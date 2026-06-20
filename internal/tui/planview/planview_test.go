@@ -919,47 +919,110 @@ func boxGlyphCell(sc tcell.SimulationScreen, content string) (int, int, tcell.St
 	return x, y, cells[y*w+x].Style, true
 }
 
-// TestDraw_CursorBoxGreenSelection is the BUG-008 cue: the cursor's node box
-// renders with a GREEN border AND green content (glyph + label), with NO selection
-// background fill anywhere on screen. A non-cursor box keeps its own state colour.
-func TestDraw_CursorBoxGreenSelection(t *testing.T) {
+// doubleBoxCornerStyleNear returns the style of the DOUBLE-LINE box top-left
+// corner (`╔`) at-or-left-of the glyph at column gx, on the box top row (gy-1) —
+// the double-border analogue of boxCornerStyleNear. ok is false when none found.
+func doubleBoxCornerStyleNear(sc tcell.SimulationScreen, gx, gy int) (tcell.Style, bool) {
+	cells, w, _ := sc.GetContents()
+	row := gy - 1
+	if row < 0 {
+		return tcell.StyleDefault, false
+	}
+	for x := gx; x >= 0; x-- {
+		c := cells[row*w+x]
+		if len(c.Runes) > 0 && c.Runes[0] == '╔' {
+			return c.Style, true
+		}
+	}
+	return tcell.StyleDefault, false
+}
+
+// TestDraw_CursorBoxDoubleBorderSelection is the BUG-008 cue: the cursor's node
+// box renders with a DOUBLE-LINE border (╔ ═ ║ …) in the node's OWN state colour
+// (bold when focused) and state-coloured content — NO green selection colour, NO
+// background fill anywhere. A non-cursor box keeps the single rounded border.
+func TestDraw_CursorBoxDoubleBorderSelection(t *testing.T) {
 	w := New()
 	// stage0 [0a working] -> stage1 [1a working]. Cursor on 0a. Both working
-	// (amber) so the non-cursor box has a state colour clearly != selection green.
+	// (amber), so the selected box border is amber too — proving selection is the
+	// glyph weight, not a hue.
 	w.SetData([]Node{liveNode("0a", StateWorking), liveNode("1a", StateWorking)}, []Edge{{From: "0a", To: "1a"}})
 	w.SetFocused(true)
 	testutil.Equal(t, w.CurrentNodeID(), "0a")
 
 	sc := drawToSim(t, w, 60, 20)
 	cells, _, _ := sc.GetContents()
-	// The selection cue is NOT a background fill: no cell carries the old
-	// ColorHighlight selection background anywhere on screen.
+	// Selection is neither a colour nor a fill: no cell carries the old
+	// ColorHighlight selection background, and no cell is the old green-selection.
 	for i := range cells {
 		_, bg, _ := cells[i].Style.Decompose()
 		testutil.Equal(t, bg == theme.ColorHighlight, false)
 	}
+	// The double-line runes appear (the selected box drew them).
+	out := drawToString(t, w, 60, 20)
+	testutil.Contains(t, out, "╔")
+	testutil.Contains(t, out, "╚")
 
-	// 0a's box glyph cell (found by the box content "⟳ 0a", NOT the header's Status
-	// ⟳) renders in the selection green, with no highlight background.
+	// 0a's box glyph cell content keeps its STATE colour (amber), not green.
 	gx, gy, curGlyphStyle, ok := boxGlyphCell(sc, "⟳ 0a")
 	testutil.Equal(t, ok, true)
 	cfg, curBg, _ := curGlyphStyle.Decompose()
-	testutil.Equal(t, cfg, theme.ColorComplete)             // PRIMARY: green content (glyph + label)
+	testutil.Equal(t, cfg, theme.ColorInProgress)           // content keeps state colour, NOT green
 	testutil.Equal(t, curBg == theme.ColorHighlight, false) // no background fill
-	// Its corner border is green and bold (focused).
-	curBorder, ok := boxCornerStyleNear(sc, gx, gy)
+	// Its corner is a DOUBLE-LINE corner in the state colour, bold (focused).
+	curBorder, ok := doubleBoxCornerStyleNear(sc, gx, gy)
 	testutil.Equal(t, ok, true)
 	bfg, _, battr := curBorder.Decompose()
-	testutil.Equal(t, bfg, theme.ColorComplete)        // green selection border
+	testutil.Equal(t, bfg, theme.ColorInProgress)      // border = state colour (amber), not green
 	testutil.Equal(t, battr&tcell.AttrBold != 0, true) // focused → bold
 
-	// 1a (⟳, working) is NOT the cursor → its content + border keep the state
-	// colour (amber), not the selection green.
-	_, _, otherGlyphStyle, ok2 := boxGlyphCell(sc, "⟳ 1a")
+	// 1a (⟳, working) is NOT the cursor → single rounded box in the state colour,
+	// non-bold; no double-line corner sits left of its glyph.
+	ox, oy, otherGlyphStyle, ok2 := boxGlyphCell(sc, "⟳ 1a")
 	testutil.Equal(t, ok2, true)
 	ofg, _, _ := otherGlyphStyle.Decompose()
 	testutil.Equal(t, ofg, theme.ColorInProgress)
-	testutil.Equal(t, ofg == theme.ColorComplete, false)
+	_, isDouble := doubleBoxCornerStyleNear(sc, ox, oy)
+	testutil.Equal(t, isDouble, false) // unselected → no double border
+	roundBorder, ok := boxCornerStyleNear(sc, ox, oy)
+	testutil.Equal(t, ok, true)
+	rfg, _, rattr := roundBorder.Decompose()
+	testutil.Equal(t, rfg, theme.ColorInProgress)       // rounded border in state colour
+	testutil.Equal(t, rattr&tcell.AttrBold != 0, false) // unselected → not bold
+}
+
+// TestDraw_SelectedDoneDistinctFromUnselectedDone proves a selected DONE (green)
+// node is distinguishable from an unselected done node: the selected one draws a
+// DOUBLE border, the unselected one a single rounded border — both green. This is
+// the exact collision the BUG-008 rework removed (green selection vs green done).
+func TestDraw_SelectedDoneDistinctFromUnselectedDone(t *testing.T) {
+	w := New()
+	// stage0 [0a done] -> stage1 [1a done]. Cursor on 0a (selected, done/green).
+	w.SetData([]Node{liveNode("0a", StateDone), liveNode("1a", StateDone)}, []Edge{{From: "0a", To: "1a"}})
+	w.SetFocused(true)
+	testutil.Equal(t, w.CurrentNodeID(), "0a")
+
+	sc := drawToSim(t, w, 60, 20)
+
+	// Selected done node: DOUBLE border, green, bold.
+	sx, sy, _, ok := boxGlyphCell(sc, "✓ 0a")
+	testutil.Equal(t, ok, true)
+	selBorder, ok := doubleBoxCornerStyleNear(sc, sx, sy)
+	testutil.Equal(t, ok, true)
+	sfg, _, sattr := selBorder.Decompose()
+	testutil.Equal(t, sfg, theme.ColorComplete) // green (done)
+	testutil.Equal(t, sattr&tcell.AttrBold != 0, true)
+
+	// Unselected done node: single rounded border, green, NOT a double border.
+	ux, uy, _, ok2 := boxGlyphCell(sc, "✓ 1a")
+	testutil.Equal(t, ok2, true)
+	_, isDouble := doubleBoxCornerStyleNear(sc, ux, uy)
+	testutil.Equal(t, isDouble, false)
+	unselBorder, ok := boxCornerStyleNear(sc, ux, uy)
+	testutil.Equal(t, ok, true)
+	ufg, _, uattr := unselBorder.Decompose()
+	testutil.Equal(t, ufg, theme.ColorComplete) // also green (done)
+	testutil.Equal(t, uattr&tcell.AttrBold != 0, false)
 }
 
 // TestDraw_StageBoxCentered: a single node box is centered horizontally — its

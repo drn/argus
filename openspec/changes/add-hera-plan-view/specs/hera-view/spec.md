@@ -173,21 +173,26 @@ A LIVE plan node's status icon (glyph AND style, including the animated spinner 
 - **WHEN** a node is a never-bound planned role, or a bound role whose task reports failure
 - **THEN** the planned node renders `○` and the failed node renders `✕`
 
-### Requirement: Plan nodes render as boxes with a green selection cue (area 6)
+### Requirement: Plan nodes render as boxes with a double-line border selection cue (area 6)
 
-The plan diagram SHALL render each node as a padded rounded box (`╭─╮ / │ glyph short-id │ / ╰─╯`) whose border is drawn in the node's state colour. The box under the cursor SHALL render with a green border AND green content (the glyph and label) — bold green when the widget owns focus, plain green when it does not (the focused distinction is weight, not hue) — and SHALL NOT use any background fill. A box the cursor is not on SHALL keep its state-colour border and content. Each stage's box row SHALL be centered horizontally within the diagram region and the whole block centered vertically when it fits.
+The plan diagram SHALL render each UNSELECTED node as a padded single rounded box (`╭─╮ / │ glyph short-id │ / ╰─╯`) and the SELECTED node (the box under the cursor) as a DOUBLE-LINE border box (`╔═╗ / ║ glyph short-id ║ / ╚═╝`) in its OWN state colour — bold when the widget owns focus, plain weight when it does not (the focused distinction is weight, not hue). Both selected and unselected boxes draw the border in the node's state colour, and the content (glyph and label) always keeps its state colour; there SHALL be no dedicated selection colour and no background fill. Selection is conveyed purely by border weight (double vs single), so it survives any state colour — a selected DONE (green) node shows a green double border, distinguishable from a green single-rounded done node. A collapsed group under the cursor SHALL keep its dashed identity but render with a HEAVY dashed border (`┏╍╍┓ / ╏ … ╏ / ┗╍╍┛`) instead of the light dashed border, so selection reads without losing the collapsed/expandable signal. Each stage's box row SHALL be centered horizontally within the diagram region and the whole block centered vertically when it fits.
 
-A background fill is deliberately NOT used: a terminal background is whole-cell, but the rounded-border glyph sits mid-cell, so a fill paints gray around the border line and escapes the visual box.
+A dedicated selection colour is deliberately NOT used: green would collide with the green DONE state. A background fill is deliberately NOT used: a terminal background is whole-cell, but the border glyph sits mid-cell, so a fill paints gray around the border line and escapes the visual box.
 
-#### Scenario: The cursor's box renders green with no fill
+#### Scenario: The cursor's box renders a double-line border with no fill
 
 - **WHEN** the cursor is on a plan node
-- **THEN** that node's box border and content render in the selection green and no cell carries a selection background fill, while a non-cursor box keeps its state colour
+- **THEN** that node's box renders a double-line border in its state colour (bold when focused) with state-coloured content and no selection background fill, while a non-cursor box renders a single rounded border in its state colour
 
-#### Scenario: Cursor member box renders green in a fanned group
+#### Scenario: A selected done node is distinguishable from an unselected done node
+
+- **WHEN** the cursor is on a done (green) node and another done node is not selected
+- **THEN** the selected node renders a green DOUBLE-line border and the unselected node renders a green single rounded border — distinguishable by border weight despite sharing the green state colour
+
+#### Scenario: Cursor member box renders a double-line border in a fanned group
 
 - **WHEN** the cursor is on a member of a fanned-out group
-- **THEN** that member's box border and content render in the selection green (no fill) and the other member boxes keep their state colour
+- **THEN** that member's box renders a double-line border in its state colour (no fill) and the other member boxes render single rounded borders in their state colour
 
 ### Requirement: Fanned group visually expands into member boxes (area 6)
 

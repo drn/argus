@@ -1621,32 +1621,39 @@ func (w *Widget) buildStageBlock(s int) stageBlock {
 	}
 }
 
-// layoutNodeBox returns the width/height and a draw closure for a single rounded
-// node box: `╭─╮ / │ <content> │ / ╰─╯`, one space of horizontal padding inside.
-// When selected the border AND the content (glyph + label) render in the
-// selection green (BUG-008); there is NO background fill — a terminal background
-// is whole-cell but the rounded-border glyph sits mid-cell, so a fill leaks gray
-// around the line. Unselected: the border takes the node's state colour.
+// layoutNodeBox returns the width/height and a draw closure for a single node
+// box, one space of horizontal padding inside. SELECTED renders a DOUBLE-LINE
+// border (`╔═╗ / ║ <content> ║ / ╚═╝`); UNSELECTED renders the single rounded
+// border (`╭─╮ / │ <content> │ / ╰─╯`). The border takes the node's STATE colour
+// in BOTH cases (bold when selected and the widget owns focus) — selection is
+// conveyed purely by the heavier glyph set, never a colour or a fill (BUG-008): a
+// dedicated colour would collide with the green DONE state, and a background fill
+// leaks gray around the mid-cell border glyph. The content (glyph + label) always
+// keeps its own state colour — no selection override.
 func (w *Widget) layoutNodeBox(content string, contentStyle tcell.Style, selected bool) (int, int, func(tcell.Screen, int, int, clipRect)) {
 	cw := len([]rune(content))
 	innerW := cw + 2*boxHPad
 	boxW := innerW + 2 // borders
 	border := w.boxBorderStyle(contentStyle, selected)
-	if selected {
-		contentStyle = contentStyle.Foreground(selectionFG)
-	}
 	draw := func(screen tcell.Screen, x, y int, clip clipRect) {
-		w.drawRoundedBox(screen, x, y, boxW, nodeBoxH, border, clip)
+		if selected {
+			w.drawDoubleBox(screen, x, y, boxW, nodeBoxH, border, clip)
+		} else {
+			w.drawRoundedBox(screen, x, y, boxW, nodeBoxH, border, clip)
+		}
 		// Content centered-left after the padding, on the middle row.
 		put(screen, clip, x+1+boxHPad, y+1, content, contentStyle)
 	}
 	return boxW, nodeBoxH, draw
 }
 
-// layoutDashedBox returns a dashed-bordered box (`┌╌╌┐ / ╎ … ╎ / └╌╌┘`) holding a
-// label line and an optional sub line (the counts), used for a collapsed group.
-// topLabel, when non-empty, is embedded into the top edge (`┌╌ label ╌┐`) — the
-// fanned-group enclosure uses that variant.
+// layoutDashedBox returns a dashed-bordered box holding a label line and an
+// optional sub line (the counts), used for a collapsed group. The dashed edge is
+// the collapsed/expandable identity, so it survives selection: UNSELECTED uses
+// the light dashed set (`┌╌╌┐ / ╎ … ╎ / └╌╌┘`), SELECTED swaps to a HEAVY dashed
+// set (`┏╍╍┓ / ╏ … ╏ / ┗╍╍┛`) so the cue reads without losing the dashed signal
+// (BUG-008 — no colour, no fill). topLabel, when non-empty, is embedded into the
+// top edge (`┌╌ label ╌┐`) — the fanned-group enclosure uses that variant.
 func (w *Widget) layoutDashedBox(label, sub, topLabel string, selected bool) (int, int, func(tcell.Screen, int, int, clipRect)) {
 	lines := []string{label}
 	if sub != "" {
@@ -1666,11 +1673,8 @@ func (w *Widget) layoutDashedBox(label, sub, topLabel string, selected bool) (in
 	boxH := len(lines) + 2
 	border := w.dashedBorderStyle(selected)
 	contentStyle := theme.StyleNormal
-	if selected {
-		contentStyle = contentStyle.Foreground(selectionFG)
-	}
 	draw := func(screen tcell.Screen, x, y int, clip clipRect) {
-		w.drawDashedBox(screen, x, y, boxW, boxH, topLabel, border, clip)
+		w.drawDashedBox(screen, x, y, boxW, boxH, topLabel, border, clip, selected)
 		for i, l := range lines {
 			put(screen, clip, x+1+groupPad, y+1+i, l, contentStyle)
 		}
@@ -1721,13 +1725,16 @@ func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tce
 	boxW := labelCol + innerW + 2*groupPad + 2
 	boxH := innerH + 2 // rounded top + bottom edges
 	enclosureSel := onSlot && w.cursor.Member < 0
-	border := w.selStyleOr(enclosureSel, theme.StyleDimmed.Foreground(theme.ColorBorder))
+	border := w.enclosureBorderStyle(enclosureSel)
 	labelStyle := theme.StyleDimmed
-	if enclosureSel {
-		labelStyle = labelStyle.Foreground(selectionFG)
-	}
 	draw := func(screen tcell.Screen, x, y int, clip clipRect) {
-		w.drawRoundedBox(screen, x, y, boxW, boxH, border, clip)
+		// Selected enclosure (cursor on the group slot, no member) → double-line;
+		// otherwise the single rounded enclosure (BUG-008: weight, not colour/fill).
+		if enclosureSel {
+			w.drawDoubleBox(screen, x, y, boxW, boxH, border, clip)
+		} else {
+			w.drawRoundedBox(screen, x, y, boxW, boxH, border, clip)
+		}
 		// ▲ collapse affordance just inside the top-right corner.
 		setIf(screen, clip, x+boxW-2, y, '▲', border)
 		// Vertical role label down the left inner edge (one rune per row).
@@ -1748,15 +1755,6 @@ func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tce
 		}
 	}
 	return boxW, boxH, draw
-}
-
-// selStyleOr returns the selection border style when sel is true, else the given
-// fallback style. Keeps the fanned-enclosure border choice terse.
-func (w *Widget) selStyleOr(sel bool, fallback tcell.Style) tcell.Style {
-	if sel {
-		return w.selectionBorderStyle()
-	}
-	return fallback
 }
 
 // commonRoleToken returns the role-name token shared by every member after the
@@ -1786,61 +1784,70 @@ func (w *Widget) commonRoleToken(members []string) string {
 	return first
 }
 
-// boxBorderStyle is the rounded node box's border style: the node's state colour
-// normally, or the green selection border when selected (bold when the widget
-// owns focus, plain green when it does not).
+// boxBorderStyle is the node box's border style: the node's STATE colour (the fg
+// from contentStyle) for BOTH selected and unselected, made BOLD only when the
+// box is selected AND the widget owns focus. Selection is carried by the glyph
+// set (double vs rounded — see layoutNodeBox), never by hue or a fill (BUG-008):
+// a dedicated colour would collide with the green DONE state.
 func (w *Widget) boxBorderStyle(contentStyle tcell.Style, selected bool) tcell.Style {
-	if !selected {
-		fg, _, _ := contentStyle.Decompose()
-		return tcell.StyleDefault.Foreground(fg)
+	fg, _, _ := contentStyle.Decompose()
+	style := tcell.StyleDefault.Foreground(fg)
+	if selected && w.focused {
+		style = style.Bold(true)
 	}
-	return w.selectionBorderStyle()
+	return style
 }
 
-// dashedBorderStyle is a dashed enclosure's border style: dim normally, the
-// selection border when selected.
+// dashedBorderStyle is the collapsed-group dashed border style: the dim border
+// colour, made bold only when selected and the widget owns focus. The dashed vs
+// heavy-dashed glyph set (layoutDashedBox) is what conveys selection.
 func (w *Widget) dashedBorderStyle(selected bool) tcell.Style {
-	if selected {
-		return w.selectionBorderStyle()
+	style := theme.StyleDimmed.Foreground(theme.ColorBorder)
+	if selected && w.focused {
+		style = style.Bold(true)
 	}
-	return theme.StyleDimmed.Foreground(theme.ColorBorder)
+	return style
 }
 
-// selectionFG is the cursor-box selection colour — the theme's green
-// (`ColorComplete`), reused so the cue reads consistently with the rest of the
-// TUI. The selected node's border AND content (glyph + label) both render in this
-// green; there is NO background fill (a terminal bg is whole-cell but the
-// rounded-border glyph sits mid-cell, so any fill leaks gray around the line —
-// BUG-008). NOTE: the "done" state is also green (ColorComplete → ✓), so a
-// selected node and a done node both read green; the moving cursor (+ bold when
-// focused) is what disambiguates them.
-var selectionFG = theme.ColorComplete
-
-// selectionBorderStyle is the cursor-box selection foreground: GREEN, BOLD when
-// the widget owns focus and plain (non-bold) green when it does not — the focused
-// distinction is weight, not hue. The selected box's content is given the same
-// green foreground by the box layouts; together (no fill) they make the selected
-// box unmistakable.
-func (w *Widget) selectionBorderStyle() tcell.Style {
-	if w.focused {
-		return tcell.StyleDefault.Foreground(selectionFG).Bold(true)
+// enclosureBorderStyle is the fanned-group enclosure border style: the dim border
+// colour, bold only when the enclosure slot is selected and the widget owns
+// focus. The rounded vs double glyph set (layoutFannedGroup) conveys selection.
+func (w *Widget) enclosureBorderStyle(selected bool) tcell.Style {
+	style := theme.StyleDimmed.Foreground(theme.ColorBorder)
+	if selected && w.focused {
+		style = style.Bold(true)
 	}
-	return tcell.StyleDefault.Foreground(selectionFG)
+	return style
 }
 
 // drawRoundedBox paints a rounded-corner box (`╭─╮ │ │ ╰─╯`) at (x,y) of the
-// given width/height, clipped to the region.
+// given width/height, clipped to the region. The UNSELECTED node box.
 func (w *Widget) drawRoundedBox(screen tcell.Screen, x, y, bw, bh int, style tcell.Style, clip clipRect) {
 	drawBoxFrame(screen, x, y, bw, bh, style, clip, '╭', '╮', '╰', '╯', '─', '│')
 }
 
-// drawDashedBox paints a dashed-edge box (`┌╌╌┐ ╎ ╎ └╌╌┘`); when topLabel is
-// non-empty it is embedded into the top edge as `┌╌ label ╌…┐`.
-func (w *Widget) drawDashedBox(screen tcell.Screen, x, y, bw, bh int, topLabel string, style tcell.Style, clip clipRect) {
-	drawBoxFrame(screen, x, y, bw, bh, style, clip, '┌', '┐', '└', '┘', '╌', '╎')
+// drawDoubleBox paints a double-line box (`╔═╗ ║ ║ ╚═╝`) at (x,y). The SELECTED
+// node box (BUG-008): selection is the heavier glyph set, in the node's own state
+// colour, so it survives any state colour and never collides with a state hue.
+func (w *Widget) drawDoubleBox(screen tcell.Screen, x, y, bw, bh int, style tcell.Style, clip clipRect) {
+	drawBoxFrame(screen, x, y, bw, bh, style, clip, '╔', '╗', '╚', '╝', '═', '║')
+}
+
+// drawDashedBox paints a dashed-edge box; light dashed (`┌╌╌┐ ╎ ╎ └╌╌┘`) when not
+// heavy, heavy dashed (`┏╍╍┓ ╏ ╏ ┗╍╍┛`) when heavy (the SELECTED collapsed group —
+// keeps the dashed identity while reading as selected). When topLabel is non-empty
+// it is embedded into the top edge as `┌╌ label ╌…┐` (heavy: `┏╍ label ╍…┓`).
+func (w *Widget) drawDashedBox(screen tcell.Screen, x, y, bw, bh int, topLabel string, style tcell.Style, clip clipRect, heavy bool) {
+	tl, tr, bl, br, horiz, vert := '┌', '┐', '└', '┘', '╌', '╎'
+	dash := "╌"
+	if heavy {
+		tl, tr, bl, br, horiz, vert = '┏', '┓', '┗', '┛', '╍', '╏'
+		dash = "╍"
+	}
+	drawBoxFrame(screen, x, y, bw, bh, style, clip, tl, tr, bl, br, horiz, vert)
 	if topLabel != "" && bw >= len([]rune(topLabel))+4 {
 		// `┌╌ label ╌╌┐`: corner, one dash, space, label, space, dashes…
-		put(screen, clip, x+1, y, "╌ "+topLabel+" ", style)
+		put(screen, clip, x+1, y, dash+" "+topLabel+" ", style)
 	}
 }
 

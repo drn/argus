@@ -187,6 +187,30 @@ func TestDraw_CollapsedGroupStillShowsDashedRangeBox(t *testing.T) {
 	testutil.Contains(t, out, "╌") // dashed border rune
 }
 
+// TestDraw_SelectedCollapsedGroupHeavyDashed (BUG-008): when the cursor rests on a
+// COLLAPSED group slot, the dashed box keeps its dashed identity but swaps to the
+// HEAVY dashed glyph set (┏ ╍ ╏ …) so selection reads — no green, no fill. An
+// unselected collapsed group stays on the light dashed set (┌ ╌ ╎).
+func TestDraw_SelectedCollapsedGroupHeavyDashed(t *testing.T) {
+	// Unselected (cursor parked at stage 0): light dashed runes, no heavy ones.
+	w := fanGroup("2a", "2b", "2c")
+	w.SetFocused(true)
+	unsel := drawToString(t, w, 70, 18)
+	testutil.Contains(t, unsel, "╌")                           // light dashed present
+	testutil.Equal(t, strings.ContainsRune(unsel, '╍'), false) // no heavy dashed
+	testutil.Equal(t, strings.ContainsRune(unsel, '┏'), false) // no heavy corner
+
+	// Move the cursor onto the collapsed group slot (stage 1) WITHOUT fanning out.
+	w.MoveStage(1)
+	_, isGroup := w.GroupAt(w.CursorPos().Stage, w.CursorPos().Slot)
+	testutil.Equal(t, isGroup, true)
+	sel := drawToString(t, w, 70, 18)
+	// Heavy dashed corner + edges now present; the range label survives.
+	testutil.Contains(t, sel, "┏")
+	testutil.Contains(t, sel, "╍")
+	testutil.Contains(t, sel, "[2a–2c]")
+}
+
 // TestDraw_CollapsedGroupTwoLineFormat is the BUG-005 collapsed-box format: a
 // FULL-feed group renders top line `[range] → <target>` and sub line
 // `<role token> · <per-state counts>`. The bare planned-count must NOT trail the
@@ -247,8 +271,9 @@ func TestDraw_CollapsedGroupPartialFeedTopLine(t *testing.T) {
 }
 
 // TestDraw_FannedMemberCursorBoxSelected: the cursor's member box inside a fanned
-// group renders with a GREEN border + green content (BUG-008), no background fill;
-// a different member's box keeps its own state colour and has no green selection.
+// group renders with a DOUBLE-LINE border in its OWN state colour (BUG-008) — no
+// green selection colour, no fill; a different member's box keeps the single
+// rounded border in its own state colour.
 func TestDraw_FannedMemberCursorBoxSelected(t *testing.T) {
 	w := fanGroup("2a", "2b", "2c")
 	w.SetFocused(true)
@@ -270,24 +295,28 @@ func TestDraw_FannedMemberCursorBoxSelected(t *testing.T) {
 	// resolve the member box, not the panel/header.
 	bx, by, ok := findStringCell(sc, "○ 2b")
 	testutil.Equal(t, ok, true)
-	// The 2b content cell renders in the selection green.
+	// The 2b content cell keeps its STATE colour (planned → violet), not green.
 	bcfg, _, _ := cells[by*scw+bx].Style.Decompose()
-	testutil.Equal(t, bcfg, theme.ColorComplete)
-	// And its box border carries the green selection foreground.
-	bSel, ok := boxCornerStyleNear(sc, bx, by)
+	testutil.Equal(t, bcfg, colorPlanned)
+	testutil.Equal(t, bcfg == theme.ColorComplete, false)
+	// Its box border is a DOUBLE-LINE corner in the state colour (violet), bold.
+	bSel, ok := doubleBoxCornerStyleNear(sc, bx, by)
 	testutil.Equal(t, ok, true)
-	bfg, _, _ := bSel.Decompose()
-	testutil.Equal(t, bfg, theme.ColorComplete)
+	bfg, _, battr := bSel.Decompose()
+	testutil.Equal(t, bfg, colorPlanned)
+	testutil.Equal(t, battr&tcell.AttrBold != 0, true) // focused → bold
 
-	// 2a's box (non-cursor member): content + border are NOT the selection green
-	// (planned members render violet, not green).
+	// 2a's box (non-cursor member): single rounded border (no double corner), state
+	// colour, NOT green.
 	ax, ay, ok2 := findStringCell(sc, "○ 2a")
 	testutil.Equal(t, ok2, true)
 	acfg, _, _ := cells[ay*scw+ax].Style.Decompose()
 	testutil.Equal(t, acfg == theme.ColorComplete, false)
-	aSel, ok := boxCornerStyleNear(sc, ax, ay)
+	_, isDouble := doubleBoxCornerStyleNear(sc, ax, ay)
+	testutil.Equal(t, isDouble, false) // unselected → no double border
+	aRound, ok := boxCornerStyleNear(sc, ax, ay)
 	testutil.Equal(t, ok, true)
-	afg, _, _ := aSel.Decompose()
+	afg, _, _ := aRound.Decompose()
 	testutil.Equal(t, afg == theme.ColorComplete, false)
 }
 
