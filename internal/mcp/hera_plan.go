@@ -40,6 +40,8 @@ func (s *Server) toolHeraPlanNode(id interface{}, args json.RawMessage) *Respons
 		Cwd          string `json:"cwd"`
 		Name         string `json:"name"`
 		Prompt       string `json:"prompt"`
+		Goal         string `json:"goal"`
+		Kind         string `json:"kind"`
 		Project      string `json:"project"`
 		Orchestrator string `json:"orchestrator"`
 	}
@@ -52,9 +54,27 @@ func (s *Server) toolHeraPlanNode(id interface{}, args json.RawMessage) *Respons
 	if name == "" {
 		return toolError(id, "name is required")
 	}
-	prompt := strings.TrimSpace(p.Prompt)
-	if prompt == "" {
-		return toolError(id, "prompt is required")
+
+	// Resolve node kind. Default to worker when absent or empty.
+	nodeKind := db.HeraNodeKindWorker
+	if strings.TrimSpace(p.Kind) == string(db.HeraNodeKindSubCoord) {
+		nodeKind = db.HeraNodeKindSubCoord
+	}
+
+	// For subcoord nodes the goal serves as the delivery prompt; for worker
+	// nodes the prompt field is required as before. The two paths are exclusive.
+	var prompt string
+	if nodeKind == db.HeraNodeKindSubCoord {
+		goal := strings.TrimSpace(p.Goal)
+		if goal == "" {
+			return toolError(id, "subcoord node requires a goal (goal is the delivery prompt for the spawned coordinator)")
+		}
+		prompt = goal
+	} else {
+		prompt = strings.TrimSpace(p.Prompt)
+		if prompt == "" {
+			return toolError(id, "prompt is required")
+		}
 	}
 
 	caller, errResp := s.heraPlanCoordinatorGuard(id, p.Cwd, p.Orchestrator)
@@ -78,6 +98,7 @@ func (s *Server) toolHeraPlanNode(id interface{}, args json.RawMessage) *Respons
 	role, err := s.heraStore.CreateHeraPlannedRole(db.CreateHeraRoleInput{
 		OrchestratorID: caller.orch.ID,
 		Name:           uniqueName,
+		NodeKind:       nodeKind,
 		ArgusProject:   project,
 		Prompt:         prompt,
 	})
@@ -85,13 +106,14 @@ func (s *Server) toolHeraPlanNode(id interface{}, args json.RawMessage) *Respons
 		return toolError(id, fmt.Sprintf("create planned node: %v", err))
 	}
 
-	slog.Info("[hera] plan_node ok", "orch", caller.orch.Name, "role", role.Name, "role_id", role.ID)
+	slog.Info("[hera] plan_node ok", "orch", caller.orch.Name, "role", role.Name, "role_id", role.ID, "kind", string(nodeKind))
 	var b strings.Builder
 	fmt.Fprintf(&b, "Planned node created.\n\n")
 	fmt.Fprintf(&b, "- **orchestrator**: %s\n", caller.orch.Name)
 	fmt.Fprintf(&b, "- **name**: %s\n", role.Name)
 	fmt.Fprintf(&b, "- **role_id**: %d\n", role.ID)
 	fmt.Fprintf(&b, "- **project**: %s\n", project)
+	fmt.Fprintf(&b, "- **kind**: %s\n", string(nodeKind))
 	fmt.Fprintf(&b, "- **status**: planned (no agent yet; materializes when blockers reach done)\n")
 	return toolResult(id, b.String())
 }
@@ -150,6 +172,8 @@ func (s *Server) toolHeraPlan(id interface{}, args json.RawMessage) *Response {
 		Nodes []struct {
 			Name    string `json:"name"`
 			Prompt  string `json:"prompt"`
+			Goal    string `json:"goal"`
+			Kind    string `json:"kind"`
 			Project string `json:"project"`
 		} `json:"nodes"`
 		Edges []struct {
@@ -185,10 +209,29 @@ func (s *Server) toolHeraPlan(id interface{}, args json.RawMessage) *Response {
 		if name == "" {
 			return toolError(id, fmt.Sprintf("nodes[%d]: name is required", i))
 		}
-		prompt := strings.TrimSpace(n.Prompt)
-		if prompt == "" {
-			return toolError(id, fmt.Sprintf("nodes[%d] (%s): prompt is required", i, name))
+
+		// Resolve node kind. Default to worker when absent or empty.
+		nodeKind := db.HeraNodeKindWorker
+		if strings.TrimSpace(n.Kind) == string(db.HeraNodeKindSubCoord) {
+			nodeKind = db.HeraNodeKindSubCoord
 		}
+
+		// For subcoord nodes the goal is the delivery prompt; for worker nodes
+		// the prompt field is required as before.
+		var prompt string
+		if nodeKind == db.HeraNodeKindSubCoord {
+			goal := strings.TrimSpace(n.Goal)
+			if goal == "" {
+				return toolError(id, fmt.Sprintf("nodes[%d] (%s): subcoord node requires a goal", i, name))
+			}
+			prompt = goal
+		} else {
+			prompt = strings.TrimSpace(n.Prompt)
+			if prompt == "" {
+				return toolError(id, fmt.Sprintf("nodes[%d] (%s): prompt is required", i, name))
+			}
+		}
+
 		project := strings.TrimSpace(n.Project)
 		if project == "" {
 			project = caller.task.Project
@@ -200,7 +243,7 @@ func (s *Server) toolHeraPlan(id interface{}, args json.RawMessage) *Response {
 		if err != nil {
 			return toolError(id, fmt.Sprintf("nodes[%d] (%s): uniquify: %v", i, name, err))
 		}
-		specs = append(specs, db.HeraPlannedNodeSpec{Name: uniqueName, ArgusProject: project, Prompt: prompt})
+		specs = append(specs, db.HeraPlannedNodeSpec{Name: uniqueName, ArgusProject: project, Prompt: prompt, NodeKind: nodeKind})
 		nameIdx[name] = i
 	}
 

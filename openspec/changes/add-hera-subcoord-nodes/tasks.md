@@ -12,10 +12,10 @@
 
 **Depends on:** Stage 1
 
-- [ ] 2.1 `internal/db/hera_plan.go`: add the node-kind discriminator to the planned-role insert path — nullable `kind` column on the planned role (the goal is the existing delivery prompt; NO child-orch/coord-role names stored — resolves the design Open Question; queried by the gater each tick). `CreateHeraPlannedRole` and `CreateHeraPlan` accept kind defaulting to `worker`; keep existing worker rows byte-identical
-- [ ] 2.2 `internal/db/hera_plan.go`: `ListHeraPlannedNodes` surfaces the kind + goal so the gater can branch without re-resolving intent
-- [ ] 2.3 `internal/mcp/hera_plan.go`: `toolHeraPlanNode` + `toolHeraPlan` accept `kind` (default `worker`) + `goal` only (NO child-orch/coord-role-name params — parent hands just the goal); validate that a `subcoord` node has a goal; keep the coordinator-only guard; surface kind in the tool result text
-- [ ] 2.4 uxlog/slog: log sub-coord node authoring (`[hera] plan_node kind=subcoord ...`) consistent with existing plan-authoring logs
+- [x] 2.1 `internal/db/hera_plan.go`: add the node-kind discriminator to the planned-role insert path — nullable `kind` column on the planned role (the goal is the existing delivery prompt; NO child-orch/coord-role names stored — resolves the design Open Question; queried by the gater each tick). `CreateHeraPlannedRole` and `CreateHeraPlan` accept kind defaulting to `worker`; keep existing worker rows byte-identical
+- [x] 2.2 `internal/db/hera_plan.go`: `ListHeraPlannedNodes` surfaces the kind + goal so the gater can branch without re-resolving intent
+- [x] 2.3 `internal/mcp/hera_plan.go`: `toolHeraPlanNode` + `toolHeraPlan` accept `kind` (default `worker`) + `goal` only (NO child-orch/coord-role-name params — parent hands just the goal); validate that a `subcoord` node has a goal; keep the coordinator-only guard; surface kind in the tool result text
+- [x] 2.4 uxlog/slog: log sub-coord node authoring (`[hera] plan_node kind=subcoord ...`) consistent with existing plan-authoring logs
 
 ## 3. Materialization: distinct coordinator agent + gater routing
 

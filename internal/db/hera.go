@@ -95,6 +95,27 @@ const (
 	HeraKindFreelance   HeraRoleKind = "freelance"
 )
 
+// HeraNodeKind is the plan-node discriminator stored on a planned role
+// (add-hera-subcoord-nodes). It steers how the gater materializes the node:
+// worker nodes materialize as leaf agents; subcoord nodes materialize as a
+// distinct coordinator agent that owns its own sub-orchestrator.
+//
+// IMPORTANT: HeraNodeKind is SEPARATE from HeraRoleKind. A planned node's
+// hera_roles.kind is ALWAYS worker (D2 — the node occupies a worker slot in
+// the parent DAG regardless of node_kind). node_kind is only consulted at
+// materialize time.
+type HeraNodeKind string
+
+const (
+	// HeraNodeKindWorker is the default: materialize as a leaf worker agent.
+	// Absent or NULL node_kind maps to this value on scan.
+	HeraNodeKindWorker HeraNodeKind = "worker"
+	// HeraNodeKindSubCoord means: materialize as a distinct coordinator agent
+	// with its own sub-orchestrator. The planned role's Prompt IS the goal
+	// delivered to that coordinator.
+	HeraNodeKindSubCoord HeraNodeKind = "subcoord"
+)
+
 // HeraRoleStatusValue enumerates the valid hera_role_status strings.
 type HeraRoleStatusValue string
 
@@ -127,11 +148,15 @@ type HeraOrchestrator struct {
 
 // HeraRole is a participant in an orchestrator. Prompt is the only free-form
 // field. ArchivedAt / PinnedAt / NukedAt mirror HeraOrchestrator.
+// NodeKind is the plan-node discriminator (add-hera-subcoord-nodes): only
+// meaningful on planned roles (no binding ever); defaults to HeraNodeKindWorker
+// when the DB column is NULL or absent.
 type HeraRole struct {
 	ID             int64
 	OrchestratorID int64
 	Name           string
 	Kind           HeraRoleKind
+	NodeKind       HeraNodeKind
 	ArgusProject   string
 	Prompt         string
 	CreatedAt      time.Time
@@ -162,10 +187,16 @@ type HeraRoleStatus struct {
 }
 
 // CreateHeraRoleInput captures the fields a role create must supply.
+// NodeKind is the plan-node discriminator (add-hera-subcoord-nodes); it is
+// stored on the hera_roles row as node_kind. Callers that do not set NodeKind
+// get HeraNodeKindWorker (the zero-value default). Only CreateHeraPlannedRole
+// persists this field; CreateHeraRole and CreateHeraRoleWithBinding ignore it
+// (born-bound roles are never plan nodes and have no node_kind semantics).
 type CreateHeraRoleInput struct {
 	OrchestratorID int64
 	Name           string
 	Kind           HeraRoleKind
+	NodeKind       HeraNodeKind
 	ArgusProject   string
 	Prompt         string
 }
@@ -415,7 +446,7 @@ func (d *DB) ListHeraRoles(orchID int64, includeArchived bool) ([]*HeraRole, err
 
 	// Nuked roles (Tier-2 EOL) are invisible to the rail-feeding list regardless
 	// of includeArchived — recoverable only by id lookup (HeraRole).
-	query := `SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at
+	query := `SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind
 	          FROM hera_roles WHERE orchestrator_id=? AND nuked_at IS NULL`
 	if !includeArchived {
 		query += ` AND archived_at IS NULL`
@@ -446,7 +477,7 @@ func (d *DB) ListHeraRolesByKind(orchID int64, kind HeraRoleKind) ([]*HeraRole, 
 	defer d.mu.Unlock()
 
 	rows, err := d.conn.Query(
-		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind
 		 FROM hera_roles WHERE orchestrator_id=? AND kind=? AND archived_at IS NULL ORDER BY name ASC`,
 		orchID, string(kind))
 	if err != nil {
@@ -554,23 +585,32 @@ func (d *DB) DeleteHeraRole(id int64) error {
 
 func (d *DB) heraRoleByID(id int64) (*HeraRole, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind
 		 FROM hera_roles WHERE id=?`, id)
 	return scanHeraRole(row)
 }
 
 func (d *DB) heraRoleByActiveName(orchID int64, name string) (*HeraRole, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind
 		 FROM hera_roles WHERE orchestrator_id=? AND name=? AND archived_at IS NULL`, orchID, name)
 	return scanHeraRole(row)
 }
 
 func insertHeraRole(ex execer, in CreateHeraRoleInput, now string) (*HeraRole, error) {
+	// node_kind: store NULL for the default worker kind so pre-existing rows
+	// (which have no node_kind column value) scan identically to a newly
+	// inserted worker. Storing NULL for worker and "subcoord" for subcoord
+	// keeps the column sparse and makes the default unambiguous on scan.
+	var nodeKindVal *string
+	if in.NodeKind == HeraNodeKindSubCoord {
+		s := string(in.NodeKind)
+		nodeKindVal = &s
+	}
 	res, err := ex.Exec(
-		`INSERT INTO hera_roles (orchestrator_id, name, kind, argus_project, prompt, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		in.OrchestratorID, in.Name, string(in.Kind), in.ArgusProject, in.Prompt, now)
+		`INSERT INTO hera_roles (orchestrator_id, name, kind, argus_project, prompt, created_at, node_kind)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		in.OrchestratorID, in.Name, string(in.Kind), in.ArgusProject, in.Prompt, now, nodeKindVal)
 	if err != nil {
 		return nil, fmt.Errorf("insert hera role: %w", err)
 	}
@@ -578,11 +618,16 @@ func insertHeraRole(ex execer, in CreateHeraRoleInput, now string) (*HeraRole, e
 	if err != nil {
 		return nil, fmt.Errorf("insert hera role: last insert id: %w", err)
 	}
+	nodeKind := in.NodeKind
+	if nodeKind == "" {
+		nodeKind = HeraNodeKindWorker
+	}
 	return &HeraRole{
 		ID:             id,
 		OrchestratorID: in.OrchestratorID,
 		Name:           in.Name,
 		Kind:           in.Kind,
+		NodeKind:       nodeKind,
 		ArgusProject:   in.ArgusProject,
 		Prompt:         in.Prompt,
 		CreatedAt:      parseTime(now),
@@ -1158,9 +1203,9 @@ func scanHeraOrchestrator(s rowScanner) (*HeraOrchestrator, error) {
 func scanHeraRole(s rowScanner) (*HeraRole, error) {
 	var r HeraRole
 	var kind, createdAt string
-	var archivedAt, pinnedAt, nukedAt sql.NullString
+	var archivedAt, pinnedAt, nukedAt, nodeKind sql.NullString
 	if err := s.Scan(&r.ID, &r.OrchestratorID, &r.Name, &kind, &r.ArgusProject, &r.Prompt,
-		&createdAt, &archivedAt, &pinnedAt, &nukedAt); err != nil {
+		&createdAt, &archivedAt, &pinnedAt, &nukedAt, &nodeKind); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrHeraNotFound
 		}
@@ -1171,6 +1216,13 @@ func scanHeraRole(s rowScanner) (*HeraRole, error) {
 	r.ArchivedAt = nullTimePtr(archivedAt)
 	r.PinnedAt = nullTimePtr(pinnedAt)
 	r.NukedAt = nullTimePtr(nukedAt)
+	// NULL or absent node_kind → HeraNodeKindWorker (default). Only "subcoord"
+	// is stored explicitly; worker nodes store NULL to keep the column sparse.
+	if nodeKind.Valid && nodeKind.String == string(HeraNodeKindSubCoord) {
+		r.NodeKind = HeraNodeKindSubCoord
+	} else {
+		r.NodeKind = HeraNodeKindWorker
+	}
 	return &r, nil
 }
 
