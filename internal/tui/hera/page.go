@@ -215,6 +215,22 @@ func (p *HeraPage) jumpToLeaf(id string) {
 		uxlog.Log("[hera-view] plan leaf-enter: no rail row for task=%s (focus unchanged)", id)
 		return
 	}
+	// Mirror the rail's Enter-reattach (BUG-009): a plan-leaf node whose agent
+	// session has EXITED must restart-and-join it, exactly as the rail's Enter
+	// does — not merely select it (which leaves the pane showing a dead session).
+	// Reuse the same OnReattach plumbing under the SAME liveness gate the rail
+	// Enter uses (page.go ~712): a dead session (any role) or a live
+	// non-coordinator role fires it; a live coordinator stays navigate-only. Only
+	// leaf nodes reach jumpToLeaf (planview routes Drillable sub-coordinators to
+	// OnDrillIn), so drill-in is unaffected.
+	sel := p.rail.Selection()
+	if taskID := sel.FocusTaskID(); taskID != "" && p.OnReattach != nil {
+		live := p.resolve != nil && p.resolve(taskID) != nil
+		if !live || !sel.IsCoordinator() {
+			uxlog.Log("[hera-view] plan leaf-enter reattach task=%s (live=%v coordinator=%v)", taskID, live, sel.IsCoordinator())
+			p.OnReattach(sel)
+		}
+	}
 	// applySelection ran via onSelectionChanged; a plain worker selection feeds the
 	// AGENT pane, so land focus there. (A leaf that resolved to a coordinator/sub-
 	// coord row is detailsMode — advance into the coord pane instead, mirroring the

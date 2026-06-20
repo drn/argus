@@ -6,6 +6,7 @@ import (
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/planview"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -318,6 +319,108 @@ func TestPlanLeafEnter_JumpsWithinHeraNotTasks(t *testing.T) {
 func TestPlanLeafEnter_OnEnterIsPageOwned(t *testing.T) {
 	p := NewHeraPage(memDB(t))
 	testutil.Equal(t, p.Plan().OnEnter != nil, true)
+}
+
+// TestPlanLeafEnter_DeadSessionFiresReattach is BUG-009: Enter on a plan-leaf
+// node whose agent session has EXITED must restart-and-join it (fire OnReattach),
+// exactly as the rail's Enter does — not merely select it (which would leave the
+// pane showing a dead session). Here no session resolver is wired, so the
+// worker's task is treated as dead, the case the rail's Enter restarts.
+func TestPlanLeafEnter_DeadSessionFiresReattach(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	p := NewHeraPage(d)
+	// No SetSessionResolver → p.resolve == nil → the worker session is dead.
+	var reattached Selection
+	called := false
+	p.OnReattach = func(s Selection) { reattached = s; called = true }
+	p.Refresh()
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	t.Cleanup(sim.Fini)
+	sim.SetSize(120, 30)
+	p.SetRect(0, 0, 120, 30)
+	p.Draw(sim)
+
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
+	testutil.Equal(t, p.detailsMode, true) // coordinator selected → details/plan
+	pl := p.Plan()
+	testutil.Equal(t, pl.CurrentNodeID(), "t-wkr")
+
+	// Enter on the dead leaf → restart+join via OnReattach (like the rail).
+	pl.ActivateCursor()
+
+	testutil.Equal(t, called, true)
+	testutil.Equal(t, reattached.FocusTaskID(), "t-wkr")
+	// The jump-within-Hera behaviour is preserved: focus lands on the agent pane.
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
+}
+
+// TestPlanLeafEnter_LiveWorkerFiresReattach: Enter on a LIVE worker leaf STILL
+// fires OnReattach — identical to the rail's Enter gate. A SIGTSTP'd worker is
+// "alive" but suspended, so the App-side handler is what decides whether to
+// actually revive it; the view fires the same callback either way.
+func TestPlanLeafEnter_LiveWorkerFiresReattach(t *testing.T) {
+	p := leafPlanPage(t) // wires a LIVE resolver for t-coord and t-wkr
+	var got Selection
+	called := false
+	p.OnReattach = func(s Selection) { got = s; called = true }
+
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
+	pl := p.Plan()
+	testutil.Equal(t, pl.CurrentNodeID(), "t-wkr")
+
+	pl.ActivateCursor()
+
+	testutil.Equal(t, called, true)
+	testutil.Equal(t, got.FocusTaskID(), "t-wkr")
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
+}
+
+// TestPlanLeafEnter_LiveCoordinatorDoesNotReattach: a live coordinator stays
+// navigate-only — leaf-Enter must NOT restart it. Coordinators are folded into
+// the orch header (no selectable leaf row), so SelectByTaskID can't land on one
+// and jumpToLeaf is a no-op; even if it resolved, the shared !IsCoordinator()
+// gate (proven for the rail in TestKeyset_EnterLiveCoordinatorDoesNotReattach)
+// would block the reattach. Either way: no OnReattach for a live coordinator.
+func TestPlanLeafEnter_LiveCoordinatorDoesNotReattach(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-coord": {id: "t-coord", alive: true}}))
+	called := false
+	p.OnReattach = func(Selection) { called = true }
+	p.Refresh()
+
+	p.jumpToLeaf("t-coord") // jumpToLeaf is the wired Plan().OnEnter handler
+
+	testutil.Equal(t, called, false)
+}
+
+// TestPlanEnter_DrillInDoesNotReattach: a Drillable sub-coordinator node fires
+// OnDrillIn (the page-owned drill-in path), NOT OnEnter/jumpToLeaf, so the
+// BUG-009 reattach must never fire for it. The planview widget routes the Enter
+// key by Drillable, so the new jumpToLeaf reattach is structurally unreachable
+// from a drill-in node.
+func TestPlanEnter_DrillInDoesNotReattach(t *testing.T) {
+	p := NewHeraPage(memDB(t))
+	reattached := false
+	p.OnReattach = func(Selection) { reattached = true }
+	drilled := ""
+	p.Plan().OnDrillIn = func(id string) { drilled = id }
+
+	// A single Drillable node under the cursor.
+	p.Plan().SetData([]planview.Node{{ID: "t-sub", Name: "sub", Drillable: true}}, nil)
+	testutil.Equal(t, p.Plan().CurrentNodeID(), "t-sub")
+
+	p.Plan().ActivateCursor()
+
+	testutil.Equal(t, drilled, "t-sub")  // drill-in path fired
+	testutil.Equal(t, reattached, false) // BUG-009 reattach did NOT fire
 }
 
 // TestRailSelectByTaskID finds and selects a role row by its bound task id,

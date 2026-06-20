@@ -14,6 +14,11 @@ For a coordinator selection the system SHALL render BOTH the read-only `" Detail
 - **WHEN** the details region is focused and the user presses Enter on a plain leaf node (not a group, not a sub-coordinator)
 - **THEN** the system selects that node's role in the Hera rail (by its bound task id) and moves focus to that role's agent pane, staying on the Hera tab (it SHALL NOT switch to the Tasks view)
 
+#### Scenario: Enter on a leaf node whose session is dead restarts and joins it
+
+- **WHEN** the user presses Enter on a plain leaf node whose backing agent session has exited (no live session in the runner)
+- **THEN** the system restarts-and-joins that session, identically to the rail's Enter — firing the same reattach under the same liveness gate (a dead session of any role, or a live non-coordinator role, fires it; a live coordinator stays navigate-only) — so the node never merely selects without restarting
+
 ### Requirement: Plan DAG projects blocking edges and planned nodes in-memory (area 6)
 
 The system SHALL project the embedded graph's nodes from the rail's already-built model via `heraPlanNodes` — a pure in-memory read with no DB call at Draw time. The graph renders the orchestrator's PLAN: every planned (never-bound) and live worker role as a node, and every `hera_blocks` blocking edge between them as a dependency edge. Stage placement is computed longest-path over the blocking edges; a node's short-id (parsed from the role-name prefix) is the display label only and never drives placement. A live node's colour comes from its bound task's argus status/result (including the failed-result red `✕`); a planned (never-bound) node renders violet with the `○` glyph. When the selected orchestrator has no planned nodes and no blocking edges, the graph SHALL render the orchestrator's live worker roles as a single flat edgeless stage with a "no plan" hint, so running workers are never invisible. When no orchestrator is selected, the graph renders empty without panic.
