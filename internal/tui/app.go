@@ -5166,6 +5166,11 @@ func (a *App) openConfirmPrune() {
 		return
 	}
 
+	// Count from the already-loaded task list for the prompt. This is a display
+	// snapshot only — the authoritative set is re-derived by db.PruneCompleted
+	// when the user confirms, so a task completing during modal dwell time can
+	// make the actual deletion count differ from the number shown here. Narrow
+	// (human-speed) window, cosmetic-only, and correctness is unaffected.
 	completed := 0
 	for _, t := range a.tasks {
 		if t != nil && t.Status == model.StatusComplete {
