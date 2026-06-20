@@ -232,7 +232,7 @@ func TestCopyStagedClipboardForHeraPane_PresentCopiesAndClears(t *testing.T) {
 // without any rail navigation.
 func seedHeraCoord(t *testing.T, d *db.DB) {
 	t.Helper()
-	o, err := d.CreateHeraOrchestrator("o")
+	o, err := d.CreateHeraOrchestrator("o", "")
 	testutil.NoError(t, err)
 	coord, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: o.ID, Name: "c", Kind: db.HeraKindCoordinator, ArgusProject: "p"})
 	testutil.NoError(t, err)

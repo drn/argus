@@ -26,7 +26,7 @@ func idsContain(ids []string, want string) bool {
 // seedHeraOrch creates an active orchestrator on the test DB.
 func seedHeraOrch(t *testing.T, d *db.DB, name string) int64 {
 	t.Helper()
-	o, err := d.CreateHeraOrchestrator(name)
+	o, err := d.CreateHeraOrchestrator(name, "")
 	testutil.NoError(t, err)
 	return o.ID
 }

@@ -67,12 +67,18 @@ func TestCreateHeraTables_MigratesPreNukedAtDB(t *testing.T) {
 	testutil.NoError(t, err)
 	_, err = d.conn.Exec(`SELECT nuked_at FROM hera_roles`)
 	testutil.NoError(t, err)
+
+	// base_branch (add-hera-plan-base-branch) is added by the same idempotent
+	// ALTER migration on a pre-existing orchestrators table that never had it.
+	// The legacy shape above omits the column, so this is a real regression guard.
+	_, err = d.conn.Exec(`SELECT base_branch FROM hera_orchestrators`)
+	testutil.NoError(t, err)
 }
 
 // mkOrch creates an active orchestrator and fails the test on error.
 func mkOrch(t *testing.T, d *DB, name string) *HeraOrchestrator {
 	t.Helper()
-	o, err := d.CreateHeraOrchestrator(name)
+	o, err := d.CreateHeraOrchestrator(name, "")
 	testutil.NoError(t, err)
 	return o
 }
@@ -120,6 +126,37 @@ func TestHeraOrchestratorCRUD(t *testing.T) {
 		list, err := d.ListHeraOrchestrators(false)
 		testutil.NoError(t, err)
 		testutil.Equal(t, len(list), 1)
+	})
+
+	t.Run("base branch round-trips through all read paths", func(t *testing.T) {
+		d := heraTestDB(t)
+		o, err := d.CreateHeraOrchestrator("based", "feature/seed")
+		testutil.NoError(t, err)
+		testutil.Equal(t, o.BaseBranch, "feature/seed")
+
+		got, err := d.HeraOrchestrator(o.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.BaseBranch, "feature/seed")
+
+		byName, err := d.HeraOrchestratorByName("based")
+		testutil.NoError(t, err)
+		testutil.Equal(t, byName.BaseBranch, "feature/seed")
+
+		list, err := d.ListHeraOrchestrators(false)
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(list), 1)
+		testutil.Equal(t, list[0].BaseBranch, "feature/seed")
+	})
+
+	t.Run("base branch defaults to empty when none supplied", func(t *testing.T) {
+		d := heraTestDB(t)
+		o, err := d.CreateHeraOrchestrator("plain", "")
+		testutil.NoError(t, err)
+		testutil.Equal(t, o.BaseBranch, "")
+
+		got, err := d.HeraOrchestrator(o.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.BaseBranch, "")
 	})
 
 	t.Run("not found by id and name", func(t *testing.T) {
@@ -894,7 +931,7 @@ func TestNukeHeraOrchestrator(t *testing.T) {
 		testutil.Equal(t, len(list), 0)
 
 		// Name freed: a fresh active orchestrator can reuse it.
-		o2, err := d.CreateHeraOrchestrator("alpha")
+		o2, err := d.CreateHeraOrchestrator("alpha", "")
 		testutil.NoError(t, err)
 		if o2.ID == o.ID {
 			t.Fatal("expected a distinct new orchestrator, not the nuked one")

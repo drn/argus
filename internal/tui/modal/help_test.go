@@ -39,11 +39,11 @@ func TestHelpModal_InputHandler(t *testing.T) {
 
 func TestHelpModal_Draw(t *testing.T) {
 	// Height must clear the full section list (the modal scrolls when it
-	// can't); 80 leaves headroom so every section header — including the last
+	// can't); 90 leaves headroom so every section header — including the last
 	// one, Settings — renders without scrolling.
-	sim := drawAt(t, 100, 80)
+	sim := drawAt(t, 100, 90)
 	m := NewHelpModal()
-	m.SetRect(0, 0, 100, 80)
+	m.SetRect(0, 0, 100, 90)
 	m.Draw(sim)
 	sim.Sync()
 
@@ -52,6 +52,13 @@ func TestHelpModal_Draw(t *testing.T) {
 	testutil.Contains(t, body, "Task List")
 	testutil.Contains(t, body, "Hera View (rail)")
 	testutil.Contains(t, body, "Agent View")
+	// Plan-DAG view keys (Stage 7): the plan diagram nav + fan-out + drill must
+	// be discoverable — fail the build if any binding is silently dropped.
+	testutil.Contains(t, body, "Hera View (plan DAG)")
+	testutil.Contains(t, body, "move between plan stages")
+	testutil.Contains(t, body, "fan out / collapse a parallel group")
+	testutil.Contains(t, body, "drill sub-coord / open leaf (revive session)")
+	testutil.Contains(t, body, "collapse fanned group / drill out to parent plan")
 	testutil.Contains(t, body, "File Panel")
 	testutil.Contains(t, body, "Settings")
 	testutil.Contains(t, body, "[esc / ?] close")
@@ -247,9 +254,9 @@ func TestHelpModal_DrawShowsScrollPositionWhenOverflow(t *testing.T) {
 
 func TestHelpModal_DrawHidesScrollHintWhenFits(t *testing.T) {
 	// Give the modal enough room that every row fits.
-	sim := drawAt(t, 100, 80)
+	sim := drawAt(t, 100, 90)
 	m := NewHelpModal()
-	m.SetRect(0, 0, 100, 80)
+	m.SetRect(0, 0, 100, 90)
 	m.Draw(sim)
 	sim.Sync()
 	body := screenString(sim)

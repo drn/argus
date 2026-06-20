@@ -81,7 +81,7 @@ func waitAliveInSup(t *testing.T, sc *Client, taskID string) {
 // bindHeraWorker creates an orchestrator + worker role + live binding for taskID.
 func bindHeraWorker(t *testing.T, database *db.DB, taskID string) int64 {
 	t.Helper()
-	o, err := database.CreateHeraOrchestrator("o-" + taskID)
+	o, err := database.CreateHeraOrchestrator("o-"+taskID, "")
 	testutil.NoError(t, err)
 	r, err := database.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: o.ID, Name: "w", Kind: db.HeraKindWorker, ArgusProject: "proj"})
 	testutil.NoError(t, err)

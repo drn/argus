@@ -91,6 +91,16 @@ var HelpSections = []HelpSection{
 		},
 	},
 	{
+		Title: "Hera View (plan DAG)",
+		Bindings: []HelpBinding{
+			{"↑↓ / j / k", "move between plan stages"},
+			{"←→ / h / l", "move slots (walk members in a fanned group)"},
+			{"Enter / space", "fan out / collapse a parallel group"},
+			{"Enter", "drill sub-coord / open leaf (revive session)"},
+			{"Esc", "collapse fanned group / drill out to parent plan"},
+		},
+	},
+	{
 		Title: "Agent View",
 		Bindings: []HelpBinding{
 			{"ctrl+q / Esc", "back (diff → files → list)"},

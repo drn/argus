@@ -3,7 +3,7 @@ package hera
 import (
 	"strings"
 
-	"github.com/drn/argus/internal/tui/dagview"
+	"github.com/drn/argus/internal/tui/planview"
 	"github.com/drn/argus/internal/tui/terminal"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
@@ -73,12 +73,21 @@ type HeraPage struct {
 	// carries its own needs-input flag and the subtree rollup is computed (BUG-018).
 	needsInput map[string]bool
 
-	// DAG render mode of the Details region (coordinator selection only). When a
-	// coordinator is selected the Details region stacks the read-only roster
-	// (top) over this embedded orchestration-tree graph (bottom) — both render at
-	// once, no toggle. Nodes are projected in-process from the rail's model by
-	// heraTreeNodes (the role hierarchy), so there is no provider seam.
-	dag *dagview.Widget // embedded orchestration-tree graph
+	// Plan-DAG render mode of the Details region (coordinator selection only).
+	// When a coordinator is selected the Details region stacks the read-only
+	// roster (top) over this embedded plan graph (bottom) — both render at once,
+	// no toggle. Nodes/edges are projected in-process from the rail's model by
+	// heraPlanNodesWithBridge (the planned + live worker roles and their
+	// hera_blocks edges — the plan a coordinator authored), so there is no
+	// provider seam. It replaced the retired orchestration-tree projection.
+	plan *planview.Widget // embedded plan-DAG graph
+
+	// planOrchID is the orchestrator ID whose plan is currently projected into the
+	// plan widget (0 when none). rebuildPlan compares it to the incoming root to
+	// decide SetData (a genuine selection change — full cursor reset) vs UpdateData
+	// (the same orchestrator re-projected on a ~1s refresh tick — preserve the
+	// operator's cursor + fanned groups). See gotchas/hera-view.md.
+	planOrchID int64
 
 	// Selection + per-pane bound task (so SetSession only fires on change).
 	sel         Selection
@@ -149,17 +158,89 @@ func NewHeraPage(reader HeraReader) *HeraPage {
 		coordPane: terminal.NewTerminalPane(),
 		agentPane: terminal.NewTerminalPane(),
 		details:   NewDetailsView(),
-		dag:       dagview.New(),
+		plan:      planview.New(),
 	}
 	p.coordPane.SetBorderTitle(coordPaneTitle)
-	// Retitle the embedded graph so it reads as the orchestration tree, not a
-	// second top-level " DAG " tab (gotchas/hera-view.md).
-	p.dag.SetTitle(" Orchestration Tree ")
+	// Retitle the embedded graph so it reads as the plan DAG, not a second
+	// top-level " DAG " tab (gotchas/hera-view.md).
+	p.plan.SetTitle(" Plan ")
 	p.rail.SetFocused(true)
 	// Rebind the panes whenever the rail cursor lands on a different role.
 	p.rail.SetOnSelectionChanged(p.applySelection)
+	// Drill-in (D6) is owned by the page, not the App: it needs the rail bridge
+	// index to resolve the child orchestrator and the in-package projection to
+	// build the child plan.
+	p.plan.OnDrillIn = p.drillIntoChild
+	// Plain-leaf Enter jumps to that node's role WITHIN the Hera view (BUG-002):
+	// select the role in the rail by its bound task id + focus the agent pane —
+	// NOT a switch to the Tasks tab. Page-owned (it needs the rail + focus
+	// machine). The App must NOT override Plan().OnEnter with a Tasks-jump.
+	p.plan.OnEnter = p.jumpToLeaf
 	p.refresher = NewRefresher(DefaultRefreshDebounce, p.doRefresh)
 	return p
+}
+
+// drillIntoChild is the plan widget's OnDrillIn handler (D6): the cursor sits on
+// a sub-coordinator node whose id is its bound coordinator-bridge task. Resolve
+// the child orchestrator through the rail bridge index, project the child's plan
+// DAG, and push it onto the widget's nav stack with the "Details ▸ <orch> · Plan"
+// title (D6). A bridge miss (the child orchestrator is gone) is a no-op so the
+// widget stays on the parent plan. MUST run on the tview main thread (it reads
+// the rail model and reprojects — pure in-memory, no I/O).
+func (p *HeraPage) drillIntoChild(id string) {
+	child := p.rail.Model().bridgeIndex()[id]
+	if child == nil {
+		uxlog.Log("[hera-view] plan drill-in: no child orch for task=%s", id)
+		return
+	}
+	nodes, edges := heraPlanNodesWithBridge(child, p.rail.Model().bridgeIndex())
+	p.plan.PushOrch("Details ▸ "+child.Name+" · Plan", nodes, edges)
+	uxlog.Log("[hera-view] plan drill-in: task=%s child=%s nodes=%d edges=%d depth=%d",
+		id, child.Name, len(nodes), len(edges), p.plan.DrillDepth())
+}
+
+// jumpToLeaf is the plan widget's OnEnter handler for a plain-leaf node
+// (BUG-002): instead of switching to the Tasks tab, it jumps to that node's role
+// WITHIN the Hera view — select the role in the rail by its bound task id (which
+// fires applySelection → rebinds the AGENT pane to that task) and move focus into
+// the agent pane so the operator can type into it immediately. id is the node's
+// bound argus task id. A node whose role has no visible rail row (or remote mode,
+// where the rail is inert) leaves focus on the plan region. MUST run on the tview
+// main thread (rail + focus mutations).
+func (p *HeraPage) jumpToLeaf(id string) {
+	if p.remote || id == "" {
+		return
+	}
+	if !p.rail.SelectByTaskID(id) {
+		uxlog.Log("[hera-view] plan leaf-enter: no rail row for task=%s (focus unchanged)", id)
+		return
+	}
+	// Mirror the rail's Enter-reattach (BUG-009): a plan-leaf node whose agent
+	// session has EXITED must restart-and-join it, exactly as the rail's Enter
+	// does — not merely select it (which leaves the pane showing a dead session).
+	// Reuse the same OnReattach plumbing under the SAME liveness gate the rail
+	// Enter uses (page.go ~712): a dead session (any role) or a live
+	// non-coordinator role fires it; a live coordinator stays navigate-only. Only
+	// leaf nodes reach jumpToLeaf (planview routes Drillable sub-coordinators to
+	// OnDrillIn), so drill-in is unaffected.
+	sel := p.rail.Selection()
+	if taskID := sel.FocusTaskID(); taskID != "" && p.OnReattach != nil {
+		live := p.resolve != nil && p.resolve(taskID) != nil
+		if !live || !sel.IsCoordinator() {
+			uxlog.Log("[hera-view] plan leaf-enter reattach task=%s (live=%v coordinator=%v)", taskID, live, sel.IsCoordinator())
+			p.OnReattach(sel)
+		}
+	}
+	// applySelection ran via onSelectionChanged; a plain worker selection feeds the
+	// AGENT pane, so land focus there. (A leaf that resolved to a coordinator/sub-
+	// coord row is detailsMode — advance into the coord pane instead, mirroring the
+	// rail Enter behaviour.)
+	if !p.detailsMode {
+		p.focus.SetRegion(FocusAgent)
+	} else {
+		p.focus.SetRegion(FocusCoord)
+	}
+	uxlog.Log("[hera-view] plan leaf-enter: jumped to task=%s within hera (detailsMode=%v)", id, p.detailsMode)
 }
 
 // Reconcile late-binds live sessions and is the App-tick hook (main thread).
@@ -173,11 +254,13 @@ func (p *HeraPage) Reconcile() { p.reconcileSessions() }
 func (p *HeraPage) CoordPane() *terminal.TerminalPane { return p.coordPane }
 func (p *HeraPage) AgentPane() *terminal.TerminalPane { return p.agentPane }
 
-// DAG exposes the embedded orchestration-tree widget so the App can wire its
-// OnEnter (jump to a node's agent view) and OnBranchChange (log-only forceRedraw)
-// callbacks. The page owns the widget's rect, focus, and node set (projected by
-// heraTreeNodes from the rail model); the App owns what OnEnter does.
-func (p *HeraPage) DAG() *dagview.Widget { return p.dag }
+// Plan exposes the embedded plan-DAG widget so the App can wire its OnEnter
+// (jump to a leaf node's agent view), OnDrillIn (push the child orchestrator's
+// plan), and OnBranchChange (log-only forceRedraw) callbacks. The page owns the
+// widget's rect, focus, and node/edge set (projected by heraPlanNodesWithBridge
+// from the rail model); the App owns what OnEnter does. The page itself wires
+// OnDrillIn (it needs the rail bridge index + the projection) — see applySelection.
+func (p *HeraPage) Plan() *planview.Widget { return p.plan }
 
 // Rail exposes the inner rail (test seam + 6b wiring).
 func (p *HeraPage) Rail() *Rail { return p.rail }
@@ -367,32 +450,32 @@ func (p *HeraPage) Draw(screen tcell.Screen) {
 	}
 }
 
-// drawDetailsRegion stacks the read-only roster (top) over the embedded
-// orchestration tree (bottom) for a selected coordinator — both render at once,
-// no toggle. The roster is sized to its natural content height, capped at half
-// the region so the tree always keeps at least half; the tree fills the
-// remainder. Each widget draws its own bordered panel covering its full
-// sub-rect, so no stale cells survive (no Sync — CLAUDE.md UX-rendering rules).
-// The tree is the interactive surface, so it owns the focused border.
+// drawDetailsRegion stacks the read-only roster (top) over the embedded plan
+// DAG (bottom) for a selected coordinator — both render at once, no toggle. The
+// roster is sized to its natural content height, capped at half the region so
+// the plan graph always keeps at least half; the plan fills the remainder. Each
+// widget draws its own bordered panel covering its full sub-rect, so no stale
+// cells survive (no Sync — CLAUDE.md UX-rendering rules). The plan graph is the
+// interactive surface, so it owns the focused border.
 func (p *HeraPage) drawDetailsRegion(screen tcell.Screen, y, w, h int) {
-	// Roster sized to its content, capped at half the region so the DAG keeps
-	// at least half, then clamped to the region height for tiny panes.
+	// Roster sized to its content, capped at half the region so the plan graph
+	// keeps at least half, then clamped to the region height for tiny panes.
 	rosterH := min(p.details.ContentHeight(), h/2)
 	rosterH = max(rosterH, 3)
 	rosterH = min(rosterH, h)
 	p.details.Draw(screen, p.agentX, y, w, rosterH, false)
 
-	dagH := h - rosterH
-	if dagH >= 2 {
-		p.dag.SetRect(p.agentX, y+rosterH, w, dagH)
-		p.dag.SetFocused(p.focus.State() == FocusAgent)
-		p.dag.Draw(screen)
+	planH := h - rosterH
+	if planH >= 2 {
+		p.plan.SetRect(p.agentX, y+rosterH, w, planH)
+		p.plan.SetFocused(p.focus.State() == FocusAgent)
+		p.plan.Draw(screen)
 	} else {
-		// Pane too short to show the DAG — zero its rect so a stale rect from a
-		// prior (taller) frame can't catch a click/scroll over the roster area.
-		// MouseHandler always forwards coordinator-region events to p.dag, which
-		// gates on InRect; an empty rect makes that gate reject everything.
-		p.dag.SetRect(0, 0, 0, 0)
+		// Pane too short to show the plan graph — zero its rect so a stale rect
+		// from a prior (taller) frame can't catch a click/scroll over the roster
+		// area. MouseHandler always forwards coordinator-region events to p.plan,
+		// which gates on InRect; an empty rect makes that gate reject everything.
+		p.plan.SetRect(0, 0, 0, 0)
 	}
 }
 
@@ -528,6 +611,17 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 			p.forwardKey(p.coordPane, event)
 		case FocusAgent:
 			if p.detailsMode {
+				// Rail-mutation keys (pin P, rename r, …, Ctrl+D) act on the rail's
+				// CURRENT selection — the selected coordinator — even while its
+				// Details/plan region is focused. Route them to handleRailMutation
+				// BEFORE the plan widget so pin et al. still work with the Details
+				// view open (BUG-010: BUG-002's plan-Enter→jumpToLeaf parks focus
+				// here, where the plan widget would otherwise swallow them). Plan-nav
+				// keys (j/k/h/l/Enter/Space/Esc/arrows) are not rail mutations, so
+				// they fall through to the plan widget unchanged.
+				if p.isRailMutationKey(event) && p.handleRailMutation(event) {
+					return
+				}
 				p.handleDetailsKey(event, setFocus)
 			} else {
 				p.forwardKey(p.agentPane, event)
@@ -553,30 +647,81 @@ func (p *HeraPage) terminalPaneFocused() bool {
 }
 
 // handleDetailsKey routes keys for a focused Details region (coordinator
-// selected). The region stacks the read-only roster over the embedded
-// orchestration tree, so the tree is the only interactive surface: every key
-// forwards to it (cursor nav j/k/arrows + Enter, which fires the OnEnter
-// callback the App wired — jump to the node's agent view). The global handler
-// reserves only 1/2/3/q/? — see gotchas/keybindings.md.
+// selected). The region stacks the read-only roster over the embedded plan
+// graph, so the plan widget is the only interactive surface: nav (j/k/h/l +
+// arrows), Enter/Space (fan-out/collapse a group, drill into a sub-coordinator,
+// or jump to a leaf's agent view via the wired OnEnter callback), and Esc
+// ("back out one level": un-fan a fanned group → drill out → root no-op).
+//
+// Esc is ALWAYS forwarded to the widget, which CONSUMES it in every case (see
+// Widget.EscBack); it never jumps to the rail. The operator leaves the pane via
+// the focus ladder (^Q / Tab), shown in the status bar — so there is no trap.
+// (The Stage-7 Esc→rail escape hatch was removed once EscBack made the widget
+// swallow Esc at the root.) The global handler reserves only 1/2/3/q/? — see
+// gotchas/keybindings.md.
 func (p *HeraPage) handleDetailsKey(event *tcell.EventKey, setFocus func(tview.Primitive)) {
-	p.dag.InputHandler()(event, setFocus)
+	p.plan.InputHandler()(event, setFocus)
 }
 
-// rebuildDAG reprojects the given orchestrator's orchestration SUBTREE (the role
-// hierarchy — coordinator → workers → sub-coordinators → their workers) into the
-// embedded widget. `root` is the orchestrator in Details view — the selected one
-// for a top-level coordinator, or the bridged CHILD for a worker-bridge sub-coord
-// (BUG-004). A nil root yields an empty graph. MUST run on the tview main thread
-// (heraTreeNodes is a pure read over the rail's already-built model; SetNodes
-// recomputes layout but touches no I/O).
-func (p *HeraPage) rebuildDAG(root *OrchView) {
+// rebuildPlan reprojects the given orchestrator's PLAN DAG — its planned
+// (never-bound) and live worker roles as nodes, its hera_blocks blocking edges
+// as dependency edges — into the embedded plan widget. `root` is the
+// orchestrator in Details view — the selected one for a top-level coordinator,
+// or the bridged CHILD for a worker-bridge sub-coord (BUG-004). A nil root
+// yields an empty graph. The bridge index (Model.bridgeIndex) lets the
+// projection stamp Node.Drillable on a worker whose bound task coordinates a
+// child orchestrator (D6), so the single-arg heraPlanNodes is NOT used here —
+// it leaves Drillable false. MUST run on the tview main thread
+// (heraPlanNodesWithBridge is a pure read over the rail's already-built model;
+// SetData recomputes layout but touches no I/O).
+func (p *HeraPage) rebuildPlan(root *OrchView) {
+	// Same orchestrator as the last projection (and not drilled in) → this is a
+	// refresh tick re-projecting an unchanged-or-evolved plan: route through
+	// UpdateData so the operator's cursor and fanned groups survive. A different
+	// orchestrator (or nil) is a genuine selection change → SetData full-resets.
+	// A drill-in stack from a previous coordinator is abandoned either way (pop to
+	// root) so the visible plan is this root's, not a buried child frame.
+	sameOrch := root != nil && p.planOrchID == root.ID && p.plan.DrillDepth() == 0
+	for p.plan.DrillDepth() > 0 {
+		p.plan.PopOrch()
+	}
 	if root == nil {
-		p.dag.SetNodes(nil)
+		p.planOrchID = 0
+		p.plan.SetData(nil, nil)
 		return
 	}
-	nodes := heraTreeNodes(p.rail.Model(), root)
-	p.dag.SetNodes(nodes)
-	uxlog.Log("[hera-view] tree render: orch=%s nodes=%d", root.Name, len(nodes))
+	nodes, edges := heraPlanNodesWithBridge(root, p.rail.Model().bridgeIndex())
+	if sameOrch {
+		p.plan.UpdateData(nodes, edges)
+	} else {
+		p.plan.SetData(nodes, edges)
+	}
+	p.planOrchID = root.ID
+	uxlog.Log("[hera-view] plan render: orch=%s nodes=%d edges=%d sameOrch=%v",
+		root.Name, len(nodes), len(edges), sameOrch)
+}
+
+// isRailMutationKey reports whether event is one of the rail-FOCUS mutation
+// commands that handleRailMutation acts on — spawn `w`, rename `r`, archive `a`,
+// pin `P`, status `s`/`S`, adopt `J`, new-coordinator `n`, clear-archive `C`, and
+// Ctrl+D nuke. It deliberately EXCLUDES Enter and the navigation keys
+// (j/k/h/l/Space/Esc/arrows): in details mode those belong to the embedded plan
+// widget, so they must reach handleDetailsKey untouched. The details-mode branch
+// of InputHandler consults this to route rail mutations to handleRailMutation
+// while a coordinator's plan is focused, without hijacking plan navigation
+// (BUG-010). The rune set is kept in lock-step with handleRailMutation's switch
+// below and the help modal's "Hera View (rail)" section.
+func (p *HeraPage) isRailMutationKey(event *tcell.EventKey) bool {
+	switch event.Key() {
+	case tcell.KeyCtrlD:
+		return true
+	case tcell.KeyRune:
+		switch event.Rune() {
+		case 'w', 'r', 'a', 'P', 's', 'S', 'J', 'n', 'C':
+			return true
+		}
+	}
+	return false
 }
 
 // handleRailMutation maps the rail-focus mutation keyset to the page's mutation
@@ -744,10 +889,10 @@ func (p *HeraPage) MouseHandler() func(action tview.MouseAction, event *tcell.Ev
 				}
 			case FocusAgent:
 				if p.detailsMode {
-					// Coordinator: the DAG (bottom of the stacked region) is the
-					// interactive surface; it ignores clicks outside its own rect,
+					// Coordinator: the plan graph (bottom of the stacked region) is
+					// the interactive surface; it ignores clicks outside its own rect,
 					// so the roster area above it is inert.
-					consumed, _ = p.dag.MouseHandler()(action, event, setFocus)
+					consumed, _ = p.plan.MouseHandler()(action, event, setFocus)
 				} else {
 					consumed, _ = p.agentPane.MouseHandler()(action, event, setFocus)
 				}

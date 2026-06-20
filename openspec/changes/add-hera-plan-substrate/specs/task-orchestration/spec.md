@@ -21,12 +21,22 @@ The system SHALL allow a coordinator to create a **planned node**: a `hera_roles
 
 ### Requirement: Blocking edges between roles with cycle detection
 
-The system SHALL store directed blocking edges in a `hera_blocks(blocked_role_id, blocker_role_id)` table with foreign keys to `hera_roles`. On inserting an edge the system SHALL run a depth-first cycle check within the same transaction and SHALL reject any edge that would create a cycle. Both endpoints of an edge SHALL belong to the same orchestrator; an edge whose endpoints are in different orchestrators SHALL be rejected (single-orchestrator scope for this version). When a blocker role no longer exists, the system SHALL treat the dependent as no longer blocked by that missing edge rather than failing.
+The system SHALL store directed blocking edges in a `hera_blocks(blocked_role_id, blocker_role_id)` table with foreign keys to `hera_roles`. On inserting an edge the system SHALL run a depth-first cycle check within the same transaction and SHALL reject any edge that would create a cycle. Both endpoints of an edge SHALL belong to the same orchestrator; an edge whose endpoints are in different orchestrators SHALL be rejected (single-orchestrator scope for this version). The system SHALL reject an edge whose **blocker** endpoint is a `coordinator` role: a coordinator's session stays alive for the whole orchestration and never reaches role-status `done`, so gating a node on it is a permanently-unsatisfiable dependency; a clear creation-time error is returned rather than silently planning the dependent forever. The rejection is blocker-side only — a coordinator MAY be the blocked endpoint. When a blocker role no longer exists, the system SHALL treat the dependent as no longer blocked by that missing edge rather than failing.
 
 #### Scenario: Cycle is rejected
 
 - **WHEN** adding a blocking edge that would make the graph cyclic
 - **THEN** the insert is rejected and the edge is not stored
+
+#### Scenario: Coordinator-as-blocker edge is rejected
+
+- **WHEN** a blocking edge is attempted whose blocker endpoint is a coordinator role
+- **THEN** the insert is rejected with a coordinator-blocker error and the edge is not stored (a coordinator never reaches role-status done)
+
+#### Scenario: Coordinator may be the blocked endpoint
+
+- **WHEN** a blocking edge is attempted whose blocked endpoint is a coordinator role and whose blocker is a worker role
+- **THEN** the insert is accepted (only coordinator-as-blocker is the never-satisfiable case)
 
 #### Scenario: Cross-orchestrator edge is rejected
 
@@ -107,7 +117,7 @@ The system SHALL deliver to every gater-materialized worker a standing instructi
 
 ### Requirement: Gate on role-status done; a failed blocker holds the dependent
 
-The gate SHALL be the blocker's hera **role status** reaching `done` — the worker's explicit declaration that its work is finished. This is distinct from the argus **task status**: a finished hera worker rolls its task to `in_review` (never auto-`complete`), so task status is NOT the gate; only role-status `done` is. A blocker still `working` — for example iterating on CI by pushing PRs — SHALL NOT satisfy the gate, so the next phase does not start under churning work. When a blocker's session ends without its role ever reaching `done` (a crash or other failure), the system SHALL **hold** the dependent (not materialize it) and notify the coordinator, so no worker is spawned and parked behind dead or unfinished work. A blocker that has **never been bound** (a planned node still waiting on its own blockers) SHALL NOT be treated as failed: it has not started, so the dependent simply stays planned (pending), and the coordinator is NOT notified. The distinction is whether the blocker ever held a binding — never-bound is pending, bound-then-ended-without-done is failed. This MUST hold transitively: in a chain A→B→C where A is still working and B is an unstarted planned node, C stays planned (it is not held behind B), so DAGs deeper than two levels resolve correctly. The hold-notification SHALL be sent once per held (dependent, blocker) pair rather than repeated on each evaluation, so the coordinator is alerted without being spammed.
+The gate SHALL be the blocker's hera **role status** reaching `done` — the worker's explicit declaration that its work is finished. This is distinct from the argus **task status**: a finished hera worker rolls its task to `in_review` (never auto-`complete`), so task status is NOT the gate; only role-status `done` is. A blocker still `working` — for example iterating on CI by pushing PRs — SHALL NOT satisfy the gate, so the next phase does not start under churning work. When a blocker's session ends without its role ever reaching `done` (a crash or other failure), the system SHALL **hold** the dependent (not materialize it) and notify the coordinator, so no worker is spawned and parked behind dead or unfinished work. A blocker that has **never been bound** (a planned node still waiting on its own blockers) SHALL NOT be treated as failed: it has not started, so the dependent simply stays planned (pending), and the coordinator is NOT notified. The distinction is whether the blocker ever held a binding — never-bound is pending, bound-then-ended-without-done is failed. An **alive coordinator** blocker SHALL likewise NOT be treated as failed: a coordinator's session is alive for the whole orchestration and never reaches role-status `done`, so while its binding is live the dependent stays planned (pending) with no hold-notification — even though its bound task may have moved off `in_progress`. This gater guard is defense-in-depth for any coordinator-as-blocker edges already present in the store (new such edges are rejected at creation). This MUST hold transitively: in a chain A→B→C where A is still working and B is an unstarted planned node, C stays planned (it is not held behind B), so DAGs deeper than two levels resolve correctly. The hold-notification SHALL be sent once per held (dependent, blocker) pair rather than repeated on each evaluation, so the coordinator is alerted without being spammed.
 
 #### Scenario: Only role-status done opens the gate
 
@@ -128,6 +138,11 @@ The gate SHALL be the blocker's hera **role status** reaching `done` — the wor
 
 - **WHEN** a node's blocker is itself an unstarted planned node (never bound) — for example in a chain A→B→C where A is still working and B has not yet materialized
 - **THEN** the dependent (C) stays planned (pending), is not held, and the coordinator is not notified — a planned blocker is not a failed blocker, so transitive DAGs deeper than two levels resolve correctly
+
+#### Scenario: An alive coordinator blocker keeps the dependent planned, not held
+
+- **WHEN** a node's blocker is a coordinator role whose binding is still live (its session has not ended) and whose role status is not `done` — even if its bound task has moved off `in_progress`
+- **THEN** the dependent stays planned (pending), is not held, and the coordinator is not notified — an alive coordinator never reaches `done` but has not failed, so it is not a failed blocker
 
 ### Requirement: Planner-assigned stable short-id naming
 

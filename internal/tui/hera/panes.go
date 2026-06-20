@@ -78,10 +78,10 @@ func (p *HeraPage) applySelection() {
 		p.bindPane(p.coordPane, &p.coordBound, detailsOrch.CoordTaskID(), "coord")
 		p.bindPane(p.agentPane, &p.agentBound, "", "agent")
 		p.details.SetOrch(detailsOrch, p.prMeta)
-		// The Details region stacks the roster over the DAG, so reproject this
-		// coordinator's orchestration subtree on every selection (the roster reads
-		// straight from the model; the DAG needs the scoped node set rebuilt).
-		p.rebuildDAG(detailsOrch)
+		// The Details region stacks the roster over the plan graph, so reproject
+		// this coordinator's plan DAG on every selection (the roster reads straight
+		// from the model; the plan widget needs the scoped node/edge set rebuilt).
+		p.rebuildPlan(detailsOrch)
 	} else {
 		p.bindPane(p.coordPane, &p.coordBound, p.sel.CoordTaskID(), "coord")
 		p.bindPane(p.agentPane, &p.agentBound, p.sel.TaskID(), "agent")

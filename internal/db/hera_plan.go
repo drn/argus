@@ -24,6 +24,12 @@ var (
 	ErrHeraBlockCrossOrchestrator = errors.New("hera: blocking edge endpoints are in different orchestrators")
 	// ErrHeraBlockSelf is returned when an edge points a role at itself.
 	ErrHeraBlockSelf = errors.New("hera: a role cannot block itself")
+	// ErrHeraBlockCoordinator is returned when the BLOCKER endpoint of an edge is a
+	// coordinator role (BUG-003). A coordinator's session is alive for the whole
+	// orchestration and never reaches role-status `done`, so gating a node on it is
+	// a permanently-unsatisfiable dependency — the dependent would stay planned
+	// forever. Rejected at creation so a clear error beats a silently-stuck worker.
+	ErrHeraBlockCoordinator = errors.New("hera: a coordinator role cannot be a blocker (it never reaches role-status done)")
 )
 
 // HeraBlock is one directed blocking edge: BlockedRoleID waits on BlockerRoleID.
@@ -82,6 +88,17 @@ func insertHeraBlockTx(tx *sql.Tx, blockedRoleID, blockerRoleID int64) error {
 	}
 	if blockedOrch != blockerOrch {
 		return ErrHeraBlockCrossOrchestrator
+	}
+	// A coordinator never reaches role-status `done` (its session is alive for the
+	// whole orchestration), so an edge gated on a coordinator-as-blocker is
+	// permanently unsatisfiable — reject it (BUG-003). The check is blocker-side
+	// only: a coordinator may legitimately be the blocked endpoint.
+	blockerKind, err := blockKindOf(tx, blockerRoleID)
+	if err != nil {
+		return err
+	}
+	if blockerKind == HeraKindCoordinator {
+		return ErrHeraBlockCoordinator
 	}
 	// Cycle check: an edge blocked->blocker closes a cycle iff blocker is
 	// already (transitively) blocked by blocked. Walk the existing blocking
@@ -195,6 +212,20 @@ func blockOrchOf(tx *sql.Tx, roleID int64) (int64, error) {
 	return orchID, nil
 }
 
+// blockKindOf returns the kind of a role within the insert tx. Used by
+// insertHeraBlockTx to reject a coordinator-as-blocker edge (BUG-003).
+func blockKindOf(tx *sql.Tx, roleID int64) (HeraRoleKind, error) {
+	var kind string
+	err := tx.QueryRow(`SELECT kind FROM hera_roles WHERE id=?`, roleID).Scan(&kind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("hera block: role %d: %w", roleID, ErrHeraNotFound)
+	}
+	if err != nil {
+		return "", fmt.Errorf("hera block: kind of role %d: %w", roleID, err)
+	}
+	return HeraRoleKind(kind), nil
+}
+
 // blockReaches reports whether `target` is reachable from `start` by following
 // blocked->blocker edges (i.e. start is transitively blocked by target). Used by
 // AddHeraBlock to detect cycles before inserting blocked->blocker. Iterative DFS
@@ -254,6 +285,49 @@ func (d *DB) HeraBlockersOf(blockedRoleID int64) ([]int64, error) {
 		var b int64
 		if err := rows.Scan(&b); err != nil {
 			return nil, fmt.Errorf("hera blockers of scan: %w", err)
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// ListHeraBlocks returns every blocking edge whose endpoints both belong to the
+// given orchestrator, as (BlockedRoleID, BlockerRoleID) pairs. It complements
+// the per-role HeraBlockersOf with one bulk read for the whole orchestrator, so
+// the plan view can project all edges without N per-node queries. The result is
+// deterministically ordered by blocked then blocker role id, and excludes edges
+// whose endpoints are archived or nuked roles (consistent with how the view
+// filters roles).
+func (d *DB) ListHeraBlocks(orchID int64) ([]HeraBlock, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	// Join both endpoints to hera_roles so we can scope to the orchestrator and
+	// drop any edge whose blocked OR blocker role is archived/nuked — the same
+	// archived_at IS NULL / nuked_at IS NULL filter the role list applies. Both
+	// endpoints must belong to orchID (a cross-orchestrator edge cannot exist per
+	// AddHeraBlock's guard, but scoping on both is defensive and free).
+	// created_at is intentionally omitted from the projection — the plan view
+	// consumes only the (blocked, blocker) endpoints, so HeraBlock.CreatedAt stays
+	// zero here (mirroring HeraBlockersOf, which returns ids alone).
+	rows, err := d.conn.Query(
+		`SELECT bl.blocked_role_id, bl.blocker_role_id
+		 FROM hera_blocks bl
+		 JOIN hera_roles blocked ON blocked.id = bl.blocked_role_id
+		 JOIN hera_roles blocker ON blocker.id = bl.blocker_role_id
+		 WHERE blocked.orchestrator_id=? AND blocker.orchestrator_id=?
+		   AND blocked.archived_at IS NULL AND blocked.nuked_at IS NULL
+		   AND blocker.archived_at IS NULL AND blocker.nuked_at IS NULL
+		 ORDER BY bl.blocked_role_id ASC, bl.blocker_role_id ASC`,
+		orchID, orchID)
+	if err != nil {
+		return nil, fmt.Errorf("list hera blocks: %w", err)
+	}
+	defer rows.Close()
+	var out []HeraBlock
+	for rows.Next() {
+		var b HeraBlock
+		if err := rows.Scan(&b.BlockedRoleID, &b.BlockerRoleID); err != nil {
+			return nil, fmt.Errorf("list hera blocks scan: %w", err)
 		}
 		out = append(out, b)
 	}

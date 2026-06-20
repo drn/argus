@@ -119,6 +119,10 @@ type HeraOrchestrator struct {
 	ArchivedAt *time.Time
 	PinnedAt   *time.Time
 	NukedAt    *time.Time
+	// BaseBranch is the optional explicit base branch a plan-DAG's ROOT nodes
+	// stack on (add-hera-plan-base-branch). Empty means root nodes default to the
+	// coordinator's branch, then the project default. Set once at bootstrap.
+	BaseBranch string
 }
 
 // HeraRole is a participant in an orchestrator. Prompt is the only free-form
@@ -186,9 +190,11 @@ type execer interface {
 
 // CreateHeraOrchestrator inserts a new active orchestrator. If an active
 // orchestrator with the same name already exists it is returned unchanged
-// (idempotent). An archived row with the same name does NOT block creation —
-// a fresh active row is inserted.
-func (d *DB) CreateHeraOrchestrator(name string) (*HeraOrchestrator, error) {
+// (idempotent) — the supplied baseBranch is NOT re-applied to an existing row.
+// An archived row with the same name does NOT block creation — a fresh active
+// row is inserted. baseBranch is the optional explicit base branch a plan-DAG's
+// root nodes stack on (add-hera-plan-base-branch); pass "" when none.
+func (d *DB) CreateHeraOrchestrator(name, baseBranch string) (*HeraOrchestrator, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -199,7 +205,7 @@ func (d *DB) CreateHeraOrchestrator(name string) (*HeraOrchestrator, error) {
 	}
 
 	now := formatTime(time.Now())
-	res, err := d.conn.Exec(`INSERT INTO hera_orchestrators (name, created_at) VALUES (?, ?)`, name, now)
+	res, err := d.conn.Exec(`INSERT INTO hera_orchestrators (name, created_at, base_branch) VALUES (?, ?, ?)`, name, now, baseBranch)
 	if err != nil {
 		return nil, fmt.Errorf("create hera orchestrator: %w", err)
 	}
@@ -207,7 +213,7 @@ func (d *DB) CreateHeraOrchestrator(name string) (*HeraOrchestrator, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create hera orchestrator: last insert id: %w", err)
 	}
-	return &HeraOrchestrator{ID: id, Name: name, CreatedAt: parseTime(now)}, nil
+	return &HeraOrchestrator{ID: id, Name: name, CreatedAt: parseTime(now), BaseBranch: baseBranch}, nil
 }
 
 // HeraOrchestrator loads an orchestrator by id. Archived rows are returned —
@@ -235,7 +241,7 @@ func (d *DB) ListHeraOrchestrators(includeArchived bool) ([]*HeraOrchestrator, e
 
 	// Nuked rows (Tier-2 EOL) are invisible to the rail-feeding lists regardless
 	// of includeArchived — they are recoverable only by primary-key id lookup.
-	query := `SELECT id, name, created_at, archived_at, pinned_at, nuked_at FROM hera_orchestrators WHERE nuked_at IS NULL`
+	query := `SELECT id, name, created_at, archived_at, pinned_at, nuked_at, base_branch FROM hera_orchestrators WHERE nuked_at IS NULL`
 	if !includeArchived {
 		query += ` AND archived_at IS NULL`
 	}
@@ -350,13 +356,13 @@ func (d *DB) DeleteHeraOrchestrator(id int64) error {
 }
 
 func (d *DB) heraOrchestratorByID(id int64) (*HeraOrchestrator, error) {
-	row := d.conn.QueryRow(`SELECT id, name, created_at, archived_at, pinned_at, nuked_at FROM hera_orchestrators WHERE id=?`, id)
+	row := d.conn.QueryRow(`SELECT id, name, created_at, archived_at, pinned_at, nuked_at, base_branch FROM hera_orchestrators WHERE id=?`, id)
 	return scanHeraOrchestrator(row)
 }
 
 func (d *DB) heraOrchestratorByActiveName(name string) (*HeraOrchestrator, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, name, created_at, archived_at, pinned_at, nuked_at FROM hera_orchestrators WHERE name=? AND archived_at IS NULL`,
+		`SELECT id, name, created_at, archived_at, pinned_at, nuked_at, base_branch FROM hera_orchestrators WHERE name=? AND archived_at IS NULL`,
 		name)
 	return scanHeraOrchestrator(row)
 }
@@ -1134,8 +1140,8 @@ type rowScanner interface {
 func scanHeraOrchestrator(s rowScanner) (*HeraOrchestrator, error) {
 	var o HeraOrchestrator
 	var createdAt string
-	var archivedAt, pinnedAt, nukedAt sql.NullString
-	if err := s.Scan(&o.ID, &o.Name, &createdAt, &archivedAt, &pinnedAt, &nukedAt); err != nil {
+	var archivedAt, pinnedAt, nukedAt, baseBranch sql.NullString
+	if err := s.Scan(&o.ID, &o.Name, &createdAt, &archivedAt, &pinnedAt, &nukedAt, &baseBranch); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrHeraNotFound
 		}
@@ -1145,6 +1151,7 @@ func scanHeraOrchestrator(s rowScanner) (*HeraOrchestrator, error) {
 	o.ArchivedAt = nullTimePtr(archivedAt)
 	o.PinnedAt = nullTimePtr(pinnedAt)
 	o.NukedAt = nullTimePtr(nukedAt)
+	o.BaseBranch = baseBranch.String
 	return &o, nil
 }
 

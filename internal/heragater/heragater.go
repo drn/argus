@@ -241,6 +241,19 @@ func (w *Watcher) blockerOutcome(blockerID int64) blockerOutcome {
 	if st, err := w.db.HeraRoleStatusFor(blockerID); err == nil && st.Status == db.HeraStatusDone {
 		return blockerDone
 	}
+	// Not done. A COORDINATOR never reaches role-status done — its session is alive
+	// for the whole orchestration (BUG-003). An alive coordinator blocker must NOT
+	// be classified failed (it has not ended); treat it as permanently WORKING so
+	// the dependent stays PLANNED with no false "failed blocker" hold-ping. This is
+	// defense-in-depth: AddHeraBlock now rejects a coordinator-as-blocker edge, but
+	// the gater also protects any such edges already present in the live DB. Only
+	// when the coordinator's session has genuinely ended (no live binding) does it
+	// fall through to the normal had-binding-ended-without-done failure path.
+	if role, rErr := w.db.HeraRole(blockerID); rErr == nil && role.Kind == db.HeraKindCoordinator {
+		if _, lbErr := w.db.HeraLiveBindingByRole(blockerID); lbErr == nil {
+			return blockerWorking
+		}
+	}
 	// Not done. Is the session still alive?
 	binding, err := w.db.HeraLiveBindingByRole(blockerID)
 	if err != nil {
@@ -297,12 +310,21 @@ func (w *Watcher) materializeNode(node *db.HeraRole) {
 	}
 }
 
-// resolveBaseBranch returns the branch the new worktree should stack on: the
-// branch of the highest-id (most-recently-created) DONE blocker that has a task
-// with a branch. Empty when no blocker branch is resolvable (the project default
-// is then used by CreateAndStart). This gives a clean stacked-PR base when a node
-// depends on a single upstream worker; for fan-in the latest blocker wins (the
-// coordinator can re-base via the check-in if a different base is wanted).
+// resolveBaseBranch returns the branch the new worktree should stack on.
+//
+// For a node WITH blockers (non-root): the branch of the highest-id
+// (most-recently-created) DONE blocker that has a task with a branch. This gives
+// a clean stacked-PR base when a node depends on a single upstream worker; for
+// fan-in the latest blocker wins (the coordinator can re-base via the check-in if
+// a different base is wanted). This behavior is unchanged by
+// add-hera-plan-base-branch.
+//
+// For a ROOT node (no blocker branch resolves) the fallback order is
+// (add-hera-plan-base-branch): the orchestrator's explicit base_branch when set →
+// otherwise the coordinator role's bound-task branch → otherwise "" (CreateAndStart
+// then applies the project default, as before this change). Every step degrades to
+// "" on a miss — never a panic — so an orchestrator with no coordinator, or a
+// coordinator with no branch, falls through to the historical behavior.
 func (w *Watcher) resolveBaseBranch(node *db.HeraRole) string {
 	blockerIDs, err := w.db.HeraBlockersOf(node.ID)
 	if err != nil {
@@ -329,7 +351,53 @@ func (w *Watcher) resolveBaseBranch(node *db.HeraRole) string {
 			branch = t.Branch
 		}
 	}
-	return branch
+	if branch != "" {
+		// A blocker branch resolved — non-root path, unchanged.
+		return branch
+	}
+	// Root node: no blocker branch. Resolve the configurable root base.
+	return w.resolveRootBaseBranch(node)
+}
+
+// resolveRootBaseBranch resolves a ROOT node's base branch
+// (add-hera-plan-base-branch): explicit orchestrator base_branch → coordinator
+// role's bound-task branch → "". Logs which source won. Never panics.
+func (w *Watcher) resolveRootBaseBranch(node *db.HeraRole) string {
+	if orch, err := w.db.HeraOrchestrator(node.OrchestratorID); err == nil && orch.BaseBranch != "" {
+		w.logf("[heragater] root base for node %d (%s): %q (source=explicit)", node.ID, node.Name, orch.BaseBranch)
+		return orch.BaseBranch
+	}
+	if branch := w.coordinatorBranch(node.OrchestratorID); branch != "" {
+		w.logf("[heragater] root base for node %d (%s): %q (source=coordinator)", node.ID, node.Name, branch)
+		return branch
+	}
+	w.logf("[heragater] root base for node %d (%s): \"\" (source=project-default)", node.ID, node.Name)
+	return ""
+}
+
+// coordinatorBranch returns the branch of the orchestrator's coordinator role's
+// bound task, or "" if no coordinator role, no live/last binding, or no task
+// branch is resolvable. Mirrors the blocker path's live-then-latest binding
+// fallback so a coordinator that has gone idle still resolves.
+func (w *Watcher) coordinatorBranch(orchID int64) string {
+	coords, err := w.db.ListHeraRolesByKind(orchID, db.HeraKindCoordinator)
+	if err != nil || len(coords) == 0 {
+		return ""
+	}
+	coordID := coords[0].ID
+	binding, err := w.db.HeraLiveBindingByRole(coordID)
+	if err != nil {
+		bindings, lErr := w.db.ListHeraBindingsByRole(coordID)
+		if lErr != nil || len(bindings) == 0 {
+			return ""
+		}
+		binding = bindings[0] // most recent first
+	}
+	t, err := w.db.Get(binding.ArgusTaskID)
+	if err != nil || t == nil {
+		return ""
+	}
+	return t.Branch
 }
 
 // holdAndPing notifies the coordinator that a node is held behind a failed

@@ -20,10 +20,34 @@ func memDB(t *testing.T) *db.DB {
 	return d
 }
 
+// orchView is a tiny builder for a single orchestrator: the first (coord, task)
+// pair is the coordinator, the rest are live workers. (Relocated from the
+// retired tree_test.go; still used by the filter/model in-memory tests.)
+func orchView(id int64, name, coordTask string, workers ...struct{ name, task string }) OrchView {
+	o := OrchView{ID: id, Name: name}
+	if coordTask != "" {
+		o.Roles = append(o.Roles, RoleView{
+			Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: coordTask,
+			TaskStatus: "in_progress",
+		})
+	}
+	for _, w := range workers {
+		o.Roles = append(o.Roles, RoleView{
+			Name: w.name, Kind: db.HeraKindWorker, Live: true, TaskID: w.task,
+			TaskStatus: "in_progress",
+		})
+	}
+	return o
+}
+
+func wk(name, task string) struct{ name, task string } {
+	return struct{ name, task string }{name, task}
+}
+
 // seedOrch creates an active orchestrator and returns its id.
 func seedOrch(t *testing.T, d *db.DB, name string) int64 {
 	t.Helper()
-	o, err := d.CreateHeraOrchestrator(name)
+	o, err := d.CreateHeraOrchestrator(name, "")
 	testutil.NoError(t, err)
 	return o.ID
 }

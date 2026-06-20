@@ -12,7 +12,7 @@ description: >-
 
 Hera is argus's **native, in-tree** layer for running a *team* of agents. It is not a separate
 daemon or plugin — coordination runs in-process in the argus daemon, the rail/tree render directly
-in the TUI's second tab, and agents drive it entirely through the nine `mcp__argus__hera_*` MCP
+in the TUI's second tab, and agents drive it entirely through the twelve `mcp__argus__hera_*` MCP
 tools. State lives in the same `~/.argus/data.sql` (the `hera_*` tables). You never touch the
 plumbing; you call the tools.
 
@@ -48,10 +48,11 @@ is no CLI fallback and nothing below applies.
     you **must** pass `orchestrator=<name>` to every tool so hera knows which role you are acting as;
     omitting it returns an ambiguity error listing your options.
 
-## 3. The nine tools
+## 3. The twelve tools
 
 All take `cwd`. `orchestrator` is optional with exactly one live binding and **required** with 2+.
-Arg names below are exact — do not invent others.
+Arg names below are exact — do not invent others. The nine coordination tools come first; the three
+**plan-DAG authoring** tools are grouped at the end of this section.
 
 ### Bootstrap / join
 
@@ -127,6 +128,47 @@ Arg names below are exact — do not invent others.
   recipient must live in it); inaccessible / missing ids get a per-id `error` field rather than a
   top-level error.
 
+### Plan authoring — the plan-DAG (coordinator-only)
+
+Instead of spawning every worker immediately, a coordinator can lay out a **plan**: a set of
+**planned nodes** wired by **blocking edges**, and let the daemon's gater materialize each node into a
+live born-bound worker *automatically*, in dependency order. A planned node costs one DB row — no
+agent, worktree, or inbox until it materializes. The plan-DAG renders in the TUI's second tab (planned
+`○` → live-by-status), and you navigate it there.
+
+- **`hera_plan_node(cwd, name, prompt, [orchestrator], [project])`** — create ONE planned node (a
+  worker role with no live agent/worktree/inbox yet). It materializes into a live worker automatically
+  once **all** its blockers reach role-status `done`. `prompt` is delivered to the worker at
+  materialization (a check-in standing-order is prepended automatically, so the worker pings you on
+  start). **Name with a stable short-id prefix** — number = serial stage, letter = parallel member
+  (e.g. `1a-seed`, `2a-alpha`, `2b-beta`, `3a-final`); uniquified within the orchestrator. `project`
+  defaults to the coordinator's own.
+
+- **`hera_block(cwd, blocked, blocker, [orchestrator])`** — add a blocking edge: `blocked` waits on
+  `blocker` reaching role-status `done` before it materializes. Coordinator-only; both roles must be in
+  your orchestrator. **Rejected** if it would create a cycle, if the roles are in different
+  orchestrators, or if `blocker` is a **coordinator** role (a coordinator never reaches `done`, so it
+  would be a permanently-unsatisfiable dependency).
+
+- **`hera_plan(cwd, nodes, [edges], [orchestrator])`** — submit a WHOLE graph in one **transactional**
+  call: `nodes` = `[{name, prompt, [project]}]`, `edges` = `[{blocked, blocker}]` referencing nodes by
+  name (or existing roles). Nodes are created first, then edges (cycle-checked, single-orchestrator).
+  **All-or-nothing** — any cycle / cross-orchestrator / coordinator-blocker / validation error rolls
+  back the entire graph (no orphan nodes). This is the way to author a multi-stage plan at once rather
+  than many `hera_plan_node` + `hera_block` calls.
+
+**How materialization + branch-stacking works** (you don't drive it — the gater does, ~60s tick):
+- A node with **no remaining blockers** materializes into a born-bound worker (same as
+  `hera_spawn_worker` would produce).
+- **Non-root nodes stack automatically**: a materializing node is branched off its most-recently-`done`
+  blocker's branch, so a chain produces cleanly stacked PRs.
+- **Root nodes** (no blockers) resolve their base branch as: explicit orchestrator `base_branch` →
+  the coordinator role's bound-task branch → the project default. So a plan rooted on your feature
+  branch stacks on it (pass `base_branch` to `hera_new_orchestrator` to override the root).
+- **Respond to check-ins promptly.** Each node check-ins on materialization via `hera_send`; you pull
+  it from `hera_inbox` and reply (e.g. `"go"`). A node whose blocker genuinely **failed** is HELD and
+  pings you — decide whether to unblock, re-plan, or let it stay held.
+
 ## 4. Decision rules
 
 - **Starting a coordination effort?** `hera_new_orchestrator`. Don't `hera_join` first.
@@ -139,6 +181,11 @@ Arg names below are exact — do not invent others.
 - **`spawn_worker` vs adopt:** native hera has **no adopt step** — workers are born bound at spawn time.
   (The old `depends_on`-driven auto-adopt watcher was retired with the DAG.) To delegate, just
   `hera_spawn_worker`.
+- **Spawn now vs plan a DAG:** use `hera_spawn_worker` when you want a worker running *immediately*.
+  Use the **plan-DAG** (`hera_plan`, or `hera_plan_node` + `hera_block`) when work runs in **stages /
+  dependency order** — author planned nodes wired by blocking edges and let the gater materialize them
+  as their blockers finish (auto-stacking each stage's branch on the prior). Lay the whole graph out
+  with one `hera_plan` call; respond to each node's check-in via `hera_inbox`.
 - **This task holds 2+ bindings?** Pass `orchestrator=` on EVERY tool call.
 - **Got a doorbell?** Call `hera_inbox(cwd=$PWD)` immediately — the content is in the inbox, not the
   doorbell line.
@@ -211,6 +258,34 @@ You opened in a born-bound worker terminal:
 5. `hera_send(cwd=$PWD, body="<summary + PR link>", tldr="cart-api done, PR #47, tests green")` then
    `hera_status(cwd=$PWD, status="done")` — which rolls your task to in_review + ready_to_close so the
    coordinator sees you finished.
+
+### (c) Author a staged plan-DAG and let it self-materialize
+
+You are a coordinator and the work has clear stages (a seed, a parallel fan-out, a fan-in):
+
+1. Bootstrap (if you haven't): `hera_new_orchestrator(cwd=$PWD, name="<feature>", coordinator_role_name="coord")`.
+   To root the plan on your current feature branch, pass `base_branch="argus/<your-branch>"`.
+2. Submit the whole graph transactionally — short-id names, full spec baked into each prompt:
+   ```
+   hera_plan(cwd=$PWD,
+     nodes=[
+       {name:"1a-seed",  prompt:"<complete spec…>"},
+       {name:"2a-alpha", prompt:"<complete spec…>"},
+       {name:"2b-beta",  prompt:"<complete spec…>"},
+       {name:"3a-final", prompt:"<complete spec…>"}],
+     edges=[
+       {blocked:"2a-alpha", blocker:"1a-seed"},
+       {blocked:"2b-beta",  blocker:"1a-seed"},
+       {blocked:"3a-final", blocker:"2a-alpha"},
+       {blocked:"3a-final", blocker:"2b-beta"}])
+   ```
+   `1a-seed` materializes first (rooted on your branch); `2a`/`2b` materialize in parallel once it's
+   `done` (each stacked on `1a-seed`'s branch); `3a-final` waits for **both** and stacks on the latest.
+3. Watch it fill in the second-tab plan-DAG (planned `○` → live). Respond to each node's check-in:
+   `hera_inbox(cwd=$PWD)` on the doorbell → reply `hera_send(to="<node>", body="go", tldr="go")`.
+4. If a node is HELD behind a genuinely failed blocker, the gater pings you — re-plan, unblock, or
+   re-dispatch. (A coordinator-as-blocker edge is rejected at authoring time, so you can't wedge the
+   graph on a never-`done` coordinator.)
 
 ### Worker promotion: becoming a sub-coordinator
 

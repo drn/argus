@@ -119,7 +119,7 @@ func TestReconcileBindings_RealDB(t *testing.T) {
 	testutil.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
 
-	o, err := d.CreateHeraOrchestrator("orch")
+	o, err := d.CreateHeraOrchestrator("orch", "")
 	testutil.NoError(t, err)
 	r, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: o.ID, Name: "w", Kind: db.HeraKindWorker, ArgusProject: "proj"})
 	testutil.NoError(t, err)
@@ -144,7 +144,7 @@ func TestReconcileBindings_LeavesPlannedRoleIntact(t *testing.T) {
 	testutil.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
 
-	o, err := d.CreateHeraOrchestrator("orch")
+	o, err := d.CreateHeraOrchestrator("orch", "")
 	testutil.NoError(t, err)
 	planned, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
 		OrchestratorID: o.ID, Name: "2c-planned", ArgusProject: "proj", Prompt: "later",

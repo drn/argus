@@ -37,7 +37,7 @@ func TestHandleHera_OrchestratorWithBoundCoordinator(t *testing.T) {
 	testutil.NoError(t, d.Add(task))
 	testutil.True(t, task.ID != "")
 
-	orch, err := d.CreateHeraOrchestrator("ship-it")
+	orch, err := d.CreateHeraOrchestrator("ship-it", "")
 	testutil.NoError(t, err)
 
 	role, _, err := d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
@@ -102,7 +102,7 @@ func TestHandleHera_FreelanceHoistedAndPinArchiveFlags(t *testing.T) {
 
 	// Pinned orchestrator with a freelance role (active) — the freelance role
 	// must be hoisted to the top-level Freelance list, not nested.
-	pinned, err := d.CreateHeraOrchestrator("pinned-orch")
+	pinned, err := d.CreateHeraOrchestrator("pinned-orch", "")
 	testutil.NoError(t, err)
 	testutil.NoError(t, d.PinHeraOrchestrator(pinned.ID))
 	_, err = d.CreateHeraRole(db.CreateHeraRoleInput{
@@ -114,7 +114,7 @@ func TestHandleHera_FreelanceHoistedAndPinArchiveFlags(t *testing.T) {
 	testutil.NoError(t, err)
 
 	// Archived orchestrator — surfaces with Archived=true.
-	arch, err := d.CreateHeraOrchestrator("old-orch")
+	arch, err := d.CreateHeraOrchestrator("old-orch", "")
 	testutil.NoError(t, err)
 	testutil.NoError(t, d.ArchiveHeraOrchestrator(arch.ID))
 
@@ -149,7 +149,7 @@ func TestHandleHera_FreelanceHoistSuppression(t *testing.T) {
 	srv, d := testServer(t)
 
 	// (1) Active orchestrator with an ARCHIVED freelance role → stays nested.
-	act, err := d.CreateHeraOrchestrator("active-orch")
+	act, err := d.CreateHeraOrchestrator("active-orch", "")
 	testutil.NoError(t, err)
 	archRole, err := d.CreateHeraRole(db.CreateHeraRoleInput{
 		OrchestratorID: act.ID,
@@ -161,7 +161,7 @@ func TestHandleHera_FreelanceHoistSuppression(t *testing.T) {
 	testutil.NoError(t, d.ArchiveHeraRole(archRole.ID))
 
 	// (2) Archived orchestrator with an ACTIVE freelance role → stays nested.
-	arch, err := d.CreateHeraOrchestrator("archived-orch")
+	arch, err := d.CreateHeraOrchestrator("archived-orch", "")
 	testutil.NoError(t, err)
 	_, err = d.CreateHeraRole(db.CreateHeraRoleInput{
 		OrchestratorID: arch.ID,
@@ -234,7 +234,7 @@ func TestHandleHera_DBError(t *testing.T) {
 		srv, d := testServer(t)
 		// An orchestrator must exist so the loop body (ListHeraRoles) runs;
 		// bindings stay intact so the read reaches the roles call.
-		_, err := d.CreateHeraOrchestrator("orch")
+		_, err := d.CreateHeraOrchestrator("orch", "")
 		testutil.NoError(t, err)
 		dropHeraTable(t, d, "hera_roles")
 		w := httptest.NewRecorder()

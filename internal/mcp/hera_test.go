@@ -437,7 +437,7 @@ func TestHera_CallerContext_MultipleBindings(t *testing.T) {
 
 	// Create two separate orchestrators both binding to the same task.
 	for _, orchName := range []string{"orchA", "orchB"} {
-		orch, err := d.CreateHeraOrchestrator(orchName)
+		orch, err := d.CreateHeraOrchestrator(orchName, "")
 		testutil.NoError(t, err)
 		_, _, err = d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
 			OrchestratorID: orch.ID,
@@ -471,7 +471,7 @@ func TestHera_CallerContext_OrchestratorParam(t *testing.T) {
 	testutil.NoError(t, d.Add(ambiguous))
 
 	for _, orchName := range []string{"orchA", "orchB"} {
-		orch, err := d.CreateHeraOrchestrator(orchName)
+		orch, err := d.CreateHeraOrchestrator(orchName, "")
 		testutil.NoError(t, err)
 		_, _, err = d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
 			OrchestratorID: orch.ID,

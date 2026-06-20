@@ -226,7 +226,7 @@ func seedHera(d *db.DB, task *model.Task) error {
 			return err
 		}
 	}
-	orch, err := d.CreateHeraOrchestrator("demo-orch")
+	orch, err := d.CreateHeraOrchestrator("demo-orch", "")
 	if err != nil {
 		return err
 	}

@@ -47,7 +47,7 @@ func seedDaemonProject(t *testing.T, d *Daemon, repo string) {
 // bindWorker creates an orchestrator + worker role + live binding for taskID.
 func bindWorker(t *testing.T, d *Daemon, taskID string) {
 	t.Helper()
-	o, err := d.db.CreateHeraOrchestrator("o-" + taskID)
+	o, err := d.db.CreateHeraOrchestrator("o-"+taskID, "")
 	testutil.NoError(t, err)
 	r, err := d.db.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: o.ID, Name: "w", Kind: db.HeraKindWorker, ArgusProject: "proj"})
 	testutil.NoError(t, err)
@@ -58,7 +58,7 @@ func bindWorker(t *testing.T, d *Daemon, taskID string) {
 // bindCoordinator creates an orchestrator + coordinator role + binding for taskID.
 func bindCoordinator(t *testing.T, d *Daemon, taskID string) {
 	t.Helper()
-	o, err := d.db.CreateHeraOrchestrator("oc-" + taskID)
+	o, err := d.db.CreateHeraOrchestrator("oc-"+taskID, "")
 	testutil.NoError(t, err)
 	r, err := d.db.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: o.ID, Name: "coord", Kind: db.HeraKindCoordinator, ArgusProject: "proj"})
 	testutil.NoError(t, err)
@@ -140,7 +140,7 @@ func TestHeraSpawnWorker_HappyPath(t *testing.T) {
 	repo := heraInitGitRepo(t)
 	d, _ := testDaemon(t)
 	seedDaemonProject(t, d, repo)
-	orch, err := d.db.CreateHeraOrchestrator("orch")
+	orch, err := d.db.CreateHeraOrchestrator("orch", "")
 	testutil.NoError(t, err)
 
 	res, err := d.heraSpawnWorker(mcp.HeraSpawnInput{
