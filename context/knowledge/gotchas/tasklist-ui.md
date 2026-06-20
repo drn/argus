@@ -50,6 +50,7 @@
 ## Modal Forms (`handle*FormKey`)
 
 - **Every `handle*FormKey` early-return on validation or DB save failure MUST set `form.done = false` before returning.** `HandleKey` only ever sets `done = true` (on Enter / Ctrl+S); it never clears it. Without the reset, the next keypress flows back through `Done()`, hits the same validation failure, and the user is stuck in an infinite submit loop with no way out except Escape. `projectform`/`backendform`/`scheduleform` all have this dance — copy it verbatim when adding a new modal form.
+- **`Ctrl+R` (Tasks tab) prune is confirmation-gated (`openConfirmPrune` → `modeConfirmPrune`), and the re-entrancy guard lives on the GATE, not the worker.** `openConfirmPrune` returns early when the header notice is set (a prune is running) and skips the modal entirely when zero completed tasks exist (status note instead of a silent no-op); it counts completed tasks from `a.tasks` (already-loaded, includes completed/archived), NOT by calling `PrunePrepare` — `PrunePrepare`/`db.PruneCompleted` DELETE rows as a side effect, so they can never be used merely to count. Only `handleConfirmPruneKey`'s confirm branch calls `pruneCompletedTasks`. The `Ctrl+R` key + "prune completed" label are unchanged, so no help-modal/statusbar edit is required.
 
 ## Task Row Rendering
 
