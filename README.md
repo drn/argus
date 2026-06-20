@@ -160,8 +160,7 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `P`       | Toggle pin (★ section pinned to the top of the task list)       |
 | `c`       | Copy task prompt to clipboard                                   |
 | `r`       | Rename task (display name only; branch/worktree stay locked)    |
-| `H`       | Toggle hidden Hera-spawned workers (hidden by default — they live in the Hera tab) |
-| `f`       | Freelancers only — hide all hera-managed tasks (live coordinator/worker bindings); toggle off to restore |
+| `H`       | Toggle hidden Hera-managed tasks (workers + coordinators; hidden by default — they live in the Hera tab) |
 | `ctrl+d`  | Destroy task (kill agent + remove worktree + delete branch)     |
 | `ctrl+o`  | Open the project's GitHub repo in browser (via `gh repo view --web`) |
 | `ctrl+r`  | Prune completed tasks                                           |

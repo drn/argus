@@ -59,7 +59,7 @@ func TestHelpModal_Draw(t *testing.T) {
 	testutil.Contains(t, body, "new task")
 	testutil.Contains(t, body, "fork task")
 	testutil.Contains(t, body, "task switcher")
-	testutil.Contains(t, body, "show/hide hera workers")
+	testutil.Contains(t, body, "show/hide hera-managed (workers+coords)")
 	// Hera rail Ctrl+Z fullscreen binding (closes the suspend footgun) must be
 	// discoverable — fail the build if it's ever silently dropped.
 	testutil.Contains(t, body, "fullscreen pane")
@@ -72,7 +72,6 @@ func TestHelpModal_Draw(t *testing.T) {
 	// The `J` adopt/reparent rail key must be discoverable in the overlay so a
 	// future removal of the binding fails the build (keybinding-help contract).
 	testutil.Contains(t, body, "adopt freelancer / reparent coordinator")
-	testutil.Contains(t, body, "freelancers only")
 	testutil.Contains(t, body, "filter rail by name") // Hera rail `/` filter
 	// Rail key family (BUG-005/006/010/011/012): every new/changed rail key must
 	// be discoverable in the overlay.

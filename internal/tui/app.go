@@ -495,13 +495,9 @@ func (a *App) buildUI() {
 	a.tasklist.OnCursorChange = a.onTaskCursorChange
 	a.tasklist.OnLayoutChange = func() { a.forceRedraw("tasklist rows changed") }
 	a.tasklist.OnFilterToggle = func() { a.forceRedraw("tasklist filter toggled") }
-	a.tasklist.OnHeraWorkersToggle = func(hidden bool) {
-		uxlog.Log("[hera-view] tasklist hide-hera-workers toggled: hidden=%v", hidden)
-		a.forceRedraw("tasklist hera-workers toggled")
-	}
-	a.tasklist.OnFreelancersOnlyToggle = func(active bool) {
-		uxlog.Log("[tui] tasklist freelancers-only toggled: active=%v", active)
-		a.forceRedraw("tasklist freelancers-only toggled")
+	a.tasklist.OnHeraManagedToggle = func(hidden bool) {
+		uxlog.Log("[hera-view] tasklist hide-hera-managed toggled: hidden=%v", hidden)
+		a.forceRedraw("tasklist hera-managed toggled")
 	}
 	a.tasklist.OnStatusChange = func(t *model.Task) {
 		uxlog.Log("[tui] manual status change: task %s (%s) → %s", t.ID, t.Name, t.Status)
