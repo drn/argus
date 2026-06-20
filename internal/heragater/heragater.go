@@ -56,10 +56,11 @@ type CoordinatorPinger func(fromRoleID, coordRoleID int64, body, tldr string) er
 // Watcher polls the DB for ready planned nodes and materializes them. Embed-
 // friendly: configuration via Set* methods, no exported state.
 type Watcher struct {
-	db          *db.DB
-	materialize Materializer
-	ping        CoordinatorPinger
-	interval    time.Duration
+	db               *db.DB
+	materialize      Materializer
+	subCoordMaterial Materializer
+	ping             CoordinatorPinger
+	interval         time.Duration
 
 	stopCh chan struct{}
 	mu     sync.Mutex
@@ -126,6 +127,16 @@ func (w *Watcher) SetInterval(d time.Duration) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.interval = d
+}
+
+// SetSubCoordMaterializer registers the second materialize seam used for subcoord
+// plan nodes (add-hera-subcoord-nodes). Wired to agent.MaterializeHeraSubCoordinator
+// via the daemon adapter; tests inject a fake. When unset, a subcoord node falls
+// back to the worker materializer (defensive — production always wires it).
+func (w *Watcher) SetSubCoordMaterializer(fn Materializer) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.subCoordMaterial = fn
 }
 
 // SetOnMaterialize registers a callback fired after a node is materialized.
@@ -298,6 +309,16 @@ func (w *Watcher) materializeNode(node *db.HeraRole) {
 	}
 	project := node.ArgusProject
 	branch := w.resolveBaseBranch(node)
+
+	// Route on node kind (add-hera-subcoord-nodes). A subcoord node materializes
+	// via the sub-coord seam (a distinct coordinator agent owning a child
+	// orchestrator); everything else is a leaf worker. Idempotency, gating, and
+	// base-branch resolution are identical — only the materialize step differs.
+	if node.NodeKind == db.HeraNodeKindSubCoord {
+		w.materializeSubCoord(node, orch.Name, coordName, project, branch)
+		return
+	}
+
 	taskPrompt := agent.HeraCheckInOrientation(orch.Name, coordName) + "\n\n---\n\n" + node.Prompt
 
 	if err := w.materialize(node, taskPrompt, project, branch, "", ""); err != nil {
@@ -305,6 +326,37 @@ func (w *Watcher) materializeNode(node *db.HeraRole) {
 		return
 	}
 	w.logf("[heragater] materialized node %d (%s) in orch %q (base_branch=%q)", node.ID, node.Name, orch.Name, branch)
+	if cb := w.materializeCallback(); cb != nil {
+		cb(node)
+	}
+}
+
+// materializeSubCoord materializes a subcoord plan node via the sub-coord seam.
+// The delivered prompt is the coordinator orientation (naming a derived child-orch
+// placeholder + the parent + the spawn/plan tools) + the check-in/poll-inbox
+// standing order + the node's goal (its stored prompt). The seam
+// (agent.MaterializeHeraSubCoordinator) de-collides the real child-orchestrator
+// name at materialize time, so the orientation uses the node name as the visible
+// child-orch reference. A nil seam falls back to the worker materializer
+// (defensive; production always wires SetSubCoordMaterializer).
+func (w *Watcher) materializeSubCoord(node *db.HeraRole, parentOrchName, coordName, project, branch string) {
+	w.mu.Lock()
+	seam := w.subCoordMaterial
+	w.mu.Unlock()
+	if seam == nil {
+		w.logf("[heragater] subcoord seam unset for node %d (%s); falling back to worker path", node.ID, node.Name)
+		seam = w.materialize
+	}
+
+	orientation := agent.HeraSubCoordinatorOrientation(node.Name, parentOrchName, "coord")
+	checkIn := agent.HeraCheckInOrientation(parentOrchName, coordName)
+	taskPrompt := orientation + "\n\n---\n\n" + checkIn + "\n\n---\n\n" + node.Prompt
+
+	if err := seam(node, taskPrompt, project, branch, "", ""); err != nil {
+		w.logf("[heragater] materialize SUBCOORD %d (%s) FAILED (stays planned, retry next tick): %v", node.ID, node.Name, err)
+		return
+	}
+	w.logf("[heragater] materialized SUBCOORD node %d (%s) in orch %q (child_orch=%s, base_branch=%q)", node.ID, node.Name, parentOrchName, node.Name, branch)
 	if cb := w.materializeCallback(); cb != nil {
 		cb(node)
 	}

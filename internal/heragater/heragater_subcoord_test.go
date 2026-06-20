@@ -155,7 +155,7 @@ func TestSubCoord_GaterRoutesWorkerNodeToWorkerPath(t *testing.T) {
 func TestSubCoord_GaterIdempotentSubCoordAlreadyBound(t *testing.T) {
 	f := newExtendedGaterFixture(t)
 	orch := f.seedCoord(t, "orch")
-	node := f.seedSubCoordNode(t, orch, "3a-auth")
+	_ = f.seedSubCoordNode(t, orch, "3a-auth")
 
 	f.w.Tick() // materializes the node (inserts a binding)
 
