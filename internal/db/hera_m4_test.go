@@ -246,6 +246,33 @@ func TestRollHeraWorkerToReview(t *testing.T) {
 		testutil.Equal(t, flipped, false)
 	})
 
+	// ClearHeraReadyToClose is the inverse of the roll's stamp (BUG-024): it
+	// flips the ready_to_close flag to "false" so a worker stepped OUT of done no
+	// longer reads as ready_to_close.
+	t.Run("clear ready_to_close after a roll", func(t *testing.T) {
+		d, id := setup(t, model.StatusInProgress, HeraKindWorker, true)
+		_, err := d.RollHeraWorkerToReview(id)
+		testutil.NoError(t, err)
+		// Confirm it is set, then clear it.
+		readyToClose := func() bool {
+			meta, _ := d.ListMeta(id, HeraMetaNamespace)
+			for _, e := range meta {
+				if e.Key == HeraMetaKeyReadyToClose {
+					return e.Value == "true"
+				}
+			}
+			return false
+		}
+		testutil.Equal(t, readyToClose(), true)
+		testutil.NoError(t, d.ClearHeraReadyToClose(id))
+		testutil.Equal(t, readyToClose(), false)
+	})
+
+	t.Run("clear is an idempotent no-op when never set", func(t *testing.T) {
+		d, id := setup(t, model.StatusInProgress, HeraKindWorker, true)
+		testutil.NoError(t, d.ClearHeraReadyToClose(id))
+	})
+
 	// Regression guard for the native-Hera worker-role auto-archive defect.
 	//
 	// The EXTERNAL hera plugin's hera_status("done") handler deliberately

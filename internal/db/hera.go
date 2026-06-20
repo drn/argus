@@ -801,6 +801,19 @@ func (d *DB) RollHeraWorkerToReview(taskID string) (bool, error) {
 	return true, nil
 }
 
+// ClearHeraReadyToClose removes the meta:hera.ready_to_close mark on taskID —
+// the inverse of the stamp RollHeraWorkerToReview sets when a worker reaches
+// `done`. Stepping a worker's hera status back DOWN the ladder (out of `done`)
+// uses this so the rail glyph reflects the new status instead of staying pinned
+// to the review ✓ (ready_to_close wins over status in the glyph precedence, so
+// an uncleared mark masks every subsequent step — BUG-024). It writes "false"
+// rather than deleting the row, matching how the flag is read (== "true"); a
+// task that never carried the flag is an idempotent no-op. Touches meta only —
+// never the task's workflow status (owned by the session lifecycle).
+func (d *DB) ClearHeraReadyToClose(taskID string) error {
+	return d.SetMeta(taskID, HeraMetaNamespace, HeraMetaKeyReadyToClose, "false")
+}
+
 // UniqueHeraRoleName returns base unchanged when no ACTIVE role under orchID
 // already uses it, else base-2, base-3, … until a free slot is found. Mirrors
 // Hera's ops.uniqueWorkerName. Archived roles do NOT block (they don't occupy
