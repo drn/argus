@@ -611,6 +611,17 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 			p.forwardKey(p.coordPane, event)
 		case FocusAgent:
 			if p.detailsMode {
+				// Rail-mutation keys (pin P, rename r, …, Ctrl+D) act on the rail's
+				// CURRENT selection — the selected coordinator — even while its
+				// Details/plan region is focused. Route them to handleRailMutation
+				// BEFORE the plan widget so pin et al. still work with the Details
+				// view open (BUG-010: BUG-002's plan-Enter→jumpToLeaf parks focus
+				// here, where the plan widget would otherwise swallow them). Plan-nav
+				// keys (j/k/h/l/Enter/Space/Esc/arrows) are not rail mutations, so
+				// they fall through to the plan widget unchanged.
+				if p.isRailMutationKey(event) && p.handleRailMutation(event) {
+					return
+				}
 				p.handleDetailsKey(event, setFocus)
 			} else {
 				p.forwardKey(p.agentPane, event)
@@ -688,6 +699,29 @@ func (p *HeraPage) rebuildPlan(root *OrchView) {
 	p.planOrchID = root.ID
 	uxlog.Log("[hera-view] plan render: orch=%s nodes=%d edges=%d sameOrch=%v",
 		root.Name, len(nodes), len(edges), sameOrch)
+}
+
+// isRailMutationKey reports whether event is one of the rail-FOCUS mutation
+// commands that handleRailMutation acts on — spawn `w`, rename `r`, archive `a`,
+// pin `P`, status `s`/`S`, adopt `J`, new-coordinator `n`, clear-archive `C`, and
+// Ctrl+D nuke. It deliberately EXCLUDES Enter and the navigation keys
+// (j/k/h/l/Space/Esc/arrows): in details mode those belong to the embedded plan
+// widget, so they must reach handleDetailsKey untouched. The details-mode branch
+// of InputHandler consults this to route rail mutations to handleRailMutation
+// while a coordinator's plan is focused, without hijacking plan navigation
+// (BUG-010). The rune set is kept in lock-step with handleRailMutation's switch
+// below and the help modal's "Hera View (rail)" section.
+func (p *HeraPage) isRailMutationKey(event *tcell.EventKey) bool {
+	switch event.Key() {
+	case tcell.KeyCtrlD:
+		return true
+	case tcell.KeyRune:
+		switch event.Rune() {
+		case 'w', 'r', 'a', 'P', 's', 'S', 'J', 'n', 'C':
+			return true
+		}
+	}
+	return false
 }
 
 // handleRailMutation maps the rail-focus mutation keyset to the page's mutation
