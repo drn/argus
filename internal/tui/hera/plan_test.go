@@ -227,6 +227,79 @@ func TestHeraPlanNodes_NilOrchEmpty(t *testing.T) {
 	testutil.Equal(t, len(edges), 0)
 }
 
+// --- BUG-007: plan node icons 1:1 with the rail's statusIcon ---
+
+// projectWorkerIcon builds a one-coordinator/one-worker orchestrator from the
+// given worker RoleView, projects it, and returns the worker node's resolved Icon
+// (nil for planned/failed, which use the State overlay).
+func projectWorkerIcon(t *testing.T, wkr RoleView) *planview.NodeIcon {
+	t.Helper()
+	wkr.Kind = db.HeraKindWorker
+	ov := &OrchView{ID: 1, Name: "orch", Roles: []RoleView{
+		{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-coord"},
+		wkr,
+	}}
+	nodes, _ := heraPlanNodes(ov)
+	for _, n := range nodes {
+		if n.Name == wkr.Name {
+			return n.Icon
+		}
+	}
+	t.Fatalf("worker node %q not projected", wkr.Name)
+	return nil
+}
+
+// TestPlanNodeIcon_LiveMatchesRailStatusIcon is the BUG-007 headline: a LIVE
+// node's projected icon (glyph + style) is IDENTICAL to what the rail's
+// statusIcon renders for the same role — done / working / idle / in-review /
+// needs-input — because both go through the one shared classifier
+// (widget.RoleStatusIcon). Frame 0 keeps the spinner comparison deterministic.
+func TestPlanNodeIcon_LiveMatchesRailStatusIcon(t *testing.T) {
+	cases := []struct {
+		name string
+		role RoleView
+	}{
+		{"done", RoleView{RoleID: 2, Name: "w-done", Live: true, TaskID: "t1", BridgeTaskID: "t1", HasStatus: true, Status: db.HeraStatusDone, TaskStatus: model.StatusInReview.String()}},
+		{"working/active", RoleView{RoleID: 2, Name: "w-work", Live: true, TaskID: "t1", BridgeTaskID: "t1", TaskStatus: model.StatusInProgress.String()}},
+		{"idle", RoleView{RoleID: 2, Name: "w-idle", Live: true, TaskID: "t1", BridgeTaskID: "t1", HasStatus: true, Status: db.HeraStatusIdle}},
+		{"in-review/ready", RoleView{RoleID: 2, Name: "w-rev", Live: true, TaskID: "t1", BridgeTaskID: "t1", ReadyToClose: true}},
+		{"needs-input", RoleView{RoleID: 2, Name: "w-ni", Live: true, TaskID: "t1", BridgeTaskID: "t1", NeedsInput: true}},
+		{"live-quiet", RoleView{RoleID: 2, Name: "w-live", Live: true, TaskID: "t1", BridgeTaskID: "t1"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wantGlyph, wantStyle := statusIcon(&tc.role, false, 0)
+			icon := projectWorkerIcon(t, tc.role)
+			testutil.Equal(t, icon != nil, true)
+			// Style is always 1:1. The glyph is 1:1 too; for the animated case the
+			// projection stores the frame-0 glyph and flags Animated (the widget
+			// re-resolves the live frame at Draw), so frame-0 here matches.
+			testutil.Equal(t, icon.Style, wantStyle)
+			testutil.Equal(t, icon.Glyph, wantGlyph)
+		})
+	}
+}
+
+// TestPlanNodeIcon_WorkingIsAnimated: the genuinely-active "working" node is
+// flagged Animated so the plan view renders the live spinner frame (1:1 with the
+// rail's animated row), not a frozen glyph.
+func TestPlanNodeIcon_WorkingIsAnimated(t *testing.T) {
+	icon := projectWorkerIcon(t, RoleView{RoleID: 2, Name: "w", Live: true, TaskID: "t1", BridgeTaskID: "t1", TaskStatus: model.StatusInProgress.String()})
+	testutil.Equal(t, icon != nil, true)
+	testutil.Equal(t, icon.Animated, true)
+}
+
+// TestPlanNodeIcon_PlannedAndFailedUseStateOverlay: the two plan-view-specific
+// states the rail has no concept of leave Icon nil → the widget renders the State
+// overlay (planned ○ / failed ✕).
+func TestPlanNodeIcon_PlannedAndFailedUseStateOverlay(t *testing.T) {
+	planned := projectWorkerIcon(t, RoleView{RoleID: 2, Name: "w-planned", Planned: true})
+	testutil.Nil(t, planned)
+
+	failed := projectWorkerIcon(t, RoleView{RoleID: 2, Name: "w-failed", Live: true, TaskID: "t1", BridgeTaskID: "t1", TaskStatus: model.StatusInReview.String(), TaskResult: `{"failed":true}`})
+	testutil.Nil(t, failed)
+}
+
 // --- Refresh preserves plan cursor + fanned state (BUG-1/2 page-level) ---
 
 // TestRefresh_PreservesPlanCursorAndFanned is the page-level regression for the

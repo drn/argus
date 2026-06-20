@@ -6,6 +6,7 @@ import (
 
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -84,6 +85,37 @@ func TestDraw_PlannedChipGlyphRendered(t *testing.T) {
 	testutil.Contains(t, out, "○")
 	testutil.Contains(t, out, "1a")
 	testutil.Contains(t, out, "2a")
+}
+
+// TestDraw_LiveNodeUsesStampedIcon (BUG-007): a node carrying a projection-
+// stamped Icon renders that glyph (1:1 with the rail), NOT its State.Glyph().
+func TestDraw_LiveNodeUsesStampedIcon(t *testing.T) {
+	w := New()
+	// State says working (⟳) but the stamped Icon is the rail's moon-outline (idle):
+	// the render must use the Icon, proving Icon wins over State.Glyph().
+	w.SetData([]Node{{
+		ID: "1a", Name: "1a-role", State: StateWorking,
+		Icon: &NodeIcon{Glyph: theme.IconMoonOutline, Style: theme.StyleInReview},
+	}}, nil)
+	w.SetFocused(true)
+	out := drawToString(t, w, 50, 14)
+	testutil.Contains(t, out, string(theme.IconMoonOutline))
+	testutil.Equal(t, strings.ContainsRune(out, '⟳'), false) // State glyph NOT used
+}
+
+// TestDraw_AnimatedIconRendersSpinnerFrame (BUG-007): an Animated icon renders a
+// live spinner frame (re-resolved at Draw), not the stored placeholder glyph.
+func TestDraw_AnimatedIconRendersSpinnerFrame(t *testing.T) {
+	w := New()
+	w.SetData([]Node{{
+		ID: "1a", Name: "1a-role", State: StateWorking,
+		Icon: &NodeIcon{Glyph: 'X', Style: theme.StyleInProgress, Animated: true},
+	}}, nil)
+	w.SetFocused(true)
+	out := drawToString(t, w, 50, 14)
+	// The stored placeholder 'X' must NOT appear; a real spinner frame does.
+	testutil.Equal(t, strings.ContainsRune(out, 'X'), false)
+	testutil.Equal(t, strings.ContainsRune(out, widget.SpinnerFrame(planSpinnerFrame())), true)
 }
 
 func TestDraw_GroupBoxRendered(t *testing.T) {

@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/drn/argus/internal/tui/dagview"
 	"github.com/drn/argus/internal/tui/theme"
@@ -127,6 +128,22 @@ type Node struct {
 	Drillable bool
 	// Description is the role's delivery-prompt first line (the header "Description").
 	Description string
+	// Icon, when non-nil, is the resolved status glyph + style for a LIVE node,
+	// computed by the projection via the SHARED classifier (widget.RoleStatusIcon)
+	// so the plan node renders 1:1 with the rail (BUG-007). nil for a planned/failed
+	// node (those use the State overlay: planned ○ / failed ✕) and for the
+	// single-arg test projection — the widget then falls back to State.Glyph()/style.
+	Icon *NodeIcon
+}
+
+// NodeIcon is a live node's resolved status indicator, mirroring exactly what the
+// rail's statusIcon renders for the same role (BUG-007). Animated marks the
+// genuinely-active "working" case: the widget re-resolves the spinner frame at
+// Draw (so it animates) rather than freezing the projection-time frame.
+type NodeIcon struct {
+	Glyph    rune
+	Style    tcell.Style
+	Animated bool
 }
 
 // Edge is one directed blocking dependency in the plan: To waits on From (To is
@@ -267,6 +284,11 @@ type Widget struct {
 	noPlan  bool
 	title   string
 	focused bool
+
+	// animFrame is the spinner animation frame recomputed at the top of each Draw
+	// (wall-clock, mirroring the rail's spinnerFrame) so an Animated node icon
+	// animates 1:1 with the rail (BUG-007). Read by nodeGlyph during the frame.
+	animFrame int
 
 	// cursor is the current (stage, slot, member) position. Member is -1 unless
 	// the cursor is inside a fanned-out group (Stage 4).
@@ -1224,9 +1246,11 @@ func (w *Widget) headerContent() []string {
 }
 
 // nodeHeaderLines renders the node-view header: the role name, its Status (the
-// node's state word + glyph — planned for a never-bound role, else the live
-// worker's state; BUG-006), its description (the delivery-prompt first line), and
-// what it feeds (the downstream nodes it blocks, by label, from the edge set) (D9).
+// node's state word + glyph; BUG-006), its description (the delivery-prompt first
+// line), and what it feeds (the downstream nodes it blocks, by label) (D9). The
+// Status glyph uses the SAME resolved icon the node box shows (1:1 with the rail
+// for a live node, BUG-007), so the header and the diagram never disagree; the
+// word is the State.Label() vocabulary (planned / working / done / …).
 func (w *Widget) nodeHeaderLines(id string) []string {
 	n := w.nodes[id]
 	desc := n.Description
@@ -1238,13 +1262,28 @@ func (w *Widget) nodeHeaderLines(id string) []string {
 	if len(feeds) == 0 {
 		feedsLine = "Feeds: (nothing)"
 	}
-	statusLine := fmt.Sprintf("Status: %c %s", n.State.Glyph(), n.State.Label())
+	statusLine := fmt.Sprintf("Status: %c %s", w.headerStatusGlyph(n), n.State.Label())
 	return []string{
 		n.Name,
 		statusLine,
 		desc,
 		feedsLine,
 	}
+}
+
+// headerStatusGlyph is the glyph shown on the header Status line: the node's
+// resolved status icon (1:1 with the rail + the box, BUG-007) when the projection
+// stamped one, falling back to the State glyph for planned/failed overlays and
+// the test projection. For the animated "working" case it shows a representative
+// spinner frame (the header is static text — it does not animate per-frame).
+func (w *Widget) headerStatusGlyph(n Node) rune {
+	if n.Icon != nil {
+		if n.Icon.Animated {
+			return widget.SpinnerFrame(w.animFrame)
+		}
+		return n.Icon.Glyph
+	}
+	return n.State.Glyph()
 }
 
 // groupHeaderLines renders the group-view header: the range·title (the group's
@@ -1321,6 +1360,9 @@ func (w *Widget) HeaderHeight() int { return headerHeight }
 // bordered panel. No screen.Sync (CLAUDE.md UX-rendering rules).
 func (w *Widget) Draw(screen tcell.Screen) {
 	w.DrawForSubclass(screen, w)
+	// Recompute the spinner frame once per Draw so Animated node icons animate in
+	// lockstep with the rail (BUG-007); cheap, wall-clock-derived.
+	w.animFrame = planSpinnerFrame()
 	x, y, wpx, hpx := w.GetInnerRect()
 	if wpx <= 0 || hpx <= 0 {
 		return
@@ -1546,8 +1588,9 @@ func (w *Widget) buildStageBlock(s int) stageBlock {
 			bw, bh, draw := w.layoutDashedBox(w.groupTopLine(sl.group), w.groupSubLine(sl.group), "", onSlot)
 			sibs = append(sibs, sib{bw, bh, draw})
 		default:
-			content := string(w.nodes[sl.nodeID].State.Glyph()) + " " + w.LabelOf(sl.nodeID)
-			bw, bh, draw := w.layoutNodeBox(content, w.nodes[sl.nodeID].State.style(), onSlot)
+			glyph, style := w.nodeGlyph(sl.nodeID)
+			content := string(glyph) + " " + w.LabelOf(sl.nodeID)
+			bw, bh, draw := w.layoutNodeBox(content, style, onSlot)
 			sibs = append(sibs, sib{bw, bh, draw})
 		}
 	}
@@ -1658,11 +1701,12 @@ func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tce
 	}
 	var members []mbox
 	for memberIdx, id := range g.Members {
-		content := string(w.nodes[id].State.Glyph()) + " " + w.LabelOf(id)
+		glyph, style := w.nodeGlyph(id)
+		content := string(glyph) + " " + w.LabelOf(id)
 		if g.FeedingMembers[id] {
 			content += " ↘"
 		}
-		bw, bh, d := w.layoutNodeBox(content, w.nodes[id].State.style(), onSlot && w.cursor.Member == memberIdx)
+		bw, bh, d := w.layoutNodeBox(content, style, onSlot && w.cursor.Member == memberIdx)
 		members = append(members, mbox{bw, bh, d})
 	}
 	innerW, innerH := 0, 0
@@ -1872,6 +1916,35 @@ func groupCounts(g *Group) string {
 		}
 	}
 	return strings.Join(parts, " · ")
+}
+
+// nodeGlyph returns a node's status glyph + style for rendering. When the
+// projection stamped a resolved Icon (a LIVE node, classified 1:1 with the rail
+// via the shared widget.RoleStatusIcon — BUG-007) it uses that, re-resolving the
+// spinner frame at Draw for the Animated "working" case so it animates in
+// lockstep with the rail. Otherwise (planned ○ / failed ✕ overlays, or the
+// single-arg test projection that stamps no Icon) it falls back to the State
+// glyph + style, preserving the prior behaviour.
+func (w *Widget) nodeGlyph(id string) (rune, tcell.Style) {
+	n := w.nodes[id]
+	if n.Icon != nil {
+		if n.Icon.Animated {
+			return widget.SpinnerFrame(w.animFrame), n.Icon.Style
+		}
+		return n.Icon.Glyph, n.Icon.Style
+	}
+	return n.State.Glyph(), n.State.style()
+}
+
+// planSpinnerFrame computes the current spinner animation frame from wall-clock
+// time, mirroring the rail's spinnerFrame so an Animated plan node advances in
+// lockstep. Recomputed at the top of each Draw.
+func planSpinnerFrame() int {
+	interval := widget.SpinnerTickInterval()
+	if interval <= 0 {
+		return 0
+	}
+	return int(time.Now().UnixMilli()/interval.Milliseconds()) % widget.SpinnerFrameCount()
 }
 
 // groupTopLine is the collapsed box's first line (BUG-005): the bare range label

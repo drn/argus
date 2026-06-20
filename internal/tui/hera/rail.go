@@ -1227,44 +1227,27 @@ func liveRoleCount(o *OrchView) int {
 // the spinner to it made idle/stopped/dead roles animate. Mirrors the plugin's
 // stateGlyph (spinner on in_progress + running). See BUG-003.
 func statusIcon(role *RoleView, dim bool, frame int) (rune, tcell.Style) {
-	if role.ReadyToClose {
-		st := tcell.StyleDefault.Foreground(theme.ColorComplete).Bold(true)
-		if dim {
-			st = theme.StyleDimmed
-		}
-		return theme.IconReview, st
+	// Single source of truth shared with the plan-view node projection
+	// (widget.RoleStatusIcon) so the two surfaces render 1:1 (BUG-007). The
+	// precedence + vocabulary live in widget; this only maps RoleView → inputs.
+	// ShowsNeedsInput folds in the BuildModel subtree rollup (BUG-018); IsActive is
+	// the honest live+in_progress "working" signal, never the stale hera status
+	// (BUG-003).
+	return widget.RoleStatusIcon(roleStatusInputs(role), dim, frame)
+}
+
+// roleStatusInputs maps a RoleView to the primitive signals the shared
+// classifier switches on. Kept next to statusIcon so the rail's contract is
+// visible; the plan-view projection builds the same inputs from its own RoleView.
+func roleStatusInputs(role *RoleView) widget.RoleStatusInputs {
+	return widget.RoleStatusInputs{
+		ReadyToClose: role.ReadyToClose,
+		NeedsInput:   role.ShowsNeedsInput(),
+		Done:         role.HasStatus && role.Status == db.HeraStatusDone,
+		Active:       role.IsActive(),
+		Idle:         role.HasStatus && role.Status == db.HeraStatusIdle,
+		Live:         role.Live,
 	}
-	var glyph rune
-	var style tcell.Style
-	switch {
-	case role.ShowsNeedsInput():
-		// Needs-input "(?)" — the role's OWN signal (authoritative needs-input flag
-		// OR a deliberate "I'm blocked" hera status) OR the subtree ROLLUP computed
-		// in BuildModel: any descendant role (transitively across bridged
-		// sub-orchestrators) needs input, so the attention bubbles up to every
-		// ancestor coordinator and the root (BUG-018). Precedence: this ranks below
-		// the role's own ready_to_close mark (above) and ABOVE done/active/idle/live
-		// — a descendant needing input surfaces on an idle/working/done ancestor,
-		// because it is the one actionable thing in the subtree. It is never masked
-		// by the activity spinner while the task is technically still in_progress.
-		glyph, style = theme.IconNeedsInput, theme.StyleNeedsInput
-	case role.HasStatus && role.Status == db.HeraStatusDone:
-		glyph, style = '✓', theme.StyleComplete
-	case role.IsActive():
-		// Genuinely producing output → animate. Sourced from real task activity,
-		// never the stale hera role-status (BUG-003).
-		glyph, style = widget.SpinnerFrame(frame), theme.StyleInProgress
-	case role.HasStatus && role.Status == db.HeraStatusIdle:
-		glyph, style = theme.IconMoonOutline, theme.StyleInReview
-	case role.Live:
-		glyph, style = theme.IconMoonStars, theme.StyleInReview
-	default:
-		glyph, style = theme.IconMoonOutline, theme.StyleDimmed
-	}
-	if dim {
-		style = theme.StyleDimmed
-	}
-	return glyph, style
 }
 
 // CursorToParent moves the cursor to the nearest parent-coordinator row — the

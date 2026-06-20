@@ -7,6 +7,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/planview"
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -55,12 +56,14 @@ func heraPlanNodesWithBridge(orch *OrchView, bridge map[string]*OrchView) ([]pla
 		}
 		id := planNodeID(r)
 		nodeID[r.RoleID] = id
+		state := planNodeState(r)
 		n := planview.Node{
 			ID:          id,
 			Name:        r.Name,
 			Planned:     r.Planned,
-			State:       planNodeState(r),
+			State:       state,
 			Description: firstLine(r.Prompt),
+			Icon:        planNodeIcon(r, state),
 		}
 		// A worker whose bound task coordinates a child orchestrator is a
 		// sub-coordinator: Enter drills into that child's plan DAG (D6). The bridge
@@ -131,6 +134,24 @@ func planNodeState(r *RoleView) planview.State {
 		// pending / unknown / unbound-but-once-materialized → pending dot.
 		return planview.StatePending
 	}
+}
+
+// planNodeIcon resolves a LIVE node's status icon 1:1 with the rail (BUG-007):
+// the SAME shared classifier (widget.RoleStatusIcon over roleStatusInputs) the
+// rail's statusIcon uses, so the plan node and the rail row never disagree. It
+// returns nil for the two plan-view-specific overlays the rail has no concept of
+// — a PLANNED (never-bound) node (rendered ○ via State) and a FAILED node
+// (rendered ✕ via State) — letting the widget fall back to the State glyph there.
+// Animated marks the genuinely-active "working" case so the widget re-resolves
+// the live spinner frame at Draw. frame 0 here is a placeholder (the glyph is
+// re-resolved at Draw when Animated); the Style (StyleInProgress) is correct.
+func planNodeIcon(r *RoleView, state planview.State) *planview.NodeIcon {
+	if state == planview.StatePlanned || state == planview.StateFailed {
+		return nil // ○ / ✕ overlays come from State (the rail has neither)
+	}
+	in := roleStatusInputs(r)
+	glyph, style := widget.RoleStatusIcon(in, false, 0)
+	return &planview.NodeIcon{Glyph: glyph, Style: style, Animated: in.Active}
 }
 
 // firstLine returns the first line of s, trimmed of surrounding whitespace, for

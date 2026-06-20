@@ -159,6 +159,20 @@ The operator leaves the plan pane via the focus ladder (`Ctrl+Q` / `Tab`), never
 - **WHEN** the cursor is at the root with nothing fanned and the user presses `Esc`
 - **THEN** nothing changes and focus stays in the plan pane (Esc does not reach the rail)
 
+### Requirement: Live plan node icons are 1:1 with the rail (area 6)
+
+A LIVE plan node's status icon (glyph AND style, including the animated spinner for a genuinely-active node) SHALL be identical to what the rail's status icon renders for the same role, computed through a SINGLE shared classifier so the two surfaces can never drift — not a parallel glyph table. The shared vocabulary: ready-to-close → review clipboard; needs-input → the needs-input glyph (so a worker blocked on a prompt is actionable from the DAG); done → `✓`; genuinely-active → the animated spinner (the plan view recomputes the frame at draw so it animates in lockstep); idle → moon-outline; live-quiet → moon-stars. Two plan-view-specific overlays the rail has no concept of: a PLANNED (never-bound) node renders the `○` circle, and a FAILED node (bound task result reports failure) renders `✕`. The header Status line uses the same resolved icon.
+
+#### Scenario: A live node's icon equals the rail's
+
+- **WHEN** a live worker role is in any status (done / working / idle / in-review / needs-input)
+- **THEN** its plan node renders the same glyph and style the rail's status icon renders for that role, and a working node animates
+
+#### Scenario: Planned and failed overlays
+
+- **WHEN** a node is a never-bound planned role, or a bound role whose task reports failure
+- **THEN** the planned node renders `○` and the failed node renders `✕`
+
 ### Requirement: Plan nodes render as boxes with a selection fill (area 6)
 
 The plan diagram SHALL render each node as a padded rounded box (`╭─╮ / │ glyph short-id │ / ╰─╯`) whose border is drawn in the node's state colour. The box under the cursor SHALL be filled across all its cells (border, interior, and content) with a subtle selection background — slightly lighter than the default terminal background — as the primary cursor cue, with the border foreground in a bright selection colour (more prominent when the widget owns focus) as a secondary cue; the cue SHALL NOT rely on reverse-video text. A box the cursor is not on SHALL have no selection background and keep its state-colour border. Each stage's box row SHALL be centered horizontally within the diagram region and the whole block centered vertically when it fits.
