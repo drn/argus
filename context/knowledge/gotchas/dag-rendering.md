@@ -13,6 +13,7 @@ The `dagview` widget (`internal/tui/dagview/`) renders a layered top-down graph.
 - **Iterate over `[]rune`, not the raw string, when placing a node label.** `for i, r := range s` returns byte indices; multi-byte glyphs like `✓`/`✕`/`○` (3 bytes) skip cells and leave gaps. Both `dagview` and `planview` use rune slices for chip text.
 - **Edges drawn with single-line box chars only.** Mixing single (`─ │`) with double/thick creates joiner glitches in tcell.
 - **Box width is constant in runes, not bytes.** Truncation is rune-count based.
+- **The plan-view selection cue is a GREEN border+text, NOT a background fill (BUG-008).** A terminal background is whole-cell but the rounded-border glyph (`╭╮╰╯ ─│`) sits mid-cell, so any fill paints gray around the line and leaks outside the visual box. The selected node renders its border AND content (glyph + label) in `theme.ColorComplete` green (bold when focused, plain green when not). NOTE the "done" state is also green, so a selected node and a done node both read green — the moving cursor (+ bold) disambiguates.
 
 ## planview node colour + state (the new consumer)
 

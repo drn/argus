@@ -919,45 +919,47 @@ func boxGlyphCell(sc tcell.SimulationScreen, content string) (int, int, tcell.St
 	return x, y, cells[y*w+x].Style, true
 }
 
-// TestDraw_CursorBoxHasSelectionFill is the BUG-004 cue: the cursor's node box is
-// filled with the subtle selection BACKGROUND across its cells (the primary cue),
-// while the border keeps its bright selection foreground (secondary). A non-cursor
-// box has neither the selection background nor the selection-foreground border.
-func TestDraw_CursorBoxHasSelectionFill(t *testing.T) {
+// TestDraw_CursorBoxGreenSelection is the BUG-008 cue: the cursor's node box
+// renders with a GREEN border AND green content (glyph + label), with NO selection
+// background fill anywhere on screen. A non-cursor box keeps its own state colour.
+func TestDraw_CursorBoxGreenSelection(t *testing.T) {
 	w := New()
-	// stage0 [0a working] -> stage1 [1a done]. Cursor on 0a.
-	w.SetData([]Node{liveNode("0a", StateWorking), liveNode("1a", StateDone)}, []Edge{{From: "0a", To: "1a"}})
+	// stage0 [0a working] -> stage1 [1a working]. Cursor on 0a. Both working
+	// (amber) so the non-cursor box has a state colour clearly != selection green.
+	w.SetData([]Node{liveNode("0a", StateWorking), liveNode("1a", StateWorking)}, []Edge{{From: "0a", To: "1a"}})
 	w.SetFocused(true)
 	testutil.Equal(t, w.CurrentNodeID(), "0a")
 
 	sc := drawToSim(t, w, 60, 20)
+	cells, _, _ := sc.GetContents()
+	// The selection cue is NOT a background fill: no cell carries the old
+	// ColorHighlight selection background anywhere on screen.
+	for i := range cells {
+		_, bg, _ := cells[i].Style.Decompose()
+		testutil.Equal(t, bg == theme.ColorHighlight, false)
+	}
+
 	// 0a's box glyph cell (found by the box content "⟳ 0a", NOT the header's Status
-	// ⟳) carries the selection background, and its corner border keeps the bright
-	// selection foreground (secondary cue).
+	// ⟳) renders in the selection green, with no highlight background.
 	gx, gy, curGlyphStyle, ok := boxGlyphCell(sc, "⟳ 0a")
 	testutil.Equal(t, ok, true)
-	cfg, curBg, cattr := curGlyphStyle.Decompose()
-	testutil.Equal(t, curBg, selectionBG)                  // PRIMARY: background fill on the selected box
-	testutil.Equal(t, cattr&tcell.AttrReverse != 0, false) // not reverse-video
-	_ = cfg
+	cfg, curBg, _ := curGlyphStyle.Decompose()
+	testutil.Equal(t, cfg, theme.ColorComplete)             // PRIMARY: green content (glyph + label)
+	testutil.Equal(t, curBg == theme.ColorHighlight, false) // no background fill
+	// Its corner border is green and bold (focused).
 	curBorder, ok := boxCornerStyleNear(sc, gx, gy)
 	testutil.Equal(t, ok, true)
-	bfg, bbg, _ := curBorder.Decompose()
-	testutil.Equal(t, bfg, theme.ColorSelected) // border foreground (secondary cue)
-	testutil.Equal(t, bbg, selectionBG)         // border carries the fill too
+	bfg, _, battr := curBorder.Decompose()
+	testutil.Equal(t, bfg, theme.ColorComplete)        // green selection border
+	testutil.Equal(t, battr&tcell.AttrBold != 0, true) // focused → bold
 
-	// 1a (✓, done) is NOT the cursor → no selection background, border is the done
-	// colour (not the selection foreground).
-	dx, dy, doneGlyphStyle, ok2 := boxGlyphCell(sc, "✓ 1a")
+	// 1a (⟳, working) is NOT the cursor → its content + border keep the state
+	// colour (amber), not the selection green.
+	_, _, otherGlyphStyle, ok2 := boxGlyphCell(sc, "⟳ 1a")
 	testutil.Equal(t, ok2, true)
-	_, doneBg, _ := doneGlyphStyle.Decompose()
-	testutil.Equal(t, doneBg == selectionBG, false) // no fill on a non-cursor box
-	otherBorder, ok := boxCornerStyleNear(sc, dx, dy)
-	testutil.Equal(t, ok, true)
-	ofg, obg, _ := otherBorder.Decompose()
-	testutil.Equal(t, ofg == theme.ColorSelected, false)
-	testutil.Equal(t, ofg, theme.ColorComplete)
-	testutil.Equal(t, obg == selectionBG, false)
+	ofg, _, _ := otherGlyphStyle.Decompose()
+	testutil.Equal(t, ofg, theme.ColorInProgress)
+	testutil.Equal(t, ofg == theme.ColorComplete, false)
 }
 
 // TestDraw_StageBoxCentered: a single node box is centered horizontally — its

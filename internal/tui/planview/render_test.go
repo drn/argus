@@ -247,8 +247,8 @@ func TestDraw_CollapsedGroupPartialFeedTopLine(t *testing.T) {
 }
 
 // TestDraw_FannedMemberCursorBoxSelected: the cursor's member box inside a fanned
-// group carries the subtle selection BACKGROUND fill (primary cue) + the selection
-// border foreground (secondary); a different member's box has neither.
+// group renders with a GREEN border + green content (BUG-008), no background fill;
+// a different member's box keeps its own state colour and has no green selection.
 func TestDraw_FannedMemberCursorBoxSelected(t *testing.T) {
 	w := fanGroup("2a", "2b", "2c")
 	w.SetFocused(true)
@@ -258,30 +258,37 @@ func TestDraw_FannedMemberCursorBoxSelected(t *testing.T) {
 	testutil.Equal(t, w.CurrentNodeID(), "2b")
 
 	sc := drawToSim(t, w, 70, 18)
+	cells, scw, _ := sc.GetContents()
+	// No cell carries the old ColorHighlight selection-fill background.
+	for i := range cells {
+		_, bg, _ := cells[i].Style.Decompose()
+		testutil.Equal(t, bg == theme.ColorHighlight, false)
+	}
+
 	// Search the box content form "○ 2b" (glyph+id, only in a box — the header
 	// shows the full role name "2b-role", never the box form), so the cell + corner
 	// resolve the member box, not the panel/header.
 	bx, by, ok := findStringCell(sc, "○ 2b")
 	testutil.Equal(t, ok, true)
-	// The 2b content cell carries the selection background (primary cue).
-	cells, scw, _ := sc.GetContents()
-	_, selBg, _ := cells[by*scw+bx].Style.Decompose()
-	testutil.Equal(t, selBg, selectionBG)
-	// And its box border keeps the bright selection foreground (secondary cue).
+	// The 2b content cell renders in the selection green.
+	bcfg, _, _ := cells[by*scw+bx].Style.Decompose()
+	testutil.Equal(t, bcfg, theme.ColorComplete)
+	// And its box border carries the green selection foreground.
 	bSel, ok := boxCornerStyleNear(sc, bx, by)
 	testutil.Equal(t, ok, true)
 	bfg, _, _ := bSel.Decompose()
-	testutil.Equal(t, bfg, theme.ColorSelected)
+	testutil.Equal(t, bfg, theme.ColorComplete)
 
-	// 2a's box (non-cursor member): no selection background, border not selection fg.
+	// 2a's box (non-cursor member): content + border are NOT the selection green
+	// (planned members render violet, not green).
 	ax, ay, ok2 := findStringCell(sc, "○ 2a")
 	testutil.Equal(t, ok2, true)
-	_, aBg, _ := cells[ay*scw+ax].Style.Decompose()
-	testutil.Equal(t, aBg == selectionBG, false)
+	acfg, _, _ := cells[ay*scw+ax].Style.Decompose()
+	testutil.Equal(t, acfg == theme.ColorComplete, false)
 	aSel, ok := boxCornerStyleNear(sc, ax, ay)
 	testutil.Equal(t, ok, true)
 	afg, _, _ := aSel.Decompose()
-	testutil.Equal(t, afg == theme.ColorSelected, false)
+	testutil.Equal(t, afg == theme.ColorComplete, false)
 }
 
 // TestDraw_FannedPartialFeedMemberCarriesMarker: when a group partially feeds a

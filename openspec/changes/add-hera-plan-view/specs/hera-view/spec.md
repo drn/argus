@@ -173,19 +173,21 @@ A LIVE plan node's status icon (glyph AND style, including the animated spinner 
 - **WHEN** a node is a never-bound planned role, or a bound role whose task reports failure
 - **THEN** the planned node renders `○` and the failed node renders `✕`
 
-### Requirement: Plan nodes render as boxes with a selection fill (area 6)
+### Requirement: Plan nodes render as boxes with a green selection cue (area 6)
 
-The plan diagram SHALL render each node as a padded rounded box (`╭─╮ / │ glyph short-id │ / ╰─╯`) whose border is drawn in the node's state colour. The box under the cursor SHALL be filled across all its cells (border, interior, and content) with a subtle selection background — slightly lighter than the default terminal background — as the primary cursor cue, with the border foreground in a bright selection colour (more prominent when the widget owns focus) as a secondary cue; the cue SHALL NOT rely on reverse-video text. A box the cursor is not on SHALL have no selection background and keep its state-colour border. Each stage's box row SHALL be centered horizontally within the diagram region and the whole block centered vertically when it fits.
+The plan diagram SHALL render each node as a padded rounded box (`╭─╮ / │ glyph short-id │ / ╰─╯`) whose border is drawn in the node's state colour. The box under the cursor SHALL render with a green border AND green content (the glyph and label) — bold green when the widget owns focus, plain green when it does not (the focused distinction is weight, not hue) — and SHALL NOT use any background fill. A box the cursor is not on SHALL keep its state-colour border and content. Each stage's box row SHALL be centered horizontally within the diagram region and the whole block centered vertically when it fits.
 
-#### Scenario: The cursor's box is filled with the selection background
+A background fill is deliberately NOT used: a terminal background is whole-cell, but the rounded-border glyph sits mid-cell, so a fill paints gray around the border line and escapes the visual box.
+
+#### Scenario: The cursor's box renders green with no fill
 
 - **WHEN** the cursor is on a plan node
-- **THEN** that node's box cells carry the subtle selection background and its border the selection colour, while a non-cursor box has neither
+- **THEN** that node's box border and content render in the selection green and no cell carries a selection background fill, while a non-cursor box keeps its state colour
 
-#### Scenario: Cursor member box is filled in a fanned group
+#### Scenario: Cursor member box renders green in a fanned group
 
 - **WHEN** the cursor is on a member of a fanned-out group
-- **THEN** that member's box carries the selection background fill and the other member boxes do not
+- **THEN** that member's box border and content render in the selection green (no fill) and the other member boxes keep their state colour
 
 ### Requirement: Fanned group visually expands into member boxes (area 6)
 
