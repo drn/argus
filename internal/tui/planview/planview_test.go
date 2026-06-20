@@ -507,11 +507,56 @@ func TestDrillIn_DrillableMarkerPresent(t *testing.T) {
 	testutil.Equal(t, hasMarker, true)
 }
 
-// TestInputHandler_EscRouting pins the Esc routing contract the page relies on:
-// Esc at DrillDepth>0 pops the nav stack and fires OnDrillOut; at the root it is
-// a no-op so the page-level routing can escape the pane.
+// TestInputHandler_EscRouting pins the Esc "back out one level" contract: Esc on
+// a FANNED group collapses it (highest priority); else at DrillDepth>0 it pops
+// the nav stack and fires OnDrillOut; else at the root it is a consumed no-op
+// (the widget swallows Esc — it never reaches the page/rail). Priority order:
+// un-fan → drill-out → root no-op.
 func TestInputHandler_EscRouting(t *testing.T) {
 	noFocus := func(tview.Primitive) {}
+	t.Run("Esc on a fanned group collapses it (cursor back on the slot)", func(t *testing.T) {
+		w := navGraph()
+		w.MoveStage(1)     // onto the [1a–1c] group
+		w.ActivateCursor() // fan out → cursor lands on member 0
+		testutil.Equal(t, w.Fanned(1, 0), true)
+		testutil.Equal(t, w.CursorPos().Member, 0)
+		h := w.InputHandler()
+		h(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone), noFocus)
+		// Un-fanned, cursor back on the collapsed slot (Member -1), still on the slot.
+		testutil.Equal(t, w.Fanned(1, 0), false)
+		testutil.Equal(t, w.CursorPos().Member, -1)
+		testutil.Equal(t, w.CursorPos().Slot, 0)
+	})
+	t.Run("Esc on a fanned group does NOT drill out even when drilled in", func(t *testing.T) {
+		// Un-fan wins over drill-out: a fanned group inside a drilled-in child plan
+		// collapses first; DrillDepth is untouched until the next Esc.
+		w := New()
+		var popped int
+		w.OnDrillOut = func() { popped++ }
+		w.OnDrillIn = func(string) {
+			w.PushOrch("child",
+				[]Node{node("0a"), node("1a"), node("1b"), node("1c")},
+				[]Edge{{From: "0a", To: "1a"}, {From: "0a", To: "1b"}, {From: "0a", To: "1c"}},
+			)
+		}
+		w.SetData([]Node{{ID: "sub", Name: "1a-subcoord", State: StateWorking, Drillable: true}}, nil)
+		w.SetFocused(true)
+		w.ActivateCursor() // drill into child → depth 1
+		testutil.Equal(t, w.DrillDepth(), 1)
+		w.MoveStage(1)     // onto the child's [1a–1c] group
+		w.ActivateCursor() // fan it out
+		testutil.Equal(t, w.Fanned(1, 0), true)
+		h := w.InputHandler()
+		h(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone), noFocus)
+		// First Esc un-fanned; still drilled in, OnDrillOut not fired.
+		testutil.Equal(t, w.Fanned(1, 0), false)
+		testutil.Equal(t, w.DrillDepth(), 1)
+		testutil.Equal(t, popped, 0)
+		// Second Esc now drills out.
+		h(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone), noFocus)
+		testutil.Equal(t, w.DrillDepth(), 0)
+		testutil.Equal(t, popped, 1)
+	})
 	t.Run("Esc at root no-ops and does not fire OnDrillOut", func(t *testing.T) {
 		w := New()
 		var popped bool
@@ -523,7 +568,7 @@ func TestInputHandler_EscRouting(t *testing.T) {
 		testutil.Equal(t, w.DrillDepth(), 0)
 		testutil.Equal(t, popped, false)
 	})
-	t.Run("Esc at drill-depth>0 pops and fires OnDrillOut", func(t *testing.T) {
+	t.Run("Esc at drill-depth>0 (nothing fanned) pops and fires OnDrillOut", func(t *testing.T) {
 		w := New()
 		var popped int
 		w.OnDrillOut = func() { popped++ }

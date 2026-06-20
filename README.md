@@ -220,7 +220,7 @@ When a **worker** is selected the details region shows its live agent terminal. 
 | `←` / `→` / `h` / `l` | Move between slots; inside a fanned-out group, walk its members                   |
 | `Enter` / `Space`    | Fan out / collapse a parallel group                                               |
 | `Enter`              | On a sub-coordinator node, drill into its child orchestrator's plan; on a plain leaf, jump to that node's agent view |
-| `Esc`                | Drill out to the parent plan (at the root, returns focus to the rail)             |
+| `Esc`                | Back out one level: collapse a fanned group, else drill out to the parent plan (consumed at the root — leave the pane via `Ctrl+Q` / `Tab`) |
 
 End-of-life has **two resting states**, and **no DB row is ever hard-deleted** — "done with" always means gone from the rail + worktree gone from disk, with the role / orchestrator / inbox / task all retained and recoverable: **Hide** (`a`, Tier 1) nests a worker / sub-coordinator in its parent coordinator's archive and keeps its session + worktree alive (reversible — un-hide restores it exactly); **Nuke** (`ctrl+d`, Tier 2; or `C` for a coordinator's whole archive) removes the row from the rail entirely, reclaims its worktree + branch, and stops its session, leaving only the DB rows behind. Every nuke is confirm-gated and honors multi-binding isolation (a task bound live under another orchestrator is never touched).
 

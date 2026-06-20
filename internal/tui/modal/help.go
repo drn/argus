@@ -97,7 +97,7 @@ var HelpSections = []HelpSection{
 			{"←→ / h / l", "move slots (walk members in a fanned group)"},
 			{"Enter / space", "fan out / collapse a parallel group"},
 			{"Enter", "drill into sub-coordinator / open leaf agent view"},
-			{"Esc", "drill out to the parent plan"},
+			{"Esc", "collapse fanned group / drill out to parent plan"},
 		},
 	},
 	{

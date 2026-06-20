@@ -592,17 +592,15 @@ func (p *HeraPage) terminalPaneFocused() bool {
 // graph, so the plan widget is the only interactive surface: nav (j/k/h/l +
 // arrows), Enter/Space (fan-out/collapse a group, drill into a sub-coordinator,
 // or jump to a leaf's agent view via the wired OnEnter callback), and Esc
-// (drill out). At drill-depth 0 the widget no-ops Esc, so the page handles it
-// here as a pane-escape back to the rail (otherwise the operator would be
-// trapped in the plan region). The global handler reserves only 1/2/3/q/? — see
+// ("back out one level": un-fan a fanned group → drill out → root no-op).
+//
+// Esc is ALWAYS forwarded to the widget, which CONSUMES it in every case (see
+// Widget.EscBack); it never jumps to the rail. The operator leaves the pane via
+// the focus ladder (^Q / Tab), shown in the status bar — so there is no trap.
+// (The Stage-7 Esc→rail escape hatch was removed once EscBack made the widget
+// swallow Esc at the root.) The global handler reserves only 1/2/3/q/? — see
 // gotchas/keybindings.md.
 func (p *HeraPage) handleDetailsKey(event *tcell.EventKey, setFocus func(tview.Primitive)) {
-	if event.Key() == tcell.KeyEscape && p.plan.DrillDepth() == 0 {
-		// Root of the plan nav stack: Esc escapes the pane back to the rail
-		// rather than dead-ending in the widget's root no-op.
-		p.focus.ToRail()
-		return
-	}
 	p.plan.InputHandler()(event, setFocus)
 }
 

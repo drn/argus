@@ -222,10 +222,11 @@ func TestDetailsPlan_KeyForwardsToWidget(t *testing.T) {
 	testutil.Equal(t, p.Plan().CursorPos().Stage, 0)
 }
 
-// TestDetailsPlan_EscAtRootEscapesPane: with a coordinator selected and the plan
-// region focused at drill-depth 0, Esc escapes the pane back to the rail (the
-// widget no-ops Esc at root, so the page must handle it — no operator trap).
-func TestDetailsPlan_EscAtRootEscapesPane(t *testing.T) {
+// TestDetailsPlan_EscAtRootDoesNotJumpToRail: with a coordinator selected and the
+// plan region focused at drill-depth 0 with nothing fanned, Esc is a CONSUMED
+// no-op in the widget — it must NOT change focus / reach the rail. The Stage-7
+// Esc→rail escape hatch was removed; the operator leaves the pane via ^Q / Tab.
+func TestDetailsPlan_EscAtRootDoesNotJumpToRail(t *testing.T) {
 	p := planPage(t)
 	testutil.Equal(t, selectOrchByName(p, "orch"), true)
 	toAgentFocus(p)
@@ -233,7 +234,8 @@ func TestDetailsPlan_EscAtRootEscapesPane(t *testing.T) {
 
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone), noFocus)
-	testutil.Equal(t, p.Machine().State(), FocusRail)
+	// Focus stays in the pane — Esc did NOT jump to the rail.
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
 }
 
 // TestDetailsPlan_NoSyncOnDraw pins the UX-rendering rule for the stacked region.

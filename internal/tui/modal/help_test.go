@@ -58,7 +58,7 @@ func TestHelpModal_Draw(t *testing.T) {
 	testutil.Contains(t, body, "move between plan stages")
 	testutil.Contains(t, body, "fan out / collapse a parallel group")
 	testutil.Contains(t, body, "drill into sub-coordinator / open leaf agent view")
-	testutil.Contains(t, body, "drill out to the parent plan")
+	testutil.Contains(t, body, "collapse fanned group / drill out to parent plan")
 	testutil.Contains(t, body, "File Panel")
 	testutil.Contains(t, body, "Settings")
 	testutil.Contains(t, body, "[esc / ?] close")

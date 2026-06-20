@@ -112,17 +112,37 @@ Above the plan diagram the system SHALL render a fixed-height header describing 
 
 ### Requirement: Sub-coordinator drill-in (area 6)
 
-When the cursor is on a node whose bound task is the coordinator of a child orchestrator (a sub-coordinator, discovered via the rail's in-memory bridge), `Enter` SHALL push that child orchestrator onto a navigation stack and re-project the plan DAG for the child; `Esc` SHALL pop back to the parent orchestrator's plan DAG. The header title SHALL reflect the currently-displayed orchestrator. Drill-in is navigation between independently-projected per-orchestrator DAGs; it SHALL NOT draw a cross-orchestrator edge. A sub-coordinator node SHALL carry a visible drillable marker so the gesture is discoverable.
+When the cursor is on a node whose bound task is the coordinator of a child orchestrator (a sub-coordinator, discovered via the rail's in-memory bridge), `Enter` SHALL push that child orchestrator onto a navigation stack and re-project the plan DAG for the child. The header title SHALL reflect the currently-displayed orchestrator. Drill-in is navigation between independently-projected per-orchestrator DAGs; it SHALL NOT draw a cross-orchestrator edge. A sub-coordinator node SHALL carry a visible drillable marker so the gesture is discoverable. (Drilling back out is governed by the `Esc` back-out requirement below.)
 
 #### Scenario: Enter drills into a sub-coordinator
 
 - **WHEN** the cursor is on a sub-coordinator node and the user presses `Enter`
 - **THEN** the diagram swaps to that child orchestrator's plan DAG and the header title names the child
 
-#### Scenario: Esc pops back to the parent
+### Requirement: Esc backs out one level and never jumps to the rail (area 6)
 
-- **WHEN** the view is showing a drilled-in child plan DAG and the user presses `Esc`
+`Esc` in the plan view SHALL back out of the plan view's OWN state by one level, in a fixed priority order, and SHALL be CONSUMED by the widget in every case (it SHALL NOT propagate to the page or the rail):
+
+1. when the cursor is on a fanned-out group, collapse it (un-fan; cursor returns to the collapsed slot);
+2. otherwise, when drilled into a sub-coordinator, pop back to the parent orchestrator's plan DAG;
+3. otherwise (root, nothing fanned), it is a consumed no-op.
+
+The operator leaves the plan pane via the focus ladder (`Ctrl+Q` / `Tab`), never via `Esc`.
+
+#### Scenario: Esc collapses a fanned group first
+
+- **WHEN** the cursor is on a fanned-out group and the user presses `Esc`
+- **THEN** the group collapses, the cursor returns to the collapsed slot, and the drill stack is unchanged
+
+#### Scenario: Esc pops back to the parent when nothing is fanned
+
+- **WHEN** the view is showing a drilled-in child plan DAG with nothing fanned and the user presses `Esc`
 - **THEN** the diagram returns to the parent orchestrator's plan DAG
+
+#### Scenario: Esc at the root is a consumed no-op
+
+- **WHEN** the cursor is at the root with nothing fanned and the user presses `Esc`
+- **THEN** nothing changes and focus stays in the plan pane (Esc does not reach the rail)
 
 ### Requirement: Plan nodes render as boxes with a selection border (area 6)
 

@@ -1022,6 +1022,33 @@ func (w *Widget) ActivateCursor() {
 	}
 }
 
+// EscBack is the "back out one level" gesture, bound to Esc. It backs out of the
+// plan view's OWN state in a fixed priority order and is always CONSUMED by the
+// widget (the caller never lets Esc fall through to the page/rail):
+//
+//  1. cursor on a FANNED group → collapse it (un-fan; same effect as Enter/Space
+//     toggling a fanned group: drop the fan, Member back to -1, notify).
+//  2. else drilled into a sub-coordinator (DrillDepth > 0) → pop back to the
+//     parent orchestrator's plan + fire OnDrillOut.
+//  3. else (root, nothing fanned) → no-op. The operator leaves the pane via the
+//     focus ladder (^Q / Tab), never via Esc — so Esc never jumps to the rail.
+func (w *Widget) EscBack() {
+	if sl, ok := w.slotAt(w.cursor.Stage, w.cursor.Slot); ok && sl.group != nil && w.Fanned(w.cursor.Stage, w.cursor.Slot) {
+		w.collapseCursorGroup()
+		w.cursor.Member = -1
+		w.maybeNotifyBranchChange()
+		return
+	}
+	if w.DrillDepth() > 0 {
+		w.PopOrch()
+		if w.OnDrillOut != nil {
+			w.OnDrillOut()
+		}
+		return
+	}
+	// Root, nothing fanned: consumed no-op (the widget swallows Esc).
+}
+
 // slotAt returns the slot at (stage, slotIdx) and whether it exists.
 func (w *Widget) slotAt(stage, slotIdx int) (slot, bool) {
 	if stage < 0 || stage >= len(w.stages) {
@@ -1762,14 +1789,7 @@ func (w *Widget) InputHandler() func(*tcell.EventKey, func(tview.Primitive)) {
 		case tcell.KeyEnter:
 			w.ActivateCursor()
 		case tcell.KeyEscape:
-			// Esc pops the drill-in nav stack back to the parent orchestrator (D6).
-			// At the root it is a no-op here so the key falls through to the page.
-			if w.DrillDepth() > 0 {
-				w.PopOrch()
-				if w.OnDrillOut != nil {
-					w.OnDrillOut()
-				}
-			}
+			w.EscBack()
 		case tcell.KeyRune:
 			switch event.Rune() {
 			case ' ':
