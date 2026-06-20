@@ -88,7 +88,7 @@ Additive schema only: a node-kind discriminator recorded on the planned role (th
 - it should create a new child orchestrator with a coordinator role bound to that same new task
 - it should make the new sub-coordinator nest under the parent via the existing multi-binding bridge (it appears as one node in the parent and owns its own child orchestrator)
 - it should deliver a coordinator orientation plus the check-in/poll-inbox standing order plus the goal prompt to the new agent
-- it should leave the planned role intact (binding ended only) if the session fails to start, so the gater can retry
+- it should leave the planned role intact (authored data) if the session fails to start — the node is held, not re-materialized (the binding exists-but-ended, so it leaves the planned set; matches the worker never-double-spawn guard)
 - it should not produce a sub-coordinator that shares the parent's task (no agentless sub-coordinator)
 
 ### Default behavior preserved
