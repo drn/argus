@@ -44,6 +44,7 @@ type MutateStore interface {
 	HeraRoleStatusFor(roleID int64) (*db.HeraRoleStatus, error)
 	UpsertHeraRoleStatus(roleID int64, status db.HeraRoleStatusValue) error
 	RollHeraWorkerToReview(taskID string) (bool, error)
+	ClearHeraReadyToClose(taskID string) error
 
 	HeraLiveBindingByRole(roleID int64) (*db.HeraBinding, error)
 	EndHeraBinding(bindingID int64, reason string) error
@@ -203,11 +204,22 @@ func (o *Ops) StepStatus(sel Selection, dir int) error {
 		uxlog.Log("[hera-view] status step role %d failed: %v", r.RoleID, err)
 		return err
 	}
-	if next == db.HeraStatusDone && r.Kind == db.HeraKindWorker && r.TaskID != "" {
-		if flipped, rErr := o.store.RollHeraWorkerToReview(r.TaskID); rErr != nil {
-			uxlog.Log("[hera-view] status(done): worker roll failed for %s (status still set): %v", r.TaskID, rErr)
-		} else if flipped {
-			uxlog.Log("[hera-view] status(done): rolled worker task %s to in_review", r.TaskID)
+	if r.Kind == db.HeraKindWorker && r.TaskID != "" {
+		if next == db.HeraStatusDone {
+			if flipped, rErr := o.store.RollHeraWorkerToReview(r.TaskID); rErr != nil {
+				uxlog.Log("[hera-view] status(done): worker roll failed for %s (status still set): %v", r.TaskID, rErr)
+			} else if flipped {
+				uxlog.Log("[hera-view] status(done): rolled worker task %s to in_review", r.TaskID)
+			}
+		} else {
+			// Stepping a worker OUT of `done` clears the ready_to_close review mark
+			// (the inverse of the done-roll). Without this the mark wins the glyph
+			// precedence and the rail row stays pinned to the review ✓ even though
+			// the status moved — the status step is invisible (BUG-024). Soft-fail so
+			// the status update always lands.
+			if cErr := o.store.ClearHeraReadyToClose(r.TaskID); cErr != nil {
+				uxlog.Log("[hera-view] status step: clear ready_to_close failed for %s (status still set): %v", r.TaskID, cErr)
+			}
 		}
 	}
 	return nil

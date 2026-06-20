@@ -16,9 +16,9 @@ func idsContain(ids []string, want string) bool {
 	return false
 }
 
-func TestHideHeraWorkers_DefaultHidesAndToggleReveals(t *testing.T) {
+func TestHideHeraManaged_DefaultHidesAndToggleReveals(t *testing.T) {
 	tl := NewTaskListView()
-	testutil.Equal(t, tl.HideHeraWorkers(), true) // hidden by default
+	testutil.Equal(t, tl.HideHeraManaged(), true) // hidden by default
 
 	tasks := []*model.Task{
 		{ID: "normal", Name: "normal task", Project: "p", Status: model.StatusInProgress},
@@ -34,23 +34,63 @@ func TestHideHeraWorkers_DefaultHidesAndToggleReveals(t *testing.T) {
 	testutil.Equal(t, idsContain(vis, "worker"), false)
 
 	// Reveal toggle (`H`): the worker now appears.
-	tl.ToggleHeraWorkers()
-	testutil.Equal(t, tl.HideHeraWorkers(), false)
+	tl.ToggleHeraManaged()
+	testutil.Equal(t, tl.HideHeraManaged(), false)
 	vis = tl.VisibleTaskIDs()
 	testutil.Equal(t, idsContain(vis, "worker"), true)
 
 	// Toggle back hides it again.
-	tl.ToggleHeraWorkers()
+	tl.ToggleHeraManaged()
 	testutil.Equal(t, idsContain(tl.VisibleTaskIDs(), "worker"), false)
 }
 
-func TestHideHeraWorkers_ToggleFiresCallback(t *testing.T) {
+func TestHideHeraManaged_ToggleFiresCallback(t *testing.T) {
 	tl := NewTaskListView()
 	var got []bool
-	tl.OnHeraWorkersToggle = func(hidden bool) { got = append(got, hidden) }
-	tl.ToggleHeraWorkers() // → false
-	tl.ToggleHeraWorkers() // → true
+	tl.OnHeraManagedToggle = func(hidden bool) { got = append(got, hidden) }
+	tl.ToggleHeraManaged() // → false
+	tl.ToggleHeraManaged() // → true
 	testutil.DeepEqual(t, got, []bool{false, true})
+}
+
+// TestHideHeraManaged_TruthTable pins the collapsed single-`H` semantics
+// (BUG-025): one toggle hides every hera-managed role that lives in the Hera
+// tab — spawned workers (task_meta hera.role=worker) AND live coordinators (a
+// live coordinator/worker binding fed via SetManagedTasks). Freelancers and
+// plain non-hera tasks stay visible regardless of `H`.
+func TestHideHeraManaged_TruthTable(t *testing.T) {
+	tl := NewTaskListView()
+	tasks := []*model.Task{
+		{ID: "worker", Name: "spawned worker", Project: "p", Status: model.StatusInProgress},
+		{ID: "coord", Name: "coordinator", Project: "p", Status: model.StatusInProgress},
+		{ID: "free", Name: "freelancer", Project: "p", Status: model.StatusInProgress},
+		{ID: "plain", Name: "plain task", Project: "p", Status: model.StatusInProgress},
+	}
+	// "worker" is a hera-spawned worker (permanent task_meta signal). "coord"
+	// holds a live coordinator binding (the live `managed` signal the removed
+	// freelancers-only filter consumed) — NOT in the spawned-worker set. "free"
+	// and "plain" hold no hera binding.
+	tl.SetHeraWorkers(map[string]bool{"worker": true})
+	tl.SetManagedTasks(map[string]bool{"coord": true, "worker": true})
+	tl.SetExpanded("p")
+	tl.SetTasks(tasks)
+
+	// H on (default): both the worker and the coordinator are hidden; the
+	// freelancer and the plain task remain visible.
+	vis := tl.VisibleTaskIDs()
+	testutil.Equal(t, tl.HideHeraManaged(), true)
+	testutil.Equal(t, idsContain(vis, "worker"), false)
+	testutil.Equal(t, idsContain(vis, "coord"), false)
+	testutil.Equal(t, idsContain(vis, "free"), true)
+	testutil.Equal(t, idsContain(vis, "plain"), true)
+
+	// H off: every task becomes visible.
+	tl.ToggleHeraManaged()
+	vis = tl.VisibleTaskIDs()
+	testutil.Equal(t, idsContain(vis, "worker"), true)
+	testutil.Equal(t, idsContain(vis, "coord"), true)
+	testutil.Equal(t, idsContain(vis, "free"), true)
+	testutil.Equal(t, idsContain(vis, "plain"), true)
 }
 
 func TestSetHeraWorkers_NilClears(t *testing.T) {

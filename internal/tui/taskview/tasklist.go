@@ -83,20 +83,16 @@ type TaskListView struct {
 	filtering bool   // true while the filter input is focused
 	filter    string // current filter text (case-insensitive substring match)
 
-	// hideHeraWorkers hides hera-spawned worker tasks from the Tasks tab (they
-	// live in the Hera tab). Default true; the `H` key toggles it to reveal
-	// them inline. See gotchas/tasklist-ui.md.
-	hideHeraWorkers bool
-
-	// freelancersOnly, when true, hides every hera-managed task (tasks with a
-	// live coordinator- or worker-kind binding) from the Tasks tab so only
-	// freelancer tasks remain visible. Default false; the `f` key toggles it.
-	// Orthogonal to hideHeraWorkers — both exclusions apply independently.
-	freelancersOnly bool
+	// hideHeraManaged hides every hera-managed task from the Tasks tab — both
+	// hera-spawned workers and live coordinators (the roles that live in the
+	// Hera tab). Default true; the `H` key toggles it to reveal them inline.
+	// See gotchas/tasklist-ui.md.
+	hideHeraManaged bool
 
 	// managed is the set of task IDs that currently hold at least one live hera
 	// binding to a coordinator- or worker-kind role. Fed by SetManagedTasks on
-	// the app refresh tick. Used by the freelancersOnly filter pass in buildRows.
+	// the app refresh tick. Folded into the hideHeraManaged (`H`) predicate in
+	// buildRows so live coordinators are hidden alongside spawned workers.
 	managed map[string]bool
 
 	// Callback when user selects a task (Enter key).
@@ -124,14 +120,10 @@ type TaskListView struct {
 	// reserves/releases the bottom row without changing the row signature.
 	// See gotchas/ui-threading.md.
 	OnFilterToggle func()
-	// Callback fired when the hide-hera-workers reveal toggle flips (`H`).
+	// Callback fired when the hide-hera-managed reveal toggle flips (`H`).
 	// Lets the App log the transition. The row rebuild itself fires
 	// OnLayoutChange via the normal signature-change path.
-	OnHeraWorkersToggle func(hidden bool)
-	// Callback fired when the freelancers-only toggle flips (`f`). Log-only —
-	// lets the App record the transition. The row rebuild itself fires
-	// OnLayoutChange via the normal signature-change path.
-	OnFreelancersOnlyToggle func(active bool)
+	OnHeraManagedToggle func(hidden bool)
 
 	// Signature of the last buildRows output. Used to suppress
 	// OnLayoutChange when the rebuild produced the same rows.
@@ -152,7 +144,7 @@ func NewTaskListView() *TaskListView {
 		heraWorkers:     make(map[string]bool),
 		heraCoords:      make(map[string]bool),
 		managed:         make(map[string]bool),
-		hideHeraWorkers: true,       // hera-spawned workers live in the Hera tab by default
+		hideHeraManaged: true,       // hera-managed tasks (workers + coordinators) live in the Hera tab by default
 		lastRowsSig:     ^uint64(0), // sentinel — first build always fires OnLayoutChange
 	}
 	return tl
@@ -244,7 +236,7 @@ func (tl *TaskListView) PRStateFor(taskID string) model.PRState {
 
 // SetHeraWorkers updates the set of task IDs that are hera-spawned workers
 // (meta:hera.role=worker). The App feeds this from the task_meta "hera"
-// namespace on the tick. While hideHeraWorkers is true (the default), these
+// namespace on the tick. While hideHeraManaged is true (the default), these
 // rows are skipped from the Tasks tab in buildRows. A nil map clears the set.
 func (tl *TaskListView) SetHeraWorkers(ids map[string]bool) {
 	if ids == nil {
@@ -283,48 +275,34 @@ func (tl *TaskListView) IsHeraCoordinator(taskID string) bool {
 	return tl.heraCoords[taskID]
 }
 
-// HideHeraWorkers reports whether hera-spawned workers are currently hidden
-// from the Tasks tab (test seam).
-func (tl *TaskListView) HideHeraWorkers() bool { return tl.hideHeraWorkers }
+// HideHeraManaged reports whether hera-managed tasks (spawned workers and live
+// coordinators) are currently hidden from the Tasks tab (test seam).
+func (tl *TaskListView) HideHeraManaged() bool { return tl.hideHeraManaged }
 
-// ToggleHeraWorkers flips whether hera-spawned workers are hidden, rebuilds
-// rows, and fires OnHeraWorkersToggle. Bound to the `H` key.
-func (tl *TaskListView) ToggleHeraWorkers() {
-	tl.hideHeraWorkers = !tl.hideHeraWorkers
+// ToggleHeraManaged flips whether hera-managed tasks are hidden, rebuilds
+// rows, and fires OnHeraManagedToggle. Bound to the `H` key. When on (the
+// default), every hera-spawned worker and live coordinator/worker-bound task
+// is hidden; freelancers and plain non-hera tasks stay visible.
+func (tl *TaskListView) ToggleHeraManaged() {
+	tl.hideHeraManaged = !tl.hideHeraManaged
 	tl.buildRows()
 	tl.clampCursor()
-	if tl.OnHeraWorkersToggle != nil {
-		tl.OnHeraWorkersToggle(tl.hideHeraWorkers)
+	if tl.OnHeraManagedToggle != nil {
+		tl.OnHeraManagedToggle(tl.hideHeraManaged)
 	}
 }
 
 // SetManagedTasks updates the set of task IDs that currently hold at least one
 // live hera binding to a coordinator- or worker-kind role. The App feeds this
 // from ManagedTaskIDs() (local mode) or the worker+coordinator maps (remote
-// fallback) on the refresh tick. A nil map clears the set.
+// fallback) on the refresh tick. Folded into the `H` predicate so live
+// coordinators are hidden alongside spawned workers. A nil map clears the set.
 func (tl *TaskListView) SetManagedTasks(ids map[string]bool) {
 	if ids == nil {
 		tl.managed = make(map[string]bool)
 		return
 	}
 	tl.managed = ids
-}
-
-// FreelancersOnly reports whether the freelancers-only filter is currently
-// active (test seam).
-func (tl *TaskListView) FreelancersOnly() bool { return tl.freelancersOnly }
-
-// ToggleFreelancersOnly flips the freelancers-only filter, rebuilds rows, and
-// fires OnFreelancersOnlyToggle. Bound to the `f` key. When active, every
-// hera-managed task (live coordinator- or worker-kind binding) is hidden;
-// freelancer tasks remain visible. Orthogonal to hideHeraWorkers.
-func (tl *TaskListView) ToggleFreelancersOnly() {
-	tl.freelancersOnly = !tl.freelancersOnly
-	tl.buildRows()
-	tl.clampCursor()
-	if tl.OnFreelancersOnlyToggle != nil {
-		tl.OnFreelancersOnlyToggle(tl.freelancersOnly)
-	}
 }
 
 // updateSpinnerFrame computes the current spinner frame from wall clock time.
@@ -403,14 +381,12 @@ func (tl *TaskListView) buildRows() {
 		if !tl.matchesFilter(t) {
 			continue
 		}
-		// Hide hera-spawned workers unless the reveal toggle (`H`) is on. They
-		// live in the Hera tab; hiding keeps the normal Tasks list clean.
-		if tl.hideHeraWorkers && tl.isHeraSpawnedWorker(t) {
-			continue
-		}
-		// Hide hera-managed tasks (live coordinator- or worker-kind binding)
-		// when the freelancers-only filter (`f`) is active.
-		if tl.freelancersOnly && tl.managed[t.ID] {
+		// Hide every hera-managed task unless the reveal toggle (`H`) is off.
+		// "Managed" is the union of hera-spawned workers (permanent task_meta
+		// hera.role=worker) and tasks holding a live coordinator/worker binding
+		// (the live signal). Both live in the Hera tab; hiding keeps the normal
+		// Tasks list clean. Freelancers and plain non-hera tasks stay visible.
+		if tl.hideHeraManaged && (tl.isHeraSpawnedWorker(t) || tl.managed[t.ID]) {
 			continue
 		}
 		switch {
@@ -1011,9 +987,7 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 					tl.OnCopyPrompt(t)
 				}
 			case 'H':
-				tl.ToggleHeraWorkers()
-			case 'f':
-				tl.ToggleFreelancersOnly()
+				tl.ToggleHeraManaged()
 			}
 		}
 	})
@@ -1039,7 +1013,7 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 		return
 	}
 
-	// Show filter text and/or freelancers-only indicator in panel title when active.
+	// Show filter text in panel title when active.
 	title := " Tasks "
 	inner := widget.DrawBorderedPanel(screen, x, y, width, height, title, theme.StyleBorder)
 	titleCol := x + 1 + ansi.StringWidth(title) // cursor starts after the title text
@@ -1059,24 +1033,6 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 		}
 		if col < x+width-1 {
 			screen.SetContent(col, y, ']', nil, theme.StyleBorder)
-			col++
-		}
-		titleCol = col // advance past the filter indicator
-	}
-	if tl.freelancersOnly {
-		// Freelancers-only indicator: styled differently from the filter
-		// indicator so the two are unambiguously distinct at a glance.
-		col := titleCol
-		if col < x+width-1 {
-			screen.SetContent(col, y, ' ', nil, theme.StyleBorder)
-			col++
-		}
-		for _, r := range "freelancers" {
-			if col >= x+width-1 {
-				break
-			}
-			screen.SetContent(col, y, r, nil, theme.StyleInReview)
-			col++
 		}
 	}
 	if inner.W <= 0 || inner.H <= 0 {
