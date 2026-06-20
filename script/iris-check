@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+#
+# iris-check — host-side quality-gate entrypoint for iris.
+#
+# iris's `iris_run_checks(task_id, check)` executes `script/iris-check <check>`
+# in a task's worktree on the HOST, where the full Go toolchain (goimports,
+# golangci-lint, govulncheck) is installed. This lets sandboxed agents run
+# argus's own gates without opening a speculative PR just to make CI run them.
+#
+# A single check token (argv[1]) maps to a Makefile target:
+#
+#     token    -> make target
+#     ------------------------
+#     pre-pr   -> pre-pr           (full CI mirror: build+vet+fmt-check+lint-pr+vuln+test-cover-gate)
+#     lint     -> lint-pr          (golangci-lint --new-from-rev=origin/master)
+#     fmt      -> fmt-check        (goimports -l . must be empty)
+#     vet      -> vet              (go vet ./...)
+#     vuln     -> vuln             (govulncheck ./...)
+#     test     -> test            (go test -race -count=1 ./...)
+#     cover    -> test-cover-gate  (race suite + coverage floor)
+#     build    -> build            (go build ./...)
+#
+# The resolved `make` command is exec'd so its exit code and combined output
+# pass straight through to iris (which surfaces a non-zero exit + output verbatim).
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+usage() {
+	echo "usage: script/iris-check <pre-pr|lint|fmt|vet|vuln|test|cover|build>" >&2
+}
+
+if [ "$#" -ne 1 ]; then
+	usage
+	exit 2
+fi
+
+case "$1" in
+	pre-pr) target=pre-pr ;;
+	lint)   target=lint-pr ;;
+	fmt)    target=fmt-check ;;
+	vet)    target=vet ;;
+	vuln)   target=vuln ;;
+	test)   target=test ;;
+	cover)  target=test-cover-gate ;;
+	build)  target=build ;;
+	*)
+		echo "unknown check: $1" >&2
+		usage
+		exit 2
+		;;
+esac
+
+exec make "$target"
