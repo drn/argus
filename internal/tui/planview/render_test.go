@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -87,7 +88,9 @@ func TestDraw_PlannedChipGlyphRendered(t *testing.T) {
 
 func TestDraw_GroupBoxRendered(t *testing.T) {
 	w := fanGroup("2a", "2b", "2c")
-	out := drawToString(t, w, 60, 12)
+	// Boxes are 3 rows tall; give the region enough height for the header + two
+	// stacked boxes + footer so the collapsed group's label row is visible.
+	out := drawToString(t, w, 60, 18)
 	// The collapsed group box and its aggregate counts render.
 	testutil.Contains(t, out, "[2a–2c]")
 }
@@ -110,15 +113,15 @@ func rowOf(out, substr string) string {
 	return ""
 }
 
-// TestDraw_FannedGroupShowsMemberChips is the core bug-2 fix: pressing Enter on a
-// collapsed group must EXPAND the diagram into individual member chips (glyph +
-// short-id), not keep rendering the collapsed "[2a–2c]" range box. This is the
-// user's "[2a–2c] never expands" complaint.
-func TestDraw_FannedGroupShowsMemberChips(t *testing.T) {
+// TestDraw_FannedGroupShowsMemberBoxes is the core bug-2 fix in its boxed form:
+// pressing Enter on a collapsed group must EXPAND the diagram into individual
+// member node-boxes inside a dashed enclosure, not keep rendering the collapsed
+// "[2a–2c]" range box. This is the user's "[2a–2c] never expands" complaint.
+func TestDraw_FannedGroupShowsMemberBoxes(t *testing.T) {
 	w := fanGroup("2a", "2b", "2c")
 	w.SetFocused(true)
-	// Collapsed: the range box is shown.
-	collapsed := drawToString(t, w, 60, 14)
+	// Collapsed: the dashed range box shows the [2a–2c] label.
+	collapsed := drawToString(t, w, 70, 18)
 	testutil.Contains(t, collapsed, "[2a–2c]")
 
 	// Move to the group (stage 1) and fan it out.
@@ -127,31 +130,34 @@ func TestDraw_FannedGroupShowsMemberChips(t *testing.T) {
 	testutil.Equal(t, isGroup, true)
 	w.ActivateCursor() // fan out
 
-	fanned := drawToString(t, w, 60, 14)
-	// The expanded stage row carries all three member short-ids as separate chips.
-	// (Find it by a row that holds 2b AND 2c — only the diagram member row does;
-	// the header shows a single member's full role name, never all three.)
+	fanned := drawToString(t, w, 70, 18)
+	// All three member short-ids render on the SAME row (their boxes' middle row).
 	memberRow := rowOf(fanned, "2b")
 	testutil.Contains(t, memberRow, "2a")
 	testutil.Contains(t, memberRow, "2c")
-	// The collapsed range-box label is GONE for that stage once fanned.
+	// The expansion is wrapped in a dashed enclosure (top-edge label = the members'
+	// common role token "role").
+	testutil.Contains(t, fanned, "┌╌")
+	testutil.Contains(t, fanned, "role")
+	// The collapsed range-box label is GONE once fanned.
 	testutil.Equal(t, strings.Contains(fanned, "[2a–2c]"), false)
 }
 
-// TestDraw_CollapsedGroupStillShowsRangeBox: a group the cursor has NOT fanned
-// renders as the range box (the expansion is scoped to the fanned slot only).
-func TestDraw_CollapsedGroupStillShowsRangeBox(t *testing.T) {
+// TestDraw_CollapsedGroupStillShowsDashedRangeBox: a group the cursor has NOT
+// fanned renders as the dashed range box (expansion scoped to the fanned slot).
+func TestDraw_CollapsedGroupStillShowsDashedRangeBox(t *testing.T) {
 	w := fanGroup("2a", "2b", "2c")
 	w.SetFocused(true)
 	// Cursor parked at stage 0 (lone 0a) — the group at stage 1 stays collapsed.
-	out := drawToString(t, w, 60, 14)
+	out := drawToString(t, w, 70, 18)
 	testutil.Contains(t, out, "[2a–2c]")
+	testutil.Contains(t, out, "╌") // dashed border rune
 }
 
-// TestDraw_FannedMemberCursorHighlighted: the cursor's member chip inside a
-// fanned group carries the reverse-video highlight; a different member does not.
-// This realizes the member-level highlight (bug-3) on the expanded diagram.
-func TestDraw_FannedMemberCursorHighlighted(t *testing.T) {
+// TestDraw_FannedMemberCursorBoxSelected: the cursor's member box inside a fanned
+// group carries the selection border (ColorSelected when focused); a different
+// member's box does not. This realizes the member-level box highlight.
+func TestDraw_FannedMemberCursorBoxSelected(t *testing.T) {
 	w := fanGroup("2a", "2b", "2c")
 	w.SetFocused(true)
 	w.MoveStage(1)
@@ -159,18 +165,28 @@ func TestDraw_FannedMemberCursorHighlighted(t *testing.T) {
 	w.MoveSlot(1)      // walk to member 1 (2b)
 	testutil.Equal(t, w.CurrentNodeID(), "2b")
 
-	chips := w.stageRowChips(1)
-	// Three member chips, one per member.
-	testutil.Equal(t, len(chips), 3)
-	// The cursor member (index 1, "2b") is reversed; index 0 ("2a") is not.
-	_, _, cur := chips[1].style.Decompose()
-	_, _, other := chips[0].style.Decompose()
-	testutil.Equal(t, cur&tcell.AttrReverse != 0, true)
-	testutil.Equal(t, other&tcell.AttrReverse != 0, false)
+	sc := drawToSim(t, w, 70, 18)
+	// Search the box content form "○ 2b" (glyph+id, only in a box — the header
+	// shows the full role name "2b-role", never the box form), so boxCornerStyleNear
+	// resolves the member box, not the panel/header border.
+	bx, by, ok := findStringCell(sc, "○ 2b")
+	testutil.Equal(t, ok, true)
+	bSel, ok := boxCornerStyleNear(sc, bx, by)
+	testutil.Equal(t, ok, true)
+	bfg, _, _ := bSel.Decompose()
+	testutil.Equal(t, bfg, theme.ColorSelected)
+
+	// 2a's box (non-cursor member) border is NOT the selection colour.
+	ax, ay, ok2 := findStringCell(sc, "○ 2a")
+	testutil.Equal(t, ok2, true)
+	aSel, ok := boxCornerStyleNear(sc, ax, ay)
+	testutil.Equal(t, ok, true)
+	afg, _, _ := aSel.Decompose()
+	testutil.Equal(t, afg == theme.ColorSelected, false)
 }
 
 // TestDraw_FannedPartialFeedMemberCarriesMarker: when a group partially feeds a
-// downstream node, the fanned-out feeding member chip carries the ↘ marker (D5).
+// downstream node, the fanned-out feeding member box carries the ↘ marker (D5).
 func TestDraw_FannedPartialFeedMemberCarriesMarker(t *testing.T) {
 	w := New()
 	// stage0 [0a] -> group {1a,1b,1c} at stage1; only 1b feeds a stage-2 node.
@@ -187,21 +203,42 @@ func TestDraw_FannedPartialFeedMemberCarriesMarker(t *testing.T) {
 	testutil.Equal(t, g.PartialFeed, true)
 	testutil.Equal(t, g.FeedingMember, "1b")
 
-	// Fan out the group and assert only the feeding member's chip carries ↘.
+	// Fan out the group; only the feeding member box's content row carries ↘.
 	w.MoveStage(1)
 	w.ActivateCursor()
-	chips := w.stageRowChips(1)
-	var feederHasMarker, otherHasMarker bool
-	for _, c := range chips {
-		if strings.Contains(c.label, "1b") && strings.Contains(c.label, "↘") {
-			feederHasMarker = true
+	out := drawToString(t, w, 70, 18)
+	// The ↘ rides 1b's row, not 1a's or 1c's.
+	feedRow := rowOf(out, "1b")
+	testutil.Contains(t, feedRow, "↘")
+}
+
+// findStringCell returns the (x,y) of the first cell that begins a row-contiguous
+// run matching s (rune by rune), scanning row-major. ok false when not found.
+func findStringCell(sc tcell.SimulationScreen, s string) (int, int, bool) {
+	want := []rune(s)
+	cells, w, h := sc.GetContents()
+	cellRune := func(x, y int) rune {
+		c := cells[y*w+x]
+		if len(c.Runes) > 0 {
+			return c.Runes[0]
 		}
-		if (strings.Contains(c.label, "1a") || strings.Contains(c.label, "1c")) && strings.Contains(c.label, "↘") {
-			otherHasMarker = true
+		return ' '
+	}
+	for y := 0; y < h; y++ {
+		for x := 0; x+len(want) <= w; x++ {
+			ok := true
+			for i, r := range want {
+				if cellRune(x+i, y) != r {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				return x, y, true
+			}
 		}
 	}
-	testutil.Equal(t, feederHasMarker, true)
-	testutil.Equal(t, otherHasMarker, false)
+	return 0, 0, false
 }
 
 func TestGroupCounts_OmitsZeroStates(t *testing.T) {

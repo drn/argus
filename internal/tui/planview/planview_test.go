@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -765,86 +766,149 @@ func findGlyphCell(sc tcell.SimulationScreen, r rune) (x, y int, style tcell.Sty
 	return 0, 0, tcell.StyleDefault, false
 }
 
-// TestDraw_CursorSlotHighlighted: the chip under the cursor carries the reverse-
-// video highlight; a non-cursor chip does not (BUG: no selection highlight in the
-// diagram).
-func TestDraw_CursorSlotHighlighted(t *testing.T) {
-	w := New()
-	// Two lone nodes at stage 0 (no edges → flat, but mark planned so it's a real
-	// plan with chips at stage 0). Use distinct short-ids so the glyphs differ.
-	w.SetData([]Node{node("0a"), node("1a")}, []Edge{{From: "0a", To: "1a"}})
-	w.SetFocused(true)
-	// Cursor starts at stage 0, slot 0 (node 0a).
-	testutil.Equal(t, w.CurrentNodeID(), "0a")
-
-	sc := drawToSim(t, w, 60, 24)
-	// 0a's glyph is the planned ○; find it and assert it is reversed.
-	_, _, cursorStyle, ok := findGlyphCell(sc, '○')
-	testutil.Equal(t, ok, true)
-	_, _, attr := cursorStyle.Decompose()
-	testutil.Equal(t, attr&tcell.AttrReverse != 0, true)
+// boxCornerStyleNear returns the style of the rounded box top-left corner (`╭`)
+// that sits at-or-left-of the glyph at column gx on the same row's box top (gy-1),
+// i.e. the border of the box whose middle row holds that glyph. ok is false when
+// no corner is found on that row.
+func boxCornerStyleNear(sc tcell.SimulationScreen, gx, gy int) (tcell.Style, bool) {
+	cells, w, _ := sc.GetContents()
+	// The box top border is the row above the glyph row.
+	row := gy - 1
+	if row < 0 {
+		return tcell.StyleDefault, false
+	}
+	for x := gx; x >= 0; x-- {
+		c := cells[row*w+x]
+		if len(c.Runes) > 0 && c.Runes[0] == '╭' {
+			return c.Style, true
+		}
+	}
+	return tcell.StyleDefault, false
 }
 
-// TestDraw_NonCursorSlotNotHighlighted: a chip the cursor is NOT on renders with
-// its plain state style (no reverse video). Asserts the highlight is scoped to
-// the cursor slot, not painted everywhere.
-func TestDraw_NonCursorSlotNotHighlighted(t *testing.T) {
+// TestDraw_NodeRendersAsRoundedBox: every node renders as a 3-row rounded box
+// (the artifact's boxed treatment), so the box corner/edge runes are present.
+func TestDraw_NodeRendersAsRoundedBox(t *testing.T) {
 	w := New()
-	// stage0 [0a] -> stage1 [1a]. Cursor on 0a; 1a must NOT be highlighted.
+	w.SetData([]Node{liveNode("0a", StateWorking)}, nil)
+	w.SetFocused(true)
+	out := drawToString(t, w, 60, 16)
+	testutil.Contains(t, out, "╭")
+	testutil.Contains(t, out, "╮")
+	testutil.Contains(t, out, "╰")
+	testutil.Contains(t, out, "╯")
+	// The glyph + short-id ride the middle row.
+	testutil.Contains(t, out, "⟳ 0a")
+}
+
+// TestDraw_CursorBoxHasSelectionBorder: the cursor's node box border is painted
+// in the bright selection colour (ColorSelected when focused), NOT reverse-video
+// on the text — the user's "more of a box" ask. A non-cursor box border is in its
+// state colour, not the selection colour.
+func TestDraw_CursorBoxHasSelectionBorder(t *testing.T) {
+	w := New()
+	// stage0 [0a working] -> stage1 [1a done]. Cursor on 0a.
 	w.SetData([]Node{liveNode("0a", StateWorking), liveNode("1a", StateDone)}, []Edge{{From: "0a", To: "1a"}})
 	w.SetFocused(true)
 	testutil.Equal(t, w.CurrentNodeID(), "0a")
 
-	sc := drawToSim(t, w, 60, 24)
-	// 1a is done → ✓ glyph; it is not under the cursor, so no reverse video.
-	_, _, doneStyle, ok := findGlyphCell(sc, '✓')
+	sc := drawToSim(t, w, 60, 18)
+	// 0a glyph (⟳) is under the cursor → its box corner border is ColorSelected.
+	gx, gy, _, ok := findGlyphCell(sc, '⟳')
 	testutil.Equal(t, ok, true)
-	_, _, doneAttr := doneStyle.Decompose()
-	testutil.Equal(t, doneAttr&tcell.AttrReverse != 0, false)
+	curBorder, ok := boxCornerStyleNear(sc, gx, gy)
+	testutil.Equal(t, ok, true)
+	fg, _, _ := curBorder.Decompose()
+	testutil.Equal(t, fg, theme.ColorSelected)
+	// The glyph text itself is NOT reverse-video (highlight moved to the border).
+	_, gattr := findGlyphCellStyle(sc, '⟳')
+	testutil.Equal(t, gattr&tcell.AttrReverse != 0, false)
 
-	// 0a is working → ⟳ glyph; it IS under the cursor, so reverse video.
-	_, _, curStyle, ok2 := findGlyphCell(sc, '⟳')
+	// 1a (✓, done) is NOT the cursor → its border is the done colour, not selection.
+	dx, dy, _, ok2 := findGlyphCell(sc, '✓')
 	testutil.Equal(t, ok2, true)
-	_, _, curAttr := curStyle.Decompose()
-	testutil.Equal(t, curAttr&tcell.AttrReverse != 0, true)
+	otherBorder, ok := boxCornerStyleNear(sc, dx, dy)
+	testutil.Equal(t, ok, true)
+	ofg, _, _ := otherBorder.Decompose()
+	testutil.Equal(t, ofg == theme.ColorSelected, false)
+	testutil.Equal(t, ofg, theme.ColorComplete)
 }
 
-// TestDraw_StageRowCentered: a single-chip stage row starts at a CENTERED column,
-// not the left inner edge (BUG: diagram left-aligned, not centered like the web
-// artifact).
-func TestDraw_StageRowCentered(t *testing.T) {
+// findGlyphCellStyle returns the attr mask of the first cell holding rune r.
+func findGlyphCellStyle(sc tcell.SimulationScreen, r rune) (tcell.Color, tcell.AttrMask) {
+	_, _, st, _ := findGlyphCell(sc, r)
+	fg, _, attr := st.Decompose()
+	return fg, attr
+}
+
+// TestDraw_StageBoxCentered: a single node box is centered horizontally — its
+// left border sits well right of the inner left edge.
+func TestDraw_StageBoxCentered(t *testing.T) {
 	w := New()
 	w.SetData([]Node{liveNode("0a", StateWorking)}, nil)
 	w.SetFocused(true)
-
-	cols := 60
-	sc := drawToSim(t, w, cols, 24)
-	// The lone chip "⟳ 0a" — find its glyph column.
+	sc := drawToSim(t, w, 60, 16)
 	x, _, _, ok := findGlyphCell(sc, '⟳')
 	testutil.Equal(t, ok, true)
-	// Inner left edge is col 1 (one-cell border). The centered chip must start well
-	// to the right of the left edge — strictly greater than a small left margin.
 	testutil.Equal(t, x > 4, true)
 }
 
-// TestDraw_WiderRegionPushesChipFurtherRight: doubling the region width moves the
-// centered chip's start column further right — proving the start tracks
-// (W - rowWidth)/2 rather than a fixed offset.
-func TestDraw_WiderRegionPushesChipFurtherRight(t *testing.T) {
+// TestDraw_WiderRegionPushesBoxFurtherRight: doubling the region width moves the
+// centered box further right — centering tracks (W - boxWidth)/2.
+func TestDraw_WiderRegionPushesBoxFurtherRight(t *testing.T) {
 	w := New()
 	w.SetData([]Node{liveNode("0a", StateWorking)}, nil)
 	w.SetFocused(true)
-
-	narrow := drawToSim(t, w, 40, 24)
+	narrow := drawToSim(t, w, 40, 16)
 	xNarrow, _, _, ok1 := findGlyphCell(narrow, '⟳')
 	testutil.Equal(t, ok1, true)
 
 	w2 := New()
 	w2.SetData([]Node{liveNode("0a", StateWorking)}, nil)
 	w2.SetFocused(true)
-	wide := drawToSim(t, w2, 80, 24)
+	wide := drawToSim(t, w2, 80, 16)
 	xWide, _, _, ok2 := findGlyphCell(wide, '⟳')
 	testutil.Equal(t, ok2, true)
-
 	testutil.Equal(t, xWide > xNarrow, true)
+}
+
+// TestDraw_FooterHintPresent: the dim nav legend renders on a bottom row.
+func TestDraw_FooterHintPresent(t *testing.T) {
+	w := New()
+	w.SetData([]Node{liveNode("0a", StateWorking)}, nil)
+	out := drawToString(t, w, 60, 16)
+	testutil.Contains(t, out, "stage")
+	testutil.Contains(t, out, "Enter fan")
+}
+
+// TestDraw_ScrollKeepsCursorBoxVisible: with many stages in a short region the
+// block overflows; the cursor's stage box must be painted within the region
+// (the view scrolls to follow the cursor). Moving the cursor to the last stage
+// makes its short-id visible even though it sits far past the region height.
+func TestDraw_ScrollKeepsCursorBoxVisible(t *testing.T) {
+	w := New()
+	// A linear chain of 8 stages — boxes are 3 rows each, so the block (≈31 rows)
+	// far exceeds a 12-row screen.
+	var nodes []Node
+	var edges []Edge
+	ids := []string{"0a", "1a", "2a", "3a", "4a", "5a", "6a", "7a"}
+	for i, id := range ids {
+		nodes = append(nodes, node(id))
+		if i > 0 {
+			edges = append(edges, Edge{From: ids[i-1], To: id})
+		}
+	}
+	w.SetData(nodes, edges)
+	w.SetFocused(true)
+	// Walk to the last stage.
+	for i := 0; i < len(ids); i++ {
+		w.MoveStage(1)
+	}
+	testutil.Equal(t, w.CursorPos().Stage, len(ids)-1)
+
+	out := drawToString(t, w, 50, 12)
+	// The last node's short-id "7a" must be visible (scrolled into view), and the
+	// first "0a" scrolled off.
+	testutil.Contains(t, out, "7a")
+	testutil.Equal(t, strings.Contains(out, "0a"), false)
 }

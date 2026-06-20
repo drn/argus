@@ -1291,10 +1291,29 @@ func (w *Widget) Draw(screen tcell.Screen) {
 			H: inner.H - headerHeight,
 		}
 	}
+	// Footer hint bar pinned to the bottom inner row; the diagram region loses
+	// that row. Drawn last (below) so a tall diagram never paints over it.
+	if diagram.H > 1 {
+		footerRow := diagram.Y + diagram.H - 1
+		w.drawFooter(screen, diagram.X, footerRow, diagram.W)
+		diagram.H--
+	}
 	if w.noPlan {
 		widget.DrawText(screen, diagram.X, diagram.Y, diagram.W, "no plan authored — live roles:", theme.StyleDimmed)
 	}
 	w.drawStages(screen, diagram)
+}
+
+// footerHint is the dim bottom-row nav legend (D-render). Kept ASCII-light so
+// the single-width truncation math in DrawText holds.
+const footerHint = "↑↓ stage · ←→ within · Enter fan · Esc back"
+
+// drawFooter paints the dim nav legend on a single row, clipped to width.
+func (w *Widget) drawFooter(screen tcell.Screen, x, y, maxW int) {
+	if maxW <= 0 {
+		return
+	}
+	widget.DrawText(screen, x, y, maxW, footerHint, theme.StyleDimmed)
 }
 
 // drawHeader paints the fixed-height master-detail header strip at the top of
@@ -1318,157 +1337,399 @@ func (w *Widget) drawHeader(screen tcell.Screen, inner widget.InnerRect) {
 	}
 }
 
-// chipGap is the blank-column run between two chips/group boxes in a stage row.
-const chipGap = 2
+// Box-rendering geometry (the artifact's "full boxed treatment").
+const (
+	// boxGap is the blank-column run between two sibling boxes on a stage row.
+	boxGap = 1
+	// boxHPad is the horizontal padding inside a node box (one space each side).
+	boxHPad = 1
+	// nodeBoxH is the fixed height of a node box: top border + content + bottom.
+	nodeBoxH = 3
+	// groupPad is the dashed enclosure's inner padding on each horizontal side.
+	groupPad = 1
+)
 
-// drawStages paints each stage as a CENTERED row of chips/group boxes with
-// single-line vertical edges between consecutive stages, mirroring the web
-// artifact's tight-tree layout. Each stage row is horizontally centered within
-// the diagram region (rune-aware width math) and the whole block is vertically
-// centered when it is shorter than the region. The chip under the cursor is
-// drawn with a highlight style so the selected node is visible in the diagram,
-// not only in the header (BUG: no selection highlight).
+// stageBlock is one stage's laid-out drawable: its total width/height (cells)
+// and a draw closure that paints it with its top-left at (x, y). drawStages
+// centers each block horizontally and stacks them with a connector between.
+type stageBlock struct {
+	width  int
+	height int
+	draw   func(screen tcell.Screen, x, y int, clip clipRect)
+}
+
+// clipRect bounds painting to the diagram region so a scrolled/overflowing box
+// never writes outside it (and never over the footer). Cells outside are dropped.
+type clipRect struct{ x0, y0, x1, y1 int } // [x0,x1) × [y0,y1)
+
+func (c clipRect) contains(x, y int) bool {
+	return x >= c.x0 && x < c.x1 && y >= c.y0 && y < c.y1
+}
+
+// drawStages lays each stage out as a boxed block (node = rounded box, group =
+// dashed enclosure), centers each block horizontally, stacks them vertically
+// with a centered `│` connector between, and vertical-scrolls so the cursor's
+// stage block stays in view when the plan overflows. No screen.Sync; every cell
+// is clipped to the diagram region (full-rect coverage by DrawBorderedPanel).
 func (w *Widget) drawStages(screen tcell.Screen, inner widget.InnerRect) {
-	top := inner.Y
+	regionTop := inner.Y
 	if w.noPlan {
-		top++ // leave the hint line above the flat stage
+		regionTop++ // leave the hint line above the flat stage
 	}
-	// Vertically center the block (two rows per stage minus the trailing gap)
-	// within the region below the optional hint line.
-	availH := inner.Y + inner.H - top
-	blockH := len(w.stages)*2 - 1
-	if blockH < 0 {
-		blockH = 0
+	regionH := inner.Y + inner.H - regionTop
+	if regionH <= 0 {
+		return
 	}
-	if availH > blockH {
-		top += (availH - blockH) / 2
+	clip := clipRect{x0: inner.X, y0: regionTop, x1: inner.X + inner.W, y1: inner.Y + inner.H}
+
+	blocks := make([]stageBlock, len(w.stages))
+	for s := range w.stages {
+		blocks[s] = w.buildStageBlock(s)
 	}
-	row := top
-	for s := 0; s < len(w.stages); s++ {
-		if row >= inner.Y+inner.H {
-			break
+
+	// Total block height: each stage's height plus a 1-row connector between.
+	totalH := 0
+	for i, b := range blocks {
+		totalH += b.height
+		if i > 0 {
+			totalH++ // connector row
 		}
-		chips := w.stageRowChips(s)
-		// Horizontally center the row: total rendered width is the sum of chip
-		// widths plus a chipGap between each pair (rune-aware). A fanned group
-		// contributes its expanded member chips, so this tracks the wider row.
-		col := inner.X
-		if rowW := rowChipsWidth(chips); inner.W > rowW {
-			col += (inner.W - rowW) / 2
+	}
+
+	// Vertical placement: center the block when it fits; otherwise scroll so the
+	// cursor's stage block is fully visible within the region.
+	startY := regionTop
+	if regionH > totalH {
+		startY += (regionH - totalH) / 2
+	} else {
+		startY -= w.scrollOffsetFor(blocks, regionH)
+	}
+
+	y := startY
+	for s, b := range blocks {
+		// Horizontally center each block within the region.
+		bx := inner.X
+		if inner.W > b.width {
+			bx += (inner.W - b.width) / 2
 		}
-		for _, c := range chips {
-			runes := []rune(c.label)
-			for i, r := range runes {
-				if col+i >= inner.X+inner.W {
-					break
-				}
-				screen.SetContent(col+i, row, r, nil, c.style)
-			}
-			col += len(runes) + chipGap
-			if col >= inner.X+inner.W {
-				break
-			}
-		}
-		// Single-line edge connector between stages (cosmetic), centered under the
-		// row so the connector tracks the centered chips.
-		if s < len(w.stages)-1 && row+1 < inner.Y+inner.H {
+		b.draw(screen, bx, y, clip)
+		y += b.height
+		// Centered connector to the next stage.
+		if s < len(blocks)-1 {
 			ec := inner.X + inner.W/2
-			screen.SetContent(ec, row+1, '│', nil, theme.StyleDimmed.Foreground(theme.ColorBorder))
+			if clip.contains(ec, y) {
+				screen.SetContent(ec, y, '│', nil, theme.StyleDimmed.Foreground(theme.ColorBorder))
+			}
+			y++ // connector row
 		}
-		row += 2
 	}
 }
 
-// renderChip is one drawable chip in a stage row: its rendered label and the
-// style to paint it with (already cursor-highlighted when appropriate).
-type renderChip struct {
-	label string
-	style tcell.Style
+// scrollOffsetFor returns how many rows to shift the block up so the cursor's
+// stage is fully visible inside a region of height regionH that the full block
+// overflows. Anchors the cursor stage's top into view, then nudges so its bottom
+// fits, clamped to [0, totalH-regionH]. The offset is region-relative.
+func (w *Widget) scrollOffsetFor(blocks []stageBlock, regionH int) int {
+	// Y of each stage block's top, relative to the block origin (offset 0).
+	tops := make([]int, len(blocks))
+	yy := 0
+	for i, b := range blocks {
+		tops[i] = yy
+		yy += b.height
+		if i < len(blocks)-1 {
+			yy++ // connector
+		}
+	}
+	totalH := yy
+	cur := w.cursor.Stage
+	if cur < 0 || cur >= len(blocks) {
+		return 0
+	}
+	cTop := tops[cur]
+	cBot := cTop + blocks[cur].height // exclusive
+	off := 0
+	// Scroll down enough that the cursor block's bottom is visible.
+	if cBot > regionH {
+		off = cBot - regionH
+	}
+	// But never hide the cursor block's top.
+	if cTop < off {
+		off = cTop
+	}
+	if max := totalH - regionH; off > max {
+		off = max
+	}
+	if off < 0 {
+		off = 0
+	}
+	return off
 }
 
-// stageRowChips builds the ordered drawable chips for a stage, expanding any
-// FANNED group slot into one chip per member (glyph + short-id, with the partial-
-// feed ↘ on the feeding member) instead of the collapsed range box — this is the
-// "Enter fans out a group to SHOW its members" behaviour the web artifact uses.
-// A collapsed group renders as a single range-box chip; a lone node as its
-// glyph+short-id chip. The cursor's slot (lone node / collapsed group) or its
-// member (inside a fanned group) carries the highlight style.
-func (w *Widget) stageRowChips(s int) []renderChip {
-	if s < 0 || s >= len(w.stages) {
-		return nil
+// buildStageBlock lays out one stage into a stageBlock: a row of sibling boxes
+// (lone nodes as rounded boxes, collapsed groups as dashed boxes, fanned groups
+// as a dashed enclosure wrapping the member node-boxes). The block's width is the
+// sum of sibling widths + boxGap between them; its height is the tallest sibling.
+func (w *Widget) buildStageBlock(s int) stageBlock {
+	type sib struct {
+		width, height int
+		draw          func(screen tcell.Screen, x, y int, clip clipRect)
 	}
-	var chips []renderChip
+	var sibs []sib
 	for slotIdx, sl := range w.stages[s] {
 		onSlot := w.cursor.Stage == s && w.cursor.Slot == slotIdx
-		if sl.group != nil && w.Fanned(s, slotIdx) {
-			// Expanded: one chip per member. Highlight the cursor's member.
-			for memberIdx, id := range sl.group.Members {
-				label, st := w.memberChip(sl.group, id)
-				if onSlot && w.cursor.Member == memberIdx {
-					st = w.highlightStyle(st)
-				}
-				chips = append(chips, renderChip{label: label, style: st})
-			}
-			continue
+		switch {
+		case sl.group != nil && w.Fanned(s, slotIdx):
+			bw, bh, draw := w.layoutFannedGroup(s, slotIdx, sl.group)
+			sibs = append(sibs, sib{bw, bh, draw})
+		case sl.group != nil:
+			label, sub := sl.group.Label, groupCounts(sl.group)
+			bw, bh, draw := w.layoutDashedBox(label, sub, "", onSlot)
+			sibs = append(sibs, sib{bw, bh, draw})
+		default:
+			content := string(w.nodes[sl.nodeID].State.Glyph()) + " " + w.LabelOf(sl.nodeID)
+			bw, bh, draw := w.layoutNodeBox(content, w.nodes[sl.nodeID].State.style(), onSlot)
+			sibs = append(sibs, sib{bw, bh, draw})
 		}
-		// Collapsed group or lone node: one chip.
-		label, st := w.slotChip(sl)
-		if onSlot {
-			st = w.highlightStyle(st)
-		}
-		chips = append(chips, renderChip{label: label, style: st})
 	}
-	return chips
-}
-
-// memberChip renders a single fanned-out group member's chip: glyph + short-id in
-// the member's own state style, with the partial-feed ↘ appended on the group's
-// feeding member (D5 — on fan-out the specific feeding member carries the marker
-// the collapsed box otherwise shows).
-func (w *Widget) memberChip(g *Group, id string) (string, tcell.Style) {
-	n := w.nodes[id]
-	label := string(n.State.Glyph()) + " " + w.LabelOf(id)
-	if g.PartialFeed && g.FeedingMember == id {
-		label += " ↘"
-	}
-	return label, n.State.style()
-}
-
-// rowChipsWidth returns the total rendered width (cells) of a row's chips: the
-// sum of each chip's rune width plus a chipGap between consecutive chips.
-func rowChipsWidth(chips []renderChip) int {
-	total := 0
-	for i, c := range chips {
-		total += len([]rune(c.label))
+	width, height := 0, 0
+	for i, sb := range sibs {
+		width += sb.width
 		if i > 0 {
-			total += chipGap
+			width += boxGap
+		}
+		if sb.height > height {
+			height = sb.height
 		}
 	}
-	return total
+	sibsCopy := sibs
+	return stageBlock{
+		width:  width,
+		height: height,
+		draw: func(screen tcell.Screen, x, y int, clip clipRect) {
+			cx := x
+			for i, sb := range sibsCopy {
+				if i > 0 {
+					cx += boxGap
+				}
+				sb.draw(screen, cx, y, clip)
+				cx += sb.width
+			}
+		},
+	}
 }
 
-// highlightStyle returns the cursor-highlight variant of a chip's state style:
-// reverse video (matching dagview's cursor treatment) so the selected node
-// stands out in the diagram regardless of its state colour. When the widget owns
-// focus the highlight is bolded for extra prominence; an unfocused widget still
-// reverses so the last position stays visible.
-func (w *Widget) highlightStyle(st tcell.Style) tcell.Style {
-	st = st.Reverse(true)
+// layoutNodeBox returns the width/height and a draw closure for a single rounded
+// node box: `╭─╮ / │ <content> │ / ╰─╯`, one space of horizontal padding inside,
+// border painted in the state colour (or the selection border when selected).
+func (w *Widget) layoutNodeBox(content string, contentStyle tcell.Style, selected bool) (int, int, func(tcell.Screen, int, int, clipRect)) {
+	cw := len([]rune(content))
+	innerW := cw + 2*boxHPad
+	boxW := innerW + 2 // borders
+	border := w.boxBorderStyle(contentStyle, selected)
+	draw := func(screen tcell.Screen, x, y int, clip clipRect) {
+		w.drawRoundedBox(screen, x, y, boxW, nodeBoxH, border, clip)
+		// Content centered-left after the padding, on the middle row.
+		put(screen, clip, x+1+boxHPad, y+1, content, contentStyle)
+	}
+	return boxW, nodeBoxH, draw
+}
+
+// layoutDashedBox returns a dashed-bordered box (`┌╌╌┐ / ╎ … ╎ / └╌╌┘`) holding a
+// label line and an optional sub line (the counts), used for a collapsed group.
+// topLabel, when non-empty, is embedded into the top edge (`┌╌ label ╌┐`) — the
+// fanned-group enclosure uses that variant.
+func (w *Widget) layoutDashedBox(label, sub, topLabel string, selected bool) (int, int, func(tcell.Screen, int, int, clipRect)) {
+	lines := []string{label}
+	if sub != "" {
+		lines = append(lines, sub)
+	}
+	contentW := 0
+	for _, l := range lines {
+		if n := len([]rune(l)); n > contentW {
+			contentW = n
+		}
+	}
+	if t := len([]rune(topLabel)) + 4; t > contentW+2*groupPad+2 {
+		contentW = t - 2*groupPad - 2
+	}
+	innerW := contentW + 2*groupPad
+	boxW := innerW + 2
+	boxH := len(lines) + 2
+	border := w.dashedBorderStyle(selected)
+	draw := func(screen tcell.Screen, x, y int, clip clipRect) {
+		w.drawDashedBox(screen, x, y, boxW, boxH, topLabel, border, clip)
+		for i, l := range lines {
+			put(screen, clip, x+1+groupPad, y+1+i, l, theme.StyleNormal)
+		}
+	}
+	return boxW, boxH, draw
+}
+
+// layoutFannedGroup lays a fanned group out as a dashed enclosure (top-edge label
+// = the group's common token or range) wrapping the member node-boxes laid out
+// horizontally inside. The cursor's member box gets the selection border; the
+// partial-feed ↘ rides the feeding member's box content.
+func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tcell.Screen, int, int, clipRect)) {
+	onSlot := w.cursor.Stage == s && w.cursor.Slot == slotIdx
+	type mbox struct {
+		width, height int
+		draw          func(tcell.Screen, int, int, clipRect)
+	}
+	var members []mbox
+	for memberIdx, id := range g.Members {
+		content := string(w.nodes[id].State.Glyph()) + " " + w.LabelOf(id)
+		if g.PartialFeed && g.FeedingMember == id {
+			content += " ↘"
+		}
+		bw, bh, d := w.layoutNodeBox(content, w.nodes[id].State.style(), onSlot && w.cursor.Member == memberIdx)
+		members = append(members, mbox{bw, bh, d})
+	}
+	innerW, innerH := 0, 0
+	for i, m := range members {
+		innerW += m.width
+		if i > 0 {
+			innerW += boxGap
+		}
+		if m.height > innerH {
+			innerH = m.height
+		}
+	}
+	boxW := innerW + 2*groupPad + 2
+	boxH := innerH + 2 // dashed top + bottom edges
+	topLabel := w.groupTopLabel(g)
+	border := w.dashedBorderStyle(onSlot && w.cursor.Member < 0)
+	draw := func(screen tcell.Screen, x, y int, clip clipRect) {
+		w.drawDashedBox(screen, x, y, boxW, boxH, topLabel, border, clip)
+		cx := x + 1 + groupPad
+		for i, m := range members {
+			if i > 0 {
+				cx += boxGap
+			}
+			m.draw(screen, cx, y+1, clip)
+			cx += m.width
+		}
+	}
+	return boxW, boxH, draw
+}
+
+// groupTopLabel is the dashed enclosure's top-edge label: the members' common
+// role-name token when cheaply derivable (e.g. "research" from "2a-research",
+// "2b-research"), else the range-box label.
+func (w *Widget) groupTopLabel(g *Group) string {
+	if tok := w.commonRoleToken(g.Members); tok != "" {
+		return tok
+	}
+	return g.Label
+}
+
+// commonRoleToken returns the role-name token shared by every member after the
+// short-id prefix (the segment after the first '-' in the node name), or "" when
+// the members differ or any lacks that segment. Cheap presentation nicety; the
+// range label is the fallback.
+func (w *Widget) commonRoleToken(members []string) string {
+	tokenOf := func(id string) string {
+		name := w.nodes[id].Name
+		if i := strings.IndexByte(name, '-'); i >= 0 && i+1 < len(name) {
+			return name[i+1:]
+		}
+		return ""
+	}
+	if len(members) == 0 {
+		return ""
+	}
+	first := tokenOf(members[0])
+	if first == "" {
+		return ""
+	}
+	for _, m := range members[1:] {
+		if tokenOf(m) != first {
+			return ""
+		}
+	}
+	return first
+}
+
+// boxBorderStyle is the rounded node box's border style: the node's state colour
+// normally, or the bright selection border when selected (pink + bold when the
+// widget owns focus, cyan when it does not — "the whole box highlighted").
+func (w *Widget) boxBorderStyle(contentStyle tcell.Style, selected bool) tcell.Style {
+	if !selected {
+		fg, _, _ := contentStyle.Decompose()
+		return tcell.StyleDefault.Foreground(fg)
+	}
+	return w.selectionBorderStyle()
+}
+
+// dashedBorderStyle is a dashed enclosure's border style: dim normally, the
+// selection border when selected.
+func (w *Widget) dashedBorderStyle(selected bool) tcell.Style {
+	if selected {
+		return w.selectionBorderStyle()
+	}
+	return theme.StyleDimmed.Foreground(theme.ColorBorder)
+}
+
+// selectionBorderStyle is the distinct cursor-box border: bright pink + bold when
+// focused, cyan (dimmer, unbold) when the widget does not own focus.
+func (w *Widget) selectionBorderStyle() tcell.Style {
 	if w.focused {
-		st = st.Bold(true)
+		return tcell.StyleDefault.Foreground(theme.ColorSelected).Bold(true)
 	}
-	return st
+	return tcell.StyleDefault.Foreground(theme.ColorTitle)
 }
 
-// slotChip returns a slot's rendered label + style: a glyph+short-id chip for a
-// lone node, or the range-box label for a collapsed group (with its aggregate
-// counts appended).
-func (w *Widget) slotChip(sl slot) (string, tcell.Style) {
-	if sl.group != nil {
-		return sl.group.Label + " " + groupCounts(sl.group), tcell.StyleDefault.Foreground(theme.ColorNormal)
+// drawRoundedBox paints a rounded-corner box (`╭─╮ │ │ ╰─╯`) at (x,y) of the
+// given width/height, clipped to the region.
+func (w *Widget) drawRoundedBox(screen tcell.Screen, x, y, bw, bh int, style tcell.Style, clip clipRect) {
+	drawBoxFrame(screen, x, y, bw, bh, style, clip, '╭', '╮', '╰', '╯', '─', '│')
+}
+
+// drawDashedBox paints a dashed-edge box (`┌╌╌┐ ╎ ╎ └╌╌┘`); when topLabel is
+// non-empty it is embedded into the top edge as `┌╌ label ╌…┐`.
+func (w *Widget) drawDashedBox(screen tcell.Screen, x, y, bw, bh int, topLabel string, style tcell.Style, clip clipRect) {
+	drawBoxFrame(screen, x, y, bw, bh, style, clip, '┌', '┐', '└', '┘', '╌', '╎')
+	if topLabel != "" && bw >= len([]rune(topLabel))+4 {
+		// `┌╌ label ╌╌┐`: corner, one dash, space, label, space, dashes…
+		put(screen, clip, x+1, y, "╌ "+topLabel+" ", style)
 	}
-	n := w.nodes[sl.nodeID]
-	return string(n.State.Glyph()) + " " + w.LabelOf(sl.nodeID), n.State.style()
+}
+
+// drawBoxFrame paints a generic box frame with the given corner/edge runes,
+// clipped. Interior is left untouched (DrawBorderedPanel already blanked it).
+func drawBoxFrame(screen tcell.Screen, x, y, bw, bh int, style tcell.Style, clip clipRect, tl, tr, bl, br, horiz, vert rune) {
+	if bw < 2 || bh < 2 {
+		return
+	}
+	setIf(screen, clip, x, y, tl, style)
+	setIf(screen, clip, x+bw-1, y, tr, style)
+	setIf(screen, clip, x, y+bh-1, bl, style)
+	setIf(screen, clip, x+bw-1, y+bh-1, br, style)
+	for i := 1; i < bw-1; i++ {
+		setIf(screen, clip, x+i, y, horiz, style)
+		setIf(screen, clip, x+i, y+bh-1, horiz, style)
+	}
+	for j := 1; j < bh-1; j++ {
+		setIf(screen, clip, x, y+j, vert, style)
+		setIf(screen, clip, x+bw-1, y+j, vert, style)
+	}
+}
+
+// setIf paints one cell when it lies inside the clip region.
+func setIf(screen tcell.Screen, clip clipRect, x, y int, r rune, style tcell.Style) {
+	if clip.contains(x, y) {
+		screen.SetContent(x, y, r, nil, style)
+	}
+}
+
+// put paints a rune-aware string starting at (x,y), one cell per rune, clipped.
+func put(screen tcell.Screen, clip clipRect, x, y int, s string, style tcell.Style) {
+	col := x
+	for _, r := range s {
+		if clip.contains(col, y) {
+			screen.SetContent(col, y, r, nil, style)
+		}
+		col++
+	}
 }
 
 // groupCounts renders the aggregate per-state counts for a collapsed group box,

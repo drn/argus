@@ -124,33 +124,47 @@ When the cursor is on a node whose bound task is the coordinator of a child orch
 - **WHEN** the view is showing a drilled-in child plan DAG and the user presses `Esc`
 - **THEN** the diagram returns to the parent orchestrator's plan DAG
 
-### Requirement: Selected plan node is highlighted (area 6)
+### Requirement: Plan nodes render as boxes with a selection border (area 6)
 
-The plan diagram SHALL render the chip under the cursor with a highlight style (reverse video, more prominent when the widget owns focus) so the selected node is visible in the diagram itself, not only described in the master-detail header. A chip the cursor is not on SHALL render with its plain state style.
+The plan diagram SHALL render each node as a padded rounded box (`╭─╮ / │ glyph short-id │ / ╰─╯`) whose border is drawn in the node's state colour. The node under the cursor SHALL carry a distinct selection border (a bright selection colour, more prominent when the widget owns focus) rather than reverse-video text, so the selected node reads as a highlighted box. A node the cursor is not on SHALL keep its state-colour border. Each stage's box row SHALL be centered horizontally within the diagram region and the whole block centered vertically when it fits.
 
-#### Scenario: Cursor chip is highlighted
+#### Scenario: Node is a box and the cursor's box is selection-bordered
 
 - **WHEN** the cursor is on a plan node
-- **THEN** that node's chip is drawn with the highlight style and a non-cursor chip is not
+- **THEN** that node renders as a box whose border is the selection colour, and a non-cursor node's box border is its state colour
 
-#### Scenario: Cursor member chip is highlighted in a fanned group
+#### Scenario: Cursor member box is selection-bordered in a fanned group
 
 - **WHEN** the cursor is on a member of a fanned-out group
-- **THEN** that member's chip is drawn with the highlight style and the other member chips are not
+- **THEN** that member's box carries the selection border and the other member boxes do not
 
-### Requirement: Fanned group visually expands in the diagram (area 6)
+### Requirement: Fanned group visually expands into member boxes (area 6)
 
-When a parallel group is fanned out, the diagram SHALL render its members as individual chips (glyph + short-id) in place of the collapsed range box, laid out horizontally across that stage row; the row's centering SHALL account for the wider expanded width. A member that partially feeds a downstream node SHALL carry the `↘` partial-feed marker on its expanded chip (D5). A collapsed group SHALL still render as the range box.
+When a parallel group is fanned out, the diagram SHALL render its members as individual node boxes inside a dashed enclosure (`┌╌ label ╌┐ … └╌┘`) whose top-edge label is the members' common role token (or the range label), laid out horizontally; the row's centering SHALL account for the wider expanded width. A member that partially feeds a downstream node SHALL carry the `↘` partial-feed marker on its box (D5). A collapsed group SHALL still render as a dashed range box.
 
-#### Scenario: Fanning a group expands the diagram into member chips
+#### Scenario: Fanning a group expands the diagram into member boxes
 
 - **WHEN** the cursor is on a collapsed group and the user presses `Enter`
-- **THEN** the diagram replaces the range box with one chip per member on that stage row, and the range-box label is no longer drawn for that stage
+- **THEN** the diagram replaces the range box with one box per member inside a dashed enclosure, and the range-box label is no longer drawn for that stage
 
-#### Scenario: A collapsed group stays a range box
+#### Scenario: A collapsed group stays a dashed range box
 
 - **WHEN** a group is not fanned out
-- **THEN** the diagram renders it as the collapsed range box
+- **THEN** the diagram renders it as the collapsed dashed range box
+
+### Requirement: Plan diagram has a footer hint and scrolls to the cursor (area 6)
+
+The plan diagram SHALL render a dim footer hint bar on its bottom row (`↑↓ stage · ←→ within · Enter fan · Esc back`). Because boxes are taller than single-line chips, when the stacked block exceeds the diagram region the view SHALL scroll vertically so the cursor's stage box is fully visible; when the block fits, no scroll is applied. All painting SHALL be clipped to the diagram region (no `screen.Sync`).
+
+#### Scenario: Footer hint renders
+
+- **WHEN** the plan diagram is drawn
+- **THEN** a dim nav-legend footer row is present
+
+#### Scenario: The diagram scrolls to keep the selected node visible
+
+- **WHEN** the plan has more stages than fit the region and the cursor is on the last stage
+- **THEN** the last stage's box is rendered within the region and the first stage has scrolled out of view
 
 ### Requirement: Plan cursor and fan-out survive a model refresh (area 6)
 
