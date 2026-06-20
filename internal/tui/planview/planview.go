@@ -184,24 +184,28 @@ func truncateLabel(name string) string {
 }
 
 // Group is a collapsed parallel group: a maximal set of same-stage nodes that
-// share a blocker set and have no internal edges (D4). It renders as a range
-// box [first–last] (or [first–last +N] when non-contiguous) with aggregate
-// state counts.
+// share a blocker set and have no internal edges (D4). It renders as a two-line
+// box: a top line `[first–last]` + a feed indicator, and a sub-line
+// `<role token> · <per-state counts>` (BUG-005, matching the design images).
 type Group struct {
 	// Members are the node IDs in the group, sorted by short-id.
 	Members []string
 	// Stage is the computed longest-path stage shared by all members.
 	Stage int
-	// Label is the collapsed range box label ("[2a–2c]" / "[2a–2f +1]").
+	// Label is the bare collapsed range box label ("[2a–2c]" / "[2a–2f +1]") — the
+	// feed indicator (→ target / ↘) is rendered separately, NOT embedded here.
 	Label string
 	// Counts is the per-state aggregate (e.g. StateDone→3).
 	Counts map[State]int
-	// PartialFeed is true when only some members feed a downstream node (D5);
-	// the box carries a ↘ marker and the feeding member is marked on fan-out.
+	// FeedTarget is the short-id of the single downstream node every out-of-group
+	// edge points to (the FULL-feed case → "→ <FeedTarget>"); empty otherwise.
+	FeedTarget string
+	// PartialFeed is true when only SOME members feed downstream (the partial case
+	// → "↘" on the top line); mutually exclusive with a non-empty FeedTarget.
 	PartialFeed bool
-	// FeedingMember is the node ID of the single downstream-feeding member when
-	// PartialFeed (the chip that carries ↘ on fan-out).
-	FeedingMember string
+	// FeedingMembers is the set of member node IDs that have an out-of-group edge;
+	// each such member's box carries a ↘ on fan-out (the design's "2d ↘ 2e ↘ …").
+	FeedingMembers map[string]bool
 }
 
 // slot is one rendered column in a stage: either a single lone node (group nil,
@@ -770,38 +774,54 @@ func noInternalEdges(members []string, connected map[string]map[string]bool) boo
 	return true
 }
 
-// buildGroup collapses members into a Group: range-box label, aggregate state
-// counts, and the partial-feed marker (D4/D5). Members are already short-id
-// sorted by the caller.
+// buildGroup collapses members into a Group: bare range-box label, aggregate
+// state counts, and the feed semantics (BUG-005). Members are already short-id
+// sorted by the caller. Feed derivation over the members' out-of-group edges:
+//   - every out-of-group edge points to ONE node → FeedTarget = that node's
+//     short-id (full feed, renders "→ <id>" on the top line);
+//   - only SOME members have an out-of-group edge → PartialFeed (renders "↘");
+//   - FeedingMembers = the set of members with any out-of-group edge (each gets
+//     a ↘ on its box when fanned out).
 func (w *Widget) buildGroup(members []string, edges []Edge) *Group {
-	g := &Group{Members: append([]string(nil), members...), Counts: map[State]int{}}
+	g := &Group{Members: append([]string(nil), members...), Counts: map[State]int{}, FeedingMembers: map[string]bool{}}
 	g.Stage = w.stageOf[members[0]]
 	for _, m := range members {
 		g.Counts[w.nodes[m].State]++
 	}
 	g.Label = w.groupLabel(members)
 
-	// Partial-feed (D5): a downstream-feeding member is one with an outgoing
-	// edge to a node outside this group's stage (a later stage). If only some
-	// members feed downstream, mark the group and record the single feeder.
 	memberSet := make(map[string]bool, len(members))
 	for _, m := range members {
 		memberSet[m] = true
 	}
-	var feeders []string
+	// Collect the distinct out-of-group targets and which members feed them.
+	targets := map[string]bool{}
 	for _, m := range members {
 		for _, e := range edges {
 			if e.From == m && !memberSet[e.To] {
-				feeders = append(feeders, m)
-				break
+				g.FeedingMembers[m] = true
+				targets[e.To] = true
 			}
 		}
 	}
-	if len(feeders) > 0 && len(feeders) < len(members) {
+	feederCount := len(g.FeedingMembers)
+	switch {
+	case feederCount == 0:
+		// No downstream feed at all — bare range box, no indicator.
+	case feederCount < len(members):
+		// Only SOME members feed downstream → partial "↘" (regardless of how many
+		// distinct targets). This is checked before the single-target case so a lone
+		// feeder reads as partial, not as a full "→ X" feed.
 		g.PartialFeed = true
-		g.FeedingMember = feeders[0]
-		// The ↘ goes inside the box per the spec ("[2a–2c ↘]").
-		g.Label = bracketWithMarker(g.Label)
+	case len(targets) == 1:
+		// ALL members feed, and to ONE node → full feed "→ <short-id>".
+		for t := range targets {
+			g.FeedTarget = w.LabelOf(t)
+		}
+	default:
+		// All members feed but to multiple distinct targets → partial "↘" (no
+		// single arrow target to name).
+		g.PartialFeed = true
 	}
 	return g
 }
@@ -820,15 +840,6 @@ func (w *Widget) groupLabel(members []string) string {
 		return fmt.Sprintf("[%s–%s +%d]", first, last, extra)
 	}
 	return fmt.Sprintf("[%s–%s]", first, last)
-}
-
-// bracketWithMarker inserts the ↘ inside the closing bracket of a range-box
-// label, e.g. "[2a–2c]" → "[2a–2c ↘]" / "[2a–2f +1]" → "[2a–2f +1 ↘]".
-func bracketWithMarker(label string) string {
-	if strings.HasSuffix(label, "]") {
-		return label[:len(label)-1] + " ↘]"
-	}
-	return label + " ↘"
 }
 
 // contiguous reports whether the members' parsed short-id members form a
@@ -1508,8 +1519,9 @@ func (w *Widget) buildStageBlock(s int) stageBlock {
 			bw, bh, draw := w.layoutFannedGroup(s, slotIdx, sl.group)
 			sibs = append(sibs, sib{bw, bh, draw})
 		case sl.group != nil:
-			label, sub := sl.group.Label, groupCounts(sl.group)
-			bw, bh, draw := w.layoutDashedBox(label, sub, "", onSlot)
+			// Two-line collapsed box (BUG-005): top = "[range]" + feed indicator,
+			// sub = "<role token> · <per-state counts>".
+			bw, bh, draw := w.layoutDashedBox(w.groupTopLine(sl.group), w.groupSubLine(sl.group), "", onSlot)
 			sibs = append(sibs, sib{bw, bh, draw})
 		default:
 			content := string(w.nodes[sl.nodeID].State.Glyph()) + " " + w.LabelOf(sl.nodeID)
@@ -1609,10 +1621,13 @@ func (w *Widget) layoutDashedBox(label, sub, topLabel string, selected bool) (in
 	return boxW, boxH, draw
 }
 
-// layoutFannedGroup lays a fanned group out as a dashed enclosure (top-edge label
-// = the group's common token or range) wrapping the member node-boxes laid out
-// horizontally inside. The cursor's member box gets the selection border; the
-// partial-feed ↘ rides the feeding member's box content.
+// layoutFannedGroup lays a fanned group out as a SOLID rounded enclosure wrapping
+// the member node-boxes laid out horizontally inside (BUG-005, matching the
+// design). The enclosure carries the group's role label VERTICALLY down its left
+// inner edge (one rune per row, dim) and a ▲ collapse affordance at the top-right;
+// each member that feeds downstream (g.FeedingMembers) gets a ↘ on its box. The
+// cursor's member box gets the selection fill; the enclosure itself fills only
+// when the cursor rests on the group slot with no member selected.
 func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tcell.Screen, int, int, clipRect)) {
 	onSlot := w.cursor.Stage == s && w.cursor.Slot == slotIdx
 	type mbox struct {
@@ -1622,7 +1637,7 @@ func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tce
 	var members []mbox
 	for memberIdx, id := range g.Members {
 		content := string(w.nodes[id].State.Glyph()) + " " + w.LabelOf(id)
-		if g.PartialFeed && g.FeedingMember == id {
+		if g.FeedingMembers[id] {
 			content += " ↘"
 		}
 		bw, bh, d := w.layoutNodeBox(content, w.nodes[id].State.style(), onSlot && w.cursor.Member == memberIdx)
@@ -1638,23 +1653,38 @@ func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tce
 			innerH = m.height
 		}
 	}
-	boxW := innerW + 2*groupPad + 2
-	boxH := innerH + 2 // dashed top + bottom edges
-	topLabel := w.groupTopLabel(g)
-	// The enclosure itself is "selected" only when the cursor rests on the group
-	// slot but not on a member (Member < 0); normally a fan-out lands on a member,
-	// so the selection fill rides the member box (layoutNodeBox), not the enclosure.
+	// Reserve one extra inner column on the left for the vertical role label when
+	// the group has a common token (else the label column is omitted).
+	vlabel := []rune(w.commonRoleToken(g.Members))
+	labelCol := 0
+	if len(vlabel) > 0 {
+		labelCol = 1
+	}
+	boxW := labelCol + innerW + 2*groupPad + 2
+	boxH := innerH + 2 // rounded top + bottom edges
 	enclosureSel := onSlot && w.cursor.Member < 0
-	border := w.dashedBorderStyle(enclosureSel)
+	border := w.selStyleOr(enclosureSel, theme.StyleDimmed.Foreground(theme.ColorBorder))
+	labelStyle := theme.StyleDimmed
 	if enclosureSel {
 		border = border.Background(selectionBG)
+		labelStyle = labelStyle.Background(selectionBG)
 	}
 	draw := func(screen tcell.Screen, x, y int, clip clipRect) {
 		if enclosureSel {
 			fillRect(screen, clip, x, y, boxW, boxH, selectionBG)
 		}
-		w.drawDashedBox(screen, x, y, boxW, boxH, topLabel, border, clip)
-		cx := x + 1 + groupPad
+		w.drawRoundedBox(screen, x, y, boxW, boxH, border, clip)
+		// ▲ collapse affordance just inside the top-right corner.
+		setIf(screen, clip, x+boxW-2, y, '▲', border)
+		// Vertical role label down the left inner edge (one rune per row).
+		for i, r := range vlabel {
+			ry := y + 1 + i
+			if ry >= y+boxH-1 {
+				break // don't overwrite the bottom border
+			}
+			setIf(screen, clip, x+1, ry, r, labelStyle)
+		}
+		cx := x + 1 + labelCol + groupPad
 		for i, m := range members {
 			if i > 0 {
 				cx += boxGap
@@ -1666,14 +1696,13 @@ func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tce
 	return boxW, boxH, draw
 }
 
-// groupTopLabel is the dashed enclosure's top-edge label: the members' common
-// role-name token when cheaply derivable (e.g. "research" from "2a-research",
-// "2b-research"), else the range-box label.
-func (w *Widget) groupTopLabel(g *Group) string {
-	if tok := w.commonRoleToken(g.Members); tok != "" {
-		return tok
+// selStyleOr returns the selection border style when sel is true, else the given
+// fallback style. Keeps the fanned-enclosure border choice terse.
+func (w *Widget) selStyleOr(sel bool, fallback tcell.Style) tcell.Style {
+	if sel {
+		return w.selectionBorderStyle()
 	}
-	return g.Label
+	return fallback
 }
 
 // commonRoleToken returns the role-name token shared by every member after the
@@ -1821,6 +1850,37 @@ func groupCounts(g *Group) string {
 		}
 	}
 	return strings.Join(parts, " · ")
+}
+
+// groupTopLine is the collapsed box's first line (BUG-005): the bare range label
+// plus a feed indicator — "→ <target>" when the group fully feeds a single
+// downstream node, "↘" when only some members feed (partial), nothing otherwise.
+// The bare planned-count that used to trail the range (which read as "blocks 3a")
+// is gone — the count moved to the sub-line.
+func (w *Widget) groupTopLine(g *Group) string {
+	switch {
+	case g.FeedTarget != "":
+		return g.Label + " → " + g.FeedTarget
+	case g.PartialFeed:
+		return g.Label + " ↘"
+	default:
+		return g.Label
+	}
+}
+
+// groupSubLine is the collapsed box's second line (BUG-005): the group's common
+// role token (e.g. "research", "drafting") then the per-state counts, joined by
+// " · " — "research · 1 ✓ · 2 ○". Falls back to just the counts when the members
+// share no common role token.
+func (w *Widget) groupSubLine(g *Group) string {
+	counts := groupCounts(g)
+	if tok := w.commonRoleToken(g.Members); tok != "" {
+		if counts == "" {
+			return tok
+		}
+		return tok + " · " + counts
+	}
+	return counts
 }
 
 // InputHandler routes the 4-way navigation (↑↓ stage, ←→ slot/member) and

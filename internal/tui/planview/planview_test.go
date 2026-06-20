@@ -181,9 +181,32 @@ func TestPartialDep_MarksGroupAndFeedingMember(t *testing.T) {
 	)
 	g, ok := w.GroupAt(1, 0)
 	testutil.Equal(t, ok, true)
+	// Only some members feed → PartialFeed, and 2b is in the feeding set; the bare
+	// range Label carries NO ↘ (the indicator is rendered on the top line, BUG-005).
 	testutil.Equal(t, g.PartialFeed, true)
-	testutil.Equal(t, g.FeedingMember, "2b")
-	testutil.Contains(t, g.Label, "↘")
+	testutil.Equal(t, g.FeedingMembers["2b"], true)
+	testutil.Equal(t, g.FeedingMembers["2a"], false)
+	testutil.Equal(t, g.FeedTarget, "") // partial, not a single-target full feed
+	testutil.Equal(t, strings.Contains(g.Label, "↘"), false)
+}
+
+// TestFullFeed_AllMembersToOneTargetSetsFeedTarget: when every out-of-group edge
+// points to ONE node, the group is a full feed → FeedTarget is that node's
+// short-id (renders "→ 3a"), not PartialFeed, and all feeders are marked.
+func TestFullFeed_AllMembersToOneTargetSetsFeedTarget(t *testing.T) {
+	w := New()
+	w.SetData(
+		[]Node{node("0a"), node("2d"), node("2e"), node("2f"), node("3a")},
+		[]Edge{
+			{From: "0a", To: "2d"}, {From: "0a", To: "2e"}, {From: "0a", To: "2f"},
+			{From: "2d", To: "3a"}, {From: "2e", To: "3a"}, {From: "2f", To: "3a"},
+		},
+	)
+	g, ok := w.GroupAt(1, 0)
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, g.FeedTarget, "3a")
+	testutil.Equal(t, g.PartialFeed, false)
+	testutil.Equal(t, g.FeedingMembers["2d"] && g.FeedingMembers["2e"] && g.FeedingMembers["2f"], true)
 }
 
 // --- Degenerate no-plan (Requirement: no plan authored renders live roles flat) ---

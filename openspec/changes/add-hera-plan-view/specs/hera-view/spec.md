@@ -68,14 +68,24 @@ The system SHALL collapse a maximal set of nodes in the same computed stage that
 - **WHEN** a group's members are `2a`,`2b`,`2f` (non-contiguous)
 - **THEN** the box renders `[2a–2f +1]`
 
-### Requirement: Partial-dependency marker (option B) (area 6)
+### Requirement: Collapsed group box format and feed indicator (area 6)
 
-When only some members of a collapsed parallel group feed a downstream node, the system SHALL mark the collapsed group box with a `↘` (meaning one member continues downstream) and, on fan-out, mark the specific feeding member's chip with a `↘`. The group stays whole when collapsed; the precise feeding member is revealed only on fan-out.
+A collapsed parallel group box SHALL render as two lines (matching the design):
 
-#### Scenario: Partially-feeding group is marked
+- **Top line:** the bare range label `[first–last]` followed by a feed indicator — `→ <short-id>` when every out-of-group edge from the group's members points to ONE downstream node (full feed), or `↘` when only some members feed downstream (partial). No feed indicator when the group feeds nothing. The range label SHALL NOT carry a trailing bare count (the old `[2a–2c] 3 ○`, which read as "blocks 3a", is removed).
+- **Sub line:** the group's common role token followed by the per-state aggregate counts, joined by ` · ` (e.g. `research · 1 ✓ · 2 ○`); the counts alone when there is no common token.
+
+On fan-out, every member with an out-of-group edge SHALL carry a `↘` on its box (not only a single feeder).
+
+#### Scenario: Full-feed group shows the arrow target
+
+- **WHEN** all members of group `[2d–2f]` feed the single downstream `3a`
+- **THEN** the collapsed box top line is `[2d–2f] → 3a` and its sub line is `<token> · <counts>`
+
+#### Scenario: Partially-feeding group shows the partial marker
 
 - **WHEN** only `2b` of group `[2a–2c]` blocks the downstream `3a`
-- **THEN** the collapsed box shows `[2a–2c ↘]` and, fanned out, `2b` carries a `↘` chip
+- **THEN** the collapsed box top line is `[2a–2c] ↘` (no arrow target) and, fanned out, `2b` carries a `↘`
 
 ### Requirement: Four-way plan navigation with group fan-out (area 6)
 
@@ -160,12 +170,12 @@ The plan diagram SHALL render each node as a padded rounded box (`╭─╮ / �
 
 ### Requirement: Fanned group visually expands into member boxes (area 6)
 
-When a parallel group is fanned out, the diagram SHALL render its members as individual node boxes inside a dashed enclosure (`┌╌ label ╌┐ … └╌┘`) whose top-edge label is the members' common role token (or the range label), laid out horizontally; the row's centering SHALL account for the wider expanded width. A member that partially feeds a downstream node SHALL carry the `↘` partial-feed marker on its box (D5). A collapsed group SHALL still render as a dashed range box.
+When a parallel group is fanned out, the diagram SHALL render its members as individual node boxes inside a SOLID rounded enclosure (matching the design), laid out horizontally; the enclosure SHALL carry the members' common role token rendered vertically down its left inner edge and a `▲` collapse affordance at its top-right. The row's centering SHALL account for the wider expanded width. Every member with an out-of-group (downstream) edge SHALL carry a `↘` on its box. A collapsed group SHALL still render as a dashed range box.
 
 #### Scenario: Fanning a group expands the diagram into member boxes
 
 - **WHEN** the cursor is on a collapsed group and the user presses `Enter`
-- **THEN** the diagram replaces the range box with one box per member inside a dashed enclosure, and the range-box label is no longer drawn for that stage
+- **THEN** the diagram replaces the range box with one box per member inside a solid rounded enclosure carrying a `▲` collapse affordance, and the range-box label is no longer drawn for that stage
 
 #### Scenario: A collapsed group stays a dashed range box
 

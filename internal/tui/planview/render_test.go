@@ -115,8 +115,8 @@ func rowOf(out, substr string) string {
 
 // TestDraw_FannedGroupShowsMemberBoxes is the core bug-2 fix in its boxed form:
 // pressing Enter on a collapsed group must EXPAND the diagram into individual
-// member node-boxes inside a dashed enclosure, not keep rendering the collapsed
-// "[2a–2c]" range box. This is the user's "[2a–2c] never expands" complaint.
+// member node-boxes inside a SOLID rounded enclosure (BUG-005), not keep
+// rendering the collapsed "[2a–2c]" range box.
 func TestDraw_FannedGroupShowsMemberBoxes(t *testing.T) {
 	w := fanGroup("2a", "2b", "2c")
 	w.SetFocused(true)
@@ -135,10 +135,11 @@ func TestDraw_FannedGroupShowsMemberBoxes(t *testing.T) {
 	memberRow := rowOf(fanned, "2b")
 	testutil.Contains(t, memberRow, "2a")
 	testutil.Contains(t, memberRow, "2c")
-	// The expansion is wrapped in a dashed enclosure (top-edge label = the members'
-	// common role token "role").
-	testutil.Contains(t, fanned, "┌╌")
-	testutil.Contains(t, fanned, "role")
+	// The expansion is wrapped in a solid rounded enclosure with a ▲ collapse
+	// affordance; the vertical role label ("role" → first rune "r") rides the left
+	// inner edge.
+	testutil.Contains(t, fanned, "▲")
+	testutil.Contains(t, fanned, "╭")
 	// The collapsed range-box label is GONE once fanned.
 	testutil.Equal(t, strings.Contains(fanned, "[2a–2c]"), false)
 }
@@ -152,6 +153,65 @@ func TestDraw_CollapsedGroupStillShowsDashedRangeBox(t *testing.T) {
 	out := drawToString(t, w, 70, 18)
 	testutil.Contains(t, out, "[2a–2c]")
 	testutil.Contains(t, out, "╌") // dashed border rune
+}
+
+// TestDraw_CollapsedGroupTwoLineFormat is the BUG-005 collapsed-box format: a
+// FULL-feed group renders top line `[range] → <target>` and sub line
+// `<role token> · <per-state counts>`. The bare planned-count must NOT trail the
+// range label (that read as "blocks 3a").
+func TestDraw_CollapsedGroupTwoLineFormat(t *testing.T) {
+	w := New()
+	// {2d,2e,2f}=drafting all feed 3a (full feed → "→ 3a"); 1a blocks them.
+	w.SetData(
+		[]Node{
+			liveNode("1a", StateDone),
+			{ID: "2d", Name: "2d-drafting", State: StatePlanned, Planned: true},
+			{ID: "2e", Name: "2e-drafting", State: StatePlanned, Planned: true},
+			{ID: "2f", Name: "2f-drafting", State: StatePlanned, Planned: true},
+			{ID: "3a", Name: "3a-final", State: StatePlanned, Planned: true},
+		},
+		[]Edge{
+			{From: "1a", To: "2d"}, {From: "1a", To: "2e"}, {From: "1a", To: "2f"},
+			{From: "2d", To: "3a"}, {From: "2e", To: "3a"}, {From: "2f", To: "3a"},
+		},
+	)
+	w.SetFocused(true)
+	out := drawToString(t, w, 72, 18)
+	// Top line: range + full-feed arrow to the single target.
+	topRow := rowOf(out, "[2d–2f]")
+	testutil.Contains(t, topRow, "→ 3a")
+	// Sub line: role token + per-state counts.
+	subRow := rowOf(out, "drafting")
+	testutil.Contains(t, subRow, "3 ○")
+	// The range label must NOT carry a bare trailing count (the old "[2d–2f] 3 ○").
+	testutil.Equal(t, strings.Contains(topRow, "3 ○"), false)
+}
+
+// TestDraw_CollapsedGroupPartialFeedTopLine: a PARTIAL-feed group (only some
+// members feed downstream) shows `↘` on the top line, not `→ <target>`.
+func TestDraw_CollapsedGroupPartialFeedTopLine(t *testing.T) {
+	w := New()
+	// {2a,2b,2c}=research, only 2b feeds 3a → partial.
+	w.SetData(
+		[]Node{
+			liveNode("1a", StateDone),
+			{ID: "2a", Name: "2a-research", State: StateDone},
+			{ID: "2b", Name: "2b-research", State: StatePlanned, Planned: true},
+			{ID: "2c", Name: "2c-research", State: StatePlanned, Planned: true},
+			{ID: "3a", Name: "3a-final", State: StatePlanned, Planned: true},
+		},
+		[]Edge{
+			{From: "1a", To: "2a"}, {From: "1a", To: "2b"}, {From: "1a", To: "2c"},
+			{From: "2b", To: "3a"},
+		},
+	)
+	w.SetFocused(true)
+	out := drawToString(t, w, 72, 18)
+	topRow := rowOf(out, "[2a–2c]")
+	testutil.Contains(t, topRow, "↘")
+	testutil.Equal(t, strings.Contains(topRow, "→"), false) // partial, not a full-feed arrow
+	subRow := rowOf(out, "research")
+	testutil.Contains(t, subRow, "✓") // counts present on the sub line
 }
 
 // TestDraw_FannedMemberCursorBoxSelected: the cursor's member box inside a fanned
@@ -208,13 +268,13 @@ func TestDraw_FannedPartialFeedMemberCarriesMarker(t *testing.T) {
 	g, ok := w.GroupAt(1, 0)
 	testutil.Equal(t, ok, true)
 	testutil.Equal(t, g.PartialFeed, true)
-	testutil.Equal(t, g.FeedingMember, "1b")
+	testutil.Equal(t, g.FeedingMembers["1b"], true)
 
 	// Fan out the group; only the feeding member box's content row carries ↘.
 	w.MoveStage(1)
 	w.ActivateCursor()
 	out := drawToString(t, w, 70, 18)
-	// The ↘ rides 1b's row, not 1a's or 1c's.
+	// The ↘ rides 1b's row (its box content), and 1b's box only.
 	feedRow := rowOf(out, "1b")
 	testutil.Contains(t, feedRow, "↘")
 }
