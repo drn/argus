@@ -29,7 +29,7 @@
 
 **Depends on:** Stage 2, Stage 3
 
-- [ ] 4.1 `make pre-pr` green (build, vet, fmt-check, lint-pr, vuln, test-cover-gate); coverage on touched packages ≥95%
+- [x] 4.1 `make pre-pr` green (build, vet, fmt-check, lint-pr, vuln, test-cover-gate); coverage on touched packages ≥95%
 - [x] 4.2 Add a gotcha to `context/knowledge/gotchas/` (daemon-rpc.md or misc.md): `gh pr view`/`pullRequests` hit the GraphQL bucket not REST; batch by repo; `pullRequests(headRefName:)` survives branch deletion where `ref(...)` returns null; cost = ceil(nodeCount/100)
 - [ ] 4.3 Dogfood: deploy onto the running daemon (restart required), watch `gh api rate_limit` graphql bucket drop and `[pr] poll: repo=… cost=…` lines confirm ~1 point/cycle
 

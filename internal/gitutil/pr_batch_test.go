@@ -119,6 +119,71 @@ func TestFetchPRStatesBatch_QueryErrorReturnsError(t *testing.T) {
 	testutil.Error(t, err)
 }
 
+// An invalid repo string (no owner/name split) is rejected before any query.
+func TestFetchPRStatesBatch_InvalidRepoNoQuery(t *testing.T) {
+	fake := &fakeGraphQLRunner{out: graphQLSuccess, code: 0}
+	installGraphQLRunner(t, fake.run)
+
+	_, _, err := FetchPRStatesBatch(context.Background(), "not-a-repo", map[string]string{"argus/open": "t1"})
+	testutil.Error(t, err)
+	testutil.Equal(t, fake.calls, 0)
+}
+
+// A non-zero exit with no runner error (e.g. gh prints to stderr and exits 1)
+// is still surfaced as an error so the caller keeps-stale.
+func TestFetchPRStatesBatch_NonZeroExitReturnsError(t *testing.T) {
+	fake := &fakeGraphQLRunner{out: "boom", code: 1, err: nil}
+	installGraphQLRunner(t, fake.run)
+
+	_, _, err := FetchPRStatesBatch(context.Background(), "drn/argus", map[string]string{"argus/open": "t1"})
+	testutil.Error(t, err)
+}
+
+// Malformed JSON from gh is an error, not a silent empty result.
+func TestFetchPRStatesBatch_BadJSONReturnsError(t *testing.T) {
+	fake := &fakeGraphQLRunner{out: "{not json", code: 0}
+	installGraphQLRunner(t, fake.run)
+
+	_, _, err := FetchPRStatesBatch(context.Background(), "drn/argus", map[string]string{"argus/open": "t1"})
+	testutil.Error(t, err)
+}
+
+// A well-formed envelope whose per-alias connection is malformed is an error.
+func TestFetchPRStatesBatch_BadAliasConnReturnsError(t *testing.T) {
+	const badAlias = `{
+  "data": {
+    "rateLimit": {"cost": 1, "remaining": 4999},
+    "repo": {"t1": "not-an-object"}
+  }
+}`
+	fake := &fakeGraphQLRunner{out: badAlias, code: 0}
+	installGraphQLRunner(t, fake.run)
+
+	_, _, err := FetchPRStatesBatch(context.Background(), "drn/argus", map[string]string{"argus/open": "t1"})
+	testutil.Error(t, err)
+}
+
+// An alias in the response that the caller never asked for is ignored, not mapped.
+func TestFetchPRStatesBatch_UnknownAliasIgnored(t *testing.T) {
+	const extraAlias = `{
+  "data": {
+    "rateLimit": {"cost": 2, "remaining": 4998},
+    "repo": {
+      "t1": {"nodes": [{"state": "OPEN", "isDraft": false, "reviewDecision": "APPROVED", "url": "https://github.com/drn/argus/pull/11"}]},
+      "t99": {"nodes": [{"state": "OPEN", "isDraft": false, "url": "https://github.com/drn/argus/pull/99"}]}
+    }
+  }
+}`
+	fake := &fakeGraphQLRunner{out: extraAlias, code: 0}
+	installGraphQLRunner(t, fake.run)
+
+	res, cost, err := FetchPRStatesBatch(context.Background(), "drn/argus", map[string]string{"argus/open": "t1"})
+	testutil.NoError(t, err)
+	testutil.Equal(t, cost, 2)
+	testutil.Equal(t, len(res), 1)
+	testutil.Equal(t, res["argus/open"].State, model.PRApproved)
+}
+
 // Empty branch set is a no-op: no query is issued and an empty map returns.
 func TestFetchPRStatesBatch_EmptyBranchesNoQuery(t *testing.T) {
 	fake := &fakeGraphQLRunner{out: graphQLSuccess, code: 0}
