@@ -107,24 +107,40 @@ func mapPRState(raw string, exitCode int) (model.PRState, string, error) {
 		return model.PRNone, "", fmt.Errorf("parse gh json: %w", err)
 	}
 
+	if p.State != "MERGED" && p.State != "CLOSED" && p.State != "OPEN" {
+		return model.PRNone, "", fmt.Errorf("unexpected gh pr state %q", p.State)
+	}
+	state, url := mapPRStateFromJSON(p)
+	return state, url, nil
+}
+
+// mapPRStateFromJSON is the pure state-mapping table from the design doc,
+// shared by both the single-branch path (mapPRState) and the batched path
+// (mapBatchNode). Given a decoded PR payload it returns the (PRState, url)
+// pair. It assumes a present PR — callers handle the "no PR" case (empty nodes
+// for batch, "no pull requests found" for single) before reaching here. An
+// unrecognized state falls through to PRNone, matching the connection shape
+// where unexpected values are non-actionable; mapPRState additionally surfaces
+// such states as an error for the single-fetch contract.
+func mapPRStateFromJSON(p prJSON) (model.PRState, string) {
 	switch p.State {
 	case "MERGED", "CLOSED":
-		return model.PRMergedClosed, p.URL, nil
+		return model.PRMergedClosed, p.URL
 	case "OPEN":
 		if p.IsDraft {
-			return model.PRDraft, p.URL, nil
+			return model.PRDraft, p.URL
 		}
 		switch p.ReviewDecision {
 		case "CHANGES_REQUESTED":
-			return model.PRChangesRequested, p.URL, nil
+			return model.PRChangesRequested, p.URL
 		case "APPROVED":
-			return model.PRApproved, p.URL, nil
+			return model.PRApproved, p.URL
 		default:
 			// Covers "" and "REVIEW_REQUIRED" and any future unknown values.
-			return model.PRAwaitingReview, p.URL, nil
+			return model.PRAwaitingReview, p.URL
 		}
 	default:
-		return model.PRNone, "", fmt.Errorf("unexpected gh pr state %q", p.State)
+		return model.PRNone, ""
 	}
 }
 

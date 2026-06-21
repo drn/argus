@@ -2,10 +2,10 @@
 
 ## 1. Tests
 
-- [ ] 1.1 Write failing tests in `internal/gitutil` for `FetchPRStatesBatch`: builds one aliased query for N branches, parses per-branch results, maps `nodes:[]` → `none`, resolves a deleted-merged-branch PR to `merged-closed` (table test with a fake `gh api graphql` runner seam, mirroring the existing `prRunner` injection in `pr.go`)
-- [ ] 1.2 Write failing tests for repo resolution: `owner/name` parsed from a cached `pr`/`url`; fallback to worktree default repo when no url; grouping multiple branches that share a repo into one group
-- [ ] 1.3 Write failing tests in `internal/daemon/pr_poll_test.go` for `pollPRStatesOnce` batched path: one batch call per repo group; terminal (`merged-closed`) tasks excluded before grouping; keep-stale on group-query error; authoritative write (incl. `none`) on success; chunking when a group exceeds the alias cap
-- [ ] 1.4 Confirm every `it should X` criterion in `design.md` has a corresponding failing test (Prove-It Pattern) before implementing
+- [x] 1.1 Write failing tests in `internal/gitutil` for `FetchPRStatesBatch`: builds one aliased query for N branches, parses per-branch results, maps `nodes:[]` → `none`, resolves a deleted-merged-branch PR to `merged-closed` (table test with a fake `gh api graphql` runner seam, mirroring the existing `prRunner` injection in `pr.go`)
+- [x] 1.2 Write failing tests for repo resolution: `owner/name` parsed from a cached `pr`/`url`; fallback to worktree default repo when no url; grouping multiple branches that share a repo into one group
+- [x] 1.3 Write failing tests in `internal/daemon/pr_poll_test.go` for `pollPRStatesOnce` batched path: one batch call per repo group; terminal (`merged-closed`) tasks excluded before grouping; keep-stale on group-query error; authoritative write (incl. `none`) on success; chunking when a group exceeds the alias cap
+- [x] 1.4 Confirm every `it should X` criterion in `design.md` has a corresponding failing test (Prove-It Pattern) before implementing
 
 ## 2. Batch fetcher in gitutil
 
