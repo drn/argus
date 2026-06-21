@@ -1035,25 +1035,35 @@ func (w *Widget) shiftSlot(dSlot int) {
 }
 
 // ActivateCursor performs the Enter/Space action at the cursor. Disjoint by the
-// cursor's target type (D6): on a group it fans out / collapses; Stage 6 adds
+// cursor's target type (D6): on a COLLAPSED group it fans out; on an interior
+// MEMBER of a fanned group it navigates to that member (BUG-013), exactly like a
+// plain leaf — collapse is Esc's job (EscBack), never Enter/Space; Stage 6 adds
 // the sub-coordinator drill-in and plain-leaf OnEnter branches.
 func (w *Widget) ActivateCursor() {
 	sl, ok := w.slotAt(w.cursor.Stage, w.cursor.Slot)
 	if !ok {
 		return
 	}
-	// Group target (Stage 4): toggle fan-out / collapse.
+	// Group slot (Stage 4). A collapsed group fans out; a fanned enclosure with no
+	// member selected toggles back collapsed. But a fanned group with the cursor on
+	// a MEMBER falls through to the node-target dispatch below so Enter navigates to
+	// that member instead of collapsing the group (BUG-013) — Esc is the collapse.
 	if sl.group != nil {
 		key := [2]int{w.cursor.Stage, w.cursor.Slot}
-		if w.fanned[key] {
-			delete(w.fanned, key)
-			w.cursor.Member = -1
-		} else {
+		switch {
+		case !w.fanned[key]:
 			w.fanned[key] = true
 			w.cursor.Member = 0 // land on the first member
+			w.maybeNotifyBranchChange()
+			return
+		case w.cursor.Member < 0:
+			// Fanned enclosure, no member under the cursor: toggle collapses it.
+			delete(w.fanned, key)
+			w.cursor.Member = -1
+			w.maybeNotifyBranchChange()
+			return
 		}
-		w.maybeNotifyBranchChange()
-		return
+		// Fanned group, cursor on a member: fall through to navigate to it.
 	}
 	// Node target (Stage 6): disjoint by the node's type. A sub-coordinator node
 	// drills into its child orchestrator (the consumer re-projects + pushes via

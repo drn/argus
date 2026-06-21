@@ -95,8 +95,8 @@ var HelpSections = []HelpSection{
 		Bindings: []HelpBinding{
 			{"↑↓ / j / k", "move between plan stages"},
 			{"←→ / h / l", "move slots (walk members in a fanned group)"},
-			{"Enter / space", "fan out / collapse a parallel group"},
-			{"Enter", "drill sub-coord / open leaf (revive session)"},
+			{"Enter / space", "fan out a parallel group"},
+			{"Enter", "open member/leaf, drill sub-coord, revive"},
 			{"Esc", "collapse fanned group / drill out to parent plan"},
 		},
 	},

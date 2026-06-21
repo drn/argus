@@ -286,14 +286,66 @@ func TestNav_EnterFansOutGroupLandsOnFirstMember(t *testing.T) {
 	testutil.Equal(t, w.CurrentNodeID(), "1a")
 }
 
-// TestNav_SpaceCollapsesFannedGroup: Space on a fanned group collapses it.
-func TestNav_SpaceCollapsesFannedGroup(t *testing.T) {
-	w := navGraph()
-	w.MoveStage(1)
-	w.ActivateCursor() // fan out
-	testutil.Equal(t, w.Fanned(1, 0), true)
-	w.ActivateCursor() // collapse (Enter/Space toggle on a group)
-	testutil.Equal(t, w.Fanned(1, 0), false)
+// TestNav_EnterOnMemberNavigatesNotCollapse pins BUG-013: with a group fanned
+// out and the cursor on an interior MEMBER, Enter fires OnEnter for THAT member's
+// node id and leaves the group expanded — it must NOT collapse (collapse is Esc's
+// job, asserted by the companion case). Drill-in is unaffected: a Drillable member
+// fires OnDrillIn, not OnEnter.
+func TestNav_EnterOnMemberNavigatesNotCollapse(t *testing.T) {
+	noFocus := func(tview.Primitive) {}
+	enter := func(w *Widget) {
+		w.InputHandler()(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
+	}
+
+	t.Run("Enter on a fanned member fires OnEnter and keeps the group fanned", func(t *testing.T) {
+		w := navGraph()
+		var entered string
+		w.OnEnter = func(id string) { entered = id }
+		w.MoveStage(1)     // onto the [1a–1c] group
+		w.ActivateCursor() // fan out → cursor on member 0 (1a)
+		w.MoveSlot(1)      // walk to member 1 (1b) — an interior member
+		testutil.Equal(t, w.CurrentNodeID(), "1b")
+
+		enter(w)
+		// OnEnter fired for the member's id, and the group is STILL fanned.
+		testutil.Equal(t, entered, "1b")
+		testutil.Equal(t, w.Fanned(1, 0), true)
+		testutil.Equal(t, w.CursorPos().Member, 1)
+	})
+
+	t.Run("Esc on a member still collapses the group (no BUG-001 regression)", func(t *testing.T) {
+		w := navGraph()
+		w.MoveStage(1)
+		w.ActivateCursor() // fan out → cursor on member 0
+		testutil.Equal(t, w.Fanned(1, 0), true)
+		w.InputHandler()(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone), noFocus)
+		testutil.Equal(t, w.Fanned(1, 0), false)
+		testutil.Equal(t, w.CursorPos().Member, -1)
+	})
+
+	t.Run("Enter on a Drillable member drills in, not OnEnter", func(t *testing.T) {
+		w := New()
+		var entered, drilled string
+		w.OnEnter = func(id string) { entered = id }
+		w.OnDrillIn = func(id string) { drilled = id }
+		// Two same-stage, same-blocker members form a group; both Drillable.
+		w.SetData(
+			[]Node{
+				node("0a"),
+				{ID: "1a", Name: "1a-sub", State: StateWorking, Drillable: true},
+				{ID: "1b", Name: "1b-sub", State: StateWorking, Drillable: true},
+			},
+			[]Edge{{From: "0a", To: "1a"}, {From: "0a", To: "1b"}},
+		)
+		w.SetFocused(true)
+		w.MoveStage(1)     // onto the [1a–1b] group
+		w.ActivateCursor() // fan out → cursor on member 0 (1a)
+		testutil.Equal(t, w.Fanned(1, 0), true)
+		enter(w)
+		testutil.Equal(t, drilled, "1a")
+		testutil.Equal(t, entered, "")
+		testutil.Equal(t, w.Fanned(1, 0), true) // not collapsed
+	})
 }
 
 // TestNav_MemberWalkInsideGroup mirrors "walk members on ←/→ inside a fanned-out

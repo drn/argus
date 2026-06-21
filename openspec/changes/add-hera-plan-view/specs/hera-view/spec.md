@@ -94,7 +94,7 @@ On fan-out, every member with an out-of-group edge SHALL carry a `↘` on its bo
 
 ### Requirement: Four-way plan navigation with group fan-out (area 6)
 
-The plan view SHALL support a cursor over `(stage, slot, member)`: `↑`/`↓` change the stage and collapse any fanned-out group on the way; `←`/`→` move within a stage between slots (nodes and collapsed groups); `Enter`/`Space` fan out a collapsed group or collapse a fanned-out one when the cursor is on a group. Inside a fanned-out group, `←`/`→` walk between members; stepping off either edge exits and collapses the group and moves to the adjacent slot (or clamps at the stage edge).
+The plan view SHALL support a cursor over `(stage, slot, member)`: `↑`/`↓` change the stage and collapse any fanned-out group on the way; `←`/`→` move within a stage between slots (nodes and collapsed groups); `Enter`/`Space` on a COLLAPSED group fan it out. When the cursor is on an interior MEMBER of a fanned-out group, `Enter`/`Space` SHALL navigate to that member — firing the same leaf action a plain node fires (open/jump, or drill in when the member is a sub-coordinator) — and SHALL NOT collapse the group; collapsing a fanned group is `Esc`'s job (see the Esc back-out requirement). `Enter`/`Space` on a fanned enclosure with no member under the cursor SHALL collapse it. Inside a fanned-out group, `←`/`→` walk between members; stepping off either edge exits and collapses the group and moves to the adjacent slot (or clamps at the stage edge).
 
 #### Scenario: Up/down changes stage and collapses
 
@@ -105,6 +105,11 @@ The plan view SHALL support a cursor over `(stage, slot, member)`: `↑`/`↓` c
 
 - **WHEN** the cursor is on a collapsed group and the user presses `Enter`
 - **THEN** the group fans out to show its members and the cursor lands on the first member
+
+#### Scenario: Enter on a fanned-out group member navigates to it (does not collapse)
+
+- **WHEN** a group is fanned out, the cursor is on one of its members, and the user presses `Enter`
+- **THEN** the system fires that member's leaf action (jump to / open the member, or drill in when it is a sub-coordinator) and the group stays fanned out — it does NOT collapse
 
 #### Scenario: Stepping off a group edge exits and collapses
 
