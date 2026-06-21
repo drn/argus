@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -98,8 +99,14 @@ func simApp(t *testing.T) (*tview.Application, tcell.SimulationScreen, *lazyScre
 	return app, sim, ls
 }
 
-// runApp starts the tview event loop in a goroutine and returns a function
-// to stop it and wait for shutdown.
+// runApp starts the tview event loop in a goroutine and returns a function to
+// stop it and wait for shutdown. The returned stop is idempotent and is ALSO
+// registered via t.Cleanup, so the real event loop is torn down even when a
+// caller forgets `defer stop()`. This is load-bearing: a leaked, still-running
+// app.Run() loop is the one goroutine that can busy-spin (tview spins on a nil
+// PollEvent once the screen is finalized out from under it) and — if a test
+// also hangs so m.Run() never returns and os.Exit never reaps it — orphan the
+// test binary at ~100% CPU. See gotchas/ui-threading.md.
 func runApp(t *testing.T, app *tview.Application) func() {
 	t.Helper()
 	done := make(chan struct{})
@@ -109,14 +116,19 @@ func runApp(t *testing.T, app *tview.Application) func() {
 	}()
 	// Wait for the event loop to be alive.
 	syncUI(t, app)
-	return func() {
-		app.Stop()
-		select {
-		case <-done:
-		case <-time.After(uiTimeout):
-			t.Fatal("tview event loop did not stop within timeout")
-		}
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			app.Stop()
+			select {
+			case <-done:
+			case <-time.After(uiTimeout):
+				t.Error("tview event loop did not stop within timeout")
+			}
+		})
 	}
+	t.Cleanup(stop)
+	return stop
 }
 
 // syncUI waits for injected events to propagate through the tview event loop.
@@ -167,6 +179,41 @@ func wireApp(t *testing.T, app *App) (tcell.SimulationScreen, func()) {
 	app.tapp.SetRoot(app.root, true)
 	stop := runApp(t, tApp)
 	return sim, stop
+}
+
+// TestSmoke_RunAppStopIsIdempotent verifies the stop returned by runApp can be
+// called any number of times (explicit call + the t.Cleanup-registered call)
+// without panicking, double-closing, or blocking. The idempotency is what makes
+// auto-cleanup safe to layer under the existing `defer stop()` callers.
+func TestSmoke_RunAppStopIsIdempotent(t *testing.T) {
+	app, _, _ := simApp(t)
+	app.SetRoot(tview.NewBox(), true)
+	stop := runApp(t, app)
+	stop()
+	stop() // second explicit call is a no-op; the t.Cleanup call is a third.
+}
+
+// TestSmoke_RunAppCleanupTearsDownLoop verifies runApp's t.Cleanup stops the
+// tview event loop even when the caller never invokes the returned stop(). A
+// leaked, still-running app.Run() loop is the busy-spin vector behind the
+// orphaned tui.test binary that ran at ~95% CPU for 2+ days. simApp wires a
+// plain Box (no emulator drain goroutines), so once Run() exits the goroutine
+// count returns to the pre-subtest baseline.
+func TestSmoke_RunAppCleanupTearsDownLoop(t *testing.T) {
+	base := runtime.NumGoroutine()
+	t.Run("loop", func(t *testing.T) {
+		app, _, _ := simApp(t)
+		app.SetRoot(tview.NewBox(), true)
+		_ = runApp(t, app) // intentionally NO defer stop(); rely on t.Cleanup.
+	})
+	// The subtest's cleanups have fired by now. Poll to absorb shutdown latency.
+	deadline := time.Now().Add(uiTimeout)
+	for runtime.NumGoroutine() > base && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := runtime.NumGoroutine(); n > base {
+		t.Errorf("event loop goroutine leaked after cleanup: base=%d now=%d", base, n)
+	}
 }
 
 // ---------- 1. SimulationScreen integration tests for tview setup ----------
