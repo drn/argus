@@ -51,6 +51,33 @@ func TestAttentionSummary_DrawNarrowRect_NoPanic(t *testing.T) {
 	screen.Show()
 }
 
+// TestAttentionSummary_LeftPadding asserts one cell of left padding between the
+// border and the text (BUG-004): "│ 2 tasks…" not "│2 tasks…".
+func TestAttentionSummary_LeftPadding(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(30, attentionSummaryHeight)
+
+	s := NewAttentionSummary()
+	s.SetCount(2)
+	s.SetRect(0, 0, 30, s.DesiredHeight())
+	s.Draw(screen)
+	screen.Show()
+
+	// Box at x=0: border col 0, interior col 1. Padding ⇒ col 1 blank, text at col 2.
+	pad, _, _ := screen.Get(1, 1)
+	if pad != " " && pad != "" {
+		t.Errorf("interior left column = %q, want a blank pad cell", pad)
+	}
+	first, _, _ := screen.Get(2, 1)
+	if first != "2" {
+		t.Errorf("text first cell (col 2) = %q, want %q", first, "2")
+	}
+}
+
 func TestAttentionSummary_DrawZero_NoBorder(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	if err := screen.Init(); err != nil {

@@ -1633,6 +1633,33 @@ func (a *App) syncIdleUnvisited() {
 	a.tasklist.SetIdleUnvisited(ids)
 }
 
+// needsInputInProgress filters the sticky needs-input set down to tasks that are
+// currently in_progress — the SAME gate the task list ((?) only on
+// StatusInProgress) and buildRoleView (NeedsInput only while taskInProgress)
+// apply. The needs-input scan is sticky (a finished task idling at its final
+// prompt keeps the marker in its log tail), so without this gate the Hera
+// attention-summary box counts unmanaged tasks that have already finished — they
+// show no "(?)" in the task list or rail, but the box would still tally them
+// (BUG-005). Pure (no receiver state) so it is unit-testable.
+func needsInputInProgress(ids []string, tasks []*model.Task) []string {
+	if len(ids) == 0 {
+		return ids
+	}
+	inProgress := make(map[string]bool, len(tasks))
+	for _, t := range tasks {
+		if t.Status == model.StatusInProgress {
+			inProgress[t.ID] = true
+		}
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if inProgress[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // updateAttentionBar feeds the agent view's attention bar with the names of
 // tasks currently blocked on a user prompt (the `needsInputIDs` set computed
 // by refreshTasksWithIDs). The currently-viewed task is excluded so the bar
@@ -1946,11 +1973,17 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	a.syncIdleUnvisited()
 	a.needsInputIDs = a.detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput)
 	a.tasklist.SetNeedsInput(a.needsInputIDs)
-	// Feed the SAME authoritative needs-input set to the Hera rail so a blocked
-	// worker shows "(?)" and the rollup bubbles it up to ancestor coordinators
-	// (BUG-018). Cheap pure setter; the rebuild is scheduled below when the tab is
-	// active. Always non-nil (created at construction); remote mode no-ops.
-	a.heraPage.SetNeedsInput(a.needsInputIDs)
+	// Feed the authoritative needs-input set to the Hera rail so a blocked worker
+	// shows "(?)" and the rollup bubbles it up to ancestor coordinators (BUG-018).
+	// Gated to in_progress tasks: the set is STICKY (a finished task idling at its
+	// final prompt keeps the marker), and both the task list ((?) only on
+	// StatusInProgress) and buildRoleView (NeedsInput only while in_progress) apply
+	// this gate — so the Hera attention-summary box must too, else it tallies
+	// finished unmanaged tasks that show no "(?)" anywhere (BUG-005). Pre-gating
+	// here is a no-op for the rail rollup (buildRoleView re-gates) and the deliberate
+	// hera `blocked` status (an independent source). Cheap pure setter; the rebuild
+	// is scheduled below when the tab is active. Remote mode no-ops.
+	a.heraPage.SetNeedsInput(needsInputInProgress(a.needsInputIDs, a.tasks))
 	a.tasklist.SetPRStates(a.readPRStates())
 	heraWorkers, heraCoordinators := a.readHeraRoles()
 	a.tasklist.SetHeraWorkers(heraWorkers)
