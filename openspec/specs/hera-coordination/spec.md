@@ -5,9 +5,7 @@
 Hera Coordination is the native substrate beneath the Hera View: the role/orchestrator/binding storage model, the nine `hera_*` MCP tools an agent uses to bootstrap and participate in a coordination session, the born-bound worker spawn primitive, the subtree TLDR roll-up, and the daemon-startup binding reconciliation. It runs in-process in the daemon and reuses primitives Argus already owns (the runner, the worktree engine, the SQLite store).
 
 This is a faithful capture of current native behavior, mirroring the plugin's `hera-coordination` capability split. Each requirement cites the `file:line` it was derived from. Where native is materially different from the plugin, a `NOTE:` flags it.
-
 ## Requirements
-
 ### Requirement: Orchestrator, role, and binding storage model
 
 The system SHALL store orchestrators (`hera_orchestrators`), roles of kind `coordinator`/`worker`/`freelance` (`hera_roles`), and role↔task bindings (`hera_bindings`). It SHALL enforce, via partial unique indexes over `WHERE ended_at IS NULL`: at most one live binding per role, one live binding per (argus task, orchestrator), and one live binding per (worktree path, orchestrator). A single argus task MAY therefore hold live bindings under several distinct orchestrators at once, but never two under the same one.
@@ -26,9 +24,7 @@ Derived from: `internal/db/schema.go:447` (live-role unique index), `internal/db
 
 ### Requirement: Native hera_* MCP tool surface
 
-The system SHALL register exactly nine native `hera_*` MCP tools with the same names, parameters, descriptions, and required lists as the external Hera daemon: `hera_new_orchestrator`, `hera_join`, `hera_send`, `hera_inbox`, `hera_mark_read`, `hera_status`, `hera_spawn_worker`, `hera_tree_updates`, and `hera_get_messages`. The tools SHALL be available only when the hera service is wired AND task management is enabled (caller resolution via `cwd` requires task management). A dup-tool guard SHALL suppress any plugin tool scoped `hera` while native Hera is enabled, so in-tree and plugin tools never both appear.
-
-Derived from: `internal/mcp/hera.go:54` (`heraToolDefs`, the nine tools), `internal/mcp/hera.go:202` (`SetHeraService`), `internal/mcp/hera.go:210` (`heraEnabled`).
+The system SHALL register twelve native `hera_*` MCP tools with the same names, parameters, descriptions, and required lists as the external Hera daemon where they overlap: `hera_new_orchestrator`, `hera_join`, `hera_send`, `hera_inbox`, `hera_mark_read`, `hera_status`, `hera_spawn_worker`, `hera_tree_updates`, `hera_get_messages`, and the three plan-authoring tools `hera_plan_node`, `hera_block`, and `hera_plan`. The plan-authoring tools SHALL be coordinator-only (a worker or freelance caller is rejected, mirroring `hera_spawn_worker`): `hera_plan_node` creates a planned node, `hera_block` adds a blocking edge (cycle-checked, single-orchestrator), and `hera_plan` submits a whole graph of nodes and edges in one call. The tools SHALL be available only when the hera service is wired AND task management is enabled (caller resolution via `cwd` requires task management). A dup-tool guard SHALL suppress any plugin tool scoped `hera` while native Hera is enabled, so in-tree and plugin tools never both appear.
 
 #### Scenario: Tools require task management
 
@@ -39,6 +35,16 @@ Derived from: `internal/mcp/hera.go:54` (`heraToolDefs`, the nine tools), `inter
 
 - **WHEN** native Hera is enabled
 - **THEN** any plugin tool scoped `hera` is suppressed so only the in-tree tools appear
+
+#### Scenario: Plan-authoring tools are coordinator-only
+
+- **WHEN** a worker or freelance role calls `hera_plan_node`, `hera_block`, or `hera_plan`
+- **THEN** the tool errors that only coordinators may author the plan
+
+#### Scenario: Whole-graph submission in one call
+
+- **WHEN** a coordinator calls `hera_plan` with a set of nodes and blocking edges
+- **THEN** the planned nodes and their cycle-checked edges are created together
 
 ### Requirement: Caller role resolution from cwd with orchestrator disambiguation
 
@@ -102,7 +108,7 @@ Derived from: `internal/mcp/hera.go:358` (`toolHeraJoin`), `internal/mcp/hera.go
 
 The system SHALL, on `hera_spawn_worker`, require the caller to hold a live COORDINATOR binding and create a new argus task (worktree + session) plus, transactionally, a worker role+binding pre-bound to it. The role+binding write is an `AfterPersist` hook inside `agent.CreateAndStart`, joining its LIFO compensating-cleanup stack so any failure unwinds every prior step. The worker's project defaults to the COORDINATOR'S OWN TASK project (authoritative, not `role.ArgusProject`). The role name defaults to a slug of the prompt and is uniquified within the orchestrator. An orientation prefix naming the coordinator + orchestrator is prepended to the delivered prompt; the verbatim prompt is also stored on the role. An optional per-worker `model` is passed through. Required args: `cwd`, `prompt`.
 
-Derived from: `internal/mcp/hera.go:708` (`toolHeraSpawnWorker`), `internal/mcp/hera.go:739` (coordinator-only guard), `internal/mcp/hera.go:746` (project resolution), `internal/mcp/hera.go:767` (orientation prefix), `context/knowledge/gotchas/hera-view.md` (shared `agent.SpawnHeraWorker` primitive).
+The same born-bound transactional spawn SHALL also be reachable as a **materialization** path against a **pre-created planned role**: instead of minting a fresh role, `agent.CreateAndStart` binds and starts the supplied planned role (created earlier via the plan-authoring tools), reusing the identical `AfterPersist` + LIFO-cleanup machinery. Materialization is the only way a planned node acquires a binding, agent, worktree, and inbox; born-bound `hera_spawn_worker` (no pre-created role) remains the immediate "spawn now" path and is unchanged.
 
 #### Scenario: Non-coordinator caller is rejected
 
@@ -118,6 +124,11 @@ Derived from: `internal/mcp/hera.go:708` (`toolHeraSpawnWorker`), `internal/mcp/
 
 - **WHEN** the role+binding insert or the later session start fails
 - **THEN** the LIFO compensating stack unwinds the task, worktree, and any prior steps, leaving no orphan worktree, branch, or ghost row
+
+#### Scenario: Materialization binds a pre-created planned role
+
+- **WHEN** a planned role is materialized
+- **THEN** CreateAndStart binds and starts that existing role (rather than creating a new one), reusing the same AfterPersist and LIFO-cleanup machinery
 
 ### Requirement: hera_status updates role status and rolls a finished worker
 
@@ -142,11 +153,11 @@ Derived from: `internal/mcp/hera.go:643` (`toolHeraStatus`), `internal/mcp/hera.
 
 ### Requirement: Subtree TLDR roll-up via hera_tree_updates
 
-The system SHALL, on `hera_tree_updates`, scan the caller's orchestrator subtree for messages newer than a cursor and return TLDR-only subject lines (no bodies), capped at 200, with a `next_cursor` equal to the max id returned. The subtree is every orchestrator reachable from the caller's by multi-binding BFS: a child orchestrator hangs off a frontier when its live, non-archived coordinator role's task also holds a live binding under the frontier; archived orchestrators are excluded as descendants (the root is always included). The cursor is stored per-role and auto-advances unless the caller pins an explicit `since` (which overrides and does not advance the stored cursor).
+The system SHALL, on `hera_tree_updates`, scan the caller's orchestrator subtree for messages newer than a cursor and return TLDR-only subject lines (no bodies), capped at 200, with a `next_cursor` equal to the max id returned. The subtree is every orchestrator reachable from the caller's by multi-binding BFS: a child orchestrator hangs off a frontier when its non-archived coordinator role's task ALSO has its LATEST binding under the frontier — regardless of that binding's liveness — unless that latest binding ended via an operator teardown (`reparented`/`user_deleted`), which severs the link; archived orchestrators are excluded as descendants (the root is always included). The cursor is stored per-role and auto-advances unless the caller pins an explicit `since` (which overrides and does not advance the stored cursor).
 
 Derived from: `internal/mcp/hera.go:797` (`toolHeraTreeUpdates`), `internal/db/hera_subtree.go:55` (`SubtreeOrchIDs` BFS), `internal/db/hera_subtree.go:125` (`HeraTreeUpdatesSince`), `internal/db/hera_subtree.go:33` (`HeraTreeUpdatesLimit` = 200).
 
-`NOTE:` Native's subtree bridges ONLY through bindings with `ended_at IS NULL` (`workerTaskSet` also requires `r.Live`). Per `docs/RAIL-PARITY-ANALYSIS.md` (Gap #2), the plugin bridges on a coordinator's LATEST binding regardless of liveness (excluding only `reparented`/`user_deleted` end reasons), so native's tree is structurally narrower — it drops every bridge whose binding ended for a benign reason. This is a documented native-vs-plugin difference that persists even with complete data.
+`NOTE:` Native's subtree bridges through each coordinator role's LATEST binding regardless of liveness — the `latest` CTE in `internal/db/hera_subtree.go` selects the max binding id per role, so a child whose coordinator session has finished still nests under its parent. Only a latest binding ended via an operator teardown (`reparented`/`user_deleted`) severs the link; every other end reason leaves the structural bridge intact. Since the #747 rail-parity rewrite this matches the plugin's bridging (per `docs/RAIL-PARITY-ANALYSIS.md`, Gap #2) — native is no longer structurally narrower.
 
 #### Scenario: TLDR-only roll-up with paging cursor
 
@@ -201,3 +212,33 @@ Derived from: `internal/heraadopt/heraadopt.go:34` (`ReconcileBindings`).
 
 - **WHEN** the task lookup returns a transient (non-not-found) error
 - **THEN** the binding is left live for a later boot to re-sweep
+
+### Requirement: Plan-authoring tools accept a sub-coordinator node kind and goal
+
+The plan-authoring tools `hera_plan_node` and `hera_plan` SHALL accept an optional node **kind** parameter with values `worker` (the default) and `subcoord`, and for a `subcoord` node SHALL accept a **goal** prompt and nothing further — the tools SHALL NOT accept a child-orchestrator name or coordinator-role name (the parent hands only the goal; those are derived at materialize time and the sub-coordinator owns its plan). When the kind is omitted or `worker`, the tools SHALL create a leaf-worker planned node exactly as before. When the kind is `subcoord`, the tools SHALL create a planned node carrying the `subcoord` discriminator and goal (for the gater's coordinator materialize path), rejecting the request when the goal is absent. The coordinator-only guard SHALL apply to `subcoord` nodes identically to worker nodes — a worker or freelance caller SHALL be rejected. In `hera_plan`'s whole-graph submission, individual nodes SHALL be independently typeable as `worker` or `subcoord`, and a blocking edge MAY reference a `subcoord` node on either endpoint.
+
+#### Scenario: hera_plan_node accepts a sub-coordinator node
+
+- **WHEN** a coordinator calls `hera_plan_node` with kind `subcoord` and a goal
+- **THEN** a planned node carrying the `subcoord` discriminator and goal is created
+
+#### Scenario: Sub-coordinator node requires a goal
+
+- **WHEN** a coordinator calls `hera_plan_node` or `hera_plan` with a `subcoord` node that has no goal
+- **THEN** the tool rejects the request with an error that a sub-coordinator node requires a goal
+
+#### Scenario: Omitted kind creates a leaf worker
+
+- **WHEN** a coordinator authors a node without specifying a kind
+- **THEN** a leaf-worker planned node is created, unchanged from the substrate
+
+#### Scenario: Whole-graph submission mixes node kinds
+
+- **WHEN** a coordinator calls `hera_plan` with some `worker` nodes and some `subcoord` nodes connected by blocking edges
+- **THEN** each node is created with its specified kind and the cycle-checked edges are created together
+
+#### Scenario: Non-coordinator cannot author a sub-coordinator node
+
+- **WHEN** a worker or freelance role calls `hera_plan_node` or `hera_plan` to create a `subcoord` node
+- **THEN** the tool errors that only coordinators may author the plan
+

@@ -1,3 +1,11 @@
+## RENAMED Requirements
+
+- FROM: `### Requirement: Details region stacks roster over the orchestration tree (area 6)`
+- TO: `### Requirement: Details region stacks roster over the plan DAG (area 6)`
+
+- FROM: `### Requirement: Orchestration tree projects the role hierarchy in-memory (area 6)`
+- TO: `### Requirement: Plan DAG projects blocking edges and planned nodes in-memory (area 6)`
+
 ## MODIFIED Requirements
 
 ### Requirement: Details region stacks roster over the plan DAG (area 6)

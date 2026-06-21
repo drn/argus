@@ -3,9 +3,7 @@
 ## Purpose
 
 The data persistence capability is the durable store for tasks, projects, backends, and scalar configuration. It owns a single SQLite database under the argus data directory, creates and evolves its schema on open, seeds sensible defaults on first run, and exposes thread-safe create/read/update/delete operations. All other capabilities depend on it as the source of truth for persisted state, so its contracts (ID generation, not-found signalling, transactional grouping, and concurrent-write safety) must be stable.
-
 ## Requirements
-
 ### Requirement: Database open and initialization
 
 The store SHALL open or create a SQLite database at a caller-supplied path, creating any missing parent directories, ensuring all required tables and indexes exist, and applying default seeding and backend fixups before returning a usable handle. If the directory cannot be created or the file is not a valid SQLite database, Open SHALL return an error rather than a partially-initialized handle.
@@ -270,3 +268,18 @@ The store SHALL serialize concurrent access so that reads and writes from multip
 
 - **WHEN** multiple goroutines read and write through the store concurrently
 - **THEN** operations complete without data corruption and reads observe well-formed rows
+
+### Requirement: Orchestrator-scoped blocking-edge query
+
+The store SHALL expose `ListHeraBlocks(orchID)` returning every `hera_blocks` edge whose endpoints belong to the given orchestrator, as `(blocked_role_id, blocker_role_id)` pairs. This complements the substrate's per-role `HeraBlockersOf` with a single bulk read for the whole orchestrator, so the plan view can project all edges without N per-node queries. The result is deterministically ordered (by blocked then blocker role id) and excludes edges whose endpoints are archived or nuked roles, consistent with how the view filters roles.
+
+#### Scenario: Returns all edges for an orchestrator
+
+- **WHEN** an orchestrator has blocking edges `3a←2b` and `2a←1a`
+- **THEN** `ListHeraBlocks(orchID)` returns both pairs in deterministic order
+
+#### Scenario: Empty when no plan authored
+
+- **WHEN** an orchestrator has no blocking edges
+- **THEN** `ListHeraBlocks(orchID)` returns an empty slice without error
+
