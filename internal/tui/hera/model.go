@@ -25,6 +25,13 @@ type RoleView struct {
 	Live         bool   // has a live binding
 	ReadyToClose bool   // bound task carries meta:hera.ready_to_close=true
 	Archived     bool   // role archived_at set
+	// Pinned is true when the role's hera_roles.pinned_at is set. A pinned
+	// non-root role FLOATS out of its parent subtree into the rail's Pinned
+	// section as a two-line breadcrumb entry (rail.collectPinnedRoles). Pin and
+	// archive are mutually exclusive (db.PinHeraRole clears archived_at). Without
+	// this projection the existing P→Ops.PinToggle→db.PinHeraRole path stamped
+	// pinned_at yet rendered nothing — a silent no-op (add-hera-pin-nonroot).
+	Pinned bool
 	// NeedsInput is the role's OWN needs-input signal: its live binding's argus
 	// task is currently blocked on a user prompt per the SAME authoritative set
 	// the task list consumes (App.needsInputIDs — the idle-gated, sticky
@@ -788,6 +795,7 @@ func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.
 		Name:         role.Name,
 		Kind:         role.Kind,
 		Archived:     role.ArchivedAt != nil,
+		Pinned:       role.PinnedAt != nil,
 		CreatedAt:    role.CreatedAt,
 		ArgusProject: role.ArgusProject,
 		Prompt:       role.Prompt,
