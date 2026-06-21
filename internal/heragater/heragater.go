@@ -369,6 +369,15 @@ const (
 // pending), and "failed" once its session has ended (task no longer in_progress
 // AND not pending, or the binding has been ended) without ever reaching done.
 func (w *Watcher) blockerOutcome(blockerID int64) blockerOutcome {
+	// A cancelled planned node is treated as satisfied (non-blocking): its
+	// dependent can proceed even though the node was never materialized. This
+	// check runs first so a cancelled never-bound node is not mistakenly treated
+	// as still-working (the never-started path further below would return
+	// blockerWorking, but that would incorrectly block dependents forever).
+	if role, err := w.db.HeraRole(blockerID); err == nil && role.CancelledAt != nil {
+		return blockerDone
+	}
+
 	if st, err := w.db.HeraRoleStatusFor(blockerID); err == nil {
 		switch st.Status {
 		case db.HeraStatusDone:

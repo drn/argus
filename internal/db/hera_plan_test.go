@@ -499,3 +499,167 @@ func TestHeraRoleHasBinding(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, has, true)
 }
+
+// --- RemoveHeraBlock ---
+
+func TestRemoveHeraBlock_RemovesEdge(t *testing.T) {
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+	a := plannedRole(t, d, orch, "a")
+	b := plannedRole(t, d, orch, "b")
+	testutil.NoError(t, d.AddHeraBlock(b.ID, a.ID))
+
+	// Verify edge exists.
+	blockers, err := d.HeraBlockersOf(b.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(blockers), 1)
+
+	// Remove it.
+	testutil.NoError(t, d.RemoveHeraBlock(b.ID, a.ID))
+
+	// Edge is gone.
+	after, err := d.HeraBlockersOf(b.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(after), 0)
+}
+
+func TestRemoveHeraBlock_IdempotentOnMissingEdge(t *testing.T) {
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+	a := plannedRole(t, d, orch, "a")
+	b := plannedRole(t, d, orch, "b")
+
+	// No edge was ever added — removing it must be a no-op (no error).
+	testutil.NoError(t, d.RemoveHeraBlock(b.ID, a.ID))
+}
+
+func TestRemoveHeraBlock_OnlyRemovesTargetEdge(t *testing.T) {
+	// When a node has two blockers, removing one must leave the other intact.
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+	a := plannedRole(t, d, orch, "a")
+	b := plannedRole(t, d, orch, "b")
+	c := plannedRole(t, d, orch, "c")
+	testutil.NoError(t, d.AddHeraBlock(c.ID, a.ID))
+	testutil.NoError(t, d.AddHeraBlock(c.ID, b.ID))
+
+	testutil.NoError(t, d.RemoveHeraBlock(c.ID, a.ID))
+
+	blockers, err := d.HeraBlockersOf(c.ID)
+	testutil.NoError(t, err)
+	testutil.DeepEqual(t, blockers, []int64{b.ID})
+}
+
+// --- UpdateHeraPlannedNode ---
+
+func TestUpdateHeraPlannedNode_UpdatesPromptAndProject(t *testing.T) {
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+	r := plannedRole(t, d, orch, "w")
+
+	testutil.NoError(t, d.UpdateHeraPlannedNode(r.ID, "new prompt", "new-proj"))
+
+	got, err := d.HeraRole(r.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Prompt, "new prompt")
+	testutil.Equal(t, got.ArgusProject, "new-proj")
+}
+
+func TestUpdateHeraPlannedNode_PreservesProjectOnEmpty(t *testing.T) {
+	// An empty project string must leave the existing project unchanged.
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+	r := plannedRole(t, d, orch, "w") // argus_project="proj" from plannedRole helper
+
+	testutil.NoError(t, d.UpdateHeraPlannedNode(r.ID, "new prompt", ""))
+
+	got, err := d.HeraRole(r.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Prompt, "new prompt")
+	testutil.Equal(t, got.ArgusProject, "proj") // unchanged
+}
+
+// --- CancelHeraPlannedNode ---
+
+func TestCancelHeraPlannedNode_StampsCancelledAt(t *testing.T) {
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+	r := plannedRole(t, d, orch, "w")
+	testutil.Nil(t, r.CancelledAt)
+
+	testutil.NoError(t, d.CancelHeraPlannedNode(r.ID))
+
+	got, err := d.HeraRole(r.ID)
+	testutil.NoError(t, err)
+	if got.CancelledAt == nil {
+		t.Fatal("expected CancelledAt to be set after cancel")
+	}
+}
+
+func TestCancelHeraPlannedNode_Idempotent(t *testing.T) {
+	// A second cancel must preserve the original timestamp, not clobber it.
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+	r := plannedRole(t, d, orch, "w")
+
+	testutil.NoError(t, d.CancelHeraPlannedNode(r.ID))
+	first, err := d.HeraRole(r.ID)
+	testutil.NoError(t, err)
+	if first.CancelledAt == nil {
+		t.Fatal("expected CancelledAt after first cancel")
+	}
+
+	testutil.NoError(t, d.CancelHeraPlannedNode(r.ID))
+	second, err := d.HeraRole(r.ID)
+	testutil.NoError(t, err)
+	if second.CancelledAt == nil {
+		t.Fatal("expected CancelledAt after second cancel")
+	}
+
+	// COALESCE preserves the first timestamp — both reads return the same value.
+	if !first.CancelledAt.Equal(*second.CancelledAt) {
+		t.Fatalf("idempotent cancel changed timestamp: first=%v second=%v", first.CancelledAt, second.CancelledAt)
+	}
+}
+
+func TestCancelHeraPlannedNode_ExcludedFromListHeraPlannedNodes(t *testing.T) {
+	// A cancelled node must NOT appear in ListHeraPlannedNodes — the gater must
+	// never attempt to materialize it.
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+	active := plannedRole(t, d, orch, "active")
+	toCancel := plannedRole(t, d, orch, "cancelled")
+
+	testutil.NoError(t, d.CancelHeraPlannedNode(toCancel.ID))
+
+	nodes, err := d.ListHeraPlannedNodes()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(nodes), 1)
+	testutil.Equal(t, nodes[0].ID, active.ID)
+}
+
+func TestCancelHeraPlannedNode_StillVisibleViaByID(t *testing.T) {
+	// Cancelled nodes are kept in the DB (not deleted): HeraRole(id) and
+	// ListHeraBlocks still surface them (for the plan view).
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+	dep := plannedRole(t, d, orch, "dep")
+	blocker := plannedRole(t, d, orch, "blocker")
+	testutil.NoError(t, d.AddHeraBlock(dep.ID, blocker.ID))
+	testutil.NoError(t, d.CancelHeraPlannedNode(blocker.ID))
+
+	// By-id lookup still works.
+	got, err := d.HeraRole(blocker.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.ID, blocker.ID)
+	if got.CancelledAt == nil {
+		t.Fatal("expected CancelledAt to be set")
+	}
+
+	// ListHeraBlocks still surfaces the edge (plan view needs it to render the
+	// cancelled node in its position in the graph).
+	blocks, err := d.ListHeraBlocks(orch)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(blocks), 1)
+	testutil.Equal(t, blocks[0].BlockerRoleID, blocker.ID)
+}

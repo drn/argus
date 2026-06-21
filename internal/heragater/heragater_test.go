@@ -588,6 +588,80 @@ func TestGater_ExplicitFailedBlockerHoldsWithoutSessionEnd(t *testing.T) {
 	testutil.Equal(t, tk.Status, model.StatusInProgress)
 }
 
+// --- Cancelled-node gater tests (make-hera-plan-living) ---
+
+// TestGater_CancelledNodeNeverMaterializes verifies that a cancelled planned node
+// is excluded from the gater's planned set and is never materialized, even when
+// it has no blockers and would otherwise be ready.
+func TestGater_CancelledNodeNeverMaterializes(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	node := f.planned(t, orch, "1a")
+
+	testutil.NoError(t, f.d.CancelHeraPlannedNode(node.ID))
+
+	f.w.Tick()
+
+	// A cancelled node must never be spawned.
+	testutil.Equal(t, len(f.materialized()), 0)
+	testutil.Equal(t, f.pingCount(), 0)
+}
+
+// TestGater_DependentOfCancelledBlockerBecomesReady verifies that a planned node
+// whose ONLY unsatisfied blocker is cancelled is classified stateReady and
+// materializes. The cancelled blocker is treated as "done" (non-blocking) so the
+// dependent can proceed.
+//
+// The blocker is a live bound worker (in_progress, role-status working) so it
+// keeps the dependent planned on the first tick. After the blocker role is
+// cancelled, the dependent must materialize.
+func TestGater_DependentOfCancelledBlockerBecomesReady(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+
+	// Use f.boundWorker so the blocker has a real task row in the DB.
+	blocker := f.boundWorker(t, orch, "1a", model.StatusInProgress, db.HeraStatusWorking)
+	node := f.planned(t, orch, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, blocker.ID))
+
+	// Before cancel: node stays planned (blocker is still working).
+	f.w.Tick()
+	testutil.Equal(t, len(f.materialized()), 0)
+	testutil.Equal(t, f.pingCount(), 0)
+
+	// Cancel the blocker role — its dependent's only blocker is now non-blocking.
+	testutil.NoError(t, f.d.CancelHeraPlannedNode(blocker.ID))
+
+	f.w.Tick()
+
+	mat := f.materialized()
+	testutil.Equal(t, len(mat), 1)
+	testutil.Equal(t, mat[0].ID, node.ID)
+	testutil.Equal(t, f.pingCount(), 0) // no hold-ping — it was ready, not held
+}
+
+// TestGater_CancelledBlockerAmongMultipleStillAllowsReady verifies that when a
+// node has two blockers — one done and one cancelled — it is classified ready
+// and materializes (both are treated as satisfied).
+func TestGater_CancelledBlockerAmongMultipleStillAllowsReady(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+
+	done := f.boundWorker(t, orch, "1a", model.StatusInReview, db.HeraStatusDone)
+	cancelled := f.planned(t, orch, "1b")
+	node := f.planned(t, orch, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, done.ID))
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, cancelled.ID))
+
+	testutil.NoError(t, f.d.CancelHeraPlannedNode(cancelled.ID))
+
+	f.w.Tick()
+
+	mat := f.materialized()
+	testutil.Equal(t, len(mat), 1)
+	testutil.Equal(t, mat[0].ID, node.ID)
+}
+
 // TestGater_PlannedDependentReWaitsWhenBlockerReopens covers "Planned dependents
 // re-wait when a blocker reopens": a done blocker returns to working before the
 // dependent materialized; the gater reads the current status and keeps the

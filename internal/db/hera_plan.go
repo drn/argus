@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -355,9 +356,9 @@ func (d *DB) ListHeraPlannedNodes() ([]*HeraRole, error) {
 	defer d.mu.Unlock()
 	rows, err := d.conn.Query(
 		`SELECT r.id, r.orchestrator_id, r.name, r.kind, r.argus_project, r.prompt,
-		        r.created_at, r.archived_at, r.pinned_at, r.nuked_at, r.node_kind
+		        r.created_at, r.archived_at, r.pinned_at, r.nuked_at, r.node_kind, r.cancelled_at
 		 FROM hera_roles r
-		 WHERE r.kind=? AND r.archived_at IS NULL
+		 WHERE r.kind=? AND r.archived_at IS NULL AND r.cancelled_at IS NULL
 		   AND NOT EXISTS (SELECT 1 FROM hera_bindings b WHERE b.role_id = r.id)
 		 ORDER BY r.id ASC`,
 		string(HeraKindWorker))
@@ -374,6 +375,64 @@ func (d *DB) ListHeraPlannedNodes() ([]*HeraRole, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// RemoveHeraBlock removes the blocking edge (blockedRoleID waits on
+// blockerRoleID). Idempotent: deleting a non-existent edge returns nil.
+func (d *DB) RemoveHeraBlock(blockedRoleID, blockerRoleID int64) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.conn.Exec(
+		`DELETE FROM hera_blocks WHERE blocked_role_id=? AND blocker_role_id=?`,
+		blockedRoleID, blockerRoleID)
+	if err != nil {
+		return fmt.Errorf("remove hera block: %w", err)
+	}
+	// Idempotent: zero rows affected is not an error.
+	slog.Info(fmt.Sprintf("[hera plan] removed block edge blocked=%d blocker=%d", blockedRoleID, blockerRoleID))
+	return nil
+}
+
+// UpdateHeraPlannedNode updates the prompt and optionally the argus_project of a
+// planned node. project is only updated when non-empty — an empty string
+// preserves the existing value. The materialized-vs-planned guard belongs in the
+// MCP layer; this function updates any role unconditionally.
+func (d *DB) UpdateHeraPlannedNode(roleID int64, prompt, project string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var err error
+	if project != "" {
+		_, err = d.conn.Exec(
+			`UPDATE hera_roles SET prompt=?, argus_project=? WHERE id=?`,
+			prompt, project, roleID)
+	} else {
+		_, err = d.conn.Exec(
+			`UPDATE hera_roles SET prompt=? WHERE id=?`,
+			prompt, roleID)
+	}
+	if err != nil {
+		return fmt.Errorf("update hera planned node: %w", err)
+	}
+	slog.Info(fmt.Sprintf("[hera plan] updated planned node role=%d", roleID))
+	return nil
+}
+
+// CancelHeraPlannedNode stamps cancelled_at on a planned node. Idempotent: a
+// node that is already cancelled is a no-op (cancelled_at is preserved via
+// COALESCE). The node is kept in the DB for the plan view but excluded from
+// materialization (ListHeraPlannedNodes adds AND cancelled_at IS NULL) and
+// treated as non-blocking by the gater.
+func (d *DB) CancelHeraPlannedNode(roleID int64) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.conn.Exec(
+		`UPDATE hera_roles SET cancelled_at=COALESCE(cancelled_at, ?) WHERE id=?`,
+		formatTime(time.Now()), roleID)
+	if err != nil {
+		return fmt.Errorf("cancel hera planned node: %w", err)
+	}
+	slog.Info(fmt.Sprintf("[hera plan] cancelled planned node role=%d", roleID))
+	return nil
 }
 
 // HeraRoleHasBinding reports whether a role has EVER held a binding (live or

@@ -152,6 +152,9 @@ type HeraOrchestrator struct {
 // NodeKind is the plan-node discriminator (add-hera-subcoord-nodes): only
 // meaningful on planned roles (no binding ever); defaults to HeraNodeKindWorker
 // when the DB column is NULL or absent.
+// CancelledAt (make-hera-plan-living) is non-nil when the coordinator has
+// cancelled a planned node; the node is kept in the DB but excluded from
+// materialization and treated as non-blocking by the gater.
 type HeraRole struct {
 	ID             int64
 	OrchestratorID int64
@@ -164,6 +167,7 @@ type HeraRole struct {
 	ArchivedAt     *time.Time
 	PinnedAt       *time.Time
 	NukedAt        *time.Time
+	CancelledAt    *time.Time
 }
 
 // HeraBinding is one (role, argus task) incarnation. OrchestratorID is
@@ -447,7 +451,7 @@ func (d *DB) ListHeraRoles(orchID int64, includeArchived bool) ([]*HeraRole, err
 
 	// Nuked roles (Tier-2 EOL) are invisible to the rail-feeding list regardless
 	// of includeArchived — recoverable only by id lookup (HeraRole).
-	query := `SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind
+	query := `SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at
 	          FROM hera_roles WHERE orchestrator_id=? AND nuked_at IS NULL`
 	if !includeArchived {
 		query += ` AND archived_at IS NULL`
@@ -478,7 +482,7 @@ func (d *DB) ListHeraRolesByKind(orchID int64, kind HeraRoleKind) ([]*HeraRole, 
 	defer d.mu.Unlock()
 
 	rows, err := d.conn.Query(
-		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at
 		 FROM hera_roles WHERE orchestrator_id=? AND kind=? AND archived_at IS NULL ORDER BY name ASC`,
 		orchID, string(kind))
 	if err != nil {
@@ -586,14 +590,14 @@ func (d *DB) DeleteHeraRole(id int64) error {
 
 func (d *DB) heraRoleByID(id int64) (*HeraRole, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at
 		 FROM hera_roles WHERE id=?`, id)
 	return scanHeraRole(row)
 }
 
 func (d *DB) heraRoleByActiveName(orchID int64, name string) (*HeraRole, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at
 		 FROM hera_roles WHERE orchestrator_id=? AND name=? AND archived_at IS NULL`, orchID, name)
 	return scanHeraRole(row)
 }
@@ -1231,9 +1235,9 @@ func scanHeraOrchestrator(s rowScanner) (*HeraOrchestrator, error) {
 func scanHeraRole(s rowScanner) (*HeraRole, error) {
 	var r HeraRole
 	var kind, createdAt string
-	var archivedAt, pinnedAt, nukedAt, nodeKind sql.NullString
+	var archivedAt, pinnedAt, nukedAt, nodeKind, cancelledAt sql.NullString
 	if err := s.Scan(&r.ID, &r.OrchestratorID, &r.Name, &kind, &r.ArgusProject, &r.Prompt,
-		&createdAt, &archivedAt, &pinnedAt, &nukedAt, &nodeKind); err != nil {
+		&createdAt, &archivedAt, &pinnedAt, &nukedAt, &nodeKind, &cancelledAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrHeraNotFound
 		}
@@ -1251,6 +1255,7 @@ func scanHeraRole(s rowScanner) (*HeraRole, error) {
 	} else {
 		r.NodeKind = HeraNodeKindWorker
 	}
+	r.CancelledAt = nullTimePtr(cancelledAt)
 	return &r, nil
 }
 
