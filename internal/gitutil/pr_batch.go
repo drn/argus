@@ -76,26 +76,31 @@ type graphQLBatchResponse struct {
 // branch name to its alias id (already sanitized by the caller into a valid
 // GraphQL identifier); the returned map is keyed by branch name.
 //
+// The returned int is the GraphQL complexity cost GitHub billed this query
+// (parsed from data.rateLimit.cost) — the observability hook the daemon logs
+// per repo (Decision 4, design.md). It is 0 on an empty-branches no-op and on
+// any error path (no query was billed, or the response could not be parsed).
+//
 // Decision 1/3 (design.md): one query per repo group, billed at ~1 GraphQL
 // complexity point regardless of branch count. Chunking a group that exceeds
 // the alias cap is the caller's (daemon's) responsibility — this primitive
 // issues exactly one query for whatever branches it is handed.
 //
 // Return contract:
-//   - empty branches → (empty map, nil), no query issued.
-//   - whole-query transport/JSON error → (nil, err); the caller keeps every
+//   - empty branches → (empty map, 0, nil), no query issued.
+//   - whole-query transport/JSON error → (nil, 0, err); the caller keeps every
 //     cached value in the group stale (Decision 4).
-//   - success → map[branch]PRResult; an empty nodes array maps to PRNone, the
-//     state mapping reusing the same table as FetchPRState (mapPRState).
-func FetchPRStatesBatch(ctx context.Context, repo string, branches map[string]string) (map[string]PRResult, error) {
+//   - success → (map[branch]PRResult, cost, nil); an empty nodes array maps to
+//     PRNone, the state mapping reusing the same table as FetchPRState.
+func FetchPRStatesBatch(ctx context.Context, repo string, branches map[string]string) (map[string]PRResult, int, error) {
 	out := map[string]PRResult{}
 	if len(branches) == 0 {
-		return out, nil
+		return out, 0, nil
 	}
 
 	owner, name, ok := splitRepo(repo)
 	if !ok {
-		return nil, fmt.Errorf("invalid repo %q (want owner/name)", repo)
+		return nil, 0, fmt.Errorf("invalid repo %q (want owner/name)", repo)
 	}
 
 	query := buildBatchQuery(owner, name, branches)
@@ -106,29 +111,29 @@ func FetchPRStatesBatch(ctx context.Context, repo string, branches map[string]st
 
 	tmp, err := os.CreateTemp("", "argus-prquery-*.graphql")
 	if err != nil {
-		return nil, fmt.Errorf("create graphql query temp file: %w", err)
+		return nil, 0, fmt.Errorf("create graphql query temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
 	defer func() { _ = os.Remove(tmpPath) }()
 	if _, err := tmp.WriteString(query); err != nil {
 		_ = tmp.Close()
-		return nil, fmt.Errorf("write graphql query temp file: %w", err)
+		return nil, 0, fmt.Errorf("write graphql query temp file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return nil, fmt.Errorf("close graphql query temp file: %w", err)
+		return nil, 0, fmt.Errorf("close graphql query temp file: %w", err)
 	}
 
 	raw, code, runErr := prGraphQLRunner(fetchCtx, "", "api", "graphql", "-F", "query=@"+tmpPath)
 	if runErr != nil {
-		return nil, fmt.Errorf("gh api graphql: %w", runErr)
+		return nil, 0, fmt.Errorf("gh api graphql: %w", runErr)
 	}
 	if code != 0 {
-		return nil, fmt.Errorf("gh api graphql exited %d: %s", code, strings.TrimSpace(raw))
+		return nil, 0, fmt.Errorf("gh api graphql exited %d: %s", code, strings.TrimSpace(raw))
 	}
 
 	var resp graphQLBatchResponse
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
-		return nil, fmt.Errorf("parse graphql json: %w", err)
+		return nil, 0, fmt.Errorf("parse graphql json: %w", err)
 	}
 
 	// Invert branch→alias so we can map each alias key back to its branch.
@@ -144,12 +149,12 @@ func FetchPRStatesBatch(ctx context.Context, repo string, branches map[string]st
 		}
 		var conn graphQLConnection
 		if err := json.Unmarshal(rawConn, &conn); err != nil {
-			return nil, fmt.Errorf("parse graphql alias %q: %w", alias, err)
+			return nil, 0, fmt.Errorf("parse graphql alias %q: %w", alias, err)
 		}
 		out[branch] = mapBatchNode(conn.Nodes)
 	}
 
-	return out, nil
+	return out, resp.Data.RateLimit.Cost, nil
 }
 
 // mapBatchNode converts a pullRequests connection's nodes into a PRResult,

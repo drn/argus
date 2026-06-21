@@ -128,11 +128,12 @@ type Daemon struct {
 
 	// prBatchFetch resolves PR state for every branch in a repo group with a
 	// single aliased GraphQL query. branches maps branch name → alias id; the
-	// returned map is keyed by branch name. Defaults to
-	// gitutil.FetchPRStatesBatch; tests swap it for a fake so the poller never
-	// spawns a real gh process. A non-nil error means keep-stale for the whole
-	// group (Decision 4, design.md).
-	prBatchFetch func(ctx context.Context, repo string, branches map[string]string) (map[string]gitutil.PRResult, error)
+	// returned map is keyed by branch name. The int return is the GraphQL
+	// complexity cost GitHub billed the query (logged per repo for observability
+	// — Decision 4, design.md). Defaults to gitutil.FetchPRStatesBatch; tests
+	// swap it for a fake so the poller never spawns a real gh process. A non-nil
+	// error means keep-stale for the whole group (Decision 4).
+	prBatchFetch func(ctx context.Context, repo string, branches map[string]string) (map[string]gitutil.PRResult, int, error)
 
 	// prResolveRepo resolves a worktree's default GitHub repo ("owner/name") the
 	// way gh would target it — the fallback when a task has no cached pr/url to
@@ -503,6 +504,13 @@ func (d *Daemon) heraGaterMaterialize(role *db.HeraRole, taskPrompt, project, br
 // every cached value for that chunk's tasks is left untouched (no write). A
 // successful fetch is authoritative and each branch's state+url is written into
 // task_meta namespace "pr", INCLUDING writing "none" when the query found no PR.
+//
+// Count semantics: skipped/written/errored count TASKS, not branches or repos,
+// so the cycle invariant eligible == written + errored + skipped always holds.
+// Two tasks sharing a branch share one PR — the branch is queried once and the
+// single result is written to BOTH tasks (each counted in written); neither is
+// silently dropped. The per-repo `cost=` line reports the real GraphQL cost
+// summed across that repo's chunks (Decision 4, design.md).
 func (d *Daemon) pollPRStatesOnce(ctx context.Context) {
 	tasks, err := d.db.Tasks()
 	if err != nil {
@@ -575,61 +583,87 @@ func (d *Daemon) pollPRStatesOnce(ctx context.Context) {
 		aliasCap = prDefaultAliasCap
 	}
 
-	for repo, branchToAlias := range groups {
-		// Stable, deterministic chunk boundaries: order branches before
-		// slicing so chunking (and any logs) are reproducible.
-		branches := make([]string, 0, len(branchToAlias))
-		for branch := range branchToAlias {
+	for repo, branchToAliases := range groups {
+		// Stable, deterministic chunk boundaries: order DISTINCT branches before
+		// slicing so chunking (and any logs) are reproducible. Chunking is by
+		// distinct branch — two tasks sharing a branch share the same PR, so the
+		// branch is queried once and the result fans out to every alias for it.
+		branches := make([]string, 0, len(branchToAliases))
+		for branch := range branchToAliases {
 			branches = append(branches, branch)
 		}
 		sort.Strings(branches)
+
+		// repoCost accumulates the GraphQL cost across this repo's chunks so the
+		// per-repo log line reports the real summed cost (Decision 4, design.md).
+		var repoCost, repoBranches int
 
 		for start := 0; start < len(branches); start += aliasCap {
 			end := start + aliasCap
 			if end > len(branches) {
 				end = len(branches)
 			}
-			chunk := make(map[string]string, end-start)
-			for _, branch := range branches[start:end] {
-				chunk[branch] = branchToAlias[branch]
+			// chunk maps each distinct branch to ONE alias (the lookup key for the
+			// query). Results fan back out to ALL aliases for that branch below.
+			chunkBranches := branches[start:end]
+			chunk := make(map[string]string, len(chunkBranches))
+			for _, branch := range chunkBranches {
+				chunk[branch] = branchToAliases[branch][0]
 			}
 
-			results, ferr := d.prBatchFetch(ctx, repo, chunk)
+			// chunkTaskCount is the number of TASKS this chunk covers (summed
+			// across shared branches), so errored/written count tasks, not
+			// branches — keeping eligible == written + errored + skipped.
+			var chunkTaskCount int
+			for _, branch := range chunkBranches {
+				chunkTaskCount += len(branchToAliases[branch])
+			}
+
+			results, cost, ferr := d.prBatchFetch(ctx, repo, chunk)
 			if ferr != nil {
 				// Whole-chunk transient failure: keep every cached value in this
 				// chunk stale (no write). This relies on FetchPRStatesBatch
 				// surfacing GraphQL `errors` arrays as a non-nil error — the real
 				// runner depends on `gh api graphql` exiting non-zero on them.
-				errored += len(chunk)
+				errored += chunkTaskCount
 				uxlog.Log("[pr] poll: repo=%s branches=%d fetch failed (keeping stale): %v", repo, len(chunk), ferr)
 				continue
 			}
 
-			uxlog.Log("[pr] poll: repo=%s branches=%d cost=%d", repo, len(chunk), 0)
+			repoCost += cost
+			repoBranches += len(chunk)
 
-			for branch, alias := range chunk {
-				t := aliasToTask[alias]
-				if t == nil {
-					continue
-				}
+			for _, branch := range chunkBranches {
 				res, ok := results[branch]
 				if !ok {
 					// Branch absent from a successful response — treat as no PR
 					// (the batch fetcher maps empty nodes to PRNone, so this is
 					// only reachable for a malformed partial response). Keep
 					// stale rather than clobbering with a guessed value.
-					uxlog.Log("[pr] poll: %s missing from repo=%s response (keeping stale)", t.ID, repo)
+					uxlog.Log("[pr] poll: branch=%s missing from repo=%s response (keeping stale)", branch, repo)
 					continue
 				}
-				if werr := d.db.SetMetaBatch(t.ID, "pr", map[string]string{
-					"state": res.State.String(),
-					"url":   res.URL,
-				}); werr != nil {
-					uxlog.Log("[pr] poll: persist failed for %s: %v", t.ID, werr)
-					continue
+				// Fan the single PRResult out to every task sharing this branch:
+				// they all point at the same PR, so each gets the same state+url.
+				for _, alias := range branchToAliases[branch] {
+					t := aliasToTask[alias]
+					if t == nil {
+						continue
+					}
+					if werr := d.db.SetMetaBatch(t.ID, "pr", map[string]string{
+						"state": res.State.String(),
+						"url":   res.URL,
+					}); werr != nil {
+						uxlog.Log("[pr] poll: persist failed for %s: %v", t.ID, werr)
+						continue
+					}
+					written++
 				}
-				written++
 			}
+		}
+
+		if repoBranches > 0 {
+			uxlog.Log("[pr] poll: repo=%s branches=%d cost=%d", repo, repoBranches, repoCost)
 		}
 	}
 

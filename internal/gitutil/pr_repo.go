@@ -74,12 +74,19 @@ type BranchRepoInput struct {
 }
 
 // GroupBranchesByRepo buckets inputs by their resolved PR repo ("owner/name"),
-// returning repo → branch → alias-id. Resolution is url-first (ParsePRRepo on
+// returning repo → branch → []alias-id. Resolution is url-first (ParsePRRepo on
 // CachedURL), falling back to resolveDefault(ctx, worktree) — the worktree's
 // default GitHub repo as gh would target it. Inputs that resolve to neither are
 // dropped: without an owner/name they cannot be queried.
-func GroupBranchesByRepo(ctx context.Context, inputs []BranchRepoInput, resolveDefault func(ctx context.Context, worktree string) (string, bool)) map[string]map[string]string {
-	groups := map[string]map[string]string{}
+//
+// The inner value is a SLICE of alias ids because two distinct tasks in the same
+// repo can share a branch (e.g. a stacked retry pointed at the same head ref).
+// They share the SAME PR, so the caller queries that branch once and fans the
+// single PRResult out to every alias in the slice — no task is silently dropped
+// (the old branch→id map would have let the second task overwrite the first,
+// losing it from the query, the write, and the counts).
+func GroupBranchesByRepo(ctx context.Context, inputs []BranchRepoInput, resolveDefault func(ctx context.Context, worktree string) (string, bool)) map[string]map[string][]string {
+	groups := map[string]map[string][]string{}
 	for _, in := range inputs {
 		repo, ok := ParsePRRepo(in.CachedURL)
 		if !ok {
@@ -92,9 +99,9 @@ func GroupBranchesByRepo(ctx context.Context, inputs []BranchRepoInput, resolveD
 			}
 		}
 		if groups[repo] == nil {
-			groups[repo] = map[string]string{}
+			groups[repo] = map[string][]string{}
 		}
-		groups[repo][in.Branch] = in.ID
+		groups[repo][in.Branch] = append(groups[repo][in.Branch], in.ID)
 	}
 	return groups
 }

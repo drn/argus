@@ -73,11 +73,14 @@ func TestFetchPRStatesBatch_ParsesPerBranchResults(t *testing.T) {
 		"argus/deleted": "t3",
 	}
 
-	res, err := FetchPRStatesBatch(context.Background(), "drn/argus", branches)
+	res, cost, err := FetchPRStatesBatch(context.Background(), "drn/argus", branches)
 	testutil.NoError(t, err)
 
 	// Exactly ONE query for the whole batch, regardless of branch count.
 	testutil.Equal(t, fake.calls, 1)
+
+	// The GraphQL cost is parsed from data.rateLimit.cost and surfaced.
+	testutil.Equal(t, cost, 1)
 
 	testutil.Equal(t, res["argus/open"].State, model.PRApproved)
 	testutil.Equal(t, res["argus/open"].URL, "https://github.com/drn/argus/pull/11")
@@ -101,7 +104,7 @@ func TestFetchPRStatesBatch_OneQueryForNBranches(t *testing.T) {
 		"argus/none":    "t2",
 		"argus/deleted": "t3",
 	}
-	_, err := FetchPRStatesBatch(context.Background(), "drn/argus", branches)
+	_, _, err := FetchPRStatesBatch(context.Background(), "drn/argus", branches)
 	testutil.NoError(t, err)
 	testutil.Equal(t, fake.calls, 1)
 }
@@ -112,7 +115,7 @@ func TestFetchPRStatesBatch_QueryErrorReturnsError(t *testing.T) {
 	installGraphQLRunner(t, fake.run)
 
 	branches := map[string]string{"argus/open": "t1"}
-	_, err := FetchPRStatesBatch(context.Background(), "drn/argus", branches)
+	_, _, err := FetchPRStatesBatch(context.Background(), "drn/argus", branches)
 	testutil.Error(t, err)
 }
 
@@ -121,10 +124,11 @@ func TestFetchPRStatesBatch_EmptyBranchesNoQuery(t *testing.T) {
 	fake := &fakeGraphQLRunner{out: graphQLSuccess, code: 0}
 	installGraphQLRunner(t, fake.run)
 
-	res, err := FetchPRStatesBatch(context.Background(), "drn/argus", map[string]string{})
+	res, cost, err := FetchPRStatesBatch(context.Background(), "drn/argus", map[string]string{})
 	testutil.NoError(t, err)
 	testutil.Equal(t, fake.calls, 0)
 	testutil.Equal(t, len(res), 0)
+	testutil.Equal(t, cost, 0)
 }
 
 // --- Repo resolution + grouping (Decision 2) ---
@@ -178,14 +182,33 @@ func TestGroupBranchesByRepo(t *testing.T) {
 
 	groups := GroupBranchesByRepo(context.Background(), inputs, resolveDefault)
 
-	// drn/argus has t1, t2, t3 (cached + default fallback); anutron/gmail-mcp has t4.
+	// drn/argus has 3 distinct branches (t1, t2, t3 — cached + default fallback);
+	// anutron/gmail-mcp has 1.
 	testutil.Equal(t, len(groups["drn/argus"]), 3)
 	testutil.Equal(t, len(groups["anutron/gmail-mcp"]), 1)
 
-	// Each group maps branch → sanitized id (the alias key).
-	testutil.Equal(t, groups["drn/argus"]["argus/a"], "t1")
-	testutil.Equal(t, groups["drn/argus"]["argus/c"], "t3")
-	testutil.Equal(t, groups["anutron/gmail-mcp"]["feat/x"], "t4")
+	// Each group maps branch → []sanitized id (the alias keys). Distinct branches
+	// carry a single-element slice.
+	testutil.DeepEqual(t, groups["drn/argus"]["argus/a"], []string{"t1"})
+	testutil.DeepEqual(t, groups["drn/argus"]["argus/c"], []string{"t3"})
+	testutil.DeepEqual(t, groups["anutron/gmail-mcp"]["feat/x"], []string{"t4"})
+}
+
+// Two distinct tasks in the same repo sharing a branch (same head ref → same PR)
+// must BOTH appear under that branch — neither silently overwritten/dropped.
+func TestGroupBranchesByRepo_SharedBranchKeepsBothTasks(t *testing.T) {
+	inputs := []BranchRepoInput{
+		{ID: "t1", Branch: "argus/shared", Worktree: "/wt/t1", CachedURL: "https://github.com/drn/argus/pull/1"},
+		{ID: "t2", Branch: "argus/shared", Worktree: "/wt/t2", CachedURL: "https://github.com/drn/argus/pull/1"},
+	}
+	resolveDefault := func(_ context.Context, _ string) (string, bool) { return "", false }
+
+	groups := GroupBranchesByRepo(context.Background(), inputs, resolveDefault)
+
+	// One repo, one distinct branch, but BOTH task aliases under it.
+	testutil.Equal(t, len(groups), 1)
+	testutil.Equal(t, len(groups["drn/argus"]), 1)
+	testutil.DeepEqual(t, groups["drn/argus"]["argus/shared"], []string{"t1", "t2"})
 }
 
 // A task whose repo cannot be resolved at all (no url, default resolver fails)

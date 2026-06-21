@@ -65,7 +65,7 @@ func TestPollPRBatch_OneCallPerRepoGroup(t *testing.T) {
 
 	var mu sync.Mutex
 	callsPerRepo := map[string]int{}
-	d.prBatchFetch = func(_ context.Context, repo string, branches map[string]string) (map[string]gitutil.PRResult, error) {
+	d.prBatchFetch = func(_ context.Context, repo string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
 		mu.Lock()
 		callsPerRepo[repo]++
 		mu.Unlock()
@@ -73,7 +73,7 @@ func TestPollPRBatch_OneCallPerRepoGroup(t *testing.T) {
 		for branch := range branches {
 			out[branch] = gitutil.PRResult{State: model.PRApproved, URL: "u"}
 		}
-		return out, nil
+		return out, 1, nil
 	}
 	d.prResolveRepo = func(_ context.Context, _ string) (string, bool) { return "", false }
 
@@ -93,13 +93,13 @@ func TestPollPRBatch_FallsBackToWorktreeDefaultRepo(t *testing.T) {
 	seedTask(t, d.db, "a", "argus/a", false) // no cached url
 
 	var seenRepo string
-	d.prBatchFetch = func(_ context.Context, repo string, branches map[string]string) (map[string]gitutil.PRResult, error) {
+	d.prBatchFetch = func(_ context.Context, repo string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
 		seenRepo = repo
 		out := map[string]gitutil.PRResult{}
 		for branch := range branches {
 			out[branch] = gitutil.PRResult{State: model.PRNone}
 		}
-		return out, nil
+		return out, 1, nil
 	}
 	d.prResolveRepo = func(_ context.Context, worktree string) (string, bool) {
 		return "drn/argus", true
@@ -122,7 +122,7 @@ func TestPollPRBatch_TerminalExcludedBeforeGrouping(t *testing.T) {
 
 	var mu sync.Mutex
 	queried := map[string]bool{}
-	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, error) {
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
 		mu.Lock()
 		for branch := range branches {
 			queried[branch] = true
@@ -132,7 +132,7 @@ func TestPollPRBatch_TerminalExcludedBeforeGrouping(t *testing.T) {
 		for branch := range branches {
 			out[branch] = gitutil.PRResult{State: model.PRApproved, URL: "u"}
 		}
-		return out, nil
+		return out, 1, nil
 	}
 	d.prResolveRepo = func(_ context.Context, _ string) (string, bool) { return "", false }
 
@@ -167,8 +167,8 @@ func TestPollPRBatch_KeepStaleOnGroupError(t *testing.T) {
 		"state": "changes-requested", "url": "https://github.com/drn/argus/pull/2",
 	}))
 
-	d.prBatchFetch = func(_ context.Context, _ string, _ map[string]string) (map[string]gitutil.PRResult, error) {
-		return nil, errors.New("network timeout")
+	d.prBatchFetch = func(_ context.Context, _ string, _ map[string]string) (map[string]gitutil.PRResult, int, error) {
+		return nil, 0, errors.New("network timeout")
 	}
 	d.prResolveRepo = func(_ context.Context, _ string) (string, bool) { return "", false }
 
@@ -193,7 +193,7 @@ func TestPollPRBatch_WritesResultsInclNone(t *testing.T) {
 	seedURL(t, d, "a", "https://github.com/drn/argus/pull/1")
 	seedURL(t, d, "b", "https://github.com/drn/argus/pull/2")
 
-	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, error) {
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
 		out := map[string]gitutil.PRResult{}
 		for branch := range branches {
 			switch branch {
@@ -203,7 +203,7 @@ func TestPollPRBatch_WritesResultsInclNone(t *testing.T) {
 				out[branch] = gitutil.PRResult{State: model.PRNone} // authoritative none
 			}
 		}
-		return out, nil
+		return out, 1, nil
 	}
 	d.prResolveRepo = func(_ context.Context, _ string) (string, bool) { return "", false }
 
@@ -242,7 +242,7 @@ func TestPollPRBatch_ChunksOversizedGroup(t *testing.T) {
 	var mu sync.Mutex
 	var calls int
 	var maxBranchesPerCall int
-	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, error) {
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
 		mu.Lock()
 		calls++
 		if len(branches) > maxBranchesPerCall {
@@ -253,7 +253,7 @@ func TestPollPRBatch_ChunksOversizedGroup(t *testing.T) {
 		for branch := range branches {
 			out[branch] = gitutil.PRResult{State: model.PRApproved, URL: "u"}
 		}
-		return out, nil
+		return out, 1, nil
 	}
 	d.prResolveRepo = func(_ context.Context, _ string) (string, bool) { return "", false }
 
@@ -300,19 +300,132 @@ func TestPollPRBatch_LogsPerCycleSummary(t *testing.T) {
 	seedTask(t, d.db, "c", "feat/c", false)
 	seedURL(t, d, "c", "https://github.com/anutron/gmail-mcp/pull/3")
 
-	d.prBatchFetch = func(_ context.Context, repo string, branches map[string]string) (map[string]gitutil.PRResult, error) {
+	d.prBatchFetch = func(_ context.Context, repo string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
 		if repo == "anutron/gmail-mcp" {
-			return nil, errors.New("network timeout")
+			return nil, 0, errors.New("network timeout")
 		}
 		out := map[string]gitutil.PRResult{}
 		for branch := range branches {
 			out[branch] = gitutil.PRResult{State: model.PRApproved, URL: "u"}
 		}
-		return out, nil
+		return out, 1, nil
 	}
 	d.prResolveRepo = func(_ context.Context, _ string) (string, bool) { return "", false }
 
 	d.pollPRStatesOnce(context.Background())
 
 	testutil.Contains(t, readLog(), "[pr] poll: eligible=3 skipped=1 written=2 errored=1")
+}
+
+// Scenario: The real GraphQL cost is threaded to the per-repo uxlog line.
+//
+// WHEN a repo group fetches cleanly THEN the per-repo line reports the cost the
+// fake returned (summed across chunks) — not a hardcoded 0. This is the
+// observability hook the dogfood step watches (Decision 4, design.md).
+func TestPollPRBatch_LogsRealGraphQLCost(t *testing.T) {
+	readLog := initTestUxlog(t)
+	d, _ := testDaemon(t)
+
+	seedTask(t, d.db, "a", "argus/a", false)
+	seedTask(t, d.db, "b", "argus/b", false)
+	seedURL(t, d, "a", "https://github.com/drn/argus/pull/1")
+	seedURL(t, d, "b", "https://github.com/drn/argus/pull/2")
+
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
+		out := map[string]gitutil.PRResult{}
+		for branch := range branches {
+			out[branch] = gitutil.PRResult{State: model.PRApproved, URL: "u"}
+		}
+		return out, 7, nil // GitHub billed 7 complexity points for this query
+	}
+	d.prResolveRepo = func(_ context.Context, _ string) (string, bool) { return "", false }
+
+	d.pollPRStatesOnce(context.Background())
+
+	testutil.Contains(t, readLog(), "[pr] poll: repo=drn/argus branches=2 cost=7")
+}
+
+// Scenario: The per-repo cost line sums the cost across chunks when a repo group
+// is split (Decision 5). Two chunks at cost 3 each → cost=6 on one repo line.
+func TestPollPRBatch_LogsSummedCostAcrossChunks(t *testing.T) {
+	readLog := initTestUxlog(t)
+	d, _ := testDaemon(t)
+
+	const n = 4
+	for i := 0; i < n; i++ {
+		id := "t" + string(rune('a'+i))
+		seedTask(t, d.db, id, "argus/"+id, false)
+		seedURL(t, d, id, "https://github.com/drn/argus/pull/"+string(rune('1'+i)))
+	}
+	d.prAliasCap = 2 // 4 branches / cap 2 → 2 chunks
+
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
+		out := map[string]gitutil.PRResult{}
+		for branch := range branches {
+			out[branch] = gitutil.PRResult{State: model.PRApproved, URL: "u"}
+		}
+		return out, 3, nil // each chunk billed 3 → summed 6 for the repo
+	}
+	d.prResolveRepo = func(_ context.Context, _ string) (string, bool) { return "", false }
+
+	d.pollPRStatesOnce(context.Background())
+
+	testutil.Contains(t, readLog(), "[pr] poll: repo=drn/argus branches=4 cost=6")
+}
+
+// Scenario: Two eligible tasks in the same repo sharing a branch (same head ref
+// → same PR) must BOTH get the fetched PR state written — neither silently
+// dropped — and the cycle accounting stays consistent
+// (eligible == written + errored + skipped).
+//
+// Regression for the GroupBranchesByRepo branch→id collision: the old inner map
+// let the second task overwrite the first, so the loser was never queried,
+// written, or counted.
+func TestPollPRBatch_SharedBranchWritesBothTasks(t *testing.T) {
+	readLog := initTestUxlog(t)
+	d, _ := testDaemon(t)
+
+	// Two distinct tasks, same repo, same branch (a stacked retry on the same
+	// head ref). Same cached url → same repo + same branch → one PR.
+	seedTask(t, d.db, "first", "argus/shared", false)
+	seedTask(t, d.db, "second", "argus/shared", false)
+	seedURL(t, d, "first", "https://github.com/drn/argus/pull/1")
+	seedURL(t, d, "second", "https://github.com/drn/argus/pull/1")
+
+	var mu sync.Mutex
+	var branchQueries int
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
+		mu.Lock()
+		branchQueries += len(branches) // distinct branches actually queried
+		mu.Unlock()
+		out := map[string]gitutil.PRResult{}
+		for branch := range branches {
+			out[branch] = gitutil.PRResult{State: model.PRApproved, URL: "https://github.com/drn/argus/pull/1"}
+		}
+		return out, 1, nil
+	}
+	d.prResolveRepo = func(_ context.Context, _ string) (string, bool) { return "", false }
+
+	d.pollPRStatesOnce(context.Background())
+
+	// The shared branch is queried exactly once (not duplicated per task).
+	mu.Lock()
+	testutil.Equal(t, branchQueries, 1)
+	mu.Unlock()
+
+	// BOTH tasks got the PR state written — neither dropped.
+	for _, id := range []string{"first", "second"} {
+		meta, err := d.db.ListMeta(id, "pr")
+		testutil.NoError(t, err)
+		got := map[string]string{}
+		for _, e := range meta {
+			got[e.Key] = e.Value
+		}
+		testutil.Equal(t, got["state"], "approved")
+		testutil.Equal(t, got["url"], "https://github.com/drn/argus/pull/1")
+	}
+
+	// Accounting: 2 eligible, both written, no silent loss
+	// (eligible == written + errored + skipped).
+	testutil.Contains(t, readLog(), "[pr] poll: eligible=2 skipped=0 written=2 errored=0")
 }

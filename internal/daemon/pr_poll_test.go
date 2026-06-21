@@ -47,7 +47,7 @@ func TestPollPR_SkipsArchivedAndBranchless(t *testing.T) {
 
 	var mu sync.Mutex
 	fetched := map[string]bool{}
-	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, error) {
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
 		mu.Lock()
 		out := map[string]gitutil.PRResult{}
 		for branch := range branches {
@@ -55,7 +55,7 @@ func TestPollPR_SkipsArchivedAndBranchless(t *testing.T) {
 			out[branch] = gitutil.PRResult{State: model.PRApproved, URL: "https://example/pr/1"}
 		}
 		mu.Unlock()
-		return out, nil
+		return out, 1, nil
 	}
 	d.prResolveRepo = resolveAll("drn/argus")
 
@@ -89,7 +89,7 @@ func TestPollPR_SkipsTerminalCachedState(t *testing.T) {
 
 	var mu sync.Mutex
 	fetched := map[string]bool{}
-	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, error) {
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
 		mu.Lock()
 		out := map[string]gitutil.PRResult{}
 		for branch := range branches {
@@ -97,7 +97,7 @@ func TestPollPR_SkipsTerminalCachedState(t *testing.T) {
 			out[branch] = gitutil.PRResult{State: model.PRApproved, URL: "https://example/pr/open"}
 		}
 		mu.Unlock()
-		return out, nil
+		return out, 1, nil
 	}
 	d.prResolveRepo = resolveAll("drn/argus")
 
@@ -145,7 +145,7 @@ func TestPollPR_PollsNonTerminalCachedStates(t *testing.T) {
 
 	var mu sync.Mutex
 	fetched := map[string]bool{}
-	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, error) {
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
 		mu.Lock()
 		out := map[string]gitutil.PRResult{}
 		for branch := range branches {
@@ -153,7 +153,7 @@ func TestPollPR_PollsNonTerminalCachedStates(t *testing.T) {
 			out[branch] = gitutil.PRResult{State: model.PRApproved, URL: "u"}
 		}
 		mu.Unlock()
-		return out, nil
+		return out, 1, nil
 	}
 	d.prResolveRepo = resolveAll("drn/argus")
 
@@ -169,12 +169,12 @@ func TestPollPR_WritesStateAndURL(t *testing.T) {
 	d, _ := testDaemon(t)
 	seedTask(t, d.db, "t1", "argus/t1", false)
 
-	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, error) {
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
 		out := map[string]gitutil.PRResult{}
 		for branch := range branches {
 			out[branch] = gitutil.PRResult{State: model.PRChangesRequested, URL: "https://example/pr/9"}
 		}
-		return out, nil
+		return out, 1, nil
 	}
 	d.prResolveRepo = resolveAll("drn/argus")
 	d.pollPRStatesOnce(context.Background())
@@ -199,8 +199,8 @@ func TestPollPR_KeepsStaleOnError(t *testing.T) {
 		"url":   "https://example/pr/prior",
 	}))
 
-	d.prBatchFetch = func(_ context.Context, _ string, _ map[string]string) (map[string]gitutil.PRResult, error) {
-		return nil, errors.New("network timeout")
+	d.prBatchFetch = func(_ context.Context, _ string, _ map[string]string) (map[string]gitutil.PRResult, int, error) {
+		return nil, 0, errors.New("network timeout")
 	}
 	d.prResolveRepo = resolveAll("drn/argus")
 	d.pollPRStatesOnce(context.Background())
@@ -221,12 +221,12 @@ func TestPollPR_PersistsPRNone(t *testing.T) {
 	seedTask(t, d.db, "t1", "argus/t1", false)
 
 	// An unambiguous PRNone from a successful query is authoritative and written.
-	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, error) {
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
 		out := map[string]gitutil.PRResult{}
 		for branch := range branches {
 			out[branch] = gitutil.PRResult{State: model.PRNone}
 		}
-		return out, nil
+		return out, 1, nil
 	}
 	d.prResolveRepo = resolveAll("drn/argus")
 	d.pollPRStatesOnce(context.Background())
@@ -278,15 +278,15 @@ func TestPollPR_InFlightFetchSeesCancellation(t *testing.T) {
 
 	entered := make(chan struct{})
 	sawCancel := make(chan struct{})
-	d.prBatchFetch = func(ctx context.Context, _ string, _ map[string]string) (map[string]gitutil.PRResult, error) {
+	d.prBatchFetch = func(ctx context.Context, _ string, _ map[string]string) (map[string]gitutil.PRResult, int, error) {
 		close(entered)
 		select {
 		case <-ctx.Done():
 			close(sawCancel)
-			return nil, ctx.Err()
+			return nil, 0, ctx.Err()
 		case <-time.After(5 * time.Second):
 			t.Error("fetch ran to timeout — ctx cancellation did not propagate")
-			return map[string]gitutil.PRResult{}, nil
+			return map[string]gitutil.PRResult{}, 0, nil
 		}
 	}
 	d.prResolveRepo = resolveAll("drn/argus")
@@ -314,9 +314,9 @@ func TestPollPR_ListTasksError(t *testing.T) {
 	seedTask(t, d.db, "t1", "argus/t1", false)
 
 	var called bool
-	d.prBatchFetch = func(_ context.Context, _ string, _ map[string]string) (map[string]gitutil.PRResult, error) {
+	d.prBatchFetch = func(_ context.Context, _ string, _ map[string]string) (map[string]gitutil.PRResult, int, error) {
 		called = true
-		return map[string]gitutil.PRResult{}, nil
+		return map[string]gitutil.PRResult{}, 0, nil
 	}
 	d.prResolveRepo = resolveAll("drn/argus")
 	// Close the DB so Tasks() errors — the poll must bail without fetching.
@@ -332,9 +332,9 @@ func TestPollPR_NoEligibleTasks(t *testing.T) {
 	seedTask(t, d.db, "archived", "argus/a", true)
 
 	var called bool
-	d.prBatchFetch = func(_ context.Context, _ string, _ map[string]string) (map[string]gitutil.PRResult, error) {
+	d.prBatchFetch = func(_ context.Context, _ string, _ map[string]string) (map[string]gitutil.PRResult, int, error) {
 		called = true
-		return map[string]gitutil.PRResult{}, nil
+		return map[string]gitutil.PRResult{}, 0, nil
 	}
 	d.prResolveRepo = resolveAll("drn/argus")
 	d.pollPRStatesOnce(context.Background())
