@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -339,4 +341,48 @@ func TestPollPR_NoEligibleTasks(t *testing.T) {
 	d.prResolveRepo = resolveAll("drn/argus")
 	d.pollPRStatesOnce(context.Background())
 	testutil.Equal(t, called, false)
+}
+
+func TestPollPR_PausedByKillSwitch(t *testing.T) {
+	d, _ := testDaemon(t)
+	seedTask(t, d.db, "live", "argus/live", false)
+
+	// A present sentinel file pauses the poller before any gh query.
+	flag := filepath.Join(t.TempDir(), prPollDisableFlag)
+	if err := os.WriteFile(flag, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.prDisableFlagPath = flag
+	d.prResolveRepo = resolveAll("drn/argus")
+
+	var called bool
+	d.prBatchFetch = func(_ context.Context, _ string, _ map[string]string) (map[string]gitutil.PRResult, int, error) {
+		called = true
+		return map[string]gitutil.PRResult{}, 0, nil
+	}
+
+	d.pollPRStatesOnce(context.Background())
+
+	// Paused: zero gh queries and nothing written.
+	testutil.Equal(t, called, false)
+	meta, err := d.db.ListMetaByNamespace("pr")
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(meta), 0)
+
+	// Removing the sentinel resumes polling on the next cycle.
+	if err := os.Remove(flag); err != nil {
+		t.Fatal(err)
+	}
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
+		out := map[string]gitutil.PRResult{}
+		for b := range branches {
+			out[b] = gitutil.PRResult{State: model.PRApproved, URL: "https://example/pr/1"}
+		}
+		return out, 1, nil
+	}
+	d.pollPRStatesOnce(context.Background())
+
+	meta, err = d.db.ListMetaByNamespace("pr")
+	testutil.NoError(t, err)
+	testutil.Equal(t, meta["live"]["state"], "approved")
 }

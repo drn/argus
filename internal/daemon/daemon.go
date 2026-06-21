@@ -47,6 +47,12 @@ const prPollInterval = 60 * time.Second
 // stays in the cheapest GraphQL complexity tier (ceil(nodeCount/100), min 1).
 const prDefaultAliasCap = 100
 
+// prPollDisableFlag is the basename of a sentinel file under the data dir. When
+// it exists, the PR-status poller skips every cycle (issues zero gh queries) — an
+// instant, no-restart kill-switch for the GitHub API budget. Drop the file to
+// pause, remove it to resume; toggling never requires a daemon bounce.
+const prPollDisableFlag = "pr-poller.disabled"
+
 // DefaultSocketPath returns the default Unix socket path.
 func DefaultSocketPath() string {
 	return filepath.Join(db.DataDir(), "daemon.sock")
@@ -147,6 +153,12 @@ type Daemon struct {
 	// set it small to force chunking without thousands of tasks.
 	prAliasCap int
 
+	// prDisableFlagPath is the absolute path to the poller kill-switch sentinel
+	// (prPollDisableFlag under the data dir). When the file exists, every poll
+	// cycle is skipped before any gh query. Defaults to the real data-dir path;
+	// tests point it at a temp file. Empty disables the check entirely.
+	prDisableFlagPath string
+
 	// notifier is the reliable pane-delivery service. Created in Serve once
 	// the runner and focus tracker are ready. Nil until Serve runs.
 	notifier *notify.Notifier
@@ -208,9 +220,10 @@ func New(database *db.DB) *Daemon {
 		clipboard: clipboard.New(),
 		prFetch:   gitutil.FetchPRState,
 
-		prBatchFetch:  gitutil.FetchPRStatesBatch,
-		prResolveRepo: gitutil.ResolveDefaultRepo,
-		prAliasCap:    prDefaultAliasCap,
+		prBatchFetch:      gitutil.FetchPRStatesBatch,
+		prResolveRepo:     gitutil.ResolveDefaultRepo,
+		prAliasCap:        prDefaultAliasCap,
+		prDisableFlagPath: filepath.Join(db.DataDir(), prPollDisableFlag),
 	}
 
 	// Capture the binary path, hash, and mtime at startup. The on-disk binary
@@ -530,6 +543,17 @@ func (d *Daemon) heraGaterMaterializeSubCoord(role *db.HeraRole, taskPrompt, pro
 // silently dropped. The per-repo `cost=` line reports the real GraphQL cost
 // summed across that repo's chunks (Decision 4, design.md).
 func (d *Daemon) pollPRStatesOnce(ctx context.Context) {
+	// Kill-switch: an operator-dropped sentinel file pauses the poller without a
+	// daemon bounce. Checked before any DB read or gh query so a paused poller
+	// costs nothing against the GitHub API budget. Logged each cycle (not spammy
+	// — only while explicitly paused) so daemon.log shows the pause is in effect.
+	if d.prDisableFlagPath != "" {
+		if _, statErr := os.Stat(d.prDisableFlagPath); statErr == nil {
+			slog.Info("[pr] poll skipped: paused via kill-switch", "flag", d.prDisableFlagPath)
+			return
+		}
+	}
+
 	tasks, err := d.db.Tasks()
 	if err != nil {
 		uxlog.Log("[pr] poll: list tasks failed: %v", err)
