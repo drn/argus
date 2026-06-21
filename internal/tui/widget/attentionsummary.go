@@ -60,10 +60,12 @@ func (s *AttentionSummary) Draw(screen tcell.Screen) {
 	}
 
 	inner := DrawBorderedPanel(screen, x, y, width, height, " Needs input ", theme.StyleInReview)
-	if inner.W <= 0 || inner.H <= 0 {
+	if inner.W <= 1 || inner.H <= 0 {
 		return
 	}
-	DrawText(screen, inner.X, inner.Y, inner.W, attentionSummaryText(s.count), theme.StyleInReview)
+	// One cell of left padding so the text reads "│ 2 tasks need input", not
+	// flush against the border "│2 tasks need input" (BUG-004).
+	DrawText(screen, inner.X+1, inner.Y, inner.W-1, attentionSummaryText(s.count), theme.StyleInReview)
 }
 
 // attentionSummaryText builds the pluralised count line.

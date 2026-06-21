@@ -52,6 +52,25 @@ func TestUnmanagedNeedsInputCount_ExcludesViaBridgeTaskID(t *testing.T) {
 	testutil.Equal(t, got, 1) // only tx
 }
 
+// TestUnmanagedNeedsInputCount_ExcludesArchivedRoleBoundTask is the BUG-005
+// regression lock: a task bound to an ARCHIVED hera role (binding ended, role
+// archived) still has Hera presence via its BridgeTaskID, so it must NOT be
+// counted — only a genuinely Hera-less task does.
+func TestUnmanagedNeedsInputCount_ExcludesArchivedRoleBoundTask(t *testing.T) {
+	m := Model{Active: []OrchView{{
+		ID:   1,
+		Name: "R",
+		Roles: []RoleView{
+			{Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc"},
+			// Archived worker whose live binding ended; structural key survives.
+			{Name: "old-wkr", Kind: db.HeraKindWorker, Archived: true, BridgeTaskID: "tarch"},
+		},
+	}}}
+	// tc + tarch are model-known (managed/archived); only ty has no Hera presence.
+	got := m.UnmanagedNeedsInputCount(niSet("tc", "tarch", "ty"))
+	testutil.Equal(t, got, 1)
+}
+
 func TestUnmanagedNeedsInputCount_ZeroWhenAllKnownOrEmpty(t *testing.T) {
 	m := Model{Active: []OrchView{orchView(1, "R", "tc", wk("w", "tw"))}}
 	testutil.Equal(t, m.UnmanagedNeedsInputCount(niSet("tc", "tw")), 0)
