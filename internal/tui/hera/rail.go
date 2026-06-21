@@ -1057,6 +1057,47 @@ func (r *Rail) SelectByTaskID(taskID string) bool {
 	return false
 }
 
+// EnsureAncestorsExpanded uncollapses orchID and every ancestor on its canonical
+// parent chain up to the root, so a row nested under folded coordinator(s) becomes
+// visible. It walks canonicalParents() — the SAME fold-independent parentage the
+// rail nests by — with a visited guard against cycles, handling deeply nested
+// sub-coordinators (the WHOLE chain, not just the immediate parent). When any fold
+// actually flips it rebuilds the rows and persists the change, so the expand
+// survives like a user Space-toggle. Used by the plan view's leaf-Enter join
+// (BUG-007): a folded coordinator must not swallow the join — expand first, then
+// SelectByTaskID can see (and select) the now-built row.
+func (r *Rail) EnsureAncestorsExpanded(orchID int64) {
+	if orchID == 0 {
+		return
+	}
+	canonical := r.model.canonicalParents()
+	seen := make(map[int64]bool)
+	changed := false
+	for id := orchID; id != 0; {
+		if seen[id] {
+			break // cycle guard (matches BridgeSubtree's visited discipline)
+		}
+		seen[id] = true
+		if r.collapsed[id] {
+			r.collapsed[id] = false
+			changed = true
+		}
+		cp, ok := canonical[id]
+		if !ok {
+			break // reached a top-level root
+		}
+		id = cp.orchID
+	}
+	if !changed {
+		return
+	}
+	ref := r.currentRef()
+	r.buildRows()
+	r.restoreCursor(ref)
+	r.clampCursor()
+	r.persist() // fold change (BUG-002), like ToggleCollapse
+}
+
 // Selected returns the RoleView under the cursor, or nil when the cursor is on
 // a header/orchestrator. 6b uses this to bind the panes.
 func (r *Rail) Selected() *RoleView {

@@ -392,6 +392,32 @@ type canonParent struct {
 // orchestrators are reachable in a subtree (consumedSet / BridgeSubtree still walk
 // every bridge for root selection and the Ctrl+D cascade), only which single
 // parent row hosts a multi-parent child.
+// OrchIDsForTask returns the ids of every orchestrator that hosts a non-freelance
+// role whose live binding points at taskID. It scans the FULL model regardless of
+// rail fold state, so it resolves a buried worker's containing orchestrator even
+// when an ancestor coordinator is collapsed and the row was never built (BUG-007:
+// the rail's leaf-Enter join uses this to know which ancestor chains to expand
+// before SelectByTaskID, which only sees built rows). The same task bound under
+// two orchestrators (multi-binding) returns both ids; "" returns nil.
+func (m Model) OrchIDsForTask(taskID string) []int64 {
+	if taskID == "" {
+		return nil
+	}
+	var out []int64
+	seen := make(map[int64]bool)
+	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
+		for i := range sec {
+			for j := range sec[i].Roles {
+				if sec[i].Roles[j].TaskID == taskID && !seen[sec[i].ID] {
+					seen[sec[i].ID] = true
+					out = append(out, sec[i].ID)
+				}
+			}
+		}
+	}
+	return out
+}
+
 func (m Model) canonicalParents() map[int64]canonParent {
 	var all []*OrchView
 	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {

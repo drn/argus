@@ -401,6 +401,42 @@ func TestPlanLeafEnter_LiveCoordinatorDoesNotReattach(t *testing.T) {
 	testutil.Equal(t, called, false)
 }
 
+// TestPlanLeafEnter_ExpandsCollapsedAncestorBeforeJoin is BUG-007: pressing Enter
+// on a plan-DAG leaf whose coordinator is COLLAPSED in the rail must expand the
+// rail (uncollapse the ancestor coordinator) so the row builds, THEN join — not
+// silently no-op. The plan graph projects from the full model, so the leaf node is
+// still shown when the coordinator is folded; before the fix SelectByTaskID scanned
+// only the built rows, so the folded coordinator swallowed the join.
+func TestPlanLeafEnter_ExpandsCollapsedAncestorBeforeJoin(t *testing.T) {
+	p := leafPlanPage(t) // LIVE resolver for t-coord + t-wkr
+	var got Selection
+	p.OnReattach = func(s Selection) { got = s }
+
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
+	testutil.Equal(t, p.detailsMode, true) // coordinator selected → details/plan
+
+	// Collapse the coordinator's orchestrator: its worker leaf row is no longer
+	// built, so the rail cannot see it for a join.
+	orchID := p.Rail().Model().Active[0].ID
+	p.Rail().seekCursor(t, func(row railRow) bool { return row.orch != nil && row.orch.ID == orchID })
+	p.Rail().ToggleCollapse()
+	testutil.Equal(t, p.Rail().OrchCollapsed(orchID), true)
+	testutil.Equal(t, p.Rail().SelectByTaskID("t-wkr"), false) // invisible under the fold
+
+	// The plan still lists the worker leaf (projected from the model, not the rail).
+	pl := p.Plan()
+	testutil.Equal(t, pl.CurrentNodeID(), "t-wkr")
+
+	// Enter on the leaf expands the rail AND joins.
+	pl.ActivateCursor()
+
+	testutil.Equal(t, p.Rail().OrchCollapsed(orchID), false)  // rail re-expanded
+	testutil.Equal(t, p.SelectionContext().TaskID(), "t-wkr") // selection landed
+	testutil.Equal(t, p.detailsMode, false)
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
+	testutil.Equal(t, got.FocusTaskID(), "t-wkr") // join (reattach) fired
+}
+
 // TestPlanEnter_DrillInDoesNotReattach: a Drillable sub-coordinator node fires
 // OnDrillIn (the page-owned drill-in path), NOT OnEnter/jumpToLeaf, so the
 // BUG-009 reattach must never fire for it. The planview widget routes the Enter
