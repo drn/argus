@@ -500,6 +500,131 @@ func TestBranchChange_FiresOnStructuralChange(t *testing.T) {
 	testutil.Equal(t, fired > prev, true)
 }
 
+// wideStage builds a single flat (no-plan) stage of n live working nodes
+// (w0..w{n-1}), each a lone box, so the stage row overflows a narrow pane and
+// exercises the horizontal viewport.
+func wideStage(n int) *Widget {
+	w := New()
+	var nodes []Node
+	for i := 0; i < n; i++ {
+		nodes = append(nodes, liveNode("w"+string(rune('0'+i)), StateWorking))
+	}
+	w.SetData(nodes, nil)
+	w.SetFocused(true)
+	return w
+}
+
+// boxContent is the rendered box middle-row content for a working live node:
+// the working glyph plus the node's label (the full "wN-role" name, since the
+// short-id parse falls back to the name).
+func boxContent(label string) string { return "⟳ " + label + "-role" }
+
+// assertBoxFullyVisible locates the node box whose content row reads `content`
+// and asserts BOTH its left and right vertical borders are painted within the
+// screen (the box is whole, not clipped). The content sits two columns right of
+// the left border; the box is boxW = len(content)+2*boxHPad+2 wide.
+func assertBoxFullyVisible(t *testing.T, sc tcell.SimulationScreen, content string) {
+	t.Helper()
+	cx, cy, ok := findStringCell(sc, content)
+	testutil.Equal(t, ok, true)
+	cells, scw, _ := sc.GetContents()
+	leftBorder := cx - 1 - boxHPad
+	rightBorder := leftBorder + (len([]rune(content)) + 2*boxHPad + 2) - 1
+	testutil.Equal(t, leftBorder >= 0, true)
+	testutil.Equal(t, rightBorder < scw, true)
+	isBorder := func(x int) bool {
+		c := cells[cy*scw+x]
+		if len(c.Runes) == 0 {
+			return false
+		}
+		return c.Runes[0] == '│' || c.Runes[0] == '║'
+	}
+	testutil.Equal(t, isBorder(leftBorder), true)
+	testutil.Equal(t, isBorder(rightBorder), true)
+}
+
+// TestDraw_HScroll_SelectedNodeFullyVisible (BUG-010): with more sibling nodes
+// than fit a narrow pane, the SELECTED node's whole box is painted within the
+// region for the first, a middle, and the last cursor position; a node off the
+// opposite edge is not painted.
+func TestDraw_HScroll_SelectedNodeFullyVisible(t *testing.T) {
+	w := wideStage(8)
+	// Last node: scrolls right; w7 whole + on-screen, w0 scrolled off the left.
+	for i := 0; i < 8; i++ {
+		w.MoveSlot(1)
+	}
+	testutil.Equal(t, w.CurrentNodeID(), "w7")
+	last := drawToSim(t, w, 40, 14)
+	assertBoxFullyVisible(t, last, boxContent("w7"))
+	_, _, found := findStringCell(last, boxContent("w0"))
+	testutil.Equal(t, found, false)
+
+	// A middle node: its whole box is visible.
+	w.MoveSlot(-4)
+	testutil.Equal(t, w.CurrentNodeID(), "w3")
+	mid := drawToSim(t, w, 40, 14)
+	assertBoxFullyVisible(t, mid, boxContent("w3"))
+
+	// Back to the first node: w0 whole + on-screen again.
+	for i := 0; i < 8; i++ {
+		w.MoveSlot(-1)
+	}
+	testutil.Equal(t, w.CurrentNodeID(), "w0")
+	first := drawToSim(t, w, 40, 14)
+	assertBoxFullyVisible(t, first, boxContent("w0"))
+}
+
+// TestDraw_HScroll_EdgeIndicators (BUG-010): a `›` marks content hidden past the
+// right edge (cursor on the first node), and a `‹` marks content hidden past the
+// left edge once scrolled right (cursor on the last node).
+func TestDraw_HScroll_EdgeIndicators(t *testing.T) {
+	w := wideStage(8)
+	// Cursor on the first node: right content hidden → `›`, nothing left → no `‹`.
+	atFirst := drawToString(t, w, 40, 14)
+	testutil.Contains(t, atFirst, "›")
+	testutil.Equal(t, strings.ContainsRune(atFirst, '‹'), false)
+
+	// Cursor on the last node: scrolled right → `‹`, nothing right → no `›`.
+	for i := 0; i < 8; i++ {
+		w.MoveSlot(1)
+	}
+	atLast := drawToString(t, w, 40, 14)
+	testutil.Contains(t, atLast, "‹")
+	testutil.Equal(t, strings.ContainsRune(atLast, '›'), false)
+}
+
+// TestDraw_HScroll_FannedMemberScrollsIntoView (BUG-010): a fanned group wider
+// than the pane scrolls so the SELECTED member box is fully visible, with an
+// earlier member scrolled off the left.
+func TestDraw_HScroll_FannedMemberScrollsIntoView(t *testing.T) {
+	w := fanGroup("1a", "1b", "1c", "1d", "1e", "1f", "1g", "1h")
+	w.SetFocused(true)
+	w.MoveStage(1)     // onto the collapsed group
+	w.ActivateCursor() // fan out → cursor on member 0 (1a)
+	for i := 0; i < 7; i++ {
+		w.MoveSlot(1) // walk to the last member (1h)
+	}
+	testutil.Equal(t, w.CurrentNodeID(), "1h")
+	sc := drawToSim(t, w, 40, 18)
+	// ○ is the planned-node glyph; inside a fanned group the box label is the
+	// parsed short-id ("1h"), not the full role name.
+	assertBoxFullyVisible(t, sc, "○ 1h")
+	_, _, found := findStringCell(sc, "○ 1a")
+	testutil.Equal(t, found, false)
+}
+
+// TestDraw_HScroll_NoIndicatorsWhenFits (BUG-010): when every stage fits the pane
+// width, no horizontal scroll is applied and no edge indicator is drawn.
+func TestDraw_HScroll_NoIndicatorsWhenFits(t *testing.T) {
+	w := wideStage(2) // two small boxes fit a wide pane
+	out := drawToString(t, w, 60, 14)
+	testutil.Equal(t, strings.ContainsRune(out, '‹'), false)
+	testutil.Equal(t, strings.ContainsRune(out, '›'), false)
+	// Both nodes are visible (nothing clipped).
+	testutil.Contains(t, out, "w0")
+	testutil.Contains(t, out, "w1")
+}
+
 func TestTruncateLabel_RuneAware(t *testing.T) {
 	// A long name truncates to fallbackLabelRunes with an ellipsis, rune-counted.
 	long := "verylongrolenamehere"

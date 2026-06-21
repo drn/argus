@@ -312,6 +312,12 @@ type Widget struct {
 	// so DrillDepth is len(navStack).
 	navStack []navFrame
 
+	// xOffset is the horizontal viewport scroll (cells, ≥0), maintained across
+	// Draws (BUG-010). When the widest stage block overflows the diagram width,
+	// Draw ensure-visibles the cursor's selected box by adjusting this offset so a
+	// node past the right edge is scrolled into view; 0 when everything fits.
+	xOffset int
+
 	lastShape uint64
 }
 
@@ -357,9 +363,11 @@ func (w *Widget) SetTitle(title string) { w.title = title }
 func (w *Widget) SetData(nodes []Node, edges []Edge) {
 	w.installLayout(nodes, edges)
 	// A fresh snapshot invalidates every prior fan-out and the cursor; reset to
-	// stage 0, slot 0, clamped to the new layout.
+	// stage 0, slot 0, clamped to the new layout. The horizontal viewport resets
+	// too (a different plan's widths are meaningless against the old offset).
 	w.fanned = map[[2]int]bool{}
 	w.cursor = Cursor{Member: -1}
+	w.xOffset = 0
 	w.clampCursor()
 
 	uxlog.Log("[planview] SetData: nodes=%d edges=%d stages=%d noPlan=%v",
@@ -1482,10 +1490,15 @@ const (
 // stageBlock is one stage's laid-out drawable: its total width/height (cells)
 // and a draw closure that paints it with its top-left at (x, y). drawStages
 // centers each block horizontally and stacks them with a connector between.
+// selW > 0 only for the stage that holds the cursor: selRelX/selW are the
+// selected box's x-offset (relative to the block's left edge) and width, used by
+// the horizontal viewport to ensure-visible the selection (BUG-010).
 type stageBlock struct {
-	width  int
-	height int
-	draw   func(screen tcell.Screen, x, y int, clip clipRect)
+	width   int
+	height  int
+	selRelX int
+	selW    int
+	draw    func(screen tcell.Screen, x, y int, clip clipRect)
 }
 
 // clipRect bounds painting to the diagram region so a scrolled/overflowing box
@@ -1496,11 +1509,23 @@ func (c clipRect) contains(x, y int) bool {
 	return x >= c.x0 && x < c.x1 && y >= c.y0 && y < c.y1
 }
 
+// edgeMoreLeft / edgeMoreRight are the off-screen content indicators drawn at a
+// stage row's left / right pane edge when sibling boxes are hidden by the
+// horizontal viewport (BUG-010). Single-width, consistent with the plan's
+// single-line glyph vocabulary.
+const (
+	edgeMoreLeft  = '‹'
+	edgeMoreRight = '›'
+)
+
 // drawStages lays each stage out as a boxed block (node = rounded box, group =
 // dashed enclosure), centers each block horizontally, stacks them vertically
 // with a centered `│` connector between, and vertical-scrolls so the cursor's
-// stage block stays in view when the plan overflows. No screen.Sync; every cell
-// is clipped to the diagram region (full-rect coverage by DrawBorderedPanel).
+// stage block stays in view when the plan overflows. When the widest stage
+// overflows the diagram width it also scrolls HORIZONTALLY so the cursor's
+// selected box stays fully visible, drawing `‹`/`›` edge indicators where
+// content is hidden (BUG-010). No screen.Sync; every cell is clipped to the
+// diagram region (full-rect coverage by DrawBorderedPanel).
 func (w *Widget) drawStages(screen tcell.Screen, inner widget.InnerRect) {
 	regionTop := inner.Y
 	if w.noPlan {
@@ -1519,10 +1544,14 @@ func (w *Widget) drawStages(screen tcell.Screen, inner widget.InnerRect) {
 
 	// Total block height: each stage's height plus a 1-row connector between.
 	totalH := 0
+	maxBlockW := 0
 	for i, b := range blocks {
 		totalH += b.height
 		if i > 0 {
 			totalH++ // connector row
+		}
+		if b.width > maxBlockW {
+			maxBlockW = b.width
 		}
 	}
 
@@ -1535,24 +1564,97 @@ func (w *Widget) drawStages(screen tcell.Screen, inner widget.InnerRect) {
 		startY -= w.scrollOffsetFor(blocks, regionH)
 	}
 
+	// Horizontal viewport: scroll only when the widest stage overflows the pane.
+	// In scroll mode every block is left-aligned at inner.X and shifted left by
+	// xOffset; otherwise each block stays centered and the offset is 0.
+	scrollX := maxBlockW > inner.W
+	if scrollX {
+		w.xOffset = w.ensureCursorVisibleX(blocks, inner.W)
+	} else {
+		w.xOffset = 0
+	}
+
 	y := startY
 	for s, b := range blocks {
-		// Horizontally center each block within the region.
 		bx := inner.X
-		if inner.W > b.width {
+		if scrollX {
+			bx = inner.X - w.xOffset
+		} else if inner.W > b.width {
 			bx += (inner.W - b.width) / 2
 		}
 		b.draw(screen, bx, y, clip)
+		if scrollX {
+			w.drawEdgeIndicators(screen, inner, clip, b, y)
+		}
 		y += b.height
-		// Centered connector to the next stage.
+		// Connector to the next stage, hung under this block's center (clamped to
+		// the visible region so a scrolled block keeps a sane connector).
 		if s < len(blocks)-1 {
-			ec := inner.X + inner.W/2
+			ec := bx + b.width/2
+			if ec < inner.X {
+				ec = inner.X
+			}
+			if ec > inner.X+inner.W-1 {
+				ec = inner.X + inner.W - 1
+			}
 			if clip.contains(ec, y) {
 				screen.SetContent(ec, y, '│', nil, theme.StyleDimmed.Foreground(theme.ColorBorder))
 			}
 			y++ // connector row
 		}
 	}
+}
+
+// drawEdgeIndicators paints the `‹`/`›` off-screen markers on a block's middle
+// row when its content is hidden past the left / right pane edge by the current
+// xOffset (BUG-010). Drawn over the (clipped) box edge cell — the marker is the
+// signal that more siblings exist beyond the pane.
+func (w *Widget) drawEdgeIndicators(screen tcell.Screen, inner widget.InnerRect, clip clipRect, b stageBlock, y int) {
+	if b.width <= 0 {
+		return
+	}
+	midY := y + b.height/2
+	style := theme.StyleDimmed.Foreground(theme.ColorBorder)
+	if w.xOffset > 0 { // content hidden to the left
+		setIf(screen, clip, inner.X, midY, edgeMoreLeft, style)
+	}
+	if b.width-w.xOffset > inner.W { // content extends past the right edge
+		setIf(screen, clip, inner.X+inner.W-1, midY, edgeMoreRight, style)
+	}
+}
+
+// edgeGutter is the one-column margin ensure-visible keeps at each pane edge in
+// scroll mode, so the `‹`/`›` indicators never overlap the fully-shown selected
+// box (BUG-010).
+const edgeGutter = 1
+
+// ensureCursorVisibleX returns the horizontal scroll offset (≥0) that keeps the
+// cursor's selected box fully within a viewport of width viewW, scrolling the
+// minimum from the current offset (BUG-010). selRelX/selW come from the cursor
+// stage's block (the dagview-derived layout). A one-column gutter is reserved at
+// each edge for the off-screen indicators. With no selectable box it falls back
+// to the start (0).
+func (w *Widget) ensureCursorVisibleX(blocks []stageBlock, viewW int) int {
+	cur := w.cursor.Stage
+	if cur < 0 || cur >= len(blocks) || blocks[cur].selW <= 0 {
+		return 0
+	}
+	boxLeft := blocks[cur].selRelX
+	boxRight := boxLeft + blocks[cur].selW // exclusive
+	off := w.xOffset
+	// Scroll right enough to reveal the box's right edge (inside the right gutter).
+	if boxRight-off > viewW-edgeGutter {
+		off = boxRight - (viewW - edgeGutter)
+	}
+	// Prefer showing the left edge inside the left gutter (also handles a box
+	// wider than the viewport).
+	if boxLeft-off < edgeGutter {
+		off = boxLeft - edgeGutter
+	}
+	if off < 0 {
+		off = 0
+	}
+	return off
 }
 
 // scrollOffsetFor returns how many rows to shift the block up so the cursor's
@@ -1603,40 +1705,69 @@ func (w *Widget) buildStageBlock(s int) stageBlock {
 	type sib struct {
 		width, height int
 		draw          func(screen tcell.Screen, x, y int, clip clipRect)
+		// selRelX/selW describe the selected box WITHIN this sib (selW > 0 only for
+		// the sib the cursor sits on): a lone node / collapsed group is the whole
+		// box; a fanned group with a member selected is that member's box.
+		selRelX, selW int
 	}
+	isCursorStage := w.cursor.Stage == s
 	var sibs []sib
 	for slotIdx, sl := range w.stages[s] {
-		onSlot := w.cursor.Stage == s && w.cursor.Slot == slotIdx
+		onSlot := isCursorStage && w.cursor.Slot == slotIdx
 		switch {
 		case sl.group != nil && w.Fanned(s, slotIdx):
-			bw, bh, draw := w.layoutFannedGroup(s, slotIdx, sl.group)
-			sibs = append(sibs, sib{bw, bh, draw})
+			bw, bh, draw, memRelX, memW := w.layoutFannedGroup(s, slotIdx, sl.group)
+			sb := sib{width: bw, height: bh, draw: draw}
+			if onSlot {
+				if memW > 0 { // a member is selected inside the fanned group
+					sb.selRelX, sb.selW = memRelX, memW
+				} else { // the enclosure slot itself is selected
+					sb.selW = bw
+				}
+			}
+			sibs = append(sibs, sb)
 		case sl.group != nil:
 			// Two-line collapsed box (BUG-005): top = "[range]" + feed indicator,
 			// sub = "<role token> · <per-state counts>".
 			bw, bh, draw := w.layoutDashedBox(w.groupTopLine(sl.group), w.groupSubSegs(sl.group), "", onSlot)
-			sibs = append(sibs, sib{bw, bh, draw})
+			sb := sib{width: bw, height: bh, draw: draw}
+			if onSlot {
+				sb.selW = bw
+			}
+			sibs = append(sibs, sb)
 		default:
 			glyph, style := w.nodeGlyph(sl.nodeID)
 			content := string(glyph) + " " + w.LabelOf(sl.nodeID)
 			bw, bh, draw := w.layoutNodeBox(content, style, onSlot)
-			sibs = append(sibs, sib{bw, bh, draw})
+			sb := sib{width: bw, height: bh, draw: draw}
+			if onSlot {
+				sb.selW = bw
+			}
+			sibs = append(sibs, sb)
 		}
 	}
 	width, height := 0, 0
+	selRelX, selW := 0, 0
+	cx := 0
 	for i, sb := range sibs {
-		width += sb.width
 		if i > 0 {
-			width += boxGap
+			cx += boxGap
 		}
+		if sb.selW > 0 {
+			selRelX, selW = cx+sb.selRelX, sb.selW
+		}
+		cx += sb.width
 		if sb.height > height {
 			height = sb.height
 		}
 	}
+	width = cx
 	sibsCopy := sibs
 	return stageBlock{
-		width:  width,
-		height: height,
+		width:   width,
+		height:  height,
+		selRelX: selRelX,
+		selW:    selW,
 		draw: func(screen tcell.Screen, x, y int, clip clipRect) {
 			cx := x
 			for i, sb := range sibsCopy {
@@ -1724,7 +1855,10 @@ func (w *Widget) layoutDashedBox(label string, sub []countSeg, topLabel string, 
 // each member that feeds downstream (g.FeedingMembers) gets a ↘ on its box. The
 // cursor's member box gets the selection fill; the enclosure itself fills only
 // when the cursor rests on the group slot with no member selected.
-func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tcell.Screen, int, int, clipRect)) {
+// The two trailing return values are the selected member's box x-offset
+// (relative to the enclosure's left edge) and width, for the horizontal viewport
+// (BUG-010); selMemW is 0 unless the cursor sits on a member of THIS group.
+func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tcell.Screen, int, int, clipRect), int, int) {
 	onSlot := w.cursor.Stage == s && w.cursor.Slot == slotIdx
 	type mbox struct {
 		width, height int
@@ -1760,6 +1894,20 @@ func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tce
 	boxW := labelCol + innerW + 2*groupPad + 2
 	boxH := innerH + 2 // rounded top + bottom edges
 	enclosureSel := onSlot && w.cursor.Member < 0
+	// Selected member geometry (relative to the enclosure box left edge), mirroring
+	// the member-draw loop's x math below.
+	selMemRelX, selMemW := 0, 0
+	memBase := 1 + labelCol + groupPad
+	mcx := memBase
+	for i, m := range members {
+		if i > 0 {
+			mcx += boxGap
+		}
+		if onSlot && w.cursor.Member == i {
+			selMemRelX, selMemW = mcx, m.width
+		}
+		mcx += m.width
+	}
 	border := w.enclosureBorderStyle(enclosureSel)
 	labelStyle := theme.StyleDimmed
 	draw := func(screen tcell.Screen, x, y int, clip clipRect) {
@@ -1789,7 +1937,7 @@ func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tce
 			cx += m.width
 		}
 	}
-	return boxW, boxH, draw
+	return boxW, boxH, draw, selMemRelX, selMemW
 }
 
 // commonRoleToken returns the role-name token shared by every member after the
