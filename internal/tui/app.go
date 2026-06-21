@@ -1677,8 +1677,14 @@ func (a *App) updateAttentionBar() {
 	for _, t := range a.tasks {
 		byID[t.ID] = t
 	}
-	entries := make([]widget.AttentionEntry, 0, len(a.needsInputIDs))
-	for _, id := range a.needsInputIDs {
+	// Gate on in_progress (BUG-006): needsInputIDs is sticky, so a finished task
+	// idling at its final prompt lingers in the set. The task list shows (?) only
+	// while in_progress and the Hera box gates the same way (BUG-005) — the
+	// agent-view bar must too, else it surfaces a done task that shows no (?)
+	// anywhere. Reuses the same helper the Hera feed does.
+	gated := needsInputInProgress(a.needsInputIDs, a.tasks)
+	entries := make([]widget.AttentionEntry, 0, len(gated))
+	for _, id := range gated {
 		if id == currentID {
 			continue
 		}
