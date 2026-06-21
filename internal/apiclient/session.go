@@ -44,6 +44,7 @@ type Session struct {
 	idle      bool
 	lastInput time.Time
 	done      chan struct{}
+	closeOnce sync.Once
 
 	// streamCtx is cancelled to stop the SSE reader. Distinct from p.closed
 	// so callers can stop a single session without nuking the whole provider.
@@ -232,14 +233,16 @@ func (s *Session) AddWriterFrom(_ io.Writer, _ uint64)         {}
 func (s *Session) AddWriterFromTolerant(_ io.Writer, _ uint64) {}
 func (s *Session) RemoveWriter(_ io.Writer)                    {}
 
-// close terminates the SSE reader and signals consumers of Done().
+// close terminates the SSE reader and signals consumers of Done(). It is
+// safe to call concurrently and repeatedly: both the runStream goroutine
+// (on EOF / stream-lost / provider-close) and Provider.Close race to tear a
+// session down, so the done-channel close is guarded by a sync.Once. The
+// prior check-then-act select was a data race — two callers could both
+// observe done still open and both close it (panic: close of closed channel).
+// streamCancel is itself idempotent.
 func (s *Session) close() {
 	s.streamCancel()
-	select {
-	case <-s.done:
-	default:
-		close(s.done)
-	}
+	s.closeOnce.Do(func() { close(s.done) })
 }
 
 // runStream is the SSE reader goroutine. Connects, decodes events, writes

@@ -276,6 +276,36 @@ func TestSession_SatisfiesInterface(t *testing.T) {
 	_ = s.RemoveWriter
 }
 
+// TestSession_CloseConcurrent pins BUG-009: the runStream goroutine and
+// Provider.Close both tear a session down and both call close(), so the
+// done-channel close must be guarded against a double close. The prior
+// check-then-act select panicked ("close of closed channel") when two
+// callers observed done still open. Hammering close() from many goroutines
+// reproduces that window; with the sync.Once guard it stays panic- and
+// race-clean and Done() ends up closed exactly once.
+func TestSession_CloseConcurrent(t *testing.T) {
+	fs := newFakeServer(t)
+	p := NewProvider(fs.client())
+	s := newSession("t1", p)
+
+	const closers = 64
+	var wg sync.WaitGroup
+	wg.Add(closers)
+	for i := 0; i < closers; i++ {
+		go func() {
+			defer wg.Done()
+			s.close()
+		}()
+	}
+	wg.Wait()
+
+	select {
+	case <-s.Done():
+	default:
+		t.Fatal("Done() should be closed after close()")
+	}
+}
+
 func TestProvider_Start_Resume(t *testing.T) {
 	fs := newFakeServer(t)
 	fs.addTask("t1", TaskJSON{ID: "t1", Status: "in_progress"})
