@@ -13,41 +13,41 @@ coordinator with branch + sha; do not push or open PRs directly.
 
 Write failing tests from the `hera-messaging` and `hera-coordination` deltas.
 
-- [ ] 1.1 `internal/db`: tests that `hera_role_status` accepts and round-trips `failed` (schema CHECK widened) — `UpsertHeraRoleStatus`/`HeraRoleStatusFor`.
-- [ ] 1.2 `internal/mcp` (hera_send): failing tests — worker→coord send with no `status` errors; `status` applied synchronously to the sender role before return; `status=done` rolls the worker task to in_review + ready_to_close; `status=failed` rolls to in_review WITHOUT ready_to_close; coordinator send needs no status.
-- [ ] 1.3 `internal/mcp` (hera_status): failing tests — `failed` is accepted; invalid status names all five values; worker `failed` roll (in_review, no ready_to_close).
-- [ ] 1.4 `internal/heragater`: failing tests — a blocker with role-status `failed` holds the dependent + pings (explicit, before session death); a planned dependent re-waits when a done blocker returns to working; held dedup clears on blocker recovery and re-pings on re-failure; exactly one "unblocked" notice on recovery; no notice for an already-materialized node whose blocker reopens.
-- [ ] 1.5 `internal/tui/hera` + `internal/tui/widget`: failing test that a role with status `failed` renders the red ✕ glyph at the right precedence (below ready_to_close, distinct from done).
-- [ ] 1.6 Confirm every Phase-A `it should X` acceptance criterion in design.md has a failing test (Prove-It).
+- [x] 1.1 `internal/db`: tests that `hera_role_status` accepts and round-trips `failed` (schema CHECK widened) — `UpsertHeraRoleStatus`/`HeraRoleStatusFor`.
+- [x] 1.2 `internal/mcp` (hera_send): failing tests — worker→coord send with no `status` errors; `status` applied synchronously to the sender role before return; `status=done` rolls the worker task to in_review + ready_to_close; `status=failed` rolls to in_review WITHOUT ready_to_close; coordinator send needs no status.
+- [x] 1.3 `internal/mcp` (hera_status): failing tests — `failed` is accepted; invalid status names all five values; worker `failed` roll (in_review, no ready_to_close).
+- [x] 1.4 `internal/heragater`: failing tests — a blocker with role-status `failed` holds the dependent + pings (explicit, before session death); a planned dependent re-waits when a done blocker returns to working; held dedup clears on blocker recovery and re-pings on re-failure; exactly one "unblocked" notice on recovery; no notice for an already-materialized node whose blocker reopens.
+- [x] 1.5 `internal/tui/hera` + `internal/tui/widget`: failing test that a role with status `failed` renders the red ✕ glyph at the right precedence (below ready_to_close, distinct from done).
+- [x] 1.6 Confirm every Phase-A `it should X` acceptance criterion in design.md has a failing test (Prove-It).
 
 ## 2. Phase A — failed role-status (schema + store + rail glyph)
 
 **Depends on:** Stage 1
 
-- [ ] 2.1 `internal/db/schema.go`: widen the `hera_role_status.status` CHECK to include `'failed'`; add the `HeraStatusFailed` constant in `internal/db/hera.go`.
-- [ ] 2.2 `internal/tui/widget/rolestatusicon.go`: add a `Failed` input + a red ✕ glyph case, placed below `ReadyToClose`/`NeedsInput` and distinct from `Done`; wire `roleStatusInputs` in `internal/tui/hera/rail.go` to set it from `role.Status == HeraStatusFailed`.
-- [ ] 2.3 uxlog: log failed-status transitions where other status transitions are logged.
+- [x] 2.1 `internal/db/schema.go`: widen the `hera_role_status.status` CHECK to include `'failed'`; add the `HeraStatusFailed` constant in `internal/db/hera.go`.
+- [x] 2.2 `internal/tui/widget/rolestatusicon.go`: add a `Failed` input + a red ✕ glyph case, placed below `ReadyToClose`/`NeedsInput` and distinct from `Done`; wire `roleStatusInputs` in `internal/tui/hera/rail.go` to set it from `role.Status == HeraStatusFailed`.
+- [x] 2.3 uxlog: log failed-status transitions where other status transitions are logged.
 
 ## 3. Phase A — required synchronous send-status
 
 **Depends on:** Stage 2
 
-- [ ] 3.1 `internal/mcp/hera.go`: add the `status` parameter to the `hera_send` tool def + handler; require it for worker/freelance senders (error naming the five values); ignore-or-accept for coordinators.
-- [ ] 3.2 Apply the sent status synchronously in the handler via the shared upsert-and-roll path (reuse the `hera_status` logic / `RollHeraWorkerToReview` family) BEFORE returning; soft-fail so a roll error never blocks the send.
-- [ ] 3.3 Add the `failed` worker roll sibling: roll to in_review WITHOUT `ready_to_close` (in_progress-gated, worker-kind-only, idempotent, soft-fail). Factor with `RollHeraWorkerToReview` so the invariants can't drift.
-- [ ] 3.4 `internal/mcp/hera.go` (hera_status): accept `failed`; route the worker `failed` roll through the same sibling.
-- [ ] 3.5 uxlog on the send-status apply (success + soft-fail).
+- [x] 3.1 `internal/mcp/hera.go`: add the `status` parameter to the `hera_send` tool def + handler; require it for worker/freelance senders (error naming the five values); ignore-or-accept for coordinators.
+- [x] 3.2 Apply the sent status synchronously in the handler via the shared upsert-and-roll path (reuse the `hera_status` logic / `RollHeraWorkerToReview` family) BEFORE returning; soft-fail so a roll error never blocks the send.
+- [x] 3.3 Add the `failed` worker roll sibling: roll to in_review WITHOUT `ready_to_close` (in_progress-gated, worker-kind-only, idempotent, soft-fail). Factor with `RollHeraWorkerToReview` so the invariants can't drift.
+- [x] 3.4 `internal/mcp/hera.go` (hera_status): accept `failed`; route the worker `failed` roll through the same sibling.
+- [x] 3.5 uxlog on the send-status apply (success + soft-fail).
 
 ## 4. Phase A — gater failure gating, re-arm, recovery notice
 
 **Depends on:** Stage 2
 
-- [ ] 4.1 `internal/heragater/heragater.go` `blockerOutcome`: return `blockerFailed` directly when `HeraRoleStatusFor(blocker).Status == failed`, BEFORE the session-death inference path.
-- [ ] 4.2 Re-arm: each tick, for every `(node, blocker)` key in `heldPings`, clear it when the blocker's outcome is no longer `blockerFailed` (recovered, or edge/role gone).
-- [ ] 4.3 Recovery notice: when a key clears because the blocker RECOVERED, emit exactly one "unblocked: node X's blocker Y recovered" message to the coordinator (FROM the held node's role, reusing the `ping` seam).
-- [ ] 4.4 Confirm no notice path exists for an already-materialized node whose blocker reopens (assert via test).
-- [ ] 4.5 uxlog on re-arm clears and recovery notices.
-- [ ] 4.6 Full Phase-A verification: `go test ./internal/db/... ./internal/mcp/... ./internal/heragater/... ./internal/tui/...` green; linter 0 issues. Report Phase A green to coordinator.
+- [x] 4.1 `internal/heragater/heragater.go` `blockerOutcome`: return `blockerFailed` directly when `HeraRoleStatusFor(blocker).Status == failed`, BEFORE the session-death inference path.
+- [x] 4.2 Re-arm: each tick, for every `(node, blocker)` key in `heldPings`, clear it when the blocker's outcome is no longer `blockerFailed` (recovered, or edge/role gone).
+- [x] 4.3 Recovery notice: when a key clears because the blocker RECOVERED, emit exactly one "unblocked: node X's blocker Y recovered" message to the coordinator (FROM the held node's role, reusing the `ping` seam).
+- [x] 4.4 Confirm no notice path exists for an already-materialized node whose blocker reopens (assert via test).
+- [x] 4.5 uxlog on re-arm clears and recovery notices.
+- [x] 4.6 Full Phase-A verification: `go test ./internal/db/... ./internal/mcp/... ./internal/heragater/... ./internal/tui/...` green; linter 0 issues. Report Phase A green to coordinator.
 
 ## 5. Phase B — Tests (mutation verbs)
 
