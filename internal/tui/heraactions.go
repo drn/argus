@@ -577,7 +577,20 @@ func (a *App) heraClearArchive(sel hera.Selection) {
 		a.statusbar.SetError("Clear archive: select a coordinator")
 		return
 	}
-	workers := a.heraPage.Rail().Model().SubtreeArchivedWorkers(orch.ID)
+	// Scope to the SELECTED coordinator. When the cursor rests on a bridging
+	// sub-coordinator row, sel.Orch is the PARENT orchestrator but the archive we
+	// clear belongs to the nested CHILD — use its own orch id (mirrors the exact
+	// disambiguation in heraOpenDelete's Ctrl+D cascade). A plain top-level
+	// coordinator (no BridgeChildOrchID) scopes to its own orch, unchanged.
+	scopeID, scopeName := orch.ID, orch.Name
+	model := a.heraPage.Rail().Model()
+	if sel.Role != nil && sel.BridgeChildOrchID != 0 {
+		scopeID = sel.BridgeChildOrchID
+		if child := model.OrchByID(scopeID); child != nil {
+			scopeName = child.Name
+		}
+	}
+	workers := model.SubtreeArchivedWorkers(scopeID)
 	if len(workers) == 0 {
 		a.statusbar.SetInfo("Nothing to clear")
 		return
@@ -586,7 +599,7 @@ func (a *App) heraClearArchive(sel hera.Selection) {
 	msg := fmt.Sprintf(
 		"Nukes %d hidden agent(s) and reclaims %d worktree(s)+branch(es). %d preserved (bound elsewhere). Rows are retained (recoverable via the DB).",
 		len(workers), reclaim, preserved)
-	a.openHeraConfirm("Clear "+orch.Name+"'s archive?", msg, func() {
+	a.openHeraConfirm("Clear "+scopeName+"'s archive?", msg, func() {
 		a.heraDoClearArchive(workers)
 	})
 }
