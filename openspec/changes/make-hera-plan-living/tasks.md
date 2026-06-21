@@ -96,10 +96,10 @@ Write failing tests from the `hera-coordination` (mutation-verb + cancelled) and
 
 **Depends on:** Stage 8
 
-- [ ] 9.1 `.claude/skills/hera/SKILL.md`: state the plan-DAG is authoritative for a bound coordinator; document the required `hera_send` status; document `hera_plan_node_update` / `hera_unblock` / `hera_plan_node_cancel`; add a "keep the DAG reconciled" standing order; reframe the create-only language.
-- [ ] 9.2 `context/knowledge/gotchas/orchestration.md`: status-on-send synchronous apply; `failed` status + explicit gating; re-arm + recovery notice; cancelled-node semantics.
-- [ ] 9.3 `context/knowledge/gotchas/dag-rendering.md`: cancelled node grey ✕ rendering rules.
-- [ ] 9.4 `context/knowledge/gotchas/hera-view.md`: failed glyph precedence; cancelled node projection.
-- [ ] 9.5 `context/knowledge/gotchas/messaging.md`: required worker→coord send-status + synchronous apply + soft-fail.
-- [ ] 9.6 README Reference: add the `hera_send` `status` parameter to the tool table.
-- [ ] 9.7 Report Phase C green to coordinator.
+- [x] 9.1 `.claude/skills/hera/SKILL.md`: state the plan-DAG is authoritative for a bound coordinator; document the required `hera_send` status; document `hera_plan_node_update` / `hera_unblock` / `hera_plan_node_cancel`; add a "keep the DAG reconciled" standing order; reframe the create-only language.
+- [x] 9.2 `context/knowledge/gotchas/orchestration.md`: status-on-send synchronous apply; `failed` status + explicit gating; re-arm + recovery notice; cancelled-node semantics.
+- [x] 9.3 `context/knowledge/gotchas/dag-rendering.md`: cancelled node grey ✕ rendering rules.
+- [x] 9.4 `context/knowledge/gotchas/hera-view.md`: failed glyph precedence; cancelled node projection.
+- [x] 9.5 `context/knowledge/gotchas/messaging.md`: required worker→coord send-status + synchronous apply + soft-fail.
+- [x] 9.6 README Reference: add the `hera_send` `status` parameter to the tool table.
+- [x] 9.7 Report Phase C green to coordinator.
