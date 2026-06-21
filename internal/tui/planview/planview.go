@@ -289,6 +289,10 @@ type Widget struct {
 	// (wall-clock, mirroring the rail's spinnerFrame) so an Animated node icon
 	// animates 1:1 with the rail (BUG-007). Read by nodeGlyph during the frame.
 	animFrame int
+	// frameFn is the source for animFrame, recomputed at the top of each Draw.
+	// Defaults to planSpinnerFrame (wall-clock); tests inject a fixed frame so
+	// spinner-glyph assertions are deterministic rather than racing the clock.
+	frameFn func() int
 
 	// cursor is the current (stage, slot, member) position. Member is -1 unless
 	// the cursor is inside a fanned-out group (Stage 4).
@@ -1385,8 +1389,9 @@ func (w *Widget) HeaderHeight() int { return headerHeight }
 func (w *Widget) Draw(screen tcell.Screen) {
 	w.DrawForSubclass(screen, w)
 	// Recompute the spinner frame once per Draw so Animated node icons animate in
-	// lockstep with the rail (BUG-007); cheap, wall-clock-derived.
-	w.animFrame = planSpinnerFrame()
+	// lockstep with the rail (BUG-007); cheap, wall-clock-derived (frameFn is the
+	// injectable seam tests pin for determinism).
+	w.animFrame = w.spinnerFrame()
 	x, y, wpx, hpx := w.GetInnerRect()
 	if wpx <= 0 || hpx <= 0 {
 		return
@@ -2013,6 +2018,16 @@ func planSpinnerFrame() int {
 		return 0
 	}
 	return int(time.Now().UnixMilli()/interval.Milliseconds()) % widget.SpinnerFrameCount()
+}
+
+// spinnerFrame yields the current spinner frame, honouring an injected frameFn
+// (tests pin it for determinism) and falling back to the wall-clock
+// planSpinnerFrame for a normally-constructed or zero-value widget.
+func (w *Widget) spinnerFrame() int {
+	if w.frameFn != nil {
+		return w.frameFn()
+	}
+	return planSpinnerFrame()
 }
 
 // groupTopLine is the collapsed box's first line (BUG-005): the bare range label

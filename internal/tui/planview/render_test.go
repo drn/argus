@@ -112,10 +112,13 @@ func TestDraw_AnimatedIconRendersSpinnerFrame(t *testing.T) {
 		Icon: &NodeIcon{Glyph: 'X', Style: theme.StyleInProgress, Animated: true},
 	}}, nil)
 	w.SetFocused(true)
+	// Pin the spinner frame so the assertion is deterministic, not racing the clock.
+	const pinnedFrame = 2
+	w.frameFn = func() int { return pinnedFrame }
 	out := drawToString(t, w, 50, 14)
-	// The stored placeholder 'X' must NOT appear; a real spinner frame does.
+	// The stored placeholder 'X' must NOT appear; the live (pinned) spinner frame does.
 	testutil.Equal(t, strings.ContainsRune(out, 'X'), false)
-	testutil.Equal(t, strings.ContainsRune(out, widget.SpinnerFrame(planSpinnerFrame())), true)
+	testutil.Equal(t, strings.ContainsRune(out, widget.SpinnerFrame(pinnedFrame)), true)
 }
 
 func TestDraw_GroupBoxRendered(t *testing.T) {
@@ -291,6 +294,10 @@ func TestDraw_CollapsedGroupCountIconsRailParity(t *testing.T) {
 		},
 	)
 	w.SetFocused(true)
+	// Pin the spinner frame so the working-segment glyph assertion is deterministic
+	// (the wall-clock frame could otherwise tick between Draw and the assertion).
+	const pinnedFrame = 2
+	w.frameFn = func() int { return pinnedFrame }
 	sc := drawToSim(t, w, 72, 18)
 	cells, scw, _ := sc.GetContents()
 
@@ -319,8 +326,9 @@ func TestDraw_CollapsedGroupCountIconsRailParity(t *testing.T) {
 	testutil.Equal(t, rvFg, theme.ColorInReview)
 	testutil.Equal(t, rvFg == theme.ColorComplete, false)
 
-	// working → the LIVE spinner frame (animated) in amber, not the static ⟳.
-	spinner := widget.SpinnerFrame(planSpinnerFrame())
+	// working → the LIVE (pinned) spinner frame in amber, not the static ⟳. The
+	// glyph equals SpinnerFrame(pinnedFrame), proving the frame flows source→render.
+	spinner := widget.SpinnerFrame(pinnedFrame)
 	spStyle, ok := styleAt(spinner)
 	testutil.Equal(t, ok, true)
 	spFg, _, _ := spStyle.Decompose()
