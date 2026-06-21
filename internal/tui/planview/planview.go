@@ -1609,7 +1609,7 @@ func (w *Widget) buildStageBlock(s int) stageBlock {
 		case sl.group != nil:
 			// Two-line collapsed box (BUG-005): top = "[range]" + feed indicator,
 			// sub = "<role token> · <per-state counts>".
-			bw, bh, draw := w.layoutDashedBox(w.groupTopLine(sl.group), w.groupSubLine(sl.group), "", onSlot)
+			bw, bh, draw := w.layoutDashedBox(w.groupTopLine(sl.group), w.groupSubSegs(sl.group), "", onSlot)
 			sibs = append(sibs, sib{bw, bh, draw})
 		default:
 			glyph, style := w.nodeGlyph(sl.nodeID)
@@ -1678,29 +1678,35 @@ func (w *Widget) layoutNodeBox(content string, contentStyle tcell.Style, selecte
 // set (`┏╍╍┓ / ╏ … ╏ / ┗╍╍┛`) so the cue reads without losing the dashed signal
 // (BUG-008 — no colour, no fill). topLabel, when non-empty, is embedded into the
 // top edge (`┌╌ label ╌┐`) — the fanned-group enclosure uses that variant.
-func (w *Widget) layoutDashedBox(label, sub, topLabel string, selected bool) (int, int, func(tcell.Screen, int, int, clipRect)) {
-	lines := []string{label}
-	if sub != "" {
-		lines = append(lines, sub)
+func (w *Widget) layoutDashedBox(label string, sub []countSeg, topLabel string, selected bool) (int, int, func(tcell.Screen, int, int, clipRect)) {
+	subW := 0
+	for _, seg := range sub {
+		subW += len([]rune(seg.text))
 	}
-	contentW := 0
-	for _, l := range lines {
-		if n := len([]rune(l)); n > contentW {
-			contentW = n
-		}
+	contentW := len([]rune(label))
+	if subW > contentW {
+		contentW = subW
 	}
 	if t := len([]rune(topLabel)) + 4; t > contentW+2*groupPad+2 {
 		contentW = t - 2*groupPad - 2
 	}
 	innerW := contentW + 2*groupPad
 	boxW := innerW + 2
-	boxH := len(lines) + 2
+	nLines := 1
+	if subW > 0 {
+		nLines = 2
+	}
+	boxH := nLines + 2
 	border := w.dashedBorderStyle(selected)
-	contentStyle := theme.StyleNormal
 	draw := func(screen tcell.Screen, x, y int, clip clipRect) {
 		w.drawDashedBox(screen, x, y, boxW, boxH, topLabel, border, clip, selected)
-		for i, l := range lines {
-			put(screen, clip, x+1+groupPad, y+1+i, l, contentStyle)
+		put(screen, clip, x+1+groupPad, y+1, label, theme.StyleNormal)
+		// The sub line is painted segment-by-segment so each per-state count keeps
+		// its own colour (the working spinner already carries its live frame).
+		col := x + 1 + groupPad
+		for _, seg := range sub {
+			put(screen, clip, col, y+2, seg.text, seg.style)
+			col += len([]rune(seg.text))
 		}
 	}
 	return boxW, boxH, draw
@@ -1913,17 +1919,71 @@ func put(screen tcell.Screen, clip clipRect, x, y int, s string, style tcell.Sty
 	}
 }
 
-// groupCounts renders the aggregate per-state counts for a collapsed group box,
-// e.g. "3 ✓ · 2 ⟳ · 1 ○". States with a zero count are omitted; the order
-// follows the State enum for stability.
-func groupCounts(g *Group) string {
-	var parts []string
-	for _, s := range []State{StateDone, StateInReview, StateWorking, StatePending, StateFailed, StatePlanned} {
-		if c := g.Counts[s]; c > 0 {
-			parts = append(parts, fmt.Sprintf("%d %c", c, s.Glyph()))
-		}
+// countSeg is one styled run of the collapsed-group count line: either a
+// "<count> <glyph>" segment in its per-state colour or a dim " · " separator
+// (BUG-011). Painting per-segment (rather than a single flat string) is what
+// lets a mixed group convey each state's colour and animate the working spinner.
+type countSeg struct {
+	text  string
+	style tcell.Style
+}
+
+// countSegGlyph resolves the rail-vocabulary glyph for a collapsed-count segment
+// of state s. It is 1:1 with the rail + the plan NODES (BUG-007/011): rather than
+// the compact State.Glyph() set (◔/⟳), it synthesises a widget.RoleStatusInputs
+// from the State and calls the SHARED classifier widget.RoleStatusIcon — the same
+// fn the rail's statusIcon and the node's planNodeIcon use — so the count can
+// never drift from the rail. The two plan-only overlays the rail has no concept
+// of (planned ○ / failed ✕) fall back to the State glyph. The working segment
+// animates via the live spinner frame.
+//
+// Only the GLYPH comes from the classifier; the COLOUR is the caller's
+// State.style() (the per-state node-border colour). The classifier's
+// ready_to_close style is green (reserved for done) where the count line wants
+// in_review cyan, so glyph and colour are sourced separately on purpose.
+func countSegGlyph(s State, frame int) rune {
+	switch s {
+	case StatePlanned, StateFailed:
+		return s.Glyph() // ○ / ✕ overlays — the rail has neither
 	}
-	return strings.Join(parts, " · ")
+	var in widget.RoleStatusInputs
+	switch s {
+	case StateDone:
+		in.Done = true // → ✓
+	case StateWorking:
+		in.Active = true // → animated spinner
+	case StateInReview:
+		in.ReadyToClose = true // → clipboard 󰂼 (theme.IconReview), NOT ◔
+	case StatePending:
+		in.Idle = true // → moon outline
+	}
+	glyph, _ := widget.RoleStatusIcon(in, false, frame)
+	return glyph
+}
+
+// groupCountSegs renders the aggregate per-state counts for a collapsed group box
+// as styled segments, e.g. "3 ✓"(green) · "2 <spinner>"(amber) · "1 ○"(violet).
+// States with a zero count are omitted; the order follows the State enum for
+// stability. Each count segment carries its state's colour (State.style() — the
+// same per-state colour the node box uses); the " · " separators stay dim. The
+// glyphs are 1:1 with the rail (countSegGlyph), and the working spinner re-resolves
+// the frame from w.animFrame each Draw (layout runs per Draw) so it animates.
+func (w *Widget) groupCountSegs(g *Group) []countSeg {
+	var segs []countSeg
+	for _, s := range []State{StateDone, StateInReview, StateWorking, StatePending, StateFailed, StatePlanned} {
+		c := g.Counts[s]
+		if c == 0 {
+			continue
+		}
+		if len(segs) > 0 {
+			segs = append(segs, countSeg{text: " · ", style: theme.StyleDimmed})
+		}
+		segs = append(segs, countSeg{
+			text:  fmt.Sprintf("%d %c", c, countSegGlyph(s, w.animFrame)),
+			style: s.style(),
+		})
+	}
+	return segs
 }
 
 // nodeGlyph returns a node's status glyph + style for rendering. When the
@@ -1971,19 +2031,23 @@ func (w *Widget) groupTopLine(g *Group) string {
 	}
 }
 
-// groupSubLine is the collapsed box's second line (BUG-005): the group's common
-// role token (e.g. "research", "drafting") then the per-state counts, joined by
-// " · " — "research · 1 ✓ · 2 ○". Falls back to just the counts when the members
-// share no common role token.
-func (w *Widget) groupSubLine(g *Group) string {
-	counts := groupCounts(g)
-	if tok := w.commonRoleToken(g.Members); tok != "" {
-		if counts == "" {
-			return tok
-		}
-		return tok + " · " + counts
+// groupSubSegs is the collapsed box's second line (BUG-005) as styled segments:
+// the group's common role token (e.g. "research", "drafting") in dim, then the
+// per-state counts (each in its state colour), joined by a dim " · " —
+// "research · 1 ✓ · 2 <spinner>". Falls back to just the counts when the members
+// share no common role token, and to just the token when there are no counts.
+func (w *Widget) groupSubSegs(g *Group) []countSeg {
+	counts := w.groupCountSegs(g)
+	tok := w.commonRoleToken(g.Members)
+	if tok == "" {
+		return counts
 	}
-	return counts
+	segs := []countSeg{{text: tok, style: theme.StyleDimmed}}
+	if len(counts) > 0 {
+		segs = append(segs, countSeg{text: " · ", style: theme.StyleDimmed})
+		segs = append(segs, counts...)
+	}
+	return segs
 }
 
 // InputHandler routes the 4-way navigation (↑↓ stage, ←→ slot/member), Enter
