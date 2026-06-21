@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -393,24 +394,34 @@ func (d *DB) RemoveHeraBlock(blockedRoleID, blockerRoleID int64) error {
 	return nil
 }
 
-// UpdateHeraPlannedNode updates the prompt and optionally the argus_project of a
-// planned node. project is only updated when non-empty — an empty string
-// preserves the existing value. The materialized-vs-planned guard belongs in the
-// MCP layer; this function updates any role unconditionally.
+// UpdateHeraPlannedNode updates the prompt and/or argus_project of a planned
+// node. Each field is only updated when non-empty — an empty string preserves
+// the existing value (so a project-only edit never wipes the prompt, and a
+// prompt-only edit never wipes the project). Both empty is a no-op (the MCP
+// layer rejects that case before calling here, but the store is safe either
+// way). The materialized-vs-planned guard belongs in the MCP layer; this
+// function updates any role unconditionally.
 func (d *DB) UpdateHeraPlannedNode(roleID int64, prompt, project string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	var err error
-	if project != "" {
-		_, err = d.conn.Exec(
-			`UPDATE hera_roles SET prompt=?, argus_project=? WHERE id=?`,
-			prompt, project, roleID)
-	} else {
-		_, err = d.conn.Exec(
-			`UPDATE hera_roles SET prompt=? WHERE id=?`,
-			prompt, roleID)
+	setClauses := make([]string, 0, 2)
+	args := make([]interface{}, 0, 3)
+	if prompt != "" {
+		setClauses = append(setClauses, "prompt=?")
+		args = append(args, prompt)
 	}
-	if err != nil {
+	if project != "" {
+		setClauses = append(setClauses, "argus_project=?")
+		args = append(args, project)
+	}
+	if len(setClauses) == 0 {
+		// Nothing to update — no-op.
+		return nil
+	}
+	args = append(args, roleID)
+	//nolint:gosec // G202: setClauses contains only hard-coded column=? literals; no user input is concatenated.
+	query := "UPDATE hera_roles SET " + strings.Join(setClauses, ", ") + " WHERE id=?"
+	if _, err := d.conn.Exec(query, args...); err != nil {
 		return fmt.Errorf("update hera planned node: %w", err)
 	}
 	slog.Info(fmt.Sprintf("[hera plan] updated planned node role=%d", roleID))

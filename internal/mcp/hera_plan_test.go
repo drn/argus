@@ -282,6 +282,8 @@ func TestHeraPlanNodeUpdate_EditsProject(t *testing.T) {
 	orch, _ := d.HeraOrchestratorByName("orch")
 	updated, _ := d.HeraRoleByName(orch.ID, "1a-writer")
 	testutil.Equal(t, updated.ArgusProject, "new-project")
+	// Regression: a project-only edit must NOT wipe the existing prompt.
+	testutil.Equal(t, updated.Prompt, "some prompt")
 }
 
 func TestHeraPlanNodeUpdate_RejectsMaterialized(t *testing.T) {

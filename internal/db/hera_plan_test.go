@@ -579,6 +579,36 @@ func TestUpdateHeraPlannedNode_PreservesProjectOnEmpty(t *testing.T) {
 	testutil.Equal(t, got.ArgusProject, "proj") // unchanged
 }
 
+func TestUpdateHeraPlannedNode_PreservesPromptOnProjectOnly(t *testing.T) {
+	// A project-only update (empty prompt) must NOT wipe the existing prompt.
+	// This is the regression for the bug where the project-branch ran
+	// SET prompt=?, argus_project=? with the empty prompt, overwriting the stored value.
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+	r := plannedRole(t, d, orch, "w") // prompt="do w", argus_project="proj"
+
+	testutil.NoError(t, d.UpdateHeraPlannedNode(r.ID, "", "new-proj"))
+
+	got, err := d.HeraRole(r.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Prompt, "do w")           // must be unchanged
+	testutil.Equal(t, got.ArgusProject, "new-proj") // updated
+}
+
+func TestUpdateHeraPlannedNode_BothFieldsUpdated(t *testing.T) {
+	// When both prompt and project are supplied, both are updated.
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+	r := plannedRole(t, d, orch, "w")
+
+	testutil.NoError(t, d.UpdateHeraPlannedNode(r.ID, "revised prompt", "revised-proj"))
+
+	got, err := d.HeraRole(r.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Prompt, "revised prompt")
+	testutil.Equal(t, got.ArgusProject, "revised-proj")
+}
+
 // --- CancelHeraPlannedNode ---
 
 func TestCancelHeraPlannedNode_StampsCancelledAt(t *testing.T) {
