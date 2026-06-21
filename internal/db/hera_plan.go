@@ -120,11 +120,15 @@ func insertHeraBlockTx(tx *sql.Tx, blockedRoleID, blockerRoleID int64) error {
 }
 
 // HeraPlannedNodeSpec is one planned node in a whole-graph CreateHeraPlan call.
-// It mirrors the fields CreateHeraPlannedRole consumes; Kind is forced to worker.
+// It mirrors the fields CreateHeraPlannedRole consumes; Kind is forced to worker
+// (D2). NodeKind is the plan-node discriminator (add-hera-subcoord-nodes):
+// absent or HeraNodeKindWorker means leaf worker; HeraNodeKindSubCoord means the
+// gater should materialize this node as a distinct coordinator agent.
 type HeraPlannedNodeSpec struct {
 	Name         string
 	ArgusProject string
 	Prompt       string
+	NodeKind     HeraNodeKind
 }
 
 // HeraBlockSpec is one blocking edge in a whole-graph CreateHeraPlan call. Each
@@ -161,6 +165,7 @@ func (d *DB) CreateHeraPlan(orchID int64, nodes []HeraPlannedNodeSpec, edges []H
 				OrchestratorID: orchID,
 				Name:           n.Name,
 				Kind:           HeraKindWorker,
+				NodeKind:       n.NodeKind,
 				ArgusProject:   n.ArgusProject,
 				Prompt:         n.Prompt,
 			}, now)
@@ -350,7 +355,7 @@ func (d *DB) ListHeraPlannedNodes() ([]*HeraRole, error) {
 	defer d.mu.Unlock()
 	rows, err := d.conn.Query(
 		`SELECT r.id, r.orchestrator_id, r.name, r.kind, r.argus_project, r.prompt,
-		        r.created_at, r.archived_at, r.pinned_at, r.nuked_at
+		        r.created_at, r.archived_at, r.pinned_at, r.nuked_at, r.node_kind
 		 FROM hera_roles r
 		 WHERE r.kind=? AND r.archived_at IS NULL
 		   AND NOT EXISTS (SELECT 1 FROM hera_bindings b WHERE b.role_id = r.id)

@@ -458,6 +458,24 @@ func (d *Daemon) heraGaterMaterialize(role *db.HeraRole, taskPrompt, project, br
 	return err
 }
 
+// heraGaterMaterializeSubCoord is the gater's second Materializer adapter
+// (add-hera-subcoord-nodes): it materializes a pre-created planned SUBCOORD node
+// as a distinct coordinator agent via the shared agent.MaterializeHeraSubCoordinator
+// primitive (one new task carrying both a parent-worker binding and a child-coord
+// binding). Wired via Watcher.SetSubCoordMaterializer; the worker path stays on
+// heraGaterMaterialize.
+func (d *Daemon) heraGaterMaterializeSubCoord(role *db.HeraRole, taskPrompt, project, branch, backend, model string) error {
+	_, err := agent.MaterializeHeraSubCoordinator(d.db, d.runner, agent.HeraMaterializeInput{
+		Role:       role,
+		TaskPrompt: taskPrompt,
+		Project:    project,
+		Branch:     branch,
+		Backend:    backend,
+		Model:      model,
+	})
+	return err
+}
+
 // pollPRStatesOnce runs a single PR-status refresh pass over every eligible
 // task. Eligible = not archived AND has a non-empty Branch AND its cached PR
 // state (task_meta namespace "pr", key "state") is not terminal (merged/closed).
@@ -762,6 +780,10 @@ func (d *Daemon) Serve(sockPath string) error {
 				_, err := gaterSvc.Send(fromRoleID, coordRoleID, body, tldr, nil)
 				return err
 			})
+		// Route subcoord plan nodes through the distinct-coordinator materialize
+		// path (add-hera-subcoord-nodes); without this the gater would fall back to
+		// the worker path and never spawn a sub-coordinator agent.
+		d.heraGater.SetSubCoordMaterializer(d.heraGaterMaterializeSubCoord)
 		go d.heraGater.Start()
 	}
 

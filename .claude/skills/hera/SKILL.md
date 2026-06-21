@@ -136,13 +136,18 @@ live born-bound worker *automatically*, in dependency order. A planned node cost
 agent, worktree, or inbox until it materializes. The plan-DAG renders in the TUI's second tab (planned
 `○` → live-by-status), and you navigate it there.
 
-- **`hera_plan_node(cwd, name, prompt, [orchestrator], [project])`** — create ONE planned node (a
-  worker role with no live agent/worktree/inbox yet). It materializes into a live worker automatically
-  once **all** its blockers reach role-status `done`. `prompt` is delivered to the worker at
-  materialization (a check-in standing-order is prepended automatically, so the worker pings you on
-  start). **Name with a stable short-id prefix** — number = serial stage, letter = parallel member
-  (e.g. `1a-seed`, `2a-alpha`, `2b-beta`, `3a-final`); uniquified within the orchestrator. `project`
-  defaults to the coordinator's own.
+- **`hera_plan_node(cwd, name, prompt, [orchestrator], [project], [kind], [goal])`** — create ONE
+  planned node (a worker role with no live agent/worktree/inbox yet). It materializes automatically
+  once **all** its blockers reach role-status `done`. **Name with a stable short-id prefix** — number =
+  serial stage, letter = parallel member (e.g. `1a-seed`, `2a-alpha`, `2b-beta`, `3a-final`);
+  uniquified within the orchestrator. `project` defaults to the coordinator's own.
+  - `kind` — `worker` (default) or `subcoord`. A **worker** node materializes into a live born-bound
+    worker; `prompt` is delivered to it (a check-in standing-order is prepended automatically, so it
+    pings you on start). A **subcoord** node materializes into a *distinct sub-coordinator agent* (its
+    own task/worktree + a fresh child orchestrator it coordinates) — see "sub-coordinator nodes" below.
+  - `goal` — **required for `kind=subcoord`** (and used instead of `prompt`): the objective handed to
+    the sub-coordinator. You hand only the goal — you do NOT name its child orchestrator or author its
+    sub-plan; the sub-coordinator owns its own decomposition.
 
 - **`hera_block(cwd, blocked, blocker, [orchestrator])`** — add a blocking edge: `blocked` waits on
   `blocker` reaching role-status `done` before it materializes. Coordinator-only; both roles must be in
@@ -151,8 +156,10 @@ agent, worktree, or inbox until it materializes. The plan-DAG renders in the TUI
   would be a permanently-unsatisfiable dependency).
 
 - **`hera_plan(cwd, nodes, [edges], [orchestrator])`** — submit a WHOLE graph in one **transactional**
-  call: `nodes` = `[{name, prompt, [project]}]`, `edges` = `[{blocked, blocker}]` referencing nodes by
-  name (or existing roles). Nodes are created first, then edges (cycle-checked, single-orchestrator).
+  call: `nodes` = `[{name, prompt, [project], [kind], [goal]}]` (per-node `kind` = `worker` default |
+  `subcoord`; a `subcoord` node needs `goal`, not `prompt`), `edges` = `[{blocked, blocker}]`
+  referencing nodes by name (or existing roles). Nodes are created first, then edges (cycle-checked,
+  single-orchestrator).
   **All-or-nothing** — any cycle / cross-orchestrator / coordinator-blocker / validation error rolls
   back the entire graph (no orphan nodes). This is the way to author a multi-stage plan at once rather
   than many `hera_plan_node` + `hera_block` calls.
@@ -168,6 +175,24 @@ agent, worktree, or inbox until it materializes. The plan-DAG renders in the TUI
 - **Respond to check-ins promptly.** Each node check-ins on materialization via `hera_send`; you pull
   it from `hera_inbox` and reply (e.g. `"go"`). A node whose blocker genuinely **failed** is HELD and
   pings you — decide whether to unblock, re-plan, or let it stay held.
+
+**Sub-coordinator nodes (`kind=subcoord`).** Use a subcoord node when a plan stage is itself a *sub-team*
+rather than a single unit of work — a chunk big enough to warrant its own coordinator and its own
+fan-out. It is the **declarative** form of "worker promotion" (§7): instead of spawning a worker that
+later calls `hera_new_orchestrator` on itself, you author the sub-team as a plan node up front, and the
+gater materializes it as a *distinct coordinator agent* when its blockers finish. Mechanics:
+- It occupies the parent DAG exactly like any node — it is a worker role in **your** orchestrator, so
+  blocking edges, gating, hold/ping, and branch-stacking all treat it identically. Its worker-role
+  `done` gates the parent's dependents.
+- At materialization it becomes **one new agent** (own task + worktree) that is simultaneously a worker
+  in your orchestrator AND the coordinator of a freshly-created child orchestrator (named automatically,
+  de-collided) — so it nests under you in the rail/tree via the multi-binding bridge, never sharing your
+  task. **One claude instance = one rail element** holds.
+- You hand it only the `goal`. It runs its own planning (often `/brainstorm` → its own `hera_plan`) and
+  spawns its own workers. Bake rich context into the goal so it needs little back-and-forth; it can
+  still `hera_send` you for guidance.
+- Keep it an explicit choice — default to plain worker nodes for ordinary stages. Don't spin up
+  middle-management for a stage one worker can do.
 
 ## 4. Decision rules
 
@@ -186,6 +211,10 @@ agent, worktree, or inbox until it materializes. The plan-DAG renders in the TUI
   dependency order** — author planned nodes wired by blocking edges and let the gater materialize them
   as their blockers finish (auto-stacking each stage's branch on the prior). Lay the whole graph out
   with one `hera_plan` call; respond to each node's check-in via `hera_inbox`.
+- **Worker node vs sub-coordinator node:** a plain plan node (`kind=worker`) is a single unit of work.
+  Make it `kind=subcoord` (with a `goal`) only when the stage is a *sub-team* — large enough to deserve
+  its own coordinator that plans and fans out its own workers. It's the declarative alternative to a
+  worker promoting itself mid-task (§7). Default to worker nodes.
 - **This task holds 2+ bindings?** Pass `orchestrator=` on EVERY tool call.
 - **Got a doorbell?** Call `hera_inbox(cwd=$PWD)` immediately — the content is in the inbox, not the
   doorbell line.
@@ -288,6 +317,11 @@ You are a coordinator and the work has clear stages (a seed, a parallel fan-out,
    graph on a never-`done` coordinator.)
 
 ### Worker promotion: becoming a sub-coordinator
+
+> If you already know up front (at plan-authoring time) that a stage is a sub-team, prefer the
+> **declarative** form: a `kind=subcoord` plan node (§3). The gater then materializes the
+> sub-coordinator for you when its blockers finish. The runtime promotion below is for when a worker
+> discovers the need *mid-task*.
 
 If a worker realizes mid-task it needs its own team (cross-repo work, real parallelism, a long sub-task):
 

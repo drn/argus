@@ -415,6 +415,11 @@ func (d *DB) createHeraTables() error {
 	// yet created) and is intentionally ignored; the CREATE TABLE below carries
 	// the column inline.
 	d.conn.Exec(`ALTER TABLE hera_orchestrators ADD COLUMN base_branch TEXT`) //nolint:errcheck
+	// node_kind (add-hera-subcoord-nodes): plan-node discriminator. NULL means
+	// leaf worker (default); "subcoord" means the gater materializes as a
+	// distinct coordinator agent. Idempotent — ignored when the column already
+	// exists (e.g. fresh DBs where the CREATE TABLE below adds it inline).
+	d.conn.Exec(`ALTER TABLE hera_roles ADD COLUMN node_kind TEXT`) //nolint:errcheck
 
 	ddl := `
 		CREATE TABLE IF NOT EXISTS hera_orchestrators (
@@ -454,7 +459,11 @@ func (d *DB) createHeraTables() error {
 			archived_at     TEXT,
 			pinned_at       TEXT,
 			-- nuked_at (BUG-022 two-state EOL): see hera_orchestrators.nuked_at.
-			nuked_at        TEXT
+			nuked_at        TEXT,
+			-- node_kind (add-hera-subcoord-nodes): plan-node discriminator. NULL or
+			-- absent means leaf worker (default); "subcoord" means materialize as a
+			-- distinct coordinator agent. Only meaningful on planned roles (no binding).
+			node_kind       TEXT
 		);
 		CREATE INDEX IF NOT EXISTS idx_hera_roles_kind ON hera_roles(orchestrator_id, kind);
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_hera_roles_active_name ON hera_roles(orchestrator_id, name) WHERE archived_at IS NULL;

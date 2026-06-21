@@ -176,6 +176,163 @@ func MaterializeHeraWorker(database *db.DB, runner SessionProvider, in HeraMater
 	return &HeraWorkerSpawnResult{Task: task, Role: in.Role, Binding: binding}, nil
 }
 
+// HeraSubCoordMaterializeResult is the success payload from
+// MaterializeHeraSubCoordinator (add-hera-subcoord-nodes). The single new task
+// holds TWO bindings: ParentBinding (a worker binding against the pre-created
+// planned role in the parent orchestrator, occupying its DAG slot) and
+// CoordBinding (a coordinator binding in a freshly minted child orchestrator).
+// ParentRole is the planned role itself (in.Role); CoordRole is the new "coord"
+// role in the child orchestrator.
+type HeraSubCoordMaterializeResult struct {
+	Task          *model.Task
+	ParentRole    *db.HeraRole
+	ParentBinding *db.HeraBinding
+	ChildOrch     *db.HeraOrchestrator
+	CoordRole     *db.HeraRole
+	CoordBinding  *db.HeraBinding
+}
+
+// MaterializeHeraSubCoordinator materializes a PRE-CREATED planned subcoord node
+// (add-hera-subcoord-nodes D2/D3) as a DISTINCT coordinator agent on ONE new task.
+// It mirrors MaterializeHeraWorker's "bind the planned role" discipline AND
+// SpawnHeraCoordinator's "mint a child orchestrator + coord role" discipline,
+// fused onto a single CreateAndStart so both bindings land in one transaction:
+//
+//	(a) PARENT worker binding against in.Role (CreateHeraBinding) — so the node
+//	    keeps its parent-DAG slot and its worker-role status `done` still gates the
+//	    parent's dependents, identical to a leaf worker.
+//	(b) a NEW child orchestrator (name auto-derived from in.Role.Name, de-collided
+//	    via UniqueHeraOrchestratorName) + a coordinator role (defaulted "coord")
+//	    bound to the SAME new task.
+//
+// Because the task holds a worker binding in the parent AND a coordinator binding
+// in the child, it nests under the parent via the existing SubtreeOrchIDs
+// multi-binding bridge — no new nesting mechanism (D2).
+//
+// LIFO compensation on a later runner.Start failure: END the parent binding (do
+// NOT delete in.Role — it is authored plan data the gater retries against, the
+// same rule as MaterializeHeraWorker) AND delete the freshly minted child
+// orchestrator (which cascades its coord role + coord binding). The child orch is
+// created INSIDE the AfterPersist hook so the hook's compensating cleanup owns its
+// teardown, and a hook-internal insert failure unwinds the task+worktree with
+// nothing left behind.
+func MaterializeHeraSubCoordinator(database *db.DB, runner SessionProvider, in HeraMaterializeInput) (*HeraSubCoordMaterializeResult, error) {
+	if in.Role == nil {
+		return nil, fmt.Errorf("materialize subcoord: nil role")
+	}
+	var (
+		parentBinding *db.HeraBinding
+		childOrch     *db.HeraOrchestrator
+		coordRole     *db.HeraRole
+		coordBinding  *db.HeraBinding
+	)
+	task, _, err := CreateAndStart(database, runner, CreateInput{
+		Name:       in.Role.Name,
+		Prompt:     in.TaskPrompt,
+		Project:    in.Project,
+		Backend:    in.Backend,
+		Model:      in.Model,
+		BaseBranch: in.Branch,
+		AutoName:   false, // name is the planner-assigned short-id slug — never rename
+		AfterPersist: func(t *model.Task) (func(), error) {
+			// The new task is a coordinator (of its own child orchestrator); rail
+			// rendering keys on meta:hera.role. Best-effort — a meta failure must not
+			// abort an otherwise-valid materialize.
+			if mErr := database.SetMeta(t.ID, db.HeraMetaNamespace, db.HeraMetaKeyRole, string(db.HeraKindCoordinator)); mErr != nil {
+				slog.Warn("[hera] subcoord materialize: meta role stamp failed (continuing)", "task", t.ID, "err", mErr)
+			}
+
+			// (a) Parent worker binding against the pre-created planned role.
+			pb, cErr := database.CreateHeraBinding(db.CreateHeraBindingInput{
+				RoleID:         in.Role.ID,
+				OrchestratorID: in.Role.OrchestratorID,
+				ArgusTaskID:    t.ID,
+				WorktreePath:   t.Worktree,
+			})
+			if cErr != nil {
+				return nil, cErr
+			}
+			parentBinding = pb
+
+			// (b) Child orchestrator (name derived from the node, de-collided) +
+			// coordinator role bound to the SAME task.
+			childName, cErr := database.UniqueHeraOrchestratorName(in.Role.Name)
+			if cErr != nil {
+				return nil, cErr
+			}
+			// Empty base_branch (add-hera-plan-base-branch): the child orchestrator's
+			// own root plan nodes resolve their base via the gater's coordinatorBranch
+			// fallback (= this sub-coordinator's bound-task branch). Mirrors
+			// SpawnHeraCoordinator, which also passes "".
+			co, cErr := database.CreateHeraOrchestrator(childName, "")
+			if cErr != nil {
+				return nil, cErr
+			}
+			childOrch = co
+			cr, cb, cErr := database.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+				OrchestratorID: co.ID,
+				Name:           "coord",
+				Kind:           db.HeraKindCoordinator,
+				ArgusProject:   in.Project,
+				Prompt:         in.Role.Prompt,
+			}, t.ID, t.Worktree)
+			if cErr != nil {
+				return nil, cErr
+			}
+			coordRole, coordBinding = cr, cb
+
+			// Compensating cleanup for a LATER failure (runner.Start). Mirror the
+			// proven LIFO discipline:
+			//   - END the parent binding (NOT DeleteHeraRole — in.Role is authored
+			//     plan data the gater retries against, identical to
+			//     MaterializeHeraWorker's rule).
+			//   - DELETE the freshly minted child orchestrator, which cascades its
+			//     coord role + coord binding away (so no orphan child orch/role/binding).
+			cleanup := func() {
+				if eErr := database.EndHeraBinding(pb.ID, "subcoord_materialize_failed"); eErr != nil {
+					slog.Warn("[hera] subcoord materialize unwind: end parent binding failed", "binding_id", pb.ID, "err", eErr)
+				}
+				if dErr := database.DeleteHeraOrchestrator(co.ID); dErr != nil {
+					slog.Warn("[hera] subcoord materialize unwind: delete child orchestrator failed", "orch_id", co.ID, "err", dErr)
+				}
+			}
+			return cleanup, nil
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &HeraSubCoordMaterializeResult{
+		Task:          task,
+		ParentRole:    in.Role,
+		ParentBinding: parentBinding,
+		ChildOrch:     childOrch,
+		CoordRole:     coordRole,
+		CoordBinding:  coordBinding,
+	}, nil
+}
+
+// HeraSubCoordinatorOrientation is the orientation prefix delivered to a
+// gater-materialized sub-coordinator (add-hera-subcoord-nodes D4). It names the
+// child orchestrator it owns and the parent orchestrator it answers to, points at
+// the coordination tools (spawn / plan / status / send / inbox), and states the
+// core expectation: the sub-coordinator OWNS the decomposition — it runs its own
+// brainstorm against the goal and authors its own sub-plan. The full materialized
+// prompt is this orientation + HeraCheckInOrientation (check in with the parent,
+// poll hera_inbox for go/wait) + the node's goal.
+func HeraSubCoordinatorOrientation(childOrchName, parentOrchName, coordRoleName string) string {
+	return fmt.Sprintf(
+		"You are the coordinator (role %q) of hera sub-orchestrator %q, materialized as a "+
+			"sub-team under parent orchestrator %q. You OWN the decomposition of your goal: run "+
+			"your own brainstorm against it and author your own sub-plan — your parent handed you a "+
+			"goal, not a ready-made plan. Dispatch work with hera_spawn_worker(project=\"...\", "+
+			"prompt=\"...\"), structure phases with hera_plan / hera_plan_node, track roles via "+
+			"hera_status / hera_inbox / hera_get_messages, and message roles (including your parent "+
+			"coordinator) with hera_send. When opening pull requests, use mcp__argus__iris_gh_pr_create "+
+			"(not gh pr create directly) so argus records the PR URL and the hera rail shows the PR indicator.",
+		coordRoleName, childOrchName, parentOrchName)
+}
+
 // HeraCheckInOrientation is the standing-order prefix prepended to a
 // gater-materialized worker's prompt. It instructs the worker to FIRST message
 // its coordinator that it has started, then POLL hera_inbox in a loop for a
