@@ -145,7 +145,21 @@ type HeraPage struct {
 	// Region rects from the last Draw (mouse hit-testing in regionAt).
 	coordX, coordW int
 	agentX, agentW int
+
+	// summary is the needs-input heads-up box drawn at the top of the rail column
+	// when one or more needs-input tasks have no presence in the Hera model (plain
+	// Tasks-tab tasks invisible from this tab). Its count is recomputed each Draw
+	// from needsInput + the rail model; managed roles (incl. folded + freelance)
+	// are excluded. summaryShown tracks the last drawn visibility so the show/hide
+	// transition is logged once, not every frame.
+	summary      *widget.AttentionSummary
+	summaryShown bool
 }
+
+// minRailHeight is the floor below which the attention summary box yields its
+// rows back to the rail, so a short terminal never starves the rail of its
+// header + at least one content row.
+const minRailHeight = 4
 
 // NewHeraPage builds the page against a hera reader. Pass nil for remote mode.
 func NewHeraPage(reader HeraReader) *HeraPage {
@@ -159,6 +173,7 @@ func NewHeraPage(reader HeraReader) *HeraPage {
 		agentPane: terminal.NewTerminalPane(),
 		details:   NewDetailsView(),
 		plan:      planview.New(),
+		summary:   widget.NewAttentionSummary(),
 	}
 	p.coordPane.SetBorderTitle(coordPaneTitle)
 	// Retitle the embedded graph so it reads as the plan DAG, not a second
@@ -399,8 +414,26 @@ func (p *HeraPage) Draw(screen tcell.Screen) {
 	p.coordPane.SetBorderTitle(clipboardHintTitle(coordPaneTitle, p.clipReady && p.focus.State() == FocusCoord))
 	p.agentPane.SetBorderTitle(clipboardHintTitle(agentPaneTitle, p.clipReady && !p.detailsMode && p.focus.State() == FocusAgent))
 
+	// Needs-input summary box atop the rail column: count tasks blocked on a
+	// prompt that have NO presence in the Hera model (invisible from this tab),
+	// drawn above the rail and shrinking it by the box height. On a terminal too
+	// short to keep the rail usable the box yields its rows back. Pure Draw math —
+	// no flex/ResizeItem and no Sync; the box and rail each paint their full rect.
+	p.summary.SetCount(p.rail.Model().UnmanagedNeedsInputCount(p.needsInput))
+	barH := p.summary.DesiredHeight()
+	if barH > 0 && h-barH < minRailHeight {
+		barH = 0
+	}
+	railY, railH := y, h
+	if barH > 0 {
+		p.summary.SetRect(x, y, railW, barH)
+		p.summary.Draw(screen)
+		railY, railH = y+barH, h-barH
+	}
+	p.logSummaryTransition(barH > 0)
+
 	p.rail.SetFocused(p.focus.State() == FocusRail)
-	p.rail.SetRect(x, y, railW, h)
+	p.rail.SetRect(x, railY, railW, railH)
 	p.rail.Draw(screen)
 
 	// Fullscreen: the rail stays put and the single focused content pane fills
@@ -447,6 +480,20 @@ func (p *HeraPage) Draw(screen tcell.Screen) {
 			p.agentPane.SetRect(p.agentX, y, agentW, h)
 			p.agentPane.Draw(screen)
 		}
+	}
+}
+
+// logSummaryTransition logs the attention summary's show/hide edge once (not
+// every frame), per the uxlog state-transition rule.
+func (p *HeraPage) logSummaryTransition(shown bool) {
+	if shown == p.summaryShown {
+		return
+	}
+	p.summaryShown = shown
+	if shown {
+		uxlog.Log("[hera-view] attention summary shown: %d unmanaged task(s) need input", p.summary.Count())
+	} else {
+		uxlog.Log("[hera-view] attention summary hidden")
 	}
 }
 
