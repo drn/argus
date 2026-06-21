@@ -346,6 +346,76 @@ func TestRail_CollapsedGrandparentFoldsWholeSubtree(t *testing.T) {
 	testutil.Equal(t, rootHeaderCount(r), 1) // only P
 }
 
+// TestRail_EnsureAncestorsExpandedRevealsNestedLeaf is BUG-007: a worker leaf
+// buried under collapsed ANCESTOR coordinators is invisible to SelectByTaskID
+// (which scans only the currently-built rows), so the plan view's leaf-Enter join
+// silently no-ops. EnsureAncestorsExpanded must uncollapse the WHOLE canonical
+// ancestor chain (multi-level, not just the immediate parent) so the row builds
+// and the join lands. Reuses the grandparent fold shape: P → Q (coord-spawned) →
+// qw (bridges R) → R → rw; collapsing the top grandparent P folds the whole chain.
+func TestRail_EnsureAncestorsExpandedRevealsNestedLeaf(t *testing.T) {
+	p := coordOf(1, "P", 100, "T")
+	q := coordOf(2, "Q", 200, "T",
+		RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tr"})
+	rr := coordOf(3, "R", 300, "tr",
+		RoleView{RoleID: 301, Name: "rw", Kind: db.HeraKindWorker, Live: true, TaskID: "trw", BridgeTaskID: "trw"})
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{p, q, rr}})
+
+	// Collapse the top grandparent P → the whole subtree (Q, qw, R, rw) folds.
+	r.seekCursor(t, func(row railRow) bool { return row.orch != nil && row.orch.Name == "P" })
+	r.ToggleCollapse()
+	testutil.Equal(t, r.depthOf("rw"), -1)
+	// Pre-expand the leaf's row is not built, so a join attempt no-ops.
+	testutil.Equal(t, r.SelectByTaskID("trw"), false)
+
+	// Resolve the leaf's containing orchestrator from the FULL model (fold-
+	// independent) and expand its ancestor chain.
+	orchIDs := r.Model().OrchIDsForTask("trw")
+	testutil.DeepEqual(t, orchIDs, []int64{3})
+	r.EnsureAncestorsExpanded(orchIDs[0])
+
+	// Every ancestor on the chain (R, Q, P) is now expanded and persisted like a
+	// user toggle, the leaf row is built across all levels, and the join lands.
+	testutil.Equal(t, r.OrchCollapsed(1), false)
+	testutil.Equal(t, r.OrchCollapsed(2), false)
+	testutil.Equal(t, r.OrchCollapsed(3), false)
+	testutil.Equal(t, r.depthOf("rw") >= 0, true)
+	testutil.Equal(t, r.SelectByTaskID("trw"), true)
+	testutil.Equal(t, r.Selected().TaskID, "trw")
+}
+
+// TestRail_EnsureAncestorsExpandedNoOpWhenVisible: expanding when nothing is
+// folded leaves the rows untouched (no spurious rebuild) and still selectable.
+func TestRail_EnsureAncestorsExpandedNoOpWhenVisible(t *testing.T) {
+	r := NewRail()
+	r.SetModel(twoOrchModel())
+	// twoOrchModel seeds first-run-collapsed; expand orch-1 so its worker is shown.
+	r.EnsureAncestorsExpanded(1)
+	testutil.Equal(t, r.OrchCollapsed(1), false)
+	testutil.Equal(t, r.SelectByTaskID("t12"), true)
+	rowsBefore := r.Rows()
+	r.EnsureAncestorsExpanded(1) // already expanded → no change
+	testutil.Equal(t, r.Rows(), rowsBefore)
+	// A zero id is a guarded no-op.
+	r.EnsureAncestorsExpanded(0)
+	testutil.Equal(t, r.Rows(), rowsBefore)
+}
+
+// TestModel_OrchIDsForTask covers the fold-independent task→orchestrator resolver
+// the leaf-Enter join uses, including the multi-binding fan-out (same task under
+// two orchestrators returns both ids) and the empty-input guard.
+func TestModel_OrchIDsForTask(t *testing.T) {
+	m := Model{Active: []OrchView{
+		coordOf(1, "A", 10, "ta", RoleView{RoleID: 11, Name: "w", Kind: db.HeraKindWorker, Live: true, TaskID: "shared"}),
+		coordOf(2, "B", 20, "tb", RoleView{RoleID: 21, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "shared"}),
+	}}
+	testutil.DeepEqual(t, m.OrchIDsForTask("shared"), []int64{1, 2})
+	testutil.DeepEqual(t, m.OrchIDsForTask("ta"), []int64{1})
+	testutil.Nil(t, m.OrchIDsForTask(""))
+	testutil.Nil(t, m.OrchIDsForTask("missing"))
+}
+
 // seekCursor parks the cursor on the first row matching pred (for fold tests).
 func (r *Rail) seekCursor(t *testing.T, pred func(railRow) bool) {
 	t.Helper()

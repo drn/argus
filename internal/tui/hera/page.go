@@ -226,6 +226,17 @@ func (p *HeraPage) jumpToLeaf(id string) {
 	if p.remote || id == "" {
 		return
 	}
+	// BUG-007: expand any folded ancestor coordinators BEFORE selecting. The plan
+	// graph projects from the full model, so it surfaces a node even when its
+	// coordinator is collapsed in the rail — but SelectByTaskID only scans the
+	// currently-built rows, so the join would silently no-op. Resolve the target's
+	// containing orchestrator(s) from the full model (fold-independent) and
+	// uncollapse each ancestor chain, exactly as a user Space-expand would, so the
+	// row is built and the join lands regardless of fold state. Multi-binding fans
+	// to multiple orchestrators; expand them all.
+	for _, orchID := range p.rail.Model().OrchIDsForTask(id) {
+		p.rail.EnsureAncestorsExpanded(orchID)
+	}
 	if !p.rail.SelectByTaskID(id) {
 		uxlog.Log("[hera-view] plan leaf-enter: no rail row for task=%s (focus unchanged)", id)
 		return
