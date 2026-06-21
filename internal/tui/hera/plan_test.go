@@ -7,6 +7,8 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/planview"
+	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 )
 
 // seedPlannedRole creates a planned (never-bound) worker role and returns it.
@@ -278,6 +280,81 @@ func TestPlanNodeIcon_LiveMatchesRailStatusIcon(t *testing.T) {
 			testutil.Equal(t, icon.Glyph, wantGlyph)
 		})
 	}
+}
+
+// effectiveGlyph mirrors how the planview widget resolves a node's RENDERED
+// glyph (planview.nodeGlyph / headerStatusGlyph): an Animated icon re-resolves to
+// the live spinner frame at Draw; otherwise the stored glyph is shown. The
+// needs-input parity check must compare THIS — what the operator actually sees —
+// not the raw Icon.Glyph, because a correct Icon.Glyph that is wrongly flagged
+// Animated still renders the spinner (BUG-012).
+func effectiveGlyph(icon *planview.NodeIcon, frame int) rune {
+	if icon == nil {
+		return 0
+	}
+	if icon.Animated {
+		return widget.SpinnerFrame(frame)
+	}
+	return icon.Glyph
+}
+
+// TestPlanNodeIcon_NeedsInputNotAnimated is the BUG-012 headline: a needs-input
+// role whose bound task is ALSO live + in_progress (IsActive) must render the
+// static needs-input "?" on its plan node, 1:1 with the rail — NOT the working
+// spinner. needs-input OUTRANKS active in the shared classifier, so the resolved
+// glyph is "?"; the projection must therefore NOT flag the icon Animated (which
+// would make the widget swap "?" for the live spinner frame at Draw, the exact
+// parity break). Covered through the EFFECTIVE rendered glyph so the assertion
+// catches the Animated-override even when Icon.Glyph itself is correct. Both the
+// role's OWN signal and a descendant subtree-rollup case are exercised.
+func TestPlanNodeIcon_NeedsInputNotAnimated(t *testing.T) {
+	t.Run("own signal (blocked + in_progress)", func(t *testing.T) {
+		// A worker blocked on a prompt while its task is still in_progress: active
+		// AND needs-input. The rail shows "?"; the plan node must too.
+		role := RoleView{
+			RoleID: 2, Name: "2b-prompter", Kind: db.HeraKindWorker,
+			Live: true, TaskID: "t1", BridgeTaskID: "t1",
+			TaskStatus: model.StatusInProgress.String(),
+			HasStatus:  true, Status: db.HeraStatusBlocked,
+		}
+		testutil.Equal(t, role.IsActive(), true)        // genuinely working...
+		testutil.Equal(t, role.ShowsNeedsInput(), true) // ...AND blocked on input
+		wantGlyph, wantStyle := statusIcon(&role, false, 0)
+		testutil.Equal(t, wantGlyph, theme.IconNeedsInput)
+
+		icon := projectWorkerIcon(t, role)
+		testutil.Equal(t, icon != nil, true)
+		testutil.Equal(t, icon.Animated, false) // the fix: must not animate "?"
+		testutil.Equal(t, icon.Style, wantStyle)
+		// The EFFECTIVE rendered glyph (what the widget paints) is the static "?".
+		testutil.Equal(t, effectiveGlyph(icon, 0), wantGlyph)
+	})
+
+	t.Run("descendant subtree rollup", func(t *testing.T) {
+		// R(coord tr, worker w→tc) → C(coord tc, worker wc→twc). The leaf wc needs
+		// input; the bridging sub-coordinator w is itself live + in_progress
+		// (active). After the rollup w.SubtreeNeedsInput is true, so the rail shows
+		// "?" on w — and so must w's plan node, not the spinner.
+		r := orchView(1, "R", "tr", wk("w", "tc"))
+		c := orchView(2, "C", "tc", wk("wc", "twc"))
+		m := Model{Active: []OrchView{r, c}}
+		roleByName(t, &m, 2, "wc").NeedsInput = true
+		m.rollupNeedsInput()
+
+		w := roleByName(t, &m, 1, "w")
+		testutil.Equal(t, w.IsActive(), true)        // bridging sub-coord is working...
+		testutil.Equal(t, w.SubtreeNeedsInput, true) // ...with a descendant blocked
+		wantGlyph, wantStyle := statusIcon(w, false, 0)
+		testutil.Equal(t, wantGlyph, theme.IconNeedsInput)
+
+		nodes, _ := heraPlanNodesWithBridge(m.OrchByID(1), m.bridgeIndex())
+		n, ok := findNode(nodes, planNodeID(w))
+		testutil.Equal(t, ok, true)
+		testutil.Equal(t, n.Icon != nil, true)
+		testutil.Equal(t, n.Icon.Animated, false)
+		testutil.Equal(t, n.Icon.Style, wantStyle)
+		testutil.Equal(t, effectiveGlyph(n.Icon, 0), wantGlyph)
+	})
 }
 
 // TestPlanNodeIcon_WorkingIsAnimated: the genuinely-active "working" node is

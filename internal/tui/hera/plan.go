@@ -142,16 +142,26 @@ func planNodeState(r *RoleView) planview.State {
 // returns nil for the two plan-view-specific overlays the rail has no concept of
 // — a PLANNED (never-bound) node (rendered ○ via State) and a FAILED node
 // (rendered ✕ via State) — letting the widget fall back to the State glyph there.
+//
 // Animated marks the genuinely-active "working" case so the widget re-resolves
-// the live spinner frame at Draw. frame 0 here is a placeholder (the glyph is
-// re-resolved at Draw when Animated); the Style (StyleInProgress) is correct.
+// the live spinner frame at Draw. It is derived from the classifier's OWN frame-0
+// output (glyph == the spinner frame), NOT from in.Active directly: in.Active is
+// NOT mutually exclusive with the higher-precedence signals (a live in_progress
+// worker blocked on a prompt is BOTH active AND needs-input), and the classifier
+// correctly resolves that to the STATIC needs-input "?" (needs-input outranks
+// active). Flagging such a node Animated would make the widget swap the "?" for
+// the spinner frame at Draw, breaking 1:1 parity with the rail row (which shows
+// "?"). Comparing the resolved glyph to the spinner keeps Animated true ONLY when
+// the spinner actually won, with zero duplication of the classifier's precedence
+// (and it tracks the active spinner style, which both sides read). See BUG-012.
 func planNodeIcon(r *RoleView, state planview.State) *planview.NodeIcon {
 	if state == planview.StatePlanned || state == planview.StateFailed {
 		return nil // ○ / ✕ overlays come from State (the rail has neither)
 	}
 	in := roleStatusInputs(r)
 	glyph, style := widget.RoleStatusIcon(in, false, 0)
-	return &planview.NodeIcon{Glyph: glyph, Style: style, Animated: in.Active}
+	animated := glyph == widget.SpinnerFrame(0)
+	return &planview.NodeIcon{Glyph: glyph, Style: style, Animated: animated}
 }
 
 // firstLine returns the first line of s, trimmed of surrounding whitespace, for

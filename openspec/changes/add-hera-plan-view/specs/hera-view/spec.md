@@ -61,7 +61,7 @@ The system SHALL label each plan node with its short-id — the prefix of the ro
 
 ### Requirement: Parallel groups auto-collapse (area 6)
 
-The system SHALL collapse a maximal set of nodes in the same computed stage that share the same blocker set and have no edges among themselves into a single range box labelled `[first–last]` (ids sorted), rendering `[first–last +N]` when membership is non-contiguous (N = the count of ids beyond the two endpoints of the span). A collapsed group box SHALL show aggregate counts of its members by state (e.g. `3 ✓ · 2 ⟳ · 1 ○`). A stage whose nodes do not form a clean group renders them as individual chips.
+The system SHALL collapse a maximal set of nodes in the same computed stage that share the same blocker set and have no edges among themselves into a single range box labelled `[first–last]` (ids sorted), rendering `[first–last +N]` when membership is non-contiguous (N = the count of ids beyond the two endpoints of the span). A collapsed group box SHALL show aggregate counts of its members by state (e.g. `3 ✓ · 2 <spinner> · 1 ○`, with the rail-1:1 glyphs and per-state colour defined under "Collapsed group count segments are 1:1 with the rail"). A stage whose nodes do not form a clean group renders them as individual chips.
 
 #### Scenario: Same-stage siblings collapse into a range box
 
@@ -78,7 +78,7 @@ The system SHALL collapse a maximal set of nodes in the same computed stage that
 A collapsed parallel group box SHALL render as two lines (matching the design):
 
 - **Top line:** the bare range label `[first–last]` followed by a feed indicator — `→ <short-id>` when every out-of-group edge from the group's members points to ONE downstream node (full feed), or `↘` when only some members feed downstream (partial). No feed indicator when the group feeds nothing. The range label SHALL NOT carry a trailing bare count (the old `[2a–2c] 3 ○`, which read as "blocks 3a", is removed).
-- **Sub line:** the group's common role token followed by the per-state aggregate counts, joined by ` · ` (e.g. `research · 1 ✓ · 2 ○`); the counts alone when there is no common token.
+- **Sub line:** the group's common role token followed by the per-state aggregate counts, joined by ` · ` (e.g. `research · 1 ✓ · 2 <spinner>`); the counts alone when there is no common token.
 
 On fan-out, every member with an out-of-group edge SHALL carry a `↘` on its box (not only a single feeder).
 
@@ -92,9 +92,18 @@ On fan-out, every member with an out-of-group edge SHALL carry a `↘` on its bo
 - **WHEN** only `2b` of group `[2a–2c]` blocks the downstream `3a`
 - **THEN** the collapsed box top line is `[2a–2c] ↘` (no arrow target) and, fanned out, `2b` carries a `↘`
 
+### Requirement: Collapsed group count segments are 1:1 with the rail (area 6)
+
+Each per-state count segment on a collapsed group's sub line SHALL use the rail's glyph vocabulary, NOT the compact chip set (`◔`/`⟳`). The glyph SHALL be resolved through the SAME shared classifier the rail's status icon and the live plan node use — a `RoleStatusInputs` synthesised from the segment's state (done → `Done`; working → `Active`; in_review → `ready-to-close`/review clipboard; pending/idle → `Idle`/moon) so the count can never drift from the rail; the two plan-only overlays the rail has no concept of (planned, failed) keep their `○`/`✕` glyphs. Each `<count> <glyph>` segment SHALL be coloured in that state's colour — the SAME per-state colour the node box uses (done green, working amber, in_review cyan, planned violet, failed red, pending/idle dim) — while the ` · ` separators and the common role token stay dim. (in_review is cyan, NOT green: green is reserved for done, distinct from the rail's ready-to-close green for this overlay-only count.) The working segment's spinner SHALL animate, re-resolving the frame from the wall-clock spinner frame at draw (the same mechanism the per-node working spinner uses), so a collapsed group hiding active work conveys motion.
+
+#### Scenario: Mixed collapsed group renders rail glyphs, per-state colour, and an animated spinner
+
+- **WHEN** a collapsed group contains a done, a working, and an in_review member
+- **THEN** its count line renders `<n> ✓` in green, `<n> <spinner>` in amber with the live spinner frame (animated, not a static `⟳`), and `<n> 󰂼` (the review clipboard) in cyan (not `◔`, not green), with dim ` · ` separators — and the compact `◔`/`⟳` glyphs never appear
+
 ### Requirement: Four-way plan navigation with group fan-out (area 6)
 
-The plan view SHALL support a cursor over `(stage, slot, member)`: `↑`/`↓` change the stage and collapse any fanned-out group on the way; `←`/`→` move within a stage between slots (nodes and collapsed groups); `Enter`/`Space` fan out a collapsed group or collapse a fanned-out one when the cursor is on a group. Inside a fanned-out group, `←`/`→` walk between members; stepping off either edge exits and collapses the group and moves to the adjacent slot (or clamps at the stage edge).
+The plan view SHALL support a cursor over `(stage, slot, member)`: `↑`/`↓` change the stage and collapse any fanned-out group on the way; `←`/`→` move within a stage between slots (nodes and collapsed groups). `Space` SHALL be a PURE fan-out/collapse toggle on a group slot — fanning out a collapsed group and collapsing a fanned one regardless of which member the cursor is on — and SHALL NEVER navigate (on a lone-node slot it is a no-op; opening a leaf is `Enter`'s job). `Enter` on a COLLAPSED group SHALL fan it out; on an interior MEMBER of a fanned-out group, `Enter` SHALL navigate to that member — firing the same leaf action a plain node fires (open/jump, or drill in when the member is a sub-coordinator) — and SHALL NOT collapse the group (collapsing is `Space`'s or `Esc`'s job). `Enter` on a fanned enclosure with no member under the cursor SHALL collapse it. Inside a fanned-out group, `←`/`→` walk between members; stepping off either edge exits and collapses the group and moves to the adjacent slot (or clamps at the stage edge).
 
 #### Scenario: Up/down changes stage and collapses
 
@@ -105,6 +114,16 @@ The plan view SHALL support a cursor over `(stage, slot, member)`: `↑`/`↓` c
 
 - **WHEN** the cursor is on a collapsed group and the user presses `Enter`
 - **THEN** the group fans out to show its members and the cursor lands on the first member
+
+#### Scenario: Enter on a fanned-out group member navigates to it (does not collapse)
+
+- **WHEN** a group is fanned out, the cursor is on one of its members, and the user presses `Enter`
+- **THEN** the system fires that member's leaf action (jump to / open the member, or drill in when it is a sub-coordinator) and the group stays fanned out — it does NOT collapse
+
+#### Scenario: Space on a fanned-out group member collapses and never navigates
+
+- **WHEN** a group is fanned out, the cursor is on one of its members, and the user presses `Space`
+- **THEN** the group collapses and no leaf action fires — `Space` is a pure toggle, not a navigation
 
 #### Scenario: Stepping off a group edge exits and collapses
 
@@ -166,12 +185,17 @@ The operator leaves the plan pane via the focus ladder (`Ctrl+Q` / `Tab`), never
 
 ### Requirement: Live plan node icons are 1:1 with the rail (area 6)
 
-A LIVE plan node's status icon (glyph AND style, including the animated spinner for a genuinely-active node) SHALL be identical to what the rail's status icon renders for the same role, computed through a SINGLE shared classifier so the two surfaces can never drift — not a parallel glyph table. The shared vocabulary: ready-to-close → review clipboard; needs-input → the needs-input glyph (so a worker blocked on a prompt is actionable from the DAG); done → `✓`; genuinely-active → the animated spinner (the plan view recomputes the frame at draw so it animates in lockstep); idle → moon-outline; live-quiet → moon-stars. Two plan-view-specific overlays the rail has no concept of: a PLANNED (never-bound) node renders the `○` circle, and a FAILED node (bound task result reports failure) renders `✕`. The header Status line uses the same resolved icon.
+A LIVE plan node's status icon (glyph AND style, including the animated spinner for a genuinely-active node) SHALL be identical to what the rail's status icon renders for the same role, computed through a SINGLE shared classifier so the two surfaces can never drift — not a parallel glyph table. The shared vocabulary: ready-to-close → review clipboard; needs-input → the needs-input glyph (so a worker blocked on a prompt is actionable from the DAG); done → `✓`; genuinely-active → the animated spinner (the plan view recomputes the frame at draw so it animates in lockstep); idle → moon-outline; live-quiet → moon-stars. Two plan-view-specific overlays the rail has no concept of: a PLANNED (never-bound) node renders the `○` circle, and a FAILED node (bound task result reports failure) renders `✕`. The header Status line uses the same resolved icon. The animated-spinner re-resolution applies ONLY when the shared classifier actually resolved to the spinner; a higher-precedence signal (notably needs-input on a still-active in_progress role) resolves to its STATIC glyph and the node SHALL NOT animate, so it renders 1:1 with the rail's `?` rather than swapping in the spinner frame.
 
 #### Scenario: A live node's icon equals the rail's
 
 - **WHEN** a live worker role is in any status (done / working / idle / in-review / needs-input)
 - **THEN** its plan node renders the same glyph and style the rail's status icon renders for that role, and a working node animates
+
+#### Scenario: Needs-input outranks active without animating (BUG-012)
+
+- **WHEN** a live worker role's bound task is in_progress (genuinely active) AND the role also needs input (blocked on a prompt, or a descendant in its subtree does)
+- **THEN** its plan node renders the static needs-input `?` glyph and style — identical to the rail row — and is NOT flagged animated, so the widget does not swap the `?` for the live spinner frame at draw
 
 #### Scenario: Planned and failed overlays
 

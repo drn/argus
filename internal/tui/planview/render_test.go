@@ -112,10 +112,13 @@ func TestDraw_AnimatedIconRendersSpinnerFrame(t *testing.T) {
 		Icon: &NodeIcon{Glyph: 'X', Style: theme.StyleInProgress, Animated: true},
 	}}, nil)
 	w.SetFocused(true)
+	// Pin the spinner frame so the assertion is deterministic, not racing the clock.
+	const pinnedFrame = 2
+	w.frameFn = func() int { return pinnedFrame }
 	out := drawToString(t, w, 50, 14)
-	// The stored placeholder 'X' must NOT appear; a real spinner frame does.
+	// The stored placeholder 'X' must NOT appear; the live (pinned) spinner frame does.
 	testutil.Equal(t, strings.ContainsRune(out, 'X'), false)
-	testutil.Equal(t, strings.ContainsRune(out, widget.SpinnerFrame(planSpinnerFrame())), true)
+	testutil.Equal(t, strings.ContainsRune(out, widget.SpinnerFrame(pinnedFrame)), true)
 }
 
 func TestDraw_GroupBoxRendered(t *testing.T) {
@@ -270,6 +273,79 @@ func TestDraw_CollapsedGroupPartialFeedTopLine(t *testing.T) {
 	testutil.Contains(t, subRow, "✓") // counts present on the sub line
 }
 
+// TestDraw_CollapsedGroupCountIconsRailParity (BUG-011): a COLLAPSED group with
+// mixed in-motion members renders its count line 1:1 with the rail — the
+// in_review segment uses the clipboard 󰂼 in CYAN (not ◔, not green), the working
+// segment uses the LIVE spinner frame in AMBER (animated, not the static ⟳), and
+// the done segment uses ✓ in GREEN. The compact State.Glyph() set never appears.
+func TestDraw_CollapsedGroupCountIconsRailParity(t *testing.T) {
+	w := New()
+	// {2a=done, 2b=working, 2c=in_review} all blocked by 1a → one collapsed group
+	// at stage 1. Cursor parked at stage 0 (default) so the group stays collapsed.
+	w.SetData(
+		[]Node{
+			liveNode("1a", StateDone),
+			liveNode("2a", StateDone),
+			liveNode("2b", StateWorking),
+			liveNode("2c", StateInReview),
+		},
+		[]Edge{
+			{From: "1a", To: "2a"}, {From: "1a", To: "2b"}, {From: "1a", To: "2c"},
+		},
+	)
+	w.SetFocused(true)
+	// Pin the spinner frame so the working-segment glyph assertion is deterministic
+	// (the wall-clock frame could otherwise tick between Draw and the assertion).
+	const pinnedFrame = 2
+	w.frameFn = func() int { return pinnedFrame }
+	sc := drawToSim(t, w, 72, 18)
+	cells, scw, _ := sc.GetContents()
+
+	// The collapsed range box is present (group did not fan). The count line sits
+	// one row below the "[2a–2c]" label row inside the box.
+	_, boxY, ok := findStringCell(sc, "[2a–2c]")
+	testutil.Equal(t, ok, true)
+	countRow := boxY + 1
+
+	// styleAt finds a glyph ON THE COUNT ROW (so the header's own ✓/status glyphs,
+	// which are normal-styled, can't be mistaken for the coloured count segments).
+	styleAt := func(r rune) (tcell.Style, bool) {
+		for x := 0; x < scw; x++ {
+			c := cells[countRow*scw+x]
+			if len(c.Runes) > 0 && c.Runes[0] == r {
+				return c.Style, true
+			}
+		}
+		return tcell.StyleDefault, false
+	}
+
+	// in_review → clipboard 󰂼 in cyan (NOT the compact ◔, NOT done-green).
+	rvStyle, ok := styleAt(theme.IconReview)
+	testutil.Equal(t, ok, true)
+	rvFg, _, _ := rvStyle.Decompose()
+	testutil.Equal(t, rvFg, theme.ColorInReview)
+	testutil.Equal(t, rvFg == theme.ColorComplete, false)
+
+	// working → the LIVE (pinned) spinner frame in amber, not the static ⟳. The
+	// glyph equals SpinnerFrame(pinnedFrame), proving the frame flows source→render.
+	spinner := widget.SpinnerFrame(pinnedFrame)
+	spStyle, ok := styleAt(spinner)
+	testutil.Equal(t, ok, true)
+	spFg, _, _ := spStyle.Decompose()
+	testutil.Equal(t, spFg, theme.ColorInProgress)
+
+	// done → ✓ in green.
+	dnStyle, ok := styleAt('✓')
+	testutil.Equal(t, ok, true)
+	dnFg, _, _ := dnStyle.Decompose()
+	testutil.Equal(t, dnFg, theme.ColorComplete)
+
+	// The compact State.Glyph() vocabulary must NOT appear anywhere.
+	out := drawToString(t, w, 72, 18)
+	testutil.Equal(t, strings.ContainsRune(out, '◔'), false)
+	testutil.Equal(t, strings.ContainsRune(out, '⟳'), false)
+}
+
 // TestDraw_FannedMemberCursorBoxSelected: the cursor's member box inside a fanned
 // group renders with a DOUBLE-LINE border in its OWN state colour (BUG-008) — no
 // green selection colour, no fill; a different member's box keeps the single
@@ -376,11 +452,40 @@ func findStringCell(sc tcell.SimulationScreen, s string) (int, int, bool) {
 	return 0, 0, false
 }
 
-func TestGroupCounts_OmitsZeroStates(t *testing.T) {
-	g := &Group{Counts: map[State]int{StateDone: 3, StateWorking: 2, StatePlanned: 1}}
-	got := groupCounts(g)
-	// Order follows the enum-stable list: done, working, planned.
-	testutil.Equal(t, got, "3 ✓ · 2 ⟳ · 1 ○")
+// TestGroupCountSegs_OmitsZeroStatesAndRailGlyphs (BUG-011): the collapsed-count
+// segments follow the enum-stable order, omit zero-count states, use the rail's
+// glyph vocabulary (NOT the compact ◔/⟳ State.Glyph() set), and colour each
+// segment in its per-state colour with dim " · " separators.
+func TestGroupCountSegs_OmitsZeroStatesAndRailGlyphs(t *testing.T) {
+	w := New()
+	g := &Group{Counts: map[State]int{StateDone: 3, StateWorking: 2, StateInReview: 1, StatePlanned: 1}}
+	segs := w.groupCountSegs(g)
+	// Reconstruct the flat text for an order/glyph check: done, in_review, working,
+	// planned. Working glyph is the live spinner frame; in_review is the clipboard.
+	var b strings.Builder
+	for _, s := range segs {
+		b.WriteString(s.text)
+	}
+	flat := b.String()
+	testutil.Equal(t, strings.HasPrefix(flat, "3 ✓"), true)
+	testutil.Contains(t, flat, "1 "+string(theme.IconReview)) // in_review = 󰂼, NOT ◔
+	testutil.Contains(t, flat, "2 "+string(widget.SpinnerFrame(w.animFrame)))
+	testutil.Contains(t, flat, "1 ○") // planned overlay
+	// The compact State.Glyph() set must NOT appear in the count.
+	testutil.Equal(t, strings.ContainsRune(flat, '◔'), false)
+	testutil.Equal(t, strings.ContainsRune(flat, '⟳'), false)
+	// Per-segment colour: the done segment is green, separators dim.
+	for _, s := range segs {
+		fg, _, _ := s.style.Decompose()
+		switch {
+		case strings.HasPrefix(s.text, "3 "):
+			testutil.Equal(t, fg, theme.ColorComplete) // done green
+		case strings.HasPrefix(s.text, "1 "+string(theme.IconReview)):
+			testutil.Equal(t, fg, theme.ColorInReview) // in_review cyan (NOT green)
+		case s.text == " · ":
+			testutil.Equal(t, fg, theme.ColorDimmed) // separators dim
+		}
+	}
 }
 
 func TestBranchChange_FiresOnStructuralChange(t *testing.T) {
