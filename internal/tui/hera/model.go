@@ -155,6 +155,52 @@ func (m Model) IsEmpty() bool {
 		len(m.Archived) == 0 && len(m.Freelance) == 0
 }
 
+// managedTaskIDs returns the set of argus task ids the Hera model knows: every
+// role's live binding (TaskID) and latest-binding structural key (BridgeTaskID),
+// across the Pinned/Active/Archived orchestrator sections AND the Freelance
+// section. Collecting BridgeTaskID as well as TaskID keeps the set correct when a
+// role's binding has ended while its task is still running. Empty ids are skipped.
+func (m Model) managedTaskIDs() map[string]bool {
+	ids := make(map[string]bool)
+	add := func(roles []RoleView) {
+		for i := range roles {
+			if id := roles[i].TaskID; id != "" {
+				ids[id] = true
+			}
+			if id := roles[i].BridgeTaskID; id != "" {
+				ids[id] = true
+			}
+		}
+	}
+	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
+		for i := range sec {
+			add(sec[i].Roles)
+		}
+	}
+	add(m.Freelance)
+	return ids
+}
+
+// UnmanagedNeedsInputCount returns how many needs-input tasks have NO presence in
+// the Hera model: |needsInput − managedTaskIDs|. These are the tasks invisible
+// from the Hera tab (plain Tasks-tab tasks never bound to any orchestrator) — the
+// only ones the Hera-view attention summary box reports, since managed roles
+// (coordinators, workers, freelance-roles), including those whose subtree row is
+// folded, already carry their own needs-input cue in the rail.
+func (m Model) UnmanagedNeedsInputCount(needsInput map[string]bool) int {
+	if len(needsInput) == 0 {
+		return 0
+	}
+	managed := m.managedTaskIDs()
+	n := 0
+	for id := range needsInput {
+		if !managed[id] {
+			n++
+		}
+	}
+	return n
+}
+
 // OrchByID finds the OrchView with the given id across every non-freelance
 // section, returning a pointer into the model's backing array (so callers read
 // the live projection, never a copy), or nil when not found. Used to resolve a
