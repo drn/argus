@@ -36,6 +36,12 @@ type HeraStore interface {
 	// by id (see db.HeraBlockSpec).
 	CreateHeraPlan(orchID int64, nodes []db.HeraPlannedNodeSpec, edges []db.HeraBlockSpec) ([]*db.HeraRole, error)
 	UniqueHeraRoleName(orchID int64, base string) (string, error)
+	// Plan-mutation verbs (make-hera-plan-living D5). Coordinator-only at the
+	// tool layer; the materialized-vs-planned guard lives in the MCP handlers.
+	HeraRoleHasBinding(roleID int64) (bool, error)
+	UpdateHeraPlannedNode(roleID int64, prompt, project string) error
+	CancelHeraPlannedNode(roleID int64) error
+	RemoveHeraBlock(blockedRoleID, blockerRoleID int64) error
 	// Bindings
 	HeraLiveBindingByTask(taskID string) (*db.HeraBinding, error)
 	HeraLiveBindingByTaskAndOrchestrator(taskID string, orchID int64) (*db.HeraBinding, error)
@@ -61,12 +67,14 @@ type HeraStore interface {
 	RollHeraWorkerFailed(taskID string) (bool, error)
 }
 
-// heraToolDefs contains the 12 hera_* tool schemas. The first 9 are ported
+// heraToolDefs contains the 15 hera_* tool schemas. The first 9 are ported
 // verbatim from Hera's daemon.toolDefinitions() — same param names,
 // descriptions, and required lists as the external Hera daemon so agents have an
-// identical surface when running natively. The last 3 (hera_plan_node /
+// identical surface when running natively. The next 3 (hera_plan_node /
 // hera_block / hera_plan) are the native plan-DAG authoring tools
 // (add-hera-plan-substrate); they are coordinator-only like hera_spawn_worker.
+// The last 3 (hera_plan_node_update / hera_unblock / hera_plan_node_cancel) are
+// the plan-mutation verbs (make-hera-plan-living D5).
 var heraToolDefs = []Tool{
 	{
 		Name:        "hera_new_orchestrator",
@@ -262,6 +270,48 @@ var heraToolDefs = []Tool{
 				"orchestrator": map[string]interface{}{"type": "string", "description": "(optional) Disambiguates when the calling task holds multiple live coordinator bindings"},
 			},
 			"required": []string{"cwd", "nodes"},
+		},
+	},
+	{
+		Name:        "hera_plan_node_update",
+		Description: "Edit a PLANNED node's prompt and/or project. Coordinator-only. Rejected if the node has already materialized (prompt already delivered to a running worker). Requires at least one of prompt or project. Re-pointing a prompt before a node materializes lets a coordinator reconcile the plan to reality without cancelling and re-creating.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"cwd":          map[string]interface{}{"type": "string", "description": "Coordinator's worktree path (use $PWD)"},
+				"name":         map[string]interface{}{"type": "string", "description": "Name of the planned node to update"},
+				"prompt":       map[string]interface{}{"type": "string", "description": "(optional) New prompt to deliver when the node materializes. Preserves existing if omitted."},
+				"project":      map[string]interface{}{"type": "string", "description": "(optional) Override the argus project for the node. Preserves existing if omitted."},
+				"orchestrator": map[string]interface{}{"type": "string", "description": "(optional) Disambiguates when the calling task holds multiple live coordinator bindings"},
+			},
+			"required": []string{"cwd", "name"},
+		},
+	},
+	{
+		Name:        "hera_unblock",
+		Description: "Remove a blocking edge between two roles in the orchestrator: `blocker` no longer gates `blocked`. Coordinator-only. Idempotent — removing a non-existent edge succeeds as a no-op. Re-pointing an edge is hera_unblock + hera_block; there is no separate re-point verb.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"cwd":          map[string]interface{}{"type": "string", "description": "Coordinator's worktree path (use $PWD)"},
+				"blocked":      map[string]interface{}{"type": "string", "description": "Name of the role that WAITS (the dependent)"},
+				"blocker":      map[string]interface{}{"type": "string", "description": "Name of the role whose blocking edge to remove"},
+				"orchestrator": map[string]interface{}{"type": "string", "description": "(optional) Disambiguates when the calling task holds multiple live coordinator bindings"},
+			},
+			"required": []string{"cwd", "blocked", "blocker"},
+		},
+	},
+	{
+		Name:        "hera_plan_node_cancel",
+		Description: "Cancel a PLANNED node: stamps cancelled_at, excludes it from materialization, and unblocks its dependents (a cancelled node no longer gates them). Coordinator-only. The node is kept in the plan for visibility (renders as grey ✕). Rejected if the node has already materialized — stop a running worker via the task lifecycle instead.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"cwd":          map[string]interface{}{"type": "string", "description": "Coordinator's worktree path (use $PWD)"},
+				"name":         map[string]interface{}{"type": "string", "description": "Name of the planned node to cancel"},
+				"orchestrator": map[string]interface{}{"type": "string", "description": "(optional) Disambiguates when the calling task holds multiple live coordinator bindings"},
+			},
+			"required": []string{"cwd", "name"},
 		},
 	},
 }

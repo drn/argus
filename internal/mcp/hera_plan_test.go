@@ -238,6 +238,259 @@ func TestHeraPlan_NonCoordinatorRejected(t *testing.T) {
 	testutil.Contains(t, cr.Content[0].Text, "only coordinators may author the plan")
 }
 
+// --- hera_plan_node_update ---
+
+func TestHeraPlanNodeUpdate_EditsPrompt(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "orch", "/wt/coord")
+	planNode(t, s, coord.Worktree, "1a-writer", "original prompt")
+
+	orch, _ := d.HeraOrchestratorByName("orch")
+	role, _ := d.HeraRoleByName(orch.ID, "1a-writer")
+	testutil.Equal(t, role.Prompt, "original prompt")
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_plan_node_update",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "name": "1a-writer", "prompt": "revised prompt"
+		}`, coord.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+	testutil.Contains(t, cr.Content[0].Text, "Planned node updated")
+
+	updated, _ := d.HeraRoleByName(orch.ID, "1a-writer")
+	testutil.Equal(t, updated.Prompt, "revised prompt")
+}
+
+func TestHeraPlanNodeUpdate_EditsProject(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "orch", "/wt/coord")
+	planNode(t, s, coord.Worktree, "1a-writer", "some prompt")
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_plan_node_update",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "name": "1a-writer", "project": "new-project"
+		}`, coord.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+
+	orch, _ := d.HeraOrchestratorByName("orch")
+	updated, _ := d.HeraRoleByName(orch.ID, "1a-writer")
+	testutil.Equal(t, updated.ArgusProject, "new-project")
+}
+
+func TestHeraPlanNodeUpdate_RejectsMaterialized(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "orch", "/wt/coord")
+	// Attach a worker with a binding (simulates a materialized node).
+	orch, _ := d.HeraOrchestratorByName("orch")
+	workerTask := addHeraTestTask(t, d, "/wt/w1")
+	_, _, err := d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID,
+		Name:           "1a-live",
+		Kind:           db.HeraKindWorker,
+		ArgusProject:   "proj",
+		Prompt:         "original",
+	}, workerTask.ID, "/wt/w1")
+	testutil.NoError(t, err)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_plan_node_update",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "name": "1a-live", "prompt": "new prompt"
+		}`, coord.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "already materialized")
+}
+
+func TestHeraPlanNodeUpdate_RejectsNonCoordinator(t *testing.T) {
+	s, d := testHeraServer(t)
+	seedCoordinator(t, s, d, "orch", "/wt/coord")
+	worker := attachWorkerTask(t, s, d, "orch", "/wt/w", "w1")
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_plan_node_update",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "name": "anything", "prompt": "p"
+		}`, worker.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "only coordinators may author the plan")
+}
+
+func TestHeraPlanNodeUpdate_RejectsEmptyMutation(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "orch", "/wt/coord")
+	planNode(t, s, coord.Worktree, "1a-writer", "original")
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_plan_node_update",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "name": "1a-writer"
+		}`, coord.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "at least one of prompt or project")
+}
+
+// --- hera_unblock ---
+
+func TestHeraUnblock_DropsExistingEdge(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "orch", "/wt/coord")
+	planNode(t, s, coord.Worktree, "a", "do a")
+	planNode(t, s, coord.Worktree, "b", "do b")
+	// Add block edge: b waits on a.
+	doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_block",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"cwd": %q, "blocked": "b", "blocker": "a"}`, coord.Worktree)),
+	})
+
+	orch, _ := d.HeraOrchestratorByName("orch")
+	b, _ := d.HeraRoleByName(orch.ID, "b")
+	blockersBefore, _ := d.HeraBlockersOf(b.ID)
+	testutil.Equal(t, len(blockersBefore), 1)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_unblock",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "blocked": "b", "blocker": "a"
+		}`, coord.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+	testutil.Contains(t, cr.Content[0].Text, "Blocking edge removed")
+
+	blockersAfter, _ := d.HeraBlockersOf(b.ID)
+	testutil.Equal(t, len(blockersAfter), 0)
+}
+
+func TestHeraUnblock_IdempotentOnMissingEdge(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "orch", "/wt/coord")
+	planNode(t, s, coord.Worktree, "a", "do a")
+	planNode(t, s, coord.Worktree, "b", "do b")
+	// No block edge added — unblock should still succeed.
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_unblock",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "blocked": "b", "blocker": "a"
+		}`, coord.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+}
+
+func TestHeraUnblock_RejectsNonCoordinator(t *testing.T) {
+	s, d := testHeraServer(t)
+	seedCoordinator(t, s, d, "orch", "/wt/coord")
+	worker := attachWorkerTask(t, s, d, "orch", "/wt/w", "w1")
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_unblock",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "blocked": "b", "blocker": "a"
+		}`, worker.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "only coordinators may author the plan")
+}
+
+// --- hera_plan_node_cancel ---
+
+func TestHeraPlanNodeCancel_CancelsPlannedNode(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "orch", "/wt/coord")
+	planNode(t, s, coord.Worktree, "1a-worker", "do work")
+
+	// Node is in the planned set before cancel.
+	plansBefore, _ := d.ListHeraPlannedNodes()
+	testutil.Equal(t, len(plansBefore), 1)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_plan_node_cancel",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "name": "1a-worker"
+		}`, coord.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+	testutil.Contains(t, cr.Content[0].Text, "Planned node cancelled")
+
+	// After cancel the node must be excluded from the planned set (gater-side).
+	plansAfter, _ := d.ListHeraPlannedNodes()
+	testutil.Equal(t, len(plansAfter), 0)
+
+	// But the role must still exist in the DB (kept for plan visibility).
+	orch, _ := d.HeraOrchestratorByName("orch")
+	role, err := d.HeraRoleByName(orch.ID, "1a-worker")
+	testutil.NoError(t, err)
+	if role.CancelledAt == nil {
+		t.Fatal("expected cancelled_at to be set after cancel")
+	}
+}
+
+func TestHeraPlanNodeCancel_RejectsMaterialized(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "orch", "/wt/coord")
+	// Attach a worker with a binding (simulates a materialized node).
+	orch, _ := d.HeraOrchestratorByName("orch")
+	workerTask := addHeraTestTask(t, d, "/wt/w2")
+	_, _, err := d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID,
+		Name:           "1b-live",
+		Kind:           db.HeraKindWorker,
+		ArgusProject:   "proj",
+		Prompt:         "prompt",
+	}, workerTask.ID, "/wt/w2")
+	testutil.NoError(t, err)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_plan_node_cancel",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "name": "1b-live"
+		}`, coord.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "already materialized")
+}
+
+func TestHeraPlanNodeCancel_RejectsNonCoordinator(t *testing.T) {
+	s, d := testHeraServer(t)
+	seedCoordinator(t, s, d, "orch", "/wt/coord")
+	worker := attachWorkerTask(t, s, d, "orch", "/wt/w", "w1")
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_plan_node_cancel",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "name": "anything"
+		}`, worker.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "only coordinators may author the plan")
+}
+
 // TestHeraPlan_EdgeReferencingExistingRole confirms an edge endpoint resolves
 // against a pre-existing orchestrator role (not just nodes in this call).
 func TestHeraPlan_EdgeReferencingExistingRole(t *testing.T) {

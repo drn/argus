@@ -317,6 +317,158 @@ func (s *Server) resolvePlanEndpoint(id interface{}, caller *callerRoleResult, n
 	return -1, role.ID, nil
 }
 
+func (s *Server) toolHeraPlanNodeUpdate(id interface{}, args json.RawMessage) *Response {
+	if !s.heraEnabled() {
+		return toolError(id, "hera not configured")
+	}
+	var p struct {
+		Cwd          string `json:"cwd"`
+		Name         string `json:"name"`
+		Prompt       string `json:"prompt"`
+		Project      string `json:"project"`
+		Orchestrator string `json:"orchestrator"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if p.Cwd == "" {
+		return toolError(id, "cwd is required")
+	}
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		return toolError(id, "name is required")
+	}
+	prompt := strings.TrimSpace(p.Prompt)
+	project := strings.TrimSpace(p.Project)
+	if prompt == "" && project == "" {
+		return toolError(id, "at least one of prompt or project is required")
+	}
+
+	caller, errResp := s.heraPlanCoordinatorGuard(id, p.Cwd, p.Orchestrator)
+	if errResp != nil {
+		return errResp
+	}
+
+	role, errResp := s.resolveOrchRole(id, caller.orch.ID, caller.orch.Name, name)
+	if errResp != nil {
+		return errResp
+	}
+
+	has, err := s.heraStore.HeraRoleHasBinding(role.ID)
+	if err != nil {
+		return toolError(id, fmt.Sprintf("check materialization: %v", err))
+	}
+	if has {
+		return toolError(id, fmt.Sprintf("role %q has already materialized (prompt already delivered); cannot update a running worker via the plan", name))
+	}
+
+	if err := s.heraStore.UpdateHeraPlannedNode(role.ID, prompt, project); err != nil {
+		return toolError(id, fmt.Sprintf("update planned node: %v", err))
+	}
+
+	slog.Info("[hera plan] plan_node_update ok", "orch", caller.orch.Name, "role", role.Name)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Planned node updated.\n\n")
+	fmt.Fprintf(&b, "- **orchestrator**: %s\n", caller.orch.Name)
+	fmt.Fprintf(&b, "- **name**: %s\n", role.Name)
+	fmt.Fprintf(&b, "- **status**: planned (not yet materialized)\n")
+	return toolResult(id, b.String())
+}
+
+func (s *Server) toolHeraUnblock(id interface{}, args json.RawMessage) *Response {
+	if !s.heraEnabled() {
+		return toolError(id, "hera not configured")
+	}
+	var p struct {
+		Cwd          string `json:"cwd"`
+		Blocked      string `json:"blocked"`
+		Blocker      string `json:"blocker"`
+		Orchestrator string `json:"orchestrator"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if p.Cwd == "" {
+		return toolError(id, "cwd is required")
+	}
+	if strings.TrimSpace(p.Blocked) == "" || strings.TrimSpace(p.Blocker) == "" {
+		return toolError(id, "blocked and blocker are both required")
+	}
+
+	caller, errResp := s.heraPlanCoordinatorGuard(id, p.Cwd, p.Orchestrator)
+	if errResp != nil {
+		return errResp
+	}
+
+	blockedRole, errResp := s.resolveOrchRole(id, caller.orch.ID, caller.orch.Name, p.Blocked)
+	if errResp != nil {
+		return errResp
+	}
+	blockerRole, errResp := s.resolveOrchRole(id, caller.orch.ID, caller.orch.Name, p.Blocker)
+	if errResp != nil {
+		return errResp
+	}
+
+	if err := s.heraStore.RemoveHeraBlock(blockedRole.ID, blockerRole.ID); err != nil {
+		return toolError(id, fmt.Sprintf("remove block: %v", err))
+	}
+
+	slog.Info("[hera plan] unblock ok", "orch", caller.orch.Name, "blocked", blockedRole.Name, "blocker", blockerRole.Name)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Blocking edge removed (idempotent — no-op if the edge did not exist).\n\n")
+	fmt.Fprintf(&b, "- **blocked**: %s\n", blockedRole.Name)
+	fmt.Fprintf(&b, "- **blocker**: %s\n", blockerRole.Name)
+	return toolResult(id, b.String())
+}
+
+func (s *Server) toolHeraPlanNodeCancel(id interface{}, args json.RawMessage) *Response {
+	if !s.heraEnabled() {
+		return toolError(id, "hera not configured")
+	}
+	var p struct {
+		Cwd          string `json:"cwd"`
+		Name         string `json:"name"`
+		Orchestrator string `json:"orchestrator"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if p.Cwd == "" {
+		return toolError(id, "cwd is required")
+	}
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		return toolError(id, "name is required")
+	}
+
+	caller, errResp := s.heraPlanCoordinatorGuard(id, p.Cwd, p.Orchestrator)
+	if errResp != nil {
+		return errResp
+	}
+
+	role, errResp := s.resolveOrchRole(id, caller.orch.ID, caller.orch.Name, name)
+	if errResp != nil {
+		return errResp
+	}
+
+	has, err := s.heraStore.HeraRoleHasBinding(role.ID)
+	if err != nil {
+		return toolError(id, fmt.Sprintf("check materialization: %v", err))
+	}
+	if has {
+		return toolError(id, fmt.Sprintf("role %q has already materialized; stop the running worker via the task lifecycle instead", name))
+	}
+
+	if err := s.heraStore.CancelHeraPlannedNode(role.ID); err != nil {
+		return toolError(id, fmt.Sprintf("cancel planned node: %v", err))
+	}
+
+	slog.Info("[hera plan] plan_node_cancel ok", "orch", caller.orch.Name, "role", role.Name)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Planned node cancelled.\n\n")
+	fmt.Fprintf(&b, "- **orchestrator**: %s\n", caller.orch.Name)
+	fmt.Fprintf(&b, "- **name**: %s\n", role.Name)
+	fmt.Fprintf(&b, "- **status**: cancelled (kept in plan for visibility; will not materialize; no longer gates dependents)\n")
+	return toolResult(id, b.String())
+}
+
 // heraBlockErrMessage maps the store's block sentinels to agent-facing messages.
 func heraBlockErrMessage(err error) string {
 	switch {
