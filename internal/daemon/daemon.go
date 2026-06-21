@@ -12,9 +12,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -42,9 +42,10 @@ import (
 // task set stays under GitHub's authenticated rate limit (design.md).
 const prPollInterval = 60 * time.Second
 
-// prPollConcurrency caps the number of concurrent `gh pr view` processes the
-// poller spawns per tick. Bounded so a big task set can't fork-bomb gh.
-const prPollConcurrency = 4
+// prDefaultAliasCap is the default per-query alias cap (Decision 5, design.md).
+// A repo group larger than this is split into sequential chunks so each query
+// stays in the cheapest GraphQL complexity tier (ceil(nodeCount/100), min 1).
+const prDefaultAliasCap = 100
 
 // DefaultSocketPath returns the default Unix socket path.
 func DefaultSocketPath() string {
@@ -119,10 +120,31 @@ type Daemon struct {
 	binaryHash  string
 	bootedAt    time.Time
 
-	// prFetch is the injectable seam the PR-status poller calls to resolve a
-	// task branch's review state. Defaults to gitutil.FetchPRState; tests swap
-	// it for a fake so the poller never spawns a real gh process.
+	// prFetch is the legacy single-branch fetch seam, retained as a fallback /
+	// for any non-poller caller. The batched poller no longer calls it (it uses
+	// prBatchFetch instead); see the batch seams below. Defaults to
+	// gitutil.FetchPRState; tests swap it for a fake.
 	prFetch func(ctx context.Context, worktreeDir, branch string) (model.PRState, string, error)
+
+	// prBatchFetch resolves PR state for every branch in a repo group with a
+	// single aliased GraphQL query. branches maps branch name → alias id; the
+	// returned map is keyed by branch name. Defaults to
+	// gitutil.FetchPRStatesBatch; tests swap it for a fake so the poller never
+	// spawns a real gh process. A non-nil error means keep-stale for the whole
+	// group (Decision 4, design.md).
+	prBatchFetch func(ctx context.Context, repo string, branches map[string]string) (map[string]gitutil.PRResult, error)
+
+	// prResolveRepo resolves a worktree's default GitHub repo ("owner/name") the
+	// way gh would target it — the fallback when a task has no cached pr/url to
+	// parse a repo from (Decision 2, design.md). Defaults to
+	// gitutil.ResolveDefaultRepo; tests swap it. Runs off the UI thread (the
+	// poller goroutine), consistent with all other git ops.
+	prResolveRepo func(ctx context.Context, worktree string) (string, bool)
+
+	// prAliasCap is the per-query alias cap that triggers chunking of an
+	// oversized repo group (Decision 5). Defaults to prDefaultAliasCap; tests
+	// set it small to force chunking without thousands of tasks.
+	prAliasCap int
 
 	// notifier is the reliable pane-delivery service. Created in Serve once
 	// the runner and focus tracker are ready. Nil until Serve runs.
@@ -184,6 +206,10 @@ func New(database *db.DB) *Daemon {
 		bootedAt:  time.Now(),
 		clipboard: clipboard.New(),
 		prFetch:   gitutil.FetchPRState,
+
+		prBatchFetch:  gitutil.FetchPRStatesBatch,
+		prResolveRepo: gitutil.ResolveDefaultRepo,
+		prAliasCap:    prDefaultAliasCap,
 	}
 
 	// Capture the binary path, hash, and mtime at startup. The on-disk binary
@@ -464,15 +490,19 @@ func (d *Daemon) heraGaterMaterialize(role *db.HeraRole, taskPrompt, project, br
 // A terminal state never changes, so once observed the task is excluded from all
 // future polls — this conserves the GitHub API budget that re-polling long-merged
 // PRs would otherwise drain. The skip reads the persisted cache, so it survives a
-// daemon restart. For each eligible task it calls d.prFetch (the
-// gitutil.FetchPRState seam) under a bounded
-// worker pool (prPollConcurrency) and persists a successful result into
-// task_meta namespace "pr" (keys "state" and "url").
+// daemon restart.
 //
-// Keep-stale contract: a fetch that returns a non-nil error is transient — the
-// existing cached value is left untouched (no write). A nil error (including an
-// unambiguous PRNone or a PRUnknown for gh-absent) is authoritative and is
-// written. This mirrors gitutil.FetchPRState's documented return contract.
+// Flow (design.md Decisions 2/4/5): eligible → group → chunk → fetch → apply.
+// Eligible tasks are grouped by resolved PR repo (cached pr/url first, then the
+// worktree's default GitHub repo via d.prResolveRepo). Each repo group is split
+// into chunks of at most d.prAliasCap branches and resolved with one batched
+// GraphQL query per chunk (d.prBatchFetch) — collapsing per-cycle GitHub API
+// cost from O(tasks) to ~O(repos).
+//
+// Keep-stale contract: a chunk fetch returning a non-nil error is transient —
+// every cached value for that chunk's tasks is left untouched (no write). A
+// successful fetch is authoritative and each branch's state+url is written into
+// task_meta namespace "pr", INCLUDING writing "none" when the query found no PR.
 func (d *Daemon) pollPRStatesOnce(ctx context.Context) {
 	tasks, err := d.db.Tasks()
 	if err != nil {
@@ -518,42 +548,115 @@ func (d *Daemon) pollPRStatesOnce(ctx context.Context) {
 		return
 	}
 
-	sem := make(chan struct{}, prPollConcurrency)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var written, errored int
-
+	// Build the grouping inputs. The alias id is a sanitized, GraphQL-safe
+	// derivation of the task id (prAliasID) so the batched query never emits an
+	// illegal alias; aliasToTask maps each alias back to its task for the write
+	// pass. The branch is the GraphQL lookup key (headRefName); the cached
+	// pr/url (when present) is authoritative for repo resolution, else the
+	// worktree's default GitHub repo via d.prResolveRepo.
+	aliasToTask := make(map[string]*model.Task, len(eligible))
+	inputs := make([]gitutil.BranchRepoInput, 0, len(eligible))
 	for _, t := range eligible {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(t *model.Task) {
-			defer wg.Done()
-			defer func() { <-sem }()
-
-			state, url, ferr := d.prFetch(ctx, t.Worktree, t.Branch)
-			if ferr != nil {
-				// Transient failure — keep the cached value intact.
-				mu.Lock()
-				errored++
-				mu.Unlock()
-				uxlog.Log("[pr] poll: fetch failed for %s (keeping stale): %v", t.ID, ferr)
-				return
-			}
-			if werr := d.db.SetMetaBatch(t.ID, "pr", map[string]string{
-				"state": state.String(),
-				"url":   url,
-			}); werr != nil {
-				uxlog.Log("[pr] poll: persist failed for %s: %v", t.ID, werr)
-				return
-			}
-			mu.Lock()
-			written++
-			mu.Unlock()
-		}(t)
+		alias := prAliasID(t.ID)
+		aliasToTask[alias] = t
+		inputs = append(inputs, gitutil.BranchRepoInput{
+			ID:        alias,
+			Branch:    t.Branch,
+			Worktree:  t.Worktree,
+			CachedURL: prMeta[t.ID]["url"],
+		})
 	}
-	wg.Wait()
+
+	groups := gitutil.GroupBranchesByRepo(ctx, inputs, d.prResolveRepo)
+
+	var written, errored int
+	aliasCap := d.prAliasCap
+	if aliasCap < 1 {
+		aliasCap = prDefaultAliasCap
+	}
+
+	for repo, branchToAlias := range groups {
+		// Stable, deterministic chunk boundaries: order branches before
+		// slicing so chunking (and any logs) are reproducible.
+		branches := make([]string, 0, len(branchToAlias))
+		for branch := range branchToAlias {
+			branches = append(branches, branch)
+		}
+		sort.Strings(branches)
+
+		for start := 0; start < len(branches); start += aliasCap {
+			end := start + aliasCap
+			if end > len(branches) {
+				end = len(branches)
+			}
+			chunk := make(map[string]string, end-start)
+			for _, branch := range branches[start:end] {
+				chunk[branch] = branchToAlias[branch]
+			}
+
+			results, ferr := d.prBatchFetch(ctx, repo, chunk)
+			if ferr != nil {
+				// Whole-chunk transient failure: keep every cached value in this
+				// chunk stale (no write). This relies on FetchPRStatesBatch
+				// surfacing GraphQL `errors` arrays as a non-nil error — the real
+				// runner depends on `gh api graphql` exiting non-zero on them.
+				errored += len(chunk)
+				uxlog.Log("[pr] poll: repo=%s branches=%d fetch failed (keeping stale): %v", repo, len(chunk), ferr)
+				continue
+			}
+
+			uxlog.Log("[pr] poll: repo=%s branches=%d cost=%d", repo, len(chunk), 0)
+
+			for branch, alias := range chunk {
+				t := aliasToTask[alias]
+				if t == nil {
+					continue
+				}
+				res, ok := results[branch]
+				if !ok {
+					// Branch absent from a successful response — treat as no PR
+					// (the batch fetcher maps empty nodes to PRNone, so this is
+					// only reachable for a malformed partial response). Keep
+					// stale rather than clobbering with a guessed value.
+					uxlog.Log("[pr] poll: %s missing from repo=%s response (keeping stale)", t.ID, repo)
+					continue
+				}
+				if werr := d.db.SetMetaBatch(t.ID, "pr", map[string]string{
+					"state": res.State.String(),
+					"url":   res.URL,
+				}); werr != nil {
+					uxlog.Log("[pr] poll: persist failed for %s: %v", t.ID, werr)
+					continue
+				}
+				written++
+			}
+		}
+	}
 
 	uxlog.Log("[pr] poll: eligible=%d skipped=%d written=%d errored=%d", len(eligible), skipped, written, errored)
+}
+
+// prAliasID derives a GraphQL-safe alias from a task id. A GraphQL alias must
+// match [_A-Za-z][_0-9A-Za-z]*; argus task ids are numeric, so a bare id would
+// start with a digit (illegal). We prefix a constant "t" and replace any
+// non-[0-9A-Za-z_] rune with "_", yielding a valid alias that still maps
+// uniquely back to the task: the "t" prefix guarantees a letter lead, and the
+// 1:1 alias→task map (aliasToTask) preserves the association even if two ids
+// were to sanitize to the same string (last-writer-wins is impossible here
+// because the caller dedups by task id upstream).
+func prAliasID(id string) string {
+	var b strings.Builder
+	b.Grow(len(id) + 1)
+	b.WriteByte('t')
+	for _, r := range id {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 // runPRPoller is the PR-status poller goroutine body. It runs pollPRStatesOnce
@@ -565,9 +668,9 @@ func (d *Daemon) runPRPoller() {
 	defer ticker.Stop()
 
 	// Derive a cancelable context so a tick already running pollPRStatesOnce
-	// (which spawns up to prPollConcurrency `gh` procs, each with a 5s timeout)
-	// aborts immediately on shutdown instead of letting those procs run to
-	// their timeout. cancel() fires both on the d.done branch and on return.
+	// (which issues one `gh api graphql` query per repo group, each with its own
+	// timeout) aborts immediately on shutdown instead of letting those queries
+	// run to their timeout. cancel() fires both on the d.done branch and on return.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
