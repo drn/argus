@@ -41,13 +41,14 @@ type railViewState struct {
 type railRowKind uint8
 
 const (
-	rrRule           railRowKind = iota // non-selectable separator
-	rrSectionHeader                     // "Pinned" / "Freelance" label
-	rrOrch                              // orchestrator header (selectable, collapsible)
-	rrRole                              // role under an orchestrator (selectable)
-	rrFreelanceRole                     // freelance-kind role (selectable)
-	rrArchiveExpando                    // "Archive (N)" fold (selectable, collapsible)
-	rrEmpty                             // empty-state placeholder (non-selectable)
+	rrRule             railRowKind = iota // non-selectable separator
+	rrSectionHeader                       // "Pinned" / "Freelance" label
+	rrOrch                                // orchestrator header (selectable, collapsible)
+	rrRole                                // role under an orchestrator (selectable)
+	rrFreelanceRole                       // freelance-kind role (selectable)
+	rrArchiveExpando                      // "Archive (N)" fold (selectable, collapsible)
+	rrEmpty                               // empty-state placeholder (non-selectable)
+	rrPinnedBreadcrumb                    // line 1 of a pinned non-root entry (selectable; dimmed icon + lineage)
 )
 
 // railRow is one flattened display line. orch/role point into the Model (never
@@ -65,12 +66,23 @@ type railRow struct {
 	collFreelance bool
 	collArchive   bool  // bottom Archive section (archived ROOT orchestrators)
 	archiveOwner  int64 // >0 → per-coordinator Archive expando for this orch's archived roles
+
+	// Two-line pinned non-root entry (add-hera-pin-nonroot). breadcrumb is the
+	// dimmed lineage trail drawn on an rrPinnedBreadcrumb row (line 1).
+	// breadcrumbCont marks the rrRole continuation (line 2): the non-selectable
+	// name line that pairs with the preceding rrPinnedBreadcrumb row.
+	breadcrumb     string
+	breadcrumbCont bool
 }
 
 func (r railRow) selectable() bool {
 	switch r.kind {
-	case rrOrch, rrRole, rrFreelanceRole, rrArchiveExpando:
+	case rrOrch, rrFreelanceRole, rrArchiveExpando, rrPinnedBreadcrumb:
 		return true // both the bottom Archive section and per-coordinator expandos
+	case rrRole:
+		// The continuation (line 2) of a two-line pinned entry is non-selectable —
+		// the cursor anchors on the preceding rrPinnedBreadcrumb (line 1).
+		return !r.breadcrumbCont
 	case rrSectionHeader:
 		// The Freelance fold header is selectable so the cursor can land on it
 		// to collapse/expand; the plain "Pinned" label is not.
@@ -115,6 +127,13 @@ type Rail struct {
 	filterInput bool
 	filterQuery string
 	filterVis   map[int64]bool
+
+	// pinnedFloat is the set of role ids that float OUT of their parent subtree
+	// into the Pinned section as a two-line breadcrumb entry (add-hera-pin-nonroot).
+	// Recomputed each buildRows by collectPinnedRoles; appendOrchWorkers consults
+	// it to suppress a floated worker row (and its bridged child, already hoisted
+	// + placed in the Pinned pass) from the active tree. nil when nothing floats.
+	pinnedFloat map[int64]bool
 
 	focused   bool // drives the border-highlight style
 	animFrame int  // spinner frame for in-motion role glyphs (recomputed each Draw)
@@ -452,7 +471,9 @@ func (r *Rail) restoreCursor(ref int64) {
 	}
 	for i, row := range r.rows {
 		switch {
-		case row.role != nil && row.role.RoleID == ref:
+		case row.role != nil && !row.breadcrumbCont && row.role.RoleID == ref:
+			// Anchor on the breadcrumb line (line 1), never the non-selectable
+			// continuation (line 2) which carries the same role pointer.
 			r.cursor = i
 			return
 		case row.orch != nil && -row.orch.ID == ref:
@@ -516,12 +537,19 @@ func (r *Rail) buildRows() {
 	}
 
 	// 1. Pinned section. Pinned orchestrators are always top-level roots
-	// (user intent), even if some worker bridges them. The header is pruned when
-	// no pinned orchestrator is visible under the active filter.
-	if r.anyOrchVisible(r.model.Pinned) {
+	// (user intent), even if some worker bridges them. Pinned NON-ROOT roles
+	// (add-hera-pin-nonroot) float OUT of their parent subtree into the same
+	// section as a two-line breadcrumb entry, after the pinned orchestrators. The
+	// header renders when a pinned orchestrator is visible OR any role floats; it
+	// is pruned when neither holds under the active filter.
+	floated := r.collectPinnedRoles(canonical)
+	if r.anyOrchVisible(r.model.Pinned) || len(floated) > 0 {
 		r.rows = append(r.rows, railRow{kind: rrSectionHeader, label: "Pinned"})
 		for i := range r.model.Pinned {
 			r.appendOrch(&r.model.Pinned[i], 0, r.model.Pinned[i].Archived, canonical, placed)
+		}
+		for _, pe := range floated {
+			r.appendPinnedRole(pe, canonical, placed)
 		}
 	}
 
@@ -668,6 +696,12 @@ func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, canonical map
 		if w.Kind == db.HeraKindCoordinator {
 			continue // folded into the header / the bridging row above
 		}
+		// A pinned non-root role floats into the Pinned section (rendered first,
+		// already placed) — suppress it (and its hoisted bridged child) here so it
+		// renders exactly once (add-hera-pin-nonroot).
+		if r.pinnedFloat[w.RoleID] {
+			continue
+		}
 		// BUG-022 Q3: HIDING a worker (or a bridging sub-coordinator) folds it into
 		// the per-coordinator Archive expando — and a bridging sub-coord drags its
 		// WHOLE subtree in with it (structure retained INSIDE the expando), NOT
@@ -796,6 +830,117 @@ func (r *Rail) appendWorkerRow(ownerID int64, w *RoleView, depth int, dim bool, 
 		placed[child.ID] = true
 		if !r.isCollapsed(child.ID) {
 			r.appendOrchWorkers(child, depth+1, dim || child.Archived, canonical, placed)
+		}
+	}
+}
+
+// --- pinned non-root roles (add-hera-pin-nonroot) ---
+
+// pinnedRoleEntry pairs a floated pinned role with its computed lineage trail.
+type pinnedRoleEntry struct {
+	role       *RoleView
+	breadcrumb string
+}
+
+// collectPinnedRoles walks the Active and Archived orchestrators and returns
+// every pinned NON-coordinator role that floats OUT of its parent subtree into
+// the Pinned section, paired with its lineage breadcrumb. It also (re)sets
+// r.pinnedFloat (the role-id suppression set appendOrchWorkers consults) so the
+// floated row renders exactly once. Roles under a PINNED orchestrator are NOT
+// collected — that orchestrator already floats as a root and its roles stay
+// nested under it (mirrors the plugin's rolePinnedOut). Under an active filter a
+// role is kept only when its own name matches OR it bridges a filter-visible
+// child. A role whose orchestrator cannot be resolved for the breadcrumb is
+// skipped (logged) rather than rendered without lineage.
+func (r *Rail) collectPinnedRoles(canonical map[int64]canonParent) []pinnedRoleEntry {
+	var out []pinnedRoleEntry
+	floatSet := make(map[int64]bool)
+	for _, sec := range [][]OrchView{r.model.Active, r.model.Archived} {
+		for i := range sec {
+			o := &sec[i]
+			for j := range o.Roles {
+				rv := &o.Roles[j]
+				if !rv.Pinned || rv.Kind == db.HeraKindCoordinator {
+					continue
+				}
+				if r.filterActive() && !r.filterMatches(rv.Name) {
+					// Keep a non-matching pinned row only when it bridges a visible
+					// child (so a matching nested subtree is not orphaned).
+					c := r.workerBridgeChild(o.ID, rv, canonical, map[int64]bool{})
+					if c == nil || !r.filterVis[c.ID] {
+						continue
+					}
+				}
+				bc := r.pinnedBreadcrumb(rv, canonical)
+				if bc == "" {
+					uxlog.Log("[hera-view] pinned role %d (%s): parent orch %d unresolved, not floating", rv.RoleID, rv.Name, rv.OrchID)
+					continue
+				}
+				out = append(out, pinnedRoleEntry{role: rv, breadcrumb: bc})
+				floatSet[rv.RoleID] = true
+			}
+		}
+	}
+	r.pinnedFloat = floatSet
+	return out
+}
+
+// pinnedBreadcrumb builds a floated role's lineage trail: the orchestrator-name
+// chain from the root down to and including the role's own orchestrator
+// (role.OrchID), joined with " › " and trailing " › " (e.g. "root › sub › ").
+// The chain is walked via canonicalParents — the SAME deterministic, fold-
+// independent parentage the rail nests by — so the trail matches the rendered
+// tree. Returns "" when any orchestrator on the chain cannot be resolved.
+func (r *Rail) pinnedBreadcrumb(rv *RoleView, canonical map[int64]canonParent) string {
+	var names []string
+	seen := make(map[int64]bool)
+	for id := rv.OrchID; id != 0; {
+		o := r.model.OrchByID(id)
+		if o == nil {
+			return "" // unresolvable parent → caller skips (no context-free render)
+		}
+		names = append(names, o.Name)
+		if seen[id] {
+			break // cycle guard (matches BridgeSubtree's visited discipline)
+		}
+		seen[id] = true
+		cp, ok := canonical[id]
+		if !ok {
+			break // reached a top-level root
+		}
+		id = cp.orchID
+	}
+	var b strings.Builder
+	for i := len(names) - 1; i >= 0; i-- {
+		b.WriteString(names[i])
+		b.WriteString(" › ")
+	}
+	return b.String()
+}
+
+// appendPinnedRole emits a floated pinned role as a two-line entry: line 1 is a
+// selectable rrPinnedBreadcrumb (dimmed icon + lineage), line 2 a non-selectable
+// rrRole continuation (the name). When the role bridges a child orchestrator (a
+// pinned sub-coordinator) the breadcrumb row carries collOrchID = child.ID (so
+// Space folds it and Ctrl+D cascades), and the child's subtree is hoisted
+// beneath the entry and marked placed so the active passes render it exactly
+// once (full parity with the plugin's BUG-021).
+func (r *Rail) appendPinnedRole(pe pinnedRoleEntry, canonical map[int64]canonParent, placed map[int64]bool) {
+	rv := pe.role
+	child := r.workerBridgeChild(rv.OrchID, rv, canonical, placed)
+	if child != nil && r.filterActive() && !r.filterVis[child.ID] {
+		child = nil // a non-visible child does not hoist (and the chevron drops)
+	}
+	collID := int64(0)
+	if child != nil {
+		collID = child.ID
+	}
+	r.rows = append(r.rows, railRow{kind: rrPinnedBreadcrumb, role: rv, depth: 0, breadcrumb: pe.breadcrumb, collOrchID: collID})
+	r.rows = append(r.rows, railRow{kind: rrRole, role: rv, depth: 1, breadcrumbCont: true})
+	if child != nil {
+		placed[child.ID] = true
+		if !r.isCollapsed(child.ID) {
+			r.appendOrchWorkers(child, 2, child.Archived, canonical, placed)
 		}
 	}
 }
@@ -1005,7 +1150,13 @@ func (r *Rail) Draw(screen tcell.Screen) {
 		if idx >= len(r.rows) {
 			break
 		}
-		r.drawRow(screen, inner.X, rowY+vis, inner.W, r.rows[idx], idx == r.cursor)
+		// A two-line pinned entry highlights its continuation (line 2) when the
+		// preceding breadcrumb (line 1, the cursor anchor) is selected.
+		selected := idx == r.cursor
+		if r.rows[idx].breadcrumbCont && idx-1 == r.cursor {
+			selected = true
+		}
+		r.drawRow(screen, inner.X, rowY+vis, inner.W, r.rows[idx], selected)
 	}
 }
 
@@ -1029,10 +1180,14 @@ func (r *Rail) drawRow(screen tcell.Screen, x, y, w int, row railRow, selected b
 	const marker = '›'
 	indent := row.depth * 2
 
-	// Selection marker gutter.
+	// Selection marker gutter. The continuation (line 2) of a two-line pinned
+	// entry never draws the '›' marker — the cursor anchors on line 1 — but its
+	// text still renders selected-style when line 1 is selected.
 	gutterStyle := theme.StyleDimmed
 	if selected {
-		screen.SetContent(x, y, marker, nil, theme.StyleSelected)
+		if !row.breadcrumbCont {
+			screen.SetContent(x, y, marker, nil, theme.StyleSelected)
+		}
 		gutterStyle = theme.StyleSelected
 	}
 	textX := x + 2 + indent
@@ -1073,7 +1228,13 @@ func (r *Rail) drawRow(screen tcell.Screen, x, y, w int, row railRow, selected b
 		widget.DrawText(screen, textX, y, textW, chevron(collapsed)+" "+row.label, style)
 	case rrOrch:
 		r.drawOrchRow(screen, textX, y, textW, row, selected)
+	case rrPinnedBreadcrumb:
+		r.drawPinnedBreadcrumbRow(screen, textX, y, textW, row)
 	case rrRole, rrFreelanceRole:
+		if row.breadcrumbCont {
+			r.drawBreadcrumbNameRow(screen, textX, y, textW, row.role, selected)
+			return
+		}
 		r.drawRoleRow(screen, textX, y, textW, row, selected, gutterStyle)
 	}
 }
@@ -1173,6 +1334,62 @@ func (r *Rail) drawRoleRow(screen tcell.Screen, x, y, w int, row railRow, select
 		return
 	}
 	widget.DrawText(screen, col, y, remaining, role.Name, nameStyle)
+}
+
+// drawPinnedBreadcrumbRow renders line 1 of a two-line pinned non-root entry:
+// the role's status glyph (dimmed — context only, the selection cue is the
+// gutter marker drawn by drawRow) followed by the dimmed lineage trail. An
+// over-wide trail is left-truncated with a leading "…" so the NEAREST parent
+// (rightmost text) stays visible (add-hera-pin-nonroot).
+func (r *Rail) drawPinnedBreadcrumbRow(screen tcell.Screen, x, y, w int, row railRow) {
+	role := row.role
+	if role == nil {
+		return
+	}
+	icon, _ := statusIcon(role, true, r.animFrame) // force dimmed below
+	screen.SetContent(x, y, icon, nil, theme.StyleDimmed)
+	col := x + 2
+	availW := w - 2
+	if availW <= 0 {
+		return
+	}
+	widget.DrawText(screen, col, y, availW, truncRunesLeft(row.breadcrumb, availW), theme.StyleDimmed)
+}
+
+// drawBreadcrumbNameRow renders line 2 of a two-line pinned non-root entry: the
+// role name (indented under line 1). It renders selected-style when the
+// preceding breadcrumb line (the cursor anchor) is selected, dimmed when the
+// role is archived, normal otherwise (add-hera-pin-nonroot).
+func (r *Rail) drawBreadcrumbNameRow(screen tcell.Screen, x, y, w int, role *RoleView, selected bool) {
+	if role == nil {
+		return
+	}
+	nameStyle := theme.StyleNormal
+	if role.Archived {
+		nameStyle = theme.StyleDimmed
+	}
+	if selected {
+		nameStyle = theme.StyleSelected
+	}
+	widget.DrawText(screen, x, y, w, role.Name, nameStyle)
+}
+
+// truncRunesLeft left-truncates s to at most max runes, prepending "…" when
+// truncation occurs, so the rightmost (nearest-ancestor) text of an overflowing
+// breadcrumb trail stays visible. Rune-aware (not byte-aware) per the rail's
+// truncation rules (add-hera-pin-nonroot).
+func truncRunesLeft(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	if max == 1 {
+		return "…"
+	}
+	return "…" + string(runes[len(runes)-(max-1):])
 }
 
 // spinnerFrame computes the current spinner animation frame from wall-clock
