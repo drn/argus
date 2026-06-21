@@ -545,7 +545,7 @@ func TestHera_Send_DefaultRoute_WorkerToCoordinator(t *testing.T) {
 	resp := doRequest(t, s, "tools/call", ToolCallParams{
 		Name: "hera_send",
 		Arguments: json.RawMessage(fmt.Sprintf(`{
-			"cwd":%q,"body":"hello coord","tldr":"greeting"
+			"cwd":%q,"body":"hello coord","tldr":"greeting","status":"working"
 		}`, workerWt)),
 	})
 	testutil.NoError(t, respErr(resp))
@@ -616,7 +616,7 @@ func TestHera_Inbox_MarksRead(t *testing.T) {
 	doRequest(t, s, "tools/call", ToolCallParams{
 		Name: "hera_send",
 		Arguments: json.RawMessage(fmt.Sprintf(`{
-			"cwd":%q,"body":"status update","tldr":"update"
+			"cwd":%q,"body":"status update","tldr":"update","status":"working"
 		}`, workerWt)),
 	})
 
@@ -653,7 +653,7 @@ func TestHera_MarkRead(t *testing.T) {
 		r := doRequest(t, s, "tools/call", ToolCallParams{
 			Name: "hera_send",
 			Arguments: json.RawMessage(fmt.Sprintf(`{
-				"cwd":%q,"body":"msg %d","tldr":%q
+				"cwd":%q,"body":"msg %d","tldr":%q,"status":"working"
 			}`, workerWt, i, tldr)),
 		})
 		cr := callResult(t, r)
@@ -748,7 +748,7 @@ func TestHera_GetMessages_HappyPath(t *testing.T) {
 	sendResp := doRequest(t, s, "tools/call", ToolCallParams{
 		Name: "hera_send",
 		Arguments: json.RawMessage(fmt.Sprintf(`{
-			"cwd":%q,"body":"hello coord","tldr":"hi"
+			"cwd":%q,"body":"hello coord","tldr":"hi","status":"working"
 		}`, workerWt)),
 	})
 	cr := callResult(t, sendResp)
@@ -805,11 +805,11 @@ func TestHera_GetMessages_AccessRule(t *testing.T) {
 		}`, workerTask2.Worktree)),
 	})
 
-	// Worker in orch2 sends to coord2.
+	// Worker in orch1 sends to coord1 (default route).
 	sendResp := doRequest(t, s, "tools/call", ToolCallParams{
 		Name: "hera_send",
 		Arguments: json.RawMessage(fmt.Sprintf(`{
-			"cwd":%q,"body":"private","tldr":"private"
+			"cwd":%q,"body":"private","tldr":"private","status":"working"
 		}`, workerWt1)), // worker1 in orch1
 	})
 	cr := callResult(t, sendResp)
@@ -947,10 +947,10 @@ func TestHera_TreeUpdates_SubtreeRollup(t *testing.T) {
 		Name:      "hera_send",
 		Arguments: json.RawMessage(fmt.Sprintf(`{"cwd":%q,"to":"w1","body":"root body","tldr":"root-tldr"}`, coordWt)),
 	})))
-	// Sub-orch message: sw → subcoord (default route).
+	// Sub-orch message: sw → subcoord (default route). Workers must supply status.
 	subMsg := parseHeraMsgID(t, callResult(t, doRequest(t, s, "tools/call", ToolCallParams{
 		Name:      "hera_send",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"cwd":%q,"body":"sub body","tldr":"sub-tldr"}`, subWorkerWt)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"cwd":%q,"body":"sub body","tldr":"sub-tldr","status":"working"}`, subWorkerWt)),
 	})))
 
 	resp := doRequest(t, s, "tools/call", ToolCallParams{
@@ -999,7 +999,7 @@ func TestHera_TreeUpdates_CursorAutoAdvanceAndExplicitSince(t *testing.T) {
 	// A new message then appears.
 	m2 := parseHeraMsgID(t, callResult(t, doRequest(t, s, "tools/call", ToolCallParams{
 		Name:      "hera_send",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"cwd":%q,"body":"b2","tldr":"t2"}`, subWorkerWt)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"cwd":%q,"body":"b2","tldr":"t2","status":"working"}`, subWorkerWt)),
 	})))
 
 	// Explicit since=0 overrides the stored cursor (returns both) WITHOUT advancing it.
@@ -1051,10 +1051,10 @@ func TestHera_GetMessages_SubtreeAccess(t *testing.T) {
 	s, d := testHeraServer(t)
 	coordWt, _, subWorkerWt := setupNestedOrch(t, s, d)
 
-	// Message inside the child orchestrator.
+	// Message inside the child orchestrator (worker must supply status).
 	subMsg := parseHeraMsgID(t, callResult(t, doRequest(t, s, "tools/call", ToolCallParams{
 		Name:      "hera_send",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"cwd":%q,"body":"child secret","tldr":"child"}`, subWorkerWt)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"cwd":%q,"body":"child secret","tldr":"child","status":"working"}`, subWorkerWt)),
 	})))
 
 	// Unrelated orchestrator + message.
@@ -1070,7 +1070,7 @@ func TestHera_GetMessages_SubtreeAccess(t *testing.T) {
 	})
 	otherMsg := parseHeraMsgID(t, callResult(t, doRequest(t, s, "tools/call", ToolCallParams{
 		Name:      "hera_send",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"cwd":%q,"body":"other secret","tldr":"other"}`, otherWorkerTask.Worktree)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"cwd":%q,"body":"other secret","tldr":"other","status":"working"}`, otherWorkerTask.Worktree)),
 	})))
 
 	// Root coordinator fetches both: child accessible, unrelated denied.
@@ -1155,12 +1155,12 @@ func TestHera_Join_ClaimMode_UnreadCount(t *testing.T) {
 		}`, wt.Worktree)),
 	})
 
-	// Worker sends 2 messages.
+	// Worker sends 2 messages. Workers must supply status (D1).
 	for i := 0; i < 2; i++ {
 		doRequest(t, s, "tools/call", ToolCallParams{
 			Name: "hera_send",
 			Arguments: json.RawMessage(fmt.Sprintf(`{
-				"cwd":%q,"body":"msg","tldr":"t%d"
+				"cwd":%q,"body":"msg","tldr":"t%d","status":"working"
 			}`, wt.Worktree, i)),
 		})
 	}

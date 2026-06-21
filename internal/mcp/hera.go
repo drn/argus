@@ -101,7 +101,7 @@ var heraToolDefs = []Tool{
 	},
 	{
 		Name:        "hera_send",
-		Description: "Send a message to another role in the same orchestrator. Workers/freelancers default to the coordinator when 'to' is omitted. Coordinators must supply an explicit 'to'.",
+		Description: "Send a message to another role in the same orchestrator. Workers/freelancers default to the coordinator when 'to' is omitted. Coordinators must supply an explicit 'to'. Worker/freelance senders MUST supply 'status' (one of idle/working/blocked/done/failed) — it is applied to the sender's role synchronously before the message is sent.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -111,6 +111,7 @@ var heraToolDefs = []Tool{
 				"to":           map[string]interface{}{"type": "string", "description": "(optional for worker/freelance, required for coordinator) Recipient role name within the same orchestrator"},
 				"in_reply_to":  map[string]interface{}{"type": "integer", "description": "(optional) Message id this is a reply to"},
 				"orchestrator": map[string]interface{}{"type": "string", "description": "(required when the caller's argus task holds 2+ live bindings; optional when it holds exactly one) The orchestrator whose binding identifies the sender role for this call. The recipient is resolved within the same orchestrator."},
+				"status":       map[string]interface{}{"type": "string", "enum": []string{"idle", "working", "blocked", "done", "failed"}, "description": "REQUIRED for worker/freelance senders: the sender's current role status, applied synchronously before the message is sent. Optional for coordinator senders (omit to leave status unchanged)."},
 			},
 			"required": []string{"cwd", "body", "tldr"},
 		},
@@ -554,6 +555,7 @@ func (s *Server) toolHeraSend(id interface{}, args json.RawMessage) *Response {
 		To           string `json:"to"`
 		InReplyTo    *int64 `json:"in_reply_to"`
 		Orchestrator string `json:"orchestrator"`
+		Status       string `json:"status"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
 
@@ -570,6 +572,37 @@ func (s *Server) toolHeraSend(id interface{}, args json.RawMessage) *Response {
 	caller, err := s.resolveCallerRole(p.Cwd, p.Orchestrator)
 	if err != nil {
 		return toolError(id, err.Error())
+	}
+
+	// D1 (make-hera-plan-living): worker/freelance senders MUST supply a status.
+	// Enforce BEFORE recipient resolution so no message is sent on omission.
+	switch caller.role.Kind {
+	case db.HeraKindWorker, db.HeraKindFreelance:
+		if p.Status == "" {
+			return toolError(id, "status is required for worker/freelance senders; must be one of idle, working, blocked, done, failed")
+		}
+	}
+
+	// Validate the status value when supplied (coordinator or worker/freelance).
+	var sv db.HeraRoleStatusValue
+	if p.Status != "" {
+		sv = db.HeraRoleStatusValue(p.Status)
+		switch sv {
+		case db.HeraStatusIdle, db.HeraStatusWorking, db.HeraStatusBlocked, db.HeraStatusDone, db.HeraStatusFailed:
+		default:
+			return toolError(id, fmt.Sprintf("invalid status %q; must be one of idle, working, blocked, done, failed", p.Status))
+		}
+	}
+
+	// Apply status SYNCHRONOUSLY before the message is sent (D1). This decouples
+	// the authoritative state change from the best-effort doorbell delivery path.
+	// Soft-fail: a status-apply error must NOT block the message send.
+	if p.Status != "" {
+		if applyErr := s.applyRoleStatus(caller, sv); applyErr != nil {
+			slog.Warn("[hera] send: status apply failed (proceeding with send)", "role", caller.role.Name, "status", p.Status, "err", applyErr)
+		} else {
+			slog.Info("[hera] send: status applied", "role", caller.role.Name, "status", p.Status)
+		}
 	}
 
 	// Resolve recipient.
@@ -724,6 +757,52 @@ func (s *Server) toolHeraMarkRead(id interface{}, args json.RawMessage) *Respons
 	return toolResult(id, fmt.Sprintf("Marked %d of %d message ID%s as read.", n, len(p.MessageIDs), plural(len(p.MessageIDs))))
 }
 
+// applyRoleStatus validates sv, upserts the role status, mirrors to task_meta,
+// and performs the worker task roll (done→in_review+ready_to_close,
+// failed→in_review/no-ready_to_close). This is the single shared path used by
+// both toolHeraStatus and toolHeraSend — keeping the two callers identical so
+// they can never drift (D1, make-hera-plan-living).
+//
+// caller must be fully resolved before this call. Returns the first hard error
+// (upsert failure); the task-roll is always soft-fail (logged, not returned).
+// Callers that need soft-fail semantics on the whole apply (hera_send) should
+// log any returned error rather than blocking the message send.
+func (s *Server) applyRoleStatus(caller *callerRoleResult, sv db.HeraRoleStatusValue) error {
+	if err := s.heraStore.UpsertHeraRoleStatus(caller.role.ID, sv); err != nil {
+		return fmt.Errorf("update status failed: %w", err)
+	}
+
+	// Mirror to task_meta best-effort.
+	if metaErr := s.heraStore.SetMeta(caller.binding.ArgusTaskID, db.HeraMetaNamespace, db.HeraMetaKeyThreadStatus, string(sv)); metaErr != nil {
+		slog.Warn("[hera] meta mirror failed", "role", caller.role.Name, "task_id", caller.binding.ArgusTaskID, "err", metaErr)
+	}
+
+	// BUG-050 PRIMARY trigger: a WORKER reporting status="done" rolls its bound
+	// task to in_review + stamps ready_to_close — the idle-but-done case the
+	// exit hook misses. Worker-kind ONLY; RollHeraWorkerToReview no-ops unless
+	// the task is in_progress (never clobbers human-set state). Soft-fail.
+	if sv == db.HeraStatusDone && caller.role.Kind == db.HeraKindWorker {
+		if flipped, rErr := s.heraStore.RollHeraWorkerToReview(caller.binding.ArgusTaskID); rErr != nil {
+			slog.Warn("[hera] apply-status(done): worker roll failed (status still updated)", "task_id", caller.binding.ArgusTaskID, "err", rErr)
+		} else if flipped {
+			slog.Info("[hera] apply-status(done): rolled worker task to in_review", "task_id", caller.binding.ArgusTaskID, "role", caller.role.Name)
+		}
+	}
+
+	// D2 (make-hera-plan-living): a WORKER reporting status="failed" rolls its
+	// bound task to in_review WITHOUT stamping ready_to_close. Same soft-fail /
+	// idempotent invariants as the done roll above.
+	if sv == db.HeraStatusFailed && caller.role.Kind == db.HeraKindWorker {
+		if flipped, rErr := s.heraStore.RollHeraWorkerFailed(caller.binding.ArgusTaskID); rErr != nil {
+			slog.Warn("[hera] apply-status(failed): worker roll failed (status still updated)", "task_id", caller.binding.ArgusTaskID, "err", rErr)
+		} else if flipped {
+			slog.Info("[hera] apply-status(failed): rolled worker task to in_review (no ready_to_close)", "task_id", caller.binding.ArgusTaskID, "role", caller.role.Name)
+		}
+	}
+
+	return nil
+}
+
 func (s *Server) toolHeraStatus(id interface{}, args json.RawMessage) *Response {
 	if !s.heraEnabled() {
 		return toolError(id, "hera not configured")
@@ -754,42 +833,8 @@ func (s *Server) toolHeraStatus(id interface{}, args json.RawMessage) *Response 
 		return toolError(id, err.Error())
 	}
 
-	if err := s.heraStore.UpsertHeraRoleStatus(caller.role.ID, sv); err != nil {
-		return toolError(id, fmt.Sprintf("update status failed: %v", err))
-	}
-
-	// Mirror to task_meta best-effort.
-	if metaErr := s.heraStore.SetMeta(caller.binding.ArgusTaskID, db.HeraMetaNamespace, db.HeraMetaKeyThreadStatus, p.Status); metaErr != nil {
-		slog.Warn("[hera] meta mirror failed", "tool", "hera_status", "task_id", caller.binding.ArgusTaskID, "err", metaErr)
-	}
-
-	// BUG-050 PRIMARY trigger: a WORKER reporting status="done" rolls its bound
-	// task to in_review + stamps ready_to_close — the idle-but-done case the
-	// exit hook misses (Claude workers finish their report and go idle, they
-	// don't exit). Worker-kind ONLY (coordinators/freelance just update status);
-	// RollHeraWorkerToReview itself no-ops unless the task is in_progress, so it
-	// never clobbers a human-set in_review/complete and never auto-completes. It
-	// touches DB status + meta only — the live session is left running. Failure
-	// is soft (logged, never surfaced) so the status update always succeeds; the
-	// call is idempotent (re-calling done is a no-op once flipped).
-	if sv == db.HeraStatusDone && caller.role.Kind == db.HeraKindWorker {
-		if flipped, rErr := s.heraStore.RollHeraWorkerToReview(caller.binding.ArgusTaskID); rErr != nil {
-			slog.Warn("[hera] status(done): worker roll failed (status still updated)", "task_id", caller.binding.ArgusTaskID, "err", rErr)
-		} else if flipped {
-			slog.Info("[hera] status(done): rolled worker task to in_review", "task_id", caller.binding.ArgusTaskID, "role", caller.role.Name)
-		}
-	}
-
-	// D2 (make-hera-plan-living): a WORKER reporting status="failed" rolls its
-	// bound task to in_review WITHOUT stamping ready_to_close — the task needs
-	// coordinator attention but is not ready to check off. Same soft-fail /
-	// idempotent invariants as the done roll above.
-	if sv == db.HeraStatusFailed && caller.role.Kind == db.HeraKindWorker {
-		if flipped, rErr := s.heraStore.RollHeraWorkerFailed(caller.binding.ArgusTaskID); rErr != nil {
-			slog.Warn("[hera] status(failed): worker roll failed (status still updated)", "task_id", caller.binding.ArgusTaskID, "err", rErr)
-		} else if flipped {
-			slog.Info("[hera] status(failed): rolled worker task to in_review (no ready_to_close)", "task_id", caller.binding.ArgusTaskID, "role", caller.role.Name)
-		}
+	if err := s.applyRoleStatus(caller, sv); err != nil {
+		return toolError(id, err.Error())
 	}
 
 	slog.Info("[hera] status ok", "role", caller.role.Name, "status", p.Status, "orch", caller.orch.Name)
