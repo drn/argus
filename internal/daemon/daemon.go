@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log/slog"
 	"net"
@@ -158,6 +159,13 @@ type Daemon struct {
 	// cycle is skipped before any gh query. Defaults to the real data-dir path;
 	// tests point it at a temp file. Empty disables the check entirely.
 	prDisableFlagPath string
+
+	// pollCycle counts PR-poll cycles since boot (incremented once per tick in
+	// runPRPoller). It is the phase input to the dormancy-tiered cadence: a task
+	// on stride N is queried on the cycles where (pollCycle + hash(id)) % N == 0,
+	// spreading each tier's tasks across the stride window instead of bunching
+	// them onto one cycle. Reset to 0 on restart (the schedule simply re-phases).
+	pollCycle uint64
 
 	// notifier is the reliable pane-delivery service. Created in Serve once
 	// the runner and focus tracker are ready. Nil until Serve runs.
@@ -573,27 +581,47 @@ func (d *Daemon) pollPRStatesOnce(ctx context.Context) {
 		prMeta = nil
 	}
 
-	// Collect eligible tasks up front so the logged count is exact. A task whose
-	// last-known cached state is terminal is skipped permanently — that state
-	// can never change, so re-polling it can never return anything new.
+	// Collect eligible tasks up front so the logged count is exact. Two kinds of
+	// task are dropped here and counted in `skipped` (everything eligible by base
+	// criteria but not queried this cycle), preserving len(eligible) == written +
+	// errored:
+	//   1. Terminal cached state (merged/closed) — skipped permanently; that
+	//      state can never change, so re-polling can never return anything new.
+	//   2. Dormancy cadence — an eligible task not due this cycle. GitHub's
+	//      GraphQL budget is cost-based (~1 unit per branch resolved), so querying
+	//      every dormant PR-less branch every cycle drains it; we poll them on a
+	//      stride instead (prPollCadenceStride). An open PR overrides the stride
+	//      and is always polled.
+	now := time.Now()
 	eligible := make([]*model.Task, 0, len(tasks))
 	var skipped int
 	for _, t := range tasks {
 		if t == nil || t.Archived || t.Branch == "" {
 			continue
 		}
+		// Parse the cached PR state once: it drives both the terminal skip and the
+		// cadence floor (an open PR is always polled). A missing or unparseable
+		// value is treated as PRNone (no known PR → dormancy-tiered).
+		state := model.PRNone
 		if raw := prMeta[t.ID]["state"]; raw != "" {
-			if st, perr := model.ParsePRState(raw); perr == nil && st.IsTerminal() {
-				skipped++
-				uxlog.Log("[pr] poll: skip terminal %s (state=%s)", t.ID, raw)
-				continue
+			if st, perr := model.ParsePRState(raw); perr == nil {
+				state = st
 			}
+		}
+		if state.IsTerminal() {
+			skipped++
+			uxlog.Log("[pr] poll: skip terminal %s (state=%s)", t.ID, state)
+			continue
+		}
+		if stride := prPollCadenceStride(t, state, now); !prCadenceSelects(d.pollCycle, t.ID, stride) {
+			skipped++
+			continue
 		}
 		eligible = append(eligible, t)
 	}
 	if len(eligible) == 0 {
 		if skipped > 0 {
-			uxlog.Log("[pr] poll: eligible=0 skipped=%d (all terminal)", skipped)
+			uxlog.Log("[pr] poll: eligible=0 skipped=%d", skipped)
 		}
 		return
 	}
@@ -712,6 +740,52 @@ func (d *Daemon) pollPRStatesOnce(ctx context.Context) {
 	uxlog.Log("[pr] poll: eligible=%d skipped=%d written=%d errored=%d", len(eligible), skipped, written, errored)
 }
 
+// prPollCadenceStride returns how many poll cycles apart a task should be
+// queried, tiered by dormancy to bound the GitHub GraphQL budget (cost-based —
+// ~1 unit per branch resolved — so per-repo batching alone does not cap it). An
+// open PR (draft/awaiting-review/changes-requested/approved) overrides the tier
+// and is polled every cycle (stride 1) so externally-driven review/merge
+// transitions surface promptly. Otherwise the stride is derived from the task's
+// most recent lifecycle activity (latest of EndedAt/StartedAt/CreatedAt):
+// within 1h → 1, 1h–24h → 5, 24h–7d → 15, older → 30.
+func prPollCadenceStride(t *model.Task, state model.PRState, now time.Time) int {
+	switch state {
+	case model.PRDraft, model.PRAwaitingReview, model.PRChangesRequested, model.PRApproved:
+		return 1
+	}
+	last := t.CreatedAt
+	if t.StartedAt.After(last) {
+		last = t.StartedAt
+	}
+	if t.EndedAt.After(last) {
+		last = t.EndedAt
+	}
+	switch age := now.Sub(last); {
+	case age < time.Hour:
+		return 1
+	case age < 24*time.Hour:
+		return 5
+	case age < 7*24*time.Hour:
+		return 15
+	default:
+		return 30
+	}
+}
+
+// prCadenceSelects reports whether a task on the given stride is due on this
+// poll cycle. Stride 1 is always due. Otherwise selection is phased by a stable
+// hash of the task id so a tier's tasks spread across the stride window rather
+// than all firing on the same cycle (a thundering herd that would defeat the
+// budget saving).
+func prCadenceSelects(cycle uint64, taskID string, stride int) bool {
+	if stride <= 1 {
+		return true
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(taskID))
+	return (cycle+h.Sum64())%uint64(stride) == 0
+}
+
 // prAliasID derives a GraphQL-safe alias from a task id. A GraphQL alias must
 // match [_A-Za-z][_0-9A-Za-z]*; argus task ids are numeric, so a bare id would
 // start with a digit (illegal). We prefix a constant "t" and replace any
@@ -756,6 +830,7 @@ func (d *Daemon) runPRPoller() {
 			cancel()
 			return
 		case <-ticker.C:
+			d.pollCycle++
 			d.pollPRStatesOnce(ctx)
 		}
 	}

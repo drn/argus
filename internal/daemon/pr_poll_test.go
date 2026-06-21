@@ -343,6 +343,153 @@ func TestPollPR_NoEligibleTasks(t *testing.T) {
 	testutil.Equal(t, called, false)
 }
 
+func TestPRPollCadenceStride(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	aged := func(age time.Duration) *model.Task { return &model.Task{CreatedAt: now.Add(-age)} }
+
+	cases := []struct {
+		name  string
+		task  *model.Task
+		state model.PRState
+		want  int
+	}{
+		{"within 1h, no PR", aged(30 * time.Minute), model.PRNone, 1},
+		{"1-24h, no PR", aged(5 * time.Hour), model.PRNone, 5},
+		{"1-7d, no PR", aged(3 * 24 * time.Hour), model.PRNone, 15},
+		{"over 7d, no PR", aged(10 * 24 * time.Hour), model.PRNone, 30},
+		{"over 7d, unknown", aged(10 * 24 * time.Hour), model.PRUnknown, 30},
+		{"open PR floors a dormant task to hot: awaiting-review", aged(30 * 24 * time.Hour), model.PRAwaitingReview, 1},
+		{"open PR floors a dormant task to hot: draft", aged(30 * 24 * time.Hour), model.PRDraft, 1},
+		{"open PR floors a dormant task to hot: approved", aged(30 * 24 * time.Hour), model.PRApproved, 1},
+		{"open PR floors a dormant task to hot: changes-requested", aged(30 * 24 * time.Hour), model.PRChangesRequested, 1},
+		{
+			"most-recent lifecycle ts wins (fresh ended_at beats old created_at)",
+			&model.Task{CreatedAt: now.Add(-10 * 24 * time.Hour), EndedAt: now.Add(-20 * time.Minute)},
+			model.PRNone, 1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			testutil.Equal(t, prPollCadenceStride(tc.task, tc.state, now), tc.want)
+		})
+	}
+}
+
+func TestPRCadenceSelects(t *testing.T) {
+	// Stride 1 is due every cycle.
+	for c := uint64(0); c < 5; c++ {
+		testutil.Equal(t, prCadenceSelects(c, "x", 1), true)
+	}
+	// Stride 30: due on exactly one of any 30 consecutive cycles.
+	got := 0
+	for c := uint64(0); c < 30; c++ {
+		if prCadenceSelects(c, "task-abc", 30) {
+			got++
+		}
+	}
+	testutil.Equal(t, got, 1)
+}
+
+func TestPRCadenceSpread(t *testing.T) {
+	// Distinct task ids in the same tier land on different cycles (phased by
+	// id hash) rather than all firing on the same cycle.
+	firstFire := func(id string) uint64 {
+		for c := uint64(0); c < 30; c++ {
+			if prCadenceSelects(c, id, 30) {
+				return c
+			}
+		}
+		return 999
+	}
+	offsets := map[uint64]bool{}
+	for _, id := range []string{"a", "b", "c", "d", "e", "f", "g", "h"} {
+		offsets[firstFire(id)] = true
+	}
+	// At least two distinct fire-cycles → the tier is spread, not bunched.
+	testutil.Equal(t, len(offsets) > 1, true)
+}
+
+func TestPollPR_DefersDormantPRlessTask(t *testing.T) {
+	d, _ := testDaemon(t)
+	// Dormant (>7d), no PR → frozen tier (stride 30).
+	old := time.Now().Add(-10 * 24 * time.Hour)
+	task := &model.Task{
+		ID: "dormant", Name: "dormant", Status: model.StatusInReview,
+		Project: "p", Branch: "argus/dormant", Worktree: "/tmp/wt/dormant", CreatedAt: old,
+	}
+	testutil.NoError(t, d.db.Add(task))
+	d.prResolveRepo = resolveAll("drn/argus")
+
+	var calls int
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
+		calls++
+		out := map[string]gitutil.PRResult{}
+		for b := range branches {
+			out[b] = gitutil.PRResult{State: model.PRNone}
+		}
+		return out, 1, nil
+	}
+
+	// Pick a cycle where the frozen task is NOT due: no fetch, cache untouched.
+	for c := uint64(0); c < 30; c++ {
+		if !prCadenceSelects(c, "dormant", 30) {
+			d.pollCycle = c
+			break
+		}
+	}
+	d.pollPRStatesOnce(context.Background())
+	testutil.Equal(t, calls, 0)
+	meta, err := d.db.ListMetaByNamespace("pr")
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(meta), 0)
+
+	// On a cycle where it IS due, it gets queried.
+	for c := uint64(0); c < 30; c++ {
+		if prCadenceSelects(c, "dormant", 30) {
+			d.pollCycle = c
+			break
+		}
+	}
+	d.pollPRStatesOnce(context.Background())
+	testutil.Equal(t, calls, 1)
+}
+
+func TestPollPR_OpenPROverridesDormancy(t *testing.T) {
+	d, _ := testDaemon(t)
+	// Very old task, but it has an open PR → polled every cycle regardless.
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	task := &model.Task{
+		ID: "oldpr", Name: "oldpr", Status: model.StatusInReview,
+		Project: "p", Branch: "argus/oldpr", Worktree: "/tmp/wt/oldpr", CreatedAt: old,
+	}
+	testutil.NoError(t, d.db.Add(task))
+	testutil.NoError(t, d.db.SetMetaBatch("oldpr", "pr", map[string]string{
+		"state": "awaiting-review", "url": "https://example/pr/9",
+	}))
+	d.prResolveRepo = resolveAll("drn/argus")
+
+	var calls int
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
+		calls++
+		out := map[string]gitutil.PRResult{}
+		for b := range branches {
+			out[b] = gitutil.PRResult{State: model.PRApproved, URL: "u"}
+		}
+		return out, 1, nil
+	}
+
+	// An arbitrary cycle where a frozen-tier task would NOT be due — the open PR
+	// floor still forces a poll.
+	for c := uint64(0); c < 30; c++ {
+		if !prCadenceSelects(c, "oldpr", 30) {
+			d.pollCycle = c
+			break
+		}
+	}
+	d.pollPRStatesOnce(context.Background())
+	testutil.Equal(t, calls, 1)
+}
+
 func TestPollPR_PausedByKillSwitch(t *testing.T) {
 	d, _ := testDaemon(t)
 	seedTask(t, d.db, "live", "argus/live", false)
