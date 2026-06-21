@@ -56,41 +56,41 @@ Write failing tests from the `hera-messaging` and `hera-coordination` deltas.
 Write failing tests from the `hera-coordination` (mutation-verb + cancelled) and
 `hera-view` (cancelled rendering) deltas.
 
-- [ ] 5.1 `internal/db`: failing tests for `RemoveHeraBlock(blocked, blocker)` (removes one edge; missing edge is a no-op), `SetHeraRolePrompt`/`UpdateHeraPlannedNode` (edits prompt/project), and the `cancelled_at` column (`CancelHeraPlannedNode`; `ListHeraPlannedNodes` excludes cancelled; `ListHeraBlocks`/render still surface it).
-- [ ] 5.2 `internal/heragater`: failing tests — a cancelled node never materializes; a dependent whose only unsatisfied blocker is cancelled becomes eligible.
-- [ ] 5.3 `internal/mcp` (hera_plan.go): failing tests — `hera_plan_node_update` edits a planned node, rejects a materialized node; `hera_unblock` drops an edge idempotently; `hera_plan_node_cancel` cancels a planned node, rejects a materialized one; all three reject non-coordinator callers.
-- [ ] 5.4 `internal/tui/planview` + `internal/tui/hera`: failing SimulationScreen/projection test — a cancelled node renders a distinct grey ✕, kept visible, distinct from failed.
-- [ ] 5.5 Confirm every Phase-B `it should X` criterion has a failing test.
+- [x] 5.1 `internal/db`: failing tests for `RemoveHeraBlock(blocked, blocker)` (removes one edge; missing edge is a no-op), `SetHeraRolePrompt`/`UpdateHeraPlannedNode` (edits prompt/project), and the `cancelled_at` column (`CancelHeraPlannedNode`; `ListHeraPlannedNodes` excludes cancelled; `ListHeraBlocks`/render still surface it).
+- [x] 5.2 `internal/heragater`: failing tests — a cancelled node never materializes; a dependent whose only unsatisfied blocker is cancelled becomes eligible.
+- [x] 5.3 `internal/mcp` (hera_plan.go): failing tests — `hera_plan_node_update` edits a planned node, rejects a materialized node; `hera_unblock` drops an edge idempotently; `hera_plan_node_cancel` cancels a planned node, rejects a materialized one; all three reject non-coordinator callers.
+- [x] 5.4 `internal/tui/planview` + `internal/tui/hera`: failing SimulationScreen/projection test — a cancelled node renders a distinct grey ✕, kept visible, distinct from failed.
+- [x] 5.5 Confirm every Phase-B `it should X` criterion has a failing test.
 
 ## 6. Phase B — store additions (edge-remove, prompt-edit, cancelled marker)
 
 **Depends on:** Stage 5
 
-- [ ] 6.1 `internal/db/schema.go`: add `cancelled_at TEXT` to `hera_roles` + `idx_hera_roles_cancelled`.
-- [ ] 6.2 `internal/db/hera_plan.go`: `RemoveHeraBlock(blocked, blocker int64) error` (DELETE on `hera_blocks`, idempotent).
-- [ ] 6.3 `internal/db/hera_plan.go` / `hera.go`: `SetHeraRolePrompt`/`UpdateHeraPlannedNode` (prompt + project edit, planned-only path).
-- [ ] 6.4 `internal/db/hera_plan.go`: `CancelHeraPlannedNode` (stamp `cancelled_at`); extend `ListHeraPlannedNodes` with `AND cancelled_at IS NULL`.
-- [ ] 6.5 `internal/heragater`: `blockerOutcome` treats a cancelled blocker as non-gating (dependent proceeds).
-- [ ] 6.6 uxlog on each store mutation.
+- [x] 6.1 `internal/db/schema.go`: add `cancelled_at TEXT` to `hera_roles` + `idx_hera_roles_cancelled`.
+- [x] 6.2 `internal/db/hera_plan.go`: `RemoveHeraBlock(blocked, blocker int64) error` (DELETE on `hera_blocks`, idempotent).
+- [x] 6.3 `internal/db/hera_plan.go` / `hera.go`: `SetHeraRolePrompt`/`UpdateHeraPlannedNode` (prompt + project edit, planned-only path).
+- [x] 6.4 `internal/db/hera_plan.go`: `CancelHeraPlannedNode` (stamp `cancelled_at`); extend `ListHeraPlannedNodes` with `AND cancelled_at IS NULL`.
+- [x] 6.5 `internal/heragater`: `blockerOutcome` treats a cancelled blocker as non-gating (dependent proceeds).
+- [x] 6.6 uxlog on each store mutation.
 
 ## 7. Phase B — MCP mutation verbs
 
 **Depends on:** Stage 6
 
-- [ ] 7.1 `internal/mcp/hera_plan.go`: `hera_plan_node_update` handler + tool def (coordinator-guarded; reject if materialized).
-- [ ] 7.2 `internal/mcp/hera_plan.go`: `hera_unblock` handler + tool def (coordinator-guarded; idempotent).
-- [ ] 7.3 `internal/mcp/hera_plan.go`: `hera_plan_node_cancel` handler + tool def (coordinator-guarded; reject if materialized).
-- [ ] 7.4 Register the three verbs in `heraToolDefs` / the CallTool dispatcher.
-- [ ] 7.5 uxlog on each verb.
+- [x] 7.1 `internal/mcp/hera_plan.go`: `hera_plan_node_update` handler + tool def (coordinator-guarded; reject if materialized).
+- [x] 7.2 `internal/mcp/hera_plan.go`: `hera_unblock` handler + tool def (coordinator-guarded; idempotent).
+- [x] 7.3 `internal/mcp/hera_plan.go`: `hera_plan_node_cancel` handler + tool def (coordinator-guarded; reject if materialized).
+- [x] 7.4 Register the three verbs in `heraToolDefs` / the CallTool dispatcher.
+- [x] 7.5 uxlog on each verb.
 
 ## 8. Phase B — planview cancelled rendering
 
 **Depends on:** Stage 6
 
-- [ ] 8.1 `internal/tui/hera` projection (`heraPlanNodes`): map a `cancelled_at` role to a new `planview` cancelled state.
-- [ ] 8.2 `internal/tui/planview`: render the cancelled state as a distinct grey ✕ (rune-slice iteration; full-rect; no Sync — follow dag-rendering.md).
-- [ ] 8.3 README Reference appendix: add the three MCP verbs to the hera tool table.
-- [ ] 8.4 Full Phase-B verification: targeted `go test` green; linter 0 issues. Report Phase B green to coordinator.
+- [x] 8.1 `internal/tui/hera` projection (`heraPlanNodes`): map a `cancelled_at` role to a new `planview` cancelled state.
+- [x] 8.2 `internal/tui/planview`: render the cancelled state as a distinct grey ✕ (rune-slice iteration; full-rect; no Sync — follow dag-rendering.md).
+- [x] 8.3 README Reference appendix: add the three MCP verbs to the hera tool table.
+- [x] 8.4 Full Phase-B verification: targeted `go test` green; linter 0 issues. Report Phase B green to coordinator.
 
 ## 9. Phase C — authority + docs
 
