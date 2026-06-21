@@ -863,6 +863,10 @@ func (tp *TerminalPane) PasteHandler() func(pastedText string, setFocus func(p t
 		sess := tp.session
 		tp.mu.Unlock()
 		if sess != nil && sess.Alive() {
+			// BUG-008: a paste is real input — snap to the live tail so the
+			// pasted text echoes on screen instead of off the bottom of a
+			// scrolled-up viewport. Anchor-lock (output growth) is untouched.
+			tp.ResetScroll()
 			// Write the entire paste as a single PTY write, wrapped in
 			// bracket paste sequences so the agent's readline sees it as
 			// a paste (no per-character echo/processing).

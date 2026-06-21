@@ -1880,6 +1880,46 @@ func TestTerminalPane_PasteHandler_LiveSession(t *testing.T) {
 	}
 }
 
+// TestTerminalPane_PasteHandler_SnapsScrollToBottom is the BUG-008 regression:
+// pasting into a scrolled-up pane (real user input) must snap the view back to the
+// live tail so the pasted text and cursor are visible.
+func TestTerminalPane_PasteHandler_SnapsScrollToBottom(t *testing.T) {
+	tp := NewTerminalPane()
+	rec := &pasteRecorder{mockAdapter: mockAdapter{alive: true}}
+	tp.SetSession(rec)
+
+	tp.ScrollUp(10)
+	if tp.ScrollOffset() == 0 {
+		t.Fatal("precondition: pane should be scrolled up")
+	}
+
+	handler := tp.PasteHandler()
+	handler("hello", func(p tview.Primitive) {})
+
+	if tp.ScrollOffset() != 0 {
+		t.Errorf("paste should snap scroll to bottom, got offset %d", tp.ScrollOffset())
+	}
+}
+
+// TestTerminalPane_PasteHandler_DeadSessionNoSnap proves a paste to a dead session
+// neither writes nor snaps — there is no live tail to bring into view.
+func TestTerminalPane_PasteHandler_DeadSessionNoSnap(t *testing.T) {
+	tp := NewTerminalPane()
+	rec := &pasteRecorder{mockAdapter: mockAdapter{alive: false}}
+	tp.SetSession(rec)
+
+	tp.ScrollUp(10)
+	handler := tp.PasteHandler()
+	handler("ignored", func(p tview.Primitive) {})
+
+	if tp.ScrollOffset() == 0 {
+		t.Error("paste to dead session should not snap scroll")
+	}
+	if len(rec.written) != 0 {
+		t.Errorf("paste should not be sent to dead session: %q", rec.written)
+	}
+}
+
 func TestTerminalPane_PasteHandler_DeadSession(t *testing.T) {
 	tp := NewTerminalPane()
 	rec := &pasteRecorder{mockAdapter: mockAdapter{alive: false}}
