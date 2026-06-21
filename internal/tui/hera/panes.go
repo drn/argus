@@ -6,6 +6,7 @@ import (
 	"github.com/drn/argus/internal/tui/terminal"
 	"github.com/drn/argus/internal/uxlog"
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 )
 
 // paneScrollStep is how many lines a PgUp/PgDn scrolls a focused pane.
@@ -143,6 +144,11 @@ func (p *HeraPage) bindPane(tp *terminal.TerminalPane, bound *string, taskID, la
 	// on-disk log; SetSession then attaches the live ring when present.
 	tp.SetTaskID(taskID)
 	tp.SetSession(sess)
+	// Enter on this pane while its session is dead/nil revives the pane's bound
+	// task (BUG-001). The closure reads live page state at fire time (never a
+	// snapshot), so it stays correct as the selection moves; reattachPane targets
+	// the right task per pane (agent → selected worker, coord → its coordinator).
+	tp.OnReattach = func() { p.reattachPane(tp) }
 	if sess != nil {
 		// A session previously sized for the full-width main agent view must be
 		// resized to this (narrower) hera pane, or the agent keeps painting at
@@ -298,7 +304,13 @@ func (p *HeraPage) forwardKey(tp *terminal.TerminalPane, ev *tcell.EventKey) {
 		p.reconcileOne(tp, boundID, label)
 		sess = tp.Session()
 		if sess == nil || !sess.Alive() {
-			uxlog.Log("[hera-view] forwardKey: %s pane re-resolve found no live session (task=%s) — keystroke dropped", label, boundID)
+			// No live session to write to. Route the event to the pane's own
+			// InputHandler: Enter revives the worker via OnReattach (BUG-001 — the
+			// "Session not running - press Enter to start" overlay's promise), and
+			// every other key is a no-op (dropped, as before). setFocus is unused by
+			// the pane's handler, so a no-op suffices.
+			uxlog.Log("[hera-view] forwardKey: %s pane re-resolve found no live session (task=%s) — routing to pane InputHandler (Enter revives)", label, boundID)
+			tp.InputHandler()(ev, func(tview.Primitive) {})
 			return
 		}
 	}
@@ -307,6 +319,33 @@ func (p *HeraPage) forwardKey(tp *terminal.TerminalPane, ev *tcell.EventKey) {
 			uxlog.Log("[hera-view] pane write failed: %v", err)
 		}
 	}
+}
+
+// reattachPane revives the session backing tp via the page's OnReattach callback
+// (wired by the App to heraReattach — the SAME revive path the rail's Enter uses).
+// It builds a Selection targeting THIS pane's bound task: the agent pane revives
+// the selected worker (p.sel), while the coordinator pane revives the orchestrator
+// whose coordinator it shows — the resolved details orchestrator in detailsMode,
+// else the selected orchestrator. A Selection with only Orch set is a coordinator
+// selection (FocusTaskID → the coordinator task), so heraReattach treats it
+// correctly (dead → restart, live coordinator → navigate-only).
+func (p *HeraPage) reattachPane(tp *terminal.TerminalPane) {
+	if p.OnReattach == nil {
+		return
+	}
+	sel := p.sel
+	if tp == p.coordPane {
+		orch := p.sel.Orch
+		if p.detailsMode {
+			orch = p.detailsOrch()
+		}
+		sel = Selection{Orch: orch}
+	}
+	if sel.FocusTaskID() == "" {
+		return
+	}
+	uxlog.Log("[hera-view] pane reattach: task=%s coordinator=%v", sel.FocusTaskID(), sel.IsCoordinator())
+	p.OnReattach(sel)
 }
 
 // regionAt maps a screen x-coordinate to the focus region it falls in, using

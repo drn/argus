@@ -443,6 +443,78 @@ func TestPanes_ForwardKeyDropsWhenNoLiveSession(t *testing.T) {
 	testutil.Equal(t, len(dead.wrote), 0) // dropped, not delivered to a dead handle
 }
 
+// TestPanes_ForwardKeyEnterRevivesDeadPane is the BUG-001 regression: Enter into a
+// focused pane with no live session fires OnReattach (the "Session not running -
+// press Enter to start" overlay's promise) targeting the pane's bound task, while a
+// non-Enter key into the same dead pane is still dropped (no revive, no write).
+func TestPanes_ForwardKeyEnterRevivesDeadPane(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+
+	dead := &fakeSession{id: "t-wkr", alive: false}
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{
+		"t-coord": {id: "t-coord", alive: true},
+		"t-wkr":   dead,
+	}))
+	var got []Selection
+	p.OnReattach = func(sel Selection) { got = append(got, sel) }
+	p.Refresh()
+	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
+
+	// Enter on the dead agent pane revives the worker — its bound task, not the
+	// coordinator's.
+	p.forwardKey(p.AgentPane(), tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	testutil.Equal(t, len(got), 1)
+	testutil.Equal(t, got[0].FocusTaskID(), "t-wkr")
+	testutil.Equal(t, len(dead.wrote), 0) // never written to a dead handle
+
+	// A non-Enter key into the dead pane does NOT revive.
+	p.forwardKey(p.AgentPane(), tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone))
+	testutil.Equal(t, len(got), 1)
+}
+
+// TestSmoke_HeraPaneEnterRevivesDeadSession drives the real event loop: a worker
+// selection with a dead agent session, focus walked into the agent pane, then
+// Enter — which must fire the revive path (BUG-001). Exercises the page
+// InputHandler → forwardKey → pane InputHandler → OnReattach chain end to end.
+func TestSmoke_HeraPaneEnterRevivesDeadSession(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+
+	deadWkr := &fakeSession{id: "t-wkr", alive: false}
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{
+		"t-coord": {id: "t-coord", alive: true},
+		"t-wkr":   deadWkr,
+	}))
+	var revived []string
+	p.OnReattach = func(sel Selection) { revived = append(revived, sel.FocusTaskID()) }
+	p.Refresh()
+	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(120, 30)
+	p.SetRect(0, 0, 120, 30)
+	p.Draw(sim) // teach the focus machine both right regions are present
+
+	h := p.InputHandler()
+	h(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), noFocus)                // rail → coord
+	h(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModCtrl|tcell.ModAlt), noFocus) // coord → agent
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
+
+	// Enter on the focused dead-session pane fires the revive for the worker task.
+	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, len(revived), 1)
+	testutil.Equal(t, revived[0], "t-wkr")
+}
+
 // TestPanes_FocusTraversal walks rail→coord→agent and back. Entering a pane
 // from the rail is still Tab; once a terminal pane is focused the focus ladder
 // is Ctrl+Alt+←/→ (Tab/Shift-Tab now pass through to the PTY — BUG-019), and
