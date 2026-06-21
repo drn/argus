@@ -2766,3 +2766,55 @@ func TestAsyncReplayRebuild_FiresBranchChangeOnSuccess(t *testing.T) {
 		t.Fatal("OnBranchChange did not fire on successful rebuild")
 	}
 }
+
+// TestTerminalPane_InputHandlerEnterRevives pins BUG-001: Enter on a focused pane
+// with no live session (the "Session not running - press Enter to start" state)
+// fires OnReattach so the pane self-revives; Enter while alive and every non-Enter
+// key fall through so live PTY input is never swallowed; a nil OnReattach is inert.
+func TestTerminalPane_InputHandlerEnterRevives(t *testing.T) {
+	enterEv := tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone)
+	runeEv := tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone)
+	noFocus := func(tview.Primitive) {}
+
+	t.Run("Enter with nil session fires OnReattach", func(t *testing.T) {
+		tp := NewTerminalPane()
+		tp.SetTaskID("task-1")
+		fired := 0
+		tp.OnReattach = func() { fired++ }
+		tp.InputHandler()(enterEv, noFocus)
+		testutil.Equal(t, fired, 1)
+	})
+
+	t.Run("Enter with dead session fires OnReattach", func(t *testing.T) {
+		tp := NewTerminalPane()
+		tp.SetSession(&mockAdapter{alive: false})
+		fired := 0
+		tp.OnReattach = func() { fired++ }
+		tp.InputHandler()(enterEv, noFocus)
+		testutil.Equal(t, fired, 1)
+	})
+
+	t.Run("Enter with live session does NOT fire OnReattach", func(t *testing.T) {
+		tp := NewTerminalPane()
+		tp.SetSession(&mockAdapter{alive: true})
+		fired := 0
+		tp.OnReattach = func() { fired++ }
+		tp.InputHandler()(enterEv, noFocus)
+		testutil.Equal(t, fired, 0)
+	})
+
+	t.Run("non-Enter key with no session does NOT fire OnReattach", func(t *testing.T) {
+		tp := NewTerminalPane()
+		tp.SetTaskID("task-1")
+		fired := 0
+		tp.OnReattach = func() { fired++ }
+		tp.InputHandler()(runeEv, noFocus)
+		testutil.Equal(t, fired, 0)
+	})
+
+	t.Run("nil OnReattach is inert (no panic)", func(t *testing.T) {
+		tp := NewTerminalPane()
+		tp.SetTaskID("task-1")
+		tp.InputHandler()(enterEv, noFocus) // must not panic
+	})
+}

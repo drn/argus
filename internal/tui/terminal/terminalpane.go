@@ -224,6 +224,14 @@ type TerminalPane struct {
 	// Safe to fire from any goroutine: the callback is set once in
 	// buildUI and never reassigned, and forceRedraw just logs.
 	OnBranchChange func()
+
+	// OnReattach is fired by InputHandler when Enter is pressed while NO live
+	// session is attached — the state behind the "Session not running - press
+	// Enter to start" overlay. The Hera view wires it to revive the pane's bound
+	// task (BUG-001), making a focused pane self-revive instead of relying only
+	// on the rail's reattach. Nil-guarded: a consumer that does not wire it (the
+	// task page mounts the same widget) keeps Enter inert, exactly as before.
+	OnReattach func()
 }
 
 // mouseScrollStep is the number of lines scrolled per mouse wheel tick.
@@ -792,6 +800,30 @@ func readLiveRebuildHistory(sess agentview.TerminalAdapter, taskID string) (raw 
 	out = append(out, logRaw...)
 	out = append(out, extra...)
 	return out, ringTotal
+}
+
+// InputHandler intercepts Enter when no live session is attached so a focused
+// pane can revive its dead/suspended worker — the action the "Session not running
+// - press Enter to start" overlay promises (BUG-001). It fires OnReattach ONLY
+// when Enter is pressed AND the session is nil or !Alive(); for every other case
+// — a non-Enter key, or Enter while the session IS alive — it falls through to the
+// default Box behavior so live PTY input (routed by the consumer, e.g.
+// HeraPage.forwardKey for Hera panes or handleAgentKey for the task page) is never
+// swallowed. OnReattach is nil-guarded, so a consumer that does not wire it keeps
+// the pane inert exactly as before.
+func (tp *TerminalPane) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
+	return tp.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
+		if event == nil || event.Key() != tcell.KeyEnter || tp.OnReattach == nil {
+			return
+		}
+		tp.mu.Lock()
+		sess := tp.session
+		tp.mu.Unlock()
+		if sess != nil && sess.Alive() {
+			return // live session — Enter belongs to the agent PTY, not the revive
+		}
+		tp.OnReattach()
+	})
 }
 
 // MouseHandler handles mouse clicks (focus switching) and scroll wheel.

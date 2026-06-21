@@ -114,6 +114,54 @@ func TestHeraActions_ClearArchiveBranches(t *testing.T) {
 	testutil.Equal(t, app.mode, modeHeraConfirm)
 }
 
+// TestHeraActions_ClearArchiveScopesToSubCoordinator pins BUG-003: pressing `C`
+// on a SUB-coordinator (a bridging worker row whose Selection carries the child
+// orch id) must scope the nuke set to that sub-coordinator's OWN subtree — not
+// the parent orchestrator's whole subtree. A top-level coordinator selection
+// (no BridgeChildOrchID) still scopes to its own orch, unchanged.
+func TestHeraActions_ClearArchiveScopesToSubCoordinator(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.heraOps = hera.NewOps(d)
+
+	// Parent P (id 1): a coordinator, a LIVE worker "w" bridging to child C, and a
+	// hidden parent worker "pw". Child C (id 2): a coordinator bound to "tc-c"
+	// (so the bridge index links P's worker → C), plus a hidden child worker "cw".
+	parent := hera.OrchView{ID: 1, Name: "P", Roles: []hera.RoleView{
+		{RoleID: 10, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc-p"},
+		{RoleID: 11, OrchID: 1, Name: "w", Kind: db.HeraKindWorker, Live: true, TaskID: "tc-c", BridgeTaskID: "tc-c"},
+		{RoleID: 12, OrchID: 1, Name: "pw", Kind: db.HeraKindWorker, Archived: true},
+	}}
+	child := hera.OrchView{ID: 2, Name: "C", Roles: []hera.RoleView{
+		{RoleID: 20, OrchID: 2, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc-c", BridgeTaskID: "tc-c"},
+		{RoleID: 21, OrchID: 2, Name: "cw", Kind: db.HeraKindWorker, Archived: true},
+	}}
+	app.heraPage.Rail().SetModel(hera.Model{Active: []hera.OrchView{parent, child}})
+
+	// Sub-coordinator selection: cursor on the bridging worker row, carrying the
+	// child orch id. Scope = child subtree only → 1 hidden worker ("cw"), NOT 2.
+	subSel := hera.Selection{
+		Role:              &hera.RoleView{RoleID: 11, OrchID: 1, Name: "w", Kind: db.HeraKindWorker, Live: true, TaskID: "tc-c", BridgeTaskID: "tc-c"},
+		Orch:              &parent,
+		BridgeChildOrchID: 2,
+	}
+	app.heraClearArchive(subSel)
+	testutil.Equal(t, app.mode, modeHeraConfirm)
+	testutil.Contains(t, app.heraConfirmModal.Message(), "Nukes 1 hidden agent(s)")
+	// Title names the SELECTED sub-coordinator (child "C"), not the parent "P".
+	testutil.Contains(t, app.heraConfirmModal.Title(), "C's archive")
+	app.closeHeraConfirm()
+
+	// Top-level coordinator selection (no BridgeChildOrchID): scope = parent's
+	// whole subtree → both hidden workers ("pw" + "cw") → 2.
+	topSel := hera.Selection{Orch: &parent}
+	app.heraClearArchive(topSel)
+	testutil.Equal(t, app.mode, modeHeraConfirm)
+	testutil.Contains(t, app.heraConfirmModal.Message(), "Nukes 2 hidden agent(s)")
+	testutil.Contains(t, app.heraConfirmModal.Title(), "P's archive")
+	app.closeHeraConfirm()
+}
+
 // TestHeraActions_NewTaskOverrideInvokesOnDone drives the shared new-task modal
 // through submit and asserts the Hera override (newTaskOnDone) runs instead of
 // the default create path, the form returns to the Hera tab, and state is reset.
