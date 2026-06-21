@@ -3,13 +3,35 @@ package daemon
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/uxlog"
 )
+
+// initTestUxlog redirects uxlog to a temp file and returns a reader for the log
+// contents. Cleanup (which resets the global sink) is registered automatically.
+// Mirrors internal/gitutil/pr_test.go:initTestUxlog.
+func initTestUxlog(t *testing.T) func() string {
+	t.Helper()
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	if err := uxlog.Init(logPath); err != nil {
+		t.Fatalf("uxlog.Init: %v", err)
+	}
+	t.Cleanup(uxlog.Close)
+	return func() string {
+		b, err := os.ReadFile(logPath)
+		if err != nil {
+			t.Fatalf("read log: %v", err)
+		}
+		return string(b)
+	}
+}
 
 // Stage 1 (Prove-It) tests for the BATCHED pollPRStatesOnce path. They drive
 // the daemon through new seams that do not exist yet:
@@ -244,4 +266,53 @@ func TestPollPRBatch_ChunksOversizedGroup(t *testing.T) {
 	if maxBranchesPerCall > d.prAliasCap {
 		t.Fatalf("a chunk had %d branches, exceeding cap %d", maxBranchesPerCall, d.prAliasCap)
 	}
+}
+
+// Scenario: Logs per-cycle poll summary.
+//
+// WHEN a poll cycle completes THEN the system emits a single
+//
+//	[pr] poll: eligible=… skipped=… written=… errored=…
+//
+// uxlog summary line with counts that reflect the cycle. The cycle mixes a
+// terminal-cached task (skipped), two tasks whose repo group fetches cleanly
+// (written), and one task whose repo group errors (errored, cache preserved):
+//
+//	eligible=3 skipped=1 written=2 errored=1
+func TestPollPRBatch_LogsPerCycleSummary(t *testing.T) {
+	readLog := initTestUxlog(t)
+	d, _ := testDaemon(t)
+
+	// Terminal task → excluded from the eligible set → counted as skipped.
+	seedTask(t, d.db, "merged", "argus/merged", false)
+	testutil.NoError(t, d.db.SetMetaBatch("merged", "pr", map[string]string{
+		"state": model.PRMergedClosed.String(),
+		"url":   "https://github.com/drn/argus/pull/9",
+	}))
+
+	// Two eligible tasks on drn/argus → group resolves cleanly → both written.
+	seedTask(t, d.db, "a", "argus/a", false)
+	seedTask(t, d.db, "b", "argus/b", false)
+	seedURL(t, d, "a", "https://github.com/drn/argus/pull/1")
+	seedURL(t, d, "b", "https://github.com/drn/argus/pull/2")
+
+	// One eligible task on a repo whose group fetch errors → counted as errored.
+	seedTask(t, d.db, "c", "feat/c", false)
+	seedURL(t, d, "c", "https://github.com/anutron/gmail-mcp/pull/3")
+
+	d.prBatchFetch = func(_ context.Context, repo string, branches map[string]string) (map[string]gitutil.PRResult, error) {
+		if repo == "anutron/gmail-mcp" {
+			return nil, errors.New("network timeout")
+		}
+		out := map[string]gitutil.PRResult{}
+		for branch := range branches {
+			out[branch] = gitutil.PRResult{State: model.PRApproved, URL: "u"}
+		}
+		return out, nil
+	}
+	d.prResolveRepo = func(_ context.Context, _ string) (string, bool) { return "", false }
+
+	d.pollPRStatesOnce(context.Background())
+
+	testutil.Contains(t, readLog(), "[pr] poll: eligible=3 skipped=1 written=2 errored=1")
 }
