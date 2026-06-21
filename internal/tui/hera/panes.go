@@ -315,6 +315,12 @@ func (p *HeraPage) forwardKey(tp *terminal.TerminalPane, ev *tcell.EventKey) {
 		}
 	}
 	if b := keyenc.Encode(ev); len(b) > 0 {
+		// BUG-008: real input snaps the pane to the live tail. If the user
+		// scrolled up to browse history, the keystroke echoes at the live
+		// bottom (off-screen) unless we reset scroll first; PgUp/PgDn already
+		// returned above, so only genuine input reaches here. Output-driven
+		// growth is unaffected (anchor-lock still pins scrolled-up content).
+		tp.ResetScroll()
 		if _, err := sess.WriteInput(b); err != nil {
 			uxlog.Log("[hera-view] pane write failed: %v", err)
 		}

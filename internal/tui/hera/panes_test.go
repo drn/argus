@@ -654,6 +654,34 @@ func TestPanes_ForwardKeyToFocusedSession(t *testing.T) {
 	p.forwardKey(p.AgentPane(), tcell.NewEventKey(tcell.KeyPgUp, 0, tcell.ModNone))
 }
 
+// TestPanes_ForwardKeySnapsScrollToBottom is the BUG-008 regression: typing into a
+// scrolled-up Hera pane must snap the view back to the live tail (scrollOffset=0)
+// so the input echoes on screen, while a scrollback-navigation key (PgUp/PgDn) must
+// NOT snap.
+func TestPanes_ForwardKeySnapsScrollToBottom(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	sess := &fakeSession{id: "t-wkr", alive: true}
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-wkr": sess}))
+	p.Refresh()
+	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
+
+	pane := p.AgentPane()
+
+	// Scroll up into history, then type — the keystroke must snap to bottom.
+	pane.ScrollUp(10)
+	testutil.Equal(t, pane.ScrollOffset() > 0, true)
+	p.forwardKey(pane, tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone))
+	testutil.Equal(t, pane.ScrollOffset(), 0)
+	testutil.Equal(t, string(sess.wrote), "x")
+
+	// A scrollback key (PgUp) must NOT snap — it scrolls up.
+	p.forwardKey(pane, tcell.NewEventKey(tcell.KeyPgUp, 0, tcell.ModNone))
+	testutil.Equal(t, pane.ScrollOffset() > 0, true)
+}
+
 // TestPanes_NoSyncOnDraw pins the CLAUDE.md UX-rendering rule: drawing the Hera
 // view (rail + live coord pane + agent pane + details) never calls screen.Sync.
 func TestPanes_NoSyncOnDraw(t *testing.T) {
