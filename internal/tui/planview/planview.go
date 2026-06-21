@@ -1550,7 +1550,7 @@ func (w *Widget) drawStages(screen tcell.Screen, inner widget.InnerRect) {
 
 	blocks := make([]stageBlock, len(w.stages))
 	for s := range w.stages {
-		blocks[s] = w.buildStageBlock(s)
+		blocks[s] = w.buildStageBlock(s, inner.W)
 	}
 
 	// Total block height: each stage's height plus a 1-row connector between.
@@ -1712,7 +1712,9 @@ func (w *Widget) scrollOffsetFor(blocks []stageBlock, regionH int) int {
 // (lone nodes as rounded boxes, collapsed groups as dashed boxes, fanned groups
 // as a dashed enclosure wrapping the member node-boxes). The block's width is the
 // sum of sibling widths + boxGap between them; its height is the tallest sibling.
-func (w *Widget) buildStageBlock(s int) stageBlock {
+// availW is the diagram's inner width, used so a fanned group wraps its member
+// boxes onto multiple rows to fit the pane instead of overflowing (BUG-011).
+func (w *Widget) buildStageBlock(s int, availW int) stageBlock {
 	type sib struct {
 		width, height int
 		draw          func(screen tcell.Screen, x, y int, clip clipRect)
@@ -1727,7 +1729,7 @@ func (w *Widget) buildStageBlock(s int) stageBlock {
 		onSlot := isCursorStage && w.cursor.Slot == slotIdx
 		switch {
 		case sl.group != nil && w.Fanned(s, slotIdx):
-			bw, bh, draw, memRelX, memW := w.layoutFannedGroup(s, slotIdx, sl.group)
+			bw, bh, draw, memRelX, memW := w.layoutFannedGroup(s, slotIdx, sl.group, availW)
 			sb := sib{width: bw, height: bh, draw: draw}
 			if onSlot {
 				if memW > 0 { // a member is selected inside the fanned group
@@ -1860,22 +1862,27 @@ func (w *Widget) layoutDashedBox(label string, sub []countSeg, topLabel string, 
 }
 
 // layoutFannedGroup lays a fanned group out as a SOLID rounded enclosure wrapping
-// the member node-boxes laid out horizontally inside (BUG-005, matching the
-// design). The enclosure carries the group's role label VERTICALLY down its left
-// inner edge (one rune per row, dim) and a ▲ collapse affordance at the top-right;
-// each member that feeds downstream (g.FeedingMembers) gets a ↘ on its box. The
-// cursor's member box gets the selection fill; the enclosure itself fills only
-// when the cursor rests on the group slot with no member selected.
+// the member node-boxes inside (BUG-005, matching the design). The member boxes
+// are packed left-to-right and WRAPPED onto multiple rows so the enclosure fits
+// the available diagram width (availW) instead of overflowing in one row
+// (BUG-011): a new row starts whenever the next box would exceed the inner-width
+// budget, and a box wider than the budget on its own still occupies its own row
+// (the BUG-010 horizontal viewport then scrolls to it). The enclosure carries the
+// group's role label VERTICALLY down its left inner edge (one rune per row, dim)
+// and a ▲ collapse affordance at the top-right; each member that feeds downstream
+// (g.FeedingMembers) gets a ↘ on its box. The cursor's member box gets the
+// selection (double border); the enclosure itself is selected only when the
+// cursor rests on the group slot with no member selected.
 // The two trailing return values are the selected member's box x-offset
 // (relative to the enclosure's left edge) and width, for the horizontal viewport
 // (BUG-010); selMemW is 0 unless the cursor sits on a member of THIS group.
-func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tcell.Screen, int, int, clipRect), int, int) {
+func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group, availW int) (int, int, func(tcell.Screen, int, int, clipRect), int, int) {
 	onSlot := w.cursor.Stage == s && w.cursor.Slot == slotIdx
 	type mbox struct {
 		width, height int
 		draw          func(tcell.Screen, int, int, clipRect)
 	}
-	var members []mbox
+	members := make([]mbox, 0, len(g.Members))
 	for memberIdx, id := range g.Members {
 		glyph, style := w.nodeGlyph(id)
 		content := string(glyph) + " " + w.LabelOf(id)
@@ -1885,16 +1892,6 @@ func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tce
 		bw, bh, d := w.layoutNodeBox(content, style, onSlot && w.cursor.Member == memberIdx)
 		members = append(members, mbox{bw, bh, d})
 	}
-	innerW, innerH := 0, 0
-	for i, m := range members {
-		innerW += m.width
-		if i > 0 {
-			innerW += boxGap
-		}
-		if m.height > innerH {
-			innerH = m.height
-		}
-	}
 	// Reserve one extra inner column on the left for the vertical role label when
 	// the group has a common token (else the label column is omitted).
 	vlabel := []rune(w.commonRoleToken(g.Members))
@@ -1902,22 +1899,77 @@ func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tce
 	if len(vlabel) > 0 {
 		labelCol = 1
 	}
+	// Inner-width budget for the member rows: the available diagram width minus the
+	// label column, the enclosure's horizontal padding, and its two borders. At
+	// least 1 so a degenerate narrow pane still packs one (overflowing) box per row.
+	budget := availW - labelCol - 2*groupPad - 2
+	if budget < 1 {
+		budget = 1
+	}
+	// Pack member indices into rows: keep adding to the current row until the next
+	// box would exceed the budget, then start a new row. A row always holds at
+	// least one box (even if it alone exceeds the budget).
+	var rows [][]int
+	var cur []int
+	curW := 0
+	for i, m := range members {
+		add := m.width
+		if len(cur) > 0 {
+			add += boxGap
+		}
+		if len(cur) > 0 && curW+add > budget {
+			rows = append(rows, cur)
+			cur = nil
+			curW = 0
+			add = m.width
+		}
+		cur = append(cur, i)
+		curW += add
+	}
+	if len(cur) > 0 {
+		rows = append(rows, cur)
+	}
+	// Row geometry: each row's width is the sum of its members + gaps; its height
+	// the tallest member. innerW = widest row, innerH = sum of row heights.
+	rowHeights := make([]int, len(rows))
+	innerW, innerH := 0, 0
+	for r, row := range rows {
+		rw, rh := 0, 0
+		for j, mi := range row {
+			if j > 0 {
+				rw += boxGap
+			}
+			rw += members[mi].width
+			if members[mi].height > rh {
+				rh = members[mi].height
+			}
+		}
+		rowHeights[r] = rh
+		if rw > innerW {
+			innerW = rw
+		}
+		innerH += rh
+	}
 	boxW := labelCol + innerW + 2*groupPad + 2
 	boxH := innerH + 2 // rounded top + bottom edges
 	enclosureSel := onSlot && w.cursor.Member < 0
-	// Selected member geometry (relative to the enclosure box left edge), mirroring
-	// the member-draw loop's x math below.
-	selMemRelX, selMemW := 0, 0
 	memBase := 1 + labelCol + groupPad
-	mcx := memBase
-	for i, m := range members {
-		if i > 0 {
-			mcx += boxGap
+	// Selected member geometry (relative to the enclosure box left edge), mirroring
+	// the member-draw loop's x math below. Only the X axis is threaded to the
+	// horizontal viewport (BUG-010); wrapping keeps the group within the width in
+	// the common case, so the viewport only fires for a lone over-wide member box.
+	selMemRelX, selMemW := 0, 0
+	for _, row := range rows {
+		mcx := memBase
+		for j, mi := range row {
+			if j > 0 {
+				mcx += boxGap
+			}
+			if onSlot && w.cursor.Member == mi {
+				selMemRelX, selMemW = mcx, members[mi].width
+			}
+			mcx += members[mi].width
 		}
-		if onSlot && w.cursor.Member == i {
-			selMemRelX, selMemW = mcx, m.width
-		}
-		mcx += m.width
 	}
 	border := w.enclosureBorderStyle(enclosureSel)
 	labelStyle := theme.StyleDimmed
@@ -1939,13 +1991,19 @@ func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tce
 			}
 			setIf(screen, clip, x+1, ry, r, labelStyle)
 		}
-		cx := x + 1 + labelCol + groupPad
-		for i, m := range members {
-			if i > 0 {
-				cx += boxGap
+		// Member boxes, row by row. Each row's top is the running sum of prior row
+		// heights below the enclosure's top border.
+		ry := y + 1
+		for r, row := range rows {
+			cx := x + memBase
+			for j, mi := range row {
+				if j > 0 {
+					cx += boxGap
+				}
+				members[mi].draw(screen, cx, ry, clip)
+				cx += members[mi].width
 			}
-			m.draw(screen, cx, y+1, clip)
-			cx += m.width
+			ry += rowHeights[r]
 		}
 	}
 	return boxW, boxH, draw, selMemRelX, selMemW
