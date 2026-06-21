@@ -94,7 +94,7 @@ On fan-out, every member with an out-of-group edge SHALL carry a `↘` on its bo
 
 ### Requirement: Four-way plan navigation with group fan-out (area 6)
 
-The plan view SHALL support a cursor over `(stage, slot, member)`: `↑`/`↓` change the stage and collapse any fanned-out group on the way; `←`/`→` move within a stage between slots (nodes and collapsed groups); `Enter`/`Space` on a COLLAPSED group fan it out. When the cursor is on an interior MEMBER of a fanned-out group, `Enter`/`Space` SHALL navigate to that member — firing the same leaf action a plain node fires (open/jump, or drill in when the member is a sub-coordinator) — and SHALL NOT collapse the group; collapsing a fanned group is `Esc`'s job (see the Esc back-out requirement). `Enter`/`Space` on a fanned enclosure with no member under the cursor SHALL collapse it. Inside a fanned-out group, `←`/`→` walk between members; stepping off either edge exits and collapses the group and moves to the adjacent slot (or clamps at the stage edge).
+The plan view SHALL support a cursor over `(stage, slot, member)`: `↑`/`↓` change the stage and collapse any fanned-out group on the way; `←`/`→` move within a stage between slots (nodes and collapsed groups). `Space` SHALL be a PURE fan-out/collapse toggle on a group slot — fanning out a collapsed group and collapsing a fanned one regardless of which member the cursor is on — and SHALL NEVER navigate (on a lone-node slot it is a no-op; opening a leaf is `Enter`'s job). `Enter` on a COLLAPSED group SHALL fan it out; on an interior MEMBER of a fanned-out group, `Enter` SHALL navigate to that member — firing the same leaf action a plain node fires (open/jump, or drill in when the member is a sub-coordinator) — and SHALL NOT collapse the group (collapsing is `Space`'s or `Esc`'s job). `Enter` on a fanned enclosure with no member under the cursor SHALL collapse it. Inside a fanned-out group, `←`/`→` walk between members; stepping off either edge exits and collapses the group and moves to the adjacent slot (or clamps at the stage edge).
 
 #### Scenario: Up/down changes stage and collapses
 
@@ -110,6 +110,11 @@ The plan view SHALL support a cursor over `(stage, slot, member)`: `↑`/`↓` c
 
 - **WHEN** a group is fanned out, the cursor is on one of its members, and the user presses `Enter`
 - **THEN** the system fires that member's leaf action (jump to / open the member, or drill in when it is a sub-coordinator) and the group stays fanned out — it does NOT collapse
+
+#### Scenario: Space on a fanned-out group member collapses and never navigates
+
+- **WHEN** a group is fanned out, the cursor is on one of its members, and the user presses `Space`
+- **THEN** the group collapses and no leaf action fires — `Space` is a pure toggle, not a navigation
 
 #### Scenario: Stepping off a group edge exits and collapses
 

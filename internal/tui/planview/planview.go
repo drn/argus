@@ -1034,33 +1034,47 @@ func (w *Widget) shiftSlot(dSlot int) {
 	w.cursor.Slot = ns
 }
 
-// ActivateCursor performs the Enter/Space action at the cursor. Disjoint by the
+// ToggleCursorFan is the Space action (BUG-013 follow-up): a PURE fan-out /
+// collapse toggle on the group slot under the cursor — it never navigates. On a
+// collapsed group it fans out (cursor lands on the first member); on a fanned
+// group it collapses (regardless of which member the cursor is on), Member → -1.
+// On a lone-node slot it is a no-op — opening a leaf is Enter's job, not Space's.
+func (w *Widget) ToggleCursorFan() {
+	sl, ok := w.slotAt(w.cursor.Stage, w.cursor.Slot)
+	if !ok || sl.group == nil {
+		return
+	}
+	key := [2]int{w.cursor.Stage, w.cursor.Slot}
+	if w.fanned[key] {
+		delete(w.fanned, key)
+		w.cursor.Member = -1
+	} else {
+		w.fanned[key] = true
+		w.cursor.Member = 0 // land on the first member
+	}
+	w.maybeNotifyBranchChange()
+}
+
+// ActivateCursor performs the Enter action at the cursor. Disjoint by the
 // cursor's target type (D6): on a COLLAPSED group it fans out; on an interior
 // MEMBER of a fanned group it navigates to that member (BUG-013), exactly like a
-// plain leaf — collapse is Esc's job (EscBack), never Enter/Space; Stage 6 adds
-// the sub-coordinator drill-in and plain-leaf OnEnter branches.
+// plain leaf — collapse is Esc's job (EscBack) and Space's (ToggleCursorFan),
+// never Enter; Stage 6 adds the sub-coordinator drill-in and plain-leaf OnEnter
+// branches.
 func (w *Widget) ActivateCursor() {
 	sl, ok := w.slotAt(w.cursor.Stage, w.cursor.Slot)
 	if !ok {
 		return
 	}
 	// Group slot (Stage 4). A collapsed group fans out; a fanned enclosure with no
-	// member selected toggles back collapsed. But a fanned group with the cursor on
-	// a MEMBER falls through to the node-target dispatch below so Enter navigates to
-	// that member instead of collapsing the group (BUG-013) — Esc is the collapse.
+	// member selected toggles back collapsed (both delegated to the shared fan
+	// toggle). But a fanned group with the cursor on a MEMBER falls through to the
+	// node-target dispatch below so Enter navigates to that member instead of
+	// collapsing the group (BUG-013) — collapse is Esc / Space.
 	if sl.group != nil {
 		key := [2]int{w.cursor.Stage, w.cursor.Slot}
-		switch {
-		case !w.fanned[key]:
-			w.fanned[key] = true
-			w.cursor.Member = 0 // land on the first member
-			w.maybeNotifyBranchChange()
-			return
-		case w.cursor.Member < 0:
-			// Fanned enclosure, no member under the cursor: toggle collapses it.
-			delete(w.fanned, key)
-			w.cursor.Member = -1
-			w.maybeNotifyBranchChange()
+		if !w.fanned[key] || w.cursor.Member < 0 {
+			w.ToggleCursorFan()
 			return
 		}
 		// Fanned group, cursor on a member: fall through to navigate to it.
@@ -1972,9 +1986,10 @@ func (w *Widget) groupSubLine(g *Group) string {
 	return counts
 }
 
-// InputHandler routes the 4-way navigation (↑↓ stage, ←→ slot/member) and
-// Enter/Space (fan-out/collapse on a group; Stage 6 adds drill-in/jump and Esc
-// drill-out). Unknown keys fall through to the default tview.Box no-op.
+// InputHandler routes the 4-way navigation (↑↓ stage, ←→ slot/member), Enter
+// (fan a collapsed group / navigate a member or leaf / drill-in), Space (pure
+// fan-out/collapse toggle, never navigate — BUG-013 follow-up), and Esc
+// (collapse / drill-out). Unknown keys fall through to the default tview.Box no-op.
 func (w *Widget) InputHandler() func(*tcell.EventKey, func(tview.Primitive)) {
 	return w.WrapInputHandler(func(event *tcell.EventKey, _ func(tview.Primitive)) {
 		switch event.Key() {
@@ -1993,7 +2008,7 @@ func (w *Widget) InputHandler() func(*tcell.EventKey, func(tview.Primitive)) {
 		case tcell.KeyRune:
 			switch event.Rune() {
 			case ' ':
-				w.ActivateCursor()
+				w.ToggleCursorFan()
 			case 'k':
 				w.MoveStage(-1)
 			case 'j':

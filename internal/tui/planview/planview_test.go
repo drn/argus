@@ -348,6 +348,43 @@ func TestNav_EnterOnMemberNavigatesNotCollapse(t *testing.T) {
 	})
 }
 
+// TestNav_SpaceTogglesNeverNavigates pins the BUG-013 follow-up: Space is a PURE
+// fan-out/collapse toggle and NEVER navigates. On a fanned member it collapses
+// the group (does not fire OnEnter); on a lone leaf it is a no-op (Enter opens
+// leaves, not Space). A collapsed group still fans out.
+func TestNav_SpaceTogglesNeverNavigates(t *testing.T) {
+	noFocus := func(tview.Primitive) {}
+	space := func(w *Widget) {
+		w.InputHandler()(tcell.NewEventKey(tcell.KeyRune, ' ', tcell.ModNone), noFocus)
+	}
+
+	t.Run("Space on a fanned member collapses, does not fire OnEnter", func(t *testing.T) {
+		w := navGraph()
+		var entered string
+		w.OnEnter = func(id string) { entered = id }
+		w.MoveStage(1) // onto the [1a–1c] group
+		space(w)       // fan out → cursor on member 0
+		testutil.Equal(t, w.Fanned(1, 0), true)
+		w.MoveSlot(1) // walk to member 1 (1b)
+		testutil.Equal(t, w.CurrentNodeID(), "1b")
+		space(w) // Space collapses — never navigates
+		testutil.Equal(t, w.Fanned(1, 0), false)
+		testutil.Equal(t, w.CursorPos().Member, -1)
+		testutil.Equal(t, entered, "") // OnEnter must NOT have fired
+	})
+
+	t.Run("Space on a lone leaf is a no-op (does not fire OnEnter)", func(t *testing.T) {
+		w := New()
+		var entered string
+		w.OnEnter = func(id string) { entered = id }
+		w.SetData([]Node{liveNode("w1", StateWorking)}, nil)
+		w.SetFocused(true)
+		testutil.Equal(t, w.CurrentNodeID(), "w1")
+		space(w)
+		testutil.Equal(t, entered, "") // Space never opens a leaf — that's Enter
+	})
+}
+
 // TestNav_MemberWalkInsideGroup mirrors "walk members on ←/→ inside a fanned-out
 // group".
 func TestNav_MemberWalkInsideGroup(t *testing.T) {

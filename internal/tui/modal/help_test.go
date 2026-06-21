@@ -56,8 +56,8 @@ func TestHelpModal_Draw(t *testing.T) {
 	// be discoverable — fail the build if any binding is silently dropped.
 	testutil.Contains(t, body, "Hera View (plan DAG)")
 	testutil.Contains(t, body, "move between plan stages")
-	testutil.Contains(t, body, "fan out a parallel group")
-	testutil.Contains(t, body, "open member/leaf, drill sub-coord, revive")
+	testutil.Contains(t, body, "fan out / collapse a group (toggle, no open)")
+	testutil.Contains(t, body, "fan group; open member/leaf, drill sub-coord")
 	testutil.Contains(t, body, "collapse fanned group / drill out to parent plan")
 	testutil.Contains(t, body, "File Panel")
 	testutil.Contains(t, body, "Settings")
