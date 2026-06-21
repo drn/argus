@@ -30,7 +30,7 @@ func TestSubCoord_MaterializeCreatesDistinctTask(t *testing.T) {
 	d := createTestDB(t, repo)
 	fr := &fakeRunner{sessionPID: 7777}
 
-	parentOrch, err := d.CreateHeraOrchestrator("parent-orch")
+	parentOrch, err := d.CreateHeraOrchestrator("parent-orch", "")
 	testutil.NoError(t, err)
 
 	// Coordinator task (the parent agent).
@@ -79,7 +79,7 @@ func TestSubCoord_MaterializeWritesBothBindings(t *testing.T) {
 	d := createTestDB(t, repo)
 	fr := &fakeRunner{sessionPID: 8888}
 
-	parentOrch, err := d.CreateHeraOrchestrator("parent-orch")
+	parentOrch, err := d.CreateHeraOrchestrator("parent-orch", "")
 	testutil.NoError(t, err)
 
 	planned, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
@@ -127,7 +127,7 @@ func TestSubCoord_MaterializeNestsViaMultiBinding(t *testing.T) {
 	d := createTestDB(t, repo)
 	fr := &fakeRunner{sessionPID: 9999}
 
-	parentOrch, err := d.CreateHeraOrchestrator("parent-orch")
+	parentOrch, err := d.CreateHeraOrchestrator("parent-orch", "")
 	testutil.NoError(t, err)
 
 	planned, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
@@ -168,7 +168,7 @@ func TestSubCoord_MaterializeChildOrchNameDerived(t *testing.T) {
 	d := createTestDB(t, repo)
 	fr := &fakeRunner{sessionPID: 1111}
 
-	parentOrch, err := d.CreateHeraOrchestrator("parent-orch")
+	parentOrch, err := d.CreateHeraOrchestrator("parent-orch", "")
 	testutil.NoError(t, err)
 
 	planned, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
@@ -203,7 +203,7 @@ func TestSubCoord_MaterializeDeCollidesChildOrchName(t *testing.T) {
 	d := createTestDB(t, repo)
 	fr := &fakeRunner{sessionPID: 2222}
 
-	parentOrch, err := d.CreateHeraOrchestrator("parent-orch")
+	parentOrch, err := d.CreateHeraOrchestrator("parent-orch", "")
 	testutil.NoError(t, err)
 
 	p1, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
@@ -249,7 +249,7 @@ func TestSubCoord_MaterializePromptContainsCoordOrientationAndGoal(t *testing.T)
 	d := createTestDB(t, repo)
 	fr := &fakeRunner{sessionPID: 4444}
 
-	parentOrch, err := d.CreateHeraOrchestrator("parent-orch")
+	parentOrch, err := d.CreateHeraOrchestrator("parent-orch", "")
 	testutil.NoError(t, err)
 
 	planned, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
@@ -299,7 +299,7 @@ func TestSubCoord_MaterializeStartFailureUnwindsBothBindingsLeavesPlannedRole(t 
 	d := createTestDB(t, repo)
 	fr := &fakeRunner{startErr: errors.New("boom")}
 
-	parentOrch, err := d.CreateHeraOrchestrator("parent-orch")
+	parentOrch, err := d.CreateHeraOrchestrator("parent-orch", "")
 	testutil.NoError(t, err)
 
 	planned, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
