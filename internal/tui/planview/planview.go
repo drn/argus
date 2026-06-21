@@ -45,6 +45,11 @@ const (
 	StateFailed
 	// StatePending is a live-but-not-yet-progressing node.
 	StatePending
+	// StateCancelled is a planned node that was explicitly cancelled by the
+	// coordinator (grey ✕). It renders distinctly from StateFailed (red ✕) —
+	// same glyph, different colour. Cancelled nodes remain visible in the plan
+	// DAG but are excluded from materialization (make-hera-plan-living B3).
+	StateCancelled
 )
 
 // Glyph returns the one-rune state indicator drawn inside a chip.
@@ -57,6 +62,8 @@ func (s State) Glyph() rune {
 	case StateInReview:
 		return '◔'
 	case StateFailed:
+		return '✕'
+	case StateCancelled:
 		return '✕'
 	case StatePending:
 		return '·'
@@ -77,6 +84,8 @@ func (s State) Label() string {
 		return "in review"
 	case StateFailed:
 		return "failed"
+	case StateCancelled:
+		return "cancelled"
 	case StatePending:
 		return "pending"
 	default: // StatePlanned
@@ -97,6 +106,8 @@ func (s State) style() tcell.Style {
 		return base.Foreground(theme.ColorInReview)
 	case StateFailed:
 		return base.Foreground(theme.ColorError).Bold(true)
+	case StateCancelled:
+		return base.Foreground(theme.ColorDimmed)
 	case StatePending:
 		return base.Foreground(theme.ColorPending)
 	default: // StatePlanned — violet
@@ -2072,6 +2083,21 @@ func put(screen tcell.Screen, clip clipRect, x, y int, s string, style tcell.Sty
 	}
 }
 
+// groupCounts renders the aggregate per-state counts for a collapsed group box,
+// e.g. "3 ✓ · 2 ⟳ · 1 ○". States with a zero count are omitted; the order
+// follows the State enum for stability. Retained as a flat-string helper (and
+// for TestGroupCounts_IncludesCancelled); the live render path uses
+// groupCountSegs for per-segment colour + spinner animation (BUG-011).
+func groupCounts(g *Group) string {
+	var parts []string
+	for _, s := range []State{StateDone, StateInReview, StateWorking, StatePending, StateFailed, StateCancelled, StatePlanned} {
+		if c := g.Counts[s]; c > 0 {
+			parts = append(parts, fmt.Sprintf("%d %c", c, s.Glyph()))
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
 // countSeg is one styled run of the collapsed-group count line: either a
 // "<count> <glyph>" segment in its per-state colour or a dim " · " separator
 // (BUG-011). Painting per-segment (rather than a single flat string) is what
@@ -2086,9 +2112,9 @@ type countSeg struct {
 // the compact State.Glyph() set (◔/⟳), it synthesises a widget.RoleStatusInputs
 // from the State and calls the SHARED classifier widget.RoleStatusIcon — the same
 // fn the rail's statusIcon and the node's planNodeIcon use — so the count can
-// never drift from the rail. The two plan-only overlays the rail has no concept
-// of (planned ○ / failed ✕) fall back to the State glyph. The working segment
-// animates via the live spinner frame.
+// never drift from the rail. The three plan-only overlays the rail has no concept
+// of (planned ○ / failed ✕ / cancelled ✕) fall back to the State glyph. The
+// working segment animates via the live spinner frame.
 //
 // Only the GLYPH comes from the classifier; the COLOUR is the caller's
 // State.style() (the per-state node-border colour). The classifier's
@@ -2096,8 +2122,8 @@ type countSeg struct {
 // in_review cyan, so glyph and colour are sourced separately on purpose.
 func countSegGlyph(s State, frame int) rune {
 	switch s {
-	case StatePlanned, StateFailed:
-		return s.Glyph() // ○ / ✕ overlays — the rail has neither
+	case StatePlanned, StateFailed, StateCancelled:
+		return s.Glyph() // ○ / ✕ / ✕ overlays — the rail has neither
 	}
 	var in widget.RoleStatusInputs
 	switch s {
@@ -2123,7 +2149,7 @@ func countSegGlyph(s State, frame int) rune {
 // the frame from w.animFrame each Draw (layout runs per Draw) so it animates.
 func (w *Widget) groupCountSegs(g *Group) []countSeg {
 	var segs []countSeg
-	for _, s := range []State{StateDone, StateInReview, StateWorking, StatePending, StateFailed, StatePlanned} {
+	for _, s := range []State{StateDone, StateInReview, StateWorking, StatePending, StateFailed, StateCancelled, StatePlanned} {
 		c := g.Counts[s]
 		if c == 0 {
 			continue

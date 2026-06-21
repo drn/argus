@@ -426,6 +426,9 @@ If the recipient has a live agent session the daemon also writes a single notifi
 | `hera_plan_node`        | Author a single planned node under the caller's orchestrator (coordinator-only). Params: `name`, `kind` (`worker`\|`subcoord`, default `worker`), `prompt` (worker nodes) or `goal` (subcoord nodes — required; the goal handed to the spawned coordinator). A `subcoord` node materializes as a distinct coordinator agent with its own task, worktree, and child orchestrator. |
 | `hera_block`            | Add a blocking edge: `blocked` waits until `blocker` reaches role-status `done`. Coordinator-only; both roles must be in the same orchestrator. No cycles. |
 | `hera_plan`             | Author an entire plan graph in one call: a `nodes` array (each with `name`, `kind`, `prompt`/`goal`, optional `project`) and an `edges` array (`blocked`→`blocker` pairs). Coordinator-only; atomically creates all nodes then all edges. Supports mixed `kind` values in the same graph. |
+| `hera_plan_node_update` | Edit a planned node's `prompt` and/or `project` before it materializes. Rejected after materialization.                                          |
+| `hera_unblock`          | Remove a blocking edge between two roles. Idempotent. Re-pointing an edge is `hera_unblock` + `hera_block`.                                      |
+| `hera_plan_node_cancel` | Cancel a planned node: stamps `cancelled_at`, excludes it from materialization, unblocks dependents. Kept visible in the plan DAG as grey ✕.     |
 
 **Schedule Management:**
 

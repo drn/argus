@@ -112,11 +112,16 @@ func planNodeID(r *RoleView) string {
 	return fmt.Sprintf("plan:%d", r.RoleID)
 }
 
-// planNodeState maps a role to its render state (D7). A planned (never-bound)
-// role is StatePlanned (violet ○). A live/finished role colours from its bound
-// argus task status + result, with the {"failed":true} result winning over the
-// workflow status (red ✕) — reusing coordTaskFailed (details.go), not a third copy.
+// planNodeState maps a role to its render state (D7). Cancelled wins over all
+// other discriminators — a cancelled planned node renders grey ✕ (StateCancelled)
+// regardless of its other fields. A planned (never-bound) role is StatePlanned
+// (violet ○). A live/finished role colours from its bound argus task status +
+// result, with the {"failed":true} result winning over the workflow status (red ✕)
+// — reusing coordTaskFailed (details.go), not a third copy.
 func planNodeState(r *RoleView) planview.State {
+	if r.Cancelled {
+		return planview.StateCancelled
+	}
 	if r.Planned {
 		return planview.StatePlanned
 	}
@@ -155,8 +160,8 @@ func planNodeState(r *RoleView) planview.State {
 // the spinner actually won, with zero duplication of the classifier's precedence
 // (and it tracks the active spinner style, which both sides read). See BUG-012.
 func planNodeIcon(r *RoleView, state planview.State) *planview.NodeIcon {
-	if state == planview.StatePlanned || state == planview.StateFailed {
-		return nil // ○ / ✕ overlays come from State (the rail has neither)
+	if state == planview.StatePlanned || state == planview.StateFailed || state == planview.StateCancelled {
+		return nil // ○ / ✕ / cancelled ✕ overlays come from State (the rail has no concept of these)
 	}
 	in := roleStatusInputs(r)
 	glyph, style := widget.RoleStatusIcon(in, false, 0)
