@@ -27,7 +27,9 @@ type gaterFixture struct {
 }
 
 type ping struct {
+	from  int64
 	coord int64
+	body  string
 	tldr  string
 }
 
@@ -62,7 +64,7 @@ func newGaterFixture(t *testing.T) *gaterFixture {
 			if f.pingFail {
 				return errors.New("ping boom")
 			}
-			f.pings = append(f.pings, ping{coord: coordRoleID, tldr: tldr})
+			f.pings = append(f.pings, ping{from: fromRoleID, coord: coordRoleID, body: body, tldr: tldr})
 			return nil
 		},
 	)
@@ -83,6 +85,12 @@ func (f *gaterFixture) pingCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.pings)
+}
+
+func (f *gaterFixture) lastPing() ping {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pings[len(f.pings)-1]
 }
 
 // seedCoord creates an orchestrator + a coordinator role+binding (so a coord
@@ -551,6 +559,156 @@ func TestGater_BlockerHavingNodeBaseUnchanged(t *testing.T) {
 	testutil.Equal(t, len(mat), 1)
 	// Resolves from the blocker's branch, NOT the explicit/coordinator root base.
 	testutil.Equal(t, f.matBranch[node.ID], "argus/1a")
+}
+
+// TestGater_ExplicitFailedBlockerHoldsWithoutSessionEnd covers the D2 gating
+// half: a blocker that self-declares role-status `failed` while its session is
+// STILL LIVE (task in_progress, binding live) holds its dependent immediately —
+// the gater does not wait for the session to end. This exercises the explicit
+// failed branch in blockerOutcome, which takes precedence over the session-death
+// inference path.
+func TestGater_ExplicitFailedBlockerHoldsWithoutSessionEnd(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	// Live session (in_progress, live binding) but the worker self-reports failed.
+	failed := f.boundWorker(t, orch, "1a", model.StatusInProgress, db.HeraStatusFailed)
+	node := f.planned(t, orch, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, failed.ID))
+
+	f.w.Tick()
+
+	testutil.Equal(t, len(f.materialized()), 0) // held, not materialized
+	testutil.Equal(t, f.pingCount(), 1)
+	testutil.Equal(t, strings.Contains(f.lastPing().tldr, "held"), true)
+	// The blocker's session never ended — its task is still in_progress.
+	bt, err := f.d.HeraLiveBindingByRole(failed.ID)
+	testutil.NoError(t, err)
+	tk, err := f.d.Get(bt.ArgusTaskID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, tk.Status, model.StatusInProgress)
+}
+
+// TestGater_PlannedDependentReWaitsWhenBlockerReopens covers "Planned dependents
+// re-wait when a blocker reopens": a done blocker returns to working before the
+// dependent materialized; the gater reads the current status and keeps the
+// dependent planned (it does not materialize off the stale done).
+func TestGater_PlannedDependentReWaitsWhenBlockerReopens(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	blocker := f.boundWorker(t, orch, "1a", model.StatusInProgress, db.HeraStatusDone)
+	node := f.planned(t, orch, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, blocker.ID))
+
+	// Blocker reopens to working BEFORE the dependent materializes.
+	testutil.NoError(t, f.d.UpsertHeraRoleStatus(blocker.ID, db.HeraStatusWorking))
+
+	f.w.Tick()
+
+	testutil.Equal(t, len(f.materialized()), 0) // does not materialize off stale done
+	testutil.Equal(t, f.pingCount(), 0)         // working blocker → planned, not held
+
+	planned, err := f.d.ListHeraPlannedNodes()
+	testutil.NoError(t, err)
+	found := false
+	for _, p := range planned {
+		if p.ID == node.ID {
+			found = true
+		}
+	}
+	testutil.Equal(t, found, true)
+}
+
+// TestGater_HeldDedupClearsOnRecoveryAndReArms covers the re-arm contract: a held
+// node behind a failed blocker pings once; when the blocker recovers the dedup
+// clears (and one recovery notice fires); a subsequent re-failure pings AGAIN.
+func TestGater_HeldDedupClearsOnRecoveryAndReArms(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	blocker := f.boundWorker(t, orch, "1a", model.StatusInProgress, db.HeraStatusFailed)
+	node := f.planned(t, orch, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, blocker.ID))
+
+	f.w.Tick() // held → ping #1
+	testutil.Equal(t, f.pingCount(), 1)
+	testutil.Equal(t, strings.Contains(f.lastPing().tldr, "held"), true)
+
+	// Recover: blocker flips back to working. The re-arm sweep clears the dedup and
+	// emits exactly one recovery notice.
+	testutil.NoError(t, f.d.UpsertHeraRoleStatus(blocker.ID, db.HeraStatusWorking))
+	f.w.Tick() // recovery notice → ping #2 (unblocked)
+	testutil.Equal(t, f.pingCount(), 2)
+	testutil.Equal(t, strings.Contains(f.lastPing().tldr, "unblocked"), true)
+
+	// A tick with no change emits nothing more (notice was one-time).
+	f.w.Tick()
+	testutil.Equal(t, f.pingCount(), 2)
+
+	// Re-fail: the dedup re-armed, so this pings AGAIN (held).
+	testutil.NoError(t, f.d.UpsertHeraRoleStatus(blocker.ID, db.HeraStatusFailed))
+	f.w.Tick() // held → ping #3
+	testutil.Equal(t, f.pingCount(), 3)
+	testutil.Equal(t, strings.Contains(f.lastPing().tldr, "held"), true)
+}
+
+// TestGater_RecoveryNoticeAddressedToCoordinatorFromNode covers "Recovery clears
+// the dedup and notifies once": EXACTLY ONE unblocked notice, addressed to the
+// coordinator role and sent FROM the held node's own role (self-send-safe).
+func TestGater_RecoveryNoticeAddressedToCoordinatorFromNode(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	coord := f.coordRole(t, orch)
+	blocker := f.boundWorker(t, orch, "1a", model.StatusInProgress, db.HeraStatusFailed)
+	node := f.planned(t, orch, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, blocker.ID))
+
+	f.w.Tick() // held ping
+	testutil.Equal(t, f.pingCount(), 1)
+
+	// Recover.
+	testutil.NoError(t, f.d.UpsertHeraRoleStatus(blocker.ID, db.HeraStatusDone))
+	f.w.Tick()
+
+	testutil.Equal(t, f.pingCount(), 2) // exactly one recovery notice on top of the hold
+	recovery := f.lastPing()
+	testutil.Equal(t, strings.Contains(recovery.tldr, "unblocked"), true)
+	testutil.Equal(t, recovery.coord, coord.ID) // addressed to the coordinator
+	testutil.Equal(t, recovery.from, node.ID)   // sent from the held node's own role
+	// Never to itself (self-send guard would reject from==to).
+	testutil.Equal(t, recovery.from != recovery.coord, true)
+}
+
+// TestGater_NoRecoveryNoticeForMaterializedNode covers the Non-Goals case: a node
+// that ALREADY MATERIALIZED (has a binding) whose blocker later reopens gets NO
+// notice — a running worker cannot be un-spawned. The held key is cleared
+// silently when the node leaves the planned set.
+func TestGater_NoRecoveryNoticeForMaterializedNode(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	blocker := f.boundWorker(t, orch, "1a", model.StatusInProgress, db.HeraStatusFailed)
+	node := f.planned(t, orch, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, blocker.ID))
+
+	f.w.Tick() // node held behind failed blocker → ping #1
+	testutil.Equal(t, f.pingCount(), 1)
+
+	// Materialize the node manually (give it a binding) so it leaves the planned
+	// set — simulating the coordinator force-spawning it past the hold.
+	tk := newRunningTask(node.Name)
+	testutil.NoError(t, f.d.Add(tk))
+	_, err := f.d.CreateHeraBinding(db.CreateHeraBindingInput{
+		RoleID: node.ID, OrchestratorID: node.OrchestratorID,
+		ArgusTaskID: tk.ID, WorktreePath: "/wt/" + node.Name,
+	})
+	testutil.NoError(t, err)
+
+	// Now flip the blocker around (recover then re-fail). Because the node is no
+	// longer planned, the re-arm sweep clears the key SILENTLY — zero new pings.
+	testutil.NoError(t, f.d.UpsertHeraRoleStatus(blocker.ID, db.HeraStatusWorking))
+	f.w.Tick()
+	testutil.NoError(t, f.d.UpsertHeraRoleStatus(blocker.ID, db.HeraStatusFailed))
+	f.w.Tick()
+
+	testutil.Equal(t, f.pingCount(), 1) // no recovery notice, no re-held ping
 }
 
 func TestGater_StartStop(t *testing.T) {

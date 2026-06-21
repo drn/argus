@@ -175,7 +175,9 @@ func (w *Watcher) Tick() {
 		w.logf("[heragater] list planned nodes: %v", err)
 		return
 	}
+	plannedByID := make(map[int64]*db.HeraRole, len(planned))
 	for _, node := range planned {
+		plannedByID[node.ID] = node
 		state, failedBlocker := w.classify(node)
 		switch state {
 		case stateReady:
@@ -186,6 +188,124 @@ func (w *Watcher) Tick() {
 			w.holdAndPing(node, failedBlocker)
 		}
 	}
+	w.rearmHeldPings(plannedByID)
+}
+
+// rearmHeldPings sweeps the held-ping dedup (D4) so a held node is re-reported
+// after its blocker recovers then re-fails, and announces a recovery exactly
+// once. For each (node, blocker) key currently marked:
+//
+//   - If the NODE is no longer a planned node (it materialized — gained a binding
+//     — or was archived/removed), delete the key SILENTLY. An already-running
+//     node's reopened blocker is physics, not actionable (Non-Goals): no notice.
+//   - Else recompute the blocker's outcome. If it is still blockerFailed, keep the
+//     key (the hold stands). Otherwise clear it:
+//   - If it cleared because the blocker RECOVERED (the blocker role still exists
+//     and its outcome is now working or done), emit EXACTLY ONE "unblocked"
+//     notice to the coordinator, sent FROM the held node's own role (same ping
+//     seam holdAndPing uses, so the self-send guard never trips).
+//   - If it cleared because the edge/role VANISHED (the blocker role is gone, or
+//     the edge was removed so the blocker no longer gates this node), no notice.
+//
+// After a key is cleared, a later re-failure re-arms naturally: holdAndPing sets
+// the key again the next time the node is held.
+func (w *Watcher) rearmHeldPings(plannedByID map[int64]*db.HeraRole) {
+	w.mu.Lock()
+	keys := make([][2]int64, 0, len(w.heldPings))
+	for k := range w.heldPings {
+		keys = append(keys, k)
+	}
+	w.mu.Unlock()
+
+	for _, key := range keys {
+		nodeID, blockerID := key[0], key[1]
+		node, stillPlanned := plannedByID[nodeID]
+		if !stillPlanned {
+			// Materialized or removed — un-spawnable, no notice (Non-Goals).
+			w.clearHeldKey(key)
+			w.logf("[heragater] re-arm: cleared held key (node %d, blocker %d) — node no longer planned (silent)", nodeID, blockerID)
+			continue
+		}
+		if w.blockerOutcome(blockerID) == blockerFailed {
+			continue // hold stands; key kept
+		}
+		// No longer failed → clear. Distinguish recovered vs vanished: a RECOVERED
+		// blocker still gates this node (edge present) and its role still exists.
+		recovered := w.blockerRecovered(nodeID, blockerID)
+		w.clearHeldKey(key)
+		if recovered {
+			w.emitRecoveryNotice(node, blockerID)
+			continue
+		}
+		w.logf("[heragater] re-arm: cleared held key (node %d, blocker %d) — blocker edge/role vanished (no notice)", nodeID, blockerID)
+	}
+}
+
+// blockerRecovered reports whether a cleared held key cleared because the blocker
+// genuinely RECOVERED (its role still exists, it still gates the node via an
+// extant edge, and its outcome is now working or done) versus the edge/role
+// having VANISHED. Distinguishing the two is what gates the recovery notice: only
+// a real recovery is actionable; a removed edge/role is not.
+func (w *Watcher) blockerRecovered(nodeID, blockerID int64) bool {
+	// Role must still exist.
+	if _, err := w.db.HeraRole(blockerID); err != nil {
+		return false
+	}
+	// Edge must still gate this node.
+	blockerIDs, err := w.db.HeraBlockersOf(nodeID)
+	if err != nil {
+		return false
+	}
+	stillEdge := false
+	for _, bid := range blockerIDs {
+		if bid == blockerID {
+			stillEdge = true
+			break
+		}
+	}
+	if !stillEdge {
+		return false
+	}
+	switch w.blockerOutcome(blockerID) {
+	case blockerWorking, blockerDone:
+		return true
+	default:
+		return false
+	}
+}
+
+// clearHeldKey deletes one (node, blocker) entry from the dedup map.
+func (w *Watcher) clearHeldKey(key [2]int64) {
+	w.mu.Lock()
+	delete(w.heldPings, key)
+	w.mu.Unlock()
+}
+
+// emitRecoveryNotice sends a one-time "unblocked" notice to the coordinator that
+// a held node's blocker has recovered, sent FROM the held node's own role (same
+// self-send-safe ping seam as holdAndPing). A delivery failure is logged but the
+// key stays cleared — the hold is genuinely gone, and re-failure re-arms anyway;
+// we do not resurrect the dedup just to retry an advisory recovery notice.
+func (w *Watcher) emitRecoveryNotice(node *db.HeraRole, blockerID int64) {
+	coords, err := w.db.ListHeraRolesByKind(node.OrchestratorID, db.HeraKindCoordinator)
+	if err != nil || len(coords) == 0 {
+		w.logf("[heragater] recovery %d: no coordinator to notify: %v", node.ID, err)
+		return
+	}
+	blockerName := ""
+	if r, rErr := w.db.HeraRole(blockerID); rErr == nil {
+		blockerName = r.Name
+	}
+	body := "Planned node " + node.Name + " is UNBLOCKED: its previously-failed blocker " + blockerName +
+		" has recovered. It will materialize once all its blockers reach role-status done."
+	tldr := "unblocked: " + node.Name + " blocker " + blockerName + " recovered"
+	if w.ping != nil {
+		if pErr := w.ping(node.ID, coords[0].ID, body, tldr); pErr != nil {
+			w.logf("[heragater] recovery %d: notify coordinator failed (key stays cleared): %v", node.ID, pErr)
+			return
+		}
+	}
+	w.logf("[heragater] recovery: node %d (%s) unblocked — blocker %s recovered; notified coordinator", node.ID, node.Name, blockerName)
 }
 
 // classify computes a node's state from its blockers, returning the failing
@@ -249,8 +369,17 @@ const (
 // pending), and "failed" once its session has ended (task no longer in_progress
 // AND not pending, or the binding has been ended) without ever reaching done.
 func (w *Watcher) blockerOutcome(blockerID int64) blockerOutcome {
-	if st, err := w.db.HeraRoleStatusFor(blockerID); err == nil && st.Status == db.HeraStatusDone {
-		return blockerDone
+	if st, err := w.db.HeraRoleStatusFor(blockerID); err == nil {
+		switch st.Status {
+		case db.HeraStatusDone:
+			return blockerDone
+		case db.HeraStatusFailed:
+			// Explicit self-declared defeat (D2 gating half). A worker that reports
+			// `failed` holds its dependents IMMEDIATELY — no need to wait for its
+			// session to end. This takes precedence over the session-death inference
+			// path below (which only catches crashes / silent give-up).
+			return blockerFailed
+		}
 	}
 	// Not done. A COORDINATOR never reaches role-status done — its session is alive
 	// for the whole orchestration (BUG-003). An alive coordinator blocker must NOT
