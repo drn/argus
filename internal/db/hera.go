@@ -124,6 +124,7 @@ const (
 	HeraStatusWorking HeraRoleStatusValue = "working"
 	HeraStatusBlocked HeraRoleStatusValue = "blocked"
 	HeraStatusDone    HeraRoleStatusValue = "done"
+	HeraStatusFailed  HeraRoleStatusValue = "failed"
 )
 
 // HeraOrchestrator is one coordination group. ArchivedAt is non-nil for
@@ -810,6 +811,43 @@ func (d *DB) ManagedTaskIDs() (map[string]bool, error) {
 	return out, nil
 }
 
+// rollHeraWorkerToReviewInner is the shared implementation behind
+// RollHeraWorkerToReview and RollHeraWorkerFailed. Both roll a live worker's
+// bound task from in_progress to in_review; they differ only in whether
+// ready_to_close is stamped (done → stamp; failed → no stamp, the task is not
+// ready to close). Invariants enforced here so neither call-site can drift:
+//   - worker-kind only (coordinators/freelance are no-ops)
+//   - no-op unless the task is currently in_progress (never clobbers human state)
+//   - DB status + meta only — the live session is never touched
+//   - idempotent (second call is a no-op; task is already in_review)
+//
+// Returns (true, nil) when flipped, (false, nil) on any no-op path.
+func (d *DB) rollHeraWorkerToReviewInner(taskID string, stampReadyToClose bool) (bool, error) {
+	worker, err := d.TaskHoldsLiveHeraWorkerBinding(taskID)
+	if err != nil {
+		return false, err
+	}
+	if !worker {
+		return false, nil
+	}
+	t, err := d.Get(taskID)
+	if err != nil {
+		return false, err
+	}
+	if t == nil || t.Status != model.StatusInProgress {
+		return false, nil // never clobber a human-set in_review/complete
+	}
+	if err := d.SetStatus(taskID, model.StatusInReview); err != nil {
+		return false, err
+	}
+	if stampReadyToClose {
+		if mErr := d.SetMeta(taskID, HeraMetaNamespace, HeraMetaKeyReadyToClose, "true"); mErr != nil {
+			slog.Warn("[hera] ready_to_close stamp failed (flip stands)", "task", taskID, "err", mErr)
+		}
+	}
+	return true, nil
+}
+
 // RollHeraWorkerToReview implements the BUG-050 worker close-out roll: it moves
 // a worker-bound task to in_review and stamps meta:hera.ready_to_close=true. It
 // is the SINGLE shared helper behind BOTH close-out triggers — the session-exit
@@ -829,27 +867,17 @@ func (d *DB) ManagedTaskIDs() (map[string]bool, error) {
 // ready_to_close stamp is best-effort soft-fail — a meta failure is logged and
 // the flip still stands.
 func (d *DB) RollHeraWorkerToReview(taskID string) (bool, error) {
-	worker, err := d.TaskHoldsLiveHeraWorkerBinding(taskID)
-	if err != nil {
-		return false, err
-	}
-	if !worker {
-		return false, nil
-	}
-	t, err := d.Get(taskID)
-	if err != nil {
-		return false, err
-	}
-	if t == nil || t.Status != model.StatusInProgress {
-		return false, nil // never clobber a human-set in_review/complete
-	}
-	if err := d.SetStatus(taskID, model.StatusInReview); err != nil {
-		return false, err
-	}
-	if mErr := d.SetMeta(taskID, HeraMetaNamespace, HeraMetaKeyReadyToClose, "true"); mErr != nil {
-		slog.Warn("[hera] ready_to_close stamp failed (flip stands)", "task", taskID, "err", mErr)
-	}
-	return true, nil
+	return d.rollHeraWorkerToReviewInner(taskID, true)
+}
+
+// RollHeraWorkerFailed rolls a failed worker's bound task to in_review WITHOUT
+// stamping ready_to_close. A failed task surfaces for coordinator attention
+// (in_review) but is NOT ready to check off — the coordinator must decide
+// whether to retry, reassign, or close it. Shares all invariants with
+// RollHeraWorkerToReview: worker-kind only, no-op unless in_progress, idempotent,
+// soft-fail (the roll succeeds even if the meta write fails).
+func (d *DB) RollHeraWorkerFailed(taskID string) (bool, error) {
+	return d.rollHeraWorkerToReviewInner(taskID, false)
 }
 
 // ClearHeraReadyToClose removes the meta:hera.ready_to_close mark on taskID —

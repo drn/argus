@@ -496,7 +496,7 @@ func (d *DB) createHeraTables() error {
 
 		CREATE TABLE IF NOT EXISTS hera_role_status (
 			role_id    INTEGER PRIMARY KEY REFERENCES hera_roles(id) ON DELETE CASCADE,
-			status     TEXT NOT NULL CHECK (status IN ('idle','working','blocked','done')),
+			status     TEXT NOT NULL CHECK (status IN ('idle','working','blocked','done','failed')),
 			updated_at TEXT NOT NULL
 		);
 

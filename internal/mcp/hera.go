@@ -55,6 +55,10 @@ type HeraStore interface {
 	// session-exit hooks; the hera_status("done") trigger calls it. No-op
 	// unless the task is a live worker AND currently in_progress.
 	RollHeraWorkerToReview(taskID string) (bool, error)
+	// RollHeraWorkerFailed rolls a failed worker's task to in_review WITHOUT
+	// stamping ready_to_close (D2, make-hera-plan-living). Called when a worker
+	// reports status="failed"; same invariants as RollHeraWorkerToReview.
+	RollHeraWorkerFailed(taskID string) (bool, error)
 }
 
 // heraToolDefs contains the 12 hera_* tool schemas. The first 9 are ported
@@ -740,9 +744,9 @@ func (s *Server) toolHeraStatus(id interface{}, args json.RawMessage) *Response 
 
 	sv := db.HeraRoleStatusValue(p.Status)
 	switch sv {
-	case db.HeraStatusIdle, db.HeraStatusWorking, db.HeraStatusBlocked, db.HeraStatusDone:
+	case db.HeraStatusIdle, db.HeraStatusWorking, db.HeraStatusBlocked, db.HeraStatusDone, db.HeraStatusFailed:
 	default:
-		return toolError(id, fmt.Sprintf("invalid status %q; must be one of idle, working, blocked, done", p.Status))
+		return toolError(id, fmt.Sprintf("invalid status %q; must be one of idle, working, blocked, done, failed", p.Status))
 	}
 
 	caller, err := s.resolveCallerRole(p.Cwd, p.Orchestrator)
@@ -773,6 +777,18 @@ func (s *Server) toolHeraStatus(id interface{}, args json.RawMessage) *Response 
 			slog.Warn("[hera] status(done): worker roll failed (status still updated)", "task_id", caller.binding.ArgusTaskID, "err", rErr)
 		} else if flipped {
 			slog.Info("[hera] status(done): rolled worker task to in_review", "task_id", caller.binding.ArgusTaskID, "role", caller.role.Name)
+		}
+	}
+
+	// D2 (make-hera-plan-living): a WORKER reporting status="failed" rolls its
+	// bound task to in_review WITHOUT stamping ready_to_close — the task needs
+	// coordinator attention but is not ready to check off. Same soft-fail /
+	// idempotent invariants as the done roll above.
+	if sv == db.HeraStatusFailed && caller.role.Kind == db.HeraKindWorker {
+		if flipped, rErr := s.heraStore.RollHeraWorkerFailed(caller.binding.ArgusTaskID); rErr != nil {
+			slog.Warn("[hera] status(failed): worker roll failed (status still updated)", "task_id", caller.binding.ArgusTaskID, "err", rErr)
+		} else if flipped {
+			slog.Info("[hera] status(failed): rolled worker task to in_review (no ready_to_close)", "task_id", caller.binding.ArgusTaskID, "role", caller.role.Name)
 		}
 	}
 
