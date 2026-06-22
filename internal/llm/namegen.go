@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // DefaultTimeout caps each name-gen call. The claude CLI startup alone
@@ -126,6 +127,15 @@ func GenerateName(ctx context.Context, prompt string) (string, error) {
 
 	out, err := cmd.Output()
 	if err != nil {
+		// cmd.Output() leaves cmd.Stderr nil, so on a non-zero exit the
+		// captured stderr lands in ExitError.Stderr. The error's own
+		// Error() is just "exit status 1" — fold the stderr in so the
+		// failure is actually diagnosable from the autoname log line.
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+			if stderr := strings.TrimSpace(string(exitErr.Stderr)); stderr != "" {
+				return "", fmt.Errorf("claude -p failed: %w: %s", err, truncate(stderr, 500))
+			}
+		}
 		return "", fmt.Errorf("claude -p failed: %w", err)
 	}
 
@@ -134,6 +144,21 @@ func GenerateName(ctx context.Context, prompt string) (string, error) {
 		return "", fmt.Errorf("invalid name from model: %q", strings.TrimSpace(string(out)))
 	}
 	return name, nil
+}
+
+// truncate caps s at max bytes (rune-safe), appending an ellipsis when it
+// trims. Keeps captured stderr from bloating a log line if claude dumps a
+// stack trace or long help text on failure.
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	// Back up to a rune boundary so we don't split a multi-byte sequence.
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
 
 // sanitizeAndValidate trims whitespace, strips chatty wrappers (leading/

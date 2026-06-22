@@ -129,6 +129,69 @@ func TestGenerateName_PromptFraming(t *testing.T) {
 	}
 }
 
+// setupFailingClaude wires a fake `claude` that writes stderr and exits
+// non-zero, so we can assert GenerateName folds the captured stderr into
+// its error instead of dropping it as a bare "exit status 1".
+func setupFailingClaude(t *testing.T, stderr string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script not portable on Windows")
+	}
+	tmp := t.TempDir()
+	fake := tmp + "/claude"
+	if err := writeExec(fake, "#!/bin/sh\nprintf '"+stderr+"' >&2\nexit 1\n"); err != nil {
+		t.Fatalf("writeExec: %v", err)
+	}
+	t.Setenv("PATH", tmp)
+
+	prev := nameGenCmd
+	t.Cleanup(func() { nameGenCmd = prev })
+	nameGenCmd = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, fake)
+	}
+}
+
+func TestGenerateName_ExitErrorIncludesStderr(t *testing.T) {
+	setupFailingClaude(t, "Credit balance is too low to run this request.")
+
+	_, err := GenerateName(context.Background(), "build a feature")
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	testutil.Contains(t, err.Error(), "claude -p failed")
+	testutil.Contains(t, err.Error(), "Credit balance is too low")
+}
+
+func TestGenerateName_ExitErrorEmptyStderr(t *testing.T) {
+	setupFailingClaude(t, "")
+
+	_, err := GenerateName(context.Background(), "build a feature")
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	// No stderr to fold in — error stays the bare exit-status form.
+	testutil.Contains(t, err.Error(), "claude -p failed: exit status 1")
+}
+
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		max  int
+		want string
+	}{
+		{"under limit", "short", 10, "short"},
+		{"at limit", "exactly10!", 10, "exactly10!"},
+		{"over limit", "abcdefghij", 5, "abcde…"},
+		{"multibyte boundary", "abcdé", 4, "abcd…"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testutil.Equal(t, truncate(tt.in, tt.max), tt.want)
+		})
+	}
+}
+
 func TestGenerateName_InvalidModelOutput(t *testing.T) {
 	setupFakeClaude(t, "Sorry, I cannot help with that.", nil)
 
