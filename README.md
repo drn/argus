@@ -683,6 +683,7 @@ Command templates, keyed by name. Seeded with `claude`, `codex`, and `pi`.
 | `command` | string | — | Executable plus base flags for the agent CLI (e.g. `claude`, `codex --dangerously-bypass-approvals-and-sandbox`). Permission flags come from `defaults.permission_mode` and are **not** baked in here. |
 | `prompt_flag` | string | `""` | Flag used to pass the initial prompt to the backend (empty = positional/piped). |
 | `model` | string | `""` | Default model for this backend, injected as `--model <value>` for known CLIs (claude, codex, pi). Empty = the CLI's own default. A per-task model overrides it. |
+| `models` | array | `[]` | Option list for the new-task model selector for this backend. Empty = built-in list (claude → `opus`/`sonnet`/`haiku`, codex → `gpt-5-codex`/`gpt-5`, others → none). A `custom…` entry always lets you type a model not in the list. |
 
 #### `[projects.<name>]`
 

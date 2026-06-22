@@ -1636,23 +1636,104 @@ func TestNewTaskForm_HandleProjectKey_TextEditing(t *testing.T) {
 
 // --- Model field ---
 
-func TestNewTaskForm_TaskCarriesModel(t *testing.T) {
-	f := NewNewTaskForm(
-		map[string]config.Project{"p": {}}, "p",
-		map[string]config.Backend{"b": {}}, "b",
-	)
-	f.modelInput = []rune("  opus  ")
-	f.prompt = []rune("go")
-	task := f.Task()
-	testutil.Equal(t, task.Model, "opus") // trimmed
-}
-
 func TestNewTaskForm_TaskModelEmptyByDefault(t *testing.T) {
 	f := NewNewTaskForm(
 		map[string]config.Project{"p": {}}, "p",
-		map[string]config.Backend{"b": {}}, "b",
+		map[string]config.Backend{"b": {Command: "claude"}}, "b",
 	)
 	f.prompt = []rune("go")
+	// modelIdx starts at 0 ("default") → empty model.
+	testutil.Equal(t, f.Task().Model, "")
+}
+
+func TestNewTaskForm_TaskModelSelectsListedModel(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"b": {Command: "claude"}}, "b",
+	)
+	f.prompt = []rune("go")
+	f.focused = ntFieldModel
+	handler := f.InputHandler()
+	// default → opus (first known Claude model).
+	handler(tcell.NewEventKey(tcell.KeyRight, 0, 0), nil)
+	testutil.Equal(t, f.Task().Model, "opus")
+	// opus → sonnet.
+	handler(tcell.NewEventKey(tcell.KeyRight, 0, 0), nil)
+	testutil.Equal(t, f.Task().Model, "sonnet")
+}
+
+func TestNewTaskForm_TaskModelCustom(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"b": {Command: "claude"}}, "b",
+	)
+	f.prompt = []rune("go")
+	f.focused = ntFieldModel
+	handler := f.InputHandler()
+	// Cycle left once from "default" wraps to the last entry, "custom…".
+	handler(tcell.NewEventKey(tcell.KeyLeft, 0, 0), nil)
+	if !f.modelIsCustom() {
+		t.Fatalf("left from default should land on custom…, modelIdx=%d", f.modelIdx)
+	}
+	for _, r := range "  glm-4.6  " {
+		handler(tcell.NewEventKey(tcell.KeyRune, r, 0), nil)
+	}
+	testutil.Equal(t, f.Task().Model, "glm-4.6") // trimmed
+}
+
+func TestNewTaskForm_ModelOptionsFromBackend(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"b": {Command: "claude"}}, "b",
+	)
+	testutil.DeepEqual(t, f.modelOptions, []string{"opus", "sonnet", "haiku"})
+	testutil.Equal(t, f.modelEntryCount(), 5) // default + 3 models + custom…
+}
+
+func TestNewTaskForm_ModelOptionsConfigOverride(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"b": {Command: "claude", Models: []string{"x", "y"}}}, "b",
+	)
+	testutil.DeepEqual(t, f.modelOptions, []string{"x", "y"})
+}
+
+func TestNewTaskForm_ModelUnknownBackendDefaultAndCustomOnly(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"b": {Command: "bash"}}, "b",
+	)
+	testutil.Equal(t, len(f.modelOptions), 0)
+	testutil.Equal(t, f.modelEntryCount(), 2) // default + custom… only
+	f.focused = ntFieldModel
+	handler := f.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRight, 0, 0), nil)
+	if !f.modelIsCustom() {
+		t.Fatalf("right from default should land on custom… for an empty list, modelIdx=%d", f.modelIdx)
+	}
+}
+
+func TestNewTaskForm_BackendChangeRebuildsAndResetsModel(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{
+			"a-claude": {Command: "claude"},
+			"z-codex":  {Command: "codex"},
+		}, "a-claude",
+	)
+	f.focused = ntFieldModel
+	handler := f.InputHandler()
+	// Pick a non-default model on the claude backend.
+	handler(tcell.NewEventKey(tcell.KeyRight, 0, 0), nil)
+	testutil.Equal(t, f.Task().Model, "opus")
+
+	// Move to the backend selector and change it.
+	f.focused = ntFieldBackend
+	handler(tcell.NewEventKey(tcell.KeyRight, 0, 0), nil)
+
+	// Model options rebuilt for codex, selection reset to default.
+	testutil.DeepEqual(t, f.modelOptions, []string{"gpt-5-codex", "gpt-5"})
+	testutil.Equal(t, f.modelIdx, 0)
 	testutil.Equal(t, f.Task().Model, "")
 }
 
@@ -1681,13 +1762,24 @@ func TestNewTaskForm_BackendDefaultModel_NoBackends(t *testing.T) {
 	testutil.Equal(t, f.backendDefaultModel(), "")
 }
 
-func TestNewTaskForm_ModelFieldTyping(t *testing.T) {
+// enterCustomModel cycles the focused model selector to the "custom…" entry.
+func enterCustomModel(t *testing.T, f *NewTaskForm, handler func(*tcell.EventKey, func(tview.Primitive))) {
+	t.Helper()
+	f.focused = ntFieldModel
+	// Left from "default" (idx 0) wraps to the last entry, "custom…".
+	handler(tcell.NewEventKey(tcell.KeyLeft, 0, 0), nil)
+	if !f.modelIsCustom() {
+		t.Fatalf("expected custom mode after Left, modelIdx=%d optsLen=%d", f.modelIdx, len(f.modelOptions))
+	}
+}
+
+func TestNewTaskForm_ModelCustomTyping(t *testing.T) {
 	f := NewNewTaskForm(
 		map[string]config.Project{"p": {}}, "p",
-		map[string]config.Backend{"b": {}}, "b",
+		map[string]config.Backend{"b": {}}, "b", // empty command → only default + custom…
 	)
-	f.focused = ntFieldModel
 	handler := f.InputHandler()
+	enterCustomModel(t, f, handler)
 
 	for _, r := range "opusX" {
 		handler(tcell.NewEventKey(tcell.KeyRune, r, 0), nil)
@@ -1695,16 +1787,12 @@ func TestNewTaskForm_ModelFieldTyping(t *testing.T) {
 	handler(tcell.NewEventKey(tcell.KeyBackspace2, 0, 0), nil)
 	testutil.Equal(t, string(f.modelInput), "opus")
 
-	// Cursor movement + word ops.
+	// Home/End reposition; Delete removes forward; Ctrl+U kills to start.
 	handler(tcell.NewEventKey(tcell.KeyHome, 0, 0), nil)
 	testutil.Equal(t, f.modelCursorPos, 0)
 	handler(tcell.NewEventKey(tcell.KeyDelete, 0, 0), nil)
 	testutil.Equal(t, string(f.modelInput), "pus")
 	handler(tcell.NewEventKey(tcell.KeyEnd, 0, 0), nil)
-	testutil.Equal(t, f.modelCursorPos, 3)
-	handler(tcell.NewEventKey(tcell.KeyLeft, 0, 0), nil)
-	testutil.Equal(t, f.modelCursorPos, 2)
-	handler(tcell.NewEventKey(tcell.KeyRight, 0, 0), nil)
 	testutil.Equal(t, f.modelCursorPos, 3)
 	handler(tcell.NewEventKey(tcell.KeyCtrlU, 0, 0), nil)
 	testutil.Equal(t, string(f.modelInput), "")
@@ -1714,11 +1802,21 @@ func TestNewTaskForm_ModelFieldTyping(t *testing.T) {
 	}
 	handler(tcell.NewEventKey(tcell.KeyCtrlW, 0, 0), nil)
 	testutil.Equal(t, string(f.modelInput), "abc ")
-	handler(tcell.NewEventKey(tcell.KeyCtrlK, 0, 0), nil)
-	testutil.Equal(t, string(f.modelInput), "abc ")
 	handler(tcell.NewEventKey(tcell.KeyCtrlA, 0, 0), nil)
 	handler(tcell.NewEventKey(tcell.KeyCtrlK, 0, 0), nil)
 	testutil.Equal(t, string(f.modelInput), "")
+}
+
+func TestNewTaskForm_ModelNonCustomIgnoresRunes(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"b": {Command: "claude"}}, "b",
+	)
+	f.focused = ntFieldModel // on "default" — a selector, not a text field
+	handler := f.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, 'z', 0), nil)
+	testutil.Equal(t, len(f.modelInput), 0) // rune ignored outside custom mode
+	testutil.Equal(t, f.modelIdx, 0)
 }
 
 func TestNewTaskForm_ModelFieldNavigation(t *testing.T) {
@@ -1744,40 +1842,43 @@ func TestNewTaskForm_ModelFieldNavigation(t *testing.T) {
 	testutil.Equal(t, f.focused, ntFieldPrompt)
 }
 
-func TestNewTaskForm_ModelFieldAltWordOps(t *testing.T) {
+func TestNewTaskForm_ModelCustomAltWordOps(t *testing.T) {
 	f := NewNewTaskForm(
 		map[string]config.Project{"p": {}}, "p",
 		map[string]config.Backend{"b": {}}, "b",
 	)
-	f.focused = ntFieldModel
+	handler := f.InputHandler()
+	enterCustomModel(t, f, handler)
 	f.modelInput = []rune("abc def")
 	f.modelCursorPos = 7
-	handler := f.InputHandler()
 
-	handler(tcell.NewEventKey(tcell.KeyRune, 'b', tcell.ModAlt), nil)
-	testutil.Equal(t, f.modelCursorPos, 4)
-	handler(tcell.NewEventKey(tcell.KeyRune, 'f', tcell.ModAlt), nil)
-	testutil.Equal(t, f.modelCursorPos, 7)
-	handler(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModAlt), nil)
-	testutil.Equal(t, f.modelCursorPos, 4)
-	handler(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModAlt), nil)
-	testutil.Equal(t, f.modelCursorPos, 7)
+	// Alt+Backspace: delete word left.
 	handler(tcell.NewEventKey(tcell.KeyBackspace2, 0, tcell.ModAlt), nil)
 	testutil.Equal(t, string(f.modelInput), "abc ")
-	handler(tcell.NewEventKey(tcell.KeyRune, 'b', tcell.ModAlt), nil)
+	// Alt+D: delete word right (from start).
+	handler(tcell.NewEventKey(tcell.KeyCtrlA, 0, 0), nil)
 	handler(tcell.NewEventKey(tcell.KeyRune, 'd', tcell.ModAlt), nil)
 	testutil.Equal(t, string(f.modelInput), " ") // DeleteWordRight stops at the word end
 }
 
-func TestNewTaskForm_ModelFieldPaste(t *testing.T) {
+func TestNewTaskForm_ModelPasteOnlyInCustom(t *testing.T) {
 	f := NewNewTaskForm(
 		map[string]config.Project{"p": {}}, "p",
-		map[string]config.Backend{"b": {}}, "b",
+		map[string]config.Backend{"b": {Command: "claude"}}, "b",
 	)
 	f.focused = ntFieldModel
-	f.PasteHandler()("sonnet", nil)
-	testutil.Equal(t, string(f.modelInput), "sonnet")
-	testutil.Equal(t, f.modelCursorPos, 6)
+	paste := f.PasteHandler()
+
+	// On "default" (a selector) paste is ignored.
+	paste("sonnet", nil)
+	testutil.Equal(t, len(f.modelInput), 0)
+
+	// In custom mode paste inserts.
+	handler := f.InputHandler()
+	enterCustomModel(t, f, handler)
+	paste("glm-4.6", nil)
+	testutil.Equal(t, string(f.modelInput), "glm-4.6")
+	testutil.Equal(t, f.modelCursorPos, 7)
 }
 
 // simRowText scrapes one row of a SimulationScreen into a string.
@@ -1839,7 +1940,7 @@ func TestNewTaskForm_DrawModelField(t *testing.T) {
 	f.SetRect(0, 0, 80, 24)
 	sim := drawSim(t)
 
-	// Unfocused + empty → placeholder with the backend default.
+	// On the "default" entry the selector renders with the backend default as a hint.
 	f.focused = ntFieldPrompt
 	f.Draw(sim)
 	var modelRow, backendRow, promptRow int
@@ -1848,7 +1949,8 @@ func TestNewTaskForm_DrawModelField(t *testing.T) {
 		line := simRowText(sim, row)
 		if strings.Contains(line, "Model:") {
 			modelRow = row
-			testutil.Contains(t, line, "default: sonnet")
+			testutil.Contains(t, line, "◀ default ▶")
+			testutil.Contains(t, line, "sonnet") // backend-default hint
 		}
 		if strings.Contains(line, "Backend:") {
 			backendRow = row
@@ -1864,14 +1966,20 @@ func TestNewTaskForm_DrawModelField(t *testing.T) {
 		t.Errorf("row order backend=%d model=%d prompt=%d, want backend < model < prompt", backendRow, modelRow, promptRow)
 	}
 
-	// Focused + typed text → text renders (placeholder gone).
+	// Cycle to a listed model → selector shows that model.
 	f.focused = ntFieldModel
-	f.modelInput = []rune("opus")
-	f.modelCursorPos = 4
+	handler := f.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRight, 0, 0), nil) // default → opus
 	f.Draw(sim)
 	line := simRowText(sim, modelRow)
-	testutil.Contains(t, line, "opus")
-	if strings.Contains(line, "default: sonnet") {
-		t.Error("placeholder should not render once text is typed")
-	}
+	testutil.Contains(t, line, "◀ opus ▶")
+
+	// Cycle to custom… → selector shows custom and reveals the text input.
+	f.modelIdx = len(f.modelOptions) + 1 // custom…
+	f.modelInput = []rune("glm-4.6")
+	f.modelCursorPos = 7
+	f.Draw(sim)
+	line = simRowText(sim, modelRow)
+	testutil.Contains(t, line, "custom")
+	testutil.Contains(t, line, "glm-4.6")
 }

@@ -106,6 +106,22 @@ command = "claude --custom"
 	testutil.Equal(t, base.Backends["claude"].Command, "claude")
 }
 
+func TestFileLoader_BackendModelsOverlay(t *testing.T) {
+	path := writeFile(t, `
+[backends.claude]
+command = "claude"
+models = ["opus", "sonnet"]
+`)
+	l := NewFileLoader(path)
+	base := DefaultConfig()
+
+	got := l.Apply(base)
+
+	testutil.DeepEqual(t, got.Backends["claude"].Models, []string{"opus", "sonnet"})
+	// DefaultConfig leaves Models nil so the built-in list applies.
+	testutil.Nil(t, base.Backends["claude"].Models)
+}
+
 func TestFileLoader_AllocatesNilMaps(t *testing.T) {
 	path := writeFile(t, `
 [backends.foo]
