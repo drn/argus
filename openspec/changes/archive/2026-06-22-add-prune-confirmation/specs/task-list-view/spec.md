@@ -1,6 +1,6 @@
 # Task List View
 
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Prune completed tasks is confirmation-gated
 

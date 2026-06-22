@@ -3,9 +3,7 @@
 ## Purpose
 
 Argus renders raw PTY output from an agent session directly onto the terminal screen without an ANSI-string intermediary. Inbound bytes are parsed by a VT emulator into a cell grid, and each cell is painted to the screen with its glyph and styling. This capability covers live follow-tail rendering, scrollback browsing, finished-session replay, diff display, the byte-stream filters that protect the emulator from upstream parser bugs, and the helpers that strip terminal noise to plain text. Updates rely on per-cell diffing (synchronized output) for atomic, flash-free repaints — there is no screen-wide clear-and-redraw in the steady state.
-
 ## Requirements
-
 ### Requirement: Live PTY rendering
 
 The terminal pane SHALL feed inbound PTY bytes through a VT emulator and paint the resulting cell grid directly to the screen, mapping emulator cell glyphs and styles to screen cells without an intermediate ANSI string. In live follow-tail mode it SHALL feed only the bytes that have arrived since the last paint, rather than re-feeding the full stream on every frame.
@@ -275,3 +273,23 @@ The plugin-view terminal surface SHALL feed an ANSI byte stream from a channel t
 
 - **WHEN** no input-back channel is configured
 - **THEN** the pane SHALL be read-only and forward no input
+
+### Requirement: Snap to bottom on user input
+
+The terminal pane SHALL snap back to the live tail (scroll offset zero) when the user sends real input to a live session while scrolled up into history, so the typed input and the agent cursor are immediately visible. Real input means a printable key, Enter, a control character meant for the agent, or a paste. Scrollback navigation keys SHALL NOT snap, and new agent output SHALL NOT snap (anchor-lock keeps scrolled-up content pinned as output arrives).
+
+#### Scenario: Typing while scrolled up snaps to the live tail
+
+- **WHEN** the pane is scrolled up (offset greater than zero) and a keystroke or paste is forwarded to a live session
+- **THEN** the scroll offset SHALL be reset to zero so the next frame shows the live tail with the cursor
+
+#### Scenario: Scrollback keys do not snap
+
+- **WHEN** the pane is scrolled up and a scrollback-navigation key (PgUp / PgDn / Shift+arrows / Home / End) is pressed
+- **THEN** the scroll offset SHALL NOT be reset by the keypress and the user SHALL continue browsing history
+
+#### Scenario: Output does not snap
+
+- **WHEN** the pane is scrolled up and new agent output arrives
+- **THEN** the scroll offset SHALL remain pinned by anchor-lock and SHALL NOT snap to the bottom
+
