@@ -45,8 +45,14 @@ type NewTaskForm struct {
 	promptWidth  int    // cached inner width from last Draw, used by cursor movement
 	focused      int    // 0=project, 1=branch, 2=backend, 3=model, 4=prompt
 
-	// model override state — free text; empty means the backend's default
-	modelInput     []rune
+	// model override state. The field is a per-backend cycling selector:
+	// modelIdx 0 == "default" (empty model → backend/CLI default), 1..len ==
+	// modelOptions[idx-1], len+1 == "custom…" (free text via modelInput).
+	// modelOptions is rebuilt for the selected backend (agent.BackendModels)
+	// and reset to "default" whenever the backend changes.
+	modelOptions   []string
+	modelIdx       int
+	modelInput     []rune // only meaningful in custom mode
 	modelCursorPos int
 	done           bool
 	canceled       bool
@@ -137,6 +143,8 @@ func NewNewTaskForm(projects map[string]config.Project, defaultProject string, b
 
 	// Load skills for the default project
 	f.loadSkills()
+	// Populate the model selector for the initially selected backend.
+	f.rebuildModelOptions()
 	return f
 }
 
@@ -189,21 +197,76 @@ func (f *NewTaskForm) Task() *model.Task {
 		Branch:  branch,
 		Prompt:  prompt,
 		Backend: backend,
-		Model:   strings.TrimSpace(string(f.modelInput)),
+		Model:   f.modelValue(),
 	}
 }
 
-// backendDefaultModel returns the configured default model of the currently
-// selected backend, or "" when the backend has none. Used as the model
-// field's placeholder so the user sees what an empty override resolves to.
-func (f *NewTaskForm) backendDefaultModel() string {
-	if len(f.backendNames) == 0 || f.backendIdx >= len(f.backendNames) {
-		return ""
+// currentBackend returns the config.Backend for the currently selected backend.
+func (f *NewTaskForm) currentBackend() (config.Backend, bool) {
+	if f.backendIdx < 0 || f.backendIdx >= len(f.backendNames) {
+		return config.Backend{}, false
 	}
-	if b, ok := f.backends[f.backendNames[f.backendIdx]]; ok {
+	b, ok := f.backends[f.backendNames[f.backendIdx]]
+	return b, ok
+}
+
+// backendDefaultModel returns the configured default model of the currently
+// selected backend, or "" when the backend has none. Surfaced as a hint on the
+// "default" model option so the user sees what an empty override resolves to.
+func (f *NewTaskForm) backendDefaultModel() string {
+	if b, ok := f.currentBackend(); ok {
 		return b.Model
 	}
 	return ""
+}
+
+// rebuildModelOptions repopulates the model selector for the currently selected
+// backend (agent.BackendModels: the backend's configured Models override, else
+// the built-in KnownModels list) and resets the selection to "default",
+// clearing any typed custom value. Called on construction and whenever the
+// backend selector changes.
+func (f *NewTaskForm) rebuildModelOptions() {
+	if b, ok := f.currentBackend(); ok {
+		f.modelOptions = agent.BackendModels(b)
+	} else {
+		f.modelOptions = nil
+	}
+	f.modelIdx = 0
+	f.modelInput = nil
+	f.modelCursorPos = 0
+}
+
+// modelEntryCount is the number of cycle positions: "default" + each model +
+// "custom…".
+func (f *NewTaskForm) modelEntryCount() int { return len(f.modelOptions) + 2 }
+
+// modelIsCustom reports whether the model selector is on the "custom…" entry
+// (the final position), where the free-text modelInput applies.
+func (f *NewTaskForm) modelIsCustom() bool { return f.modelIdx == len(f.modelOptions)+1 }
+
+// modelValue resolves the selected model to the task's Model value: empty for
+// "default", the chosen model for a listed entry, the trimmed typed text for
+// "custom…".
+func (f *NewTaskForm) modelValue() string {
+	if f.modelIsCustom() {
+		return strings.TrimSpace(string(f.modelInput))
+	}
+	if f.modelIdx >= 1 && f.modelIdx <= len(f.modelOptions) {
+		return f.modelOptions[f.modelIdx-1]
+	}
+	return ""
+}
+
+// modelDisplayLabel returns the selector's current display value: "default",
+// a model name, or "custom…".
+func (f *NewTaskForm) modelDisplayLabel() string {
+	if f.modelIsCustom() {
+		return "custom…"
+	}
+	if f.modelIdx >= 1 && f.modelIdx <= len(f.modelOptions) {
+		return f.modelOptions[f.modelIdx-1]
+	}
+	return "default"
 }
 
 // resolvedBranch returns the branch to use: the typed text if non-empty,
@@ -552,6 +615,12 @@ func (f *NewTaskForm) PasteHandler() func(pastedText string, setFocus func(p tvi
 			f.branchCursorPos += len(runes)
 			f.updateBranchAC()
 		case ntFieldModel:
+			// Only the custom… free-text entry accepts paste; otherwise the
+			// model field is a selector and ignores pasted text (mirroring the
+			// backend selector's paste no-op).
+			if !f.modelIsCustom() {
+				return
+			}
 			newInput := make([]rune, 0, len(f.modelInput)+len(runes))
 			newInput = append(newInput, f.modelInput[:f.modelCursorPos]...)
 			newInput = append(newInput, runes...)
@@ -864,13 +933,14 @@ func (f *NewTaskForm) handleBranchKey(event *tcell.EventKey) {
 	}
 }
 
-// handleModelKey handles key events when the model override field is focused.
-// A plain single-line text input — no autocomplete (model names are free
-// text; the meaningful set differs per backend and even per CLI version).
+// handleModelKey handles key events when the model field is focused. The field
+// is a per-backend cycling selector: left/right cycle "default" → known models
+// → "custom…" (always, even in custom mode — left/right are the cycle, not
+// cursor movement). Up/down move field focus. When the selector is on "custom…"
+// the runes/edit keys flow into the free-text modelInput so a model the list
+// doesn't name can still be typed; cursor positioning within that text is
+// Home/End-only (left/right belong to the selector).
 func (f *NewTaskForm) handleModelKey(event *tcell.EventKey) {
-	mod := event.Modifiers()
-	hasAlt := mod&tcell.ModAlt != 0
-
 	switch event.Key() {
 	case tcell.KeyEnter, tcell.KeyDown:
 		f.focused = ntFieldPrompt
@@ -878,6 +948,32 @@ func (f *NewTaskForm) handleModelKey(event *tcell.EventKey) {
 	case tcell.KeyUp:
 		f.focused = ntFieldBackend
 		return
+	case tcell.KeyLeft:
+		count := f.modelEntryCount()
+		f.modelIdx = (f.modelIdx - 1 + count) % count
+		return
+	case tcell.KeyRight:
+		count := f.modelEntryCount()
+		f.modelIdx = (f.modelIdx + 1) % count
+		return
+	}
+
+	// Remaining keys only act in custom mode (the free-text escape hatch).
+	if !f.modelIsCustom() {
+		return
+	}
+	f.handleModelCustomKey(event)
+}
+
+// handleModelCustomKey edits the free-text modelInput while the "custom…" entry
+// is selected. Left/right are intentionally absent here — they cycle the
+// selector (see handleModelKey); positioning is Home/End plus the word/line
+// kill keys.
+func (f *NewTaskForm) handleModelCustomKey(event *tcell.EventKey) {
+	mod := event.Modifiers()
+	hasAlt := mod&tcell.ModAlt != 0
+
+	switch event.Key() {
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if hasAlt {
 			f.modelInput, f.modelCursorPos = widget.DeleteWordLeft(f.modelInput, f.modelCursorPos)
@@ -894,24 +990,6 @@ func (f *NewTaskForm) handleModelKey(event *tcell.EventKey) {
 	case tcell.KeyDelete:
 		if f.modelCursorPos < len(f.modelInput) {
 			f.modelInput = append(f.modelInput[:f.modelCursorPos], f.modelInput[f.modelCursorPos+1:]...)
-		}
-		return
-	case tcell.KeyLeft:
-		if hasAlt {
-			f.modelCursorPos = widget.WordLeftPos(f.modelInput, f.modelCursorPos)
-			return
-		}
-		if f.modelCursorPos > 0 {
-			f.modelCursorPos--
-		}
-		return
-	case tcell.KeyRight:
-		if hasAlt {
-			f.modelCursorPos = widget.WordRightPos(f.modelInput, f.modelCursorPos)
-			return
-		}
-		if f.modelCursorPos < len(f.modelInput) {
-			f.modelCursorPos++
 		}
 		return
 	case tcell.KeyHome, tcell.KeyCtrlA:
@@ -931,10 +1009,6 @@ func (f *NewTaskForm) handleModelKey(event *tcell.EventKey) {
 		r := event.Rune()
 		if hasAlt {
 			switch r {
-			case 'b', 'B':
-				f.modelCursorPos = widget.WordLeftPos(f.modelInput, f.modelCursorPos)
-			case 'f', 'F':
-				f.modelCursorPos = widget.WordRightPos(f.modelInput, f.modelCursorPos)
 			case 'd', 'D':
 				f.modelInput, f.modelCursorPos = widget.DeleteWordRight(f.modelInput, f.modelCursorPos)
 			}
@@ -955,11 +1029,13 @@ func (f *NewTaskForm) handleSelectorKey(event *tcell.EventKey, idx *int, count i
 		*idx = (*idx - 1 + count) % count
 		if idx == &f.backendIdx {
 			f.updateAutocomplete()
+			f.rebuildModelOptions()
 		}
 	case tcell.KeyRight:
 		*idx = (*idx + 1) % count
 		if idx == &f.backendIdx {
 			f.updateAutocomplete()
+			f.rebuildModelOptions()
 		}
 	case tcell.KeyDown, tcell.KeyEnter:
 		if f.focused < ntFieldPrompt {
@@ -1674,9 +1750,12 @@ func (f *NewTaskForm) drawBranchField(screen tcell.Screen, x, y, w int) {
 	}
 }
 
-// drawModelField renders the model override text input. The placeholder shows
-// what an empty override resolves to: the selected backend's configured
-// default model, or the CLI's own default when none is configured.
+// drawModelField renders the per-backend model selector. Non-custom entries
+// render as a "◀ value ▶" selector (matching the backend selector); the
+// "default" entry surfaces the backend's configured default model as a dim
+// hint so the user sees what an empty override resolves to. The "custom…" entry
+// renders the selector value followed by an inline free-text input for a model
+// the list does not name.
 func (f *NewTaskForm) drawModelField(screen tcell.Screen, x, y, w int) {
 	focused := f.focused == ntFieldModel
 	modalBG := tcell.ColorDefault
@@ -1689,19 +1768,53 @@ func (f *NewTaskForm) drawModelField(screen tcell.Screen, x, y, w int) {
 	labelW := utf8.RuneCountInString(label)
 	widget.DrawText(screen, x, y, w, label, labelStyle)
 
-	inputX := x + labelW + 1
-	inputW := w - labelW - 1
-	if inputW <= 0 {
+	valX := x + labelW + 1
+	valW := w - labelW - 1
+	if valW <= 0 {
 		return
 	}
 
+	selector := "◀ " + f.modelDisplayLabel() + " ▶"
+	selectorStyle := theme.StyleNormal
+	if focused {
+		selectorStyle = theme.StyleSelected
+	}
+	widget.DrawText(screen, valX, y, valW, selector, selectorStyle)
+	selectorW := utf8.RuneCountInString(selector)
+
+	if f.modelIsCustom() {
+		// Inline free-text input after the selector value.
+		inputX := valX + selectorW + 1
+		inputW := valW - selectorW - 1
+		if inputW > 0 {
+			f.drawModelCustomInput(screen, inputX, y, inputW, focused, modalBG)
+		}
+		return
+	}
+
+	// "default" entry: hint at what an empty override resolves to.
+	if f.modelIdx == 0 {
+		if m := f.backendDefaultModel(); m != "" {
+			hint := "→ " + m
+			hintX := valX + selectorW + 1
+			hintW := valW - selectorW - 1
+			if hintW > 0 {
+				widget.DrawText(screen, hintX, y, hintW, hint, theme.StyleDimmed)
+			}
+		}
+	}
+}
+
+// drawModelCustomInput renders the inline free-text model input shown when the
+// "custom…" entry is selected.
+func (f *NewTaskForm) drawModelCustomInput(screen tcell.Screen, x, y, w int, focused bool, modalBG tcell.Color) {
 	inputRunes := f.modelInput
 	inputEmptyStyle := tcell.StyleDefault.Background(modalBG)
 	inputStyle := tcell.StyleDefault.Foreground(theme.ColorNormal).Background(modalBG)
 	cursorStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.Color252)
 
 	if focused {
-		for col := 0; col < inputW; col++ {
+		for col := range w {
 			var ch rune
 			var st tcell.Style
 			if col < len(inputRunes) {
@@ -1714,30 +1827,25 @@ func (f *NewTaskForm) drawModelField(screen tcell.Screen, x, y, w int) {
 			if col == f.modelCursorPos {
 				st = cursorStyle
 			}
-			screen.SetContent(inputX+col, y, ch, nil, st)
+			screen.SetContent(x+col, y, ch, nil, st)
 		}
 		return
 	}
 
 	if len(inputRunes) == 0 {
-		placeholder := "default"
-		if m := f.backendDefaultModel(); m != "" {
-			placeholder = "default: " + m
-		}
 		placeholderStyle := tcell.StyleDefault.Foreground(theme.ColorDimmed).Background(modalBG)
-		pRunes := []rune(placeholder)
-		for col := 0; col < inputW; col++ {
-			if col < len(pRunes) {
-				screen.SetContent(inputX+col, y, pRunes[col], nil, placeholderStyle)
+		placeholder := []rune("type a model")
+		for col := range w {
+			if col < len(placeholder) {
+				screen.SetContent(x+col, y, placeholder[col], nil, placeholderStyle)
 			} else {
-				screen.SetContent(inputX+col, y, ' ', nil, inputEmptyStyle)
+				screen.SetContent(x+col, y, ' ', nil, inputEmptyStyle)
 			}
 		}
 		return
 	}
-
 	unfocusedStyle := tcell.StyleDefault.Foreground(theme.ColorNormal).Background(modalBG)
-	widget.DrawText(screen, inputX, y, inputW, string(inputRunes), unfocusedStyle)
+	widget.DrawText(screen, x, y, w, string(inputRunes), unfocusedStyle)
 }
 
 // drawBranchAC renders the branch autocomplete dropdown.

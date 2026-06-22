@@ -1511,7 +1511,8 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
     </div>
     <div class="form-group">
       <label>Model (optional)</label>
-      <input type="text" id="create-model" placeholder="Backend default" autocapitalize="none" autocorrect="off">
+      <select id="create-model"></select>
+      <input type="text" id="create-model-custom" placeholder="Model identifier" autocapitalize="none" autocorrect="off" style="display:none;margin-top:6px">
     </div>
     <div class="form-group">
       <label>Name (optional)</label>
@@ -4647,21 +4648,78 @@ async function loadBackends() {
       || (createBackendsCache[0] && createBackendsCache[0].name)
       || '';
     if (preferred) sel.value = preferred;
-    // Surface the selected backend's default model as the placeholder so an
-    // empty override is self-documenting. onchange assignment is idempotent
-    // across loadBackends re-runs (unlike addEventListener).
-    sel.onchange = updateCreateModelPlaceholder;
-    updateCreateModelPlaceholder();
+    // Rebuild the per-backend model <select> whenever the backend changes.
+    // onchange assignment is idempotent across loadBackends re-runs (unlike
+    // addEventListener).
+    sel.onchange = rebuildCreateModelOptions;
+    rebuildCreateModelOptions();
     backendsLoaded = true;
   } catch(e) {}
 }
 
-function updateCreateModelPlaceholder() {
-  const input = document.getElementById('create-model');
-  const sel = document.getElementById('create-backend');
-  if (!input || !sel) return;
-  const b = createBackendsCache.find(x => x.name === sel.value);
-  input.placeholder = (b && b.model) ? `Backend default (${b.model})` : 'Backend default';
+// CREATE_MODEL_CUSTOM is the sentinel <option> value for the "custom…" entry.
+const CREATE_MODEL_CUSTOM = '__custom__';
+
+// rebuildCreateModelOptions repopulates the model <select> for the selected
+// backend: a "default" entry (empty value → backend/CLI default, labeled with
+// the backend's configured default model when present), the backend's known
+// models, and a "custom…" entry that reveals a free-text input. Resets to
+// "default" and hides the custom input on every rebuild (backend change).
+function rebuildCreateModelOptions() {
+  const sel = document.getElementById('create-model');
+  const backendSel = document.getElementById('create-backend');
+  const custom = document.getElementById('create-model-custom');
+  if (!sel || !backendSel) return;
+  const b = createBackendsCache.find(x => x.name === backendSel.value);
+  const models = (b && Array.isArray(b.models)) ? b.models : [];
+  sel.replaceChildren();
+
+  const def = document.createElement('option');
+  def.value = '';
+  def.textContent = (b && b.model) ? `default (${b.model})` : 'default';
+  sel.appendChild(def);
+
+  for (const m of models) {
+    const opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = m;
+    sel.appendChild(opt);
+  }
+
+  const customOpt = document.createElement('option');
+  customOpt.value = CREATE_MODEL_CUSTOM;
+  customOpt.textContent = 'custom…';
+  sel.appendChild(customOpt);
+
+  sel.value = '';
+  sel.onchange = onCreateModelSelectChange;
+  if (custom) { custom.style.display = 'none'; custom.value = ''; }
+}
+
+// onCreateModelSelectChange reveals the free-text input when "custom…" is
+// chosen and hides it otherwise.
+function onCreateModelSelectChange() {
+  const sel = document.getElementById('create-model');
+  const custom = document.getElementById('create-model-custom');
+  if (!sel || !custom) return;
+  if (sel.value === CREATE_MODEL_CUSTOM) {
+    custom.style.display = '';
+    custom.focus();
+  } else {
+    custom.style.display = 'none';
+  }
+}
+
+// createModelValue resolves the submitted model: the trimmed custom text when
+// "custom…" is selected, otherwise the select value (empty for "default").
+function createModelValue() {
+  const sel = document.getElementById('create-model');
+  if (!sel) return '';
+  if (sel.value === CREATE_MODEL_CUSTOM) {
+    const custom = document.getElementById('create-model-custom');
+    return custom ? custom.value.trim() : '';
+  }
+  return sel.value;
 }
 
 // --- File upload state for the New Task form ---
@@ -4775,7 +4833,7 @@ async function createTask() {
   // is a no-op until /api/backends loads, so we tolerate the empty case.
   const backend = document.getElementById('create-backend').value;
   // Empty model = use the backend's configured default model.
-  const taskModel = document.getElementById('create-model').value.trim();
+  const taskModel = createModelValue();
   if (!project) { showToast('Select a project'); return; }
   if (!prompt && !name && createFiles.length === 0) {
     showToast('Enter a name, prompt, or attach a file');
@@ -4807,7 +4865,7 @@ async function createTask() {
     if (r.ok) {
       document.getElementById('create-name').value = '';
       document.getElementById('create-prompt').value = '';
-      document.getElementById('create-model').value = '';
+      rebuildCreateModelOptions();
       createFiles = [];
       renderCreateFilesList();
       switchTab('tasks');

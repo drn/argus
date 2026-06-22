@@ -1556,6 +1556,12 @@ type backendJSON struct {
 	// Model is the backend's default model, injected as --model at session
 	// start unless the task carries its own override.
 	Model string `json:"model,omitempty"`
+	// Models is the per-backend option list for the web new-task model select,
+	// resolved via agent.BackendModels (the backend's configured Models, else
+	// the built-in KnownModels for its command). Config.toml `models` overrides
+	// reach only the TUI, which reads merged config; the API serves the DB
+	// roster, so this reflects the built-in list for DB-defined backends.
+	Models []string `json:"models,omitempty"`
 }
 
 func (s *Server) handleListBackends(w http.ResponseWriter, r *http.Request) {
@@ -1566,7 +1572,7 @@ func (s *Server) handleListBackends(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]backendJSON, 0, len(backends))
 	for name, b := range backends {
-		out = append(out, backendJSON{Name: name, Command: b.Command, PromptFlag: b.PromptFlag, Model: b.Model})
+		out = append(out, backendJSON{Name: name, Command: b.Command, PromptFlag: b.PromptFlag, Model: b.Model, Models: agent.BackendModels(b)})
 	}
 	for i := 1; i < len(out); i++ {
 		for j := i; j > 0 && out[j].Name < out[j-1].Name; j-- {

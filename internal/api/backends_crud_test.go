@@ -175,3 +175,31 @@ func TestHandleBackends_ModelRoundTrip(t *testing.T) {
 	}
 	testutil.True(t, found)
 }
+
+// GET /api/backends exposes the per-backend model option list (built-in
+// agent.KnownModels) so the web new-task form can populate its model <select>.
+func TestHandleBackends_ModelsList(t *testing.T) {
+	srv, _ := testServer(t)
+	mux := srv.routes()
+
+	req := masterReq("POST", "/api/backends", `{"name":"cc","command":"claude"}`)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusCreated)
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("GET", "/api/backends", ""))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	var resp struct {
+		Backends []backendJSON `json:"backends"`
+	}
+	testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	found := false
+	for _, b := range resp.Backends {
+		if b.Name == "cc" {
+			found = true
+			testutil.DeepEqual(t, b.Models, []string{"opus", "sonnet", "haiku"})
+		}
+	}
+	testutil.True(t, found)
+}

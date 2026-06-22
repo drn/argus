@@ -154,6 +154,12 @@ type Backend struct {
 	// means the CLI's own default. A per-task model (model.Task.Model) takes
 	// precedence over this value.
 	Model string `toml:"model"`
+	// Models is an optional list of selectable model identifiers offered for
+	// this backend in the new-task model selector. Empty falls back to the
+	// built-in agent.KnownModels list for the backend command. This is a
+	// config.toml overlay field only (no DB column); it overrides the built-in
+	// list for power users who run models the curated list does not name.
+	Models []string `toml:"models"`
 }
 
 // ProjectSandboxConfig holds per-project sandbox overrides.

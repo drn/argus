@@ -13,7 +13,7 @@ Argus — a terminal-native LLM code orchestrator (Go + tcell/tview). Manages mu
 1. Create `openspec/changes/<name>/` with `proposal.md`, delta specs under `specs/<capability>/spec.md`, and `tasks.md`.
 2. Get approval before implementing.
 3. Implement against the tasks, keeping deltas in sync as requirements shift.
-4. `openspec archive <name>` once shipped — merges deltas into base specs under `openspec/specs/<capability>/`.
+4. **Archive within the same PR, before merge** — run `openspec archive <name>` (or apply it by hand: merge the delta requirements into the base specs under `openspec/specs/<capability>/` and move the change folder to `openspec/changes/archive/<YYYY-MM-DD>-<name>/`) and commit the result on the change branch. Merge applies the work immediately, so the base-spec update must land atomically with the PR — do NOT leave archiving as a separate post-merge step (that strands the base specs behind shipped code). The `openspec` CLI may be absent; the manual merge-and-move is the fallback and produces the identical tree.
 
 Skip the change folder only for genuinely non-behavioral work: docs, comments, formatting, test-only edits, mechanical refactors. When unsure, write the change.
 
