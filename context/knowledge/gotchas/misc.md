@@ -158,6 +158,7 @@
 - **Goroutine inherits its parent process lifecycle.** TUI-initiated tasks fire `runAutoRename` inside the TUI process; if the user quits before Haiku returns, the rename is lost. Headless paths (HTTP API / MCP) run inside the daemon, so renames survive TUI restarts.
 - **`AutoName` opt-in lives on each call site, not centrally.** Only set `AutoName: true` when the name was string-interpolated from `Prompt` — NOT for fork (`<src>-fork`) or multipart with attachment-derived name (the filename is already meaningful).
 - **`llm.DefaultTimeout` must comfortably exceed claude CLI startup + Haiku latency.** Observed end-to-end is 6-8s (CLI startup 1-2s + model 3-6s) with occasional spikes; setting the timeout near that range produces frequent `signal: killed` failures and silent fallback to the regex slug. 30s gives ample headroom and costs nothing because the goroutine is fire-and-forget. If you ever shrink it, watch `[autoname] failed … signal: killed` in `~/.argus/daemon.log`.
+- **`GenerateName` folds `ExitError.Stderr` into the wrapped error — don't set `cmd.Stderr`.** `cmd.Output()` only populates `ExitError.Stderr` when `cmd.Stderr` is nil; the bare error's `Error()` is just `exit status 1`, so the claude CLI's real failure reason (credit/usage limit, auth, API error) is lost unless folded in. If you ever assign `cmd.Stderr`, `ExitError.Stderr` goes empty and the `[autoname] failed` log line reverts to opaque `exit status 1`. Stderr is truncated to 500 bytes (rune-safe) to keep the log line bounded.
 
 ## Link Extraction
 
