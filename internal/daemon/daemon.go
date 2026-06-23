@@ -815,16 +815,18 @@ func (d *Daemon) Serve(sockPath string) error {
 	// Start the scheduler (recurring scheduled tasks). Always-on — empty
 	// table is a no-op, so there's no setting to gate it. Created before
 	// the MCP server so SetScheduleManager can be wired before listening.
-	sch := scheduler.New(d.db, func(name, prompt, project, backend string) (*model.Task, error) {
+	sch := scheduler.New(d.db, func(name, prompt, project, backend, taskModel string) (*model.Task, error) {
 		// Schedule names are user-edited (then suffixed with a timestamp) —
 		// already meaningful; no auto-rename. backend is the per-schedule
-		// override (sched.Backend); empty string falls back to the configured
-		// default inside agent.CreateAndStart.
+		// override (sched.Backend) and taskModel is the per-schedule model
+		// override (sched.Model); empty strings fall back to the configured
+		// defaults inside agent.CreateAndStart.
 		return HeadlessCreateTask(d.db, d.runner, HeadlessInput{
 			Name:    name,
 			Prompt:  prompt,
 			Project: project,
 			Backend: backend,
+			Model:   taskModel,
 		})
 	})
 	if pushMgr != nil {

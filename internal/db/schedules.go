@@ -18,7 +18,7 @@ func (d *DB) Schedules() ([]*model.ScheduledTask, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	rows, err := d.conn.Query(`SELECT id, name, project, prompt, backend, schedule, run_once_at, enabled, created_at, last_run_at, next_run_at, last_task_id, last_error FROM scheduled_tasks ORDER BY name`)
+	rows, err := d.conn.Query(`SELECT id, name, project, prompt, backend, model, schedule, run_once_at, enabled, created_at, last_run_at, next_run_at, last_task_id, last_error FROM scheduled_tasks ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("query schedules: %w", err)
 	}
@@ -40,7 +40,7 @@ func (d *DB) GetSchedule(id string) (*model.ScheduledTask, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	row := d.conn.QueryRow(`SELECT id, name, project, prompt, backend, schedule, run_once_at, enabled, created_at, last_run_at, next_run_at, last_task_id, last_error FROM scheduled_tasks WHERE id=?`, id)
+	row := d.conn.QueryRow(`SELECT id, name, project, prompt, backend, model, schedule, run_once_at, enabled, created_at, last_run_at, next_run_at, last_task_id, last_error FROM scheduled_tasks WHERE id=?`, id)
 	s, err := scanSchedule(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrScheduleNotFound
@@ -61,8 +61,8 @@ func (d *DB) AddSchedule(s *model.ScheduledTask) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	_, err := d.conn.Exec(`INSERT INTO scheduled_tasks (id, name, project, prompt, backend, schedule, run_once_at, enabled, created_at, last_run_at, next_run_at, last_task_id, last_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		s.ID, s.Name, s.Project, s.Prompt, s.Backend, s.Schedule, formatTime(s.RunOnceAt), boolToInt(s.Enabled), formatTime(s.CreatedAt), formatTime(s.LastRunAt), formatTime(s.NextRunAt), s.LastTaskID, s.LastError)
+	_, err := d.conn.Exec(`INSERT INTO scheduled_tasks (id, name, project, prompt, backend, model, schedule, run_once_at, enabled, created_at, last_run_at, next_run_at, last_task_id, last_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		s.ID, s.Name, s.Project, s.Prompt, s.Backend, s.Model, s.Schedule, formatTime(s.RunOnceAt), boolToInt(s.Enabled), formatTime(s.CreatedAt), formatTime(s.LastRunAt), formatTime(s.NextRunAt), s.LastTaskID, s.LastError)
 	if err != nil {
 		return fmt.Errorf("insert schedule: %w", err)
 	}
@@ -74,8 +74,8 @@ func (d *DB) UpdateSchedule(s *model.ScheduledTask) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	res, err := d.conn.Exec(`UPDATE scheduled_tasks SET name=?, project=?, prompt=?, backend=?, schedule=?, run_once_at=?, enabled=?, last_run_at=?, next_run_at=?, last_task_id=?, last_error=? WHERE id=?`,
-		s.Name, s.Project, s.Prompt, s.Backend, s.Schedule, formatTime(s.RunOnceAt), boolToInt(s.Enabled), formatTime(s.LastRunAt), formatTime(s.NextRunAt), s.LastTaskID, s.LastError, s.ID)
+	res, err := d.conn.Exec(`UPDATE scheduled_tasks SET name=?, project=?, prompt=?, backend=?, model=?, schedule=?, run_once_at=?, enabled=?, last_run_at=?, next_run_at=?, last_task_id=?, last_error=? WHERE id=?`,
+		s.Name, s.Project, s.Prompt, s.Backend, s.Model, s.Schedule, formatTime(s.RunOnceAt), boolToInt(s.Enabled), formatTime(s.LastRunAt), formatTime(s.NextRunAt), s.LastTaskID, s.LastError, s.ID)
 	if err != nil {
 		return fmt.Errorf("update schedule: %w", err)
 	}
@@ -110,7 +110,7 @@ func scanSchedule(scanner interface {
 	var s model.ScheduledTask
 	var enabled int
 	var createdAt, lastRunAt, nextRunAt, runOnceAt string
-	if err := scanner.Scan(&s.ID, &s.Name, &s.Project, &s.Prompt, &s.Backend, &s.Schedule, &runOnceAt, &enabled, &createdAt, &lastRunAt, &nextRunAt, &s.LastTaskID, &s.LastError); err != nil {
+	if err := scanner.Scan(&s.ID, &s.Name, &s.Project, &s.Prompt, &s.Backend, &s.Model, &s.Schedule, &runOnceAt, &enabled, &createdAt, &lastRunAt, &nextRunAt, &s.LastTaskID, &s.LastError); err != nil {
 		return nil, err
 	}
 	s.Enabled = enabled != 0

@@ -58,6 +58,53 @@ func TestScheduleCRUD(t *testing.T) {
 	}
 }
 
+// TestScheduleModelRoundTrip pins the per-schedule model override through
+// Add → Get → Update → Get, and that a row inserted without one defaults to "".
+func TestScheduleModelRoundTrip(t *testing.T) {
+	d := testDB(t)
+
+	withModel := &model.ScheduledTask{
+		Name:     "sonnet watcher",
+		Project:  "argus",
+		Prompt:   "watch",
+		Backend:  "claude",
+		Model:    "sonnet",
+		Schedule: "@daily",
+		Enabled:  true,
+	}
+	noModel := &model.ScheduledTask{
+		Name:     "default watcher",
+		Project:  "argus",
+		Prompt:   "watch",
+		Schedule: "@daily",
+		Enabled:  true,
+	}
+	testutil.NoError(t, d.AddSchedule(withModel))
+	testutil.NoError(t, d.AddSchedule(noModel))
+
+	got, err := d.GetSchedule(withModel.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Model, "sonnet")
+
+	gotNone, err := d.GetSchedule(noModel.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotNone.Model, "")
+
+	// Update the model and confirm it persists.
+	got.Model = "opus"
+	testutil.NoError(t, d.UpdateSchedule(got))
+	reread, err := d.GetSchedule(withModel.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, reread.Model, "opus")
+
+	// Clearing the model writes the empty string back.
+	reread.Model = ""
+	testutil.NoError(t, d.UpdateSchedule(reread))
+	cleared, err := d.GetSchedule(withModel.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cleared.Model, "")
+}
+
 func TestUpdateScheduleMissing(t *testing.T) {
 	d := testDB(t)
 	err := d.UpdateSchedule(&model.ScheduledTask{ID: "nope"})

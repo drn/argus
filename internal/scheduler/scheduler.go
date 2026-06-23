@@ -23,10 +23,10 @@ const defaultTickInterval = time.Minute
 
 // TaskCreator creates a task via the same headless flow the HTTP API uses.
 // backend overrides the per-project / global default backend when non-empty;
-// empty falls back to the configured default. Deliberately narrower than
-// api.TaskCreator: schedules carry no per-task model override, so fired tasks
-// always use the backend's default model (agent.ResolveModel).
-type TaskCreator func(name, prompt, project, backend string) (*model.Task, error)
+// empty falls back to the configured default. taskModel overrides the
+// backend's default model when non-empty; empty lets agent.ResolveModel fall
+// back to the backend's configured default model.
+type TaskCreator func(name, prompt, project, backend, taskModel string) (*model.Task, error)
 
 // Scheduler is the cron service. It owns its own ticker goroutine; methods
 // other than Start/Stop are safe to call from any goroutine but exist mostly
@@ -292,11 +292,12 @@ func (s *Scheduler) fire(sched *model.ScheduledTask, parsed cron.Schedule, now t
 	// with the previous fire still being open.
 	name := scheduleFireName(sched.Name, now)
 
-	// Pass sched.Backend to the creator so the agent process is launched
-	// with the override. Updating task.Backend post-creation would be a no-op
-	// for the running session — agent.CreateAndStart resolves the backend
-	// inside its transactional flow before fire() can see the task row.
-	task, err := s.create(name, sched.Prompt, sched.Project, sched.Backend)
+	// Pass sched.Backend and sched.Model to the creator so the agent process
+	// is launched with the overrides. Updating task.Backend/Model
+	// post-creation would be a no-op for the running session —
+	// agent.CreateAndStart resolves both inside its transactional flow before
+	// fire() can see the task row.
+	task, err := s.create(name, sched.Prompt, sched.Project, sched.Backend, sched.Model)
 	if err != nil {
 		sched.LastError = err.Error()
 		sched.LastRunAt = now

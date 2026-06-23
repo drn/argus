@@ -83,6 +83,7 @@ func scheduleReqFromModel(s *model.ScheduledTask) apiclient.ScheduleReq {
 	project := s.Project
 	prompt := s.Prompt
 	backend := s.Backend
+	mdl := s.Model
 	schedule := s.Schedule
 	enabled := s.Enabled
 	req := apiclient.ScheduleReq{
@@ -90,6 +91,7 @@ func scheduleReqFromModel(s *model.ScheduledTask) apiclient.ScheduleReq {
 		Project:  &project,
 		Prompt:   &prompt,
 		Backend:  &backend,
+		Model:    &mdl,
 		Schedule: &schedule,
 		Enabled:  &enabled,
 	}

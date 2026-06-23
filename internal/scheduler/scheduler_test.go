@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,7 +29,7 @@ type recordingCreator struct {
 	failNext error
 }
 
-func (r *recordingCreator) Create(name, prompt, project, backend string) (*model.Task, error) {
+func (r *recordingCreator) Create(name, prompt, project, backend, taskModel string) (*model.Task, error) {
 	if r.failNext != nil {
 		err := r.failNext
 		r.failNext = nil
@@ -40,6 +41,7 @@ func (r *recordingCreator) Create(name, prompt, project, backend string) (*model
 		Project: project,
 		Prompt:  prompt,
 		Backend: backend,
+		Model:   taskModel,
 	}
 	r.calls = append(r.calls, *t)
 	return t, nil
@@ -378,6 +380,75 @@ func TestSchedulerRunNowWithBackendOverride(t *testing.T) {
 		t.Fatalf("expected 1 fire, got %d", len(rec.calls))
 	}
 	testutil.Equal(t, rec.calls[0].Backend, "codex")
+}
+
+// sched.Model must reach TaskCreator at fire time (cron-tick path) so the
+// launched agent runs on the per-schedule model override rather than the
+// backend default. An empty Model must arrive empty so ResolveModel falls back.
+func TestSchedulerFiresWithModelOverride(t *testing.T) {
+	s, d, rec, clk := newTestScheduler(t)
+	withModel := &model.ScheduledTask{
+		Name:     "with-sonnet",
+		Project:  "p",
+		Prompt:   "go",
+		Model:    "sonnet",
+		Schedule: "@every 1m",
+		Enabled:  true,
+	}
+	noModel := &model.ScheduledTask{
+		Name:     "no-model",
+		Project:  "p",
+		Prompt:   "go",
+		Schedule: "@every 1m",
+		Enabled:  true,
+	}
+	if err := d.AddSchedule(withModel); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.AddSchedule(noModel); err != nil {
+		t.Fatal(err)
+	}
+	s.tick()
+	clk.Advance(2 * time.Minute)
+	s.tick()
+	if len(rec.calls) != 2 {
+		t.Fatalf("expected 2 fires, got %d", len(rec.calls))
+	}
+	// Fire names are suffixed with the fire timestamp, so match by prefix.
+	byName := map[string]string{}
+	for _, c := range rec.calls {
+		switch {
+		case strings.HasPrefix(c.Name, "with-sonnet"):
+			byName["with-sonnet"] = c.Model
+		case strings.HasPrefix(c.Name, "no-model"):
+			byName["no-model"] = c.Model
+		}
+	}
+	testutil.Equal(t, byName["with-sonnet"], "sonnet")
+	testutil.Equal(t, byName["no-model"], "")
+}
+
+// RunNow (manual fire) must also pass sched.Model through Scheduler.fire.
+func TestSchedulerRunNowWithModelOverride(t *testing.T) {
+	s, d, rec, _ := newTestScheduler(t)
+	sched := &model.ScheduledTask{
+		Name:     "manual-sonnet",
+		Project:  "p",
+		Prompt:   "go",
+		Model:    "sonnet",
+		Schedule: "@every 1h",
+		Enabled:  true,
+	}
+	if err := d.AddSchedule(sched); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RunNow(sched.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.calls) != 1 {
+		t.Fatalf("expected 1 fire, got %d", len(rec.calls))
+	}
+	testutil.Equal(t, rec.calls[0].Model, "sonnet")
 }
 
 func TestOneShotFiresOnceThenAutoDisables(t *testing.T) {

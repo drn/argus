@@ -740,6 +740,7 @@ var scheduleToolDefs = []Tool{
 				"schedule":    map[string]interface{}{"type": "string", "description": "Cron expression. Mutually exclusive with run_once_at."},
 				"run_once_at": map[string]interface{}{"type": "string", "description": "RFC3339 UTC timestamp (e.g. \"2026-05-17T14:00:00Z\"). Must be in the future. Mutually exclusive with schedule."},
 				"backend":     map[string]interface{}{"type": "string", "description": "Optional backend override for this schedule (e.g. 'claude-haiku')."},
+				"model":       map[string]interface{}{"type": "string", "description": "Optional per-schedule model override (e.g. 'sonnet', 'opus', 'gpt-5'), passed to the backend CLI as --model at each fire. Empty = the backend's configured default."},
 				"enabled":     map[string]interface{}{"type": "boolean", "description": "Optional. Defaults to true."},
 			},
 			"required": []string{"name", "project", "prompt"},
@@ -758,6 +759,7 @@ var scheduleToolDefs = []Tool{
 				"schedule":    map[string]interface{}{"type": "string", "description": "Cron expression. Pass empty string to clear when switching to a one-shot."},
 				"run_once_at": map[string]interface{}{"type": "string", "description": "RFC3339 UTC timestamp. Pass empty string to clear when switching to a recurring schedule."},
 				"backend":     map[string]interface{}{"type": "string", "description": "Backend override (e.g. 'claude-haiku'). Empty string clears the override."},
+				"model":       map[string]interface{}{"type": "string", "description": "Per-schedule model override (e.g. 'sonnet', 'opus', 'gpt-5'), passed as --model at each fire. Empty string clears the override (falls back to the backend default)."},
 				"enabled":     map[string]interface{}{"type": "boolean", "description": "Toggle on/off without resending the prompt. Re-enabling a one-shot whose RunOnceAt is in the past does NOT cause it to fire again — LastRunAt is the definitive guard."},
 			},
 			"required": []string{"id"},
@@ -1665,6 +1667,9 @@ func (s *Server) toolScheduleList(id interface{}, _ json.RawMessage) *Response {
 		if sch.Backend != "" {
 			fmt.Fprintf(&sb, "  - backend: %s\n", sch.Backend)
 		}
+		if sch.Model != "" {
+			fmt.Fprintf(&sb, "  - model: %s\n", sch.Model)
+		}
 		if next := formatScheduleTime(sch.NextRunAt); next != "" {
 			fmt.Fprintf(&sb, "  - next_run_at: %s\n", next)
 		}
@@ -1689,6 +1694,7 @@ func (s *Server) toolScheduleCreate(id interface{}, args json.RawMessage) *Respo
 		Schedule  string `json:"schedule"`
 		RunOnceAt string `json:"run_once_at"`
 		Backend   string `json:"backend"`
+		Model     string `json:"model"`
 		Enabled   *bool  `json:"enabled"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
@@ -1699,6 +1705,7 @@ func (s *Server) toolScheduleCreate(id interface{}, args json.RawMessage) *Respo
 		Prompt:   p.Prompt,
 		Schedule: strings.TrimSpace(p.Schedule),
 		Backend:  strings.TrimSpace(p.Backend),
+		Model:    strings.TrimSpace(p.Model),
 		Enabled:  true, // default
 	}
 	if raw := strings.TrimSpace(p.RunOnceAt); raw != "" {
@@ -1744,6 +1751,7 @@ func (s *Server) toolScheduleUpdate(id interface{}, args json.RawMessage) *Respo
 		Schedule  *string `json:"schedule"`
 		RunOnceAt *string `json:"run_once_at"`
 		Backend   *string `json:"backend"`
+		Model     *string `json:"model"`
 		Enabled   *bool   `json:"enabled"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
@@ -1808,6 +1816,9 @@ func (s *Server) toolScheduleUpdate(id interface{}, args json.RawMessage) *Respo
 	}
 	if p.Backend != nil {
 		sched.Backend = strings.TrimSpace(*p.Backend)
+	}
+	if p.Model != nil {
+		sched.Model = strings.TrimSpace(*p.Model)
 	}
 	if p.Enabled != nil {
 		sched.Enabled = *p.Enabled

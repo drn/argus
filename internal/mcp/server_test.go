@@ -1678,6 +1678,29 @@ func TestScheduleCreate(t *testing.T) {
 		testutil.Contains(t, cr.Content[0].Text, "weekly-cleanup")
 	})
 
+	t.Run("with model override", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "schedule_create",
+			Arguments: json.RawMessage(`{"name":"sonnet-watch","project":"myapp","prompt":"watch","schedule":"@daily","model":"sonnet"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		var found *model.ScheduledTask
+		for _, sch := range store.schedules {
+			if sch.Name == "sonnet-watch" {
+				found = sch
+				break
+			}
+		}
+		if found == nil {
+			t.Fatal("sonnet-watch schedule not found")
+		}
+		testutil.Equal(t, found.Model, "sonnet")
+	})
+
 	t.Run("missing required field", func(t *testing.T) {
 		resp := doRequest(t, s, "tools/call", ToolCallParams{
 			Name:      "schedule_create",
@@ -1835,6 +1858,29 @@ func TestScheduleUpdate(t *testing.T) {
 		if got.NextRunAt.Equal(oldNext) {
 			t.Error("expected NextRunAt to be recomputed when schedule changed")
 		}
+	})
+
+	t.Run("set and clear model", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "schedule_update",
+			Arguments: json.RawMessage(`{"id":"existing-2","model":"sonnet"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		got, _ := store.GetSchedule("existing-2")
+		testutil.Equal(t, got.Model, "sonnet")
+
+		// Empty string clears the override.
+		resp = doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "schedule_update",
+			Arguments: json.RawMessage(`{"id":"existing-2","model":""}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		got, _ = store.GetSchedule("existing-2")
+		testutil.Equal(t, got.Model, "")
 	})
 
 	t.Run("missing id", func(t *testing.T) {

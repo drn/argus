@@ -252,9 +252,39 @@ func TestScheduleForm_IsSelector(t *testing.T) {
 	testutil.Equal(t, sf.isSelector(sfFieldName), false)
 	testutil.Equal(t, sf.isSelector(sfFieldProject), true)
 	testutil.Equal(t, sf.isSelector(sfFieldBackend), true)
+	testutil.Equal(t, sf.isSelector(sfFieldModel), false) // free-text, not a selector
 	testutil.Equal(t, sf.isSelector(sfFieldSchedule), false)
 	testutil.Equal(t, sf.isSelector(sfFieldPrompt), false)
 	testutil.Equal(t, sf.isSelector(sfFieldEnabled), true)
+}
+
+func TestScheduleForm_ResultCarriesModel(t *testing.T) {
+	sf := NewScheduleForm([]string{"p"}, []string{"claude"})
+	sf.focused = sfFieldModel
+	for _, r := range "sonnet" {
+		sf.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, 0))
+	}
+	testutil.Equal(t, sf.Result().Model, "sonnet")
+}
+
+func TestScheduleForm_LoadScheduleModel(t *testing.T) {
+	sf := NewScheduleForm([]string{"argus"}, []string{"claude"})
+	sf.LoadSchedule(&model.ScheduledTask{
+		ID:       "s1",
+		Name:     "watcher",
+		Project:  "argus",
+		Backend:  "claude",
+		Model:    "opus",
+		Schedule: "@daily",
+		Prompt:   "go",
+		Enabled:  true,
+	})
+	testutil.Equal(t, string(sf.fields[sfFieldModel]), "opus")
+	testutil.Equal(t, sf.Result().Model, "opus")
+
+	// Empty model round-trips as empty (backend default).
+	sf.fields[sfFieldModel] = nil
+	testutil.Equal(t, sf.Result().Model, "")
 }
 
 func TestScheduleForm_ProjectAndBackendValueOOB(t *testing.T) {

@@ -204,6 +204,7 @@ func (d *DB) createTables() error {
 			project      TEXT NOT NULL,
 			prompt       TEXT NOT NULL,
 			backend      TEXT NOT NULL DEFAULT '',
+			model        TEXT NOT NULL DEFAULT '',
 			schedule     TEXT NOT NULL DEFAULT '',
 			run_once_at  TEXT NOT NULL DEFAULT '',
 			enabled      INTEGER NOT NULL DEFAULT 1,
@@ -219,6 +220,9 @@ func (d *DB) createTables() error {
 
 	// Add run_once_at column to existing scheduled_tasks tables. Idempotent.
 	d.conn.Exec(`ALTER TABLE scheduled_tasks ADD COLUMN run_once_at TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+
+	// Per-schedule model override column. Idempotent.
+	d.conn.Exec(`ALTER TABLE scheduled_tasks ADD COLUMN model TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 
 	// Inter-task messaging. One row per peer-to-peer message; read state is
 	// per-recipient via read_at. kind is documentation for receiving agents

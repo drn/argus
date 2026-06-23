@@ -10,8 +10,10 @@ import (
 
 // ScheduledTask defines a scheduled task that fires either on a recurring
 // cron expression OR once at a specific timestamp. At each fire the daemon
-// creates a fresh task in Project using Prompt (and optionally Backend), the
-// same way the new-task form or vault watcher does.
+// creates a fresh task in Project using Prompt (and optionally Backend and
+// Model), the same way the new-task form or vault watcher does. Model is an
+// optional per-schedule model override; empty means the backend's configured
+// default model.
 //
 // Schedule is parsed by github.com/robfig/cron/v3 with ParseStandard
 // (5-field cron + descriptors @hourly/@daily/@weekly/@monthly/@yearly and
@@ -26,6 +28,7 @@ type ScheduledTask struct {
 	Project   string    `json:"project"`
 	Prompt    string    `json:"prompt"`
 	Backend   string    `json:"backend,omitempty"`
+	Model     string    `json:"model,omitempty"`
 	Schedule  string    `json:"schedule"`
 	RunOnceAt time.Time `json:"run_once_at,omitempty"`
 	Enabled   bool      `json:"enabled"`

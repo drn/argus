@@ -10,6 +10,7 @@ type ScheduleJSON struct {
 	Project    string `json:"project"`
 	Prompt     string `json:"prompt"`
 	Backend    string `json:"backend,omitempty"`
+	Model      string `json:"model,omitempty"`
 	Schedule   string `json:"schedule"`
 	RunOnceAt  string `json:"run_once_at,omitempty"`
 	Enabled    bool   `json:"enabled"`
@@ -29,6 +30,7 @@ type ScheduleReq struct {
 	Project   *string `json:"project,omitempty"`
 	Prompt    *string `json:"prompt,omitempty"`
 	Backend   *string `json:"backend,omitempty"`
+	Model     *string `json:"model,omitempty"`
 	Schedule  *string `json:"schedule,omitempty"`
 	RunOnceAt *string `json:"run_once_at,omitempty"`
 	Enabled   *bool   `json:"enabled,omitempty"`
