@@ -1142,8 +1142,10 @@ func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Styl
 		// Idle InProgress tasks not yet revisited — moon+stars, needs a look.
 		return theme.IconMoonStars, theme.StyleInReview
 	case hasIdleInProgress:
-		// All in-progress tasks are idle (waiting for input).
-		return theme.IconMoonOutline, tcell.StyleDefault.Foreground(theme.ColorInReview)
+		// All in-progress tasks are idle (waiting for input). Use the shared
+		// StyleInReview (same value) so this aggregate header can't drift from
+		// the per-task TaskStatusIcon if that style ever gains bold/background.
+		return theme.IconMoonOutline, theme.StyleInReview
 	case hasComplete && !hasPending:
 		return '✓', theme.StyleComplete
 	case hasComplete && hasPending:
@@ -1237,43 +1239,14 @@ func (tl *TaskListView) drawPinnedHeader(screen tcell.Screen, x, y, w int) {
 }
 
 func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *model.Task, cursor bool) {
-	// Status indicator
-	var statusChar rune
-	var statusStyle tcell.Style
-	switch task.Status {
-	case model.StatusPending:
-		statusChar = '○'
-		statusStyle = theme.StylePending
-	case model.StatusInProgress:
-		switch {
-		case tl.needsInput[task.ID]:
-			// Agent rendered a blocking prompt — call attention regardless of
-			// whether the user has visited since going idle.
-			statusChar = theme.IconNeedsInput
-			statusStyle = theme.StyleNeedsInput
-		case tl.idleUnvisited[task.ID]:
-			// Idle and not yet viewed since going idle — moon with stars.
-			statusChar = theme.IconMoonStars
-			statusStyle = theme.StyleInReview
-		case !tl.running[task.ID] || tl.idle[task.ID]:
-			// Session absent or idle (waiting for input) — moon icon.
-			statusChar = theme.IconMoonOutline
-			statusStyle = theme.StyleInReview
-		default:
-			// Actively running — animated spinner (nerd font progress spinner).
-			statusChar = widget.SpinnerFrame(tl.animFrame)
-			statusStyle = theme.StyleInProgress
-		}
-	case model.StatusInReview:
-		statusChar = theme.IconReview
-		statusStyle = theme.StyleInReview
-	case model.StatusComplete:
-		statusChar = '✓'
-		statusStyle = theme.StyleComplete
-	default:
-		statusChar = '○'
-		statusStyle = theme.StylePending
-	}
+	// Status indicator — resolved by the shared helper so the task switcher
+	// renders a glyph-identical indicator column.
+	statusChar, statusStyle := widget.TaskStatusIcon(task.Status, widget.TaskStatusInputs{
+		NeedsInput:    tl.needsInput[task.ID],
+		IdleUnvisited: tl.idleUnvisited[task.ID],
+		Running:       tl.running[task.ID],
+		Idle:          tl.idle[task.ID],
+	}, tl.animFrame)
 
 	// Build the row
 	nameStyle := theme.StyleNormal
