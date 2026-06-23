@@ -103,8 +103,15 @@ func (m *CopyChoiceModal) Draw(screen tcell.Screen) {
 	}
 
 	// Fixed chrome: top border, title, blank, [choices...], blank, footer,
-	// bottom border = 6 + len(choices).
-	formH := min(6+len(m.choices), height)
+	// bottom border = 6 + len(choices). On a terminal too short for the full
+	// chrome, clamp the choice rows (floor at 0) so the footer never bleeds onto
+	// a choice row — mirrors ConfirmModal's body clamp.
+	maxChoices := max(height-6, 0)
+	shown := m.choices
+	if len(shown) > maxChoices {
+		shown = shown[:maxChoices]
+	}
+	formH := min(6+len(shown), height)
 	formX := x + (width-formW)/2
 	formY := max(y+(height-formH)/2, y)
 
@@ -117,7 +124,7 @@ func (m *CopyChoiceModal) Draw(screen tcell.Screen) {
 
 	widget.DrawBorder(screen, formX, formY, formW, formH, theme.StyleFocusedBorder)
 	widget.DrawText(screen, formX+2, formY+1, formW-4, m.title, theme.StyleTitle)
-	for i, c := range m.choices {
+	for i, c := range shown {
 		style := theme.StyleNormal
 		prefix := "  "
 		if i == m.cursor {
