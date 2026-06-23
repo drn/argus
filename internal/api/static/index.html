@@ -1406,6 +1406,11 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
         <select id="sm-backend"></select>
       </div>
       <div class="form-group">
+        <label>Model (blank = backend default)</label>
+        <select id="sm-model"></select>
+        <input type="text" id="sm-model-custom" placeholder="Model identifier" autocapitalize="none" autocorrect="off" style="display:none;margin-top:6px">
+      </div>
+      <div class="form-group">
         <label>Schedule</label>
         <input id="sm-schedule" class="mono" placeholder="0 9 * * 1-5  or  @daily  or  @every 30m">
         <div class="meta">Cron format (m h dom mon dow), or @hourly · @daily · @weekly · @monthly · @yearly · @every 30m.</div>
@@ -5521,10 +5526,11 @@ function renderSchedulesBlock() {
     const last = s.last_run_at ? ` · last ${formatRel(s.last_run_at)}` : '';
     const err = s.last_error ? ` · <span style="color:var(--red)">err: ${esc(s.last_error)}</span>` : '';
     const backendLabel = s.backend ? ` · ${esc(s.backend)}` : '';
+    const modelLabel = s.model ? ` · ${esc(s.model)}` : '';
     return `<div class="settings-row">
       <div class="grow">
         <div class="label">${esc(s.name)}${s.enabled ? '' : ' <span class="meta" style="font-weight:normal">(off)</span>'}</div>
-        <div class="meta">${esc(s.project)}${backendLabel} · <code>${esc(s.schedule)}</code> · ${esc(next)}${last}${err}</div>
+        <div class="meta">${esc(s.project)}${backendLabel}${modelLabel} · <code>${esc(s.schedule)}</code> · ${esc(next)}${last}${err}</div>
       </div>
       <button data-act="edit-schedule" data-idx="${i}">Edit</button>
     </div>`;
@@ -5573,6 +5579,10 @@ function openScheduleEditor(s) {
     const sel = s && s.backend === b.name ? 'selected' : '';
     return `<option value="${escAttr(b.name)}" ${sel}>${esc(b.name)}</option>`;
   }).join('');
+  // Rebuild the per-backend model select on backend change, then seed it with
+  // the schedule's stored model (custom-aware) on initial open.
+  beSel.onchange = () => rebuildScheduleModelOptions();
+  rebuildScheduleModelOptions(s ? s.model : '');
 
   document.getElementById('sm-delete').style.display = s ? 'inline-block' : 'none';
   document.getElementById('sm-run').style.display = s ? 'inline-block' : 'none';
@@ -5613,6 +5623,7 @@ async function saveScheduleFromModal() {
     name,
     project,
     backend: document.getElementById('sm-backend').value,
+    model: scheduleModelValue(),
     schedule,
     prompt,
     enabled: document.getElementById('sm-enabled').checked,
@@ -5628,6 +5639,83 @@ async function saveScheduleFromModal() {
     closeScheduleEditor();
     loadSchedulesBlock();
   } catch(e) { showToast('Save failed: ' + e.message); }
+}
+
+// SM_MODEL_CUSTOM is the sentinel <option> value for the schedule modal's
+// "custom…" model entry.
+const SM_MODEL_CUSTOM = '__custom__';
+
+// rebuildScheduleModelOptions repopulates the schedule modal's model <select>
+// for the currently-selected backend: a "default" entry (empty value →
+// backend default, labeled with the backend's configured default when present),
+// the backend's known models, and a "custom…" entry that reveals a free-text
+// input. When `preselect` is a non-empty model not in the list, it is selected
+// via the custom input; an empty preselect resets to "default". Called on open
+// and on every backend change.
+function rebuildScheduleModelOptions(preselect) {
+  const sel = document.getElementById('sm-model');
+  const beSel = document.getElementById('sm-backend');
+  const custom = document.getElementById('sm-model-custom');
+  if (!sel || !beSel) return;
+  const b = (backendsCache || []).find(x => x.name === beSel.value);
+  const models = (b && Array.isArray(b.models)) ? b.models : [];
+  sel.replaceChildren();
+
+  const def = document.createElement('option');
+  def.value = '';
+  def.textContent = (b && b.model) ? `default (${b.model})` : 'default';
+  sel.appendChild(def);
+
+  for (const m of models) {
+    const opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = m;
+    sel.appendChild(opt);
+  }
+
+  const customOpt = document.createElement('option');
+  customOpt.value = SM_MODEL_CUSTOM;
+  customOpt.textContent = 'custom…';
+  sel.appendChild(customOpt);
+
+  sel.onchange = onScheduleModelSelectChange;
+  if (custom) { custom.style.display = 'none'; custom.value = ''; }
+
+  const want = (preselect || '').trim();
+  if (want && models.includes(want)) {
+    sel.value = want;
+  } else if (want) {
+    sel.value = SM_MODEL_CUSTOM;
+    if (custom) { custom.style.display = ''; custom.value = want; }
+  } else {
+    sel.value = '';
+  }
+}
+
+// onScheduleModelSelectChange reveals the free-text input when "custom…" is
+// chosen and hides it otherwise.
+function onScheduleModelSelectChange() {
+  const sel = document.getElementById('sm-model');
+  const custom = document.getElementById('sm-model-custom');
+  if (!sel || !custom) return;
+  if (sel.value === SM_MODEL_CUSTOM) {
+    custom.style.display = '';
+    custom.focus();
+  } else {
+    custom.style.display = 'none';
+  }
+}
+
+// scheduleModelValue resolves the submitted model: the trimmed custom text when
+// "custom…" is selected, otherwise the select value (empty for "default").
+function scheduleModelValue() {
+  const sel = document.getElementById('sm-model');
+  if (!sel) return '';
+  if (sel.value === SM_MODEL_CUSTOM) {
+    const custom = document.getElementById('sm-model-custom');
+    return custom ? custom.value.trim() : '';
+  }
+  return sel.value;
 }
 
 async function deleteScheduleFromModal() {

@@ -432,8 +432,8 @@ If the recipient has a live agent session the daemon also writes a single notifi
 | Tool               | Description                                                                                                                                                                                               |
 | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `schedule_list`    | List all schedules with name, project, cron expression, enabled state, next/last fire timestamps                                                                                                          |
-| `schedule_create`  | Create. Params: `name`, `project`, `prompt`, plus exactly one of `schedule` (cron or `@every <duration>`) or `run_once_at` (RFC3339 UTC); optional `backend`, `enabled`                                   |
-| `schedule_update`  | Partial update — pass `id` plus any fields to change. Toggling `enabled`, rotating prompts, or converting between cron and one-shot (set the new field; the other clears automatically).                  |
+| `schedule_create`  | Create. Params: `name`, `project`, `prompt`, plus exactly one of `schedule` (cron or `@every <duration>`) or `run_once_at` (RFC3339 UTC); optional `backend`, `model` (per-schedule `--model` override), `enabled` |
+| `schedule_update`  | Partial update — pass `id` plus any fields to change. Toggling `enabled`, rotating prompts, setting/clearing the `model` override, or converting between cron and one-shot (set the new field; the other clears automatically). |
 | `schedule_delete`  | Remove a schedule by `id`. Tasks already created by previous fires are unaffected.                                                                                                                        |
 | `schedule_run_now` | Fire a schedule immediately, out of cycle. Bookkeeping is updated so the next regular tick will not double-fire. One-shot rows auto-disable. Does NOT send a push notification — only cron-tick fires do. |
 
@@ -578,7 +578,7 @@ Tokens are stored as SHA-256 hashes; plaintext is never persisted on the server.
 | Method   | Endpoint                  | Description                                                                                                                                           |
 | -------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET`    | `/api/schedules`          | List schedules with `next_run_at`, `last_run_at`, `last_task_id`, `last_error`. |
-| `POST`   | `/api/schedules`          | Create. Body: `{"name","project","prompt","schedule","backend?","enabled"}`. Returns the created row. |
+| `POST`   | `/api/schedules`          | Create. Body: `{"name","project","prompt","schedule","backend?","model?","enabled"}`. `model` is an optional per-schedule `--model` override (empty = backend default). Returns the created row. |
 | `PUT`    | `/api/schedules/{id}`     | Partial update — every field optional. Useful for toggling `enabled`. |
 | `DELETE` | `/api/schedules/{id}`     | Remove. Tasks already created by the schedule are not affected. |
 | `POST`   | `/api/schedules/{id}/run` | Fire the schedule now, regardless of cron timing. Returns `{"task_id"}`. |

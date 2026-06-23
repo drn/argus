@@ -89,6 +89,51 @@ func TestScheduleHandlers_CreateListUpdateDelete(t *testing.T) {
 	testutil.Equal(t, len(list.Schedules), 0)
 }
 
+func TestScheduleHandlers_ModelCreateAndPartialUpdate(t *testing.T) {
+	srv, _ := testServer(t)
+	handler := authMiddleware(srv.token, srv.db, nil, srv.routes())
+
+	// Create with a model override — it echoes back.
+	body := `{"name":"Watcher","project":"argus","prompt":"watch","schedule":"@daily","backend":"claude","model":"sonnet"}`
+	req := authedReq("POST", "/api/schedules", body)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusCreated)
+	var created scheduleJSON
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Equal(t, created.Model, "sonnet")
+
+	// Partial update of only `model` preserves the other fields.
+	req = authedReq("PUT", "/api/schedules/"+created.ID, `{"model":"opus"}`)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusOK)
+	var updated scheduleJSON
+	if err := json.Unmarshal(w.Body.Bytes(), &updated); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Equal(t, updated.Model, "opus")
+	testutil.Equal(t, updated.Name, "Watcher")
+	testutil.Equal(t, updated.Backend, "claude")
+	testutil.Equal(t, updated.Schedule, "@daily")
+
+	// Clearing the model via empty string drops the override. Decode into a
+	// fresh struct: `model` is omitempty, so the cleared response omits it and
+	// reusing `updated` would retain the stale value.
+	req = authedReq("PUT", "/api/schedules/"+created.ID, `{"model":""}`)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusOK)
+	var cleared scheduleJSON
+	if err := json.Unmarshal(w.Body.Bytes(), &cleared); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Equal(t, cleared.Model, "")
+	testutil.Equal(t, cleared.Name, "Watcher")
+}
+
 func TestScheduleHandlers_CreateValidates(t *testing.T) {
 	srv, _ := testServer(t)
 	handler := authMiddleware(srv.token, srv.db, nil, srv.routes())

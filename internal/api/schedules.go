@@ -39,6 +39,7 @@ type scheduleJSON struct {
 	Project    string `json:"project"`
 	Prompt     string `json:"prompt"`
 	Backend    string `json:"backend,omitempty"`
+	Model      string `json:"model,omitempty"`
 	Schedule   string `json:"schedule"`
 	RunOnceAt  string `json:"run_once_at,omitempty"`
 	Enabled    bool   `json:"enabled"`
@@ -56,6 +57,7 @@ func toScheduleJSON(s *model.ScheduledTask) scheduleJSON {
 		Project:    s.Project,
 		Prompt:     s.Prompt,
 		Backend:    s.Backend,
+		Model:      s.Model,
 		Schedule:   s.Schedule,
 		Enabled:    s.Enabled,
 		LastTaskID: s.LastTaskID,
@@ -85,6 +87,7 @@ type scheduleRequest struct {
 	Project   *string `json:"project,omitempty"`
 	Prompt    *string `json:"prompt,omitempty"`
 	Backend   *string `json:"backend,omitempty"`
+	Model     *string `json:"model,omitempty"`
 	Schedule  *string `json:"schedule,omitempty"`
 	RunOnceAt *string `json:"run_once_at,omitempty"`
 	Enabled   *bool   `json:"enabled,omitempty"`
@@ -262,6 +265,9 @@ func applyScheduleRequest(sched *model.ScheduledTask, req scheduleRequest) error
 	}
 	if req.Backend != nil {
 		sched.Backend = strings.TrimSpace(*req.Backend)
+	}
+	if req.Model != nil {
+		sched.Model = strings.TrimSpace(*req.Model)
 	}
 	// Reject ambiguous "both cadences in one call" up front. Validate would
 	// not catch this because the per-field clear logic below silently picks

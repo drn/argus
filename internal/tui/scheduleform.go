@@ -15,10 +15,11 @@ const (
 	sfFieldName     = 0
 	sfFieldProject  = 1
 	sfFieldBackend  = 2
-	sfFieldSchedule = 3
-	sfFieldPrompt   = 4
-	sfFieldEnabled  = 5
-	sfFieldCount    = 6
+	sfFieldModel    = 3
+	sfFieldSchedule = 4
+	sfFieldPrompt   = 5
+	sfFieldEnabled  = 6
+	sfFieldCount    = 7
 )
 
 // ScheduleForm is a modal form for adding/editing scheduled tasks.
@@ -30,8 +31,10 @@ const (
 type ScheduleForm struct {
 	*tview.Box
 
-	// Text fields: name, schedule, prompt. Project / backend / enabled are
-	// selectors and live in their own state.
+	// Text fields: name, model, schedule, prompt. Project / backend / enabled
+	// are selectors and live in their own state. Model is free-text (not a
+	// cycling selector) so any model the curated list does not name is still
+	// reachable; empty = the backend's configured default.
 	fields  [sfFieldCount][]rune
 	cursors [sfFieldCount]int
 	focused int
@@ -76,6 +79,7 @@ func NewScheduleForm(projects, backends []string) *ScheduleForm {
 func (sf *ScheduleForm) LoadSchedule(s *model.ScheduledTask) {
 	sf.scheduleID = s.ID
 	sf.fields[sfFieldName] = []rune(s.Name)
+	sf.fields[sfFieldModel] = []rune(s.Model)
 	sf.fields[sfFieldSchedule] = []rune(s.Schedule)
 	sf.fields[sfFieldPrompt] = []rune(s.Prompt)
 	sf.enabled = s.Enabled
@@ -116,6 +120,7 @@ func (sf *ScheduleForm) Result() *model.ScheduledTask {
 		Name:     strings.TrimSpace(string(sf.fields[sfFieldName])),
 		Project:  project,
 		Backend:  backend,
+		Model:    strings.TrimSpace(string(sf.fields[sfFieldModel])),
 		Schedule: strings.TrimSpace(string(sf.fields[sfFieldSchedule])),
 		Prompt:   string(sf.fields[sfFieldPrompt]),
 		Enabled:  sf.enabled,
@@ -240,7 +245,7 @@ func (sf *ScheduleForm) Draw(screen tcell.Screen) {
 	}
 
 	formW := min(72, width-4)
-	formH := 18 // 6 fields * 2 rows + title + error + padding
+	formH := 20 // 7 fields * 2 rows + title + error + padding
 	formX := x + (width-formW)/2
 	formY := y + (height-formH)/2
 	if formY < y {
@@ -264,7 +269,7 @@ func (sf *ScheduleForm) Draw(screen tcell.Screen) {
 		if ly >= formY+formH-1 {
 			break
 		}
-		labels := [sfFieldCount]string{"Name:", "Project:", "Backend:", "Schedule:", "Prompt:", "Enabled:"}
+		labels := [sfFieldCount]string{"Name:", "Project:", "Backend:", "Model:", "Schedule:", "Prompt:", "Enabled:"}
 		labelStyle := theme.StyleDimmed
 		if i == sf.focused {
 			labelStyle = tcell.StyleDefault.Foreground(theme.ColorTitle)

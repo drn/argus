@@ -353,6 +353,7 @@ func (s *Store) Schedules() ([]*model.ScheduledTask, error) {
 			Project:    w.Project,
 			Prompt:     w.Prompt,
 			Backend:    w.Backend,
+			Model:      w.Model,
 			Schedule:   w.Schedule,
 			Enabled:    w.Enabled,
 			LastTaskID: w.LastTaskID,

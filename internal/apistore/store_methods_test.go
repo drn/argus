@@ -198,16 +198,37 @@ func TestStore_Schedules_RoundTrip(t *testing.T) {
 	s, _ := newStore(t, func(mux *http.ServeMux) {
 		mux.HandleFunc("/api/schedules", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"schedules":[{"id":"s1","name":"daily","project":"p","prompt":"x","schedule":"@daily","enabled":true,"created_at":"2026-05-22T00:00:00Z"}]}`))
+			_, _ = w.Write([]byte(`{"schedules":[{"id":"s1","name":"daily","project":"p","prompt":"x","model":"sonnet","schedule":"@daily","enabled":true,"created_at":"2026-05-22T00:00:00Z"}]}`))
 		})
 	})
 	got, err := s.Schedules()
 	testutil.NoError(t, err)
 	testutil.Equal(t, len(got), 1)
 	testutil.Equal(t, got[0].ID, "s1")
+	testutil.Equal(t, got[0].Model, "sonnet")
 	if got[0].CreatedAt.IsZero() {
 		t.Fatal("CreatedAt should parse RFC3339")
 	}
+}
+
+// scheduleReqFromModel must marshal the per-schedule model override so a remote
+// UpdateSchedule/AddSchedule carries it to the daemon.
+func TestScheduleReqFromModel_IncludesModel(t *testing.T) {
+	req := scheduleReqFromModel(&model.ScheduledTask{
+		Name: "n", Project: "p", Prompt: "x", Backend: "claude", Model: "sonnet", Schedule: "@daily", Enabled: true,
+	})
+	if req.Model == nil {
+		t.Fatal("Model pointer should be non-nil")
+	}
+	testutil.Equal(t, *req.Model, "sonnet")
+
+	// Empty model still round-trips as a non-nil empty pointer so an update can
+	// clear it (the server treats Model != nil as "set this field").
+	reqEmpty := scheduleReqFromModel(&model.ScheduledTask{Name: "n", Project: "p", Prompt: "x", Schedule: "@daily"})
+	if reqEmpty.Model == nil {
+		t.Fatal("Model pointer should be non-nil even when empty")
+	}
+	testutil.Equal(t, *reqEmpty.Model, "")
 }
 
 func TestStore_AddSchedule_AssignsIDAndCreatedAt(t *testing.T) {
