@@ -34,7 +34,17 @@ func TestRunner_StartAndGet(t *testing.T) {
 	})
 
 	task := &model.Task{ID: "t1", Name: "test", Worktree: t.TempDir()}
-	cfg := runnerTestConfig()
+	// Use a blocking command so the session is reliably observable while
+	// running. A fast-exiting command (e.g. "echo hello") races the exit
+	// watcher, which deletes the session as soon as the process finishes,
+	// so HasSession below could observe an already-cleaned-up session.
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "test"},
+		Backends: map[string]config.Backend{
+			"test": {Command: "sleep 60", PromptFlag: ""},
+		},
+		Projects: make(map[string]config.Project),
+	}
 
 	sess, err := r.Start(task, cfg, 24, 80, false)
 	if err != nil {
@@ -47,6 +57,9 @@ func TestRunner_StartAndGet(t *testing.T) {
 	if !r.HasSession("t1") {
 		t.Error("should have session")
 	}
+
+	// Stop the process to exercise the exit/cleanup path deterministically.
+	_ = r.Stop("t1")
 
 	// Wait for process to finish and runner to clean up
 	select {
