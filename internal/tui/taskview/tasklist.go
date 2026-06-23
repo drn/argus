@@ -109,8 +109,9 @@ type TaskListView struct {
 	OnPin func(task *model.Task)
 	// Callback when user presses 'r' to rename a task.
 	OnRename func(task *model.Task)
-	// Callback when user presses 'c' to copy task prompt.
-	OnCopyPrompt func(task *model.Task)
+	// Callback when user presses 'c' to copy a field of the task (name or
+	// prompt). The caller presents the choice; this fires for any selected task.
+	OnCopy func(task *model.Task)
 	// Callback fired after buildRows when the row composition changes.
 	// Used by App to force a tcell Sync — rows shifting under tview's
 	// diff-based emit is a known source of bleed-through in tmux.
@@ -983,8 +984,8 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 					tl.OnRename(t)
 				}
 			case 'c':
-				if t := tl.SelectedTask(); t != nil && t.Prompt != "" && tl.OnCopyPrompt != nil {
-					tl.OnCopyPrompt(t)
+				if t := tl.SelectedTask(); t != nil && tl.OnCopy != nil {
+					tl.OnCopy(t)
 				}
 			case 'H':
 				tl.ToggleHeraManaged()

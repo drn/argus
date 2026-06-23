@@ -325,6 +325,71 @@ func TestSmoke_PinToggleDoesNotClobberBackgroundRename(t *testing.T) {
 	testutil.Equal(t, got.Status, model.StatusInReview)
 }
 
+// TestSmoke_CopyChoiceModal exercises the full task-list `c` flow: opening the
+// copy-choice modal, then selecting Name or Prompt copies the right field to the
+// OS clipboard writer and returns focus to the task list.
+func TestSmoke_CopyChoiceModal(t *testing.T) {
+	d := testDB(t)
+	task := &model.Task{Name: "my-task", Status: model.StatusInProgress, Project: "p", Prompt: "fix the bug"}
+	if err := d.Add(task); err != nil {
+		t.Fatal(err)
+	}
+	app := New(d, agent.NewRunner(nil), false)
+
+	wrote := make(chan string, 2)
+	app.clipboardWriter = func(s string) error {
+		wrote <- s
+		return nil
+	}
+
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	// `c` opens the modal via the OnCopy callback.
+	readUI(t, app.tapp, func() { app.tasklist.OnCopy(task) })
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.mode, modeCopyChoice)
+		testutil.Equal(t, app.copyChoiceModal != nil, true)
+	})
+
+	// Enter on the default cursor copies the Name.
+	readUI(t, app.tapp, func() {
+		app.handleCopyChoiceKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	})
+	select {
+	case s := <-wrote:
+		testutil.Equal(t, s, "my-task")
+	case <-time.After(time.Second):
+		t.Fatal("clipboard writer never called for Name")
+	}
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeTaskList) })
+
+	// Re-open and select Prompt (Down then Enter).
+	readUI(t, app.tapp, func() { app.tasklist.OnCopy(task) })
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		app.handleCopyChoiceKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+		app.handleCopyChoiceKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	})
+	select {
+	case s := <-wrote:
+		testutil.Equal(t, s, "fix the bug")
+	case <-time.After(time.Second):
+		t.Fatal("clipboard writer never called for Prompt")
+	}
+
+	// Re-open and cancel with Esc — no copy, focus returns to the list.
+	readUI(t, app.tapp, func() { app.tasklist.OnCopy(task) })
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		app.handleCopyChoiceKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+		testutil.Equal(t, app.mode, modeTaskList)
+		testutil.Equal(t, app.copyChoiceModal == nil, true)
+	})
+}
+
 // TestSmoke_ReconciliationUsesNameSafeStatusWrite covers the daemon-mode
 // reconciliation path (refreshTasksWithIDs): an InProgress task with no live
 // session flips to InReview (NOT Complete — reconciliation is a pure inference

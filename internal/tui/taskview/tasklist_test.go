@@ -1686,10 +1686,10 @@ func TestTaskListView_RenameKeyNoSelection(t *testing.T) {
 	}
 }
 
-func TestTaskListView_CopyPromptKey(t *testing.T) {
+func TestTaskListView_CopyKey(t *testing.T) {
 	tl := NewTaskListView()
 	var copied *model.Task
-	tl.OnCopyPrompt = func(task *model.Task) {
+	tl.OnCopy = func(task *model.Task) {
 		copied = task
 	}
 
@@ -1703,13 +1703,14 @@ func TestTaskListView_CopyPromptKey(t *testing.T) {
 	handler := tl.InputHandler()
 	handler(tcell.NewEventKey(tcell.KeyRune, 'c', tcell.ModNone), func(tview.Primitive) {})
 	if copied == nil {
-		t.Fatal("OnCopyPrompt should have been called for task with prompt")
+		t.Fatal("OnCopy should have been called for task with prompt")
 	}
 	if copied.ID != "1" {
-		t.Errorf("OnCopyPrompt called with task %s, want 1", copied.ID)
+		t.Errorf("OnCopy called with task %s, want 1", copied.ID)
 	}
 
-	// Task without prompt — callback should NOT fire.
+	// Task without a prompt — callback STILL fires (the name is copyable, so
+	// the caller presents a choice for any selected task).
 	copied = nil
 	tl.SetTasks([]*model.Task{
 		{ID: "2", Name: "no-prompt", Project: "p", Prompt: ""},
@@ -1719,12 +1720,15 @@ func TestTaskListView_CopyPromptKey(t *testing.T) {
 	tl.CursorDown()
 
 	handler(tcell.NewEventKey(tcell.KeyRune, 'c', tcell.ModNone), func(tview.Primitive) {})
-	if copied != nil {
-		t.Error("OnCopyPrompt should NOT fire for task without prompt")
+	if copied == nil {
+		t.Fatal("OnCopy should fire even for a task without a prompt")
+	}
+	if copied.ID != "2" {
+		t.Errorf("OnCopy called with task %s, want 2", copied.ID)
 	}
 
 	// No callback wired — should not panic.
-	tl.OnCopyPrompt = nil
+	tl.OnCopy = nil
 	tl.SetTasks([]*model.Task{
 		{ID: "3", Name: "with-prompt", Project: "p", Prompt: "hello"},
 	})
@@ -2679,33 +2683,33 @@ func TestTaskListView_InputHandler_RenameKey(t *testing.T) {
 	}
 }
 
-func TestTaskListView_InputHandler_CopyPromptKey(t *testing.T) {
+func TestTaskListView_InputHandler_CopyKey(t *testing.T) {
 	tl := NewTaskListView()
 	tl.SetTasks([]*model.Task{{ID: "1", Name: "x", Project: "p", Status: model.StatusPending, Prompt: "do thing"}})
 	tl.expanded = "p"
 
 	var copied *model.Task
-	tl.OnCopyPrompt = func(t *model.Task) { copied = t }
+	tl.OnCopy = func(t *model.Task) { copied = t }
 
 	handler := tl.InputHandler()
 	handler(tcell.NewEventKey(tcell.KeyRune, 'c', tcell.ModNone), func(p tview.Primitive) {})
 	if copied == nil || copied.ID != "1" {
-		t.Errorf("OnCopyPrompt should fire when Prompt is non-empty, got %v", copied)
+		t.Errorf("OnCopy should fire when Prompt is non-empty, got %v", copied)
 	}
 }
 
-func TestTaskListView_InputHandler_CopyPromptEmptyPrompt(t *testing.T) {
+func TestTaskListView_InputHandler_CopyKeyEmptyPrompt(t *testing.T) {
 	tl := NewTaskListView()
 	tl.SetTasks([]*model.Task{{ID: "1", Name: "x", Project: "p", Status: model.StatusPending}}) // no Prompt
 	tl.expanded = "p"
 
-	called := false
-	tl.OnCopyPrompt = func(t *model.Task) { called = true }
+	var copied *model.Task
+	tl.OnCopy = func(t *model.Task) { copied = t }
 
 	handler := tl.InputHandler()
 	handler(tcell.NewEventKey(tcell.KeyRune, 'c', tcell.ModNone), func(p tview.Primitive) {})
-	if called {
-		t.Error("OnCopyPrompt should NOT fire when Prompt is empty")
+	if copied == nil || copied.ID != "1" {
+		t.Errorf("OnCopy should fire even when Prompt is empty (name is copyable), got %v", copied)
 	}
 }
 

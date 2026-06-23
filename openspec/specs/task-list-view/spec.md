@@ -3,9 +3,7 @@
 ## Purpose
 
 The task list view is the primary navigation surface for browsing all tasks, grouped by project into collapsible folders. It provides keyboard-driven cursor navigation, a substring filter, pinned and archive sections, per-task and per-project status indicators, and an accompanying detail and live-output preview pane for the selected task. It exists so a user can scan the state of every task at a glance and drill into one without leaving the keyboard.
-
 ## Requirements
-
 ### Requirement: Project grouping and section ordering
 
 Tasks SHALL be grouped by project name (alphabetically), and partitioned into three sections rendered top-to-bottom: Pinned, Active, and Archive. A task's section SHALL be chosen by precedence where pinned wins over archived, and archived wins over active. Tasks with no project name SHALL be grouped under "(no project)".
@@ -108,7 +106,7 @@ Pressing `/` SHALL activate a filter input mode. Typed text SHALL filter tasks b
 
 ### Requirement: Task selection and status actions
 
-Pressing Enter on a non-complete task SHALL fire the select callback; Enter on a complete task SHALL do nothing. Keyboard actions on the selected task SHALL cycle status forward (`s`) and backward (`S`), toggle archive (`a`), toggle pinned (`P`), rename (`r`), and copy the prompt (`c`, only when the prompt is non-empty). Each action SHALL fire its corresponding callback.
+Pressing Enter on a non-complete task SHALL fire the select callback; Enter on a complete task SHALL do nothing. Keyboard actions on the selected task SHALL cycle status forward (`s`) and backward (`S`), toggle archive (`a`), toggle pinned (`P`), rename (`r`), and open the copy-choice menu (`c`). Each action SHALL fire its corresponding callback.
 
 #### Scenario: Enter ignores completed tasks
 
@@ -125,10 +123,10 @@ Pressing Enter on a non-complete task SHALL fire the select callback; Enter on a
 - **WHEN** the user presses `s` (or `S`) on the selected task
 - **THEN** the task status advances to its next (or previous) value and the status-change callback fires
 
-#### Scenario: Copy prompt requires a non-empty prompt
+#### Scenario: Copy key opens the copy-choice menu
 
-- **WHEN** the user presses `c` on a task whose prompt is empty
-- **THEN** the copy-prompt callback does not fire
+- **WHEN** the user presses `c` on the selected task
+- **THEN** the copy callback fires with that task (regardless of whether the prompt is empty), so the caller can present a choice of copying the name or the prompt
 
 ### Requirement: Per-task status indicator
 
@@ -223,3 +221,4 @@ When the task list is refreshed with a new task set, the cursor SHALL be restore
 
 - **WHEN** the task set is replaced and the previously selected task still exists in the same section
 - **THEN** the cursor is restored onto that same task
+
