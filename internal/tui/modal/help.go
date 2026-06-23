@@ -54,7 +54,7 @@ var HelpSections = []HelpSection{
 			{"P", "toggle pin"},
 			{"H", "show/hide hera-managed (workers+coords)"},
 			{"r", "rename"},
-			{"c", "copy prompt"},
+			{"c", "copy name / prompt"},
 			{"/", "filter"},
 			{"ctrl+f", "fork task"},
 			{"ctrl+d", "destroy task"},

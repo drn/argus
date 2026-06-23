@@ -60,6 +60,7 @@ const (
 	modeScheduleForm
 	modeForkTask
 	modeRenameTask
+	modeCopyChoice // task-list `c` copy-name-or-prompt menu
 	modeLinkPicker
 	modeFuzzyLinkPicker
 	modeSessionPicker
@@ -190,6 +191,10 @@ type App struct {
 	// Rename task modal (created on demand)
 	renameModal *RenameTaskForm
 	renameTask  *model.Task
+
+	// Copy-choice modal (task-list `c`; created on demand)
+	copyChoiceModal *modal.CopyChoiceModal
+	copyChoiceTask  *model.Task
 
 	// Settings forms (created on demand)
 	projectForm       *ProjectForm
@@ -537,11 +542,8 @@ func (a *App) buildUI() {
 	a.tasklist.OnRename = func(t *model.Task) {
 		a.openRenameModal(t)
 	}
-	a.tasklist.OnCopyPrompt = func(t *model.Task) {
-		taskID, taskName := t.ID, t.Name
-		a.copyToClipboard(t.Prompt, "Prompt copied", func() {
-			uxlog.Log("[tui] copied prompt to clipboard: task %s (%s)", taskID, taskName)
-		})
+	a.tasklist.OnCopy = func(t *model.Task) {
+		a.openCopyChoiceModal(t)
 	}
 
 	a.taskGitPanel = gitpanel.NewGitPanel()
@@ -2322,6 +2324,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Rename task modal — delegate everything to the modal
 	if a.mode == modeRenameTask && a.renameModal != nil {
 		a.handleRenameTaskKey(event)
+		return nil
+	}
+
+	// Copy-choice modal (task-list `c`) — delegate to the modal.
+	if a.mode == modeCopyChoice && a.copyChoiceModal != nil {
+		a.handleCopyChoiceKey(event)
 		return nil
 	}
 
@@ -4563,6 +4571,56 @@ func (a *App) closeRenameModal() {
 	a.renameModal = nil
 	a.renameTask = nil
 	a.pages.RemovePage("renametask")
+	a.pages.SwitchToPage("tasks")
+	a.tapp.SetFocus(a.tasklist)
+}
+
+// openCopyChoiceModal shows the copy-choice menu for the given task, offering
+// to copy the name or (when present) the prompt to the OS clipboard.
+func (a *App) openCopyChoiceModal(t *model.Task) {
+	a.copyChoiceTask = t
+	a.copyChoiceModal = modal.NewCopyChoiceModal("Copy to clipboard", t.Prompt != "")
+	a.mode = modeCopyChoice
+	a.pages.AddPage("copychoice", a.copyChoiceModal, true, true)
+	a.pages.SwitchToPage("copychoice")
+	a.tapp.SetFocus(a.copyChoiceModal)
+}
+
+// handleCopyChoiceKey processes keys in the copy-choice modal, copying the
+// selected field on confirm and dismissing on cancel.
+func (a *App) handleCopyChoiceKey(event *tcell.EventKey) {
+	handler := a.copyChoiceModal.InputHandler()
+	handler(event, func(p tview.Primitive) {})
+
+	if a.copyChoiceModal.Canceled() {
+		a.closeCopyChoiceModal()
+		return
+	}
+
+	switch a.copyChoiceModal.Selected() {
+	case modal.CopyName:
+		taskID, taskName := a.copyChoiceTask.ID, a.copyChoiceTask.Name
+		a.copyToClipboard(taskName, "Name copied", func() {
+			uxlog.Log("[tui] copied name to clipboard: task %s (%s)", taskID, taskName)
+		})
+		a.closeCopyChoiceModal()
+	case modal.CopyPrompt:
+		taskID, taskName, prompt := a.copyChoiceTask.ID, a.copyChoiceTask.Name, a.copyChoiceTask.Prompt
+		a.copyToClipboard(prompt, "Prompt copied", func() {
+			uxlog.Log("[tui] copied prompt to clipboard: task %s (%s)", taskID, taskName)
+		})
+		a.closeCopyChoiceModal()
+	case modal.CopyNone:
+		// Still open — no selection yet.
+	}
+}
+
+// closeCopyChoiceModal dismisses the copy-choice modal.
+func (a *App) closeCopyChoiceModal() {
+	a.mode = modeTaskList
+	a.copyChoiceModal = nil
+	a.copyChoiceTask = nil
+	a.pages.RemovePage("copychoice")
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
 }
