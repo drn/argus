@@ -4179,17 +4179,30 @@ func (a *App) openTaskSwitcher() {
 	for _, id := range a.needsInputIDs {
 		needs[id] = true
 	}
+	// Mirror the task list's per-task state maps so the switcher's status icon
+	// resolves to the same in_progress sub-state glyph (spinner / moon variants).
+	running := make(map[string]bool, len(a.runningIDs))
+	for _, id := range a.runningIDs {
+		running[id] = true
+	}
+	idle := make(map[string]bool, len(a.idleIDs))
+	for _, id := range a.idleIDs {
+		idle[id] = true
+	}
 	entries := make([]taskSwitcherEntry, 0, len(a.tasks))
 	for _, t := range a.tasks {
 		if t.Archived || t.ID == currentID {
 			continue
 		}
 		entries = append(entries, taskSwitcherEntry{
-			ID:         t.ID,
-			Name:       t.Name,
-			Project:    t.Project,
-			Status:     t.Status,
-			NeedsInput: needs[t.ID],
+			ID:            t.ID,
+			Name:          t.Name,
+			Project:       t.Project,
+			Status:        t.Status,
+			NeedsInput:    needs[t.ID],
+			Running:       running[t.ID],
+			Idle:          idle[t.ID],
+			IdleUnvisited: a.idleUnvisited[t.ID],
 		})
 	}
 	// Needs-input first, then alphabetical by name (case-insensitive),

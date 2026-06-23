@@ -155,15 +155,19 @@ func TestTaskSwitcher_Paste(t *testing.T) {
 }
 
 func TestTaskSwitcherRowText(t *testing.T) {
+	// Status is conveyed by the leading icon now, so the row text is the task
+	// name followed by its project — never the status display name.
 	e := taskSwitcherEntry{Name: "Do thing", Project: "argus", Status: model.StatusInReview}
 	got := taskSwitcherRowText(e)
 	testutil.Contains(t, got, "Do thing")
 	testutil.Contains(t, got, "argus")
-	testutil.Contains(t, got, model.StatusInReview.DisplayName())
+	if strings.Contains(got, model.StatusInReview.DisplayName()) {
+		t.Errorf("row text should not spell out the status, got %q", got)
+	}
 
-	// No project → the meta tail is just the status, with no "project · " prefix.
+	// No project → just the name, with no "  ·  project" tail.
 	noProj := taskSwitcherRowText(taskSwitcherEntry{Name: "Solo", Project: "", Status: model.StatusPending})
-	testutil.Equal(t, noProj, "Solo  ·  "+model.StatusPending.DisplayName())
+	testutil.Equal(t, noProj, "Solo")
 }
 
 func drawSwitcherToString(t *testing.T, m *TaskSwitcherModal, w, h int) string {
@@ -193,6 +197,38 @@ func TestTaskSwitcher_DrawRendersRows(t *testing.T) {
 	testutil.Contains(t, out, "Enter switch")
 	// Needs-input marker icon present for the blocked task.
 	testutil.Contains(t, out, string(theme.IconNeedsInput))
+}
+
+// TestTaskSwitcher_DrawShowsStatusIconNotName: the switcher renders the task
+// list's status glyph to the left of each name instead of spelling out the
+// status, so the in_review task shows IconReview and no "In Review"/"In Progress"
+// text appears anywhere.
+func TestTaskSwitcher_DrawShowsStatusIconNotName(t *testing.T) {
+	m := NewTaskSwitcherModal(sampleSwitcherEntries())
+	out := drawSwitcherToString(t, m, 100, 24)
+	// in_review task's clipboard icon and the blocked task's needs-input icon.
+	testutil.Contains(t, out, string(theme.IconReview))
+	testutil.Contains(t, out, string(theme.IconNeedsInput))
+	// Status display names are no longer spelled out.
+	for _, name := range []string{
+		model.StatusInReview.DisplayName(),
+		model.StatusInProgress.DisplayName(),
+	} {
+		if strings.Contains(out, name) {
+			t.Errorf("switcher should not render status name %q; got:\n%s", name, out)
+		}
+	}
+}
+
+// TestSwitcherGrouped_DrawShowsStatusIcon: grouped (Ctrl+K) rows carry the icon
+// indented under their folder, identical to the task list.
+func TestSwitcherGrouped_DrawShowsStatusIcon(t *testing.T) {
+	m := groupedSwitcher() // argus expanded: task #1 (needs-input), #2 (in_progress)
+	out := drawSwitcherToString(t, m, 100, 24)
+	testutil.Contains(t, out, string(theme.IconNeedsInput))
+	if strings.Contains(out, model.StatusInProgress.DisplayName()) {
+		t.Errorf("grouped switcher should not render status name; got:\n%s", out)
+	}
 }
 
 func TestTaskSwitcher_DrawEmptyState(t *testing.T) {

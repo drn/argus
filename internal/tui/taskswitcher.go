@@ -22,6 +22,23 @@ type taskSwitcherEntry struct {
 	Project    string
 	Status     model.Status
 	NeedsInput bool
+	// Running/Idle/IdleUnvisited mirror the task list's per-task state maps so
+	// the switcher's status icon (widget.TaskStatusIcon) resolves to the same
+	// in_progress sub-state glyph the task list shows (spinner / moon variants).
+	Running       bool
+	Idle          bool
+	IdleUnvisited bool
+}
+
+// statusIcon resolves this entry's status glyph + style via the shared helper,
+// so the switcher's indicator column stays identical to the task list's.
+func (e taskSwitcherEntry) statusIcon() (rune, tcell.Style) {
+	return widget.TaskStatusIcon(e.Status, widget.TaskStatusInputs{
+		NeedsInput:    e.NeedsInput,
+		IdleUnvisited: e.IdleUnvisited,
+		Running:       e.Running,
+		Idle:          e.Idle,
+	}, widget.CurrentSpinnerFrame())
 }
 
 // switcherRowKind distinguishes a project-folder header from a task row in the
@@ -495,21 +512,20 @@ func (m *TaskSwitcherModal) landOnLastTaskGrouped(idx, prev int) {
 	}
 }
 
-// taskSwitcherRowText renders the non-marker portion of a flat-mode row: the
-// task name followed by a dimmed metadata tail (project · status).
+// taskSwitcherRowText renders the non-icon portion of a flat-mode row: the task
+// name followed by its project. The status is now conveyed by the leading icon
+// (matching the task list), so it is no longer spelled out here.
 func taskSwitcherRowText(e taskSwitcherEntry) string {
-	meta := e.Status.DisplayName()
 	if e.Project != "" {
-		meta = e.Project + " · " + meta
+		return e.Name + "  ·  " + e.Project
 	}
-	return e.Name + "  ·  " + meta
+	return e.Name
 }
 
-// switcherTaskRowText renders a grouped task row: the task name followed by a
-// dimmed status tail. The project lives in the folder header, so it's omitted
-// here.
+// switcherTaskRowText renders a grouped task row: just the task name. The status
+// is shown by the leading icon and the project lives in the folder header.
 func switcherTaskRowText(e taskSwitcherEntry) string {
-	return e.Name + "  ·  " + e.Status.DisplayName()
+	return e.Name
 }
 
 // switcherHeaderText renders a grouped project-folder header with its chevron
@@ -645,13 +661,11 @@ func (m *TaskSwitcherModal) drawFlatItems(screen tcell.Screen, innerX, itemsY, i
 		if selected {
 			style = theme.StyleSelected
 		}
-		if e.NeedsInput {
-			markerStyle := theme.StyleNeedsInput
-			if selected {
-				markerStyle = theme.StyleSelected
-			}
-			screen.SetContent(innerX, rowY, theme.IconNeedsInput, nil, markerStyle)
-		}
+		// Status icon to the left of the name — identical to the task list. The
+		// icon keeps its status colour even on the selected row (only the name
+		// adopts the selected style), matching drawTaskRow.
+		icon, iconStyle := e.statusIcon()
+		screen.SetContent(innerX, rowY, icon, nil, iconStyle)
 		display := taskSwitcherRowText(e)
 		textW := innerW - 2
 		if utf8.RuneCountInString(display) > textW && textW > 3 {
@@ -700,13 +714,11 @@ func (m *TaskSwitcherModal) drawGroupedItems(screen tcell.Screen, innerX, itemsY
 		if selected {
 			style = theme.StyleSelected
 		}
-		if e.NeedsInput {
-			markerStyle := theme.StyleNeedsInput
-			if selected {
-				markerStyle = theme.StyleSelected
-			}
-			screen.SetContent(innerX+2, rowY, theme.IconNeedsInput, nil, markerStyle)
-		}
+		// Status icon to the left of the name (indented under its folder),
+		// identical to the task list. The icon keeps its status colour even on
+		// the selected row, matching drawTaskRow.
+		icon, iconStyle := e.statusIcon()
+		screen.SetContent(innerX+2, rowY, icon, nil, iconStyle)
 		display := switcherTaskRowText(e)
 		textW := max(innerW-4, 1)
 		if utf8.RuneCountInString(display) > textW && textW > 3 {
