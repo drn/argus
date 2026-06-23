@@ -7,6 +7,7 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -168,6 +169,32 @@ func TestTaskSwitcherRowText(t *testing.T) {
 	// No project → just the name, with no "  ·  project" tail.
 	noProj := taskSwitcherRowText(taskSwitcherEntry{Name: "Solo", Project: "", Status: model.StatusPending})
 	testutil.Equal(t, noProj, "Solo")
+}
+
+// TestTaskSwitcherEntry_StatusIcon pins the switcher's entry→glyph wiring (the
+// flags populated in openTaskSwitcher flow through statusIcon to the shared
+// classifier). Covers the spinner (actively-running) branch specifically, which
+// the draw tests can't assert deterministically because the frame is time-based.
+func TestTaskSwitcherEntry_StatusIcon(t *testing.T) {
+	spinnerFrames := make(map[rune]bool, widget.SpinnerFrameCount())
+	for i := range widget.SpinnerFrameCount() {
+		spinnerFrames[widget.SpinnerFrame(i)] = true
+	}
+	// Actively-running in_progress → some spinner frame, in-progress style.
+	glyph, style := taskSwitcherEntry{Status: model.StatusInProgress, Running: true}.statusIcon()
+	if !spinnerFrames[glyph] {
+		t.Errorf("running in_progress entry: glyph %q is not a spinner frame", glyph)
+	}
+	testutil.Equal(t, style, theme.StyleInProgress)
+
+	// Idle in_progress (session present but quiet) → moon outline, not a spinner.
+	idleGlyph, idleStyle := taskSwitcherEntry{Status: model.StatusInProgress, Running: true, Idle: true}.statusIcon()
+	testutil.Equal(t, idleGlyph, theme.IconMoonOutline)
+	testutil.Equal(t, idleStyle, theme.StyleInReview)
+
+	// In-review → clipboard glyph.
+	revGlyph, _ := taskSwitcherEntry{Status: model.StatusInReview}.statusIcon()
+	testutil.Equal(t, revGlyph, theme.IconReview)
 }
 
 func drawSwitcherToString(t *testing.T, m *TaskSwitcherModal, w, h int) string {

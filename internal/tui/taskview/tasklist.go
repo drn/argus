@@ -1142,8 +1142,10 @@ func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Styl
 		// Idle InProgress tasks not yet revisited — moon+stars, needs a look.
 		return theme.IconMoonStars, theme.StyleInReview
 	case hasIdleInProgress:
-		// All in-progress tasks are idle (waiting for input).
-		return theme.IconMoonOutline, tcell.StyleDefault.Foreground(theme.ColorInReview)
+		// All in-progress tasks are idle (waiting for input). Use the shared
+		// StyleInReview (same value) so this aggregate header can't drift from
+		// the per-task TaskStatusIcon if that style ever gains bold/background.
+		return theme.IconMoonOutline, theme.StyleInReview
 	case hasComplete && !hasPending:
 		return '✓', theme.StyleComplete
 	case hasComplete && hasPending:
