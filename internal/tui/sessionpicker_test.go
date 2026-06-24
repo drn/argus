@@ -184,3 +184,30 @@ func TestSessionPicker_DrawVariousSizesNoPanic(t *testing.T) {
 		m.Draw(screen) // must not panic
 	}
 }
+
+// Meta (Alt/Option) word-motion keys on the session picker query.
+func TestSessionPicker_AltWordMotion(t *testing.T) {
+	m := NewSessionPickerModal(sampleSessions(), "")
+	h := m.InputHandler()
+	m.query = []rune("foo bar")
+	m.qCursor = 7
+
+	h(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModAlt), nil)
+	testutil.Equal(t, m.qCursor, 4) // start of "bar"
+
+	// Alt+Backspace from the end deletes the trailing word.
+	m.qCursor = 7
+	h(tcell.NewEventKey(tcell.KeyBackspace2, 0, tcell.ModAlt), nil)
+	testutil.Equal(t, string(m.query), "foo ")
+
+	// Alt+Delete word-right from the start.
+	m.query = []rune("foo bar")
+	m.qCursor = 0
+	h(tcell.NewEventKey(tcell.KeyDelete, 0, tcell.ModAlt), nil)
+	testutil.Equal(t, string(m.query), " bar")
+
+	// Alt+f cursor motion: from start of " bar", skip the space + "bar" to end.
+	m.qCursor = 0
+	h(tcell.NewEventKey(tcell.KeyRune, 'f', tcell.ModAlt), nil)
+	testutil.Equal(t, m.qCursor, 4)
+}

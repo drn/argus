@@ -97,19 +97,42 @@ func (m *FuzzyLinkPickerModal) InputHandler() func(event *tcell.EventKey, setFoc
 			m.qCursor = 0
 			m.refilter()
 		case tcell.KeyLeft:
-			if m.qCursor > 0 {
+			if event.Modifiers()&tcell.ModAlt != 0 {
+				m.qCursor = widget.WordLeftPos(m.query, m.qCursor)
+			} else if m.qCursor > 0 {
 				m.qCursor--
 			}
 		case tcell.KeyRight:
-			if m.qCursor < len(m.query) {
+			if event.Modifiers()&tcell.ModAlt != 0 {
+				m.qCursor = widget.WordRightPos(m.query, m.qCursor)
+			} else if m.qCursor < len(m.query) {
 				m.qCursor++
 			}
+		case tcell.KeyDelete:
+			if event.Modifiers()&tcell.ModAlt != 0 {
+				m.query, m.qCursor = widget.DeleteWordRight(m.query, m.qCursor)
+			} else if m.qCursor < len(m.query) {
+				m.query = append(m.query[:m.qCursor], m.query[m.qCursor+1:]...)
+			}
+			m.refilter()
 		case tcell.KeyHome, tcell.KeyCtrlA:
 			m.qCursor = 0
 		case tcell.KeyEnd, tcell.KeyCtrlE:
 			m.qCursor = len(m.query)
 		case tcell.KeyRune:
 			r := event.Rune()
+			if event.Modifiers()&tcell.ModAlt != 0 {
+				switch r {
+				case 'b', 'B':
+					m.qCursor = widget.WordLeftPos(m.query, m.qCursor)
+				case 'f', 'F':
+					m.qCursor = widget.WordRightPos(m.query, m.qCursor)
+				case 'd', 'D':
+					m.query, m.qCursor = widget.DeleteWordRight(m.query, m.qCursor)
+					m.refilter()
+				}
+				return
+			}
 			m.query = append(m.query[:m.qCursor], append([]rune{r}, m.query[m.qCursor:]...)...)
 			m.qCursor++
 			m.refilter()

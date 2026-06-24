@@ -194,6 +194,32 @@ Every modal that accepts typed text SHALL implement a paste handler that inserts
 - **WHEN** multi-line text is pasted into a single-line filter input
 - **THEN** newline and carriage-return characters are dropped and the remaining characters are appended
 
+### Requirement: Word-wise text editing
+
+Every editable modal text input field that maintains an edit cursor — the new-task prompt, the project form (name/path/backend), the rename field, the schedule form fields, the quick-add directory input, and every fuzzy/search picker query (task switcher, session picker, hera picker, link picker) — SHALL respond to meta- (Alt/Option-) modified editing keys so word-wise navigation and deletion behave consistently across all forms, matching the conventions of native terminal line editors. Specifically, a focused editable text field SHALL support: meta+Left and meta+Right (equivalently meta+b and meta+f) to move the cursor one word left or right; meta+Backspace (equivalently Ctrl+W) to delete the word before the cursor; meta+Delete (equivalently meta+d) to delete the word after the cursor; and Home/Ctrl+A and End/Ctrl+E to move the cursor to the start or end of the field. Word boundaries SHALL be computed by the shared word-boundary helper so all fields segment identically. These keys SHALL leave a read-only field (e.g. the project name in edit mode) unchanged, and on fields backed by autocomplete or live filtering the edit SHALL refresh the dependent state. Unrecognized meta+rune combinations SHALL be swallowed (a no-op), never inserted as literal characters.
+
+Two narrow exceptions apply. A pure incremental-search filter that does not maintain an edit cursor (the AppleEvents picker filter) is out of scope, as word motion has no cursor to operate on. The new-task model `custom…` input maintains an edit cursor but reserves Left/Right for cycling the model selector, so it SHALL provide Home/Ctrl+A and End/Ctrl+E positioning plus the full word- and line-deletion set (meta+Backspace, Ctrl+W, meta+Delete, meta+d, Ctrl+U, Ctrl+K) rather than arrow-based word motion.
+
+#### Scenario: Meta+arrow moves by word
+
+- **WHEN** an editable text field is focused with multi-word content and the user presses meta+Left then meta+Right
+- **THEN** the cursor moves to the previous word boundary and then back to the next word boundary
+
+#### Scenario: Meta+Backspace deletes the previous word
+
+- **WHEN** the cursor sits at the end of a multi-word text field and the user presses meta+Backspace
+- **THEN** the word before the cursor is removed and the cursor moves to the new boundary
+
+#### Scenario: Meta+Delete deletes the next word
+
+- **WHEN** the cursor sits at the start of a multi-word text field and the user presses meta+Delete
+- **THEN** the word after the cursor is removed and the cursor stays in place
+
+#### Scenario: Word editing leaves read-only fields untouched
+
+- **WHEN** a read-only text field is focused and the user presses any word-wise editing key
+- **THEN** the field value is unchanged
+
 ### Requirement: AppleEvents allowlist picker
 
 The AppleEvents picker SHALL present a filterable, multi-select list of scriptable apps, pre-populated from a project's existing allowlist, with selections that persist across filter changes. When the trimmed filter is a syntactically valid dotted bundle identifier that matches no scanned app and is not already selected, the picker SHALL offer a synthetic "Add custom" row for it. The confirmed result SHALL be the selected bundle identifiers in a deterministic sorted order.

@@ -551,3 +551,30 @@ func TestQuickAddForm_HandleSelection_EnterNoSelection(t *testing.T) {
 	f.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
 	testutil.Contains(t, f.errMsg, "No repos selected")
 }
+
+// Meta (Alt/Option) word-motion keys on the quick-add directory input.
+func TestQuickAddForm_DirAltWordMotion(t *testing.T) {
+	f := NewQuickAddForm(nil)
+	f.dirPath = []rune("/Users/me/proj")
+	f.dirCursor = len(f.dirPath)
+
+	// Alt+Backspace deletes the trailing word ("proj"); '/' is a delimiter.
+	f.handleDirInputKey(tcell.NewEventKey(tcell.KeyBackspace2, 0, tcell.ModAlt))
+	testutil.Equal(t, string(f.dirPath), "/Users/me/")
+
+	// Alt+Left then Alt+Left walks back over "me" and "Users".
+	f.handleDirInputKey(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModAlt))
+	testutil.Equal(t, f.dirCursor, 7) // start of "me"
+	f.handleDirInputKey(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModAlt))
+	testutil.Equal(t, f.dirCursor, 1) // start of "Users"
+
+	// Alt+Delete from here removes "Users".
+	f.handleDirInputKey(tcell.NewEventKey(tcell.KeyDelete, 0, tcell.ModAlt))
+	testutil.Equal(t, string(f.dirPath), "//me/")
+
+	// Ctrl+W deletes the word left from the end.
+	f.dirPath = []rune("/a/bbb")
+	f.dirCursor = len(f.dirPath)
+	f.handleDirInputKey(tcell.NewEventKey(tcell.KeyCtrlW, 0, 0))
+	testutil.Equal(t, string(f.dirPath), "/a/")
+}

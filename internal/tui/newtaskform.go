@@ -988,6 +988,10 @@ func (f *NewTaskForm) handleModelCustomKey(event *tcell.EventKey) {
 		f.modelInput, f.modelCursorPos = widget.DeleteWordLeft(f.modelInput, f.modelCursorPos)
 		return
 	case tcell.KeyDelete:
+		if hasAlt {
+			f.modelInput, f.modelCursorPos = widget.DeleteWordRight(f.modelInput, f.modelCursorPos)
+			return
+		}
 		if f.modelCursorPos < len(f.modelInput) {
 			f.modelInput = append(f.modelInput[:f.modelCursorPos], f.modelInput[f.modelCursorPos+1:]...)
 		}

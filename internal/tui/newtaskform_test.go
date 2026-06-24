@@ -1807,6 +1807,25 @@ func TestNewTaskForm_ModelCustomTyping(t *testing.T) {
 	testutil.Equal(t, string(f.modelInput), "")
 }
 
+// The model custom field's meta+Delete deletes the word to the right,
+// completing its word-deletion vocabulary (it already has Alt+Backspace/Alt+d).
+func TestNewTaskForm_ModelCustomAltDelete(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"b": {}}, "b",
+	)
+	handler := f.InputHandler()
+	enterCustomModel(t, f, handler)
+
+	for _, r := range "foo bar" {
+		handler(tcell.NewEventKey(tcell.KeyRune, r, 0), nil)
+	}
+	handler(tcell.NewEventKey(tcell.KeyCtrlA, 0, 0), nil) // cursor to start
+	handler(tcell.NewEventKey(tcell.KeyDelete, 0, tcell.ModAlt), nil)
+	testutil.Equal(t, string(f.modelInput), " bar")
+	testutil.Equal(t, f.modelCursorPos, 0)
+}
+
 func TestNewTaskForm_ModelNonCustomIgnoresRunes(t *testing.T) {
 	f := NewNewTaskForm(
 		map[string]config.Project{"p": {}}, "p",
