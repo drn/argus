@@ -89,3 +89,23 @@ func TestOrchPickerModal_DrawEmptyList(t *testing.T) {
 	screen.SetSize(80, 24)
 	m.Draw(screen) // must not panic on the empty-list branch
 }
+
+// Meta (Alt/Option) word-motion keys on the orchestrator picker query.
+func TestOrchPickerModal_AltWordMotion(t *testing.T) {
+	m := NewOrchPickerModal("t", orchs())
+	h := m.InputHandler()
+	m.query = []rune("foo bar")
+	m.qCursor = 7
+
+	h(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModAlt), func(tview.Primitive) {})
+	testutil.Equal(t, m.qCursor, 4)
+
+	m.qCursor = 7
+	h(tcell.NewEventKey(tcell.KeyBackspace2, 0, tcell.ModAlt), func(tview.Primitive) {})
+	testutil.Equal(t, string(m.query), "foo ")
+
+	m.query = []rune("foo bar")
+	m.qCursor = 0
+	h(tcell.NewEventKey(tcell.KeyDelete, 0, tcell.ModAlt), func(tview.Primitive) {})
+	testutil.Equal(t, string(m.query), " bar")
+}

@@ -168,28 +168,63 @@ func (sf *ScheduleForm) HandleKey(ev *tcell.EventKey) {
 		return
 	}
 
-	// Text field input.
+	// Text field input. Alt-modified keys provide word-wise motion/deletion
+	// (Option+Arrow / Option+Delete on macOS) via the shared word-boundary
+	// helpers, consistent with the other modal text inputs.
+	f := sf.focused
+	hasAlt := ev.Modifiers()&tcell.ModAlt != 0
 	switch ev.Key() {
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		f := sf.focused
-		if sf.cursors[f] > 0 {
+		if hasAlt {
+			sf.fields[f], sf.cursors[f] = widget.DeleteWordLeft(sf.fields[f], sf.cursors[f])
+		} else if sf.cursors[f] > 0 {
 			sf.fields[f] = append(sf.fields[f][:sf.cursors[f]-1], sf.fields[f][sf.cursors[f]:]...)
 			sf.cursors[f]--
 		}
 		return
+	case tcell.KeyCtrlW:
+		sf.fields[f], sf.cursors[f] = widget.DeleteWordLeft(sf.fields[f], sf.cursors[f])
+		return
+	case tcell.KeyDelete:
+		if hasAlt {
+			sf.fields[f], sf.cursors[f] = widget.DeleteWordRight(sf.fields[f], sf.cursors[f])
+		} else if sf.cursors[f] < len(sf.fields[f]) {
+			sf.fields[f] = append(sf.fields[f][:sf.cursors[f]], sf.fields[f][sf.cursors[f]+1:]...)
+		}
+		return
 	case tcell.KeyLeft:
-		if sf.cursors[sf.focused] > 0 {
-			sf.cursors[sf.focused]--
+		if hasAlt {
+			sf.cursors[f] = widget.WordLeftPos(sf.fields[f], sf.cursors[f])
+		} else if sf.cursors[f] > 0 {
+			sf.cursors[f]--
 		}
 		return
 	case tcell.KeyRight:
-		if sf.cursors[sf.focused] < len(sf.fields[sf.focused]) {
-			sf.cursors[sf.focused]++
+		if hasAlt {
+			sf.cursors[f] = widget.WordRightPos(sf.fields[f], sf.cursors[f])
+		} else if sf.cursors[f] < len(sf.fields[f]) {
+			sf.cursors[f]++
 		}
 		return
+	case tcell.KeyHome, tcell.KeyCtrlA:
+		sf.cursors[f] = 0
+		return
+	case tcell.KeyEnd, tcell.KeyCtrlE:
+		sf.cursors[f] = len(sf.fields[f])
+		return
 	case tcell.KeyRune:
-		f := sf.focused
 		r := ev.Rune()
+		if hasAlt {
+			switch r {
+			case 'b', 'B':
+				sf.cursors[f] = widget.WordLeftPos(sf.fields[f], sf.cursors[f])
+			case 'f', 'F':
+				sf.cursors[f] = widget.WordRightPos(sf.fields[f], sf.cursors[f])
+			case 'd', 'D':
+				sf.fields[f], sf.cursors[f] = widget.DeleteWordRight(sf.fields[f], sf.cursors[f])
+			}
+			return
+		}
 		sf.fields[f] = append(sf.fields[f][:sf.cursors[f]], append([]rune{r}, sf.fields[f][sf.cursors[f]:]...)...)
 		sf.cursors[f]++
 		return

@@ -650,3 +650,128 @@ func TestProjectForm_SetError(t *testing.T) {
 	pf.SetError("oops")
 	testutil.Equal(t, pf.errMsg, "oops")
 }
+
+// Word-motion bindings (Option+Arrow / Option+Delete on macOS, plus the
+// Alt+b/f/d and Ctrl/Home/End aliases) on the Name text field.
+func TestProjectForm_NameField_AltWordMotion(t *testing.T) {
+	t.Run("alt+left jumps word left", func(t *testing.T) {
+		pf := NewProjectForm()
+		pf.focused = pfFieldName
+		typeRunes(pf, "foo bar baz")
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModAlt))
+		testutil.Equal(t, pf.cursors[pfFieldName], 8) // start of "baz"
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModAlt))
+		testutil.Equal(t, pf.cursors[pfFieldName], 4) // start of "bar"
+	})
+
+	t.Run("alt+right jumps word right", func(t *testing.T) {
+		pf := NewProjectForm()
+		pf.focused = pfFieldName
+		typeRunes(pf, "foo bar")
+		pf.cursors[pfFieldName] = 0
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModAlt))
+		testutil.Equal(t, pf.cursors[pfFieldName], 3) // end of "foo"
+	})
+
+	t.Run("alt+backspace deletes word left", func(t *testing.T) {
+		pf := NewProjectForm()
+		pf.focused = pfFieldName
+		typeRunes(pf, "foo bar baz")
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyBackspace2, 0, tcell.ModAlt))
+		testutil.Equal(t, string(pf.fields[pfFieldName]), "foo bar ")
+		testutil.Equal(t, pf.cursors[pfFieldName], 8)
+	})
+
+	t.Run("alt+delete deletes word right", func(t *testing.T) {
+		pf := NewProjectForm()
+		pf.focused = pfFieldName
+		typeRunes(pf, "foo bar")
+		pf.cursors[pfFieldName] = 0
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyDelete, 0, tcell.ModAlt))
+		testutil.Equal(t, string(pf.fields[pfFieldName]), " bar")
+		testutil.Equal(t, pf.cursors[pfFieldName], 0)
+	})
+
+	t.Run("alt+b / alt+f / alt+d via rune", func(t *testing.T) {
+		pf := NewProjectForm()
+		pf.focused = pfFieldName
+		typeRunes(pf, "foo bar")
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'b', tcell.ModAlt))
+		testutil.Equal(t, pf.cursors[pfFieldName], 4)
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'f', tcell.ModAlt))
+		testutil.Equal(t, pf.cursors[pfFieldName], 7)
+		pf.cursors[pfFieldName] = 0
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'd', tcell.ModAlt))
+		testutil.Equal(t, string(pf.fields[pfFieldName]), " bar")
+	})
+
+	t.Run("ctrl+w deletes word left", func(t *testing.T) {
+		pf := NewProjectForm()
+		pf.focused = pfFieldName
+		typeRunes(pf, "foo bar")
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlW, 0, tcell.ModNone))
+		testutil.Equal(t, string(pf.fields[pfFieldName]), "foo ")
+	})
+
+	t.Run("home and end move to edges", func(t *testing.T) {
+		pf := NewProjectForm()
+		pf.focused = pfFieldName
+		typeRunes(pf, "foobar")
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyHome, 0, tcell.ModNone))
+		testutil.Equal(t, pf.cursors[pfFieldName], 0)
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyEnd, 0, tcell.ModNone))
+		testutil.Equal(t, pf.cursors[pfFieldName], 6)
+	})
+}
+
+// Word-motion on the Path field also refreshes the autocomplete dropdown.
+func TestProjectForm_PathField_AltDeleteUpdatesAC(t *testing.T) {
+	root := setupACDirs(t, "alpha", "beta")
+	pf := NewProjectForm()
+	pf.focused = pfFieldPath
+	typeRunes(pf, root+"/al")
+	testutil.Equal(t, pf.pathAC.Open(), true)
+
+	// Alt+Backspace removes the "al" word so the dropdown reflects the dir again.
+	pf.HandleKey(tcell.NewEventKey(tcell.KeyBackspace2, 0, tcell.ModAlt))
+	testutil.Equal(t, string(pf.fields[pfFieldPath]), root+"/")
+}
+
+// The name field stays read-only under word-motion keys in edit mode.
+func TestProjectForm_EditMode_NameReadOnlyUnderWordMotion(t *testing.T) {
+	pf := NewProjectForm()
+	pf.LoadProject("myproj", config.Project{Path: "/tmp"})
+	pf.focused = pfFieldName // force focus to the (normally skipped) name field
+	pf.HandleKey(tcell.NewEventKey(tcell.KeyBackspace2, 0, tcell.ModAlt))
+	pf.HandleKey(tcell.NewEventKey(tcell.KeyDelete, 0, tcell.ModAlt))
+	pf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlW, 0, tcell.ModNone))
+	pf.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'd', tcell.ModAlt))
+	testutil.Equal(t, string(pf.fields[pfFieldName]), "myproj")
+}
+
+// Plain (non-Alt) Delete forward-deletes the character under the cursor.
+func TestProjectForm_PlainDeleteForwardDeletes(t *testing.T) {
+	pf := NewProjectForm()
+	pf.focused = pfFieldName
+	typeRunes(pf, "foo")
+	pf.cursors[pfFieldName] = 0
+	pf.HandleKey(tcell.NewEventKey(tcell.KeyDelete, 0, tcell.ModNone))
+	testutil.Equal(t, string(pf.fields[pfFieldName]), "oo")
+	testutil.Equal(t, pf.cursors[pfFieldName], 0)
+
+	// Plain Delete at end of field is a no-op.
+	pf.cursors[pfFieldName] = 2
+	pf.HandleKey(tcell.NewEventKey(tcell.KeyDelete, 0, tcell.ModNone))
+	testutil.Equal(t, string(pf.fields[pfFieldName]), "oo")
+}
+
+// Word motion is field-agnostic — verify it on the Backend field too.
+func TestProjectForm_BackendField_AltWordMotion(t *testing.T) {
+	pf := NewProjectForm()
+	pf.focused = pfFieldBackend
+	typeRunes(pf, "claude code")
+	pf.HandleKey(tcell.NewEventKey(tcell.KeyBackspace2, 0, tcell.ModAlt))
+	testutil.Equal(t, string(pf.fields[pfFieldBackend]), "claude ")
+	pf.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModAlt))
+	testutil.Equal(t, pf.cursors[pfFieldBackend], 0)
+}

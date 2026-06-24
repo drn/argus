@@ -339,3 +339,32 @@ func TestScheduleForm_Draw_TinyRect(t *testing.T) {
 	t.Cleanup(func() { screen.Fini() })
 	sf.Draw(screen) // must not panic
 }
+
+// Meta (Alt/Option) word-motion keys on the schedule form's text fields.
+func TestScheduleForm_AltWordMotion(t *testing.T) {
+	sf := NewScheduleForm([]string{"p"}, []string{})
+	sf.focused = sfFieldName
+	for _, r := range "foo bar" {
+		sf.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, 0))
+	}
+
+	// Alt+Left jumps to the start of "bar".
+	sf.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModAlt))
+	testutil.Equal(t, sf.cursors[sfFieldName], 4)
+
+	// Alt+Backspace deletes the word left.
+	sf.HandleKey(tcell.NewEventKey(tcell.KeyBackspace2, 0, tcell.ModAlt))
+	testutil.Equal(t, string(sf.fields[sfFieldName]), "bar")
+	testutil.Equal(t, sf.cursors[sfFieldName], 0)
+
+	// Alt+Delete deletes the word right.
+	sf.HandleKey(tcell.NewEventKey(tcell.KeyDelete, 0, tcell.ModAlt))
+	testutil.Equal(t, string(sf.fields[sfFieldName]), "")
+
+	// Ctrl+W deletes the word left.
+	for _, r := range "alpha beta" {
+		sf.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, 0))
+	}
+	sf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlW, 0, 0))
+	testutil.Equal(t, string(sf.fields[sfFieldName]), "alpha ")
+}

@@ -235,14 +235,20 @@ func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
 		return
 	}
 
-	// Text field input.
+	// Text field input. Alt-modified keys provide word-wise motion/deletion
+	// (Option+Arrow / Option+Delete on macOS terminals), mirroring the
+	// RenameTaskForm bindings via the shared widget word-boundary helpers.
+	f := pf.focused
+	hasAlt := ev.Modifiers()&tcell.ModAlt != 0
+	readOnly := pf.editMode && f == pfFieldName
 	switch ev.Key() {
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		f := pf.focused
-		if pf.editMode && f == pfFieldName {
+		if readOnly {
 			return
 		}
-		if pf.cursors[f] > 0 {
+		if hasAlt {
+			pf.fields[f], pf.cursors[f] = widget.DeleteWordLeft(pf.fields[f], pf.cursors[f])
+		} else if pf.cursors[f] > 0 {
 			pf.fields[f] = append(pf.fields[f][:pf.cursors[f]-1], pf.fields[f][pf.cursors[f]:]...)
 			pf.cursors[f]--
 		}
@@ -250,22 +256,68 @@ func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
 			pf.updatePathAC()
 		}
 		return
+	case tcell.KeyCtrlW:
+		if readOnly {
+			return
+		}
+		pf.fields[f], pf.cursors[f] = widget.DeleteWordLeft(pf.fields[f], pf.cursors[f])
+		if f == pfFieldPath {
+			pf.updatePathAC()
+		}
+		return
+	case tcell.KeyDelete:
+		if readOnly {
+			return
+		}
+		if hasAlt {
+			pf.fields[f], pf.cursors[f] = widget.DeleteWordRight(pf.fields[f], pf.cursors[f])
+		} else if pf.cursors[f] < len(pf.fields[f]) {
+			pf.fields[f] = append(pf.fields[f][:pf.cursors[f]], pf.fields[f][pf.cursors[f]+1:]...)
+		}
+		if f == pfFieldPath {
+			pf.updatePathAC()
+		}
+		return
 	case tcell.KeyLeft:
-		if pf.cursors[pf.focused] > 0 {
-			pf.cursors[pf.focused]--
+		if hasAlt {
+			pf.cursors[f] = widget.WordLeftPos(pf.fields[f], pf.cursors[f])
+		} else if pf.cursors[f] > 0 {
+			pf.cursors[f]--
 		}
 		return
 	case tcell.KeyRight:
-		if pf.cursors[pf.focused] < len(pf.fields[pf.focused]) {
-			pf.cursors[pf.focused]++
+		if hasAlt {
+			pf.cursors[f] = widget.WordRightPos(pf.fields[f], pf.cursors[f])
+		} else if pf.cursors[f] < len(pf.fields[f]) {
+			pf.cursors[f]++
 		}
 		return
+	case tcell.KeyHome, tcell.KeyCtrlA:
+		pf.cursors[f] = 0
+		return
+	case tcell.KeyEnd, tcell.KeyCtrlE:
+		pf.cursors[f] = len(pf.fields[f])
+		return
 	case tcell.KeyRune:
-		if pf.editMode && pf.focused == pfFieldName {
+		if readOnly {
 			return
 		}
-		f := pf.focused
 		r := ev.Rune()
+		if hasAlt {
+			// Alt+B: word left, Alt+F: word right, Alt+D: delete word right.
+			switch r {
+			case 'b', 'B':
+				pf.cursors[f] = widget.WordLeftPos(pf.fields[f], pf.cursors[f])
+			case 'f', 'F':
+				pf.cursors[f] = widget.WordRightPos(pf.fields[f], pf.cursors[f])
+			case 'd', 'D':
+				pf.fields[f], pf.cursors[f] = widget.DeleteWordRight(pf.fields[f], pf.cursors[f])
+				if f == pfFieldPath {
+					pf.updatePathAC()
+				}
+			}
+			return
+		}
 		pf.fields[f] = append(pf.fields[f][:pf.cursors[f]], append([]rune{r}, pf.fields[f][pf.cursors[f]:]...)...)
 		pf.cursors[f]++
 		if f == pfFieldPath {

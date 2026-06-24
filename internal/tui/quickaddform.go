@@ -361,28 +361,43 @@ func (f *QuickAddForm) handleDirInputKey(ev *tcell.EventKey) {
 		return
 
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		if f.dirCursor > 0 {
+		if ev.Modifiers()&tcell.ModAlt != 0 {
+			f.dirPath, f.dirCursor = widget.DeleteWordLeft(f.dirPath, f.dirCursor)
+			f.updateDirAutocomplete()
+		} else if f.dirCursor > 0 {
 			f.dirPath = append(f.dirPath[:f.dirCursor-1], f.dirPath[f.dirCursor:]...)
 			f.dirCursor--
 			f.updateDirAutocomplete()
 		}
 		return
 
+	case tcell.KeyCtrlW:
+		f.dirPath, f.dirCursor = widget.DeleteWordLeft(f.dirPath, f.dirCursor)
+		f.updateDirAutocomplete()
+		return
+
 	case tcell.KeyDelete:
-		if f.dirCursor < len(f.dirPath) {
+		if ev.Modifiers()&tcell.ModAlt != 0 {
+			f.dirPath, f.dirCursor = widget.DeleteWordRight(f.dirPath, f.dirCursor)
+			f.updateDirAutocomplete()
+		} else if f.dirCursor < len(f.dirPath) {
 			f.dirPath = append(f.dirPath[:f.dirCursor], f.dirPath[f.dirCursor+1:]...)
 			f.updateDirAutocomplete()
 		}
 		return
 
 	case tcell.KeyLeft:
-		if f.dirCursor > 0 {
+		if ev.Modifiers()&tcell.ModAlt != 0 {
+			f.dirCursor = widget.WordLeftPos(f.dirPath, f.dirCursor)
+		} else if f.dirCursor > 0 {
 			f.dirCursor--
 		}
 		return
 
 	case tcell.KeyRight:
-		if f.dirCursor < len(f.dirPath) {
+		if ev.Modifiers()&tcell.ModAlt != 0 {
+			f.dirCursor = widget.WordRightPos(f.dirPath, f.dirCursor)
+		} else if f.dirCursor < len(f.dirPath) {
 			f.dirCursor++
 		}
 		return
@@ -408,6 +423,18 @@ func (f *QuickAddForm) handleDirInputKey(ev *tcell.EventKey) {
 
 	case tcell.KeyRune:
 		r := ev.Rune()
+		if ev.Modifiers()&tcell.ModAlt != 0 {
+			switch r {
+			case 'b', 'B':
+				f.dirCursor = widget.WordLeftPos(f.dirPath, f.dirCursor)
+			case 'f', 'F':
+				f.dirCursor = widget.WordRightPos(f.dirPath, f.dirCursor)
+			case 'd', 'D':
+				f.dirPath, f.dirCursor = widget.DeleteWordRight(f.dirPath, f.dirCursor)
+				f.updateDirAutocomplete()
+			}
+			return
+		}
 		f.dirPath = append(f.dirPath[:f.dirCursor], append([]rune{r}, f.dirPath[f.dirCursor:]...)...)
 		f.dirCursor++
 		f.updateDirAutocomplete()

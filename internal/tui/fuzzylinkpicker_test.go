@@ -204,3 +204,23 @@ func TestFuzzyLinkPickerModal_MatchesLabel(t *testing.T) {
 	testutil.Equal(t, len(m.filtered), 1)
 	testutil.Equal(t, m.filtered[0].Label, "My Docs Page")
 }
+
+// Meta (Alt/Option) word-motion keys on the link picker query.
+func TestFuzzyLinkPickerModal_AltWordMotion(t *testing.T) {
+	m := NewFuzzyLinkPickerModal([]Link{{Label: "x", URL: "y"}})
+	h := m.InputHandler()
+	m.query = []rune("foo bar")
+	m.qCursor = 7
+
+	h(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModAlt), func(tview.Primitive) {})
+	testutil.Equal(t, m.qCursor, 4)
+
+	m.qCursor = 7
+	h(tcell.NewEventKey(tcell.KeyBackspace2, 0, tcell.ModAlt), func(tview.Primitive) {})
+	testutil.Equal(t, string(m.query), "foo ")
+
+	m.query = []rune("foo bar")
+	m.qCursor = 0
+	h(tcell.NewEventKey(tcell.KeyDelete, 0, tcell.ModAlt), func(tview.Primitive) {})
+	testutil.Equal(t, string(m.query), " bar")
+}
