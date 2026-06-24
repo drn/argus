@@ -287,6 +287,9 @@ func (m *FuzzyLinkPickerModal) Draw(screen tcell.Screen) {
 
 			// Every row reserves a left gutter so PR and non-PR links stay
 			// column-aligned; PR rows fill it with the indicator glyph.
+			// textW may go ≤ 0 on a very narrow terminal; unlike the filter
+			// row's fieldW it needs no clamp — DrawText returns early for a
+			// non-positive width and SetContent clips offscreen cols in tcell.
 			textX := innerX + prLinkGutter
 			textW := innerW - prLinkGutter
 			if utf8.RuneCountInString(display) > textW {

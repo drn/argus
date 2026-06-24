@@ -61,7 +61,7 @@ func TestExtract(t *testing.T) {
 		{
 			name:    "github PR URL",
 			content: "PR: https://github.com/org/repo/pull/123",
-			want:    []Link{{Label: "https://github.com/org/repo/pull/123", URL: "https://github.com/org/repo/pull/123"}},
+			want:    []Link{{Label: "https://github.com/org/repo/pull/123", URL: "https://github.com/org/repo/pull/123", IsPR: true}},
 		},
 		{
 			name:    "URL with ANSI escape sequences",
@@ -105,7 +105,7 @@ func TestExtract(t *testing.T) {
 			name:    "multiple OSC 8 hyperlinks",
 			content: "\x1b]8;;https://github.com/org/repo/pull/1\x1b\\PR #1\x1b]8;;\x1b\\ and \x1b]8;;https://circleci.com/gh/org/repo/99\x1b\\CI\x1b]8;;\x1b\\",
 			want: []Link{
-				{Label: "https://github.com/org/repo/pull/1", URL: "https://github.com/org/repo/pull/1"},
+				{Label: "https://github.com/org/repo/pull/1", URL: "https://github.com/org/repo/pull/1", IsPR: true},
 				{Label: "https://circleci.com/gh/org/repo/99", URL: "https://circleci.com/gh/org/repo/99"},
 			},
 		},
@@ -117,12 +117,12 @@ func TestExtract(t *testing.T) {
 		{
 			name:    "cursor movement prevents text merging",
 			content: "https://github.com/org/repo/pull/123\x1b[5C\x1b[1Bpublished",
-			want:    []Link{{Label: "https://github.com/org/repo/pull/123", URL: "https://github.com/org/repo/pull/123"}},
+			want:    []Link{{Label: "https://github.com/org/repo/pull/123", URL: "https://github.com/org/repo/pull/123", IsPR: true}},
 		},
 		{
 			name:    "quoted URL stops at double quote",
 			content: `"https://github.com/org/repo/pull/123",URL,"https://github.com/org/repo/pull/123")`,
-			want:    []Link{{Label: "https://github.com/org/repo/pull/123", URL: "https://github.com/org/repo/pull/123"}},
+			want:    []Link{{Label: "https://github.com/org/repo/pull/123", URL: "https://github.com/org/repo/pull/123", IsPR: true}},
 		},
 		{
 			name:    "backtick-wrapped URL cleaned",
@@ -242,6 +242,7 @@ func TestExtract(t *testing.T) {
 			for i := range tt.want {
 				testutil.Equal(t, got[i].Label, tt.want[i].Label)
 				testutil.Equal(t, got[i].URL, tt.want[i].URL)
+				testutil.Equal(t, got[i].IsPR, tt.want[i].IsPR)
 			}
 		})
 	}

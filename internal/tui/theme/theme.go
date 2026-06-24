@@ -89,8 +89,10 @@ var (
 
 	// StylePRLink colors the PR indicator in the Open Link pickers. Purple is
 	// the app's PR family color, so a PR link reads as a PR at a glance without
-	// implying any particular review state.
-	StylePRLink = tcell.StyleDefault.Foreground(ColorPRAwaiting).Bold(true)
+	// implying any particular review state. Aliased to StylePRAwaiting so the
+	// shared purple stays structurally identical — restyle the family once and
+	// both surfaces move together rather than silently diverging.
+	StylePRLink = StylePRAwaiting
 
 	// StyleCoordinator renders the task-row coordinator indicator. Cyan (the
 	// project color) reads as "structural/orchestration" rather than a status.

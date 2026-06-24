@@ -193,7 +193,9 @@ func (m *LinkPickerModal) Draw(screen tcell.Screen) {
 		isCursor := idx == m.cursor
 
 		// Every row reserves a left gutter so PR and non-PR links stay
-		// column-aligned; PR rows fill it with the indicator glyph.
+		// column-aligned; PR rows fill it with the indicator glyph. textW may
+		// go ≤ 0 on a very narrow terminal but needs no clamp — DrawText
+		// returns early for a non-positive width and SetContent clips in tcell.
 		textX := innerX + prLinkGutter
 		textW := innerW - prLinkGutter
 		label := link.Label
