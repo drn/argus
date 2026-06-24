@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -138,52 +139,65 @@ func GenerateName(ctx context.Context, prompt string) (string, error) {
 	// Retry once on a transient CLI failure (overload, usage/rate limit, budget
 	// blip) so a momentary error doesn't permanently strand the slug. A clean
 	// run that produced UNUSABLE output is NOT retried — it would just produce
-	// the same output again — so generateNameOnce distinguishes a run error
-	// (retryable) from a validation error (terminal). Both attempts share the
-	// caller's deadline, so the retry can't run the operation past DefaultTimeout.
-	var runErr error
+	// the same output again — so generateNameOnce reports whether the failure is
+	// retryable (a non-zero exit) or terminal (a validation failure).
+	//
+	// Both attempts share the caller's deadline; the retry is best-effort within
+	// it. The transient failures it targets (budget / rate-limit / overload) fail
+	// fast, so the retry normally gets ~all the remaining window. A slow attempt 0
+	// that burns the whole deadline simply yields no retry — correct, since a hang
+	// is not the transient case the retry is for.
+	//
+	// firstErr is kept (not overwritten): attempt 0 runs with the most time
+	// budget and carries the richest reason, while a retry can die bare ("exit
+	// status 1" / "signal: killed") as the deadline closes in. Surfacing the
+	// first reason keeps the autoname log line diagnosable.
+	var firstErr error
 	for attempt := range 2 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				return "", runErr // out of time — surface the first failure's reason
+				return "", firstErr // out of time — surface the first failure's reason
 			case <-time.After(retryBackoff):
 			}
 		}
-		name, validationErr, rErr := generateNameOnce(ctx, args)
+		name, retryable, err := generateNameOnce(ctx, args)
 		switch {
-		case rErr != nil:
-			runErr = rErr // transient — fall through to retry
-		case validationErr != nil:
-			return "", validationErr // terminal — don't retry
-		default:
+		case err == nil:
 			return name, nil
+		case !retryable:
+			return "", err // validation failure — terminal, don't retry
+		default:
+			if firstErr == nil {
+				firstErr = err // transient — keep the first (richest) reason, then retry
+			}
 		}
 	}
-	return "", runErr
+	return "", firstErr
 }
 
 // generateNameOnce runs the claude CLI exactly once and classifies the result:
-//   - (name, nil, nil)        success
-//   - ("", validationErr, nil) clean run, unusable output — NOT retryable
-//   - ("", nil, runErr)       non-zero exit — retryable
-func generateNameOnce(ctx context.Context, args []string) (name string, validationErr, runErr error) {
+//   - (name, false, nil)  success
+//   - ("", false, err)    clean run, unusable output — terminal, NOT retryable
+//   - ("", true,  err)    non-zero exit — retryable
+func generateNameOnce(ctx context.Context, args []string) (name string, retryable bool, err error) {
 	cmd := nameGenCmd(ctx, "claude", args...)
 	// Run from a neutral cwd so claude can't auto-discover CLAUDE.md or
 	// project-local config in the worktree even though --setting-sources ""
 	// already disables settings loading. Belt-and-suspenders.
 	cmd.Dir = os.TempDir()
 
-	out, err := cmd.Output()
-	if err != nil {
-		return "", nil, wrapRunError(err, out)
+	out, runErr := cmd.Output()
+	if runErr != nil {
+		return "", true, wrapRunError(runErr, out)
 	}
 
-	name = sanitizeAndValidate(string(out))
+	outStr := string(out)
+	name = sanitizeAndValidate(outStr)
 	if name == "" {
-		return "", fmt.Errorf("invalid name from model: %q", strings.TrimSpace(string(out))), nil
+		return "", false, fmt.Errorf("invalid name from model: %q", strings.TrimSpace(outStr))
 	}
-	return name, nil, nil
+	return name, false, nil
 }
 
 // wrapRunError folds the CLI's emitted failure reason into the error so the
@@ -191,17 +205,47 @@ func generateNameOnce(ctx context.Context, args []string) (name string, validati
 // `claude -p` writes RUNTIME errors (budget exceeded, usage/rate limit, overload)
 // to STDOUT and exits non-zero with an EMPTY stderr; only flag-parse errors go
 // to stderr. cmd.Output() returns the captured stdout in `out` even on error, so
-// prefer it (the runtime-error channel) and fall back to ExitError.Stderr.
+// stdout leads (the runtime-error channel); stderr is appended when ALSO present
+// (e.g. partial stdout + a flag-parse error) so neither channel's reason is lost.
+//
+// The folded reason is scrubbed of control characters: it is untrusted output
+// (claude may echo attacker-influenced prompt text) and flows verbatim into
+// uxlog (`%s`-formatted, newline-terminated per line) and slog's TextHandler
+// (which does not quote embedded newlines). An un-scrubbed newline would forge a
+// second physical log line — a fake `[autoname] renamed …` record. scrubReason
+// collapses CR/LF/ANSI/other control runes to spaces, defusing the injection.
 func wrapRunError(err error, stdout []byte) error {
-	if reason := strings.TrimSpace(string(stdout)); reason != "" {
-		return fmt.Errorf("claude -p failed: %w: %s", err, truncate(reason, 500))
+	var reasons []string
+	if r := scrubReason(string(stdout)); r != "" {
+		reasons = append(reasons, r)
 	}
 	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-		if stderr := strings.TrimSpace(string(exitErr.Stderr)); stderr != "" {
-			return fmt.Errorf("claude -p failed: %w: %s", err, truncate(stderr, 500))
+		if r := scrubReason(string(exitErr.Stderr)); r != "" {
+			reasons = append(reasons, r)
 		}
 	}
-	return fmt.Errorf("claude -p failed: %w", err)
+	if len(reasons) == 0 {
+		return fmt.Errorf("claude -p failed: %w", err)
+	}
+	return fmt.Errorf("claude -p failed: %w: %s", err, truncate(strings.Join(reasons, " | "), 500))
+}
+
+// scrubReason trims surrounding whitespace and replaces every control rune
+// (newlines, CR, tab, ANSI ESC, etc.) with a single space, so an untrusted CLI
+// reason can be folded into a single-line log record without splitting it or
+// injecting terminal escapes. Runs of resulting spaces are left as-is (cheap;
+// truncate caps the length anyway).
+func scrubReason(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	return strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' || r == '\r' || unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
 }
 
 // truncate caps s at max bytes (rune-safe), appending an ellipsis when it
