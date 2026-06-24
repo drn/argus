@@ -734,12 +734,16 @@ func TestHandleGetLinks(t *testing.T) {
 			Links []struct {
 				Label string `json:"label"`
 				URL   string `json:"url"`
+				IsPR  bool   `json:"isPR"`
 			} `json:"links"`
 		}
 		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 		testutil.Equal(t, len(resp.Links), 2)
 		testutil.Equal(t, resp.Links[0].URL, "https://example.com/page")
+		testutil.Equal(t, resp.Links[0].IsPR, false)
 		testutil.Equal(t, resp.Links[1].URL, "https://github.com/org/repo/pull/42")
+		// PR URLs are flagged so the web client can mark them without re-deriving.
+		testutil.Equal(t, resp.Links[1].IsPR, true)
 	})
 }
 

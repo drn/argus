@@ -196,8 +196,9 @@ func (m *FuzzyLinkPickerModal) Draw(screen tcell.Screen) {
 		}
 	}
 
-	// modal width: label + padding + border
-	modalW := max(maxDisplayW+6, 40)
+	// modal width: label + padding + border + the PR-indicator gutter every
+	// item row reserves (so the widest link still fits beside the glyph).
+	modalW := max(maxDisplayW+6+prLinkGutter, 40)
 	modalW = min(modalW, width-4)
 	innerW := modalW - 4
 
@@ -284,10 +285,14 @@ func (m *FuzzyLinkPickerModal) Draw(screen tcell.Screen) {
 				display = link.Label + "  " + link.URL
 			}
 
-			if utf8.RuneCountInString(display) > innerW {
+			// Every row reserves a left gutter so PR and non-PR links stay
+			// column-aligned; PR rows fill it with the indicator glyph.
+			textX := innerX + prLinkGutter
+			textW := innerW - prLinkGutter
+			if utf8.RuneCountInString(display) > textW {
 				runes := []rune(display)
-				if innerW > 3 {
-					display = string(runes[:innerW-1]) + "…"
+				if textW > 3 {
+					display = string(runes[:textW-1]) + "…"
 				}
 			}
 
@@ -295,7 +300,10 @@ func (m *FuzzyLinkPickerModal) Draw(screen tcell.Screen) {
 			if isCursor {
 				style = theme.StyleSelected
 			}
-			widget.DrawText(screen, innerX, itemsY+i, innerW, display, style)
+			if link.IsPR {
+				screen.SetContent(innerX, itemsY+i, theme.IconPRLink, nil, theme.StylePRLink)
+			}
+			widget.DrawText(screen, textX, itemsY+i, textW, display, style)
 		}
 	}
 

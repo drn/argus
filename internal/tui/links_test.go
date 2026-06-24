@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -8,7 +9,21 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/theme"
 )
+
+// screenHasRune reports whether any cell on the simulation screen renders r.
+// Used to assert the PR indicator glyph is (or isn't) painted by a picker.
+// Callers must Show() the screen after Draw so the front buffer is populated.
+func screenHasRune(sim tcell.SimulationScreen, r rune) bool {
+	cells, w, h := sim.GetContents()
+	for i := 0; i < w*h; i++ {
+		if slices.Contains(cells[i].Runes, r) {
+			return true
+		}
+	}
+	return false
+}
 
 // Pure ExtractLinks coverage lives in internal/links/links_test.go. This file
 // keeps tests for the TUI-specific picker modal and openURL helper.
@@ -186,4 +201,42 @@ func TestLinkPickerModal_SelectedLink_OutOfBounds(t *testing.T) {
 	m := NewLinkPickerModal(nil)
 	link := m.SelectedLink()
 	testutil.Equal(t, link.URL, "")
+}
+
+func TestLinkPickerModal_Draw_PRIndicator(t *testing.T) {
+	t.Run("PR link draws the glyph", func(t *testing.T) {
+		m := NewLinkPickerModal([]Link{{Label: "PR", URL: "https://github.com/o/r/pull/1", IsPR: true}})
+		m.SetRect(0, 0, 80, 24)
+		sim := drawSim(t)
+		m.Draw(sim)
+		sim.Show()
+		testutil.Equal(t, screenHasRune(sim, theme.IconPRLink), true)
+	})
+	t.Run("non-PR link omits the glyph", func(t *testing.T) {
+		m := NewLinkPickerModal([]Link{{Label: "Docs", URL: "https://example.com/guide"}})
+		m.SetRect(0, 0, 80, 24)
+		sim := drawSim(t)
+		m.Draw(sim)
+		sim.Show()
+		testutil.Equal(t, screenHasRune(sim, theme.IconPRLink), false)
+	})
+}
+
+func TestFuzzyLinkPickerModal_Draw_PRIndicator(t *testing.T) {
+	t.Run("PR link draws the glyph", func(t *testing.T) {
+		m := NewFuzzyLinkPickerModal([]Link{{Label: "PR", URL: "https://github.com/o/r/pull/1", IsPR: true}})
+		m.SetRect(0, 0, 80, 24)
+		sim := drawSim(t)
+		m.Draw(sim)
+		sim.Show()
+		testutil.Equal(t, screenHasRune(sim, theme.IconPRLink), true)
+	})
+	t.Run("non-PR link omits the glyph", func(t *testing.T) {
+		m := NewFuzzyLinkPickerModal([]Link{{Label: "Docs", URL: "https://example.com/guide"}})
+		m.SetRect(0, 0, 80, 24)
+		sim := drawSim(t)
+		m.Draw(sim)
+		sim.Show()
+		testutil.Equal(t, screenHasRune(sim, theme.IconPRLink), false)
+	})
 }

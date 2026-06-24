@@ -851,13 +851,23 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
 }
 .links-empty { padding: 12px; color: var(--text-dim); font-size: 13px; text-align: center; }
 .links-item {
-  display: flex; flex-direction: column; gap: 2px;
+  display: flex; flex-direction: row; align-items: center; gap: 8px;
   width: 100%; padding: 8px 10px; min-height: 44px;
   background: transparent; border: 0; border-radius: 0;
   color: var(--text); text-align: left; cursor: pointer;
   font: inherit;
 }
 .links-item:hover, .links-item:focus { background: var(--surface); outline: none; }
+/* Label/URL stack. min-width:0 lets the children's ellipsis kick in inside
+   the flex row instead of overflowing it. */
+.links-item .links-content { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+/* PR indicator pill. Purple matches the TUI's StylePRLink (ColorPRAwaiting)
+   and the task list's awaiting-review badge, so "this link is a PR" reads
+   consistently across surfaces. */
+.links-item .links-pr-badge {
+  flex: none; font-size: 11px; font-weight: 600; padding: 2px 7px;
+  border-radius: 10px; background: #251b3a; color: #b294fa; white-space: nowrap;
+}
 .links-item .links-label {
   font-size: 13px; line-height: 1.3;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -3931,17 +3941,30 @@ function renderLinksList() {
     const url = l.url || '';
     const label = l.label || url;
     if (label === url) btn.classList.add('url-only');
+    // PR indicator. l.isPR is server-classified by the shared links package
+    // (single source of truth), so the client never re-derives it. Built via
+    // the DOM API — never innerHTML — like everything else in this row.
+    if (l.isPR) {
+      const badge = document.createElement('span');
+      badge.className = 'links-pr-badge';
+      badge.textContent = 'PR';
+      badge.title = 'Pull request';
+      btn.appendChild(badge);
+    }
     // textContent (not innerHTML) is required — labels and URLs are
     // attacker-controlled (they came out of the agent's stdout). textContent
     // escapes HTML, so a label of `<img src=x onerror=...>` renders as text.
+    const content = document.createElement('div');
+    content.className = 'links-content';
     const labelEl = document.createElement('span');
     labelEl.className = 'links-label';
     labelEl.textContent = label;
     const urlEl = document.createElement('span');
     urlEl.className = 'links-url';
     urlEl.textContent = url;
-    btn.appendChild(labelEl);
-    btn.appendChild(urlEl);
+    content.appendChild(labelEl);
+    content.appendChild(urlEl);
+    btn.appendChild(content);
     btn.addEventListener('click', () => {
       closeLinksModal();
       openExternalURL(url);

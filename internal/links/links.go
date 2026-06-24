@@ -16,6 +16,26 @@ import (
 type Link struct {
 	Label string `json:"label"` // markdown link text, or the URL itself for bare URLs
 	URL   string `json:"url"`
+	IsPR  bool   `json:"isPR"` // URL points at a GitHub PR / GitLab merge request
+}
+
+// prPathRe matches the path of a pull-request / merge-request URL on a
+// code-forge host: GitHub's "/<owner>/<repo>/pull/<n>" or GitLab's
+// "/<group>/<repo>/-/merge_requests/<n>". Matching on the path segment (rather
+// than the host) means it also recognizes GitHub Enterprise and self-hosted
+// GitLab instances. The trailing "(?:/|$)" keeps "/pull/123" and
+// "/pull/123/files" matching while a stray "/pull/abc" does not.
+var prPathRe = regexp.MustCompile(`/(?:pull|merge_requests)/\d+(?:/|$)`)
+
+// IsPR reports whether the URL points at a pull request or merge request. It is
+// the single source of truth for the PR indicator shown by the TUI link pickers
+// and the web client's Open Link modal.
+func IsPR(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return prPathRe.MatchString(u.Path)
 }
 
 // mdLinkRe matches markdown links: [text](url)
@@ -160,7 +180,7 @@ func Extract(content string) []Link {
 			continue
 		}
 		seen[u] = true
-		out = append(out, Link{Label: m[1], URL: u})
+		out = append(out, Link{Label: m[1], URL: u, IsPR: IsPR(u)})
 	}
 
 	// Second pass: bare URLs not already captured
@@ -173,7 +193,7 @@ func Extract(content string) []Link {
 			continue
 		}
 		seen[u] = true
-		out = append(out, Link{Label: u, URL: u})
+		out = append(out, Link{Label: u, URL: u, IsPR: IsPR(u)})
 	}
 
 	return out
