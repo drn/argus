@@ -148,7 +148,7 @@ The rail SHALL NOT bind `R` (retire) or a rail-wide `Ctrl+R` (prune) — both ar
 
 Derived from: `internal/tui/hera/rail.go` (rail `InputHandler`), `internal/tui/hera/page.go` (page `InputHandler` focus ladder + `handleRailMutation`), `internal/tui/heraactions.go` (handlers), `internal/tui/modal/help.go` (help overlay Hera section).
 
-`NOTE:` `Ctrl+D` is the only delete/nuke key and never collides with the agent-view `Ctrl+R` (Claude session switcher), which runs in a different mode/widget. A focused content pane forwards `C`/`a`/`Ctrl+D` to its PTY.
+`NOTE:` `Ctrl+D` is the only key that NUKES a live selection directly (`C` nukes only the selected coordinator's already-hidden Tier-1 archive items); the rail binds no `R` (retire) or rail-wide `Ctrl+R` (prune). `Ctrl+D` never collides with the agent-view `Ctrl+R` (Claude session switcher), which runs in a different mode/widget. A focused content pane forwards `C`/`a`/`Ctrl+D` to its PTY.
 
 #### Scenario: Hide key acts on the current selection
 
@@ -1036,64 +1036,6 @@ Derived from: `internal/tui/heraactions.go` (`heraSpawnWorker`, `heraNewCoordina
 - **WHEN** the user presses `w` on a selection whose orchestrator has no live coordinator
 - **THEN** the status bar shows a "no live coordinator" error and no worker is spawned
 
-### Requirement: `R` retires a worker (area 7)
-
-The system SHALL bind `R` on the focused rail to a confirm-gated retire of the selected WORKER role. Retire steps the hera role status to `done` (rolling a worker's task to `in_review` + `ready_to_close`), STOPS the session, ARCHIVES the underlying argus task (the worktree is KEPT — retire is reversible), ends this role's live binding, and archives the role row. For a task bound under MULTIPLE orchestrators the worktree and task are PRESERVED and only THIS role's binding ends + role archives (multi-binding isolation). On a coordinator or orchestrator-header selection `R` surfaces "Retire applies to workers" and is a no-op.
-
-Derived from: `internal/tui/heraactions.go` (`heraRetireWorker`, `heraDoRetire`), `internal/tui/hera/ops.go` (`Ops.RetireRole`).
-
-#### Scenario: Retire a sole-bound worker
-
-- **WHEN** the user presses `R` on a worker whose task is bound only to this role and confirms
-- **THEN** the session stops, the argus task is archived (worktree kept), the role status is `done`, this role's binding ends, and the role row is archived
-
-#### Scenario: Retire a multi-bound worker preserves the task
-
-- **WHEN** the user presses `R` on a worker whose task is also bound under another orchestrator and confirms
-- **THEN** only this role's binding ends and the role row is archived; the argus task and its worktree are preserved
-
-#### Scenario: Retire on a coordinator is a no-op
-
-- **WHEN** the user presses `R` on a coordinator/header selection
-- **THEN** the status bar shows "Retire applies to workers" and nothing is changed
-
-### Requirement: `C` prunes a coordinator's archived descendants (area 7)
-
-The system SHALL bind `C` on the focused rail to a confirm-gated prune scoped to the selected coordinator's subtree (`Model.BridgeSubtree`). Prune completes the tasks and reclaims the worktrees+branches of all ARCHIVED descendant worker roles in the subtree, then removes those role rows. A task still bound live under another orchestrator is PRESERVED (its worktree is kept; the role row is still removed). The confirm modal SHALL show a count summary (roles pruned / worktrees reclaimed / preserved); when the subtree has no archived descendant workers the status bar SHALL show "nothing to prune" and no confirm opens.
-
-Derived from: `internal/tui/heraactions.go` (`heraPruneDescendants`, `heraDoPruneDescendants`, `heraReclaimRole`), `internal/tui/hera/eol.go` (`Model.SubtreeArchivedWorkers`).
-
-#### Scenario: Prune archived descendants
-
-- **WHEN** the user presses `C` on a coordinator with archived descendant workers and confirms
-- **THEN** each archived descendant worker's task is completed, its worktree+branch reclaimed (unless bound live elsewhere), and its role row removed
-
-#### Scenario: Nothing to prune
-
-- **WHEN** the user presses `C` on a coordinator with no archived descendant workers
-- **THEN** the status bar shows "nothing to prune" and no confirm modal opens
-
-### Requirement: `Ctrl+R` prunes all finished coordinators and agents (area 7)
-
-The system SHALL bind `Ctrl+R` on the focused rail (its OWN handler, never colliding with the agent-view session switcher) to a confirm-gated rail-wide prune. It reclaims every FINISHED role (a role that is archived, or whose hera status is `done`, or that is flagged `ready_to_close`) — completing its task, reclaiming its worktree+branch (unless bound live elsewhere), and removing its role row — and deletes orchestrators whose every role is finished. The confirm modal SHALL show a count summary; when no finished roles exist the status bar SHALL show "nothing to prune" and no confirm opens.
-
-Derived from: `internal/tui/heraactions.go` (`heraPruneDone`, `heraDoPruneDone`), `internal/tui/hera/eol.go` (`RoleView.IsFinished`, `Model.FinishedRoles`, `Model.FullyFinishedOrchestratorIDs`).
-
-#### Scenario: Sweep finished roles rail-wide
-
-- **WHEN** the user presses `Ctrl+R` with finished roles present and confirms
-- **THEN** each finished role's task is completed, its worktree+branch reclaimed (unless bound live elsewhere), and its role row removed; fully-finished orchestrators are deleted
-
-#### Scenario: Ctrl+R does not collide with the agent view
-
-- **WHEN** the user presses `Ctrl+R` while a content pane (not the rail) holds focus
-- **THEN** the keystroke forwards to the pane's PTY and the rail-wide prune does NOT fire
-
-#### Scenario: Nothing to prune
-
-- **WHEN** the user presses `Ctrl+R` with no finished roles on the rail
-- **THEN** the status bar shows "nothing to prune" and no confirm modal opens
-
 ### Requirement: Cmd+Up / Cmd+Down move rail selection without changing pane focus
 
 The Hera view SHALL intercept `KeyUp` / `KeyDown` events carrying the `ModCtrl|ModAlt` modifier (the mod-7 encoding iTerm2 maps `Cmd+↑` / `Cmd+↓` onto) in `HeraPage.InputHandler` BEFORE forwarding any key to a focused content pane.
@@ -1794,20 +1736,3 @@ Derived from: `internal/tui/hera/rail.go` (PR cell in `drawRoleRow`), `internal/
 
 - **WHEN** a managed role's bound task has a non-empty "pr" url
 - **THEN** its rail row renders a `PR` indicator
-
-### Requirement: Ctrl+D on a bridging row cascades the nested sub-team (area 7)
-
-The system SHALL, when Ctrl+D is pressed on a worker row that bridges a nested sub-orchestrator, tear down the WHOLE nested sub-team rooted at that child — the child orchestrator and every orchestrator nested beneath it — behind a confirmation modal. The modal MUST be explicitly destructive: it states how many orchestrators and agents are removed and how many worktrees + branches are destroyed. On confirm, each orchestrator's sole-bound managed tasks are destroyed (session stopped, worktree + branch removed, binding ended) and the orchestrator is deleted (cascading its roles/bindings); a task bound in another (non-subtree) orchestrator — e.g. a bridge task still held by the parent — is PRESERVED (multi-binding safety). A non-bridging row keeps the conservative single-role delete.
-
-Derived from: `internal/tui/hera/rail.go` (`Selection.BridgeChildOrchID`), `internal/tui/hera/model.go` (`BridgeSubtree`), `internal/tui/heraactions.go` (`heraCascadeDeleteSubtree`, `heraDoCascadeDelete`).
-
-#### Scenario: Cascade warns and tears down the subtree
-
-- **WHEN** Ctrl+D is pressed on a worker row that nests a sub-team and the operator confirms
-- **THEN** the confirm modal states the number of orchestrators/agents/worktrees affected, the child orchestrator and its sole-bound tasks are destroyed, and a bridge task still bound under the parent is preserved
-
-#### Scenario: Non-bridging row keeps conservative delete
-
-- **WHEN** Ctrl+D is pressed on a worker row that nests no sub-team
-- **THEN** only that role is removed (the underlying task is destroyed only if sole-bound), with no subtree cascade
-

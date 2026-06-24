@@ -1,7 +1,7 @@
 # reliable-pane-delivery Specification
 
 ## Purpose
-TBD - created by archiving change add-reliable-pane-delivery. Update Purpose after archive.
+Deliver a message into a task's agent pane exactly once and reliably — injecting the text and submitting it only when the session is idle and unfocused, deduplicating by delivery ID, pre-clearing the prompt, serializing per task, and backstopping with a deadline — so an inbound message reaches the agent's prompt without racing live typing or being silently dropped.
 ## Requirements
 ### Requirement: Reliable inject-and-submit
 

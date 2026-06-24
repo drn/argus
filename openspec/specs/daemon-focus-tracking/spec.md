@@ -1,7 +1,7 @@
 # daemon-focus-tracking Specification
 
 ## Purpose
-TBD - created by archiving change add-reliable-pane-delivery. Update Purpose after archive.
+Track which task pane currently holds the user's focus so reliable pane-delivery can gate injection on an unfocused session — providing focus registration/query and an optional focus-transition event, kept correct under concurrent access.
 ## Requirements
 ### Requirement: Focus registration and query
 
