@@ -722,6 +722,16 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .settings-input.mono { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
 textarea.settings-input { min-height: 70px; resize: vertical; }
+/* System metrics */
+.metric { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.metric:last-child { border-bottom: none; }
+.metric-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.metric-head .label { font-size: 14px; }
+.metric-head .value { font-size: 13px; color: var(--text-dim); font-family: ui-monospace, Menlo, monospace; }
+.metric-bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.metric-bar > span { display: block; height: 100%; border-radius: 3px; background: var(--accent, #4a9eff); transition: width 0.4s ease, background 0.4s ease; }
+.metric-bar > span.warn { background: var(--yellow, #d8a200); }
+.metric-bar > span.crit { background: var(--red, #e05260); }
 .help-icon {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; border-radius: 50%;
@@ -1127,6 +1137,30 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
 
   <!-- Settings View -->
   <div id="settings-view">
+    <div class="settings-section">
+      <h3>System <span id="sys-updated" class="meta" style="text-transform:none;letter-spacing:0;float:right"></span></h3>
+      <div class="metric">
+        <div class="metric-head"><span class="label">CPU</span><span class="value" id="sys-cpu">—</span></div>
+        <div class="metric-bar"><span id="sys-cpu-bar" style="width:0%"></span></div>
+      </div>
+      <div class="settings-row"><div class="label">Load avg</div><div class="value" id="sys-load" style="font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--text-dim)">—</div></div>
+      <div class="metric">
+        <div class="metric-head"><span class="label">Memory</span><span class="value" id="sys-mem">—</span></div>
+        <div class="metric-bar"><span id="sys-mem-bar" style="width:0%"></span></div>
+      </div>
+      <div class="metric">
+        <div class="metric-head"><span class="label">Swap</span><span class="value" id="sys-swap">—</span></div>
+        <div class="metric-bar"><span id="sys-swap-bar" style="width:0%"></span></div>
+      </div>
+      <div class="metric">
+        <div class="metric-head"><span class="label">Disk <span class="meta" id="sys-disk-path" style="text-transform:none;letter-spacing:0"></span></span><span class="value" id="sys-disk">—</span></div>
+        <div class="metric-bar"><span id="sys-disk-bar" style="width:0%"></span></div>
+      </div>
+      <div class="settings-row"><div class="label">Argus process</div><div class="value" id="sys-proc" style="font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--text-dim)">—</div></div>
+      <div class="settings-row"><div class="label">Agent sessions</div><div class="value" id="sys-sessions" style="font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--text-dim)">—</div></div>
+      <div class="settings-row"><div class="label">Uptime</div><div class="value" id="sys-uptime" style="font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--text-dim)">—</div></div>
+    </div>
+
     <div class="settings-section">
       <h3>Sandbox</h3>
       <div class="settings-row">
@@ -4909,6 +4943,7 @@ function switchTab(tab) {
   closeHotkeysModal();
   closeStream();
   destroyTerm();
+  stopSystemMetrics(); // halt the metrics poller; loadSettings restarts it for the Settings tab
   if (tab === 'tasks') refresh();
   if (tab === 'hera') loadHera();
   if (tab === 'create') applyCreateDefaults();
@@ -5062,7 +5097,96 @@ let projectsCache = [];
 let backendsCache = [];
 let editingProject = null; // null = creating; otherwise the project being edited
 
+// --- System metrics (live host load) ---
+// Polls /api/system-metrics on a short interval, but ONLY while the Settings tab
+// is visible: startSystemMetrics is called from loadSettings, and switchTab calls
+// stopSystemMetrics on every tab change so no orphan timer keeps fetching for a
+// hidden tab. The server samples on its own ticker and serves a cached snapshot.
+let sysMetricsTimer = null;
+// Poll cadence; keep loosely in sync with sysmetrics.defaultInterval (2s) server-side.
+// They need not match exactly — the server serves a cached snapshot either way.
+const SYS_METRICS_INTERVAL = 2000;
+
+// fmtSize renders bytes in IEC units up to TiB — for RAM/disk, which the
+// existing fmtBytes (capped at MB, used for upload sizes) renders too coarsely.
+function fmtSize(n) {
+  n = n || 0;
+  const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n : n.toFixed(1)) + ' ' + u[i];
+}
+
+function fmtUptime(sec) {
+  sec = sec || 0;
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+  if (d > 0) return d + 'd ' + h + 'h';
+  if (h > 0) return h + 'h ' + m + 'm';
+  return m + 'm';
+}
+
+// setBar sets a meter's width and colour band; pass avail=false to blank it.
+function setBar(id, pct, avail) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!avail) { el.style.width = '0%'; el.className = ''; return; }
+  pct = Math.max(0, Math.min(100, pct || 0));
+  el.style.width = pct.toFixed(1) + '%';
+  el.className = pct >= 90 ? 'crit' : pct >= 75 ? 'warn' : '';
+}
+
+function setText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+function renderSystemMetrics(m) {
+  // CPU
+  setText('sys-cpu', m.cpu_avail ? m.cpu_percent.toFixed(0) + '%' : '—');
+  setBar('sys-cpu-bar', m.cpu_percent, m.cpu_avail);
+  // Load average
+  setText('sys-load', m.load_avail ? [m.load1, m.load5, m.load15].map(x => x.toFixed(2)).join('  ') : '—');
+  // Memory
+  setText('sys-mem', m.mem_avail ? fmtSize(m.mem_used) + ' / ' + fmtSize(m.mem_total) + '  (' + m.mem_percent.toFixed(0) + '%)' : '—');
+  setBar('sys-mem-bar', m.mem_percent, m.mem_avail);
+  // Swap
+  setText('sys-swap', m.swap_avail ? (m.swap_total ? fmtSize(m.swap_used) + ' / ' + fmtSize(m.swap_total) + '  (' + m.swap_percent.toFixed(0) + '%)' : 'none') : '—');
+  setBar('sys-swap-bar', m.swap_percent, m.swap_avail && m.swap_total > 0);
+  // Disk
+  setText('sys-disk', m.disk_avail ? fmtSize(m.disk_used) + ' / ' + fmtSize(m.disk_total) + '  (' + m.disk_percent.toFixed(0) + '%, ' + fmtSize(m.disk_free) + ' free)' : '—');
+  setBar('sys-disk-bar', m.disk_percent, m.disk_avail);
+  setText('sys-disk-path', m.disk_path || '');
+  // Argus process + sessions + uptime
+  setText('sys-proc', m.proc_avail ? fmtSize(m.proc_rss) + ' RSS' : '—');
+  const s = m.sessions || {};
+  setText('sys-sessions', (s.running || 0) + ' running, ' + (s.idle || 0) + ' idle');
+  setText('sys-uptime', m.uptime_avail ? fmtUptime(m.uptime_sec) : '—');
+}
+
+async function loadSystemMetrics() {
+  try {
+    const r = await api('/api/system-metrics');
+    if (!r.ok) return;
+    const m = await r.json();
+    renderSystemMetrics(m);
+    setText('sys-updated', 'live');
+  } catch (e) {
+    setText('sys-updated', 'stale');
+  }
+}
+
+function startSystemMetrics() {
+  stopSystemMetrics();
+  loadSystemMetrics();
+  sysMetricsTimer = setInterval(loadSystemMetrics, SYS_METRICS_INTERVAL);
+}
+
+function stopSystemMetrics() {
+  if (sysMetricsTimer) { clearInterval(sysMetricsTimer); sysMetricsTimer = null; }
+}
+
 async function loadSettings() {
+  startSystemMetrics();
   await Promise.all([
     populateShareURL(),
     loadTokens(),

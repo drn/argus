@@ -20,6 +20,7 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/notify"
 	"github.com/drn/argus/internal/push"
+	"github.com/drn/argus/internal/sysmetrics"
 	"github.com/drn/argus/internal/tui/settings"
 )
 
@@ -87,6 +88,11 @@ type Server struct {
 	// disables focus-based gating (the notifier falls through to idle-only).
 	// Set via SetFocusTracker before ListenAndServe.
 	focusTracker *notify.FocusTracker
+
+	// metrics samples host-system load (CPU/mem/swap/disk/uptime) on its own
+	// ticker and caches the latest snapshot; handleSystemMetrics serves it.
+	// Started in New, stopped in Shutdown.
+	metrics *sysmetrics.Collector
 }
 
 // SetNotifier wires the reliable pane-delivery service into the API server.
@@ -116,6 +122,7 @@ func New(database *db.DB, runner agent.SessionRunner, token string, creator Task
 		stopCh:         make(chan struct{}),
 		lastResizeCols: make(map[string]uint16),
 		pluginSections: settings.NewRegistry(),
+		metrics:        sysmetrics.New(db.DataDir()),
 	}
 	srv.rehydratePluginSections()
 	// Start the idle watcher unconditionally. It fires session.idle events
@@ -141,6 +148,14 @@ func New(database *db.DB, runner agent.SessionRunner, token string, creator Task
 // is not running the API still comes up on localhost only; remote PWA access
 // is disabled until Tailscale is back.
 func (s *Server) ListenAndServe(port int) (int, error) {
+	// Begin sampling host load on the collector's own ticker; handleSystemMetrics
+	// serves the cached snapshot. Started here (not in New) so unit tests that
+	// drive handlers directly via routes() don't spin up a real-syscall sampler.
+	// Stopped in Shutdown.
+	if s.metrics != nil {
+		s.metrics.Start()
+	}
+
 	mux := s.routes()
 
 	// Auth middleware skips the dashboard route (GET /) and /vendor/ static
@@ -270,6 +285,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		// already closed
 	default:
 		close(s.stopCh)
+	}
+	if s.metrics != nil {
+		s.metrics.Close()
 	}
 	if s.httpSrv == nil {
 		return nil
