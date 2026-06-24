@@ -61,7 +61,7 @@ func TestExtract(t *testing.T) {
 		{
 			name:    "github PR URL",
 			content: "PR: https://github.com/org/repo/pull/123",
-			want:    []Link{{Label: "https://github.com/org/repo/pull/123", URL: "https://github.com/org/repo/pull/123"}},
+			want:    []Link{{Label: "https://github.com/org/repo/pull/123", URL: "https://github.com/org/repo/pull/123", IsPR: true}},
 		},
 		{
 			name:    "URL with ANSI escape sequences",
@@ -105,7 +105,7 @@ func TestExtract(t *testing.T) {
 			name:    "multiple OSC 8 hyperlinks",
 			content: "\x1b]8;;https://github.com/org/repo/pull/1\x1b\\PR #1\x1b]8;;\x1b\\ and \x1b]8;;https://circleci.com/gh/org/repo/99\x1b\\CI\x1b]8;;\x1b\\",
 			want: []Link{
-				{Label: "https://github.com/org/repo/pull/1", URL: "https://github.com/org/repo/pull/1"},
+				{Label: "https://github.com/org/repo/pull/1", URL: "https://github.com/org/repo/pull/1", IsPR: true},
 				{Label: "https://circleci.com/gh/org/repo/99", URL: "https://circleci.com/gh/org/repo/99"},
 			},
 		},
@@ -117,12 +117,12 @@ func TestExtract(t *testing.T) {
 		{
 			name:    "cursor movement prevents text merging",
 			content: "https://github.com/org/repo/pull/123\x1b[5C\x1b[1Bpublished",
-			want:    []Link{{Label: "https://github.com/org/repo/pull/123", URL: "https://github.com/org/repo/pull/123"}},
+			want:    []Link{{Label: "https://github.com/org/repo/pull/123", URL: "https://github.com/org/repo/pull/123", IsPR: true}},
 		},
 		{
 			name:    "quoted URL stops at double quote",
 			content: `"https://github.com/org/repo/pull/123",URL,"https://github.com/org/repo/pull/123")`,
-			want:    []Link{{Label: "https://github.com/org/repo/pull/123", URL: "https://github.com/org/repo/pull/123"}},
+			want:    []Link{{Label: "https://github.com/org/repo/pull/123", URL: "https://github.com/org/repo/pull/123", IsPR: true}},
 		},
 		{
 			name:    "backtick-wrapped URL cleaned",
@@ -242,7 +242,42 @@ func TestExtract(t *testing.T) {
 			for i := range tt.want {
 				testutil.Equal(t, got[i].Label, tt.want[i].Label)
 				testutil.Equal(t, got[i].URL, tt.want[i].URL)
+				testutil.Equal(t, got[i].IsPR, tt.want[i].IsPR)
 			}
 		})
 	}
+}
+
+func TestIsPR(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{"github pr", "https://github.com/org/repo/pull/123", true},
+		{"github pr with files suffix", "https://github.com/org/repo/pull/123/files", true},
+		{"github enterprise pr", "https://github.example.com/org/repo/pull/9", true},
+		{"gitlab merge request", "https://gitlab.com/group/repo/-/merge_requests/42", true},
+		{"github repo root not a pr", "https://github.com/org/repo", false},
+		{"github issue not a pr", "https://github.com/org/repo/issues/5", false},
+		{"github compare range not a pr", "https://github.com/org/repo/compare/v1.0...v1.1", false},
+		{"pull without number not a pr", "https://github.com/org/repo/pull/abc", false},
+		{"unrelated url", "https://example.com/page", false},
+		{"empty", "", false},
+		{"no host", "https:///pull/1", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testutil.Equal(t, IsPR(tt.url), tt.want)
+		})
+	}
+}
+
+func TestExtractStampsIsPR(t *testing.T) {
+	got := Extract("PR: https://github.com/org/repo/pull/7 and docs https://example.com/guide")
+	testutil.Equal(t, len(got), 2)
+	testutil.Equal(t, got[0].URL, "https://github.com/org/repo/pull/7")
+	testutil.Equal(t, got[0].IsPR, true)
+	testutil.Equal(t, got[1].URL, "https://example.com/guide")
+	testutil.Equal(t, got[1].IsPR, false)
 }

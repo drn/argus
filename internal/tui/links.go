@@ -46,6 +46,12 @@ func openURL(url string) {
 	uxlog.Log("[links] opened URL in browser: %s", url)
 }
 
+// prLinkGutter is the number of columns every link-picker row reserves at its
+// left edge for the PR indicator glyph (theme.IconPRLink). The glyph occupies
+// one cell; the extra column is breathing room before the link text. Non-PR
+// rows leave the gutter blank so PR and non-PR links stay column-aligned.
+const prLinkGutter = 2
+
 // ---------------------------------------------------------------------------
 // LinkPickerModal — selection dialog for multiple links
 // ---------------------------------------------------------------------------
@@ -135,8 +141,9 @@ func (m *LinkPickerModal) Draw(screen tcell.Screen) {
 		}
 	}
 
-	// modal width: label + padding + border
-	modalW := max(maxLabelW+6, 30)
+	// modal width: label + padding + border + the PR-indicator gutter every
+	// item row reserves.
+	modalW := max(maxLabelW+6+prLinkGutter, 30)
 	modalW = min(modalW, width-4)
 	innerW := modalW - 4
 
@@ -185,12 +192,18 @@ func (m *LinkPickerModal) Draw(screen tcell.Screen) {
 		link := m.links[idx]
 		isCursor := idx == m.cursor
 
+		// Every row reserves a left gutter so PR and non-PR links stay
+		// column-aligned; PR rows fill it with the indicator glyph. textW may
+		// go ≤ 0 on a very narrow terminal but needs no clamp — DrawText
+		// returns early for a non-positive width and SetContent clips in tcell.
+		textX := innerX + prLinkGutter
+		textW := innerW - prLinkGutter
 		label := link.Label
-		if utf8.RuneCountInString(label) > innerW {
+		if utf8.RuneCountInString(label) > textW {
 			// Truncate
 			runes := []rune(label)
-			if innerW > 3 {
-				label = string(runes[:innerW-1]) + "…"
+			if textW > 3 {
+				label = string(runes[:textW-1]) + "…"
 			}
 		}
 
@@ -198,7 +211,10 @@ func (m *LinkPickerModal) Draw(screen tcell.Screen) {
 		if isCursor {
 			style = theme.StyleSelected
 		}
-		widget.DrawText(screen, innerX, row+i, innerW, label, style)
+		if link.IsPR {
+			screen.SetContent(innerX, row+i, theme.IconPRLink, nil, theme.StylePRLink)
+		}
+		widget.DrawText(screen, textX, row+i, textW, label, style)
 	}
 
 	// Help text

@@ -52,6 +52,11 @@ const (
 	IconPRChanges  = rune(0xF09D8) // 󰧘 nf-md-source_pull (changes requested overlay)
 	IconPRApproved = rune(0xF0DDF) // 󰷟 nf-md-source_branch_check (approved overlay)
 
+	// IconPRLink marks a pull-request / merge-request URL in the Open Link
+	// pickers. Reuses the neutral git-pull-request glyph (no review-state
+	// overlay) so it reads as "this link is a PR" without implying a state.
+	IconPRLink = rune(0xF407) //  nf-oct-git_pull_request
+
 	// IconCoordinator marks a task that holds a Hera coordinator role
 	// (meta:hera.role=coordinator). Shares the orchestrator glyph used by the
 	// native Hera rail so the two surfaces read consistently.
@@ -81,6 +86,13 @@ var (
 	StylePRAwaiting = tcell.StyleDefault.Foreground(ColorPRAwaiting).Bold(true)
 	StylePRChanges  = tcell.StyleDefault.Foreground(ColorPRChanges).Bold(true)
 	StylePRApproved = tcell.StyleDefault.Foreground(ColorPRApproved).Bold(true)
+
+	// StylePRLink colors the PR indicator in the Open Link pickers. Purple is
+	// the app's PR family color, so a PR link reads as a PR at a glance without
+	// implying any particular review state. Aliased to StylePRAwaiting so the
+	// shared purple stays structurally identical — restyle the family once and
+	// both surfaces move together rather than silently diverging.
+	StylePRLink = StylePRAwaiting
 
 	// StyleCoordinator renders the task-row coordinator indicator. Cyan (the
 	// project color) reads as "structural/orchestration" rather than a status.
