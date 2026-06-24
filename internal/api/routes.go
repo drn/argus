@@ -34,6 +34,7 @@ func (s *Server) routes() *http.ServeMux {
 	// API endpoints — auth is applied by the middleware wrapper in ListenAndServe,
 	// but the dashboard route is excluded from auth below.
 	mux.HandleFunc("GET /api/status", s.handleStatus)
+	mux.HandleFunc("GET /api/system-metrics", s.handleSystemMetrics)
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
 	mux.HandleFunc("POST /api/tasks", s.handleCreateTask)
 	mux.HandleFunc("GET /api/projects", s.handleListProjects)
