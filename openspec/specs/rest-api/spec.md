@@ -3,9 +3,7 @@
 ## Purpose
 
 The REST API exposes the Argus daemon's tasks, terminal sessions, configuration, git status, and uploads over HTTP so mobile devices and external scripts can drive the daemon remotely. It is designed for single-user remote control over Tailscale: it refuses to listen on untrusted LANs, authenticates every API request with a bearer token, and reserves destructive or configuration-mutating operations for the master token while allowing per-device tokens to perform per-task operations.
-
 ## Requirements
-
 ### Requirement: Network binding refuses untrusted networks
 
 The server SHALL bind to the loopback address (`127.0.0.1`) and, when a Tailscale CGNAT address is detected, additionally bind to that address. It SHALL NEVER bind to `0.0.0.0`. Loopback binding is mandatory; if it cannot bind within the retry window the server SHALL return an error. Tailscale binding is best-effort: failure to detect or bind the Tailscale address SHALL leave the server running on loopback only rather than aborting startup.
@@ -308,3 +306,99 @@ The server SHALL return a curated settings view (sandbox, KB, API, defaults) and
 
 - **WHEN** a log read targets a name that is not whitelisted
 - **THEN** the server responds 400 Bad Request
+
+### Requirement: Hera orchestration roster endpoint
+
+The REST API SHALL expose `GET /api/hera`, a read-only endpoint returning the Hera orchestration roster: a list of orchestrators — each with `id`, `name`, `pinned`, `archived`, and its non-freelance `roles` — plus a top-level `freelance` list of hoisted freelance roles. Each role SHALL carry `role_id`, `orch_id`, `name`, `kind` (`coordinator`/`worker`/`freelance`), `status` (`idle`/`working`/`blocked`/`done`, or empty when no status row exists), `task_id`, `task_name`, `task_status`, `live`, `ready_to_close`, and `archived`. The endpoint MUST be authenticated like every other `/api/*` route. The handler MUST source all data from the database and MUST NOT import the TUI Hera package (to keep tview out of the API binary).
+
+#### Scenario: Empty roster
+- **WHEN** an authenticated client requests `/api/hera` with no orchestrators present
+- **THEN** the response is `200` with empty `orchestrators` and `freelance` arrays
+
+#### Scenario: Bound coordinator role
+- **WHEN** an orchestrator has a coordinator role with a live binding to an argus task
+- **THEN** that role appears under the orchestrator's `roles` with `live: true`, its hera `status`, and the bound task's `task_id`/`task_name`/`task_status`
+
+#### Scenario: Ready-to-close flag
+- **WHEN** a bound role's task carries `meta:hera.ready_to_close=true`
+- **THEN** that role's `ready_to_close` is `true`
+
+#### Scenario: Freelance roles are hoisted
+- **WHEN** an active orchestrator has an active freelance-kind role
+- **THEN** that role appears in the top-level `freelance` list and not in the orchestrator's `roles`
+
+#### Scenario: Freelance hoist suppression
+- **WHEN** a freelance role is archived, or its orchestrator is archived
+- **THEN** that role stays nested in its orchestrator's `roles` and is not hoisted
+
+#### Scenario: Authentication required
+- **WHEN** `/api/hera` is requested without a valid bearer token or `?token=`
+- **THEN** the response is `401`
+
+#### Scenario: Store read failure
+- **WHEN** a required store read (orchestrators, live bindings, or an orchestrator's roles) fails
+- **THEN** the response is `500` and no partial body is written
+
+### Requirement: Reliable pane-delivery endpoint
+
+The system SHALL expose a `POST /api/tasks/{id}/notify` endpoint that registers a text delivery for the named task via the reliable notify service. The request body SHALL require `text` (non-empty string), `submit` (must be `true`), and `delivery_id` (non-empty identifier, max 128 bytes, alphanumeric and `-_` only). An optional `deadline_ms` field controls the delivery deadline in milliseconds (default 300,000; minimum 1,000; maximum 3,600,000). The endpoint SHALL be callable by any authenticated token (master, device, or plugin-scoped). On success it SHALL return the delivery_id and its current state (`"submitted"` or `"pending"`). Re-posting a previously submitted delivery_id SHALL be idempotent (200 with state `"submitted"`).
+
+#### Scenario: Delivery registered and pending
+
+- **WHEN** a client posts a valid notify request for a task whose session is not yet idle
+- **THEN** the endpoint returns 202 with `{"delivery_id": "...", "state": "pending"}`
+
+#### Scenario: Delivery submitted inline (session already idle and unfocused)
+
+- **WHEN** a client posts a valid notify request for a task that is idle and unfocused at request time
+- **THEN** the endpoint returns 202 with `{"delivery_id": "...", "state": "submitted"}`
+
+#### Scenario: Re-post of submitted delivery_id is idempotent
+
+- **WHEN** a client posts a notify request with a delivery_id that was already submitted
+- **THEN** the endpoint returns 200 with `{"delivery_id": "...", "state": "submitted"}` without re-injecting
+
+#### Scenario: Missing or invalid fields rejected
+
+- **WHEN** a client posts a notify request with missing text, missing delivery_id, or `submit` not `true`
+- **THEN** the endpoint returns 400 with an error identifying the missing or invalid field
+
+#### Scenario: Delivery_id format rejected
+
+- **WHEN** a client posts a notify request with a delivery_id containing characters outside alphanumeric and `-_`
+- **THEN** the endpoint returns 400
+
+#### Scenario: Task not found
+
+- **WHEN** a client posts a notify request for a task ID that does not exist
+- **THEN** the endpoint returns 404
+
+#### Scenario: Any authenticated token accepted
+
+- **WHEN** a request authenticated with a device token or a plugin-scoped token posts to this endpoint
+- **THEN** the request is accepted (not rejected as master-only)
+
+### Requirement: Cancel pane-delivery endpoint
+
+The system SHALL expose a `DELETE /api/tasks/{id}/notify/{delivery_id}` endpoint that cancels a pending delivery registered via the notify endpoint. If the delivery is pending, it SHALL be removed and the response SHALL indicate `cancelled: true`. If the delivery is not found (already submitted or never registered), the response SHALL indicate `cancelled: false` and return 200 (idempotent).
+
+#### Scenario: Pending delivery cancelled
+
+- **WHEN** a client calls DELETE for a delivery_id that is currently pending
+- **THEN** the response is `{"delivery_id": "...", "cancelled": true}` and no further PTY write occurs for that delivery
+
+#### Scenario: Already-submitted delivery cancel is a no-op
+
+- **WHEN** a client calls DELETE for a delivery_id that was already submitted
+- **THEN** the response is `{"delivery_id": "...", "cancelled": false}` with 200 (no error)
+
+#### Scenario: Unknown delivery_id is a no-op
+
+- **WHEN** a client calls DELETE for a delivery_id that was never registered
+- **THEN** the response is `{"delivery_id": "...", "cancelled": false}` with 200 (no error)
+
+#### Scenario: Any authenticated token accepted
+
+- **WHEN** a request authenticated with a device token or plugin-scoped token calls DELETE on this endpoint
+- **THEN** the request is accepted (not rejected as master-only)
+

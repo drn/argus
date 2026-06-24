@@ -222,3 +222,80 @@ When the task list is refreshed with a new task set, the cursor SHALL be restore
 - **WHEN** the task set is replaced and the previously selected task still exists in the same section
 - **THEN** the cursor is restored onto that same task
 
+### Requirement: Hide hera-managed tasks toggle
+
+The task list SHALL provide a single hera-visibility toggle bound to the `H` key. While the toggle is ON (the default), the list SHALL hide every **hera-managed** task and SHALL show freelancer and plain non-hera tasks; pressing `H` reveals the hidden tasks inline, and pressing `H` again hides them again. The toggle SHALL default to ON (hera-managed tasks hidden, because they have their own home in the Hera tab).
+
+A task SHALL be classified as **hera-managed** when EITHER of the following holds:
+
+- It is a hera-spawned worker — its `task_meta` `hera.role` is `worker` (the sidecar stamped at spawn/join, which is permanent and is never cleared when a binding ends); OR
+- It holds at least one live hera binding (a binding whose `ended_at` is unset) to a role of kind `coordinator` or `worker`, as reported by the hera bindings/roles store.
+
+A task SHALL be classified as a **freelancer** (and therefore SHALL remain visible regardless of the toggle) when it is neither a hera-spawned worker nor holds a live coordinator/worker binding — i.e. it has no live binding, or holds only `freelance`-kind live bindings. A plain non-hera task (no hera role at all) SHALL likewise always remain visible.
+
+The toggle SHALL compose with the substring filter (`/`) — each is an independent exclusion applied in the same row-build pass. In remote (`--remote`) mode, where no binding-query REST endpoint exists, the live-binding signal MAY fall back to a best-effort union of the `task_meta` `hera.role` worker and coordinator entries; this MAY report a finished worker or coordinator as still managed until the next tick refresh, and is a known degradation documented in the design.
+
+#### Scenario: Hera worker hidden by default, revealed by H
+
+- **WHEN** a task is a hera-spawned worker and the toggle is ON (the default)
+- **THEN** the task is hidden from the Tasks tab; pressing `H` reveals it and pressing `H` again hides it
+
+#### Scenario: Live coordinator hidden by default, revealed by H
+
+- **WHEN** a task holds a live coordinator-kind binding and the toggle is ON (the default)
+- **THEN** the task is hidden from the Tasks tab; pressing `H` reveals it and pressing `H` again hides it
+
+#### Scenario: Freelancer always visible
+
+- **WHEN** a task has no live hera binding (or only `freelance`-kind live bindings) and is not a hera-spawned worker
+- **THEN** the task is visible whether the toggle is ON or OFF
+
+#### Scenario: Plain non-hera task always visible
+
+- **WHEN** a task holds no hera role at all
+- **THEN** the task is visible whether the toggle is ON or OFF
+
+#### Scenario: Composes with the substring filter
+
+- **WHEN** both the toggle is ON and a substring filter is active
+- **THEN** a task is visible only if it is not hera-managed AND matches every substring term
+
+### Requirement: Prune completed tasks is confirmation-gated
+
+The system SHALL gate the Tasks-tab `Ctrl+R` "prune completed tasks" action
+behind an explicit y/N confirmation before any deletion occurs. On `Ctrl+R`
+(Tasks tab, task-list mode), the system SHALL count the completed tasks and:
+
+- WHEN at least one completed task exists, open a confirmation modal
+  (`modal.ConfirmModal`, title "Prune completed tasks") whose message names the
+  count and states that the tasks' worktrees and branches will be removed and
+  the action cannot be undone. The destructive two-phase prune SHALL run ONLY on
+  an explicit confirm (`Enter` or `y`); `Esc`, `Ctrl+Q`, or `n` SHALL dismiss
+  the modal and remove nothing.
+- WHEN no completed task exists, skip the modal entirely and surface a brief
+  status note ("No completed tasks to prune") instead of acting silently.
+
+The system SHALL NOT open the confirmation while a prune is already in progress
+(the header cleanup notice is set), preserving the prior double-`Ctrl+R`
+re-entrancy guard. The `Ctrl+R` keybinding and its "prune completed" label are
+unchanged, so the help modal and statusbar are unaffected.
+
+#### Scenario: Ctrl+R opens the confirmation, prunes nothing yet
+
+- **WHEN** the user presses `Ctrl+R` on the Tasks tab with at least one completed task
+- **THEN** the confirm-prune modal opens and no task is removed until the user confirms
+
+#### Scenario: Confirming prunes completed tasks
+
+- **WHEN** the confirm-prune modal is open and the user presses `Enter` or `y`
+- **THEN** the modal is dismissed and the completed tasks are pruned (DB rows, sessions, worktrees, and branches), leaving non-completed tasks intact
+
+#### Scenario: Cancelling removes nothing
+
+- **WHEN** the confirm-prune modal is open and the user presses `Esc` or `n`
+- **THEN** the modal is dismissed and every task — completed and active — remains
+
+#### Scenario: Nothing to prune skips the modal
+
+- **WHEN** the user presses `Ctrl+R` with no completed tasks
+- **THEN** no modal opens and a "No completed tasks to prune" status note is shown

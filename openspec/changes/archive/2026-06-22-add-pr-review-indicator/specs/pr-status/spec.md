@@ -34,30 +34,6 @@ The system SHALL determine a task branch's open-PR review state by invoking the 
 - **WHEN** `gh` is not installed or the call fails due to missing authentication
 - **THEN** detection reports `unknown` and the condition is logged via uxlog at most once rather than on every poll
 
-### Requirement: Cached, non-blocking polling
-
-The system SHALL poll PR review state from a daemon-side background loop on a fixed interval, covering only non-archived tasks that have a branch, with bounded concurrency, and SHALL persist results in the `task_meta` sidecar under namespace `pr` (keys `state` and `url`). The UI MUST NOT invoke the GitHub CLI on its own thread; it reads only the cached value. A transient fetch failure MUST NOT overwrite a previously cached value.
-
-#### Scenario: Skips ineligible tasks
-- **WHEN** the poller runs over the task set
-- **THEN** archived tasks and tasks without a branch are not polled
-
-#### Scenario: Persists successful result
-- **WHEN** a poll successfully resolves a branch's PR state
-- **THEN** the `state` and `url` are written to `task_meta` namespace `pr` for that task
-
-#### Scenario: Preserves cache on transient failure
-- **WHEN** a poll fails with a timeout or network error for a task that already has a cached PR state
-- **THEN** the existing `task_meta` value for that task is left unchanged
-
-#### Scenario: Clean shutdown
-- **WHEN** the daemon begins shutdown
-- **THEN** the poller goroutine stops without blocking shutdown
-
-#### Scenario: Cleared with the task
-- **WHEN** a task is deleted or archived
-- **THEN** its `pr` namespace `task_meta` rows are removed by the existing meta cleanup
-
 ### Requirement: TUI task-list indicator
 
 The TUI task list SHALL render an indicator cell immediately after each task's status glyph, showing a distinct glyph and color for `awaiting-review`, `changes-requested`, and `approved`. For all other states the cell MUST be omitted so the task name reclaims that horizontal space. The indicator MUST coexist with the existing status glyph (never replace it).

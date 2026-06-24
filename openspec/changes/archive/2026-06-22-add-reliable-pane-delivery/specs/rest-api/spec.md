@@ -1,6 +1,6 @@
 # REST API
 
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Reliable pane-delivery endpoint
 
