@@ -5103,6 +5103,8 @@ let editingProject = null; // null = creating; otherwise the project being edite
 // stopSystemMetrics on every tab change so no orphan timer keeps fetching for a
 // hidden tab. The server samples on its own ticker and serves a cached snapshot.
 let sysMetricsTimer = null;
+// Poll cadence; keep loosely in sync with sysmetrics.defaultInterval (2s) server-side.
+// They need not match exactly — the server serves a cached snapshot either way.
 const SYS_METRICS_INTERVAL = 2000;
 
 // fmtSize renders bytes in IEC units up to TiB — for RAM/disk, which the

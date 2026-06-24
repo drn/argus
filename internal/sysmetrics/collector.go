@@ -12,6 +12,7 @@ package sysmetrics
 import (
 	"context"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -99,9 +100,11 @@ type Collector struct {
 	done   chan struct{}
 }
 
-// New returns a Collector that will sample the filesystem holding diskPath. Call
-// Start to begin sampling and Close to stop. diskPath should be the Argus data
-// directory so the disk metric reflects where worktrees and the DB actually live.
+// New returns a Collector that will sample the filesystem holding diskPath. The
+// returned collector is inert until Start is called (Latest returns the zero
+// Snapshot until then); the API server starts it in ListenAndServe, not New, so
+// handler unit tests don't spin up the real sampler. diskPath should be the Argus
+// data directory so the disk metric reflects where worktrees and the DB live.
 func New(diskPath string) *Collector {
 	return &Collector{
 		diskPath: diskPath,
@@ -112,20 +115,29 @@ func New(diskPath string) *Collector {
 }
 
 // Start primes the CPU baseline, takes an immediate first sample (so Latest is
-// populated right away), and launches the background sampling loop. Safe to call
-// once; subsequent calls before Close are a no-op-ish reset and should be avoided.
+// populated right away), and launches the background sampling loop. It is
+// idempotent: a second call while already running is a no-op (it will not leak a
+// second goroutine), and a call after Close stays a no-op (the collector does not
+// support restart). cancel/done are set together under the lock before the
+// goroutine launches, so Close never observes a half-initialized collector.
 func (c *Collector) Start() {
+	c.mu.Lock()
+	if c.done != nil { // already started (or started-then-closed) — stay a no-op
+		c.mu.Unlock()
+		return
+	}
 	if c.interval <= 0 {
 		c.interval = defaultInterval
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	c.cancel = cancel
+	c.done = make(chan struct{})
+	c.mu.Unlock()
+
 	if c.prime != nil {
 		c.prime()
 	}
 	c.update() // populate Latest() immediately so the first poll isn't empty
-
-	ctx, cancel := context.WithCancel(context.Background())
-	c.cancel = cancel
-	c.done = make(chan struct{})
 	go c.loop(ctx)
 	uxlog.Log("[sysmetrics] collector started (interval=%s, disk=%s)", c.interval, c.diskPath)
 }
@@ -175,13 +187,17 @@ func (c *Collector) SetForTest(s Snapshot) {
 }
 
 // Close stops the sampling loop and waits for it to exit. Safe to call on a
-// Collector that was never started.
+// Collector that was never started. Reads cancel/done under the lock so it cannot
+// race with Start setting them.
 func (c *Collector) Close() {
-	if c.cancel != nil {
-		c.cancel()
+	c.mu.Lock()
+	cancel, done := c.cancel, c.done
+	c.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
-	if c.done != nil {
-		<-c.done
+	if done != nil {
+		<-done
 	}
 }
 
@@ -189,10 +205,27 @@ func (c *Collector) Close() {
 // reflects the interval since Start rather than since process boot.
 func defaultPrime() { _, _ = cpu.Percent(0, false) }
 
+// collapseHome rewrites a path under the user's home dir to a "~"-prefixed form
+// so the disk path served over the API ("~/.argus") doesn't disclose the OS
+// username. Paths outside home are returned unchanged.
+func collapseHome(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == home {
+		return "~"
+	}
+	if prefix := home + string(os.PathSeparator); strings.HasPrefix(p, prefix) {
+		return "~" + string(os.PathSeparator) + p[len(prefix):]
+	}
+	return p
+}
+
 // defaultSample collects every metric, tolerating per-metric failures by leaving
 // that group's availability flag false.
 func defaultSample(diskPath string) Snapshot {
-	s := Snapshot{DiskPath: diskPath, SampledAt: time.Now()}
+	s := Snapshot{DiskPath: collapseHome(diskPath), SampledAt: time.Now()}
 
 	if pct, err := cpu.Percent(0, false); err == nil && len(pct) > 0 {
 		s.CPUPercent = pct[0]

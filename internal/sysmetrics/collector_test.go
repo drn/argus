@@ -1,6 +1,7 @@
 package sysmetrics
 
 import (
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -115,6 +116,25 @@ func TestCollector_CloseWithoutStartIsSafe(t *testing.T) {
 	c.Close() // no cancel/done set — must not panic or block
 }
 
+// Start is idempotent: a second call must not launch a second goroutine or
+// re-sample. With a long interval the only sample is the first Start's immediate one.
+func TestCollector_StartIsIdempotent(t *testing.T) {
+	var calls int32
+	c := &Collector{
+		diskPath: "/data",
+		interval: time.Hour,
+		prime:    func() {},
+		sample: func(string) Snapshot {
+			atomic.AddInt32(&calls, 1)
+			return Snapshot{}
+		},
+	}
+	c.Start()
+	c.Start() // no-op: must not re-prime, re-sample, or leak a second loop
+	defer c.Close()
+	testutil.Equal(t, atomic.LoadInt32(&calls), int32(1))
+}
+
 // Exercises the real gopsutil-backed sampler. Disk usage via statfs works on the
 // dev platforms (darwin/linux); other metrics are best-effort, so we only assert
 // the universally-available pieces to keep the test platform-stable.
@@ -127,6 +147,18 @@ func TestDefaultSample(t *testing.T) {
 
 func TestDefaultPrime(t *testing.T) {
 	defaultPrime() // must not panic
+}
+
+func TestCollapseHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home dir on this host")
+	}
+	testutil.Equal(t, collapseHome(home), "~")
+	testutil.Equal(t, collapseHome(home+string(os.PathSeparator)+".argus"), "~"+string(os.PathSeparator)+".argus")
+	// A path outside home is returned unchanged (and never leaks a username).
+	outside := string(os.PathSeparator) + "var" + string(os.PathSeparator) + "tmp"
+	testutil.Equal(t, collapseHome(outside), outside)
 }
 
 func TestCollector_SetForTest(t *testing.T) {
