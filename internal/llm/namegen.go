@@ -2,9 +2,11 @@
 //
 // GenerateName shells out to the user's local `claude` CLI with Haiku
 // pinned and every context source disabled (no tools, no MCPs, no
-// settings, no slash commands, no session persistence). Per-call cost
-// is ~150 input + ~10 output tokens (≈ $0.0002 at Haiku pricing).
-// All failures fail-open: callers keep their fallback name.
+// settings, no slash commands, no session persistence). Even so, the CLI
+// injects a non-trivial baseline: a measured call is ~1235 input + ~111
+// output tokens (≈ $0.0034 at Haiku 4.5 pricing, CLI v2.1.x) — far above
+// the original ~$0.0002 estimate, hence the budget cap is sized with real
+// headroom. All failures fail-open: callers keep their fallback name.
 package llm
 
 import (
@@ -16,15 +18,24 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
-// DefaultTimeout caps each name-gen call. The claude CLI startup alone
-// runs 1-2s, and Haiku adds another 3-6s, so end-to-end commonly lands
-// at 6-8s with occasional spikes. We pick 30s to stay well above the
-// observed tail — the call is fire-and-forget in a background goroutine,
-// so a generous cap has no UX cost but prevents `signal: killed` failures.
-const DefaultTimeout = 30 * time.Second
+// DefaultTimeout caps the WHOLE name-gen operation, including the single
+// retry below. The claude CLI startup alone runs 1-2s, and Haiku adds another
+// 3-6s, so end-to-end commonly lands at 6-8s with occasional spikes; heavier
+// recent CLI versions spike further, and a `signal: killed` (the deadline
+// SIGKILL-ing the process) was observed at 30s. We pick 45s to stay well above
+// the observed tail and still leave room for the retry — the call is
+// fire-and-forget in a background goroutine, so a generous cap has no UX cost.
+const DefaultTimeout = 45 * time.Second
+
+// retryBackoff is the pause before the single retry on a transient CLI
+// failure. A package var (not const) so tests can zero it. Kept short: the
+// retry exists to ride out a momentary overload/limit/budget blip, not to
+// wait out a sustained outage.
+var retryBackoff = 500 * time.Millisecond
 
 // MaxNameLen caps the kebab-case name length. The system prompt and the
 // validator both reference this so they can't drift.
@@ -108,7 +119,13 @@ func GenerateName(ctx context.Context, prompt string) (string, error) {
 		"--no-session-persistence",
 		"--system-prompt", nameSystemPrompt,
 		"--output-format", "text",
-		"--max-budget-usd", "0.01",
+		// Per-call budget cap. Sized at 0.05 — ~15× the measured ~$0.0034 cost
+		// (1235 input + 111 output tokens at Haiku 4.5 / CLI v2.1.x). The
+		// original 0.01 was tuned against a stale ~$0.0002 estimate and left
+		// only ~3× headroom, so a longer pasted prompt (URLs, issue bodies,
+		// JSON error blobs) or a verbose reply crossed it and `claude -p` exited
+		// non-zero with `Error: Exceeded USD budget` (written to stdout).
+		"--max-budget-usd", "0.05",
 		// "--" stops claude's flag parsing so a prompt that happens to start
 		// with "--" can't be interpreted as a flag. Not an OS injection risk
 		// (no shell), but prevents flag-injection against the claude CLI.
@@ -119,36 +136,121 @@ func GenerateName(ctx context.Context, prompt string) (string, error) {
 		"Task description: " + prompt,
 	}
 
+	// Retry once on a transient CLI failure (overload, usage/rate limit, budget
+	// blip) so a momentary error doesn't permanently strand the slug. A clean
+	// run that produced UNUSABLE output is NOT retried — it would just produce
+	// the same output again — so generateNameOnce reports whether the failure is
+	// retryable (a non-zero exit) or terminal (a validation failure).
+	//
+	// Both attempts share the caller's deadline; the retry is best-effort within
+	// it. The transient failures it targets (budget / rate-limit / overload) fail
+	// fast, so the retry normally gets ~all the remaining window. A slow attempt 0
+	// that burns the whole deadline simply yields no retry — correct, since a hang
+	// is not the transient case the retry is for.
+	//
+	// firstErr is kept (not overwritten): attempt 0 runs with the most time
+	// budget and carries the richest reason, while a retry can die bare ("exit
+	// status 1" / "signal: killed") as the deadline closes in. Surfacing the
+	// first reason keeps the autoname log line diagnosable.
+	var firstErr error
+	for attempt := range 2 {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return "", firstErr // out of time — surface the first failure's reason
+			case <-time.After(retryBackoff):
+			}
+		}
+		name, retryable, err := generateNameOnce(ctx, args)
+		switch {
+		case err == nil:
+			return name, nil
+		case !retryable:
+			return "", err // validation failure — terminal, don't retry
+		default:
+			if firstErr == nil {
+				firstErr = err // transient — keep the first (richest) reason, then retry
+			}
+		}
+	}
+	return "", firstErr
+}
+
+// generateNameOnce runs the claude CLI exactly once and classifies the result:
+//   - (name, false, nil)  success
+//   - ("", false, err)    clean run, unusable output — terminal, NOT retryable
+//   - ("", true,  err)    non-zero exit — retryable
+func generateNameOnce(ctx context.Context, args []string) (name string, retryable bool, err error) {
 	cmd := nameGenCmd(ctx, "claude", args...)
 	// Run from a neutral cwd so claude can't auto-discover CLAUDE.md or
 	// project-local config in the worktree even though --setting-sources ""
 	// already disables settings loading. Belt-and-suspenders.
 	cmd.Dir = os.TempDir()
 
-	out, err := cmd.Output()
-	if err != nil {
-		// cmd.Output() leaves cmd.Stderr nil, so on a non-zero exit the
-		// captured stderr lands in ExitError.Stderr. The error's own
-		// Error() is just "exit status 1" — fold the stderr in so the
-		// failure is actually diagnosable from the autoname log line.
-		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-			if stderr := strings.TrimSpace(string(exitErr.Stderr)); stderr != "" {
-				return "", fmt.Errorf("claude -p failed: %w: %s", err, truncate(stderr, 500))
-			}
-		}
-		return "", fmt.Errorf("claude -p failed: %w", err)
+	out, runErr := cmd.Output()
+	if runErr != nil {
+		return "", true, wrapRunError(runErr, out)
 	}
 
-	name := sanitizeAndValidate(string(out))
+	outStr := string(out)
+	name = sanitizeAndValidate(outStr)
 	if name == "" {
-		return "", fmt.Errorf("invalid name from model: %q", strings.TrimSpace(string(out)))
+		return "", false, fmt.Errorf("invalid name from model: %q", strings.TrimSpace(outStr))
 	}
-	return name, nil
+	return name, false, nil
+}
+
+// wrapRunError folds the CLI's emitted failure reason into the error so the
+// autoname log line is diagnosable instead of a bare "exit status 1". Crucially,
+// `claude -p` writes RUNTIME errors (budget exceeded, usage/rate limit, overload)
+// to STDOUT and exits non-zero with an EMPTY stderr; only flag-parse errors go
+// to stderr. cmd.Output() returns the captured stdout in `out` even on error, so
+// stdout leads (the runtime-error channel); stderr is appended when ALSO present
+// (e.g. partial stdout + a flag-parse error) so neither channel's reason is lost.
+//
+// The folded reason is scrubbed of control characters: it is untrusted output
+// (claude may echo attacker-influenced prompt text) and flows verbatim into
+// uxlog (`%s`-formatted, newline-terminated per line) and slog's TextHandler
+// (which does not quote embedded newlines). An un-scrubbed newline would forge a
+// second physical log line — a fake `[autoname] renamed …` record. scrubReason
+// collapses CR/LF/ANSI/other control runes to spaces, defusing the injection.
+func wrapRunError(err error, stdout []byte) error {
+	var reasons []string
+	if r := scrubReason(string(stdout)); r != "" {
+		reasons = append(reasons, r)
+	}
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		if r := scrubReason(string(exitErr.Stderr)); r != "" {
+			reasons = append(reasons, r)
+		}
+	}
+	if len(reasons) == 0 {
+		return fmt.Errorf("claude -p failed: %w", err)
+	}
+	return fmt.Errorf("claude -p failed: %w: %s", err, truncate(strings.Join(reasons, " | "), 500))
+}
+
+// scrubReason trims surrounding whitespace and replaces every control rune
+// (newlines, CR, tab, ANSI ESC, etc.) with a single space, so an untrusted CLI
+// reason can be folded into a single-line log record without splitting it or
+// injecting terminal escapes. Runs of resulting spaces are left as-is (cheap;
+// truncate caps the length anyway).
+func scrubReason(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	return strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' || r == '\r' || unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
 }
 
 // truncate caps s at max bytes (rune-safe), appending an ellipsis when it
-// trims. Keeps captured stderr from bloating a log line if claude dumps a
-// stack trace or long help text on failure.
+// trims. Keeps a captured stdout/stderr failure reason from bloating a log
+// line if claude dumps a stack trace or long help text on failure.
 func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s

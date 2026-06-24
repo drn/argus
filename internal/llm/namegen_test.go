@@ -134,18 +134,37 @@ func TestGenerateName_PromptFraming(t *testing.T) {
 // its error instead of dropping it as a bare "exit status 1".
 func setupFailingClaude(t *testing.T, stderr string) {
 	t.Helper()
+	setupClaudeScript(t, "printf '"+stderr+"' >&2\nexit 1\n")
+}
+
+// setupFailingClaudeStdout wires a fake `claude` that writes its failure
+// reason to STDOUT and exits non-zero — the real runtime-error shape of
+// `claude -p` (budget exceeded / usage limit / overload), where stderr is
+// empty. Asserts GenerateName folds the stdout reason in.
+func setupFailingClaudeStdout(t *testing.T, stdout string) {
+	t.Helper()
+	setupClaudeScript(t, "printf '"+stdout+"'\nexit 1\n")
+}
+
+// setupClaudeScript wires a fake `claude` whose body is `body` (a /bin/sh
+// fragment) onto PATH + nameGenCmd, and zeroes retryBackoff so the single
+// retry doesn't slow the suite.
+func setupClaudeScript(t *testing.T, body string) {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script not portable on Windows")
 	}
 	tmp := t.TempDir()
 	fake := tmp + "/claude"
-	if err := writeExec(fake, "#!/bin/sh\nprintf '"+stderr+"' >&2\nexit 1\n"); err != nil {
+	if err := writeExec(fake, "#!/bin/sh\n"+body); err != nil {
 		t.Fatalf("writeExec: %v", err)
 	}
 	t.Setenv("PATH", tmp)
 
+	prevBackoff := retryBackoff
+	retryBackoff = 0
 	prev := nameGenCmd
-	t.Cleanup(func() { nameGenCmd = prev })
+	t.Cleanup(func() { nameGenCmd = prev; retryBackoff = prevBackoff })
 	nameGenCmd = func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		return exec.CommandContext(ctx, fake)
 	}
@@ -155,9 +174,7 @@ func TestGenerateName_ExitErrorIncludesStderr(t *testing.T) {
 	setupFailingClaude(t, "Credit balance is too low to run this request.")
 
 	_, err := GenerateName(context.Background(), "build a feature")
-	if err == nil {
-		t.Fatal("want error, got nil")
-	}
+	testutil.Error(t, err)
 	testutil.Contains(t, err.Error(), "claude -p failed")
 	testutil.Contains(t, err.Error(), "Credit balance is too low")
 }
@@ -166,11 +183,122 @@ func TestGenerateName_ExitErrorEmptyStderr(t *testing.T) {
 	setupFailingClaude(t, "")
 
 	_, err := GenerateName(context.Background(), "build a feature")
-	if err == nil {
-		t.Fatal("want error, got nil")
-	}
-	// No stderr to fold in — error stays the bare exit-status form.
+	testutil.Error(t, err)
+	// No stdout/stderr to fold in — error stays the bare exit-status form.
 	testutil.Contains(t, err.Error(), "claude -p failed: exit status 1")
+}
+
+// TestGenerateName_ExitErrorIncludesStdout is the regression guard for the
+// real failure mode: `claude -p` writes runtime errors (budget exceeded,
+// usage limit, overload) to STDOUT and exits non-zero with empty stderr. The
+// reason must be folded into the error, not dropped as a bare "exit status 1".
+func TestGenerateName_ExitErrorIncludesStdout(t *testing.T) {
+	setupFailingClaudeStdout(t, "Error: Exceeded USD budget (0.05)")
+
+	_, err := GenerateName(context.Background(), "build a feature")
+	testutil.Error(t, err)
+	testutil.Contains(t, err.Error(), "claude -p failed")
+	testutil.Contains(t, err.Error(), "Exceeded USD budget")
+}
+
+// TestGenerateName_RetriesOnceThenSucceeds asserts a transient non-zero exit
+// is retried and a valid name on the second attempt is returned.
+func TestGenerateName_RetriesOnceThenSucceeds(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script not portable on Windows")
+	}
+	marker := t.TempDir() + "/attempted"
+	// First invocation: no marker yet → create it and exit 1. Second
+	// invocation: marker present → emit a valid name.
+	setupClaudeScript(t, "if [ -f '"+marker+"' ]; then printf 'retried-name\\n'; else : > '"+marker+"'; exit 1; fi\n")
+
+	got, err := GenerateName(context.Background(), "build a feature")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got, "retried-name")
+}
+
+// TestGenerateName_RetryExhausted asserts that when both attempts fail, the
+// operation fails open with the diagnosable reason folded in.
+func TestGenerateName_RetryExhausted(t *testing.T) {
+	setupFailingClaudeStdout(t, "Error: Overloaded")
+
+	_, err := GenerateName(context.Background(), "build a feature")
+	testutil.Error(t, err)
+	testutil.Contains(t, err.Error(), "Overloaded")
+}
+
+// TestGenerateName_BudgetFlag pins the per-call budget cap value passed to the
+// CLI so it can't silently drift back below the measured per-call cost.
+func TestGenerateName_BudgetFlag(t *testing.T) {
+	var capturedArgs []string
+	setupFakeClaude(t, `ok-name\n`, &capturedArgs)
+
+	_, err := GenerateName(context.Background(), "build a feature")
+	testutil.NoError(t, err)
+
+	var budget string
+	for i, a := range capturedArgs {
+		if a == "--max-budget-usd" && i+1 < len(capturedArgs) {
+			budget = capturedArgs[i+1]
+		}
+	}
+	testutil.Equal(t, budget, "0.05")
+}
+
+// TestGenerateName_ScrubsControlCharsFromReason is the log-injection guard:
+// `claude -p` stdout is untrusted (may echo prompt text) and is folded into an
+// error that flows verbatim into uxlog/slog. A newline in the reason must not
+// survive into the error string, else it forges a second physical log line.
+func TestGenerateName_ScrubsControlCharsFromReason(t *testing.T) {
+	// Embedded LF + a forged-looking log line + an ANSI escape.
+	setupFailingClaudeStdout(t, `Error: Overloaded\n2026/06/24 [autoname] renamed task=victim\x1b[0m`)
+
+	_, err := GenerateName(context.Background(), "build a feature")
+	testutil.Error(t, err)
+	msg := err.Error()
+	testutil.Contains(t, msg, "Overloaded")
+	if strings.ContainsAny(msg, "\n\r\x1b") {
+		t.Errorf("error string still contains control chars (log-injection risk): %q", msg)
+	}
+}
+
+// TestGenerateName_KeepsFirstReasonOnExhaustion asserts that when both attempts
+// fail, the FIRST attempt's (richer) reason is surfaced, not the last — the
+// retry can die bare as the deadline closes in, and the first reason is the
+// diagnosable one.
+func TestGenerateName_KeepsFirstReasonOnExhaustion(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script not portable on Windows")
+	}
+	marker := t.TempDir() + "/attempted"
+	// Attempt 0: rich budget reason on stdout, exit 1. Attempt 1: bare exit 1
+	// (no output) — mimics a deadline SIGKILL losing the reason.
+	setupClaudeScript(t, "if [ -f '"+marker+"' ]; then exit 1; else : > '"+marker+"'; printf 'Error: Exceeded USD budget'; exit 1; fi\n")
+
+	_, err := GenerateName(context.Background(), "build a feature")
+	testutil.Error(t, err)
+	testutil.Contains(t, err.Error(), "Exceeded USD budget")
+}
+
+func TestScrubReason(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain", "Error: Overloaded", "Error: Overloaded"},
+		{"trim", "  busy  ", "busy"},
+		{"newline", "a\nb", "a b"},
+		{"crlf", "a\r\nb", "a  b"}, // CR and LF each map to a space (no collapsing)
+		{"tab", "a\tb", "a b"},
+		{"ansi escape", "a\x1b[0mb", "a [0mb"}, // only ESC is a control rune; "[0m" is harmless literal text without it
+		{"empty", "   ", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testutil.Equal(t, scrubReason(tt.in), tt.want)
+		})
+	}
 }
 
 func TestTruncate(t *testing.T) {
