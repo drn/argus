@@ -2,6 +2,7 @@ package hera
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/db"
@@ -461,6 +462,61 @@ func TestRefresh_DifferentCoordinatorResetsPlanCursor(t *testing.T) {
 	// Switch coordinators: the plan cursor must reset to stage 0.
 	testutil.Equal(t, selectOrchByName(p, "orch-b"), true)
 	testutil.Equal(t, pl.CursorPos().Stage, 0)
+}
+
+// planStatusLine returns the plan widget's "Status:" header line for the node
+// under the cursor — the line that renders the node's RESOLVED status glyph
+// (1:1 with the rail). Empty when no node is selected.
+func planStatusLine(pl *planview.Widget) string {
+	for _, ln := range pl.HeaderLines() {
+		if strings.HasPrefix(ln, "Status:") {
+			return ln
+		}
+	}
+	return ""
+}
+
+// TestRefresh_StatusStepReprojectsPlanNode is the BUG-012 page-level regression:
+// with a coordinator selected (details mode), clearing a worker's ready_to_close
+// mark — the StepStatus-out-of-`done` effect — must re-project the plan so the
+// worker's DAG node updates in lock-step with the rail, NOT keep rendering the
+// stale review ✓. The worker's task-derived State (working) is UNCHANGED by the
+// step (only the icon flips), so the plan widget's UpdateData short-circuit on an
+// unchanged projection signature would leave the node stale — unless the node
+// ICON is folded into that signature (the fix). Asserts through the plan header's
+// resolved status glyph, which is what the operator actually sees.
+func TestRefresh_StatusStepReprojectsPlanNode(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	// The worker is live + in_progress (working) AND marked ready_to_close, so its
+	// plan node shows the review ✓ (ready_to_close wins the glyph precedence over
+	// the working spinner — same as the rail row).
+	testutil.NoError(t, d.SetMeta("t-wkr", db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"))
+
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-coord": {id: "t-coord", alive: true}}))
+	p.Refresh()
+
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
+	testutil.Equal(t, p.detailsMode, true)
+
+	pl := p.Plan()
+	// Degenerate single-worker plan: the cursor sits on the worker node, whose
+	// header Status line renders its resolved glyph.
+	testutil.Equal(t, pl.CurrentNodeID(), "t-wkr")
+	testutil.Equal(t, strings.ContainsRune(planStatusLine(pl), theme.IconReview), true)
+
+	// Step the worker OUT of `done`: clear ready_to_close (exactly what
+	// Ops.StepStatus does), then run the SAME refresh the s/S key triggers. The
+	// node's State (working) is unchanged — only the icon flips — so the plan node
+	// must STILL update to the working glyph, never stay pinned to the review ✓.
+	testutil.NoError(t, d.ClearHeraReadyToClose("t-wkr"))
+	p.Refresh()
+
+	testutil.Equal(t, pl.CurrentNodeID(), "t-wkr")
+	testutil.Equal(t, strings.ContainsRune(planStatusLine(pl), theme.IconReview), false)
 }
 
 // --- Cancelled planned node rendering (make-hera-plan-living B3) ---
