@@ -543,7 +543,8 @@ func (r *Rail) buildRows() {
 	// header renders when a pinned orchestrator is visible OR any role floats; it
 	// is pruned when neither holds under the active filter.
 	floated := r.collectPinnedRoles(canonical)
-	if r.anyOrchVisible(r.model.Pinned) || len(floated) > 0 {
+	pinnedRendered := r.anyOrchVisible(r.model.Pinned) || len(floated) > 0
+	if pinnedRendered {
 		r.rows = append(r.rows, railRow{kind: rrSectionHeader, label: "Pinned"})
 		for i := range r.model.Pinned {
 			r.appendOrch(&r.model.Pinned[i], 0, r.model.Pinned[i].Archived, canonical, placed)
@@ -558,6 +559,13 @@ func (r *Rail) buildRows() {
 	// orchestrator left unplaced AND whose canonical chain reaches no root. A child
 	// that is merely hidden because an ancestor is collapsed/archived is
 	// structurally reachable, so it stays folded instead of leaking to the top.
+	//
+	// A horizontal-rule divider (BUG-027) separates the Pinned section from the
+	// Active list — the same rrRule the Freelance / Archive sections use —
+	// inserted at activeStart only when the Pinned section rendered AND the Active
+	// loops produced ≥1 row (no stray rule when nothing is pinned, none when
+	// Pinned is the only content).
+	activeStart := len(r.rows)
 	for i := range r.model.Active {
 		if !consumed[r.model.Active[i].ID] {
 			r.appendOrch(&r.model.Active[i], 0, false, canonical, placed)
@@ -568,6 +576,10 @@ func (r *Rail) buildRows() {
 		if !placed[id] && !structReach[id] {
 			r.appendOrch(&r.model.Active[i], 0, false, canonical, placed)
 		}
+	}
+	if pinnedRendered && len(r.rows) > activeStart {
+		// Insert the divider between the last Pinned row and the first Active row.
+		r.rows = append(r.rows[:activeStart], append([]railRow{{kind: rrRule}}, r.rows[activeStart:]...)...)
 	}
 
 	// 3. Freelance section. The header + separator are pruned when no freelance
