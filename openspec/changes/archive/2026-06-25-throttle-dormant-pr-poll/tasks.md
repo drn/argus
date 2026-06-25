@@ -22,10 +22,10 @@
 
 **Depends on:** Stage 2
 
-- [ ] 3.1 `make pre-pr` green (build + vet + fmt-check + lint-pr + vuln + test-cover-gate).
-- [ ] 3.2 Dogfood-deploy to the live daemon; remove the `pr-poller.disabled` sentinel; confirm via daemon GraphQL pace that steady-state cost drops to ~10 lookups/cycle while open PRs still refresh each cycle.
+- [x] 3.1 `make pre-pr` green (build + vet + fmt-check + lint-pr + vuln + test-cover-gate).
+- [x] 3.2 Dogfood-deploy to the live daemon; remove the `pr-poller.disabled` sentinel; confirm via daemon GraphQL pace that steady-state cost drops to ~10 lookups/cycle while open PRs still refresh each cycle.
 
 ## 4. Docs
 
 - [x] 4.1 Add the cost-based-budget + dormancy-cadence gotcha to `context/knowledge/gotchas/daemon-rpc.md` (PR poller section).
-- [ ] 4.2 `openspec archive throttle-dormant-pr-poll` once shipped.
+- [x] 4.2 `openspec archive throttle-dormant-pr-poll` once shipped.
