@@ -29,6 +29,11 @@ func testDaemon(t *testing.T) (*Daemon, string) {
 
 	d := New(database)
 
+	// Neutralize the PR-poller kill-switch in tests: New defaults it to the real
+	// ~/.argus/pr-poller.disabled, which must never influence tests (and may exist
+	// on a dev machine that has paused the poller). Point it at an absent temp file.
+	d.prDisableFlagPath = filepath.Join(t.TempDir(), prPollDisableFlag)
+
 	// Use a temp socket path.
 	sockPath := filepath.Join(t.TempDir(), "test.sock")
 
