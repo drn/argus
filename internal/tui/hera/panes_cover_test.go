@@ -89,6 +89,72 @@ func TestPanes_RegionAt(t *testing.T) {
 	testutil.Equal(t, p.regionAt(p.agentX+1), FocusAgent)
 }
 
+// drawnPageSelecting builds a worker+coordinator page with live sessions,
+// applies the selection, and draws once — so BOTH the region hit-test rects
+// (coordX/coordW/agentX/agentW) AND the selected pane's own rect reflect that
+// selection (the agent pane only gets a rect when a worker is selected; the
+// coord pane is always drawn). Returns the drawn page.
+func drawnPageSelecting(t *testing.T, selectFn func(*HeraPage) bool) *HeraPage {
+	t.Helper()
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{
+		"t-coord": {id: "t-coord", alive: true},
+		"t-wkr":   {id: "t-wkr", alive: true},
+	}))
+	p.Refresh()
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	t.Cleanup(sim.Fini)
+	sim.SetSize(120, 30)
+	p.SetRect(0, 0, 120, 30)
+	testutil.Equal(t, selectFn(p), true)
+	p.Draw(sim)
+	return p
+}
+
+// TestPanes_MouseScrollRoutesToWorkerPane is the BUG-026 regression: a mouse
+// wheel-up over the agent region must reach the selected worker's TerminalPane
+// and scroll its scrollback — NOT fall through regionAt to the rail. The rail
+// has no MouseHandler, so a misrouted wheel hits Box.MouseHandler, is NOT
+// consumed, and tview never redraws (Application redraws a mouse event only when
+// consumed) — i.e. scroll-up silently does nothing. This pins regionAt → agent
+// pane routing for a live worker selection. (The existing
+// TestPanes_MouseRoutingByRegion scrolls but never asserts the scroll landed.)
+func TestPanes_MouseScrollRoutesToWorkerPane(t *testing.T) {
+	p := drawnPageSelecting(t, func(p *HeraPage) bool { return selectRoleByName(p, "wkr") })
+	testutil.Equal(t, p.detailsMode, false)
+
+	before := p.AgentPane().ScrollOffset()
+	consumed, _ := p.MouseHandler()(tview.MouseScrollUp,
+		tcell.NewEventMouse(p.agentX+1, 12, tcell.Button1, tcell.ModNone), noFocus)
+	testutil.Equal(t, consumed, true)
+	if got := p.AgentPane().ScrollOffset(); got <= before {
+		t.Fatalf("wheel over agent region did not scroll worker pane: before=%d after=%d", before, got)
+	}
+}
+
+// TestPanes_MouseScrollRoutesToCoordPane is the BUG-026 regression for the
+// coordinator case: with the orchestrator header (a coordinator selection)
+// selected the right region is the Details/plan stack, so the coordinator's
+// live terminal is the MIDDLE pane. A wheel over the coord region must scroll
+// the coordinator pane and be consumed.
+func TestPanes_MouseScrollRoutesToCoordPane(t *testing.T) {
+	p := drawnPageSelecting(t, func(p *HeraPage) bool { return selectOrchByName(p, "orch") })
+	testutil.Equal(t, p.detailsMode, true)
+
+	before := p.CoordPane().ScrollOffset()
+	consumed, _ := p.MouseHandler()(tview.MouseScrollUp,
+		tcell.NewEventMouse(p.coordX+1, 12, tcell.Button1, tcell.ModNone), noFocus)
+	testutil.Equal(t, consumed, true)
+	if got := p.CoordPane().ScrollOffset(); got <= before {
+		t.Fatalf("wheel over coord region did not scroll coordinator pane: before=%d after=%d", before, got)
+	}
+}
+
 func TestPanes_SyncPanesLocal(t *testing.T) {
 	p := drawnPage(t)
 	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
