@@ -137,6 +137,19 @@ func TestDraw_NoPlanHint(t *testing.T) {
 	testutil.Contains(t, out, "no plan authored")
 }
 
+// TestDraw_NoPlanEmptyNodeSet (BUG-013): when fed an EMPTY node set — which the
+// hera Plan pane does whenever no plan is authored — the widget draws the
+// empty-plan placeholder ("No plan authored." + an authoring hint) and NO live
+// worker chips. The live roster is the rail's job; the plan graph shows only the
+// authored plan.
+func TestDraw_NoPlanEmptyNodeSet(t *testing.T) {
+	w := New()
+	w.SetData(nil, nil)
+	out := drawToString(t, w, 60, 12)
+	testutil.Contains(t, out, "No plan authored")
+	testutil.Contains(t, out, "hera_plan") // the authoring hint
+}
+
 // rowOf returns the diagram row (from drawToString output) that contains substr,
 // or "" when none does. Used to assert chip text lands on the expanded stage row.
 func rowOf(out, substr string) string {
