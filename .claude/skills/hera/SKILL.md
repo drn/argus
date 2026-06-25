@@ -154,9 +154,13 @@ mutation verbs below to edit a node's prompt, drop a stale edge, or cancel a nod
 
 - **`hera_plan_node(cwd, name, prompt, [orchestrator], [project], [kind], [goal])`** — create ONE
   planned node (a worker role with no live agent/worktree/inbox yet). It materializes automatically
-  once **all** its blockers reach role-status `done`. **Name with a stable short-id prefix** — number =
-  serial stage, letter = parallel member (e.g. `1a-seed`, `2a-alpha`, `2b-beta`, `3a-final`);
-  uniquified within the orchestrator. `project` defaults to the coordinator's own.
+  once **all** its blockers reach role-status `done`. **Name nodes by a `<stage><member>` short-id —
+  number = serial stage, letter = parallel member (`1a`, `2a`, `2b`, `3a`)** — optionally with a *terse*
+  suffix (`1a-seed`, `2a-alpha`). This is **not cosmetic**: the rail/DAG renders one box per node, and
+  long descriptive names (`backend-api-handlers`, `frontend`) blow the boxes wide and wreck legibility
+  once you have more than a handful of stages, while `2a`-style ids keep the graph tight and scannable
+  and make the stage/parallel structure readable at a glance. Names are uniquified within the
+  orchestrator. `project` defaults to the coordinator's own.
   - `kind` — `worker` (default) or `subcoord`. A **worker** node materializes into a live born-bound
     worker; `prompt` is delivered to it (a check-in standing-order is prepended automatically, so it
     pings you on start). A **subcoord** node materializes into a *distinct sub-coordinator agent* (its
@@ -178,7 +182,9 @@ mutation verbs below to edit a node's prompt, drop a stale edge, or cancel a nod
   single-orchestrator).
   **All-or-nothing** — any cycle / cross-orchestrator / coordinator-blocker / validation error rolls
   back the entire graph (no orphan nodes). This is the way to author a multi-stage plan at once rather
-  than many `hera_plan_node` + `hera_block` calls.
+  than many `hera_plan_node` + `hera_block` calls. **Name every node by its `<stage><member>` short-id
+  (`1a`, `2a`, `2b`, `3a`)** so the rendered DAG stays tight — descriptive names blow the boxes wide
+  (see `hera_plan_node` above for the rationale).
 
 **Plan mutation verbs (reconcile as you go — coordinator-only):**
 
@@ -201,7 +207,21 @@ mutation verbs below to edit a node's prompt, drop a stale edge, or cancel a nod
 - A node with **no remaining blockers** materializes into a born-bound worker (same as
   `hera_spawn_worker` would produce).
 - **Non-root nodes stack automatically**: a materializing node is branched off its most-recently-`done`
-  blocker's branch, so a chain produces cleanly stacked PRs.
+  blocker's branch, so a *linear* chain produces cleanly stacked PRs.
+- **Fan-in stacks on ONE blocker, not a merge of all.** A node with multiple blockers bases off the
+  *single* most-recently-`done` blocker's branch — it does **not** merge the others in. In a diamond
+  (`3a` blocked by both `2a` and `2b`), `3a` starts from whichever of `2a`/`2b` materialized later and
+  is **missing the other's work** unless those two were themselves stacked. For true fan-in, either keep
+  the stages a linear chain, or have the fan-in node merge the branches itself via a self-rebase step
+  (next bullet).
+- **`done` gates materialization, but `done` ≠ merged/integrated.** A worker reaching role-status `done`
+  rolls its task to `in_review` (*not* merged) — so the gater materializes the dependent the instant the
+  blocker *reports* done, which is **before** you've reviewed or merged anything. The dependent stacks on
+  the blocker's worker branch as it stood at `done`. That's exactly right for a linear stack where that
+  branch *is* the integration point; but if your workflow merges upstream work into a separate feature
+  branch before cutting the next stage, the materialized node will be racing ahead of your merge — bake a
+  **self-rebase + self-guard** step into its prompt (see §6) so it pulls the integration branch and
+  verifies its prerequisites before building.
 - **Root nodes** (no blockers) resolve their base branch as: explicit orchestrator `base_branch` →
   the coordinator role's bound-task branch → the project default. So a plan rooted on your feature
   branch stacks on it (pass `base_branch` to `hera_new_orchestrator` to override the root).
@@ -255,6 +275,15 @@ gater materializes it as a *distinct coordinator agent* when its blockers finish
   with one `hera_plan` call; respond to each node's check-in via `hera_inbox`. **Reconcile the DAG
   as work evolves** — edit nodes, drop stale edges, cancel superseded nodes rather than abandoning the
   plan.
+- **When a stage's base needs *integration* (not just a branch-stack), or a downstream prompt depends on
+  an upstream's *discovered* contract:** the plan-DAG still works — but the gater materializes on
+  blocker-`done`, *ahead of your merge* (see §3), so don't author the graph and walk away. Two safe
+  prompt-side patterns, used together, make plan-mode robust here: **self-rebase** — the node's first step
+  is `git merge --no-edit origin/<your-integration-branch>` to pull whatever you've integrated so far;
+  **self-guard** — the node greps for the API routes / files / symbols it depends on and, if absent,
+  `hera_send`s you to wait instead of building against a phantom contract. Reserve pure incremental
+  `hera_spawn_worker` (spawn the next stage by hand only after you've merged the prior) for when even that
+  is too racy — i.e. a hard human/coordinator decision gate must sit between phases.
 - **Worker node vs sub-coordinator node:** a plain plan node (`kind=worker`) is a single unit of work.
   Make it `kind=subcoord` (with a `goal`) only when the stage is a *sub-team* — large enough to deserve
   its own coordinator that plans and fans out its own workers. It's the declarative alternative to a
@@ -295,6 +324,15 @@ in the doorbell, returned by `hera_tree_updates`, and stored permanently.
   worker is often missed: delivery is idle-gated and best-effort, so a busy worker never receives it and
   an idle/finished worker may not act on it. Put the full spec in the spawn prompt; verify via the branch
   diff and re-dispatch a fresh worker if one idled out without the requirement.
+- **Plan-DAG nodes materialize on blocker-`done`, which races ahead of your merge — make node prompts
+  self-defending.** A node spawns the instant its blockers *report* `done` (their tasks roll to
+  `in_review`, not merged), so a node that depends on upstream output can start before you've reviewed or
+  integrated it. Give any such node two prompt-side guards: a **self-rebase** first step
+  (`git merge --no-edit origin/<integration-branch>`) to pull integrated work, and a **self-guard** check
+  that greps for the prerequisite routes/files/symbols and `hera_send`s you to wait if they're missing,
+  rather than building blind. This is the standard mitigation for the fan-in and contract-discovery cases
+  in §3/§4 — it is what makes plan-mode safe for stacked work, so you rarely need to fall back to driving
+  every stage by hand.
 - **The message bus is idle-gated and best-effort for *delivery*, durable for *storage*.** Storage always
   succeeds (the row is committed); live pane delivery soft-fails (logged, never rolled back) when the
   recipient has no live binding or never becomes idle. `hera_inbox` always returns the durable rows, so
@@ -360,6 +398,9 @@ You are a coordinator and the work has clear stages (a seed, a parallel fan-out,
    ```
    `1a-seed` materializes first (rooted on your branch); `2a`/`2b` materialize in parallel once it's
    `done` (each stacked on `1a-seed`'s branch); `3a-final` waits for **both** and stacks on the latest.
+   **Fan-in caveat:** `3a-final` bases off whichever of `2a`/`2b` finished later — it does NOT auto-merge
+   the other half. Give `3a-final`'s prompt a self-rebase first step (`git merge --no-edit` the sibling/
+   integration branch) so it actually has both halves before it builds (see §6).
 3. Watch it fill in the second-tab plan-DAG (planned `○` → live). Respond to each node's check-in:
    `hera_inbox(cwd=$PWD)` on the doorbell → reply `hera_send(cwd=$PWD, to="<node>", body="go", tldr="go")`.
 4. If a node is HELD behind a genuinely failed blocker, the gater pings you — use `hera_unblock` to
