@@ -137,6 +137,19 @@ func TestDraw_NoPlanHint(t *testing.T) {
 	testutil.Contains(t, out, "no plan authored")
 }
 
+// TestDraw_NoPlanEmptyNodeSet (BUG-013): when fed an EMPTY node set — which the
+// hera Plan pane does whenever no plan is authored — the widget draws the
+// empty-plan placeholder ("No plan authored." + an authoring hint) and NO live
+// worker chips. The live roster is the rail's job; the plan graph shows only the
+// authored plan.
+func TestDraw_NoPlanEmptyNodeSet(t *testing.T) {
+	w := New()
+	w.SetData(nil, nil)
+	out := drawToString(t, w, 60, 12)
+	testutil.Contains(t, out, "No plan authored")
+	testutil.Contains(t, out, "hera_plan") // the authoring hint
+}
+
 // rowOf returns the diagram row (from drawToString output) that contains substr,
 // or "" when none does. Used to assert chip text lands on the expanded stage row.
 func rowOf(out, substr string) string {
@@ -593,10 +606,13 @@ func TestDraw_HScroll_EdgeIndicators(t *testing.T) {
 	testutil.Equal(t, strings.ContainsRune(atLast, '›'), false)
 }
 
-// TestDraw_HScroll_FannedMemberScrollsIntoView (BUG-010): a fanned group wider
-// than the pane scrolls so the SELECTED member box is fully visible, with an
-// earlier member scrolled off the left.
-func TestDraw_HScroll_FannedMemberScrollsIntoView(t *testing.T) {
+// TestDraw_FannedGroupWrapsInsteadOfHScroll (BUG-011 supersedes the BUG-010
+// fanned-scroll path): a fanned group wider than the pane no longer scrolls one
+// overflowing row horizontally — it WRAPS onto multiple rows, so the selected
+// member AND the previously-off-left first member are BOTH fully visible at once,
+// and no horizontal-scroll edge indicator is drawn. (Lone-node stages still
+// scroll horizontally — see TestDraw_HScroll_SelectedNodeFullyVisible.)
+func TestDraw_FannedGroupWrapsInsteadOfHScroll(t *testing.T) {
 	w := fanGroup("1a", "1b", "1c", "1d", "1e", "1f", "1g", "1h")
 	w.SetFocused(true)
 	w.MoveStage(1)     // onto the collapsed group
@@ -605,12 +621,15 @@ func TestDraw_HScroll_FannedMemberScrollsIntoView(t *testing.T) {
 		w.MoveSlot(1) // walk to the last member (1h)
 	}
 	testutil.Equal(t, w.CurrentNodeID(), "1h")
-	sc := drawToSim(t, w, 40, 18)
-	// ○ is the planned-node glyph; inside a fanned group the box label is the
-	// parsed short-id ("1h"), not the full role name.
+	sc := drawToSim(t, w, 40, 30)
+	// The selected last member is fully visible AND the first member is still on
+	// screen (wrapped to an earlier row), not scrolled off the left.
 	assertBoxFullyVisible(t, sc, "○ 1h")
-	_, _, found := findStringCell(sc, "○ 1a")
-	testutil.Equal(t, found, false)
+	assertBoxFullyVisible(t, sc, "○ 1a")
+	// No horizontal-scroll indicators — wrapping removed the overflow.
+	out := drawToString(t, w, 40, 30)
+	testutil.Equal(t, strings.ContainsRune(out, '‹'), false)
+	testutil.Equal(t, strings.ContainsRune(out, '›'), false)
 }
 
 // TestDraw_HScroll_NoIndicatorsWhenFits (BUG-010): when every stage fits the pane
@@ -623,6 +642,200 @@ func TestDraw_HScroll_NoIndicatorsWhenFits(t *testing.T) {
 	// Both nodes are visible (nothing clipped).
 	testutil.Contains(t, out, "w0")
 	testutil.Contains(t, out, "w1")
+}
+
+// TestState_Glyph_Cancelled: StateCancelled carries the same ✕ glyph as
+// StateFailed — the COLOUR is the discriminator (grey vs red).
+func TestState_Glyph_Cancelled(t *testing.T) {
+	testutil.Equal(t, StateCancelled.Glyph(), '✕')
+}
+
+// TestState_Label_Cancelled: StateCancelled labels itself "cancelled".
+func TestState_Label_Cancelled(t *testing.T) {
+	testutil.Equal(t, StateCancelled.Label(), "cancelled")
+}
+
+// TestState_Style_CancelledIsGrey_DistinctFromFailed: StateCancelled uses
+// ColorDimmed (grey) and StateFailed uses ColorError (red) — same ✕ glyph,
+// different colour, so they are visually distinct.
+func TestState_Style_CancelledIsGrey_DistinctFromFailed(t *testing.T) {
+	cfg, _, _ := StateCancelled.style().Decompose()
+	ffg, _, _ := StateFailed.style().Decompose()
+	testutil.Equal(t, cfg, theme.ColorDimmed)
+	testutil.Equal(t, ffg, theme.ColorError)
+	testutil.Equal(t, cfg == ffg, false)
+}
+
+// TestDraw_CancelledChipGlyphRendered: a node with State=StateCancelled renders
+// the ✕ glyph and the node's short-id label, and is distinct from StateFailed
+// (which uses a red bold style vs the dimmed grey of cancelled).
+func TestDraw_CancelledChipGlyphRendered(t *testing.T) {
+	w := New()
+	w.SetData([]Node{
+		{ID: "1a", Name: "1a-cancelled", State: StateCancelled},
+		{ID: "2a", Name: "2a-failed", State: StateFailed},
+	}, []Edge{{From: "1a", To: "2a"}})
+
+	sc := drawToSim(t, w, 60, 18)
+	cells, scw, _ := sc.GetContents()
+
+	// Both nodes render a ✕ glyph.
+	cx, cy, okC := findStringCell(sc, "✕ 1a")
+	testutil.Equal(t, okC, true)
+	fx, fy, okF := findStringCell(sc, "✕ 2a")
+	testutil.Equal(t, okF, true)
+
+	// The cancelled cell uses grey (ColorDimmed), not red.
+	cancelFG, _, _ := cells[cy*scw+cx].Style.Decompose()
+	testutil.Equal(t, cancelFG, theme.ColorDimmed)
+
+	// The failed cell uses red (ColorError), not grey.
+	failFG, _, _ := cells[fy*scw+fx].Style.Decompose()
+	testutil.Equal(t, failFG, theme.ColorError)
+
+	// They must be visually distinct — different colours.
+	testutil.Equal(t, cancelFG == failFG, false)
+}
+
+// TestGroupCounts_IncludesCancelled: groupCounts includes a non-zero
+// StateCancelled count as a grey ✕ entry in the aggregate line.
+func TestGroupCounts_IncludesCancelled(t *testing.T) {
+	g := &Group{Counts: map[State]int{StateDone: 2, StateCancelled: 1}}
+	got := groupCounts(g)
+	testutil.Contains(t, got, "2 ✓")
+	testutil.Contains(t, got, "1 ✕")
+}
+
+// fanGroupFeeding builds a plan stage0 [1a] -> group {members…} (stage1) -> [3a]
+// where every member feeds 3a, so the group is a downstream-feeding parallel
+// group with stages above AND below it. Used to exercise the wrapped-group edge
+// anchoring (BUG-011 fan-wrap).
+func fanGroupFeeding(members ...string) *Widget {
+	w := New()
+	nodes := []Node{node("1a"), node("3a")}
+	var edges []Edge
+	for _, m := range members {
+		nodes = append(nodes, node(m))
+		edges = append(edges, Edge{From: "1a", To: m}, Edge{From: m, To: "3a"})
+	}
+	w.SetData(nodes, edges)
+	w.SetFocused(true)
+	return w
+}
+
+// TestDraw_FannedGroupWrapsToFitWidth (BUG-011 fan-wrap): a fanned group with
+// more members than fit one row at a narrow pane width wraps its member boxes
+// onto MULTIPLE ROWS so every box is fully visible — no overflow off the right
+// edge and no horizontal-scroll edge indicators. The first and last members
+// land on different rows.
+func TestDraw_FannedGroupWrapsToFitWidth(t *testing.T) {
+	members := []string{"2a", "2b", "2c", "2d", "2e", "2f", "2g", "2h"}
+	// Plain group (no downstream feed) so member boxes carry no `↘` and their
+	// content matches assertBoxFullyVisible's exact box-width math.
+	w := fanGroup(members...)
+	// Fan out the group (stage 1).
+	w.MoveStage(1)
+	_, isGroup := w.GroupAt(w.CursorPos().Stage, w.CursorPos().Slot)
+	testutil.Equal(t, isGroup, true)
+	w.ActivateCursor()
+
+	const paneW, paneH = 40, 30
+	sc := drawToSim(t, w, paneW, paneH)
+	// Every member box is present AND fully visible (left + right borders on-screen).
+	for _, m := range members {
+		assertBoxFullyVisible(t, sc, "○ "+m)
+	}
+	// The first and last members are on DIFFERENT rows (the group wrapped).
+	_, yFirst, okF := findStringCell(sc, "○ 2a")
+	_, yLast, okL := findStringCell(sc, "○ 2h")
+	testutil.Equal(t, okF, true)
+	testutil.Equal(t, okL, true)
+	testutil.Equal(t, yFirst != yLast, true)
+
+	// Wrapping removed the horizontal overflow → no edge indicators.
+	out := drawToString(t, w, paneW, paneH)
+	testutil.Equal(t, strings.ContainsRune(out, '›'), false)
+	testutil.Equal(t, strings.ContainsRune(out, '‹'), false)
+}
+
+// TestDraw_FannedGroupWrapCursorReachesEveryMember (BUG-011 fan-wrap): with the
+// group wrapped onto multiple rows, walking the cursor right from the first
+// member advances through every member in order across the rows.
+func TestDraw_FannedGroupWrapCursorReachesEveryMember(t *testing.T) {
+	members := []string{"2a", "2b", "2c", "2d", "2e", "2f", "2g", "2h"}
+	w := fanGroup(members...)
+	w.MoveStage(1)
+	w.ActivateCursor() // fan out → cursor on member 0 (2a)
+	testutil.Equal(t, w.CurrentNodeID(), "2a")
+	// Render narrow so it wraps; the cursor model is width-independent, but assert
+	// the rendered grid is multi-row first.
+	const paneW, paneH = 40, 30
+	sc := drawToSim(t, w, paneW, paneH)
+	_, y0, _ := findStringCell(sc, "○ 2a")
+	_, y7, _ := findStringCell(sc, "○ 2h")
+	testutil.Equal(t, y0 != y7, true)
+	// Walk right through all members; each step names the next member in order.
+	for i := 1; i < len(members); i++ {
+		w.MoveSlot(1)
+		testutil.Equal(t, w.CurrentNodeID(), members[i])
+	}
+}
+
+// TestDraw_FannedGroupWrapDownstreamEdgeAnchored (BUG-011 fan-wrap): when a
+// wrapped group feeds a downstream stage, the downstream stage's box renders
+// BELOW the (now taller) wrapped block, and an inter-stage `│` connector sits
+// between them — the edge re-anchors under the taller block.
+func TestDraw_FannedGroupWrapDownstreamEdgeAnchored(t *testing.T) {
+	members := []string{"2a", "2b", "2c", "2d", "2e", "2f", "2g", "2h"}
+	w := fanGroupFeeding(members...)
+	w.MoveStage(1)
+	w.ActivateCursor() // fan out the group
+
+	const paneW, paneH = 40, 30
+	sc := drawToSim(t, w, paneW, paneH)
+	// The downstream node 3a renders below the wrapped group's last member row.
+	_, yLastMember, okM := findStringCell(sc, "○ 2h")
+	_, y3a, ok3a := findStringCell(sc, "○ 3a")
+	testutil.Equal(t, okM, true)
+	testutil.Equal(t, ok3a, true)
+	testutil.Equal(t, y3a > yLastMember, true)
+	// An inter-stage connector `│` sits on a row strictly between the group block
+	// and the downstream box (the edge anchors under the taller wrapped block).
+	cells, scw, _ := sc.GetContents()
+	connectorBetween := false
+	for y := yLastMember + 1; y < y3a; y++ {
+		for x := 0; x < scw; x++ {
+			c := cells[y*scw+x]
+			if len(c.Runes) > 0 && c.Runes[0] == '│' {
+				connectorBetween = true
+			}
+		}
+	}
+	testutil.Equal(t, connectorBetween, true)
+}
+
+// TestDraw_FannedGroupNarrowPaneOnePerRow (BUG-011 fan-wrap, degenerate edge):
+// at a pane so narrow that a single member box exceeds the inner-width budget,
+// each member wraps to its own row, the enclosure still overflows the pane
+// width, and the BUG-010 horizontal viewport keeps the SELECTED member visible
+// (drawing a `‹` once scrolled right). Exercises the budget clamp + the fanned
+// horizontal-scroll path that wrapping otherwise supersedes.
+func TestDraw_FannedGroupNarrowPaneOnePerRow(t *testing.T) {
+	w := fanGroup("1a", "1b", "1c")
+	w.MoveStage(1)
+	w.ActivateCursor() // fan out → cursor on member 0
+	w.MoveSlot(1)      // walk to the last visible member
+	w.MoveSlot(1)      // (clamps at the last member)
+	// A very narrow pane: a single ~8-wide member box can't fit the inner budget,
+	// so each member occupies its own row and the enclosure overflows the width.
+	sc := drawToSim(t, w, 12, 20)
+	// The render must not panic and the cursor still names a member box.
+	id := w.CurrentNodeID()
+	testutil.Equal(t, id == "1a" || id == "1b" || id == "1c", true)
+	// Content is hidden to the left after scrolling right → a `‹` indicator.
+	out := drawToString(t, w, 12, 20)
+	testutil.Contains(t, out, "‹")
+	_ = sc
 }
 
 func TestTruncateLabel_RuneAware(t *testing.T) {

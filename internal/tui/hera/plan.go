@@ -21,8 +21,13 @@ import (
 // with OrchView.Blocks populated by BuildModel) — no DB read, no I/O — so it is
 // safe on the tview thread and trivially testable. A live node carries its
 // bound task's status/result (the colour source); a planned node carries
-// State=StatePlanned. The degenerate "no plan authored" case (no planned nodes,
-// no edges) yields the live worker roles as a flat edgeless single stage (D1).
+// State=StatePlanned. The projection ALWAYS surfaces every live worker role as a
+// node (needed when a plan IS authored — a worker materialized from a planned
+// node must still render with its task colour). Whether the result is RENDERED as
+// a DAG or as the empty-plan state is the Plan pane's call: rebuildPlan checks
+// planIsAuthored and feeds the widget an EMPTY node set for the degenerate
+// "no plan authored" case (no planned nodes, no edges), so the live roles are
+// never drawn as a flat pseudo-DAG stage (BUG-013).
 //
 // Sub-coordinator drill-in (Node.Drillable, D6) needs the whole Model to see
 // sibling orchestrators, which a lone OrchView cannot; this single-arg form (the
@@ -97,6 +102,27 @@ func heraPlanNodesWithBridge(orch *OrchView, bridge map[string]*OrchView) ([]pla
 	return nodes, edges
 }
 
+// planIsAuthored reports whether a projected plan is an AUTHORED plan: at least
+// one planned (never-bound) node OR at least one blocking edge. A degenerate
+// projection — only live worker roles, with no planned nodes and no edges — is
+// NOT an authored plan: the DAG depicts the plan a coordinator authored, while
+// the live roster is the rail's job. The Plan pane renders the empty-plan state
+// for the degenerate case (rebuildPlan feeds the widget an empty node set)
+// rather than drawing the live roles as a flat pseudo-DAG stage (BUG-013). A
+// sub-coordinator bridge with neither planned nodes nor block edges is likewise
+// not authored — its drillable live node is not a planned node or an edge.
+func planIsAuthored(nodes []planview.Node, edges []planview.Edge) bool {
+	if len(edges) > 0 {
+		return true
+	}
+	for _, n := range nodes {
+		if n.Planned {
+			return true
+		}
+	}
+	return false
+}
+
 // planNodeID is a plan node's stable identity: a live node's bound argus task id
 // (so the planview OnEnter can jump to its agent view) or, for a never-bound
 // planned role, a synthetic key derived from the role id. The two id spaces
@@ -112,11 +138,16 @@ func planNodeID(r *RoleView) string {
 	return fmt.Sprintf("plan:%d", r.RoleID)
 }
 
-// planNodeState maps a role to its render state (D7). A planned (never-bound)
-// role is StatePlanned (violet ○). A live/finished role colours from its bound
-// argus task status + result, with the {"failed":true} result winning over the
-// workflow status (red ✕) — reusing coordTaskFailed (details.go), not a third copy.
+// planNodeState maps a role to its render state (D7). Cancelled wins over all
+// other discriminators — a cancelled planned node renders grey ✕ (StateCancelled)
+// regardless of its other fields. A planned (never-bound) role is StatePlanned
+// (violet ○). A live/finished role colours from its bound argus task status +
+// result, with the {"failed":true} result winning over the workflow status (red ✕)
+// — reusing coordTaskFailed (details.go), not a third copy.
 func planNodeState(r *RoleView) planview.State {
+	if r.Cancelled {
+		return planview.StateCancelled
+	}
 	if r.Planned {
 		return planview.StatePlanned
 	}
@@ -155,8 +186,8 @@ func planNodeState(r *RoleView) planview.State {
 // the spinner actually won, with zero duplication of the classifier's precedence
 // (and it tracks the active spinner style, which both sides read). See BUG-012.
 func planNodeIcon(r *RoleView, state planview.State) *planview.NodeIcon {
-	if state == planview.StatePlanned || state == planview.StateFailed {
-		return nil // ○ / ✕ overlays come from State (the rail has neither)
+	if state == planview.StatePlanned || state == planview.StateFailed || state == planview.StateCancelled {
+		return nil // ○ / ✕ / cancelled ✕ overlays come from State (the rail has no concept of these)
 	}
 	in := roleStatusInputs(r)
 	glyph, style := widget.RoleStatusIcon(in, false, 0)

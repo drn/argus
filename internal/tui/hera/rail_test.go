@@ -946,6 +946,7 @@ func TestStatusIcon_StatusMapping(t *testing.T) {
 		{db.HeraStatusBlocked},
 		{db.HeraStatusDone},
 		{db.HeraStatusIdle},
+		{db.HeraStatusFailed},
 	}
 	for _, c := range cases {
 		// Each known status yields a non-zero glyph without panicking.
@@ -1078,6 +1079,53 @@ func TestStatusIcon_NeedsInputSources(t *testing.T) {
 		icon, _ := statusIcon(&RoleView{Live: true, TaskStatus: "in_progress"}, false, 0)
 		if icon == theme.IconNeedsInput {
 			t.Fatalf("expected a non-needs-input glyph, got %q", icon)
+		}
+	})
+}
+
+// TestStatusIcon_Failed pins the D2 (make-hera-plan-living) failed rail glyph.
+// A role with status "failed" renders a red ✕ via roleStatusInputs → widget,
+// placed below NeedsInput and above Done in precedence.
+func TestStatusIcon_Failed(t *testing.T) {
+	t.Run("failed renders ✕", func(t *testing.T) {
+		icon, style := statusIcon(&RoleView{HasStatus: true, Status: db.HeraStatusFailed}, false, 0)
+		testutil.Equal(t, icon, '✕')
+		testutil.Equal(t, style, theme.StyleError)
+	})
+
+	t.Run("failed is distinct from done ✓", func(t *testing.T) {
+		failedIcon, _ := statusIcon(&RoleView{HasStatus: true, Status: db.HeraStatusFailed}, false, 0)
+		doneIcon, _ := statusIcon(&RoleView{HasStatus: true, Status: db.HeraStatusDone}, false, 0)
+		if failedIcon == doneIcon {
+			t.Fatalf("failed glyph %q must differ from done glyph %q", failedIcon, doneIcon)
+		}
+	})
+
+	t.Run("needs-input beats failed", func(t *testing.T) {
+		// ShowsNeedsInput uses NeedsInput || SubtreeNeedsInput.
+		icon, _ := statusIcon(&RoleView{
+			HasStatus: true, Status: db.HeraStatusFailed, NeedsInput: true,
+		}, false, 0)
+		testutil.Equal(t, icon, theme.IconNeedsInput)
+	})
+
+	t.Run("ready_to_close beats failed", func(t *testing.T) {
+		icon, _ := statusIcon(&RoleView{
+			HasStatus: true, Status: db.HeraStatusFailed, ReadyToClose: true,
+		}, false, 0)
+		testutil.Equal(t, icon, theme.IconReview)
+	})
+
+	t.Run("failed appears in TestStatusIcon_StatusMapping set", func(t *testing.T) {
+		// All five role-status values yield a non-zero glyph without panicking.
+		for _, sv := range []db.HeraRoleStatusValue{
+			db.HeraStatusIdle, db.HeraStatusWorking, db.HeraStatusBlocked,
+			db.HeraStatusDone, db.HeraStatusFailed,
+		} {
+			icon, _ := statusIcon(&RoleView{HasStatus: true, Status: sv}, false, 0)
+			if icon == 0 {
+				t.Errorf("status %q produced zero glyph", sv)
+			}
 		}
 	})
 }

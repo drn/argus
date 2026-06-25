@@ -101,8 +101,8 @@ func TestDetailsPlan_EdgeDrivesStages(t *testing.T) {
 }
 
 // TestDetailsPlan_RebuildOnCoordChange: selecting a different coordinator
-// reprojects the plan for the new orchestrator (an empty plan → degenerate
-// single flat stage).
+// reprojects the plan for the new orchestrator (an orchestrator with no authored
+// plan → the empty-plan state, NoPlan() true).
 func TestDetailsPlan_RebuildOnCoordChange(t *testing.T) {
 	d := memDB(t)
 	a := seedOrch(t, d, "orch-a")
@@ -120,11 +120,52 @@ func TestDetailsPlan_RebuildOnCoordChange(t *testing.T) {
 	testutil.Equal(t, selectOrchByName(p, "orch-a"), true)
 	testutil.Equal(t, p.Plan().Stages(), 2)
 
-	// Navigate to orch-b's header; applySelection reprojects an empty (no-plan)
-	// orchestrator → a single degenerate stage.
+	// Navigate to orch-b's header; applySelection reprojects an orchestrator with
+	// no authored plan → the empty-plan state.
 	testutil.Equal(t, selectOrchByName(p, "orch-b"), true)
 	testutil.Equal(t, p.SelectionContext().Orch.ID, b)
 	testutil.Equal(t, p.Plan().NoPlan(), true)
+}
+
+// TestDetailsPlan_LiveWorkersNoPlanRendersEmptyState (BUG-013): a coordinator
+// with LIVE workers but no planned nodes and no blocking edges projects to the
+// empty-plan state — NoPlan() true, zero stages, the "No plan authored."
+// placeholder drawn, and the live worker role chips are NOT rendered as a
+// pseudo-DAG stage (the live agents are the rail's job, not the plan graph's).
+func TestDetailsPlan_LiveWorkersNoPlanRendersEmptyState(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "alpha-wkr", db.HeraKindWorker, "t-alpha")
+	seedBoundRole(t, d, orch, "beta-wkr", db.HeraKindWorker, "t-beta")
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{
+		"t-coord": {id: "t-coord", alive: true},
+		"t-alpha": {id: "t-alpha", alive: true},
+		"t-beta":  {id: "t-beta", alive: true},
+	}))
+	p.Refresh()
+
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
+	testutil.Equal(t, p.detailsMode, true)
+	// NoPlan + zero stages prove the plan has no flat live-role stage; the
+	// placeholder renders. (The live workers still appear in the Details ROSTER
+	// panel above the plan — that is the rail/roster's job, not the plan graph's.)
+	testutil.Equal(t, p.Plan().NoPlan(), true)
+	testutil.Equal(t, p.Plan().Stages(), 0)
+
+	text := drawnPageText(t, p, 120, 30)
+	testutil.Equal(t, strings.Contains(text, "No plan authored"), true)
+}
+
+// TestDetailsPlan_AuthoredPlanRendersDAG (BUG-013): a coordinator WITH an
+// authored plan (≥1 planned node / ≥1 edge) still projects the full DAG — NoPlan()
+// false and the planned nodes lay out into stages.
+func TestDetailsPlan_AuthoredPlanRendersDAG(t *testing.T) {
+	p := planPage(t) // coord + planned 1a/2a with 2a←1a edge
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
+	testutil.Equal(t, p.Plan().NoPlan(), false)
+	testutil.Equal(t, p.Plan().Stages(), 2)
 }
 
 // TestDetailsPlan_DrawStacksBothPanels: with a coordinator selected the right
@@ -267,14 +308,18 @@ func TestDetailsPlan_MouseRoutesToWidget(t *testing.T) {
 }
 
 // leafPlanPage builds a coordinator orchestrator with one LIVE worker leaf bound
-// to a real task, with the coordinator selected (details mode → the plan shows
-// the worker as a leaf node whose node id is its bound task). Returns the page.
+// to a real task, plus an AUTHORED plan (a planned downstream node blocked by the
+// live worker) so the Plan pane renders the DAG rather than the empty-plan state
+// (BUG-013). The live worker is the sole stage-0 root, so the plan cursor lands on
+// its leaf node (id = its bound task "t-wkr"). Returns the page.
 func leafPlanPage(t *testing.T) *HeraPage {
 	t.Helper()
 	d := memDB(t)
 	orch := seedOrch(t, d, "orch")
 	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
-	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	wkr := seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	plan2a := seedPlannedRole(t, d, orch, "2a")
+	testutil.NoError(t, d.AddHeraBlock(plan2a.ID, wkr.ID)) // 2a blocked by the live worker
 	p := NewHeraPage(d)
 	p.SetSessionResolver(resolverFor(map[string]*fakeSession{
 		"t-coord": {id: "t-coord", alive: true},
@@ -330,7 +375,11 @@ func TestPlanLeafEnter_DeadSessionFiresReattach(t *testing.T) {
 	d := memDB(t)
 	orch := seedOrch(t, d, "orch")
 	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
-	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	wkr := seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	// An AUTHORED plan (planned 2a blocked by the live worker) so the Plan pane
+	// renders the DAG with the worker as the sole stage-0 leaf (BUG-013).
+	plan2a := seedPlannedRole(t, d, orch, "2a")
+	testutil.NoError(t, d.AddHeraBlock(plan2a.ID, wkr.ID))
 	p := NewHeraPage(d)
 	// No SetSessionResolver → p.resolve == nil → the worker session is dead.
 	var reattached Selection

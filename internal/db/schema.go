@@ -424,6 +424,12 @@ func (d *DB) createHeraTables() error {
 	// distinct coordinator agent. Idempotent — ignored when the column already
 	// exists (e.g. fresh DBs where the CREATE TABLE below adds it inline).
 	d.conn.Exec(`ALTER TABLE hera_roles ADD COLUMN node_kind TEXT`) //nolint:errcheck
+	// Idempotent ADD COLUMN migration for the role-level cancelled_at
+	// (make-hera-plan-living). Same pattern as nuked_at / base_branch above:
+	// additive, nullable TEXT, no backfill — existing rows read back NULL
+	// (active / not cancelled). Fails on a fresh DB (table not yet created) and
+	// is intentionally ignored; the CREATE TABLE below carries the column inline.
+	d.conn.Exec(`ALTER TABLE hera_roles ADD COLUMN cancelled_at TEXT`) //nolint:errcheck
 
 	ddl := `
 		CREATE TABLE IF NOT EXISTS hera_orchestrators (
@@ -467,13 +473,21 @@ func (d *DB) createHeraTables() error {
 			-- node_kind (add-hera-subcoord-nodes): plan-node discriminator. NULL or
 			-- absent means leaf worker (default); "subcoord" means materialize as a
 			-- distinct coordinator agent. Only meaningful on planned roles (no binding).
-			node_kind       TEXT
+			node_kind       TEXT,
+			-- cancelled_at (make-hera-plan-living): a planned node may be cancelled
+			-- by the coordinator (plan-mutation verb CancelHeraPlannedNode). A
+			-- cancelled node is kept in the DB (not deleted) so the plan view can
+			-- show it as cancelled, but it is excluded from ListHeraPlannedNodes so
+			-- the gater never materializes it, and it is treated as non-blocking
+			-- (satisfied) by the gater so its dependents can still proceed.
+			cancelled_at    TEXT
 		);
 		CREATE INDEX IF NOT EXISTS idx_hera_roles_kind ON hera_roles(orchestrator_id, kind);
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_hera_roles_active_name ON hera_roles(orchestrator_id, name) WHERE archived_at IS NULL;
-		CREATE INDEX IF NOT EXISTS idx_hera_roles_archived ON hera_roles(archived_at);
-		CREATE INDEX IF NOT EXISTS idx_hera_roles_pinned   ON hera_roles(pinned_at);
-		CREATE INDEX IF NOT EXISTS idx_hera_roles_nuked    ON hera_roles(nuked_at);
+		CREATE INDEX IF NOT EXISTS idx_hera_roles_archived  ON hera_roles(archived_at);
+		CREATE INDEX IF NOT EXISTS idx_hera_roles_pinned    ON hera_roles(pinned_at);
+		CREATE INDEX IF NOT EXISTS idx_hera_roles_nuked     ON hera_roles(nuked_at);
+		CREATE INDEX IF NOT EXISTS idx_hera_roles_cancelled ON hera_roles(cancelled_at);
 
 		CREATE TABLE IF NOT EXISTS hera_bindings (
 			id              INTEGER PRIMARY KEY,
@@ -496,7 +510,7 @@ func (d *DB) createHeraTables() error {
 
 		CREATE TABLE IF NOT EXISTS hera_role_status (
 			role_id    INTEGER PRIMARY KEY REFERENCES hera_roles(id) ON DELETE CASCADE,
-			status     TEXT NOT NULL CHECK (status IN ('idle','working','blocked','done')),
+			status     TEXT NOT NULL CHECK (status IN ('idle','working','blocked','done','failed')),
 			updated_at TEXT NOT NULL
 		);
 

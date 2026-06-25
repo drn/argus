@@ -73,6 +73,13 @@ type RoleView struct {
 	// NOT planned. Stage 2/3 populates this in buildRoleView.
 	Planned bool
 
+	// Cancelled is true when the coordinator has explicitly cancelled this planned
+	// node (cancelled_at is set). A cancelled node is excluded from gater
+	// materialization but remains visible in the plan DAG, rendered as grey ✕
+	// (StateCancelled). Cancelled wins over Planned in the plan projection
+	// (make-hera-plan-living B3).
+	Cancelled bool
+
 	// Prompt is the role's verbatim delivery prompt (persisted on the hera role at
 	// plan/spawn time). The plan view's master-detail header shows its first line
 	// as the node Description (D9). Empty when the role carries no prompt.
@@ -887,5 +894,9 @@ func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.
 	// A bound-but-finished role keeps Live==false but carries a BridgeTaskID, so it
 	// is NOT planned — the gater never re-materializes it.
 	rv.Planned = role.Kind == db.HeraKindWorker && !rv.Live && rv.BridgeTaskID == ""
+	// Cancelled discriminator (make-hera-plan-living B3): coordinator stamped
+	// cancelled_at on this planned node. Cancelled wins over Planned in the plan
+	// projection (renders grey ✕ instead of violet ○).
+	rv.Cancelled = role.CancelledAt != nil
 	return rv
 }

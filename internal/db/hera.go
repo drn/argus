@@ -124,6 +124,7 @@ const (
 	HeraStatusWorking HeraRoleStatusValue = "working"
 	HeraStatusBlocked HeraRoleStatusValue = "blocked"
 	HeraStatusDone    HeraRoleStatusValue = "done"
+	HeraStatusFailed  HeraRoleStatusValue = "failed"
 )
 
 // HeraOrchestrator is one coordination group. ArchivedAt is non-nil for
@@ -151,6 +152,9 @@ type HeraOrchestrator struct {
 // NodeKind is the plan-node discriminator (add-hera-subcoord-nodes): only
 // meaningful on planned roles (no binding ever); defaults to HeraNodeKindWorker
 // when the DB column is NULL or absent.
+// CancelledAt (make-hera-plan-living) is non-nil when the coordinator has
+// cancelled a planned node; the node is kept in the DB but excluded from
+// materialization and treated as non-blocking by the gater.
 type HeraRole struct {
 	ID             int64
 	OrchestratorID int64
@@ -163,6 +167,7 @@ type HeraRole struct {
 	ArchivedAt     *time.Time
 	PinnedAt       *time.Time
 	NukedAt        *time.Time
+	CancelledAt    *time.Time
 }
 
 // HeraBinding is one (role, argus task) incarnation. OrchestratorID is
@@ -446,7 +451,7 @@ func (d *DB) ListHeraRoles(orchID int64, includeArchived bool) ([]*HeraRole, err
 
 	// Nuked roles (Tier-2 EOL) are invisible to the rail-feeding list regardless
 	// of includeArchived — recoverable only by id lookup (HeraRole).
-	query := `SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind
+	query := `SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at
 	          FROM hera_roles WHERE orchestrator_id=? AND nuked_at IS NULL`
 	if !includeArchived {
 		query += ` AND archived_at IS NULL`
@@ -477,7 +482,7 @@ func (d *DB) ListHeraRolesByKind(orchID int64, kind HeraRoleKind) ([]*HeraRole, 
 	defer d.mu.Unlock()
 
 	rows, err := d.conn.Query(
-		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at
 		 FROM hera_roles WHERE orchestrator_id=? AND kind=? AND archived_at IS NULL ORDER BY name ASC`,
 		orchID, string(kind))
 	if err != nil {
@@ -585,14 +590,14 @@ func (d *DB) DeleteHeraRole(id int64) error {
 
 func (d *DB) heraRoleByID(id int64) (*HeraRole, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at
 		 FROM hera_roles WHERE id=?`, id)
 	return scanHeraRole(row)
 }
 
 func (d *DB) heraRoleByActiveName(orchID int64, name string) (*HeraRole, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at
 		 FROM hera_roles WHERE orchestrator_id=? AND name=? AND archived_at IS NULL`, orchID, name)
 	return scanHeraRole(row)
 }
@@ -810,6 +815,43 @@ func (d *DB) ManagedTaskIDs() (map[string]bool, error) {
 	return out, nil
 }
 
+// rollHeraWorkerToReviewInner is the shared implementation behind
+// RollHeraWorkerToReview and RollHeraWorkerFailed. Both roll a live worker's
+// bound task from in_progress to in_review; they differ only in whether
+// ready_to_close is stamped (done → stamp; failed → no stamp, the task is not
+// ready to close). Invariants enforced here so neither call-site can drift:
+//   - worker-kind only (coordinators/freelance are no-ops)
+//   - no-op unless the task is currently in_progress (never clobbers human state)
+//   - DB status + meta only — the live session is never touched
+//   - idempotent (second call is a no-op; task is already in_review)
+//
+// Returns (true, nil) when flipped, (false, nil) on any no-op path.
+func (d *DB) rollHeraWorkerToReviewInner(taskID string, stampReadyToClose bool) (bool, error) {
+	worker, err := d.TaskHoldsLiveHeraWorkerBinding(taskID)
+	if err != nil {
+		return false, err
+	}
+	if !worker {
+		return false, nil
+	}
+	t, err := d.Get(taskID)
+	if err != nil {
+		return false, err
+	}
+	if t == nil || t.Status != model.StatusInProgress {
+		return false, nil // never clobber a human-set in_review/complete
+	}
+	if err := d.SetStatus(taskID, model.StatusInReview); err != nil {
+		return false, err
+	}
+	if stampReadyToClose {
+		if mErr := d.SetMeta(taskID, HeraMetaNamespace, HeraMetaKeyReadyToClose, "true"); mErr != nil {
+			slog.Warn("[hera] ready_to_close stamp failed (flip stands)", "task", taskID, "err", mErr)
+		}
+	}
+	return true, nil
+}
+
 // RollHeraWorkerToReview implements the BUG-050 worker close-out roll: it moves
 // a worker-bound task to in_review and stamps meta:hera.ready_to_close=true. It
 // is the SINGLE shared helper behind BOTH close-out triggers — the session-exit
@@ -829,27 +871,17 @@ func (d *DB) ManagedTaskIDs() (map[string]bool, error) {
 // ready_to_close stamp is best-effort soft-fail — a meta failure is logged and
 // the flip still stands.
 func (d *DB) RollHeraWorkerToReview(taskID string) (bool, error) {
-	worker, err := d.TaskHoldsLiveHeraWorkerBinding(taskID)
-	if err != nil {
-		return false, err
-	}
-	if !worker {
-		return false, nil
-	}
-	t, err := d.Get(taskID)
-	if err != nil {
-		return false, err
-	}
-	if t == nil || t.Status != model.StatusInProgress {
-		return false, nil // never clobber a human-set in_review/complete
-	}
-	if err := d.SetStatus(taskID, model.StatusInReview); err != nil {
-		return false, err
-	}
-	if mErr := d.SetMeta(taskID, HeraMetaNamespace, HeraMetaKeyReadyToClose, "true"); mErr != nil {
-		slog.Warn("[hera] ready_to_close stamp failed (flip stands)", "task", taskID, "err", mErr)
-	}
-	return true, nil
+	return d.rollHeraWorkerToReviewInner(taskID, true)
+}
+
+// RollHeraWorkerFailed rolls a failed worker's bound task to in_review WITHOUT
+// stamping ready_to_close. A failed task surfaces for coordinator attention
+// (in_review) but is NOT ready to check off — the coordinator must decide
+// whether to retry, reassign, or close it. Shares all invariants with
+// RollHeraWorkerToReview: worker-kind only, no-op unless in_progress, idempotent,
+// soft-fail (the roll succeeds even if the meta write fails).
+func (d *DB) RollHeraWorkerFailed(taskID string) (bool, error) {
+	return d.rollHeraWorkerToReviewInner(taskID, false)
 }
 
 // ClearHeraReadyToClose removes the meta:hera.ready_to_close mark on taskID —
@@ -1203,9 +1235,9 @@ func scanHeraOrchestrator(s rowScanner) (*HeraOrchestrator, error) {
 func scanHeraRole(s rowScanner) (*HeraRole, error) {
 	var r HeraRole
 	var kind, createdAt string
-	var archivedAt, pinnedAt, nukedAt, nodeKind sql.NullString
+	var archivedAt, pinnedAt, nukedAt, nodeKind, cancelledAt sql.NullString
 	if err := s.Scan(&r.ID, &r.OrchestratorID, &r.Name, &kind, &r.ArgusProject, &r.Prompt,
-		&createdAt, &archivedAt, &pinnedAt, &nukedAt, &nodeKind); err != nil {
+		&createdAt, &archivedAt, &pinnedAt, &nukedAt, &nodeKind, &cancelledAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrHeraNotFound
 		}
@@ -1223,6 +1255,7 @@ func scanHeraRole(s rowScanner) (*HeraRole, error) {
 	} else {
 		r.NodeKind = HeraNodeKindWorker
 	}
+	r.CancelledAt = nullTimePtr(cancelledAt)
 	return &r, nil
 }
 

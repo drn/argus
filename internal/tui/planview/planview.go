@@ -45,6 +45,11 @@ const (
 	StateFailed
 	// StatePending is a live-but-not-yet-progressing node.
 	StatePending
+	// StateCancelled is a planned node that was explicitly cancelled by the
+	// coordinator (grey ✕). It renders distinctly from StateFailed (red ✕) —
+	// same glyph, different colour. Cancelled nodes remain visible in the plan
+	// DAG but are excluded from materialization (make-hera-plan-living B3).
+	StateCancelled
 )
 
 // Glyph returns the one-rune state indicator drawn inside a chip.
@@ -57,6 +62,8 @@ func (s State) Glyph() rune {
 	case StateInReview:
 		return '◔'
 	case StateFailed:
+		return '✕'
+	case StateCancelled:
 		return '✕'
 	case StatePending:
 		return '·'
@@ -77,6 +84,8 @@ func (s State) Label() string {
 		return "in review"
 	case StateFailed:
 		return "failed"
+	case StateCancelled:
+		return "cancelled"
 	case StatePending:
 		return "pending"
 	default: // StatePlanned
@@ -97,6 +106,8 @@ func (s State) style() tcell.Style {
 		return base.Foreground(theme.ColorInReview)
 	case StateFailed:
 		return base.Foreground(theme.ColorError).Bold(true)
+	case StateCancelled:
+		return base.Foreground(theme.ColorDimmed)
 	case StatePending:
 		return base.Foreground(theme.ColorPending)
 	default: // StatePlanned — violet
@@ -441,10 +452,10 @@ func (w *Widget) installLayout(nodes []Node, edges []Edge) {
 }
 
 // projectionSig hashes a snapshot's structure: every node's ID + State +
-// Drillable, and every edge's endpoints. Two snapshots with the same signature
-// render identical cells, so UpdateData can no-op (preserving cursor/fan-out)
-// when the signature is unchanged. Order-sensitive on purpose — the projection
-// is deterministic, so a stable order means a stable signature.
+// Drillable + status icon, and every edge's endpoints. Two snapshots with the
+// same signature render identical cells, so UpdateData can no-op (preserving
+// cursor/fan-out) when the signature is unchanged. Order-sensitive on purpose —
+// the projection is deterministic, so a stable order means a stable signature.
 func projectionSig(nodes []Node, edges []Edge) uint64 {
 	var h uint64 = 1469598103934665603 // FNV-1a offset basis
 	mix := func(s string) {
@@ -469,6 +480,24 @@ func projectionSig(nodes []Node, edges []Edge) uint64 {
 			mixU(1)
 		} else {
 			mixU(0)
+		}
+		// Fold the resolved status icon (the rail-parity glyph carrying the
+		// ready_to_close ✓ + hera role-status mark) so a status step / ready_to_close
+		// clear that changes the node's GLYPH without changing its task-derived State
+		// still flips the sig — otherwise UpdateData no-ops on the unchanged State and
+		// the DAG node renders a stale ✓ while the rail already updated (BUG-012). The
+		// projected Icon.Glyph is a stable frame-0 placeholder (spinner frames are
+		// re-resolved at Draw), so this never spams a reproject. A nil icon (planned /
+		// failed nodes fall back to State.Glyph) folds a distinct sentinel.
+		if n.Icon != nil {
+			mix(string(n.Icon.Glyph))
+			if n.Icon.Animated {
+				mixU(2)
+			} else {
+				mixU(3)
+			}
+		} else {
+			mixU(0xEE) // nil-icon sentinel
 		}
 	}
 	mixU(0xFF) // node/edge boundary
@@ -1413,7 +1442,11 @@ func (w *Widget) Draw(screen tcell.Screen) {
 		return
 	}
 	if len(w.stages) == 0 {
-		widget.DrawText(screen, inner.X, inner.Y, inner.W, "No plan — spawn a worker under this coordinator.", theme.StyleDimmed)
+		// Nothing to lay out — render the empty-plan placeholder. The hera Plan
+		// pane feeds an EMPTY node set here whenever no plan is authored (no planned
+		// nodes, no blocking edges), so the live worker roles are NOT drawn as a
+		// flat pseudo-DAG stage (BUG-013); the live agents are the rail's concern.
+		w.drawEmptyPlan(screen, inner)
 		return
 	}
 	// Master-detail header strip above the diagram (D9). Its height is fixed and
@@ -1440,6 +1473,34 @@ func (w *Widget) Draw(screen tcell.Screen) {
 		widget.DrawText(screen, diagram.X, diagram.Y, diagram.W, "no plan authored — live roles:", theme.StyleDimmed)
 	}
 	w.drawStages(screen, diagram)
+}
+
+// drawEmptyPlan renders the empty-plan placeholder shown when the widget has no
+// stages to lay out (an empty node set). The hera Plan pane feeds an empty set
+// whenever no plan is authored (no planned nodes, no blocking edges), so the
+// live worker roles are NOT drawn as a flat pseudo-DAG (BUG-013) — the live
+// agents are the rail's concern; the plan graph depicts only the AUTHORED plan.
+// Two dim, centered lines: the state and an authoring hint.
+func (w *Widget) drawEmptyPlan(screen tcell.Screen, inner widget.InnerRect) {
+	lines := []string{
+		"No plan authored.",
+		"Author one with hera_plan_node / hera_plan.",
+	}
+	top := inner.Y + (inner.H-len(lines))/2
+	if top < inner.Y {
+		top = inner.Y
+	}
+	for i, line := range lines {
+		row := top + i
+		if row >= inner.Y+inner.H {
+			break
+		}
+		col := inner.X + (inner.W-len(line))/2
+		if col < inner.X {
+			col = inner.X
+		}
+		widget.DrawText(screen, col, row, inner.W, line, theme.StyleDimmed)
+	}
 }
 
 // footerHint is the dim bottom-row nav legend (D-render). Kept ASCII-light so
@@ -1539,7 +1600,7 @@ func (w *Widget) drawStages(screen tcell.Screen, inner widget.InnerRect) {
 
 	blocks := make([]stageBlock, len(w.stages))
 	for s := range w.stages {
-		blocks[s] = w.buildStageBlock(s)
+		blocks[s] = w.buildStageBlock(s, inner.W)
 	}
 
 	// Total block height: each stage's height plus a 1-row connector between.
@@ -1701,7 +1762,9 @@ func (w *Widget) scrollOffsetFor(blocks []stageBlock, regionH int) int {
 // (lone nodes as rounded boxes, collapsed groups as dashed boxes, fanned groups
 // as a dashed enclosure wrapping the member node-boxes). The block's width is the
 // sum of sibling widths + boxGap between them; its height is the tallest sibling.
-func (w *Widget) buildStageBlock(s int) stageBlock {
+// availW is the diagram's inner width, used so a fanned group wraps its member
+// boxes onto multiple rows to fit the pane instead of overflowing (BUG-011).
+func (w *Widget) buildStageBlock(s int, availW int) stageBlock {
 	type sib struct {
 		width, height int
 		draw          func(screen tcell.Screen, x, y int, clip clipRect)
@@ -1716,7 +1779,7 @@ func (w *Widget) buildStageBlock(s int) stageBlock {
 		onSlot := isCursorStage && w.cursor.Slot == slotIdx
 		switch {
 		case sl.group != nil && w.Fanned(s, slotIdx):
-			bw, bh, draw, memRelX, memW := w.layoutFannedGroup(s, slotIdx, sl.group)
+			bw, bh, draw, memRelX, memW := w.layoutFannedGroup(s, slotIdx, sl.group, availW)
 			sb := sib{width: bw, height: bh, draw: draw}
 			if onSlot {
 				if memW > 0 { // a member is selected inside the fanned group
@@ -1849,22 +1912,27 @@ func (w *Widget) layoutDashedBox(label string, sub []countSeg, topLabel string, 
 }
 
 // layoutFannedGroup lays a fanned group out as a SOLID rounded enclosure wrapping
-// the member node-boxes laid out horizontally inside (BUG-005, matching the
-// design). The enclosure carries the group's role label VERTICALLY down its left
-// inner edge (one rune per row, dim) and a ▲ collapse affordance at the top-right;
-// each member that feeds downstream (g.FeedingMembers) gets a ↘ on its box. The
-// cursor's member box gets the selection fill; the enclosure itself fills only
-// when the cursor rests on the group slot with no member selected.
+// the member node-boxes inside (BUG-005, matching the design). The member boxes
+// are packed left-to-right and WRAPPED onto multiple rows so the enclosure fits
+// the available diagram width (availW) instead of overflowing in one row
+// (BUG-011): a new row starts whenever the next box would exceed the inner-width
+// budget, and a box wider than the budget on its own still occupies its own row
+// (the BUG-010 horizontal viewport then scrolls to it). The enclosure carries the
+// group's role label VERTICALLY down its left inner edge (one rune per row, dim)
+// and a ▲ collapse affordance at the top-right; each member that feeds downstream
+// (g.FeedingMembers) gets a ↘ on its box. The cursor's member box gets the
+// selection (double border); the enclosure itself is selected only when the
+// cursor rests on the group slot with no member selected.
 // The two trailing return values are the selected member's box x-offset
 // (relative to the enclosure's left edge) and width, for the horizontal viewport
 // (BUG-010); selMemW is 0 unless the cursor sits on a member of THIS group.
-func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tcell.Screen, int, int, clipRect), int, int) {
+func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group, availW int) (int, int, func(tcell.Screen, int, int, clipRect), int, int) {
 	onSlot := w.cursor.Stage == s && w.cursor.Slot == slotIdx
 	type mbox struct {
 		width, height int
 		draw          func(tcell.Screen, int, int, clipRect)
 	}
-	var members []mbox
+	members := make([]mbox, 0, len(g.Members))
 	for memberIdx, id := range g.Members {
 		glyph, style := w.nodeGlyph(id)
 		content := string(glyph) + " " + w.LabelOf(id)
@@ -1874,16 +1942,6 @@ func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tce
 		bw, bh, d := w.layoutNodeBox(content, style, onSlot && w.cursor.Member == memberIdx)
 		members = append(members, mbox{bw, bh, d})
 	}
-	innerW, innerH := 0, 0
-	for i, m := range members {
-		innerW += m.width
-		if i > 0 {
-			innerW += boxGap
-		}
-		if m.height > innerH {
-			innerH = m.height
-		}
-	}
 	// Reserve one extra inner column on the left for the vertical role label when
 	// the group has a common token (else the label column is omitted).
 	vlabel := []rune(w.commonRoleToken(g.Members))
@@ -1891,22 +1949,77 @@ func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tce
 	if len(vlabel) > 0 {
 		labelCol = 1
 	}
+	// Inner-width budget for the member rows: the available diagram width minus the
+	// label column, the enclosure's horizontal padding, and its two borders. At
+	// least 1 so a degenerate narrow pane still packs one (overflowing) box per row.
+	budget := availW - labelCol - 2*groupPad - 2
+	if budget < 1 {
+		budget = 1
+	}
+	// Pack member indices into rows: keep adding to the current row until the next
+	// box would exceed the budget, then start a new row. A row always holds at
+	// least one box (even if it alone exceeds the budget).
+	var rows [][]int
+	var cur []int
+	curW := 0
+	for i, m := range members {
+		add := m.width
+		if len(cur) > 0 {
+			add += boxGap
+		}
+		if len(cur) > 0 && curW+add > budget {
+			rows = append(rows, cur)
+			cur = nil
+			curW = 0
+			add = m.width
+		}
+		cur = append(cur, i)
+		curW += add
+	}
+	if len(cur) > 0 {
+		rows = append(rows, cur)
+	}
+	// Row geometry: each row's width is the sum of its members + gaps; its height
+	// the tallest member. innerW = widest row, innerH = sum of row heights.
+	rowHeights := make([]int, len(rows))
+	innerW, innerH := 0, 0
+	for r, row := range rows {
+		rw, rh := 0, 0
+		for j, mi := range row {
+			if j > 0 {
+				rw += boxGap
+			}
+			rw += members[mi].width
+			if members[mi].height > rh {
+				rh = members[mi].height
+			}
+		}
+		rowHeights[r] = rh
+		if rw > innerW {
+			innerW = rw
+		}
+		innerH += rh
+	}
 	boxW := labelCol + innerW + 2*groupPad + 2
 	boxH := innerH + 2 // rounded top + bottom edges
 	enclosureSel := onSlot && w.cursor.Member < 0
-	// Selected member geometry (relative to the enclosure box left edge), mirroring
-	// the member-draw loop's x math below.
-	selMemRelX, selMemW := 0, 0
 	memBase := 1 + labelCol + groupPad
-	mcx := memBase
-	for i, m := range members {
-		if i > 0 {
-			mcx += boxGap
+	// Selected member geometry (relative to the enclosure box left edge), mirroring
+	// the member-draw loop's x math below. Only the X axis is threaded to the
+	// horizontal viewport (BUG-010); wrapping keeps the group within the width in
+	// the common case, so the viewport only fires for a lone over-wide member box.
+	selMemRelX, selMemW := 0, 0
+	for _, row := range rows {
+		mcx := memBase
+		for j, mi := range row {
+			if j > 0 {
+				mcx += boxGap
+			}
+			if onSlot && w.cursor.Member == mi {
+				selMemRelX, selMemW = mcx, members[mi].width
+			}
+			mcx += members[mi].width
 		}
-		if onSlot && w.cursor.Member == i {
-			selMemRelX, selMemW = mcx, m.width
-		}
-		mcx += m.width
 	}
 	border := w.enclosureBorderStyle(enclosureSel)
 	labelStyle := theme.StyleDimmed
@@ -1928,13 +2041,19 @@ func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tce
 			}
 			setIf(screen, clip, x+1, ry, r, labelStyle)
 		}
-		cx := x + 1 + labelCol + groupPad
-		for i, m := range members {
-			if i > 0 {
-				cx += boxGap
+		// Member boxes, row by row. Each row's top is the running sum of prior row
+		// heights below the enclosure's top border.
+		ry := y + 1
+		for r, row := range rows {
+			cx := x + memBase
+			for j, mi := range row {
+				if j > 0 {
+					cx += boxGap
+				}
+				members[mi].draw(screen, cx, ry, clip)
+				cx += members[mi].width
 			}
-			m.draw(screen, cx, y+1, clip)
-			cx += m.width
+			ry += rowHeights[r]
 		}
 	}
 	return boxW, boxH, draw, selMemRelX, selMemW
@@ -2072,6 +2191,21 @@ func put(screen tcell.Screen, clip clipRect, x, y int, s string, style tcell.Sty
 	}
 }
 
+// groupCounts renders the aggregate per-state counts for a collapsed group box,
+// e.g. "3 ✓ · 2 ⟳ · 1 ○". States with a zero count are omitted; the order
+// follows the State enum for stability. Retained as a flat-string helper (and
+// for TestGroupCounts_IncludesCancelled); the live render path uses
+// groupCountSegs for per-segment colour + spinner animation (BUG-011).
+func groupCounts(g *Group) string {
+	var parts []string
+	for _, s := range []State{StateDone, StateInReview, StateWorking, StatePending, StateFailed, StateCancelled, StatePlanned} {
+		if c := g.Counts[s]; c > 0 {
+			parts = append(parts, fmt.Sprintf("%d %c", c, s.Glyph()))
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
 // countSeg is one styled run of the collapsed-group count line: either a
 // "<count> <glyph>" segment in its per-state colour or a dim " · " separator
 // (BUG-011). Painting per-segment (rather than a single flat string) is what
@@ -2086,9 +2220,9 @@ type countSeg struct {
 // the compact State.Glyph() set (◔/⟳), it synthesises a widget.RoleStatusInputs
 // from the State and calls the SHARED classifier widget.RoleStatusIcon — the same
 // fn the rail's statusIcon and the node's planNodeIcon use — so the count can
-// never drift from the rail. The two plan-only overlays the rail has no concept
-// of (planned ○ / failed ✕) fall back to the State glyph. The working segment
-// animates via the live spinner frame.
+// never drift from the rail. The three plan-only overlays the rail has no concept
+// of (planned ○ / failed ✕ / cancelled ✕) fall back to the State glyph. The
+// working segment animates via the live spinner frame.
 //
 // Only the GLYPH comes from the classifier; the COLOUR is the caller's
 // State.style() (the per-state node-border colour). The classifier's
@@ -2096,8 +2230,8 @@ type countSeg struct {
 // in_review cyan, so glyph and colour are sourced separately on purpose.
 func countSegGlyph(s State, frame int) rune {
 	switch s {
-	case StatePlanned, StateFailed:
-		return s.Glyph() // ○ / ✕ overlays — the rail has neither
+	case StatePlanned, StateFailed, StateCancelled:
+		return s.Glyph() // ○ / ✕ / ✕ overlays — the rail has neither
 	}
 	var in widget.RoleStatusInputs
 	switch s {
@@ -2123,7 +2257,7 @@ func countSegGlyph(s State, frame int) rune {
 // the frame from w.animFrame each Draw (layout runs per Draw) so it animates.
 func (w *Widget) groupCountSegs(g *Group) []countSeg {
 	var segs []countSeg
-	for _, s := range []State{StateDone, StateInReview, StateWorking, StatePending, StateFailed, StatePlanned} {
+	for _, s := range []State{StateDone, StateInReview, StateWorking, StatePending, StateFailed, StateCancelled, StatePlanned} {
 		c := g.Counts[s]
 		if c == 0 {
 			continue

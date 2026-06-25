@@ -209,7 +209,10 @@ func TestFullFeed_AllMembersToOneTargetSetsFeedTarget(t *testing.T) {
 	testutil.Equal(t, g.FeedingMembers["2d"] && g.FeedingMembers["2e"] && g.FeedingMembers["2f"], true)
 }
 
-// --- Degenerate no-plan (Requirement: no plan authored renders live roles flat) ---
+// --- Degenerate no-plan generic widget layout (the hera Plan pane feeds an EMPTY
+// node set for the no-authored-plan case — see TestDraw_NoPlanEmptyNodeSet and the
+// hera dag tests; this pins the generic widget's flat layout when it IS given
+// no-plan nodes directly) ---
 
 func TestNoPlan_FlatSingleStage(t *testing.T) {
 	w := New()
@@ -256,11 +259,10 @@ func TestNav_UpDownChangesStageAndCollapses(t *testing.T) {
 // TestNav_LeftRightMovesSlot: within a multi-slot stage ←/→ moves between slots.
 func TestNav_LeftRightMovesSlot(t *testing.T) {
 	// Two same-stage roots that share the EMPTY blocker set collapse into a
-	// single group per D4 — that is spec-compliant, so we can't use two planned
-	// roots here. The no-plan path (live roles, no planned nodes, no edges)
-	// renders each live worker as its own lone-node slot, never grouped, giving a
-	// genuine two-slot stage 0 that preserves this test's intent (←/→ between
-	// slots).
+	// single group per D4, so we can't use two planned roots here. The no-plan
+	// path (live roles, no planned nodes, no edges) renders each live worker as
+	// its own lone-node slot, never grouped, giving a genuine two-slot stage 0
+	// that preserves this test's intent (←/→ between slots).
 	w := New()
 	w.SetData([]Node{liveNode("w1", StateWorking), liveNode("w2", StateWorking)}, nil)
 	w.SetFocused(true)
@@ -940,6 +942,32 @@ func TestUpdateData_CollapsedGroupCursorReanchors(t *testing.T) {
 	_, stillGroup := w.GroupAt(w.CursorPos().Stage, w.CursorPos().Slot)
 	testutil.Equal(t, stillGroup, true)
 	testutil.Equal(t, w.CursorPos().Stage, 1)
+}
+
+// TestUpdateData_IconChangeReinstalls: a hera role-status step / ready_to_close
+// clear changes a node's rendered ICON (the rail-parity glyph) WITHOUT changing
+// its task-derived State. UpdateData must still re-install the layout so the DAG
+// node updates in lock-step with the rail (BUG-012). The icon is folded into the
+// projection signature; without it UpdateData would no-op on the unchanged State
+// and the node would render a stale ✓ while the rail already moved to working.
+func TestUpdateData_IconChangeReinstalls(t *testing.T) {
+	mk := func(ic *NodeIcon) []Node {
+		n := liveNode("w0", StateWorking) // task still in_progress (working) in BOTH frames
+		n.Icon = ic
+		return []Node{n}
+	}
+	reviewIcon := &NodeIcon{Glyph: '✓', Style: tcell.StyleDefault, Animated: false}
+	workingIcon := &NodeIcon{Glyph: '⠋', Style: tcell.StyleDefault, Animated: true}
+
+	w := New()
+	w.SetData(mk(reviewIcon), nil)
+	testutil.Equal(t, w.nodes["w0"].Icon.Glyph, '✓')
+
+	// Same node ID and same State (StateInProgress) — only the icon flipped from
+	// the ready_to_close ✓ to the working spinner. The stored node must update.
+	w.UpdateData(mk(workingIcon), nil)
+	testutil.Equal(t, w.nodes["w0"].Icon.Glyph, '⠋')
+	testutil.Equal(t, w.nodes["w0"].Icon.Animated, true)
 }
 
 // --- Selection highlight + centering (SimulationScreen Draw tests) ---

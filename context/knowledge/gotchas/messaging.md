@@ -135,6 +135,11 @@ true)` and `db.Delete(id)`; entrypoints that go through `db.Update`
   the typical "task replies within a few seconds" case where 500ms tick
   is plenty.
 
+## Hera send-status (make-hera-plan-living)
+
+- **Worker/freelance `hera_send` REQUIRES a `status` parameter; the apply is SYNCHRONOUS and DECOUPLED from doorbell delivery.** The handler calls `applyRoleStatus` (the shared `hera_status` path) before any send/deliver work; it commits the role-status DB write and task roll synchronously in the send handler — it never rides `notify.Notifier` (best-effort, idle-gated). A failed `applyRoleStatus` is soft-failed (logged, send proceeds), so the message always lands even if the DB write fails transiently.
+- **`failed` is a valid `hera_send` status (fifth value).** A worker reporting `status="failed"` rolls its task to `in_review` WITHOUT `ready_to_close` (needs attention). The gater's `blockerOutcome` treats a `failed` role-status as explicitly `blockerFailed` — without waiting for session death — and holds dependent planned nodes.
+
 ## Hera message bus (M2)
 
 - **`hera_messages.read_at` is real NULL, never `''`.** The partial inbox index

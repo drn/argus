@@ -1,6 +1,8 @@
 package hera
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/db"
@@ -198,11 +200,14 @@ func TestHeraPlanNodes_LiveNodeColoursFromTaskStatus(t *testing.T) {
 	testutil.Equal(t, n.State, planview.StateDone)
 }
 
-// TestHeraPlanNodes_DegenerateNoPlanFlatStage mirrors "render the orchestrator's
-// live roles as a flat edgeless stage with a 'no plan' hint when no plan is
-// authored". With no planned nodes and no edges, the live workers project as
-// nodes with no edges between them.
-func TestHeraPlanNodes_DegenerateNoPlanFlatStage(t *testing.T) {
+// TestHeraPlanNodes_LiveWorkersStillProjectAsNodes: the projection ALWAYS
+// surfaces live worker roles as nodes (needed when a plan IS authored — a live
+// worker materialized from a planned node must still render with its task colour).
+// With no planned nodes and no edges the workers project as nodes with no edges
+// between them; whether that degenerate set is RENDERED as an empty-plan state vs
+// a DAG is the widget's call (planview's noPlan path, BUG-013) — the projection
+// itself does not drop the live nodes.
+func TestHeraPlanNodes_LiveWorkersStillProjectAsNodes(t *testing.T) {
 	d := memDB(t)
 	orch := seedOrch(t, d, "orch")
 	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
@@ -460,4 +465,147 @@ func TestRefresh_DifferentCoordinatorResetsPlanCursor(t *testing.T) {
 	// Switch coordinators: the plan cursor must reset to stage 0.
 	testutil.Equal(t, selectOrchByName(p, "orch-b"), true)
 	testutil.Equal(t, pl.CursorPos().Stage, 0)
+}
+
+// planStatusLine returns the plan widget's "Status:" header line for the node
+// under the cursor — the line that renders the node's RESOLVED status glyph
+// (1:1 with the rail). Empty when no node is selected.
+func planStatusLine(pl *planview.Widget) string {
+	for _, ln := range pl.HeaderLines() {
+		if strings.HasPrefix(ln, "Status:") {
+			return ln
+		}
+	}
+	return ""
+}
+
+// TestRefresh_StatusStepReprojectsPlanNode is the BUG-012 page-level regression:
+// with a coordinator selected (details mode), clearing a worker's ready_to_close
+// mark — the StepStatus-out-of-`done` effect — must re-project the plan so the
+// worker's DAG node updates in lock-step with the rail, NOT keep rendering the
+// stale review ✓. The worker's task-derived State (working) is UNCHANGED by the
+// step (only the icon flips), so the plan widget's UpdateData short-circuit on an
+// unchanged projection signature would leave the node stale — unless the node
+// ICON is folded into that signature (the fix). Asserts through the plan header's
+// resolved status glyph, which is what the operator actually sees.
+func TestRefresh_StatusStepReprojectsPlanNode(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	wkr := seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	// An AUTHORED plan (planned 2a blocked by the live worker) so the Plan pane
+	// renders the DAG — the live worker is the sole stage-0 leaf the cursor lands
+	// on (BUG-013). The worker is live + in_progress (working) AND marked
+	// ready_to_close, so its plan node shows the review ✓ (ready_to_close wins the
+	// glyph precedence over the working spinner — same as the rail row).
+	plan2a := seedPlannedRole(t, d, orch, "2a")
+	testutil.NoError(t, d.AddHeraBlock(plan2a.ID, wkr.ID))
+	testutil.NoError(t, d.SetMeta("t-wkr", db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"))
+
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-coord": {id: "t-coord", alive: true}}))
+	p.Refresh()
+
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
+	testutil.Equal(t, p.detailsMode, true)
+
+	pl := p.Plan()
+	// The cursor sits on the live worker leaf (stage 0), whose header Status line
+	// renders its resolved glyph.
+	testutil.Equal(t, pl.CurrentNodeID(), "t-wkr")
+	testutil.Equal(t, strings.ContainsRune(planStatusLine(pl), theme.IconReview), true)
+
+	// Step the worker OUT of `done`: clear ready_to_close (exactly what
+	// Ops.StepStatus does), then run the SAME refresh the s/S key triggers. The
+	// node's State (working) is unchanged — only the icon flips — so the plan node
+	// must STILL update to the working glyph, never stay pinned to the review ✓.
+	testutil.NoError(t, d.ClearHeraReadyToClose("t-wkr"))
+	p.Refresh()
+
+	testutil.Equal(t, pl.CurrentNodeID(), "t-wkr")
+	testutil.Equal(t, strings.ContainsRune(planStatusLine(pl), theme.IconReview), false)
+}
+
+// --- Cancelled planned node rendering (make-hera-plan-living B3) ---
+
+// TestRoleViewCancelled_SetFromCancelledAt: a role whose CancelledAt is set
+// projects Cancelled=true in the RoleView.
+func TestRoleViewCancelled_SetFromCancelledAt(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	r := seedPlannedRole(t, d, orch, "1a-to-cancel")
+	testutil.NoError(t, d.CancelHeraPlannedNode(r.ID))
+
+	ov := orchViewByName(t, d, "orch")
+	testutil.Equal(t, ov != nil, true)
+	found := false
+	for _, rv := range ov.Roles {
+		if rv.RoleID == r.ID {
+			found = true
+			testutil.Equal(t, rv.Cancelled, true)
+		}
+	}
+	testutil.Equal(t, found, true)
+}
+
+// TestHeraPlanNodes_CancelledProjectsStateCancelled: a cancelled planned node
+// (CancelledAt set) projects State=StateCancelled and remains in the node list
+// (NOT omitted — it stays visible in the plan DAG as grey ✕).
+func TestHeraPlanNodes_CancelledProjectsStateCancelled(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	cancelled := seedPlannedRole(t, d, orch, "1a-cancelled")
+	active := seedPlannedRole(t, d, orch, "2a-active")
+	testutil.NoError(t, d.CancelHeraPlannedNode(cancelled.ID))
+
+	ov := orchViewByName(t, d, "orch")
+	testutil.Equal(t, ov != nil, true)
+	nodes, _ := heraPlanNodes(ov)
+
+	// Both nodes appear (cancelled is visible, not dropped).
+	nc, okC := findNode(nodes, fmt.Sprintf("plan:%d", cancelled.ID))
+	na, okA := findNode(nodes, fmt.Sprintf("plan:%d", active.ID))
+	testutil.Equal(t, okC, true)
+	testutil.Equal(t, okA, true)
+
+	// Cancelled node → StateCancelled; active planned node → StatePlanned.
+	testutil.Equal(t, nc.State, planview.StateCancelled)
+	testutil.Equal(t, na.State, planview.StatePlanned)
+}
+
+// TestHeraPlanNodes_CancelledWinsOverPlanned: a node that is both planned
+// (never materialized) AND cancelled projects StateCancelled, not StatePlanned.
+// This pins the priority order: Cancelled > Planned.
+func TestHeraPlanNodes_CancelledWinsOverPlanned(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	r := seedPlannedRole(t, d, orch, "1a-cancel-planned")
+	testutil.NoError(t, d.CancelHeraPlannedNode(r.ID))
+
+	ov := orchViewByName(t, d, "orch")
+	testutil.Equal(t, ov != nil, true)
+
+	// Confirm the RoleView carries Planned=true AND Cancelled=true (double flag).
+	for _, rv := range ov.Roles {
+		if rv.RoleID == r.ID {
+			testutil.Equal(t, rv.Planned, true)
+			testutil.Equal(t, rv.Cancelled, true)
+		}
+	}
+
+	nodes, _ := heraPlanNodes(ov)
+	n, ok := findNode(nodes, fmt.Sprintf("plan:%d", r.ID))
+	testutil.Equal(t, ok, true)
+	// Cancelled wins — renders StateCancelled, NOT StatePlanned.
+	testutil.Equal(t, n.State, planview.StateCancelled)
+}
+
+// TestPlanNodeIcon_CancelledUsesStateOverlay: a cancelled node leaves Icon nil
+// so the widget renders the State overlay (grey ✕) rather than an Icon glyph.
+func TestPlanNodeIcon_CancelledUsesStateOverlay(t *testing.T) {
+	icon := projectWorkerIcon(t, RoleView{RoleID: 2, Name: "w-cancelled", Cancelled: true})
+	testutil.Nil(t, icon)
 }

@@ -417,15 +417,18 @@ If the recipient has a live agent session the daemon also writes a single notifi
 | `hera_new_orchestrator` | Bootstrap a new orchestrator and claim its `coordinator` role for the calling task.                                                               |
 | `hera_join`             | Claim the calling task's existing role + unread count, or (with `role_name` + `kind`) attach a new `worker`/`freelance` role under an orchestrator. |
 | `hera_spawn_worker`     | Spawn a born-bound worker task + session under the caller's orchestrator (caller must hold a live coordinator binding). Optional `model` picks the worker's model by task complexity (backend-scoped; empty = backend default). |
-| `hera_send`             | Send a role-addressed message; workers/freelancers default to the coordinator when `to` is omitted, coordinators must name a recipient.           |
+| `hera_send`             | Send a role-addressed message. **`status` is required for worker/freelance senders** (`idle`/`working`/`blocked`/`done`/`failed`) and is applied synchronously before send. Workers/freelancers default to the coordinator when `to` is omitted; coordinators must name a recipient. |
 | `hera_inbox`            | Fetch the caller role's unread messages (oldest first), cancel their pending pane deliveries, and mark them read.                                 |
 | `hera_mark_read`        | Mark a specific list of message IDs read and cancel their pending deliveries.                                                                     |
-| `hera_status`           | Set the caller role's status (`idle`/`working`/`blocked`/`done`), mirrored to `task_meta`; a worker reporting `done` rolls its task to in-review. |
+| `hera_status`           | Set the caller role's status (`idle`/`working`/`blocked`/`done`/`failed`), mirrored to `task_meta`; `done` rolls the worker's task to in-review + `ready_to_close`; `failed` rolls to in-review without `ready_to_close`. |
 | `hera_tree_updates`     | Scan the caller's orchestrator subtree for messages since a per-role cursor; returns TLDR subject lines only and auto-advances the cursor.        |
 | `hera_get_messages`     | Fetch full message bodies by ID (after `hera_tree_updates`), scoped to the caller's orchestrator subtree.                                         |
 | `hera_plan_node`        | Author a single planned node under the caller's orchestrator (coordinator-only). Params: `name`, `kind` (`worker`\|`subcoord`, default `worker`), `prompt` (worker nodes) or `goal` (subcoord nodes — required; the goal handed to the spawned coordinator). A `subcoord` node materializes as a distinct coordinator agent with its own task, worktree, and child orchestrator. |
 | `hera_block`            | Add a blocking edge: `blocked` waits until `blocker` reaches role-status `done`. Coordinator-only; both roles must be in the same orchestrator. No cycles. |
 | `hera_plan`             | Author an entire plan graph in one call: a `nodes` array (each with `name`, `kind`, `prompt`/`goal`, optional `project`) and an `edges` array (`blocked`→`blocker` pairs). Coordinator-only; atomically creates all nodes then all edges. Supports mixed `kind` values in the same graph. |
+| `hera_plan_node_update` | Edit a planned node's `prompt` and/or `project` before it materializes. Rejected after materialization.                                          |
+| `hera_unblock`          | Remove a blocking edge between two roles. Idempotent. Re-pointing an edge is `hera_unblock` + `hera_block`.                                      |
+| `hera_plan_node_cancel` | Cancel a planned node: stamps `cancelled_at`, excludes it from materialization, unblocks dependents. Kept visible in the plan DAG as grey ✕.     |
 
 **Schedule Management:**
 

@@ -457,13 +457,19 @@ func TestSmoke_HelpListsHeraKeys(t *testing.T) {
 // (which stacks the roster over the plan-DAG graph) → the embedded plan is
 // projected with the orchestrator's worker roles. Proves the global key routing,
 // focus ladder, and plan projection compose without any toggle. The seeded orch
-// has a live worker but no authored plan, so the plan renders the degenerate
-// flat single stage with the worker node under the cursor.
+// has an AUTHORED plan (a planned downstream node blocked by the live worker), so
+// the plan renders the DAG with the worker as the sole stage-0 leaf under the
+// cursor (a no-authored-plan orch would render the empty-plan state — BUG-013).
 func TestSmoke_HeraDetailsPlanMode(t *testing.T) {
 	d := testDB(t)
 	orch := seedHeraOrch(t, d, "orch")
 	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
-	seedHeraBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
+	wkr := seedHeraBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
+	plan2a, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
+		OrchestratorID: orch, Name: "2a", ArgusProject: "p", Prompt: "do 2a",
+	})
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.AddHeraBlock(plan2a.ID, wkr.ID)) // 2a blocked by the live worker
 
 	app := New(d, agent.NewRunner(nil), false)
 	sim, stop := wireApp(t, app)
@@ -481,9 +487,35 @@ func TestSmoke_HeraDetailsPlanMode(t *testing.T) {
 	syncUI(t, app.tapp)
 	sim.InjectKey(tcell.KeyTab, 0, 0)
 	syncUI(t, app.tapp)
-	// The embedded plan has the worker node (degenerate flat stage, cursor on it).
+	// The embedded plan projects the authored DAG: the live worker leaf at stage 0
+	// (cursor on it) and the planned downstream node at stage 1.
 	readUI(t, app.tapp, func() {
-		testutil.Equal(t, app.heraPage.Plan().Stages(), 1)
+		testutil.Equal(t, app.heraPage.Plan().Stages(), 2)
 		testutil.Equal(t, app.heraPage.Plan().CurrentNodeID(), "tw")
+	})
+}
+
+// TestSmoke_HeraDetailsEmptyPlanState (BUG-013): a coordinator with LIVE workers
+// but NO authored plan (no planned nodes, no blocking edges) renders the
+// empty-plan placeholder in the Plan pane — NOT the live worker roles as a flat
+// pseudo-DAG. Driven through the real event loop: Hera tab → coordinator selected
+// → the embedded plan projects to the empty state.
+func TestSmoke_HeraDetailsEmptyPlanState(t *testing.T) {
+	d := testDB(t)
+	orch := seedHeraOrch(t, d, "orch")
+	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+	seedHeraBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
+
+	app := New(d, agent.NewRunner(nil), false)
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	sim.InjectKey(tcell.KeyRune, '2', 0) // → Hera tab (cursor lands on orch header = coordinator)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		// No authored plan → the plan pane is the empty state: zero stages, NoPlan.
+		testutil.Equal(t, app.heraPage.SelectionContext().IsCoordinator(), true)
+		testutil.Equal(t, app.heraPage.Plan().NoPlan(), true)
+		testutil.Equal(t, app.heraPage.Plan().Stages(), 0)
 	})
 }

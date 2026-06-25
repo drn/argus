@@ -73,6 +73,11 @@ func TestCreateHeraTables_MigratesPreNukedAtDB(t *testing.T) {
 	// The legacy shape above omits the column, so this is a real regression guard.
 	_, err = d.conn.Exec(`SELECT base_branch FROM hera_orchestrators`)
 	testutil.NoError(t, err)
+
+	// cancelled_at (make-hera-plan-living) is added by the same idempotent ALTER
+	// migration on a pre-existing hera_roles table that never had it.
+	_, err = d.conn.Exec(`SELECT cancelled_at FROM hera_roles`)
+	testutil.NoError(t, err)
 }
 
 // mkOrch creates an active orchestrator and fails the test on error.
