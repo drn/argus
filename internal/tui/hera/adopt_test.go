@@ -285,6 +285,101 @@ func liveBindingCount(t *testing.T, d *db.DB, taskID string) int {
 	return n
 }
 
+func TestDetachCoordinator(t *testing.T) {
+	t.Run("un-nests a nested coordinator back to top-level", func(t *testing.T) {
+		d := memDB(t)
+		// Child C nested under parent P: a worker link role in P bound to C's
+		// coord task, plus C's own coordinator role + binding.
+		child := seedOrch(t, d, "child")
+		coord := seedBoundRole(t, d, child, "child", db.HeraKindCoordinator, "child-coord")
+		parent := seedOrch(t, d, "parent")
+		seedBoundRole(t, d, parent, "parent", db.HeraKindCoordinator, "parent-coord")
+		// Nest C under P first via the real re-parent op.
+		_, err := NewAdoptOps(d).ReparentCoordinator(ReparentInput{
+			ChildOrchestratorID: child, ParentOrchestratorID: parent,
+		})
+		testutil.NoError(t, err)
+		// Sanity: the link exists before detach.
+		_, err = d.HeraLiveBindingByTaskAndOrchestrator("child-coord", parent)
+		testutil.NoError(t, err)
+
+		res, err := NewAdoptOps(d).DetachCoordinator(child)
+		testutil.NoError(t, err)
+		testutil.Equal(t, res.LinksRemoved, 1)
+
+		// The parent link role + its live binding are gone.
+		_, err = d.HeraLiveBindingByTaskAndOrchestrator("child-coord", parent)
+		testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+		pRoles, err := d.ListHeraRoles(parent, true)
+		testutil.NoError(t, err)
+		// Only the parent's own coordinator role remains under P.
+		testutil.Equal(t, len(pRoles), 1)
+		testutil.Equal(t, pRoles[0].Kind, db.HeraKindCoordinator)
+
+		// C's own coordinator role + its live binding survive untouched, and C
+		// holds no live parent link — it is top-level again.
+		gotCoord, err := d.HeraRole(coord.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, gotCoord.Kind, db.HeraKindCoordinator)
+		testutil.Equal(t, liveBindingCount(t, d, "child-coord"), 1) // only the coord binding
+	})
+
+	t.Run("is an idempotent no-op on an already-top-level coordinator", func(t *testing.T) {
+		d := memDB(t)
+		child := seedOrch(t, d, "child")
+		coord := seedBoundRole(t, d, child, "child", db.HeraKindCoordinator, "child-coord")
+
+		before := liveBindingCount(t, d, "child-coord")
+		res, err := NewAdoptOps(d).DetachCoordinator(child)
+		testutil.NoError(t, err)
+		testutil.Equal(t, res.LinksRemoved, 0) // already top-level
+
+		// Coord role + binding untouched; a second detach is still a clean no-op.
+		gotCoord, err := d.HeraRole(coord.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, gotCoord.Kind, db.HeraKindCoordinator)
+		testutil.Equal(t, liveBindingCount(t, d, "child-coord"), before)
+		res2, err := NewAdoptOps(d).DetachCoordinator(child)
+		testutil.NoError(t, err)
+		testutil.Equal(t, res2.LinksRemoved, 0)
+	})
+
+	t.Run("resolves task from the latest ended coord binding (dormant) and detaches", func(t *testing.T) {
+		d := memDB(t)
+		child := seedOrch(t, d, "child")
+		coord := seedBoundRole(t, d, child, "child", db.HeraKindCoordinator, "child-coord")
+		parent := seedOrch(t, d, "parent")
+		seedBoundRole(t, d, parent, "parent", db.HeraKindCoordinator, "parent-coord")
+		_, err := NewAdoptOps(d).ReparentCoordinator(ReparentInput{
+			ChildOrchestratorID: child, ParentOrchestratorID: parent,
+		})
+		testutil.NoError(t, err)
+		// C's coordinator session ends — only an ENDED coord binding remains.
+		coordLive, err := d.HeraLiveBindingByRole(coord.ID)
+		testutil.NoError(t, err)
+		testutil.NoError(t, d.EndHeraBinding(coordLive.ID, "manual"))
+
+		res, err := NewAdoptOps(d).DetachCoordinator(child)
+		testutil.NoError(t, err)
+		testutil.Equal(t, res.LinksRemoved, 1)
+		_, err = d.HeraLiveBindingByTaskAndOrchestrator("child-coord", parent)
+		testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+	})
+
+	t.Run("rejects an unknown orchestrator", func(t *testing.T) {
+		d := memDB(t)
+		_, err := NewAdoptOps(d).DetachCoordinator(999)
+		testutil.Contains(t, errStr(err), "no longer exists")
+	})
+
+	t.Run("rejects a coordinator with no coordinator role", func(t *testing.T) {
+		d := memDB(t)
+		child := seedOrch(t, d, "child") // no coord role
+		_, err := NewAdoptOps(d).DetachCoordinator(child)
+		testutil.Contains(t, errStr(err), "no coordinator role")
+	})
+}
+
 func TestListActiveOrchestrators(t *testing.T) {
 	d := memDB(t)
 	a := seedOrch(t, d, "a")
