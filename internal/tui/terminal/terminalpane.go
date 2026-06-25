@@ -837,22 +837,70 @@ func (tp *TerminalPane) MouseHandler() func(action tview.MouseAction, event *tce
 			}
 			return true, nil
 		case tview.MouseScrollUp:
-			if tp.diffMode {
+			switch {
+			case tp.diffMode:
 				tp.DiffScrollUp(mouseScrollStep)
-			} else {
+			case tp.agentOwnsWheel():
+				tp.forwardWheel(64, event) // SGR button 64 = wheel-up
+			default:
 				tp.ScrollUp(mouseScrollStep)
 			}
 			return true, nil
 		case tview.MouseScrollDown:
-			if tp.diffMode {
+			switch {
+			case tp.diffMode:
 				tp.DiffScrollDown(mouseScrollStep)
-			} else {
+			case tp.agentOwnsWheel():
+				tp.forwardWheel(65, event) // SGR button 65 = wheel-down
+			default:
 				tp.ScrollDown(mouseScrollStep)
 			}
 			return true, nil
 		}
 		return false, nil
 	})
+}
+
+// agentOwnsWheel reports whether the live agent has grabbed the screen as a
+// full-screen application (alternate screen) — the signal that it wants the
+// mouse wheel itself, exactly as a real terminal hands the wheel to the
+// foreground app instead of scrolling its own scrollback (BUG-026). A
+// full-screen agent that redraws in place (cursor-home, no line-scroll) leaves
+// the pane's terminal scrollback empty, so consuming the wheel for it would
+// make wheel-up a no-op; forwarding lets the agent scroll its own view. Only a
+// LIVE session can receive forwarded input; a finished/replay session keeps the
+// pane's scrollback (its log replay is the only way to scroll its history).
+// Main-goroutine only: tp.emu is main-goroutine-owned, IsAltScreen is mutex-safe.
+func (tp *TerminalPane) agentOwnsWheel() bool {
+	tp.mu.Lock()
+	sess := tp.session
+	tp.mu.Unlock()
+	if sess == nil || !sess.Alive() {
+		return false
+	}
+	return tp.emu != nil && tp.emu.IsAltScreen()
+}
+
+// forwardWheel encodes a wheel event as an SGR mouse frame
+// (ESC [ < Cb ; Cx ; Cy M — Cb 64 = wheel-up, 65 = wheel-down) and writes it to
+// the live session, so a full-screen agent scrolls its own surface. Coordinates
+// are 1-based relative to the pane's inner rect (outer minus the 1-cell
+// border), clamped so a tick on the border still lands in range — mirroring the
+// plugin-view wheel forwarder (#681). No-op without a live session.
+func (tp *TerminalPane) forwardWheel(cb int, event *tcell.EventMouse) {
+	tp.mu.Lock()
+	sess := tp.session
+	tp.mu.Unlock()
+	if sess == nil {
+		return
+	}
+	x, y, w, h := tp.GetRect()
+	ex, ey := event.Position()
+	cx := min(max(ex-x, 1), max(w-2, 1))
+	cy := min(max(ey-y, 1), max(h-2, 1))
+	if _, err := sess.WriteInput([]byte(fmt.Sprintf("\x1b[<%d;%d;%dM", cb, cx, cy))); err != nil {
+		uxlog.Log("[terminalpane] wheel-forward write failed: %v", err)
+	}
 }
 
 // PasteHandler handles bracketed paste events, writing the entire pasted text
