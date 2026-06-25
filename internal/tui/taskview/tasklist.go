@@ -85,8 +85,9 @@ type TaskListView struct {
 
 	// hideHeraManaged hides every hera-managed task from the Tasks tab — both
 	// hera-spawned workers and live coordinators (the roles that live in the
-	// Hera tab). Default true; the `H` key toggles it to reveal them inline.
-	// See gotchas/tasklist-ui.md.
+	// Hera tab). Default FALSE: hera-managed tasks are visible inline by default,
+	// each marked with a per-row hera-role indicator; the `H` key toggles it ON to
+	// hide them for a clean plain-tasks view. See gotchas/tasklist-ui.md.
 	hideHeraManaged bool
 
 	// managed is the set of task IDs that currently hold at least one live hera
@@ -145,7 +146,7 @@ func NewTaskListView() *TaskListView {
 		heraWorkers:     make(map[string]bool),
 		heraCoords:      make(map[string]bool),
 		managed:         make(map[string]bool),
-		hideHeraManaged: true,       // hera-managed tasks (workers + coordinators) live in the Hera tab by default
+		hideHeraManaged: false,      // hera-managed tasks (workers + coordinators) visible inline by default; `H` hides them
 		lastRowsSig:     ^uint64(0), // sentinel — first build always fires OnLayoutChange
 	}
 	return tl
@@ -250,6 +251,14 @@ func (tl *TaskListView) SetHeraWorkers(ids map[string]bool) {
 // isHeraSpawnedWorker reports whether a task is a hera-spawned worker.
 func (tl *TaskListView) isHeraSpawnedWorker(t *model.Task) bool {
 	return tl.heraWorkers[t.ID]
+}
+
+// isHeraWorkerRow reports whether a task should render the worker indicator: it
+// is a hera-spawned worker or holds a live worker-kind binding (the `managed`
+// set, which also includes coordinators). Callers MUST check isHeraCoordinator
+// first — a coordinator outranks the worker glyph (drawTaskRow does this).
+func (tl *TaskListView) isHeraWorkerRow(t *model.Task) bool {
+	return tl.isHeraSpawnedWorker(t) || tl.managed[t.ID]
 }
 
 // SetHeraCoordinators updates the set of task IDs that hold a hera coordinator
@@ -1276,12 +1285,17 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 		col += 2 // PR indicator + space
 	}
 
-	// Coordinator indicator cell. Only consumes width when the task holds a
-	// Hera coordinator role; otherwise the cell is skipped and the name column
-	// reclaims the space. Orthogonal to the status and PR glyphs above.
-	if tl.isHeraCoordinator(task) {
+	// Hera-role indicator cell. Only consumes width when the task participates in
+	// Hera; otherwise the cell is skipped and the name column reclaims the space.
+	// Orthogonal to the status and PR glyphs above. Coordinator outranks worker:
+	// a task qualifying as both renders the coordinator glyph.
+	switch {
+	case tl.isHeraCoordinator(task):
 		screen.SetContent(col, y, theme.IconCoordinator, nil, theme.StyleCoordinator)
 		col += 2 // coordinator indicator + space
+	case tl.isHeraWorkerRow(task):
+		screen.SetContent(col, y, theme.IconWorker, nil, theme.StyleWorker)
+		col += 2 // worker indicator + space
 	}
 
 	// Name gets priority; elapsed is right-aligned.

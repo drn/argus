@@ -690,6 +690,53 @@ func TestDrawTaskRow_CoordinatorIndicator_CursorRow(t *testing.T) {
 	testutil.Equal(t, gotStyle, theme.StyleCoordinator)
 }
 
+// TestDrawTaskRow_WorkerIndicator pins the worker glyph: a hera-spawned worker
+// that is NOT a coordinator renders theme.IconWorker (with StyleWorker) in the
+// hera-role indicator cell.
+func TestDrawTaskRow_WorkerIndicator(t *testing.T) {
+	sim := newSim(t, 60, 5)
+	tl := NewTaskListView()
+	task := &model.Task{ID: "1", Name: "do-the-thing", Project: "p", Status: model.StatusInProgress}
+	tl.SetTasks([]*model.Task{task})
+	tl.SetHeraWorkers(map[string]bool{"1": true})
+
+	tl.drawTaskRow(sim, 0, 0, 60, task, false)
+
+	gotStr, gotStyle, _ := sim.Get(prCellCol, 0)
+	testutil.Equal(t, firstRune(gotStr), theme.IconWorker)
+	testutil.Equal(t, gotStyle, theme.StyleWorker)
+}
+
+// TestDrawTaskRow_CoordinatorOutranksWorker pins the precedence: a task that
+// qualifies as BOTH a coordinator and a worker renders the coordinator glyph.
+func TestDrawTaskRow_CoordinatorOutranksWorker(t *testing.T) {
+	sim := newSim(t, 60, 5)
+	tl := NewTaskListView()
+	task := &model.Task{ID: "1", Name: "both", Project: "p", Status: model.StatusInProgress}
+	tl.SetTasks([]*model.Task{task})
+	tl.SetHeraWorkers(map[string]bool{"1": true})
+	tl.SetHeraCoordinators(map[string]bool{"1": true})
+
+	tl.drawTaskRow(sim, 0, 0, 60, task, false)
+
+	gotStr, _, _ := sim.Get(prCellCol, 0)
+	testutil.Equal(t, firstRune(gotStr), theme.IconCoordinator)
+}
+
+// TestDrawTaskRow_NoHeraIndicatorForPlainTask pins that a plain task draws no
+// hera-role indicator: the name reclaims prCellCol.
+func TestDrawTaskRow_NoHeraIndicatorForPlainTask(t *testing.T) {
+	sim := newSim(t, 60, 5)
+	tl := NewTaskListView()
+	task := &model.Task{ID: "1", Name: "plain", Project: "p", Status: model.StatusInProgress}
+	tl.SetTasks([]*model.Task{task})
+
+	tl.drawTaskRow(sim, 0, 0, 60, task, false)
+
+	gotFirst, _, _ := sim.Get(prCellCol, 0)
+	testutil.Equal(t, firstRune(gotFirst), 'p')
+}
+
 // TestIsHeraCoordinator_NilSafeBeforeSet pins that a freshly constructed view
 // reports false for any task before SetHeraCoordinators is ever called (the
 // constructor initializes the map; this guards against a regression to a nil

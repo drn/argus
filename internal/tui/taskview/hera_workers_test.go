@@ -16,9 +16,9 @@ func idsContain(ids []string, want string) bool {
 	return false
 }
 
-func TestHideHeraManaged_DefaultHidesAndToggleReveals(t *testing.T) {
+func TestHideHeraManaged_DefaultShowsAndToggleHides(t *testing.T) {
 	tl := NewTaskListView()
-	testutil.Equal(t, tl.HideHeraManaged(), true) // hidden by default
+	testutil.Equal(t, tl.HideHeraManaged(), false) // visible by default
 
 	tasks := []*model.Task{
 		{ID: "normal", Name: "normal task", Project: "p", Status: model.StatusInProgress},
@@ -28,29 +28,30 @@ func TestHideHeraManaged_DefaultHidesAndToggleReveals(t *testing.T) {
 	tl.SetExpanded("p")
 	tl.SetTasks(tasks)
 
-	// Default: the hera worker is hidden, the normal task is shown.
+	// Default: both the hera worker and the normal task are shown.
 	vis := tl.VisibleTaskIDs()
 	testutil.Equal(t, idsContain(vis, "normal"), true)
-	testutil.Equal(t, idsContain(vis, "worker"), false)
-
-	// Reveal toggle (`H`): the worker now appears.
-	tl.ToggleHeraManaged()
-	testutil.Equal(t, tl.HideHeraManaged(), false)
-	vis = tl.VisibleTaskIDs()
 	testutil.Equal(t, idsContain(vis, "worker"), true)
 
-	// Toggle back hides it again.
+	// Hide toggle (`H`): the worker disappears.
 	tl.ToggleHeraManaged()
-	testutil.Equal(t, idsContain(tl.VisibleTaskIDs(), "worker"), false)
+	testutil.Equal(t, tl.HideHeraManaged(), true)
+	vis = tl.VisibleTaskIDs()
+	testutil.Equal(t, idsContain(vis, "worker"), false)
+	testutil.Equal(t, idsContain(vis, "normal"), true)
+
+	// Toggle back shows it again.
+	tl.ToggleHeraManaged()
+	testutil.Equal(t, idsContain(tl.VisibleTaskIDs(), "worker"), true)
 }
 
 func TestHideHeraManaged_ToggleFiresCallback(t *testing.T) {
 	tl := NewTaskListView()
 	var got []bool
 	tl.OnHeraManagedToggle = func(hidden bool) { got = append(got, hidden) }
+	tl.ToggleHeraManaged() // default false → true
 	tl.ToggleHeraManaged() // → false
-	tl.ToggleHeraManaged() // → true
-	testutil.DeepEqual(t, got, []bool{false, true})
+	testutil.DeepEqual(t, got, []bool{true, false})
 }
 
 // TestHideHeraManaged_TruthTable pins the collapsed single-`H` semantics
@@ -75,20 +76,20 @@ func TestHideHeraManaged_TruthTable(t *testing.T) {
 	tl.SetExpanded("p")
 	tl.SetTasks(tasks)
 
-	// H on (default): both the worker and the coordinator are hidden; the
-	// freelancer and the plain task remain visible.
+	// H off (default): every task is visible.
 	vis := tl.VisibleTaskIDs()
-	testutil.Equal(t, tl.HideHeraManaged(), true)
-	testutil.Equal(t, idsContain(vis, "worker"), false)
-	testutil.Equal(t, idsContain(vis, "coord"), false)
+	testutil.Equal(t, tl.HideHeraManaged(), false)
+	testutil.Equal(t, idsContain(vis, "worker"), true)
+	testutil.Equal(t, idsContain(vis, "coord"), true)
 	testutil.Equal(t, idsContain(vis, "free"), true)
 	testutil.Equal(t, idsContain(vis, "plain"), true)
 
-	// H off: every task becomes visible.
+	// H on: both the worker and the coordinator are hidden; the freelancer and
+	// the plain task remain visible.
 	tl.ToggleHeraManaged()
 	vis = tl.VisibleTaskIDs()
-	testutil.Equal(t, idsContain(vis, "worker"), true)
-	testutil.Equal(t, idsContain(vis, "coord"), true)
+	testutil.Equal(t, idsContain(vis, "worker"), false)
+	testutil.Equal(t, idsContain(vis, "coord"), false)
 	testutil.Equal(t, idsContain(vis, "free"), true)
 	testutil.Equal(t, idsContain(vis, "plain"), true)
 }

@@ -175,20 +175,20 @@ func TestSmoke_HideHeraWorkersInTasksTab(t *testing.T) {
 	sim, stop := wireApp(t, app)
 	defer stop()
 
-	// Default: the worker is hidden from the Tasks tab.
+	// Default: the worker is visible inline in the Tasks tab.
 	readUI(t, app.tapp, func() {
 		vis := app.tasklist.VisibleTaskIDs()
 		testutil.Equal(t, idsContain(vis, "normal"), true)
-		testutil.Equal(t, idsContain(vis, "worker"), false)
-		testutil.Equal(t, app.tasklist.HideHeraManaged(), true)
+		testutil.Equal(t, idsContain(vis, "worker"), true)
+		testutil.Equal(t, app.tasklist.HideHeraManaged(), false)
 	})
 
-	// `H` reveals them inline.
+	// `H` hides them.
 	sim.InjectKey(tcell.KeyRune, 'H', 0)
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() {
-		testutil.Equal(t, app.tasklist.HideHeraManaged(), false)
-		testutil.Equal(t, idsContain(app.tasklist.VisibleTaskIDs(), "worker"), true)
+		testutil.Equal(t, app.tasklist.HideHeraManaged(), true)
+		testutil.Equal(t, idsContain(app.tasklist.VisibleTaskIDs(), "worker"), false)
 	})
 }
 
