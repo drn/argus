@@ -910,6 +910,80 @@ func TestRail_ArchiveExpandoDefaultCollapsed(t *testing.T) {
 	testutil.Equal(t, r.Rows(), 5) // + archived orch header + its role
 }
 
+// pinnedPlusActiveModel: one pinned coordinator-only orchestrator and one active
+// coordinator-only orchestrator. Each renders as a single header row, so the only
+// thing that can sit between them is the BUG-027 Pinned→Active divider.
+func pinnedPlusActiveModel() Model {
+	return Model{
+		Pinned: []OrchView{{ID: 1, Name: "pinned-orch", Pinned: true, Roles: []RoleView{
+			{RoleID: 11, OrchID: 1, Name: "pcoord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tp"},
+		}}},
+		Active: []OrchView{{ID: 2, Name: "active-orch", Roles: []RoleView{
+			{RoleID: 21, OrchID: 2, Name: "acoord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "ta"},
+		}}},
+	}
+}
+
+// ruleIndexes returns the row indices of every rrRule (divider) row.
+func (r *Rail) ruleIndexes() []int {
+	var idx []int
+	for i, row := range r.rows {
+		if row.kind == rrRule {
+			idx = append(idx, i)
+		}
+	}
+	return idx
+}
+
+// TestRail_PinnedSectionDivider pins BUG-027: a horizontal-rule divider sits
+// between the Pinned section and the Active list, mirroring the Freelance /
+// Archive dividers, but only when both sections are present.
+func TestRail_PinnedSectionDivider(t *testing.T) {
+	r := NewRail()
+	r.SetModel(pinnedPlusActiveModel())
+
+	// Rows: Pinned header, pinned-orch, ─ divider, active-orch = 4.
+	testutil.Equal(t, r.Rows(), 4)
+
+	rules := r.ruleIndexes()
+	testutil.Equal(t, len(rules), 1) // exactly one divider
+	div := rules[0]
+
+	// The divider sits AFTER the last Pinned row and BEFORE the first Active row:
+	// the row above it belongs to the Pinned section (its orch), and the row below
+	// it is the active orchestrator.
+	testutil.Equal(t, r.rows[div-1].kind, rrOrch)
+	testutil.Equal(t, r.rows[div-1].orch.Name, "pinned-orch")
+	testutil.Equal(t, r.rows[div+1].kind, rrOrch)
+	testutil.Equal(t, r.rows[div+1].orch.Name, "active-orch")
+
+	// The divider is non-selectable: j/k navigation steps from the pinned orch
+	// straight to the active orch, never landing on the rule.
+	testutil.Equal(t, r.SelectedOrch().Name, "pinned-orch")
+	r.CursorDown()
+	testutil.Equal(t, r.SelectedOrch().Name, "active-orch")
+}
+
+// TestRail_NoPinnedDividerWithoutPins: with no pinned section the Active list
+// renders with no leading divider.
+func TestRail_NoPinnedDividerWithoutPins(t *testing.T) {
+	r := NewRail()
+	r.SetModel(twoOrchModel()) // active-only
+	testutil.Equal(t, len(r.ruleIndexes()), 0)
+}
+
+// TestRail_NoPinnedDividerWithoutActive: a Pinned section with no Active entries
+// below it renders no trailing divider.
+func TestRail_NoPinnedDividerWithoutActive(t *testing.T) {
+	r := NewRail()
+	r.SetModel(Model{Pinned: []OrchView{{ID: 1, Name: "pinned-orch", Pinned: true, Roles: []RoleView{
+		{RoleID: 11, OrchID: 1, Name: "pcoord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tp"},
+	}}}})
+	// Rows: Pinned header + pinned-orch = 2, no divider.
+	testutil.Equal(t, r.Rows(), 2)
+	testutil.Equal(t, len(r.ruleIndexes()), 0)
+}
+
 func TestRail_EmptyModel(t *testing.T) {
 	r := NewRail()
 	r.SetModel(Model{})
