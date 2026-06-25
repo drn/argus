@@ -942,6 +942,32 @@ func TestUpdateData_CollapsedGroupCursorReanchors(t *testing.T) {
 	testutil.Equal(t, w.CursorPos().Stage, 1)
 }
 
+// TestUpdateData_IconChangeReinstalls: a hera role-status step / ready_to_close
+// clear changes a node's rendered ICON (the rail-parity glyph) WITHOUT changing
+// its task-derived State. UpdateData must still re-install the layout so the DAG
+// node updates in lock-step with the rail (BUG-012). The icon is folded into the
+// projection signature; without it UpdateData would no-op on the unchanged State
+// and the node would render a stale ✓ while the rail already moved to working.
+func TestUpdateData_IconChangeReinstalls(t *testing.T) {
+	mk := func(ic *NodeIcon) []Node {
+		n := liveNode("w0", StateWorking) // task still in_progress (working) in BOTH frames
+		n.Icon = ic
+		return []Node{n}
+	}
+	reviewIcon := &NodeIcon{Glyph: '✓', Style: tcell.StyleDefault, Animated: false}
+	workingIcon := &NodeIcon{Glyph: '⠋', Style: tcell.StyleDefault, Animated: true}
+
+	w := New()
+	w.SetData(mk(reviewIcon), nil)
+	testutil.Equal(t, w.nodes["w0"].Icon.Glyph, '✓')
+
+	// Same node ID and same State (StateInProgress) — only the icon flipped from
+	// the ready_to_close ✓ to the working spinner. The stored node must update.
+	w.UpdateData(mk(workingIcon), nil)
+	testutil.Equal(t, w.nodes["w0"].Icon.Glyph, '⠋')
+	testutil.Equal(t, w.nodes["w0"].Icon.Animated, true)
+}
+
 // --- Selection highlight + centering (SimulationScreen Draw tests) ---
 
 // drawToSim renders w into a fresh SimulationScreen sized (cols, rows) and

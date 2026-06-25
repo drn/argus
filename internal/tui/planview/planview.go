@@ -452,10 +452,10 @@ func (w *Widget) installLayout(nodes []Node, edges []Edge) {
 }
 
 // projectionSig hashes a snapshot's structure: every node's ID + State +
-// Drillable, and every edge's endpoints. Two snapshots with the same signature
-// render identical cells, so UpdateData can no-op (preserving cursor/fan-out)
-// when the signature is unchanged. Order-sensitive on purpose — the projection
-// is deterministic, so a stable order means a stable signature.
+// Drillable + status icon, and every edge's endpoints. Two snapshots with the
+// same signature render identical cells, so UpdateData can no-op (preserving
+// cursor/fan-out) when the signature is unchanged. Order-sensitive on purpose —
+// the projection is deterministic, so a stable order means a stable signature.
 func projectionSig(nodes []Node, edges []Edge) uint64 {
 	var h uint64 = 1469598103934665603 // FNV-1a offset basis
 	mix := func(s string) {
@@ -480,6 +480,24 @@ func projectionSig(nodes []Node, edges []Edge) uint64 {
 			mixU(1)
 		} else {
 			mixU(0)
+		}
+		// Fold the resolved status icon (the rail-parity glyph carrying the
+		// ready_to_close ✓ + hera role-status mark) so a status step / ready_to_close
+		// clear that changes the node's GLYPH without changing its task-derived State
+		// still flips the sig — otherwise UpdateData no-ops on the unchanged State and
+		// the DAG node renders a stale ✓ while the rail already updated (BUG-012). The
+		// projected Icon.Glyph is a stable frame-0 placeholder (spinner frames are
+		// re-resolved at Draw), so this never spams a reproject. A nil icon (planned /
+		// failed nodes fall back to State.Glyph) folds a distinct sentinel.
+		if n.Icon != nil {
+			mix(string(n.Icon.Glyph))
+			if n.Icon.Animated {
+				mixU(2)
+			} else {
+				mixU(3)
+			}
+		} else {
+			mixU(0xEE) // nil-icon sentinel
 		}
 	}
 	mixU(0xFF) // node/edge boundary
