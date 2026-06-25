@@ -3,9 +3,14 @@ name: hera
 description: >-
   Inside an argus sandbox (cwd under ~/.argus/worktrees/ or ARGUS_TASK_ID set), coordinate
   multi-agent work via hera's mcp__argus__hera_* tools — bootstrap an orchestrator, claim or
-  attach a worker/freelance role, and message other roles over the idle-gated bus. Use when you
-  need to spawn and coordinate other agent sessions, run a large multi-session project, or
-  message another role. NOT for non-argus sessions, where these MCP tools are not registered.
+  attach a worker/freelance role, author a staged plan-DAG, and message roles over the idle-gated
+  bus. Use whenever you spawn or coordinate other agent sessions, run a multi-session project, or
+  message another role. LOAD AND READ THIS SKILL IN FULL BEFORE authoring or driving any
+  multi-stage / multi-worker plan — do not improvise coordination from the tool schemas. The
+  plan-DAG gating (nodes materialize ONLY when every blocker reaches role-status `done`), automatic
+  branch-stacking, short-id node naming, and living-reconciliation rules are non-obvious and wrong
+  to guess: the tool schemas carry none of them. NOT for non-argus sessions, where these MCP tools
+  are not registered.
 ---
 
 # Hera — native multi-agent coordination inside argus
