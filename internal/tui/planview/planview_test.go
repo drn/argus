@@ -209,7 +209,10 @@ func TestFullFeed_AllMembersToOneTargetSetsFeedTarget(t *testing.T) {
 	testutil.Equal(t, g.FeedingMembers["2d"] && g.FeedingMembers["2e"] && g.FeedingMembers["2f"], true)
 }
 
-// --- Degenerate no-plan (Requirement: no plan authored renders live roles flat) ---
+// --- Degenerate no-plan generic widget layout (the hera Plan pane feeds an EMPTY
+// node set for the no-authored-plan case — see TestDraw_NoPlanEmptyNodeSet and the
+// hera dag tests; this pins the generic widget's flat layout when it IS given
+// no-plan nodes directly) ---
 
 func TestNoPlan_FlatSingleStage(t *testing.T) {
 	w := New()
@@ -256,11 +259,10 @@ func TestNav_UpDownChangesStageAndCollapses(t *testing.T) {
 // TestNav_LeftRightMovesSlot: within a multi-slot stage ←/→ moves between slots.
 func TestNav_LeftRightMovesSlot(t *testing.T) {
 	// Two same-stage roots that share the EMPTY blocker set collapse into a
-	// single group per D4 — that is spec-compliant, so we can't use two planned
-	// roots here. The no-plan path (live roles, no planned nodes, no edges)
-	// renders each live worker as its own lone-node slot, never grouped, giving a
-	// genuine two-slot stage 0 that preserves this test's intent (←/→ between
-	// slots).
+	// single group per D4, so we can't use two planned roots here. The no-plan
+	// path (live roles, no planned nodes, no edges) renders each live worker as
+	// its own lone-node slot, never grouped, giving a genuine two-slot stage 0
+	// that preserves this test's intent (←/→ between slots).
 	w := New()
 	w.SetData([]Node{liveNode("w1", StateWorking), liveNode("w2", StateWorking)}, nil)
 	w.SetFocused(true)

@@ -1442,7 +1442,11 @@ func (w *Widget) Draw(screen tcell.Screen) {
 		return
 	}
 	if len(w.stages) == 0 {
-		widget.DrawText(screen, inner.X, inner.Y, inner.W, "No plan — spawn a worker under this coordinator.", theme.StyleDimmed)
+		// Nothing to lay out — render the empty-plan placeholder. The hera Plan
+		// pane feeds an EMPTY node set here whenever no plan is authored (no planned
+		// nodes, no blocking edges), so the live worker roles are NOT drawn as a
+		// flat pseudo-DAG stage (BUG-013); the live agents are the rail's concern.
+		w.drawEmptyPlan(screen, inner)
 		return
 	}
 	// Master-detail header strip above the diagram (D9). Its height is fixed and
@@ -1469,6 +1473,34 @@ func (w *Widget) Draw(screen tcell.Screen) {
 		widget.DrawText(screen, diagram.X, diagram.Y, diagram.W, "no plan authored — live roles:", theme.StyleDimmed)
 	}
 	w.drawStages(screen, diagram)
+}
+
+// drawEmptyPlan renders the empty-plan placeholder shown when the widget has no
+// stages to lay out (an empty node set). The hera Plan pane feeds an empty set
+// whenever no plan is authored (no planned nodes, no blocking edges), so the
+// live worker roles are NOT drawn as a flat pseudo-DAG (BUG-013) — the live
+// agents are the rail's concern; the plan graph depicts only the AUTHORED plan.
+// Two dim, centered lines: the state and an authoring hint.
+func (w *Widget) drawEmptyPlan(screen tcell.Screen, inner widget.InnerRect) {
+	lines := []string{
+		"No plan authored.",
+		"Author one with hera_plan_node / hera_plan.",
+	}
+	top := inner.Y + (inner.H-len(lines))/2
+	if top < inner.Y {
+		top = inner.Y
+	}
+	for i, line := range lines {
+		row := top + i
+		if row >= inner.Y+inner.H {
+			break
+		}
+		col := inner.X + (inner.W-len(line))/2
+		if col < inner.X {
+			col = inner.X
+		}
+		widget.DrawText(screen, col, row, inner.W, line, theme.StyleDimmed)
+	}
 }
 
 // footerHint is the dim bottom-row nav legend (D-render). Kept ASCII-light so

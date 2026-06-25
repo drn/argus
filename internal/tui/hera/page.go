@@ -729,7 +729,10 @@ func (p *HeraPage) handleDetailsKey(event *tcell.EventKey, setFocus func(tview.P
 // yields an empty graph. The bridge index (Model.bridgeIndex) lets the
 // projection stamp Node.Drillable on a worker whose bound task coordinates a
 // child orchestrator (D6), so the single-arg heraPlanNodes is NOT used here —
-// it leaves Drillable false. MUST run on the tview main thread
+// it leaves Drillable false. When the projection is NOT an authored plan
+// (planIsAuthored false — no planned nodes, no blocking edges), the widget is fed
+// an EMPTY node set so it renders the empty-plan state rather than the live roles
+// as a flat pseudo-DAG (BUG-013). MUST run on the tview main thread
 // (heraPlanNodesWithBridge is a pure read over the rail's already-built model;
 // SetData recomputes layout but touches no I/O).
 func (p *HeraPage) rebuildPlan(root *OrchView) {
@@ -749,14 +752,22 @@ func (p *HeraPage) rebuildPlan(root *OrchView) {
 		return
 	}
 	nodes, edges := heraPlanNodesWithBridge(root, p.rail.Model().bridgeIndex())
+	authored := planIsAuthored(nodes, edges)
+	if !authored {
+		// No authored plan (no planned nodes, no blocking edges) — feed the widget
+		// an EMPTY node set so it renders the empty-plan state, NOT the live worker
+		// roles as a flat pseudo-DAG stage (BUG-013). The live agents stay visible
+		// in the rail.
+		nodes, edges = nil, nil
+	}
 	if sameOrch {
 		p.plan.UpdateData(nodes, edges)
 	} else {
 		p.plan.SetData(nodes, edges)
 	}
 	p.planOrchID = root.ID
-	uxlog.Log("[hera-view] plan render: orch=%s nodes=%d edges=%d sameOrch=%v",
-		root.Name, len(nodes), len(edges), sameOrch)
+	uxlog.Log("[hera-view] plan render: orch=%s nodes=%d edges=%d authored=%v sameOrch=%v",
+		root.Name, len(nodes), len(edges), authored, sameOrch)
 }
 
 // isRailMutationKey reports whether event is one of the rail-FOCUS mutation

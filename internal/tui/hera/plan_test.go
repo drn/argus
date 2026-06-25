@@ -200,11 +200,14 @@ func TestHeraPlanNodes_LiveNodeColoursFromTaskStatus(t *testing.T) {
 	testutil.Equal(t, n.State, planview.StateDone)
 }
 
-// TestHeraPlanNodes_DegenerateNoPlanFlatStage mirrors "render the orchestrator's
-// live roles as a flat edgeless stage with a 'no plan' hint when no plan is
-// authored". With no planned nodes and no edges, the live workers project as
-// nodes with no edges between them.
-func TestHeraPlanNodes_DegenerateNoPlanFlatStage(t *testing.T) {
+// TestHeraPlanNodes_LiveWorkersStillProjectAsNodes: the projection ALWAYS
+// surfaces live worker roles as nodes (needed when a plan IS authored — a live
+// worker materialized from a planned node must still render with its task colour).
+// With no planned nodes and no edges the workers project as nodes with no edges
+// between them; whether that degenerate set is RENDERED as an empty-plan state vs
+// a DAG is the widget's call (planview's noPlan path, BUG-013) — the projection
+// itself does not drop the live nodes.
+func TestHeraPlanNodes_LiveWorkersStillProjectAsNodes(t *testing.T) {
 	d := memDB(t)
 	orch := seedOrch(t, d, "orch")
 	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
@@ -489,10 +492,14 @@ func TestRefresh_StatusStepReprojectsPlanNode(t *testing.T) {
 	d := memDB(t)
 	orch := seedOrch(t, d, "orch")
 	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
-	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
-	// The worker is live + in_progress (working) AND marked ready_to_close, so its
-	// plan node shows the review ✓ (ready_to_close wins the glyph precedence over
-	// the working spinner — same as the rail row).
+	wkr := seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	// An AUTHORED plan (planned 2a blocked by the live worker) so the Plan pane
+	// renders the DAG — the live worker is the sole stage-0 leaf the cursor lands
+	// on (BUG-013). The worker is live + in_progress (working) AND marked
+	// ready_to_close, so its plan node shows the review ✓ (ready_to_close wins the
+	// glyph precedence over the working spinner — same as the rail row).
+	plan2a := seedPlannedRole(t, d, orch, "2a")
+	testutil.NoError(t, d.AddHeraBlock(plan2a.ID, wkr.ID))
 	testutil.NoError(t, d.SetMeta("t-wkr", db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"))
 
 	p := NewHeraPage(d)
@@ -503,8 +510,8 @@ func TestRefresh_StatusStepReprojectsPlanNode(t *testing.T) {
 	testutil.Equal(t, p.detailsMode, true)
 
 	pl := p.Plan()
-	// Degenerate single-worker plan: the cursor sits on the worker node, whose
-	// header Status line renders its resolved glyph.
+	// The cursor sits on the live worker leaf (stage 0), whose header Status line
+	// renders its resolved glyph.
 	testutil.Equal(t, pl.CurrentNodeID(), "t-wkr")
 	testutil.Equal(t, strings.ContainsRune(planStatusLine(pl), theme.IconReview), true)
 
