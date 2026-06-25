@@ -546,14 +546,17 @@ func TestHeraActions_OpenAdoptNoOpAndFeedbackBranches(t *testing.T) {
 	app.heraOpenAdopt(hera.Selection{Role: &hera.RoleView{Kind: db.HeraKindFreelance, TaskID: "tf", Name: "tf"}})
 	testutil.Equal(t, app.mode, modeTaskList)
 
-	// Coordinator with NO other orchestrator to nest under → feedback, no picker.
+	// Coordinator with NO other orchestrator to nest under STILL opens the picker:
+	// the detach-to-top-level sentinel is always offered (no "no eligible target"
+	// bail on the coordinator path).
 	orch := seedHeraOrch(t, d, "only")
 	seedHeraBoundRole(t, d, orch, "only", db.HeraKindCoordinator, "tc")
 	app.heraOpenAdopt(hera.Selection{
 		Role: &hera.RoleView{Kind: db.HeraKindCoordinator, TaskID: "tc", Name: "only"},
 		Orch: &hera.OrchView{ID: orch, Name: "only"},
 	})
-	testutil.Equal(t, app.mode, modeTaskList)
+	testutil.Equal(t, app.mode, modeHeraOrchPicker)
+	app.closeHeraOrchPicker()
 }
 
 func TestSmoke_HeraAdoptFreelancerThroughPicker(t *testing.T) {
@@ -600,13 +603,49 @@ func TestSmoke_HeraReparentCoordinatorThroughPicker(t *testing.T) {
 	readUI(t, app.tapp, func() { app.heraOpenAdopt(sel) })
 	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeHeraOrchPicker) })
 
-	// The picker excludes the child itself, so only "parent" remains; Enter picks it.
+	// Row 0 is the detach sentinel; "parent" (the only re-parent target, child
+	// excluded) is row 1. Down then Enter picks the re-parent target.
+	sim.InjectKey(tcell.KeyDown, 0, 0)
 	sim.InjectKey(tcell.KeyEnter, 0, 0)
 	syncUI(t, app.tapp)
 
 	link, err := d.HeraLiveBindingByTaskAndOrchestrator("child-coord", parent)
 	testutil.NoError(t, err)
 	testutil.Equal(t, link.OrchestratorID, parent)
+}
+
+func TestSmoke_HeraDetachCoordinatorThroughPicker(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.heraAdoptOps = hera.NewAdoptOps(d)
+	child := seedHeraOrch(t, d, "child")
+	seedHeraBoundRole(t, d, child, "child", db.HeraKindCoordinator, "child-coord")
+	parent := seedHeraOrch(t, d, "parent")
+	seedHeraBoundRole(t, d, parent, "parent", db.HeraKindCoordinator, "parent-coord")
+	// Nest child under parent first so there is a parent link to tear down.
+	_, err := hera.NewAdoptOps(d).ReparentCoordinator(hera.ReparentInput{
+		ChildOrchestratorID: child, ParentOrchestratorID: parent,
+	})
+	testutil.NoError(t, err)
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	sel := hera.Selection{
+		Role: &hera.RoleView{Kind: db.HeraKindCoordinator, TaskID: "child-coord", Name: "child"},
+		Orch: &hera.OrchView{ID: child, Name: "child"},
+	}
+	readUI(t, app.tapp, func() { app.heraOpenAdopt(sel) })
+	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeHeraOrchPicker) })
+
+	// Row 0 is the detach sentinel; Enter on it detaches the coordinator.
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeTaskList) })
+
+	// The parent link is gone — child is top-level again.
+	_, err = d.HeraLiveBindingByTaskAndOrchestrator("child-coord", parent)
+	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
 }
 
 func TestSmoke_HeraAdoptPickerEscCancels(t *testing.T) {

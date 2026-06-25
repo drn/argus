@@ -805,9 +805,20 @@ func (a *App) heraAdoptFreelancer(r *hera.RoleView) {
 	})
 }
 
-// heraAdoptCoordinator opens the orchestrator picker (excluding the coordinator
-// itself) and, on selection, re-parents the coordinator under the chosen parent.
-// Descendant cycles are rejected authoritatively by ReparentCoordinator.
+// heraDetachSentinel is a synthetic picker row prepended to the `J` coordinator
+// picker. Selecting it detaches the coordinator to top-level (un-nests it)
+// instead of re-parenting under a target. It is distinguished by POINTER
+// identity (never by ID/name), so it can never collide with a real orchestrator.
+var heraDetachSentinel = &db.HeraOrchestrator{Name: "— Detach (make top-level) —"}
+
+// heraAdoptCoordinator opens the orchestrator picker for a coordinator. The
+// picker always offers a detach-to-top-level sentinel at the TOP, followed by
+// the OTHER active orchestrators as re-parent targets. Picking the sentinel
+// detaches (un-nests) the coordinator; picking a target re-parents it.
+// Descendant cycles are rejected authoritatively by ReparentCoordinator; detach
+// is idempotent (already-top-level → clean no-op). The picker always opens for a
+// coordinator (the detach option is always available), so there is no
+// "no eligible target" bail on this path.
 func (a *App) heraAdoptCoordinator(childOrchID int64, name, coordTaskID string) {
 	project := ""
 	if coordTaskID != "" {
@@ -820,17 +831,23 @@ func (a *App) heraAdoptCoordinator(childOrchID int64, name, coordTaskID string) 
 		a.statusbar.SetError("Adopt failed: " + err.Error())
 		return
 	}
-	targets := make([]*db.HeraOrchestrator, 0, len(orchs))
+	// Detach sentinel first (always offered), then the re-parent targets.
+	targets := make([]*db.HeraOrchestrator, 0, len(orchs)+1)
+	targets = append(targets, heraDetachSentinel)
 	for _, o := range orchs {
 		if o.ID != childOrchID {
 			targets = append(targets, o)
 		}
 	}
-	if len(targets) == 0 {
-		a.statusbar.SetError("J: no other active coordinator to adopt this coordinator under — create one with hera_new_orchestrator first")
-		return
-	}
-	a.openHeraOrchPicker(fmt.Sprintf("Adopt coordinator %q under…", name), targets, func(o *db.HeraOrchestrator) {
+	a.openHeraOrchPicker(fmt.Sprintf("Adopt coordinator %q under… (or detach)", name), targets, func(o *db.HeraOrchestrator) {
+		if o == heraDetachSentinel {
+			if _, err := a.heraAdoptOps.DetachCoordinator(childOrchID); err != nil {
+				a.statusbar.SetError("Detach failed: " + err.Error())
+				return
+			}
+			a.heraRefresh()
+			return
+		}
 		if _, err := a.heraAdoptOps.ReparentCoordinator(hera.ReparentInput{
 			ChildOrchestratorID:  childOrchID,
 			CoordTaskID:          coordTaskID,

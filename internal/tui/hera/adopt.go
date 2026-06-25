@@ -21,6 +21,11 @@ import (
 // is moved under a new parent (audit trail on the historical row).
 const EndReasonReparented = "reparented"
 
+// EndReasonDetached marks a parent-link binding ended when a coordinator is
+// detached back to top-level (un-nested) — the same teardown as a re-parent but
+// with no new link recreated.
+const EndReasonDetached = "detached"
+
 // AdoptStore is the read+write seam the adopt/reparent ops drive. Every method
 // is an EXISTING method on *db.DB, which satisfies this implicitly. Remote mode
 // has no *db.DB, so the App never constructs AdoptOps there and the `J` key is
@@ -250,36 +255,10 @@ func (o *AdoptOps) ReparentCoordinator(in ReparentInput) (*ReparentResult, error
 
 	// BUG-026 teardown: end EVERY prior parent linkage of C's coord task by ROLE
 	// id so the re-parent is IDEMPOTENT — repeated J never piles up de-collided
-	// duplicate link roles. A parent link is a binding of C's coord task on any
-	// role OTHER than C's own coordinator role. End live links first (audit:
-	// reparented) before the role delete cascades them, then delete every
-	// distinct link role (live OR ended) so its bindings cascade and the name
-	// frees up for the single clean link recreated below.
-	liveLinks, err := o.store.ListHeraLiveBindingsByTask(taskID)
-	if err != nil {
-		return nil, fmt.Errorf("hera.ReparentCoordinator: live bindings for %s: %w", taskID, err)
-	}
-	for _, bnd := range liveLinks {
-		if bnd.RoleID == coordRole.ID {
-			continue // C's own coordinator binding — never a parent link.
-		}
-		if err := o.store.EndHeraBinding(bnd.ID, EndReasonReparented); err != nil {
-			return nil, fmt.Errorf("hera.ReparentCoordinator: end prior parent binding %d: %w", bnd.ID, err)
-		}
-	}
-	allLinks, err := o.store.ListHeraBindingsByTask(taskID)
-	if err != nil {
-		return nil, fmt.Errorf("hera.ReparentCoordinator: all bindings for %s: %w", taskID, err)
-	}
-	deleted := make(map[int64]bool)
-	for _, bnd := range allLinks {
-		if bnd.RoleID == 0 || bnd.RoleID == coordRole.ID || deleted[bnd.RoleID] {
-			continue
-		}
-		deleted[bnd.RoleID] = true
-		if err := o.store.DeleteHeraRole(bnd.RoleID); err != nil && !errors.Is(err, db.ErrHeraNotFound) {
-			return nil, fmt.Errorf("hera.ReparentCoordinator: delete prior parent role %d: %w", bnd.RoleID, err)
-		}
+	// duplicate link roles. The single clean link is recreated below; the
+	// teardown frees up the name for it. Shared single-source with DetachCoordinator.
+	if _, err := o.teardownParentLinks(taskID, coordRole.ID, EndReasonReparented); err != nil {
+		return nil, fmt.Errorf("hera.ReparentCoordinator: %w", err)
 	}
 
 	name, err := o.uniqueRoleName(in.ParentOrchestratorID, defaultStr(in.RoleName, child.Name))
@@ -310,6 +289,109 @@ func (o *AdoptOps) ReparentCoordinator(in ReparentInput) (*ReparentResult, error
 	}, nil
 }
 
+// DetachResult reports the outcome of a detach-to-top-level.
+type DetachResult struct {
+	// ChildOrchestratorName is the detached coordinator's orchestrator name.
+	ChildOrchestratorName string
+	// LinksRemoved is the number of distinct parent-link roles torn down. Zero
+	// means the coordinator was already top-level (an idempotent clean no-op).
+	LinksRemoved int
+}
+
+// DetachCoordinator un-nests coordinator C (childOrchestratorID) back to a
+// top-level root orchestrator with no parent, WITHOUT creating any new link. It
+// is exactly ReparentCoordinator's BUG-026 teardown with no recreate: resolve
+// C's coord role + argus task from the coord role's LATEST binding (live, else
+// most-recent ended — same as re-parent), then run the shared teardown to end
+// every live parent-link binding and delete every distinct parent-link role
+// (all bindings of C's coord task on roles OTHER than C's own coordinator role).
+// C's own coordinator role + binding are never touched, so C and its whole
+// subtree survive intact at top-level.
+//
+// Idempotent: a coordinator that is already top-level (no parent-link roles) is
+// a clean no-op (LinksRemoved == 0, no error). Rejected only when the
+// orchestrator no longer exists, or C has no coordinator role / no binding to
+// resolve its task.
+func (o *AdoptOps) DetachCoordinator(childOrchestratorID int64) (*DetachResult, error) {
+	child, err := o.store.HeraOrchestrator(childOrchestratorID)
+	if errors.Is(err, db.ErrHeraNotFound) {
+		return nil, fmt.Errorf("coordinator %d no longer exists", childOrchestratorID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("hera.DetachCoordinator: load child %d: %w", childOrchestratorID, err)
+	}
+
+	// Resolve C's coordinator argus task id from the coord role's LATEST binding
+	// (live, else most-recent ended) so a dormant coordinator detaches too —
+	// identical resolution to ReparentCoordinator.
+	coordRole, err := o.coordRoleOf(childOrchestratorID, child.Name)
+	if err != nil {
+		return nil, err
+	}
+	hist, err := o.store.ListHeraBindingsByRole(coordRole.ID)
+	if err != nil {
+		return nil, fmt.Errorf("hera.DetachCoordinator: bindings for coord role %d: %w", coordRole.ID, err)
+	}
+	if len(hist) == 0 {
+		return nil, fmt.Errorf("%q has never had a coordinator binding to detach", child.Name)
+	}
+	taskID := strings.TrimSpace(hist[0].ArgusTaskID) // newest-first
+	if taskID == "" {
+		return nil, fmt.Errorf("%q has no argus task id to detach", child.Name)
+	}
+
+	removed, err := o.teardownParentLinks(taskID, coordRole.ID, EndReasonDetached)
+	if err != nil {
+		return nil, fmt.Errorf("hera.DetachCoordinator: %w", err)
+	}
+	if removed == 0 {
+		uxlog.Log("[hera-view] detach: %q (task=%s) already top-level — no-op", child.Name, taskID)
+	} else {
+		uxlog.Log("[hera-view] detach: %q (task=%s) → top-level, removed %d parent link(s)", child.Name, taskID, removed)
+	}
+	return &DetachResult{ChildOrchestratorName: child.Name, LinksRemoved: removed}, nil
+}
+
+// teardownParentLinks ends every LIVE parent-link binding of coordTaskID and
+// deletes every distinct parent-link role, EXCLUDING C's own coordinator role
+// (coordRoleID). A "parent link" is any binding of C's coord task on a role
+// other than C's own coordinator role — i.e. a bridge binding some parent
+// orchestrator holds over C. Live bindings are ended (audit reason) BEFORE the
+// role delete cascades them; then every distinct link role (live OR ended) is
+// deleted so its bindings cascade away. Returns the count of distinct
+// parent-link roles deleted (0 ⇒ C was already top-level). Single-source
+// teardown shared by ReparentCoordinator (clean slate before recreating the one
+// new link) and DetachCoordinator (teardown with no recreate).
+func (o *AdoptOps) teardownParentLinks(taskID string, coordRoleID int64, reason string) (int, error) {
+	liveLinks, err := o.store.ListHeraLiveBindingsByTask(taskID)
+	if err != nil {
+		return 0, fmt.Errorf("live bindings for %s: %w", taskID, err)
+	}
+	for _, bnd := range liveLinks {
+		if bnd.RoleID == coordRoleID {
+			continue // C's own coordinator binding — never a parent link.
+		}
+		if err := o.store.EndHeraBinding(bnd.ID, reason); err != nil {
+			return 0, fmt.Errorf("end prior parent binding %d: %w", bnd.ID, err)
+		}
+	}
+	allLinks, err := o.store.ListHeraBindingsByTask(taskID)
+	if err != nil {
+		return 0, fmt.Errorf("all bindings for %s: %w", taskID, err)
+	}
+	deleted := make(map[int64]bool)
+	for _, bnd := range allLinks {
+		if bnd.RoleID == 0 || bnd.RoleID == coordRoleID || deleted[bnd.RoleID] {
+			continue
+		}
+		deleted[bnd.RoleID] = true
+		if err := o.store.DeleteHeraRole(bnd.RoleID); err != nil && !errors.Is(err, db.ErrHeraNotFound) {
+			return 0, fmt.Errorf("delete prior parent role %d: %w", bnd.RoleID, err)
+		}
+	}
+	return len(deleted), nil
+}
+
 // ListActiveOrchestrators returns the active (non-archived) orchestrators for
 // the `J` picker, in the store's listing order.
 func (o *AdoptOps) ListActiveOrchestrators() ([]*db.HeraOrchestrator, error) {
@@ -322,17 +404,18 @@ func (o *AdoptOps) ListActiveOrchestrators() ([]*db.HeraOrchestrator, error) {
 
 // coordRoleOf returns the first coordinator role under orchID (active or
 // archived), or an error when the orchestrator has no coordinator role at all.
+// Shared by ReparentCoordinator and DetachCoordinator, so the wording is generic.
 func (o *AdoptOps) coordRoleOf(orchID int64, name string) (*db.HeraRole, error) {
 	roles, err := o.store.ListHeraRoles(orchID, true)
 	if err != nil {
-		return nil, fmt.Errorf("hera.ReparentCoordinator: list roles for %d: %w", orchID, err)
+		return nil, fmt.Errorf("hera: list roles for %d: %w", orchID, err)
 	}
 	for _, r := range roles {
 		if r.Kind == db.HeraKindCoordinator {
 			return r, nil
 		}
 	}
-	return nil, fmt.Errorf("%q has no coordinator role to re-parent", name)
+	return nil, fmt.Errorf("%q has no coordinator role", name)
 }
 
 // uniqueRoleName de-collides the requested role name against the orchestrator's
