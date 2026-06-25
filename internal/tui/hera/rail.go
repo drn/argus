@@ -1501,6 +1501,7 @@ func roleStatusInputs(role *RoleView) widget.RoleStatusInputs {
 	return widget.RoleStatusInputs{
 		ReadyToClose: role.ReadyToClose,
 		NeedsInput:   role.ShowsNeedsInput(),
+		Failed:       role.HasStatus && role.Status == db.HeraStatusFailed,
 		Done:         role.HasStatus && role.Status == db.HeraStatusDone,
 		Active:       role.IsActive(),
 		Idle:         role.HasStatus && role.Status == db.HeraStatusIdle,

@@ -18,6 +18,10 @@ type RoleStatusInputs struct {
 	// NeedsInput: the role's needs-input signal (own OR subtree rollup) — a worker
 	// blocked on a user prompt. Ranks below ready_to_close, above done/active.
 	NeedsInput bool
+	// Failed: the hera role status is "failed" (D2, make-hera-plan-living) — a
+	// worker that self-reported defeat. Ranks below NeedsInput, above Done. Renders
+	// a red ✕ distinct from the Done ✓ (a failed task is not done).
+	Failed bool
 	// Done: the hera role status is "done".
 	Done bool
 	// Active: genuinely producing output (live binding + bound task in_progress) —
@@ -35,7 +39,7 @@ type RoleStatusInputs struct {
 // (BUG-007). `frame` is the current spinner animation frame (the Active case
 // animates via SpinnerFrame); `dim` forces the dimmed style for archived
 // placement (the glyph never lies — only the style dims). Precedence:
-// ready_to_close → needs-input → done → active(spinner) → idle → live → default.
+// ready_to_close → needs-input → failed(red ✕) → done → active(spinner) → idle → live → default.
 func RoleStatusIcon(in RoleStatusInputs, dim bool, frame int) (rune, tcell.Style) {
 	if in.ReadyToClose {
 		st := tcell.StyleDefault.Foreground(theme.ColorComplete).Bold(true)
@@ -49,6 +53,10 @@ func RoleStatusIcon(in RoleStatusInputs, dim bool, frame int) (rune, tcell.Style
 	switch {
 	case in.NeedsInput:
 		glyph, style = theme.IconNeedsInput, theme.StyleNeedsInput
+	case in.Failed:
+		// D2 (make-hera-plan-living): explicit self-reported defeat — red ✕,
+		// distinct from the Done ✓ (a failed task is not done, not ready to close).
+		glyph, style = '✕', theme.StyleError
 	case in.Done:
 		glyph, style = '✓', theme.StyleComplete
 	case in.Active:

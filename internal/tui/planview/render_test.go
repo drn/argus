@@ -625,6 +625,68 @@ func TestDraw_HScroll_NoIndicatorsWhenFits(t *testing.T) {
 	testutil.Contains(t, out, "w1")
 }
 
+// TestState_Glyph_Cancelled: StateCancelled carries the same ✕ glyph as
+// StateFailed — the COLOUR is the discriminator (grey vs red).
+func TestState_Glyph_Cancelled(t *testing.T) {
+	testutil.Equal(t, StateCancelled.Glyph(), '✕')
+}
+
+// TestState_Label_Cancelled: StateCancelled labels itself "cancelled".
+func TestState_Label_Cancelled(t *testing.T) {
+	testutil.Equal(t, StateCancelled.Label(), "cancelled")
+}
+
+// TestState_Style_CancelledIsGrey_DistinctFromFailed: StateCancelled uses
+// ColorDimmed (grey) and StateFailed uses ColorError (red) — same ✕ glyph,
+// different colour, so they are visually distinct.
+func TestState_Style_CancelledIsGrey_DistinctFromFailed(t *testing.T) {
+	cfg, _, _ := StateCancelled.style().Decompose()
+	ffg, _, _ := StateFailed.style().Decompose()
+	testutil.Equal(t, cfg, theme.ColorDimmed)
+	testutil.Equal(t, ffg, theme.ColorError)
+	testutil.Equal(t, cfg == ffg, false)
+}
+
+// TestDraw_CancelledChipGlyphRendered: a node with State=StateCancelled renders
+// the ✕ glyph and the node's short-id label, and is distinct from StateFailed
+// (which uses a red bold style vs the dimmed grey of cancelled).
+func TestDraw_CancelledChipGlyphRendered(t *testing.T) {
+	w := New()
+	w.SetData([]Node{
+		{ID: "1a", Name: "1a-cancelled", State: StateCancelled},
+		{ID: "2a", Name: "2a-failed", State: StateFailed},
+	}, []Edge{{From: "1a", To: "2a"}})
+
+	sc := drawToSim(t, w, 60, 18)
+	cells, scw, _ := sc.GetContents()
+
+	// Both nodes render a ✕ glyph.
+	cx, cy, okC := findStringCell(sc, "✕ 1a")
+	testutil.Equal(t, okC, true)
+	fx, fy, okF := findStringCell(sc, "✕ 2a")
+	testutil.Equal(t, okF, true)
+
+	// The cancelled cell uses grey (ColorDimmed), not red.
+	cancelFG, _, _ := cells[cy*scw+cx].Style.Decompose()
+	testutil.Equal(t, cancelFG, theme.ColorDimmed)
+
+	// The failed cell uses red (ColorError), not grey.
+	failFG, _, _ := cells[fy*scw+fx].Style.Decompose()
+	testutil.Equal(t, failFG, theme.ColorError)
+
+	// They must be visually distinct — different colours.
+	testutil.Equal(t, cancelFG == failFG, false)
+}
+
+// TestGroupCounts_IncludesCancelled: groupCounts includes a non-zero
+// StateCancelled count as a grey ✕ entry in the aggregate line.
+func TestGroupCounts_IncludesCancelled(t *testing.T) {
+	g := &Group{Counts: map[State]int{StateDone: 2, StateCancelled: 1}}
+	got := groupCounts(g)
+	testutil.Contains(t, got, "2 ✓")
+	testutil.Contains(t, got, "1 ✕")
+}
+
 func TestTruncateLabel_RuneAware(t *testing.T) {
 	// A long name truncates to fallbackLabelRunes with an ellipsis, rune-counted.
 	long := "verylongrolenamehere"

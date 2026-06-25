@@ -1,6 +1,7 @@
 package hera
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/drn/argus/internal/db"
@@ -460,4 +461,88 @@ func TestRefresh_DifferentCoordinatorResetsPlanCursor(t *testing.T) {
 	// Switch coordinators: the plan cursor must reset to stage 0.
 	testutil.Equal(t, selectOrchByName(p, "orch-b"), true)
 	testutil.Equal(t, pl.CursorPos().Stage, 0)
+}
+
+// --- Cancelled planned node rendering (make-hera-plan-living B3) ---
+
+// TestRoleViewCancelled_SetFromCancelledAt: a role whose CancelledAt is set
+// projects Cancelled=true in the RoleView.
+func TestRoleViewCancelled_SetFromCancelledAt(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	r := seedPlannedRole(t, d, orch, "1a-to-cancel")
+	testutil.NoError(t, d.CancelHeraPlannedNode(r.ID))
+
+	ov := orchViewByName(t, d, "orch")
+	testutil.Equal(t, ov != nil, true)
+	found := false
+	for _, rv := range ov.Roles {
+		if rv.RoleID == r.ID {
+			found = true
+			testutil.Equal(t, rv.Cancelled, true)
+		}
+	}
+	testutil.Equal(t, found, true)
+}
+
+// TestHeraPlanNodes_CancelledProjectsStateCancelled: a cancelled planned node
+// (CancelledAt set) projects State=StateCancelled and remains in the node list
+// (NOT omitted — it stays visible in the plan DAG as grey ✕).
+func TestHeraPlanNodes_CancelledProjectsStateCancelled(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	cancelled := seedPlannedRole(t, d, orch, "1a-cancelled")
+	active := seedPlannedRole(t, d, orch, "2a-active")
+	testutil.NoError(t, d.CancelHeraPlannedNode(cancelled.ID))
+
+	ov := orchViewByName(t, d, "orch")
+	testutil.Equal(t, ov != nil, true)
+	nodes, _ := heraPlanNodes(ov)
+
+	// Both nodes appear (cancelled is visible, not dropped).
+	nc, okC := findNode(nodes, fmt.Sprintf("plan:%d", cancelled.ID))
+	na, okA := findNode(nodes, fmt.Sprintf("plan:%d", active.ID))
+	testutil.Equal(t, okC, true)
+	testutil.Equal(t, okA, true)
+
+	// Cancelled node → StateCancelled; active planned node → StatePlanned.
+	testutil.Equal(t, nc.State, planview.StateCancelled)
+	testutil.Equal(t, na.State, planview.StatePlanned)
+}
+
+// TestHeraPlanNodes_CancelledWinsOverPlanned: a node that is both planned
+// (never materialized) AND cancelled projects StateCancelled, not StatePlanned.
+// This pins the priority order: Cancelled > Planned.
+func TestHeraPlanNodes_CancelledWinsOverPlanned(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	r := seedPlannedRole(t, d, orch, "1a-cancel-planned")
+	testutil.NoError(t, d.CancelHeraPlannedNode(r.ID))
+
+	ov := orchViewByName(t, d, "orch")
+	testutil.Equal(t, ov != nil, true)
+
+	// Confirm the RoleView carries Planned=true AND Cancelled=true (double flag).
+	for _, rv := range ov.Roles {
+		if rv.RoleID == r.ID {
+			testutil.Equal(t, rv.Planned, true)
+			testutil.Equal(t, rv.Cancelled, true)
+		}
+	}
+
+	nodes, _ := heraPlanNodes(ov)
+	n, ok := findNode(nodes, fmt.Sprintf("plan:%d", r.ID))
+	testutil.Equal(t, ok, true)
+	// Cancelled wins — renders StateCancelled, NOT StatePlanned.
+	testutil.Equal(t, n.State, planview.StateCancelled)
+}
+
+// TestPlanNodeIcon_CancelledUsesStateOverlay: a cancelled node leaves Icon nil
+// so the widget renders the State overlay (grey ✕) rather than an Icon glyph.
+func TestPlanNodeIcon_CancelledUsesStateOverlay(t *testing.T) {
+	icon := projectWorkerIcon(t, RoleView{RoleID: 2, Name: "w-cancelled", Cancelled: true})
+	testutil.Nil(t, icon)
 }
