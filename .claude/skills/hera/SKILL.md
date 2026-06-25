@@ -2,17 +2,21 @@
 name: hera
 description: >-
   Inside an argus sandbox (cwd under ~/.argus/worktrees/ or ARGUS_TASK_ID set), coordinate
-  multi-agent work via hera's mcp__argus__hera_* tools — bootstrap an orchestrator, claim or
-  attach a worker/freelance role, and message other roles over the idle-gated bus. Use when you
-  need to spawn and coordinate other agent sessions, run a large multi-session project, or
-  message another role. NOT for non-argus sessions, where these MCP tools are not registered.
+  multi-agent work via hera's mcp__argus__hera_* tools — bootstrap an orchestrator, claim or attach
+  a worker/freelance role, spawn workers, and message roles over the idle-gated bus. Load this skill
+  when you are (or are becoming) a coordinator, when you're spawned as a hera worker, or before
+  delegating work that must run as its OWN argus session (separate worktree / long-running agent /
+  own PR / own sandbox) — as opposed to in-process Claude sub-agents, which stay the right tool for
+  ephemeral in-session fan-out. For staged or dependency-ordered multi-worker plans, this skill
+  routes you to the companion `hera-plan` skill. NOT for non-argus sessions, where these MCP tools
+  are not registered.
 ---
 
 # Hera — native multi-agent coordination inside argus
 
 Hera is argus's **native, in-tree** layer for running a *team* of agents. It is not a separate
 daemon or plugin — coordination runs in-process in the argus daemon, the rail/tree render directly
-in the TUI's second tab, and agents drive it entirely through the twelve `mcp__argus__hera_*` MCP
+in the TUI's second tab, and agents drive it entirely through the `mcp__argus__hera_*` MCP
 tools. State lives in the same `~/.argus/data.sql` (the `hera_*` tables). You never touch the
 plumbing; you call the tools.
 
@@ -48,11 +52,12 @@ is no CLI fallback and nothing below applies.
     you **must** pass `orchestrator=<name>` to every tool so hera knows which role you are acting as;
     omitting it returns an ambiguity error listing your options.
 
-## 3. The twelve tools
+## 3. The coordination tools
 
 All take `cwd`. `orchestrator` is optional with exactly one live binding and **required** with 2+.
-Arg names below are exact — do not invent others. The nine coordination tools come first; the three
-**plan-DAG authoring** tools are grouped at the end of this section.
+Arg names below are exact — do not invent others. These nine cover bootstrap, messaging, and status;
+the plan-DAG authoring/mutation tools live in the companion `hera-plan` skill (pointer at the end of
+this section).
 
 ### Bootstrap / join
 
@@ -134,107 +139,25 @@ Arg names below are exact — do not invent others. The nine coordination tools 
   recipient must live in it); inaccessible / missing ids get a per-id `error` field rather than a
   top-level error.
 
-### Plan authoring + living reconciliation — the plan-DAG (coordinator-only)
+### Plan-DAG authoring (staged, dependency-ordered work) → the `hera-plan` skill
 
-> **With a live coordinator binding, the plan-DAG is the single source of truth for all worker
-> activity. Author every worker as a plan node; track progress through the DAG; reconcile the plan
-> as work evolves. The harness `TaskCreate` system-reminder is not applicable to coordinated work —
-> use `hera_plan_node` / `hera_plan` / `hera_spawn_worker`, never bare task creation.**
+> **With a live coordinator binding, do NOT use the harness `TaskCreate` system-reminder for
+> coordinated work — coordinate via the hera tools (`hera_spawn_worker`, or the plan-DAG), never
+> bare task creation.**
 
-Instead of spawning every worker immediately, a coordinator can lay out a **plan**: a set of
-**planned nodes** wired by **blocking edges**, and let the daemon's gater materialize each node into a
-live born-bound worker *automatically*, in dependency order. A planned node costs one DB row — no
-agent, worktree, or inbox until it materializes. The plan-DAG renders in the TUI's second tab (planned
-`○` → live-by-status), and you navigate it there.
+For work that decomposes into multiple hera worker units **with dependencies among them** (one stage
+needs another's output, or a required ordering), hera offers a **plan-DAG**: planned nodes wired by
+blocking edges that the daemon gater materializes into born-bound workers in dependency order,
+auto-stacking each stage's branch on the prior. It renders in the TUI's second tab and is a *living*
+graph (edit / re-point / cancel as work evolves).
 
-The DAG is **living, not authoring-time**: update it as reality diverges from the plan. Use the
-mutation verbs below to edit a node's prompt, drop a stale edge, or cancel a node you no longer need.
-
-**Plan authoring verbs:**
-
-- **`hera_plan_node(cwd, name, prompt, [orchestrator], [project], [kind], [goal])`** — create ONE
-  planned node (a worker role with no live agent/worktree/inbox yet). It materializes automatically
-  once **all** its blockers reach role-status `done`. **Name with a stable short-id prefix** — number =
-  serial stage, letter = parallel member (e.g. `1a-seed`, `2a-alpha`, `2b-beta`, `3a-final`);
-  uniquified within the orchestrator. `project` defaults to the coordinator's own.
-  - `kind` — `worker` (default) or `subcoord`. A **worker** node materializes into a live born-bound
-    worker; `prompt` is delivered to it (a check-in standing-order is prepended automatically, so it
-    pings you on start). A **subcoord** node materializes into a *distinct sub-coordinator agent* (its
-    own task/worktree + a fresh child orchestrator it coordinates) — see "sub-coordinator nodes" below.
-  - `goal` — **required for `kind=subcoord`** (and used instead of `prompt`): the objective handed to
-    the sub-coordinator. You hand only the goal — you do NOT name its child orchestrator or author its
-    sub-plan; the sub-coordinator owns its own decomposition.
-
-- **`hera_block(cwd, blocked, blocker, [orchestrator])`** — add a blocking edge: `blocked` waits on
-  `blocker` reaching role-status `done` before it materializes. Coordinator-only; both roles must be in
-  your orchestrator. **Rejected** if it would create a cycle, if the roles are in different
-  orchestrators, or if `blocker` is a **coordinator** role (a coordinator never reaches `done`, so it
-  would be a permanently-unsatisfiable dependency).
-
-- **`hera_plan(cwd, nodes, [edges], [orchestrator])`** — submit a WHOLE graph in one **transactional**
-  call: `nodes` = `[{name, prompt, [project], [kind], [goal]}]` (per-node `kind` = `worker` default |
-  `subcoord`; a `subcoord` node needs `goal`, not `prompt`), `edges` = `[{blocked, blocker}]`
-  referencing nodes by name (or existing roles). Nodes are created first, then edges (cycle-checked,
-  single-orchestrator).
-  **All-or-nothing** — any cycle / cross-orchestrator / coordinator-blocker / validation error rolls
-  back the entire graph (no orphan nodes). This is the way to author a multi-stage plan at once rather
-  than many `hera_plan_node` + `hera_block` calls.
-
-**Plan mutation verbs (reconcile as you go — coordinator-only):**
-
-- **`hera_plan_node_update(cwd, name, [prompt], [project], [orchestrator])`** — edit a **planned**
-  node's prompt and/or project. Rejected once the node has materialized (the prompt was already
-  delivered to the worker). Use this when you discover the original spec needs revision before the
-  node spawns.
-
-- **`hera_unblock(cwd, blocked, blocker, [orchestrator])`** — drop one blocking edge. Idempotent
-  (dropping a missing edge is a no-op). To re-point an edge: `hera_unblock` (old blocker) then
-  `hera_block` (new blocker).
-
-- **`hera_plan_node_cancel(cwd, name, [orchestrator])`** — cancel a planned node: it will never
-  materialize, its dependents proceed (no longer gated on it), and it stays visible in the plan as a
-  grey ✕. Rejected if the node has already materialized (use the task lifecycle to stop a running
-  worker). Cancelled nodes are kept in the DAG to show what was dropped — not silently deleted.
-
-**How materialization + branch-stacking works** (you don't drive it — the gater does, ~60s tick):
-
-- A node with **no remaining blockers** materializes into a born-bound worker (same as
-  `hera_spawn_worker` would produce).
-- **Non-root nodes stack automatically**: a materializing node is branched off its most-recently-`done`
-  blocker's branch, so a chain produces cleanly stacked PRs.
-- **Root nodes** (no blockers) resolve their base branch as: explicit orchestrator `base_branch` →
-  the coordinator role's bound-task branch → the project default. So a plan rooted on your feature
-  branch stacks on it (pass `base_branch` to `hera_new_orchestrator` to override the root).
-- **Respond to check-ins promptly.** Each node check-ins on materialization via `hera_send`; you pull
-  it from `hera_inbox` and reply (e.g. `"go"`). A node whose blocker genuinely **failed** is HELD and
-  pings you — decide whether to `hera_unblock`, `hera_plan_node_cancel` the held node, or dispatch a
-  replacement via `hera_spawn_worker`.
-
-**Standing order — keep the DAG reconciled:**
-
-- After every worker interaction, check whether the plan still reflects reality. If a worker's scope
-  changed, `hera_plan_node_update` its prompt. If an edge is no longer needed, `hera_unblock` it. If a
-  node was superseded, `hera_plan_node_cancel` it.
-- A worker reopening (re-engaging on rework after `done`/`failed`) reports `working` on its next
-  `hera_send` by requirement — the DAG self-corrects. No coordinator action needed for a simple reopen.
-
-**Sub-coordinator nodes (`kind=subcoord`).** Use a subcoord node when a plan stage is itself a *sub-team*
-rather than a single unit of work — a chunk big enough to warrant its own coordinator and its own
-fan-out. It is the **declarative** form of "worker promotion" (§7): instead of spawning a worker that
-later calls `hera_new_orchestrator` on itself, you author the sub-team as a plan node up front, and the
-gater materializes it as a *distinct coordinator agent* when its blockers finish. Mechanics:
-- It occupies the parent DAG exactly like any node — it is a worker role in **your** orchestrator, so
-  blocking edges, gating, hold/ping, and branch-stacking all treat it identically. Its worker-role
-  `done` gates the parent's dependents.
-- At materialization it becomes **one new agent** (own task + worktree) that is simultaneously a worker
-  in your orchestrator AND the coordinator of a freshly-created child orchestrator (named automatically,
-  de-collided) — so it nests under you in the rail/tree via the multi-binding bridge, never sharing your
-  task. **One claude instance = one rail element** holds.
-- You hand it only the `goal`. It runs its own planning (often `/brainstorm` → its own `hera_plan`) and
-  spawns its own workers. Bake rich context into the goal so it needs little back-and-forth; it can
-  still `hera_send` you for guidance.
-- Keep it an explicit choice — default to plain worker nodes for ordinary stages. Don't spin up
-  middle-management for a stage one worker can do.
+**Load the companion `hera-plan` skill** before authoring or driving a plan-DAG. It carries the six
+plan tools (`hera_plan`, `hera_plan_node`, `hera_block`, `hera_plan_node_update`, `hera_unblock`,
+`hera_plan_node_cancel`), the gating contract (a node materializes ONLY when every blocker reaches
+role-status `done`), automatic branch-stacking and its fan-in footgun, short-id node naming,
+sub-coordinator nodes, and the self-guard prompt patterns — none of which the tool schemas convey. The
+decision triad in §4 tells you *when* the plan-DAG is the right tool versus spawning workers directly
+or using in-session sub-agents.
 
 ## 4. Decision rules
 
@@ -248,17 +171,20 @@ gater materializes it as a *distinct coordinator agent* when its blockers finish
 - **`spawn_worker` vs adopt:** native hera has **no adopt step** — workers are born bound at spawn time.
   (The old `depends_on`-driven auto-adopt watcher was retired with the DAG.) To delegate, just
   `hera_spawn_worker`.
-- **Spawn now vs plan a DAG:** use `hera_spawn_worker` when you want a worker running *immediately*.
-  Use the **plan-DAG** (`hera_plan`, or `hera_plan_node` + `hera_block`) when work runs in **stages /
-  dependency order** — author planned nodes wired by blocking edges and let the gater materialize them
-  as their blockers finish (auto-stacking each stage's branch on the prior). Lay the whole graph out
-  with one `hera_plan` call; respond to each node's check-in via `hera_inbox`. **Reconcile the DAG
-  as work evolves** — edit nodes, drop stale edges, cancel superseded nodes rather than abandoning the
-  plan.
-- **Worker node vs sub-coordinator node:** a plain plan node (`kind=worker`) is a single unit of work.
-  Make it `kind=subcoord` (with a `goal`) only when the stage is a *sub-team* — large enough to deserve
-  its own coordinator that plans and fans out its own workers. It's the declarative alternative to a
-  worker promoting itself mid-task (§7). Default to worker nodes.
+- **The coordination decision — in-session sub-agents vs hera workers vs the plan-DAG (settle this
+  BEFORE delegating):**
+  1. **Ephemeral, in-session work** — research, review, fan-out reads, anything that returns results
+     to you and needs no worktree/PR of its own? → use **Claude's native sub-agents** (Agent/Task
+     tool). NOT hera. Hera is overkill and slower for in-session parallelism.
+  2. **Work whose unit must be its OWN argus session** — separate worktree / its own PR / long-running
+     / its own sandbox? → **hera**. Then split by dependency:
+     - Units have **dependencies among them** (one needs another's output, or a required ordering)? →
+       **plan-DAG**: load the `hera-plan` skill, author planned nodes + blocking edges, let the gater
+       run them in dependency order. *Decide this yourself when the dependency is obvious — don't ask
+       the human.* **Internal dependencies are the clean signal to plan a DAG** rather than spawn ad hoc.
+     - Units are **independent** (no ordering)? → just `hera_spawn_worker` them in parallel; no DAG.
+  3. **Ask the human only** when it's genuinely ambiguous whether the work warrants multi-session
+     orchestration at all — never for the routine dependency call above.
 - **This task holds 2+ bindings?** Pass `orchestrator=` on EVERY tool call.
 - **Got a doorbell?** Call `hera_inbox(cwd=$PWD)` immediately — the content is in the inbox, not the
   doorbell line.
@@ -338,44 +264,18 @@ You opened in a born-bound worker terminal:
    — the synchronous status apply rolls your task to in_review + ready_to_close so the coordinator
    sees you finished. If you cannot complete: `hera_send(cwd=$PWD, status="failed", body="<reason>", …)`.
 
-### (c) Author a staged plan-DAG and let it self-materialize
+### (c) Author a staged plan-DAG
 
-You are a coordinator and the work has clear stages (a seed, a parallel fan-out, a fan-in):
-
-1. Bootstrap (if you haven't): `hera_new_orchestrator(cwd=$PWD, name="<feature>", coordinator_role_name="coord")`.
-   To root the plan on your current feature branch, pass `base_branch="argus/<your-branch>"`.
-2. Submit the whole graph transactionally — short-id names, full spec baked into each prompt:
-   ```
-   hera_plan(cwd=$PWD,
-     nodes=[
-       {name:"1a-seed",  prompt:"<complete spec…>"},
-       {name:"2a-alpha", prompt:"<complete spec…>"},
-       {name:"2b-beta",  prompt:"<complete spec…>"},
-       {name:"3a-final", prompt:"<complete spec…>"}],
-     edges=[
-       {blocked:"2a-alpha", blocker:"1a-seed"},
-       {blocked:"2b-beta",  blocker:"1a-seed"},
-       {blocked:"3a-final", blocker:"2a-alpha"},
-       {blocked:"3a-final", blocker:"2b-beta"}])
-   ```
-   `1a-seed` materializes first (rooted on your branch); `2a`/`2b` materialize in parallel once it's
-   `done` (each stacked on `1a-seed`'s branch); `3a-final` waits for **both** and stacks on the latest.
-3. Watch it fill in the second-tab plan-DAG (planned `○` → live). Respond to each node's check-in:
-   `hera_inbox(cwd=$PWD)` on the doorbell → reply `hera_send(cwd=$PWD, to="<node>", body="go", tldr="go")`.
-4. If a node is HELD behind a genuinely failed blocker, the gater pings you — use `hera_unblock` to
-   drop the edge, `hera_plan_node_cancel` to cancel the held node, or `hera_spawn_worker` to dispatch
-   a replacement. (A coordinator-as-blocker edge is rejected at authoring time, so you can't wedge the
-   graph on a never-`done` coordinator.)
-5. **Reconcile as work unfolds.** If a worker's scope changed: `hera_plan_node_update` its prompt before
-   it materializes. If an edge is obsolete: `hera_unblock`. If a node was superseded: `hera_plan_node_cancel`.
-   Keep the DAG a live mirror of the actual plan.
+When the work decomposes into multiple multi-session units with dependencies among them, **load the
+`hera-plan` skill** and author a plan-DAG — it carries the tools, gating, branch-stacking, naming, and
+a full worked seed→fan-out→fan-in example. The §4 decision triad tells you when that's the right tool.
 
 ### Worker promotion: becoming a sub-coordinator
 
 > If you already know up front (at plan-authoring time) that a stage is a sub-team, prefer the
-> **declarative** form: a `kind=subcoord` plan node (§3). The gater then materializes the
-> sub-coordinator for you when its blockers finish. The runtime promotion below is for when a worker
-> discovers the need *mid-task*.
+> **declarative** form: a `kind=subcoord` plan node (see the `hera-plan` skill). The gater then
+> materializes the sub-coordinator for you when its blockers finish. The runtime promotion below is for
+> when a worker discovers the need *mid-task*.
 
 If a worker realizes mid-task it needs its own team (cross-repo work, real parallelism, a long sub-task):
 
