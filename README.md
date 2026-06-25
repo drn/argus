@@ -397,7 +397,7 @@ Argus runs an MCP server on port 7742 and auto-injects it into every agent workt
 | `task_complete`        | Mark a task as complete (sets status, stamps `EndedAt`). Pass `cwd` or `id`. Does NOT stop a running agent — call `task_stop` first if needed.                     |
 | `task_set_result`      | Persist an opaque JSON result blob the orchestrator can read (PR URL, milestone, failure reason). Pass `cwd` or `id` plus `result`. Up to 64 KiB.                  |
 
-The bundled skills (`.claude/skills/{archive,argus-complete,argus-schedule,hera}`, installed via `./install-claude-skills.sh` — see [Agent-facing skills](#agent-facing-skills)) let an agent finalize, schedule, and coordinate its own work via `cwd` resolution. Completing and archiving are independent axes.
+The bundled skills (`.claude/skills/{archive,argus-complete,argus-schedule,hera,hera-plan}`, installed via `./install-claude-skills.sh` — see [Agent-facing skills](#agent-facing-skills)) let an agent finalize, schedule, and coordinate its own work via `cwd` resolution. Completing and archiving are independent axes.
 
 **Inter-Task Messaging** (peer-to-peer between live or paused tasks):
 
@@ -456,7 +456,8 @@ If the recipient has a live agent session the daemon also writes a single notifi
 
 A Claude session inside an argus worktree sees the `mcp__argus__*` tool names but not when to reach for them or how they compose. Argus ships that orientation as installable Claude assets, gated at runtime so they stay inert outside argus sandboxes:
 
-- `.claude/skills/hera/SKILL.md` — coordinate multi-agent work over hera's `mcp__argus__hera_*` tools (bootstrap an orchestrator, claim or attach a worker/freelance role, message other roles).
+- `.claude/skills/hera/SKILL.md` — coordinate multi-agent work over hera's `mcp__argus__hera_*` tools (bootstrap an orchestrator, claim or attach a worker/freelance role, message other roles); carries the decision rule for in-session sub-agents vs hera workers vs the plan-DAG.
+- `.claude/skills/hera-plan/SKILL.md` — the on-demand plan-DAG companion: author staged, dependency-ordered multi-worker plans (planned nodes + blocking edges) that the daemon gater materializes in order, with branch-stacking, short-id naming, and self-guard prompt patterns.
 - `.claude/skills/{archive,argus-complete,argus-schedule}/SKILL.md` — let an agent finalize, archive, and schedule its own argus task via `cwd` resolution.
 - `claude/snippets/*.md` — always-loaded orientation snippets (`hera.md`, `argus-tasks.md`) that point the agent at the skills above.
 
