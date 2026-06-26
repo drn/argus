@@ -88,7 +88,11 @@ button:disabled { opacity: 0.5; cursor: default; }
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 
 /* Task list */
-.task-list { padding: 0; }
+/* Bottom padding keeps the last row clear of the iOS bottom toolbar / home
+   indicator, which otherwise swallows taps on the final task. Mirrors the
+   80px guard on #hera-view / #settings-view, plus the safe-area inset (0 unless
+   the viewport opts into viewport-fit=cover). */
+.task-list { padding: 0; padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
 .task-item {
   display: flex; align-items: center; padding: 12px 12px 12px 28px;
   border-bottom: 1px solid var(--border); cursor: pointer;
