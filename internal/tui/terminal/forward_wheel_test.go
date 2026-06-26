@@ -35,6 +35,9 @@ func (a *recAdapter) TotalWritten() uint64 { return uint64(len(a.output)) }
 func (a *recAdapter) Alive() bool          { return a.alive }
 func (a *recAdapter) PTYSize() (int, int)  { return 80, 24 }
 
+func (a *recAdapter) SetViewerSize(id string, cols, rows int) {}
+func (a *recAdapter) RemoveViewer(id string)                  {}
+
 func drawnWheelPane(t *testing.T, output []byte) (*TerminalPane, *recAdapter) {
 	t.Helper()
 	sess := &recAdapter{alive: true, output: output}
