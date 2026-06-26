@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/testutil"
 )
@@ -243,6 +244,25 @@ func TestGenerateName_BudgetFlag(t *testing.T) {
 		}
 	}
 	testutil.Equal(t, budget, "0.05")
+}
+
+// TestDefaultTimeout_Bounds bounds the operation deadline on BOTH sides. The
+// floor (≥120s) keeps the cap comfortably above the observed claude-CLI
+// cold-start tail under load (>45s `signal: killed` failures were seen at 45s);
+// shrinking it back toward that tail reintroduces the kills. The ceiling
+// (≤5min) guards the other direction: runAutoRename is a fire-and-forget
+// goroutine with no concurrency cap, so an over-large deadline lets a hung
+// `claude` pin a goroutine for that whole window — 120s is negligible, 10min is
+// not. A range (not an exact value) lets future tuning move within the band
+// without editing the test.
+func TestDefaultTimeout_Bounds(t *testing.T) {
+	const floor, ceiling = 120 * time.Second, 5 * time.Minute
+	if DefaultTimeout < floor {
+		t.Errorf("DefaultTimeout = %v, must be ≥ %v (cold-start tail guard)", DefaultTimeout, floor)
+	}
+	if DefaultTimeout > ceiling {
+		t.Errorf("DefaultTimeout = %v, must be ≤ %v (goroutine-lifetime guard)", DefaultTimeout, ceiling)
+	}
 }
 
 // TestGenerateName_ScrubsControlCharsFromReason is the log-injection guard:
