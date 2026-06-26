@@ -29,10 +29,16 @@ import (
 // own agent cold-starting, KB indexing, other live sessions) for CPU/IO. Each
 // auto-name spawns a fresh `claude -p`, so it is effectively always a cold
 // start. The 30s → 45s history kept chasing that tail and still hit
-// `signal: killed` (the deadline SIGKILL-ing the process) at 45s under load. We
-// pick 120s — ~2.6× the observed failing wall — to end the chase. The call is
-// fire-and-forget in a background goroutine, so a generous cap has no UX cost;
-// the only effect of a truly-hung claude is one idle goroutine living that long.
+// `signal: killed` at 45s under load — and because the deadline SIGKILLs the
+// process, we never observe how long the call WOULD have taken, only that it
+// exceeded the cap. The true cold-start-under-load tail is therefore
+// unmeasurable from the kill itself. So rather than fit the cap to a tail we
+// cannot see, we set it generously against its ONLY real cost — goroutine
+// lifetime: 120s. The call is fire-and-forget in a background goroutine, so a
+// large cap has no UX cost; the sole effect of a truly-hung claude is one idle
+// goroutine living up to that long. The test in namegen_test.go bounds it on
+// both sides (≥120s to clear the tail, ≤5min so a future bump can't pin a
+// goroutine for minutes).
 const DefaultTimeout = 120 * time.Second
 
 // retryBackoff is the pause before the single retry on a transient CLI

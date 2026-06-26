@@ -20,7 +20,12 @@ var autoRenameFn = llm.GenerateName
 // task and comparing names) ensures we never clobber a manual rename that
 // happened while the LLM call was in flight.
 //
-// Runs from a goroutine; takes ownership of its own ctx/cancel.
+// Runs from a goroutine; takes ownership of its own ctx/cancel. There is no
+// concurrency cap on these goroutines: task creation is human/schedule-paced,
+// not bursty, so at most a handful overlap, and each is bounded by
+// llm.DefaultTimeout. If task-creation ever becomes high-rate, gate this behind
+// a semaphore — the DefaultTimeout window (the goroutine's max lifetime) is the
+// knob that decides how many can pile up.
 func runAutoRename(database *db.DB, taskID, originalName, prompt string) {
 	ctx, cancel := context.WithTimeout(context.Background(), llm.DefaultTimeout)
 	defer cancel()
