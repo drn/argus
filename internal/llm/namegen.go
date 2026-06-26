@@ -23,13 +23,17 @@ import (
 )
 
 // DefaultTimeout caps the WHOLE name-gen operation, including the single
-// retry below. The claude CLI startup alone runs 1-2s, and Haiku adds another
-// 3-6s, so end-to-end commonly lands at 6-8s with occasional spikes; heavier
-// recent CLI versions spike further, and a `signal: killed` (the deadline
-// SIGKILL-ing the process) was observed at 30s. We pick 45s to stay well above
-// the observed tail and still leave room for the retry — the call is
-// fire-and-forget in a background goroutine, so a generous cap has no UX cost.
-const DefaultTimeout = 45 * time.Second
+// retry below. The claude CLI cold-start latency has ballooned with recent CLI
+// versions: measured against this exact invocation it is ~3-5s warm, ~20s cold,
+// and >45s when the cold start races concurrent work (the newly-created task's
+// own agent cold-starting, KB indexing, other live sessions) for CPU/IO. Each
+// auto-name spawns a fresh `claude -p`, so it is effectively always a cold
+// start. The 30s → 45s history kept chasing that tail and still hit
+// `signal: killed` (the deadline SIGKILL-ing the process) at 45s under load. We
+// pick 120s — ~2.6× the observed failing wall — to end the chase. The call is
+// fire-and-forget in a background goroutine, so a generous cap has no UX cost;
+// the only effect of a truly-hung claude is one idle goroutine living that long.
+const DefaultTimeout = 120 * time.Second
 
 // retryBackoff is the pause before the single retry on a transient CLI
 // failure. A package var (not const) so tests can zero it. Kept short: the

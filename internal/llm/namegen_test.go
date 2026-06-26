@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/testutil"
 )
@@ -243,6 +244,19 @@ func TestGenerateName_BudgetFlag(t *testing.T) {
 		}
 	}
 	testutil.Equal(t, budget, "0.05")
+}
+
+// TestDefaultTimeout_FloorGuard pins a lower bound on the operation deadline.
+// The cap must stay comfortably above the observed claude-CLI cold-start tail
+// under load (>45s `signal: killed` failures were seen at 45s). It is a
+// fire-and-forget background goroutine, so a generous cap has no UX cost —
+// shrinking it back toward the observed tail reintroduces the kills, hence the
+// floor. Asserts a floor (not an exact value) so future bumps don't break it.
+func TestDefaultTimeout_FloorGuard(t *testing.T) {
+	const floor = 120 * time.Second
+	if DefaultTimeout < floor {
+		t.Errorf("DefaultTimeout = %v, must be ≥ %v (cold-start tail guard)", DefaultTimeout, floor)
+	}
 }
 
 // TestGenerateName_ScrubsControlCharsFromReason is the log-injection guard:
