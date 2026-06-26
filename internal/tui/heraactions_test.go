@@ -490,8 +490,39 @@ func TestHeraCoordReparentTarget(t *testing.T) {
 		testutil.Equal(t, id, int64(8))
 		testutil.Equal(t, name, "o")
 	})
-	t.Run("worker role does not qualify", func(t *testing.T) {
+	t.Run("plain worker role does not qualify", func(t *testing.T) {
 		sel := hera.Selection{Role: &hera.RoleView{Kind: db.HeraKindWorker}, Orch: &hera.OrchView{ID: 1}}
+		_, _, _, ok := heraCoordReparentTarget(sel)
+		testutil.Equal(t, ok, false)
+	})
+	t.Run("worker-bridge sub-coordinator row qualifies", func(t *testing.T) {
+		// A nested sub-coordinator renders as a headerless worker-bridge row; the
+		// rail stamps the CHILD orch id on BridgeChildOrchID. It must resolve to the
+		// CHILD orchestrator (not the parent worker role) with the bridge role's name.
+		sel := hera.Selection{
+			Role:              &hera.RoleView{Kind: db.HeraKindWorker, Name: "child", TaskID: "child-coord"},
+			Orch:              &hera.OrchView{ID: 3, Name: "parent"},
+			BridgeChildOrchID: 9,
+		}
+		id, name, task, ok := heraCoordReparentTarget(sel)
+		testutil.Equal(t, ok, true)
+		testutil.Equal(t, id, int64(9)) // the bridged CHILD orch, not the parent (3)
+		testutil.Equal(t, name, "child")
+		testutil.Equal(t, task, "child-coord")
+	})
+	t.Run("worker-bridge prefers the structural bridge task for the coord hint", func(t *testing.T) {
+		// A bridge whose live binding ended still carries BridgeTaskID; the coord
+		// task hint must come from there (roleReclaimTask), falling back to TaskID.
+		sel := hera.Selection{
+			Role:              &hera.RoleView{Kind: db.HeraKindWorker, Name: "child", TaskID: "", BridgeTaskID: "child-coord"},
+			BridgeChildOrchID: 9,
+		}
+		_, _, task, ok := heraCoordReparentTarget(sel)
+		testutil.Equal(t, ok, true)
+		testutil.Equal(t, task, "child-coord")
+	})
+	t.Run("archived worker-bridge row does not qualify", func(t *testing.T) {
+		sel := hera.Selection{Role: &hera.RoleView{Kind: db.HeraKindWorker, Archived: true}, BridgeChildOrchID: 9}
 		_, _, _, ok := heraCoordReparentTarget(sel)
 		testutil.Equal(t, ok, false)
 	})
@@ -644,6 +675,95 @@ func TestSmoke_HeraDetachCoordinatorThroughPicker(t *testing.T) {
 	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeTaskList) })
 
 	// The parent link is gone — child is top-level again.
+	_, err = d.HeraLiveBindingByTaskAndOrchestrator("child-coord", parent)
+	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+}
+
+// An ALREADY-NESTED sub-coordinator is selected as a headerless worker-bridge
+// row (worker-kind role under the parent, bound to the child's coord task,
+// carrying Selection.BridgeChildOrchID). Pressing `J` + the detach sentinel must
+// reach DetachCoordinator for the CHILD orch — the follow-up to #814's bug, where
+// `J` on this exact shape fell through to the "select a coordinator" error.
+func TestSmoke_HeraDetachNestedBridgeThroughPicker(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.heraAdoptOps = hera.NewAdoptOps(d)
+	child := seedHeraOrch(t, d, "child")
+	seedHeraBoundRole(t, d, child, "child", db.HeraKindCoordinator, "child-coord")
+	parent := seedHeraOrch(t, d, "parent")
+	seedHeraBoundRole(t, d, parent, "parent", db.HeraKindCoordinator, "parent-coord")
+	// Nest child under parent so it renders as a worker-bridge row in parent.
+	_, err := hera.NewAdoptOps(d).ReparentCoordinator(hera.ReparentInput{
+		ChildOrchestratorID: child, ParentOrchestratorID: parent,
+	})
+	testutil.NoError(t, err)
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	// The bridge-row selection: a worker-kind role under the parent bound to the
+	// child's coord task, with BridgeChildOrchID = child (what Rail.Selection sets).
+	sel := hera.Selection{
+		Role:              &hera.RoleView{Kind: db.HeraKindWorker, TaskID: "child-coord", Name: "child"},
+		Orch:              &hera.OrchView{ID: parent, Name: "parent"},
+		BridgeChildOrchID: child,
+	}
+	readUI(t, app.tapp, func() { app.heraOpenAdopt(sel) })
+	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeHeraOrchPicker) })
+
+	// Row 0 is the detach sentinel; Enter on it detaches the CHILD coordinator.
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeTaskList) })
+
+	// The parent link is gone — child is top-level again; its own coord binding stays.
+	_, err = d.HeraLiveBindingByTaskAndOrchestrator("child-coord", parent)
+	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+	live, err := d.HeraLiveBindingByTaskAndOrchestrator("child-coord", child)
+	testutil.NoError(t, err)
+	testutil.Equal(t, live.OrchestratorID, child)
+}
+
+// Symmetry: re-parenting an already-nested sub-coordinator (selected as its
+// worker-bridge row) under a DIFFERENT parent must move the CHILD orchestrator.
+func TestSmoke_HeraReparentNestedBridgeThroughPicker(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.heraAdoptOps = hera.NewAdoptOps(d)
+	child := seedHeraOrch(t, d, "child")
+	seedHeraBoundRole(t, d, child, "child", db.HeraKindCoordinator, "child-coord")
+	parent := seedHeraOrch(t, d, "parent")
+	seedHeraBoundRole(t, d, parent, "parent", db.HeraKindCoordinator, "parent-coord")
+	other := seedHeraOrch(t, d, "other")
+	seedHeraBoundRole(t, d, other, "other", db.HeraKindCoordinator, "other-coord")
+	_, err := hera.NewAdoptOps(d).ReparentCoordinator(hera.ReparentInput{
+		ChildOrchestratorID: child, ParentOrchestratorID: parent,
+	})
+	testutil.NoError(t, err)
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	sel := hera.Selection{
+		Role:              &hera.RoleView{Kind: db.HeraKindWorker, TaskID: "child-coord", Name: "child"},
+		Orch:              &hera.OrchView{ID: parent, Name: "parent"},
+		BridgeChildOrchID: child,
+	}
+	readUI(t, app.tapp, func() { app.heraOpenAdopt(sel) })
+	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeHeraOrchPicker) })
+
+	// Type "other" to narrow the picker to that single re-parent target, then Enter.
+	for _, r := range "other" {
+		sim.InjectKey(tcell.KeyRune, r, 0)
+	}
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeTaskList) })
+
+	// The child moved: a live link under "other", none under "parent".
+	link, err := d.HeraLiveBindingByTaskAndOrchestrator("child-coord", other)
+	testutil.NoError(t, err)
+	testutil.Equal(t, link.OrchestratorID, other)
 	_, err = d.HeraLiveBindingByTaskAndOrchestrator("child-coord", parent)
 	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
 }
