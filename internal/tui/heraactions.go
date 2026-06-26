@@ -744,15 +744,32 @@ func (a *App) heraOpenAdopt(sel hera.Selection) {
 }
 
 // heraCoordReparentTarget reports whether sel is a coordinator that `J` can
-// re-parent, returning the child orchestrator id, a display name, and the
-// coordinator's argus task hint (may be empty for a dormant coordinator — the
-// op resolves it from the coord role's latest binding). Two shapes qualify: a
-// coordinator-kind role row, or a non-archived orchestrator header whose
-// orchestrator has a coordinator role.
+// re-parent / detach, returning the child orchestrator id, a display name, and
+// the coordinator's argus task hint (may be empty for a dormant coordinator —
+// the op resolves it from the coord role's latest binding). Three shapes qualify:
+//
+//   - a coordinator-kind role row (defensive — coordinators fold into the header);
+//   - a non-archived orchestrator header whose orchestrator has a coordinator role;
+//   - a non-archived WORKER-bridge row: a nested sub-coordinator renders as a
+//     headerless worker row in its parent (rail.go bridge placement), so its
+//     Role.Kind is worker, but the rail stamps the bridged CHILD orchestrator id
+//     on Selection.BridgeChildOrchID (the SAME field the Ctrl+D cascade reads).
+//     That worker row IS the child's coordinator, so it routes the coordinator
+//     detach/re-parent path against the CHILD orch. Only a bridge row qualifies
+//     (BridgeChildOrchID != 0) — a PLAIN worker is never misclassified.
+//
+// Without this third shape, `J` on an already-nested sub-coordinator falls
+// through to the "select a coordinator" error — the #814 follow-up bug.
 func heraCoordReparentTarget(sel hera.Selection) (childOrchID int64, name, coordTaskID string, ok bool) {
 	if r := sel.Role; r != nil {
 		if r.Kind == db.HeraKindCoordinator && !r.Archived && sel.Orch != nil && !sel.Orch.Archived {
 			return sel.Orch.ID, r.Name, r.TaskID, true
+		}
+		// A non-archived worker row that bridges a child orchestrator is that
+		// child's coordinator — target the CHILD orch, not the parent worker role.
+		// The coord task hint comes from the bridge task (live, else structural).
+		if r.Kind == db.HeraKindWorker && !r.Archived && sel.BridgeChildOrchID != 0 {
+			return sel.BridgeChildOrchID, r.Name, roleReclaimTask(r), true
 		}
 		return 0, "", "", false
 	}

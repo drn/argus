@@ -811,8 +811,8 @@ Derived from: `internal/tui/app.go` (`App.heraPaneFocused`), `internal/tui/app.g
 While the RAIL is focused, pressing `J` SHALL act on the current selection:
 
 - A FREELANCER selection (a `freelance`-kind role row carrying a live argus task) SHALL open a target picker listing the active (non-archived) orchestrators.
-- A COORDINATOR selection (a `coordinator`-kind role row, OR an orchestrator header whose orchestrator has a coordinator role and is not archived) SHALL open a target picker. The picker SHALL include, as a sentinel row at the TOP, a "Detach (make top-level)" entry that detaches the coordinator to top-level, followed by the OTHER active orchestrators (excluding the coordinator's own orchestrator) as re-parent targets.
-- Any other selection (a managed worker role, an empty selection, an archived row) SHALL surface visible feedback that only a freelancer or coordinator can be adopted, and SHALL NOT create or change any role or binding (never a silent no-op).
+- A COORDINATOR selection SHALL open a target picker. A coordinator selection is any of: a `coordinator`-kind role row; an orchestrator header whose orchestrator has a coordinator role and is not archived; OR a non-archived `worker`-kind role row that BRIDGES a child orchestrator (a nested sub-coordinator — its `Selection.BridgeChildOrchID` is non-zero, the SAME field the `Ctrl+D` cascade reads). For the worker-bridge case the picker SHALL target the bridged CHILD orchestrator, not the parent worker role. The picker SHALL include, as a sentinel row at the TOP, a "Detach (make top-level)" entry that detaches the coordinator to top-level, followed by the OTHER active orchestrators (excluding the coordinator's own orchestrator) as re-parent targets.
+- Any other selection (a PLAIN managed worker role with no bridged child, an empty selection, an archived row) SHALL surface visible feedback that only a freelancer or coordinator can be adopted, and SHALL NOT create or change any role or binding (never a silent no-op).
 
 The picker SHALL be a themed, focusable, dismissable modal in which typed characters narrow the list by case-insensitive substring on the orchestrator name, `Enter` selects the highlighted orchestrator, and `Esc` cancels without change. The picker SHALL name the row being adopted in its title. For a FREELANCER, when no eligible target orchestrator exists, pressing `J` SHALL surface visible feedback that a coordinator must be created first and SHALL NOT open the picker or create any role or binding. For a COORDINATOR the picker SHALL always open (the detach sentinel is always offered), so there is no "no eligible target" feedback path for a coordinator.
 
@@ -829,7 +829,7 @@ The freelancer's argus task SHALL be best-effort stamped `meta:hera.role=worker`
 
 #### Re-parent (coordinator → sub-coordinator)
 
-Selecting a parent orchestrator for a coordinator SHALL re-parent it by creating a `worker` role under the chosen parent bound to the coordinator's coordinator argus task — the multi-binding the orchestration tree renders as a nested sub-coordinator. The coordinator's whole subtree moves with it (the subtree derives from the coordinator, which is untouched). The coordinator argus task + worktree SHALL be resolved from the coordinator role's LATEST binding (live, else most-recent ended) so a dormant coordinator can still be re-parented.
+Selecting a parent orchestrator for a coordinator SHALL re-parent it by creating a `worker` role under the chosen parent bound to the coordinator's coordinator argus task — the multi-binding the orchestration tree renders as a nested sub-coordinator. The coordinator's whole subtree moves with it (the subtree derives from the coordinator, which is untouched). The coordinator argus task + worktree SHALL be resolved from the coordinator role's LATEST binding (live, else most-recent ended) so a dormant coordinator can still be re-parented. The coordinator may be selected either as a top-level coordinator (role row or orchestrator header) OR as an already-nested sub-coordinator (a worker-bridge row); both resolve the same CHILD orchestrator id and route the same re-parent op, so a nested sub-coordinator can be moved between parents.
 
 The re-parent SHALL be REJECTED with visible feedback when the chosen parent IS the coordinator's own orchestrator, or is a descendant of it (a cycle), or the coordinator has no coordinator role / no binding to re-parent.
 
@@ -837,7 +837,7 @@ The re-parent SHALL be REJECTED with visible feedback when the chosen parent IS 
 
 #### Detach (coordinator → top-level)
 
-Selecting the "Detach (make top-level)" sentinel for a coordinator SHALL un-nest it back to a root orchestrator with no parent, WITHOUT creating any new link. Detach resolves the coordinator's argus task + coord role from the coordinator role's LATEST binding (the same resolution re-parent uses), then runs ONLY the teardown invariant above (end every live parent-link binding with reason `detached`, then delete every distinct parent-link role so its bindings cascade) — it recreates NO link. The coordinator's own coordinator role and its coordinator binding are NEVER touched, so the coordinator and its whole subtree survive intact, now at top-level.
+Selecting the "Detach (make top-level)" sentinel for a coordinator SHALL un-nest it back to a root orchestrator with no parent, WITHOUT creating any new link. Detach resolves the coordinator's argus task + coord role from the coordinator role's LATEST binding (the same resolution re-parent uses), then runs ONLY the teardown invariant above (end every live parent-link binding with reason `detached`, then delete every distinct parent-link role so its bindings cascade) — it recreates NO link. The coordinator's own coordinator role and its coordinator binding are NEVER touched, so the coordinator and its whole subtree survive intact, now at top-level. Detach SHALL be reachable for an already-nested sub-coordinator: such a coordinator is selected as a worker-bridge row, whose `Selection.BridgeChildOrchID` resolves the CHILD orchestrator to detach.
 
 Detach SHALL be IDEMPOTENT: a coordinator that is already top-level (no parent-link roles) SHALL be a clean no-op (no error, no role or binding changed). Detach SHALL be REJECTED with visible feedback only when the orchestrator no longer exists, or the coordinator has no coordinator role / no binding to resolve its task.
 
@@ -866,6 +866,11 @@ Detach SHALL be IDEMPOTENT: a coordinator that is already top-level (no parent-l
 - **WHEN** the operator selects a coordinator (role row or orchestrator header), presses `J`, and picks a different orchestrator (not the detach sentinel)
 - **THEN** a `worker` role under the chosen parent bound to the coordinator's coordinator argus task MUST be created, nesting the coordinator's subtree under the parent
 
+#### Scenario: `J` re-parents an already-nested sub-coordinator selected as its bridge row
+
+- **WHEN** the operator selects a sub-coordinator that is currently nested under a parent (rendered as a worker-bridge row whose `Selection.BridgeChildOrchID` is the child orchestrator), presses `J`, and picks a different orchestrator
+- **THEN** the CHILD orchestrator (not the parent worker role) MUST be re-parented under the chosen orchestrator via the same re-parent op (its prior parent links torn down, one clean link to the new parent created)
+
 #### Scenario: Re-parenting ends all prior parent-links by role id
 
 - **WHEN** a coordinator that is already nested under some parent (with a live link, and a leftover ended link role from a prior move) is re-parented under a new parent
@@ -881,6 +886,11 @@ Detach SHALL be IDEMPOTENT: a coordinator that is already top-level (no parent-l
 - **WHEN** the operator selects a coordinator that is currently nested under a parent (a parent-link role + live binding), presses `J`, and picks the "Detach (make top-level)" sentinel
 - **THEN** every parent-link binding of the coordinator's task MUST be ended (reason `detached`) and every distinct parent-link role MUST be deleted, so the coordinator holds no live parent link and is top-level again; the coordinator's own coordinator role and binding MUST be untouched
 
+#### Scenario: `J` detaches an already-nested sub-coordinator selected as its bridge row
+
+- **WHEN** the operator selects an already-nested sub-coordinator — rendered as a headerless worker-bridge row whose `Selection.BridgeChildOrchID` is the child orchestrator — presses `J`, and picks the "Detach (make top-level)" sentinel
+- **THEN** the CHILD orchestrator MUST be detached to top-level (its parent links torn down) — the detach path MUST be reachable for a worker-bridge selection, not only for a coordinator-header or coordinator-role selection
+
 #### Scenario: Detaching an already-top-level coordinator is an idempotent no-op
 
 - **WHEN** the operator picks "Detach (make top-level)" for a coordinator that is already top-level (no parent-link roles)
@@ -893,7 +903,7 @@ Detach SHALL be IDEMPOTENT: a coordinator that is already top-level (no parent-l
 
 #### Scenario: `J` on a non-adoptable row surfaces feedback
 
-- **WHEN** the operator presses `J` while a managed worker role, an empty selection, or an archived row is selected
+- **WHEN** the operator presses `J` while a PLAIN managed worker role (no bridged child), an empty selection, or an archived row is selected
 - **THEN** the view MUST surface visible feedback and MUST NOT create any role or binding
 
 #### Scenario: No eligible target orchestrator surfaces feedback (freelancer)
