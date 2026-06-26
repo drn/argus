@@ -26,10 +26,11 @@ func testConfig() config.Config {
 	return config.Config{
 		Defaults: config.Defaults{Backend: "claude"},
 		Backends: map[string]config.Backend{
-			"claude": {Command: "claude --dangerously-skip-permissions --permission-mode plan", PromptFlag: ""},
-			"codex":  {Command: "codex --dangerously-bypass-approvals-and-sandbox", PromptFlag: ""},
-			"pi":     {Command: "pi", PromptFlag: ""},
-			"bare":   {Command: "my-agent", PromptFlag: ""},
+			"claude":   {Command: "claude --dangerously-skip-permissions --permission-mode plan", PromptFlag: ""},
+			"codex":    {Command: "codex --dangerously-bypass-approvals-and-sandbox", PromptFlag: ""},
+			"pi":       {Command: "pi", PromptFlag: ""},
+			"opencode": {Command: "opencode", PromptFlag: "--prompt"},
+			"bare":     {Command: "my-agent", PromptFlag: ""},
 		},
 		Projects: map[string]config.Project{
 			"myapp": {Path: "/home/user/myapp", Backend: "codex"},
@@ -1653,6 +1654,8 @@ func TestNeedsSessionRecapture(t *testing.T) {
 		{"codex skips once captured", "codex", "existing-uuid", false},
 		{"pi captures once (empty)", "pi", "", true},
 		{"pi skips once captured", "pi", "existing-uuid", false},
+		{"opencode captures once (empty)", "opencode", "", true},
+		{"opencode skips once captured", "opencode", "ses_existing", false},
 		{"unknown backend never recaptures", "bare", "", false},
 	}
 	for _, tc := range tests {

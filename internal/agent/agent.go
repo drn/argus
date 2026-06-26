@@ -2,6 +2,7 @@ package agent
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -30,6 +31,12 @@ var codexSessionIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-
 // piSessionFileRe matches pi's session filenames: <timestamp>_<uuid>.jsonl.
 // Pi writes sessions to ~/.pi/agent/sessions/--<encoded-cwd>--/<ts>_<uuid>.jsonl.
 var piSessionFileRe = regexp.MustCompile(`_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$`)
+
+// opencodeSessionIDRe validates a captured opencode session ID. opencode mints
+// IDs as "ses_" + 12 hex + 14 base62; we accept the prefix plus any base62 tail
+// rather than pinning the exact length, so a future length tweak doesn't reject
+// a valid ID.
+var opencodeSessionIDRe = regexp.MustCompile(`^ses_[0-9A-Za-z]+$`)
 
 // ResolveSandboxConfig returns the effective sandbox config for a task.
 // Per-project settings are merged on top of the global config:
@@ -113,6 +120,11 @@ func KnownModels(command string) []string {
 	case IsCodexBackend(command):
 		return []string{"gpt-5-codex", "gpt-5"}
 	default:
+		// opencode is intentionally custom-only: its --model takes a
+		// provider/model identifier whose valid set depends on which providers
+		// the user has authenticated, so a curated list would name models the
+		// user may not have. The selector offers default + custom… typing, and
+		// power users can pin a list via the backend's `models` config field.
 		return nil
 	}
 }
@@ -167,6 +179,16 @@ func IsPiBackend(command string) bool {
 func IsClaudeBackend(command string) bool {
 	fields := strings.Fields(command)
 	return len(fields) > 0 && filepath.Base(fields[0]) == "claude"
+}
+
+// IsOpencodeBackend reports whether a backend command is opencode-based.
+// Detection uses the basename of the first word to handle both bare names
+// ("opencode") and absolute paths. opencode is a capture-style backend: like
+// codex and pi it mints its own session ID (no start-time --session-id) and
+// resumes via `--session <id>`.
+func IsOpencodeBackend(command string) bool {
+	fields := strings.Fields(command)
+	return len(fields) > 0 && filepath.Base(fields[0]) == "opencode"
 }
 
 // hasPermissionFlags reports whether a backend command already specifies a
@@ -304,6 +326,156 @@ func CaptureCodexSessionID(worktreePath string) (string, error) {
 	return id, nil
 }
 
+// opencodeDataDir returns opencode's data root: $XDG_DATA_HOME/opencode when
+// XDG_DATA_HOME is set, else ~/.local/share/opencode. This mirrors opencode's
+// own xdg-basedir resolution (Global.Path.data = xdgData/opencode).
+func opencodeDataDir() (string, error) {
+	if xdg := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); xdg != "" {
+		return filepath.Join(xdg, "opencode"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("opencodeDataDir: home dir: %w", err)
+	}
+	return filepath.Join(home, ".local", "share", "opencode"), nil
+}
+
+// canonPath returns the symlink-resolved absolute form of a path, falling back
+// to the cleaned absolute path when resolution fails (e.g. the path no longer
+// exists). opencode stores session directories as resolved absolute paths, so
+// matching requires canonicalizing both sides.
+func canonPath(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(p)
+}
+
+// CaptureOpencodeSessionID recovers the most recently updated opencode session
+// that ran in the given worktree. opencode keys sessions by git root-commit
+// (shared across every worktree of a repo), so the worktree is identified by
+// the per-session "directory" field, not by the storage bucket. Current
+// opencode (v1.14+) keeps sessions in SQLite (~/.local/share/opencode/opencode.db,
+// table "session"); older opencode used JSON files under
+// storage/session/<projectID>/<ses_id>.json. We read SQLite first and fall back
+// to the JSON walk, returning the validated ses_… ID. Returns an error when no
+// matching session is found — callers treat that as "nothing to capture", and
+// because opencode never pins an ID the effect is simply that the next start is
+// a fresh session.
+func CaptureOpencodeSessionID(worktreePath string) (string, error) {
+	if worktreePath == "" {
+		return "", fmt.Errorf("CaptureOpencodeSessionID: worktree path is empty")
+	}
+	dataDir, err := opencodeDataDir()
+	if err != nil {
+		return "", err
+	}
+	want := canonPath(worktreePath)
+
+	// SQLite first (current opencode).
+	dbPath := filepath.Join(dataDir, "opencode.db")
+	if _, statErr := os.Stat(dbPath); statErr == nil {
+		if id, qerr := captureOpencodeFromSQLite(dbPath, want); qerr == nil && id != "" {
+			return id, nil
+		}
+		// fall through to JSON on miss/error
+	}
+
+	// Legacy JSON store fallback (opencode <= ~v1.13).
+	if id := captureOpencodeFromJSON(filepath.Join(dataDir, "storage", "session"), want); id != "" {
+		return id, nil
+	}
+
+	return "", fmt.Errorf("CaptureOpencodeSessionID: no session for worktree %s", worktreePath)
+}
+
+// captureOpencodeFromSQLite queries opencode's session table for the
+// most-recently-updated session whose directory matches the worktree. The DB
+// runs in WAL mode; open read-only and immutable so a concurrent opencode does
+// not block us. Matches the directory both as-stored and symlink-resolved.
+func captureOpencodeFromSQLite(dbPath, want string) (string, error) {
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&immutable=1")
+	if err != nil {
+		return "", fmt.Errorf("captureOpencodeFromSQLite: open: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rows, err := db.Query(`SELECT id, directory FROM session ORDER BY time_updated DESC`)
+	if err != nil {
+		return "", fmt.Errorf("captureOpencodeFromSQLite: query: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id, dir string
+		if scanErr := rows.Scan(&id, &dir); scanErr != nil {
+			continue
+		}
+		if dir == want || canonPath(dir) == want {
+			if !opencodeSessionIDRe.MatchString(id) {
+				return "", fmt.Errorf("captureOpencodeFromSQLite: unexpected session ID format: %q", id)
+			}
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("captureOpencodeFromSQLite: no session for %s", want)
+}
+
+// captureOpencodeFromJSON walks the legacy JSON session store
+// (<sessionRoot>/<projectID>/<ses_id>.json) and returns the id of the
+// most-recently-updated session whose directory matches the worktree. Returns
+// "" when no match is found (the caller falls open).
+func captureOpencodeFromJSON(sessionRoot, want string) string {
+	projectDirs, err := os.ReadDir(sessionRoot)
+	if err != nil {
+		return ""
+	}
+	var bestID string
+	var bestUpdated float64
+	for _, pd := range projectDirs {
+		if !pd.IsDir() {
+			continue
+		}
+		files, err := os.ReadDir(filepath.Join(sessionRoot, pd.Name()))
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			if f.IsDir() || !strings.HasSuffix(f.Name(), ".json") {
+				continue
+			}
+			raw, err := os.ReadFile(filepath.Join(sessionRoot, pd.Name(), f.Name()))
+			if err != nil {
+				continue
+			}
+			var s struct {
+				ID        string `json:"id"`
+				Directory string `json:"directory"`
+				Time      struct {
+					Updated float64 `json:"updated"`
+				} `json:"time"`
+			}
+			if json.Unmarshal(raw, &s) != nil {
+				continue
+			}
+			if s.ID == "" || !opencodeSessionIDRe.MatchString(s.ID) {
+				continue
+			}
+			if s.Directory != want && canonPath(s.Directory) != want {
+				continue
+			}
+			if s.Time.Updated >= bestUpdated {
+				bestUpdated = s.Time.Updated
+				bestID = s.ID
+			}
+		}
+	}
+	return bestID
+}
+
 // CaptureSessionID dispatches to the backend-specific post-exit capture
 // function based on the resolved backend command. Codex/Pi scan their own state
 // (SQLite / session files); Claude scans its transcript directory so a /clear
@@ -321,6 +493,8 @@ func CaptureSessionID(task *model.Task, cfg config.Config) (string, error) {
 		return CaptureCodexSessionID(task.Worktree)
 	case IsPiBackend(backend.Command):
 		return CapturePiSessionID(task.Worktree)
+	case IsOpencodeBackend(backend.Command):
+		return CaptureOpencodeSessionID(task.Worktree)
 	case IsClaudeBackend(backend.Command):
 		return CaptureClaudeSessionID(task.Worktree)
 	default:
@@ -343,7 +517,7 @@ func NeedsSessionRecapture(task *model.Task, cfg config.Config) bool {
 	switch {
 	case IsClaudeBackend(backend.Command):
 		return true
-	case IsCodexBackend(backend.Command), IsPiBackend(backend.Command):
+	case IsCodexBackend(backend.Command), IsPiBackend(backend.Command), IsOpencodeBackend(backend.Command):
 		return task.SessionID == ""
 	default:
 		return false
@@ -365,6 +539,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 
 	isCodex := IsCodexBackend(backend.Command)
 	isPi := IsPiBackend(backend.Command)
+	isOpencode := IsOpencodeBackend(backend.Command)
 
 	// Inject the configured permission mode for claude backends only. Scoped to
 	// IsClaudeBackend (not "not codex/pi") so custom/bare commands never receive
@@ -385,7 +560,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// below replaces cmdStr and must re-append the flag itself.
 	modelFlag := ""
 	if m := ResolveModel(task, backend); m != "" &&
-		(IsClaudeBackend(backend.Command) || isCodex || isPi) &&
+		(IsClaudeBackend(backend.Command) || isCodex || isPi || isOpencode) &&
 		!hasModelFlag(backend.Command) {
 		modelFlag = " --model " + shellQuote(m)
 	}
@@ -402,17 +577,21 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		case isCodex:
 			// Flags must precede the positional session-id argument.
 			cmdStr = codexResumeCmd + modelFlag + " " + shellQuote(task.SessionID)
-		case isPi && task.SessionID != "":
-			// Pi-style: append --session <UUID> (pi accepts partial UUIDs).
+		case (isPi || isOpencode) && task.SessionID != "":
+			// Pi / opencode style: append --session <ID> (pi accepts partial
+			// UUIDs; opencode takes its ses_… ID). Checked before the
+			// Claude-style branch because opencode is not pi but must NOT take
+			// --resume.
 			cmdStr += " --session " + shellQuote(task.SessionID)
-		case !isPi && task.SessionID != "":
+		case !isPi && !isOpencode && task.SessionID != "":
 			// Claude-style: append --resume flag.
 			cmdStr += " --resume " + shellQuote(task.SessionID)
 		}
 	} else {
 		// New session — only pin session ID for Claude-style backends.
-		// Codex and pi don't support --session-id; their IDs are captured post-exit.
-		if !isCodex && !isPi && task.SessionID != "" {
+		// Codex, pi, and opencode don't support --session-id; their IDs are
+		// captured post-exit.
+		if !isCodex && !isPi && !isOpencode && task.SessionID != "" {
 			cmdStr += " --session-id " + shellQuote(task.SessionID)
 		}
 		if task.Prompt != "" {

@@ -260,6 +260,15 @@ func DefaultConfig() Config {
 				Command:    "pi",
 				PromptFlag: "",
 			},
+			"opencode": {
+				// opencode is a capture-style backend (no start-time
+				// --session-id; it mints its own ses_… ID). The TUI takes its
+				// initial prompt via --prompt, so the prompt rides the
+				// PromptFlag path. Permissions are deliberately left to the
+				// user's own opencode config — the bare command is the default.
+				Command:    "opencode",
+				PromptFlag: "--prompt",
+			},
 		},
 		Projects:    make(map[string]Project),
 		Keybindings: DefaultKeybindings(),

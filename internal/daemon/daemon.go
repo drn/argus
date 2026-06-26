@@ -29,6 +29,7 @@ import (
 	"github.com/drn/argus/internal/heragater"
 	"github.com/drn/argus/internal/inject"
 	injectcodex "github.com/drn/argus/internal/inject/codex"
+	injectopencode "github.com/drn/argus/internal/inject/opencode"
 	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/mcp"
 	"github.com/drn/argus/internal/model"
@@ -1076,6 +1077,11 @@ func (d *Daemon) Serve(sockPath string) error {
 					slog.Error("inject codex", "err", err)
 				} else {
 					slog.Info("inject codex", "port", actualPort)
+				}
+				if err := injectopencode.InjectGlobal(actualPort); err != nil {
+					slog.Error("inject opencode", "err", err)
+				} else {
+					slog.Info("inject opencode", "port", actualPort)
 				}
 				if err := inject.SetClaudeProjectMcpTrust(); err != nil {
 					slog.Error("inject claude trust", "err", err)

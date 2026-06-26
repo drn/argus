@@ -122,7 +122,7 @@ To open the PWA, enable **Remote API** in Settings, then point your phone at `ht
 
 - **Go 1.26+** — to `go install` the binary above.
 - **Git** — every project Argus drives must be a git repository.
-- **At least one agent CLI on your `PATH`.** Argus shells out to whatever backend you pick; it doesn't bundle a model. The default backend is **Claude Code** (`claude`), and `codex` and `pi` come pre-configured too. Install the one you use and make sure it runs from a plain shell (`claude --version`).
+- **At least one agent CLI on your `PATH`.** Argus shells out to whatever backend you pick; it doesn't bundle a model. The default backend is **Claude Code** (`claude`), and `codex`, `pi`, and `opencode` come pre-configured too. Install the one you use and make sure it runs from a plain shell (`claude --version`).
 - **Optional:** [`gh`](https://cli.github.com) (GitHub CLI) powers the open-repo / open-PR keys and the PR-status indicator — features degrade quietly if it's absent. [Tailscale](https://tailscale.com) is recommended for reaching the PWA from your phone.
 
 ### First run
@@ -131,7 +131,7 @@ To open the PWA, enable **Remote API** in Settings, then point your phone at `ht
 argus
 ```
 
-The first launch creates `~/.argus/data.sql`, seeds the `claude` / `codex` / `pi` backends, and auto-starts the background daemon. You land on an empty task list — **no projects are seeded, so add one before creating a task.**
+The first launch creates `~/.argus/data.sql`, seeds the `claude` / `codex` / `pi` / `opencode` backends, and auto-starts the background daemon. You land on an empty task list — **no projects are seeded, so add one before creating a task.**
 
 1. **Register a project.** Press `3` for the **Settings** tab, move to the **Projects** section, and either:
    - press `i` to **quick-add** — point it at a directory (e.g. `~/src`) and Argus scans for git repos; select the ones to import; or
@@ -681,14 +681,14 @@ Every option below is overridable. A ⚠️ marks options that are **read but no
 
 #### `[backends.<name>]`
 
-Command templates, keyed by name. Seeded with `claude`, `codex`, and `pi`.
+Command templates, keyed by name. Seeded with `claude`, `codex`, `pi`, and `opencode`.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `command` | string | — | Executable plus base flags for the agent CLI (e.g. `claude`, `codex --dangerously-bypass-approvals-and-sandbox`). Permission flags come from `defaults.permission_mode` and are **not** baked in here. |
 | `prompt_flag` | string | `""` | Flag used to pass the initial prompt to the backend (empty = positional/piped). |
-| `model` | string | `""` | Default model for this backend, injected as `--model <value>` for known CLIs (claude, codex, pi). Empty = the CLI's own default. A per-task model overrides it. |
-| `models` | array | `[]` | Option list for the new-task model selector for this backend. Empty = built-in list (claude → `opus`/`sonnet`/`haiku`, codex → `gpt-5-codex`/`gpt-5`, others → none). A `custom…` entry always lets you type a model not in the list. |
+| `model` | string | `""` | Default model for this backend, injected as `--model <value>` for known CLIs (claude, codex, pi, opencode — opencode takes a `provider/model` value). Empty = the CLI's own default. A per-task model overrides it. |
+| `models` | array | `[]` | Option list for the new-task model selector for this backend. Empty = built-in list (claude → `opus`/`sonnet`/`haiku`, codex → `gpt-5-codex`/`gpt-5`, others including opencode → none, so `custom…` only). A `custom…` entry always lets you type a model not in the list. |
 
 #### `[projects.<name>]`
 
