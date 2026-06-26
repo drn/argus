@@ -85,7 +85,8 @@ type ResizeResp struct {
 	Rerendered bool `json:"rerendered"`
 }
 
-// Resize sends a SIGWINCH-equivalent resize to the agent's PTY.
+// Resize sends a SIGWINCH-equivalent resize to the agent's PTY (the legacy
+// last-writer-wins path, no viewer ID).
 func (c *Client) Resize(ctx context.Context, id string, rows, cols uint16) (*ResizeResp, error) {
 	req := map[string]uint16{"rows": rows, "cols": cols}
 	var resp ResizeResp
@@ -93,6 +94,26 @@ func (c *Client) Resize(ctx context.Context, id string, rows, cols uint16) (*Res
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// ResizeViewer registers a remote TUI as an active viewer of the shared PTY,
+// keyed by a stable connection ID, so it participates in the server's
+// min-over-active-viewers sizing instead of forcing an absolute resize. The
+// response carries the effective (min) size the PTY actually applied.
+func (c *Client) ResizeViewer(ctx context.Context, id, conn string, rows, cols uint16) (*ResizeResp, error) {
+	req := map[string]any{"rows": rows, "cols": cols, "conn": conn}
+	var resp ResizeResp
+	if err := c.doJSON(ctx, "POST", "/api/tasks/"+id+"/resize", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ReleaseViewer drops a remote TUI's viewer size claim (POST
+// /api/tasks/{id}/viewer/release?conn=). The server recomputes the PTY size
+// over the remaining active viewers. Returns nil on the handler's 204.
+func (c *Client) ReleaseViewer(ctx context.Context, id, conn string) error {
+	return c.doJSON(ctx, "POST", "/api/tasks/"+id+"/viewer/release"+query("conn", conn), nil, nil)
 }
 
 // StreamOutput opens a long-lived SSE connection to the task's PTY output.

@@ -1168,11 +1168,15 @@ func (s *Server) handleResize(w http.ResponseWriter, r *http.Request) {
 	effCols, effRows := sess.PTYSize()
 	rerendered := s.maybeKickRerender(id, clampDim16(effRows), clampDim16(effCols))
 
+	// Report the EFFECTIVE (min-over-viewers) size the PTY actually applied,
+	// not the requested size — when a smaller viewer pins the PTY, the
+	// requested cols/rows never reach the agent, so echoing them back would
+	// mislead a non-SPA consumer about the true PTY state.
 	writeJSON(w, http.StatusOK, struct {
 		Cols       int  `json:"cols"`
 		Rows       int  `json:"rows"`
 		Rerendered bool `json:"rerendered"`
-	}{Cols: int(req.Cols), Rows: int(req.Rows), Rerendered: rerendered})
+	}{Cols: effCols, Rows: effRows, Rerendered: rerendered})
 }
 
 // handleViewerRelease drops a connection's active-viewer size claim without

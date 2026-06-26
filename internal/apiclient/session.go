@@ -107,28 +107,39 @@ func (s *Session) Resize(rows, cols uint16) error {
 }
 
 // SetViewerSize registers this remote TUI as an active viewer of the shared
-// PTY. The REST surface for the per-connection viewer registry (section 4 of
-// the viewer-sizing change) is not yet wired, so for now a --remote TUI's
-// claim bridges onto the existing /resize endpoint: a single remote viewer
-// behaves exactly as today's last-writer-wins resize. The cols/rows fields
-// fully determine the request; the stable viewer ID is unused until the
-// per-connection endpoints land. Fire-and-forget: errors are logged, not
-// returned, matching the SessionHandle contract.
+// PTY, keyed by the stable viewer ID the TUI mints. It bridges to the
+// per-connection /resize endpoint (conn=id) so a --remote TUI is a first-class
+// registry participant: the server sizes the PTY to the min over all active
+// viewers (this remote TUI, the web app, any local pane), not last-writer-wins.
+// Fire-and-forget: errors are logged, not returned, matching the SessionHandle
+// contract. Caches the effective (min) size the server reports.
 func (s *Session) SetViewerSize(id string, cols, rows int) {
-	if cols <= 0 || rows <= 0 {
+	if id == "" || cols <= 0 || rows <= 0 {
 		return
 	}
-	if err := s.Resize(clampUint16(rows), clampUint16(cols)); err != nil {
+	resp, err := s.p.c.ResizeViewer(context.Background(), s.taskID, id, clampUint16(rows), clampUint16(cols))
+	if err != nil {
 		uxlog.Log("[pty] apiclient SetViewerSize id=%s task=%s failed: %v", id, s.taskID, err)
+		return
 	}
+	s.mu.Lock()
+	s.cols = resp.Cols
+	s.rows = resp.Rows
+	s.mu.Unlock()
 }
 
-// RemoveViewer releases this remote TUI's viewer claim. With the per-connection
-// viewer endpoints not yet wired (section 4), there is no server-side claim to
-// drop for the remote path, so this is a no-op. A remote TUI leaving the agent
-// view simply stops reposting its size; the server keeps the last applied size,
-// which matches the "zero active viewers keeps last size" invariant.
-func (s *Session) RemoveViewer(id string) {}
+// RemoveViewer releases this remote TUI's viewer size claim via the
+// /viewer/release endpoint, so leaving the agent view drops its constraint and
+// the PTY grows back to the min over the remaining active viewers. Fire-and-
+// forget: errors are logged, not returned.
+func (s *Session) RemoveViewer(id string) {
+	if id == "" {
+		return
+	}
+	if err := s.p.c.ReleaseViewer(context.Background(), s.taskID, id); err != nil {
+		uxlog.Log("[pty] apiclient RemoveViewer id=%s task=%s failed: %v", id, s.taskID, err)
+	}
+}
 
 // clampUint16 coerces a viewer dimension into the uint16 PTY range for the
 // /resize bridge. Callers gate on >0 before invoking.

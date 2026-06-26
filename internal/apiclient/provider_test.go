@@ -2,6 +2,7 @@ package apiclient
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -27,6 +28,11 @@ type fakeServer struct {
 
 	// streamLines is the canned set of SSE events streamOnce should emit.
 	streamLines []string
+
+	// lastResizeConn / lastReleaseConn record the conn ID the most recent
+	// /resize and /viewer/release request carried, for viewer-registry tests.
+	lastResizeConn  string
+	lastReleaseConn string
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
@@ -122,8 +128,20 @@ func (f *fakeServer) routes() {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"cols":120,"rows":40}`))
 		case "resize":
+			var body struct {
+				Conn string `json:"conn"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.mu.Lock()
+			f.lastResizeConn = body.Conn
+			f.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"cols":120,"rows":40,"rerendered":false}`))
+		case "viewer/release":
+			f.mu.Lock()
+			f.lastReleaseConn = r.URL.Query().Get("conn")
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
 		case "stream":
 			f.handleStream(w, r)
 		default:
@@ -236,6 +254,38 @@ func TestSession_Resize_UpdatesCachedSize(t *testing.T) {
 	cols, rows := s.PTYSize()
 	testutil.Equal(t, cols, 120)
 	testutil.Equal(t, rows, 40)
+}
+
+// TestSession_ViewerRegistry asserts a --remote TUI participates in the
+// server's active-viewer registry: SetViewerSize bridges to /resize carrying
+// the stable conn ID (and caches the effective size the server reports), and
+// RemoveViewer drops the claim via /viewer/release?conn=.
+func TestSession_ViewerRegistry(t *testing.T) {
+	fs := newFakeServer(t)
+	p := NewProvider(fs.client())
+	s := p.getOrCreateSession("t1")
+	defer s.close()
+
+	s.SetViewerSize("remote-1", 120, 40)
+	s.mu.Lock()
+	cols, rows := s.cols, s.rows
+	s.mu.Unlock()
+	testutil.Equal(t, cols, 120) // effective size cached from the resize response
+	testutil.Equal(t, rows, 40)
+	fs.mu.Lock()
+	resizeConn := fs.lastResizeConn
+	fs.mu.Unlock()
+	testutil.Equal(t, resizeConn, "remote-1")
+
+	s.RemoveViewer("remote-1")
+	fs.mu.Lock()
+	releaseConn := fs.lastReleaseConn
+	fs.mu.Unlock()
+	testutil.Equal(t, releaseConn, "remote-1")
+
+	// Empty viewer ID is a no-op on both paths (no panic, no request).
+	s.SetViewerSize("", 80, 24)
+	s.RemoveViewer("")
 }
 
 func TestSession_RingBufferReceivesStream(t *testing.T) {
