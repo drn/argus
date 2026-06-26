@@ -136,6 +136,24 @@ type ResizeReq struct {
 	Cols   uint16
 }
 
+// SetViewerSizeReq registers/updates an active viewer's requested PTY size in a
+// session's viewer registry. ID is a stable per-viewer key (TUI App UUID, web
+// per-connection token). The session sizes the PTY to the per-dimension min
+// over all active viewers, replacing the old last-writer-wins Resize path.
+type SetViewerSizeReq struct {
+	TaskID string
+	ID     string
+	Cols   int
+	Rows   int
+}
+
+// RemoveViewerReq drops a viewer's size claim from a session's registry, so the
+// effective min is recomputed over the remaining active viewers.
+type RemoveViewerReq struct {
+	TaskID string
+	ID     string
+}
+
 // KickReq is the RPC request to kick-rerender a session (P2, protocol v2). It
 // carries the full task projection (like StartReq, minus Resume — a kick always
 // resumes) because the supervisor's runner stores the task to rebuild the

@@ -84,7 +84,18 @@ type SessionRunner interface {
 type SessionHandle interface {
 	PID() int
 	WriteInput(p []byte) (int, error)
+	// Resize is the internal apply-to-PTY primitive (still driven by the
+	// daemon RPC and rerender-kick restart). Viewers SHALL NOT call it
+	// directly; they influence size only through the registry below.
 	Resize(rows, cols uint16) error
+	// SetViewerSize registers (or updates) an active viewer's requested PTY
+	// dimensions under a stable ID. The live PTY is sized to the per-dimension
+	// min over all active viewers; an unchanged min is a no-op (no resize, no
+	// SIGWINCH).
+	SetViewerSize(id string, cols, rows int)
+	// RemoveViewer drops a viewer's size claim and recomputes the min. With no
+	// active viewers left the session keeps its last applied size.
+	RemoveViewer(id string)
 	RecentOutput() []byte
 	RecentOutputTail(n int) []byte
 	// RecentOutputTailWithTotal returns the last n bytes AND the high-water

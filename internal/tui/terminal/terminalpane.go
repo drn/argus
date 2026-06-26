@@ -167,15 +167,29 @@ type TerminalPane struct {
 	diffScroll       int
 	diffFile         string
 
-	// pendingResize is set by Draw() when panel dimensions differ from PTY.
-	// The tick goroutine checks this and performs the resize RPC.
+	// pendingResize is set by Draw() when panel dimensions differ from the last
+	// size this pane posted. The tick goroutine consumes it and posts the new
+	// size to the session's viewer registry (SetViewerSize), debounced off the
+	// main thread.
 	pendingResizeRows uint16
 	pendingResizeCols uint16
 
-	// forceResync makes the next Draw() unconditionally repost a resize even
-	// when panel dimensions appear unchanged. Used on agent-view entry to
-	// recover from a stuck PTY size (e.g. a dropped SIGWINCH at session start).
-	forceResync bool
+	// viewerID is this pane's stable identity in the session's viewer registry.
+	// Set once by the owning App / HeraPage via SetViewerID. While the pane shows
+	// a live session it reports the pane's (cols, rows) under this ID; the session
+	// sizes its PTY to the per-dimension min over all active viewers, so a smaller
+	// concurrent viewer (web app, another terminal) constrains the size instead of
+	// the TUI forcing an absolute resize. Empty until wired (a bare task-page mount
+	// that never registers stays inert — it posts nothing and releases nothing).
+	viewerID string
+
+	// lastPostedCols/Rows track the size most recently handed to the session's
+	// viewer registry, so Draw only re-posts on a real change (the registry itself
+	// no-ops an unchanged min, but skipping the post avoids a daemon-client RPC
+	// round trip every frame). Reset to 0 on SetSession so a fresh session always
+	// receives an initial claim, even at the same dimensions.
+	lastPostedCols uint16
+	lastPostedRows uint16
 
 	// Async replay rebuild: when Draw() hits a cache miss on the slow path,
 	// it kicks off a background goroutine instead of blocking the main goroutine.
@@ -280,11 +294,22 @@ func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 	} else {
 		uxlog.Log("[terminalpane] SetSession: nil")
 	}
+	// Release this viewer's claim on the OUTGOING session so leaving it (task
+	// switch, exit, dead→nil) no longer constrains its effective PTY size. The
+	// daemon-client RemoveViewer is a blocking RPC, so it runs off the main
+	// goroutine. The in-process / remote (no-op) paths are cheap but go through
+	// the same goroutine for uniformity.
+	prev := tp.session
+	vid := tp.viewerID
 	tp.session = sess
 	tp.pending = false
 	tp.emu = nil
 	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
+	// Force a fresh viewer claim for the incoming session at the next Draw even
+	// when its dimensions match — a brand-new session has no claim yet.
+	tp.lastPostedCols = 0
+	tp.lastPostedRows = 0
 	tp.paintCacheValid = false
 	// Seed PTY size from the visible inner rect — Draw() will refine on first
 	// render. GetInnerRect returns the pane's OUTER rect because TerminalPane
@@ -316,9 +341,22 @@ func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 		}
 	}
 	tp.mu.Unlock()
+	if prev != nil && prev != sess && vid != "" {
+		go prev.RemoveViewer(vid)
+	}
 	// Branch change: nil↔live↔replay paint different cells in the same rect.
 	// Fire AFTER releasing the lock — the app-side handler may take other locks.
 	tp.notifyBranchChange()
+}
+
+// SetViewerID sets this pane's stable viewer identity in the session's viewer
+// registry. Call once after construction. An empty ID leaves the pane inert in
+// the registry (it posts no size claims and releases nothing) — used by mounts
+// that only render, never drive PTY sizing (e.g. the task page's preview pane).
+func (tp *TerminalPane) SetViewerID(id string) {
+	tp.mu.Lock()
+	tp.viewerID = id
+	tp.mu.Unlock()
 }
 
 // Session returns the current session (thread-safe).
@@ -379,32 +417,30 @@ func (tp *TerminalPane) SetPending(v bool) {
 	}
 }
 
-// ForceResyncPTY schedules a one-shot unconditional resize on the next Draw().
-// Call this on agent-view entry so a session whose PTY is stuck at a stale
-// width gets reconciled to the current panel dimensions even when the delta
-// check would miss.
-func (tp *TerminalPane) ForceResyncPTY() {
-	tp.mu.Lock()
-	tp.forceResync = true
-	tp.mu.Unlock()
-}
-
-// SyncPTYSize performs a pending PTY resize (RPC). Called from the tick
-// goroutine — safe to block here. Draw() sets pendingResize* when panel
-// dimensions change; this method consumes them and issues the resize RPC.
+// SyncPTYSize posts a pending viewer-size claim to the session's registry
+// (RPC on the daemon-client path). Called from the tick / redraw goroutine —
+// safe to block here. Draw() sets pendingResize* when the pane's dimensions
+// change; this method consumes them and reports the new (cols, rows) under this
+// pane's viewer ID via SetViewerSize. The session then sizes its PTY to the
+// per-dimension min over all active viewers (no absolute Resize from the pane),
+// so a smaller concurrent viewer is honoured and an unchanged min is a no-op.
+//
+// A pane with no viewer ID (a render-only mount) posts nothing — it never drives
+// PTY sizing.
 func (tp *TerminalPane) SyncPTYSize() {
 	tp.mu.Lock()
 	sess := tp.session
+	vid := tp.viewerID
 	rows := tp.pendingResizeRows
 	cols := tp.pendingResizeCols
 	tp.pendingResizeRows = 0
 	tp.pendingResizeCols = 0
 	tp.mu.Unlock()
 
-	if sess == nil || !sess.Alive() || rows == 0 || cols == 0 {
+	if sess == nil || !sess.Alive() || vid == "" || rows == 0 || cols == 0 {
 		return
 	}
-	sess.Resize(rows, cols)
+	sess.SetViewerSize(vid, int(cols), int(rows))
 }
 
 // SetFocused sets the focus state for border rendering and grayscale paint.
@@ -991,6 +1027,20 @@ func (tp *TerminalPane) DiffScrollDown(n int) {
 
 // --- Draw ---
 
+// clampPTYDim coerces a panel dimension into the uint16 PTY range so the
+// int→uint16 conversions feeding the viewer-size claim are overflow-safe
+// (gosec G115). Panel dimensions are always small and positive in practice;
+// this is belt-and-suspenders against a pathological terminal size.
+func clampPTYDim(d int) uint16 {
+	if d < 0 {
+		return 0
+	}
+	if d > 0xFFFF {
+		return 0xFFFF
+	}
+	return uint16(d)
+}
+
 func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -1030,26 +1080,24 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	wantCols := max(width, 20)
 	wantRows := max(height, 5)
 	if sess != nil && sess.Alive() {
-		// Live session — resize PTY to match panel. The forceResync flag
-		// reposts a resize even when dimensions match our tracked ptyCols,
-		// which recovers from a PTY that's stuck at a stale width.
-		sizeChanged := tp.ptyCols != wantCols || tp.ptyRows != wantRows
-		if sizeChanged || tp.forceResync {
-			if tp.forceResync {
-				if sizeChanged {
-					uxlog.Log("[terminalpane] force resync corrected %dx%d -> %dx%d", tp.ptyCols, tp.ptyRows, wantCols, wantRows)
-				} else {
-					uxlog.Log("[terminalpane] force resync at %dx%d (no delta)", wantCols, wantRows)
-				}
-			}
+		// Live session — report this pane's dimensions to the session's viewer
+		// registry. We post only when the size differs from what we last handed
+		// the registry (lastPosted*), not from a separate tracked PTY size: the
+		// session's per-dimension min decides the actual PTY size, so the pane
+		// no longer forces an absolute resize on entry. SetSession reset
+		// lastPosted to 0, so a freshly-attached session always gets an initial
+		// claim — that subsumes the old forceResync flag (a session previously
+		// sized for a wider viewer is re-claimed at this pane's size, and the
+		// registry min shrinks it down).
+		wc, wr := clampPTYDim(wantCols), clampPTYDim(wantRows)
+		if tp.lastPostedCols != wc || tp.lastPostedRows != wr {
 			tp.ptyCols = wantCols
 			tp.ptyRows = wantRows
-			tp.pendingResizeRows = uint16(wantRows)
-			tp.pendingResizeCols = uint16(wantCols)
+			tp.pendingResizeRows = wr
+			tp.pendingResizeCols = wc
+			tp.lastPostedCols = wc
+			tp.lastPostedRows = wr
 		}
-		// Only clear when a live session actually consumed the flag.
-		// Dead/nil-session Draws must leave it armed for the next live session.
-		tp.forceResync = false
 	}
 	ptyCols := tp.ptyCols
 	ptyRows := tp.ptyRows

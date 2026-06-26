@@ -1802,6 +1802,14 @@ let term = null;
 let fitAddon = null;
 let evtSource = null;
 let lastTerm = { cols: 0, rows: 0 };
+// Stable per-tab viewer ID. Sent on both /resize (a viewer size claim) and the
+// /stream URL so the server can drop this tab's claim when its stream
+// disconnects (tab closed) or it backgrounds (visibilitychange→hidden). The
+// shared PTY is sized to the min over active viewers, so releasing this claim
+// lets the TUI (or another tab) grow back to full size.
+const VIEWER_ID = 'web-' + ((window.crypto && crypto.randomUUID)
+  ? crypto.randomUUID()
+  : (Date.now().toString(36) + Math.random().toString(36).slice(2)));
 let resizeDebounce = null;
 // ResizeObserver on #term refits xterm whenever its rendered size changes —
 // covers the compose-bar auto-grow path that doesn't fire `window.resize` or
@@ -3018,7 +3026,7 @@ function fit() {
     fetch(API + `/api/tasks/${taskId}/resize`, {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cols, rows }),
+      body: JSON.stringify({ cols, rows, conn: VIEWER_ID }),
     }).then(r => r.ok ? r.json() : null).then(j => {
       if (j && j.rerendered && currentTask && currentTask.id === taskId) {
         setExpectingRerender(true);
@@ -3026,6 +3034,40 @@ function fit() {
     }).catch(() => {});
   }
 }
+
+// releaseViewer drops this tab's PTY size claim on the server without closing
+// the stream. Called when the tab is backgrounded or unloaded so a hidden web
+// app stops constraining the shared PTY (the min-over-active-viewers policy) —
+// the TUI or a visible tab then grows back to full size. Uses sendBeacon so it
+// still fires during pagehide/unload when fetch would be cancelled; token and
+// conn ride as query params because beacons can't set headers.
+function releaseViewer() {
+  if (!currentTask || currentTask.status !== 'in_progress') return;
+  const url = API + `/api/tasks/${currentTask.id}/viewer/release`
+    + '?conn=' + encodeURIComponent(VIEWER_ID)
+    + '&token=' + encodeURIComponent(TOKEN);
+  if (navigator.sendBeacon) {
+    navigator.sendBeacon(url);
+  } else {
+    fetch(url, { method: 'POST', headers: { 'Authorization': 'Bearer ' + TOKEN }, keepalive: true }).catch(() => {});
+  }
+}
+
+// A backgrounded tab releases its claim; returning re-asserts the current size.
+// Resetting lastTerm forces fit()'s change-gate open so the resize POST (which
+// re-registers the viewer) actually fires even though the dimensions are
+// unchanged since we hid.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    releaseViewer();
+  } else if (currentTask && currentTask.status === 'in_progress') {
+    lastTerm = { cols: 0, rows: 0 };
+    fit();
+  }
+});
+// Best-effort release on unload, on top of the server-side stream-disconnect
+// path (which removes the claim when the EventSource connection drops).
+window.addEventListener('pagehide', releaseViewer);
 
 function openStream(id, since) {
   // EventSource doesn't support custom headers, so pass the token as a query
@@ -3035,7 +3077,8 @@ function openStream(id, since) {
   // before attaching live, so the disk-log fetch + this stream cover full
   // history without overlap. Omitted/0 falls back to a full ring replay
   // (legacy behaviour, used by the online-event reconnect path).
-  let url = API + `/api/tasks/${id}/stream?token=` + encodeURIComponent(TOKEN);
+  let url = API + `/api/tasks/${id}/stream?token=` + encodeURIComponent(TOKEN)
+    + '&conn=' + encodeURIComponent(VIEWER_ID);
   if (typeof since === 'number' && since > 0) {
     url += '&since=' + since;
   }

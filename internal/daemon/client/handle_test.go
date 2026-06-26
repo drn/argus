@@ -94,6 +94,44 @@ func TestH_Resize(t *testing.T) {
 	})
 }
 
+func TestH_Viewer(t *testing.T) {
+	_, rs := startedClient(t, "t-h-vw", "sleep 60")
+
+	// A single active viewer sizes the PTY to its dimensions.
+	rs.SetViewerSize("tui", 120, 40)
+	waitPTYSize(t, rs, 120, 40)
+
+	// A smaller second viewer constrains the per-dimension min down.
+	rs.SetViewerSize("web", 80, 24)
+	waitPTYSize(t, rs, 80, 24)
+
+	// Removing the smaller viewer grows the PTY back up over the survivors.
+	rs.RemoveViewer("web")
+	waitPTYSize(t, rs, 120, 40)
+
+	// Fire-and-forget on an unknown task must not panic.
+	rs.SetViewerSize("any", 100, 30)
+	rs.RemoveViewer("any")
+}
+
+// waitPTYSize polls PTYSize (which round-trips SessionStatus and caches into
+// rs.info) until it matches the expected dims or the deadline elapses. The
+// viewer proxies are fire-and-forget RPCs, so the apply is observable only via
+// a subsequent status read.
+func waitPTYSize(t *testing.T, rs *RemoteSession, wantCols, wantRows int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var cols, rows int
+	for time.Now().Before(deadline) {
+		cols, rows = rs.PTYSize()
+		if cols == wantCols && rows == wantRows {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("PTYSize never reached (%d,%d); last (%d,%d)", wantCols, wantRows, cols, rows)
+}
+
 func TestH_WriteIn(t *testing.T) {
 	_, rs := startedClient(t, "t-h-wr", "sleep 60")
 	zero := rs.LastInput()

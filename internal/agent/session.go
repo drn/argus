@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+
+	"github.com/drn/argus/internal/uxlog"
 )
 
 const defaultBufSize = 256 * 1024 // 256KB ring buffer; session log file handles full scrollback
@@ -28,6 +30,12 @@ const (
 	DefaultTermRows uint16 = 24
 	DefaultTermCols uint16 = 80
 )
+
+// viewerSize is one active viewer's requested PTY dimensions.
+type viewerSize struct {
+	cols uint16
+	rows uint16
+}
 
 // Session manages a single agent process with PTY.
 type Session struct {
@@ -51,8 +59,26 @@ type Session struct {
 	lastInput   time.Time // last time WriteInput was called; idle-push gate uses this to detect new work cycles
 	ptmxClosed  bool      // true after waitLoop closes ptmx; guards Resize/WriteInput
 
+	// viewers is the active-viewer registry. A PTY has exactly one size, but
+	// several viewers (TUI agent pane, web xterm.js, --remote TUIs) share it.
+	// Each active viewer claims a size under a stable ID; the live PTY is sized
+	// to the per-dimension min over all active viewers (tmux `window-size
+	// smallest`). Guarded by mu. Empty ⇒ keep the last applied size.
+	viewers map[string]viewerSize
+
+	// setSize is the apply-to-PTY primitive, injectable so tests can spy on the
+	// resize call count without a real kernel SIGWINCH. Defaults to pty.Setsize.
+	setSize func(f *os.File, ws *pty.Winsize) error
+
+	// lastViewerLogAt rate-limits the noisy "min unchanged" uxlog line so a busy
+	// Draw loop reposting the same size every frame does not flood ux.log.
+	lastViewerLogAt time.Time
+
 	logFile *os.File // PTY output log for post-session scrollback; nil if unavailable
 }
+
+// viewerUnchangedLogInterval rate-limits the no-op (min-unchanged) viewer log.
+const viewerUnchangedLogInterval = 5 * time.Second
 
 // SessionsDir returns the directory where session logs are stored.
 func SessionsDir() string {
@@ -114,6 +140,8 @@ func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, er
 		ptyRows:     rows,
 		initialCols: cols,
 		initialRows: rows,
+		viewers:     make(map[string]viewerSize),
+		setSize:     pty.Setsize,
 		logFile:     logFile,
 	}
 
@@ -543,24 +571,135 @@ func (s *Session) WorkDir() string {
 }
 
 // Resize sets the PTY window size and updates the persisted size sidecar.
+//
+// Resize is the internal apply-to-PTY primitive. Viewers MUST NOT call it
+// directly — they influence size only through SetViewerSize/RemoveViewer,
+// which compute the per-dimension min over the active-viewer registry and
+// funnel the result here. It stays exported so the runner/daemon RPC and the
+// rerender-kick restart path can still drive an explicit size.
+//
 // Setsize must stay under s.mu — it calls os.File.Fd(), which races with
 // waitLoop's Close() (see gotchas/pty-terminal.md).
 func (s *Session) Resize(rows, cols uint16) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.resizeLocked(rows, cols)
+}
+
+// resizeLocked applies a PTY size. Caller MUST hold s.mu. It always updates the
+// reported ptyCols/ptyRows; after the process exits it keeps the sidecar at the
+// last size the agent actually rendered for (a post-exit resize is a no-op
+// success on the PTY, so recording its size would lie about the width the log
+// bytes were formatted for).
+func (s *Session) resizeLocked(rows, cols uint16) error {
 	s.ptyCols = cols
 	s.ptyRows = rows
 	if s.ptmxClosed {
-		// The process is gone — keep the sidecar at the last size the
-		// agent actually rendered for, so dead-session previews re-emulate
-		// the log at the right width.
 		return nil
 	}
 	SaveSessionSize(s.TaskID, int(cols), int(rows))
-	return pty.Setsize(s.ptmx, &pty.Winsize{
+	return s.setSize(s.ptmx, &pty.Winsize{
 		Rows: rows,
 		Cols: cols,
 	})
+}
+
+// SetViewerSize adds or updates an active viewer's requested PTY dimensions
+// under a stable ID, then recomputes and applies the effective size (the
+// per-dimension min over all active viewers). Zero cols/rows for a viewer are
+// ignored for that dimension's min so a not-yet-laid-out viewer cannot collapse
+// the PTY toward zero. Safe to call concurrently and after process exit (the
+// registry mutates but resizeLocked no-ops on a closed PTY).
+func (s *Session) SetViewerSize(id string, cols, rows int) {
+	if id == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.viewers == nil {
+		s.viewers = make(map[string]viewerSize)
+	}
+	s.viewers[id] = viewerSize{cols: clampDim(cols), rows: clampDim(rows)}
+	mc, mr, changed := s.applyViewerMinLocked()
+	s.mu.Unlock()
+	if changed {
+		uxlog.Log("[pty] viewer set id=%s %dx%d -> min %dx%d", id, cols, rows, mc, mr)
+	} else {
+		s.logViewerUnchanged(id, mc, mr)
+	}
+}
+
+// RemoveViewer drops a viewer's size claim and recomputes the effective size.
+// When the last active viewer is removed the registry is empty and the session
+// keeps its last applied size (never resizes toward zero). Safe to call for an
+// unknown ID and after process exit.
+func (s *Session) RemoveViewer(id string) {
+	s.mu.Lock()
+	if _, ok := s.viewers[id]; !ok {
+		s.mu.Unlock()
+		return
+	}
+	delete(s.viewers, id)
+	n := len(s.viewers)
+	mc, mr, _ := s.applyViewerMinLocked()
+	s.mu.Unlock()
+	uxlog.Log("[pty] viewer remove id=%s -> min %dx%d (n=%d)", id, mc, mr, n)
+}
+
+// applyViewerMinLocked computes the per-dimension minimum over the active
+// viewers and applies it to the PTY when it differs from the current size.
+// Caller MUST hold s.mu. Returns the effective (cols, rows) and whether a
+// resize was actually issued. An empty registry keeps the last applied size
+// (returns the current size, changed=false). An unchanged min is a no-op — no
+// resize, no SIGWINCH.
+func (s *Session) applyViewerMinLocked() (cols, rows uint16, changed bool) {
+	var mc, mr uint16
+	for _, v := range s.viewers {
+		if v.cols > 0 && (mc == 0 || v.cols < mc) {
+			mc = v.cols
+		}
+		if v.rows > 0 && (mr == 0 || v.rows < mr) {
+			mr = v.rows
+		}
+	}
+	if mc == 0 || mr == 0 {
+		// No active viewer constrains one (or both) dimensions — keep the last
+		// applied size rather than collapsing toward zero.
+		return s.ptyCols, s.ptyRows, false
+	}
+	if mc == s.ptyCols && mr == s.ptyRows {
+		return mc, mr, false
+	}
+	_ = s.resizeLocked(mr, mc)
+	return mc, mr, true
+}
+
+// clampDim coerces a viewer-supplied dimension into the uint16 PTY range.
+// Negative or zero stays 0 (treated as "no claim" for that dimension); values
+// above uint16 max are capped.
+func clampDim(d int) uint16 {
+	if d <= 0 {
+		return 0
+	}
+	if d > 0xFFFF {
+		return 0xFFFF
+	}
+	return uint16(d)
+}
+
+// logViewerUnchanged emits the no-op "min unchanged" uxlog line at most once per
+// viewerUnchangedLogInterval so a Draw loop reposting the same size every frame
+// does not flood ux.log. Caller MUST NOT hold s.mu (it takes the lock).
+func (s *Session) logViewerUnchanged(id string, mc, mr uint16) {
+	s.mu.Lock()
+	now := time.Now()
+	due := now.Sub(s.lastViewerLogAt) >= viewerUnchangedLogInterval
+	if due {
+		s.lastViewerLogAt = now
+	}
+	s.mu.Unlock()
+	if due {
+		uxlog.Log("[pty] viewer set id=%s -> min %dx%d (unchanged)", id, mc, mr)
+	}
 }
 
 // PTYSize returns the current PTY dimensions (cols, rows).

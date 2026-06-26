@@ -1096,6 +1096,25 @@ func (s *Server) handleGetSize(w http.ResponseWriter, r *http.Request) {
 type resizeReq struct {
 	Cols uint16 `json:"cols"`
 	Rows uint16 `json:"rows"`
+	// Conn is a stable per-connection viewer ID minted by the client. It ties
+	// this resize (a viewer size claim) to the same client's output stream so
+	// stream disconnect can drop the claim. Empty ⇒ legacy direct-resize
+	// fallback (last-writer-wins) for clients that don't participate in the
+	// active-viewer registry.
+	Conn string `json:"conn"`
+}
+
+// clampDim16 coerces a PTY dimension (PTYSize returns int) into the uint16 range
+// maybeKickRerender expects, keeping the conversion overflow-safe (gosec G115).
+// Real terminal dimensions never approach the bound; this is defensive.
+func clampDim16(d int) uint16 {
+	if d < 0 {
+		return 0
+	}
+	if d > 0xFFFF {
+		return 0xFFFF
+	}
+	return uint16(d)
 }
 
 func (s *Server) handleResize(w http.ResponseWriter, r *http.Request) {
@@ -1120,19 +1139,34 @@ func (s *Server) handleResize(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "cols/rows out of range", nil)
 		return
 	}
-	if err := sess.Resize(req.Rows, req.Cols); err != nil {
-		writeErr(w, http.StatusInternalServerError, "", err)
-		return
+	// Register this connection as an active viewer at the requested size
+	// rather than setting an absolute PTY size: the live PTY is the
+	// per-dimension min over all active viewers (TUI pane, other web tabs,
+	// --remote TUIs). A client without a viewer ID falls back to the legacy
+	// direct resize so non-registry callers still work.
+	if req.Conn == "" {
+		if err := sess.Resize(req.Rows, req.Cols); err != nil {
+			writeErr(w, http.StatusInternalServerError, "", err)
+			return
+		}
+	} else {
+		sess.SetViewerSize(req.Conn, int(req.Cols), int(req.Rows))
 	}
 
-	// After a successful SIGWINCH, decide whether to also trigger a
+	// After applying the new effective size, decide whether to also trigger a
 	// kill+resume rerender. SIGWINCH alone re-flows live UI but leaves
 	// scrollback baked at the session's start width — viewers that opened
 	// at a different width than the agent committed at see jagged history.
 	// The kick stops the session; the runner's exit goroutine restarts it
 	// at the new dimensions via --session-id so the agent re-emits the
 	// entire conversation. Best-effort: never let this fail the resize.
-	rerendered := s.maybeKickRerender(id, req.Rows, req.Cols)
+	//
+	// Key the decision on the EFFECTIVE (min-over-viewers) size, not the
+	// requested size: when a smaller viewer pins the PTY the requested cols
+	// never reach the agent, so rerendering at them would be wrong. Reading
+	// PTYSize() after the apply yields the size the agent actually rendered for.
+	effCols, effRows := sess.PTYSize()
+	rerendered := s.maybeKickRerender(id, clampDim16(effRows), clampDim16(effCols))
 
 	writeJSON(w, http.StatusOK, struct {
 		Cols       int  `json:"cols"`
@@ -1141,14 +1175,39 @@ func (s *Server) handleResize(w http.ResponseWriter, r *http.Request) {
 	}{Cols: int(req.Cols), Rows: int(req.Rows), Rerendered: rerendered})
 }
 
-// isRedundantResize caches the latest cols for taskID and reports
-// whether the previous call already saw the same value. xterm.js fires
-// /resize on every terminal mount even when the viewport didn't change, so
-// without this gate a reopen of the web agent view would re-evaluate the
-// kick predicate and kill any in-flight Claude UI (e.g. AskUserQuestion
-// overlays) that the --session-id restart can't rehydrate. Always updates
-// the cache so genuine viewport resizes (cols different from the cached
-// value) fall through to the predicate.
+// handleViewerRelease drops a connection's active-viewer size claim without
+// tearing down its output stream. The SPA calls this on visibilitychange→hidden
+// (a backgrounded tab should stop constraining the shared PTY) via sendBeacon,
+// which can't set headers or a JSON body reliably — so the viewer ID and token
+// travel as query params. Releasing may grow the PTY for remaining viewers, so
+// re-emit at the new effective size when the rerender predicate is satisfied.
+func (s *Server) handleViewerRelease(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sess := s.runner.Get(id)
+	if sess == nil {
+		writeErr(w, http.StatusNotFound, "no active session", nil)
+		return
+	}
+	connID := r.URL.Query().Get("conn")
+	if connID == "" {
+		writeErr(w, http.StatusBadRequest, "conn is required", nil)
+		return
+	}
+	sess.RemoveViewer(connID)
+	effCols, effRows := sess.PTYSize()
+	s.maybeKickRerender(id, clampDim16(effRows), clampDim16(effCols))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// isRedundantResize caches the latest EFFECTIVE (min-over-viewers) cols for
+// taskID and reports whether the previous call already saw the same value.
+// xterm.js fires /resize on every terminal mount even when the viewport didn't
+// change, and the registry no-ops an unchanged min — so without this gate a
+// reopen of the web agent view would re-evaluate the kick predicate and kill
+// any in-flight Claude UI (e.g. AskUserQuestion overlays) that the --session-id
+// restart can't rehydrate. Always updates the cache so a genuine change in the
+// effective width (a viewer joining/leaving, or a real viewport resize that
+// moves the min) falls through to the predicate.
 func (s *Server) isRedundantResize(taskID string, cols uint16) bool {
 	s.lastResizeMu.Lock()
 	defer s.lastResizeMu.Unlock()
@@ -1291,6 +1350,23 @@ func (s *Server) handleStreamOutput(w http.ResponseWriter, r *http.Request) {
 	cw := &channelWriter{ch: make(chan []byte, 128)}
 	sess.AddWriterFrom(cw, since)
 	defer sess.RemoveWriter(cw)
+
+	// Tie the output stream to the client's viewer size claim (posted via
+	// /resize with the same `conn` ID). When this request's context is
+	// cancelled — the browser tab closed or navigated away — drop the claim so
+	// the PTY grows back to the min over the remaining active viewers (e.g. the
+	// TUI returns to full screen). Growing the PTY can leave scrollback baked at
+	// the old narrower width, so re-emit at the new effective size when the
+	// rerender predicate is satisfied (idle, not blocked on a prompt). The kick
+	// is a safe no-op on a dead session.
+	connID := r.URL.Query().Get("conn")
+	if connID != "" {
+		defer func() {
+			sess.RemoveViewer(connID)
+			c, rr := sess.PTYSize()
+			s.maybeKickRerender(id, clampDim16(rr), clampDim16(c))
+		}()
+	}
 
 	// Subscribe to agent-staged clipboard updates for this task. Any change
 	// (set or clear) queues a `clipboard` SSE event. The subscriber callback

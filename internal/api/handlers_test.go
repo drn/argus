@@ -2595,6 +2595,151 @@ func TestHandleResize_LiveSession(t *testing.T) {
 	})
 }
 
+// TestHandleResize_ViewerRegistry exercises the active-viewer registry: a resize
+// with a `conn` ID registers a sized viewer, the PTY tracks the per-dimension
+// min over active viewers (smallest wins), an explicit release drops a claim and
+// grows the PTY back for the remaining viewers, and releasing the last viewer
+// keeps the last applied size rather than collapsing.
+func TestHandleResize_ViewerRegistry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts a real PTY-backed sleep")
+	}
+	srv, d := testServer(t)
+	mux := srv.routes()
+
+	testutil.NoError(t, d.SetBackend("sh-sleep", config.Backend{Command: "sleep 30"}))
+	task := &model.Task{Name: "vrz", Status: model.StatusInProgress, Backend: "sh-sleep", Worktree: t.TempDir()}
+	testutil.NoError(t, d.Add(task))
+	sess, err := srv.runner.Start(task, d.Config(), 24, 80, false)
+	testutil.NoError(t, err)
+	t.Cleanup(func() {
+		_ = srv.runner.Stop(task.ID)
+		<-sess.Done()
+	})
+
+	resize := func(conn string, cols, rows int) int {
+		w := httptest.NewRecorder()
+		body := fmt.Sprintf(`{"cols":%d,"rows":%d,"conn":%q}`, cols, rows, conn)
+		mux.ServeHTTP(w, authedReq("POST", "/api/tasks/"+task.ID+"/resize", body))
+		return w.Code
+	}
+	release := func(url string) int {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, authedReq("POST", url, ""))
+		return w.Code
+	}
+
+	t.Run("first viewer sizes the PTY", func(t *testing.T) {
+		testutil.Equal(t, resize("web-1", 100, 40), http.StatusOK)
+		c, r := sess.PTYSize()
+		testutil.Equal(t, c, 100)
+		testutil.Equal(t, r, 40)
+	})
+
+	t.Run("smallest active viewer wins", func(t *testing.T) {
+		testutil.Equal(t, resize("web-2", 60, 20), http.StatusOK)
+		c, r := sess.PTYSize()
+		testutil.Equal(t, c, 60)
+		testutil.Equal(t, r, 20)
+	})
+
+	t.Run("release grows back to the remaining viewer", func(t *testing.T) {
+		testutil.Equal(t, release("/api/tasks/"+task.ID+"/viewer/release?conn=web-2"), http.StatusNoContent)
+		c, r := sess.PTYSize()
+		testutil.Equal(t, c, 100)
+		testutil.Equal(t, r, 40)
+	})
+
+	t.Run("release without conn is 400", func(t *testing.T) {
+		testutil.Equal(t, release("/api/tasks/"+task.ID+"/viewer/release"), http.StatusBadRequest)
+	})
+
+	t.Run("release on missing session is 404", func(t *testing.T) {
+		testutil.Equal(t, release("/api/tasks/missing/viewer/release?conn=x"), http.StatusNotFound)
+	})
+
+	t.Run("releasing the last viewer keeps the last size", func(t *testing.T) {
+		testutil.Equal(t, release("/api/tasks/"+task.ID+"/viewer/release?conn=web-1"), http.StatusNoContent)
+		c, r := sess.PTYSize()
+		testutil.Equal(t, c, 100)
+		testutil.Equal(t, r, 40)
+	})
+
+	t.Run("no conn falls back to a direct resize", func(t *testing.T) {
+		// Empty conn ⇒ legacy direct-resize path (last-writer-wins). With the
+		// registry now empty (both viewers released above) this drives the PTY
+		// directly.
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, authedReq("POST", "/api/tasks/"+task.ID+"/resize", `{"cols":90,"rows":30}`))
+		testutil.Equal(t, w.Code, http.StatusOK)
+		c, r := sess.PTYSize()
+		testutil.Equal(t, c, 90)
+		testutil.Equal(t, r, 30)
+	})
+}
+
+// TestHandleStreamOutput_DisconnectReleasesViewer drives the SSE stream end-to-end
+// and asserts that cancelling the request context (the browser tab closing) drops
+// the stream connection's viewer claim, so the PTY grows back to the min over the
+// remaining active viewers.
+func TestHandleStreamOutput_DisconnectReleasesViewer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts a real PTY-backed cat")
+	}
+	srv, d := testServer(t)
+	mux := srv.routes()
+
+	testutil.NoError(t, d.SetBackend("cat", config.Backend{Command: "cat"}))
+	task := &model.Task{ID: "vstream", Name: "vs", Status: model.StatusInProgress, Backend: "cat", Worktree: t.TempDir()}
+	testutil.NoError(t, d.Add(task))
+	sess, err := srv.runner.Start(task, d.Config(), 24, 80, false)
+	testutil.NoError(t, err)
+	t.Cleanup(func() {
+		_ = srv.runner.Stop(task.ID)
+		<-sess.Done()
+	})
+
+	// A large viewer that must remain after the stream's small viewer drops, and
+	// a smaller viewer tied to the stream connection (same conn ID).
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("POST", "/api/tasks/"+task.ID+"/resize", `{"cols":120,"rows":40,"conn":"web-keep"}`))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("POST", "/api/tasks/"+task.ID+"/resize", `{"cols":50,"rows":20,"conn":"web-stream"}`))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	if c, _ := sess.PTYSize(); c != 50 {
+		t.Fatalf("expected PTY pinned to smaller viewer (50), got %d", c)
+	}
+
+	ts := httptest.NewServer(srv.routes())
+	t.Cleanup(ts.Close)
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/tasks/"+task.ID+"/stream?conn=web-stream", nil)
+	testutil.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := http.DefaultClient.Do(req)
+	testutil.NoError(t, err)
+	testutil.Equal(t, resp.StatusCode, http.StatusOK)
+
+	// Let the SSE handler attach and register its disconnect defer, then cancel.
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+	_ = resp.Body.Close()
+
+	// The stream's defer drops web-stream; the PTY grows back to web-keep (120).
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if c, _ := sess.PTYSize(); c == 120 {
+			break
+		}
+		if time.Now().After(deadline) {
+			c, _ := sess.PTYSize()
+			t.Fatalf("PTY did not grow back after stream disconnect: cols=%d", c)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestHandleGetSize_LiveSession(t *testing.T) {
 	if testing.Short() {
 		t.Skip("starts a real PTY-backed sleep")

@@ -15,10 +15,14 @@ import (
 // fakeSession is a minimal agentview.TerminalAdapter identified by task ID, so
 // tests can assert which task's session a pane is feeding from.
 type fakeSession struct {
-	id     string
-	alive  bool
-	resize [2]uint16 // last (rows, cols) passed to Resize
-	wrote  []byte    // bytes received via WriteInput (for forwardKey assertions)
+	id         string
+	alive      bool
+	resize     [2]uint16 // last (rows, cols) passed to Resize
+	viewerID   string    // last id passed to SetViewerSize
+	viewerSize [2]int    // last (cols, rows) passed to SetViewerSize
+	viewerSets int       // count of SetViewerSize calls
+	removes    int       // count of RemoveViewer calls
+	wrote      []byte    // bytes received via WriteInput (for forwardKey assertions)
 }
 
 func (f *fakeSession) WriteInput(p []byte) (int, error) {
@@ -26,8 +30,14 @@ func (f *fakeSession) WriteInput(p []byte) (int, error) {
 	return len(p), nil
 }
 func (f *fakeSession) Resize(rows, cols uint16) error { f.resize = [2]uint16{rows, cols}; return nil }
-func (f *fakeSession) RecentOutput() []byte           { return nil }
-func (f *fakeSession) RecentOutputTail(int) []byte    { return nil }
+func (f *fakeSession) SetViewerSize(id string, cols, rows int) {
+	f.viewerID = id
+	f.viewerSize = [2]int{cols, rows}
+	f.viewerSets++
+}
+func (f *fakeSession) RemoveViewer(id string)      { f.removes++ }
+func (f *fakeSession) RecentOutput() []byte        { return nil }
+func (f *fakeSession) RecentOutputTail(int) []byte { return nil }
 func (f *fakeSession) RecentOutputTailWithTotal(int) ([]byte, uint64) {
 	return nil, 0
 }

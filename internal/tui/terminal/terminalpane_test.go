@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -103,24 +104,18 @@ func TestTerminalPane_SetSessionSeedsInnerRect(t *testing.T) {
 	}
 }
 
-func TestTerminalPane_FirstDrawAfterSetSessionPostsNoSizeDelta(t *testing.T) {
-	// The actual behavioral guarantee of the SetSession inner-rect seed:
-	// on the first Draw of a freshly-attached session at the pane's
-	// fully-laid-out size, sizeChanged must be FALSE — so no pendingResize is
-	// queued and no Resize RPC fires. Before the fix this asserted the
-	// opposite (a 192x84 -> 190x82 correction every entry), which dispatched
-	// a same-size Resize → kernel SIGWINCH suppression masked the visual
-	// glitch on macOS, but the trip through the daemon was both wasteful
-	// and platform-dependent. This test pins the seed/inner alignment so a
-	// future change to the seed math (or the DrawBorderedPanel border width)
-	// is caught here directly.
-	//
-	// NB: This test does NOT call ForceResyncPTY — that flag is intentionally
-	// unconditional per TestTerminalPane_ForceResyncPTY and will still post a
-	// same-size pendingResize on entry. The "no spurious resize" we care
-	// about here is the seed-vs-inner sizeChanged path that fired on every
-	// agent-view entry prior to the fix.
+func TestTerminalPane_FirstDrawAfterSetSessionPostsViewerClaim(t *testing.T) {
+	// Under the viewer-registry model, the first Draw of a freshly-attached
+	// session posts an INITIAL viewer claim at the pane's fully-laid-out inner
+	// size — SetSession reset lastPosted to 0, so the pane registers itself as a
+	// viewer regardless of the seed. This is intentional and safe: the session's
+	// per-dimension viewer min no-ops an unchanged size (no SIGWINCH), so the
+	// claim costs at most one fire-and-forget SetViewerSize and never repaints
+	// the agent on re-entry. The seed still aligns ptyCols/ptyRows to the inner
+	// rect (190x82 for a 192x84 outer rect), so the claim carries the true pane
+	// size, not a stale or default guess.
 	tp := NewTerminalPane()
+	tp.SetViewerID("viewer-first")
 	tp.SetRect(0, 0, 192, 84)
 	screen := tcell.NewSimulationScreen("UTF-8")
 	if err := screen.Init(); err != nil {
@@ -134,13 +129,43 @@ func TestTerminalPane_FirstDrawAfterSetSessionPostsNoSizeDelta(t *testing.T) {
 
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
-	// First Draw saw no sizeChanged and forceResync was not armed, so no
-	// pending resize was queued.
-	testutil.Equal(t, tp.pendingResizeCols, uint16(0))
-	testutil.Equal(t, tp.pendingResizeRows, uint16(0))
-	// And the tracked dimensions match the inner rect that Draw computed.
+	// First Draw armed a viewer claim at the inner-rect dimensions.
+	testutil.Equal(t, tp.pendingResizeCols, uint16(190))
+	testutil.Equal(t, tp.pendingResizeRows, uint16(82))
+	// The tracked dimensions match the inner rect that Draw computed.
 	testutil.Equal(t, tp.ptyCols, 190)
 	testutil.Equal(t, tp.ptyRows, 82)
+	// lastPosted advanced so a SECOND Draw at the same size posts nothing.
+	testutil.Equal(t, tp.lastPostedCols, uint16(190))
+	testutil.Equal(t, tp.lastPostedRows, uint16(82))
+}
+
+func TestTerminalPane_SecondDrawSameSizePostsNothing(t *testing.T) {
+	// Re-draw at the same size after the initial claim posts no new pendingResize
+	// — the lastPosted gate suppresses redundant viewer-size churn (the no-flicker
+	// guarantee on re-entry at the same pane size).
+	tp := NewTerminalPane()
+	tp.SetViewerID("viewer-second")
+	tp.SetRect(0, 0, 192, 84)
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(192, 84)
+	sess := &mockAdapter{alive: true}
+	tp.SetSession(sess)
+	tp.Draw(screen) // initial claim
+	tp.mu.Lock()
+	tp.pendingResizeCols = 0 // simulate SyncPTYSize consuming the claim
+	tp.pendingResizeRows = 0
+	tp.mu.Unlock()
+
+	tp.Draw(screen) // same size again
+
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	testutil.Equal(t, tp.pendingResizeCols, uint16(0))
+	testutil.Equal(t, tp.pendingResizeRows, uint16(0))
 }
 
 type mockAdapter struct {
@@ -149,9 +174,11 @@ type mockAdapter struct {
 	output       []byte
 }
 
-func (m *mockAdapter) WriteInput(p []byte) (int, error) { return len(p), nil }
-func (m *mockAdapter) Resize(rows, cols uint16) error   { return nil }
-func (m *mockAdapter) RecentOutput() []byte             { return m.output }
+func (m *mockAdapter) WriteInput(p []byte) (int, error)  { return len(p), nil }
+func (m *mockAdapter) Resize(rows, cols uint16) error    { return nil }
+func (m *mockAdapter) SetViewerSize(id string, c, r int) {}
+func (m *mockAdapter) RemoveViewer(id string)            {}
+func (m *mockAdapter) RecentOutput() []byte              { return m.output }
 func (m *mockAdapter) RecentOutputTail(n int) []byte {
 	if n >= len(m.output) {
 		return m.output
@@ -1612,8 +1639,15 @@ func TestTerminalPane_PendingState(t *testing.T) {
 	tp.mu.Unlock()
 }
 
-func TestTerminalPane_ForceResyncPTY(t *testing.T) {
+func TestTerminalPane_NewSessionReclaimsAtSameSize(t *testing.T) {
+	// The viewer-registry replacement for the old ForceResyncPTY flag: attaching
+	// a NEW session re-claims the pane size even when the dimensions are
+	// identical to the previous session's. SetSession resets lastPosted to 0, so
+	// the first Draw of the new session arms a pendingResize. This is what
+	// reconciles a session previously sized for a wider viewer down to this pane
+	// (the session's per-dimension min shrinks the PTY once the claim lands).
 	tp := NewTerminalPane()
+	tp.SetViewerID("viewer-reclaim")
 	tp.Box.SetRect(0, 0, 42, 12) // inner 40x10 after 1-cell border
 	screen := tcell.NewSimulationScreen("UTF-8")
 	if err := screen.Init(); err != nil {
@@ -1621,50 +1655,40 @@ func TestTerminalPane_ForceResyncPTY(t *testing.T) {
 	}
 	screen.SetSize(42, 12)
 
-	sess := &mockAdapter{alive: true, totalWritten: 0, output: nil}
+	sess := &mockAdapter{alive: true}
 	tp.SetSession(sess)
 
-	// First Draw establishes ptyCols/ptyRows and queues a resize.
+	// First Draw establishes ptyCols/ptyRows and queues an initial claim.
 	tp.Draw(screen)
 	tp.mu.Lock()
 	firstCols, firstRows := tp.ptyCols, tp.ptyRows
-	// Simulate SyncPTYSize consuming the pending resize.
-	tp.pendingResizeCols = 0
+	tp.pendingResizeCols = 0 // simulate SyncPTYSize consuming the claim
 	tp.pendingResizeRows = 0
 	tp.mu.Unlock()
 
-	// A Draw with unchanged dimensions and no force flag must NOT repost.
+	// A Draw with unchanged dimensions on the SAME session posts nothing.
 	tp.Draw(screen)
 	tp.mu.Lock()
 	testutil.Equal(t, tp.pendingResizeCols, uint16(0))
 	testutil.Equal(t, tp.pendingResizeRows, uint16(0))
 	tp.mu.Unlock()
 
-	// ForceResyncPTY makes the next Draw repost even without a size delta.
-	tp.ForceResyncPTY()
+	// Attaching a DIFFERENT session at the same size re-arms the claim.
+	sess2 := &mockAdapter{alive: true}
+	tp.SetSession(sess2)
 	tp.Draw(screen)
 	tp.mu.Lock()
 	testutil.Equal(t, tp.pendingResizeCols, uint16(firstCols))
 	testutil.Equal(t, tp.pendingResizeRows, uint16(firstRows))
-	testutil.Equal(t, tp.forceResync, false) // flag consumed
-	tp.mu.Unlock()
-
-	// Flag is one-shot — subsequent Draws without a delta stay quiet.
-	tp.mu.Lock()
-	tp.pendingResizeCols = 0
-	tp.pendingResizeRows = 0
-	tp.mu.Unlock()
-	tp.Draw(screen)
-	tp.mu.Lock()
-	testutil.Equal(t, tp.pendingResizeCols, uint16(0))
-	testutil.Equal(t, tp.pendingResizeRows, uint16(0))
 	tp.mu.Unlock()
 }
 
-func TestTerminalPane_ForceResyncPTY_DeadSessionKeepsFlag(t *testing.T) {
-	// Dead sessions have no PTY to resize — forceResync must be a no-op
-	// there but stay armed so the next live session sees it.
+func TestTerminalPane_DeadSessionPostsNoClaim(t *testing.T) {
+	// Dead sessions have no PTY to resize — Draw must post no viewer claim for
+	// them (the dead/replay path renders at panel dimensions but never drives
+	// the registry).
 	tp := NewTerminalPane()
+	tp.SetViewerID("viewer-dead")
 	tp.Box.SetRect(0, 0, 42, 12)
 	screen := tcell.NewSimulationScreen("UTF-8")
 	if err := screen.Init(); err != nil {
@@ -1672,16 +1696,39 @@ func TestTerminalPane_ForceResyncPTY_DeadSessionKeepsFlag(t *testing.T) {
 	}
 	screen.SetSize(42, 12)
 
-	dead := &mockAdapter{alive: false, totalWritten: 0, output: nil}
+	dead := &mockAdapter{alive: false}
 	tp.SetSession(dead)
-	tp.ForceResyncPTY()
 	tp.Draw(screen)
 
 	tp.mu.Lock()
 	testutil.Equal(t, tp.pendingResizeCols, uint16(0))
 	testutil.Equal(t, tp.pendingResizeRows, uint16(0))
-	testutil.Equal(t, tp.forceResync, true) // still armed for future live session
 	tp.mu.Unlock()
+}
+
+func TestTerminalPane_SetSessionReleasesPriorViewer(t *testing.T) {
+	// Switching sessions releases the OUTGOING session's viewer claim (RemoveViewer
+	// off the main goroutine) so leaving it no longer constrains its PTY size.
+	tp := NewTerminalPane()
+	tp.SetViewerID("viewer-release")
+	prev := &resizeRecorder{mockAdapter: mockAdapter{alive: true}}
+	tp.SetSession(prev)
+	// Switch to a new session — prev's claim must be released.
+	tp.SetSession(&resizeRecorder{mockAdapter: mockAdapter{alive: true}})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		prev.mu.Lock()
+		n := prev.removes
+		prev.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	prev.mu.Lock()
+	defer prev.mu.Unlock()
+	testutil.Equal(t, prev.removes, 1)
 }
 
 func newSim(t *testing.T, w, h int) tcell.SimulationScreen {
@@ -1742,23 +1789,45 @@ func TestTerminalPane_SyncPTYSize_DeadSession(t *testing.T) {
 	testutil.Equal(t, rows, uint16(0))
 }
 
-// resizeRecorder counts Resize calls, fulfilling the TerminalAdapter interface.
+// resizeRecorder records SetViewerSize calls, fulfilling the TerminalAdapter
+// interface. SyncPTYSize now posts to the viewer registry (SetViewerSize),
+// never an absolute Resize — so the recorder also flags any stray Resize call.
 type resizeRecorder struct {
 	mockAdapter
-	resizeRows uint16
-	resizeCols uint16
-	resizes    int
+	mu          sync.Mutex
+	viewerID    string
+	viewerCols  int
+	viewerRows  int
+	viewerSets  int
+	removes     int
+	resizeCalls int // must stay 0: panes never call Resize directly anymore
 }
 
 func (r *resizeRecorder) Resize(rows, cols uint16) error {
-	r.resizes++
-	r.resizeRows = rows
-	r.resizeCols = cols
+	r.mu.Lock()
+	r.resizeCalls++
+	r.mu.Unlock()
 	return nil
+}
+
+func (r *resizeRecorder) SetViewerSize(id string, cols, rows int) {
+	r.mu.Lock()
+	r.viewerSets++
+	r.viewerID = id
+	r.viewerCols = cols
+	r.viewerRows = rows
+	r.mu.Unlock()
+}
+
+func (r *resizeRecorder) RemoveViewer(id string) {
+	r.mu.Lock()
+	r.removes++
+	r.mu.Unlock()
 }
 
 func TestTerminalPane_SyncPTYSize_LiveSession(t *testing.T) {
 	tp := NewTerminalPane()
+	tp.SetViewerID("viewer-x")
 	live := &resizeRecorder{mockAdapter: mockAdapter{alive: true}}
 	tp.SetSession(live)
 	tp.mu.Lock()
@@ -1767,9 +1836,15 @@ func TestTerminalPane_SyncPTYSize_LiveSession(t *testing.T) {
 	tp.mu.Unlock()
 
 	tp.SyncPTYSize()
-	testutil.Equal(t, live.resizes, 1)
-	testutil.Equal(t, live.resizeRows, uint16(30))
-	testutil.Equal(t, live.resizeCols, uint16(100))
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	// SyncPTYSize posts the pane size to the viewer registry under our ID —
+	// SetViewerSize(id, cols, rows), NOT an absolute Resize.
+	testutil.Equal(t, live.viewerSets, 1)
+	testutil.Equal(t, live.viewerID, "viewer-x")
+	testutil.Equal(t, live.viewerCols, 100)
+	testutil.Equal(t, live.viewerRows, 30)
+	testutil.Equal(t, live.resizeCalls, 0)
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
 	testutil.Equal(t, tp.pendingResizeRows, uint16(0))

@@ -9,6 +9,7 @@ import (
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/drn/argus/internal/uxlog"
 	"github.com/gdamore/tcell/v2"
+	"github.com/google/uuid"
 	"github.com/rivo/tview"
 )
 
@@ -175,6 +176,13 @@ func NewHeraPage(reader HeraReader) *HeraPage {
 		plan:      planview.New(),
 		summary:   widget.NewAttentionSummary(),
 	}
+	// Each Hera pane registers under its OWN viewer ID in the session's PTY
+	// viewer registry, so when the coord and agent panes ever feed the same task
+	// (a multi-bound coordinator) their size claims don't overwrite one another —
+	// the session sizes its PTY to the per-dimension min over both. Minted once
+	// here; SetSession on a pane releases the outgoing session's claim under its ID.
+	p.coordPane.SetViewerID("hera-coord-" + uuid.NewString())
+	p.agentPane.SetViewerID("hera-agent-" + uuid.NewString())
 	p.coordPane.SetBorderTitle(coordPaneTitle)
 	// Retitle the embedded graph so it reads as the plan DAG, not a second
 	// top-level " DAG " tab (gotchas/hera-view.md).

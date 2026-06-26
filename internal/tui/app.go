@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/google/uuid"
 	"github.com/rivo/tview"
 	"golang.org/x/term"
 
@@ -268,17 +269,13 @@ type App struct {
 	// re-renders the conversation history at the current (wider) PTY.
 	pendingRerenderRestart map[string]bool
 
-	// lastAttachCols caches the panel cols at which we most recently evaluated
-	// the rerender predicate for each task. The gate is "panel size unchanged
-	// since the last attach" — if the user closes the agent view and reopens
-	// it without resizing the terminal, the predicate would otherwise re-fire
-	// and (when the panel is meaningfully wider/narrower than the session's
-	// initialCols) kill an idle session. That destroys any in-flight
-	// interactive UI Claude is rendering (notably AskUserQuestion overlays)
-	// because the restart via --session-id rehydrates the conversation but
-	// not the ephemeral modal. Storing the cols per task lets reopen-at-same
-	// -size short-circuit, while genuine resizes still fall through.
-	lastAttachCols map[string]uint16
+	// viewerID is this TUI's stable identity in a session's PTY viewer registry.
+	// Minted once per App (a UUID); the agent pane registers under it on entry to
+	// the agent view and releases it on exit, so the TUI constrains a session's
+	// size only while it is actually viewing it (the session sizes its PTY to the
+	// per-dimension min over all active viewers). The two Hera panes mint their
+	// own distinct IDs so they never collide when both view the same task.
+	viewerID string
 
 	// Worktree root for orphan sweep (default: ~/.argus/worktrees/).
 	// Overridden in tests to avoid scanning real worktrees.
@@ -427,7 +424,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 		idleUnvisited:          make(map[string]bool),
 		viewedWhileAgent:       make(map[string]bool),
 		pendingRerenderRestart: make(map[string]bool),
-		lastAttachCols:         make(map[string]uint16),
+		viewerID:               "tui-" + uuid.NewString(),
 		wtRoot:                 filepath.Join(db.DataDir(), "worktrees"),
 		clipboardWriter:        pbcopyWriter,
 		nowFn:                  time.Now,
@@ -557,6 +554,7 @@ func (a *App) buildUI() {
 	a.gitPanel.OnBranchChange = func() { a.forceRedraw("agent git panel branch changed") }
 	a.filePanel = gitpanel.NewFilePanel()
 	a.agentPane = terminal.NewTerminalPane()
+	a.agentPane.SetViewerID(a.viewerID)
 	a.agentHeader = widget.NewAgentHeader()
 
 	// Wire mouse click callbacks so clicking a panel switches agentFocus.
@@ -3344,10 +3342,12 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 	a.root.ResizeItem(a.header, 0, 0)
 	a.pages.SwitchToPage("agent")
 	a.tapp.SetFocus(a.agentPane)
-	// Reconcile PTY size on entry so a session whose PTY is stuck at a stale
-	// width (dropped SIGWINCH, started in a smaller window, etc.) gets resized
-	// to the current panel dimensions on the next Draw.
-	a.agentPane.ForceResyncPTY()
+	// The agent pane registers itself as a viewer of this session's PTY through
+	// the viewer registry: SetSession reset the pane's lastPosted size to 0, so
+	// the first Draw arms a pending SetViewerSize at the current pane dimensions
+	// which SyncPTYSize posts off the main thread. No unconditional ForceResyncPTY
+	// — the session's per-dimension viewer min reconciles the size, so re-entry at
+	// the same size issues no resize (no agent repaint flicker).
 
 	// Kick off initial git status
 	if a.worktreeDir != "" {
@@ -3414,14 +3414,14 @@ func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 	taskID := task.ID
 	_, panelCols := a.computePTYSize() // safe: GetInnerRect on the main goroutine
 
-	// Cache gate runs before the SessionID check so Codex tasks (which
-	// have SessionID=="" and can never be kicked) still benefit from the
-	// short-circuit — matches the web side's ordering and avoids spawning
-	// an RPC goroutine on every Codex agent-view reopen.
-	if a.isRedundantAttach(taskID, panelCols) {
-		uxlog.Log("[tui] rerender: skipping kick task=%s — panel cols unchanged since last attach (%d)", taskID, panelCols)
-		return
-	}
+	// No same-cols short-circuit: the rerender kick is now gated solely by
+	// agent.ShouldKickRerender, which fires ONLY when the session's committed
+	// scrollback width (InitialPTYSize) differs meaningfully from the current
+	// panel. A re-entry at the same size leaves InitialPTYSize == panelCols, so
+	// the predicate Skips — there is no kick and no double-kick. (The old
+	// lastAttachCols guard existed because agent-view entry used to force an
+	// unconditional resize; that is gone now — the viewer registry no-ops an
+	// unchanged min, so re-entry repaints nothing.)
 	if task.SessionID == "" {
 		return // backend doesn't support --session-id resume; nothing to do
 	}
@@ -3442,16 +3442,14 @@ func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 			case agent.RerenderSkip:
 				return
 			case agent.RerenderDeferBusy:
-				// Agent is mid-tool-call — invalidate so the next
-				// same-cols reopen re-evaluates when the agent goes idle.
-				a.invalidateAttachCache(taskID)
+				// Agent is mid-tool-call — leave it alone; a later entry or
+				// genuine resize re-evaluates once the agent goes idle.
 				uxlog.Log("[tui] rerender deferred: task=%s busy (init=%d panel=%d)", taskID, initCols, panelCols)
 				return
 			case agent.RerenderDeferPrompt:
 				// Agent is blocked on a user prompt — kicking would dismiss
-				// the question. Invalidate so a later resize re-evaluates
-				// once the user has answered and the agent moves on.
-				a.invalidateAttachCache(taskID)
+				// the question. Leave it; a later resize re-evaluates once the
+				// user has answered and the agent moves on.
 				uxlog.Log("[tui] rerender deferred: task=%s blocked on user prompt — preserving question (init=%d panel=%d)", taskID, initCols, panelCols)
 				return
 			case agent.RerenderKick:
@@ -3461,40 +3459,11 @@ func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 				if err := sess.Stop(); err != nil {
 					uxlog.Log("[tui] rerender: stop failed task=%s err=%v", taskID, err)
 					delete(a.pendingRerenderRestart, taskID)
-					// Stop attempt failed — invalidate so the next
-					// same-cols reopen retries (mirrors DeferBusy).
-					a.invalidateAttachCache(taskID)
 					a.statusbar.ClearInfo()
 				}
 			}
 		})
 	}()
-}
-
-// isRedundantAttach returns true when the panel cols match the
-// most recent attach for this task — i.e., the user reopened the agent view
-// without resizing. The rerender kick would otherwise destroy any in-flight
-// Claude UI (e.g. AskUserQuestion overlays) because the --session-id restart
-// rehydrates the conversation but not ephemeral modals. When proceeding,
-// caches the current cols so a subsequent reopen at the same size short
-// -circuits. Genuine resizes fall through because panelCols differs from
-// the cached value, so the kick predicate still runs.
-func (a *App) isRedundantAttach(taskID string, panelCols uint16) bool {
-	if prev, ok := a.lastAttachCols[taskID]; ok && prev == panelCols {
-		return true
-	}
-	a.lastAttachCols[taskID] = panelCols
-	return false
-}
-
-// invalidateAttachCache clears the cached cols for taskID so the next
-// maybeKickRerender call at any panel size re-evaluates the predicate.
-// Called from every non-Skip "could have kicked but didn't" outcome (busy
-// session, kick attempt error) so subsequent reopens at the same cols retry
-// instead of permanently short-circuiting. Main-goroutine-only (lastAttachCols
-// has no mutex because every access path runs on the tview main goroutine).
-func (a *App) invalidateAttachCache(taskID string) {
-	delete(a.lastAttachCols, taskID)
 }
 
 // reapStaleRerenderRestart clears a leaked pendingRerenderRestart entry when the
@@ -3917,11 +3886,11 @@ func (a *App) startSession(task *model.Task) {
 	// pane isn't visible — onTaskSelect will attach when the user returns.
 	if a.mode == modeAgent && a.agentState.TaskID == task.ID {
 		a.agentPane.SetSession(sess)
-		// Force a PTY resize repost on the next Draw. Covers the auto-start
-		// path (pending view → session starts while user is watching) where
-		// onTaskSelect isn't called and the PTY could otherwise be stuck at
-		// its launch size.
-		a.agentPane.ForceResyncPTY()
+		// SetSession reset the pane's last-posted size, so the next Draw arms a
+		// SetViewerSize claim at the current pane dimensions (posted off-thread by
+		// SyncPTYSize). Covers the auto-start path (pending view → session starts
+		// while the user is watching) where onTaskSelect isn't called and the PTY
+		// could otherwise be stuck at its launch size.
 		a.startAgentRedrawLoop(task.ID, sess)
 	}
 }
@@ -5244,9 +5213,7 @@ func (a *App) deleteTask(t *model.Task) {
 		uxlog.Log("[tui] failed to delete task %s: %v", t.ID, err)
 	}
 	// Drop any per-task cache entries so deleted tasks don't accumulate
-	// in long-lived TUI sessions. Matches the cleanup pattern for
-	// pendingRerenderRestart (in handleSessionExitUI).
-	a.invalidateAttachCache(t.ID)
+	// in long-lived TUI sessions.
 	delete(a.pendingRerenderRestart, t.ID)
 	a.refreshTasksLocal()
 
@@ -5481,6 +5448,11 @@ func (a *App) exitAgentView() {
 	// proportions stay consistent while in the task list; the next agent view
 	// re-asserts this on entry anyway.
 	a.applyDefaultAgentZen()
+	// SetSession(nil) releases this TUI's viewer claim on the session being left
+	// (RemoveViewer off the main thread), so leaving the agent view no longer
+	// constrains that session's effective PTY size. Task-to-task navigation goes
+	// through onTaskSelect → SetSession(newSess), which releases the old claim and
+	// re-registers under the new task's session the same way.
 	a.agentPane.SetSession(nil)
 	a.agentPane.SetFocused(false)
 	a.agentPane.ExitDiffMode()

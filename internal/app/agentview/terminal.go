@@ -11,8 +11,21 @@ type TerminalAdapter interface {
 	// WriteInput sends raw bytes to the agent process stdin.
 	WriteInput(p []byte) (int, error)
 
-	// Resize informs the PTY of a new terminal size.
+	// Resize informs the PTY of a new terminal size. It is the internal
+	// apply-to-PTY primitive; display panes SHALL NOT call it directly — they
+	// influence size through the viewer registry below.
 	Resize(rows, cols uint16) error
+
+	// SetViewerSize registers (or updates) this viewer's requested PTY size
+	// under a stable ID. The session sizes its PTY to the per-dimension min over
+	// all active viewers, so a smaller concurrent viewer constrains the size
+	// rather than the pane forcing an absolute resize. An unchanged min is a
+	// no-op (no resize, no SIGWINCH).
+	SetViewerSize(id string, cols, rows int)
+
+	// RemoveViewer drops this viewer's size claim and recomputes the min. With
+	// no active viewers left the session keeps its last applied size.
+	RemoveViewer(id string)
 
 	// RecentOutput returns the full contents of the ring buffer.
 	RecentOutput() []byte

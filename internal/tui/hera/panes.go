@@ -151,12 +151,12 @@ func (p *HeraPage) bindPane(tp *terminal.TerminalPane, bound *string, taskID, la
 	tp.OnReattach = func() { p.reattachPane(tp) }
 	if sess != nil {
 		// A session previously sized for the full-width main agent view must be
-		// resized to this (narrower) hera pane, or the agent keeps painting at
-		// its old width. ForceResyncPTY arms an unconditional resize on the next
-		// Draw even when the seeded ptyCols already matches; SyncPanes then
-		// applies it off the main thread. This is the CLAUDE.md rule-5 size
-		// alignment — never papered over with Sync.
-		tp.ForceResyncPTY()
+		// re-claimed at this (narrower) hera pane's size, or the agent keeps
+		// painting at its old width. SetSession reset the pane's last-posted size,
+		// so the next Draw arms a SetViewerSize at the pane dimensions and SyncPanes
+		// posts it off the main thread; the session's per-dimension viewer min then
+		// shrinks the PTY. This is the CLAUDE.md rule-5 size alignment — never
+		// papered over with Sync.
 		uxlog.Log("[hera-view] %s pane feed-start task=%s (live)", label, taskID)
 	} else {
 		uxlog.Log("[hera-view] %s pane bind task=%s (no live session; replay)", label, taskID)
@@ -216,7 +216,9 @@ func (p *HeraPage) reconcileOne(tp *terminal.TerminalPane, taskID, label string)
 		return // replacing a dead handle: only a fresh, live, distinct one qualifies
 	}
 	tp.SetSession(sess)
-	tp.ForceResyncPTY()
+	// SetSession reset the pane's last-posted size, so the next Draw re-claims the
+	// pane size in the new session's viewer registry (posted off-thread by
+	// SyncPanes) — no explicit force needed.
 	if cur == nil {
 		uxlog.Log("[hera-view] %s pane feed-start task=%s (late bind)", label, taskID)
 	} else {

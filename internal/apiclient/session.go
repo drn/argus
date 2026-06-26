@@ -106,6 +106,42 @@ func (s *Session) Resize(rows, cols uint16) error {
 	return nil
 }
 
+// SetViewerSize registers this remote TUI as an active viewer of the shared
+// PTY. The REST surface for the per-connection viewer registry (section 4 of
+// the viewer-sizing change) is not yet wired, so for now a --remote TUI's
+// claim bridges onto the existing /resize endpoint: a single remote viewer
+// behaves exactly as today's last-writer-wins resize. The cols/rows fields
+// fully determine the request; the stable viewer ID is unused until the
+// per-connection endpoints land. Fire-and-forget: errors are logged, not
+// returned, matching the SessionHandle contract.
+func (s *Session) SetViewerSize(id string, cols, rows int) {
+	if cols <= 0 || rows <= 0 {
+		return
+	}
+	if err := s.Resize(clampUint16(rows), clampUint16(cols)); err != nil {
+		uxlog.Log("[pty] apiclient SetViewerSize id=%s task=%s failed: %v", id, s.taskID, err)
+	}
+}
+
+// RemoveViewer releases this remote TUI's viewer claim. With the per-connection
+// viewer endpoints not yet wired (section 4), there is no server-side claim to
+// drop for the remote path, so this is a no-op. A remote TUI leaving the agent
+// view simply stops reposting its size; the server keeps the last applied size,
+// which matches the "zero active viewers keeps last size" invariant.
+func (s *Session) RemoveViewer(id string) {}
+
+// clampUint16 coerces a viewer dimension into the uint16 PTY range for the
+// /resize bridge. Callers gate on >0 before invoking.
+func clampUint16(d int) uint16 {
+	if d <= 0 {
+		return 0
+	}
+	if d > 0xFFFF {
+		return 0xFFFF
+	}
+	return uint16(d)
+}
+
 // RecentOutput returns the full ring buffer contents.
 func (s *Session) RecentOutput() []byte {
 	s.mu.Lock()

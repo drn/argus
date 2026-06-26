@@ -47,12 +47,13 @@ func TestTerminalPane_BorderTitle(t *testing.T) {
 }
 
 // TestTerminalPane_SizeSeedAlignment is the M6b size-alignment invariant: two
-// TerminalPanes given the SAME outer rect compute the SAME PTY resize. A native
-// Hera pane and the main agent view are both TerminalPanes, so feeding the same
-// task into either at the same dimensions resizes the PTY identically — there
-// is no size delta to trigger a SIGWINCH-induced agent repaint (CLAUDE.md rule
+// TerminalPanes given the SAME outer rect post the SAME viewer-size claim. A
+// native Hera pane and the main agent view are both TerminalPanes, so feeding
+// the same task into either at the same dimensions registers an identical
+// viewer claim — the session's per-dimension min then sizes the PTY identically,
+// with no size delta to trigger a SIGWINCH-induced agent repaint (CLAUDE.md rule
 // 5). Seed from an unset rect (SetSession before SetRect) so Draw posts a real
-// resize rather than matching the seed.
+// claim rather than matching the seed.
 func TestTerminalPane_SizeSeedAlignment(t *testing.T) {
 	sim := tcell.NewSimulationScreen("UTF-8")
 	testutil.NoError(t, sim.Init())
@@ -61,16 +62,22 @@ func TestTerminalPane_SizeSeedAlignment(t *testing.T) {
 
 	mk := func() *resizeRecorder {
 		tp := NewTerminalPane()
+		tp.SetViewerID("seed-align")
 		rec := &resizeRecorder{mockAdapter: mockAdapter{alive: true}}
 		tp.SetSession(rec) // rect still unset → seed stays zero
 		tp.SetRect(0, 0, 100, 36)
 		tp.Draw(sim)     // computes pendingResize from the rect
-		tp.SyncPTYSize() // applies it to the recorder
+		tp.SyncPTYSize() // posts it to the recorder's viewer registry
 		return rec
 	}
 	a := mk()
 	b := mk()
-	testutil.Equal(t, a.resizes >= 1, true)
-	testutil.Equal(t, a.resizeRows, b.resizeRows)
-	testutil.Equal(t, a.resizeCols, b.resizeCols)
+	a.mu.Lock()
+	b.mu.Lock()
+	defer a.mu.Unlock()
+	defer b.mu.Unlock()
+	testutil.Equal(t, a.viewerSets >= 1, true)
+	testutil.Equal(t, a.resizeCalls, 0) // never an absolute Resize
+	testutil.Equal(t, a.viewerRows, b.viewerRows)
+	testutil.Equal(t, a.viewerCols, b.viewerCols)
 }

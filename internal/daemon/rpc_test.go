@@ -158,6 +158,63 @@ func TestRPC_Resize(t *testing.T) {
 	})
 }
 
+func TestRPC_Viewer(t *testing.T) {
+	_, c := startTestSession(t, "t-view", "sleep 60")
+
+	t.Run("set", func(t *testing.T) {
+		var resp StatusResp
+		testutil.NoError(t, c.Call("Daemon.SetViewerSize", &SetViewerSizeReq{
+			TaskID: "t-view", ID: "tui", Cols: 120, Rows: 40,
+		}, &resp))
+		testutil.True(t, resp.OK)
+
+		var info SessionInfo
+		testutil.NoError(t, c.Call("Daemon.SessionStatus", &TaskIDReq{TaskID: "t-view"}, &info))
+		testutil.Equal(t, info.Cols, 120)
+		testutil.Equal(t, info.Rows, 40)
+	})
+
+	t.Run("smaller viewer wins", func(t *testing.T) {
+		var resp StatusResp
+		testutil.NoError(t, c.Call("Daemon.SetViewerSize", &SetViewerSizeReq{
+			TaskID: "t-view", ID: "web", Cols: 80, Rows: 24,
+		}, &resp))
+		testutil.True(t, resp.OK)
+
+		var info SessionInfo
+		testutil.NoError(t, c.Call("Daemon.SessionStatus", &TaskIDReq{TaskID: "t-view"}, &info))
+		testutil.Equal(t, info.Cols, 80)
+		testutil.Equal(t, info.Rows, 24)
+	})
+
+	t.Run("remove grows back", func(t *testing.T) {
+		var resp StatusResp
+		testutil.NoError(t, c.Call("Daemon.RemoveViewer", &RemoveViewerReq{
+			TaskID: "t-view", ID: "web",
+		}, &resp))
+		testutil.True(t, resp.OK)
+
+		var info SessionInfo
+		testutil.NoError(t, c.Call("Daemon.SessionStatus", &TaskIDReq{TaskID: "t-view"}, &info))
+		testutil.Equal(t, info.Cols, 120)
+		testutil.Equal(t, info.Rows, 40)
+	})
+
+	t.Run("missing session is benign", func(t *testing.T) {
+		var setResp StatusResp
+		testutil.NoError(t, c.Call("Daemon.SetViewerSize", &SetViewerSizeReq{
+			TaskID: "nope", ID: "tui", Cols: 100, Rows: 30,
+		}, &setResp))
+		testutil.True(t, setResp.OK)
+
+		var rmResp StatusResp
+		testutil.NoError(t, c.Call("Daemon.RemoveViewer", &RemoveViewerReq{
+			TaskID: "nope", ID: "tui",
+		}, &rmResp))
+		testutil.True(t, rmResp.OK)
+	})
+}
+
 func TestRPC_GetExitInfo(t *testing.T) {
 	d, sockPath := testDaemon(t)
 	go d.Serve(sockPath) //nolint:errcheck

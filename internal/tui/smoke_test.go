@@ -2367,3 +2367,195 @@ func containsString(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// --- Viewer-registry no-flicker smoke tests (pty-smallest-viewer-sizing §3) ---
+
+// viewerSpySession is a live agent.SessionHandle that implements the same
+// per-dimension viewer-min registry the real *agent.Session does, so a smoke
+// test can assert that re-entering the agent view at the same pane size issues
+// NO effective resize (no agent repaint / no switch flicker). appliedResizes
+// counts only the times the computed min actually changed — exactly the SIGWINCH
+// the spec must avoid on re-entry.
+type viewerSpySession struct {
+	mu             sync.Mutex
+	viewers        map[string][2]int // id -> {cols, rows}
+	curCols        int
+	curRows        int
+	appliedResizes int
+	setCalls       int
+}
+
+func newViewerSpySession() *viewerSpySession {
+	return &viewerSpySession{viewers: map[string][2]int{}}
+}
+
+func (s *viewerSpySession) SetViewerSize(id string, cols, rows int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.setCalls++
+	s.viewers[id] = [2]int{cols, rows}
+	s.recomputeLocked()
+}
+
+func (s *viewerSpySession) RemoveViewer(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.viewers[id]; !ok {
+		return
+	}
+	delete(s.viewers, id)
+	s.recomputeLocked()
+}
+
+// recomputeLocked mirrors agent.applyViewerMinLocked: per-dimension min over
+// positive claims; an empty registry (or a dimension with no positive claim)
+// keeps the last applied size; an unchanged min is a no-op.
+func (s *viewerSpySession) recomputeLocked() {
+	mc, mr := 0, 0
+	for _, v := range s.viewers {
+		if v[0] > 0 && (mc == 0 || v[0] < mc) {
+			mc = v[0]
+		}
+		if v[1] > 0 && (mr == 0 || v[1] < mr) {
+			mr = v[1]
+		}
+	}
+	if mc == 0 {
+		mc = s.curCols
+	}
+	if mr == 0 {
+		mr = s.curRows
+	}
+	if mc == s.curCols && mr == s.curRows {
+		return // unchanged min — no resize, no SIGWINCH
+	}
+	s.curCols, s.curRows = mc, mr
+	s.appliedResizes++
+}
+
+func (s *viewerSpySession) snapshot() (applied, sets int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.appliedResizes, s.setCalls
+}
+
+func (s *viewerSpySession) PID() int                         { return 1234 }
+func (s *viewerSpySession) WriteInput(p []byte) (int, error) { return len(p), nil }
+func (s *viewerSpySession) Resize(uint16, uint16) error      { return nil }
+func (s *viewerSpySession) RecentOutput() []byte             { return nil }
+func (s *viewerSpySession) RecentOutputTail(int) []byte      { return nil }
+func (s *viewerSpySession) RecentOutputTailWithTotal(int) ([]byte, uint64) {
+	return nil, 0
+}
+func (s *viewerSpySession) TotalWritten() uint64                    { return 0 }
+func (s *viewerSpySession) IsIdle() bool                            { return true }
+func (s *viewerSpySession) LastInput() time.Time                    { return time.Time{} }
+func (s *viewerSpySession) Alive() bool                             { return true }
+func (s *viewerSpySession) PTYSize() (int, int)                     { return s.curCols, s.curRows }
+func (s *viewerSpySession) InitialPTYSize() (int, int)              { return 0, 0 } // "unknown" → never kicks
+func (s *viewerSpySession) Done() <-chan struct{}                   { return make(chan struct{}) }
+func (s *viewerSpySession) Err() error                              { return nil }
+func (s *viewerSpySession) WorkDir() string                         { return "" }
+func (s *viewerSpySession) Stop() error                             { return nil }
+func (s *viewerSpySession) AddWriter(io.Writer)                     {}
+func (s *viewerSpySession) AddWriterFrom(io.Writer, uint64)         {}
+func (s *viewerSpySession) AddWriterFromTolerant(io.Writer, uint64) {}
+func (s *viewerSpySession) RemoveWriter(io.Writer)                  {}
+
+// viewerSpyProvider is a SessionProvider whose Get returns a fixed spy session,
+// so onTaskSelect attaches it to the agent pane and the Draw → SyncPTYSize path
+// posts viewer-size claims to it.
+type viewerSpyProvider struct {
+	*agent.Runner
+	sess *viewerSpySession
+}
+
+func (p *viewerSpyProvider) Get(taskID string) agent.SessionHandle { return p.sess }
+func (p *viewerSpyProvider) HasSession(taskID string) bool         { return true }
+
+// flushAgentSize drives a frame and posts any pending viewer claim off the main
+// thread (SyncPTYSize is the production tick-goroutine path), then settles.
+func flushAgentSize(t *testing.T, app *App) {
+	t.Helper()
+	// Force a real frame so the agent pane's Draw arms a pending viewer claim,
+	// then post it off the main thread (production's tick-goroutine path).
+	drawn := make(chan struct{})
+	app.tapp.QueueUpdateDraw(func() { close(drawn) })
+	select {
+	case <-drawn:
+	case <-time.After(uiTimeout):
+		t.Fatal("timed out forcing a draw")
+	}
+	app.agentPane.SyncPTYSize()
+	syncUI(t, app.tapp)
+}
+
+// TestSmoke_AgentReentrySameSizeNoResize pins the spec's core guarantee: leaving
+// and re-entering the agent view at the SAME pane size issues no effective
+// resize (no min change → no SIGWINCH → no switch flicker), even though the TUI
+// re-registers as a viewer on each entry.
+func TestSmoke_AgentReentrySameSizeNoResize(t *testing.T) {
+	d := testDB(t)
+	spy := newViewerSpySession()
+	app := New(d, &viewerSpyProvider{Runner: agent.NewRunner(nil), sess: spy}, true)
+
+	task := &model.Task{ID: "reentry-1", Name: "reentry", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}
+	testutil.NoError(t, d.Add(task))
+	app.refreshTasks()
+
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	// First entry registers the viewer at the pane size.
+	readUI(t, app.tapp, func() { app.onTaskSelect(task, false) })
+	flushAgentSize(t, app)
+	applied1, sets1 := spy.snapshot()
+	testutil.Equal(t, applied1 >= 1, true) // initial claim sized the PTY
+	testutil.Equal(t, sets1 >= 1, true)
+
+	// Leave (releases the claim) and re-enter at the same size.
+	readUI(t, app.tapp, func() { app.exitAgentView() })
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { app.onTaskSelect(task, false) })
+	flushAgentSize(t, app)
+
+	applied2, _ := spy.snapshot()
+	// The re-entry re-registered the SAME size, so the recomputed min is
+	// unchanged — no additional effective resize fired.
+	testutil.Equal(t, applied2, applied1)
+}
+
+// TestSmoke_AgentEntryWithSmallerViewerNoResize pins the multi-viewer case: when
+// a SMALLER second viewer (a web app, a narrower terminal) is already registered,
+// entering the agent view registers the TUI's (larger) size but does NOT grow the
+// PTY — the per-dimension min stays pinned to the smaller viewer, so no resize
+// fires.
+func TestSmoke_AgentEntryWithSmallerViewerNoResize(t *testing.T) {
+	d := testDB(t)
+	spy := newViewerSpySession()
+	app := New(d, &viewerSpyProvider{Runner: agent.NewRunner(nil), sess: spy}, true)
+
+	task := &model.Task{ID: "smaller-1", Name: "smaller", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}
+	testutil.NoError(t, d.Add(task))
+	app.refreshTasks()
+
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	// A smaller external viewer is already registered (e.g. a phone web client).
+	spy.SetViewerSize("web-client", 40, 12)
+	applied0, _ := spy.snapshot()
+
+	// Enter the agent view — the TUI registers its (wider) pane size.
+	readUI(t, app.tapp, func() { app.onTaskSelect(task, false) })
+	flushAgentSize(t, app)
+
+	applied1, sets1 := spy.snapshot()
+	testutil.Equal(t, sets1 >= 1, true) // the TUI did register a viewer claim
+	// But the per-dimension min is still the smaller web client's 40x12, so no
+	// additional effective resize fired on TUI entry.
+	testutil.Equal(t, applied1, applied0)
+	cols, rows := spy.PTYSize()
+	testutil.Equal(t, cols, 40)
+	testutil.Equal(t, rows, 12)
+}

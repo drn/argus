@@ -54,6 +54,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/tasks/{id}/stream", s.handleStreamOutput)
 	mux.HandleFunc("GET /api/tasks/{id}/size", s.handleGetSize)
 	mux.HandleFunc("POST /api/tasks/{id}/resize", s.handleResize)
+	mux.HandleFunc("POST /api/tasks/{id}/viewer/release", s.handleViewerRelease)
 	mux.HandleFunc("POST /api/tasks/{id}/archive", s.handleArchiveTask)
 	mux.HandleFunc("POST /api/tasks/{id}/unarchive", s.handleUnarchiveTask)
 	mux.HandleFunc("POST /api/tasks/{id}/rename", s.handleRenameTask)

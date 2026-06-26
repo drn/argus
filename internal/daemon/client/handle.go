@@ -153,6 +153,33 @@ func (rs *RemoteSession) Resize(rows, cols uint16) error {
 	return nil
 }
 
+// SetViewerSize proxies an active-viewer size claim to the daemon, which funnels
+// it through the session's per-dimension-min registry. Errors are logged (not
+// returned) so a viewer-size best-effort never blocks the caller — the interface
+// method is fire-and-forget by design.
+func (rs *RemoteSession) SetViewerSize(id string, cols, rows int) {
+	var resp daemon.StatusResp
+	if err := rs.client.call("Daemon.SetViewerSize", &daemon.SetViewerSizeReq{
+		TaskID: rs.taskID,
+		ID:     id,
+		Cols:   cols,
+		Rows:   rows,
+	}, &resp); err != nil {
+		uxlog.Log("[pty] remote SetViewerSize id=%s task=%s failed: %v", id, rs.taskID, err)
+	}
+}
+
+// RemoveViewer proxies a viewer-claim release to the daemon registry.
+func (rs *RemoteSession) RemoveViewer(id string) {
+	var resp daemon.StatusResp
+	if err := rs.client.call("Daemon.RemoveViewer", &daemon.RemoveViewerReq{
+		TaskID: rs.taskID,
+		ID:     id,
+	}, &resp); err != nil {
+		uxlog.Log("[pty] remote RemoveViewer id=%s task=%s failed: %v", id, rs.taskID, err)
+	}
+}
+
 func (rs *RemoteSession) RecentOutput() []byte {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()

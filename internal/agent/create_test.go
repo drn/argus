@@ -93,6 +93,8 @@ type fakeSession struct {
 func (s *fakeSession) PID() int                       { return s.pid }
 func (s *fakeSession) WriteInput([]byte) (int, error) { return 0, nil }
 func (s *fakeSession) Resize(uint16, uint16) error    { return nil }
+func (s *fakeSession) SetViewerSize(string, int, int) {}
+func (s *fakeSession) RemoveViewer(string)            {}
 func (s *fakeSession) RecentOutput() []byte           { return nil }
 func (s *fakeSession) RecentOutputTail(int) []byte    { return s.tail }
 func (s *fakeSession) RecentOutputTailWithTotal(int) ([]byte, uint64) {

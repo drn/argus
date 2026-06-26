@@ -266,6 +266,37 @@ func (c *sessionCore) Resize(req *ResizeReq, resp *StatusResp) error {
 	return nil
 }
 
+// SetViewerSize registers/updates an active viewer's requested PTY size in the
+// session's viewer registry (the per-dimension-min chokepoint that replaces the
+// old last-writer-wins Resize). The apply-to-PTY happens session-side, so when
+// the daemon runs in supervisor-ON mode this proxies through to the supervisor
+// where the agent PTY actually lives. A missing session is a benign no-op
+// success: a viewer can race a session exit, and there is nothing to size.
+func (c *sessionCore) SetViewerSize(req *SetViewerSizeReq, resp *StatusResp) error {
+	sess := c.runner.Get(req.TaskID)
+	if sess == nil {
+		resp.OK = true
+		return nil
+	}
+	sess.SetViewerSize(req.ID, req.Cols, req.Rows)
+	resp.OK = true
+	return nil
+}
+
+// RemoveViewer drops a viewer's size claim from the session registry so the
+// effective min grows back over the remaining active viewers. Missing session
+// is a benign no-op success (the registry died with the session).
+func (c *sessionCore) RemoveViewer(req *RemoveViewerReq, resp *StatusResp) error {
+	sess := c.runner.Get(req.TaskID)
+	if sess == nil {
+		resp.OK = true
+		return nil
+	}
+	sess.RemoveViewer(req.ID)
+	resp.OK = true
+	return nil
+}
+
 // KickRerender stops a session and queues an in-place restart at new dimensions
 // (protocol v2). The supervisor serves this so the daemon's API resize path can
 // drive a rerender through the supervisor's runner — the pendingRestart

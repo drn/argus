@@ -158,8 +158,8 @@ func TestPanes_MouseScrollRoutesToCoordPane(t *testing.T) {
 func TestPanes_SyncPanesLocal(t *testing.T) {
 	p := drawnPage(t)
 	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
-	// Draw set pendingResize on the agent pane; SyncPanes applies it (the live
-	// fakeSession records the Resize). Just assert it doesn't panic.
+	// Draw set pendingResize on the agent pane; SyncPanes posts it to the live
+	// fakeSession's viewer registry (SetViewerSize). Just assert it doesn't panic.
 	p.SyncPanes()
 }
 

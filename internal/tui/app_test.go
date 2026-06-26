@@ -38,65 +38,6 @@ func testDB(t *testing.T) *db.DB {
 	return d
 }
 
-func TestIsRedundantAttach(t *testing.T) {
-	// Regression: reopening the agent view at the same panel cols must not
-	// re-trigger the rerender kick — otherwise Claude's in-flight
-	// AskUserQuestion UI is destroyed by the --session-id restart. Genuine
-	// resizes (different cols from the cached value) must still fall through
-	// to the predicate.
-	d := testDB(t)
-	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
-
-	const taskID = "rerender-gate"
-
-	// First attach at 120 cols: no cached value, must NOT skip.
-	if app.isRedundantAttach(taskID, 120) {
-		t.Fatal("first attach should not skip — no cached cols yet")
-	}
-	// Reopen at the same size: must skip.
-	if !app.isRedundantAttach(taskID, 120) {
-		t.Fatal("reopen at same cols (120) should skip — gate failed")
-	}
-	// Reopen again at the same size: still skip (gate is idempotent).
-	if !app.isRedundantAttach(taskID, 120) {
-		t.Fatal("reopen at same cols (120) should still skip on third call")
-	}
-	// Genuine resize to 140: must NOT skip; cache must update.
-	if app.isRedundantAttach(taskID, 140) {
-		t.Fatal("resize to 140 should not skip — cols changed")
-	}
-	// Reopen at 140: must skip now that 140 is cached.
-	if !app.isRedundantAttach(taskID, 140) {
-		t.Fatal("reopen at same cols (140) should skip after resize")
-	}
-	// Per-task isolation: a different task's cache is empty.
-	if app.isRedundantAttach("other-task", 140) {
-		t.Fatal("different task should not skip — separate cache entry")
-	}
-
-	// Invalidation API contract: every non-Skip "could have kicked but
-	// didn't" outcome in maybeKickRerender's goroutine (RerenderDeferBusy,
-	// RerenderDeferPrompt, sess.Stop() error) calls `invalidateAttachCache(taskID)` so the next
-	// reopen at the same cols re-evaluates instead of permanently short-
-	// circuiting. Drive the helper directly to pin the invariant — if any
-	// production branch stops invoking invalidateAttachCache, the cache
-	// will stay populated and the gate will incorrectly skip subsequent
-	// retries.
-	app.invalidateAttachCache(taskID)
-	if app.isRedundantAttach(taskID, 140) {
-		t.Fatal("after invalidateAttachCache, reopen at 140 should proceed (not skip)")
-	}
-	if !app.isRedundantAttach(taskID, 140) {
-		t.Fatal("after invalidate + re-cache, reopen at 140 should skip again")
-	}
-	// invalidateAttachCache is idempotent on a missing key.
-	app.invalidateAttachCache("never-cached")
-	if app.isRedundantAttach("never-cached", 200) {
-		t.Fatal("invalidating a never-cached entry should leave it absent (next call proceeds)")
-	}
-}
-
 func TestSessionBlockedOnPrompt(t *testing.T) {
 	// The TUI's needsInput computation for maybeKickRerender: idle AND a
 	// selection-UI / trailing-question marker in the on-disk session log.
@@ -141,6 +82,8 @@ type fakeKickSession struct {
 func (f *fakeKickSession) PID() int                                       { return 0 }
 func (f *fakeKickSession) WriteInput([]byte) (int, error)                 { return 0, nil }
 func (f *fakeKickSession) Resize(uint16, uint16) error                    { return nil }
+func (f *fakeKickSession) SetViewerSize(string, int, int)                 {}
+func (f *fakeKickSession) RemoveViewer(string)                            {}
 func (f *fakeKickSession) RecentOutput() []byte                           { return nil }
 func (f *fakeKickSession) RecentOutputTail(int) []byte                    { return nil }
 func (f *fakeKickSession) RecentOutputTailWithTotal(int) ([]byte, uint64) { return nil, 0 }
@@ -161,11 +104,10 @@ func (f *fakeKickSession) RemoveWriter(io.Writer)                         {}
 
 func TestMaybeKickRerender_TUIDefersWhenBlockedOnPrompt(t *testing.T) {
 	// End-to-end for the TUI's RerenderDeferPrompt switch branch: a genuine
-	// resize (initCols 20 ≪ panel) on an idle session that's blocked on a
-	// prompt must NOT kick — it must invalidate the attach cache and leave
-	// no pending restart, so the question survives. Drives the real
-	// maybeKickRerender goroutine + QueueUpdateDraw dispatch with a fake
-	// session (no PTY, no idle-wait — IsIdle is forced true).
+	// width drift (initCols 20 ≪ panel) on an idle session that's blocked on a
+	// prompt must NOT kick — it must leave no pending restart so the question
+	// survives. Drives the real maybeKickRerender goroutine + QueueUpdateDraw
+	// dispatch with a fake session (no PTY, no idle-wait — IsIdle is forced true).
 	t.Setenv("HOME", t.TempDir())
 	const taskID = "tui-blocked"
 	logPath := agent.SessionLogPath(taskID)
@@ -186,26 +128,26 @@ func TestMaybeKickRerender_TUIDefersWhenBlockedOnPrompt(t *testing.T) {
 	// QueueUpdateDraw — so invoke it on the tview goroutine.
 	readUI(t, app.tapp, func() { app.maybeKickRerender(task, sess) })
 
-	// Poll until the DeferPrompt side effects settle: attach cache cleared
-	// (invalidateAttachCache) and no pending restart queued.
+	// The DeferPrompt branch must leave no pending restart queued (so the agent
+	// is never stopped). Poll briefly to let the goroutine + QueueUpdateDraw
+	// dispatch settle, then assert. A spurious pending entry would mean the kick
+	// fired despite the prompt.
 	deadline := time.Now().Add(uiTimeout)
-	settled := false
 	for time.Now().Before(deadline) {
-		var cacheCleared, noPending bool
+		var noPending bool
 		readUI(t, app.tapp, func() {
-			_, cached := app.lastAttachCols[taskID]
-			cacheCleared = !cached
 			noPending = !app.pendingRerenderRestart[taskID]
 		})
-		if cacheCleared && noPending {
-			settled = true
+		if noPending && sess.stopCalled.Load() == false {
+			// give the dispatch a moment more in case a late kick is in flight
+			time.Sleep(20 * time.Millisecond)
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if !settled {
-		t.Fatal("RerenderDeferPrompt side effects never settled (cache not invalidated or restart queued)")
-	}
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.pendingRerenderRestart[taskID], false)
+	})
 	// The blocked session must never be stopped — that's the dismissed-question bug.
 	testutil.Equal(t, sess.stopCalled.Load(), false)
 }
