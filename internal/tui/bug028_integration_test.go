@@ -64,9 +64,10 @@ func driveNeedsInput(t *testing.T, app *App, wkrTask string) {
 	readUI(t, app.tapp, func() {
 		app.needsInputIDs = app.detectNeedsInputSticky([]string{wkrTask}, []string{wkrTask}, nil)
 		if len(app.needsInputIDs) == 0 {
-			t.Fatalf("detection failed: worker not flagged needs-input from disk log")
+			t.Fatalf("detection failed: %s not flagged needs-input from disk log", wkrTask)
 		}
-		app.heraPage.SetNeedsInput(needsInputInProgress(app.needsInputIDs, app.tasks))
+		_, coordinators := app.readHeraRoles()
+		app.heraPage.SetNeedsInput(needsInputForHeraRail(app.needsInputIDs, app.tasks, coordinators))
 		app.heraPage.Refresh()
 	})
 	forceDraw(t, app)
@@ -141,5 +142,53 @@ func TestBUG028_Integration_CoordinatorlessHeaderSurfacesNeedsInput(t *testing.T
 	// the glyph can only come from the header rollup.
 	if !screenHasRune(sim, theme.IconNeedsInput) {
 		t.Errorf("BUG-028: collapsed coordinator-less header did not surface needs-input glyph %q", theme.IconNeedsInput)
+	}
+}
+
+// TestBUG028_Integration_BlockedCoordinatorCompleteTaskSurfaces is the live
+// bug-bash repro: a COORDINATOR whose bound task is `complete` (coordinators
+// finish their task status early) but whose session is alive and blocked on a
+// user prompt must surface "(?)" on its collapsed header. Both the app.go feed
+// (needsInputForHeraRail admits coordinators regardless of status) and the model
+// gate (non-workers surface regardless of task status) are exercised end to end.
+func TestBUG028_Integration_BlockedCoordinatorCompleteTaskSurfaces(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	d, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { d.Close() })
+
+	o, err := d.CreateHeraOrchestrator("orch", "")
+	testutil.NoError(t, err)
+	const coordTask = "coord-task"
+	role, err := d.CreateHeraRole(db.CreateHeraRoleInput{
+		OrchestratorID: o.ID, Name: "coord", Kind: db.HeraKindCoordinator, ArgusProject: "p",
+	})
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.Add(&model.Task{ID: coordTask, Name: "coord", Status: model.StatusComplete, Project: "p"}))
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{
+		RoleID: role.ID, ArgusTaskID: coordTask, WorktreePath: "/wt/" + coordTask,
+	})
+	testutil.NoError(t, err)
+	// Mark the coordinator a hera coordinator in task_meta so readHeraRoles admits
+	// it through the app feed (needsInputForHeraRail), and write its blocked log.
+	testutil.NoError(t, d.SetMeta(coordTask, db.HeraMetaNamespace, db.HeraMetaKeyRole, string(db.HeraKindCoordinator)))
+	testutil.NoError(t, os.MkdirAll(agent.SessionsDir(), 0o755))
+	testutil.NoError(t, os.WriteFile(agent.SessionLogPath(coordTask), []byte(blockedSessionLog), 0o644))
+
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.refreshTasks()
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+	sim.InjectKey(tcell.KeyRune, '2', 0)
+	syncUI(t, app.tapp)
+
+	driveNeedsInput(t, app, coordTask)
+
+	// Collapsed coordinator header must surface "(?)" even though its task is complete.
+	if !screenHasRune(sim, theme.IconNeedsInput) {
+		t.Errorf("BUG-028: collapsed coordinator header did not surface needs-input glyph %q while its task is complete", theme.IconNeedsInput)
 	}
 }

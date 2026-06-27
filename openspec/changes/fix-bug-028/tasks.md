@@ -7,9 +7,10 @@
 
 ## 2. Implement
 
-- [x] 2.1 Stamp the per-orchestrator rollup on `OrchView.SubtreeNeedsInput` in `rollupNeedsInput`
-- [x] 2.2 Surface the needs-input glyph on the header in `drawOrchRow` when no coordinator role carries it
-- [x] 2.3 Preserve the BUG-023 in_progress gate (finished worker clears the header rollup)
+- [x] 2.1 `buildRoleView`: apply the in_progress gate to WORKER roles only; live non-worker (coordinator/freelance) roles surface needs-input regardless of task status (BUG-028)
+- [x] 2.2 `needsInputForHeraRail` App feed: admit coordinators regardless of status (managed → no BUG-005 regression); keep `needsInputInProgress` for the agent-view attention bar
+- [x] 2.3 Stamp the per-orchestrator rollup on `OrchView.SubtreeNeedsInput`; surface it on a coordinator-less header in `drawOrchRow`
+- [x] 2.4 Preserve BUG-023 (finished worker clears) — verified by a dedicated test
 
 ## 3. Verify
 

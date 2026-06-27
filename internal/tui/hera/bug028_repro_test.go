@@ -63,3 +63,47 @@ func TestBUG028_CoordinatorlessOrchSurfacesSubtreeNeedsInput(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, m2.OrchByID(orch).SubtreeNeedsInput, false)
 }
+
+// TestBUG028_BlockedCoordinatorSurfacesEvenWhenTaskComplete is the headline
+// BUG-028 case from the live bug-bash: a COORDINATOR whose bound task has rolled
+// to complete/in_review (coordinators commonly finish their task status early)
+// but whose session is alive and blocked on a user prompt MUST surface "(?)" on
+// its (collapsed) header. The in_progress gate is worker-only — a non-worker role
+// does not "finish" by task status while alive, so it surfaces regardless. The
+// worker path stays in_progress-gated (BUG-023), proven separately.
+func TestBUG028_BlockedCoordinatorSurfacesEvenWhenTaskComplete(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	coord := seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	_ = coord
+	// Coordinator task rolled to complete while its session stays alive + blocked.
+	testutil.NoError(t, d.SetStatus("t-coord", model.StatusComplete))
+
+	m, err := BuildModel(d, map[string]bool{"t-coord": true})
+	testutil.NoError(t, err)
+	cr := m.OrchByID(orch).CoordRole()
+	testutil.Equal(t, cr.TaskStatus, "complete")
+	testutil.Equal(t, cr.NeedsInput, true)        // surfaces despite complete task
+	testutil.Equal(t, cr.ShowsNeedsInput(), true) // header renders "(?)"
+
+	icon, style := statusIcon(cr, false, 0)
+	testutil.Equal(t, icon, theme.IconNeedsInput)
+	testutil.Equal(t, style, theme.StyleNeedsInput)
+}
+
+// TestBUG028_FinishedWorkerStaysClearedEvenWhenTaskComplete guards BUG-023: the
+// non-worker exemption above must NOT leak to workers. A worker whose task rolled
+// to in_review/complete (finished) but lingers in the sticky needs-input set MUST
+// NOT show "(?)" — the worker gate stays strictly in_progress.
+func TestBUG028_FinishedWorkerStaysClearedEvenWhenTaskComplete(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	testutil.NoError(t, d.SetStatus("t-wkr", model.StatusComplete)) // worker finished
+
+	m, err := BuildModel(d, map[string]bool{"t-wkr": true}) // sticky marker lingers
+	testutil.NoError(t, err)
+	testutil.Equal(t, roleByName(t, &m, orch, "wkr").NeedsInput, false)
+	testutil.Equal(t, m.OrchByID(orch).CoordRole().SubtreeNeedsInput, false)
+}
