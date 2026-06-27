@@ -52,11 +52,14 @@ func TestComputeNeedsInput(t *testing.T) {
 	}
 	tailOf := func(id string) []byte { return tails[id] }
 
+	blockedFP := agent.ContentFingerprint(blockedTail)
+
 	cases := []struct {
 		name    string
 		idle    []string
 		running []string
 		prev    []string
+		prevFP  map[string]uint64
 		want    []string
 	}{
 		{
@@ -70,6 +73,27 @@ func TestComputeNeedsInput(t *testing.T) {
 			idle:    nil, // streaming past, not idle this tick
 			running: []string{"blocked"},
 			prev:    nil,
+			want:    []string{},
+		},
+		{
+			// BUG-032: a never-idle session parked at a prompt (continuous
+			// redraw/animation bytes) is flagged once its content fingerprint
+			// is stable across ticks, even though it is not in the idle set.
+			name:    "content-stable blocked task flagged though never idle",
+			idle:    nil,
+			running: []string{"blocked"},
+			prev:    nil,
+			prevFP:  map[string]uint64{"blocked": blockedFP},
+			want:    []string{"blocked"},
+		},
+		{
+			// Regression guard: a streaming agent flashing the marker has a
+			// fingerprint that differs from last tick → not flagged.
+			name:    "streaming task with shifting content not flagged",
+			idle:    nil,
+			running: []string{"blocked"},
+			prev:    nil,
+			prevFP:  map[string]uint64{"blocked": blockedFP + 1}, // last tick differed
 			want:    []string{},
 		},
 		{
@@ -96,7 +120,7 @@ func TestComputeNeedsInput(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := computeNeedsInput(tc.idle, tc.running, tc.prev, tailOf)
+			got, gotFP := computeNeedsInput(tc.idle, tc.running, tc.prev, tc.prevFP, tailOf)
 			gotSet := map[string]bool{}
 			for _, id := range got {
 				gotSet[id] = true
@@ -106,8 +130,35 @@ func TestComputeNeedsInput(t *testing.T) {
 				wantSet[id] = true
 			}
 			testutil.DeepEqual(t, gotSet, wantSet)
+			// Every running task showing the signature must carry its
+			// fingerprint forward so the next tick can compare.
+			if _, ok := gotFP["blocked"]; !ok {
+				for _, id := range tc.running {
+					if id == "blocked" {
+						t.Error("expected blocked task fingerprint carried forward")
+					}
+				}
+			}
 		})
 	}
+}
+
+// TestComputeNeedsInput_StabilityAcrossTicks drives the content-stability pass
+// across two real ticks: the first observation of a never-idle blocked session
+// records its fingerprint but does not flag; the second, with content
+// unchanged, flags it.
+func TestComputeNeedsInput_StabilityAcrossTicks(t *testing.T) {
+	tailOf := func(id string) []byte { return blockedTail }
+
+	// Tick 1: not idle, no prior fingerprint → record only, do not flag.
+	got1, fp1 := computeNeedsInput(nil, []string{"blocked"}, nil, nil, tailOf)
+	testutil.Equal(t, len(got1), 0)
+	testutil.Equal(t, len(fp1), 1)
+
+	// Tick 2: still not idle, content unchanged → flagged.
+	got2, _ := computeNeedsInput(nil, []string{"blocked"}, nil, fp1, tailOf)
+	testutil.Equal(t, len(got2), 1)
+	testutil.Equal(t, got2[0], "blocked")
 }
 
 // TestDetectNeedsInputTick drives the full watcher pass: it publishes the

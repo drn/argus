@@ -234,9 +234,10 @@ type App struct {
 	lastPreviewTaskID  string // task ID for the cached TotalWritten
 	lastPreviewLogSize int64  // log file size when dead-session preview was last refreshed
 	// Idle-unvisited tracking (for visual InReview promotion)
-	idleUnvisited    map[string]bool // task IDs idle since user last opened their agent view
-	viewedWhileAgent map[string]bool // tasks viewed in agent view; suppresses idleUnvisited re-add
-	needsInputIDs    []string        // task IDs detected as blocked on a user prompt this tick
+	idleUnvisited    map[string]bool   // task IDs idle since user last opened their agent view
+	viewedWhileAgent map[string]bool   // tasks viewed in agent view; suppresses idleUnvisited re-add
+	needsInputIDs    []string          // task IDs detected as blocked on a user prompt this tick
+	needsInputFP     map[string]uint64 // taskID -> prior-tick content fingerprint (BUG-032 stability pass)
 
 	// Daemon health
 	daemonFailures    int
@@ -1759,34 +1760,56 @@ func (a *App) detectNeedsInput(idleIDs []string) []string {
 	return out
 }
 
-// detectNeedsInputSticky wraps detectNeedsInput with a "carry-forward" pass:
-// any task that was previously detected as needing input gets re-checked
-// against its log tail this tick, even if it has fallen out of idleIDs.
+// detectNeedsInputSticky augments the idle-gated detection with two passes that
+// keep a genuinely-blocked agent flagged even though Claude's prompt UI emits
+// periodic redraw/animation bytes (cursor blink, spinner, alt-screen repaint)
+// that bump the session's lastOutput and so knock it out of the daemon's idle
+// list — for a tick or two (the original symptom) or, for a fullscreen prompt,
+// indefinitely (BUG-032). Mirrors the daemon's computeNeedsInput.
 //
-// Why: Claude's prompt UI emits periodic animation bytes (cursor blink,
-// spinner) while waiting for the user. Each emission bumps the session's
-// lastOutput, which kicks the task out of the daemon's idle list for a tick
-// or two at a time. Without this pass the attention bar would oscillate —
-// visible only during the ~3 s windows when the task crosses back through
-// the idle threshold — which the user perceives as "the bar shows briefly
-// then disappears."
-//
-// The sticky entry self-clears when the on-disk marker is gone (the agent
-// has produced enough new bytes to push it out of the tail window — i.e.
-// the question has been answered) or when the task is no longer running.
+//   - Content-stability pass (BUG-032): a running session that never reaches
+//     the idle set is flagged when it shows the prompt signature AND its
+//     content fingerprint (agent.ContentFingerprint, which strips the animation
+//     chrome) is unchanged from the previous tick. A streaming agent's
+//     fingerprint shifts every tick, so it is never flagged here — the
+//     false-positive guard. Fingerprints persist on a.needsInputFP.
+//   - Sticky carry-forward: a previously-flagged task still running and still
+//     showing the marker rides through a one-tick content blip without
+//     oscillating; it self-clears when the marker scrolls out of the 16 KB
+//     tail (question answered) or the task stops running.
 func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []string) []string {
 	fresh := a.detectNeedsInput(idleIDs)
-	if len(prevNeedsInput) == 0 {
-		return fresh
-	}
 	freshSet := make(map[string]bool, len(fresh))
 	for _, id := range fresh {
 		freshSet[id] = true
+	}
+	flag := func(id string) {
+		if !freshSet[id] {
+			fresh = append(fresh, id)
+			freshSet[id] = true
+		}
 	}
 	runningSet := make(map[string]bool, len(runningIDs))
 	for _, id := range runningIDs {
 		runningSet[id] = true
 	}
+
+	// Content-stability pass: fingerprint only sessions actually showing the
+	// signature, compare against last tick, carry this tick's forward.
+	newFP := make(map[string]uint64)
+	for _, id := range runningIDs {
+		tail := readSessionLogTailBytes(id, detectNeedsInputTailBytes)
+		if len(tail) == 0 || !agent.DetectNeedsInput(tail) {
+			continue
+		}
+		fp := agent.ContentFingerprint(tail)
+		newFP[id] = fp
+		if last, ok := a.needsInputFP[id]; ok && last == fp {
+			flag(id)
+		}
+	}
+	a.needsInputFP = newFP
+
 	for _, id := range prevNeedsInput {
 		if freshSet[id] || !runningSet[id] {
 			continue
@@ -1796,8 +1819,7 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 			continue
 		}
 		if agent.DetectNeedsInput(tail) {
-			fresh = append(fresh, id)
-			freshSet[id] = true
+			flag(id)
 		}
 	}
 	return fresh
