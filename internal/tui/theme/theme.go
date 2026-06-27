@@ -61,6 +61,12 @@ const (
 	// (meta:hera.role=coordinator). Shares the orchestrator glyph used by the
 	// native Hera rail so the two surfaces read consistently.
 	IconCoordinator = rune(0x0F0E7B) // 󰹻 nf-md — Hera coordinator / orchestrator marker
+
+	// IconWorker marks a task that is a hera-spawned worker (or holds a live
+	// worker-kind binding) and is NOT a coordinator. A single-person glyph reads
+	// as "individual worker" against the coordinator's supervisor glyph. CODEPOINT
+	// NOT RENDER-TESTED IN A TERMINAL YET — eyeball in a real Nerd Font terminal.
+	IconWorker = rune(0x0F0004) // 󰀄 nf-md-account — Hera worker marker
 )
 
 // Styles for common UI elements.
@@ -97,6 +103,10 @@ var (
 	// StyleCoordinator renders the task-row coordinator indicator. Cyan (the
 	// project color) reads as "structural/orchestration" rather than a status.
 	StyleCoordinator = tcell.StyleDefault.Foreground(ColorProject).Bold(true)
+
+	// StyleWorker renders the task-row worker indicator. Dim (not bold) so a
+	// worker reads as subordinate to the bold cyan coordinator marker.
+	StyleWorker = tcell.StyleDefault.Foreground(ColorDimmed)
 )
 
 // PRGlyph maps a PR review state to the glyph and style its task-row
