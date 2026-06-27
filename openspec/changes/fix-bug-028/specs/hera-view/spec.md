@@ -14,6 +14,23 @@ in as a worker row) and SHALL be cycle-safe, reusing the same
 cascade. The indicator SHALL clear on an ancestor as soon as no descendant (and
 not the ancestor itself) needs input.
 
+A live needs-input signal SHALL surface for a blocked role even when its bound
+argus task is NO LONGER `in_progress`, for any role that does not "finish" by task
+status while its session is alive — specifically a COORDINATOR (and freelance)
+role. A coordinator routinely rolls its bound task to complete/in_review while its
+session stays alive and keeps coordinating, and may itself block on a user prompt;
+gating its needs-input on `in_progress` hid the "(?)" on its (usually collapsed)
+header. The in_progress gate SHALL therefore apply ONLY to WORKER-kind roles (the
+finished-worker clear, BUG-023): a worker that leaves `in_progress` is finished
+and its lingering sticky marker SHALL NOT keep "(?)" pinned, whereas a live
+non-worker role SHALL surface "(?)" regardless of task status. A non-worker role's
+"finished" condition is its session exiting, which drops it from the sticky
+needs-input set upstream, so there is no stale-marker hazard. The App's Hera-rail
+needs-input feed SHALL admit a task that is `in_progress` OR bound to a hera
+coordinator role (regardless of task status); admitting a non-in_progress
+coordinator (a MANAGED task) SHALL NOT affect the unmanaged attention-summary
+count (BUG-005), which stays `in_progress`-gated for unmanaged tasks.
+
 When an orchestrator has NO coordinator role to carry the glyph (for example its
 coordinator role was nuked, BUG-022 Tier-2), the orchestrator HEADER itself SHALL
 surface the subtree needs-input rollup with the SAME `theme.IconNeedsInput` /
@@ -84,3 +101,13 @@ surfaces `OrchView.SubtreeNeedsInput` when no coordinator role is present),
 
 - **WHEN** the only blocked worker under a coordinator-less orchestrator finishes (its bound task rolls to in_review) even though the App's sticky needs-input set still flags it
 - **THEN** the orchestrator header stops rendering "(?)" on the next refresh
+
+#### Scenario: A blocked coordinator surfaces "(?)" even when its task is complete
+
+- **WHEN** a coordinator's bound task has rolled to complete/in_review but its session is alive and blocked on a user prompt (its task is in the needs-input set)
+- **THEN** the coordinator's (collapsed) header renders the needs-input "(?)" indicator, instead of being hidden by the in_progress gate
+
+#### Scenario: A finished worker stays cleared even when its task is complete
+
+- **WHEN** a worker's bound task has rolled to complete/in_review (finished) but the sticky needs-input set still flags it
+- **THEN** the worker's row and its ancestor rollup do NOT render "(?)" — the in_progress gate stays worker-only (BUG-023 preserved)
