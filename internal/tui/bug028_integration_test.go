@@ -84,7 +84,7 @@ func TestBUG028_Integration_HeraRailShowsNeedsInputForBlockedWorker(t *testing.T
 
 	d, err := db.OpenInMemory()
 	testutil.NoError(t, err)
-	t.Cleanup(func() { d.Close() })
+	t.Cleanup(func() { _ = d.Close() })
 	_, wkrTask := seedBlockedWorkerOrch(t, d, true /* withCoord */)
 
 	runner := agent.NewRunner(nil)
@@ -124,7 +124,7 @@ func TestBUG028_Integration_CoordinatorlessHeaderSurfacesNeedsInput(t *testing.T
 
 	d, err := db.OpenInMemory()
 	testutil.NoError(t, err)
-	t.Cleanup(func() { d.Close() })
+	t.Cleanup(func() { _ = d.Close() })
 	_, wkrTask := seedBlockedWorkerOrch(t, d, false /* no coordinator */)
 
 	runner := agent.NewRunner(nil)
@@ -156,7 +156,7 @@ func TestBUG028_Integration_BlockedCoordinatorCompleteTaskSurfaces(t *testing.T)
 
 	d, err := db.OpenInMemory()
 	testutil.NoError(t, err)
-	t.Cleanup(func() { d.Close() })
+	t.Cleanup(func() { _ = d.Close() })
 
 	o, err := d.CreateHeraOrchestrator("orch", "")
 	testutil.NoError(t, err)
