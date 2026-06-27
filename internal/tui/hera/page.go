@@ -136,6 +136,12 @@ type HeraPage struct {
 	// view) and drives the `(ctrl+y copy)` border-title affordance in Draw.
 	clipReady bool
 
+	// OnInfo surfaces a brief, transient status-bar notice (auto-expiring, BUG-030).
+	// Used for the BUG-031 affordance when the user tries to scroll a full-screen
+	// (alt-screen) agent pane that has no linear scrollback. nil-safe: unwired in
+	// remote mode, never panics.
+	OnInfo func(string)
+
 	// OnFocusChange is called whenever the focused Hera region changes so the
 	// app can update focus-aware UI (e.g. the bottom status bar hint set). It
 	// receives the new focus state and fires on both keyboard and mouse changes.
