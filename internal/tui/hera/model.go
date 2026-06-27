@@ -144,6 +144,15 @@ type OrchView struct {
 	// (heraPlanNodes) turns these into planview.Edge dependency edges. Stage 2
 	// populates this in BuildModel.
 	Blocks []db.HeraBlock
+	// SubtreeNeedsInput is the orchestrator-level needs-input rollup (any role in
+	// this orchestrator's subtree, transitively across bridges, is blocked on a
+	// user prompt). Stamped by rollupNeedsInput. The rail's collapsed header
+	// surfaces it (BUG-028) so a blocked worker is visible without expanding —
+	// mirroring the task list's project-folder aggregate (projectStatusIcon),
+	// which always shows "(?)" for any blocked task. The coordinator role carries
+	// the same value, but a coordinator-less orchestrator (e.g. its coordinator
+	// role was nuked) would otherwise render no needs-input cue at all.
+	SubtreeNeedsInput bool
 }
 
 // Model is the full read-only snapshot the rail renders. Orchestrators are
@@ -767,11 +776,15 @@ func BuildModel(r HeraReader, needsInput map[string]bool) (Model, error) {
 // only SubtreeNeedsInput. The traversal reuses BridgeSubtree (cycle-safe) so it
 // matches rail nesting and the Ctrl+D cascade exactly. See BUG-018.
 func (m *Model) rollupNeedsInput() {
-	// Phase 1: per-orchestrator subtree rollup (transitive across bridges).
+	// Phase 1: per-orchestrator subtree rollup (transitive across bridges). Also
+	// stamp the OrchView so the rail's collapsed header can surface it even when
+	// no coordinator role exists to carry the glyph (BUG-028).
 	subtree := make(map[int64]bool)
 	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
 		for i := range sec {
-			subtree[sec[i].ID] = m.orchSubtreeNeedsInput(sec[i].ID)
+			ni := m.orchSubtreeNeedsInput(sec[i].ID)
+			subtree[sec[i].ID] = ni
+			sec[i].SubtreeNeedsInput = ni
 		}
 	}
 	// Phase 2: stamp each role. A coordinator carries its orchestrator's whole
