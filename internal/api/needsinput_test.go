@@ -18,6 +18,11 @@ import (
 var (
 	blockedTail = []byte("doing work\n❯ 1. Yes\n  2. No\n")
 	idleTail    = []byte("just some streaming output, nothing to answer here")
+	// questionTail trips DetectNeedsInput via endsInQuestion (trailing `?`
+	// above the input box) but has NO selection widget — DetectSelectionPrompt
+	// is false. A busy agent showing this must NOT be flagged by the
+	// idle-gate-less content-stability pass.
+	questionTail = []byte("⏺ Want me to ship it?\n\n╭───╮\n│ > │\n╰───╯\n  ? for shortcuts\n")
 )
 
 // recordingSink captures emitted events for inspection. Local to the api test
@@ -49,10 +54,12 @@ func TestComputeNeedsInput(t *testing.T) {
 		"blocked":  blockedTail,
 		"idle":     idleTail,
 		"answered": idleTail, // marker scrolled out of the tail
+		"question": questionTail,
 	}
 	tailOf := func(id string) []byte { return tails[id] }
 
 	blockedFP := agent.ContentFingerprint(blockedTail)
+	questionFP := agent.ContentFingerprint(questionTail)
 
 	cases := []struct {
 		name    string
@@ -94,6 +101,18 @@ func TestComputeNeedsInput(t *testing.T) {
 			running: []string{"blocked"},
 			prev:    nil,
 			prevFP:  map[string]uint64{"blocked": blockedFP + 1}, // last tick differed
+			want:    []string{},
+		},
+		{
+			// Regression guard (coord feedback): a busy agent whose last line
+			// ends in `?` (endsInQuestion → DetectNeedsInput true) but has NO
+			// selection widget must NOT be flagged by the idle-gate-less
+			// stability pass, even when its content is stable across ticks.
+			name:    "content-stable trailing-question working agent not flagged",
+			idle:    nil,
+			running: []string{"question"},
+			prev:    nil,
+			prevFP:  map[string]uint64{"question": questionFP}, // stable since last tick
 			want:    []string{},
 		},
 		{

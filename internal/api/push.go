@@ -196,11 +196,13 @@ func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uin
 		runningSet[id] = true
 	}
 
-	// Content-stability pass: only sessions actually showing the signature are
-	// fingerprinted (no point tracking a session with no prompt on screen).
+	// Content-stability pass: only sessions showing the UNAMBIGUOUS selection
+	// widget (DetectSelectionPrompt, NOT the fuzzy trailing-question heuristic
+	// — this pass has no idle gate, so a busy agent whose last line ends in `?`
+	// must not qualify) are fingerprinted and considered.
 	for _, id := range runningIDs {
 		tail := tailOf(id)
-		if !agent.DetectNeedsInput(tail) {
+		if !agent.DetectSelectionPrompt(tail) {
 			continue
 		}
 		fp := agent.ContentFingerprint(tail)

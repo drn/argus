@@ -1794,12 +1794,15 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 		runningSet[id] = true
 	}
 
-	// Content-stability pass: fingerprint only sessions actually showing the
-	// signature, compare against last tick, carry this tick's forward.
+	// Content-stability pass: fingerprint only sessions showing the
+	// UNAMBIGUOUS selection widget (DetectSelectionPrompt, NOT the fuzzy
+	// trailing-question heuristic — this pass has no idle gate, so a busy agent
+	// whose last line ends in `?` must not qualify), compare against last tick,
+	// carry this tick's forward.
 	newFP := make(map[string]uint64)
 	for _, id := range runningIDs {
 		tail := readSessionLogTailBytes(id, detectNeedsInputTailBytes)
-		if len(tail) == 0 || !agent.DetectNeedsInput(tail) {
+		if len(tail) == 0 || !agent.DetectSelectionPrompt(tail) {
 			continue
 		}
 		fp := agent.ContentFingerprint(tail)

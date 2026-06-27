@@ -79,6 +79,34 @@ func DetectNeedsInput(buf []byte) bool {
 	return endsInQuestion(stripped)
 }
 
+// DetectSelectionPrompt reports whether the tail shows one of Claude's
+// UNAMBIGUOUS blocking selection widgets — the numbered-selection cursor
+// (`❯ 1.`, permission / edit / plan-mode confirms and open-ended choices) or
+// the AskUserQuestion chooser footer (`Enter to select … Esc to cancel`). It
+// deliberately EXCLUDES the fuzzy trailing-question heuristic (endsInQuestion):
+// a transcript line ending in `?` can sit above the rendered input box while
+// the agent is merely between steps, so on its own it is a reliable "blocked"
+// signal only behind the strong idle gate.
+//
+// The content-stability pass (BUG-032) flags a session that NEVER reaches the
+// idle set, i.e. it removes that gate — so it MUST use this stricter signal,
+// not DetectNeedsInput, or a busy agent whose last line happens to end in `?`
+// and whose content is briefly stable for a tick would false-positive. The
+// idle-gated and sticky passes keep using DetectNeedsInput (idle is gate
+// enough for the question heuristic — unchanged behavior).
+func DetectSelectionPrompt(buf []byte) bool {
+	if len(buf) == 0 {
+		return false
+	}
+	tail := buf
+	if len(tail) > needsInputTailWindow {
+		tail = tail[len(tail)-needsInputTailWindow:]
+	}
+	stripped := sanitize.StripANSI(string(tail))
+	return needsInputSelectionRe.MatchString(stripped) ||
+		needsInputChooserFooterRe.MatchString(stripped)
+}
+
 // BlockedOnPrompt reports whether the session's recent output shows the agent
 // blocked on a user prompt (selection UI overlay or a trailing question). A
 // rerender kick must never fire while this is true: stop+restart via

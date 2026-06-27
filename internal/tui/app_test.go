@@ -173,6 +173,18 @@ func TestDetectNeedsInputSticky_ContentStability(t *testing.T) {
 		got = b.detectNeedsInputSticky(nil, []string{"stream"}, nil)
 		testutil.Equal(t, len(got), 0)
 	})
+
+	t.Run("a content-stable working agent ending in a question is never flagged", func(t *testing.T) {
+		// endsInQuestion (DetectNeedsInput true) but NO selection widget —
+		// the idle-gate-less stability pass must not flag it even when stable.
+		c := &App{}
+		const question = "⏺ Want me to ship it?\r\r╭───╮\r│ > │\r╰───╯\r  ? for shortcuts\r"
+		writeLog("q", question)
+		testutil.Equal(t, len(c.detectNeedsInputSticky(nil, []string{"q"}, nil)), 0)
+		// Stable second tick: still not flagged.
+		writeLog("q", question)
+		testutil.Equal(t, len(c.detectNeedsInputSticky(nil, []string{"q"}, nil)), 0)
+	})
 }
 
 // fakeKickSession is a minimal agent.SessionHandle for driving

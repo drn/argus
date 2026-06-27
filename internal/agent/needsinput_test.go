@@ -263,6 +263,42 @@ func TestContentFingerprint(t *testing.T) {
 	})
 }
 
+// TestDetectSelectionPrompt pins the stricter signal the content-stability pass
+// relies on: only the unambiguous selection widget (❯ 1. / chooser footer)
+// fires, NEVER the fuzzy trailing-question heuristic. A busy agent whose last
+// line ends in `?` above the input box must not qualify when the idle gate is
+// removed.
+func TestDetectSelectionPrompt(t *testing.T) {
+	cases := []struct {
+		name string
+		buf  string
+		want bool
+	}{
+		{"numbered selection fires", "Do you want to proceed?\n❯ 1. Yes\n  2. No\n", true},
+		{"chooser footer fires", "  ❯  Execute\n     Copy\n\n  Enter to select · Esc to cancel\n", true},
+		{
+			// endsInQuestion would make DetectNeedsInput true here, but there is
+			// NO selection widget — the stability pass must NOT treat this as
+			// blocked.
+			"trailing-question above prompt box does NOT fire",
+			"⏺ Want me to ship it?\n\n╭───╮\n│ > │\n╰───╯\n  ? for shortcuts\n",
+			false,
+		},
+		{"plain output does not fire", "Reading foo.go\nDone.\n", false},
+		{"empty does not fire", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			testutil.Equal(t, DetectSelectionPrompt([]byte(c.buf)), c.want)
+			// Sanity: the trailing-question case IS caught by the broader
+			// DetectNeedsInput, proving the two predicates genuinely differ.
+			if c.name == "trailing-question above prompt box does NOT fire" {
+				testutil.Equal(t, DetectNeedsInput([]byte(c.buf)), true)
+			}
+		})
+	}
+}
+
 func TestBlockedOnPrompt(t *testing.T) {
 	t.Run("nil session is not blocked", func(t *testing.T) {
 		testutil.Equal(t, BlockedOnPrompt(nil), false)

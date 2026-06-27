@@ -5,20 +5,25 @@
 ### Requirement: Needs-input is detected for a never-idle session via content stability
 
 The system SHALL flag a running session as waiting for user input even when it
-never enters the idle set, provided the prompt signature is present in its recent
-output AND its meaningful content is unchanged across consecutive detection ticks.
-"Meaningful content" SHALL exclude animation/redraw chrome — spinner and timing
-decoration lines, the rendered input/cursor prompt line, blank lines, and ANSI
-escape sequences — and SHALL be robust to a session repainting the same frame a
-varying number of times (e.g. an alt-screen prompt). This closes the gap where a
-session parked at a prompt emits a steady trickle of redraw bytes that keep its
-raw-output clock fresh, so it never goes idle and the idle-gated detector never
-scans it.
+never enters the idle set, provided an UNAMBIGUOUS selection-prompt signal — the
+numbered-selection cursor or the chooser footer — is present in its recent output
+AND its meaningful content is unchanged across consecutive detection ticks. This
+pass SHALL NOT use the fuzzy trailing-question heuristic (a transcript line ending
+in `?` above the input box): that heuristic is reliable only behind the idle gate,
+and this pass removes that gate, so a busy agent whose last line ends in `?` must
+not qualify. "Meaningful content" SHALL exclude animation/redraw chrome — spinner
+and timing decoration lines, the rendered input/cursor prompt line, blank lines,
+and ANSI escape sequences — and SHALL be robust to a session repainting the same
+frame a varying number of times (e.g. an alt-screen prompt). This closes the gap
+where a session parked at a selection prompt emits a steady trickle of redraw
+bytes that keep its raw-output clock fresh, so it never goes idle and the
+idle-gated detector never scans it.
 
 A session whose meaningful content CHANGES between ticks SHALL NOT be flagged by
-this pass: a still-streaming agent that transiently shows the prompt signature is
+this pass: a still-streaming agent that transiently shows the selection prompt is
 not blocked. The idle-gated detection and the sticky carry-forward pass remain
-unchanged; this content-stability pass is additive.
+unchanged (they still honor the trailing-question heuristic behind the idle gate);
+this content-stability pass is additive.
 
 #### Scenario: Never-idle session parked at a prompt is flagged once content is stable
 
@@ -28,9 +33,17 @@ unchanged; this content-stability pass is additive.
 
 #### Scenario: Streaming session showing the signature transiently is not flagged
 
-- **WHEN** a running session shows the prompt signature but its meaningful
+- **WHEN** a running session shows the selection prompt but its meaningful
   transcript content has changed since the previous tick
 - **THEN** the system reports the agent is not waiting for input
+
+#### Scenario: Content-stable working agent ending in a question is not flagged
+
+- **WHEN** a running session's meaningful content is stable across ticks and its
+  last transcript line ends in a question mark, but no selection-prompt widget is
+  present
+- **THEN** the content-stability pass does not flag it (the trailing-question
+  heuristic is honored only behind the idle gate)
 
 #### Scenario: First observation records but does not flag
 
