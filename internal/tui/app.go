@@ -652,6 +652,10 @@ func (a *App) buildUI() {
 		a.statusbar.SetHeraFocus(int(f))
 	}
 
+	// BUG-031: transient status-bar notice for the alt-screen scroll affordance.
+	// Purely a UI hint, so it is wired unconditionally (safe in remote mode).
+	a.heraPage.OnInfo = func(msg string) { a.statusbar.SetInfo(msg) }
+
 	// Wire the hera panes' redraw callbacks exactly like the main agent pane:
 	// OnBranchChange is log-only (forceRedraw never Syncs), OnNeedRedraw bounces
 	// a QueueUpdateDraw for async replay-rebuild completion.
@@ -2712,6 +2716,14 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 
 	// Scrollback keys
 	if event.Modifiers()&tcell.ModShift != 0 {
+		// BUG-031: a full-screen agent (alt-screen) has no linear scrollback;
+		// argus's own scroll mode would replay its in-place frames as garbage.
+		// Suppress scroll-up entry and tell the user to scroll within the agent
+		// (the mouse wheel is forwarded to it — BUG-026).
+		if a.agentPane.InAltScreen() && (event.Key() == tcell.KeyUp || event.Key() == tcell.KeyPgUp) {
+			a.statusbar.SetInfo("Fullscreen agent — scroll within the agent")
+			return nil
+		}
 		switch event.Key() {
 		case tcell.KeyUp:
 			a.agentPane.AccelScrollUp()

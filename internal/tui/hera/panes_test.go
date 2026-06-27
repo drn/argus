@@ -19,6 +19,7 @@ type fakeSession struct {
 	alive  bool
 	resize [2]uint16 // last (rows, cols) passed to Resize
 	wrote  []byte    // bytes received via WriteInput (for forwardKey assertions)
+	output []byte    // bytes the pane reads as PTY output (drives the emulator)
 }
 
 func (f *fakeSession) WriteInput(p []byte) (int, error) {
@@ -26,12 +27,17 @@ func (f *fakeSession) WriteInput(p []byte) (int, error) {
 	return len(p), nil
 }
 func (f *fakeSession) Resize(rows, cols uint16) error { f.resize = [2]uint16{rows, cols}; return nil }
-func (f *fakeSession) RecentOutput() []byte           { return nil }
-func (f *fakeSession) RecentOutputTail(int) []byte    { return nil }
-func (f *fakeSession) RecentOutputTailWithTotal(int) ([]byte, uint64) {
-	return nil, 0
+func (f *fakeSession) RecentOutput() []byte           { return f.output }
+func (f *fakeSession) RecentOutputTail(n int) []byte {
+	if n >= len(f.output) {
+		return f.output
+	}
+	return f.output[len(f.output)-n:]
 }
-func (f *fakeSession) TotalWritten() uint64 { return 0 }
+func (f *fakeSession) RecentOutputTailWithTotal(n int) ([]byte, uint64) {
+	return f.RecentOutputTail(n), uint64(len(f.output))
+}
+func (f *fakeSession) TotalWritten() uint64 { return uint64(len(f.output)) }
 func (f *fakeSession) Alive() bool          { return f.alive }
 func (f *fakeSession) PTYSize() (int, int)  { return 80, 24 }
 
