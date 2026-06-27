@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"hash/fnv"
 	"regexp"
 	"strings"
 	"unicode"
@@ -78,6 +79,34 @@ func DetectNeedsInput(buf []byte) bool {
 	return endsInQuestion(stripped)
 }
 
+// DetectSelectionPrompt reports whether the tail shows one of Claude's
+// UNAMBIGUOUS blocking selection widgets — the numbered-selection cursor
+// (`❯ 1.`, permission / edit / plan-mode confirms and open-ended choices) or
+// the AskUserQuestion chooser footer (`Enter to select … Esc to cancel`). It
+// deliberately EXCLUDES the fuzzy trailing-question heuristic (endsInQuestion):
+// a transcript line ending in `?` can sit above the rendered input box while
+// the agent is merely between steps, so on its own it is a reliable "blocked"
+// signal only behind the strong idle gate.
+//
+// The content-stability pass (BUG-032) flags a session that NEVER reaches the
+// idle set, i.e. it removes that gate — so it MUST use this stricter signal,
+// not DetectNeedsInput, or a busy agent whose last line happens to end in `?`
+// and whose content is briefly stable for a tick would false-positive. The
+// idle-gated and sticky passes keep using DetectNeedsInput (idle is gate
+// enough for the question heuristic — unchanged behavior).
+func DetectSelectionPrompt(buf []byte) bool {
+	if len(buf) == 0 {
+		return false
+	}
+	tail := buf
+	if len(tail) > needsInputTailWindow {
+		tail = tail[len(tail)-needsInputTailWindow:]
+	}
+	stripped := sanitize.StripANSI(string(tail))
+	return needsInputSelectionRe.MatchString(stripped) ||
+		needsInputChooserFooterRe.MatchString(stripped)
+}
+
 // BlockedOnPrompt reports whether the session's recent output shows the agent
 // blocked on a user prompt (selection UI overlay or a trailing question). A
 // rerender kick must never fire while this is true: stop+restart via
@@ -152,6 +181,79 @@ func endsInQuestion(stripped string) bool {
 		}
 		above = above[:cut]
 	}
+}
+
+// contentFingerprintLines bounds how many trailing DISTINCT substantive lines
+// feed the content fingerprint. The lines are de-duplicated (first-occurrence
+// order) before this cap is applied, which is what keeps the fingerprint stable
+// for an alt-screen session that repaints the same frame over and over: the
+// buffered byte window may hold a varying number of identical frames, but the
+// set of distinct lines on screen is the same every tick. Hashing raw window
+// lines would flap as whole frames slide in and out of the 16 KB tail. Capping
+// at the tail of the distinct list discriminates genuinely-new output (fresh
+// distinct lines arrive) from a static prompt (distinct set unchanged).
+const contentFingerprintLines = 40
+
+// ContentFingerprint returns a stable hash of a session's recent MEANINGFUL
+// output — the agent's transcript content with animation/redraw chrome removed.
+// It is the discriminator BUG-032 needs: a session parked at a prompt emits a
+// steady trickle of redraw bytes (spinner, cursor blink, alt-screen repaint)
+// that bumps the raw-output clock and keeps Session.IsIdle() false forever, so
+// the idle-gated needs-input detector never scans it. Two output tails that
+// differ ONLY in that animation chrome fingerprint identically; a tail with
+// genuinely new transcript content fingerprints differently. Callers compare a
+// session's fingerprint across detector ticks: unchanged ⇒ content-stable
+// (treat as blocked when the prompt signature is also present), changed ⇒ the
+// agent is still producing output (not blocked).
+//
+// Normalization, in order: strip ANSI, fold bare \r line breaks (the live PTY
+// stream separates visual lines with carriage returns after strip), drop blank
+// and volatile-chrome lines (fingerprintVolatileLine), de-duplicate (first
+// occurrence wins) so repeated repaint frames collapse, then keep the trailing
+// contentFingerprintLines distinct lines and hash them.
+func ContentFingerprint(tail []byte) uint64 {
+	stripped := sanitize.StripANSI(string(tail))
+	stripped = strings.ReplaceAll(stripped, "\r\n", "\n")
+	stripped = strings.ReplaceAll(stripped, "\r", "\n")
+
+	var lines []string
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(stripped, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || fingerprintVolatileLine(trimmed) || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		lines = append(lines, trimmed)
+	}
+	if len(lines) > contentFingerprintLines {
+		lines = lines[len(lines)-contentFingerprintLines:]
+	}
+
+	h := fnv.New64a()
+	for _, line := range lines {
+		h.Write([]byte(line))
+		h.Write([]byte{'\n'})
+	}
+	return h.Sum64()
+}
+
+// fingerprintVolatileLine reports whether a stripped, trimmed line is chrome
+// that redraws frame-to-frame without representing new agent output, so it must
+// be excluded from the content fingerprint. Two sources of volatility:
+//
+//   - decorationLine: the spinner-glyph timing line ("✻ Brewed for 57s") and
+//     box-drawing horizontal rules — the spinner verb/seconds tick while the
+//     agent waits, and the glyph cycles, but none of it is new output.
+//   - Claude's input-prompt line (leading ❯): it carries a blinking cursor
+//     block that toggles on every redraw, and the selection cursor (❯ 1.) is
+//     repainted as the user navigates — neither is agent output.
+func fingerprintVolatileLine(trimmed string) bool {
+	if decorationLine(trimmed) {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(trimmed)
+	return r == '❯'
 }
 
 // spinnerGlyphs are the runes Claude Code's spinner animation cycles through.

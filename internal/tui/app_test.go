@@ -128,6 +128,65 @@ func TestSessionBlockedOnPrompt(t *testing.T) {
 	})
 }
 
+// TestDetectNeedsInputSticky_ContentStability covers BUG-032: a worker parked
+// at a permission prompt that NEVER reaches the idle set (it emits continuous
+// redraw/animation bytes) must still be flagged needs-input via the
+// content-stability pass — and a session whose content is still shifting must
+// not be (the streaming false-positive guard).
+func TestDetectNeedsInputSticky_ContentStability(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeLog := func(taskID, content string) {
+		logPath := agent.SessionLogPath(taskID)
+		testutil.NoError(t, os.MkdirAll(logPath[:strings.LastIndex(logPath, "/")], 0o755))
+		testutil.NoError(t, os.WriteFile(logPath, []byte(content), 0o644))
+	}
+
+	// A fullscreen permission prompt: the worker is running but never idle.
+	const parked = "⏺ Do you want to make this edit?\r✻ Brewed for 4s\r\r❯ 1. Yes\r  2. No\r\r"
+	writeLog("wkr", parked)
+	a := &App{}
+
+	t.Run("first tick records fingerprint without flagging a never-idle session", func(t *testing.T) {
+		got := a.detectNeedsInputSticky(nil /* not idle */, []string{"wkr"}, nil)
+		testutil.Equal(t, len(got), 0)
+		if _, ok := a.needsInputFP["wkr"]; !ok {
+			t.Fatal("expected fingerprint recorded for the prompt-showing session")
+		}
+	})
+
+	t.Run("second tick flags it once content is stable across ticks", func(t *testing.T) {
+		// Only the animation chrome advanced between ticks (4s → 9s spinner).
+		writeLog("wkr", "⏺ Do you want to make this edit?\r✶ Brewed for 9s\r\r❯ 1. Yes\r  2. No\r\r")
+		got := a.detectNeedsInputSticky(nil, []string{"wkr"}, nil)
+		testutil.Equal(t, len(got), 1)
+		testutil.Equal(t, got[0], "wkr")
+	})
+
+	t.Run("a streaming session producing new content is never flagged", func(t *testing.T) {
+		b := &App{}
+		writeLog("stream", "⏺ Reading a.go\r✻ Brewed for 1s\r\r❯ 1. Yes\r  2. No\r\r")
+		got := b.detectNeedsInputSticky(nil, []string{"stream"}, nil)
+		testutil.Equal(t, len(got), 0)
+		// Next tick: new transcript content arrived → fingerprint differs →
+		// still not flagged.
+		writeLog("stream", "⏺ Reading a.go\r⏺ Editing b.go\r✻ Brewed for 2s\r\r❯ 1. Yes\r  2. No\r\r")
+		got = b.detectNeedsInputSticky(nil, []string{"stream"}, nil)
+		testutil.Equal(t, len(got), 0)
+	})
+
+	t.Run("a content-stable working agent ending in a question is never flagged", func(t *testing.T) {
+		// endsInQuestion (DetectNeedsInput true) but NO selection widget —
+		// the idle-gate-less stability pass must not flag it even when stable.
+		c := &App{}
+		const question = "⏺ Want me to ship it?\r\r╭───╮\r│ > │\r╰───╯\r  ? for shortcuts\r"
+		writeLog("q", question)
+		testutil.Equal(t, len(c.detectNeedsInputSticky(nil, []string{"q"}, nil)), 0)
+		// Stable second tick: still not flagged.
+		writeLog("q", question)
+		testutil.Equal(t, len(c.detectNeedsInputSticky(nil, []string{"q"}, nil)), 0)
+	})
+}
+
 // fakeKickSession is a minimal agent.SessionHandle for driving
 // App.maybeKickRerender without a real PTY. Only the fields the rerender
 // predicate reads are meaningful; everything else returns zero values.

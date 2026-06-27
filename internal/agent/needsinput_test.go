@@ -218,6 +218,87 @@ func TestDetectNeedsInput(t *testing.T) {
 	}
 }
 
+// TestContentFingerprint pins the BUG-032 discriminator: a session parked at a
+// prompt that only emits redraw/animation chrome must fingerprint STABLY, while
+// a session producing genuinely new transcript content must fingerprint
+// differently. The content-stability detector relies on exactly this property
+// to flag a never-idle blocked session without false-positiving on a streaming
+// one.
+func TestContentFingerprint(t *testing.T) {
+	// Two snapshots of the SAME parked permission prompt, differing only in
+	// animation chrome: the spinner timing line ticks (3s → 7s, glyph cycles)
+	// and cursor-positioning/blink escapes are emitted on the prompt line.
+	frame := func(secs string, glyph string) string {
+		return "⏺ Do you want to proceed with this edit?\r" +
+			glyph + " Brewed for " + secs + "\r\r" +
+			"❯ 1. Yes\r  2. Yes, and don't ask again\r  3. No\r\r" +
+			"\x1b[?25l\x1b[2;5H❯\x1b[?25h  \r\r"
+	}
+	parkedA := []byte(frame("3s", "✻"))
+	parkedB := []byte(frame("7s", "✶")) // later: more seconds, different spinner glyph
+
+	t.Run("animation-only changes fingerprint identically", func(t *testing.T) {
+		testutil.Equal(t, ContentFingerprint(parkedA), ContentFingerprint(parkedB))
+	})
+
+	t.Run("both parked snapshots are still detected as needs-input", func(t *testing.T) {
+		testutil.Equal(t, DetectNeedsInput(parkedA), true)
+		testutil.Equal(t, DetectNeedsInput(parkedB), true)
+	})
+
+	t.Run("new transcript content changes the fingerprint", func(t *testing.T) {
+		streaming1 := []byte("⏺ Reading internal/foo.go\r✻ Brewed for 3s\r\r")
+		streaming2 := []byte("⏺ Reading internal/foo.go\r⏺ Editing internal/bar.go\r✻ Brewed for 4s\r\r")
+		if ContentFingerprint(streaming1) == ContentFingerprint(streaming2) {
+			t.Fatal("fingerprint did not change when new transcript content arrived")
+		}
+	})
+
+	t.Run("repaint count does not destabilize the fingerprint", func(t *testing.T) {
+		// Same static frame buffered a different number of times (alt-screen
+		// repaint): the trailing-line anchor must keep the fingerprint stable.
+		one := []byte(frame("3s", "✻"))
+		three := []byte(frame("3s", "✻") + frame("4s", "✶") + frame("5s", "✻"))
+		testutil.Equal(t, ContentFingerprint(one), ContentFingerprint(three))
+	})
+}
+
+// TestDetectSelectionPrompt pins the stricter signal the content-stability pass
+// relies on: only the unambiguous selection widget (❯ 1. / chooser footer)
+// fires, NEVER the fuzzy trailing-question heuristic. A busy agent whose last
+// line ends in `?` above the input box must not qualify when the idle gate is
+// removed.
+func TestDetectSelectionPrompt(t *testing.T) {
+	cases := []struct {
+		name string
+		buf  string
+		want bool
+	}{
+		{"numbered selection fires", "Do you want to proceed?\n❯ 1. Yes\n  2. No\n", true},
+		{"chooser footer fires", "  ❯  Execute\n     Copy\n\n  Enter to select · Esc to cancel\n", true},
+		{
+			// endsInQuestion would make DetectNeedsInput true here, but there is
+			// NO selection widget — the stability pass must NOT treat this as
+			// blocked.
+			"trailing-question above prompt box does NOT fire",
+			"⏺ Want me to ship it?\n\n╭───╮\n│ > │\n╰───╯\n  ? for shortcuts\n",
+			false,
+		},
+		{"plain output does not fire", "Reading foo.go\nDone.\n", false},
+		{"empty does not fire", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			testutil.Equal(t, DetectSelectionPrompt([]byte(c.buf)), c.want)
+			// Sanity: the trailing-question case IS caught by the broader
+			// DetectNeedsInput, proving the two predicates genuinely differ.
+			if c.name == "trailing-question above prompt box does NOT fire" {
+				testutil.Equal(t, DetectNeedsInput([]byte(c.buf)), true)
+			}
+		})
+	}
+}
+
 func TestBlockedOnPrompt(t *testing.T) {
 	t.Run("nil session is not blocked", func(t *testing.T) {
 		testutil.Equal(t, BlockedOnPrompt(nil), false)

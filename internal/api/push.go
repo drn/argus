@@ -124,6 +124,11 @@ type idleWatcherState struct {
 	seenBefore    map[string]bool      // taskID -> have we observed this session on a prior tick?
 	pushedAt      map[string]time.Time // taskID -> wall-clock time we last fired an idle push
 	needsInputNow map[string]bool      // taskID -> last seen blocked-on-user-input?
+	// contentFP carries each prompt-showing session's content fingerprint from
+	// the previous tick (BUG-032). A session whose meaningful output is
+	// unchanged across ticks while it shows the prompt signature is blocked
+	// even if it never goes idle (continuous redraw/animation bytes).
+	contentFP map[string]uint64
 }
 
 func newIdleWatcherState() *idleWatcherState {
@@ -132,6 +137,7 @@ func newIdleWatcherState() *idleWatcherState {
 		seenBefore:    make(map[string]bool),
 		pushedAt:      make(map[string]time.Time),
 		needsInputNow: make(map[string]bool),
+		contentFP:     make(map[string]uint64),
 	}
 }
 
@@ -145,49 +151,76 @@ const needsInputScanBytes = 16 * 1024
 // indicates the agent is blocked waiting on the user, reusing the shared
 // agent.DetectNeedsInput heuristic. It mirrors the TUI's detection
 // (internal/tui/app.go detectNeedsInputSticky) so the daemon-published signal
-// matches what the TUI renders:
+// matches what the TUI renders. Three passes, each guarded against the
+// false-positive risk of flagging a still-streaming agent:
 //
-//   - Detection is gated on idleness — a still-streaming agent that flashes
-//     the marker text transiently is not blocked.
-//   - A sticky carry-forward pass re-checks previously-flagged tasks that
-//     dropped out of idleIDs this tick. Claude's prompt UI emits periodic
-//     animation bytes (cursor blink, spinner) that briefly kick the session
-//     out of the idle set; without this the flag (and its SSE events) would
-//     oscillate. A sticky entry clears only when the marker is gone from the
-//     tail or the session is no longer running.
+//   - Idle pass: an idle session showing the prompt signature is blocked. The
+//     idle gate alone rejects a streaming agent that flashes the marker text.
+//   - Content-stability pass (BUG-032): a session that NEVER goes idle —
+//     because it sits at a prompt emitting continuous redraw/animation bytes
+//     (spinner, cursor blink, alt-screen repaint) — is blocked when the
+//     signature is present AND its content fingerprint (agent.ContentFingerprint,
+//     which strips that animation chrome) is unchanged from the previous tick.
+//     A streaming agent's fingerprint changes every tick, so it is never
+//     flagged here. prevFP supplies last tick's fingerprints; the returned map
+//     carries this tick's forward.
+//   - Sticky carry-forward: a previously-flagged task still running and still
+//     showing the signature stays flagged through a one-tick content blip,
+//     preventing the flag (and its SSE events) from oscillating.
 //
 // tailOf returns the recent output tail for a task (nil if unavailable);
 // injected so the watcher reads the live session ring while tests supply
 // canned bytes. agent.DetectNeedsInput treats nil/empty as "not blocked".
-func computeNeedsInput(idleIDs, runningIDs, prev []string, tailOf func(string) []byte) []string {
+func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uint64, tailOf func(string) []byte) ([]string, map[string]uint64) {
 	out := make([]string, 0, len(idleIDs))
 	seen := make(map[string]bool, len(idleIDs))
+	newFP := make(map[string]uint64)
+	flag := func(id string) {
+		if !seen[id] {
+			out = append(out, id)
+			seen[id] = true
+		}
+	}
+
 	for _, id := range idleIDs {
 		if seen[id] {
 			continue
 		}
 		if agent.DetectNeedsInput(tailOf(id)) {
-			out = append(out, id)
-			seen[id] = true
+			flag(id)
 		}
 	}
-	if len(prev) == 0 {
-		return out
-	}
+
 	runningSet := make(map[string]bool, len(runningIDs))
 	for _, id := range runningIDs {
 		runningSet[id] = true
 	}
+
+	// Content-stability pass: only sessions showing the UNAMBIGUOUS selection
+	// widget (DetectSelectionPrompt, NOT the fuzzy trailing-question heuristic
+	// — this pass has no idle gate, so a busy agent whose last line ends in `?`
+	// must not qualify) are fingerprinted and considered.
+	for _, id := range runningIDs {
+		tail := tailOf(id)
+		if !agent.DetectSelectionPrompt(tail) {
+			continue
+		}
+		fp := agent.ContentFingerprint(tail)
+		newFP[id] = fp
+		if last, ok := prevFP[id]; ok && last == fp {
+			flag(id)
+		}
+	}
+
 	for _, id := range prev {
 		if seen[id] || !runningSet[id] {
 			continue
 		}
 		if agent.DetectNeedsInput(tailOf(id)) {
-			out = append(out, id)
-			seen[id] = true
+			flag(id)
 		}
 	}
-	return out
+	return out, newFP
 }
 
 // idleWatcher periodically polls all running sessions and fires
@@ -391,7 +424,8 @@ func (s *Server) detectNeedsInputTick(state *idleWatcherState, running, idle []s
 	for id := range state.needsInputNow {
 		prev = append(prev, id)
 	}
-	needs := computeNeedsInput(idle, running, prev, tailOf)
+	needs, newFP := computeNeedsInput(idle, running, prev, state.contentFP, tailOf)
+	state.contentFP = newFP
 	needsSet := make(map[string]bool, len(needs))
 	for _, id := range needs {
 		needsSet[id] = true
