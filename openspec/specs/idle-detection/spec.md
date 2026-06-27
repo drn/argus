@@ -3,9 +3,7 @@
 ## Purpose
 
 When an agent session stops generating and waits for the user, the orchestrator must recognize that the session is blocked so the UI can surface it and so destructive maintenance actions never silently dismiss a pending question. This capability defines how recent agent output is inspected to decide whether the agent is waiting on user input, and how that decision gates a width-driven session restart ("rerender kick") that would otherwise discard an in-flight prompt.
-
 ## Requirements
-
 ### Requirement: Needs-input detection from recent output
 
 The system SHALL determine whether an agent is blocked waiting for the user by inspecting only the most recent window of its output. Detection MUST fire on either of two signals: the agent's numbered-selection prompt UI, or the agent's last visible transcript line ending with a question mark. Empty output SHALL never be treated as needs-input.
@@ -168,3 +166,80 @@ The system SHALL compute whether a width change is large enough to justify a kic
 
 - **WHEN** the absolute difference between panel width and initial width is at least the margin
 - **THEN** the system reports the margin threshold is exceeded
+
+### Requirement: Needs-input is detected for a never-idle session via content stability
+
+The system SHALL flag a running session as waiting for user input even when it
+never enters the idle set, provided an UNAMBIGUOUS selection-prompt signal — the
+numbered-selection cursor or the chooser footer — is present in its recent output
+AND its meaningful content is unchanged across consecutive detection ticks. This
+pass SHALL NOT use the fuzzy trailing-question heuristic (a transcript line ending
+in `?` above the input box): that heuristic is reliable only behind the idle gate,
+and this pass removes that gate, so a busy agent whose last line ends in `?` must
+not qualify. "Meaningful content" SHALL exclude animation/redraw chrome — spinner
+and timing decoration lines, the rendered input/cursor prompt line, blank lines,
+and ANSI escape sequences — and SHALL be robust to a session repainting the same
+frame a varying number of times (e.g. an alt-screen prompt). This closes the gap
+where a session parked at a selection prompt emits a steady trickle of redraw
+bytes that keep its raw-output clock fresh, so it never goes idle and the
+idle-gated detector never scans it.
+
+A session whose meaningful content CHANGES between ticks SHALL NOT be flagged by
+this pass: a still-streaming agent that transiently shows the selection prompt is
+not blocked. The idle-gated detection and the sticky carry-forward pass remain
+unchanged (they still honor the trailing-question heuristic behind the idle gate);
+this content-stability pass is additive.
+
+#### Scenario: Never-idle session parked at a prompt is flagged once content is stable
+
+- **WHEN** a running session shows the prompt signature and only its animation
+  chrome (spinner, cursor blink, repaint) has changed since the previous tick
+- **THEN** the system reports the agent is waiting for input
+
+#### Scenario: Streaming session showing the signature transiently is not flagged
+
+- **WHEN** a running session shows the selection prompt but its meaningful
+  transcript content has changed since the previous tick
+- **THEN** the system reports the agent is not waiting for input
+
+#### Scenario: Content-stable working agent ending in a question is not flagged
+
+- **WHEN** a running session's meaningful content is stable across ticks and its
+  last transcript line ends in a question mark, but no selection-prompt widget is
+  present
+- **THEN** the content-stability pass does not flag it (the trailing-question
+  heuristic is honored only behind the idle gate)
+
+#### Scenario: First observation records but does not flag
+
+- **WHEN** a never-idle session showing the prompt signature is observed for the
+  first time (no prior tick to compare against)
+- **THEN** the system does not yet flag it, and records its content fingerprint
+  so the next tick can compare
+
+#### Scenario: Repaint count does not destabilize the decision
+
+- **WHEN** a parked session's recent output contains the same static frame
+  repainted a different number of times between ticks
+- **THEN** the content is treated as stable and the agent is reported waiting for input
+
+### Requirement: Content fingerprint excludes animation chrome and collapses repaint frames
+
+The system SHALL expose a content fingerprint over a session's recent output that
+is identical for two output tails differing only in animation/redraw chrome, and
+different for tails differing in meaningful transcript content. The fingerprint
+MUST strip ANSI sequences, drop spinner/timing decoration lines and the rendered
+input/cursor prompt line, ignore blank lines, and de-duplicate repeated lines so
+that repainted frames collapse rather than inflating or shifting the fingerprint.
+
+#### Scenario: Animation-only difference fingerprints identically
+
+- **WHEN** two snapshots of the same parked prompt differ only in the spinner
+  glyph, the timing seconds, and cursor-positioning escapes
+- **THEN** their content fingerprints are equal
+
+#### Scenario: New transcript content fingerprints differently
+
+- **WHEN** a later snapshot contains a new transcript line not present in the earlier one
+- **THEN** their content fingerprints differ
+
