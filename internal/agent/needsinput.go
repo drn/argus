@@ -2,12 +2,17 @@ package agent
 
 import (
 	"hash/fnv"
+	"io"
 	"regexp"
+	"runtime/debug"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
+	xvt "github.com/charmbracelet/x/vt"
+
 	"github.com/drn/argus/internal/sanitize"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // needsInputChooserFooterRe matches the footer line of Claude Code's
@@ -69,14 +74,21 @@ func DetectNeedsInput(buf []byte) bool {
 	if len(tail) > needsInputTailWindow {
 		tail = tail[len(tail)-needsInputTailWindow:]
 	}
-	stripped := sanitize.StripANSI(string(tail))
-	if needsInputSelectionRe.MatchString(stripped) {
+	return detectNeedsInputText(sanitize.StripANSI(string(tail)))
+}
+
+// detectNeedsInputText is the body of DetectNeedsInput operating on already
+// plain (ANSI-stripped or vt-rendered) text. Shared with DetectNeedsInputScreen
+// so the alt-screen fallback matches the identical three signals against the
+// reconstructed screen text.
+func detectNeedsInputText(text string) bool {
+	if needsInputSelectionRe.MatchString(text) {
 		return true
 	}
-	if needsInputChooserFooterRe.MatchString(stripped) {
+	if needsInputChooserFooterRe.MatchString(text) {
 		return true
 	}
-	return endsInQuestion(stripped)
+	return endsInQuestion(text)
 }
 
 // DetectSelectionPrompt reports whether the tail shows one of Claude's
@@ -102,9 +114,14 @@ func DetectSelectionPrompt(buf []byte) bool {
 	if len(tail) > needsInputTailWindow {
 		tail = tail[len(tail)-needsInputTailWindow:]
 	}
-	stripped := sanitize.StripANSI(string(tail))
-	return needsInputSelectionRe.MatchString(stripped) ||
-		needsInputChooserFooterRe.MatchString(stripped)
+	return detectSelectionPromptText(sanitize.StripANSI(string(tail)))
+}
+
+// detectSelectionPromptText is the body of DetectSelectionPrompt operating on
+// already plain (ANSI-stripped or vt-rendered) text.
+func detectSelectionPromptText(text string) bool {
+	return needsInputSelectionRe.MatchString(text) ||
+		needsInputChooserFooterRe.MatchString(text)
 }
 
 // BlockedOnPrompt reports whether the session's recent output shows the agent
@@ -212,7 +229,14 @@ const contentFingerprintLines = 40
 // occurrence wins) so repeated repaint frames collapse, then keep the trailing
 // contentFingerprintLines distinct lines and hash them.
 func ContentFingerprint(tail []byte) uint64 {
-	stripped := sanitize.StripANSI(string(tail))
+	return fingerprintText(sanitize.StripANSI(string(tail)))
+}
+
+// fingerprintText is the body of ContentFingerprint operating on already plain
+// text. Shared with the alt-screen path (SelectionPromptFingerprint), which
+// feeds the vt-rendered screen — naturally stable for a parked prompt — instead
+// of the raw byte tail (which never stabilizes while the prompt repaints).
+func fingerprintText(stripped string) uint64 {
 	stripped = strings.ReplaceAll(stripped, "\r\n", "\n")
 	stripped = strings.ReplaceAll(stripped, "\r", "\n")
 
@@ -280,4 +304,126 @@ func decorationLine(line string) bool {
 		}
 	}
 	return true
+}
+
+// risReset is the RIS (Reset to Initial State, ESC c) control that clears a
+// reused emulator back to a blank main screen between renders.
+var risReset = []byte("\x1bc")
+
+// ScreenRenderer reconstructs the VISIBLE terminal screen from a session's raw
+// PTY tail bytes, so needs-input detection can match the EMULATED screen rather
+// than sanitize.StripANSI of the raw stream. The distinction matters for a
+// FULLSCREEN (alt-screen) Claude agent: it paints its prompt with cursor-
+// addressed in-place redraws, so the `❯` and `1.` glyphs are not linearly
+// adjacent in the byte stream (StripANSI only removes escapes, it does NOT apply
+// cursor positioning) — the selection regex never matches the raw tail and the
+// session is silently never flagged needs-input (BUG-033). Feeding the tail
+// through a vt emulator places the glyphs where they actually render, so the
+// existing regexes fire.
+//
+// Reuse ONE renderer per detector context (the daemon's idle watcher; the TUI
+// tick): it lazily allocates a single emulator and drives one drain goroutine
+// for its lifetime, resetting via RIS between renders. This mirrors
+// terminal.PreviewVT's reuse-via-RIS pattern — allocating-and-Close-ing a fresh
+// drained emulator per render would race the drain goroutine's unlocked Read
+// against Close on the emulator's closed flag (flagged by -race; see
+// terminal.NewDrainedEmulator's lifecycle note). A zero ScreenRenderer is ready
+// to use; it is NOT safe for concurrent use (each detector context is single-
+// goroutine).
+type ScreenRenderer struct {
+	emu        *xvt.SafeEmulator
+	cols, rows int
+}
+
+// render writes tail through the emulator sized to cols×rows and returns the
+// visible screen as plain text. Non-positive dimensions fall back to the
+// session default (80×24) — wrong cols changes wrapping, so callers should pass
+// the session's real PTY size (agent.LoadSessionSize) when known.
+func (r *ScreenRenderer) render(tail []byte, cols, rows int) string {
+	if cols <= 0 {
+		cols = int(DefaultTermCols)
+	}
+	if rows <= 0 {
+		rows = int(DefaultTermRows)
+	}
+	if r.emu == nil {
+		r.emu = xvt.NewSafeEmulator(cols, rows)
+		r.cols, r.rows = cols, rows
+		// One drain goroutine for the renderer's lifetime: x/vt writes query
+		// responses (DA/DSR/cursor-position) to an internal io.Pipe that blocks
+		// Write until read — Claude's output stream contains such queries.
+		go io.Copy(io.Discard, r.emu) //nolint:errcheck
+	} else {
+		// Reset to a clean blank screen, then re-size if this session differs
+		// from the last one rendered (RIS preserves dimensions).
+		safeEmuWrite(r.emu, risReset)
+		if cols != r.cols || rows != r.rows {
+			r.emu.Resize(cols, rows)
+			r.cols, r.rows = cols, rows
+		}
+	}
+	safeEmuWrite(r.emu, tail)
+	return r.emu.String()
+}
+
+// safeEmuWrite writes to the emulator, recovering from panics in upstream vt
+// code (e.g. cursor positions from a larger terminal). Mirrors
+// terminal.SafeEmuWrite; duplicated here to keep internal/agent free of an
+// import cycle through internal/tui/terminal.
+func safeEmuWrite(emu *xvt.SafeEmulator, data []byte) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			uxlog.Log("[needsinput] recovered from emulator panic: %v\n%s", rec, debug.Stack())
+		}
+	}()
+	if _, err := emu.Write(data); err != nil {
+		uxlog.Log("[needsinput] emulator write error: %v", err)
+	}
+}
+
+// DetectNeedsInputScreen is the alt-screen-aware form of DetectNeedsInput. It
+// first matches the raw byte stream (fast path — linear / main-screen agents
+// behave EXACTLY as DetectNeedsInput, and the emulator is never touched), and
+// only on a raw miss does it reconstruct the visible screen via r and re-match
+// the same three signals against the rendered text. A nil renderer disables the
+// fallback, making it identical to DetectNeedsInput.
+func DetectNeedsInputScreen(r *ScreenRenderer, buf []byte, cols, rows int) bool {
+	if DetectNeedsInput(buf) {
+		return true
+	}
+	if r == nil || len(buf) == 0 {
+		return false
+	}
+	return detectNeedsInputText(r.render(buf, cols, rows))
+}
+
+// SelectionPromptFingerprint powers the BUG-032 content-stability pass with
+// alt-screen support. It reports whether the tail shows the UNAMBIGUOUS
+// selection widget (❯ 1. / chooser footer — NOT the fuzzy trailing-question
+// heuristic) and, when it does, the stability fingerprint to compare across
+// ticks. The source is paired with how the widget was detected so linear agents
+// stay byte-identical to pre-BUG-033:
+//
+//   - Raw match (linear): fingerprint the raw tail (== ContentFingerprint).
+//   - Raw miss → emulated screen (alt-screen): if the widget appears on the
+//     rendered screen, fingerprint THAT text. A parked alt-screen prompt's
+//     visible screen is naturally stable tick-to-tick (only off-screen repaint
+//     bytes change), so its fingerprint holds and the 2nd qualifying tick flags
+//     it; a streaming agent's rendered content shifts, so the fingerprint
+//     differs and it is never flagged — the same false-positive guard, now on
+//     the emulated screen.
+//
+// ok=false ⇒ no selection widget; fp is meaningless and must not be stored.
+func SelectionPromptFingerprint(r *ScreenRenderer, buf []byte, cols, rows int) (fp uint64, ok bool) {
+	if DetectSelectionPrompt(buf) {
+		return ContentFingerprint(buf), true
+	}
+	if r == nil || len(buf) == 0 {
+		return 0, false
+	}
+	screen := r.render(buf, cols, rows)
+	if !detectSelectionPromptText(screen) {
+		return 0, false
+	}
+	return fingerprintText(screen), true
 }

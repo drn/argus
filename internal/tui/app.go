@@ -238,6 +238,12 @@ type App struct {
 	viewedWhileAgent map[string]bool   // tasks viewed in agent view; suppresses idleUnvisited re-add
 	needsInputIDs    []string          // task IDs detected as blocked on a user prompt this tick
 	needsInputFP     map[string]uint64 // taskID -> prior-tick content fingerprint (BUG-032 stability pass)
+	// needsInputScreen re-emulates a session's log tail to the visible screen so
+	// needs-input detection matches the rendered screen, not StripANSI(raw) —
+	// catching fullscreen (alt-screen) prompts whose cursor-addressed glyphs are
+	// not linearly present in the bytes (BUG-033). Used only inside the tick
+	// callback (tview main goroutine), which is single-threaded, so no lock.
+	needsInputScreen *agent.ScreenRenderer
 
 	// Daemon health
 	daemonFailures    int
@@ -1753,11 +1759,25 @@ func (a *App) detectNeedsInput(idleIDs []string) []string {
 		if len(tail) == 0 {
 			continue
 		}
-		if agent.DetectNeedsInput(tail) {
+		cols, rows := needsInputScreenSize(id)
+		if agent.DetectNeedsInputScreen(a.needsInputScreen, tail, cols, rows) {
 			out = append(out, id)
 		}
 	}
 	return out
+}
+
+// needsInputScreenSize returns the PTY dimensions a task's session was last
+// sized at, for re-emulating its log tail to the screen the bytes were
+// formatted for (BUG-033 alt-screen detection). Reads the persisted size
+// sidecar (a local file) so it is non-blocking — safe on the tview main
+// goroutine, unlike SessionHandle.PTYSize() which can round-trip to the daemon.
+// Falls back to the session default (80×24) when the sidecar is missing.
+func needsInputScreenSize(taskID string) (cols, rows int) {
+	if c, r, ok := agent.LoadSessionSize(taskID); ok {
+		return c, r
+	}
+	return int(agent.DefaultTermCols), int(agent.DefaultTermRows)
 }
 
 // detectNeedsInputSticky augments the idle-gated detection with two passes that
@@ -1778,6 +1798,9 @@ func (a *App) detectNeedsInput(idleIDs []string) []string {
 //     oscillating; it self-clears when the marker scrolls out of the 16 KB
 //     tail (question answered) or the task stops running.
 func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []string) []string {
+	if a.needsInputScreen == nil {
+		a.needsInputScreen = &agent.ScreenRenderer{}
+	}
 	fresh := a.detectNeedsInput(idleIDs)
 	freshSet := make(map[string]bool, len(fresh))
 	for _, id := range fresh {
@@ -1802,10 +1825,14 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	newFP := make(map[string]uint64)
 	for _, id := range runningIDs {
 		tail := readSessionLogTailBytes(id, detectNeedsInputTailBytes)
-		if len(tail) == 0 || !agent.DetectSelectionPrompt(tail) {
+		if len(tail) == 0 {
 			continue
 		}
-		fp := agent.ContentFingerprint(tail)
+		cols, rows := needsInputScreenSize(id)
+		fp, ok := agent.SelectionPromptFingerprint(a.needsInputScreen, tail, cols, rows)
+		if !ok {
+			continue
+		}
 		newFP[id] = fp
 		if last, ok := a.needsInputFP[id]; ok && last == fp {
 			flag(id)
@@ -1821,7 +1848,8 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 		if len(tail) == 0 {
 			continue
 		}
-		if agent.DetectNeedsInput(tail) {
+		cols, rows := needsInputScreenSize(id)
+		if agent.DetectNeedsInputScreen(a.needsInputScreen, tail, cols, rows) {
 			flag(id)
 		}
 	}

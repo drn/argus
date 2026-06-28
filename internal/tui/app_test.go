@@ -187,6 +187,65 @@ func TestDetectNeedsInputSticky_ContentStability(t *testing.T) {
 	})
 }
 
+// TestDetectNeedsInputSticky_AltScreen covers BUG-033 end-to-end through the
+// TUI tick: a FULLSCREEN (alt-screen) agent paints its prompt cursor-addressed,
+// so the raw on-disk log tail does NOT contain a linear `❯ 1.` (StripANSI drops
+// the cursor moves without applying them) — the old raw detector silently
+// missed it until the user opened the pane and a SIGWINCH forced a linear
+// repaint. Detection against the EMULATED screen flags it without any repaint.
+func TestDetectNeedsInputSticky_AltScreen(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeLog := func(taskID, content string) {
+		logPath := agent.SessionLogPath(taskID)
+		testutil.NoError(t, os.MkdirAll(logPath[:strings.LastIndex(logPath, "/")], 0o755))
+		testutil.NoError(t, os.WriteFile(logPath, []byte(content), 0o644))
+	}
+
+	// Alt-screen frame: the option text is painted first, then the ❯ cursor is
+	// painted LAST at an absolute position to its left — so in byte order ❯
+	// trails "1." and the raw regex misses; only emulation lines them up.
+	altFrame := func(secs, glyph string) string {
+		return "\x1b[?1049h\x1b[2J" +
+			"\x1b[1;1H" + glyph + " Brewed for " + secs +
+			"\x1b[3;5HDo you want to make this edit?" +
+			"\x1b[5;5H1. Yes\x1b[6;5H2. No" +
+			"\x1b[5;3H❯" +
+			"\x1b[8;1H\x1b[?25l"
+	}
+
+	a := &App{}
+	t.Run("raw detection alone misses the alt-screen prompt", func(t *testing.T) {
+		// Prove the precondition: without emulation the tail is invisible.
+		testutil.Equal(t, agent.DetectNeedsInput([]byte(altFrame("4s", "✻"))), false)
+	})
+
+	t.Run("first tick records fingerprint without flagging", func(t *testing.T) {
+		writeLog("alt", altFrame("4s", "✻"))
+		got := a.detectNeedsInputSticky(nil /* never idle */, []string{"alt"}, nil)
+		testutil.Equal(t, len(got), 0)
+		if _, ok := a.needsInputFP["alt"]; !ok {
+			t.Fatal("expected fingerprint recorded for the emulated alt-screen prompt")
+		}
+	})
+
+	t.Run("second tick flags it once the emulated screen is stable", func(t *testing.T) {
+		// Only the spinner chrome advanced (4s/✻ → 9s/✶); the rendered prompt
+		// screen is unchanged.
+		writeLog("alt", altFrame("9s", "✶"))
+		got := a.detectNeedsInputSticky(nil, []string{"alt"}, nil)
+		testutil.Equal(t, len(got), 1)
+		testutil.Equal(t, got[0], "alt")
+	})
+
+	t.Run("a streaming alt-screen agent without a prompt is never flagged", func(t *testing.T) {
+		b := &App{}
+		writeLog("altbusy", "\x1b[?1049h\x1b[2J\x1b[2;5HApplying edit 1 of 3\x1b[3;5HRunning tests...")
+		testutil.Equal(t, len(b.detectNeedsInputSticky(nil, []string{"altbusy"}, nil)), 0)
+		writeLog("altbusy", "\x1b[?1049h\x1b[2J\x1b[2;5HApplying edit 2 of 3\x1b[3;5HRunning tests...")
+		testutil.Equal(t, len(b.detectNeedsInputSticky(nil, []string{"altbusy"}, nil)), 0)
+	})
+}
+
 // fakeKickSession is a minimal agent.SessionHandle for driving
 // App.maybeKickRerender without a real PTY. Only the fields the rerender
 // predicate reads are meaningful; everything else returns zero values.

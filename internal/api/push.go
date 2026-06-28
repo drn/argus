@@ -129,6 +129,12 @@ type idleWatcherState struct {
 	// unchanged across ticks while it shows the prompt signature is blocked
 	// even if it never goes idle (continuous redraw/animation bytes).
 	contentFP map[string]uint64
+	// screen reconstructs the visible terminal screen from a session's raw tail
+	// so detection matches the EMULATED screen, catching fullscreen (alt-screen)
+	// prompts whose cursor-addressed glyphs aren't linearly present in the bytes
+	// (BUG-033). Reused across ticks (one drain goroutine for the watcher's
+	// lifetime); the watcher is single-goroutine so no lock is needed.
+	screen *agent.ScreenRenderer
 }
 
 func newIdleWatcherState() *idleWatcherState {
@@ -138,6 +144,7 @@ func newIdleWatcherState() *idleWatcherState {
 		pushedAt:      make(map[string]time.Time),
 		needsInputNow: make(map[string]bool),
 		contentFP:     make(map[string]uint64),
+		screen:        &agent.ScreenRenderer{},
 	}
 }
 
@@ -146,6 +153,21 @@ func newIdleWatcherState() *idleWatcherState {
 // its own tail window internally; this is the generous upper bound read from
 // the ring. Matches the TUI's detectNeedsInputTailBytes.
 const needsInputScanBytes = 16 * 1024
+
+// sessionScreenSize returns the PTY dimensions a task's session was last sized
+// at, for re-emulating its output to the screen the bytes were formatted for
+// (BUG-033 alt-screen detection). Reads the persisted size sidecar
+// (~/.argus/sessions/<id>.size) the daemon writes on every Start/Resize — a
+// local file read, so it is non-blocking in both the in-process and supervisor-
+// client runner cases (PTYSize() can round-trip to the supervisor). Falls back
+// to the session default (80×24) when the sidecar is missing; agent.render
+// applies the same default for non-positive dimensions.
+func sessionScreenSize(taskID string) (cols, rows int) {
+	if c, r, ok := agent.LoadSessionSize(taskID); ok {
+		return c, r
+	}
+	return int(agent.DefaultTermCols), int(agent.DefaultTermRows)
+}
 
 // computeNeedsInput returns the set of task IDs whose recent PTY output
 // indicates the agent is blocked waiting on the user, reusing the shared
@@ -171,7 +193,13 @@ const needsInputScanBytes = 16 * 1024
 // tailOf returns the recent output tail for a task (nil if unavailable);
 // injected so the watcher reads the live session ring while tests supply
 // canned bytes. agent.DetectNeedsInput treats nil/empty as "not blocked".
-func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uint64, tailOf func(string) []byte) ([]string, map[string]uint64) {
+//
+// Detection matches the EMULATED screen (BUG-033): the raw byte regex is the
+// fast path (linear agents), and on a miss the tail is rendered through
+// `screen` sized via sizeOf so a fullscreen (alt-screen) agent's cursor-
+// addressed prompt is caught without a view-triggered repaint. A nil screen
+// disables the fallback (raw-only), matching pre-BUG-033 behavior.
+func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uint64, tailOf func(string) []byte, screen *agent.ScreenRenderer, sizeOf func(string) (cols, rows int)) ([]string, map[string]uint64) {
 	out := make([]string, 0, len(idleIDs))
 	seen := make(map[string]bool, len(idleIDs))
 	newFP := make(map[string]uint64)
@@ -186,7 +214,8 @@ func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uin
 		if seen[id] {
 			continue
 		}
-		if agent.DetectNeedsInput(tailOf(id)) {
+		cols, rows := sizeOf(id)
+		if agent.DetectNeedsInputScreen(screen, tailOf(id), cols, rows) {
 			flag(id)
 		}
 	}
@@ -201,11 +230,11 @@ func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uin
 	// — this pass has no idle gate, so a busy agent whose last line ends in `?`
 	// must not qualify) are fingerprinted and considered.
 	for _, id := range runningIDs {
-		tail := tailOf(id)
-		if !agent.DetectSelectionPrompt(tail) {
+		cols, rows := sizeOf(id)
+		fp, ok := agent.SelectionPromptFingerprint(screen, tailOf(id), cols, rows)
+		if !ok {
 			continue
 		}
-		fp := agent.ContentFingerprint(tail)
 		newFP[id] = fp
 		if last, ok := prevFP[id]; ok && last == fp {
 			flag(id)
@@ -216,7 +245,8 @@ func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uin
 		if seen[id] || !runningSet[id] {
 			continue
 		}
-		if agent.DetectNeedsInput(tailOf(id)) {
+		cols, rows := sizeOf(id)
+		if agent.DetectNeedsInputScreen(screen, tailOf(id), cols, rows) {
 			flag(id)
 		}
 	}
@@ -424,7 +454,7 @@ func (s *Server) detectNeedsInputTick(state *idleWatcherState, running, idle []s
 	for id := range state.needsInputNow {
 		prev = append(prev, id)
 	}
-	needs, newFP := computeNeedsInput(idle, running, prev, state.contentFP, tailOf)
+	needs, newFP := computeNeedsInput(idle, running, prev, state.contentFP, tailOf, state.screen, sessionScreenSize)
 	state.contentFP = newFP
 	needsSet := make(map[string]bool, len(needs))
 	for _, id := range needs {

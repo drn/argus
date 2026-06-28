@@ -299,6 +299,118 @@ func TestDetectSelectionPrompt(t *testing.T) {
 	}
 }
 
+// altScreenPromptFrame builds a fullscreen (alt-screen) selection-prompt frame
+// the way a cursor-addressed renderer paints it: the option text is written
+// first, then the ❯ selection cursor is painted LAST at an absolute position to
+// the LEFT of "1.". In byte order the ❯ therefore TRAILS "1.", so the raw
+// `❯ … 1.` regex misses; only after vt emulation places the glyphs on the
+// screen do they line up as "❯ 1.". `secs`/`glyph` vary the spinner timing
+// chrome so successive frames differ in raw bytes but not in rendered content.
+func altScreenPromptFrame(secs, glyph string) string {
+	return "\x1b[?1049h\x1b[2J" +
+		"\x1b[1;1H" + glyph + " Brewed for " + secs +
+		"\x1b[3;5H\x1b[38;2;200;200;200mDo you want to proceed?\x1b[39m" +
+		"\x1b[5;5H1. Yes" +
+		"\x1b[6;5H2. No" +
+		"\x1b[5;3H\x1b[38;2;177;185;249m❯\x1b[39m" +
+		"\x1b[8;1H\x1b[?25l" // park cursor, hide it (animation chrome)
+}
+
+// TestDetectNeedsInputScreen pins BUG-033: a fullscreen agent's cursor-addressed
+// prompt is invisible to the raw-StripANSI detector but visible once emulated.
+func TestDetectNeedsInputScreen(t *testing.T) {
+	altScreen := []byte(altScreenPromptFrame("3s", "✻"))
+
+	t.Run("raw detection misses the alt-screen prompt", func(t *testing.T) {
+		// The bug: cursor positioning is stripped, not applied, so ❯ and 1. are
+		// not adjacent in the raw stream.
+		testutil.Equal(t, DetectNeedsInput(altScreen), false)
+		testutil.Equal(t, DetectSelectionPrompt(altScreen), false)
+	})
+
+	t.Run("emulated detection catches the alt-screen prompt", func(t *testing.T) {
+		r := &ScreenRenderer{}
+		testutil.Equal(t, DetectNeedsInputScreen(r, altScreen, 80, 24), true)
+	})
+
+	t.Run("nil renderer falls back to raw (== DetectNeedsInput)", func(t *testing.T) {
+		testutil.Equal(t, DetectNeedsInputScreen(nil, altScreen, 80, 24), false)
+	})
+
+	t.Run("linear main-screen prompt still fires via the raw fast path", func(t *testing.T) {
+		linear := []byte("Do you want to proceed?\n❯ 1. Yes\n  2. No\n")
+		r := &ScreenRenderer{}
+		testutil.Equal(t, DetectNeedsInputScreen(r, linear, 80, 24), true)
+	})
+
+	t.Run("plain alt-screen output without a prompt does not fire", func(t *testing.T) {
+		busy := []byte("\x1b[?1049h\x1b[2J\x1b[2;5HReading internal/foo.go\x1b[3;5HEditing internal/bar.go")
+		r := &ScreenRenderer{}
+		testutil.Equal(t, DetectNeedsInputScreen(r, busy, 80, 24), false)
+	})
+
+	t.Run("renderer reuse across different sessions/sizes stays correct", func(t *testing.T) {
+		r := &ScreenRenderer{}
+		// First render a wide alt-screen prompt, then a plain narrow frame, then
+		// the prompt again: RIS reset + resize must not bleed state between them.
+		testutil.Equal(t, DetectNeedsInputScreen(r, altScreen, 120, 40), true)
+		busy := []byte("\x1b[?1049h\x1b[2J\x1b[2;5HWorking...")
+		testutil.Equal(t, DetectNeedsInputScreen(r, busy, 80, 24), false)
+		testutil.Equal(t, DetectNeedsInputScreen(r, altScreen, 80, 24), true)
+	})
+}
+
+// TestSelectionPromptFingerprint pins the alt-screen content-stability path: the
+// rendered screen of a parked fullscreen prompt is stable across ticks (so the
+// 2nd qualifying tick flags it) while a streaming alt-screen agent's rendered
+// content shifts (so it is never flagged).
+func TestSelectionPromptFingerprint(t *testing.T) {
+	t.Run("linear prompt fingerprints the raw tail and matches ContentFingerprint", func(t *testing.T) {
+		linear := []byte("Do you want to proceed?\n❯ 1. Yes\n  2. No\n")
+		r := &ScreenRenderer{}
+		fp, ok := SelectionPromptFingerprint(r, linear, 80, 24)
+		testutil.Equal(t, ok, true)
+		testutil.Equal(t, fp, ContentFingerprint(linear))
+	})
+
+	t.Run("alt-screen prompt is detected and stable across animation-only ticks", func(t *testing.T) {
+		r := &ScreenRenderer{}
+		// Two frames of the SAME parked prompt differing only in spinner chrome
+		// (3s/✻ → 7s/✶). The raw bytes differ; the rendered prompt screen does
+		// not (the spinner timing line is volatile-stripped from the fingerprint).
+		fpA, okA := SelectionPromptFingerprint(r, []byte(altScreenPromptFrame("3s", "✻")), 80, 24)
+		fpB, okB := SelectionPromptFingerprint(r, []byte(altScreenPromptFrame("7s", "✶")), 80, 24)
+		testutil.Equal(t, okA, true)
+		testutil.Equal(t, okB, true)
+		testutil.Equal(t, fpA, fpB)
+	})
+
+	t.Run("streaming alt-screen content without a prompt is never flagged", func(t *testing.T) {
+		r := &ScreenRenderer{}
+		busy := []byte("\x1b[?1049h\x1b[2J\x1b[2;5HReading internal/foo.go\x1b[3;5HEditing internal/bar.go")
+		_, ok := SelectionPromptFingerprint(r, busy, 80, 24)
+		testutil.Equal(t, ok, false)
+	})
+
+	t.Run("alt-screen prompt with changing transcript shifts the fingerprint", func(t *testing.T) {
+		r := &ScreenRenderer{}
+		// Same prompt widget but the visible transcript line above it changes,
+		// so the rendered-screen fingerprint must differ (genuine new content).
+		frame := func(line string) string {
+			return "\x1b[?1049h\x1b[2J" +
+				"\x1b[3;5H" + line +
+				"\x1b[5;5H1. Yes\x1b[6;5H2. No\x1b[5;3H❯"
+		}
+		fp1, ok1 := SelectionPromptFingerprint(r, []byte(frame("Applying edit 1 of 3")), 80, 24)
+		fp2, ok2 := SelectionPromptFingerprint(r, []byte(frame("Applying edit 2 of 3")), 80, 24)
+		testutil.Equal(t, ok1, true)
+		testutil.Equal(t, ok2, true)
+		if fp1 == fp2 {
+			t.Fatal("fingerprint did not change when the visible transcript changed")
+		}
+	})
+}
+
 func TestBlockedOnPrompt(t *testing.T) {
 	t.Run("nil session is not blocked", func(t *testing.T) {
 		testutil.Equal(t, BlockedOnPrompt(nil), false)

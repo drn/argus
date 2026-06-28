@@ -25,6 +25,11 @@ var (
 	questionTail = []byte("⏺ Want me to ship it?\n\n╭───╮\n│ > │\n╰───╯\n  ? for shortcuts\n")
 )
 
+// defaultSizeOf is the size lookup the computeNeedsInput tests use: canned
+// tails are formatted for a standard terminal, so 80×24 is fine. The emulated-
+// screen fallback only fires when the raw regex misses; these tails match raw.
+func defaultSizeOf(string) (int, int) { return 80, 24 }
+
 // recordingSink captures emitted events for inspection. Local to the api test
 // package (the events package's own recordingSink is unexported there).
 type recordingSink struct {
@@ -139,7 +144,7 @@ func TestComputeNeedsInput(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, gotFP := computeNeedsInput(tc.idle, tc.running, tc.prev, tc.prevFP, tailOf)
+			got, gotFP := computeNeedsInput(tc.idle, tc.running, tc.prev, tc.prevFP, tailOf, &agent.ScreenRenderer{}, defaultSizeOf)
 			gotSet := map[string]bool{}
 			for _, id := range got {
 				gotSet[id] = true
@@ -169,13 +174,14 @@ func TestComputeNeedsInput(t *testing.T) {
 func TestComputeNeedsInput_StabilityAcrossTicks(t *testing.T) {
 	tailOf := func(id string) []byte { return blockedTail }
 
+	screen := &agent.ScreenRenderer{}
 	// Tick 1: not idle, no prior fingerprint → record only, do not flag.
-	got1, fp1 := computeNeedsInput(nil, []string{"blocked"}, nil, nil, tailOf)
+	got1, fp1 := computeNeedsInput(nil, []string{"blocked"}, nil, nil, tailOf, screen, defaultSizeOf)
 	testutil.Equal(t, len(got1), 0)
 	testutil.Equal(t, len(fp1), 1)
 
 	// Tick 2: still not idle, content unchanged → flagged.
-	got2, _ := computeNeedsInput(nil, []string{"blocked"}, nil, fp1, tailOf)
+	got2, _ := computeNeedsInput(nil, []string{"blocked"}, nil, fp1, tailOf, screen, defaultSizeOf)
 	testutil.Equal(t, len(got2), 1)
 	testutil.Equal(t, got2[0], "blocked")
 }
