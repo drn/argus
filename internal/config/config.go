@@ -160,6 +160,15 @@ type Backend struct {
 	// config.toml overlay field only (no DB column); it overrides the built-in
 	// list for power users who run models the curated list does not name.
 	Models []string `toml:"models"`
+	// EnvVars is a per-backend credential environment mapping consulted by
+	// agent.BuildCmd: each entry maps a TARGET environment-variable name (set in
+	// the spawned agent's child process) to a SOURCE descriptor resolved at spawn
+	// time through agent's pluggable secret-resolver seam. It holds the MAPPING
+	// ONLY — never a secret value — so it is safe to persist (a JSON env_vars DB
+	// column) and to log by key. Example: {"OPENAI_API_KEY": "HERA_OPENAI"} copies
+	// the daemon-side HERA_OPENAI into the child's OPENAI_API_KEY. An unresolved
+	// source sets nothing (see agent.BuildCmd).
+	EnvVars map[string]string `toml:"env_vars"`
 }
 
 // ProjectSandboxConfig holds per-project sandbox overrides.
@@ -255,6 +264,11 @@ func DefaultConfig() Config {
 			"codex": {
 				Command:    "codex --dangerously-bypass-approvals-and-sandbox",
 				PromptFlag: "",
+				// Credential mapping ONLY (never a value): copy the daemon-side
+				// HERA_OPENAI into the child's OPENAI_API_KEY so a Codex (OpenAI)
+				// agent — e.g. a cross-vendor reviewer — receives its key under the
+				// expected name. Resolved at spawn via agent's secret-resolver seam.
+				EnvVars: map[string]string{"OPENAI_API_KEY": "HERA_OPENAI"},
 			},
 			"pi": {
 				Command:    "pi",

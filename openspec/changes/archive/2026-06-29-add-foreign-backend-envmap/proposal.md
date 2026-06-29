@@ -44,12 +44,27 @@ Scope is `codex` only. Gemini is explicitly out of scope.
 ## Operator setup (documentation)
 
 For a `codex` reviewer to actually receive a key, the **daemon's own
-environment** must carry the source variable (default `HERA_OPENAI`). Because
-the argus daemon is typically launched by launchd with a minimal environment,
-operators must arrange for `HERA_OPENAI` to be present in the daemon's
-environment (the same minimal-env constraint that once stripped `TERM`). Wiring
-launchd is out of scope for this change; the open design question below records
-how that source should ultimately be provisioned.
+environment** must carry the source variable (default `HERA_OPENAI`). The
+default resolver is `os.LookupEnv(source)`.
+
+**Important caveat — the launchd deployment resolves nothing by default.** The
+argus daemon is typically launched by launchd with a minimal environment that
+will **NOT** contain `HERA_OPENAI` (the same minimal-env constraint that once
+stripped `TERM` and made agents render colorless). In that deployment the
+default `os.LookupEnv` resolver finds nothing, so no key is injected and the
+mapping is logged as unresolved. **Cross-vendor review works today only when the
+daemon is started from an environment that already carries `HERA_OPENAI`** (for
+example, launched from an interactive shell that exported it). Wiring launchd to
+carry the source is explicitly out of scope here.
+
+**Intended production path (deferred follow-up).** The production resolver is an
+`op`/1Password-CLI resolver that shells out at spawn time — e.g.
+`op read op://claude/shell-env/HERA_OPENAI` — and drops into the existing
+`agent.SetSecretResolver` seam **without touching `BuildCmd`**. The actual
+production resolver, and how the daemon authenticates to 1Password without a
+plaintext key in any plist or file (Aaron's secret/launchd infra + org policy),
+is a SEPARATE story, out of scope for this change. This PR ships the seam and
+the `os.LookupEnv` default only.
 
 ## Open design question (sent to the coordinator)
 

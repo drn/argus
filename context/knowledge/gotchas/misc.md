@@ -38,6 +38,12 @@
 - **`fixupBackends()` migrates old codex flags** (`--yolo`, `--full-auto`) to `--dangerously-bypass-approvals-and-sandbox`.
 - **`ensureTopLevel` must insert before the first `[section]` header, not append.** Appending a top-level TOML key to the end of a file places it inside the last section (e.g. `[notice.model_migrations]`), causing type errors. `ensureTopLevel` also migrates previously misplaced keys.
 
+## Backend credential env mapping (env_vars)
+
+- **`config.Backend.EnvVars` / the `backends.env_vars` JSON column hold the MAPPING ONLY (target env var → source descriptor), NEVER a secret value.** A secret value must never enter the DB, logs, fixtures, or git. `BuildCmd` resolves the source at spawn time through the swappable `agent.secretResolver` seam (default `envSecretResolver` = `os.LookupEnv`) and appends `target=value` to `cmd.Env`; an unresolved source sets nothing and `uxlog`s a warning naming ONLY the var, never the value. The success path logs nothing about the value.
+- **Swap the resolver via `agent.SetSecretResolver` (returns the previous; nil resets to default) — never edit `BuildCmd` to add a new credential source.** This is the seam for a future `op`/1Password resolver.
+- **The launchd-started daemon's minimal env will NOT carry the source (e.g. `HERA_OPENAI`)**, so the default `os.LookupEnv` resolver injects nothing there — same minimal-env constraint that once stripped `TERM`. Cross-vendor review works today only when the daemon is started from an env that already exports the source. The `codex` default seeds `{"OPENAI_API_KEY":"HERA_OPENAI"}`; `fixupBackends` fills it on pre-existing rows only when their mapping is empty (never clobbers a customized one).
+
 ## Model Selection (--model injection)
 
 - **`--model` injection is scoped to known backend CLIs (claude, codex, pi).** Unknown/custom backends never receive the flag — if a custom backend needs a model, bake `--model` into its command. A backend command that already names `--model` always wins (no double injection), mirroring the `hasPermissionFlags` "command wins" rule.
