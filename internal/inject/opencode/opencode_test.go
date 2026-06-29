@@ -25,6 +25,7 @@ func readMCP(t *testing.T, path string) map[string]any {
 }
 
 func TestInjectGlobal_UsesHome(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "") // force the ~/.config path
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	if err := InjectGlobal(7742); err != nil {
@@ -39,10 +40,24 @@ func TestInjectGlobal_UsesHome(t *testing.T) {
 	}
 }
 
+func TestInjectGlobal_HonorsXDGConfigHome(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("HOME", t.TempDir()) // must NOT be used when XDG_CONFIG_HOME is set
+	if err := InjectGlobal(7742); err != nil {
+		t.Fatalf("InjectGlobal: %v", err)
+	}
+	argus := readMCP(t, filepath.Join(xdg, "opencode", "opencode.json"))
+	if argus["url"] != "http://localhost:7742/mcp" {
+		t.Errorf("url = %v", argus["url"])
+	}
+}
+
 func TestInjectGlobal_MkdirError(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("running as root")
 	}
+	t.Setenv("XDG_CONFIG_HOME", "") // force the ~/.config path
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	// Make ~/.config a file so MkdirAll of ~/.config/opencode fails.

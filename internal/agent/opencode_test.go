@@ -85,6 +85,16 @@ func TestBuildCmd_OpencodeModelInjection(t *testing.T) {
 	testutil.Equal(t, cmd.Args[2], "opencode --model 'anthropic/claude-sonnet-4-5' --prompt 'fix the bug'")
 }
 
+func TestBuildCmd_OpencodeModelInjection_Resume(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{Backend: "opencode", Model: "anthropic/claude-opus-4-1", SessionID: "ses_abc123", Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, true)
+	testutil.NoError(t, err)
+	// Model flag precedes the resume --session; prompt is dropped.
+	testutil.Equal(t, cmd.Args[2], "opencode --model 'anthropic/claude-opus-4-1' --session 'ses_abc123'")
+}
+
 // seedOpencodeSQLite creates an opencode.db with a `session` table under the
 // given data dir and inserts the provided rows (id, directory, timeUpdated).
 func seedOpencodeSQLite(t *testing.T, dataDir string, rows [][3]any) {
@@ -169,6 +179,43 @@ func TestCaptureOpencodeSessionID_MalformedIDRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error: malformed session id must not be returned")
 	}
+}
+
+// A malformed NEWEST row must not hide an older valid session for the same
+// directory — the scan skips it and returns the valid one.
+func TestCaptureOpencodeSessionID_SQLiteSkipsMalformedNewest(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dataRoot := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataRoot)
+	wt := t.TempDir()
+	seedOpencodeSQLite(t, filepath.Join(dataRoot, "opencode"), [][3]any{
+		{"garbage-newest", wt, 300},
+		{"ses_valid1111111111111111111", wt, 200},
+	})
+	got, err := CaptureOpencodeSessionID(wt)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got, "ses_valid1111111111111111111")
+}
+
+// A worktree under a symlinked path must still match a session whose stored
+// directory is the resolved-absolute form (the full-scan canonPath fallback).
+func TestCaptureOpencodeSessionID_SQLiteSymlinkMatch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dataRoot := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataRoot)
+
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	// opencode stores the resolved (real) path; Argus looks up via the symlink.
+	seedOpencodeSQLite(t, filepath.Join(dataRoot, "opencode"), [][3]any{
+		{"ses_symlink11111111111111111", real, 100},
+	})
+	got, err := CaptureOpencodeSessionID(link)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got, "ses_symlink11111111111111111")
 }
 
 func TestCaptureSessionID_DispatchesOpencode(t *testing.T) {

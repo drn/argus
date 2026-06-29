@@ -6,21 +6,30 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // mcpServerName is the key used for Argus in opencode's `mcp` object.
 const mcpServerName = "argus"
 
-// InjectGlobal reads ~/.config/opencode/opencode.json, adds/updates the argus
-// MCP server entry under the `mcp` object, and writes the file back. Idempotent
-// — only writes if the entry is absent or the port has changed. All other keys
+// InjectGlobal reads opencode's global config, adds/updates the argus MCP
+// server entry under the `mcp` object, and writes the file back. Idempotent —
+// only writes if the entry is absent or the port has changed. All other keys
 // (including unrelated mcp entries and top-level config) are preserved verbatim.
+// The config lives at $XDG_CONFIG_HOME/opencode/opencode.json when
+// XDG_CONFIG_HOME is set, else ~/.config/opencode/opencode.json — mirroring
+// opencode's own xdg-basedir resolution (and the XDG_DATA_HOME awareness on the
+// capture side).
 func InjectGlobal(port int) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("inject opencode global: user home dir: %w", err)
+	configHome := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
+	if configHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("inject opencode global: user home dir: %w", err)
+		}
+		configHome = filepath.Join(home, ".config")
 	}
-	path := filepath.Join(home, ".config", "opencode", "opencode.json")
+	path := filepath.Join(configHome, "opencode", "opencode.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}

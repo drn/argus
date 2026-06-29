@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -393,16 +394,38 @@ func CaptureOpencodeSessionID(worktreePath string) (string, error) {
 }
 
 // captureOpencodeFromSQLite queries opencode's session table for the
-// most-recently-updated session whose directory matches the worktree. The DB
-// runs in WAL mode; open read-only and immutable so a concurrent opencode does
-// not block us. Matches the directory both as-stored and symlink-resolved.
+// most-recently-updated session whose directory matches the worktree. Opened
+// read-only (mode=ro) so we never mutate opencode's DB and still read the WAL —
+// immutable=1 would skip the -wal file and miss an uncheckpointed newest row.
+// The DSN is built via url.URL so a data-dir path containing '?' or '#' can't
+// corrupt the query string.
+//
+// opencode stores `directory` as a resolved-absolute path, so the indexed
+// exact-match query handles the common case in O(log n). Only when that misses
+// do we fall back to a full scan that symlink-resolves each stored directory —
+// covering the rare case where the stored path and the worktree differ only by
+// a symlink. Malformed (non-ses_) ids are skipped, not fatal, so one bad row
+// never hides an older valid session.
 func captureOpencodeFromSQLite(dbPath, want string) (string, error) {
-	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&immutable=1")
+	dsn := (&url.URL{Scheme: "file", Path: dbPath, RawQuery: "mode=ro"}).String()
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return "", fmt.Errorf("captureOpencodeFromSQLite: open: %w", err)
 	}
 	defer func() { _ = db.Close() }()
 
+	// Fast path: indexed exact-match on the resolved-absolute directory.
+	var id string
+	err = db.QueryRow(
+		`SELECT id FROM session WHERE directory = ? ORDER BY time_updated DESC LIMIT 1`,
+		want,
+	).Scan(&id)
+	if err == nil && opencodeSessionIDRe.MatchString(id) {
+		return id, nil
+	}
+
+	// Fallback: scan newest-first, symlink-resolving each stored directory,
+	// skipping malformed ids.
 	rows, err := db.Query(`SELECT id, directory FROM session ORDER BY time_updated DESC`)
 	if err != nil {
 		return "", fmt.Errorf("captureOpencodeFromSQLite: query: %w", err)
@@ -410,16 +433,19 @@ func captureOpencodeFromSQLite(dbPath, want string) (string, error) {
 	defer rows.Close()
 
 	for rows.Next() {
-		var id, dir string
-		if scanErr := rows.Scan(&id, &dir); scanErr != nil {
+		var rid, dir string
+		if scanErr := rows.Scan(&rid, &dir); scanErr != nil {
+			continue
+		}
+		if !opencodeSessionIDRe.MatchString(rid) {
 			continue
 		}
 		if dir == want || canonPath(dir) == want {
-			if !opencodeSessionIDRe.MatchString(id) {
-				return "", fmt.Errorf("captureOpencodeFromSQLite: unexpected session ID format: %q", id)
-			}
-			return id, nil
+			return rid, nil
 		}
+	}
+	if rerr := rows.Err(); rerr != nil {
+		return "", fmt.Errorf("captureOpencodeFromSQLite: scan: %w", rerr)
 	}
 	return "", fmt.Errorf("captureOpencodeFromSQLite: no session for %s", want)
 }

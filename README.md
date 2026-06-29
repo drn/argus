@@ -90,7 +90,7 @@ Disabled by default — see **[Knowledge Base setup](docs/knowledge-base.md)** t
 - **Remote TUI** — `argus --remote https://your-mac.tail-xxxx.ts.net --token "$ARGUS_TOKEN"` launches the full TUI against a daemon running on another machine. Same keybindings, same panels, same agent stream — over Tailscale. No local SQLite, no daemon socket; every call rides the REST API the PWA already uses.
 - **Multi-backend** — Claude Code, Codex, or any LLM CLI as a templated command. Per-backend prompt flags, plan-mode defaults, and a default model, plus a per-task model override injected as `--model` at launch.
 - **Worktree isolation** — every task gets `~/.argus/worktrees/<project>/<task>` and an `argus/<task>` branch, all transactionally created and cleaned up.
-- **Session resume** — `--resume` on Claude Code, `codex resume <id>` on Codex. Your conversation survives a daemon restart.
+- **Session resume** — `--resume` on Claude Code, `codex resume <id>` on Codex, `--session <id>` on opencode. Your conversation survives a daemon restart.
 - **Consistent scrollback across viewers** — switch between the TUI and the PWA at very different widths and the agent re-emits the conversation at the new size. Idle-gated so it never fires mid-tool-call; the SPA reattaches transparently.
 - **Agent forking** — duplicate a running task with full context (source info, recent output, git diff) injected into the new worktree.
 - **Smart auto-naming** — a Claude Haiku call quietly turns a free-form prompt into a kebab-case task name. Falls open to a regex slug if `claude` is unavailable.

@@ -1718,10 +1718,11 @@ func modelConfig() config.Config {
 	return config.Config{
 		Defaults: config.Defaults{Backend: "claude"},
 		Backends: map[string]config.Backend{
-			"claude": {Command: "claude"},
-			"codex":  {Command: "codex --dangerously-bypass-approvals-and-sandbox"},
-			"pi":     {Command: "pi"},
-			"bare":   {Command: "my-agent"},
+			"claude":   {Command: "claude"},
+			"codex":    {Command: "codex --dangerously-bypass-approvals-and-sandbox"},
+			"pi":       {Command: "pi"},
+			"opencode": {Command: "opencode", PromptFlag: "--prompt"},
+			"bare":     {Command: "my-agent"},
 		},
 	}
 }
