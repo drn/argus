@@ -30,6 +30,7 @@ type CreateInput struct {
 	Project    string
 	Backend    string // optional; empty = cfg.Defaults.Backend
 	Model      string // optional; overrides the backend's default model for this task
+	Archetype  string // optional; diligence-profile resolution key (add-diligence-profiles)
 	BaseBranch string // optional; overrides projCfg.Branch for this task
 
 	// AutoName, when true, fires a fire-and-forget Haiku rename in a
@@ -196,6 +197,7 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		Prompt:     prompt,
 		Backend:    backend,
 		Model:      strings.TrimSpace(input.Model),
+		Archetype:  strings.TrimSpace(input.Archetype),
 		Worktree:   wtPath,
 		Branch:     branchName,
 		BaseBranch: baseBranch,
