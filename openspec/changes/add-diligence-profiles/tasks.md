@@ -94,12 +94,12 @@ integrated result before ralph-review.
 
 **Depends on:** Stage 1
 
-- [ ] 6.1 Document the formal archetype list (13) + the model-naming convention in the README Reference
+- [x] 6.1 Document the formal archetype list (13) + the model-naming convention in the README Reference
   appendix; add a profiles section (file location, `extends`, `validate`, seed profiles).
-- [ ] 6.2 Add a profile-awareness section to the in-repo hera/DAG skill (`.claude/skills/hera*`):
+- [x] 6.2 Add a profile-awareness section to the in-repo hera/DAG skill (`.claude/skills/hera*`):
   reading `ARGUS_PROFILE`/`ARGUS_ARCHETYPE`, what the archetype means for the agent. (Reviewer-panel
   consumption is explicitly deferred to `2a-xvendor-review`.)
-- [ ] 6.3 Record non-obvious gotchas in `context/knowledge/gotchas/*.md` (profile resolution fail-open,
+- [x] 6.3 Record non-obvious gotchas in `context/knowledge/gotchas/*.md` (profile resolution fail-open,
   in-repo precedence, daemon-side resolution vs sandbox, `[panel]` deferred seam) per the docs rule.
 
 ## 7. Review pass (ralph-review)

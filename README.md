@@ -281,7 +281,59 @@ Hera is Argus's native layer for running a *team* of agents. It introduces **rol
 - **`hera.enabled = true` (default)** — native Hera is active. It stores its state in the same `~/.argus/data.sql` (the `hera_*` tables), exposes the `hera_*` MCP tools in-process, and owns the second tab. The legacy Hera plugin's tools are suppressed so they never double-register.
 - **`hera.enabled = false`** — the native `hera_*` MCP tools are not served, and you can instead run the external **Hera plugin** over the [plugin substrate](#plugin-substrate). The plugin keeps its own `~/.hera` state and plugin view, entirely unaffected by Argus. The TUI's second tab is always the native Hera view regardless of this flag.
 
-The two run **independently and share no state.** Switching to native Hera performs **no migration** of any prior `~/.hera` data — native Hera starts fresh. Set the flag in `config.toml` (`[hera] enabled = …`) or the DB.
+The two run **independently and share no state.** Switching to native Hera performs **no migration** of any prior `~/.hera` data – native Hera starts fresh. Set the flag in `config.toml` (`[hera] enabled = …`) or the DB.
+
+### Diligence profiles (model tiering)
+
+**Diligence profiles** route model choice *per archetype* and vary process rigor *per project*: spend premium models up the tree (plan / orchestrate / review / synthesize), where leverage is high and output is hard to verify; save cheaper models down the tree (CI loops, verification, docs), where work is high-volume and verifiable. A profile is a named, on-disk TOML preset; a project points at one *by name*. At spawn, Argus resolves the bound profile, feeds the per-archetype model into the existing model-resolution chain, and exports the resolution to the agent's environment so the in-repo hera/DAG skill is profile-aware.
+
+#### Archetypes
+
+A task's **archetype** names *what kind of job* it is. It is an optional task property set at the spawn layer – the new-task form, the new-worker prompt, the `hera_spawn_worker` `archetype` param, and plan-DAG nodes – on every spawn path except a new hera coordinator (which is always `orchestrator`). The archetype is the key matched against a profile's `[archetype.<name>]` tables; the selector defaults to `(none)`, meaning no profile is consulted. The thirteen canonical archetypes (and the model the seed `default` profile assigns each):
+
+| Archetype | What it is | `default` model |
+|-----------|------------|-----------------|
+| `brainstorm` | Exploratory design / ideation | `opus` |
+| `orchestrator` | Coordinator that delegates and routes work (default for hera coordinators) | `opus` |
+| `big_build` | Large, multi-file implementation | `opus` |
+| `code_slice` | A scoped implementation slice (default for hera workers) | `sonnet` |
+| `bug_fix` | A targeted defect fix | `sonnet` |
+| `review` | A code / plan review pass | `opus` |
+| `security_review` | A security-focused review | `opus` |
+| `synthesis` | Consolidating multiple inputs into one result | `opus` |
+| `spec_audit` | Auditing spec coverage / conformance | `sonnet` |
+| `ci_loop` | A mechanical CI-green loop | `haiku` |
+| `verify` | Verification / acceptance checking | `haiku` |
+| `recovery` | Recovering a stuck or failed task | `sonnet` |
+| `docs` | Documentation writing | `haiku` |
+
+#### Model-naming convention
+
+A profile's `model` field uses the backend's **stable CLI aliases**, which always map to the current model, so a profile does not churn per model release. Claude: `opus`, `sonnet`, `haiku`. Codex: `gpt-5-codex`, `gpt-5`. Validation accepts any model in the **union** of these built-in aliases and every configured backend's `models` list – so adding a foreign reviewer model under `[backends.<name>] models` makes it a valid profile model with no Argus code change. A profile model is applied only when it is valid for the worker's *resolved* backend; otherwise resolution falls through (e.g. `opus` named for a codex worker falls open to that backend's default).
+
+#### Profiles
+
+A profile is one TOML file, discovered from two locations:
+
+- `~/.argus/profiles/<name>.toml` – the per-user **library** (fallback).
+- `<repo>/.argus/profiles/<name>.toml` – an **in-repo** copy (checked in or gitignored, operator's choice). In-repo **takes precedence** over the library for the same name, so a repo can pin its own profile.
+
+The DB stores **only** the project→profile *name* – never a profile body, and there is no profiles table.
+
+- **`extends`** – a profile may set `extends = "<parent>"`; the child's declared fields overlay onto the fully-resolved parent, recursively and per-field (a field the child omits is inherited). An `extends` cycle is a validation error.
+- **`validate` CLI** – `argus validate <name>` loads, resolves, and validates a profile, reporting every conformance error (unknown archetype, out-of-enum `effort`/`window`, unknown model, `extends` cycle) or confirming it is valid and naming the source (in-repo vs library) it resolved from. Exit `0` = valid, `1` = not found / invalid. It is operator tooling only – **not** wired into the Go build, CI, or any Make gate.
+- **Seed profiles** – three documented examples ship under `docs/profiles/` (they are examples, **not** auto-installed – copy one to `~/.argus/profiles/` or a repo's `.argus/profiles/` and adapt):
+  - `default` – balanced allocation across all 13 archetypes (the table above).
+  - `lean` – `extends = "default"`, minimal process (single review pass, no gating) for daily-driven personal tooling.
+  - `customer_grade` – `extends = "default"`, turned-up rigor (two review passes, gating, a security spot-check) plus a reviewer `[panel]`, for customer-facing code with no dogfooding loop.
+- **Project binding** – **Settings → project view** shows a validated select-list of on-disk profiles; only profiles that pass validation are selectable, and the chosen name persists as the project's default binding. The new-agent modal also lets you pick a profile for that spawn. An unbound project resolves the `default` profile.
+- **`effort` / `window`** – each `[archetype.<name>]` entry may also carry `effort` (∈ `low`/`medium`/`high`) and `window` (∈ `200k`/`1m`). These are validated and surfaced in the plan/DAG view, but currently only `model` is wired into resolution.
+- **Reviewer `[panel]`** – a profile may carry an opaque `[panel]` block. Its composition grammar is a forward-reference owned by the cross-vendor review work and is **not consumed yet**; validation checks only that the block is structurally well-formed.
+- **Env vars** – when a bound profile actively contributes a backend-valid model, the spawn exports `ARGUS_PROFILE`, `ARGUS_ARCHETYPE`, and `ARGUS_MODEL` to the agent (mirroring `ARGUS_TASK_ID`); when no profile resolves, none of the three are exported.
+- **Plan/DAG view** – each node shows its archetype and the applied model/effort, and a node/project is flagged with a warning when its bound profile is missing or invalid.
+- **Fail-open** – a missing or invalid bound profile never hard-fails a spawn: Argus logs it and passes **no** `--model`, so the agent uses its own CLI default. Validation is the loud surface (the CLI, the Settings select-list, the DAG warning); resolution itself fails open.
+
+Resolution reads `~/.argus/profiles/` and the worktree's `.argus/profiles/`, so it runs **daemon-side at spawn** – outside the sandbox, where global `~/.argus` reads would `EPERM`. The agent itself only ever reads the exported env vars (or its own in-repo `.argus/profiles/`).
 
 ### Daemon & session-supervisor
 
@@ -416,16 +468,16 @@ If the recipient has a live agent session the daemon also writes a single notifi
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `hera_new_orchestrator` | Bootstrap a new orchestrator and claim its `coordinator` role for the calling task.                                                               |
 | `hera_join`             | Claim the calling task's existing role + unread count, or (with `role_name` + `kind`) attach a new `worker`/`freelance` role under an orchestrator. |
-| `hera_spawn_worker`     | Spawn a born-bound worker task + session under the caller's orchestrator (caller must hold a live coordinator binding). Optional `model` picks the worker's model by task complexity (backend-scoped; empty = backend default). |
+| `hera_spawn_worker`     | Spawn a born-bound worker task + session under the caller's orchestrator (caller must hold a live coordinator binding). Optional `model` picks the worker's model by task complexity (backend-scoped; empty = backend default). Optional `archetype` ([diligence profile](#diligence-profiles-model-tiering)) rides onto the task; defaults to `code_slice` when omitted. |
 | `hera_send`             | Send a role-addressed message. **`status` is required for worker/freelance senders** (`idle`/`working`/`blocked`/`done`/`failed`) and is applied synchronously before send. Workers/freelancers default to the coordinator when `to` is omitted; coordinators must name a recipient. |
 | `hera_inbox`            | Fetch the caller role's unread messages (oldest first), cancel their pending pane deliveries, and mark them read.                                 |
 | `hera_mark_read`        | Mark a specific list of message IDs read and cancel their pending deliveries.                                                                     |
 | `hera_status`           | Set the caller role's status (`idle`/`working`/`blocked`/`done`/`failed`), mirrored to `task_meta`; `done` rolls the worker's task to in-review + `ready_to_close`; `failed` rolls to in-review without `ready_to_close`. |
 | `hera_tree_updates`     | Scan the caller's orchestrator subtree for messages since a per-role cursor; returns TLDR subject lines only and auto-advances the cursor.        |
 | `hera_get_messages`     | Fetch full message bodies by ID (after `hera_tree_updates`), scoped to the caller's orchestrator subtree.                                         |
-| `hera_plan_node`        | Author a single planned node under the caller's orchestrator (coordinator-only). Params: `name`, `kind` (`worker`\|`subcoord`, default `worker`), `prompt` (worker nodes) or `goal` (subcoord nodes — required; the goal handed to the spawned coordinator). A `subcoord` node materializes as a distinct coordinator agent with its own task, worktree, and child orchestrator. |
+| `hera_plan_node`        | Author a single planned node under the caller's orchestrator (coordinator-only). Params: `name`, `kind` (`worker`\|`subcoord`, default `worker`), `prompt` (worker nodes) or `goal` (subcoord nodes — required; the goal handed to the spawned coordinator), optional `archetype` ([diligence profile](#diligence-profiles-model-tiering)) persisted on the node and copied onto the task it materializes. A `subcoord` node materializes as a distinct coordinator agent with its own task, worktree, and child orchestrator. |
 | `hera_block`            | Add a blocking edge: `blocked` waits until `blocker` reaches role-status `done`. Coordinator-only; both roles must be in the same orchestrator. No cycles. |
-| `hera_plan`             | Author an entire plan graph in one call: a `nodes` array (each with `name`, `kind`, `prompt`/`goal`, optional `project`) and an `edges` array (`blocked`→`blocker` pairs). Coordinator-only; atomically creates all nodes then all edges. Supports mixed `kind` values in the same graph. |
+| `hera_plan`             | Author an entire plan graph in one call: a `nodes` array (each with `name`, `kind`, `prompt`/`goal`, optional `project`, optional `archetype`) and an `edges` array (`blocked`→`blocker` pairs). Coordinator-only; atomically creates all nodes then all edges. Supports mixed `kind` values in the same graph. |
 | `hera_plan_node_update` | Edit a planned node's `prompt` and/or `project` before it materializes. Rejected after materialization.                                          |
 | `hera_unblock`          | Remove a blocking edge between two roles. Idempotent. Re-pointing an edge is `hera_unblock` + `hera_block`.                                      |
 | `hera_plan_node_cancel` | Cancel a planned node: stamps `cancelled_at`, excludes it from materialization, unblocks dependents. Kept visible in the plan DAG as grey ✕.     |
@@ -699,6 +751,7 @@ Registered repos, keyed by name. The DB projects table is the primary source; en
 | `path` | string | — | Absolute path to the git repository. |
 | `branch` | string | — | Base branch new worktrees fork from. |
 | `backend` | string | — | Per-project backend override; falls back to `defaults.backend`. |
+| `profile` | string | `""` | The [diligence profile](#diligence-profiles-model-tiering) bound to this project, by name. Only the name is stored; the body lives on disk. Empty resolves the `default` profile. |
 
 `[projects.<name>.sandbox]` — per-project sandbox overrides. **These untagged fields match by lowercased Go name, not snake_case** (`denyread`, not `deny_read`):
 

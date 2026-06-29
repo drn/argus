@@ -57,7 +57,7 @@ would produce) according to this contract:
 
 ## Authoring verbs
 
-- **`hera_plan_node(cwd, name, prompt, [orchestrator], [project], [kind], [goal])`** — create ONE
+- **`hera_plan_node(cwd, name, prompt, [orchestrator], [project], [kind], [goal], [archetype])`** — create ONE
   planned node. **Name nodes by a `<stage><member>` short-id — number = serial stage, letter =
   parallel member (`1a`, `2a`, `2b`, `3a`)** — optionally with a *terse* suffix (`1a-seed`,
   `2a-alpha`). This is **not cosmetic**: the rail/DAG renders one box per node, and long descriptive
@@ -70,6 +70,9 @@ would produce) according to this contract:
     nodes" below.
   - `goal` — **required for `kind=subcoord`** (used instead of `prompt`): the objective handed to the
     sub-coordinator. You hand only the goal — not its child orchestrator name or its sub-plan.
+  - `archetype` — the node's **diligence archetype** (e.g. `code_slice`, `review`, `ci_loop`); persisted
+    on the planned node and copied onto the task when the gater materializes it, so the worker is born
+    with the right per-archetype model + `ARGUS_ARCHETYPE`. See §9 of the base `hera` skill.
 
 - **`hera_block(cwd, blocked, blocker, [orchestrator])`** — add a blocking edge: `blocked` waits on
   `blocker` reaching role-status `done` before it materializes. Both roles must be in your
@@ -77,7 +80,7 @@ would produce) according to this contract:
   (a coordinator never reaches `done`, so it would be permanently unsatisfiable).
 
 - **`hera_plan(cwd, nodes, [edges], [orchestrator])`** — submit a WHOLE graph in one
-  **transactional** call: `nodes` = `[{name, prompt, [project], [kind], [goal]}]`, `edges` =
+  **transactional** call: `nodes` = `[{name, prompt, [project], [kind], [goal], [archetype]}]`, `edges` =
   `[{blocked, blocker}]` referencing nodes by name (or existing roles). **All-or-nothing** — any
   cycle / cross-orchestrator / coordinator-blocker / validation error rolls back the entire graph
   (no orphan nodes). The way to lay out a multi-stage plan at once. **Name every node by its
