@@ -9,8 +9,9 @@ The new-agent prompts (new task and new worker) SHALL present a **Profile** cycl
 coordinator** prompt SHALL NOT present an archetype selector (a coordinator is always the `orchestrator`
 archetype). The Profile selector SHALL default to the project's bound profile and allow a per-spawn
 override; the Archetype selector SHALL offer the canonical archetypes plus a `(none)` option, and SHALL
-default to `(none)`. The submitted task SHALL carry the selected archetype (empty when `(none)`), and the
-selected profile override (if any) SHALL be passed to the spawn caller.
+default to `(none)`. The submitted task SHALL carry the selected archetype (empty when `(none)}`), and the
+selected profile override (if any) SHALL be persisted on the spawned task's `profile` field and SHALL
+take effect during model resolution, overriding the project's bound profile for that one spawn.
 
 #### Scenario: Selectors present on the new-task prompt
 
@@ -32,3 +33,9 @@ selected profile override (if any) SHALL be passed to the spawn caller.
 
 - **WHEN** the Archetype selector is left on `(none)` and the form is submitted
 - **THEN** the produced task carries an empty archetype
+
+#### Scenario: Per-spawn override takes effect on resolution
+
+- **WHEN** the operator cycles the Profile selector to a profile different from the project's bound default
+- **THEN** the spawned task's `profile` field carries the selected override name and model resolution consults
+  that profile instead of the project's bound profile

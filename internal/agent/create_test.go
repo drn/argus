@@ -554,3 +554,53 @@ func TestCreateAndStart_NoArchetypeLeavesEmpty(t *testing.T) {
 
 	RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo)
 }
+
+// TestCreateAndStart_PersistsProfile verifies that a per-spawn profile
+// override passed via CreateInput.Profile is stored on the task row and
+// survives a DB round-trip.
+func TestCreateAndStart_PersistsProfile(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{sessionPID: 1}
+
+	task, _, err := CreateAndStart(d, fr, CreateInput{
+		Name:      "profile-task",
+		Prompt:    "go",
+		Project:   "proj",
+		Archetype: "code_slice",
+		Profile:   "custom",
+	})
+	testutil.NoError(t, err)
+	testutil.Equal(t, task.Profile, "custom")
+
+	// Round-trip: re-fetch from DB to confirm the column was persisted.
+	got, err := d.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Profile, "custom")
+
+	RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo)
+}
+
+// TestCreateAndStart_EmptyProfileLeavesEmpty verifies that an empty Profile
+// input persists as empty (no override = use project binding at resolve time).
+func TestCreateAndStart_EmptyProfileLeavesEmpty(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{sessionPID: 1}
+
+	task, _, err := CreateAndStart(d, fr, CreateInput{
+		Name:      "noprofile-task",
+		Prompt:    "go",
+		Project:   "proj",
+		Archetype: "code_slice",
+		Profile:   "",
+	})
+	testutil.NoError(t, err)
+	testutil.Equal(t, task.Profile, "")
+
+	got, err := d.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Profile, "")
+
+	RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo)
+}

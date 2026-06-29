@@ -25,6 +25,7 @@ func (d *DB) createTables() error {
 			base_branch TEXT NOT NULL DEFAULT '',
 			result      TEXT NOT NULL DEFAULT '',
 			archetype   TEXT NOT NULL DEFAULT '',
+			profile     TEXT NOT NULL DEFAULT '',
 			created_at  TEXT NOT NULL,
 			started_at  TEXT NOT NULL DEFAULT '',
 			ended_at    TEXT NOT NULL DEFAULT ''
@@ -97,6 +98,11 @@ func (d *DB) createTables() error {
 	// read by agent.ResolveModel. Idempotent ADD for databases predating it;
 	// existing rows read empty (no archetype → no profile consulted).
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN archetype TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+
+	// profile (add-diligence-profiles): the per-spawn profile override. Non-empty
+	// means the operator selected a specific profile for this one spawn, overriding
+	// the project's bound profile during model resolution. Empty = use project binding.
+	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN profile TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 
 	// Index for FindByNameProject (task_create idempotency check inside
 	// createMu). The query filters by all three columns; SQLite uses a

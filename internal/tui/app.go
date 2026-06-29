@@ -3597,12 +3597,12 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 
 		// Capture form data before closing.
 		proj := a.newTaskForm.SelectedProject()
-		// The per-spawn profile override is surfaced to the caller (forms-and-modals
-		// requirement). There is no per-task profile column to persist it (the
-		// authoritative binding is the project's, set in Settings), so it is logged
-		// for visibility; profile resolution reads the project binding at spawn.
-		if override := a.newTaskForm.ProfileOverride(); override != "" {
-			uxlog.Log("[newtask] per-spawn profile override selected: %q (archetype=%q)", override, task.Archetype)
+		// task.Profile carries the per-spawn profile override (non-empty when the
+		// operator picked a different profile for this one spawn). It is persisted on
+		// the task row and takes precedence over the project's bound profile during
+		// model resolution (agent.resolveProfile). Log it for observability.
+		if task.Profile != "" {
+			uxlog.Log("[newtask] per-spawn profile override selected: %q (archetype=%q)", task.Profile, task.Archetype)
 		}
 		onDone := a.newTaskOnDone
 		var projCfg config.Project
@@ -3646,6 +3646,7 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 			Backend:    task.Backend,
 			Model:      task.Model,
 			Archetype:  task.Archetype,
+			Profile:    task.Profile,
 			BaseBranch: task.Branch,
 			// INVARIANT: the new-task form has no name field — task.Name is
 			// always GenerateNameFromPrompt(prompt). If a name field is added

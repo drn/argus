@@ -231,3 +231,108 @@ func TestBuildCmd_ProfileEnv_AbsentOnFallThrough(t *testing.T) {
 	// --model still reflects the backend default.
 	testutil.Contains(t, cmd.Args[2], "--model 'gpt-5'")
 }
+
+// TestResolveModel_TaskProfileOverrideHonored verifies that a non-empty
+// task.Profile overrides the project's bound profile during resolution.
+func TestResolveModel_TaskProfileOverrideHonored(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := modelConfig()
+	cfg.Projects = map[string]config.Project{
+		"app": {Path: "/x", Profile: "lean"},
+	}
+	// lean profile (project binding) uses haiku; override uses sonnet.
+	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmodel = \"haiku\"\n")
+	writeLibraryProfile(t, "custom", "[archetype.code_slice]\nmodel = \"sonnet\"\n")
+
+	task := &model.Task{
+		Project:   "app",
+		Archetype: "code_slice",
+		Backend:   "claude",
+		Profile:   "custom", // per-spawn override
+	}
+	gotModel, gotProf := ResolveModel(task, cfg.Backends["claude"], cfg)
+
+	testutil.Equal(t, gotModel, "sonnet")
+	if gotProf == nil {
+		t.Fatal("expected a resolved profile")
+	}
+	testutil.Equal(t, gotProf.Name, "custom")
+}
+
+// TestResolveModel_EmptyTaskProfileFallsToProjectBinding verifies that an
+// empty task.Profile falls through to the project's bound profile.
+func TestResolveModel_EmptyTaskProfileFallsToProjectBinding(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := modelConfig()
+	cfg.Projects = map[string]config.Project{
+		"app": {Path: "/x", Profile: "lean"},
+	}
+	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmodel = \"haiku\"\n")
+
+	task := &model.Task{
+		Project:   "app",
+		Archetype: "code_slice",
+		Backend:   "claude",
+		Profile:   "", // no override → use project binding
+	}
+	gotModel, gotProf := ResolveModel(task, cfg.Backends["claude"], cfg)
+
+	testutil.Equal(t, gotModel, "haiku")
+	if gotProf == nil {
+		t.Fatal("expected a resolved profile")
+	}
+	testutil.Equal(t, gotProf.Name, "lean")
+}
+
+// TestResolveModel_InvalidTaskProfileOverrideFallsOpen verifies that a
+// task.Profile naming a missing profile falls open (no --model), exactly as
+// a missing project profile does.
+func TestResolveModel_InvalidTaskProfileOverrideFallsOpen(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := modelConfig()
+	cfg.Projects = map[string]config.Project{
+		"app": {Path: "/x", Profile: "lean"},
+	}
+	// lean profile exists on disk; the override points at a non-existent file.
+	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmodel = \"haiku\"\n")
+
+	task := &model.Task{
+		Project:   "app",
+		Archetype: "code_slice",
+		Backend:   "claude",
+		Profile:   "does-not-exist",
+	}
+	gotModel, gotProf := ResolveModel(task, cfg.Backends["claude"], cfg)
+
+	testutil.Equal(t, gotModel, "") // falls open → no --model
+	testutil.Nil(t, gotProf)
+}
+
+// TestBuildCmd_ProfileEnv_OverrideProfile verifies that ARGUS_PROFILE reflects
+// the per-spawn override profile name, not the project's bound profile.
+func TestBuildCmd_ProfileEnv_OverrideProfile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := modelConfig()
+	cfg.Projects = map[string]config.Project{
+		"app": {Path: "/x", Profile: "lean"},
+	}
+	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmodel = \"haiku\"\n")
+	writeLibraryProfile(t, "custom", "[archetype.code_slice]\nmodel = \"sonnet\"\n")
+
+	task := &model.Task{
+		ID: "t4", Name: "t", Prompt: "go",
+		Project:   "app",
+		Backend:   "claude",
+		Archetype: "code_slice",
+		Profile:   "custom",
+		Worktree:  t.TempDir(),
+	}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+
+	env := envMap(cmd.Env)
+	testutil.Equal(t, env["ARGUS_PROFILE"], "custom")
+	testutil.Equal(t, env["ARGUS_ARCHETYPE"], "code_slice")
+	testutil.Equal(t, env["ARGUS_MODEL"], "sonnet")
+	testutil.Contains(t, cmd.Args[2], "--model 'sonnet'")
+}

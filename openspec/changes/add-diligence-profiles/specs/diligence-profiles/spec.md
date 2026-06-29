@@ -117,20 +117,31 @@ panel's model/lens roster or synthesizer contract; it SHALL only confirm the blo
 ### Requirement: Profile-aware model resolution
 
 The system SHALL resolve a task's effective model with the precedence: the per-task model override when
-set; otherwise, when the task carries an archetype and the project's bound profile is present and valid,
-the profile's model for that archetype; otherwise the project/backend default. When the bound profile is
-missing or invalid, or the resolved profile model is not valid for the task's resolved backend, the
-system SHALL resolve to **no model** (no `--model` injected) rather than failing the spawn. A task that
-carries no archetype SHALL NOT consult any profile.
+set; otherwise, when the task carries an archetype and a valid profile is present, the profile's model for
+that archetype; otherwise the project/backend default. The profile consulted is, in order: the task's
+per-spawn `profile` override (when non-empty), else the project's bound profile, else `default`. When the
+consulted profile is missing or invalid, or the resolved profile model is not valid for the task's
+resolved backend, the system SHALL resolve to **no model** (no `--model` injected) rather than failing the
+spawn. A task that carries no archetype SHALL NOT consult any profile.
 
-#### Scenario: Task override wins
+#### Scenario: Task model override wins
 
 - **WHEN** a task sets `Model = "opus"` and also has an archetype with a bound profile
 - **THEN** the effective model is `opus` and the profile is not consulted
 
+#### Scenario: Per-spawn profile override honored
+
+- **WHEN** a task's `profile` field is non-empty (set at spawn as a per-spawn override)
+- **THEN** resolution consults that profile instead of the project's bound profile
+
+#### Scenario: Empty per-spawn override uses project binding
+
+- **WHEN** a task's `profile` field is empty
+- **THEN** resolution falls through to the project's bound profile (or `default` if unbound)
+
 #### Scenario: Profile model applied by archetype
 
-- **WHEN** a task has no model override, carries archetype `code_slice`, and the bound profile is valid
+- **WHEN** a task has no model override, carries archetype `code_slice`, and the resolved profile is valid
 - **THEN** the effective model is the profile's `code_slice` model
 
 #### Scenario: Invalid-for-backend model falls through
@@ -140,7 +151,7 @@ carries no archetype SHALL NOT consult any profile.
 
 #### Scenario: Missing or invalid profile falls open
 
-- **WHEN** the project's bound profile is missing or fails validation
+- **WHEN** the consulted profile is missing or fails validation
 - **THEN** resolution injects no `--model` and the spawn proceeds with the CLI's own default
 
 #### Scenario: No archetype skips the profile

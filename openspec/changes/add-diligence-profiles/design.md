@@ -43,6 +43,9 @@ when a project points at a missing or invalid profile.
   profiles that pass validation are selectable, and the chosen name is persisted as the project's
   binding.
 - `ResolveModel` extends to `task.Model → profile[archetype].model → project default → backend.Model`.
+  The profile consulted is: `task.Profile` (the per-spawn override, when non-empty) > the project's
+  bound profile > `"default"`. This means a coordinator can run lean simply by setting `task.Profile`
+  at spawn — no project reconfiguration needed.
 - A task's **archetype** is a first-class, optional property set at the **argus spawn layer**
   (`CreateAndStart`), so it works for any spawned agent — new task, hera worker, freelancer — via an
   archetype select-list on every new-agent prompt **except new hera coordinator**. Hera/plan spawns set
@@ -180,7 +183,12 @@ The binding is persisted on the project entity in both `config.Project`
 - **Settings pane (persistent):** the project view shows a select-list of on-disk profiles, each
   validated; only valid profiles are selectable. Selecting one persists the project's default binding.
 - **Per-spawn modal cycler (override):** the new-agent modal shows the project's bound profile as the
-  default and lets the operator override it for that one spawn.
+  default and lets the operator override it for that one spawn. **This override DOES take effect** —
+  the selected name is persisted as `tasks.profile` on the spawned task row, and `agent.resolveProfile`
+  consults it in preference to the project's binding for that task's model resolution. Empty override
+  (the operator left the cycler on the project's bound default) stores empty → falls through to the
+  project binding as before. The precedence is: `task.Profile` (non-empty) > project's bound profile >
+  `"default"`.
 
 Only the **name** is ever stored; the body stays on disk.
 

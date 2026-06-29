@@ -95,6 +95,7 @@ func (a *App) heraDoSpawnWorker(orchID int64, orchName, coordName string, task *
 			Backend:        task.Backend,
 			Model:          task.Model,
 			Archetype:      task.Archetype,
+			Profile:        task.Profile,
 		})
 		a.tapp.QueueUpdateDraw(func() {
 			if err != nil {

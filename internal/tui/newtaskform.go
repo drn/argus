@@ -224,6 +224,7 @@ func (f *NewTaskForm) Task() *model.Task {
 		Backend:   backend,
 		Model:     f.modelValue(),
 		Archetype: f.Archetype(),
+		Profile:   f.ProfileOverride(),
 	}
 }
 

@@ -4,16 +4,23 @@
 
 ### Requirement: Archetype and profile-binding columns
 
-The schema SHALL persist a task's archetype, a project's bound profile name, and a hera role's planned
-archetype: a `tasks.archetype` column (the authoritative model-resolution key), a `projects.profile`
-column (the project→profile-name binding), and a `hera_roles.archetype` column (a planned node's intended
-archetype, mirrored for the live role). Each SHALL default to empty for existing rows and require no data
-migration. The database SHALL NOT store profile bodies.
+The schema SHALL persist a task's archetype, a task's per-spawn profile override, a project's bound
+profile name, and a hera role's planned archetype: a `tasks.archetype` column (the authoritative
+model-resolution key), a `tasks.profile` column (the per-spawn profile override — non-empty means the
+operator overrode the project's profile for this one spawn), a `projects.profile` column (the
+project→profile-name binding), and a `hera_roles.archetype` column (a planned node's intended archetype,
+mirrored for the live role). Each SHALL default to empty for existing rows and require no data migration.
+The database SHALL NOT store profile bodies.
 
 #### Scenario: Task archetype round-trips
 
 - **WHEN** a task with archetype `ci_loop` is written and re-read
 - **THEN** the read-back task carries `ci_loop`
+
+#### Scenario: Task per-spawn profile override round-trips
+
+- **WHEN** a task is created with a per-spawn profile override `custom`
+- **THEN** the read-back task carries `custom` as its `profile` field
 
 #### Scenario: Project profile name round-trips
 

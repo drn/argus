@@ -137,10 +137,16 @@ func resolveProfile(task *model.Task, backend config.Backend, cfg config.Config)
 		return nil
 	}
 
-	profName := "default"
-	if task.Project != "" {
-		if proj, ok := cfg.Projects[task.Project]; ok {
-			profName = proj.ResolveProfileName()
+	// Per-spawn override takes precedence over the project's bound profile.
+	// task.Profile is non-empty only when the operator explicitly picked a
+	// different profile for this one spawn (e.g. "run one coord lean").
+	profName := strings.TrimSpace(task.Profile)
+	if profName == "" {
+		profName = "default"
+		if task.Project != "" {
+			if proj, ok := cfg.Projects[task.Project]; ok {
+				profName = proj.ResolveProfileName()
+			}
 		}
 	}
 
