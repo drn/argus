@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/events"
@@ -29,6 +30,12 @@ var (
 // tails are formatted for a standard terminal, so 80×24 is fine. The emulated-
 // screen fallback only fires when the raw regex misses; these tails match raw.
 func defaultSizeOf(string) (int, int) { return 80, 24 }
+
+// noInput / notArchived are the BUG-034 clear-disabled defaults for tests that
+// don't exercise the clear path: no session has received input (zero time, so
+// nothing ever advances past a baseline) and nothing is archived.
+func noInput(string) time.Time { return time.Time{} }
+func notArchived(string) bool  { return false }
 
 // recordingSink captures emitted events for inspection. Local to the api test
 // package (the events package's own recordingSink is unexported there).
@@ -144,7 +151,7 @@ func TestComputeNeedsInput(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, gotFP := computeNeedsInput(tc.idle, tc.running, tc.prev, tc.prevFP, tailOf, &agent.ScreenRenderer{}, defaultSizeOf)
+			got, gotFP, _ := computeNeedsInput(tc.idle, tc.running, tc.prev, tc.prevFP, nil, tailOf, noInput, notArchived, &agent.ScreenRenderer{}, defaultSizeOf)
 			gotSet := map[string]bool{}
 			for _, id := range got {
 				gotSet[id] = true
@@ -176,12 +183,12 @@ func TestComputeNeedsInput_StabilityAcrossTicks(t *testing.T) {
 
 	screen := &agent.ScreenRenderer{}
 	// Tick 1: not idle, no prior fingerprint → record only, do not flag.
-	got1, fp1 := computeNeedsInput(nil, []string{"blocked"}, nil, nil, tailOf, screen, defaultSizeOf)
+	got1, fp1, _ := computeNeedsInput(nil, []string{"blocked"}, nil, nil, nil, tailOf, noInput, notArchived, screen, defaultSizeOf)
 	testutil.Equal(t, len(got1), 0)
 	testutil.Equal(t, len(fp1), 1)
 
 	// Tick 2: still not idle, content unchanged → flagged.
-	got2, _ := computeNeedsInput(nil, []string{"blocked"}, nil, fp1, tailOf, screen, defaultSizeOf)
+	got2, _, _ := computeNeedsInput(nil, []string{"blocked"}, nil, fp1, nil, tailOf, noInput, notArchived, screen, defaultSizeOf)
 	testutil.Equal(t, len(got2), 1)
 	testutil.Equal(t, got2[0], "blocked")
 }
@@ -289,4 +296,42 @@ func TestComputeRuntimeState_NeedsInput(t *testing.T) {
 	// In set absent → false.
 	other := &model.Task{ID: "t2", Status: model.StatusInProgress}
 	testutil.Equal(t, computeRuntimeState(other, running, idle, needs).NeedsInput, false)
+}
+
+// TestComputeNeedsInput_ClearOnInput covers BUG-034: a task flagged via the
+// trailing-question heuristic clears once the user delivers input to that
+// session, even though the question still matches in the tail, and input to a
+// different session does not clear it.
+func TestComputeNeedsInput_ClearOnInput(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	t1 := time.Unix(2000, 0)
+	// Both sessions sit idle showing a numbered selection prompt (always flagged
+	// by the idle pass), so the only variable is the clear filter.
+	tailOf := func(string) []byte { return blockedTail }
+	screen := &agent.ScreenRenderer{}
+
+	// Tick 1: no input yet (t0 predates the flag) → both flagged, baselines t0.
+	lastInput := map[string]time.Time{"a": t0, "b": t0}
+	lastInputOf := func(id string) time.Time { return lastInput[id] }
+	got1, _, since1 := computeNeedsInput([]string{"a", "b"}, []string{"a", "b"}, nil, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	testutil.Equal(t, len(got1), 2)
+
+	// Tick 2: user responds to "a" only (advances past its baseline). "a" clears
+	// despite the stale prompt still in the tail; "b" stays flagged.
+	lastInput["a"] = t1
+	got2, _, _ := computeNeedsInput([]string{"a", "b"}, []string{"a", "b"}, got1, nil, since1, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	gotSet := map[string]bool{}
+	for _, id := range got2 {
+		gotSet[id] = true
+	}
+	testutil.DeepEqual(t, gotSet, map[string]bool{"b": true})
+}
+
+// TestComputeNeedsInput_ClearOnArchive covers BUG-034: an archived task is
+// dropped from the set regardless of its detection signal.
+func TestComputeNeedsInput_ClearOnArchive(t *testing.T) {
+	tailOf := func(string) []byte { return blockedTail }
+	archivedOf := func(id string) bool { return id == "a" }
+	got, _, _ := computeNeedsInput([]string{"a", "b"}, []string{"a", "b"}, nil, nil, nil, tailOf, noInput, archivedOf, &agent.ScreenRenderer{}, defaultSizeOf)
+	testutil.DeepEqual(t, got, []string{"b"})
 }

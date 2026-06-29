@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"runtime/debug"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -379,6 +380,63 @@ func safeEmuWrite(emu *xvt.SafeEmulator, data []byte) {
 	if _, err := emu.Write(data); err != nil {
 		uxlog.Log("[needsinput] emulator write error: %v", err)
 	}
+}
+
+// NeedsInputClear filters a candidate needs-input set (already computed by the
+// idle / content-stability / sticky passes) down to the set that should still
+// surface "(?)", applying the two BUG-034 clear conditions that the entry
+// heuristics never apply on their own:
+//
+//	(a) Clear on user input. A free-text question (endsInQuestion) leaves its
+//	    "?" in the recent-output tail indefinitely, so the entry heuristic
+//	    re-matches every tick and the flag would never clear even after the user
+//	    answered. The clear is deterministic and does NOT wait for the question
+//	    to scroll out of the tail: per candidate task we freeze the session's
+//	    last-input timestamp observed when it FIRST entered the set (its
+//	    "baseline"), and once lastInputOf(id) advances past that baseline the
+//	    user has responded — the task is dropped and not re-added while that
+//	    input remains the latest, even though the stale "?" still matches.
+//	(b) Clear on archive. An archived task is dropped regardless of its signal
+//	    so it stops lighting "(?)" and stops rolling up to ancestor coordinators.
+//
+// The baseline map is the carry-forward state: pass the previous tick's return
+// as prevBaseline. An entry is kept (frozen) as long as the task remains a
+// non-archived candidate (whether surfaced or input-cleared), and is dropped
+// once the task is no longer a candidate (its signal disappeared) or is
+// archived — so a fresh question raised after the user's response re-captures a
+// new baseline and re-arms the flag.
+//
+// lastInputOf returns a session's most-recent-input wall-clock time (zero if
+// never / unknown); a nil func disables clear-on-input (every baseline stays
+// zero, nothing ever advances past it). archivedOf reports whether a task is
+// archived; a nil func disables clear-on-archive. With both nil the candidate
+// set passes through unchanged, so callers that cannot observe input/archive
+// state degrade to pre-BUG-034 behavior.
+func NeedsInputClear(candidates []string, prevBaseline map[string]time.Time, lastInputOf func(string) time.Time, archivedOf func(string) bool) (out []string, newBaseline map[string]time.Time) {
+	out = make([]string, 0, len(candidates))
+	newBaseline = make(map[string]time.Time, len(candidates))
+	for _, id := range candidates {
+		if archivedOf != nil && archivedOf(id) {
+			// Archived: drop from the set AND from the baseline map (so an
+			// un-archive later re-arms cleanly).
+			continue
+		}
+		// Capture the baseline on first entry; freeze it across subsequent
+		// ticks while the task stays a candidate.
+		baseline, tracked := prevBaseline[id]
+		if !tracked {
+			if lastInputOf != nil {
+				baseline = lastInputOf(id)
+			}
+		}
+		newBaseline[id] = baseline
+		// Input arrived after the flag was raised → the user responded → clear.
+		if lastInputOf != nil && lastInputOf(id).After(baseline) {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out, newBaseline
 }
 
 // DetectNeedsInputScreen is the alt-screen-aware form of DetectNeedsInput. It

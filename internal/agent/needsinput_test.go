@@ -3,6 +3,7 @@ package agent
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/testutil"
 )
@@ -422,5 +423,96 @@ func TestBlockedOnPrompt(t *testing.T) {
 	t.Run("selection-UI overlay is blocked", func(t *testing.T) {
 		sess := &fakeSession{tail: []byte("Do you want to proceed?\n❯ 1. Yes\n  2. No\n")}
 		testutil.Equal(t, BlockedOnPrompt(sess), true)
+	})
+}
+
+// TestNeedsInputClear covers BUG-034: the deterministic clear of the needs-input
+// flag on user input or archive, and its persistence otherwise.
+func TestNeedsInputClear(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	t1 := time.Unix(2000, 0) // strictly after t0
+
+	t.Run("nil deps pass candidates through unchanged", func(t *testing.T) {
+		out, base := NeedsInputClear([]string{"a", "b"}, nil, nil, nil)
+		testutil.DeepEqual(t, out, []string{"a", "b"})
+		// Baselines are captured (zero) so subsequent ticks have state.
+		testutil.Equal(t, len(base), 2)
+	})
+
+	t.Run("persists across ticks with no input (no decay)", func(t *testing.T) {
+		lastInput := func(string) time.Time { return t0 } // input predates the flag
+		var base map[string]time.Time
+		var out []string
+		for i := 0; i < 5; i++ {
+			out, base = NeedsInputClear([]string{"a"}, base, lastInput, nil)
+			testutil.DeepEqual(t, out, []string{"a"})
+		}
+		// Baseline frozen at the first-seen input time.
+		testutil.Equal(t, base["a"].Equal(t0), true)
+	})
+
+	t.Run("clears on input delivered after the flag, stale tail still matching", func(t *testing.T) {
+		// Tick 1: flagged; baseline captured at t0 (no input since the question).
+		input := t0
+		lastInput := func(string) time.Time { return input }
+		out, base := NeedsInputClear([]string{"a"}, nil, lastInput, nil)
+		testutil.DeepEqual(t, out, []string{"a"})
+
+		// Tick 2: user responds (lastInput advances past the baseline). The
+		// candidate is STILL passed in (the "?" is still in the tail), but it
+		// must be cleared anyway — that is the crux.
+		input = t1
+		out, base = NeedsInputClear([]string{"a"}, base, lastInput, nil)
+		testutil.Equal(t, len(out), 0)
+
+		// Tick 3: still a candidate (stale tail), no new input → stays cleared.
+		out, _ = NeedsInputClear([]string{"a"}, base, lastInput, nil)
+		testutil.Equal(t, len(out), 0)
+	})
+
+	t.Run("input to a different session does not clear this one", func(t *testing.T) {
+		// "a" never receives input (t0, predates flag); "b" receives input (t1).
+		lastInput := func(id string) time.Time {
+			if id == "b" {
+				return t1
+			}
+			return t0
+		}
+		// Prime baselines for both at t0 by seeding the prev map.
+		prev := map[string]time.Time{"a": t0, "b": t0}
+		out, _ := NeedsInputClear([]string{"a", "b"}, prev, lastInput, nil)
+		testutil.DeepEqual(t, out, []string{"a"}) // a kept, b cleared
+	})
+
+	t.Run("archive clears regardless of signal and drops the baseline", func(t *testing.T) {
+		archived := func(id string) bool { return id == "a" }
+		prev := map[string]time.Time{"a": t0, "b": t0}
+		out, base := NeedsInputClear([]string{"a", "b"}, prev, nil, archived)
+		testutil.DeepEqual(t, out, []string{"b"})
+		if _, ok := base["a"]; ok {
+			t.Error("archived task baseline should be dropped")
+		}
+	})
+
+	t.Run("re-arms after the signal disappears then a fresh question arrives", func(t *testing.T) {
+		input := t0
+		lastInput := func(string) time.Time { return input }
+
+		// Flagged, then user responds at t1 → cleared, baseline frozen at t0.
+		_, base := NeedsInputClear([]string{"a"}, nil, lastInput, nil)
+		input = t1
+		out, base := NeedsInputClear([]string{"a"}, base, lastInput, nil)
+		testutil.Equal(t, len(out), 0)
+
+		// Agent responds: "a" is no longer a candidate this tick → baseline drops.
+		_, base = NeedsInputClear(nil, base, lastInput, nil)
+		if _, ok := base["a"]; ok {
+			t.Error("baseline should drop when the task leaves the candidate set")
+		}
+
+		// Fresh question arrives: baseline re-captured at the CURRENT input (t1),
+		// nothing has advanced past it → flagged again.
+		out, _ = NeedsInputClear([]string{"a"}, base, lastInput, nil)
+		testutil.DeepEqual(t, out, []string{"a"})
 	})
 }

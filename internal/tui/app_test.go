@@ -3513,3 +3513,75 @@ func TestHandleGlobalKey_HeraRailFilterSwallowsQuitAndHelp(t *testing.T) {
 	testutil.Nil(t, gotHelp2) // consumed globally
 	testutil.Equal(t, app.mode == modeHelp, true)
 }
+
+// fakeInputSession is a fakeKickSession with a settable LastInput, for driving
+// the BUG-034 clear-on-input filter in detectNeedsInputSticky.
+type fakeInputSession struct {
+	*fakeKickSession
+	last time.Time
+}
+
+func (f *fakeInputSession) LastInput() time.Time { return f.last }
+
+// fakeInputRunner is an agent.SessionProvider whose Get returns canned sessions,
+// so detectNeedsInputSticky can read a controllable LastInput per task.
+type fakeInputRunner struct {
+	*agent.Runner
+	sessions map[string]agent.SessionHandle
+}
+
+func (r *fakeInputRunner) Get(id string) agent.SessionHandle { return r.sessions[id] }
+
+// TestDetectNeedsInputSticky_ClearOnInput covers BUG-034 in the TUI: a free-text
+// question flags (?), persists with no input, then clears once the user delivers
+// input to that session — even though the question still sits in the log tail
+// (the stale-tail crux) — while input to a different session does not clear it.
+func TestDetectNeedsInputSticky_ClearOnInput(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeLog := func(taskID, content string) {
+		logPath := agent.SessionLogPath(taskID)
+		testutil.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0o755))
+		testutil.NoError(t, os.WriteFile(logPath, []byte(content), 0o644))
+	}
+	// Free-text question (endsInQuestion via the ╭ prompt box) — NO selection
+	// widget. This is the exact BUG-034 scenario.
+	const question = "⏺ Should I ship it?\r\r╭───╮\r│ > │\r╰───╯\r  ? for shortcuts\r"
+	writeLog("c1", question)
+	writeLog("c2", question)
+
+	t0 := time.Unix(1000, 0)
+	t1 := time.Unix(2000, 0)
+	s1 := &fakeInputSession{fakeKickSession: &fakeKickSession{}, last: t0}
+	s2 := &fakeInputSession{fakeKickSession: &fakeKickSession{}, last: t0}
+	a := &App{runner: &fakeInputRunner{
+		Runner:   agent.NewRunner(nil),
+		sessions: map[string]agent.SessionHandle{"c1": s1, "c2": s2},
+	}}
+
+	// Tick 1: both idle on a question, no input since → both flagged.
+	got := a.detectNeedsInputSticky([]string{"c1", "c2"}, []string{"c1", "c2"}, nil)
+	testutil.Equal(t, len(got), 2)
+
+	// Tick 2: no input on either → persists (no decay).
+	got = a.detectNeedsInputSticky([]string{"c1", "c2"}, []string{"c1", "c2"}, got)
+	testutil.Equal(t, len(got), 2)
+
+	// Tick 3: user responds to c1 only. c1 clears despite the stale question
+	// still in its log; c2 stays flagged (cross-session input must not clear it).
+	s1.last = t1
+	got = a.detectNeedsInputSticky([]string{"c1", "c2"}, []string{"c1", "c2"}, got)
+	testutil.DeepEqual(t, got, []string{"c2"})
+}
+
+// TestDetectNeedsInputSticky_ClearOnArchive covers BUG-034: an archived task is
+// dropped from the needs-input set regardless of its detection signal.
+func TestDetectNeedsInputSticky_ClearOnArchive(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	logPath := agent.SessionLogPath("c1")
+	testutil.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0o755))
+	testutil.NoError(t, os.WriteFile(logPath, []byte("Do you want to proceed?\n❯ 1. Yes\n  2. No\n"), 0o644))
+
+	a := &App{tasks: []*model.Task{{ID: "c1", Archived: true}}}
+	got := a.detectNeedsInputSticky([]string{"c1"}, []string{"c1"}, nil)
+	testutil.Equal(t, len(got), 0)
+}

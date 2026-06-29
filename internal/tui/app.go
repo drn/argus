@@ -238,6 +238,13 @@ type App struct {
 	viewedWhileAgent map[string]bool   // tasks viewed in agent view; suppresses idleUnvisited re-add
 	needsInputIDs    []string          // task IDs detected as blocked on a user prompt this tick
 	needsInputFP     map[string]uint64 // taskID -> prior-tick content fingerprint (BUG-032 stability pass)
+	// needsInputSince carries the clear-on-input baseline (BUG-034): the
+	// session's last-input timestamp observed when a task first entered the
+	// needs-input set. agent.NeedsInputClear clears the flag once the session's
+	// last-input advances past it (the user responded), even while the stale
+	// question still matches in the log tail. Mirrors the daemon's
+	// idleWatcherState.needsInputSince.
+	needsInputSince map[string]time.Time
 	// needsInputScreen re-emulates a session's log tail to the visible screen so
 	// needs-input detection matches the rendered screen, not StripANSI(raw) —
 	// catching fullscreen (alt-screen) prompts whose cursor-addressed glyphs are
@@ -1853,7 +1860,42 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 			flag(id)
 		}
 	}
-	return fresh
+
+	// BUG-034: clear the flag for sessions the user has responded to or tasks
+	// that have been archived. Mirrors the daemon's computeNeedsInput. The
+	// last-input timestamp comes from the local session handle (authoritative in
+	// in-process mode; in daemon-client mode it captures input sent through this
+	// TUI's agent pane — cross-surface input clears via the natural log-content
+	// change instead). archivedOf reads the cached task list (a.tasks is set by
+	// the caller before this runs).
+	var out []string
+	out, a.needsInputSince = agent.NeedsInputClear(fresh, a.needsInputSince, a.lastSessionInput, a.archivedTaskSet())
+	return out
+}
+
+// lastSessionInput returns a session's most-recent-input wall-clock time for the
+// BUG-034 clear-on-input filter, or the zero time when the runner or session is
+// unavailable (nothing then ever advances past a baseline, so the flag persists).
+func (a *App) lastSessionInput(taskID string) time.Time {
+	if a.runner == nil {
+		return time.Time{}
+	}
+	if sess := a.runner.Get(taskID); sess != nil {
+		return sess.LastInput()
+	}
+	return time.Time{}
+}
+
+// archivedTaskSet returns a predicate reporting whether a task is archived, for
+// the BUG-034 clear-on-archive filter. Built from the cached task list.
+func (a *App) archivedTaskSet() func(string) bool {
+	archived := make(map[string]bool)
+	for _, t := range a.tasks {
+		if t.Archived {
+			archived[t.ID] = true
+		}
+	}
+	return func(id string) bool { return archived[id] }
 }
 
 // detectNeedsInputTailBytes is how many bytes to read from the end of each
