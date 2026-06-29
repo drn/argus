@@ -113,7 +113,7 @@ integrated result before ralph-review.
 
 **Depends on:** Stage 7
 
-- [ ] 8.1 Run `/spec-audit` against the `add-diligence-profiles` deltas; confirm coverage; ensure
+- [x] 8.1 Run `/spec-audit` against the `add-diligence-profiles` deltas; confirm coverage; ensure
   `openspec validate add-diligence-profiles --strict` passes; archive the change **on the branch** (base
   specs updated atomically with the implementation). NO per-chunk GitHub PR and NO `iris_gh_pr_create`:
   the mini-pipeline's ralph-review + spec-audit nodes ARE the review. On completion, `iris_push` the

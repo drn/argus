@@ -127,3 +127,19 @@ A backend configuration entry MAY carry an optional `models` list naming the mod
 - **WHEN** a backend entry omits `models` and its command is a recognized built-in backend
 - **THEN** the new-task model selector offers that backend's built-in curated model list
 
+### Requirement: Project profile binding
+
+Project configuration SHALL support an optional `profile` field naming the diligence profile bound to
+that project, storing the profile **name only** (never the profile body). When a project's `profile` is
+empty or absent, the project SHALL be treated as bound to the `default` profile for resolution purposes.
+
+#### Scenario: Project carries a profile name
+
+- **WHEN** a project entry declares `profile = "customer_grade"`
+- **THEN** the loaded project exposes `customer_grade` as its bound profile name
+
+#### Scenario: Absent profile resolves default
+
+- **WHEN** a project entry omits `profile`
+- **THEN** the project is treated as bound to the `default` profile
+
