@@ -1,0 +1,56 @@
+# default diligence profile
+#
+# Balanced model allocation across all 13 archetypes: premium models up the tree
+# (plan / orchestrate / review / synthesize) where leverage is high and output is
+# hard to verify, cheaper models down the tree (CI loops, verification, docs)
+# where work is high-volume and verifiable. Fable is treated as absent (pulled
+# from market), so this uses the current model line-up only.
+#
+# This is a documented EXAMPLE. Copy it to ~/.argus/profiles/default.toml (or to
+# a project's .argus/profiles/default.toml) and adapt; argus does not auto-install
+# it. Validate with: argus validate default
+
+[archetype.brainstorm]
+model  = "opus"
+effort = "high"
+
+[archetype.orchestrator]
+model = "opus"
+
+[archetype.big_build]
+model = "opus"
+
+[archetype.code_slice]
+model = "sonnet"
+
+[archetype.bug_fix]
+model = "sonnet"
+
+[archetype.review]
+model = "opus"
+
+[archetype.security_review]
+model = "opus"
+
+[archetype.synthesis]
+model = "opus"
+
+[archetype.spec_audit]
+model = "sonnet"
+
+[archetype.ci_loop]
+model = "haiku"
+
+[archetype.verify]
+model = "haiku"
+
+[archetype.recovery]
+model = "sonnet"
+
+[archetype.docs]
+model = "haiku"
+
+[rigor]
+review_passes       = 1
+gating              = false
+security_spot_check = false

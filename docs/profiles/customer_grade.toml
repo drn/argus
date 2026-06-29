@@ -1,0 +1,23 @@
+# customer_grade diligence profile
+#
+# For customer-facing code with no dogfooding loop: inherits default's model
+# allocation but turns up the rigor — two review passes, gating enabled, and a
+# security spot-check — plus a reviewer panel.
+#
+# Documented EXAMPLE — copy + adapt; not auto-installed.
+# Validate with: argus validate customer_grade
+
+extends = "default"
+
+[rigor]
+review_passes       = 2
+gating              = true
+security_spot_check = true
+
+# OPAQUE forward-reference: the reviewer-panel composition grammar (model/lens
+# roster, synthesizer contract) is owned by the sibling 2a-xvendor-review
+# capability. Diligence-profiles retains this block verbatim and validates only
+# that it is structurally well-formed — it does NOT interpret the contents.
+[panel]
+reviewers   = ["opus", "gpt-5"]
+synthesizer = "opus"

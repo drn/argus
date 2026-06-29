@@ -1,0 +1,15 @@
+# lean diligence profile
+#
+# For daily-driven personal tooling with a tight dogfooding loop: inherits
+# default's model allocation, keeps process overhead minimal (single review pass,
+# no gating). Override individual archetypes below if you want a cheaper model for
+# a specific role.
+#
+# Documented EXAMPLE — copy + adapt; not auto-installed.
+# Validate with: argus validate lean
+
+extends = "default"
+
+[rigor]
+review_passes = 1
+gating        = false
