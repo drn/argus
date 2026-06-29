@@ -69,6 +69,14 @@ func heraPlanNodesWithBridge(orch *OrchView, bridge map[string]*OrchView) ([]pla
 			State:       state,
 			Description: firstLine(r.Prompt),
 			Icon:        planNodeIcon(r, state),
+			// Diligence-tiering readout (D-VIEW). Archetype is the role's own
+			// (no I/O); the model/effort/warning are stamped by the App's
+			// SetTierResolver during doRefresh (resolution reads disk, so it can't
+			// run here on the tview thread). Remote/unstamped → all empty.
+			Archetype:      r.Archetype,
+			Model:          r.AppliedModel,
+			Effort:         r.AppliedEffort,
+			ProfileWarning: r.ProfileWarning,
 		}
 		// A worker whose bound task coordinates a child orchestrator is a
 		// sub-coordinator: Enter drills into that child's plan DAG (D6). The bridge

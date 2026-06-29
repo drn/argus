@@ -22,8 +22,14 @@ const (
 	pfFieldBranch  = 2
 	pfFieldBackend = 3
 	pfFieldSandbox = 4
-	pfFieldCount   = 5
+	pfFieldProfile = 5
+	pfFieldCount   = 6
 )
+
+// pfProfileUnbound is the display label for the no-binding profile option
+// (index 0 of the profile selector). Selecting it persists an empty profile name
+// (add-diligence-profiles: an unbound project resolves the "default" profile).
+const pfProfileUnbound = "(unbound)"
 
 // Sandbox selector indices — must match sandboxOptions order.
 const (
@@ -59,6 +65,16 @@ type ProjectForm struct {
 	sandboxExtraWrite       []string
 	sandboxAllowAppleEvents []string
 
+	// Profile selector state (add-diligence-profiles, settings-view). profileOpts
+	// is the display list: index 0 is always pfProfileUnbound (persists ""), the
+	// rest are valid on-disk profile names (plus the currently bound name even if
+	// it no longer validates, so the operator can see + keep it). Only valid names
+	// are offered — the App filters via profiles.Loader.ValidateName before calling
+	// SetProfileOptions. The selected NAME is persisted on the project; the body
+	// stays on disk.
+	profileOpts []string
+	profileIdx  int
+
 	// Path autocomplete.
 	pathAC dirAC
 
@@ -71,8 +87,62 @@ type ProjectForm struct {
 // NewProjectForm creates a new project form.
 func NewProjectForm() *ProjectForm {
 	return &ProjectForm{
-		Box: tview.NewBox(),
+		Box:         tview.NewBox(),
+		profileOpts: []string{pfProfileUnbound},
 	}
+}
+
+// SetProfileOptions populates the profile selector with the VALID on-disk profile
+// names (the App filters via profiles.Loader.ValidateName before calling this).
+// A leading "(unbound)" entry is always prepended (persists an empty name). The
+// currently bound name (bound) is appended when it is not already in valid — so an
+// explicitly-bound profile that no longer validates is still shown + selectable,
+// and the selector is pre-positioned on the project's current binding. Only valid
+// profiles are otherwise selectable, satisfying the "no malformed binding" rule.
+func (pf *ProjectForm) SetProfileOptions(valid []string, bound string) {
+	opts := make([]string, 0, len(valid)+2)
+	opts = append(opts, pfProfileUnbound)
+	have := map[string]bool{}
+	for _, n := range valid {
+		if n == "" || have[n] {
+			continue
+		}
+		have[n] = true
+		opts = append(opts, n)
+	}
+	bound = strings.TrimSpace(bound)
+	if bound != "" && !have[bound] {
+		opts = append(opts, bound) // keep an invalid-but-bound name visible
+	}
+	pf.profileOpts = opts
+	pf.selectProfile(bound)
+}
+
+// selectProfile positions the selector on name (index 0 = unbound when empty or
+// not found).
+func (pf *ProjectForm) selectProfile(name string) {
+	pf.profileIdx = 0
+	if name == "" {
+		return
+	}
+	for i, n := range pf.profileOpts {
+		if n == name {
+			pf.profileIdx = i
+			return
+		}
+	}
+}
+
+// profileValue returns the selected profile name to persist: "" for the
+// pfProfileUnbound entry (index 0), else the chosen name.
+func (pf *ProjectForm) profileValue() string {
+	if pf.profileIdx <= 0 || pf.profileIdx >= len(pf.profileOpts) {
+		return ""
+	}
+	if pf.profileOpts[pf.profileIdx] == pfProfileUnbound {
+		return ""
+	}
+	return pf.profileOpts[pf.profileIdx]
 }
 
 // LoadProject populates the form for editing an existing project.
@@ -92,6 +162,11 @@ func (pf *ProjectForm) LoadProject(name string, p config.Project) {
 	pf.sandboxDenyRead = p.Sandbox.DenyRead
 	pf.sandboxExtraWrite = p.Sandbox.ExtraWrite
 	pf.sandboxAllowAppleEvents = p.Sandbox.AllowAppleEvents
+	// Pre-position the profile selector on the project's bound name. The App calls
+	// SetProfileOptions afterwards (which re-selects bound against the full option
+	// list); this keeps the selection correct even if SetProfileOptions is not
+	// wired (e.g. tests / remote).
+	pf.selectProfile(strings.TrimSpace(p.Profile))
 	pf.editMode = true
 	pf.focused = pfFieldPath // skip name in edit mode
 }
@@ -134,6 +209,7 @@ func (pf *ProjectForm) Result() (name string, p config.Project) {
 		Path:    pf.pathValue(),
 		Branch:  branch,
 		Backend: string(pf.fields[pfFieldBackend]),
+		Profile: pf.profileValue(),
 	}
 	switch pf.sandboxIdx {
 	case sandboxEnabled:
@@ -191,7 +267,7 @@ func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
 		pf.canceled = true
 		return
 	case tcell.KeyEnter:
-		if pf.focused < pfFieldSandbox {
+		if pf.focused < pfFieldProfile {
 			pf.focused++
 			if pf.editMode && pf.focused == pfFieldName {
 				pf.focused++
@@ -217,7 +293,7 @@ func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
 		pf.closePathAC()
 		pf.focused = (pf.focused + pfFieldCount - 1) % pfFieldCount
 		if pf.editMode && pf.focused == pfFieldName {
-			pf.focused = pfFieldSandbox
+			pf.focused = pfFieldProfile // skip read-only name → last field
 		}
 		if pf.focused == pfFieldBranch {
 			pf.maybeLoadBranches()
@@ -232,6 +308,10 @@ func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
 	}
 	if pf.focused == pfFieldSandbox {
 		pf.handleSandboxSelector(ev)
+		return
+	}
+	if pf.focused == pfFieldProfile {
+		pf.handleProfileSelector(ev)
 		return
 	}
 
@@ -373,6 +453,20 @@ func (pf *ProjectForm) handleSandboxSelector(ev *tcell.EventKey) {
 	}
 }
 
+// handleProfileSelector processes keys when the profile field is focused.
+func (pf *ProjectForm) handleProfileSelector(ev *tcell.EventKey) {
+	n := len(pf.profileOpts)
+	if n == 0 {
+		return
+	}
+	switch ev.Key() {
+	case tcell.KeyLeft:
+		pf.profileIdx = (pf.profileIdx - 1 + n) % n
+	case tcell.KeyRight:
+		pf.profileIdx = (pf.profileIdx + 1) % n
+	}
+}
+
 // PasteHandler handles bracketed paste events, inserting pasted text into the
 // focused field in a single operation.
 func (pf *ProjectForm) PasteHandler() func(pastedText string, setFocus func(p tview.Primitive)) {
@@ -385,7 +479,7 @@ func (pf *ProjectForm) PasteHandler() func(pastedText string, setFocus func(p tv
 		if f == pfFieldBranch && pf.branchIsSelector() {
 			return
 		}
-		if f == pfFieldSandbox {
+		if f == pfFieldSandbox || f == pfFieldProfile {
 			return
 		}
 		runes := []rune(pastedText)
@@ -417,7 +511,7 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 
 	// Center the form.
 	formW := min(60, width-4)
-	formH := 13 + acRows // pfFieldCount*2 rows + 3 overhead (title, border, error)
+	formH := 15 + acRows // pfFieldCount*2 rows + 3 overhead (title, border, error)
 	formX := x + (width-formW)/2
 	formY := y + (height-formH)/2
 	if formY < y {
@@ -437,7 +531,7 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 		screen.SetContent(titleX+i, formY, r, nil, titleStyle)
 	}
 
-	labels := [pfFieldCount]string{"Name:", "Path:", "Branch:", "Backend:", "Sandbox:"}
+	labels := [pfFieldCount]string{"Name:", "Path:", "Branch:", "Backend:", "Sandbox:", "Profile:"}
 	maxW := formW - 14
 	extraOffset := 0 // extra rows inserted after path field for AC dropdown
 	for i := range pfFieldCount {
@@ -458,6 +552,10 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 		}
 		if i == pfFieldSandbox {
 			pf.drawSandboxSelector(screen, formX+12, ly, maxW)
+			continue
+		}
+		if i == pfFieldProfile {
+			pf.drawProfileSelector(screen, formX+12, ly, maxW)
 			continue
 		}
 
@@ -500,6 +598,33 @@ func (pf *ProjectForm) drawSandboxSelector(screen tcell.Screen, x, y, w int) {
 		st = theme.StyleSelected
 	}
 	widget.DrawText(screen, x, y, w, selector, st)
+}
+
+// drawProfileSelector renders the diligence-profile binding as a ◀/▶ selector.
+func (pf *ProjectForm) drawProfileSelector(screen tcell.Screen, x, y, w int) {
+	if len(pf.profileOpts) == 0 {
+		widget.DrawText(screen, x, y, w, pfProfileUnbound, theme.StyleDimmed)
+		return
+	}
+	idx := pf.profileIdx
+	if idx < 0 || idx >= len(pf.profileOpts) {
+		idx = 0
+	}
+	name := pf.profileOpts[idx]
+	selector := "◀ " + name + " ▶"
+	st := theme.StyleNormal
+	if pf.focused == pfFieldProfile {
+		st = theme.StyleSelected
+	}
+	widget.DrawText(screen, x, y, w, selector, st)
+
+	if len(pf.profileOpts) > 1 {
+		posText := "(" + itoa(idx+1) + "/" + itoa(len(pf.profileOpts)) + ")"
+		posX := x + w - utf8.RuneCountInString(posText)
+		if posX > x+utf8.RuneCountInString(selector)+1 {
+			widget.DrawText(screen, posX, y, utf8.RuneCountInString(posText), posText, theme.StyleDimmed)
+		}
+	}
 }
 
 // drawBranchSelector renders the branch field as a ◀/▶ selector.

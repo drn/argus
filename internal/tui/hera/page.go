@@ -73,6 +73,14 @@ type HeraPage struct {
 	// carries its own needs-input flag and the subtree rollup is computed (BUG-018).
 	needsInput map[string]bool
 
+	// tierResolver stamps the diligence-tiering readout (AppliedModel/Effort +
+	// ProfileWarning) onto each RoleView during doRefresh. The App wires it (local
+	// mode only) because resolution reads disk (agent.ResolveModel + profile load),
+	// which must NOT run in the pure projection on the tview thread. nil → the plan
+	// view shows the archetype (free from the role) but no model/warning (remote
+	// mode / tests). See add-diligence-profiles D-VIEW.
+	tierResolver func(*RoleView)
+
 	// Plan-DAG render mode of the Details region (coordinator selection only).
 	// When a coordinator is selected the Details region stacks the read-only
 	// roster (top) over this embedded plan graph (bottom) — both render at once,
@@ -302,6 +310,14 @@ func (p *HeraPage) RailFiltering() bool { return p.rail.Filtering() }
 // *db.DB; remote mode never calls it, so persistence stays off.
 func (p *HeraPage) SetRailStateStore(s RailStateStore) { p.rail.SetStateStore(s) }
 
+// SetTierResolver wires the diligence-tiering annotation seam (add-diligence-
+// profiles D-VIEW). The App calls it (local mode only) with a closure that stamps
+// AppliedModel/AppliedEffort/ProfileWarning onto each RoleView using cfg + a
+// profiles loader + agent.ResolveModel. It runs during doRefresh, off the Draw
+// path, because resolution reads disk (the pure projection cannot). Remote mode
+// never calls it, so the plan view then shows archetype only (no model/warning).
+func (p *HeraPage) SetTierResolver(fn func(*RoleView)) { p.tierResolver = fn }
+
 // Machine exposes the focus machine (test seam + 6b wiring). Not named Focus()
 // because that collides with tview.Primitive's Focus(func(tview.Primitive)).
 func (p *HeraPage) Machine() *FocusMachine { return p.focus }
@@ -361,6 +377,12 @@ func (p *HeraPage) doRefresh() {
 	if err != nil {
 		uxlog.Log("[hera-view] rail refresh failed: %v", err)
 		return
+	}
+	// Stamp the diligence-tiering readout (model/effort/warning) onto each role
+	// before handing the model to the rail — local mode only (the resolver is nil
+	// in remote/tests). Runs here, off the Draw path, because resolution reads disk.
+	if p.tierResolver != nil {
+		m.annotateRoles(p.tierResolver)
 	}
 	p.rail.SetModel(m)
 	// Best-effort PR indicator source (namespace "pr", same daemon-populated

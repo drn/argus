@@ -72,6 +72,7 @@ func TestProjectForm_TypeAndResult(t *testing.T) {
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0)) // → branch
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0)) // → backend
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0)) // → sandbox
+	pf.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0)) // → profile
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0)) // → done
 
 	if !pf.Done() {

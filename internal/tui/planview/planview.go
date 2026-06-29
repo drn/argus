@@ -145,6 +145,22 @@ type Node struct {
 	// node (those use the State overlay: planned ○ / failed ✕) and for the
 	// single-arg test projection — the widget then falls back to State.Glyph()/style.
 	Icon *NodeIcon
+
+	// Archetype / Model / Effort are the diligence-tiering readout
+	// (add-diligence-profiles, D-VIEW): the node's selected archetype and the
+	// model/effort that resolved for it. They are PURE render strings stamped by
+	// the hera projection (the resolution itself — agent.ResolveModel + profile
+	// load — runs OFF this widget, since it reads disk and the projection must stay
+	// pure / tview-thread-safe). Empty Archetype means "(none)" (no profile
+	// consulted); empty Model means the CLI/backend default applied.
+	Archetype string
+	Model     string
+	Effort    string
+	// ProfileWarning is non-empty when the node's project points at a missing or
+	// invalid diligence profile (the runtime fail-open case). When set, the header
+	// surfaces a ⚠ decoration so the operator is told why the agent ran on the CLI
+	// default instead of a tiered model.
+	ProfileWarning string
 }
 
 // NodeIcon is a live node's resolved status indicator, mirroring exactly what the
@@ -1267,11 +1283,15 @@ func (w *Widget) snapshotNodes() []Node {
 
 // --- Master-detail header (Stage 5) ---
 
+// warnGlyph decorates the header Tier line when a node's project points at a
+// missing/invalid profile (D-VIEW fail-open surfacing).
+const warnGlyph = '⚠'
+
 // headerContentRows is the fixed number of content lines the header strip
 // occupies (D9 + BUG-006): four lines (node → name / status / description / feeds;
 // group → range·title / members / downstream, padded). Held constant so the
 // diagram budget never drifts with the cursor target.
-const headerContentRows = 4
+const headerContentRows = 5
 
 // headerHeight is the total fixed header height: the content rows plus a one-row
 // separator rule. The diagram region is the panel inner height minus this,
@@ -1331,9 +1351,36 @@ func (w *Widget) nodeHeaderLines(id string) []string {
 	return []string{
 		n.Name,
 		statusLine,
+		nodeTierLine(n),
 		desc,
 		feedsLine,
 	}
+}
+
+// nodeTierLine renders the diligence-tiering readout (D-VIEW): the node's
+// archetype and the model/effort applied to it, or a ⚠ warning when the project's
+// bound profile is missing/invalid (the runtime fail-open case the operator must
+// see). "(none)" means the node carries no archetype, so no profile was consulted
+// and the agent ran on the project/backend default.
+func nodeTierLine(n Node) string {
+	if n.ProfileWarning != "" {
+		if n.Archetype != "" {
+			return fmt.Sprintf("Tier: %s  %c %s", n.Archetype, warnGlyph, n.ProfileWarning)
+		}
+		return fmt.Sprintf("Tier: %c %s", warnGlyph, n.ProfileWarning)
+	}
+	if n.Archetype == "" {
+		return "Tier: (none)"
+	}
+	model := n.Model
+	if model == "" {
+		model = "(default)"
+	}
+	line := fmt.Sprintf("Tier: %s → %s", n.Archetype, model)
+	if n.Effort != "" {
+		line += " /" + n.Effort
+	}
+	return line
 }
 
 // headerStatusGlyph is the glyph shown on the header Status line: the node's

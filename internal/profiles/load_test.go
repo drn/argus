@@ -254,3 +254,30 @@ model = "haiku"`)
 	testutil.Equal(t, p.Name, "lean")
 	testutil.Equal(t, p.Archetype["docs"].Model, "haiku")
 }
+
+// TestDiscover_UnionDedupAndSort covers Loader.Discover: it returns the sorted,
+// de-duplicated union of profile names across RepoDir and LibraryDir, stripping
+// the ".toml" suffix and skipping non-toml files and missing dirs.
+func TestDiscover_UnionDedupAndSort(t *testing.T) {
+	repo := t.TempDir()
+	lib := t.TempDir()
+	writeProfile(t, repo, "lean", "")
+	writeProfile(t, repo, "shared", "") // also in lib → de-duped
+	writeProfile(t, lib, "shared", "")
+	writeProfile(t, lib, "customer_grade", "")
+	// A non-toml file is ignored.
+	if err := os.WriteFile(filepath.Join(lib, "notes.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	l := &Loader{RepoDir: repo, LibraryDir: lib}
+	got := l.Discover()
+	testutil.DeepEqual(t, got, []string{"customer_grade", "lean", "shared"})
+}
+
+// TestDiscover_MissingDirsSkipped: a Loader pointing at non-existent dirs returns
+// an empty list, not an error.
+func TestDiscover_MissingDirsSkipped(t *testing.T) {
+	l := &Loader{RepoDir: filepath.Join(t.TempDir(), "nope"), LibraryDir: ""}
+	testutil.Equal(t, len(l.Discover()), 0)
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -48,6 +49,42 @@ func (l *Loader) locate(name string) (path string, src Source, ok bool) {
 func fileExists(p string) bool {
 	info, err := os.Stat(p)
 	return err == nil && !info.IsDir()
+}
+
+// Discover returns the sorted, de-duplicated set of profile names found on disk
+// across both directories — every `<name>.toml` in RepoDir and LibraryDir, with
+// the ".toml" suffix stripped. A name present in both is listed once (in-repo
+// precedence is a Load-time concern; discovery only enumerates what exists).
+// Used to populate the Settings project view's validated select-list and the
+// new-agent prompt's Profile cycler. A missing/unreadable directory is skipped
+// (not an error) — either location may be absent.
+func (l *Loader) Discover() []string {
+	seen := map[string]bool{}
+	for _, dir := range []string{l.RepoDir, l.LibraryDir} {
+		if dir == "" {
+			continue
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			n := e.Name()
+			if !strings.HasSuffix(n, ".toml") {
+				continue
+			}
+			seen[strings.TrimSuffix(n, ".toml")] = true
+		}
+	}
+	names := make([]string, 0, len(seen))
+	for n := range seen {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // loadRaw decodes a single profile file (no extends resolution).

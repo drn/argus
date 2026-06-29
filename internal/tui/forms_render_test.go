@@ -573,14 +573,15 @@ func TestProjectForm_Tab_LoadsBranchesEvenWithCallback(t *testing.T) {
 	testutil.Equal(t, loaded, true)
 }
 
-// --- ProjectForm: backtab from name in edit mode wraps to sandbox ---
+// --- ProjectForm: backtab from name in edit mode wraps to the last field ---
 
 func TestProjectForm_BacktabEditModeFromPath(t *testing.T) {
 	pf := NewProjectForm()
 	pf.LoadProject("test", config.Project{Path: "/p"})
-	// Edit mode focused starts at path. Backtab → name (skipped) → sandbox.
+	// Edit mode focused starts at path. Backtab → name (skipped) → profile (the
+	// last field; add-diligence-profiles).
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyBacktab, 0, 0))
-	testutil.Equal(t, pf.focused, pfFieldSandbox)
+	testutil.Equal(t, pf.focused, pfFieldProfile)
 }
 
 // --- ProjectForm: editing name field is read-only in edit mode ---

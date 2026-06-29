@@ -58,7 +58,7 @@ func (a *App) heraSpawnWorker(sel hera.Selection) {
 	// BUG-005: spawn from the FULL new-task modal (project/branch/backend/model/
 	// prompt), project defaulting to the coordinator's. On submit, spawn a
 	// born-bound worker under the current coordinator via the shared primitive.
-	a.openHeraNewTaskForm(fmt.Sprintf(" Spawn worker under %s ", orchName), project, func(task *model.Task, _ string) {
+	a.openHeraNewTaskForm(fmt.Sprintf(" Spawn worker under %s ", orchName), project, false, func(task *model.Task, _ string) {
 		a.heraDoSpawnWorker(orchID, orchName, coordName, task)
 	})
 }
@@ -94,6 +94,7 @@ func (a *App) heraDoSpawnWorker(orchID int64, orchName, coordName string, task *
 			Branch:         task.Branch,
 			Backend:        task.Backend,
 			Model:          task.Model,
+			Archetype:      task.Archetype,
 		})
 		a.tapp.QueueUpdateDraw(func() {
 			if err != nil {
@@ -124,7 +125,7 @@ func (a *App) heraNewCoordinator(sel hera.Selection) {
 			project = t.Project
 		}
 	}
-	a.openHeraNewTaskForm(" New coordinator ", project, func(task *model.Task, _ string) {
+	a.openHeraNewTaskForm(" New coordinator ", project, true, func(task *model.Task, _ string) {
 		a.heraDoNewCoordinator(task)
 	})
 }

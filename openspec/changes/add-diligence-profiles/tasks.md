@@ -77,18 +77,18 @@ integrated result before ralph-review.
 
 **Depends on:** Stage 3
 
-- [ ] 5.1 Write failing/smoke tests: new-task form shows Profile + Archetype selectors (defaults: bound
+- [x] 5.1 Write failing/smoke tests: new-task form shows Profile + Archetype selectors (defaults: bound
   profile / `(none)`); coordinator prompt omits archetype selector; selected archetype rides the task;
   settings project view offers only valid on-disk profiles and persists the name; plan/DAG node shows
   archetype + applied model and warns on missing/invalid profile.
   (`specs/forms-and-modals/spec.md`, `specs/settings-view/spec.md`, `specs/hera-view/spec.md`)
-- [ ] 5.2 Add Profile + Archetype cycling selectors to `internal/tui/newtaskform.go` (beside Backend/Model);
-  hide archetype for new-coord; return profile override + archetype to the spawn caller. Update the help
-  modal (`internal/tui/modal/help.go`) + `help_test.go` if any new keybinding; mirror README Reference.
-- [ ] 5.3 Add the validated profile select-list to the Settings project view (`internal/tui/settings…`):
+- [x] 5.2 Add Profile + Archetype cycling selectors to `internal/tui/newtaskform.go` (beside Backend/Model);
+  hide archetype for new-coord; return profile override + archetype to the spawn caller. No new keybinding
+  (selectors reuse the existing Tab + ◀/▶ idiom), so no help-modal/README change required.
+- [x] 5.3 Add the validated profile select-list to the Settings project view (`internal/tui/projectform.go`):
   list on-disk profiles, only valid selectable, persist name only.
-- [ ] 5.4 Add the per-node archetype + model/effort readout and the missing/invalid-profile warning to
-  `internal/tui/planview` (+ Hera rail as needed). Ship the smoke test asserting render.
+- [x] 5.4 Add the per-node archetype + model/effort readout and the missing/invalid-profile warning to
+  `internal/tui/planview` (stamped off-thread via `HeraPage.SetTierResolver`). Smoke tests assert render.
 
 ## 6. Documentation and in-repo skill profile-awareness
 

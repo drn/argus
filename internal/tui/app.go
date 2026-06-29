@@ -628,6 +628,12 @@ func (a *App) buildUI() {
 		// (BUG-002). Local-only: remote mode (apistore) has no config table seam,
 		// so persistence stays off. Mirrors the heraReader / heraOps type-assert.
 		a.heraPage.SetRailStateStore(d)
+		// Plan-view diligence-tiering readout (add-diligence-profiles D-VIEW):
+		// stamp each role's applied model/effort + missing-profile warning during
+		// doRefresh. Local-only — resolution reads disk + the task row, which is
+		// inert/expensive over the remote apistore, so remote leaves it nil (the
+		// plan view then shows archetype only).
+		a.heraPage.SetTierResolver(a.resolveHeraTier)
 	}
 	if heraReader != nil {
 		// In-process runner feed seam (replaces Hera's proxy/ SSE fan-out). Read
@@ -3520,6 +3526,10 @@ func (a *App) reapStaleRerenderRestart(taskID string, sess agent.SessionHandle) 
 func (a *App) buildNewTaskForm(defaultProject string) *NewTaskForm {
 	cfg := a.db.Config()
 	f := NewNewTaskForm(cfg.Projects, defaultProject, cfg.Backends, cfg.Defaults.Backend)
+	// Supply the valid on-disk profile names for the per-spawn override cycler
+	// (add-diligence-profiles forms-and-modals), scoped to the default project's
+	// in-repo dir + the per-user library.
+	f.SetProfileOptions(a.validProfileNames(cfg.Projects[defaultProject].Path))
 	f.OnBranchFocus = func(path string) {
 		go func() {
 			branches := gitutil.ListRemoteBranches(path)
@@ -3551,9 +3561,13 @@ func (a *App) onNewTask() {
 // labels the modal (e.g. "Spawn worker"); defaultProject pre-fills the project;
 // onDone runs with the assembled task + resolved project on submit (the form is
 // already closed and focus has returned to the Hera tab).
-func (a *App) openHeraNewTaskForm(title, defaultProject string, onDone func(task *model.Task, project string)) {
+func (a *App) openHeraNewTaskForm(title, defaultProject string, hideArchetype bool, onDone func(task *model.Task, project string)) {
 	a.newTaskForm = a.buildNewTaskForm(defaultProject)
 	a.newTaskForm.SetTitle(title)
+	// The new-coordinator prompt hides the archetype selector (a coordinator is
+	// always the `orchestrator` archetype, set programmatically); the worker prompt
+	// shows it.
+	a.newTaskForm.SetHideArchetype(hideArchetype)
 	a.newTaskOnDone = onDone
 	a.newTaskReturnPage = "hera"
 	a.newTaskForm.maybeLoadBranches()
@@ -3583,6 +3597,13 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 
 		// Capture form data before closing.
 		proj := a.newTaskForm.SelectedProject()
+		// The per-spawn profile override is surfaced to the caller (forms-and-modals
+		// requirement). There is no per-task profile column to persist it (the
+		// authoritative binding is the project's, set in Settings), so it is logged
+		// for visibility; profile resolution reads the project binding at spawn.
+		if override := a.newTaskForm.ProfileOverride(); override != "" {
+			uxlog.Log("[newtask] per-spawn profile override selected: %q (archetype=%q)", override, task.Archetype)
+		}
 		onDone := a.newTaskOnDone
 		var projCfg config.Project
 		if p, ok := a.db.Config().Projects[proj]; ok {
@@ -3624,6 +3645,7 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 			Project:    proj,
 			Backend:    task.Backend,
 			Model:      task.Model,
+			Archetype:  task.Archetype,
 			BaseBranch: task.Branch,
 			// INVARIANT: the new-task form has no name field — task.Name is
 			// always GenerateNameFromPrompt(prompt). If a name field is added
@@ -4776,6 +4798,10 @@ func (a *App) openProjectForm(edit bool, name string, p config.Project) {
 	if edit {
 		a.projectForm.LoadProject(name, p)
 	}
+	// Populate the diligence-profile select-list with the VALID on-disk profiles
+	// for this project (in-repo .argus/profiles + the ~/.argus/profiles library),
+	// pre-positioned on the current binding (add-diligence-profiles settings-view).
+	a.projectForm.SetProfileOptions(a.validProfileNames(p.Path), p.Profile)
 	a.mode = modeProjectForm
 	a.pages.AddPage("projectform", a.projectForm, true, true)
 	a.pages.SwitchToPage("projectform")

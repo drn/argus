@@ -172,7 +172,7 @@ func TestHeraActions_NewTaskOverrideInvokesOnDone(t *testing.T) {
 
 	var gotTask *model.Task
 	var gotProj string
-	app.openHeraNewTaskForm(" Test ", "p", func(task *model.Task, project string) {
+	app.openHeraNewTaskForm(" Test ", "p", false, func(task *model.Task, project string) {
 		gotTask = task
 		gotProj = project
 	})
