@@ -47,17 +47,17 @@ func runValidate(w io.Writer, loader *profiles.Loader, cfg config.Config, name s
 	if p == nil {
 		// Resolution failed (not found, or extends cycle); errs holds the cause.
 		for _, e := range errs {
-			fmt.Fprintf(w, "profile %q: %v\n", name, e)
+			_, _ = fmt.Fprintf(w, "profile %q: %v\n", name, e)
 		}
 		return 1
 	}
 	if len(errs) == 0 {
-		fmt.Fprintf(w, "profile %q is valid (source: %s)\n", name, p.Source)
+		_, _ = fmt.Fprintf(w, "profile %q is valid (source: %s)\n", name, p.Source)
 		return 0
 	}
-	fmt.Fprintf(w, "profile %q has %d error(s) (source: %s):\n", name, len(errs), p.Source)
+	_, _ = fmt.Fprintf(w, "profile %q has %d error(s) (source: %s):\n", name, len(errs), p.Source)
 	for _, e := range errs {
-		fmt.Fprintf(w, "  - %v\n", e)
+		_, _ = fmt.Fprintf(w, "  - %v\n", e)
 	}
 	return 1
 }

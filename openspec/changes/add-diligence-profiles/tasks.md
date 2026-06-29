@@ -11,24 +11,24 @@ integrated result before ralph-review.
 
 ## 1. Profiles package core (load, extends, validate, seeds, CLI)
 
-- [ ] 1.1 Write failing tests for: loading `~/.argus/profiles/<name>.toml`; in-repo
+- [x] 1.1 Write failing tests for: loading `~/.argus/profiles/<name>.toml`; in-repo
   `.argus/profiles/<name>.toml` precedence + source reporting; `extends` overlay (recursive, child
   overrides only set fields); `default` resolution target. (scenarios in
   `specs/diligence-profiles/spec.md` → "Profile file format and discovery", "Profile inheritance")
-- [ ] 1.2 Write failing tests for validation: unknown archetype, out-of-enum effort/window, unknown
+- [x] 1.2 Write failing tests for validation: unknown archetype, out-of-enum effort/window, unknown
   model, backend-contributed model accepted, extends cycle, structurally-valid `[panel]` accepted,
   report-all-errors. ("Profile structure and archetypes", "Profile validation",
   "Reviewer-panel forward-reference seam")
-- [ ] 1.3 Implement `internal/profiles`: types (Profile, per-archetype entry, rigor, opaque panel),
+- [x] 1.3 Implement `internal/profiles`: types (Profile, per-archetype entry, rigor, opaque panel),
   TOML loader with dual-location discovery + in-repo precedence + source tag, recursive `extends`
   resolution with cycle guard.
-- [ ] 1.4 Implement validation: canonical 13-archetype set; effort∈{low,medium,high};
+- [x] 1.4 Implement validation: canonical 13-archetype set; effort∈{low,medium,high};
   window∈{200k,1m}; model ∈ union(built-in `KnownModels` ∪ each `cfg.Backends[*].Models`); extends-cycle
   detection; `[panel]` structural-only check; aggregate all errors.
-- [ ] 1.5 Author the three seed profiles (`default`, `lean`, `customer_grade`) from the §2 archetype→model
+- [x] 1.5 Author the three seed profiles (`default`, `lean`, `customer_grade`) from the §2 archetype→model
   table (Fable absent), as repo example files (not auto-installed); add tests asserting each seed
   validates and `default` covers every archetype.
-- [ ] 1.6 Add the `validate` CLI affordance in `cmd/argus` (load+resolve+validate a named profile, report
+- [x] 1.6 Add the `validate` CLI affordance in `cmd/argus` (load+resolve+validate a named profile, report
   errors / confirm valid + source, non-zero on failure); NOT wired into build/CI/Make. Test the
   command's pure logic.
 
@@ -36,28 +36,28 @@ integrated result before ralph-review.
 
 **Depends on:** none (parallel with Stage 1)
 
-- [ ] 2.1 Write failing tests for: `tasks.archetype` round-trip; `projects.profile` round-trip;
+- [x] 2.1 Write failing tests for: `tasks.archetype` round-trip; `projects.profile` round-trip;
   existing-rows-default-empty after column add; `config.Project.Profile` parse + default-when-absent.
   (`specs/data-persistence/spec.md`, `specs/config-management/spec.md`)
-- [ ] 2.2 Add columns `tasks.archetype`, `projects.profile`, `hera_roles.archetype` to `internal/db/schema.go`
+- [x] 2.2 Add columns `tasks.archetype`, `projects.profile`, `hera_roles.archetype` to `internal/db/schema.go`
   (+ idempotent add-column-if-missing for existing local DBs); extend INSERT/scan in `db/projects.go`,
   the tasks store, and `db/hera.go` role read/write.
-- [ ] 2.3 Add `Profile string \`toml:"profile"\`` to `config.Project` (`internal/config/config.go`); load
+- [x] 2.3 Add `Profile string \`toml:"profile"\`` to `config.Project` (`internal/config/config.go`); load
   + overlay handling; resolve empty→`default`.
 
 ## 3. Resolution, spawn-layer archetype, and env injection
 
 **Depends on:** Stage 1, Stage 2
 
-- [ ] 3.1 Write failing tests for the resolution chain: task override wins; profile model applied by
+- [x] 3.1 Write failing tests for the resolution chain: task override wins; profile model applied by
   archetype; invalid-for-backend model falls through; missing/invalid profile → no `--model`; no
   archetype → profile skipped. (`specs/diligence-profiles/spec.md` → "Profile-aware model resolution")
-- [ ] 3.2 Write failing tests for `CreateAndStart` carrying `archetype` onto the task, and for env export
+- [x] 3.2 Write failing tests for `CreateAndStart` carrying `archetype` onto the task, and for env export
   (`ARGUS_PROFILE`/`ARGUS_ARCHETYPE`/`ARGUS_MODEL` present on resolution, omitted otherwise).
   (`specs/agent-execution/spec.md`)
-- [ ] 3.3 Extend `ResolveModel` (`internal/agent/agent.go`) to thread the resolved profile:
+- [x] 3.3 Extend `ResolveModel` (`internal/agent/agent.go`) to thread the resolved profile:
   `task.Model → profile[task.Archetype].model (backend-valid) → project/backend default → no model`.
-- [ ] 3.4 Add the optional `archetype` param to `agent.CreateAndStart`, persist onto the task; wire the
+- [x] 3.4 Add the optional `archetype` param to `agent.CreateAndStart`, persist onto the task; wire the
   daemon-side profile resolution + env export (`ARGUS_PROFILE`/`ARGUS_ARCHETYPE`/`ARGUS_MODEL`) into
   command construction (resolution runs daemon-side, outside the sandbox).
 
@@ -106,7 +106,7 @@ integrated result before ralph-review.
 
 **Depends on:** Stage 1, Stage 2, Stage 3, Stage 4, Stage 5, Stage 6
 
-- [ ] 7.1 Run `/ralph-review` against the implemented work vs the deltas; auto-fix confident issues, park
+- [x] 7.1 Run `/ralph-review` against the implemented work vs the deltas; auto-fix confident issues, park
   questions. (This is a `profiles-exec` sub-DAG node, blocked on all impl groups.)
 
 ## 8. Spec audit

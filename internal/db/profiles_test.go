@@ -37,6 +37,37 @@ func TestDB_TaskArchetypeRoundTrip(t *testing.T) {
 	testutil.Equal(t, gotBare.Archetype, "")
 }
 
+// TestDB_TaskProfileRoundTrip pins the add-diligence-profiles tasks.profile
+// column (the per-spawn profile override): a profile name set on a task
+// survives Add → Get and a later Update → Get, and a task created with no
+// override reads back empty.
+func TestDB_TaskProfileRoundTrip(t *testing.T) {
+	d := testDB(t)
+
+	task := &model.Task{Name: "override-task", Profile: "custom"}
+	testutil.NoError(t, d.Add(task))
+
+	got, err := d.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Profile, "custom")
+
+	// Full-row Update carries the column too.
+	got.Profile = "customer_grade"
+	testutil.NoError(t, d.Update(got))
+
+	got2, err := d.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got2.Profile, "customer_grade")
+
+	// A task created with no per-spawn override reads empty (resolution falls
+	// through to the project's bound profile).
+	bare := &model.Task{Name: "bare-profile"}
+	testutil.NoError(t, d.Add(bare))
+	gotBare, err := d.Get(bare.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotBare.Profile, "")
+}
+
 // TestDB_ProjectProfileRoundTrip pins the projects.profile column: a profile
 // NAME set on a project survives SetProject → Projects.
 func TestDB_ProjectProfileRoundTrip(t *testing.T) {
