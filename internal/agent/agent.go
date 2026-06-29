@@ -14,6 +14,7 @@ import (
 	"github.com/drn/argus/internal/claudesession"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/uxlog"
 	_ "modernc.org/sqlite"
 )
 
@@ -499,6 +500,25 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// rather than emit a literal "ARGUS_TASK_ID=" with no value.
 	if task.ID != "" {
 		cmd.Env = append(cmd.Env, "ARGUS_TASK_ID="+task.ID)
+	}
+
+	// Per-backend credential env mapping. backend.EnvVars maps a TARGET env var
+	// (set in the child) to a SOURCE descriptor resolved at spawn time via the
+	// pluggable secretResolver (default: the daemon's own environment). The
+	// mapping carries NO secret value — only the descriptor. A resolved value is
+	// appended to the child env (later entries win per exec.Cmd.Env semantics);
+	// an unresolved source sets nothing and logs a non-sensitive warning naming
+	// ONLY the variable, never the value. We never log the resolved value.
+	for target, source := range backend.EnvVars {
+		if target == "" || source == "" {
+			continue
+		}
+		value, ok := secretResolver(source)
+		if !ok {
+			uxlog.Log("[agent] backend %q: credential source %q did not resolve; %q left unset in child env", backend.Command, source, target)
+			continue
+		}
+		cmd.Env = append(cmd.Env, target+"="+value)
 	}
 
 	committed = true

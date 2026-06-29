@@ -47,16 +47,20 @@ func (d *DB) seedDefaults() error {
 	// Default backends — insert if missing, and fix placeholder commands
 	// (e.g. "echo") that may have been written by earlier development builds.
 	for name, b := range cfg.Backends {
+		envVars, merr := marshalEnvVars(b.EnvVars)
+		if merr != nil {
+			return merr
+		}
 		var existing string
 		err := d.conn.QueryRow(`SELECT command FROM backends WHERE name=?`, name).Scan(&existing)
 		if err == sql.ErrNoRows {
-			if _, err := d.conn.Exec(`INSERT INTO backends (name, command, prompt_flag) VALUES (?, ?, ?)`,
-				name, b.Command, b.PromptFlag); err != nil {
+			if _, err := d.conn.Exec(`INSERT INTO backends (name, command, prompt_flag, env_vars) VALUES (?, ?, ?, ?)`,
+				name, b.Command, b.PromptFlag, envVars); err != nil {
 				return err
 			}
 		} else if err == nil && (existing == "echo" || existing == "cat" || existing == "true") {
-			if _, err := d.conn.Exec(`UPDATE backends SET command=?, prompt_flag=? WHERE name=?`,
-				b.Command, b.PromptFlag, name); err != nil {
+			if _, err := d.conn.Exec(`UPDATE backends SET command=?, prompt_flag=?, env_vars=? WHERE name=?`,
+				b.Command, b.PromptFlag, envVars, name); err != nil {
 				return err
 			}
 		}
@@ -105,14 +109,18 @@ func (d *DB) fixupBackends() error {
 	cfg := config.DefaultConfig()
 
 	for name, want := range cfg.Backends {
-		var command, promptFlag string
+		wantEnvVars, merr := marshalEnvVars(want.EnvVars)
+		if merr != nil {
+			return merr
+		}
+		var command, promptFlag, envVars string
 		err := d.conn.QueryRow(
-			`SELECT command, prompt_flag FROM backends WHERE name=?`, name,
-		).Scan(&command, &promptFlag)
+			`SELECT command, prompt_flag, env_vars FROM backends WHERE name=?`, name,
+		).Scan(&command, &promptFlag, &envVars)
 		if errors.Is(err, sql.ErrNoRows) {
 			if _, ierr := d.conn.Exec(
-				`INSERT INTO backends (name, command, prompt_flag) VALUES (?, ?, ?)`,
-				name, want.Command, want.PromptFlag,
+				`INSERT INTO backends (name, command, prompt_flag, env_vars) VALUES (?, ?, ?, ?)`,
+				name, want.Command, want.PromptFlag, wantEnvVars,
 			); ierr != nil {
 				return ierr
 			}
@@ -120,6 +128,19 @@ func (d *DB) fixupBackends() error {
 		}
 		if err != nil {
 			continue
+		}
+
+		// Propagate a newly-shipped default credential mapping to a pre-existing
+		// row that has none yet (e.g. the codex OPENAI_API_KEY -> HERA_OPENAI
+		// mapping). Guarded on the stored value being empty so a user who
+		// customized (or deliberately cleared) the mapping is never clobbered.
+		// The mapping holds no secret value — only target -> source descriptors.
+		if envVars == "" && wantEnvVars != "" {
+			if _, uerr := d.conn.Exec(
+				`UPDATE backends SET env_vars=? WHERE name=?`, wantEnvVars, name,
+			); uerr != nil {
+				return uerr
+			}
 		}
 
 		needsUpdate := false

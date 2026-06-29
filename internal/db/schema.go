@@ -43,7 +43,12 @@ func (d *DB) createTables() error {
 			command        TEXT NOT NULL,
 			prompt_flag    TEXT NOT NULL DEFAULT '',
 			resume_command TEXT NOT NULL DEFAULT '',
-			model          TEXT NOT NULL DEFAULT ''
+			model          TEXT NOT NULL DEFAULT '',
+			-- env_vars: JSON object mapping a TARGET env-var name to a SOURCE
+			-- descriptor, consulted by agent.BuildCmd. Holds the MAPPING ONLY,
+			-- never a secret value (resolved at spawn time). '' / 'null' both
+			-- decode to an empty mapping.
+			env_vars       TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS config (
 			key   TEXT PRIMARY KEY,
@@ -108,6 +113,11 @@ func (d *DB) createTables() error {
 
 	// Add resume_command column to existing backends tables.
 	d.conn.Exec(`ALTER TABLE backends ADD COLUMN resume_command TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+
+	// Per-backend credential env mapping (add-foreign-backend-envmap). JSON
+	// object: TARGET env var -> SOURCE descriptor; mapping only, never a value.
+	// Idempotent ADD for databases predating the column.
+	d.conn.Exec(`ALTER TABLE backends ADD COLUMN env_vars TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 
 	// Per-backend default model and per-task model override.
 	d.conn.Exec(`ALTER TABLE backends ADD COLUMN model TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
