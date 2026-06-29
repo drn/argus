@@ -1039,6 +1039,33 @@ func TestFixupBackends_InsertsMissingDefault(t *testing.T) {
 	}
 }
 
+// TestFixupBackends_InsertsOpencode pins that the opencode default (a
+// capture-style backend with a --prompt prompt flag) is seeded into a
+// pre-existing DB that predates it, command and prompt flag intact.
+func TestFixupBackends_InsertsOpencode(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.sql")
+
+	d1, err := Open(dbPath)
+	testutil.NoError(t, err)
+	testutil.NoError(t, d1.DeleteBackend("opencode")) // simulate a pre-opencode build
+	_ = d1.Close()
+
+	d2, err := Open(dbPath)
+	testutil.NoError(t, err)
+	defer func() { _ = d2.Close() }()
+
+	backends, err := d2.Backends()
+	testutil.NoError(t, err)
+	oc, ok := backends["opencode"]
+	if !ok {
+		t.Fatal("expected opencode to be re-inserted by fixupBackends after Open")
+	}
+	defaultCfg := config.DefaultConfig()
+	testutil.Equal(t, oc.Command, defaultCfg.Backends["opencode"].Command)
+	testutil.Equal(t, oc.PromptFlag, defaultCfg.Backends["opencode"].PromptFlag)
+	testutil.Equal(t, oc.PromptFlag, "--prompt")
+}
+
 // --- Config edge case tests ---
 
 func TestDB_Config_CleanupWorktrees(t *testing.T) {
@@ -1372,9 +1399,9 @@ func TestDB_Config_MultipleProjectsAndBackends(t *testing.T) {
 		t.Errorf("app2 backend = %q", cfg.Projects["app2"].Backend)
 	}
 
-	// Verify backends (claude default + codex + pi default + custom = 4).
-	if len(cfg.Backends) != 4 {
-		t.Fatalf("expected 4 backends, got %d", len(cfg.Backends))
+	// Verify backends (claude default + codex + pi default + opencode default + custom = 5).
+	if len(cfg.Backends) != 5 {
+		t.Fatalf("expected 5 backends, got %d", len(cfg.Backends))
 	}
 	if _, ok := cfg.Backends["pi"]; !ok {
 		t.Error("expected hardcoded pi backend to be present")

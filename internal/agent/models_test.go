@@ -17,6 +17,7 @@ func TestKnownModels(t *testing.T) {
 		{"claude abs path", "/usr/local/bin/claude", []string{"opus", "sonnet", "haiku"}},
 		{"codex with flags", "codex --dangerously-bypass-approvals-and-sandbox", []string{"gpt-5-codex", "gpt-5"}},
 		{"pi is empty", "pi", nil},
+		{"opencode is empty (custom-only)", "opencode", nil},
 		{"custom is empty", "bash", nil},
 		{"empty command", "", nil},
 	}

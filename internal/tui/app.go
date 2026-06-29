@@ -1527,6 +1527,8 @@ func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool)
 					kind = "codex"
 				case agent.IsPiBackend(b.Command):
 					kind = "pi"
+				case agent.IsOpencodeBackend(b.Command):
+					kind = "opencode"
 				case agent.IsClaudeBackend(b.Command):
 					kind = "claude"
 				}
@@ -3866,7 +3868,7 @@ func (a *App) startSession(task *model.Task) {
 	generatedSessionID := false
 	if !resume {
 		backend, berr := agent.ResolveBackend(task, cfg)
-		if berr == nil && !agent.IsCodexBackend(backend.Command) && !agent.IsPiBackend(backend.Command) {
+		if berr == nil && !agent.IsCodexBackend(backend.Command) && !agent.IsPiBackend(backend.Command) && !agent.IsOpencodeBackend(backend.Command) {
 			task.SessionID = model.GenerateSessionID()
 			generatedSessionID = true
 			a.db.Update(task) //nolint:errcheck
@@ -4115,7 +4117,7 @@ func (a *App) openSessionPicker() {
 		uxlog.Log("[tui] session picker: resolve backend failed for task %s: %v", taskID, berr)
 		return
 	}
-	if agent.IsCodexBackend(backend.Command) || agent.IsPiBackend(backend.Command) {
+	if agent.IsCodexBackend(backend.Command) || agent.IsPiBackend(backend.Command) || agent.IsOpencodeBackend(backend.Command) {
 		uxlog.Log("[tui] session picker: backend %q is not Claude — switcher unavailable", backend.Command)
 		a.statusbar.SetInfo("Session switcher is Claude-only")
 		return
