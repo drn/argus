@@ -65,6 +65,7 @@ type HeraSpawnInput struct {
 	Branch         string // optional base branch passed through to CreateAndStart
 	Backend        string // optional backend override
 	Model          string // optional per-worker model override (empty = backend default)
+	Archetype      string // optional diligence archetype (empty = spawner default code_slice)
 	OrchestratorID int64  // orchestrator the new worker role + binding belong to
 }
 

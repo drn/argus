@@ -176,6 +176,7 @@ var heraToolDefs = []Tool{
 				"branch":       map[string]interface{}{"type": "string", "description": "(optional) Branch passed to argus CreateTask. Defaults to project default"},
 				"backend":      map[string]interface{}{"type": "string", "description": "(optional) Backend passed to argus CreateTask. Defaults to project default"},
 				"model":        map[string]interface{}{"type": "string", "description": "(optional) Per-worker model override; choose by task complexity. Must be valid for the worker's resolved backend (claude: opus/sonnet/haiku; codex: e.g. gpt-5; pi: its model ids). Empty = backend default. Only claude/codex/pi backends receive --model; ignored if the backend command already hard-codes --model"},
+				"archetype":    map[string]interface{}{"type": "string", "description": "(optional) Diligence archetype for the worker (e.g. code_slice, bug_fix, big_build, review, ci_loop). Selects the per-archetype model from the project's bound profile and is exported as ARGUS_ARCHETYPE to the worker. Defaults to code_slice when omitted"},
 			},
 			"required": []string{"cwd", "prompt"},
 		},
@@ -216,6 +217,7 @@ var heraToolDefs = []Tool{
 				"name":         map[string]interface{}{"type": "string", "description": "Short-id-prefixed node name (e.g. '2c-fact-checker'); made unique within the orchestrator automatically"},
 				"prompt":       map[string]interface{}{"type": "string", "description": "Task prompt delivered to the worker when the node materializes"},
 				"project":      map[string]interface{}{"type": "string", "description": "(optional) argus project for the worker. Defaults to the coordinator's own project"},
+				"archetype":    map[string]interface{}{"type": "string", "description": "(optional) Diligence archetype for the worker (e.g. code_slice, review, ci_loop); persisted on the planned node and copied onto the task when it materializes"},
 				"orchestrator": map[string]interface{}{"type": "string", "description": "(optional) Disambiguates when the calling task holds multiple live coordinator bindings"},
 			},
 			"required": []string{"cwd", "name", "prompt"},
@@ -244,13 +246,14 @@ var heraToolDefs = []Tool{
 				"cwd": map[string]interface{}{"type": "string", "description": "Coordinator's worktree path (use $PWD)"},
 				"nodes": map[string]interface{}{
 					"type":        "array",
-					"description": "Planned nodes. Each: {name (short-id-prefixed), prompt, project (optional)}",
+					"description": "Planned nodes. Each: {name (short-id-prefixed), prompt, project (optional), archetype (optional)}",
 					"items": map[string]interface{}{
 						"type": "object",
 						"properties": map[string]interface{}{
-							"name":    map[string]interface{}{"type": "string"},
-							"prompt":  map[string]interface{}{"type": "string"},
-							"project": map[string]interface{}{"type": "string"},
+							"name":      map[string]interface{}{"type": "string"},
+							"prompt":    map[string]interface{}{"type": "string"},
+							"project":   map[string]interface{}{"type": "string"},
+							"archetype": map[string]interface{}{"type": "string", "description": "(optional) Diligence archetype; copied onto the task when the node materializes"},
 						},
 						"required": []string{"name", "prompt"},
 					},
@@ -912,6 +915,7 @@ func (s *Server) toolHeraSpawnWorker(id interface{}, args json.RawMessage) *Resp
 		Branch       string `json:"branch"`
 		Backend      string `json:"backend"`
 		Model        string `json:"model"`
+		Archetype    string `json:"archetype"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
 
@@ -965,6 +969,7 @@ func (s *Server) toolHeraSpawnWorker(id interface{}, args json.RawMessage) *Resp
 		Branch:         p.Branch,
 		Backend:        p.Backend,
 		Model:          strings.TrimSpace(p.Model),
+		Archetype:      strings.TrimSpace(p.Archetype),
 		OrchestratorID: caller.orch.ID,
 	})
 	if err != nil {

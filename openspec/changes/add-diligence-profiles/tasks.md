@@ -65,12 +65,12 @@ integrated result before ralph-review.
 
 **Depends on:** Stage 2, Stage 3
 
-- [ ] 4.1 Write failing tests: `hera_spawn_worker` archetype passthrough + `code_slice` default;
+- [x] 4.1 Write failing tests: `hera_spawn_worker` archetype passthrough + `code_slice` default;
   planned-node archetype persisted; planned archetype propagates onto the materialized task.
   (`specs/hera-coordination/spec.md`, `specs/task-orchestration/spec.md`, `specs/data-persistence/spec.md`)
-- [ ] 4.2 Add `archetype` to `hera_spawn_worker` (MCP tool + `internal/hera`), pass to `CreateAndStart`,
+- [x] 4.2 Add `archetype` to `hera_spawn_worker` (MCP tool + `internal/hera`), pass to `CreateAndStart`,
   mirror onto the role; default `code_slice` when omitted, `orchestrator` for coordinators.
-- [ ] 4.3 Add `archetype` to plan-node authoring (planned-role persistence) + carry it through gater
+- [x] 4.3 Add `archetype` to plan-node authoring (planned-role persistence) + carry it through gater
   materialization into the task.
 
 ## 5. TUI surfaces (selectors, settings list, plan-view readout)

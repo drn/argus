@@ -46,13 +46,19 @@ func fakeHeraSpawn(d *db.DB) HeraSpawner {
 		if err != nil {
 			return nil, err
 		}
+		// Mirror agent.SpawnHeraWorker's archetype default (code_slice when empty).
+		archetype := in.Archetype
+		if archetype == "" {
+			archetype = "code_slice"
+		}
 		task := &model.Task{
-			Name:     name,
-			Status:   model.StatusInProgress,
-			Project:  in.Project,
-			Worktree: "/wt/spawn-" + name,
-			Prompt:   in.TaskPrompt,
-			Model:    in.Model, // mirrors agent.SpawnHeraWorker → CreateInput.Model
+			Name:      name,
+			Status:    model.StatusInProgress,
+			Project:   in.Project,
+			Worktree:  "/wt/spawn-" + name,
+			Prompt:    in.TaskPrompt,
+			Model:     in.Model,  // mirrors agent.SpawnHeraWorker → CreateInput.Model
+			Archetype: archetype, // mirrors agent.SpawnHeraWorker → CreateInput.Archetype
 		}
 		if err := d.Add(task); err != nil {
 			return nil, err
@@ -64,6 +70,7 @@ func fakeHeraSpawn(d *db.DB) HeraSpawner {
 			Kind:           db.HeraKindWorker,
 			ArgusProject:   in.Project,
 			Prompt:         in.RolePrompt,
+			Archetype:      archetype,
 		}, task.ID, task.Worktree)
 		if err != nil {
 			return nil, err
@@ -1311,6 +1318,48 @@ func TestHera_SpawnWorker_ModelArg(t *testing.T) {
 
 	wt := workerTaskByName(t, d, "refactor")
 	testutil.Equal(t, wt.Model, "opus")
+}
+
+// TestHera_SpawnWorker_ArchetypeArg asserts the optional `archetype` argument is
+// read from the tool call and threaded into the spawner input (onto the task and
+// mirrored onto the worker role).
+func TestHera_SpawnWorker_ArchetypeArg(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord")
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_spawn_worker",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"cwd": %q, "prompt": "tighten CI", "role_name": "ci", "archetype": "ci_loop"}`, coord.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+
+	wt := workerTaskByName(t, d, "ci")
+	testutil.Equal(t, wt.Archetype, "ci_loop")
+
+	orch, err := d.HeraOrchestratorByName("myorch")
+	testutil.NoError(t, err)
+	role, err := d.HeraRoleByName(orch.ID, "ci")
+	testutil.NoError(t, err)
+	testutil.Equal(t, role.Archetype, "ci_loop")
+}
+
+// TestHera_SpawnWorker_ArchetypeOmittedDefaults asserts omitting `archetype`
+// defaults the spawned worker to code_slice (mirrored by the fake spawner, which
+// matches agent.SpawnHeraWorker's default).
+func TestHera_SpawnWorker_ArchetypeOmittedDefaults(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord")
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_spawn_worker",
+		Arguments: spawnArgs(coord.Worktree, "mechanical work", "plain", "", ""),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+
+	wt := workerTaskByName(t, d, "plain")
+	testutil.Equal(t, wt.Archetype, "code_slice")
 }
 
 // TestHera_SpawnWorker_ModelOmittedDefaults asserts omitting `model` leaves the

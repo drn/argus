@@ -43,6 +43,7 @@ func (s *Server) toolHeraPlanNode(id interface{}, args json.RawMessage) *Respons
 		Goal         string `json:"goal"`
 		Kind         string `json:"kind"`
 		Project      string `json:"project"`
+		Archetype    string `json:"archetype"`
 		Orchestrator string `json:"orchestrator"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
@@ -101,6 +102,7 @@ func (s *Server) toolHeraPlanNode(id interface{}, args json.RawMessage) *Respons
 		NodeKind:       nodeKind,
 		ArgusProject:   project,
 		Prompt:         prompt,
+		Archetype:      strings.TrimSpace(p.Archetype),
 	})
 	if err != nil {
 		return toolError(id, fmt.Sprintf("create planned node: %v", err))
@@ -170,11 +172,12 @@ func (s *Server) toolHeraPlan(id interface{}, args json.RawMessage) *Response {
 	var p struct {
 		Cwd   string `json:"cwd"`
 		Nodes []struct {
-			Name    string `json:"name"`
-			Prompt  string `json:"prompt"`
-			Goal    string `json:"goal"`
-			Kind    string `json:"kind"`
-			Project string `json:"project"`
+			Name      string `json:"name"`
+			Prompt    string `json:"prompt"`
+			Goal      string `json:"goal"`
+			Kind      string `json:"kind"`
+			Project   string `json:"project"`
+			Archetype string `json:"archetype"`
 		} `json:"nodes"`
 		Edges []struct {
 			Blocked string `json:"blocked"`
@@ -243,7 +246,7 @@ func (s *Server) toolHeraPlan(id interface{}, args json.RawMessage) *Response {
 		if err != nil {
 			return toolError(id, fmt.Sprintf("nodes[%d] (%s): uniquify: %v", i, name, err))
 		}
-		specs = append(specs, db.HeraPlannedNodeSpec{Name: uniqueName, ArgusProject: project, Prompt: prompt, NodeKind: nodeKind})
+		specs = append(specs, db.HeraPlannedNodeSpec{Name: uniqueName, ArgusProject: project, Prompt: prompt, NodeKind: nodeKind, Archetype: strings.TrimSpace(n.Archetype)})
 		nameIdx[name] = i
 	}
 

@@ -131,6 +131,9 @@ type HeraPlannedNodeSpec struct {
 	ArgusProject string
 	Prompt       string
 	NodeKind     HeraNodeKind
+	// Archetype is the planned node's optional diligence archetype
+	// (add-diligence-profiles); the gater copies it onto the materialized task.
+	Archetype string
 }
 
 // HeraBlockSpec is one blocking edge in a whole-graph CreateHeraPlan call. Each
@@ -170,6 +173,7 @@ func (d *DB) CreateHeraPlan(orchID int64, nodes []HeraPlannedNodeSpec, edges []H
 				NodeKind:       n.NodeKind,
 				ArgusProject:   n.ArgusProject,
 				Prompt:         n.Prompt,
+				Archetype:      n.Archetype,
 			}, now)
 			if err != nil {
 				return err

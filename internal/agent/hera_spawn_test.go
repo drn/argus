@@ -224,6 +224,100 @@ func TestSpawnHeraWorker_EmptyModelDefaults(t *testing.T) {
 	testutil.Equal(t, got.Model, "")
 }
 
+// TestSpawnHeraWorker_ArchetypePassthrough asserts an explicit Archetype flows
+// onto BOTH the spawned task (the model-resolution key) and the worker role (the
+// mirrored display value).
+func TestSpawnHeraWorker_ArchetypePassthrough(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{}
+	orch, err := d.CreateHeraOrchestrator("orch", "")
+	testutil.NoError(t, err)
+
+	res, err := SpawnHeraWorker(d, fr, HeraWorkerSpawnInput{
+		OrchestratorID: orch.ID,
+		BaseName:       "ci",
+		TaskPrompt:     "body",
+		Project:        "proj",
+		Archetype:      "ci_loop",
+	})
+	testutil.NoError(t, err)
+
+	// Mirrored onto the role.
+	testutil.Equal(t, res.Role.Archetype, "ci_loop")
+	// Persisted onto the task (the authoritative resolution key).
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Archetype, "ci_loop")
+}
+
+// TestSpawnHeraWorker_ArchetypeDefaultsCodeSlice asserts an omitted archetype
+// defaults to code_slice on both the task and the role.
+func TestSpawnHeraWorker_ArchetypeDefaultsCodeSlice(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{}
+	orch, err := d.CreateHeraOrchestrator("orch", "")
+	testutil.NoError(t, err)
+
+	res, err := SpawnHeraWorker(d, fr, HeraWorkerSpawnInput{
+		OrchestratorID: orch.ID,
+		BaseName:       "plain",
+		TaskPrompt:     "body",
+		Project:        "proj",
+	})
+	testutil.NoError(t, err)
+
+	testutil.Equal(t, res.Role.Archetype, "code_slice")
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Archetype, "code_slice")
+}
+
+// TestSpawnHeraCoordinator_ArchetypeDefaultsOrchestrator asserts a born-bound
+// coordinator defaults to the orchestrator archetype on the task + coord role.
+func TestSpawnHeraCoordinator_ArchetypeDefaultsOrchestrator(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{}
+
+	res, err := SpawnHeraCoordinator(d, fr, HeraCoordinatorSpawnInput{
+		OrchestratorBaseName: "coord-orch",
+		TaskPrompt:           "body",
+		Project:              "proj",
+	})
+	testutil.NoError(t, err)
+
+	testutil.Equal(t, res.Role.Archetype, "orchestrator")
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Archetype, "orchestrator")
+}
+
+// TestMaterializeHeraWorker_ArchetypePropagates asserts a planned role's authored
+// archetype is copied onto the materialized task (the gater propagation path).
+func TestMaterializeHeraWorker_ArchetypePropagates(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{}
+	orch, err := d.CreateHeraOrchestrator("orch", "")
+	testutil.NoError(t, err)
+
+	planned, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID, Name: "rev", ArgusProject: "proj", Prompt: "v", Archetype: "review",
+	})
+	testutil.NoError(t, err)
+
+	res, err := MaterializeHeraWorker(d, fr, HeraMaterializeInput{
+		Role: planned, TaskPrompt: "body", Project: "proj",
+	})
+	testutil.NoError(t, err)
+
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Archetype, "review")
+}
+
 // TestSpawnHeraWorker_UniquifiesName verifies a second spawn of the same base
 // name lands on base-2 (the role-name uniquifier).
 func TestSpawnHeraWorker_UniquifiesName(t *testing.T) {

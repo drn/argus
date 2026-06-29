@@ -26,7 +26,16 @@ type HeraWorkerSpawnInput struct {
 	Branch         string // optional base branch
 	Backend        string // optional backend override
 	Model          string // optional per-worker model override (empty = backend default)
+	Archetype      string // optional diligence archetype; defaults to code_slice when empty
 }
+
+// Default archetypes applied at the spawn layer when the caller supplies none
+// (add-diligence-profiles). Both MUST be members of profiles.CanonicalArchetypes:
+// a born-bound worker is a code_slice unit, a born-bound coordinator orchestrates.
+const (
+	defaultWorkerArchetype      = "code_slice"
+	defaultCoordinatorArchetype = "orchestrator"
+)
 
 // HeraWorkerSpawnResult is the success payload from SpawnHeraWorker.
 type HeraWorkerSpawnResult struct {
@@ -55,6 +64,15 @@ func SpawnHeraWorker(database *db.DB, runner SessionProvider, in HeraWorkerSpawn
 		return nil, err
 	}
 
+	// Default an omitted archetype to code_slice (add-diligence-profiles): a
+	// born-bound worker is a code-slice unit unless the coordinator says otherwise.
+	// The resolved value is both the task's model-resolution key and the role's
+	// mirrored display value, so resolve it once here.
+	archetype := strings.TrimSpace(in.Archetype)
+	if archetype == "" {
+		archetype = defaultWorkerArchetype
+	}
+
 	var role *db.HeraRole
 	var binding *db.HeraBinding
 	task, _, err := CreateAndStart(database, runner, CreateInput{
@@ -63,6 +81,7 @@ func SpawnHeraWorker(database *db.DB, runner SessionProvider, in HeraWorkerSpawn
 		Project:    in.Project,
 		Backend:    in.Backend,
 		Model:      in.Model,
+		Archetype:  archetype,
 		BaseBranch: in.Branch,
 		AutoName:   false, // name is the meaningful role slug — no Haiku rename
 		AfterPersist: func(t *model.Task) (func(), error) {
@@ -77,6 +96,7 @@ func SpawnHeraWorker(database *db.DB, runner SessionProvider, in HeraWorkerSpawn
 				Kind:           db.HeraKindWorker,
 				ArgusProject:   in.Project,
 				Prompt:         in.RolePrompt,
+				Archetype:      archetype,
 			}, t.ID, t.Worktree)
 			if cErr != nil {
 				// Returning the error makes CreateAndStart unwind the task row +
@@ -134,11 +154,14 @@ func MaterializeHeraWorker(database *db.DB, runner SessionProvider, in HeraMater
 	}
 	var binding *db.HeraBinding
 	task, _, err := CreateAndStart(database, runner, CreateInput{
-		Name:       in.Role.Name,
-		Prompt:     in.TaskPrompt,
-		Project:    in.Project,
-		Backend:    in.Backend,
-		Model:      in.Model,
+		Name:    in.Role.Name,
+		Prompt:  in.TaskPrompt,
+		Project: in.Project,
+		Backend: in.Backend,
+		Model:   in.Model,
+		// The planned role's authored archetype (add-diligence-profiles) propagates
+		// onto the materialized task; empty stays empty (resolution falls open).
+		Archetype:  in.Role.Archetype,
 		BaseBranch: in.Branch,
 		AutoName:   false, // name is the planner-assigned short-id slug — never rename
 		AfterPersist: func(t *model.Task) (func(), error) {
@@ -227,11 +250,14 @@ func MaterializeHeraSubCoordinator(database *db.DB, runner SessionProvider, in H
 		coordBinding  *db.HeraBinding
 	)
 	task, _, err := CreateAndStart(database, runner, CreateInput{
-		Name:       in.Role.Name,
-		Prompt:     in.TaskPrompt,
-		Project:    in.Project,
-		Backend:    in.Backend,
-		Model:      in.Model,
+		Name:    in.Role.Name,
+		Prompt:  in.TaskPrompt,
+		Project: in.Project,
+		Backend: in.Backend,
+		Model:   in.Model,
+		// The planned subcoord role's authored archetype propagates onto the
+		// materialized task (add-diligence-profiles); empty stays empty.
+		Archetype:  in.Role.Archetype,
 		BaseBranch: in.Branch,
 		AutoName:   false, // name is the planner-assigned short-id slug — never rename
 		AfterPersist: func(t *model.Task) (func(), error) {
@@ -370,6 +396,7 @@ type HeraCoordinatorSpawnInput struct {
 	Branch               string // optional base branch
 	Backend              string // optional backend override
 	Model                string // optional model override (empty = backend default)
+	Archetype            string // optional diligence archetype; defaults to orchestrator when empty
 }
 
 // HeraCoordinatorSpawnResult is the success payload from SpawnHeraCoordinator.
@@ -414,6 +441,13 @@ func SpawnHeraCoordinator(database *db.DB, runner SessionProvider, in HeraCoordi
 		taskName = orchName
 	}
 
+	// Default an omitted archetype to orchestrator (add-diligence-profiles): a
+	// born-bound coordinator orchestrates unless told otherwise.
+	archetype := strings.TrimSpace(in.Archetype)
+	if archetype == "" {
+		archetype = defaultCoordinatorArchetype
+	}
+
 	var role *db.HeraRole
 	var binding *db.HeraBinding
 	task, _, err := CreateAndStart(database, runner, CreateInput{
@@ -422,6 +456,7 @@ func SpawnHeraCoordinator(database *db.DB, runner SessionProvider, in HeraCoordi
 		Project:    in.Project,
 		Backend:    in.Backend,
 		Model:      in.Model,
+		Archetype:  archetype,
 		BaseBranch: in.Branch,
 		AutoName:   false, // name is the orchestrator slug — no Haiku rename
 		AfterPersist: func(t *model.Task) (func(), error) {
@@ -434,6 +469,7 @@ func SpawnHeraCoordinator(database *db.DB, runner SessionProvider, in HeraCoordi
 				Kind:           db.HeraKindCoordinator,
 				ArgusProject:   in.Project,
 				Prompt:         in.RolePrompt,
+				Archetype:      archetype,
 			}, t.ID, t.Worktree)
 			if cErr != nil {
 				return nil, cErr
