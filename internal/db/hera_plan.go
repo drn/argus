@@ -357,7 +357,7 @@ func (d *DB) ListHeraPlannedNodes() ([]*HeraRole, error) {
 	defer d.mu.Unlock()
 	rows, err := d.conn.Query(
 		`SELECT r.id, r.orchestrator_id, r.name, r.kind, r.argus_project, r.prompt,
-		        r.created_at, r.archived_at, r.pinned_at, r.nuked_at, r.node_kind, r.cancelled_at
+		        r.created_at, r.archived_at, r.pinned_at, r.nuked_at, r.node_kind, r.cancelled_at, r.archetype
 		 FROM hera_roles r
 		 WHERE r.kind=? AND r.archived_at IS NULL AND r.cancelled_at IS NULL
 		   AND NOT EXISTS (SELECT 1 FROM hera_bindings b WHERE b.role_id = r.id)

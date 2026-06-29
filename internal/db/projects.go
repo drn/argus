@@ -11,7 +11,7 @@ func (d *DB) Projects() (map[string]config.Project, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	rows, err := d.conn.Query(`SELECT name, path, branch, backend, sandbox_enabled, sandbox_deny_read, sandbox_extra_write, sandbox_allow_apple_events FROM projects ORDER BY name`)
+	rows, err := d.conn.Query(`SELECT name, path, branch, backend, sandbox_enabled, sandbox_deny_read, sandbox_extra_write, sandbox_allow_apple_events, profile FROM projects ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("query projects: %w", err)
 	}
@@ -22,7 +22,7 @@ func (d *DB) Projects() (map[string]config.Project, error) {
 		var name string
 		var p config.Project
 		var sandboxEnabled, sandboxDenyRead, sandboxExtraWrite, sandboxAllowAppleEvents string
-		if err := rows.Scan(&name, &p.Path, &p.Branch, &p.Backend, &sandboxEnabled, &sandboxDenyRead, &sandboxExtraWrite, &sandboxAllowAppleEvents); err != nil {
+		if err := rows.Scan(&name, &p.Path, &p.Branch, &p.Backend, &sandboxEnabled, &sandboxDenyRead, &sandboxExtraWrite, &sandboxAllowAppleEvents, &p.Profile); err != nil {
 			continue
 		}
 		switch sandboxEnabled {
@@ -63,8 +63,8 @@ func (d *DB) SetProject(name string, p config.Project) error {
 	sandboxExtraWrite := strings.Join(p.Sandbox.ExtraWrite, ",")
 	sandboxAllowAppleEvents := strings.Join(p.Sandbox.AllowAppleEvents, ",")
 
-	_, err := d.conn.Exec(`INSERT OR REPLACE INTO projects (name, path, branch, backend, sandbox_enabled, sandbox_deny_read, sandbox_extra_write, sandbox_allow_apple_events) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		name, p.Path, p.Branch, p.Backend, sandboxEnabled, sandboxDenyRead, sandboxExtraWrite, sandboxAllowAppleEvents)
+	_, err := d.conn.Exec(`INSERT OR REPLACE INTO projects (name, path, branch, backend, sandbox_enabled, sandbox_deny_read, sandbox_extra_write, sandbox_allow_apple_events, profile) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		name, p.Path, p.Branch, p.Backend, sandboxEnabled, sandboxDenyRead, sandboxExtraWrite, sandboxAllowAppleEvents, p.Profile)
 	return err
 }
 

@@ -201,6 +201,24 @@ type Project struct {
 	Branch  string               `toml:"branch"`
 	Backend string               `toml:"backend"`
 	Sandbox ProjectSandboxConfig `toml:"sandbox"`
+	// Profile names the diligence profile bound to this project
+	// (add-diligence-profiles). Stores the profile NAME only, never the body.
+	// Empty/absent is treated as bound to the "default" profile for resolution.
+	// Like the other scalar fields, a partial [projects.<name>] entry in
+	// config.toml zeroes this (BurntSushi decodes into a fresh struct) — define
+	// projects wholesale in the file. See ResolveProfileName.
+	Profile string `toml:"profile"`
+}
+
+// ResolveProfileName returns the project's bound profile name, resolving an
+// empty/absent binding to the canonical "default" profile. Centralizing the
+// empty→default rule keeps the binding semantics in one place for callers that
+// resolve a project's profile (Settings select-list, spawn-layer resolution).
+func (p Project) ResolveProfileName() string {
+	if p.Profile == "" {
+		return "default"
+	}
+	return p.Profile
 }
 
 type Keybindings struct {
