@@ -197,9 +197,11 @@ func TestCaptureOpencodeSessionID_SQLiteSkipsMalformedNewest(t *testing.T) {
 	testutil.Equal(t, got, "ses_valid1111111111111111111")
 }
 
-// A worktree under a symlinked path must still match a session whose stored
-// directory is the resolved-absolute form (the full-scan canonPath fallback).
-func TestCaptureOpencodeSessionID_SQLiteSymlinkMatch(t *testing.T) {
+// A session whose stored directory is NON-canonical (a symlink path) must still
+// match — the indexed exact-match misses (it binds the canonicalized want), and
+// the full-scan fallback's canonPath(dir) resolves it. This exercises the scan
+// fallback, NOT the fast path.
+func TestCaptureOpencodeSessionID_SQLiteScanCanonFallback(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dataRoot := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", dataRoot)
@@ -209,13 +211,51 @@ func TestCaptureOpencodeSessionID_SQLiteSymlinkMatch(t *testing.T) {
 	if err := os.Symlink(real, link); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
 	}
-	// opencode stores the resolved (real) path; Argus looks up via the symlink.
+	// DB stores the non-canonical symlink path; lookup uses real. want =
+	// canonPath(real); fast path `WHERE directory = want` misses (DB holds the
+	// raw link string); scan canonPath(link) == want catches it.
 	seedOpencodeSQLite(t, filepath.Join(dataRoot, "opencode"), [][3]any{
-		{"ses_symlink11111111111111111", real, 100},
+		{"ses_scanfallback111111111111", link, 100},
 	})
-	got, err := CaptureOpencodeSessionID(link)
+	got, err := CaptureOpencodeSessionID(real)
 	testutil.NoError(t, err)
-	testutil.Equal(t, got, "ses_symlink11111111111111111")
+	testutil.Equal(t, got, "ses_scanfallback111111111111")
+}
+
+// SQLite present but holding only a DIFFERENT directory → capture falls through
+// to the legacy JSON store, which has a matching session.
+func TestCaptureOpencodeSessionID_SQLiteMissJSONHit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dataRoot := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataRoot)
+	wt := t.TempDir()
+
+	// SQLite has only an unrelated directory.
+	seedOpencodeSQLite(t, filepath.Join(dataRoot, "opencode"), [][3]any{
+		{"ses_sqlonly00000000000000000", t.TempDir(), 999},
+	})
+	// JSON store has the worktree's session.
+	projDir := filepath.Join(dataRoot, "opencode", "storage", "session", "proj")
+	testutil.NoError(t, os.MkdirAll(projDir, 0o755))
+	writeOpencodeJSON(t, filepath.Join(projDir, "ses_jsonhit1111111111111111.json"), "ses_jsonhit1111111111111111", wt, 100)
+
+	got, err := CaptureOpencodeSessionID(wt)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got, "ses_jsonhit1111111111111111")
+}
+
+// With XDG_DATA_HOME unset, the data dir falls back to ~/.local/share/opencode.
+func TestCaptureOpencodeSessionID_HomeFallback(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "") // force the HOME fallback
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	wt := t.TempDir()
+	seedOpencodeSQLite(t, filepath.Join(home, ".local", "share", "opencode"), [][3]any{
+		{"ses_homefallback11111111111", wt, 100},
+	})
+	got, err := CaptureOpencodeSessionID(wt)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got, "ses_homefallback11111111111")
 }
 
 func TestCaptureSessionID_DispatchesOpencode(t *testing.T) {

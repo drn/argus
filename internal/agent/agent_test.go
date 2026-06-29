@@ -196,9 +196,10 @@ func permModeConfig(mode string) config.Config {
 	return config.Config{
 		Defaults: config.Defaults{Backend: "claude", PermissionMode: mode},
 		Backends: map[string]config.Backend{
-			"claude": {Command: "claude"},
-			"codex":  {Command: "codex --dangerously-bypass-approvals-and-sandbox"},
-			"pi":     {Command: "pi"},
+			"claude":   {Command: "claude"},
+			"codex":    {Command: "codex --dangerously-bypass-approvals-and-sandbox"},
+			"pi":       {Command: "pi"},
+			"opencode": {Command: "opencode", PromptFlag: "--prompt"},
 		},
 	}
 }
@@ -241,6 +242,14 @@ func TestBuildCmd_PermissionMode_SkippedForNonClaude(t *testing.T) {
 		cmd, _, err := BuildCmd(task, cfg, false)
 		testutil.NoError(t, err)
 		testutil.Equal(t, cmd.Args[2], "pi 'go'")
+	})
+
+	t.Run("opencode", func(t *testing.T) {
+		task := &model.Task{Name: "t", Backend: "opencode", Prompt: "go", Worktree: t.TempDir()}
+		cmd, _, err := BuildCmd(task, cfg, false)
+		testutil.NoError(t, err)
+		// opencode is not Claude → no permission flags injected; prompt rides --prompt.
+		testutil.Equal(t, cmd.Args[2], "opencode --prompt 'go'")
 	})
 
 	t.Run("bare custom command", func(t *testing.T) {
