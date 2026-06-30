@@ -189,11 +189,19 @@ func discardStaleLiveTasksFile(dataDir string) {
 //     TUI/PWA client is attached would never reach handleSessionExit and the task
 //     would never flip to Complete.
 //
-//  3. Flips ONLY the true orphans (InProgress rows the supervisor does NOT report
+//  3. RESTORES any re-attached worker stranded in InReview back to InProgress
+//     (BUG-B). A live worker the supervisor confirms alive that is parked in
+//     InReview (from a prior BUG-050 roll or an earlier reconcile) is genuinely
+//     working again, so ReviveHeraWorkerToInProgress un-rolls it — EXCEPT a
+//     worker awaiting close-out (ready_to_close, or a terminal done|failed
+//     role-status), which stays InReview to preserve the #707 / BUG-050
+//     invariant. Scoped to the live set; the true orphans flip the other way.
+//
+//  4. Flips ONLY the true orphans (InProgress rows the supervisor does NOT report
 //     alive — e.g. the supervisor also restarted/crashed) to InReview, leaving
 //     re-attached tasks InProgress.
 //
-//  4. Posts ARGUS_BOUNCED to those true orphans only (they actually lost their
+//  5. Posts ARGUS_BOUNCED to those true orphans only (they actually lost their
 //     session); re-attached agents were never interrupted and get nothing. In the
 //     pure re-attach case (the supervisor kept everything), this is a no-op.
 func (d *Daemon) reattachSupervised() {
