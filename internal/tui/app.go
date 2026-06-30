@@ -145,7 +145,9 @@ type App struct {
 	// project on submit (the form is already closed). The Hera rail's `w`/`n`
 	// keys use it to spawn a born-bound worker / new root coordinator from the
 	// SAME modal as the new-argus-task popup. nil = the default Tasks-tab path.
-	newTaskOnDone func(task *model.Task, project string)
+	// The second arg is the form's optional entered name ("" when blank) — the
+	// Hera handlers use it to override the prompt-derived worker/orchestrator name.
+	newTaskOnDone func(task *model.Task, name string)
 	// newTaskReturnPage is the page closeNewTaskForm switches back to (and which
 	// primitive it focuses). Defaults to "tasks"; the Hera rail sets "hera" so the
 	// shared modal returns to the Hera tab on submit/cancel.
@@ -3707,11 +3709,19 @@ func (a *App) onNewTask() {
 	a.tapp.SetFocus(a.newTaskForm)
 }
 
+// autoNameOnCreate reports whether the background LLM auto-rename should run for
+// a freshly created task. It runs ONLY when the user did NOT supply an explicit
+// name; a user-chosen name (the trimmed/sanitized new-task form value, "" when
+// blank) is authoritative and must never be LLM-replaced (auto-naming capability).
+func autoNameOnCreate(enteredName string) bool { return enteredName == "" }
+
 // openHeraNewTaskForm opens the shared new-task modal for the Hera tab. title
 // labels the modal (e.g. "Spawn worker"); defaultProject pre-fills the project;
-// onDone runs with the assembled task + resolved project on submit (the form is
-// already closed and focus has returned to the Hera tab).
-func (a *App) openHeraNewTaskForm(title, defaultProject string, onDone func(task *model.Task, project string)) {
+// onDone runs with the assembled task + the optional entered name ("" when
+// blank) on submit (the form is already closed and focus has returned to the
+// Hera tab). The project is resolved from the task; the name lets the handler
+// override the prompt-derived worker/orchestrator name.
+func (a *App) openHeraNewTaskForm(title, defaultProject string, onDone func(task *model.Task, name string)) {
 	a.newTaskForm = a.buildNewTaskForm(defaultProject)
 	a.newTaskForm.SetTitle(title)
 	a.newTaskOnDone = onDone
@@ -3743,6 +3753,7 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 
 		// Capture form data before closing.
 		proj := a.newTaskForm.SelectedProject()
+		enteredName := a.newTaskForm.EnteredName()
 		onDone := a.newTaskOnDone
 		var projCfg config.Project
 		if p, ok := a.db.Config().Projects[proj]; ok {
@@ -3754,9 +3765,10 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 		a.closeNewTaskForm()
 
 		// Hera-tab override (rail `w`/`n`): spawn worker / new coordinator from the
-		// shared modal instead of the default Tasks-tab create-and-start path.
+		// shared modal instead of the default Tasks-tab create-and-start path. The
+		// entered name (if any) lets the handler override the prompt-derived name.
 		if onDone != nil {
-			onDone(task, proj)
+			onDone(task, enteredName)
 			return
 		}
 
@@ -3785,10 +3797,10 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 			Backend:    task.Backend,
 			Model:      task.Model,
 			BaseBranch: task.Branch,
-			// INVARIANT: the new-task form has no name field — task.Name is
-			// always GenerateNameFromPrompt(prompt). If a name field is added
-			// later, gate this on whether the user typed one.
-			AutoName:    true,
+			// Background LLM auto-rename runs ONLY when the user left the name
+			// field blank. A user-supplied name is authoritative and must never
+			// be replaced by an LLM suggestion (auto-naming capability).
+			AutoName:    autoNameOnCreate(enteredName),
 			Rows:        rows,
 			Cols:        cols,
 			BeforeStart: func() { a.startGen.Add(1) },
