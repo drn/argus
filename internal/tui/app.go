@@ -232,9 +232,30 @@ type App struct {
 	lastPreviewTaskID  string // task ID for the cached TotalWritten
 	lastPreviewLogSize int64  // log file size when dead-session preview was last refreshed
 	// Idle-unvisited tracking (for visual InReview promotion)
-	idleUnvisited    map[string]bool // task IDs idle since user last opened their agent view
-	viewedWhileAgent map[string]bool // tasks viewed in agent view; suppresses idleUnvisited re-add
-	needsInputIDs    []string        // task IDs detected as blocked on a user prompt this tick
+	idleUnvisited    map[string]bool   // task IDs idle since user last opened their agent view
+	viewedWhileAgent map[string]bool   // tasks viewed in agent view; suppresses idleUnvisited re-add
+	needsInputIDs    []string          // task IDs detected as blocked on a user prompt this tick
+	needsInputFP     map[string]uint64 // taskID -> prior-tick content fingerprint (BUG-032 stability pass)
+	// needsInputSince carries the clear-on-input baseline (BUG-034): the
+	// session's last-input timestamp observed when a task first entered the
+	// needs-input set. agent.NeedsInputClear clears the flag once the session's
+	// last-input advances past it (the user responded), even while the stale
+	// question still matches in the log tail. Mirrors the daemon's
+	// idleWatcherState.needsInputSince.
+	needsInputSince map[string]time.Time
+	// needsInputScreen re-emulates a session's log tail to the visible screen so
+	// needs-input detection matches the rendered screen, not StripANSI(raw) —
+	// catching fullscreen (alt-screen) prompts whose cursor-addressed glyphs are
+	// not linearly present in the bytes (BUG-033). Used only inside the tick
+	// callback (tview main goroutine), which is single-threaded, so no lock.
+	needsInputScreen *agent.ScreenRenderer
+	// contentIdle carries the content-aware idle bookkeeping (BUG-036): per-task
+	// emulated-screen fingerprint + stable-since time used to recognize a
+	// fullscreen (alt-screen) agent parked at its prompt — one that never reaches
+	// the raw-byte idle set. refreshTasksWithIDs unions agent.ContentIdle's result
+	// with the raw idle set and feeds it to the Hera rail so a parked fullscreen
+	// role's spinner stops. Tick-callback only (tview main goroutine), no lock.
+	contentIdle *agent.ContentIdleState
 
 	// Daemon health
 	daemonFailures    int
@@ -1664,6 +1685,36 @@ func needsInputInProgress(ids []string, tasks []*model.Task) []string {
 	return out
 }
 
+// needsInputForHeraRail filters the sticky needs-input set for the Hera rail
+// rollup feed: keep a task if it is in_progress (the task-list / buildRoleView
+// worker gate, BUG-006/BUG-023) OR it is bound to a hera COORDINATOR role,
+// regardless of task status. A coordinator routinely rolls to complete/in_review
+// while its session stays alive and may be genuinely blocked on a user prompt; an
+// in_progress-only gate hid the needs-input "(?)" on its (usually collapsed)
+// header (BUG-028). Coordinators are MANAGED tasks, so admitting a non-in_progress
+// coordinator never reaches the unmanaged attention-summary count (BUG-005 stays
+// in_progress-gated for unmanaged tasks). buildRoleView re-gates per role kind
+// (workers on in_progress, non-workers on live), so this is the authoritative
+// admission step, not a second gate. Pure (no receiver state) — unit-testable.
+func needsInputForHeraRail(ids []string, tasks []*model.Task, coordinators map[string]bool) []string {
+	if len(ids) == 0 {
+		return ids
+	}
+	inProgress := make(map[string]bool, len(tasks))
+	for _, t := range tasks {
+		if t.Status == model.StatusInProgress {
+			inProgress[t.ID] = true
+		}
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if inProgress[id] || coordinators[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // updateAttentionBar feeds the agent view's attention bar with the names of
 // tasks currently blocked on a user prompt (the `needsInputIDs` set computed
 // by refreshTasksWithIDs). The currently-viewed task is excluded so the bar
@@ -1718,41 +1769,88 @@ func (a *App) detectNeedsInput(idleIDs []string) []string {
 		if len(tail) == 0 {
 			continue
 		}
-		if agent.DetectNeedsInput(tail) {
+		cols, rows := needsInputScreenSize(id)
+		if agent.DetectNeedsInputScreen(a.needsInputScreen, tail, cols, rows) {
 			out = append(out, id)
 		}
 	}
 	return out
 }
 
-// detectNeedsInputSticky wraps detectNeedsInput with a "carry-forward" pass:
-// any task that was previously detected as needing input gets re-checked
-// against its log tail this tick, even if it has fallen out of idleIDs.
-//
-// Why: Claude's prompt UI emits periodic animation bytes (cursor blink,
-// spinner) while waiting for the user. Each emission bumps the session's
-// lastOutput, which kicks the task out of the daemon's idle list for a tick
-// or two at a time. Without this pass the attention bar would oscillate —
-// visible only during the ~3 s windows when the task crosses back through
-// the idle threshold — which the user perceives as "the bar shows briefly
-// then disappears."
-//
-// The sticky entry self-clears when the on-disk marker is gone (the agent
-// has produced enough new bytes to push it out of the tail window — i.e.
-// the question has been answered) or when the task is no longer running.
-func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []string) []string {
-	fresh := a.detectNeedsInput(idleIDs)
-	if len(prevNeedsInput) == 0 {
-		return fresh
+// needsInputScreenSize returns the PTY dimensions a task's session was last
+// sized at, for re-emulating its log tail to the screen the bytes were
+// formatted for (BUG-033 alt-screen detection). Reads the persisted size
+// sidecar (a local file) so it is non-blocking — safe on the tview main
+// goroutine, unlike SessionHandle.PTYSize() which can round-trip to the daemon.
+// Falls back to the session default (80×24) when the sidecar is missing.
+func needsInputScreenSize(taskID string) (cols, rows int) {
+	if c, r, ok := agent.LoadSessionSize(taskID); ok {
+		return c, r
 	}
+	return int(agent.DefaultTermCols), int(agent.DefaultTermRows)
+}
+
+// detectNeedsInputSticky augments the idle-gated detection with two passes that
+// keep a genuinely-blocked agent flagged even though Claude's prompt UI emits
+// periodic redraw/animation bytes (cursor blink, spinner, alt-screen repaint)
+// that bump the session's lastOutput and so knock it out of the daemon's idle
+// list — for a tick or two (the original symptom) or, for a fullscreen prompt,
+// indefinitely (BUG-032). Mirrors the daemon's computeNeedsInput.
+//
+//   - Content-stability pass (BUG-032): a running session that never reaches
+//     the idle set is flagged when it shows the prompt signature AND its
+//     content fingerprint (agent.ContentFingerprint, which strips the animation
+//     chrome) is unchanged from the previous tick. A streaming agent's
+//     fingerprint shifts every tick, so it is never flagged here — the
+//     false-positive guard. Fingerprints persist on a.needsInputFP.
+//   - Sticky carry-forward: a previously-flagged task still running and still
+//     showing the marker rides through a one-tick content blip without
+//     oscillating; it self-clears when the marker scrolls out of the 16 KB
+//     tail (question answered) or the task stops running.
+func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []string) []string {
+	if a.needsInputScreen == nil {
+		a.needsInputScreen = &agent.ScreenRenderer{}
+	}
+	fresh := a.detectNeedsInput(idleIDs)
 	freshSet := make(map[string]bool, len(fresh))
 	for _, id := range fresh {
 		freshSet[id] = true
+	}
+	flag := func(id string) {
+		if !freshSet[id] {
+			fresh = append(fresh, id)
+			freshSet[id] = true
+		}
 	}
 	runningSet := make(map[string]bool, len(runningIDs))
 	for _, id := range runningIDs {
 		runningSet[id] = true
 	}
+
+	// Content-stability pass: fingerprint only sessions showing an
+	// awaiting-input signal (agent.AwaitingInputFingerprint: the UNAMBIGUOUS
+	// selection widget, OR a free-text trailing question with the "working"
+	// affordance absent — this pass has no idle gate, so a busy agent that is
+	// still working must not qualify), compare against last tick, carry this
+	// tick's forward.
+	newFP := make(map[string]uint64)
+	for _, id := range runningIDs {
+		tail := readSessionLogTailBytes(id, detectNeedsInputTailBytes)
+		if len(tail) == 0 {
+			continue
+		}
+		cols, rows := needsInputScreenSize(id)
+		fp, ok := agent.AwaitingInputFingerprint(a.needsInputScreen, tail, cols, rows)
+		if !ok {
+			continue
+		}
+		newFP[id] = fp
+		if last, ok := a.needsInputFP[id]; ok && last == fp {
+			flag(id)
+		}
+	}
+	a.needsInputFP = newFP
+
 	for _, id := range prevNeedsInput {
 		if freshSet[id] || !runningSet[id] {
 			continue
@@ -1761,12 +1859,50 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 		if len(tail) == 0 {
 			continue
 		}
-		if agent.DetectNeedsInput(tail) {
-			fresh = append(fresh, id)
-			freshSet[id] = true
+		cols, rows := needsInputScreenSize(id)
+		if agent.DetectNeedsInputScreen(a.needsInputScreen, tail, cols, rows) {
+			flag(id)
 		}
 	}
-	return fresh
+
+	// BUG-034: clear the flag for sessions the user has responded to or tasks
+	// that have been archived. Mirrors the daemon's computeNeedsInput. The
+	// last-input timestamp comes from the local session handle (authoritative in
+	// in-process mode; in daemon-client mode it captures input sent through this
+	// TUI's agent pane — cross-surface input clears via the natural log-content
+	// change instead). archivedOf reads the cached task list (a.tasks is set by
+	// the caller before this runs).
+	var out []string
+	out, a.needsInputSince = agent.NeedsInputClear(fresh, a.needsInputSince, a.lastSessionInput, a.archivedTaskSet())
+	return out
+}
+
+// lastSessionInput returns a session's most-recent-USER-input wall-clock time
+// for the BUG-034 clear-on-input filter, or the zero time when the runner or
+// session is unavailable (nothing then ever advances past a baseline, so the
+// flag persists). It reads LastUserInput, not LastInput, so system-injected
+// reliable-notify delivery (which uses WriteInputSystem and advances only
+// LastInput) never clears the "(?)" — only a genuine user keystroke does.
+func (a *App) lastSessionInput(taskID string) time.Time {
+	if a.runner == nil {
+		return time.Time{}
+	}
+	if sess := a.runner.Get(taskID); sess != nil {
+		return sess.LastUserInput()
+	}
+	return time.Time{}
+}
+
+// archivedTaskSet returns a predicate reporting whether a task is archived, for
+// the BUG-034 clear-on-archive filter. Built from the cached task list.
+func (a *App) archivedTaskSet() func(string) bool {
+	archived := make(map[string]bool)
+	for _, t := range a.tasks {
+		if t.Archived {
+			archived[t.ID] = true
+		}
+	}
+	return func(id string) bool { return archived[id] }
 }
 
 // detectNeedsInputTailBytes is how many bytes to read from the end of each
@@ -1983,19 +2119,41 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	a.syncIdleUnvisited()
 	a.needsInputIDs = a.detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput)
 	a.tasklist.SetNeedsInput(a.needsInputIDs)
-	// Feed the authoritative needs-input set to the Hera rail so a blocked worker
-	// shows "(?)" and the rollup bubbles it up to ancestor coordinators (BUG-018).
-	// Gated to in_progress tasks: the set is STICKY (a finished task idling at its
-	// final prompt keeps the marker), and both the task list ((?) only on
-	// StatusInProgress) and buildRoleView (NeedsInput only while in_progress) apply
-	// this gate — so the Hera attention-summary box must too, else it tallies
-	// finished unmanaged tasks that show no "(?)" anywhere (BUG-005). Pre-gating
-	// here is a no-op for the rail rollup (buildRoleView re-gates) and the deliberate
-	// hera `blocked` status (an independent source). Cheap pure setter; the rebuild
-	// is scheduled below when the tab is active. Remote mode no-ops.
-	a.heraPage.SetNeedsInput(needsInputInProgress(a.needsInputIDs, a.tasks))
-	a.tasklist.SetPRStates(a.readPRStates())
 	heraWorkers, heraCoordinators := a.readHeraRoles()
+	// Feed the authoritative needs-input set to the Hera rail so a blocked role
+	// shows "(?)" and the rollup bubbles it up to ancestor coordinators (BUG-018).
+	// Keep in_progress tasks (the task-list gate, BUG-006) PLUS any task bound to a
+	// hera COORDINATOR role REGARDLESS of status (BUG-028): a coordinator routinely
+	// rolls to complete/in_review while its session stays alive and can itself
+	// block on a user prompt, so gating it on in_progress hid the "(?)" on its
+	// (usually collapsed) header. Coordinators are MANAGED, so admitting them never
+	// affects the unmanaged attention-summary count (BUG-005) — buildRoleView still
+	// gates WORKERS on in_progress (the finished-worker clear, BUG-023). Cheap pure
+	// setter; the rebuild is scheduled below when the tab is active. Remote no-ops.
+	a.heraPage.SetNeedsInput(needsInputForHeraRail(a.needsInputIDs, a.tasks, heraCoordinators))
+	// Content-aware idle (BUG-036): a fullscreen (alt-screen) agent parked at its
+	// prompt repaints continuously, so it never reaches idleIDs (raw-byte idle)
+	// and its Hera rail spinner would animate forever. Augment idleIDs with the
+	// content-idle set (sessions whose emulated screen is stable and not
+	// "working") and feed the union to the rail so a parked role renders a static
+	// idle/live glyph. Reuses the needs-input screen renderer (same single
+	// goroutine) and the disk-log tail, mirroring detectNeedsInputSticky.
+	if a.needsInputScreen == nil {
+		a.needsInputScreen = &agent.ScreenRenderer{}
+	}
+	rawIdleSet := make(map[string]bool, len(idleIDs))
+	for _, id := range idleIDs {
+		rawIdleSet[id] = true
+	}
+	contentIdleIDs, nextContentIdle := agent.ContentIdle(runningIDs, rawIdleSet,
+		func(id string) []byte { return readSessionLogTailBytes(id, detectNeedsInputTailBytes) },
+		needsInputScreenSize, a.needsInputScreen, a.contentIdle, time.Now())
+	a.contentIdle = nextContentIdle
+	sessionIdle := make([]string, 0, len(idleIDs)+len(contentIdleIDs))
+	sessionIdle = append(sessionIdle, idleIDs...)
+	sessionIdle = append(sessionIdle, contentIdleIDs...)
+	a.heraPage.SetSessionIdle(sessionIdle)
+	a.tasklist.SetPRStates(a.readPRStates())
 	a.tasklist.SetHeraWorkers(heraWorkers)
 	a.tasklist.SetHeraCoordinators(heraCoordinators)
 	a.tasklist.SetManagedTasks(a.readManagedTasks())

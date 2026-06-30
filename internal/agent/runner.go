@@ -321,6 +321,16 @@ func (r *Runner) HasPendingRestart(taskID string) bool {
 	return ok
 }
 
+// SetSessionForTest injects a live *Session into the runner's map without
+// going through Start (which needs a backend command + worktree). Tests use it
+// to drive watcher / notify paths against a real PTY session (e.g. exec sleep)
+// whose WriteInput / LastInput / LastUserInput timestamps they control.
+func (r *Runner) SetSessionForTest(taskID string, sess *Session) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sessions[taskID] = sess
+}
+
 // SetPendingRestartForTest injects a pendingRestart entry without going
 // through the full Stop+exit-goroutine dance. Tests use this to exercise code
 // paths that consult HasPendingRestart / PendingRestartIDs without depending

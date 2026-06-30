@@ -30,15 +30,16 @@ type RemoteSession struct {
 	taskID string
 	client *Client
 
-	mu        sync.Mutex
-	buf       *agent.RingBuffer // local ring buffer, populated by stream reader
-	writers   []io.Writer       // stream reader tees output to all attached writers (see fan-out note below)
-	pid       int
-	info      daemon.SessionInfo // cached session info
-	done      chan struct{}      // closed when stream EOF
-	closeOnce sync.Once          // guards close(done) — see close()
-	inputCh   chan []byte        // async input channel for WriteInput
-	lastInput time.Time          // wall-clock time of last WriteInput call
+	mu            sync.Mutex
+	buf           *agent.RingBuffer // local ring buffer, populated by stream reader
+	writers       []io.Writer       // stream reader tees output to all attached writers (see fan-out note below)
+	pid           int
+	info          daemon.SessionInfo // cached session info
+	done          chan struct{}      // closed when stream EOF
+	closeOnce     sync.Once          // guards close(done) — see close()
+	inputCh       chan []byte        // async input channel for WriteInput
+	lastInput     time.Time          // wall-clock time of last input write (user or system)
+	lastUserInput time.Time          // wall-clock time of last USER keystroke (WriteInput only; not WriteInputSystem) — BUG-034 clear-on-input source
 }
 
 func newRemoteSession(taskID string, c *Client) *RemoteSession {
@@ -109,13 +110,30 @@ func (rs *RemoteSession) PID() int {
 // must wrap the whole cycle in a single WriteInput call (start sequence,
 // payload, and end sequence) — never split it across calls.
 func (rs *RemoteSession) WriteInput(p []byte) (int, error) {
+	return rs.writeInput(p, true)
+}
+
+// WriteInputSystem enqueues p like WriteInput but records only the work-cycle
+// timestamp (lastInput), NOT the user-input timestamp (lastUserInput) — the
+// system-delivery path (reliable-notify) so a delivered message never clears
+// the needs-input "(?)" flag (BUG-034). The wire RPC is identical; the
+// supervisor types the bytes the same way regardless.
+func (rs *RemoteSession) WriteInputSystem(p []byte) (int, error) {
+	return rs.writeInput(p, false)
+}
+
+func (rs *RemoteSession) writeInput(p []byte, user bool) (int, error) {
 	// Copy so the caller can reuse the slice.
 	cp := make([]byte, len(p))
 	copy(cp, p)
 	select {
 	case rs.inputCh <- cp:
+		now := time.Now()
 		rs.mu.Lock()
-		rs.lastInput = time.Now()
+		rs.lastInput = now
+		if user {
+			rs.lastUserInput = now
+		}
 		rs.mu.Unlock()
 		return len(p), nil
 	case <-rs.done:
@@ -135,6 +153,16 @@ func (rs *RemoteSession) LastInput() time.Time {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	return rs.lastInput
+}
+
+// LastUserInput returns the wall-clock time of the most recent USER keystroke
+// written through this handle (WriteInput), or zero. WriteInputSystem does not
+// advance it. Like LastInput, this is tracked client-side to satisfy the
+// SessionHandle contract; the daemon watcher reads the in-process session.
+func (rs *RemoteSession) LastUserInput() time.Time {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return rs.lastUserInput
 }
 
 func (rs *RemoteSession) Resize(rows, cols uint16) error {

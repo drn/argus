@@ -41,6 +41,14 @@ type RoleView struct {
 	// did not even show "(?)" on itself; this restores that and feeds the rollup
 	// below (BUG-018).
 	NeedsInput bool
+	// SessionIdle is the role's content-aware idle signal (BUG-036): the App's
+	// per-tick content-idle classification marked this live binding's session
+	// idle — either raw-byte idle OR a fullscreen (alt-screen) agent whose
+	// emulated screen is stable and shows no "working" affordance. It suppresses
+	// the spinner (IsActive) so a parked fullscreen agent renders a static
+	// idle/live glyph instead of animating forever. Threaded into BuildModel
+	// alongside NeedsInput; only a live role (keyed by live task ID) can be set.
+	SessionIdle bool
 	// SubtreeNeedsInput is the needs-input ROLLUP computed by BuildModel's
 	// post-pass: true when this role itself OR any descendant role in its
 	// orchestration subtree (transitively across BRIDGED sub-orchestrators) needs
@@ -108,8 +116,17 @@ type RoleView struct {
 // task that is sitting idle still counts as active; the stale-status cases the
 // bug reported (stopped / dead / days-old sessions) are excluded because they
 // are either not Live or no longer in_progress. See BUG-003.
+//
+// SessionIdle additionally suppresses the spinner (BUG-036): a fullscreen
+// (alt-screen) agent parked at its prompt repaints continuously, so its raw
+// bytes never quiesce and it would otherwise animate forever even though it is
+// doing nothing. The App's content-aware idle classification (emulated-screen
+// stability) marks such a session idle, dropping it out of "active" so it
+// renders a static idle/live glyph. A genuinely content-active agent (emulated
+// content changing, or showing the "working" affordance) is never SessionIdle
+// and still spins.
 func (r *RoleView) IsActive() bool {
-	return r.Live && r.TaskStatus == model.StatusInProgress.String()
+	return r.Live && r.TaskStatus == model.StatusInProgress.String() && !r.SessionIdle
 }
 
 // needsInputOwn reports the role's OWN needs-input signal — what makes a LEAF
@@ -144,6 +161,15 @@ type OrchView struct {
 	// (heraPlanNodes) turns these into planview.Edge dependency edges. Stage 2
 	// populates this in BuildModel.
 	Blocks []db.HeraBlock
+	// SubtreeNeedsInput is the orchestrator-level needs-input rollup (any role in
+	// this orchestrator's subtree, transitively across bridges, is blocked on a
+	// user prompt). Stamped by rollupNeedsInput. The rail's collapsed header
+	// surfaces it (BUG-028) so a blocked worker is visible without expanding —
+	// mirroring the task list's project-folder aggregate (projectStatusIcon),
+	// which always shows "(?)" for any blocked task. The coordinator role carries
+	// the same value, but a coordinator-less orchestrator (e.g. its coordinator
+	// role was nuked) would otherwise render no needs-input cue at all.
+	SubtreeNeedsInput bool
 }
 
 // Model is the full read-only snapshot the rail renders. Orchestrators are
@@ -644,7 +670,12 @@ func (s Selection) CoordTaskID() string {
 // consumes), keyed by live argus task ID. nil/empty is fine (no role shows a
 // needs-input flag from this source; the self-asserted hera `blocked` status
 // still drives "(?)"). It feeds RoleView.NeedsInput and the subtree rollup.
-func BuildModel(r HeraReader, needsInput map[string]bool) (Model, error) {
+// sessionIdle is the authoritative per-task content-aware idle set (the App's
+// content-idle classification — raw-byte idle ∪ fullscreen content-idle), keyed
+// by live argus task ID. nil/empty is fine. It feeds RoleView.SessionIdle so the
+// spinner stops for a parked fullscreen agent (BUG-036); it does NOT affect the
+// needs-input rollup.
+func BuildModel(r HeraReader, needsInput map[string]bool, sessionIdle map[string]bool) (Model, error) {
 	var m Model
 	if r == nil {
 		return m, nil
@@ -729,7 +760,7 @@ func BuildModel(r HeraReader, needsInput map[string]bool) (Model, error) {
 			if role.NukedAt != nil {
 				continue
 			}
-			rv := buildRoleView(r, role, roleToBinding, roleToLatest, heraMeta, taskByID, needsInput)
+			rv := buildRoleView(r, role, roleToBinding, roleToLatest, heraMeta, taskByID, needsInput, sessionIdle)
 			if role.Kind == db.HeraKindFreelance && role.ArchivedAt == nil && o.ArchivedAt == nil {
 				// Active freelance roles live in their own top-level section.
 				m.Freelance = append(m.Freelance, rv)
@@ -767,11 +798,15 @@ func BuildModel(r HeraReader, needsInput map[string]bool) (Model, error) {
 // only SubtreeNeedsInput. The traversal reuses BridgeSubtree (cycle-safe) so it
 // matches rail nesting and the Ctrl+D cascade exactly. See BUG-018.
 func (m *Model) rollupNeedsInput() {
-	// Phase 1: per-orchestrator subtree rollup (transitive across bridges).
+	// Phase 1: per-orchestrator subtree rollup (transitive across bridges). Also
+	// stamp the OrchView so the rail's collapsed header can surface it even when
+	// no coordinator role exists to carry the glyph (BUG-028).
 	subtree := make(map[int64]bool)
 	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
 		for i := range sec {
-			subtree[sec[i].ID] = m.orchSubtreeNeedsInput(sec[i].ID)
+			ni := m.orchSubtreeNeedsInput(sec[i].ID)
+			subtree[sec[i].ID] = ni
+			sec[i].SubtreeNeedsInput = ni
 		}
 	}
 	// Phase 2: stamp each role. A coordinator carries its orchestrator's whole
@@ -821,7 +856,7 @@ func (m *Model) orchSubtreeNeedsInput(orchID int64) bool {
 
 // buildRoleView projects one db.HeraRole into a RoleView, resolving its live
 // binding's task, status row, and ready_to_close flag.
-func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.HeraBinding, roleToLatest map[int64]*db.HeraBinding, heraMeta map[string]map[string]string, taskByID map[string]*model.Task, needsInput map[string]bool) RoleView {
+func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.HeraBinding, roleToLatest map[int64]*db.HeraBinding, heraMeta map[string]map[string]string, taskByID map[string]*model.Task, needsInput map[string]bool, sessionIdle map[string]bool) RoleView {
 	rv := RoleView{
 		RoleID:       role.ID,
 		OrchID:       role.OrchestratorID,
@@ -849,21 +884,37 @@ func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.
 			rv.TaskName = t.Name
 			taskInProgress = t.Status == model.StatusInProgress
 		}
-		// Own needs-input from the authoritative App-tick set (keyed by live task)
-		// — but ONLY while the bound task is actively in_progress (BUG-023). The
-		// App's needsInputIDs scan is STICKY: a finished worker idling at its final
-		// prompt keeps the needs-input marker in its log tail indefinitely, so
-		// without this gate the task would stay flagged forever and pin "(?)" on
-		// every ancestor coordinator permanently — the rollup could never clear.
-		// Gating on in_progress is the "agent resolved" clear condition: when the
-		// worker finishes (rolls to in_review/complete) the signal drops and the
-		// rollup recomputes clear, transitively to the root, on the next refresh.
+		// Content-aware idle (BUG-036): suppresses the spinner for a parked
+		// fullscreen agent. Keyed by live task; the App's set already unions
+		// raw-byte idle with the content-idle augmentation.
+		rv.SessionIdle = sessionIdle[taskID]
+		// Own needs-input from the authoritative App-tick set (keyed by live task).
+		// The App's needsInputIDs scan is STICKY + upstream gated to live, idle,
+		// blocked sessions, so membership already implies a live blocked session.
+		// The only thing to additionally suppress is a FINISHED WORKER idling at
+		// its final/done prompt: its marker lingers in the log tail indefinitely,
+		// so without a gate it would stay flagged forever and pin "(?)" on every
+		// ancestor permanently — the rollup could never clear (BUG-023). A worker
+		// is "finished" once its task leaves in_progress (rolls to in_review/
+		// complete), so gate WORKERS on taskInProgress: that is the "agent resolved"
+		// clear condition.
+		//
+		// A COORDINATOR (or freelance) role, by contrast, does NOT finish by task
+		// status while its session is alive — a coordinator routinely rolls to
+		// complete/in_review yet keeps coordinating and can itself block on a user
+		// prompt (BUG-028). Gating it on in_progress hid the "(?)" on its (usually
+		// collapsed) header. So a live non-worker role surfaces needs-input
+		// regardless of task status; its "done" is a session exit, which drops it
+		// from the sticky set upstream, so there is no stale-marker hazard.
+		// rv.Live is true here (this is the live-binding branch).
+		//
 		// The deliberate hera `blocked` role status stays an INDEPENDENT, ungated
 		// needs-input source (needsInputOwn), cleared by stepping off `blocked`
 		// (s/S). A task missing from the snapshot (read failure) is treated as not
 		// in_progress — a transient flicker that self-heals next tick, never a
 		// stuck-forever "(?)".
-		if needsInput[taskID] && taskInProgress {
+		allowNeedsInput := taskInProgress || (role.Kind != db.HeraKindWorker && rv.Live)
+		if needsInput[taskID] && allowNeedsInput {
 			rv.NeedsInput = true
 		}
 	}

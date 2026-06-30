@@ -72,6 +72,11 @@ type HeraPage struct {
 	// task list consumes). doRefresh threads it into BuildModel so each live role
 	// carries its own needs-input flag and the subtree rollup is computed (BUG-018).
 	needsInput map[string]bool
+	// sessionIdle is the authoritative per-task content-aware idle set the App
+	// pushes each tick (raw-byte idle ∪ fullscreen content-idle). doRefresh
+	// threads it into BuildModel so a parked fullscreen role's spinner stops
+	// (RoleView.SessionIdle → IsActive false; BUG-036).
+	sessionIdle map[string]bool
 
 	// Plan-DAG render mode of the Details region (coordinator selection only).
 	// When a coordinator is selected the Details region stacks the read-only
@@ -327,6 +332,23 @@ func (p *HeraPage) SetNeedsInput(ids []string) {
 	p.needsInput = m
 }
 
+// SetSessionIdle records the task IDs the App classified as idle this tick — the
+// content-aware idle set (raw-byte idle ∪ fullscreen content-idle, BUG-036).
+// doRefresh threads it into BuildModel so a parked fullscreen role stops
+// animating its spinner (RoleView.SessionIdle → IsActive false). Pure setter;
+// the tick already schedules the rebuild. MUST run on the tview thread.
+func (p *HeraPage) SetSessionIdle(ids []string) {
+	if len(ids) == 0 {
+		p.sessionIdle = nil
+		return
+	}
+	m := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		m[id] = true
+	}
+	p.sessionIdle = m
+}
+
 // SetClipboardHint toggles whether the focused terminal pane advertises a
 // staged agent clipboard payload via a `(ctrl+y copy)` border-title affordance.
 // The App refreshes it each tick from the daemon for the focused pane's task
@@ -357,7 +379,7 @@ func (p *HeraPage) Refresh() {
 // remote mode the reader is nil → BuildModel returns an empty model and Draw
 // renders the unavailable banner, so this stays a cheap no-op.
 func (p *HeraPage) doRefresh() {
-	m, err := BuildModel(p.reader, p.needsInput)
+	m, err := BuildModel(p.reader, p.needsInput, p.sessionIdle)
 	if err != nil {
 		uxlog.Log("[hera-view] rail refresh failed: %v", err)
 		return

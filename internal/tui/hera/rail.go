@@ -1310,6 +1310,19 @@ func (r *Rail) drawOrchRow(screen tcell.Screen, x, y, w int, row railRow, select
 		glyph, gstyle := statusIcon(coord, row.dim, r.animFrame)
 		screen.SetContent(col, y, glyph, nil, gstyle)
 		col += 2
+	} else if o.SubtreeNeedsInput {
+		// Coordinator-less orchestrator (e.g. its coordinator role was nuked):
+		// no coord glyph carries the needs-input rollup, so surface it directly
+		// (BUG-028). Without this, a blocked worker under a collapsed header — the
+		// default "tidy summary" view — shows no needs-input cue at all, unlike the
+		// always-flat task list. Style stays needs-input even when dimmed/selected
+		// (the glyph never lies), matching statusIcon's ready_to_close/needs-input.
+		gstyle := theme.StyleNeedsInput
+		if row.dim {
+			gstyle = theme.StyleDimmed
+		}
+		screen.SetContent(col, y, theme.IconNeedsInput, nil, gstyle)
+		col += 2
 	}
 	// chevron
 	if col < x+w {
