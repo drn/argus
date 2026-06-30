@@ -8,6 +8,7 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/keymap"
 )
 
 func TestHelpModal_Defaults(t *testing.T) {
@@ -38,12 +39,12 @@ func TestHelpModal_InputHandler(t *testing.T) {
 }
 
 func TestHelpModal_Draw(t *testing.T) {
-	// Height must clear the full section list (the modal scrolls when it
-	// can't); 90 leaves headroom so every section header — including the last
-	// one, Settings — renders without scrolling.
-	sim := drawAt(t, 100, 90)
+	// Height must clear the full section list (the modal scrolls when it can't);
+	// 140 leaves headroom so every section — including the last ones, Hera plan
+	// DAG and Modals & Forms — renders without scrolling.
+	sim := drawAt(t, 100, 140)
 	m := NewHelpModal()
-	m.SetRect(0, 0, 100, 90)
+	m.SetRect(0, 0, 100, 140)
 	m.Draw(sim)
 	sim.Sync()
 
@@ -257,9 +258,9 @@ func TestHelpModal_DrawShowsScrollPositionWhenOverflow(t *testing.T) {
 
 func TestHelpModal_DrawHidesScrollHintWhenFits(t *testing.T) {
 	// Give the modal enough room that every row fits.
-	sim := drawAt(t, 100, 90)
+	sim := drawAt(t, 100, 140)
 	m := NewHelpModal()
-	m.SetRect(0, 0, 100, 90)
+	m.SetRect(0, 0, 100, 140)
 	m.Draw(sim)
 	sim.Sync()
 	body := screenString(sim)
@@ -305,8 +306,9 @@ func TestNewHelpModalWith_DismissOnKey(t *testing.T) {
 }
 
 func TestHelpSections_NonEmpty(t *testing.T) {
-	testutil.True(t, len(HelpSections) > 0)
-	for _, sec := range HelpSections {
+	sections := SectionsFromKeymap(keymap.DefaultKeymap())
+	testutil.True(t, len(sections) > 0)
+	for _, sec := range sections {
 		t.Run(sec.Title, func(t *testing.T) {
 			testutil.True(t, sec.Title != "")
 			testutil.True(t, len(sec.Bindings) > 0)

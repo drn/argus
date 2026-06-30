@@ -11,6 +11,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/tui/keymap"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
@@ -126,6 +127,11 @@ type TaskListView struct {
 	// Lets the App log the transition. The row rebuild itself fires
 	// OnLayoutChange via the normal signature-change path.
 	OnHeraManagedToggle func(hidden bool)
+
+	// Keys returns the live keymap (set by the App so config reloads take
+	// effect). Nil-safe via keys(): falls back to the built-in defaults, so a
+	// TaskListView constructed directly in a test still resolves bindings.
+	Keys func() *keymap.Keymap
 
 	// Signature of the last buildRows output. Used to suppress
 	// OnLayoutChange when the rebuild produced the same rows.
@@ -949,58 +955,69 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 				tl.ClearFilter()
 			}
 		case tcell.KeyRune:
-			switch event.Rune() {
-			case 'j':
+			switch act, _ := tl.keys().Resolve(keymap.CtxTaskList, event); act {
+			case keymap.ActTaskDown:
 				tl.CursorDown()
-			case 'k':
+			case keymap.ActTaskUp:
 				tl.CursorUp()
-			case 'n':
+			case keymap.ActTaskNew:
 				if tl.OnNew != nil {
 					tl.OnNew()
 				}
-			case '/':
+			case keymap.ActTaskFilter:
 				tl.setFiltering(true)
-			case 's':
+			case keymap.ActTaskStatusAdv:
 				if t := tl.SelectedTask(); t != nil {
 					t.SetStatus(t.Status.Next())
 					if tl.OnStatusChange != nil {
 						tl.OnStatusChange(t)
 					}
 				}
-			case 'S':
+			case keymap.ActTaskStatusRev:
 				if t := tl.SelectedTask(); t != nil {
 					t.SetStatus(t.Status.Prev())
 					if tl.OnStatusChange != nil {
 						tl.OnStatusChange(t)
 					}
 				}
-			case 'a':
+			case keymap.ActTaskArchive:
 				if t := tl.SelectedTask(); t != nil {
 					t.SetArchived(!t.Archived)
 					if tl.OnArchive != nil {
 						tl.OnArchive(t)
 					}
 				}
-			case 'P':
+			case keymap.ActTaskPin:
 				if t := tl.SelectedTask(); t != nil {
 					t.SetPinned(!t.Pinned)
 					if tl.OnPin != nil {
 						tl.OnPin(t)
 					}
 				}
-			case 'r':
+			case keymap.ActTaskRename:
 				if t := tl.SelectedTask(); t != nil && tl.OnRename != nil {
 					tl.OnRename(t)
 				}
-			case 'c':
+			case keymap.ActTaskCopy:
 				if t := tl.SelectedTask(); t != nil && tl.OnCopy != nil {
 					tl.OnCopy(t)
 				}
-			case 'H':
+			case keymap.ActTaskHera:
 				tl.ToggleHeraManaged()
 			}
 		}
 	})
+}
+
+// keys returns the live keymap, falling back to the built-in defaults when the
+// App has not injected an accessor (e.g. a directly-constructed test view).
+func (tl *TaskListView) keys() *keymap.Keymap {
+	if tl.Keys != nil {
+		if km := tl.Keys(); km != nil {
+			return km
+		}
+	}
+	return keymap.DefaultKeymap()
 }
 
 // PasteHandler handles bracketed paste events in filter mode.

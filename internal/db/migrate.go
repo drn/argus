@@ -68,15 +68,6 @@ func (d *DB) seedDefaults() error {
 	if configCount == 0 {
 		defaults := map[string]string{
 			"defaults.backend":      cfg.Defaults.Backend,
-			"keybindings.new":       cfg.Keybindings.New,
-			"keybindings.attach":    cfg.Keybindings.Attach,
-			"keybindings.status":    cfg.Keybindings.Status,
-			"keybindings.delete":    cfg.Keybindings.Delete,
-			"keybindings.quit":      cfg.Keybindings.Quit,
-			"keybindings.help":      cfg.Keybindings.Help,
-			"keybindings.filter":    cfg.Keybindings.Filter,
-			"keybindings.prompt":    cfg.Keybindings.Prompt,
-			"keybindings.worktree":  cfg.Keybindings.Worktree,
 			"ui.theme":              cfg.UI.Theme,
 			"ui.show_elapsed":       fmt.Sprintf("%t", cfg.UI.ShowElapsed),
 			"ui.show_icons":         fmt.Sprintf("%t", cfg.UI.ShowIcons),
@@ -90,6 +81,13 @@ func (d *DB) seedDefaults() error {
 				return err
 			}
 		}
+	}
+
+	// Sweep stale DB-backed keybinding rows. Keybindings moved to keymap
+	// defaults + config.toml overrides only (the keybindings.* rows are dead);
+	// drop any left over from older databases. Idempotent — runs every Open.
+	if _, err := d.conn.Exec(`DELETE FROM config WHERE key LIKE 'keybindings.%'`); err != nil {
+		return err
 	}
 
 	return nil

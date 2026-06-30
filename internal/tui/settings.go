@@ -16,6 +16,7 @@ import (
 	"github.com/drn/argus/internal/launchagent"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/spinner"
+	"github.com/drn/argus/internal/tui/keymap"
 	pluginsettings "github.com/drn/argus/internal/tui/settings"
 	"github.com/drn/argus/internal/tui/store"
 	"github.com/drn/argus/internal/tui/streampane"
@@ -178,6 +179,9 @@ type pluginKey struct {
 // and the detail of the selected row.
 type SettingsView struct {
 	*tview.Box
+
+	// Keys returns the live keymap (set by the App). Nil-safe via keys().
+	Keys func() *keymap.Keymap
 
 	category     settingsCategory // active category in the left rail
 	activePlugin pluginKey        // identifies the plugin section when category == catPlugin
@@ -1129,19 +1133,10 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 		}
 		return sv.handleEnter()
 	case tcell.KeyRune:
+		// h/l are structural focus movement (Left→rail / Right→pane) and are not
+		// rebindable — see gotchas/keybindings.md (settings Left always returns to
+		// the rail). Everything else routes through the keymap.
 		switch ev.Rune() {
-		case 'k':
-			if sv.focus == focusRail {
-				return sv.moveCategory(-1)
-			}
-			sv.moveCursor(-1)
-			return true
-		case 'j':
-			if sv.focus == focusRail {
-				return sv.moveCategory(1)
-			}
-			sv.moveCursor(1)
-			return true
 		case 'h':
 			if sv.focus == focusPane {
 				sv.setFocus(focusRail)
@@ -1154,42 +1149,56 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 				return true
 			}
 			return false
-		case 'd':
+		}
+		switch act, _ := sv.keys().Resolve(keymap.CtxSettings, ev); act {
+		case keymap.ActSettingsUp:
+			if sv.focus == focusRail {
+				return sv.moveCategory(-1)
+			}
+			sv.moveCursor(-1)
+			return true
+		case keymap.ActSettingsDown:
+			if sv.focus == focusRail {
+				return sv.moveCategory(1)
+			}
+			sv.moveCursor(1)
+			return true
+		case keymap.ActSettingsDelete:
 			if sv.focus == focusRail {
 				return false
 			}
 			return sv.handleDeleteOrDefault()
-		case 'n':
+		case keymap.ActSettingsNew:
 			if sv.focus == focusRail {
 				return false
 			}
 			return sv.handleNew()
-		case 'e':
+		case keymap.ActSettingsEdit:
 			if sv.focus == focusRail {
 				return false
 			}
 			return sv.handleEdit()
-		case 'i':
+		case keymap.ActSettingsQuickAdd:
 			if sv.focus == focusRail {
 				return false
 			}
 			return sv.handleQuickAdd()
-		case 'a':
+		case keymap.ActSettingsApple:
 			if sv.focus == focusRail {
 				return false
 			}
 			return sv.handleAppleEvents()
-		case 't':
+		case keymap.ActSettingsToggle:
 			if sv.focus == focusRail {
 				return false
 			}
 			return sv.handleToggleSchedule()
-		case 'r':
+		case keymap.ActSettingsRun:
 			if sv.focus == focusRail {
 				return false
 			}
 			return sv.handleRunSchedule()
-		case 'm':
+		case keymap.ActSettingsModel:
 			if sv.focus == focusRail {
 				return false
 			}
@@ -1197,6 +1206,16 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 		}
 	}
 	return false
+}
+
+// keys returns the live keymap, falling back to defaults when no accessor is set.
+func (sv *SettingsView) keys() *keymap.Keymap {
+	if sv.Keys != nil {
+		if km := sv.Keys(); km != nil {
+			return km
+		}
+	}
+	return keymap.DefaultKeymap()
 }
 
 func (sv *SettingsView) handleQuickAdd() bool {

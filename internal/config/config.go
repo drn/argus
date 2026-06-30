@@ -194,16 +194,21 @@ type Project struct {
 	Sandbox ProjectSandboxConfig `toml:"sandbox"`
 }
 
+// Keybindings holds user keybinding OVERRIDES, scoped by TUI context. Each inner
+// map is action-id → keyspec string (e.g. {"new": "x", "fork": "ctrl+g"}); an
+// absent entry keeps the built-in default. The defaults themselves live in
+// internal/tui/keymap (DefaultKeymap), NOT here — this struct carries only what
+// the user changed. Unknown action ids and unknown context tables are ignored
+// (forward-compatible, matching FileLoader's lenient decode). config.toml is the
+// sole source for these overrides; there are no DB-backed keybinding rows.
 type Keybindings struct {
-	New      string `toml:"new"`
-	Attach   string `toml:"attach"`
-	Status   string `toml:"status"`
-	Delete   string `toml:"delete"`
-	Quit     string `toml:"quit"`
-	Help     string `toml:"help"`
-	Filter   string `toml:"filter"`
-	Prompt   string `toml:"prompt"`
-	Worktree string `toml:"worktree"`
+	Global    map[string]string `toml:"global"`
+	TaskList  map[string]string `toml:"tasklist"`
+	Agent     map[string]string `toml:"agent"`
+	FilePanel map[string]string `toml:"filepanel"`
+	Diff      map[string]string `toml:"diff"`
+	Settings  map[string]string `toml:"settings"`
+	HeraRail  map[string]string `toml:"hera_rail"`
 }
 
 type UIConfig struct {
@@ -298,16 +303,9 @@ func DefaultConfig() Config {
 	}
 }
 
+// DefaultKeybindings returns the empty override set. Built-in default bindings
+// live in internal/tui/keymap (DefaultKeymap); this layer carries only the
+// user's config.toml overrides, so the default is "no overrides".
 func DefaultKeybindings() Keybindings {
-	return Keybindings{
-		New:      "n",
-		Attach:   "enter",
-		Status:   "s",
-		Delete:   "d",
-		Quit:     "q",
-		Help:     "?",
-		Filter:   "/",
-		Prompt:   "p",
-		Worktree: "w",
-	}
+	return Keybindings{}
 }
