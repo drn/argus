@@ -106,6 +106,15 @@ func TestSmoke_CtrlZSwallowedWhenZoomRebound(t *testing.T) {
 	testutil.Equal(t, zen, false)
 }
 
+// TestFilePanelKey_UnboundNonRuneFallsThrough guards the `default:` dispatch
+// change: an unbound non-rune key (e.g. ctrl+g) must still fall through
+// (return the event) so it isn't silently swallowed.
+func TestFilePanelKey_UnboundNonRuneFallsThrough(t *testing.T) {
+	app := New(testDB(t), agent.NewRunner(nil), false)
+	got := app.handleFilePanelKey(tcell.NewEventKey(tcell.KeyCtrlG, 0, 0))
+	testutil.NotNil(t, got) // unbound key propagates, not consumed
+}
+
 // TestHelpReflectsOverride proves the help overlay renders the overridden key.
 func TestHelpReflectsOverride(t *testing.T) {
 	km, warns := keymap.Build(config.Keybindings{TaskList: map[string]string{"new": "x"}})

@@ -1133,6 +1133,12 @@ func (a *App) onTick() {
 		}
 		a.mu.Unlock()
 
+		// Rebuild the keymap if config.toml keybindings changed (live reload).
+		// Done here on the tick — not per keystroke — so agent typing never pays
+		// a db.Config() read. Runs on the tview goroutine (this is inside the
+		// QueueUpdateDraw closure), matching the keymap cache's threading.
+		a.refreshKeymap()
+
 		// Refresh task list side panels.
 		// Note: refreshPreview can be expensive for large session logs on
 		// first load (up to 256KB ring buffer copy + VT emulator feed), but
@@ -2180,22 +2186,33 @@ func (a *App) heraPaneFocused() bool {
 		a.heraPage.Machine().State() != hera.FocusRail
 }
 
-// activeKeymap returns the current keymap, rebuilding it only when the
-// config.Keybindings overrides have changed since the last build (live reload
-// without a per-keystroke rebuild). Called on the tview main goroutine only, so
+// refreshKeymap rebuilds the keymap from the current config, but only when the
+// config.Keybindings overrides have changed since the last build (live reload).
+// It reads db.Config() (a SQLite query locally / cached struct in remote mode),
+// so it is called from the once-per-second tick — NOT the per-keystroke hot path
+// — keeping agent typing latency-free. Runs on the tview main goroutine only, so
 // the cache needs no mutex. The fingerprint relies on `fmt` printing map keys in
-// sorted order (Go 1.12+), so an unchanged config always yields the same
-// signature string and the keymap is reused.
-func (a *App) activeKeymap() *keymap.Keymap {
+// sorted order (Go 1.12+), so an unchanged config yields a stable signature.
+func (a *App) refreshKeymap() {
 	kb := a.db.Config().Keybindings
 	sig := fmt.Sprintf("%v", kb)
-	if a.keymap == nil || sig != a.keymapSig {
-		km, warns := keymap.Build(kb)
-		for _, w := range warns {
-			uxlog.Log("%s", w.String())
-		}
-		a.keymap = km
-		a.keymapSig = sig
+	if a.keymap != nil && sig == a.keymapSig {
+		return
+	}
+	km, warns := keymap.Build(kb)
+	for _, w := range warns {
+		uxlog.Log("%s", w.String())
+	}
+	a.keymap = km
+	a.keymapSig = sig
+}
+
+// activeKeymap returns the cached keymap for the per-keystroke dispatch hot path.
+// It does NOT read config — refreshKeymap does that on the tick — it only primes
+// the keymap once if it was never built. tview main goroutine only.
+func (a *App) activeKeymap() *keymap.Keymap {
+	if a.keymap == nil {
+		a.refreshKeymap()
 	}
 	return a.keymap
 }
