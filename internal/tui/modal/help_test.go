@@ -48,6 +48,12 @@ func TestHelpModal_Draw(t *testing.T) {
 	m.Draw(sim)
 	sim.Sync()
 
+	// Guard against silent under-testing: if a future section pushes the content
+	// past the window, the body-substring asserts below would pass only because
+	// the overflowed rows scrolled off. Require everything to fit (no scroll) so
+	// such an overflow fails loudly here instead.
+	testutil.Equal(t, m.maxScroll, 0)
+
 	body := screenString(sim)
 	testutil.Contains(t, body, "Keybindings")
 	testutil.Contains(t, body, "Task List")
