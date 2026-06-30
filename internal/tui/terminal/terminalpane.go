@@ -494,7 +494,25 @@ const scrollAccelWindow = 120 * time.Millisecond
 // scrollAccelMax caps the acceleration multiplier.
 const scrollAccelMax = 12
 
+// InAltScreen reports whether the pane's emulator is in alternate-screen mode
+// (DECSET 1049). A full-screen agent (Claude Code / Codex / vim) redraws in place
+// (cursor-home, no line-scroll) and pushes ~zero lines into linear scrollback, so
+// replaying its raw session log through a fresh emulator reads the stacked in-place
+// frames as interleaved garbage. argus must therefore NOT enter its own scroll mode
+// for such a pane (BUG-031). The emulator leaves alt-screen on ESC[?1049l (agent
+// quit/exit), at which point normal scrollback resumes — the guard never latches.
+// Main-goroutine only: tp.emu is main-goroutine-owned; IsAltScreen is mutex-safe.
+func (tp *TerminalPane) InAltScreen() bool {
+	return tp.emu != nil && tp.emu.IsAltScreen()
+}
+
 func (tp *TerminalPane) ScrollUp(n int) {
+	if tp.InAltScreen() {
+		// BUG-031: no linear scrollback to reveal; entering scroll mode would
+		// replay alt-screen frames as garbage. Suppress (the mouse wheel is
+		// forwarded to the agent instead — BUG-026).
+		return
+	}
 	wasZero := tp.scrollOffset == 0
 	if wasZero {
 		tp.invalidateReplayCache()
@@ -525,6 +543,9 @@ func (tp *TerminalPane) ResetScroll() {
 // AccelScrollUp performs an accelerated scroll up for keyboard key-repeat.
 // Returns the actual number of lines scrolled.
 func (tp *TerminalPane) AccelScrollUp() int {
+	if tp.InAltScreen() {
+		return 0 // BUG-031: suppress scroll-mode entry for full-screen agents
+	}
 	n := tp.nextAccelStep()
 	wasZero := tp.scrollOffset == 0
 	if wasZero {
@@ -878,7 +899,7 @@ func (tp *TerminalPane) agentOwnsWheel() bool {
 	if sess == nil || !sess.Alive() {
 		return false
 	}
-	return tp.emu != nil && tp.emu.IsAltScreen()
+	return tp.InAltScreen()
 }
 
 // forwardWheel encodes a wheel event as an SGR mouse frame
