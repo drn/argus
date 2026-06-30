@@ -627,36 +627,64 @@ func TestBuildModel_SessionIdleSuppressesSpinner(t *testing.T) {
 	}
 }
 
-// TestBuildModel_NeedsInputClearsWhenWorkerFinishes is the BUG-023 headline at
-// the BuildModel seam: the App's needsInputIDs scan is STICKY (a finished worker
-// idling at its final prompt keeps the needs-input marker in its log tail
-// forever, so the task stays in the set indefinitely). The hera rollup MUST NOT
-// treat that as live needs-input: the per-role PTY signal is gated on the bound
-// task being in_progress, so as soon as the worker finishes (rolls to in_review)
-// the signal drops and the ancestor coordinator's "(?)" clears on the next
-// refresh — even though the App still reports the task in needsInputIDs. The
-// deliberate hera `blocked` role status is a SEPARATE, ungated source.
-func TestBuildModel_NeedsInputClearsWhenWorkerFinishes(t *testing.T) {
+// TestBuildModel_LiveWorkerInReviewSurfacesNeedsInput is the BUG-A headline at
+// the BuildModel seam: a WORKER whose task has rolled to in_review (per #707 a
+// hera worker deliberately sits in in_review while its session lingers alive for
+// the coordinator to close out) but whose session is STILL LIVE and genuinely at
+// a prompt MUST surface "(?)". RollHeraWorkerToReview keeps the binding live
+// (rv.Live stays true; only status + meta change), and the App's needsInput set
+// is content-aware (it flags a task only while it shows a CURRENT awaiting-input
+// signal), so a flagged live in_review worker is genuinely blocked — the rollup
+// must light its own row and the ancestor coordinator.
+func TestBuildModel_LiveWorkerInReviewSurfacesNeedsInput(t *testing.T) {
 	d := memDB(t)
 	orch := seedOrch(t, d, "orch")
 	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
 	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
 
-	// While the worker is in_progress + flagged, the rollup SETs (unchanged).
 	flagged := map[string]bool{"t-wkr": true}
+
+	// In_progress + flagged: surfaces (the always-correct path).
 	m, err := BuildModel(d, flagged, nil)
 	testutil.NoError(t, err)
 	testutil.Equal(t, roleByName(t, &m, orch, "wkr").NeedsInput, true)
 	testutil.Equal(t, coordSubtreeNI(t, &m, orch), true)
 
-	// The worker finishes → in_review. The needsInput set STILL flags the task
-	// (sticky marker lingers in the log tail), but the in_progress gate drops the
-	// signal so the role's own "(?)" and the coordinator rollup both clear.
+	// The worker rolls to in_review but its binding stays LIVE (session alive,
+	// #707). It is still in the content-aware needsInput set → still genuinely
+	// blocked → "(?)" MUST persist on the row AND roll up to the coordinator.
 	testutil.NoError(t, d.SetStatus("t-wkr", model.StatusInReview))
 	m2, err := BuildModel(d, flagged, nil)
 	testutil.NoError(t, err)
-	testutil.Equal(t, roleByName(t, &m2, orch, "wkr").NeedsInput, false)
-	testutil.Equal(t, coordSubtreeNI(t, &m2, orch), false)
+	testutil.Equal(t, roleByName(t, &m2, orch, "wkr").NeedsInput, true)
+	testutil.Equal(t, coordSubtreeNI(t, &m2, orch), true)
+}
+
+// TestBuildModel_ExitedWorkerSuppressesNeedsInput is the BUG-023 guard under the
+// loosened gate: once a worker's SESSION EXITS its binding ends (rv.Live becomes
+// false), so even though the App's needsInput set still names the task (a marker
+// in the log tail), the role no longer surfaces "(?)" — neither on its own
+// (now-finished) row nor in the ancestor coordinator's rollup. Liveness, not task
+// status, is the BUG-023 clear condition.
+func TestBuildModel_ExitedWorkerSuppressesNeedsInput(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+
+	flagged := map[string]bool{"t-wkr": true}
+
+	// Worker rolled to in_review AND its session has exited → end the binding.
+	testutil.NoError(t, d.SetStatus("t-wkr", model.StatusInReview))
+	_, err := d.EndHeraBindingsForTask("t-wkr", "exit")
+	testutil.NoError(t, err)
+
+	m, err := BuildModel(d, flagged, nil)
+	testutil.NoError(t, err)
+	// The worker role is no longer live, so neither its own row nor the ancestor
+	// coordinator's rollup pins "(?)".
+	testutil.Equal(t, roleByName(t, &m, orch, "wkr").NeedsInput, false)
+	testutil.Equal(t, coordSubtreeNI(t, &m, orch), false)
 }
 
 // errReader returns an error from ListHeraOrchestrators to prove BuildModel

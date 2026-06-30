@@ -39,20 +39,22 @@ type RoleStatusInputs struct {
 // (BUG-007). `frame` is the current spinner animation frame (the Active case
 // animates via SpinnerFrame); `dim` forces the dimmed style for archived
 // placement (the glyph never lies — only the style dims). Precedence:
-// ready_to_close → needs-input → failed(red ✕) → done → active(spinner) → idle → live → default.
+// needs-input → ready_to_close → failed(red ✕) → done → active(spinner) → idle → live → default.
+//
+// needs-input outranks ready_to_close (BUG-A): a worker GENUINELY blocked on a
+// user prompt is not "ready to close" — the done-roll's ready_to_close stamp is
+// contradicted by an active block, so the actionable "(?)" must win and not be
+// masked by the review glyph. needs-input is content-aware upstream, so a worker
+// merely idling at its done summary (no interactive affordance) is never flagged
+// and still renders the ready_to_close review glyph.
 func RoleStatusIcon(in RoleStatusInputs, dim bool, frame int) (rune, tcell.Style) {
-	if in.ReadyToClose {
-		st := tcell.StyleDefault.Foreground(theme.ColorComplete).Bold(true)
-		if dim {
-			st = theme.StyleDimmed
-		}
-		return theme.IconReview, st
-	}
 	var glyph rune
 	var style tcell.Style
 	switch {
 	case in.NeedsInput:
 		glyph, style = theme.IconNeedsInput, theme.StyleNeedsInput
+	case in.ReadyToClose:
+		glyph, style = theme.IconReview, tcell.StyleDefault.Foreground(theme.ColorComplete).Bold(true)
 	case in.Failed:
 		// D2 (make-hera-plan-living): explicit self-reported defeat — red ✕,
 		// distinct from the Done ✓ (a failed task is not done, not ready to close).

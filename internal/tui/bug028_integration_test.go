@@ -66,8 +66,9 @@ func driveNeedsInput(t *testing.T, app *App, wkrTask string) {
 		if len(app.needsInputIDs) == 0 {
 			t.Fatalf("detection failed: %s not flagged needs-input from disk log", wkrTask)
 		}
-		_, coordinators := app.readHeraRoles()
-		app.heraPage.SetNeedsInput(needsInputForHeraRail(app.needsInputIDs, app.tasks, coordinators))
+		workers, coordinators := app.readHeraRoles()
+		heraManaged := mergeManagedFromMeta(workers, coordinators)
+		app.heraPage.SetNeedsInput(needsInputForHeraRail(app.needsInputIDs, app.tasks, heraManaged))
 		app.heraPage.Refresh()
 	})
 	forceDraw(t, app)
@@ -190,5 +191,57 @@ func TestBUG028_Integration_BlockedCoordinatorCompleteTaskSurfaces(t *testing.T)
 	// Collapsed coordinator header must surface "(?)" even though its task is complete.
 	if !screenHasRune(sim, theme.IconNeedsInput) {
 		t.Errorf("BUG-028: collapsed coordinator header did not surface needs-input glyph %q while its task is complete", theme.IconNeedsInput)
+	}
+}
+
+// TestBUGA_Integration_LiveInReviewWorkerAtPromptSurfaces is the BUG-A repro at
+// the render seam: a WORKER whose task has rolled to in_review with
+// meta:hera.ready_to_close=true (the #707 close-out state RollHeraWorkerToReview
+// stamps) but whose session is ALIVE and blocked on a prompt must surface "(?)"
+// on its row — NOT the ready_to_close review glyph. Exercises all three fix
+// layers end to end: the app.go feed admits the in_review worker
+// (needsInputForHeraRail / heraManaged), the model gate surfaces it (rv.Live),
+// and the shared status-icon classifier ranks needs-input above ready_to_close.
+func TestBUGA_Integration_LiveInReviewWorkerAtPromptSurfaces(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	d, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	o, err := d.CreateHeraOrchestrator("orch", "")
+	testutil.NoError(t, err)
+	const wkrTask = "wkr-task"
+	role, err := d.CreateHeraRole(db.CreateHeraRoleInput{
+		OrchestratorID: o.ID, Name: "wkr", Kind: db.HeraKindWorker, ArgusProject: "p",
+	})
+	testutil.NoError(t, err)
+	// in_review + a still-LIVE binding (RollHeraWorkerToReview never ends it, #707).
+	testutil.NoError(t, d.Add(&model.Task{ID: wkrTask, Name: "wkr", Status: model.StatusInReview, Project: "p"}))
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{
+		RoleID: role.ID, ArgusTaskID: wkrTask, WorktreePath: "/wt/" + wkrTask,
+	})
+	testutil.NoError(t, err)
+	// Hera worker meta + the ready_to_close stamp the done-roll sets, plus a blocked
+	// session log (a permission prompt the worker raised AFTER reporting done).
+	testutil.NoError(t, d.SetMeta(wkrTask, db.HeraMetaNamespace, db.HeraMetaKeyRole, string(db.HeraKindWorker)))
+	testutil.NoError(t, d.SetMeta(wkrTask, db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"))
+	testutil.NoError(t, os.MkdirAll(agent.SessionsDir(), 0o755))
+	testutil.NoError(t, os.WriteFile(agent.SessionLogPath(wkrTask), []byte(blockedSessionLog), 0o644))
+
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.refreshTasks()
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+	sim.InjectKey(tcell.KeyRune, '2', 0)
+	syncUI(t, app.tapp)
+
+	driveNeedsInput(t, app, wkrTask)
+
+	// Collapsed coordinator-less header rolls up the live worker's "(?)".
+	if !screenHasRune(sim, theme.IconNeedsInput) {
+		t.Errorf("BUG-A: live in_review worker at a prompt did not surface needs-input glyph %q (ready_to_close masked it?)", theme.IconNeedsInput)
 	}
 }

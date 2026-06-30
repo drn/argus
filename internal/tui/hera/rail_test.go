@@ -1128,7 +1128,8 @@ func TestStatusIcon_BlockedOutranksActivity(t *testing.T) {
 
 // TestStatusIcon_NeedsInputSources covers the BUG-018 "(?)" triggers + precedence:
 // the role's own authoritative NeedsInput flag, the subtree rollup, and the
-// precedence against ready_to_close (wins over rollup) and done (loses to rollup).
+// precedence against ready_to_close (now LOSES to needs-input, BUG-A) and done
+// (loses to rollup).
 func TestStatusIcon_NeedsInputSources(t *testing.T) {
 	t.Run("own needs-input flag shows (?)", func(t *testing.T) {
 		icon, style := statusIcon(&RoleView{Live: true, TaskStatus: "in_progress", NeedsInput: true}, false, 0)
@@ -1145,8 +1146,15 @@ func TestStatusIcon_NeedsInputSources(t *testing.T) {
 		icon, _ := statusIcon(&RoleView{Live: true, HasStatus: true, Status: db.HeraStatusDone, SubtreeNeedsInput: true}, false, 0)
 		testutil.Equal(t, icon, theme.IconNeedsInput)
 	})
-	t.Run("ready_to_close still wins over the rollup", func(t *testing.T) {
+	t.Run("needs-input rollup wins over ready_to_close (BUG-A)", func(t *testing.T) {
+		// A worker stamped ready_to_close (done-roll) that is ALSO genuinely
+		// blocked must surface "(?)", not the review glyph — the actionable block
+		// outranks the now-contradicted "ready to close out" stamp.
 		icon, _ := statusIcon(&RoleView{Live: true, ReadyToClose: true, SubtreeNeedsInput: true}, false, 0)
+		testutil.Equal(t, icon, theme.IconNeedsInput)
+	})
+	t.Run("ready_to_close shows review glyph when not blocked", func(t *testing.T) {
+		icon, _ := statusIcon(&RoleView{Live: true, ReadyToClose: true}, false, 0)
 		testutil.Equal(t, icon, theme.IconReview)
 	})
 	t.Run("no needs-input → not (?)", func(t *testing.T) {

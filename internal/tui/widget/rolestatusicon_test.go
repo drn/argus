@@ -9,8 +9,16 @@ import (
 
 // TestRoleStatusIcon_Precedence pins the shared classifier's precedence +
 // vocabulary (BUG-007): the single source of truth the rail and the plan view
-// both consume. ready_to_close → needs-input → failed(red ✕) → done → active →
+// both consume. needs-input → ready_to_close → failed(red ✕) → done → active →
 // idle → live → default.
+//
+// needs-input outranks ready_to_close (BUG-A): a worker GENUINELY blocked on a
+// user prompt RIGHT NOW is not "ready to close" — the ready_to_close stamp set by
+// the done-roll (RollHeraWorkerToReview) is contradicted by an active block, and
+// the actionable "(?)" must win so the user is not misled into closing a worker
+// that is waiting on them. needs-input is content-aware upstream, so a worker
+// merely idling at its done summary (no interactive affordance) is never flagged
+// and still renders the ready_to_close review glyph.
 func TestRoleStatusIcon_Precedence(t *testing.T) {
 	const frame = 0
 	cases := []struct {
@@ -18,7 +26,8 @@ func TestRoleStatusIcon_Precedence(t *testing.T) {
 		in        RoleStatusInputs
 		wantGlyph rune
 	}{
-		{"ready_to_close wins over all", RoleStatusInputs{ReadyToClose: true, NeedsInput: true, Failed: true, Done: true, Active: true}, theme.IconReview},
+		{"needs-input wins over all", RoleStatusInputs{NeedsInput: true, ReadyToClose: true, Failed: true, Done: true, Active: true}, theme.IconNeedsInput},
+		{"ready_to_close over failed/done/active", RoleStatusInputs{ReadyToClose: true, Failed: true, Done: true, Active: true}, theme.IconReview},
 		{"needs-input over failed/done/active", RoleStatusInputs{NeedsInput: true, Failed: true, Done: true, Active: true}, theme.IconNeedsInput},
 		{"failed over done/active", RoleStatusInputs{Failed: true, Done: true, Active: true}, '✕'},
 		{"done over active", RoleStatusInputs{Done: true, Active: true}, '✓'},

@@ -889,31 +889,36 @@ func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.
 		// raw-byte idle with the content-idle augmentation.
 		rv.SessionIdle = sessionIdle[taskID]
 		// Own needs-input from the authoritative App-tick set (keyed by live task).
-		// The App's needsInputIDs scan is STICKY + upstream gated to live, idle,
-		// blocked sessions, so membership already implies a live blocked session.
-		// The only thing to additionally suppress is a FINISHED WORKER idling at
-		// its final/done prompt: its marker lingers in the log tail indefinitely,
-		// so without a gate it would stay flagged forever and pin "(?)" on every
-		// ancestor permanently — the rollup could never clear (BUG-023). A worker
-		// is "finished" once its task leaves in_progress (rolls to in_review/
-		// complete), so gate WORKERS on taskInProgress: that is the "agent resolved"
-		// clear condition.
+		// The App's needsInputIDs scan is content-aware (post-BUG-032/034/035): a
+		// task is in the set only while it shows a CURRENT awaiting-input signal,
+		// and it clears on user input or archive — it does NOT linger on a stale
+		// done-summary marker. So membership already means "this live session is
+		// genuinely at a prompt right now."
 		//
-		// A COORDINATOR (or freelance) role, by contrast, does NOT finish by task
-		// status while its session is alive — a coordinator routinely rolls to
-		// complete/in_review yet keeps coordinating and can itself block on a user
-		// prompt (BUG-028). Gating it on in_progress hid the "(?)" on its (usually
-		// collapsed) header. So a live non-worker role surfaces needs-input
-		// regardless of task status; its "done" is a session exit, which drops it
-		// from the sticky set upstream, so there is no stale-marker hazard.
-		// rv.Live is true here (this is the live-binding branch).
+		// This whole branch runs under a LIVE binding (rv.Live is unconditionally
+		// true here), so a live role of ANY kind — worker, coordinator, or
+		// freelance — surfaces needs-input when it is in the content-aware set,
+		// regardless of task status:
+		//   - A COORDINATOR routinely rolls to complete/in_review while its session
+		//     stays alive and can itself block on a user prompt (BUG-028).
+		//   - A WORKER deliberately sits in in_review while its session lingers
+		//     alive for the coordinator to close out (#707) and can genuinely ask a
+		//     fresh question in that state — it MUST surface "(?)" then (BUG-A).
 		//
-		// The deliberate hera `blocked` role status stays an INDEPENDENT, ungated
-		// needs-input source (needsInputOwn), cleared by stepping off `blocked`
-		// (s/S). A task missing from the snapshot (read failure) is treated as not
-		// in_progress — a transient flicker that self-heals next tick, never a
-		// stuck-forever "(?)".
-		allowNeedsInput := taskInProgress || (role.Kind != db.HeraKindWorker && rv.Live)
+		// BUG-023 (a FINISHED worker pinning "(?)" forever on every ancestor) stays
+		// protected without a task-status gate: a worker is "finished" when its
+		// SESSION EXITS, which ENDS its binding (rv.Live becomes false → this branch
+		// no longer runs → suppressed); and a still-alive worker idling at a done
+		// summary with no interactive affordance is never in the content-aware set
+		// to begin with. The task-status gate was the pre-content-aware blunt
+		// instrument; the content-aware set + the liveness branch now carry it.
+		//
+		// taskInProgress is retained as a defensive OR for the rare window where a
+		// task reads in_progress but its live binding lookup raced; in steady state
+		// rv.Live dominates. The deliberate hera `blocked` role status stays an
+		// INDEPENDENT, ungated needs-input source (needsInputOwn), cleared by
+		// stepping off `blocked` (s/S).
+		allowNeedsInput := taskInProgress || rv.Live
 		if needsInput[taskID] && allowNeedsInput {
 			rv.NeedsInput = true
 		}

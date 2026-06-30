@@ -1692,17 +1692,21 @@ func needsInputInProgress(ids []string, tasks []*model.Task) []string {
 }
 
 // needsInputForHeraRail filters the sticky needs-input set for the Hera rail
-// rollup feed: keep a task if it is in_progress (the task-list / buildRoleView
-// worker gate, BUG-006/BUG-023) OR it is bound to a hera COORDINATOR role,
-// regardless of task status. A coordinator routinely rolls to complete/in_review
-// while its session stays alive and may be genuinely blocked on a user prompt; an
-// in_progress-only gate hid the needs-input "(?)" on its (usually collapsed)
-// header (BUG-028). Coordinators are MANAGED tasks, so admitting a non-in_progress
-// coordinator never reaches the unmanaged attention-summary count (BUG-005 stays
-// in_progress-gated for unmanaged tasks). buildRoleView re-gates per role kind
-// (workers on in_progress, non-workers on live), so this is the authoritative
-// admission step, not a second gate. Pure (no receiver state) — unit-testable.
-func needsInputForHeraRail(ids []string, tasks []*model.Task, coordinators map[string]bool) []string {
+// rollup feed: keep a task if it is in_progress (the task-list parity gate,
+// BUG-006) OR it is bound to ANY hera role — coordinator OR worker —
+// regardless of task status (heraManaged). A coordinator routinely rolls to
+// complete/in_review while its session stays alive and may be genuinely blocked
+// on a user prompt (BUG-028); a worker likewise sits in in_review while its
+// session lingers alive for close-out (#707) and can genuinely ask a fresh
+// question there (BUG-A). An in_progress-only gate hid the needs-input "(?)" on
+// both. Hera-bound tasks are MANAGED, so admitting a non-in_progress one never
+// reaches the unmanaged attention-summary count (UnmanagedNeedsInputCount
+// subtracts the managed set, which keys on the role's binding regardless of
+// liveness). buildRoleView re-gates each admitted task on its role's LIVE binding
+// (a worker whose session exited has an ended binding → suppressed, BUG-023), so
+// this is the permissive admission step, not the authoritative gate. Pure (no
+// receiver state) — unit-testable.
+func needsInputForHeraRail(ids []string, tasks []*model.Task, heraManaged map[string]bool) []string {
 	if len(ids) == 0 {
 		return ids
 	}
@@ -1714,7 +1718,7 @@ func needsInputForHeraRail(ids []string, tasks []*model.Task, coordinators map[s
 	}
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if inProgress[id] || coordinators[id] {
+		if inProgress[id] || heraManaged[id] {
 			out = append(out, id)
 		}
 	}
@@ -2128,15 +2132,18 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	heraWorkers, heraCoordinators := a.readHeraRoles()
 	// Feed the authoritative needs-input set to the Hera rail so a blocked role
 	// shows "(?)" and the rollup bubbles it up to ancestor coordinators (BUG-018).
-	// Keep in_progress tasks (the task-list gate, BUG-006) PLUS any task bound to a
-	// hera COORDINATOR role REGARDLESS of status (BUG-028): a coordinator routinely
-	// rolls to complete/in_review while its session stays alive and can itself
-	// block on a user prompt, so gating it on in_progress hid the "(?)" on its
-	// (usually collapsed) header. Coordinators are MANAGED, so admitting them never
-	// affects the unmanaged attention-summary count (BUG-005) — buildRoleView still
-	// gates WORKERS on in_progress (the finished-worker clear, BUG-023). Cheap pure
-	// setter; the rebuild is scheduled below when the tab is active. Remote no-ops.
-	a.heraPage.SetNeedsInput(needsInputForHeraRail(a.needsInputIDs, a.tasks, heraCoordinators))
+	// Keep in_progress tasks (the task-list parity gate, BUG-006) PLUS any task
+	// bound to ANY hera role — coordinator OR worker — REGARDLESS of status: a
+	// coordinator routinely rolls to complete/in_review while its session stays
+	// alive and can block on a prompt (BUG-028), and a worker sits in in_review
+	// while its session lingers for close-out (#707) and can genuinely ask there
+	// (BUG-A). Hera-bound tasks are MANAGED, so admitting a non-in_progress one
+	// never affects the unmanaged attention-summary count (BUG-005); buildRoleView
+	// re-gates each on its LIVE binding, so an exited worker is still suppressed
+	// (BUG-023). Cheap pure setter; the rebuild is scheduled below when the tab is
+	// active. Remote no-ops.
+	heraManaged := mergeManagedFromMeta(heraWorkers, heraCoordinators)
+	a.heraPage.SetNeedsInput(needsInputForHeraRail(a.needsInputIDs, a.tasks, heraManaged))
 	// Content-aware idle (BUG-036): a fullscreen (alt-screen) agent parked at its
 	// prompt repaints continuously, so it never reaches idleIDs (raw-byte idle)
 	// and its Hera rail spinner would animate forever. Augment idleIDs with the
