@@ -221,6 +221,24 @@ func (d *Daemon) reattachSupervised() {
 	}
 	slog.Info("reattach: re-attached live supervisor sessions", "reattached", reattached, "live", len(liveSet))
 
+	// Restore any re-attached worker stranded in in_review by a prior roll or
+	// reconcile but genuinely alive and working again (BUG-B). The helper is
+	// worker-kind only, fires only on an in_review task, and LEAVES genuinely-
+	// finished workers (ready_to_close / role-status done|failed) in in_review,
+	// preserving the #707 / BUG-050 close-out invariant. Scoped to liveSet —
+	// the true orphans (handled below) deliberately flip the other way.
+	revived := 0
+	for id := range liveSet {
+		if ok, err := d.db.ReviveHeraWorkerToInProgress(id); err != nil {
+			slog.Warn("reattach: revive-to-in_progress failed", "task", id, "err", err)
+		} else if ok {
+			revived++
+		}
+	}
+	if revived > 0 {
+		slog.Info("reattach: restored stranded live workers to in_progress", "count", revived)
+	}
+
 	// Flip only the true orphans; re-attached (live) tasks stay InProgress.
 	orphans, err := agent.ReconcileStaleSessionsExcept(d.db, liveSet)
 	if err != nil {

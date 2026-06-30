@@ -712,10 +712,32 @@ func (a *App) reviveHeraWorker(task *model.Task, sess agent.SessionHandle) {
 				a.statusbar.SetError("Revive failed: " + err.Error())
 				uxlog.Log("[hera-view] revive: kick failed task=%s: %v", taskID, err)
 			} else {
+				// The worker is actively working again — restore in_progress if
+				// it was parked in in_review by a prior roll/reconcile (BUG-B).
+				a.reviveRestoreInProgress(taskID)
 				a.heraRefresh()
 			}
 		})
 	}()
+}
+
+// reviveRestoreInProgress restores a just-revived worker's task to in_progress
+// — the inverse of the in_review close-out roll (BUG-B). Called right after a
+// successful in-place revive kick. The shared *db.DB helper enforces the
+// BUG-050 guard: a genuinely-finished worker (ready_to_close, or role-status
+// done|failed) is LEFT in in_review. Local store only — the restore goes
+// through *db.DB directly, so --remote mode is a no-op (the live local daemon
+// owns the same flip on its own supervisor reattach).
+func (a *App) reviveRestoreInProgress(taskID string) {
+	dbv, ok := a.db.(*db.DB)
+	if !ok {
+		return
+	}
+	if restored, err := dbv.ReviveHeraWorkerToInProgress(taskID); err != nil {
+		uxlog.Log("[hera-view] revive: restore in_progress failed task=%s: %v", taskID, err)
+	} else if restored {
+		uxlog.Log("[hera-view] revive: restored task=%s to in_progress", taskID)
+	}
 }
 
 // --- `J` adopt / reparent ---------------------------------------------------
