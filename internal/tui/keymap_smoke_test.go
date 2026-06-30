@@ -106,6 +106,39 @@ func TestSmoke_CtrlZSwallowedWhenZoomRebound(t *testing.T) {
 	testutil.Equal(t, zen, false)
 }
 
+// TestKeymapLiveReload proves a config.toml edit mid-session is picked up by
+// refreshKeymap (the tick path) without a restart. The two configs differ in
+// size so the FileLoader's (mtime,size) cache reliably detects the change.
+func TestKeymapLiveReload(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, config.FileName)
+	testutil.NoError(t, os.WriteFile(cfgPath, []byte("[keybindings.tasklist]\nnew = \"y\"\n"), 0o644))
+	d, err := db.Open(filepath.Join(dir, "data.sql"))
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	app := New(d, agent.NewRunner(nil), false)
+
+	// Primed from the initial config: `y` is new-task, `n` is not.
+	got, ok := app.activeKeymap().Resolve(keymap.CtxTaskList, ev(tcell.KeyRune, 'y', 0))
+	testutil.True(t, ok)
+	testutil.Equal(t, got, keymap.ActTaskNew)
+
+	// Edit config.toml, then refresh (what the once-per-second tick does).
+	testutil.NoError(t, os.WriteFile(cfgPath, []byte("[keybindings.tasklist]\nnew = \"ctrl+g\"\n"), 0o644))
+	app.refreshKeymap()
+
+	// New binding is live; the old one no longer maps to new-task.
+	got, ok = app.activeKeymap().Resolve(keymap.CtxTaskList, ev(tcell.KeyCtrlG, 0, 0))
+	testutil.True(t, ok)
+	testutil.Equal(t, got, keymap.ActTaskNew)
+	_, ok = app.activeKeymap().Resolve(keymap.CtxTaskList, ev(tcell.KeyRune, 'y', 0))
+	testutil.False(t, ok)
+}
+
+func ev(k tcell.Key, r rune, m tcell.ModMask) *tcell.EventKey { return tcell.NewEventKey(k, r, m) }
+
 // TestFilePanelKey_UnboundNonRuneFallsThrough guards the `default:` dispatch
 // change: an unbound non-rune key (e.g. ctrl+g) must still fall through
 // (return the event) so it isn't silently swallowed.

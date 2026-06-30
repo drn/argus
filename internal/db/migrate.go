@@ -83,14 +83,17 @@ func (d *DB) seedDefaults() error {
 		}
 	}
 
-	// Sweep stale DB-backed keybinding rows. Keybindings moved to keymap
-	// defaults + config.toml overrides only (the keybindings.* rows are dead);
-	// drop any left over from older databases. Idempotent — runs every Open.
-	if _, err := d.conn.Exec(`DELETE FROM config WHERE key LIKE 'keybindings.%'`); err != nil {
-		return err
-	}
-
 	return nil
+}
+
+// sweepLegacyKeybindings removes the dead `keybindings.*` config rows that older
+// databases seeded before keybindings moved to keymap defaults + config.toml
+// overrides. db.Config() already ignores these rows, so this is housekeeping —
+// but it must run on EVERY Open (not just first-time seeding) to actually clean
+// existing users' databases. Idempotent.
+func (d *DB) sweepLegacyKeybindings() error {
+	_, err := d.conn.Exec(`DELETE FROM config WHERE key LIKE 'keybindings.%'`)
+	return err
 }
 
 // fixupBackends runs on every Open and corrects known-outdated backend

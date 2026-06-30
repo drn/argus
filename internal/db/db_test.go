@@ -1435,16 +1435,15 @@ func TestDB_Config_IgnoresDBKeybindingRows(t *testing.T) {
 	}
 }
 
-// The migrate sweep removes stale keybindings.* rows on Open.
-func TestDB_Migrate_SweepsStaleKeybindingRows(t *testing.T) {
+// sweepLegacyKeybindings removes stale keybindings.* rows and is idempotent.
+func TestDB_SweepLegacyKeybindings(t *testing.T) {
 	d := testDB(t)
 
-	// Seed a stale row, then re-run migrate (idempotent) to sweep it.
 	if err := d.SetConfigValue("keybindings.legacy", "z"); err != nil {
 		t.Fatalf("SetConfigValue: %v", err)
 	}
-	if err := d.seedDefaults(); err != nil {
-		t.Fatalf("seedDefaults: %v", err)
+	if err := d.sweepLegacyKeybindings(); err != nil {
+		t.Fatalf("sweepLegacyKeybindings: %v", err)
 	}
 
 	var n int
@@ -1453,6 +1452,44 @@ func TestDB_Migrate_SweepsStaleKeybindingRows(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("stale keybinding rows = %d, want 0", n)
+	}
+	// Idempotent: a second sweep is a no-op and still errors-free.
+	if err := d.sweepLegacyKeybindings(); err != nil {
+		t.Fatalf("second sweep: %v", err)
+	}
+}
+
+// Open() sweeps stale keybinding rows on EVERY open, including already-migrated
+// (existing) databases — the sweep must not live behind the first-time seed gate.
+func TestDB_Open_SweepsStaleRowsForExistingDB(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.sql")
+
+	// First open creates + migrates the DB; inject a stale legacy row.
+	d1, err := Open(path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	if err := d1.SetConfigValue("keybindings.new", "x"); err != nil {
+		t.Fatalf("SetConfigValue: %v", err)
+	}
+	_ = d1.Close()
+
+	// Reopen the already-migrated DB — migrate() early-returns, so the sweep must
+	// run via the every-Open path, not seedDefaults.
+	d2, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	defer func() { _ = d2.Close() }()
+
+	var n int
+	if err := d2.conn.QueryRow(`SELECT COUNT(*) FROM config WHERE key LIKE 'keybindings.%'`).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("stale keybinding rows after reopen = %d, want 0", n)
 	}
 }
 
