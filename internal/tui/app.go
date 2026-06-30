@@ -2183,8 +2183,9 @@ func (a *App) heraPaneFocused() bool {
 // activeKeymap returns the current keymap, rebuilding it only when the
 // config.Keybindings overrides have changed since the last build (live reload
 // without a per-keystroke rebuild). Called on the tview main goroutine only, so
-// the cache needs no mutex. The fingerprint uses fmt's deterministic map
-// ordering, so an unchanged config yields a stable signature.
+// the cache needs no mutex. The fingerprint relies on `fmt` printing map keys in
+// sorted order (Go 1.12+), so an unchanged config always yields the same
+// signature string and the keymap is reused.
 func (a *App) activeKeymap() *keymap.Keymap {
 	kb := a.db.Config().Keybindings
 	sig := fmt.Sprintf("%v", kb)
@@ -2693,6 +2694,16 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 	}
 
+	// SIGTSTP safety net (gotchas/keybindings.md: "Ctrl+Z must never reach the
+	// PTY"). A literal Ctrl+Z encodes to 0x1a, which backgrounds the agent. When
+	// agent.zoom is bound to ctrl+z (the default) the interception block above
+	// already consumed it; if the user rebound zoom to another key, ctrl+z is now
+	// unbound — swallow it here so the invariant holds regardless of config. This
+	// sits before diff/file routing, matching the historical literal placement.
+	if event.Key() == tcell.KeyCtrlZ {
+		return nil
+	}
+
 	// Diff mode keys
 	if a.agentPane.InDiffMode() {
 		return a.handleDiffKey(event)
@@ -2795,7 +2806,8 @@ func (a *App) handleFilePanelKey(event *tcell.EventKey) *tcell.EventKey {
 		// Open diff for selected file
 		a.openFileDiff()
 		return nil
-	case tcell.KeyRune:
+	default:
+		// Resolve for all non-structural keys so ctrl/named overrides work.
 		if act, ok := a.activeKeymap().Resolve(keymap.CtxFilePnl, event); ok {
 			switch act {
 			case keymap.ActFileDown:
@@ -2849,7 +2861,8 @@ func (a *App) handleDiffKey(event *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyPgDn:
 		a.agentPane.DiffScrollDown(20)
 		return nil
-	case tcell.KeyRune:
+	default:
+		// Resolve for all non-structural keys so ctrl/named overrides work.
 		if act, ok := a.activeKeymap().Resolve(keymap.CtxDiff, event); ok {
 			switch act {
 			case keymap.ActDiffSplit:
@@ -2863,7 +2876,8 @@ func (a *App) handleDiffKey(event *tcell.EventKey) *tcell.EventKey {
 				return nil
 			}
 		}
-		// `q` exits diff mode — structural "back", not rebindable.
+		// `q` exits diff mode — structural "back", reserved (not rebindable in
+		// CtxDiff, so the keymap above can never shadow it).
 		if event.Rune() == 'q' {
 			a.agentPane.ExitDiffMode()
 			a.agentFocus = focusTerminal

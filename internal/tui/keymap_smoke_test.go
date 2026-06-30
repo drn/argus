@@ -72,6 +72,40 @@ func TestSmoke_KeymapInvalidOverrideKeepsDefault(t *testing.T) {
 	testutil.Equal(t, act, keymap.ActAgentLinks)
 }
 
+// TestSmoke_CtrlZSwallowedWhenZoomRebound is the regression guard for the
+// SIGTSTP invariant: even when agent.zoom is rebound away from ctrl+z, a literal
+// ctrl+z must be consumed (never forwarded to the PTY as 0x1a). With zoom on
+// ctrl+w, ctrl+z is inert (zen unchanged) and ctrl+w toggles zen.
+func TestSmoke_CtrlZSwallowedWhenZoomRebound(t *testing.T) {
+	d := testDBWithConfig(t, "[keybindings.agent]\nzoom = \"ctrl+w\"\n")
+	task := &model.Task{ID: "zr-1", Name: "zoom rebind", Status: model.StatusPending, Project: "p"}
+	testutil.NoError(t, d.Add(task))
+	app := New(d, agent.NewRunner(nil), false)
+	app.refreshTasks()
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	// Enter agent view — defaults to zoomed (agentZen=true).
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+	var zen bool
+	readUI(t, app.tapp, func() { zen = app.agentZen })
+	testutil.Equal(t, zen, true)
+
+	// ctrl+z is now unbound (zoom moved to ctrl+w): it must be swallowed and NOT
+	// toggle zen (and the dispatch must not forward 0x1a to the PTY).
+	sim.InjectKey(tcell.KeyCtrlZ, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { zen = app.agentZen })
+	testutil.Equal(t, zen, true) // unchanged — ctrl+z inert
+
+	// The rebound key toggles zoom.
+	sim.InjectKey(tcell.KeyCtrlW, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { zen = app.agentZen })
+	testutil.Equal(t, zen, false)
+}
+
 // TestHelpReflectsOverride proves the help overlay renders the overridden key.
 func TestHelpReflectsOverride(t *testing.T) {
 	km, warns := keymap.Build(config.Keybindings{TaskList: map[string]string{"new": "x"}})

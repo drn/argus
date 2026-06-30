@@ -1132,10 +1132,12 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 			return true
 		}
 		return sv.handleEnter()
-	case tcell.KeyRune:
+	default:
+		// Resolve for all non-structural keys (runes AND ctrl/named overrides).
 		// h/l are structural focus movement (Left→rail / Right→pane) and are not
 		// rebindable — see gotchas/keybindings.md (settings Left always returns to
-		// the rail). Everything else routes through the keymap.
+		// the rail; they're reserved in CtxSettings so the keymap can't shadow
+		// them). Everything else routes through the keymap.
 		switch ev.Rune() {
 		case 'h':
 			if sv.focus == focusPane {

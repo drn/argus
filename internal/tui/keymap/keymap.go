@@ -13,9 +13,10 @@
 // "shift+down".
 //
 // Reserved/structural keys are NOT routed through the keymap and cannot be
-// rebound: Esc/Enter/Tab/Backtab, Ctrl+C / Ctrl+Q (failsafe), and plain arrow
-// keys (navigation). Agent-context bindings must carry a modifier so plain
-// typing still reaches the agent PTY.
+// rebound: Esc/Enter/Tab/Backtab, Ctrl+C / Ctrl+Q (failsafe), plain navigation
+// keys (arrows + pgup/pgdn/home/end), and per-context structural runes (diff q,
+// settings h/l) listed in reservedContextKeys. Agent-context bindings must carry
+// a modifier so plain typing still reaches the agent PTY.
 package keymap
 
 import (
@@ -206,15 +207,33 @@ func eventBinding(ev *tcell.EventKey) Binding {
 	return Binding{Key: ev.Key()}
 }
 
+// reservedContextKeys are per-context keys that the dispatch site handles with a
+// literal branch (so they stay structural and cannot be rebound). An override
+// onto one of these would be silently shadowed by the literal, so it is rejected
+// at build time instead — the user gets a warning and keeps the default.
+var reservedContextKeys = map[Context][]Binding{
+	CtxDiff:     {{Key: tcell.KeyRune, Rune: 'q'}},                                  // exit diff
+	CtxSettings: {{Key: tcell.KeyRune, Rune: 'h'}, {Key: tcell.KeyRune, Rune: 'l'}}, // focus rail / pane
+}
+
 // bindingAllowed enforces the rebinding limits. Returns ("", true) when allowed,
 // or (reason, false) to reject (keep the default).
 func bindingAllowed(ctx Context, b Binding) (string, bool) {
-	if isArrow(b.Key) && b.Mods == 0 {
-		return "binds a plain arrow key (reserved for navigation)", false
+	// Plain (unmodified) navigation keys are reserved in every context: the
+	// fast-path reverse lookup strips modifiers (eventBinding), so a plain
+	// binding here would also capture the cmd/shift-modified variant of the same
+	// key — e.g. a plain `pgdn` binding would swallow `shift+pgdn` scrollback.
+	if isModifiable(b.Key) && b.Mods == 0 {
+		return "binds a plain navigation key (reserved)", false
 	}
 	switch b.Key {
 	case tcell.KeyEnter, tcell.KeyEscape, tcell.KeyTab, tcell.KeyBacktab, tcell.KeyCtrlC, tcell.KeyCtrlQ:
 		return "binds a reserved structural/failsafe key", false
+	}
+	for _, rb := range reservedContextKeys[ctx] {
+		if b == rb {
+			return "binds a key reserved as structural in this context", false
+		}
 	}
 	if ctx == CtxAgent {
 		_, isCtrlLetter := ctrlLetters[b.Key]

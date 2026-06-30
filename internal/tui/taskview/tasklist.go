@@ -954,7 +954,10 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 			if tl.filter != "" {
 				tl.ClearFilter()
 			}
-		case tcell.KeyRune:
+		default:
+			// Resolve for ALL non-structural keys (not just runes) so ctrl/named
+			// keyspec overrides are honored, not silently dropped. Filter input is
+			// already handled above; arrows/Enter/Esc are the explicit cases.
 			switch act, _ := tl.keys().Resolve(keymap.CtxTaskList, event); act {
 			case keymap.ActTaskDown:
 				tl.CursorDown()

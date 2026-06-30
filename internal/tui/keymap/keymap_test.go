@@ -154,11 +154,55 @@ func TestBuild_StructuralKeyRejected(t *testing.T) {
 	}
 }
 
-func TestBuild_PlainArrowRejected(t *testing.T) {
-	kb := config.Keybindings{Global: map[string]string{"tab_tasks": "up"}}
-	_, warns := Build(kb)
-	testutil.Equal(t, len(warns), 1)
-	testutil.Contains(t, warns[0].Message, "arrow")
+func TestBuild_PlainNavKeyRejected(t *testing.T) {
+	// Plain arrows AND plain page/home/end keys are reserved everywhere, because
+	// the fast-path lookup strips modifiers (a plain binding would also capture
+	// the cmd/shift variant).
+	for _, spec := range []string{"up", "down", "pgdn", "pgup", "home", "end"} {
+		kb := config.Keybindings{Global: map[string]string{"tab_tasks": spec}}
+		_, warns := Build(kb)
+		if len(warns) != 1 {
+			t.Fatalf("spec %q: want 1 warning, got %d", spec, len(warns))
+		}
+		testutil.Contains(t, warns[0].Message, "navigation key")
+	}
+}
+
+func TestBuild_ReservedContextKeyRejected(t *testing.T) {
+	// `q` is structural (exit) in the diff view; `h`/`l` are structural focus in
+	// settings. Binding an action onto them would be silently shadowed, so reject.
+	cases := []struct {
+		kb   config.Keybindings
+		ctx  Context
+		dflt Binding
+	}{
+		{config.Keybindings{Diff: map[string]string{"split": "q"}}, CtxDiff, Binding{Key: tcell.KeyRune, Rune: 's'}},
+		{config.Keybindings{Settings: map[string]string{"edit": "h"}}, CtxSettings, Binding{Key: tcell.KeyRune, Rune: 'e'}},
+		{config.Keybindings{Settings: map[string]string{"edit": "l"}}, CtxSettings, Binding{Key: tcell.KeyRune, Rune: 'e'}},
+	}
+	for _, c := range cases {
+		km, warns := Build(c.kb)
+		testutil.Equal(t, len(warns), 1)
+		testutil.Contains(t, warns[0].Message, "reserved as structural")
+		// Default survived.
+		if c.ctx == CtxDiff {
+			got, _ := km.Resolve(CtxDiff, ev(tcell.KeyRune, 's', 0))
+			testutil.Equal(t, got, ActDiffSplit)
+		} else {
+			got, _ := km.Resolve(CtxSettings, ev(tcell.KeyRune, 'e', 0))
+			testutil.Equal(t, got, ActSettingsEdit)
+		}
+	}
+}
+
+func TestBuild_CtrlLetterOverrideHonored(t *testing.T) {
+	// A ctrl-letter override in a rune-default context must resolve (the dispatch
+	// sites now resolve for all key types, not just runes).
+	km, warns := Build(config.Keybindings{TaskList: map[string]string{"new": "ctrl+n"}})
+	testutil.Equal(t, len(warns), 0)
+	got, ok := km.Resolve(CtxTaskList, ev(tcell.KeyCtrlN, 0, 0))
+	testutil.True(t, ok)
+	testutil.Equal(t, got, ActTaskNew)
 }
 
 func TestBuild_ConflictKeepsDefault(t *testing.T) {

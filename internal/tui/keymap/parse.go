@@ -70,16 +70,6 @@ var keyNames = map[tcell.Key]string{
 	tcell.KeyDelete:     "delete",
 }
 
-// isArrow reports whether k is one of the four arrow keys. Plain (unmodified)
-// arrows are reserved for navigation and cannot be rebound.
-func isArrow(k tcell.Key) bool {
-	switch k {
-	case tcell.KeyUp, tcell.KeyDown, tcell.KeyLeft, tcell.KeyRight:
-		return true
-	}
-	return false
-}
-
 // isModifiable reports whether a named key may carry a cmd/shift modifier in a
 // keyspec. These are the navigation keys the historical dispatch matched with a
 // loose modifier test (cmd+arrows for pane/task nav; shift+arrows/pgup/pgdn/end
