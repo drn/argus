@@ -261,6 +261,9 @@ func TestIsPR(t *testing.T) {
 		// PR detection is scoped to github.com only — enterprise hosts and GitLab
 		// merge requests are intentionally NOT flagged.
 		{"github enterprise pr not flagged", "https://github.example.com/org/repo/pull/9", false},
+		// www.github.com redirects to the apex, so real agent output never emits
+		// it; excluding it is a deliberate consequence of the exact-host match.
+		{"www.github.com pr not flagged (intentional)", "https://www.github.com/org/repo/pull/1", false},
 		{"gitlab merge request not flagged", "https://gitlab.com/group/repo/-/merge_requests/42", false},
 		{"non-github host with pull path not flagged", "https://example.com/org/repo/pull/1", false},
 		{"github pull at root not a pr", "https://github.com/pull/1", false},
