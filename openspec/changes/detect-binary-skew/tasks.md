@@ -23,8 +23,8 @@
 
 **Depends on:** Stage 2
 
-- [ ] 3.1 Write the pure verdict function: inputs = gathered identities (PATH `argus`, `~/.argus/argusd` target, `go install` target, daemon, supervisor, TUI); output = verdict (healthy / restart-needed / path-divergence) + remediation text. No I/O.
-- [ ] 3.2 Wire the `doctor` subcommand in `cmd/argus/main.go`: gather identities (best-effort, unknown-on-failure), connect to the daemon for `BootInfo`, resolve symlinks/PATH/`go env GOPATH`, print the table + verdict + fix command. Read-only; runs without launching the TUI.
+- [x] 3.1 Write the pure verdict function: inputs = gathered identities (PATH `argus`, `~/.argus/argusd` target, `go install` target, daemon, supervisor, TUI); output = verdict (healthy / restart-needed / path-divergence) + remediation text. No I/O. — `internal/doctor` (`Diagnose`/`Render`).
+- [x] 3.2 Wire the `doctor` subcommand in `cmd/argus/main.go`: gather identities (best-effort, unknown-on-failure), connect to the daemon for `BootInfo`, resolve symlinks/PATH/`go env GOPATH`, print the table + verdict + fix command. Read-only; runs without launching the TUI. — `cmd/argus/doctor.go`.
 
 ## 4. Startup detection + supervisor-aware modal
 
@@ -38,6 +38,6 @@
 
 **Depends on:** Stage 3, Stage 4
 
-- [ ] 5.1 Add `argus doctor` to the README Reference (commands table); note the path-divergence footgun.
+- [x] 5.1 Add `argus doctor` to the README Reference (commands table); note the path-divergence footgun.
 - [ ] 5.2 Add a gotcha entry (`context/knowledge/gotchas/daemon-rpc.md`): the `go install` skew failure mode, that supervisor staleness is checked on the auto-start path while daemon staleness is not, the additive `ProtocolVersion` 2→3 + old-supervisor-unknown rule, and that doctor's verdict distinguishes restart-needed from path-divergence.
 - [ ] 5.3 Run `make pre-pr` until green.

@@ -74,6 +74,9 @@ func main() {
 		case "token":
 			runTokenCommand(os.Args[2:])
 			return
+		case "doctor":
+			runDoctor()
+			return
 		}
 	}
 
