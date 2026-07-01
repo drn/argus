@@ -861,19 +861,6 @@ func (a *App) submitPluginSection(scope, title string, values map[string]any) er
 	return nil
 }
 
-// openRestartDaemonPrompt shows the modal asking whether to restart the
-// out-of-date daemon. Idempotent.
-func (a *App) openRestartDaemonPrompt() {
-	if a.restartDaemonModal != nil {
-		return
-	}
-	a.restartDaemonModal = modal.NewRestartDaemonModal()
-	a.mode = modeRestartDaemonPrompt
-	a.pages.AddPage("restartdaemon", a.restartDaemonModal, true, true)
-	a.pages.SwitchToPage("restartdaemon")
-	a.tapp.SetFocus(a.restartDaemonModal)
-}
-
 // openSkewPrompt shows the startup binary-skew modal, rendering the rich
 // identity of whichever of {daemon, supervisor} is stale and offering the
 // relevant restart action(s). Reuses the restartDaemonModal field/page/mode so

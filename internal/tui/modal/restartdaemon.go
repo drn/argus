@@ -48,13 +48,6 @@ type RestartDaemonModal struct {
 	done     bool
 }
 
-// NewRestartDaemonModal creates the legacy daemon-only modal: buttons
-// [Restart daemon, Skip], Restart selected by default. Retained for callers
-// (and tests) that only ever prompt for the daemon.
-func NewRestartDaemonModal() *RestartDaemonModal {
-	return NewSkewModal(true, false, "", "")
-}
-
 // NewSkewModal builds the skew modal from the daemon/supervisor staleness flags
 // and each stale process's display identity. Buttons are built dynamically: a
 // "Restart daemon" button when the daemon is stale, a "Restart supervisor"
@@ -78,10 +71,6 @@ func NewSkewModal(daemonStale, supervisorStale bool, daemonIdentity, supervisorI
 	m.buttons = append(m.buttons, skewButton{"[ Skip ]", choiceSkip})
 	return m
 }
-
-// ChoseRestart reports whether the user picked "Restart daemon". Kept as the
-// legacy accessor name for the daemon-only path.
-func (m *RestartDaemonModal) ChoseRestart() bool { return m.done && m.chose == choiceRestartDaemon }
 
 // ChoseRestartDaemon reports whether the user picked "Restart daemon".
 func (m *RestartDaemonModal) ChoseRestartDaemon() bool {

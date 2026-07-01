@@ -478,8 +478,9 @@ func TestSmoke_RestartDaemonPrompt_OpensAndSkips(t *testing.T) {
 	defer stop()
 
 	// Open the modal on the tview goroutine (mimics what Run() does when
-	// SetDaemonStale was called before the event loop started).
-	readUI(t, app.tapp, func() { app.openRestartDaemonPrompt() })
+	// SetSkew flagged the daemon before the event loop started).
+	app.SetSkew(true, false, "", "")
+	readUI(t, app.tapp, func() { app.openSkewPrompt() })
 
 	var mode viewMode
 	var hasModal bool
@@ -517,6 +518,15 @@ func TestSetSkew_StoresFields(t *testing.T) {
 	}
 	testutil.Equal(t, app.daemonIdentity, "dae @ /a")
 	testutil.Equal(t, app.supervisorIdentity, "sup @ /b")
+}
+
+// TestLiveAgentCount pins the default agentCountFn: with no live sessions the
+// running+idle sum is zero. (The double-confirm's non-zero rendering is covered
+// by TestSmoke_SkewPrompt_SupervisorDoubleConfirm via an agentCountFn override.)
+func TestLiveAgentCount(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), true)
+	testutil.Equal(t, app.liveAgentCount(), 0)
 }
 
 // waitForCond polls fn on the tview goroutine until it returns true or the
@@ -647,22 +657,22 @@ func TestSetDaemonStale_StoresFlag(t *testing.T) {
 }
 
 // Regression test for the startup deadlock fixed in 67eda38. Run() opens the
-// daemon-stale prompt directly because tview v0.42's QueueUpdate is
-// synchronous (sends on `updates`, then blocks on a per-call done channel
-// until the event loop runs the closure). The contract this test pins:
-// openRestartDaemonPrompt itself must remain safe to call without an event
-// loop running, because Run() calls it directly before tapp.Run(). If
-// someone modifies openRestartDaemonPrompt to internally use QueueUpdate /
-// QueueUpdateDraw, this test will time out.
+// skew prompt directly because tview v0.42's QueueUpdate is synchronous (sends
+// on `updates`, then blocks on a per-call done channel until the event loop
+// runs the closure). The contract this test pins: openSkewPrompt itself — the
+// function Run() actually calls before tapp.Run() — must remain safe to call
+// without an event loop running. If someone modifies openSkewPrompt to
+// internally use QueueUpdate / QueueUpdateDraw, this test will time out.
 //
 // Note: this test does NOT cover the case of Run() itself re-wrapping the
 // call in QueueUpdateDraw — that regression is guarded by the explicit
 // comment in app.go and the gotcha entry in ui-threading.md, plus would
 // require a Run()-with-sim-screen harness we don't have.
-func TestSmoke_OpenRestartDaemonPromptBeforeRunDoesNotBlock(t *testing.T) {
+func TestSmoke_OpenSkewPromptBeforeRunDoesNotBlock(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, true)
+	app.SetSkew(true, false, "", "")
 
 	tApp, _, ls := simApp(t)
 	app.tapp = tApp
@@ -675,13 +685,13 @@ func TestSmoke_OpenRestartDaemonPromptBeforeRunDoesNotBlock(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		app.openRestartDaemonPrompt()
+		app.openSkewPrompt()
 	}()
 
 	select {
 	case <-done:
 	case <-time.After(uiTimeout):
-		t.Fatal("openRestartDaemonPrompt blocked before tapp.Run() — likely re-introduced QueueUpdateDraw deadlock")
+		t.Fatal("openSkewPrompt blocked before tapp.Run() — likely re-introduced QueueUpdateDraw deadlock")
 	}
 
 	if app.mode != modeRestartDaemonPrompt {

@@ -9,7 +9,7 @@ import (
 )
 
 func TestRestartDaemonModal_DefaultsToRestart(t *testing.T) {
-	m := NewRestartDaemonModal()
+	m := NewSkewModal(true, false, "", "")
 	if m.Selected() != 0 {
 		t.Errorf("default selection = %d, want 0 (Restart)", m.Selected())
 	}
@@ -147,7 +147,7 @@ func TestRestartDaemonModal_KeyHandling(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := NewRestartDaemonModal()
+			m := NewSkewModal(true, false, "", "")
 			handler := m.InputHandler()
 			for _, k := range tt.keys {
 				handler(k, nil)
@@ -155,8 +155,8 @@ func TestRestartDaemonModal_KeyHandling(t *testing.T) {
 			if got := m.Done(); got != tt.wantDone {
 				t.Errorf("Done() = %v, want %v", got, tt.wantDone)
 			}
-			if got := m.ChoseRestart(); got != tt.wantRestart {
-				t.Errorf("ChoseRestart() = %v, want %v", got, tt.wantRestart)
+			if got := m.ChoseRestartDaemon(); got != tt.wantRestart {
+				t.Errorf("ChoseRestartDaemon() = %v, want %v", got, tt.wantRestart)
 			}
 			if got := m.ChoseSkip(); got != tt.wantSkip {
 				t.Errorf("ChoseSkip() = %v, want %v", got, tt.wantSkip)

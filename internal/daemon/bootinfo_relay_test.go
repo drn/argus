@@ -25,6 +25,14 @@ func TestBootInfoOwnVCS(t *testing.T) {
 	testutil.Equal(t, resp.VCS, buildid.VCS{Revision: "cafebabe", Modified: true})
 }
 
+// TestShortHashRPC covers the log-rendering helper across its three branches:
+// empty ⇒ "unknown", long ⇒ truncated to 12, short ⇒ verbatim.
+func TestShortHashRPC(t *testing.T) {
+	testutil.Equal(t, shortHashRPC(""), "unknown")
+	testutil.Equal(t, shortHashRPC("abc123"), "abc123")
+	testutil.Equal(t, shortHashRPC("0123456789abcdef0123"), "0123456789ab")
+}
+
 // TestBootInfoSupervisorRelay covers the D1 relay: the daemon re-queries the
 // connected supervisor's Hello at serve time and surfaces its identity — with
 // correct present/unknown handling for a missing, old, or unreachable supervisor.

@@ -3011,7 +3011,8 @@ func TestApp_HandleRestartDaemonKey_Skip(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
-	app.openRestartDaemonPrompt()
+	app.SetSkew(true, false, "", "")
+	app.openSkewPrompt()
 	app.handleRestartDaemonKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
 	testutil.Equal(t, app.mode, modeTaskList)
 }
