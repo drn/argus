@@ -14,10 +14,10 @@
 
 **Depends on:** Stage 1
 
-- [ ] 2.1 Add a build-identity helper (commit SHA + `modified` flag via `runtime/debug.ReadBuildInfo`) reused by daemon, supervisor, and TUI.
-- [ ] 2.2 Add `BinaryHash` + VCS fields to `daemon.HelloResp`; supervisor populates them at boot (hash its own resolved binary like the daemon does); bump `daemon.ProtocolVersion` 2→3 with a v3 history note.
-- [ ] 2.3 Add supervisor fields to `daemon.BootInfoResp` (`SupervisorPresent`, `SupervisorPath`, `SupervisorHash`, `SupervisorVCS`) + the daemon's own VCS; populate `BootInfo` by querying the supervisor's `Hello` at serve time (re-query, not cached at `New()`), feature-detecting an old supervisor (empty hash ⇒ present-but-unknown).
-- [ ] 2.4 Plumb the enriched `BootInfoResp` through `internal/daemon/client` and update the `daemon-client`/`fakedaemon` test doubles.
+- [x] 2.1 Add a build-identity helper (commit SHA + `modified` flag via `runtime/debug.ReadBuildInfo`) reused by daemon, supervisor, and TUI. — `internal/buildid`.
+- [x] 2.2 Add `BinaryHash` + VCS fields to `daemon.HelloResp`; supervisor populates them at boot (hash its own resolved binary like the daemon does); bump `daemon.ProtocolVersion` 2→3 with a v3 history note.
+- [x] 2.3 Add supervisor fields to `daemon.BootInfoResp` (`SupervisorPresent`, `SupervisorPath`, `SupervisorHash`, `SupervisorVCS`) + the daemon's own VCS; populate `BootInfo` by querying the supervisor's `Hello` at serve time (re-query, not cached at `New()`), feature-detecting an old supervisor (empty hash ⇒ present-but-unknown).
+- [x] 2.4 Plumb the enriched `BootInfoResp` through `internal/daemon/client` and update the `daemon-client`/`fakedaemon` test doubles.
 
 ## 3. `argus doctor` command
 

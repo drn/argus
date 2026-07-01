@@ -25,6 +25,13 @@ type fakeSupClient struct {
 	// getCalls records the task IDs passed to Get — the supervisor-mode startup
 	// reconcile calls Get on every live ID to re-attach (arm the exit relay).
 	getCalls []string
+
+	// helloResp / helloErr override the Hello handshake reply so BootInfo-relay
+	// tests can simulate a v3 supervisor (hash + VCS), a v2 supervisor (empty
+	// hash ⇒ present-but-unknown), or a transport failure. When both are unset
+	// Hello returns the default matching-version reply.
+	helloResp *HelloResp
+	helloErr  error
 }
 
 func (f *fakeSupClient) Start(*model.Task, config.Config, uint16, uint16, bool) (agent.SessionHandle, error) {
@@ -50,6 +57,12 @@ func (f *fakeSupClient) NeedsInputIDs() []string                                
 func (f *fakeSupClient) SetNeedsInputIDs([]string)                                     {}
 func (f *fakeSupClient) OnSessionExit(fn func(string, ExitInfo))                       { f.exitFn = fn }
 func (f *fakeSupClient) Hello() (HelloResp, error) {
+	if f.helloErr != nil {
+		return HelloResp{}, f.helloErr
+	}
+	if f.helloResp != nil {
+		return *f.helloResp, nil
+	}
 	return HelloResp{ProtocolVersion: ProtocolVersion}, nil
 }
 func (f *fakeSupClient) Close() error { f.closeCalled = true; return nil }
