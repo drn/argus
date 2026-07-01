@@ -1128,11 +1128,11 @@ func TestSmoke_ForceRedrawOnTransitions(t *testing.T) {
 		t.Errorf("tab switch did not fire pages-changed redraw")
 	}
 
-	// Ctrl+L triggers a Sync (one of only two places we Sync — user-
-	// initiated refresh; one CSI 2J flash is the expected cost).
+	// The refresh key (default Ctrl+L) triggers a Sync (one of only two places
+	// we Sync — user-initiated refresh; one CSI 2J flash is the expected cost).
 	sim.InjectKey(tcell.KeyCtrlL, 0, 0)
 	syncUI(t, app.tapp)
-	testutil.Contains(t, readLog(), "ctrl+l — Sync")
+	testutil.Contains(t, readLog(), "refresh — Sync")
 
 	// Back to Tasks so Enter can open the agent view.
 	sim.InjectKey(tcell.KeyRune, '1', 0)

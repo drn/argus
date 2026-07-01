@@ -3,6 +3,7 @@ package hera
 import (
 	"strings"
 
+	"github.com/drn/argus/internal/tui/keymap"
 	"github.com/drn/argus/internal/tui/planview"
 	"github.com/drn/argus/internal/tui/terminal"
 	"github.com/drn/argus/internal/tui/theme"
@@ -54,6 +55,9 @@ func clipboardHintTitle(base string, show bool) string {
 // the --remote build (see gotchas/remote-tui.md).
 type HeraPage struct {
 	*tview.Box
+
+	// Keys returns the live keymap (set by the App). Nil-safe via keys().
+	Keys func() *keymap.Keymap
 
 	rail      *Rail
 	focus     *FocusMachine
@@ -781,16 +785,20 @@ func (p *HeraPage) rebuildPlan(root *OrchView) {
 // (BUG-010). The rune set is kept in lock-step with handleRailMutation's switch
 // below and the help modal's "Hera View (rail)" section.
 func (p *HeraPage) isRailMutationKey(event *tcell.EventKey) bool {
-	switch event.Key() {
-	case tcell.KeyCtrlD:
-		return true
-	case tcell.KeyRune:
-		switch event.Rune() {
-		case 'w', 'r', 'a', 'P', 's', 'S', 'J', 'n', 'C':
-			return true
+	// Derived from the keymap (the mutation keyset is exactly the CtxHeraRail
+	// actions; Enter + nav are NOT in that table, so they're correctly excluded).
+	_, ok := p.keys().Resolve(keymap.CtxHeraRail, event)
+	return ok
+}
+
+// keys returns the live keymap, falling back to defaults when no accessor is set.
+func (p *HeraPage) keys() *keymap.Keymap {
+	if p.Keys != nil {
+		if km := p.Keys(); km != nil {
+			return km
 		}
 	}
-	return false
+	return keymap.DefaultKeymap()
 }
 
 // handleRailMutation maps the rail-focus mutation keyset to the page's mutation
@@ -811,10 +819,9 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 		return false
 	}
 	sel := p.rail.Selection()
-	switch event.Key() {
-	case tcell.KeyCtrlD:
-		return p.fire(p.OnDelete, sel)
-	case tcell.KeyEnter:
+	// Enter is structural (reattach + focus advance) and not rebindable — it
+	// must reach the embedded plan widget untouched in details mode.
+	if event.Key() == tcell.KeyEnter {
 		// Enter "enters" the selected role and revives its session first, then
 		// moves focus into the pane. Reattach fires for:
 		//   * a DEAD session (no live session in the runner) — any role; or
@@ -846,27 +853,30 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 			p.focus.Advance()
 		}
 		return true
-	case tcell.KeyRune:
-		switch event.Rune() {
-		case 'w':
+	}
+	if act, ok := p.keys().Resolve(keymap.CtxHeraRail, event); ok {
+		switch act {
+		case keymap.ActHeraDelete:
+			return p.fire(p.OnDelete, sel)
+		case keymap.ActHeraSpawn:
 			return p.fire(p.OnSpawnWorker, sel)
-		case 'r':
+		case keymap.ActHeraRename:
 			return p.fire(p.OnRename, sel)
-		case 'a':
+		case keymap.ActHeraArchive:
 			return p.fire(p.OnArchiveToggle, sel)
-		case 'P':
+		case keymap.ActHeraPin:
 			return p.fire(p.OnPinToggle, sel)
-		case 's':
+		case keymap.ActHeraStatAdv:
 			return p.fire(p.OnStatusAdvance, sel)
-		case 'S':
+		case keymap.ActHeraStatRev:
 			return p.fire(p.OnStatusRevert, sel)
-		case 'J':
+		case keymap.ActHeraAdopt:
 			// Adopt a freelancer into / re-parent a coordinator under a chosen
-			// orchestrator. Rail-focus-only (a focused pane forwards `J` to the
+			// orchestrator. Rail-focus-only (a focused pane forwards the key to the
 			// PTY via forwardKey, never reaching here). The handler sorts out
 			// freelance vs coordinator vs not-applicable and surfaces feedback.
 			return p.fire(p.OnAdopt, sel)
-		case 'n':
+		case keymap.ActHeraNewCoord:
 			// New top-level coordinator (BUG-006). Selection-INDEPENDENT — it is
 			// the bootstrap affordance, so it fires even on an empty rail and does
 			// NOT route through the selection-gated `fire`.
@@ -874,7 +884,7 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 				p.OnNewCoordinator(sel)
 			}
 			return true
-		case 'C':
+		case keymap.ActHeraClear:
 			// Clear the selected coordinator's archive: NUKE every Tier-1 hidden
 			// item under it (BUG-022). Acts on the selection.
 			return p.fire(p.OnClearArchive, sel)

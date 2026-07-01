@@ -35,6 +35,7 @@ import (
 	"github.com/drn/argus/internal/tui/gitpanel"
 	"github.com/drn/argus/internal/tui/hera"
 	"github.com/drn/argus/internal/tui/keyenc"
+	"github.com/drn/argus/internal/tui/keymap"
 	"github.com/drn/argus/internal/tui/modal"
 	"github.com/drn/argus/internal/tui/store"
 	"github.com/drn/argus/internal/tui/taskview"
@@ -368,6 +369,14 @@ type App struct {
 	// the App signals SetFocused on agent-view enter/exit so the reliable
 	// pane-delivery service can gate auto-submits. Optional: nil is safe.
 	focusTracker focusTrackerIface
+
+	// keymap resolves keystrokes to actions at every dispatch site. Built from
+	// keymap defaults overlaid by config.Keybindings; rebuilt by activeKeymap()
+	// only when the underlying overrides change (live reload). Touched only on
+	// the tview main goroutine. keymapSig caches the override fingerprint so the
+	// rebuild is skipped on the common no-change path.
+	keymap    *keymap.Keymap
+	keymapSig string
 }
 
 // pluginStreamKey identifies an open stream-section connector. Matches the
@@ -440,6 +449,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 	app.restartSupervisorFn = app.restartSupervisor
 
 	app.settings = NewSettingsView(database)
+	app.settings.Keys = app.activeKeymap
 	app.settings.SetDaemonConnected(daemonConnected)
 	// Remote mode (a.db is not the local *db.DB) hides daemon-admin actions
 	// that manage the local OS install.
@@ -482,6 +492,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 
 	cfg := database.Config()
 	widget.SetActiveSpinner(cfg.UI.SpinnerStyle)
+	app.activeKeymap() // prime the keymap (logs any config warnings at startup)
 
 	app.buildUI()
 	app.refreshTasks()
@@ -495,6 +506,7 @@ func (a *App) buildUI() {
 	a.statusbar = widget.NewStatusBar()
 
 	a.tasklist = taskview.NewTaskListView()
+	a.tasklist.Keys = a.activeKeymap
 	a.tasklist.OnSelect = func(task *model.Task) { a.onTaskSelect(task, true) }
 	a.tasklist.OnNew = a.onNewTask
 	a.tasklist.OnCursorChange = a.onTaskCursorChange
@@ -623,6 +635,7 @@ func (a *App) buildUI() {
 		heraReader = d
 	}
 	a.heraPage = hera.NewHeraPage(heraReader)
+	a.heraPage.Keys = a.activeKeymap
 	if d, ok := a.db.(*db.DB); ok {
 		// Persist + restore the rail's fold/selection state across restarts
 		// (BUG-002). Local-only: remote mode (apistore) has no config table seam,
@@ -1119,6 +1132,12 @@ func (a *App) onTick() {
 			taskID = a.agentState.TaskID
 		}
 		a.mu.Unlock()
+
+		// Rebuild the keymap if config.toml keybindings changed (live reload).
+		// Done here on the tick — not per keystroke — so agent typing never pays
+		// a db.Config() read. Runs on the tview goroutine (this is inside the
+		// QueueUpdateDraw closure), matching the keymap cache's threading.
+		a.refreshKeymap()
 
 		// Refresh task list side panels.
 		// Note: refreshPreview can be expensive for large session logs on
@@ -2167,6 +2186,37 @@ func (a *App) heraPaneFocused() bool {
 		a.heraPage.Machine().State() != hera.FocusRail
 }
 
+// refreshKeymap rebuilds the keymap from the current config, but only when the
+// config.Keybindings overrides have changed since the last build (live reload).
+// It reads db.Config() (a SQLite query locally / cached struct in remote mode),
+// so it is called from the once-per-second tick — NOT the per-keystroke hot path
+// — keeping agent typing latency-free. Runs on the tview main goroutine only, so
+// the cache needs no mutex. The fingerprint relies on `fmt` printing map keys in
+// sorted order (Go 1.12+), so an unchanged config yields a stable signature.
+func (a *App) refreshKeymap() {
+	kb := a.db.Config().Keybindings
+	sig := fmt.Sprintf("%v", kb)
+	if a.keymap != nil && sig == a.keymapSig {
+		return
+	}
+	km, warns := keymap.Build(kb)
+	for _, w := range warns {
+		uxlog.Log("%s", w.String())
+	}
+	a.keymap = km
+	a.keymapSig = sig
+}
+
+// activeKeymap returns the cached keymap for the per-keystroke dispatch hot path.
+// It does NOT read config — refreshKeymap does that on the tick — it only primes
+// the keymap once if it was never built. tview main goroutine only.
+func (a *App) activeKeymap() *keymap.Keymap {
+	if a.keymap == nil {
+		a.refreshKeymap()
+	}
+	return a.keymap
+}
+
 func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Plugin-view mode — full surrender. While a plugin has the ball, argus
 	// reserves NO key for its own navigation: Esc, Ctrl+C, `?`, tab-switch
@@ -2353,6 +2403,8 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	// Structural / failsafe keys stay literal — never rebindable (the plugin
+	// failsafe + agent-view back ladder + quit-from-task-list).
 	switch event.Key() {
 	case tcell.KeyCtrlC:
 		if a.mode == modeAgent {
@@ -2371,18 +2423,6 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 		a.tapp.Stop()
 		return nil
-	case tcell.KeyCtrlL:
-		// Manual refresh — force a full screen re-emit to wipe ghost
-		// cells that the diff-based Show() failed to overwrite. Only
-		// active outside agent view; in agent mode we fall through so
-		// handleAgentKey's Ctrl+L → link-picker binding runs instead.
-		// User-initiated; one CSI 2J flash is the expected cost. A focused Hera
-		// pane also falls through so ^L reaches its PTY.
-		if a.mode != modeAgent && !a.heraPaneFocused() {
-			uxlog.Log("[tui] ctrl+l — Sync")
-			a.screen.Sync()
-			return nil
-		}
 	case tcell.KeyCtrlQ:
 		if a.mode == modeAgent {
 			// 3-level exit: diff → files panel → agent view
@@ -2400,104 +2440,101 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			a.exitAgentView()
 			return nil
 		}
-	case tcell.KeyCtrlD:
-		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
-			if t := a.tasklist.SelectedTask(); t != nil {
-				a.openConfirmDelete(t)
-				return nil
-			}
-		}
-	case tcell.KeyCtrlF:
-		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
-			if t := a.tasklist.SelectedTask(); t != nil && t.Worktree != "" {
-				a.openForkModal(t)
-				return nil
-			}
-		}
-	case tcell.KeyCtrlO:
-		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
-			if t := a.tasklist.SelectedTask(); t != nil {
-				dir := ""
-				if p, ok := a.db.Config().Projects[t.Project]; ok && p.Path != "" {
-					dir = p.Path
-				} else if t.Worktree != "" {
-					dir = t.Worktree
-				}
-				if dir != "" {
-					if err := repoOpener(dir); err != nil {
-						uxlog.Log("[tui] open repo failed: %v", err)
-					}
+	}
+
+	// Rune-input guards: while a text field / live Hera pane holds focus, every
+	// rune is input — don't run any global rune shortcut. ctrl-keyed actions
+	// (refresh/destroy/fork/…) are unaffected, matching the historical dispatch.
+	// Tab switching is 1/2/3 only (Left/Right fall through to the focused view).
+	suppressRune := event.Key() == tcell.KeyRune &&
+		((a.mode == modeTaskList && a.tasklist.Filtering()) ||
+			(a.mode == modeTaskList && a.settings.IsEditing()) ||
+			a.heraPaneFocused() ||
+			(a.mode == modeTaskList && a.header.ActiveTab() == widget.TabHera && a.heraPage.RailFiltering()))
+
+	if !suppressRune {
+		if act, ok := a.activeKeymap().Resolve(keymap.CtxGlobal, event); ok {
+			switch act {
+			case keymap.ActGlobalQuit:
+				if a.mode == modeTaskList {
+					a.tapp.Stop()
 					return nil
 				}
-			}
-		}
-	case tcell.KeyCtrlP:
-		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
-			if t := a.tasklist.SelectedTask(); t != nil && t.Worktree != "" {
-				if err := prOpener(t.Worktree); err != nil {
-					uxlog.Log("[tui] open PR failed: %v", err)
+			case keymap.ActGlobalTabTasks:
+				if a.mode != modeAgent {
+					a.switchTab(widget.TabTasks)
+					return nil
 				}
-				return nil
-			}
-		}
-	case tcell.KeyCtrlR:
-		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
-			a.openConfirmPrune()
-			return nil
-		}
-	// NOTE: Left/Right are intentionally NOT handled here. They used to cycle
-	// the top-level tabs, but that collided with horizontal navigation inside
-	// views (e.g. the Hera rail's rail↔coord↔details movement). Tab switching
-	// is now via 1/2/3 only; Left/Right fall through to the focused view. On the
-	// Settings tab the settings routing below consumes the directions it uses
-	// for rail↔pane focus (Right from the rail, Left from the pane); the
-	// others (e.g. Left from the rail) simply fall through and never switch tabs.
-	case tcell.KeyRune:
-		// When the task list filter or settings prompt editor is active,
-		// let all rune keys through instead of handling global shortcuts.
-		if a.mode == modeTaskList && a.tasklist.Filtering() {
-			break
-		}
-		if a.mode == modeTaskList && a.settings.IsEditing() {
-			break
-		}
-		// A focused Hera pane is a live terminal — every rune must reach its PTY,
-		// so don't intercept any global rune shortcut (q quit / 1·2·3 tab-switch /
-		// ? help) while a Hera content pane holds focus (BUG-001). The rail still
-		// gets these globals because heraPaneFocused() is false on the rail.
-		if a.heraPaneFocused() {
-			break
-		}
-		// While the Hera rail is in `/` search input mode, every rune is filter
-		// input — don't run the 1/2/3 tab-switch, q quit, or ? help shortcuts.
-		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabHera && a.heraPage.RailFiltering() {
-			break
-		}
-		switch event.Rune() {
-		case 'q':
-			if a.mode == modeTaskList {
-				a.tapp.Stop()
-				return nil
-			}
-		case '1':
-			if a.mode != modeAgent {
-				a.switchTab(widget.TabTasks)
-				return nil
-			}
-		case '2':
-			if a.mode != modeAgent {
-				a.switchTab(widget.TabHera)
-				return nil
-			}
-		case '3':
-			if a.mode != modeAgent {
-				a.switchTab(widget.TabSettings)
-				return nil
-			}
-		case '?':
-			if a.mode != modeAgent {
-				a.openHelp()
-				return nil
+			case keymap.ActGlobalTabHera:
+				if a.mode != modeAgent {
+					a.switchTab(widget.TabHera)
+					return nil
+				}
+			case keymap.ActGlobalTabSettings:
+				if a.mode != modeAgent {
+					a.switchTab(widget.TabSettings)
+					return nil
+				}
+			case keymap.ActGlobalHelp:
+				if a.mode != modeAgent {
+					a.openHelp()
+					return nil
+				}
+			case keymap.ActGlobalRefresh:
+				// Manual refresh — force a full screen re-emit to wipe ghost cells
+				// the diff-based Show() failed to overwrite. Only outside agent view
+				// and off a focused Hera pane; otherwise fall through so the agent /
+				// pane gets the key (handleAgentKey's link-picker binding, or the PTY).
+				if a.mode != modeAgent && !a.heraPaneFocused() {
+					uxlog.Log("[tui] refresh — Sync")
+					a.screen.Sync()
+					return nil
+				}
+			case keymap.ActGlobalDestroy:
+				if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
+					if t := a.tasklist.SelectedTask(); t != nil {
+						a.openConfirmDelete(t)
+						return nil
+					}
+				}
+			case keymap.ActGlobalFork:
+				if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
+					if t := a.tasklist.SelectedTask(); t != nil && t.Worktree != "" {
+						a.openForkModal(t)
+						return nil
+					}
+				}
+			case keymap.ActGlobalOpenRepo:
+				if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
+					if t := a.tasklist.SelectedTask(); t != nil {
+						dir := ""
+						if p, ok := a.db.Config().Projects[t.Project]; ok && p.Path != "" {
+							dir = p.Path
+						} else if t.Worktree != "" {
+							dir = t.Worktree
+						}
+						if dir != "" {
+							if err := repoOpener(dir); err != nil {
+								uxlog.Log("[tui] open repo failed: %v", err)
+							}
+							return nil
+						}
+					}
+				}
+			case keymap.ActGlobalOpenPR:
+				if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
+					if t := a.tasklist.SelectedTask(); t != nil && t.Worktree != "" {
+						if err := prOpener(t.Worktree); err != nil {
+							uxlog.Log("[tui] open PR failed: %v", err)
+						}
+						return nil
+					}
+				}
+			case keymap.ActGlobalPrune:
+				if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
+					a.openConfirmPrune()
+					return nil
+				}
 			}
 		}
 	}
@@ -2592,8 +2629,9 @@ func (a *App) toggleAgentZen() {
 
 // handleAgentKey handles keys when the agent view is active.
 func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
-	switch event.Key() {
-	case tcell.KeyEscape:
+	// Escape is structural (focus state machine + forward-to-PTY) and is NOT
+	// rebindable — handled before any keymap resolution.
+	if event.Key() == tcell.KeyEscape {
 		// Escape refocuses terminal from diff/files, but does NOT exit agent view
 		if a.agentPane.InDiffMode() {
 			a.agentPane.ExitDiffMode()
@@ -2614,33 +2652,42 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 			a.agentPane.ResetScroll()
 		}
 		return nil
-	case tcell.KeyCtrlL: // Overrides typical "clear screen" — intercepted before PTY
-		a.openAgentLinks()
-		return nil
-	case tcell.KeyCtrlR: // Switch Claude session — intercepted before PTY (shadows Claude's transcript toggle)
-		a.openSessionPicker()
-		return nil
-	case tcell.KeyCtrlK: // Open task switcher — intercepted before PTY (shadows readline kill-line)
-		a.openTaskSwitcher()
-		return nil
-	case tcell.KeyCtrlP: // Open PR for the worktree's branch via gh
-		a.openPR()
-		return nil
-	case tcell.KeyCtrlZ:
-		// Toggle single-pane (zoom) view: collapse/restore side panels.
-		// Intercepted here so it never reaches the PTY — otherwise Claude
-		// Code would background the foreground task on Ctrl+Z (0x1a / SIGTSTP).
-		a.toggleAgentZen()
-		return nil
-	case tcell.KeyCtrlY:
-		// Conditional intercept: only steal ctrl+y from the PTY when an
-		// agent has staged a clipboard payload. Without a payload, fall
-		// through so `vim`/`emacs` style yank still reaches the agent.
-		if a.copyStagedClipboard() {
+	}
+
+	// Interception block: keymap-resolved agent actions that fire BEFORE the PTY
+	// pass-through. Only the interception actions are switched here — scrollback
+	// (shift+arrows) also resolves but has no case, so it falls through to its
+	// position-sensitive block below (after diff / file-panel routing), exactly
+	// as the historical literal dispatch did. The runtime predicates (conditional
+	// Ctrl+Y, zoom gate) stay in the switch — the keymap only recognizes the key.
+	if act, ok := a.activeKeymap().Resolve(keymap.CtxAgent, event); ok {
+		switch act {
+		case keymap.ActAgentLinks: // Overrides "clear screen" — intercepted before PTY
+			a.openAgentLinks()
 			return nil
-		}
-	case tcell.KeyLeft:
-		if event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0 {
+		case keymap.ActAgentSession: // Switch Claude session (shadows Claude's transcript toggle)
+			a.openSessionPicker()
+			return nil
+		case keymap.ActAgentSwitcher: // Task switcher (shadows readline kill-line)
+			a.openTaskSwitcher()
+			return nil
+		case keymap.ActAgentOpenPR: // Open PR for the worktree's branch via gh
+			a.openPR()
+			return nil
+		case keymap.ActAgentZoom:
+			// Toggle single-pane (zoom) view: collapse/restore side panels.
+			// Intercepted here so it never reaches the PTY — otherwise Claude
+			// Code would background the foreground task on Ctrl+Z (0x1a / SIGTSTP).
+			a.toggleAgentZen()
+			return nil
+		case keymap.ActAgentCopy:
+			// Conditional intercept: only steal from the PTY when an agent has
+			// staged a clipboard payload. Without a payload, fall through so
+			// `vim`/`emacs` style yank still reaches the agent.
+			if a.copyStagedClipboard() {
+				return nil
+			}
+		case keymap.ActAgentPaneLeft:
 			// Zoomed view is single-pane — the side panels are collapsed to zero
 			// width, so a pane switch would move focus to an invisible panel and
 			// silently swallow keys. Consume the key without changing panes.
@@ -2649,25 +2696,29 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 				a.updateFocusIndicators()
 			}
 			return nil
-		}
-	case tcell.KeyRight:
-		if event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0 {
+		case keymap.ActAgentPaneRight:
 			if !a.agentZen && a.agentFocus < focusFiles {
 				a.agentFocus++
 				a.updateFocusIndicators()
 			}
 			return nil
-		}
-	case tcell.KeyUp:
-		if event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0 {
+		case keymap.ActAgentTaskPrev:
 			a.navigateAgentTask(-1)
 			return nil
-		}
-	case tcell.KeyDown:
-		if event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0 {
+		case keymap.ActAgentTaskNext:
 			a.navigateAgentTask(1)
 			return nil
 		}
+	}
+
+	// SIGTSTP safety net (gotchas/keybindings.md: "Ctrl+Z must never reach the
+	// PTY"). A literal Ctrl+Z encodes to 0x1a, which backgrounds the agent. When
+	// agent.zoom is bound to ctrl+z (the default) the interception block above
+	// already consumed it; if the user rebound zoom to another key, ctrl+z is now
+	// unbound — swallow it here so the invariant holds regardless of config. This
+	// sits before diff/file routing, matching the historical literal placement.
+	if event.Key() == tcell.KeyCtrlZ {
+		return nil
 	}
 
 	// Diff mode keys
@@ -2682,22 +2733,25 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 
 	sess := a.agentPane.Session()
 
-	// Scrollback keys
-	if event.Modifiers()&tcell.ModShift != 0 {
-		switch event.Key() {
-		case tcell.KeyUp:
+	// Scrollback keys (default shift+arrows). Resolved here — AFTER diff and
+	// file-panel routing — so scrollback never shadows those modes, matching the
+	// historical dispatch. The interception block above resolves these too but
+	// has no case for them, so they fall through to here.
+	if act, ok := a.activeKeymap().Resolve(keymap.CtxAgent, event); ok {
+		switch act {
+		case keymap.ActAgentScrollUp:
 			a.agentPane.AccelScrollUp()
 			return nil
-		case tcell.KeyDown:
+		case keymap.ActAgentScrollDown:
 			a.agentPane.AccelScrollDown()
 			return nil
-		case tcell.KeyPgUp:
+		case keymap.ActAgentScrollPgUp:
 			a.agentPane.ScrollUp(20)
 			return nil
-		case tcell.KeyPgDn:
+		case keymap.ActAgentScrollPgDn:
 			a.agentPane.ScrollDown(20)
 			return nil
-		case tcell.KeyEnd:
+		case keymap.ActAgentScrollEnd:
 			a.agentPane.ResetScroll()
 			return nil
 		}
@@ -2769,30 +2823,33 @@ func (a *App) handleFilePanelKey(event *tcell.EventKey) *tcell.EventKey {
 		// Open diff for selected file
 		a.openFileDiff()
 		return nil
-	case tcell.KeyRune:
-		switch event.Rune() {
-		case 'j':
-			if dir := a.filePanel.CursorDown(); dir != "" {
-				go a.fetchDirChildren(dir)
+	default:
+		// Resolve for all non-structural keys so ctrl/named overrides work.
+		if act, ok := a.activeKeymap().Resolve(keymap.CtxFilePnl, event); ok {
+			switch act {
+			case keymap.ActFileDown:
+				if dir := a.filePanel.CursorDown(); dir != "" {
+					go a.fetchDirChildren(dir)
+				}
+				return nil
+			case keymap.ActFileUp:
+				if dir := a.filePanel.CursorUp(); dir != "" {
+					go a.fetchDirChildren(dir)
+				}
+				return nil
+			case keymap.ActFileFinder:
+				a.openInFinder()
+				return nil
+			case keymap.ActFileOpen:
+				a.openFile()
+				return nil
+			case keymap.ActFileEditor:
+				a.openInEditor()
+				return nil
+			case keymap.ActFileTerminal:
+				a.openTerminal()
+				return nil
 			}
-			return nil
-		case 'k':
-			if dir := a.filePanel.CursorUp(); dir != "" {
-				go a.fetchDirChildren(dir)
-			}
-			return nil
-		case 'f':
-			a.openInFinder()
-			return nil
-		case 'o':
-			a.openFile()
-			return nil
-		case 'e':
-			a.openInEditor()
-			return nil
-		case 't':
-			a.openTerminal()
-			return nil
 		}
 	}
 	return event
@@ -2821,21 +2878,27 @@ func (a *App) handleDiffKey(event *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyPgDn:
 		a.agentPane.DiffScrollDown(20)
 		return nil
-	case tcell.KeyRune:
-		switch event.Rune() {
-		case 's':
-			a.agentPane.ToggleDiffSplit()
-			return nil
-		case 'q':
+	default:
+		// Resolve for all non-structural keys so ctrl/named overrides work.
+		if act, ok := a.activeKeymap().Resolve(keymap.CtxDiff, event); ok {
+			switch act {
+			case keymap.ActDiffSplit:
+				a.agentPane.ToggleDiffSplit()
+				return nil
+			case keymap.ActDiffScrollDown:
+				a.agentPane.DiffScrollDown(1)
+				return nil
+			case keymap.ActDiffScrollUp:
+				a.agentPane.DiffScrollUp(1)
+				return nil
+			}
+		}
+		// `q` exits diff mode — structural "back", reserved (not rebindable in
+		// CtxDiff, so the keymap above can never shadow it).
+		if event.Rune() == 'q' {
 			a.agentPane.ExitDiffMode()
 			a.agentFocus = focusTerminal
 			a.updateFocusIndicators()
-			return nil
-		case 'j':
-			a.agentPane.DiffScrollDown(1)
-			return nil
-		case 'k':
-			a.agentPane.DiffScrollUp(1)
 			return nil
 		}
 	}
@@ -4377,7 +4440,8 @@ func (a *App) openHelp() {
 		return
 	}
 	a.helpPrevPage, _ = a.pages.GetFrontPage()
-	a.helpModal = modal.NewHelpModal()
+	// Render help from the live keymap so it reflects any config overrides.
+	a.helpModal = modal.NewHelpModalWith("Keybindings", modal.SectionsFromKeymap(a.activeKeymap()))
 	a.mode = modeHelp
 	a.pages.AddPage("help", a.helpModal, true, true)
 	a.pages.SwitchToPage("help")

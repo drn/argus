@@ -148,6 +148,10 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 
 ### Keybindings
 
+The tables below are the **defaults**. Every key here is remappable via
+`[keybindings.<context>]` in `config.toml` — see [`[keybindings.<context>]`](#keybindingscontext)
+below. The `?` overlay always shows your active bindings.
+
 #### Task List
 
 | Key       | Action                                                          |
@@ -656,7 +660,7 @@ When the PWA cannot reach the API — daemon stopped, host asleep, or Tailscale 
 
 ### Data
 
-All state (tasks, projects, backends, keybindings, UI settings, KB index) is persisted in SQLite at `~/.argus/data.sql`.
+All state (tasks, projects, backends, UI settings, KB index) is persisted in SQLite at `~/.argus/data.sql`. Keybindings are the exception — they live in the built-in defaults plus `config.toml` overrides only (no DB rows).
 
 ### Config file (`~/.argus/config.toml`)
 
@@ -720,21 +724,39 @@ Registered repos, keyed by name. The DB projects table is the primary source; en
 | `show_icons` | bool | `true` | ⚠️ Reserved — show status icons. Not yet consumed. |
 | `cleanup_worktrees` | bool | `true` | ⚠️ Reserved — auto-remove worktrees on task delete. Not yet consumed (worktrees are currently always cleaned up). |
 
-#### `[keybindings]` ⚠️
+#### `[keybindings.<context>]`
 
-All keybindings are **reserved**: they're loaded into config but the TUI key routing is still hardcoded, so setting them has no effect yet. This is the "more robust config backend → remap hotkeys" work that's planned, not shipped.
+Remap argus's own keys, alacritty-style. Bindings are **context-scoped**: each
+`[keybindings.<context>]` table maps an action id to a keyspec, layered on top of
+the built-in defaults (only the entries you set change). Edits are picked up live
+— no restart. Contexts: `global`, `tasklist`, `agent`, `filepanel`, `diff`,
+`settings`, `hera_rail`.
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `new` | string | `"n"` | New task. |
-| `attach` | string | `"enter"` | Attach to / open the selected task's agent. |
-| `status` | string | `"s"` | Advance task status. |
-| `delete` | string | `"d"` | Delete task. |
-| `quit` | string | `"q"` | Quit. |
-| `help` | string | `"?"` | Help overlay. |
-| `filter` | string | `"/"` | Filter the task list. |
-| `prompt` | string | `"p"` | Open the prompt modal. |
-| `worktree` | string | `"w"` | Worktree action. |
+```toml
+[keybindings.tasklist]
+new = "N"            # new task
+
+[keybindings.global]
+fork = "ctrl+g"      # fork task (the ctrl-shortcuts live in `global`)
+
+[keybindings.agent]
+session = "ctrl+t"   # switch Claude session
+
+[keybindings.hera_rail]
+spawn_worker = "W"
+```
+
+**Keyspec grammar:** a single printable rune (`n`, `?`, `/`, `J`), a named key
+(`enter`, `esc`, `tab`, `space`, `up`/`down`/`left`/`right`, `pgup`/`pgdn`,
+`home`/`end`, `backspace`, `delete`), `ctrl+<letter>`, `cmd`/`opt`/`alt`+arrow,
+or `shift`+(arrow/`pgup`/`pgdn`/`home`/`end`). The action ids are the ones shown
+in the `?` help overlay (which always reflects your active bindings).
+
+**Limits** (rejected overrides log a warning and keep the default): structural
+keys (`enter`/`esc`/`tab`, the `ctrl+c`/`ctrl+q` failsafe, plain arrows) are not
+rebindable; `agent` bindings must carry a modifier (so plain typing still reaches
+the agent); two actions can't share a key within one context; and plugin-view
+keys stay fully reserved.
 
 #### `[sandbox]`
 
