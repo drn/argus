@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
+
+	"github.com/drn/argus/internal/testutil"
 )
 
 func TestRestartDaemonModal_DefaultsToRestart(t *testing.T) {
@@ -14,6 +16,76 @@ func TestRestartDaemonModal_DefaultsToRestart(t *testing.T) {
 	if m.Done() {
 		t.Error("Done should be false before any input")
 	}
+}
+
+func TestSkewModal_SupervisorButtonAndChoice(t *testing.T) {
+	// Supervisor-only skew: buttons are [Restart supervisor, Skip] with the
+	// restart action selected by default. Enter picks it.
+	m := NewSkewModal(false, true, "", "svc-abc @ /path/argus")
+	if m.Selected() != 0 {
+		t.Fatalf("default selection = %d, want 0 (Restart supervisor)", m.Selected())
+	}
+	m.InputHandler()(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), nil)
+	if !m.ChoseRestartSupervisor() {
+		t.Error("Enter on supervisor-only modal should choose ChoseRestartSupervisor")
+	}
+	if m.ChoseRestartDaemon() || m.ChoseSkip() {
+		t.Error("only ChoseRestartSupervisor should be true")
+	}
+}
+
+func TestSkewModal_SupervisorHasNoLetterShortcut(t *testing.T) {
+	// The destructive supervisor restart must NOT be reachable by an accidental
+	// letter press; 'r' only chooses daemon (absent here) so it is a no-op.
+	m := NewSkewModal(false, true, "", "svc")
+	m.InputHandler()(tcell.NewEventKey(tcell.KeyRune, 'r', tcell.ModNone), nil)
+	if m.Done() {
+		t.Error("'r' must not choose supervisor restart (no daemon button present)")
+	}
+}
+
+func TestSkewModal_BothStaleThreeButtons(t *testing.T) {
+	m := NewSkewModal(true, true, "dae-1 @ /a", "sup-2 @ /b")
+	// Tab from daemon(0) → supervisor(1) → skip(2) → wrap to daemon(0).
+	h := m.InputHandler()
+	h(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), nil)
+	testutil.Equal(t, m.Selected(), 1)
+	h(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), nil)
+	testutil.Equal(t, m.Selected(), 2)
+	h(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), nil)
+	testutil.Equal(t, m.Selected(), 0)
+	// Selecting supervisor (index 1) and pressing Enter chooses supervisor.
+	h(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), nil) // → 1
+	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), nil)
+	if !m.ChoseRestartSupervisor() {
+		t.Error("Enter on supervisor button should choose supervisor restart")
+	}
+}
+
+func TestSkewModal_DrawShowsRichIdentity(t *testing.T) {
+	sim := drawAt(t, 80, 24)
+	m := NewSkewModal(true, true, "a1b2c3 (dirty) @ /usr/bin/argus", "d4e5f6 @ /gopath/bin/argus")
+	m.SetRect(0, 0, 80, 24)
+	m.Draw(sim)
+	sim.Sync()
+	body := screenString(sim)
+	testutil.Contains(t, body, "Binaries out of date")
+	testutil.Contains(t, body, "a1b2c3 (dirty)")
+	testutil.Contains(t, body, "d4e5f6")
+	testutil.Contains(t, body, "Restart daemon")
+	testutil.Contains(t, body, "Restart supervisor")
+	testutil.Contains(t, body, "Skip")
+}
+
+func TestSkewModal_SupervisorOnlyTitle(t *testing.T) {
+	sim := drawAt(t, 80, 24)
+	m := NewSkewModal(false, true, "", "d4e5f6 @ /gopath/bin/argus")
+	m.SetRect(0, 0, 80, 24)
+	m.Draw(sim)
+	sim.Sync()
+	body := screenString(sim)
+	testutil.Contains(t, body, "Supervisor out of date")
+	testutil.Contains(t, body, "d4e5f6")
 }
 
 func TestRestartDaemonModal_KeyHandling(t *testing.T) {

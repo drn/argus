@@ -7,7 +7,7 @@
 - [ ] 1.1 Write failing tests for the identity helper: `debug.ReadBuildInfo`-backed identity returns SHA+dirty when VCS present, short-hash fallback when absent (`internal/daemon` or a small `internal/buildid` pkg).
 - [ ] 1.2 Write failing tests for `staleDecision`/supervisor split: decision is hash-based; differing VCS + equal hash ⇒ not stale; old-protocol supervisor (empty hash) ⇒ unknown, not stale.
 - [ ] 1.3 Write failing tests for the pure `doctor` verdict function: healthy / restart-needed (same path, diff hash) / path-divergence (diff files) / unknown-row-degrades.
-- [ ] 1.4 Write failing tests for the modal flow: supervisor checked on auto-start path; daemon check gated on pre-existing; supervisor restart requires a second confirm naming agent count; decline leaves supervisor running.
+- [x] 1.4 Write failing tests for the modal flow: supervisor checked on auto-start path; daemon check gated on pre-existing; supervisor restart requires a second confirm naming agent count; decline leaves supervisor running. — `cmd/argus` (`TestEvaluateSkew` gating) + `internal/tui` smoke (`TestSmoke_SkewPrompt_*`) + `internal/tui/modal` (`TestSkewModal_*`).
 - [ ] 1.5 Confirm every `it should X` acceptance criterion in `design.md` maps to a failing test (Prove-It).
 
 ## 2. Identity model + cross-process relay
@@ -30,14 +30,14 @@
 
 **Depends on:** Stage 2
 
-- [ ] 4.1 Split `isDaemonStale` into `daemonStaleDecision` + `supervisorStaleDecision` over the enriched `BootInfoResp`; in `main.go` compute supervisor staleness whenever a supervisor is present (regardless of `preExisting`), keep daemon staleness gated on `preExisting`.
-- [ ] 4.2 Extend the modal (`internal/tui/app.go` + `internal/tui/modal/`) to render rich identity for the stale process and offer the relevant restart action(s).
-- [ ] 4.3 Add the supervisor-restart action with a double-confirm (`modal.ConfirmModal`) reading "Are you sure? This will restart N agent processes" (N = supervisor `ListSessions` count); wire the actual restart (re-exec `session-supervisor start` per the design's open question) only on the second yes.
+- [x] 4.1 Split `isDaemonStale` into `evaluateSkew` (daemon `staleDecision` + `supervisorStaleDecision`) over the enriched `BootInfoResp`; in `main.go` compute supervisor staleness whenever a supervisor is present (regardless of `preExisting`), keep daemon staleness gated on `preExisting`.
+- [x] 4.2 Extend the modal (`internal/tui/app.go` + `internal/tui/modal/`) to render rich identity for the stale process and offer the relevant restart action(s). — `modal.NewSkewModal`.
+- [x] 4.3 Add the supervisor-restart action with a double-confirm (`modal.ConfirmModal`) reading "Are you sure? This will restart N agent processes" (N = `runner.RunningAndIdle` count, fetched off-thread); wire the actual restart (reusing the existing `restartSupervisor` bounce) only on the second yes.
 
 ## 5. Docs + gotchas
 
 **Depends on:** Stage 3, Stage 4
 
 - [x] 5.1 Add `argus doctor` to the README Reference (commands table); note the path-divergence footgun.
-- [ ] 5.2 Add a gotcha entry (`context/knowledge/gotchas/daemon-rpc.md`): the `go install` skew failure mode, that supervisor staleness is checked on the auto-start path while daemon staleness is not, the additive `ProtocolVersion` 2→3 + old-supervisor-unknown rule, and that doctor's verdict distinguishes restart-needed from path-divergence.
+- [x] 5.2 Add a gotcha entry (`context/knowledge/gotchas/daemon-rpc.md`): the `go install` skew failure mode, that supervisor staleness is checked on the auto-start path while daemon staleness is not, the additive `ProtocolVersion` 2→3 + old-supervisor-unknown rule, and that doctor's verdict distinguishes restart-needed from path-divergence.
 - [ ] 5.3 Run `make pre-pr` until green.
