@@ -449,7 +449,7 @@ func (tp *TerminalPane) EagerReplayBuild() {
 	onDone := tp.OnNeedRedraw
 	tp.mu.Unlock()
 
-	go tp.asyncReplayRebuild(taskID, 0, rows, cols, rows, nil, nil, 0, onDone)
+	go tp.asyncReplayRebuild(taskID, 0, rows, cols, rows, nil, nil, 0, false, onDone)
 }
 
 // ResetVT clears all terminal state (on resize or task switch).
@@ -703,14 +703,30 @@ func readLogTailForTask(taskID string, size int64) ([]byte, int64) {
 	return buf[:n], fileSize
 }
 
+// scrollExtendChunk is how much further back a ceiling-hit rebuild reads
+// beyond the previous window's first byte. The (scrollOffset+viewport)*cols*3
+// heuristic maps *visible lines* to *log bytes*, but escape-dense agent output
+// (Claude's in-place spinner/stream repaints) packs far more bytes per net
+// scrollback line than that estimate — so at the loaded ceiling the heuristic
+// re-asks for the SAME 8MB window and scrollback stalls short of the full log
+// even though older bytes are on disk (BUG-E). When the user scrolls past the
+// loaded window, we extend by this absolute byte chunk instead, guaranteeing
+// each ceiling-hit rebuild reaches strictly further back regardless of density,
+// until the whole log is loaded (firstByte reaches 0). See gotchas/pty-terminal.md.
+const scrollExtendChunk = 8 * 1024 * 1024
+
 // replayRebuildReadSize computes how many bytes asyncReplayRebuild should
 // pull from the session log. Base size = (scrollOffset+viewport) * cols * 3,
 // floored at 8MB to populate the 50K-line replay scrollback buffer. When
 // `prevFirstByte > 0`, the size grows so the new firstByteOffset is ≤
 // prevFirstByte — keeps the user's deep-scroll content from jumping out
-// from under the cursor as the log grows (defect 5). Capped at
-// replayRebuildMaxBytes (64MB) to bound a single synchronous read.
-func replayRebuildReadSize(taskID string, scrollOffset, viewportHeight, ptyCols int, prevFirstByte int64) int64 {
+// from under the cursor as the log grows (defect 5). When `extend` is set
+// (the user scrolled past the currently-loaded window on an alive session),
+// the size grows a further scrollExtendChunk beyond prevFirstByte so the read
+// reaches strictly older bytes even when the line heuristic under-reads dense
+// output (BUG-E). Capped at replayRebuildMaxBytes (64MB) to bound a single
+// synchronous read.
+func replayRebuildReadSize(taskID string, scrollOffset, viewportHeight, ptyCols int, prevFirstByte int64, extend bool) int64 {
 	needed := int64(scrollOffset+viewportHeight) * int64(ptyCols) * 3
 	if needed < 8*1024*1024 {
 		needed = 8 * 1024 * 1024
@@ -722,6 +738,15 @@ func replayRebuildReadSize(taskID string, scrollOffset, viewportHeight, ptyCols 
 		if fi, err := os.Stat(agent.SessionLogPath(taskID)); err == nil {
 			if fi.Size() > prevFirstByte {
 				needForMono := fi.Size() - prevFirstByte
+				if extend {
+					// Ceiling hit: pull a whole extra chunk before the previous
+					// window's first byte so scrollback advances even when the
+					// line heuristic under-reads dense output (BUG-E). Read
+					// bytes [fileSize-needForMono, fileSize) → new firstByte is
+					// scrollExtendChunk earlier than prevFirstByte (clamped to 0
+					// once the read covers the whole file).
+					needForMono += scrollExtendChunk
+				}
 				if needForMono > needed {
 					needed = needForMono
 				}
@@ -1181,6 +1206,16 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 			// growing log forces the 8MB read window forward and the user's
 			// deepest-cached scrollback jumps out from under their cursor.
 			prevFirstByte := tp.replayEmuFirstByte
+			// Extend the read window when the user scrolled PAST the loaded
+			// window on an alive session and older log bytes remain below it
+			// (BUG-E). The dimension match makes the maxScroll comparison
+			// meaningful — a dimension change wants a fresh read at the new
+			// size, not a further-back extend. Reading strictly further back
+			// each ceiling hit breaks the density-underestimate stall where
+			// scrollOffset is clamped to a maxScroll the heuristic can't grow.
+			extend := alive && tp.replayEmu != nil &&
+				tp.replayEmuCols == ptyCols && tp.replayEmuRows == ptyRows &&
+				prevFirstByte > 0 && scrollOffset > tp.replayEmuMaxScroll
 			var replayDataCopy []byte
 			if len(tp.replayData) > 0 {
 				replayDataCopy = tp.replayData
@@ -1194,7 +1229,7 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 				ringBuf = sess.RecentOutput()
 			}
 			onDone := tp.OnNeedRedraw
-			go tp.asyncReplayRebuild(taskID, scrollOffset, height, ptyCols, ptyRows, ringBuf, replayDataCopy, prevFirstByte, onDone)
+			go tp.asyncReplayRebuild(taskID, scrollOffset, height, ptyCols, ptyRows, ringBuf, replayDataCopy, prevFirstByte, extend, onDone)
 
 			tp.mu.Lock()
 		}
@@ -1256,7 +1291,12 @@ const replayRebuildMaxBytes = 64 * 1024 * 1024
 // if no prior build). When non-zero, the read window grows to start at or
 // before that offset so the user-visible scrollback doesn't slide forward
 // as the agent appends new bytes to the log between builds (defect 5).
-func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewportHeight, ptyCols, ptyRows int, ringBuf, replayDataCopy []byte, prevFirstByte int64, onDone func()) {
+//
+// `extend` is set when this rebuild was triggered by the user scrolling past
+// the currently-loaded window (BUG-E): the read window then grows a further
+// scrollExtendChunk beyond prevFirstByte so scrollback reaches strictly older
+// history even when the line heuristic under-reads escape-dense output.
+func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewportHeight, ptyCols, ptyRows int, ringBuf, replayDataCopy []byte, prevFirstByte int64, extend bool, onDone func()) {
 	defer func() {
 		if r := recover(); r != nil {
 			uxlog.Log("[terminalpane] PANIC in asyncReplayRebuild: %v\n%s", r, debug.Stack())
@@ -1267,9 +1307,13 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 	var logSize int64
 
 	if taskID != "" {
-		needed := replayRebuildReadSize(taskID, scrollOffset, viewportHeight, ptyCols, prevFirstByte)
+		needed := replayRebuildReadSize(taskID, scrollOffset, viewportHeight, ptyCols, prevFirstByte, extend)
 		// Use taskID parameter (not tp.taskID) to avoid data race with SetTaskID.
 		raw, logSize = readLogTailForTask(taskID, needed)
+		if extend {
+			uxlog.Log("[terminalpane] scrollback extend %s: read %d bytes, firstByte %d -> %d (scrollOffset=%d)",
+				taskID, len(raw), prevFirstByte, logSize-int64(len(raw)), scrollOffset)
+		}
 	}
 	if len(raw) == 0 {
 		// Fallback: ring buffer snapshot or cached replay data.
