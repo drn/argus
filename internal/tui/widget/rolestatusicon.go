@@ -13,20 +13,24 @@ import (
 // (it must not import hera, which would cycle).
 type RoleStatusInputs struct {
 	// ReadyToClose: bound task carries meta:hera.ready_to_close — a finished worker
-	// awaiting close-out. Highest precedence.
+	// awaiting close-out. Ranks below needs-input (BUG-A) and active (BUG-F),
+	// above failed/done.
 	ReadyToClose bool
 	// NeedsInput: the role's needs-input signal (own OR subtree rollup) — a worker
-	// blocked on a user prompt. Ranks below ready_to_close, above done/active.
+	// blocked on a user prompt. Highest precedence: outranks ready_to_close (BUG-A)
+	// and everything else — the one actionable thing in the subtree.
 	NeedsInput bool
 	// Failed: the hera role status is "failed" (D2, make-hera-plan-living) — a
-	// worker that self-reported defeat. Ranks below NeedsInput, above Done. Renders
-	// a red ✕ distinct from the Done ✓ (a failed task is not done).
+	// worker that self-reported defeat. Ranks below active (BUG-F), above Done.
+	// Renders a red ✕ distinct from the Done ✓ (a failed task is not done).
 	Failed bool
 	// Done: the hera role status is "done".
 	Done bool
-	// Active: genuinely producing output (live binding + bound task in_progress) —
-	// the honest "working" signal that animates the spinner (NOT the stale hera
-	// role-status field). See RoleView.IsActive / BUG-003.
+	// Active: genuinely producing output (Live && SessionRunning && !SessionIdle,
+	// BUG-C) — the honest, content-derived "working" signal that animates the
+	// spinner (NOT the stale hera role-status/meta). Ranks just below needs-input:
+	// it OUTRANKS the stale-able resting states ready_to_close/failed/done (BUG-F).
+	// See RoleView.IsActive / BUG-003 / BUG-C.
 	Active bool
 	// Idle: the hera role status is "idle" (live but quiet).
 	Idle bool
@@ -39,20 +43,35 @@ type RoleStatusInputs struct {
 // (BUG-007). `frame` is the current spinner animation frame (the Active case
 // animates via SpinnerFrame); `dim` forces the dimmed style for archived
 // placement (the glyph never lies — only the style dims). Precedence:
-// needs-input → ready_to_close → failed(red ✕) → done → active(spinner) → idle → live → default.
+// needs-input → active(spinner) → ready_to_close → failed(red ✕) → done → idle → live → default.
 //
-// needs-input outranks ready_to_close (BUG-A): a worker GENUINELY blocked on a
-// user prompt is not "ready to close" — the done-roll's ready_to_close stamp is
-// contradicted by an active block, so the actionable "(?)" must win and not be
-// masked by the review glyph. needs-input is content-aware upstream, so a worker
-// merely idling at its done summary (no interactive affordance) is never flagged
-// and still renders the ready_to_close review glyph.
+// needs-input outranks everything (BUG-A): a worker GENUINELY blocked on a user
+// prompt is the one actionable thing in the subtree — it must never be masked.
+//
+// active outranks the stale-able resting states ready_to_close/failed/done
+// (BUG-F, the icon-precedence completion of BUG-C). Active is the HONEST,
+// content-derived "producing output right now" signal (Live && SessionRunning &&
+// !SessionIdle) — NOT a stale hera role-status/meta. A worker genuinely producing
+// output is working again, so the spinner is the truer current state and must not
+// be masked by the done-roll's ready_to_close stamp (or a stale done/failed
+// role-status). When the worker goes idle again, IsActive drops false (the
+// SessionRunning/!SessionIdle gate) and the resting glyph correctly returns — so
+// the resting case is preserved. needs-input stays highest (a worker blocked on
+// the user is more urgent than one merely producing; the two are mutually
+// exclusive in practice). needs-input is content-aware upstream, so a
+// ready_to_close worker merely idling at its done summary (no interactive
+// affordance, not active) still renders the review glyph.
 func RoleStatusIcon(in RoleStatusInputs, dim bool, frame int) (rune, tcell.Style) {
 	var glyph rune
 	var style tcell.Style
 	switch {
 	case in.NeedsInput:
 		glyph, style = theme.IconNeedsInput, theme.StyleNeedsInput
+	case in.Active:
+		// BUG-F: honest content-derived "producing output now" — outranks the
+		// stale-able ready_to_close/failed/done stamps below. Drops to false the
+		// moment the session idles/exits, so those resting glyphs then return.
+		glyph, style = SpinnerFrame(frame), theme.StyleInProgress
 	case in.ReadyToClose:
 		glyph, style = theme.IconReview, tcell.StyleDefault.Foreground(theme.ColorComplete).Bold(true)
 	case in.Failed:
@@ -61,8 +80,6 @@ func RoleStatusIcon(in RoleStatusInputs, dim bool, frame int) (rune, tcell.Style
 		glyph, style = '✕', theme.StyleError
 	case in.Done:
 		glyph, style = '✓', theme.StyleComplete
-	case in.Active:
-		glyph, style = SpinnerFrame(frame), theme.StyleInProgress
 	case in.Idle:
 		glyph, style = theme.IconMoonOutline, theme.StyleInReview
 	case in.Live:

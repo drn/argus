@@ -1007,9 +1007,35 @@ func TestRail_CursorRestoredAcrossRebuild(t *testing.T) {
 }
 
 func TestStatusIcon_ReadyToCloseWins(t *testing.T) {
-	// ready_to_close overrides the role status with the distinct review mark.
+	// ready_to_close overrides the role status with the distinct review mark
+	// (session NOT running here → not active, so ready_to_close wins).
 	icon, _ := statusIcon(&RoleView{ReadyToClose: true, HasStatus: true, Status: db.HeraStatusWorking}, false, 0)
 	testutil.Equal(t, icon, theme.IconReview)
+}
+
+// TestStatusIcon_ActiveOutranksReadyToClose pins BUG-F (the icon-precedence
+// completion of BUG-C): a live worker rolled to in_review with ready_to_close
+// stamped by the done-roll that is STILL producing output (running, not
+// session-idle) animates the spinner — the honest activity signal (IsActive)
+// outranks the now-stale ready_to_close review glyph. When the session goes idle
+// the review glyph returns, so the resting close-out state is preserved.
+func TestStatusIcon_ActiveOutranksReadyToClose(t *testing.T) {
+	widget.SetActiveSpinner("progress")
+	defer widget.SetActiveSpinner("progress")
+
+	// Reactivated ready_to_close worker: live binding, running session, producing
+	// output (not idle), task rolled to in_review, ready_to_close stamped.
+	reactivated := &RoleView{Live: true, SessionRunning: true, TaskStatus: "in_review", ReadyToClose: true}
+	g0, _ := statusIcon(reactivated, false, 0)
+	g1, _ := statusIcon(reactivated, false, 1)
+	testutil.Equal(t, g0, widget.SpinnerFrame(0))
+	testutil.Equal(t, g1, widget.SpinnerFrame(1))
+
+	// Resting case preserved: once the session idles (BUG-036 content-idle), IsActive
+	// drops false and the ready_to_close review glyph returns.
+	resting := &RoleView{Live: true, SessionRunning: true, TaskStatus: "in_review", SessionIdle: true, ReadyToClose: true}
+	r0, _ := statusIcon(resting, false, 0)
+	testutil.Equal(t, r0, theme.IconReview)
 }
 
 func TestStatusIcon_StatusMapping(t *testing.T) {
