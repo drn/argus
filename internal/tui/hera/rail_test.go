@@ -1053,7 +1053,7 @@ func TestStatusIcon_ActiveAnimatesSpinner(t *testing.T) {
 
 	// A genuinely active role (live binding + bound task in_progress) renders the
 	// active spinner's frame and advances with the frame counter.
-	active := &RoleView{Live: true, TaskStatus: "in_progress", HasStatus: true, Status: db.HeraStatusWorking}
+	active := &RoleView{Live: true, SessionRunning: true, TaskStatus: "in_progress", HasStatus: true, Status: db.HeraStatusWorking}
 	f0, _ := statusIcon(active, false, 0)
 	f1, _ := statusIcon(active, false, 1)
 	testutil.Equal(t, f0, widget.SpinnerFrame(0))
@@ -1064,7 +1064,7 @@ func TestStatusIcon_ActiveAnimatesSpinner(t *testing.T) {
 
 	// Real activity drives the spinner even when the stale role-status disagrees
 	// (here it claims idle): the bound task is genuinely in_progress.
-	activeStaleStatus := &RoleView{Live: true, TaskStatus: "in_progress", HasStatus: true, Status: db.HeraStatusIdle}
+	activeStaleStatus := &RoleView{Live: true, SessionRunning: true, TaskStatus: "in_progress", HasStatus: true, Status: db.HeraStatusIdle}
 	a0, _ := statusIcon(activeStaleStatus, false, 0)
 	testutil.Equal(t, a0, widget.SpinnerFrame(0))
 
@@ -1078,14 +1078,37 @@ func TestStatusIcon_ActiveAnimatesSpinner(t *testing.T) {
 		t.Error("stale-working stopped role animated the spinner (BUG-003 regression)")
 	}
 
-	// A live role whose bound task already left in_progress (e.g. auto-completed
-	// coordinator) is NOT producing → static, even with stale Status==working.
-	staleLiveDone := &RoleView{Live: true, TaskStatus: "in_review", HasStatus: true, Status: db.HeraStatusWorking}
-	d0, _ := statusIcon(staleLiveDone, false, 0)
-	d1, _ := statusIcon(staleLiveDone, false, 3)
+	// BUG-C regression: a DEAD worker whose binding LINGERS (bindings don't end on
+	// session exit) stays Live with a stale working status but is NOT in the
+	// running set → must NOT animate. This is the case Live && !SessionIdle alone
+	// got wrong (a dead session is neither running nor in the idle set).
+	deadLingering := &RoleView{Live: true, SessionRunning: false, TaskStatus: "in_review", HasStatus: true, Status: db.HeraStatusWorking}
+	x0, _ := statusIcon(deadLingering, false, 0)
+	x1, _ := statusIcon(deadLingering, false, 4)
+	testutil.Equal(t, x0, x1)
+	if x0 == widget.SpinnerFrame(0) {
+		t.Error("dead-but-lingering role animated the spinner (BUG-003 regression)")
+	}
+
+	// BUG-C: a live role in in_review (e.g. the #707 close-out window) whose
+	// session is STILL RUNNING and producing output DOES animate — the spinner is
+	// gated on liveness + running + content-idle, not bound-task status.
+	// Previously this fell through to the static review glyph and looked parked.
+	activeInReview := &RoleView{Live: true, SessionRunning: true, TaskStatus: "in_review", HasStatus: true, Status: db.HeraStatusWorking}
+	r0, _ := statusIcon(activeInReview, false, 0)
+	r1, _ := statusIcon(activeInReview, false, 1)
+	testutil.Equal(t, r0, widget.SpinnerFrame(0))
+	testutil.Equal(t, r1, widget.SpinnerFrame(1))
+
+	// BUG-036: a live role whose SESSION is idle (parked fullscreen agent, content
+	// stable) is NOT producing → static, even with stale Status==working and any
+	// task status.
+	staleLiveIdle := &RoleView{Live: true, SessionRunning: true, TaskStatus: "in_review", SessionIdle: true, HasStatus: true, Status: db.HeraStatusWorking}
+	d0, _ := statusIcon(staleLiveIdle, false, 0)
+	d1, _ := statusIcon(staleLiveIdle, false, 3)
 	testutil.Equal(t, d0, d1)
 	if d0 == widget.SpinnerFrame(0) {
-		t.Error("live-but-not-in_progress role animated the spinner (BUG-003 regression)")
+		t.Error("live-but-session-idle role animated the spinner (BUG-036 regression)")
 	}
 
 	// A non-active (idle) role is static across frames.
@@ -1096,17 +1119,31 @@ func TestStatusIcon_ActiveAnimatesSpinner(t *testing.T) {
 }
 
 // TestRoleView_IsActive isolates the activity predicate that sources the spinner.
+// Post-BUG-C the predicate is liveness + session-RUNNING + content-idle, NOT
+// bound-task status: a live, running, content-active worker spins regardless of
+// task status (in_progress OR the #707 in_review close-out window); a
+// live-but-idle (BUG-036), live-but-dead (BUG-003), or unbound session does not.
 func TestRoleView_IsActive(t *testing.T) {
 	cases := []struct {
 		name string
 		role RoleView
 		want bool
 	}{
-		{"live in_progress", RoleView{Live: true, TaskStatus: "in_progress"}, true},
-		{"live in_review", RoleView{Live: true, TaskStatus: "in_review"}, false},
-		{"live complete", RoleView{Live: true, TaskStatus: "complete"}, false},
-		{"live no task snapshot", RoleView{Live: true, TaskStatus: ""}, false},
-		{"not live but in_progress task", RoleView{Live: false, TaskStatus: "in_progress"}, false},
+		{"live running in_progress active", RoleView{Live: true, SessionRunning: true, TaskStatus: "in_progress"}, true},
+		{"live running in_progress but session-idle (BUG-036)", RoleView{Live: true, SessionRunning: true, TaskStatus: "in_progress", SessionIdle: true}, false},
+		// BUG-C: a live worker rolled to in_review (#707 close-out window) whose
+		// session is STILL RUNNING and producing output must spin, not fall through
+		// to the review glyph.
+		{"live running in_review active (BUG-C)", RoleView{Live: true, SessionRunning: true, TaskStatus: "in_review"}, true},
+		{"live running in_review but session-idle (parked/done)", RoleView{Live: true, SessionRunning: true, TaskStatus: "in_review", SessionIdle: true}, false},
+		{"live running complete but active", RoleView{Live: true, SessionRunning: true, TaskStatus: "complete"}, true},
+		{"live running no task snapshot, active", RoleView{Live: true, SessionRunning: true, TaskStatus: ""}, true},
+		// BUG-C regression: bindings do NOT end on session exit, so a DEAD worker
+		// stays Live but drops from the running set — it must NOT spin. This is the
+		// case Live && !SessionIdle alone got wrong.
+		{"live but NOT running — dead worker, binding lingers (BUG-003)", RoleView{Live: true, SessionRunning: false, TaskStatus: "in_review"}, false},
+		{"live but NOT running, in_progress task (BUG-003)", RoleView{Live: true, SessionRunning: false, TaskStatus: "in_progress"}, false},
+		{"not live but in_progress task (BUG-003)", RoleView{Live: false, SessionRunning: true, TaskStatus: "in_progress"}, false},
 		{"stale working status only", RoleView{HasStatus: true, Status: db.HeraStatusWorking}, false},
 	}
 	for _, c := range cases {

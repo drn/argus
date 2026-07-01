@@ -77,6 +77,11 @@ type HeraPage struct {
 	// threads it into BuildModel so a parked fullscreen role's spinner stops
 	// (RoleView.SessionIdle → IsActive false; BUG-036).
 	sessionIdle map[string]bool
+	// sessionRunning is the authoritative per-task RUNNING set the App pushes each
+	// tick (runner.RunningAndIdle running list). doRefresh threads it into
+	// BuildModel so a dead worker whose binding lingers stops its spinner
+	// (RoleView.SessionRunning → IsActive false; BUG-C).
+	sessionRunning map[string]bool
 
 	// Plan-DAG render mode of the Details region (coordinator selection only).
 	// When a coordinator is selected the Details region stacks the read-only
@@ -355,6 +360,23 @@ func (p *HeraPage) SetSessionIdle(ids []string) {
 	p.sessionIdle = m
 }
 
+// SetSessionRunning records the task IDs whose sessions have a RUNNING PTY this
+// tick (the App's runner.RunningAndIdle running list). doRefresh threads it into
+// BuildModel so a dead worker whose binding lingers stops animating its spinner
+// (RoleView.SessionRunning → IsActive false, BUG-C). Pure setter; the tick
+// already schedules the rebuild. MUST run on the tview thread.
+func (p *HeraPage) SetSessionRunning(ids []string) {
+	if len(ids) == 0 {
+		p.sessionRunning = nil
+		return
+	}
+	m := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		m[id] = true
+	}
+	p.sessionRunning = m
+}
+
 // SetClipboardHint toggles whether the focused terminal pane advertises a
 // staged agent clipboard payload via a `(ctrl+y copy)` border-title affordance.
 // The App refreshes it each tick from the daemon for the focused pane's task
@@ -385,7 +407,7 @@ func (p *HeraPage) Refresh() {
 // remote mode the reader is nil → BuildModel returns an empty model and Draw
 // renders the unavailable banner, so this stays a cheap no-op.
 func (p *HeraPage) doRefresh() {
-	m, err := BuildModel(p.reader, p.needsInput, p.sessionIdle)
+	m, err := BuildModel(p.reader, p.needsInput, p.sessionIdle, p.sessionRunning)
 	if err != nil {
 		uxlog.Log("[hera-view] rail refresh failed: %v", err)
 		return

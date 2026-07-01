@@ -49,6 +49,15 @@ type RoleView struct {
 	// idle/live glyph instead of animating forever. Threaded into BuildModel
 	// alongside NeedsInput; only a live role (keyed by live task ID) can be set.
 	SessionIdle bool
+	// SessionRunning reports whether this live binding's session has a RUNNING
+	// PTY process right now (BUG-C). It is fed from the App's per-tick running set
+	// (runner.RunningAndIdle), keyed by live task ID. A hera binding does NOT end
+	// when its agent session exits — bindings only end on task-delete / reparent /
+	// detach / missing-sweep — so rv.Live stays true for a dead worker whose task
+	// row lingers. Liveness alone therefore CANNOT distinguish "live worker still
+	// running" from "dead worker, binding lingering"; the running signal does, and
+	// gates the spinner (IsActive) so a dead worker never animates.
+	SessionRunning bool
 	// SubtreeNeedsInput is the needs-input ROLLUP computed by BuildModel's
 	// post-pass: true when this role itself OR any descendant role in its
 	// orchestration subtree (transitively across BRIDGED sub-orchestrators) needs
@@ -106,27 +115,40 @@ type RoleView struct {
 }
 
 // IsActive reports whether the role is genuinely producing output right now: it
-// holds a live binding AND its bound argus task is in_progress. This is the
-// honest "working" signal the rail spinner animates on — NOT the hera role
-// Status field, which is a manual/MCP-set ladder value that goes stale (it stays
-// "working" after the session idles, stops, or dies, because nothing reconciles
-// it down). Mirrors the plugin's stateGlyph, which animates the spinner only on
-// a KNOWN in_progress + running argus state. Native has no per-task idle /
-// needs-input flag (the plugin sourced those from the API), so a live in_progress
-// task that is sitting idle still counts as active; the stale-status cases the
-// bug reported (stopped / dead / days-old sessions) are excluded because they
-// are either not Live or no longer in_progress. See BUG-003.
+// holds a live binding AND its session is not idle. This is the honest "working"
+// signal the rail spinner animates on — NOT the hera role Status field, which is
+// a manual/MCP-set ladder value that goes stale (it stays "working" after the
+// session idles, stops, or dies, because nothing reconciles it down).
 //
-// SessionIdle additionally suppresses the spinner (BUG-036): a fullscreen
-// (alt-screen) agent parked at its prompt repaints continuously, so its raw
-// bytes never quiesce and it would otherwise animate forever even though it is
-// doing nothing. The App's content-aware idle classification (emulated-screen
-// stability) marks such a session idle, dropping it out of "active" so it
-// renders a static idle/live glyph. A genuinely content-active agent (emulated
-// content changing, or showing the "working" affordance) is never SessionIdle
-// and still spins.
+// The predicate is gated on the SESSION being RUNNING and NOT idle, NOT the
+// bound task's workflow status (BUG-C). The task-status gate was the
+// pre-content-aware blunt instrument; both stale-session cases it once guarded
+// are carried by running + content-idle instead:
+//   - BUG-003 (a stale/stopped/dead/days-old session must NOT spin): a hera
+//     binding does NOT end when its agent session exits (bindings only end on
+//     task-delete / reparent / detach / missing-sweep), so rv.Live stays true for
+//     a dead worker whose task row lingers — liveness ALONE cannot exclude it.
+//     SessionRunning does: a dead session drops out of the App's running set, so
+//     SessionRunning is false and the role is not active. (An earlier BUG-C fix
+//     wrongly gated on Live && !SessionIdle; a dead worker is neither running nor
+//     in the idle set, so it spun — the regression this Running gate closes.)
+//   - BUG-036 (a parked fullscreen agent must NOT spin forever): a fullscreen
+//     (alt-screen) agent parked at its prompt repaints continuously, so its raw
+//     bytes never quiesce; the App's content-aware idle classification
+//     (emulated-screen stability with the "working" affordance absent) marks it
+//     idle. SessionIdle unions raw-byte idle with that content-idle set, so
+//     !SessionIdle covers BOTH idle modes. (The idle set is a subset of the
+//     running set, so SessionRunning && !SessionIdle == "running and producing".)
+//
+// So a live, running, content-active worker spins REGARDLESS of task status —
+// including the #707 close-out window where a worker deliberately sits in
+// in_review with its session still alive and producing output (BUG-C: it
+// previously fell through to the static review glyph and looked parked). A
+// live-but-idle, live-but-dead, or unbound worker does not spin. This is the
+// display sibling of BUG-A, which un-gated the (?) needs-input signal from task
+// status the same way.
 func (r *RoleView) IsActive() bool {
-	return r.Live && r.TaskStatus == model.StatusInProgress.String() && !r.SessionIdle
+	return r.Live && r.SessionRunning && !r.SessionIdle
 }
 
 // needsInputOwn reports the role's OWN needs-input signal — what makes a LEAF
@@ -675,7 +697,12 @@ func (s Selection) CoordTaskID() string {
 // by live argus task ID. nil/empty is fine. It feeds RoleView.SessionIdle so the
 // spinner stops for a parked fullscreen agent (BUG-036); it does NOT affect the
 // needs-input rollup.
-func BuildModel(r HeraReader, needsInput map[string]bool, sessionIdle map[string]bool) (Model, error) {
+// sessionRunning is the authoritative per-task RUNNING set (the App's
+// runner.RunningAndIdle running list), keyed by live argus task ID. nil/empty is
+// fine (no role counts as active). It feeds RoleView.SessionRunning so the
+// spinner is suppressed for a dead worker whose binding lingers (BUG-C); it does
+// NOT affect the needs-input rollup.
+func BuildModel(r HeraReader, needsInput map[string]bool, sessionIdle map[string]bool, sessionRunning map[string]bool) (Model, error) {
 	var m Model
 	if r == nil {
 		return m, nil
@@ -760,7 +787,7 @@ func BuildModel(r HeraReader, needsInput map[string]bool, sessionIdle map[string
 			if role.NukedAt != nil {
 				continue
 			}
-			rv := buildRoleView(r, role, roleToBinding, roleToLatest, heraMeta, taskByID, needsInput, sessionIdle)
+			rv := buildRoleView(r, role, roleToBinding, roleToLatest, heraMeta, taskByID, needsInput, sessionIdle, sessionRunning)
 			if role.Kind == db.HeraKindFreelance && role.ArchivedAt == nil && o.ArchivedAt == nil {
 				// Active freelance roles live in their own top-level section.
 				m.Freelance = append(m.Freelance, rv)
@@ -856,7 +883,7 @@ func (m *Model) orchSubtreeNeedsInput(orchID int64) bool {
 
 // buildRoleView projects one db.HeraRole into a RoleView, resolving its live
 // binding's task, status row, and ready_to_close flag.
-func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.HeraBinding, roleToLatest map[int64]*db.HeraBinding, heraMeta map[string]map[string]string, taskByID map[string]*model.Task, needsInput map[string]bool, sessionIdle map[string]bool) RoleView {
+func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.HeraBinding, roleToLatest map[int64]*db.HeraBinding, heraMeta map[string]map[string]string, taskByID map[string]*model.Task, needsInput map[string]bool, sessionIdle map[string]bool, sessionRunning map[string]bool) RoleView {
 	rv := RoleView{
 		RoleID:       role.ID,
 		OrchID:       role.OrchestratorID,
@@ -888,6 +915,10 @@ func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.
 		// fullscreen agent. Keyed by live task; the App's set already unions
 		// raw-byte idle with the content-idle augmentation.
 		rv.SessionIdle = sessionIdle[taskID]
+		// Session RUNNING (BUG-C): the App's per-tick running set. A hera binding
+		// does not end on session exit, so rv.Live alone would still spin a dead
+		// worker; gating IsActive on SessionRunning excludes it.
+		rv.SessionRunning = sessionRunning[taskID]
 		// Own needs-input from the authoritative App-tick set (keyed by live task).
 		// The App's needsInputIDs scan is content-aware (post-BUG-032/034/035): a
 		// task is in the set only while it shows a CURRENT awaiting-input signal,

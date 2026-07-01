@@ -246,7 +246,7 @@ func TestBuildModel_RoleViewPinned(t *testing.T) {
 	worker := seedBoundRole(t, d, orchID, "leaf", db.HeraKindWorker, "t11")
 	testutil.NoError(t, d.PinHeraRole(worker.ID))
 
-	m, err := BuildModel(d, nil, nil)
+	m, err := BuildModel(d, nil, nil, nil)
 	testutil.NoError(t, err)
 
 	var got *RoleView
@@ -261,7 +261,7 @@ func TestBuildModel_RoleViewPinned(t *testing.T) {
 	testutil.Equal(t, got.Pinned, true)
 
 	testutil.NoError(t, d.UnpinHeraRole(worker.ID))
-	m2, err := BuildModel(d, nil, nil)
+	m2, err := BuildModel(d, nil, nil, nil)
 	testutil.NoError(t, err)
 	for i := range m2.Active {
 		for j := range m2.Active[i].Roles {

@@ -2166,6 +2166,11 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	sessionIdle = append(sessionIdle, idleIDs...)
 	sessionIdle = append(sessionIdle, contentIdleIDs...)
 	a.heraPage.SetSessionIdle(sessionIdle)
+	// Running set (BUG-C): a hera binding does NOT end when its agent session
+	// exits, so rv.Live stays true for a dead worker whose task row lingers. Feed
+	// the App's running list so the rail spinner (IsActive) is gated on a RUNNING
+	// session, not just a live binding — a dead worker never animates.
+	a.heraPage.SetSessionRunning(runningIDs)
 	a.tasklist.SetPRStates(a.readPRStates())
 	a.tasklist.SetHeraWorkers(heraWorkers)
 	a.tasklist.SetHeraCoordinators(heraCoordinators)

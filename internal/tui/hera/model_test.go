@@ -29,13 +29,13 @@ func orchView(id int64, name, coordTask string, workers ...struct{ name, task st
 	if coordTask != "" {
 		o.Roles = append(o.Roles, RoleView{
 			Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: coordTask,
-			TaskStatus: "in_progress",
+			TaskStatus: "in_progress", SessionRunning: true,
 		})
 	}
 	for _, w := range workers {
 		o.Roles = append(o.Roles, RoleView{
 			Name: w.name, Kind: db.HeraKindWorker, Live: true, TaskID: w.task,
-			TaskStatus: "in_progress",
+			TaskStatus: "in_progress", SessionRunning: true,
 		})
 	}
 	return o
@@ -72,7 +72,7 @@ func seedBoundRole(t *testing.T, d *db.DB, orchID int64, name string, kind db.He
 }
 
 func TestBuildModel_NilReaderEmpty(t *testing.T) {
-	m, err := BuildModel(nil, nil, nil)
+	m, err := BuildModel(nil, nil, nil, nil)
 	testutil.NoError(t, err)
 	testutil.Equal(t, m.IsEmpty(), true)
 }
@@ -88,7 +88,7 @@ func TestBuildModel_PartitionsSections(t *testing.T) {
 	archID := seedOrch(t, d, "arch-orch")
 	testutil.NoError(t, d.ArchiveHeraOrchestrator(archID))
 
-	m, err := BuildModel(d, nil, nil)
+	m, err := BuildModel(d, nil, nil, nil)
 	testutil.NoError(t, err)
 	testutil.Equal(t, len(m.Active), 1)
 	testutil.Equal(t, len(m.Pinned), 1)
@@ -117,7 +117,7 @@ func TestBuildModel_FiltersNuked(t *testing.T) {
 	testutil.NoError(t, d.NukeHeraRole(wNuke.ID))
 	testutil.NoError(t, d.NukeHeraOrchestrator(gone))
 
-	m, err := BuildModel(d, nil, nil)
+	m, err := BuildModel(d, nil, nil, nil)
 	testutil.NoError(t, err)
 
 	// The nuked orchestrator is in no section.
@@ -169,7 +169,7 @@ func TestBuildModel_MultiBindingFanOut(t *testing.T) {
 	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: roleB.ID, ArgusTaskID: sharedTask, WorktreePath: "/wt/b"})
 	testutil.NoError(t, err)
 
-	m, err := BuildModel(d, nil, nil)
+	m, err := BuildModel(d, nil, nil, nil)
 	testutil.NoError(t, err)
 	testutil.Equal(t, len(m.Active), 2)
 
@@ -192,7 +192,7 @@ func TestBuildModel_FreelanceHoisted(t *testing.T) {
 	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
 	seedBoundRole(t, d, orch, "free", db.HeraKindFreelance, "t-free")
 
-	m, err := BuildModel(d, nil, nil)
+	m, err := BuildModel(d, nil, nil, nil)
 	testutil.NoError(t, err)
 	// Coordinator stays under the orchestrator; freelance hoists out.
 	testutil.Equal(t, len(m.Active[0].Roles), 1)
@@ -209,7 +209,7 @@ func TestBuildModel_ReadyToCloseAndStatus(t *testing.T) {
 	testutil.NoError(t, d.SetMeta("t-rc", db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"))
 	testutil.NoError(t, d.UpsertHeraRoleStatus(role.ID, db.HeraStatusWorking))
 
-	m, err := BuildModel(d, nil, nil)
+	m, err := BuildModel(d, nil, nil, nil)
 	testutil.NoError(t, err)
 	rv := m.Active[0].Roles[0]
 	testutil.Equal(t, rv.ReadyToClose, true)
@@ -224,7 +224,7 @@ func TestBuildModel_BridgeTaskID(t *testing.T) {
 	t.Run("live role: bridge equals live task", func(t *testing.T) {
 		role := seedBoundRole(t, d, orch, "live", db.HeraKindWorker, "t-live")
 		_ = role
-		m, err := BuildModel(d, nil, nil)
+		m, err := BuildModel(d, nil, nil, nil)
 		testutil.NoError(t, err)
 		var rv *RoleView
 		for i := range m.Active[0].Roles {
@@ -243,7 +243,7 @@ func TestBuildModel_BridgeTaskID(t *testing.T) {
 		testutil.NoError(t, err)
 		testutil.NoError(t, d.EndHeraBinding(bnd.ID, db.HeraEndReasonUserDeleted))
 
-		m, err := BuildModel(d, nil, nil)
+		m, err := BuildModel(d, nil, nil, nil)
 		testutil.NoError(t, err)
 		var rv *RoleView
 		for i := range m.Active[0].Roles {
@@ -403,7 +403,7 @@ func TestBuildModel_PopulatesDetailsFields(t *testing.T) {
 	role := seedBoundRole(t, d, orchID, "coord", db.HeraKindCoordinator, "t-c")
 	testutil.NoError(t, d.UpsertHeraRoleStatus(role.ID, db.HeraStatusWorking))
 
-	m, err := BuildModel(d, nil, nil)
+	m, err := BuildModel(d, nil, nil, nil)
 	testutil.NoError(t, err)
 	ov := m.Active[0]
 	testutil.Equal(t, ov.CreatedAt.IsZero(), false)
@@ -582,7 +582,7 @@ func TestBuildModel_NeedsInputStamped(t *testing.T) {
 	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
 	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
 
-	m, err := BuildModel(d, map[string]bool{"t-wkr": true}, nil)
+	m, err := BuildModel(d, map[string]bool{"t-wkr": true}, nil, nil)
 	testutil.NoError(t, err)
 	wkr := roleByName(t, &m, orch, "wkr")
 	testutil.Equal(t, wkr.NeedsInput, true)
@@ -591,7 +591,7 @@ func TestBuildModel_NeedsInputStamped(t *testing.T) {
 	testutil.Equal(t, coordSubtreeNI(t, &m, orch), true)
 
 	// Without the set, nothing flags.
-	m2, err := BuildModel(d, nil, nil)
+	m2, err := BuildModel(d, nil, nil, nil)
 	testutil.NoError(t, err)
 	testutil.Equal(t, roleByName(t, &m2, orch, "wkr").NeedsInput, false)
 	testutil.Equal(t, coordSubtreeNI(t, &m2, orch), false)
@@ -607,15 +607,17 @@ func TestBuildModel_SessionIdleSuppressesSpinner(t *testing.T) {
 	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
 	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
 
-	// No content-idle: a live in_progress worker spins (active).
-	m, err := BuildModel(d, nil, nil)
+	running := map[string]bool{"t-coord": true, "t-wkr": true}
+
+	// No content-idle: a live in_progress worker with a running session spins.
+	m, err := BuildModel(d, nil, nil, running)
 	testutil.NoError(t, err)
 	wkr := roleByName(t, &m, orch, "wkr")
 	testutil.Equal(t, wkr.SessionIdle, false)
 	testutil.Equal(t, wkr.IsActive(), true)
 
 	// Content-idle for the worker's task → SessionIdle stamped, IsActive false.
-	m2, err := BuildModel(d, nil, map[string]bool{"t-wkr": true})
+	m2, err := BuildModel(d, nil, map[string]bool{"t-wkr": true}, running)
 	testutil.NoError(t, err)
 	wkr2 := roleByName(t, &m2, orch, "wkr")
 	testutil.Equal(t, wkr2.SessionIdle, true)
@@ -625,6 +627,55 @@ func TestBuildModel_SessionIdleSuppressesSpinner(t *testing.T) {
 	if glyph == widget.SpinnerFrame(0) {
 		t.Error("content-idle role should not render the active spinner glyph")
 	}
+}
+
+// TestBuildModel_LiveWorkerInReviewSpins is the BUG-C headline at the BuildModel
+// seam and the display sibling of BUG-A: a WORKER whose task has rolled to
+// in_review (per #707 a hera worker deliberately sits in in_review while its
+// session lingers alive for coordinator close-out) but whose session is STILL
+// LIVE and actively producing output MUST animate the working spinner (IsActive),
+// not fall through to the static review glyph. The rail spinner is gated on
+// liveness + content-idle, NOT bound-task status.
+func TestBuildModel_LiveWorkerInReviewSpins(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	// Roll the worker's task to in_review, keeping its binding live (#707).
+	testutil.NoError(t, d.SetStatus("t-wkr", model.StatusInReview))
+
+	running := map[string]bool{"t-coord": true, "t-wkr": true}
+
+	// Live in_review worker with a RUNNING session, NOT content-idle (actively
+	// producing) → spins.
+	m, err := BuildModel(d, nil, nil, running)
+	testutil.NoError(t, err)
+	wkr := roleByName(t, &m, orch, "wkr")
+	testutil.Equal(t, wkr.TaskStatus, model.StatusInReview.String())
+	testutil.Equal(t, wkr.Live, true)
+	testutil.Equal(t, wkr.SessionRunning, true)
+	testutil.Equal(t, wkr.SessionIdle, false)
+	testutil.Equal(t, wkr.IsActive(), true)
+
+	// Same live in_review worker, now content-idle (parked/done) → no spinner
+	// (BUG-036 stays safe under the running+content-idle predicate).
+	m2, err := BuildModel(d, nil, map[string]bool{"t-wkr": true}, running)
+	testutil.NoError(t, err)
+	wkr2 := roleByName(t, &m2, orch, "wkr")
+	testutil.Equal(t, wkr2.SessionIdle, true)
+	testutil.Equal(t, wkr2.IsActive(), false)
+
+	// BUG-C regression: a DEAD worker (session exited → dropped from the running
+	// set) whose binding LINGERS (bindings don't end on session exit) stays Live
+	// with an in_review task but MUST NOT spin. This is the case Live && !idle
+	// alone got wrong — the running gate closes it.
+	m3, err := BuildModel(d, nil, nil, map[string]bool{"t-coord": true}) // t-wkr NOT running
+	testutil.NoError(t, err)
+	wkr3 := roleByName(t, &m3, orch, "wkr")
+	testutil.Equal(t, wkr3.Live, true)
+	testutil.Equal(t, wkr3.SessionRunning, false)
+	testutil.Equal(t, wkr3.SessionIdle, false)
+	testutil.Equal(t, wkr3.IsActive(), false)
 }
 
 // TestBuildModel_LiveWorkerInReviewSurfacesNeedsInput is the BUG-A headline at
@@ -645,7 +696,7 @@ func TestBuildModel_LiveWorkerInReviewSurfacesNeedsInput(t *testing.T) {
 	flagged := map[string]bool{"t-wkr": true}
 
 	// In_progress + flagged: surfaces (the always-correct path).
-	m, err := BuildModel(d, flagged, nil)
+	m, err := BuildModel(d, flagged, nil, nil)
 	testutil.NoError(t, err)
 	testutil.Equal(t, roleByName(t, &m, orch, "wkr").NeedsInput, true)
 	testutil.Equal(t, coordSubtreeNI(t, &m, orch), true)
@@ -654,7 +705,7 @@ func TestBuildModel_LiveWorkerInReviewSurfacesNeedsInput(t *testing.T) {
 	// #707). It is still in the content-aware needsInput set → still genuinely
 	// blocked → "(?)" MUST persist on the row AND roll up to the coordinator.
 	testutil.NoError(t, d.SetStatus("t-wkr", model.StatusInReview))
-	m2, err := BuildModel(d, flagged, nil)
+	m2, err := BuildModel(d, flagged, nil, nil)
 	testutil.NoError(t, err)
 	testutil.Equal(t, roleByName(t, &m2, orch, "wkr").NeedsInput, true)
 	testutil.Equal(t, coordSubtreeNI(t, &m2, orch), true)
@@ -679,7 +730,7 @@ func TestBuildModel_ExitedWorkerSuppressesNeedsInput(t *testing.T) {
 	_, err := d.EndHeraBindingsForTask("t-wkr", "exit")
 	testutil.NoError(t, err)
 
-	m, err := BuildModel(d, flagged, nil)
+	m, err := BuildModel(d, flagged, nil, nil)
 	testutil.NoError(t, err)
 	// The worker role is no longer live, so neither its own row nor the ancestor
 	// coordinator's rollup pins "(?)".
@@ -696,7 +747,7 @@ func (errReader) ListHeraOrchestrators(bool) ([]*db.HeraOrchestrator, error) {
 }
 
 func TestBuildModel_PropagatesReadError(t *testing.T) {
-	_, err := BuildModel(errReader{}, nil, nil)
+	_, err := BuildModel(errReader{}, nil, nil, nil)
 	testutil.Contains(t, errString(err), "boom")
 }
 

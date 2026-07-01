@@ -308,14 +308,23 @@ func TestWorktreeDisplay(t *testing.T) {
 }
 
 func TestCoordRoleStatusLabel(t *testing.T) {
-	// A genuinely active coordinator (live binding + bound task in_progress) reads
+	// A genuinely active coordinator (live + running session + in_progress) reads
 	// "working".
-	testutil.Equal(t, coordRoleStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, TaskStatus: "in_progress"}), "working")
+	testutil.Equal(t, coordRoleStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: true, TaskStatus: "in_progress"}), "working")
 	// BUG-003: a STALE "working" role-status that isn't backed by real activity
-	// must not claim "working". A dead/stopped binding reads "stopped"; a live
-	// binding no longer in_progress reads "live".
+	// must not claim "working". A dead/stopped binding (not Live) reads "stopped".
 	testutil.Equal(t, coordRoleStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking}), "stopped")
-	testutil.Equal(t, coordRoleStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, TaskStatus: "in_review"}), "live")
+	// BUG-C: a DEAD coordinator whose binding lingers (Live but session not in the
+	// running set) reads "live", NOT "working" — IsActive is false because the
+	// session is not running.
+	testutil.Equal(t, coordRoleStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: false, TaskStatus: "in_review"}), "live")
+	// BUG-036: a live+running-but-session-idle binding (parked, not producing)
+	// reads "live" regardless of task status — IsActive false because SessionIdle.
+	testutil.Equal(t, coordRoleStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: true, TaskStatus: "in_review", SessionIdle: true}), "live")
+	// BUG-C: a live, running, content-active coordinator in in_review (session
+	// still producing during #707 close-out) is genuinely "working" — no longer
+	// masked by the bound-task status.
+	testutil.Equal(t, coordRoleStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: true, TaskStatus: "in_review"}), "working")
 	// Non-working role-status assertions pass through unchanged.
 	testutil.Equal(t, coordRoleStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusIdle}), "idle")
 	testutil.Equal(t, coordRoleStatusLabel(&RoleView{Live: true}), "live")
@@ -342,12 +351,16 @@ func TestCoordTaskStatusLabel(t *testing.T) {
 }
 
 func TestCoordStatusLabel_Combined(t *testing.T) {
-	// Active coordinator, ongoing task → role status only.
-	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, TaskStatus: "in_progress"}), "working")
+	// Active coordinator (live + running session), ongoing task → role status only.
+	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: true, TaskStatus: "in_progress"}), "working")
 	// Role + terminal task signal combine.
 	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusDone, Live: true, TaskStatus: "complete"}), "done · task complete")
-	// Stale-working honesty preserved AND the terminal task state appended.
-	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, TaskStatus: "in_review"}), "live · task in_review")
+	// Stale-working honesty preserved when session-idle (BUG-036) AND the terminal
+	// task state appended.
+	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: true, TaskStatus: "in_review", SessionIdle: true}), "live · task in_review")
+	// BUG-C: a live, running, content-active coordinator in in_review reads
+	// "working" and still appends the terminal task state.
+	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: true, TaskStatus: "in_review"}), "working · task in_review")
 	// failed result blob.
 	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusIdle, Live: true, TaskStatus: "complete", TaskResult: `{"failed":true}`}), "idle · task failed")
 	// Unbound coordinator → no suffix.

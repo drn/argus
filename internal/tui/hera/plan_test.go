@@ -28,7 +28,7 @@ func seedPlannedRole(t *testing.T, d *db.DB, orchID int64, name string) *db.Hera
 // RoleView.Planned discriminator (Stage 2).
 func orchViewByName(t *testing.T, d *db.DB, name string) *OrchView {
 	t.Helper()
-	m, err := BuildModel(d, nil, nil)
+	m, err := BuildModel(d, nil, nil, nil)
 	testutil.NoError(t, err)
 	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
 		for i := range sec {
@@ -319,8 +319,8 @@ func TestPlanNodeIcon_NeedsInputNotAnimated(t *testing.T) {
 		role := RoleView{
 			RoleID: 2, Name: "2b-prompter", Kind: db.HeraKindWorker,
 			Live: true, TaskID: "t1", BridgeTaskID: "t1",
-			TaskStatus: model.StatusInProgress.String(),
-			HasStatus:  true, Status: db.HeraStatusBlocked,
+			TaskStatus: model.StatusInProgress.String(), SessionRunning: true,
+			HasStatus: true, Status: db.HeraStatusBlocked,
 		}
 		testutil.Equal(t, role.IsActive(), true)        // genuinely working...
 		testutil.Equal(t, role.ShowsNeedsInput(), true) // ...AND blocked on input
@@ -366,7 +366,7 @@ func TestPlanNodeIcon_NeedsInputNotAnimated(t *testing.T) {
 // flagged Animated so the plan view renders the live spinner frame (1:1 with the
 // rail's animated row), not a frozen glyph.
 func TestPlanNodeIcon_WorkingIsAnimated(t *testing.T) {
-	icon := projectWorkerIcon(t, RoleView{RoleID: 2, Name: "w", Live: true, TaskID: "t1", BridgeTaskID: "t1", TaskStatus: model.StatusInProgress.String()})
+	icon := projectWorkerIcon(t, RoleView{RoleID: 2, Name: "w", Live: true, SessionRunning: true, TaskID: "t1", BridgeTaskID: "t1", TaskStatus: model.StatusInProgress.String()})
 	testutil.Equal(t, icon != nil, true)
 	testutil.Equal(t, icon.Animated, true)
 }

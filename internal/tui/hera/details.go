@@ -329,9 +329,12 @@ func coordStatusLabel(r *RoleView) string {
 // status. A STALE "working" role-status (the manual/MCP-set ladder value that
 // never reconciles down after a session idles/stops/dies) is not reported as
 // "working" unless it is backed by real activity (role.IsActive) — the same
-// honesty the rail spinner now enforces (BUG-003). A stale-working role reads
-// "live" when its binding is still alive (just not in_progress) and "stopped"
-// when the binding is gone; every other role-status passes through verbatim.
+// honesty the rail spinner now enforces (BUG-003 / BUG-036). Post-BUG-C IsActive
+// is gated on liveness + content-idle (NOT bound-task status), so a stale-working
+// role reads "live" when its binding is alive but its session is idle
+// (SessionIdle) and "stopped" when the binding is gone; a live, content-active
+// role reads "working" honestly regardless of task status. Every other
+// role-status passes through verbatim.
 func coordRoleStatusLabel(r *RoleView) string {
 	switch {
 	case r.HasStatus && r.Status == db.HeraStatusWorking && !r.IsActive():
