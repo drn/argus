@@ -6,6 +6,7 @@ import (
 
 	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/selfupdate"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // RPCService implements the JSON-RPC methods exposed by the daemon. The
@@ -31,18 +32,55 @@ func logRPCErr(method string, err error) string {
 }
 
 // BootInfo returns the daemon's boot-time identity (binary path, content hash,
-// and mtime). The TUI uses this to detect when the on-disk binary has been
-// rebuilt since the daemon started, and prompt the user to restart.
+// mtime, VCS) AND — when a session-supervisor is connected — the supervisor's
+// relayed identity (D1). The TUI uses this to detect when the daemon and/or
+// supervisor binary is stale relative to the TUI's own build, and prompt the
+// user to restart the relevant process.
 //
-// The fields read here are written once in Daemon.New() and never mutated
-// afterward, so reading without a lock is safe — the goroutine spawn that
-// runs RPC handlers happens-after New() returns.
+// The daemon's own fields are written once in Daemon.New() and never mutated,
+// so reading without a lock is safe. The supervisor fields are re-queried here
+// at SERVE time (not cached at New()) so an independently-restarted supervisor
+// reports its CURRENT identity, not whatever was captured when the daemon
+// connected. A v2 supervisor (or an unreachable one) yields an empty
+// SupervisorHash — reported as "unknown", NEVER as stale.
 func (s *RPCService) BootInfo(_ *Empty, resp *BootInfoResp) error {
 	resp.BinaryPath = s.daemon.binaryPath
 	resp.BinaryMtime = s.daemon.binaryMtime
 	resp.BinaryHash = s.daemon.binaryHash
+	resp.VCS = s.daemon.vcs
 	resp.BootedAt = s.daemon.bootedAt
+
+	// Relay the connected supervisor's identity. supClient is nil in in-process
+	// mode (no supervisor); present otherwise. Re-query Hello every call.
+	if s.daemon.supClient != nil {
+		resp.SupervisorPresent = true
+		hello, err := s.daemon.supClient.Hello()
+		if err != nil {
+			// Present but unreachable — leave the hash empty (unknown). Never a
+			// false stale; the TUI treats an unknown supervisor as not-stale.
+			uxlog.Log("[skew] BootInfo supervisor Hello failed: %v", err)
+			slog.Warn("BootInfo supervisor Hello failed", "err", err)
+		} else {
+			resp.SupervisorPath = hello.BinaryPath
+			resp.SupervisorHash = hello.BinaryHash
+			resp.SupervisorVCS = hello.VCS
+			uxlog.Log("[skew] BootInfo relayed supervisor identity: path=%s hash=%s proto=%d",
+				hello.BinaryPath, shortHashRPC(hello.BinaryHash), hello.ProtocolVersion)
+		}
+	}
 	return nil
+}
+
+// shortHashRPC renders a content hash for logging: the first 12 hex chars, or
+// "unknown" for an empty hash (a pre-v3 or unreachable supervisor).
+func shortHashRPC(h string) string {
+	if h == "" {
+		return "unknown"
+	}
+	if len(h) > 12 {
+		return h[:12]
+	}
+	return h
 }
 
 // Ports returns the live MCP and REST API HTTP ports the daemon is bound to.

@@ -277,6 +277,12 @@ func TestSupHello(t *testing.T) {
 	if hello.BinaryPath == "" {
 		t.Error("expected a non-empty supervisor binary path in the handshake")
 	}
+	// v3: the supervisor hashes its own resolved binary at boot, exactly like
+	// the daemon does, so the handshake carries a content hash the daemon can
+	// relay for skew detection.
+	if hello.BinaryHash == "" {
+		t.Error("expected a non-empty supervisor binary hash in the v3 handshake")
+	}
 }
 
 // TestSupKick proves the protocol-v2 KickRerender RPC reaches the supervisor's

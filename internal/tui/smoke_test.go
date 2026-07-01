@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -477,8 +478,9 @@ func TestSmoke_RestartDaemonPrompt_OpensAndSkips(t *testing.T) {
 	defer stop()
 
 	// Open the modal on the tview goroutine (mimics what Run() does when
-	// SetDaemonStale was called before the event loop started).
-	readUI(t, app.tapp, func() { app.openRestartDaemonPrompt() })
+	// SetSkew flagged the daemon before the event loop started).
+	app.SetSkew(true, false, "", "")
+	readUI(t, app.tapp, func() { app.openSkewPrompt() })
 
 	var mode viewMode
 	var hasModal bool
@@ -506,6 +508,140 @@ func TestSmoke_RestartDaemonPrompt_OpensAndSkips(t *testing.T) {
 	}
 }
 
+func TestSetSkew_StoresFields(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), true)
+
+	app.SetSkew(true, true, "dae @ /a", "sup @ /b")
+	if !app.daemonStale || !app.supervisorStale {
+		t.Error("SetSkew should set both stale flags")
+	}
+	testutil.Equal(t, app.daemonIdentity, "dae @ /a")
+	testutil.Equal(t, app.supervisorIdentity, "sup @ /b")
+}
+
+// TestLiveAgentCount pins the default agentCountFn: with no live sessions the
+// running+idle sum is zero. (The double-confirm's non-zero rendering is covered
+// by TestSmoke_SkewPrompt_SupervisorDoubleConfirm via an agentCountFn override.)
+func TestLiveAgentCount(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), true)
+	testutil.Equal(t, app.liveAgentCount(), 0)
+}
+
+// waitForCond polls fn on the tview goroutine until it returns true or the
+// timeout elapses. Used to await work dispatched back via QueueUpdateDraw from
+// an off-thread goroutine (e.g. the supervisor-restart agent count).
+func waitForCond(t *testing.T, app *tview.Application, what string, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(uiTimeout)
+	for time.Now().Before(deadline) {
+		var ok bool
+		readUI(t, app, func() { ok = fn() })
+		if ok {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for: %s", what)
+}
+
+// TestSmoke_SkewPrompt_SupervisorDoubleConfirm is the load-bearing safety test:
+// choosing "Restart supervisor" in the startup skew modal must open a SECOND
+// confirm naming the live agent count, and the actual restart must fire ONLY on
+// the explicit second yes.
+func TestSmoke_SkewPrompt_SupervisorDoubleConfirm(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), true)
+	app.SetSkew(false, true, "", "sup-abc @ /gopath/bin/argus")
+	app.agentCountFn = func() int { return 3 }
+	var restarted atomic.Bool
+	app.restartSupervisorFn = func() { restarted.Store(true) }
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	// Open the skew modal (mimics Run() when SetSkew flagged the supervisor).
+	readUI(t, app.tapp, func() { app.openSkewPrompt() })
+	var open bool
+	readUI(t, app.tapp, func() {
+		open = app.mode == modeRestartDaemonPrompt && app.restartDaemonModal != nil
+	})
+	if !open {
+		t.Fatal("skew modal did not open")
+	}
+
+	// Enter selects the default button (Restart supervisor) and triggers the
+	// double-confirm. The agent count is fetched off-thread then dispatched back.
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+
+	waitForCond(t, app.tapp, "supervisor double-confirm to open", func() bool {
+		return app.restartSupervisorModal != nil
+	})
+	var msg string
+	var mode viewMode
+	readUI(t, app.tapp, func() {
+		msg = app.restartSupervisorModal.Message()
+		mode = app.mode
+	})
+	testutil.Equal(t, mode, modeConfirmRestartSupervisor)
+	testutil.Equal(t, msg, "Are you sure? This will restart 3 agent processes")
+	// The restart must NOT have fired yet — only the confirm is open.
+	if restarted.Load() {
+		t.Fatal("supervisor restarted before the second confirmation")
+	}
+
+	// Explicit second yes → the restart fires.
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+	waitForCond(t, app.tapp, "supervisor restart to fire", func() bool { return restarted.Load() })
+	var stillOpen bool
+	readUI(t, app.tapp, func() { stillOpen = app.restartSupervisorModal != nil })
+	if stillOpen {
+		t.Error("confirm modal should be dismissed after confirming")
+	}
+}
+
+// TestSmoke_SkewPrompt_DeclineLeavesSupervisorRunning verifies declining the
+// second confirmation is a pure no-op: no restart, supervisor left running.
+func TestSmoke_SkewPrompt_DeclineLeavesSupervisorRunning(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), true)
+	app.SetSkew(false, true, "", "sup-abc @ /gopath/bin/argus")
+	app.agentCountFn = func() int { return 2 }
+	var restarted atomic.Bool
+	app.restartSupervisorFn = func() { restarted.Store(true) }
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	readUI(t, app.tapp, func() { app.openSkewPrompt() })
+	sim.InjectKey(tcell.KeyEnter, 0, 0) // choose Restart supervisor
+	syncUI(t, app.tapp)
+	waitForCond(t, app.tapp, "supervisor double-confirm to open", func() bool {
+		return app.restartSupervisorModal != nil
+	})
+
+	// Decline the second confirm.
+	sim.InjectKey(tcell.KeyRune, 'n', 0)
+	syncUI(t, app.tapp)
+
+	var mode viewMode
+	var modalOpen bool
+	readUI(t, app.tapp, func() {
+		mode = app.mode
+		modalOpen = app.restartSupervisorModal != nil
+	})
+	testutil.Equal(t, mode, modeTaskList)
+	if modalOpen {
+		t.Error("confirm modal should be dismissed after declining")
+	}
+	if restarted.Load() {
+		t.Error("declining the confirmation must NOT restart the supervisor")
+	}
+}
+
 func TestSetDaemonStale_StoresFlag(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
@@ -521,22 +657,22 @@ func TestSetDaemonStale_StoresFlag(t *testing.T) {
 }
 
 // Regression test for the startup deadlock fixed in 67eda38. Run() opens the
-// daemon-stale prompt directly because tview v0.42's QueueUpdate is
-// synchronous (sends on `updates`, then blocks on a per-call done channel
-// until the event loop runs the closure). The contract this test pins:
-// openRestartDaemonPrompt itself must remain safe to call without an event
-// loop running, because Run() calls it directly before tapp.Run(). If
-// someone modifies openRestartDaemonPrompt to internally use QueueUpdate /
-// QueueUpdateDraw, this test will time out.
+// skew prompt directly because tview v0.42's QueueUpdate is synchronous (sends
+// on `updates`, then blocks on a per-call done channel until the event loop
+// runs the closure). The contract this test pins: openSkewPrompt itself — the
+// function Run() actually calls before tapp.Run() — must remain safe to call
+// without an event loop running. If someone modifies openSkewPrompt to
+// internally use QueueUpdate / QueueUpdateDraw, this test will time out.
 //
 // Note: this test does NOT cover the case of Run() itself re-wrapping the
 // call in QueueUpdateDraw — that regression is guarded by the explicit
 // comment in app.go and the gotcha entry in ui-threading.md, plus would
 // require a Run()-with-sim-screen harness we don't have.
-func TestSmoke_OpenRestartDaemonPromptBeforeRunDoesNotBlock(t *testing.T) {
+func TestSmoke_OpenSkewPromptBeforeRunDoesNotBlock(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, true)
+	app.SetSkew(true, false, "", "")
 
 	tApp, _, ls := simApp(t)
 	app.tapp = tApp
@@ -549,13 +685,13 @@ func TestSmoke_OpenRestartDaemonPromptBeforeRunDoesNotBlock(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		app.openRestartDaemonPrompt()
+		app.openSkewPrompt()
 	}()
 
 	select {
 	case <-done:
 	case <-time.After(uiTimeout):
-		t.Fatal("openRestartDaemonPrompt blocked before tapp.Run() — likely re-introduced QueueUpdateDraw deadlock")
+		t.Fatal("openSkewPrompt blocked before tapp.Run() — likely re-introduced QueueUpdateDraw deadlock")
 	}
 
 	if app.mode != modeRestartDaemonPrompt {

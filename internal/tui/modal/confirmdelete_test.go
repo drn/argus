@@ -164,7 +164,7 @@ func TestConfirmDeleteProjectModal_DrawZeroSize(t *testing.T) {
 
 func TestRestartDaemonModal_Draw(t *testing.T) {
 	sim := drawAt(t, 80, 24)
-	m := NewRestartDaemonModal()
+	m := NewSkewModal(true, false, "", "")
 	m.SetRect(0, 0, 80, 24)
 	m.Draw(sim)
 	sim.Sync()
@@ -176,7 +176,7 @@ func TestRestartDaemonModal_Draw(t *testing.T) {
 
 func TestRestartDaemonModal_DrawSkipSelected(t *testing.T) {
 	sim := drawAt(t, 80, 24)
-	m := NewRestartDaemonModal()
+	m := NewSkewModal(true, false, "", "")
 	// Move selection to Skip via Tab.
 	m.InputHandler()(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), nil)
 	m.SetRect(0, 0, 80, 24)
@@ -185,13 +185,13 @@ func TestRestartDaemonModal_DrawSkipSelected(t *testing.T) {
 
 func TestRestartDaemonModal_DrawZeroSize(t *testing.T) {
 	sim := drawAt(t, 80, 24)
-	m := NewRestartDaemonModal()
+	m := NewSkewModal(true, false, "", "")
 	m.SetRect(0, 0, 0, 0)
 	m.Draw(sim)
 }
 
 func TestRestartDaemonModal_HLNavigation(t *testing.T) {
-	m := NewRestartDaemonModal()
+	m := NewSkewModal(true, false, "", "")
 	h := m.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyRune, 'l', tcell.ModNone), nil)
 	testutil.Equal(t, m.Selected(), 1)
@@ -200,11 +200,11 @@ func TestRestartDaemonModal_HLNavigation(t *testing.T) {
 }
 
 func TestRestartDaemonModal_UppercaseShortcuts(t *testing.T) {
-	m := NewRestartDaemonModal()
+	m := NewSkewModal(true, false, "", "")
 	m.InputHandler()(tcell.NewEventKey(tcell.KeyRune, 'R', tcell.ModNone), nil)
-	testutil.True(t, m.ChoseRestart())
+	testutil.True(t, m.ChoseRestartDaemon())
 
-	m2 := NewRestartDaemonModal()
+	m2 := NewSkewModal(true, false, "", "")
 	m2.InputHandler()(tcell.NewEventKey(tcell.KeyRune, 'S', tcell.ModNone), nil)
 	testutil.True(t, m2.ChoseSkip())
 }

@@ -168,16 +168,23 @@ type App struct {
 	// Error modal (created on demand to surface failed actions prominently)
 	errorModal *modal.ErrorModal
 
-	// Restart-daemon prompt (created on demand when binary mtime mismatch
-	// is detected at startup). daemonStale is set by main before Run() and
-	// read once inside Run() — no concurrent access, no lock needed.
+	// Startup binary-skew prompt (created on demand when the daemon and/or the
+	// session-supervisor run a binary that differs from the TUI's). The stale
+	// flags + rich identities are set by main via SetSkew before Run() and read
+	// once inside Run() — no concurrent access, no lock needed.
 	restartDaemonModal *modal.RestartDaemonModal
 	daemonStale        bool
+	supervisorStale    bool
+	daemonIdentity     string // rich identity of the stale daemon (display-only)
+	supervisorIdentity string // rich identity of the stale supervisor (display-only)
 
-	// Session-supervisor restart caution gate (Settings → System). Created on
-	// demand when the user activates the row; the bounce SIGHUPs every agent,
-	// so it is always confirmed before running.
-	restartSupervisorModal *modal.ConfirmModal
+	// Session-supervisor restart caution gate. Reused by two callers: the
+	// Settings → System row and the startup skew modal's "Restart supervisor"
+	// action. The bounce SIGHUPs every agent, so it is ALWAYS confirmed before
+	// running. restartSupervisorReturnPage records which page to return to on
+	// close ("settings" or "tasks").
+	restartSupervisorModal      *modal.ConfirmModal
+	restartSupervisorReturnPage string
 
 	// Link picker modals (created on demand)
 	linkPickerModal      *LinkPickerModal
@@ -255,6 +262,13 @@ type App struct {
 	// forking the test binary as a fake supervisor (same ErrTestBinary failure
 	// mode as restartDaemonFn).
 	restartSupervisorFn func()
+
+	// agentCountFn returns the number of live agent sessions the supervisor is
+	// hosting — the count named in the supervisor-restart double-confirm.
+	// Defaults to a.liveAgentCount (an RPC to the daemon via RunningAndIdle,
+	// which callers run off the UI thread). Tests override it to return a fixed
+	// count without a live daemon.
+	agentCountFn func() int
 
 	// Tick control
 	tickDone            chan struct{}
@@ -447,6 +461,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 	}
 	app.restartDaemonFn = app.restartDaemon
 	app.restartSupervisorFn = app.restartSupervisor
+	app.agentCountFn = app.liveAgentCount
 
 	app.settings = NewSettingsView(database)
 	app.settings.Keys = app.activeKeymap
@@ -786,9 +801,28 @@ func (a *App) afterDraw(screen tcell.Screen) {
 }
 
 // SetDaemonStale records that the connected daemon's binary differs from the
-// TUI's. Must be called before Run() — the flag is consumed there.
+// TUI's. Must be called before Run() — the flag is consumed there. Retained for
+// callers/tests that only track daemon staleness; SetSkew is the fuller form.
 func (a *App) SetDaemonStale(stale bool) {
 	a.daemonStale = stale
+}
+
+// SetSkew records the startup binary-skew evaluation: whether the daemon and/or
+// the session-supervisor run a stale binary, plus each stale process's rich
+// display identity for the modal. Must be called before Run() — consumed there.
+func (a *App) SetSkew(daemonStale, supervisorStale bool, daemonIdentity, supervisorIdentity string) {
+	a.daemonStale = daemonStale
+	a.supervisorStale = supervisorStale
+	a.daemonIdentity = daemonIdentity
+	a.supervisorIdentity = supervisorIdentity
+}
+
+// liveAgentCount returns the number of live agent sessions (running + idle)
+// hosted by the supervisor. It issues an RPC to the daemon (RunningAndIdle), so
+// callers MUST invoke it off the tview main goroutine.
+func (a *App) liveAgentCount() int {
+	running, idle := a.runner.RunningAndIdle()
+	return len(running) + len(idle)
 }
 
 // submitPluginSection is the production submit hook wired into the
@@ -840,13 +874,16 @@ func (a *App) submitPluginSection(scope, title string, values map[string]any) er
 	return nil
 }
 
-// openRestartDaemonPrompt shows the modal asking whether to restart the
-// out-of-date daemon. Idempotent.
-func (a *App) openRestartDaemonPrompt() {
+// openSkewPrompt shows the startup binary-skew modal, rendering the rich
+// identity of whichever of {daemon, supervisor} is stale and offering the
+// relevant restart action(s). Reuses the restartDaemonModal field/page/mode so
+// the existing key routing (handleRestartDaemonKey) and teardown apply. Safe to
+// call before the event loop starts (no QueueUpdate); idempotent.
+func (a *App) openSkewPrompt() {
 	if a.restartDaemonModal != nil {
 		return
 	}
-	a.restartDaemonModal = modal.NewRestartDaemonModal()
+	a.restartDaemonModal = modal.NewSkewModal(a.daemonStale, a.supervisorStale, a.daemonIdentity, a.supervisorIdentity)
 	a.mode = modeRestartDaemonPrompt
 	a.pages.AddPage("restartdaemon", a.restartDaemonModal, true, true)
 	a.pages.SwitchToPage("restartdaemon")
@@ -873,9 +910,16 @@ func (a *App) handleRestartDaemonKey(event *tcell.EventKey) {
 	if !a.restartDaemonModal.Done() {
 		return
 	}
-	chooseRestart := a.restartDaemonModal.ChoseRestart()
-	a.closeRestartDaemonPrompt()
-	if chooseRestart {
+	switch {
+	case a.restartDaemonModal.ChoseRestartSupervisor():
+		// The supervisor restart is destructive (it SIGHUPs every agent). We do
+		// NOT restart here — closing this modal opens a SECOND confirm that names
+		// the agent count; the actual restart fires only on that explicit yes.
+		a.closeRestartDaemonPrompt()
+		uxlog.Log("[tui] user chose to restart out-of-date supervisor — opening double-confirm")
+		a.promptSupervisorRestartFromSkew()
+	case a.restartDaemonModal.ChoseRestartDaemon():
+		a.closeRestartDaemonPrompt()
 		uxlog.Log("[tui] user chose to restart out-of-date daemon")
 		a.mu.Lock()
 		a.daemonRestarting = true
@@ -883,37 +927,73 @@ func (a *App) handleRestartDaemonKey(event *tcell.EventKey) {
 		a.mu.Unlock()
 		a.settings.SetDaemonRestarting(true)
 		go a.restartDaemonFn()
-	} else {
-		uxlog.Log("[tui] user skipped daemon restart")
+	default:
+		a.closeRestartDaemonPrompt()
+		uxlog.Log("[tui] user skipped binary-skew restart")
 	}
 }
 
+// promptSupervisorRestartFromSkew opens the double-confirm gate before a
+// supervisor bounce triggered from the startup skew modal. The live agent count
+// is fetched OFF the tview main goroutine (agentCountFn issues an RPC), then the
+// confirm — naming that count — is opened via QueueUpdateDraw. The restart still
+// fires only on the confirm's explicit yes (handleRestartSupervisorKey).
+func (a *App) promptSupervisorRestartFromSkew() {
+	go func() {
+		n := a.agentCountFn()
+		a.tapp.QueueUpdateDraw(func() {
+			a.openRestartSupervisorConfirm(
+				"Restart Session Supervisor?",
+				fmt.Sprintf("Are you sure? This will restart %d agent processes", n),
+				"tasks",
+			)
+		})
+	}()
+}
+
 // openRestartSupervisorPrompt shows the caution confirm before bouncing the
-// session-supervisor. Unlike a daemon restart, this interrupts every running
-// agent, so it is always gated. Idempotent.
+// session-supervisor from Settings → System. Unlike a daemon restart, this
+// interrupts every running agent, so it is always gated. Idempotent.
 func (a *App) openRestartSupervisorPrompt() {
+	a.openRestartSupervisorConfirm(
+		"Restart Session Supervisor?",
+		"This SIGHUPs every running agent — active tasks flip to In Review.",
+		"settings",
+	)
+}
+
+// openRestartSupervisorConfirm shows the supervisor-restart confirm with the
+// given title/message and records the page to return to on close. Shared by the
+// Settings row (returnPage "settings") and the startup skew modal's
+// double-confirm (returnPage "tasks"). Idempotent.
+func (a *App) openRestartSupervisorConfirm(title, message, returnPage string) {
 	if a.restartSupervisorModal != nil {
 		return
 	}
-	a.restartSupervisorModal = modal.NewConfirmModal(
-		"Restart Session Supervisor?",
-		"This SIGHUPs every running agent — active tasks flip to In Review.",
-	)
+	a.restartSupervisorModal = modal.NewConfirmModal(title, message)
+	a.restartSupervisorReturnPage = returnPage
 	a.mode = modeConfirmRestartSupervisor
 	a.pages.AddPage("restartsupervisor", a.restartSupervisorModal, true, true)
 	a.pages.SwitchToPage("restartsupervisor")
 	a.tapp.SetFocus(a.restartSupervisorModal)
 }
 
-// closeRestartSupervisorPrompt dismisses the modal and returns to the settings
-// view (the row lives in Settings → System).
+// closeRestartSupervisorPrompt dismisses the modal and returns to whichever page
+// opened it (Settings → System, or the task list when reached from the startup
+// skew modal).
 func (a *App) closeRestartSupervisorPrompt() {
-	// The settings view runs under modeTaskList with the active tab tracked
-	// separately by the header; the supervisor row is only reachable from the
-	// Settings tab, so return focus there. Mirrors closeErrorModal.
 	a.mode = modeTaskList
 	a.restartSupervisorModal = nil
 	a.pages.RemovePage("restartsupervisor")
+	page := a.restartSupervisorReturnPage
+	a.restartSupervisorReturnPage = ""
+	if page == "tasks" {
+		a.pages.SwitchToPage("tasks")
+		a.tapp.SetFocus(a.tasklist)
+		return
+	}
+	// Default: the supervisor row is reachable from the Settings tab, so return
+	// focus there. Mirrors closeErrorModal.
 	a.pages.SwitchToPage("settings")
 	a.tapp.SetFocus(a.settings)
 }
@@ -1005,8 +1085,8 @@ func (a *App) Run() error {
 	// from the absence of a concurrent reader, not internal synchronization.
 	// Note: pages.SetChangedFunc fires forceRedraw which is now log-only
 	// (no Sync, no channel send, no blocking). Safe to call pre-Run().
-	if a.daemonStale {
-		a.openRestartDaemonPrompt()
+	if a.daemonStale || a.supervisorStale {
+		a.openSkewPrompt()
 	}
 
 	uxlog.Log("[tui] starting tcell/tview application")
