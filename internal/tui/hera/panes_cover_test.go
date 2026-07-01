@@ -163,6 +163,66 @@ func TestPanes_SyncPanesLocal(t *testing.T) {
 	p.SyncPanes()
 }
 
+// altScreenPage builds a worker+coordinator page whose worker session emits
+// DECSET 1049 (alt-screen) output, selects the worker, and draws once so the
+// agent pane's emulator absorbs the bytes and reports InAltScreen.
+func altScreenPage(t *testing.T) *HeraPage {
+	t.Helper()
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{
+		"t-coord": {id: "t-coord", alive: true},
+		// Full-screen agent: enter alt-screen, clear, draw something.
+		"t-wkr": {id: "t-wkr", alive: true, output: []byte("\x1b[?1049h\x1b[2J\x1b[Hhello")},
+	}))
+	p.Refresh()
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	t.Cleanup(sim.Fini)
+	sim.SetSize(120, 30)
+	p.SetRect(0, 0, 120, 30)
+	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
+	p.Draw(sim)
+	return p
+}
+
+// TestPanes_ForwardKeyAltScreenSuppressesScroll is the BUG-031 regression for the
+// Hera keyboard path: PgUp on a full-screen (alt-screen) agent pane must NOT enter
+// argus's scroll mode (which would replay in-place frames as garbage); it suppresses
+// and surfaces the affordance via OnInfo.
+func TestPanes_ForwardKeyAltScreenSuppressesScroll(t *testing.T) {
+	p := altScreenPage(t)
+	if !p.AgentPane().InAltScreen() {
+		t.Fatal("agent pane should be in alt-screen after feeding DECSET 1049")
+	}
+	var info string
+	p.OnInfo = func(msg string) { info = msg }
+
+	p.forwardKey(p.AgentPane(), tcell.NewEventKey(tcell.KeyPgUp, 0, tcell.ModNone))
+
+	testutil.Equal(t, p.AgentPane().ScrollOffset(), 0) // no scroll-mode entry
+	if info == "" {
+		t.Error("expected an OnInfo affordance for alt-screen PgUp, got none")
+	}
+}
+
+// TestPanes_ForwardKeyNonAltScreenScrolls is the regression guard: a normal
+// (non-alt-screen) worker pane still scrolls on PgUp exactly as before.
+func TestPanes_ForwardKeyNonAltScreenScrolls(t *testing.T) {
+	p := drawnPageSelecting(t, func(p *HeraPage) bool { return selectRoleByName(p, "wkr") })
+	if p.AgentPane().InAltScreen() {
+		t.Fatal("plain worker pane must not be in alt-screen")
+	}
+	before := p.AgentPane().ScrollOffset()
+	p.forwardKey(p.AgentPane(), tcell.NewEventKey(tcell.KeyPgUp, 0, tcell.ModNone))
+	if got := p.AgentPane().ScrollOffset(); got <= before {
+		t.Fatalf("PgUp on a non-alt-screen pane did not scroll: before=%d after=%d", before, got)
+	}
+}
+
 func TestPanes_ForwardKeyDeadAndDetails(t *testing.T) {
 	p := drawnPage(t)
 	// Dead session → forwardKey drops the keystroke (no panic).

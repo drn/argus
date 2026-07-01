@@ -211,6 +211,72 @@ func TestTerminalPane_Scrollback(t *testing.T) {
 	}
 }
 
+// setAltScreen gives the pane an emulator and drives it into alternate-screen
+// mode (DECSET 1049) so InAltScreen() reports true — mirrors a full-screen agent
+// (Claude Code / vim) that owns the screen with in-place redraws (BUG-031).
+func setAltScreen(t *testing.T, tp *TerminalPane) {
+	t.Helper()
+	tp.emu = xvt.NewSafeEmulator(80, 24)
+	if _, err := SafeEmuWrite(tp.emu, []byte("\x1b[?1049h")); err != nil {
+		t.Fatalf("enter alt-screen: %v", err)
+	}
+	if !tp.InAltScreen() {
+		t.Fatal("emulator should be in alt-screen after DECSET 1049")
+	}
+}
+
+func TestTerminalPane_ScrollUpSuppressedInAltScreen(t *testing.T) {
+	// BUG-031: a full-screen agent has no linear scrollback; entering argus's own
+	// scroll mode replays its in-place frames as garbage. ScrollUp / AccelScrollUp
+	// must NOT raise scrollOffset for an alt-screen pane.
+	tp := NewTerminalPane()
+	setAltScreen(t, tp)
+
+	tp.ScrollUp(5)
+	testutil.Equal(t, tp.ScrollOffset(), 0)
+
+	if n := tp.AccelScrollUp(); n != 0 {
+		t.Errorf("AccelScrollUp in alt-screen returned %d lines, want 0", n)
+	}
+	testutil.Equal(t, tp.ScrollOffset(), 0)
+}
+
+func TestTerminalPane_ScrollUpWorksWhenNotAltScreen(t *testing.T) {
+	// Regression: a non-alt-screen pane (normal/exited session) must scroll
+	// exactly as before — the guard keys off IsAltScreen, nothing else.
+	tp := NewTerminalPane()
+	tp.emu = xvt.NewSafeEmulator(80, 24) // emulator present but main screen
+	if tp.InAltScreen() {
+		t.Fatal("fresh emulator must not be in alt-screen")
+	}
+	tp.ScrollUp(5)
+	testutil.Equal(t, tp.ScrollOffset(), 5)
+	if n := tp.AccelScrollUp(); n == 0 {
+		t.Error("AccelScrollUp on a non-alt-screen pane should scroll")
+	}
+	if tp.ScrollOffset() <= 5 {
+		t.Errorf("scrollOffset = %d, want > 5 after AccelScrollUp", tp.ScrollOffset())
+	}
+}
+
+func TestTerminalPane_ScrollResumesAfterAltScreenExit(t *testing.T) {
+	// Once the agent leaves alt-screen (ESC[?1049l on quit/exit), normal
+	// scrollback must resume — the guard must not latch.
+	tp := NewTerminalPane()
+	setAltScreen(t, tp)
+	tp.ScrollUp(5)
+	testutil.Equal(t, tp.ScrollOffset(), 0) // suppressed while alt-screen
+
+	if _, err := SafeEmuWrite(tp.emu, []byte("\x1b[?1049l")); err != nil {
+		t.Fatalf("leave alt-screen: %v", err)
+	}
+	if tp.InAltScreen() {
+		t.Fatal("emulator should have left alt-screen after DECRST 1049")
+	}
+	tp.ScrollUp(5)
+	testutil.Equal(t, tp.ScrollOffset(), 5) // scrollback resumes
+}
+
 func TestTerminalPane_MouseScroll(t *testing.T) {
 	tp := NewTerminalPane()
 	tp.SetRect(0, 0, 80, 24)

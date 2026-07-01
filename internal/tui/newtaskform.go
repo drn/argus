@@ -23,7 +23,8 @@ const (
 	ntFieldBackend = 2
 	ntFieldModel   = 3
 	ntFieldPrompt  = 4
-	ntFieldCount   = 5
+	ntFieldName    = 5
+	ntFieldCount   = 6
 )
 
 // maxPromptLines is the maximum visible lines for the prompt textarea.
@@ -43,7 +44,14 @@ type NewTaskForm struct {
 	cursorPos    int    // cursor position in prompt runes
 	scrollOffset int    // first visible wrapped line (for scrolling)
 	promptWidth  int    // cached inner width from last Draw, used by cursor movement
-	focused      int    // 0=project, 1=branch, 2=backend, 3=model, 4=prompt
+	focused      int    // 0=project, 1=branch, 2=backend, 3=model, 4=prompt, 5=name
+
+	// optional task-name field: a single-line input rendered after the prompt.
+	// Empty (or whitespace-only) ⇒ the task name is derived from the prompt as
+	// before; non-empty ⇒ the entered (trimmed + sanitized) name is used and
+	// background auto-naming is suppressed. Mirrors the project/branch inputs.
+	nameInput     []rune
+	nameCursorPos int
 
 	// model override state. The field is a per-backend cycling selector:
 	// modelIdx 0 == "default" (empty model → backend/CLI default), 1..len ==
@@ -190,8 +198,12 @@ func (f *NewTaskForm) Task() *model.Task {
 	branch := f.resolvedBranch()
 
 	prompt := strings.TrimSpace(string(f.prompt))
+	name := f.EnteredName()
+	if name == "" {
+		name = model.GenerateNameFromPrompt(prompt)
+	}
 	return &model.Task{
-		Name:    model.GenerateNameFromPrompt(prompt),
+		Name:    name,
 		Status:  model.StatusPending,
 		Project: proj,
 		Branch:  branch,
@@ -199,6 +211,19 @@ func (f *NewTaskForm) Task() *model.Task {
 		Backend: backend,
 		Model:   f.modelValue(),
 	}
+}
+
+// EnteredName returns the trimmed, sanitized value of the optional name field,
+// or "" when the field is blank (whitespace-only counts as blank). A non-empty
+// return is the "user-chosen name" signal: it both names the task and suppresses
+// background auto-naming. Sanitization uses the same safe-name path that
+// auto-derived task/branch names already pass through.
+func (f *NewTaskForm) EnteredName() string {
+	trimmed := strings.TrimSpace(string(f.nameInput))
+	if trimmed == "" {
+		return ""
+	}
+	return agent.SafeName(trimmed)
 }
 
 // currentBackend returns the config.Backend for the currently selected backend.
@@ -635,6 +660,13 @@ func (f *NewTaskForm) PasteHandler() func(pastedText string, setFocus func(p tvi
 			f.prompt = newPrompt
 			f.cursorPos += len(runes)
 			f.updateAutocomplete()
+		case ntFieldName:
+			newInput := make([]rune, 0, len(f.nameInput)+len(runes))
+			newInput = append(newInput, f.nameInput[:f.nameCursorPos]...)
+			newInput = append(newInput, runes...)
+			newInput = append(newInput, f.nameInput[f.nameCursorPos:]...)
+			f.nameInput = newInput
+			f.nameCursorPos += len(runes)
 			// ntFieldBackend: backend selector ignores paste
 		}
 	})
@@ -715,6 +747,8 @@ func (f *NewTaskForm) InputHandler() func(event *tcell.EventKey, setFocus func(p
 			f.handleModelKey(event)
 		case ntFieldPrompt:
 			f.handlePromptKey(event)
+		case ntFieldName:
+			f.handleNameKey(event)
 		}
 	})
 }
@@ -929,6 +963,103 @@ func (f *NewTaskForm) handleBranchKey(event *tcell.EventKey) {
 		f.branchInput = append(f.branchInput[:f.branchCursorPos], append([]rune{r}, f.branchInput[f.branchCursorPos:]...)...)
 		f.branchCursorPos++
 		f.updateBranchAC()
+		return
+	}
+}
+
+// handleNameKey handles key events when the optional name field is focused. It
+// is a plain single-line text input (no autocomplete), mirroring the branch
+// field's editing keys. Enter submits the form (the name is the last field, so
+// the user can fill it and submit) using the same guard as the prompt's Enter;
+// Up/Down move focus within the cycle (prompt above, project below).
+func (f *NewTaskForm) handleNameKey(event *tcell.EventKey) {
+	mod := event.Modifiers()
+	hasAlt := mod&tcell.ModAlt != 0
+
+	switch event.Key() {
+	case tcell.KeyEnter:
+		if f.resolveProject() == "" {
+			f.errMsg = "Unknown project"
+			return
+		}
+		if len(f.prompt) > 0 {
+			f.done = true
+		}
+		return
+	case tcell.KeyDown:
+		f.focused = ntFieldProject
+		return
+	case tcell.KeyUp:
+		f.focused = ntFieldPrompt
+		return
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if hasAlt {
+			f.nameInput, f.nameCursorPos = widget.DeleteWordLeft(f.nameInput, f.nameCursorPos)
+			return
+		}
+		if f.nameCursorPos > 0 {
+			f.nameInput = append(f.nameInput[:f.nameCursorPos-1], f.nameInput[f.nameCursorPos:]...)
+			f.nameCursorPos--
+		}
+		return
+	case tcell.KeyCtrlW:
+		f.nameInput, f.nameCursorPos = widget.DeleteWordLeft(f.nameInput, f.nameCursorPos)
+		return
+	case tcell.KeyDelete:
+		if hasAlt {
+			f.nameInput, f.nameCursorPos = widget.DeleteWordRight(f.nameInput, f.nameCursorPos)
+			return
+		}
+		if f.nameCursorPos < len(f.nameInput) {
+			f.nameInput = append(f.nameInput[:f.nameCursorPos], f.nameInput[f.nameCursorPos+1:]...)
+		}
+		return
+	case tcell.KeyLeft:
+		if hasAlt {
+			f.nameCursorPos = widget.WordLeftPos(f.nameInput, f.nameCursorPos)
+			return
+		}
+		if f.nameCursorPos > 0 {
+			f.nameCursorPos--
+		}
+		return
+	case tcell.KeyRight:
+		if hasAlt {
+			f.nameCursorPos = widget.WordRightPos(f.nameInput, f.nameCursorPos)
+			return
+		}
+		if f.nameCursorPos < len(f.nameInput) {
+			f.nameCursorPos++
+		}
+		return
+	case tcell.KeyHome, tcell.KeyCtrlA:
+		f.nameCursorPos = 0
+		return
+	case tcell.KeyEnd, tcell.KeyCtrlE:
+		f.nameCursorPos = len(f.nameInput)
+		return
+	case tcell.KeyCtrlU:
+		f.nameInput = f.nameInput[f.nameCursorPos:]
+		f.nameCursorPos = 0
+		return
+	case tcell.KeyCtrlK:
+		f.nameInput = f.nameInput[:f.nameCursorPos]
+		return
+	case tcell.KeyRune:
+		r := event.Rune()
+		if hasAlt {
+			switch r {
+			case 'b', 'B':
+				f.nameCursorPos = widget.WordLeftPos(f.nameInput, f.nameCursorPos)
+			case 'f', 'F':
+				f.nameCursorPos = widget.WordRightPos(f.nameInput, f.nameCursorPos)
+			case 'd', 'D':
+				f.nameInput, f.nameCursorPos = widget.DeleteWordRight(f.nameInput, f.nameCursorPos)
+			}
+			return
+		}
+		f.nameInput = append(f.nameInput[:f.nameCursorPos], append([]rune{r}, f.nameInput[f.nameCursorPos:]...)...)
+		f.nameCursorPos++
 		return
 	}
 }
@@ -1380,8 +1511,8 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 		}
 	}
 
-	// Modal height: border(1) + padding(1) + project(1) + projAC(P) + branch(1) + branchAC(B) + backend(1) + model(1) + label(1) + prompt(N) + ac(M) + gap(1) + help(1) + padding(1) + border(1)
-	modalH := 11 + visiblePromptLines + acRows + projACRows + branchACRows
+	// Modal height: border(1) + padding(1) + project(1) + projAC(P) + branch(1) + branchAC(B) + backend(1) + model(1) + label(1) + prompt(N) + ac(M) + name(1) + gap(1) + help(1) + padding(1) + border(1)
+	modalH := 12 + visiblePromptLines + acRows + projACRows + branchACRows
 	if f.errMsg != "" {
 		modalH += 2
 	}
@@ -1519,6 +1650,10 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 		f.drawAutocomplete(screen, innerX, row, innerW)
 		row += acRows
 	}
+
+	// Optional name field (rendered after the prompt + its autocomplete).
+	f.drawNameField(screen, innerX, row, innerW)
+	row++
 
 	row++ // gap
 
@@ -1752,6 +1887,67 @@ func (f *NewTaskForm) drawBranchField(screen tcell.Screen, x, y, w int) {
 			widget.DrawText(screen, inputX, inputRow, inputW, string(inputRunes), unfocusedStyle)
 		}
 	}
+}
+
+// drawNameField renders the optional task-name input. Single-line, mirroring
+// the branch field (caret when focused, dim "(optional)" placeholder when empty
+// and unfocused). No autocomplete.
+func (f *NewTaskForm) drawNameField(screen tcell.Screen, x, y, w int) {
+	focused := f.focused == ntFieldName
+	modalBG := tcell.ColorDefault
+
+	labelStyle := theme.StyleDimmed
+	if focused {
+		labelStyle = theme.StyleTitle
+	}
+	label := "Name:"
+	labelW := utf8.RuneCountInString(label)
+	widget.DrawText(screen, x, y, w, label, labelStyle)
+
+	inputX := x + labelW + 1
+	inputW := w - labelW - 1
+	if inputW <= 0 {
+		return
+	}
+
+	inputRunes := f.nameInput
+	inputEmptyStyle := tcell.StyleDefault.Background(modalBG)
+	inputStyle := tcell.StyleDefault.Foreground(theme.ColorNormal).Background(modalBG)
+	cursorStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.Color252)
+
+	if focused {
+		for col := range inputW {
+			var ch rune
+			var st tcell.Style
+			if col < len(inputRunes) {
+				ch = inputRunes[col]
+				st = inputStyle
+			} else {
+				ch = ' '
+				st = inputEmptyStyle
+			}
+			if col == f.nameCursorPos {
+				st = cursorStyle
+			}
+			screen.SetContent(inputX+col, y, ch, nil, st)
+		}
+		return
+	}
+
+	if len(inputRunes) == 0 {
+		placeholderStyle := tcell.StyleDefault.Foreground(theme.ColorDimmed).Background(modalBG)
+		placeholder := []rune("(optional)")
+		for col := range inputW {
+			if col < len(placeholder) {
+				screen.SetContent(inputX+col, y, placeholder[col], nil, placeholderStyle)
+			} else {
+				screen.SetContent(inputX+col, y, ' ', nil, inputEmptyStyle)
+			}
+		}
+		return
+	}
+	unfocusedStyle := tcell.StyleDefault.Foreground(theme.ColorNormal).Background(modalBG)
+	widget.DrawText(screen, inputX, y, inputW, string(inputRunes), unfocusedStyle)
 }
 
 // drawModelField renders the per-backend model selector. Non-custom entries

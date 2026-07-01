@@ -285,6 +285,16 @@ func (p *HeraPage) SelectionContext() Selection { return p.sel }
 func (p *HeraPage) forwardKey(tp *terminal.TerminalPane, ev *tcell.EventKey) {
 	switch ev.Key() {
 	case tcell.KeyPgUp:
+		// BUG-031: a full-screen agent (alt-screen) has no linear scrollback;
+		// entering argus's scroll mode would replay its in-place frames as
+		// garbage. Suppress + tell the user to scroll within the agent (the
+		// mouse wheel is forwarded to it — BUG-026). ScrollUp also self-guards.
+		if tp.InAltScreen() {
+			if p.OnInfo != nil {
+				p.OnInfo("Fullscreen agent — scroll within the agent")
+			}
+			return
+		}
 		tp.ScrollUp(paneScrollStep)
 		return
 	case tcell.KeyPgDn:

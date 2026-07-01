@@ -1053,10 +1053,10 @@ load-on-store-set, one-shot pending-selection restore, save-on-change), `interna
 
 ### Requirement: `w` and `n` use the full new-task modal (area 4)
 
-The system SHALL open the SAME modal as the new-argus-task popup (project / branch / backend / model / prompt, with project and skill autocomplete) for both the rail `w` (spawn worker) and `n` (new coordinator) keys. The project field SHALL default to the selected coordinator's project for `w`, and to the current selection's coordinator project (else the last-selected Tasks-tab project) for `n`. The modal SHALL return to the Hera tab on submit or cancel (not the Tasks tab). On submit:
+The system SHALL open the SAME modal as the new-argus-task popup (project / branch / backend / model / prompt / optional name, with project and skill autocomplete) for both the rail `w` (spawn worker) and `n` (new coordinator) keys. The project field SHALL default to the selected coordinator's project for `w`, and to the current selection's coordinator project (else the last-selected Tasks-tab project) for `n`. The modal SHALL return to the Hera tab on submit or cancel (not the Tasks tab). On submit:
 
-- `w` spawns a born-bound worker under the selected coordinator's orchestrator via the shared `agent.SpawnHeraWorker` primitive, carrying the form's project, branch, backend, model, and prompt.
-- `n` creates a NEW top-level orchestrator + coordinator role bound to a freshly created argus task via the shared `agent.SpawnHeraCoordinator` primitive (the orchestrator name is derived from the prompt and de-collided; the coordinator role is named `coord`).
+- `w` spawns a born-bound worker under the selected coordinator's orchestrator via the shared `agent.SpawnHeraWorker` primitive, carrying the form's project, branch, backend, model, and prompt. When the optional name is non-blank, it SHALL name the worker task/role (overriding the prompt-derived name); when blank, the worker name derives from the prompt as before.
+- `n` creates a NEW top-level orchestrator + coordinator role bound to a freshly created argus task via the shared `agent.SpawnHeraCoordinator` primitive. When the optional name is non-blank, it SHALL name BOTH the new orchestrator and the coordinator task (overriding the prompt-derived, de-collided orchestrator name); when blank, the orchestrator name is derived from the prompt and de-collided as before. The coordinator role is named `coord` in both cases.
 
 The worker/coordinator spawn runs off the tview main thread (it creates a worktree + session) and refreshes the rail on completion. A spawn with no live coordinator (for `w`) surfaces visible feedback and does nothing.
 
@@ -1076,6 +1076,21 @@ Derived from: `internal/tui/heraactions.go` (`heraSpawnWorker`, `heraNewCoordina
 
 - **WHEN** the user presses `w` on a selection whose orchestrator has no live coordinator
 - **THEN** the status bar shows a "no live coordinator" error and no worker is spawned
+
+#### Scenario: `w` with an explicit name names the worker
+
+- **WHEN** the user presses `w`, enters a non-blank name in the modal, fills the rest, and submits
+- **THEN** the spawned worker's task/role name is the entered name rather than a prompt-derived name
+
+#### Scenario: `n` with an explicit name names the orchestrator and coordinator task
+
+- **WHEN** the user presses `n`, enters a non-blank name in the modal, fills the rest, and submits
+- **THEN** the new orchestrator's name (the rail label) AND the coordinator task's name are the entered name rather than a prompt-derived name, and the coordinator role is still named `coord`
+
+#### Scenario: blank name derives from the prompt as before
+
+- **WHEN** the user presses `w` or `n`, leaves the name field blank, fills the rest, and submits
+- **THEN** the worker / orchestrator name is derived from the prompt exactly as it was before the optional name field existed
 
 ### Requirement: Cmd+Up / Cmd+Down move rail selection without changing pane focus
 
@@ -1252,13 +1267,42 @@ in as a worker row) and SHALL be cycle-safe, reusing the same
 cascade. The indicator SHALL clear on an ancestor as soon as no descendant (and
 not the ancestor itself) needs input.
 
+A live needs-input signal SHALL surface for a blocked role even when its bound
+argus task is NO LONGER `in_progress`, for any role that does not "finish" by task
+status while its session is alive — specifically a COORDINATOR (and freelance)
+role. A coordinator routinely rolls its bound task to complete/in_review while its
+session stays alive and keeps coordinating, and may itself block on a user prompt;
+gating its needs-input on `in_progress` hid the "(?)" on its (usually collapsed)
+header. The in_progress gate SHALL therefore apply ONLY to WORKER-kind roles (the
+finished-worker clear, BUG-023): a worker that leaves `in_progress` is finished
+and its lingering sticky marker SHALL NOT keep "(?)" pinned, whereas a live
+non-worker role SHALL surface "(?)" regardless of task status. A non-worker role's
+"finished" condition is its session exiting, which drops it from the sticky
+needs-input set upstream, so there is no stale-marker hazard. The App's Hera-rail
+needs-input feed SHALL admit a task that is `in_progress` OR bound to a hera
+coordinator role (regardless of task status); admitting a non-in_progress
+coordinator (a MANAGED task) SHALL NOT affect the unmanaged attention-summary
+count (BUG-005), which stays `in_progress`-gated for unmanaged tasks.
+
+When an orchestrator has NO coordinator role to carry the glyph (for example its
+coordinator role was nuked, BUG-022 Tier-2), the orchestrator HEADER itself SHALL
+surface the subtree needs-input rollup with the SAME `theme.IconNeedsInput` /
+`theme.StyleNeedsInput` indicator, so a blocked worker is visible from the
+default collapsed ("tidy summary") view without expanding — mirroring the task
+list's project-folder aggregate, which always shows "(?)" for any blocked task.
+The per-orchestrator rollup SHALL therefore be exposed on the `OrchView`
+(`SubtreeNeedsInput`), not only on the coordinator role. When a coordinator role
+IS present its status glyph already carries the rollup and the header SHALL NOT
+double-render the indicator.
+
 The authoritative per-role needs-input signal SHALL be the SAME set the task
 list consumes — the App's `needsInputIDs` (the idle-gated, sticky
 `agent.DetectNeedsInput` PTY-tail scan) — threaded into `BuildModel`, plus the
 role's own hera `blocked` status. No new needs-input detection SHALL be invented
 for the rail. The rollup SHALL be computed in the MODEL (`BuildModel`) and
-exposed as a `RoleView` field, so `statusIcon` stays a pure projection that only
-reads it (no Draw-time I/O, no `screen.Sync()`).
+exposed as a `RoleView` field (and an `OrchView` field for the header), so
+`statusIcon` and `drawOrchRow` stay pure projections that only read it (no
+Draw-time I/O, no `screen.Sync()`).
 
 Precedence: the needs-input rollup SHALL rank immediately below a role's OWN
 `ready_to_close` mark and ABOVE the role's `done`, active-spinner, idle, and live
@@ -1268,9 +1312,11 @@ ancestor is itself idle, working, or done. A role's own `ready_to_close`
 it.
 
 Derived from: `internal/tui/hera/model.go` (`RoleView.NeedsInput`,
-`RoleView.SubtreeNeedsInput`, `needsInputOwn`, `ShowsNeedsInput`, `BuildModel`
-needs-input parameter, `rollupNeedsInput`, `orchSubtreeNeedsInput`),
-`internal/tui/hera/rail.go` (`statusIcon` reads `ShowsNeedsInput`),
+`RoleView.SubtreeNeedsInput`, `OrchView.SubtreeNeedsInput`, `needsInputOwn`,
+`ShowsNeedsInput`, `BuildModel` needs-input parameter, `rollupNeedsInput`,
+`orchSubtreeNeedsInput`),
+`internal/tui/hera/rail.go` (`statusIcon` reads `ShowsNeedsInput`; `drawOrchRow`
+surfaces `OrchView.SubtreeNeedsInput` when no coordinator role is present),
 `internal/tui/hera/page.go` (`SetNeedsInput`, `doRefresh`),
 `internal/tui/app.go` (push `needsInputIDs` to the Hera page each tick).
 
@@ -1296,8 +1342,28 @@ needs-input parameter, `rollupNeedsInput`, `orchSubtreeNeedsInput`),
 
 #### Scenario: The rollup is cycle-safe
 
-- **WHEN** the bridge graph contains a cycle (A bridges B and B bridges A)
+- **WHEN** the orchestration subtree contains a bridge cycle (A bridges B and B bridges A)
 - **THEN** the rollup terminates and still reports needs-input for the reachable members
+
+#### Scenario: A coordinator-less orchestrator header surfaces a blocked worker
+
+- **WHEN** a collapsed orchestrator has a blocked (needs-input) worker in its subtree but no coordinator role (e.g. the coordinator was nuked)
+- **THEN** the orchestrator header renders the needs-input "(?)" indicator so the blocked worker is visible without expanding
+
+#### Scenario: A coordinator-less header rollup clears when the worker finishes
+
+- **WHEN** the only blocked worker under a coordinator-less orchestrator finishes (its bound task rolls to in_review) even though the App's sticky needs-input set still flags it
+- **THEN** the orchestrator header stops rendering "(?)" on the next refresh
+
+#### Scenario: A blocked coordinator surfaces "(?)" even when its task is complete
+
+- **WHEN** a coordinator's bound task has rolled to complete/in_review but its session is alive and blocked on a user prompt (its task is in the needs-input set)
+- **THEN** the coordinator's (collapsed) header renders the needs-input "(?)" indicator, instead of being hidden by the in_progress gate
+
+#### Scenario: A finished worker stays cleared even when its task is complete
+
+- **WHEN** a worker's bound task has rolled to complete/in_review (finished) but the sticky needs-input set still flags it
+- **THEN** the worker's row and its ancestor rollup do NOT render "(?)" — the in_progress gate stays worker-only (BUG-023 preserved)
 
 ### Requirement: Needs-input "(?)" CLEARS and propagates up when a descendant resolves (area rail)
 
@@ -1736,15 +1802,17 @@ Derived from: `internal/tui/hera/rail.go` (per-orchestrator archive expando in `
 
 ### Requirement: Active agents animate a spinner glyph (area 3)
 
-The system SHALL render a genuinely-active role's status glyph as an animated spinner frame from the active spinner (`widget.SpinnerFrame`), advancing with the wall-clock frame counter, rather than a static glyph. A role is genuinely active (`RoleView.IsActive`) when it holds a live binding AND its bound argus task is `in_progress` — sourced from REAL session activity, NOT the hera role `working` status field. The hera role status is a manual/MCP-set ladder value that never reconciles down (it stays `working` after a session idles, stops, or dies), so it MUST NOT drive the spinner: a stale-`working` role whose binding is gone, dead, or no longer `in_progress` is static (BUG-003). This mirrors the plugin's `stateGlyph`, which animates only on a known `in_progress` + running argus state.
+The system SHALL render a genuinely-active role's status glyph as an animated spinner frame from the active spinner (`widget.SpinnerFrame`), advancing with the wall-clock frame counter, rather than a static glyph. A role is genuinely active (`RoleView.IsActive`) when it holds a live binding AND its bound argus task is `in_progress` AND its session is NOT content-idle — sourced from REAL session activity, NOT the hera role `working` status field. The hera role status is a manual/MCP-set ladder value that never reconciles down (it stays `working` after a session idles, stops, or dies), so it MUST NOT drive the spinner: a stale-`working` role whose binding is gone, dead, or no longer `in_progress` is static (BUG-003).
 
-An operator/agent-set `blocked` assertion takes precedence over the spinner (the needs-input glyph renders even while the task is still `in_progress`), as does `done` and `ready_to_close`. Non-active states (idle, blocked, done, ready_to_close, unbound, stopped) remain static.
+The content-idle gate fixes a fullscreen (alt-screen) agent parked at its prompt (BUG-036): such an agent repaints continuously, so it never reaches the raw-byte idle set and would otherwise animate the spinner forever even though it is doing nothing. When the App's content-idle signal (the animation-stripped emulated-screen stability classification) marks the role's bound session idle, the role is NOT active and renders a static idle/live glyph (or the needs-input glyph if it is at a prompt, which already outranks the spinner). A genuinely content-ACTIVE agent — emulated content changing tick-to-tick, or showing the "working" affordance — still spins. This mirrors the plugin's `stateGlyph`, which animates only on a known `in_progress` + running argus state.
 
-Derived from: `internal/tui/hera/rail.go` (`statusIcon`), `internal/tui/hera/model.go` (`RoleView.IsActive`), `internal/tui/widget/spinnerstate.go` (`SpinnerFrame`).
+An operator/agent-set `blocked` assertion takes precedence over the spinner (the needs-input glyph renders even while the task is still `in_progress`), as does `done` and `ready_to_close`. Non-active states (idle, content-idle, blocked, done, ready_to_close, unbound, stopped) remain static.
+
+Derived from: `internal/tui/hera/rail.go` (`statusIcon`), `internal/tui/hera/model.go` (`RoleView.IsActive`, `RoleView.SessionIdle`), `internal/tui/widget/spinnerstate.go` (`SpinnerFrame`).
 
 #### Scenario: Genuinely active role spins
 
-- **WHEN** a role holds a live binding and its bound argus task is `in_progress`, and it is not blocked/done/ready_to_close
+- **WHEN** a role holds a live binding and its bound argus task is `in_progress`, its session is not content-idle, and it is not blocked/done/ready_to_close
 - **THEN** its status glyph is the active spinner's frame for the current animation frame, and the glyph differs across frames
 
 #### Scenario: Stale-working stopped role is static
@@ -1756,6 +1824,11 @@ Derived from: `internal/tui/hera/rail.go` (`statusIcon`), `internal/tui/hera/mod
 
 - **WHEN** a role holds a live binding but its bound argus task has left `in_progress` (e.g. an auto-completed coordinator now `in_review`), even with a stale `working` hera status
 - **THEN** its status glyph does not animate
+
+#### Scenario: Content-idle fullscreen role is static
+
+- **WHEN** a role holds a live binding and its bound argus task is `in_progress`, but the App marks its session content-idle (parked fullscreen agent, stable emulated screen, no "working" affordance)
+- **THEN** its status glyph does not animate — it renders a static idle/live glyph (or the needs-input glyph if it is at a prompt)
 
 #### Scenario: Blocked outranks activity
 

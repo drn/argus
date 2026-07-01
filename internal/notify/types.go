@@ -43,7 +43,12 @@ type delivery struct {
 // makes test fakes much simpler.
 type SessionHandleIface interface {
 	IsIdle() bool
-	WriteInput(p []byte) (int, error)
+	// WriteInputSystem injects the delivery as SYSTEM input: it advances the
+	// agent's work cycle but NOT the user-input timestamp, so a delivered
+	// hera/task message never masquerades as the user answering a prompt and
+	// never clears the needs-input "(?)" flag (BUG-034). Notify never uses the
+	// user-facing WriteInput.
+	WriteInputSystem(p []byte) (int, error)
 }
 
 // RunnerIface is the subset of agent.SessionProvider needed by the notifier.
