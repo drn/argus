@@ -1,9 +1,8 @@
-# binary-coherence
+# binary-coherence Specification
 
-Detecting and diagnosing binary skew across the three argus processes that each load a binary from disk: the TUI (`argus` on `PATH`), the daemon (`~/.argus/argusd`), and the session-supervisor. Skew arises when `go install` updates one binary but not the others, silently breaking TUI↔daemon round-trip behavior.
-
-## ADDED Requirements
-
+## Purpose
+TBD - created by archiving change detect-binary-skew. Update Purpose after archive.
+## Requirements
 ### Requirement: Cross-process binary identity reporting
 
 The daemon SHALL report its own boot-time binary identity AND, when a session-supervisor is connected, the supervisor's binary identity to the TUI in a single `BootInfo` response. Identity comprises the resolved binary path, the SHA-256 content hash, and the VCS revision plus dirty flag read from the binary's build info. The supervisor's `Hello` handshake SHALL carry its content hash and VCS identity, and the R/S `ProtocolVersion` SHALL be bumped additively so a newer daemon can feature-detect an older supervisor.
@@ -50,6 +49,11 @@ The CLI SHALL provide an `argus doctor` command that runs read-only, enumerates 
 
 - **WHEN** the TUI, daemon, and supervisor resolve to the same binary file with matching hashes
 - **THEN** `argus doctor` SHALL print a healthy verdict and exit zero
+
+#### Scenario: Non-healthy verdict exits non-zero
+
+- **WHEN** `argus doctor` renders any non-healthy verdict (restart-needed or path-divergence)
+- **THEN** it SHALL exit with a non-zero status after printing the table and remediation
 
 #### Scenario: Restart needed
 
@@ -99,3 +103,4 @@ At startup the TUI SHALL detect binary skew against the daemon and the superviso
 
 - **WHEN** the user declines the second supervisor-restart confirmation
 - **THEN** the supervisor SHALL be left running and no agents interrupted
+
