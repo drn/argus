@@ -660,7 +660,7 @@ When the PWA cannot reach the API — daemon stopped, host asleep, or Tailscale 
 
 ### Data
 
-All state (tasks, projects, backends, keybindings, UI settings, KB index) is persisted in SQLite at `~/.argus/data.sql`.
+All state (tasks, projects, backends, UI settings, KB index) is persisted in SQLite at `~/.argus/data.sql`. Keybindings are the exception — they live in the built-in defaults plus `config.toml` overrides only (no DB rows).
 
 ### Config file (`~/.argus/config.toml`)
 
@@ -734,8 +734,10 @@ the built-in defaults (only the entries you set change). Edits are picked up liv
 
 ```toml
 [keybindings.tasklist]
-new  = "N"        # new task
-fork = "ctrl+g"
+new = "N"            # new task
+
+[keybindings.global]
+fork = "ctrl+g"      # fork task (the ctrl-shortcuts live in `global`)
 
 [keybindings.agent]
 session = "ctrl+t"   # switch Claude session
