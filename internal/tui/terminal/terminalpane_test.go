@@ -147,6 +147,8 @@ type mockAdapter struct {
 	alive        bool
 	totalWritten uint64
 	output       []byte
+	ptyCols      int // 0 → PTYSize reports "unknown" (0,0)
+	ptyRows      int
 }
 
 func (m *mockAdapter) WriteInput(p []byte) (int, error) { return len(p), nil }
@@ -163,7 +165,7 @@ func (m *mockAdapter) RecentOutputTailWithTotal(n int) ([]byte, uint64) {
 }
 func (m *mockAdapter) TotalWritten() uint64 { return m.totalWritten }
 func (m *mockAdapter) Alive() bool          { return m.alive }
-func (m *mockAdapter) PTYSize() (int, int)  { return 80, 24 }
+func (m *mockAdapter) PTYSize() (int, int)  { return m.ptyCols, m.ptyRows }
 
 func TestTerminalPane_SessionGuardPreservesEmulator(t *testing.T) {
 	// Simulates the tick callback bug: when streams fail repeatedly,
@@ -2840,6 +2842,109 @@ func TestTerminalPane_Draw_ScrollExtendSmoke(t *testing.T) {
 	tp.mu.Unlock()
 	if extendedFirstByte >= firstByte {
 		t.Fatalf("scrolling past the ceiling did not extend the window: firstByte %d -> %d", firstByte, extendedFirstByte)
+	}
+}
+
+// TestReplayEmuDims_UsesAuthoredWidthWhenWiderThanPane covers the width
+// resolution behind the live-session scroll-corruption fix: the scroll replay
+// emulates at the size the scrollback bytes were AUTHORED for (session PTY /
+// sidecar), never narrower than the pane, so wide content isn't clamped.
+func TestReplayEmuDims_UsesAuthoredWidthWhenWiderThanPane(t *testing.T) {
+	// Live session authored at 100x48, viewed in a 40x12 pane → emulate wide.
+	live := &mockAdapter{alive: true, ptyCols: 100, ptyRows: 48}
+	c, r := replayEmuDims(live, "", 40, 12)
+	testutil.Equal(t, c, 100)
+	testutil.Equal(t, r, 48)
+
+	// Pane already at least as wide as the session → keep the pane (no needless
+	// widening; content authored narrow stays narrow).
+	c, r = replayEmuDims(live, "", 120, 60)
+	testutil.Equal(t, c, 120)
+	testutil.Equal(t, r, 60)
+
+	// No live PTY (dead/nil session) → the persisted sidecar supplies the size.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".argus", "sessions")
+	testutil.NoError(t, os.MkdirAll(dir, 0o755))
+	testutil.NoError(t, os.WriteFile(filepath.Join(dir, "sz.size"), []byte("110 50\n"), 0o644))
+	c, r = replayEmuDims(nil, "sz", 40, 12)
+	testutil.Equal(t, c, 110)
+	testutil.Equal(t, r, 50)
+
+	// No live PTY, no sidecar → pane floor.
+	c, r = replayEmuDims(nil, "missing-task", 40, 12)
+	testutil.Equal(t, c, 40)
+	testutil.Equal(t, r, 12)
+}
+
+// TestTerminalPane_Draw_ScrollWideContentNoCorruption reproduces the
+// screenshot-confirmed live-session scroll corruption and asserts the fix.
+// A LIVE session authored WIDE (PTY 100) is viewed in a NARROW pane (inner 40).
+// Every log line positions a marker 'Z' at column 90 via CHA (ESC[90G). At the
+// authored width the marker sits at col 89 — beyond the 40-wide pane, so it is
+// CLIPPED, not shown. If the replay were (wrongly) rebuilt at the pane width,
+// CHA-to-90 would CLAMP to the pane's rightmost column, producing the reported
+// stranded single-char column down the far-right edge. The fix emulates at the
+// authored width and clips, so the stranded column is gone.
+func TestTerminalPane_Draw_ScrollWideContentNoCorruption(t *testing.T) {
+	if testing.Short() {
+		t.Skip("VT-emulates a wide replay")
+	}
+	var b strings.Builder
+	for i := 0; i < 40; i++ {
+		b.WriteString("left text row")
+		b.WriteString("\x1b[90GZ\r\n") // jump to col 90 (1-based), write marker Z
+	}
+	setupTaskLog(t, "wide", b.String())
+
+	sim := newSim(t, 42, 12)
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 42, 12) // inner rect 40x10 (screen cols 1..40)
+	sess := &mockAdapter{alive: true, ptyCols: 100, ptyRows: 48, totalWritten: 6, output: []byte("tail\r\n")}
+	tp.SetSession(sess)
+	tp.SetTaskID("wide")
+
+	settle := func() {
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			tp.mu.Lock()
+			building := tp.replayBuilding
+			tp.mu.Unlock()
+			if !building {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatal("replay rebuild did not settle")
+	}
+
+	tp.scrollOffset = 2
+	tp.Draw(sim) // cache miss → kick async rebuild
+	settle()
+	tp.Draw(sim) // cache hit → paint at authored width, clipped to pane
+
+	// Fix signal: the replay emulator is built at the authored width (100),
+	// not the pane width (40). Before the fix this would be 40 and the marker
+	// would clamp to the pane edge.
+	tp.mu.Lock()
+	emuCols := tp.replayEmuCols
+	tp.mu.Unlock()
+	testutil.Equal(t, emuCols, 100)
+
+	// No stranded right-edge column: the pane's rightmost inner column (screen
+	// x=40) must not be a run of the clamped marker 'Z'. Before the fix, CHA to
+	// col 90 clamped to the pane edge, filling this column with 'Z'.
+	lines := strings.Split(readScreen(sim), "\n")
+	strandedZ := 0
+	for row := 1; row <= 10; row++ {
+		cells := []rune(lines[row])
+		if len(cells) > 40 && cells[40] == 'Z' {
+			strandedZ++
+		}
+	}
+	if strandedZ > 0 {
+		t.Fatalf("stranded right-edge column: %d 'Z' markers at the pane's right edge (width-mismatch corruption)", strandedZ)
 	}
 }
 
