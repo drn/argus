@@ -886,7 +886,7 @@ func TestTerminalPane_AnchorLockResetsOnScrollToBottom(t *testing.T) {
 // QueueUpdateDraw callback. After calling, the replay emulator is populated
 // and tp fields are updated under tp.mu.
 func buildReplaySync(tp *TerminalPane, raw []byte, cols, rows int) {
-	tp.asyncReplayRebuild("", 0, rows, cols, rows, raw, nil, 0, nil)
+	tp.asyncReplayRebuild("", 0, rows, cols, rows, raw, nil, 0, false, nil)
 	// Consume the pending flag the same way Draw() does, via the shared
 	// helper so test and production stay in lockstep.
 	tp.mu.Lock()
@@ -2573,7 +2573,7 @@ func TestEagerReplayBuild_RunsWithDimensions(t *testing.T) {
 func TestAsyncReplayRebuild_CooldownOnEmpty(t *testing.T) {
 	tp := NewTerminalPane()
 	// All inputs empty: no taskID, no ringBuf, no replayDataCopy.
-	tp.asyncReplayRebuild("", 0, 24, 80, 24, nil, nil, 0, nil)
+	tp.asyncReplayRebuild("", 0, 24, 80, 24, nil, nil, 0, false, nil)
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
 	if tp.replayBuilding {
@@ -2612,7 +2612,7 @@ func TestReplayRebuildReadSize_MonotonicFirstByte(t *testing.T) {
 
 	// Default budget (8MB) — file is 9MB so the read covers
 	// [fileSize-8MB, fileSize), implying firstByte = 1MB after the build.
-	defaultNeeded := replayRebuildReadSize("mono", 0, 24, 80, 0)
+	defaultNeeded := replayRebuildReadSize("mono", 0, 24, 80, 0, false)
 	if defaultNeeded != 8*1024*1024 {
 		t.Errorf("default needed = %d, want 8MB", defaultNeeded)
 	}
@@ -2621,7 +2621,7 @@ func TestReplayRebuildReadSize_MonotonicFirstByte(t *testing.T) {
 	// helper must grow the read to cover the prior firstByte: readSize ≥
 	// fileSize - prevFirstByte = 8MB exactly (matches default), so no
 	// growth is needed.
-	atDefault := replayRebuildReadSize("mono", 0, 24, 80, fileSize-8*1024*1024)
+	atDefault := replayRebuildReadSize("mono", 0, 24, 80, fileSize-8*1024*1024, false)
 	if atDefault != 8*1024*1024 {
 		t.Errorf("at-default needed = %d, want 8MB", atDefault)
 	}
@@ -2630,13 +2630,13 @@ func TestReplayRebuildReadSize_MonotonicFirstByte(t *testing.T) {
 	// is BELOW the default-read floor (i.e., the previous build saw older
 	// bytes). The helper must grow the read so the new firstByte ≤ prevFirstByte.
 	prevFirstByte := int64(512 * 1024) // 0.5MB into the file
-	grown := replayRebuildReadSize("mono", 0, 24, 80, prevFirstByte)
+	grown := replayRebuildReadSize("mono", 0, 24, 80, prevFirstByte, false)
 	if grown < fileSize-prevFirstByte {
 		t.Errorf("grown needed = %d, want >= %d (fileSize - prevFirstByte)", grown, fileSize-prevFirstByte)
 	}
 
 	// Cap at replayRebuildMaxBytes (64MB) — push the request well past the cap.
-	capped := replayRebuildReadSize("mono", 1_000_000, 24, 80, 0)
+	capped := replayRebuildReadSize("mono", 1_000_000, 24, 80, 0, false)
 	if capped > replayRebuildMaxBytes {
 		t.Errorf("capped needed = %d exceeds replayRebuildMaxBytes %d", capped, replayRebuildMaxBytes)
 	}
@@ -2647,9 +2647,199 @@ func TestReplayRebuildReadSize_MonotonicFirstByte(t *testing.T) {
 // to the default sizing without panicking.
 func TestReplayRebuildReadSize_NoFile(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	got := replayRebuildReadSize("missing", 0, 24, 80, 4*1024*1024)
+	got := replayRebuildReadSize("missing", 0, 24, 80, 4*1024*1024, false)
 	if got != 8*1024*1024 {
 		t.Errorf("got = %d, want 8MB default when log is absent", got)
+	}
+}
+
+// TestReplayRebuildReadSize_ExtendReadsFurtherBack is the unit-level
+// reproduction of BUG-E's scroll-extend stall. When the user is at the loaded
+// scrollback ceiling of an escape-dense session, the (scrollOffset+viewport)*
+// cols*3 heuristic under-reads (dense output produced few net lines, so
+// scrollOffset stays below the 8MB-floor threshold) — so WITHOUT the extend
+// signal the read window never moves and the older log is unreachable. WITH
+// extend, the read grows a scrollExtendChunk further back so a strictly-earlier
+// firstByte becomes reachable.
+func TestReplayRebuildReadSize_ExtendReadsFurtherBack(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".argus", "sessions")
+	testutil.NoError(t, os.MkdirAll(dir, 0o755))
+	logPath := filepath.Join(dir, "ext.log")
+	f, err := os.Create(logPath)
+	testutil.NoError(t, err)
+	const fileSize = int64(40 * 1024 * 1024)
+	testutil.NoError(t, f.Truncate(fileSize)) // sparse — instant, no disk
+	testutil.NoError(t, f.Close())
+
+	// A prior 8MB tail read left firstByte at 32MB. scrollOffset is small
+	// (dense session), so the line heuristic stays under the 8MB floor.
+	prevFirstByte := fileSize - 8*1024*1024
+	const scrollOffset = 2000
+
+	// Without extend: read does not grow past the previous 8MB window — stall.
+	stalled := replayRebuildReadSize("ext", scrollOffset, 24, 120, prevFirstByte, false)
+	testutil.Equal(t, stalled, int64(8*1024*1024))
+	testutil.Equal(t, fileSize-stalled, prevFirstByte) // firstByte unchanged — the bug
+
+	// With extend: read grows a chunk further back, so firstByte moves earlier.
+	extended := replayRebuildReadSize("ext", scrollOffset, 24, 120, prevFirstByte, true)
+	testutil.Equal(t, extended, (fileSize-prevFirstByte)+scrollExtendChunk)
+	if fileSize-extended >= prevFirstByte {
+		t.Fatalf("extend must move firstByte strictly earlier: %d -> %d", prevFirstByte, fileSize-extended)
+	}
+}
+
+// TestReplayRebuildReadSize_ExtendStaysBoundedByCap verifies the extend path
+// still honours the 64MB single-read cap so a very long log can't force an
+// unbounded synchronous read.
+func TestReplayRebuildReadSize_ExtendStaysBoundedByCap(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".argus", "sessions")
+	testutil.NoError(t, os.MkdirAll(dir, 0o755))
+	logPath := filepath.Join(dir, "big.log")
+	f, err := os.Create(logPath)
+	testutil.NoError(t, err)
+	testutil.NoError(t, f.Truncate(int64(200*1024*1024))) // 200MB sparse
+	testutil.NoError(t, f.Close())
+
+	got := replayRebuildReadSize("big", 1000, 24, 120, 4*1024*1024, true)
+	if got > replayRebuildMaxBytes {
+		t.Fatalf("extend read %d exceeds cap %d", got, replayRebuildMaxBytes)
+	}
+}
+
+// denseLogContent builds an escape-dense session log: many in-place repaint
+// frames (cursor moves + styled rewrites, which add zero net scrollback lines)
+// per committed line, so a fixed byte budget yields far fewer net lines than
+// (bytes/cols/3). This is the density that stalls the line heuristic (BUG-E).
+func denseLogContent(targetBytes int) string {
+	const frame = "\x1b[2K\x1b[1G\x1b[38;5;42mframe\x1b[0m"
+	const commit = "\r\n\x1b[0mcommitted line\r\n"
+	var b strings.Builder
+	for b.Len() < targetBytes {
+		for r := 0; r < 60; r++ {
+			b.WriteString(frame)
+		}
+		b.WriteString(commit)
+	}
+	return b.String()
+}
+
+// TestTerminalPane_ScrollExtendReachesOlderHistory reproduces BUG-E end-to-end
+// through asyncReplayRebuild: after reattaching to a long, escape-dense session,
+// a ceiling-hit rebuild that trusts the line heuristic (extend=false) re-reads
+// the SAME window (stall), while extend=true reads strictly further back on each
+// ceiling hit until the whole on-disk log is loaded (firstByte reaches 0).
+func TestTerminalPane_ScrollExtendReachesOlderHistory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a multi-MB log and emulates it")
+	}
+	setupTaskLog(t, "dense", denseLogContent(20*1024*1024)) // 20MB dense
+	cols, rows := 120, 24
+	tp := NewTerminalPane()
+
+	// First scroll-up build (fresh entry, prevFirstByte=0 → 8MB tail read).
+	tp.asyncReplayRebuild("dense", 0, rows, cols, rows, nil, nil, 0, false, nil)
+	tp.mu.Lock()
+	tp.consumeReplayRebuildPendingLocked()
+	firstByte := tp.replayEmuFirstByte
+	maxScroll := tp.replayEmuMaxScroll
+	tp.mu.Unlock()
+	if firstByte <= 0 {
+		t.Fatalf("test log too small: whole file read on first build (firstByte=%d)", firstByte)
+	}
+
+	// Reproduce the stall: a ceiling-hit rebuild WITHOUT extend re-reads the
+	// same window, leaving firstByte unchanged — older history unreachable.
+	tp.asyncReplayRebuild("dense", maxScroll+12, rows, cols, rows, nil, nil, firstByte, false, nil)
+	tp.mu.Lock()
+	tp.consumeReplayRebuildPendingLocked()
+	stalledFirstByte := tp.replayEmuFirstByte
+	tp.mu.Unlock()
+	testutil.Equal(t, stalledFirstByte, firstByte) // no progress — BUG-E reproduced
+
+	// With extend, each ceiling-hit rebuild reaches strictly further back until
+	// the entire log is loaded.
+	prev := firstByte
+	for i := 0; i < 12 && prev > 0; i++ {
+		tp.mu.Lock()
+		scroll := tp.replayEmuMaxScroll + 12
+		fb := tp.replayEmuFirstByte
+		tp.mu.Unlock()
+		tp.asyncReplayRebuild("dense", scroll, rows, cols, rows, nil, nil, fb, true, nil)
+		tp.mu.Lock()
+		tp.consumeReplayRebuildPendingLocked()
+		cur := tp.replayEmuFirstByte
+		tp.mu.Unlock()
+		if cur >= prev {
+			t.Fatalf("extend did not progress at iter %d: firstByte %d -> %d", i, prev, cur)
+		}
+		prev = cur
+	}
+	testutil.Equal(t, prev, int64(0)) // reached the start of the on-disk log
+}
+
+// TestTerminalPane_Draw_ScrollExtendSmoke exercises the reattach+scroll path
+// through the real Draw loop on a SimulationScreen: a live session whose on-disk
+// log exceeds the initial read window. Scrolling past the loaded ceiling must
+// kick an extend rebuild (Draw computes the extend signal) that advances the
+// loaded window strictly further back.
+func TestTerminalPane_Draw_ScrollExtendSmoke(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a multi-MB log and emulates it")
+	}
+	// Just over the 8MB initial window so the first build leaves firstByte > 0.
+	setupTaskLog(t, "dense-draw", denseLogContent(10*1024*1024)) // 10MB dense
+	sim := newSim(t, 60, 12)
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 60, 12)
+	// Live session: ring is small (log-backed replay is what deep scroll reads).
+	ring := []byte(strings.Repeat("tail\r\n", 20))
+	sess := &mockAdapter{alive: true, totalWritten: uint64(len(ring)), output: ring}
+	tp.SetSession(sess)
+	tp.SetTaskID("dense-draw")
+
+	settle := func() {
+		// Emulating multi-MB logs is slow under -race; use a generous deadline.
+		deadline := time.Now().Add(60 * time.Second)
+		for time.Now().Before(deadline) {
+			tp.mu.Lock()
+			building := tp.replayBuilding
+			tp.mu.Unlock()
+			if !building {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatal("replay rebuild did not settle")
+	}
+
+	// Enter scroll mode → first rebuild reads the 8MB tail (firstByte > 0).
+	tp.scrollOffset = 1
+	tp.Draw(sim)
+	settle()
+	tp.Draw(sim) // consume pending + clamp + cache-hit paint
+	tp.mu.Lock()
+	firstByte := tp.replayEmuFirstByte
+	maxScroll := tp.replayEmuMaxScroll
+	tp.mu.Unlock()
+	if firstByte <= 0 {
+		t.Fatalf("expected a bounded initial window (firstByte>0), got %d", firstByte)
+	}
+
+	// User scrolls past the loaded ceiling → Draw must kick an extend rebuild.
+	tp.scrollOffset = maxScroll + 50
+	tp.Draw(sim)
+	settle()
+	tp.Draw(sim)
+	tp.mu.Lock()
+	extendedFirstByte := tp.replayEmuFirstByte
+	tp.mu.Unlock()
+	if extendedFirstByte >= firstByte {
+		t.Fatalf("scrolling past the ceiling did not extend the window: firstByte %d -> %d", firstByte, extendedFirstByte)
 	}
 }
 
@@ -2864,7 +3054,7 @@ func TestAsyncReplayRebuild_FiresBranchChangeOnSuccess(t *testing.T) {
 		default:
 		}
 	}
-	tp.asyncReplayRebuild("branch-change", 0, 24, 80, 24, nil, nil, 0, nil)
+	tp.asyncReplayRebuild("branch-change", 0, 24, 80, 24, nil, nil, 0, false, nil)
 	select {
 	case <-fired:
 		// Good.
