@@ -17,6 +17,11 @@ cmd/argus/main.go
 cmd/argus/kb.go
 cmd/argus/remote.go
 
+# `argus doctor` gather+print glue: best-effort I/O only (exec.LookPath,
+# EvalSymlinks, `go env`, a read-only daemon BootInfo dial). The testable
+# substance — the verdict + rendering — lives in internal/doctor (97% covered).
+cmd/argus/doctor.go
+
 # Test-only HTTP harness for Playwright. Covered by web-tests/*.spec.ts.
 cmd/argus-test-server/main.go
 

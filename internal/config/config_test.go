@@ -69,15 +69,12 @@ func TestSupervisorConfig_ExplicitFalseRollback(t *testing.T) {
 }
 
 func TestDefaultKeybindings(t *testing.T) {
+	// Defaults now live in internal/tui/keymap, so the config layer carries only
+	// user overrides — DefaultKeybindings() is the empty (no-override) set.
 	kb := DefaultKeybindings()
-	if kb.New != "n" {
-		t.Errorf("New = %q, want n", kb.New)
-	}
-	if kb.Quit != "q" {
-		t.Errorf("Quit = %q, want q", kb.Quit)
-	}
-	if kb.Help != "?" {
-		t.Errorf("Help = %q, want ?", kb.Help)
+	if kb.Global != nil || kb.TaskList != nil || kb.Agent != nil ||
+		kb.FilePanel != nil || kb.Diff != nil || kb.Settings != nil || kb.HeraRail != nil {
+		t.Errorf("DefaultKeybindings() should be empty, got %+v", kb)
 	}
 }
 

@@ -68,15 +68,6 @@ func (d *DB) seedDefaults() error {
 	if configCount == 0 {
 		defaults := map[string]string{
 			"defaults.backend":      cfg.Defaults.Backend,
-			"keybindings.new":       cfg.Keybindings.New,
-			"keybindings.attach":    cfg.Keybindings.Attach,
-			"keybindings.status":    cfg.Keybindings.Status,
-			"keybindings.delete":    cfg.Keybindings.Delete,
-			"keybindings.quit":      cfg.Keybindings.Quit,
-			"keybindings.help":      cfg.Keybindings.Help,
-			"keybindings.filter":    cfg.Keybindings.Filter,
-			"keybindings.prompt":    cfg.Keybindings.Prompt,
-			"keybindings.worktree":  cfg.Keybindings.Worktree,
 			"ui.theme":              cfg.UI.Theme,
 			"ui.show_elapsed":       fmt.Sprintf("%t", cfg.UI.ShowElapsed),
 			"ui.show_icons":         fmt.Sprintf("%t", cfg.UI.ShowIcons),
@@ -93,6 +84,16 @@ func (d *DB) seedDefaults() error {
 	}
 
 	return nil
+}
+
+// sweepLegacyKeybindings removes the dead `keybindings.*` config rows that older
+// databases seeded before keybindings moved to keymap defaults + config.toml
+// overrides. db.Config() already ignores these rows, so this is housekeeping —
+// but it must run on EVERY Open (not just first-time seeding) to actually clean
+// existing users' databases. Idempotent.
+func (d *DB) sweepLegacyKeybindings() error {
+	_, err := d.conn.Exec(`DELETE FROM config WHERE key LIKE 'keybindings.%'`)
+	return err
 }
 
 // fixupBackends runs on every Open and corrects known-outdated backend

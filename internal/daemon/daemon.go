@@ -21,6 +21,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/api"
+	"github.com/drn/argus/internal/buildid"
 	"github.com/drn/argus/internal/clipboard"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/events"
@@ -126,6 +127,7 @@ type Daemon struct {
 	binaryPath  string
 	binaryMtime time.Time
 	binaryHash  string
+	vcs         buildid.VCS // daemon's own commit SHA + dirty flag; display-only (blank outside a git tree)
 	bootedAt    time.Time
 
 	// prFetch is the legacy single-branch fetch seam, retained as a fallback /
@@ -251,6 +253,7 @@ func New(database *db.DB) *Daemon {
 			d.binaryHash = h
 		}
 	}
+	d.vcs = buildid.Current()
 
 	// Create the in-process runner with an onFinish callback that builds the
 	// ExitInfo and hands it to handleSessionExit (the shared DB-side exit sink).

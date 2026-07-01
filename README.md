@@ -148,6 +148,10 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 
 ### Keybindings
 
+The tables below are the **defaults**. Every key here is remappable via
+`[keybindings.<context>]` in `config.toml` — see [`[keybindings.<context>]`](#keybindingscontext)
+below. The `?` overlay always shows your active bindings.
+
 #### Task List
 
 | Key       | Action                                                          |
@@ -313,6 +317,22 @@ argus session-supervisor status   # show supervisor pid/socket/protocol state
 Or use **Settings → System → Restart Session Supervisor** (Enter), which is gated behind a confirmation prompt because it SIGHUPs every running agent. Under the hood it stops the supervisor and then restarts the daemon, since the daemon holds the supervisor connection and has no mid-life reconnect — bouncing the daemon is how it picks up the freshly-started supervisor. Active tasks are interrupted and flip to **In Review**. The row only appears when supervisor mode is on.
 
 **Supervisor mode is ON by default** (`supervisor.enabled`, see the config table below). To **roll back** to the legacy in-process path — where the daemon owns the PTYs itself, exactly as before the supervisor existed — set `supervisor.enabled = false` (config.toml or the DB) and restart the daemon. The in-process path is retained as a supported fallback for one release.
+
+### Diagnosing binary skew (`argus doctor`)
+
+`go install` can update one argus binary while the others keep running — the TUI on a new build, the daemon and/or supervisor on the old bytes — which silently breaks the keys that need the TUI↔daemon round-trip (Enter to attach, Ctrl+Q to detach) while local keys keep working.
+
+```bash
+argus doctor   # read-only: enumerate every argus binary + running process, print a verdict
+```
+
+`doctor` resolves the `argus` on your `PATH`, the `~/.argus/argusd` symlink target, the `go install` target, and the identity each live process (daemon, supervisor, this binary) is running, then prints a table and one of three verdicts with the exact fix:
+
+- **HEALTHY** — all resolve to the same file with matching hashes (exit 0).
+- **RESTART NEEDED** — same file, older bytes in a running process (a rebuild landed); the fix is `argus daemon restart`.
+- **PATH DIVERGENCE** — the daemon symlink target and your `PATH` `argus` resolve to **different files** (the real footgun — a plain restart just relaunches the divergent binary and loops); the fix re-points/reinstalls so both point at one build.
+
+It is strictly **read-only** (never touches a symlink, binary, `PATH`, or process) and best-effort — an unresolvable row degrades to "unknown" rather than aborting. Exits non-zero on any non-healthy verdict.
 
 ### Auto-start at Login (macOS)
 
@@ -656,7 +676,7 @@ When the PWA cannot reach the API — daemon stopped, host asleep, or Tailscale 
 
 ### Data
 
-All state (tasks, projects, backends, keybindings, UI settings, KB index) is persisted in SQLite at `~/.argus/data.sql`.
+All state (tasks, projects, backends, UI settings, KB index) is persisted in SQLite at `~/.argus/data.sql`. Keybindings are the exception — they live in the built-in defaults plus `config.toml` overrides only (no DB rows).
 
 ### Config file (`~/.argus/config.toml`)
 
@@ -720,21 +740,39 @@ Registered repos, keyed by name. The DB projects table is the primary source; en
 | `show_icons` | bool | `true` | ⚠️ Reserved — show status icons. Not yet consumed. |
 | `cleanup_worktrees` | bool | `true` | ⚠️ Reserved — auto-remove worktrees on task delete. Not yet consumed (worktrees are currently always cleaned up). |
 
-#### `[keybindings]` ⚠️
+#### `[keybindings.<context>]`
 
-All keybindings are **reserved**: they're loaded into config but the TUI key routing is still hardcoded, so setting them has no effect yet. This is the "more robust config backend → remap hotkeys" work that's planned, not shipped.
+Remap argus's own keys, alacritty-style. Bindings are **context-scoped**: each
+`[keybindings.<context>]` table maps an action id to a keyspec, layered on top of
+the built-in defaults (only the entries you set change). Edits are picked up live
+— no restart. Contexts: `global`, `tasklist`, `agent`, `filepanel`, `diff`,
+`settings`, `hera_rail`.
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `new` | string | `"n"` | New task. |
-| `attach` | string | `"enter"` | Attach to / open the selected task's agent. |
-| `status` | string | `"s"` | Advance task status. |
-| `delete` | string | `"d"` | Delete task. |
-| `quit` | string | `"q"` | Quit. |
-| `help` | string | `"?"` | Help overlay. |
-| `filter` | string | `"/"` | Filter the task list. |
-| `prompt` | string | `"p"` | Open the prompt modal. |
-| `worktree` | string | `"w"` | Worktree action. |
+```toml
+[keybindings.tasklist]
+new = "N"            # new task
+
+[keybindings.global]
+fork = "ctrl+g"      # fork task (the ctrl-shortcuts live in `global`)
+
+[keybindings.agent]
+session = "ctrl+t"   # switch Claude session
+
+[keybindings.hera_rail]
+spawn_worker = "W"
+```
+
+**Keyspec grammar:** a single printable rune (`n`, `?`, `/`, `J`), a named key
+(`enter`, `esc`, `tab`, `space`, `up`/`down`/`left`/`right`, `pgup`/`pgdn`,
+`home`/`end`, `backspace`, `delete`), `ctrl+<letter>`, `cmd`/`opt`/`alt`+arrow,
+or `shift`+(arrow/`pgup`/`pgdn`/`home`/`end`). The action ids are the ones shown
+in the `?` help overlay (which always reflects your active bindings).
+
+**Limits** (rejected overrides log a warning and keep the default): structural
+keys (`enter`/`esc`/`tab`, the `ctrl+c`/`ctrl+q` failsafe, plain arrows) are not
+rebindable; `agent` bindings must carry a modifier (so plain typing still reaches
+the agent); two actions can't share a key within one context; and plugin-view
+keys stay fully reserved.
 
 #### `[sandbox]`
 

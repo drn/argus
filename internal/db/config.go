@@ -51,15 +51,8 @@ func (d *DB) Config() config.Config {
 		{"defaults.backend", &cfg.Defaults.Backend},
 		{"defaults.share_project", &cfg.Defaults.ShareProject},
 		{"defaults.permission_mode", &cfg.Defaults.PermissionMode},
-		{"keybindings.new", &cfg.Keybindings.New},
-		{"keybindings.attach", &cfg.Keybindings.Attach},
-		{"keybindings.status", &cfg.Keybindings.Status},
-		{"keybindings.delete", &cfg.Keybindings.Delete},
-		{"keybindings.quit", &cfg.Keybindings.Quit},
-		{"keybindings.help", &cfg.Keybindings.Help},
-		{"keybindings.filter", &cfg.Keybindings.Filter},
-		{"keybindings.prompt", &cfg.Keybindings.Prompt},
-		{"keybindings.worktree", &cfg.Keybindings.Worktree},
+		// Keybindings are NOT DB-backed: they live in keymap defaults +
+		// config.toml overrides only (the old keybindings.* rows were dropped).
 		{"ui.theme", &cfg.UI.Theme},
 		{"ui.spinner", &cfg.UI.SpinnerStyle},
 	}
