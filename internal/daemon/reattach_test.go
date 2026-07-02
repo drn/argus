@@ -68,6 +68,48 @@ func TestReconcileOnStartup_Supervised_ReattachLiveFlipOrphan(t *testing.T) {
 	testutil.Equal(t, len(bindings), 1)
 }
 
+// TestReconcileOnStartup_Supervised_RevivesStrandedLiveWorker pins BUG-B: a
+// worker the supervisor confirms ALIVE across a bounce but whose task is parked
+// in in_review (a prior roll/reconcile stranded it) is restored to in_progress
+// on reattach — while a genuinely-finished worker (ready_to_close) stays in
+// in_review. The orphan continues to flip the other way (in_progress→in_review).
+func TestReconcileOnStartup_Supervised_RevivesStrandedLiveWorker(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	d, _ := testDaemon(t)
+
+	// A live worker stranded in in_review with no close-out marker — must revive.
+	stranded := &model.Task{Name: "stranded", Project: "proj", Status: model.StatusInReview}
+	testutil.NoError(t, d.db.Add(stranded))
+	bindWorker(t, d, stranded.ID)
+
+	// A live worker that genuinely reported done (ready_to_close) — must stay.
+	done := &model.Task{Name: "done", Project: "proj", Status: model.StatusInReview}
+	testutil.NoError(t, d.db.Add(done))
+	bindWorker(t, d, done.ID)
+	testutil.NoError(t, d.db.SetMeta(done.ID, db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"))
+
+	// A true orphan still in in_progress (supervisor does NOT report it) — flips.
+	orphan := &model.Task{Name: "orphan", Project: "proj", Status: model.StatusInProgress}
+	testutil.NoError(t, d.db.Add(orphan))
+
+	fake := &fakeSupClient{running: []string{stranded.ID, done.ID}} // both live
+	d.UseSupervisorRunner(fake)
+
+	d.ReconcileOnStartup()
+
+	gotStranded, err := d.db.Get(stranded.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotStranded.Status, model.StatusInProgress) // restored
+
+	gotDone, err := d.db.Get(done.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotDone.Status, model.StatusInReview) // close-out preserved
+
+	gotOrphan, err := d.db.Get(orphan.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotOrphan.Status, model.StatusInReview) // orphaned
+}
+
 // TestReconcileOnStartup_Supervised_LiveSetQueryFails_SkipsReconcile proves the
 // nil-guard: a failed ListSessions RPC (Running()==nil) must NOT flip live
 // agents to InReview (false termination). Nothing is re-attached, flipped, or
