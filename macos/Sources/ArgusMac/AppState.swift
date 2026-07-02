@@ -37,6 +37,11 @@ final class AppState {
     private var client: ArgusClient?
     private var pollTask: _Concurrency.Task<Void, Never>?
 
+    /// Live terminal controllers, cached by task ID so switching tasks in the
+    /// sidebar and back preserves scrollback. Torn down when the task is deleted
+    /// (``pruneTerminalControllers(keeping:)``) or the client is rebuilt.
+    private var terminalControllers: [String: TerminalController] = [:]
+
     /// Poll cadence. A later phase swaps this whole path for the `/api/events`
     /// SSE stream — see ``refreshOnce()`` / ``startPolling()``.
     private let pollInterval: Duration = .seconds(2)
@@ -78,6 +83,9 @@ final class AppState {
     func connect() {
         stop()
         connection = .connecting
+        // A rebuilt client may point at a different server/token, so drop every
+        // cached terminal controller (each holds its own client).
+        teardownTerminalControllers()
         do {
             client = try makeClient()
         } catch {
@@ -86,6 +94,31 @@ final class AppState {
             return
         }
         startPolling()
+    }
+
+    // MARK: - Terminal controllers
+
+    /// Returns the cached terminal controller for a task, creating it on first
+    /// use. Returns nil when there is no live client (not connected yet).
+    func terminalController(for taskID: String) -> TerminalController? {
+        if let existing = terminalControllers[taskID] { return existing }
+        guard let client else { return nil }
+        let controller = TerminalController(taskID: taskID, client: client)
+        terminalControllers[taskID] = controller
+        return controller
+    }
+
+    /// Tears down controllers whose task no longer exists.
+    private func pruneTerminalControllers(keeping ids: Set<String>) {
+        for (id, controller) in terminalControllers where !ids.contains(id) {
+            controller.teardown()
+            terminalControllers[id] = nil
+        }
+    }
+
+    private func teardownTerminalControllers() {
+        for controller in terminalControllers.values { controller.teardown() }
+        terminalControllers.removeAll()
     }
 
     /// Retry after a connection failure (wired to the banner's Retry button).
@@ -110,6 +143,7 @@ final class AppState {
             // "all" so archived tasks are present for the collapsed section.
             let fetched = try await client.tasks(archived: "all")
             tasks = fetched
+            pruneTerminalControllers(keeping: Set(fetched.map(\.id)))
             connection = .connected
         } catch {
             connection = .error(Self.describe(error))

@@ -70,13 +70,22 @@ let package = Package(
         .library(name: "ArgusKit", targets: ["ArgusKit"]),
         .executable(name: "ArgusMac", targets: ["ArgusMac"]),
     ],
+    dependencies: [
+        // SwiftTerm powers the live agent terminal in ArgusMac ONLY. ArgusKit
+        // stays pure Foundation (no third-party deps) so its stream-session
+        // state machine remains trivially testable.
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.2.0"),
+    ],
     targets: [
         .target(
             name: "ArgusKit"
         ),
         .executableTarget(
             name: "ArgusMac",
-            dependencies: ["ArgusKit"]
+            dependencies: [
+                "ArgusKit",
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
+            ]
             // ArgusMac builds clean in the default Swift 6 language mode. If a
             // future phase hits an intractable strict-concurrency fight in UI
             // glue, scope the escape hatch to THIS target only by adding:

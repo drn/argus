@@ -14,19 +14,15 @@ struct DetailView: View {
     }
 }
 
-/// The per-task tab view. Terminal / Diff / Files are placeholders for later
-/// phases; Info is real.
+/// The per-task tab view. Terminal is a live SwiftTerm stream; Diff / Files are
+/// placeholders for later phases; Info is real.
 struct TaskDetailTabs: View {
     let task: ArgusTask
 
     var body: some View {
         TabView {
-            PlaceholderTab(
-                title: "Terminal",
-                systemImage: "terminal",
-                message: "The live agent terminal will render here in a later phase (SwiftTerm)."
-            )
-            .tabItem { Label("Terminal", systemImage: "terminal") }
+            TerminalTab(task: task)
+                .tabItem { Label("Terminal", systemImage: "terminal") }
 
             PlaceholderTab(
                 title: "Diff",
