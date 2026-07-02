@@ -25,6 +25,13 @@ struct Sidebar: View {
         }
         .listStyle(.sidebar)
         .navigationTitle("Argus")
+        // Focus-scoped: only fires while the list itself has keyboard focus,
+        // so a plain Delete/Backspace typed into the terminal pane (which is
+        // most of what Delete is for, in a shell) never reaches this.
+        .onDeleteCommand {
+            guard let task = app.selectedTask else { return }
+            app.pendingConfirmation = .delete(task)
+        }
     }
 
     @ViewBuilder

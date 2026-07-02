@@ -17,6 +17,9 @@ struct TaskRow: View {
             }
         }
         .padding(.vertical, 2)
+        .contextMenu {
+            TaskActionMenuItems(task: task)
+        }
     }
 }
 

@@ -26,10 +26,43 @@ final class AppState {
     var selectedTaskID: ArgusTask.ID?
     private(set) var connection: ConnectionState = .connecting
 
-    /// Project + backend names pulled once from `/api/config`. Populated for
-    /// future new-task UI; today they feed nothing but are cheap to keep fresh.
+    /// Project + backend names pulled once from `/api/config`, feeding the New
+    /// Task sheet's pickers.
     private(set) var projectNames: [String] = []
     private(set) var backendNames: [String] = []
+    /// The daemon's configured default backend name (`Defaults.Backend`), used
+    /// to label the New Task sheet's "use default" backend option.
+    private(set) var defaultBackendName: String = ""
+
+    /// Which tab of the selected task's detail view is showing. Forced to
+    /// ``DetailTab/terminal`` after creating or forking a task so the user
+    /// lands on the live session rather than whatever tab a previously
+    /// selected task left scrolled to.
+    enum DetailTab: Hashable {
+        case terminal, diff, files, info
+    }
+    var activeDetailTab: DetailTab = .terminal
+
+    /// A destructive/interrupting task action awaiting user confirmation.
+    /// Driven by a single `.confirmationDialog` mounted once in
+    /// ``ContentView`` — the sidebar context menu and the detail pane's
+    /// overflow menu both just set this instead of owning their own dialogs.
+    enum PendingConfirmation {
+        case stop(ArgusTask)
+        case delete(ArgusTask)
+    }
+    var pendingConfirmation: PendingConfirmation?
+
+    /// Non-nil while the rename sheet is open, carrying the task being
+    /// renamed. Driven by a single `.sheet(item:)` in ``ContentView``.
+    var renamingTask: ArgusTask?
+
+    /// A transient, non-blocking error surfaced after a failed task action
+    /// (stop/restart/resume/archive/rename/fork/delete). Auto-dismisses after
+    /// a few seconds; visually mirrors ``ConnectionBanner`` but is
+    /// action-scoped rather than connection-scoped (see ``ActionErrorBanner``).
+    private(set) var actionError: String?
+    private var actionErrorDismissTask: _Concurrency.Task<Void, Never>?
 
     // MARK: - Collaborators
 
@@ -157,6 +190,130 @@ final class AppState {
         return (try? await client.links(taskID: taskID)) ?? []
     }
 
+    // MARK: - Git surfaces (Diff / Files tabs)
+    //
+    // Thin throwing wrappers over the ArgusKit git endpoints. Views own their
+    // own loading/error state (see ``DiffTabModel`` / ``FilesTabModel``); these
+    // just gate on a live client and run off the caller's task. `ArgusClient` is
+    // Sendable and actor-free, so the awaits hop off the main actor for the URL
+    // round-trip and resume back here.
+
+    func gitStatus(taskID: String) async throws -> GitStatus {
+        guard let client else { throw ArgusError.invalidResponse("not connected") }
+        return try await client.gitStatus(taskID: taskID)
+    }
+
+    func gitDiff(taskID: String, path: String) async throws -> GitDiff {
+        guard let client else { throw ArgusError.invalidResponse("not connected") }
+        return try await client.gitDiff(taskID: taskID, path: path)
+    }
+
+    func fileTree(taskID: String, dir: String = "") async throws -> FileTree {
+        guard let client else { throw ArgusError.invalidResponse("not connected") }
+        return try await client.fileTree(taskID: taskID, dir: dir)
+    }
+
+    // MARK: - Task lifecycle actions
+
+    /// Creates a task from the New Task sheet. Throws (rather than routing
+    /// through ``showActionError``) so the sheet can show an inline,
+    /// input-preserving error instead of a toast. On success, refreshes,
+    /// selects the new task, and switches the detail pane to Terminal.
+    func createTask(_ req: CreateTaskRequest) async throws -> String {
+        guard let client else { throw ArgusError.invalidResponse("not connected") }
+        let resp = try await client.createTask(req)
+        await refreshOnce()
+        selectedTaskID = resp.id
+        activeDetailTab = .terminal
+        return resp.id
+    }
+
+    /// `POST /api/tasks/{id}/stop` — called after the Stop confirmation.
+    func stop(_ task: ArgusTask) async {
+        await perform(task, label: "stop") { try await $0.stopTask(id: task.id) }
+    }
+
+    func restart(_ task: ArgusTask) async {
+        await perform(task, label: "restart") { _ = try await $0.restartTask(id: task.id) }
+    }
+
+    func resume(_ task: ArgusTask) async {
+        await perform(task, label: "resume") { _ = try await $0.resumeTask(id: task.id) }
+    }
+
+    /// Archiving the selected task moves it out of the sidebar's default
+    /// (collapsed-archive) view, so clear the selection rather than leaving
+    /// the detail pane pointed at a task that just left the visible list.
+    func archive(_ task: ArgusTask) async {
+        await perform(task, label: "archive") { try await $0.archiveTask(id: task.id) }
+        if selectedTaskID == task.id { selectedTaskID = nil }
+    }
+
+    func unarchive(_ task: ArgusTask) async {
+        await perform(task, label: "unarchive") { try await $0.unarchiveTask(id: task.id) }
+    }
+
+    func rename(_ task: ArgusTask, to name: String) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        await perform(task, label: "rename") { try await $0.renameTask(id: task.id, name: trimmed) }
+    }
+
+    /// `POST /api/tasks/{id}/fork` — mirrors ``createTask(_:)``'s post-success
+    /// UX (select + switch to Terminal) since a fork is effectively a new task.
+    func fork(_ task: ArgusTask) async {
+        guard let client else { return }
+        do {
+            let resp = try await client.forkTask(id: task.id)
+            await refreshOnce()
+            selectedTaskID = resp.id
+            activeDetailTab = .terminal
+        } catch {
+            showActionError("Failed to fork \"\(task.name)\": \(Self.describe(error))")
+        }
+    }
+
+    /// `DELETE /api/tasks/{id}` — called after the Delete confirmation. Clears
+    /// the selection up front; ``refreshOnce()``'s existing
+    /// ``pruneTerminalControllers(keeping:)`` pass tears down the terminal
+    /// controller once the deleted id drops out of the fetched list.
+    func delete(_ task: ArgusTask) async {
+        if selectedTaskID == task.id { selectedTaskID = nil }
+        await perform(task, label: "delete") { try await $0.deleteTask(id: task.id) }
+    }
+
+    /// Dismisses the action-error toast immediately (wired to its close
+    /// button in ``ActionErrorBanner``).
+    func dismissActionError() {
+        actionErrorDismissTask?.cancel()
+        actionErrorDismissTask = nil
+        actionError = nil
+    }
+
+    /// Shared plumbing for the simple task actions: run the client call,
+    /// refresh the task list on success, and surface a transient error on
+    /// failure.
+    private func perform(_ task: ArgusTask, label: String,
+                         _ body: (ArgusClient) async throws -> Void) async {
+        guard let client else { return }
+        do {
+            try await body(client)
+            await refreshOnce()
+        } catch {
+            showActionError("Failed to \(label) \"\(task.name)\": \(Self.describe(error))")
+        }
+    }
+
+    private func showActionError(_ message: String) {
+        actionError = message
+        actionErrorDismissTask?.cancel()
+        actionErrorDismissTask = _Concurrency.Task { [weak self] in
+            try? await _Concurrency.Task.sleep(for: .seconds(6))
+            guard !_Concurrency.Task.isCancelled else { return }
+            self?.actionError = nil
+        }
+    }
+
     // MARK: - Internals
 
     private func makeClient() throws -> ArgusClient {
@@ -197,6 +354,9 @@ final class AppState {
         }
         if let backends = cfg["Backends"]?.objectValue {
             backendNames = backends.keys.sorted()
+        }
+        if let backend = cfg["Defaults"]?["Backend"]?.stringValue {
+            defaultBackendName = backend
         }
     }
 

@@ -18,46 +18,41 @@ struct DetailView: View {
 /// placeholders for later phases; Info is real.
 struct TaskDetailTabs: View {
     let task: ArgusTask
+    @Environment(AppState.self) private var app
 
     var body: some View {
-        TabView {
-            TerminalTab(task: task)
-                .tabItem { Label("Terminal", systemImage: "terminal") }
+        @Bindable var app = app
+        VStack(spacing: 0) {
+            DetailHeaderChips(task: task)
+            TabView(selection: $app.activeDetailTab) {
+                TerminalTab(task: task)
+                    .tabItem { Label("Terminal", systemImage: "terminal") }
+                    .tag(AppState.DetailTab.terminal)
 
-            PlaceholderTab(
-                title: "Diff",
-                systemImage: "plusminus",
-                message: "The task's git diff will render here in a later phase."
-            )
-            .tabItem { Label("Diff", systemImage: "plusminus") }
+                DiffTab(task: task)
+                    .tabItem { Label("Diff", systemImage: "plusminus") }
+                    .tag(AppState.DetailTab.diff)
 
-            PlaceholderTab(
-                title: "Files",
-                systemImage: "folder",
-                message: "The task's changed files will render here in a later phase."
-            )
-            .tabItem { Label("Files", systemImage: "folder") }
+                FilesTab(task: task)
+                    .tabItem { Label("Files", systemImage: "folder") }
+                    .tag(AppState.DetailTab.files)
 
-            InfoTab(task: task)
-                .tabItem { Label("Info", systemImage: "info.circle") }
+                InfoTab(task: task)
+                    .tabItem { Label("Info", systemImage: "info.circle") }
+                    .tag(AppState.DetailTab.info)
+            }
+            .padding()
         }
-        .padding()
         .navigationTitle(task.name)
         .navigationSubtitle(task.project)
-    }
-}
-
-/// A labelled placeholder for a not-yet-built tab.
-struct PlaceholderTab: View {
-    let title: String
-    let systemImage: String
-    let message: String
-
-    var body: some View {
-        ContentUnavailableView {
-            Label(title, systemImage: systemImage)
-        } description: {
-            Text(message)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    TaskActionMenuItems(task: task, showShortcuts: true)
+                } label: {
+                    Label("Actions", systemImage: "ellipsis.circle")
+                }
+            }
         }
     }
 }
