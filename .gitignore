@@ -59,3 +59,6 @@ web-tests/.cache/
 .claude/reviews/
 .workflow/
 .bug-bash/
+
+# macOS SwiftPM build (ArgusMac / ArgusKit)
+macos/.build/
