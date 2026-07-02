@@ -22,10 +22,17 @@ build:
 #        Certificate Type: Code Signing
 #      (No need to mark the cert "trusted" — codesign and TCC both work with an
 #       untrusted self-signed identity; locally-built binaries aren't quarantined.)
-#   2. Run a dogfood deploy (or `make dogfood-install`) — the binary is now
-#      signed with a stable identity.
-#   3. Approve the macOS prompt once, OR grant the binary Full Disk Access
-#      (System Settings -> Privacy & Security -> Full Disk Access). It persists.
+#   2. Run a dogfood deploy (or `make dogfood-install`). The FIRST time codesign
+#      uses the key, macOS Keychain prompts "codesign wants to sign using key
+#      '<name>' in your keychain" — click **Always Allow**, NOT "Allow". "Allow"
+#      re-prompts every build, and since dogfood deploys run unattended (iris),
+#      an un-answered prompt hangs the build. "Always Allow" grants codesign
+#      standing access so future signs are silent.
+#   3. The binary is now stably signed. The next time the macOS privacy prompt
+#      ("argus would like to access data from other apps") appears in normal
+#      use, approve it once — OR grant the binary Full Disk Access (System
+#      Settings -> Privacy & Security). Because the signature is now stable,
+#      that grant persists across every future rebuild.
 #
 # Machines without that identity (other devs, CI, Linux) fall back to a plain
 # `go install` — byte-identical to before — so this target is always safe.
