@@ -1,7 +1,46 @@
-.PHONY: build vet test test-watch test-cover test-cover-gate test-pkg lint-pr fmt fmt-check vuln pre-pr plugin-smoke
+.PHONY: build vet test test-watch test-cover test-cover-gate test-pkg lint-pr fmt fmt-check vuln pre-pr plugin-smoke dogfood-install
 
 build:
 	go build ./...
+
+# Build + install the live argusd binary the local daemon runs, self-signing
+# it with a STABLE code-signing identity when one is available so macOS TCC
+# privacy grants persist across rebuilds. This is the command .iris.toml runs
+# on every dogfood deploy.
+#
+# WHY: Go's toolchain ad-hoc-signs binaries with a content-derived cdhash that
+# changes on every build. macOS TCC keys a privacy grant ("argus would like to
+# access data from other apps" — triggered when a spawned agent or tool touches
+# ~/Library/{Application Support,Containers,Caches}) to that cdhash, so an
+# unsigned/ad-hoc binary re-prompts after every rebuild. A stable signing
+# identity gives TCC a constant designated requirement, so one grant sticks.
+#
+# OPT-IN (macOS, per developer — fully optional):
+#   1. Keychain Access -> Certificate Assistant -> Create a Certificate:
+#        Name: "Argus Dogfood"  (or set ARGUS_SIGN_IDENTITY to your own name)
+#        Identity Type: Self Signed Root
+#        Certificate Type: Code Signing
+#      (No need to mark the cert "trusted" — codesign and TCC both work with an
+#       untrusted self-signed identity; locally-built binaries aren't quarantined.)
+#   2. Run a dogfood deploy (or `make dogfood-install`) — the binary is now
+#      signed with a stable identity.
+#   3. Approve the macOS prompt once, OR grant the binary Full Disk Access
+#      (System Settings -> Privacy & Security -> Full Disk Access). It persists.
+#
+# Machines without that identity (other devs, CI, Linux) fall back to a plain
+# `go install` — byte-identical to before — so this target is always safe.
+ARGUS_SIGN_IDENTITY ?= Argus Dogfood
+
+dogfood-install:
+	go install ./cmd/argus
+	@bin="$$(go env GOBIN)"; [ -n "$$bin" ] || bin="$$(go env GOPATH)/bin"; bin="$$bin/argus"; \
+	id=$$(security find-identity -p codesigning 2>/dev/null | grep -F "$(ARGUS_SIGN_IDENTITY)" | head -1 | awk '{print $$2}'); \
+	if [ -n "$$id" ]; then \
+		codesign --force --identifier com.drn.argus --sign "$$id" "$$bin" \
+			&& echo "[dogfood] signed $$bin with stable identity '$(ARGUS_SIGN_IDENTITY)' ($$id) — TCC grant will persist"; \
+	else \
+		echo "[dogfood] no '$(ARGUS_SIGN_IDENTITY)' code-signing identity found — left ad-hoc (macOS may re-prompt for file access). To opt in, see the dogfood-install comment in the Makefile."; \
+	fi
 
 # Full pre-PR gate — mirrors .github/workflows/ci.yml in order. Run this
 # (and get a clean pass) before opening or updating a PR. test-cover-gate
