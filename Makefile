@@ -1,4 +1,4 @@
-.PHONY: build vet test test-watch test-cover test-cover-gate test-pkg lint-pr fmt fmt-check vuln pre-pr plugin-smoke install-signed
+.PHONY: build vet test test-watch test-cover test-cover-gate test-pkg lint-pr fmt fmt-check vuln pre-pr plugin-smoke install-signed mac-build mac-test mac-run mac-app
 
 build:
 	go build ./...
@@ -122,3 +122,30 @@ test-pkg:
 # transient backends/tasks/views/sections/MCP tools on exit.
 plugin-smoke:
 	go run ./cmd/argus-plugin-smoke -verbose
+
+# --- macOS GUI (ArgusMac) ---------------------------------------------------
+# The native SwiftUI app (a Conductor-style GUI) lives in ./macos as a pure
+# SwiftPM package built with the Swift 6.3 Command Line Tools — no Xcode, no
+# xcodebuild. These targets are self-contained (they never touch the Go build).
+#
+# --disable-sandbox: SwiftPM sandboxes manifest/plugin compiles via
+# sandbox-exec, and macOS forbids NESTED sandboxes — so any `swift build`
+# inside an argus agent sandbox (how this repo is dogfooded) dies with
+# "sandbox_apply: Operation not permitted". Our own manifest needs no
+# protection from us; disable it so the targets work everywhere.
+mac-build:
+	cd macos && swift build --disable-sandbox
+
+# NOT `swift test`: on a CLT-only install (no Xcode) `swift test` silently
+# runs ZERO tests and exits 0 — even failing tests "pass". The suite is an
+# executable target instead; see the ArgusKitTests comment in macos/Package.swift.
+mac-test:
+	cd macos && swift run --disable-sandbox ArgusKitTests
+
+mac-run:
+	cd macos && swift run --disable-sandbox ArgusMac
+
+# Assembles the real, double-clickable macos/dist/ArgusMac.app bundle (release
+# build + Info.plist + codesign) — see scripts/mac-app.sh for the why.
+mac-app:
+	./scripts/mac-app.sh
