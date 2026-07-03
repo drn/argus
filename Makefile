@@ -1,12 +1,14 @@
-.PHONY: build vet test test-watch test-cover test-cover-gate test-pkg lint-pr fmt fmt-check vuln pre-pr plugin-smoke dogfood-install
+.PHONY: build vet test test-watch test-cover test-cover-gate test-pkg lint-pr fmt fmt-check vuln pre-pr plugin-smoke install-signed
 
 build:
 	go build ./...
 
 # Build + install the live argusd binary the local daemon runs, self-signing
 # it with a STABLE code-signing identity when one is available so macOS TCC
-# privacy grants persist across rebuilds. This is the command .iris.toml runs
-# on every dogfood deploy.
+# privacy grants persist across rebuilds. This is the right way to (re)install
+# argus locally regardless of workflow — a plain `go install` works too, it
+# just leaves the binary ad-hoc signed (see WHY). `.iris.toml` runs this on
+# each deploy; run it by hand for any other local (re)install.
 #
 # WHY: Go's toolchain ad-hoc-signs binaries with a content-derived cdhash that
 # changes on every build. macOS TCC keys a privacy grant ("argus would like to
@@ -17,17 +19,18 @@ build:
 #
 # OPT-IN (macOS, per developer — fully optional):
 #   1. Keychain Access -> Certificate Assistant -> Create a Certificate:
-#        Name: "Argus Dogfood"  (or set ARGUS_SIGN_IDENTITY to your own name)
+#        Name: "Argus Code Signing"  (or set ARGUS_SIGN_IDENTITY to your own name)
 #        Identity Type: Self Signed Root
 #        Certificate Type: Code Signing
 #      (No need to mark the cert "trusted" — codesign and TCC both work with an
 #       untrusted self-signed identity; locally-built binaries aren't quarantined.)
-#   2. Run a dogfood deploy (or `make dogfood-install`). The FIRST time codesign
-#      uses the key, macOS Keychain prompts "codesign wants to sign using key
-#      '<name>' in your keychain" — click **Always Allow**, NOT "Allow". "Allow"
-#      re-prompts every build, and since dogfood deploys run unattended (iris),
-#      an un-answered prompt hangs the build. "Always Allow" grants codesign
-#      standing access so future signs are silent.
+#   2. Run `make install-signed` (also what `.iris.toml` runs on each deploy).
+#      The FIRST time codesign uses the key, macOS Keychain prompts "codesign
+#      wants to sign using key '<name>' in your keychain" — click **Always
+#      Allow**, NOT "Allow". "Allow" re-prompts every build; if an automated
+#      rebuild runs unattended (e.g. an iris deploy), an un-answered prompt
+#      hangs it. "Always Allow" grants codesign standing access so future
+#      signs are silent.
 #   3. The binary is now stably signed. The next time the macOS privacy prompt
 #      ("argus would like to access data from other apps") appears in normal
 #      use, approve it once — OR grant the binary Full Disk Access (System
@@ -36,17 +39,17 @@ build:
 #
 # Machines without that identity (other devs, CI, Linux) fall back to a plain
 # `go install` — byte-identical to before — so this target is always safe.
-ARGUS_SIGN_IDENTITY ?= Argus Dogfood
+ARGUS_SIGN_IDENTITY ?= Argus Code Signing
 
-dogfood-install:
+install-signed:
 	go install ./cmd/argus
 	@bin="$$(go env GOBIN)"; [ -n "$$bin" ] || bin="$$(go env GOPATH)/bin"; bin="$$bin/argus"; \
 	id=$$(security find-identity -p codesigning 2>/dev/null | grep -F "$(ARGUS_SIGN_IDENTITY)" | head -1 | awk '{print $$2}'); \
 	if [ -n "$$id" ]; then \
 		codesign --force --identifier com.drn.argus --sign "$$id" "$$bin" \
-			&& echo "[dogfood] signed $$bin with stable identity '$(ARGUS_SIGN_IDENTITY)' ($$id) — TCC grant will persist"; \
+			&& echo "[install-signed] signed $$bin with stable identity '$(ARGUS_SIGN_IDENTITY)' ($$id) — TCC grant will persist"; \
 	else \
-		echo "[dogfood] no '$(ARGUS_SIGN_IDENTITY)' code-signing identity found — left ad-hoc (macOS may re-prompt for file access). To opt in, see the dogfood-install comment in the Makefile."; \
+		echo "[install-signed] no '$(ARGUS_SIGN_IDENTITY)' code-signing identity found — left ad-hoc (macOS may re-prompt for file access). To opt in, see the install-signed comment in the Makefile."; \
 	fi
 
 # Full pre-PR gate — mirrors .github/workflows/ci.yml in order. Run this
