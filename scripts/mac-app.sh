@@ -20,7 +20,7 @@ DIST_DIR="$MACOS_DIR/dist"
 APP_DIR="$DIST_DIR/ArgusMac.app"
 BINARY_NAME="ArgusMac"
 
-ARGUS_SIGN_IDENTITY="${ARGUS_SIGN_IDENTITY:-Argus Dogfood}"
+ARGUS_SIGN_IDENTITY="${ARGUS_SIGN_IDENTITY:-Argus Code Signing}"
 BUNDLE_ID="com.drn.argus.mac"
 
 echo "[mac-app] building release binary..."
@@ -69,8 +69,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Codesign — mirror the dogfood-install pattern in the Makefile: sign with a
-# STABLE identity when the developer has opted in (see dogfood-install's
+# Codesign — mirror the install-signed pattern in the Makefile: sign with a
+# STABLE identity when the developer has opted in (see install-signed's
 # comment for setup), else fall back to an ad-hoc signature so the bundle is
 # still launchable everywhere (other devs, CI, Linux-built-but-never-run).
 id=$(security find-identity -p codesigning 2>/dev/null | grep -F "$ARGUS_SIGN_IDENTITY" | head -1 | awk '{print $2}' || true)
@@ -79,7 +79,7 @@ if [ -n "$id" ]; then
     echo "[mac-app] signed with stable identity '$ARGUS_SIGN_IDENTITY' ($id)"
 else
     codesign --force --sign - "$APP_DIR"
-    echo "[mac-app] no '$ARGUS_SIGN_IDENTITY' code-signing identity found — ad-hoc signed instead (see dogfood-install in the Makefile to opt in)"
+    echo "[mac-app] no '$ARGUS_SIGN_IDENTITY' code-signing identity found — ad-hoc signed instead (see install-signed in the Makefile to opt in)"
 fi
 
 echo "[mac-app] bundle ready: $APP_DIR"
