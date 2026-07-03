@@ -18,14 +18,14 @@ default_branch = "master"
 # `go install ./cmd/argus` lands ~/go/bin/argus, the exact file the daemon
 # runs. No machine-specific paths here: this file is shared/checked in.
 #
-# `make dogfood-install` wraps that `go install` and additionally self-signs
+# `make install-signed` wraps that `go install` and additionally self-signs
 # the binary with a stable code-signing identity WHEN one is present, so macOS
 # TCC privacy grants survive rebuilds (Go's ad-hoc signature changes every
 # build and re-prompts). Opt-in and per-developer: machines without the signing
-# identity fall back to a plain install. See the dogfood-install target in the
+# identity fall back to a plain install. See the install-signed target in the
 # Makefile for the one-time opt-in steps.
 [build]
-command = ["make", "dogfood-install"]
+command = ["make", "install-signed"]
 
 # Restart via the user LaunchAgent; iris kickstarts the label.
 [restart]
