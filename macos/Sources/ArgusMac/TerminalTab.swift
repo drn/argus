@@ -37,17 +37,20 @@ struct TerminalSurface: NSViewRepresentable {
 /// SwiftTerm's `TerminalView.mouseDown` only drives selection/mouse-reporting —
 /// it never takes first responder, which a plain AppKit window compensates for
 /// but a SwiftUI-hosted view does not. Without this subclass, keystrokes never
-/// reach `keyDown` and the terminal is read-only.
+/// reach `keyDown` and the terminal is read-only. `mouseDown` is `public` (not
+/// `open`) in SwiftTerm so it cannot be overridden (release-mode enforces it);
+/// a local left-click event monitor reclaims focus instead, and
+/// `viewDidMoveToWindow` (inherited open from NSView) grabs it on mount.
 final class FocusTakingTerminalView: TerminalView {
-    override func mouseDown(with event: NSEvent) {
-        if let window, window.firstResponder !== self {
-            window.makeFirstResponder(self)
-        }
-        super.mouseDown(with: event)
-    }
+    private var clickMonitor: Any?
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if let clickMonitor {
+            NSEvent.removeMonitor(clickMonitor)
+            self.clickMonitor = nil
+        }
+        guard window != nil else { return }
         // Grab focus when (re)mounted so typing works without a click. Async:
         // the SwiftUI mount may not have finished wiring the window's responder
         // plumbing synchronously.
@@ -57,7 +60,22 @@ final class FocusTakingTerminalView: TerminalView {
                 window.makeFirstResponder(self)
             }
         }
+        // Reclaim focus on any click landing inside the terminal (the monitor
+        // fires before normal dispatch; returning the event lets SwiftTerm's
+        // own selection handling proceed untouched).
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
+            guard let self, let window = self.window, event.window === window else { return event }
+            let point = self.convert(event.locationInWindow, from: nil)
+            if self.bounds.contains(point), window.firstResponder !== self {
+                window.makeFirstResponder(self)
+            }
+            return event
+        }
     }
+
+    // No deinit cleanup needed (and Swift 6 forbids touching the non-Sendable
+    // monitor from a nonisolated deinit): leaving a window always fires
+    // viewDidMoveToWindow with window == nil, which removes the monitor above.
 }
 
 /// The Terminal tab: a live streaming terminal, or the connecting / ended /
