@@ -33,3 +33,15 @@ The `macos/` SwiftPM package (ArgusKit SDK + ArgusMac SwiftUI app) is a thin RES
 ## TerminalControllers are cached per task ID and pruned only on disappearance
 
 **Terminal controllers are cached by task ID (`AppState.terminalControllers`) so switching tasks in the sidebar preserves scrollback**, and are torn down ONLY when the task drops out of an `/api/tasks` snapshot (`pruneTerminalControllers(keeping:)`) or the client is rebuilt. Do not tear a controller down on mere view disappearance — that loses the terminal buffer on every sidebar switch.
+
+## `bytes.lines` swallows empty lines — never parse SSE with it
+
+**Swift's `AsyncLineSequence` (`URLSession.AsyncBytes.lines`) silently drops empty lines, and SSE dispatches events on the blank line — parsed through it, NO event ever dispatches**: frames coalesce into one giant `\n`-joined payload that fails base64 at stream end, the resume cursor stagnates, and overlapping replays paint spliced garbage (stray `m`/`s`/`f` SGR terminators) over the terminal. `ArgusClient.stream` iterates raw bytes through `ByteLineSplitter` (preserves empties, strips `\r`, flushes trailing line); tests pin the empty-line property. Empirically verified: `"a\n\nb\n\n\nc\n"` yields `[a] [b] [c]` through `.lines`.
+
+## SwiftTerm's TerminalView never takes first responder under SwiftUI hosting
+
+**`TerminalView.mouseDown` only drives selection/mouse-reporting — it never calls `makeFirstResponder`, so a SwiftUI-hosted terminal is READ-ONLY (keystrokes never reach `keyDown`)**; a plain AppKit window's responder wiring masks this, `NSViewRepresentable` does not. `FocusTakingTerminalView` (TerminalTab.swift) overrides `mouseDown` (focus-then-super) and `viewDidMoveToWindow` (async focus grab on mount) so typing works on open and after clicking away and back.
+
+## `open Foo.app` does not pass environment variables
+
+**The `ARGUS_MAC_SELECT_TASK` / `ARGUS_MAC_INITIAL_TAB` launch hooks only work when the bundle binary is executed directly** (`macos/dist/ArgusMac.app/Contents/MacOS/ArgusMac`) — `open(1)` launches via launchd and drops the caller's environment.

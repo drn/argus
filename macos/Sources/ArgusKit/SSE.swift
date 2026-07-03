@@ -13,6 +13,40 @@ public struct SSEvent: Sendable, Equatable {
     }
 }
 
+/// Splits a raw byte stream into lines on `\n` (stripping a trailing `\r`),
+/// PRESERVING empty lines. SSE dispatches events on blank lines, but Swift's
+/// `AsyncLineSequence` (`bytes.lines`) silently swallows empty lines — feeding
+/// it to ``SSEParser`` means no event ever dispatches and frames coalesce into
+/// one giant undecodable payload at stream end. Iterate the raw bytes and feed
+/// them here instead.
+public struct ByteLineSplitter: Sendable {
+    private var buffer: [UInt8] = []
+
+    public init() {}
+
+    /// Feeds one byte. Returns a completed line (possibly empty) when `byte`
+    /// is `\n`, else nil.
+    public mutating func feed(_ byte: UInt8) -> String? {
+        if byte == 0x0A { // \n
+            if buffer.last == 0x0D { buffer.removeLast() } // strip \r
+            let line = String(decoding: buffer, as: UTF8.self)
+            buffer.removeAll(keepingCapacity: true)
+            return line
+        }
+        buffer.append(byte)
+        return nil
+    }
+
+    /// Flushes a trailing unterminated line at end-of-stream (nil if empty).
+    public mutating func flush() -> String? {
+        guard !buffer.isEmpty else { return nil }
+        if buffer.last == 0x0D { buffer.removeLast() }
+        let line = String(decoding: buffer, as: UTF8.self)
+        buffer.removeAll(keepingCapacity: true)
+        return line
+    }
+}
+
 /// A minimal, WHATWG-compliant Server-Sent-Events line parser.
 ///
 /// Feed it lines (without trailing newlines). It accumulates `event:` and
@@ -158,11 +192,18 @@ extension ArgusClient {
                     // parsing so a stream that never emits a frame still resolves
                     // as connected rather than perpetually connecting.
                     onOpen?()
+                    // Raw byte iteration, NOT `bytes.lines`: AsyncLineSequence
+                    // swallows empty lines, and SSE dispatches on blank lines —
+                    // see ByteLineSplitter.
+                    var splitter = ByteLineSplitter()
                     var parser = SSEParser()
-                    for try await line in bytes.lines {
-                        if let ev = parser.feed(line) {
+                    for try await byte in bytes {
+                        if let line = splitter.feed(byte), let ev = parser.feed(line) {
                             continuation.yield(ev)
                         }
+                    }
+                    if let line = splitter.flush(), let ev = parser.feed(line) {
+                        continuation.yield(ev)
                     }
                     if let ev = parser.finish() {
                         continuation.yield(ev)

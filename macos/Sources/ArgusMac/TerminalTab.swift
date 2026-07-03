@@ -29,12 +29,33 @@ struct TerminalSurface: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        // Clicking the terminal focuses it (SwiftTerm becomes first responder
-        // on mouseDown); make it the first responder on mount too so keystrokes
-        // flow immediately without a click.
-        let tv = controller.terminalView
-        if let window = tv.window, window.firstResponder !== tv {
-            DispatchQueue.main.async { window.makeFirstResponder(tv) }
+        // Focus is handled by FocusTakingTerminalView (click + mount) — hosted
+        // AppKit views get no first responder from SwiftUI on their own.
+    }
+}
+
+/// SwiftTerm's `TerminalView.mouseDown` only drives selection/mouse-reporting —
+/// it never takes first responder, which a plain AppKit window compensates for
+/// but a SwiftUI-hosted view does not. Without this subclass, keystrokes never
+/// reach `keyDown` and the terminal is read-only.
+final class FocusTakingTerminalView: TerminalView {
+    override func mouseDown(with event: NSEvent) {
+        if let window, window.firstResponder !== self {
+            window.makeFirstResponder(self)
+        }
+        super.mouseDown(with: event)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // Grab focus when (re)mounted so typing works without a click. Async:
+        // the SwiftUI mount may not have finished wiring the window's responder
+        // plumbing synchronously.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window else { return }
+            if window.firstResponder !== self {
+                window.makeFirstResponder(self)
+            }
         }
     }
 }

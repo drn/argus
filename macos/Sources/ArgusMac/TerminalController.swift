@@ -71,7 +71,7 @@ final class TerminalController {
     init(taskID: String, client: ArgusClient) {
         self.taskID = taskID
         self.client = client
-        self.terminalView = TerminalView(frame: CGRect(x: 0, y: 0, width: 640, height: 400))
+        self.terminalView = FocusTakingTerminalView(frame: CGRect(x: 0, y: 0, width: 640, height: 400))
 
         var cont: AsyncStream<Data>.Continuation!
         let stream = AsyncStream<Data> { cont = $0 }
