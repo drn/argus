@@ -35,7 +35,12 @@ make vuln           # govulncheck ./...
 make lint-pr        # golangci-lint --new-from-rev=origin/master (matches CI)
 make pre-pr         # full CI mirror: build+vet+fmt-check+lint-pr+vuln+test-cover-gate
 go build -o argus ./cmd/argus/
+make mac-build      # swift build the macos/ package (--disable-sandbox)
+make mac-test       # run the Swift suite (NOT `swift test`; see gotchas/macos-app.md)
+make mac-run        # launch the ArgusMac SwiftUI app
 ```
+
+The `mac-*` targets drive the `macos/` SwiftPM package with the Swift 6.3 Command Line Tools (no Xcode, no `xcodebuild`); they never touch the Go build and are not part of `make pre-pr`.
 
 ## Before Opening a PR
 
@@ -57,6 +62,7 @@ tcell/tview UI with direct cell painting for the agent terminal. `App` (`interna
 - `internal/daemon/` — `daemon.go` (owns Runner + Unix socket; first byte 'R'/'S' selects RPC vs stream), `sessioncore.go` (the R/S server both daemon and supervisor mount; hosts the `#707` `awaitExitInfoCached` guard), `supervisor.go` (the dark long-lived PTY owner on its own sock/pid/lock trio), `headless.go` (TUI-less task create), `client/` (TUI-side daemon client).
 - `internal/api/` — REST + PWA on :7743, binds `127.0.0.1` + the Tailscale IP only, never `0.0.0.0`. `internal/push/` — Web Push (VAPID). `internal/mcp/` — MCP server :7742, native `hera_*` tools. `internal/db/` — SQLite at `~/.argus/data.sql`; `hera.go` + `hera_messages.go` are the Hera store. `internal/hera/service.go` — role-addressed delivery over the existing `notify.Notifier` bus.
 - Others: `internal/config`, `internal/gitutil` (pure Go, off-UI-thread), `internal/spinner`, `internal/skills`, `internal/uxlog`, `internal/apiclient`, `internal/apistore`, `internal/model` (`Task` + `Status`: `pending → in_progress → in_review → complete`), `cmd/argus-test-server` (Playwright harness).
+- `macos/` — the native macOS app (SwiftPM, not Go): `ArgusKit` (a pure-Foundation typed Swift SDK for the daemon's REST + SSE API) + `ArgusMac` (a SwiftUI app shell built on it). A thin REST/SSE client of the daemon with NO Go coupling — it shares no code, only the wire contract; see `gotchas/macos-app.md`.
 
 **Key patterns** (non-obvious; the gotcha files hold the invariants):
 
@@ -68,6 +74,14 @@ tcell/tview UI with direct cell painting for the agent terminal. `App` (`interna
 - **Retired: the `depends_on` DAG.** `depswatcher`, `task_link`/`unlink`/`deps`/`halt_downstream`/`set_plan_slug`, `/api/dag`, the DAG tab + SPA view — all removed for Hera. `internal/orch` + `internal/depswatcher` deleted; `Task.DependsOn`/`PlanSlug` + columns gone. **`base_branch` was kept** — the git-stacking mechanic (branch a worktree off another task's branch), independent of the retired gating; a coordinator stacks PRs by spawning sequential workers, each branched off the previous.
 - **Task/worktree lifecycle:** all fresh-task creation routes through `agent.CreateAndStart` — single goroutine, fully transactional (CreateWorktree → `OnWorktreeCreated` hook → `db.Add` → SessionID → `runner.Start` → InProgress), each step LIFO-compensated on failure (no orphan worktrees/branches/rows); auto-suffixes name conflicts. `startSession` is existing-task restart only (reverts status but keeps the row on failure). Delete: stop agent → `RemoveWorktreeAndBranch` → delete local + remote branch → DB delete.
 - **Git ops never run synchronously on the UI thread** — background goroutines deliver via `QueueUpdateDraw`; resolved paths are cached.
+
+## Frontend Parity (TUI · Web · macOS)
+
+The repo now ships THREE user-facing frontends: the TUI (`internal/tui`), the web SPA/PWA (`internal/api/static`), and the native macOS app (`macos/`). All three are clients of the same daemon.
+
+**Any user-facing feature or behavior change must be evaluated against all three surfaces in the same PR.** Parity is defined at the REST-exposed surface — what the daemon serves is what every client can reach — so a change to that surface (new/changed endpoint, event, field, status semantics) is the trigger to check all three clients. Implementing in one client and not the others is allowed, but requires an explicit, NAMED follow-up (an openspec Non-Goals note or a tracked task) — never silence.
+
+The one standing intentional gap: **hera mutations are TUI-only; over REST hera is read-only** (`GET /api/hera` roster; the web and macOS Hera tabs are read-only by design), with the follow-up named in openspec. Don't "fix" it silently or treat it as an oversight.
 
 ## Config & Persistence
 
@@ -109,6 +123,7 @@ Gotcha files hold: invariants that caused bugs when violated, ordering requireme
 - **Any tview screen-setup change (SetScreen / EnablePaste / EnableMouse / wrapping) needs a SimulationScreen integration test** (`smoke_test.go`: `simApp` / `wireApp` / `runApp`). Major UI paths (tab switch, modal open/close, paste, agent enter/exit) need smoke tests exercising the real event loop.
 - **Every page wrapper / layout container with non-interactive child panels needs a `MouseHandler` guarding `setFocus`** (tview's default steals focus on click → non-interactive panels drop all keys). See `TaskPage.MouseHandler()`; ship a `TestSmoke_Click*` test asserting focus stays on the intended widget.
 - **`OnBranchChange` / `OnLayoutChange` callbacks are a log-only debug trail (NOT Sync)** — see the rendering rules above. If you add one, ship a smoke test asserting the `[tui] force redraw: ...` log line (`TestSmoke_FilterToggleFiresRedraw`); otherwise skip the callback.
+- **Swift-side (`macos/`) tests run via `make mac-test`, NOT `swift test`** — the suite is an executable swift-testing runner because `swift test` on a CLT-only install silently runs zero tests and exits 0 (even failures "pass"). See `gotchas/macos-app.md`.
 
 ## Planned but Not Yet Implemented
 

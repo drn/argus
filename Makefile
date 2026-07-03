@@ -1,4 +1,4 @@
-.PHONY: build vet test test-watch test-cover test-cover-gate test-pkg lint-pr fmt fmt-check vuln pre-pr plugin-smoke install-signed mac-build mac-test mac-run
+.PHONY: build vet test test-watch test-cover test-cover-gate test-pkg lint-pr fmt fmt-check vuln pre-pr plugin-smoke install-signed mac-build mac-test mac-run mac-app
 
 build:
 	go build ./...
@@ -144,3 +144,8 @@ mac-test:
 
 mac-run:
 	cd macos && swift run --disable-sandbox ArgusMac
+
+# Assembles the real, double-clickable macos/dist/ArgusMac.app bundle (release
+# build + Info.plist + codesign) — see scripts/mac-app.sh for the why.
+mac-app:
+	./scripts/mac-app.sh

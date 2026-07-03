@@ -28,11 +28,17 @@ Coding agents are cheap to start and expensive to babysit. Five `claude` tabs be
 - **A built-in MCP server** lets agents talk to Argus directly — search your notes, spawn other agents, or hand off work between models.
 - **Harness- and model-agnostic by design.** Argus orchestrates the workflow, not a single tool. Every backend is just a templated command, so the same worktree → branch → review → notify loop is identical whether the agent underneath is Claude Code, Codex, opencode, or a local model via ollama — pick the harness and model per task, keep one standardized workflow across all of them.
 
-## The Three Pillars
+## One daemon, three clients
 
-### 📱 Mobile Dashboard (PWA)
+Argus is really a **local daemon** plus the clients that drive it. The daemon owns everything durable — your tasks and projects in SQLite, the agent PTYs in its session-supervisor, hera coordination in-process — and serves it all over one authenticated REST + SSE API on port 7743. Every client is a thin lens over that same API, so they stay in lockstep: start a task in the terminal, watch it go idle on your phone, review the diff on your Mac. Reach for whichever one fits where you are.
 
-Argus ships a real, installable Progressive Web App. Tap **Add to Home Screen** in Safari and you have a phone-shaped operations console for your agents — running locally on your machine, reachable over your Tailscale mesh, never exposed to the public internet.
+### 🖥️ Terminal TUI — the keyboard-driven daily driver
+
+The original surface, and the one you'll live in: a full-screen `tcell`/`tview` dashboard (the two screenshots up top) with real PTY emulation, inline diffs, and a chord for every verb. **Reach for it** when you're already in a terminal — over SSH, inside tmux, on the box where the repos live. `argus --remote` gives you the identical TUI against a daemon on another machine.
+
+### 📱 Web app / PWA — the swarm in your pocket
+
+Argus ships a real, installable Progressive Web App. Tap **Add to Home Screen** in Safari and you have a phone-shaped operations console for your agents — running locally on your machine, reachable over your Tailscale mesh, never exposed to the public internet. **Reach for it** from any device you didn't bring the terminal to — your phone on the couch, a borrowed laptop — and let Web Push tap you on the shoulder when an agent needs you.
 
 <p align="center">
   <img src="screenshots/pwa-task-list.png" width="200" alt="PWA task list grouped by project with running/idle/done status and PR badges">
@@ -53,6 +59,21 @@ Argus ships a real, installable Progressive Web App. Tap **Add to Home Screen** 
 - **Per-device API tokens** — your iPhone, your iPad, and your laptop each get their own labeled token. Revoke any of them from the dashboard. Master token mints; SHA-256 hashes are all that's stored.
 - **Offline-aware** — when the daemon is unreachable (laptop closed, Tailscale off) the PWA flips to a branded offline screen and reconnects automatically.
 - **Pure-local** — runs on `localhost` and your Tailscale IP only, never `0.0.0.0`. Hotel/cafe LANs cannot reach the API even with the token.
+
+### 🖥️ macOS app — native point-and-click mission control
+
+A native SwiftUI app (`make mac-app`) that turns the same daemon into a Mac-first control room — no browser tab, no keyboard chords to memorize. A source-list sidebar of tasks grouped by status (Active / In Review / Complete / Archived) with project badges, a live agent terminal powered by SwiftTerm, and detail tabs for the session, the diff, the file tree, and task info. **Reach for it** when you're at your Mac and want the OS working for you: native notifications when an agent needs input or goes idle, a **Dock badge** counting how many are waiting, and a **menu-bar extra** for a glance without switching windows.
+
+- **Full task lifecycle** — create (a project / backend / model / prompt sheet), fork, stop, restart, resume, rename, archive, and delete, each with native confirmations.
+- **Live everything** — the task list and every terminal update ride the daemon's SSE event stream, not polling; a connection banner appears the moment the daemon is unreachable.
+- **Diff & files tabs** — a unified diff with per-file collapsible sections and a browsable worktree file tree, parsed client-side by ArgusKit.
+- **Schedules & System windows** — manage scheduled tasks (⇧⌘S) and watch host load / agent-session counts, the same data the TUI and PWA show.
+- **Hera roster** — the orchestration tree, read-only (see the parity note in the Reference).
+- **Keychain-backed remote settings** — point it at any daemon by overriding the server URL; the token lives in the macOS Keychain, never on disk. Defaults to `http://127.0.0.1:7743` with the token from `~/.argus/api-token`.
+
+Requires macOS 15+ and the Swift 6.3 Command Line Tools — no Xcode. Build and run details are in the [macOS app](#macos-app) reference below.
+
+## Built for agents, too
 
 ### 🤝 Full MCP Server
 
@@ -271,6 +292,52 @@ argus --remote https://mbp-2026.tail1efd7.ts.net --token "$ARGUS_TOKEN"
 Launches the TUI pointed at a remote argus daemon instead of the local one. No local SQLite is opened, no daemon socket is contacted — every persistence call goes through the REST API the daemon already serves on port 7743 (the same surface the PWA uses). `--token` falls back to `ARGUS_TOKEN`.
 
 A few local-only operations gracefully degrade in remote mode: spawning a fresh task via the new-task form, forking, schedule fires, and prune-completed all require local worktree access. The status bar surfaces the equivalent REST endpoint when these are attempted remotely. Everything else — task list, attach, input, resize, archive/rename/status flips, settings — works identically against the remote.
+
+### macOS app
+
+A native SwiftUI client (`ArgusMac`) built on **ArgusKit**, a typed Swift SDK over the daemon's REST + SSE API. It drives the same daemon as the TUI and the PWA — there is no separate backend.
+
+**Requirements:** macOS 15+ and the **Swift 6.3 Command Line Tools** (`xcode-select --install`). No Xcode or `xcodebuild` needed — the app is a SwiftPM package (`macos/Package.swift`) built entirely from the CLT toolchain. SwiftTerm (the live-terminal widget) is the only third-party dependency; ArgusKit itself is pure Foundation.
+
+| Target          | Command                                        | What it does                                                                                     |
+| --------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `make mac-build` | `swift build --disable-sandbox`               | Compile ArgusKit + ArgusMac.                                                                     |
+| `make mac-test`  | `swift run --disable-sandbox ArgusKitTests`   | Run the ArgusKit test suite. **This is the test entry point, not `swift test`** (see below).     |
+| `make mac-run`   | `swift run --disable-sandbox ArgusMac`        | Build and launch the app from source.                                                            |
+| `make mac-app`   | `./scripts/mac-app.sh`                         | Assemble the double-clickable `macos/dist/ArgusMac.app` (release build + `Info.plist` + codesign) and print the `open` command. |
+
+`--disable-sandbox` is required because macOS forbids nested `sandbox-exec` profiles: when you build from inside an argus agent sandbox (how this repo is dogfooded), SwiftPM's own manifest sandbox fails to apply. The app's own manifest needs no protection from us, so disabling it makes the targets work everywhere.
+
+**Why not `swift test`:** on a CLT-only install (no Xcode) `swift test` builds the `.xctest` bundle but cannot execute it — it silently runs **zero** tests and exits `0`, so even failing tests "pass". The suite is therefore an *executable* swift-testing target (`ArgusKitTests`) run via `make mac-test`, which executes it for real and propagates a correct exit code.
+
+**Launch env hooks** (automation / deep-linking; each read once at startup):
+
+| Variable                | Value                                       | Effect                                                                                          |
+| ----------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `ARGUS_MAC_SELECT_TASK` | task id or exact name                       | Selects that task at launch, overriding the default auto-select.                                |
+| `ARGUS_MAC_INITIAL_TAB` | `terminal` \| `diff` \| `files` \| `info`   | Sets the initial detail tab regardless of which task is selected. Unrecognized values ignored.  |
+
+```sh
+# run the bundle binary directly — `open` does not pass environment variables through
+ARGUS_MAC_SELECT_TASK=my-task ARGUS_MAC_INITIAL_TAB=diff \
+  macos/dist/ArgusMac.app/Contents/MacOS/ArgusMac
+```
+
+**Settings:** by default the app connects to `http://127.0.0.1:7743` using the master token from `~/.argus/api-token`. To drive a **remote** daemon (e.g. over Tailscale), set a **Server URL override** (stored in `UserDefaults`) and a **token override** in Preferences — the token is written to the macOS **Keychain**, never to disk. Preferences also carries the needs-input / idle notification toggles and the menu-bar-extra toggle.
+
+**Feature surface:**
+
+| Area          | What's there                                                                                              |
+| ------------- | -------------------------------------------------------------------------------------------------------- |
+| Task rail     | Sidebar of tasks in status sections (Active / In Review / Complete / Archived) with project badges, status icons, needs-input markers, and a live connection indicator. |
+| Detail tabs   | **Terminal** (live SwiftTerm session), **Diff** (unified, per-file collapsible), **Files** (worktree tree), **Info**. |
+| Lifecycle     | New-task sheet (project / backend / model / prompt), fork, stop, restart, resume, rename, archive, delete — with confirmations. |
+| Live updates  | Task list + terminals driven by the SSE event stream; a 30 s safety-net poll; offline/connection banner. |
+| Notifications | Native `UNUserNotificationCenter` alerts on needs-input / idle (when not frontmost), a Dock badge counting tasks awaiting you, and an optional menu-bar extra. |
+| Windows       | Main window, **Schedules** (⇧⌘S), **System** (host metrics + session counts), and standard **Settings**. |
+| Hera          | Read-only orchestration roster (`GET /api/hera`).                                                         |
+
+**Parity note:** the **Hera view is read-only in both the macOS app and the web app** — they render the roster and plan but expose no coordinator mutations (spawn / block / status). Driving a hera team stays **TUI-only** until the hera mutation endpoints are exposed over REST. Everything else — task lifecycle, terminal I/O, diffs, schedules, settings — is at full parity across all three clients.
 
 ### Self-Update
 

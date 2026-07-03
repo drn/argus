@@ -68,6 +68,17 @@ final class AppState {
     /// selected task left scrolled to.
     enum DetailTab: Hashable {
         case terminal, diff, files, info
+
+        /// Parses `ARGUS_MAC_INITIAL_TAB`'s value; unrecognized strings are ignored.
+        init?(envValue: String) {
+            switch envValue {
+            case "terminal": self = .terminal
+            case "diff": self = .diff
+            case "files": self = .files
+            case "info": self = .info
+            default: return nil
+            }
+        }
     }
     var activeDetailTab: DetailTab = .terminal
 
@@ -126,6 +137,23 @@ final class AppState {
     private let fallbackPollInterval: Duration = .seconds(30)
 
     private static let log = Logger(subsystem: "com.argus.mac", category: "appstate")
+
+    // MARK: - Launch-state defaults (automation / deep-link hooks)
+
+    /// Set once, before the first task snapshot lands, so the window never
+    /// opens empty. See ``applyLaunchStateIfNeeded(_:)``.
+    private var didApplyLaunchState = false
+
+    /// Automation/deep-link hook, checked once at startup: selects a task by
+    /// id or exact name match at launch, overriding the default auto-select.
+    /// e.g. `ARGUS_MAC_SELECT_TASK=my-task-name open macos/dist/ArgusMac.app`.
+    private static let envSelectTask = ProcessInfo.processInfo.environment["ARGUS_MAC_SELECT_TASK"]
+
+    /// Automation/deep-link hook, checked once at startup: sets the initial
+    /// detail tab (`terminal`|`diff`|`files`|`info`) regardless of which task
+    /// ends up selected. Unrecognized values are ignored.
+    private static let envInitialTab = ProcessInfo.processInfo.environment["ARGUS_MAC_INITIAL_TAB"]
+        .flatMap(DetailTab.init(envValue:))
 
     /// Live terminal controllers, cached by task ID so switching tasks in the
     /// sidebar and back preserves scrollback. Torn down when the task is deleted
@@ -294,6 +322,43 @@ final class AppState {
         }
         needsInputTaskIDs = rebuilt
         updateBadge()
+        applyLaunchStateIfNeeded(fetched)
+    }
+
+    /// Deterministic launch-state defaults, applied once on the first task
+    /// snapshot to land after launch so the window never opens on an empty
+    /// detail pane:
+    ///  - `ARGUS_MAC_SELECT_TASK` (id or exact name match), if set, wins over
+    ///    the default auto-select.
+    ///  - Otherwise, auto-selects the most recently created `in_progress`
+    ///    task, falling back to the first task in the Active section
+    ///    (``activeTasks``).
+    ///  - `ARGUS_MAC_INITIAL_TAB`, if set to a recognized tab, is applied
+    ///    regardless of which task (if any) got selected.
+    /// A pre-existing selection (e.g. from a prior snapshot or user click
+    /// racing this one) is left untouched.
+    private func applyLaunchStateIfNeeded(_ fetched: [ArgusTask]) {
+        guard !didApplyLaunchState, !fetched.isEmpty else { return }
+        didApplyLaunchState = true
+
+        if let tab = Self.envInitialTab {
+            activeDetailTab = tab
+        }
+
+        guard selectedTaskID == nil else { return }
+
+        if let want = Self.envSelectTask,
+           let match = fetched.first(where: { $0.id == want || $0.name == want }) {
+            selectedTaskID = match.id
+            return
+        }
+
+        let inProgress = fetched.filter { !$0.archived && $0.taskStatus == .inProgress }
+        if let mostRecent = inProgress.max(by: { $0.createdAt < $1.createdAt }) {
+            selectedTaskID = mostRecent.id
+        } else if let firstActive = activeTasks.first {
+            selectedTaskID = firstActive.id
+        }
     }
 
     /// Fetches links (PR / branch URLs) for a task's Info tab. Non-throwing:
