@@ -84,6 +84,12 @@ public struct SSEParser: Sendable {
 
 /// A decoded terminal-stream event from ``ArgusClient/terminalStream(taskID:since:)``.
 public enum TerminalEvent: Sendable, Equatable {
+    /// The SSE response validated (2xx) and the channel is open — emitted ONCE,
+    /// synthetically, before any frames. It is NOT decoded from an SSEvent; the
+    /// stream wrapper injects it so a healthy-but-silent stream (an idle agent
+    /// producing no new bytes for minutes) resolves to live instead of spinning
+    /// on "connecting" forever.
+    case connected
     /// Raw PTY bytes (an unnamed SSE event, base64-decoded).
     case output(Data)
     /// The `exit` event; `rerendering` is true when a kick-restart is in flight.
@@ -105,13 +111,30 @@ public struct ServerEvent: Sendable, Equatable {
     }
 }
 
+/// One item from ``ArgusClient/eventsStream(since:)``: either the synthetic
+/// `connected` signal (the SSE response validated, before any frames) or a
+/// decoded ``ServerEvent``. The `connected` case lets ``EventsStreamSession``
+/// mark itself live + reset backoff even when the events channel stays quiet
+/// for a long stretch — the same fix as ``TerminalEvent/connected``.
+public enum EventStreamItem: Sendable, Equatable {
+    case connected
+    case event(ServerEvent)
+}
+
 extension ArgusClient {
     /// Opens an SSE connection and yields parsed ``SSEvent`` values. Auth is via
     /// the `?token=` query param (EventSource-style), matching
     /// `internal/api/auth.go`. The underlying request has no client-side
     /// timeout, so the stream can sit idle between the server's 30s keepalive
     /// pings; cancel by breaking out of the `for await` (or cancelling the task).
-    public func stream(path: String, query: [URLQueryItem] = []) -> AsyncThrowingStream<SSEvent, Error> {
+    ///
+    /// `onOpen` fires exactly once, immediately after the HTTP response is
+    /// validated (2xx) and BEFORE any SSE frame is parsed — the signal that the
+    /// channel is open even if it then stays silent. A dial that fails before
+    /// the response (transport error / non-2xx) never fires it, so callers can
+    /// treat "onOpen fired" as an accepted, healthy connection.
+    public func stream(path: String, query: [URLQueryItem] = [],
+                       onOpen: (@Sendable () -> Void)? = nil) -> AsyncThrowingStream<SSEvent, Error> {
         AsyncThrowingStream { continuation in
             let work = _Concurrency.Task {
                 do {
@@ -131,6 +154,10 @@ extension ArgusClient {
                     guard (200..<300).contains(http.statusCode) else {
                         throw ArgusError.http(status: http.statusCode, body: "SSE \(path)")
                     }
+                    // Response validated — the channel is open. Announce it before
+                    // parsing so a stream that never emits a frame still resolves
+                    // as connected rather than perpetually connecting.
+                    onOpen?()
                     var parser = SSEParser()
                     for try await line in bytes.lines {
                         if let ev = parser.feed(line) {
@@ -159,8 +186,12 @@ extension ArgusClient {
     public func terminalStream(taskID: String, since: UInt64 = 0) -> AsyncThrowingStream<TerminalEvent, Error> {
         var q: [URLQueryItem] = []
         if since > 0 { q.append(.init(name: "since", value: String(since))) }
-        let base = stream(path: "/api/tasks/\(taskID)/stream", query: q)
         return AsyncThrowingStream { continuation in
+            // `onOpen` yields `.connected` the instant the response validates,
+            // so it lands in the outer stream before any mapped frame (the base
+            // stream reads no line until after onOpen fires).
+            let base = stream(path: "/api/tasks/\(taskID)/stream", query: q,
+                              onOpen: { continuation.yield(.connected) })
             let work = _Concurrency.Task {
                 do {
                     for try await ev in base {
@@ -181,16 +212,20 @@ extension ArgusClient {
 
     /// Streams daemon events via `GET /api/events/stream`. Pass the last-seen
     /// event ID as `since` for replay; a `resync` event means history rotated
-    /// out and the client should re-snapshot daemon state.
-    public func eventsStream(since: Int64 = 0) -> AsyncThrowingStream<ServerEvent, Error> {
+    /// out and the client should re-snapshot daemon state. Yields an
+    /// ``EventStreamItem/connected`` once (response validated, before any frame)
+    /// so the caller can mark the session live even during a long quiet stretch,
+    /// then ``EventStreamItem/event(_:)`` per decoded ``ServerEvent``.
+    public func eventsStream(since: Int64 = 0) -> AsyncThrowingStream<EventStreamItem, Error> {
         var q: [URLQueryItem] = []
         if since > 0 { q.append(.init(name: "since", value: String(since))) }
-        let base = stream(path: "/api/events/stream", query: q)
         return AsyncThrowingStream { continuation in
+            let base = stream(path: "/api/events/stream", query: q,
+                              onOpen: { continuation.yield(.connected) })
             let work = _Concurrency.Task {
                 do {
                     for try await ev in base {
-                        continuation.yield(ServerEvent(type: ev.name ?? "", jsonData: Data(ev.data.utf8)))
+                        continuation.yield(.event(ServerEvent(type: ev.name ?? "", jsonData: Data(ev.data.utf8))))
                     }
                     continuation.finish()
                 } catch is CancellationError {

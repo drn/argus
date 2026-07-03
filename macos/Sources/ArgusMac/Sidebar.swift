@@ -1,7 +1,16 @@
 import SwiftUI
+import ArgusKit
 
-/// The task list, grouped into Active / In Review / Complete / Archived.
-/// Archived is collapsed by default.
+/// The task list, grouped into project folders (mirroring the TUI's task
+/// list — see `internal/tui/taskview/tasklist.go`'s `groupByProject`/`buildRows`):
+/// one `Section` per project, holding tasks of every non-archived status.
+/// Archived tasks live in their own collapsed section at the bottom, outside
+/// the folders, matching the TUI's separate Archive section.
+///
+/// Parity gap: the TUI additionally floats `Pinned` tasks (across all
+/// projects) above everything else. `pinned` isn't part of the REST
+/// `GET /api/tasks` wire shape (see `ArgusKit.Task`), so there is no signal
+/// to reproduce that section here — see `context/knowledge/gotchas/macos-app.md`.
 struct Sidebar: View {
     @Environment(AppState.self) private var app
     @State private var archivedExpanded = false
@@ -9,14 +18,22 @@ struct Sidebar: View {
     var body: some View {
         @Bindable var app = app
         List(selection: $app.selectedTaskID) {
-            taskSection("Active", app.activeTasks)
-            taskSection("In Review", app.inReviewTasks)
-            taskSection("Complete", app.completeTasks)
+            ForEach(app.tasksByFolder) { folder in
+                Section(folder.project) {
+                    ForEach(folder.tasks) { task in
+                        TaskRow(task: task).tag(task.id)
+                    }
+                }
+            }
 
             if !app.archivedTasks.isEmpty {
                 Section(isExpanded: $archivedExpanded) {
-                    ForEach(app.archivedTasks) { task in
-                        TaskRow(task: task).tag(task.id)
+                    ForEach(app.archivedTasksByFolder) { folder in
+                        Section(folder.project) {
+                            ForEach(folder.tasks) { task in
+                                TaskRow(task: task).tag(task.id)
+                            }
+                        }
                     }
                 } header: {
                     Text("Archived (\(app.archivedTasks.count))")
@@ -31,17 +48,6 @@ struct Sidebar: View {
         .onDeleteCommand {
             guard let task = app.selectedTask else { return }
             app.pendingConfirmation = .delete(task)
-        }
-    }
-
-    @ViewBuilder
-    private func taskSection(_ title: String, _ items: [ArgusTask]) -> some View {
-        if !items.isEmpty {
-            Section(title) {
-                ForEach(items) { task in
-                    TaskRow(task: task).tag(task.id)
-                }
-            }
         }
     }
 }

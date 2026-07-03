@@ -179,21 +179,35 @@ final class AppState {
 
     // MARK: - Grouping (drives the sidebar sections)
 
-    /// Active = not archived and pending or in_progress.
+    /// Active = not archived and pending or in_progress. Feeds the launch
+    /// auto-select fallback (``applyLaunchStateIfNeeded(_:)``) and the
+    /// menu-bar dropdown (``MenuBarContent``) — both want "tasks currently
+    /// doing something", independent of the sidebar's project-folder layout.
     var activeTasks: [ArgusTask] {
         tasks.filter { !$0.archived && ($0.taskStatus == .pending || $0.taskStatus == .inProgress) }
     }
 
-    var inReviewTasks: [ArgusTask] {
-        tasks.filter { !$0.archived && $0.taskStatus == .inReview }
-    }
-
-    var completeTasks: [ArgusTask] {
-        tasks.filter { !$0.archived && $0.taskStatus == .complete }
-    }
-
     var archivedTasks: [ArgusTask] {
         tasks.filter { $0.archived }
+    }
+
+    /// Non-archived tasks (every status), grouped into project folders and
+    /// ordered the way the TUI's task list orders them: projects sorted
+    /// alphabetically (`"(no project)"` last-resort label for an empty
+    /// project field), tasks within a folder in the order the daemon
+    /// returned them (`created_at ASC` — see `internal/tui/taskview/tasklist.go`
+    /// `groupByProject`). Drives ``Sidebar``'s per-folder sections; each row
+    /// still carries its own status icon since the folder no longer implies
+    /// a single status.
+    var tasksByFolder: [TaskFolder] {
+        TaskGrouping.byProject(tasks.filter { !$0.archived })
+    }
+
+    /// Archived tasks, grouped the same way as ``tasksByFolder`` — used inside
+    /// the sidebar's collapsed Archived section so archived tasks are still
+    /// organized by project once expanded.
+    var archivedTasksByFolder: [TaskFolder] {
+        TaskGrouping.byProject(archivedTasks)
     }
 
     // MARK: - Connection lifecycle
@@ -614,9 +628,16 @@ final class AppState {
         }
 
         do {
-            for try await raw in client.eventsStream(since: since) {
+            for try await item in client.eventsStream(since: since) {
                 if _Concurrency.Task.isCancelled { break }
-                applyEventActions(eventSession.handle(raw))
+                switch item {
+                case .connected:
+                    // Response validated before any frame: mark live + reset the
+                    // backoff so a quiet events channel isn't stuck reconnecting.
+                    eventSession.streamConnected()
+                case .event(let raw):
+                    applyEventActions(eventSession.handle(raw))
+                }
             }
         } catch is CancellationError {
             snap.cancel()

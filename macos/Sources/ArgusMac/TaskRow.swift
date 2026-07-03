@@ -1,7 +1,10 @@
 import SwiftUI
 
-/// A single task row: status icon + name, with a needs-input marker and a
-/// project badge.
+/// A single task row: status icon + name, with a needs-input marker. No
+/// project badge — the sidebar now groups tasks into per-project folder
+/// Sections (see ``Sidebar``), so the folder header carries the project
+/// name and the icon alone carries the status signal the old status-based
+/// sections used to.
 struct TaskRow: View {
     @Environment(AppState.self) private var app
     let task: ArgusTask
@@ -26,28 +29,10 @@ struct TaskRow: View {
                     .help("Needs input")
                     .accessibilityLabel("Needs input")
             }
-            if !task.project.isEmpty {
-                ProjectBadge(project: task.project)
-            }
         }
         .padding(.vertical, 2)
         .contextMenu {
             TaskActionMenuItems(task: task)
         }
-    }
-}
-
-/// A small pill showing the task's project.
-struct ProjectBadge: View {
-    let project: String
-
-    var body: some View {
-        Text(project)
-            .font(.caption2)
-            .lineLimit(1)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(.quaternary, in: Capsule())
-            .foregroundStyle(.secondary)
     }
 }

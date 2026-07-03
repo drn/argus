@@ -107,6 +107,20 @@ public struct TerminalStreamSession: Sendable, Equatable {
     /// Interprets one decoded ``TerminalEvent`` from the live stream.
     public mutating func handle(_ event: TerminalEvent) -> [Action] {
         switch event {
+        case .connected:
+            // The SSE response validated: the stream is open and healthy even if
+            // no bytes follow (an idle agent). Resolve the spinner to live and,
+            // since an accepted connection is healthy, reset the backoff. A real
+            // `.ended` stays ended; the cursor is untouched; emits no actions.
+            switch phase {
+            case .connecting, .reconnecting:
+                pendingDelay = baseDelay
+                phase = .live
+            case .idle, .live, .ended:
+                break
+            }
+            return []
+
         case .output(let data):
             // Healthy traffic: advance the cursor and reset the backoff so a
             // later drop reconnects promptly.

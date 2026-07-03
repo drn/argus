@@ -189,6 +189,22 @@ public struct EventsStreamSession: Sendable, Equatable {
         if phase == .reconnecting { phase = .connecting }
     }
 
+    /// Signals that the SSE response validated (2xx, channel open) BEFORE any
+    /// event arrived. Flips `.connecting`/`.reconnecting` → `.live` and resets
+    /// the backoff so a healthy-but-silent stream (the events channel goes quiet
+    /// between the server's keepalives) reads as connected, not perpetually
+    /// connecting. No-op in every other phase; emits no actions. Parallel to
+    /// ``TerminalStreamSession/handle(_:)``'s `.connected` case.
+    public mutating func streamConnected() {
+        switch phase {
+        case .connecting, .reconnecting:
+            pendingDelay = baseDelay
+            phase = .live
+        case .idle, .live:
+            break
+        }
+    }
+
     /// Interprets one raw ``ServerEvent`` from the live stream: advances the
     /// cursor, marks traffic healthy (phase `.live`, backoff reset), and returns
     /// the incremental-vs-resnapshot decision.

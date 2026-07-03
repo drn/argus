@@ -95,6 +95,78 @@ struct TerminalStreamSessionTests {
         #expect(session.phase == .live)
     }
 
+    // MARK: - Event interpretation: connected
+
+    @Test("connected while connecting resolves to live with no actions (idle-agent spinner fix)")
+    func connectedWhileConnectingGoesLive() {
+        var session = TerminalStreamSession()
+        _ = session.start(tailTotal: 0)
+        #expect(session.phase == .connecting)
+        // An open-but-silent stream: no `.output` will ever arrive, yet the UI
+        // must leave the "connecting" spinner the moment the channel is up.
+        let actions = session.handle(.connected)
+        #expect(actions == [])
+        #expect(session.phase == .live)
+    }
+
+    @Test("connected while reconnecting resolves to live with no actions")
+    func connectedWhileReconnectingGoesLive() {
+        var session = TerminalStreamSession()
+        _ = session.start(tailTotal: 0)
+        _ = session.streamClosed()          // -> .reconnecting
+        #expect(session.phase == .reconnecting)
+        // A connected can land while still nominally reconnecting (e.g. a
+        // rerender-exit reconnect whose retry validated before any frame).
+        let actions = session.handle(.connected)
+        #expect(actions == [])
+        #expect(session.phase == .live)
+    }
+
+    @Test("connected resets the backoff to baseDelay (an accepted connection is healthy)")
+    func connectedResetsBackoff() {
+        var session = TerminalStreamSession(baseDelay: .milliseconds(100),
+                                            maxDelay: .seconds(5),
+                                            multiplier: 2.0)
+        _ = session.start(tailTotal: 0)
+        // A failed dial grows the internal pending delay.
+        #expect(session.streamClosed() == .reconnect(since: 0, after: .milliseconds(100)))
+        session.streamOpening()             // -> .connecting
+        // This attempt's response validates (connected) with no frames: the
+        // healthy connection must reset the schedule back to baseDelay.
+        _ = session.handle(.connected)
+        #expect(session.phase == .live)
+        // A subsequent independent drop reconnects promptly at baseDelay, proving
+        // the grown delay was discarded.
+        #expect(session.streamClosed() == .reconnect(since: 0, after: .milliseconds(100)))
+    }
+
+    @Test("connected after the session ended stays ended (never revives a dead session)")
+    func connectedAfterEndedStaysEnded() {
+        var session = TerminalStreamSession()
+        _ = session.start(tailTotal: 0)
+        _ = session.handle(.exit(rerendering: false))
+        #expect(session.phase == .ended)
+        let actions = session.handle(.connected)
+        #expect(actions == [])
+        #expect(session.phase == .ended)
+    }
+
+    @Test("tail-then-connected-then-frames: connected leaves the offset untouched")
+    func connectedDoesNotAffectOffset() {
+        var session = TerminalStreamSession()
+        // Seed a tail cursor, then connected (no frame), then a live frame.
+        let tail = bytes("scrollback tail")
+        _ = session.start(tailTotal: 100, tailData: tail)
+        #expect(session.offset == 100)
+
+        _ = session.handle(.connected)
+        #expect(session.phase == .live)
+        #expect(session.offset == 100) // connected advances nothing
+
+        _ = session.handle(.output(bytes("live")))
+        #expect(session.offset == 104) // only real bytes advance the cursor
+    }
+
     // MARK: - Event interpretation: exit
 
     @Test("exit(rerendering: true) reconnects from the current offset and stays reconnecting")

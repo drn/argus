@@ -258,6 +258,46 @@ struct EventsStreamSessionTests {
         #expect(session.streamClosed() == .reconnect(since: 1, after: .milliseconds(100)))
     }
 
+    // MARK: - streamConnected (response-validated-before-any-frame)
+
+    @Test("streamConnected while connecting resolves to live (quiet-channel fix)")
+    func streamConnectedWhileConnectingGoesLive() {
+        var session = EventsStreamSession()
+        _ = session.start()
+        #expect(session.phase == .connecting)
+        session.streamConnected()
+        #expect(session.phase == .live)
+    }
+
+    @Test("streamConnected while reconnecting resolves to live and resets the backoff")
+    func streamConnectedResetsBackoff() {
+        var session = EventsStreamSession(baseDelay: .milliseconds(100),
+                                          maxDelay: .seconds(5), multiplier: 2.0)
+        _ = session.start()
+        #expect(session.streamClosed() == .reconnect(since: 0, after: .milliseconds(100)))
+        #expect(session.phase == .reconnecting)
+        // The retry's response validates before any event arrives: mark live and
+        // discard the grown delay.
+        session.streamConnected()
+        #expect(session.phase == .live)
+        #expect(session.streamClosed() == .reconnect(since: 0, after: .milliseconds(100)))
+    }
+
+    @Test("streamConnected is a no-op in idle and live")
+    func streamConnectedNoOpInIdleAndLive() {
+        var idle = EventsStreamSession()
+        idle.streamConnected()
+        #expect(idle.phase == .idle)
+
+        var live = EventsStreamSession()
+        _ = live.start()
+        _ = live.handle(serverEvent(id: 1, type: "session.idle", taskID: "a"))
+        #expect(live.phase == .live)
+        live.streamConnected() // already live: no phase or cursor change
+        #expect(live.phase == .live)
+        #expect(live.cursor == 1)
+    }
+
     @Test("streamOpening is a no-op outside the reconnecting phase")
     func streamOpeningNoOpOutsideReconnecting() {
         var session = EventsStreamSession()
