@@ -30,11 +30,34 @@ struct ArgusMacApp: App {
         }
         .windowToolbarStyle(.unified)
 
+        // The Schedules window, opened via the toolbar's clock button
+        // (⇧⌘S) — see `ContentView`'s `openWindow(id: "schedules")`.
+        Window("Schedules", id: "schedules") {
+            SchedulesView()
+                .environment(appState)
+        }
+
         // Provides the standard Cmd+, menu item automatically.
         Settings {
             SettingsView()
                 .environment(appState)
         }
+
+        // Menu-bar extra: quick access to active tasks + a needs-input count,
+        // gated by the Settings toggle (default on).
+        MenuBarExtra(isInserted: menuBarInserted) {
+            MenuBarContent()
+                .environment(appState)
+        } label: {
+            MenuBarLabel(app: appState)
+        }
+        .menuBarExtraStyle(.menu)
+    }
+
+    /// Binds the menu-bar extra's presence to the observable Settings toggle.
+    private var menuBarInserted: Binding<Bool> {
+        Binding(get: { appState.showMenuBarExtra },
+                set: { appState.showMenuBarExtra = $0 })
     }
 }
 

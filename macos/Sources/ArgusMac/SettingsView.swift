@@ -1,11 +1,22 @@
 import SwiftUI
 
-/// The Settings scene (Cmd+,): server URL + token overrides.
-///
-/// The URL persists to UserDefaults; the token persists to the Keychain. Leaving
-/// a field empty clears that override — the URL falls back to the default local
-/// port and the token falls back to `~/.argus/api-token`. Saving reconnects.
+/// The Settings scene (Cmd+,): a General tab (server URL + token overrides,
+/// notification/menu-bar toggles) and a System tab (daemon status + host
+/// metrics, see ``SystemView``).
 struct SettingsView: View {
+    var body: some View {
+        TabView {
+            GeneralSettingsTab()
+                .tabItem { Label("General", systemImage: "gearshape") }
+            SystemView()
+                .tabItem { Label("System", systemImage: "cpu") }
+        }
+        .frame(width: 460)
+    }
+}
+
+/// The original single-Form settings surface, now the TabView's General tab.
+private struct GeneralSettingsTab: View {
     @Environment(AppState.self) private var app
 
     @State private var serverURL = ""
@@ -13,6 +24,7 @@ struct SettingsView: View {
     @State private var didLoad = false
 
     var body: some View {
+        @Bindable var app = app
         Form {
             Section {
                 TextField(
@@ -32,6 +44,23 @@ struct SettingsView: View {
                 Text("Leave a field blank to use the default. The token is stored in your Keychain and never logged.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle("Notify when a task needs input", isOn: $app.notifyOnNeedsInput)
+                Toggle("Notify when a task goes idle", isOn: $app.notifyOnIdle)
+            } header: {
+                Text("Notifications")
+            } footer: {
+                Text("Idle notifications appear only when Argus is not the frontmost app.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle("Show menu-bar extra", isOn: $app.showMenuBarExtra)
+            } header: {
+                Text("Menu Bar")
             }
 
             Section {

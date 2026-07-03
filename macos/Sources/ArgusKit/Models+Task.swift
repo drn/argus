@@ -89,6 +89,53 @@ public struct Task: Sendable, Equatable, Identifiable, Decodable {
         prompt = try c.decodeIfPresent(String.self, forKey: .prompt)
         prState = try c.decodeIfPresent(String.self, forKey: .prState)
     }
+
+    /// Memberwise initializer, used to build patched copies from incremental
+    /// events (the wire ``init(from:)`` is the only other initializer). All
+    /// stored properties are `let`, so an event-driven field change (rename,
+    /// status flip, needs-input edge) is expressed as a whole-value copy via
+    /// ``with(name:status:idle:needsInput:archived:)`` rather than mutation.
+    public init(id: String, name: String, status: String, idle: Bool, needsInput: Bool,
+                project: String, branch: String?, backend: String?, elapsed: String?,
+                createdAt: String, archived: Bool, worktreePath: String?, prompt: String?,
+                prState: String?) {
+        self.id = id
+        self.name = name
+        self.status = status
+        self.idle = idle
+        self.needsInput = needsInput
+        self.project = project
+        self.branch = branch
+        self.backend = backend
+        self.elapsed = elapsed
+        self.createdAt = createdAt
+        self.archived = archived
+        self.worktreePath = worktreePath
+        self.prompt = prompt
+        self.prState = prState
+    }
+
+    /// Returns a copy with the given fields replaced. Only the fields that an
+    /// incremental daemon event can change are parameterised; the rest carry
+    /// over unchanged. A subsequent `/api/tasks` snapshot (the fallback poll or a
+    /// resync) heals any field this patch cannot reach (e.g. `elapsed`).
+    public func with(name: String? = nil, status: String? = nil, idle: Bool? = nil,
+                     needsInput: Bool? = nil, archived: Bool? = nil) -> Task {
+        Task(id: id,
+             name: name ?? self.name,
+             status: status ?? self.status,
+             idle: idle ?? self.idle,
+             needsInput: needsInput ?? self.needsInput,
+             project: project,
+             branch: branch,
+             backend: backend,
+             elapsed: elapsed,
+             createdAt: createdAt,
+             archived: archived ?? self.archived,
+             worktreePath: worktreePath,
+             prompt: prompt,
+             prState: prState)
+    }
 }
 
 /// The envelope returned when creating (`POST /api/tasks`), or forking
