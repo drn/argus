@@ -127,10 +127,10 @@ func (a *App) copyStagedClipboardForHeraPane(taskID string) {
 // focused terminal pane and toggles the pane's `(ctrl+y copy)` border-title
 // affordance, mirroring refreshClipboardCache for the main agent view. It looks
 // at a single task per tick (the focused pane's), so there is no extra RPC
-// chattiness beyond the agent view's own per-tick poll. The hint also gates the
-// ctrl+y interception in the page, so when it is off ctrl+y falls through to the
-// PTY. No-op (hint off) when no terminal pane is focused or the runner is not
-// daemon-backed.
+// chattiness beyond the agent view's own per-tick poll. The hint is purely
+// discoverability now — ctrl+y is always intercepted regardless of its state
+// (see page.go's ctrl+y trap). No-op (hint off) when no terminal pane is
+// focused or the runner is not daemon-backed.
 func (a *App) refreshHeraClipboardHint() {
 	id := a.heraPage.FocusedTerminalTaskID()
 	if id == "" {
