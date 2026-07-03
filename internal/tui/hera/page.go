@@ -134,20 +134,21 @@ type HeraPage struct {
 	OnNewCoordinator func(Selection) // `n` — new top-level coordinator (full new-task modal; selection used only to default the project, fires even when empty)
 	OnClearArchive   func(Selection) // `C` — NUKE every Tier-1 hidden item in the selected coordinator's archive (confirm)
 
-	// OnCopyClipboard fires on `ctrl+y` while a TERMINAL pane (coordinator or
-	// worker) is focused AND that pane's task has an agent-staged clipboard
-	// payload, passing the focused pane's bound task ID. The App copies the
-	// staged payload for THAT task to the OS clipboard (the Hera view shows
-	// several tasks at once, so the payload must come from the focused pane, not
-	// a single global active task). nil-safe: unwired in remote mode / when the
-	// runner is not daemon-backed, making `ctrl+y` fall through to the PTY.
+	// OnCopyClipboard fires on `ctrl+y` whenever a TERMINAL pane (coordinator or
+	// worker) is focused, passing the focused pane's bound task ID — regardless
+	// of whether that task has an agent-staged clipboard payload. The App
+	// copies the staged payload for THAT task to the OS clipboard if present
+	// (the Hera view shows several tasks at once, so the payload must come from
+	// the focused pane, not a single global active task), otherwise flashes a
+	// "Nothing to copy" notice. nil-safe: unwired in remote mode / when the
+	// runner is not daemon-backed, in which case ctrl+y is an inert no-op.
 	OnCopyClipboard func(taskID string)
 
 	// clipReady is set by the App each tick (SetClipboardHint): true when the
-	// focused terminal pane's task has an agent-staged clipboard payload. It
-	// gates the `ctrl+y` interception (so ctrl+y still falls through to the PTY
-	// for an in-agent yank when nothing is staged — mirroring the main agent
-	// view) and drives the `(ctrl+y copy)` border-title affordance in Draw.
+	// focused terminal pane's task has an agent-staged clipboard payload. It no
+	// longer gates the `ctrl+y` interception (ctrl+y always fires
+	// OnCopyClipboard on a focused terminal pane) — it only drives the
+	// `(ctrl+y copy)` border-title affordance in Draw.
 	clipReady bool
 
 	// OnInfo surfaces a brief, transient status-bar notice (auto-expiring, BUG-030).
@@ -665,16 +666,18 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 			return
 		case tcell.KeyCtrlY:
 			// Copy the agent-staged clipboard payload for the focused TERMINAL
-			// pane's task. Conditional intercept, mirroring the main agent view:
-			// steal ctrl+y from the PTY ONLY when a payload is staged (clipReady,
-			// refreshed each tick for the focused pane's task). When nothing is
-			// staged — or focus is on the rail / coordinator details (no PTY) — fall
-			// through to the per-region dispatch so vim/emacs-style yank still
-			// reaches the agent. The App's callback resolves the payload from
-			// FocusedTerminalTaskID, so the copy is scoped to the focused pane.
-			if p.clipReady && p.terminalPaneFocused() && p.OnCopyClipboard != nil {
+			// pane's task. Always intercepted when a terminal pane is focused,
+			// mirroring the main agent view: the App's callback copies the
+			// payload if one is staged, otherwise flashes "Nothing to copy" —
+			// ctrl+y never falls through to the PTY, giving up vim/emacs-style
+			// yank inside the pane for predictable copy semantics. Rail /
+			// coordinator-details focus has no PTY to intercept from, so it
+			// stays an inert no-op there. The App's callback resolves the
+			// payload from FocusedTerminalTaskID, so the copy is scoped to the
+			// focused pane. clipReady only drives the border-title hint now.
+			if p.terminalPaneFocused() && p.OnCopyClipboard != nil {
 				if id := p.FocusedTerminalTaskID(); id != "" {
-					uxlog.Log("[hera-view] ctrl+y copy staged clipboard: task=%s", id)
+					uxlog.Log("[hera-view] ctrl+y copy: task=%s staged=%v", id, p.clipReady)
 					p.OnCopyClipboard(id)
 					return
 				}

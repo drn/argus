@@ -1451,17 +1451,19 @@ THAT pane's bound argus task to the OS clipboard. Because the Hera view shows
 several tasks at once, the payload SHALL be resolved from the FOCUSED pane's task
 (`FocusedTerminalTaskID`), never a single global active task.
 
-The interception SHALL be conditional, mirroring the main agent view: `ctrl+y`
-SHALL be stolen from the PTY only when a payload is currently staged for the
-focused pane's task; when nothing is staged it SHALL fall through to the pane's
-PTY so vim/emacs-style yank still reaches the agent. The staged-ness gate is the
-same per-tick hint state that drives the discoverability affordance. On copy the
-system SHALL clear the daemon-side slot and flash a "Copied" notice, reusing the
-existing `clipboardAccessor` (`ClipboardGet`/`ClipboardClear`) and
-`copyToClipboard` — no second clipboard path is introduced. When the runner is
-not daemon-backed (in-process fallback) or nothing is staged, `ctrl+y` SHALL be a
-logged no-op (and still fall through to the PTY). In remote mode the page is
-inert, so `ctrl+y` does nothing.
+The interception SHALL be unconditional whenever a terminal pane is focused:
+`ctrl+y` SHALL always be stolen from the PTY, regardless of whether a payload
+is currently staged for the focused pane's task — it SHALL NEVER fall through
+to the pane's PTY. When a payload is staged, the system SHALL clear the
+daemon-side slot and flash a "Copied" notice, reusing the existing
+`clipboardAccessor` (`ClipboardGet`/`ClipboardClear`) and `copyToClipboard` — no
+second clipboard path is introduced. When the runner is not daemon-backed
+(in-process fallback) or nothing is staged, `ctrl+y` SHALL flash a notice
+indicating there is nothing to copy instead of copying, and SHALL still consume
+the key. In remote mode the page is inert, so `ctrl+y` does nothing.
+
+The per-tick staged-ness hint state (`clipReady`) no longer gates the
+interception — it drives only the discoverability affordance described below.
 
 When the focused terminal pane's task has a staged payload, the system SHALL
 surface a discoverability affordance by appending a `(ctrl+y copy)` marker to
@@ -1473,9 +1475,9 @@ leaves a terminal pane or nothing is staged.
 Derived from: `internal/tui/hera/page.go` (`InputHandler` `ctrl+y` trap,
 `OnCopyClipboard`, `clipReady`/`SetClipboardHint`, `Draw` border-title hint),
 `internal/tui/hera/panes.go` (`FocusedTerminalTaskID`), `internal/tui/clipboard.go`
-(`copyStagedClipboardForHeraPane`), `internal/tui/app.go` (`OnCopyClipboard`
-wiring + `refreshHeraClipboardHint` tick), `internal/tui/modal/help.go:70` (help
-overlay Hera section).
+(`copyStagedClipboardForHeraPane`, `flashNotice`), `internal/tui/app.go`
+(`OnCopyClipboard` wiring + `refreshHeraClipboardHint` tick),
+`internal/tui/modal/help.go:70` (help overlay Hera section).
 
 #### Scenario: Copy a staged payload from a focused worker pane
 
@@ -1487,10 +1489,10 @@ overlay Hera section).
 - **WHEN** the coordinator pane is focused and a payload is staged for the coordinator's task
 - **THEN** `ctrl+y` copies the COORDINATOR task's payload (resolved from the focused pane), not any worker pane's payload
 
-#### Scenario: ctrl+y falls through to the PTY when nothing is staged
+#### Scenario: ctrl+y is intercepted with a notice when nothing is staged
 
 - **WHEN** a terminal pane is focused but no payload is staged for its task and the user presses `ctrl+y`
-- **THEN** no copy occurs and the keystroke is forwarded to the pane's PTY (so an in-agent yank still works)
+- **THEN** no copy occurs, a "nothing to copy" notice flashes, and the keystroke is consumed rather than forwarded to the pane's PTY
 
 #### Scenario: ctrl+y on the rail or coordinator details is an inert no-op
 

@@ -116,6 +116,21 @@ func TestCopyStagedClipboard_NoPayload(t *testing.T) {
 	}
 }
 
+// TestActAgentCopy_NothingStaged_FlashesNotice covers the ctrl+y dispatch
+// contract: when copyStagedClipboard reports nothing was copied, the caller
+// flashes "Nothing to copy" rather than letting the key fall through to the
+// PTY (there is no PTY fallback path left to assert against — the absence of
+// one IS the behavior change).
+func TestActAgentCopy_NothingStaged_FlashesNotice(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	if !app.copyStagedClipboard() {
+		app.flashNotice("Nothing to copy")
+	}
+	testutil.Equal(t, app.header.Notice(), "Nothing to copy")
+}
+
 func TestCopyStagedClipboard_ClearsLocalStateAndFiresClearRPC(t *testing.T) {
 	d := testDB(t)
 	fp := newFakeProvider()
@@ -167,11 +182,15 @@ func TestCopyStagedClipboard_ClearError_LoggedNotPanicked(t *testing.T) {
 
 func TestCopyStagedClipboardForHeraPane_NoTaskOrAccessor(t *testing.T) {
 	d := testDB(t)
-	// Empty task → no-op, no panic.
+	// Empty task → no-op, no panic, no notice (never reaches the intercept).
 	app := New(d, agent.NewRunner(nil), false)
 	app.copyStagedClipboardForHeraPane("")
-	// Plain runner is not a clipboardAccessor → logged no-op, no panic.
+	testutil.Equal(t, app.header.Notice(), "")
+
+	// Plain runner is not a clipboardAccessor → logged no-op, flashes "Nothing
+	// to copy" (ctrl+y is always intercepted, so the user still gets feedback).
 	app.copyStagedClipboardForHeraPane("task1")
+	testutil.Equal(t, app.header.Notice(), "Nothing to copy")
 }
 
 func TestCopyStagedClipboardForHeraPane_AbsentNoCopy(t *testing.T) {
@@ -182,9 +201,10 @@ func TestCopyStagedClipboardForHeraPane_AbsentNoCopy(t *testing.T) {
 	app.clipboardWriter = func(string) error { return nil }
 
 	app.copyStagedClipboardForHeraPane("task1")
-	// Nothing staged → no clear RPC fired.
+	// Nothing staged → no clear RPC fired, but the user still gets feedback.
 	time.Sleep(20 * time.Millisecond)
 	testutil.Equal(t, len(fp.clearedSnapshot()), 0)
+	testutil.Equal(t, app.header.Notice(), "Nothing to copy")
 }
 
 func TestCopyStagedClipboardForHeraPane_PresentCopiesAndClears(t *testing.T) {

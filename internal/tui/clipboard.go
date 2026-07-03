@@ -45,6 +45,24 @@ func (a *App) copyToClipboard(text, notice string, onSuccess func()) {
 	}()
 }
 
+// flashNotice sets a transient header notice, auto-clearing it after 2s
+// unless something else has replaced it first. Unlike copyToClipboard's
+// notice, the set happens synchronously — callers run on the tview UI
+// goroutine (a key-dispatch callback), so there's no need to marshal the
+// initial write through QueueUpdateDraw; only the delayed clear (fired from a
+// spawned goroutine) needs it.
+func (a *App) flashNotice(notice string) {
+	a.header.SetNotice(notice)
+	go func() {
+		time.Sleep(2 * time.Second)
+		a.tapp.QueueUpdateDraw(func() {
+			if a.header.Notice() == notice {
+				a.header.ClearNotice()
+			}
+		})
+	}()
+}
+
 // refreshClipboardCache polls the daemon for the agent-staged payload for
 // the given task, updates `a.clipboardPending*`, and toggles the agentHeader
 // hint. Called from the tick loop callback (already on the tview goroutine
@@ -74,10 +92,11 @@ func (a *App) refreshClipboardCache(taskID string) {
 // is the Hera-view analogue of copyStagedClipboard (agent view), but there is no
 // single "active" task in the Hera view — it shows several at once — so the
 // caller (HeraPage's ctrl+y) passes the FOCUSED pane's task ID and we look the
-// payload up directly rather than through the activeAgentTaskID cache. A logged
-// no-op when the runner is not daemon-backed (in-process fallback) or nothing is
-// staged for that task. Reuses copyToClipboard so the "Copied" flash and writer
-// contract match the agent view exactly.
+// payload up directly rather than through the activeAgentTaskID cache. The key
+// is always intercepted (see page.go's ctrl+y trap): with the runner not
+// daemon-backed (in-process fallback) or nothing staged for that task, this
+// flashes a "Nothing to copy" notice instead of copying. Reuses copyToClipboard
+// so the "Copied" flash and writer contract match the agent view exactly.
 func (a *App) copyStagedClipboardForHeraPane(taskID string) {
 	if taskID == "" {
 		return
@@ -85,11 +104,13 @@ func (a *App) copyStagedClipboardForHeraPane(taskID string) {
 	acc, ok := a.runner.(clipboardAccessor)
 	if !ok {
 		uxlog.Log("[hera] clipboard copy skipped: runner not daemon-backed (task=%s)", taskID)
+		a.flashNotice("Nothing to copy")
 		return
 	}
 	text, present := acc.ClipboardGet(taskID)
 	if !present || text == "" {
 		uxlog.Log("[hera] clipboard copy skipped: nothing staged (task=%s)", taskID)
+		a.flashNotice("Nothing to copy")
 		return
 	}
 	a.copyToClipboard(text, "Copied", func() {
@@ -128,8 +149,9 @@ func (a *App) refreshHeraClipboardHint() {
 // copyStagedClipboard is the ctrl+y handler. Copies the cached pending
 // payload via `a.clipboardWriter` (the configured OS-clipboard writer),
 // clears the daemon-side state, and flashes "Copied". Returns true if a
-// payload was copied, false if nothing was staged (caller should fall
-// through to PTY pass-through).
+// payload was copied, false if nothing was staged — ctrl+y is always
+// intercepted (never falls through to the PTY), so the caller flashes a
+// "Nothing to copy" notice on false instead.
 func (a *App) copyStagedClipboard() bool {
 	if a.clipboardPending == "" {
 		return false
