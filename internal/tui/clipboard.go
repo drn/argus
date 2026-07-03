@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"time"
-
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -17,11 +15,15 @@ type clipboardAccessor interface {
 }
 
 // copyToClipboard hands text to `a.clipboardWriter` on a goroutine and flashes
-// a notice in the global header. Caller passes an optional onSuccess callback
-// (e.g. for uxlog logging that depends on caller-side IDs). Tests that exercise
-// this code path MUST overwrite `a.clipboardWriter` with a no-op writer
-// immediately after `New()` — otherwise the production `pbcopyWriter` runs and
-// clobbers the developer's real clipboard. See the field comment on
+// a notice in the global header. The notice auto-clears on its own via
+// `Header`'s expiresAt/tick model (`widget.HeaderNoticeTTL`) — no timer or
+// goroutine needed here beyond the one already marshaling the write off the
+// UI thread; see `gotchas/ui-threading.md` for why a second timer goroutine
+// would be redundant. Caller passes an optional onSuccess callback (e.g. for
+// uxlog logging that depends on caller-side IDs). Tests that exercise this
+// code path MUST overwrite `a.clipboardWriter` with a no-op writer immediately
+// after `New()` — otherwise the production `pbcopyWriter` runs and clobbers
+// the developer's real clipboard. See the field comment on
 // `App.clipboardWriter` for the full contract.
 func (a *App) copyToClipboard(text, notice string, onSuccess func()) {
 	writer := a.clipboardWriter
@@ -36,31 +38,14 @@ func (a *App) copyToClipboard(text, notice string, onSuccess func()) {
 		a.tapp.QueueUpdateDraw(func() {
 			a.header.SetNotice(notice)
 		})
-		time.Sleep(2 * time.Second)
-		a.tapp.QueueUpdateDraw(func() {
-			if a.header.Notice() == notice {
-				a.header.ClearNotice()
-			}
-		})
 	}()
 }
 
-// flashNotice sets a transient header notice, auto-clearing it after 2s
-// unless something else has replaced it first. Unlike copyToClipboard's
-// notice, the set happens synchronously — callers run on the tview UI
-// goroutine (a key-dispatch callback), so there's no need to marshal the
-// initial write through QueueUpdateDraw; only the delayed clear (fired from a
-// spawned goroutine) needs it.
+// flashNotice sets a transient header notice; it auto-clears via `Header`'s
+// own expiresAt/tick model, so this is a plain synchronous call — callers run
+// on the tview UI goroutine (a key-dispatch callback).
 func (a *App) flashNotice(notice string) {
 	a.header.SetNotice(notice)
-	go func() {
-		time.Sleep(2 * time.Second)
-		a.tapp.QueueUpdateDraw(func() {
-			if a.header.Notice() == notice {
-				a.header.ClearNotice()
-			}
-		})
-	}()
 }
 
 // refreshClipboardCache polls the daemon for the agent-staged payload for

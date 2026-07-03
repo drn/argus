@@ -666,13 +666,16 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 			return
 		case tcell.KeyCtrlY:
 			// Copy the agent-staged clipboard payload for the focused TERMINAL
-			// pane's task. Always intercepted when a terminal pane is focused,
-			// mirroring the main agent view: the App's callback copies the
-			// payload if one is staged, otherwise flashes "Nothing to copy" —
-			// ctrl+y never falls through to the PTY, giving up vim/emacs-style
-			// yank inside the pane for predictable copy semantics. Rail /
-			// coordinator-details focus has no PTY to intercept from, so it
-			// stays an inert no-op there. The App's callback resolves the
+			// pane's task. Intercepted (never reaches the PTY) whenever a
+			// terminal pane is focused AND resolves to a bound task, mirroring
+			// the main agent view: the App's callback copies the payload if
+			// one is staged, otherwise flashes "Nothing to copy" — giving up
+			// vim/emacs-style yank inside the pane for predictable copy
+			// semantics. Rail / coordinator-details focus has no PTY to
+			// intercept from, so it stays an inert no-op there; a terminal
+			// pane with no bound task (FocusedTerminalTaskID == "", e.g. no
+			// coordinator role yet) falls through to the PTY same as before —
+			// there's nothing to copy for. The App's callback resolves the
 			// payload from FocusedTerminalTaskID, so the copy is scoped to the
 			// focused pane. clipReady only drives the border-title hint now.
 			if p.terminalPaneFocused() && p.OnCopyClipboard != nil {
