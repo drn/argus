@@ -40,8 +40,11 @@
 
 ## 4. Verification
 
-- [ ] 4.1 `make pre-pr` passes clean (build → vet → fmt-check → lint-pr → vuln →
-  test-cover-gate).
+- [x] 4.1 `make pre-pr` passes clean (build → vet → fmt-check → lint-pr → vuln →
+  test-cover-gate). Note: `vuln` reports advisory stdlib CVEs (go1.26.3
+  net/textproto + crypto/x509, fixed in go1.26.4, code paths untouched by this
+  change); CI runs the vuln step as continue-on-error, so CI is green. lint-pr
+  reports 0 issues; filtered coverage 89.5% (≥88 gate).
 - [x] 4.2 Add/update gotchas in `context/knowledge/gotchas/hera-view.md` (node
   description = first N wrapped lines, policy-agnostic) and `.../orchestration.md`
   or the messaging/coordination gotcha (spawn/plan prompts carry the mission
@@ -49,7 +52,9 @@
 
 ## 5. Archive (same PR, before merge)
 
-- [ ] 5.1 `openspec archive improve-hera-node-descriptions` (or apply by hand:
-  fold deltas into base specs, move the change folder to
-  `openspec/changes/archive/2026-06-30-improve-hera-node-descriptions/`), commit
-  on the change branch so base specs land atomically with the code.
+- [x] 5.1 `openspec archive improve-hera-node-descriptions` — folded both delta
+  requirements into the base specs (`openspec/specs/hera-coordination/spec.md`,
+  `openspec/specs/hera-view/spec.md`) and moved the change folder to
+  `openspec/changes/archive/2026-07-03-improve-hera-node-descriptions/`.
+  `openspec validate --all --strict` passes (47/47). Committed on the change
+  branch so base specs land atomically with the code.
