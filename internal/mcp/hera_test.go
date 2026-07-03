@@ -1523,3 +1523,50 @@ func TestHera_Status_Done_DoesNotClobberComplete(t *testing.T) {
 	got, _ := d.Get(worker.ID)
 	testutil.Equal(t, got.Status, model.StatusComplete) // not clobbered
 }
+
+// promptParamDescription digs the `prompt` param's description out of a tool's
+// InputSchema (a map[string]interface{} literal in heraToolDefs). Fails the test
+// if the tool or its prompt param is missing.
+func promptParamDescription(t *testing.T, toolName string) string {
+	t.Helper()
+	for _, tool := range heraToolDefs {
+		if tool.Name != toolName {
+			continue
+		}
+		schema, ok := tool.InputSchema.(map[string]interface{})
+		testutil.Equal(t, ok, true)
+		props, ok := schema["properties"].(map[string]interface{})
+		testutil.Equal(t, ok, true)
+		prompt, ok := props["prompt"].(map[string]interface{})
+		testutil.Equal(t, ok, true)
+		desc, ok := prompt["description"].(string)
+		testutil.Equal(t, ok, true)
+		return desc
+	}
+	t.Fatalf("tool %q not found in heraToolDefs", toolName)
+	return ""
+}
+
+// TestHeraPromptParams_MissionOnlyContract is the prompt-hygiene contract
+// (improve-hera-node-descriptions): the `prompt` param descriptions on
+// hera_spawn_worker and hera_plan_node direct the coordinator to supply the
+// worker's MISSION only and NOT to prepend org/security policy — because every
+// spawned worker session receives its org instructions independently
+// (harness-injected), so a prepended copy is redundant and pollutes the stored
+// prompt + the plan-DAG view.
+func TestHeraPromptParams_MissionOnlyContract(t *testing.T) {
+	for _, toolName := range []string{"hera_spawn_worker", "hera_plan_node"} {
+		t.Run(toolName, func(t *testing.T) {
+			desc := promptParamDescription(t, toolName)
+			lower := strings.ToLower(desc)
+			// Directs supplying the worker's mission only.
+			testutil.Contains(t, desc, "MISSION")
+			// Directs NOT prepending org/security policy (never instructs to prepend it).
+			testutil.Contains(t, lower, "do not prepend")
+			testutil.Contains(t, lower, "policy")
+			// States the rationale: the worker gets org instructions independently.
+			testutil.Contains(t, lower, "independently")
+			testutil.Contains(t, lower, "redundant")
+		})
+	}
+}

@@ -171,7 +171,7 @@ var heraToolDefs = []Tool{
 				"cwd":          map[string]interface{}{"type": "string", "description": "Coordinator's worktree path (use $PWD)"},
 				"orchestrator": map[string]interface{}{"type": "string", "description": "(optional) Disambiguates when the calling task holds multiple live coordinator bindings"},
 				"role_name":    map[string]interface{}{"type": "string", "description": "(optional) Worker role name. Derived from prompt slug if omitted; made unique within the orchestrator automatically"},
-				"prompt":       map[string]interface{}{"type": "string", "description": "Full task prompt delivered to the new worker session. An orientation prefix naming the coordinator is prepended automatically. The verbatim prompt is also stored on the role row"},
+				"prompt":       map[string]interface{}{"type": "string", "description": "The worker's MISSION/task only. An orientation prefix naming the coordinator is prepended automatically; the verbatim prompt is stored on the role row and shown as the node's description in the plan-DAG view. Do NOT prepend organization or security policy: every spawned worker session receives its org instructions independently (harness-injected), so a prepended copy is redundant and pollutes the stored prompt and the plan-DAG view"},
 				"project":      map[string]interface{}{"type": "string", "description": "(optional) Override the argus project. Defaults to the coordinator's own project"},
 				"branch":       map[string]interface{}{"type": "string", "description": "(optional) Branch passed to argus CreateTask. Defaults to project default"},
 				"backend":      map[string]interface{}{"type": "string", "description": "(optional) Backend passed to argus CreateTask. Defaults to project default"},
@@ -214,7 +214,7 @@ var heraToolDefs = []Tool{
 			"properties": map[string]interface{}{
 				"cwd":          map[string]interface{}{"type": "string", "description": "Coordinator's worktree path (use $PWD)"},
 				"name":         map[string]interface{}{"type": "string", "description": "Short-id-prefixed node name (e.g. '2c-fact-checker'); made unique within the orchestrator automatically"},
-				"prompt":       map[string]interface{}{"type": "string", "description": "Task prompt delivered to the worker when the node materializes"},
+				"prompt":       map[string]interface{}{"type": "string", "description": "The worker's MISSION/task only, delivered when the node materializes and stored verbatim as the node's description in the plan-DAG view. Do NOT prepend organization or security policy: every spawned worker session receives its org instructions independently (harness-injected), so a prepended copy is redundant and pollutes the stored prompt and the plan-DAG view"},
 				"project":      map[string]interface{}{"type": "string", "description": "(optional) argus project for the worker. Defaults to the coordinator's own project"},
 				"orchestrator": map[string]interface{}{"type": "string", "description": "(optional) Disambiguates when the calling task holds multiple live coordinator bindings"},
 			},

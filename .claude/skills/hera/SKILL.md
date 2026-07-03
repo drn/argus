@@ -84,8 +84,9 @@ this section).
   a live coordinator binding.** Creates an argus task (worktree + session) and, transactionally, a worker
   role + binding pre-bound to it; an orientation prefix naming the coordinator + orchestrator is prepended
   to the prompt automatically. Args:
-  - `prompt` (**required**) — the full task prompt for the worker. The verbatim prompt is also stored on
-    the role row.
+  - `prompt` (**required**) — the worker's MISSION/task only. The verbatim prompt is also stored on the
+    role row and shown as the node's description in the plan-DAG view. **Do NOT prepend the org/security
+    policy** — see the mission-only gotcha in §6.
   - `project` — defaults to the **coordinator's own task project** (authoritative, not `role.ArgusProject`).
   - `branch` — base branch passed to argus task creation. **Defaults to the project default — see the
     base-branch gotcha in §6.**
@@ -217,6 +218,13 @@ in the doorbell, returned by `hera_tree_updates`, and stored permanently.
   `hera_spawn_worker`'s `branch` defaults to the *project* default (e.g. an old `master`/`main`), not the
   coordinator's current worktree branch. If the worker must build on the coordinator's (or a sibling's)
   work, **pass `branch=` explicitly and verify ancestry** — otherwise the worker starts from stale code.
+- **Pass the MISSION only in `hera_spawn_worker` / `hera_plan_node` prompts — never prepend the
+  org/security policy.** A hera worker is a full argus session that receives its org instructions
+  independently, via its OWN session's harness injection (an `<organizationInstructions>` block, verified
+  present in every spawned session regardless of the parent). So a manually prepended copy is a redundant
+  duplicate — and argus stores the prompt verbatim on the role and renders its opening lines as the node's
+  description in the plan-DAG, so a prepended policy pollutes the DAG (every node reads the boilerplate
+  instead of its mission). Write the prompt as exactly the message you want the worker to act on.
 - **Bake all requirements into the initial `hera_spawn_worker` prompt.** Mid-flight `hera_send` to a
   worker is often missed: delivery is idle-gated and best-effort, so a busy worker never receives it and
   an idle/finished worker may not act on it. Put the full spec in the spawn prompt; verify via the branch

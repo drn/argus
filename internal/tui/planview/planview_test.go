@@ -606,6 +606,98 @@ func TestHeader_FixedHeightBudget(t *testing.T) {
 	testutil.Equal(t, len(w.HeaderLines()) <= h, true)
 }
 
+// TestHeader_NodeDescriptionShowsFirstNonEmptyLines is the hera-view change
+// (improve-hera-node-descriptions): the node header renders the first N (≈3)
+// NON-EMPTY lines of the stored prompt — not just the first line — so a
+// coordinator reads the mission in the plan-DAG rather than one truncated line.
+func TestHeader_NodeDescriptionShowsFirstNonEmptyLines(t *testing.T) {
+	w := New()
+	w.SetData([]Node{{
+		ID: "1a", Name: "1a-research", State: StatePlanned, Planned: true,
+		Description: "line one mission\nline two detail\nline three more\nline four hidden",
+	}}, nil)
+	w.SetFocused(true)
+	testutil.Equal(t, w.CurrentNodeID(), "1a")
+	joined := joinLines(w.HeaderLines())
+	testutil.Contains(t, joined, "line one mission")
+	testutil.Contains(t, joined, "line two detail")
+	testutil.Contains(t, joined, "line three more")
+	// The 4th line is beyond the descMaxLines cap and must not appear.
+	testutil.Equal(t, strings.Contains(joined, "line four hidden"), false)
+	// Name, Status, and Feeds still render alongside the description.
+	testutil.Contains(t, joined, "1a-research")
+	testutil.Contains(t, joined, "Status:")
+	testutil.Contains(t, joined, "Feeds:")
+}
+
+// TestHeader_NodeDescriptionSkipsBlankLines is the "NON-EMPTY lines" rule:
+// leading and interior blank lines are skipped so the first real mission lines
+// surface (a prompt often opens or separates paragraphs with blank lines).
+func TestHeader_NodeDescriptionSkipsBlankLines(t *testing.T) {
+	w := New()
+	w.SetData([]Node{{
+		ID: "1a", Name: "1a-research", State: StatePlanned, Planned: true,
+		Description: "\n\nfirst real line\n\n  second real line  \n",
+	}}, nil)
+	w.SetFocused(true)
+	joined := joinLines(w.HeaderLines())
+	testutil.Contains(t, joined, "first real line")
+	testutil.Contains(t, joined, "second real line")
+}
+
+// TestHeader_NodeDescriptionPolicyAgnostic pins the hera-view invariant: the
+// render NEVER strips, skips, or classifies policy text. A prompt that opens
+// with organization/security policy shows those opening lines verbatim — the fix
+// for a polluted prompt is upstream prompt hygiene, not view-side stripping.
+func TestHeader_NodeDescriptionPolicyAgnostic(t *testing.T) {
+	w := New()
+	w.SetData([]Node{{
+		ID: "1a", Name: "1a-research", State: StatePlanned, Planned: true,
+		Description: "SECURITY POLICY (Thanx org — obey at all times)\nreview the vendor feeds",
+	}}, nil)
+	w.SetFocused(true)
+	joined := joinLines(w.HeaderLines())
+	testutil.Contains(t, joined, "SECURITY POLICY") // opening line shown as-is, not stripped
+	testutil.Contains(t, joined, "review the vendor feeds")
+}
+
+// TestHeader_EmptyDescriptionShowsPlaceholder preserves the "(no description)"
+// placeholder for a node whose stored prompt is empty (or all-blank).
+func TestHeader_EmptyDescriptionShowsPlaceholder(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		desc string
+	}{
+		{"empty", ""},
+		{"all blank lines", "\n  \n\t\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := New()
+			w.SetData([]Node{{ID: "1a", Name: "1a-research", State: StatePlanned, Planned: true, Description: tc.desc}}, nil)
+			w.SetFocused(true)
+			joined := joinLines(w.HeaderLines())
+			testutil.Contains(t, joined, "(no description)")
+		})
+	}
+}
+
+// TestHeader_MultiLineDescriptionStaysWithinBudget guarantees the grown header
+// still fits its fixed budget: even a long multi-line prompt caps at
+// headerContentRows content lines, and HeaderLines never exceeds HeaderHeight —
+// so the roster-over-graph split in the Details region never overflows.
+func TestHeader_MultiLineDescriptionStaysWithinBudget(t *testing.T) {
+	w := New()
+	w.SetData([]Node{{
+		ID: "1a", Name: "1a-research", State: StatePlanned, Planned: true,
+		Description: "l1\nl2\nl3\nl4\nl5\nl6\nl7",
+	}}, nil)
+	w.SetFocused(true)
+	testutil.Equal(t, len(w.HeaderLines()) <= w.HeaderHeight(), true)
+	testutil.Equal(t, len(w.HeaderLines()), headerContentRows)
+	// The header still carries the Feeds line despite the capped description.
+	testutil.Contains(t, joinLines(w.HeaderLines()), "Feeds:")
+}
+
 // --- Sub-coordinator drill-in (Requirement: Sub-coordinator drill-in) ---
 
 // TestDrillIn_EnterPushesChildPlan mirrors "Enter drills into a sub-coordinator":

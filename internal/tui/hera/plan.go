@@ -2,7 +2,6 @@ package hera
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
@@ -63,11 +62,16 @@ func heraPlanNodesWithBridge(orch *OrchView, bridge map[string]*OrchView) ([]pla
 		nodeID[r.RoleID] = id
 		state := planNodeState(r)
 		n := planview.Node{
-			ID:          id,
-			Name:        r.Name,
-			Planned:     r.Planned,
-			State:       state,
-			Description: firstLine(r.Prompt),
+			ID:      id,
+			Name:    r.Name,
+			Planned: r.Planned,
+			State:   state,
+			// The node description is the role's stored prompt VERBATIM. planview
+			// owns the presentation (first N non-empty lines, wrapped/truncated to
+			// the pane, policy-agnostic — no stripping) so the "how much to show"
+			// policy lives in one place (nodeHeaderLines). See improve-hera-node-
+			// descriptions + gotchas/hera-view.md.
+			Description: r.Prompt,
 			Icon:        planNodeIcon(r, state),
 		}
 		// A worker whose bound task coordinates a child orchestrator is a
@@ -193,14 +197,4 @@ func planNodeIcon(r *RoleView, state planview.State) *planview.NodeIcon {
 	glyph, style := widget.RoleStatusIcon(in, false, 0)
 	animated := glyph == widget.SpinnerFrame(0)
 	return &planview.NodeIcon{Glyph: glyph, Style: style, Animated: animated}
-}
-
-// firstLine returns the first line of s, trimmed of surrounding whitespace, for
-// the header Description. Empty when s is empty (the widget shows "(no description)").
-func firstLine(s string) string {
-	s = strings.TrimSpace(s)
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return strings.TrimSpace(s[:i])
-	}
-	return s
 }
