@@ -6,6 +6,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
+	"github.com/drn/argus/internal/tui/keymap"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
 )
@@ -40,56 +41,53 @@ type HelpSection struct {
 	Bindings []HelpBinding
 }
 
-// HelpSections is the canonical inventory rendered by the modal. Source of
-// truth for the help overlay — mirror updates here when bindings change.
-var HelpSections = []HelpSection{
-	{
-		Title: "Task List",
-		Bindings: []HelpBinding{
-			{"n", "new task"},
-			{"Enter", "open agent view"},
-			{"j / k", "navigate up/down"},
-			{"s / S", "advance / revert status"},
-			{"a", "toggle archive"},
-			{"P", "toggle pin"},
-			{"H", "show/hide hera-managed (workers+coords)"},
-			{"r", "rename"},
-			{"c", "copy name / prompt"},
-			{"/", "filter"},
-			{"ctrl+f", "fork task"},
-			{"ctrl+d", "destroy task"},
-			{"ctrl+r", "prune completed"},
-			{"ctrl+p", "open PR"},
-			{"ctrl+o", "open repo"},
-			{"ctrl+l", "refresh screen"},
-			{"1 / 2 / 3", "switch tab (tasks / hera / settings)"},
-			{"q", "quit"},
-		},
-	},
-	{
-		Title: "Hera View (rail)",
-		Bindings: []HelpBinding{
-			{"j / k", "navigate up/down"},
-			{"space", "collapse/expand"},
-			{"/", "filter rail by name (↑/↓ navigate, Enter accepts, Esc clears)"},
-			{"Tab", "enter pane (then Tab → agent autocomplete)"},
-			{"ctrl+alt+← / →", "move between panes; ctrl+q back to rail"},
-			{"ctrl+z", "fullscreen pane"},
-			{"ctrl+y", "copy staged text (focused pane)"},
-			{"Enter", "enter pane (revive dead/suspended session)"},
-			{"w", "spawn worker under coordinator (new-task modal)"},
-			{"n", "new coordinator (new-task modal)"},
-			{"r", "rename role/orchestrator"},
-			{"a", "hide worker in coord's archive (reversible)"},
-			{"P", "toggle pin"},
-			{"s / S", "advance / revert status"},
-			{"J", "adopt freelancer / reparent coordinator"},
-			{"C", "clear coord's archive (nuke hidden agents)"},
-			{"ctrl+d", "nuke role/orchestrator (whole sub-team if nested)"},
-			{"←", "move to parent coordinator (rail focused)"},
-			{"Cmd+↑ / Cmd+↓", "move rail selection (stay focused in pane)"},
-		},
-	},
+// helpGroup describes one help section that is (partly) keymap-driven: the
+// rebindable rows come from the keymap (ctx, in contextOrder), and `extra`
+// appends the structural keys that are documented but NOT rebindable.
+type helpGroup struct {
+	title string
+	ctx   keymap.Context
+	extra []HelpBinding
+}
+
+// helpLayout is the ordered set of keymap-backed help sections. The structural
+// rows in `extra` are the non-rebindable keys (arrows / Enter / Esc / Tab and
+// the hera focus-ladder) — they stay hand-maintained because they are fixed.
+var helpLayout = []helpGroup{
+	{title: "Task List", ctx: keymap.CtxTaskList, extra: []HelpBinding{
+		{"Enter", "open agent view"},
+	}},
+	{title: "Global", ctx: keymap.CtxGlobal},
+	{title: "Agent View", ctx: keymap.CtxAgent, extra: []HelpBinding{
+		{"ctrl+q / Esc", "back (diff → files → list)"},
+	}},
+	{title: "File Panel", ctx: keymap.CtxFilePnl, extra: []HelpBinding{
+		{"Enter", "open diff"},
+	}},
+	{title: "Diff View", ctx: keymap.CtxDiff, extra: []HelpBinding{
+		{"q", "exit diff"},
+		{"↑ / ↓", "previous / next file"},
+		{"PgUp / PgDn", "scroll"},
+	}},
+	{title: "Settings", ctx: keymap.CtxSettings, extra: []HelpBinding{
+		{"h / l", "focus rail / pane"},
+		{"Enter / ◀ / ▶", "toggle / cycle settings"},
+	}},
+	{title: "Hera View (rail)", ctx: keymap.CtxHeraRail, extra: []HelpBinding{
+		{"j / k / space", "navigate / collapse / expand"},
+		{"/", "filter rail by name (↑/↓ navigate, Enter accepts, Esc clears)"},
+		{"Enter", "enter pane (revive dead/suspended session)"},
+		{"Tab", "enter pane (then Tab → agent autocomplete)"},
+		{"ctrl+alt+← / →", "move between panes; ctrl+q back to rail"},
+		{"ctrl+z", "fullscreen pane"},
+		{"ctrl+y", "copy staged text (focused pane)"},
+		{"←", "move to parent coordinator (rail focused)"},
+		{"Cmd+↑ / Cmd+↓", "move rail selection (stay focused in pane)"},
+	}},
+}
+
+// staticHelpSections are fully structural — no keymap actions back them.
+var staticHelpSections = []HelpSection{
 	{
 		Title: "Hera View (plan DAG)",
 		Bindings: []HelpBinding{
@@ -101,45 +99,6 @@ var HelpSections = []HelpSection{
 		},
 	},
 	{
-		Title: "Agent View",
-		Bindings: []HelpBinding{
-			{"ctrl+q / Esc", "back (diff → files → list)"},
-			{"Cmd+← / Cmd+→", "switch panels"},
-			{"Cmd+↑ / Cmd+↓", "navigate tasks"},
-			{"Shift+↑ / Shift+↓", "scroll terminal"},
-			{"ctrl+z", "toggle single-pane (zoom)"},
-			{"ctrl+k", "task switcher"},
-			{"ctrl+l", "link picker"},
-			{"ctrl+r", "switch Claude session"},
-			{"ctrl+p", "open PR"},
-			{"ctrl+y", "copy staged text"},
-		},
-	},
-	{
-		Title: "File Panel",
-		Bindings: []HelpBinding{
-			{"Enter", "open diff"},
-			{"s", "toggle split/unified"},
-			{"f", "reveal in Finder"},
-			{"o", "open file"},
-			{"e", "open in editor ($EDITOR)"},
-			{"t", "open terminal in worktree"},
-		},
-	},
-	{
-		Title: "Settings",
-		Bindings: []HelpBinding{
-			{"j / k", "navigate rows"},
-			{"n", "new project / backend / schedule"},
-			{"e", "edit"},
-			{"d", "delete / set default"},
-			{"t", "toggle schedule enabled"},
-			{"r", "run schedule now"},
-			{"i", "quick add projects"},
-			{"Enter / ◀ / ▶", "toggle / cycle settings"},
-		},
-	},
-	{
 		Title: "Modals & Forms",
 		Bindings: []HelpBinding{
 			{"Esc / ctrl+q", "close / cancel"},
@@ -147,6 +106,25 @@ var HelpSections = []HelpSection{
 			{"Tab / Shift+Tab", "navigate fields"},
 		},
 	},
+}
+
+// SectionsFromKeymap renders the help overlay's argus sections from a keymap, so
+// the displayed keys always reflect the active (possibly user-overridden)
+// bindings. Each keymap-backed section lists its rebindable actions (in
+// contextOrder) followed by its structural `extra` rows; fully-structural
+// sections are appended verbatim.
+func SectionsFromKeymap(km *keymap.Keymap) []HelpSection {
+	out := make([]HelpSection, 0, len(helpLayout)+len(staticHelpSections))
+	for _, g := range helpLayout {
+		sec := HelpSection{Title: g.title}
+		for _, r := range km.HelpRows(g.ctx) {
+			sec.Bindings = append(sec.Bindings, HelpBinding{Key: r.Key, Action: r.Label})
+		}
+		sec.Bindings = append(sec.Bindings, g.extra...)
+		out = append(out, sec)
+	}
+	out = append(out, staticHelpSections...)
+	return out
 }
 
 // helpRow is one rendered line of help content.
@@ -174,12 +152,12 @@ func helpRows(sections []HelpSection) []helpRow {
 }
 
 // sectionsFor returns the inventory this modal renders: its own sections when
-// set, otherwise argus's package-level HelpSections.
+// set, otherwise argus's default keymap-derived sections.
 func (m *HelpModal) sectionsFor() []HelpSection {
 	if m.sections != nil {
 		return m.sections
 	}
-	return HelpSections
+	return SectionsFromKeymap(keymap.DefaultKeymap())
 }
 
 // titleFor returns the bordered-panel heading, defaulting to "Keybindings".

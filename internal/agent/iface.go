@@ -84,6 +84,12 @@ type SessionRunner interface {
 type SessionHandle interface {
 	PID() int
 	WriteInput(p []byte) (int, error)
+	// WriteInputSystem writes SYSTEM-injected input (reliable-notify pane
+	// delivery of hera/task messages). It advances the work-cycle timestamp
+	// (LastInput) like WriteInput but NOT the user-input timestamp
+	// (LastUserInput), so a delivered message never counts as the user
+	// answering a prompt and never clears the needs-input "(?)" flag (BUG-034).
+	WriteInputSystem(p []byte) (int, error)
 	Resize(rows, cols uint16) error
 	RecentOutput() []byte
 	RecentOutputTail(n int) []byte
@@ -107,6 +113,13 @@ type SessionHandle interface {
 	// timestamp so the interface contract holds, but no watcher ever reads
 	// that value — it exists only to satisfy SessionHandle.
 	LastInput() time.Time
+	// LastUserInput is the wall-clock time of the most recent USER keystroke
+	// (WriteInput), or zero if the user has never typed. SYSTEM delivery
+	// (WriteInputSystem) does not advance it. The needs-input clear-on-input
+	// filter reads this so only a genuine user response clears "(?)" (BUG-034).
+	// Like LastInput, RemoteSession tracks a local value purely to satisfy the
+	// interface; the daemon watcher reads the in-process *agent.Session.
+	LastUserInput() time.Time
 	Alive() bool
 	PTYSize() (cols, rows int)
 	// InitialPTYSize returns the PTY dimensions the session was started with,

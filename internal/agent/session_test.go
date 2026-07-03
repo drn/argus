@@ -249,6 +249,54 @@ func TestSession_WriteInput(t *testing.T) {
 	}
 }
 
+// TestSession_WriteInputSystem_DoesNotAdvanceUserInput pins the BUG-034
+// regression fix at the source: a SYSTEM write (reliable-notify delivery)
+// advances the work-cycle timestamp (LastInput) so the idle-push gate still
+// sees new work, but does NOT advance the user-input timestamp (LastUserInput)
+// that the needs-input clear-on-input filter reads — so a delivered message
+// never masquerades as the user answering a prompt. A genuine user WriteInput
+// advances both.
+func TestSession_WriteInputSystem_DoesNotAdvanceUserInput(t *testing.T) {
+	cmd := exec.Command("cat")
+	sess, err := StartSession("wis-1", cmd, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Stop() }()
+
+	// Fresh session: no input of any kind yet.
+	if !sess.LastInput().IsZero() {
+		t.Fatalf("fresh LastInput = %v, want zero", sess.LastInput())
+	}
+	if !sess.LastUserInput().IsZero() {
+		t.Fatalf("fresh LastUserInput = %v, want zero", sess.LastUserInput())
+	}
+
+	// System delivery: advances LastInput, NOT LastUserInput.
+	if _, err := sess.WriteInputSystem([]byte("coordinator msg\r")); err != nil {
+		t.Fatal(err)
+	}
+	if sess.LastInput().IsZero() {
+		t.Error("WriteInputSystem did not advance LastInput (work cycle)")
+	}
+	if !sess.LastUserInput().IsZero() {
+		t.Error("WriteInputSystem wrongly advanced LastUserInput (would clear the (?) flag)")
+	}
+
+	sysLastInput := sess.LastInput()
+
+	// User keystroke: advances BOTH.
+	if _, err := sess.WriteInput([]byte("y\r")); err != nil {
+		t.Fatal(err)
+	}
+	if !sess.LastInput().After(sysLastInput) {
+		t.Error("WriteInput did not advance LastInput past the system write")
+	}
+	if sess.LastUserInput().IsZero() {
+		t.Error("WriteInput did not advance LastUserInput")
+	}
+}
+
 func TestSession_Signal_NilProcess(t *testing.T) {
 	// Create a session with a command that hasn't been started via Process
 	// We can test the nil process path by using a finished session

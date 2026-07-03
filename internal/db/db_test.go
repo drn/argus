@@ -770,9 +770,6 @@ func TestDB_Config(t *testing.T) {
 	if cfg.Defaults.Backend != "claude" {
 		t.Errorf("default backend = %q", cfg.Defaults.Backend)
 	}
-	if cfg.Keybindings.New != "n" {
-		t.Errorf("keybinding new = %q", cfg.Keybindings.New)
-	}
 	if !cfg.UI.ShowElapsed {
 		t.Error("ShowElapsed should be true")
 	}
@@ -1037,6 +1034,33 @@ func TestFixupBackends_InsertsMissingDefault(t *testing.T) {
 	if pi.PromptFlag != defaultCfg.Backends["pi"].PromptFlag {
 		t.Errorf("pi prompt_flag after reinsert = %q, want %q", pi.PromptFlag, defaultCfg.Backends["pi"].PromptFlag)
 	}
+}
+
+// TestFixupBackends_InsertsOpencode pins that the opencode default (a
+// capture-style backend with a --prompt prompt flag) is seeded into a
+// pre-existing DB that predates it, command and prompt flag intact.
+func TestFixupBackends_InsertsOpencode(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.sql")
+
+	d1, err := Open(dbPath)
+	testutil.NoError(t, err)
+	testutil.NoError(t, d1.DeleteBackend("opencode")) // simulate a pre-opencode build
+	_ = d1.Close()
+
+	d2, err := Open(dbPath)
+	testutil.NoError(t, err)
+	defer func() { _ = d2.Close() }()
+
+	backends, err := d2.Backends()
+	testutil.NoError(t, err)
+	oc, ok := backends["opencode"]
+	if !ok {
+		t.Fatal("expected opencode to be re-inserted by fixupBackends after Open")
+	}
+	defaultCfg := config.DefaultConfig()
+	testutil.Equal(t, oc.Command, defaultCfg.Backends["opencode"].Command)
+	testutil.Equal(t, oc.PromptFlag, defaultCfg.Backends["opencode"].PromptFlag)
+	testutil.Equal(t, oc.PromptFlag, "--prompt")
 }
 
 // --- Config edge case tests ---
@@ -1372,9 +1396,9 @@ func TestDB_Config_MultipleProjectsAndBackends(t *testing.T) {
 		t.Errorf("app2 backend = %q", cfg.Projects["app2"].Backend)
 	}
 
-	// Verify backends (claude default + codex + pi default + custom = 4).
-	if len(cfg.Backends) != 4 {
-		t.Fatalf("expected 4 backends, got %d", len(cfg.Backends))
+	// Verify backends (claude default + codex + pi default + opencode default + custom = 5).
+	if len(cfg.Backends) != 5 {
+		t.Fatalf("expected 5 backends, got %d", len(cfg.Backends))
 	}
 	if _, ok := cfg.Backends["pi"]; !ok {
 		t.Error("expected hardcoded pi backend to be present")
@@ -1390,51 +1414,82 @@ func TestDB_Config_MultipleProjectsAndBackends(t *testing.T) {
 	}
 }
 
-// --- Config keybinding overrides ---
+// --- Keybindings are no longer DB-backed ---
 
-func TestDB_Config_AllKeybindingOverrides(t *testing.T) {
+// Keybindings moved to keymap defaults + config.toml overrides only. Any
+// keybindings.* row in the DB must be IGNORED by Config() (cfg.Keybindings is
+// the override-map struct, populated only by the config.toml overlay).
+func TestDB_Config_IgnoresDBKeybindingRows(t *testing.T) {
 	d := testDB(t)
 
-	overrides := map[string]string{
-		"keybindings.attach":   "a",
-		"keybindings.status":   "x",
-		"keybindings.delete":   "D",
-		"keybindings.quit":     "Q",
-		"keybindings.help":     "h",
-		"keybindings.filter":   "f",
-		"keybindings.prompt":   "P",
-		"keybindings.worktree": "W",
-	}
-	for k, v := range overrides {
-		if err := d.SetConfigValue(k, v); err != nil {
-			t.Fatalf("SetConfigValue(%q, %q): %v", k, v, err)
-		}
+	if err := d.SetConfigValue("keybindings.new", "x"); err != nil {
+		t.Fatalf("SetConfigValue: %v", err)
 	}
 
 	cfg := d.Config()
-	if cfg.Keybindings.Attach != "a" {
-		t.Errorf("Attach = %q", cfg.Keybindings.Attach)
+	if cfg.Keybindings.Global != nil || cfg.Keybindings.TaskList != nil ||
+		cfg.Keybindings.Agent != nil || cfg.Keybindings.Settings != nil ||
+		cfg.Keybindings.HeraRail != nil || cfg.Keybindings.FilePanel != nil ||
+		cfg.Keybindings.Diff != nil {
+		t.Errorf("DB keybinding rows must be ignored, got %+v", cfg.Keybindings)
 	}
-	if cfg.Keybindings.Status != "x" {
-		t.Errorf("Status = %q", cfg.Keybindings.Status)
+}
+
+// sweepLegacyKeybindings removes stale keybindings.* rows and is idempotent.
+func TestDB_SweepLegacyKeybindings(t *testing.T) {
+	d := testDB(t)
+
+	if err := d.SetConfigValue("keybindings.legacy", "z"); err != nil {
+		t.Fatalf("SetConfigValue: %v", err)
 	}
-	if cfg.Keybindings.Delete != "D" {
-		t.Errorf("Delete = %q", cfg.Keybindings.Delete)
+	if err := d.sweepLegacyKeybindings(); err != nil {
+		t.Fatalf("sweepLegacyKeybindings: %v", err)
 	}
-	if cfg.Keybindings.Quit != "Q" {
-		t.Errorf("Quit = %q", cfg.Keybindings.Quit)
+
+	var n int
+	if err := d.conn.QueryRow(`SELECT COUNT(*) FROM config WHERE key LIKE 'keybindings.%'`).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
 	}
-	if cfg.Keybindings.Help != "h" {
-		t.Errorf("Help = %q", cfg.Keybindings.Help)
+	if n != 0 {
+		t.Errorf("stale keybinding rows = %d, want 0", n)
 	}
-	if cfg.Keybindings.Filter != "f" {
-		t.Errorf("Filter = %q", cfg.Keybindings.Filter)
+	// Idempotent: a second sweep is a no-op and still errors-free.
+	if err := d.sweepLegacyKeybindings(); err != nil {
+		t.Fatalf("second sweep: %v", err)
 	}
-	if cfg.Keybindings.Prompt != "P" {
-		t.Errorf("Prompt = %q", cfg.Keybindings.Prompt)
+}
+
+// Open() sweeps stale keybinding rows on EVERY open, including already-migrated
+// (existing) databases — the sweep must not live behind the first-time seed gate.
+func TestDB_Open_SweepsStaleRowsForExistingDB(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.sql")
+
+	// First open creates + migrates the DB; inject a stale legacy row.
+	d1, err := Open(path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
 	}
-	if cfg.Keybindings.Worktree != "W" {
-		t.Errorf("Worktree = %q", cfg.Keybindings.Worktree)
+	if err := d1.SetConfigValue("keybindings.new", "x"); err != nil {
+		t.Fatalf("SetConfigValue: %v", err)
+	}
+	_ = d1.Close()
+
+	// Reopen the already-migrated DB — migrate() early-returns, so the sweep must
+	// run via the every-Open path, not seedDefaults.
+	d2, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	defer func() { _ = d2.Close() }()
+
+	var n int
+	if err := d2.conn.QueryRow(`SELECT COUNT(*) FROM config WHERE key LIKE 'keybindings.%'`).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("stale keybinding rows after reopen = %d, want 0", n)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -16,23 +17,27 @@ import (
 type Link struct {
 	Label string `json:"label"` // markdown link text, or the URL itself for bare URLs
 	URL   string `json:"url"`
-	IsPR  bool   `json:"isPR"` // URL points at a GitHub PR / GitLab merge request
+	IsPR  bool   `json:"isPR"` // URL points at a github.com pull request
 }
 
-// prPathRe matches the path of a pull-request / merge-request URL on a
-// code-forge host: GitHub's "/<owner>/<repo>/pull/<n>" or GitLab's
-// "/<group>/<repo>/-/merge_requests/<n>". Matching on the path segment (rather
-// than the host) means it also recognizes GitHub Enterprise and self-hosted
-// GitLab instances. The trailing "(?:/|$)" keeps "/pull/123" and
-// "/pull/123/files" matching while a stray "/pull/abc" does not.
-var prPathRe = regexp.MustCompile(`/(?:pull|merge_requests)/\d+(?:/|$)`)
+// prPathRe matches the path of a github.com pull-request URL:
+// "/<owner>/<repo>/pull/<n>". The anchor and two leading segments mean only a
+// real PR path qualifies (not e.g. "/pull/<n>" at the root). The trailing
+// "(?:/|$)" keeps "/pull/123" and "/pull/123/files" matching while a stray
+// "/pull/abc" does not.
+var prPathRe = regexp.MustCompile(`^/[^/]+/[^/]+/pull/\d+(?:/|$)`)
 
-// IsPR reports whether the URL points at a pull request or merge request. It is
-// the single source of truth for the PR indicator shown by the TUI link pickers
-// and the web client's Open Link modal.
+// IsPR reports whether the URL points at a github.com pull request. It is the
+// single source of truth for the PR indicator shown by the TUI link pickers and
+// the web client's Open Link modal. Detection is scoped to github.com only:
+// GitHub Enterprise hosts and GitLab merge requests are intentionally NOT
+// flagged, so the indicator means exactly "a github.com/<org>/<repo>/pull/<n>".
 func IsPR(raw string) bool {
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
+	if err != nil {
+		return false
+	}
+	if strings.ToLower(u.Hostname()) != "github.com" {
 		return false
 	}
 	return prPathRe.MatchString(u.Path)
@@ -195,6 +200,14 @@ func Extract(content string) []Link {
 		seen[u] = true
 		out = append(out, Link{Label: u, URL: u, IsPR: IsPR(u)})
 	}
+
+	// PR links lead the list — they're almost always the one the user wants to
+	// open. Stable so relative order within the PR and non-PR groups is the
+	// extraction order. Every consumer (TUI pickers, web modal, REST endpoint)
+	// renders this order verbatim, so sorting once here orders all surfaces.
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].IsPR && !out[j].IsPR
+	})
 
 	return out
 }

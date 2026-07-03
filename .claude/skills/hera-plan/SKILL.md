@@ -19,6 +19,15 @@ coordinator binding and know the base hera model (roles, bindings, messaging, `h
 status/tree) from the `hera` skill — **load that first if you haven't.** Every tool here takes
 `cwd` (pass `cwd=$PWD`) and `orchestrator` is required when your task holds 2+ live bindings.
 
+**Plan nodes land under your EXISTING orchestrator – the one you already coordinate.** Authoring a
+plan-DAG is *not* a bootstrap step: you do **not** call `hera_new_orchestrator` to hold your plan.
+The `hera_plan` / `hera_plan_node` verbs add nodes to the orchestrator you already coordinate, and
+the gater materializes each node as a worker **directly beneath you**. Spinning up a second
+orchestrator to hold your own plan creates a redundant self-coordinator that wrongly owns the DAG –
+don't. The only reason to pass `orchestrator=` is to disambiguate when your task holds 2+ live
+bindings; the only reason to spin up a *new* orchestrator inside a plan is the deliberate
+`kind=subcoord` node (a genuinely distinct sub-goal handed to a separate sub-team – see below).
+
 ## When the plan-DAG is the right tool
 
 The base `hera` skill's decision triad gets you here: the work decomposes into units that each must
@@ -165,8 +174,17 @@ when its blockers finish.
 
 The work has a seed, a parallel fan-out, and a fan-in:
 
-1. Bootstrap (if you haven't): `hera_new_orchestrator(cwd=$PWD, name="<feature>", coordinator_role_name="coord")`.
-   To root the plan on your current feature branch, pass `base_branch="argus/<your-branch>"`.
+1. **Author the DAG under your EXISTING orchestrator – do NOT call `hera_new_orchestrator` to hold
+   your plan.** If you are already a coordinator (you bootstrapped or claimed an orchestrator earlier
+   this session – the common case when you reach this skill), skip straight to step 2: the nodes
+   become workers in your current orchestrator, materialized directly beneath you by the gater. Only
+   call `hera_new_orchestrator(cwd=$PWD, name="<feature>", coordinator_role_name="coord")` in the rare
+   cold-start case where you do **not** yet hold ANY coordinator binding; calling it when you already
+   coordinate one creates a redundant second coordinator that wrongly holds your DAG. (To root a
+   *fresh* orchestrator's plan on a feature branch, pass `base_branch="argus/<your-branch>"`; an
+   existing orchestrator already carries its own base – see the root-node branch resolution above.)
+   Author your own stages directly as plain worker nodes; reach for `kind=subcoord` only to hand a
+   genuinely distinct sub-goal to a separate sub-team.
 2. Submit the whole graph transactionally — short-id names, full spec baked into each prompt:
    ```
    hera_plan(cwd=$PWD,

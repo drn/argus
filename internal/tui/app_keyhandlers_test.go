@@ -340,7 +340,8 @@ func TestApp_HandleRestartDaemonKey_RestartChosen(t *testing.T) {
 		}
 	}
 
-	app.openRestartDaemonPrompt()
+	app.SetSkew(true, false, "", "")
+	app.openSkewPrompt()
 	// Press 'y' to confirm restart. The modal interprets Enter as the default
 	// (Restart), so press Enter.
 	app.handleRestartDaemonKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))

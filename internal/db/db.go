@@ -70,6 +70,10 @@ func Open(path string) (*DB, error) {
 		conn.Close()
 		return nil, err
 	}
+	if err := d.sweepLegacyKeybindings(); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	return d, nil
 }
 
@@ -90,6 +94,10 @@ func OpenInMemory() (*DB, error) {
 	// Seed defaults for in-memory (no migration from files).
 	if err := d.seedDefaults(); err != nil {
 		conn.Close()
+		return nil, err
+	}
+	if err := d.sweepLegacyKeybindings(); err != nil {
+		_ = conn.Close()
 		return nil, err
 	}
 	return d, nil

@@ -1,6 +1,7 @@
 package links
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/testutil"
@@ -256,8 +257,16 @@ func TestIsPR(t *testing.T) {
 	}{
 		{"github pr", "https://github.com/org/repo/pull/123", true},
 		{"github pr with files suffix", "https://github.com/org/repo/pull/123/files", true},
-		{"github enterprise pr", "https://github.example.com/org/repo/pull/9", true},
-		{"gitlab merge request", "https://gitlab.com/group/repo/-/merge_requests/42", true},
+		{"github pr host case-insensitive", "https://GitHub.com/org/repo/pull/1", true},
+		// PR detection is scoped to github.com only — enterprise hosts and GitLab
+		// merge requests are intentionally NOT flagged.
+		{"github enterprise pr not flagged", "https://github.example.com/org/repo/pull/9", false},
+		// www.github.com redirects to the apex, so real agent output never emits
+		// it; excluding it is a deliberate consequence of the exact-host match.
+		{"www.github.com pr not flagged (intentional)", "https://www.github.com/org/repo/pull/1", false},
+		{"gitlab merge request not flagged", "https://gitlab.com/group/repo/-/merge_requests/42", false},
+		{"non-github host with pull path not flagged", "https://example.com/org/repo/pull/1", false},
+		{"github pull at root not a pr", "https://github.com/pull/1", false},
 		{"github repo root not a pr", "https://github.com/org/repo", false},
 		{"github issue not a pr", "https://github.com/org/repo/issues/5", false},
 		{"github compare range not a pr", "https://github.com/org/repo/compare/v1.0...v1.1", false},
@@ -280,4 +289,29 @@ func TestExtractStampsIsPR(t *testing.T) {
 	testutil.Equal(t, got[0].IsPR, true)
 	testutil.Equal(t, got[1].URL, "https://example.com/guide")
 	testutil.Equal(t, got[1].IsPR, false)
+}
+
+func TestExtractPRLinksLeadList(t *testing.T) {
+	t.Run("PR printed after a non-PR still leads", func(t *testing.T) {
+		got := Extract("docs https://example.com/guide then PR https://github.com/org/repo/pull/7")
+		testutil.Equal(t, len(got), 2)
+		testutil.Equal(t, got[0].URL, "https://github.com/org/repo/pull/7")
+		testutil.Equal(t, got[0].IsPR, true)
+		testutil.Equal(t, got[1].URL, "https://example.com/guide")
+	})
+
+	t.Run("order within each group preserved", func(t *testing.T) {
+		got := Extract(strings.Join([]string{
+			"https://example.com/a",
+			"https://github.com/org/repo/pull/1",
+			"https://example.com/b",
+			"https://github.com/org/repo/pull/2",
+		}, " "))
+		testutil.Equal(t, len(got), 4)
+		// PRs first, in extraction order, then non-PRs in extraction order.
+		testutil.Equal(t, got[0].URL, "https://github.com/org/repo/pull/1")
+		testutil.Equal(t, got[1].URL, "https://github.com/org/repo/pull/2")
+		testutil.Equal(t, got[2].URL, "https://example.com/a")
+		testutil.Equal(t, got[3].URL, "https://example.com/b")
+	})
 }

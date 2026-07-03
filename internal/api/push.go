@@ -124,14 +124,41 @@ type idleWatcherState struct {
 	seenBefore    map[string]bool      // taskID -> have we observed this session on a prior tick?
 	pushedAt      map[string]time.Time // taskID -> wall-clock time we last fired an idle push
 	needsInputNow map[string]bool      // taskID -> last seen blocked-on-user-input?
+	// contentFP carries each prompt-showing session's content fingerprint from
+	// the previous tick (BUG-032). A session whose meaningful output is
+	// unchanged across ticks while it shows the prompt signature is blocked
+	// even if it never goes idle (continuous redraw/animation bytes).
+	contentFP map[string]uint64
+	// needsInputSince carries the clear-on-input baseline (BUG-034): the
+	// session's last-input timestamp observed when a task first entered the
+	// needs-input set. agent.NeedsInputClear freezes it across ticks and clears
+	// the flag once the session's last-input advances past it (the user
+	// responded), even while the stale question still matches in the tail.
+	needsInputSince map[string]time.Time
+	// screen reconstructs the visible terminal screen from a session's raw tail
+	// so detection matches the EMULATED screen, catching fullscreen (alt-screen)
+	// prompts whose cursor-addressed glyphs aren't linearly present in the bytes
+	// (BUG-033). Reused across ticks (one drain goroutine for the watcher's
+	// lifetime); the watcher is single-goroutine so no lock is needed.
+	screen *agent.ScreenRenderer
+	// contentIdle carries the content-aware idle bookkeeping (BUG-036): the
+	// per-task emulated-screen fingerprint + stable-since timestamp used to
+	// recognize a fullscreen (alt-screen) agent that is parked at its prompt and
+	// so never reaches the raw-byte idle set. agent.ContentIdle folds the result
+	// into the idle set used for idle-push / session.idle, so a parked fullscreen
+	// agent fires one idle push when its content stabilizes.
+	contentIdle *agent.ContentIdleState
 }
 
 func newIdleWatcherState() *idleWatcherState {
 	return &idleWatcherState{
-		idleNow:       make(map[string]bool),
-		seenBefore:    make(map[string]bool),
-		pushedAt:      make(map[string]time.Time),
-		needsInputNow: make(map[string]bool),
+		idleNow:         make(map[string]bool),
+		seenBefore:      make(map[string]bool),
+		pushedAt:        make(map[string]time.Time),
+		needsInputNow:   make(map[string]bool),
+		contentFP:       make(map[string]uint64),
+		needsInputSince: make(map[string]time.Time),
+		screen:          &agent.ScreenRenderer{},
 	}
 }
 
@@ -141,53 +168,115 @@ func newIdleWatcherState() *idleWatcherState {
 // the ring. Matches the TUI's detectNeedsInputTailBytes.
 const needsInputScanBytes = 16 * 1024
 
+// sessionScreenSize returns the PTY dimensions a task's session was last sized
+// at, for re-emulating its output to the screen the bytes were formatted for
+// (BUG-033 alt-screen detection). Reads the persisted size sidecar
+// (~/.argus/sessions/<id>.size) the daemon writes on every Start/Resize — a
+// local file read, so it is non-blocking in both the in-process and supervisor-
+// client runner cases (PTYSize() can round-trip to the supervisor). Falls back
+// to the session default (80×24) when the sidecar is missing; agent.render
+// applies the same default for non-positive dimensions.
+func sessionScreenSize(taskID string) (cols, rows int) {
+	if c, r, ok := agent.LoadSessionSize(taskID); ok {
+		return c, r
+	}
+	return int(agent.DefaultTermCols), int(agent.DefaultTermRows)
+}
+
 // computeNeedsInput returns the set of task IDs whose recent PTY output
 // indicates the agent is blocked waiting on the user, reusing the shared
 // agent.DetectNeedsInput heuristic. It mirrors the TUI's detection
 // (internal/tui/app.go detectNeedsInputSticky) so the daemon-published signal
-// matches what the TUI renders:
+// matches what the TUI renders. Three passes, each guarded against the
+// false-positive risk of flagging a still-streaming agent:
 //
-//   - Detection is gated on idleness — a still-streaming agent that flashes
-//     the marker text transiently is not blocked.
-//   - A sticky carry-forward pass re-checks previously-flagged tasks that
-//     dropped out of idleIDs this tick. Claude's prompt UI emits periodic
-//     animation bytes (cursor blink, spinner) that briefly kick the session
-//     out of the idle set; without this the flag (and its SSE events) would
-//     oscillate. A sticky entry clears only when the marker is gone from the
-//     tail or the session is no longer running.
+//   - Idle pass: an idle session showing the prompt signature is blocked. The
+//     idle gate alone rejects a streaming agent that flashes the marker text.
+//   - Content-stability pass (BUG-032): a session that NEVER goes idle —
+//     because it sits at a prompt emitting continuous redraw/animation bytes
+//     (spinner, cursor blink, alt-screen repaint) — is blocked when the
+//     signature is present AND its content fingerprint (agent.ContentFingerprint,
+//     which strips that animation chrome) is unchanged from the previous tick.
+//     A streaming agent's fingerprint changes every tick, so it is never
+//     flagged here. prevFP supplies last tick's fingerprints; the returned map
+//     carries this tick's forward.
+//   - Sticky carry-forward: a previously-flagged task still running and still
+//     showing the signature stays flagged through a one-tick content blip,
+//     preventing the flag (and its SSE events) from oscillating.
 //
 // tailOf returns the recent output tail for a task (nil if unavailable);
 // injected so the watcher reads the live session ring while tests supply
 // canned bytes. agent.DetectNeedsInput treats nil/empty as "not blocked".
-func computeNeedsInput(idleIDs, runningIDs, prev []string, tailOf func(string) []byte) []string {
+//
+// Detection matches the EMULATED screen (BUG-033): the raw byte regex is the
+// fast path (linear agents), and on a miss the tail is rendered through
+// `screen` sized via sizeOf so a fullscreen (alt-screen) agent's cursor-
+// addressed prompt is caught without a view-triggered repaint. A nil screen
+// disables the fallback (raw-only), matching pre-BUG-033 behavior.
+//
+// After the three entry passes build the candidate set, agent.NeedsInputClear
+// applies the BUG-034 clear conditions: a task whose session received new input
+// after the flag was raised (lastInputOf advanced past the baseline carried in
+// prevSince) or whose task is archived (archivedOf) is dropped — deterministic,
+// independent of the stale question scrolling out of the tail. The returned
+// newSince carries the baselines forward; nil lastInputOf/archivedOf degrade to
+// pre-BUG-034 behavior (no clear).
+func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uint64, prevSince map[string]time.Time, tailOf func(string) []byte, lastInputOf func(string) time.Time, archivedOf func(string) bool, screen *agent.ScreenRenderer, sizeOf func(string) (cols, rows int)) ([]string, map[string]uint64, map[string]time.Time) {
 	out := make([]string, 0, len(idleIDs))
 	seen := make(map[string]bool, len(idleIDs))
+	newFP := make(map[string]uint64)
+	flag := func(id string) {
+		if !seen[id] {
+			out = append(out, id)
+			seen[id] = true
+		}
+	}
+
 	for _, id := range idleIDs {
 		if seen[id] {
 			continue
 		}
-		if agent.DetectNeedsInput(tailOf(id)) {
-			out = append(out, id)
-			seen[id] = true
+		cols, rows := sizeOf(id)
+		if agent.DetectNeedsInputScreen(screen, tailOf(id), cols, rows) {
+			flag(id)
 		}
 	}
-	if len(prev) == 0 {
-		return out
-	}
+
 	runningSet := make(map[string]bool, len(runningIDs))
 	for _, id := range runningIDs {
 		runningSet[id] = true
 	}
+
+	// Content-stability pass: only sessions showing an awaiting-input signal
+	// (agent.AwaitingInputFingerprint: the UNAMBIGUOUS selection widget, OR a
+	// free-text trailing question with the "working" affordance absent — this
+	// pass has no idle gate, so a busy agent that is still working must not
+	// qualify) are fingerprinted and considered.
+	for _, id := range runningIDs {
+		cols, rows := sizeOf(id)
+		fp, ok := agent.AwaitingInputFingerprint(screen, tailOf(id), cols, rows)
+		if !ok {
+			continue
+		}
+		newFP[id] = fp
+		if last, ok := prevFP[id]; ok && last == fp {
+			flag(id)
+		}
+	}
+
 	for _, id := range prev {
 		if seen[id] || !runningSet[id] {
 			continue
 		}
-		if agent.DetectNeedsInput(tailOf(id)) {
-			out = append(out, id)
-			seen[id] = true
+		cols, rows := sizeOf(id)
+		if agent.DetectNeedsInputScreen(screen, tailOf(id), cols, rows) {
+			flag(id)
 		}
 	}
-	return out
+
+	// BUG-034: clear the flag for tasks the user has responded to or archived.
+	out, newSince := agent.NeedsInputClear(out, prevSince, lastInputOf, archivedOf)
+	return out, newFP, newSince
 }
 
 // idleWatcher periodically polls all running sessions and fires
@@ -295,6 +384,31 @@ func (s *Server) idleWatcherTick(state *idleWatcherState) {
 	}
 
 	now := time.Now()
+
+	// tailOf reads a task's recent PTY output from the live session ring (the
+	// daemon is the sole PTY reader, so the ring is populated with no TUI). Shared
+	// by the content-idle pass and the needs-input pass below.
+	tailOf := func(id string) []byte {
+		if sess := s.runner.Get(id); sess != nil {
+			return sess.RecentOutputTail(needsInputScanBytes)
+		}
+		return nil
+	}
+
+	// Content-aware idle (BUG-036): a fullscreen (alt-screen) agent parked at its
+	// prompt repaints continuously, so it never reaches the raw-byte idle set and
+	// would never fire idle-push. Fold the content-idle augmentation (sessions
+	// whose emulated screen is stable and NOT "working") into idleSet so the
+	// busy→idle transition and session.idle fire for them too. Exactly-once firing
+	// is still guaranteed by shouldFireIdlePush's per-work-cycle gate (no re-push
+	// until new input), so a re-asserted content-idle signal cannot storm; and a
+	// non-fullscreen agent is already in idleSet (raw-idle), so it is unaffected.
+	contentIdle, nextCI := agent.ContentIdle(running, idleSet, tailOf, sessionScreenSize, state.screen, state.contentIdle, now)
+	state.contentIdle = nextCI
+	for _, id := range contentIdle {
+		idleSet[id] = true
+	}
+
 	for _, id := range running {
 		seen[id] = true
 		// Idle bit comes from the RunningAndIdle snapshot above so the
@@ -349,12 +463,7 @@ func (s *Server) idleWatcherTick(state *idleWatcherState) {
 		s.push.Notify("", name, body, id)
 	}
 
-	s.detectNeedsInputTick(state, running, idle, func(id string) []byte {
-		if sess := s.runner.Get(id); sess != nil {
-			return sess.RecentOutputTail(needsInputScanBytes)
-		}
-		return nil
-	})
+	s.detectNeedsInputTick(state, running, idle, tailOf)
 
 	// Drop entries for sessions that exited.
 	for id := range state.idleNow {
@@ -391,7 +500,38 @@ func (s *Server) detectNeedsInputTick(state *idleWatcherState, running, idle []s
 	for id := range state.needsInputNow {
 		prev = append(prev, id)
 	}
-	needs := computeNeedsInput(idle, running, prev, tailOf)
+	// lastInputOf reads the daemon-owned session's most-recent-USER-input
+	// timestamp (BUG-034 clear-on-input). It MUST be LastUserInput, not
+	// LastInput: every input surface — TUI socket, REST — funnels through this
+	// handle, but so does reliable pane delivery (hera/task messages), which is
+	// SYSTEM input, not the user answering the prompt. Reliable delivery uses
+	// WriteInputSystem, which advances LastInput (work cycle) but NOT
+	// LastUserInput — so reading LastUserInput here keeps a delivered coordinator
+	// message from clearing a parked worker's "(?)" (the regression this fixes).
+	// In-process mode reads the real *agent.Session; supervisor mode reads the
+	// daemon-side client handle, both of which track the user/system split.
+	lastInputOf := func(id string) time.Time {
+		if sess := s.runner.Get(id); sess != nil {
+			return sess.LastUserInput()
+		}
+		return time.Time{}
+	}
+	// archivedOf drops archived tasks from the set (BUG-034 clear-on-archive)
+	// so they stop surfacing "(?)" and stop rolling up. Built once per tick.
+	archived := make(map[string]bool)
+	if s.db != nil {
+		if tasks, err := s.db.Tasks(); err == nil {
+			for _, t := range tasks {
+				if t.Archived {
+					archived[t.ID] = true
+				}
+			}
+		}
+	}
+	archivedOf := func(id string) bool { return archived[id] }
+	needs, newFP, newSince := computeNeedsInput(idle, running, prev, state.contentFP, state.needsInputSince, tailOf, lastInputOf, archivedOf, state.screen, sessionScreenSize)
+	state.contentFP = newFP
+	state.needsInputSince = newSince
 	needsSet := make(map[string]bool, len(needs))
 	for _, id := range needs {
 		needsSet[id] = true

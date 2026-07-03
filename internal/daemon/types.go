@@ -2,16 +2,36 @@ package daemon
 
 import (
 	"time"
+
+	"github.com/drn/argus/internal/buildid"
 )
 
 // BootInfoResp describes the daemon's boot-time identity. Used by the TUI to
 // detect when the daemon binary is older than the TUI binary (e.g. after a
 // rebuild) and prompt the user to restart it.
+//
+// It also relays the connected session-supervisor's identity (D1): the TUI
+// talks only to the daemon, so the daemon — which already holds the supervisor
+// client — re-queries the supervisor's Hello when it serves BootInfo (see
+// RPCService.BootInfo) and folds the reply into the Supervisor* fields. The
+// re-query (not a New()-time cache) means an independently-restarted supervisor
+// reports its CURRENT identity.
 type BootInfoResp struct {
-	BinaryPath  string    // resolved path of the daemon executable at boot
-	BinaryMtime time.Time // mtime of the binary at boot (zero if stat failed)
-	BinaryHash  string    // SHA-256 of the binary at boot (empty if hashing failed)
-	BootedAt    time.Time // wall-clock time the daemon started
+	BinaryPath  string      // resolved path of the daemon executable at boot
+	BinaryMtime time.Time   // mtime of the binary at boot (zero if stat failed)
+	BinaryHash  string      // SHA-256 of the binary at boot (empty if hashing failed)
+	VCS         buildid.VCS // daemon's own commit SHA + dirty flag (blank outside a git tree); display-only
+	BootedAt    time.Time   // wall-clock time the daemon started
+
+	// Supervisor identity, relayed from the connected supervisor's Hello at
+	// serve time. SupervisorPresent is false when the daemon runs the in-process
+	// runner (no supervisor). When present but the supervisor speaks an older
+	// protocol that omits the hash, SupervisorHash is empty — reported as
+	// "unknown", NEVER as stale (the additive-protocol feature-detect).
+	SupervisorPresent bool        // a supervisor client is connected
+	SupervisorPath    string      // resolved path of the supervisor executable
+	SupervisorHash    string      // SHA-256 of the supervisor binary (empty ⇒ unknown / pre-hash protocol)
+	SupervisorVCS     buildid.VCS // supervisor's commit SHA + dirty flag; display-only
 }
 
 // ProtocolVersion is the version of the session-server R/S protocol that the
@@ -35,7 +55,13 @@ type BootInfoResp struct {
 //     bookkeeping must run supervisor-side, so it can't be composed client-side
 //     from Stop+Start). Additive: a v1 supervisor simply lacks the method and a
 //     KickRerender RPC against it errors, which the daemon treats as a no-op kick.
-const ProtocolVersion = 2
+//   - v3 (binary-coherence): + HelloResp.BinaryHash and HelloResp.VCS (the
+//     supervisor hashes its own resolved binary at boot and reports its VCS
+//     identity, so the daemon can relay supervisor skew to the TUI via BootInfo).
+//     Additive: a v2 supervisor omits both fields, and the daemon feature-detects
+//     the empty BinaryHash as "supervisor identity unknown" — NEVER a false stale,
+//     and never a trigger to auto-restart the live supervisor.
+const ProtocolVersion = 3
 
 // SupervisorProtocolMatch reports whether a supervisor's handshake version
 // equals the daemon's. A mismatch is NOT fatal and NEVER triggers an auto-
@@ -49,21 +75,25 @@ func SupervisorProtocolMatch(hello HelloResp) bool {
 }
 
 // HelloResp is the session-supervisor's handshake reply. ProtocolVersion lets
-// the daemon (P2) decide which RPCs/fields it may use against this supervisor.
+// the daemon decide which RPCs/fields it may use against this supervisor.
 //
-// It carries the supervisor's binary path/mtime so a future daemon could
-// reason about supervisor staleness (a stale supervisor is NOT auto-restarted —
-// that would interrupt agents; see the design doc §4.4). It deliberately does
-// NOT yet carry the SHA-256 BinaryHash that BootInfoResp gained: no consumer
-// compares supervisor binaries for staleness today, and adding the field would
-// force a ProtocolVersion bump (logging skew against every already-running
-// supervisor) for data nothing reads. When supervisor-staleness checking is
-// actually implemented, add BinaryHash here and bump ProtocolVersion then.
+// It carries the supervisor's binary identity so the daemon can reason about
+// (and relay) supervisor staleness. A stale supervisor is NEVER auto-restarted
+// — that would interrupt agents; see the design doc §4.4 — the daemon only
+// surfaces it to the TUI, which prompts for a guarded, user-initiated restart.
+//
+// BinaryHash + VCS were added in ProtocolVersion 3 (binary-coherence). The
+// staleness DECISION is the SHA-256 content-hash comparison; VCS (commit SHA +
+// dirty flag) is display-only and blank for binaries built outside a git tree.
+// A v2 supervisor omits both — the daemon feature-detects the empty BinaryHash
+// as "unknown", never stale.
 type HelloResp struct {
 	ProtocolVersion int
-	BinaryPath      string    // resolved path of the supervisor executable at boot
-	BinaryMtime     time.Time // mtime of the binary at boot (zero if stat failed)
-	BootedAt        time.Time // wall-clock time the supervisor started
+	BinaryPath      string      // resolved path of the supervisor executable at boot
+	BinaryMtime     time.Time   // mtime of the binary at boot (zero if stat failed)
+	BinaryHash      string      // SHA-256 of the binary at boot (empty ⇒ hashing failed OR pre-v3 supervisor)
+	VCS             buildid.VCS // supervisor's commit SHA + dirty flag; display-only, blank outside a git tree
+	BootedAt        time.Time   // wall-clock time the supervisor started
 }
 
 // PortsResp returns the live HTTP ports the daemon is bound to. Both servers

@@ -56,8 +56,8 @@ func TestFileLoader_OverlaysPresentFieldsOnly(t *testing.T) {
 theme = "dark"
 spinner_style = "braille"
 
-[keybindings]
-status = "x"
+[keybindings.tasklist]
+status_advance = "x"
 
 [backends.custom]
 command = "my-agent"
@@ -72,11 +72,11 @@ prompt_flag = "-p"
 	// Overridden fields win.
 	testutil.Equal(t, got.UI.Theme, "dark")
 	testutil.Equal(t, got.UI.SpinnerStyle, "braille")
-	testutil.Equal(t, got.Keybindings.Status, "x")
+	testutil.Equal(t, got.Keybindings.TaskList["status_advance"], "x")
 
 	// Absent fields fall through to the base.
 	testutil.Equal(t, got.UI.ShowIcons, base.UI.ShowIcons)
-	testutil.Equal(t, got.Keybindings.New, base.Keybindings.New)
+	testutil.Nil(t, got.Keybindings.Agent)
 
 	// Map merge: new backend added, defaults preserved.
 	testutil.Equal(t, got.Backends["custom"].Command, "my-agent")

@@ -42,7 +42,7 @@ type fakeSession struct {
 	mu     sync.Mutex
 	idle   bool
 	writes [][]byte
-	// writeErr is returned from WriteInput when set.
+	// writeErr is returned from WriteInputSystem when set.
 	writeErr error
 }
 
@@ -52,7 +52,7 @@ func (s *fakeSession) IsIdle() bool {
 	return s.idle
 }
 
-func (s *fakeSession) WriteInput(p []byte) (int, error) {
+func (s *fakeSession) WriteInputSystem(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.writeErr != nil {

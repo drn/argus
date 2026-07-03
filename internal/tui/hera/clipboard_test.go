@@ -109,10 +109,11 @@ func TestCtrlY_CopiesStagedFromFocusedPane(t *testing.T) {
 	testutil.Equal(t, len(coordSess.wrote), 0)
 }
 
-// TestCtrlY_FallsThroughWhenNotStaged: with no staged payload (clipReady false),
-// ctrl+y is NOT intercepted — it forwards to the focused pane's PTY so an
-// in-agent vim/emacs yank still works.
-func TestCtrlY_FallsThroughWhenNotStaged(t *testing.T) {
+// TestCtrlY_AlwaysInterceptsWhenNotStaged: with no staged payload (clipReady
+// false), ctrl+y is still intercepted — it fires OnCopyClipboard with the
+// focused pane's task (so the App can flash "Nothing to copy") and never
+// forwards the key to the PTY.
+func TestCtrlY_AlwaysInterceptsWhenNotStaged(t *testing.T) {
 	d := memDB(t)
 	orch := seedOrch(t, d, "o")
 	seedBoundRole(t, d, orch, "c", db.HeraKindCoordinator, "tc")
@@ -131,8 +132,8 @@ func TestCtrlY_FallsThroughWhenNotStaged(t *testing.T) {
 
 	h := p.InputHandler()
 	h(ctrlY(), noFocus)
-	testutil.Equal(t, copied, "")                   // callback never fired
-	testutil.Equal(t, len(wkrSess.wrote) > 0, true) // forwarded to the PTY instead
+	testutil.Equal(t, copied, "tw")          // callback still fires, scoped to the focused pane
+	testutil.Equal(t, len(wkrSess.wrote), 0) // consumed, never forwarded to the PTY
 }
 
 // TestCtrlY_InertOnRailAndDetails: ctrl+y never copies when the focused region

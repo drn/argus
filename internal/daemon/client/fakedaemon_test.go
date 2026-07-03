@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/buildid"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -57,9 +58,12 @@ func (s *FakeRPCService) Ping(_ *daemon.Empty, resp *daemon.PongResp) error {
 }
 
 // Hello answers the supervisor handshake so the client's Hello() can be tested.
+// It carries the v3 BinaryHash + VCS so the client round-trips the full identity.
 func (s *FakeRPCService) Hello(_ *daemon.Empty, resp *daemon.HelloResp) error {
 	resp.ProtocolVersion = daemon.ProtocolVersion
 	resp.BinaryPath = "/fake/supervisor"
+	resp.BinaryHash = "fakehash"
+	resp.VCS = buildid.VCS{Revision: "fakerev", Modified: true}
 	return nil
 }
 
