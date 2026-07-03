@@ -67,7 +67,7 @@ private struct PRChip: View {
     let state: String?
 
     var body: some View {
-        if let url = URL(string: link.url) {
+        if let url = link.webURL {
             SwiftUI.Link(destination: url) {
                 chipBody(icon: "arrow.triangle.pull", text: label, tint: .purple)
             }

@@ -12,17 +12,21 @@ no new daemon endpoints.
 
 ### Requirement: App shell & task rail
 
-The system SHALL present a sidebar task rail listing tasks grouped into
-sections (active, in review, complete, archived), each row showing a status
-icon and a needs-input indicator, and a detail pane with Terminal, Diff,
-Files, and Info tabs for the selected task.
+The system SHALL present a sidebar task rail listing non-archived tasks
+grouped into per-project folder sections (mirroring the TUI task list's
+project grouping and ordering), each row showing a status icon and a
+needs-input indicator, with archived tasks in a separate collapsed section at
+the bottom, and a detail pane with Terminal, Diff, Files, and Info tabs for
+the selected task.
 
-#### Scenario: Sections reflect task state
+#### Scenario: Folders mirror the TUI task list
 
 - **WHEN** the app loads the task list from `GET /api/tasks`
-- **THEN** each task is placed into exactly one rail section (active / in
-  review / complete / archived) matching its `status` and `archived` fields,
-  and archived tasks are hidden unless the archived section is expanded
+- **THEN** each non-archived task is placed under its project folder
+  (folders sorted alphabetically, tasks in created order, empty project →
+  "(no project)"), the row's status icon carries the task-state signal, and
+  archived tasks are hidden in a collapsed bottom section (itself grouped by
+  project) unless expanded
 
 #### Scenario: Needs-input surfaces in the rail
 

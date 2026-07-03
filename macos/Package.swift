@@ -74,7 +74,9 @@ let package = Package(
         // SwiftTerm powers the live agent terminal in ArgusMac ONLY. ArgusKit
         // stays pure Foundation (no third-party deps) so its stream-session
         // state machine remains trivially testable.
-        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.2.0"),
+        // Pinned exact: the only third-party dependency, with no CVE/changelog
+        // gate in CI — bumps are deliberate edits here, not `swift package update`.
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.13.0"),
     ],
     targets: [
         .target(

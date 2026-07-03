@@ -52,7 +52,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         guard let center, !authorizationRequested else { return }
         authorizationRequested = true
         center.requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] granted, error in
-            Task { @MainActor in
+            _Concurrency.Task { @MainActor in
                 self?.authorized = granted
                 if let error {
                     Self.log.error("[notify] authorization error: \(String(describing: error), privacy: .public)")
@@ -137,7 +137,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let taskID = response.notification.request.content.userInfo["task_id"] as? String
-        Task { @MainActor [weak self] in
+        _Concurrency.Task { @MainActor [weak self] in
             NSApplication.shared.activate(ignoringOtherApps: true)
             if let taskID { self?.onSelectTask?(taskID) }
         }

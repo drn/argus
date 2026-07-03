@@ -89,4 +89,14 @@ public struct Link: Sendable, Equatable, Decodable {
     enum CodingKeys: String, CodingKey {
         case label, url, isPR
     }
+
+    /// The URL parsed and validated to a web scheme (http/https), else nil.
+    /// Link strings originate in agent terminal output, so clients must not
+    /// hand arbitrary schemes (file:, x-apple.systempreferences:, …) to the
+    /// OS opener — same allowlist as the terminal's OSC-8 link handling.
+    public var webURL: URL? {
+        guard let u = URL(string: url), let scheme = u.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else { return nil }
+        return u
+    }
 }

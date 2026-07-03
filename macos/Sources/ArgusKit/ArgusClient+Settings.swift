@@ -35,12 +35,12 @@ extension ArgusClient {
         if let sender, !sender.isEmpty { q.append(.init(name: "sender", value: sender)) }
         if let since, !since.isEmpty { q.append(.init(name: "since", value: since)) }
         if let limit, limit > 0 { q.append(.init(name: "limit", value: String(limit))) }
-        return try await getDecoding("/api/tasks/\(taskID)/inbox", query: q)
+        return try await getDecoding("/api/tasks/\(pc(taskID))/inbox", query: q)
     }
 
     /// `POST /api/tasks/{id}/messages` — stages a message from the given task.
     public func sendMessage(fromTaskID: String, _ req: SendMessageRequest) async throws -> SendMessageResponse {
-        try await sendDecoding("POST", "/api/tasks/\(fromTaskID)/messages", body: req)
+        try await sendDecoding("POST", "/api/tasks/\(pc(fromTaskID))/messages", body: req)
     }
 
     private struct AckResponse: Decodable { let acked: Int }
@@ -49,7 +49,7 @@ extension ArgusClient {
     /// Returns the count actually flipped.
     @discardableResult
     public func ackInbox(taskID: String, ids: [String]) async throws -> Int {
-        let resp: AckResponse = try await sendDecoding("POST", "/api/tasks/\(taskID)/inbox/ack",
+        let resp: AckResponse = try await sendDecoding("POST", "/api/tasks/\(pc(taskID))/inbox/ack",
                                                        body: ["ids": ids])
         return resp.acked
     }
@@ -64,7 +64,7 @@ extension ArgusClient {
     public func taskMeta(taskID: String, namespace: String? = nil) async throws -> [MetaEntry] {
         var q: [URLQueryItem] = []
         if let namespace, !namespace.isEmpty { q.append(.init(name: "namespace", value: namespace)) }
-        let env: MetaEnvelope = try await getDecoding("/api/tasks/\(taskID)/meta", query: q)
+        let env: MetaEnvelope = try await getDecoding("/api/tasks/\(pc(taskID))/meta", query: q)
         return env.entries
     }
 
@@ -72,7 +72,7 @@ extension ArgusClient {
     /// number of rows written.
     @discardableResult
     public func putTaskMeta(taskID: String, _ req: MetaPutRequest) async throws -> Int {
-        let resp: MetaWriteResponse = try await sendDecoding("PUT", "/api/tasks/\(taskID)/meta", body: req)
+        let resp: MetaWriteResponse = try await sendDecoding("PUT", "/api/tasks/\(pc(taskID))/meta", body: req)
         return resp.written
     }
 }

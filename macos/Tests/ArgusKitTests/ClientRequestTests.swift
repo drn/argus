@@ -199,4 +199,25 @@ struct ClientRequestTests {
             _ = try ArgusConfig.resolve(tokenFileURL: URL(fileURLWithPath: "/nonexistent/api-token"))
         }
     }
+
+    // MARK: - SSE stream auth (regression: token must NEVER ride the URL)
+
+    @Test("SSE stream authenticates via the Authorization header, never ?token=")
+    func streamAuthUsesHeaderNotQuery() async throws {
+        // A token in the URL leaks into NSError descriptions
+        // (NSErrorFailingURLStringKey) and from there into logs — the stream
+        // request must carry the same bearer header as every other call.
+        MockURLProtocol.stubJSON(status: 200,
+                                 headers: ["Content-Type": "text/event-stream"],
+                                 body: Data("data: aGk=\n\n".utf8))
+        let client = makeClient()
+        for try await _ in client.terminalStream(taskID: "42", since: 7) { break }
+
+        let req = MockURLProtocol.lastRequest
+        #expect(req?.value(forHTTPHeaderField: "Authorization") == "Bearer secret-token")
+        let items = queryItems(req)
+        #expect(items["token"] == nil)
+        #expect(items["since"] == "7")
+        #expect(req?.url?.absoluteString.contains("secret-token") == false)
+    }
 }

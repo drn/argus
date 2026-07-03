@@ -17,7 +17,7 @@ extension ArgusClient {
 
     /// `GET /api/tasks/{id}`.
     public func task(id: String) async throws -> Task {
-        try await getDecoding("/api/tasks/\(id)")
+        try await getDecoding("/api/tasks/\(pc(id))")
     }
 
     /// `POST /api/tasks` — creates a task and starts its agent session.
@@ -29,51 +29,51 @@ extension ArgusClient {
     /// `DELETE /api/tasks/{id}` — stops the session, removes the worktree +
     /// branch, and deletes the row.
     public func deleteTask(id: String) async throws {
-        try await sendVoid("DELETE", "/api/tasks/\(id)")
+        try await sendVoid("DELETE", "/api/tasks/\(pc(id))")
     }
 
     /// `POST /api/tasks/{id}/stop` — stops the session and flips the task to
     /// in_review.
     public func stopTask(id: String) async throws {
-        try await sendVoid("POST", "/api/tasks/\(id)/stop")
+        try await sendVoid("POST", "/api/tasks/\(pc(id))/stop")
     }
 
     /// `POST /api/tasks/{id}/restart` — re-spawns a finished session, resuming
     /// the prior conversation when the backend supports `--resume`.
     public func restartTask(id: String) async throws -> SessionActionResult {
-        try await sendDecoding("POST", "/api/tasks/\(id)/restart")
+        try await sendDecoding("POST", "/api/tasks/\(pc(id))/restart")
     }
 
     /// `POST /api/tasks/{id}/resume` — resumes (or starts fresh) the session.
     public func resumeTask(id: String) async throws -> SessionActionResult {
-        try await sendDecoding("POST", "/api/tasks/\(id)/resume")
+        try await sendDecoding("POST", "/api/tasks/\(pc(id))/resume")
     }
 
     /// `POST /api/tasks/{id}/archive`.
     public func archiveTask(id: String) async throws {
-        try await sendVoid("POST", "/api/tasks/\(id)/archive")
+        try await sendVoid("POST", "/api/tasks/\(pc(id))/archive")
     }
 
     /// `POST /api/tasks/{id}/unarchive`.
     public func unarchiveTask(id: String) async throws {
-        try await sendVoid("POST", "/api/tasks/\(id)/unarchive")
+        try await sendVoid("POST", "/api/tasks/\(pc(id))/unarchive")
     }
 
     /// `POST /api/tasks/{id}/rename`.
     public func renameTask(id: String, name: String) async throws {
-        try await sendVoid("POST", "/api/tasks/\(id)/rename", body: ["name": name])
+        try await sendVoid("POST", "/api/tasks/\(pc(id))/rename", body: ["name": name])
     }
 
     /// `POST /api/tasks/{id}/status` — moves a task to one of
     /// pending/in_progress/in_review/complete.
     public func setStatus(id: String, status: String) async throws {
-        try await sendVoid("POST", "/api/tasks/\(id)/status", body: ["status": status])
+        try await sendVoid("POST", "/api/tasks/\(pc(id))/status", body: ["status": status])
     }
 
     /// `POST /api/tasks/{id}/fork` — forks a task; empty request fields inherit
     /// from the source.
     public func forkTask(id: String, _ req: ForkRequest = ForkRequest()) async throws -> CreateTaskResponse {
-        try await sendDecoding("POST", "/api/tasks/\(id)/fork", body: req)
+        try await sendDecoding("POST", "/api/tasks/\(pc(id))/fork", body: req)
     }
 
     private struct LinksEnvelope: Decodable { let links: [Link] }
@@ -81,7 +81,7 @@ extension ArgusClient {
     /// `GET /api/tasks/{id}/links` — http/https URLs extracted from the task's
     /// terminal output.
     public func links(taskID: String) async throws -> [Link] {
-        let env: LinksEnvelope = try await getDecoding("/api/tasks/\(taskID)/links")
+        let env: LinksEnvelope = try await getDecoding("/api/tasks/\(pc(taskID))/links")
         return env.links
     }
 }

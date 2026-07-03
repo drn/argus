@@ -23,12 +23,12 @@ extension ArgusClient {
 
     /// `PUT /api/schedules/{id}` — partial-updates a schedule.
     public func updateSchedule(id: String, _ req: ScheduleRequest) async throws -> Schedule {
-        try await sendDecoding("PUT", "/api/schedules/\(id)", body: req)
+        try await sendDecoding("PUT", "/api/schedules/\(pc(id))", body: req)
     }
 
     /// `DELETE /api/schedules/{id}`.
     public func deleteSchedule(id: String) async throws {
-        try await sendVoid("DELETE", "/api/schedules/\(id)")
+        try await sendVoid("DELETE", "/api/schedules/\(pc(id))")
     }
 
     private struct RunScheduleResponse: Decodable {
@@ -40,7 +40,7 @@ extension ArgusClient {
     /// the created task's ID.
     @discardableResult
     public func runSchedule(id: String) async throws -> String {
-        let resp: RunScheduleResponse = try await sendDecoding("POST", "/api/schedules/\(id)/run")
+        let resp: RunScheduleResponse = try await sendDecoding("POST", "/api/schedules/\(pc(id))/run")
         return resp.taskID
     }
 }

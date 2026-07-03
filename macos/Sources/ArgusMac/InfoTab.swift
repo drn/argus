@@ -81,7 +81,7 @@ struct LinkRow: View {
             Image(systemName: link.isPR ? "arrow.triangle.pull" : "link")
                 .foregroundStyle(link.isPR ? .purple : .secondary)
                 .frame(width: 18)
-            if let url = URL(string: link.url) {
+            if let url = link.webURL {
                 SwiftUI.Link(link.label.isEmpty ? link.url : link.label, destination: url)
                     .lineLimit(1)
                     .truncationMode(.middle)

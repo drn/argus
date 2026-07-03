@@ -50,6 +50,18 @@ public struct ArgusClient: Sendable {
         return url
     }
 
+    /// Percent-encodes a single path component (task ID, schedule ID, …) so a
+    /// value containing `/`, `?`, or `#` cannot inject extra path segments or
+    /// a query. IDs are server-issued opaque strings today, but as SDK surface
+    /// this must not rely on caller discipline.
+    static func pc(_ component: String) -> String {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/?#")
+        return component.addingPercentEncoding(withAllowedCharacters: allowed) ?? component
+    }
+
+    func pc(_ component: String) -> String { Self.pc(component) }
+
     func makeRequest(method: String, path: String, query: [URLQueryItem] = [],
                      body: Data? = nil, contentType: String? = nil) throws -> URLRequest {
         var req = URLRequest(url: try makeURL(path: path, query: query))

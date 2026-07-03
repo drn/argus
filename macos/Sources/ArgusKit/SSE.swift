@@ -157,10 +157,14 @@ public enum EventStreamItem: Sendable, Equatable {
 
 extension ArgusClient {
     /// Opens an SSE connection and yields parsed ``SSEvent`` values. Auth is via
-    /// the `?token=` query param (EventSource-style), matching
-    /// `internal/api/auth.go`. The underlying request has no client-side
-    /// timeout, so the stream can sit idle between the server's 30s keepalive
-    /// pings; cancel by breaking out of the `for await` (or cancelling the task).
+    /// the `Authorization: Bearer` header, same as every other request — NEVER
+    /// the `?token=` query param (that fallback in `internal/api/auth.go` exists
+    /// for browser `EventSource`, which cannot set headers; this client can, and
+    /// a token in the URL would ride along inside `NSError` descriptions —
+    /// `NSErrorFailingURLStringKey` — straight into logs). The underlying
+    /// request has no client-side timeout, so the stream can sit idle between
+    /// the server's 30s keepalive pings; cancel by breaking out of the
+    /// `for await` (or cancelling the task).
     ///
     /// `onOpen` fires exactly once, immediately after the HTTP response is
     /// validated (2xx) and BEFORE any SSE frame is parsed — the signal that the
@@ -172,11 +176,7 @@ extension ArgusClient {
         AsyncThrowingStream { continuation in
             let work = _Concurrency.Task {
                 do {
-                    var q = query
-                    if !config.token.isEmpty {
-                        q.append(URLQueryItem(name: "token", value: config.token))
-                    }
-                    var req = URLRequest(url: try makeURL(path: path, query: q))
+                    var req = try makeRequest(method: "GET", path: path, query: query)
                     req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                     // Streaming request must not time out on idle keepalives.
                     req.timeoutInterval = TimeInterval.greatestFiniteMagnitude
@@ -231,7 +231,7 @@ extension ArgusClient {
             // `onOpen` yields `.connected` the instant the response validates,
             // so it lands in the outer stream before any mapped frame (the base
             // stream reads no line until after onOpen fires).
-            let base = stream(path: "/api/tasks/\(taskID)/stream", query: q,
+            let base = stream(path: "/api/tasks/\(pc(taskID))/stream", query: q,
                               onOpen: { continuation.yield(.connected) })
             let work = _Concurrency.Task {
                 do {

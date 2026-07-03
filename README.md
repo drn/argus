@@ -62,7 +62,7 @@ Argus ships a real, installable Progressive Web App. Tap **Add to Home Screen** 
 
 ### 🖥️ macOS app — native point-and-click mission control
 
-A native SwiftUI app (`make mac-app`) that turns the same daemon into a Mac-first control room — no browser tab, no keyboard chords to memorize. A source-list sidebar of tasks grouped by status (Active / In Review / Complete / Archived) with project badges, a live agent terminal powered by SwiftTerm, and detail tabs for the session, the diff, the file tree, and task info. **Reach for it** when you're at your Mac and want the OS working for you: native notifications when an agent needs input or goes idle, a **Dock badge** counting how many are waiting, and a **menu-bar extra** for a glance without switching windows.
+A native SwiftUI app (`make mac-app`) that turns the same daemon into a Mac-first control room — no browser tab, no keyboard chords to memorize. A source-list sidebar of tasks grouped into per-project folders (mirroring the TUI task list, with a collapsed Archived section at the bottom), a live agent terminal powered by SwiftTerm, and detail tabs for the session, the diff, the file tree, and task info. **Reach for it** when you're at your Mac and want the OS working for you: native notifications when an agent needs input or goes idle, a **Dock badge** counting how many are waiting, and a **menu-bar extra** for a glance without switching windows.
 
 - **Full task lifecycle** — create (a project / backend / model / prompt sheet), fork, stop, restart, resume, rename, archive, and delete, each with native confirmations.
 - **Live everything** — the task list and every terminal update ride the daemon's SSE event stream, not polling; a connection banner appears the moment the daemon is unreachable.
@@ -329,7 +329,7 @@ ARGUS_MAC_SELECT_TASK=my-task ARGUS_MAC_INITIAL_TAB=diff \
 
 | Area          | What's there                                                                                              |
 | ------------- | -------------------------------------------------------------------------------------------------------- |
-| Task rail     | Sidebar of tasks in status sections (Active / In Review / Complete / Archived) with project badges, status icons, needs-input markers, and a live connection indicator. |
+| Task rail     | Sidebar of tasks grouped into per-project folders (TUI-parity ordering; Archived collapsed at the bottom), with status icons, needs-input markers, and a live connection indicator. |
 | Detail tabs   | **Terminal** (live SwiftTerm session), **Diff** (unified, per-file collapsible), **Files** (worktree tree), **Info**. |
 | Lifecycle     | New-task sheet (project / backend / model / prompt), fork, stop, restart, resume, rename, archive, delete — with confirmations. |
 | Live updates  | Task list + terminals driven by the SSE event stream; a 30 s safety-net poll; offline/connection banner. |
