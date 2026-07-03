@@ -323,9 +323,10 @@ type App struct {
 	wtRoot string
 
 	// Cached agent-staged clipboard text for the currently-active agent-view
-	// task. Polled from the daemon on each tick; used to (a) gate the ctrl+y
-	// hotkey so PTY pass-through wins when nothing is staged, (b) toggle the
-	// agentHeader hint. Empty string when nothing is staged.
+	// task. Polled from the daemon on each tick; used to (a) decide whether
+	// ctrl+y copies text or flashes "Nothing to copy" (it always intercepts
+	// the key either way), (b) toggle the agentHeader hint. Empty string when
+	// nothing is staged.
 	clipboardPending     string
 	clipboardPendingTask string // task ID the cached payload belongs to
 
@@ -2937,12 +2938,14 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 			a.toggleAgentZen()
 			return nil
 		case keymap.ActAgentCopy:
-			// Conditional intercept: only steal from the PTY when an agent has
-			// staged a clipboard payload. Without a payload, fall through so
-			// `vim`/`emacs` style yank still reaches the agent.
-			if a.copyStagedClipboard() {
-				return nil
+			// Always intercepted: never falls through to the PTY. Copies the
+			// staged clipboard payload if present; otherwise flashes "Nothing
+			// to copy". Trades away `vim`/`emacs` style yank inside the agent
+			// for predictable ctrl+y semantics.
+			if !a.copyStagedClipboard() {
+				a.flashNotice("Nothing to copy")
 			}
+			return nil
 		case keymap.ActAgentPaneLeft:
 			// Zoomed view is single-pane — the side panels are collapsed to zero
 			// width, so a pane switch would move focus to an invisible panel and

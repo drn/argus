@@ -13,6 +13,7 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/hera"
+	"github.com/gdamore/tcell/v2"
 )
 
 // Compile-time assertions: both runner transports that back the agent view
@@ -116,6 +117,61 @@ func TestCopyStagedClipboard_NoPayload(t *testing.T) {
 	}
 }
 
+// ctrlYEvent is the key event ctrl+y dispatches in the agent view.
+func ctrlYEvent() *tcell.EventKey { return tcell.NewEventKey(tcell.KeyCtrlY, 0, tcell.ModNone) }
+
+// TestHandleAgentKey_CtrlY_NothingStaged_FlashesNoticeAndConsumes drives the
+// REAL dispatcher (handleAgentKey), not a manual re-execution of the switch
+// case body, so a regression in the ActAgentCopy wiring itself (e.g. an
+// inverted condition, or the case losing its `return nil`) would fail this
+// test. Covers the "nothing staged" path: ctrl+y must be consumed (nil
+// result) and flash "Nothing to copy" rather than reaching the PTY.
+func TestHandleAgentKey_CtrlY_NothingStaged_FlashesNoticeAndConsumes(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.mode = modeAgent
+	app.agentState.Reset("t1", "test")
+
+	result := app.handleAgentKey(ctrlYEvent())
+
+	testutil.Nil(t, result) // consumed, never forwarded to the PTY
+	testutil.Equal(t, app.header.Notice(), "Nothing to copy")
+}
+
+// TestHandleAgentKey_CtrlY_Staged_CopiesAndConsumes covers the staged-payload
+// path through the real dispatcher: ctrl+y copies to the OS clipboard writer,
+// clears the local cache, and consumes the key.
+func TestHandleAgentKey_CtrlY_Staged_CopiesAndConsumes(t *testing.T) {
+	d := testDB(t)
+	fp := newFakeProvider()
+	app := New(d, fp, false)
+	app.mode = modeAgent
+	app.agentState.Reset("t1", "test")
+
+	wrote := make(chan string, 1)
+	app.clipboardWriter = func(s string) error {
+		select {
+		case wrote <- s:
+		default:
+		}
+		return nil
+	}
+	app.clipboardPending = "snippet"
+	app.clipboardPendingTask = "t1"
+
+	result := app.handleAgentKey(ctrlYEvent())
+
+	testutil.Nil(t, result) // consumed, never forwarded to the PTY
+	testutil.Equal(t, app.clipboardPending, "")
+
+	select {
+	case s := <-wrote:
+		testutil.Equal(t, s, "snippet")
+	case <-time.After(time.Second):
+		t.Fatal("clipboard writer never called")
+	}
+}
+
 func TestCopyStagedClipboard_ClearsLocalStateAndFiresClearRPC(t *testing.T) {
 	d := testDB(t)
 	fp := newFakeProvider()
@@ -167,11 +223,15 @@ func TestCopyStagedClipboard_ClearError_LoggedNotPanicked(t *testing.T) {
 
 func TestCopyStagedClipboardForHeraPane_NoTaskOrAccessor(t *testing.T) {
 	d := testDB(t)
-	// Empty task → no-op, no panic.
+	// Empty task → no-op, no panic, no notice (never reaches the intercept).
 	app := New(d, agent.NewRunner(nil), false)
 	app.copyStagedClipboardForHeraPane("")
-	// Plain runner is not a clipboardAccessor → logged no-op, no panic.
+	testutil.Equal(t, app.header.Notice(), "")
+
+	// Plain runner is not a clipboardAccessor → logged no-op, flashes "Nothing
+	// to copy" (ctrl+y is always intercepted, so the user still gets feedback).
 	app.copyStagedClipboardForHeraPane("task1")
+	testutil.Equal(t, app.header.Notice(), "Nothing to copy")
 }
 
 func TestCopyStagedClipboardForHeraPane_AbsentNoCopy(t *testing.T) {
@@ -182,9 +242,10 @@ func TestCopyStagedClipboardForHeraPane_AbsentNoCopy(t *testing.T) {
 	app.clipboardWriter = func(string) error { return nil }
 
 	app.copyStagedClipboardForHeraPane("task1")
-	// Nothing staged → no clear RPC fired.
+	// Nothing staged → no clear RPC fired, but the user still gets feedback.
 	time.Sleep(20 * time.Millisecond)
 	testutil.Equal(t, len(fp.clearedSnapshot()), 0)
+	testutil.Equal(t, app.header.Notice(), "Nothing to copy")
 }
 
 func TestCopyStagedClipboardForHeraPane_PresentCopiesAndClears(t *testing.T) {
