@@ -327,11 +327,30 @@ The DB stores **only** the project→profile *name* – never a profile body, an
   - `lean` – `extends = "default"`, minimal process (single review pass, no gating) for daily-driven personal tooling.
   - `customer_grade` – `extends = "default"`, turned-up rigor (two review passes, gating, a security spot-check) plus a reviewer `[panel]`, for customer-facing code with no dogfooding loop.
 - **Project binding** – **Settings → project view** shows a validated select-list of on-disk profiles; only profiles that pass validation are selectable, and the chosen name persists as the project's default binding. The new-agent modal also lets you pick a profile for that spawn. An unbound project resolves the `default` profile.
-- **`effort` / `window`** – each `[archetype.<name>]` entry may also carry `effort` (∈ `low`/`medium`/`high`) and `window` (∈ `200k`/`1m`). These are validated and surfaced in the plan/DAG view, but currently only `model` is wired into resolution.
+- **`effort` / `window`** – each `[archetype.<name>]` entry may also carry `effort` (∈ `low`/`medium`/`high`/`xhigh`/`max`, matching the levels `claude --effort` accepts) and `window` (∈ `200k`/`1m`). Both are validated and surfaced in the plan/DAG view; `model` and `effort` are both wired into resolution and injected at spawn (`--effort <level>` for claude-style backends, `-c model_reasoning_effort=<level>` for codex, no flag for pi/unknown/custom). `window` always lives at the archetype level, whether or not the archetype uses the scalar or menu form below.
+- **Bounded model-menu selection** – instead of a single scalar `model`/`effort` pair, an archetype may set an ordered `menu` of `{model, effort}` pairs, cheapest first:
+
+  ```toml
+  # scalar (unchanged) — one fixed pair
+  [archetype.docs]
+  model = "haiku"
+
+  # menu — ordered, cheapest first; mutually exclusive with the scalar model/effort fields
+  [archetype.code_slice]
+  menu = [
+    { model = "sonnet", effort = "high" },
+    { model = "opus",   effort = "low" },
+  ]
+  ```
+
+  A menu needs 2+ entries (validation rejects fewer, and rejects an archetype that sets both a menu and scalar fields). Menu ordering is an authoring convention, not machine-checked — there's no cost oracle across arbitrary configured models, so "cheapest first" is on the profile author to get right.
+
+  The menu is a **governance ceiling enforced at spawn/retier time**, not merely a suggestion: a full `(model, effort)` override that matches a menu entry is honored; one that doesn't is silently substituted with the menu's first (cheapest) entry and logged (never a hard spawn failure). A *partial* override (only `model` or only `effort` set) is honored as-is with no membership check, and the unset field defaults to the cheapest entry's value. Neither set → the cheapest entry, for both a direct `hera_spawn_worker` call and plan-DAG gater materialization. **This governance triggers only when all three hold: the task has an archetype, a profile resolves, and that archetype's value is a menu** – no archetype, no/invalid profile, or a scalar archetype leaves `model`/`effort` overrides exactly as ungated as they are today.
+- **Non-blocking worker check-in** – a worker whose archetype resolves to a menu calls `profile_resolve` to detect it, announces its (cheapest) pick and the full menu to its coordinator via `hera_send`, then proceeds immediately without waiting for a reply. The coordinator may retier a live, bound worker later via `hera_retier` (see [MCP Tools](#mcp-tools)). Full conventions (including the spawner's own cheapest-by-default selection rule) live in the in-repo hera skill.
 - **Reviewer `[panel]`** – a profile may carry an opaque `[panel]` block. Its composition grammar is a forward-reference owned by the cross-vendor review work and is **not consumed yet**; validation checks only that the block is structurally well-formed.
-- **Env vars** – when a bound profile actively contributes a backend-valid model, the spawn exports `ARGUS_PROFILE`, `ARGUS_ARCHETYPE`, and `ARGUS_MODEL` to the agent (mirroring `ARGUS_TASK_ID`); when no profile resolves, none of the three are exported.
+- **Env vars** – when a bound profile actively contributes a backend-valid model, the spawn exports `ARGUS_PROFILE`, `ARGUS_ARCHETYPE`, `ARGUS_MODEL`, and `ARGUS_EFFORT` to the agent (mirroring `ARGUS_TASK_ID`); when no profile resolves, none of the four are exported.
 - **Plan/DAG view** – each node shows its archetype and the applied model/effort, and a node/project is flagged with a warning when its bound profile is missing or invalid.
-- **Fail-open** – a missing or invalid bound profile never hard-fails a spawn: Argus logs it and passes **no** `--model`, so the agent uses its own CLI default. Validation is the loud surface (the CLI, the Settings select-list, the DAG warning); resolution itself fails open.
+- **Fail-open** – a missing or invalid bound profile never hard-fails a spawn: Argus logs it and passes **no** `--model`/`--effort`, so the agent uses its own CLI default. Validation is the loud surface (the CLI, the Settings select-list, the DAG warning); resolution itself fails open. This is the same fail-open envelope the menu governance above lives inside: no profile or no menu is fully ungated, exactly like today's plain `--model` override.
 
 Resolution reads `~/.argus/profiles/` and the worktree's `.argus/profiles/`, so it runs **daemon-side at spawn** – outside the sandbox, where global `~/.argus` reads would `EPERM`. The agent itself only ever reads the exported env vars (or its own in-repo `.argus/profiles/`).
 
@@ -468,7 +487,8 @@ If the recipient has a live agent session the daemon also writes a single notifi
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `hera_new_orchestrator` | Bootstrap a new orchestrator and claim its `coordinator` role for the calling task.                                                               |
 | `hera_join`             | Claim the calling task's existing role + unread count, or (with `role_name` + `kind`) attach a new `worker`/`freelance` role under an orchestrator. |
-| `hera_spawn_worker`     | Spawn a born-bound worker task + session under the caller's orchestrator (caller must hold a live coordinator binding). Optional `model` picks the worker's model by task complexity (backend-scoped; empty = backend default). Optional `archetype` ([diligence profile](#diligence-profiles-model-tiering)) rides onto the task; defaults to `code_slice` when omitted. |
+| `hera_spawn_worker`     | Spawn a born-bound worker task + session under the caller's orchestrator (caller must hold a live coordinator binding). Optional `model` picks the worker's model by task complexity (backend-scoped; empty = backend default). Optional `effort` (`low`/`medium`/`high`/`xhigh`/`max`) pairs with `model`. Optional `archetype` ([diligence profile](#diligence-profiles-model-tiering)) rides onto the task; defaults to `code_slice` when omitted. When the resolved archetype is a bounded model-menu, an off-menu `(model, effort)` pair is substituted with the menu's cheapest entry and logged — never a hard failure. |
+| `hera_retier`           | Coordinator-only. Requests a live `model`/`effort` change on an already-bound worker role (`orchestrator`, `role`, `model`, `effort` all required). Re-resolves the target's archetype/profile live and re-validates against the same bounded-menu governance as spawn time (off-menu → substituted with the cheapest entry, logged). Delivers `/model` and (only if effort is actually changing) `/effort` into the target's PTY via the existing idle-gated single-writer delivery primitive — no new write path. **Claude-backend targets only** — a non-Claude-style backend returns an explicit unsupported error, never a silent no-op. |
 | `hera_send`             | Send a role-addressed message. **`status` is required for worker/freelance senders** (`idle`/`working`/`blocked`/`done`/`failed`) and is applied synchronously before send. Workers/freelancers default to the coordinator when `to` is omitted; coordinators must name a recipient. |
 | `hera_inbox`            | Fetch the caller role's unread messages (oldest first), cancel their pending pane deliveries, and mark them read.                                 |
 | `hera_mark_read`        | Mark a specific list of message IDs read and cancel their pending deliveries.                                                                     |

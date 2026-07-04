@@ -97,8 +97,13 @@ this section).
     exported to the worker as `ARGUS_ARCHETYPE`. An explicit `model` still wins over the profile. See §9.
   - `role_name` — derived from a prompt slug if omitted; uniquified within the orchestrator.
   - `orchestrator` — disambiguates when the calling task holds multiple live coordinator bindings.
+  - `effort` — per-worker effort override (`low`/`medium`/`high`/`xhigh`/`max`), paired with `model`.
+    Bounded the same way as `model` when the resolved archetype is a menu — see §9.
 
   Returns the orchestrator, worker role name, `binding_id`, argus task id, and project.
+
+- **`hera_retier(cwd, orchestrator, role, model, effort)`** — coordinator-only live retier of an
+  already-bound worker's model/effort. See §9 for the full mechanism and its Claude-only scope.
 
 ### Messaging (idle-gated bus)
 
@@ -323,12 +328,15 @@ do not load or parse any profile — you only read the env.
 - **`ARGUS_PROFILE`** — the name of the bound profile that drove the choice (e.g. `default`, `lean`,
   `customer_grade`).
 - **`ARGUS_MODEL`** — the model the profile selected for your archetype.
+- **`ARGUS_EFFORT`** — the effort level (`low`/`medium`/`high`/`xhigh`/`max`) the profile selected
+  alongside the model, paired with it — a model/effort pick is always a pair, never resolved
+  independently.
 
-**Critical: all three are exported together or not at all, and may be absent even when you have an
+**Critical: all four are exported together or not at all, and may be absent even when you have an
 archetype.** They are exported **only** when a bound profile actively contributed a backend-valid model.
 If the project has no bound profile, the profile is missing/invalid, your archetype isn't mapped, or the
 profile's model isn't valid for your backend, resolution *fails open* (the agent runs on its own CLI
-default) and **none** of the three vars are set. So: read `ARGUS_ARCHETYPE` if present for a behavior
+default) and **none** of the four vars are set. So: read `ARGUS_ARCHETYPE` if present for a behavior
 hint, but never assume it exists, and never block on it.
 
 **You do not consult profile files.** Reading `~/.argus/profiles/` from inside the sandbox can `EPERM`;
@@ -340,3 +348,36 @@ archetype; you do not set your own.
 reviewer block, but **this skill does not consume it** — composing and running a reviewer panel is owned by
 the sibling `2a-xvendor-review` capability and is not wired up yet. Do not attempt to assemble a review
 panel from the profile; treat `[panel]` as out of scope for now.
+
+### Bounded model-menu selection (spawner + non-blocking worker conventions)
+
+An archetype's value in a profile may be either a single fixed `{model, effort}` pair (the default —
+nothing below applies) or an ordered **menu** of pairs, cheapest first. When it's a menu, the *final*
+tier choice moves to spawn time — where the job's actual context lives — and is bounded to that menu as
+a governance ceiling (an off-menu pick at spawn or retier time is silently corrected to the menu's
+cheapest entry and logged, never a hard failure). Two conventions follow from this:
+
+**Spawner selection convention (you, when spawning a worker or authoring a plan node):** default to the
+menu's cheapest entry. Climb to a pricier entry only when the job's blast radius, ambiguity, or low
+verifiability actually justifies it — not by default, not "to be safe." When you do climb, `hera_send`
+(or, for a plan node, the node's stored rationale) a one-line reason naming what justified it. This
+keeps model spend legible: every above-cheapest pick has a stated reason attached to it.
+
+**Non-blocking worker check-in convention (you, when spawned into a menu-resolved archetype):** call
+`profile_resolve` early (before or alongside your first real step) to check whether your resolved
+archetype is menu-shaped. If it is, `hera_send` your coordinator announcing your (cheapest, default)
+pick and the full menu — e.g. *"operating at sonnet:high (cheapest option); menu is
+[sonnet:high, opus:low]; confirm or retier"* — then **proceed immediately with real work**. Do not poll
+`hera_inbox` waiting for a reply and do not block on one; the coordinator may act at any later point via
+`hera_retier` (below) if it disagrees with your tier. This is the same "non-blocking, hera_send and move
+on" shape as any other soft check-in — the difference here is *what* you're checking in about (your
+resolved tier, not a design fork).
+
+**`hera_retier(cwd, orchestrator, role, model, effort)`** — coordinator-only. Lets you request a live
+model/effort change on an already-bound worker role, re-resolving and re-validating against the same
+menu envelope live (never cached). On a claude-backend target it writes `/model` and (if effort is
+actually changing) `/effort` into the worker's PTY through the same idle-gated single-writer delivery
+primitive `hera_send` already uses — no new write path, no busy-session race. **Claude-backend targets
+only in v1** — calling it against a codex/pi/custom-backend target returns an explicit unsupported
+error, never a silent no-op; for those backends, use `hera_send` to ask the worker to adjust itself
+instead.

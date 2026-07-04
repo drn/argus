@@ -94,18 +94,24 @@ integrated result before ralph-review.
 
 **Depends on:** Stage 3, Stage 4
 
-- [ ] 5.1 **Pre-check:** confirm `mcp__argus__profile_resolve` (built by sibling worker
+- [x] 5.1 **Pre-check:** confirm `mcp__argus__profile_resolve` (built by sibling worker
   `2a-xvendor-review` on `argus/model-tiering`) is present on this branch before writing 5.2's check-in
   convention text — rebase to pick it up, or coordinate sequencing with `coord`, if it hasn't landed yet.
-- [ ] 5.2 Add the spawner selection convention (default cheapest; climb only when blast radius, ambiguity,
+  (Not present at check time — grep of `internal/mcp/*.go` came back empty; flagged to `coord` via
+  `hera_send`, who did not direct a hold, so documented anyway, referencing the tool by name as a forward
+  reference to land alongside `2a-xvendor-review`'s work.)
+- [x] 5.2 Add the spawner selection convention (default cheapest; climb only when blast radius, ambiguity,
   or low verifiability justify it; log a one-line rationale) and the non-blocking worker check-in
   convention (call `profile_resolve` to detect a menu-resolved archetype; announce the cheapest pick + the
   full menu via `hera_send`; proceed immediately, never block) to the in-repo hera skill.
-- [ ] 5.3 Document the menu TOML form, the 5-level effort enum, and the `hera_retier` tool in the README
+- [x] 5.3 Document the menu TOML form, the 5-level effort enum, and the `hera_retier` tool in the README
   Reference appendix (profiles section + MCP tools table).
-- [ ] 5.4 Record non-obvious gotchas in `context/knowledge/gotchas/misc.md` (menu governance fail-open
+- [x] 5.4 Record non-obvious gotchas in `context/knowledge/gotchas/misc.md` (menu governance fail-open
   scope, the `/model`/`/effort` live-retier mechanism and its Claude-only scope, the OpenSpec
   single-physical-line requirement-text gotcha hit while authoring this change's deltas).
+- [x] 5.5 Add a "Future Work" note to `design.md`'s Open Questions section documenting the
+  `hera_plan_node`/`hera_plan` vs `hera_spawn_worker` effort-param asymmetry (flagged by `2a-persist`
+  during implementation; intentionally out of this change's scope).
 
 ## 6. Review pass (ralph-review)
 

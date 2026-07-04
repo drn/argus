@@ -42,7 +42,7 @@ model = "opus"
 
 [archetype.code_slice]
 model  = "no-such-model"
-effort = "max"
+effort = "extreme"
 `)
 	var b strings.Builder
 	code := runValidate(&b, &profiles.Loader{LibraryDir: lib}, config.Config{}, "bad")
@@ -50,7 +50,7 @@ effort = "max"
 	out := b.String()
 	testutil.Contains(t, out, "planner")
 	testutil.Contains(t, out, "no-such-model")
-	testutil.Contains(t, out, "max")
+	testutil.Contains(t, out, "extreme")
 }
 
 func TestRunValidate_NotFound(t *testing.T) {

@@ -242,6 +242,19 @@ signature not yet visible in code.
 - Whether `hera_retier` should extend to pi backends if/when pi exposes an equivalent live command —
   explicitly future work, not blocking this change.
 
+## Future Work
+
+- **`hera_plan_node`/`hera_plan`'s per-node schema has no `effort` param, unlike `hera_spawn_worker`.**
+  This change (D4) gives `hera_spawn_worker` both an optional `model` and an optional `effort` param.
+  `hera_plan_node`/`hera_plan` (`internal/mcp/hera_plan.go`) already expose an `archetype` param for a
+  planned node but have no equivalent `effort` param — an asymmetry flagged by `2a-persist` during
+  implementation. This is intentionally **not** addressed here: proposal.md and the hera-coordination
+  delta scope this change to `hera_spawn_worker`'s effort param only, and a planned node's effort today
+  always resolves per the Menu-based governance defaults (D6) — the cheapest menu entry, or an explicit
+  `hera_retier` after the node materializes into a live worker. A future change can close this gap by
+  adding `effort` to the plan-node schema if a coordinator ever needs to pre-specify a planned node's
+  effort at authoring time, before it has a live binding to retier.
+
 ## Acceptance criteria
 
 **Schema (D1):**
