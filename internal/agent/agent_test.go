@@ -1705,12 +1705,24 @@ func TestResolveModel(t *testing.T) {
 			task := &model.Task{Model: tc.taskModel}
 			b := config.Backend{Model: tc.backendModel}
 			// No archetype on these tasks, so profile resolution short-circuits
-			// (no disk access) and the second return is always nil.
-			got, prof := ResolveModel(task, b, config.Config{})
+			// (no disk access) and the resolved profile is always nil.
+			got, effort, prof := ResolveModel(task, b, config.Config{})
 			testutil.Equal(t, got, tc.want)
+			testutil.Equal(t, effort, "")
 			testutil.Nil(t, prof)
 		})
 	}
+}
+
+// TestResolveModel_EffortPassthroughNoArchetype confirms a task.Effort override
+// passes straight through when there's no archetype to consult a profile for
+// (add-model-menu-selection "Profile-aware model resolution").
+func TestResolveModel_EffortPassthroughNoArchetype(t *testing.T) {
+	task := &model.Task{Effort: "high"}
+	model, effort, prof := ResolveModel(task, config.Backend{}, config.Config{})
+	testutil.Equal(t, model, "")
+	testutil.Equal(t, effort, "high")
+	testutil.Nil(t, prof)
 }
 
 // modelConfig returns a config with bare commands (no baked flags) so model
@@ -1875,4 +1887,83 @@ func TestBuildCmd_ModelInjection_PrefixFlagDoesNotSuppress(t *testing.T) {
 	cmd, _, err := BuildCmd(task, cfg, false)
 	testutil.NoError(t, err)
 	testutil.Equal(t, cmd.Args[2], "claude --model-format json --model 'sonnet' -- 'go'")
+}
+
+// --- Effort injection (add-model-menu-selection D3) ---
+
+func TestHasEffortFlag(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  string
+		want bool
+	}{
+		{"space form", "claude --effort high", true},
+		{"equals form", "claude --effort=high", true},
+		{"trailing", "claude --effort", true},
+		{"codex override", "codex -c model_reasoning_effort=high", true},
+		{"absent", "claude --permission-mode plan", false},
+		{"prefix flag does not match", "my-agent --effort-level high", false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			testutil.Equal(t, hasEffortFlag(tc.cmd), tc.want)
+		})
+	}
+}
+
+func TestBuildCmd_EffortInjection(t *testing.T) {
+	cases := []struct {
+		name       string
+		backend    string
+		taskEffort string
+		want       string
+	}{
+		{"claude effort", "claude", "high", "claude --effort 'high' -- 'go'"},
+		{"claude no effort", "claude", "", "claude -- 'go'"},
+		{"codex effort", "codex", "high", "codex --dangerously-bypass-approvals-and-sandbox -c 'model_reasoning_effort=high' -- 'go'"},
+		{"pi effort skipped", "pi", "high", "pi 'go'"},
+		{"unknown backend skipped", "bare", "high", "my-agent -- 'go'"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := modelConfig()
+			task := &model.Task{Name: "t", Prompt: "go", Backend: tc.backend, Effort: tc.taskEffort, Worktree: t.TempDir()}
+			cmd, _, err := BuildCmd(task, cfg, false)
+			testutil.NoError(t, err)
+			testutil.Equal(t, cmd.Args[2], tc.want)
+		})
+	}
+}
+
+// A backend command that already names an effort override wins — no double
+// injection (hand-edited command wins, mirroring hasModelFlag's contract).
+func TestBuildCmd_EffortInjection_CommandWins(t *testing.T) {
+	cfg := modelConfig()
+	cfg.Backends["claude"] = config.Backend{Command: "claude --effort xhigh"}
+
+	task := &model.Task{Name: "t", Prompt: "go", Effort: "low", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], "claude --effort xhigh -- 'go'")
+}
+
+func TestBuildCmd_EffortInjection_CodexCommandWins(t *testing.T) {
+	cfg := modelConfig()
+	cfg.Backends["codex"] = config.Backend{Command: "codex -c model_reasoning_effort=xhigh"}
+
+	task := &model.Task{Name: "t", Prompt: "go", Backend: "codex", Effort: "low", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], "codex -c model_reasoning_effort=xhigh -- 'go'")
+}
+
+// Effort injection survives a codex resume, mirroring the model-flag
+// re-append contract (codex resume replaces the base command).
+func TestBuildCmd_EffortInjection_CodexResume(t *testing.T) {
+	cfg := modelConfig()
+	task := &model.Task{Name: "t", Backend: "codex", Effort: "high", SessionID: "abc-123", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, true)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], "codex resume --dangerously-bypass-approvals-and-sandbox -c 'model_reasoning_effort=high' 'abc-123'")
 }

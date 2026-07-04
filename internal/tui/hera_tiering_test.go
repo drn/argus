@@ -48,6 +48,23 @@ func TestResolveHeraTier_AppliesProfileModel(t *testing.T) {
 	testutil.Equal(t, rv.ProfileWarning, "")
 }
 
+// TestResolveHeraTier_MenuArchetypeAppliesCheapest: a role with a menu-shaped
+// archetype and no live task override resolves the menu's cheapest (first)
+// entry — the same default a real spawn or plan-DAG gater materialization
+// would apply with no override in play (add-model-menu-selection D6).
+func TestResolveHeraTier_MenuArchetypeAppliesCheapest(t *testing.T) {
+	app := tierTestApp(t)
+	d := app.db.(*db.DB)
+	testutil.NoError(t, d.SetProject("p", config.Project{Path: t.TempDir(), Profile: "lean"}))
+	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmenu = [\n  { model = \"sonnet\", effort = \"high\" },\n  { model = \"opus\", effort = \"low\" },\n]\n")
+
+	rv := &hera.RoleView{ArgusProject: "p", Archetype: "code_slice"}
+	app.resolveHeraTier(rv)
+	testutil.Equal(t, rv.AppliedModel, "sonnet")
+	testutil.Equal(t, rv.AppliedEffort, "high")
+	testutil.Equal(t, rv.ProfileWarning, "")
+}
+
 // TestResolveHeraTier_ExplicitMissingProfileWarns: an EXPLICIT binding to a
 // profile that does not exist surfaces a ProfileWarning.
 func TestResolveHeraTier_ExplicitMissingProfileWarns(t *testing.T) {

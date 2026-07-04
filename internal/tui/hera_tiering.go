@@ -62,17 +62,32 @@ func (a *App) resolveHeraTier(rv *hera.RoleView) {
 		return // no archetype → no profile consult → no model readout
 	}
 
-	rv.AppliedEffort = strings.TrimSpace(prof.Archetype[rv.Archetype].Effort)
-
 	t := a.heraTierTask(rv)
 	backend, err := agent.ResolveBackend(t, cfg)
 	if err != nil {
-		// Can't resolve a backend → show the profile's declared model as the intent.
-		rv.AppliedModel = strings.TrimSpace(prof.Archetype[rv.Archetype].Model)
+		// Can't resolve a backend → show the profile's declared model/effort as
+		// the intent. A menu-shaped archetype has no scalar fields to show, so
+		// fall back to its cheapest (first) entry — the same default a real
+		// resolution would apply with no override in play.
+		entry := prof.Archetype[rv.Archetype]
+		if len(entry.Menu) > 0 {
+			rv.AppliedModel = strings.TrimSpace(entry.Menu[0].Model)
+			rv.AppliedEffort = strings.TrimSpace(entry.Menu[0].Effort)
+		} else {
+			rv.AppliedModel = strings.TrimSpace(entry.Model)
+			rv.AppliedEffort = strings.TrimSpace(entry.Effort)
+		}
 		return
 	}
-	applied, _ := agent.ResolveModel(t, backend, cfg)
+	// agent.ResolveModel is the single resolution path for both a materialized
+	// role's live task (which may carry a model/effort override) and a
+	// never-materialized planned node's synthesized task (heraTierTask, no
+	// override) — the latter always resolves to the menu's cheapest entry when
+	// the archetype is menu-shaped, exactly matching what a real spawn or
+	// gater materialization with no override would pick (D6).
+	applied, effort, _ := agent.ResolveModel(t, backend, cfg)
 	rv.AppliedModel = applied
+	rv.AppliedEffort = effort
 }
 
 // validProfileNames returns the names of on-disk diligence profiles that pass

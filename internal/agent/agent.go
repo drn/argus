@@ -93,50 +93,93 @@ func ResolveBackend(task *model.Task, cfg config.Config) (config.Backend, error)
 
 // ResolvedProfile is the daemon-side outcome of diligence-profile resolution at
 // spawn. It is non-nil ONLY when a bound profile loaded, validated, and
-// contributed a model that is valid for the task's resolved backend. BuildCmd
-// exports ARGUS_PROFILE/ARGUS_ARCHETYPE/ARGUS_MODEL from it so the in-repo
-// hera/DAG skill is profile-aware; when nil, none of those vars are exported.
+// actively contributed the resolved model/effort — either because the task
+// carried no full override (the profile's scalar pick, or its menu-governed
+// pick, won at least one field) or because governance applies (a menu-resolved
+// archetype consults the profile regardless of overrides, since the menu
+// envelope must be checked). BuildCmd exports ARGUS_PROFILE/ARGUS_ARCHETYPE/
+// ARGUS_MODEL/ARGUS_EFFORT from it so the in-repo hera/DAG skill is
+// profile-aware; when nil, none of those vars are exported.
 type ResolvedProfile struct {
 	Name      string // bound profile name (e.g. "default", "lean")
 	Archetype string // the task's archetype that selected the model
-	Model     string // the profile-selected model, validated for the backend
+	Model     string // the resolved model, validated for the backend
+	Effort    string // the resolved effort level (may be empty)
 }
 
-// ResolveModel returns the effective model for a task and, when a diligence
-// profile actively drove the choice, the resolution metadata for env export.
+// ResolveModel returns the effective model and effort for a task, paired
+// together, and — when a diligence profile actively drove the choice — the
+// resolution metadata for env export.
 //
-// Precedence: task.Model override → profile[task.Archetype].model → project /
-// backend default → "" (no --model). The profile is consulted ONLY when
-// task.Model is unset AND the task carries an archetype; the per-archetype model
-// is used only when the project's bound profile loads, validates, and the model
-// is valid for the resolved backend. Any miss (no archetype, missing/invalid
-// profile, archetype absent from the profile, or model not valid for the
-// backend) falls open to the backend default — never a hard error. Empty model
-// means "let the CLI pick its own default"; BuildCmd injects no --model flag.
+// Precedence, independently per field: task.{Model,Effort} override →
+// profile[task.Archetype]'s resolved pick → project/backend default → ""
+// (no flag). The profile is consulted ONLY when the task carries an archetype;
+// archetype-less spawns short-circuit with no disk access. When the archetype
+// resolves to an ordered `menu` of {model, effort} pairs, model and effort are
+// NOT resolved independently — the menu-membership governance in
+// governMenuPick decides the pair together (see design D6). A scalar (non-menu)
+// archetype is never gated: an explicit task override always wins outright,
+// with no membership or backend-validity check applied to it. Any miss (no
+// archetype, missing/invalid profile, archetype absent from the profile, or a
+// scalar profile model not valid for the backend) falls open to the backend
+// default — never a hard error. Empty model means "let the CLI pick its own
+// default"; BuildCmd injects no --model/--effort flag for an empty value.
 //
 // Resolution reads ~/.argus/profiles and the worktree's .argus/profiles, so it
 // MUST run daemon-side (outside the sandbox, where global ~/.argus reads EPERM).
-func ResolveModel(task *model.Task, backend config.Backend, cfg config.Config) (string, *ResolvedProfile) {
-	if m := strings.TrimSpace(task.Model); m != "" {
-		return m, nil
-	}
-	if rp := resolveProfile(task, backend, cfg); rp != nil {
-		return rp.Model, rp
-	}
-	return strings.TrimSpace(backend.Model), nil
-}
+func ResolveModel(task *model.Task, backend config.Backend, cfg config.Config) (string, string, *ResolvedProfile) {
+	taskModel := strings.TrimSpace(task.Model)
+	taskEffort := strings.TrimSpace(task.Effort)
 
-// resolveProfile loads and validates the task's bound diligence profile and
-// returns the per-archetype model when it is valid for the resolved backend, or
-// nil to signal "fall open to the backend default". It short-circuits (no disk
-// access) when the task carries no archetype, keeping archetype-less spawns
-// (the common case) hermetic and free of profile I/O.
-func resolveProfile(task *model.Task, backend config.Backend, cfg config.Config) *ResolvedProfile {
 	arch := strings.TrimSpace(task.Archetype)
 	if arch == "" {
-		return nil
+		return firstNonEmpty(taskModel, strings.TrimSpace(backend.Model)), taskEffort, nil
 	}
 
+	p, a, ok := loadArchetype(task, cfg, arch)
+	if !ok {
+		return firstNonEmpty(taskModel, strings.TrimSpace(backend.Model)), taskEffort, nil
+	}
+
+	if len(a.Menu) > 0 {
+		m, e := governMenuPick(a.Menu, taskModel, taskEffort, task.ID, p.Name, arch)
+		return m, e, &ResolvedProfile{Name: p.Name, Archetype: arch, Model: m, Effort: e}
+	}
+
+	// Scalar archetype: fully ungated. A task-level model override always wins
+	// outright — no backend-validity check applied to an explicit override
+	// (matches the pre-existing base-capability contract).
+	profModel := strings.TrimSpace(a.Model)
+	modelFromProfile := profModel != "" && backendAllowsModel(profModel, backend)
+	if profModel != "" && !modelFromProfile {
+		uxlog.Log("[profiles] task %q: profile %q model %q not valid for resolved backend; falling through to default", task.ID, p.Name, profModel)
+	}
+
+	m := taskModel
+	if m == "" {
+		if modelFromProfile {
+			m = profModel
+		} else {
+			m = strings.TrimSpace(backend.Model)
+		}
+	}
+	e := firstNonEmpty(taskEffort, strings.TrimSpace(a.Effort))
+
+	if taskModel != "" || !modelFromProfile {
+		// The task fully controlled the model (profile not consulted for
+		// env-export purposes), or the profile had nothing valid to
+		// contribute — either way resolution falls open, matching the base
+		// capability's fail-open env-export contract.
+		return m, e, nil
+	}
+	return m, e, &ResolvedProfile{Name: p.Name, Archetype: arch, Model: m, Effort: e}
+}
+
+// loadArchetype loads and validates the task's bound diligence profile and
+// returns the profile plus the raw archetype entry (scalar or menu). ok is
+// false when the profile is missing/invalid, signaling "fall open to the
+// backend default" — callers never see a partially-resolved profile.
+func loadArchetype(task *model.Task, cfg config.Config, arch string) (*profiles.Profile, profiles.Archetype, bool) {
 	// Per-spawn override takes precedence over the project's bound profile.
 	// task.Profile is non-empty only when the operator explicitly picked a
 	// different profile for this one spawn (e.g. "run one coord lean").
@@ -160,18 +203,45 @@ func resolveProfile(task *model.Task, backend config.Backend, cfg config.Config)
 	p, errs := loader.ValidateName(profName, cfg, KnownModels)
 	if p == nil || len(errs) > 0 {
 		uxlog.Log("[profiles] task %q: profile %q missing or invalid (%d error(s)); resolving with no --model", task.ID, profName, len(errs))
-		return nil
+		return nil, profiles.Archetype{}, false
 	}
+	return p, p.Archetype[arch], true
+}
 
-	m := strings.TrimSpace(p.Archetype[arch].Model)
-	if m == "" {
-		return nil
+// governMenuPick implements the D6 menu-membership governance: a full
+// (model, effort) override matching a menu entry is honored; a non-matching
+// full override is corrected to the menu's first (cheapest) entry and logged;
+// a partial override (only one field explicitly set) is honored as-is with the
+// unset field defaulted from the cheapest entry's value for that field, with
+// no membership check; neither field set defaults to the cheapest entry. The
+// menu is guaranteed (by profiles.Validate) to have at least 2 entries.
+func governMenuPick(menu []profiles.MenuOption, taskModel, taskEffort, taskID, profileName, archetype string) (string, string) {
+	cheapest := menu[0]
+	switch {
+	case taskModel != "" && taskEffort != "":
+		for _, opt := range menu {
+			if opt.Model == taskModel && opt.Effort == taskEffort {
+				return opt.Model, opt.Effort
+			}
+		}
+		uxlog.Log("[profiles] task %q: profile %q archetype %q: override %s:%s not a menu member; substituting cheapest entry %s:%s",
+			taskID, profileName, archetype, taskModel, taskEffort, cheapest.Model, cheapest.Effort)
+		return cheapest.Model, cheapest.Effort
+	case taskModel != "":
+		return taskModel, cheapest.Effort
+	case taskEffort != "":
+		return cheapest.Model, taskEffort
+	default:
+		return cheapest.Model, cheapest.Effort
 	}
-	if !backendAllowsModel(m, backend) {
-		uxlog.Log("[profiles] task %q: profile %q model %q not valid for resolved backend; falling through to default", task.ID, profName, m)
-		return nil
+}
+
+// firstNonEmpty returns a if non-empty, else b.
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
 	}
-	return &ResolvedProfile{Name: p.Name, Archetype: arch, Model: m}
+	return b
 }
 
 // backendAllowsModel reports whether m is selectable for the resolved backend —
@@ -277,6 +347,17 @@ func hasModelFlag(command string) bool {
 	return strings.Contains(command, "--model ") ||
 		strings.Contains(command, "--model=") ||
 		strings.HasSuffix(command, "--model")
+}
+
+// hasEffortFlag reports whether a backend command already names an effort
+// override — --effort for Claude-style backends, or the codex
+// model_reasoning_effort config override — so a hand-edited command always
+// wins and BuildCmd never double-injects (mirrors hasModelFlag's contract).
+func hasEffortFlag(command string) bool {
+	return strings.Contains(command, "--effort ") ||
+		strings.Contains(command, "--effort=") ||
+		strings.HasSuffix(command, "--effort") ||
+		strings.Contains(command, "model_reasoning_effort=")
 }
 
 // piEncodeCwd mirrors pi's getDefaultSessionDir(): strip exactly ONE leading
@@ -474,8 +555,9 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// (a hand-edited command always wins). Computed once here because the codex
 	// resume branch below replaces cmdStr and must re-append the flag itself.
 	// resolvedProfile is non-nil only when a bound profile actively contributed
-	// the model; its fields drive the ARGUS_PROFILE/ARCHETYPE/MODEL env export.
-	resolvedModel, resolvedProfile := ResolveModel(task, backend, cfg)
+	// the model/effort; its fields drive the ARGUS_PROFILE/ARCHETYPE/MODEL/
+	// ARGUS_EFFORT env export.
+	resolvedModel, resolvedEffort, resolvedProfile := ResolveModel(task, backend, cfg)
 	modelFlag := ""
 	if resolvedModel != "" &&
 		(IsClaudeBackend(backend.Command) || isCodex || isPi) &&
@@ -483,6 +565,21 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		modelFlag = " --model " + shellQuote(resolvedModel)
 	}
 	cmdStr += modelFlag
+
+	// Inject the resolved effort per-backend (add-model-menu-selection D3):
+	// --effort <level> for claude, -c model_reasoning_effort=<level> for codex,
+	// no flag for pi/unknown/custom (no confirmed override mechanism). Skipped
+	// when the command already names an effort flag/override (command wins).
+	effortFlag := ""
+	if resolvedEffort != "" && !hasEffortFlag(backend.Command) {
+		switch {
+		case IsClaudeBackend(backend.Command):
+			effortFlag = " --effort " + shellQuote(resolvedEffort)
+		case isCodex:
+			effortFlag = " -c " + shellQuote("model_reasoning_effort="+resolvedEffort)
+		}
+	}
+	cmdStr += effortFlag
 
 	if resume {
 		// Codex resumes by replacing the base command unconditionally — that's
@@ -494,7 +591,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		switch {
 		case isCodex:
 			// Flags must precede the positional session-id argument.
-			cmdStr = codexResumeCmd + modelFlag + " " + shellQuote(task.SessionID)
+			cmdStr = codexResumeCmd + modelFlag + effortFlag + " " + shellQuote(task.SessionID)
 		case isPi && task.SessionID != "":
 			// Pi-style: append --session <UUID> (pi accepts partial UUIDs).
 			cmdStr += " --session " + shellQuote(task.SessionID)
@@ -594,16 +691,18 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		cmd.Env = append(cmd.Env, "ARGUS_TASK_ID="+task.ID)
 	}
 
-	// Diligence-profile env export (add-diligence-profiles). When a bound
-	// profile actively contributed a backend-valid model, surface the resolution
-	// to the agent so the in-repo hera/DAG skill is profile-aware. All three are
-	// exported together (ARGUS_MODEL is always meaningful here) or omitted
+	// Diligence-profile env export (add-diligence-profiles, widened to a
+	// quartet by add-model-menu-selection D4/D7). When a bound profile
+	// actively contributed the resolution, surface it to the agent so the
+	// in-repo hera/DAG skill is profile-aware. All four are exported together
+	// (ARGUS_MODEL/ARGUS_EFFORT are always meaningful here) or omitted
 	// entirely — never exported empty. Mirrors the ARGUS_TASK_ID export above.
 	if resolvedProfile != nil {
 		cmd.Env = append(cmd.Env,
 			"ARGUS_PROFILE="+resolvedProfile.Name,
 			"ARGUS_ARCHETYPE="+resolvedProfile.Archetype,
 			"ARGUS_MODEL="+resolvedProfile.Model,
+			"ARGUS_EFFORT="+resolvedProfile.Effort,
 		)
 	}
 

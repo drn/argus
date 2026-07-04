@@ -46,26 +46,26 @@ integrated result before ralph-review.
 
 **Depends on:** Stage 1, Stage 2
 
-- [ ] 3.1 Write failing tests for the menu governance rules: matching full (model, effort) override
+- [x] 3.1 Write failing tests for the menu governance rules: matching full (model, effort) override
   honored; non-matching full override substituted with the menu's first entry and logged; partial
   override (only one field set) honors the set field and defaults the other from the cheapest entry, no
   membership check; neither set defaults to the cheapest entry; a scalar (non-menu) archetype is never
   gated, regardless of override. (`specs/diligence-profiles/spec.md` → "Menu-based archetype resolution
   and governance")
-- [ ] 3.2 Write failing tests for paired model+effort resolution precedence (task override → profile pick
+- [x] 3.2 Write failing tests for paired model+effort resolution precedence (task override → profile pick
   → project/backend default → none) and for per-backend injection: `--effort <level>` for Claude-style
   backends, `-c model_reasoning_effort=<level>` for codex, no flag for pi/unknown/custom, and no
   double-injection when the backend command already names an effort flag/override.
   (`specs/diligence-profiles/spec.md` → "Profile-aware model resolution")
-- [ ] 3.3 Write failing tests for env export: `ARGUS_EFFORT` joins the existing
+- [x] 3.3 Write failing tests for env export: `ARGUS_EFFORT` joins the existing
   `ARGUS_PROFILE`/`ARGUS_ARCHETYPE`/`ARGUS_MODEL` trio, all four exported together or omitted together.
   (`specs/agent-execution/spec.md`, `specs/diligence-profiles/spec.md` → "Profile environment injection")
-- [ ] 3.4 Change `agent.ResolveModel`'s signature to also resolve and return effort (paired with model);
+- [x] 3.4 Change `agent.ResolveModel`'s signature to also resolve and return effort (paired with model);
   implement the menu-governance rules from 3.1 inside it (or a sibling function it calls).
-- [ ] 3.5 Update `BuildCmd` (`internal/agent/agent.go`) to inject the resolved effort per-backend
+- [x] 3.5 Update `BuildCmd` (`internal/agent/agent.go`) to inject the resolved effort per-backend
   (mirroring the existing `--model` injection: `hasEffortFlag` guard, backend-family branch) and to
   export `ARGUS_EFFORT` alongside the existing trio.
-- [ ] 3.6 Update the one other `ResolveModel` call site, `internal/tui/hera_tiering.go`
+- [x] 3.6 Update the one other `ResolveModel` call site, `internal/tui/hera_tiering.go`
   (`resolveHeraTier`), for the new signature; extend `RoleView`/plan-view rendering if a menu-resolved
   node's readout needs to say "menu" rather than a single fixed value (check current
   `AppliedModel`/`AppliedEffort` rendering in `internal/tui/planview` for what "resolved at spawn time,

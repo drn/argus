@@ -122,7 +122,7 @@ func TestResolveModel_ProfileChain(t *testing.T) {
 			task := &model.Task{Model: tc.taskModel, Archetype: tc.archetype, Backend: tc.backend}
 			b := cfg.Backends[tc.backend]
 
-			gotModel, gotProf := ResolveModel(task, b, cfg)
+			gotModel, _, gotProf := ResolveModel(task, b, cfg)
 			testutil.Equal(t, gotModel, tc.wantModel)
 
 			if tc.wantProfile {
@@ -151,7 +151,7 @@ func TestResolveModel_ProfileBoundByProject(t *testing.T) {
 	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmodel = \"haiku\"\n")
 
 	task := &model.Task{Project: "app", Archetype: "code_slice", Backend: "claude"}
-	gotModel, gotProf := ResolveModel(task, cfg.Backends["claude"], cfg)
+	gotModel, _, gotProf := ResolveModel(task, cfg.Backends["claude"], cfg)
 
 	testutil.Equal(t, gotModel, "haiku")
 	if gotProf == nil {
@@ -183,6 +183,29 @@ func TestBuildCmd_ProfileEnv_PresentOnResolution(t *testing.T) {
 	testutil.Contains(t, cmd.Args[2], "--model 'sonnet'")
 }
 
+// TestBuildCmd_ProfileEnv_IncludesEffort verifies ARGUS_EFFORT joins the
+// existing trio (add-model-menu-selection D4/D7) and drives --effort
+// injection, exactly mirroring how ARGUS_MODEL drives --model.
+func TestBuildCmd_ProfileEnv_IncludesEffort(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := modelConfig()
+	writeLibraryProfile(t, "default", "[archetype.code_slice]\nmodel = \"sonnet\"\neffort = \"high\"\n")
+
+	task := &model.Task{
+		ID: "t1e", Name: "t", Prompt: "go", Backend: "claude",
+		Archetype: "code_slice", Worktree: t.TempDir(),
+	}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+
+	env := envMap(cmd.Env)
+	testutil.Equal(t, env["ARGUS_PROFILE"], "default")
+	testutil.Equal(t, env["ARGUS_ARCHETYPE"], "code_slice")
+	testutil.Equal(t, env["ARGUS_MODEL"], "sonnet")
+	testutil.Equal(t, env["ARGUS_EFFORT"], "high")
+	testutil.Contains(t, cmd.Args[2], "--effort 'high'")
+}
+
 // TestBuildCmd_ProfileEnv_AbsentWithoutProfile verifies none of the profile env
 // vars are exported when the task carries no archetype (so no profile resolves).
 func TestBuildCmd_ProfileEnv_AbsentWithoutProfile(t *testing.T) {
@@ -196,7 +219,7 @@ func TestBuildCmd_ProfileEnv_AbsentWithoutProfile(t *testing.T) {
 	testutil.NoError(t, err)
 
 	env := envMap(cmd.Env)
-	for _, k := range []string{"ARGUS_PROFILE", "ARGUS_ARCHETYPE", "ARGUS_MODEL"} {
+	for _, k := range []string{"ARGUS_PROFILE", "ARGUS_ARCHETYPE", "ARGUS_MODEL", "ARGUS_EFFORT"} {
 		if _, ok := env[k]; ok {
 			t.Errorf("expected %s to be absent; cmd.Env = %v", k, cmd.Env)
 		}
@@ -223,7 +246,7 @@ func TestBuildCmd_ProfileEnv_AbsentOnFallThrough(t *testing.T) {
 	testutil.NoError(t, err)
 
 	env := envMap(cmd.Env)
-	for _, k := range []string{"ARGUS_PROFILE", "ARGUS_ARCHETYPE", "ARGUS_MODEL"} {
+	for _, k := range []string{"ARGUS_PROFILE", "ARGUS_ARCHETYPE", "ARGUS_MODEL", "ARGUS_EFFORT"} {
 		if _, ok := env[k]; ok {
 			t.Errorf("expected %s to be absent on fall-through; cmd.Env = %v", k, cmd.Env)
 		}
@@ -250,7 +273,7 @@ func TestResolveModel_TaskProfileOverrideHonored(t *testing.T) {
 		Backend:   "claude",
 		Profile:   "custom", // per-spawn override
 	}
-	gotModel, gotProf := ResolveModel(task, cfg.Backends["claude"], cfg)
+	gotModel, _, gotProf := ResolveModel(task, cfg.Backends["claude"], cfg)
 
 	testutil.Equal(t, gotModel, "sonnet")
 	if gotProf == nil {
@@ -275,7 +298,7 @@ func TestResolveModel_EmptyTaskProfileFallsToProjectBinding(t *testing.T) {
 		Backend:   "claude",
 		Profile:   "", // no override → use project binding
 	}
-	gotModel, gotProf := ResolveModel(task, cfg.Backends["claude"], cfg)
+	gotModel, _, gotProf := ResolveModel(task, cfg.Backends["claude"], cfg)
 
 	testutil.Equal(t, gotModel, "haiku")
 	if gotProf == nil {
@@ -302,7 +325,7 @@ func TestResolveModel_InvalidTaskProfileOverrideFallsOpen(t *testing.T) {
 		Backend:   "claude",
 		Profile:   "does-not-exist",
 	}
-	gotModel, gotProf := ResolveModel(task, cfg.Backends["claude"], cfg)
+	gotModel, _, gotProf := ResolveModel(task, cfg.Backends["claude"], cfg)
 
 	testutil.Equal(t, gotModel, "") // falls open → no --model
 	testutil.Nil(t, gotProf)
@@ -335,4 +358,90 @@ func TestBuildCmd_ProfileEnv_OverrideProfile(t *testing.T) {
 	testutil.Equal(t, env["ARGUS_ARCHETYPE"], "code_slice")
 	testutil.Equal(t, env["ARGUS_MODEL"], "sonnet")
 	testutil.Contains(t, cmd.Args[2], "--model 'sonnet'")
+}
+
+// --- Menu-based archetype resolution and governance (add-model-menu-selection D6) ---
+
+const menuGovernanceProfile = `
+[archetype.code_slice]
+menu = [
+  { model = "sonnet", effort = "high" },
+  { model = "opus", effort = "low" },
+]
+`
+
+// TestResolveModel_MenuGovernance exercises every D6 governance branch: a
+// matching full override is honored; a non-matching full override is
+// substituted with the cheapest (first) menu entry; a partial override honors
+// the set field and defaults the other from the cheapest entry with no
+// membership check; and no override at all defaults to the cheapest entry.
+func TestResolveModel_MenuGovernance(t *testing.T) {
+	cases := []struct {
+		name       string
+		taskModel  string
+		taskEffort string
+		wantModel  string
+		wantEffort string
+	}{
+		{"matching full override honored", "opus", "low", "opus", "low"},
+		{"non-matching full override substituted with cheapest", "opus", "high", "sonnet", "high"},
+		{"partial override model-only defaults effort from cheapest", "opus", "", "opus", "high"},
+		{"partial override effort-only defaults model from cheapest", "", "low", "sonnet", "low"},
+		{"neither set defaults to cheapest", "", "", "sonnet", "high"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			cfg := modelConfig()
+			writeLibraryProfile(t, "default", menuGovernanceProfile)
+
+			task := &model.Task{Model: tc.taskModel, Effort: tc.taskEffort, Archetype: "code_slice", Backend: "claude"}
+			gotModel, gotEffort, gotProf := ResolveModel(task, cfg.Backends["claude"], cfg)
+
+			testutil.Equal(t, gotModel, tc.wantModel)
+			testutil.Equal(t, gotEffort, tc.wantEffort)
+			if gotProf == nil {
+				t.Fatal("expected a resolved profile for a menu-governed archetype")
+			}
+			testutil.Equal(t, gotProf.Model, tc.wantModel)
+			testutil.Equal(t, gotProf.Effort, tc.wantEffort)
+		})
+	}
+}
+
+// TestResolveModel_ScalarArchetypeNeverGated confirms a scalar (non-menu)
+// archetype applies NO menu-membership check whatsoever — a full task
+// override is honored unconditionally even though it matches neither the
+// scalar profile pick nor (by construction) any menu.
+func TestResolveModel_ScalarArchetypeNeverGated(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := modelConfig()
+	writeLibraryProfile(t, "default", "[archetype.code_slice]\nmodel = \"sonnet\"\neffort = \"low\"\n")
+
+	task := &model.Task{Model: "opus", Effort: "xhigh", Archetype: "code_slice", Backend: "claude"}
+	gotModel, gotEffort, gotProf := ResolveModel(task, cfg.Backends["claude"], cfg)
+
+	testutil.Equal(t, gotModel, "opus")
+	testutil.Equal(t, gotEffort, "xhigh")
+	testutil.Nil(t, gotProf)
+}
+
+// TestResolveModel_ScalarPairResolvedTogether verifies a scalar archetype's
+// model and effort resolve together as a pair when neither is overridden
+// (add-model-menu-selection D5).
+func TestResolveModel_ScalarPairResolvedTogether(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := modelConfig()
+	writeLibraryProfile(t, "default", "[archetype.code_slice]\nmodel = \"sonnet\"\neffort = \"high\"\n")
+
+	task := &model.Task{Archetype: "code_slice", Backend: "claude"}
+	gotModel, gotEffort, gotProf := ResolveModel(task, cfg.Backends["claude"], cfg)
+
+	testutil.Equal(t, gotModel, "sonnet")
+	testutil.Equal(t, gotEffort, "high")
+	if gotProf == nil {
+		t.Fatal("expected a resolved profile")
+	}
+	testutil.Equal(t, gotProf.Effort, "high")
 }
