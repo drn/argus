@@ -295,6 +295,73 @@ func TestHera_NewOrchestrator_AlreadyBound(t *testing.T) {
 	testutil.Contains(t, cr2.Content[0].Text, "already has a live binding")
 }
 
+// TestHera_NewOrchestrator_CoordinatorSelfInvokeRejected is the guardrail: a
+// task that is already a coordinator (of orchestrator A) must be rejected when
+// it calls hera_new_orchestrator for a DIFFERENT orchestrator B on its own
+// session — that is the self-promotion footgun. The error must steer to
+// hera_spawn_worker / kind=subcoord, and NO orchestrator B and no second
+// binding may be created (the guard runs before orchestrator creation).
+func TestHera_NewOrchestrator_CoordinatorSelfInvokeRejected(t *testing.T) {
+	s, d := testHeraServer(t)
+	task := seedCoordinator(t, s, d, "orch-a", "/wt/coord")
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_new_orchestrator",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "name": "orch-b", "coordinator_role_name": "coord"
+		}`, task.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	// Actionable guidance: steer to worker dispatch, not self-promotion.
+	testutil.Contains(t, cr.Content[0].Text, "hera_spawn_worker")
+	testutil.Contains(t, cr.Content[0].Text, "kind=subcoord")
+
+	// No orphan orchestrator B was created (guard runs before CreateHeraOrchestrator).
+	orchs, err := d.ListHeraOrchestrators(true)
+	testutil.NoError(t, err)
+	for _, o := range orchs {
+		if o.Name == "orch-b" {
+			t.Fatalf("orch-b must not have been created on rejection")
+		}
+	}
+	// The coordinator task still holds exactly its one (coordinator) binding.
+	bnds, err := d.ListHeraLiveBindingsByTask(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(bnds), 1)
+}
+
+// TestHera_NewOrchestrator_WorkerSelfPromotionAllowed asserts the guard does NOT
+// over-block: a task holding only a WORKER binding may still call
+// hera_new_orchestrator to become a sub-coordinator (the documented
+// worker-promotion pattern). Its session is already isolated, so a second
+// (coordinator) binding is legitimate here.
+func TestHera_NewOrchestrator_WorkerSelfPromotionAllowed(t *testing.T) {
+	s, d := testHeraServer(t)
+	parent, err := d.CreateHeraOrchestrator("parent", "")
+	testutil.NoError(t, err)
+	task := addHeraTestTask(t, d, "/wt/worker")
+	_, _, err = d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: parent.ID,
+		Name:           "w1",
+		Kind:           db.HeraKindWorker,
+		ArgusProject:   "test-project",
+	}, task.ID, task.Worktree)
+	testutil.NoError(t, err)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_new_orchestrator",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "name": "child", "coordinator_role_name": "coord"
+		}`, task.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+	testutil.Contains(t, cr.Content[0].Text, "**kind**: coordinator")
+}
+
 // --- hera_join ---
 
 func TestHera_Join_ClaimMode(t *testing.T) {
@@ -1383,21 +1450,31 @@ func TestHera_SpawnWorker_SpawnerError(t *testing.T) {
 	testutil.Contains(t, cr.Content[0].Text, "spawn worker: worktree creation failed")
 }
 
-func TestHera_SpawnWorker_MultiCoordinatorDisambiguation(t *testing.T) {
+func TestHera_SpawnWorker_MultiBindingDisambiguation(t *testing.T) {
 	s, d := testHeraServer(t)
-	// One task is coordinator in two orchestrators.
+	// A single task holding 2+ live bindings needs orchestrator= disambiguation on
+	// hera_spawn_worker. The LEGITIMATE multi-binding shape is a promoted worker:
+	// worker in orchA + coordinator in orchB (a task coordinating TWO orchestrators
+	// is now blocked by the self-promotion guard, so we build the ambiguity that
+	// way). First seed the worker binding under orchA directly...
 	coord := addHeraTestTask(t, d, "/wt/multi")
-	for _, orch := range []string{"orchA", "orchB"} {
-		resp := doRequest(t, s, "tools/call", ToolCallParams{
-			Name: "hera_new_orchestrator",
-			Arguments: json.RawMessage(fmt.Sprintf(`{
-				"cwd": %q, "name": %q, "coordinator_role_name": "coord"
-			}`, coord.Worktree, orch)),
-		})
-		testutil.Equal(t, callResult(t, resp).IsError, false)
-	}
+	orchA, err := d.CreateHeraOrchestrator("orchA", "")
+	testutil.NoError(t, err)
+	_, _, err = d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: orchA.ID, Name: "w-self", Kind: db.HeraKindWorker, ArgusProject: "test-project",
+	}, coord.ID, coord.Worktree)
+	testutil.NoError(t, err)
+	// ...then self-promote to coordinator of orchB (allowed: only a worker binding
+	// exists, so the guard does not fire).
+	resp0 := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_new_orchestrator",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "name": "orchB", "coordinator_role_name": "coord"
+		}`, coord.Worktree)),
+	})
+	testutil.Equal(t, callResult(t, resp0).IsError, false)
 
-	// Spawn without orchestrator → ambiguous.
+	// Spawn without orchestrator → ambiguous (2 live bindings).
 	resp := doRequest(t, s, "tools/call", ToolCallParams{
 		Name:      "hera_spawn_worker",
 		Arguments: spawnArgs(coord.Worktree, "x", "w", "", ""),
@@ -1406,7 +1483,7 @@ func TestHera_SpawnWorker_MultiCoordinatorDisambiguation(t *testing.T) {
 	testutil.Equal(t, cr.IsError, true)
 	testutil.Contains(t, cr.Content[0].Text, "multiple orchestrators")
 
-	// Spawn with orchestrator=orchB → resolves to that one.
+	// Spawn with orchestrator=orchB → resolves to the orchestrator the caller coordinates.
 	resp2 := doRequest(t, s, "tools/call", ToolCallParams{
 		Name:      "hera_spawn_worker",
 		Arguments: spawnArgs(coord.Worktree, "x", "w", "", "orchB"),

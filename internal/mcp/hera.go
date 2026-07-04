@@ -446,6 +446,45 @@ func (s *Server) toolHeraNewOrchestrator(id interface{}, args json.RawMessage) *
 		return toolError(id, err.Error())
 	}
 
+	// Guard the self-promotion footgun: a task that already holds a live
+	// coordinator binding under a DIFFERENT orchestrator must not bind its own
+	// session as a SECOND coordinator of a new one. Following such a call, the
+	// rail renders a phantom nested "sub-coordinator" that drives the identical
+	// PTY as its parent — and in practice that pseudo-sub-coordinator implements
+	// solo instead of dispatching. Run this BEFORE CreateHeraOrchestrator so a
+	// rejected call never leaves an orphan orchestrator behind. Scope: a
+	// coordinator re-calling for the SAME orchestrator falls through to the
+	// same-orchestrator guard below (which keeps its hera_join guidance, and
+	// creates no orphan since that orchestrator already exists); callers holding
+	// only worker/freelance bindings (worker self-promotion) or no binding (fresh
+	// bootstrap) also fall through. Fail-open on a list error, matching the
+	// sibling same-orchestrator guard.
+	if liveBindings, lbErr := s.heraStore.ListHeraLiveBindingsByTask(task.ID); lbErr == nil {
+		for _, b := range liveBindings {
+			r, rErr := s.heraStore.HeraRole(b.RoleID)
+			if rErr != nil || r.Kind != db.HeraKindCoordinator {
+				continue
+			}
+			orchName := fmt.Sprintf("id:%d", b.OrchestratorID)
+			if o, oErr := s.heraStore.HeraOrchestrator(b.OrchestratorID); oErr == nil {
+				orchName = o.Name
+			}
+			if orchName == p.Name {
+				// Same orchestrator: not a self-promotion — let the same-orchestrator
+				// guard below handle it with its hera_join guidance.
+				continue
+			}
+			slog.Info("[hera] new_orchestrator rejected: caller already a coordinator",
+				"caller_task", task.ID, "coordinator_orch", orchName, "requested_orch", p.Name)
+			return toolError(id, fmt.Sprintf(
+				"task is already the coordinator of orchestrator %q; a coordinator DISPATCHES work "+
+					"with hera_spawn_worker (project= targets any repo) and must not bind its own session "+
+					"as a second coordinator. For a dedicated sub-team, spawn a worker (which can promote "+
+					"itself via hera_new_orchestrator) or author a kind=subcoord hera_plan_node.",
+				orchName))
+		}
+	}
+
 	// Create (or fetch existing) orchestrator — CreateHeraOrchestrator is idempotent.
 	orch, err := s.heraStore.CreateHeraOrchestrator(p.Name, p.BaseBranch)
 	if err != nil {
