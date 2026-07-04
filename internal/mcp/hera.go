@@ -1046,11 +1046,20 @@ func (s *Server) toolHeraRetier(id interface{}, args json.RawMessage) *Response 
 	if p.Role == "" {
 		return toolError(id, "role is required")
 	}
-	if p.Model == "" {
+	model := strings.TrimSpace(p.Model)
+	effort := strings.TrimSpace(p.Effort)
+	if model == "" {
 		return toolError(id, "model is required")
 	}
-	if p.Effort == "" {
+	if effort == "" {
 		return toolError(id, "effort is required")
+	}
+	// The pair is typed into the target's live PTY as `/model <model>` /
+	// `/effort <level>` (see below) — an embedded newline would submit
+	// extra, arbitrary lines of input. Same hazard, same guard as
+	// ErrHeraMessageTldrMultiline on hera_send's tldr.
+	if strings.ContainsAny(model, "\n\r") || strings.ContainsAny(effort, "\n\r") {
+		return toolError(id, "model and effort must be single-line")
 	}
 
 	caller, err := s.resolveCallerRole(p.Cwd, p.Orchestrator)
@@ -1069,6 +1078,10 @@ func (s *Server) toolHeraRetier(id interface{}, args json.RawMessage) *Response 
 	}
 	if err != nil {
 		return toolError(id, fmt.Sprintf("resolve target role: %v", err))
+	}
+	if targetRole.Kind != db.HeraKindWorker {
+		return toolError(id, fmt.Sprintf(
+			"role %q has kind %q; hera_retier only targets workers", targetRole.Name, targetRole.Kind))
 	}
 
 	binding, err := s.heraStore.HeraLiveBindingByRole(targetRole.ID)
@@ -1101,8 +1114,8 @@ func (s *Server) toolHeraRetier(id interface{}, args json.RawMessage) *Response 
 	// validated against the SAME menu envelope as spawn time (D6) via the exact
 	// governance Stage 3 already implements — never a reimplementation.
 	probe := *targetTask
-	probe.Model = p.Model
-	probe.Effort = p.Effort
+	probe.Model = model
+	probe.Effort = effort
 	resolvedModel, resolvedEffort, _ := agent.ResolveModel(&probe, backend, cfg)
 
 	deliveryBase := fmt.Sprintf("hera-retier:%d:%d", targetRole.ID, time.Now().UnixNano())

@@ -430,6 +430,45 @@ func TestMaterializeHeraWorker_EffortPropagates(t *testing.T) {
 	testutil.Equal(t, got.Effort, "high")
 }
 
+// TestMaterializeHeraWorker_MenuDefaultsIdenticallyToDirectSpawn asserts the
+// named add-model-menu-selection scenario "Plan-DAG materialization defaults
+// identically": a planned role with a menu-resolved archetype and no explicit
+// model/effort override, once materialized, resolves to the menu's cheapest
+// entry — the same governance outcome as a direct hera_spawn_worker with no
+// override (TestSpawnHeraWorker_OffMenuPickSubstituted exercises the
+// direct-spawn half of this pairing).
+func TestMaterializeHeraWorker_MenuDefaultsIdenticallyToDirectSpawn(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	testutil.NoError(t, d.SetConfigValue("defaults.backend", "claude"))
+	testutil.NoError(t, d.SetBackend("claude", config.Backend{Command: "claude"}))
+	writeLibraryProfile(t, "default", menuGovernanceProfile)
+
+	fr := &fakeRunner{}
+	orch, err := d.CreateHeraOrchestrator("orch", "")
+	testutil.NoError(t, err)
+
+	planned, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID, Name: "rev", ArgusProject: "proj", Prompt: "v", Archetype: "code_slice",
+	})
+	testutil.NoError(t, err)
+
+	res, err := MaterializeHeraWorker(d, fr, HeraMaterializeInput{
+		Role: planned, TaskPrompt: "body", Project: "proj",
+	})
+	testutil.NoError(t, err)
+
+	gotTask, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotTask.Model, "")
+	testutil.Equal(t, gotTask.Effort, "")
+
+	cfg := d.Config()
+	gotModel, gotEffort, _ := ResolveModel(gotTask, cfg.Backends["claude"], cfg)
+	testutil.Equal(t, gotModel, "sonnet")
+	testutil.Equal(t, gotEffort, "high")
+}
+
 // TestSpawnHeraWorker_UniquifiesName verifies a second spawn of the same base
 // name lands on base-2 (the role-name uniquifier).
 func TestSpawnHeraWorker_UniquifiesName(t *testing.T) {

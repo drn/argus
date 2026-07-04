@@ -172,6 +172,8 @@ func overlay(parent *Profile, child rawProfile) *Profile {
 	// Per-archetype, per-field overlay.
 	for name, ca := range cp.Archetype {
 		base := out.Archetype[name] // zero Archetype if the parent lacked it
+		definesScalar := md.IsDefined("archetype", name, "model") || md.IsDefined("archetype", name, "effort")
+		definesMenu := md.IsDefined("archetype", name, "menu")
 		if md.IsDefined("archetype", name, "model") {
 			base.Model = ca.Model
 		}
@@ -181,8 +183,20 @@ func overlay(parent *Profile, child rawProfile) *Profile {
 		if md.IsDefined("archetype", name, "window") {
 			base.Window = ca.Window
 		}
-		if md.IsDefined("archetype", name, "menu") {
+		if definesMenu {
 			base.Menu = ca.Menu
+		}
+		// A child switching an archetype's representation (menu -> scalar or
+		// scalar -> menu) must clear the parent's other representation —
+		// otherwise the merged archetype carries both and trips the
+		// mutual-exclusivity validation error even though neither the parent
+		// nor the child alone violates it.
+		if definesScalar && !definesMenu {
+			base.Menu = nil
+		}
+		if definesMenu && !definesScalar {
+			base.Model = ""
+			base.Effort = ""
 		}
 		out.Archetype[name] = base
 	}

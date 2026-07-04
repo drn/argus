@@ -91,6 +91,25 @@ func addRetierTarget(t *testing.T, d *db.DB, backend, archetype string) *model.T
 	return task
 }
 
+// addRetierTargetWithOverride is addRetierTarget plus an explicit
+// model/effort override already bound on the task — used to exercise a
+// current-pick that is NOT the menu's cheapest entry.
+func addRetierTargetWithOverride(t *testing.T, d *db.DB, backend, archetype, model_, effort string) *model.Task {
+	t.Helper()
+	task := &model.Task{
+		Name:      "target",
+		Status:    model.StatusInProgress,
+		Project:   "test-project",
+		Worktree:  "/wt/target",
+		Backend:   backend,
+		Archetype: archetype,
+		Model:     model_,
+		Effort:    effort,
+	}
+	testutil.NoError(t, d.Add(task))
+	return task
+}
+
 // bindRetierWorker creates a worker role + live binding against target,
 // without going through the spawn path (mirrors fakeHeraSpawn's DB-direct style).
 func bindRetierWorker(t *testing.T, d *db.DB, orchID int64, roleName string, target *model.Task) *db.HeraRole {
@@ -186,8 +205,39 @@ func TestHeraRetier_OffMenuSubstitutedAndLogged(t *testing.T) {
 	testutil.Contains(t, cr.Content[0].Text, "**model**: sonnet")
 	testutil.Contains(t, cr.Content[0].Text, "**effort**: high")
 
-	// Delivered pair is the substituted cheapest entry, not the off-menu request.
+	// Delivered pair is the substituted cheapest entry, not the off-menu
+	// request. The target's current pick (no override) is already the
+	// cheapest entry, so effort is unchanged and only /model is sent.
+	testutil.Equal(t, len(notifier.calls), 1)
 	testutil.Equal(t, notifier.calls[0].text, "/model sonnet")
+}
+
+// TestHeraRetier_OffMenuSubstitutionChangesEffort: the target is currently
+// bound to the menu's SECOND entry (opus:low, not cheapest), so an off-menu
+// request substituted to the cheapest entry (sonnet:high) actually changes
+// the effort too — both /model and /effort must be delivered, in that order.
+func TestHeraRetier_OffMenuSubstitutionChangesEffort(t *testing.T) {
+	s, d, notifier := retierTestServer(t)
+	writeRetierMenuProfile(t)
+	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord")
+	orch, err := d.HeraOrchestratorByName("myorch")
+	testutil.NoError(t, err)
+	target := addRetierTargetWithOverride(t, d, "claude", "code_slice", "opus", "low")
+	bindRetierWorker(t, d, orch.ID, "worker1", target)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_retier",
+		Arguments: retierArgs(coord.Worktree, "myorch", "worker1", "mistral", "medium"),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+	testutil.Contains(t, cr.Content[0].Text, "**model**: sonnet")
+	testutil.Contains(t, cr.Content[0].Text, "**effort**: high")
+
+	testutil.Equal(t, len(notifier.calls), 2)
+	testutil.Equal(t, notifier.calls[0].text, "/model sonnet")
+	testutil.Equal(t, notifier.calls[1].text, "/effort high")
 }
 
 // TestHeraRetier_UnchangedEffortNotResent: requesting the pair that is
@@ -232,6 +282,47 @@ func TestHeraRetier_UnsupportedBackend(t *testing.T) {
 	cr := callResult(t, resp)
 	testutil.Equal(t, cr.IsError, true)
 	testutil.Contains(t, cr.Content[0].Text, "not supported for backend")
+	testutil.Equal(t, len(notifier.calls), 0)
+}
+
+// TestHeraRetier_NonWorkerTargetRejected asserts a coordinator (including the
+// caller's OWN role) cannot be retiered — hera_retier only targets workers.
+func TestHeraRetier_NonWorkerTargetRejected(t *testing.T) {
+	s, d, notifier := retierTestServer(t)
+	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord")
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_retier",
+		Arguments: retierArgs(coord.Worktree, "myorch", "coord", "opus", "high"),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "hera_retier only targets workers")
+	testutil.Equal(t, len(notifier.calls), 0)
+}
+
+// TestHeraRetier_MultilineModelRejected asserts an embedded newline in model
+// or effort is rejected rather than typed into the target's live PTY as
+// extra, arbitrary lines of input (mirrors ErrHeraMessageTldrMultiline on
+// hera_send's tldr, the same delivery primitive).
+func TestHeraRetier_MultilineModelRejected(t *testing.T) {
+	s, d, notifier := retierTestServer(t)
+	writeRetierMenuProfile(t)
+	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord")
+	orch, err := d.HeraOrchestratorByName("myorch")
+	testutil.NoError(t, err)
+	target := addRetierTarget(t, d, "claude", "code_slice")
+	bindRetierWorker(t, d, orch.ID, "worker1", target)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_retier",
+		Arguments: retierArgs(coord.Worktree, "myorch", "worker1", "opus\n/exit", "low"),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "single-line")
 	testutil.Equal(t, len(notifier.calls), 0)
 }
 

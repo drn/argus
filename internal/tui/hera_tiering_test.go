@@ -65,6 +65,25 @@ func TestResolveHeraTier_MenuArchetypeAppliesCheapest(t *testing.T) {
 	testutil.Equal(t, rv.ProfileWarning, "")
 }
 
+// TestResolveHeraTier_MenuArchetypeUnresolvedBackendAppliesCheapest: when the
+// role's synthesized task names a backend absent from config (so
+// agent.ResolveBackend errors), a menu-shaped archetype's readout still falls
+// back to the menu's cheapest entry — the same default a resolved backend
+// would apply with no override — rather than leaving AppliedModel/Effort
+// blank.
+func TestResolveHeraTier_MenuArchetypeUnresolvedBackendAppliesCheapest(t *testing.T) {
+	app := tierTestApp(t)
+	d := app.db.(*db.DB)
+	testutil.NoError(t, d.SetProject("p", config.Project{Path: t.TempDir(), Profile: "lean", Backend: "ghost"}))
+	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmenu = [\n  { model = \"sonnet\", effort = \"high\" },\n  { model = \"opus\", effort = \"low\" },\n]\n")
+
+	rv := &hera.RoleView{ArgusProject: "p", Archetype: "code_slice"}
+	app.resolveHeraTier(rv)
+	testutil.Equal(t, rv.AppliedModel, "sonnet")
+	testutil.Equal(t, rv.AppliedEffort, "high")
+	testutil.Equal(t, rv.ProfileWarning, "")
+}
+
 // TestResolveHeraTier_ExplicitMissingProfileWarns: an EXPLICIT binding to a
 // profile that does not exist surfaces a ProfileWarning.
 func TestResolveHeraTier_ExplicitMissingProfileWarns(t *testing.T) {

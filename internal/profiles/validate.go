@@ -18,6 +18,8 @@ var validEffortsText = strings.Join(ValidEfforts, ", ")
 //   - every archetype table names a canonical archetype;
 //   - an archetype does not set both a scalar model/effort and a menu;
 //   - a menu, when present, has at least two entries;
+//   - each menu entry names both a model and an effort (unlike the scalar
+//     fields, a menu entry has no "unset means fallback" meaning);
 //   - each non-empty effort (scalar, or per-entry within a menu) is one of
 //     ValidEfforts;
 //   - each non-empty window is one of ValidWindows;
@@ -70,6 +72,16 @@ func Validate(p *Profile, cfg config.Config, knownModels func(command string) []
 		}
 
 		for i, m := range a.Menu {
+			// Unlike the scalar fields, a menu entry is an atomic {model,
+			// effort} pair with no "unset means fallback" meaning — governance
+			// picks an entry and uses both fields unconditionally, so both
+			// must be present.
+			if m.Model == "" {
+				errs = append(errs, fmt.Errorf("archetype %q: menu entry %d: missing model", name, i))
+			}
+			if m.Effort == "" {
+				errs = append(errs, fmt.Errorf("archetype %q: menu entry %d: missing effort", name, i))
+			}
 			if m.Effort != "" && !inSet(m.Effort, ValidEfforts) {
 				errs = append(errs, fmt.Errorf("archetype %q: menu entry %d: invalid effort %q (allowed: %s)", name, i, m.Effort, validEffortsText))
 			}

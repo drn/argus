@@ -55,9 +55,9 @@ is no CLI fallback and nothing below applies.
 ## 3. The coordination tools
 
 All take `cwd`. `orchestrator` is optional with exactly one live binding and **required** with 2+.
-Arg names below are exact — do not invent others. These nine cover bootstrap, messaging, and status;
-the plan-DAG authoring/mutation tools live in the companion `hera-plan` skill (pointer at the end of
-this section).
+Arg names below are exact — do not invent others. These cover bootstrap, messaging, and status; the
+plan-DAG authoring/mutation tools live in the companion `hera-plan` skill (pointer at the end of this
+section).
 
 ### Bootstrap / join
 
@@ -79,7 +79,7 @@ this section).
     the role) and `status` (`idle`/`working`/`blocked`/`done`). Use to join a team nobody spawned you
     into.
 
-- **`hera_spawn_worker(cwd, prompt, [orchestrator], [role_name], [project], [branch], [backend], [model], [archetype])`**
+- **`hera_spawn_worker(cwd, prompt, [orchestrator], [role_name], [project], [branch], [backend], [model], [archetype], [effort])`**
   — spawn a new **born-bound** worker task + session under the caller's orchestrator. **Caller must hold
   a live coordinator binding.** Creates an argus task (worktree + session) and, transactionally, a worker
   role + binding pre-bound to it; an orientation prefix naming the coordinator + orchestrator is prepended
@@ -360,8 +360,9 @@ cheapest entry and logged, never a hard failure). Two conventions follow from th
 **Spawner selection convention (you, when spawning a worker or authoring a plan node):** default to the
 menu's cheapest entry. Climb to a pricier entry only when the job's blast radius, ambiguity, or low
 verifiability actually justifies it — not by default, not "to be safe." When you do climb, `hera_send`
-(or, for a plan node, the node's stored rationale) a one-line reason naming what justified it. This
-keeps model spend legible: every above-cheapest pick has a stated reason attached to it.
+a one-line reason naming what justified it (for a plan node, note it in the node's prompt text — there
+is no separate rationale field). This keeps model spend legible: every above-cheapest pick has a stated
+reason attached to it.
 
 **Non-blocking worker check-in convention (you, when spawned into a menu-resolved archetype):** call
 `profile_resolve` early (before or alongside your first real step) to check whether your resolved

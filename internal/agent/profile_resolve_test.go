@@ -410,6 +410,25 @@ func TestResolveModel_MenuGovernance(t *testing.T) {
 	}
 }
 
+// TestResolveModel_MenuPickInvalidForBackendFallsOpen verifies the menu path
+// applies the same backend-validity fall-open contract as the scalar path
+// (add-model-menu-selection "Profile-aware model resolution"): a menu authored
+// with claude models, consulted by a task whose resolved backend is codex,
+// must never inject a claude model name — resolution falls through to no
+// model/no effort/no ResolvedProfile rather than the invalid pick.
+func TestResolveModel_MenuPickInvalidForBackendFallsOpen(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := modelConfig()
+	writeLibraryProfile(t, "default", menuGovernanceProfile)
+
+	task := &model.Task{Archetype: "code_slice", Backend: "codex"}
+	gotModel, gotEffort, gotProf := ResolveModel(task, cfg.Backends["codex"], cfg)
+
+	testutil.Equal(t, gotModel, "")
+	testutil.Equal(t, gotEffort, "")
+	testutil.Nil(t, gotProf)
+}
+
 // TestResolveModel_ScalarArchetypeNeverGated confirms a scalar (non-menu)
 // archetype applies NO menu-membership check whatsoever — a full task
 // override is honored unconditionally even though it matches neither the

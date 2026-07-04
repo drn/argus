@@ -117,8 +117,15 @@ integrated result before ralph-review.
 
 **Depends on:** Stage 1, Stage 2, Stage 3, Stage 4, Stage 5
 
-- [ ] 6.1 Run `/ralph-review` against the implemented work vs the deltas; auto-fix confident issues, park
-  questions. (This is a `menu-exec` sub-DAG node, blocked on all impl groups.)
+- [x] 6.1 Run `/ralph-review` against the implemented work vs the deltas; auto-fix confident issues, park
+  questions. (This is a `menu-exec` sub-DAG node, blocked on all impl groups.) Found and fixed: a
+  `hera_retier` target-kind gap allowing retier of a coordinator/freelance role (incl. the caller's own),
+  a missing single-line guard on `hera_retier`'s PTY-delivered model/effort, a menu-governed model pick
+  never checked against the resolved backend's validity, a profile `extends` overlay bug where a child
+  switching an archetype's representation (menu↔scalar) left the parent's sibling representation intact
+  and tripped a false mutual-exclusivity error, a missing per-menu-entry completeness check (both
+  model+effort required), several hera skill doc inaccuracies, and multiple test-coverage gaps. All
+  auto-fixed and committed; no open questions parked (see commit for the full report).
 
 ## 7. Spec audit, archive, and report
 

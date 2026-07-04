@@ -253,6 +253,58 @@ menu = [
 	testutil.Equal(t, a.Menu[1].Effort, "low")
 }
 
+func TestLoad_ExtendsOverlay_ChildSwitchesMenuToScalar(t *testing.T) {
+	lib := t.TempDir()
+	writeProfile(t, lib, "default", `
+[archetype.code_slice]
+menu = [
+  { model = "sonnet", effort = "high" },
+  { model = "opus",   effort = "low" },
+]
+`)
+	writeProfile(t, lib, "child", `
+extends = "default"
+
+[archetype.code_slice]
+model = "haiku"
+effort = "medium"
+`)
+	l := &Loader{LibraryDir: lib}
+	p, err := l.Load("child")
+	testutil.NoError(t, err)
+	a := p.Archetype["code_slice"]
+	testutil.Equal(t, a.Model, "haiku")
+	testutil.Equal(t, a.Effort, "medium")
+	testutil.Equal(t, len(a.Menu), 0)
+}
+
+func TestLoad_ExtendsOverlay_ChildSwitchesScalarToMenu(t *testing.T) {
+	lib := t.TempDir()
+	writeProfile(t, lib, "default", `
+[archetype.code_slice]
+model = "sonnet"
+effort = "high"
+`)
+	writeProfile(t, lib, "child", `
+extends = "default"
+
+[archetype.code_slice]
+menu = [
+  { model = "haiku",  effort = "medium" },
+  { model = "sonnet", effort = "low" },
+]
+`)
+	l := &Loader{LibraryDir: lib}
+	p, err := l.Load("child")
+	testutil.NoError(t, err)
+	a := p.Archetype["code_slice"]
+	testutil.Equal(t, a.Model, "")
+	testutil.Equal(t, a.Effort, "")
+	testutil.Equal(t, len(a.Menu), 2)
+	testutil.Equal(t, a.Menu[0].Model, "haiku")
+	testutil.Equal(t, a.Menu[1].Model, "sonnet")
+}
+
 func TestLoad_ExtendsCycle(t *testing.T) {
 	lib := t.TempDir()
 	writeProfile(t, lib, "a", `extends = "b"`)

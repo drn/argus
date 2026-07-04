@@ -93,13 +93,14 @@ func ResolveBackend(task *model.Task, cfg config.Config) (config.Backend, error)
 
 // ResolvedProfile is the daemon-side outcome of diligence-profile resolution at
 // spawn. It is non-nil ONLY when a bound profile loaded, validated, and
-// actively contributed the resolved model/effort — either because the task
-// carried no full override (the profile's scalar pick, or its menu-governed
-// pick, won at least one field) or because governance applies (a menu-resolved
-// archetype consults the profile regardless of overrides, since the menu
-// envelope must be checked). BuildCmd exports ARGUS_PROFILE/ARGUS_ARCHETYPE/
-// ARGUS_MODEL/ARGUS_EFFORT from it so the in-repo hera/DAG skill is
-// profile-aware; when nil, none of those vars are exported.
+// actively contributed the resolved MODEL — either because the task carried no
+// model override and the profile's scalar/menu-governed pick won (a
+// profile-only-effort scalar archetype, with no model set, does NOT gate this
+// on), or because governance applies (a menu-resolved archetype consults the
+// profile regardless of overrides, since the menu envelope must be checked).
+// BuildCmd exports ARGUS_PROFILE/ARGUS_ARCHETYPE/ARGUS_MODEL/ARGUS_EFFORT from
+// it so the in-repo hera/DAG skill is profile-aware; when nil, none of those
+// vars are exported.
 type ResolvedProfile struct {
 	Name      string // bound profile name (e.g. "default", "lean")
 	Archetype string // the task's archetype that selected the model
@@ -143,6 +144,14 @@ func ResolveModel(task *model.Task, backend config.Backend, cfg config.Config) (
 
 	if len(a.Menu) > 0 {
 		m, e := governMenuPick(a.Menu, taskModel, taskEffort, task.ID, p.Name, arch)
+		if !backendAllowsModel(m, backend) {
+			// Same fail-open contract as a missing/invalid profile: the menu
+			// governance decided a pair, but it's not valid for THIS task's
+			// resolved backend (e.g. a claude-authored menu consulted by a
+			// codex task) — never inject a model the backend can't use.
+			uxlog.Log("[profiles] task %q: profile %q archetype %q: menu pick %q not valid for resolved backend; falling through to default", task.ID, p.Name, arch, m)
+			return firstNonEmpty(taskModel, strings.TrimSpace(backend.Model)), taskEffort, nil
+		}
 		return m, e, &ResolvedProfile{Name: p.Name, Archetype: arch, Model: m, Effort: e}
 	}
 

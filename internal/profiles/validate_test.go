@@ -200,6 +200,32 @@ menu = [
 	testutil.Contains(t, errorsText(errs), "critical")
 }
 
+func TestValidate_MenuEntryMissingModelRejected(t *testing.T) {
+	p := loadOne(t, `
+[archetype.code_slice]
+menu = [
+  { effort = "high" },
+  { model = "opus", effort = "low" },
+]
+`)
+	errs := Validate(p, config.Config{}, testKnownModels)
+	testutil.Equal(t, len(errs), 1)
+	testutil.Contains(t, errorsText(errs), "missing model")
+}
+
+func TestValidate_MenuEntryMissingEffortRejected(t *testing.T) {
+	p := loadOne(t, `
+[archetype.code_slice]
+menu = [
+  { model = "sonnet" },
+  { model = "opus", effort = "low" },
+]
+`)
+	errs := Validate(p, config.Config{}, testKnownModels)
+	testutil.Equal(t, len(errs), 1)
+	testutil.Contains(t, errorsText(errs), "missing effort")
+}
+
 func TestValidate_ReportsAllErrors(t *testing.T) {
 	// Three independent violations: unknown archetype, bad effort, unknown model.
 	p := loadOne(t, `
