@@ -163,7 +163,10 @@ func MaterializeHeraWorker(database *db.DB, runner SessionProvider, in HeraMater
 		Model:   in.Model,
 		// The planned role's authored archetype (add-diligence-profiles) propagates
 		// onto the materialized task; empty stays empty (resolution falls open).
-		Archetype:  in.Role.Archetype,
+		Archetype: in.Role.Archetype,
+		// The planned role's authored effort override (add-model-menu-selection)
+		// propagates onto the materialized task the same way archetype does.
+		Effort:     in.Role.Effort,
 		BaseBranch: in.Branch,
 		AutoName:   false, // name is the planner-assigned short-id slug — never rename
 		AfterPersist: func(t *model.Task) (func(), error) {
@@ -259,7 +262,10 @@ func MaterializeHeraSubCoordinator(database *db.DB, runner SessionProvider, in H
 		Model:   in.Model,
 		// The planned subcoord role's authored archetype propagates onto the
 		// materialized task (add-diligence-profiles); empty stays empty.
-		Archetype:  in.Role.Archetype,
+		Archetype: in.Role.Archetype,
+		// The planned subcoord role's authored effort override propagates onto the
+		// materialized task the same way archetype does (add-model-menu-selection).
+		Effort:     in.Role.Effort,
 		BaseBranch: in.Branch,
 		AutoName:   false, // name is the planner-assigned short-id slug — never rename
 		AfterPersist: func(t *model.Task) (func(), error) {

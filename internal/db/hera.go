@@ -173,6 +173,11 @@ type HeraRole struct {
 	// means no archetype. Stored as the nullable hera_roles.archetype column;
 	// the gater copies it into the materialized task's archetype.
 	Archetype string
+	// Effort is the planned node's intended effort override
+	// (add-model-menu-selection), mirrored onto the live role for display. Empty
+	// means no override. Stored as the nullable hera_roles.effort column; the
+	// gater copies it into the materialized task's effort override.
+	Effort string
 }
 
 // HeraBinding is one (role, argus task) incarnation. OrchestratorID is
@@ -212,6 +217,9 @@ type CreateHeraRoleInput struct {
 	// Archetype is the optional diligence archetype (add-diligence-profiles)
 	// persisted on the role's hera_roles.archetype column. Empty stores NULL.
 	Archetype string
+	// Effort is the optional effort-level override (add-model-menu-selection)
+	// persisted on the role's hera_roles.effort column. Empty stores NULL.
+	Effort string
 }
 
 // CreateHeraBindingInput captures the fields needed to start a binding.
@@ -459,7 +467,7 @@ func (d *DB) ListHeraRoles(orchID int64, includeArchived bool) ([]*HeraRole, err
 
 	// Nuked roles (Tier-2 EOL) are invisible to the rail-feeding list regardless
 	// of includeArchived — recoverable only by id lookup (HeraRole).
-	query := `SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at, archetype
+	query := `SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at, archetype, effort
 	          FROM hera_roles WHERE orchestrator_id=? AND nuked_at IS NULL`
 	if !includeArchived {
 		query += ` AND archived_at IS NULL`
@@ -490,7 +498,7 @@ func (d *DB) ListHeraRolesByKind(orchID int64, kind HeraRoleKind) ([]*HeraRole, 
 	defer d.mu.Unlock()
 
 	rows, err := d.conn.Query(
-		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at, archetype
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at, archetype, effort
 		 FROM hera_roles WHERE orchestrator_id=? AND kind=? AND archived_at IS NULL ORDER BY name ASC`,
 		orchID, string(kind))
 	if err != nil {
@@ -598,14 +606,14 @@ func (d *DB) DeleteHeraRole(id int64) error {
 
 func (d *DB) heraRoleByID(id int64) (*HeraRole, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at, archetype
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at, archetype, effort
 		 FROM hera_roles WHERE id=?`, id)
 	return scanHeraRole(row)
 }
 
 func (d *DB) heraRoleByActiveName(orchID int64, name string) (*HeraRole, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at, archetype
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at, archetype, effort
 		 FROM hera_roles WHERE orchestrator_id=? AND name=? AND archived_at IS NULL`, orchID, name)
 	return scanHeraRole(row)
 }
@@ -627,10 +635,16 @@ func insertHeraRole(ex execer, in CreateHeraRoleInput, now string) (*HeraRole, e
 		s := in.Archetype
 		archetypeVal = &s
 	}
+	// effort: store NULL when empty, same sparse-column pattern as archetype.
+	var effortVal *string
+	if in.Effort != "" {
+		s := in.Effort
+		effortVal = &s
+	}
 	res, err := ex.Exec(
-		`INSERT INTO hera_roles (orchestrator_id, name, kind, argus_project, prompt, created_at, node_kind, archetype)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		in.OrchestratorID, in.Name, string(in.Kind), in.ArgusProject, in.Prompt, now, nodeKindVal, archetypeVal)
+		`INSERT INTO hera_roles (orchestrator_id, name, kind, argus_project, prompt, created_at, node_kind, archetype, effort)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		in.OrchestratorID, in.Name, string(in.Kind), in.ArgusProject, in.Prompt, now, nodeKindVal, archetypeVal, effortVal)
 	if err != nil {
 		return nil, fmt.Errorf("insert hera role: %w", err)
 	}
@@ -652,6 +666,7 @@ func insertHeraRole(ex execer, in CreateHeraRoleInput, now string) (*HeraRole, e
 		Prompt:         in.Prompt,
 		CreatedAt:      parseTime(now),
 		Archetype:      in.Archetype,
+		Effort:         in.Effort,
 	}, nil
 }
 
@@ -1251,9 +1266,9 @@ func scanHeraOrchestrator(s rowScanner) (*HeraOrchestrator, error) {
 func scanHeraRole(s rowScanner) (*HeraRole, error) {
 	var r HeraRole
 	var kind, createdAt string
-	var archivedAt, pinnedAt, nukedAt, nodeKind, cancelledAt, archetype sql.NullString
+	var archivedAt, pinnedAt, nukedAt, nodeKind, cancelledAt, archetype, effort sql.NullString
 	if err := s.Scan(&r.ID, &r.OrchestratorID, &r.Name, &kind, &r.ArgusProject, &r.Prompt,
-		&createdAt, &archivedAt, &pinnedAt, &nukedAt, &nodeKind, &cancelledAt, &archetype); err != nil {
+		&createdAt, &archivedAt, &pinnedAt, &nukedAt, &nodeKind, &cancelledAt, &archetype, &effort); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrHeraNotFound
 		}
@@ -1274,6 +1289,9 @@ func scanHeraRole(s rowScanner) (*HeraRole, error) {
 	r.CancelledAt = nullTimePtr(cancelledAt)
 	if archetype.Valid {
 		r.Archetype = archetype.String
+	}
+	if effort.Valid {
+		r.Effort = effort.String
 	}
 	return &r, nil
 }

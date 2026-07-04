@@ -318,6 +318,31 @@ func TestMaterializeHeraWorker_ArchetypePropagates(t *testing.T) {
 	testutil.Equal(t, got.Archetype, "review")
 }
 
+// TestMaterializeHeraWorker_EffortPropagates asserts a planned role's authored
+// effort override is copied onto the materialized task (add-model-menu-selection,
+// mirroring the archetype propagation path above).
+func TestMaterializeHeraWorker_EffortPropagates(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{}
+	orch, err := d.CreateHeraOrchestrator("orch", "")
+	testutil.NoError(t, err)
+
+	planned, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID, Name: "rev", ArgusProject: "proj", Prompt: "v", Effort: "high",
+	})
+	testutil.NoError(t, err)
+
+	res, err := MaterializeHeraWorker(d, fr, HeraMaterializeInput{
+		Role: planned, TaskPrompt: "body", Project: "proj",
+	})
+	testutil.NoError(t, err)
+
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Effort, "high")
+}
+
 // TestSpawnHeraWorker_UniquifiesName verifies a second spawn of the same base
 // name lands on base-2 (the role-name uniquifier).
 func TestSpawnHeraWorker_UniquifiesName(t *testing.T) {

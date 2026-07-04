@@ -26,6 +26,7 @@ func (d *DB) createTables() error {
 			result      TEXT NOT NULL DEFAULT '',
 			archetype   TEXT NOT NULL DEFAULT '',
 			profile     TEXT NOT NULL DEFAULT '',
+			effort      TEXT NOT NULL DEFAULT '',
 			created_at  TEXT NOT NULL,
 			started_at  TEXT NOT NULL DEFAULT '',
 			ended_at    TEXT NOT NULL DEFAULT ''
@@ -103,6 +104,11 @@ func (d *DB) createTables() error {
 	// means the operator selected a specific profile for this one spawn, overriding
 	// the project's bound profile during model resolution. Empty = use project binding.
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN profile TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+
+	// effort (add-model-menu-selection): the per-spawn effort-level override,
+	// resolved the same way as the existing tasks.model override. Idempotent ADD
+	// for databases predating it; existing rows read empty (no override).
+	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN effort TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 
 	// Index for FindByNameProject (task_create idempotency check inside
 	// createMu). The query filters by all three columns; SQLite uses a
@@ -462,6 +468,12 @@ func (d *DB) createHeraTables() error {
 	// read back NULL (no archetype). Fails on a fresh DB (table not yet created)
 	// and is intentionally ignored; the CREATE TABLE below carries it inline.
 	d.conn.Exec(`ALTER TABLE hera_roles ADD COLUMN archetype TEXT`) //nolint:errcheck
+	// effort (add-model-menu-selection): a planned node's intended effort
+	// override, mirrored onto the live role for display. Same additive
+	// nullable-TEXT pattern as archetype above — no backfill, existing rows read
+	// back NULL (no override). Fails on a fresh DB (table not yet created) and is
+	// intentionally ignored; the CREATE TABLE below carries it inline.
+	d.conn.Exec(`ALTER TABLE hera_roles ADD COLUMN effort TEXT`) //nolint:errcheck
 
 	ddl := `
 		CREATE TABLE IF NOT EXISTS hera_orchestrators (
@@ -517,7 +529,12 @@ func (d *DB) createHeraTables() error {
 			-- diligence archetype, mirrored onto the live role for display. NULL or
 			-- empty means no archetype. The gater copies it into CreateAndStart so
 			-- the materialized task carries it as the model-resolution key.
-			archetype       TEXT
+			archetype       TEXT,
+			-- effort (add-model-menu-selection): a planned node's intended effort
+			-- override, mirrored onto the live role for display. NULL or empty means
+			-- no override. The gater copies it into CreateAndStart the same way
+			-- archetype is.
+			effort          TEXT
 		);
 		CREATE INDEX IF NOT EXISTS idx_hera_roles_kind ON hera_roles(orchestrator_id, kind);
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_hera_roles_active_name ON hera_roles(orchestrator_id, name) WHERE archived_at IS NULL;

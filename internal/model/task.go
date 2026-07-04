@@ -33,7 +33,12 @@ type Task struct {
 	// Profile is the per-spawn diligence-profile override (add-diligence-profiles).
 	// When non-empty it takes precedence over the project's bound profile during
 	// model resolution. Empty means "use the project's binding".
-	Profile    string    `json:"profile,omitempty"`
+	Profile string `json:"profile,omitempty"`
+	// Effort is the per-spawn effort-level override (add-model-menu-selection),
+	// resolved the same way as Model: an empty string means no override, so
+	// resolution falls through to the archetype/profile pick or the
+	// project/backend default.
+	Effort     string    `json:"effort,omitempty"`
 	Worktree   string    `json:"worktree,omitempty"`
 	AgentPID   int       `json:"agent_pid,omitempty"`
 	SessionID  string    `json:"session_id,omitempty"`

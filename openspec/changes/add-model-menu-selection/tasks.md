@@ -33,13 +33,13 @@ integrated result before ralph-review.
 
 **Depends on:** none (parallel with Stage 1)
 
-- [ ] 2.1 Write failing tests for: `tasks.effort` round-trips; `hera_roles.effort` round-trips and
+- [x] 2.1 Write failing tests for: `tasks.effort` round-trips; `hera_roles.effort` round-trips and
   propagates at materialization; existing rows default to empty after the column adds.
   (`specs/data-persistence/spec.md` → "Archetype and profile-binding columns")
-- [ ] 2.2 Add `tasks.effort` and `hera_roles.effort` columns to `internal/db/schema.go` (idempotent
+- [x] 2.2 Add `tasks.effort` and `hera_roles.effort` columns to `internal/db/schema.go` (idempotent
   add-column-if-missing, matching the existing `tasks.archetype`/`hera_roles.archetype` pattern); extend
   the tasks store and `db/hera.go` role read/write.
-- [ ] 2.3 Add `Effort string` to `model.Task` (`internal/model/task.go`) and to `agent.CreateInput`
+- [x] 2.3 Add `Effort string` to `model.Task` (`internal/model/task.go`) and to `agent.CreateInput`
   (`internal/agent/create.go`), threaded the same way `Model`/`Archetype`/`Profile` already are.
 
 ## 3. Resolution, governance, and per-backend effort injection

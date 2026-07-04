@@ -32,6 +32,7 @@ type CreateInput struct {
 	Model      string // optional; overrides the backend's default model for this task
 	Archetype  string // optional; diligence-profile resolution key (add-diligence-profiles)
 	Profile    string // optional; per-spawn profile override — overrides the project's bound profile for this one spawn; empty = use project binding
+	Effort     string // optional; per-spawn effort-level override (add-model-menu-selection), resolved the same way as Model
 	BaseBranch string // optional; overrides projCfg.Branch for this task
 
 	// AutoName, when true, fires a fire-and-forget Haiku rename in a
@@ -200,6 +201,7 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		Model:      strings.TrimSpace(input.Model),
 		Archetype:  strings.TrimSpace(input.Archetype),
 		Profile:    strings.TrimSpace(input.Profile),
+		Effort:     strings.TrimSpace(input.Effort),
 		Worktree:   wtPath,
 		Branch:     branchName,
 		BaseBranch: baseBranch,
