@@ -75,17 +75,17 @@ integrated result before ralph-review.
 
 **Depends on:** Stage 2, Stage 3
 
-- [ ] 4.1 Write failing tests for: `hera_spawn_worker` accepts and passes through an `effort` param; an
+- [x] 4.1 Write failing tests for: `hera_spawn_worker` accepts and passes through an `effort` param; an
   off-menu (model, effort) pair at spawn is substituted with the cheapest entry and logged.
   (`specs/hera-coordination/spec.md` → "hera_spawn_worker creates a born-bound worker transactionally")
-- [ ] 4.2 Add the optional `effort` param to `hera_spawn_worker` (MCP tool schema + `internal/agent` spawn
+- [x] 4.2 Add the optional `effort` param to `hera_spawn_worker` (MCP tool schema + `internal/agent` spawn
   path), passed through to `CreateAndStart` the same way `model` already is.
-- [ ] 4.3 Write failing tests for `hera_retier`: non-coordinator caller rejected; a matching pair is
+- [x] 4.3 Write failing tests for `hera_retier`: non-coordinator caller rejected; a matching pair is
   delivered as `/model`/`/effort` PTY writes via the existing idle-gated delivery primitive; an off-menu
   pair is substituted and logged; a non-Claude-style backend target returns an explicit unsupported
   error; an unchanged effort is not re-sent. (`specs/hera-coordination/spec.md` → "hera_retier retiers a
   live, bound worker")
-- [ ] 4.4 Implement `hera_retier` (`internal/mcp/hera.go`): coordinator-only auth check, live
+- [x] 4.4 Implement `hera_retier` (`internal/mcp/hera.go`): coordinator-only auth check, live
   re-resolution of the target's archetype/profile (reusing the Stage 3 governance function, not a cached
   value), and delivery through the existing `internal/hera/service.go` idle-gated single-writer PTY-write
   primitive — no new write path.

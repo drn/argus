@@ -59,6 +59,7 @@ func fakeHeraSpawn(d *db.DB) HeraSpawner {
 			Prompt:    in.TaskPrompt,
 			Model:     in.Model,  // mirrors agent.SpawnHeraWorker → CreateInput.Model
 			Archetype: archetype, // mirrors agent.SpawnHeraWorker → CreateInput.Archetype
+			Effort:    in.Effort, // mirrors agent.SpawnHeraWorker → CreateInput.Effort
 		}
 		if err := d.Add(task); err != nil {
 			return nil, err
@@ -148,10 +149,10 @@ func TestToolsList_HeraOn(t *testing.T) {
 		names[tool.Name] = true
 	}
 
-	// All 15 hera tools must appear (9 ported + 3 plan-authoring + 3 plan-mutation).
+	// All 16 hera tools must appear (9 ported + hera_retier + 3 plan-authoring + 3 plan-mutation).
 	for _, want := range []string{
 		"hera_new_orchestrator", "hera_join", "hera_send", "hera_inbox",
-		"hera_mark_read", "hera_status", "hera_spawn_worker",
+		"hera_mark_read", "hera_status", "hera_spawn_worker", "hera_retier",
 		"hera_tree_updates", "hera_get_messages",
 		"hera_plan_node", "hera_block", "hera_plan",
 		"hera_plan_node_update", "hera_unblock", "hera_plan_node_cancel",
@@ -1377,6 +1378,41 @@ func TestHera_SpawnWorker_ModelOmittedDefaults(t *testing.T) {
 
 	wt := workerTaskByName(t, d, "plain")
 	testutil.Equal(t, wt.Model, "")
+}
+
+// TestHera_SpawnWorker_EffortArg asserts the optional `effort` argument is read
+// from the tool call and threaded into the spawner input (and onto the task),
+// mirroring TestHera_SpawnWorker_ModelArg (add-model-menu-selection).
+func TestHera_SpawnWorker_EffortArg(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord")
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_spawn_worker",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"cwd": %q, "prompt": "hard refactor", "role_name": "refactor", "effort": "high"}`, coord.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+
+	wt := workerTaskByName(t, d, "refactor")
+	testutil.Equal(t, wt.Effort, "high")
+}
+
+// TestHera_SpawnWorker_EffortOmittedDefaults asserts omitting `effort` leaves
+// the spawned task effort empty (no --effort injection).
+func TestHera_SpawnWorker_EffortOmittedDefaults(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord")
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_spawn_worker",
+		Arguments: spawnArgs(coord.Worktree, "mechanical work", "plain", "", ""),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+
+	wt := workerTaskByName(t, d, "plain")
+	testutil.Equal(t, wt.Effort, "")
 }
 
 func TestHera_SpawnWorker_MissingArgs(t *testing.T) {

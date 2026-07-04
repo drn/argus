@@ -378,3 +378,49 @@ func TestHeraDeliveryID(t *testing.T) {
 	testutil.Equal(t, heraDeliveryID(1), "hera:1")
 	testutil.Equal(t, heraDeliveryID(9999), "hera:9999")
 }
+
+// --- DeliverToRole (add-model-menu-selection hera_retier) ---
+
+// TestServiceDeliverToRole_HappyPath asserts DeliverToRole resolves the role's
+// live binding and reuses the SAME ReliableNotify primitive Send uses for
+// message delivery — no new write path.
+func TestServiceDeliverToRole_HappyPath(t *testing.T) {
+	store := newFakeStore()
+	store.addBinding(2, "task-abc")
+
+	nudger := &fakeNotifier{}
+	svc := New(store, nudger)
+
+	err := svc.DeliverToRole(2, "/model opus", "hera-retier:2:1")
+	testutil.NoError(t, err)
+
+	testutil.Equal(t, len(nudger.notifyCalls), 1)
+	testutil.Equal(t, nudger.notifyCalls[0].taskID, "task-abc")
+	testutil.Equal(t, nudger.notifyCalls[0].text, "/model opus")
+	testutil.Equal(t, nudger.notifyCalls[0].deliveryID, "hera-retier:2:1")
+}
+
+// TestServiceDeliverToRole_NoLiveBinding asserts a role with no live binding
+// (never materialized, or ended) returns ErrHeraNotFound and delivers nothing.
+func TestServiceDeliverToRole_NoLiveBinding(t *testing.T) {
+	store := newFakeStore()
+	nudger := &fakeNotifier{}
+	svc := New(store, nudger)
+
+	err := svc.DeliverToRole(2, "/model opus", "id")
+	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+	testutil.Equal(t, len(nudger.notifyCalls), 0)
+}
+
+// TestServiceDeliverToRole_NilNotifier asserts a nil notifier returns an
+// explicit error — unlike Send's soft-fail-and-persist, retier delivery has
+// nothing durable to fall back to, so silently doing nothing would be a
+// silent no-op the caller can't detect.
+func TestServiceDeliverToRole_NilNotifier(t *testing.T) {
+	store := newFakeStore()
+	store.addBinding(2, "task-abc")
+	svc := New(store, nil)
+
+	err := svc.DeliverToRole(2, "/model opus", "id")
+	testutil.Error(t, err)
+}

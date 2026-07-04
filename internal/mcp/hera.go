@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/model"
@@ -46,6 +47,9 @@ type HeraStore interface {
 	HeraLiveBindingByTask(taskID string) (*db.HeraBinding, error)
 	HeraLiveBindingByTaskAndOrchestrator(taskID string, orchID int64) (*db.HeraBinding, error)
 	ListHeraLiveBindingsByTask(taskID string) ([]*db.HeraBinding, error)
+	// HeraLiveBindingByRole resolves a role's live binding — used by
+	// hera_retier to find the target's bound argus task (add-model-menu-selection).
+	HeraLiveBindingByRole(roleID int64) (*db.HeraBinding, error)
 	// Role status
 	UpsertHeraRoleStatus(roleID int64, status db.HeraRoleStatusValue) error
 	// Inbox count for hera_join claim response (does NOT cancel deliveries).
@@ -65,16 +69,21 @@ type HeraStore interface {
 	// stamping ready_to_close (D2, make-hera-plan-living). Called when a worker
 	// reports status="failed"; same invariants as RollHeraWorkerToReview.
 	RollHeraWorkerFailed(taskID string) (bool, error)
+	// Config exposes the live argus config for hera_retier's live re-resolution
+	// (agent.ResolveBackend / agent.ResolveModel need it; never cached — see D8).
+	Config() config.Config
 }
 
-// heraToolDefs contains the 15 hera_* tool schemas. The first 9 are ported
+// heraToolDefs contains the 16 hera_* tool schemas. The first 9 are ported
 // verbatim from Hera's daemon.toolDefinitions() — same param names,
 // descriptions, and required lists as the external Hera daemon so agents have an
-// identical surface when running natively. The next 3 (hera_plan_node /
-// hera_block / hera_plan) are the native plan-DAG authoring tools
-// (add-hera-plan-substrate); they are coordinator-only like hera_spawn_worker.
-// The last 3 (hera_plan_node_update / hera_unblock / hera_plan_node_cancel) are
-// the plan-mutation verbs (make-hera-plan-living D5).
+// identical surface when running natively. hera_retier (10th) is a native
+// coordinator-only mutation added by add-model-menu-selection (D8), grouped
+// next to hera_spawn_worker since both resolve/govern a worker's model+effort.
+// The next 3 (hera_plan_node / hera_block / hera_plan) are the native plan-DAG
+// authoring tools (add-hera-plan-substrate); they are coordinator-only like
+// hera_spawn_worker. The last 3 (hera_plan_node_update / hera_unblock /
+// hera_plan_node_cancel) are the plan-mutation verbs (make-hera-plan-living D5).
 var heraToolDefs = []Tool{
 	{
 		Name:        "hera_new_orchestrator",
@@ -177,8 +186,24 @@ var heraToolDefs = []Tool{
 				"backend":      map[string]interface{}{"type": "string", "description": "(optional) Backend passed to argus CreateTask. Defaults to project default"},
 				"model":        map[string]interface{}{"type": "string", "description": "(optional) Per-worker model override; choose by task complexity. Must be valid for the worker's resolved backend (claude: opus/sonnet/haiku; codex: e.g. gpt-5; pi: its model ids). Empty = backend default. Only claude/codex/pi backends receive --model; ignored if the backend command already hard-codes --model"},
 				"archetype":    map[string]interface{}{"type": "string", "description": "(optional) Diligence archetype for the worker (e.g. code_slice, bug_fix, big_build, review, ci_loop). Selects the per-archetype model from the project's bound profile and is exported as ARGUS_ARCHETYPE to the worker. Defaults to code_slice when omitted"},
+				"effort":       map[string]interface{}{"type": "string", "description": "(optional) Per-worker effort override (low/medium/high/xhigh/max), paired with model. When the resolved archetype is a bounded model-menu, an off-menu (model, effort) pair is substituted with the menu's cheapest entry and logged — never a hard failure"},
 			},
 			"required": []string{"cwd", "prompt"},
+		},
+	},
+	{
+		Name:        "hera_retier",
+		Description: "Request a live model/effort change on a bound worker role. Coordinator-only. Re-resolves the target's archetype/profile live (never cached) and validates the requested (model, effort) pair against the same bounded-menu governance as spawn time — an off-menu pair is substituted with the menu's cheapest entry and logged. Delivers via the existing idle-gated single-writer PTY primitive: writes `/model <model>` and, only if effort is actually changing, `/effort <level>`. Claude-backend targets only — a non-Claude-style backend returns an explicit unsupported error, never a silent no-op.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"cwd":          map[string]interface{}{"type": "string", "description": "Coordinator's worktree path (use $PWD)"},
+				"orchestrator": map[string]interface{}{"type": "string", "description": "The orchestrator the target role belongs to"},
+				"role":         map[string]interface{}{"type": "string", "description": "Name of the target worker role within the orchestrator"},
+				"model":        map[string]interface{}{"type": "string", "description": "Requested model for the target"},
+				"effort":       map[string]interface{}{"type": "string", "description": "Requested effort level for the target (low/medium/high/xhigh/max)"},
+			},
+			"required": []string{"cwd", "orchestrator", "role", "model", "effort"},
 		},
 	},
 	{
@@ -916,6 +941,7 @@ func (s *Server) toolHeraSpawnWorker(id interface{}, args json.RawMessage) *Resp
 		Backend      string `json:"backend"`
 		Model        string `json:"model"`
 		Archetype    string `json:"archetype"`
+		Effort       string `json:"effort"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
 
@@ -970,6 +996,7 @@ func (s *Server) toolHeraSpawnWorker(id interface{}, args json.RawMessage) *Resp
 		Backend:        p.Backend,
 		Model:          strings.TrimSpace(p.Model),
 		Archetype:      strings.TrimSpace(p.Archetype),
+		Effort:         strings.TrimSpace(p.Effort),
 		OrchestratorID: caller.orch.ID,
 	})
 	if err != nil {
@@ -988,6 +1015,115 @@ func (s *Server) toolHeraSpawnWorker(id interface{}, args json.RawMessage) *Resp
 	fmt.Fprintf(&b, "- **argus_task_id**: %s\n", res.Task.ID)
 	fmt.Fprintf(&b, "- **project**: %s\n", project)
 	return toolResult(id, b.String())
+}
+
+// toolHeraRetier implements hera_retier (add-model-menu-selection D8):
+// coordinator-only live retier of a bound worker's model/effort. It re-resolves
+// the target task's archetype/profile LIVE via agent.ResolveModel — the exact
+// same function (and governMenuPick governance) Stage 3 uses at spawn/BuildCmd
+// time — never a cached value, and delivers through hera.Service.DeliverToRole,
+// which reuses the existing idle-gated single-writer PTY primitive (no new
+// write path).
+func (s *Server) toolHeraRetier(id interface{}, args json.RawMessage) *Response {
+	if !s.heraEnabled() {
+		return toolError(id, "hera not configured")
+	}
+	var p struct {
+		Cwd          string `json:"cwd"`
+		Orchestrator string `json:"orchestrator"`
+		Role         string `json:"role"`
+		Model        string `json:"model"`
+		Effort       string `json:"effort"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if p.Cwd == "" {
+		return toolError(id, "cwd is required")
+	}
+	if p.Orchestrator == "" {
+		return toolError(id, "orchestrator is required")
+	}
+	if p.Role == "" {
+		return toolError(id, "role is required")
+	}
+	if p.Model == "" {
+		return toolError(id, "model is required")
+	}
+	if p.Effort == "" {
+		return toolError(id, "effort is required")
+	}
+
+	caller, err := s.resolveCallerRole(p.Cwd, p.Orchestrator)
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+	if caller.role.Kind != db.HeraKindCoordinator {
+		return toolError(id, fmt.Sprintf(
+			"caller role %q has kind %q; only coordinators may retier a worker",
+			caller.role.Name, caller.role.Kind))
+	}
+
+	targetRole, err := s.heraStore.HeraRoleByName(caller.orch.ID, p.Role)
+	if errors.Is(err, db.ErrHeraNotFound) {
+		return toolError(id, fmt.Sprintf("role %q not found in orchestrator %q", p.Role, caller.orch.Name))
+	}
+	if err != nil {
+		return toolError(id, fmt.Sprintf("resolve target role: %v", err))
+	}
+
+	binding, err := s.heraStore.HeraLiveBindingByRole(targetRole.ID)
+	if errors.Is(err, db.ErrHeraNotFound) {
+		return toolError(id, fmt.Sprintf("role %q has no live binding (not materialized, or ended)", p.Role))
+	}
+	if err != nil {
+		return toolError(id, fmt.Sprintf("resolve target binding: %v", err))
+	}
+
+	targetTask, err := s.resolveTask(binding.ArgusTaskID, "")
+	if err != nil {
+		return toolError(id, fmt.Sprintf("resolve target task: %v", err))
+	}
+
+	cfg := s.heraStore.Config()
+	backend, err := agent.ResolveBackend(targetTask, cfg)
+	if err != nil {
+		return toolError(id, fmt.Sprintf("resolve target backend: %v", err))
+	}
+	if !agent.IsClaudeBackend(backend.Command) {
+		return toolError(id, fmt.Sprintf("retier not supported for backend %q", backend.Command))
+	}
+
+	// The target's CURRENTLY resolved effort (task as-is, no override) — decides
+	// whether /effort needs to be re-sent below. Live, not cached.
+	_, currentEffort, _ := agent.ResolveModel(targetTask, backend, cfg)
+
+	// Live re-resolution with the requested pair applied as a full override,
+	// validated against the SAME menu envelope as spawn time (D6) via the exact
+	// governance Stage 3 already implements — never a reimplementation.
+	probe := *targetTask
+	probe.Model = p.Model
+	probe.Effort = p.Effort
+	resolvedModel, resolvedEffort, _ := agent.ResolveModel(&probe, backend, cfg)
+
+	deliveryBase := fmt.Sprintf("hera-retier:%d:%d", targetRole.ID, time.Now().UnixNano())
+	if err := s.heraSvc.DeliverToRole(targetRole.ID, "/model "+resolvedModel, deliveryBase+":model"); err != nil {
+		return toolError(id, fmt.Sprintf("deliver /model: %v", err))
+	}
+	effortChanged := resolvedEffort != currentEffort
+	if effortChanged {
+		if err := s.heraSvc.DeliverToRole(targetRole.ID, "/effort "+resolvedEffort, deliveryBase+":effort"); err != nil {
+			return toolError(id, fmt.Sprintf("deliver /effort: %v", err))
+		}
+	}
+
+	slog.Info("[hera] retier ok", "role", targetRole.Name, "model", resolvedModel, "effort", resolvedEffort, "effort_changed", effortChanged)
+	var rb strings.Builder
+	fmt.Fprintf(&rb, "Retier delivered.\n\n")
+	fmt.Fprintf(&rb, "- **role**: %s\n", targetRole.Name)
+	fmt.Fprintf(&rb, "- **model**: %s\n", resolvedModel)
+	fmt.Fprintf(&rb, "- **effort**: %s\n", resolvedEffort)
+	fmt.Fprintf(&rb, "- **effort_changed**: %v\n", effortChanged)
+	return toolResult(id, rb.String())
 }
 
 func (s *Server) toolHeraTreeUpdates(id interface{}, args json.RawMessage) *Response {

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -222,6 +223,92 @@ func TestSpawnHeraWorker_EmptyModelDefaults(t *testing.T) {
 	got, err := d.Get(res.Task.ID)
 	testutil.NoError(t, err)
 	testutil.Equal(t, got.Model, "")
+}
+
+// TestSpawnHeraWorker_EffortPropagates asserts a per-worker Effort override flows
+// into CreateInput and is persisted on the spawned task row (add-model-menu-selection,
+// mirroring TestSpawnHeraWorker_ModelPropagates).
+func TestSpawnHeraWorker_EffortPropagates(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{}
+	orch, err := d.CreateHeraOrchestrator("orch", "")
+	testutil.NoError(t, err)
+
+	res, err := SpawnHeraWorker(d, fr, HeraWorkerSpawnInput{
+		OrchestratorID: orch.ID,
+		BaseName:       "efforted",
+		TaskPrompt:     "body",
+		Project:        "proj",
+		Effort:         "high",
+	})
+	testutil.NoError(t, err)
+
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Effort, "high")
+}
+
+// TestSpawnHeraWorker_EmptyEffortDefaults asserts an unset Effort leaves the
+// task effort empty (no --effort injection at BuildCmd time).
+func TestSpawnHeraWorker_EmptyEffortDefaults(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{}
+	orch, err := d.CreateHeraOrchestrator("orch", "")
+	testutil.NoError(t, err)
+
+	res, err := SpawnHeraWorker(d, fr, HeraWorkerSpawnInput{
+		OrchestratorID: orch.ID,
+		BaseName:       "plain",
+		TaskPrompt:     "body",
+		Project:        "proj",
+	})
+	testutil.NoError(t, err)
+
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Effort, "")
+}
+
+// TestSpawnHeraWorker_OffMenuPickSubstituted proves the spawn-time threading of
+// Model+Effort integrates with the Stage 3 governance in ResolveModel/
+// governMenuPick: an off-menu (model, effort) pair supplied to hera_spawn_worker
+// lands on the persisted task as-is (raw), but resolving it against the bound
+// menu-shaped archetype substitutes the cheapest entry (add-model-menu-selection
+// D6, hera-coordination "Off-menu spawn pick substituted").
+func TestSpawnHeraWorker_OffMenuPickSubstituted(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	testutil.NoError(t, d.SetConfigValue("defaults.backend", "claude"))
+	testutil.NoError(t, d.SetBackend("claude", config.Backend{Command: "claude"}))
+	writeLibraryProfile(t, "default", menuGovernanceProfile)
+
+	fr := &fakeRunner{}
+	orch, err := d.CreateHeraOrchestrator("orch", "")
+	testutil.NoError(t, err)
+
+	res, err := SpawnHeraWorker(d, fr, HeraWorkerSpawnInput{
+		OrchestratorID: orch.ID,
+		BaseName:       "offmenu",
+		TaskPrompt:     "body",
+		Project:        "proj",
+		Archetype:      "code_slice",
+		Model:          "opus",
+		Effort:         "high", // not a menu member (menu has sonnet:high and opus:low)
+	})
+	testutil.NoError(t, err)
+
+	gotTask, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	// Raw override persisted as given — governance runs at resolution time, not spawn time.
+	testutil.Equal(t, gotTask.Model, "opus")
+	testutil.Equal(t, gotTask.Effort, "high")
+
+	cfg := d.Config()
+	gotModel, gotEffort, _ := ResolveModel(gotTask, cfg.Backends["claude"], cfg)
+	testutil.Equal(t, gotModel, "sonnet")
+	testutil.Equal(t, gotEffort, "high")
 }
 
 // TestSpawnHeraWorker_ArchetypePassthrough asserts an explicit Archetype flows

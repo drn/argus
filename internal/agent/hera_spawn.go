@@ -28,6 +28,7 @@ type HeraWorkerSpawnInput struct {
 	Model          string // optional per-worker model override (empty = backend default)
 	Archetype      string // optional diligence archetype; defaults to code_slice when empty
 	Profile        string // optional per-spawn profile override; empty = use project binding
+	Effort         string // optional per-worker effort override (add-model-menu-selection), resolved the same way as Model
 }
 
 // Default archetypes applied at the spawn layer when the caller supplies none
@@ -84,6 +85,7 @@ func SpawnHeraWorker(database *db.DB, runner SessionProvider, in HeraWorkerSpawn
 		Model:      in.Model,
 		Archetype:  archetype,
 		Profile:    in.Profile,
+		Effort:     in.Effort,
 		BaseBranch: in.Branch,
 		AutoName:   false, // name is the meaningful role slug — no Haiku rename
 		AfterPersist: func(t *model.Task) (func(), error) {

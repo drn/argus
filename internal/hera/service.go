@@ -160,6 +160,25 @@ func (s *Service) GetByIDs(ids []int64) ([]*db.HeraMessage, error) {
 	return s.store.HeraMessagesByIDs(ids)
 }
 
+// DeliverToRole writes text directly into roleID's live-bound task PTY,
+// reusing the SAME idle-gated single-writer ReliableNotify primitive Send uses
+// for message delivery (add-model-menu-selection hera_retier) — no new write
+// path. Returns db.ErrHeraNotFound if the role has no live binding. Unlike
+// Send, a nil notifier is a hard error rather than a soft-fail: a retier
+// request has no durable message row to fall back on, so silently doing
+// nothing would be an undetectable no-op for the caller.
+func (s *Service) DeliverToRole(roleID int64, text, deliveryID string) error {
+	if s.notifier == nil {
+		return fmt.Errorf("hera: no notifier configured, cannot deliver")
+	}
+	binding, err := s.store.HeraLiveBindingByRole(roleID)
+	if err != nil {
+		return err
+	}
+	s.notifier.ReliableNotify(binding.ArgusTaskID, text, deliveryID, notify.NotifyOpts{})
+	return nil
+}
+
 // cancelDeliveries cancels pending notifier deliveries for msgs addressed to
 // roleID. Resolves the role's live binding once; skips if none found.
 // Granularity note: cancels are per-message (deliveryID = "hera:<msgID>"),

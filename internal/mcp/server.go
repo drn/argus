@@ -66,6 +66,7 @@ type HeraSpawnInput struct {
 	Backend        string // optional backend override
 	Model          string // optional per-worker model override (empty = backend default)
 	Archetype      string // optional diligence archetype (empty = spawner default code_slice)
+	Effort         string // optional per-worker effort override (add-model-menu-selection), resolved the same way as Model
 	OrchestratorID int64  // orchestrator the new worker role + binding belong to
 }
 
@@ -911,6 +912,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolHeraStatus(req.ID, params.Arguments)
 	case "hera_spawn_worker":
 		return s.toolHeraSpawnWorker(req.ID, params.Arguments)
+	case "hera_retier":
+		return s.toolHeraRetier(req.ID, params.Arguments)
 	case "hera_tree_updates":
 		return s.toolHeraTreeUpdates(req.ID, params.Arguments)
 	case "hera_get_messages":

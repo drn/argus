@@ -484,6 +484,7 @@ func (d *Daemon) heraSpawnWorker(in mcp.HeraSpawnInput) (*mcp.HeraSpawnResult, e
 		Backend:        in.Backend,
 		Model:          in.Model,
 		Archetype:      in.Archetype,
+		Effort:         in.Effort,
 	})
 	if err != nil {
 		return nil, err
