@@ -1006,6 +1006,17 @@ func (d *Daemon) Serve(sockPath string) error {
 	// directly instead of racing the ticker.
 	go d.runPRPoller()
 
+	// Host-suspend watchdog (detect-host-suspend). Detects a laptop sleep /
+	// hibernate / VM pause from a large wall-clock gap between its own ticks and
+	// broadcasts an advisory ARGUS_HOST_SUSPENDED note to every running task, so a
+	// hera coordinator does not misread the concurrent silence (its workers were
+	// frozen alongside it) as a stuck worker and spawn duplicate retry nodes. Runs
+	// UNCONDITIONALLY (not gated on cfg.Hera.Enabled): a bare-worker coordinator
+	// misjudges the same way, and the note is harmless for a non-coordinator.
+	// Per-tick logic is factored into hostSuspendTick so tests drive one pass with
+	// synthetic times instead of sleeping.
+	go d.runHostSuspendWatcher()
+
 	// Hera plan-DAG gater (add-hera-plan-substrate). Runs whenever hera is
 	// enabled, independent of the KB/MCP server: it materializes already-authored
 	// planned nodes whose blockers have all reached role-status done. Inert when no
