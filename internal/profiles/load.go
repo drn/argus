@@ -181,6 +181,9 @@ func overlay(parent *Profile, child rawProfile) *Profile {
 		if md.IsDefined("archetype", name, "window") {
 			base.Window = ca.Window
 		}
+		if md.IsDefined("archetype", name, "menu") {
+			base.Menu = ca.Menu
+		}
 		out.Archetype[name] = base
 	}
 

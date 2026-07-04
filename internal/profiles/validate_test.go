@@ -67,11 +67,25 @@ func TestValidate_OutOfEnumEffort(t *testing.T) {
 	p := loadOne(t, `
 [archetype.code_slice]
 model  = "sonnet"
-effort = "max"
+effort = "critical"
 `)
 	errs := Validate(p, config.Config{}, testKnownModels)
 	testutil.Equal(t, len(errs), 1)
 	testutil.Contains(t, errorsText(errs), "effort")
+}
+
+func TestValidate_WidenedEffortEnumAccepted(t *testing.T) {
+	for _, effort := range ValidEfforts {
+		t.Run(effort, func(t *testing.T) {
+			p := loadOne(t, `
+[archetype.code_slice]
+model  = "sonnet"
+effort = "`+effort+`"
+`)
+			errs := Validate(p, config.Config{}, testKnownModels)
+			testutil.Equal(t, len(errs), 0)
+		})
+	}
 }
 
 func TestValidate_OutOfEnumWindow(t *testing.T) {
@@ -133,6 +147,59 @@ weird_field = 42
 	testutil.Equal(t, len(errs), 0)
 }
 
+func TestValidate_MenuValid(t *testing.T) {
+	p := loadOne(t, `
+[archetype.code_slice]
+menu = [
+  { model = "sonnet", effort = "high" },
+  { model = "opus",   effort = "low" },
+]
+`)
+	errs := Validate(p, config.Config{}, testKnownModels)
+	testutil.Equal(t, len(errs), 0)
+}
+
+func TestValidate_MenuAndScalarRejected(t *testing.T) {
+	p := loadOne(t, `
+[archetype.code_slice]
+model = "sonnet"
+menu = [
+  { model = "sonnet", effort = "high" },
+  { model = "opus",   effort = "low" },
+]
+`)
+	errs := Validate(p, config.Config{}, testKnownModels)
+	testutil.Equal(t, len(errs), 1)
+	testutil.Contains(t, errorsText(errs), "code_slice")
+}
+
+func TestValidate_MenuTooShortRejected(t *testing.T) {
+	p := loadOne(t, `
+[archetype.code_slice]
+menu = [
+  { model = "sonnet", effort = "high" },
+]
+`)
+	errs := Validate(p, config.Config{}, testKnownModels)
+	testutil.Equal(t, len(errs), 1)
+	testutil.Contains(t, errorsText(errs), "code_slice")
+}
+
+func TestValidate_MenuEntryValidatedPerField(t *testing.T) {
+	p := loadOne(t, `
+[archetype.code_slice]
+menu = [
+  { model = "nope-model", effort = "critical" },
+  { model = "opus",       effort = "low" },
+]
+`)
+	errs := Validate(p, config.Config{}, testKnownModels)
+	// one bad model + one bad effort within the same menu entry
+	testutil.Equal(t, len(errs), 2)
+	testutil.Contains(t, errorsText(errs), "nope-model")
+	testutil.Contains(t, errorsText(errs), "critical")
+}
+
 func TestValidate_ReportsAllErrors(t *testing.T) {
 	// Three independent violations: unknown archetype, bad effort, unknown model.
 	p := loadOne(t, `
@@ -141,7 +208,7 @@ model = "opus"
 
 [archetype.code_slice]
 model  = "nope-model"
-effort = "max"
+effort = "critical"
 `)
 	errs := Validate(p, config.Config{}, testKnownModels)
 	// planner (unknown archetype) + code_slice bad effort + code_slice unknown model

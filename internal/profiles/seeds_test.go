@@ -37,11 +37,26 @@ func TestSeeds_DefaultCoversAllArchetypes(t *testing.T) {
 			t.Errorf("default seed missing archetype %q", name)
 			continue
 		}
-		if a.Model == "" {
-			t.Errorf("default seed archetype %q has no model", name)
+		if a.Model == "" && len(a.Menu) == 0 {
+			t.Errorf("default seed archetype %q has no model or menu", name)
 		}
 	}
 	testutil.Equal(t, len(p.Archetype), len(CanonicalArchetypes))
+}
+
+func TestSeeds_DefaultCodeSliceIsMenu(t *testing.T) {
+	p, err := seedLoader().Load("default")
+	testutil.NoError(t, err)
+	a := p.Archetype["code_slice"]
+	testutil.Equal(t, a.Model, "")
+	testutil.Equal(t, a.Effort, "")
+	if len(a.Menu) < 2 {
+		t.Fatalf("default seed's code_slice menu has %d entries, want >= 2", len(a.Menu))
+	}
+	testutil.Equal(t, a.Menu[0].Model, "sonnet")
+	testutil.Equal(t, a.Menu[0].Effort, "high")
+	testutil.Equal(t, a.Menu[1].Model, "opus")
+	testutil.Equal(t, a.Menu[1].Effort, "low")
 }
 
 func TestSeeds_LeanAndCustomerGradeExtendDefault(t *testing.T) {
@@ -49,8 +64,9 @@ func TestSeeds_LeanAndCustomerGradeExtendDefault(t *testing.T) {
 
 	lean, err := l.Load("lean")
 	testutil.NoError(t, err)
-	// lean inherits default's model allocation...
-	testutil.Equal(t, lean.Archetype["code_slice"].Model, "sonnet")
+	// lean inherits default's model allocation, including the code_slice menu...
+	testutil.Equal(t, len(lean.Archetype["code_slice"].Menu), 2)
+	testutil.Equal(t, lean.Archetype["code_slice"].Menu[0].Model, "sonnet")
 	testutil.Equal(t, lean.Archetype["brainstorm"].Model, "opus")
 	// ...and expresses its own rigor.
 	testutil.Equal(t, lean.Rigor.ReviewPasses, 1)
@@ -58,7 +74,8 @@ func TestSeeds_LeanAndCustomerGradeExtendDefault(t *testing.T) {
 
 	cg, err := l.Load("customer_grade")
 	testutil.NoError(t, err)
-	testutil.Equal(t, cg.Archetype["code_slice"].Model, "sonnet") // inherited
+	testutil.Equal(t, len(cg.Archetype["code_slice"].Menu), 2) // inherited
+	testutil.Equal(t, cg.Archetype["code_slice"].Menu[0].Model, "sonnet")
 	testutil.Equal(t, cg.Rigor.ReviewPasses, 2)
 	testutil.True(t, cg.Rigor.Gating)
 	testutil.True(t, cg.Rigor.SecuritySpotCheck)
@@ -73,7 +90,6 @@ func TestSeeds_DefaultArchetypeDefaultsMatchFramework(t *testing.T) {
 		"brainstorm":      "opus",
 		"orchestrator":    "opus",
 		"big_build":       "opus",
-		"code_slice":      "sonnet",
 		"bug_fix":         "sonnet",
 		"review":          "opus",
 		"security_review": "opus",

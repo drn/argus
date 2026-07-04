@@ -43,19 +43,31 @@ var CanonicalArchetypes = []string{
 	"docs",
 }
 
-// ValidEfforts is the allowed enum for an archetype's effort field.
-var ValidEfforts = []string{"low", "medium", "high"}
+// ValidEfforts is the allowed enum for an archetype's effort field, matching
+// the levels the `claude` CLI's `--effort` flag accepts.
+var ValidEfforts = []string{"low", "medium", "high", "xhigh", "max"}
 
 // ValidWindows is the allowed enum for an archetype's context-window field.
 var ValidWindows = []string{"200k", "1m"}
 
-// Archetype is the per-archetype model/effort/window triple. All fields are
-// optional; an empty field means "unset" (and is skipped during validation and
-// inherited from a parent during extends overlay).
-type Archetype struct {
+// MenuOption is one {model, effort} pair within an archetype's ordered menu.
+type MenuOption struct {
 	Model  string `toml:"model"`
 	Effort string `toml:"effort"`
-	Window string `toml:"window"`
+}
+
+// Archetype is the per-archetype model/effort/window triple, or — as an
+// alternative to the scalar Model/Effort pair — an ordered Menu of
+// {model, effort} pairs (cheapest first). Menu and the scalar Model/Effort
+// fields are mutually exclusive (enforced by Validate); Window applies to the
+// archetype as a whole regardless of which form is used. All fields are
+// optional; an empty/nil field means "unset" (and is skipped during
+// validation and inherited from a parent during extends overlay).
+type Archetype struct {
+	Model  string       `toml:"model"`
+	Effort string       `toml:"effort"`
+	Window string       `toml:"window"`
+	Menu   []MenuOption `toml:"menu"`
 }
 
 // Rigor holds the per-profile process/diligence flags.

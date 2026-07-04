@@ -3,19 +3,28 @@ package profiles
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/drn/argus/internal/config"
 )
+
+// validEffortsText is the human-readable allowed-values list for error
+// messages, kept in sync with ValidEfforts.
+var validEffortsText = strings.Join(ValidEfforts, ", ")
 
 // Validate checks a resolved profile for conformance and returns ALL errors
 // found (an empty slice means valid). It checks:
 //
 //   - every archetype table names a canonical archetype;
-//   - each non-empty effort is one of ValidEfforts;
+//   - an archetype does not set both a scalar model/effort and a menu;
+//   - a menu, when present, has at least two entries;
+//   - each non-empty effort (scalar, or per-entry within a menu) is one of
+//     ValidEfforts;
 //   - each non-empty window is one of ValidWindows;
-//   - each non-empty model is a member of the union of the built-in backend
-//     aliases (knownModels("claude") ∪ knownModels("codex")) and every
-//     configured backend's models list;
+//   - each non-empty model (scalar, or per-entry within a menu) is a member of
+//     the union of the built-in backend aliases
+//     (knownModels("claude") ∪ knownModels("codex")) and every configured
+//     backend's models list;
 //   - the [panel] block, if present, is structurally well-formed (it is opaque
 //     and its composition grammar is NOT validated here — see D-PANEL-SEAM).
 //
@@ -40,14 +49,33 @@ func Validate(p *Profile, cfg config.Config, knownModels func(command string) []
 		if !canon[name] {
 			errs = append(errs, fmt.Errorf("unknown archetype %q (not one of the 13 canonical archetypes)", name))
 		}
+
+		hasScalar := a.Model != "" || a.Effort != ""
+		hasMenu := len(a.Menu) > 0
+		if hasScalar && hasMenu {
+			errs = append(errs, fmt.Errorf("archetype %q: sets both scalar model/effort and a menu (mutually exclusive)", name))
+		}
+		if hasMenu && len(a.Menu) < 2 {
+			errs = append(errs, fmt.Errorf("archetype %q: menu has %d entry, needs at least 2 to express a choice", name, len(a.Menu)))
+		}
+
 		if a.Effort != "" && !inSet(a.Effort, ValidEfforts) {
-			errs = append(errs, fmt.Errorf("archetype %q: invalid effort %q (allowed: low, medium, high)", name, a.Effort))
+			errs = append(errs, fmt.Errorf("archetype %q: invalid effort %q (allowed: %s)", name, a.Effort, validEffortsText))
 		}
 		if a.Window != "" && !inSet(a.Window, ValidWindows) {
 			errs = append(errs, fmt.Errorf("archetype %q: invalid window %q (allowed: 200k, 1m)", name, a.Window))
 		}
 		if a.Model != "" && !allowed[a.Model] {
 			errs = append(errs, fmt.Errorf("archetype %q: unknown model %q (not in built-in aliases or any configured backend's models)", name, a.Model))
+		}
+
+		for i, m := range a.Menu {
+			if m.Effort != "" && !inSet(m.Effort, ValidEfforts) {
+				errs = append(errs, fmt.Errorf("archetype %q: menu entry %d: invalid effort %q (allowed: %s)", name, i, m.Effort, validEffortsText))
+			}
+			if m.Model != "" && !allowed[m.Model] {
+				errs = append(errs, fmt.Errorf("archetype %q: menu entry %d: unknown model %q (not in built-in aliases or any configured backend's models)", name, i, m.Model))
+			}
 		}
 	}
 

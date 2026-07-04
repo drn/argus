@@ -9,6 +9,11 @@
 # This is a documented EXAMPLE. Copy it to ~/.argus/profiles/default.toml (or to
 # a project's .argus/profiles/default.toml) and adapt; argus does not auto-install
 # it. Validate with: argus validate default
+#
+# code_slice is authored as a MENU (ordered, cheapest first) rather than a fixed
+# pair: job difficulty genuinely varies for this archetype, so the spawner picks
+# a tier at spawn time within this bounded envelope instead of a single fixed
+# model. See openspec/changes/add-model-menu-selection/design.md (D1).
 
 [archetype.brainstorm]
 model  = "opus"
@@ -21,7 +26,10 @@ model = "opus"
 model = "opus"
 
 [archetype.code_slice]
-model = "sonnet"
+menu = [
+  { model = "sonnet", effort = "high" },
+  { model = "opus",   effort = "low" },
+]
 
 [archetype.bug_fix]
 model = "sonnet"

@@ -11,21 +11,21 @@ integrated result before ralph-review.
 
 ## 1. Profile schema v2 (menu form, validation, seed example)
 
-- [ ] 1.1 Write failing tests for: an archetype authored as a `menu` parses into an ordered
+- [x] 1.1 Write failing tests for: an archetype authored as a `menu` parses into an ordered
   `[]MenuOption`; a scalar archetype parses unchanged; a menu + scalar fields on the same archetype is
   rejected; a menu with fewer than 2 entries is rejected; each menu entry validates model/effort exactly
   like the scalar path; the widened 5-level effort enum (`low`/`medium`/`high`/`xhigh`/`max`) accepts all
   five and rejects an out-of-enum value. (`specs/diligence-profiles/spec.md` → "Profile structure and
   archetypes", "Profile validation")
-- [ ] 1.2 Add `Menu []MenuOption` to `profiles.Archetype` and a `MenuOption{Model, Effort string}` type
+- [x] 1.2 Add `Menu []MenuOption` to `profiles.Archetype` and a `MenuOption{Model, Effort string}` type
   (`internal/profiles/profiles.go`); widen `ValidEfforts` to the 5-level enum.
-- [ ] 1.3 Extend `Validate` (`internal/profiles/validate.go`) to: reject an archetype setting both scalar
+- [x] 1.3 Extend `Validate` (`internal/profiles/validate.go`) to: reject an archetype setting both scalar
   fields and `menu`; reject a `menu` with < 2 entries; validate each menu entry's model/effort with the
   same per-field checks as the scalar path, aggregated into the existing all-errors report.
-- [ ] 1.4 Update `overlay` (`internal/profiles/load.go`) so `extends` inheritance correctly overlays a
+- [x] 1.4 Update `overlay` (`internal/profiles/load.go`) so `extends` inheritance correctly overlays a
   child's `menu` field (declared-field detection via `md.IsDefined`, mirroring the existing per-field
   scalar overlay) — write a failing test for a child overriding a parent's menu first.
-- [ ] 1.5 Rewrite the `default` seed profile's `code_slice` archetype as a menu (at least two ordered
+- [x] 1.5 Rewrite the `default` seed profile's `code_slice` archetype as a menu (at least two ordered
   `{model, effort}` pairs, cheapest first); add/update the seed test asserting it validates and is
   menu-shaped. (`specs/diligence-profiles/spec.md` → "Seed profiles")
 

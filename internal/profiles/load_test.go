@@ -88,6 +88,42 @@ window = "1m"
 	testutil.Equal(t, a.Window, "1m")
 }
 
+func TestLoad_MenuParses(t *testing.T) {
+	lib := writeProfile(t, t.TempDir(), "p", `
+[archetype.code_slice]
+menu = [
+  { model = "sonnet", effort = "high" },
+  { model = "opus",   effort = "low" },
+]
+`)
+	l := &Loader{LibraryDir: lib}
+	p, err := l.Load("p")
+	testutil.NoError(t, err)
+	a := p.Archetype["code_slice"]
+	testutil.Equal(t, a.Model, "")
+	testutil.Equal(t, a.Effort, "")
+	testutil.Equal(t, len(a.Menu), 2)
+	testutil.Equal(t, a.Menu[0].Model, "sonnet")
+	testutil.Equal(t, a.Menu[0].Effort, "high")
+	testutil.Equal(t, a.Menu[1].Model, "opus")
+	testutil.Equal(t, a.Menu[1].Effort, "low")
+}
+
+func TestLoad_ScalarArchetypeUnchanged(t *testing.T) {
+	lib := writeProfile(t, t.TempDir(), "p", `
+[archetype.docs]
+model  = "haiku"
+effort = "low"
+`)
+	l := &Loader{LibraryDir: lib}
+	p, err := l.Load("p")
+	testutil.NoError(t, err)
+	a := p.Archetype["docs"]
+	testutil.Equal(t, a.Model, "haiku")
+	testutil.Equal(t, a.Effort, "low")
+	testutil.Equal(t, len(a.Menu), 0)
+}
+
 func TestLoad_RigorParse(t *testing.T) {
 	lib := writeProfile(t, t.TempDir(), "p", `
 [rigor]
@@ -186,6 +222,35 @@ effort = "low"
 	testutil.Equal(t, a.Model, "opus") // inherited
 	testutil.Equal(t, a.Effort, "low") // overridden
 	testutil.Equal(t, a.Window, "1m")  // inherited
+}
+
+func TestLoad_ExtendsOverlay_ChildOverridesMenu(t *testing.T) {
+	lib := t.TempDir()
+	writeProfile(t, lib, "default", `
+[archetype.code_slice]
+menu = [
+  { model = "sonnet", effort = "high" },
+  { model = "opus",   effort = "low" },
+]
+`)
+	writeProfile(t, lib, "child", `
+extends = "default"
+
+[archetype.code_slice]
+menu = [
+  { model = "haiku",  effort = "medium" },
+  { model = "sonnet", effort = "low" },
+]
+`)
+	l := &Loader{LibraryDir: lib}
+	p, err := l.Load("child")
+	testutil.NoError(t, err)
+	a := p.Archetype["code_slice"]
+	testutil.Equal(t, len(a.Menu), 2)
+	testutil.Equal(t, a.Menu[0].Model, "haiku")
+	testutil.Equal(t, a.Menu[0].Effort, "medium")
+	testutil.Equal(t, a.Menu[1].Model, "sonnet")
+	testutil.Equal(t, a.Menu[1].Effort, "low")
 }
 
 func TestLoad_ExtendsCycle(t *testing.T) {
