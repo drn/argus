@@ -49,3 +49,7 @@ The `macos/` SwiftPM package (ArgusKit SDK + ArgusMac SwiftUI app) is a thin RES
 ## `open Foo.app` does not pass environment variables
 
 **The `ARGUS_MAC_SELECT_TASK` / `ARGUS_MAC_INITIAL_TAB` launch hooks only work when the bundle binary is executed directly** (`macos/dist/ArgusMac.app/Contents/MacOS/ArgusMac`) — `open(1)` launches via launchd and drops the caller's environment.
+
+## No Ctrl+Z interception before the PTY — a real parity gap, not yet an incident
+
+**A literal Ctrl+Z (`0x1A`) typed into `FocusTakingTerminalView`/SwiftTerm and forwarded to `/api/tasks/{id}/input` is Claude Code's own "background this session" command — it detaches the conversation onto Claude Code's per-user supervisor, permanently outside argus's process tree and un-stoppable via any argus stop action** (see gotchas/daemon-rpc.md "Claude Code's own background-session supervisor", gotchas/hera-view.md "Ctrl+Z fullscreen + suspended-pane revive"). The TUI hard-swallows `Ctrl+Z` before it ever reaches an agent's PTY, in both the classic agent view and native Hera view; ArgusMac has no equivalent — a repo-wide grep of `macos/` finds zero Ctrl+Z-specific handling, so SwiftTerm's default key forwarding sends the raw byte straight through. Needs the same swallow-before-forward guard as the TUI (or a server-side strip in `handleWriteInput`) before this surface is safe to leave attached to a live worker unattended.
