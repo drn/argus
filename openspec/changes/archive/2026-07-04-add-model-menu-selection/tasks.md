@@ -131,9 +131,12 @@ integrated result before ralph-review.
 
 **Depends on:** Stage 6
 
-- [ ] 7.1 Run `/spec-audit` against the `add-model-menu-selection` deltas; confirm coverage; ensure
+- [x] 7.1 Run `/spec-audit` against the `add-model-menu-selection` deltas; confirm coverage; ensure
   `openspec validate add-model-menu-selection --strict` passes; archive the change **on the branch** (base
   specs updated atomically with the implementation). NO per-chunk GitHub PR and NO `iris_gh_pr_create`:
   the mini-pipeline's ralph-review + spec-audit nodes ARE the review. On completion, `iris_push` the final
   branch and `hera_send` the branch name + a plain-language "how it works" summary to `coord`, who
-  advances `argus/model-tiering`.
+  advances `argus/model-tiering`. (Spec audit: 42/42 scenarios covered, report at
+  `.workflow/audits/2026-07-04/spec-audit-report.md`. `openspec validate --strict` passed. Archived via
+  `openspec archive`. `profile_resolve` MCP tool re-confirmed absent — flagged as an open risk in the
+  done report to `coord`.)
