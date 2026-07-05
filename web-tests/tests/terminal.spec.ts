@@ -355,4 +355,54 @@ test.describe('terminal', () => {
     const termInstance = await page.evaluate(() => (window as any).term);
     expect(termInstance).toBeNull();
   });
+
+  // Ctrl+Z guard: a bare Ctrl+Z emits 0x1a (SIGTSTP); reaching Claude Code's
+  // stdin it backgrounds the session into the CLI's own supervisor, orphaning
+  // the argus worker permanently. The TUI already traps Ctrl+Z on every
+  // surface; the PWA terminal swallows it at the xterm key layer so 0x1a never
+  // reaches /input. See gotchas/web-remote.md.
+  test('Ctrl+Z is swallowed and never reaches the PTY input path', async ({ page }) => {
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await expect(page.locator('.term-status.live')).toBeVisible({ timeout: 5000 });
+
+    // Capture every byte the SPA POSTs to the input endpoint.
+    const inputBodies: string[] = [];
+    page.on('request', req => {
+      if (req.method() === 'POST' && /\/api\/tasks\/[^/]+\/input$/.test(req.url())) {
+        inputBodies.push(req.postData() ?? '');
+      }
+    });
+
+    // Focus xterm's helper textarea directly (works on desktop AND the iphone
+    // profile's compose-redirect, since we bypass tap-to-focus routing).
+    await page.evaluate(() => (window as any).term?.focus());
+    await page.keyboard.press('Control+z');
+
+    // The explanatory toast appears (never a silent dead key).
+    await expect(page.locator('.toast')).toContainText('background the agent');
+
+    // A control keystroke still forwards — proves the guard is specific to
+    // Ctrl+Z, not a blanket input block.
+    await page.keyboard.press('x');
+    await expect.poll(async () => inputBodies.some(b => b.includes('x')), { timeout: 3000 }).toBe(true);
+
+    // No 0x1a (SUB / SIGTSTP) byte was ever POSTed to the PTY.
+    const SUB = String.fromCharCode(0x1a); // 0x1a = SUB / the Ctrl+Z byte
+    expect(inputBodies.some(b => b.includes(SUB))).toBe(false);
+  });
+
+  test('Cmd+Z (metaKey) is not intercepted by the Ctrl+Z guard', async ({ page }) => {
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await expect(page.locator('.term-status.live')).toBeVisible({ timeout: 5000 });
+
+    await page.evaluate(() => (window as any).term?.focus());
+    await page.keyboard.press('Meta+z');
+
+    // Cmd+Z is the browser/textarea undo — the guard must leave it alone, so
+    // no "background the agent" toast is shown.
+    await page.waitForTimeout(200);
+    await expect(page.locator('.toast', { hasText: 'background the agent' })).toHaveCount(0);
+  });
 });
