@@ -2524,6 +2524,17 @@ async function attachTerminal(task) {
   }
 }
 
+// isCtrlZ reports whether a KeyboardEvent is a bare Ctrl+Z — the SIGTSTP
+// footgun. Ctrl held, neither Meta nor Alt, the `z` key. Shift is TOLERATED
+// because Ctrl+Shift+Z produces the same 0x1a byte ('z'&0x1f == 'Z'&0x1f ==
+// 0x1a), so it is the same hazard. Cmd+Z (metaKey) is deliberately NOT matched
+// — that is the browser/textarea undo. keyCode===90 is a layout-robust fallback
+// alongside the ev.key character check.
+function isCtrlZ(ev) {
+  return ev.ctrlKey && !ev.metaKey && !ev.altKey &&
+    (ev.key === 'z' || ev.key === 'Z' || ev.keyCode === 90);
+}
+
 function setupTerm() {
   const TerminalCtor = (window.Terminal || (window.xterm && window.xterm.Terminal));
   const FitCtor = (window.FitAddon && window.FitAddon.FitAddon) || window.FitAddon;
@@ -2627,6 +2638,29 @@ function setupTerm() {
     });
     termResizeObserver.observe(termTouchEl);
   }
+
+  // Ctrl+Z guard (session-orphan prevention). A bare Ctrl+Z emits 0x1a
+  // (SUB / SIGTSTP); delivered to Claude Code's stdin it makes the CLI
+  // background the session into its OWN supervisor, reparenting it out of
+  // argus's process tree permanently and invisibly — argus can never signal or
+  // stop it again (orphaned worker). The TUI already traps Ctrl+Z on every
+  // surface (agent view → zoom, Hera view → fullscreen) so the byte never
+  // reaches the PTY; this is the parity guard for the web/PWA terminal, which
+  // had none. There is no split-pane/zoom analog on this surface (the detail
+  // view is already full-screen), so we SWALLOW rather than remap. Returning
+  // false makes xterm's key handler bail before emitting any byte to onData
+  // (its _keyDown does `if (custom(e) === false) return false` first), the same
+  // intercept-before-PTY point the TUI uses in handleAgentKey. preventDefault +
+  // the toast run on keydown only (the paired keyup would otherwise double the
+  // toast); showToast self-dedupes so mashing Ctrl+Z keeps one re-timed toast.
+  term.attachCustomKeyEventHandler(ev => {
+    if (!isCtrlZ(ev)) return true;
+    if (ev.type === 'keydown') {
+      ev.preventDefault();
+      showToast('Ctrl+Z is disabled here — it would background the agent', 2500);
+    }
+    return false;
+  });
 
   // Forward keystrokes to the agent. xterm gives us already-translated bytes
   // (e.g. arrow keys come as ESC[A). Send them raw.
