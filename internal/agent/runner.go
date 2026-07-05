@@ -372,7 +372,14 @@ func (r *Runner) Stop(taskID string) error {
 	r.stopped[taskID] = true
 	r.mu.Unlock()
 	slog.Info("runner.Stop", "task", taskID, "pid", sess.PID())
-	return sess.Stop()
+	err := sess.Stop()
+	// Best-effort cleanup for a session that already detached itself to
+	// Claude Code's own background-session supervisor (see
+	// context/knowledge/gotchas/daemon-rpc.md) — the SIGTERM above can never
+	// reach it. Fire-and-forget so a claude CLI round-trip never adds
+	// latency to this call.
+	go reapOrphanedClaudeSessions(taskID, sess.WorkDir())
+	return err
 }
 
 // StopAll terminates all running sessions.
