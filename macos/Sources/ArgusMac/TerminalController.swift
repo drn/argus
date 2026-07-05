@@ -345,8 +345,23 @@ final class TerminalController {
 final class TerminalCoordinator: TerminalViewDelegate {
     weak var controller: TerminalController?
 
+    private static let log = Logger(subsystem: "com.argus.mac", category: "terminal")
+
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        let bytes = Data(data)
+        // Ctrl+Z (0x1A) must never reach the agent PTY. It raises SIGTSTP and
+        // suspends the process, but the graver problem is Claude Code specific:
+        // a literal Ctrl+Z byte trips the CLI's OWN background-session
+        // supervisor, which reparents the session out of argus's process tree
+        // permanently and invisibly (an orphaned session argus's stop path can
+        // never signal again). Strip it here — the single outbound chokepoint
+        // for keyboard input — mirroring the TUI, which likewise never forwards
+        // Ctrl+Z to the PTY. See ArgusKit/TerminalInput + gotchas/macos-app.md.
+        let raw = Data(data)
+        let bytes = TerminalInput.sanitize(raw)
+        if bytes.count != raw.count {
+            Self.log.info("[terminal] dropped Ctrl+Z (0x1A) from keyboard input — would suspend/orphan the session")
+        }
+        guard !bytes.isEmpty else { return }
         let controller = self.controller
         MainActor.assumeIsolated { controller?.enqueueInput(bytes) }
     }

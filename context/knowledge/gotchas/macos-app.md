@@ -42,6 +42,10 @@ The `macos/` SwiftPM package (ArgusKit SDK + ArgusMac SwiftUI app) is a thin RES
 
 **`TerminalView.mouseDown` only drives selection/mouse-reporting — it never calls `makeFirstResponder`, so a SwiftUI-hosted terminal is READ-ONLY (keystrokes never reach `keyDown`)**; a plain AppKit window's responder wiring masks this, `NSViewRepresentable` does not. `FocusTakingTerminalView` (TerminalTab.swift) overrides `mouseDown` (focus-then-super) and `viewDidMoveToWindow` (async focus grab on mount) so typing works on open and after clicking away and back.
 
+## Ctrl+Z (0x1A) is stripped from outbound terminal input — never forward it
+
+**A literal Ctrl+Z byte reaching the agent orphans the session, so the macOS app strips `0x1A` from ALL keyboard input before `POST /input`.** Claude Code's CLI runs its own background-session supervisor; a Ctrl+Z byte makes it reparent the session out of argus's process tree permanently and invisibly (argus's stop path can never signal it again). The TUI already guards this by never forwarding Ctrl+Z to the PTY (it remaps the key to a pane-zoom/fullscreen toggle). The macOS app has no analogous zoom surface, so it **swallows** the byte rather than remapping — the intent (Ctrl+Z never reaches the session) is mirrored, not the mechanism. The filter is a pure `ArgusKit.TerminalInput.sanitize(_:)` helper (in ArgusKit so it's testable from the `ArgusKitTests` target, which can't import `ArgusMac`), called at the single outbound chokepoint `TerminalCoordinator.send`; it strips only `0x1A` (other control bytes — Ctrl+C `0x03`, Ctrl+Y `0x19`, ESC `0x1B` — pass through untouched) and logs each drop.
+
 ## `open Foo.app` does not pass environment variables
 
 **The `ARGUS_MAC_SELECT_TASK` / `ARGUS_MAC_INITIAL_TAB` launch hooks only work when the bundle binary is executed directly** (`macos/dist/ArgusMac.app/Contents/MacOS/ArgusMac`) — `open(1)` launches via launchd and drops the caller's environment.
