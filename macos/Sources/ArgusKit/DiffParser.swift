@@ -6,7 +6,7 @@ import Foundation
 // splits back apart on `diff --git` boundaries.
 //
 // Kept dependency-free and side-effect-free so it is trivially unit-tested;
-// all rendering lives in the ArgusMac layer.
+// all rendering lives in the Argus app layer.
 
 /// The role of a single line inside a hunk.
 public enum DiffLineKind: String, Sendable, Equatable {

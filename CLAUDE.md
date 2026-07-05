@@ -37,7 +37,7 @@ make pre-pr         # full CI mirror: build+vet+fmt-check+lint-pr+vuln+test-cove
 go build -o argus ./cmd/argus/
 make mac-build      # swift build the macos/ package (--disable-sandbox)
 make mac-test       # run the Swift suite (NOT `swift test`; see gotchas/macos-app.md)
-make mac-run        # launch the ArgusMac SwiftUI app
+make mac-run        # launch the Argus SwiftUI app
 ```
 
 The `mac-*` targets drive the `macos/` SwiftPM package with the Swift 6.3 Command Line Tools (no Xcode, no `xcodebuild`); they never touch the Go build and are not part of `make pre-pr`.
@@ -62,7 +62,7 @@ tcell/tview UI with direct cell painting for the agent terminal. `App` (`interna
 - `internal/daemon/` — `daemon.go` (owns Runner + Unix socket; first byte 'R'/'S' selects RPC vs stream), `sessioncore.go` (the R/S server both daemon and supervisor mount; hosts the `#707` `awaitExitInfoCached` guard), `supervisor.go` (the dark long-lived PTY owner on its own sock/pid/lock trio), `headless.go` (TUI-less task create), `client/` (TUI-side daemon client).
 - `internal/api/` — REST + PWA on :7743, binds `127.0.0.1` + the Tailscale IP only, never `0.0.0.0`. `internal/push/` — Web Push (VAPID). `internal/mcp/` — MCP server :7742, native `hera_*` tools. `internal/db/` — SQLite at `~/.argus/data.sql`; `hera.go` + `hera_messages.go` are the Hera store. `internal/hera/service.go` — role-addressed delivery over the existing `notify.Notifier` bus.
 - Others: `internal/config`, `internal/gitutil` (pure Go, off-UI-thread), `internal/spinner`, `internal/skills`, `internal/uxlog`, `internal/apiclient`, `internal/apistore`, `internal/model` (`Task` + `Status`: `pending → in_progress → in_review → complete`), `cmd/argus-test-server` (Playwright harness).
-- `macos/` — the native macOS app (SwiftPM, not Go): `ArgusKit` (a pure-Foundation typed Swift SDK for the daemon's REST + SSE API) + `ArgusMac` (a SwiftUI app shell built on it). A thin REST/SSE client of the daemon with NO Go coupling — it shares no code, only the wire contract; see `gotchas/macos-app.md`.
+- `macos/` — the native macOS app (SwiftPM, not Go): `ArgusKit` (a pure-Foundation typed Swift SDK for the daemon's REST + SSE API) + `Argus` (a SwiftUI app shell built on it). A thin REST/SSE client of the daemon with NO Go coupling — it shares no code, only the wire contract; see `gotchas/macos-app.md`.
 
 **Key patterns** (non-obvious; the gotcha files hold the invariants):
 

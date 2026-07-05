@@ -5,7 +5,7 @@
 A native macOS SwiftUI application (Conductor-class: sidebar task rail + tabbed
 detail pane) that drives the same argus daemon as the TUI and the web PWA,
 speaking only the existing REST + SSE API on `:7743`. Ships as a pure SwiftPM
-package (`ArgusKit` library + `ArgusMac` executable) with no Xcode project and
+package (`ArgusKit` library + `Argus` executable) with no Xcode project and
 no new daemon endpoints.
 ## Requirements
 ### Requirement: App shell & task rail
@@ -189,14 +189,37 @@ checked into the repo.
 - **WHEN** `make mac-build` runs in an environment with only the Swift
   toolchain (no Xcode project generation step)
 - **THEN** the build succeeds via `swift build --package-path macos` and
-  produces the `ArgusMac` executable
+  produces the `Argus` executable
 
 #### Scenario: mac-app produces a launchable bundle
 
 - **WHEN** `make mac-app` runs after a successful `mac-build`
-- **THEN** it assembles `ArgusMac.app` with an ad-hoc code signature and the
+- **THEN** it assembles `Argus.app` with an ad-hoc code signature and the
   bundle launches from Finder or `open` without a Gatekeeper "unidentified
   developer" prompt requiring override
+
+### Requirement: App branding
+
+The system SHALL present the Argus shield/eye mark as the app's icon in the
+Dock, Finder, and Cmd+Tab switcher, both for the packaged `.app` bundle (via
+`Info.plist`'s `CFBundleIconFile`) and for the bare `swift run` executable
+(via `NSApplication.shared.applicationIconImage`, set at launch from a
+resource bundled with the SwiftPM target) — no user-visible surface SHALL
+fall back to AppKit's generic executable icon.
+
+#### Scenario: Packaged bundle carries the icon
+
+- **WHEN** `make mac-app` assembles `Argus.app`
+- **THEN** `Contents/Resources/AppIcon.icns` exists and `Info.plist`
+  declares it via `CFBundleIconFile`, so Finder and the Dock show the Argus
+  mark without launching the app
+
+#### Scenario: Bare executable also shows the icon
+
+- **WHEN** the app is launched via `swift run Argus` (no `.app` bundle)
+- **THEN** the Dock icon shows the Argus mark rather than AppKit's generic
+  fallback, because `AppDelegate.applicationDidFinishLaunching` sets
+  `NSApplication.shared.applicationIconImage` from the bundled resource
 
 ### Requirement: Three-surface frontend parity policy
 
@@ -241,7 +264,7 @@ parity for the macOS app.
 
 The decision logic SHALL be a pure, dependency-free helper
 (`ArgusKit.TerminalInput.sanitize`) so it is unit-testable without SwiftTerm or
-AppKit, and the terminal input delegate (`ArgusMac.TerminalCoordinator.send`)
+AppKit, and the terminal input delegate (`Argus.TerminalCoordinator.send`)
 SHALL call it at the single outbound chokepoint and SHALL log when a byte is
 dropped.
 

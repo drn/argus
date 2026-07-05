@@ -21,7 +21,7 @@ import Foundation
 /// not.
 ///
 /// This lives in ArgusKit (pure Foundation) so the decision is unit-testable
-/// without SwiftTerm/AppKit; `ArgusMac`'s terminal input delegate calls it at
+/// without SwiftTerm/AppKit; `Argus`'s terminal input delegate calls it at
 /// the single outbound chokepoint (`TerminalCoordinator.send`).
 public enum TerminalInput {
 
