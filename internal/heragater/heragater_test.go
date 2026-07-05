@@ -785,6 +785,117 @@ func TestGater_NoRecoveryNoticeForMaterializedNode(t *testing.T) {
 	testutil.Equal(t, f.pingCount(), 1) // no recovery notice, no re-held ping
 }
 
+// --- Fan-in notify tests (add-hera-fanin-notify) ---
+
+// TestGater_FanInMaterializePingsCoordinator covers the new notify scenario: a
+// node with 2+ blockers pings the coordinator exactly once on materialization,
+// naming the winning (highest-binding-id) blocker's branch and the un-merged
+// sibling's name/branch. The branch pick itself is unchanged (regression-guarded
+// separately by TestGater_MaterializesWhenAllBlockersDone et al.).
+func TestGater_FanInMaterializePingsCoordinator(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	a := f.boundWorker(t, orch, "1a", model.StatusInReview, db.HeraStatusDone)
+	b := f.boundWorker(t, orch, "1b", model.StatusInReview, db.HeraStatusDone) // higher binding id — wins
+	node := f.planned(t, orch, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, a.ID))
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, b.ID))
+
+	f.w.Tick()
+
+	mat := f.materialized()
+	testutil.Equal(t, len(mat), 1)
+	testutil.Equal(t, mat[0].ID, node.ID)
+	testutil.Equal(t, f.matBranch[node.ID], "argus/1b") // unchanged fan-in pick
+
+	testutil.Equal(t, f.pingCount(), 1)
+	p := f.lastPing()
+	testutil.Equal(t, p.from, node.ID)
+	testutil.Equal(t, p.coord, f.coordRole(t, orch).ID)
+	testutil.Equal(t, strings.Contains(p.tldr, "fan-in"), true)
+	testutil.Equal(t, strings.Contains(p.tldr, "1b"), true)
+	testutil.Equal(t, strings.Contains(p.body, "argus/1b"), true) // chosen base_branch
+	testutil.Equal(t, strings.Contains(p.body, "1a"), true)       // un-merged sibling name
+	testutil.Equal(t, strings.Contains(p.body, "argus/1a"), true) // un-merged sibling branch
+}
+
+// TestGater_SingleBlockerMaterializeNoFanInPing is a regression guard: a node
+// with exactly one blocker has no sibling to report, so no fan-in notice fires
+// (only the ordinary materialize happens).
+func TestGater_SingleBlockerMaterializeNoFanInPing(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	blocker := f.boundWorker(t, orch, "1a", model.StatusInReview, db.HeraStatusDone)
+	node := f.planned(t, orch, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, blocker.ID))
+
+	f.w.Tick()
+
+	testutil.Equal(t, len(f.materialized()), 1)
+	testutil.Equal(t, f.pingCount(), 0)
+}
+
+// TestGater_RootMaterializeNoFanInPing is a regression guard: a root node (no
+// blockers) never fires the fan-in notice.
+func TestGater_RootMaterializeNoFanInPing(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	f.planned(t, orch, "1a")
+
+	f.w.Tick()
+
+	testutil.Equal(t, len(f.materialized()), 1)
+	testutil.Equal(t, f.pingCount(), 0)
+}
+
+// TestGater_FanInPingFailureDoesNotAffectMaterializeOrRetry covers the one-shot,
+// non-retried contract: a fan-in ping failure is logged and dropped — the
+// already-successful materialization stands, there is no panic, and a later
+// tick does not re-attempt the ping (the node has left the planned set, so
+// materializeNode never runs for it again).
+func TestGater_FanInPingFailureDoesNotAffectMaterializeOrRetry(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	a := f.boundWorker(t, orch, "1a", model.StatusInReview, db.HeraStatusDone)
+	b := f.boundWorker(t, orch, "1b", model.StatusInReview, db.HeraStatusDone)
+	node := f.planned(t, orch, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, a.ID))
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, b.ID))
+
+	f.pingFail = true
+	f.w.Tick() // materialize succeeds; ping fails (logged, dropped)
+
+	mat := f.materialized()
+	testutil.Equal(t, len(mat), 1)
+	testutil.Equal(t, mat[0].ID, node.ID)
+	testutil.Equal(t, f.pingCount(), 0) // failed ping is not recorded
+
+	f.pingFail = false
+	f.w.Tick() // node already materialized (left the planned set) — no retry
+
+	testutil.Equal(t, len(f.materialized()), 1)
+	testutil.Equal(t, f.pingCount(), 0)
+}
+
+// TestGater_FanInNoCoordinatorNoPanic covers the pingFanIn path when no
+// coordinator exists to notify (logged, no panic, no ping recorded) —
+// mirrors TestGater_HoldNoCoordinatorNoPanic for the hold-ping seam.
+func TestGater_FanInNoCoordinatorNoPanic(t *testing.T) {
+	f := newGaterFixture(t)
+	o, err := f.d.CreateHeraOrchestrator("nocoord", "")
+	testutil.NoError(t, err)
+	a := f.boundWorker(t, o.ID, "1a", model.StatusInReview, db.HeraStatusDone)
+	b := f.boundWorker(t, o.ID, "1b", model.StatusInReview, db.HeraStatusDone)
+	node := f.planned(t, o.ID, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, a.ID))
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, b.ID))
+
+	f.w.Tick() // must not panic; no coordinator → no ping
+
+	testutil.Equal(t, len(f.materialized()), 1)
+	testutil.Equal(t, f.pingCount(), 0)
+}
+
 func TestGater_StartStop(t *testing.T) {
 	f := newGaterFixture(t)
 	orch := f.seedCoord(t, "orch")
