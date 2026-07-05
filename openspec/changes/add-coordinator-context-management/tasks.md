@@ -18,8 +18,8 @@ than exposing independent branches that would need reconciling back together.
 
 **Depends on:** Stage 1
 
-- [ ] 2.1 Add `CoordinatorContextBudget int` (`toml:"coordinator_context_budget"`) to `HeraConfig`, wired into the default-config constructor at `200000`
-- [ ] 2.2 Make the Stage 1.2 tests green
+- [x] 2.1 Add `CoordinatorContextBudget int` (`toml:"coordinator_context_budget"`) to `HeraConfig`, wired into the default-config constructor at `200000`
+- [x] 2.2 Make the Stage 1.2 tests green
 
 ## 3. hera_status extension
 
