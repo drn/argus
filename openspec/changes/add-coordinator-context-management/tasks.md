@@ -25,10 +25,10 @@ than exposing independent branches that would need reconciling back together.
 
 **Depends on:** Stage 2
 
-- [ ] 3.1 Add optional `handoff_note`/`request_recycle` params to the `hera_status` MCP tool schema and handler (`internal/mcp/hera.go`)
-- [ ] 3.2 Stamp `task_meta` (`hera`, `handoff_note`) when supplied; record a pending-recycle intent when `request_recycle=true`
-- [ ] 3.3 Reject both params with a naming error when the caller is not a coordinator
-- [ ] 3.4 Make the Stage 1.1 tests green
+- [x] 3.1 Add optional `handoff_note`/`request_recycle` params to the `hera_status` MCP tool schema and handler (`internal/mcp/hera.go`)
+- [x] 3.2 Stamp `task_meta` (`hera`, `handoff_note`) when supplied; record a pending-recycle intent when `request_recycle=true`
+- [x] 3.3 Reject both params with a naming error when the caller is not a coordinator
+- [x] 3.4 Make the Stage 1.1 tests green
 
 ## 4. Context-budget Stop hook
 

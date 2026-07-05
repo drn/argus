@@ -84,6 +84,15 @@ const (
 	// HeraMetaKeyPrompt optionally carries a worker's verbatim prompt so the
 	// auto-adopt path can populate the adopted role's prompt. Tolerated absent.
 	HeraMetaKeyPrompt = "prompt"
+	// HeraMetaKeyHandoffNote carries a coordinator's distilled context ahead of
+	// a recycle (add-coordinator-context-management D5) — the new session's
+	// seed prompt reads it so the successor never needs a tool call to
+	// reconstruct why a non-obvious call was made.
+	HeraMetaKeyHandoffNote = "handoff_note"
+	// HeraMetaKeyPendingRecycle marks a coordinator's self-service recycle
+	// request ("true"). The recycle_coord primitive consumes it and defers the
+	// actual kill-and-restart until the session goes idle.
+	HeraMetaKeyPendingRecycle = "pending_recycle"
 )
 
 // HeraRoleKind enumerates the valid kinds for a hera_roles row.
