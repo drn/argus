@@ -42,6 +42,11 @@ type HeraConfig struct {
 	// the native Hera view and fall back to the legacy DAG-only second tab.
 	// config.toml wins over the DB when both are set (standard overlay rule).
 	Enabled bool `toml:"enabled"`
+
+	// CoordinatorContextBudget is the token count at/above which the
+	// context-budget Stop hook (argus hera-report) begins nudging a
+	// coordinator to recycle. Defaults to 200000.
+	CoordinatorContextBudget int `toml:"coordinator_context_budget"`
 }
 
 // ArgusConfig holds settings for self-updating the Argus binary.
@@ -291,7 +296,8 @@ func DefaultConfig() Config {
 			HTTPPort: 7743,
 		},
 		Hera: HeraConfig{
-			Enabled: true, // default on; only explicit "false" in DB/toml disables it
+			Enabled:                  true, // default on; only explicit "false" in DB/toml disables it
+			CoordinatorContextBudget: 200000,
 		},
 		Supervisor: SupervisorConfig{
 			// Default ON as of P4: agents run under the out-of-process
