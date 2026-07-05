@@ -7,12 +7,12 @@ than exposing independent branches that would need reconciling back together.
 
 ## 1. Tests
 
-- [ ] 1.1 Write failing tests for the `hera_status` `handoff_note`/`request_recycle` params (both accept-and-apply and reject-for-non-coordinator paths) — from the `hera-coordination` delta scenarios
-- [ ] 1.2 Write failing tests for `HeraConfig.CoordinatorContextBudget` default (`200000`) and override-from-config.toml — from the `config-management` delta scenarios
-- [ ] 1.3 Write failing tests for the `argus hera-report` Stop-hook subcommand: no-op on missing `ARGUS_TASK_ID`, no-op on non-coordinator role, unconditional `context_size` stamp, over-budget nudge, nudge recurrence and its stop condition — from the `coordinator-context-management` delta scenarios
-- [ ] 1.4 Write failing tests for `recycle_coord`: same task/worktree/branch/binding survives, self-service waits for idle, human-forced does not wait, seed prompt requires zero follow-up tool calls, stray background job is cleaned up before restart
-- [ ] 1.5 Write failing tests for the `B` rail keybinding: confirmation modal fires on a coordinator selection, no-op on a non-coordinator selection, help-modal listing includes `B`
-- [ ] 1.6 Confirm every `it should X` acceptance criterion in `design.md` maps to a failing test written above (Prove-It Pattern) — note any gap before proceeding
+- [x] 1.1 Write failing tests for the `hera_status` `handoff_note`/`request_recycle` params (both accept-and-apply and reject-for-non-coordinator paths) — from the `hera-coordination` delta scenarios
+- [x] 1.2 Write failing tests for `HeraConfig.CoordinatorContextBudget` default (`200000`) and override-from-config.toml — from the `config-management` delta scenarios
+- [x] 1.3 Write failing tests for the `argus hera-report` Stop-hook subcommand: no-op on missing `ARGUS_TASK_ID`, no-op on non-coordinator role, unconditional `context_size` stamp, over-budget nudge, nudge recurrence and its stop condition — from the `coordinator-context-management` delta scenarios
+- [x] 1.4 Write failing tests for `recycle_coord`: same task/worktree/branch/binding survives, self-service waits for idle, human-forced does not wait, seed prompt requires zero follow-up tool calls, stray background job is cleaned up before restart
+- [x] 1.5 Write failing tests for the `B` rail keybinding: confirmation modal fires on a coordinator selection, no-op on a non-coordinator selection, help-modal listing includes `B`
+- [x] 1.6 Confirm every `it should X` acceptance criterion in `design.md` maps to a failing test written above (Prove-It Pattern) — note any gap before proceeding. **Gaps found:** D2's "no `hera_messages`/`hera_role_status` schema change" is a negative/architectural constraint with no natural Go-test expression — verify by diff review at Stage 10, not a Stage 1 test. D2's "[decision_fork]/[impasse] tldr convention" and D4's two orientation/skill-text criteria (all five habits present; SKILL.md tightened) are Stage 5's own scope (task 5.3 — orientation-text snapshot test), not enumerated in Stage 1's task list — correctly deferred, not a Stage 1 gap.
 
 ## 2. Config field
 

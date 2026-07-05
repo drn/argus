@@ -114,6 +114,29 @@ func TestHeraActions_ClearArchiveBranches(t *testing.T) {
 	testutil.Equal(t, app.mode, modeHeraConfirm)
 }
 
+// TestHeraActions_ForceRecycleBranches pins the `B` force-recycle key
+// (add-coordinator-context-management, hera-view delta): a coordinator
+// selection opens a confirmation modal before the recycle proceeds; a worker
+// selection is a no-op — no modal, no recycle. app.heraOpenForceRecycle does
+// not exist yet (Stage 7), so this fails to compile until then.
+func TestHeraActions_ForceRecycleBranches(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.heraOps = hera.NewOps(d)
+
+	// Coordinator selection → confirmation modal opens, no recycle yet.
+	app.heraOpenForceRecycle(heraCoordSel(1, "tc"))
+	testutil.Equal(t, app.mode, modeHeraConfirm)
+
+	// Reset and try a worker selection → no-op (no modal, no recycle).
+	app.closeHeraConfirm()
+	orch := seedHeraOrch(t, d, "o")
+	role := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
+	sel := hera.Selection{Role: &hera.RoleView{RoleID: role.ID, OrchID: orch, Name: "w", Kind: db.HeraKindWorker, TaskID: "tw", Live: true}}
+	app.heraOpenForceRecycle(sel)
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
 // TestHeraActions_ClearArchiveScopesToSubCoordinator pins BUG-003: pressing `C`
 // on a SUB-coordinator (a bridging worker row whose Selection carries the child
 // orch id) must scope the nuke set to that sub-coordinator's OWN subtree — not

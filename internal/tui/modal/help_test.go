@@ -82,6 +82,9 @@ func TestHelpModal_Draw(t *testing.T) {
 	// The `J` adopt/reparent rail key must be discoverable in the overlay so a
 	// future removal of the binding fails the build (keybinding-help contract).
 	testutil.Contains(t, body, "adopt freelancer / reparent coordinator")
+	// The `B` force-recycle rail key (add-coordinator-context-management) must be
+	// discoverable in the overlay — fail the build if it's ever silently dropped.
+	testutil.Contains(t, body, "force recycle coordinator")
 	testutil.Contains(t, body, "filter rail by name") // Hera rail `/` filter
 	// Rail key family (BUG-005/006/010/011/012): every new/changed rail key must
 	// be discoverable in the overlay.
