@@ -76,10 +76,22 @@ A distinct pass from per-area review: "does the fix work in the *shipped artifac
 Prove `hera-spawn-review` on Sherlock PR-45 @ `cdc3a65` before adoption.
 
 - Run the *real* `hera-spawn-review` panel + synthesizer on PR-45, produce a normalized findings list, score it.
-- **Graceful degradation:** if the live codex leg can't authenticate (daemon lacks `HERA_OPENAI` — the known secret-sourcing follow-up), feed the synthesizer the already-captured `codex-*.md` experiment reports and run Opus/Fable live; the harness still validates the synthesizer + composition + union lift. State the limitation in the result.
-- **Answer key:** rebuild the 54-issue consolidated key via a judge agent from the raw `r1-*-{fable,opus}.md` + sweeps, using `fable-crit-review.md` as ground truth.
-- **Metrics:** per-finder and union catch-rate (primary), precision guardrail (no FP regression vs Opus-alone), unique-catch, cost. Output shows **what Opus found, what Fable found, what codex found**, and the union — side by side, with provenance.
+- **Vendor-neutral answer key (load-bearing — corrected after the slice validation below).** The key MUST be built by **pooling every vendor's findings** (Opus, Fable, codex, and any future foreign lab) and adjudicating each as REAL / WAI / uncertain from *code evidence* — NOT rebuilt from Anthropic-lineage (Opus/Fable) reviews alone, and NOT with any vendor's raw report treated as the key. A single-vendor-derived key structurally cannot credit a foreign model's distinct catches, so it cannot measure cross-vendor value. Use `fable-crit-review.md` + direct code inspection as ground truth; every reviewer's out-of-key "extra-real" find gets adjudicated *into* the key, not discarded.
+- **All reviewers must see the same packet.** Every config reviews the identical slice (auth + internal runtime endpoints + RLS/tenancy migrations) under one brief. Scope asymmetry invalidates the comparison — the whole point of the finding below.
+- **Graceful degradation:** if the live codex leg can't authenticate (daemon lacks `HERA_OPENAI` — the known secret-sourcing follow-up), feed the synthesizer the already-captured `codex-*.md` reports and run Opus/Fable live; the harness still validates the synthesizer + composition + union lift. State the limitation in the result.
+- **Metrics:** per-finder and union catch-rate (primary), precision guardrail (no FP regression vs Opus-alone), unique-catch (with provenance), cost. Output shows what each vendor found + the union, side by side.
 - **No hard gate.** The harness reports; Aaron judges from the numbers.
+
+### D5-findings — What the PR-45 slice validation actually showed (kept sharp, not smoothed)
+
+An interim run on the auth+runtime+tenancy slice — all six configs (fable-low, fable-medium, sonnet5-xhigh, opus-high, opus-xhigh, codex) on one shared 24-file packet, scored against an interim 18-issue key — produced these results, which drive the D5 correction above:
+
+- **codex added ZERO unique key-catches on a level playing field.** Its earlier apparent role as sole catcher of the two highest-value bugs (RLS auth-bootstrap; runtime claim-binding) was a **packet-scope artifact** — it evaporated the moment every reviewer saw the runtime endpoint + the RLS migrations (both bugs then caught 5 of 6). The only two unique catches in the study both went to **Anthropic** configs (opus-high → K8, fable-low → K15).
+- **Two Anthropic configs (fable-low + opus-high) = 12/18 = the ENTIRE panel's total coverage on this slice.** Adding opus-xhigh, sonnet5-xhigh, *or* codex on top bought zero additional key catches. This is the uncomfortable core result and it stands unsmoothed.
+- **BUT the interim key was single-vendor (Anthropic-derived) and auth-scoped**, so it structurally could not score codex's real out-of-key contribution — an unvalidated `user_id` claim, cross-merchant `parent_id` exposure, child tables missing RLS. "codex redundant" was true *against that key*, not a verdict on codex. This is exactly why D5's key must be vendor-neutral.
+- **Effort is not monotonic:** opus-xhigh was the best single reviewer (10/18) yet added no unique catch; fable-low beat fable-medium; sonnet5-xhigh self-limited to a test-coverage lens and scored 3/18. Reviewer framing/scope dominates the effort dial.
+- **Precision was near-perfect** (≈0 false positives); **6 key issues were caught by nobody**; and 5 of 6 reviewers flagged a real service-JWT replay bug that was *missing from the interim key* — evidence the key itself needs pooling.
+- **Scope/limits:** n=1 slice; LLM-judge scoring carries ~±1-2 issue variance (only large gaps are robust). This does **not** overturn the full-PR finding in Context — it exposes a *measurement* requirement (the vendor-neutral key), which is the change D5 now bakes in.
 
 ### D6 — `profile_resolve` MCP tool: thin wrapper, opaque pass-through
 
@@ -125,6 +137,7 @@ fix_verification = true
 
 - **Validation** (reconciling the seam): `finders` is a non-empty list of ids each resolvable to a known in-session model or configured backend; each lens has a non-empty `name` and a known `model`; `synthesizer` (if set) is a known model; `fix_verification` is a bool. `review_skill`/lens `skill` are free-form skill-name strings (existence is not validated at profile-load time — a missing skill fails loudly at spawn, and `review_instruction` prose has no skill to check); exactly one of `review_skill`/`review_instruction` may be set (else default to `hera-review`). To avoid a `profiles → review` import cycle, the panel-grammar validator is **injected** into `profiles.Validate` as a func, mirroring how `knownModels` is already injected.
 - **Profile blocks filled here:** `customer_grade` = full multi-vendor panel + lenses + fix-verification; `lean` = light (e.g. `["opus", "codex"]`, no fix-verification); `default` = middle.
+- **Fable-effort reliability (operational gotcha — must survive in the docs).** Fable reliably runs only at **low** effort in this harness. At **high** it *always* falls back to Opus, and at **medium** it falls back intermittently (observed on both sides). A `[panel]` that specifies a Fable finder therefore must pin it to `low`, or the panel will *silently review with Opus* while believing it ran Fable — a broken diversity assumption. The panel/profile docs and `context/knowledge/gotchas/` record this so a future composition can't unknowingly rely on Fable:high/medium. (A per-finder effort field can pin this once the effort knob is first-class; until then, a Fable finder means Fable:low.)
 - **Why:** this is Decision 2 made concrete; the profile is where "customer-facing → multi-vendor, internal → lighter" and the "how many workers" leeway live.
 
 ### D8 — The review *instruction* is user-owned; hera owns the spawn/inject/synthesize glue
@@ -141,7 +154,9 @@ Split the capability along its natural seam (Aaron's design review):
 
 - **codex can't authenticate during validation** (daemon lacks `HERA_OPENAI`) → harness degrades to captured `codex-*.md` reports and flags coord; a codex-auth failure is not a shipping blocker.
 - **Panel grammar churn vs 3a's opaque seam** → contained to one field's validator + `hera-spawn-review`'s consumption; nothing else depends on panel semantics.
-- **Fable's lineage** (Claude-family) could add correlated votes rather than diversity → empirically Fable had unique catches vs Opus (the answer key is Fable+Opus); kept as a finder, its marginal value measured by the harness's unique-catch metric.
+- **Fable's lineage** (Claude-family) could add correlated votes rather than diversity → its marginal value is measured by the harness's unique-catch metric against the *vendor-neutral* key (a Fable+Opus-derived key would flatter it).
+- **Fable silently substitutes Opus at medium/high effort** → a panel naming Fable:high/medium believes it ran Fable but got Opus, corrupting both the diversity assumption and any cost accounting. Mitigation: pin Fable finders to `low`; documented in D7 + a gotchas file so composition can't rely on a broken tier.
+- **Measuring cross-vendor value with a single-vendor key is invalid** → the validation harness (D5) pools all vendors' findings before adjudicating "real"; a key derived from one vendor's reviews cannot credit a foreign model and will always rank a same-lineage tier above it (the D5-findings result).
 - **More findings → more false positives** → the D2a single-finder adversarial gate + foreign-never-auto-fixes guard the auto-fix path.
 - **Sandbox can't read `~/.argus/profiles`** → `profile_resolve` runs daemon-side; the sandbox agent only calls the MCP tool.
 - **Skill behavior isn't Go-CI-tested** → the argus-Go pieces (`profile_resolve`, capture primitive, panel validation) get Go tests; the skill's contract is recorded as a capability (specs are local docs, per project policy) and proven by the validation harness.
@@ -207,7 +222,9 @@ Split the capability along its natural seam (Aaron's design review):
 
 **Validation harness:**
 
-- It should score the panel against the rebuilt 54-issue key and report per-finder + union catch-rate, precision, unique-catch, and cost.
+- It should build a **vendor-neutral** answer key by pooling every vendor's findings and adjudicating each from code evidence — never scoring against a key derived from a single vendor's reviews.
+- It should give every reviewer the **same code packet** under one brief (scope symmetry).
+- It should score the panel against that key and report per-finder + union catch-rate, precision, unique-catch (with provenance), and cost, showing each vendor's finds and the union side by side.
 - It should degrade to the captured codex reports when the live codex leg cannot authenticate, and flag it.
 
 ## Open Questions

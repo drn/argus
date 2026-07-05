@@ -2,7 +2,11 @@
 
 **Design doc:** `openspec/changes/add-cross-vendor-review/design.md`
 
-Groups below map 1:1 to the execution sub-DAG nodes. `Depends on` lines are the sub-DAG edges. The spine is **linear** (each node branches off the prior on `argus/model-tiering`) to avoid the branch-stacking fan-in footgun; Groups 2 and 3 are independent and MAY be parallelized if the coordinator accepts the fan-in. Merge target is `argus/model-tiering`; no per-chunk GitHub PR.
+Groups below map 1:1 to the execution sub-DAG nodes. `Depends on` lines are the sub-DAG edges.
+
+**Branch routing:** on self-promote, `hera_new_orchestrator` must NOT pass `base_branch=argus/model-tiering` — let it default to **this chunk's own current branch (`argus/2a-xvendor-review`), which carries the committed change folder**. `argus/model-tiering` does not yet include it, so an explicit override would strand Group 1 without its openspec files. Each sub-DAG node branches off the prior on `argus/2a-xvendor-review`. At the end, `iris_push` this branch and report the tip to coord, who advances `argus/model-tiering` from it. **No per-chunk GitHub PR.**
+
+**Stay LINEAR** — do NOT parallelize Groups 2 and 3. The fan-in branch-stacking cost (missing-sibling-work footgun) outweighs the modest time savings.
 
 ## 1. Failing tests (Go prove-it)
 
@@ -44,6 +48,7 @@ Groups below map 1:1 to the execution sub-DAG nodes. `Depends on` lines are the 
 
 **Depends on:** Group 4
 
+- [ ] 5.0 **Gate: `make pre-pr` GREEN on the branch BEFORE review begins.** Run the full CI-mirror gate (build → vet → fmt-check → lint-pr → vuln → test-cover-gate) now, not only at spec-audit — per-group runs piped to `tail` mask exit codes, so surface lint/test gaps here rather than discovering them at the end.
 - [ ] 5.1 Run `/ralph-review` against the change's deltas over the Group 2-4 implementation; auto-fix confident issues, park questions
 - [ ] 5.2 Resolve or park findings; keep deltas in sync if behavior shifted
 
@@ -58,8 +63,8 @@ Groups below map 1:1 to the execution sub-DAG nodes. `Depends on` lines are the 
 
 **Depends on:** Group 6
 
-- [ ] 7.1 Rebuild the consolidated 54-issue answer key via an in-session judge agent from `review/raw/r1-*-{fable,opus}.md` + sweeps, adjudicating REAL/WAI/uncertain using `fable-crit-review.md` as ground truth
-- [ ] 7.2 Run the real `hera-spawn-review` panel on Sherlock PR-45 @ `cdc3a65`; if the live codex leg can't authenticate (daemon lacks `HERA_OPENAI`), degrade to the captured `codex-*.md` reports and flag coord
-- [ ] 7.3 Score per-finder + union catch-rate (primary), precision guardrail, unique-catch, cost; produce a per-model side-by-side report (what Opus/Fable/codex each found + the union) for Aaron
-- [ ] 7.4 Archive the change in-PR (merge deltas into base specs under `openspec/specs/`, move the change folder to `openspec/changes/archive/<date>-add-cross-vendor-review/`); commit on the branch
+- [ ] 7.1 Build a **VENDOR-NEUTRAL** answer key via an in-session judge agent: pool **every vendor's** findings (Opus, Fable, codex, +future) and adjudicate each REAL/WAI/uncertain from **code evidence** (+ `fable-crit-review.md` as ground truth). Do NOT rebuild the key from Anthropic-lineage (`r1-*-{fable,opus}`) reviews alone, and do NOT treat any single vendor's report as the key — a single-vendor key structurally cannot credit a foreign model (see design D5-findings). Adjudicate each reviewer's out-of-key "extra-real" find *into* the key.
+- [ ] 7.2 Run the real `hera-spawn-review` panel on Sherlock PR-45 @ `cdc3a65` with **every reviewer on the identical code packet** under one brief (scope symmetry — a scope-asymmetric packet invalidates the comparison). If the live codex leg can't authenticate (daemon lacks `HERA_OPENAI`), degrade to the captured `codex-*.md` reports and flag coord.
+- [ ] 7.3 Score per-finder + union catch-rate (primary), precision guardrail, unique-catch (with provenance), cost; produce a per-vendor side-by-side report (what each vendor found + the union) for Aaron
+- [ ] 7.4 Archive the change **ON-BRANCH (no GitHub PR)**: merge deltas into base specs under `openspec/specs/`, move the change folder to `openspec/changes/archive/<date>-add-cross-vendor-review/`, and commit directly on `argus/2a-xvendor-review` (merge applies work immediately, so base-spec update lands atomically with the branch — never a post-merge step)
 - [ ] 7.5 `iris_push` the final branch; report the tip + validation result to coord (who advances `argus/model-tiering`)
