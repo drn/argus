@@ -77,8 +77,9 @@ func (r *HeraRecycleRunner) Restart(taskID string) error {
 	// Capture the outgoing session's PTY size before Recycle stops it, so the
 	// fresh session opens at the same dimensions rather than falling back to
 	// Start's 80x24 default.
+	sess := r.runner.Get(taskID)
 	var rows, cols uint16
-	if sess := r.runner.Get(taskID); sess != nil {
+	if sess != nil {
 		c, rw := sess.PTYSize()
 		cols, rows = uint16(c), uint16(rw) //nolint:gosec // bounded by terminal cell count
 	}
@@ -90,6 +91,17 @@ func (r *HeraRecycleRunner) Restart(taskID string) error {
 	task.Prompt = seedPrompt
 	if err := r.database.Update(task); err != nil {
 		return fmt.Errorf("recycle restart: persist cleared session id for task %s: %w", taskID, err)
+	}
+
+	if sess == nil {
+		// No live session to stop (already exited between the recycle request
+		// and this restart). IsIdle already treats this as "proceed" — but
+		// Runner.Recycle requires an existing session to stop and would return
+		// ErrSessionNotFound here, which would leave the pending-recycle intent
+		// stuck retrying forever on every watcher tick. Start a fresh session
+		// directly instead; 80x24 mirrors Start's own new-session default.
+		_, startErr := r.runner.Start(task, r.cfgFn(), 24, 80, false)
+		return startErr
 	}
 
 	return r.runner.Recycle(task, r.cfgFn(), rows, cols)

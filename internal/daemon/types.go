@@ -35,7 +35,14 @@ type BootInfoResp struct {
 //     bookkeeping must run supervisor-side, so it can't be composed client-side
 //     from Stop+Start). Additive: a v1 supervisor simply lacks the method and a
 //     KickRerender RPC against it errors, which the daemon treats as a no-op kick.
-const ProtocolVersion = 2
+//   - v3 (add-coordinator-context-management): + Recycle (recycle_coord's
+//     same-task kill-and-restart with resume=false; same pendingRestart
+//     bookkeeping requirement as KickRerender, so it can't be composed
+//     client-side either). Additive: a v2 supervisor simply lacks the method
+//     and a Recycle RPC against it errors — unlike KickRerender, the daemon
+//     surfaces that error rather than treating it as a no-op, since a silently
+//     no-op'd recycle would strand a coordinator that thinks it recycled.
+const ProtocolVersion = 3
 
 // SupervisorProtocolMatch reports whether a supervisor's handshake version
 // equals the daemon's. A mismatch is NOT fatal and NEVER triggers an auto-

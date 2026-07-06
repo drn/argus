@@ -81,14 +81,14 @@ than exposing independent branches that would need reconciling back together.
 
 **Depends on:** Stage 8
 
-- [ ] 9.1 Run the full `make pre-pr` (build, vet, fmt-check, lint-pr, vuln, test-cover-gate) and fix every gap it surfaces before proceeding — run before the review stage, not only at the end
+- [x] 9.1 Run the full `make pre-pr` (build, vet, fmt-check, lint-pr, vuln, test-cover-gate) and fix every gap it surfaces before proceeding — run before the review stage, not only at the end
 
 ## 10. Review
 
 **Depends on:** Stage 9
 
-- [ ] 10.1 Single bounded direct review pass against `design.md` and the delta specs (correctness, spec-compliance, no regressions to existing hera-coordination/hera-view behavior)
-- [ ] 10.2 Address any findings and re-run the affected portion of Stage 9's gate
+- [x] 10.1 Single bounded direct review pass against `design.md` and the delta specs (correctness, spec-compliance, no regressions to existing hera-coordination/hera-view behavior)
+- [x] 10.2 Address any findings and re-run the affected portion of Stage 9's gate
 
 ## 11. Archive and ship
 

@@ -80,6 +80,49 @@ func TestRecycleWatcher_Tick_IgnoresNonCoordinatorPendingFlag(t *testing.T) {
 	testutil.Equal(t, runner.restartCalled, false)
 }
 
+// TestRecycleWatcher_Tick_MultiBindingTaskFindsCoordinatorBinding pins a fix
+// for a task that legitimately holds 2+ live bindings (joined more than one
+// orchestrator — e.g. a nested sub-coordinator bound as coordinator of its
+// own team while also live under its parent's as a plain worker). The
+// single-binding HeraLiveBindingByTask errors ErrHeraAmbiguous for such a
+// task; tickTask must instead scan ListHeraLiveBindingsByTask for the
+// coordinator-kind one so a real pending-recycle request doesn't get stuck
+// retrying forever.
+func TestRecycleWatcher_Tick_MultiBindingTaskFindsCoordinatorBinding(t *testing.T) {
+	d, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	task, _, _ := seedRecycleCoordinator(t, d, "coord-orch", "/wt/coord", "argus/coord-branch", "mission")
+
+	// The SAME task also joins a second orchestrator as a plain worker —
+	// giving it 2 live bindings, which HeraLiveBindingByTask cannot resolve.
+	otherOrch, err := d.CreateHeraOrchestrator("other-orch", "master")
+	testutil.NoError(t, err)
+	_, _, err = d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: otherOrch.ID,
+		Name:           "w-in-other-orch",
+		Kind:           db.HeraKindWorker,
+		ArgusProject:   task.Project,
+	}, task.ID, task.Worktree)
+	testutil.NoError(t, err)
+
+	// Sanity: the task really is ambiguous under the single-binding lookup.
+	_, err = d.HeraLiveBindingByTask(task.ID)
+	if err == nil {
+		t.Fatal("expected HeraLiveBindingByTask to be ambiguous for a task with 2 live bindings")
+	}
+
+	testutil.NoError(t, d.SetMeta(task.ID, db.HeraMetaNamespace, db.HeraMetaKeyPendingRecycle, "true"))
+
+	runner := &fakeRecycleRunner{idle: true}
+	w := NewRecycleWatcher(d, runner)
+	w.Tick()
+
+	testutil.Equal(t, runner.restartCalled, true)
+	testutil.Equal(t, runner.restartTaskID, task.ID)
+}
+
 // concurrentRecycleRunner is a goroutine-safe RecycleRunner fake, distinct
 // from fakeRecycleRunner (recycle_test.go) which is unguarded and only safe
 // for single-goroutine use — TestRecycleWatcher_StartStop drives Tick from a

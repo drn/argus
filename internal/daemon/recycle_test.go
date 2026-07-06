@@ -147,6 +147,38 @@ func TestHeraRecycleRunner_Restart_EndToEnd(t *testing.T) {
 	t.Fatal("timeout waiting for Restart to resurrect the session")
 }
 
+// TestHeraRecycleRunner_Restart_NoLiveSession_StartsFresh pins the fix for a
+// coordinator whose session already exited (e.g. crashed) between requesting
+// a self-service recycle and the watcher's next tick: IsIdle treats a missing
+// session as "proceed" (see IsIdle's doc comment), so Restart must actually
+// succeed in that case by starting a fresh session directly rather than
+// routing through runner.Recycle (which requires a live session to stop and
+// would return ErrSessionNotFound, permanently stranding the pending-recycle
+// intent).
+func TestHeraRecycleRunner_Restart_NoLiveSession_StartsFresh(t *testing.T) {
+	database, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+
+	task, _ := seedHeraRecycleCoordinator(t, database, t.TempDir(), "You are the coordinator.")
+
+	runner := agent.NewRunner(nil) // no session ever started for this task
+	cfg := recycleTestConfig()
+	r := NewHeraRecycleRunner(database, runner, func() config.Config { return cfg })
+
+	testutil.NoError(t, r.Restart(task.ID))
+	t.Cleanup(runner.StopAll)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if sess := runner.Get(task.ID); sess != nil && sess.Alive() {
+			return // success
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timeout waiting for Restart to start a fresh session when none existed")
+}
+
 func TestHeraRecycleRunner_Restart_UnknownTaskErrors(t *testing.T) {
 	database, err := db.OpenInMemory()
 	testutil.NoError(t, err)
