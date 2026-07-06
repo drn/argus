@@ -208,6 +208,32 @@ model = "haiku"
 	testutil.Equal(t, review.Window, "1m")
 }
 
+func TestProfileResolve_RejectsPathTraversalInExplicitProfile(t *testing.T) {
+	s, _ := testProfileServer(t)
+
+	for _, name := range []string{"../../../etc/passwd", "sub/dir", `sub\dir`, "..", "a/../b"} {
+		out, cr := callProfileResolve(t, s, fmt.Sprintf(`{"profile": %q}`, name))
+		testutil.Equal(t, cr.IsError, false) // fail-open: not a hard tool error
+		testutil.Equal(t, out.Resolved, false)
+		testutil.Equal(t, len(out.Errors) > 0, true)
+	}
+}
+
+func TestProfileResolve_RejectsPathTraversalInPerSpawnOverride(t *testing.T) {
+	s, d := testProfileServer(t)
+	worktree := t.TempDir()
+	testutil.NoError(t, d.SetProject("myproj", config.Project{Path: worktree, Profile: "customer_grade"}))
+	addProfileTestTask(t, d, "myproj", worktree, "../../../etc/passwd")
+	writeLibraryProfile(t, "customer_grade", `[archetype.review]
+model = "opus"
+`)
+
+	out, cr := callProfileResolve(t, s, fmt.Sprintf(`{"cwd": %q}`, worktree))
+	testutil.Equal(t, cr.IsError, false)
+	testutil.Equal(t, out.Resolved, false)
+	testutil.Equal(t, len(out.Errors) > 0, true)
+}
+
 func TestProfileResolve_RequiresCwdOrProfile(t *testing.T) {
 	s, _ := testProfileServer(t)
 	_, cr := callProfileResolve(t, s, `{}`)

@@ -185,7 +185,7 @@ Split the capability along its natural seam (Aaron's design review):
 ## Migration Plan
 
 - Rebase the work onto `argus/model-tiering` (done); merge target is `argus/model-tiering`, never master (coord advances the integration branch). No per-chunk GitHub PR.
-- argus-Go: add `profile_resolve` MCP tool; add the injected panel-grammar validator to `internal/profiles`; add the foreign-reviewer-capture path (reviewer-mode + sentinel extraction + structured result). Direct edits; tests alongside; archive-in-PR.
+- argus-Go: add `profile_resolve` MCP tool; add the injected panel-grammar validator to `internal/profiles`. Direct edits; tests alongside; archive-in-PR. (The foreign-reviewer-capture path is DEFERRED per D-SCOPE — see the follow-up chunk.)
 - Content: fill the `[panel]` blocks in `docs/profiles/{default,lean,customer_grade}.toml`.
 - Skills: add `hera-spawn-review` (the glue) and the default `hera-review` instruction (+ shipped lens instructions) under the argus repo `.claude/skills/`.
 - Rollback = revert the change; no external state.
@@ -223,7 +223,7 @@ Split the capability along its natural seam (Aaron's design review):
 - It should reject a lens with an empty `name` or an unknown `model`.
 - It should validate the panel via an injected validator without `internal/profiles` importing the review package.
 
-**Foreign-reviewer-capture:**
+**Foreign-reviewer-capture (DEFERRED — see D-SCOPE, follow-up chunk; its delta requirement was removed from this change, kept here as design-of-record):**
 
 - It should wrap a reviewer-mode prompt so the foreign agent emits its review between the sentinels.
 - It should extract the sentinel-delimited block from the session log and expose it as a structured, addressable result.
@@ -251,4 +251,4 @@ Split the capability along its natural seam (Aaron's design review):
 ## Open Questions
 
 - Exact sentinel strings and the structured-result home for capture (`task.Result` field vs a dedicated `task_meta` key vs an artifact) — settle in the capture impl node; leaning a dedicated result field keyed to the task.
-- Whether panel-grammar validation surfaces at `validate`/Settings time (loud surface) in addition to consumption time — leaning yes, via the injected validator, to match 3a's "validation is the loud surface" stance.
+- Whether panel-grammar validation surfaces at `validate`/Settings time (loud surface) in addition to consumption time — **resolved as shipped, but worth a second look:** daemon-side/MCP consumption callers (`agent.resolveProfile`, `mcp`'s `profile_resolve`) inject the real `panelValidator`; the CLI `argus validate` affordance and the TUI Settings/plan-view tiering readout pass `nil` (structural-only), so `argus validate` currently does NOT report panel-grammar errors even though its own base-spec contract says it "reports every conformance error found" (see `context/knowledge/gotchas/misc.md`'s "Diligence profiles" section for the as-shipped rationale). This is spec-legal (the delta's "Panel structural fallback without a validator" scenario explicitly sanctions `nil`) but means a `[panel]` typo can silently fail a project's entire profile open at spawn time while `argus validate` reports it clean — flagged by ralph-review for a possible follow-up (wire the real validator into the CLI affordance at minimum, or decouple panel errors from archetype fail-open for the more surgical fix).

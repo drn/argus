@@ -113,7 +113,7 @@ The orchestration SHALL run a fix-verification phase distinct from per-area revi
 
 ### Requirement: Fix-and-re-review loop
 
-After applying accepted fixes, the orchestration SHALL re-review the result and repeat until no further auto-fixable findings remain, spawning fix-workers that follow the target project's own contribution conventions and report a confidence signal.
+After applying accepted fixes, the orchestration SHALL re-review the result and repeat until no further auto-fixable findings remain, spawning fix-workers that follow the target project's own contribution conventions and report a confidence signal. As a cost/safety bound, the orchestration SHALL cap re-review at 3 rounds; if `[AUTO-FIX]` findings still remain when the cap is reached, it SHALL stop and flag that another pass may be needed rather than looping unbounded.
 
 #### Scenario: Re-review after fixes
 
@@ -124,3 +124,8 @@ After applying accepted fixes, the orchestration SHALL re-review the result and 
 
 - **WHEN** a fix-worker is spawned to apply a finding
 - **THEN** it follows the target project's own conventions (e.g. spec-first and tests when the project requires them) and reports a confidence signal
+
+#### Scenario: Round cap as a safety bound
+
+- **WHEN** a review round completes and `[AUTO-FIX]` findings still remain after 3 rounds
+- **THEN** the orchestration stops and flags the remainder for human follow-up rather than looping unbounded

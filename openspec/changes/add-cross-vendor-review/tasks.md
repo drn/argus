@@ -34,10 +34,10 @@ Moved to the follow-up chunk — see "Deferred" below. The linear chain skips fr
 
 **Depends on:** Group 2
 
-- [ ] 4.1 `hera-spawn-review` glue skill: call `profile_resolve`; compose the panel; spawn broad finders (**Opus/Fable in-session via `Agent`**) each injected with the configured `review_skill`/`review_instruction` (default `hera-review`); spawn lens finders with their instructions. A foreign finder id in the panel is skipped-with-a-loud-note this chunk (capture deferred)
-- [ ] 4.2 Synthesizer step in the glue: normalize→dedup-with-provenance→corroboration confidence vote→classify; single-finder→adversarial-verify-or-downgrade; the synthesizer owns the final `[AUTO-FIX]` call (no finder makes it)
-- [ ] 4.3 Fix-verification phase (**Opus adversarial reasoning default**; optional `iris_run_checks` when `script/iris-check` present) + fix-and-re-review loop (fix-workers follow project conventions, report confidence)
-- [ ] 4.4 Default `hera-review` review instruction (encodes ralph's review contract) + shipped lens instruction(s) (e.g. `hera-review-test-adversary`); fallback default panel when no profile resolves
+- [x] 4.1 `hera-spawn-review` glue skill: call `profile_resolve`; compose the panel; spawn broad finders (**Opus/Fable in-session via `Agent`**) each injected with the configured `review_skill`/`review_instruction` (default `hera-review`); spawn lens finders with their instructions. A foreign finder id in the panel is skipped-with-a-loud-note this chunk (capture deferred)
+- [x] 4.2 Synthesizer step in the glue: normalize→dedup-with-provenance→corroboration confidence vote→classify; single-finder→adversarial-verify-or-downgrade; the synthesizer owns the final `[AUTO-FIX]` call (no finder makes it)
+- [x] 4.3 Fix-verification phase (**Opus adversarial reasoning default**; optional `iris_run_checks` when `script/iris-check` present) + fix-and-re-review loop (fix-workers follow project conventions, report confidence)
+- [x] 4.4 Default `hera-review` review instruction (encodes ralph's review contract) + shipped lens instruction(s) (e.g. `hera-review-test-adversary`); fallback default panel when no profile resolves
 - [ ] 4.5 Manual smoke on a tiny diff to confirm the glue composes + injects correctly (this is the shipped validation for this chunk; the Fable+Opus catch-rate is already backed by the prior bake-off)
 
 ## 5. ralph-review node (implementation quality review)

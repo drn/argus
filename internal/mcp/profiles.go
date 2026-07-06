@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -97,6 +98,15 @@ func (s *Server) toolProfileResolve(id interface{}, args json.RawMessage) *Respo
 				}
 			}
 		}
+	}
+
+	// name reaches the loader via filepath.Join(dir, name+".toml") with no
+	// further sanitization (internal/profiles/load.go's locate). It is
+	// caller-supplied (the "profile" MCP argument, or a per-spawn task
+	// override) and thus prompt-injection-reachable, so reject path
+	// traversal / separators here rather than trust the shared loader.
+	if strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
+		return toolResult(id, marshalProfileResolveResult(name, nil, []error{fmt.Errorf("invalid profile name %q: must not contain path separators or \"..\"", name)}))
 	}
 
 	loader := &profiles.Loader{LibraryDir: filepath.Join(db.DataDir(), "profiles")}
