@@ -45,9 +45,9 @@ than exposing independent branches that would need reconciling back together.
 
 **Depends on:** Stage 4
 
-- [ ] 5.1 Extend `HeraCoordinatorOrientation` (`internal/agent/hera_spawn.go`) with the five habits: small-window framing, low-default-effort-with-escalation, the sharpened delegation rule (native sub-agent for investigation vs. `hera_spawn_worker` for worktree-scoped work), pointers-not-payloads, distillate-harvest-before-retire
-- [ ] 5.2 Tighten `.claude/skills/hera/SKILL.md` §4 (the coordination-decision rule) with the "delegate with prejudice, but don't be dumb about it" language, without changing the existing decision triad
-- [ ] 5.3 Add/update an orientation-text snapshot test asserting all five habits are present
+- [x] 5.1 Extend `HeraCoordinatorOrientation` (`internal/agent/hera_spawn.go`) with the five habits: small-window framing, low-default-effort-with-escalation, the sharpened delegation rule (native sub-agent for investigation vs. `hera_spawn_worker` for worktree-scoped work), pointers-not-payloads, distillate-harvest-before-retire
+- [x] 5.2 Tighten `.claude/skills/hera/SKILL.md` §4 (the coordination-decision rule) with the "delegate with prejudice, but don't be dumb about it" language, without changing the existing decision triad
+- [x] 5.3 Add/update an orientation-text snapshot test asserting all five habits are present
 
 ## 6. recycle_coord primitive
 

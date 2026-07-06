@@ -175,10 +175,13 @@ or using in-session sub-agents.
   (The old `depends_on`-driven auto-adopt watcher was retired with the DAG.) To delegate, just
   `hera_spawn_worker`.
 - **The coordination decision — in-session sub-agents vs hera workers vs the plan-DAG (settle this
-  BEFORE delegating):**
+  BEFORE delegating). Delegate with prejudice, but don't be dumb about it:**
   1. **Ephemeral, in-session work** — research, review, fan-out reads, anything that returns results
      to you and needs no worktree/PR of its own? → use **Claude's native sub-agents** (Agent/Task
-     tool). NOT hera. Hera is overkill and slower for in-session parallelism.
+     tool). NOT hera. Hera is overkill and slower for in-session parallelism. But don't reflexively
+     round-trip a sub-agent for every read: a single small file or a one-shot grep with a few hits is
+     cheaper read inline than dispatched — delegate when the exploration volume clearly dwarfs the
+     answer needed back, not on principle.
   2. **Work whose unit must be its OWN argus session** — separate worktree / its own PR / long-running
      / its own sandbox? → **hera**. Then split by dependency:
      - Units have **dependencies among them** (one needs another's output, or a required ordering)? →

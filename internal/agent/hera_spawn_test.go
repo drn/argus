@@ -35,6 +35,39 @@ func TestHeraCoordinatorOrientation_NamesOrch(t *testing.T) {
 	testutil.Equal(t, strings.Contains(got, `"my-orch"`), true)
 }
 
+// TestHeraCoordinatorOrientation_CarriesFiveDisciplineHabits is a snapshot-style
+// test asserting the add-coordinator-context-management D4 habits all survive in
+// the spawn orientation text: small window, low-default-effort-with-escalation,
+// the sharpened delegation rule, pointers-not-payloads, and
+// distillate-harvest-before-retire (design.md D4 acceptance criterion).
+func TestHeraCoordinatorOrientation_CarriesFiveDisciplineHabits(t *testing.T) {
+	got := strings.ToLower(HeraCoordinatorOrientation("my-orch"))
+
+	// 1. Small window (habit, not a model setting).
+	testutil.Equal(t, strings.Contains(got, "small window"), true)
+
+	// 2. Low default reasoning effort, escalate for real judgment calls.
+	testutil.Equal(t, strings.Contains(got, "low reasoning effort"), true)
+	testutil.Equal(t, strings.Contains(got, "escalate"), true)
+
+	// 3. Delegation bias sharpened to a concrete rule: native sub-agent for
+	// investigation, hera_spawn_worker reserved for its-own-worktree work.
+	testutil.Equal(t, strings.Contains(got, "delegate with prejudice"), true)
+	testutil.Equal(t, strings.Contains(got, "agent/task"), true)
+	testutil.Equal(t, strings.Contains(got, "hera_spawn_worker"), true)
+
+	// 4. Pointers, not payloads.
+	testutil.Equal(t, strings.Contains(got, "pointers, not payloads"), true)
+	testutil.Equal(t, strings.Contains(got, "path:line"), true)
+
+	// 5. Distillate-harvest-before-retire: design.md checkpoint + handoff_note
+	// via the extended hera_status call.
+	testutil.Equal(t, strings.Contains(got, "harvest a distillate"), true)
+	testutil.Equal(t, strings.Contains(got, "design.md"), true)
+	testutil.Equal(t, strings.Contains(got, "handoff_note"), true)
+	testutil.Equal(t, strings.Contains(got, "request_recycle"), true)
+}
+
 // TestSpawnHeraCoordinator_HappyPath drives the root-coordinator spawner: it
 // creates a fresh orchestrator + coordinator role + binding to a new task,
 // stamps meta:hera.role=coordinator, and carries the model override.
