@@ -4,7 +4,7 @@ Hera coordinators are long-lived — unlike a disposable worker, a coordinator p
 
 ## What Changes
 
-- A new `argus hera-report` subcommand, registered as a global Claude Code `Stop` hook, stamps a live `context_size` value into `task_meta` on every turn for coordinator-role sessions, and repeats a "reach a safe seam, call for a reboot" nudge once a configurable budget is crossed.
+- A new `argus coord-hook` subcommand, registered as a global Claude Code `Stop` hook, stamps a live `context_size` value into `task_meta` on every turn for coordinator-role sessions, and repeats a "reach a safe seam, call for a reboot" nudge once a configurable budget is crossed.
 - A new `HeraConfig.CoordinatorContextBudget` config field (`config.toml`, default `200000`).
 - `hera_status` gains two optional parameters, `handoff_note` and `request_recycle`, so a coordinator can record a short distilled handoff note and signal recycle intent in the same call it already makes routinely.
 - A new `recycle_coord` primitive: kills a coordinator's session and restarts it on the *same* task/worktree/branch/binding, seeded with its original mission, current plan-DAG state, and any handoff note — all injected directly into the new session's opening prompt, no tool calls required to reconstruct context. Reachable two ways: self-service (coordinator-requested, daemon waits for genuine idle) and a human-forced rail keybinding with a confirm modal (immediate, for a coordinator that's actually wedged and can't ask for anything itself).
@@ -26,7 +26,7 @@ Hera coordinators are long-lived — unlike a disposable worker, a coordinator p
 
 ## Impact
 
-- **New code:** `cmd/argus/hera_report.go` (or similar) for the `hera-report` subcommand; a daemon-side recycle mechanism (task kill/restart + seed-prompt assembly); a rail keybinding + confirm modal.
+- **New code:** `cmd/argus/coord_hook.go` (or similar) for the `coord-hook` subcommand; a daemon-side recycle mechanism (task kill/restart + seed-prompt assembly); a rail keybinding + confirm modal.
 - **Modified code:** `internal/config/config.go` (`HeraConfig`), `internal/mcp/hera.go` (`hera_status` params), `internal/agent/hera_spawn.go` (`HeraCoordinatorOrientation`), `.claude/skills/hera/SKILL.md`.
 - **Modified data:** new `task_meta` keys under the existing `hera` namespace (`context_size`, `handoff_note`, a pending-recycle flag) — no schema migration, uses the existing sidecar table.
 - **External dependency:** a one-time manual step for the user — registering the `Stop` hook in their global `~/.claude/settings.json` (argus cannot write to that file on the user's behalf).

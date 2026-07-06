@@ -44,7 +44,7 @@ type HeraConfig struct {
 	Enabled bool `toml:"enabled"`
 
 	// CoordinatorContextBudget is the token count at/above which the
-	// context-budget Stop hook (argus hera-report) begins nudging a
+	// context-budget Stop hook (argus coord-hook) begins nudging a
 	// coordinator to recycle. Defaults to 200000.
 	CoordinatorContextBudget int `toml:"coordinator_context_budget"`
 }

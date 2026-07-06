@@ -32,7 +32,7 @@ Explicitly out of scope for this change, surfaced during design but belonging el
 
 ### D1 — Context budget via a self-gated global Stop hook
 
-A new `argus hera-report` subcommand (`cmd/argus/`), registered as a `Stop` hook in the user's **global** `~/.claude/settings.json` (not any project's `.claude/settings.json`).
+A new `argus coord-hook` subcommand (`cmd/argus/`), registered as a `Stop` hook in the user's **global** `~/.claude/settings.json` (not any project's `.claude/settings.json`).
 
 **Why global, not project-scoped:** every agent process argus spawns inherits the daemon's full environment via `cmd.Env = append(os.Environ(), ...)` (`internal/agent/agent.go`) — `HOME` always resolves to the real user's home directory regardless of which repo a worktree lives in. A hera coordinator can be spawned into any project, most of which argus doesn't own and can't pre-configure with hook wiring. One global registration covers every hera-spawned session in every project, forever.
 
@@ -135,7 +135,7 @@ The new coordinator's first message already contains its situation — it never 
 Additive throughout — no existing behavior changes for non-coordinator roles or pre-existing coordinators:
 
 1. Add `HeraConfig.CoordinatorContextBudget` (default `200000`) — absent key behaves as today (no budget enforced) until a project opts in, but the field ships with a non-zero default so it's active by default once this change lands.
-2. Add the `argus hera-report` subcommand; document the required global `~/.claude/settings.json` Stop-hook registration (a one-time manual step for the user, not something argus can write to their global settings on their behalf).
+2. Add the `argus coord-hook` subcommand; document the required global `~/.claude/settings.json` Stop-hook registration (a one-time manual step for the user, not something argus can write to their global settings on their behalf).
 3. Extend `hera_status` with optional `handoff_note` / `request_recycle` params — fully backward compatible, existing callers unaffected.
 4. Add the recycle primitive (daemon-side) and the rail keybinding + confirm modal.
 5. Update `HeraCoordinatorOrientation` and `.claude/skills/hera/SKILL.md` — takes effect for newly-spawned coordinators only; running coordinators keep their original orientation text until their next recycle.

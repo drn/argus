@@ -93,6 +93,11 @@ const (
 	// request ("true"). The recycle_coord primitive consumes it and defers the
 	// actual kill-and-restart until the session goes idle.
 	HeraMetaKeyPendingRecycle = "pending_recycle"
+	// HeraMetaKeyContextSize mirrors a coordinator's last-observed
+	// cache_read_input_tokens count (add-coordinator-context-management D1),
+	// overwritten on every Stop-hook invocation (`argus coord-hook`) — a
+	// single scalar, not a time series.
+	HeraMetaKeyContextSize = "context_size"
 )
 
 // HeraRoleKind enumerates the valid kinds for a hera_roles row.

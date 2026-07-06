@@ -9,7 +9,7 @@ than exposing independent branches that would need reconciling back together.
 
 - [x] 1.1 Write failing tests for the `hera_status` `handoff_note`/`request_recycle` params (both accept-and-apply and reject-for-non-coordinator paths) — from the `hera-coordination` delta scenarios
 - [x] 1.2 Write failing tests for `HeraConfig.CoordinatorContextBudget` default (`200000`) and override-from-config.toml — from the `config-management` delta scenarios
-- [x] 1.3 Write failing tests for the `argus hera-report` Stop-hook subcommand: no-op on missing `ARGUS_TASK_ID`, no-op on non-coordinator role, unconditional `context_size` stamp, over-budget nudge, nudge recurrence and its stop condition — from the `coordinator-context-management` delta scenarios
+- [x] 1.3 Write failing tests for the `argus coord-hook` Stop-hook subcommand: no-op on missing `ARGUS_TASK_ID`, no-op on non-coordinator role, unconditional `context_size` stamp, over-budget nudge, nudge recurrence and its stop condition — from the `coordinator-context-management` delta scenarios
 - [x] 1.4 Write failing tests for `recycle_coord`: same task/worktree/branch/binding survives, self-service waits for idle, human-forced does not wait, seed prompt requires zero follow-up tool calls, stray background job is cleaned up before restart
 - [x] 1.5 Write failing tests for the `B` rail keybinding: confirmation modal fires on a coordinator selection, no-op on a non-coordinator selection, help-modal listing includes `B`
 - [x] 1.6 Confirm every `it should X` acceptance criterion in `design.md` maps to a failing test written above (Prove-It Pattern) — note any gap before proceeding. **Gaps found:** D2's "no `hera_messages`/`hera_role_status` schema change" is a negative/architectural constraint with no natural Go-test expression — verify by diff review at Stage 10, not a Stage 1 test. D2's "[decision_fork]/[impasse] tldr convention" and D4's two orientation/skill-text criteria (all five habits present; SKILL.md tightened) are Stage 5's own scope (task 5.3 — orientation-text snapshot test), not enumerated in Stage 1's task list — correctly deferred, not a Stage 1 gap.
@@ -34,12 +34,12 @@ than exposing independent branches that would need reconciling back together.
 
 **Depends on:** Stage 3
 
-- [ ] 4.1 Add the `argus hera-report` subcommand (`cmd/argus/`): parse the hook's stdin for `transcript_path`, gate on `ARGUS_TASK_ID` + resolved coordinator role
-- [ ] 4.2 Tail the transcript JSONL for the latest assistant message's `usage.cache_read_input_tokens`
-- [ ] 4.3 Self-discover the daemon's REST port and `~/.argus/api-token`; overwrite `task_meta` (`hera`, `context_size`) via the REST API
-- [ ] 4.4 Compare against the project's `coordinator_context_budget`; emit a Stop-hook block decision with the reach-a-seam nudge when at/over budget
-- [ ] 4.5 Make the Stage 1.3 tests green
-- [ ] 4.6 Document the required one-time manual `~/.claude/settings.json` global Stop-hook registration (this is external to argus's own config — argus cannot write to the user's global settings file)
+- [x] 4.1 Add the `argus coord-hook` subcommand (`cmd/argus/`): parse the hook's stdin for `transcript_path`, gate on `ARGUS_TASK_ID` + resolved coordinator role
+- [x] 4.2 Tail the transcript JSONL for the latest assistant message's `usage.cache_read_input_tokens`
+- [x] 4.3 Self-discover the daemon's REST port and `~/.argus/api-token`; overwrite `task_meta` (`hera`, `context_size`) via the REST API
+- [x] 4.4 Compare against the project's `coordinator_context_budget`; emit a Stop-hook block decision with the reach-a-seam nudge when at/over budget
+- [x] 4.5 Make the Stage 1.3 tests green
+- [x] 4.6 Document the required one-time manual `~/.claude/settings.json` global Stop-hook registration (this is external to argus's own config — argus cannot write to the user's global settings file)
 
 ## 5. Coordinator-discipline spawn orientation and shared skill
 
