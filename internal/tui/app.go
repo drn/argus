@@ -691,6 +691,9 @@ func (a *App) buildUI() {
 		// (retire `R` and the rail-wide `Ctrl+R` prune were removed).
 		a.heraPage.OnNewCoordinator = a.heraNewCoordinator
 		a.heraPage.OnClearArchive = a.heraClearArchive
+		// `B` force-recycle (add-coordinator-context-management): confirm, then
+		// kill-and-restart the selected coordinator's session in place.
+		a.heraPage.OnForceRecycle = a.heraOpenForceRecycle
 		// ctrl+y copies the agent-staged clipboard payload for the focused pane's
 		// task (resolved by the page from FocusedTerminalTaskID). Daemon-backed
 		// only — the copy method no-ops gracefully under the in-process runner.

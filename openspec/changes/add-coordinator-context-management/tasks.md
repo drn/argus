@@ -64,10 +64,10 @@ than exposing independent branches that would need reconciling back together.
 
 **Depends on:** Stage 6
 
-- [ ] 7.1 Bind `B` on the rail: confirmation modal on a coordinator selection, no-op on a non-coordinator selection
-- [ ] 7.2 Wire the confirmed action to `recycle_coord`'s human-forced (immediate) path
-- [ ] 7.3 Add the `B` entry to `HelpSections` (`internal/tui/modal/help.go`) and its `help_test.go` assertion (required in the same PR per this repo's key-binding convention)
-- [ ] 7.4 Make the Stage 1.5 tests green
+- [x] 7.1 Bind `B` on the rail: confirmation modal on a coordinator selection, no-op on a non-coordinator selection
+- [x] 7.2 Wire the confirmed action to `recycle_coord`'s human-forced (immediate) path
+- [x] 7.3 Add the `B` entry to `HelpSections` (`internal/tui/modal/help.go`) and its `help_test.go` assertion (required in the same PR per this repo's key-binding convention)
+- [x] 7.4 Make the Stage 1.5 tests green
 
 ## 8. Documentation
 

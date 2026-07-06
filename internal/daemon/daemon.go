@@ -1035,7 +1035,7 @@ func (d *Daemon) Serve(sockPath string) error {
 		// nodes; this recycles live coordinators) but gated on the same
 		// cfg.Hera.Enabled — both are hera-native background loops with no
 		// meaning when hera is off.
-		d.heraRecycleWatcher = hera.NewRecycleWatcher(d.db, newHeraRecycleRunner(d.db, d.runner, d.cfgFn))
+		d.heraRecycleWatcher = hera.NewRecycleWatcher(d.db, NewHeraRecycleRunner(d.db, d.runner, d.cfgFn))
 		go d.heraRecycleWatcher.Start()
 	}
 

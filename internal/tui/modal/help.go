@@ -84,6 +84,7 @@ var HelpSections = []HelpSection{
 			{"P", "toggle pin"},
 			{"s / S", "advance / revert status"},
 			{"J", "adopt freelancer / reparent coordinator"},
+			{"B", "force recycle coordinator (kill + restart, confirm)"},
 			{"C", "clear coord's archive (nuke hidden agents)"},
 			{"ctrl+d", "nuke role/orchestrator (whole sub-team if nested)"},
 			{"←", "move to parent coordinator (rail focused)"},

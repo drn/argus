@@ -120,6 +120,13 @@ type HeraPage struct {
 	OnReattach      func(Selection) // Enter on a dead-session row — restart its session
 	OnAdopt         func(Selection) // `J` — adopt freelancer / reparent coordinator (orch picker)
 
+	// OnForceRecycle fires on `B` when the current selection is a coordinator
+	// (add-coordinator-context-management, hera-view delta): kills and
+	// restarts the coordinator's session on the same task/worktree/branch/
+	// binding — recycle_coord's human-forced (immediate, no idle wait) path.
+	// A no-op on a non-coordinator selection (see handleRailMutation).
+	OnForceRecycle func(Selection)
+
 	// Creation + EOL keys (BUG-006/022). OnNewCoordinator is selection-INDEPENDENT
 	// — it fires even on an empty rail, so it is dispatched directly (not via the
 	// selection-gated `fire`). OnClearArchive acts on the current Selection.
@@ -794,21 +801,22 @@ func (p *HeraPage) rebuildPlan(root *OrchView) {
 
 // isRailMutationKey reports whether event is one of the rail-FOCUS mutation
 // commands that handleRailMutation acts on — spawn `w`, rename `r`, archive `a`,
-// pin `P`, status `s`/`S`, adopt `J`, new-coordinator `n`, clear-archive `C`, and
-// Ctrl+D nuke. It deliberately EXCLUDES Enter and the navigation keys
-// (j/k/h/l/Space/Esc/arrows): in details mode those belong to the embedded plan
-// widget, so they must reach handleDetailsKey untouched. The details-mode branch
-// of InputHandler consults this to route rail mutations to handleRailMutation
-// while a coordinator's plan is focused, without hijacking plan navigation
-// (BUG-010). The rune set is kept in lock-step with handleRailMutation's switch
-// below and the help modal's "Hera View (rail)" section.
+// pin `P`, status `s`/`S`, adopt `J`, new-coordinator `n`, clear-archive `C`,
+// force-recycle `B`, and Ctrl+D nuke. It deliberately EXCLUDES Enter and the
+// navigation keys (j/k/h/l/Space/Esc/arrows): in details mode those belong to
+// the embedded plan widget, so they must reach handleDetailsKey untouched. The
+// details-mode branch of InputHandler consults this to route rail mutations to
+// handleRailMutation while a coordinator's plan is focused, without hijacking
+// plan navigation (BUG-010). The rune set is kept in lock-step with
+// handleRailMutation's switch below and the help modal's "Hera View (rail)"
+// section.
 func (p *HeraPage) isRailMutationKey(event *tcell.EventKey) bool {
 	switch event.Key() {
 	case tcell.KeyCtrlD:
 		return true
 	case tcell.KeyRune:
 		switch event.Rune() {
-		case 'w', 'r', 'a', 'P', 's', 'S', 'J', 'n', 'C':
+		case 'w', 'r', 'a', 'P', 's', 'S', 'J', 'n', 'C', 'B':
 			return true
 		}
 	}
@@ -900,6 +908,16 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 			// Clear the selected coordinator's archive: NUKE every Tier-1 hidden
 			// item under it (BUG-022). Acts on the selection.
 			return p.fire(p.OnClearArchive, sel)
+		case 'B':
+			// Force-recycle the selected coordinator (add-coordinator-context-
+			// management): a no-op — no modal, no callback — on anything but a
+			// coordinator selection (hera-view delta: "Force-recycle key is a
+			// no-op on a non-coordinator selection"). The key is still consumed
+			// so it never leaks to rail navigation.
+			if !sel.IsCoordinator() {
+				return true
+			}
+			return p.fire(p.OnForceRecycle, sel)
 		}
 	}
 	return false

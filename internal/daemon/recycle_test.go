@@ -65,7 +65,7 @@ func TestHeraRecycleRunner_IsIdle_NoSessionIsIdle(t *testing.T) {
 
 	runner := agent.NewRunner(nil)
 	cfg := recycleTestConfig()
-	r := newHeraRecycleRunner(database, runner, func() config.Config { return cfg })
+	r := NewHeraRecycleRunner(database, runner, func() config.Config { return cfg })
 
 	testutil.Equal(t, r.IsIdle("no-such-task"), true)
 }
@@ -79,7 +79,7 @@ func TestHeraRecycleRunner_StopStrayJobs_NoopForNonClaudeBackend(t *testing.T) {
 
 	runner := agent.NewRunner(nil)
 	cfg := recycleTestConfig()
-	r := newHeraRecycleRunner(database, runner, func() config.Config { return cfg })
+	r := NewHeraRecycleRunner(database, runner, func() config.Config { return cfg })
 
 	testutil.NoError(t, r.StopStrayJobs(task.ID, "sess-1"))
 }
@@ -91,7 +91,7 @@ func TestHeraRecycleRunner_StopStrayJobs_UnknownTaskErrors(t *testing.T) {
 
 	runner := agent.NewRunner(nil)
 	cfg := recycleTestConfig()
-	r := newHeraRecycleRunner(database, runner, func() config.Config { return cfg })
+	r := NewHeraRecycleRunner(database, runner, func() config.Config { return cfg })
 
 	err = r.StopStrayJobs("no-such-task", "sess-1")
 	if err == nil {
@@ -121,7 +121,7 @@ func TestHeraRecycleRunner_Restart_EndToEnd(t *testing.T) {
 	testutil.NoError(t, err)
 	t.Cleanup(runner.StopAll)
 
-	r := newHeraRecycleRunner(database, runner, func() config.Config { return cfg })
+	r := NewHeraRecycleRunner(database, runner, func() config.Config { return cfg })
 	testutil.NoError(t, r.Restart(task.ID))
 
 	// Persisted row must have its stale SessionID cleared and a non-empty
@@ -154,7 +154,7 @@ func TestHeraRecycleRunner_Restart_UnknownTaskErrors(t *testing.T) {
 
 	runner := agent.NewRunner(nil)
 	cfg := recycleTestConfig()
-	r := newHeraRecycleRunner(database, runner, func() config.Config { return cfg })
+	r := NewHeraRecycleRunner(database, runner, func() config.Config { return cfg })
 
 	err = r.Restart("no-such-task")
 	if err == nil {

@@ -9,28 +9,35 @@ import (
 	"github.com/drn/argus/internal/hera"
 )
 
-// heraRecycleRunner implements hera.RecycleRunner against the daemon's real
+// HeraRecycleRunner implements hera.RecycleRunner against the daemon's real
 // session runner and DB (add-coordinator-context-management D5). It is the
 // seam recycle_test.go's fakeRecycleRunner stands in for in unit tests — this
 // is the concrete, production version wired into the daemon's background
-// recycle sweep and (Stage 7) the rail's human-forced keybinding.
-type heraRecycleRunner struct {
+// recycle sweep and (Stage 7) the rail's human-forced keybinding via the
+// exported NewHeraRecycleRunner (internal/tui/heraactions.go builds one
+// directly since the TUI's hera mutation layer already operates on *db.DB +
+// agent.SessionRunner in local mode, same pattern as its other hera ops).
+type HeraRecycleRunner struct {
 	database *db.DB
 	runner   agent.SessionRunner
 	cfgFn    func() config.Config
 }
 
-func newHeraRecycleRunner(database *db.DB, runner agent.SessionRunner, cfgFn func() config.Config) *heraRecycleRunner {
-	return &heraRecycleRunner{database: database, runner: runner, cfgFn: cfgFn}
+// NewHeraRecycleRunner builds the production hera.RecycleRunner. Exported so
+// both the daemon's background RecycleWatcher and the TUI's human-forced `B`
+// rail keybinding share the identical kill/restart implementation rather than
+// each hand-rolling their own.
+func NewHeraRecycleRunner(database *db.DB, runner agent.SessionRunner, cfgFn func() config.Config) *HeraRecycleRunner {
+	return &HeraRecycleRunner{database: database, runner: runner, cfgFn: cfgFn}
 }
 
-var _ hera.RecycleRunner = (*heraRecycleRunner)(nil)
+var _ hera.RecycleRunner = (*HeraRecycleRunner)(nil)
 
 // IsIdle reports whether taskID's live session is currently idle. A missing
 // session (already exited, or never started) is treated as idle — nothing is
 // actively producing output, so a self-service recycle should proceed rather
 // than wait forever for a session that no longer exists.
-func (r *heraRecycleRunner) IsIdle(taskID string) bool {
+func (r *HeraRecycleRunner) IsIdle(taskID string) bool {
 	sess := r.runner.Get(taskID)
 	return sess == nil || sess.IsIdle()
 }
@@ -38,7 +45,7 @@ func (r *heraRecycleRunner) IsIdle(taskID string) bool {
 // StopStrayJobs cleans up any Claude Code background job tied to sessionID
 // before the caller restarts taskID (design.md Risks: task_stop does not kill
 // everything).
-func (r *heraRecycleRunner) StopStrayJobs(taskID, sessionID string) error {
+func (r *HeraRecycleRunner) StopStrayJobs(taskID, sessionID string) error {
 	task, err := r.database.Get(taskID)
 	if err != nil {
 		return fmt.Errorf("stop stray jobs: load task %s: %w", taskID, err)
@@ -51,7 +58,7 @@ func (r *heraRecycleRunner) StopStrayJobs(taskID, sessionID string) error {
 // stale SessionID so BuildCmd starts genuinely fresh rather than colliding on
 // an already-used UUID, persists both, and hands off to the runner's
 // same-task recycle primitive.
-func (r *heraRecycleRunner) Restart(taskID string) error {
+func (r *HeraRecycleRunner) Restart(taskID string) error {
 	task, err := r.database.Get(taskID)
 	if err != nil {
 		return fmt.Errorf("recycle restart: load task %s: %w", taskID, err)
