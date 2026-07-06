@@ -94,6 +94,6 @@ than exposing independent branches that would need reconciling back together.
 
 **Depends on:** Stage 10
 
-- [ ] 11.1 Archive the OpenSpec change: fold the delta requirements into `openspec/specs/coordinator-context-management/spec.md` (new), `openspec/specs/hera-coordination/spec.md`, `openspec/specs/hera-view/spec.md`, and `openspec/specs/config-management/spec.md` (all modified in place), then move the change folder to `openspec/changes/archive/<date>-add-coordinator-context-management/` — all in the same branch, before merge
-- [ ] 11.2 Re-run `make pre-pr` after archiving to confirm no drift
-- [ ] 11.3 Push the final branch via `iris_push` and `hera_send` coord the branch name plus a plain-language summary of how it works
+- [x] 11.1 Archive the OpenSpec change: fold the delta requirements into `openspec/specs/coordinator-context-management/spec.md` (new), `openspec/specs/hera-coordination/spec.md`, `openspec/specs/hera-view/spec.md`, and `openspec/specs/config-management/spec.md` (all modified in place), then move the change folder to `openspec/changes/archive/<date>-add-coordinator-context-management/` — all in the same branch, before merge
+- [x] 11.2 Re-run `make pre-pr` after archiving to confirm no drift
+- [x] 11.3 Push the final branch via `iris_push` and `hera_send` coord the branch name plus a plain-language summary of how it works
