@@ -52,8 +52,8 @@ Moved to the follow-up chunk — see "Deferred" below. The linear chain skips fr
 
 **Depends on:** Group 5
 
-- [ ] 6.1 Run `/spec-audit` (or the coordinator's spec-audit) against the deltas; confirm code matches every requirement/scenario; fix drift
-- [ ] 6.2 `make pre-pr` green on the branch
+- [x] 6.1 Run `/spec-audit` (or the coordinator's spec-audit) against the deltas; confirm code matches every requirement/scenario; fix drift — manual requirement-by-requirement audit of both `specs/cross-vendor-review/spec.md` and `specs/diligence-profiles/spec.md` (incl. the 3b-fixup's new "Profile validation CLI affordance" requirement) against `internal/review`, `internal/profiles`, `internal/mcp`, `cmd/argus/validate.go`, and the three `hera-review*` skills. No drift found — every requirement/scenario has corresponding code or skill-prose coverage and a passing test where Go-testable
+- [x] 6.2 `make pre-pr` green on the branch — build/vet/fmt-check/lint-pr clean, test-cover-gate 89.6% (floor 88, no PTY flake this run); `vuln` fails only on pre-existing go1.26.3 stdlib CVEs (net/textproto, crypto/x509), advisory per CI's `continue-on-error` and `context/knowledge/gotchas/ci-gates.md`
 
 ## 7. Archive + ship (on-branch, no GitHub PR)
 
