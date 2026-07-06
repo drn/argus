@@ -107,7 +107,7 @@ func Connect(sockPath string) (*Client, error) {
 	}
 
 	// Eagerly verify daemon is alive before returning the client.
-	c.Ping() //nolint:errcheck — best-effort; health check will retry
+	c.Ping() //nolint:errcheck // best-effort; health check will retry
 
 	return c, nil
 }

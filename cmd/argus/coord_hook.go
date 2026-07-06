@@ -82,7 +82,7 @@ func runCoordHook(stdin io.Reader, out, errOut io.Writer, env coordHookEnv) {
 
 	kind, err := env.ResolveRoleKind(taskID)
 	if err != nil {
-		fmt.Fprintf(errOut, "coord-hook: resolve role kind: %v\n", err)
+		_, _ = fmt.Fprintf(errOut, "coord-hook: resolve role kind: %v\n", err)
 		return
 	}
 	if kind != string(db.HeraKindCoordinator) {
@@ -91,13 +91,13 @@ func runCoordHook(stdin io.Reader, out, errOut io.Writer, env coordHookEnv) {
 
 	var in stopHookInput
 	if err := json.NewDecoder(stdin).Decode(&in); err != nil {
-		fmt.Fprintf(errOut, "coord-hook: decode stdin: %v\n", err)
+		_, _ = fmt.Fprintf(errOut, "coord-hook: decode stdin: %v\n", err)
 		return
 	}
 
 	size, err := env.ReadContextSize(in.TranscriptPath)
 	if err != nil {
-		fmt.Fprintf(errOut, "coord-hook: read context size: %v\n", err)
+		_, _ = fmt.Fprintf(errOut, "coord-hook: read context size: %v\n", err)
 		return
 	}
 
@@ -105,12 +105,12 @@ func runCoordHook(stdin io.Reader, out, errOut io.Writer, env coordHookEnv) {
 	// or the recycle mechanism reads, with zero dependency on the
 	// coordinator's cooperation.
 	if err := env.StampContextSize(taskID, size); err != nil {
-		fmt.Fprintf(errOut, "coord-hook: stamp context size: %v\n", err)
+		_, _ = fmt.Fprintf(errOut, "coord-hook: stamp context size: %v\n", err)
 	}
 
 	budget, err := env.Budget(taskID)
 	if err != nil {
-		fmt.Fprintf(errOut, "coord-hook: read budget: %v\n", err)
+		_, _ = fmt.Fprintf(errOut, "coord-hook: read budget: %v\n", err)
 		return
 	}
 	if size < budget {
@@ -125,7 +125,7 @@ func runCoordHook(stdin io.Reader, out, errOut io.Writer, env coordHookEnv) {
 		),
 	}
 	if err := json.NewEncoder(out).Encode(dec); err != nil {
-		fmt.Fprintf(errOut, "coord-hook: encode decision: %v\n", err)
+		_, _ = fmt.Fprintf(errOut, "coord-hook: encode decision: %v\n", err)
 	}
 }
 

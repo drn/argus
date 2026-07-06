@@ -80,7 +80,7 @@ func (r *HeraRecycleRunner) Restart(taskID string) error {
 	var rows, cols uint16
 	if sess := r.runner.Get(taskID); sess != nil {
 		c, rw := sess.PTYSize()
-		cols, rows = uint16(c), uint16(rw)
+		cols, rows = uint16(c), uint16(rw) //nolint:gosec // bounded by terminal cell count
 	}
 
 	// task.SessionID MUST be cleared before Recycle: BuildCmd's non-resume
