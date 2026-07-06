@@ -22,7 +22,7 @@ const (
 	TabSettings
 )
 
-var TabLabels = [...]string{"Tasks", "Hera", "Settings"}
+var TabLabels = [...]string{"Tasks", "Projects", "Settings"}
 var tabKeys = [...]string{"1", "2", "3"}
 
 // Powerline separator (right-facing filled chevron).

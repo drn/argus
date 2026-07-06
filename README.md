@@ -190,7 +190,7 @@ below. The `?` overlay always shows your active bindings.
 | `ctrl+o`  | Open the project's GitHub repo in browser (via `gh repo view --web`) |
 | `ctrl+r`  | Prune completed tasks                                           |
 | `j` / `k` | Navigate up/down                                                |
-| `1` / `2` / `3` | Switch tabs (Tasks / Hera / Settings) |
+| `1` / `2` / `3` | Switch tabs (Tasks / Projects / Settings) |
 | `ctrl+l`  | Refresh screen (wipe ghost cells; works in every non-agent tab) |
 | `q`       | Quit                                                            |
 
@@ -210,9 +210,9 @@ below. The `?` overlay always shows your active bindings.
 | `ctrl+y`              | Copy agent-staged text; flashes "Nothing to copy" if no payload is pending (always intercepted — never sent to the PTY) |
 | `Shift+↑` / `Shift+↓` | Scroll terminal (with acceleration)                                       |
 
-#### Hera Tab
+#### Projects Tab
 
-The Hera tab (`2`) has three regions: a left **rail**, a middle **coordinator pane**, and a right **details** region. The rail lists active orchestrators with their coordinator/worker roles, plus **Pinned**, **Freelance**, and a collapsed **Archive** section. Keys act on the rail selection:
+The Projects tab (`2`) has three regions: a left **rail**, a middle **coordinator pane**, and a right **details** region. The rail lists active orchestrators with their coordinator/worker roles, plus **Pinned**, **Freelance**, and a collapsed **Archive** section. Keys act on the rail selection:
 
 | Key             | Action                                                                                 |
 | --------------- | -------------------------------------------------------------------------------------- |
@@ -222,7 +222,7 @@ The Hera tab (`2`) has three regions: a left **rail**, a middle **coordinator pa
 | `Tab`           | Enter a pane from the rail. **Once a terminal pane is focused, `Tab` / `Shift+Tab` pass through to the agent's PTY** so its autocomplete works (e.g. `/plugi`+`Tab` → `/plugin`) — they no longer cycle focus |
 | `ctrl+alt+←` / `ctrl+alt+→` | Move focus between panes once you're in one (the focus ladder; `Tab` is reserved for the agent there). `ctrl+q` steps back to the rail |
 | `ctrl+z`        | Fullscreen the focused content pane (rail stays; the other pane hides). Also traps `^Z` so it can never suspend the pane's agent |
-| `ctrl+y`        | Copy the agent-staged clipboard payload for the **focused pane's** task (coordinator or worker) — the Hera view shows several tasks at once, so the copy is scoped to whichever pane has focus. Always steals the key (the pane's title shows `(ctrl+y copy)` when a payload is staged); flashes "Nothing to copy" otherwise — never falls through to the PTY |
+| `ctrl+y`        | Copy the agent-staged clipboard payload for the **focused pane's** task (coordinator or worker) — the Projects view shows several tasks at once, so the copy is scoped to whichever pane has focus. Always steals the key (the pane's title shows `(ctrl+y copy)` when a payload is staged); flashes "Nothing to copy" otherwise — never falls through to the PTY |
 | `Enter`         | Enter the selected role's pane, reviving its session first — a dead session is restarted, and a suspended/stuck worker is resumed in place via `--session-id` |
 | `w`             | Spawn a worker under the selected coordinator (opens the full new-task modal: project / branch / backend / model / prompt, project defaulted to the coordinator's) |
 | `n`             | Create a new top-level coordinator (same new-task modal); bootstraps a fresh orchestrator + `coord` role bound to a new task. Works on an empty rail |
@@ -244,7 +244,7 @@ When a **worker** is selected the details region shows its live agent terminal. 
 | `↑` / `↓` / `j` / `k` | Move between plan stages (collapses any fanned-out group on the way)              |
 | `←` / `→` / `h` / `l` | Move between slots; inside a fanned-out group, walk its members                   |
 | `Space`              | Fan out / collapse a parallel group — a pure toggle that never opens a node (on a lone leaf it is a no-op; opening is `Enter`'s job) |
-| `Enter`              | Fan out a collapsed group; on a fanned-out group **member**, a sub-coordinator node, or a plain leaf, open that node: drill into a sub-coordinator's child orchestrator's plan, else jump to that node's role within the Hera view (selects it in the rail + focuses its agent pane — no tab switch), reviving a dead/suspended session just like the rail's `Enter`. On a member it does **not** collapse the group — that's `Space` / `Esc` |
+| `Enter`              | Fan out a collapsed group; on a fanned-out group **member**, a sub-coordinator node, or a plain leaf, open that node: drill into a sub-coordinator's child orchestrator's plan, else jump to that node's role within the Projects view (selects it in the rail + focuses its agent pane — no tab switch), reviving a dead/suspended session just like the rail's `Enter`. On a member it does **not** collapse the group — that's `Space` / `Esc` |
 | `Esc`                | Back out one level: collapse a fanned group, else drill out to the parent plan (consumed at the root — leave the pane via `Ctrl+Q` / `Tab`) |
 
 End-of-life has **two resting states**, and **no DB row is ever hard-deleted** — "done with" always means gone from the rail + worktree gone from disk, with the role / orchestrator / inbox / task all retained and recoverable: **Hide** (`a`, Tier 1) nests a worker / sub-coordinator in its parent coordinator's archive and keeps its session + worktree alive (reversible — un-hide restores it exactly); **Nuke** (`ctrl+d`, Tier 2; or `C` for a coordinator's whole archive) removes the row from the rail entirely, reclaims its worktree + branch, and stops its session, leaving only the DB rows behind. Every nuke is confirm-gated and honors multi-binding isolation (a task bound live under another orchestrator is never touched).
@@ -345,7 +345,7 @@ From the **Settings tab** (Status section, when the daemon is connected) the **S
 
 ### Hera (native multi-agent coordination)
 
-Hera is Argus's native layer for running a *team* of agents. It introduces **roles** — a `coordinator` plus the `worker`s and `freelance`rs it spawns — bound to argus tasks and addressed by name. A coordinator delegates work to workers it spawns (`hera_spawn_worker` / the rail's `w` key), they trade messages over the same idle-gated bus that powers inter-task messaging, and the team's work renders as a **plan DAG** (the planned + live worker roles laid out by their `hera_blocks` dependency order, with sub-coordinator drill-in) folded into the Hera tab's details pane. The whole surface is the second tab (`2`) — see the [Hera Tab](#hera-tab) keybindings above. The coordination layer runs in-process in the daemon; the view renders directly in the TUI. Agents drive it over MCP (the [`hera_*` tools](#mcp-tools)).
+Hera is Argus's native layer for running a *team* of agents. It introduces **roles** — a `coordinator` plus the `worker`s and `freelance`rs it spawns — bound to argus tasks and addressed by name. A coordinator delegates work to workers it spawns (`hera_spawn_worker` / the rail's `w` key), they trade messages over the same idle-gated bus that powers inter-task messaging, and the team's work renders as a **plan DAG** (the planned + live worker roles laid out by their `hera_blocks` dependency order, with sub-coordinator drill-in) folded into the Projects tab's details pane. The whole surface is the second tab (`2`) — see the [Projects Tab](#projects-tab) keybindings above. The coordination layer runs in-process in the daemon; the view renders directly in the TUI. Agents drive it over MCP (the [`hera_*` tools](#mcp-tools)).
 
 **Native Hera and the external Hera plugin are mutually exclusive, selected by `hera.enabled` (default ON):**
 

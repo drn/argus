@@ -57,11 +57,11 @@ func TestHelpModal_Draw(t *testing.T) {
 	body := screenString(sim)
 	testutil.Contains(t, body, "Keybindings")
 	testutil.Contains(t, body, "Task List")
-	testutil.Contains(t, body, "Hera View (rail)")
+	testutil.Contains(t, body, "Projects View (rail)")
 	testutil.Contains(t, body, "Agent View")
 	// Plan-DAG view keys (Stage 7): the plan diagram nav + fan-out + drill must
 	// be discoverable — fail the build if any binding is silently dropped.
-	testutil.Contains(t, body, "Hera View (plan DAG)")
+	testutil.Contains(t, body, "Projects View (plan DAG)")
 	testutil.Contains(t, body, "move between plan stages")
 	testutil.Contains(t, body, "fan out / collapse a group (toggle, no open)")
 	testutil.Contains(t, body, "fan group; open member/leaf, drill sub-coord")

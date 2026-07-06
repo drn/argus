@@ -2,6 +2,10 @@
 
 M6a scaffolds the native Hera view: a `HeraPage` (rail | coordinator pane | agent pane) replacing the old DAG tab. Only the LEFT rail is live and READ-ONLY; the two right panes are placeholders (6b adds PTY feeds; 6c adds mutations). M6b makes the two right panes REAL terminal feeds and wires rail selection to them.
 
+## Display label is "Projects"; every internal name stays "Hera"
+
+- **The second tab is user-facing "Projects" (TUI `widget.TabLabels[TabHera]`, web `.tab[data-tab="hera"]` text, macOS `HeraTab`'s `navigationTitle`) but every identifier behind it — `TabHera`, `CtxHeraRail`, the `hera` tview/DOM page ID, `hera.enabled`, the `hera_*` MCP tools/tables, `HeraPage`/`HeraTab` types — is intentionally untouched.** Only the rendered strings a user reads (tab label, `?` help overlay section titles "Projects View (rail|plan DAG)", the "switch to Projects tab" help row, and the bottom-bar `2`→`projects` hint) were renamed; grepping for "Hera" still finds the real implementation. Don't "finish the rename" by touching Go/Swift/JS identifiers — that was an explicit non-goal.
+
 ## M6b — pane feeds from the in-process runner
 
 - **Panes are fed from the in-process runner's ring buffer, NOT SSE — Hera's `proxy/` fan-out has no Argus equivalent and is not ported.** The coord/agent panes are `terminal.TerminalPane`s (the same widget the main agent view uses). A `SessionResolver func(taskID) agentview.TerminalAdapter` seam (App wires it to `runner.Get`) hands the pane a live session; the TerminalPane POLLS that session's ring via `RecentOutput*` on every Draw (it does NOT `AddWriter`). The daemon-owned PTY ring is the single source — there is no SSE/HTTP hop and no `ArgusStateCache` polling. Remote mode (`nil` reader) never sets a resolver and never feeds the panes.

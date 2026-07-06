@@ -446,7 +446,7 @@ func TestSmoke_HeraRemoteModeMutationKeysInert(t *testing.T) {
 func TestSmoke_HelpListsHeraKeys(t *testing.T) {
 	found := false
 	for _, sec := range modal.SectionsFromKeymap(keymap.DefaultKeymap()) {
-		if sec.Title == "Hera View (rail)" {
+		if sec.Title == "Projects View (rail)" {
 			found = true
 		}
 	}

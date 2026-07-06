@@ -269,12 +269,12 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 	case TabSettings:
 		hints = []hint{
 			{"n", "new project"}, {"d", "del"},
-			{"1", "tasks"}, {"2", "hera"}, {"?", "help"}, {"q", "quit"},
+			{"1", "tasks"}, {"2", "projects"}, {"?", "help"}, {"q", "quit"},
 		}
 	case TabHera:
 		// Focus-aware: rail focus shows mutation keys; pane focus shows pane keys.
 		// heraFocus == 0 → rail (default); 1 → coord pane; 2 → agent pane.
-		// Key names match modal/help.go "Hera View (rail)" exactly.
+		// Key names match modal/help.go "Projects View (rail)" exactly.
 		if sb.heraFocus == 0 {
 			hints = []hint{
 				{"j/k", "nav"}, {"SP", "fold"}, {"←", "parent"}, {"/", "filter"},
@@ -296,7 +296,7 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 	default:
 		hints = []hint{
 			{"n", "new"}, {"RET", "attach"}, {"s", "status"}, {"r", "rename"},
-			{"^p", "PR"}, {"^f", "fork"}, {"^d", "del"}, {"^r", "prune"}, {"H", "hera-workers"}, {"2", "hera"}, {"3", "settings"},
+			{"^p", "PR"}, {"^f", "fork"}, {"^d", "del"}, {"^r", "prune"}, {"H", "hera-workers"}, {"2", "projects"}, {"3", "settings"},
 			{"?", "help"}, {"q", "quit"},
 		}
 	}
