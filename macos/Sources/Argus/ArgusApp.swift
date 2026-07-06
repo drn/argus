@@ -1,14 +1,14 @@
 import AppKit
 import SwiftUI
 
-/// ArgusMac — a Conductor-style native GUI for the argus daemon.
+/// Argus — a Conductor-style native GUI for the argus daemon.
 ///
 /// This is the app shell only: it renders the task list and a task-detail tab
 /// view whose Terminal / Diff / Files tabs are placeholders that later phases
 /// fill in (Terminal will embed SwiftTerm). The Info tab and the whole
 /// connection / polling / settings surface are real.
 @main
-struct ArgusMacApp: App {
+struct ArgusApp: App {
     // The delegate exists purely to make a window appear and grab focus when
     // the binary is launched OUTSIDE an .app bundle (i.e. via `swift run`),
     // where the default activation policy is `.prohibited`/`.accessory`.
@@ -63,13 +63,22 @@ struct ArgusMacApp: App {
 
 /// Makes the window appear and activate when run as a bare executable.
 ///
-/// `swift run ArgusMac` produces a plain Mach-O binary, not a bundled `.app`,
+/// `swift run Argus` produces a plain Mach-O binary, not a bundled `.app`,
 /// so AppKit starts it as a background (`.accessory`) process with no menu bar
 /// or focused window. Forcing `.regular` + `activate` is the standard fix.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
+
+        // The packaged .app bundle gets its Dock/Finder icon from
+        // Info.plist's CFBundleIconFile (see scripts/mac-app.sh). A bare
+        // `swift run` executable has no bundle, so AppKit falls back to a
+        // generic icon unless we set one explicitly here.
+        if let iconURL = Bundle.module.url(forResource: "AppIcon", withExtension: "icns"),
+           let icon = NSImage(contentsOf: iconURL) {
+            NSApplication.shared.applicationIconImage = icon
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

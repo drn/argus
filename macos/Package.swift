@@ -7,9 +7,9 @@ import Foundation
 // Pure Foundation, no external dependencies. Builds with the Swift 6.3 Command
 // Line Tools toolchain (`swift build` / `swift test`) — no Xcode, no xcodebuild.
 //
-// ArgusMac is the SwiftUI app shell (a Conductor-style GUI) built on top of the
+// Argus is the SwiftUI app shell (a Conductor-style GUI) built on top of the
 // ArgusKit library. It has no third-party dependencies (SwiftTerm is added by a
-// later phase). Run it with `swift run ArgusMac`.
+// later phase). Run it with `swift run Argus`.
 
 // swift-testing wiring for Command Line Tools-only installs.
 //
@@ -68,10 +68,10 @@ let package = Package(
     ],
     products: [
         .library(name: "ArgusKit", targets: ["ArgusKit"]),
-        .executable(name: "ArgusMac", targets: ["ArgusMac"]),
+        .executable(name: "Argus", targets: ["Argus"]),
     ],
     dependencies: [
-        // SwiftTerm powers the live agent terminal in ArgusMac ONLY. ArgusKit
+        // SwiftTerm powers the live agent terminal in Argus ONLY. ArgusKit
         // stays pure Foundation (no third-party deps) so its stream-session
         // state machine remains trivially testable.
         // Pinned exact: the only third-party dependency, with no CVE/changelog
@@ -83,12 +83,13 @@ let package = Package(
             name: "ArgusKit"
         ),
         .executableTarget(
-            name: "ArgusMac",
+            name: "Argus",
             dependencies: [
                 "ArgusKit",
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
-            ]
-            // ArgusMac builds clean in the default Swift 6 language mode. If a
+            ],
+            resources: [.copy("Resources/AppIcon.icns")]
+            // Argus builds clean in the default Swift 6 language mode. If a
             // future phase hits an intractable strict-concurrency fight in UI
             // glue, scope the escape hatch to THIS target only by adding:
             //   swiftSettings: [.swiftLanguageMode(.v5)]

@@ -146,7 +146,7 @@ final class AppState {
 
     /// Automation/deep-link hook, checked once at startup: selects a task by
     /// id or exact name match at launch, overriding the default auto-select.
-    /// e.g. `ARGUS_MAC_SELECT_TASK=my-task-name open macos/dist/ArgusMac.app`.
+    /// e.g. `ARGUS_MAC_SELECT_TASK=my-task-name open macos/dist/Argus.app`.
     private static let envSelectTask = ProcessInfo.processInfo.environment["ARGUS_MAC_SELECT_TASK"]
 
     /// Automation/deep-link hook, checked once at startup: sets the initial
