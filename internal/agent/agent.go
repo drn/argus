@@ -16,6 +16,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/profiles"
+	"github.com/drn/argus/internal/review"
 	"github.com/drn/argus/internal/uxlog"
 	_ "modernc.org/sqlite"
 )
@@ -157,7 +158,11 @@ func resolveProfile(task *model.Task, backend config.Backend, cfg config.Config)
 
 	// KnownModels is injected as the union allow-list seed; this keeps the
 	// dependency direction agent → profiles (profiles never imports agent).
-	p, errs := loader.ValidateName(profName, cfg, KnownModels)
+	// The panel-grammar validator is injected the same way (agent → review;
+	// profiles never imports review either) — this call runs daemon-side
+	// (see the doc comment above), so it applies the real grammar rather than
+	// a nil/structural-only fallback.
+	p, errs := loader.ValidateName(profName, cfg, KnownModels, review.NewValidator(cfg))
 	if p == nil || len(errs) > 0 {
 		uxlog.Log("[profiles] task %q: profile %q missing or invalid (%d error(s)); resolving with no --model", task.ID, profName, len(errs))
 		return nil

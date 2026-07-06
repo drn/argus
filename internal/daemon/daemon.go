@@ -1055,6 +1055,7 @@ func (d *Daemon) Serve(sockPath string) error {
 			mcpSrv.SetHeraService(hera.New(d.db, d.notifier), d.db, d.heraSpawnWorker)
 		}
 		mcpSrv.SetArtifactManager(d.db)
+		mcpSrv.SetProfileResolver(d.db)
 		mcpSrv.SetPluginRegistry(pluginRegistry)
 		d.mcpServer = mcpSrv
 		actualPort, err := mcpSrv.ListenAndServe()

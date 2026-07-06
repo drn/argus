@@ -1,6 +1,7 @@
 package profiles
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -49,7 +50,7 @@ window = "1m"
 [panel]
 reviewers = ["opus"]
 `)
-	errs := Validate(p, config.Config{}, testKnownModels)
+	errs := Validate(p, config.Config{}, testKnownModels, nil)
 	testutil.Equal(t, len(errs), 0)
 }
 
@@ -58,7 +59,7 @@ func TestValidate_UnknownArchetype(t *testing.T) {
 [archetype.planner]
 model = "opus"
 `)
-	errs := Validate(p, config.Config{}, testKnownModels)
+	errs := Validate(p, config.Config{}, testKnownModels, nil)
 	testutil.Equal(t, len(errs), 1)
 	testutil.Contains(t, errorsText(errs), "planner")
 }
@@ -69,7 +70,7 @@ func TestValidate_OutOfEnumEffort(t *testing.T) {
 model  = "sonnet"
 effort = "max"
 `)
-	errs := Validate(p, config.Config{}, testKnownModels)
+	errs := Validate(p, config.Config{}, testKnownModels, nil)
 	testutil.Equal(t, len(errs), 1)
 	testutil.Contains(t, errorsText(errs), "effort")
 }
@@ -80,7 +81,7 @@ func TestValidate_OutOfEnumWindow(t *testing.T) {
 model  = "sonnet"
 window = "2m"
 `)
-	errs := Validate(p, config.Config{}, testKnownModels)
+	errs := Validate(p, config.Config{}, testKnownModels, nil)
 	testutil.Equal(t, len(errs), 1)
 	testutil.Contains(t, errorsText(errs), "window")
 }
@@ -90,7 +91,7 @@ func TestValidate_UnknownModel(t *testing.T) {
 [archetype.code_slice]
 model = "gemini-2.5-pro"
 `)
-	errs := Validate(p, config.Config{}, testKnownModels)
+	errs := Validate(p, config.Config{}, testKnownModels, nil)
 	testutil.Equal(t, len(errs), 1)
 	testutil.Contains(t, errorsText(errs), "gemini-2.5-pro")
 }
@@ -105,7 +106,7 @@ model = "gemini-2.5-pro"
 			"gem": {Command: "gemini", Models: []string{"gemini-2.5-pro"}},
 		},
 	}
-	errs := Validate(p, cfg, testKnownModels)
+	errs := Validate(p, cfg, testKnownModels, nil)
 	testutil.Equal(t, len(errs), 0)
 }
 
@@ -114,12 +115,13 @@ func TestValidate_CodexBuiltinAccepted(t *testing.T) {
 [archetype.code_slice]
 model = "gpt-5-codex"
 `)
-	errs := Validate(p, config.Config{}, testKnownModels)
+	errs := Validate(p, config.Config{}, testKnownModels, nil)
 	testutil.Equal(t, len(errs), 0)
 }
 
 func TestValidate_PanelStructuralAccepted(t *testing.T) {
-	// A structurally well-formed [panel] block is accepted without grammar checks.
+	// A structurally well-formed [panel] block is accepted without grammar checks
+	// when no panel-grammar validator is injected (nil).
 	p := loadOne(t, `
 [archetype.docs]
 model = "haiku"
@@ -129,7 +131,49 @@ reviewers   = ["opus", "gpt-5"]
 synthesizer = "opus"
 weird_field = 42
 `)
-	errs := Validate(p, config.Config{}, testKnownModels)
+	errs := Validate(p, config.Config{}, testKnownModels, nil)
+	testutil.Equal(t, len(errs), 0)
+}
+
+// alwaysRejectPanel and alwaysAcceptPanel are stub panel-grammar validators
+// used to prove profiles.Validate applies whatever is injected, without this
+// package importing internal/review (the real validator's grammar is tested
+// in internal/review; here we only test the injection seam).
+func alwaysRejectPanel(map[string]any) []error {
+	return []error{fmt.Errorf("stub panel validator: rejected")}
+}
+
+func alwaysAcceptPanel(map[string]any) []error {
+	return nil
+}
+
+func TestValidate_PanelInjectedValidatorApplied(t *testing.T) {
+	p := loadOne(t, `
+[panel]
+finders = ["opus"]
+`)
+	errs := Validate(p, config.Config{}, testKnownModels, alwaysRejectPanel)
+	testutil.Equal(t, len(errs), 1)
+	testutil.Contains(t, errorsText(errs), "stub panel validator")
+}
+
+func TestValidate_PanelInjectedValidatorAccepts(t *testing.T) {
+	p := loadOne(t, `
+[panel]
+finders = ["opus"]
+`)
+	errs := Validate(p, config.Config{}, testKnownModels, alwaysAcceptPanel)
+	testutil.Equal(t, len(errs), 0)
+}
+
+func TestValidate_PanelInjectedValidatorSkippedWhenPanelAbsent(t *testing.T) {
+	// A profile with no [panel] table at all never invokes the injected
+	// validator — a missing panel is not itself a grammar violation.
+	p := loadOne(t, `
+[archetype.docs]
+model = "haiku"
+`)
+	errs := Validate(p, config.Config{}, testKnownModels, alwaysRejectPanel)
 	testutil.Equal(t, len(errs), 0)
 }
 
@@ -143,7 +187,7 @@ model = "opus"
 model  = "nope-model"
 effort = "max"
 `)
-	errs := Validate(p, config.Config{}, testKnownModels)
+	errs := Validate(p, config.Config{}, testKnownModels, nil)
 	// planner (unknown archetype) + code_slice bad effort + code_slice unknown model
 	testutil.Equal(t, len(errs), 3)
 }
@@ -153,7 +197,7 @@ func TestValidateName_CycleReported(t *testing.T) {
 	writeProfile(t, lib, "a", `extends = "b"`)
 	writeProfile(t, lib, "b", `extends = "a"`)
 	l := &Loader{LibraryDir: lib}
-	_, errs := l.ValidateName("a", config.Config{}, testKnownModels)
+	_, errs := l.ValidateName("a", config.Config{}, testKnownModels, nil)
 	testutil.Equal(t, len(errs), 1)
 	testutil.Contains(t, errorsText(errs), "cycle")
 }
@@ -164,7 +208,7 @@ func TestValidateName_Valid(t *testing.T) {
 model = "sonnet"
 `)
 	l := &Loader{LibraryDir: lib}
-	p, errs := l.ValidateName("ok", config.Config{}, testKnownModels)
+	p, errs := l.ValidateName("ok", config.Config{}, testKnownModels, nil)
 	testutil.Equal(t, len(errs), 0)
 	testutil.Equal(t, p.Name, "ok")
 }

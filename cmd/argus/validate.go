@@ -43,7 +43,11 @@ func runValidateCommand(args []string) {
 // and validates the named profile, writes a human-readable report to w, and
 // returns the process exit code (0 = valid, 1 = not found / invalid).
 func runValidate(w io.Writer, loader *profiles.Loader, cfg config.Config, name string) int {
-	p, errs := loader.ValidateName(name, cfg, agent.KnownModels)
+	// panelValidator is nil here: this operator/documentation tool checks
+	// archetype/rigor conformance only, leaving [panel] grammar enforcement
+	// to the daemon-side consumers (spawn-time resolution, profile_resolve)
+	// where the real validator (internal/review) is injected.
+	p, errs := loader.ValidateName(name, cfg, agent.KnownModels, nil)
 	if p == nil {
 		// Resolution failed (not found, or extends cycle); errs holds the cause.
 		for _, e := range errs {

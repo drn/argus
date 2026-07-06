@@ -166,6 +166,7 @@ type Server struct {
 	heraSvc     *hera.Service   // optional; set via SetHeraService
 	heraStore   HeraStore       // optional; set via SetHeraService
 	heraSpawn   HeraSpawner     // optional; set via SetHeraService (born-bound spawn)
+	profileCfg  ConfigStore     // optional; set via SetProfileResolver
 	createMu    sync.Mutex
 	creating    int // number of in-flight task_create calls
 	// creatingKeys tracks (project, name) pairs currently being created so
@@ -812,6 +813,9 @@ func (s *Server) handleToolsList(req *Request) *Response {
 	if s.heraEnabled() {
 		tools = append(tools, heraToolDefs...)
 	}
+	if s.profileResolveEnabled() {
+		tools = append(tools, profileToolDefs...)
+	}
 	if s.registry != nil {
 		// Failures here are logged and swallowed: surfacing a registry error
 		// here would break the entire tools/list response for built-in tools
@@ -927,6 +931,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolHeraUnblock(req.ID, params.Arguments)
 	case "hera_plan_node_cancel":
 		return s.toolHeraPlanNodeCancel(req.ID, params.Arguments)
+	case "profile_resolve":
+		return s.toolProfileResolve(req.ID, params.Arguments)
 	default:
 		// Plugin-registered tool? PR 4 — dispatch into the registry which
 		// HTTP-POSTs to the plugin's callback_url and returns the response

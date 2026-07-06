@@ -13,3 +13,12 @@ extends = "default"
 [rigor]
 review_passes = 1
 gating        = false
+
+# Reviewer panel (grammar owned by internal/review — see D7 in
+# add-cross-vendor-review/design.md). Light: a single in-session finder, no
+# corrective lens, no fix-verification phase. Declared explicitly (rather than
+# inherited from default) because extends only overlays [panel] when the child
+# sets it — an absent [panel] here would otherwise pick up default's broader
+# roster verbatim.
+[panel]
+finders = ["opus"]

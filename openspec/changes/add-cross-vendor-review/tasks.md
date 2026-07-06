@@ -12,19 +12,19 @@ Groups below map 1:1 to the execution sub-DAG nodes. `Depends on` lines are the 
 
 ## 1. Failing tests (Go prove-it)
 
-- [ ] 1.1 Failing tests for `profile_resolve`: cwd→project→profile resolution, per-spawn override precedence, explicit-name arg, fail-open on missing/invalid, opaque archetype pass-through
-- [ ] 1.2 Failing tests for the injected panel-grammar validator: well-formed accept (incl. a reserved `codex` finder id); empty/unknown `finders`; malformed lens; `review_skill`+`review_instruction` conflict; `profiles.Validate` applies the injected validator; no `profiles → review` import
-- [ ] 1.3 Confirm every non-deferred delta scenario has a corresponding failing Go test where Go-testable (skill scenarios are proven by the Group 4 smoke, not Go CI)
+- [x] 1.1 Failing tests for `profile_resolve`: cwd→project→profile resolution, per-spawn override precedence, explicit-name arg, fail-open on missing/invalid, opaque archetype pass-through
+- [x] 1.2 Failing tests for the injected panel-grammar validator: well-formed accept (incl. a reserved `codex` finder id); empty/unknown `finders`; malformed lens; `review_skill`+`review_instruction` conflict; `profiles.Validate` applies the injected validator; no `profiles → review` import
+- [x] 1.3 Confirm every non-deferred delta scenario has a corresponding failing Go test where Go-testable (skill scenarios are proven by the Group 4 smoke, not Go CI)
 
 ## 2. Panel grammar + profile_resolve (argus-Go)
 
 **Depends on:** Group 1
 
-- [ ] 2.1 Define the `[panel]` grammar type + validator in a new review-owned package; export an injectable `func(panel) []error`. `finders` ids resolve to a known in-session model OR a configured backend, so `codex` validates as a reserved slot even though it is not composed this chunk
-- [ ] 2.2 Wire the injected validator into `profiles.Validate` (mirror the `knownModels` injection; keep `profiles` free of the review import)
-- [ ] 2.3 Build `mcp__argus__profile_resolve(cwd, [profile])` in `internal/mcp` as a thin wrapper over `profiles.Loader.ValidateName` + `Project.ResolveProfileName`; resolve daemon-side; honor `task.Profile` > project binding > `default`; return the full body (archetype/rigor/panel) as JSON with opaque archetype pass-through; fail open
-- [ ] 2.4 Fill the `[panel]` blocks of `docs/profiles/{default,lean,customer_grade}.toml` with **in-session finders only** (customer_grade = Opus + Fable + lenses + fix_verification; lean = light, no fix_verification; default = middle). Do NOT list `codex` in a shipped profile — the slot is reserved in the grammar, not composed
-- [ ] 2.5 Make Group-1 tests for 1.1 + 1.2 pass; `make test` green for touched packages
+- [x] 2.1 Define the `[panel]` grammar type + validator in a new review-owned package; export an injectable `func(panel) []error`. `finders` ids resolve to a known in-session model OR a configured backend, so `codex` validates as a reserved slot even though it is not composed this chunk
+- [x] 2.2 Wire the injected validator into `profiles.Validate` (mirror the `knownModels` injection; keep `profiles` free of the review import)
+- [x] 2.3 Build `mcp__argus__profile_resolve(cwd, [profile])` in `internal/mcp` as a thin wrapper over `profiles.Loader.ValidateName` + `Project.ResolveProfileName`; resolve daemon-side; honor `task.Profile` > project binding > `default`; return the full body (archetype/rigor/panel) as JSON with opaque archetype pass-through; fail open
+- [x] 2.4 Fill the `[panel]` blocks of `docs/profiles/{default,lean,customer_grade}.toml` with **in-session finders only** (customer_grade = Opus + Fable + lenses + fix_verification; lean = light, no fix_verification; default = middle). Do NOT list `codex` in a shipped profile — the slot is reserved in the grammar, not composed
+- [x] 2.5 Make Group-1 tests for 1.1 + 1.2 pass; `make test` green for touched packages
 
 ## 3. (DEFERRED) Foreign-reviewer-capture primitive
 
