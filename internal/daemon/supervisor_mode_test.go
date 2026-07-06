@@ -46,6 +46,7 @@ func (f *fakeSupClient) StartOrReattach(*model.Task, config.Config, uint16, uint
 	return nil, false, nil
 }
 func (f *fakeSupClient) KickRerender(*model.Task, config.Config, uint16, uint16) error { return nil }
+func (f *fakeSupClient) Recycle(*model.Task, config.Config, uint16, uint16) error      { return nil }
 func (f *fakeSupClient) NeedsInputIDs() []string                                       { return nil }
 func (f *fakeSupClient) SetNeedsInputIDs([]string)                                     {}
 func (f *fakeSupClient) OnSessionExit(fn func(string, ExitInfo))                       { f.exitFn = fn }

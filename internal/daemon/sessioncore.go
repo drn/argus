@@ -295,6 +295,31 @@ func (c *sessionCore) KickRerender(req *KickReq, resp *StatusResp) error {
 	return nil
 }
 
+// Recycle stops a coordinator's session and queues an in-place restart with a
+// fresh (empty) context (add-coordinator-context-management D5), mirroring
+// KickRerender's wire/promotion contract exactly except resume is always
+// false. req.Prompt already carries the assembled seed prompt and no
+// SessionID is shipped — a recycle never resumes.
+func (c *sessionCore) Recycle(req *RecycleReq, resp *StatusResp) error {
+	slog.Info("rpc.Recycle", "task", req.TaskID)
+	task := &model.Task{
+		ID:       req.TaskID,
+		Prompt:   req.Prompt,
+		Project:  req.Project,
+		Backend:  req.Backend,
+		Model:    req.Model,
+		Worktree: req.Worktree,
+		Branch:   req.Branch,
+	}
+	if err := c.runner.Recycle(task, c.cfgFn(), req.Rows, req.Cols); err != nil {
+		slog.Error("rpc.Recycle failed", "task", req.TaskID, "err", err)
+		resp.Error = err.Error()
+		return nil
+	}
+	resp.OK = true
+	return nil
+}
+
 // GetExitInfo returns cached exit info for a finished session.
 // Returns empty ExitInfo if the session is still running or info has expired.
 func (c *sessionCore) GetExitInfo(req *TaskIDReq, resp *ExitInfo) error {

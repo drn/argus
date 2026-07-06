@@ -53,12 +53,12 @@ than exposing independent branches that would need reconciling back together.
 
 **Depends on:** Stage 5
 
-- [ ] 6.1 Implement the daemon-side kill-and-restart on the same task (`BuildCmd(task, cfg, resume=false)` path; confirm no stale `SessionID` is pinned across the restart)
-- [ ] 6.2 Implement the self-service path: consume the pending-recycle intent from Stage 3, defer the actual restart until `session.IsIdle()`
-- [ ] 6.3 Implement the human-forced path: immediate kill-and-restart, no idle wait
-- [ ] 6.4 Implement stray background-job cleanup before restart (session-identity job lookup + stop, addressing the known `task_stop`-doesn't-kill-everything failure mode)
-- [ ] 6.5 Implement seed-prompt assembly: role's stored mission prompt + current plan-DAG node states for the orchestrator + `task_meta.handoff_note` (if present), composed server-side into the new session's opening prompt
-- [ ] 6.6 Make the Stage 1.4 tests green
+- [x] 6.1 Implement the daemon-side kill-and-restart on the same task (`BuildCmd(task, cfg, resume=false)` path; confirm no stale `SessionID` is pinned across the restart)
+- [x] 6.2 Implement the self-service path: consume the pending-recycle intent from Stage 3, defer the actual restart until `session.IsIdle()`
+- [x] 6.3 Implement the human-forced path: immediate kill-and-restart, no idle wait
+- [x] 6.4 Implement stray background-job cleanup before restart (session-identity job lookup + stop, addressing the known `task_stop`-doesn't-kill-everything failure mode)
+- [x] 6.5 Implement seed-prompt assembly: role's stored mission prompt + current plan-DAG node states for the orchestrator + `task_meta.handoff_note` (if present), composed server-side into the new session's opening prompt
+- [x] 6.6 Make the Stage 1.4 tests green
 
 ## 7. hera-view rail keybinding
 

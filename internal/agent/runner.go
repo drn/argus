@@ -12,17 +12,24 @@ import (
 	"github.com/drn/argus/internal/model"
 )
 
-// pendingRestart holds the state needed to restart a session at new PTY
-// dimensions after KickRerender stops it. Stored under Runner.mu. The entry
-// stays in the map throughout the restart (so HasPendingRestart / Running
-// surface "still alive" during the BuildCmd gap), but `consumed` flips true
-// once an exit goroutine takes ownership — that prevents a fast-crashing
-// resumed session's exit goroutine from re-entering the restart and looping.
+// pendingRestart holds the state needed to restart a session after
+// KickRerender or Recycle stops it. Stored under Runner.mu. The entry stays
+// in the map throughout the restart (so HasPendingRestart / Running surface
+// "still alive" during the BuildCmd gap), but `consumed` flips true once an
+// exit goroutine takes ownership — that prevents a fast-crashing resumed
+// session's exit goroutine from re-entering the restart and looping.
+//
+// resume distinguishes the two callers: KickRerender always sets true (the
+// agent re-emits its full conversation at the new PTY width via --resume);
+// Recycle always sets false (a fresh, empty-context session — the whole
+// point of a recycle — via --session-id or no session flag at all,
+// depending on whether task.SessionID was cleared by the caller).
 type pendingRestart struct {
 	task     *model.Task
 	cfg      config.Config
 	rows     uint16
 	cols     uint16
+	resume   bool
 	consumed bool
 }
 
@@ -185,8 +192,8 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 		r.mu.Unlock()
 
 		if shouldRestart {
-			slog.Info("runner: restarting after kick", "task", task.ID, "cols", pending.cols, "rows", pending.rows)
-			_, rerr := r.Start(pending.task, pending.cfg, pending.rows, pending.cols, true)
+			slog.Info("runner: restarting after kick", "task", task.ID, "cols", pending.cols, "rows", pending.rows, "resume", pending.resume)
+			_, rerr := r.Start(pending.task, pending.cfg, pending.rows, pending.cols, pending.resume)
 			// Clear the pending entry now that Start has returned; whether
 			// it succeeded (new session in the map) or failed, the gap is
 			// over and consumers should fall back to direct session lookup.
@@ -291,10 +298,11 @@ func (r *Runner) KickRerender(task *model.Task, cfg config.Config, rows, cols ui
 		return fmt.Errorf("kick already pending for task %s", task.ID)
 	}
 	r.pendingRestart[task.ID] = &pendingRestart{
-		task: task,
-		cfg:  cfg,
-		rows: rows,
-		cols: cols,
+		task:   task,
+		cfg:    cfg,
+		rows:   rows,
+		cols:   cols,
+		resume: true,
 	}
 	r.stopped[task.ID] = true
 	r.mu.Unlock()
@@ -302,6 +310,60 @@ func (r *Runner) KickRerender(task *model.Task, cfg config.Config, rows, cols ui
 	slog.Info("runner.KickRerender", "task", task.ID, "cols", cols, "rows", rows)
 	if err := sess.Stop(); err != nil {
 		// Stop failed — back out the pending entry so a future kick can run.
+		r.mu.Lock()
+		delete(r.pendingRestart, task.ID)
+		delete(r.stopped, task.ID)
+		r.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// Recycle stops a live session and queues a same-task restart with
+// resume=false — a fresh, empty-context session rather than a re-emitted
+// conversation, unlike KickRerender's resume=true. Used by recycle_coord
+// (add-coordinator-context-management D5) for both the self-service and
+// human-forced trigger paths; callers own the idle-wait gating (see
+// hera.RecycleCoord) — once called, Recycle itself acts immediately, mirroring
+// KickRerender's unconditional-once-invoked contract.
+//
+// The caller MUST clear task.SessionID (and persist that clear) before
+// calling Recycle: BuildCmd's non-resume branch pins any non-empty SessionID
+// via --session-id, and a stale (already-used) UUID there would collide
+// rather than mint a fresh session. The caller is also responsible for
+// setting task.Prompt to the desired seed prompt (see
+// hera.BuildRecycleSeedPrompt) — BuildCmd feeds task.Prompt as the new
+// session's opening message.
+//
+// Returns ErrSessionNotFound if no live session exists for the task, or an
+// error if a kick/recycle is already pending. Stop failures propagate as-is.
+func (r *Runner) Recycle(task *model.Task, cfg config.Config, rows, cols uint16) error {
+	if task == nil {
+		return fmt.Errorf("nil task")
+	}
+	r.mu.Lock()
+	sess := r.sessions[task.ID]
+	if sess == nil {
+		r.mu.Unlock()
+		return ErrSessionNotFound
+	}
+	if _, exists := r.pendingRestart[task.ID]; exists {
+		r.mu.Unlock()
+		return fmt.Errorf("restart already pending for task %s", task.ID)
+	}
+	r.pendingRestart[task.ID] = &pendingRestart{
+		task:   task,
+		cfg:    cfg,
+		rows:   rows,
+		cols:   cols,
+		resume: false,
+	}
+	r.stopped[task.ID] = true
+	r.mu.Unlock()
+
+	slog.Info("runner.Recycle", "task", task.ID)
+	if err := sess.Stop(); err != nil {
+		// Stop failed — back out the pending entry so a future recycle can run.
 		r.mu.Lock()
 		delete(r.pendingRestart, task.ID)
 		delete(r.stopped, task.ID)

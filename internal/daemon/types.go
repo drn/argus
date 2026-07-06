@@ -154,6 +154,26 @@ type KickReq struct {
 	Cols      uint16
 }
 
+// RecycleReq is the RPC request to recycle a coordinator's session
+// (add-coordinator-context-management D5). Like KickReq it carries the full
+// task projection so the supervisor's runner can rebuild the command for the
+// in-place restart — but unlike a kick, a recycle always starts fresh
+// (resume=false), so SessionID here MUST already be cleared by the caller and
+// Prompt MUST already carry the assembled seed prompt (see
+// hera.BuildRecycleSeedPrompt). The supervisor resolves cfg via its own
+// cfgFn, so the daemon does not ship config on the wire.
+type RecycleReq struct {
+	TaskID   string
+	Prompt   string
+	Project  string
+	Backend  string
+	Model    string
+	Worktree string
+	Branch   string
+	Rows     uint16
+	Cols     uint16
+}
+
 // StreamHeader is sent by the client on a stream connection to subscribe
 // to a session's output. Since is the monotonic byte offset the client has
 // already received; the daemon replays only [Since, currentTotal) from the
