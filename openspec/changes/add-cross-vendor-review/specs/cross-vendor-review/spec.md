@@ -47,30 +47,30 @@ The review instruction each broad finder runs SHALL be user-owned and selected f
 
 ### Requirement: Vendor-diverse panel composition
 
-The orchestration SHALL compose the panel from the resolved profile's `[panel]`, running each broad finder over the full diff and each lens with its own instruction. Anthropic-family broad finders (e.g. `opus`, `fable`) and lens finders SHALL run as in-session sub-agents; a foreign finder (e.g. `codex`) SHALL run as a spawned session whose output is obtained via `foreign-reviewer-capture`. When no profile resolves, the orchestration SHALL fall back to a built-in default panel.
+The orchestration SHALL compose the panel from the resolved profile's `[panel]`, running each broad finder over the full diff and each lens with its own instruction. Anthropic-family broad finders (e.g. `opus`, `fable`) and lens finders SHALL run as in-session sub-agents. A foreign finder id (e.g. `codex`) SHALL be accepted by the panel grammar as a reserved, valid id, but the orchestration SHALL NOT spawn it until the `foreign-reviewer-capture` primitive lands (deferred per design D-SCOPE); shipped profiles SHALL therefore compose only in-session finders. When no profile resolves, the orchestration SHALL fall back to a built-in default panel.
 
 #### Scenario: Broad finders run over the full diff
 
-- **WHEN** the panel lists `finders = ["opus", "fable", "codex"]`
+- **WHEN** the panel lists `finders = ["opus", "fable"]`
 - **THEN** each broad finder reviews the full diff (none is narrowed to a single lane)
 
-#### Scenario: Foreign finder routed through capture
+#### Scenario: Foreign finder id reserved, not yet spawned
 
-- **WHEN** a finder id resolves to a foreign backend (e.g. `codex`)
-- **THEN** it is run as a spawned reviewer-mode session and its output is obtained via `foreign-reviewer-capture`
+- **WHEN** a `[panel]` names a foreign finder id (e.g. `codex`) that resolves to a configured backend
+- **THEN** the grammar accepts the id, and spawning that finder is deferred to the `foreign-reviewer-capture` capability (shipped profiles compose only in-session finders)
 
 #### Scenario: Fallback panel without a profile
 
 - **WHEN** no diligence profile resolves for the project
 - **THEN** the orchestration composes a built-in default panel rather than failing
 
-### Requirement: Cross-vendor synthesis contract
+### Requirement: Synthesis contract
 
-A single Anthropic synthesizer SHALL consolidate all finder outputs: normalize each into the canonical finding schema (`[AUTO-FIX]`/`[QUESTION]`/`[SPEC-DRIFT]`/`[ACKNOWLEDGED]`/`[SKIP]`); deduplicate while preserving provenance (which finders reported each issue); and assign confidence by cross-vendor corroboration. A foreign finder SHALL NOT make the final `[AUTO-FIX]` determination.
+A single synthesizer SHALL consolidate all finder outputs: normalize each into the canonical finding schema (`[AUTO-FIX]`/`[QUESTION]`/`[SPEC-DRIFT]`/`[ACKNOWLEDGED]`/`[SKIP]`); deduplicate while preserving provenance (which finders reported each issue); and assign confidence by corroboration across finders. The synthesizer SHALL own the final `[AUTO-FIX]` determination — no finder (in-session or, when later added, foreign) makes it.
 
-#### Scenario: Foreign output normalized into the schema
+#### Scenario: Free-form output normalized into the schema
 
-- **WHEN** a foreign finder emits free-form findings
+- **WHEN** a finder emits free-form findings
 - **THEN** the synthesizer normalizes them into the canonical tags rather than trusting the finder's own tags
 
 #### Scenario: Deduplication preserves provenance
@@ -78,10 +78,10 @@ A single Anthropic synthesizer SHALL consolidate all finder outputs: normalize e
 - **WHEN** the same issue is reported by two finders
 - **THEN** the synthesizer emits a single finding recording both finders as its provenance
 
-#### Scenario: Foreign never decides auto-fix
+#### Scenario: Synthesizer owns the auto-fix call
 
-- **WHEN** a finding originates only from a foreign finder
-- **THEN** the final `[AUTO-FIX]` determination is made by the Anthropic synthesizer, not the foreign finder
+- **WHEN** a finding originates from a single finder
+- **THEN** the final `[AUTO-FIX]` determination is made by the synthesizer, not the finder
 
 ### Requirement: Single-finder adversarial gate
 

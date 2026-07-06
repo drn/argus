@@ -32,6 +32,16 @@ This change operationalizes that finding as a first-class, argus-native capabili
 
 ## Decisions
 
+### D-SCOPE — Ship Fable+Opus now; defer foreign-reviewer-capture + cross-vendor validation (owner decision, 2026-07-05)
+
+Aaron's scope call (2026-07-05): because cross-vendor value is **unmeasured** (the validation key is circular — built from Fable+Opus reviews, see D5-findings) and the operational default is Fable:high + Opus:high (D9), this chunk ships the panel machinery at the Fable+Opus default and **reserves** the foreign-vendor slot in the panel grammar. Deferred to a follow-up chunk (bundled with the codex-auth `HERA_OPENAI` fix a live codex leg needs):
+
+- **The `foreign-reviewer-capture` primitive (D3).** Its delta spec is removed from this change; D3 below is retained as the design-of-record for the follow-up.
+- **The codex leg of the panel (D2) and of fix-verification (D4).** The `[panel]` grammar still accepts `codex` as a reserved, valid id, but no shipped profile composes it and `hera-spawn-review` does not spawn it this chunk.
+- **The live cross-vendor validation + vendor-neutral answer key (D5).** The Fable+Opus default is already backed by the prior bake-off (Fable:low + Opus:high = full slice coverage on PR-45); this chunk adds only a manual smoke that the glue composes/injects.
+
+Everything else ships this chunk: `profile_resolve`, the `[panel]` grammar + injected validator, the shipped Fable+Opus profiles, the `hera-spawn-review` glue + `hera-review` default instruction + lenses, the synthesizer + single-finder adversarial gate, and fix-verification as Opus adversarial reasoning.
+
 ### D1 — Native hera-aware orchestration skill, not a ralph upgrade
 
 The orchestration lives in a new hera-aware skill (`hera-spawn-review`, see D8) in the argus repo; ralph is left alone.
@@ -57,6 +67,8 @@ The dangerous failure mode is auto-"fixing" working code from a hallucinated fin
 
 ### D3 — Foreign-reviewer-capture (D10 = option c), only for codex
 
+**DEFERRED (per D-SCOPE) — design-of-record for the follow-up chunk; not built here.**
+
 A first-class capture path: mark a session "reviewer-mode," wrap its prompt so the foreign agent emits its review between sentinels (`<<<ARGUS_REVIEW>>> … <<<END_ARGUS_REVIEW>>>`), extract that block from the already-persisted `~/.argus/sessions/<taskID>.log`, and stamp it into a structured, addressable result the synthesizer reads.
 
 - **Only codex needs this.** Opus, Fable, and the lenses run as **in-session Claude sub-agents** (`Agent` tool, `model=opus|fable`) whose output returns directly — no capture, no worktree, no hera. codex is the sole leg that requires an argus session + capture.
@@ -68,10 +80,12 @@ A distinct pass from per-area review: "does the fix work in the *shipped artifac
 
 - **Default = adversarial artifact *reasoning*** (no build): read the deploy surfaces (Dockerfile, entrypoint, config precedence, what ships into the image, test-suite integrity) and trace "build → running container: is the fix present and functional?" This is exactly what caught the PR-45 bug.
 - **Optional escalation = real run** via the existing `iris_run_checks` where the project ships `script/iris-check`. No new argus-Go.
-- **Cross-vendor here too:** the adversarial pass spawns a codex reviewer via the same capture primitive (the PR-45 catch was foreign). One primitive serves both the panel and fix-verification.
+- **Cross-vendor here too (DEFERRED leg):** in the full design the adversarial pass also spawns a codex reviewer via the same capture primitive (the PR-45 catch was foreign) — one primitive serving both the panel and fix-verification. Per D-SCOPE this chunk ships fix-verification as **Opus adversarial reasoning only**; the codex adversarial leg lands with the capture primitive.
 - **Why a phase, not a separate skill:** it belongs in the review loop; a standalone entrypoint adds surface without benefit now.
 
 ### D5 — Validation harness (in-session judge agents), run at execution
+
+**DEFERRED (per D-SCOPE) — the live cross-vendor validation + vendor-neutral answer key move to the follow-up chunk (a fair test needs the capture primitive + a live codex leg). This chunk relies on the prior bake-off for the shipped Fable+Opus default and adds only a manual glue-composition smoke. D5/D5-findings are retained as the design-of-record + honest measurement caveat.**
 
 Prove `hera-spawn-review` on Sherlock PR-45 @ `cdc3a65` before adoption.
 
