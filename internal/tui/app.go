@@ -3384,7 +3384,7 @@ func (a *App) switchTab(t widget.Tab) {
 // the tab label, and refreshes the rail. Called from switchTab. Must run on the
 // tview main goroutine.
 func (a *App) switchToHeraTab2() {
-	a.header.SetTabLabel(widget.TabHera, "Hera")
+	a.header.SetTabLabel(widget.TabHera, "Projects")
 	// Tab entry always starts with the rail focused; reset the statusbar hint
 	// set so the operator sees rail hints immediately (the rail is the default
 	// region — no focus-machine state persists across tab switches).

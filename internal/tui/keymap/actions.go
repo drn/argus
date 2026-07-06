@@ -151,7 +151,7 @@ var defaultSpecs = map[Context]map[Action]string{
 // actionLabels are the human-readable descriptions used in the help overlay.
 var actionLabels = map[Action]string{
 	ActGlobalQuit: "quit", ActGlobalHelp: "help", ActGlobalTabTasks: "switch to Tasks tab",
-	ActGlobalTabHera: "switch to Hera tab", ActGlobalTabSettings: "switch to Settings tab",
+	ActGlobalTabHera: "switch to Projects tab", ActGlobalTabSettings: "switch to Settings tab",
 	ActGlobalRefresh: "refresh screen", ActGlobalDestroy: "destroy task", ActGlobalFork: "fork task",
 	ActGlobalOpenRepo: "open repo", ActGlobalOpenPR: "open PR", ActGlobalPrune: "prune completed",
 

@@ -34,9 +34,9 @@ struct ContentView: View {
                 Button {
                     app.showingHera.toggle()
                 } label: {
-                    Label("Hera", systemImage: "point.3.filled.connected.trianglepath.dotted")
+                    Label("Projects", systemImage: "point.3.filled.connected.trianglepath.dotted")
                 }
-                .help("Toggle the Hera roster")
+                .help("Toggle the Projects roster")
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {

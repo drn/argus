@@ -28,8 +28,8 @@ func TestTabLabels(t *testing.T) {
 	if len(tabKeys) != 3 {
 		t.Errorf("tabKeys count = %d, want 3", len(tabKeys))
 	}
-	if TabLabels[TabHera] != "Hera" {
-		t.Errorf("TabLabels[TabHera] = %q, want Hera", TabLabels[TabHera])
+	if TabLabels[TabHera] != "Projects" {
+		t.Errorf("TabLabels[TabHera] = %q, want Projects", TabLabels[TabHera])
 	}
 }
 
@@ -184,8 +184,8 @@ func TestHeader_SetTabLabel_RenderedInDraw(t *testing.T) {
 	if !strings.Contains(all, "DAG") {
 		t.Errorf("overridden label DAG not found in rendered output: %q", all)
 	}
-	if strings.Contains(all, "Hera") {
-		t.Errorf("original label Hera should not appear after override: %q", all)
+	if strings.Contains(all, "Projects") {
+		t.Errorf("original label Projects should not appear after override: %q", all)
 	}
 }
 

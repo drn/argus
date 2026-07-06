@@ -73,7 +73,7 @@ var helpLayout = []helpGroup{
 		{"h / l", "focus rail / pane"},
 		{"Enter / ◀ / ▶", "toggle / cycle settings"},
 	}},
-	{title: "Hera View (rail)", ctx: keymap.CtxHeraRail, extra: []HelpBinding{
+	{title: "Projects View (rail)", ctx: keymap.CtxHeraRail, extra: []HelpBinding{
 		{"j / k / space", "navigate / collapse / expand"},
 		{"/", "filter rail by name (↑/↓ navigate, Enter accepts, Esc clears)"},
 		{"Enter", "enter pane (revive dead/suspended session)"},
@@ -89,7 +89,7 @@ var helpLayout = []helpGroup{
 // staticHelpSections are fully structural — no keymap actions back them.
 var staticHelpSections = []HelpSection{
 	{
-		Title: "Hera View (plan DAG)",
+		Title: "Projects View (plan DAG)",
 		Bindings: []HelpBinding{
 			{"↑↓ / j / k", "move between plan stages"},
 			{"←→ / h / l", "move slots (walk members in a fanned group)"},
