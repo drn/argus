@@ -295,16 +295,16 @@ A few local-only operations gracefully degrade in remote mode: spawning a fresh 
 
 ### macOS app
 
-A native SwiftUI client (`ArgusMac`) built on **ArgusKit**, a typed Swift SDK over the daemon's REST + SSE API. It drives the same daemon as the TUI and the PWA — there is no separate backend.
+A native SwiftUI client (`Argus`) built on **ArgusKit**, a typed Swift SDK over the daemon's REST + SSE API. It drives the same daemon as the TUI and the PWA — there is no separate backend.
 
 **Requirements:** macOS 15+ and the **Swift 6.3 Command Line Tools** (`xcode-select --install`). No Xcode or `xcodebuild` needed — the app is a SwiftPM package (`macos/Package.swift`) built entirely from the CLT toolchain. SwiftTerm (the live-terminal widget) is the only third-party dependency; ArgusKit itself is pure Foundation.
 
 | Target          | Command                                        | What it does                                                                                     |
 | --------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `make mac-build` | `swift build --disable-sandbox`               | Compile ArgusKit + ArgusMac.                                                                     |
+| `make mac-build` | `swift build --disable-sandbox`               | Compile ArgusKit + Argus.                                                                        |
 | `make mac-test`  | `swift run --disable-sandbox ArgusKitTests`   | Run the ArgusKit test suite. **This is the test entry point, not `swift test`** (see below).     |
-| `make mac-run`   | `swift run --disable-sandbox ArgusMac`        | Build and launch the app from source.                                                            |
-| `make mac-app`   | `./scripts/mac-app.sh`                         | Assemble the double-clickable `macos/dist/ArgusMac.app` (release build + `Info.plist` + codesign) and print the `open` command. |
+| `make mac-run`   | `swift run --disable-sandbox Argus`           | Build and launch the app from source.                                                            |
+| `make mac-app`   | `./scripts/mac-app.sh`                         | Assemble the double-clickable `macos/dist/Argus.app` (release build + `Info.plist` + codesign) and print the `open` command. |
 
 `--disable-sandbox` is required because macOS forbids nested `sandbox-exec` profiles: when you build from inside an argus agent sandbox (how this repo is dogfooded), SwiftPM's own manifest sandbox fails to apply. The app's own manifest needs no protection from us, so disabling it makes the targets work everywhere.
 
@@ -320,7 +320,7 @@ A native SwiftUI client (`ArgusMac`) built on **ArgusKit**, a typed Swift SDK ov
 ```sh
 # run the bundle binary directly — `open` does not pass environment variables through
 ARGUS_MAC_SELECT_TASK=my-task ARGUS_MAC_INITIAL_TAB=diff \
-  macos/dist/ArgusMac.app/Contents/MacOS/ArgusMac
+  macos/dist/Argus.app/Contents/MacOS/Argus
 ```
 
 **Settings:** by default the app connects to `http://127.0.0.1:7743` using the master token from `~/.argus/api-token`. To drive a **remote** daemon (e.g. over Tailscale), set a **Server URL override** (stored in `UserDefaults`) and a **token override** in Preferences — the token is written to the macOS **Keychain**, never to disk. Preferences also carries the needs-input / idle notification toggles and the menu-bar-extra toggle.

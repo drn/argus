@@ -12,7 +12,7 @@ import os
 ///
 /// ## Non-bundled safety
 /// `UNUserNotificationCenter.current()` traps when the process has no bundle
-/// identifier (i.e. `swift run ArgusMac`, a bare Mach-O). We detect that and
+/// identifier (i.e. `swift run Argus`, a bare Mach-O). We detect that and
 /// degrade to a no-op so the app still runs outside an `.app` bundle; inside a
 /// real bundle the full path is exercised.
 @MainActor

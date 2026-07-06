@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 /// A tiny generic-password wrapper over the Security framework for the single
-/// secret ArgusMac persists: the API token override.
+/// secret Argus persists: the API token override.
 ///
 /// The token never leaves the Keychain except to build an ``ArgusKit/ArgusConfig``
 /// in memory; it is never logged or printed.

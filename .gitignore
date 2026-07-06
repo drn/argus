@@ -60,7 +60,7 @@ web-tests/.cache/
 .workflow/
 .bug-bash/
 
-# macOS SwiftPM build (ArgusMac / ArgusKit)
+# macOS SwiftPM build (Argus / ArgusKit)
 macos/.build/
 
 # macOS .app bundle assembled by `make mac-app` (scripts/mac-app.sh)
