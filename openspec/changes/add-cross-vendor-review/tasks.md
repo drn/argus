@@ -38,7 +38,7 @@ Moved to the follow-up chunk — see "Deferred" below. The linear chain skips fr
 - [x] 4.2 Synthesizer step in the glue: normalize→dedup-with-provenance→corroboration confidence vote→classify; single-finder→adversarial-verify-or-downgrade; the synthesizer owns the final `[AUTO-FIX]` call (no finder makes it)
 - [x] 4.3 Fix-verification phase (**Opus adversarial reasoning default**; optional `iris_run_checks` when `script/iris-check` present) + fix-and-re-review loop (fix-workers follow project conventions, report confidence)
 - [x] 4.4 Default `hera-review` review instruction (encodes ralph's review contract) + shipped lens instruction(s) (e.g. `hera-review-test-adversary`); fallback default panel when no profile resolves
-- [ ] 4.5 Manual smoke on a tiny diff to confirm the glue composes + injects correctly (this is the shipped validation for this chunk; the Fable+Opus catch-rate is already backed by the prior bake-off)
+- [x] 4.5 Manual smoke on a tiny diff to confirm the glue composes + injects correctly (this is the shipped validation for this chunk; the Fable+Opus catch-rate is already backed by the prior bake-off) — see `SMOKE.md`. Ran as a 2-of-3-source panel (fable + test-adversary; opus broad finder unavailable in-session, loudly noted); verified D2/D2a corroboration + single-finder adversarial gate + provenance + codex-skip
 
 ## 5. ralph-review node (implementation quality review)
 

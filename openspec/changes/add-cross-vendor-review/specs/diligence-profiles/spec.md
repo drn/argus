@@ -72,6 +72,15 @@ The system SHALL validate that a profile conforms: every archetype table names a
 - **WHEN** no panel-grammar validator is injected and a profile carries a structurally well-formed `[panel]` table
 - **THEN** validation accepts it on structural shape alone
 
+### Requirement: Profile validation CLI affordance
+
+The command-line `validate` affordance SHALL inject the same reviewer-panel-grammar validator (`internal/review.NewValidator`) that the daemon-side/MCP consumption callers inject, so a malformed `[panel]` table is reported at `argus validate` — not only at spawn-time resolution or `profile_resolve`. This closes the gap where a `[panel]` typo could pass `argus validate` clean while silently fail-opening the profile's entire archetype/rigor tiering at spawn (see design.md's Open Question #2 resolution).
+
+#### Scenario: CLI reports a malformed panel
+
+- **WHEN** `argus validate` runs against a profile whose `[panel]` table fails the reviewer-panel-grammar validator (e.g. an unknown finder id)
+- **THEN** it reports the panel-grammar error and exits non-zero, the same as any other conformance error
+
 ### Requirement: Reviewer-panel forward-reference seam
 
 The `[panel]` table SHALL be retained verbatim by the loader as a block whose composition grammar is defined by the `cross-vendor-review` capability. The `diligence-profiles` capability SHALL NOT hard-code the panel's grammar; instead it SHALL accept an injected panel-grammar validator (mirroring the injected known-models function) and apply it during validation when supplied, so that panel semantics live with the owning capability and no `profiles → review` import dependency is introduced.
