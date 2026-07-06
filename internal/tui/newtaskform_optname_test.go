@@ -63,8 +63,8 @@ func rowIndexOf(rows []string, want string) int {
 
 // --- forms-and-modals: field presence / placeholder / focus / paste --------
 
-// Scenario: Name field renders after the prompt with placeholder.
-func TestNewTaskForm_NameField_RendersAfterPromptWithPlaceholder(t *testing.T) {
+// Scenario: Name field renders before the prompt with placeholder.
+func TestNewTaskForm_NameField_RendersBeforePromptWithPlaceholder(t *testing.T) {
 	f := optNameForm(t)
 	f.SetRect(0, 0, 80, 24)
 	sim := drawSim(t)
@@ -74,8 +74,9 @@ func TestNewTaskForm_NameField_RendersAfterPromptWithPlaceholder(t *testing.T) {
 	rows := screenRows(sim)
 	testutil.Equal(t, anyContains(rows, "Name:"), true)
 	testutil.Equal(t, anyContains(rows, "(optional)"), true)
-	// The name field is rendered AFTER (below) the prompt label.
-	testutil.Equal(t, rowIndexOf(rows, "Name:") > rowIndexOf(rows, "Prompt:"), true)
+	// The name field is rendered BEFORE (above) the prompt label, right under
+	// the modal title.
+	testutil.Equal(t, rowIndexOf(rows, "Name:") < rowIndexOf(rows, "Prompt:"), true)
 }
 
 // Scenario: Name field is reachable in focus order (immediately after prompt).
