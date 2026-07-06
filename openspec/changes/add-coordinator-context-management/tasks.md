@@ -73,9 +73,9 @@ than exposing independent branches that would need reconciling back together.
 
 **Depends on:** Stage 7
 
-- [ ] 8.1 Add gotcha entries to `context/knowledge/gotchas/orchestration.md` (or the appropriate existing file): the Stop-hook's global-settings requirement and self-gating rationale, the `hera_status` param additions, `recycle_coord`'s same-task mechanism and stray-job cleanup, the `B` keybinding's idle-vs-immediate distinction from self-service recycle
-- [ ] 8.2 Update `context/knowledge/index.md` bullet counts for any touched gotcha file
-- [ ] 8.3 Update the README Reference appendix: new MCP tool params, new keybinding table entry (per this repo's "top half is marketing, appendix updates in place" convention — no top-half edit expected for this change)
+- [x] 8.1 Add gotcha entries to `context/knowledge/gotchas/orchestration.md` (or the appropriate existing file): the Stop-hook's global-settings requirement and self-gating rationale, the `hera_status` param additions, `recycle_coord`'s same-task mechanism and stray-job cleanup, the `B` keybinding's idle-vs-immediate distinction from self-service recycle
+- [x] 8.2 Update `context/knowledge/index.md` bullet counts for any touched gotcha file
+- [x] 8.3 Update the README Reference appendix: new MCP tool params, new keybinding table entry (per this repo's "top half is marketing, appendix updates in place" convention — no top-half edit expected for this change)
 
 ## 9. Pre-PR gate
 
