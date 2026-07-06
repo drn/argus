@@ -92,6 +92,13 @@ An interim run on the auth+runtime+tenancy slice — all six configs (fable-low,
 - **Effort is not monotonic:** opus-xhigh was the best single reviewer (10/18) yet added no unique catch; fable-low beat fable-medium; sonnet5-xhigh self-limited to a test-coverage lens and scored 3/18. Reviewer framing/scope dominates the effort dial.
 - **Precision was near-perfect** (≈0 false positives); **6 key issues were caught by nobody**; and 5 of 6 reviewers flagged a real service-JWT replay bug that was *missing from the interim key* — evidence the key itself needs pooling.
 - **Scope/limits:** n=1 slice; LLM-judge scoring carries ~±1-2 issue variance (only large gaps are robust). This does **not** overturn the full-PR finding in Context — it exposes a *measurement* requirement (the vendor-neutral key), which is the change D5 now bakes in.
+- **The key is CIRCULAR — built from prior Fable + Opus reviews — so these numbers cannot decide cross-vendor value.** The 18-issue key was consolidated from Fable (`r1-auth-fable.md`, and `fable-crit-review.md` — the experiment's primary ground-truth source) + Opus (`r1-auth-opus.md`) + sweeps. Scoring configs against it measures *reproduction of prior Fable/Opus findings* and structurally cannot credit a foreign model — codex's distinct value landed as 7 out-of-key "extra-real" cross-tenant finds. Honest status: **cross-vendor value is UNMEASURED, not disproven** (pending the vendor-neutral key). "codex redundant" reflects the key's authorship, not codex's ceiling; "Fable:high is top performer" is likewise unmeasured here (Fable:high fell back — the matrix Fable is Fable:*low*).
+
+### D9 — Operational panel default + fail-loud Fable (owner decision)
+
+- **Highest-quality panel = Fable:high + Opus:high**, falling back to **Fable:low** when Fable:high is unavailable. Rationale: Fable is the current frontier model ("Fable leads, Opus catches its misses"); this is the strongest panel we can *actually run*. This supersedes any "codex + Anthropic" default until a vendor-neutral key measures cross-vendor value.
+- **Fail-loud Fable:** the machine setting *"switch models when a message is flagged"* is DISABLED, so Fable:high now **stops instead of silently substituting Opus**. A panel can therefore trust a Fable finder is really Fable — but a panel run must handle a Fable:high *stop* (fall back to Fable:low), not a silent Opus swap.
+- **Cross-vendor (codex/gemini) stays supported** by the foreign-reviewer-capture primitive — it is the mechanism that makes a fair vendor-neutral test possible — but it is **not** the justification for the capability until such a test measures a real lift.
 
 ### D6 — `profile_resolve` MCP tool: thin wrapper, opaque pass-through
 
