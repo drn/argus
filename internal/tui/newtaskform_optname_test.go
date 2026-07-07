@@ -63,8 +63,8 @@ func rowIndexOf(rows []string, want string) int {
 
 // --- forms-and-modals: field presence / placeholder / focus / paste --------
 
-// Scenario: Name field renders before the prompt with placeholder.
-func TestNewTaskForm_NameField_RendersBeforePromptWithPlaceholder(t *testing.T) {
+// Scenario: Name field renders below the model field and above the prompt.
+func TestNewTaskForm_NameField_RendersBetweenModelAndPromptWithPlaceholder(t *testing.T) {
 	f := optNameForm(t)
 	f.SetRect(0, 0, 80, 24)
 	sim := drawSim(t)
@@ -74,19 +74,24 @@ func TestNewTaskForm_NameField_RendersBeforePromptWithPlaceholder(t *testing.T) 
 	rows := screenRows(sim)
 	testutil.Equal(t, anyContains(rows, "Name:"), true)
 	testutil.Equal(t, anyContains(rows, "(optional)"), true)
-	// The name field is rendered BEFORE (above) the prompt label, right under
-	// the modal title.
+	// The name field is rendered below (after) the model field and above
+	// (before) the prompt label.
+	testutil.Equal(t, rowIndexOf(rows, "Model:") < rowIndexOf(rows, "Name:"), true)
 	testutil.Equal(t, rowIndexOf(rows, "Name:") < rowIndexOf(rows, "Prompt:"), true)
 }
 
-// Scenario: Name field is reachable in focus order (immediately after prompt).
-func TestNewTaskForm_NameField_TabReachableAfterPrompt(t *testing.T) {
+// Scenario: Name field is reachable in focus order (immediately after model,
+// immediately before prompt).
+func TestNewTaskForm_NameField_TabReachableAfterModel(t *testing.T) {
 	f := optNameForm(t)
-	testutil.Equal(t, f.focused, ntFieldPrompt)
+	f.focused = ntFieldModel
 
 	h := f.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyTab, 0, 0), func(p tview.Primitive) {})
 	testutil.Equal(t, f.focused, ntFieldName)
+
+	h(tcell.NewEventKey(tcell.KeyTab, 0, 0), func(p tview.Primitive) {})
+	testutil.Equal(t, f.focused, ntFieldPrompt)
 }
 
 // Scenario: Name field accepts pasted text.

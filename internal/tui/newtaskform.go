@@ -18,11 +18,11 @@ import (
 )
 
 const (
-	ntFieldName    = 0
-	ntFieldProject = 1
-	ntFieldBranch  = 2
-	ntFieldBackend = 3
-	ntFieldModel   = 4
+	ntFieldProject = 0
+	ntFieldBranch  = 1
+	ntFieldBackend = 2
+	ntFieldModel   = 3
+	ntFieldName    = 4
 	ntFieldPrompt  = 5
 	ntFieldCount   = 6
 )
@@ -44,11 +44,11 @@ type NewTaskForm struct {
 	cursorPos    int    // cursor position in prompt runes
 	scrollOffset int    // first visible wrapped line (for scrolling)
 	promptWidth  int    // cached inner width from last Draw, used by cursor movement
-	focused      int    // 0=name, 1=project, 2=branch, 3=backend, 4=model, 5=prompt
+	focused      int    // 0=project, 1=branch, 2=backend, 3=model, 4=name, 5=prompt
 
-	// optional task-name field: a single-line input rendered at the top of the
-	// form, above the project field. Empty (or whitespace-only) ⇒ the task name
-	// is derived from the prompt as before; non-empty ⇒ the entered (trimmed +
+	// optional task-name field: a single-line input rendered below the model
+	// field and above the prompt. Empty (or whitespace-only) ⇒ the task name is
+	// derived from the prompt as before; non-empty ⇒ the entered (trimmed +
 	// sanitized) name is used and background auto-naming is suppressed. Mirrors
 	// the project/branch inputs.
 	nameInput     []rune
@@ -972,7 +972,7 @@ func (f *NewTaskForm) handleBranchKey(event *tcell.EventKey) {
 // is a plain single-line text input (no autocomplete), mirroring the branch
 // field's editing keys. Enter submits the form using the same guard as the
 // prompt's Enter, so the user can fill the name in and submit directly; Up/Down
-// move focus within the cycle (prompt above, project below).
+// move focus within the cycle (model above, prompt below).
 func (f *NewTaskForm) handleNameKey(event *tcell.EventKey) {
 	mod := event.Modifiers()
 	hasAlt := mod&tcell.ModAlt != 0
@@ -988,10 +988,10 @@ func (f *NewTaskForm) handleNameKey(event *tcell.EventKey) {
 		}
 		return
 	case tcell.KeyDown:
-		f.focused = ntFieldProject
+		f.focused = ntFieldPrompt
 		return
 	case tcell.KeyUp:
-		f.focused = ntFieldPrompt
+		f.focused = ntFieldModel
 		return
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if hasAlt {
@@ -1512,7 +1512,7 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 		}
 	}
 
-	// Modal height: border(1) + padding(1) + name(1) + project(1) + projAC(P) + branch(1) + branchAC(B) + backend(1) + model(1) + label(1) + prompt(N) + ac(M) + gap(1) + help(1) + padding(1) + border(1)
+	// Modal height: border(1) + padding(1) + project(1) + projAC(P) + branch(1) + branchAC(B) + backend(1) + model(1) + name(1) + label(1) + prompt(N) + ac(M) + gap(1) + help(1) + padding(1) + border(1)
 	modalH := 12 + visiblePromptLines + acRows + projACRows + branchACRows
 	if f.errMsg != "" {
 		modalH += 2
@@ -1550,10 +1550,6 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 	innerX := mx + 2
 	row := my + 2
 
-	// Optional name field (rendered first, above the project field).
-	f.drawNameField(screen, innerX, row, innerW)
-	row++
-
 	// Project typeahead
 	f.drawProjectField(screen, innerX, row, innerW)
 	row++
@@ -1576,6 +1572,10 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 
 	// Model override field
 	f.drawModelField(screen, innerX, row, innerW)
+	row++
+
+	// Optional name field (rendered after model, above the prompt).
+	f.drawNameField(screen, innerX, row, innerW)
 	row++
 
 	// Prompt field
@@ -1890,8 +1890,8 @@ func (f *NewTaskForm) drawBranchField(screen tcell.Screen, x, y, w int) {
 	}
 }
 
-// drawNameField renders the optional task-name input, at the top of the form
-// above the project field. Single-line, mirroring the branch field (caret when
+// drawNameField renders the optional task-name input, below the model field
+// and above the prompt. Single-line, mirroring the branch field (caret when
 // focused, dim "(optional)" placeholder when empty and unfocused). No
 // autocomplete.
 func (f *NewTaskForm) drawNameField(screen tcell.Screen, x, y, w int) {
