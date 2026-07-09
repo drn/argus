@@ -495,6 +495,85 @@ func TestAwaitingInputFingerprint(t *testing.T) {
 	})
 }
 
+// TestParkedSelectionSignal pins the BUG-029 escalation heuristic's per-tick
+// qualifying condition: the unambiguous selection-prompt shape present AND the
+// "working" affordance absent, over either the raw tail (linear fast path) or
+// the emulated screen (alt-screen fallback) — mirroring the
+// raw-first-then-emulated pattern used throughout this file.
+func TestParkedSelectionSignal(t *testing.T) {
+	t.Run("linear parked selection prompt qualifies", func(t *testing.T) {
+		r := &ScreenRenderer{}
+		buf := []byte("Do you want to proceed?\n❯ 1. Yes\n  2. No\n")
+		testutil.Equal(t, ParkedSelectionSignal(r, buf, 80, 24), true)
+	})
+
+	t.Run("linear selection prompt WHILE WORKING does not qualify", func(t *testing.T) {
+		r := &ScreenRenderer{}
+		buf := []byte("❯ 1. Yes\r  2. No\r✻ Cogitating… (8s · esc to interrupt)\r")
+		testutil.Equal(t, ParkedSelectionSignal(r, buf, 80, 24), false)
+	})
+
+	t.Run("no selection prompt does not qualify", func(t *testing.T) {
+		r := &ScreenRenderer{}
+		buf := []byte("Reading foo.go\nDone.\n")
+		testutil.Equal(t, ParkedSelectionSignal(r, buf, 80, 24), false)
+	})
+
+	t.Run("empty buffer does not qualify", func(t *testing.T) {
+		testutil.Equal(t, ParkedSelectionSignal(&ScreenRenderer{}, nil, 80, 24), false)
+	})
+
+	t.Run("alt-screen parked selection prompt qualifies via the emulated screen", func(t *testing.T) {
+		r := &ScreenRenderer{}
+		testutil.Equal(t, ParkedSelectionSignal(r, []byte(altScreenPromptFrame("3s", "✻")), 80, 24), true)
+	})
+
+	t.Run("alt-screen selection prompt WHILE WORKING does not qualify", func(t *testing.T) {
+		r := &ScreenRenderer{}
+		testutil.Equal(t, ParkedSelectionSignal(r, []byte(altScreenQuestionFrame("3s", "✻", true)), 80, 24), false)
+	})
+
+	t.Run("nil renderer disables the alt-screen fallback", func(t *testing.T) {
+		testutil.Equal(t, ParkedSelectionSignal(nil, []byte(altScreenPromptFrame("3s", "✻")), 80, 24), false)
+	})
+}
+
+// TestEscalateParkedSelection pins the BUG-029 bounded-escalation counter: a
+// pure (prevTicks, qualifies) -> (newTicks, escalated) step function. Reset on
+// any non-qualifying tick (not a pause), escalate only once the streak reaches
+// NeedsInputEscalationTicks.
+func TestEscalateParkedSelection(t *testing.T) {
+	t.Run("non-qualifying tick resets to zero and never escalates", func(t *testing.T) {
+		ticks, escalated := EscalateParkedSelection(NeedsInputEscalationTicks-1, false)
+		testutil.Equal(t, ticks, 0)
+		testutil.Equal(t, escalated, false)
+	})
+
+	t.Run("qualifying streak escalates exactly at the threshold, not before", func(t *testing.T) {
+		ticks := 0
+		escalated := false
+		for i := 0; i < NeedsInputEscalationTicks-1; i++ {
+			ticks, escalated = EscalateParkedSelection(ticks, true)
+			testutil.Equal(t, escalated, false)
+		}
+		testutil.Equal(t, ticks, NeedsInputEscalationTicks-1)
+		ticks, escalated = EscalateParkedSelection(ticks, true)
+		testutil.Equal(t, ticks, NeedsInputEscalationTicks)
+		testutil.Equal(t, escalated, true)
+	})
+
+	t.Run("streak broken then resumed does not carry the prior count", func(t *testing.T) {
+		ticks := NeedsInputEscalationTicks - 1 // one tick away from escalating
+		ticks, escalated := EscalateParkedSelection(ticks, false)
+		testutil.Equal(t, ticks, 0)
+		testutil.Equal(t, escalated, false)
+		// Resuming the streak starts over from 1, not N.
+		ticks, escalated = EscalateParkedSelection(ticks, true)
+		testutil.Equal(t, ticks, 1)
+		testutil.Equal(t, escalated, false)
+	})
+}
+
 func TestBlockedOnPrompt(t *testing.T) {
 	t.Run("nil session is not blocked", func(t *testing.T) {
 		testutil.Equal(t, BlockedOnPrompt(nil), false)
@@ -693,6 +772,68 @@ func TestContentIdle(t *testing.T) {
 		r := &ScreenRenderer{}
 		tailOf := func(string) []byte { return nil }
 		idle, _ := ContentIdle([]string{"w"}, nil, tailOf, size, r, nil, t0)
+		testutil.Equal(t, len(idle), 0)
+	})
+
+	// TestContentIdle/escalation pins BUG-029: a parked selection prompt whose
+	// surrounding tail also carries unrelated per-tick-varying content (a status
+	// counter, here) never lets the full-screen fingerprint converge — so the
+	// ordinary stability timer restarts every tick (`since` never carries
+	// forward) and content-idle would otherwise NEVER fire, leaving the rail
+	// spinner running forever. The escalation counter is independent of the
+	// fingerprint and must still fire after NeedsInputEscalationTicks.
+	t.Run("never-converging fingerprint escalates to content-idle after N ticks", func(t *testing.T) {
+		r := &ScreenRenderer{}
+		n := 0
+		tailOf := func(string) []byte {
+			return []byte(altScreenPromptFrame("3s", "✻") + "\x1b[10;1Hnoise " + string(rune('a'+n)))
+		}
+		var st *ContentIdleState
+		for i := 0; i < NeedsInputEscalationTicks-1; i++ {
+			n = i
+			var idle []string
+			// Advance by only 1s per tick (well under idleThreshold=3s) so the
+			// ordinary wall-clock stability path cannot be what fires idle.
+			idle, st = ContentIdle([]string{"w"}, nil, tailOf, size, r, st, t0.Add(time.Duration(i)*time.Second))
+			testutil.Equal(t, len(idle), 0)
+		}
+		n = NeedsInputEscalationTicks - 1
+		idle, _ := ContentIdle([]string{"w"}, nil, tailOf, size, r, st, t0.Add(time.Duration(NeedsInputEscalationTicks-1)*time.Second))
+		testutil.DeepEqual(t, idle, []string{"w"})
+	})
+
+	t.Run("escalation counter resets when the working affordance appears alongside the same selection shape", func(t *testing.T) {
+		r := &ScreenRenderer{}
+		n := 0
+		tailOf := func(string) []byte {
+			return []byte(altScreenPromptFrame("3s", "✻") + "\x1b[10;1Hnoise " + string(rune('a'+n)))
+		}
+		// Same selection-prompt shape as tailOf, but with the "esc to interrupt"
+		// working affordance ALSO present — must suppress qualification even
+		// though the selection cursor is still on screen.
+		workingTail := func(string) []byte {
+			return []byte("\x1b[?1049h\x1b[2J" +
+				"\x1b[1;1H✻ Cogitating… (4s · esc to interrupt)" +
+				"\x1b[3;5HDo you want to make this edit?" +
+				"\x1b[5;5H1. Yes\x1b[6;5H2. No" +
+				"\x1b[5;3H❯" +
+				"\x1b[8;1H\x1b[?25l")
+		}
+		var st *ContentIdleState
+		half := NeedsInputEscalationTicks / 2
+		for i := 0; i < half; i++ {
+			n = i
+			var idle []string
+			idle, st = ContentIdle([]string{"w"}, nil, tailOf, size, r, st, t0.Add(time.Duration(i)*time.Second))
+			testutil.Equal(t, len(idle), 0)
+		}
+		// Working affordance appears for one tick — must reset the counter.
+		idle, st2 := ContentIdle([]string{"w"}, nil, workingTail, size, r, st, t0.Add(time.Duration(half)*time.Second))
+		testutil.Equal(t, len(idle), 0)
+		// Resume the parked prompt: must NOT immediately escalate since the
+		// streak restarted rather than resumed from half.
+		n = half + 1
+		idle, _ = ContentIdle([]string{"w"}, nil, tailOf, size, r, st2, t0.Add(time.Duration(half+1)*time.Second))
 		testutil.Equal(t, len(idle), 0)
 	})
 }
