@@ -867,12 +867,24 @@ func (p *HeraPage) keys() *keymap.Keymap {
 // Ctrl+Q (focus ladder) are handled by the caller before this; nav keys
 // (j/k/↑/↓/space) fall through to the rail.
 func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
-	// While the rail is in `/` search INPUT mode every keystroke is filter input,
-	// not a command: return false so the key falls through to rail.InputHandler
-	// (which appends it to the query / handles Esc·Enter·Backspace). This also
-	// suppresses the Enter-reattach and Ctrl+D paths below while typing.
+	// While the rail is in `/` search INPUT mode every keystroke is filter
+	// input, not a command — EXCEPT Enter, which is special-cased below to
+	// select the CURRENT match (auto-picked while typing, or wherever Up/Down
+	// moved it) and jump into it, clearing the filter in the SAME keystroke
+	// (BUG-028-RAIL; no more separate "lock" step). Every other key returns false
+	// here so it falls through to rail.InputHandler (which appends it to the
+	// query / handles Esc·Backspace). This also suppresses the Ctrl+D path
+	// below while typing.
 	if p.rail.Filtering() {
-		return false
+		if event.Key() != tcell.KeyEnter {
+			return false
+		}
+		// Clear FIRST: ClearFilter re-pins the cursor, by stable identity, onto
+		// the SAME row in the now-unfiltered tree, so `sel` below resolves the
+		// operator's live-selected match correctly whether it was auto-picked
+		// or arrow-navigated. The Enter-reattach logic then runs exactly as it
+		// would for a non-filtering Enter.
+		p.rail.ClearFilter()
 	}
 	sel := p.rail.Selection()
 	// Enter is structural (reattach + focus advance) and not rebindable — it

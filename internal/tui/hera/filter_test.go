@@ -156,16 +156,16 @@ func TestRail_FilterPrunesFreelanceAndArchiveHeaders(t *testing.T) {
 	testutil.Equal(t, r.depthOf("delta") >= 0, true) // auto-expanded
 }
 
-func TestRail_FilterEscClearsEnterAccepts(t *testing.T) {
+// TestRail_FilterEscClears pins Esc's discard behavior: full reset, no
+// selection carried through the clear beyond identity-based cursor restore.
+func TestRail_FilterEscClears(t *testing.T) {
 	r := NewRail()
 	r.SetModel(filterModel())
 	h := r.InputHandler()
 
-	// `/` enters input mode.
 	h(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), noFocus)
 	testutil.Equal(t, r.Filtering(), true)
 
-	// Type "alpha".
 	for _, ru := range "alpha" {
 		h(tcell.NewEventKey(tcell.KeyRune, ru, tcell.ModNone), noFocus)
 	}
@@ -177,27 +177,50 @@ func TestRail_FilterEscClearsEnterAccepts(t *testing.T) {
 	h(tcell.NewEventKey(tcell.KeyBackspace2, 0, tcell.ModNone), noFocus)
 	testutil.Equal(t, r.filterQuery, "alph")
 
-	// Enter accepts: input mode off, query stays, rail stays narrowed.
-	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
-	testutil.Equal(t, r.Filtering(), false)
-	testutil.Equal(t, r.filterQuery, "alph")
-	testutil.Equal(t, r.depthOf("alpha") >= 0, true)
-
-	// j/k now navigate the filtered set (normal nav resumed).
-	before := r.CursorIndex()
-	h(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone), noFocus)
-	if r.CursorIndex() == before && r.Rows() > 1 {
-		t.Error("j did not move the cursor within the filtered set")
-	}
-
-	// Re-open `/` preserves the query for editing, then Esc clears everything.
-	h(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), noFocus)
-	testutil.Equal(t, r.Filtering(), true)
-	testutil.Equal(t, r.filterQuery, "alph")
 	h(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone), noFocus)
 	testutil.Equal(t, r.Filtering(), false)
 	testutil.Equal(t, r.filterQuery, "")
 	testutil.Equal(t, r.depthOf("gamma") >= 0, true) // full rail restored
+
+	// Re-opening `/` always starts a fresh (empty) query — there is no
+	// "preserved for editing" state anymore (BUG-028-RAIL: Enter/Esc both fully
+	// clear).
+	h(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), noFocus)
+	testutil.Equal(t, r.Filtering(), true)
+	testutil.Equal(t, r.filterQuery, "")
+}
+
+// TestRail_FilterEnterSelectsAndClears pins the NEW one-Enter behavior at the
+// bare-Rail level (BUG-028-RAIL, supersedes the old "Enter accepts, query stays,
+// input mode off" two-step). A bare Rail (no HeraPage wrapper) can't fire the
+// reattach half itself, but it MUST still fully clear the filter — query reset
+// AND input mode off — in a SINGLE Enter, exactly like Esc, while re-pinning the
+// cursor by identity onto the row that was selected under the filter so a
+// HeraPage-level caller (which resolves Selection() BEFORE clearing) sees the
+// right target.
+func TestRail_FilterEnterSelectsAndClears(t *testing.T) {
+	r := NewRail()
+	r.SetModel(filterModel())
+	h := r.InputHandler()
+
+	h(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), noFocus)
+	for _, ru := range "alpha" {
+		h(tcell.NewEventKey(tcell.KeyRune, ru, tcell.ModNone), noFocus)
+	}
+	testutil.Equal(t, r.Filtering(), true)
+	sel := r.Selected()
+	testutil.Equal(t, sel != nil && sel.Name == "alpha", true)
+
+	// A SINGLE Enter — no separate "lock" step.
+	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, r.Filtering(), false)
+	testutil.Equal(t, r.filterQuery, "")
+	testutil.Equal(t, r.depthOf("gamma") >= 0, true) // full rail restored
+
+	// The cursor still rests on "alpha" (re-pinned by stable identity across
+	// the clear-triggered rebuild).
+	sel2 := r.Selected()
+	testutil.Equal(t, sel2 != nil && sel2.Name == "alpha", true)
 }
 
 func TestRail_FilterArrowsNavigateWhileTyping(t *testing.T) {
@@ -205,11 +228,14 @@ func TestRail_FilterArrowsNavigateWhileTyping(t *testing.T) {
 	r.SetModel(filterModel())
 	h := r.InputHandler()
 
-	// Enter filter mode and type a query that keeps MULTIPLE selectable rows
-	// visible: "co" matches the "coord" role in both orchestrators, so their
-	// headers (ancestry) plus the matching roles all survive the narrow.
+	// Enter filter mode and type a query that keeps MULTIPLE real (non
+	// ancestry-only) matches visible: "a" matches "alpha", "gamma", the
+	// freelancer "free-zeta", and the archived "delta" — none of the headers
+	// on the path to them (R, C's bridging "bridge" row, "old-orch") contain
+	// "a" themselves, so they render as ancestry-only (non-selectable) and are
+	// skipped by navigation.
 	h(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), noFocus)
-	for _, ru := range "co" {
+	for _, ru := range "a" {
 		h(tcell.NewEventKey(tcell.KeyRune, ru, tcell.ModNone), noFocus)
 	}
 	testutil.Equal(t, r.Filtering(), true)
@@ -217,12 +243,15 @@ func TestRail_FilterArrowsNavigateWhileTyping(t *testing.T) {
 		t.Fatalf("filtered set too small to navigate: %d rows", r.Rows())
 	}
 
-	// The cursor starts on a visible, selectable filtered-in row.
+	// The cursor starts on the first REAL match — "alpha" — auto-selected live
+	// as the operator typed (BUG-028-RAIL), not merely "some selectable row".
 	testutil.Equal(t, r.rows[r.CursorIndex()].selectable(), true)
+	sel := r.Selected()
+	testutil.Equal(t, sel != nil && sel.Name == "alpha", true)
 
-	// Down arrow navigates WITHIN the filtered set without leaving input mode —
-	// this is the fix (previously Down was ignored while typing, so the operator
-	// could never move the selection into the filtered list).
+	// Down arrow navigates WITHIN the filtered set without leaving input mode,
+	// landing only on real matches — never the ancestry-only "R" header or the
+	// ancestry-only bridging "bridge" row.
 	moved := false
 	for i := 0; i < r.Rows(); i++ {
 		before := r.CursorIndex()
@@ -230,10 +259,10 @@ func TestRail_FilterArrowsNavigateWhileTyping(t *testing.T) {
 		if r.CursorIndex() != before {
 			moved = true
 		}
-		// Input mode stays active (query remains editable) and the cursor only
-		// ever rests on a selectable row that survived the filter.
 		testutil.Equal(t, r.Filtering(), true)
-		testutil.Equal(t, r.rows[r.CursorIndex()].selectable(), true)
+		row := r.rows[r.CursorIndex()]
+		testutil.Equal(t, row.selectable(), true)
+		testutil.Equal(t, row.ancestryOnly, false)
 	}
 	testutil.Equal(t, moved, true)
 
@@ -247,7 +276,120 @@ func TestRail_FilterArrowsNavigateWhileTyping(t *testing.T) {
 
 	// Typing still extends the query after navigating (arrows didn't break input).
 	h(tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone), noFocus)
-	testutil.Equal(t, r.filterQuery, "cox")
+	testutil.Equal(t, r.filterQuery, "ax")
+}
+
+// TestRail_FilterAncestryOnlyHeaderNotSelectable pins the core BUG-028-RAIL
+// invariant: a coordinator/orchestrator heading kept on screen ONLY for
+// ancestry (its own name — and its folded-in coordinator's name — do not match
+// the query) renders ancestryOnly and is never selectable.
+func TestRail_FilterAncestryOnlyHeaderNotSelectable(t *testing.T) {
+	r := NewRail()
+	r.SetModel(filterModel())
+
+	// "gamma" matches only the deeply-nested worker. R's header (own name "R",
+	// coordinator name "coord") matches neither.
+	r.filterQuery = "gamma"
+	r.buildRows()
+
+	var headerRow *railRow
+	for i := range r.rows {
+		if r.rows[i].kind == rrOrch && r.rows[i].orch.Name == "R" {
+			headerRow = &r.rows[i]
+		}
+	}
+	testutil.Equal(t, headerRow != nil, true)
+	testutil.Equal(t, headerRow.ancestryOnly, true)
+	testutil.Equal(t, headerRow.selectable(), false)
+
+	// The bridging "bridge" row is likewise ancestry-only: its own name doesn't
+	// match "gamma" either, it's only visible because it bridges to visible C.
+	var bridgeRow *railRow
+	for i := range r.rows {
+		if r.rows[i].role != nil && r.rows[i].role.Name == "bridge" {
+			bridgeRow = &r.rows[i]
+		}
+	}
+	testutil.Equal(t, bridgeRow != nil, true)
+	testutil.Equal(t, bridgeRow.ancestryOnly, true)
+	testutil.Equal(t, bridgeRow.selectable(), false)
+
+	// "gamma" itself is a real match — selectable, not ancestry-only.
+	var gammaRow *railRow
+	for i := range r.rows {
+		if r.rows[i].role != nil && r.rows[i].role.Name == "gamma" {
+			gammaRow = &r.rows[i]
+		}
+	}
+	testutil.Equal(t, gammaRow != nil, true)
+	testutil.Equal(t, gammaRow.ancestryOnly, false)
+	testutil.Equal(t, gammaRow.selectable(), true)
+}
+
+// TestRail_FilterArrowNavSkipsAncestryOnlyRows confirms arrow nav has nowhere
+// else to go when the ONLY other rows in the narrowed set are ancestry-only —
+// the cursor stays pinned on the sole real match rather than landing on a
+// heading kept only for context.
+func TestRail_FilterArrowNavSkipsAncestryOnlyRows(t *testing.T) {
+	r := NewRail()
+	r.SetModel(filterModel())
+	h := r.InputHandler()
+
+	h(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), noFocus)
+	for _, ru := range "gamma" {
+		h(tcell.NewEventKey(tcell.KeyRune, ru, tcell.ModNone), noFocus)
+	}
+	sel := r.Selected()
+	testutil.Equal(t, sel != nil && sel.Name == "gamma", true)
+
+	before := r.CursorIndex()
+	h(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, r.CursorIndex(), before)
+	testutil.Equal(t, r.rows[r.CursorIndex()].role.Name, "gamma")
+
+	h(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, r.CursorIndex(), before)
+	testutil.Equal(t, r.rows[r.CursorIndex()].role.Name, "gamma")
+}
+
+// TestRail_FilterOrchestratorOwnNameIsRealMatch pins the header own-match rule
+// (BUG-028-RAIL): the coordinator is folded into the orchestrator header with no
+// separate row, so a query matching the coordinator's NAME must count as the
+// header's own match, not ancestry — otherwise searching a coordinator by name
+// could never select its header directly.
+func TestRail_FilterOrchestratorOwnNameIsRealMatch(t *testing.T) {
+	r := NewRail()
+	r.SetModel(filterModel())
+
+	// "co" matches the coordinator role's name ("coord") in BOTH orchestrators.
+	r.filterQuery = "co"
+	r.buildRows()
+
+	found := false
+	for i := range r.rows {
+		if r.rows[i].kind == rrOrch && r.rows[i].orch.Name == "R" {
+			found = true
+			testutil.Equal(t, r.rows[i].ancestryOnly, false)
+			testutil.Equal(t, r.rows[i].selectable(), true)
+		}
+	}
+	testutil.Equal(t, found, true)
+}
+
+// TestRail_FilterAutoSelectsFirstRealMatchWhileTyping pins the live
+// auto-select behavior (BUG-028-RAIL): typing a query that narrows to a sole real
+// match selects it immediately, with no arrow key needed.
+func TestRail_FilterAutoSelectsFirstRealMatchWhileTyping(t *testing.T) {
+	r := NewRail()
+	r.SetModel(filterModel())
+	h := r.InputHandler()
+
+	h(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), noFocus)
+	for _, ru := range "alpha" {
+		h(tcell.NewEventKey(tcell.KeyRune, ru, tcell.ModNone), noFocus)
+	}
+	sel := r.Selected()
+	testutil.Equal(t, sel != nil && sel.Name == "alpha", true)
 }
 
 func TestRail_FilterInputLineAndTitleRender(t *testing.T) {
@@ -320,6 +462,11 @@ func TestPage_MutationKeysAreFilterInputWhileTyping(t *testing.T) {
 	testutil.Equal(t, p.RailFiltering(), false)
 }
 
+// TestPage_FilterArrowNavigateThenEnterSelects pins the NEW one-Enter behavior
+// at the HeraPage level (BUG-028-RAIL, supersedes the old two-Enter "commit then
+// reattach" flow): typing auto-selects the first real match live, Up/Down move
+// within the narrowed set while still typing, and a SINGLE Enter reattaches
+// into the current selection AND clears the filter together.
 func TestPage_FilterArrowNavigateThenEnterSelects(t *testing.T) {
 	d := memDB(t)
 	orch := seedOrch(t, d, "team")
@@ -334,36 +481,70 @@ func TestPage_FilterArrowNavigateThenEnterSelects(t *testing.T) {
 	p.OnReattach = func(s Selection) { reattached = s; gotReattach++ }
 
 	h := p.InputHandler()
-	// Enter filter mode; "wk" narrows to the two workers (plus their orch
-	// ancestry header) — "coord" does not match.
+	// Enter filter mode; "wk" narrows to the two workers — the "team" header
+	// (own name "team", coordinator name "coord") matches neither, so it
+	// renders as an ancestry-only heading and is skipped by both auto-select
+	// and arrow nav.
 	h(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), noFocus)
 	for _, ru := range "wk" {
 		h(tcell.NewEventKey(tcell.KeyRune, ru, tcell.ModNone), noFocus)
 	}
 	testutil.Equal(t, p.RailFiltering(), true)
 
-	// Down arrow walks the filtered rows WHILE typing until the selection lands
-	// on a worker role — the previously-impossible "navigate into the filtered
-	// list" path.
-	for i := 0; i < p.Rail().Rows(); i++ {
-		if role := p.Rail().Selection().Role; role != nil && role.Kind == db.HeraKindWorker {
-			break
-		}
-		h(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus)
-	}
+	// Typing alone already auto-selected the FIRST real match — a worker —
+	// live, with no arrow press needed (BUG-028-RAIL).
 	sel := p.Rail().Selection()
 	testutil.Equal(t, sel.Role != nil, true)
 	testutil.Equal(t, sel.Role.Kind, db.HeraKindWorker)
-	// Navigating did not exit input mode (query stays editable).
-	testutil.Equal(t, p.RailFiltering(), true)
 
-	// Enter commits the filter (exits input mode); a SECOND Enter acts on the
-	// navigated row (reattach), mirroring the Tasks-tab `/` filter.
+	// Down arrow moves within the narrowed real matches, staying in input mode.
+	h(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.RailFiltering(), true)
+	sel2 := p.Rail().Selection()
+	testutil.Equal(t, sel2.Role != nil && sel2.Role.Kind == db.HeraKindWorker, true)
+
+	// A SINGLE Enter selects the current match, jumps into it (reattach), and
+	// clears the filter — no second Enter (BUG-028-RAIL).
 	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
 	testutil.Equal(t, p.RailFiltering(), false)
-	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
 	testutil.Equal(t, gotReattach, 1)
 	testutil.Equal(t, reattached.Role != nil && reattached.Role.Kind == db.HeraKindWorker, true)
+}
+
+// TestPage_FilterEnterJumpsIntoSoleOrchestratorMatch is the concrete BUG-028-RAIL
+// acceptance scenario: typing a query that narrows to a coordinator's OWN
+// orchestrator name (e.g. "/bugb" for "hera-bugbash") auto-selects that
+// orchestrator's header live, and a single Enter jumps straight into it.
+func TestPage_FilterEnterJumpsIntoSoleOrchestratorMatch(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "hera-bugbash")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "worker", db.HeraKindWorker, "t-worker")
+	p := NewHeraPage(d)
+	p.Refresh()
+
+	var reattached Selection
+	gotReattach := 0
+	p.OnReattach = func(s Selection) { reattached = s; gotReattach++ }
+
+	h := p.InputHandler()
+	h(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), noFocus)
+	for _, ru := range "bugb" {
+		h(tcell.NewEventKey(tcell.KeyRune, ru, tcell.ModNone), noFocus)
+	}
+	testutil.Equal(t, p.RailFiltering(), true)
+
+	// "bugb" matches the orchestrator's own name — the header is a real match
+	// (not ancestry-only), auto-selected live by typing alone.
+	sel := p.Rail().Selection()
+	testutil.Equal(t, sel.Orch != nil && sel.Orch.Name == "hera-bugbash", true)
+	testutil.Equal(t, sel.Role == nil, true) // header selection = coordinator
+
+	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.RailFiltering(), false)
+	testutil.Equal(t, p.Rail().filterQuery, "")
+	testutil.Equal(t, gotReattach, 1)
+	testutil.Equal(t, reattached.Orch != nil && reattached.Orch.Name == "hera-bugbash", true)
 }
 
 func TestRail_FilterMatchesBridgeWorkerOnly(t *testing.T) {
