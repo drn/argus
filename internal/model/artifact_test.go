@@ -23,6 +23,10 @@ func TestInferArtifactType(t *testing.T) {
 		{"svg", "diagram.svg", ArtifactImage},
 		{"unknown defaults to text", "data.bin", ArtifactText},
 		{"no ext defaults to text", "README", ArtifactText},
+		{"mp3", "song.mp3", ArtifactAudio},
+		{"wav upper", "audio.WAV", ArtifactAudio},
+		{"mp4", "clip.mp4", ArtifactVideo},
+		{"mov", "clip.mov", ArtifactVideo},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -32,10 +36,10 @@ func TestInferArtifactType(t *testing.T) {
 }
 
 func TestValidArtifactType(t *testing.T) {
-	for _, ty := range []ArtifactType{ArtifactHTML, ArtifactMarkdown, ArtifactPDF, ArtifactImage, ArtifactText} {
+	for _, ty := range []ArtifactType{ArtifactHTML, ArtifactMarkdown, ArtifactPDF, ArtifactImage, ArtifactText, ArtifactAudio, ArtifactVideo} {
 		testutil.True(t, ValidArtifactType(ty))
 	}
-	testutil.True(t, !ValidArtifactType(ArtifactType("video")))
+	testutil.True(t, !ValidArtifactType(ArtifactType("bogus")))
 	testutil.True(t, !ValidArtifactType(ArtifactType("")))
 }
 
@@ -50,6 +54,8 @@ func TestArtifactContentType(t *testing.T) {
 		{"pdf", Artifact{Type: ArtifactPDF, Filename: "r.pdf"}, "application/pdf"},
 		{"text", Artifact{Type: ArtifactText, Filename: "r.txt"}, "text/plain; charset=utf-8"},
 		{"image png", Artifact{Type: ArtifactImage, Filename: "r.png"}, "image/png"},
+		{"audio mp3", Artifact{Type: ArtifactAudio, Filename: "s.mp3"}, "audio/mpeg"},
+		{"video mp4", Artifact{Type: ArtifactVideo, Filename: "c.mp4"}, "video/mp4"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -63,6 +69,41 @@ func TestArtifactContentType_ImageFallback(t *testing.T) {
 	// to image/png rather than leaking a wrong/empty type.
 	got := ArtifactContentType(Artifact{Type: ArtifactImage, Filename: "weird.unknownext"})
 	testutil.Equal(t, got, "image/png")
+}
+
+func TestArtifactContentType_AudioFallback(t *testing.T) {
+	// An audio artifact whose extension is unrecognized falls back to
+	// audio/mpeg rather than leaking a wrong/empty type.
+	got := ArtifactContentType(Artifact{Type: ArtifactAudio, Filename: "weird.unknownaudioext"})
+	testutil.Equal(t, got, "audio/mpeg")
+}
+
+func TestArtifactContentType_VideoFallback(t *testing.T) {
+	// A video artifact whose extension is unrecognized falls back to
+	// video/mp4 rather than leaking a wrong/empty type.
+	got := ArtifactContentType(Artifact{Type: ArtifactVideo, Filename: "weird.unknownvideoext"})
+	testutil.Equal(t, got, "video/mp4")
+}
+
+func TestMaxBytesForType(t *testing.T) {
+	tests := []struct {
+		name string
+		typ  ArtifactType
+		want int64
+	}{
+		{"html", ArtifactHTML, MaxArtifactBytes},
+		{"markdown", ArtifactMarkdown, MaxArtifactBytes},
+		{"pdf", ArtifactPDF, MaxArtifactBytes},
+		{"image", ArtifactImage, MaxArtifactBytes},
+		{"text", ArtifactText, MaxArtifactBytes},
+		{"audio", ArtifactAudio, MaxMediaArtifactBytes},
+		{"video", ArtifactVideo, MaxMediaArtifactBytes},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			testutil.Equal(t, MaxBytesForType(tc.typ), tc.want)
+		})
+	}
 }
 
 func TestSanitizeArtifactFilename(t *testing.T) {

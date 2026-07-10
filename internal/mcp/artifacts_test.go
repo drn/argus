@@ -156,6 +156,18 @@ func TestArtifactRegister_SizeCap(t *testing.T) {
 	testutil.Contains(t, cr.Content[0].Text, "cap")
 }
 
+func TestArtifactRegister_AudioUnderMediaCap(t *testing.T) {
+	s, store := testServerWithArtifacts(t)
+	// Just over the OLD 25 MiB default cap, but nowhere near the new 1 GiB
+	// media cap — proves the audio/video tier actually took effect (this same
+	// size fails for a .txt file in TestArtifactRegister_SizeCap).
+	big := strings.Repeat("a", model.MaxArtifactBytes+1024)
+	src := writeTempFile(t, "clip.mp3", big)
+	cr := callArtifactRegister(t, s, map[string]any{"path": src, "id": "abc123"})
+	testutil.True(t, !cr.IsError)
+	testutil.Equal(t, store.saved[0].Type, model.ArtifactAudio)
+}
+
 func TestArtifactRegister_NotConfigured(t *testing.T) {
 	// Task management on, but no artifact store → tool absent / errors.
 	t.Setenv("HOME", t.TempDir())

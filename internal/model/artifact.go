@@ -11,7 +11,9 @@ import (
 // ArtifactType classifies a registered session artifact so the Argus Web SPA
 // can pick a renderer. The viewers are: html → sandboxed iframe, markdown →
 // client-rendered into a srcdoc iframe, pdf → embedded object + download
-// fallback, image → <img>, text → <pre>.
+// fallback, image → <img>, text → <pre>, audio/video → <audio>/<video>
+// element (streamed via Range requests, not fetched as a blob like the
+// other types).
 type ArtifactType string
 
 const (
@@ -20,12 +22,14 @@ const (
 	ArtifactPDF      ArtifactType = "pdf"
 	ArtifactImage    ArtifactType = "image"
 	ArtifactText     ArtifactType = "text"
+	ArtifactAudio    ArtifactType = "audio"
+	ArtifactVideo    ArtifactType = "video"
 )
 
 // ValidArtifactType reports whether t is one of the recognized types.
 func ValidArtifactType(t ArtifactType) bool {
 	switch t {
-	case ArtifactHTML, ArtifactMarkdown, ArtifactPDF, ArtifactImage, ArtifactText:
+	case ArtifactHTML, ArtifactMarkdown, ArtifactPDF, ArtifactImage, ArtifactText, ArtifactAudio, ArtifactVideo:
 		return true
 	}
 	return false
@@ -36,6 +40,44 @@ func ValidArtifactType(t ArtifactType) bool {
 // screenshot while bounding disk use under a misbehaving producer. The copy
 // step at registration enforces it.
 const MaxArtifactBytes = 25 * 1024 * 1024
+
+// MaxMediaArtifactBytes caps audio/video artifacts. Media is streamed and
+// scrubbed via HTTP Range requests rather than loaded whole, so it gets a
+// much larger ceiling than the inline-rendered types.
+const MaxMediaArtifactBytes = 1024 * 1024 * 1024 // 1 GiB
+
+// MaxBytesForType returns the size ceiling that applies to a given artifact
+// type. The MCP registration path enforces it at registration time.
+func MaxBytesForType(t ArtifactType) int64 {
+	switch t {
+	case ArtifactAudio, ArtifactVideo:
+		return MaxMediaArtifactBytes
+	default:
+		return MaxArtifactBytes
+	}
+}
+
+// audioMimeByExt maps audio extensions to MIME types deterministically,
+// independent of the OS mime database (unlike mime.TypeByExtension, which
+// varies by platform/CI).
+var audioMimeByExt = map[string]string{
+	".mp3":  "audio/mpeg",
+	".wav":  "audio/wav",
+	".m4a":  "audio/mp4",
+	".flac": "audio/flac",
+	".ogg":  "audio/ogg",
+	".aac":  "audio/aac",
+}
+
+// videoMimeByExt maps video extensions to MIME types deterministically, for
+// the same reason as audioMimeByExt.
+var videoMimeByExt = map[string]string{
+	".mp4":  "video/mp4",
+	".mov":  "video/quicktime",
+	".webm": "video/webm",
+	".mkv":  "video/x-matroska",
+	".m4v":  "video/mp4",
+}
 
 // Artifact is a file an agent/skill produced and registered for viewing in
 // Argus Web. The bytes live at ~/.argus/artifacts/<task-id>/<filename>; this
@@ -64,6 +106,10 @@ func InferArtifactType(name string) ArtifactType {
 		return ArtifactPDF
 	case ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico":
 		return ArtifactImage
+	case ".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac":
+		return ArtifactAudio
+	case ".mp4", ".mov", ".webm", ".mkv", ".m4v":
+		return ArtifactVideo
 	default:
 		return ArtifactText
 	}
@@ -86,6 +132,16 @@ func ArtifactContentType(a Artifact) string {
 			return ct
 		}
 		return "image/png"
+	case ArtifactAudio:
+		if ct, ok := audioMimeByExt[strings.ToLower(filepath.Ext(a.Filename))]; ok {
+			return ct
+		}
+		return "audio/mpeg"
+	case ArtifactVideo:
+		if ct, ok := videoMimeByExt[strings.ToLower(filepath.Ext(a.Filename))]; ok {
+			return ct
+		}
+		return "video/mp4"
 	default:
 		return "text/plain; charset=utf-8"
 	}
