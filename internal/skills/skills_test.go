@@ -10,6 +10,24 @@ import (
 	"github.com/drn/argus/internal/testutil"
 )
 
+// withoutBuiltins strips argus's own embedded builtin skills from a LoadSkills
+// result, so tests that predate builtin merging can keep asserting on exactly
+// the fixtures they set up. Builtin-merge behavior itself is covered by
+// TestLoadSkills_BuiltinsMerged.
+func withoutBuiltins(items []SkillItem) []SkillItem {
+	builtin := make(map[string]bool)
+	for _, b := range BuiltinItems() {
+		builtin[b.Name] = true
+	}
+	var out []SkillItem
+	for _, s := range items {
+		if !builtin[s.Name] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func TestFilterSkills(t *testing.T) {
 	items := []SkillItem{
 		{Name: "commit", Description: "Create a commit"},
@@ -81,7 +99,7 @@ func TestLoadSkills_DiscoversUserSkillsAndPluginItems(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.NoError(t, os.WriteFile(filepath.Join(manifestDir, "installed_plugins.json"), data, 0o644))
 
-	items := LoadSkills(nil)
+	items := withoutBuiltins(LoadSkills(nil))
 	names := make([]string, len(items))
 	for i, s := range items {
 		names[i] = s.Name
@@ -111,7 +129,7 @@ func TestLoadSkills_NoPluginManifestStillReturnsUserSkills(t *testing.T) {
 	testutil.NoError(t, os.WriteFile(filepath.Join(userSkill, "SKILL.md"),
 		[]byte("---\ndescription: Polish\n---\n"), 0o644))
 
-	items := LoadSkills(nil)
+	items := withoutBuiltins(LoadSkills(nil))
 	testutil.Equal(t, len(items), 1)
 	testutil.Equal(t, items[0].Name, "polish")
 }
@@ -133,7 +151,7 @@ func TestLoadSkills_ExtraDirOverridesUser(t *testing.T) {
 	testutil.NoError(t, os.WriteFile(filepath.Join(projSkill, "SKILL.md"),
 		[]byte("---\ndescription: project review\n---\n"), 0o644))
 
-	items := LoadSkills([]string{projectRoot})
+	items := withoutBuiltins(LoadSkills([]string{projectRoot}))
 	testutil.Equal(t, len(items), 1)
 	testutil.Equal(t, items[0].Name, "review")
 	testutil.Equal(t, items[0].Description, "project review")
@@ -166,7 +184,7 @@ func TestLoadSkills_FollowsSymlinkedSkillsDir(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.NoError(t, os.WriteFile(filepath.Join(manifestDir, "installed_plugins.json"), data, 0o644))
 
-	items := LoadSkills(nil)
+	items := withoutBuiltins(LoadSkills(nil))
 	testutil.Equal(t, len(items), 1)
 	testutil.Equal(t, items[0].Name, "cortex:nucleus")
 }
@@ -193,7 +211,7 @@ func TestLoadSkills_RejectsMaliciousPluginNames(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.NoError(t, os.WriteFile(filepath.Join(manifestDir, "installed_plugins.json"), data, 0o644))
 
-	items := LoadSkills(nil)
+	items := withoutBuiltins(LoadSkills(nil))
 	testutil.Equal(t, len(items), 0)
 }
 
@@ -223,7 +241,7 @@ func TestLoadSkills_SkipsDanglingSkillsSymlink(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.NoError(t, os.WriteFile(filepath.Join(manifestDir, "installed_plugins.json"), data, 0o644))
 
-	items := LoadSkills(nil)
+	items := withoutBuiltins(LoadSkills(nil))
 	testutil.Equal(t, len(items), 1)
 	testutil.Equal(t, items[0].Name, "cortex:review")
 }

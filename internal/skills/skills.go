@@ -2,8 +2,10 @@ package skills
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -35,6 +37,9 @@ type SkillItem struct {
 //   - installed plugins under ~/.claude/plugins/cache/... via installed_plugins.json,
 //     exposing both plugin commands (commands/*.md) and skills (skills/**/SKILL.md)
 //     as "<plugin>:<name>" entries.
+//   - argus's own embedded builtin skills — lowest priority, since at runtime
+//     they load from a Claude Code --add-dir directory, which a same-named
+//     personal/project/plugin skill shadows (see EnsureBuiltinSkills).
 func LoadSkills(extraDirs []string) []SkillItem {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -52,6 +57,15 @@ func LoadSkills(extraDirs []string) []SkillItem {
 
 	// Plugin-provided commands and skills, namespaced as "<plugin>:<name>".
 	items = append(items, loadPluginItems(home, seen)...)
+
+	// Argus's own builtin skills, lowest precedence.
+	for _, item := range BuiltinItems() {
+		if seen[item.Name] {
+			continue
+		}
+		seen[item.Name] = true
+		items = append(items, item)
+	}
 
 	sort.Slice(items, func(i, j int) bool {
 		return items[i].Name < items[j].Name
@@ -216,8 +230,20 @@ func readFrontmatterField(path, field string) string {
 		return ""
 	}
 	defer f.Close()
+	return scanFrontmatterField(f, field)
+}
 
-	scanner := bufio.NewScanner(f)
+// parseFrontmatterField runs scanFrontmatterField over an in-memory buffer —
+// the embedded-FS counterpart to readFrontmatterField, which reads from the
+// OS filesystem.
+func parseFrontmatterField(data []byte, field string) string {
+	return scanFrontmatterField(bytes.NewReader(data), field)
+}
+
+// scanFrontmatterField is the shared frontmatter scan used by both
+// readFrontmatterField (OS file) and parseFrontmatterField (embedded FS).
+func scanFrontmatterField(r io.Reader, field string) string {
+	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), frontmatterMaxLine)
 	prefix := field + ":"
 	inFrontmatter := false

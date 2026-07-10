@@ -37,6 +37,7 @@ import (
 	"github.com/drn/argus/internal/notify"
 	"github.com/drn/argus/internal/push"
 	"github.com/drn/argus/internal/scheduler"
+	"github.com/drn/argus/internal/skills"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -1099,6 +1100,15 @@ func (d *Daemon) Serve(sockPath string) error {
 				}
 				if err := inject.SetClaudeProjectMcpTrust(); err != nil {
 					slog.Error("inject claude trust", "err", err)
+				}
+				// Warm the builtin-skills materialization cache. Not
+				// load-bearing: BuildCmd ensures this on demand for every
+				// Claude-backend launch, so a failure here just means the
+				// first task launch pays the (cheap) materialize cost itself.
+				if root, err := skills.EnsureBuiltinSkills(); err != nil {
+					slog.Error("materialize builtin skills", "err", err)
+				} else {
+					slog.Info("materialize builtin skills", "root", root)
 				}
 			}()
 		}

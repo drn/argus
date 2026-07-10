@@ -291,6 +291,82 @@ func TestBuildCmd_PermissionMode_BeforeSessionID(t *testing.T) {
 		"claude --dangerously-skip-permissions --session-id 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee'")
 }
 
+// TestBuildCmd_BuiltinSkillsAddDir confirms Claude backends receive an
+// --add-dir flag pointing at the materialized builtin-skills workspace, and
+// that it precedes the --session-id suffix (same ordering rule as the other
+// injected flags).
+func TestBuildCmd_BuiltinSkillsAddDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg := permModeConfig("")
+	task := &model.Task{Name: "t", SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+
+	wantRoot := filepath.Join(home, ".argus", "skills")
+	testutil.Equal(t, cmd.Args[2],
+		"claude --add-dir "+shellQuote(wantRoot)+" --session-id 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee'")
+
+	// The flag is load-bearing, not decorative: the directory it names must
+	// actually exist and contain the builtin skills.
+	if _, statErr := os.Stat(filepath.Join(wantRoot, ".claude", "skills")); statErr != nil {
+		t.Fatalf("expected materialized skills dir at %s: %v", wantRoot, statErr)
+	}
+}
+
+// TestBuildCmd_BuiltinSkillsAddDir_SkippedForNonClaude confirms codex/pi/
+// opencode backends — which don't accept --add-dir — never receive the flag.
+func TestBuildCmd_BuiltinSkillsAddDir_SkippedForNonClaude(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := testConfig()
+
+	for _, backend := range []string{"codex", "pi", "opencode"} {
+		t.Run(backend, func(t *testing.T) {
+			task := &model.Task{Name: "t", Backend: backend, Prompt: "go", Worktree: t.TempDir()}
+			cmd, _, err := BuildCmd(task, cfg, false)
+			testutil.NoError(t, err)
+			testutil.False(t, strings.Contains(cmd.Args[2], "--add-dir"))
+		})
+	}
+}
+
+// TestBuildCmd_BuiltinSkillsAddDir_MaterializeFailureSkipsFlag confirms a
+// materialization failure never blocks task launch: BuildCmd still succeeds,
+// just without the flag. Not setting HOME here (ambient real HOME during `go
+// test`) exercises exactly this path, since skills.EnsureBuiltinSkills refuses
+// to write to a real ~/.argus/ during tests — the same failure shape a real
+// permission error or disk issue would produce.
+func TestBuildCmd_BuiltinSkillsAddDir_MaterializeFailureSkipsFlag(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{Name: "t", Prompt: "go", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.False(t, strings.Contains(cmd.Args[2], "--add-dir"))
+}
+
+// TestBuildCmd_BuiltinSkillsAddDir_AdditiveWithExistingAddDir confirms the
+// injected flag is additive to (not a replacement for) a --add-dir already
+// present in the backend command template — --add-dir is repeatable.
+func TestBuildCmd_BuiltinSkillsAddDir_AdditiveWithExistingAddDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "claude"},
+		Backends: map[string]config.Backend{
+			"claude": {Command: "claude --add-dir /some/other/dir"},
+		},
+	}
+	task := &model.Task{Name: "t", Prompt: "go", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+
+	wantRoot := filepath.Join(home, ".argus", "skills")
+	testutil.Contains(t, cmd.Args[2], "--add-dir /some/other/dir")
+	testutil.Contains(t, cmd.Args[2], "--add-dir "+shellQuote(wantRoot))
+}
+
 // TestBuildCmd_ExportsTaskID confirms ARGUS_TASK_ID lands in the spawned
 // shell's environment. Orchestration sub-tasks rely on this to call
 // task_set_result(id: ENV) without scraping cwd.

@@ -16,6 +16,8 @@ import (
 	"github.com/drn/argus/internal/claudesession"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/skills"
+	"github.com/drn/argus/internal/uxlog"
 	_ "modernc.org/sqlite"
 )
 
@@ -575,6 +577,20 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	if IsClaudeBackend(backend.Command) && !hasPermissionFlags(backend.Command) {
 		if flags := config.PermissionModeFlags(cfg.Defaults.PermissionMode); flags != "" {
 			cmdStr += " " + flags
+		}
+	}
+
+	// Make argus's own builtin skills (archive, hera, ...) available to Claude
+	// backends by materializing them and appending --add-dir. Claude Code loads
+	// .claude/skills/ from a --add-dir directory as a documented exception to
+	// --add-dir otherwise granting file access only. Additive to any --add-dir
+	// already present in the backend command — repeatable flag, no conflict.
+	// Materialization failure is logged and skipped rather than blocking launch.
+	if IsClaudeBackend(backend.Command) {
+		if root, err := skills.EnsureBuiltinSkills(); err != nil {
+			uxlog.Log("[skills] builtin skills materialize failed (continuing without them): %v", err)
+		} else {
+			cmdStr += " --add-dir " + shellQuote(root)
 		}
 	}
 
