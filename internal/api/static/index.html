@@ -4188,6 +4188,16 @@ function renderArtifactsList(arts, taskId) {
 // render used to be reachable only intermittently.
 async function downloadArtifact(taskId, art) {
   if (art.type === 'audio' || art.type === 'video') {
+    // HEAD through api() first — it's the one place that centralizes 401
+    // handling (logout() + offline screen). The actual download then streams
+    // straight from the direct URL rather than through a JS-buffered blob.
+    try {
+      const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`, { method: 'HEAD' });
+      if (!r.ok) throw new Error('fetch ' + r.status);
+    } catch (e) {
+      showToast('Download failed: ' + e.message);
+      return;
+    }
     const a = document.createElement('a');
     a.href = artifactDirectURL(taskId, art);
     a.download = art.filename;
@@ -4232,7 +4242,18 @@ async function openArtifactViewer(taskId, art) {
   body.className = 'artifacts-body viewing';
   body.innerHTML = artifactBackToolbar(taskId, '') + '<div class="files-empty">Loading…</div>';
   if (art.type === 'audio' || art.type === 'video') {
-    renderBlobArtifact(taskId, art, artifactDirectURL(taskId, art));
+    // HEAD through api() first so an expired/invalid token surfaces via the
+    // normal 401 → logout() path instead of a silently-broken media element;
+    // playback itself then streams straight from the direct URL, not a blob.
+    try {
+      const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`, { method: 'HEAD' });
+      if (!r.ok) throw new Error('fetch ' + r.status);
+      if (artifactsViewTask?.id !== taskId) return;
+      renderArtifactWithURL(taskId, art, artifactDirectURL(taskId, art));
+    } catch (e) {
+      if (artifactsViewTask?.id !== taskId) return;
+      body.innerHTML = artifactBackToolbar(taskId, '') + `<div class="files-empty">Failed to load: ${esc(e.message)}</div>`;
+    }
     return;
   }
   try {
@@ -4248,7 +4269,7 @@ async function openArtifactViewer(taskId, art) {
       if (artifactsViewTask?.id !== taskId) return;
       const url = URL.createObjectURL(blob);
       artifactObjectURLs.push(url);
-      renderBlobArtifact(taskId, art, url);
+      renderArtifactWithURL(taskId, art, url);
     }
   } catch (e) {
     if (artifactsViewTask?.id !== taskId) return;
@@ -4266,12 +4287,16 @@ function artifactDirectURL(taskId, art) {
 }
 
 // Builds the DOM node that renders an artifact's content, shared by the paneled
-// viewer (renderBlobArtifact/renderTextArtifact) and the full-screen overlay
+// viewer (renderArtifactWithURL/renderTextArtifact) and the full-screen overlay
 // (openArtifactFullscreen). Defining it once keeps the security-critical sandbox
 // flags in a single place — HTML gets allow-scripts WITHOUT allow-same-origin
 // (opaque origin, can't read our token); markdown gets NO allow-scripts; PDF is
-// deliberately un-sandboxed (see gotchas/web-remote.md). `payload` is `{url}` for
-// blob types (html/pdf/image/other) or `{txt}` for markdown/text.
+// deliberately un-sandboxed (see gotchas/web-remote.md). `payload` is `{txt}` for
+// markdown/text, otherwise `{url}` — for html/pdf/image `payload.url` is always a
+// `blob:` URL (load-bearing: never pass a directly-authenticated URL to the HTML
+// branch, or embedded script could read the token via window.location); for
+// audio/video `payload.url` is a direct `?token=`-authenticated URL instead,
+// which is safe there ONLY because a media file isn't a scriptable document.
 function makeArtifactNode(art, payload) {
   if (art.type === 'html') {
     const f = document.createElement('iframe');
@@ -4319,6 +4344,12 @@ function makeArtifactNode(art, payload) {
     const el = document.createElement('audio');
     el.className = 'artifact-media';
     el.controls = true;
+    // The src is a directly-authenticated URL (see the payload note above),
+    // so trim the native affordances that would otherwise hand that URL to
+    // something outside our own auth flow: no built-in "download" control,
+    // no AirPlay/cast (which fetches the URL from an external receiver).
+    el.setAttribute('controlsList', 'nodownload noremoteplayback');
+    el.disableRemotePlayback = true;
     el.src = payload.url;
     return el;
   }
@@ -4326,6 +4357,8 @@ function makeArtifactNode(art, payload) {
     const el = document.createElement('video');
     el.className = 'artifact-media';
     el.controls = true;
+    el.setAttribute('controlsList', 'nodownload noremoteplayback');
+    el.disableRemotePlayback = true;
     el.src = payload.url;
     return el;
   }
@@ -4335,7 +4368,10 @@ function makeArtifactNode(art, payload) {
   return d;
 }
 
-function renderBlobArtifact(taskId, art, url) {
+// renderArtifactWithURL renders via a `src`/URL-bearing payload — a `blob:`
+// URL for html/pdf/image (the common case), or a direct authenticated URL for
+// audio/video (see makeArtifactNode's doc comment for why that's safe there).
+function renderArtifactWithURL(taskId, art, url) {
   const body = document.getElementById('artifacts-body');
   const dl = `<span class="link" onclick="downloadCurrentArtifact()">Download</span>`;
   body.innerHTML = artifactBackToolbar(taskId, dl);
@@ -4366,9 +4402,19 @@ async function openArtifactFullscreen(taskId, art) {
   body.innerHTML = '<div class="files-empty">Loading…</div>';
   view.classList.add('open');
   if (art.type === 'audio' || art.type === 'video') {
-    const node = makeArtifactNode(art, { url: artifactDirectURL(taskId, art) });
-    body.innerHTML = '';
-    body.appendChild(node);
+    // HEAD through api() first — same 401-handling rationale as the paneled
+    // viewer above; playback itself streams from the direct URL, not a blob.
+    try {
+      const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`, { method: 'HEAD' });
+      if (!r.ok) throw new Error('fetch ' + r.status);
+      if (gen !== artifactFsGen) return;
+      const node = makeArtifactNode(art, { url: artifactDirectURL(taskId, art) });
+      body.innerHTML = '';
+      body.appendChild(node);
+    } catch (e) {
+      if (gen !== artifactFsGen) return;
+      body.innerHTML = `<div class="files-empty">Failed to load: ${esc(e.message)}</div>`;
+    }
     return;
   }
   try {

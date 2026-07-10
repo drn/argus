@@ -3,7 +3,9 @@
 ## Purpose
 
 Session artifacts are files (HTML reports, PDFs, images, markdown, text) that an agent produces during a task and registers in a per-task manifest. This capability exposes those artifacts over the REST API so the remote SPA can list and view them, while enforcing that only registered files are served, that no file outside the task's artifact directory can be reached, and that embedded artifacts can be safely iframed without leaking the caller's auth token.
+
 ## Requirements
+
 ### Requirement: List task artifacts
 
 The API SHALL return the registered-artifact manifest for an existing task as a JSON object. When a task has no artifacts the response SHALL contain an empty array rather than a null value. Requests for a non-existent task SHALL be rejected.
@@ -106,4 +108,3 @@ Deleting a task SHALL remove both its artifact manifest rows and its on-disk art
 
 - **WHEN** a task that has registered artifacts is deleted
 - **THEN** the manifest rows for that task are removed and the task's on-disk artifact directory no longer exists
-

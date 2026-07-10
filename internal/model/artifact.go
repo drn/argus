@@ -11,7 +11,9 @@ import (
 // ArtifactType classifies a registered session artifact so the Argus Web SPA
 // can pick a renderer. The viewers are: html → sandboxed iframe, markdown →
 // client-rendered into a srcdoc iframe, pdf → embedded object + download
-// fallback, image → <img>, text → <pre>.
+// fallback, image → <img>, text → <pre>, audio/video → <audio>/<video>
+// element (streamed via Range requests, not fetched as a blob like the
+// other types).
 type ArtifactType string
 
 const (

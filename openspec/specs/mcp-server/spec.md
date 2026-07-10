@@ -3,7 +3,9 @@
 ## Purpose
 
 The MCP server exposes Argus capabilities to LLM agents over the Model Context Protocol (Streamable HTTP transport). It surfaces a knowledge-base tool set and, when the daemon wires them in, tools for task lifecycle management, inter-task messaging, recurring schedules, clipboard staging, and viewable artifacts. The server lets an agent (or an orchestrator agent) drive Argus programmatically without going through the TUI or web UI.
+
 ## Requirements
+
 ### Requirement: JSON-RPC over Streamable HTTP transport
 
 The server SHALL serve a single MCP endpoint that follows the MCP Streamable HTTP transport: POST carries client-to-server JSON-RPC, GET is a long-lived server-to-client SSE channel, and DELETE acknowledges session termination. JSON-RPC requests (those carrying an `id`) MUST receive a JSON response; pure notifications (no `id`) MUST receive HTTP 202 Accepted with an empty body. Malformed JSON MUST yield a JSON-RPC parse error (code -32700). Unknown methods MUST yield a method-not-found error (code -32601). The request body SHALL be capped (4 MiB) to bound memory.
@@ -299,4 +301,3 @@ Plugin-registered tools SHALL be name-scoped (a tool name MUST start with its sc
 
 - **WHEN** the plugin callback returns a non-2xx status or an undecodable body
 - **THEN** the response is a tool error describing the plugin failure
-
