@@ -115,6 +115,7 @@
 - **MCP `task_stop` must NOT pre-check DB status before calling `Stop()`.** TOCTOU race: the process can exit between the status read and the Stop() call, causing confusing errors. Let the stopper determine whether the session is alive.
 - **MCP `task_archive` cwd resolution must compare against `worktree + separator`, not raw prefix.** Otherwise a task with worktree `…/add-tests` would match a cwd inside `…/add-tests-extra`. `resolveTask` uses `strings.HasPrefix(cwd, wt+string(filepath.Separator))` plus an exact-equals check. Longest-match wins across siblings.
 - **MCP `task_archive` mirrors the TUI 'a' keybinding — archiving is independent of `Status`.** `/archive` does not set `StatusComplete`.
+- **`artifact_register`'s size cap is type-dependent, not a flat constant.** `model.MaxBytesForType(t)` resolves `model.MaxArtifactBytes` (25 MiB) for html/markdown/pdf/image/text — loaded whole into the viewer — vs. `model.MaxMediaArtifactBytes` (1 GiB) for audio/video, which stream and scrub via Range requests instead. `copyArtifact` takes the resolved type and enforces the matching cap on both the pre-copy stat check and the `io.LimitReader`. Motivated by a real 148 MB mp3 that had no path to registration under the old flat 25 MiB cap; see `context/spikes/2026-07-09-artifact-registration-over-25mb.md`.
 
 ## Remote API
 

@@ -3,9 +3,7 @@
 ## Purpose
 
 The MCP server exposes Argus capabilities to LLM agents over the Model Context Protocol (Streamable HTTP transport). It surfaces a knowledge-base tool set and, when the daemon wires them in, tools for task lifecycle management, inter-task messaging, recurring schedules, clipboard staging, and viewable artifacts. The server lets an agent (or an orchestrator agent) drive Argus programmatically without going through the TUI or web UI.
-
 ## Requirements
-
 ### Requirement: JSON-RPC over Streamable HTTP transport
 
 The server SHALL serve a single MCP endpoint that follows the MCP Streamable HTTP transport: POST carries client-to-server JSON-RPC, GET is a long-lived server-to-client SSE channel, and DELETE acknowledges session termination. JSON-RPC requests (those carrying an `id`) MUST receive a JSON response; pure notifications (no `id`) MUST receive HTTP 202 Accepted with an empty body. Malformed JSON MUST yield a JSON-RPC parse error (code -32700). Unknown methods MUST yield a method-not-found error (code -32601). The request body SHALL be capped (4 MiB) to bound memory.
@@ -256,7 +254,7 @@ The server SHALL expose tools to list, create, update, delete, and run-now sched
 
 ### Requirement: Viewable artifact registration
 
-`artifact_register` SHALL require a source `path`, resolve the owning task by id/cwd, sanitize the destination basename (rejecting path separators and `..`), determine the artifact type from an explicit valid value or infer it from the extension, copy the source file into durable per-task storage under a size cap, and persist a manifest row (last-write-wins per filename). When the manifest write fails after the copy, the copied bytes MUST be removed so no unreferenced file is left behind.
+`artifact_register` SHALL require a source `path`, resolve the owning task by id/cwd, sanitize the destination basename (rejecting path separators and `..`), determine the artifact type from an explicit valid value (html, markdown, pdf, image, text, audio, or video) or infer it from the extension, copy the source file into durable per-task storage under a size cap, and persist a manifest row (last-write-wins per filename). The size cap SHALL be type-dependent: audio and video artifacts (streamed and scrubbed via HTTP Range requests rather than loaded whole) SHALL have a substantially larger cap than the inline-rendered types (html, markdown, pdf, image, text). When the manifest write fails after the copy, the copied bytes MUST be removed so no unreferenced file is left behind.
 
 #### Scenario: Path required
 
@@ -266,12 +264,17 @@ The server SHALL expose tools to list, create, update, delete, and run-now sched
 #### Scenario: Invalid explicit type rejected
 
 - **WHEN** `artifact_register` is called with a `type` that is not a recognized artifact type
-- **THEN** the response is a tool error listing the valid types
+- **THEN** the response is a tool error listing the valid types (html, markdown, pdf, image, text, audio, video)
 
-#### Scenario: Oversized artifact rejected
+#### Scenario: Oversized artifact rejected against its type's cap
 
-- **WHEN** the source file exceeds the artifact size cap
+- **WHEN** the source file exceeds the size cap for its resolved artifact type
 - **THEN** the response is a tool error reporting the cap and no manifest row is created
+
+#### Scenario: Audio/video registration under the larger media cap
+
+- **WHEN** an audio or video file is registered whose size is under the media cap but over the default (html/markdown/pdf/image/text) cap
+- **THEN** registration succeeds and the manifest row records the audio/video type
 
 ### Requirement: Plugin tool registry and proxying
 
@@ -296,3 +299,4 @@ Plugin-registered tools SHALL be name-scoped (a tool name MUST start with its sc
 
 - **WHEN** the plugin callback returns a non-2xx status or an undecodable body
 - **THEN** the response is a tool error describing the plugin failure
+

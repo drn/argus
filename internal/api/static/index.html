@@ -500,6 +500,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .artifact-img-wrap { flex: 1 1 auto; overflow: auto; -webkit-overflow-scrolling: touch; text-align: center; background: var(--bg); }
 .artifact-img { max-width: 100%; height: auto; }
 .artifact-pre { flex: 1 1 auto; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--text); background: var(--bg); }
+.artifact-media { flex: 1 1 auto; width: 100%; max-height: 100%; background: var(--bg); }
 /* Full-screen artifact overlay — edge-to-edge, no toolbar, just a small
    floating Back button. z-index sits above #artifacts-view (60). */
 #artifact-fs { display: none; }
@@ -4127,6 +4128,8 @@ function artifactIcon(type) {
     case 'pdf': return '📄';
     case 'image': return '🖼️';
     case 'markdown': return '📝';
+    case 'audio': return '🎵';
+    case 'video': return '🎬';
     default: return '📃';
   }
 }
@@ -4184,6 +4187,15 @@ function renderArtifactsList(arts, taskId) {
 // behavior varied by platform (inline preview vs. save), which is why the open
 // render used to be reachable only intermittently.
 async function downloadArtifact(taskId, art) {
+  if (art.type === 'audio' || art.type === 'video') {
+    const a = document.createElement('a');
+    a.href = artifactDirectURL(taskId, art);
+    a.download = art.filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    return;
+  }
   try {
     const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`);
     if (!r.ok) throw new Error('fetch ' + r.status);
@@ -4219,6 +4231,10 @@ async function openArtifactViewer(taskId, art) {
   const body = document.getElementById('artifacts-body');
   body.className = 'artifacts-body viewing';
   body.innerHTML = artifactBackToolbar(taskId, '') + '<div class="files-empty">Loading…</div>';
+  if (art.type === 'audio' || art.type === 'video') {
+    renderBlobArtifact(taskId, art, artifactDirectURL(taskId, art));
+    return;
+  }
   try {
     const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`);
     if (!r.ok) throw new Error('fetch ' + r.status);
@@ -4238,6 +4254,15 @@ async function openArtifactViewer(taskId, art) {
     if (artifactsViewTask?.id !== taskId) return;
     body.innerHTML = artifactBackToolbar(taskId, '') + `<div class="files-empty">Failed to load: ${esc(e.message)}</div>`;
   }
+}
+
+// Direct authenticated artifact URL — bypasses fetch()+blob() so large
+// media (audio/video) streams via the browser's native Range-request
+// handling instead of being fully buffered in JS memory first. Same
+// ?token= pattern openStream uses for EventSource, which also can't set
+// custom headers.
+function artifactDirectURL(taskId, art) {
+  return API + `/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}?token=` + encodeURIComponent(TOKEN);
 }
 
 // Builds the DOM node that renders an artifact's content, shared by the paneled
@@ -4290,6 +4315,20 @@ function makeArtifactNode(art, payload) {
     pre.textContent = payload.txt; // textContent, not innerHTML — no escaping needed
     return pre;
   }
+  if (art.type === 'audio') {
+    const el = document.createElement('audio');
+    el.className = 'artifact-media';
+    el.controls = true;
+    el.src = payload.url;
+    return el;
+  }
+  if (art.type === 'video') {
+    const el = document.createElement('video');
+    el.className = 'artifact-media';
+    el.controls = true;
+    el.src = payload.url;
+    return el;
+  }
   const d = document.createElement('div');
   d.className = 'files-empty';
   d.textContent = 'Preview not supported — use Download.';
@@ -4326,6 +4365,12 @@ async function openArtifactFullscreen(taskId, art) {
   revokeArtifactFsURL();
   body.innerHTML = '<div class="files-empty">Loading…</div>';
   view.classList.add('open');
+  if (art.type === 'audio' || art.type === 'video') {
+    const node = makeArtifactNode(art, { url: artifactDirectURL(taskId, art) });
+    body.innerHTML = '';
+    body.appendChild(node);
+    return;
+  }
   try {
     const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`);
     if (!r.ok) throw new Error('fetch ' + r.status);

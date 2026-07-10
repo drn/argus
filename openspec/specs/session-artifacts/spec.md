@@ -3,9 +3,7 @@
 ## Purpose
 
 Session artifacts are files (HTML reports, PDFs, images, markdown, text) that an agent produces during a task and registers in a per-task manifest. This capability exposes those artifacts over the REST API so the remote SPA can list and view them, while enforcing that only registered files are served, that no file outside the task's artifact directory can be reached, and that embedded artifacts can be safely iframed without leaking the caller's auth token.
-
 ## Requirements
-
 ### Requirement: List task artifacts
 
 The API SHALL return the registered-artifact manifest for an existing task as a JSON object. When a task has no artifacts the response SHALL contain an empty array rather than a null value. Requests for a non-existent task SHALL be rejected.
@@ -31,8 +29,13 @@ The API SHALL serve the raw bytes of a single artifact selected by its on-disk f
 
 #### Scenario: Serve by artifact type
 
-- **WHEN** a client requests a registered artifact whose type is HTML, markdown, PDF, image, or text
-- **THEN** the response is HTTP 200, the body is the exact stored bytes, and the Content-Type matches the artifact type (for example `text/html; charset=utf-8` for HTML, `application/pdf` for PDF, `image/png` for a PNG image)
+- **WHEN** a client requests a registered artifact whose type is HTML, markdown, PDF, image, text, audio, or video
+- **THEN** the response is HTTP 200, the body is the exact stored bytes, and the Content-Type matches the artifact type (for example `text/html; charset=utf-8` for HTML, `application/pdf` for PDF, `image/png` for a PNG image, `audio/mpeg` for an mp3, `video/mp4` for an mp4)
+
+#### Scenario: Range request against a large media artifact
+
+- **WHEN** a client requests a byte range of a registered audio or video artifact via a `Range` header
+- **THEN** the response serves the requested range (HTTP 206) so the client can scrub/seek without downloading the full file first
 
 ### Requirement: Manifest-scoped serving
 
@@ -103,3 +106,4 @@ Deleting a task SHALL remove both its artifact manifest rows and its on-disk art
 
 - **WHEN** a task that has registered artifacts is deleted
 - **THEN** the manifest rows for that task are removed and the task's on-disk artifact directory no longer exists
+
