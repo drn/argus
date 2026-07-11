@@ -786,7 +786,7 @@ func TestContentIdle(t *testing.T) {
 		r := &ScreenRenderer{}
 		n := 0
 		tailOf := func(string) []byte {
-			return []byte(altScreenPromptFrame("3s", "✻") + "\x1b[10;1Hnoise " + string(rune('a'+n)))
+			return []byte(altScreenPromptFrame("3s", "✻") + "\x1b[10;1Hnoise " + string(rune('a'+n))) //nolint:gosec // G115: n is bounded to [0,NeedsInputEscalationTicks) in this test, no overflow risk
 		}
 		var st *ContentIdleState
 		for i := 0; i < NeedsInputEscalationTicks-1; i++ {
@@ -806,7 +806,7 @@ func TestContentIdle(t *testing.T) {
 		r := &ScreenRenderer{}
 		n := 0
 		tailOf := func(string) []byte {
-			return []byte(altScreenPromptFrame("3s", "✻") + "\x1b[10;1Hnoise " + string(rune('a'+n)))
+			return []byte(altScreenPromptFrame("3s", "✻") + "\x1b[10;1Hnoise " + string(rune('a'+n))) //nolint:gosec // G115: n is bounded to [0,NeedsInputEscalationTicks) in this test, no overflow risk
 		}
 		// Same selection-prompt shape as tailOf, but with the "esc to interrupt"
 		// working affordance ALSO present — must suppress qualification even
