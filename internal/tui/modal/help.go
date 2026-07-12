@@ -75,7 +75,7 @@ var helpLayout = []helpGroup{
 	}},
 	{title: "Projects View (rail)", ctx: keymap.CtxHeraRail, extra: []HelpBinding{
 		{"j / k / space", "navigate / collapse / expand"},
-		{"/", "filter rail by name (↑/↓ navigate, Enter accepts, Esc clears)"},
+		{"/", "filter rail by name (↑/↓ navigate, Enter jumps in + clears, Esc clears)"},
 		{"Enter", "enter pane (revive dead/suspended session)"},
 		{"Tab", "enter pane (then Tab → agent autocomplete)"},
 		{"ctrl+alt+← / →", "move between panes; ctrl+q back to rail"},
