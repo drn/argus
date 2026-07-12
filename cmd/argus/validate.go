@@ -10,6 +10,7 @@ import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/profiles"
+	"github.com/drn/argus/internal/review"
 )
 
 // runValidateCommand handles: argus validate <profile-name>
@@ -43,7 +44,10 @@ func runValidateCommand(args []string) {
 // and validates the named profile, writes a human-readable report to w, and
 // returns the process exit code (0 = valid, 1 = not found / invalid).
 func runValidate(w io.Writer, loader *profiles.Loader, cfg config.Config, name string) int {
-	p, errs := loader.ValidateName(name, cfg, agent.KnownModels)
+	// The same panelValidator the daemon/MCP inject (internal/review.NewValidator),
+	// so a malformed [panel] is reported here too instead of only failing open
+	// at spawn time — see design.md's Open Question #2.
+	p, errs := loader.ValidateName(name, cfg, agent.KnownModels, review.NewValidator(cfg))
 	if p == nil {
 		// Resolution failed (not found, or extends cycle); errs holds the cause.
 		for _, e := range errs {

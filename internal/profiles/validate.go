@@ -16,13 +16,19 @@ import (
 //   - each non-empty model is a member of the union of the built-in backend
 //     aliases (knownModels("claude") ∪ knownModels("codex")) and every
 //     configured backend's models list;
-//   - the [panel] block, if present, is structurally well-formed (it is opaque
-//     and its composition grammar is NOT validated here — see D-PANEL-SEAM).
+//   - the [panel] block, when present, passes panelValidator if one is
+//     injected; when panelValidator is nil, [panel] is accepted on structural
+//     shape alone (it is, by construction, a decoded TOML table — nothing
+//     further to check).
 //
 // knownModels is injected (pass agent.KnownModels) so this package needs no
-// internal/agent import. The extends chain is resolved by Load before Validate
-// runs; an extends cycle surfaces as a Load error, aggregated by ValidateName.
-func Validate(p *Profile, cfg config.Config, knownModels func(command string) []string) []error {
+// internal/agent import. panelValidator is injected the same way (pass
+// review.NewValidator(cfg)) so this package needs no internal/review import —
+// panel composition grammar is owned by the sibling cross-vendor-review
+// capability (D-PANEL-SEAM). The extends chain is resolved by Load before
+// Validate runs; an extends cycle surfaces as a Load error, aggregated by
+// ValidateName.
+func Validate(p *Profile, cfg config.Config, knownModels func(command string) []string, panelValidator func(panel map[string]any) []error) []error {
 	var errs []error
 
 	allowed := modelAllowList(cfg, knownModels)
@@ -51,9 +57,12 @@ func Validate(p *Profile, cfg config.Config, knownModels func(command string) []
 		}
 	}
 
-	// [panel] is structural-only: when present it is, by construction, a TOML
-	// table decoded into a map — so there is nothing further to reject. Its
-	// composition grammar is owned by 2a-xvendor-review.
+	// [panel] grammar is enforced only when a validator is injected (owned by
+	// the sibling cross-vendor-review capability — see D-PANEL-SEAM); absent
+	// that, a present [panel] is accepted on structural shape alone.
+	if panelValidator != nil && p.PanelPresent {
+		errs = append(errs, panelValidator(p.Panel)...)
+	}
 
 	return errs
 }
@@ -61,12 +70,12 @@ func Validate(p *Profile, cfg config.Config, knownModels func(command string) []
 // ValidateName loads, resolves, and validates a profile by name, aggregating the
 // resolution errors (not-found, extends cycle) and the conformance errors into a
 // single list. The resolved profile is returned (nil when resolution failed).
-func (l *Loader) ValidateName(name string, cfg config.Config, knownModels func(command string) []string) (*Profile, []error) {
+func (l *Loader) ValidateName(name string, cfg config.Config, knownModels func(command string) []string, panelValidator func(panel map[string]any) []error) (*Profile, []error) {
 	p, err := l.Load(name)
 	if err != nil {
 		return nil, []error{err}
 	}
-	return p, Validate(p, cfg, knownModels)
+	return p, Validate(p, cfg, knownModels, panelValidator)
 }
 
 // modelAllowList builds the union of built-in backend aliases (for the "claude"

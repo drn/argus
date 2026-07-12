@@ -19,7 +19,7 @@ func TestSeeds_EachValidates(t *testing.T) {
 	l := seedLoader()
 	for _, name := range []string{"default", "lean", "customer_grade"} {
 		t.Run(name, func(t *testing.T) {
-			p, errs := l.ValidateName(name, config.Config{}, testKnownModels)
+			p, errs := l.ValidateName(name, config.Config{}, testKnownModels, nil)
 			testutil.NotNil(t, p)
 			if len(errs) != 0 {
 				t.Fatalf("seed %q failed validation: %s", name, errorsText(errs))

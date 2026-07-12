@@ -70,6 +70,22 @@ func TestRunValidate_CycleReported(t *testing.T) {
 	testutil.Contains(t, b.String(), "cycle")
 }
 
+func TestRunValidate_MalformedPanelReported(t *testing.T) {
+	lib := t.TempDir()
+	writeProfileFile(t, lib, "bad-panel", `
+[archetype.code_slice]
+model = "sonnet"
+
+[panel]
+finders = ["nonexistent-model"]
+`)
+	var b strings.Builder
+	code := runValidate(&b, &profiles.Loader{LibraryDir: lib}, config.Config{}, "bad-panel")
+	testutil.Equal(t, code, 1)
+	testutil.Contains(t, b.String(), "panel")
+	testutil.Contains(t, b.String(), "nonexistent-model")
+}
+
 func TestRunValidate_InRepoSourceReported(t *testing.T) {
 	repo := t.TempDir()
 	writeProfileFile(t, repo, "p", `

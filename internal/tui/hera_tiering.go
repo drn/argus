@@ -49,7 +49,10 @@ func (a *App) resolveHeraTier(rv *hera.RoleView) {
 	if rv.WorktreePath != "" {
 		loader.RepoDir = filepath.Join(rv.WorktreePath, ".argus", "profiles")
 	}
-	prof, errs := loader.ValidateName(name, cfg, agent.KnownModels)
+	// panelValidator is nil: the plan-view tiering readout only consults
+	// archetype/rigor fields, so panel-grammar enforcement is left to the
+	// daemon-side consumers (spawn-time resolution, profile_resolve).
+	prof, errs := loader.ValidateName(name, cfg, agent.KnownModels, nil)
 	if prof == nil || len(errs) > 0 {
 		// Only surface a warning for an EXPLICIT binding; an unbound project that
 		// falls back to a missing "default" is the silent fail-open case.
@@ -90,7 +93,7 @@ func (a *App) validProfileNames(projectPath string) []string {
 	}
 	var valid []string
 	for _, name := range loader.Discover() {
-		if p, errs := loader.ValidateName(name, cfg, agent.KnownModels); p != nil && len(errs) == 0 {
+		if p, errs := loader.ValidateName(name, cfg, agent.KnownModels, nil); p != nil && len(errs) == 0 {
 			valid = append(valid, name)
 		}
 	}

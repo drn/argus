@@ -3,8 +3,12 @@
 # Balanced model allocation across all 13 archetypes: premium models up the tree
 # (plan / orchestrate / review / synthesize) where leverage is high and output is
 # hard to verify, cheaper models down the tree (CI loops, verification, docs)
-# where work is high-volume and verifiable. Fable is treated as absent (pulled
-# from market), so this uses the current model line-up only.
+# where work is high-volume and verifiable. Archetypes below treat Fable as
+# absent (pulled from market at the time this profile's archetype allocation
+# was written), so per-archetype models use the current line-up only — the
+# reviewer panel below is unrelated and DOES use Fable now that it's back
+# (D9, add-cross-vendor-review): Fable+Opus is the strongest panel that can
+# actually be run today.
 #
 # This is a documented EXAMPLE. Copy it to ~/.argus/profiles/default.toml (or to
 # a project's .argus/profiles/default.toml) and adapt; argus does not auto-install
@@ -54,3 +58,15 @@ model = "haiku"
 review_passes       = 1
 gating              = false
 security_spot_check = false
+
+# Reviewer panel (grammar owned by internal/review — see D7 in
+# add-cross-vendor-review/design.md). Middle rigor: both broad in-session
+# finders, no corrective lens, no fix-verification phase (customer_grade turns
+# both on; lean drops to a single finder). codex is a RESERVED, valid finder id
+# per the grammar but is NOT listed here — cross-vendor composition is
+# deferred until the foreign-reviewer-capture primitive lands (D-SCOPE).
+#
+# GOTCHA (D7): a "fable" finder means Fable:LOW — it silently falls back to
+# Opus at medium/high effort. See customer_grade.toml for the full note.
+[panel]
+finders = ["opus", "fable"]
