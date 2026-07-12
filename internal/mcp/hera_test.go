@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -148,9 +149,9 @@ func TestToolsList_HeraOn(t *testing.T) {
 		names[tool.Name] = true
 	}
 
-	// All 15 hera tools must appear (9 ported + 3 plan-authoring + 3 plan-mutation).
+	// All 16 hera tools must appear (9 ported + hera_move + 3 plan-authoring + 3 plan-mutation).
 	for _, want := range []string{
-		"hera_new_orchestrator", "hera_join", "hera_send", "hera_inbox",
+		"hera_new_orchestrator", "hera_join", "hera_move", "hera_send", "hera_inbox",
 		"hera_mark_read", "hera_status", "hera_spawn_worker",
 		"hera_tree_updates", "hera_get_messages",
 		"hera_plan_node", "hera_block", "hera_plan",
@@ -302,6 +303,73 @@ func TestHera_NewOrchestrator_AlreadyBound(t *testing.T) {
 	testutil.Contains(t, cr2.Content[0].Text, "already has a live binding")
 }
 
+// TestHera_NewOrchestrator_CoordinatorSelfInvokeRejected is the guardrail: a
+// task that is already a coordinator (of orchestrator A) must be rejected when
+// it calls hera_new_orchestrator for a DIFFERENT orchestrator B on its own
+// session — that is the self-promotion footgun. The error must steer to
+// hera_spawn_worker / kind=subcoord, and NO orchestrator B and no second
+// binding may be created (the guard runs before orchestrator creation).
+func TestHera_NewOrchestrator_CoordinatorSelfInvokeRejected(t *testing.T) {
+	s, d := testHeraServer(t)
+	task := seedCoordinator(t, s, d, "orch-a", "/wt/coord")
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_new_orchestrator",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "name": "orch-b", "coordinator_role_name": "coord"
+		}`, task.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	// Actionable guidance: steer to worker dispatch, not self-promotion.
+	testutil.Contains(t, cr.Content[0].Text, "hera_spawn_worker")
+	testutil.Contains(t, cr.Content[0].Text, "kind=subcoord")
+
+	// No orphan orchestrator B was created (guard runs before CreateHeraOrchestrator).
+	orchs, err := d.ListHeraOrchestrators(true)
+	testutil.NoError(t, err)
+	for _, o := range orchs {
+		if o.Name == "orch-b" {
+			t.Fatalf("orch-b must not have been created on rejection")
+		}
+	}
+	// The coordinator task still holds exactly its one (coordinator) binding.
+	bnds, err := d.ListHeraLiveBindingsByTask(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(bnds), 1)
+}
+
+// TestHera_NewOrchestrator_WorkerSelfPromotionAllowed asserts the guard does NOT
+// over-block: a task holding only a WORKER binding may still call
+// hera_new_orchestrator to become a sub-coordinator (the documented
+// worker-promotion pattern). Its session is already isolated, so a second
+// (coordinator) binding is legitimate here.
+func TestHera_NewOrchestrator_WorkerSelfPromotionAllowed(t *testing.T) {
+	s, d := testHeraServer(t)
+	parent, err := d.CreateHeraOrchestrator("parent", "")
+	testutil.NoError(t, err)
+	task := addHeraTestTask(t, d, "/wt/worker")
+	_, _, err = d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: parent.ID,
+		Name:           "w1",
+		Kind:           db.HeraKindWorker,
+		ArgusProject:   "test-project",
+	}, task.ID, task.Worktree)
+	testutil.NoError(t, err)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_new_orchestrator",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "name": "child", "coordinator_role_name": "coord"
+		}`, task.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+	testutil.Contains(t, cr.Content[0].Text, "**kind**: coordinator")
+}
+
 // --- hera_join ---
 
 func TestHera_Join_ClaimMode(t *testing.T) {
@@ -414,6 +482,334 @@ func TestHera_Join_AlreadyBound(t *testing.T) {
 	cr := callResult(t, resp)
 	testutil.Equal(t, cr.IsError, true)
 	testutil.Contains(t, cr.Content[0].Text, "already has a live binding")
+}
+
+// --- fix-hera-join-move-binding: hera_join cross-orchestrator rejection + hera_move ---
+
+// heraBindingRow fetches the raw ended_at/end_reason columns for a binding id
+// directly via SQL. HeraStore only exposes LIVE-binding lookups (ended_at IS
+// NULL), so ended bindings are invisible to it by design; this reaches past
+// that with the existing public d.WithTx, no new DB-layer code required.
+func heraBindingRow(t *testing.T, d *db.DB, bindingID int64) (endedAt, endReason sql.NullString) {
+	t.Helper()
+	err := d.WithTx(func(tx *sql.Tx) error {
+		return tx.QueryRow(`SELECT ended_at, end_reason FROM hera_bindings WHERE id=?`, bindingID).Scan(&endedAt, &endReason)
+	})
+	testutil.NoError(t, err)
+	return endedAt, endReason
+}
+
+// TestHera_Join_AttachMode_RejectsWhenBoundElsewhere is task 1.1: a caller
+// already live-bound under orchestrator A must be rejected — not silently
+// double-bound — when it attaches to a DIFFERENT orchestrator B. Currently
+// FAILS: toolHeraJoin's attach-mode branch only checks for a second binding
+// under the SAME target orchestrator, so today this creates an unrelated
+// second binding under B instead of rejecting.
+func TestHera_Join_AttachMode_RejectsWhenBoundElsewhere(t *testing.T) {
+	s, d := testHeraServer(t)
+
+	coordA := addHeraTestTask(t, d, "/wt/coordA-reject")
+	doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_new_orchestrator",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"name":"orchA-reject","coordinator_role_name":"coord"
+		}`, coordA.Worktree)),
+	})
+	orchA, err := d.HeraOrchestratorByName("orchA-reject")
+	testutil.NoError(t, err)
+
+	coordB := addHeraTestTask(t, d, "/wt/coordB-reject")
+	doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_new_orchestrator",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"name":"orchB-reject","coordinator_role_name":"coord"
+		}`, coordB.Worktree)),
+	})
+	orchB, err := d.HeraOrchestratorByName("orchB-reject")
+	testutil.NoError(t, err)
+
+	// workerTask is already live-bound under A.
+	workerTask := addHeraTestTask(t, d, "/wt/bound-a-worker")
+	attachResp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_join",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"orchestrator":"orchA-reject","role_name":"w1","kind":"worker"
+		}`, workerTask.Worktree)),
+	})
+	if cr := callResult(t, attachResp); cr.IsError {
+		t.Fatalf("setup: attach under orchA-reject failed: %s", cr.Content[0].Text)
+	}
+	origBinding, err := d.HeraLiveBindingByTaskAndOrchestrator(workerTask.ID, orchA.ID)
+	testutil.NoError(t, err)
+
+	// Attach mode targeting the DIFFERENT orchestrator B must be rejected.
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_join",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"orchestrator":"orchB-reject","role_name":"w2","kind":"worker"
+		}`, workerTask.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "hera_move")
+
+	// Binding under A remains live and unchanged.
+	stillA, err := d.HeraLiveBindingByTaskAndOrchestrator(workerTask.ID, orchA.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, stillA.ID, origBinding.ID)
+	testutil.Nil(t, stillA.EndedAt)
+
+	// No binding was created under B.
+	_, err = d.HeraLiveBindingByTaskAndOrchestrator(workerTask.ID, orchB.ID)
+	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+}
+
+// TestHera_Move_HappyPath is task 1.2. FAILS today: hera_move does not exist,
+// so the tool/call dispatch returns a JSON-RPC "unknown tool" error instead of
+// the response asserted below.
+func TestHera_Move_HappyPath(t *testing.T) {
+	s, d := testHeraServer(t)
+
+	coordA := addHeraTestTask(t, d, "/wt/coordA-move")
+	doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_new_orchestrator",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"name":"orchA-move","coordinator_role_name":"coord"
+		}`, coordA.Worktree)),
+	})
+	orchA, err := d.HeraOrchestratorByName("orchA-move")
+	testutil.NoError(t, err)
+
+	coordB := addHeraTestTask(t, d, "/wt/coordB-move")
+	doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_new_orchestrator",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"name":"orchB-move","coordinator_role_name":"coord"
+		}`, coordB.Worktree)),
+	})
+	orchB, err := d.HeraOrchestratorByName("orchB-move")
+	testutil.NoError(t, err)
+
+	workerTask := addHeraTestTask(t, d, "/wt/mover")
+	attachResp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_join",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"orchestrator":"orchA-move","role_name":"w1","kind":"worker"
+		}`, workerTask.Worktree)),
+	})
+	if cr := callResult(t, attachResp); cr.IsError {
+		t.Fatalf("setup: attach under orchA-move failed: %s", cr.Content[0].Text)
+	}
+	origBinding, err := d.HeraLiveBindingByTaskAndOrchestrator(workerTask.ID, orchA.ID)
+	testutil.NoError(t, err)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_move",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"orchestrator":"orchB-move","role_name":"w2","kind":"worker"
+		}`, workerTask.Worktree)),
+	})
+	if resp.Error != nil {
+		t.Fatalf("hera_move rpc error: %v", resp.Error)
+	}
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+	testutil.Contains(t, cr.Content[0].Text, "orchA-move")
+	testutil.Contains(t, cr.Content[0].Text, "w1")
+
+	// Old binding under A is ended with end_reason "moved".
+	_, err = d.HeraLiveBindingByTaskAndOrchestrator(workerTask.ID, orchA.ID)
+	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+	endedAt, endReason := heraBindingRow(t, d, origBinding.ID)
+	testutil.Equal(t, endedAt.Valid, true)
+	testutil.Equal(t, endReason.String, "moved")
+
+	// New live binding exists under B.
+	newBinding, err := d.HeraLiveBindingByTaskAndOrchestrator(workerTask.ID, orchB.ID)
+	testutil.NoError(t, err)
+	newRole, err := d.HeraRole(newBinding.RoleID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, newRole.Name, "w2")
+
+	// Response reports the new binding id.
+	testutil.Contains(t, cr.Content[0].Text, fmt.Sprintf("%d", newBinding.ID))
+}
+
+// TestHera_Move_NothingToMove is task 1.3. FAILS today: hera_move does not
+// exist yet.
+func TestHera_Move_NothingToMove(t *testing.T) {
+	s, d := testHeraServer(t)
+
+	coordB := addHeraTestTask(t, d, "/wt/coordB-nothing")
+	doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_new_orchestrator",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"name":"orchB-nothing","coordinator_role_name":"coord"
+		}`, coordB.Worktree)),
+	})
+	orchB, err := d.HeraOrchestratorByName("orchB-nothing")
+	testutil.NoError(t, err)
+
+	unbound := addHeraTestTask(t, d, "/wt/unbound-mover")
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_move",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"orchestrator":"orchB-nothing","role_name":"w","kind":"worker"
+		}`, unbound.Worktree)),
+	})
+	if resp.Error != nil {
+		t.Fatalf("hera_move rpc error: %v", resp.Error)
+	}
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "hera_join")
+	testutil.Contains(t, cr.Content[0].Text, "hera_new_orchestrator")
+
+	_, err = d.HeraLiveBindingByTaskAndOrchestrator(unbound.ID, orchB.ID)
+	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+}
+
+// TestHera_Move_SameOrchestrator is task 1.4. FAILS today: hera_move does not
+// exist yet.
+func TestHera_Move_SameOrchestrator(t *testing.T) {
+	s, d := testHeraServer(t)
+
+	coordA := addHeraTestTask(t, d, "/wt/coordA-same")
+	doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_new_orchestrator",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"name":"orchA-same","coordinator_role_name":"coord"
+		}`, coordA.Worktree)),
+	})
+	orchA, err := d.HeraOrchestratorByName("orchA-same")
+	testutil.NoError(t, err)
+
+	workerTask := addHeraTestTask(t, d, "/wt/same-orch-worker")
+	attachResp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_join",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"orchestrator":"orchA-same","role_name":"w1","kind":"worker"
+		}`, workerTask.Worktree)),
+	})
+	if cr := callResult(t, attachResp); cr.IsError {
+		t.Fatalf("setup: attach under orchA-same failed: %s", cr.Content[0].Text)
+	}
+	origBinding, err := d.HeraLiveBindingByTaskAndOrchestrator(workerTask.ID, orchA.ID)
+	testutil.NoError(t, err)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_move",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"orchestrator":"orchA-same","role_name":"w2","kind":"worker"
+		}`, workerTask.Worktree)),
+	})
+	if resp.Error != nil {
+		t.Fatalf("hera_move rpc error: %v", resp.Error)
+	}
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "hera_join")
+
+	// Nothing ended: the original binding is still live and unchanged.
+	stillLive, err := d.HeraLiveBindingByTaskAndOrchestrator(workerTask.ID, orchA.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, stillLive.ID, origBinding.ID)
+	testutil.Nil(t, stillLive.EndedAt)
+
+	// Nothing created: role "w2" must not exist under orchA-same.
+	_, err = d.HeraRoleByName(orchA.ID, "w2")
+	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+}
+
+// TestHera_Move_AmbiguousRequiresFromOrchestrator is task 1.5. FAILS today:
+// hera_move does not exist yet.
+func TestHera_Move_AmbiguousRequiresFromOrchestrator(t *testing.T) {
+	s, d := testHeraServer(t)
+
+	// Caller holds a worker binding under orchA-amb...
+	caller := addHeraTestTask(t, d, "/wt/amb-mover")
+	orchA, err := d.CreateHeraOrchestrator("orchA-amb", "")
+	testutil.NoError(t, err)
+	_, _, err = d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: orchA.ID, Name: "w-self", Kind: db.HeraKindWorker, ArgusProject: "test-project",
+	}, caller.ID, caller.Worktree)
+	testutil.NoError(t, err)
+
+	// ...and self-promotes to coordinator of orchB-amb (multi-binding, allowed
+	// only because the existing binding is worker-kind, not coordinator-kind).
+	resp0 := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_new_orchestrator",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"name":"orchB-amb","coordinator_role_name":"coord"
+		}`, caller.Worktree)),
+	})
+	testutil.Equal(t, callResult(t, resp0).IsError, false)
+
+	// A third, unrelated orchestrator to move into.
+	coordC := addHeraTestTask(t, d, "/wt/coordC-amb")
+	doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_new_orchestrator",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"name":"orchC-amb","coordinator_role_name":"coord"
+		}`, coordC.Worktree)),
+	})
+
+	// hera_move without from_orchestrator → ambiguous (2 live bindings).
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_move",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"orchestrator":"orchC-amb","role_name":"w-moved","kind":"worker"
+		}`, caller.Worktree)),
+	})
+	if resp.Error != nil {
+		t.Fatalf("hera_move rpc error: %v", resp.Error)
+	}
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "multiple orchestrators")
+	testutil.Contains(t, cr.Content[0].Text, "orchA-amb")
+	testutil.Contains(t, cr.Content[0].Text, "orchB-amb")
+
+	// Follow-up call supplying from_orchestrator succeeds.
+	resp2 := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_move",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"orchestrator":"orchC-amb","role_name":"w-moved","kind":"worker","from_orchestrator":"orchA-amb"
+		}`, caller.Worktree)),
+	})
+	if resp2.Error != nil {
+		t.Fatalf("hera_move (with from_orchestrator) rpc error: %v", resp2.Error)
+	}
+	cr2 := callResult(t, resp2)
+	testutil.Equal(t, cr2.IsError, false)
+
+	orchC, err := d.HeraOrchestratorByName("orchC-amb")
+	testutil.NoError(t, err)
+	_, err = d.HeraLiveBindingByTaskAndOrchestrator(caller.ID, orchC.ID)
+	testutil.NoError(t, err)
+}
+
+// TestHera_Move_CoordinatorKindRejected is task 1.6, mirroring
+// TestHera_Join_CoordinatorKindRejected. FAILS today: hera_move does not
+// exist yet.
+func TestHera_Move_CoordinatorKindRejected(t *testing.T) {
+	s, d := testHeraServer(t)
+	task := addHeraTestTask(t, d, "/wt/move-coord-kind")
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_move",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"orchestrator":"myorch","role_name":"c","kind":"coordinator"
+		}`, task.Worktree)),
+	})
+	if resp.Error != nil {
+		t.Fatalf("hera_move rpc error: %v", resp.Error)
+	}
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "hera_new_orchestrator")
 }
 
 // --- CallerContext / resolveCallerRole ---
@@ -1432,21 +1828,31 @@ func TestHera_SpawnWorker_SpawnerError(t *testing.T) {
 	testutil.Contains(t, cr.Content[0].Text, "spawn worker: worktree creation failed")
 }
 
-func TestHera_SpawnWorker_MultiCoordinatorDisambiguation(t *testing.T) {
+func TestHera_SpawnWorker_MultiBindingDisambiguation(t *testing.T) {
 	s, d := testHeraServer(t)
-	// One task is coordinator in two orchestrators.
+	// A single task holding 2+ live bindings needs orchestrator= disambiguation on
+	// hera_spawn_worker. The LEGITIMATE multi-binding shape is a promoted worker:
+	// worker in orchA + coordinator in orchB (a task coordinating TWO orchestrators
+	// is now blocked by the self-promotion guard, so we build the ambiguity that
+	// way). First seed the worker binding under orchA directly...
 	coord := addHeraTestTask(t, d, "/wt/multi")
-	for _, orch := range []string{"orchA", "orchB"} {
-		resp := doRequest(t, s, "tools/call", ToolCallParams{
-			Name: "hera_new_orchestrator",
-			Arguments: json.RawMessage(fmt.Sprintf(`{
-				"cwd": %q, "name": %q, "coordinator_role_name": "coord"
-			}`, coord.Worktree, orch)),
-		})
-		testutil.Equal(t, callResult(t, resp).IsError, false)
-	}
+	orchA, err := d.CreateHeraOrchestrator("orchA", "")
+	testutil.NoError(t, err)
+	_, _, err = d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: orchA.ID, Name: "w-self", Kind: db.HeraKindWorker, ArgusProject: "test-project",
+	}, coord.ID, coord.Worktree)
+	testutil.NoError(t, err)
+	// ...then self-promote to coordinator of orchB (allowed: only a worker binding
+	// exists, so the guard does not fire).
+	resp0 := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_new_orchestrator",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "name": "orchB", "coordinator_role_name": "coord"
+		}`, coord.Worktree)),
+	})
+	testutil.Equal(t, callResult(t, resp0).IsError, false)
 
-	// Spawn without orchestrator → ambiguous.
+	// Spawn without orchestrator → ambiguous (2 live bindings).
 	resp := doRequest(t, s, "tools/call", ToolCallParams{
 		Name:      "hera_spawn_worker",
 		Arguments: spawnArgs(coord.Worktree, "x", "w", "", ""),
@@ -1455,7 +1861,7 @@ func TestHera_SpawnWorker_MultiCoordinatorDisambiguation(t *testing.T) {
 	testutil.Equal(t, cr.IsError, true)
 	testutil.Contains(t, cr.Content[0].Text, "multiple orchestrators")
 
-	// Spawn with orchestrator=orchB → resolves to that one.
+	// Spawn with orchestrator=orchB → resolves to the orchestrator the caller coordinates.
 	resp2 := doRequest(t, s, "tools/call", ToolCallParams{
 		Name:      "hera_spawn_worker",
 		Arguments: spawnArgs(coord.Worktree, "x", "w", "", "orchB"),
@@ -1571,4 +1977,51 @@ func TestHera_Status_Done_DoesNotClobberComplete(t *testing.T) {
 
 	got, _ := d.Get(worker.ID)
 	testutil.Equal(t, got.Status, model.StatusComplete) // not clobbered
+}
+
+// promptParamDescription digs the `prompt` param's description out of a tool's
+// InputSchema (a map[string]interface{} literal in heraToolDefs). Fails the test
+// if the tool or its prompt param is missing.
+func promptParamDescription(t *testing.T, toolName string) string {
+	t.Helper()
+	for _, tool := range heraToolDefs {
+		if tool.Name != toolName {
+			continue
+		}
+		schema, ok := tool.InputSchema.(map[string]interface{})
+		testutil.Equal(t, ok, true)
+		props, ok := schema["properties"].(map[string]interface{})
+		testutil.Equal(t, ok, true)
+		prompt, ok := props["prompt"].(map[string]interface{})
+		testutil.Equal(t, ok, true)
+		desc, ok := prompt["description"].(string)
+		testutil.Equal(t, ok, true)
+		return desc
+	}
+	t.Fatalf("tool %q not found in heraToolDefs", toolName)
+	return ""
+}
+
+// TestHeraPromptParams_MissionOnlyContract is the prompt-hygiene contract
+// (improve-hera-node-descriptions): the `prompt` param descriptions on
+// hera_spawn_worker and hera_plan_node direct the coordinator to supply the
+// worker's MISSION only and NOT to prepend org/security policy — because every
+// spawned worker session receives its org instructions independently
+// (harness-injected), so a prepended copy is redundant and pollutes the stored
+// prompt + the plan-DAG view.
+func TestHeraPromptParams_MissionOnlyContract(t *testing.T) {
+	for _, toolName := range []string{"hera_spawn_worker", "hera_plan_node"} {
+		t.Run(toolName, func(t *testing.T) {
+			desc := promptParamDescription(t, toolName)
+			lower := strings.ToLower(desc)
+			// Directs supplying the worker's mission only.
+			testutil.Contains(t, desc, "MISSION")
+			// Directs NOT prepending org/security policy (never instructs to prepend it).
+			testutil.Contains(t, lower, "do not prepend")
+			testutil.Contains(t, lower, "policy")
+			// States the rationale: the worker gets org instructions independently.
+			testutil.Contains(t, lower, "independently")
+			testutil.Contains(t, lower, "redundant")
+		})
+	}
 }

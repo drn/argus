@@ -68,6 +68,48 @@ func TestHeraCoordinatorOrientation_CarriesFiveDisciplineHabits(t *testing.T) {
 	testutil.Equal(t, strings.Contains(got, "request_recycle"), true)
 }
 
+// TestHeraCoordinatorOrientation_NoSelfPromotion guards the coordinator's core
+// contract. The HEADLINE rule is dispatch-don't-implement: a coordinator with
+// actual work calls hera_spawn_worker (regardless of repo) and never implements
+// in its own session. The real bug was a coordinator using hera_new_orchestrator
+// on ITSELF as a relabel and then doing the work solo — so the orientation must
+// (a) lead with "you do NOT implement — spawn a worker", (b) keep the self-invoke
+// guardrail and state it is not a way to "become the one who does the work",
+// (c) treat cross-repo as a normal worker spawn (no new orchestrator), and
+// (d) reserve a new coordinator session for genuine multi-project/multi-phase
+// sub-teams. HeraWorkerOrientation is intentionally NOT covered: worker
+// self-promotion is the correct pattern.
+func TestHeraCoordinatorOrientation_NoSelfPromotion(t *testing.T) {
+	got := HeraCoordinatorOrientation("my-orch")
+	cases := []struct {
+		name    string
+		sub     string
+		present bool
+	}{
+		// The old self-promotion phrasing AND cross-repo-as-a-trigger phrasing are gone.
+		{"no-old-become-subcoord", "become a sub-coordinator", false},
+		{"no-crossrepo-as-subteam-trigger", "sub-team (including one in another repo)", false},
+		// Headline: a coordinator dispatches, it does NOT implement.
+		{"headline-no-implement", "you do NOT implement", true},
+		{"headline-spawn-worker-for-work", "spawn a worker with hera_spawn_worker", true},
+		// hera_new_orchestrator-on-self is a relabel-and-implement antipattern, not a sub-team.
+		{"warns-no-self-invoke", "NEVER call hera_new_orchestrator on yourself", true},
+		{"not-a-way-to-do-work", "NOT a way to become the one who does the work", true},
+		// Cross-repo work is a normal worker spawn — no new orchestrator.
+		{"crossrepo-normal-spawn", "cross-repo work is just a normal worker spawn", true},
+		{"no-new-orch-for-crossrepo", "no new orchestrator needed", true},
+		// A NEW coordinator session is reserved for multi-project/phase decomposition.
+		{"subteam-trigger-is-scope", "multiple projects or phases", true},
+		{"path-worker-promotion", "worker-promotion", true},
+		{"path-subcoord-node", "kind=subcoord hera_plan_node", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			testutil.Equal(t, strings.Contains(got, c.sub), c.present)
+		})
+	}
+}
+
 // TestSpawnHeraCoordinator_HappyPath drives the root-coordinator spawner: it
 // creates a fresh orchestrator + coordinator role + binding to a new task,
 // stamps meta:hera.role=coordinator, and carries the model override.

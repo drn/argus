@@ -1,0 +1,310 @@
+import Foundation
+
+/// A parsed Server-Sent Event. `name` is the `event:` field (nil for the
+/// default/unnamed event); `data` is the accumulated `data:` payload with
+/// multi-line fields joined by `\n`.
+public struct SSEvent: Sendable, Equatable {
+    public var name: String?
+    public var data: String
+
+    public init(name: String? = nil, data: String) {
+        self.name = name
+        self.data = data
+    }
+}
+
+/// Splits a raw byte stream into lines on `\n` (stripping a trailing `\r`),
+/// PRESERVING empty lines. SSE dispatches events on blank lines, but Swift's
+/// `AsyncLineSequence` (`bytes.lines`) silently swallows empty lines — feeding
+/// it to ``SSEParser`` means no event ever dispatches and frames coalesce into
+/// one giant undecodable payload at stream end. Iterate the raw bytes and feed
+/// them here instead.
+public struct ByteLineSplitter: Sendable {
+    private var buffer: [UInt8] = []
+
+    public init() {}
+
+    /// Feeds one byte. Returns a completed line (possibly empty) when `byte`
+    /// is `\n`, else nil.
+    public mutating func feed(_ byte: UInt8) -> String? {
+        if byte == 0x0A { // \n
+            if buffer.last == 0x0D { buffer.removeLast() } // strip \r
+            let line = String(decoding: buffer, as: UTF8.self)
+            buffer.removeAll(keepingCapacity: true)
+            return line
+        }
+        buffer.append(byte)
+        return nil
+    }
+
+    /// Flushes a trailing unterminated line at end-of-stream (nil if empty).
+    public mutating func flush() -> String? {
+        guard !buffer.isEmpty else { return nil }
+        if buffer.last == 0x0D { buffer.removeLast() }
+        let line = String(decoding: buffer, as: UTF8.self)
+        buffer.removeAll(keepingCapacity: true)
+        return line
+    }
+}
+
+/// A minimal, WHATWG-compliant Server-Sent-Events line parser.
+///
+/// Feed it lines (without trailing newlines). It accumulates `event:` and
+/// `data:` fields, ignores `:`-prefixed comments (keepalive pings) and unknown
+/// fields (`id:` / `retry:`), and dispatches an ``SSEvent`` on a blank line —
+/// but only when a `data:` field was seen, matching the spec (a lone comment or
+/// event name with no data dispatches nothing).
+public struct SSEParser: Sendable {
+    private var eventName: String?
+    private var dataBuffer: [String] = []
+    private var sawData = false
+
+    public init() {}
+
+    /// Feeds one line. Returns an event if this line was a dispatching blank
+    /// line, else nil.
+    public mutating func feed(_ rawLine: String) -> SSEvent? {
+        var line = rawLine
+        // Tolerate CRLF framing even though most line sequences strip it.
+        if line.hasSuffix("\r") { line.removeLast() }
+
+        if line.isEmpty {
+            return dispatch()
+        }
+        if line.hasPrefix(":") {
+            return nil // comment / keepalive
+        }
+        let (field, value) = Self.splitField(line)
+        switch field {
+        case "event":
+            eventName = value
+        case "data":
+            dataBuffer.append(value)
+            sawData = true
+        default:
+            break // id / retry / unknown — ignored
+        }
+        return nil
+    }
+
+    /// Flushes any buffered event at end-of-stream (in case the stream ends
+    /// without a trailing blank line).
+    public mutating func finish() -> SSEvent? { dispatch() }
+
+    private mutating func dispatch() -> SSEvent? {
+        defer {
+            eventName = nil
+            dataBuffer.removeAll(keepingCapacity: true)
+            sawData = false
+        }
+        guard sawData else { return nil }
+        let data = dataBuffer.joined(separator: "\n")
+        let name = (eventName?.isEmpty == false) ? eventName : nil
+        return SSEvent(name: name, data: data)
+    }
+
+    /// Splits `field: value` on the first colon, dropping a single leading
+    /// space in the value. A line with no colon is a field with an empty value.
+    static func splitField(_ line: String) -> (String, String) {
+        guard let idx = line.firstIndex(of: ":") else {
+            return (line, "")
+        }
+        let field = String(line[line.startIndex..<idx])
+        var rest = line[line.index(after: idx)...]
+        if rest.first == " " { rest = rest.dropFirst() }
+        return (field, String(rest))
+    }
+}
+
+/// A decoded terminal-stream event from ``ArgusClient/terminalStream(taskID:since:)``.
+public enum TerminalEvent: Sendable, Equatable {
+    /// The SSE response validated (2xx) and the channel is open — emitted ONCE,
+    /// synthetically, before any frames. It is NOT decoded from an SSEvent; the
+    /// stream wrapper injects it so a healthy-but-silent stream (an idle agent
+    /// producing no new bytes for minutes) resolves to live instead of spinning
+    /// on "connecting" forever.
+    case connected
+    /// Raw PTY bytes (an unnamed SSE event, base64-decoded).
+    case output(Data)
+    /// The `exit` event; `rerendering` is true when a kick-restart is in flight.
+    case exit(rerendering: Bool)
+    /// The `clipboard` event: either staged text or a clear.
+    case clipboard(text: String?, cleared: Bool)
+}
+
+/// A decoded daemon event from ``ArgusClient/eventsStream(since:)`` — the
+/// `event:` name (e.g. `task.status_changed`, `resync`) plus the raw JSON
+/// payload bytes for the caller to decode per `internal/model/event.go`.
+public struct ServerEvent: Sendable, Equatable {
+    public let type: String
+    public let jsonData: Data
+
+    public init(type: String, jsonData: Data) {
+        self.type = type
+        self.jsonData = jsonData
+    }
+}
+
+/// One item from ``ArgusClient/eventsStream(since:)``: either the synthetic
+/// `connected` signal (the SSE response validated, before any frames) or a
+/// decoded ``ServerEvent``. The `connected` case lets ``EventsStreamSession``
+/// mark itself live + reset backoff even when the events channel stays quiet
+/// for a long stretch — the same fix as ``TerminalEvent/connected``.
+public enum EventStreamItem: Sendable, Equatable {
+    case connected
+    case event(ServerEvent)
+}
+
+extension ArgusClient {
+    /// Opens an SSE connection and yields parsed ``SSEvent`` values. Auth is via
+    /// the `Authorization: Bearer` header, same as every other request — NEVER
+    /// the `?token=` query param (that fallback in `internal/api/auth.go` exists
+    /// for browser `EventSource`, which cannot set headers; this client can, and
+    /// a token in the URL would ride along inside `NSError` descriptions —
+    /// `NSErrorFailingURLStringKey` — straight into logs). The underlying
+    /// request has no client-side timeout, so the stream can sit idle between
+    /// the server's 30s keepalive pings; cancel by breaking out of the
+    /// `for await` (or cancelling the task).
+    ///
+    /// `onOpen` fires exactly once, immediately after the HTTP response is
+    /// validated (2xx) and BEFORE any SSE frame is parsed — the signal that the
+    /// channel is open even if it then stays silent. A dial that fails before
+    /// the response (transport error / non-2xx) never fires it, so callers can
+    /// treat "onOpen fired" as an accepted, healthy connection.
+    public func stream(path: String, query: [URLQueryItem] = [],
+                       onOpen: (@Sendable () -> Void)? = nil) -> AsyncThrowingStream<SSEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let work = _Concurrency.Task {
+                do {
+                    var req = try makeRequest(method: "GET", path: path, query: query)
+                    req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    // Streaming request must not time out on idle keepalives.
+                    req.timeoutInterval = TimeInterval.greatestFiniteMagnitude
+
+                    let (bytes, response) = try await session.bytes(for: req)
+                    guard let http = response as? HTTPURLResponse else {
+                        throw ArgusError.invalidResponse("non-HTTP SSE response")
+                    }
+                    guard (200..<300).contains(http.statusCode) else {
+                        throw ArgusError.http(status: http.statusCode, body: "SSE \(path)")
+                    }
+                    // Response validated — the channel is open. Announce it before
+                    // parsing so a stream that never emits a frame still resolves
+                    // as connected rather than perpetually connecting.
+                    onOpen?()
+                    // Raw byte iteration, NOT `bytes.lines`: AsyncLineSequence
+                    // swallows empty lines, and SSE dispatches on blank lines —
+                    // see ByteLineSplitter.
+                    var splitter = ByteLineSplitter()
+                    var parser = SSEParser()
+                    for try await byte in bytes {
+                        if let line = splitter.feed(byte), let ev = parser.feed(line) {
+                            continuation.yield(ev)
+                        }
+                    }
+                    if let line = splitter.flush(), let ev = parser.feed(line) {
+                        continuation.yield(ev)
+                    }
+                    if let ev = parser.finish() {
+                        continuation.yield(ev)
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: mapError(error))
+                }
+            }
+            continuation.onTermination = { _ in work.cancel() }
+        }
+    }
+
+    /// Streams a task's live PTY output via `GET /api/tasks/{id}/stream`. Pass
+    /// the ``OutputTail/total`` from a prior ``output(taskID:tailBytes:clean:)``
+    /// as `since` for a gapless resume. Unnamed events carry base64 PTY bytes;
+    /// the `exit` event carries `{"rerendering":Bool}` and `clipboard` carries
+    /// `{"text":…}` or `{"cleared":true}`.
+    public func terminalStream(taskID: String, since: UInt64 = 0) -> AsyncThrowingStream<TerminalEvent, Error> {
+        var q: [URLQueryItem] = []
+        if since > 0 { q.append(.init(name: "since", value: String(since))) }
+        return AsyncThrowingStream { continuation in
+            // `onOpen` yields `.connected` the instant the response validates,
+            // so it lands in the outer stream before any mapped frame (the base
+            // stream reads no line until after onOpen fires).
+            let base = stream(path: "/api/tasks/\(pc(taskID))/stream", query: q,
+                              onOpen: { continuation.yield(.connected) })
+            let work = _Concurrency.Task {
+                do {
+                    for try await ev in base {
+                        if let te = Self.mapTerminalEvent(ev) {
+                            continuation.yield(te)
+                        }
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in work.cancel() }
+        }
+    }
+
+    /// Streams daemon events via `GET /api/events/stream`. Pass the last-seen
+    /// event ID as `since` for replay; a `resync` event means history rotated
+    /// out and the client should re-snapshot daemon state. Yields an
+    /// ``EventStreamItem/connected`` once (response validated, before any frame)
+    /// so the caller can mark the session live even during a long quiet stretch,
+    /// then ``EventStreamItem/event(_:)`` per decoded ``ServerEvent``.
+    public func eventsStream(since: Int64 = 0) -> AsyncThrowingStream<EventStreamItem, Error> {
+        var q: [URLQueryItem] = []
+        if since > 0 { q.append(.init(name: "since", value: String(since))) }
+        return AsyncThrowingStream { continuation in
+            let base = stream(path: "/api/events/stream", query: q,
+                              onOpen: { continuation.yield(.connected) })
+            let work = _Concurrency.Task {
+                do {
+                    for try await ev in base {
+                        continuation.yield(.event(ServerEvent(type: ev.name ?? "", jsonData: Data(ev.data.utf8))))
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in work.cancel() }
+        }
+    }
+
+    /// Maps a raw ``SSEvent`` from the terminal stream into a ``TerminalEvent``.
+    /// `nil` for events that don't decode (e.g. bad base64) so the stream skips
+    /// them rather than failing.
+    static func mapTerminalEvent(_ ev: SSEvent) -> TerminalEvent? {
+        switch ev.name {
+        case nil, "":
+            guard let data = Data(base64Encoded: ev.data) else { return nil }
+            return .output(data)
+        case "exit":
+            var rerender = false
+            if let d = ev.data.data(using: .utf8),
+               let obj = try? decoder.decode([String: Bool].self, from: d),
+               let r = obj["rerendering"] {
+                rerender = r
+            }
+            return .exit(rerendering: rerender)
+        case "clipboard":
+            struct Clip: Decodable { var text: String?; var cleared: Bool? }
+            if let d = ev.data.data(using: .utf8),
+               let c = try? decoder.decode(Clip.self, from: d) {
+                if c.cleared == true { return .clipboard(text: nil, cleared: true) }
+                return .clipboard(text: c.text, cleared: false)
+            }
+            return .clipboard(text: nil, cleared: true)
+        default:
+            return nil
+        }
+    }
+}

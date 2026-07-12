@@ -937,14 +937,19 @@ While a filter is active (the query is non-empty) the rail SHALL remain ancestry
 - An orchestrator (a root coordinator OR a nested sub-orchestrator) whose name matches, OR which has any descendant role or sub-orchestrator whose name matches, SHALL remain visible so a matching agent always keeps its parent coordinator header. A bridging worker row SHALL remain visible when it bridges a visible sub-orchestrator.
 - Collapsed nodes (orchestrators, per-coordinator Archive expandos) and the Freelance / bottom-Archive sections SHALL auto-expand while a filter is active so matching rows are never hidden behind a fold. The persisted fold state MUST be left unchanged and restored when the filter is cleared.
 - A section header (`Pinned`, `Freelance (N)`, the bottom `Archive (N)`) or a separator rule SHALL render only when it has at least one visible row beneath it, so the operator never lands on an empty section.
+- A coordinator/orchestrator heading row (an orchestrator header, or a worker-bridge/pinned-breadcrumb row standing in for a nested coordinator) that is visible ONLY because a descendant matches — its own name, or its folded-in coordinator's name, does NOT itself match the query — is an ANCESTRY-ONLY heading: it SHALL NOT be a valid cursor target (arrow navigation and first-match auto-select skip it entirely) and SHALL render visually dimmed so it is obvious it cannot be selected. A heading whose own name (or folded-in coordinator's name) DOES match the query remains a normal, selectable, non-dimmed row.
 
-`Esc` while in input mode SHALL exit search and restore the full, unfiltered rail (clearing the query). `Enter` while in input mode SHALL accept the filter — keeping the query applied but leaving input mode so `j`/`k` navigate the filtered set and normal rail key handling resumes. Re-pressing `/` after acceptance SHALL re-enter input mode with the current query preserved for editing.
+The FIRST real match (a selectable row that is not an ancestry-only heading, not a structural fold header) in the narrowed rows SHALL auto-select live on every query change (typing or backspacing), so the operator sees the top candidate highlighted without needing to navigate to it. Up/Down SHALL move the cursor within the narrowed set while remaining in search input mode (so typing/backspacing continues to work), landing only on rows that are themselves a match.
 
-The active query SHALL be shown unobtrusively: a `/ <query>` input line at the top of the rail while typing, and the active query reflected in the rail border title once accepted (and while typing).
+`Esc` while in input mode SHALL exit search and restore the full, unfiltered rail (clearing the query). `Enter` while in input mode SHALL resolve against the CURRENTLY selected row (the auto-selected first match, or wherever Up/Down moved it) — reattaching/entering that row's pane exactly as a normal (non-filtering) Enter would — and SHALL THEN fully clear the filter (query reset, input mode off, full unfiltered rail restored) in the SAME keystroke. There is no intermediate "accepted but still narrowed" resting state: Enter always both selects and clears, never merely one or the other.
 
-While in input mode the rail's mutation keys (`w`/`r`/`a`/`s`/`S`/`P`/`Ctrl+D` and `Enter`-reattach) SHALL NOT fire, and the global rune shortcuts (`1`/`2`/`3` tab-switch, `q` quit, `?` help) SHALL NOT fire; those keystrokes are filter input instead. After the filter is accepted (input mode off), normal rail and global key handling SHALL resume.
+The active query SHALL be shown unobtrusively: a `/ <query>` input line at the top of the rail while typing, and the active query reflected in the rail border title while typing.
 
-Derived from: `internal/tui/hera/rail.go` (filter state, filter-aware `buildRows`, `/ <query>` line, dynamic title), `internal/tui/hera/page.go` (`handleRailMutation` skip-while-filtering, `RailFiltering()`), `internal/tui/app.go` (global rune-shortcut guard mirroring `a.tasklist.Filtering()`).
+While in input mode the rail's mutation keys (`w`/`r`/`a`/`s`/`S`/`P`/`Ctrl+D`) SHALL NOT fire, and the global rune shortcuts (`1`/`2`/`3` tab-switch, `q` quit, `?` help) SHALL NOT fire; those keystrokes are filter input instead. `Enter` is the one exception — it is intercepted and handled as select-and-clear (above) rather than falling through as filter input.
+
+Derived from: `internal/tui/hera/rail.go` (filter state, filter-aware `buildRows`, ancestry-only heading detection, first-match auto-select, `/ <query>` line, dynamic title), `internal/tui/hera/page.go` (`handleRailMutation`'s Enter-while-filtering branch: select then `Rail.ClearFilter()`), `internal/tui/app.go` (global rune-shortcut guard mirroring `a.tasklist.Filtering()`).
+
+This Hera-rail filter is intentionally Hera-rail-scoped: the Tasks-tab (`internal/tui/taskview`) `/` filter keeps its own independent two-step (type → Enter locks → navigate → Enter selects) convention and is NOT changed by this requirement.
 
 #### Scenario: `/` narrows the rail to matching rows
 
@@ -954,7 +959,7 @@ Derived from: `internal/tui/hera/rail.go` (filter state, filter-aware `buildRows
 #### Scenario: A matching nested agent keeps its parent coordinator visible
 
 - **WHEN** a filter matches an agent (or sub-orchestrator) whose name does not match its parent coordinator's name
-- **THEN** the parent coordinator header (and any intermediate bridging worker rows) MUST remain visible and expanded so the matching row is shown nested under it
+- **THEN** the parent coordinator header (and any intermediate bridging worker rows) MUST remain visible and expanded so the matching row is shown nested under it, rendered as a dimmed, non-selectable ancestry-only heading
 
 #### Scenario: A collapsed node containing a match auto-expands
 
@@ -966,15 +971,30 @@ Derived from: `internal/tui/hera/rail.go` (filter state, filter-aware `buildRows
 - **WHEN** a filter is active and no Freelance (or Archive) member matches
 - **THEN** the Freelance (or Archive) section header and its separator rule MUST NOT render
 
+#### Scenario: The first real match auto-selects while typing
+
+- **WHEN** the operator types (or backspaces) a query that narrows the rail
+- **THEN** the cursor MUST move onto the first real match in the narrowed rows (never an ancestry-only heading or a structural fold header) without any further keypress
+
+#### Scenario: An ancestry-only coordinator heading is skipped by navigation and auto-select
+
+- **WHEN** a filter matches only a descendant of a coordinator/orchestrator heading, so the heading itself is shown purely for ancestry context
+- **THEN** that heading row MUST render dimmed, MUST NOT be reachable by Up/Down arrow navigation, and MUST NOT be chosen by first-match auto-select
+
+#### Scenario: A coordinator heading whose own (or folded-in coordinator's) name matches is a real, selectable match
+
+- **WHEN** the query matches an orchestrator's own name, or the name of its folded-in coordinator role
+- **THEN** that orchestrator's header row MUST be treated as a real match — selectable, not dimmed, and eligible for first-match auto-select
+
+#### Scenario: Enter selects the current match, jumps into it, and clears the filter in one step
+
+- **WHEN** the operator presses `Enter` while in search input mode, with the cursor resting on a real match (auto-selected or arrow-navigated)
+- **THEN** the rail MUST reattach/enter that row's pane exactly as a normal Enter would, AND the filter MUST fully clear (query reset, input mode off) in the SAME keystroke — no second Enter is required
+
 #### Scenario: Esc restores the full rail
 
 - **WHEN** the operator presses `Esc` while in search input mode
 - **THEN** the filter MUST clear, input mode MUST exit, and the rail MUST render every row it showed before the filter
-
-#### Scenario: Enter accepts the filter and returns to navigation
-
-- **WHEN** the operator presses `Enter` while in search input mode
-- **THEN** input mode MUST exit, the query MUST stay applied (the rail stays filtered), and `j`/`k` MUST navigate the filtered set
 
 #### Scenario: Mutation and global keys are filter input while typing
 
@@ -1063,10 +1083,10 @@ load-on-store-set, one-shot pending-selection restore, save-on-change), `interna
 
 ### Requirement: `w` and `n` use the full new-task modal (area 4)
 
-The system SHALL open the SAME modal as the new-argus-task popup (project / branch / backend / model / prompt, with project and skill autocomplete) for both the rail `w` (spawn worker) and `n` (new coordinator) keys. The project field SHALL default to the selected coordinator's project for `w`, and to the current selection's coordinator project (else the last-selected Tasks-tab project) for `n`. The modal SHALL return to the Hera tab on submit or cancel (not the Tasks tab). On submit:
+The system SHALL open the SAME modal as the new-argus-task popup (project / branch / backend / model / prompt / optional name, with project and skill autocomplete) for both the rail `w` (spawn worker) and `n` (new coordinator) keys. The project field SHALL default to the selected coordinator's project for `w`, and to the current selection's coordinator project (else the last-selected Tasks-tab project) for `n`. The modal SHALL return to the Hera tab on submit or cancel (not the Tasks tab). On submit:
 
-- `w` spawns a born-bound worker under the selected coordinator's orchestrator via the shared `agent.SpawnHeraWorker` primitive, carrying the form's project, branch, backend, model, and prompt.
-- `n` creates a NEW top-level orchestrator + coordinator role bound to a freshly created argus task via the shared `agent.SpawnHeraCoordinator` primitive (the orchestrator name is derived from the prompt and de-collided; the coordinator role is named `coord`).
+- `w` spawns a born-bound worker under the selected coordinator's orchestrator via the shared `agent.SpawnHeraWorker` primitive, carrying the form's project, branch, backend, model, and prompt. When the optional name is non-blank, it SHALL name the worker task/role (overriding the prompt-derived name); when blank, the worker name derives from the prompt as before.
+- `n` creates a NEW top-level orchestrator + coordinator role bound to a freshly created argus task via the shared `agent.SpawnHeraCoordinator` primitive. When the optional name is non-blank, it SHALL name BOTH the new orchestrator and the coordinator task (overriding the prompt-derived, de-collided orchestrator name); when blank, the orchestrator name is derived from the prompt and de-collided as before. The coordinator role is named `coord` in both cases.
 
 The worker/coordinator spawn runs off the tview main thread (it creates a worktree + session) and refreshes the rail on completion. A spawn with no live coordinator (for `w`) surfaces visible feedback and does nothing.
 
@@ -1086,6 +1106,21 @@ Derived from: `internal/tui/heraactions.go` (`heraSpawnWorker`, `heraNewCoordina
 
 - **WHEN** the user presses `w` on a selection whose orchestrator has no live coordinator
 - **THEN** the status bar shows a "no live coordinator" error and no worker is spawned
+
+#### Scenario: `w` with an explicit name names the worker
+
+- **WHEN** the user presses `w`, enters a non-blank name in the modal, fills the rest, and submits
+- **THEN** the spawned worker's task/role name is the entered name rather than a prompt-derived name
+
+#### Scenario: `n` with an explicit name names the orchestrator and coordinator task
+
+- **WHEN** the user presses `n`, enters a non-blank name in the modal, fills the rest, and submits
+- **THEN** the new orchestrator's name (the rail label) AND the coordinator task's name are the entered name rather than a prompt-derived name, and the coordinator role is still named `coord`
+
+#### Scenario: blank name derives from the prompt as before
+
+- **WHEN** the user presses `w` or `n`, leaves the name field blank, fills the rest, and submits
+- **THEN** the worker / orchestrator name is derived from the prompt exactly as it was before the optional name field existed
 
 ### Requirement: Cmd+Up / Cmd+Down move rail selection without changing pane focus
 
@@ -1262,13 +1297,42 @@ in as a worker row) and SHALL be cycle-safe, reusing the same
 cascade. The indicator SHALL clear on an ancestor as soon as no descendant (and
 not the ancestor itself) needs input.
 
+A live needs-input signal SHALL surface for a blocked role even when its bound
+argus task is NO LONGER `in_progress`, for any role that does not "finish" by task
+status while its session is alive — specifically a COORDINATOR (and freelance)
+role. A coordinator routinely rolls its bound task to complete/in_review while its
+session stays alive and keeps coordinating, and may itself block on a user prompt;
+gating its needs-input on `in_progress` hid the "(?)" on its (usually collapsed)
+header. The in_progress gate SHALL therefore apply ONLY to WORKER-kind roles (the
+finished-worker clear, BUG-023): a worker that leaves `in_progress` is finished
+and its lingering sticky marker SHALL NOT keep "(?)" pinned, whereas a live
+non-worker role SHALL surface "(?)" regardless of task status. A non-worker role's
+"finished" condition is its session exiting, which drops it from the sticky
+needs-input set upstream, so there is no stale-marker hazard. The App's Hera-rail
+needs-input feed SHALL admit a task that is `in_progress` OR bound to a hera
+coordinator role (regardless of task status); admitting a non-in_progress
+coordinator (a MANAGED task) SHALL NOT affect the unmanaged attention-summary
+count (BUG-005), which stays `in_progress`-gated for unmanaged tasks.
+
+When an orchestrator has NO coordinator role to carry the glyph (for example its
+coordinator role was nuked, BUG-022 Tier-2), the orchestrator HEADER itself SHALL
+surface the subtree needs-input rollup with the SAME `theme.IconNeedsInput` /
+`theme.StyleNeedsInput` indicator, so a blocked worker is visible from the
+default collapsed ("tidy summary") view without expanding — mirroring the task
+list's project-folder aggregate, which always shows "(?)" for any blocked task.
+The per-orchestrator rollup SHALL therefore be exposed on the `OrchView`
+(`SubtreeNeedsInput`), not only on the coordinator role. When a coordinator role
+IS present its status glyph already carries the rollup and the header SHALL NOT
+double-render the indicator.
+
 The authoritative per-role needs-input signal SHALL be the SAME set the task
 list consumes — the App's `needsInputIDs` (the idle-gated, sticky
 `agent.DetectNeedsInput` PTY-tail scan) — threaded into `BuildModel`, plus the
 role's own hera `blocked` status. No new needs-input detection SHALL be invented
 for the rail. The rollup SHALL be computed in the MODEL (`BuildModel`) and
-exposed as a `RoleView` field, so `statusIcon` stays a pure projection that only
-reads it (no Draw-time I/O, no `screen.Sync()`).
+exposed as a `RoleView` field (and an `OrchView` field for the header), so
+`statusIcon` and `drawOrchRow` stay pure projections that only read it (no
+Draw-time I/O, no `screen.Sync()`).
 
 Precedence: the needs-input rollup SHALL rank immediately below a role's OWN
 `ready_to_close` mark and ABOVE the role's `done`, active-spinner, idle, and live
@@ -1278,9 +1342,11 @@ ancestor is itself idle, working, or done. A role's own `ready_to_close`
 it.
 
 Derived from: `internal/tui/hera/model.go` (`RoleView.NeedsInput`,
-`RoleView.SubtreeNeedsInput`, `needsInputOwn`, `ShowsNeedsInput`, `BuildModel`
-needs-input parameter, `rollupNeedsInput`, `orchSubtreeNeedsInput`),
-`internal/tui/hera/rail.go` (`statusIcon` reads `ShowsNeedsInput`),
+`RoleView.SubtreeNeedsInput`, `OrchView.SubtreeNeedsInput`, `needsInputOwn`,
+`ShowsNeedsInput`, `BuildModel` needs-input parameter, `rollupNeedsInput`,
+`orchSubtreeNeedsInput`),
+`internal/tui/hera/rail.go` (`statusIcon` reads `ShowsNeedsInput`; `drawOrchRow`
+surfaces `OrchView.SubtreeNeedsInput` when no coordinator role is present),
 `internal/tui/hera/page.go` (`SetNeedsInput`, `doRefresh`),
 `internal/tui/app.go` (push `needsInputIDs` to the Hera page each tick).
 
@@ -1306,8 +1372,28 @@ needs-input parameter, `rollupNeedsInput`, `orchSubtreeNeedsInput`),
 
 #### Scenario: The rollup is cycle-safe
 
-- **WHEN** the bridge graph contains a cycle (A bridges B and B bridges A)
+- **WHEN** the orchestration subtree contains a bridge cycle (A bridges B and B bridges A)
 - **THEN** the rollup terminates and still reports needs-input for the reachable members
+
+#### Scenario: A coordinator-less orchestrator header surfaces a blocked worker
+
+- **WHEN** a collapsed orchestrator has a blocked (needs-input) worker in its subtree but no coordinator role (e.g. the coordinator was nuked)
+- **THEN** the orchestrator header renders the needs-input "(?)" indicator so the blocked worker is visible without expanding
+
+#### Scenario: A coordinator-less header rollup clears when the worker finishes
+
+- **WHEN** the only blocked worker under a coordinator-less orchestrator finishes (its bound task rolls to in_review) even though the App's sticky needs-input set still flags it
+- **THEN** the orchestrator header stops rendering "(?)" on the next refresh
+
+#### Scenario: A blocked coordinator surfaces "(?)" even when its task is complete
+
+- **WHEN** a coordinator's bound task has rolled to complete/in_review but its session is alive and blocked on a user prompt (its task is in the needs-input set)
+- **THEN** the coordinator's (collapsed) header renders the needs-input "(?)" indicator, instead of being hidden by the in_progress gate
+
+#### Scenario: A finished worker stays cleared even when its task is complete
+
+- **WHEN** a worker's bound task has rolled to complete/in_review (finished) but the sticky needs-input set still flags it
+- **THEN** the worker's row and its ancestor rollup do NOT render "(?)" — the in_progress gate stays worker-only (BUG-023 preserved)
 
 ### Requirement: Needs-input "(?)" CLEARS and propagates up when a descendant resolves (area rail)
 
@@ -1395,17 +1481,19 @@ THAT pane's bound argus task to the OS clipboard. Because the Hera view shows
 several tasks at once, the payload SHALL be resolved from the FOCUSED pane's task
 (`FocusedTerminalTaskID`), never a single global active task.
 
-The interception SHALL be conditional, mirroring the main agent view: `ctrl+y`
-SHALL be stolen from the PTY only when a payload is currently staged for the
-focused pane's task; when nothing is staged it SHALL fall through to the pane's
-PTY so vim/emacs-style yank still reaches the agent. The staged-ness gate is the
-same per-tick hint state that drives the discoverability affordance. On copy the
-system SHALL clear the daemon-side slot and flash a "Copied" notice, reusing the
-existing `clipboardAccessor` (`ClipboardGet`/`ClipboardClear`) and
-`copyToClipboard` — no second clipboard path is introduced. When the runner is
-not daemon-backed (in-process fallback) or nothing is staged, `ctrl+y` SHALL be a
-logged no-op (and still fall through to the PTY). In remote mode the page is
-inert, so `ctrl+y` does nothing.
+The interception SHALL be unconditional whenever a terminal pane is focused:
+`ctrl+y` SHALL always be stolen from the PTY, regardless of whether a payload
+is currently staged for the focused pane's task — it SHALL NEVER fall through
+to the pane's PTY. When a payload is staged, the system SHALL clear the
+daemon-side slot and flash a "Copied" notice, reusing the existing
+`clipboardAccessor` (`ClipboardGet`/`ClipboardClear`) and `copyToClipboard` — no
+second clipboard path is introduced. When the runner is not daemon-backed
+(in-process fallback) or nothing is staged, `ctrl+y` SHALL flash a notice
+indicating there is nothing to copy instead of copying, and SHALL still consume
+the key. In remote mode the page is inert, so `ctrl+y` does nothing.
+
+The per-tick staged-ness hint state (`clipReady`) no longer gates the
+interception — it drives only the discoverability affordance described below.
 
 When the focused terminal pane's task has a staged payload, the system SHALL
 surface a discoverability affordance by appending a `(ctrl+y copy)` marker to
@@ -1417,9 +1505,9 @@ leaves a terminal pane or nothing is staged.
 Derived from: `internal/tui/hera/page.go` (`InputHandler` `ctrl+y` trap,
 `OnCopyClipboard`, `clipReady`/`SetClipboardHint`, `Draw` border-title hint),
 `internal/tui/hera/panes.go` (`FocusedTerminalTaskID`), `internal/tui/clipboard.go`
-(`copyStagedClipboardForHeraPane`), `internal/tui/app.go` (`OnCopyClipboard`
-wiring + `refreshHeraClipboardHint` tick), `internal/tui/modal/help.go:70` (help
-overlay Hera section).
+(`copyStagedClipboardForHeraPane`, `flashNotice`), `internal/tui/app.go`
+(`OnCopyClipboard` wiring + `refreshHeraClipboardHint` tick),
+`internal/tui/modal/help.go:70` (help overlay Hera section).
 
 #### Scenario: Copy a staged payload from a focused worker pane
 
@@ -1431,10 +1519,10 @@ overlay Hera section).
 - **WHEN** the coordinator pane is focused and a payload is staged for the coordinator's task
 - **THEN** `ctrl+y` copies the COORDINATOR task's payload (resolved from the focused pane), not any worker pane's payload
 
-#### Scenario: ctrl+y falls through to the PTY when nothing is staged
+#### Scenario: ctrl+y is intercepted with a notice when nothing is staged
 
 - **WHEN** a terminal pane is focused but no payload is staged for its task and the user presses `ctrl+y`
-- **THEN** no copy occurs and the keystroke is forwarded to the pane's PTY (so an in-agent yank still works)
+- **THEN** no copy occurs, a "nothing to copy" notice flashes, and the keystroke is consumed rather than forwarded to the pane's PTY
 
 #### Scenario: ctrl+y on the rail or coordinator details is an inert no-op
 
@@ -1746,15 +1834,17 @@ Derived from: `internal/tui/hera/rail.go` (per-orchestrator archive expando in `
 
 ### Requirement: Active agents animate a spinner glyph (area 3)
 
-The system SHALL render a genuinely-active role's status glyph as an animated spinner frame from the active spinner (`widget.SpinnerFrame`), advancing with the wall-clock frame counter, rather than a static glyph. A role is genuinely active (`RoleView.IsActive`) when it holds a live binding AND its bound argus task is `in_progress` — sourced from REAL session activity, NOT the hera role `working` status field. The hera role status is a manual/MCP-set ladder value that never reconciles down (it stays `working` after a session idles, stops, or dies), so it MUST NOT drive the spinner: a stale-`working` role whose binding is gone, dead, or no longer `in_progress` is static (BUG-003). This mirrors the plugin's `stateGlyph`, which animates only on a known `in_progress` + running argus state.
+The system SHALL render a genuinely-active role's status glyph as an animated spinner frame from the active spinner (`widget.SpinnerFrame`), advancing with the wall-clock frame counter, rather than a static glyph. A role is genuinely active (`RoleView.IsActive`) when it holds a live binding AND its bound argus task is `in_progress` AND its session is NOT content-idle — sourced from REAL session activity, NOT the hera role `working` status field. The hera role status is a manual/MCP-set ladder value that never reconciles down (it stays `working` after a session idles, stops, or dies), so it MUST NOT drive the spinner: a stale-`working` role whose binding is gone, dead, or no longer `in_progress` is static (BUG-003).
 
-An operator/agent-set `blocked` assertion takes precedence over the spinner (the needs-input glyph renders even while the task is still `in_progress`), as does `done` and `ready_to_close`. Non-active states (idle, blocked, done, ready_to_close, unbound, stopped) remain static.
+The content-idle gate fixes a fullscreen (alt-screen) agent parked at its prompt (BUG-036): such an agent repaints continuously, so it never reaches the raw-byte idle set and would otherwise animate the spinner forever even though it is doing nothing. When the App's content-idle signal (the animation-stripped emulated-screen stability classification) marks the role's bound session idle, the role is NOT active and renders a static idle/live glyph (or the needs-input glyph if it is at a prompt, which already outranks the spinner). A genuinely content-ACTIVE agent — emulated content changing tick-to-tick, or showing the "working" affordance — still spins. This mirrors the plugin's `stateGlyph`, which animates only on a known `in_progress` + running argus state.
 
-Derived from: `internal/tui/hera/rail.go` (`statusIcon`), `internal/tui/hera/model.go` (`RoleView.IsActive`), `internal/tui/widget/spinnerstate.go` (`SpinnerFrame`).
+An operator/agent-set `blocked` assertion takes precedence over the spinner (the needs-input glyph renders even while the task is still `in_progress`), as does `done` and `ready_to_close`. Non-active states (idle, content-idle, blocked, done, ready_to_close, unbound, stopped) remain static.
+
+Derived from: `internal/tui/hera/rail.go` (`statusIcon`), `internal/tui/hera/model.go` (`RoleView.IsActive`, `RoleView.SessionIdle`), `internal/tui/widget/spinnerstate.go` (`SpinnerFrame`).
 
 #### Scenario: Genuinely active role spins
 
-- **WHEN** a role holds a live binding and its bound argus task is `in_progress`, and it is not blocked/done/ready_to_close
+- **WHEN** a role holds a live binding and its bound argus task is `in_progress`, its session is not content-idle, and it is not blocked/done/ready_to_close
 - **THEN** its status glyph is the active spinner's frame for the current animation frame, and the glyph differs across frames
 
 #### Scenario: Stale-working stopped role is static
@@ -1766,6 +1856,11 @@ Derived from: `internal/tui/hera/rail.go` (`statusIcon`), `internal/tui/hera/mod
 
 - **WHEN** a role holds a live binding but its bound argus task has left `in_progress` (e.g. an auto-completed coordinator now `in_review`), even with a stale `working` hera status
 - **THEN** its status glyph does not animate
+
+#### Scenario: Content-idle fullscreen role is static
+
+- **WHEN** a role holds a live binding and its bound argus task is `in_progress`, but the App marks its session content-idle (parked fullscreen agent, stable emulated screen, no "working" affordance)
+- **THEN** its status glyph does not animate — it renders a static idle/live glyph (or the needs-input glyph if it is at a prompt)
 
 #### Scenario: Blocked outranks activity
 
@@ -1804,4 +1899,36 @@ the runtime fail-open behavior (the agent runs on the CLI default, and the opera
 
 - **WHEN** a project points at a profile name that is absent or fails validation
 - **THEN** the plan/DAG view shows a warning indicating the profile is missing or invalid
+
+### Requirement: Plan-DAG node description shows the mission's first lines (area 6)
+
+The plan view SHALL, in the coordinator Details region's embedded `" Plan "`
+graph, render a selected node's description as the first N (N ≈ 3) NON-EMPTY lines
+of the role's stored prompt, wrapped/truncated to the detail-pane width, rather
+than only the single first line. The header MAY grow to accommodate the additional
+description rows, and the coordinator Details region SHALL keep laying out the
+roster-over-graph split without overflow.
+
+The render SHALL be POLICY-AGNOSTIC: it SHALL NOT strip, skip, or pattern-match
+any organization/security policy text, and SHALL NOT assume any particular line
+is boilerplate. When the role's stored prompt is empty the header SHALL render the
+existing `"(no description)"` placeholder.
+
+Derived from: `internal/tui/hera/plan.go` (`heraPlanNodesWithBridge`,
+`Node.Description`), `internal/tui/planview/planview.go` (`nodeHeaderLines`).
+
+#### Scenario: A multi-line mission shows several lines
+
+- **WHEN** a plan node's stored prompt has multiple non-empty lines and the node is selected
+- **THEN** the detail header renders the first few (≈3) lines of the prompt, wrapped to the pane, not just the first line
+
+#### Scenario: The description is rendered verbatim, no policy stripping
+
+- **WHEN** a plan node's stored prompt begins with organization/security policy text
+- **THEN** the detail header renders those opening lines as-is, without stripping or skipping them (the fix for polluted prompts is upstream prompt hygiene, not view-side stripping)
+
+#### Scenario: Empty prompt still shows the placeholder
+
+- **WHEN** a plan node's stored prompt is empty
+- **THEN** the detail header renders `"(no description)"`
 

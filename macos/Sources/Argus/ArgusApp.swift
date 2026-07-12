@@ -1,0 +1,87 @@
+import AppKit
+import SwiftUI
+
+/// Argus — a Conductor-style native GUI for the argus daemon.
+///
+/// This is the app shell only: it renders the task list and a task-detail tab
+/// view whose Terminal / Diff / Files tabs are placeholders that later phases
+/// fill in (Terminal will embed SwiftTerm). The Info tab and the whole
+/// connection / polling / settings surface are real.
+@main
+struct ArgusApp: App {
+    // The delegate exists purely to make a window appear and grab focus when
+    // the binary is launched OUTSIDE an .app bundle (i.e. via `swift run`),
+    // where the default activation policy is `.prohibited`/`.accessory`.
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
+    @State private var appState = AppState()
+
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .environment(appState)
+                .frame(minWidth: 820, minHeight: 520)
+                .task {
+                    // Kick off the first connect + polling loop once the window
+                    // is on screen. Idempotent: re-entrancy cancels the prior
+                    // loop before starting a new one.
+                    appState.connect()
+                }
+        }
+        .windowToolbarStyle(.unified)
+
+        // The Schedules window, opened via the toolbar's clock button
+        // (⇧⌘S) — see `ContentView`'s `openWindow(id: "schedules")`.
+        Window("Schedules", id: "schedules") {
+            SchedulesView()
+                .environment(appState)
+        }
+
+        // Provides the standard Cmd+, menu item automatically.
+        Settings {
+            SettingsView()
+                .environment(appState)
+        }
+
+        // Menu-bar extra: quick access to active tasks + a needs-input count,
+        // gated by the Settings toggle (default on).
+        MenuBarExtra(isInserted: menuBarInserted) {
+            MenuBarContent()
+                .environment(appState)
+        } label: {
+            MenuBarLabel(app: appState)
+        }
+        .menuBarExtraStyle(.menu)
+    }
+
+    /// Binds the menu-bar extra's presence to the observable Settings toggle.
+    private var menuBarInserted: Binding<Bool> {
+        Binding(get: { appState.showMenuBarExtra },
+                set: { appState.showMenuBarExtra = $0 })
+    }
+}
+
+/// Makes the window appear and activate when run as a bare executable.
+///
+/// `swift run Argus` produces a plain Mach-O binary, not a bundled `.app`,
+/// so AppKit starts it as a background (`.accessory`) process with no menu bar
+/// or focused window. Forcing `.regular` + `activate` is the standard fix.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+
+        // The packaged .app bundle gets its Dock/Finder icon from
+        // Info.plist's CFBundleIconFile (see scripts/mac-app.sh). A bare
+        // `swift run` executable has no bundle, so AppKit falls back to a
+        // generic icon unless we set one explicitly here.
+        if let iconURL = Bundle.module.url(forResource: "AppIcon", withExtension: "icns"),
+           let icon = NSImage(contentsOf: iconURL) {
+            NSApplication.shared.applicationIconImage = icon
+        }
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+}

@@ -907,3 +907,20 @@ func TestHeader_NodeProfileWarning(t *testing.T) {
 	out := drawToString(t, w, 70, 16)
 	testutil.Contains(t, out, string(warnGlyph))
 }
+
+// TestDraw_NodeDescriptionRendersMultipleLines exercises the full render path for
+// the grown master-detail header (improve-hera-node-descriptions): a selected
+// node with a multi-line prompt paints its first NON-EMPTY lines as distinct
+// header rows above the diagram, not just a single truncated first line.
+func TestDraw_NodeDescriptionRendersMultipleLines(t *testing.T) {
+	w := New()
+	w.SetData([]Node{{
+		ID: "1a", Name: "1a-research", State: StatePlanned, Planned: true,
+		Description: "mission opening line\nsupporting detail line\nthird context line",
+	}}, nil)
+	w.SetFocused(true)
+	out := drawToString(t, w, 60, 18)
+	testutil.Contains(t, out, "mission opening line")
+	testutil.Contains(t, out, "supporting detail line")
+	testutil.Contains(t, out, "third context line")
+}

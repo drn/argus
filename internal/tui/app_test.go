@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -128,6 +129,202 @@ func TestSessionBlockedOnPrompt(t *testing.T) {
 	})
 }
 
+// TestDetectNeedsInputSticky_ContentStability covers BUG-032: a worker parked
+// at a permission prompt that NEVER reaches the idle set (it emits continuous
+// redraw/animation bytes) must still be flagged needs-input via the
+// content-stability pass — and a session whose content is still shifting must
+// not be (the streaming false-positive guard).
+func TestDetectNeedsInputSticky_ContentStability(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeLog := func(taskID, content string) {
+		logPath := agent.SessionLogPath(taskID)
+		testutil.NoError(t, os.MkdirAll(logPath[:strings.LastIndex(logPath, "/")], 0o755))
+		testutil.NoError(t, os.WriteFile(logPath, []byte(content), 0o644))
+	}
+
+	// A fullscreen permission prompt: the worker is running but never idle.
+	const parked = "⏺ Do you want to make this edit?\r✻ Brewed for 4s\r\r❯ 1. Yes\r  2. No\r\r"
+	writeLog("wkr", parked)
+	a := &App{}
+
+	t.Run("first tick records fingerprint without flagging a never-idle session", func(t *testing.T) {
+		got := a.detectNeedsInputSticky(nil /* not idle */, []string{"wkr"}, nil)
+		testutil.Equal(t, len(got), 0)
+		if _, ok := a.needsInputFP["wkr"]; !ok {
+			t.Fatal("expected fingerprint recorded for the prompt-showing session")
+		}
+	})
+
+	t.Run("second tick flags it once content is stable across ticks", func(t *testing.T) {
+		// Only the animation chrome advanced between ticks (4s → 9s spinner).
+		writeLog("wkr", "⏺ Do you want to make this edit?\r✶ Brewed for 9s\r\r❯ 1. Yes\r  2. No\r\r")
+		got := a.detectNeedsInputSticky(nil, []string{"wkr"}, nil)
+		testutil.Equal(t, len(got), 1)
+		testutil.Equal(t, got[0], "wkr")
+	})
+
+	t.Run("a streaming session producing new content is never flagged", func(t *testing.T) {
+		b := &App{}
+		writeLog("stream", "⏺ Reading a.go\r✻ Brewed for 1s\r\r❯ 1. Yes\r  2. No\r\r")
+		got := b.detectNeedsInputSticky(nil, []string{"stream"}, nil)
+		testutil.Equal(t, len(got), 0)
+		// Next tick: new transcript content arrived → fingerprint differs →
+		// still not flagged.
+		writeLog("stream", "⏺ Reading a.go\r⏺ Editing b.go\r✻ Brewed for 2s\r\r❯ 1. Yes\r  2. No\r\r")
+		got = b.detectNeedsInputSticky(nil, []string{"stream"}, nil)
+		testutil.Equal(t, len(got), 0)
+	})
+
+	t.Run("a content-stable WORKING agent ending in a question is never flagged", func(t *testing.T) {
+		// endsInQuestion true and NO selection widget, but the "esc to interrupt"
+		// working affordance is present → still generating, not awaiting. The
+		// idle-gate-less stability pass must not flag it even when stable
+		// (BUG-035: the working-affordance-absent gate is the BUG-032 guard).
+		c := &App{}
+		const working = "⏺ Want me to ship it?\r✻ Cogitating… (12s · esc to interrupt)\r\r╭───╮\r│ > │\r╰───╯\r  ? for shortcuts\r"
+		writeLog("q", working)
+		testutil.Equal(t, len(c.detectNeedsInputSticky(nil, []string{"q"}, nil)), 0)
+		// Stable second tick: still not flagged.
+		writeLog("q", working)
+		testutil.Equal(t, len(c.detectNeedsInputSticky(nil, []string{"q"}, nil)), 0)
+	})
+
+	t.Run("a content-stable AWAITING agent ending in a question is flagged (BUG-035 GAP A)", func(t *testing.T) {
+		// Same trailing-question shape but NO working affordance → genuinely
+		// awaiting input. A fullscreen agent here never goes idle, so the
+		// content-stability pass is the only thing that catches it.
+		d := &App{}
+		const awaiting = "⏺ Want me to ship it?\r✻ Brewed for 12s\r\r╭───╮\r│ > │\r╰───╯\r  ? for shortcuts\r"
+		writeLog("aq", awaiting)
+		// First tick records the fingerprint without flagging.
+		testutil.Equal(t, len(d.detectNeedsInputSticky(nil, []string{"aq"}, nil)), 0)
+		// Stable second tick → flagged.
+		writeLog("aq", awaiting)
+		got := d.detectNeedsInputSticky(nil, []string{"aq"}, nil)
+		testutil.Equal(t, len(got), 1)
+		testutil.Equal(t, got[0], "aq")
+	})
+}
+
+// TestDetectNeedsInputSticky_Escalation covers BUG-029: a session parked at a
+// selection prompt whose surrounding tail ALSO carries an unrelated line that
+// changes every tick (an unrecognized status/counter, or genuinely new but
+// irrelevant output elsewhere in the 16 KB window) never lets the ordinary
+// 2-tick content-fingerprint match converge — the fingerprint differs every
+// tick even though the prompt itself never changes. Without the bounded
+// escalation fallback this worker would show the active spinner forever
+// instead of "(?)". The escalation counter is independent of the fingerprint
+// and must fire once the qualifying combination (selection shape present,
+// working affordance absent) holds for NeedsInputEscalationTicks consecutive
+// ticks — and must NOT fire for a merely transient/coincidental match.
+func TestDetectNeedsInputSticky_Escalation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeLog := func(taskID, content string) {
+		logPath := agent.SessionLogPath(taskID)
+		testutil.NoError(t, os.MkdirAll(logPath[:strings.LastIndex(logPath, "/")], 0o755))
+		testutil.NoError(t, os.WriteFile(logPath, []byte(content), 0o644))
+	}
+
+	// The selection prompt never changes; the leading "progress" line does, on
+	// every tick, so the full-tail fingerprint never converges tick-to-tick.
+	frame := func(n int) string {
+		return fmt.Sprintf("progress: %d files scanned\r⏺ Do you want to make this edit?\r✻ Brewed for 4s\r\r❯ 1. Yes\r  2. No\r\r", n)
+	}
+
+	t.Run("never-converging fingerprint escalates to flagged after N consecutive ticks", func(t *testing.T) {
+		a := &App{}
+		var got []string
+		for i := 0; i < agent.NeedsInputEscalationTicks-1; i++ {
+			writeLog("wkr", frame(i))
+			got = a.detectNeedsInputSticky(nil, []string{"wkr"}, got)
+			testutil.Equal(t, len(got), 0)
+		}
+		writeLog("wkr", frame(agent.NeedsInputEscalationTicks-1))
+		got = a.detectNeedsInputSticky(nil, []string{"wkr"}, got)
+		testutil.Equal(t, len(got), 1)
+		testutil.Equal(t, got[0], "wkr")
+	})
+
+	t.Run("counter resets when the selection prompt scrolls away before the window elapses", func(t *testing.T) {
+		b := &App{}
+		var got []string
+		half := agent.NeedsInputEscalationTicks / 2
+		for i := 0; i < half; i++ {
+			writeLog("q", frame(i))
+			got = b.detectNeedsInputSticky(nil, []string{"q"}, got)
+			testutil.Equal(t, len(got), 0)
+		}
+		// The prompt disappears for one tick (still working, no selection UI) —
+		// the streak must reset, not merely pause at `half`.
+		writeLog("q", fmt.Sprintf("progress: %d files scanned\rStill generating…\r", half))
+		got = b.detectNeedsInputSticky(nil, []string{"q"}, got)
+		testutil.Equal(t, len(got), 0)
+		// Resume the prompt: must NOT immediately re-escalate from `half`.
+		writeLog("q", frame(half+1))
+		got = b.detectNeedsInputSticky(nil, []string{"q"}, got)
+		testutil.Equal(t, len(got), 0)
+	})
+}
+
+// TestDetectNeedsInputSticky_AltScreen covers BUG-033 end-to-end through the
+// TUI tick: a FULLSCREEN (alt-screen) agent paints its prompt cursor-addressed,
+// so the raw on-disk log tail does NOT contain a linear `❯ 1.` (StripANSI drops
+// the cursor moves without applying them) — the old raw detector silently
+// missed it until the user opened the pane and a SIGWINCH forced a linear
+// repaint. Detection against the EMULATED screen flags it without any repaint.
+func TestDetectNeedsInputSticky_AltScreen(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeLog := func(taskID, content string) {
+		logPath := agent.SessionLogPath(taskID)
+		testutil.NoError(t, os.MkdirAll(logPath[:strings.LastIndex(logPath, "/")], 0o755))
+		testutil.NoError(t, os.WriteFile(logPath, []byte(content), 0o644))
+	}
+
+	// Alt-screen frame: the option text is painted first, then the ❯ cursor is
+	// painted LAST at an absolute position to its left — so in byte order ❯
+	// trails "1." and the raw regex misses; only emulation lines them up.
+	altFrame := func(secs, glyph string) string {
+		return "\x1b[?1049h\x1b[2J" +
+			"\x1b[1;1H" + glyph + " Brewed for " + secs +
+			"\x1b[3;5HDo you want to make this edit?" +
+			"\x1b[5;5H1. Yes\x1b[6;5H2. No" +
+			"\x1b[5;3H❯" +
+			"\x1b[8;1H\x1b[?25l"
+	}
+
+	a := &App{}
+	t.Run("raw detection alone misses the alt-screen prompt", func(t *testing.T) {
+		// Prove the precondition: without emulation the tail is invisible.
+		testutil.Equal(t, agent.DetectNeedsInput([]byte(altFrame("4s", "✻"))), false)
+	})
+
+	t.Run("first tick records fingerprint without flagging", func(t *testing.T) {
+		writeLog("alt", altFrame("4s", "✻"))
+		got := a.detectNeedsInputSticky(nil /* never idle */, []string{"alt"}, nil)
+		testutil.Equal(t, len(got), 0)
+		if _, ok := a.needsInputFP["alt"]; !ok {
+			t.Fatal("expected fingerprint recorded for the emulated alt-screen prompt")
+		}
+	})
+
+	t.Run("second tick flags it once the emulated screen is stable", func(t *testing.T) {
+		// Only the spinner chrome advanced (4s/✻ → 9s/✶); the rendered prompt
+		// screen is unchanged.
+		writeLog("alt", altFrame("9s", "✶"))
+		got := a.detectNeedsInputSticky(nil, []string{"alt"}, nil)
+		testutil.Equal(t, len(got), 1)
+		testutil.Equal(t, got[0], "alt")
+	})
+
+	t.Run("a streaming alt-screen agent without a prompt is never flagged", func(t *testing.T) {
+		b := &App{}
+		writeLog("altbusy", "\x1b[?1049h\x1b[2J\x1b[2;5HApplying edit 1 of 3\x1b[3;5HRunning tests...")
+		testutil.Equal(t, len(b.detectNeedsInputSticky(nil, []string{"altbusy"}, nil)), 0)
+		writeLog("altbusy", "\x1b[?1049h\x1b[2J\x1b[2;5HApplying edit 2 of 3\x1b[3;5HRunning tests...")
+		testutil.Equal(t, len(b.detectNeedsInputSticky(nil, []string{"altbusy"}, nil)), 0)
+	})
+}
+
 // fakeKickSession is a minimal agent.SessionHandle for driving
 // App.maybeKickRerender without a real PTY. Only the fields the rerender
 // predicate reads are meaningful; everything else returns zero values.
@@ -140,6 +337,7 @@ type fakeKickSession struct {
 
 func (f *fakeKickSession) PID() int                                       { return 0 }
 func (f *fakeKickSession) WriteInput([]byte) (int, error)                 { return 0, nil }
+func (f *fakeKickSession) WriteInputSystem([]byte) (int, error)           { return 0, nil }
 func (f *fakeKickSession) Resize(uint16, uint16) error                    { return nil }
 func (f *fakeKickSession) RecentOutput() []byte                           { return nil }
 func (f *fakeKickSession) RecentOutputTail(int) []byte                    { return nil }
@@ -147,6 +345,7 @@ func (f *fakeKickSession) RecentOutputTailWithTotal(int) ([]byte, uint64) { retu
 func (f *fakeKickSession) TotalWritten() uint64                           { return 0 }
 func (f *fakeKickSession) IsIdle() bool                                   { return f.idle }
 func (f *fakeKickSession) LastInput() time.Time                           { return time.Time{} }
+func (f *fakeKickSession) LastUserInput() time.Time                       { return time.Time{} }
 func (f *fakeKickSession) Alive() bool                                    { return f.alive }
 func (f *fakeKickSession) PTYSize() (int, int)                            { return 0, 0 }
 func (f *fakeKickSession) InitialPTYSize() (int, int)                     { return f.initCols, 24 }
@@ -3011,7 +3210,8 @@ func TestApp_HandleRestartDaemonKey_Skip(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
-	app.openRestartDaemonPrompt()
+	app.SetSkew(true, false, "", "")
+	app.openSkewPrompt()
 	app.handleRestartDaemonKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
 	testutil.Equal(t, app.mode, modeTaskList)
 }
@@ -3394,4 +3594,78 @@ func TestHandleGlobalKey_HeraRailFilterSwallowsQuitAndHelp(t *testing.T) {
 	gotHelp2 := app.handleGlobalKey(tcell.NewEventKey(tcell.KeyRune, '?', tcell.ModNone))
 	testutil.Nil(t, gotHelp2) // consumed globally
 	testutil.Equal(t, app.mode == modeHelp, true)
+}
+
+// fakeInputSession is a fakeKickSession with a settable LastUserInput, for
+// driving the BUG-034 clear-on-input filter in detectNeedsInputSticky. The
+// filter clears on USER input only (LastUserInput), so `last` models a user
+// keystroke — NOT a system reliable-notify delivery, which never advances it.
+type fakeInputSession struct {
+	*fakeKickSession
+	last time.Time
+}
+
+func (f *fakeInputSession) LastUserInput() time.Time { return f.last }
+
+// fakeInputRunner is an agent.SessionProvider whose Get returns canned sessions,
+// so detectNeedsInputSticky can read a controllable LastInput per task.
+type fakeInputRunner struct {
+	*agent.Runner
+	sessions map[string]agent.SessionHandle
+}
+
+func (r *fakeInputRunner) Get(id string) agent.SessionHandle { return r.sessions[id] }
+
+// TestDetectNeedsInputSticky_ClearOnInput covers BUG-034 in the TUI: a free-text
+// question flags (?), persists with no input, then clears once the user delivers
+// input to that session — even though the question still sits in the log tail
+// (the stale-tail crux) — while input to a different session does not clear it.
+func TestDetectNeedsInputSticky_ClearOnInput(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeLog := func(taskID, content string) {
+		logPath := agent.SessionLogPath(taskID)
+		testutil.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0o755))
+		testutil.NoError(t, os.WriteFile(logPath, []byte(content), 0o644))
+	}
+	// Free-text question (endsInQuestion via the ╭ prompt box) — NO selection
+	// widget. This is the exact BUG-034 scenario.
+	const question = "⏺ Should I ship it?\r\r╭───╮\r│ > │\r╰───╯\r  ? for shortcuts\r"
+	writeLog("c1", question)
+	writeLog("c2", question)
+
+	t0 := time.Unix(1000, 0)
+	t1 := time.Unix(2000, 0)
+	s1 := &fakeInputSession{fakeKickSession: &fakeKickSession{}, last: t0}
+	s2 := &fakeInputSession{fakeKickSession: &fakeKickSession{}, last: t0}
+	a := &App{runner: &fakeInputRunner{
+		Runner:   agent.NewRunner(nil),
+		sessions: map[string]agent.SessionHandle{"c1": s1, "c2": s2},
+	}}
+
+	// Tick 1: both idle on a question, no input since → both flagged.
+	got := a.detectNeedsInputSticky([]string{"c1", "c2"}, []string{"c1", "c2"}, nil)
+	testutil.Equal(t, len(got), 2)
+
+	// Tick 2: no input on either → persists (no decay).
+	got = a.detectNeedsInputSticky([]string{"c1", "c2"}, []string{"c1", "c2"}, got)
+	testutil.Equal(t, len(got), 2)
+
+	// Tick 3: user responds to c1 only. c1 clears despite the stale question
+	// still in its log; c2 stays flagged (cross-session input must not clear it).
+	s1.last = t1
+	got = a.detectNeedsInputSticky([]string{"c1", "c2"}, []string{"c1", "c2"}, got)
+	testutil.DeepEqual(t, got, []string{"c2"})
+}
+
+// TestDetectNeedsInputSticky_ClearOnArchive covers BUG-034: an archived task is
+// dropped from the needs-input set regardless of its detection signal.
+func TestDetectNeedsInputSticky_ClearOnArchive(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	logPath := agent.SessionLogPath("c1")
+	testutil.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0o755))
+	testutil.NoError(t, os.WriteFile(logPath, []byte("Do you want to proceed?\n❯ 1. Yes\n  2. No\n"), 0o644))
+
+	a := &App{tasks: []*model.Task{{ID: "c1", Archived: true}}}
+	got := a.detectNeedsInputSticky([]string{"c1"}, []string{"c1"}, nil)
+	testutil.Equal(t, len(got), 0)
 }

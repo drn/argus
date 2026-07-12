@@ -3,6 +3,7 @@ package widget
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 )
@@ -27,8 +28,8 @@ func TestTabLabels(t *testing.T) {
 	if len(tabKeys) != 3 {
 		t.Errorf("tabKeys count = %d, want 3", len(tabKeys))
 	}
-	if TabLabels[TabHera] != "Hera" {
-		t.Errorf("TabLabels[TabHera] = %q, want Hera", TabLabels[TabHera])
+	if TabLabels[TabHera] != "Projects" {
+		t.Errorf("TabLabels[TabHera] = %q, want Projects", TabLabels[TabHera])
 	}
 }
 
@@ -50,6 +51,64 @@ func TestHeader_Notice(t *testing.T) {
 	h.ClearNotice()
 	if h.Notice() != "" {
 		t.Errorf("after clear, notice = %q, want empty", h.Notice())
+	}
+}
+
+// TestHeader_NoticeAutoExpires asserts a notice set via SetNotice reverts to
+// empty once HeaderNoticeTTL has elapsed, without any ClearNotice call —
+// mirroring StatusBar's expiresAt/tick model. Uses an injectable clock, no
+// real sleep.
+func TestHeader_NoticeAutoExpires(t *testing.T) {
+	h := NewHeader()
+	base := time.Unix(1000, 0)
+	h.now = func() time.Time { return base }
+
+	h.SetNotice("Copied")
+	if h.Notice() != "Copied" {
+		t.Errorf("notice = %q, want %q", h.Notice(), "Copied")
+	}
+
+	// Still showing just before expiry.
+	h.now = func() time.Time { return base.Add(HeaderNoticeTTL - time.Second) }
+	if h.Notice() != "Copied" {
+		t.Errorf("notice before expiry = %q, want %q", h.Notice(), "Copied")
+	}
+
+	// Past expiry: reverts to empty on its own (no ClearNotice call).
+	h.now = func() time.Time { return base.Add(HeaderNoticeTTL + time.Second) }
+	if h.Notice() != "" {
+		t.Errorf("notice after expiry = %q, want empty", h.Notice())
+	}
+}
+
+// TestHeader_NoticeAutoExpires_DrawTriggersExpiry asserts Draw itself lazily
+// clears an expired notice (not just the Notice() accessor), since Draw reads
+// h.noticeText directly rather than going through Notice().
+func TestHeader_NoticeAutoExpires_DrawTriggersExpiry(t *testing.T) {
+	h := NewHeader()
+	h.SetRect(0, 0, 80, 1)
+	base := time.Unix(2000, 0)
+	h.now = func() time.Time { return base }
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 1)
+
+	h.SetNotice("Nothing to copy")
+	h.Draw(screen)
+	screen.Show()
+	if !strings.Contains(readScreenRow(screen, 0, 80), "Nothing to copy") {
+		t.Fatal("expected notice to render before expiry")
+	}
+
+	h.now = func() time.Time { return base.Add(HeaderNoticeTTL + time.Second) }
+	h.Draw(screen)
+	screen.Show()
+	if strings.Contains(readScreenRow(screen, 0, 80), "Nothing to copy") {
+		t.Fatal("expired notice still rendered by Draw")
 	}
 }
 
@@ -125,8 +184,8 @@ func TestHeader_SetTabLabel_RenderedInDraw(t *testing.T) {
 	if !strings.Contains(all, "DAG") {
 		t.Errorf("overridden label DAG not found in rendered output: %q", all)
 	}
-	if strings.Contains(all, "Hera") {
-		t.Errorf("original label Hera should not appear after override: %q", all)
+	if strings.Contains(all, "Projects") {
+		t.Errorf("original label Projects should not appear after override: %q", all)
 	}
 }
 

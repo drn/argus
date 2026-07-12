@@ -27,6 +27,7 @@ package heragater
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -446,12 +447,18 @@ func (w *Watcher) materializeNode(node *db.HeraRole) {
 		coordName = coords[0].Name
 	}
 	project := node.ArgusProject
-	branch := w.resolveBaseBranch(node)
+	// blockerIDs is re-fetched here (classify and resolveBaseBranch each already
+	// query it independently this tick) purely to size the fan-in notice below;
+	// best-effort — a lookup error just suppresses the notice, never the spawn.
+	blockerIDs, _ := w.db.HeraBlockersOf(node.ID)
+	branch, winningBlockerID := w.resolveBaseBranch(node)
 
 	// Route on node kind (add-hera-subcoord-nodes). A subcoord node materializes
 	// via the sub-coord seam (a distinct coordinator agent owning a child
 	// orchestrator); everything else is a leaf worker. Idempotency, gating, and
 	// base-branch resolution are identical — only the materialize step differs.
+	// The fan-in notice below is scoped to this worker-kind path (out of scope
+	// for subcoord materialization — add-hera-fanin-notify).
 	if node.NodeKind == db.HeraNodeKindSubCoord {
 		w.materializeSubCoord(node, orch.Name, coordName, project, branch)
 		return
@@ -464,6 +471,9 @@ func (w *Watcher) materializeNode(node *db.HeraRole) {
 		return
 	}
 	w.logf("[heragater] materialized node %d (%s) in orch %q (base_branch=%q)", node.ID, node.Name, orch.Name, branch)
+	if len(blockerIDs) > 1 && winningBlockerID != 0 {
+		w.pingFanIn(node, blockerIDs, winningBlockerID, branch)
+	}
 	if cb := w.materializeCallback(); cb != nil {
 		cb(node)
 	}
@@ -501,7 +511,11 @@ func (w *Watcher) materializeSubCoord(node *db.HeraRole, parentOrchName, coordNa
 	}
 }
 
-// resolveBaseBranch returns the branch the new worktree should stack on.
+// resolveBaseBranch returns the branch the new worktree should stack on, and
+// (add-hera-fanin-notify) the id of the blocker role that branch came from — 0
+// when no blocker branch resolved (the root fallback path ran instead). The
+// winning id lets materializeNode report which blocker "won" a fan-in pick,
+// without changing the branch-resolution behavior itself.
 //
 // For a node WITH blockers (non-root): the branch of the highest-id
 // (most-recently-created) DONE blocker that has a task with a branch. This gives
@@ -516,12 +530,11 @@ func (w *Watcher) materializeSubCoord(node *db.HeraRole, parentOrchName, coordNa
 // then applies the project default, as before this change). Every step degrades to
 // "" on a miss — never a panic — so an orchestrator with no coordinator, or a
 // coordinator with no branch, falls through to the historical behavior.
-func (w *Watcher) resolveBaseBranch(node *db.HeraRole) string {
+func (w *Watcher) resolveBaseBranch(node *db.HeraRole) (branch string, winningBlockerID int64) {
 	blockerIDs, err := w.db.HeraBlockersOf(node.ID)
 	if err != nil {
-		return ""
+		return "", 0
 	}
-	var branch string
 	var bestBindingID int64
 	for _, bid := range blockerIDs {
 		binding, bErr := w.db.HeraLiveBindingByRole(bid)
@@ -540,14 +553,15 @@ func (w *Watcher) resolveBaseBranch(node *db.HeraRole) string {
 		if binding.ID > bestBindingID {
 			bestBindingID = binding.ID
 			branch = t.Branch
+			winningBlockerID = bid
 		}
 	}
 	if branch != "" {
 		// A blocker branch resolved — non-root path, unchanged.
-		return branch
+		return branch, winningBlockerID
 	}
 	// Root node: no blocker branch. Resolve the configurable root base.
-	return w.resolveRootBaseBranch(node)
+	return w.resolveRootBaseBranch(node), 0
 }
 
 // resolveRootBaseBranch resolves a ROOT node's base branch
@@ -625,4 +639,78 @@ func (w *Watcher) holdAndPing(node, failedBlocker *db.HeraRole) {
 	w.heldPings[key] = true
 	w.mu.Unlock()
 	w.logf("[heragater] held node %d (%s) behind failed blocker %s; pinged coordinator", node.ID, node.Name, failedBlocker.Name)
+}
+
+// pingFanIn notifies the coordinator that a fan-in node (2+ blockers) has just
+// materialized: base_branch resolution (resolveBaseBranch) picks ONE blocker's
+// branch — the highest-id ("most recently materialized") binding — so any other
+// blocker's branch is NOT automatically merged in. That pick is otherwise
+// silent; this makes it visible even when the coordinator never authored a
+// self-rebase step (add-hera-fanin-notify).
+//
+// Unlike holdAndPing's recurring-state, retry-on-failure contract, this is a
+// one-shot notice tied to a single event that has ALREADY happened —
+// materialization already succeeded by the time this is called — so a delivery
+// failure is logged and dropped, never retried.
+func (w *Watcher) pingFanIn(node *db.HeraRole, blockerIDs []int64, winningBlockerID int64, branch string) {
+	coords, err := w.db.ListHeraRolesByKind(node.OrchestratorID, db.HeraKindCoordinator)
+	if err != nil || len(coords) == 0 {
+		w.logf("[heragater] fan-in %d: no coordinator to notify: %v", node.ID, err)
+		return
+	}
+	winnerName := w.roleName(winningBlockerID)
+	var siblingNames, siblingDescs []string
+	for _, bid := range blockerIDs {
+		if bid == winningBlockerID {
+			continue
+		}
+		name := w.roleName(bid)
+		siblingNames = append(siblingNames, name)
+		if sb := w.roleBranch(bid); sb != "" {
+			siblingDescs = append(siblingDescs, fmt.Sprintf("%s (%s)", name, sb))
+		} else {
+			siblingDescs = append(siblingDescs, name)
+		}
+	}
+	body := fmt.Sprintf(
+		"Planned node %s materialized with %d blockers. base_branch resolved to %s (blocker %s). "+
+			"NOT automatically merged: %s — merge manually if this node needs their content too.",
+		node.Name, len(blockerIDs), branch, winnerName, strings.Join(siblingDescs, ", "))
+	tldr := fmt.Sprintf("fan-in: %s stacked on %s, %d sibling(s) not merged", node.Name, winnerName, len(siblingNames))
+	if w.ping != nil {
+		if pErr := w.ping(node.ID, coords[0].ID, body, tldr); pErr != nil {
+			w.logf("[heragater] fan-in %d: notify coordinator failed (one-shot, not retried): %v", node.ID, pErr)
+			return
+		}
+	}
+	w.logf("[heragater] fan-in: node %d (%s) materialized on %q (blocker %s); %d sibling(s) not merged; notified coordinator",
+		node.ID, node.Name, branch, winnerName, len(siblingNames))
+}
+
+// roleName resolves a role id to its display name, degrading to a placeholder
+// on lookup failure rather than propagating an error into a notice string.
+func (w *Watcher) roleName(roleID int64) string {
+	if r, err := w.db.HeraRole(roleID); err == nil {
+		return r.Name
+	}
+	return fmt.Sprintf("role#%d", roleID)
+}
+
+// roleBranch resolves a role's bound task branch via the same live-then-latest
+// binding fallback resolveBaseBranch/coordinatorBranch use, so the fan-in notice
+// can describe an un-merged sibling's branch. Empty on any miss.
+func (w *Watcher) roleBranch(roleID int64) string {
+	binding, err := w.db.HeraLiveBindingByRole(roleID)
+	if err != nil {
+		bindings, lErr := w.db.ListHeraBindingsByRole(roleID)
+		if lErr != nil || len(bindings) == 0 {
+			return ""
+		}
+		binding = bindings[0] // most recent first
+	}
+	t, tErr := w.db.Get(binding.ArgusTaskID)
+	if tErr != nil || t == nil {
+		return ""
+	}
+	return t.Branch
 }

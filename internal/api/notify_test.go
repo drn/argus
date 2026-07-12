@@ -155,7 +155,7 @@ func (notifyIdleRunner) Get(string) notify.SessionHandleIface { return &notifyId
 type notifyIdleSession struct{ writes [][]byte }
 
 func (s *notifyIdleSession) IsIdle() bool { return true }
-func (s *notifyIdleSession) WriteInput(p []byte) (int, error) {
+func (s *notifyIdleSession) WriteInputSystem(p []byte) (int, error) {
 	s.writes = append(s.writes, append([]byte(nil), p...))
 	return len(p), nil
 }

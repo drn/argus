@@ -97,6 +97,8 @@ func TestHandleGetArtifact_ContentTypeAndHeaders(t *testing.T) {
 		{"r.pdf", model.ArtifactPDF, "%PDF", "application/pdf"},
 		{"r.png", model.ArtifactImage, "\x89PNG", "image/png"},
 		{"r.txt", model.ArtifactText, "plain", "text/plain; charset=utf-8"},
+		{"r.mp3", model.ArtifactAudio, "fake-mp3-bytes", "audio/mpeg"},
+		{"r.mp4", model.ArtifactVideo, "fake-mp4-bytes", "video/mp4"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.filename, func(t *testing.T) {

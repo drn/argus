@@ -60,9 +60,21 @@ func (a *App) heraSpawnWorker(sel hera.Selection) {
 	// BUG-005: spawn from the FULL new-task modal (project/branch/backend/model/
 	// prompt), project defaulting to the coordinator's. On submit, spawn a
 	// born-bound worker under the current coordinator via the shared primitive.
-	a.openHeraNewTaskForm(fmt.Sprintf(" Spawn worker under %s ", orchName), project, false, func(task *model.Task, _ string) {
-		a.heraDoSpawnWorker(orchID, orchName, coordName, task)
+	a.openHeraNewTaskForm(fmt.Sprintf(" Spawn worker under %s ", orchName), project, false, func(task *model.Task, name string) {
+		a.heraDoSpawnWorker(orchID, orchName, coordName, name, task)
 	})
+}
+
+// heraSpawnName resolves the name for a hera worker/coordinator spawn: the
+// user-entered name (from the modal's optional name field) when non-blank, else
+// the prompt-derived slug. Shared by the rail `w` and `n` handlers so an explicit
+// name overrides the auto-derived one while a blank field reproduces the prior
+// (prompt-derived) behavior exactly.
+func heraSpawnName(entered, prompt string) string {
+	if entered != "" {
+		return entered
+	}
+	return agent.DeriveHeraWorkerName(prompt)
 }
 
 // heraCoordRoleName returns the orchestrator's coordinator role name (for the
@@ -79,17 +91,18 @@ func heraCoordRoleName(o *hera.OrchView) string {
 // heraDoSpawnWorker runs the transactional spawn off the main thread (worktree +
 // session creation can take a second), then refreshes on the main thread. The
 // task carries the new-task form's project/branch/backend/model/prompt.
-func (a *App) heraDoSpawnWorker(orchID int64, orchName, coordName string, task *model.Task) {
+func (a *App) heraDoSpawnWorker(orchID int64, orchName, coordName, name string, task *model.Task) {
 	d, ok := a.db.(*db.DB)
 	if !ok {
 		return
 	}
 	prompt := task.Prompt
-	uxlog.Log("[hera-view] spawn worker: orch=%d (%s) project=%s", orchID, orchName, task.Project)
+	baseName := heraSpawnName(name, prompt)
+	uxlog.Log("[hera-view] spawn worker: orch=%d (%s) project=%s name=%s", orchID, orchName, task.Project, baseName)
 	go func() {
 		res, err := agent.SpawnHeraWorker(d, a.runner, agent.HeraWorkerSpawnInput{
 			OrchestratorID: orchID,
-			BaseName:       agent.DeriveHeraWorkerName(prompt),
+			BaseName:       baseName,
 			TaskPrompt:     agent.HeraWorkerOrientation(orchName, coordName) + "\n\n---\n\n" + prompt,
 			RolePrompt:     prompt,
 			Project:        task.Project,
@@ -128,21 +141,24 @@ func (a *App) heraNewCoordinator(sel hera.Selection) {
 			project = t.Project
 		}
 	}
-	a.openHeraNewTaskForm(" New coordinator ", project, true, func(task *model.Task, _ string) {
-		a.heraDoNewCoordinator(task)
+	a.openHeraNewTaskForm(" New coordinator ", project, true, func(task *model.Task, name string) {
+		a.heraDoNewCoordinator(name, task)
 	})
 }
 
 // heraDoNewCoordinator runs the transactional root-coordinator spawn off the
-// main thread, then refreshes. The new orchestrator's name is derived from the
-// prompt (de-collided); the coordinator role is named "coord".
-func (a *App) heraDoNewCoordinator(task *model.Task) {
+// main thread, then refreshes. When name is non-blank it names BOTH the new
+// orchestrator (the rail label) and the coordinator task (TaskName is left ""
+// so SpawnHeraCoordinator defaults it to the de-collided orchestrator name,
+// keeping the two consistent); blank derives the name from the prompt and
+// de-collides as before. The coordinator role is always named "coord".
+func (a *App) heraDoNewCoordinator(name string, task *model.Task) {
 	d, ok := a.db.(*db.DB)
 	if !ok {
 		return
 	}
 	prompt := task.Prompt
-	base := agent.DeriveHeraWorkerName(prompt)
+	base := heraSpawnName(name, prompt)
 	uxlog.Log("[hera-view] new coordinator: base=%s project=%s", base, task.Project)
 	go func() {
 		res, err := agent.SpawnHeraCoordinator(d, a.runner, agent.HeraCoordinatorSpawnInput{
@@ -773,10 +789,32 @@ func (a *App) reviveHeraWorker(task *model.Task, sess agent.SessionHandle) {
 				a.statusbar.SetError("Revive failed: " + err.Error())
 				uxlog.Log("[hera-view] revive: kick failed task=%s: %v", taskID, err)
 			} else {
+				// The worker is actively working again — restore in_progress if
+				// it was parked in in_review by a prior roll/reconcile (BUG-B).
+				a.reviveRestoreInProgress(taskID)
 				a.heraRefresh()
 			}
 		})
 	}()
+}
+
+// reviveRestoreInProgress restores a just-revived worker's task to in_progress
+// — the inverse of the in_review close-out roll (BUG-B). Called right after a
+// successful in-place revive kick. The shared *db.DB helper enforces the
+// BUG-050 guard: a genuinely-finished worker (ready_to_close, or role-status
+// done|failed) is LEFT in in_review. Local store only — the restore goes
+// through *db.DB directly, so --remote mode is a no-op (the live local daemon
+// owns the same flip on its own supervisor reattach).
+func (a *App) reviveRestoreInProgress(taskID string) {
+	dbv, ok := a.db.(*db.DB)
+	if !ok {
+		return
+	}
+	if restored, err := dbv.ReviveHeraWorkerToInProgress(taskID); err != nil {
+		uxlog.Log("[hera-view] revive: restore in_progress failed task=%s: %v", taskID, err)
+	} else if restored {
+		uxlog.Log("[hera-view] revive: restored task=%s to in_progress", taskID)
+	}
 }
 
 // --- `J` adopt / reparent ---------------------------------------------------

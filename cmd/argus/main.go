@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/buildid"
 	"github.com/drn/argus/internal/daemon"
 	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
@@ -79,6 +80,9 @@ func main() {
 			return
 		case "coord-hook":
 			runCoordHookCommand()
+			return
+		case "doctor":
+			runDoctor()
 			return
 		}
 	}
@@ -193,7 +197,7 @@ func runTUI() {
 
 	var runner agent.SessionProvider
 	var daemonConnected bool
-	var daemonStale bool
+	var skew skewResult
 
 	sockPath := daemon.DefaultSocketPath()
 	client, err := dclient.Connect(sockPath)
@@ -202,11 +206,15 @@ func runTUI() {
 		uxlog.Log("no daemon at %s, auto-starting...", sockPath)
 		client, err = dclient.AutoStart(sockPath)
 	}
-	// Only meaningful when we connected to a daemon we did NOT just spawn.
-	// AutoStart fork/execs the current binary, so the daemon's binary always
-	// matches the TUI in that case — checking would just produce false alarms.
-	if err == nil && preExisting {
-		daemonStale = isDaemonStale(client)
+	// Evaluate binary skew against BOTH the daemon and the connected supervisor.
+	// Daemon-staleness is gated on preExisting: AutoStart fork/execs the current
+	// binary, so a daemon we just spawned always matches the TUI and checking
+	// would only produce false alarms. The supervisor, by contrast, is a
+	// long-lived process the TUI did NOT fork — it can be stale even when we just
+	// auto-started the daemon, so evaluateSkew checks it whenever it is present,
+	// regardless of preExisting (see design D4 / gap #1).
+	if err == nil {
+		skew = evaluateSkew(client, preExisting)
 	}
 
 	// appRef is set after tui.New so the onFinish callback can reach the app.
@@ -246,7 +254,7 @@ func runTUI() {
 	}
 
 	app := tui.New(database, runner, daemonConnected)
-	app.SetDaemonStale(daemonStale)
+	app.SetSkew(skew.daemonStale, skew.supervisorStale, skew.daemonIdentity, skew.supervisorIdentity)
 	appRef = app
 	appRef2 = app
 
@@ -496,71 +504,146 @@ func runDaemonStop() {
 	}
 }
 
-// isDaemonStale returns true when the running daemon's binary differs from the
-// TUI's on-disk binary — typically because argus was rebuilt while the daemon
-// kept running, but it also fires on rollbacks or any other case where the two
-// files differ. Detection is best-effort: if any step fails (older daemon
-// without BootInfo, RPC error, missing binary, stat/hash error), we return
-// false to avoid nagging the user over benign issues.
-//
-// The signal is a content hash, NOT mtime. `go install` rewrites the binary
-// (bumping its mtime) on every run even when the source is unchanged, and
-// because ~/.argus/argusd symlinks to the same file the TUI runs, an mtime
-// comparison flagged the daemon stale on every launch for anyone who
-// reinstalls habitually — even though the deterministic Go build produced a
-// byte-identical binary. Hashing only differs on a real code change. mtime
-// remains a fallback for an older daemon that predates the BinaryHash field.
-// bootInfoProvider is the subset of *dclient.Client's API that isDaemonStale
-// needs. Narrowing to an interface lets tests drive the full wiring (os.Executable →
-// BinaryHashFile → staleDecision) against the test binary with a fake
-// BootInfoResp, without a live daemon.
+// bootInfoProvider is the subset of *dclient.Client's API that evaluateSkew
+// needs. Narrowing to an interface lets tests drive the full wiring
+// (os.Executable → BinaryHashFile → staleDecision) against the test binary with
+// a fake BootInfoResp, without a live daemon.
 type bootInfoProvider interface {
 	BootInfo() (daemon.BootInfoResp, error)
 }
 
-func isDaemonStale(client bootInfoProvider) bool {
+// skewResult carries the startup binary-skew evaluation: whether the daemon
+// and/or supervisor run a different binary than the TUI, plus each stale
+// process's rich display identity (commit SHA + dirty flag + resolved path,
+// short content-hash fallback) for the modal to render.
+type skewResult struct {
+	daemonStale        bool
+	supervisorStale    bool
+	daemonIdentity     string
+	supervisorIdentity string
+}
+
+// evaluateSkew fetches the daemon's BootInfo once and evaluates daemon +
+// supervisor binary skew against the TUI's own on-disk binary. It replaces the
+// former isDaemonStale, splitting the single daemon decision into a daemon and
+// a supervisor decision over the enriched BootInfoResp.
+//
+// checkDaemon gates the DAEMON decision only (the caller passes preExisting): a
+// daemon the TUI just auto-started forks the current binary and can never be
+// stale, so checking it would only produce false alarms. The SUPERVISOR
+// decision is ALWAYS evaluated when a supervisor is present — it is a
+// long-lived process the TUI did not fork, so it can be stale even on the
+// auto-start path (the blind spot design D4 closes).
+//
+// The signal is a content hash, NOT mtime. `go install` rewrites the binary
+// (bumping its mtime) on every run even when the source is unchanged, and
+// because ~/.argus/argusd symlinks to the same file the TUI runs, an mtime
+// comparison flagged the daemon stale on every launch for habitual reinstallers
+// even though the deterministic build was byte-identical. Hashing only differs
+// on a real code change; mtime remains the fallback for a pre-BinaryHash daemon.
+// VCS identity (commit SHA + dirty) is display-only and NEVER gates — it is
+// blank for binaries built outside a git tree. Detection is best-effort: any
+// failed step (RPC error, missing binary, hash/stat error) yields "not stale"
+// so a benign local error never nags the user into a needless restart.
+func evaluateSkew(client bootInfoProvider, checkDaemon bool) skewResult {
+	var res skewResult
 	info, err := client.BootInfo()
 	if err != nil {
 		uxlog.Log("[tui] BootInfo failed: %v", err)
-		return false
+		return res
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		return false
+		return res
 	}
-	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
 		exe = resolved
 	}
 
-	// Read the TUI binary's identity (hash when the daemon reported one, else
-	// mtime for the pre-BinaryHash fallback). The pure decision lives in
-	// staleDecision so its branches are unit-testable without a daemon.
+	// Read the TUI binary's identity. Hash it when EITHER the daemon or the
+	// supervisor reported a hash to compare against; the mtime fallback below
+	// serves only a pre-BinaryHash daemon.
 	var (
 		tuiHash     string
 		tuiHashErr  bool
 		tuiMtime    time.Time
 		tuiMtimeErr bool
 	)
-	if info.BinaryHash != "" {
+	if info.BinaryHash != "" || (info.SupervisorPresent && info.SupervisorHash != "") {
 		tuiHash, err = daemon.BinaryHashFile(exe)
 		tuiHashErr = err != nil
-	} else if st, serr := os.Stat(exe); serr == nil {
-		tuiMtime = st.ModTime()
-	} else {
-		tuiMtimeErr = true
+	}
+	if info.BinaryHash == "" {
+		if st, serr := os.Stat(exe); serr == nil {
+			tuiMtime = st.ModTime()
+		} else {
+			tuiMtimeErr = true
+		}
 	}
 
-	if !staleDecision(info, tuiHash, tuiHashErr, tuiMtime, tuiMtimeErr) {
+	if checkDaemon && staleDecision(info, tuiHash, tuiHashErr, tuiMtime, tuiMtimeErr) {
+		res.daemonStale = true
+		if info.BinaryHash != "" {
+			uxlog.Log("[tui] daemon binary stale: daemon hash=%s tui hash=%s",
+				shortHash(info.BinaryHash), shortHash(tuiHash))
+		} else {
+			uxlog.Log("[tui] daemon binary stale: daemon mtime=%s tui mtime=%s",
+				info.BinaryMtime.Format(time.RFC3339), tuiMtime.Format(time.RFC3339))
+		}
+	}
+	if supervisorStaleDecision(info, tuiHash, tuiHashErr) {
+		res.supervisorStale = true
+		uxlog.Log("[tui] supervisor binary stale: supervisor hash=%s tui hash=%s",
+			shortHash(info.SupervisorHash), shortHash(tuiHash))
+	}
+
+	res.daemonIdentity = formatIdentity(info.VCS, info.BinaryHash, info.BinaryPath)
+	if info.SupervisorPresent {
+		res.supervisorIdentity = formatIdentity(info.SupervisorVCS, info.SupervisorHash, info.SupervisorPath)
+	}
+	return res
+}
+
+// supervisorStaleDecision is the pure supervisor-staleness core over the
+// enriched BootInfoResp. It returns false (never stale) when no supervisor is
+// present, when the supervisor speaks an older protocol that omits its hash
+// (empty SupervisorHash ⇒ "unknown" — the additive-protocol feature-detect,
+// never a false positive), or when the TUI's own binary hash could not be read.
+// Otherwise it is a pure content-hash comparison; VCS info never gates.
+func supervisorStaleDecision(info daemon.BootInfoResp, tuiHash string, tuiHashErr bool) bool {
+	if !info.SupervisorPresent {
 		return false
 	}
-	if info.BinaryHash != "" {
-		uxlog.Log("[tui] daemon binary stale: daemon hash=%s tui hash=%s",
-			shortHash(info.BinaryHash), shortHash(tuiHash))
-	} else {
-		uxlog.Log("[tui] daemon binary stale: daemon mtime=%s tui mtime=%s",
-			info.BinaryMtime.Format(time.RFC3339), tuiMtime.Format(time.RFC3339))
+	if info.SupervisorHash == "" {
+		return false // pre-hash supervisor: identity unknown, never stale
 	}
-	return true
+	if tuiHashErr {
+		return false
+	}
+	return tuiHash != info.SupervisorHash
+}
+
+// formatIdentity renders a process's display identity for the skew modal: the
+// commit SHA + dirty flag when VCS build info is present, else the short content
+// hash, then the resolved path. Mirrors internal/doctor.displayIdentity. This is
+// display-only — it never participates in the staleness decision.
+func formatIdentity(v buildid.VCS, hash, path string) string {
+	var ident string
+	switch {
+	case v.Present():
+		ident = shortHash(v.Revision)
+		if v.Modified {
+			ident += " (dirty)"
+		}
+	case hash != "":
+		ident = "sha:" + shortHash(hash)
+	default:
+		ident = "unknown"
+	}
+	if path != "" {
+		return ident + " @ " + path
+	}
+	return ident
 }
 
 // staleDecision is the pure core of isDaemonStale: given the daemon's boot

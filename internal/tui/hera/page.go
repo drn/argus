@@ -3,6 +3,7 @@ package hera
 import (
 	"strings"
 
+	"github.com/drn/argus/internal/tui/keymap"
 	"github.com/drn/argus/internal/tui/planview"
 	"github.com/drn/argus/internal/tui/terminal"
 	"github.com/drn/argus/internal/tui/theme"
@@ -55,6 +56,9 @@ func clipboardHintTitle(base string, show bool) string {
 type HeraPage struct {
 	*tview.Box
 
+	// Keys returns the live keymap (set by the App). Nil-safe via keys().
+	Keys func() *keymap.Keymap
+
 	rail      *Rail
 	focus     *FocusMachine
 	refresher *Refresher
@@ -72,6 +76,16 @@ type HeraPage struct {
 	// task list consumes). doRefresh threads it into BuildModel so each live role
 	// carries its own needs-input flag and the subtree rollup is computed (BUG-018).
 	needsInput map[string]bool
+	// sessionIdle is the authoritative per-task content-aware idle set the App
+	// pushes each tick (raw-byte idle ∪ fullscreen content-idle). doRefresh
+	// threads it into BuildModel so a parked fullscreen role's spinner stops
+	// (RoleView.SessionIdle → IsActive false; BUG-036).
+	sessionIdle map[string]bool
+	// sessionRunning is the authoritative per-task RUNNING set the App pushes each
+	// tick (runner.RunningAndIdle running list). doRefresh threads it into
+	// BuildModel so a dead worker whose binding lingers stops its spinner
+	// (RoleView.SessionRunning → IsActive false; BUG-C).
+	sessionRunning map[string]bool
 
 	// tierResolver stamps the diligence-tiering readout (AppliedModel/Effort +
 	// ProfileWarning) onto each RoleView during doRefresh. The App wires it (local
@@ -135,21 +149,28 @@ type HeraPage struct {
 	OnNewCoordinator func(Selection) // `n` — new top-level coordinator (full new-task modal; selection used only to default the project, fires even when empty)
 	OnClearArchive   func(Selection) // `C` — NUKE every Tier-1 hidden item in the selected coordinator's archive (confirm)
 
-	// OnCopyClipboard fires on `ctrl+y` while a TERMINAL pane (coordinator or
-	// worker) is focused AND that pane's task has an agent-staged clipboard
-	// payload, passing the focused pane's bound task ID. The App copies the
-	// staged payload for THAT task to the OS clipboard (the Hera view shows
-	// several tasks at once, so the payload must come from the focused pane, not
-	// a single global active task). nil-safe: unwired in remote mode / when the
-	// runner is not daemon-backed, making `ctrl+y` fall through to the PTY.
+	// OnCopyClipboard fires on `ctrl+y` whenever a TERMINAL pane (coordinator or
+	// worker) is focused, passing the focused pane's bound task ID — regardless
+	// of whether that task has an agent-staged clipboard payload. The App
+	// copies the staged payload for THAT task to the OS clipboard if present
+	// (the Hera view shows several tasks at once, so the payload must come from
+	// the focused pane, not a single global active task), otherwise flashes a
+	// "Nothing to copy" notice. nil-safe: unwired in remote mode / when the
+	// runner is not daemon-backed, in which case ctrl+y is an inert no-op.
 	OnCopyClipboard func(taskID string)
 
 	// clipReady is set by the App each tick (SetClipboardHint): true when the
-	// focused terminal pane's task has an agent-staged clipboard payload. It
-	// gates the `ctrl+y` interception (so ctrl+y still falls through to the PTY
-	// for an in-agent yank when nothing is staged — mirroring the main agent
-	// view) and drives the `(ctrl+y copy)` border-title affordance in Draw.
+	// focused terminal pane's task has an agent-staged clipboard payload. It no
+	// longer gates the `ctrl+y` interception (ctrl+y always fires
+	// OnCopyClipboard on a focused terminal pane) — it only drives the
+	// `(ctrl+y copy)` border-title affordance in Draw.
 	clipReady bool
+
+	// OnInfo surfaces a brief, transient status-bar notice (auto-expiring, BUG-030).
+	// Used for the BUG-031 affordance when the user tries to scroll a full-screen
+	// (alt-screen) agent pane that has no linear scrollback. nil-safe: unwired in
+	// remote mode, never panics.
+	OnInfo func(string)
 
 	// OnFocusChange is called whenever the focused Hera region changes so the
 	// app can update focus-aware UI (e.g. the bottom status bar hint set). It
@@ -350,6 +371,40 @@ func (p *HeraPage) SetNeedsInput(ids []string) {
 	p.needsInput = m
 }
 
+// SetSessionIdle records the task IDs the App classified as idle this tick — the
+// content-aware idle set (raw-byte idle ∪ fullscreen content-idle, BUG-036).
+// doRefresh threads it into BuildModel so a parked fullscreen role stops
+// animating its spinner (RoleView.SessionIdle → IsActive false). Pure setter;
+// the tick already schedules the rebuild. MUST run on the tview thread.
+func (p *HeraPage) SetSessionIdle(ids []string) {
+	if len(ids) == 0 {
+		p.sessionIdle = nil
+		return
+	}
+	m := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		m[id] = true
+	}
+	p.sessionIdle = m
+}
+
+// SetSessionRunning records the task IDs whose sessions have a RUNNING PTY this
+// tick (the App's runner.RunningAndIdle running list). doRefresh threads it into
+// BuildModel so a dead worker whose binding lingers stops animating its spinner
+// (RoleView.SessionRunning → IsActive false, BUG-C). Pure setter; the tick
+// already schedules the rebuild. MUST run on the tview thread.
+func (p *HeraPage) SetSessionRunning(ids []string) {
+	if len(ids) == 0 {
+		p.sessionRunning = nil
+		return
+	}
+	m := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		m[id] = true
+	}
+	p.sessionRunning = m
+}
+
 // SetClipboardHint toggles whether the focused terminal pane advertises a
 // staged agent clipboard payload via a `(ctrl+y copy)` border-title affordance.
 // The App refreshes it each tick from the daemon for the focused pane's task
@@ -380,7 +435,7 @@ func (p *HeraPage) Refresh() {
 // remote mode the reader is nil → BuildModel returns an empty model and Draw
 // renders the unavailable banner, so this stays a cheap no-op.
 func (p *HeraPage) doRefresh() {
-	m, err := BuildModel(p.reader, p.needsInput)
+	m, err := BuildModel(p.reader, p.needsInput, p.sessionIdle, p.sessionRunning)
 	if err != nil {
 		uxlog.Log("[hera-view] rail refresh failed: %v", err)
 		return
@@ -640,16 +695,21 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 			return
 		case tcell.KeyCtrlY:
 			// Copy the agent-staged clipboard payload for the focused TERMINAL
-			// pane's task. Conditional intercept, mirroring the main agent view:
-			// steal ctrl+y from the PTY ONLY when a payload is staged (clipReady,
-			// refreshed each tick for the focused pane's task). When nothing is
-			// staged — or focus is on the rail / coordinator details (no PTY) — fall
-			// through to the per-region dispatch so vim/emacs-style yank still
-			// reaches the agent. The App's callback resolves the payload from
-			// FocusedTerminalTaskID, so the copy is scoped to the focused pane.
-			if p.clipReady && p.terminalPaneFocused() && p.OnCopyClipboard != nil {
+			// pane's task. Intercepted (never reaches the PTY) whenever a
+			// terminal pane is focused AND resolves to a bound task, mirroring
+			// the main agent view: the App's callback copies the payload if
+			// one is staged, otherwise flashes "Nothing to copy" — giving up
+			// vim/emacs-style yank inside the pane for predictable copy
+			// semantics. Rail / coordinator-details focus has no PTY to
+			// intercept from, so it stays an inert no-op there; a terminal
+			// pane with no bound task (FocusedTerminalTaskID == "", e.g. no
+			// coordinator role yet) falls through to the PTY same as before —
+			// there's nothing to copy for. The App's callback resolves the
+			// payload from FocusedTerminalTaskID, so the copy is scoped to the
+			// focused pane. clipReady only drives the border-title hint now.
+			if p.terminalPaneFocused() && p.OnCopyClipboard != nil {
 				if id := p.FocusedTerminalTaskID(); id != "" {
-					uxlog.Log("[hera-view] ctrl+y copy staged clipboard: task=%s", id)
+					uxlog.Log("[hera-view] ctrl+y copy: task=%s staged=%v", id, p.clipReady)
 					p.OnCopyClipboard(id)
 					return
 				}
@@ -811,16 +871,26 @@ func (p *HeraPage) rebuildPlan(root *OrchView) {
 // handleRailMutation's switch below and the help modal's "Hera View (rail)"
 // section.
 func (p *HeraPage) isRailMutationKey(event *tcell.EventKey) bool {
-	switch event.Key() {
-	case tcell.KeyCtrlD:
+	// 'B' (force-recycle, add-coordinator-context-management) is a hardcoded
+	// structural key, not yet part of the rebindable keymap system — checked
+	// before falling through to the keymap-derived CtxHeraRail resolution.
+	if event.Key() == tcell.KeyRune && event.Rune() == 'B' {
 		return true
-	case tcell.KeyRune:
-		switch event.Rune() {
-		case 'w', 'r', 'a', 'P', 's', 'S', 'J', 'n', 'C', 'B':
-			return true
+	}
+	// Derived from the keymap (the mutation keyset is exactly the CtxHeraRail
+	// actions; Enter + nav are NOT in that table, so they're correctly excluded).
+	_, ok := p.keys().Resolve(keymap.CtxHeraRail, event)
+	return ok
+}
+
+// keys returns the live keymap, falling back to defaults when no accessor is set.
+func (p *HeraPage) keys() *keymap.Keymap {
+	if p.Keys != nil {
+		if km := p.Keys(); km != nil {
+			return km
 		}
 	}
-	return false
+	return keymap.DefaultKeymap()
 }
 
 // handleRailMutation maps the rail-focus mutation keyset to the page's mutation
@@ -833,18 +903,29 @@ func (p *HeraPage) isRailMutationKey(event *tcell.EventKey) bool {
 // Ctrl+Q (focus ladder) are handled by the caller before this; nav keys
 // (j/k/↑/↓/space) fall through to the rail.
 func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
-	// While the rail is in `/` search INPUT mode every keystroke is filter input,
-	// not a command: return false so the key falls through to rail.InputHandler
-	// (which appends it to the query / handles Esc·Enter·Backspace). This also
-	// suppresses the Enter-reattach and Ctrl+D paths below while typing.
+	// While the rail is in `/` search INPUT mode every keystroke is filter
+	// input, not a command — EXCEPT Enter, which is special-cased below to
+	// select the CURRENT match (auto-picked while typing, or wherever Up/Down
+	// moved it) and jump into it, clearing the filter in the SAME keystroke
+	// (BUG-028-RAIL; no more separate "lock" step). Every other key returns false
+	// here so it falls through to rail.InputHandler (which appends it to the
+	// query / handles Esc·Backspace). This also suppresses the Ctrl+D path
+	// below while typing.
 	if p.rail.Filtering() {
-		return false
+		if event.Key() != tcell.KeyEnter {
+			return false
+		}
+		// Clear FIRST: ClearFilter re-pins the cursor, by stable identity, onto
+		// the SAME row in the now-unfiltered tree, so `sel` below resolves the
+		// operator's live-selected match correctly whether it was auto-picked
+		// or arrow-navigated. The Enter-reattach logic then runs exactly as it
+		// would for a non-filtering Enter.
+		p.rail.ClearFilter()
 	}
 	sel := p.rail.Selection()
-	switch event.Key() {
-	case tcell.KeyCtrlD:
-		return p.fire(p.OnDelete, sel)
-	case tcell.KeyEnter:
+	// Enter is structural (reattach + focus advance) and not rebindable — it
+	// must reach the embedded plan widget untouched in details mode.
+	if event.Key() == tcell.KeyEnter {
 		// Enter "enters" the selected role and revives its session first, then
 		// moves focus into the pane. Reattach fires for:
 		//   * a DEAD session (no live session in the runner) — any role; or
@@ -876,27 +957,42 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 			p.focus.Advance()
 		}
 		return true
-	case tcell.KeyRune:
-		switch event.Rune() {
-		case 'w':
+	}
+	// 'B' (force-recycle, add-coordinator-context-management) is a hardcoded
+	// structural key, not yet part of the rebindable keymap system — handled
+	// before the keymap-derived switch below (mirroring Enter above). A no-op —
+	// no modal, no callback — on anything but a coordinator selection
+	// (hera-view delta: "Force-recycle key is a no-op on a non-coordinator
+	// selection"). The key is still consumed so it never leaks to rail navigation.
+	if event.Key() == tcell.KeyRune && event.Rune() == 'B' {
+		if !sel.IsCoordinator() {
+			return true
+		}
+		return p.fire(p.OnForceRecycle, sel)
+	}
+	if act, ok := p.keys().Resolve(keymap.CtxHeraRail, event); ok {
+		switch act {
+		case keymap.ActHeraDelete:
+			return p.fire(p.OnDelete, sel)
+		case keymap.ActHeraSpawn:
 			return p.fire(p.OnSpawnWorker, sel)
-		case 'r':
+		case keymap.ActHeraRename:
 			return p.fire(p.OnRename, sel)
-		case 'a':
+		case keymap.ActHeraArchive:
 			return p.fire(p.OnArchiveToggle, sel)
-		case 'P':
+		case keymap.ActHeraPin:
 			return p.fire(p.OnPinToggle, sel)
-		case 's':
+		case keymap.ActHeraStatAdv:
 			return p.fire(p.OnStatusAdvance, sel)
-		case 'S':
+		case keymap.ActHeraStatRev:
 			return p.fire(p.OnStatusRevert, sel)
-		case 'J':
+		case keymap.ActHeraAdopt:
 			// Adopt a freelancer into / re-parent a coordinator under a chosen
-			// orchestrator. Rail-focus-only (a focused pane forwards `J` to the
+			// orchestrator. Rail-focus-only (a focused pane forwards the key to the
 			// PTY via forwardKey, never reaching here). The handler sorts out
 			// freelance vs coordinator vs not-applicable and surfaces feedback.
 			return p.fire(p.OnAdopt, sel)
-		case 'n':
+		case keymap.ActHeraNewCoord:
 			// New top-level coordinator (BUG-006). Selection-INDEPENDENT — it is
 			// the bootstrap affordance, so it fires even on an empty rail and does
 			// NOT route through the selection-gated `fire`.
@@ -904,20 +1000,10 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 				p.OnNewCoordinator(sel)
 			}
 			return true
-		case 'C':
+		case keymap.ActHeraClear:
 			// Clear the selected coordinator's archive: NUKE every Tier-1 hidden
 			// item under it (BUG-022). Acts on the selection.
 			return p.fire(p.OnClearArchive, sel)
-		case 'B':
-			// Force-recycle the selected coordinator (add-coordinator-context-
-			// management): a no-op — no modal, no callback — on anything but a
-			// coordinator selection (hera-view delta: "Force-recycle key is a
-			// no-op on a non-coordinator selection"). The key is still consumed
-			// so it never leaks to rail navigation.
-			if !sel.IsCoordinator() {
-				return true
-			}
-			return p.fire(p.OnForceRecycle, sel)
 		}
 	}
 	return false

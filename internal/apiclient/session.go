@@ -33,18 +33,19 @@ type Session struct {
 	taskID string
 	p      *Provider
 
-	mu        sync.Mutex
-	buf       *agent.RingBuffer
-	pid       int
-	cols      int
-	rows      int
-	initCols  int
-	initRows  int
-	workDir   string
-	idle      bool
-	lastInput time.Time
-	done      chan struct{}
-	closeOnce sync.Once
+	mu            sync.Mutex
+	buf           *agent.RingBuffer
+	pid           int
+	cols          int
+	rows          int
+	initCols      int
+	initRows      int
+	workDir       string
+	idle          bool
+	lastInput     time.Time
+	lastUserInput time.Time
+	done          chan struct{}
+	closeOnce     sync.Once
 
 	// streamCtx is cancelled to stop the SSE reader. Distinct from p.closed
 	// so callers can stop a single session without nuking the whole provider.
@@ -73,13 +74,28 @@ func (s *Session) PID() int {
 
 // WriteInput POSTs to /api/tasks/{id}/input. p is copied — caller may reuse.
 func (s *Session) WriteInput(p []byte) (int, error) {
+	return s.writeInput(p, true)
+}
+
+// WriteInputSystem POSTs like WriteInput but records only the work-cycle
+// timestamp, not the user-input timestamp (BUG-034). On the remote-TUI path
+// notify does not run, so this exists only to satisfy SessionHandle.
+func (s *Session) WriteInputSystem(p []byte) (int, error) {
+	return s.writeInput(p, false)
+}
+
+func (s *Session) writeInput(p []byte, user bool) (int, error) {
 	cp := make([]byte, len(p))
 	copy(cp, p)
 	if err := s.p.c.WriteInput(context.Background(), s.taskID, cp); err != nil {
 		return 0, err
 	}
+	now := time.Now()
 	s.mu.Lock()
-	s.lastInput = time.Now()
+	s.lastInput = now
+	if user {
+		s.lastUserInput = now
+	}
 	s.mu.Unlock()
 	return len(p), nil
 }
@@ -91,6 +107,13 @@ func (s *Session) LastInput() time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastInput
+}
+
+// LastUserInput is local-only state (see LastInput). Required by SessionHandle.
+func (s *Session) LastUserInput() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastUserInput
 }
 
 // Resize POSTs to /api/tasks/{id}/resize.

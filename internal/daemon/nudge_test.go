@@ -41,7 +41,7 @@ type fakeNudgeSession struct {
 }
 
 func (s *fakeNudgeSession) IsIdle() bool { return s.idle }
-func (s *fakeNudgeSession) WriteInput(p []byte) (int, error) {
+func (s *fakeNudgeSession) WriteInputSystem(p []byte) (int, error) {
 	cp := make([]byte, len(p))
 	copy(cp, p)
 	s.writes = append(s.writes, cp)

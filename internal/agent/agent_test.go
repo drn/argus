@@ -26,10 +26,11 @@ func testConfig() config.Config {
 	return config.Config{
 		Defaults: config.Defaults{Backend: "claude"},
 		Backends: map[string]config.Backend{
-			"claude": {Command: "claude --dangerously-skip-permissions --permission-mode plan", PromptFlag: ""},
-			"codex":  {Command: "codex --dangerously-bypass-approvals-and-sandbox", PromptFlag: ""},
-			"pi":     {Command: "pi", PromptFlag: ""},
-			"bare":   {Command: "my-agent", PromptFlag: ""},
+			"claude":   {Command: "claude --dangerously-skip-permissions --permission-mode plan", PromptFlag: ""},
+			"codex":    {Command: "codex --dangerously-bypass-approvals-and-sandbox", PromptFlag: ""},
+			"pi":       {Command: "pi", PromptFlag: ""},
+			"opencode": {Command: "opencode", PromptFlag: "--prompt"},
+			"bare":     {Command: "my-agent", PromptFlag: ""},
 		},
 		Projects: map[string]config.Project{
 			"myapp": {Path: "/home/user/myapp", Backend: "codex"},
@@ -195,9 +196,10 @@ func permModeConfig(mode string) config.Config {
 	return config.Config{
 		Defaults: config.Defaults{Backend: "claude", PermissionMode: mode},
 		Backends: map[string]config.Backend{
-			"claude": {Command: "claude"},
-			"codex":  {Command: "codex --dangerously-bypass-approvals-and-sandbox"},
-			"pi":     {Command: "pi"},
+			"claude":   {Command: "claude"},
+			"codex":    {Command: "codex --dangerously-bypass-approvals-and-sandbox"},
+			"pi":       {Command: "pi"},
+			"opencode": {Command: "opencode", PromptFlag: "--prompt"},
 		},
 	}
 }
@@ -240,6 +242,14 @@ func TestBuildCmd_PermissionMode_SkippedForNonClaude(t *testing.T) {
 		cmd, _, err := BuildCmd(task, cfg, false)
 		testutil.NoError(t, err)
 		testutil.Equal(t, cmd.Args[2], "pi 'go'")
+	})
+
+	t.Run("opencode", func(t *testing.T) {
+		task := &model.Task{Name: "t", Backend: "opencode", Prompt: "go", Worktree: t.TempDir()}
+		cmd, _, err := BuildCmd(task, cfg, false)
+		testutil.NoError(t, err)
+		// opencode is not Claude → no permission flags injected; prompt rides --prompt.
+		testutil.Equal(t, cmd.Args[2], "opencode --prompt 'go'")
 	})
 
 	t.Run("bare custom command", func(t *testing.T) {
@@ -1653,6 +1663,8 @@ func TestNeedsSessionRecapture(t *testing.T) {
 		{"codex skips once captured", "codex", "existing-uuid", false},
 		{"pi captures once (empty)", "pi", "", true},
 		{"pi skips once captured", "pi", "existing-uuid", false},
+		{"opencode captures once (empty)", "opencode", "", true},
+		{"opencode skips once captured", "opencode", "ses_existing", false},
 		{"unknown backend never recaptures", "bare", "", false},
 	}
 	for _, tc := range tests {
@@ -1719,10 +1731,11 @@ func modelConfig() config.Config {
 	return config.Config{
 		Defaults: config.Defaults{Backend: "claude"},
 		Backends: map[string]config.Backend{
-			"claude": {Command: "claude"},
-			"codex":  {Command: "codex --dangerously-bypass-approvals-and-sandbox"},
-			"pi":     {Command: "pi"},
-			"bare":   {Command: "my-agent"},
+			"claude":   {Command: "claude"},
+			"codex":    {Command: "codex --dangerously-bypass-approvals-and-sandbox"},
+			"pi":       {Command: "pi"},
+			"opencode": {Command: "opencode", PromptFlag: "--prompt"},
+			"bare":     {Command: "my-agent"},
 		},
 	}
 }

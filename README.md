@@ -28,11 +28,17 @@ Coding agents are cheap to start and expensive to babysit. Five `claude` tabs be
 - **A built-in MCP server** lets agents talk to Argus directly — search your notes, spawn other agents, or hand off work between models.
 - **Harness- and model-agnostic by design.** Argus orchestrates the workflow, not a single tool. Every backend is just a templated command, so the same worktree → branch → review → notify loop is identical whether the agent underneath is Claude Code, Codex, opencode, or a local model via ollama — pick the harness and model per task, keep one standardized workflow across all of them.
 
-## The Three Pillars
+## One daemon, three clients
 
-### 📱 Mobile Dashboard (PWA)
+Argus is really a **local daemon** plus the clients that drive it. The daemon owns everything durable — your tasks and projects in SQLite, the agent PTYs in its session-supervisor, hera coordination in-process — and serves it all over one authenticated REST + SSE API on port 7743. Every client is a thin lens over that same API, so they stay in lockstep: start a task in the terminal, watch it go idle on your phone, review the diff on your Mac. Reach for whichever one fits where you are.
 
-Argus ships a real, installable Progressive Web App. Tap **Add to Home Screen** in Safari and you have a phone-shaped operations console for your agents — running locally on your machine, reachable over your Tailscale mesh, never exposed to the public internet.
+### 🖥️ Terminal TUI — the keyboard-driven daily driver
+
+The original surface, and the one you'll live in: a full-screen `tcell`/`tview` dashboard (the two screenshots up top) with real PTY emulation, inline diffs, and a chord for every verb. **Reach for it** when you're already in a terminal — over SSH, inside tmux, on the box where the repos live. `argus --remote` gives you the identical TUI against a daemon on another machine.
+
+### 📱 Web app / PWA — the swarm in your pocket
+
+Argus ships a real, installable Progressive Web App. Tap **Add to Home Screen** in Safari and you have a phone-shaped operations console for your agents — running locally on your machine, reachable over your Tailscale mesh, never exposed to the public internet. **Reach for it** from any device you didn't bring the terminal to — your phone on the couch, a borrowed laptop — and let Web Push tap you on the shoulder when an agent needs you.
 
 <p align="center">
   <img src="screenshots/pwa-task-list.png" width="200" alt="PWA task list grouped by project with running/idle/done status and PR badges">
@@ -53,6 +59,21 @@ Argus ships a real, installable Progressive Web App. Tap **Add to Home Screen** 
 - **Per-device API tokens** — your iPhone, your iPad, and your laptop each get their own labeled token. Revoke any of them from the dashboard. Master token mints; SHA-256 hashes are all that's stored.
 - **Offline-aware** — when the daemon is unreachable (laptop closed, Tailscale off) the PWA flips to a branded offline screen and reconnects automatically.
 - **Pure-local** — runs on `localhost` and your Tailscale IP only, never `0.0.0.0`. Hotel/cafe LANs cannot reach the API even with the token.
+
+### 🖥️ macOS app — native point-and-click mission control
+
+A native SwiftUI app (`make mac-app`) that turns the same daemon into a Mac-first control room — no browser tab, no keyboard chords to memorize. A source-list sidebar of tasks grouped into per-project folders (mirroring the TUI task list, with a collapsed Archived section at the bottom), a live agent terminal powered by SwiftTerm, and detail tabs for the session, the diff, the file tree, and task info. **Reach for it** when you're at your Mac and want the OS working for you: native notifications when an agent needs input or goes idle, a **Dock badge** counting how many are waiting, and a **menu-bar extra** for a glance without switching windows.
+
+- **Full task lifecycle** — create (a project / backend / model / prompt sheet), fork, stop, restart, resume, rename, archive, and delete, each with native confirmations.
+- **Live everything** — the task list and every terminal update ride the daemon's SSE event stream, not polling; a connection banner appears the moment the daemon is unreachable.
+- **Diff & files tabs** — a unified diff with per-file collapsible sections and a browsable worktree file tree, parsed client-side by ArgusKit.
+- **Schedules & System windows** — manage scheduled tasks (⇧⌘S) and watch host load / agent-session counts, the same data the TUI and PWA show.
+- **Hera roster** — the orchestration tree, read-only (see the parity note in the Reference).
+- **Keychain-backed remote settings** — point it at any daemon by overriding the server URL; the token lives in the macOS Keychain, never on disk. Defaults to `http://127.0.0.1:7743` with the token from `~/.argus/api-token`.
+
+Requires macOS 15+ and the Swift 6.3 Command Line Tools — no Xcode. Build and run details are in the [macOS app](#macos-app) reference below.
+
+## Built for agents, too
 
 ### 🤝 Full MCP Server
 
@@ -90,7 +111,7 @@ Disabled by default — see **[Knowledge Base setup](docs/knowledge-base.md)** t
 - **Remote TUI** — `argus --remote https://your-mac.tail-xxxx.ts.net --token "$ARGUS_TOKEN"` launches the full TUI against a daemon running on another machine. Same keybindings, same panels, same agent stream — over Tailscale. No local SQLite, no daemon socket; every call rides the REST API the PWA already uses.
 - **Multi-backend** — Claude Code, Codex, or any LLM CLI as a templated command. Per-backend prompt flags, plan-mode defaults, and a default model, plus a per-task model override injected as `--model` at launch.
 - **Worktree isolation** — every task gets `~/.argus/worktrees/<project>/<task>` and an `argus/<task>` branch, all transactionally created and cleaned up.
-- **Session resume** — `--resume` on Claude Code, `codex resume <id>` on Codex. Your conversation survives a daemon restart.
+- **Session resume** — `--resume` on Claude Code, `codex resume <id>` on Codex, `--session <id>` on opencode. Your conversation survives a daemon restart.
 - **Consistent scrollback across viewers** — switch between the TUI and the PWA at very different widths and the agent re-emits the conversation at the new size. Idle-gated so it never fires mid-tool-call; the SPA reattaches transparently.
 - **Agent forking** — duplicate a running task with full context (source info, recent output, git diff) injected into the new worktree.
 - **Smart auto-naming** — a Claude Haiku call quietly turns a free-form prompt into a kebab-case task name. Falls open to a regex slug if `claude` is unavailable.
@@ -122,7 +143,7 @@ To open the PWA, enable **Remote API** in Settings, then point your phone at `ht
 
 - **Go 1.26+** — to `go install` the binary above.
 - **Git** — every project Argus drives must be a git repository.
-- **At least one agent CLI on your `PATH`.** Argus shells out to whatever backend you pick; it doesn't bundle a model. The default backend is **Claude Code** (`claude`), and `codex` and `pi` come pre-configured too. Install the one you use and make sure it runs from a plain shell (`claude --version`).
+- **At least one agent CLI on your `PATH`.** Argus shells out to whatever backend you pick; it doesn't bundle a model. The default backend is **Claude Code** (`claude`), and `codex`, `pi`, and `opencode` come pre-configured too. Install the one you use and make sure it runs from a plain shell (`claude --version`).
 - **Optional:** [`gh`](https://cli.github.com) (GitHub CLI) powers the open-repo / open-PR keys and the PR-status indicator — features degrade quietly if it's absent. [Tailscale](https://tailscale.com) is recommended for reaching the PWA from your phone.
 
 ### First run
@@ -131,7 +152,7 @@ To open the PWA, enable **Remote API** in Settings, then point your phone at `ht
 argus
 ```
 
-The first launch creates `~/.argus/data.sql`, seeds the `claude` / `codex` / `pi` backends, and auto-starts the background daemon. You land on an empty task list — **no projects are seeded, so add one before creating a task.**
+The first launch creates `~/.argus/data.sql`, seeds the `claude` / `codex` / `pi` / `opencode` backends, and auto-starts the background daemon. You land on an empty task list — **no projects are seeded, so add one before creating a task.**
 
 1. **Register a project.** Press `3` for the **Settings** tab, move to the **Projects** section, and either:
    - press `i` to **quick-add** — point it at a directory (e.g. `~/src`) and Argus scans for git repos; select the ones to import; or
@@ -147,6 +168,10 @@ The first launch creates `~/.argus/data.sql`, seeds the `claude` / `codex` / `pi
 The sections below are the dense usage docs — keybindings, REST endpoints, configuration tables. Skim if you're getting started; bookmark if you're already running.
 
 ### Keybindings
+
+The tables below are the **defaults**. Every key here is remappable via
+`[keybindings.<context>]` in `config.toml` — see [`[keybindings.<context>]`](#keybindingscontext)
+below. The `?` overlay always shows your active bindings.
 
 #### Task List
 
@@ -165,7 +190,7 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `ctrl+o`  | Open the project's GitHub repo in browser (via `gh repo view --web`) |
 | `ctrl+r`  | Prune completed tasks                                           |
 | `j` / `k` | Navigate up/down                                                |
-| `1` / `2` / `3` | Switch tabs (Tasks / Hera / Settings) |
+| `1` / `2` / `3` | Switch tabs (Tasks / Projects / Settings) |
 | `ctrl+l`  | Refresh screen (wipe ghost cells; works in every non-agent tab) |
 | `q`       | Quit                                                            |
 
@@ -182,12 +207,12 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `ctrl+l`              | Open link picker (fuzzy search all session URLs)                          |
 | `ctrl+r`              | Switch Claude session (searchable picker of this task's conversations; resumes the chosen one). Claude backends only |
 | `ctrl+p`              | Open PR for the worktree branch in browser (via `gh pr view --web`)       |
-| `ctrl+y`              | Copy agent-staged text (only when payload pending; otherwise sent to PTY) |
+| `ctrl+y`              | Copy agent-staged text; flashes "Nothing to copy" if no payload is pending (always intercepted — never sent to the PTY) |
 | `Shift+↑` / `Shift+↓` | Scroll terminal (with acceleration)                                       |
 
-#### Hera Tab
+#### Projects Tab
 
-The Hera tab (`2`) has three regions: a left **rail**, a middle **coordinator pane**, and a right **details** region. The rail lists active orchestrators with their coordinator/worker roles, plus **Pinned**, **Freelance**, and a collapsed **Archive** section. Keys act on the rail selection:
+The Projects tab (`2`) has three regions: a left **rail**, a middle **coordinator pane**, and a right **details** region. The rail lists active orchestrators with their coordinator/worker roles, plus **Pinned**, **Freelance**, and a collapsed **Archive** section. Keys act on the rail selection:
 
 | Key             | Action                                                                                 |
 | --------------- | -------------------------------------------------------------------------------------- |
@@ -197,7 +222,7 @@ The Hera tab (`2`) has three regions: a left **rail**, a middle **coordinator pa
 | `Tab`           | Enter a pane from the rail. **Once a terminal pane is focused, `Tab` / `Shift+Tab` pass through to the agent's PTY** so its autocomplete works (e.g. `/plugi`+`Tab` → `/plugin`) — they no longer cycle focus |
 | `ctrl+alt+←` / `ctrl+alt+→` | Move focus between panes once you're in one (the focus ladder; `Tab` is reserved for the agent there). `ctrl+q` steps back to the rail |
 | `ctrl+z`        | Fullscreen the focused content pane (rail stays; the other pane hides). Also traps `^Z` so it can never suspend the pane's agent |
-| `ctrl+y`        | Copy the agent-staged clipboard payload for the **focused pane's** task (coordinator or worker) — the Hera view shows several tasks at once, so the copy is scoped to whichever pane has focus. Only steals the key when a payload is staged (the pane's title shows `(ctrl+y copy)`); otherwise falls through to the PTY so an in-agent yank still works |
+| `ctrl+y`        | Copy the agent-staged clipboard payload for the **focused pane's** task (coordinator or worker) — the Projects view shows several tasks at once, so the copy is scoped to whichever pane has focus. Always steals the key (the pane's title shows `(ctrl+y copy)` when a payload is staged); flashes "Nothing to copy" otherwise — never falls through to the PTY |
 | `Enter`         | Enter the selected role's pane, reviving its session first — a dead session is restarted, and a suspended/stuck worker is resumed in place via `--session-id` |
 | `w`             | Spawn a worker under the selected coordinator (opens the full new-task modal: project / branch / backend / model / prompt, project defaulted to the coordinator's) |
 | `n`             | Create a new top-level coordinator (same new-task modal); bootstraps a fresh orchestrator + `coord` role bound to a new task. Works on an empty rail |
@@ -220,7 +245,7 @@ When a **worker** is selected the details region shows its live agent terminal. 
 | `↑` / `↓` / `j` / `k` | Move between plan stages (collapses any fanned-out group on the way)              |
 | `←` / `→` / `h` / `l` | Move between slots; inside a fanned-out group, walk its members                   |
 | `Space`              | Fan out / collapse a parallel group — a pure toggle that never opens a node (on a lone leaf it is a no-op; opening is `Enter`'s job) |
-| `Enter`              | Fan out a collapsed group; on a fanned-out group **member**, a sub-coordinator node, or a plain leaf, open that node: drill into a sub-coordinator's child orchestrator's plan, else jump to that node's role within the Hera view (selects it in the rail + focuses its agent pane — no tab switch), reviving a dead/suspended session just like the rail's `Enter`. On a member it does **not** collapse the group — that's `Space` / `Esc` |
+| `Enter`              | Fan out a collapsed group; on a fanned-out group **member**, a sub-coordinator node, or a plain leaf, open that node: drill into a sub-coordinator's child orchestrator's plan, else jump to that node's role within the Projects view (selects it in the rail + focuses its agent pane — no tab switch), reviving a dead/suspended session just like the rail's `Enter`. On a member it does **not** collapse the group — that's `Space` / `Esc` |
 | `Esc`                | Back out one level: collapse a fanned group, else drill out to the parent plan (consumed at the root — leave the pane via `Ctrl+Q` / `Tab`) |
 
 End-of-life has **two resting states**, and **no DB row is ever hard-deleted** — "done with" always means gone from the rail + worktree gone from disk, with the role / orchestrator / inbox / task all retained and recoverable: **Hide** (`a`, Tier 1) nests a worker / sub-coordinator in its parent coordinator's archive and keeps its session + worktree alive (reversible — un-hide restores it exactly); **Nuke** (`ctrl+d`, Tier 2; or `C` for a coordinator's whole archive) removes the row from the rail entirely, reclaims its worktree + branch, and stops its session, leaving only the DB rows behind. Every nuke is confirm-gated and honors multi-binding isolation (a task bound live under another orchestrator is never touched).
@@ -269,13 +294,59 @@ Launches the TUI pointed at a remote argus daemon instead of the local one. No l
 
 A few local-only operations gracefully degrade in remote mode: spawning a fresh task via the new-task form, forking, schedule fires, and prune-completed all require local worktree access. The status bar surfaces the equivalent REST endpoint when these are attempted remotely. Everything else — task list, attach, input, resize, archive/rename/status flips, settings — works identically against the remote.
 
+### macOS app
+
+A native SwiftUI client (`Argus`) built on **ArgusKit**, a typed Swift SDK over the daemon's REST + SSE API. It drives the same daemon as the TUI and the PWA — there is no separate backend.
+
+**Requirements:** macOS 15+ and the **Swift 6.3 Command Line Tools** (`xcode-select --install`). No Xcode or `xcodebuild` needed — the app is a SwiftPM package (`macos/Package.swift`) built entirely from the CLT toolchain. SwiftTerm (the live-terminal widget) is the only third-party dependency; ArgusKit itself is pure Foundation.
+
+| Target          | Command                                        | What it does                                                                                     |
+| --------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `make mac-build` | `swift build --disable-sandbox`               | Compile ArgusKit + Argus.                                                                        |
+| `make mac-test`  | `swift run --disable-sandbox ArgusKitTests`   | Run the ArgusKit test suite. **This is the test entry point, not `swift test`** (see below).     |
+| `make mac-run`   | `swift run --disable-sandbox Argus`           | Build and launch the app from source.                                                            |
+| `make mac-app`   | `./scripts/mac-app.sh`                         | Assemble the double-clickable `macos/dist/Argus.app` (release build + `Info.plist` + codesign) and print the `open` command. |
+
+`--disable-sandbox` is required because macOS forbids nested `sandbox-exec` profiles: when you build from inside an argus agent sandbox (how this repo is dogfooded), SwiftPM's own manifest sandbox fails to apply. The app's own manifest needs no protection from us, so disabling it makes the targets work everywhere.
+
+**Why not `swift test`:** on a CLT-only install (no Xcode) `swift test` builds the `.xctest` bundle but cannot execute it — it silently runs **zero** tests and exits `0`, so even failing tests "pass". The suite is therefore an *executable* swift-testing target (`ArgusKitTests`) run via `make mac-test`, which executes it for real and propagates a correct exit code.
+
+**Launch env hooks** (automation / deep-linking; each read once at startup):
+
+| Variable                | Value                                       | Effect                                                                                          |
+| ----------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `ARGUS_MAC_SELECT_TASK` | task id or exact name                       | Selects that task at launch, overriding the default auto-select.                                |
+| `ARGUS_MAC_INITIAL_TAB` | `terminal` \| `diff` \| `files` \| `info`   | Sets the initial detail tab regardless of which task is selected. Unrecognized values ignored.  |
+
+```sh
+# run the bundle binary directly — `open` does not pass environment variables through
+ARGUS_MAC_SELECT_TASK=my-task ARGUS_MAC_INITIAL_TAB=diff \
+  macos/dist/Argus.app/Contents/MacOS/Argus
+```
+
+**Settings:** by default the app connects to `http://127.0.0.1:7743` using the master token from `~/.argus/api-token`. To drive a **remote** daemon (e.g. over Tailscale), set a **Server URL override** (stored in `UserDefaults`) and a **token override** in Preferences — the token is written to the macOS **Keychain**, never to disk. Preferences also carries the needs-input / idle notification toggles and the menu-bar-extra toggle.
+
+**Feature surface:**
+
+| Area          | What's there                                                                                              |
+| ------------- | -------------------------------------------------------------------------------------------------------- |
+| Task rail     | Sidebar of tasks grouped into per-project folders (TUI-parity ordering; Archived collapsed at the bottom), with status icons, needs-input markers, and a live connection indicator. |
+| Detail tabs   | **Terminal** (live SwiftTerm session), **Diff** (unified, per-file collapsible), **Files** (worktree tree), **Info**. |
+| Lifecycle     | New-task sheet (project / backend / model / prompt), fork, stop, restart, resume, rename, archive, delete — with confirmations. |
+| Live updates  | Task list + terminals driven by the SSE event stream; a 30 s safety-net poll; offline/connection banner. |
+| Notifications | Native `UNUserNotificationCenter` alerts on needs-input / idle (when not frontmost), a Dock badge counting tasks awaiting you, and an optional menu-bar extra. |
+| Windows       | Main window, **Schedules** (⇧⌘S), **System** (host metrics + session counts), and standard **Settings**. |
+| Hera          | Read-only orchestration roster (`GET /api/hera`).                                                         |
+
+**Parity note:** the **Hera view is read-only in both the macOS app and the web app** — they render the roster and plan but expose no coordinator mutations (spawn / block / status). Driving a hera team stays **TUI-only** until the hera mutation endpoints are exposed over REST. Everything else — task lifecycle, terminal I/O, diffs, schedules, settings — is at full parity across all three clients.
+
 ### Self-Update
 
 From the **Settings tab** (Status section, when the daemon is connected) the **Source path** row holds the path to your local Argus checkout, and the **Update Argus** row runs `git pull --ff-only` followed by `go install ./...` and then restarts the daemon so the new binary takes over. Active sessions reattach across the restart. The same controls are exposed in the web UI under **Settings → Argus update** (master token only).
 
 ### Hera (native multi-agent coordination)
 
-Hera is Argus's native layer for running a *team* of agents. It introduces **roles** — a `coordinator` plus the `worker`s and `freelance`rs it spawns — bound to argus tasks and addressed by name. A coordinator delegates work to workers it spawns (`hera_spawn_worker` / the rail's `w` key), they trade messages over the same idle-gated bus that powers inter-task messaging, and the team's work renders as a **plan DAG** (the planned + live worker roles laid out by their `hera_blocks` dependency order, with sub-coordinator drill-in) folded into the Hera tab's details pane. The whole surface is the second tab (`2`) — see the [Hera Tab](#hera-tab) keybindings above. The coordination layer runs in-process in the daemon; the view renders directly in the TUI. Agents drive it over MCP (the [`hera_*` tools](#mcp-tools)).
+Hera is Argus's native layer for running a *team* of agents. It introduces **roles** — a `coordinator` plus the `worker`s and `freelance`rs it spawns — bound to argus tasks and addressed by name. A coordinator delegates work to workers it spawns (`hera_spawn_worker` / the rail's `w` key), they trade messages over the same idle-gated bus that powers inter-task messaging, and the team's work renders as a **plan DAG** (the planned + live worker roles laid out by their `hera_blocks` dependency order, with sub-coordinator drill-in) folded into the Projects tab's details pane. The whole surface is the second tab (`2`) — see the [Projects Tab](#projects-tab) keybindings above. The coordination layer runs in-process in the daemon; the view renders directly in the TUI. Agents drive it over MCP (the [`hera_*` tools](#mcp-tools)).
 
 **Native Hera and the external Hera plugin are mutually exclusive, selected by `hera.enabled` (default ON):**
 
@@ -383,6 +454,22 @@ Or use **Settings → System → Restart Session Supervisor** (Enter), which is 
 
 **Supervisor mode is ON by default** (`supervisor.enabled`, see the config table below). To **roll back** to the legacy in-process path — where the daemon owns the PTYs itself, exactly as before the supervisor existed — set `supervisor.enabled = false` (config.toml or the DB) and restart the daemon. The in-process path is retained as a supported fallback for one release.
 
+### Diagnosing binary skew (`argus doctor`)
+
+`go install` can update one argus binary while the others keep running — the TUI on a new build, the daemon and/or supervisor on the old bytes — which silently breaks the keys that need the TUI↔daemon round-trip (Enter to attach, Ctrl+Q to detach) while local keys keep working.
+
+```bash
+argus doctor   # read-only: enumerate every argus binary + running process, print a verdict
+```
+
+`doctor` resolves the `argus` on your `PATH`, the `~/.argus/argusd` symlink target, the `go install` target, and the identity each live process (daemon, supervisor, this binary) is running, then prints a table and one of three verdicts with the exact fix:
+
+- **HEALTHY** — all resolve to the same file with matching hashes (exit 0).
+- **RESTART NEEDED** — same file, older bytes in a running process (a rebuild landed); the fix is `argus daemon restart`.
+- **PATH DIVERGENCE** — the daemon symlink target and your `PATH` `argus` resolve to **different files** (the real footgun — a plain restart just relaunches the divergent binary and loops); the fix re-points/reinstalls so both point at one build.
+
+It is strictly **read-only** (never touches a symlink, binary, `PATH`, or process) and best-effort — an unresolvable row degrades to "unknown" rather than aborting. Exits non-zero on any non-healthy verdict.
+
 ### Auto-start at Login (macOS)
 
 Toggle from **Settings → Status → Auto-start at login** (Enter), or use the CLI:
@@ -484,7 +571,8 @@ If the recipient has a live agent session the daemon also writes a single notifi
 | Tool                    | Description                                                                                                                                       |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `hera_new_orchestrator` | Bootstrap a new orchestrator and claim its `coordinator` role for the calling task.                                                               |
-| `hera_join`             | Claim the calling task's existing role + unread count, or (with `role_name` + `kind`) attach a new `worker`/`freelance` role under an orchestrator. |
+| `hera_join`             | Claim the calling task's existing role + unread count, or (with `role_name` + `kind`) attach a new `worker`/`freelance` role under an orchestrator. Attach mode rejects (directing to `hera_move`) when the caller already holds a live binding under a different orchestrator. |
+| `hera_move`             | Relocate the caller's live binding to a different orchestrator: ends the current binding (`end_reason: "moved"`) and creates a new `worker`/`freelance` role+binding under the target, in one transaction. Use instead of `hera_join` when already bound elsewhere. |
 | `hera_spawn_worker`     | Spawn a born-bound worker task + session under the caller's orchestrator (caller must hold a live coordinator binding). Optional `model` picks the worker's model by task complexity (backend-scoped; empty = backend default). Optional `archetype` ([diligence profile](#diligence-profiles-model-tiering)) rides onto the task; defaults to `code_slice` when omitted. |
 | `hera_send`             | Send a role-addressed message. **`status` is required for worker/freelance senders** (`idle`/`working`/`blocked`/`done`/`failed`) and is applied synchronously before send. Workers/freelancers default to the coordinator when `to` is omitted; coordinators must name a recipient. |
 | `hera_inbox`            | Fetch the caller role's unread messages (oldest first), cancel their pending pane deliveries, and mark them read.                                 |
@@ -725,7 +813,7 @@ When the PWA cannot reach the API — daemon stopped, host asleep, or Tailscale 
 
 ### Data
 
-All state (tasks, projects, backends, keybindings, UI settings, KB index) is persisted in SQLite at `~/.argus/data.sql`.
+All state (tasks, projects, backends, UI settings, KB index) is persisted in SQLite at `~/.argus/data.sql`. Keybindings are the exception — they live in the built-in defaults plus `config.toml` overrides only (no DB rows).
 
 ### Config file (`~/.argus/config.toml`)
 
@@ -750,14 +838,14 @@ Every option below is overridable. A ⚠️ marks options that are **read but no
 
 #### `[backends.<name>]`
 
-Command templates, keyed by name. Seeded with `claude`, `codex`, and `pi`.
+Command templates, keyed by name. Seeded with `claude`, `codex`, `pi`, and `opencode`.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `command` | string | — | Executable plus base flags for the agent CLI (e.g. `claude`, `codex --dangerously-bypass-approvals-and-sandbox`). Permission flags come from `defaults.permission_mode` and are **not** baked in here. |
 | `prompt_flag` | string | `""` | Flag used to pass the initial prompt to the backend (empty = positional/piped). |
-| `model` | string | `""` | Default model for this backend, injected as `--model <value>` for known CLIs (claude, codex, pi). Empty = the CLI's own default. A per-task model overrides it. |
-| `models` | array | `[]` | Option list for the new-task model selector for this backend. Empty = built-in list (claude → `opus`/`sonnet`/`haiku`, codex → `gpt-5-codex`/`gpt-5`, others → none). A `custom…` entry always lets you type a model not in the list. |
+| `model` | string | `""` | Default model for this backend, injected as `--model <value>` for known CLIs (claude, codex, pi, opencode — opencode takes a `provider/model` value). Empty = the CLI's own default. A per-task model overrides it. |
+| `models` | array | `[]` | Option list for the new-task model selector for this backend. Empty = built-in list (claude → `opus`/`sonnet`/`haiku`, codex → `gpt-5-codex`/`gpt-5`, others including opencode → none, so `custom…` only). A `custom…` entry always lets you type a model not in the list. |
 
 #### `[projects.<name>]`
 
@@ -790,21 +878,39 @@ Registered repos, keyed by name. The DB projects table is the primary source; en
 | `show_icons` | bool | `true` | ⚠️ Reserved — show status icons. Not yet consumed. |
 | `cleanup_worktrees` | bool | `true` | ⚠️ Reserved — auto-remove worktrees on task delete. Not yet consumed (worktrees are currently always cleaned up). |
 
-#### `[keybindings]` ⚠️
+#### `[keybindings.<context>]`
 
-All keybindings are **reserved**: they're loaded into config but the TUI key routing is still hardcoded, so setting them has no effect yet. This is the "more robust config backend → remap hotkeys" work that's planned, not shipped.
+Remap argus's own keys, alacritty-style. Bindings are **context-scoped**: each
+`[keybindings.<context>]` table maps an action id to a keyspec, layered on top of
+the built-in defaults (only the entries you set change). Edits are picked up live
+— no restart. Contexts: `global`, `tasklist`, `agent`, `filepanel`, `diff`,
+`settings`, `hera_rail`.
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `new` | string | `"n"` | New task. |
-| `attach` | string | `"enter"` | Attach to / open the selected task's agent. |
-| `status` | string | `"s"` | Advance task status. |
-| `delete` | string | `"d"` | Delete task. |
-| `quit` | string | `"q"` | Quit. |
-| `help` | string | `"?"` | Help overlay. |
-| `filter` | string | `"/"` | Filter the task list. |
-| `prompt` | string | `"p"` | Open the prompt modal. |
-| `worktree` | string | `"w"` | Worktree action. |
+```toml
+[keybindings.tasklist]
+new = "N"            # new task
+
+[keybindings.global]
+fork = "ctrl+g"      # fork task (the ctrl-shortcuts live in `global`)
+
+[keybindings.agent]
+session = "ctrl+t"   # switch Claude session
+
+[keybindings.hera_rail]
+spawn_worker = "W"
+```
+
+**Keyspec grammar:** a single printable rune (`n`, `?`, `/`, `J`), a named key
+(`enter`, `esc`, `tab`, `space`, `up`/`down`/`left`/`right`, `pgup`/`pgdn`,
+`home`/`end`, `backspace`, `delete`), `ctrl+<letter>`, `cmd`/`opt`/`alt`+arrow,
+or `shift`+(arrow/`pgup`/`pgdn`/`home`/`end`). The action ids are the ones shown
+in the `?` help overlay (which always reflects your active bindings).
+
+**Limits** (rejected overrides log a warning and keep the default): structural
+keys (`enter`/`esc`/`tab`, the `ctrl+c`/`ctrl+q` failsafe, plain arrows) are not
+rebindable; `agent` bindings must carry a modifier (so plain typing still reaches
+the agent); two actions can't share a key within one context; and plugin-view
+keys stay fully reserved.
 
 #### `[sandbox]`
 

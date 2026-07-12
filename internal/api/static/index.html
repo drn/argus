@@ -500,6 +500,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .artifact-img-wrap { flex: 1 1 auto; overflow: auto; -webkit-overflow-scrolling: touch; text-align: center; background: var(--bg); }
 .artifact-img { max-width: 100%; height: auto; }
 .artifact-pre { flex: 1 1 auto; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--text); background: var(--bg); }
+.artifact-media { flex: 1 1 auto; width: 100%; max-height: 100%; background: var(--bg); }
 /* Full-screen artifact overlay — edge-to-edge, no toolbar, just a small
    floating Back button. z-index sits above #artifacts-view (60). */
 #artifact-fs { display: none; }
@@ -1021,7 +1022,7 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
 
   <div class="tabs">
     <div class="tab active" data-tab="tasks" onclick="switchTab('tasks')">Tasks</div>
-    <div class="tab" data-tab="hera" onclick="switchTab('hera')">Hera</div>
+    <div class="tab" data-tab="hera" onclick="switchTab('hera')">Projects</div>
     <div class="tab" data-tab="create" onclick="switchTab('create')">+ New</div>
     <div class="tab" data-tab="settings" onclick="switchTab('settings')">Settings</div>
   </div>
@@ -1538,7 +1539,7 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       <div class="hotkeys-list">
         <div class="hotkeys-row"><kbd>n</kbd><span>New task</span></div>
         <div class="hotkeys-row"><kbd>t</kbd><span>Tasks tab</span></div>
-        <div class="hotkeys-row"><kbd>g</kbd><span>Hera tab</span></div>
+        <div class="hotkeys-row"><kbd>g</kbd><span>Projects tab</span></div>
         <div class="hotkeys-row"><kbd>,</kbd><span>Settings tab</span></div>
         <div class="hotkeys-row"><kbd>/</kbd><span>Focus search (Tasks tab)</span></div>
         <div class="hotkeys-row"><kbd>a</kbd><span>Toggle Active / Archived (Tasks tab)</span></div>
@@ -2524,6 +2525,17 @@ async function attachTerminal(task) {
   }
 }
 
+// isCtrlZ reports whether a KeyboardEvent is a bare Ctrl+Z — the SIGTSTP
+// footgun. Ctrl held, neither Meta nor Alt, the `z` key. Shift is TOLERATED
+// because Ctrl+Shift+Z produces the same 0x1a byte ('z'&0x1f == 'Z'&0x1f ==
+// 0x1a), so it is the same hazard. Cmd+Z (metaKey) is deliberately NOT matched
+// — that is the browser/textarea undo. keyCode===90 is a layout-robust fallback
+// alongside the ev.key character check.
+function isCtrlZ(ev) {
+  return ev.ctrlKey && !ev.metaKey && !ev.altKey &&
+    (ev.key === 'z' || ev.key === 'Z' || ev.keyCode === 90);
+}
+
 function setupTerm() {
   const TerminalCtor = (window.Terminal || (window.xterm && window.xterm.Terminal));
   const FitCtor = (window.FitAddon && window.FitAddon.FitAddon) || window.FitAddon;
@@ -2627,6 +2639,29 @@ function setupTerm() {
     });
     termResizeObserver.observe(termTouchEl);
   }
+
+  // Ctrl+Z guard (session-orphan prevention). A bare Ctrl+Z emits 0x1a
+  // (SUB / SIGTSTP); delivered to Claude Code's stdin it makes the CLI
+  // background the session into its OWN supervisor, reparenting it out of
+  // argus's process tree permanently and invisibly — argus can never signal or
+  // stop it again (orphaned worker). The TUI already traps Ctrl+Z on every
+  // surface (agent view → zoom, Hera view → fullscreen) so the byte never
+  // reaches the PTY; this is the parity guard for the web/PWA terminal, which
+  // had none. There is no split-pane/zoom analog on this surface (the detail
+  // view is already full-screen), so we SWALLOW rather than remap. Returning
+  // false makes xterm's key handler bail before emitting any byte to onData
+  // (its _keyDown does `if (custom(e) === false) return false` first), the same
+  // intercept-before-PTY point the TUI uses in handleAgentKey. preventDefault +
+  // the toast run on keydown only (the paired keyup would otherwise double the
+  // toast); showToast self-dedupes so mashing Ctrl+Z keeps one re-timed toast.
+  term.attachCustomKeyEventHandler(ev => {
+    if (!isCtrlZ(ev)) return true;
+    if (ev.type === 'keydown') {
+      ev.preventDefault();
+      showToast('Ctrl+Z is disabled here — it would background the agent', 2500);
+    }
+    return false;
+  });
 
   // Forward keystrokes to the agent. xterm gives us already-translated bytes
   // (e.g. arrow keys come as ESC[A). Send them raw.
@@ -4093,6 +4128,8 @@ function artifactIcon(type) {
     case 'pdf': return '📄';
     case 'image': return '🖼️';
     case 'markdown': return '📝';
+    case 'audio': return '🎵';
+    case 'video': return '🎬';
     default: return '📃';
   }
 }
@@ -4150,6 +4187,25 @@ function renderArtifactsList(arts, taskId) {
 // behavior varied by platform (inline preview vs. save), which is why the open
 // render used to be reachable only intermittently.
 async function downloadArtifact(taskId, art) {
+  if (art.type === 'audio' || art.type === 'video') {
+    // HEAD through api() first — it's the one place that centralizes 401
+    // handling (logout() + offline screen). The actual download then streams
+    // straight from the direct URL rather than through a JS-buffered blob.
+    try {
+      const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`, { method: 'HEAD' });
+      if (!r.ok) throw new Error('fetch ' + r.status);
+    } catch (e) {
+      showToast('Download failed: ' + e.message);
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = artifactDirectURL(taskId, art);
+    a.download = art.filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    return;
+  }
   try {
     const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`);
     if (!r.ok) throw new Error('fetch ' + r.status);
@@ -4185,6 +4241,21 @@ async function openArtifactViewer(taskId, art) {
   const body = document.getElementById('artifacts-body');
   body.className = 'artifacts-body viewing';
   body.innerHTML = artifactBackToolbar(taskId, '') + '<div class="files-empty">Loading…</div>';
+  if (art.type === 'audio' || art.type === 'video') {
+    // HEAD through api() first so an expired/invalid token surfaces via the
+    // normal 401 → logout() path instead of a silently-broken media element;
+    // playback itself then streams straight from the direct URL, not a blob.
+    try {
+      const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`, { method: 'HEAD' });
+      if (!r.ok) throw new Error('fetch ' + r.status);
+      if (artifactsViewTask?.id !== taskId) return;
+      renderArtifactWithURL(taskId, art, artifactDirectURL(taskId, art));
+    } catch (e) {
+      if (artifactsViewTask?.id !== taskId) return;
+      body.innerHTML = artifactBackToolbar(taskId, '') + `<div class="files-empty">Failed to load: ${esc(e.message)}</div>`;
+    }
+    return;
+  }
   try {
     const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`);
     if (!r.ok) throw new Error('fetch ' + r.status);
@@ -4198,7 +4269,7 @@ async function openArtifactViewer(taskId, art) {
       if (artifactsViewTask?.id !== taskId) return;
       const url = URL.createObjectURL(blob);
       artifactObjectURLs.push(url);
-      renderBlobArtifact(taskId, art, url);
+      renderArtifactWithURL(taskId, art, url);
     }
   } catch (e) {
     if (artifactsViewTask?.id !== taskId) return;
@@ -4206,13 +4277,26 @@ async function openArtifactViewer(taskId, art) {
   }
 }
 
+// Direct authenticated artifact URL — bypasses fetch()+blob() so large
+// media (audio/video) streams via the browser's native Range-request
+// handling instead of being fully buffered in JS memory first. Same
+// ?token= pattern openStream uses for EventSource, which also can't set
+// custom headers.
+function artifactDirectURL(taskId, art) {
+  return API + `/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}?token=` + encodeURIComponent(TOKEN);
+}
+
 // Builds the DOM node that renders an artifact's content, shared by the paneled
-// viewer (renderBlobArtifact/renderTextArtifact) and the full-screen overlay
+// viewer (renderArtifactWithURL/renderTextArtifact) and the full-screen overlay
 // (openArtifactFullscreen). Defining it once keeps the security-critical sandbox
 // flags in a single place — HTML gets allow-scripts WITHOUT allow-same-origin
 // (opaque origin, can't read our token); markdown gets NO allow-scripts; PDF is
-// deliberately un-sandboxed (see gotchas/web-remote.md). `payload` is `{url}` for
-// blob types (html/pdf/image/other) or `{txt}` for markdown/text.
+// deliberately un-sandboxed (see gotchas/web-remote.md). `payload` is `{txt}` for
+// markdown/text, otherwise `{url}` — for html/pdf/image `payload.url` is always a
+// `blob:` URL (load-bearing: never pass a directly-authenticated URL to the HTML
+// branch, or embedded script could read the token via window.location); for
+// audio/video `payload.url` is a direct `?token=`-authenticated URL instead,
+// which is safe there ONLY because a media file isn't a scriptable document.
 function makeArtifactNode(art, payload) {
   if (art.type === 'html') {
     const f = document.createElement('iframe');
@@ -4256,13 +4340,38 @@ function makeArtifactNode(art, payload) {
     pre.textContent = payload.txt; // textContent, not innerHTML — no escaping needed
     return pre;
   }
+  if (art.type === 'audio') {
+    const el = document.createElement('audio');
+    el.className = 'artifact-media';
+    el.controls = true;
+    // The src is a directly-authenticated URL (see the payload note above),
+    // so trim the native affordances that would otherwise hand that URL to
+    // something outside our own auth flow: no built-in "download" control,
+    // no AirPlay/cast (which fetches the URL from an external receiver).
+    el.setAttribute('controlsList', 'nodownload noremoteplayback');
+    el.disableRemotePlayback = true;
+    el.src = payload.url;
+    return el;
+  }
+  if (art.type === 'video') {
+    const el = document.createElement('video');
+    el.className = 'artifact-media';
+    el.controls = true;
+    el.setAttribute('controlsList', 'nodownload noremoteplayback');
+    el.disableRemotePlayback = true;
+    el.src = payload.url;
+    return el;
+  }
   const d = document.createElement('div');
   d.className = 'files-empty';
   d.textContent = 'Preview not supported — use Download.';
   return d;
 }
 
-function renderBlobArtifact(taskId, art, url) {
+// renderArtifactWithURL renders via a `src`/URL-bearing payload — a `blob:`
+// URL for html/pdf/image (the common case), or a direct authenticated URL for
+// audio/video (see makeArtifactNode's doc comment for why that's safe there).
+function renderArtifactWithURL(taskId, art, url) {
   const body = document.getElementById('artifacts-body');
   const dl = `<span class="link" onclick="downloadCurrentArtifact()">Download</span>`;
   body.innerHTML = artifactBackToolbar(taskId, dl);
@@ -4292,6 +4401,22 @@ async function openArtifactFullscreen(taskId, art) {
   revokeArtifactFsURL();
   body.innerHTML = '<div class="files-empty">Loading…</div>';
   view.classList.add('open');
+  if (art.type === 'audio' || art.type === 'video') {
+    // HEAD through api() first — same 401-handling rationale as the paneled
+    // viewer above; playback itself streams from the direct URL, not a blob.
+    try {
+      const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`, { method: 'HEAD' });
+      if (!r.ok) throw new Error('fetch ' + r.status);
+      if (gen !== artifactFsGen) return;
+      const node = makeArtifactNode(art, { url: artifactDirectURL(taskId, art) });
+      body.innerHTML = '';
+      body.appendChild(node);
+    } catch (e) {
+      if (gen !== artifactFsGen) return;
+      body.innerHTML = `<div class="files-empty">Failed to load: ${esc(e.message)}</div>`;
+    }
+    return;
+  }
   try {
     const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`);
     if (!r.ok) throw new Error('fetch ' + r.status);

@@ -137,7 +137,10 @@ type Node struct {
 	// Drillable marks a node whose bound task is the coordinator of a child
 	// orchestrator (a sub-coordinator); Enter drills in rather than jumping.
 	Drillable bool
-	// Description is the role's delivery-prompt first line (the header "Description").
+	// Description is the role's stored delivery prompt, VERBATIM. The header
+	// (nodeHeaderLines) renders its first descMaxLines non-empty lines, wrapped/
+	// truncated to the pane width; it is policy-agnostic (no stripping, no
+	// classifying any line as boilerplate). An empty prompt shows "(no description)".
 	Description string
 	// Icon, when non-nil, is the resolved status glyph + style for a LIVE node,
 	// computed by the projection via the SHARED classifier (widget.RoleStatusIcon)
@@ -1287,11 +1290,22 @@ func (w *Widget) snapshotNodes() []Node {
 // missing/invalid profile (D-VIEW fail-open surfacing).
 const warnGlyph = '⚠'
 
+// descMaxLines caps how many leading NON-EMPTY prompt lines the node-view header
+// shows as the description (improve-hera-node-descriptions). Policy-agnostic: the
+// first N non-empty lines are shown verbatim (each truncated to the pane width by
+// DrawText) — no line is stripped, skipped, or classified as boilerplate. Grown
+// from the original single first-line so a coordinator reads the mission, not one
+// truncated line. Header height is sized from this so the diagram budget stays
+// fixed regardless of the cursor target. See gotchas/hera-view.md.
+const descMaxLines = 3
+
 // headerContentRows is the fixed number of content lines the header strip
-// occupies (D9 + BUG-006): four lines (node → name / status / description / feeds;
-// group → range·title / members / downstream, padded). Held constant so the
-// diagram budget never drifts with the cursor target.
-const headerContentRows = 5
+// occupies (D9 + BUG-006): the node view's worst case — name / status / tier /
+// up to descMaxLines description lines / feeds — which also covers the 3-line
+// group view (range·title / members / downstream, padded). Held constant
+// (derived from descMaxLines) so the diagram budget never drifts with the
+// cursor target.
+const headerContentRows = 4 + descMaxLines // name + status + tier + feeds (4 fixed) + description lines
 
 // headerHeight is the total fixed header height: the content rows plus a one-row
 // separator rule. The diagram region is the panel inner height minus this,
@@ -1331,30 +1345,59 @@ func (w *Widget) headerContent() []string {
 }
 
 // nodeHeaderLines renders the node-view header: the role name, its Status (the
-// node's state word + glyph; BUG-006), its description (the delivery-prompt first
-// line), and what it feeds (the downstream nodes it blocks, by label) (D9). The
-// Status glyph uses the SAME resolved icon the node box shows (1:1 with the rail
-// for a live node, BUG-007), so the header and the diagram never disagree; the
-// word is the State.Label() vocabulary (planned / working / done / …).
+// node's state word + glyph; BUG-006), its description (the first descMaxLines
+// non-empty lines of the stored prompt), and what it feeds (the downstream nodes
+// it blocks, by label) (D9). The Status glyph uses the SAME resolved icon the
+// node box shows (1:1 with the rail for a live node, BUG-007), so the header and
+// the diagram never disagree; the word is the State.Label() vocabulary (planned /
+// working / done / …).
+//
+// The description is the mission's opening lines, not a single truncated line
+// (improve-hera-node-descriptions): descriptionLines yields up to descMaxLines
+// rows (each truncated to the pane width by DrawText). The returned slice is
+// [name, status, <desc rows…>, feeds]; HeaderLines pads/clamps it to
+// headerContentRows (= 3 + descMaxLines), so the feeds line is always kept and
+// the header stays within its fixed budget.
 func (w *Widget) nodeHeaderLines(id string) []string {
 	n := w.nodes[id]
-	desc := n.Description
-	if desc == "" {
-		desc = "(no description)"
-	}
 	feeds := w.feedLabels(id)
 	feedsLine := "Feeds: " + strings.Join(feeds, ", ")
 	if len(feeds) == 0 {
 		feedsLine = "Feeds: (nothing)"
 	}
 	statusLine := fmt.Sprintf("Status: %c %s", w.headerStatusGlyph(n), n.State.Label())
-	return []string{
-		n.Name,
-		statusLine,
-		nodeTierLine(n),
-		desc,
-		feedsLine,
+	descLines := descriptionLines(n.Description)
+	lines := make([]string, 0, 3+len(descLines)+1)
+	lines = append(lines, n.Name, statusLine, nodeTierLine(n))
+	lines = append(lines, descLines...)
+	lines = append(lines, feedsLine)
+	return lines
+}
+
+// descriptionLines returns the header description rows for a node's stored prompt:
+// its first descMaxLines NON-EMPTY lines, each trimmed of surrounding whitespace
+// (DrawText truncates each to the pane width at render time). It is
+// POLICY-AGNOSTIC: no line is stripped, skipped by content, or classified as
+// boilerplate — a clean prompt shows its opening mission lines, a still-polluted
+// prompt shows its opening lines as-is (the fix for pollution is upstream prompt
+// hygiene, not view-side stripping). An empty/all-blank prompt yields the single
+// "(no description)" placeholder row.
+func descriptionLines(prompt string) []string {
+	out := make([]string, 0, descMaxLines)
+	for _, ln := range strings.Split(prompt, "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" {
+			continue
+		}
+		out = append(out, ln)
+		if len(out) == descMaxLines {
+			break
+		}
 	}
+	if len(out) == 0 {
+		return []string{"(no description)"}
+	}
+	return out
 }
 
 // nodeTierLine renders the diligence-tiering readout (D-VIEW): the node's

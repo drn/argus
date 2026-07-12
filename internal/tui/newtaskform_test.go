@@ -57,21 +57,22 @@ func TestNewTaskForm_TabCycling(t *testing.T) {
 		t.Errorf("initial focus = %d, want %d", f.focused, ntFieldPrompt)
 	}
 
-	// Tab cycles through fields
+	// Tab cycles through fields. The optional name field sits immediately after
+	// the prompt in the cycle, so the first Tab from the prompt lands on it.
 	handler := f.InputHandler()
 	handler(tcell.NewEventKey(tcell.KeyTab, 0, 0), func(p tview.Primitive) {})
+	if f.focused != ntFieldName {
+		t.Errorf("after tab: focus = %d, want %d", f.focused, ntFieldName)
+	}
+
+	handler(tcell.NewEventKey(tcell.KeyTab, 0, 0), func(p tview.Primitive) {})
 	if f.focused != ntFieldProject {
-		t.Errorf("after tab: focus = %d, want %d", f.focused, ntFieldProject)
+		t.Errorf("after 2nd tab: focus = %d, want %d", f.focused, ntFieldProject)
 	}
 
 	handler(tcell.NewEventKey(tcell.KeyTab, 0, 0), func(p tview.Primitive) {})
 	if f.focused != ntFieldBranch {
-		t.Errorf("after 2nd tab: focus = %d, want %d", f.focused, ntFieldBranch)
-	}
-
-	handler(tcell.NewEventKey(tcell.KeyTab, 0, 0), func(p tview.Primitive) {})
-	if f.focused != ntFieldBackend {
-		t.Errorf("after 3rd tab: focus = %d, want %d", f.focused, ntFieldBackend)
+		t.Errorf("after 3rd tab: focus = %d, want %d", f.focused, ntFieldBranch)
 	}
 }
 
@@ -897,7 +898,8 @@ func TestNewTaskForm_EnterOnSelector(t *testing.T) {
 	)
 	handler := f.InputHandler()
 
-	// Tab to project
+	// Tab to project (prompt → name → project; name sits between them).
+	handler(tcell.NewEventKey(tcell.KeyTab, 0, 0), func(p tview.Primitive) {})
 	handler(tcell.NewEventKey(tcell.KeyTab, 0, 0), func(p tview.Primitive) {})
 	if f.focused != ntFieldProject {
 		t.Fatalf("focused = %d, want project", f.focused)

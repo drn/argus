@@ -26,6 +26,10 @@ type HeraStore interface {
 	HeraRoleByName(orchID int64, name string) (*db.HeraRole, error)
 	ListHeraRolesByKind(orchID int64, kind db.HeraRoleKind) ([]*db.HeraRole, error)
 	CreateHeraRoleWithBinding(roleIn db.CreateHeraRoleInput, taskID, worktreePath string) (*db.HeraRole, *db.HeraBinding, error)
+	// MoveHeraBinding is the move-capable counterpart to CreateHeraRoleWithBinding
+	// (fix-hera-join-move-binding): ends oldBindingID and creates the new
+	// role+binding under a different orchestrator, in one transaction.
+	MoveHeraBinding(oldBindingID int64, roleIn db.CreateHeraRoleInput, taskID, worktreePath string) (*db.MoveHeraBindingResult, error)
 	// Plan-DAG authoring (add-hera-plan-substrate). Coordinator-only at the tool
 	// layer; the store enforces cycle + same-orchestrator constraints.
 	CreateHeraPlannedRole(in db.CreateHeraRoleInput) (*db.HeraRole, error)
@@ -67,10 +71,11 @@ type HeraStore interface {
 	RollHeraWorkerFailed(taskID string) (bool, error)
 }
 
-// heraToolDefs contains the 15 hera_* tool schemas. The first 9 are ported
+// heraToolDefs contains the 16 hera_* tool schemas. The first 9 are ported
 // verbatim from Hera's daemon.toolDefinitions() — same param names,
 // descriptions, and required lists as the external Hera daemon so agents have an
-// identical surface when running natively. The next 3 (hera_plan_node /
+// identical surface when running natively. hera_move (fix-hera-join-move-binding)
+// is native-only — the external daemon has no equivalent. The next 3 (hera_plan_node /
 // hera_block / hera_plan) are the native plan-DAG authoring tools
 // (add-hera-plan-substrate); they are coordinator-only like hera_spawn_worker.
 // The last 3 (hera_plan_node_update / hera_unblock / hera_plan_node_cancel) are
@@ -105,6 +110,22 @@ var heraToolDefs = []Tool{
 				"status":       map[string]interface{}{"type": "string", "enum": []string{"idle", "working", "blocked", "done"}, "description": "(optional, attach mode) Initial role status"},
 			},
 			"required": []string{"cwd"},
+		},
+	},
+	{
+		Name:        "hera_move",
+		Description: "Relocate the caller's live hera binding to a different orchestrator: ends the current binding (end_reason 'moved') and creates a new worker/freelance role+binding under the target orchestrator, in one transaction. Use this instead of hera_join when already bound elsewhere — hera_join attach mode rejects and redirects here.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"cwd":               map[string]interface{}{"type": "string", "description": "Caller's worktree path (use $PWD)"},
+				"orchestrator":      map[string]interface{}{"type": "string", "description": "Target orchestrator to move the binding to"},
+				"role_name":         map[string]interface{}{"type": "string", "description": "Name for the new role under the target orchestrator"},
+				"kind":              map[string]interface{}{"type": "string", "enum": []string{"worker", "freelance"}, "description": "Role kind. coordinator is not accepted here — use hera_new_orchestrator."},
+				"from_orchestrator": map[string]interface{}{"type": "string", "description": "(optional) Disambiguates which of the caller's live bindings to move, when the task holds 2+ live bindings"},
+				"status":            map[string]interface{}{"type": "string", "enum": []string{"idle", "working", "blocked", "done"}, "description": "(optional) Initial status for the new role"},
+			},
+			"required": []string{"cwd", "orchestrator", "role_name", "kind"},
 		},
 	},
 	{
@@ -173,7 +194,7 @@ var heraToolDefs = []Tool{
 				"cwd":          map[string]interface{}{"type": "string", "description": "Coordinator's worktree path (use $PWD)"},
 				"orchestrator": map[string]interface{}{"type": "string", "description": "(optional) Disambiguates when the calling task holds multiple live coordinator bindings"},
 				"role_name":    map[string]interface{}{"type": "string", "description": "(optional) Worker role name. Derived from prompt slug if omitted; made unique within the orchestrator automatically"},
-				"prompt":       map[string]interface{}{"type": "string", "description": "Full task prompt delivered to the new worker session. An orientation prefix naming the coordinator is prepended automatically. The verbatim prompt is also stored on the role row"},
+				"prompt":       map[string]interface{}{"type": "string", "description": "The worker's MISSION/task only. An orientation prefix naming the coordinator is prepended automatically; the verbatim prompt is stored on the role row and shown as the node's description in the plan-DAG view. Do NOT prepend organization or security policy: every spawned worker session receives its org instructions independently (harness-injected), so a prepended copy is redundant and pollutes the stored prompt and the plan-DAG view"},
 				"project":      map[string]interface{}{"type": "string", "description": "(optional) Override the argus project. Defaults to the coordinator's own project"},
 				"branch":       map[string]interface{}{"type": "string", "description": "(optional) Branch passed to argus CreateTask. Defaults to project default"},
 				"backend":      map[string]interface{}{"type": "string", "description": "(optional) Backend passed to argus CreateTask. Defaults to project default"},
@@ -217,7 +238,7 @@ var heraToolDefs = []Tool{
 			"properties": map[string]interface{}{
 				"cwd":          map[string]interface{}{"type": "string", "description": "Coordinator's worktree path (use $PWD)"},
 				"name":         map[string]interface{}{"type": "string", "description": "Short-id-prefixed node name (e.g. '2c-fact-checker'); made unique within the orchestrator automatically"},
-				"prompt":       map[string]interface{}{"type": "string", "description": "Task prompt delivered to the worker when the node materializes"},
+				"prompt":       map[string]interface{}{"type": "string", "description": "The worker's MISSION/task only, delivered when the node materializes and stored verbatim as the node's description in the plan-DAG view. Do NOT prepend organization or security policy: every spawned worker session receives its org instructions independently (harness-injected), so a prepended copy is redundant and pollutes the stored prompt and the plan-DAG view"},
 				"project":      map[string]interface{}{"type": "string", "description": "(optional) argus project for the worker. Defaults to the coordinator's own project"},
 				"archetype":    map[string]interface{}{"type": "string", "description": "(optional) Diligence archetype for the worker (e.g. code_slice, review, ci_loop); persisted on the planned node and copied onto the task when it materializes"},
 				"orchestrator": map[string]interface{}{"type": "string", "description": "(optional) Disambiguates when the calling task holds multiple live coordinator bindings"},
@@ -451,6 +472,45 @@ func (s *Server) toolHeraNewOrchestrator(id interface{}, args json.RawMessage) *
 		return toolError(id, err.Error())
 	}
 
+	// Guard the self-promotion footgun: a task that already holds a live
+	// coordinator binding under a DIFFERENT orchestrator must not bind its own
+	// session as a SECOND coordinator of a new one. Following such a call, the
+	// rail renders a phantom nested "sub-coordinator" that drives the identical
+	// PTY as its parent — and in practice that pseudo-sub-coordinator implements
+	// solo instead of dispatching. Run this BEFORE CreateHeraOrchestrator so a
+	// rejected call never leaves an orphan orchestrator behind. Scope: a
+	// coordinator re-calling for the SAME orchestrator falls through to the
+	// same-orchestrator guard below (which keeps its hera_join guidance, and
+	// creates no orphan since that orchestrator already exists); callers holding
+	// only worker/freelance bindings (worker self-promotion) or no binding (fresh
+	// bootstrap) also fall through. Fail-open on a list error, matching the
+	// sibling same-orchestrator guard.
+	if liveBindings, lbErr := s.heraStore.ListHeraLiveBindingsByTask(task.ID); lbErr == nil {
+		for _, b := range liveBindings {
+			r, rErr := s.heraStore.HeraRole(b.RoleID)
+			if rErr != nil || r.Kind != db.HeraKindCoordinator {
+				continue
+			}
+			orchName := fmt.Sprintf("id:%d", b.OrchestratorID)
+			if o, oErr := s.heraStore.HeraOrchestrator(b.OrchestratorID); oErr == nil {
+				orchName = o.Name
+			}
+			if orchName == p.Name {
+				// Same orchestrator: not a self-promotion — let the same-orchestrator
+				// guard below handle it with its hera_join guidance.
+				continue
+			}
+			slog.Info("[hera] new_orchestrator rejected: caller already a coordinator",
+				"caller_task", task.ID, "coordinator_orch", orchName, "requested_orch", p.Name)
+			return toolError(id, fmt.Sprintf(
+				"task is already the coordinator of orchestrator %q; a coordinator DISPATCHES work "+
+					"with hera_spawn_worker (project= targets any repo) and must not bind its own session "+
+					"as a second coordinator. For a dedicated sub-team, spawn a worker (which can promote "+
+					"itself via hera_new_orchestrator) or author a kind=subcoord hera_plan_node.",
+				orchName))
+		}
+	}
+
 	// Create (or fetch existing) orchestrator — CreateHeraOrchestrator is idempotent.
 	orch, err := s.heraStore.CreateHeraOrchestrator(p.Name, p.BaseBranch)
 	if err != nil {
@@ -563,6 +623,18 @@ func (s *Server) toolHeraJoin(id interface{}, args json.RawMessage) *Response {
 		return toolError(id, fmt.Sprintf("task already has a live binding under orchestrator %q; call hera_join(cwd) without role_name to retrieve your current role", p.Orchestrator))
 	}
 
+	// Reject if bound under a DIFFERENT orchestrator — attach mode is for an
+	// unbound task or a fresh orchestrator, not for relocating an existing
+	// membership. By this point any live binding cannot be under the target
+	// (handled above), so a non-empty list here is necessarily elsewhere.
+	// Fail-open on a list error, matching the sibling guard in
+	// toolHeraNewOrchestrator.
+	if liveBindings, lbErr := s.heraStore.ListHeraLiveBindingsByTask(task.ID); lbErr == nil && len(liveBindings) > 0 {
+		return toolError(id, fmt.Sprintf(
+			"task already holds a live hera binding under a different orchestrator; use hera_move to relocate it to %q instead of hera_join",
+			p.Orchestrator))
+	}
+
 	role, binding, err := s.heraStore.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
 		OrchestratorID: orch.ID,
 		Name:           p.RoleName,
@@ -596,6 +668,107 @@ func (s *Server) toolHeraJoin(id interface{}, args json.RawMessage) *Response {
 	fmt.Fprintf(&b, "- **kind**: %s\n", role.Kind)
 	fmt.Fprintf(&b, "- **binding_id**: %d\n", binding.ID)
 	fmt.Fprintf(&b, "- **argus_task_id**: %s\n", task.ID)
+	return toolResult(id, b.String())
+}
+
+// toolHeraMove relocates the caller's live hera binding to a different
+// orchestrator (fix-hera-join-move-binding): ends the current binding
+// (end_reason "moved") and creates a new worker/freelance role+binding under
+// the target orchestrator, in one transaction via db.MoveHeraBinding. Mirrors
+// toolHeraJoin's attach-mode validation (coordinator-kind rejection, project
+// mirroring, optional initial status) but resolves the SOURCE binding via
+// resolveCallerRole (from_orchestrator disambiguates) rather than creating a
+// binding from scratch.
+func (s *Server) toolHeraMove(id interface{}, args json.RawMessage) *Response {
+	if !s.heraEnabled() {
+		return toolError(id, "hera not configured")
+	}
+	var p struct {
+		Cwd              string `json:"cwd"`
+		Orchestrator     string `json:"orchestrator"`
+		RoleName         string `json:"role_name"`
+		Kind             string `json:"kind"`
+		FromOrchestrator string `json:"from_orchestrator"`
+		Status           string `json:"status"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if p.Cwd == "" {
+		return toolError(id, "cwd is required")
+	}
+	if p.Orchestrator == "" {
+		return toolError(id, "orchestrator is required")
+	}
+	if p.RoleName == "" {
+		return toolError(id, "role_name is required")
+	}
+	if p.Kind == string(db.HeraKindCoordinator) {
+		return toolError(id, "coordinator kind is not accepted here; use hera_new_orchestrator to bootstrap a new orchestrator")
+	}
+	if p.Kind != string(db.HeraKindWorker) && p.Kind != string(db.HeraKindFreelance) {
+		return toolError(id, "kind must be 'worker' or 'freelance'")
+	}
+
+	// Resolve the caller's CURRENT (source) binding. from_orchestrator
+	// disambiguates when the task holds 2+ live bindings; resolveCallerRole
+	// already returns the "nothing to move" (no live binding at all) and
+	// "ambiguous" (2+ bindings, no from_orchestrator) error shapes verbatim.
+	caller, err := s.resolveCallerRole(p.Cwd, p.FromOrchestrator)
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+
+	targetOrch, err := s.heraStore.HeraOrchestratorByName(p.Orchestrator)
+	if errors.Is(err, db.ErrHeraNotFound) {
+		return toolError(id, fmt.Sprintf("unknown orchestrator %q", p.Orchestrator))
+	}
+	if err != nil {
+		return toolError(id, fmt.Sprintf("resolve orchestrator: %v", err))
+	}
+
+	// Same-orchestrator move is a no-op error: nothing to relocate.
+	if targetOrch.ID == caller.orch.ID {
+		return toolError(id, fmt.Sprintf(
+			"already bound under orchestrator %q; call hera_join(cwd) without role_name to retrieve your current role instead of hera_move",
+			p.Orchestrator))
+	}
+
+	result, err := s.heraStore.MoveHeraBinding(caller.binding.ID, db.CreateHeraRoleInput{
+		OrchestratorID: targetOrch.ID,
+		Name:           p.RoleName,
+		Kind:           db.HeraRoleKind(p.Kind),
+		// M4 fix parity: persist the moving task's argus project on the role.
+		ArgusProject: caller.task.Project,
+	}, caller.task.ID, caller.task.Worktree)
+	if err != nil {
+		return toolError(id, fmt.Sprintf("move binding: %v", err))
+	}
+
+	// Optional initial status on the new role.
+	if p.Status != "" {
+		sv := db.HeraRoleStatusValue(p.Status)
+		if uErr := s.heraStore.UpsertHeraRoleStatus(result.NewRole.ID, sv); uErr != nil {
+			slog.Warn("[hera] upsert initial status failed", "role_id", result.NewRole.ID, "err", uErr)
+		}
+	}
+
+	// Mirror to task_meta best-effort.
+	if metaErr := s.heraStore.SetMeta(caller.task.ID, db.HeraMetaNamespace, db.HeraMetaKeyRole, string(result.NewRole.Kind)); metaErr != nil {
+		slog.Warn("[hera] meta mirror failed", "tool", "hera_move", "task_id", caller.task.ID, "err", metaErr)
+	}
+
+	slog.Info("[hera] move ok",
+		"from_orch", result.OldOrchestratorName, "from_role", result.OldRoleName,
+		"to_orch", targetOrch.Name, "role", result.NewRole.Name, "binding_id", result.NewBinding.ID, "task_id", caller.task.ID)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Binding moved.\n\n")
+	fmt.Fprintf(&b, "- **from_orchestrator**: %s\n", result.OldOrchestratorName)
+	fmt.Fprintf(&b, "- **from_role_name**: %s\n", result.OldRoleName)
+	fmt.Fprintf(&b, "- **to_orchestrator**: %s\n", targetOrch.Name)
+	fmt.Fprintf(&b, "- **role_name**: %s\n", result.NewRole.Name)
+	fmt.Fprintf(&b, "- **kind**: %s\n", result.NewRole.Kind)
+	fmt.Fprintf(&b, "- **binding_id**: %d\n", result.NewBinding.ID)
+	fmt.Fprintf(&b, "- **argus_task_id**: %s\n", caller.task.ID)
 	return toolResult(id, b.String())
 }
 

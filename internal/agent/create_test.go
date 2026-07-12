@@ -90,17 +90,19 @@ type fakeSession struct {
 	tail []byte // returned by RecentOutputTail; nil unless a test sets it
 }
 
-func (s *fakeSession) PID() int                       { return s.pid }
-func (s *fakeSession) WriteInput([]byte) (int, error) { return 0, nil }
-func (s *fakeSession) Resize(uint16, uint16) error    { return nil }
-func (s *fakeSession) RecentOutput() []byte           { return nil }
-func (s *fakeSession) RecentOutputTail(int) []byte    { return s.tail }
+func (s *fakeSession) PID() int                             { return s.pid }
+func (s *fakeSession) WriteInput([]byte) (int, error)       { return 0, nil }
+func (s *fakeSession) WriteInputSystem([]byte) (int, error) { return 0, nil }
+func (s *fakeSession) Resize(uint16, uint16) error          { return nil }
+func (s *fakeSession) RecentOutput() []byte                 { return nil }
+func (s *fakeSession) RecentOutputTail(int) []byte          { return s.tail }
 func (s *fakeSession) RecentOutputTailWithTotal(int) ([]byte, uint64) {
 	return nil, 0
 }
 func (s *fakeSession) TotalWritten() uint64                    { return 0 }
 func (s *fakeSession) IsIdle() bool                            { return false }
 func (s *fakeSession) LastInput() time.Time                    { return time.Time{} }
+func (s *fakeSession) LastUserInput() time.Time                { return time.Time{} }
 func (s *fakeSession) Alive() bool                             { return true }
 func (s *fakeSession) PTYSize() (int, int)                     { return 80, 24 }
 func (s *fakeSession) InitialPTYSize() (int, int)              { return 80, 24 }

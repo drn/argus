@@ -192,6 +192,26 @@ func TestRail_FilterDoesNotPersist(t *testing.T) {
 	testutil.Equal(t, len(fs.saved), 0)
 }
 
+// TestRail_FilterEnterDoesNotPersist mirrors the Esc case for the NEW one-Enter
+// select-and-clear path (BUG-028-RAIL): ClearFilter routes through rebuildAfterFilter
+// (direct cursor write), never setCursor, so Enter-while-filtering fires no
+// rail-state save either.
+func TestRail_FilterEnterDoesNotPersist(t *testing.T) {
+	fs := &fakeStore{}
+	r := NewRail()
+	r.SetStateStore(fs)
+	r.SetModel(filterModel())
+	testutil.Equal(t, len(fs.saved), 0)
+
+	h := r.InputHandler()
+	h(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), noFocus)
+	for _, ru := range "alpha" {
+		h(tcell.NewEventKey(tcell.KeyRune, ru, tcell.ModNone), noFocus)
+	}
+	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, len(fs.saved), 0)
+}
+
 func TestPage_RailStatePersistsAcrossPages(t *testing.T) {
 	d := memDB(t)
 	o1 := seedOrch(t, d, "orch-a")

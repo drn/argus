@@ -1,7 +1,56 @@
-.PHONY: build vet test test-watch test-cover test-cover-gate test-pkg lint-pr fmt fmt-check vuln pre-pr plugin-smoke
+.PHONY: build vet test test-watch test-cover test-cover-gate test-pkg lint-pr fmt fmt-check vuln pre-pr plugin-smoke install-signed mac-build mac-test mac-run mac-app
 
 build:
 	go build ./...
+
+# Build + install the live argusd binary the local daemon runs, self-signing
+# it with a STABLE code-signing identity when one is available so macOS TCC
+# privacy grants persist across rebuilds. This is the right way to (re)install
+# argus locally regardless of workflow — a plain `go install` works too, it
+# just leaves the binary ad-hoc signed (see WHY). `.iris.toml` runs this on
+# each deploy; run it by hand for any other local (re)install.
+#
+# WHY: Go's toolchain ad-hoc-signs binaries with a content-derived cdhash that
+# changes on every build. macOS TCC keys a privacy grant ("argus would like to
+# access data from other apps" — triggered when a spawned agent or tool touches
+# ~/Library/{Application Support,Containers,Caches}) to that cdhash, so an
+# unsigned/ad-hoc binary re-prompts after every rebuild. A stable signing
+# identity gives TCC a constant designated requirement, so one grant sticks.
+#
+# OPT-IN (macOS, per developer — fully optional):
+#   1. Keychain Access -> Certificate Assistant -> Create a Certificate:
+#        Name: "Argus Code Signing"  (or set ARGUS_SIGN_IDENTITY to your own name)
+#        Identity Type: Self Signed Root
+#        Certificate Type: Code Signing
+#      (No need to mark the cert "trusted" — codesign and TCC both work with an
+#       untrusted self-signed identity; locally-built binaries aren't quarantined.)
+#   2. Run `make install-signed` (also what `.iris.toml` runs on each deploy).
+#      The FIRST time codesign uses the key, macOS Keychain prompts "codesign
+#      wants to sign using key '<name>' in your keychain" — click **Always
+#      Allow**, NOT "Allow". "Allow" re-prompts every build; if an automated
+#      rebuild runs unattended (e.g. an iris deploy), an un-answered prompt
+#      hangs it. "Always Allow" grants codesign standing access so future
+#      signs are silent.
+#   3. The binary is now stably signed. The next time the macOS privacy prompt
+#      ("argus would like to access data from other apps") appears in normal
+#      use, approve it once — OR grant the binary Full Disk Access (System
+#      Settings -> Privacy & Security). Because the signature is now stable,
+#      that grant persists across every future rebuild.
+#
+# Machines without that identity (other devs, CI, Linux) fall back to a plain
+# `go install` — byte-identical to before — so this target is always safe.
+ARGUS_SIGN_IDENTITY ?= Argus Code Signing
+
+install-signed:
+	go install ./cmd/argus
+	@bin="$$(go env GOBIN)"; [ -n "$$bin" ] || bin="$$(go env GOPATH)/bin"; bin="$$bin/argus"; \
+	id=$$(security find-identity -p codesigning 2>/dev/null | grep -F "$(ARGUS_SIGN_IDENTITY)" | head -1 | awk '{print $$2}'); \
+	if [ -n "$$id" ]; then \
+		codesign --force --identifier com.drn.argus --sign "$$id" "$$bin" \
+			&& echo "[install-signed] signed $$bin with stable identity '$(ARGUS_SIGN_IDENTITY)' ($$id) — TCC grant will persist"; \
+	else \
+		echo "[install-signed] no '$(ARGUS_SIGN_IDENTITY)' code-signing identity found — left ad-hoc (macOS may re-prompt for file access). To opt in, see the install-signed comment in the Makefile."; \
+	fi
 
 # Full pre-PR gate — mirrors .github/workflows/ci.yml in order. Run this
 # (and get a clean pass) before opening or updating a PR. test-cover-gate
@@ -73,3 +122,30 @@ test-pkg:
 # transient backends/tasks/views/sections/MCP tools on exit.
 plugin-smoke:
 	go run ./cmd/argus-plugin-smoke -verbose
+
+# --- macOS GUI (Argus) -------------------------------------------------------
+# The native SwiftUI app (a Conductor-style GUI) lives in ./macos as a pure
+# SwiftPM package built with the Swift 6.3 Command Line Tools — no Xcode, no
+# xcodebuild. These targets are self-contained (they never touch the Go build).
+#
+# --disable-sandbox: SwiftPM sandboxes manifest/plugin compiles via
+# sandbox-exec, and macOS forbids NESTED sandboxes — so any `swift build`
+# inside an argus agent sandbox (how this repo is dogfooded) dies with
+# "sandbox_apply: Operation not permitted". Our own manifest needs no
+# protection from us; disable it so the targets work everywhere.
+mac-build:
+	cd macos && swift build --disable-sandbox
+
+# NOT `swift test`: on a CLT-only install (no Xcode) `swift test` silently
+# runs ZERO tests and exits 0 — even failing tests "pass". The suite is an
+# executable target instead; see the ArgusKitTests comment in macos/Package.swift.
+mac-test:
+	cd macos && swift run --disable-sandbox ArgusKitTests
+
+mac-run:
+	cd macos && swift run --disable-sandbox Argus
+
+# Assembles the real, double-clickable macos/dist/Argus.app bundle (release
+# build + Info.plist + codesign) — see scripts/mac-app.sh for the why.
+mac-app:
+	./scripts/mac-app.sh

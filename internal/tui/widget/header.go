@@ -22,11 +22,19 @@ const (
 	TabSettings
 )
 
-var TabLabels = [...]string{"Tasks", "Hera", "Settings"}
+var TabLabels = [...]string{"Tasks", "Projects", "Settings"}
 var tabKeys = [...]string{"1", "2", "3"}
 
 // Powerline separator (right-facing filled chevron).
 const powerlineSep = '\ue0b0'
+
+// HeaderNoticeTTL is how long a notice set via SetNotice stays visible before
+// auto-clearing, mirroring StatusBar's expiresAt/tick model (BUG-030). The
+// clear is realized lazily in Draw/Notice \u2014 the app's unconditional ~1s
+// onTick QueueUpdateDraw repaints the header within a tick of expiry, so no
+// notice can linger forever on a static screen. Never force it with a
+// timer/goroutine (see gotchas/ui-threading.md).
+const HeaderNoticeTTL = 2 * time.Second
 
 // Colors matching the tmux status bar palette.
 var (
@@ -50,7 +58,14 @@ type Header struct {
 	tabLabels [len(TabLabels)]string
 
 	// Notice: general-purpose status indicator (left side of header).
-	noticeText string // empty = no notice
+	// Auto-expires after HeaderNoticeTTL (BUG-030-style); see expireNotice.
+	noticeText      string // empty = no notice
+	noticeExpiresAt time.Time
+
+	// now is the widget's time source; injectable so tests exercise expiry
+	// without a real sleep. Defaults to time.Now via NewHeader; falls back to
+	// time.Now in clock() for zero-value literals (direct-construction tests).
+	now func() time.Time
 }
 
 // NewHeader creates a tab bar header.
@@ -58,9 +73,29 @@ func NewHeader() *Header {
 	h := &Header{
 		Box:       tview.NewBox(),
 		activeTab: TabTasks,
+		now:       time.Now,
 	}
 	h.tabLabels = TabLabels
 	return h
+}
+
+// clock returns the widget's time source, falling back to time.Now if the
+// Header was built without NewHeader (e.g. a zero-value literal).
+func (h *Header) clock() time.Time {
+	if h.now == nil {
+		return time.Now()
+	}
+	return h.now()
+}
+
+// expireNotice clears the notice once its TTL has elapsed. Called on every
+// read path (Draw, Notice) so a stale notice is dropped the moment a repaint
+// or accessor observes it past expiry — no timer/goroutine needed.
+func (h *Header) expireNotice() {
+	if h.noticeText != "" && !h.noticeExpiresAt.IsZero() && !h.clock().Before(h.noticeExpiresAt) {
+		h.noticeText = ""
+		h.noticeExpiresAt = time.Time{}
+	}
 }
 
 // SetTabLabel overrides the display text for a single tab slot. Call before or
@@ -89,24 +124,30 @@ func (h *Header) ActiveTab() Tab {
 	return h.activeTab
 }
 
-// SetNotice sets the notice text displayed with a spinner on the left.
+// SetNotice sets the notice text displayed with a spinner on the left. It
+// auto-clears after HeaderNoticeTTL; each call resets that window so a fresh
+// notice always gets its full TTL.
 func (h *Header) SetNotice(text string) {
 	h.noticeText = text
+	h.noticeExpiresAt = h.clock().Add(HeaderNoticeTTL)
 }
 
 // ClearNotice removes the notice.
 func (h *Header) ClearNotice() {
 	h.noticeText = ""
+	h.noticeExpiresAt = time.Time{}
 }
 
-// Notice returns the current notice text (empty if none).
+// Notice returns the current notice text ("" if none or expired).
 func (h *Header) Notice() string {
+	h.expireNotice()
 	return h.noticeText
 }
 
 // Draw renders the tab bar with powerline-style segments, centered.
 // If a notice is active, a spinner + text is drawn on the left.
 func (h *Header) Draw(screen tcell.Screen) {
+	h.expireNotice()
 	h.Box.DrawForSubclass(screen, h)
 	x, y, width, _ := h.GetInnerRect()
 	if width <= 0 {

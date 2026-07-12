@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/buildid"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 )
@@ -67,8 +68,13 @@ type Supervisor struct {
 	lockFile *os.File // singleton flock held for the supervisor's lifetime
 
 	// Boot identity — recorded once at NewSupervisor so Hello can report it.
+	// binaryHash is the SHA-256 content hash of the supervisor's own resolved
+	// executable (the skew signal the daemon relays); vcs is the display-only
+	// commit SHA + dirty flag.
 	binaryPath  string
 	binaryMtime time.Time
+	binaryHash  string
+	vcs         buildid.VCS
 	bootedAt    time.Time
 }
 
@@ -86,8 +92,9 @@ func NewSupervisor(cfgFn func() config.Config) *Supervisor {
 		bootedAt: time.Now(),
 	}
 
-	// Capture the binary path + mtime at startup (mirrors Daemon.New) so Hello
-	// can report supervisor staleness to a future daemon.
+	// Capture the binary path + mtime + content hash at startup (mirrors
+	// Daemon.New) so Hello can report supervisor staleness to the daemon, which
+	// relays it to the TUI (D1). The hash is the gating signal; VCS is display.
 	if exe, err := os.Executable(); err == nil {
 		if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
 			exe = resolved
@@ -96,7 +103,11 @@ func NewSupervisor(cfgFn func() config.Config) *Supervisor {
 		if st, serr := os.Stat(exe); serr == nil {
 			s.binaryMtime = st.ModTime()
 		}
+		if h, herr := BinaryHashFile(exe); herr == nil {
+			s.binaryHash = h
+		}
 	}
+	s.vcs = buildid.Current()
 
 	if cfgFn == nil {
 		cfgFn = config.DefaultConfig
@@ -165,6 +176,8 @@ func (s *supervisorRPC) Hello(_ *Empty, resp *HelloResp) error {
 	resp.ProtocolVersion = ProtocolVersion
 	resp.BinaryPath = s.sup.binaryPath
 	resp.BinaryMtime = s.sup.binaryMtime
+	resp.BinaryHash = s.sup.binaryHash
+	resp.VCS = s.sup.vcs
 	resp.BootedAt = s.sup.bootedAt
 	return nil
 }

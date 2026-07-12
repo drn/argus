@@ -724,6 +724,98 @@ func (d *DB) CreateHeraRoleWithBinding(roleIn CreateHeraRoleInput, taskID, workt
 	return role, binding, nil
 }
 
+// HeraEndReasonMoved is stamped on a binding ended by MoveHeraBinding — the
+// caller relocated to a different orchestrator via the explicit hera_move
+// tool (fix-hera-join-move-binding), as opposed to a normal leave/delete.
+const HeraEndReasonMoved = "moved"
+
+// MoveHeraBindingResult reports the outcome of MoveHeraBinding: the ended
+// binding's orchestrator and role name (so the MCP layer can report what
+// moved) alongside the newly created role and binding under the target
+// orchestrator.
+type MoveHeraBindingResult struct {
+	OldOrchestratorName string
+	OldRoleName         string
+	NewRole             *HeraRole
+	NewBinding          *HeraBinding
+}
+
+// MoveHeraBinding ends oldBindingID (stamping end_reason "moved") and inserts
+// a new role+binding under the target orchestrator, in ONE transaction — the
+// move-capable counterpart to CreateHeraRoleWithBinding: same insert-role,
+// insert-binding pattern, with an extra end-binding step first so a caller
+// never ends up bound in neither place, nor bound in both. Returns
+// ErrHeraNotFound if oldBindingID does not name a currently-live binding
+// (already ended, or never existed); the whole transaction rolls back on any
+// failure, so a not-found or a doomed role/binding insert leaves the old
+// binding live and untouched.
+func (d *DB) MoveHeraBinding(oldBindingID int64, roleIn CreateHeraRoleInput, taskID, worktreePath string) (*MoveHeraBindingResult, error) {
+	var result MoveHeraBindingResult
+	err := d.WithTx(func(tx *sql.Tx) error {
+		now := formatTime(time.Now())
+
+		var oldRoleID int64
+		if err := tx.QueryRow(
+			`SELECT role_id FROM hera_bindings WHERE id=? AND ended_at IS NULL`, oldBindingID,
+		).Scan(&oldRoleID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrHeraNotFound
+			}
+			return fmt.Errorf("move hera binding: lookup old binding: %w", err)
+		}
+
+		var oldRoleName string
+		var oldOrchID int64
+		if err := tx.QueryRow(
+			`SELECT name, orchestrator_id FROM hera_roles WHERE id=?`, oldRoleID,
+		).Scan(&oldRoleName, &oldOrchID); err != nil {
+			return fmt.Errorf("move hera binding: lookup old role: %w", err)
+		}
+		var oldOrchName string
+		if err := tx.QueryRow(
+			`SELECT name FROM hera_orchestrators WHERE id=?`, oldOrchID,
+		).Scan(&oldOrchName); err != nil {
+			return fmt.Errorf("move hera binding: lookup old orchestrator: %w", err)
+		}
+
+		res, err := tx.Exec(
+			`UPDATE hera_bindings SET ended_at=?, end_reason=? WHERE id=? AND ended_at IS NULL`,
+			now, HeraEndReasonMoved, oldBindingID)
+		if err != nil {
+			return fmt.Errorf("move hera binding: end old binding: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrHeraNotFound
+		}
+
+		r, err := insertHeraRole(tx, roleIn, now)
+		if err != nil {
+			return err
+		}
+		b, err := insertHeraBinding(tx, CreateHeraBindingInput{
+			RoleID:         r.ID,
+			OrchestratorID: r.OrchestratorID,
+			ArgusTaskID:    taskID,
+			WorktreePath:   worktreePath,
+		}, now)
+		if err != nil {
+			return err
+		}
+
+		result = MoveHeraBindingResult{
+			OldOrchestratorName: oldOrchName,
+			OldRoleName:         oldRoleName,
+			NewRole:             r,
+			NewBinding:          b,
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // EndHeraBinding stamps ended_at and end_reason on a live binding. Returns
 // ErrHeraNotFound if no live binding has that id.
 func (d *DB) EndHeraBinding(bindingID int64, reason string) error {
@@ -912,6 +1004,89 @@ func (d *DB) RollHeraWorkerToReview(taskID string) (bool, error) {
 // soft-fail (the roll succeeds even if the meta write fails).
 func (d *DB) RollHeraWorkerFailed(taskID string) (bool, error) {
 	return d.rollHeraWorkerToReviewInner(taskID, false)
+}
+
+// ReviveHeraWorkerToInProgress is the precise inverse of RollHeraWorkerToReview
+// (BUG-B): it restores a worker-bound task from in_review back to in_progress
+// when its session is genuinely revived/resumed and working again. It is the
+// SINGLE shared helper behind BOTH revive triggers — the TUI's reviveHeraWorker
+// (KickRerender on a suspended worker) and the daemon's supervisor-mode startup
+// reattach (a session the supervisor confirms still alive) — so the two cannot
+// drift.
+//
+// It acts ONLY when the task holds a live worker-kind binding AND is currently
+// in StatusInReview AND is NOT awaiting close-out. A worker is awaiting close-out
+// — and is LEFT in in_review — when it carries meta:hera.ready_to_close (the
+// BUG-050 done / clean-exit stamp set by RollHeraWorkerToReview) OR any of its
+// live worker roles has a terminal role-status (done or failed). That guard is
+// what preserves the #707 / BUG-050 invariant: a genuinely-finished worker never
+// auto-resumes — even though its idle session is still alive — because a worker
+// never self-completes; the coordinator/human closes it out or decides on a
+// failure. It never clobbers a complete/pending/in_progress task and never
+// touches the live session (DB status only). Returns (true, nil) when it
+// restored the task, (false, nil) on any no-op. Idempotent.
+func (d *DB) ReviveHeraWorkerToInProgress(taskID string) (bool, error) {
+	worker, err := d.TaskHoldsLiveHeraWorkerBinding(taskID)
+	if err != nil {
+		return false, err
+	}
+	if !worker {
+		return false, nil
+	}
+	t, err := d.Get(taskID)
+	if err != nil {
+		return false, err
+	}
+	if t == nil || t.Status != model.StatusInReview {
+		return false, nil // only un-roll a review-parked worker; never clobber complete/pending/in_progress
+	}
+	awaiting, err := d.heraWorkerAwaitingCloseout(taskID)
+	if err != nil {
+		return false, err
+	}
+	if awaiting {
+		return false, nil // genuinely done/failed — leave for coordinator close-out (#707 / BUG-050)
+	}
+	if err := d.SetStatus(taskID, model.StatusInProgress); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// heraWorkerAwaitingCloseout reports whether a worker-bound task is in the
+// terminal "awaiting coordinator close-out" state: either it carries
+// meta:hera.ready_to_close=true (RollHeraWorkerToReview's done / clean-exit
+// stamp) or any of its live worker roles has a terminal role-status (done or
+// failed). Used by ReviveHeraWorkerToInProgress to refuse to un-roll a
+// genuinely-finished worker. A role with no status row, or whose status is
+// non-terminal (idle/working/blocked), does not count.
+func (d *DB) heraWorkerAwaitingCloseout(taskID string) (bool, error) {
+	meta, err := d.ListMeta(taskID, HeraMetaNamespace)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range meta {
+		if e.Key == HeraMetaKeyReadyToClose && e.Value == "true" {
+			return true, nil
+		}
+	}
+	bindings, err := d.ListHeraLiveBindingsByTask(taskID)
+	if err != nil {
+		return false, err
+	}
+	for _, b := range bindings {
+		rs, err := d.HeraRoleStatusFor(b.RoleID)
+		if err != nil {
+			if errors.Is(err, ErrHeraNotFound) {
+				continue // no status row yet — not terminal
+			}
+			return false, err
+		}
+		if rs.Status == HeraStatusDone || rs.Status == HeraStatusFailed {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // ClearHeraReadyToClose removes the meta:hera.ready_to_close mark on taskID —

@@ -21,6 +21,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/api"
+	"github.com/drn/argus/internal/buildid"
 	"github.com/drn/argus/internal/clipboard"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/events"
@@ -29,6 +30,7 @@ import (
 	"github.com/drn/argus/internal/heragater"
 	"github.com/drn/argus/internal/inject"
 	injectcodex "github.com/drn/argus/internal/inject/codex"
+	injectopencode "github.com/drn/argus/internal/inject/opencode"
 	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/mcp"
 	"github.com/drn/argus/internal/model"
@@ -130,6 +132,7 @@ type Daemon struct {
 	binaryPath  string
 	binaryMtime time.Time
 	binaryHash  string
+	vcs         buildid.VCS // daemon's own commit SHA + dirty flag; display-only (blank outside a git tree)
 	bootedAt    time.Time
 
 	// prFetch is the legacy single-branch fetch seam, retained as a fallback /
@@ -255,6 +258,7 @@ func New(database *db.DB) *Daemon {
 			d.binaryHash = h
 		}
 	}
+	d.vcs = buildid.Current()
 
 	// Create the in-process runner with an onFinish callback that builds the
 	// ExitInfo and hands it to handleSessionExit (the shared DB-side exit sink).
@@ -1008,6 +1012,17 @@ func (d *Daemon) Serve(sockPath string) error {
 	// directly instead of racing the ticker.
 	go d.runPRPoller()
 
+	// Host-suspend watchdog (detect-host-suspend). Detects a laptop sleep /
+	// hibernate / VM pause from a large wall-clock gap between its own ticks and
+	// broadcasts an advisory ARGUS_HOST_SUSPENDED note to every running task, so a
+	// hera coordinator does not misread the concurrent silence (its workers were
+	// frozen alongside it) as a stuck worker and spawn duplicate retry nodes. Runs
+	// UNCONDITIONALLY (not gated on cfg.Hera.Enabled): a bare-worker coordinator
+	// misjudges the same way, and the note is harmless for a non-coordinator.
+	// Per-tick logic is factored into hostSuspendTick so tests drive one pass with
+	// synthetic times instead of sleeping.
+	go d.runHostSuspendWatcher()
+
 	// Hera plan-DAG gater (add-hera-plan-substrate). Runs whenever hera is
 	// enabled, independent of the KB/MCP server: it materializes already-authored
 	// planned nodes whose blockers have all reached role-status done. Inert when no
@@ -1091,6 +1106,11 @@ func (d *Daemon) Serve(sockPath string) error {
 					slog.Error("inject codex", "err", err)
 				} else {
 					slog.Info("inject codex", "port", actualPort)
+				}
+				if err := injectopencode.InjectGlobal(actualPort); err != nil {
+					slog.Error("inject opencode", "err", err)
+				} else {
+					slog.Info("inject opencode", "port", actualPort)
 				}
 				if err := inject.SetClaudeProjectMcpTrust(); err != nil {
 					slog.Error("inject claude trust", "err", err)

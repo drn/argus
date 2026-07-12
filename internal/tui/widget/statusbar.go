@@ -2,12 +2,21 @@ package widget
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
+
+// StatusNoticeTTL is how long a transient notice set via SetError / SetInfo
+// stays visible before the status bar auto-reverts to its default task counts
+// (BUG-030). The revert is realized lazily in Draw — the app's unconditional
+// ~1s onTick QueueUpdateDraw repaints the bar within a tick of expiry, so no
+// notice can linger forever on a static screen. Never force the repaint with
+// screen.Sync() (see gotchas/ui-threading.md).
+const StatusNoticeTTL = 15 * time.Second
 
 // PluginHint is one bottom-bar hint a plugin contributes while it holds the
 // keyboard. It is a widget-local mirror of the app's HotkeyItem (bar:true
@@ -26,6 +35,14 @@ type StatusBar struct {
 	errMsg    string
 	infoMsg   string
 	activeTab Tab
+
+	// Transient-notice expiry (BUG-030). errMsg/infoMsg auto-revert to the
+	// default task counts once now() passes the matching expiresAt. Zero value
+	// means "no pending expiry". now is injectable so tests exercise expiry
+	// without a real 15s sleep; it defaults to time.Now.
+	errExpiresAt  time.Time
+	infoExpiresAt time.Time
+	now           func() time.Time
 
 	// heraFocus tracks which Hera region has focus (0=rail, 1=coord, 2=agent),
 	// matching hera.Focus iota order. Used to pick focus-aware hint sets while
@@ -58,6 +75,7 @@ func NewStatusBar() *StatusBar {
 	sb := &StatusBar{
 		Box:     tview.NewBox(),
 		running: make(map[string]bool),
+		now:     time.Now,
 	}
 	return sb
 }
@@ -111,41 +129,81 @@ func (sb *StatusBar) PluginMode() (active bool, title string, hints []PluginHint
 	return sb.pluginActive, sb.pluginTitle, sb.pluginHints
 }
 
-// SetError sets an error message to display.
+// clock returns the widget's time source, falling back to time.Now if the
+// StatusBar was built without NewStatusBar (e.g. a zero-value literal).
+func (sb *StatusBar) clock() time.Time {
+	if sb.now == nil {
+		return time.Now()
+	}
+	return sb.now()
+}
+
+// expireNotices clears any transient notice whose TTL has elapsed (BUG-030).
+// Called on every read path (Draw, Error, Info) so a stale notice is dropped
+// the moment a repaint or accessor observes it past expiry. Runs only on the
+// tview main goroutine (like all StatusBar mutation), so no lock is needed.
+func (sb *StatusBar) expireNotices() {
+	now := sb.clock()
+	if sb.errMsg != "" && !sb.errExpiresAt.IsZero() && !now.Before(sb.errExpiresAt) {
+		sb.errMsg = ""
+		sb.errExpiresAt = time.Time{}
+	}
+	if sb.infoMsg != "" && !sb.infoExpiresAt.IsZero() && !now.Before(sb.infoExpiresAt) {
+		sb.infoMsg = ""
+		sb.infoExpiresAt = time.Time{}
+	}
+}
+
+// SetError sets an error message to display. The notice shows instantly and
+// auto-reverts to the default task counts after StatusNoticeTTL (BUG-030);
+// each call resets that window so a fresh notice always gets its full TTL.
 func (sb *StatusBar) SetError(msg string) {
 	sb.errMsg = msg
+	sb.errExpiresAt = sb.clock().Add(StatusNoticeTTL)
 }
 
 // ClearError clears the error message.
 func (sb *StatusBar) ClearError() {
 	sb.errMsg = ""
+	sb.errExpiresAt = time.Time{}
 }
 
 // Error returns the currently-displayed error message ("" if none). Exposed
 // for tests that assert error-path wiring without scraping the rendered row.
 func (sb *StatusBar) Error() string {
+	sb.expireNotices()
 	return sb.errMsg
 }
 
-// SetInfo sets an informational (non-error) status message.
+// SetInfo sets an informational (non-error) status message. Like SetError it
+// shows instantly and auto-expires after StatusNoticeTTL (BUG-030).
 func (sb *StatusBar) SetInfo(msg string) {
 	sb.infoMsg = msg
+	sb.infoExpiresAt = sb.clock().Add(StatusNoticeTTL)
 }
 
 // ClearInfo clears the informational status message.
 func (sb *StatusBar) ClearInfo() {
 	sb.infoMsg = ""
+	sb.infoExpiresAt = time.Time{}
 }
 
 // Info returns the currently-displayed informational message ("" if none).
 // Exposed for tests that assert info-path wiring without scraping the row,
 // mirroring Error().
 func (sb *StatusBar) Info() string {
+	sb.expireNotices()
 	return sb.infoMsg
 }
 
 // Draw renders the status bar.
 func (sb *StatusBar) Draw(screen tcell.Screen) {
+	// Drop any transient notice whose TTL has elapsed (BUG-030) before the
+	// left-side branch reads errMsg/infoMsg, so an expired notice repaints as
+	// the default counts. The app's ~1s onTick QueueUpdateDraw guarantees this
+	// Draw runs within a tick of expiry even on an otherwise-static screen.
+	sb.expireNotices()
+
 	sb.Box.DrawForSubclass(screen, sb)
 	x, y, width, _ := sb.GetInnerRect()
 	if width <= 0 {
@@ -211,12 +269,12 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 	case TabSettings:
 		hints = []hint{
 			{"n", "new project"}, {"d", "del"},
-			{"1", "tasks"}, {"2", "hera"}, {"?", "help"}, {"q", "quit"},
+			{"1", "tasks"}, {"2", "projects"}, {"?", "help"}, {"q", "quit"},
 		}
 	case TabHera:
 		// Focus-aware: rail focus shows mutation keys; pane focus shows pane keys.
 		// heraFocus == 0 → rail (default); 1 → coord pane; 2 → agent pane.
-		// Key names match modal/help.go "Hera View (rail)" exactly.
+		// Key names match modal/help.go "Projects View (rail)" exactly.
 		if sb.heraFocus == 0 {
 			hints = []hint{
 				{"j/k", "nav"}, {"SP", "fold"}, {"←", "parent"}, {"/", "filter"},
@@ -238,7 +296,7 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 	default:
 		hints = []hint{
 			{"n", "new"}, {"RET", "attach"}, {"s", "status"}, {"r", "rename"},
-			{"^p", "PR"}, {"^f", "fork"}, {"^d", "del"}, {"^r", "prune"}, {"H", "hera-workers"}, {"2", "hera"}, {"3", "settings"},
+			{"^p", "PR"}, {"^f", "fork"}, {"^d", "del"}, {"^r", "prune"}, {"H", "hera-workers"}, {"2", "projects"}, {"3", "settings"},
 			{"?", "help"}, {"q", "quit"},
 		}
 	}

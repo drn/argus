@@ -4,8 +4,75 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/testutil"
 )
+
+// TestIdlePush_ContentIdleFiresExactlyOnce is the BUG-036 make-or-break: a
+// fullscreen (alt-screen) agent that NEVER reaches the raw-byte idle set but
+// goes content-idle must fire idle-push EXACTLY ONCE, not once per tick. It
+// drives the SAME composition idleWatcherTick uses — agent.ContentIdle to
+// augment the idle set, then shouldFireIdlePush — across many stable ticks. The
+// once-only guarantee comes from shouldFireIdlePush's per-work-cycle gate (no
+// re-push until new input), so a content-idle signal re-asserted every tick
+// cannot storm.
+func TestIdlePush_ContentIdleFiresExactlyOnce(t *testing.T) {
+	state := newIdleWatcherState()
+	screen := &agent.ScreenRenderer{}
+	size := func(string) (int, int) { return 80, 24 }
+	// Parked fullscreen frame: stable emulated screen, no "working" affordance.
+	tailOf := func(string) []byte { return altScreenQuestionTail("8s", "✻", false) }
+	lastInput := fixedNow.Add(-time.Minute) // the user kicked off work
+	running := []string{"w"}
+
+	fires := 0
+	for i := 0; i < 6; i++ {
+		now := fixedNow.Add(time.Duration(i) * idlePushTickStep)
+		// Never raw-idle (fullscreen repaints forever) → empty rawIdle set.
+		ci, next := agent.ContentIdle(running, map[string]bool{}, tailOf, size, screen, state.contentIdle, now)
+		state.contentIdle = next
+		idleSet := map[string]bool{}
+		for _, id := range ci {
+			idleSet[id] = true
+		}
+		if shouldFireIdlePush(state, "w", idleSet["w"], lastInput, now) {
+			fires++
+		}
+	}
+	testutil.Equal(t, fires, 1)
+}
+
+// TestIdlePush_WorkingFullscreenNeverFires guards the busy direction: a
+// fullscreen agent that keeps showing the "working" affordance is never
+// content-idle, so it never fires a push no matter how many ticks pass.
+func TestIdlePush_WorkingFullscreenNeverFires(t *testing.T) {
+	state := newIdleWatcherState()
+	screen := &agent.ScreenRenderer{}
+	size := func(string) (int, int) { return 80, 24 }
+	tailOf := func(string) []byte { return altScreenQuestionTail("8s", "✻", true) } // "esc to interrupt" present
+	lastInput := fixedNow.Add(-time.Minute)
+	running := []string{"w"}
+
+	fires := 0
+	for i := 0; i < 6; i++ {
+		now := fixedNow.Add(time.Duration(i) * idlePushTickStep)
+		ci, next := agent.ContentIdle(running, map[string]bool{}, tailOf, size, screen, state.contentIdle, now)
+		state.contentIdle = next
+		idleSet := map[string]bool{}
+		for _, id := range ci {
+			idleSet[id] = true
+		}
+		if shouldFireIdlePush(state, "w", idleSet["w"], lastInput, now) {
+			fires++
+		}
+	}
+	testutil.Equal(t, fires, 0)
+}
+
+// idlePushTickStep is the per-tick clock advance used by the content-idle
+// idle-push tests — comfortably past the idle threshold so a stable screen is
+// recognized as content-idle on the second observation.
+var idlePushTickStep = 5 * time.Second
 
 // fixedNow is a stable wall clock for tests so pushedAt comparisons are
 // deterministic. The exact value doesn't matter; only ordering between

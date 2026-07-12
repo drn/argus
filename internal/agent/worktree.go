@@ -41,6 +41,13 @@ var multiDash = regexp.MustCompile(`-+`)
 // maxBranchNameLen caps the length of sanitized branch/task names.
 const maxBranchNameLen = 30
 
+// SafeName sanitizes an arbitrary user-supplied task name into the same
+// branch/worktree-safe slug that auto-derived names pass through inside
+// CreateWorktree (sanitizeBranchName). Exported for the new-task form's optional
+// name field, which sanitizes a user-typed name before it becomes a task / role
+// / orchestrator name.
+func SafeName(name string) string { return sanitizeBranchName(name) }
+
 func sanitizeBranchName(name string) string {
 	// invalidBranchChars covers ., {, }, /, and others, so the regex+multiDash
 	// pass alone subsumes the historical string-level guards (Trim ".", Trim

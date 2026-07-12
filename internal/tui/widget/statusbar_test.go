@@ -2,6 +2,7 @@ package widget
 
 import (
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
@@ -64,6 +65,111 @@ func TestStatusBar_ErrorTakesPrecedenceOverInfo(t *testing.T) {
 	testutil.Contains(t, content, "working…")
 
 	screen.Fini()
+}
+
+// TestStatusBar_ErrorAutoExpires asserts that an error notice set via SetError
+// reverts to the default task counts once StatusNoticeTTL has elapsed, without
+// any ClearError call (BUG-030). Uses an injectable clock — no real sleep.
+func TestStatusBar_ErrorAutoExpires(t *testing.T) {
+	sb := NewStatusBar()
+	sb.SetRect(0, 0, 80, 1)
+	base := time.Unix(1000, 0)
+	sb.now = func() time.Time { return base }
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, screen.Init())
+	screen.SetSize(80, 1)
+	defer screen.Fini()
+
+	// Notice shows instantly.
+	sb.SetError("J: select a freelancer or a coordinator to adopt")
+	sb.Draw(screen)
+	screen.Show()
+	testutil.Contains(t, readScreenRow(screen, 0, 80), "select a freelancer")
+
+	// Still showing just before expiry.
+	sb.now = func() time.Time { return base.Add(StatusNoticeTTL - time.Second) }
+	sb.Draw(screen)
+	screen.Show()
+	testutil.Contains(t, readScreenRow(screen, 0, 80), "select a freelancer")
+
+	// Past expiry: reverts to default counts on its own (no ClearError).
+	sb.now = func() time.Time { return base.Add(StatusNoticeTTL + time.Second) }
+	sb.Draw(screen)
+	screen.Show()
+	row := readScreenRow(screen, 0, 80)
+	testutil.Contains(t, row, "0 active")
+	if contains(row, "select a freelancer") {
+		t.Fatalf("error notice did not auto-expire: %q", row)
+	}
+	// Accessor reflects the expiry too.
+	testutil.Equal(t, sb.Error(), "")
+}
+
+// TestStatusBar_InfoAutoExpires mirrors the error case for SetInfo.
+func TestStatusBar_InfoAutoExpires(t *testing.T) {
+	sb := NewStatusBar()
+	sb.SetRect(0, 0, 80, 1)
+	base := time.Unix(2000, 0)
+	sb.now = func() time.Time { return base }
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, screen.Init())
+	screen.SetSize(80, 1)
+	defer screen.Fini()
+
+	sb.SetInfo("Forked (remote: source context not carried)")
+	sb.Draw(screen)
+	screen.Show()
+	testutil.Contains(t, readScreenRow(screen, 0, 80), "Forked")
+
+	sb.now = func() time.Time { return base.Add(StatusNoticeTTL + time.Second) }
+	sb.Draw(screen)
+	screen.Show()
+	row := readScreenRow(screen, 0, 80)
+	testutil.Contains(t, row, "0 active")
+	if contains(row, "Forked") {
+		t.Fatalf("info notice did not auto-expire: %q", row)
+	}
+	testutil.Equal(t, sb.Info(), "")
+}
+
+// TestStatusBar_SecondNoticeResetsExpiry asserts the expiry window is reset
+// (not stacked, not cleared early) when a second notice arrives mid-window:
+// the second notice lives a full StatusNoticeTTL from when IT was set.
+func TestStatusBar_SecondNoticeResetsExpiry(t *testing.T) {
+	sb := NewStatusBar()
+	sb.SetRect(0, 0, 80, 1)
+	base := time.Unix(3000, 0)
+	sb.now = func() time.Time { return base }
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, screen.Init())
+	screen.SetSize(80, 1)
+	defer screen.Fini()
+
+	sb.SetError("first")
+
+	// Halfway through the first window, set a second notice — resets the clock.
+	half := base.Add(StatusNoticeTTL / 2)
+	sb.now = func() time.Time { return half }
+	sb.SetError("second")
+
+	// At base+TTL+1s the FIRST window would have lapsed, but the second notice
+	// was set at base+TTL/2 so it is still well within its own window.
+	sb.now = func() time.Time { return base.Add(StatusNoticeTTL + time.Second) }
+	sb.Draw(screen)
+	screen.Show()
+	testutil.Contains(t, readScreenRow(screen, 0, 80), "second")
+
+	// Only after a full TTL past the SECOND set does it expire.
+	sb.now = func() time.Time { return half.Add(StatusNoticeTTL + time.Second) }
+	sb.Draw(screen)
+	screen.Show()
+	row := readScreenRow(screen, 0, 80)
+	if contains(row, "second") {
+		t.Fatalf("second notice did not honor its reset window: %q", row)
+	}
 }
 
 func TestStatusBar_PluginMode_RendersBarHintsAndExitHint(t *testing.T) {

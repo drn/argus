@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -48,8 +49,14 @@ type Session struct {
 	initialCols uint16    // PTY width at StartSession; never mutated after init
 	initialRows uint16    // PTY height at StartSession; never mutated after init
 	lastOutput  time.Time // last time output was received from PTY
-	lastInput   time.Time // last time WriteInput was called; idle-push gate uses this to detect new work cycles
-	ptmxClosed  bool      // true after waitLoop closes ptmx; guards Resize/WriteInput
+	lastInput   time.Time // last time ANY input was written (WriteInput or WriteInputSystem); idle-push gate uses this to detect new work cycles
+	// lastUserInput is the last time a USER keystroke was written (WriteInput
+	// only — NOT system delivery via WriteInputSystem). The needs-input
+	// clear-on-input filter (BUG-034) reads this so a reliable-notify delivery
+	// (hera/task message: Ctrl+U + text + CR) does not masquerade as the user
+	// answering a prompt and wrongly clear the "(?)" indicator.
+	lastUserInput time.Time
+	ptmxClosed    bool // true after waitLoop closes ptmx; guards Resize/WriteInput
 
 	logFile *os.File // PTY output log for post-session scrollback; nil if unavailable
 }
@@ -488,12 +495,16 @@ func (s *Session) Signal(sig os.Signal) error {
 	return s.Cmd.Process.Signal(sig)
 }
 
-// Stop sends SIGTERM.
+// Stop sends SIGTERM. Idempotent: if the process exited on its own between
+// the liveness check and the signal call, that's a successful stop, not an error.
 func (s *Session) Stop() error {
 	if !s.Alive() {
 		return nil
 	}
-	return s.Signal(syscall.SIGTERM)
+	if err := s.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return err
+	}
+	return nil
 }
 
 // RecentOutput returns the last n bytes from the ring buffer.
@@ -588,6 +599,26 @@ func (s *Session) InitialPTYSize() (cols, rows int) {
 func (s *Session) WriteInput(p []byte) (int, error) {
 	n, err := s.ptmx.Write(p)
 	if err == nil {
+		now := time.Now()
+		s.mu.Lock()
+		s.lastInput = now
+		s.lastUserInput = now
+		s.mu.Unlock()
+	}
+	return n, err
+}
+
+// WriteInputSystem writes bytes to the PTY exactly like WriteInput but records
+// only the work-cycle timestamp (lastInput), NOT the user-input timestamp
+// (lastUserInput). It is the path for SYSTEM-injected input — reliable-notify
+// pane delivery (hera/task messages) — which advances the agent's work cycle
+// (so the idle-push gate still sees new work) but must NOT count as the user
+// answering a prompt (so it never clears the needs-input "(?)" flag; BUG-034).
+//
+// Records the timestamp only on a successful write, mirroring WriteInput.
+func (s *Session) WriteInputSystem(p []byte) (int, error) {
+	n, err := s.ptmx.Write(p)
+	if err == nil {
 		s.mu.Lock()
 		s.lastInput = time.Now()
 		s.mu.Unlock()
@@ -595,10 +626,20 @@ func (s *Session) WriteInput(p []byte) (int, error) {
 	return n, err
 }
 
-// LastInput returns the wall-clock time of the most recent WriteInput call,
-// or the zero time if WriteInput has never been called for this session.
+// LastInput returns the wall-clock time of the most recent input write (user or
+// system), or the zero time if no input has ever been written.
 func (s *Session) LastInput() time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastInput
+}
+
+// LastUserInput returns the wall-clock time of the most recent USER keystroke
+// (WriteInput), or the zero time if the user has never typed. System delivery
+// (WriteInputSystem) does NOT advance it. The needs-input clear-on-input filter
+// reads this so only a genuine user response clears the "(?)" flag (BUG-034).
+func (s *Session) LastUserInput() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastUserInput
 }

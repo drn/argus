@@ -194,10 +194,10 @@ func TestHeraActions_NewTaskOverrideInvokesOnDone(t *testing.T) {
 	app := New(d, agent.NewRunner(nil), false)
 
 	var gotTask *model.Task
-	var gotProj string
-	app.openHeraNewTaskForm(" Test ", "p", false, func(task *model.Task, project string) {
+	var gotName string
+	app.openHeraNewTaskForm(" Test ", "p", false, func(task *model.Task, name string) {
 		gotTask = task
-		gotProj = project
+		gotName = name
 	})
 	testutil.Equal(t, app.mode, modeNewTask)
 
@@ -208,7 +208,8 @@ func TestHeraActions_NewTaskOverrideInvokesOnDone(t *testing.T) {
 	app.handleNewTaskKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 
 	testutil.Equal(t, gotTask != nil, true)
-	testutil.Equal(t, gotProj, "p")
+	// No name typed → the callback's name param is blank (user-chosen signal off).
+	testutil.Equal(t, gotName, "")
 	testutil.Equal(t, gotTask.Prompt, "do it")
 	// Form closed, override cleared, return page reset.
 	testutil.Equal(t, app.mode, modeTaskList)

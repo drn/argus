@@ -8,6 +8,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/keymap"
 	"github.com/drn/argus/internal/tui/modal"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
@@ -444,8 +445,8 @@ func TestSmoke_HeraRemoteModeMutationKeysInert(t *testing.T) {
 // section so the bindings are discoverable.
 func TestSmoke_HelpListsHeraKeys(t *testing.T) {
 	found := false
-	for _, sec := range modal.HelpSections {
-		if sec.Title == "Hera View (rail)" {
+	for _, sec := range modal.SectionsFromKeymap(keymap.DefaultKeymap()) {
+		if sec.Title == "Projects View (rail)" {
 			found = true
 		}
 	}

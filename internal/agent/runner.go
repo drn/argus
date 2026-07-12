@@ -383,6 +383,16 @@ func (r *Runner) HasPendingRestart(taskID string) bool {
 	return ok
 }
 
+// SetSessionForTest injects a live *Session into the runner's map without
+// going through Start (which needs a backend command + worktree). Tests use it
+// to drive watcher / notify paths against a real PTY session (e.g. exec sleep)
+// whose WriteInput / LastInput / LastUserInput timestamps they control.
+func (r *Runner) SetSessionForTest(taskID string, sess *Session) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sessions[taskID] = sess
+}
+
 // SetPendingRestartForTest injects a pendingRestart entry without going
 // through the full Stop+exit-goroutine dance. Tests use this to exercise code
 // paths that consult HasPendingRestart / PendingRestartIDs without depending
@@ -424,7 +434,14 @@ func (r *Runner) Stop(taskID string) error {
 	r.stopped[taskID] = true
 	r.mu.Unlock()
 	slog.Info("runner.Stop", "task", taskID, "pid", sess.PID())
-	return sess.Stop()
+	err := sess.Stop()
+	// Best-effort cleanup for a session that already detached itself to
+	// Claude Code's own background-session supervisor (see
+	// context/knowledge/gotchas/daemon-rpc.md) — the SIGTERM above can never
+	// reach it. Fire-and-forget so a claude CLI round-trip never adds
+	// latency to this call.
+	go reapOrphanedClaudeSessions(taskID, sess.WorkDir())
+	return err
 }
 
 // StopAll terminates all running sessions.
