@@ -43,6 +43,7 @@ Hera orchestration + task-creation invariants that caused bugs when violated.
 - **`SetHeraService` must be called before `ListenAndServe`** — `heraSvc` and `heraStore` are read at request time without a mutex, following the `SetMessageManager` precedent. All `Set*` calls must precede server start.
 - **`SetMeta` calls are best-effort soft-fail.** Any failure in `SetMeta` (task_meta mirror) logs a warning but never returns an error to the caller and never undoes the primary DB write. This is structural, not an oversight — meta is a display aid, not authoritative state.
 - **`resolveCallerRole` with `orchestratorName=""` returns `ErrHeraAmbiguous` when 2+ live bindings match the task.** Callers get a human-readable list of orchestrator names. Supply `orchestrator=<name>` to disambiguate. This mirrors the `HeraLiveBindingByTask` M1 rule.
+- **`hera_join` attach mode now rejects+redirects instead of silently double-binding (fix-hera-join-move-binding).** When the caller already holds a live binding under a DIFFERENT orchestrator, `toolHeraJoin` errors before creating anything, pointing the caller at the new `hera_move` tool (`toolHeraMove` + DB-layer `MoveHeraBinding`, which ENDS the old binding with `end_reason="moved"` and creates the new role+binding in one tx — never a second live binding). `hera_new_orchestrator`'s worker self-promotion path remains the ONLY sanctioned way a task holds 2+ live bindings simultaneously.
 
 ## Hera born-bound spawn + auto-adopt (M4)
 

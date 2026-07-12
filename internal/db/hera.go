@@ -694,6 +694,98 @@ func (d *DB) CreateHeraRoleWithBinding(roleIn CreateHeraRoleInput, taskID, workt
 	return role, binding, nil
 }
 
+// HeraEndReasonMoved is stamped on a binding ended by MoveHeraBinding — the
+// caller relocated to a different orchestrator via the explicit hera_move
+// tool (fix-hera-join-move-binding), as opposed to a normal leave/delete.
+const HeraEndReasonMoved = "moved"
+
+// MoveHeraBindingResult reports the outcome of MoveHeraBinding: the ended
+// binding's orchestrator and role name (so the MCP layer can report what
+// moved) alongside the newly created role and binding under the target
+// orchestrator.
+type MoveHeraBindingResult struct {
+	OldOrchestratorName string
+	OldRoleName         string
+	NewRole             *HeraRole
+	NewBinding          *HeraBinding
+}
+
+// MoveHeraBinding ends oldBindingID (stamping end_reason "moved") and inserts
+// a new role+binding under the target orchestrator, in ONE transaction — the
+// move-capable counterpart to CreateHeraRoleWithBinding: same insert-role,
+// insert-binding pattern, with an extra end-binding step first so a caller
+// never ends up bound in neither place, nor bound in both. Returns
+// ErrHeraNotFound if oldBindingID does not name a currently-live binding
+// (already ended, or never existed); the whole transaction rolls back on any
+// failure, so a not-found or a doomed role/binding insert leaves the old
+// binding live and untouched.
+func (d *DB) MoveHeraBinding(oldBindingID int64, roleIn CreateHeraRoleInput, taskID, worktreePath string) (*MoveHeraBindingResult, error) {
+	var result MoveHeraBindingResult
+	err := d.WithTx(func(tx *sql.Tx) error {
+		now := formatTime(time.Now())
+
+		var oldRoleID int64
+		if err := tx.QueryRow(
+			`SELECT role_id FROM hera_bindings WHERE id=? AND ended_at IS NULL`, oldBindingID,
+		).Scan(&oldRoleID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrHeraNotFound
+			}
+			return fmt.Errorf("move hera binding: lookup old binding: %w", err)
+		}
+
+		var oldRoleName string
+		var oldOrchID int64
+		if err := tx.QueryRow(
+			`SELECT name, orchestrator_id FROM hera_roles WHERE id=?`, oldRoleID,
+		).Scan(&oldRoleName, &oldOrchID); err != nil {
+			return fmt.Errorf("move hera binding: lookup old role: %w", err)
+		}
+		var oldOrchName string
+		if err := tx.QueryRow(
+			`SELECT name FROM hera_orchestrators WHERE id=?`, oldOrchID,
+		).Scan(&oldOrchName); err != nil {
+			return fmt.Errorf("move hera binding: lookup old orchestrator: %w", err)
+		}
+
+		res, err := tx.Exec(
+			`UPDATE hera_bindings SET ended_at=?, end_reason=? WHERE id=? AND ended_at IS NULL`,
+			now, HeraEndReasonMoved, oldBindingID)
+		if err != nil {
+			return fmt.Errorf("move hera binding: end old binding: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrHeraNotFound
+		}
+
+		r, err := insertHeraRole(tx, roleIn, now)
+		if err != nil {
+			return err
+		}
+		b, err := insertHeraBinding(tx, CreateHeraBindingInput{
+			RoleID:         r.ID,
+			OrchestratorID: r.OrchestratorID,
+			ArgusTaskID:    taskID,
+			WorktreePath:   worktreePath,
+		}, now)
+		if err != nil {
+			return err
+		}
+
+		result = MoveHeraBindingResult{
+			OldOrchestratorName: oldOrchName,
+			OldRoleName:         oldRoleName,
+			NewRole:             r,
+			NewBinding:          b,
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // EndHeraBinding stamps ended_at and end_reason on a live binding. Returns
 // ErrHeraNotFound if no live binding has that id.
 func (d *DB) EndHeraBinding(bindingID int64, reason string) error {

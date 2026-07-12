@@ -900,6 +900,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolHeraNewOrchestrator(req.ID, params.Arguments)
 	case "hera_join":
 		return s.toolHeraJoin(req.ID, params.Arguments)
+	case "hera_move":
+		return s.toolHeraMove(req.ID, params.Arguments)
 	case "hera_send":
 		return s.toolHeraSend(req.ID, params.Arguments)
 	case "hera_inbox":
