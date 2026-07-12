@@ -9,7 +9,7 @@
 - The `hera_move` response reports the source orchestrator + role name that was moved, plus the new binding id.
 - Existing `hera_join` same-orchestrator conflict rejection (attaching to an orchestrator the caller is already live-bound to) is unchanged, as is the unbound-caller attach path.
 - `hera_new_orchestrator`'s multi-binding allowance for worker self-promotion / `subcoord` is unchanged — it's a separate code path not touched by this change, and remains the only sanctioned way a task can hold 2+ live bindings. No opt-out/multi-home escape hatch is added to `hera_join` or `hera_move` — none was found to be needed.
-- One-off data cleanup: end the specific stray binding found during investigation (`hera_bindings.id=596`, role `11a-archive-report`, kind `freelance`, orchestrator `hera-model-tasks`) via a targeted one-off script against the live DB — not part of the shipped code path.
+- One-off data cleanup: dropped 2026-07-12. Ending the specific stray binding found during investigation (`hera_bindings.id=596`, role `11a-archive-report`, kind `freelance`, orchestrator `hera-model-tasks`) would require either an agent bypassing its sandbox (not acceptable) or Aaron hand-running raw SQL against the live DB — not worth it for one cosmetic row with no functional impact. Aaron will manage/ignore it via the TUI instead.
 
 ## Capabilities
 
@@ -26,5 +26,5 @@ None.
 - **Code:** `internal/mcp/hera.go` (`toolHeraJoin` attach-mode branch gains a rejection case; new `toolHeraMove` handler + tool registration), `internal/db/hera.go` (new move-capable role+binding creation, transactional).
 - **Tests:** `internal/mcp/hera_test.go` and `internal/db/hera_test.go` for the new `hera_join` rejection, the new `hera_move` tool's happy path + error cases (nothing to move, same-orchestrator no-op, disambiguation, coordinator-kind rejection), and unchanged same-orchestrator-conflict / self-promotion behavior.
 - **Docs:** `context/knowledge/gotchas/orchestration.md` (hera schema/store bullet) and the README Reference MCP tools table get short additions for `hera_move` and the `hera_join` rejection.
-- **Data:** one-off live-DB fix for the single identified stray binding; no schema migration.
+- **Data:** none — the one-off live-DB fix for the stray binding was dropped; no schema migration.
 - **No REST/TUI/macOS surface changes** — `hera_join`/`hera_move` are MCP-tool-only; nothing in the three frontends calls them directly.

@@ -36,16 +36,16 @@
 - [x] 4.1 Add a short bullet to the hera schema/store entry in `context/knowledge/gotchas/orchestration.md` documenting: `hera_join` now rejects+redirects when the caller is bound elsewhere, the new `hera_move` tool, and that `hera_new_orchestrator`'s self-promotion path remains the only way to hold 2+ live bindings.
 - [x] 4.2 Update the README Reference MCP tools table to add `hera_move` (per this repo's convention of keeping that table factually current for any MCP tool addition).
 
-## 5. One-off data cleanup
+## 5. One-off data cleanup — SKIPPED
 
-**Depends on:** none (independent of the code change; safe to run any time)
+**Depends on:** none (independent of the code change; safe to run any time). Dropped 2026-07-12, by Aaron's decision: the live-DB write to end hera_bindings.id=596 requires either an agent bypassing its sandbox (not acceptable) or Aaron hand-running raw SQL against ~/.argus/data.sql (not worth it for one stale row). The stray binding is cosmetic — it makes task 11a-archive show up an extra time under the Freelance rail — and has no functional impact. Aaron will manage/ignore it directly via the TUI rail instead. Superseded by the code fix in Stages 1-4, which stops new stray bindings of this shape from being created; this specific already-existing row is left as-is.
 
-- [ ] 5.1 Write and run a one-off script (not a reusable migration, per this repo's breaking-changes policy) that ends the specific stray binding found during investigation — `hera_bindings.id=596` (role `11a-archive-report`, kind `freelance`, orchestrator `hera-model-tasks`/id 66, `argus_task_id` `1783320494974244000`) — stamping `ended_at`/`end_reason` (e.g. `manual_cleanup`).
-- [ ] 5.2 Verify via the TUI (or a direct DB query) that `11a-archive` no longer appears under the Freelance section and still appears correctly as a worker under `coordctx-exec`.
+- [x] 5.1 Write and run a one-off script (not a reusable migration, per this repo's breaking-changes policy) that ends the specific stray binding found during investigation — `hera_bindings.id=596` (role `11a-archive-report`, kind `freelance`, orchestrator `hera-model-tasks`/id 66, `argus_task_id` `1783320494974244000`) — stamping `ended_at`/`end_reason` (e.g. `manual_cleanup`). — skipped, see note above
+- [x] 5.2 Verify via the TUI (or a direct DB query) that `11a-archive` no longer appears under the Freelance section and still appears correctly as a worker under `coordctx-exec`. — skipped, see note above
 
 ## 6. Verification
 
-**Depends on:** Stage 3, Stage 5
+**Depends on:** Stage 3
 
-- [ ] 6.1 `make pre-pr` passes clean.
-- [ ] 6.2 Confirm every acceptance criterion listed in `design.md` has a corresponding passing test.
+- [x] 6.1 `make pre-pr` passes clean (build/vet/fmt-check/lint-pr/test-cover-gate green at 89.3% filtered coverage; `vuln` fails only on pre-existing Go-stdlib CVEs unrelated to this change's files, the documented toolchain-only/continue-on-error exception).
+- [x] 6.2 Confirm every acceptance criterion listed in `design.md` has a corresponding passing test — see mapping in the PR description.

@@ -16,7 +16,6 @@ The gap is narrower than "multi-binding is bad": `hera_join`'s attach mode is th
 
 - `hera_join` attach mode rejects the call — rather than silently creating a second binding — when the calling task already holds a live binding under a *different* orchestrator than the one being joined, and directs the caller to the new `hera_move` tool.
 - Add `hera_move`, a new MCP tool that explicitly relocates the caller's current live binding to a different orchestrator: ends the old binding (like a normal leave) and creates the new role+binding, transactionally, unconditionally (no opt-out — moving is the tool's entire purpose).
-- Clean up the one specific stray binding that prompted this investigation (`hera_bindings.id=596`, role `11a-archive-report`, kind `freelance`, orchestrator `hera-model-tasks`/id 66, `argus_task_id` `1783320494974244000`).
 - Update the `hera-coordination` base spec so it accurately describes: `hera_join`'s new rejection case, the new `hera_move` tool, and that unscoped cross-orchestrator multi-binding is no longer reachable through `hera_join` at all — the only sanctioned way to hold 2+ live bindings remains `hera_new_orchestrator` self-promotion.
 
 **Non-Goals:**
@@ -26,6 +25,7 @@ The gap is narrower than "multi-binding is bad": `hera_join`'s attach mode is th
 - Any opt-in multi-home escape hatch on either `hera_join` or `hera_move` — there is no legitimate use case for it, so none is provided. A caller that genuinely wants two independent bindings has only the self-promotion path.
 - Retroactively auditing or cleaning up any *other* stray bindings beyond the one identified — this change fixes the one repro case and closes the code path that created it; a broader audit is out of scope.
 - Adding TUI affordances for `hera_move` — it's an MCP tool for agent callers, not a human-facing UI feature.
+- Cleaning up the one specific stray binding that prompted this investigation (`hera_bindings.id=596`, role `11a-archive-report`, kind `freelance`, orchestrator `hera-model-tasks`/id 66, `argus_task_id` `1783320494974244000`) — dropped 2026-07-12 by Aaron's decision; see Migration Plan. This change closes the code path that creates stray bindings of this shape; it does not touch the one already-existing row.
 
 ## Decisions
 
@@ -57,8 +57,8 @@ Rationale: coordinators are bootstrapped via `hera_new_orchestrator`, never join
 ## Migration Plan
 
 - Code change ships as a normal PR; no schema migration needed (no new columns — `ended_at`/`end_reason` already exist on `hera_bindings`).
-- The one stray binding identified in this investigation (`hera_bindings.id=596`) is fixed with a one-off, targeted `UPDATE` (setting `ended_at`/`end_reason`) run once against the live `~/.argus/data.sql`, per this repo's breaking-changes policy ("no legacy migration code — write a one-off script for schema data moves"). This is a live-data fix, not part of the shipped code path, and is not a reusable migration.
-- Rollback: revert the PR; the one-off data fix is not reverted (ending a stray binding is not something to undo).
+- The one-off live-DB fix for the stray binding (`hera_bindings.id=596`) was dropped 2026-07-12: the write is sandbox-blocked from any agent session, and not worth Aaron hand-running raw SQL against `~/.argus/data.sql` for one cosmetic row. No data fix is part of this change; there is nothing to roll back.
+- Rollback: revert the PR.
 
 ## Open Questions
 
