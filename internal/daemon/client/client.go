@@ -165,6 +165,8 @@ func (c *Client) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 		Project:   task.Project,
 		Backend:   task.Backend,
 		Model:     task.Model,
+		Archetype: task.Archetype,
+		Profile:   task.Profile,
 		Worktree:  task.Worktree,
 		Branch:    task.Branch,
 		Rows:      rows,
@@ -394,6 +396,8 @@ func (c *Client) KickRerender(task *model.Task, _ config.Config, rows, cols uint
 		Project:   task.Project,
 		Backend:   task.Backend,
 		Model:     task.Model,
+		Archetype: task.Archetype,
+		Profile:   task.Profile,
 		Worktree:  task.Worktree,
 		Branch:    task.Branch,
 		Rows:      rows,
@@ -419,15 +423,17 @@ func (c *Client) KickRerender(task *model.Task, _ config.Config, rows, cols uint
 func (c *Client) Recycle(task *model.Task, _ config.Config, rows, cols uint16) error {
 	var resp daemon.StatusResp
 	if err := c.call("Daemon.Recycle", &daemon.RecycleReq{
-		TaskID:   task.ID,
-		Prompt:   task.Prompt,
-		Project:  task.Project,
-		Backend:  task.Backend,
-		Model:    task.Model,
-		Worktree: task.Worktree,
-		Branch:   task.Branch,
-		Rows:     rows,
-		Cols:     cols,
+		TaskID:    task.ID,
+		Prompt:    task.Prompt,
+		Project:   task.Project,
+		Backend:   task.Backend,
+		Model:     task.Model,
+		Archetype: task.Archetype,
+		Profile:   task.Profile,
+		Worktree:  task.Worktree,
+		Branch:    task.Branch,
+		Rows:      rows,
+		Cols:      cols,
 	}, &resp); err != nil {
 		return err
 	}

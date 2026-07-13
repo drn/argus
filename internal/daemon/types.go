@@ -115,6 +115,13 @@ type PortsResp struct {
 }
 
 // StartReq is the RPC request to start a new agent session.
+//
+// Archetype and Profile carry the task's diligence-profile resolution key and
+// per-spawn profile override across the wire — without them, the supervisor's
+// reconstructed *model.Task resolves as archetype-less and agent.ResolveModel
+// silently falls through to the backend default, even though the DB row and
+// the caller's original task both carry the right values. Keep every field
+// consumed by agent.ResolveModel/resolveProfile represented here.
 type StartReq struct {
 	TaskID    string
 	SessionID string
@@ -122,6 +129,8 @@ type StartReq struct {
 	Project   string
 	Backend   string
 	Model     string
+	Archetype string
+	Profile   string
 	Worktree  string
 	Branch    string
 	Rows      uint16
@@ -178,6 +187,9 @@ type ResizeReq struct {
 // resumes) because the supervisor's runner stores the task to rebuild the
 // command for the in-place restart. The supervisor resolves cfg via its own
 // cfgFn, so the daemon does not ship config on the wire.
+// Archetype and Profile are carried for the same reason as StartReq's: a
+// kick-rerender rebuilds the command via agent.ResolveModel too, and must not
+// silently drop back to the backend default on a resumed session.
 type KickReq struct {
 	TaskID    string
 	SessionID string
@@ -185,6 +197,8 @@ type KickReq struct {
 	Project   string
 	Backend   string
 	Model     string
+	Archetype string
+	Profile   string
 	Worktree  string
 	Branch    string
 	Rows      uint16
@@ -199,16 +213,21 @@ type KickReq struct {
 // Prompt MUST already carry the assembled seed prompt (see
 // hera.BuildRecycleSeedPrompt). The supervisor resolves cfg via its own
 // cfgFn, so the daemon does not ship config on the wire.
+// Archetype and Profile are carried for the same reason as StartReq's: a
+// recycle rebuilds the command via agent.ResolveModel too, and must not
+// silently drop back to the backend default on the fresh-context restart.
 type RecycleReq struct {
-	TaskID   string
-	Prompt   string
-	Project  string
-	Backend  string
-	Model    string
-	Worktree string
-	Branch   string
-	Rows     uint16
-	Cols     uint16
+	TaskID    string
+	Prompt    string
+	Project   string
+	Backend   string
+	Model     string
+	Archetype string
+	Profile   string
+	Worktree  string
+	Branch    string
+	Rows      uint16
+	Cols      uint16
 }
 
 // StreamHeader is sent by the client on a stream connection to subscribe

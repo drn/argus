@@ -109,6 +109,8 @@ func (c *sessionCore) StartSession(req *StartReq, resp *StartResp) error {
 		Project:   req.Project,
 		Backend:   req.Backend,
 		Model:     req.Model,
+		Archetype: req.Archetype,
+		Profile:   req.Profile,
 		Worktree:  req.Worktree,
 		Branch:    req.Branch,
 	}
@@ -283,6 +285,8 @@ func (c *sessionCore) KickRerender(req *KickReq, resp *StatusResp) error {
 		Project:   req.Project,
 		Backend:   req.Backend,
 		Model:     req.Model,
+		Archetype: req.Archetype,
+		Profile:   req.Profile,
 		Worktree:  req.Worktree,
 		Branch:    req.Branch,
 	}
@@ -303,13 +307,15 @@ func (c *sessionCore) KickRerender(req *KickReq, resp *StatusResp) error {
 func (c *sessionCore) Recycle(req *RecycleReq, resp *StatusResp) error {
 	slog.Info("rpc.Recycle", "task", req.TaskID)
 	task := &model.Task{
-		ID:       req.TaskID,
-		Prompt:   req.Prompt,
-		Project:  req.Project,
-		Backend:  req.Backend,
-		Model:    req.Model,
-		Worktree: req.Worktree,
-		Branch:   req.Branch,
+		ID:        req.TaskID,
+		Prompt:    req.Prompt,
+		Project:   req.Project,
+		Backend:   req.Backend,
+		Model:     req.Model,
+		Archetype: req.Archetype,
+		Profile:   req.Profile,
+		Worktree:  req.Worktree,
+		Branch:    req.Branch,
 	}
 	if err := c.runner.Recycle(task, c.cfgFn(), req.Rows, req.Cols); err != nil {
 		slog.Error("rpc.Recycle failed", "task", req.TaskID, "err", err)
