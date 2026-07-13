@@ -31,6 +31,7 @@ import (
 	"github.com/drn/argus/internal/launchagent"
 	"github.com/drn/argus/internal/macapps"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/profiles"
 	"github.com/drn/argus/internal/scheduler"
 	"github.com/drn/argus/internal/tui/gitpanel"
 	"github.com/drn/argus/internal/tui/hera"
@@ -510,6 +511,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 	}
 	app.settings.OnRestartSupervisor = func() { app.openRestartSupervisorPrompt() }
 	app.settings.OnUpdateArgus = func() { go app.updateArgus() }
+	app.settings.OnInstallProfiles = func() { go app.installDefaultProfiles() }
 	app.settings.OnToggleAutoStart = func(installed bool) { go app.toggleAutoStart(installed) }
 	app.settings.OnNewProject = func() { app.openProjectForm(false, "", config.Project{}) }
 	app.settings.OnEditProject = func(name string, p config.Project) { app.openProjectForm(true, name, p) }
@@ -1382,6 +1384,19 @@ func (a *App) updateArgus() {
 	// from settings.OnUpdateArgus). The other three restartDaemonFn call
 	// sites use `go` because they fire from the tview main goroutine.
 	a.restartDaemonFn()
+}
+
+// installDefaultProfiles installs the embedded default diligence profile
+// seeds into ~/.argus/profiles/, skipping any that already exist. Must run
+// in a goroutine — disk I/O off the UI thread, same as every other settings
+// action that shells out or touches the filesystem.
+func (a *App) installDefaultProfiles() {
+	dir := filepath.Join(db.DataDir(), "profiles")
+	installed, skipped, err := profiles.InstallDefaults(dir)
+	uxlog.Log("[settings] install default profiles: installed=%v skipped=%v err=%v", installed, skipped, err)
+	a.tapp.QueueUpdateDraw(func() {
+		a.settings.SetInstallProfilesResult(installed, skipped, err)
+	})
 }
 
 // toggleAutoStart installs or uninstalls the LaunchAgent. Must run in a

@@ -10,9 +10,13 @@
 # (D9, add-cross-vendor-review): Fable+Opus is the strongest panel that can
 # actually be run today.
 #
-# This is a documented EXAMPLE. Copy it to ~/.argus/profiles/default.toml (or to
-# a project's .argus/profiles/default.toml) and adapt; argus does not auto-install
-# it. Validate with: argus validate default
+# This is a documented EXAMPLE, embedded in the argus binary as an install seed
+# (internal/profiles/seeds.go). Install it via the Settings > Hera > "Install
+# Default Profiles" action, `argus profiles install-defaults`, or by hand:
+# copy it to ~/.argus/profiles/default.toml (or a project's
+# .argus/profiles/default.toml) and adapt. Never auto-installed on daemon
+# startup — installation is always an explicit action. Validate with:
+# argus validate default
 
 [archetype.brainstorm]
 model  = "opus"

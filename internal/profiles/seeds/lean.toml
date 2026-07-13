@@ -5,7 +5,9 @@
 # no gating). Override individual archetypes below if you want a cheaper model for
 # a specific role.
 #
-# Documented EXAMPLE — copy + adapt; not auto-installed.
+# Documented EXAMPLE, embedded as an install seed — Settings > Hera > "Install
+# Default Profiles", `argus profiles install-defaults`, or copy + adapt by
+# hand. Never auto-installed on daemon startup.
 # Validate with: argus validate lean
 
 extends = "default"
