@@ -1,18 +1,17 @@
 package profiles
 
 import (
-	"path/filepath"
 	"testing"
 
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/testutil"
 )
 
-// seedLoader points at the in-repo seed example files under docs/profiles/.
-// Tests run with CWD = the package dir (internal/profiles), so the repo root is
-// two levels up.
+// seedLoader points at the embeddable seed files under internal/profiles/seeds/
+// (the same files go:embed picks up in seeds.go). Tests run with CWD = the
+// package dir, so this is a plain relative subdirectory.
 func seedLoader() *Loader {
-	return &Loader{LibraryDir: filepath.Join("..", "..", "docs", "profiles")}
+	return &Loader{LibraryDir: "seeds"}
 }
 
 func TestSeeds_EachValidates(t *testing.T) {

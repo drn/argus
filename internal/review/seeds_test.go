@@ -33,14 +33,14 @@ func errorsText(errs []error) string {
 }
 
 // TestShippedProfiles_PanelValidatesUnderRealGrammar proves the shipped
-// docs/profiles/{default,lean,customer_grade}.toml [panel] blocks validate
-// against the REAL panel-grammar validator (not just structural shape) —
-// exercising the injection end-to-end the way a daemon-side caller
+// internal/profiles/seeds/{default,lean,customer_grade}.toml [panel] blocks
+// validate against the REAL panel-grammar validator (not just structural
+// shape) — exercising the injection end-to-end the way a daemon-side caller
 // (internal/agent, internal/mcp) would. cfg carries a "codex" backend entry
 // (matching config.DefaultConfig()) so the reserved-but-unused codex slot
 // would validate if a profile ever named it — none of the shipped profiles do.
 func TestShippedProfiles_PanelValidatesUnderRealGrammar(t *testing.T) {
-	loader := &profiles.Loader{LibraryDir: filepath.Join("..", "..", "docs", "profiles")}
+	loader := &profiles.Loader{LibraryDir: filepath.Join("..", "profiles", "seeds")}
 	cfg := config.DefaultConfig()
 	validator := NewValidator(cfg)
 
@@ -60,7 +60,7 @@ func TestShippedProfiles_PanelValidatesUnderRealGrammar(t *testing.T) {
 // TestNewValidator_WellFormedAccepted's reserved-codex case) but no shipped
 // profile actually names it.
 func TestShippedProfiles_NoneComposeCodex(t *testing.T) {
-	loader := &profiles.Loader{LibraryDir: filepath.Join("..", "..", "docs", "profiles")}
+	loader := &profiles.Loader{LibraryDir: filepath.Join("..", "profiles", "seeds")}
 	for _, name := range []string{"default", "lean", "customer_grade"} {
 		t.Run(name, func(t *testing.T) {
 			p, err := loader.Load(name)

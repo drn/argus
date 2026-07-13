@@ -4,7 +4,9 @@
 # allocation but turns up the rigor — two review passes, gating enabled, and a
 # security spot-check — plus a reviewer panel.
 #
-# Documented EXAMPLE — copy + adapt; not auto-installed.
+# Documented EXAMPLE, embedded as an install seed — Settings > Hera > "Install
+# Default Profiles", `argus profiles install-defaults`, or copy + adapt by
+# hand. Never auto-installed on daemon startup.
 # Validate with: argus validate customer_grade
 
 extends = "default"

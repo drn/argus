@@ -78,6 +78,9 @@ func main() {
 		case "validate":
 			runValidateCommand(os.Args[2:])
 			return
+		case "profiles":
+			runProfilesCommand(os.Args[2:])
+			return
 		case "coord-hook":
 			runCoordHookCommand()
 			return

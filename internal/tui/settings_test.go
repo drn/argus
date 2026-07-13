@@ -1845,6 +1845,94 @@ func TestSettingsView_HeraCategory_RowLabelReflectsState(t *testing.T) {
 	}
 }
 
+func TestSettingsView_HeraCategory_HasInstallProfilesRow(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catHera)
+	var found bool
+	for _, row := range sv.rows {
+		if row.kind == srInstallProfiles {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("catHera should produce an srInstallProfiles row")
+	}
+}
+
+func TestSettingsView_InstallProfilesRow_HiddenWhenRemote(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.SetRemote(true)
+	sv.setCategory(catHera)
+	for _, row := range sv.rows {
+		if row.kind == srInstallProfiles {
+			t.Error("srInstallProfiles row should not appear in remote mode")
+		}
+	}
+}
+
+func selectInstallProfilesRow(t *testing.T, sv *SettingsView) {
+	t.Helper()
+	sv.setCategory(catHera)
+	for i, row := range sv.rows {
+		if row.kind == srInstallProfiles {
+			sv.cursor = i
+			return
+		}
+	}
+	t.Fatal("no srInstallProfiles row found")
+}
+
+func TestSettingsView_InstallProfilesEnter(t *testing.T) {
+	sv := testSettingsView(t)
+	called := false
+	sv.OnInstallProfiles = func() { called = true }
+	selectInstallProfilesRow(t, sv)
+
+	sv.handleEnter()
+	if !called {
+		t.Error("OnInstallProfiles should fire on enter")
+	}
+	if !sv.installingProfiles {
+		t.Error("installingProfiles flag should be set")
+	}
+
+	// While installing, a second enter is a no-op.
+	called = false
+	sv.handleEnter()
+	if called {
+		t.Error("OnInstallProfiles should not fire while installing")
+	}
+}
+
+func TestSettingsView_SetInstallProfilesResult(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.OnInstallProfiles = func() {}
+	selectInstallProfilesRow(t, sv)
+	sv.handleEnter()
+
+	sv.SetInstallProfilesResult([]string{"default", "lean"}, []string{"customer_grade"}, nil)
+	if sv.installingProfiles {
+		t.Error("installingProfiles flag should be cleared")
+	}
+	testutil.DeepEqual(t, sv.installedProfileNames, []string{"default", "lean"})
+	testutil.DeepEqual(t, sv.skippedProfileNames, []string{"customer_grade"})
+	testutil.Contains(t, sv.installProfilesStatus, "Installed")
+}
+
+func TestSettingsView_SetInstallProfilesResult_AllSkipped(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.SetInstallProfilesResult(nil, []string{"default", "lean", "customer_grade"}, nil)
+	testutil.Contains(t, sv.installProfilesStatus, "already present")
+}
+
+func TestSettingsView_SetInstallProfilesResult_Error(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.SetInstallProfilesResult(nil, nil, fmt.Errorf("disk full"))
+	testutil.Contains(t, sv.installProfilesStatus, "Failed")
+	testutil.Contains(t, sv.installProfilesStatus, "disk full")
+}
+
 func TestSettingsView_MKeyOnNonBackendRow(t *testing.T) {
 	sv := testSettingsView(t)
 	sv.setCategory(catSandbox)
