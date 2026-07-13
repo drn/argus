@@ -42,6 +42,19 @@ func (s *Server) routes() *http.ServeMux {
 	// Hera orchestration roster — orchestrators → roles (coordinator/worker)
 	// plus freelance roles. Read-only; feeds the webapp's Hera tab.
 	mux.HandleFunc("GET /api/hera", s.handleHera)
+	// Hera mutation endpoints (add-hera-mutation-rest-api): spawn worker, send
+	// message, and the plan-DAG authoring verbs. Every endpoint resolves
+	// {orch_id}'s live coordinator server-side and acts as it — see
+	// internal/api/hera_mutations.go. Single-tier auth, same as GET /api/hera
+	// (per the proposal's resolved Open Question 1).
+	mux.HandleFunc("POST /api/hera/orchestrators/{orch_id}/workers", s.handleHeraSpawnWorker)
+	mux.HandleFunc("POST /api/hera/orchestrators/{orch_id}/messages", s.handleHeraSendMessage)
+	mux.HandleFunc("POST /api/hera/orchestrators/{orch_id}/plan/nodes", s.handleHeraPlanNodeCreate)
+	mux.HandleFunc("POST /api/hera/orchestrators/{orch_id}/plan", s.handleHeraPlanCreate)
+	mux.HandleFunc("PATCH /api/hera/orchestrators/{orch_id}/plan/nodes/{role_id}", s.handleHeraPlanNodeUpdate)
+	mux.HandleFunc("POST /api/hera/orchestrators/{orch_id}/plan/nodes/{role_id}/cancel", s.handleHeraPlanNodeCancel)
+	mux.HandleFunc("POST /api/hera/orchestrators/{orch_id}/plan/blocks", s.handleHeraBlockCreate)
+	mux.HandleFunc("DELETE /api/hera/orchestrators/{orch_id}/plan/blocks", s.handleHeraBlockDelete)
 	mux.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
 	mux.HandleFunc("POST /api/tasks/{id}/stop", s.handleStopTask)
 	mux.HandleFunc("POST /api/tasks/{id}/restart", s.handleRestartTask)

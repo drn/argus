@@ -68,7 +68,7 @@ A native SwiftUI app (`make mac-app`) that turns the same daemon into a Mac-firs
 - **Live everything** — the task list and every terminal update ride the daemon's SSE event stream, not polling; a connection banner appears the moment the daemon is unreachable.
 - **Diff & files tabs** — a unified diff with per-file collapsible sections and a browsable worktree file tree, parsed client-side by ArgusKit.
 - **Schedules & System windows** — manage scheduled tasks (⇧⌘S) and watch host load / agent-session counts, the same data the TUI and PWA show.
-- **Hera roster** — the orchestration tree, read-only (see the parity note in the Reference).
+- **Hera roster** — the orchestration tree, plus spawn-worker / send-message / plan-DAG mutation controls (see the parity note in the Reference).
 - **Keychain-backed remote settings** — point it at any daemon by overriding the server URL; the token lives in the macOS Keychain, never on disk. Defaults to `http://127.0.0.1:7743` with the token from `~/.argus/api-token`.
 
 Requires macOS 15+ and the Swift 6.3 Command Line Tools — no Xcode. Build and run details are in the [macOS app](#macos-app) reference below.
@@ -335,9 +335,9 @@ ARGUS_MAC_SELECT_TASK=my-task ARGUS_MAC_INITIAL_TAB=diff \
 | Live updates  | Task list + terminals driven by the SSE event stream; a 30 s safety-net poll; offline/connection banner. |
 | Notifications | Native `UNUserNotificationCenter` alerts on needs-input / idle (when not frontmost), a Dock badge counting tasks awaiting you, and an optional menu-bar extra. |
 | Windows       | Main window, **Schedules** (⇧⌘S), **System** (host metrics + session counts), and standard **Settings**. |
-| Hera          | Read-only orchestration roster (`GET /api/hera`).                                                         |
+| Hera          | Orchestration roster (`GET /api/hera`) plus spawn-worker, send-message, and plan-DAG mutation controls, reachable from a coordinator/orchestrator row. |
 
-**Parity note:** the **Hera view is read-only in both the macOS app and the web app** — they render the roster and plan but expose no coordinator mutations (spawn / block / status). Driving a hera team stays **TUI-only** until the hera mutation endpoints are exposed over REST. Everything else — task lifecycle, terminal I/O, diffs, schedules, settings — is at full parity across all three clients.
+**Parity note:** the **web app and macOS app both expose Hera mutations** (spawn worker, send message, plan-node create/edit/cancel, block/unblock) over the REST endpoints under `/api/hera/orchestrators/{orch_id}/...`, acting as the target orchestrator's coordinator. `hera_join`/`hera_move`/`hera_new_orchestrator` (re-binding a task's orchestrator membership, or bootstrapping a new orchestrator) stay **TUI/MCP-only** by design — there is no human-driven analog for "become a coordinator." Everything else — task lifecycle, terminal I/O, diffs, schedules, settings — is at full parity across all three clients.
 
 ### Self-Update
 
@@ -640,9 +640,19 @@ Every authenticated token has the same permissions **except** a small master-onl
 
 #### Hera orchestration
 
-| Method | Endpoint    | Description                                                                                                                                                                                                                            |
-| ------ | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET`  | `/api/hera` | Read-only orchestration roster. Returns `{orchestrators:[{id,name,pinned,archived,roles:[…]}], freelance:[…]}`. Each role carries `kind` (coordinator/worker/freelance), `status`, bound `task_id`/`task_name`/`task_status`, `live`, and `ready_to_close`. Feeds the webapp's **Hera** tab. |
+| Method   | Endpoint                                                        | Description                                                                                                                                                                                                                            |
+| -------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`    | `/api/hera`                                                       | Orchestration roster. Returns `{orchestrators:[{id,name,pinned,archived,roles:[…]}], freelance:[…]}`. Each role carries `role_id`, `kind` (coordinator/worker/freelance), `status`, bound `task_id`/`task_name`/`task_status`, `live`, and `ready_to_close`. Feeds the webapp's and macOS app's **Hera**/**Projects** tab. |
+| `POST`   | `/api/hera/orchestrators/{orch_id}/workers`                       | Spawn a born-bound worker, acting as `{orch_id}`'s live coordinator (resolved server-side — no caller identity is accepted). Body: `{"prompt", "role_name?", "project?", "branch?", "backend?", "model?"}`. 201 with `role_id`/`name`/`kind`/`project`/`argus_task_id`/`task_name`/`task_status`. 404 unknown orchestrator, 409 no live coordinator. |
+| `POST`   | `/api/hera/orchestrators/{orch_id}/messages`                      | Send a message from `{orch_id}`'s coordinator to another role in the same orchestrator (coordinator-as-sender only — no `from_role_id`, no `status`). Body: `{"to", "tldr", "body", "in_reply_to?"}` (`to` is a `role_id`). 201 with `message_id`/`to_role_id`/`delivery_mode`. 404 unknown recipient, 409 self-send, 413 body>64KiB, 429 rate-limited/inbox-full. |
+| `POST`   | `/api/hera/orchestrators/{orch_id}/plan/nodes`                    | Create one PLANNED node (no live agent yet). Body: `{"name", "kind?" ("worker"\|"subcoord"), "prompt?", "goal?", "project?"}` (`prompt` for worker, `goal` for subcoord). 201 with `role_id`/`name`/`project`/`kind`/`status:"planned"`. |
+| `POST`   | `/api/hera/orchestrators/{orch_id}/plan`                          | Create a whole plan graph (nodes + blocking edges) in one transaction. Body: `{"nodes":[{...as above}], "edges":[{"blocked","blocker"}]}` — edge endpoints are NAMES (an in-batch node's name or an existing role's name), since in-batch nodes have no id until commit. 201 with `nodes_created`/`edges_created`; any validation error creates nothing. |
+| `PATCH`  | `/api/hera/orchestrators/{orch_id}/plan/nodes/{role_id}`          | Edit a PLANNED node's prompt/project. Body: `{"prompt?", "project?"}` (at least one required). 200; 409 if the role already materialized. |
+| `POST`   | `/api/hera/orchestrators/{orch_id}/plan/nodes/{role_id}/cancel`   | Cancel a PLANNED node (excluded from materialization, unblocks its dependents). 200; 409 if already materialized. |
+| `POST`   | `/api/hera/orchestrators/{orch_id}/plan/blocks`                   | Add a blocking edge between two existing roles, addressed by id. Body: `{"blocked_role_id", "blocker_role_id"}`. 201; 409 cycle, 400 cross-orchestrator/self. |
+| `DELETE` | `/api/hera/orchestrators/{orch_id}/plan/blocks`                   | Remove a blocking edge. Query: `?blocked_role_id=&blocker_role_id=`. 200, idempotent on a missing edge. |
+
+All eight mutation endpoints act as `{orch_id}`'s live coordinator, resolved server-side — there is no caller-identity field anywhere in these request bodies. `hera_join`/`hera_move`/`hera_new_orchestrator` (role/orchestrator identity changes) stay TUI/MCP-only.
 
 #### Push notifications (Web Push, VAPID)
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/hera"
 )
 
 // Native plan-DAG authoring tools (add-hera-plan-substrate): hera_plan_node,
@@ -55,25 +56,18 @@ func (s *Server) toolHeraPlanNode(id interface{}, args json.RawMessage) *Respons
 		return toolError(id, "name is required")
 	}
 
-	// Resolve node kind. Default to worker when absent or empty.
-	nodeKind := db.HeraNodeKindWorker
-	if strings.TrimSpace(p.Kind) == string(db.HeraNodeKindSubCoord) {
-		nodeKind = db.HeraNodeKindSubCoord
-	}
-
-	// For subcoord nodes the goal serves as the delivery prompt; for worker
-	// nodes the prompt field is required as before. The two paths are exclusive.
-	var prompt string
-	if nodeKind == db.HeraNodeKindSubCoord {
-		goal := strings.TrimSpace(p.Goal)
-		if goal == "" {
+	// Kind/prompt/goal resolution is pure and caller-identity-agnostic — shared
+	// with hera_plan's per-node validation and the REST plan-node endpoint via
+	// internal/hera.
+	nodeKind, prompt, kindErr := hera.ResolvePlanNodeKind(p.Kind, p.Prompt, p.Goal)
+	if kindErr != nil {
+		switch {
+		case errors.Is(kindErr, hera.ErrGoalRequired):
 			return toolError(id, "subcoord node requires a goal (goal is the delivery prompt for the spawned coordinator)")
-		}
-		prompt = goal
-	} else {
-		prompt = strings.TrimSpace(p.Prompt)
-		if prompt == "" {
+		case errors.Is(kindErr, hera.ErrPromptRequired):
 			return toolError(id, "prompt is required")
+		default:
+			return toolError(id, kindErr.Error())
 		}
 	}
 
@@ -82,28 +76,17 @@ func (s *Server) toolHeraPlanNode(id interface{}, args json.RawMessage) *Respons
 		return errResp
 	}
 
-	project := strings.TrimSpace(p.Project)
-	if project == "" {
-		project = caller.task.Project
-	}
-	if project == "" {
-		return toolError(id, "no project resolved (coordinator task has no project and none was supplied)")
-	}
-
-	uniqueName, err := s.heraStore.UniqueHeraRoleName(caller.orch.ID, name)
+	// Project resolution, name uniquification, and the store insert are the
+	// caller-identity-agnostic post-guard body — shared with internal/api's
+	// REST plan-node endpoint via internal/hera.
+	role, err := hera.CreatePlanNode(s.heraStore, caller.orch.ID, caller.task.Project, name, nodeKind, prompt, p.Project)
 	if err != nil {
-		return toolError(id, fmt.Sprintf("uniquify name: %v", err))
-	}
-
-	role, err := s.heraStore.CreateHeraPlannedRole(db.CreateHeraRoleInput{
-		OrchestratorID: caller.orch.ID,
-		Name:           uniqueName,
-		NodeKind:       nodeKind,
-		ArgusProject:   project,
-		Prompt:         prompt,
-	})
-	if err != nil {
-		return toolError(id, fmt.Sprintf("create planned node: %v", err))
+		switch {
+		case errors.Is(err, hera.ErrNoProject):
+			return toolError(id, "no project resolved (coordinator task has no project and none was supplied)")
+		default:
+			return toolError(id, err.Error())
+		}
 	}
 
 	slog.Info("[hera] plan_node ok", "orch", caller.orch.Name, "role", role.Name, "role_id", role.ID, "kind", string(nodeKind))
@@ -112,7 +95,7 @@ func (s *Server) toolHeraPlanNode(id interface{}, args json.RawMessage) *Respons
 	fmt.Fprintf(&b, "- **orchestrator**: %s\n", caller.orch.Name)
 	fmt.Fprintf(&b, "- **name**: %s\n", role.Name)
 	fmt.Fprintf(&b, "- **role_id**: %d\n", role.ID)
-	fmt.Fprintf(&b, "- **project**: %s\n", project)
+	fmt.Fprintf(&b, "- **project**: %s\n", role.ArgusProject)
 	fmt.Fprintf(&b, "- **kind**: %s\n", string(nodeKind))
 	fmt.Fprintf(&b, "- **status**: planned (no agent yet; materializes when blockers reach done)\n")
 	return toolResult(id, b.String())
@@ -151,7 +134,7 @@ func (s *Server) toolHeraBlock(id interface{}, args json.RawMessage) *Response {
 		return errResp
 	}
 
-	if err := s.heraStore.AddHeraBlock(blockedRole.ID, blockerRole.ID); err != nil {
+	if err := hera.AddBlock(s.heraStore, blockedRole.ID, blockerRole.ID); err != nil {
 		return toolError(id, heraBlockErrMessage(err))
 	}
 
@@ -196,78 +179,32 @@ func (s *Server) toolHeraPlan(id interface{}, args json.RawMessage) *Response {
 		return errResp
 	}
 
-	// Validate and build node specs, mapping the planner's SUPPLIED name → batch
-	// index so edges can reference in-batch nodes (a duplicate name within one
-	// plan is the planner's bug; the last one wins for resolution). The names are
-	// uniquified within the orchestrator up front; the actual node + edge inserts
-	// all happen in ONE store transaction (CreateHeraPlan) so any error rolls the
-	// whole graph back — nothing partial survives.
-	specs := make([]db.HeraPlannedNodeSpec, 0, len(p.Nodes))
-	nameIdx := map[string]int{}
+	// Node/edge validation, name uniquification, and the whole-graph store
+	// transaction are the caller-identity-agnostic post-guard body — shared
+	// with internal/api's REST whole-graph endpoint via internal/hera. Edge
+	// endpoints resolve by NAME (an in-batch node's name, else an existing
+	// role's name within the orchestrator) since in-batch nodes have no id
+	// until the transaction commits.
+	nodes := make([]hera.PlanNodeSpec, len(p.Nodes))
 	for i, n := range p.Nodes {
-		name := strings.TrimSpace(n.Name)
-		if name == "" {
-			return toolError(id, fmt.Sprintf("nodes[%d]: name is required", i))
-		}
-
-		// Resolve node kind. Default to worker when absent or empty.
-		nodeKind := db.HeraNodeKindWorker
-		if strings.TrimSpace(n.Kind) == string(db.HeraNodeKindSubCoord) {
-			nodeKind = db.HeraNodeKindSubCoord
-		}
-
-		// For subcoord nodes the goal is the delivery prompt; for worker nodes
-		// the prompt field is required as before.
-		var prompt string
-		if nodeKind == db.HeraNodeKindSubCoord {
-			goal := strings.TrimSpace(n.Goal)
-			if goal == "" {
-				return toolError(id, fmt.Sprintf("nodes[%d] (%s): subcoord node requires a goal", i, name))
-			}
-			prompt = goal
-		} else {
-			prompt = strings.TrimSpace(n.Prompt)
-			if prompt == "" {
-				return toolError(id, fmt.Sprintf("nodes[%d] (%s): prompt is required", i, name))
-			}
-		}
-
-		project := strings.TrimSpace(n.Project)
-		if project == "" {
-			project = caller.task.Project
-		}
-		if project == "" {
-			return toolError(id, fmt.Sprintf("nodes[%d] (%s): no project resolved", i, name))
-		}
-		uniqueName, err := s.heraStore.UniqueHeraRoleName(caller.orch.ID, name)
-		if err != nil {
-			return toolError(id, fmt.Sprintf("nodes[%d] (%s): uniquify: %v", i, name, err))
-		}
-		specs = append(specs, db.HeraPlannedNodeSpec{Name: uniqueName, ArgusProject: project, Prompt: prompt, NodeKind: nodeKind})
-		nameIdx[name] = i
+		nodes[i] = hera.PlanNodeSpec{Name: n.Name, Kind: n.Kind, Prompt: n.Prompt, Goal: n.Goal, Project: n.Project}
 	}
-
-	// Resolve edge endpoints to either an in-batch node index or a pre-existing
-	// orchestrator role id (so an edge can reference a pre-existing planned/live
-	// role). This resolution is name → reference only — the actual insert + cycle
-	// check happens inside CreateHeraPlan's transaction.
-	edgeSpecs := make([]db.HeraBlockSpec, 0, len(p.Edges))
+	edges := make([]hera.PlanEdgeSpec, len(p.Edges))
 	for i, e := range p.Edges {
-		blockedIdx, blockedID, errResp := s.resolvePlanEndpoint(id, caller, nameIdx, e.Blocked, fmt.Sprintf("edges[%d].blocked", i))
-		if errResp != nil {
-			return errResp
+		edges[i] = hera.PlanEdgeSpec{Blocked: e.Blocked, Blocker: e.Blocker}
+	}
+	resolveExisting := func(name string) (*db.HeraRole, error) {
+		role, err := s.heraStore.HeraRoleByName(caller.orch.ID, name)
+		if errors.Is(err, db.ErrHeraNotFound) {
+			return nil, fmt.Errorf("role %q not found in this plan or orchestrator %q", name, caller.orch.Name)
 		}
-		blockerIdx, blockerID, errResp := s.resolvePlanEndpoint(id, caller, nameIdx, e.Blocker, fmt.Sprintf("edges[%d].blocker", i))
-		if errResp != nil {
-			return errResp
+		if err != nil {
+			return nil, fmt.Errorf("resolve role %q: %w", name, err)
 		}
-		edgeSpecs = append(edgeSpecs, db.HeraBlockSpec{
-			BlockedNodeIdx: blockedIdx, BlockedRoleID: blockedID,
-			BlockerNodeIdx: blockerIdx, BlockerRoleID: blockerID,
-		})
+		return role, nil
 	}
 
-	created, err := s.heraStore.CreateHeraPlan(caller.orch.ID, specs, edgeSpecs)
+	created, err := hera.CreatePlan(s.heraStore, caller.orch.ID, caller.task.Project, nodes, edges, resolveExisting)
 	if err != nil {
 		return toolError(id, fmt.Sprintf("submit plan: %s", heraBlockErrMessage(err)))
 	}
@@ -292,29 +229,6 @@ func (s *Server) resolveOrchRole(id interface{}, orchID int64, orchName, name st
 		return nil, toolError(id, fmt.Sprintf("resolve role %q: %v", name, err))
 	}
 	return role, nil
-}
-
-// resolvePlanEndpoint resolves an edge endpoint name within a hera_plan call to
-// either an in-batch node (returning its batch index, roleID 0) or a pre-existing
-// orchestrator role (returning index -1 and the role id). In-batch names take
-// precedence so an edge prefers a node created in this same plan. Returns a tool
-// error response when the name is empty or resolves to neither.
-func (s *Server) resolvePlanEndpoint(id interface{}, caller *callerRoleResult, nameIdx map[string]int, name, field string) (int, int64, *Response) {
-	trimmed := strings.TrimSpace(name)
-	if trimmed == "" {
-		return 0, 0, toolError(id, fmt.Sprintf("%s: name is required", field))
-	}
-	if idx, ok := nameIdx[trimmed]; ok {
-		return idx, 0, nil
-	}
-	role, err := s.heraStore.HeraRoleByName(caller.orch.ID, trimmed)
-	if errors.Is(err, db.ErrHeraNotFound) {
-		return 0, 0, toolError(id, fmt.Sprintf("%s: role %q not found in this plan or orchestrator %q", field, name, caller.orch.Name))
-	}
-	if err != nil {
-		return 0, 0, toolError(id, fmt.Sprintf("%s: resolve role %q: %v", field, name, err))
-	}
-	return -1, role.ID, nil
 }
 
 func (s *Server) toolHeraPlanNodeUpdate(id interface{}, args json.RawMessage) *Response {
@@ -353,16 +267,15 @@ func (s *Server) toolHeraPlanNodeUpdate(id interface{}, args json.RawMessage) *R
 		return errResp
 	}
 
-	has, err := s.heraStore.HeraRoleHasBinding(role.ID)
-	if err != nil {
-		return toolError(id, fmt.Sprintf("check materialization: %v", err))
-	}
-	if has {
-		return toolError(id, fmt.Sprintf("role %q has already materialized (prompt already delivered); cannot update a running worker via the plan", name))
-	}
-
-	if err := s.heraStore.UpdateHeraPlannedNode(role.ID, prompt, project); err != nil {
-		return toolError(id, fmt.Sprintf("update planned node: %v", err))
+	if err := hera.UpdatePlanNode(s.heraStore, role.ID, prompt, project); err != nil {
+		switch {
+		case errors.Is(err, hera.ErrAlreadyMaterialized):
+			return toolError(id, fmt.Sprintf("role %q has already materialized (prompt already delivered); cannot update a running worker via the plan", name))
+		case errors.Is(err, hera.ErrEmptyPlanUpdate):
+			return toolError(id, "at least one of prompt or project is required")
+		default:
+			return toolError(id, fmt.Sprintf("update planned node: %v", err))
+		}
 	}
 
 	slog.Info("[hera plan] plan_node_update ok", "orch", caller.orch.Name, "role", role.Name)
@@ -407,7 +320,7 @@ func (s *Server) toolHeraUnblock(id interface{}, args json.RawMessage) *Response
 		return errResp
 	}
 
-	if err := s.heraStore.RemoveHeraBlock(blockedRole.ID, blockerRole.ID); err != nil {
+	if err := hera.RemoveBlock(s.heraStore, blockedRole.ID, blockerRole.ID); err != nil {
 		return toolError(id, fmt.Sprintf("remove block: %v", err))
 	}
 
@@ -448,16 +361,13 @@ func (s *Server) toolHeraPlanNodeCancel(id interface{}, args json.RawMessage) *R
 		return errResp
 	}
 
-	has, err := s.heraStore.HeraRoleHasBinding(role.ID)
-	if err != nil {
-		return toolError(id, fmt.Sprintf("check materialization: %v", err))
-	}
-	if has {
-		return toolError(id, fmt.Sprintf("role %q has already materialized; stop the running worker via the task lifecycle instead", name))
-	}
-
-	if err := s.heraStore.CancelHeraPlannedNode(role.ID); err != nil {
-		return toolError(id, fmt.Sprintf("cancel planned node: %v", err))
+	if err := hera.CancelPlanNode(s.heraStore, role.ID); err != nil {
+		switch {
+		case errors.Is(err, hera.ErrAlreadyMaterialized):
+			return toolError(id, fmt.Sprintf("role %q has already materialized; stop the running worker via the task lifecycle instead", name))
+		default:
+			return toolError(id, fmt.Sprintf("cancel planned node: %v", err))
+		}
 	}
 
 	slog.Info("[hera plan] plan_node_cancel ok", "orch", caller.orch.Name, "role", role.Name)

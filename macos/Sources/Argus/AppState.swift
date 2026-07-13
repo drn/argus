@@ -417,6 +417,54 @@ final class AppState {
         return try await client.heraRoster()
     }
 
+    // MARK: - Hera mutations (add-hera-mutation-rest-api)
+    //
+    // Same thin-wrapper shape as the roster read above. Every call acts as
+    // orchID's live coordinator, resolved server-side — none of these take a
+    // sender/actor parameter. ``HeraTab`` re-fetches the roster on success.
+
+    @discardableResult
+    func spawnHeraWorker(orchID: Int64, _ req: HeraSpawnWorkerRequest) async throws -> HeraSpawnWorkerResponse {
+        guard let client else { throw ArgusError.invalidResponse("not connected") }
+        return try await client.spawnHeraWorker(orchID: orchID, req)
+    }
+
+    @discardableResult
+    func sendHeraMessage(orchID: Int64, _ req: HeraSendMessageRequest) async throws -> HeraSendMessageResponse {
+        guard let client else { throw ArgusError.invalidResponse("not connected") }
+        return try await client.sendHeraMessage(orchID: orchID, req)
+    }
+
+    @discardableResult
+    func createHeraPlanNode(orchID: Int64, _ req: HeraPlanNodeCreateRequest) async throws -> HeraPlanNodeResponse {
+        guard let client else { throw ArgusError.invalidResponse("not connected") }
+        return try await client.createHeraPlanNode(orchID: orchID, req)
+    }
+
+    @discardableResult
+    func updateHeraPlanNode(orchID: Int64, roleID: Int64, _ req: HeraPlanNodeUpdateRequest) async throws -> HeraPlanNodeStatusResponse {
+        guard let client else { throw ArgusError.invalidResponse("not connected") }
+        return try await client.updateHeraPlanNode(orchID: orchID, roleID: roleID, req)
+    }
+
+    @discardableResult
+    func cancelHeraPlanNode(orchID: Int64, roleID: Int64) async throws -> HeraPlanNodeStatusResponse {
+        guard let client else { throw ArgusError.invalidResponse("not connected") }
+        return try await client.cancelHeraPlanNode(orchID: orchID, roleID: roleID)
+    }
+
+    @discardableResult
+    func addHeraBlock(orchID: Int64, _ req: HeraBlockCreateRequest) async throws -> HeraBlockResponse {
+        guard let client else { throw ArgusError.invalidResponse("not connected") }
+        return try await client.addHeraBlock(orchID: orchID, req)
+    }
+
+    @discardableResult
+    func removeHeraBlock(orchID: Int64, blockedRoleID: Int64, blockerRoleID: Int64) async throws -> HeraBlockResponse {
+        guard let client else { throw ArgusError.invalidResponse("not connected") }
+        return try await client.removeHeraBlock(orchID: orchID, blockedRoleID: blockedRoleID, blockerRoleID: blockerRoleID)
+    }
+
     func schedules() async throws -> [Schedule] {
         guard let client else { throw ArgusError.invalidResponse("not connected") }
         return try await client.schedules()

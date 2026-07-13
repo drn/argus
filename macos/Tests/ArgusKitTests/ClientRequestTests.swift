@@ -220,4 +220,131 @@ struct ClientRequestTests {
         #expect(items["since"] == "7")
         #expect(req?.url?.absoluteString.contains("secret-token") == false)
     }
+
+    // MARK: - Hera mutations (add-hera-mutation-rest-api)
+    //
+    // Deliberately kept in THIS suite (not a sibling @Suite) rather than a
+    // second one: MockURLProtocol is a single global mutable singleton (see
+    // MockURLProtocol.swift), and `.serialized` only serializes tests WITHIN
+    // one suite — two suites both stubbing/reading it would still run
+    // concurrently against each other and race.
+
+    @Test("spawnHeraWorker posts to the orch-scoped path and omits blank optionals")
+    func spawnHeraWorker() async throws {
+        MockURLProtocol.stubJSON(status: 201, body: Data("""
+        {"role_id":1,"orch_id":5,"name":"w","kind":"worker","project":"p",
+         "argus_task_id":"t","task_name":"w","task_status":"in_progress"}
+        """.utf8))
+        let resp = try await makeClient().spawnHeraWorker(orchID: 5, .init(prompt: "do it"))
+        #expect(resp.roleID == 1)
+
+        let req = MockURLProtocol.lastRequest
+        #expect(req?.httpMethod == "POST")
+        #expect(req?.url?.path == "/api/hera/orchestrators/5/workers")
+        let body = try #require(MockURLProtocol.lastBody)
+        let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        #expect(obj?["prompt"] as? String == "do it")
+        #expect(obj?["role_name"] == nil)
+        #expect(obj?["project"] == nil)
+    }
+
+    @Test("spawnHeraWorker includes optionals when supplied")
+    func spawnHeraWorkerWithOptionals() async throws {
+        MockURLProtocol.stubJSON(status: 201, body: Data("""
+        {"role_id":1,"orch_id":5,"name":"w","kind":"worker","project":"p",
+         "argus_task_id":"t","task_name":"w","task_status":"in_progress"}
+        """.utf8))
+        _ = try await makeClient().spawnHeraWorker(orchID: 5, .init(
+            prompt: "do it", roleName: "custom", project: "other", branch: "b", backend: "claude", model: "opus"))
+
+        let body = try #require(MockURLProtocol.lastBody)
+        let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        #expect(obj?["role_name"] as? String == "custom")
+        #expect(obj?["project"] as? String == "other")
+        #expect(obj?["branch"] as? String == "b")
+        #expect(obj?["backend"] as? String == "claude")
+        #expect(obj?["model"] as? String == "opus")
+    }
+
+    @Test("sendHeraMessage posts to and tldr/body, omits in_reply_to when nil")
+    func sendHeraMessage() async throws {
+        MockURLProtocol.stubJSON(status: 201, body: Data(#"{"message_id":1,"to_role_id":3,"delivery_mode":"pending"}"#.utf8))
+        _ = try await makeClient().sendHeraMessage(orchID: 5, .init(to: 3, tldr: "status", body: "please proceed"))
+
+        let req = MockURLProtocol.lastRequest
+        #expect(req?.url?.path == "/api/hera/orchestrators/5/messages")
+        let body = try #require(MockURLProtocol.lastBody)
+        let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        #expect(obj?["to"] as? Int == 3)
+        #expect(obj?["tldr"] as? String == "status")
+        #expect(obj?["in_reply_to"] == nil)
+    }
+
+    @Test("createHeraPlanNode posts to plan/nodes")
+    func createHeraPlanNode() async throws {
+        MockURLProtocol.stubJSON(status: 201, body: Data(#"{"role_id":1,"name":"1a","project":"p","kind":"worker","status":"planned"}"#.utf8))
+        _ = try await makeClient().createHeraPlanNode(orchID: 5, .init(name: "1a", prompt: "do work"))
+        #expect(MockURLProtocol.lastRequest?.url?.path == "/api/hera/orchestrators/5/plan/nodes")
+    }
+
+    @Test("createHeraPlan posts nodes and edges to the whole-graph endpoint")
+    func createHeraPlan() async throws {
+        MockURLProtocol.stubJSON(status: 201, body: Data(#"{"nodes_created":2,"edges_created":1}"#.utf8))
+        let req = HeraPlanCreateRequest(
+            nodes: [.init(name: "1a", prompt: "p1"), .init(name: "1b", prompt: "p2")],
+            edges: [.init(blocked: "1b", blocker: "1a")])
+        let resp = try await makeClient().createHeraPlan(orchID: 5, req)
+        #expect(resp.nodesCreated == 2)
+
+        #expect(MockURLProtocol.lastRequest?.url?.path == "/api/hera/orchestrators/5/plan")
+        let body = try #require(MockURLProtocol.lastBody)
+        let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        #expect((obj?["nodes"] as? [[String: Any]])?.count == 2)
+        #expect((obj?["edges"] as? [[String: Any]])?.count == 1)
+    }
+
+    @Test("updateHeraPlanNode PATCHes the role-scoped path")
+    func updateHeraPlanNode() async throws {
+        MockURLProtocol.stubJSON(body: Data(#"{"role_id":9,"status":"planned"}"#.utf8))
+        _ = try await makeClient().updateHeraPlanNode(orchID: 5, roleID: 9, .init(prompt: "revised"))
+
+        let req = MockURLProtocol.lastRequest
+        #expect(req?.httpMethod == "PATCH")
+        #expect(req?.url?.path == "/api/hera/orchestrators/5/plan/nodes/9")
+    }
+
+    @Test("cancelHeraPlanNode posts to the cancel sub-path with no body")
+    func cancelHeraPlanNode() async throws {
+        MockURLProtocol.stubJSON(body: Data(#"{"role_id":9,"status":"cancelled"}"#.utf8))
+        let resp = try await makeClient().cancelHeraPlanNode(orchID: 5, roleID: 9)
+        #expect(resp.status == "cancelled")
+        #expect(MockURLProtocol.lastRequest?.url?.path == "/api/hera/orchestrators/5/plan/nodes/9/cancel")
+    }
+
+    @Test("addHeraBlock posts blocked/blocker role ids")
+    func addHeraBlock() async throws {
+        MockURLProtocol.stubJSON(status: 201, body: Data(#"{"blocked_role_id":2,"blocker_role_id":1}"#.utf8))
+        _ = try await makeClient().addHeraBlock(orchID: 5, .init(blockedRoleID: 2, blockerRoleID: 1))
+
+        let req = MockURLProtocol.lastRequest
+        #expect(req?.url?.path == "/api/hera/orchestrators/5/plan/blocks")
+        let body = try #require(MockURLProtocol.lastBody)
+        let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        #expect(obj?["blocked_role_id"] as? Int == 2)
+        #expect(obj?["blocker_role_id"] as? Int == 1)
+    }
+
+    @Test("removeHeraBlock DELETEs with query params, no body")
+    func removeHeraBlock() async throws {
+        MockURLProtocol.stubJSON(body: Data(#"{"blocked_role_id":2,"blocker_role_id":1}"#.utf8))
+        let resp = try await makeClient().removeHeraBlock(orchID: 5, blockedRoleID: 2, blockerRoleID: 1)
+        #expect(resp.blockedRoleID == 2)
+
+        let req = MockURLProtocol.lastRequest
+        #expect(req?.httpMethod == "DELETE")
+        #expect(req?.url?.path == "/api/hera/orchestrators/5/plan/blocks")
+        let items = queryItems(req)
+        #expect(items["blocked_role_id"] == "2")
+        #expect(items["blocker_role_id"] == "1")
+    }
 }

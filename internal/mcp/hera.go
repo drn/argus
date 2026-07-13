@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/model"
@@ -1106,42 +1105,31 @@ func (s *Server) toolHeraSpawnWorker(id interface{}, args json.RawMessage) *Resp
 			caller.role.Name, caller.role.Kind))
 	}
 
-	// Project: explicit override first, then the COORDINATOR'S OWN TASK project
-	// (caller.task.Project — authoritative). We deliberately do NOT trust
-	// role.ArgusProject here: historical roles created before the M4 fix have an
-	// empty argus_project, and the live task row is always correct.
-	project := strings.TrimSpace(p.Project)
-	if project == "" {
-		project = caller.task.Project
-	}
-	if project == "" {
-		return toolError(id, "no project resolved (coordinator task has no project and none was supplied)")
-	}
-
-	// Base worker role name: explicit role_name, else a slug of the prompt. The
-	// daemon spawner uniquifies it within the orchestrator (suffix -2, -3, …).
-	baseName := strings.TrimSpace(p.RoleName)
-	if baseName == "" {
-		baseName = agent.DeriveHeraWorkerName(prompt)
-	}
-
-	// Prepend the orientation prefix so the worker knows it is born-bound and
-	// who its coordinator + orchestrator are. The verbatim user prompt follows
-	// the separator and is also stored on the role row.
-	taskPrompt := agent.HeraWorkerOrientation(caller.orch.Name, caller.role.Name) + "\n\n---\n\n" + prompt
-
-	res, err := s.heraSpawn(HeraSpawnInput{
-		Project:        project,
-		BaseName:       baseName,
-		TaskPrompt:     taskPrompt,
-		RolePrompt:     prompt,
-		Branch:         p.Branch,
-		Backend:        p.Backend,
-		Model:          strings.TrimSpace(p.Model),
-		OrchestratorID: caller.orch.ID,
+	// Project resolution, role-name derivation, orientation-prefixed prompt
+	// construction, and the spawn call are caller-identity-agnostic — shared
+	// with internal/api's REST spawn-worker endpoint via internal/hera.
+	// caller.task.Project (NOT role.ArgusProject) is the authoritative project
+	// fallback: historical roles created before the M4 fix have an empty
+	// argus_project, and the live task row is always correct.
+	res, project, err := hera.SpawnWorker(s.heraSpawn, hera.SpawnWorkerParams{
+		OrchID:             caller.orch.ID,
+		OrchName:           caller.orch.Name,
+		CoordinatorName:    caller.role.Name,
+		CoordinatorProject: caller.task.Project,
+		RoleName:           p.RoleName,
+		Prompt:             p.Prompt,
+		Project:            p.Project,
+		Branch:             p.Branch,
+		Backend:            p.Backend,
+		Model:              strings.TrimSpace(p.Model),
 	})
 	if err != nil {
-		return toolError(id, fmt.Sprintf("spawn worker: %v", err))
+		switch {
+		case errors.Is(err, hera.ErrNoProject):
+			return toolError(id, "no project resolved (coordinator task has no project and none was supplied)")
+		default:
+			return toolError(id, fmt.Sprintf("spawn worker: %v", err))
+		}
 	}
 
 	slog.Info("[hera] spawn_worker ok",

@@ -684,6 +684,12 @@ button:disabled { opacity: 0.5; cursor: default; }
 .hera-card.archived { opacity: 0.55; }
 .hera-card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .hera-card-name { font-weight: 600; font-size: 14px; }
+.hera-card-actions { display: flex; gap: 6px; margin-left: auto; }
+.hera-card-actions button {
+  font-size: 11px; padding: 3px 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  cursor: pointer;
+}
 .hera-tag { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 8px; background: #30363d; color: var(--text-dim); text-transform: uppercase; }
 .hera-tag.pinned { background: #1a2a3a; color: var(--accent); }
 .hera-role {
@@ -803,6 +809,12 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
 .modal .modal-description { font-size: 13px; color: var(--text-dim); margin-bottom: 12px; }
 .modal .radio-row { display: flex; gap: 12px; font-size: 13px; }
 .modal .radio-row label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+
+/* Hera plan modal — three stacked mutation groups (new node / edit-cancel /
+   blocking edges) separated by a divider, each with its own action row. */
+.hera-plan-section { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
+.hera-plan-section:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+.hera-plan-section h4 { font-size: 13px; color: var(--text-dim); margin-bottom: 8px; }
 
 /* Keyboard shortcuts help modal — two-column rows: <kbd> chip + label. */
 .hotkeys-list { display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
@@ -1548,6 +1560,142 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       </div>
       <div class="modal-actions">
         <button class="primary" onclick="closeHotkeysModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hera: spawn worker (add-hera-mutation-rest-api). Reachable from a
+       coordinator/orchestrator card; calls POST .../workers acting as that
+       orchestrator's coordinator — no sender/actor field is collected here. -->
+  <div class="modal-overlay" id="hera-spawn-modal">
+    <div class="modal">
+      <h3 id="hera-spawn-modal-title">Spawn worker</h3>
+      <div class="form-group">
+        <label>Prompt (required)</label>
+        <textarea id="hsm-prompt" placeholder="The worker's mission…"></textarea>
+      </div>
+      <div class="form-group">
+        <label>Role name (optional — derived from the prompt if omitted)</label>
+        <input type="text" id="hsm-role-name">
+      </div>
+      <div class="form-group">
+        <label>Project (optional — defaults to the coordinator's own)</label>
+        <input type="text" id="hsm-project">
+      </div>
+      <div class="form-group">
+        <label>Branch (optional)</label>
+        <input type="text" id="hsm-branch">
+      </div>
+      <div class="form-group">
+        <label>Backend (optional)</label>
+        <input type="text" id="hsm-backend">
+      </div>
+      <div class="form-group">
+        <label>Model (optional)</label>
+        <input type="text" id="hsm-model">
+      </div>
+      <div class="modal-actions">
+        <button onclick="closeHeraSpawnModal()">Cancel</button>
+        <button class="primary" onclick="submitHeraSpawn()">Spawn</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hera: send message (add-hera-mutation-rest-api). Coordinator-as-sender
+       only — no sender-role selector, matching the narrower REST send verb. -->
+  <div class="modal-overlay" id="hera-send-modal">
+    <div class="modal">
+      <h3 id="hera-send-modal-title">Send message</h3>
+      <div class="form-group">
+        <label>To</label>
+        <select id="hsend-to"></select>
+      </div>
+      <div class="form-group">
+        <label>TLDR (required, ≤120 chars)</label>
+        <input type="text" id="hsend-tldr" maxlength="120">
+      </div>
+      <div class="form-group">
+        <label>Body (required)</label>
+        <textarea id="hsend-body"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button onclick="closeHeraSendModal()">Cancel</button>
+        <button class="primary" onclick="submitHeraSend()">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hera: plan-DAG mutations (add-hera-mutation-rest-api). Create a planned
+       node, edit/cancel an existing one, and add/remove a blocking edge —
+       all addressed by role_id (sourced from the already-fetched roster). -->
+  <div class="modal-overlay" id="hera-plan-modal">
+    <div class="modal">
+      <h3 id="hera-plan-modal-title">Plan</h3>
+
+      <div class="hera-plan-section">
+        <h4>New planned node</h4>
+        <div class="form-group">
+          <label>Name</label>
+          <input type="text" id="hplan-new-name">
+        </div>
+        <div class="form-group">
+          <label>Kind</label>
+          <select id="hplan-new-kind" onchange="onHeraPlanKindChange()">
+            <option value="worker">worker</option>
+            <option value="subcoord">subcoord</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label id="hplan-new-prompt-label">Prompt</label>
+          <textarea id="hplan-new-prompt"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Project (optional)</label>
+          <input type="text" id="hplan-new-project">
+        </div>
+        <div class="modal-actions">
+          <button class="primary" onclick="submitHeraPlanNodeCreate()">Create node</button>
+        </div>
+      </div>
+
+      <div class="hera-plan-section">
+        <h4>Edit / cancel a node</h4>
+        <div class="form-group">
+          <label>Node</label>
+          <select id="hplan-edit-role"></select>
+        </div>
+        <div class="form-group">
+          <label>New prompt (optional)</label>
+          <textarea id="hplan-edit-prompt"></textarea>
+        </div>
+        <div class="form-group">
+          <label>New project (optional)</label>
+          <input type="text" id="hplan-edit-project">
+        </div>
+        <div class="modal-actions">
+          <button class="danger" onclick="submitHeraPlanNodeCancel()">Cancel node</button>
+          <button class="primary" onclick="submitHeraPlanNodeUpdate()">Save</button>
+        </div>
+      </div>
+
+      <div class="hera-plan-section">
+        <h4>Blocking edges</h4>
+        <div class="form-group">
+          <label>Blocked (waits)</label>
+          <select id="hplan-blocked"></select>
+        </div>
+        <div class="form-group">
+          <label>Blocker (must finish first)</label>
+          <select id="hplan-blocker"></select>
+        </div>
+        <div class="modal-actions">
+          <button class="danger" onclick="submitHeraBlockRemove()">Remove edge</button>
+          <button class="primary" onclick="submitHeraBlockAdd()">Add edge</button>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button onclick="closeHeraPlanModal()">Close</button>
       </div>
     </div>
   </div>
@@ -5093,6 +5241,9 @@ function switchTab(tab) {
   closeInputsModal();
   closeLinksModal();
   closeHotkeysModal();
+  closeHeraSpawnModal();
+  closeHeraSendModal();
+  closeHeraPlanModal();
   closeStream();
   destroyTerm();
   stopSystemMetrics(); // halt the metrics poller; loadSettings restarts it for the Settings tab
@@ -5150,6 +5301,12 @@ function applyCreateDefaults() {
 // done), the role kind + name, and — when the role holds a live binding — the
 // bound task's name and workflow badge. Tapping a live role drills into that
 // task's terminal via openTaskById (the same overlay the task list uses).
+// heraLastData caches the most recent GET /api/hera response so the
+// spawn/send/plan mutation modals can look up an orchestrator's roles
+// (for recipient/node/edge pickers) without a second round-trip — the
+// modals are opened from a card already rendered from this same data.
+let heraLastData = null;
+
 async function loadHera() {
   const statusEl = document.getElementById('hera-status');
   const body = document.getElementById('hera-body');
@@ -5159,6 +5316,7 @@ async function loadHera() {
     const r = await api('/api/hera');
     if (!r.ok) throw new Error('HTTP ' + r.status);
     data = await r.json();
+    heraLastData = data;
     // Drive the same connection-tracking machinery refresh() does. Because
     // the 5s poll tick calls loadHera() (not refresh()) while this tab is
     // foregrounded, the offline screen + conn-dot would otherwise never
@@ -5216,9 +5374,21 @@ function renderHeraOrch(o) {
   const rolesHtml = roles.length
     ? roles.map(renderHeraRole).join('')
     : '<div class="hera-role"><span class="hera-task unbound">no roles</span></div>';
+  // Mutation controls (add-hera-mutation-rest-api) only make sense — and only
+  // succeed server-side — when the orchestrator has a live coordinator; an
+  // archived orchestrator never does, so gating on hasLiveCoordinator also
+  // naturally hides them there.
+  const hasLiveCoordinator = roles.some(r => r.kind === 'coordinator' && r.live);
+  const actions = hasLiveCoordinator
+    ? '<div class="hera-card-actions">' +
+      `<button onclick="openHeraSpawnModal(${o.id}, '${escAttr(o.name)}')">+ Worker</button>` +
+      `<button onclick="openHeraSendModal(${o.id}, '${escAttr(o.name)}')">Send</button>` +
+      `<button onclick="openHeraPlanModal(${o.id}, '${escAttr(o.name)}')">Plan</button>` +
+      '</div>'
+    : '';
   return '<div class="hera-card' + (o.archived ? ' archived' : '') + '">' +
     '<div class="hera-card-header"><span class="hera-card-name">' + esc(o.name) + '</span>' +
-    tags.join('') + '</div>' + rolesHtml + '</div>';
+    tags.join('') + actions + '</div>' + rolesHtml + '</div>';
 }
 
 function renderHeraRole(role) {
@@ -5240,6 +5410,219 @@ function renderHeraRole(role) {
     '<span class="hera-kind">' + esc(role.kind) + '</span>' +
     '<span class="hera-role-name">' + esc(role.name) + '</span>' +
     task + '</div>';
+}
+
+// --- Hera mutations (add-hera-mutation-rest-api) ---
+//
+// Three surfaces — spawn worker, send message, plan-DAG authoring — each a
+// modal reachable from a coordinator/orchestrator card. Every request acts
+// as the target orchestrator's coordinator server-side; no sender/actor
+// field is ever collected client-side. A successful mutation re-runs
+// loadHera() (the same path the poll tick uses) so its effect is visible
+// immediately. Errors (incl. 409 "no live coordinator") surface via
+// showToast, matching every other mutation form in this app.
+
+// heraRolesFor looks up an orchestrator's roles from the cached roster by id.
+function heraRolesFor(orchId) {
+  const o = (heraLastData?.orchestrators || []).find(o => o.id === orchId);
+  return o ? (o.roles || []) : [];
+}
+
+let heraActiveOrchId = null;
+
+function openHeraSpawnModal(orchId, orchName) {
+  heraActiveOrchId = orchId;
+  document.getElementById('hera-spawn-modal-title').textContent = 'Spawn worker — ' + orchName;
+  document.getElementById('hsm-prompt').value = '';
+  document.getElementById('hsm-role-name').value = '';
+  document.getElementById('hsm-project').value = '';
+  document.getElementById('hsm-branch').value = '';
+  document.getElementById('hsm-backend').value = '';
+  document.getElementById('hsm-model').value = '';
+  document.getElementById('hera-spawn-modal').classList.add('open');
+}
+function closeHeraSpawnModal() {
+  document.getElementById('hera-spawn-modal').classList.remove('open');
+}
+async function submitHeraSpawn() {
+  const prompt = document.getElementById('hsm-prompt').value.trim();
+  if (!prompt) { showToast('Prompt is required'); return; }
+  const body = {
+    prompt,
+    role_name: document.getElementById('hsm-role-name').value.trim(),
+    project: document.getElementById('hsm-project').value.trim(),
+    branch: document.getElementById('hsm-branch').value.trim(),
+    backend: document.getElementById('hsm-backend').value.trim(),
+    model: document.getElementById('hsm-model').value.trim(),
+  };
+  try {
+    const r = await api(`/api/hera/orchestrators/${heraActiveOrchId}/workers`, { method: 'POST', body: JSON.stringify(body) });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || ('HTTP ' + r.status));
+    }
+    closeHeraSpawnModal();
+    showToast('Worker spawned');
+    loadHera();
+  } catch (e) { showToast('Spawn failed: ' + e.message); }
+}
+
+// No sender-role selector is shown — sends are always attributed to the
+// orchestrator's coordinator (the resolved-server-side design principle).
+// The recipient list excludes the coordinator itself (self-send is a 409).
+function openHeraSendModal(orchId, orchName) {
+  heraActiveOrchId = orchId;
+  document.getElementById('hera-send-modal-title').textContent = 'Send message — ' + orchName;
+  const toSel = document.getElementById('hsend-to');
+  toSel.innerHTML = heraRolesFor(orchId)
+    .filter(r => r.kind !== 'coordinator')
+    .map(r => `<option value="${r.role_id}">${esc(r.kind)}: ${esc(r.name)}</option>`)
+    .join('');
+  document.getElementById('hsend-tldr').value = '';
+  document.getElementById('hsend-body').value = '';
+  document.getElementById('hera-send-modal').classList.add('open');
+}
+function closeHeraSendModal() {
+  document.getElementById('hera-send-modal').classList.remove('open');
+}
+async function submitHeraSend() {
+  const to = document.getElementById('hsend-to').value;
+  const tldr = document.getElementById('hsend-tldr').value.trim();
+  const body = document.getElementById('hsend-body').value;
+  if (!to) { showToast('No recipient available'); return; }
+  if (!tldr || !body) { showToast('TLDR and body are required'); return; }
+  try {
+    const r = await api(`/api/hera/orchestrators/${heraActiveOrchId}/messages`, {
+      method: 'POST', body: JSON.stringify({ to: Number(to), tldr, body })
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || ('HTTP ' + r.status));
+    }
+    closeHeraSendModal();
+    showToast('Message sent');
+    loadHera();
+  } catch (e) { showToast('Send failed: ' + e.message); }
+}
+
+function onHeraPlanKindChange() {
+  const isSubcoord = document.getElementById('hplan-new-kind').value === 'subcoord';
+  document.getElementById('hplan-new-prompt-label').textContent = isSubcoord ? 'Goal' : 'Prompt';
+}
+
+function openHeraPlanModal(orchId, orchName) {
+  heraActiveOrchId = orchId;
+  document.getElementById('hera-plan-modal-title').textContent = 'Plan — ' + orchName;
+  document.getElementById('hplan-new-name').value = '';
+  document.getElementById('hplan-new-kind').value = 'worker';
+  document.getElementById('hplan-new-prompt').value = '';
+  document.getElementById('hplan-new-project').value = '';
+  onHeraPlanKindChange();
+
+  const roles = heraRolesFor(orchId);
+  const roleOptions = roles.map(r => `<option value="${r.role_id}">${esc(r.kind)}: ${esc(r.name)}</option>`).join('');
+  document.getElementById('hplan-edit-role').innerHTML = roleOptions;
+  document.getElementById('hplan-edit-prompt').value = '';
+  document.getElementById('hplan-edit-project').value = '';
+  document.getElementById('hplan-blocked').innerHTML = roleOptions;
+  document.getElementById('hplan-blocker').innerHTML = roleOptions;
+
+  document.getElementById('hera-plan-modal').classList.add('open');
+}
+function closeHeraPlanModal() {
+  document.getElementById('hera-plan-modal').classList.remove('open');
+}
+
+async function submitHeraPlanNodeCreate() {
+  const name = document.getElementById('hplan-new-name').value.trim();
+  const kind = document.getElementById('hplan-new-kind').value;
+  const promptOrGoal = document.getElementById('hplan-new-prompt').value.trim();
+  if (!name) { showToast('Name is required'); return; }
+  const body = { name, kind, project: document.getElementById('hplan-new-project').value.trim() };
+  if (kind === 'subcoord') body.goal = promptOrGoal; else body.prompt = promptOrGoal;
+  try {
+    const r = await api(`/api/hera/orchestrators/${heraActiveOrchId}/plan/nodes`, { method: 'POST', body: JSON.stringify(body) });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || ('HTTP ' + r.status));
+    }
+    showToast('Planned node created');
+    document.getElementById('hplan-new-name').value = '';
+    document.getElementById('hplan-new-prompt').value = '';
+    loadHera();
+  } catch (e) { showToast('Create failed: ' + e.message); }
+}
+
+async function submitHeraPlanNodeUpdate() {
+  const roleId = document.getElementById('hplan-edit-role').value;
+  if (!roleId) { showToast('No node available'); return; }
+  const prompt = document.getElementById('hplan-edit-prompt').value.trim();
+  const project = document.getElementById('hplan-edit-project').value.trim();
+  if (!prompt && !project) { showToast('Supply a new prompt or project'); return; }
+  try {
+    const r = await api(`/api/hera/orchestrators/${heraActiveOrchId}/plan/nodes/${roleId}`, {
+      method: 'PATCH', body: JSON.stringify({ prompt, project })
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || ('HTTP ' + r.status));
+    }
+    showToast('Node updated');
+    loadHera();
+  } catch (e) { showToast('Update failed: ' + e.message); }
+}
+
+// Cancel is destructive-ish (excludes the node from materialization) —
+// confirm first, matching this app's convention for every other destructive
+// action (delete task/project/schedule, revoke token).
+async function submitHeraPlanNodeCancel() {
+  const roleId = document.getElementById('hplan-edit-role').value;
+  if (!roleId) { showToast('No node available'); return; }
+  if (!confirm('Cancel this planned node? It will no longer materialize.')) return;
+  try {
+    const r = await api(`/api/hera/orchestrators/${heraActiveOrchId}/plan/nodes/${roleId}/cancel`, { method: 'POST' });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || ('HTTP ' + r.status));
+    }
+    showToast('Node cancelled');
+    loadHera();
+  } catch (e) { showToast('Cancel failed: ' + e.message); }
+}
+
+async function submitHeraBlockAdd() {
+  const blocked = document.getElementById('hplan-blocked').value;
+  const blocker = document.getElementById('hplan-blocker').value;
+  if (!blocked || !blocker) { showToast('Both blocked and blocker are required'); return; }
+  try {
+    const r = await api(`/api/hera/orchestrators/${heraActiveOrchId}/plan/blocks`, {
+      method: 'POST', body: JSON.stringify({ blocked_role_id: Number(blocked), blocker_role_id: Number(blocker) })
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || ('HTTP ' + r.status));
+    }
+    showToast('Blocking edge added');
+    loadHera();
+  } catch (e) { showToast('Add edge failed: ' + e.message); }
+}
+
+// Remove is destructive-ish — confirm first, same convention as node cancel.
+async function submitHeraBlockRemove() {
+  const blocked = document.getElementById('hplan-blocked').value;
+  const blocker = document.getElementById('hplan-blocker').value;
+  if (!blocked || !blocker) { showToast('Both blocked and blocker are required'); return; }
+  if (!confirm('Remove this blocking edge?')) return;
+  try {
+    const r = await api(`/api/hera/orchestrators/${heraActiveOrchId}/plan/blocks?blocked_role_id=${blocked}&blocker_role_id=${blocker}`,
+      { method: 'DELETE' });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || ('HTTP ' + r.status));
+    }
+    showToast('Blocking edge removed');
+    loadHera();
+  } catch (e) { showToast('Remove edge failed: ' + e.message); }
 }
 
 // --- Settings tab: tokens + push + sandbox + KB + projects/backends + logs ---

@@ -29,6 +29,7 @@ import (
 	"github.com/drn/argus/internal/clipboard"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/model"
 )
 
@@ -147,6 +148,11 @@ func main() {
 
 	srv := api.New(d, runner, *token, creator, nil)
 	srv.SetClipboard(clipboard.New())
+	// Hera mutation endpoints (add-hera-mutation-rest-api) — wired so
+	// web-tests/tests/hera-mutations.spec.ts can exercise the real spawn path
+	// (agent.SpawnHeraWorker against the git-init'd test-proj worktree, same
+	// as the multipart create-task flow) rather than a stub.
+	srv.SetHeraMutations(hera.New(d, nil), heraTestSpawner(d, runner))
 	actualPort, err := srv.ListenAndServe(*port)
 	if err != nil {
 		log.Fatalf("listen: %v", err)
@@ -217,9 +223,19 @@ func main() {
 }
 
 // seedHera (re)creates a single "demo-orch" orchestrator with one coordinator
-// role bound to the given task, so the Hera-tab PWA spec has a populated roster
-// to render and a live role to drill into. Idempotent across /test/reset: any
-// prior demo-orch (and its now-stale roles) is dropped first via the cascade.
+// role bound to the given task, an unbound worker, and a planned (never-
+// materialized) node, so both the read-only Hera-tab spec and the
+// add-hera-mutation-rest-api mutation specs have fixtures to exercise:
+//   - "coordinator" — live-bound; every mutation endpoint resolves this as
+//     the acting identity.
+//   - "worker-1" — a message-send recipient / blocking-edge endpoint (the
+//     coordinator can't be either: self-send is a 409, and a coordinator
+//     can never be a blocker per BUG-003).
+//   - "1a-planned" — a planned node for the update/cancel specs; a live
+//     role would 409 on both ("already materialized").
+//
+// Idempotent across /test/reset: any prior demo-orch (and its now-stale
+// roles) is dropped first via the cascade.
 func seedHera(d *db.DB, task *model.Task) error {
 	if existing, err := d.HeraOrchestratorByName("demo-orch"); err == nil && existing != nil {
 		if err := d.DeleteHeraOrchestrator(existing.ID); err != nil {
@@ -239,7 +255,49 @@ func seedHera(d *db.DB, task *model.Task) error {
 	if err != nil {
 		return err
 	}
-	return d.UpsertHeraRoleStatus(role.ID, db.HeraStatusWorking)
+	if err := d.UpsertHeraRoleStatus(role.ID, db.HeraStatusWorking); err != nil {
+		return err
+	}
+	if _, err := d.CreateHeraRole(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID,
+		Name:           "worker-1",
+		Kind:           db.HeraKindWorker,
+		ArgusProject:   task.Project,
+	}); err != nil {
+		return err
+	}
+	if _, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID,
+		Name:           "1a-planned",
+		ArgusProject:   task.Project,
+		Prompt:         "seed planned node for mutation specs",
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+// heraTestSpawner adapts agent.SpawnHeraWorker (the same transactional
+// born-bound spawn the daemon uses) into a hera.Spawner for the test server's
+// SetHeraMutations wiring, so the spawn-worker mutation spec exercises a real
+// worktree-backed task create rather than a stub.
+func heraTestSpawner(d *db.DB, runner agent.SessionRunner) hera.Spawner {
+	return func(in hera.SpawnInput) (*hera.SpawnResult, error) {
+		res, err := agent.SpawnHeraWorker(d, runner, agent.HeraWorkerSpawnInput{
+			OrchestratorID: in.OrchestratorID,
+			BaseName:       in.BaseName,
+			TaskPrompt:     in.TaskPrompt,
+			RolePrompt:     in.RolePrompt,
+			Project:        in.Project,
+			Branch:         in.Branch,
+			Backend:        in.Backend,
+			Model:          in.Model,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &hera.SpawnResult{Task: res.Task, Role: res.Role, Binding: res.Binding}, nil
+	}
 }
 
 func envOr(key, fallback string) string {

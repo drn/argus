@@ -1137,6 +1137,11 @@ func (d *Daemon) Serve(sockPath string) error {
 			apiSrv.SetMCPRegistry(pluginRegistry)
 			apiSrv.SetNotifier(d.notifier)
 			apiSrv.SetFocusTracker(d.focusTracker)
+			// Hera mutation endpoints (add-hera-mutation-rest-api): unconditional,
+			// like GET /api/hera — cfg.Hera.Enabled only gates the MCP native-tool
+			// registration above, not this REST surface, which reads/writes the
+			// same universal hera tables regardless.
+			apiSrv.SetHeraMutations(hera.New(d.db, d.notifier), d.heraSpawnWorker)
 			d.apiServer = apiSrv
 			// Wire the events.Sink to the API server's event bus so emission
 			// sites (db, orch, runner, this file) feed /api/events/stream.

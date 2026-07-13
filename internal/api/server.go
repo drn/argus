@@ -16,6 +16,7 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/clipboard"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/mcp"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/notify"
@@ -93,12 +94,35 @@ type Server struct {
 	// ticker and caches the latest snapshot; handleSystemMetrics serves it.
 	// Started in New, stopped in Shutdown.
 	metrics *sysmetrics.Collector
+
+	// heraSvc sends role-addressed hera messages (POST .../messages). Optional;
+	// nil disables that one endpoint (503). Set via SetHeraMutations.
+	heraSvc *hera.Service
+	// heraSpawn performs the transactional born-bound worker spawn (POST
+	// .../workers). Optional; nil disables that one endpoint (503). The other
+	// six plan-DAG mutation endpoints need only s.db (already wired via New)
+	// since they call internal/hera's store-only helpers directly. Set via
+	// SetHeraMutations.
+	heraSpawn hera.Spawner
 }
 
 // SetNotifier wires the reliable pane-delivery service into the API server.
 // Must be called before ListenAndServe.
 func (s *Server) SetNotifier(n *notify.Notifier) {
 	s.notifier = n
+}
+
+// SetHeraMutations wires the Hera mutation REST endpoints
+// (add-hera-mutation-rest-api) to the daemon-owned hera.Service + spawner —
+// the same primitives internal/mcp's SetHeraService wires for the native
+// hera_* tools. Must be called before ListenAndServe. Either argument may be
+// nil to leave the corresponding endpoint(s) disabled (503): svc gates
+// POST .../messages, spawn gates POST .../workers. The five plan-DAG
+// endpoints need neither — they call internal/hera's store-only helpers
+// against s.db directly.
+func (s *Server) SetHeraMutations(svc *hera.Service, spawn hera.Spawner) {
+	s.heraSvc = svc
+	s.heraSpawn = spawn
 }
 
 // SetFocusTracker wires the daemon-level focus tracker into the API server.

@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/model"
@@ -57,30 +56,23 @@ type TaskCreateInput struct {
 // building the orientation-prefixed prompt; the daemon owns the transactional
 // task + role + binding creation (agent.CreateAndStart + an AfterPersist hook),
 // because only the daemon co-locates the DB, runner, and hera store.
-type HeraSpawnInput struct {
-	Project        string // resolved argus project (input override or coordinator's task project)
-	BaseName       string // base worker role name; daemon uniquifies within the orchestrator
-	TaskPrompt     string // orientation-prefixed prompt delivered to the worker session
-	RolePrompt     string // verbatim user prompt, stored on the role row for the Details pane
-	Branch         string // optional base branch passed through to CreateAndStart
-	Backend        string // optional backend override
-	Model          string // optional per-worker model override (empty = backend default)
-	OrchestratorID int64  // orchestrator the new worker role + binding belong to
-}
+//
+// Type-aliased to hera.SpawnInput (add-hera-mutation-rest-api) so
+// internal/hera's SpawnWorker helper — shared with internal/api — can
+// construct/consume this payload without an import cycle (internal/hera
+// cannot import internal/mcp). The alias keeps every existing call site
+// (SetHeraService, the daemon's heraSpawnWorker adapter, tests) unchanged.
+type HeraSpawnInput = hera.SpawnInput
 
 // HeraSpawnResult is the success payload returned by a HeraSpawner.
-type HeraSpawnResult struct {
-	Task    *model.Task
-	Role    *db.HeraRole
-	Binding *db.HeraBinding
-}
+type HeraSpawnResult = hera.SpawnResult
 
 // HeraSpawner performs the transactional born-bound worker spawn inside the
 // daemon. Injected via SetHeraService; nil when hera is disabled or the daemon
 // did not wire it. Implementations MUST guarantee no orphan task/worktree on a
 // role/binding-insert failure and no orphan role/binding on a session-start
 // failure (the AfterPersist LIFO-cleanup contract).
-type HeraSpawner func(in HeraSpawnInput) (*HeraSpawnResult, error)
+type HeraSpawner = hera.Spawner
 
 // TaskCreator creates a task with worktree and starts an agent session.
 // Same call shape used by daemon.HeadlessCreateTask (the daemon wraps it to
