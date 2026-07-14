@@ -142,9 +142,10 @@ func TestToolsList_HeraOn(t *testing.T) {
 		names[tool.Name] = true
 	}
 
-	// All 16 hera tools must appear (9 ported + hera_move + 3 plan-authoring + 3 plan-mutation).
+	// All 17 hera tools must appear (9 ported + hera_move + hera_rebind + 3
+	// plan-authoring + 3 plan-mutation).
 	for _, want := range []string{
-		"hera_new_orchestrator", "hera_join", "hera_move", "hera_send", "hera_inbox",
+		"hera_new_orchestrator", "hera_join", "hera_move", "hera_rebind", "hera_send", "hera_inbox",
 		"hera_mark_read", "hera_status", "hera_spawn_worker",
 		"hera_tree_updates", "hera_get_messages",
 		"hera_plan_node", "hera_block", "hera_plan",

@@ -902,6 +902,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolHeraJoin(req.ID, params.Arguments)
 	case "hera_move":
 		return s.toolHeraMove(req.ID, params.Arguments)
+	case "hera_rebind":
+		return s.toolHeraRebind(req.ID, params.Arguments)
 	case "hera_send":
 		return s.toolHeraSend(req.ID, params.Arguments)
 	case "hera_inbox":
@@ -1601,6 +1603,18 @@ func (s *Server) toolClipboardSet(id interface{}, args json.RawMessage) *Respons
 // from inside an archived worktree works. Returns an error if neither
 // input is provided or no match is found.
 //
+// A worktree_path is NOT unique across a task's full lifecycle: argus reuses
+// a worktree directory when a task name/branch is reused after the prior
+// task moved to in_review/complete/archived without its worktree being
+// cleared (BUG-059). When two or more tasks tie for the longest matching
+// worktree prefix — which, since prefixes of one string at a fixed length are
+// identical, means they share the exact same Worktree value — cwd resolution
+// disambiguates instead of silently returning whichever task the DB listed
+// first: it drops archived matches, then prefers the single in_progress task
+// (the running session making the call), and refuses (naming the candidates)
+// rather than guess when the ambiguity survives that. See
+// disambiguateCwdMatches.
+//
 // Callers must guarantee s.taskMgmtEnabled() — this method dereferences
 // s.taskDB without a nil check.
 func (s *Server) resolveTask(taskID, cwd string) (*model.Task, error) {
@@ -1619,8 +1633,8 @@ func (s *Server) resolveTask(taskID, cwd string) (*model.Task, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
-	var best *model.Task
-	var bestLen int
+	var candidates []*model.Task
+	bestLen := -1
 	for _, t := range tasks {
 		if t.Worktree == "" {
 			continue
@@ -1629,15 +1643,82 @@ func (s *Server) resolveTask(taskID, cwd string) (*model.Task, error) {
 		if cleanCwd != wt && !strings.HasPrefix(cleanCwd, wt+string(filepath.Separator)) {
 			continue
 		}
-		if len(wt) > bestLen {
-			best = t
+		switch {
+		case len(wt) > bestLen:
 			bestLen = len(wt)
+			candidates = []*model.Task{t}
+		case len(wt) == bestLen:
+			candidates = append(candidates, t)
 		}
 	}
-	if best == nil {
+	return disambiguateCwdMatches(cwd, candidates)
+}
+
+// disambiguateCwdMatches picks the single task a cwd should resolve to among
+// tasks tied for the longest matching worktree prefix (see resolveTask for
+// why a tie implies an identical Worktree value). Rules (BUG-059):
+//   - one match → return it (the common case, unchanged).
+//   - 2+ matches → drop archived; if exactly one non-archived match remains
+//     → return it.
+//   - otherwise, if exactly one non-archived match is in_progress (the
+//     running session making the call) → return it.
+//   - otherwise (all matches archived, or 2+ equally-plausible live matches)
+//     → fail, naming the candidates, rather than silently binding identity
+//     to a guessed task.
+func disambiguateCwdMatches(cwd string, matches []*model.Task) (*model.Task, error) {
+	switch len(matches) {
+	case 0:
 		return nil, fmt.Errorf("no task matches cwd: %s", cwd)
+	case 1:
+		return matches[0], nil
 	}
-	return best, nil
+
+	var active []*model.Task
+	for _, t := range matches {
+		if !t.Archived {
+			active = append(active, t)
+		}
+	}
+	switch len(active) {
+	case 0:
+		// Every task sharing this worktree is archived — there is no live task here.
+		return nil, fmt.Errorf("no task matches cwd: %s", cwd)
+	case 1:
+		return active[0], nil
+	}
+
+	var running []*model.Task
+	for _, t := range active {
+		if t.Status == model.StatusInProgress {
+			running = append(running, t)
+		}
+	}
+	if len(running) == 1 {
+		return running[0], nil
+	}
+	return nil, &CwdAmbiguousError{Cwd: cwd, Candidates: active}
+}
+
+// CwdAmbiguousError is returned when a cwd's worktree_path is shared by two
+// or more equally-plausible live tasks (BUG-059: argus reuses a worktree
+// directory when a task name/branch is reused after the prior task moved to
+// in_review/complete/archived without its worktree being cleared). The
+// message lists the candidates so the operator can disambiguate or clean up
+// the stale task rather than have identity silently resolve to a guess.
+type CwdAmbiguousError struct {
+	Cwd        string
+	Candidates []*model.Task
+}
+
+func (e *CwdAmbiguousError) Error() string {
+	parts := make([]string, 0, len(e.Candidates))
+	for _, t := range e.Candidates {
+		parts = append(parts, fmt.Sprintf("%s (%s)", t.ID, t.Status))
+	}
+	return fmt.Sprintf(
+		"cwd maps to multiple live argus tasks sharing this worktree: %s. A stale task is likely reusing this worktree path — archive or delete it, or re-run once only one task here is in_progress.",
+		strings.Join(parts, ", "),
+	)
 }
 
 // --- Schedule tool handlers ---
