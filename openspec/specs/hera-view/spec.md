@@ -1167,7 +1167,15 @@ is not needlessly reset. A live, present session SHALL be left alone (this never
 restarts or navigates a live coordinator — that remains the `Enter`-reattach
 path's responsibility).
 
-Derived from: `internal/tui/hera/panes.go` (`reconcileOne` dead-handle branch, `reconcileSessions`, `paneBinding`), `internal/daemon/client/client.go` (`Get` re-dials on a cache-miss when the daemon reports the process alive).
+Every genuine swap onto a different session handle (this reconcile
+replacement, and `bindPane`'s task-changed rebind) SHALL reset the pane's
+VT/replay state (`ResetVT`) before attaching the new handle, so no emulator
+state, cached replay content, or scroll anchor left over from the outgoing
+session can survive into the incoming session's render — the same
+`SetTaskID→ResetVT→SetSession` order the main (non-Hera) agent view already
+follows on every task/session transition.
+
+Derived from: `internal/tui/hera/panes.go` (`reconcileOne` dead-handle branch, `bindPane`, `reconcileSessions`, `paneBinding`), `internal/daemon/client/client.go` (`Get` re-dials on a cache-miss when the daemon reports the process alive).
 
 #### Scenario: A dead pane session is replaced on the next tick
 
@@ -1178,6 +1186,11 @@ Derived from: `internal/tui/hera/panes.go` (`reconcileOne` dead-handle branch, `
 
 - **WHEN** a pane holds a `!Alive()` session and the provider returns nil (process gone) or the same dead handle (cache not yet evicted)
 - **THEN** the pane keeps its current handle (its buffered output still backs log replay) and is not reset
+
+#### Scenario: A same-task session swap (e.g. `recycle_coord`) leaves no stale render state
+
+- **WHEN** a pane's bound task is recycled — the session dies and a fresh, distinct live handle for the SAME task ID is resolved on a later reconcile
+- **THEN** the swap resets the pane's VT/replay state before attaching the fresh handle, so the fresh session's render cannot show any cell or replay content carried over from the outgoing session
 
 ### Requirement: A dropped pane keystroke is logged, not silently swallowed (area 6)
 

@@ -1168,6 +1168,12 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		if midX < x {
 			midX = x
 		}
+		// Fill the full box before the message: DrawText only paints its own
+		// characters, and this transitional state must never rely on a caller
+		// having already blanked the rect (defense-in-depth alongside the
+		// bindPane/reconcileOne ResetVT fix — a partially-repainted pane must
+		// never leak a prior frame's cells regardless of which path got here).
+		widget.FillArea(screen, x, y, width, height, ' ', tcell.StyleDefault)
 		widget.DrawText(screen, midX, midY, width, msg, theme.StyleDimmed)
 		return
 	}
@@ -1331,6 +1337,9 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		}
 		if sess != nil {
 			msg := "Waiting for output..."
+			// See the "No active session" branch above: fill first so this
+			// transitional message can never leak a prior frame's cells.
+			widget.FillArea(screen, x, y, width, height, ' ', tcell.StyleDefault)
 			widget.DrawText(screen, x+(width-len(msg))/2, y+height/2, width, msg, theme.StyleDimmed)
 		}
 		return
@@ -1536,6 +1545,11 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 			if len(history) == 0 {
 				if tp.emuFedTotal == 0 {
 					msg := "Waiting for output..."
+					// Fill first: this fires right after a fresh session
+					// attaches (needRebuild) with no history yet — e.g. the
+					// recycled/resumed session's first frame — so the pane
+					// must never rely on a caller having already blanked it.
+					widget.FillArea(screen, x, y, w, h, ' ', tcell.StyleDefault)
 					widget.DrawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, theme.StyleDimmed)
 					return
 				}
@@ -1563,12 +1577,14 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 			tp.emuFedTotal = totalWritten
 		} else if tp.emuFedTotal == 0 {
 			msg := "Waiting for output..."
+			widget.FillArea(screen, x, y, w, h, ' ', tcell.StyleDefault)
 			widget.DrawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, theme.StyleDimmed)
 			return
 		}
 	} else if tp.emuFedTotal == 0 {
 		// No data has ever arrived.
 		msg := "Waiting for output..."
+		widget.FillArea(screen, x, y, w, h, ' ', tcell.StyleDefault)
 		widget.DrawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, theme.StyleDimmed)
 		return
 	} else if tp.paintCacheValid && tp.paintCacheX == x && tp.paintCacheY == y &&

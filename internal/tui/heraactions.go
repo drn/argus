@@ -678,14 +678,28 @@ func (a *App) heraDoForceRecycle(role *hera.RoleView) {
 		a.statusbar.SetError("Force recycle: unavailable in this mode")
 		return
 	}
+	taskID := roleReclaimTask(role)
 	sessionID := ""
-	if taskID := roleReclaimTask(role); taskID != "" {
+	if taskID != "" {
 		if t, err := d.Get(taskID); err == nil && t != nil {
 			sessionID = t.SessionID
 		}
 	}
+	// Mirror maybeKickRerender's pendingRerenderRestart bookkeeping (app.go):
+	// RecycleCoord's kill+respawn is the same "session dies non-cleanly, a
+	// fresh one for the SAME task follows" shape a rerender kick is, so
+	// handleSessionExitUI's dedicated immediate-resume branch should handle
+	// it too rather than falling through to the generic crash/stop path —
+	// otherwise a coordinator open in the plain (non-hera) agent view flashes
+	// an "exited" state instead of resuming gaplessly in place.
+	if taskID != "" {
+		a.pendingRerenderRestart[taskID] = true
+	}
 	rr := daemon.NewHeraRecycleRunner(d, runner, d.Config)
 	if err := herasvc.RecycleCoord(d, rr, role.RoleID, sessionID, herasvc.RecycleHumanForced); err != nil {
+		if taskID != "" {
+			delete(a.pendingRerenderRestart, taskID)
+		}
 		a.statusbar.SetError("Force recycle failed: " + err.Error())
 		uxlog.Log("[hera-view] force recycle failed: role=%d: %v", role.RoleID, err)
 		return

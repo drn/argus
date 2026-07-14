@@ -1746,6 +1746,12 @@ func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool)
 			// pre-existing out-of-scope case.
 			t.SetStatus(model.StatusInProgress)
 			a.db.Update(t) //nolint:errcheck
+			// startSession attaches the fresh session via SetSession alone;
+			// ResetVT here clears whatever emulator/replay/scroll-anchor state
+			// the OUTGOING session left behind so it can't bleed into the
+			// resumed one's first render (the same "new content incoming"
+			// contract bindPane/reconcileOne follow for the hera panes).
+			a.agentPane.ResetVT()
 			a.startSession(t)
 			a.statusbar.ClearInfo()
 			a.refreshTasksAsync()
