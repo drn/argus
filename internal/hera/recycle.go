@@ -109,11 +109,17 @@ func RecycleCoord(store RecycleStore, runner RecycleRunner, roleID int64, sessio
 }
 
 // BuildRecycleSeedPrompt composes the opening prompt for the fresh session
-// started by RecycleCoord's Restart step, per design.md D5: the role's stored
-// mission, the current plan-DAG node states for the role's orchestrator, and
-// any handoff_note left in task_meta. The result requires zero follow-up tool
-// calls from the new session — everything it needs to continue coherently is
-// already in its first message.
+// started by RecycleCoord's Restart step, per design.md D5: the current
+// plan-DAG node states for the role's orchestrator, any handoff_note left in
+// task_meta, and the role's stored mission. The result requires zero
+// follow-up tool calls from the new session — everything it needs to
+// continue coherently is already in its first message.
+//
+// The current state and handoff note are placed BEFORE the original mission,
+// with the mission explicitly marked as historical background, so a fresh
+// session anchors on what's actually going on rather than re-deriving "start
+// from scratch" from a stale instruction that may already be substantially
+// done (the failure mode this ordering fixes).
 //
 // Only the role lookup itself is fatal: a missing role means there is nothing
 // to seed. Listing sibling roles, their statuses, and the handoff note all
@@ -126,11 +132,9 @@ func BuildRecycleSeedPrompt(store RecycleStore, roleID int64) (string, error) {
 	}
 
 	var b strings.Builder
-	b.WriteString(role.Prompt)
-	b.WriteString("\n\n")
-	b.WriteString("---\n")
 	b.WriteString("You are a fresh session recycled from a prior coordinator session on this same task. ")
-	b.WriteString("The above is your original mission. Below is the current state of your orchestration and any handoff note your prior session left — read them before doing anything else; no tool call is needed to obtain them.\n")
+	b.WriteString("Below is the current state of your orchestration and any handoff note your prior session left, followed by your ORIGINAL prompt from when this task began. ")
+	b.WriteString("The current state and handoff note supersede the original prompt — read them FIRST and act on them; no tool call is needed to obtain them.\n")
 
 	b.WriteString("\n## Current plan-DAG / role state\n")
 	if planState := buildPlanStateSection(store, role.OrchestratorID, roleID); planState != "" {
@@ -144,6 +148,12 @@ func BuildRecycleSeedPrompt(store RecycleStore, roleID int64) (string, error) {
 		b.WriteString(note)
 		b.WriteString("\n")
 	}
+
+	b.WriteString("\n---\n")
+	b.WriteString("## Original prompt (background only — do NOT treat this as your current instruction)\n")
+	b.WriteString("This was your mission when this task began. It may already be substantially or fully done — check the state above before assuming otherwise.\n\n")
+	b.WriteString(role.Prompt)
+	b.WriteString("\n")
 
 	return b.String(), nil
 }
