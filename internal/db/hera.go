@@ -845,6 +845,34 @@ func (d *DB) HeraLiveBindingByTaskAndOrchestrator(taskID string, orchID int64) (
 	return scanHeraBinding(row)
 }
 
+// HeraLiveBindingByWorktreeAndOrchestrator returns the live binding for
+// (worktreePath, orchID), or ErrHeraNotFound. The worktree-keyed twin of
+// HeraLiveBindingByTaskAndOrchestrator: the (worktree_path, orchestrator_id)
+// live-uniqueness index caps this at one row, so it maps exactly onto the
+// identity an attach INSERT for that (worktree, orchestrator) would collide
+// against.
+//
+// It exists because cwd→argus_task_id resolution (resolveTask) can land on
+// the WRONG task when two argus tasks reuse the same worktree_path across
+// their lifecycles — a task name/branch reused after the prior task moved to
+// in_review/complete/archived without its worktree being cleared. When that
+// happens the task-keyed lookup misses the live binding that the
+// (worktree_path, orchestrator_id) uniqueness nonetheless rejects on INSERT —
+// the claim-says-none / attach-says-exists paradox (BUG-059). The caller's
+// worktree_path IS its cwd (ground truth) regardless of which task cwd
+// resolution happened to return, so this lookup resolves the same binding an
+// attach INSERT would collide with, keeping claim and attach in agreement.
+// Orchestrator scoping keeps the fallback safe: a stale binding under a
+// DIFFERENT orchestrator sharing the worktree is never returned here.
+func (d *DB) HeraLiveBindingByWorktreeAndOrchestrator(worktreePath string, orchID int64) (*HeraBinding, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	row := d.conn.QueryRow(
+		`SELECT id, role_id, orchestrator_id, argus_task_id, worktree_path, started_at, ended_at, end_reason
+		 FROM hera_bindings WHERE worktree_path=? AND orchestrator_id=? AND ended_at IS NULL`, worktreePath, orchID)
+	return scanHeraBinding(row)
+}
+
 // ListHeraLiveBindingsByTask returns every live binding for a task, oldest
 // first. Empty slice if none.
 func (d *DB) ListHeraLiveBindingsByTask(taskID string) ([]*HeraBinding, error) {
