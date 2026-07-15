@@ -200,6 +200,14 @@ type TerminalPane struct {
 	// its middle pane so the same widget reads correctly in both surfaces.
 	borderTitle string
 
+	// borderHint is drawn immediately after borderTitle in a distinct
+	// highlight style (theme.StyleClipboardHint), rather than being baked
+	// into borderTitle itself — so it renders visibly distinct from the rest
+	// of the title instead of blending into the border's plain style. Empty →
+	// nothing drawn. The native Hera view uses this for its "(ctrl+y copy)"
+	// staged-clipboard affordance.
+	borderHint string
+
 	// OnClick is called when the user clicks on the terminal pane.
 	// The app wires this to switch agentFocus back to the terminal.
 	OnClick func()
@@ -420,6 +428,14 @@ func (tp *TerminalPane) SetFocused(f bool) {
 // by the native Hera view to label its coordinator pane distinctly.
 func (tp *TerminalPane) SetBorderTitle(t string) {
 	tp.borderTitle = t
+}
+
+// SetBorderHint sets (or clears, via "") a highlight-styled affordance drawn
+// right after the border title — used by the native Hera view for its
+// "(ctrl+y copy) " staged-clipboard affordance so it stands out from the
+// plain-styled title instead of blending in.
+func (tp *TerminalPane) SetBorderHint(hint string) {
+	tp.borderHint = hint
 }
 
 // EagerReplayBuild kicks off an async replay rebuild from the session log
@@ -1034,6 +1050,20 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		title = " Agent "
 	}
 	inner := widget.DrawBorderedPanel(screen, x, y, width, height, title, borderStyle)
+	if tp.borderHint != "" {
+		// title is ASCII-only in practice (see the agent header's matching
+		// note), so len(title) is a valid cell-count offset for where the
+		// hint starts, immediately after the title text drawn at x+1.
+		hintStart := x + 1 + len(title)
+		c := hintStart
+		for _, r := range tp.borderHint {
+			if c >= x+width-1 {
+				break
+			}
+			screen.SetContent(c, y, r, nil, theme.StyleClipboardHint)
+			c++
+		}
+	}
 	x, y, width, height = inner.X, inner.Y, inner.W, inner.H
 	if width <= 0 || height <= 0 {
 		return

@@ -371,6 +371,101 @@ func TestTerminalPane_DiffMode(t *testing.T) {
 	}
 }
 
+// TestTerminalPane_Draw_BorderHintUsesDistinctStyle (fix-ctrl-y-copy-persist)
+// asserts SetBorderHint draws its text in theme.StyleClipboardHint, distinct
+// from the plain border-title style, so the Hera pane's "(ctrl+y copy)"
+// affordance is actually noticeable rather than blending into the title.
+func TestTerminalPane_Draw_BorderHintUsesDistinctStyle(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	screen.SetSize(40, 10)
+
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 40, 10)
+	tp.SetBorderTitle(" Agent ")
+	tp.SetBorderHint("(ctrl+y copy) ")
+	tp.Draw(screen)
+
+	var row strings.Builder
+	for col := 0; col < 40; col++ {
+		s, _, _ := screen.Get(col, 0)
+		row.WriteString(s)
+	}
+	line := row.String()
+
+	hintCol := strings.Index(line, "(ctrl+y copy)")
+	if hintCol < 0 {
+		t.Fatalf("hint not found in title row: %q", line)
+	}
+	_, hintStyle, _ := screen.Get(hintCol, 0)
+	gotFg, _, _ := hintStyle.Decompose()
+	wantFg, _, _ := theme.StyleClipboardHint.Decompose()
+	testutil.Equal(t, gotFg, wantFg)
+
+	titleCol := strings.Index(line, "Agent")
+	if titleCol < 0 {
+		t.Fatalf("title not found in title row: %q", line)
+	}
+	_, titleStyle, _ := screen.Get(titleCol, 0)
+	titleFg, _, _ := titleStyle.Decompose()
+	if titleFg == wantFg {
+		t.Error("hint foreground should differ from the plain title foreground")
+	}
+}
+
+// TestTerminalPane_Draw_BorderHintEmpty covers the no-hint path: Draw must
+// not panic and must not draw any hint text when borderHint is empty.
+func TestTerminalPane_Draw_BorderHintEmpty(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	screen.SetSize(40, 10)
+
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 40, 10)
+	tp.SetBorderTitle(" Agent ")
+	tp.Draw(screen) // no SetBorderHint call — must not panic
+
+	var row strings.Builder
+	for col := 0; col < 40; col++ {
+		s, _, _ := screen.Get(col, 0)
+		row.WriteString(s)
+	}
+	if strings.Contains(row.String(), "ctrl+y") {
+		t.Errorf("no hint was set but title row contains hint text: %q", row.String())
+	}
+}
+
+// TestTerminalPane_Draw_BorderHintNarrowWidth covers the too-narrow-to-fit
+// case: with no room left after the title, Draw must not panic and must not
+// draw hint text past the pane's right edge — mirrors the agent header's
+// TestAgentHeader_Draw_ClipboardHintNarrowWidth.
+func TestTerminalPane_Draw_BorderHintNarrowWidth(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	screen.SetSize(8, 5)
+
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 8, 5)
+	tp.SetBorderTitle(" Agent ")
+	tp.SetBorderHint("(ctrl+y copy) ")
+	tp.Draw(screen) // no room for the hint after the title — must not panic
+
+	var row strings.Builder
+	for col := 0; col < 8; col++ {
+		s, _, _ := screen.Get(col, 0)
+		row.WriteString(s)
+	}
+	if strings.Contains(row.String(), "ctrl+y") {
+		t.Errorf("hint should not fit in an 8-col pane, got row: %q", row.String())
+	}
+}
+
 func TestUvColorToTcell(t *testing.T) {
 	tests := []struct {
 		name  string
