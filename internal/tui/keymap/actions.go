@@ -79,6 +79,10 @@ const (
 	ActDiffSplit      Action = "diff.split"
 	ActDiffScrollDown Action = "diff.scroll_down"
 	ActDiffScrollUp   Action = "diff.scroll_up"
+	ActDiffFinder     Action = "diff.finder"
+	ActDiffOpen       Action = "diff.open"
+	ActDiffEditor     Action = "diff.editor"
+	ActDiffTerminal   Action = "diff.terminal"
 
 	// Settings (letter commands; arrows/h/l/enter are structural)
 	ActSettingsDown     Action = "settings.nav_down"
@@ -134,6 +138,7 @@ var defaultSpecs = map[Context]map[Action]string{
 	},
 	CtxDiff: {
 		ActDiffSplit: "s", ActDiffScrollDown: "j", ActDiffScrollUp: "k",
+		ActDiffFinder: "f", ActDiffOpen: "o", ActDiffEditor: "e", ActDiffTerminal: "t",
 	},
 	CtxSettings: {
 		ActSettingsDown: "j", ActSettingsUp: "k", ActSettingsDelete: "d",
@@ -171,6 +176,7 @@ var actionLabels = map[Action]string{
 	ActFileOpen: "open file", ActFileEditor: "open in editor", ActFileTerminal: "open terminal",
 
 	ActDiffSplit: "toggle split/unified", ActDiffScrollDown: "scroll down", ActDiffScrollUp: "scroll up",
+	ActDiffFinder: "reveal in Finder", ActDiffOpen: "open file", ActDiffEditor: "open in editor", ActDiffTerminal: "open terminal",
 
 	ActSettingsDown: "navigate down", ActSettingsUp: "navigate up", ActSettingsDelete: "delete / set default",
 	ActSettingsNew: "new", ActSettingsEdit: "edit", ActSettingsQuickAdd: "quick add projects",
@@ -223,7 +229,8 @@ var contextOrder = map[Context][]Action{
 		ActAgentPaneLeft, ActAgentPaneRight, ActAgentTaskPrev, ActAgentTaskNext,
 		ActAgentScrollUp, ActAgentScrollDown, ActAgentScrollPgUp, ActAgentScrollPgDn, ActAgentScrollEnd},
 	CtxFilePnl: {ActFileDown, ActFileUp, ActFileFinder, ActFileOpen, ActFileEditor, ActFileTerminal},
-	CtxDiff:    {ActDiffSplit, ActDiffScrollDown, ActDiffScrollUp},
+	CtxDiff: {ActDiffSplit, ActDiffScrollDown, ActDiffScrollUp,
+		ActDiffFinder, ActDiffOpen, ActDiffEditor, ActDiffTerminal},
 	CtxSettings: {ActSettingsDown, ActSettingsUp, ActSettingsNew, ActSettingsEdit, ActSettingsDelete,
 		ActSettingsQuickAdd, ActSettingsApple, ActSettingsToggle, ActSettingsRun, ActSettingsModel},
 	CtxHeraRail: {ActHeraSpawn, ActHeraNewCoord, ActHeraRename, ActHeraArchive, ActHeraPin,

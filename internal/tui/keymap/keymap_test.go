@@ -77,6 +77,10 @@ func TestResolve_Defaults(t *testing.T) {
 		{CtxHeraRail, ev(tcell.KeyRune, 'w', 0), ActHeraSpawn},
 		{CtxHeraRail, ev(tcell.KeyCtrlD, 0, 0), ActHeraDelete},
 		{CtxDiff, ev(tcell.KeyRune, 's', 0), ActDiffSplit},
+		{CtxDiff, ev(tcell.KeyRune, 'f', 0), ActDiffFinder},
+		{CtxDiff, ev(tcell.KeyRune, 'o', 0), ActDiffOpen},
+		{CtxDiff, ev(tcell.KeyRune, 'e', 0), ActDiffEditor},
+		{CtxDiff, ev(tcell.KeyRune, 't', 0), ActDiffTerminal},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.want), func(t *testing.T) {

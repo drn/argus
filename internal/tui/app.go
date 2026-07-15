@@ -3191,6 +3191,18 @@ func (a *App) handleDiffKey(event *tcell.EventKey) *tcell.EventKey {
 			case keymap.ActDiffScrollUp:
 				a.agentPane.DiffScrollUp(1)
 				return nil
+			case keymap.ActDiffFinder:
+				a.openInFinder()
+				return nil
+			case keymap.ActDiffOpen:
+				a.openFile()
+				return nil
+			case keymap.ActDiffEditor:
+				a.openInEditor()
+				return nil
+			case keymap.ActDiffTerminal:
+				a.openTerminal()
+				return nil
 			}
 		}
 		// `q` exits diff mode — structural "back", reserved (not rebindable in
