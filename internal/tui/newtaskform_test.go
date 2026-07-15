@@ -1688,8 +1688,8 @@ func TestNewTaskForm_ModelOptionsFromBackend(t *testing.T) {
 		map[string]config.Project{"p": {}}, "p",
 		map[string]config.Backend{"b": {Command: "claude"}}, "b",
 	)
-	testutil.DeepEqual(t, f.modelOptions, []string{"opus", "sonnet", "haiku"})
-	testutil.Equal(t, f.modelEntryCount(), 5) // default + 3 models + custom…
+	testutil.DeepEqual(t, f.modelOptions, []string{"opus", "sonnet", "haiku", "fable"})
+	testutil.Equal(t, f.modelEntryCount(), 6) // default + 4 models + custom…
 }
 
 func TestNewTaskForm_ModelOptionsConfigOverride(t *testing.T) {
