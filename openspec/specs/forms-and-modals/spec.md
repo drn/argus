@@ -291,7 +291,7 @@ Path and directory input fields SHALL offer directory completions resolved to ab
 
 The new-task form SHALL present the model field as a per-backend cycling selector rather than a raw text input. The selector's options SHALL be, in order: a `default` option (meaning "use the selected backend's configured default model, or the CLI's own default"), followed by the selected backend's known models, followed by a `custom…` option. Left/right SHALL cycle the selector value; up/down SHALL move field focus (unchanged from the other selectors). The `default` option SHALL be selected initially.
 
-The selector's per-backend known-model list SHALL be resolved from the backend's configured `models` list when non-empty, otherwise from a built-in curated list keyed on the backend command (Claude backends supply the stable `claude` CLI aliases; Codex backends supply the Codex model identifiers; unknown, Pi, and custom backends supply an empty list — leaving only `default` and `custom…`).
+The selector's per-backend known-model list SHALL be resolved from the backend's configured `models` list when non-empty, otherwise from a built-in curated list keyed on the backend command (Claude backends supply the stable `claude` CLI aliases `opus`, `sonnet`, `haiku`, `fable`; Codex backends supply the Codex model identifiers; unknown, Pi, and custom backends supply an empty list — leaving only `default` and `custom…`).
 
 When the backend selector changes, the model selector's option list SHALL be rebuilt for the newly selected backend and the selection SHALL reset to `default`, and any previously typed custom value SHALL be cleared.
 
