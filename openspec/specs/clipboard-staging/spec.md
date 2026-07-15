@@ -3,9 +3,7 @@
 ## Purpose
 
 Clipboard staging provides an ephemeral, per-task buffer where an agent can stage text it wants the user to copy, decoupling the moment the agent produces the text from the moment the user performs the OS-clipboard write. This solves the iOS Safari constraint that a clipboard write must happen inside a synchronous user gesture: the agent stages text ahead of time, then the user takes a single tap (PWA) or keypress (TUI ctrl+y) that performs the real copy. Staged entries are intentionally short-lived — one slot per task, last-write-wins, no persistence across daemon restarts, and an automatic time-to-live expiry.
-
 ## Requirements
-
 ### Requirement: Per-task staging buffer
 
 The staging store SHALL hold at most one text payload per task, keyed by task ID, with last-write-wins semantics. Payloads for different tasks SHALL be isolated from one another. An empty task ID SHALL be rejected silently — staging a payload under an empty task ID SHALL store nothing and SHALL return no error, and reading or clearing an empty task ID SHALL report absence.
@@ -168,14 +166,15 @@ The API SHALL encode a clipboard change as a JSON event for the streaming channe
 In the TUI, the staged-clipboard copy keybinding SHALL always be intercepted
 and SHALL NOT fall through to normal terminal handling, whether or not a
 payload is staged. If a payload is staged, the copy action SHALL copy the
-cached staged payload to the OS clipboard, clear the task's staged state, and
-flash a confirmation notice. If no payload is staged, the action SHALL flash a
-notice indicating there is nothing to copy, and SHALL NOT forward the keypress
-to the underlying terminal. Local staged state and the on-screen hint SHALL be
-cleared immediately on a successful copy, and the underlying clear of the
-task's staged payload SHALL proceed independently; a failure to clear SHALL be
-logged without disrupting the copy. If the OS clipboard write fails, no
-confirmation notice SHALL be shown.
+cached staged payload to the OS clipboard and flash a confirmation notice,
+and SHALL NOT clear the task's staged payload as a side effect of copying —
+the staged payload SHALL remain available for a subsequent copy. If no
+payload is staged, the action SHALL flash a notice indicating there is
+nothing to copy, and SHALL NOT forward the keypress to the underlying
+terminal. If the OS clipboard write fails, no confirmation notice SHALL be
+shown. The staged payload SHALL be affected only by its existing lifecycle
+(time-to-live expiry, replacement by a newer staged value, or the owning
+agent session exiting) — never by the copy action itself.
 
 #### Scenario: Nothing staged is intercepted with a notice
 
@@ -183,17 +182,18 @@ confirmation notice SHALL be shown.
 - **THEN** it reports that nothing was copied and a "nothing to copy" notice
   is shown instead of forwarding the keypress to the terminal
 
-#### Scenario: Copy clears local state and the staged payload
+#### Scenario: Copy preserves the staged payload
 
 - **WHEN** the copy action runs with a staged payload cached for a task
-- **THEN** it reports a successful copy, immediately clears the cached payload
-  and the on-screen hint, and clears the task's staged payload
+- **THEN** it reports a successful copy, the cached payload and the on-screen
+  hint remain unchanged, and the task's staged payload is left intact
 
-#### Scenario: Clear failure does not disrupt copy
+#### Scenario: Copying twice in a row both succeed
 
-- **WHEN** clearing the task's staged payload fails after a copy
-- **THEN** the failure is logged and the copy still reports success without
-  panicking
+- **WHEN** the copy action is run twice in immediate succession with the same
+  staged payload and nothing else changes the staged state in between
+- **THEN** both runs report a successful copy of the same text, and neither
+  run flashes "nothing to copy"
 
 #### Scenario: OS write failure suppresses the notice
 
@@ -202,19 +202,31 @@ confirmation notice SHALL be shown.
 
 ### Requirement: TUI staged-payload hint tracking
 
-The TUI SHALL track the currently staged payload for the active task by polling the staging source and SHALL show a hint affordance only while a payload is present. When the staging source is unavailable (for example, when the TUI runs without a daemon-backed runner), tracking SHALL be a no-op and no hint SHALL be shown. When a previously present payload becomes absent, the tracked payload SHALL be cleared and the hint hidden.
+The TUI SHALL track the currently staged payload for the active task by
+polling the staging source and SHALL show a hint affordance only while a
+payload is present. The hint SHALL render with a color that visibly
+distinguishes it from the surrounding chrome text, so its presence is
+noticeable rather than blending in. When the staging source is unavailable
+(for example, when the TUI runs without a daemon-backed runner), tracking
+SHALL be a no-op and no hint SHALL be shown. When a previously present
+payload becomes absent, the tracked payload SHALL be cleared and the hint
+hidden.
 
 #### Scenario: No staging source available
 
 - **WHEN** the staging source is not available and the cache is refreshed
 - **THEN** the tracked payload stays empty and no hint is shown
 
-#### Scenario: Present payload shows the hint
+#### Scenario: Present payload shows a visibly distinct hint
 
-- **WHEN** the staging source reports a present payload for the active task and the cache is refreshed
-- **THEN** the tracked payload is updated to that text and the hint is shown
+- **WHEN** the staging source reports a present payload for the active task
+  and the cache is refreshed
+- **THEN** the tracked payload is updated to that text, the hint is shown, and
+  it renders in a color distinct from the surrounding header/border-title text
 
 #### Scenario: Absent payload hides the hint
 
-- **WHEN** a previously present payload becomes absent and the cache is refreshed
+- **WHEN** a previously present payload becomes absent and the cache is
+  refreshed
 - **THEN** the tracked payload is cleared and the hint is hidden
+

@@ -174,11 +174,10 @@ func TestCtrlY_InertOnRailAndDetails(t *testing.T) {
 	h(ctrlY(), noFocus) // no panic
 }
 
-// TestClipboardHintTitle covers the pure title helper.
-func TestClipboardHintTitle(t *testing.T) {
-	testutil.Equal(t, clipboardHintTitle(coordPaneTitle, false), coordPaneTitle)
-	testutil.Equal(t, clipboardHintTitle(coordPaneTitle, true), " Coordinator (ctrl+y copy) ")
-	testutil.Equal(t, clipboardHintTitle(agentPaneTitle, true), " Agent (ctrl+y copy) ")
+// TestHeraClipboardHint covers the pure border-hint helper.
+func TestHeraClipboardHint(t *testing.T) {
+	testutil.Equal(t, heraClipboardHint(false), "")
+	testutil.Equal(t, heraClipboardHint(true), clipboardHintSuffix)
 }
 
 // TestCtrlY_HintRendersOnFocusedPane: with clipReady set and the worker pane

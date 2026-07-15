@@ -34,6 +34,11 @@ var (
 	ColorPRAwaiting = tcell.NewRGBColor(178, 148, 250) // #b294fa purple — PR open, awaiting review
 	ColorPRChanges  = tcell.NewRGBColor(240, 96, 96)   // #f06060 red — reviewer requested changes
 	ColorPRApproved = tcell.NewRGBColor(120, 220, 120) // #78dc78 green — PR approved
+
+	// ColorClipboardHint highlights the agent-staged clipboard "ready to copy"
+	// affordance (fix-ctrl-y-copy-persist) — a color distinct from the other
+	// status accents above so it isn't misread as needs-input/error/PR state.
+	ColorClipboardHint = tcell.NewRGBColor(255, 214, 92) // #ffd65c amber — staged clipboard ready to copy
 )
 
 // Icon constants for status indicators (Nerd Font codepoints).
@@ -99,6 +104,10 @@ var (
 	// shared purple stays structurally identical — restyle the family once and
 	// both surfaces move together rather than silently diverging.
 	StylePRLink = StylePRAwaiting
+
+	// StyleClipboardHint renders the "ctrl+y to copy" / "(ctrl+y copy)"
+	// affordances in the agent header and Hera pane border-titles.
+	StyleClipboardHint = tcell.StyleDefault.Foreground(ColorClipboardHint).Bold(true)
 
 	// StyleCoordinator renders the task-row coordinator indicator. Cyan (the
 	// project color) reads as "structural/orchestration" rather than a status.
