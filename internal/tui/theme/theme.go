@@ -36,9 +36,11 @@ var (
 	ColorPRApproved = tcell.NewRGBColor(120, 220, 120) // #78dc78 green — PR approved
 
 	// ColorClipboardHint highlights the agent-staged clipboard "ready to copy"
-	// affordance (fix-ctrl-y-copy-persist) — a color distinct from the other
-	// status accents above so it isn't misread as needs-input/error/PR state.
-	ColorClipboardHint = tcell.NewRGBColor(255, 214, 92) // #ffd65c amber — staged clipboard ready to copy
+	// affordance (fix-ctrl-y-copy-persist) — a clean yellow, picked to sit
+	// clearly outside the warm orange/salmon band already used for
+	// ColorInProgress/ColorNeedsInput (an amber this close to orange read as
+	// too similar in review) so it isn't misread as needs-input/error/PR state.
+	ColorClipboardHint = tcell.NewRGBColor(255, 235, 59) // #ffeb3b yellow — staged clipboard ready to copy
 )
 
 // Icon constants for status indicators (Nerd Font codepoints).

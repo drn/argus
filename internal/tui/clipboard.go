@@ -11,9 +11,12 @@ import (
 // OS clipboard write helper (copyToClipboard) still works in all modes.
 //
 // Deliberately narrow: the TUI only ever READS the staged payload
-// (fix-ctrl-y-copy-persist removed the ctrl+y-triggered clear). Both
-// concrete clients still expose a ClipboardClear method for the REST/PWA
-// clear-on-copy flow — this interface just doesn't need it.
+// (fix-ctrl-y-copy-persist removed the ctrl+y-triggered clear, which was the
+// last production caller of either client's ClipboardClear method). Both
+// concrete clients still expose ClipboardClear as client-SDK surface mirroring
+// the REST DELETE endpoint — which the PWA calls directly over HTTP, not
+// through these Go clients — but nothing in this codebase calls it anymore;
+// this interface just doesn't need it.
 type clipboardAccessor interface {
 	ClipboardGet(taskID string) (string, bool)
 }

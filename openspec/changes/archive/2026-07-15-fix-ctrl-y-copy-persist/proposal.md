@@ -38,6 +38,25 @@ notice there's something staged to copy at all.
   the main agent header's " ctrl+y to copy " hint and the Hera pane's
   "(ctrl+y copy)" border-title affordance.
 
+## Non-Goals
+
+- **The PWA's copy-and-clear flow is intentionally left unchanged.** The web
+  client (`internal/api/static/index.html`'s `clearServerClipboard`) still
+  calls `DELETE /api/tasks/{id}/clipboard` immediately after a successful
+  `navigator.clipboard.writeText`, so on the web surface the Copy button and
+  its hint still disappear after one use — the TUI and the web now diverge on
+  this specific behavior. Per this repo's Frontend Parity rule, that gap is
+  named here rather than left silent: iOS Safari's requirement that a
+  clipboard write happen inside a synchronous user gesture (the reason the
+  staging store exists at all) makes a lingering "still staged" web hint less
+  useful there than on the TUI's PTY-only view, and unifying the two was out
+  of scope for this fix. Bringing the PWA in line (or deciding it should stay
+  as-is) is a tracked follow-up, not an oversight.
+- The macOS app never called a clear endpoint for this feature to begin with
+  (`TerminalController.swift` copies on the incoming SSE push and never issues
+  a clear), so it already matched the TUI's new persist-after-copy behavior
+  without any change here.
+
 ## Capabilities
 
 ### Modified Capabilities
