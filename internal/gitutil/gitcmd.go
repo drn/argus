@@ -41,12 +41,15 @@ func FetchGitStatus(taskID, worktree string) GitStatusRefreshMsg {
 }
 
 // findMergeBase finds the merge-base between HEAD and the upstream or default
-// branch. Remote-tracking branches are tried before local master/main: local
-// branch refs are shared across every worktree of a repo (only HEAD is
-// per-worktree), so if another worktree or the primary checkout rewrites its
-// local master (e.g. via rebase), a merge-base computed against that local
-// ref silently jumps to a stale ancestor. Remote-tracking refs only move via
-// an explicit fetch in this worktree, so they aren't perturbed that way.
+// branch. Remote-tracking branches are tried before local master/main: all
+// branch refs (local and remote-tracking alike) are shared across every
+// worktree of a repo — only HEAD is per-worktree — so a local master is
+// exposed to any arbitrary rewrite (rebase, reset, amend) that some other
+// worktree or the primary checkout performs on it, silently jumping the
+// merge-base to a stale ancestor. Remote-tracking refs are shared too, but
+// they only ever change via an explicit fetch, which is a deliberate sync to
+// the real upstream state (normally fast-forward) rather than an arbitrary
+// history rewrite, so they're a safer fallback.
 func findMergeBase(worktree string) string {
 	if base, err := runGit(worktree, "merge-base", "HEAD", "HEAD@{upstream}"); err == nil {
 		if b := strings.TrimSpace(base); b != "" {
@@ -175,6 +178,8 @@ func ListRemoteBranches(repoDir string) []string {
 
 // priorityBranches defines the preferred ordering for branch selection.
 // upstream first for fork workflows where upstream is the canonical remote.
+// Dual use: also the remote-tracking fallback order tried by findMergeBase,
+// so changing this list changes merge-base resolution, not just UI sort order.
 var priorityBranches = []string{
 	"upstream/master",
 	"origin/master",
