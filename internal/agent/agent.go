@@ -108,8 +108,8 @@ func ResolveModel(task *model.Task, backend config.Backend) string {
 
 // KnownModels returns the curated list of selectable model identifiers for a
 // backend command, used to populate the new-task model selector. The Claude
-// entries are the stable `claude` CLI aliases (opus / sonnet / haiku) that
-// always map to the current models, so the list does not churn per model
+// entries are the stable `claude` CLI aliases (opus / sonnet / haiku / fable)
+// that always map to the current models, so the list does not churn per model
 // release; the Codex entries are the current Codex CLI model names. Unknown,
 // Pi, and custom backends return nil — the model selector then offers only its
 // "default" and "custom…" options, so any model is still reachable by typing.
@@ -117,7 +117,7 @@ func ResolveModel(task *model.Task, backend config.Backend) string {
 func KnownModels(command string) []string {
 	switch {
 	case IsClaudeBackend(command):
-		return []string{"opus", "sonnet", "haiku"}
+		return []string{"opus", "sonnet", "haiku", "fable"}
 	case IsCodexBackend(command):
 		return []string{"gpt-5-codex", "gpt-5"}
 	default:

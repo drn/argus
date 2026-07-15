@@ -198,7 +198,7 @@ func TestHandleBackends_ModelsList(t *testing.T) {
 	for _, b := range resp.Backends {
 		if b.Name == "cc" {
 			found = true
-			testutil.DeepEqual(t, b.Models, []string{"opus", "sonnet", "haiku"})
+			testutil.DeepEqual(t, b.Models, []string{"opus", "sonnet", "haiku", "fable"})
 		}
 	}
 	testutil.True(t, found)
