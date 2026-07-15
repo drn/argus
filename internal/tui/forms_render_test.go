@@ -143,6 +143,53 @@ func TestApp_HandleDiffKey_Scroll(t *testing.T) {
 	testutil.Equal(t, app.agentPane.InDiffMode(), false)
 }
 
+// f/o/e/t must still open the selected file while a diff is being displayed
+// (BUG: these used to be swallowed by handleDiffKey once Enter entered diff
+// mode, since it only resolved CtxDiff, never CtxFilePnl).
+func TestApp_HandleDiffKey_FileHotkeysStillWork(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.mode = modeAgent
+	app.filePanel.SetRect(0, 0, 40, 20)
+	app.filePanel.SetFiles([]gitutil.ChangedFile{{Status: "M", Path: "a.go"}})
+	app.worktreeDir = t.TempDir()
+	app.agentPane.EnterDiffMode("+1\n-2", "a.go")
+
+	var systemArgs [][]string
+	var editorArgs [][]string
+	var termHits int
+	oldSystem := systemOpener
+	oldEditor := editorOpener
+	oldTerm := terminalOpener
+	t.Cleanup(func() { systemOpener = oldSystem; editorOpener = oldEditor; terminalOpener = oldTerm })
+	systemOpener = func(args ...string) error { systemArgs = append(systemArgs, args); return nil }
+	editorOpener = func(wt, path string) error { editorArgs = append(editorArgs, []string{wt, path}); return nil }
+	terminalOpener = func(string) error { termHits++; return nil }
+
+	wantFile := app.worktreeDir + "/a.go"
+
+	got := app.handleDiffKey(tcell.NewEventKey(tcell.KeyRune, 'f', 0))
+	testutil.Nil(t, got)
+	testutil.DeepEqual(t, systemArgs[len(systemArgs)-1], []string{"-R", wantFile})
+
+	got = app.handleDiffKey(tcell.NewEventKey(tcell.KeyRune, 'o', 0))
+	testutil.Nil(t, got)
+	testutil.DeepEqual(t, systemArgs[len(systemArgs)-1], []string{wantFile})
+
+	got = app.handleDiffKey(tcell.NewEventKey(tcell.KeyRune, 'e', 0))
+	testutil.Nil(t, got)
+	testutil.DeepEqual(t, editorArgs[len(editorArgs)-1], []string{app.worktreeDir, "a.go"})
+
+	got = app.handleDiffKey(tcell.NewEventKey(tcell.KeyRune, 't', 0))
+	testutil.Nil(t, got)
+	testutil.Equal(t, termHits, 1)
+
+	// Still in diff mode — these hotkeys don't exit it.
+	testutil.Equal(t, app.agentPane.InDiffMode(), true)
+}
+
 func TestApp_HandleDiffKey_PgUpPgDown(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
