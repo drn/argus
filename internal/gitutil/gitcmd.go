@@ -40,11 +40,24 @@ func FetchGitStatus(taskID, worktree string) GitStatusRefreshMsg {
 	return msg
 }
 
-// findMergeBase finds the merge-base between HEAD and the upstream or default branch.
+// findMergeBase finds the merge-base between HEAD and the upstream or default
+// branch. Remote-tracking branches are tried before local master/main: local
+// branch refs are shared across every worktree of a repo (only HEAD is
+// per-worktree), so if another worktree or the primary checkout rewrites its
+// local master (e.g. via rebase), a merge-base computed against that local
+// ref silently jumps to a stale ancestor. Remote-tracking refs only move via
+// an explicit fetch in this worktree, so they aren't perturbed that way.
 func findMergeBase(worktree string) string {
 	if base, err := runGit(worktree, "merge-base", "HEAD", "HEAD@{upstream}"); err == nil {
 		if b := strings.TrimSpace(base); b != "" {
 			return b
+		}
+	}
+	for _, branch := range priorityBranches {
+		if base, err := runGit(worktree, "merge-base", "HEAD", branch); err == nil {
+			if b := strings.TrimSpace(base); b != "" {
+				return b
+			}
 		}
 	}
 	for _, branch := range []string{"master", "main"} {
