@@ -75,7 +75,11 @@ const (
 	ActFileEditor   Action = "filepanel.editor"
 	ActFileTerminal Action = "filepanel.terminal"
 
-	// Diff view
+	// Diff view. Finder/Open/Editor/Terminal deliberately mirror the
+	// filepanel actions below (same keys, same handlers) rather than reusing
+	// them directly: Resolve is scoped per Context with an independent
+	// override table, and handleDiffKey never resolves CtxFilePnl, so these
+	// hotkeys would go dead in diff mode without their own CtxDiff entries.
 	ActDiffSplit      Action = "diff.split"
 	ActDiffScrollDown Action = "diff.scroll_down"
 	ActDiffScrollUp   Action = "diff.scroll_up"
