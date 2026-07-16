@@ -578,19 +578,63 @@ func ParkedSelectionSignal(r *ScreenRenderer, buf []byte, cols, rows int) bool {
 // It returns the new count and whether the session has now reached
 // NeedsInputEscalationTicks.
 //
-// A non-qualifying tick RESETS the counter to zero rather than merely
-// pausing it — the escalation is meant to catch a combination that holds
-// CONTINUOUSLY, so a broken streak (the prompt disappears, or the working
-// affordance appears, even for a single tick) must restart the wait from
-// scratch. This is a pure step function; callers own the per-ID map (see
+// A non-qualifying tick that follows an ONGOING streak is held in a one-tick
+// GRACE PERIOD rather than discarding the streak outright (BUG-060): a
+// negative return value encodes "streak of -newTicks, one miss pending
+// confirmation". The very next tick either resumes the streak (qualifies
+// again — the miss was a transient blip) or confirms a genuine break (misses
+// again — two CONSECUTIVE non-qualifying ticks reset to zero for real). A
+// streak that was already at zero (nothing accumulated, or grace already
+// consumed) simply stays at zero on a miss.
+//
+// A grace tick's `escalated` return STAYS true when the streak had ALREADY
+// reached NeedsInputEscalationTicks before the miss — a session that has
+// already escalated must not visibly flicker back to "not flagged" for the
+// one tick a blip is being confirmed or forgiven; it only actually
+// de-escalates once the SECOND consecutive miss confirms a real break (which
+// resets to zero, `escalated` false, same as any other confirmed break).
+//
+// This grace tolerance exists because Claude's own fullscreen redraw can
+// produce an isolated tick where ParkedSelectionSignal misses even though the
+// session is genuinely, continuously parked at the SAME prompt: the widget's
+// cursor glyph can blink off for a single redraw frame, and
+// readSessionLogTailBytes has no synchronization with the daemon's concurrent
+// log-file writer, so an occasional read can land on a torn/partial frame
+// mid-redraw. Under the OLD all-or-nothing reset, either of these — recurring
+// roughly once every few ticks — could permanently prevent the streak from
+// EVER reaching NeedsInputEscalationTicks, even though the session never
+// stopped being parked: a hera worker whose blocked-prompt frame happened to
+// hit this cadence would never surface "(?)", while a sibling whose ticks
+// landed cleanly would. Two consecutive misses still reset for real — the
+// anti-false-positive guarantee BUG-029 established is unchanged: a genuinely
+// busy/streaming agent showing only sparse, ISOLATED coincidental matches
+// (not a real parked streak) never accumulates escalation credit under this
+// scheme either, because each such match is immediately followed by more
+// misses that confirm the surrounding non-parked state.
+//
+// This is a pure step function; callers own the per-ID map (see
 // ContentIdleState.esc and the TUI's needsInputEscalation field) exactly like
-// the fingerprint/since carry-forward maps elsewhere in this file.
+// the fingerprint/since carry-forward maps elsewhere in this file — the
+// negative-sentinel encoding keeps the map value type (plain int) unchanged.
 func EscalateParkedSelection(prevTicks int, qualifies bool) (newTicks int, escalated bool) {
-	if !qualifies {
-		return 0, false
+	if qualifies {
+		streak := prevTicks
+		if streak < 0 {
+			streak = -streak // resume the streak a prior isolated miss held in grace
+		}
+		newTicks = streak + 1
+		return newTicks, newTicks >= NeedsInputEscalationTicks
 	}
-	newTicks = prevTicks + 1
-	return newTicks, newTicks >= NeedsInputEscalationTicks
+	if prevTicks > 0 {
+		// First miss after a streak: hold it in grace rather than discarding —
+		// confirmed or forgiven by the very next tick. Stay escalated through
+		// this one grace tick if the streak had already crossed the threshold,
+		// so an already-flagged session doesn't flicker off for a single blip.
+		return -prevTicks, prevTicks >= NeedsInputEscalationTicks
+	}
+	// prevTicks <= 0: already at zero, or this is the SECOND consecutive miss
+	// while already in grace — a genuine break, reset for real.
+	return 0, false
 }
 
 // ContentIdleState carries the per-task content-idle bookkeeping across ticks:
@@ -669,7 +713,11 @@ func ContentIdle(running []string, rawIdle map[string]bool, tailOf func(string) 
 			prevTicks = prev.esc[id]
 		}
 		newTicks, escalated := EscalateParkedSelection(prevTicks, ParkedSelectionSignal(screen, tail, cols, rows))
-		if newTicks > 0 {
+		if newTicks != 0 {
+			// A negative value is a BUG-060 one-tick grace state (an isolated
+			// miss holding the streak pending the next tick), not "nothing to
+			// store" — only a true zero (no streak, or a confirmed break) needs
+			// no entry, since a missing map key already reads back as zero.
 			next.esc[id] = newTicks
 		}
 

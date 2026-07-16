@@ -601,11 +601,34 @@ fingerprint-convergence match — it does not alter fingerprinting itself, does
 not loosen the shared chrome-recognition allowlist
 (`fingerprintVolatileLine` / `decorationLine`), and does not apply to the
 free-text trailing-question signal (only the unambiguous selection-prompt
-shape is strong enough to escalate on its own). The consecutive-tick counter
-resets to zero the moment either half of the combination stops holding
-(selection signal disappears, or the working affordance appears) — a
-transient or coincidental match that does not persist for the full window
-SHALL NOT escalate.
+shape is strong enough to escalate on its own).
+
+A single non-qualifying tick that interrupts an otherwise-ongoing streak SHALL
+be held in a one-tick GRACE period rather than immediately discarding the
+streak: a genuinely, continuously-parked session can still produce an
+isolated single-tick miss (the agent's own fullscreen redraw can blink the
+selection-cursor glyph off for one frame as an animation, or a read of the
+session's recent output can occasionally land on a partial/torn frame mid
+redraw, independent of whether the agent is actually parked). The very next
+tick either resumes the streak in full — the interruption was transient — or,
+if it ALSO fails to qualify, confirms a genuine break: the consecutive-tick
+counter resets to zero only after TWO CONSECUTIVE non-qualifying ticks. A
+session already past the escalation threshold SHALL remain flagged
+needs-input / content-idle through a single grace-held miss — it does not
+flicker the indicator off for that one tick and back on the next.
+
+A transient or coincidental match that does not hold for the full escalation
+window SHALL still not escalate: a busy/streaming session showing the
+selection shape for only an isolated tick or two, surrounded by non-qualifying
+ticks, never accumulates enough consecutive credit to reach the threshold —
+each such isolated match is itself surrounded by two or more non-qualifying
+ticks, which confirm the non-parked state before any credit could build past
+one or two ticks.
+
+Derived from: `internal/agent/needsinput.go` (`EscalateParkedSelection`,
+`NeedsInputEscalationTicks`), `internal/tui/app.go`
+(`detectNeedsInputSticky`'s escalation persistence), `internal/agent/needsinput.go`
+(`ContentIdle`'s escalation persistence).
 
 #### Scenario: Selection prompt with no working affordance escalates after N ticks despite a non-converging fingerprint
 
@@ -616,21 +639,42 @@ SHALL NOT escalate.
 - **THEN** the system reports the agent is waiting for input and classifies it
   content-idle once the escalation window elapses
 
-#### Scenario: Transient selection-shape match does not escalate
+#### Scenario: An isolated single-tick miss does not reset an ongoing streak (BUG-060)
 
-- **WHEN** a running session's tail matches the selection-prompt shape (with
-  the working affordance absent) for fewer than N consecutive ticks before the
-  match stops holding — e.g. the agent scrolls a `❯ 1.`-looking line past
-  while still genuinely generating
-- **THEN** the system does not escalate, and the consecutive-tick counter
-  resets
+- **WHEN** a running session's tail has matched the selection-prompt shape
+  (with the working affordance absent) for one or more consecutive ticks, then
+  misses on exactly one tick (the selection shape momentarily absent, or the
+  working affordance momentarily present), then matches again on the very next
+  tick
+- **THEN** the streak resumes in full from where it left off — it is NOT
+  discarded and does not restart from one
 
-#### Scenario: Working affordance present never escalates
+#### Scenario: An already-escalated session stays flagged through a single grace-held miss (BUG-060)
 
-- **WHEN** a running session's tail matches the selection-prompt shape but the
-  working affordance is present on any tick within the window
-- **THEN** the consecutive-tick counter resets on that tick and escalation
-  does not fire
+- **WHEN** a running session has already reached the escalation threshold and
+  its next tick is an isolated miss, immediately followed by a tick that
+  matches again
+- **THEN** the session remains reported as needs-input / content-idle
+  throughout — it does not visibly clear and re-flag across that single miss
+
+#### Scenario: Two consecutive misses confirm a genuine break
+
+- **WHEN** a running session's tail fails to match the selection-prompt shape
+  (with the working affordance absent) for TWO OR MORE CONSECUTIVE ticks —
+  e.g. the agent resumes genuinely generating, or the selection widget
+  scrolls out of view for a sustained period
+- **THEN** the consecutive-tick counter resets to zero for real, and any
+  future streak must accumulate from scratch
+
+#### Scenario: Sparse isolated matches amid an otherwise-busy session never escalate
+
+- **WHEN** a running session's tail matches the selection-prompt shape only
+  occasionally (e.g. the agent scrolls a `❯ 1.`-looking line past while still
+  genuinely generating), with two or more non-qualifying ticks between each
+  isolated match
+- **THEN** the system does not escalate — each isolated match is surrounded
+  by enough non-qualifying ticks to confirm the session is not genuinely
+  parked before any meaningful credit could accumulate
 
 #### Scenario: Escalation does not change fingerprint-converging behavior
 

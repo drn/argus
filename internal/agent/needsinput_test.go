@@ -538,13 +538,17 @@ func TestParkedSelectionSignal(t *testing.T) {
 	})
 }
 
-// TestEscalateParkedSelection pins the BUG-029 bounded-escalation counter: a
-// pure (prevTicks, qualifies) -> (newTicks, escalated) step function. Reset on
-// any non-qualifying tick (not a pause), escalate only once the streak reaches
-// NeedsInputEscalationTicks.
+// TestEscalateParkedSelection pins the BUG-029/BUG-060 bounded-escalation
+// counter: a pure (prevTicks, qualifies) -> (newTicks, escalated) step
+// function. A streak of zero stays at zero on a miss (nothing to lose); an
+// ONGOING streak's first miss is held in a one-tick GRACE period (a negative
+// sentinel) rather than discarded, recovering in full if the very next tick
+// qualifies again; a SECOND consecutive miss confirms a genuine break and
+// resets for real. Escalates only once a qualifying tick's resumed/continued
+// streak reaches NeedsInputEscalationTicks.
 func TestEscalateParkedSelection(t *testing.T) {
-	t.Run("non-qualifying tick resets to zero and never escalates", func(t *testing.T) {
-		ticks, escalated := EscalateParkedSelection(NeedsInputEscalationTicks-1, false)
+	t.Run("non-qualifying tick with no prior streak stays at zero and never escalates", func(t *testing.T) {
+		ticks, escalated := EscalateParkedSelection(0, false)
 		testutil.Equal(t, ticks, 0)
 		testutil.Equal(t, escalated, false)
 	})
@@ -562,15 +566,74 @@ func TestEscalateParkedSelection(t *testing.T) {
 		testutil.Equal(t, escalated, true)
 	})
 
-	t.Run("streak broken then resumed does not carry the prior count", func(t *testing.T) {
+	// BUG-060: an ISOLATED single-tick miss (a blink-off cursor frame, a torn
+	// read of the concurrently-written session log) must not cost an ongoing
+	// streak — it is held in grace and fully recovered the moment the very
+	// next tick qualifies again. Under the old all-or-nothing reset, a session
+	// whose detection missed roughly once every few ticks (a realistic cadence
+	// for either noise source) could NEVER reach the threshold even though it
+	// never stopped being genuinely parked.
+	t.Run("an isolated single miss holds the streak in grace and fully recovers", func(t *testing.T) {
 		ticks := NeedsInputEscalationTicks - 1 // one tick away from escalating
 		ticks, escalated := EscalateParkedSelection(ticks, false)
+		if ticks >= 0 {
+			t.Fatalf("expected a negative grace sentinel preserving the streak, got %d", ticks)
+		}
+		testutil.Equal(t, escalated, false)
+		// The very next qualifying tick resumes at N+1, not 1 — full recovery.
+		ticks, escalated = EscalateParkedSelection(ticks, true)
+		testutil.Equal(t, ticks, NeedsInputEscalationTicks)
+		testutil.Equal(t, escalated, true)
+	})
+
+	// BUG-060: once ALREADY escalated, a single grace-held miss must not
+	// visibly flicker the flag off for that one tick — the caller's `escalated`
+	// bool is the direct driver of whether a role shows "(?)" this tick, so a
+	// negative (grace) newTicks that momentarily reports escalated=false would
+	// flicker the rail glyph off and back on every time this recurs.
+	t.Run("already-escalated streak stays escalated through a grace tick", func(t *testing.T) {
+		ticks := NeedsInputEscalationTicks
+		ticks, escalated := EscalateParkedSelection(ticks, false) // isolated miss, already past threshold
+		if ticks >= 0 {
+			t.Fatalf("expected a negative grace sentinel, got %d", ticks)
+		}
+		testutil.Equal(t, escalated, true)
+		// Confirm the break on a second consecutive miss: THEN it de-escalates.
+		ticks, escalated = EscalateParkedSelection(ticks, false)
 		testutil.Equal(t, ticks, 0)
 		testutil.Equal(t, escalated, false)
-		// Resuming the streak starts over from 1, not N.
+	})
+
+	t.Run("two consecutive misses confirm a genuine break and reset for real", func(t *testing.T) {
+		ticks := NeedsInputEscalationTicks - 1
+		ticks, escalated := EscalateParkedSelection(ticks, false) // 1st miss: grace
+		testutil.Equal(t, escalated, false)
+		ticks, escalated = EscalateParkedSelection(ticks, false) // 2nd consecutive miss: confirmed break
+		testutil.Equal(t, ticks, 0)
+		testutil.Equal(t, escalated, false)
+		// Resuming after a REAL break starts over from 1, not N.
 		ticks, escalated = EscalateParkedSelection(ticks, true)
 		testutil.Equal(t, ticks, 1)
 		testutil.Equal(t, escalated, false)
+	})
+
+	t.Run("sparse isolated matches while otherwise missing never accumulate (anti-false-positive)", func(t *testing.T) {
+		// A busy/streaming agent that only OCCASIONALLY, coincidentally matches
+		// the selection shape for a single tick amid many misses must never
+		// escalate — each isolated match is surrounded by 2+ misses, which
+		// confirms a break before any credit can build past 1-2 ticks.
+		ticks := 0
+		var escalated bool
+		pattern := []bool{false, false, false, true, false, false, true, false, false, false, true, false, false}
+		for _, q := range pattern {
+			ticks, escalated = EscalateParkedSelection(ticks, q)
+			if escalated {
+				t.Fatalf("escalated on a sparse/non-continuous match pattern: %v", pattern)
+			}
+		}
+		if ticks > 1 {
+			t.Fatalf("expected no meaningful accumulated credit from sparse matches, got %d", ticks)
+		}
 	})
 }
 
