@@ -1983,7 +1983,11 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 		// independently of the fingerprint match above — see
 		// agent.EscalateParkedSelection.
 		newTicks, escalated := agent.EscalateParkedSelection(a.needsInputEscalation[id], agent.ParkedSelectionSignal(a.needsInputScreen, tail, cols, rows))
-		if newTicks > 0 {
+		if newTicks != 0 {
+			// A negative value is a BUG-060 one-tick grace state (an isolated
+			// miss holding the streak pending the next tick), not "nothing to
+			// store" — only a true zero (no streak, or a confirmed break) needs
+			// no entry, since a missing map key already reads back as zero.
 			newEsc[id] = newTicks
 		}
 		if escalated {
