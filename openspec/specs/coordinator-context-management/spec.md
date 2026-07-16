@@ -3,7 +3,6 @@
 ## Purpose
 
 Hera coordinators are long-lived — unlike a disposable worker, a coordinator persists across an entire multi-stage orchestration and personally accumulates every token it reads, delegates, or relays along the way. This capability gives coordinators a visible context-size signal, a budget-driven nudge to seek a safe seam and recycle before they get too bloated or wedged, a spawn-time discipline spec pushing them to stay lean in the first place, and a `recycle_coord` primitive that resets a coordinator's session in place — same task, worktree, branch, and binding — without losing its mission or plan-DAG state.
-
 ## Requirements
 ### Requirement: Context-budget Stop hook stamps a live signal and nudges over budget
 
@@ -54,7 +53,7 @@ The system SHALL provide a `recycle_coord` primitive that terminates a coordinat
 
 Before restarting, the primitive SHALL check for and terminate any stray background job tied to the outgoing session (via the session's own agent-registry lookup) in addition to the primary session kill, so a surviving background job cannot cause a worktree-write conflict with the new session.
 
-The fresh session's opening prompt SHALL be assembled entirely server-side, before the session starts, from: the role's stored mission prompt, the current plan-DAG node states for the role's orchestrator, and any `handoff_note` present in `task_meta`. The new session SHALL NOT be required to make any tool call to obtain any of these three — they arrive already present in its first message.
+The fresh session's opening prompt SHALL be assembled entirely server-side, before the session starts, from: the role's stored mission prompt, the current plan-DAG node states for the role's orchestrator, and any `handoff_note` present in `task_meta`. The new session SHALL NOT be required to make any tool call to obtain any of these three — they arrive already present in its first message. The assembled prompt SHALL clearly mark the role's stored mission text as historical background — not a live instruction to act on now — and SHALL state, ahead of showing that mission text, that the current plan-DAG state and handoff note (which follow) supersede it. This guards against a fresh session anchoring on a stale original mission as its primary directive when the current state shows the work it describes is already done or superseded.
 
 #### Scenario: Same task survives a recycle
 
@@ -80,4 +79,9 @@ The fresh session's opening prompt SHALL be assembled entirely server-side, befo
 
 - **WHEN** the outgoing session has a background job still running under its session identity at recycle time
 - **THEN** that job is terminated before the new session starts
+
+#### Scenario: Original mission is marked historical, not a live instruction
+
+- **WHEN** a fresh session's opening prompt is assembled after a recycle
+- **THEN** the mission text is preceded by framing marking it as background/historical and stating that the current plan-DAG state and handoff note below supersede it, so the mission does not read as a live directive to act on now
 

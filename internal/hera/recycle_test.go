@@ -1,6 +1,7 @@
 package hera
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/db"
@@ -182,4 +183,20 @@ func TestBuildRecycleSeedPrompt_ComposesMissionPlanStateAndHandoffNote(t *testin
 	testutil.Contains(t, prompt, "w1")
 	testutil.Contains(t, prompt, string(db.HeraStatusWorking))
 	testutil.Contains(t, prompt, "watch the fan-in reconciliation")
+
+	// The original mission must be explicitly marked as historical, and the
+	// current plan-DAG state / handoff note must precede it in the assembled
+	// text — a fresh coordinator reads "what's actually going on" before "what
+	// I was originally asked," so it doesn't anchor on a stale mission as its
+	// live instruction (the BUG this ordering fixes).
+	testutil.Contains(t, prompt, "do NOT treat this as your current instruction")
+
+	missionIdx := strings.Index(prompt, "You are the coordinator for the config-management rollout.")
+	planStateIdx := strings.Index(prompt, "## Current plan-DAG / role state")
+	handoffIdx := strings.Index(prompt, "## Handoff note from your prior session")
+	historicalMarkerIdx := strings.Index(prompt, "do NOT treat this as your current instruction")
+
+	testutil.Equal(t, true, planStateIdx < missionIdx)
+	testutil.Equal(t, true, handoffIdx < missionIdx)
+	testutil.Equal(t, true, historicalMarkerIdx < missionIdx)
 }
