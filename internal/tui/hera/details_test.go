@@ -1,6 +1,7 @@
 package hera
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -530,5 +531,151 @@ func TestDetails_RosterTableNarrowPaneNoPanic(t *testing.T) {
 	sim.SetSize(80, 30)
 	for _, w := range []int{2, 5, 10, 20} {
 		d.Draw(sim, 0, 0, w, 20, false)
+	}
+}
+
+// bigRoster builds a coordinator with n workers, far more than a modest pane
+// can show at once — the fixture the roster-scroll tests need.
+func bigRoster(n int) *OrchView {
+	roles := []RoleView{{RoleID: 1, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator}}
+	for i := 1; i <= n; i++ {
+		roles = append(roles, RoleView{
+			RoleID: int64(i + 1), OrchID: 1, Name: fmt.Sprintf("agent-%02d", i), Kind: db.HeraKindWorker,
+		})
+	}
+	return &OrchView{ID: 1, Name: "big-orch", Roles: roles}
+}
+
+// TestDetails_RosterScrolls is the render smoke test the scroll requirement
+// needs: a 20-agent roster drawn in a pane too short to show them all must
+// make the LAST agent reachable by scrolling down, and the FIRST agent
+// reachable again by scrolling back up — nothing is permanently cut off.
+func TestDetails_RosterScrolls(t *testing.T) {
+	d := NewDetailsView()
+	d.SetOrch(bigRoster(20), nil)
+	const w, h = 60, 20
+
+	// Draw once so rosterVisibleRows reflects this pane's real budget (mirrors
+	// a live app: Draw always runs before any keypress can act on it).
+	testutil.Equal(t, rosterContainsWidth(t, d, w, h, "agent-01"), true)
+	testutil.Equal(t, rosterContainsWidth(t, d, w, h, "agent-20"), false) // cut off before scrolling
+
+	for i := 0; i < 30; i++ { // far more presses than needed; ScrollRoster clamps
+		if !d.ScrollRoster(1) {
+			break
+		}
+	}
+	testutil.Equal(t, rosterContainsWidth(t, d, w, h, "agent-20"), true) // reachable now
+	testutil.Equal(t, d.ScrollRoster(1), false)                          // already at the bound
+
+	for i := 0; i < 30; i++ {
+		if !d.ScrollRoster(-1) {
+			break
+		}
+	}
+	testutil.Equal(t, rosterContainsWidth(t, d, w, h, "agent-01"), true) // back at the top
+	testutil.Equal(t, d.ScrollRoster(-1), false)                         // already at the bound
+}
+
+// TestDetails_ScrollRosterNoopsBeforeFirstDraw pins that ScrollRoster is a
+// harmless no-op before any Draw has established a real row budget (avoids
+// scrolling against a stale/zero rosterVisibleRows).
+func TestDetails_ScrollRosterNoopsBeforeFirstDraw(t *testing.T) {
+	d := NewDetailsView()
+	d.SetOrch(bigRoster(20), nil)
+	testutil.Equal(t, d.ScrollRoster(1), false)
+	testutil.Equal(t, d.ScrollRoster(-1), false)
+}
+
+// TestDetails_ScrollRosterNoopsWhenEverythingFits pins that a small roster
+// (fits entirely within the pane) never consumes a scroll keypress — so
+// j/k/Up/Down fall straight through to the embedded plan widget as before.
+func TestDetails_ScrollRosterNoopsWhenEverythingFits(t *testing.T) {
+	d := NewDetailsView()
+	d.SetOrch(bigRoster(2), nil)
+	testutil.Equal(t, rosterContainsWidth(t, d, 60, 30, "agent-01"), true)
+	testutil.Equal(t, rosterContainsWidth(t, d, 60, 30, "agent-02"), true)
+	testutil.Equal(t, d.ScrollRoster(1), false)
+	testutil.Equal(t, d.ScrollRoster(-1), false)
+}
+
+// TestDetails_SetOrchScrollReset pins WHEN the roster's scroll offset resets:
+// a genuine selection change (different orchestrator) resets to the top, but
+// re-selecting the SAME orchestrator (the ~1s refresh-tick case) preserves
+// the operator's scroll position instead of snapping it back every tick.
+func TestDetails_SetOrchScrollReset(t *testing.T) {
+	d := NewDetailsView()
+	orchA := bigRoster(20)
+	d.SetOrch(orchA, nil)
+	rosterContainsWidth(t, d, 60, 20, "agent-01") // Draw once to seed the budget
+	testutil.Equal(t, d.ScrollRoster(5), true)
+	testutil.Equal(t, d.rosterScroll > 0, true)
+
+	// Same orchestrator (same ID) re-selected — e.g. a refresh tick rebuilding
+	// the model — must NOT reset the scroll position.
+	orchARefreshed := bigRoster(20)
+	d.SetOrch(orchARefreshed, nil)
+	testutil.Equal(t, d.rosterScroll > 0, true)
+
+	// A genuinely different orchestrator resets to the top.
+	orchB := &OrchView{ID: 2, Name: "other", Roles: []RoleView{
+		{RoleID: 1, OrchID: 2, Name: "coord", Kind: db.HeraKindCoordinator},
+	}}
+	d.SetOrch(orchB, nil)
+	testutil.Equal(t, d.rosterScroll, 0)
+}
+
+// TestDetails_ClampRosterScrollNegative pins the defensive floor: a
+// scrollOffset that somehow went negative (never possible via ScrollRoster,
+// which floors at 0 itself, but clampRosterScroll is the general re-bound
+// contract) is corrected to 0, not left negative.
+func TestDetails_ClampRosterScrollNegative(t *testing.T) {
+	d := NewDetailsView()
+	d.SetOrch(bigRoster(20), nil)
+	d.rosterScroll = -7
+	d.clampRosterScroll(20)
+	testutil.Equal(t, d.rosterScroll, 0)
+}
+
+// TestDetails_ClampRosterScrollAboveMax pins the other half of the re-bound:
+// a scroll offset past the current maxScroll (e.g. the roster SHRANK — an
+// agent completed and dropped off) is pulled back down to the new max.
+func TestDetails_ClampRosterScrollAboveMax(t *testing.T) {
+	d := NewDetailsView()
+	d.SetOrch(bigRoster(20), nil)
+	d.rosterVisibleRows = 5
+	d.rosterScroll = 100
+	d.clampRosterScroll(20)
+	testutil.Equal(t, d.rosterScroll, d.rosterMaxScroll(20))
+	testutil.Equal(t, d.rosterScroll < 100, true)
+}
+
+func TestRosterScrollDelta(t *testing.T) {
+	down, ok := rosterScrollDelta(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, down, 1)
+
+	up, ok := rosterScrollDelta(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone))
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, up, -1)
+
+	jDown, ok := rosterScrollDelta(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone))
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, jDown, 1)
+
+	kUp, ok := rosterScrollDelta(tcell.NewEventKey(tcell.KeyRune, 'k', tcell.ModNone))
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, kUp, -1)
+
+	// Any other key (h/l, Enter, Esc, an unrelated rune) is not a scroll key.
+	for _, ev := range []*tcell.EventKey{
+		tcell.NewEventKey(tcell.KeyRune, 'h', tcell.ModNone),
+		tcell.NewEventKey(tcell.KeyRune, 'l', tcell.ModNone),
+		tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone),
+		tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone),
+		tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone),
+	} {
+		_, ok := rosterScrollDelta(ev)
+		testutil.Equal(t, ok, false)
 	}
 }

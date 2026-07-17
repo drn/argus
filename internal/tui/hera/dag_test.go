@@ -1,6 +1,7 @@
 package hera
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -262,6 +263,59 @@ func TestDetailsPlan_KeyForwardsToWidget(t *testing.T) {
 	testutil.Equal(t, p.Plan().CursorPos().Stage, 1) // moved down a stage
 	h(tcell.NewEventKey(tcell.KeyRune, 'k', tcell.ModNone), noFocus)
 	testutil.Equal(t, p.Plan().CursorPos().Stage, 0)
+}
+
+// TestHandleDetailsKey_ScrollsRosterBeforePlan: a coordinator with far more
+// agents than a short pane can show must scroll the roster FIRST on
+// j/k/Up/Down — the plan widget's own stage cursor must NOT move while the
+// roster still has room to scroll. Only once the roster is fully scrolled
+// does the SAME keystroke reach the plan widget again (ScrollRoster's false
+// return falls through), so the two never fight over a keypress.
+func TestHandleDetailsKey_ScrollsRosterBeforePlan(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "big-orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	for i := 1; i <= 20; i++ {
+		seedBoundRole(t, d, orch, fmt.Sprintf("agent-%02d", i), db.HeraKindWorker, fmt.Sprintf("t-w%02d", i))
+	}
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-coord": {id: "t-coord", alive: true}}))
+	p.Refresh()
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	t.Cleanup(sim.Fini)
+	// The roster panel is capped at half the details region (drawDetailsRegion),
+	// and this fixture's natural ContentHeight (~36 rows for 20 agents) exceeds
+	// that cap at this size — so the roster overflows without needing an
+	// unrealistically short pane.
+	sim.SetSize(80, 50)
+	p.SetRect(0, 0, 80, 50)
+	p.Draw(sim)
+
+	testutil.Equal(t, selectOrchByName(p, "big-orch"), true)
+	toAgentFocus(p)
+	p.Draw(sim) // populate DetailsView.rosterVisibleRows for this selection/size
+
+	h := p.InputHandler()
+	planStage := func() int { return p.Plan().CursorPos().Stage }
+	startStage := planStage()
+	scrolledRoster := false
+	for i := 0; i < 30; i++ { // far more than needed; ScrollRoster clamps at the bound
+		before := p.details.rosterScroll
+		h(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone), noFocus)
+		if p.details.rosterScroll != before {
+			scrolledRoster = true
+		}
+		p.Draw(sim) // recompute the budget for the next keypress, as a live app would
+	}
+	testutil.Equal(t, scrolledRoster, true)
+	testutil.Equal(t, p.details.rosterScroll, p.details.rosterMaxScroll(len(p.details.workers())))
+	// This fixture has no authored plan (no planned nodes, no edges) — the
+	// plan widget's degenerate empty-plan stage never moves regardless, so
+	// the assertion that matters is that scrolling the roster didn't need the
+	// plan widget's cursor to change AT ALL.
+	testutil.Equal(t, planStage(), startStage)
 }
 
 // TestDetailsPlan_EscAtRootDoesNotJumpToRail: with a coordinator selected and the

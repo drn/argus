@@ -10,6 +10,12 @@ tier readout already shows them (`Tier: <archetype> → <model>`) — but the
 coordinator roster never surfaces either, so a coordinator glancing at "what is
 my team running" has no way to see it without drilling into the plan DAG.
 
+Separately: today a long roster (18+ agents, the real repro that surfaced this)
+simply cuts off at the bottom of the panel — the overflow is unreachable, with
+no way to see agents beyond whatever fits in the roster's row budget (itself
+capped at half the Details region so the embedded plan graph keeps room). Both
+land in this same change.
+
 ## What Changes
 
 - **The Agents roster renders as a compact, aligned TABLE** with four columns:
@@ -32,19 +38,33 @@ my team running" has no way to see it without drilling into the plan DAG.
 - **`ContentHeight()` grows by one row** (the new column header) whenever the
   roster is non-empty, staying in exact lockstep with `Draw`'s row budget as
   before.
+- **The roster SCROLLS instead of truncating** when it has more agents than
+  its row budget affords. `j`/`k`/`Up`/`Down` in the focused Details region
+  scroll the roster FIRST — the SAME keys the embedded plan widget already
+  binds for its own stage nav — falling through to the plan widget's own
+  navigation only once the roster can't move further in that direction, so
+  the two never fight over a keystroke and no new focus mode was needed. The
+  scroll offset is a direct, clamped `scrollOffset` (the terminal-pane idiom,
+  gotchas/pty-terminal.md — not the rail's cursor-following window, since the
+  roster has no selectable row), re-clamped every Draw against the live agent
+  count and pane height, and preserved across a same-orchestrator refresh
+  (reset only on a genuine selection change).
 
 ## Capabilities
 
 ### Modified Capabilities
 
 - `hera-view`: the Agents roster (Details pane, coordinator selection) renders
-  as an aligned table with status/name/archetype/model columns instead of a
-  bullet list; the PR/ready mark folds into the status cell.
+  as an aligned, scrollable table with status/name/archetype/model columns
+  instead of a bullet list that silently truncates; the PR/ready mark folds
+  into the status cell.
 
 ## Impact
 
-- **Modified code:** `internal/tui/hera/details.go` (roster rendering +
-  `ContentHeight`), `internal/tui/hera/details_test.go`.
+- **Modified code:** `internal/tui/hera/details.go` (roster rendering,
+  scroll state, `ContentHeight`), `internal/tui/hera/page.go`
+  (`handleDetailsKey` roster-scroll-then-plan routing), `internal/tui/hera/details_test.go`,
+  `internal/tui/hera/dag_test.go`.
 - **No daemon, store, MCP, or REST change.** `RoleView.Archetype` /
   `AppliedModel` were already threaded onto every role by the model-tiering
   work (`add-diligence-profiles`); this change only surfaces them in a second

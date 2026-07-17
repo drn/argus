@@ -30,6 +30,19 @@ type DetailsView struct {
 	orch   *OrchView
 	prMeta map[string]map[string]string // taskID -> pr meta (namespace "pr")
 	meta   coordMeta                    // derived once in SetOrch (pure over orch)
+
+	// rosterScroll is the roster's scroll offset (index of the first agent
+	// row shown), clamped every Draw against the live agent count and the
+	// visible-row budget the CURRENT pane height affords — the same
+	// clamped-scrollOffset idiom terminal panes use (gotchas/pty-terminal.md),
+	// applied here as direct j/k/Up/Down increments rather than a
+	// cursor-following window (the roster has no selectable row).
+	rosterScroll int
+	// rosterVisibleRows is the number of agent DATA rows (excluding the
+	// header) the roster's row budget affords, cached from the most recent
+	// Draw so ScrollRoster (called from key handling, between Draw calls)
+	// can compute the same clamp bound without redoing Draw's layout math.
+	rosterVisibleRows int
 }
 
 // coordMeta is the rich metadata block the Details pane renders for a selected
@@ -90,13 +103,23 @@ func NewDetailsView() *DetailsView { return &DetailsView{} }
 // nil when unavailable — the PR mark just won't render (best-effort, no fetch).
 // The rich metadata block is derived once here so Draw + ContentHeight share
 // the same (immutable) inputs and never drift.
+//
+// The roster's scroll offset resets to the top ONLY on a genuine selection
+// change (a different orchestrator, or none previously selected) — SetOrch
+// also runs on every ~1s refresh tick for the SAME selected coordinator
+// (doRefresh -> applySelection), and resetting scroll on every one of those
+// would snap a mid-read scroll position back to the top every tick.
 func (d *DetailsView) SetOrch(o *OrchView, prMeta map[string]map[string]string) {
+	changedOrch := d.orch == nil || o == nil || d.orch.ID != o.ID
 	d.orch = o
 	d.prMeta = prMeta
 	if o != nil {
 		d.meta = deriveCoordMeta(o)
 	} else {
 		d.meta = coordMeta{}
+	}
+	if changedOrch {
+		d.rosterScroll = 0
 	}
 }
 
@@ -219,19 +242,38 @@ func (d *DetailsView) Draw(screen tcell.Screen, x, y, w, h int, focused bool) {
 	row++ // blank spacer
 
 	// Worker roster — every non-coordinator role under the orchestrator,
-	// rendered as an aligned table: status (icon + label), name, diligence
-	// archetype, resolved model.
+	// rendered as an aligned, SCROLLABLE table: status (icon + label), name,
+	// diligence archetype, resolved model. When there are more agents than
+	// the remaining row budget affords, only a window starting at
+	// d.rosterScroll renders — j/k/Up/Down (routed by HeraPage.handleDetailsKey
+	// before the embedded plan widget's own nav) move the window so every
+	// agent stays reachable instead of the tail being silently cut off.
 	workers := d.workers()
 	draw(inner.X, fmt.Sprintf("Agents (%d):", len(workers)), theme.StyleDimmed)
 	if len(workers) == 0 {
+		d.rosterVisibleRows = 0
 		draw(inner.X+2, "(none)", theme.StyleDimmed)
 	} else {
 		cols := computeRosterColumns(workers, inner.W-2)
-		if row < maxRow {
+		// Budget = remaining rows minus the header row. Computed BEFORE
+		// consuming it, so it reflects the CURRENT pane height regardless of
+		// scroll position — the recompute-on-resize contract clampRosterScroll
+		// and ScrollRoster rely on.
+		budget := maxRow - row - 1
+		if budget < 0 {
+			budget = 0
+		}
+		d.rosterVisibleRows = budget
+		d.clampRosterScroll(len(workers))
+		if budget > 0 && row < maxRow {
 			drawRosterHeader(screen, inner.X+2, row, cols)
 			row++
 		}
-		for i := range workers {
+		end := d.rosterScroll + budget
+		if end > len(workers) {
+			end = len(workers)
+		}
+		for i := d.rosterScroll; i < end; i++ {
 			if row >= maxRow {
 				break
 			}
@@ -290,6 +332,56 @@ func (d *DetailsView) workers() []RoleView {
 		}
 	}
 	return out
+}
+
+// rosterMaxScroll bounds how far the roster can scroll for a given agent
+// count: enough to bring the LAST rosterVisibleRows agents into view, never
+// negative (a roster that already fits entirely has maxScroll 0).
+func (d *DetailsView) rosterMaxScroll(total int) int {
+	max := total - d.rosterVisibleRows
+	if max < 0 {
+		return 0
+	}
+	return max
+}
+
+// clampRosterScroll re-bounds the roster's scroll offset into [0, maxScroll]
+// against the CURRENT agent count and the visible-row budget Draw just
+// computed for the CURRENT pane height — called every Draw, so a shrinking
+// pane or a shrinking roster (an agent completing and dropping off) always
+// re-clamps rather than leaving the window stranded past the end of the list.
+func (d *DetailsView) clampRosterScroll(total int) {
+	if max := d.rosterMaxScroll(total); d.rosterScroll > max {
+		d.rosterScroll = max
+	}
+	if d.rosterScroll < 0 {
+		d.rosterScroll = 0
+	}
+}
+
+// ScrollRoster moves the roster's scroll offset by delta rows (+1 down, -1
+// up), clamped to [0, maxScroll]. Returns false — a no-op — when the roster
+// is already at the requested bound, or hasn't been drawn yet (rosterVisibleRows
+// still zero): the caller (HeraPage.handleDetailsKey) falls through to the
+// embedded plan widget's own navigation in that case, so j/k/Up/Down scroll
+// the roster first and only reach the plan once the roster can't move
+// further in that direction — the two never fight over the same keystroke.
+func (d *DetailsView) ScrollRoster(delta int) bool {
+	if d.orch == nil || d.rosterVisibleRows <= 0 {
+		return false
+	}
+	next := d.rosterScroll + delta
+	if next < 0 {
+		next = 0
+	}
+	if max := d.rosterMaxScroll(len(d.workers())); next > max {
+		next = max
+	}
+	if next == d.rosterScroll {
+		return false
+	}
+	d.rosterScroll = next
+	return true
 }
 
 // hasPR reports whether the role's bound task carries an open "pr" meta url

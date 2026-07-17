@@ -38,3 +38,55 @@
 - [x] 3.2 OpenSpec: `MODIFIED` the `hera-view` "PR indicator in the roster" and
   add an `ADDED` "Agents roster renders as an aligned table" requirement;
   archive into the base spec in this same PR.
+
+## 4. Make the roster scrollable (folded in mid-flight)
+
+- [x] 4.1 `internal/tui/hera/details.go`: add `DetailsView.rosterScroll` /
+  `rosterVisibleRows` fields; window the roster loop to `[rosterScroll,
+  rosterScroll+budget)` instead of always starting at 0 (budget computed BEFORE
+  the loop from the remaining row budget, independent of scroll position, so
+  it's a stable clamp bound between Draw calls).
+- [x] 4.2 Add `rosterMaxScroll`, `clampRosterScroll` (re-bounds every Draw
+  against the live agent count + current pane height — the recompute-on-resize
+  contract), and `ScrollRoster(delta)` (±1, returns false at either bound or
+  before the first Draw has run).
+- [x] 4.3 `SetOrch`: reset `rosterScroll` to 0 ONLY on a genuine orchestrator
+  change (`orch.ID` differs, or nil↔non-nil) — NOT on a same-orchestrator
+  refresh (the ~1s debounced tick re-selecting the same coordinator), so a
+  mid-read scroll position never snaps back every tick.
+- [x] 4.4 `internal/tui/hera/page.go`: `handleDetailsKey` tries
+  `rosterScrollDelta` + `DetailsView.ScrollRoster` FIRST for j/k/Up/Down —
+  the SAME keys the plan widget already binds for stage nav — falling through
+  to `p.plan.InputHandler()` unchanged once the roster can't scroll further in
+  that direction (or never needed to). No new focus sub-state; h/l/Enter/Space/Esc
+  are untouched, always the plan widget's.
+
+## 5. Tests (scroll)
+
+- [x] 5.1 `internal/tui/hera/details_test.go`: `TestDetails_RosterScrolls` — a
+  20-agent roster in a pane too short to show them all makes the last agent
+  reachable after scrolling down and the first reachable again after scrolling
+  back up, with `ScrollRoster` returning false at either bound.
+  `TestDetails_ScrollRosterNoopsBeforeFirstDraw` (no Draw yet → no-op),
+  `TestDetails_ScrollRosterNoopsWhenEverythingFits` (roster fits entirely →
+  scroll keys never consumed), `TestDetails_SetOrchScrollReset` (same-orch
+  refresh preserves scroll; a different orch resets it).
+- [x] 5.2 `internal/tui/hera/dag_test.go`:
+  `TestHandleDetailsKey_ScrollsRosterBeforePlan` — a 20-agent coordinator
+  through the real `HeraPage.InputHandler()`: j/k scroll the roster to its
+  bound while the plan widget's stage cursor never moves.
+
+## 6. Docs (scroll)
+
+- [x] 6.1 README Reference appendix: the plan-DAG key table's `↑`/`↓`/`j`/`k`
+  row notes the roster-scroll-then-plan-nav layering; the roster description
+  notes it's scrollable.
+- [x] 6.2 `context/knowledge/gotchas/hera-view.md`: new section documenting
+  the roster table + the clamped-scrollOffset scroll idiom + the
+  scroll-then-fall-through key routing + the SetOrch same-orch-preserves
+  contract.
+- [x] 6.3 OpenSpec: fold the scroll requirement into the SAME "Agents roster
+  renders as an aligned, scrollable table" requirement (retitled), both in
+  this archived change's delta and the base `hera-view` spec — no new change
+  folder, since this landed in the same PR/session before the original change
+  was reviewed.
