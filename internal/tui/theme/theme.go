@@ -127,6 +127,9 @@ var (
 // other state (none, draft, merged-closed, unknown) returns ok=false so the
 // caller can skip the cell entirely and let the name column reclaim the space.
 func PRGlyph(s model.PRState) (rune, tcell.Style, bool) {
+	if !s.IsActionable() {
+		return ' ', tcell.StyleDefault, false
+	}
 	switch s {
 	case model.PRAwaitingReview:
 		return IconPRAwaiting, StylePRAwaiting, true
@@ -135,6 +138,6 @@ func PRGlyph(s model.PRState) (rune, tcell.Style, bool) {
 	case model.PRApproved:
 		return IconPRApproved, StylePRApproved, true
 	default:
-		return ' ', tcell.StyleDefault, false
+		return ' ', tcell.StyleDefault, false // unreachable: IsActionable covers exactly these three
 	}
 }

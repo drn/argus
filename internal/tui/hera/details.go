@@ -292,19 +292,23 @@ func (d *DetailsView) workers() []RoleView {
 
 // roleMark composes the trailing indicators for a roster row: a "ready" mark
 // for a finished worker awaiting close-out (M4 meta:hera.ready_to_close) and a
-// "PR" mark when the bound task carries a "pr" meta url (best-effort, like the
-// task list — never fetched here).
+// "PR" mark when the bound task's cached "pr" meta state is still actionable
+// (mirrors theme.PRGlyph / model.PRState.IsActionable, best-effort like the
+// task list — never fetched here). A merged/closed/draft/unknown PR retains
+// its url in the cache but must not show the mark.
 func (d *DetailsView) roleMark(r *RoleView) string {
 	mark := ""
 	if r.ReadyToClose {
 		mark = "ready"
 	}
 	if r.TaskID != "" && d.prMeta != nil {
-		if kv := d.prMeta[r.TaskID]; kv != nil && kv["url"] != "" {
-			if mark != "" {
-				mark += " "
+		if kv := d.prMeta[r.TaskID]; kv != nil {
+			if s, err := model.ParsePRState(kv["state"]); err == nil && s.IsActionable() {
+				if mark != "" {
+					mark += " "
+				}
+				mark += "PR"
 			}
-			mark += "PR"
 		}
 	}
 	return mark

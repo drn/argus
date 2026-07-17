@@ -46,6 +46,25 @@ func TestPRState_IsTerminal(t *testing.T) {
 	}
 }
 
+func TestPRState_IsActionable(t *testing.T) {
+	for _, tc := range []struct {
+		s    PRState
+		want bool
+	}{
+		{PRNone, false},
+		{PRDraft, false},
+		{PRAwaitingReview, true},
+		{PRChangesRequested, true},
+		{PRApproved, true},
+		{PRMergedClosed, false},
+		{PRUnknown, false},
+	} {
+		t.Run(tc.s.String(), func(t *testing.T) {
+			testutil.Equal(t, tc.s.IsActionable(), tc.want)
+		})
+	}
+}
+
 func TestParsePRState(t *testing.T) {
 	for _, tc := range []struct {
 		input   string
