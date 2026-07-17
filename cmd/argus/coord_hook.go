@@ -42,11 +42,24 @@ import (
 // file; tests inject in-memory fakes so the gating/nudge logic is unit
 // testable without a live daemon (context/knowledge/testing.md).
 type coordHookEnv struct {
-	Getenv           func(key string) string
-	ResolveRoleKind  func(taskID string) (string, error)
-	ReadContextSize  func(transcriptPath string) (int, error)
-	StampContextSize func(taskID string, size int) error
-	Budget           func(taskID string) (int, error)
+	Getenv          func(key string) string
+	ResolveRoleKind func(taskID string) (string, error)
+	// PendingRecycleAlready reports whether the coordinator has already
+	// requested a self-service recycle (task_meta hera/pending_recycle ==
+	// "true") — checked BEFORE emitting a graceful block decision so an
+	// already-pending coordinator gets no-op'd instead of re-blocked (fix-
+	// coordhook-idle-deadlock: re-blocking never lets the session go idle,
+	// so RecycleWatcher's IsIdle gate never actually fires).
+	PendingRecycleAlready func(taskID string) (bool, error)
+	ReadContextSize       func(transcriptPath string) (int, error)
+	StampContextSize      func(taskID string, size int) error
+	Budget                func(taskID string) (int, error)
+	// ForceRecycle calls the daemon's hard-stop escalation (Part B): an
+	// immediate, idle-gate-free kill-and-restart of the coordinator's
+	// session, fired once context_size crosses 1.5x budget regardless of
+	// whether PendingRecycleAlready is true — the safety net for when the
+	// graceful path is stuck waiting for idleness that never comes.
+	ForceRecycle func(taskID string) error
 }
 
 // stopHookInput is the subset of Claude Code's Stop hook stdin payload this
@@ -117,6 +130,37 @@ func runCoordHook(stdin io.Reader, out, errOut io.Writer, env coordHookEnv) {
 		return
 	}
 
+	// Hard-stop escalation (Part B): once 1.5x over budget, force the
+	// recycle immediately instead of trusting the graceful path below — the
+	// safety net for a human who keeps replying quickly enough that the
+	// session's PTY never accumulates the 3s of silence IsIdle needs, even
+	// with the pending_recycle idempotency fix in place. Fires regardless of
+	// pending_recycle: that flag only gates the GRACEFUL path's re-blocking,
+	// not this unconditional escalation, so the pending-recycle read is
+	// skipped entirely here — it can't change the outcome.
+	if size*2 >= budget*3 {
+		if err := env.ForceRecycle(taskID); err != nil {
+			_, _ = fmt.Fprintf(errOut, "coord-hook: force recycle: %v\n", err)
+		}
+		return
+	}
+
+	// Part A idempotency: once the coordinator has already requested a
+	// self-service recycle, re-blocking here would force immediate
+	// re-engagement on every subsequent Stop, so the session's PTY never
+	// accumulates the 3s of silence IsIdle needs — RecycleWatcher would then
+	// never see the session idle and the recycle would never actually fire
+	// (the infinite-loop incident this fix addresses). Returning with no
+	// decision lets Claude Code's Stop genuinely go through, giving the
+	// watcher a real idle window. A read error falls back to treating the
+	// flag as not-yet-pending (the pre-fix behavior) rather than silently
+	// dropping the nudge.
+	if pending, err := env.PendingRecycleAlready(taskID); err != nil {
+		_, _ = fmt.Fprintf(errOut, "coord-hook: read pending recycle: %v\n", err)
+	} else if pending {
+		return
+	}
+
 	dec := stopHookDecision{
 		Decision: "block",
 		Reason: fmt.Sprintf(
@@ -156,11 +200,13 @@ func runCoordHookCommand() {
 // JSONL named in the hook's stdin.
 func realCoordHookEnv() coordHookEnv {
 	return coordHookEnv{
-		Getenv:           os.Getenv,
-		ResolveRoleKind:  resolveRoleKindReal,
-		ReadContextSize:  readContextSizeReal,
-		StampContextSize: stampContextSizeReal,
-		Budget:           budgetReal,
+		Getenv:                os.Getenv,
+		ResolveRoleKind:       resolveRoleKindReal,
+		PendingRecycleAlready: pendingRecycleAlreadyReal,
+		ReadContextSize:       readContextSizeReal,
+		StampContextSize:      stampContextSizeReal,
+		Budget:                budgetReal,
+		ForceRecycle:          forceRecycleReal,
 	}
 }
 
@@ -291,6 +337,61 @@ func resolveRoleKindReal(taskID string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// pendingRecycleAlreadyReal reads task_meta(hera, pending_recycle) for the
+// given task (db.HeraMetaKeyPendingRecycle) — mirrors resolveRoleKindReal's
+// shape exactly, against the same GET /api/tasks/{id}/meta?namespace=hera
+// endpoint, just reading a different key. Kept as its own round trip rather
+// than folded into resolveRoleKindReal: it's only ever consulted once a
+// coordinator is already confirmed over budget (not on every Stop event), so
+// the extra request is rare, and keeping the two reads independent avoids
+// coupling role-kind gating to recycle-flag gating in one function.
+func pendingRecycleAlreadyReal(taskID string) (bool, error) {
+	respBody, err := coordHookRequest(http.MethodGet,
+		"/api/tasks/"+taskID+"/meta?namespace="+db.HeraMetaNamespace, nil)
+	if err != nil {
+		return false, err
+	}
+
+	var parsed struct {
+		Entries []struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return false, fmt.Errorf("decode task meta: %w", err)
+	}
+	for _, e := range parsed.Entries {
+		if e.Key == db.HeraMetaKeyPendingRecycle {
+			return e.Value == "true", nil
+		}
+	}
+	return false, nil
+}
+
+// forceRecycleReal triggers the daemon's hard-stop escalation (Part B) over
+// the Unix socket RPC connection — unlike every other coord-hook call, this
+// does NOT go through the REST API: recycle_coord's kill-and-restart
+// mechanism lives entirely daemon-side (agent.SessionRunner + hera.RecycleCoord),
+// with no existing REST endpoint to reuse, so it's called the same way
+// discoverAPIPort calls Daemon.Ports.
+func forceRecycleReal(taskID string) error {
+	client, err := coordHookDial()
+	if err != nil {
+		return err
+	}
+	defer client.Close() //nolint:errcheck // short-lived CLI client; close error is non-actionable
+
+	var resp daemon.StatusResp
+	if err := client.Call("Daemon.ForceRecycleCoordinator", &daemon.TaskIDReq{TaskID: taskID}, &resp); err != nil {
+		return fmt.Errorf("Daemon.ForceRecycleCoordinator: %w", err)
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("Daemon.ForceRecycleCoordinator: %s", resp.Error)
+	}
+	return nil
 }
 
 // stampContextSizeReal overwrites task_meta(hera, context_size) via the same

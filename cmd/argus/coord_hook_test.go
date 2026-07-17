@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"net"
 	"net/rpc/jsonrpc"
 	"os"
@@ -61,6 +62,18 @@ type fakeCoordHookEnv struct {
 	readTranscript  string
 	budgetCalled    bool
 	budgetForTaskID string
+
+	// pendingRecycle (Part A: idempotent hook) — whether the coordinator has
+	// already requested a self-service recycle (task_meta pending_recycle=true).
+	pendingRecycle       bool
+	pendingRecycleErr    error
+	pendingRecycleCalled bool
+
+	// forceRecycle (Part B: hard-stop escalation) — the daemon RPC call that
+	// immediately kills+restarts a wedged coordinator once 1.5x over budget.
+	forceRecycleErr    error
+	forceRecycleCalled bool
+	forceRecycleTaskID string
 }
 
 func (f *fakeCoordHookEnv) env() coordHookEnv {
@@ -70,6 +83,10 @@ func (f *fakeCoordHookEnv) env() coordHookEnv {
 			f.resolveCalled = true
 			f.resolvedTaskID = taskID
 			return f.roleKind, f.roleKindErr
+		},
+		PendingRecycleAlready: func(taskID string) (bool, error) {
+			f.pendingRecycleCalled = true
+			return f.pendingRecycle, f.pendingRecycleErr
 		},
 		ReadContextSize: func(transcriptPath string) (int, error) {
 			f.readCalled = true
@@ -86,6 +103,11 @@ func (f *fakeCoordHookEnv) env() coordHookEnv {
 			f.budgetCalled = true
 			f.budgetForTaskID = taskID
 			return f.budget, f.budgetErr
+		},
+		ForceRecycle: func(taskID string) error {
+			f.forceRecycleCalled = true
+			f.forceRecycleTaskID = taskID
+			return f.forceRecycleErr
 		},
 	}
 }
@@ -107,6 +129,8 @@ func TestCoordHook_NoTaskID_NoOp(t *testing.T) {
 	testutil.Equal(t, f.readCalled, false)
 	testutil.Equal(t, f.stampCalled, false)
 	testutil.Equal(t, f.budgetCalled, false)
+	testutil.Equal(t, f.pendingRecycleCalled, false)
+	testutil.Equal(t, f.forceRecycleCalled, false)
 	if strings.Contains(out.String(), "block") {
 		t.Errorf("no-op path must not emit a block decision; got stdout=%q", out.String())
 	}
@@ -127,6 +151,8 @@ func TestCoordHook_NonCoordinatorRole_NoOp(t *testing.T) {
 	testutil.Equal(t, f.resolveCalled, true)
 	testutil.Equal(t, f.readCalled, false)
 	testutil.Equal(t, f.stampCalled, false)
+	testutil.Equal(t, f.pendingRecycleCalled, false)
+	testutil.Equal(t, f.forceRecycleCalled, false)
 	if strings.Contains(out.String(), "block") {
 		t.Errorf("worker no-op path must not emit a block decision; got stdout=%q", out.String())
 	}
@@ -151,6 +177,8 @@ func TestCoordHook_Coordinator_AlwaysStampsContextSize(t *testing.T) {
 	testutil.Equal(t, f.stampCalled, true)
 	testutil.Equal(t, f.stampedTaskID, "task-1")
 	testutil.Equal(t, f.stampedSize, 1000)
+	testutil.Equal(t, f.pendingRecycleCalled, false)
+	testutil.Equal(t, f.forceRecycleCalled, false)
 	if strings.Contains(out.String(), "block") {
 		t.Errorf("under-budget coordinator must not emit a block decision; got stdout=%q", out.String())
 	}
@@ -173,6 +201,8 @@ func TestCoordHook_Coordinator_OverBudget_EmitsNudge(t *testing.T) {
 
 	testutil.Equal(t, f.stampCalled, true)
 	testutil.Equal(t, f.stampedSize, 250000)
+	testutil.Equal(t, f.pendingRecycleCalled, true)
+	testutil.Equal(t, f.forceRecycleCalled, false) // 250000 is under the 1.5x (300000) hard-stop threshold
 	testutil.Contains(t, out.String(), "block")
 	testutil.Contains(t, out.String(), "seam")
 }
@@ -206,6 +236,152 @@ func TestCoordHook_OverBudgetNudge_RecursThenStops(t *testing.T) {
 		t.Errorf("nudge must stop once context_size drops below budget; got stdout=%q", out3.String())
 	}
 	testutil.Equal(t, f3.stampCalled, true) // still stamps, just doesn't block
+}
+
+// --- Part A: idempotent coord-hook (fix-coordhook-idle-deadlock) -----------
+//
+// Regression coverage for the live incident: an over-budget coordinator that
+// has already requested a self-service recycle (hera_status
+// request_recycle=true, mirrored into task_meta pending_recycle="true") must
+// NOT be re-blocked on the next Stop event. Blocking forces immediate
+// re-engagement, which means the PTY never accumulates the 3s of silence
+// IsIdle needs, so RecycleWatcher never sees the session idle and the
+// recycle never actually fires — an infinite loop with the budget climbing
+// every turn (observed for real: 15+ iterations, ~221K -> ~267K).
+
+// TestCoordHook_Coordinator_PendingRecycleAlready_DoesNotBlock is the
+// regression test for the incident: once pending_recycle is already "true",
+// a subsequent over-budget Stop event must return with no block decision so
+// Claude Code's Stop genuinely goes through and RecycleWatcher gets a real
+// idle window.
+func TestCoordHook_Coordinator_PendingRecycleAlready_DoesNotBlock(t *testing.T) {
+	f := &fakeCoordHookEnv{
+		getenv:         map[string]string{"ARGUS_TASK_ID": "task-1"},
+		roleKind:       "coordinator",
+		contextSize:    250000,
+		budget:         200000,
+		pendingRecycle: true,
+	}
+	var out, errOut bytes.Buffer
+
+	runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out, &errOut, f.env())
+
+	testutil.Equal(t, f.stampCalled, true) // still stamps, unconditionally
+	testutil.Equal(t, f.pendingRecycleCalled, true)
+	testutil.Equal(t, f.forceRecycleCalled, false) // 250000 is under the hard-stop threshold
+	if strings.Contains(out.String(), "block") {
+		t.Errorf("must not re-block once recycle is already pending; got stdout=%q", out.String())
+	}
+}
+
+// TestCoordHook_PendingRecycleAlready_ReadError_StillBlocks pins the
+// fail-safe behavior when the pending-recycle read itself errors: the hook
+// must log the error but still fall back to the pre-existing graceful block
+// (treating an unreadable flag as "not yet pending") rather than silently
+// dropping the nudge.
+func TestCoordHook_PendingRecycleAlready_ReadError_StillBlocks(t *testing.T) {
+	f := &fakeCoordHookEnv{
+		getenv:            map[string]string{"ARGUS_TASK_ID": "task-1"},
+		roleKind:          "coordinator",
+		contextSize:       250000,
+		budget:            200000,
+		pendingRecycleErr: errors.New("meta unavailable"),
+	}
+	var out, errOut bytes.Buffer
+
+	runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out, &errOut, f.env())
+
+	testutil.Contains(t, errOut.String(), "meta unavailable")
+	testutil.Contains(t, out.String(), "block")
+}
+
+// --- Part B: hard-stop escalation at 1.5x budget (fix-coordhook-idle-deadlock) ---
+//
+// Safety net for when Part A's graceful path is still stuck waiting for
+// idleness that never naturally occurs (e.g. a human replying fast enough
+// that the PTY never accumulates 3s of silence). Once context_size crosses
+// 1.5x the configured budget, the hook forces an immediate recycle via the
+// daemon's ForceRecycleCoordinator RPC — unconditionally, regardless of
+// whether pending_recycle is already set.
+
+// TestCoordHook_HardStop_JustUnderThreshold_DoesNotForceRecycle pins the
+// integer-safe 1.5x boundary math: one token under threshold must still take
+// the graceful (Part A) path, not the hard-stop escalation.
+func TestCoordHook_HardStop_JustUnderThreshold_DoesNotForceRecycle(t *testing.T) {
+	f := &fakeCoordHookEnv{
+		getenv:      map[string]string{"ARGUS_TASK_ID": "task-1"},
+		roleKind:    "coordinator",
+		contextSize: 299999, // one token under 1.5x of 200000 (300000)
+		budget:      200000,
+	}
+	var out, errOut bytes.Buffer
+
+	runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out, &errOut, f.env())
+
+	testutil.Equal(t, f.forceRecycleCalled, false)
+	testutil.Contains(t, out.String(), "block")
+}
+
+// TestCoordHook_HardStop_AtThreshold_ForcesRecycle pins the other side of the
+// boundary: exactly 1.5x budget must trigger the hard-stop escalation instead
+// of (not in addition to) the graceful block decision.
+func TestCoordHook_HardStop_AtThreshold_ForcesRecycle(t *testing.T) {
+	f := &fakeCoordHookEnv{
+		getenv:      map[string]string{"ARGUS_TASK_ID": "task-1"},
+		roleKind:    "coordinator",
+		contextSize: 300000, // exactly 1.5x of 200000
+		budget:      200000,
+	}
+	var out, errOut bytes.Buffer
+
+	runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out, &errOut, f.env())
+
+	testutil.Equal(t, f.forceRecycleCalled, true)
+	testutil.Equal(t, f.forceRecycleTaskID, "task-1")
+	if strings.Contains(out.String(), "block") {
+		t.Errorf("hard-stop escalation must not also emit the graceful block decision; got stdout=%q", out.String())
+	}
+}
+
+// TestCoordHook_HardStop_FiresRegardlessOfPendingRecycle pins that the
+// hard-stop escalation is unconditional: pending_recycle already being
+// "true" (the graceful path already fired) must not suppress it, and the
+// pending-recycle read is skipped entirely since it can't change the outcome.
+func TestCoordHook_HardStop_FiresRegardlessOfPendingRecycle(t *testing.T) {
+	f := &fakeCoordHookEnv{
+		getenv:         map[string]string{"ARGUS_TASK_ID": "task-1"},
+		roleKind:       "coordinator",
+		contextSize:    350000,
+		budget:         200000,
+		pendingRecycle: true,
+	}
+	var out, errOut bytes.Buffer
+
+	runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out, &errOut, f.env())
+
+	testutil.Equal(t, f.forceRecycleCalled, true)
+	testutil.Equal(t, f.pendingRecycleCalled, false)
+}
+
+// TestCoordHook_HardStop_ForceRecycleError_LogsToStderr confirms an RPC
+// failure is logged but does not crash the hook or fall back to the graceful
+// block (a fallback would defeat the point of an unconditional escalation).
+func TestCoordHook_HardStop_ForceRecycleError_LogsToStderr(t *testing.T) {
+	f := &fakeCoordHookEnv{
+		getenv:          map[string]string{"ARGUS_TASK_ID": "task-1"},
+		roleKind:        "coordinator",
+		contextSize:     300000,
+		budget:          200000,
+		forceRecycleErr: errors.New("boom"),
+	}
+	var out, errOut bytes.Buffer
+
+	runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out, &errOut, f.env())
+
+	testutil.Contains(t, errOut.String(), "boom")
+	if strings.Contains(out.String(), "block") {
+		t.Errorf("hard-stop path must not fall back to the graceful block on RPC failure; got stdout=%q", out.String())
+	}
 }
 
 // --- realCoordHookEnv's production wiring ---
