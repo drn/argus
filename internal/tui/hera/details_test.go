@@ -2,11 +2,13 @@ package hera
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -433,14 +435,15 @@ func TestRosterStatusText_Precedence(t *testing.T) {
 func TestComputeRosterColumns(t *testing.T) {
 	workers := []RoleView{
 		{Name: "alpha", Archetype: "code_slice", AppliedModel: "claude-sonnet-5"},
-		{Name: "a-very-long-agent-name-indeed", Archetype: "big_build", AppliedModel: "claude-opus-4-8"},
+		{Name: "a-very-long-agent-name-indeed-and-then-some", Archetype: "big_build", AppliedModel: "claude-opus-4-8"},
 		{Name: "b", Archetype: "", AppliedModel: ""},
 	}
 
 	// Plenty of room: columns size to the widest cell, capped at the max
-	// constants. "a-very-long-agent-name-indeed" is 29 runes (clamps to
-	// rosterNameMax); "code_slice"/"claude-sonnet-5" are 10/15 runes (under
-	// their caps, so the column sizes to the content, not the min/max).
+	// constants. "a-very-long-agent-name-indeed-and-then-some" is 43 runes
+	// (clamps to rosterNameMax, which fits real project names up to ~30 chars
+	// in full); "code_slice"/"claude-sonnet-5" are 10/15 runes (under their
+	// caps, so the column sizes to the content, not the min/max).
 	cols := computeRosterColumns(workers, 200)
 	testutil.Equal(t, cols.status, rosterStatusWidth)
 	testutil.Equal(t, cols.name, rosterNameMax)
@@ -473,9 +476,10 @@ func TestComputeRosterColumns(t *testing.T) {
 }
 
 // TestDetails_RosterTableColumns is the render smoke test: a coordinator's
-// roster must show the STATUS/NAME/ARCHETYPE/MODEL header and each worker's
-// resolved archetype + model, with an unresolved worker rendering "—" rather
-// than a blank cell.
+// roster must show the NAME/ARCHETYPE/MODEL/STATUS header — in that order,
+// name first and status last — and each worker's resolved archetype + model
+// rendered brightly (theme.StyleNormal), with an unresolved worker rendering
+// a dimmed "—" placeholder rather than a blank cell.
 func TestDetails_RosterTableColumns(t *testing.T) {
 	orch := &OrchView{
 		ID:   1,
@@ -506,6 +510,41 @@ func TestDetails_RosterTableColumns(t *testing.T) {
 	if !rosterContainsWidth(t, d, w, h, "—") {
 		t.Errorf("expected roster table to render \"—\" for the unresolved worker's archetype/model")
 	}
+
+	// Column ORDER: NAME first, then ARCHETYPE, then MODEL, then STATUS last
+	// (the icon+label trailing verdict) — pinned on both the header row and
+	// alpha's data row.
+	headerRow, dataRow := "", ""
+	for y := 0; y < h; y++ {
+		got := drawnText(t, func(s tcell.Screen) { d.Draw(s, 0, 0, w, h, false) }, 0, y, w)
+		if strings.Contains(got, "ARCHETYPE") {
+			headerRow = got
+		}
+		if strings.Contains(got, "code_slice") {
+			dataRow = got
+		}
+	}
+	if headerRow == "" || dataRow == "" {
+		t.Fatalf("expected to locate the roster header row and alpha's data row; header=%q data=%q", headerRow, dataRow)
+	}
+	nameH := strings.Index(headerRow, "NAME")
+	archH := strings.Index(headerRow, "ARCHETYPE")
+	modelH := strings.Index(headerRow, "MODEL")
+	statusH := strings.Index(headerRow, "STATUS")
+	testutil.Equal(t, nameH >= 0 && archH > nameH && modelH > archH && statusH > modelH, true)
+
+	nameD := strings.Index(dataRow, "alpha")
+	archD := strings.Index(dataRow, "code_slice")
+	modelD := strings.Index(dataRow, "claude-sonnet-5")
+	statusD := strings.Index(dataRow, "live") // alpha: Live, not SessionRunning → "live"
+	testutil.Equal(t, nameD >= 0 && archD > nameD && modelD > archD && statusD > modelD, true)
+
+	// Bright values: the resolved archetype/model cells render in the same
+	// readable foreground the NAME cell uses (theme.StyleNormal), not the
+	// dimmed placeholder style reserved for an unresolved "—" cell.
+	testutil.Equal(t, rosterValueStyle("code_slice"), theme.StyleNormal)
+	testutil.Equal(t, rosterValueStyle("claude-sonnet-5"), theme.StyleNormal)
+	testutil.Equal(t, rosterValueStyle(""), theme.StyleDimmed)
 }
 
 // TestDetails_RosterTableNarrowPaneNoPanic pins that a details pane too

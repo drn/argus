@@ -396,21 +396,24 @@ func (d *DetailsView) hasPR(r *RoleView) bool {
 
 // --- Roster table ------------------------------------------------------
 //
-// The Agents roster renders as a compact, left-aligned table: status (icon +
-// label), name, diligence archetype, resolved model. Column widths size to
-// the widest cell (capped) and shrink — model, then archetype, then name,
-// then status, in that priority order — when the pane is narrower than the
-// ideal total width. Every value is truncated RUNE-safely (never a byte slice
-// mid-codepoint), and a zero-width column simply stops rendering rather than
-// corrupting the layout.
+// The Agents roster renders as a compact, left-aligned table: name, diligence
+// archetype, resolved model, status (icon + label) — in that order, name
+// first so the identifying column reads immediately and status last so its
+// icon+label reads as a trailing verdict. Column widths size to the widest
+// cell (capped) and shrink — status, then model, then archetype, then name,
+// in that priority order — when the pane is narrower than the ideal total
+// width, so the name (up to ~30 chars, the longest real agent/coordinator
+// names in this project) is the LAST column to give up width. Every value is
+// truncated RUNE-safely (never a byte slice mid-codepoint), and a zero-width
+// column simply stops rendering rather than corrupting the layout.
 
 const (
 	rosterColGap      = 2  // spaces between columns
-	rosterIconGutter  = 2  // icon rune + 1 space, before the status column starts
+	rosterIconGutter  = 2  // icon rune + 1 space, before the status column's text starts
 	rosterStatusWidth = 14 // fits the longest label, "needs-input PR"
 	rosterNameMin     = 6
-	rosterNameMax     = 18
-	rosterArchMin     = 9 // fits the "ARCHETYPE" header
+	rosterNameMax     = 30 // fits real agent/coordinator names (~29 chars) in full
+	rosterArchMin     = 9  // fits the "ARCHETYPE" header
 	rosterArchMax     = 12
 	rosterModelMin    = 6
 	rosterModelMax    = 20
@@ -419,29 +422,33 @@ const (
 // rosterCols holds the resolved content width (not counting gaps/gutter) for
 // each roster column.
 type rosterCols struct {
-	status, name, archetype, model int
+	name, archetype, model, status int
 }
 
-// rosterTotalWidth is the full row width the given columns need: the icon
-// gutter, each column's content width, and a gap between every column.
+// rosterTotalWidth is the full row width the given columns need: each
+// column's content width, the icon gutter, and a gap between every column.
 func rosterTotalWidth(c rosterCols) int {
-	return rosterIconGutter + c.status + c.name + c.archetype + c.model + 3*rosterColGap
+	return c.name + c.archetype + c.model + rosterIconGutter + c.status + 3*rosterColGap
 }
 
-// rosterColStarts returns the x-offset (relative to a row's icon column)
+// rosterColStarts returns the x-offset (relative to a row's leading edge)
 // where each column's TEXT begins, so the header and data rows always agree.
-func rosterColStarts(c rosterCols) (statusX, nameX, archX, modelX int) {
-	statusX = rosterIconGutter
-	nameX = statusX + c.status + rosterColGap
+// STATUS trails the other three columns; its icon glyph is drawn at statusX
+// and its text label rosterIconGutter further along.
+func rosterColStarts(c rosterCols) (nameX, archX, modelX, statusX int) {
+	nameX = 0
 	archX = nameX + c.name + rosterColGap
 	modelX = archX + c.archetype + rosterColGap
+	statusX = modelX + c.model + rosterColGap
 	return
 }
 
 // computeRosterColumns sizes the roster's four columns from the widest cell
-// value in each (capped at a sane maximum), then shrinks them — model first,
-// then archetype, then name, then status as the last resort — down to zero
-// when avail is narrower than the ideal total width.
+// value in each (capped at a sane maximum), then shrinks them — status
+// first, then model, then archetype, then name as the last resort — down to
+// zero when avail is narrower than the ideal total width. Name is preserved
+// longest so a real agent/coordinator name stays fully readable on all but
+// the narrowest panes.
 func computeRosterColumns(workers []RoleView, avail int) rosterCols {
 	cols := rosterCols{status: rosterStatusWidth, name: rosterNameMin, archetype: rosterArchMin, model: rosterModelMin}
 	for i := range workers {
@@ -479,10 +486,10 @@ func computeRosterColumns(workers []RoleView, avail int) rosterCols {
 		*w -= cut
 		overflow -= cut
 	}
+	shrink(&cols.status)
 	shrink(&cols.model)
 	shrink(&cols.archetype)
 	shrink(&cols.name)
-	shrink(&cols.status)
 	return cols
 }
 
@@ -520,6 +527,17 @@ func modelDisplay(m string) string {
 	return m
 }
 
+// rosterValueStyle picks the roster ARCHETYPE/MODEL cell style: the same
+// bright, readable foreground the NAME cell renders in (theme.StyleNormal)
+// for a resolved value, or theme.StyleDimmed for the "—" empty placeholder so
+// an absent value doesn't visually compete with real data.
+func rosterValueStyle(raw string) tcell.Style {
+	if raw == "" {
+		return theme.StyleDimmed
+	}
+	return theme.StyleNormal
+}
+
 // rosterStatusText renders the roster status cell's text, mirroring
 // statusIcon's precedence exactly (widget.RoleStatusIcon) so the glyph and
 // the label never disagree. A "PR" suffix is appended whenever the role's
@@ -551,28 +569,31 @@ func rosterStatusText(r *RoleView, hasPR bool) string {
 	return text
 }
 
-// drawRosterHeader paints the roster's column header row (STATUS / NAME /
-// ARCHETYPE / MODEL), aligned to the same columns the data rows use.
+// drawRosterHeader paints the roster's column header row (NAME / ARCHETYPE /
+// MODEL / STATUS), aligned to the same columns the data rows use. The STATUS
+// header text aligns with where the data rows' status TEXT starts (past the
+// icon gutter), not the icon column itself.
 func drawRosterHeader(screen tcell.Screen, x, y int, cols rosterCols) {
-	statusX, nameX, archX, modelX := rosterColStarts(cols)
-	widget.DrawText(screen, x+statusX, y, cols.status, rosterTruncate("STATUS", cols.status), theme.StyleDimmed)
+	nameX, archX, modelX, statusX := rosterColStarts(cols)
 	widget.DrawText(screen, x+nameX, y, cols.name, rosterTruncate("NAME", cols.name), theme.StyleDimmed)
 	widget.DrawText(screen, x+archX, y, cols.archetype, rosterTruncate("ARCHETYPE", cols.archetype), theme.StyleDimmed)
 	widget.DrawText(screen, x+modelX, y, cols.model, rosterTruncate("MODEL", cols.model), theme.StyleDimmed)
+	widget.DrawText(screen, x+statusX+rosterIconGutter, y, cols.status, rosterTruncate("STATUS", cols.status), theme.StyleDimmed)
 }
 
-// drawRosterRow paints one agent's roster row: status icon + label, name,
-// archetype, model — aligned to cols. The icon glyph reuses statusIcon (the
-// SAME precedence the rail uses) so this table never disagrees with the rail.
+// drawRosterRow paints one agent's roster row: name, archetype, model, status
+// icon + label — aligned to cols. The icon glyph reuses statusIcon (the SAME
+// precedence the rail uses) so this table never disagrees with the rail.
 func (d *DetailsView) drawRosterRow(screen tcell.Screen, x, y int, cols rosterCols, r *RoleView, frame int) {
-	glyph, gstyle := statusIcon(r, d.orch.Archived, frame)
-	screen.SetContent(x, y, glyph, nil, gstyle)
-	statusX, nameX, archX, modelX := rosterColStarts(cols)
-	text := rosterStatusText(r, d.hasPR(r))
-	widget.DrawText(screen, x+statusX, y, cols.status, rosterTruncate(text, cols.status), gstyle)
+	nameX, archX, modelX, statusX := rosterColStarts(cols)
 	widget.DrawText(screen, x+nameX, y, cols.name, rosterTruncate(r.Name, cols.name), theme.StyleNormal)
-	widget.DrawText(screen, x+archX, y, cols.archetype, rosterTruncate(archetypeDisplay(r.Archetype), cols.archetype), theme.StyleDimmed)
-	widget.DrawText(screen, x+modelX, y, cols.model, rosterTruncate(modelDisplay(r.AppliedModel), cols.model), theme.StyleDimmed)
+	widget.DrawText(screen, x+archX, y, cols.archetype, rosterTruncate(archetypeDisplay(r.Archetype), cols.archetype), rosterValueStyle(r.Archetype))
+	widget.DrawText(screen, x+modelX, y, cols.model, rosterTruncate(modelDisplay(r.AppliedModel), cols.model), rosterValueStyle(r.AppliedModel))
+
+	glyph, gstyle := statusIcon(r, d.orch.Archived, frame)
+	screen.SetContent(x+statusX, y, glyph, nil, gstyle)
+	text := rosterStatusText(r, d.hasPR(r))
+	widget.DrawText(screen, x+statusX+rosterIconGutter, y, cols.status, rosterTruncate(text, cols.status), gstyle)
 }
 
 // coordStatusLabel renders the coordinator status line for the Details pane. It
