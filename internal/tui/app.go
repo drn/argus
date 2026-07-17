@@ -4241,6 +4241,23 @@ func PTYSizeForRect(r Rect) (rows, cols uint16) {
 //
 // For *fresh* task creation, callers use agent.CreateAndStart instead, which
 // unwinds the worktree and DB row on failure so no orphans remain.
+// refreshResumeSessionID re-derives the newest Claude transcript for a task
+// about to resume and persists it, so the resume targets the MOST RECENT
+// in-place session rather than the stale create-time UUID. It runs only on a
+// resume (a fresh start has nothing to refresh) and only in local mode: in
+// --remote mode a.db is *apistore.Store, which has no local worktree or
+// transcripts, so the daemon on the far end owns the recapture. The underlying
+// agent.RefreshResumeSessionID is itself Claude-only, idempotent, and
+// never-blank, so this wrapper only owns the resume/local guards.
+func (a *App) refreshResumeSessionID(task *model.Task, resume bool) {
+	if !resume {
+		return
+	}
+	if d, ok := a.db.(*db.DB); ok {
+		agent.RefreshResumeSessionID(d, task)
+	}
+}
+
 func (a *App) startSession(task *model.Task) {
 	cfg := a.db.Config()
 	rows, cols := a.computePTYSize()
@@ -4264,6 +4281,13 @@ func (a *App) startSession(task *model.Task) {
 			uxlog.Log("[tui] generated session ID %s for task %s", task.SessionID, task.ID)
 		}
 	}
+
+	// Resume-time recapture: for a Claude resume, re-derive the newest worktree
+	// transcript so we resume the MOST RECENT in-place session, not the stale
+	// create-time UUID (hera workers idle / lose their stream and never reach the
+	// post-exit recapture). No-op for a fresh start, non-Claude, no-change, or
+	// remote mode — see refreshResumeSessionID / agent.RefreshResumeSessionID.
+	a.refreshResumeSessionID(task, resume)
 
 	// Bump generation BEFORE the RPC so any tick that captured runningIDs
 	// before this session exists will detect the change and skip reconciliation.
