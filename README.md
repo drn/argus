@@ -352,7 +352,25 @@ Hera is Argus's native layer for running a *team* of agents. It introduces **rol
 - **`hera.enabled = true` (default)** — native Hera is active. It stores its state in the same `~/.argus/data.sql` (the `hera_*` tables), exposes the `hera_*` MCP tools in-process, and owns the second tab. The legacy Hera plugin's tools are suppressed so they never double-register.
 - **`hera.enabled = false`** — the native `hera_*` MCP tools are not served, and you can instead run the external **Hera plugin** over the [plugin substrate](#plugin-substrate). The plugin keeps its own `~/.hera` state and plugin view, entirely unaffected by Argus. The TUI's second tab is always the native Hera view regardless of this flag.
 
-The two run **independently and share no state.** Switching to native Hera performs **no migration** of any prior `~/.hera` data — native Hera starts fresh. Set the flag in `config.toml` (`[hera] enabled = …`) or the DB.
+The two run **independently and share no state.** Switching to native Hera performs **no migration** of any prior `~/.hera` data – native Hera starts fresh. Set the flag in `config.toml` (`[hera] enabled = …`) or the DB.
+
+#### Context-budget Stop hook
+
+A long-lived coordinator accumulates context for the life of its orchestration in a way a disposable worker never does. `argus coord-hook` is a CLI subcommand meant to run as a Claude Code `Stop` hook: on every turn of a hera **coordinator**'s session it self-discovers the daemon's REST port + API token, tails the session transcript for the latest `cache_read_input_tokens`, stamps it into `task_meta` (`hera`, `context_size`), and – once that value reaches the project's `coordinator_context_budget` (`[hera] coordinator_context_budget`, default `200000`) – blocks the `Stop` event with a "reach a safe seam and recycle" nudge that repeats every turn until the coordinator drops back under budget (typically via a recycle). It self-gates hard on `ARGUS_TASK_ID` plus a resolved coordinator role, so it is a silent no-op for every other Claude Code session.
+
+Because every Argus-spawned agent inherits the daemon's real `HOME` regardless of which project it's working in, the hook is registered **once, globally** – Argus cannot write to a user's global settings file on their behalf, so this is a one-time manual step. Add to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "argus coord-hook" } ] }
+    ]
+  }
+}
+```
+
+`argus doctor` checks whether this hook is registered and warns if it's missing – see [Diagnosing binary skew](#diagnosing-binary-skew-argus-doctor) below.
 
 ### Daemon & session-supervisor
 
@@ -400,6 +418,8 @@ argus doctor   # read-only: enumerate every argus binary + running process, prin
 - **PATH DIVERGENCE** — the daemon symlink target and your `PATH` `argus` resolve to **different files** (the real footgun — a plain restart just relaunches the divergent binary and loops); the fix re-points/reinstalls so both point at one build.
 
 It is strictly **read-only** (never touches a symlink, binary, `PATH`, or process) and best-effort — an unresolvable row degrades to "unknown" rather than aborting. Exits non-zero on any non-healthy verdict.
+
+`doctor` also independently reports whether the [context-budget Stop hook](#context-budget-stop-hook) is registered — **REGISTERED**, **NOT REGISTERED** (prints the exact snippet to add), or **UNKNOWN** (`~/.claude/settings.json` missing/unreadable, reported distinctly rather than assumed absent). This check is purely advisory and never affects the exit code above, which stays governed solely by the binary-coherence verdict.
 
 ### Auto-start at Login (macOS)
 
