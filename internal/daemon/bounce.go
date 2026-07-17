@@ -257,6 +257,20 @@ func (d *Daemon) reattachSupervised() {
 		slog.Info("reattach: reconciled true orphans", "count", len(orphans))
 	}
 
+	// Refresh each orphan's Claude session ID to the newest worktree transcript
+	// before its later resume. A true orphan lost its live session (the supervisor
+	// no longer reports it), so it will be resumed by a coordinator/human/REST
+	// call — and hera workers never reached the post-exit recapture, so
+	// task.SessionID is pinned to the stale create-time UUID. This is the
+	// resume-time analog of captureSessionIDPostExit; Claude-only, idempotent, and
+	// never-blank (see agent.RefreshResumeSessionID). A per-row Get error just
+	// skips that orphan — the reconcile above already flipped it to in_review.
+	for _, id := range orphans {
+		if t, gerr := d.db.Get(id); gerr == nil && t != nil {
+			agent.RefreshResumeSessionID(d.db, t)
+		}
+	}
+
 	// Signal ARGUS_BOUNCED to the true orphans only.
 	if sent := sendBounceSignals(d.db, orphans); sent > 0 {
 		slog.Info("reattach: signalled orphans", "sent", sent)

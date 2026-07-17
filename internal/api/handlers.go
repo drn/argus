@@ -476,6 +476,10 @@ func (s *Server) handleRestartTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := s.db.Config()
+	// Resume-time recapture (Claude-only): target the newest worktree transcript
+	// so the resume picks the most recent in-place session, not the stale
+	// create-time UUID. No-op for non-Claude / no-change / no-transcript.
+	agent.RefreshResumeSessionID(s.db, task)
 	// Always resume so BuildCmd appends --resume <session-id> when the task
 	// has a prior session (the normal post-exit case). If SessionID is empty,
 	// BuildCmd starts fresh — same graceful degradation as /resume.
@@ -546,6 +550,12 @@ func (s *Server) handleResumeTask(w http.ResponseWriter, r *http.Request) {
 	cfg := s.db.Config()
 	resume := task.SessionID != ""
 	prevStatus := task.Status
+
+	// Resume-time recapture (Claude-only): re-derive the newest worktree
+	// transcript so the resume picks the most recent in-place session, not the
+	// stale create-time UUID. No-op for non-Claude / no-change / no-transcript,
+	// and never populates an empty ID, so the resume decision above is unchanged.
+	agent.RefreshResumeSessionID(s.db, task)
 
 	sess, reattached, err := s.runner.StartOrReattach(task, cfg, 24, 80, resume)
 	if err != nil {
