@@ -37,19 +37,19 @@ func (s *Server) artifactsEnabled() bool {
 var artifactToolDefs = []Tool{
 	{
 		Name: "artifact_register",
-		Description: `Register a file you produced (an HTML report, PDF, rendered markdown, image, or text) so the user can VIEW it — rendered, not just downloaded — in Argus Web, including on mobile over Tailscale.
+		Description: `Register a file you produced (an HTML report, PDF, rendered markdown, image, text, or audio/video clip) so the user can VIEW it — rendered, not just downloaded — in Argus Web, including on mobile over Tailscale.
 
 Argus copies the file into durable per-task storage at registration time, so you may write it anywhere you can (e.g. /tmp or inside the worktree) and then register that path; the original is not tracked and may be deleted afterward. Re-registering the same filename overwrites the previous copy (last write wins).
 
 The agent process does not know its own task ID, so identify yourself by passing either ` + "`id`" + ` (sub-tasks should use the ` + "`ARGUS_TASK_ID`" + ` env var exported into every worktree) or ` + "`cwd`" + ` (Argus resolves to the task whose worktree the cwd lives under, longest-prefix wins). At least one is required.
 
-Guideline: artifacts render best when SELF-CONTAINED — inline all CSS/JS/images, no external CDN references — because the viewer loads them in a sandboxed frame with no network guarantees. Maximum size is 25 MiB.`,
+Guideline: artifacts render best when SELF-CONTAINED — inline all CSS/JS/images, no external CDN references — because the viewer loads them in a sandboxed frame with no network guarantees. Maximum size is 25 MiB for html/markdown/pdf/image/text, 1 GiB for audio/video (these are streamed and scrubbed via Range requests rather than loaded whole).`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"path":  map[string]interface{}{"type": "string", "description": "Absolute or relative path to the file you produced (e.g. /tmp/coaching-reports/coaching-2026-05-30.html). Copied into durable storage now."},
 				"title": map[string]interface{}{"type": "string", "description": "Optional display title shown in the artifacts list. Defaults to the file's basename."},
-				"type":  map[string]interface{}{"type": "string", "description": "Optional artifact type: html, markdown, pdf, image, or text. Inferred from the file extension when omitted."},
+				"type":  map[string]interface{}{"type": "string", "description": "Optional artifact type: html, markdown, pdf, image, text, audio, or video. Inferred from the file extension when omitted."},
 				"id":    map[string]interface{}{"type": "string", "description": "Task ID. If omitted, cwd is used to resolve the task."},
 				"cwd":   map[string]interface{}{"type": "string", "description": "Working directory inside the task's worktree. Used when id is omitted."},
 			},
@@ -94,10 +94,10 @@ func (s *Server) toolArtifactRegister(id interface{}, args json.RawMessage) *Res
 	if p.Type == "" {
 		atype = model.InferArtifactType(filename)
 	} else if !model.ValidArtifactType(atype) {
-		return toolError(id, fmt.Sprintf("invalid type %q: must be html, markdown, pdf, image, or text", p.Type))
+		return toolError(id, fmt.Sprintf("invalid type %q: must be html, markdown, pdf, image, text, audio, or video", p.Type))
 	}
 
-	size, err := s.copyArtifact(task.ID, p.Path, filename)
+	size, err := s.copyArtifact(task.ID, p.Path, filename, atype)
 	if err != nil {
 		log.Printf("[mcp] artifact_register copy failed: id=%s path=%s err=%v", task.ID, p.Path, err)
 		return toolError(id, fmt.Sprintf("Failed to register artifact: %v", err))
@@ -133,11 +133,14 @@ func (s *Server) toolArtifactRegister(id interface{}, args json.RawMessage) *Res
 // concurrent serve never observes a half-written artifact. Returns the bytes
 // written.
 //
-// The size cap is enforced with an io.LimitReader at MaxArtifactBytes+1: if
-// the copy reaches that ceiling the source exceeds the cap and we reject,
-// removing the temp file. The daemon (not the sandboxed agent) runs this, so
-// reading the agent's /tmp or worktree source is permitted.
-func (s *Server) copyArtifact(taskID, srcPath, filename string) (int64, error) {
+// The size cap is enforced with an io.LimitReader at maxBytes+1 (maxBytes
+// resolved per-type via model.MaxBytesForType): if the copy reaches that
+// ceiling the source exceeds the cap and we reject, removing the temp file.
+// The daemon (not the sandboxed agent) runs this, so reading the agent's /tmp
+// or worktree source is permitted.
+func (s *Server) copyArtifact(taskID, srcPath, filename string, atype model.ArtifactType) (int64, error) {
+	maxBytes := model.MaxBytesForType(atype)
+
 	src, err := os.Open(srcPath) //nolint:gosec // G304: srcPath is an agent-supplied path read by the unsandboxed daemon for a single-user local tool; bytes are copied, never executed.
 	if err != nil {
 		return 0, fmt.Errorf("open source: %w", err)
@@ -151,8 +154,8 @@ func (s *Server) copyArtifact(taskID, srcPath, filename string) (int64, error) {
 	if info.IsDir() {
 		return 0, fmt.Errorf("source is a directory, not a file")
 	}
-	if info.Size() > model.MaxArtifactBytes {
-		return 0, fmt.Errorf("artifact exceeds %d byte cap (got %d)", model.MaxArtifactBytes, info.Size())
+	if info.Size() > maxBytes {
+		return 0, fmt.Errorf("artifact exceeds %d byte cap (got %d)", maxBytes, info.Size())
 	}
 
 	dir := agent.ArtifactsDir(taskID)
@@ -167,7 +170,7 @@ func (s *Server) copyArtifact(taskID, srcPath, filename string) (int64, error) {
 	tmpName := tmp.Name()
 	// LimitReader at cap+1 catches a source that grows past the cap between
 	// Stat and copy (e.g. a still-being-written file).
-	n, copyErr := io.Copy(tmp, io.LimitReader(src, model.MaxArtifactBytes+1))
+	n, copyErr := io.Copy(tmp, io.LimitReader(src, maxBytes+1))
 	closeErr := tmp.Close()
 	if copyErr != nil {
 		os.Remove(tmpName) //nolint:errcheck
@@ -177,9 +180,9 @@ func (s *Server) copyArtifact(taskID, srcPath, filename string) (int64, error) {
 		os.Remove(tmpName) //nolint:errcheck
 		return 0, fmt.Errorf("close temp: %w", closeErr)
 	}
-	if n > model.MaxArtifactBytes {
+	if n > maxBytes {
 		os.Remove(tmpName) //nolint:errcheck
-		return 0, fmt.Errorf("artifact exceeds %d byte cap", model.MaxArtifactBytes)
+		return 0, fmt.Errorf("artifact exceeds %d byte cap", maxBytes)
 	}
 
 	dest := filepath.Join(dir, filename)

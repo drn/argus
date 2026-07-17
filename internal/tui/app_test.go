@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -202,6 +203,66 @@ func TestDetectNeedsInputSticky_ContentStability(t *testing.T) {
 		got := d.detectNeedsInputSticky(nil, []string{"aq"}, nil)
 		testutil.Equal(t, len(got), 1)
 		testutil.Equal(t, got[0], "aq")
+	})
+}
+
+// TestDetectNeedsInputSticky_Escalation covers BUG-029: a session parked at a
+// selection prompt whose surrounding tail ALSO carries an unrelated line that
+// changes every tick (an unrecognized status/counter, or genuinely new but
+// irrelevant output elsewhere in the 16 KB window) never lets the ordinary
+// 2-tick content-fingerprint match converge — the fingerprint differs every
+// tick even though the prompt itself never changes. Without the bounded
+// escalation fallback this worker would show the active spinner forever
+// instead of "(?)". The escalation counter is independent of the fingerprint
+// and must fire once the qualifying combination (selection shape present,
+// working affordance absent) holds for NeedsInputEscalationTicks consecutive
+// ticks — and must NOT fire for a merely transient/coincidental match.
+func TestDetectNeedsInputSticky_Escalation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeLog := func(taskID, content string) {
+		logPath := agent.SessionLogPath(taskID)
+		testutil.NoError(t, os.MkdirAll(logPath[:strings.LastIndex(logPath, "/")], 0o755))
+		testutil.NoError(t, os.WriteFile(logPath, []byte(content), 0o644))
+	}
+
+	// The selection prompt never changes; the leading "progress" line does, on
+	// every tick, so the full-tail fingerprint never converges tick-to-tick.
+	frame := func(n int) string {
+		return fmt.Sprintf("progress: %d files scanned\r⏺ Do you want to make this edit?\r✻ Brewed for 4s\r\r❯ 1. Yes\r  2. No\r\r", n)
+	}
+
+	t.Run("never-converging fingerprint escalates to flagged after N consecutive ticks", func(t *testing.T) {
+		a := &App{}
+		var got []string
+		for i := 0; i < agent.NeedsInputEscalationTicks-1; i++ {
+			writeLog("wkr", frame(i))
+			got = a.detectNeedsInputSticky(nil, []string{"wkr"}, got)
+			testutil.Equal(t, len(got), 0)
+		}
+		writeLog("wkr", frame(agent.NeedsInputEscalationTicks-1))
+		got = a.detectNeedsInputSticky(nil, []string{"wkr"}, got)
+		testutil.Equal(t, len(got), 1)
+		testutil.Equal(t, got[0], "wkr")
+	})
+
+	t.Run("counter resets when the selection prompt scrolls away before the window elapses", func(t *testing.T) {
+		b := &App{}
+		var got []string
+		half := agent.NeedsInputEscalationTicks / 2
+		for i := 0; i < half; i++ {
+			writeLog("q", frame(i))
+			got = b.detectNeedsInputSticky(nil, []string{"q"}, got)
+			testutil.Equal(t, len(got), 0)
+		}
+		// The prompt disappears for one tick (still working, no selection UI) —
+		// the streak must reset, not merely pause at `half`.
+		writeLog("q", fmt.Sprintf("progress: %d files scanned\rStill generating…\r", half))
+		got = b.detectNeedsInputSticky(nil, []string{"q"}, got)
+		testutil.Equal(t, len(got), 0)
+		// Resume the prompt: must NOT immediately re-escalate from `half`.
+		writeLog("q", frame(half+1))
+		got = b.detectNeedsInputSticky(nil, []string{"q"}, got)
+		testutil.Equal(t, len(got), 0)
 	})
 }
 

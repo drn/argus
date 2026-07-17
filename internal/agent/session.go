@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -494,12 +495,16 @@ func (s *Session) Signal(sig os.Signal) error {
 	return s.Cmd.Process.Signal(sig)
 }
 
-// Stop sends SIGTERM.
+// Stop sends SIGTERM. Idempotent: if the process exited on its own between
+// the liveness check and the signal call, that's a successful stop, not an error.
 func (s *Session) Stop() error {
 	if !s.Alive() {
 		return nil
 	}
-	return s.Signal(syscall.SIGTERM)
+	if err := s.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return err
+	}
+	return nil
 }
 
 // RecentOutput returns the last n bytes from the ring buffer.

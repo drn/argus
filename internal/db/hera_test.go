@@ -683,6 +683,108 @@ func TestHeraRoleWithBindingTransaction(t *testing.T) {
 	})
 }
 
+func TestMoveHeraBinding(t *testing.T) {
+	t.Run("happy path ends old binding and creates new one", func(t *testing.T) {
+		d := heraTestDB(t)
+		oa := mkOrch(t, d, "A")
+		ob := mkOrch(t, d, "B")
+		_, oldBinding, err := d.CreateHeraRoleWithBinding(CreateHeraRoleInput{
+			OrchestratorID: oa.ID, Name: "w1", Kind: HeraKindWorker, ArgusProject: "p",
+		}, "task-x", "/wt/x")
+		testutil.NoError(t, err)
+
+		result, err := d.MoveHeraBinding(oldBinding.ID, CreateHeraRoleInput{
+			OrchestratorID: ob.ID, Name: "w2", Kind: HeraKindWorker, ArgusProject: "p",
+		}, "task-x", "/wt/x")
+		testutil.NoError(t, err)
+		testutil.Equal(t, result.OldOrchestratorName, "A")
+		testutil.Equal(t, result.OldRoleName, "w1")
+		testutil.Equal(t, result.NewRole.Name, "w2")
+		testutil.Equal(t, result.NewBinding.OrchestratorID, ob.ID)
+
+		// Old binding is ended with end_reason "moved" — unreachable as live.
+		old, err := d.HeraRole(oldBinding.RoleID) // role itself is untouched (not archived)
+		testutil.NoError(t, err)
+		testutil.Nil(t, old.ArchivedAt)
+		_, err = d.HeraLiveBindingByRole(oldBinding.RoleID)
+		testutil.ErrorIs(t, err, ErrHeraNotFound)
+		hist, err := d.ListHeraBindingsByRole(oldBinding.RoleID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(hist), 1)
+		testutil.Equal(t, hist[0].EndReason, HeraEndReasonMoved)
+		testutil.Equal(t, hist[0].EndedAt != nil, true)
+
+		// ListHeraLiveBindingsByTask no longer includes the old binding, only new.
+		live, err := d.ListHeraLiveBindingsByTask("task-x")
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(live), 1)
+		testutil.Equal(t, live[0].ID, result.NewBinding.ID)
+		testutil.Equal(t, live[0].OrchestratorID, ob.ID)
+	})
+
+	t.Run("not found when old binding already ended", func(t *testing.T) {
+		d := heraTestDB(t)
+		oa := mkOrch(t, d, "A")
+		ob := mkOrch(t, d, "B")
+		_, oldBinding, err := d.CreateHeraRoleWithBinding(CreateHeraRoleInput{
+			OrchestratorID: oa.ID, Name: "w1", Kind: HeraKindWorker, ArgusProject: "p",
+		}, "task-x", "/wt/x")
+		testutil.NoError(t, err)
+		testutil.NoError(t, d.EndHeraBinding(oldBinding.ID, "manual"))
+
+		_, err = d.MoveHeraBinding(oldBinding.ID, CreateHeraRoleInput{
+			OrchestratorID: ob.ID, Name: "w2", Kind: HeraKindWorker, ArgusProject: "p",
+		}, "task-x", "/wt/x")
+		testutil.ErrorIs(t, err, ErrHeraNotFound)
+
+		// No role/binding created under B.
+		_, err = d.HeraRoleByName(ob.ID, "w2")
+		testutil.ErrorIs(t, err, ErrHeraNotFound)
+	})
+
+	t.Run("not found for unknown binding id", func(t *testing.T) {
+		d := heraTestDB(t)
+		ob := mkOrch(t, d, "B")
+		_, err := d.MoveHeraBinding(999999, CreateHeraRoleInput{
+			OrchestratorID: ob.ID, Name: "w2", Kind: HeraKindWorker, ArgusProject: "p",
+		}, "task-x", "/wt/x")
+		testutil.ErrorIs(t, err, ErrHeraNotFound)
+	})
+
+	t.Run("rolls back the end when the new binding insert fails", func(t *testing.T) {
+		d := heraTestDB(t)
+		oa := mkOrch(t, d, "A")
+		ob := mkOrch(t, d, "B")
+		_, oldBinding, err := d.CreateHeraRoleWithBinding(CreateHeraRoleInput{
+			OrchestratorID: oa.ID, Name: "w1", Kind: HeraKindWorker, ArgusProject: "p",
+		}, "task-x", "/wt/x")
+		testutil.NoError(t, err)
+
+		// Occupy (task-x, B) so the new binding insert violates the
+		// per-(task,orchestrator) live-uniqueness index.
+		seed := mkRole(t, d, ob.ID, "seed", HeraKindWorker)
+		_, err = d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: seed.ID, ArgusTaskID: "task-x", WorktreePath: "/wt/seed",
+		})
+		testutil.NoError(t, err)
+
+		_, err = d.MoveHeraBinding(oldBinding.ID, CreateHeraRoleInput{
+			OrchestratorID: ob.ID, Name: "doomed", Kind: HeraKindWorker, ArgusProject: "p",
+		}, "task-x", "/wt/x")
+		testutil.Equal(t, err != nil, true)
+
+		// The old binding under A must still be live — the whole tx rolled back.
+		stillLive, err := d.HeraLiveBindingByRole(oldBinding.RoleID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, stillLive.ID, oldBinding.ID)
+		testutil.Nil(t, stillLive.EndedAt)
+
+		// The "doomed" role must not exist.
+		_, err = d.HeraRoleByName(ob.ID, "doomed")
+		testutil.ErrorIs(t, err, ErrHeraNotFound)
+	})
+}
+
 func TestHeraConstraintErrors(t *testing.T) {
 	t.Run("invalid role kind rejected by CHECK", func(t *testing.T) {
 		d := heraTestDB(t)

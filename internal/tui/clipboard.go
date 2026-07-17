@@ -9,9 +9,16 @@ import (
 // implement it — when the TUI runs in fallback (no daemon) mode, type
 // assertion fails and the agent-staged clipboard feature stays dormant. The
 // OS clipboard write helper (copyToClipboard) still works in all modes.
+//
+// Deliberately narrow: the TUI only ever READS the staged payload
+// (fix-ctrl-y-copy-persist removed the ctrl+y-triggered clear, which was the
+// last production caller of either client's ClipboardClear method). Both
+// concrete clients still expose ClipboardClear as client-SDK surface mirroring
+// the REST DELETE endpoint — which the PWA calls directly over HTTP, not
+// through these Go clients — but nothing in this codebase calls it anymore;
+// this interface just doesn't need it.
 type clipboardAccessor interface {
 	ClipboardGet(taskID string) (string, bool)
-	ClipboardClear(taskID string) error
 }
 
 // copyToClipboard hands text to `a.clipboardWriter` on a goroutine and flashes
@@ -73,8 +80,11 @@ func (a *App) refreshClipboardCache(taskID string) {
 }
 
 // copyStagedClipboardForHeraPane copies the agent-staged clipboard payload for
-// a Hera pane's task to the OS clipboard, then clears the daemon-side slot. It
-// is the Hera-view analogue of copyStagedClipboard (agent view), but there is no
+// a Hera pane's task to the OS clipboard. The staged payload is left in place
+// (fix-ctrl-y-copy-persist) — the store's own TTL/last-write-wins/session-exit
+// lifecycle owns clearing it, not the copy action — so the hint stays visible
+// and ctrl+y can be pressed again to re-copy the same text. It is the
+// Hera-view analogue of copyStagedClipboard (agent view), but there is no
 // single "active" task in the Hera view — it shows several at once — so the
 // caller (HeraPage's ctrl+y) passes the FOCUSED pane's task ID and we look the
 // payload up directly rather than through the activeAgentTaskID cache. The key
@@ -101,11 +111,6 @@ func (a *App) copyStagedClipboardForHeraPane(taskID string) {
 	a.copyToClipboard(text, "Copied", func() {
 		uxlog.Log("[hera] copied agent-staged clipboard: task %s (%d bytes)", taskID, len(text))
 	})
-	go func() {
-		if err := acc.ClipboardClear(taskID); err != nil {
-			uxlog.Log("[hera] clipboard clear failed: task=%s err=%v", taskID, err)
-		}
-	}()
 }
 
 // refreshHeraClipboardHint polls the agent-staged clipboard for the Hera view's
@@ -132,30 +137,25 @@ func (a *App) refreshHeraClipboardHint() {
 }
 
 // copyStagedClipboard is the ctrl+y handler. Copies the cached pending
-// payload via `a.clipboardWriter` (the configured OS-clipboard writer),
-// clears the daemon-side state, and flashes "Copied". Returns true if a
-// payload was copied, false if nothing was staged — ctrl+y is always
-// intercepted (never falls through to the PTY), so the caller flashes a
-// "Nothing to copy" notice on false instead.
+// payload via `a.clipboardWriter` (the configured OS-clipboard writer) and
+// flashes "Copied". Returns true if a payload was copied, false if nothing
+// was staged — ctrl+y is always intercepted (never falls through to the
+// PTY), so the caller flashes a "Nothing to copy" notice on false instead.
+//
+// The staged payload is intentionally left in place (fix-ctrl-y-copy-persist):
+// the copy action is not what clears it. Clearing is owned entirely by the
+// clipboard store's own lifecycle — TTL expiry, replacement by a newer staged
+// value, or the agent session exiting (`daemon.go`'s `handleSessionExit`) —
+// so the hint stays visible and ctrl+y can be pressed again to re-copy the
+// same text.
 func (a *App) copyStagedClipboard() bool {
 	if a.clipboardPending == "" {
 		return false
 	}
 	text := a.clipboardPending
 	taskID := a.clipboardPendingTask
-	// Optimistic local clear so the agentHeader hint disappears immediately.
-	a.clipboardPending = ""
-	a.clipboardPendingTask = ""
-	a.agentHeader.SetClipboardHint(false)
 	a.copyToClipboard(text, "Copied", func() {
 		uxlog.Log("[tui] copied agent-staged clipboard: task %s (%d bytes)", taskID, len(text))
 	})
-	if acc, ok := a.runner.(clipboardAccessor); ok && taskID != "" {
-		go func() {
-			if err := acc.ClipboardClear(taskID); err != nil {
-				uxlog.Log("[tui] clipboard clear failed: task=%s err=%v", taskID, err)
-			}
-		}()
-	}
 	return true
 }

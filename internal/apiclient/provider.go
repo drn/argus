@@ -234,7 +234,10 @@ func (p *Provider) ClipboardGet(taskID string) (string, bool) {
 }
 
 // ClipboardClear removes any agent-staged clipboard text for a task. Mirrors
-// the daemon client's method so the TUI clears server-side state after ctrl+y.
+// the daemon client's method of the same name for API-surface completeness —
+// as of fix-ctrl-y-copy-persist, ctrl+y no longer calls this (it leaves the
+// staged payload in place); the PWA's own clear-on-copy flow hits the REST
+// DELETE endpoint directly via fetch rather than through this Go client.
 func (p *Provider) ClipboardClear(taskID string) error {
 	return p.c.ClearClipboard(context.Background(), taskID)
 }

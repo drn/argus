@@ -190,7 +190,7 @@ below. The `?` overlay always shows your active bindings.
 | `ctrl+o`  | Open the project's GitHub repo in browser (via `gh repo view --web`) |
 | `ctrl+r`  | Prune completed tasks                                           |
 | `j` / `k` | Navigate up/down                                                |
-| `1` / `2` / `3` | Switch tabs (Tasks / Hera / Settings) |
+| `1` / `2` / `3` | Switch tabs (Tasks / Projects / Settings) |
 | `ctrl+l`  | Refresh screen (wipe ghost cells; works in every non-agent tab) |
 | `q`       | Quit                                                            |
 
@@ -210,9 +210,9 @@ below. The `?` overlay always shows your active bindings.
 | `ctrl+y`              | Copy agent-staged text; flashes "Nothing to copy" if no payload is pending (always intercepted — never sent to the PTY) |
 | `Shift+↑` / `Shift+↓` | Scroll terminal (with acceleration)                                       |
 
-#### Hera Tab
+#### Projects Tab
 
-The Hera tab (`2`) has three regions: a left **rail**, a middle **coordinator pane**, and a right **details** region. The rail lists active orchestrators with their coordinator/worker roles, plus **Pinned**, **Freelance**, and a collapsed **Archive** section. Keys act on the rail selection:
+The Projects tab (`2`) has three regions: a left **rail**, a middle **coordinator pane**, and a right **details** region. The rail lists active orchestrators with their coordinator/worker roles, plus **Pinned**, **Freelance**, and a collapsed **Archive** section. Keys act on the rail selection:
 
 | Key             | Action                                                                                 |
 | --------------- | -------------------------------------------------------------------------------------- |
@@ -222,7 +222,7 @@ The Hera tab (`2`) has three regions: a left **rail**, a middle **coordinator pa
 | `Tab`           | Enter a pane from the rail. **Once a terminal pane is focused, `Tab` / `Shift+Tab` pass through to the agent's PTY** so its autocomplete works (e.g. `/plugi`+`Tab` → `/plugin`) — they no longer cycle focus |
 | `ctrl+alt+←` / `ctrl+alt+→` | Move focus between panes once you're in one (the focus ladder; `Tab` is reserved for the agent there). `ctrl+q` steps back to the rail |
 | `ctrl+z`        | Fullscreen the focused content pane (rail stays; the other pane hides). Also traps `^Z` so it can never suspend the pane's agent |
-| `ctrl+y`        | Copy the agent-staged clipboard payload for the **focused pane's** task (coordinator or worker) — the Hera view shows several tasks at once, so the copy is scoped to whichever pane has focus. Always steals the key (the pane's title shows `(ctrl+y copy)` when a payload is staged); flashes "Nothing to copy" otherwise — never falls through to the PTY |
+| `ctrl+y`        | Copy the agent-staged clipboard payload for the **focused pane's** task (coordinator or worker) — the Projects view shows several tasks at once, so the copy is scoped to whichever pane has focus. Always steals the key (the pane's title shows `(ctrl+y copy)` when a payload is staged); flashes "Nothing to copy" otherwise — never falls through to the PTY |
 | `Enter`         | Enter the selected role's pane, reviving its session first — a dead session is restarted, and a suspended/stuck worker is resumed in place via `--session-id` |
 | `w`             | Spawn a worker under the selected coordinator (opens the full new-task modal: project / branch / backend / model / prompt, project defaulted to the coordinator's) |
 | `n`             | Create a new top-level coordinator (same new-task modal); bootstraps a fresh orchestrator + `coord` role bound to a new task. Works on an empty rail |
@@ -244,7 +244,7 @@ When a **worker** is selected the details region shows its live agent terminal. 
 | `↑` / `↓` / `j` / `k` | Move between plan stages (collapses any fanned-out group on the way)              |
 | `←` / `→` / `h` / `l` | Move between slots; inside a fanned-out group, walk its members                   |
 | `Space`              | Fan out / collapse a parallel group — a pure toggle that never opens a node (on a lone leaf it is a no-op; opening is `Enter`'s job) |
-| `Enter`              | Fan out a collapsed group; on a fanned-out group **member**, a sub-coordinator node, or a plain leaf, open that node: drill into a sub-coordinator's child orchestrator's plan, else jump to that node's role within the Hera view (selects it in the rail + focuses its agent pane — no tab switch), reviving a dead/suspended session just like the rail's `Enter`. On a member it does **not** collapse the group — that's `Space` / `Esc` |
+| `Enter`              | Fan out a collapsed group; on a fanned-out group **member**, a sub-coordinator node, or a plain leaf, open that node: drill into a sub-coordinator's child orchestrator's plan, else jump to that node's role within the Projects view (selects it in the rail + focuses its agent pane — no tab switch), reviving a dead/suspended session just like the rail's `Enter`. On a member it does **not** collapse the group — that's `Space` / `Esc` |
 | `Esc`                | Back out one level: collapse a fanned group, else drill out to the parent plan (consumed at the root — leave the pane via `Ctrl+Q` / `Tab`) |
 
 End-of-life has **two resting states**, and **no DB row is ever hard-deleted** — "done with" always means gone from the rail + worktree gone from disk, with the role / orchestrator / inbox / task all retained and recoverable: **Hide** (`a`, Tier 1) nests a worker / sub-coordinator in its parent coordinator's archive and keeps its session + worktree alive (reversible — un-hide restores it exactly); **Nuke** (`ctrl+d`, Tier 2; or `C` for a coordinator's whole archive) removes the row from the rail entirely, reclaims its worktree + branch, and stops its session, leaving only the DB rows behind. Every nuke is confirm-gated and honors multi-binding isolation (a task bound live under another orchestrator is never touched).
@@ -295,16 +295,16 @@ A few local-only operations gracefully degrade in remote mode: spawning a fresh 
 
 ### macOS app
 
-A native SwiftUI client (`ArgusMac`) built on **ArgusKit**, a typed Swift SDK over the daemon's REST + SSE API. It drives the same daemon as the TUI and the PWA — there is no separate backend.
+A native SwiftUI client (`Argus`) built on **ArgusKit**, a typed Swift SDK over the daemon's REST + SSE API. It drives the same daemon as the TUI and the PWA — there is no separate backend.
 
 **Requirements:** macOS 15+ and the **Swift 6.3 Command Line Tools** (`xcode-select --install`). No Xcode or `xcodebuild` needed — the app is a SwiftPM package (`macos/Package.swift`) built entirely from the CLT toolchain. SwiftTerm (the live-terminal widget) is the only third-party dependency; ArgusKit itself is pure Foundation.
 
 | Target          | Command                                        | What it does                                                                                     |
 | --------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `make mac-build` | `swift build --disable-sandbox`               | Compile ArgusKit + ArgusMac.                                                                     |
+| `make mac-build` | `swift build --disable-sandbox`               | Compile ArgusKit + Argus.                                                                        |
 | `make mac-test`  | `swift run --disable-sandbox ArgusKitTests`   | Run the ArgusKit test suite. **This is the test entry point, not `swift test`** (see below).     |
-| `make mac-run`   | `swift run --disable-sandbox ArgusMac`        | Build and launch the app from source.                                                            |
-| `make mac-app`   | `./scripts/mac-app.sh`                         | Assemble the double-clickable `macos/dist/ArgusMac.app` (release build + `Info.plist` + codesign) and print the `open` command. |
+| `make mac-run`   | `swift run --disable-sandbox Argus`           | Build and launch the app from source.                                                            |
+| `make mac-app`   | `./scripts/mac-app.sh`                         | Assemble the double-clickable `macos/dist/Argus.app` (release build + `Info.plist` + codesign) and print the `open` command. |
 
 `--disable-sandbox` is required because macOS forbids nested `sandbox-exec` profiles: when you build from inside an argus agent sandbox (how this repo is dogfooded), SwiftPM's own manifest sandbox fails to apply. The app's own manifest needs no protection from us, so disabling it makes the targets work everywhere.
 
@@ -320,7 +320,7 @@ A native SwiftUI client (`ArgusMac`) built on **ArgusKit**, a typed Swift SDK ov
 ```sh
 # run the bundle binary directly — `open` does not pass environment variables through
 ARGUS_MAC_SELECT_TASK=my-task ARGUS_MAC_INITIAL_TAB=diff \
-  macos/dist/ArgusMac.app/Contents/MacOS/ArgusMac
+  macos/dist/Argus.app/Contents/MacOS/Argus
 ```
 
 **Settings:** by default the app connects to `http://127.0.0.1:7743` using the master token from `~/.argus/api-token`. To drive a **remote** daemon (e.g. over Tailscale), set a **Server URL override** (stored in `UserDefaults`) and a **token override** in Preferences — the token is written to the macOS **Keychain**, never to disk. Preferences also carries the needs-input / idle notification toggles and the menu-bar-extra toggle.
@@ -345,14 +345,32 @@ From the **Settings tab** (Status section, when the daemon is connected) the **S
 
 ### Hera (native multi-agent coordination)
 
-Hera is Argus's native layer for running a *team* of agents. It introduces **roles** — a `coordinator` plus the `worker`s and `freelance`rs it spawns — bound to argus tasks and addressed by name. A coordinator delegates work to workers it spawns (`hera_spawn_worker` / the rail's `w` key), they trade messages over the same idle-gated bus that powers inter-task messaging, and the team's work renders as a **plan DAG** (the planned + live worker roles laid out by their `hera_blocks` dependency order, with sub-coordinator drill-in) folded into the Hera tab's details pane. The whole surface is the second tab (`2`) — see the [Hera Tab](#hera-tab) keybindings above. The coordination layer runs in-process in the daemon; the view renders directly in the TUI. Agents drive it over MCP (the [`hera_*` tools](#mcp-tools)).
+Hera is Argus's native layer for running a *team* of agents. It introduces **roles** — a `coordinator` plus the `worker`s and `freelance`rs it spawns — bound to argus tasks and addressed by name. A coordinator delegates work to workers it spawns (`hera_spawn_worker` / the rail's `w` key), they trade messages over the same idle-gated bus that powers inter-task messaging, and the team's work renders as a **plan DAG** (the planned + live worker roles laid out by their `hera_blocks` dependency order, with sub-coordinator drill-in) folded into the Projects tab's details pane. The whole surface is the second tab (`2`) — see the [Projects Tab](#projects-tab) keybindings above. The coordination layer runs in-process in the daemon; the view renders directly in the TUI. Agents drive it over MCP (the [`hera_*` tools](#mcp-tools)).
 
 **Native Hera and the external Hera plugin are mutually exclusive, selected by `hera.enabled` (default ON):**
 
 - **`hera.enabled = true` (default)** — native Hera is active. It stores its state in the same `~/.argus/data.sql` (the `hera_*` tables), exposes the `hera_*` MCP tools in-process, and owns the second tab. The legacy Hera plugin's tools are suppressed so they never double-register.
 - **`hera.enabled = false`** — the native `hera_*` MCP tools are not served, and you can instead run the external **Hera plugin** over the [plugin substrate](#plugin-substrate). The plugin keeps its own `~/.hera` state and plugin view, entirely unaffected by Argus. The TUI's second tab is always the native Hera view regardless of this flag.
 
-The two run **independently and share no state.** Switching to native Hera performs **no migration** of any prior `~/.hera` data — native Hera starts fresh. Set the flag in `config.toml` (`[hera] enabled = …`) or the DB.
+The two run **independently and share no state.** Switching to native Hera performs **no migration** of any prior `~/.hera` data – native Hera starts fresh. Set the flag in `config.toml` (`[hera] enabled = …`) or the DB.
+
+#### Context-budget Stop hook
+
+A long-lived coordinator accumulates context for the life of its orchestration in a way a disposable worker never does. `argus coord-hook` is a CLI subcommand meant to run as a Claude Code `Stop` hook: on every turn of a hera **coordinator**'s session it self-discovers the daemon's REST port + API token, tails the session transcript for the latest `cache_read_input_tokens`, stamps it into `task_meta` (`hera`, `context_size`), and – once that value reaches the project's `coordinator_context_budget` (`[hera] coordinator_context_budget`, default `200000`) – blocks the `Stop` event with a "reach a safe seam and recycle" nudge that repeats every turn until the coordinator drops back under budget (typically via a recycle). It self-gates hard on `ARGUS_TASK_ID` plus a resolved coordinator role, so it is a silent no-op for every other Claude Code session.
+
+Because every Argus-spawned agent inherits the daemon's real `HOME` regardless of which project it's working in, the hook is registered **once, globally** – Argus cannot write to a user's global settings file on their behalf, so this is a one-time manual step. Add to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "argus coord-hook" } ] }
+    ]
+  }
+}
+```
+
+`argus doctor` checks whether this hook is registered and warns if it's missing – see [Diagnosing binary skew](#diagnosing-binary-skew-argus-doctor) below.
 
 ### Daemon & session-supervisor
 
@@ -400,6 +418,8 @@ argus doctor   # read-only: enumerate every argus binary + running process, prin
 - **PATH DIVERGENCE** — the daemon symlink target and your `PATH` `argus` resolve to **different files** (the real footgun — a plain restart just relaunches the divergent binary and loops); the fix re-points/reinstalls so both point at one build.
 
 It is strictly **read-only** (never touches a symlink, binary, `PATH`, or process) and best-effort — an unresolvable row degrades to "unknown" rather than aborting. Exits non-zero on any non-healthy verdict.
+
+`doctor` also independently reports whether the [context-budget Stop hook](#context-budget-stop-hook) is registered — **REGISTERED**, **NOT REGISTERED** (prints the exact snippet to add), or **UNKNOWN** (`~/.claude/settings.json` missing/unreadable, reported distinctly rather than assumed absent). This check is purely advisory and never affects the exit code above, which stays governed solely by the binary-coherence verdict.
 
 ### Auto-start at Login (macOS)
 
@@ -502,7 +522,9 @@ If the recipient has a live agent session the daemon also writes a single notifi
 | Tool                    | Description                                                                                                                                       |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `hera_new_orchestrator` | Bootstrap a new orchestrator and claim its `coordinator` role for the calling task.                                                               |
-| `hera_join`             | Claim the calling task's existing role + unread count, or (with `role_name` + `kind`) attach a new `worker`/`freelance` role under an orchestrator. |
+| `hera_join`             | Claim the calling task's existing role + unread count, or (with `role_name` + `kind`) attach a new `worker`/`freelance` role under an orchestrator. Attach mode rejects (directing to `hera_move`) when the caller already holds a live binding under a different orchestrator. |
+| `hera_move`             | Relocate the caller's live binding to a different orchestrator: ends the current binding (`end_reason: "moved"`) and creates a new `worker`/`freelance` role+binding under the target, in one transaction. Use instead of `hera_join` when already bound elsewhere. |
+| `hera_rebind`           | Repair a binding stuck claim-says-none / attach-says-exists (a reused worktree path left the live binding pointing at a stale argus task): reconciles the binding to the caller's real live task without tearing down the session — the role, its prompt, messages, and status all survive. Refuses when genuinely ambiguous. |
 | `hera_spawn_worker`     | Spawn a born-bound worker task + session under the caller's orchestrator (caller must hold a live coordinator binding). Optional `model` picks the worker's model by task complexity (backend-scoped; empty = backend default). |
 | `hera_send`             | Send a role-addressed message. **`status` is required for worker/freelance senders** (`idle`/`working`/`blocked`/`done`/`failed`) and is applied synchronously before send. Workers/freelancers default to the coordinator when `to` is omitted; coordinators must name a recipient. |
 | `hera_inbox`            | Fetch the caller role's unread messages (oldest first), cancel their pending pane deliveries, and mark them read.                                 |
@@ -775,7 +797,7 @@ Command templates, keyed by name. Seeded with `claude`, `codex`, `pi`, and `open
 | `command` | string | — | Executable plus base flags for the agent CLI (e.g. `claude`, `codex --dangerously-bypass-approvals-and-sandbox`). Permission flags come from `defaults.permission_mode` and are **not** baked in here. |
 | `prompt_flag` | string | `""` | Flag used to pass the initial prompt to the backend (empty = positional/piped). |
 | `model` | string | `""` | Default model for this backend, injected as `--model <value>` for known CLIs (claude, codex, pi, opencode — opencode takes a `provider/model` value). Empty = the CLI's own default. A per-task model overrides it. |
-| `models` | array | `[]` | Option list for the new-task model selector for this backend. Empty = built-in list (claude → `opus`/`sonnet`/`haiku`, codex → `gpt-5-codex`/`gpt-5`, others including opencode → none, so `custom…` only). A `custom…` entry always lets you type a model not in the list. |
+| `models` | array | `[]` | Option list for the new-task model selector for this backend. Empty = built-in list (claude → `opus`/`sonnet`/`haiku`/`fable`, codex → `gpt-5-codex`/`gpt-5`, others including opencode → none, so `custom…` only). A `custom…` entry always lets you type a model not in the list. |
 
 #### `[projects.<name>]`
 

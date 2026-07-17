@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/drn/argus/internal/uxlog"
@@ -61,6 +62,17 @@ type railRow struct {
 	depth int
 	dim   bool // archived placement → dimmed style
 
+	// ancestryOnly is true while a filter is active AND this coordinator/
+	// orchestrator heading row (rrOrch, or a bridging rrRole/rrPinnedBreadcrumb
+	// standing in for a nested coordinator) is on screen ONLY to preserve tree
+	// ancestry for a matching descendant — its own name (or its folded-in
+	// coordinator's name, for an rrOrch header) does NOT itself match the
+	// query. Such a row is never selectable (BUG-028-RAIL): arrow nav and
+	// first-match auto-select skip straight past it to a real match, and it
+	// renders dimmed so it's visually obvious it can't be selected. Always
+	// false when no filter is active.
+	ancestryOnly bool
+
 	// Collapse target (only one is set, and only when collapsible).
 	collOrchID    int64 // >0 → toggle collapsed[collOrchID]
 	collFreelance bool
@@ -76,6 +88,13 @@ type railRow struct {
 }
 
 func (r railRow) selectable() bool {
+	// An ancestry-only heading (BUG-028-RAIL) is on screen purely for tree context —
+	// its own name never matched the typed query, so it can never be a valid
+	// selection target while filtering. Checked first so it overrides every
+	// kind below.
+	if r.ancestryOnly {
+		return false
+	}
 	switch r.kind {
 	case rrOrch, rrFreelanceRole, rrArchiveExpando, rrPinnedBreadcrumb:
 		return true // both the bottom Archive section and per-coordinator expandos
@@ -120,10 +139,13 @@ type Rail struct {
 	// Filter state (the `/` rail name filter). filterInput is true while the
 	// operator is TYPING (drives the `/ <query>` line, the key routing, and the
 	// global-handler guard); filterQuery is the active query — non-empty NARROWS
-	// the rail (ancestry-preserving) and survives leaving input mode (Enter
-	// accepts). Filter state is transient and is NOT persisted. filterVis is the
-	// per-build visibility memo (orch id → visible), recomputed each filtered
-	// buildRows and nil when no filter is active.
+	// the rail (ancestry-preserving). A single Enter selects the current match
+	// AND clears the filter in one step (BUG-028-RAIL) — there is no longer an
+	// "accepted but still narrowed" resting state, so filterQuery is always ""
+	// whenever filterInput is false. Filter state is transient and is NOT
+	// persisted. filterVis is the per-build visibility memo (orch id →
+	// visible), recomputed each filtered buildRows and nil when no filter is
+	// active.
 	filterInput bool
 	filterQuery string
 	filterVis   map[int64]bool
@@ -184,14 +206,20 @@ func (r *Rail) SetFocused(v bool) { r.focused = v }
 // render a PR indicator. Pass nil to clear it (the indicator just won't render).
 func (r *Rail) SetPRMeta(m map[string]map[string]string) { r.prMeta = m }
 
-// rolePR reports whether the role's bound task has a non-empty "pr" url in the
-// cache (an open pull request worth flagging on the rail row).
+// rolePR reports whether the role's bound task has a PR in an actionable
+// review state (mirrors theme.PRGlyph / model.PRState.IsActionable) — a
+// merged, closed, draft, or unknown-state PR leaves a url in the cache but
+// must not flag the rail row.
 func (r *Rail) rolePR(role *RoleView) bool {
 	if role == nil || role.TaskID == "" || r.prMeta == nil {
 		return false
 	}
 	kv := r.prMeta[role.TaskID]
-	return kv != nil && kv["url"] != ""
+	if kv == nil {
+		return false
+	}
+	s, err := model.ParsePRState(kv["state"])
+	return err == nil && s.IsActionable()
 }
 
 // SetModel replaces the snapshot and rebuilds rows, preserving the cursor's
@@ -300,15 +328,18 @@ func trueKeys(m map[int64]bool) []int64 {
 // --- filter ---
 
 // Filtering reports whether the rail is in search INPUT mode (the operator is
-// typing a query). page.go skips rail mutations while this holds, and app.go
-// lets the global rune shortcuts (1/2/3/q/?) fall through to the rail as filter
-// input. It is FALSE once a filter is accepted (Enter) even though the query
-// stays applied — accepted-but-not-typing resumes normal key handling.
+// typing a query). page.go skips rail mutations while this holds — EXCEPT
+// Enter, which is special-cased to select the current match and clear the
+// filter in one step (BUG-028-RAIL) — and app.go lets the global rune shortcuts
+// (1/2/3/q/?) fall through to the rail as filter input. Enter and Esc both
+// fully clear the query (ClearFilter), so there is no longer an
+// "accepted-but-still-narrowed" resting state — Filtering() and filterActive()
+// now always flip together.
 func (r *Rail) Filtering() bool { return r.filterInput }
 
 // filterActive reports whether the rail rows are NARROWED (a non-empty query is
-// applied), regardless of input mode. An empty/all-whitespace query narrows
-// nothing.
+// applied). An empty/all-whitespace query narrows nothing. Since Enter/Esc both
+// fully clear filterQuery, this can only be true while Filtering() is also true.
 func (r *Rail) filterActive() bool { return strings.TrimSpace(r.filterQuery) != "" }
 
 // filterMatches reports whether name satisfies the current query: every
@@ -326,6 +357,22 @@ func (r *Rail) filterMatches(name string) bool {
 		}
 	}
 	return true
+}
+
+// orchMatchesOwnQuery reports whether o itself — not merely a visible
+// descendant — is a text match against the active query: its own name, OR its
+// folded-in coordinator's name. The coordinator has no separate rail row (it IS
+// the header — see appendOrch), so a query matching the coordinator's name must
+// count as the header's own match, not ancestry (BUG-028-RAIL): otherwise searching
+// for a coordinator by name would never let Enter jump straight to it.
+func (r *Rail) orchMatchesOwnQuery(o *OrchView) bool {
+	if r.filterMatches(o.Name) {
+		return true
+	}
+	if coord := o.CoordRole(); coord != nil && r.filterMatches(coord.Name) {
+		return true
+	}
+	return false
 }
 
 // computeVisible builds the orchestrator-visibility memo for the active filter:
@@ -678,11 +725,12 @@ func (r *Rail) appendOrch(o *OrchView, depth int, dim bool, canonical map[int64]
 	}
 	placed[o.ID] = true
 	r.rows = append(r.rows, railRow{
-		kind:       rrOrch,
-		orch:       o,
-		depth:      depth,
-		dim:        dim,
-		collOrchID: o.ID,
+		kind:         rrOrch,
+		orch:         o,
+		depth:        depth,
+		dim:          dim,
+		collOrchID:   o.ID,
+		ancestryOnly: r.filterActive() && !r.orchMatchesOwnQuery(o),
 	})
 	if r.isCollapsed(o.ID) {
 		return
@@ -837,7 +885,14 @@ func (r *Rail) appendWorkerRow(ownerID int64, w *RoleView, depth int, dim bool, 
 	if child != nil {
 		collID = child.ID
 	}
-	r.rows = append(r.rows, railRow{kind: rrRole, role: w, depth: depth, dim: rowDim, collOrchID: collID})
+	r.rows = append(r.rows, railRow{
+		kind:         rrRole,
+		role:         w,
+		depth:        depth,
+		dim:          rowDim,
+		collOrchID:   collID,
+		ancestryOnly: r.filterActive() && !r.filterMatches(w.Name),
+	})
 	if child != nil {
 		placed[child.ID] = true
 		if !r.isCollapsed(child.ID) {
@@ -947,8 +1002,9 @@ func (r *Rail) appendPinnedRole(pe pinnedRoleEntry, canonical map[int64]canonPar
 	if child != nil {
 		collID = child.ID
 	}
-	r.rows = append(r.rows, railRow{kind: rrPinnedBreadcrumb, role: rv, depth: 0, breadcrumb: pe.breadcrumb, collOrchID: collID})
-	r.rows = append(r.rows, railRow{kind: rrRole, role: rv, depth: 1, breadcrumbCont: true})
+	bcAncestry := r.filterActive() && !r.filterMatches(rv.Name)
+	r.rows = append(r.rows, railRow{kind: rrPinnedBreadcrumb, role: rv, depth: 0, breadcrumb: pe.breadcrumb, collOrchID: collID, ancestryOnly: bcAncestry})
+	r.rows = append(r.rows, railRow{kind: rrRole, role: rv, depth: 1, breadcrumbCont: true, ancestryOnly: bcAncestry})
 	if child != nil {
 		placed[child.ID] = true
 		if !r.isCollapsed(child.ID) {
@@ -1175,7 +1231,8 @@ func (r *Rail) Draw(screen tcell.Screen) {
 	if r.focused {
 		borderStyle = theme.StyleFocusedBorder
 	}
-	// Reflect an applied query in the border title (while typing AND after Enter).
+	// Reflect the query in the border title while typing (BUG-028-RAIL: Enter/Esc
+	// both fully clear the query, so it's never non-empty once input mode ends).
 	title := " Hera "
 	if r.filterActive() {
 		title = " Hera /" + r.filterQuery + " "
@@ -1285,7 +1342,7 @@ func (r *Rail) drawRow(screen tcell.Screen, x, y, w int, row railRow, selected b
 		r.drawPinnedBreadcrumbRow(screen, textX, y, textW, row)
 	case rrRole, rrFreelanceRole:
 		if row.breadcrumbCont {
-			r.drawBreadcrumbNameRow(screen, textX, y, textW, row.role, selected)
+			r.drawBreadcrumbNameRow(screen, textX, y, textW, row.role, row.ancestryOnly, selected)
 			return
 		}
 		r.drawRoleRow(screen, textX, y, textW, row, selected, gutterStyle)
@@ -1294,8 +1351,12 @@ func (r *Rail) drawRow(screen tcell.Screen, x, y, w int, row railRow, selected b
 
 func (r *Rail) drawOrchRow(screen tcell.Screen, x, y, w int, row railRow, selected bool) {
 	o := row.orch
+	// greyed folds in ancestryOnly (BUG-028-RAIL) alongside the existing archived-
+	// placement dim, so a heading kept only for tree context reads visually
+	// non-selectable too.
+	greyed := row.dim || row.ancestryOnly
 	nameStyle := theme.StyleProject
-	if row.dim {
+	if greyed {
 		nameStyle = theme.StyleDimmed
 	}
 	if selected {
@@ -1307,18 +1368,18 @@ func (r *Rail) drawOrchRow(screen tcell.Screen, x, y, w int, row railRow, select
 	// rows; the glyph keeps its own status style even when the row is selected
 	// (the glyph never lies). Worker-less / coordinator-less orchestrators skip it.
 	if coord := o.CoordRole(); coord != nil {
-		glyph, gstyle := statusIcon(coord, row.dim, r.animFrame)
+		glyph, gstyle := statusIcon(coord, greyed, r.animFrame)
 		screen.SetContent(col, y, glyph, nil, gstyle)
 		col += 2
 	} else if o.SubtreeNeedsInput {
 		// Coordinator-less orchestrator (e.g. its coordinator role was nuked):
 		// no coord glyph carries the needs-input rollup, so surface it directly
-		// (BUG-028). Without this, a blocked worker under a collapsed header — the
+		// (BUG-028-RAIL). Without this, a blocked worker under a collapsed header — the
 		// default "tidy summary" view — shows no needs-input cue at all, unlike the
 		// always-flat task list. Style stays needs-input even when dimmed/selected
 		// (the glyph never lies), matching statusIcon's ready_to_close/needs-input.
 		gstyle := theme.StyleNeedsInput
-		if row.dim {
+		if greyed {
 			gstyle = theme.StyleDimmed
 		}
 		screen.SetContent(col, y, theme.IconNeedsInput, nil, gstyle)
@@ -1351,9 +1412,13 @@ func (r *Rail) drawOrchRow(screen tcell.Screen, x, y, w int, row railRow, select
 
 func (r *Rail) drawRoleRow(screen tcell.Screen, x, y, w int, row railRow, selected bool, _ tcell.Style) {
 	role := row.role
-	icon, iconStyle := statusIcon(role, row.dim, r.animFrame)
+	// greyed folds in ancestryOnly (BUG-028-RAIL) alongside the existing archived-
+	// placement dim, so a bridging heading kept only for tree context reads
+	// visually non-selectable too.
+	greyed := row.dim || row.ancestryOnly
+	icon, iconStyle := statusIcon(role, greyed, r.animFrame)
 	nameStyle := theme.StyleNormal
-	if row.dim {
+	if greyed {
 		nameStyle = theme.StyleDimmed
 	}
 	if selected {
@@ -1370,7 +1435,7 @@ func (r *Rail) drawRoleRow(screen tcell.Screen, x, y, w int, row railRow, select
 			markerStyle := nameStyle
 			if !selected {
 				markerStyle = theme.StyleProject
-				if row.dim {
+				if greyed {
 					markerStyle = theme.StyleDimmed
 				}
 			}
@@ -1425,13 +1490,14 @@ func (r *Rail) drawPinnedBreadcrumbRow(screen tcell.Screen, x, y, w int, row rai
 // drawBreadcrumbNameRow renders line 2 of a two-line pinned non-root entry: the
 // role name (indented under line 1). It renders selected-style when the
 // preceding breadcrumb line (the cursor anchor) is selected, dimmed when the
-// role is archived, normal otherwise (add-hera-pin-nonroot).
-func (r *Rail) drawBreadcrumbNameRow(screen tcell.Screen, x, y, w int, role *RoleView, selected bool) {
+// role is archived OR the entry is an ancestry-only filter heading (BUG-028-RAIL),
+// normal otherwise (add-hera-pin-nonroot).
+func (r *Rail) drawBreadcrumbNameRow(screen tcell.Screen, x, y, w int, role *RoleView, ancestryOnly bool, selected bool) {
 	if role == nil {
 		return
 	}
 	nameStyle := theme.StyleNormal
-	if role.Archived {
+	if role.Archived || ancestryOnly {
 		nameStyle = theme.StyleDimmed
 	}
 	if selected {
@@ -1593,36 +1659,40 @@ func (r *Rail) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.
 	})
 }
 
-// enterFilter switches the rail into search INPUT mode, preserving any current
-// query so re-pressing `/` after acceptance lets the operator edit/extend it
-// (then Esc clears). The rows already reflect the (unchanged) query, so no
-// rebuild is needed here.
+// enterFilter switches the rail into search INPUT mode. filterQuery is always
+// "" here — Enter and Esc both fully clear it on exit (BUG-028-RAIL), so there is no
+// "accepted but still narrowed" state to resume; every `/` press starts a fresh
+// query.
 func (r *Rail) enterFilter() {
 	r.filterInput = true
-	uxlog.Log("[hera-view] rail filter: input mode (query=%q)", r.filterQuery)
+	uxlog.Log("[hera-view] rail filter: input mode")
 }
 
-// handleFilterKey routes a keystroke while in search INPUT mode. Esc clears and
-// restores the full rail; Enter accepts (query stays, input mode off so j/k
-// navigate the filtered set); Up/Down move the cursor WITHIN the filtered rows
-// without leaving input mode (so the operator can select a row while still
-// typing/editing the query — matching the Tasks-tab `/` filter); Backspace trims
-// a rune; any other rune extends the query. Every query change rebuilds + re-pins
-// the cursor onto a visible row.
+// handleFilterKey routes a keystroke while in search INPUT mode. Esc and Enter
+// both fully clear the filter via ClearFilter — Enter, at the bare-Rail level,
+// can't itself perform the "jump into the agent" half (that needs a HeraPage
+// wrapper's Selection/OnReattach wiring — see page.go's handleRailMutation,
+// which intercepts Enter FIRST and resolves the jump before calling
+// ClearFilter). Up/Down move the cursor WITHIN the filtered rows without
+// leaving input mode (so the operator can select a row while still
+// typing/editing the query — matching the Tasks-tab `/` filter, though unlike
+// it the Hera rail resolves Enter in ONE step, not two — BUG-028-RAIL); Backspace
+// trims a rune; any other rune extends the query. Every query change rebuilds,
+// auto-selecting the FIRST real match (never an ancestry-only heading) so the
+// operator sees the top candidate live as they type.
 func (r *Rail) handleFilterKey(event *tcell.EventKey) {
 	switch event.Key() {
 	case tcell.KeyEscape:
-		r.filterInput = false
-		r.filterQuery = ""
-		r.rebuildAfterFilter()
+		r.ClearFilter()
 		uxlog.Log("[hera-view] rail filter: cleared")
 	case tcell.KeyEnter:
-		r.filterInput = false
-		uxlog.Log("[hera-view] rail filter: accepted (query=%q)", r.filterQuery)
+		r.ClearFilter()
+		uxlog.Log("[hera-view] rail filter: selected + cleared")
 	case tcell.KeyDown:
 		// Navigate the filtered set while typing — step() only lands on selectable
-		// rows, and a narrowed buildRows contains only visible rows, so the cursor
-		// can never reach a filtered-out row.
+		// rows (ancestry-only headings excluded), and a narrowed buildRows contains
+		// only visible rows, so the cursor can never reach a filtered-out or
+		// ancestry-only row.
 		r.CursorDown()
 	case tcell.KeyUp:
 		r.CursorUp()
@@ -1638,14 +1708,63 @@ func (r *Rail) handleFilterKey(event *tcell.EventKey) {
 	}
 }
 
-// rebuildAfterFilter rebuilds the rows for the current query and re-pins the
-// cursor onto a still-visible selectable row. It writes the cursor directly
-// (restoreCursor/clampCursor), never via setCursor, so a filter change neither
-// fires the selection callback nor (per BUG-002) persists rail state — the
-// filter is transient.
+// ClearFilter exits search input mode and fully resets the query, rebuilding
+// the full unfiltered rail. Shared by Esc (discard) and Enter (BUG-028-RAIL: select
+// then clear) — both restore the SAME full-rail state; a HeraPage-level Enter
+// just resolves the selection BEFORE calling this. Rebuilds via
+// rebuildAfterFilter, which writes the cursor directly (never via setCursor),
+// so clearing the filter itself never fires the selection callback nor
+// persists rail state.
+func (r *Rail) ClearFilter() {
+	r.filterInput = false
+	r.filterQuery = ""
+	r.rebuildAfterFilter()
+}
+
+// rebuildAfterFilter rebuilds the rows for the current query. While the query
+// still narrows the rail it auto-selects the FIRST real match (BUG-028-RAIL) so the
+// operator sees the live top candidate as they type or backspace; once the
+// query is empty (cleared) it re-pins the cursor by stable identity onto
+// whatever row it held before, matching the pre-filter selection. Either way
+// the cursor is written directly (never via setCursor), so a filter change
+// neither fires the selection callback nor (per BUG-002) persists rail state —
+// the filter is transient.
 func (r *Rail) rebuildAfterFilter() {
 	ref := r.currentRef()
 	r.buildRows()
-	r.restoreCursor(ref)
+	if r.filterActive() {
+		r.jumpToFirstMatch()
+	} else {
+		r.restoreCursor(ref)
+	}
 	r.clampCursor()
+}
+
+// jumpToFirstMatch pins the cursor onto the FIRST real query match in the
+// narrowed rows — a coordinator/orchestrator/pinned/freelance row whose own
+// name (or, for an orchestrator header, its folded-in coordinator's name)
+// itself matched the query. It never lands on an ancestry-only heading
+// (selectable() already excludes those) nor a structural fold header
+// (Freelance/Archive expando — always selectable but never itself a text
+// match). Live auto-select while typing (BUG-028-RAIL): Enter can jump straight
+// into the top candidate with no separate "lock" step. A no-op (leaving the
+// cursor for clampCursor to resolve) when the narrowed rows contain no real
+// match.
+func (r *Rail) jumpToFirstMatch() {
+	for i, row := range r.rows {
+		if !row.selectable() {
+			continue
+		}
+		isMatch := false
+		switch row.kind {
+		case rrOrch, rrPinnedBreadcrumb, rrFreelanceRole:
+			isMatch = true
+		case rrRole:
+			isMatch = !row.breadcrumbCont
+		}
+		if isMatch {
+			r.cursor = i
+			return
+		}
+	}
 }

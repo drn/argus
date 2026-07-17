@@ -246,6 +246,12 @@ type App struct {
 	viewedWhileAgent map[string]bool   // tasks viewed in agent view; suppresses idleUnvisited re-add
 	needsInputIDs    []string          // task IDs detected as blocked on a user prompt this tick
 	needsInputFP     map[string]uint64 // taskID -> prior-tick content fingerprint (BUG-032 stability pass)
+	// needsInputEscalation carries the BUG-029 consecutive-tick escalation
+	// counter (agent.EscalateParkedSelection) across ticks: bounds the worst
+	// case for a session whose content fingerprint never converges despite
+	// genuinely showing Claude's parked selection-prompt widget. Independent of
+	// needsInputFP — it fires precisely when that fingerprint match cannot.
+	needsInputEscalation map[string]int
 	// needsInputSince carries the clear-on-input baseline (BUG-034): the
 	// session's last-input timestamp observed when a task first entered the
 	// needs-input set. agent.NeedsInputClear clears the flag once the session's
@@ -1917,6 +1923,17 @@ func needsInputScreenSize(taskID string) (cols, rows int) {
 //     showing the marker rides through a one-tick content blip without
 //     oscillating; it self-clears when the marker scrolls out of the 16 KB
 //     tail (question answered) or the task stops running.
+//   - Escalation fallback (BUG-029): the content-stability pass above requires
+//     the FULL fingerprint to match across exactly two ticks. A session whose
+//     tail keeps showing UNRELATED per-tick-varying content elsewhere in the
+//     16 KB window (an unrecognized status/counter line, or genuinely new but
+//     irrelevant output) never converges there and would stay unflagged
+//     forever even though it is genuinely parked. If the tail shows the
+//     unambiguous selection-prompt widget with the working affordance absent
+//     (agent.ParkedSelectionSignal) continuously for
+//     agent.NeedsInputEscalationTicks consecutive ticks, it is flagged
+//     regardless of whether the fingerprint ever converged. Counters persist
+//     on a.needsInputEscalation, independent of a.needsInputFP.
 func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []string) []string {
 	if a.needsInputScreen == nil {
 		a.needsInputScreen = &agent.ScreenRenderer{}
@@ -1944,6 +1961,7 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	// still working must not qualify), compare against last tick, carry this
 	// tick's forward.
 	newFP := make(map[string]uint64)
+	newEsc := make(map[string]int)
 	for _, id := range runningIDs {
 		tail := readSessionLogTailBytes(id, detectNeedsInputTailBytes)
 		if len(tail) == 0 {
@@ -1951,15 +1969,33 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 		}
 		cols, rows := needsInputScreenSize(id)
 		fp, ok := agent.AwaitingInputFingerprint(a.needsInputScreen, tail, cols, rows)
-		if !ok {
-			continue
+		if ok {
+			newFP[id] = fp
+			if last, ok := a.needsInputFP[id]; ok && last == fp {
+				flag(id)
+			}
 		}
-		newFP[id] = fp
-		if last, ok := a.needsInputFP[id]; ok && last == fp {
+
+		// BUG-029 escalation: bound the worst case for a session whose full
+		// content fingerprint never converges tick-to-tick (unrelated
+		// per-tick-varying text elsewhere in the tail keeps shifting it) despite
+		// genuinely showing Claude's parked selection-prompt widget. Advanced
+		// independently of the fingerprint match above — see
+		// agent.EscalateParkedSelection.
+		newTicks, escalated := agent.EscalateParkedSelection(a.needsInputEscalation[id], agent.ParkedSelectionSignal(a.needsInputScreen, tail, cols, rows))
+		if newTicks != 0 {
+			// A negative value is a BUG-060 one-tick grace state (an isolated
+			// miss holding the streak pending the next tick), not "nothing to
+			// store" — only a true zero (no streak, or a confirmed break) needs
+			// no entry, since a missing map key already reads back as zero.
+			newEsc[id] = newTicks
+		}
+		if escalated {
 			flag(id)
 		}
 	}
 	a.needsInputFP = newFP
+	a.needsInputEscalation = newEsc
 
 	for _, id := range prevNeedsInput {
 		if freshSet[id] || !runningSet[id] {
@@ -3159,6 +3195,18 @@ func (a *App) handleDiffKey(event *tcell.EventKey) *tcell.EventKey {
 			case keymap.ActDiffScrollUp:
 				a.agentPane.DiffScrollUp(1)
 				return nil
+			case keymap.ActDiffFinder:
+				a.openInFinder()
+				return nil
+			case keymap.ActDiffOpen:
+				a.openFile()
+				return nil
+			case keymap.ActDiffEditor:
+				a.openInEditor()
+				return nil
+			case keymap.ActDiffTerminal:
+				a.openTerminal()
+				return nil
 			}
 		}
 		// `q` exits diff mode — structural "back", reserved (not rebindable in
@@ -3384,7 +3432,7 @@ func (a *App) switchTab(t widget.Tab) {
 // the tab label, and refreshes the rail. Called from switchTab. Must run on the
 // tview main goroutine.
 func (a *App) switchToHeraTab2() {
-	a.header.SetTabLabel(widget.TabHera, "Hera")
+	a.header.SetTabLabel(widget.TabHera, "Projects")
 	// Tab entry always starts with the rail focused; reset the statusbar hint
 	// set so the operator sees rail hints immediately (the rail is the default
 	// region — no focus-machine state persists across tab switches).

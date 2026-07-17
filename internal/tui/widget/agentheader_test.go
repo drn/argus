@@ -7,6 +7,7 @@ import (
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -102,6 +103,40 @@ func TestAgentHeader_Draw_WithClipboardHint(t *testing.T) {
 	row := readAllScreenText(sim, 80, 1)
 	testutil.Contains(t, row, "ctrl+y to copy")
 	testutil.Contains(t, row, "clipboard-task")
+}
+
+// TestAgentHeader_Draw_ClipboardHintUsesDistinctStyle (fix-ctrl-y-copy-persist)
+// asserts the hint renders in theme.StyleClipboardHint's foreground, distinct
+// from the plain task-name segment style, so it's actually noticeable rather
+// than blending into the rest of the header.
+func TestAgentHeader_Draw_ClipboardHintUsesDistinctStyle(t *testing.T) {
+	sim := newSim(t, 80, 1)
+	h := NewAgentHeader()
+	h.SetRect(0, 0, 80, 1)
+	h.SetTaskName("clipboard-task")
+	h.SetClipboardHint(true)
+	h.Draw(sim)
+
+	row := readAllScreenText(sim, 80, 1)
+	hintCol := strings.Index(row, "ctrl+y to copy")
+	if hintCol < 0 {
+		t.Fatal("hint text not found in rendered row")
+	}
+	_, style, _ := sim.Get(hintCol, 0)
+	gotFg, _, _ := style.Decompose()
+	wantFg, _, _ := theme.StyleClipboardHint.Decompose()
+	testutil.Equal(t, gotFg, wantFg)
+
+	// Sanity check: distinct from the task-name segment's own foreground.
+	nameCol := strings.Index(row, "clipboard-task")
+	if nameCol < 0 {
+		t.Fatal("task name not found in rendered row")
+	}
+	_, nameStyle, _ := sim.Get(nameCol, 0)
+	nameFg, _, _ := nameStyle.Decompose()
+	if nameFg == wantFg {
+		t.Error("hint foreground should differ from the task-name segment's foreground")
+	}
 }
 
 func TestAgentHeader_Draw_ClipboardHintNarrowWidth(t *testing.T) {

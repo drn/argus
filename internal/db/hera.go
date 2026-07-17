@@ -84,6 +84,11 @@ const (
 	// HeraMetaKeyPrompt optionally carries a worker's verbatim prompt so the
 	// auto-adopt path can populate the adopted role's prompt. Tolerated absent.
 	HeraMetaKeyPrompt = "prompt"
+	// HeraMetaKeyContextSize mirrors a coordinator's last-observed
+	// cache_read_input_tokens count (add-coordinator-context-management D1),
+	// overwritten on every Stop-hook invocation (`argus coord-hook`) — a
+	// single scalar, not a time series.
+	HeraMetaKeyContextSize = "context_size"
 )
 
 // HeraRoleKind enumerates the valid kinds for a hera_roles row.
@@ -694,6 +699,98 @@ func (d *DB) CreateHeraRoleWithBinding(roleIn CreateHeraRoleInput, taskID, workt
 	return role, binding, nil
 }
 
+// HeraEndReasonMoved is stamped on a binding ended by MoveHeraBinding — the
+// caller relocated to a different orchestrator via the explicit hera_move
+// tool (fix-hera-join-move-binding), as opposed to a normal leave/delete.
+const HeraEndReasonMoved = "moved"
+
+// MoveHeraBindingResult reports the outcome of MoveHeraBinding: the ended
+// binding's orchestrator and role name (so the MCP layer can report what
+// moved) alongside the newly created role and binding under the target
+// orchestrator.
+type MoveHeraBindingResult struct {
+	OldOrchestratorName string
+	OldRoleName         string
+	NewRole             *HeraRole
+	NewBinding          *HeraBinding
+}
+
+// MoveHeraBinding ends oldBindingID (stamping end_reason "moved") and inserts
+// a new role+binding under the target orchestrator, in ONE transaction — the
+// move-capable counterpart to CreateHeraRoleWithBinding: same insert-role,
+// insert-binding pattern, with an extra end-binding step first so a caller
+// never ends up bound in neither place, nor bound in both. Returns
+// ErrHeraNotFound if oldBindingID does not name a currently-live binding
+// (already ended, or never existed); the whole transaction rolls back on any
+// failure, so a not-found or a doomed role/binding insert leaves the old
+// binding live and untouched.
+func (d *DB) MoveHeraBinding(oldBindingID int64, roleIn CreateHeraRoleInput, taskID, worktreePath string) (*MoveHeraBindingResult, error) {
+	var result MoveHeraBindingResult
+	err := d.WithTx(func(tx *sql.Tx) error {
+		now := formatTime(time.Now())
+
+		var oldRoleID int64
+		if err := tx.QueryRow(
+			`SELECT role_id FROM hera_bindings WHERE id=? AND ended_at IS NULL`, oldBindingID,
+		).Scan(&oldRoleID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrHeraNotFound
+			}
+			return fmt.Errorf("move hera binding: lookup old binding: %w", err)
+		}
+
+		var oldRoleName string
+		var oldOrchID int64
+		if err := tx.QueryRow(
+			`SELECT name, orchestrator_id FROM hera_roles WHERE id=?`, oldRoleID,
+		).Scan(&oldRoleName, &oldOrchID); err != nil {
+			return fmt.Errorf("move hera binding: lookup old role: %w", err)
+		}
+		var oldOrchName string
+		if err := tx.QueryRow(
+			`SELECT name FROM hera_orchestrators WHERE id=?`, oldOrchID,
+		).Scan(&oldOrchName); err != nil {
+			return fmt.Errorf("move hera binding: lookup old orchestrator: %w", err)
+		}
+
+		res, err := tx.Exec(
+			`UPDATE hera_bindings SET ended_at=?, end_reason=? WHERE id=? AND ended_at IS NULL`,
+			now, HeraEndReasonMoved, oldBindingID)
+		if err != nil {
+			return fmt.Errorf("move hera binding: end old binding: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrHeraNotFound
+		}
+
+		r, err := insertHeraRole(tx, roleIn, now)
+		if err != nil {
+			return err
+		}
+		b, err := insertHeraBinding(tx, CreateHeraBindingInput{
+			RoleID:         r.ID,
+			OrchestratorID: r.OrchestratorID,
+			ArgusTaskID:    taskID,
+			WorktreePath:   worktreePath,
+		}, now)
+		if err != nil {
+			return err
+		}
+
+		result = MoveHeraBindingResult{
+			OldOrchestratorName: oldOrchName,
+			OldRoleName:         oldRoleName,
+			NewRole:             r,
+			NewBinding:          b,
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // EndHeraBinding stamps ended_at and end_reason on a live binding. Returns
 // ErrHeraNotFound if no live binding has that id.
 func (d *DB) EndHeraBinding(bindingID int64, reason string) error {
@@ -750,6 +847,34 @@ func (d *DB) HeraLiveBindingByTaskAndOrchestrator(taskID string, orchID int64) (
 	row := d.conn.QueryRow(
 		`SELECT id, role_id, orchestrator_id, argus_task_id, worktree_path, started_at, ended_at, end_reason
 		 FROM hera_bindings WHERE argus_task_id=? AND orchestrator_id=? AND ended_at IS NULL`, taskID, orchID)
+	return scanHeraBinding(row)
+}
+
+// HeraLiveBindingByWorktreeAndOrchestrator returns the live binding for
+// (worktreePath, orchID), or ErrHeraNotFound. The worktree-keyed twin of
+// HeraLiveBindingByTaskAndOrchestrator: the (worktree_path, orchestrator_id)
+// live-uniqueness index caps this at one row, so it maps exactly onto the
+// identity an attach INSERT for that (worktree, orchestrator) would collide
+// against.
+//
+// It exists because cwd→argus_task_id resolution (resolveTask) can land on
+// the WRONG task when two argus tasks reuse the same worktree_path across
+// their lifecycles — a task name/branch reused after the prior task moved to
+// in_review/complete/archived without its worktree being cleared. When that
+// happens the task-keyed lookup misses the live binding that the
+// (worktree_path, orchestrator_id) uniqueness nonetheless rejects on INSERT —
+// the claim-says-none / attach-says-exists paradox (BUG-059). The caller's
+// worktree_path IS its cwd (ground truth) regardless of which task cwd
+// resolution happened to return, so this lookup resolves the same binding an
+// attach INSERT would collide with, keeping claim and attach in agreement.
+// Orchestrator scoping keeps the fallback safe: a stale binding under a
+// DIFFERENT orchestrator sharing the worktree is never returned here.
+func (d *DB) HeraLiveBindingByWorktreeAndOrchestrator(worktreePath string, orchID int64) (*HeraBinding, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	row := d.conn.QueryRow(
+		`SELECT id, role_id, orchestrator_id, argus_task_id, worktree_path, started_at, ended_at, end_reason
+		 FROM hera_bindings WHERE worktree_path=? AND orchestrator_id=? AND ended_at IS NULL`, worktreePath, orchID)
 	return scanHeraBinding(row)
 }
 

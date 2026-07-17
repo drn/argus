@@ -2,6 +2,7 @@ package main
 
 import (
 	"debug/buildinfo"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -28,6 +29,7 @@ import (
 func runDoctor() {
 	actors := gatherActors()
 	fmt.Print(doctor.Render(actors))
+	fmt.Print(doctor.RenderStopHook(gatherStopHookStatus()))
 	if doctor.Diagnose(actors).Verdict != doctor.Healthy {
 		os.Exit(1)
 	}
@@ -202,4 +204,54 @@ func trimNewline(b []byte) []byte {
 		b = b[:len(b)-1]
 	}
 	return b
+}
+
+// gatherStopHookStatus reads the user's global Claude Code settings and
+// classifies whether `argus coord-hook` is registered as a Stop hook
+// (detect-missing-coord-hook). Independent of the binary-coherence actors
+// above — never affects runDoctor's exit code.
+func gatherStopHookStatus() doctor.StopHookStatus {
+	cmds, err := readStopHookCommands(claudeSettingsPath())
+	return doctor.DiagnoseStopHook(cmds, err)
+}
+
+// claudeSettingsPath resolves ~/.claude/settings.json. Empty when the home
+// directory can't be determined, which readStopHookCommands then reports as
+// a read error (degrading the status to unknown, never a false negative).
+func claudeSettingsPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".claude", "settings.json")
+}
+
+// readStopHookCommands reads and parses the Claude Code settings file at
+// path, returning every hooks.Stop[].hooks[].command entry. Takes an
+// explicit path (rather than resolving $HOME itself) so it's testable
+// against a temp file without touching the real ~/.claude/settings.json.
+func readStopHookCommands(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var parsed struct {
+		Hooks struct {
+			Stop []struct {
+				Hooks []struct {
+					Command string `json:"command"`
+				} `json:"hooks"`
+			} `json:"Stop"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return nil, err
+	}
+	var cmds []string
+	for _, group := range parsed.Hooks.Stop {
+		for _, h := range group.Hooks {
+			cmds = append(cmds, h.Command)
+		}
+	}
+	return cmds, nil
 }

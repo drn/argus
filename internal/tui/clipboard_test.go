@@ -26,7 +26,10 @@ var (
 	_ clipboardAccessor = (*apiclient.Provider)(nil)
 )
 
-// fakeProvider satisfies agent.SessionProvider + clipboardAccessor.
+// fakeProvider satisfies agent.SessionProvider + clipboardAccessor. It also
+// implements ClipboardClear (not required by clipboardAccessor since
+// fix-ctrl-y-copy-persist) purely as test instrumentation, so tests can
+// assert that copying a staged payload does NOT trigger a clear.
 type fakeProvider struct {
 	*agent.Runner
 
@@ -34,7 +37,6 @@ type fakeProvider struct {
 	clipText    string
 	clipPresent bool
 	clearedFor  []string
-	clearErr    error
 }
 
 func newFakeProvider() *fakeProvider {
@@ -54,7 +56,7 @@ func (f *fakeProvider) ClipboardClear(taskID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.clearedFor = append(f.clearedFor, taskID)
-	return f.clearErr
+	return nil
 }
 
 func (f *fakeProvider) clearedSnapshot() []string {
@@ -140,7 +142,8 @@ func TestHandleAgentKey_CtrlY_NothingStaged_FlashesNoticeAndConsumes(t *testing.
 
 // TestHandleAgentKey_CtrlY_Staged_CopiesAndConsumes covers the staged-payload
 // path through the real dispatcher: ctrl+y copies to the OS clipboard writer,
-// clears the local cache, and consumes the key.
+// leaves the staged payload in place (fix-ctrl-y-copy-persist), and consumes
+// the key.
 func TestHandleAgentKey_CtrlY_Staged_CopiesAndConsumes(t *testing.T) {
 	d := testDB(t)
 	fp := newFakeProvider()
@@ -162,7 +165,8 @@ func TestHandleAgentKey_CtrlY_Staged_CopiesAndConsumes(t *testing.T) {
 	result := app.handleAgentKey(ctrlYEvent())
 
 	testutil.Nil(t, result) // consumed, never forwarded to the PTY
-	testutil.Equal(t, app.clipboardPending, "")
+	testutil.Equal(t, app.clipboardPending, "snippet")
+	testutil.Equal(t, app.clipboardPendingTask, "t1")
 
 	select {
 	case s := <-wrote:
@@ -172,7 +176,12 @@ func TestHandleAgentKey_CtrlY_Staged_CopiesAndConsumes(t *testing.T) {
 	}
 }
 
-func TestCopyStagedClipboard_ClearsLocalStateAndFiresClearRPC(t *testing.T) {
+// TestCopyStagedClipboard_PreservesStagedStateAfterCopy is the regression
+// test for fix-ctrl-y-copy-persist: a successful copy must NOT clear the
+// local cache, the header hint, or fire a ClipboardClear RPC — clearing is
+// owned entirely by the store's own TTL/last-write-wins/session-exit
+// lifecycle, not by the copy action.
+func TestCopyStagedClipboard_PreservesStagedStateAfterCopy(t *testing.T) {
 	d := testDB(t)
 	fp := newFakeProvider()
 	app := New(d, fp, false)
@@ -186,38 +195,48 @@ func TestCopyStagedClipboard_ClearsLocalStateAndFiresClearRPC(t *testing.T) {
 		t.Fatal("expected true when payload staged")
 	}
 
-	// Local state cleared synchronously.
-	testutil.Equal(t, app.clipboardPending, "")
-	testutil.Equal(t, app.clipboardPendingTask, "")
-	testutil.Equal(t, app.agentHeader.ClipboardHint(), false)
+	// Local state and hint stay intact after a successful copy.
+	testutil.Equal(t, app.clipboardPending, "snippet")
+	testutil.Equal(t, app.clipboardPendingTask, "abc123")
+	testutil.Equal(t, app.agentHeader.ClipboardHint(), true)
 
-	// Clear RPC fires asynchronously; spin briefly waiting for it.
-	var seen []string
-	for d := 200; d > 0; d-- {
-		seen = fp.clearedSnapshot()
-		if len(seen) > 0 {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if len(seen) != 1 || seen[0] != "abc123" {
-		t.Errorf("expected ClipboardClear(\"abc123\") once, got %v", seen)
-	}
+	// No clear RPC fires. Give any errant async call a moment to land before
+	// asserting its absence.
+	time.Sleep(20 * time.Millisecond)
+	testutil.Equal(t, len(fp.clearedSnapshot()), 0)
 }
 
-func TestCopyStagedClipboard_ClearError_LoggedNotPanicked(t *testing.T) {
+// TestCopyStagedClipboard_CopyTwiceBothSucceed: pressing ctrl+y twice in a
+// row with the same staged payload must succeed both times — the second
+// press must NOT report "nothing to copy", since the first copy no longer
+// clears the staged slot (fix-ctrl-y-copy-persist).
+func TestCopyStagedClipboard_CopyTwiceBothSucceed(t *testing.T) {
 	d := testDB(t)
 	fp := newFakeProvider()
-	fp.clearErr = errors.New("rpc broken")
 	app := New(d, fp, false)
-	app.clipboardWriter = func(string) error { return nil }
 
-	app.clipboardPending = "x"
-	app.clipboardPendingTask = "abc"
+	wrote := make(chan string, 2)
+	app.clipboardWriter = func(s string) error {
+		wrote <- s
+		return nil
+	}
+	app.clipboardPending = "snippet"
+	app.clipboardPendingTask = "abc123"
 
-	// Should not panic even when ClipboardClear errors.
 	if !app.copyStagedClipboard() {
-		t.Fatal("expected true")
+		t.Fatal("expected true on first copy")
+	}
+	if !app.copyStagedClipboard() {
+		t.Fatal("expected true on second copy")
+	}
+
+	for i := 0; i < 2; i++ {
+		select {
+		case s := <-wrote:
+			testutil.Equal(t, s, "snippet")
+		case <-time.After(time.Second):
+			t.Fatalf("clipboard writer call %d never arrived", i+1)
+		}
 	}
 }
 
@@ -248,7 +267,11 @@ func TestCopyStagedClipboardForHeraPane_AbsentNoCopy(t *testing.T) {
 	testutil.Equal(t, app.header.Notice(), "Nothing to copy")
 }
 
-func TestCopyStagedClipboardForHeraPane_PresentCopiesAndClears(t *testing.T) {
+// TestCopyStagedClipboardForHeraPane_PresentCopiesWithoutClearing is the
+// Hera-pane analogue of TestCopyStagedClipboard_PreservesStagedStateAfterCopy
+// (fix-ctrl-y-copy-persist): copying a staged payload must not clear the
+// daemon-side staged slot.
+func TestCopyStagedClipboardForHeraPane_PresentCopiesWithoutClearing(t *testing.T) {
 	d := testDB(t)
 	fp := newFakeProvider()
 	fp.setPayload("snippet", true)
@@ -273,18 +296,9 @@ func TestCopyStagedClipboardForHeraPane_PresentCopiesAndClears(t *testing.T) {
 		t.Fatal("clipboard writer never called")
 	}
 
-	// Clear RPC fires asynchronously for that task.
-	var seen []string
-	for i := 200; i > 0; i-- {
-		seen = fp.clearedSnapshot()
-		if len(seen) > 0 {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if len(seen) != 1 || seen[0] != "wkr-task" {
-		t.Errorf("expected ClipboardClear(\"wkr-task\") once, got %v", seen)
-	}
+	// No clear RPC fires — the daemon-side staged payload stays intact.
+	time.Sleep(20 * time.Millisecond)
+	testutil.Equal(t, len(fp.clearedSnapshot()), 0)
 }
 
 // seedHeraCoord seeds an orchestrator with a coordinator bound to "tc" and a

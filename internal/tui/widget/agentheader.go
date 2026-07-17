@@ -1,6 +1,7 @@
 package widget
 
 import (
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -101,7 +102,7 @@ func (h *AgentHeader) Draw(screen tcell.Screen) {
 		if hintStart < x {
 			return
 		}
-		hintStyle := tcell.StyleDefault.Foreground(headerActiveFG).Background(headerBaseBG).Bold(true)
+		hintStyle := theme.StyleClipboardHint.Background(headerBaseBG)
 		c := hintStart
 		for _, r := range hint {
 			if c >= x+width {

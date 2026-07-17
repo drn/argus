@@ -78,6 +78,9 @@ func main() {
 		case "doctor":
 			runDoctor()
 			return
+		case "coord-hook":
+			runCoordHookCommand()
+			return
 		}
 	}
 

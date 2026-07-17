@@ -279,14 +279,33 @@ Derived from: `internal/tui/hera/panes.go:59` (`applySelection` detailsMode), `i
 
 ### Requirement: PR indicator in the roster (area 6)
 
-The system SHALL mark a roster task with a `PR` indicator when that task carries a non-empty `url` in the daemon-populated `task_meta` "pr" namespace. The indicator is best-effort and read once per refresh via `ListMetaByNamespace("pr")`; it is never fetched by the view. A `ready` mark renders for a `ready_to_close` worker, and both marks may appear together.
+The system SHALL mark a roster task with a `PR` indicator when that task's
+cached `task_meta` "pr" namespace `state` parses (via `model.ParsePRState`) to
+an actionable review state — `awaiting-review`, `changes-requested`, or
+`approved` (`model.PRState.IsActionable()`). A `merged-closed`, `draft`,
+`unknown`, or empty/unparseable state SHALL NOT show the mark, even when the
+namespace's `url` field is still populated (the poller retains `url` after a
+PR merges or closes). The indicator is best-effort and read once per refresh
+via `ListMetaByNamespace("pr")`; it is never fetched by the view. A `ready`
+mark renders for a `ready_to_close` worker, and both marks may appear
+together.
 
-Derived from: `internal/tui/hera/details.go:158` (`roleMark`), `internal/tui/hera/page.go:160` (`doRefresh` reads "pr" namespace).
+Derived from: `internal/tui/hera/details.go` (`roleMark`), `internal/tui/hera/page.go` (`doRefresh` reads "pr" namespace).
 
-#### Scenario: PR mark from cached meta
+#### Scenario: PR mark from an actionable cached state
 
-- **WHEN** a roster task's "pr" meta has a non-empty url
+- **WHEN** a roster task's "pr" meta has `state: "awaiting-review"` (or `changes-requested` / `approved`)
 - **THEN** its roster row shows a `PR` mark
+
+#### Scenario: No mark for a merged or closed PR
+
+- **WHEN** a roster task's "pr" meta has `state: "merged-closed"` and a non-empty `url`
+- **THEN** its roster row shows no `PR` mark (a `ready` mark may still show if the worker is `ready_to_close`)
+
+#### Scenario: No mark for draft, unknown, or empty state
+
+- **WHEN** a roster task's "pr" meta has `state: "draft"`, `state: "unknown"`, or no `state` at all
+- **THEN** its roster row shows no `PR` mark
 
 ### Requirement: PTY size alignment on bind (area 6)
 
@@ -927,14 +946,19 @@ While a filter is active (the query is non-empty) the rail SHALL remain ancestry
 - An orchestrator (a root coordinator OR a nested sub-orchestrator) whose name matches, OR which has any descendant role or sub-orchestrator whose name matches, SHALL remain visible so a matching agent always keeps its parent coordinator header. A bridging worker row SHALL remain visible when it bridges a visible sub-orchestrator.
 - Collapsed nodes (orchestrators, per-coordinator Archive expandos) and the Freelance / bottom-Archive sections SHALL auto-expand while a filter is active so matching rows are never hidden behind a fold. The persisted fold state MUST be left unchanged and restored when the filter is cleared.
 - A section header (`Pinned`, `Freelance (N)`, the bottom `Archive (N)`) or a separator rule SHALL render only when it has at least one visible row beneath it, so the operator never lands on an empty section.
+- A coordinator/orchestrator heading row (an orchestrator header, or a worker-bridge/pinned-breadcrumb row standing in for a nested coordinator) that is visible ONLY because a descendant matches — its own name, or its folded-in coordinator's name, does NOT itself match the query — is an ANCESTRY-ONLY heading: it SHALL NOT be a valid cursor target (arrow navigation and first-match auto-select skip it entirely) and SHALL render visually dimmed so it is obvious it cannot be selected. A heading whose own name (or folded-in coordinator's name) DOES match the query remains a normal, selectable, non-dimmed row.
 
-`Esc` while in input mode SHALL exit search and restore the full, unfiltered rail (clearing the query). `Enter` while in input mode SHALL accept the filter — keeping the query applied but leaving input mode so `j`/`k` navigate the filtered set and normal rail key handling resumes. Re-pressing `/` after acceptance SHALL re-enter input mode with the current query preserved for editing.
+The FIRST real match (a selectable row that is not an ancestry-only heading, not a structural fold header) in the narrowed rows SHALL auto-select live on every query change (typing or backspacing), so the operator sees the top candidate highlighted without needing to navigate to it. Up/Down SHALL move the cursor within the narrowed set while remaining in search input mode (so typing/backspacing continues to work), landing only on rows that are themselves a match.
 
-The active query SHALL be shown unobtrusively: a `/ <query>` input line at the top of the rail while typing, and the active query reflected in the rail border title once accepted (and while typing).
+`Esc` while in input mode SHALL exit search and restore the full, unfiltered rail (clearing the query). `Enter` while in input mode SHALL resolve against the CURRENTLY selected row (the auto-selected first match, or wherever Up/Down moved it) — reattaching/entering that row's pane exactly as a normal (non-filtering) Enter would — and SHALL THEN fully clear the filter (query reset, input mode off, full unfiltered rail restored) in the SAME keystroke. There is no intermediate "accepted but still narrowed" resting state: Enter always both selects and clears, never merely one or the other.
 
-While in input mode the rail's mutation keys (`w`/`r`/`a`/`s`/`S`/`P`/`Ctrl+D` and `Enter`-reattach) SHALL NOT fire, and the global rune shortcuts (`1`/`2`/`3` tab-switch, `q` quit, `?` help) SHALL NOT fire; those keystrokes are filter input instead. After the filter is accepted (input mode off), normal rail and global key handling SHALL resume.
+The active query SHALL be shown unobtrusively: a `/ <query>` input line at the top of the rail while typing, and the active query reflected in the rail border title while typing.
 
-Derived from: `internal/tui/hera/rail.go` (filter state, filter-aware `buildRows`, `/ <query>` line, dynamic title), `internal/tui/hera/page.go` (`handleRailMutation` skip-while-filtering, `RailFiltering()`), `internal/tui/app.go` (global rune-shortcut guard mirroring `a.tasklist.Filtering()`).
+While in input mode the rail's mutation keys (`w`/`r`/`a`/`s`/`S`/`P`/`Ctrl+D`) SHALL NOT fire, and the global rune shortcuts (`1`/`2`/`3` tab-switch, `q` quit, `?` help) SHALL NOT fire; those keystrokes are filter input instead. `Enter` is the one exception — it is intercepted and handled as select-and-clear (above) rather than falling through as filter input.
+
+Derived from: `internal/tui/hera/rail.go` (filter state, filter-aware `buildRows`, ancestry-only heading detection, first-match auto-select, `/ <query>` line, dynamic title), `internal/tui/hera/page.go` (`handleRailMutation`'s Enter-while-filtering branch: select then `Rail.ClearFilter()`), `internal/tui/app.go` (global rune-shortcut guard mirroring `a.tasklist.Filtering()`).
+
+This Hera-rail filter is intentionally Hera-rail-scoped: the Tasks-tab (`internal/tui/taskview`) `/` filter keeps its own independent two-step (type → Enter locks → navigate → Enter selects) convention and is NOT changed by this requirement.
 
 #### Scenario: `/` narrows the rail to matching rows
 
@@ -944,7 +968,7 @@ Derived from: `internal/tui/hera/rail.go` (filter state, filter-aware `buildRows
 #### Scenario: A matching nested agent keeps its parent coordinator visible
 
 - **WHEN** a filter matches an agent (or sub-orchestrator) whose name does not match its parent coordinator's name
-- **THEN** the parent coordinator header (and any intermediate bridging worker rows) MUST remain visible and expanded so the matching row is shown nested under it
+- **THEN** the parent coordinator header (and any intermediate bridging worker rows) MUST remain visible and expanded so the matching row is shown nested under it, rendered as a dimmed, non-selectable ancestry-only heading
 
 #### Scenario: A collapsed node containing a match auto-expands
 
@@ -956,15 +980,30 @@ Derived from: `internal/tui/hera/rail.go` (filter state, filter-aware `buildRows
 - **WHEN** a filter is active and no Freelance (or Archive) member matches
 - **THEN** the Freelance (or Archive) section header and its separator rule MUST NOT render
 
+#### Scenario: The first real match auto-selects while typing
+
+- **WHEN** the operator types (or backspaces) a query that narrows the rail
+- **THEN** the cursor MUST move onto the first real match in the narrowed rows (never an ancestry-only heading or a structural fold header) without any further keypress
+
+#### Scenario: An ancestry-only coordinator heading is skipped by navigation and auto-select
+
+- **WHEN** a filter matches only a descendant of a coordinator/orchestrator heading, so the heading itself is shown purely for ancestry context
+- **THEN** that heading row MUST render dimmed, MUST NOT be reachable by Up/Down arrow navigation, and MUST NOT be chosen by first-match auto-select
+
+#### Scenario: A coordinator heading whose own (or folded-in coordinator's) name matches is a real, selectable match
+
+- **WHEN** the query matches an orchestrator's own name, or the name of its folded-in coordinator role
+- **THEN** that orchestrator's header row MUST be treated as a real match — selectable, not dimmed, and eligible for first-match auto-select
+
+#### Scenario: Enter selects the current match, jumps into it, and clears the filter in one step
+
+- **WHEN** the operator presses `Enter` while in search input mode, with the cursor resting on a real match (auto-selected or arrow-navigated)
+- **THEN** the rail MUST reattach/enter that row's pane exactly as a normal Enter would, AND the filter MUST fully clear (query reset, input mode off) in the SAME keystroke — no second Enter is required
+
 #### Scenario: Esc restores the full rail
 
 - **WHEN** the operator presses `Esc` while in search input mode
 - **THEN** the filter MUST clear, input mode MUST exit, and the rail MUST render every row it showed before the filter
-
-#### Scenario: Enter accepts the filter and returns to navigation
-
-- **WHEN** the operator presses `Enter` while in search input mode
-- **THEN** input mode MUST exit, the query MUST stay applied (the rail stays filtered), and `j`/`k` MUST navigate the filtered set
 
 #### Scenario: Mutation and global keys are filter input while typing
 
@@ -1844,14 +1883,28 @@ Derived from: `internal/tui/hera/rail.go` (`statusIcon`), `internal/tui/hera/mod
 
 ### Requirement: PR indicator on rail role rows (area 3)
 
-The system SHALL render a `PR` indicator on a managed (non-coordinator) rail role row when that role's bound task carries a non-empty `url` in the daemon-populated `task_meta` "pr" namespace. The indicator is best-effort, read once per refresh via `ListMetaByNamespace("pr")` and threaded into the rail; it is never fetched by the view. It reuses the same cached `prMeta` the Details roster reads.
+The system SHALL render a `PR` indicator on a managed (non-coordinator) rail
+role row when that role's bound task's cached `task_meta` "pr" namespace
+`state` parses to an actionable review state — `awaiting-review`,
+`changes-requested`, or `approved` (`model.PRState.IsActionable()`), the same
+predicate the Details roster and the TUI task list (`theme.PRGlyph`) use. A
+`merged-closed`, `draft`, `unknown`, or empty/unparseable state SHALL NOT
+render the indicator, even when `url` is still populated. The indicator is
+best-effort, read once per refresh via `ListMetaByNamespace("pr")` and
+threaded into the rail; it is never fetched by the view. It reuses the same
+cached `prMeta` the Details roster reads.
 
-Derived from: `internal/tui/hera/rail.go` (PR cell in `drawRoleRow`), `internal/tui/hera/page.go` (`doRefresh` reads "pr", passes `prMeta` to the rail).
+Derived from: `internal/tui/hera/rail.go` (`rolePR`), `internal/tui/hera/page.go` (`doRefresh` reads "pr", passes `prMeta` to the rail).
 
-#### Scenario: PR mark on a managed rail row
+#### Scenario: PR mark on a managed rail row with an actionable state
 
-- **WHEN** a managed role's bound task has a non-empty "pr" url
+- **WHEN** a managed role's bound task has "pr" meta `state: "awaiting-review"` (or `changes-requested` / `approved`)
 - **THEN** its rail row renders a `PR` indicator
+
+#### Scenario: No indicator once the PR is merged or closed
+
+- **WHEN** a managed role's bound task has "pr" meta `state: "merged-closed"` and a non-empty `url`
+- **THEN** its rail row renders no `PR` indicator
 
 ### Requirement: Plan-DAG node description shows the mission's first lines (area 6)
 

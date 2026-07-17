@@ -123,7 +123,7 @@ test-pkg:
 plugin-smoke:
 	go run ./cmd/argus-plugin-smoke -verbose
 
-# --- macOS GUI (ArgusMac) ---------------------------------------------------
+# --- macOS GUI (Argus) -------------------------------------------------------
 # The native SwiftUI app (a Conductor-style GUI) lives in ./macos as a pure
 # SwiftPM package built with the Swift 6.3 Command Line Tools — no Xcode, no
 # xcodebuild. These targets are self-contained (they never touch the Go build).
@@ -143,9 +143,9 @@ mac-test:
 	cd macos && swift run --disable-sandbox ArgusKitTests
 
 mac-run:
-	cd macos && swift run --disable-sandbox ArgusMac
+	cd macos && swift run --disable-sandbox Argus
 
-# Assembles the real, double-clickable macos/dist/ArgusMac.app bundle (release
+# Assembles the real, double-clickable macos/dist/Argus.app bundle (release
 # build + Info.plist + codesign) — see scripts/mac-app.sh for the why.
 mac-app:
 	./scripts/mac-app.sh

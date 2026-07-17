@@ -514,6 +514,129 @@ func ContentIdleFingerprint(r *ScreenRenderer, buf []byte, cols, rows int) (fp u
 	return fingerprintText(screen), needsInputWorkingRe.MatchString(screen)
 }
 
+// NeedsInputEscalationTicks bounds the worst-case delay before a genuinely
+// parked session (showing Claude's selection-prompt widget with no "working"
+// affordance) is recognized when its content fingerprint never converges
+// tick-to-tick — e.g. unrelated per-tick-varying text elsewhere in the 16 KB
+// tail window keeps shifting the fingerprint even though the agent itself is
+// truly parked (BUG-029). The ordinary content-stability pass requires the
+// FULL fingerprint to match across just two consecutive ticks; that never
+// happens here, so without this escalation the session would stay flagged
+// "active" forever (spinner never stops, "(?)" never appears).
+//
+// Chosen in the middle of the 5-10 consecutive-tick range this fix's design
+// settled on: long enough that a transient/coincidental match — the agent
+// scrolls a "❯ 1."-looking line past while still genuinely generating — can't
+// misfire, short enough that "stuck forever" becomes "stuck at most ~8
+// ticks" (ticks run about once per second — see the TUI's onTick and the
+// daemon's idle watcher). Tune here, nowhere else.
+const NeedsInputEscalationTicks = 8
+
+// ParkedSelectionSignal reports whether tail (or, for an alt-screen session,
+// its emulated screen) currently shows Claude's UNAMBIGUOUS selection-prompt
+// widget (detectSelectionPromptText — the numbered cursor or chooser footer)
+// with the "working" affordance absent. This is the BUG-029 escalation
+// fallback's per-tick qualifying condition (feed the result to
+// EscalateParkedSelection): selection-shape-present + working-absent is
+// already the strong "parked" signal AwaitingInputFingerprint and
+// DetectSelectionPrompt trust elsewhere; requiring it to hold for
+// NeedsInputEscalationTicks consecutive ticks (not just once) is what keeps
+// false-positive risk low without loosening the shared chrome-recognition
+// allowlist (fingerprintVolatileLine / decorationLine).
+//
+// Mirrors the raw-first-then-emulated-fallback pattern used throughout this
+// file (see AwaitingInputFingerprint / DetectNeedsInputScreen): a linear
+// agent's raw tail is authoritative the moment it shows (or doesn't show) the
+// selection shape, so it never touches the emulator. Only when the raw tail
+// misses the selection shape entirely (a candidate alt-screen, cursor-
+// addressed prompt) does it fall back to the reconstructed screen.
+func ParkedSelectionSignal(r *ScreenRenderer, buf []byte, cols, rows int) bool {
+	if len(buf) == 0 {
+		return false
+	}
+	tail := buf
+	if len(tail) > needsInputTailWindow {
+		tail = tail[len(tail)-needsInputTailWindow:]
+	}
+	stripped := sanitize.StripANSI(string(tail))
+	if detectSelectionPromptText(stripped) {
+		return !needsInputWorkingRe.MatchString(stripped)
+	}
+	if r == nil {
+		return false
+	}
+	screen := r.render(buf, cols, rows)
+	if !detectSelectionPromptText(screen) {
+		return false
+	}
+	return !needsInputWorkingRe.MatchString(screen)
+}
+
+// EscalateParkedSelection advances the BUG-029 consecutive-tick escalation
+// counter for a single session: prevTicks is the previous tick's count (0 if
+// never tracked / first tick), qualifies is this tick's ParkedSelectionSignal.
+// It returns the new count and whether the session has now reached
+// NeedsInputEscalationTicks.
+//
+// A non-qualifying tick that follows an ONGOING streak is held in a one-tick
+// GRACE PERIOD rather than discarding the streak outright (BUG-060): a
+// negative return value encodes "streak of -newTicks, one miss pending
+// confirmation". The very next tick either resumes the streak (qualifies
+// again — the miss was a transient blip) or confirms a genuine break (misses
+// again — two CONSECUTIVE non-qualifying ticks reset to zero for real). A
+// streak that was already at zero (nothing accumulated, or grace already
+// consumed) simply stays at zero on a miss.
+//
+// A grace tick's `escalated` return STAYS true when the streak had ALREADY
+// reached NeedsInputEscalationTicks before the miss — a session that has
+// already escalated must not visibly flicker back to "not flagged" for the
+// one tick a blip is being confirmed or forgiven; it only actually
+// de-escalates once the SECOND consecutive miss confirms a real break (which
+// resets to zero, `escalated` false, same as any other confirmed break).
+//
+// This grace tolerance exists because Claude's own fullscreen redraw can
+// produce an isolated tick where ParkedSelectionSignal misses even though the
+// session is genuinely, continuously parked at the SAME prompt: the widget's
+// cursor glyph can blink off for a single redraw frame, and
+// readSessionLogTailBytes has no synchronization with the daemon's concurrent
+// log-file writer, so an occasional read can land on a torn/partial frame
+// mid-redraw. Under the OLD all-or-nothing reset, either of these — recurring
+// roughly once every few ticks — could permanently prevent the streak from
+// EVER reaching NeedsInputEscalationTicks, even though the session never
+// stopped being parked: a hera worker whose blocked-prompt frame happened to
+// hit this cadence would never surface "(?)", while a sibling whose ticks
+// landed cleanly would. Two consecutive misses still reset for real — the
+// anti-false-positive guarantee BUG-029 established is unchanged: a genuinely
+// busy/streaming agent showing only sparse, ISOLATED coincidental matches
+// (not a real parked streak) never accumulates escalation credit under this
+// scheme either, because each such match is immediately followed by more
+// misses that confirm the surrounding non-parked state.
+//
+// This is a pure step function; callers own the per-ID map (see
+// ContentIdleState.esc and the TUI's needsInputEscalation field) exactly like
+// the fingerprint/since carry-forward maps elsewhere in this file — the
+// negative-sentinel encoding keeps the map value type (plain int) unchanged.
+func EscalateParkedSelection(prevTicks int, qualifies bool) (newTicks int, escalated bool) {
+	if qualifies {
+		streak := prevTicks
+		if streak < 0 {
+			streak = -streak // resume the streak a prior isolated miss held in grace
+		}
+		newTicks = streak + 1
+		return newTicks, newTicks >= NeedsInputEscalationTicks
+	}
+	if prevTicks > 0 {
+		// First miss after a streak: hold it in grace rather than discarding —
+		// confirmed or forgiven by the very next tick. Stay escalated through
+		// this one grace tick if the streak had already crossed the threshold,
+		// so an already-flagged session doesn't flicker off for a single blip.
+		return -prevTicks, prevTicks >= NeedsInputEscalationTicks
+	}
+	// prevTicks <= 0: already at zero, or this is the SECOND consecutive miss
+	// while already in grace — a genuine break, reset for real.
+	return 0, false
+}
+
 // ContentIdleState carries the per-task content-idle bookkeeping across ticks:
 // each tracked session's last emulated-screen fingerprint and the wall-clock
 // time that fingerprint was FIRST observed at its current value. Pass nil to
@@ -523,6 +646,10 @@ func ContentIdleFingerprint(r *ScreenRenderer, buf []byte, cols, rows int) (fp u
 type ContentIdleState struct {
 	fp    map[string]uint64
 	since map[string]time.Time
+	// esc carries the BUG-029 escalation counter (EscalateParkedSelection) per
+	// task ID across ticks — independent of fp/since, since its whole purpose
+	// is to fire even when the fingerprint never converges.
+	esc map[string]int
 }
 
 // ContentIdle returns the subset of running task IDs that are CONTENT-IDLE — a
@@ -544,6 +671,15 @@ type ContentIdleState struct {
 // ALONE would false-idle a thinking agent stalled on a spinner frame, the same
 // reasoning that gates the BUG-032/035 needs-input passes.
 //
+// A session is ALSO reported content-idle once EscalateParkedSelection
+// escalates (BUG-029): if its tail shows the unambiguous selection-prompt
+// signal with the working affordance absent for NeedsInputEscalationTicks
+// CONSECUTIVE ticks, it is treated as idle even if its full-screen fingerprint
+// never converged tick-to-tick (unrelated per-tick-varying content elsewhere
+// in the window kept shifting it). This bounds the worst case for a genuinely
+// parked-but-noisy session from "forever" to NeedsInputEscalationTicks ticks,
+// without loosening what the fingerprint itself treats as chrome.
+//
 // rawIdle is the set of already-raw-idle task IDs (skipped — already idle, and
 // dropped from the returned state). tailOf returns a task's recent output tail
 // (nil/empty → skipped). sizeOf returns its PTY dims for the emulator. screen is
@@ -553,6 +689,7 @@ func ContentIdle(running []string, rawIdle map[string]bool, tailOf func(string) 
 	next = &ContentIdleState{
 		fp:    make(map[string]uint64),
 		since: make(map[string]time.Time),
+		esc:   make(map[string]int),
 	}
 	for _, id := range running {
 		if rawIdle[id] {
@@ -564,6 +701,26 @@ func ContentIdle(running []string, rawIdle map[string]bool, tailOf func(string) 
 		}
 		cols, rows := sizeOf(id)
 		fp, working := ContentIdleFingerprint(screen, tail, cols, rows)
+
+		// BUG-029 escalation: advance the consecutive-tick counter regardless of
+		// whether the fingerprint itself converged this tick (see
+		// EscalateParkedSelection). Computed before the working-affordance early
+		// return below so a working tick correctly resets it to zero — the
+		// qualifying condition is selection-shape-present AND working-absent, so
+		// it can never be true while working is true anyway.
+		prevTicks := 0
+		if prev != nil {
+			prevTicks = prev.esc[id]
+		}
+		newTicks, escalated := EscalateParkedSelection(prevTicks, ParkedSelectionSignal(screen, tail, cols, rows))
+		if newTicks != 0 {
+			// A negative value is a BUG-060 one-tick grace state (an isolated
+			// miss holding the streak pending the next tick), not "nothing to
+			// store" — only a true zero (no streak, or a confirmed break) needs
+			// no entry, since a missing map key already reads back as zero.
+			next.esc[id] = newTicks
+		}
+
 		if working {
 			// The agent is generating — it must never accrue stability. Drop it
 			// from the carried state so a later quiet period starts a fresh timer.
@@ -579,7 +736,7 @@ func ContentIdle(running []string, rawIdle map[string]bool, tailOf func(string) 
 		}
 		next.fp[id] = fp
 		next.since[id] = since
-		if now.Sub(since) >= idleThreshold {
+		if now.Sub(since) >= idleThreshold || escalated {
 			idle = append(idle, id)
 		}
 	}

@@ -23,7 +23,7 @@ struct HeraTab: View {
 
     var body: some View {
         content
-            .navigationTitle("Hera")
+            .navigationTitle("Projects")
             .task {
                 await load()
                 while !_Concurrency.Task.isCancelled {
