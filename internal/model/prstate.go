@@ -56,6 +56,20 @@ func (s PRState) IsTerminal() bool {
 	return s == PRMergedClosed
 }
 
+// IsActionable reports whether the state represents a PR still awaiting human
+// attention — the only states a "PR" badge/glyph should render for. This is
+// the single source of truth shared by theme.PRGlyph (task list) and the
+// native Hera rail/details PR indicators, so all three surfaces hide the
+// badge together once a PR is merged, closed, draft, or its state is unknown.
+func (s PRState) IsActionable() bool {
+	switch s {
+	case PRAwaitingReview, PRChangesRequested, PRApproved:
+		return true
+	default:
+		return false
+	}
+}
+
 // ParsePRState converts a stable string name (e.g. "awaiting-review") into
 // a PRState. Returns an error for unrecognized values.
 func ParsePRState(str string) (PRState, error) {

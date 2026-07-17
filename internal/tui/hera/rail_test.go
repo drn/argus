@@ -851,8 +851,9 @@ func TestRail_PRIndicatorOnManagedRow(t *testing.T) {
 	// No PR cache → no indicator.
 	testutil.Equal(t, r.rolePR(&r.model.Active[0].Roles[1]), false)
 
-	// A "pr" url on the worker's task flags it; a task without one does not.
-	r.SetPRMeta(map[string]map[string]string{"twk": {"url": "https://example/pr/1"}})
+	// An actionable review state on the worker's task flags it; a task without
+	// one does not.
+	r.SetPRMeta(map[string]map[string]string{"twk": {"url": "https://example/pr/1", "state": "awaiting-review"}})
 	testutil.Equal(t, r.rolePR(&r.model.Active[0].Roles[1]), true)
 	testutil.Equal(t, r.rolePR(&RoleView{TaskID: "other"}), false)
 
@@ -876,6 +877,30 @@ func TestRail_PRIndicatorOnManagedRow(t *testing.T) {
 		}
 	}
 	testutil.Equal(t, found, true)
+}
+
+func TestRail_RolePR_PRStateTable(t *testing.T) {
+	r := NewRail()
+	role := &RoleView{TaskID: "twk"}
+	cases := []struct {
+		name  string
+		state string
+		want  bool
+	}{
+		{"awaiting-review", "awaiting-review", true},
+		{"changes-requested", "changes-requested", true},
+		{"approved", "approved", true},
+		{"merged-closed", "merged-closed", false},
+		{"draft", "draft", false},
+		{"unknown", "unknown", false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r.SetPRMeta(map[string]map[string]string{"twk": {"url": "https://example/pr/1", "state": tc.state}})
+			testutil.Equal(t, r.rolePR(role), tc.want)
+		})
+	}
 }
 
 func TestRail_FreelanceSectionCollapses(t *testing.T) {

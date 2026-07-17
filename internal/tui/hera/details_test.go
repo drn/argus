@@ -64,12 +64,41 @@ func TestDetails_NilOrchAndMarks(t *testing.T) {
 	// Nil orch → placeholder, no panic.
 	testutil.Contains(t, drawnText(t, func(s tcell.Screen) { d.Draw(s, 0, 0, 40, 10, false) }, 1, 1, 26), "no coordinator")
 
-	// roleMark composes ready + PR.
-	d.prMeta = map[string]map[string]string{"t": {"url": "u"}}
+	// roleMark composes ready + PR, gated on PR state (not url presence): an
+	// actionable review state shows "PR"; a merged/closed state retains the url
+	// in the cache but must not show the mark.
+	d.prMeta = map[string]map[string]string{"t": {"url": "u", "state": "awaiting-review"}}
 	rc := &RoleView{TaskID: "t", ReadyToClose: true}
 	testutil.Equal(t, d.roleMark(rc), "ready PR")
+
+	d.prMeta = map[string]map[string]string{"t": {"url": "u", "state": "merged-closed"}}
+	testutil.Equal(t, d.roleMark(rc), "ready")
+
 	noMark := &RoleView{TaskID: "none"}
 	testutil.Equal(t, d.roleMark(noMark), "")
+}
+
+func TestDetails_RoleMark_PRStateTable(t *testing.T) {
+	d := NewDetailsView()
+	cases := []struct {
+		name  string
+		state string
+		want  string
+	}{
+		{"awaiting-review", "awaiting-review", "PR"},
+		{"changes-requested", "changes-requested", "PR"},
+		{"approved", "approved", "PR"},
+		{"merged-closed", "merged-closed", ""},
+		{"draft", "draft", ""},
+		{"unknown", "unknown", ""},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d.prMeta = map[string]map[string]string{"t": {"url": "u", "state": tc.state}}
+			testutil.Equal(t, d.roleMark(&RoleView{TaskID: "t"}), tc.want)
+		})
+	}
 }
 
 func TestDetails_TinyRectNoPanic(t *testing.T) {
