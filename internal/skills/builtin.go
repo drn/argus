@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/drn/argus/internal/db"
 )
 
 // builtinFS embeds argus's own skill sources — the single source of truth for
