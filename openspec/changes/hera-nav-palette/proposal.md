@@ -25,6 +25,7 @@ This change adds three related navigation/UI primitives to close both gaps in on
 
 - `keybindings`: `agent.switcher` rebinds from `ctrl+k` to `ctrl+j`; `ctrl+k` is repurposed from the task switcher to the new command palette; both are documented as globally-intercepted chords (mirroring the existing Ctrl+Z precedent) rather than resolved per-context only.
 - `hera-view`: the task/role switcher becomes reachable from Hera rail and pane/coordinator focus (previously dead/leaking); the switcher's needs-input-first sort extends to Hera role entries with ancestor-fold expansion on selection; the rail gains a new partial-fold rendering mode that reveals only the ancestor path(s) to a hidden needs-input leaf while a coordinator stays folded; `ctrl+k` no longer passes through to a focused pane's PTY (repurposed to the command palette).
+- `forms-and-modals`: a purely cosmetic fix to a stale scenario label — the grouped switcher's status-indicator requirement referenced "(Ctrl+K)"; updated to "(Ctrl+J)" to match the rebind. No behavioral change to that requirement itself.
 
 ## Impact
 
