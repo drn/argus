@@ -21,6 +21,6 @@
 
 ## 5. Quality gate and ship
 
-- [x] 5.1 Run `make pre-pr` (build → vet → fmt-check → lint-pr → vuln → test-cover-gate); all green (or only the pre-existing documented `vuln` stdlib advisory).
-- [ ] 5.2 Archive this change (`openspec archive`) within the PR before it is ready.
+- [x] 5.1 Run `make pre-pr` (build → vet → fmt-check → lint-pr → vuln → test-cover-gate). build/vet/fmt-check/test-cover-gate green (filtered coverage 89.0% ≥ 88 floor). `vuln` fails only on pre-existing stdlib CVEs (advisory, CI `continue-on-error`, per `gotchas/ci-gates.md`). `lint-pr` (`--new-from-rev=origin/master`) flags one pre-existing `errcheck` issue in `internal/skills/builtin.go` (PR #866/`argus/3a-land-845`, not yet in master, not part of this diff) — re-verified with `golangci-lint run --new-from-rev=<3a-land-845 tip>` (the correct base for this stacked PR): 0 issues on this change's actual diff.
+- [x] 5.2 Archive this change (`openspec archive`) within the PR before it is ready.
 - [ ] 5.3 Open a PR via `iris_gh_pr_create`, based on `argus/3a-land-845`, noting it is stacked pending #866's merge.
