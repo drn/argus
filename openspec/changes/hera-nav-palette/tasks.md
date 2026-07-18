@@ -20,9 +20,10 @@
 - [ ] 3.1 Create `CommandPaletteModal` (new type) mirroring `TaskSwitcherModal`'s filter/cursor mechanics: type-to-filter by label substring, arrow-key cursor movement, `Enter` confirms.
 - [ ] 3.2 Row rendering: label + right-aligned resolved key chord, sourced from `keymap.HelpRows`-equivalent data (reuse `actionLabels`/`Keymap.Resolve` output, not a separate hardcoded list).
 - [ ] 3.3 Wire `ActGlobalPalette`'s handler to build the applicable action list (task 2.4), open `CommandPaletteModal`, and on `Enter` call `App.invokeAction` (task 2.5) then close the palette.
-- [ ] 3.4 Confirm/implement the Open Question 1 resolution (Hera pane-focus applicable-action set) once the coordinator relays the human's answer; adjust `paletteApplicableActions()` accordingly.
+- [ ] 3.4 Implement the resolved applicable-action hierarchy (design.md Decision 2 table): focused-element ∪ current-tab-rail ∪ `CtxGlobal` (uniform, not accidental-typing-gated), with `modeAgent` as the sole exception keeping its pre-existing `CtxGlobal`-off boundary. Add the two fixed Hera literal-action rows (fullscreen; copy, terminal-panes only) when a Hera pane is the focused element.
 - [ ] 3.5 Smoke test: open palette, type a filter substring, confirm only matching rows remain, press Enter, confirm the action's effect fires and the palette closes.
 - [ ] 3.6 Smoke test: an invoked-but-inapplicable action (guard not satisfied) no-ops without crashing.
+- [ ] 3.7 Smoke test: no cross-tab bleed — a Hera-focused palette (rail or pane) never lists `CtxTaskList`/`CtxSettings` rows and vice versa; a Hera pane-focused palette lists the fullscreen row (and the copy row only for a live terminal pane, absent in the coordinator Details/plan region).
 
 ## 4. Unified task/role switcher — Hera reach
 
@@ -41,7 +42,7 @@
 - [ ] 5.3 Confirm revealed rows are fully normal/selectable rows requiring no changes to `step()`/`selectable()`/`clampCursor`/drawing/mutation-by-`Selection`.
 - [ ] 5.4 Confirm `Space` (`ToggleCollapse`) on a partially-revealed coordinator behaves exactly as before (full expand/collapse, no special partial-fold state to unwind).
 - [ ] 5.5 Unit tests: single hidden leaf under one closed coordinator; two-level nested closed coordinators; multiple hidden leaves under one coordinator; unrelated siblings stay hidden; a coordinator with no needs-input descendant renders unchanged (regression guard).
-- [ ] 5.6 Resolve Open Question 2 (visual treatment of revealed rows) with the human before finalizing row styling; implement per the answer (default: no distinct styling beyond the existing ancestor `(?)` marker).
+- [ ] 5.6 Revealed rows render identically to a normal open-fold row (RESOLVED: no distinct "peeking" styling) — confirm no special-casing was accidentally introduced in the draw path.
 
 ## 6. Documentation
 
