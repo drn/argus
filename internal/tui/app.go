@@ -4839,6 +4839,16 @@ func (a *App) handleTaskSwitcherKey(event *tcell.EventKey) {
 		// page can't resolve a rail row for it (e.g. remote mode, or a stale
 		// entry whose binding just ended).
 		if heraManaged && a.heraPage != nil && !a.heraPage.IsRemote() {
+			if a.mode == modeAgent {
+				// switchTab's TabHera case is a plain mode/page swap — it does
+				// NOT perform the modeAgent teardown exitAgentView does
+				// (restoring the tab header hidden by agentZen, detaching the
+				// old session from agentPane, clearing worktreeDir). Run that
+				// teardown explicitly before landing on the Hera tab, or the
+				// header stays hidden and the prior session lingers teed to a
+				// now-invisible pane.
+				a.exitAgentView()
+			}
 			a.switchTab(widget.TabHera)
 			if a.heraPage.JumpToTask(chosen) {
 				uxlog.Log("[tui] task switcher: jumped to hera-managed task %s within Projects tab", chosen)
