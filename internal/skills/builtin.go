@@ -51,17 +51,24 @@ func BuiltinItems() []SkillItem {
 }
 
 // EnsureBuiltinSkills materializes embedded builtin skills to the managed
-// workspace (~/.argus/skills/.claude/skills) idempotently. Updates existing
-// files on content drift; removes stale skills no longer in the embedded set.
-// Errors are logged but non-fatal (failure to materialize one skill doesn't
-// block others).
-func EnsureBuiltinSkills(dataDir string) error {
-	if isTestBinary() || dataDir == "" {
-		return nil
+// workspace (~/.argus/skills) idempotently. Returns the workspace root path
+// on success (pointing to ~/.argus/skills where .claude/skills/ lives), or
+// an error on failure. Errors are non-fatal for launch (callers log but continue).
+// On success, returns the workspace root (e.g., ~/.argus/skills) suitable for
+// --add-dir flag.
+func EnsureBuiltinSkills() (string, error) {
+	if isTestBinary() {
+		return "", nil
 	}
-	workspaceRoot := filepath.Join(dataDir, managedSkillsWorkspace, ".claude", "skills")
-	if err := os.MkdirAll(workspaceRoot, 0755); err != nil {
-		return fmt.Errorf("create workspace dir: %w", err)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("no home dir: %w", err)
+	}
+	dataDir := filepath.Join(home, ".argus")
+	workspaceRoot := filepath.Join(dataDir, managedSkillsWorkspace)
+	skillsDir := filepath.Join(workspaceRoot, ".claude", "skills")
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+		return "", fmt.Errorf("create skills dir: %w", err)
 	}
 
 	// Materialize each builtin skill.
@@ -73,7 +80,7 @@ func EnsureBuiltinSkills(dataDir string) error {
 		if err != nil {
 			continue
 		}
-		targetDir := filepath.Join(workspaceRoot, item.Name)
+		targetDir := filepath.Join(skillsDir, item.Name)
 		if err := os.MkdirAll(targetDir, 0755); err != nil {
 			continue
 		}
@@ -93,13 +100,13 @@ func EnsureBuiltinSkills(dataDir string) error {
 	}
 
 	// Remove stale skills.
-	existingDirs, _ := os.ReadDir(workspaceRoot)
+	existingDirs, _ := os.ReadDir(skillsDir)
 	for _, d := range existingDirs {
 		if d.IsDir() && !present[d.Name()] {
-			os.RemoveAll(filepath.Join(workspaceRoot, d.Name()))
+			os.RemoveAll(filepath.Join(skillsDir, d.Name()))
 		}
 	}
-	return nil
+	return workspaceRoot, nil
 }
 
 // atomicWriteIfDifferent writes data to path only if the current file content
