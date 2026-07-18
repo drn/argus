@@ -4,8 +4,10 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/keymap"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -246,18 +248,42 @@ func TestSmoke_TaskSwitcherOpensFromHeraRailAndPane(t *testing.T) {
 // TestSwitcher_SelectingHeraManagedEntryJumpsIntoHeraTab confirms the unified
 // switcher's Hera routing: selecting a hera-managed entry from the CLASSIC
 // agent view switches to the Hera tab and lands on the role there, rather
-// than opening the classic per-task agent view for it.
+// than opening the classic per-task agent view for it — AND that the jump
+// properly tears down the agent view it came from (tab header restored,
+// prior session detached, worktreeDir cleared). switchTab's TabHera case is
+// a plain mode/page swap that does NOT perform that teardown on its own
+// (only exitAgentView does, and only its TabTasks case calls it) — a
+// regression caught by code review: the header stayed permanently hidden and
+// the prior live session stayed teed to the now-invisible agent pane.
 func TestSwitcher_SelectingHeraManagedEntryJumpsIntoHeraTab(t *testing.T) {
 	d := testDB(t)
 	orch := seedHeraOrch(t, d, "orch")
 	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
 	seedHeraBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
-	app := New(d, agent.NewRunner(nil), false)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
 	seedSwitcherTasks(t, app) // adds an unrelated plain task too
 	app.refreshTasks()
 
+	// Give "ts-cur" a real, live session and mark the app as if it were
+	// genuinely in the agent view for it (mirrors what enterPendingAgentView/
+	// onTaskSelect do on entry: hide the tab header, attach the session, set
+	// worktreeDir) — so the teardown assertions below are meaningful.
+	curTask, err := d.Get("ts-cur")
+	testutil.NoError(t, err)
+	curTask.Backend = "test"
+	cfg := config.DefaultConfig()
+	cfg.Backends["test"] = config.Backend{Command: "sleep 30"}
+	sess, err := runner.Start(curTask, cfg, 24, 80, false)
+	testutil.NoError(t, err)
+	defer runner.Stop(curTask.ID) //nolint:errcheck
+
 	app.mode = modeAgent
-	app.agentState.Reset("ts-cur", "current task")
+	app.agentState.Reset(curTask.ID, curTask.Name)
+	app.agentPane.SetSession(sess)
+	app.worktreeDir = curTask.Worktree
+	app.root.ResizeItem(app.header, 0, 0)
+
 	app.openTaskSwitcher()
 
 	// Find the hera-managed entry (worker task "tw") in the built list.
@@ -285,4 +311,95 @@ func TestSwitcher_SelectingHeraManagedEntryJumpsIntoHeraTab(t *testing.T) {
 	testutil.Equal(t, app.mode, modeTaskList)
 	testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
 	testutil.Equal(t, app.heraPage.SelectionContext().TaskID(), "tw")
+
+	// Teardown: the prior session must be detached and worktreeDir cleared —
+	// exitAgentView's job, which the hera-jump path must invoke explicitly.
+	if app.agentPane.Session() != nil {
+		t.Error("expected the prior agent session to be detached from agentPane after the hera jump")
+	}
+	testutil.Equal(t, app.worktreeDir, "")
+
+	// The tab header must be restored to its normal (non-zero) size — verify
+	// via a real Draw pass so the root Flex actually recomputes item rects.
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(120, 40)
+	app.root.SetRect(0, 0, 120, 40)
+	app.root.Draw(sim)
+	_, _, headerW, headerH := app.header.GetRect()
+	if headerW == 0 || headerH == 0 {
+		t.Errorf("expected the tab header to be restored (non-zero rect) after jumping into Hera from the agent view, got %dx%d", headerW, headerH)
+	}
+}
+
+// --- Synthetic-event registries (CtxTaskList/CtxSettings) actually fire the
+// real widget dispatch, and go inert during text-input mode ---
+
+// TestTaskListActionRegistry_InvokeFiresRealAction confirms the synthesized
+// tcell.EventKey actually reaches TaskListView's own InputHandler (not a
+// stub) — invoking ActTaskNew through the registry opens the real new-task
+// form, exactly as pressing `n` would.
+func TestTaskListActionRegistry_InvokeFiresRealAction(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.mode = modeTaskList
+	app.header.SetTab(widget.TabTasks)
+
+	reg := app.taskListActionRegistry()
+	fn, ok := reg[keymap.ActTaskNew]
+	if !ok {
+		t.Fatal("expected ActTaskNew to be registered")
+	}
+	fn()
+	testutil.Equal(t, app.mode, modeNewTask)
+}
+
+// TestTaskListActionRegistry_NilWhileFiltering guards against a synthesized
+// action key silently corrupting the `/` filter query instead of firing the
+// action (the registry must go fully inert while filtering).
+func TestTaskListActionRegistry_NilWhileFiltering(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	// Enter filter mode via the real InputHandler (the same `/` keypress a
+	// user would type) rather than poking private state.
+	app.tasklist.InputHandler()(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+	testutil.Equal(t, app.tasklist.Filtering(), true)
+
+	if reg := app.taskListActionRegistry(); reg != nil {
+		t.Fatal("expected a nil registry while the task list is filtering")
+	}
+}
+
+// TestSettingsActionRegistry_InvokeFiresRealAction mirrors the task-list
+// case for SettingsView.HandleKey: invoking ActSettingsQuickAdd through the
+// registry fires the real OnQuickAdd callback (category gated, exactly as a
+// physical `i` keypress would be).
+func TestSettingsActionRegistry_InvokeFiresRealAction(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.settings.category = catProjects
+	fired := false
+	app.settings.OnQuickAdd = func() { fired = true }
+
+	reg := app.settingsActionRegistry()
+	fn, ok := reg[keymap.ActSettingsQuickAdd]
+	if !ok {
+		t.Fatal("expected ActSettingsQuickAdd to be registered")
+	}
+	fn()
+	testutil.Equal(t, fired, true)
+}
+
+// TestSettingsActionRegistry_NilWhileEditing mirrors the task-list filtering
+// guard: a synthesized action key must not reach an in-progress inline edit.
+func TestSettingsActionRegistry_NilWhileEditing(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.settings.editingBackendModel = "some-backend"
+	testutil.Equal(t, app.settings.IsEditing(), true)
+
+	if reg := app.settingsActionRegistry(); reg != nil {
+		t.Fatal("expected a nil registry while a settings field is being edited")
+	}
 }
