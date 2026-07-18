@@ -73,7 +73,7 @@ When the switcher's selected entry is a Hera role nested under one or more colla
 
 ### Requirement: Command palette is reachable from Hera and no longer passes ctrl+k through to a pane
 
-The command palette (`ctrl+k`) SHALL open from any Hera focus state (rail, coordinator pane, or agent pane). In pane/coordinator focus this REPLACES the prior behavior of forwarding the raw `ctrl+k` byte to the live PTY — an intentional, documented trade-off (see the `command-palette` capability and this change's design notes), not a silent regression. When opened from a Hera focus state, the palette's action list SHALL include the Hera rail's mutation actions (acting on the rail's current selection, the same target-resolution the Details-mode rail-mutation routing already uses).
+The command palette (`ctrl+k`) SHALL open from any Hera focus state (rail, coordinator pane, or agent pane). In pane/coordinator focus this REPLACES the prior behavior of forwarding the raw `ctrl+k` byte to the live PTY — an intentional, documented trade-off (see the `command-palette` capability and this change's design notes), not a silent regression. When opened from Hera rail focus, the palette's action list SHALL include the Hera rail's mutation actions (acting on the rail's current selection). When opened from a Hera coordinator/worker terminal pane, the palette's action list SHALL include BOTH the Hera rail's mutation actions (same target-resolution the Details-mode rail-mutation routing already uses) AND the pane's own two literal actions (fullscreen toggle; clipboard copy, when the pane is a live terminal — the coordinator Details/plan region has nothing to copy so that row is absent there) — never a different tab's action set (e.g. the plain task list's actions never appear).
 
 #### Scenario: Palette opens from a Hera pane instead of forwarding to the PTY
 
@@ -84,6 +84,16 @@ The command palette (`ctrl+k`) SHALL open from any Hera focus state (rail, coord
 
 - **WHEN** the user invokes a Hera rail mutation action (e.g. spawn worker, toggle pin) from the palette while a Hera pane is focused
 - **THEN** the action acts on the rail's currently selected role/orchestrator, the same target it would act on if invoked from rail focus
+
+#### Scenario: Palette from a Hera pane also offers fullscreen and copy
+
+- **WHEN** the palette is opened while a Hera coordinator or worker terminal pane holds focus
+- **THEN** its rows include "toggle fullscreen" and "copy staged clipboard" (the pane's own focused-element literal actions) alongside the Hera rail's actions
+
+#### Scenario: Palette never shows another tab's actions
+
+- **WHEN** the palette is opened from any Hera focus state
+- **THEN** its rows never include the plain task list's or Settings tab's actions
 
 ### Requirement: Rail reveals the ancestor path to a hidden needs-input descendant through closed folds
 

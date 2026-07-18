@@ -21,12 +21,22 @@ The system SHALL provide a global command palette action (`global.palette`, defa
 
 ### Requirement: Palette lists actions applicable to the current context
 
-The palette SHALL populate its row list from the keymap actions applicable to the region that held focus when it was opened (e.g. the classic agent view's action set, the task list's action set, or the Hera rail/pane action set), each row showing the action's label and its currently-resolved key.
+The palette SHALL populate its row list as the union of: (1) the focused element's own applicable actions, (2) the CURRENT TAB's own rail/list action set (never a different tab's rail-scoped actions), and (3) the global action set — uniformly, without narrowing it by focus-based accidental-input guards that apply only to raw keypresses (a palette pick is a deliberate, filtered, Enter-confirmed action, not an incidental keystroke). Each row SHALL show the action's label and its currently-resolved key. The one exception preserving its pre-existing boundary is the classic fullscreen agent view, where the global action set stays gated off exactly as it already is for ordinary keypresses (that boundary predates this change and was never in question).
 
 #### Scenario: Row list reflects the invoking context
 
 - **WHEN** the palette is opened from the classic agent view
-- **THEN** its rows are drawn from the agent view's applicable action set, not the task list's or Hera's
+- **THEN** its rows are drawn from the agent view's own applicable action set only (no global actions, matching the existing `modeAgent` gating)
+
+#### Scenario: Hera pane focus unions the focused pane's own actions with the Hera tab's rail — never another tab's rail
+
+- **WHEN** the palette is opened while a Hera coordinator or worker terminal pane holds focus
+- **THEN** its rows include that pane's own focused-element actions plus the Hera rail's action set (acting on the rail's current selection), and do NOT include the plain task list's or Settings' action sets
+
+#### Scenario: Task-list and Settings palettes stay scoped to their own tab's rail
+
+- **WHEN** the palette is opened from the plain task list, or from the Settings tab
+- **THEN** its rows include that tab's own action set plus the global action set, and do NOT include the Hera rail's action set
 
 #### Scenario: Each row shows the action's bound key
 
@@ -61,16 +71,26 @@ The system SHALL invoke the action under the cursor immediately on `Enter` — n
 - **WHEN** the user invokes, from the palette, an action whose runtime guard is not currently satisfied (e.g. a pane-switch action while side panels are collapsed)
 - **THEN** the invocation is a safe no-op — identical to pressing the action's physical key in the same state — and does not crash or corrupt state
 
-### Requirement: Keymap metadata is the single data source
+### Requirement: Keymap metadata is the primary data source, with a narrow enumerated exception for two Hera pane literal actions
 
-The palette SHALL source its rows exclusively from the `keymap` package's own action metadata (`defaultSpecs`/`actionLabels`/`contextOrder`) — the same metadata that generates the `?` help overlay — so a config-driven rebind is reflected in the palette automatically, with no separate list to maintain. The palette SHALL NOT list actions that are not part of the rebindable keymap system (e.g. Hera's hardcoded, non-rebindable page-level keys such as the Ctrl+Z fullscreen toggle).
+The palette SHALL source the bulk of its rows from the `keymap` package's own action metadata (`defaultSpecs`/`actionLabels`/`contextOrder`) — the same metadata that generates the `?` help overlay — so a config-driven rebind is reflected in the palette automatically, with no separate list to maintain. A narrow, explicitly enumerated exception exists for exactly two Hera pane-focus actions that are NOT part of the rebindable keymap system (the Ctrl+Z fullscreen toggle and the Ctrl+Y clipboard copy, both hardcoded literal `tcell.Key` cases in the Hera page): these two SHALL appear as fixed rows (their own hardcoded label and literal key) whenever a Hera terminal pane is the focused element, per the applicable-context requirement above. The palette SHALL NOT list any OTHER non-keymap action beyond this pair (e.g. the Cmd/Ctrl+Alt+arrow focus-ladder navigation stays out of scope — pure navigation, not a palette-worthy action).
 
 #### Scenario: A rebind is reflected without code changes
 
 - **WHEN** a `[keybindings.<context>]` override changes an action's bound key
 - **THEN** the palette's row for that action shows the new key, matching the `?` help overlay
 
-#### Scenario: Non-keymap Hera literal keys are absent
+#### Scenario: Fullscreen and copy appear as fixed rows when a Hera pane is focused
 
-- **WHEN** the palette is opened from a Hera pane
-- **THEN** it does not list the Ctrl+Z fullscreen toggle or other hardcoded Hera page-level keys that are not modeled as keymap actions
+- **WHEN** the palette is opened while a Hera coordinator or worker terminal pane holds focus
+- **THEN** it lists a "toggle fullscreen" row and a "copy staged clipboard" row (each with their hardcoded key, `ctrl+z` and `ctrl+y`) alongside the keymap-sourced Hera rail rows
+
+#### Scenario: Copy is absent from the coordinator Details/plan region
+
+- **WHEN** the palette is opened while a coordinator's Details/plan region holds focus (not a terminal pane)
+- **THEN** it lists the "toggle fullscreen" row but NOT the "copy staged clipboard" row (there is nothing to copy from a non-terminal region)
+
+#### Scenario: No other non-keymap actions appear
+
+- **WHEN** the palette is open in any context
+- **THEN** it lists no action beyond keymap-sourced rows and the two enumerated Hera literal-action rows — no focus-ladder navigation entries, no other hardcoded literal appears
