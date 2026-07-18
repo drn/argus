@@ -1919,10 +1919,12 @@ func needsInputScreenSize(taskID string) (cols, rows int) {
 //     chrome) is unchanged from the previous tick. A streaming agent's
 //     fingerprint shifts every tick, so it is never flagged here — the
 //     false-positive guard. Fingerprints persist on a.needsInputFP.
-//   - Sticky carry-forward: a previously-flagged task still running and still
-//     showing the marker rides through a one-tick content blip without
-//     oscillating; it self-clears when the marker scrolls out of the 16 KB
-//     tail (question answered) or the task stops running.
+//   - Sticky carry-forward: a previously-flagged task still running stays
+//     flagged unconditionally (BUG-061) — it no longer re-requires a fresh
+//     tail match, since a flat tail window can be permanently flooded by
+//     Claude's blinking-cursor redraw long after the prompt itself scrolled
+//     out of reach. NeedsInputClear below is the only way this flag clears
+//     (user input past baseline, archive, or the task stops running).
 //   - Escalation fallback (BUG-029): the content-stability pass above requires
 //     the FULL fingerprint to match across exactly two ticks. A session whose
 //     tail keeps showing UNRELATED per-tick-varying content elsewhere in the
@@ -1997,18 +1999,21 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	a.needsInputFP = newFP
 	a.needsInputEscalation = newEsc
 
+	// Sticky carry-forward (BUG-061 hardening): a task already flagged last tick
+	// and still running stays flagged WITHOUT re-requiring a fresh tail match.
+	// The prior re-match requirement meant a previously-correct "(?)" could
+	// silently vanish on any tick whose read came back inconclusive — including,
+	// pre-fix, every tick once Claude's blinking-cursor redraw had flooded the
+	// tail window past the real prompt content (BUG-061's root cause; see
+	// agent.SubstantiveTail). NeedsInputClear below is the sole, deterministic
+	// clearing mechanism (user input advanced past baseline, or archived) — it
+	// does not depend on the marker still being visible in the tail, so this
+	// carry-forward can never leak a flag past a genuine answer.
 	for _, id := range prevNeedsInput {
 		if freshSet[id] || !runningSet[id] {
 			continue
 		}
-		tail := readSessionLogTailBytes(id, detectNeedsInputTailBytes)
-		if len(tail) == 0 {
-			continue
-		}
-		cols, rows := needsInputScreenSize(id)
-		if agent.DetectNeedsInputScreen(a.needsInputScreen, tail, cols, rows) {
-			flag(id)
-		}
+		flag(id)
 	}
 
 	// BUG-034: clear the flag for sessions the user has responded to or tasks
@@ -2060,9 +2065,14 @@ func (a *App) archivedTaskSet() func(string) bool {
 const detectNeedsInputTailBytes = 16 * 1024
 
 // readSessionLogTailBytes returns the last n raw bytes of a task's session
-// log, or nil on any error. Unlike readSessionLogTail (which strips ANSI for
-// human display), this preserves the raw stream so the caller can do its own
-// ANSI handling.
+// log — or, if that flat window turns out to be dominated by a trailing
+// degenerate repeat run (BUG-061: Claude Code's blinking cursor/status glyph,
+// which never stops even while genuinely parked at a prompt and can flood a
+// fixed-size window until real content falls permanently out of reach), reads
+// progressively further back via agent.SubstantiveTail until real content is
+// found or agent.NeedsInputMaxExpandBytes is reached. Unlike readSessionLogTail
+// (which strips ANSI for human display), this preserves the raw stream so the
+// caller can do its own ANSI handling.
 //
 // detectNeedsInput reads here instead of through SessionHandle.RecentOutputTail
 // because in daemon-client mode the local ring buffer only fills after the
@@ -2070,6 +2080,15 @@ const detectNeedsInputTailBytes = 16 * 1024
 // visited it. The disk log captures every byte the daemon ever wrote, so the
 // detector can flag a blocked agent the user has never opened.
 func readSessionLogTailBytes(taskID string, n int) []byte {
+	return agent.SubstantiveTail(func(want int) []byte {
+		return readSessionLogRawTail(taskID, want)
+	}, n, agent.NeedsInputMaxExpandBytes)
+}
+
+// readSessionLogRawTail returns the last n raw bytes of a task's session log,
+// or nil on any error — the flat, un-trimmed read readSessionLogTailBytes
+// builds on.
+func readSessionLogRawTail(taskID string, n int) []byte {
 	f, err := os.Open(agent.SessionLogPath(taskID))
 	if err != nil {
 		return nil
