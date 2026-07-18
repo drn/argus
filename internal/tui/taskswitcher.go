@@ -47,7 +47,7 @@ func (e taskSwitcherEntry) statusIcon() (rune, tcell.Style) {
 }
 
 // switcherRowKind distinguishes a project-folder header from a task row in the
-// grouped (folder-structure) rendering used by the Ctrl+K switcher.
+// grouped (folder-structure) rendering used by the Ctrl+J switcher.
 type switcherRowKind uint8
 
 const (
@@ -64,8 +64,9 @@ type switcherRow struct {
 	count   int               // tasks in this project in the current (filtered) view; valid when kind == switcherRowProjectHeader
 }
 
-// TaskSwitcherModal presents a filterable list of tasks for jumping directly to
-// another task's agent view (Ctrl+K).
+// TaskSwitcherModal presents a filterable list of tasks (and, unified,
+// hera-managed roles) for jumping directly to another task's agent view or
+// role within the Projects tab (Ctrl+J).
 //
 // It has two rendering modes:
 //
@@ -75,7 +76,7 @@ type switcherRow struct {
 //     tasks nested under collapsible project headers, one project expanded at a
 //     time (all expanded while filtering). Filtering uses the same whitespace-
 //     split, all-terms-substring match across project + task name as the task
-//     list. Used by the Ctrl+K task switcher.
+//     list. Used by the Ctrl+J task switcher.
 type TaskSwitcherModal struct {
 	*tview.Box
 	all      []taskSwitcherEntry // full set, pre-sorted (needs-input first)
@@ -107,7 +108,7 @@ func NewTaskSwitcherModal(entries []taskSwitcherEntry) *TaskSwitcherModal {
 }
 
 // SetGrouped switches the modal into the folder-structure rendering used by the
-// Ctrl+K task switcher: tasks nested under project headers with task-list-style
+// Ctrl+J task switcher: tasks nested under project headers with task-list-style
 // search. It rebuilds the row projection and parks the cursor on the first task.
 func (m *TaskSwitcherModal) SetGrouped(v bool) {
 	m.grouped = v
