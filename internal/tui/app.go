@@ -1062,8 +1062,33 @@ func (a *App) handleRestartSupervisorKey(event *tcell.EventKey) {
 	}
 }
 
+// probeTerminal reports whether a real controlling terminal is available,
+// overridable in tests. tcell.Screen.Init() lazily opens one itself (e.g.
+// tcell.NewDevTty → /dev/tty on Unix) the first time it's used — inside
+// tview's SetScreen below — but SetScreen calls Init() and discards its
+// returned error entirely (rivo/tview@v0.42.0 application.go SetScreen never
+// checks it). Without a controlling terminal (process launched with no ctty:
+// a script/tool sandbox, a detached/headless process, etc.) Init() fails and
+// the screen's tty writer is left nil, so the very next EnableMouse() call
+// panics several frames deep inside tcell/terminfo (io.WriteString on a nil
+// io.Writer) instead of surfacing a clean error. Opening and immediately
+// closing tcell's own Tty handle mirrors exactly what Init() would do,
+// without side effects (no raw-mode Start() is called), so a failure here
+// reliably predicts Init()'s failure. See gotchas/ui-threading.md.
+var probeTerminal = func() error {
+	tty, err := tcell.NewDevTty()
+	if err != nil {
+		return err
+	}
+	return tty.Close()
+}
+
 // Run starts the application event loop.
 func (a *App) Run() error {
+	if err := probeTerminal(); err != nil {
+		return fmt.Errorf("no interactive terminal available: %w", err)
+	}
+
 	// Wrap the tcell screen in lazyScreen. The wrapper is a passthrough
 	// today; keeping the indirection lets smoke tests inject a
 	// SimulationScreen through the same path production uses.
