@@ -39,17 +39,17 @@ When `profile_resolve` returns `resolved: false`, or the resolved profile has no
 
 ### Requirement: In-session model gate before native dispatch
 
-Before threading a resolved archetype model into a native sub-agent call, the convention SHALL verify the model is one of the four values Claude's native sub-agent dispatch accepts in-session (`opus`, `sonnet`, `haiku`, `fable` — mirroring `internal/review.knownInSessionModels`). A resolved model naming anything else (e.g. a foreign backend's model, since a profile's archetype model is validated against the union of every configured backend, not just Claude) SHALL NOT be forwarded to the native dispatch call; the mismatch SHALL be noted rather than silently dropped, and the stage SHALL dispatch with no model override.
+Before threading a resolved archetype model into a native sub-agent call, the convention SHALL verify the model is one of the four values Claude's native sub-agent dispatch accepts in-session (`opus`, `sonnet`, `haiku`, `fable` — mirroring `internal/review.knownInSessionModels`). Native sub-agent dispatch has no path to any other backend at all, so a resolved model naming anything else (e.g. a foreign backend's model, since a profile's archetype model is validated against the union of every configured backend, not just Claude) SHALL NOT be forwarded as-is; instead the convention SHALL substitute the closest available in-session Claude model (a best-effort capability-tier mapping, not a validated cross-vendor equivalence) and note the substitution rather than silently dropping model selection or passing the foreign value through.
 
 #### Scenario: In-session model forwarded
 
 - **WHEN** an archetype resolves to `model = "sonnet"`
 - **THEN** the native sub-agent call for that stage is dispatched with `model = "sonnet"`
 
-#### Scenario: Foreign backend model withheld
+#### Scenario: Foreign backend model substituted with the closest in-session tier
 
 - **WHEN** an archetype resolves to a model belonging to a configured non-Claude backend (e.g. a codex model name)
-- **THEN** the native sub-agent call for that stage dispatches with no model override, and the mismatch is noted rather than silently ignored
+- **THEN** the native sub-agent call for that stage dispatches with the closest available in-session Claude model substituted in its place, and the substitution is noted rather than silently ignored or left unresolved
 
 ### Requirement: Effort threaded only where the dispatch mechanism supports it
 

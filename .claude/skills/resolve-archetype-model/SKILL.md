@@ -73,11 +73,24 @@ knownInSession = {"opus", "sonnet", "haiku", "fable"}
 
 - **Model is one of these four** → forward it: `Agent(model=<resolved>)` or, for a `Workflow`
   script, `agent(prompt, {model: <resolved>})`.
-- **Model is anything else** (a foreign backend's model name) → do **not** forward it. Dispatch with
-  no model override and emit a loud, visible note — e.g. `[resolve-archetype-model] archetype
-  "code_slice" resolved to a non-in-session model ("gpt-5-codex") — dispatching with no model
-  override.` Never silently drop the mismatch and never pass the value through hoping it works;
-  an invalid `model` value on the `Agent` tool is a hard error, not a graceful fallback.
+- **Model is anything else** (a foreign backend's model name, e.g. a codex model) → native
+  dispatch has **no path to a different backend at all** — it can only ever spawn one of the four
+  in-session Claude models. Rather than dropping model selection entirely, map to the **closest
+  available in-session Claude model** and forward that instead:
+  - A foreign flagship/top-tier model (e.g. `gpt-5`, `gpt-5-codex`, or any other backend's
+    highest-capability model) → `opus`.
+  - A foreign backend's smaller/cheaper tier (e.g. a `-mini`-class model) → `haiku`.
+  - Anything ambiguous, or a foreign model whose tier isn't obvious from its name → `sonnet` (the
+    safe middle default).
+  - Always emit a loud, visible note when this substitution happens — e.g.
+    `[resolve-archetype-model] archetype "code_slice" resolved to a non-in-session model
+    ("gpt-5-codex") — substituting "opus" (closest in-session equivalent) for native dispatch.`
+    Never silently substitute; the caller (or a report reader) needs to know the profile's actual
+    choice wasn't honored. **This tiering is a best-effort heuristic, not a principled
+    cross-vendor equivalence** — there is no validated quality mapping between vendors' model
+    tiers; it exists so native dispatch degrades gracefully (some in-session model, correctly
+    tiered by rough capability) instead of silently reverting to the caller's own default,
+    which could be any tier regardless of what the archetype was configured for.
 
 ## 5. Effort — only where the mechanism accepts it
 
@@ -102,15 +115,27 @@ honored by a mechanism that has no way to honor it.
 resolved = profile_resolve(cwd=$PWD)
 models = resolved.archetype if resolved.resolved else {}
 knownInSession = {"opus", "sonnet", "haiku", "fable"}
+foreignFlagshipHints = ["gpt-5", "opus", "large", "pro"]      # rough, name-based, best-effort
+foreignCheapHints     = ["mini", "haiku", "small", "flash"]
 
 def modelFor(archetype):
     entry = models.get(archetype, {})
     m = entry.get("model", "")
-    if m and m not in knownInSession:
-        note(f'[resolve-archetype-model] archetype "{archetype}" resolved to a non-in-session '
-             f'model ("{m}") — dispatching with no model override.')
-        return None
-    return m or None
+    if not m:
+        return None                        # unset — use the caller's/tool's own default
+    if m in knownInSession:
+        return m                           # forward as-is
+    # Foreign backend model — native dispatch can't spawn it at all. Substitute the
+    # closest in-session tier rather than dropping model selection entirely.
+    substitute = "sonnet"
+    if any(h in m for h in foreignFlagshipHints):
+        substitute = "opus"
+    elif any(h in m for h in foreignCheapHints):
+        substitute = "haiku"
+    note(f'[resolve-archetype-model] archetype "{archetype}" resolved to a non-in-session '
+         f'model ("{m}") — substituting "{substitute}" (closest in-session equivalent) for '
+         f'native dispatch.')
+    return substitute
 
 # Agent tool (no effort parameter available):
 Agent(prompt=migration_prompt, model=modelFor("code_slice"))          # e.g. "sonnet", or omitted
@@ -128,9 +153,11 @@ await agent(ci_fix_prompt, {
 
 - **One `profile_resolve` call per pipeline, not per stage.** The whole point of returning every
   archetype's entry in one response is to avoid N round-trips for an N-stage pipeline.
-- **The in-session gate is not optional.** Skipping it means an archetype tuned for a codex worker
-  can silently break (or worse, silently misbehave) a native `Agent` call the first time a profile
-  author points that archetype at a foreign-backend model.
+- **The in-session gate is not optional, and a mismatch is a substitution, not a silent drop.**
+  Native dispatch cannot spawn a different backend at all — an archetype tuned for a codex worker
+  must fall back to the closest in-session Claude tier (§4), loudly noted, rather than either
+  erroring or quietly running with no model override (which could land on any tier, unrelated to
+  what the archetype was configured for).
 - **Don't claim effort was applied when it wasn't.** The `Agent` tool's lack of an effort parameter
   is a real, current limitation — state it plainly in any report, the same way `hera-spawn-review`
   documents its Fable-effort gap rather than silently ignoring it.
