@@ -28,6 +28,11 @@ type taskSwitcherEntry struct {
 	Running       bool
 	Idle          bool
 	IdleUnvisited bool
+	// HeraManaged marks a task that holds a live hera binding (worker or
+	// coordinator role). Selecting such an entry jumps into the native Hera
+	// view (rail + pane) instead of the classic per-task agent view, since the
+	// entry represents a role within Hera's own rail structure.
+	HeraManaged bool
 }
 
 // statusIcon resolves this entry's status glyph + style via the shared helper,
@@ -133,16 +138,33 @@ func (m *TaskSwitcherModal) Canceled() bool { return m.canceled }
 
 // SelectedTask returns the chosen task's ID (empty if none).
 func (m *TaskSwitcherModal) SelectedTask() string {
-	if m.grouped {
-		if m.cursor >= 0 && m.cursor < len(m.rows) && m.rows[m.cursor].kind == switcherRowTaskItem {
-			return m.rows[m.cursor].entry.ID
-		}
+	e := m.selectedEntry()
+	if e == nil {
 		return ""
 	}
-	if m.cursor >= 0 && m.cursor < len(m.filtered) {
-		return m.filtered[m.cursor].ID
+	return e.ID
+}
+
+// SelectedHeraManaged reports whether the chosen entry is hera-managed (should
+// jump into the Hera view rather than the classic per-task agent view).
+func (m *TaskSwitcherModal) SelectedHeraManaged() bool {
+	e := m.selectedEntry()
+	return e != nil && e.HeraManaged
+}
+
+// selectedEntry resolves the entry under the cursor in either render mode, or
+// nil when the cursor isn't parked on a task row.
+func (m *TaskSwitcherModal) selectedEntry() *taskSwitcherEntry {
+	if m.grouped {
+		if m.cursor >= 0 && m.cursor < len(m.rows) && m.rows[m.cursor].kind == switcherRowTaskItem {
+			return &m.rows[m.cursor].entry
+		}
+		return nil
 	}
-	return ""
+	if m.cursor >= 0 && m.cursor < len(m.filtered) {
+		return &m.filtered[m.cursor]
+	}
+	return nil
 }
 
 // PasteHandler handles bracketed paste into the filter field.
