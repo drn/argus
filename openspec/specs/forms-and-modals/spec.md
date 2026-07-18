@@ -340,7 +340,7 @@ The task switcher modal SHALL convey each task's status by rendering the task li
 
 #### Scenario: Grouped rows carry the icon indented under their folder
 
-- **WHEN** the grouped (Ctrl+K) switcher renders a task nested under its project header
+- **WHEN** the grouped (Ctrl+J) switcher renders a task nested under its project header
 - **THEN** the status glyph appears indented under the folder, immediately left of the task name, and the project name appears only in the folder header
 
 ### Requirement: Copy-choice modal
