@@ -97,7 +97,7 @@ func injectCodexTOML(path string, port int) error {
 		return fmt.Errorf("inject codex: create temp: %w", err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) //nolint:errcheck — cleanup on failure
+	defer os.Remove(tmpName) //nolint:errcheck // cleanup on failure
 	if _, err := tmp.WriteString(updated); err != nil {
 		tmp.Close()
 		return fmt.Errorf("inject codex: write temp: %w", err)

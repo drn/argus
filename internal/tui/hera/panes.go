@@ -131,8 +131,9 @@ func (p *HeraPage) bindPane(tp *terminal.TerminalPane, bound *string, taskID, la
 	}
 	if taskID == "" {
 		uxlog.Log("[hera-view] %s pane unbind (was task=%s)", label, *bound)
-		tp.SetSession(nil)
 		tp.SetTaskID("")
+		tp.ResetVT()
+		tp.SetSession(nil)
 		*bound = ""
 		return
 	}
@@ -141,8 +142,13 @@ func (p *HeraPage) bindPane(tp *terminal.TerminalPane, bound *string, taskID, la
 		sess = p.resolve(taskID)
 	}
 	// SetTaskID first so a finished task with no live session can replay its
-	// on-disk log; SetSession then attaches the live ring when present.
+	// on-disk log; ResetVT clears any emulator/replay/scroll-anchor state left
+	// by the PREVIOUSLY bound task before it can bleed into this one's render
+	// — the same SetTaskID→ResetVT→SetSession order onTaskSelect and
+	// enterPendingAgentView use for the main agent view; SetSession then
+	// attaches the live ring when present.
 	tp.SetTaskID(taskID)
+	tp.ResetVT()
 	tp.SetSession(sess)
 	// Enter on this pane while its session is dead/nil revives the pane's bound
 	// task (BUG-001). The closure reads live page state at fire time (never a
@@ -215,6 +221,14 @@ func (p *HeraPage) reconcileOne(tp *terminal.TerminalPane, taskID, label string)
 	if cur != nil && (sess == cur || !sess.Alive()) {
 		return // replacing a dead handle: only a fresh, live, distinct one qualifies
 	}
+	// ResetVT before SetSession: this is the recycle_coord kill+respawn
+	// transition (same task, brand-new session) as much as it is a
+	// StreamLost re-dial — a genuinely different handle is "new content
+	// incoming" either way, so any emulator/replay/scroll-anchor state left
+	// over from the OLD handle must not survive into the new one's render
+	// (BUG: recycled coordinator panes showed stale cells from the prior
+	// session at the top of the pane).
+	tp.ResetVT()
 	tp.SetSession(sess)
 	tp.ForceResyncPTY()
 	if cur == nil {

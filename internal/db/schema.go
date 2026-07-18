@@ -24,6 +24,8 @@ func (d *DB) createTables() error {
 			pinned      INTEGER NOT NULL DEFAULT 0,
 			base_branch TEXT NOT NULL DEFAULT '',
 			result      TEXT NOT NULL DEFAULT '',
+			archetype   TEXT NOT NULL DEFAULT '',
+			profile     TEXT NOT NULL DEFAULT '',
 			created_at  TEXT NOT NULL,
 			started_at  TEXT NOT NULL DEFAULT '',
 			ended_at    TEXT NOT NULL DEFAULT ''
@@ -36,14 +38,20 @@ func (d *DB) createTables() error {
 			sandbox_enabled             TEXT NOT NULL DEFAULT '',
 			sandbox_deny_read           TEXT NOT NULL DEFAULT '',
 			sandbox_extra_write         TEXT NOT NULL DEFAULT '',
-			sandbox_allow_apple_events  TEXT NOT NULL DEFAULT ''
+			sandbox_allow_apple_events  TEXT NOT NULL DEFAULT '',
+			profile                     TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS backends (
 			name           TEXT PRIMARY KEY,
 			command        TEXT NOT NULL,
 			prompt_flag    TEXT NOT NULL DEFAULT '',
 			resume_command TEXT NOT NULL DEFAULT '',
-			model          TEXT NOT NULL DEFAULT ''
+			model          TEXT NOT NULL DEFAULT '',
+			-- env_vars: JSON object mapping a TARGET env-var name to a SOURCE
+			-- descriptor, consulted by agent.BuildCmd. Holds the MAPPING ONLY,
+			-- never a secret value (resolved at spawn time). '' / 'null' both
+			-- decode to an empty mapping.
+			env_vars       TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS config (
 			key   TEXT PRIMARY KEY,
@@ -63,6 +71,9 @@ func (d *DB) createTables() error {
 		"sandbox_deny_read          TEXT NOT NULL DEFAULT ''",
 		"sandbox_extra_write        TEXT NOT NULL DEFAULT ''",
 		"sandbox_allow_apple_events TEXT NOT NULL DEFAULT ''",
+		// profile (add-diligence-profiles): the project→profile-NAME binding
+		// (never the profile body). Empty resolves to the "default" profile.
+		"profile                    TEXT NOT NULL DEFAULT ''",
 	} {
 		d.conn.Exec(`ALTER TABLE projects ADD COLUMN ` + def) //nolint:errcheck
 	}
@@ -82,6 +93,16 @@ func (d *DB) createTables() error {
 	// coordinator to read. Both are idempotent ADDs.
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN base_branch TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN result      TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+
+	// archetype (add-diligence-profiles): the authoritative model-resolution key
+	// read by agent.ResolveModel. Idempotent ADD for databases predating it;
+	// existing rows read empty (no archetype → no profile consulted).
+	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN archetype TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+
+	// profile (add-diligence-profiles): the per-spawn profile override. Non-empty
+	// means the operator selected a specific profile for this one spawn, overriding
+	// the project's bound profile during model resolution. Empty = use project binding.
+	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN profile TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 
 	// Index for FindByNameProject (task_create idempotency check inside
 	// createMu). The query filters by all three columns; SQLite uses a
@@ -108,6 +129,11 @@ func (d *DB) createTables() error {
 
 	// Add resume_command column to existing backends tables.
 	d.conn.Exec(`ALTER TABLE backends ADD COLUMN resume_command TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+
+	// Per-backend credential env mapping (add-foreign-backend-envmap). JSON
+	// object: TARGET env var -> SOURCE descriptor; mapping only, never a value.
+	// Idempotent ADD for databases predating the column.
+	d.conn.Exec(`ALTER TABLE backends ADD COLUMN env_vars TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 
 	// Per-backend default model and per-task model override.
 	d.conn.Exec(`ALTER TABLE backends ADD COLUMN model TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
@@ -430,6 +456,12 @@ func (d *DB) createHeraTables() error {
 	// (active / not cancelled). Fails on a fresh DB (table not yet created) and
 	// is intentionally ignored; the CREATE TABLE below carries the column inline.
 	d.conn.Exec(`ALTER TABLE hera_roles ADD COLUMN cancelled_at TEXT`) //nolint:errcheck
+	// archetype (add-diligence-profiles): a planned node's intended archetype,
+	// mirrored onto the live role for display. Same additive nullable-TEXT
+	// pattern as node_kind / cancelled_at above — no backfill, existing rows
+	// read back NULL (no archetype). Fails on a fresh DB (table not yet created)
+	// and is intentionally ignored; the CREATE TABLE below carries it inline.
+	d.conn.Exec(`ALTER TABLE hera_roles ADD COLUMN archetype TEXT`) //nolint:errcheck
 
 	ddl := `
 		CREATE TABLE IF NOT EXISTS hera_orchestrators (
@@ -480,7 +512,12 @@ func (d *DB) createHeraTables() error {
 			-- show it as cancelled, but it is excluded from ListHeraPlannedNodes so
 			-- the gater never materializes it, and it is treated as non-blocking
 			-- (satisfied) by the gater so its dependents can still proceed.
-			cancelled_at    TEXT
+			cancelled_at    TEXT,
+			-- archetype (add-diligence-profiles): a planned node's intended
+			-- diligence archetype, mirrored onto the live role for display. NULL or
+			-- empty means no archetype. The gater copies it into CreateAndStart so
+			-- the materialized task carries it as the model-resolution key.
+			archetype       TEXT
 		);
 		CREATE INDEX IF NOT EXISTS idx_hera_roles_kind ON hera_roles(orchestrator_id, kind);
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_hera_roles_active_name ON hera_roles(orchestrator_id, name) WHERE archived_at IS NULL;

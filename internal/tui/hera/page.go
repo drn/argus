@@ -89,6 +89,14 @@ type HeraPage struct {
 	// (RoleView.SessionRunning → IsActive false; BUG-C).
 	sessionRunning map[string]bool
 
+	// tierResolver stamps the diligence-tiering readout (AppliedModel/Effort +
+	// ProfileWarning) onto each RoleView during doRefresh. The App wires it (local
+	// mode only) because resolution reads disk (agent.ResolveModel + profile load),
+	// which must NOT run in the pure projection on the tview thread. nil → the plan
+	// view shows the archetype (free from the role) but no model/warning (remote
+	// mode / tests). See add-diligence-profiles D-VIEW.
+	tierResolver func(*RoleView)
+
 	// Plan-DAG render mode of the Details region (coordinator selection only).
 	// When a coordinator is selected the Details region stacks the read-only
 	// roster (top) over this embedded plan graph (bottom) — both render at once,
@@ -127,6 +135,13 @@ type HeraPage struct {
 	OnDelete        func(Selection) // ctrl+d — NUKE selected role/orchestrator (Tier-2 EOL; removes from rail + reclaims worktree, confirm)
 	OnReattach      func(Selection) // Enter on a dead-session row — restart its session
 	OnAdopt         func(Selection) // `J` — adopt freelancer / reparent coordinator (orch picker)
+
+	// OnForceRecycle fires on `B` when the current selection is a coordinator
+	// (add-coordinator-context-management, hera-view delta): kills and
+	// restarts the coordinator's session on the same task/worktree/branch/
+	// binding — recycle_coord's human-forced (immediate, no idle wait) path.
+	// A no-op on a non-coordinator selection (see handleRailMutation).
+	OnForceRecycle func(Selection)
 
 	// Creation + EOL keys (BUG-006/022). OnNewCoordinator is selection-INDEPENDENT
 	// — it fires even on an empty rail, so it is dispatched directly (not via the
@@ -348,6 +363,14 @@ func (p *HeraPage) RailFiltering() bool { return p.rail.Filtering() }
 // *db.DB; remote mode never calls it, so persistence stays off.
 func (p *HeraPage) SetRailStateStore(s RailStateStore) { p.rail.SetStateStore(s) }
 
+// SetTierResolver wires the diligence-tiering annotation seam (add-diligence-
+// profiles D-VIEW). The App calls it (local mode only) with a closure that stamps
+// AppliedModel/AppliedEffort/ProfileWarning onto each RoleView using cfg + a
+// profiles loader + agent.ResolveModel. It runs during doRefresh, off the Draw
+// path, because resolution reads disk (the pure projection cannot). Remote mode
+// never calls it, so the plan view then shows archetype only (no model/warning).
+func (p *HeraPage) SetTierResolver(fn func(*RoleView)) { p.tierResolver = fn }
+
 // Machine exposes the focus machine (test seam + 6b wiring). Not named Focus()
 // because that collides with tview.Primitive's Focus(func(tview.Primitive)).
 func (p *HeraPage) Machine() *FocusMachine { return p.focus }
@@ -441,6 +464,12 @@ func (p *HeraPage) doRefresh() {
 	if err != nil {
 		uxlog.Log("[hera-view] rail refresh failed: %v", err)
 		return
+	}
+	// Stamp the diligence-tiering readout (model/effort/warning) onto each role
+	// before handing the model to the rail — local mode only (the resolver is nil
+	// in remote/tests). Runs here, off the Draw path, because resolution reads disk.
+	if p.tierResolver != nil {
+		m.annotateRoles(p.tierResolver)
 	}
 	p.rail.SetModel(m)
 	// Best-effort PR indicator source (namespace "pr", same daemon-populated
@@ -800,10 +829,17 @@ func (p *HeraPage) terminalPaneFocused() bool {
 
 // handleDetailsKey routes keys for a focused Details region (coordinator
 // selected). The region stacks the read-only roster over the embedded plan
-// graph, so the plan widget is the only interactive surface: nav (j/k/h/l +
-// arrows), Enter/Space (fan-out/collapse a group, drill into a sub-coordinator,
-// or jump to a leaf's agent view via the wired OnEnter callback), and Esc
-// ("back out one level": un-fan a fanned group → drill out → root no-op).
+// graph. j/k/Up/Down scroll the roster FIRST when it has more agents than fit
+// (DetailsView.ScrollRoster) — the SAME physical keys the plan widget already
+// binds for stage nav, layered rather than duplicated: once the roster can't
+// move further in the requested direction (or never needed to scroll),
+// ScrollRoster returns false and the key falls through to the plan widget
+// unchanged, so the two never fight over a keystroke. Every other key (h/l,
+// Enter/Space, Esc) always goes straight to the plan widget, the only OTHER
+// interactive surface: nav, Enter/Space (fan-out/collapse a group, drill into
+// a sub-coordinator, or jump to a leaf's agent view via the wired OnEnter
+// callback), and Esc ("back out one level": un-fan a fanned group → drill out
+// → root no-op).
 //
 // Esc is ALWAYS forwarded to the widget, which CONSUMES it in every case (see
 // Widget.EscBack); it never jumps to the rail. The operator leaves the pane via
@@ -812,7 +848,31 @@ func (p *HeraPage) terminalPaneFocused() bool {
 // swallow Esc at the root.) The global handler reserves only 1/2/3/q/? — see
 // gotchas/keybindings.md.
 func (p *HeraPage) handleDetailsKey(event *tcell.EventKey, setFocus func(tview.Primitive)) {
+	if delta, ok := rosterScrollDelta(event); ok && p.details.ScrollRoster(delta) {
+		return
+	}
 	p.plan.InputHandler()(event, setFocus)
+}
+
+// rosterScrollDelta maps a key event to a roster-scroll direction (+1 down,
+// -1 up) using the same j/k/Up/Down keys already bound for plan-stage nav in
+// this region. Any other key (h/l, Enter, Space, Esc, …) is not a scroll key
+// and always falls through to the plan widget.
+func rosterScrollDelta(event *tcell.EventKey) (int, bool) {
+	switch event.Key() {
+	case tcell.KeyDown:
+		return 1, true
+	case tcell.KeyUp:
+		return -1, true
+	case tcell.KeyRune:
+		switch event.Rune() {
+		case 'j':
+			return 1, true
+		case 'k':
+			return -1, true
+		}
+	}
+	return 0, false
 }
 
 // rebuildPlan reprojects the given orchestrator's PLAN DAG — its planned
@@ -866,15 +926,22 @@ func (p *HeraPage) rebuildPlan(root *OrchView) {
 
 // isRailMutationKey reports whether event is one of the rail-FOCUS mutation
 // commands that handleRailMutation acts on — spawn `w`, rename `r`, archive `a`,
-// pin `P`, status `s`/`S`, adopt `J`, new-coordinator `n`, clear-archive `C`, and
-// Ctrl+D nuke. It deliberately EXCLUDES Enter and the navigation keys
-// (j/k/h/l/Space/Esc/arrows): in details mode those belong to the embedded plan
-// widget, so they must reach handleDetailsKey untouched. The details-mode branch
-// of InputHandler consults this to route rail mutations to handleRailMutation
-// while a coordinator's plan is focused, without hijacking plan navigation
-// (BUG-010). The rune set is kept in lock-step with handleRailMutation's switch
-// below and the help modal's "Hera View (rail)" section.
+// pin `P`, status `s`/`S`, adopt `J`, new-coordinator `n`, clear-archive `C`,
+// force-recycle `B`, and Ctrl+D nuke. It deliberately EXCLUDES Enter and the
+// navigation keys (j/k/h/l/Space/Esc/arrows): in details mode those belong to
+// the embedded plan widget, so they must reach handleDetailsKey untouched. The
+// details-mode branch of InputHandler consults this to route rail mutations to
+// handleRailMutation while a coordinator's plan is focused, without hijacking
+// plan navigation (BUG-010). The rune set is kept in lock-step with
+// handleRailMutation's switch below and the help modal's "Hera View (rail)"
+// section.
 func (p *HeraPage) isRailMutationKey(event *tcell.EventKey) bool {
+	// 'B' (force-recycle, add-coordinator-context-management) is a hardcoded
+	// structural key, not yet part of the rebindable keymap system — checked
+	// before falling through to the keymap-derived CtxHeraRail resolution.
+	if event.Key() == tcell.KeyRune && event.Rune() == 'B' {
+		return true
+	}
 	// Derived from the keymap (the mutation keyset is exactly the CtxHeraRail
 	// actions; Enter + nav are NOT in that table, so they're correctly excluded).
 	_, ok := p.keys().Resolve(keymap.CtxHeraRail, event)
@@ -955,6 +1022,18 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 			p.focus.Advance()
 		}
 		return true
+	}
+	// 'B' (force-recycle, add-coordinator-context-management) is a hardcoded
+	// structural key, not yet part of the rebindable keymap system — handled
+	// before the keymap-derived switch below (mirroring Enter above). A no-op —
+	// no modal, no callback — on anything but a coordinator selection
+	// (hera-view delta: "Force-recycle key is a no-op on a non-coordinator
+	// selection"). The key is still consumed so it never leaks to rail navigation.
+	if event.Key() == tcell.KeyRune && event.Rune() == 'B' {
+		if !sel.IsCoordinator() {
+			return true
+		}
+		return p.fire(p.OnForceRecycle, sel)
 	}
 	if act, ok := p.keys().Resolve(keymap.CtxHeraRail, event); ok {
 		switch act {

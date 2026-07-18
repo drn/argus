@@ -131,6 +131,9 @@ type HeraPlannedNodeSpec struct {
 	ArgusProject string
 	Prompt       string
 	NodeKind     HeraNodeKind
+	// Archetype is the planned node's optional diligence archetype
+	// (add-diligence-profiles); the gater copies it onto the materialized task.
+	Archetype string
 }
 
 // HeraBlockSpec is one blocking edge in a whole-graph CreateHeraPlan call. Each
@@ -170,6 +173,7 @@ func (d *DB) CreateHeraPlan(orchID int64, nodes []HeraPlannedNodeSpec, edges []H
 				NodeKind:       n.NodeKind,
 				ArgusProject:   n.ArgusProject,
 				Prompt:         n.Prompt,
+				Archetype:      n.Archetype,
 			}, now)
 			if err != nil {
 				return err
@@ -357,7 +361,7 @@ func (d *DB) ListHeraPlannedNodes() ([]*HeraRole, error) {
 	defer d.mu.Unlock()
 	rows, err := d.conn.Query(
 		`SELECT r.id, r.orchestrator_id, r.name, r.kind, r.argus_project, r.prompt,
-		        r.created_at, r.archived_at, r.pinned_at, r.nuked_at, r.node_kind, r.cancelled_at
+		        r.created_at, r.archived_at, r.pinned_at, r.nuked_at, r.node_kind, r.cancelled_at, r.archetype
 		 FROM hera_roles r
 		 WHERE r.kind=? AND r.archived_at IS NULL AND r.cancelled_at IS NULL
 		   AND NOT EXISTS (SELECT 1 FROM hera_bindings b WHERE b.role_id = r.id)

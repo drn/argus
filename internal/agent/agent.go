@@ -15,7 +15,11 @@ import (
 
 	"github.com/drn/argus/internal/claudesession"
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/profiles"
+	"github.com/drn/argus/internal/review"
+	"github.com/drn/argus/internal/uxlog"
 	_ "modernc.org/sqlite"
 )
 
@@ -96,14 +100,105 @@ func ResolveBackend(task *model.Task, cfg config.Config) (config.Backend, error)
 	return backend, nil
 }
 
-// ResolveModel returns the effective model for a task: the per-task override
-// when set, otherwise the backend's default model. Empty means "let the CLI
-// pick its own default" — BuildCmd injects no --model flag in that case.
-func ResolveModel(task *model.Task, backend config.Backend) string {
+// ResolvedProfile is the daemon-side outcome of diligence-profile resolution at
+// spawn. It is non-nil ONLY when a bound profile loaded, validated, and
+// contributed a model that is valid for the task's resolved backend. BuildCmd
+// exports ARGUS_PROFILE/ARGUS_ARCHETYPE/ARGUS_MODEL from it so the in-repo
+// hera/DAG skill is profile-aware; when nil, none of those vars are exported.
+type ResolvedProfile struct {
+	Name      string // bound profile name (e.g. "default", "lean")
+	Archetype string // the task's archetype that selected the model
+	Model     string // the profile-selected model, validated for the backend
+}
+
+// ResolveModel returns the effective model for a task and, when a diligence
+// profile actively drove the choice, the resolution metadata for env export.
+//
+// Precedence: task.Model override → profile[task.Archetype].model → project /
+// backend default → "" (no --model). The profile is consulted ONLY when
+// task.Model is unset AND the task carries an archetype; the per-archetype model
+// is used only when the project's bound profile loads, validates, and the model
+// is valid for the resolved backend. Any miss (no archetype, missing/invalid
+// profile, archetype absent from the profile, or model not valid for the
+// backend) falls open to the backend default — never a hard error. Empty model
+// means "let the CLI pick its own default"; BuildCmd injects no --model flag.
+//
+// Resolution reads ~/.argus/profiles and the worktree's .argus/profiles, so it
+// MUST run daemon-side (outside the sandbox, where global ~/.argus reads EPERM).
+func ResolveModel(task *model.Task, backend config.Backend, cfg config.Config) (string, *ResolvedProfile) {
 	if m := strings.TrimSpace(task.Model); m != "" {
-		return m
+		return m, nil
 	}
-	return strings.TrimSpace(backend.Model)
+	if rp := resolveProfile(task, backend, cfg); rp != nil {
+		return rp.Model, rp
+	}
+	return strings.TrimSpace(backend.Model), nil
+}
+
+// resolveProfile loads and validates the task's bound diligence profile and
+// returns the per-archetype model when it is valid for the resolved backend, or
+// nil to signal "fall open to the backend default". It short-circuits (no disk
+// access) when the task carries no archetype, keeping archetype-less spawns
+// (the common case) hermetic and free of profile I/O.
+func resolveProfile(task *model.Task, backend config.Backend, cfg config.Config) *ResolvedProfile {
+	arch := strings.TrimSpace(task.Archetype)
+	if arch == "" {
+		return nil
+	}
+
+	// Per-spawn override takes precedence over the project's bound profile.
+	// task.Profile is non-empty only when the operator explicitly picked a
+	// different profile for this one spawn (e.g. "run one coord lean").
+	profName := strings.TrimSpace(task.Profile)
+	if profName == "" {
+		profName = "default"
+		if task.Project != "" {
+			if proj, ok := cfg.Projects[task.Project]; ok {
+				profName = proj.ResolveProfileName()
+			}
+		}
+	}
+
+	loader := &profiles.Loader{LibraryDir: filepath.Join(db.DataDir(), "profiles")}
+	if task.Worktree != "" {
+		loader.RepoDir = filepath.Join(task.Worktree, ".argus", "profiles")
+	}
+
+	// KnownModels is injected as the union allow-list seed; this keeps the
+	// dependency direction agent → profiles (profiles never imports agent).
+	// The panel-grammar validator is injected the same way (agent → review;
+	// profiles never imports review either) — this call runs daemon-side
+	// (see the doc comment above), so it applies the real grammar rather than
+	// a nil/structural-only fallback.
+	p, errs := loader.ValidateName(profName, cfg, KnownModels, review.NewValidator(cfg))
+	if p == nil || len(errs) > 0 {
+		uxlog.Log("[profiles] task %q: profile %q missing or invalid (%d error(s)); resolving with no --model", task.ID, profName, len(errs))
+		return nil
+	}
+
+	m := strings.TrimSpace(p.Archetype[arch].Model)
+	if m == "" {
+		return nil
+	}
+	if !backendAllowsModel(m, backend) {
+		uxlog.Log("[profiles] task %q: profile %q model %q not valid for resolved backend; falling through to default", task.ID, profName, m)
+		return nil
+	}
+	return &ResolvedProfile{Name: p.Name, Archetype: arch, Model: m}
+}
+
+// backendAllowsModel reports whether m is selectable for the resolved backend —
+// a member of the backend's configured Models override or, absent that, the
+// built-in KnownModels for its command. Unknown/custom backends with no Models
+// list have no allow-list, so a profile model can never be validated for them
+// and resolution falls open (no --model).
+func backendAllowsModel(m string, backend config.Backend) bool {
+	for _, cand := range BackendModels(backend) {
+		if cand == m {
+			return true
+		}
+	}
+	return false
 }
 
 // KnownModels returns the curated list of selectable model identifiers for a
@@ -578,17 +673,20 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		}
 	}
 
-	// Inject the resolved model (task override > backend default) for known
-	// backend CLIs — claude, codex, and pi all accept --model. Scoped like
-	// permission-mode injection so custom/bare commands never receive the
-	// flag, and skipped when the command already names --model (a hand-edited
-	// command always wins). Computed once here because the codex resume branch
-	// below replaces cmdStr and must re-append the flag itself.
+	// Inject the resolved model (task override > diligence profile > backend
+	// default) for known backend CLIs — claude, codex, and pi all accept
+	// --model. Scoped like permission-mode injection so custom/bare commands
+	// never receive the flag, and skipped when the command already names --model
+	// (a hand-edited command always wins). Computed once here because the codex
+	// resume branch below replaces cmdStr and must re-append the flag itself.
+	// resolvedProfile is non-nil only when a bound profile actively contributed
+	// the model; its fields drive the ARGUS_PROFILE/ARCHETYPE/MODEL env export.
+	resolvedModel, resolvedProfile := ResolveModel(task, backend, cfg)
 	modelFlag := ""
-	if m := ResolveModel(task, backend); m != "" &&
+	if resolvedModel != "" &&
 		(IsClaudeBackend(backend.Command) || isCodex || isPi || isOpencode) &&
 		!hasModelFlag(backend.Command) {
-		modelFlag = " --model " + shellQuote(m)
+		modelFlag = " --model " + shellQuote(resolvedModel)
 	}
 	cmdStr += modelFlag
 
@@ -704,6 +802,38 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// rather than emit a literal "ARGUS_TASK_ID=" with no value.
 	if task.ID != "" {
 		cmd.Env = append(cmd.Env, "ARGUS_TASK_ID="+task.ID)
+	}
+
+	// Diligence-profile env export (add-diligence-profiles). When a bound
+	// profile actively contributed a backend-valid model, surface the resolution
+	// to the agent so the in-repo hera/DAG skill is profile-aware. All three are
+	// exported together (ARGUS_MODEL is always meaningful here) or omitted
+	// entirely — never exported empty. Mirrors the ARGUS_TASK_ID export above.
+	if resolvedProfile != nil {
+		cmd.Env = append(cmd.Env,
+			"ARGUS_PROFILE="+resolvedProfile.Name,
+			"ARGUS_ARCHETYPE="+resolvedProfile.Archetype,
+			"ARGUS_MODEL="+resolvedProfile.Model,
+		)
+	}
+
+	// Per-backend credential env mapping. backend.EnvVars maps a TARGET env var
+	// (set in the child) to a SOURCE descriptor resolved at spawn time via the
+	// pluggable secretResolver (default: the daemon's own environment). The
+	// mapping carries NO secret value — only the descriptor. A resolved value is
+	// appended to the child env (later entries win per exec.Cmd.Env semantics);
+	// an unresolved source sets nothing and logs a non-sensitive warning naming
+	// ONLY the variable, never the value. We never log the resolved value.
+	for target, source := range backend.EnvVars {
+		if target == "" || source == "" {
+			continue
+		}
+		value, ok := secretResolver(source)
+		if !ok {
+			uxlog.Log("[agent] backend %q: credential source %q did not resolve; %q left unset in child env", backend.Command, source, target)
+			continue
+		}
+		cmd.Env = append(cmd.Env, target+"="+value)
 	}
 
 	committed = true

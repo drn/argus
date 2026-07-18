@@ -79,7 +79,7 @@ this section).
     the role) and `status` (`idle`/`working`/`blocked`/`done`). Use to join a team nobody spawned you
     into.
 
-- **`hera_spawn_worker(cwd, prompt, [orchestrator], [role_name], [project], [branch], [backend], [model])`**
+- **`hera_spawn_worker(cwd, prompt, [orchestrator], [role_name], [project], [branch], [backend], [model], [archetype])`**
   — spawn a new **born-bound** worker task + session under the caller's orchestrator. **Caller must hold
   a live coordinator binding.** Creates an argus task (worktree + session) and, transactionally, a worker
   role + binding pre-bound to it; an orientation prefix naming the coordinator + orchestrator is prepended
@@ -93,6 +93,9 @@ this section).
   - `backend` — defaults to project default.
   - `model` — per-worker model override, scoped to the worker's resolved backend (claude: opus/sonnet/
     haiku; codex: e.g. gpt-5; pi: its ids). Empty = backend default. Match it to task complexity.
+  - `archetype` — the worker's **diligence archetype** (e.g. `code_slice`, `bug_fix`, `review`, `ci_loop`;
+    defaults to `code_slice`). Selects the per-archetype model from the project's bound profile and is
+    exported to the worker as `ARGUS_ARCHETYPE`. An explicit `model` still wins over the profile. See §9.
   - `role_name` — derived from a prompt slug if omitted; uniquified within the orchestrator.
   - `orchestrator` — disambiguates when the calling task holds multiple live coordinator bindings.
 
@@ -173,10 +176,13 @@ or using in-session sub-agents.
   (The old `depends_on`-driven auto-adopt watcher was retired with the DAG.) To delegate, just
   `hera_spawn_worker`.
 - **The coordination decision — in-session sub-agents vs hera workers vs the plan-DAG (settle this
-  BEFORE delegating):**
+  BEFORE delegating). Delegate with prejudice, but don't be dumb about it:**
   1. **Ephemeral, in-session work** — research, review, fan-out reads, anything that returns results
      to you and needs no worktree/PR of its own? → use **Claude's native sub-agents** (Agent/Task
-     tool). NOT hera. Hera is overkill and slower for in-session parallelism.
+     tool). NOT hera. Hera is overkill and slower for in-session parallelism. But don't reflexively
+     round-trip a sub-agent for every read: a single small file or a one-shot grep with a few hits is
+     cheaper read inline than dispatched — delegate when the exploration volume clearly dwarfs the
+     answer needed back, not on principle.
   2. **Work whose unit must be its OWN argus session** — separate worktree / its own PR / long-running
      / its own sandbox? → **hera**. Then split by dependency:
      - Units have **dependencies among them** (one needs another's output, or a required ordering)? →
@@ -310,3 +316,38 @@ tools:
 
 These are orthogonal — hera does not wrap them and they do not wrap hera. Pick per op: iris when an action
 touches the host, plannotator when it's a review surface, hera when it's about roles or messaging.
+
+## 9. Diligence-profile awareness (`ARGUS_PROFILE` / `ARGUS_ARCHETYPE`)
+
+Argus can route model choice **per archetype** via *diligence profiles* — named, on-disk presets that
+map an archetype (what kind of job a task is) to a model/effort/window. Resolution happens **daemon-side
+at spawn**, outside your sandbox; the result is handed to you as **environment variables**, not files. You
+do not load or parse any profile — you only read the env.
+
+**What you can read (when set):**
+
+- **`ARGUS_ARCHETYPE`** — your task's archetype: one of `brainstorm`, `orchestrator`, `big_build`,
+  `code_slice`, `bug_fix`, `review`, `security_review`, `synthesis`, `spec_audit`, `ci_loop`, `verify`,
+  `recovery`, `docs`. It tells you *what kind of job this is* — a `code_slice` worker should behave like a
+  focused implementer, a `review` worker like a reviewer, a `ci_loop` worker like a mechanical green-the-
+  build loop. Treat it as a hint about the diligence expected of you, not a hard contract.
+- **`ARGUS_PROFILE`** — the name of the bound profile that drove the choice (e.g. `default`, `lean`,
+  `customer_grade`).
+- **`ARGUS_MODEL`** — the model the profile selected for your archetype.
+
+**Critical: all three are exported together or not at all, and may be absent even when you have an
+archetype.** They are exported **only** when a bound profile actively contributed a backend-valid model.
+If the project has no bound profile, the profile is missing/invalid, your archetype isn't mapped, or the
+profile's model isn't valid for your backend, resolution *fails open* (the agent runs on its own CLI
+default) and **none** of the three vars are set. So: read `ARGUS_ARCHETYPE` if present for a behavior
+hint, but never assume it exists, and never block on it.
+
+**You do not consult profile files.** Reading `~/.argus/profiles/` from inside the sandbox can `EPERM`;
+that is exactly why resolution runs daemon-side and arrives by env. If you spawn workers yourself, pass
+`archetype=` on `hera_spawn_worker` (and on plan-DAG nodes — see the `hera-plan` skill) to set *their*
+archetype; you do not set your own.
+
+**Reviewer panels are NOT driven here (deferred).** A `customer_grade`-style profile may carry a `[panel]`
+reviewer block, but **this skill does not consume it** — composing and running a reviewer panel is owned by
+the sibling `2a-xvendor-review` capability and is not wired up yet. Do not attempt to assemble a review
+panel from the profile; treat `[panel]` as out of scope for now.

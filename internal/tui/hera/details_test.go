@@ -1,11 +1,14 @@
 package hera
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -64,41 +67,17 @@ func TestDetails_NilOrchAndMarks(t *testing.T) {
 	// Nil orch → placeholder, no panic.
 	testutil.Contains(t, drawnText(t, func(s tcell.Screen) { d.Draw(s, 0, 0, 40, 10, false) }, 1, 1, 26), "no coordinator")
 
-	// roleMark composes ready + PR, gated on PR state (not url presence): an
-	// actionable review state shows "PR"; a merged/closed state retains the url
-	// in the cache but must not show the mark.
+	// hasPR + rosterStatusText compose "ready PR" the same way roleMark used to.
+	// state must be an actionable review state (not merely a non-empty url —
+	// the poller retains url after merge/close), matching hasPR's state-gated
+	// check (mirrors the rail's own rolePR).
 	d.prMeta = map[string]map[string]string{"t": {"url": "u", "state": "awaiting-review"}}
 	rc := &RoleView{TaskID: "t", ReadyToClose: true}
-	testutil.Equal(t, d.roleMark(rc), "ready PR")
-
-	d.prMeta = map[string]map[string]string{"t": {"url": "u", "state": "merged-closed"}}
-	testutil.Equal(t, d.roleMark(rc), "ready")
-
+	testutil.Equal(t, d.hasPR(rc), true)
+	testutil.Equal(t, rosterStatusText(rc, d.hasPR(rc)), "ready PR")
 	noMark := &RoleView{TaskID: "none"}
-	testutil.Equal(t, d.roleMark(noMark), "")
-}
-
-func TestDetails_RoleMark_PRStateTable(t *testing.T) {
-	d := NewDetailsView()
-	cases := []struct {
-		name  string
-		state string
-		want  string
-	}{
-		{"awaiting-review", "awaiting-review", "PR"},
-		{"changes-requested", "changes-requested", "PR"},
-		{"approved", "approved", "PR"},
-		{"merged-closed", "merged-closed", ""},
-		{"draft", "draft", ""},
-		{"unknown", "unknown", ""},
-		{"empty", "", ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			d.prMeta = map[string]map[string]string{"t": {"url": "u", "state": tc.state}}
-			testutil.Equal(t, d.roleMark(&RoleView{TaskID: "t"}), tc.want)
-		})
-	}
+	testutil.Equal(t, d.hasPR(noMark), false)
+	testutil.Equal(t, rosterStatusText(noMark, d.hasPR(noMark)), "—")
 }
 
 func TestDetails_TinyRectNoPanic(t *testing.T) {
@@ -112,16 +91,24 @@ func TestDetails_TinyRectNoPanic(t *testing.T) {
 	d.Draw(sim, 0, 0, 6, 4, true) // focused border path
 }
 
-// rosterContains reports whether any row of a DetailsView drawn at the given
-// height contains sub (scans the full inner width).
-func rosterContains(t *testing.T, d *DetailsView, h int, sub string) bool {
+// rosterContainsWidth is rosterContains generalized to a caller-chosen pane
+// width — the roster table needs more horizontal room than the default 40
+// columns once the ARCHETYPE/MODEL columns are in play.
+func rosterContainsWidth(t *testing.T, d *DetailsView, w, h int, sub string) bool {
 	t.Helper()
 	for y := range h {
-		if testContains(drawnText(t, func(s tcell.Screen) { d.Draw(s, 0, 0, 40, h, false) }, 1, y, 36), sub) {
+		if testContains(drawnText(t, func(s tcell.Screen) { d.Draw(s, 0, 0, w, h, false) }, 1, y, w-4), sub) {
 			return true
 		}
 	}
 	return false
+}
+
+// rosterContains reports whether any row of a DetailsView drawn at the given
+// height (width 40) contains sub (scans the full inner width).
+func rosterContains(t *testing.T, d *DetailsView, h int, sub string) bool {
+	t.Helper()
+	return rosterContainsWidth(t, d, 40, h, sub)
 }
 
 func TestDetails_ContentHeight(t *testing.T) {
@@ -135,13 +122,13 @@ func TestDetails_ContentHeight(t *testing.T) {
 		want int
 	}{
 		// Row budget: border(2) + always(11) + coord(0/1) + agent(0) + worktree(0)
-		// + reposRows(1 "(none)") + workerRows(max(n,1)). The test roles carry no
-		// ArgusProject and the coord is unbound, so agent/worktree are omitted and
-		// repos is the "(none)" line.
+		// + reposRows(1 "(none)") + workerRows(1 "(none)" when empty, else 1 header
+		// + n data rows). The test roles carry no ArgusProject and the coord is
+		// unbound, so agent/worktree are omitted and repos is the "(none)" line.
 		{"nil orch", nil, 3}, // border + placeholder line
 		{"coord, no workers", &OrchView{ID: 1, Roles: []RoleView{coord}}, 16},                           // 2 + 11 + 1 + 1(repos none) + 1(workers none)
-		{"coord + 2 workers", &OrchView{ID: 1, Roles: []RoleView{coord, wkr(2, "a"), wkr(3, "b")}}, 17}, // 2 + 11 + 1 + 1 + 2
-		{"no coord role, 2 workers", &OrchView{ID: 1, Roles: []RoleView{wkr(2, "a"), wkr(3, "b")}}, 16}, // 2 + 11 + 0 + 1 + 2
+		{"coord + 2 workers", &OrchView{ID: 1, Roles: []RoleView{coord, wkr(2, "a"), wkr(3, "b")}}, 18}, // 2 + 11 + 1 + 1 + (1 header + 2)
+		{"no coord role, 2 workers", &OrchView{ID: 1, Roles: []RoleView{wkr(2, "a"), wkr(3, "b")}}, 17}, // 2 + 11 + 0 + 1 + (1 header + 2)
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -407,4 +394,330 @@ func testContains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestRosterTruncate(t *testing.T) {
+	testutil.Equal(t, rosterTruncate("hello", 10), "hello") // fits verbatim
+	testutil.Equal(t, rosterTruncate("hello", 5), "hello")  // exact fit
+	testutil.Equal(t, rosterTruncate("hello world", 5), "hell…")
+	testutil.Equal(t, rosterTruncate("hello", 1), "h")
+	testutil.Equal(t, rosterTruncate("hello", 0), "")
+	testutil.Equal(t, rosterTruncate("hello", -1), "")
+	// Rune-safe: a multibyte string must clip on a rune boundary, never a byte
+	// mid-codepoint (the gotchas/pty-terminal.md rune-vs-byte truncation rule).
+	testutil.Equal(t, rosterTruncate("café-société", 5), "café…")
+	testutil.Equal(t, rosterTruncate("日本語のテキスト", 3), "日本…")
+}
+
+func TestArchetypeDisplay_ModelDisplay(t *testing.T) {
+	testutil.Equal(t, archetypeDisplay(""), "—")
+	testutil.Equal(t, archetypeDisplay("code_slice"), "code_slice")
+	testutil.Equal(t, modelDisplay(""), "—")
+	testutil.Equal(t, modelDisplay("claude-sonnet-5"), "claude-sonnet-5")
+}
+
+// TestRosterStatusText_Precedence pins the status-cell text to the SAME
+// precedence widget.RoleStatusIcon uses (via roleStatusInputs), so the icon
+// and the label never disagree (BUG-A: needs-input outranks ready_to_close).
+func TestRosterStatusText_Precedence(t *testing.T) {
+	testutil.Equal(t, rosterStatusText(&RoleView{}, false), "—")
+	testutil.Equal(t, rosterStatusText(&RoleView{Live: true}, false), "live")
+	testutil.Equal(t, rosterStatusText(&RoleView{HasStatus: true, Status: db.HeraStatusIdle}, false), "idle")
+	testutil.Equal(t, rosterStatusText(&RoleView{HasStatus: true, Status: db.HeraStatusDone}, false), "done")
+	testutil.Equal(t, rosterStatusText(&RoleView{HasStatus: true, Status: db.HeraStatusFailed}, false), "failed")
+	testutil.Equal(t, rosterStatusText(&RoleView{ReadyToClose: true}, false), "ready")
+	testutil.Equal(t, rosterStatusText(&RoleView{ReadyToClose: true}, true), "ready PR")
+	testutil.Equal(t, rosterStatusText(&RoleView{Live: true, SessionRunning: true}, false), "working") // IsActive
+	// NeedsInput outranks ReadyToClose (BUG-A) and Active.
+	needsInput := &RoleView{Live: true, SessionRunning: true, NeedsInput: true, ReadyToClose: true}
+	testutil.Equal(t, rosterStatusText(needsInput, false), "needs-input")
+	// PR suffix composes with any underlying status, not just "ready".
+	testutil.Equal(t, rosterStatusText(&RoleView{HasStatus: true, Status: db.HeraStatusIdle}, true), "idle PR")
+}
+
+func TestComputeRosterColumns(t *testing.T) {
+	workers := []RoleView{
+		{Name: "alpha", Archetype: "code_slice", AppliedModel: "claude-sonnet-5"},
+		{Name: "a-very-long-agent-name-indeed-and-then-some", Archetype: "big_build", AppliedModel: "claude-opus-4-8"},
+		{Name: "b", Archetype: "", AppliedModel: ""},
+	}
+
+	// Plenty of room: columns size to the widest cell, capped at the max
+	// constants. "a-very-long-agent-name-indeed-and-then-some" is 43 runes
+	// (clamps to rosterNameMax, which fits real project names up to ~30 chars
+	// in full); "code_slice"/"claude-sonnet-5" are 10/15 runes (under their
+	// caps, so the column sizes to the content, not the min/max).
+	cols := computeRosterColumns(workers, 200)
+	testutil.Equal(t, cols.status, rosterStatusWidth)
+	testutil.Equal(t, cols.name, rosterNameMax)
+	testutil.Equal(t, cols.archetype, 10)
+	testutil.Equal(t, cols.model, 15)
+
+	// An oversized archetype/model value clamps to the max constants too.
+	capped := computeRosterColumns([]RoleView{{
+		Name:         "x",
+		Archetype:    "an-absurdly-long-archetype-name",
+		AppliedModel: "an-absurdly-long-fully-qualified-model-identifier",
+	}}, 200)
+	testutil.Equal(t, capped.archetype, rosterArchMax)
+	testutil.Equal(t, capped.model, rosterModelMax)
+
+	// A narrow pane must never make computeRosterColumns return negative
+	// widths, and once avail covers the fixed icon-gutter + inter-column gap
+	// overhead, the computed columns must fit within it. Below that floor
+	// (an extreme narrow pane) columns shrink to zero rather than corrupting
+	// the layout — TestDetails_RosterTableNarrowPaneNoPanic pins that this
+	// never panics.
+	const fixedOverhead = rosterIconGutter + 3*rosterColGap
+	for _, avail := range []int{0, -5, 1, 5, 8, 10, 20, 40, 80} {
+		got := computeRosterColumns(workers, avail)
+		testutil.Equal(t, got.status >= 0 && got.name >= 0 && got.archetype >= 0 && got.model >= 0, true)
+		if avail >= fixedOverhead {
+			testutil.Equal(t, rosterTotalWidth(got) <= avail, true)
+		}
+	}
+}
+
+// TestDetails_RosterTableColumns is the render smoke test: a coordinator's
+// roster must show the NAME/ARCHETYPE/MODEL/STATUS header — in that order,
+// name first and status last — and each worker's resolved archetype + model
+// rendered brightly (theme.StyleNormal), with an unresolved worker rendering
+// a dimmed "—" placeholder rather than a blank cell.
+func TestDetails_RosterTableColumns(t *testing.T) {
+	orch := &OrchView{
+		ID:   1,
+		Name: "my-orch",
+		Roles: []RoleView{
+			{RoleID: 1, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c"},
+			{
+				RoleID: 2, OrchID: 1, Name: "alpha", Kind: db.HeraKindWorker, Live: true, TaskID: "t-a",
+				Archetype: "code_slice", AppliedModel: "claude-sonnet-5",
+			},
+			{
+				RoleID: 3, OrchID: 1, Name: "beta", Kind: db.HeraKindWorker, Live: true, TaskID: "t-b",
+				// No archetype/model resolved (fail-open / no profile).
+			},
+		},
+	}
+	d := NewDetailsView()
+	d.SetOrch(orch, nil)
+	h := d.ContentHeight()
+	const w = 90 // wide enough that no column shrinks/truncates the fixture values
+
+	for _, want := range []string{"STATUS", "NAME", "ARCHETYPE", "MODEL", "code_slice", "claude-sonnet-5", "alpha", "beta"} {
+		if !rosterContainsWidth(t, d, w, h, want) {
+			t.Errorf("expected roster table to contain %q", want)
+		}
+	}
+	// The unresolved worker's archetype/model cells render "—", not blank.
+	if !rosterContainsWidth(t, d, w, h, "—") {
+		t.Errorf("expected roster table to render \"—\" for the unresolved worker's archetype/model")
+	}
+
+	// Column ORDER: NAME first, then ARCHETYPE, then MODEL, then STATUS last
+	// (the icon+label trailing verdict) — pinned on both the header row and
+	// alpha's data row.
+	headerRow, dataRow := "", ""
+	for y := 0; y < h; y++ {
+		got := drawnText(t, func(s tcell.Screen) { d.Draw(s, 0, 0, w, h, false) }, 0, y, w)
+		if strings.Contains(got, "ARCHETYPE") {
+			headerRow = got
+		}
+		if strings.Contains(got, "code_slice") {
+			dataRow = got
+		}
+	}
+	if headerRow == "" || dataRow == "" {
+		t.Fatalf("expected to locate the roster header row and alpha's data row; header=%q data=%q", headerRow, dataRow)
+	}
+	nameH := strings.Index(headerRow, "NAME")
+	archH := strings.Index(headerRow, "ARCHETYPE")
+	modelH := strings.Index(headerRow, "MODEL")
+	statusH := strings.Index(headerRow, "STATUS")
+	testutil.Equal(t, nameH >= 0 && archH > nameH && modelH > archH && statusH > modelH, true)
+
+	nameD := strings.Index(dataRow, "alpha")
+	archD := strings.Index(dataRow, "code_slice")
+	modelD := strings.Index(dataRow, "claude-sonnet-5")
+	statusD := strings.Index(dataRow, "live") // alpha: Live, not SessionRunning → "live"
+	testutil.Equal(t, nameD >= 0 && archD > nameD && modelD > archD && statusD > modelD, true)
+
+	// Bright values: the resolved archetype/model cells render in the same
+	// readable foreground the NAME cell uses (theme.StyleNormal), not the
+	// dimmed placeholder style reserved for an unresolved "—" cell.
+	testutil.Equal(t, rosterValueStyle("code_slice"), theme.StyleNormal)
+	testutil.Equal(t, rosterValueStyle("claude-sonnet-5"), theme.StyleNormal)
+	testutil.Equal(t, rosterValueStyle(""), theme.StyleDimmed)
+}
+
+// TestDetails_RosterTableNarrowPaneNoPanic pins that a details pane too
+// narrow to fit the ideal column widths still renders (shrunk/truncated
+// columns) without panicking or hanging.
+func TestDetails_RosterTableNarrowPaneNoPanic(t *testing.T) {
+	orch := &OrchView{
+		ID:   1,
+		Name: "my-orch",
+		Roles: []RoleView{
+			{RoleID: 1, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator},
+			{
+				RoleID: 2, OrchID: 1, Name: "a-very-long-worker-name", Kind: db.HeraKindWorker,
+				Archetype: "big_build", AppliedModel: "claude-opus-4-8",
+			},
+		},
+	}
+	d := NewDetailsView()
+	d.SetOrch(orch, nil)
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(80, 30)
+	for _, w := range []int{2, 5, 10, 20} {
+		d.Draw(sim, 0, 0, w, 20, false)
+	}
+}
+
+// bigRoster builds a coordinator with n workers, far more than a modest pane
+// can show at once — the fixture the roster-scroll tests need.
+func bigRoster(n int) *OrchView {
+	roles := []RoleView{{RoleID: 1, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator}}
+	for i := 1; i <= n; i++ {
+		roles = append(roles, RoleView{
+			RoleID: int64(i + 1), OrchID: 1, Name: fmt.Sprintf("agent-%02d", i), Kind: db.HeraKindWorker,
+		})
+	}
+	return &OrchView{ID: 1, Name: "big-orch", Roles: roles}
+}
+
+// TestDetails_RosterScrolls is the render smoke test the scroll requirement
+// needs: a 20-agent roster drawn in a pane too short to show them all must
+// make the LAST agent reachable by scrolling down, and the FIRST agent
+// reachable again by scrolling back up — nothing is permanently cut off.
+func TestDetails_RosterScrolls(t *testing.T) {
+	d := NewDetailsView()
+	d.SetOrch(bigRoster(20), nil)
+	const w, h = 60, 20
+
+	// Draw once so rosterVisibleRows reflects this pane's real budget (mirrors
+	// a live app: Draw always runs before any keypress can act on it).
+	testutil.Equal(t, rosterContainsWidth(t, d, w, h, "agent-01"), true)
+	testutil.Equal(t, rosterContainsWidth(t, d, w, h, "agent-20"), false) // cut off before scrolling
+
+	for i := 0; i < 30; i++ { // far more presses than needed; ScrollRoster clamps
+		if !d.ScrollRoster(1) {
+			break
+		}
+	}
+	testutil.Equal(t, rosterContainsWidth(t, d, w, h, "agent-20"), true) // reachable now
+	testutil.Equal(t, d.ScrollRoster(1), false)                          // already at the bound
+
+	for i := 0; i < 30; i++ {
+		if !d.ScrollRoster(-1) {
+			break
+		}
+	}
+	testutil.Equal(t, rosterContainsWidth(t, d, w, h, "agent-01"), true) // back at the top
+	testutil.Equal(t, d.ScrollRoster(-1), false)                         // already at the bound
+}
+
+// TestDetails_ScrollRosterNoopsBeforeFirstDraw pins that ScrollRoster is a
+// harmless no-op before any Draw has established a real row budget (avoids
+// scrolling against a stale/zero rosterVisibleRows).
+func TestDetails_ScrollRosterNoopsBeforeFirstDraw(t *testing.T) {
+	d := NewDetailsView()
+	d.SetOrch(bigRoster(20), nil)
+	testutil.Equal(t, d.ScrollRoster(1), false)
+	testutil.Equal(t, d.ScrollRoster(-1), false)
+}
+
+// TestDetails_ScrollRosterNoopsWhenEverythingFits pins that a small roster
+// (fits entirely within the pane) never consumes a scroll keypress — so
+// j/k/Up/Down fall straight through to the embedded plan widget as before.
+func TestDetails_ScrollRosterNoopsWhenEverythingFits(t *testing.T) {
+	d := NewDetailsView()
+	d.SetOrch(bigRoster(2), nil)
+	testutil.Equal(t, rosterContainsWidth(t, d, 60, 30, "agent-01"), true)
+	testutil.Equal(t, rosterContainsWidth(t, d, 60, 30, "agent-02"), true)
+	testutil.Equal(t, d.ScrollRoster(1), false)
+	testutil.Equal(t, d.ScrollRoster(-1), false)
+}
+
+// TestDetails_SetOrchScrollReset pins WHEN the roster's scroll offset resets:
+// a genuine selection change (different orchestrator) resets to the top, but
+// re-selecting the SAME orchestrator (the ~1s refresh-tick case) preserves
+// the operator's scroll position instead of snapping it back every tick.
+func TestDetails_SetOrchScrollReset(t *testing.T) {
+	d := NewDetailsView()
+	orchA := bigRoster(20)
+	d.SetOrch(orchA, nil)
+	rosterContainsWidth(t, d, 60, 20, "agent-01") // Draw once to seed the budget
+	testutil.Equal(t, d.ScrollRoster(5), true)
+	testutil.Equal(t, d.rosterScroll > 0, true)
+
+	// Same orchestrator (same ID) re-selected — e.g. a refresh tick rebuilding
+	// the model — must NOT reset the scroll position.
+	orchARefreshed := bigRoster(20)
+	d.SetOrch(orchARefreshed, nil)
+	testutil.Equal(t, d.rosterScroll > 0, true)
+
+	// A genuinely different orchestrator resets to the top.
+	orchB := &OrchView{ID: 2, Name: "other", Roles: []RoleView{
+		{RoleID: 1, OrchID: 2, Name: "coord", Kind: db.HeraKindCoordinator},
+	}}
+	d.SetOrch(orchB, nil)
+	testutil.Equal(t, d.rosterScroll, 0)
+}
+
+// TestDetails_ClampRosterScrollNegative pins the defensive floor: a
+// scrollOffset that somehow went negative (never possible via ScrollRoster,
+// which floors at 0 itself, but clampRosterScroll is the general re-bound
+// contract) is corrected to 0, not left negative.
+func TestDetails_ClampRosterScrollNegative(t *testing.T) {
+	d := NewDetailsView()
+	d.SetOrch(bigRoster(20), nil)
+	d.rosterScroll = -7
+	d.clampRosterScroll(20)
+	testutil.Equal(t, d.rosterScroll, 0)
+}
+
+// TestDetails_ClampRosterScrollAboveMax pins the other half of the re-bound:
+// a scroll offset past the current maxScroll (e.g. the roster SHRANK — an
+// agent completed and dropped off) is pulled back down to the new max.
+func TestDetails_ClampRosterScrollAboveMax(t *testing.T) {
+	d := NewDetailsView()
+	d.SetOrch(bigRoster(20), nil)
+	d.rosterVisibleRows = 5
+	d.rosterScroll = 100
+	d.clampRosterScroll(20)
+	testutil.Equal(t, d.rosterScroll, d.rosterMaxScroll(20))
+	testutil.Equal(t, d.rosterScroll < 100, true)
+}
+
+func TestRosterScrollDelta(t *testing.T) {
+	down, ok := rosterScrollDelta(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, down, 1)
+
+	up, ok := rosterScrollDelta(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone))
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, up, -1)
+
+	jDown, ok := rosterScrollDelta(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone))
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, jDown, 1)
+
+	kUp, ok := rosterScrollDelta(tcell.NewEventKey(tcell.KeyRune, 'k', tcell.ModNone))
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, kUp, -1)
+
+	// Any other key (h/l, Enter, Esc, an unrelated rune) is not a scroll key.
+	for _, ev := range []*tcell.EventKey{
+		tcell.NewEventKey(tcell.KeyRune, 'h', tcell.ModNone),
+		tcell.NewEventKey(tcell.KeyRune, 'l', tcell.ModNone),
+		tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone),
+		tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone),
+		tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone),
+	} {
+		_, ok := rosterScrollDelta(ev)
+		testutil.Equal(t, ok, false)
+	}
 }

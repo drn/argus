@@ -16,14 +16,24 @@ import (
 // write {"failed": true, "reason": "..."} so a Hera coordinator can decide how
 // to proceed.
 type Task struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Status     Status    `json:"status"`
-	Project    string    `json:"project"`
-	Branch     string    `json:"branch"`
-	Prompt     string    `json:"prompt"`
-	Backend    string    `json:"backend,omitempty"`
-	Model      string    `json:"model,omitempty"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Status  Status `json:"status"`
+	Project string `json:"project"`
+	Branch  string `json:"branch"`
+	Prompt  string `json:"prompt"`
+	Backend string `json:"backend,omitempty"`
+	Model   string `json:"model,omitempty"`
+	// Archetype is the optional diligence-profile resolution key
+	// (add-diligence-profiles): an empty string means no archetype, so no
+	// profile is consulted and resolution falls through to the project/backend
+	// default. Set at the agent.CreateAndStart spawn layer; read by
+	// agent.ResolveModel to pick the per-archetype model from the bound profile.
+	Archetype string `json:"archetype,omitempty"`
+	// Profile is the per-spawn diligence-profile override (add-diligence-profiles).
+	// When non-empty it takes precedence over the project's bound profile during
+	// model resolution. Empty means "use the project's binding".
+	Profile    string    `json:"profile,omitempty"`
 	Worktree   string    `json:"worktree,omitempty"`
 	AgentPID   int       `json:"agent_pid,omitempty"`
 	SessionID  string    `json:"session_id,omitempty"`

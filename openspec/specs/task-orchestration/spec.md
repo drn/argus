@@ -27,7 +27,7 @@
 ## Requirements
 ### Requirement: Planned node is a hera role with no live binding
 
-The system SHALL allow a coordinator to create a **planned node**: a `hera_roles` row of kind `worker` that has **no live binding** and therefore no agent process, no worktree, and no inbox. A planned node SHALL persist its target argus project, the prompt to deliver on materialization, and a planner-assigned short-id-prefixed name. Creating a planned node SHALL be a coordinator-only operation; a worker or freelance caller SHALL be rejected. A planned node SHALL NOT trigger `agent.CreateAndStart` or any worktree creation at plan time.
+The system SHALL allow a coordinator to create a **planned node**: a `hera_roles` row of kind `worker` that has **no live binding** and therefore no agent process, no worktree, and no inbox. A planned node SHALL persist its target argus project, the prompt to deliver on materialization, a planner-assigned short-id-prefixed name, and an optional archetype that is propagated onto the task at materialization. Creating a planned node SHALL be a coordinator-only operation; a worker or freelance caller SHALL be rejected. A planned node SHALL NOT trigger `agent.CreateAndStart` or any worktree creation at plan time.
 
 #### Scenario: Coordinator creates a planned node
 
@@ -42,7 +42,12 @@ The system SHALL allow a coordinator to create a **planned node**: a `hera_roles
 #### Scenario: Planned node carries its materialization inputs
 
 - **WHEN** a planned node is created
-- **THEN** its target project, delivery prompt, and short-id-prefixed name are persisted on the role for use at materialization
+- **THEN** its target project, delivery prompt, short-id-prefixed name, and optional archetype are persisted on the role for use at materialization
+
+#### Scenario: Planned archetype materializes onto the task
+
+- **WHEN** a planned node carrying archetype `review` is materialized
+- **THEN** the resulting task carries `review` as its archetype
 
 ### Requirement: Blocking edges between roles with cycle detection
 

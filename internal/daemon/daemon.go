@@ -118,7 +118,12 @@ type Daemon struct {
 	apiServer *api.Server          // set when API is enabled, shut down in cleanup
 	scheduler *scheduler.Scheduler // recurring scheduled-task firer; always started
 	heraGater *heragater.Watcher   // hera plan-DAG gater; started when hera enabled
-	clipboard *clipboard.Store     // agent-staged clipboard, in-memory
+	// heraRecycleWatcher drives the self-service recycle_coord path
+	// (add-coordinator-context-management D5): started when hera enabled,
+	// polls for coordinators with a pending recycle request and restarts
+	// each once its session goes idle.
+	heraRecycleWatcher *hera.RecycleWatcher
+	clipboard          *clipboard.Store // agent-staged clipboard, in-memory
 
 	// Boot identity — recorded once at New() so the TUI can detect when the
 	// on-disk binary has been rebuilt since the daemon started. binaryHash is
@@ -487,6 +492,7 @@ func (d *Daemon) heraSpawnWorker(in mcp.HeraSpawnInput) (*mcp.HeraSpawnResult, e
 		Branch:         in.Branch,
 		Backend:        in.Backend,
 		Model:          in.Model,
+		Archetype:      in.Archetype,
 	})
 	if err != nil {
 		return nil, err
@@ -1038,6 +1044,14 @@ func (d *Daemon) Serve(sockPath string) error {
 		// the worker path and never spawn a sub-coordinator agent.
 		d.heraGater.SetSubCoordMaterializer(d.heraGaterMaterializeSubCoord)
 		go d.heraGater.Start()
+
+		// Self-service recycle_coord sweep (add-coordinator-context-management
+		// D5). Independent of the gater above (that materializes planned
+		// nodes; this recycles live coordinators) but gated on the same
+		// cfg.Hera.Enabled — both are hera-native background loops with no
+		// meaning when hera is off.
+		d.heraRecycleWatcher = hera.NewRecycleWatcher(d.db, NewHeraRecycleRunner(d.db, d.runner, d.cfgFn))
+		go d.heraRecycleWatcher.Start()
 	}
 
 	// Start MCP HTTP server and KB indexer (only when KB is enabled in settings).
@@ -1069,6 +1083,7 @@ func (d *Daemon) Serve(sockPath string) error {
 			mcpSrv.SetHeraService(hera.New(d.db, d.notifier), d.db, d.heraSpawnWorker)
 		}
 		mcpSrv.SetArtifactManager(d.db)
+		mcpSrv.SetProfileResolver(d.db)
 		mcpSrv.SetPluginRegistry(pluginRegistry)
 		d.mcpServer = mcpSrv
 		actualPort, err := mcpSrv.ListenAndServe()
@@ -1281,6 +1296,11 @@ func (d *Daemon) cleanup() {
 	// Stop the hera plan-DAG gater if running.
 	if d.heraGater != nil {
 		d.heraGater.Stop()
+	}
+
+	// Stop the hera recycle_coord self-service watcher if running.
+	if d.heraRecycleWatcher != nil {
+		d.heraRecycleWatcher.Stop()
 	}
 
 	// Stop the KB indexer if running.

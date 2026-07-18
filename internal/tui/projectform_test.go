@@ -113,17 +113,30 @@ func TestProjectForm_TabCyclesToSandbox(t *testing.T) {
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
 	testutil.Equal(t, pf.focused, pfFieldSandbox)
 
-	// Tab from Sandbox → wraps to Name
+	// Tab from Sandbox → Profile (the new last field)
+	pf.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
+	testutil.Equal(t, pf.focused, pfFieldProfile)
+
+	// Tab from Profile → wraps to Name
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
 	testutil.Equal(t, pf.focused, pfFieldName)
 }
 
-func TestProjectForm_EnterOnSandbox_SubmitsForm(t *testing.T) {
+func TestProjectForm_EnterOnProfile_SubmitsForm(t *testing.T) {
+	pf := NewProjectForm()
+	pf.focused = pfFieldProfile
+
+	pf.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	testutil.Equal(t, pf.done, true)
+}
+
+func TestProjectForm_EnterOnSandbox_AdvancesToProfile(t *testing.T) {
 	pf := NewProjectForm()
 	pf.focused = pfFieldSandbox
 
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
-	testutil.Equal(t, pf.done, true)
+	testutil.Equal(t, pf.focused, pfFieldProfile)
+	testutil.Equal(t, pf.done, false)
 }
 
 func TestProjectForm_EnterOnBackend_AdvancesToSandbox(t *testing.T) {
@@ -135,12 +148,12 @@ func TestProjectForm_EnterOnBackend_AdvancesToSandbox(t *testing.T) {
 	testutil.Equal(t, pf.done, false)
 }
 
-func TestProjectForm_BacktabFromName_GoesToSandbox(t *testing.T) {
+func TestProjectForm_BacktabFromName_GoesToProfile(t *testing.T) {
 	pf := NewProjectForm()
 	pf.focused = pfFieldName
 
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyBacktab, 0, tcell.ModNone))
-	testutil.Equal(t, pf.focused, pfFieldSandbox)
+	testutil.Equal(t, pf.focused, pfFieldProfile)
 }
 
 func TestProjectForm_EditMode_BacktabSkipsName(t *testing.T) {
@@ -149,17 +162,17 @@ func TestProjectForm_EditMode_BacktabSkipsName(t *testing.T) {
 	// In edit mode, focused starts at Path.
 	pf.focused = pfFieldPath
 
-	// Backtab from Path skips Name → goes to Sandbox.
+	// Backtab from Path skips Name → goes to Profile (the last field).
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyBacktab, 0, tcell.ModNone))
-	testutil.Equal(t, pf.focused, pfFieldSandbox)
+	testutil.Equal(t, pf.focused, pfFieldProfile)
 }
 
-func TestProjectForm_TabFromSandbox_EditMode(t *testing.T) {
+func TestProjectForm_TabFromProfile_EditMode(t *testing.T) {
 	pf := NewProjectForm()
 	pf.LoadProject("test", config.Project{Path: t.TempDir()})
-	pf.focused = pfFieldSandbox
+	pf.focused = pfFieldProfile
 
-	// Tab from Sandbox → wraps to Name → edit mode skips → Path.
+	// Tab from Profile → wraps to Name → edit mode skips → Path.
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
 	testutil.Equal(t, pf.focused, pfFieldPath)
 }
@@ -774,4 +787,67 @@ func TestProjectForm_BackendField_AltWordMotion(t *testing.T) {
 	testutil.Equal(t, string(pf.fields[pfFieldBackend]), "claude ")
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModAlt))
 	testutil.Equal(t, pf.cursors[pfFieldBackend], 0)
+}
+
+// --- add-diligence-profiles: profile select-list (settings-view, 5.3) ---
+
+// TestProjectForm_ProfileSelectorPersistsName covers "Selection persists the name
+// only": the profile selector offers the unbound entry + supplied valid names,
+// pre-positioned on the bound name; cycling to another and submitting persists the
+// chosen NAME on the project.
+func TestProjectForm_ProfileSelectorPersistsName(t *testing.T) {
+	pf := NewProjectForm()
+	pf.LoadProject("proj", config.Project{Path: "/p", Profile: "lean"})
+	pf.SetProfileOptions([]string{"lean", "customer_grade"}, "lean")
+
+	// Pre-positioned on the bound profile.
+	testutil.Equal(t, pf.profileValue(), "lean")
+
+	// Cycle to customer_grade and confirm Result persists the name only.
+	pf.focused = pfFieldProfile
+	pf.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
+	_, proj := pf.Result()
+	testutil.Equal(t, proj.Profile, "customer_grade")
+}
+
+// TestProjectForm_ProfileUnboundPersistsEmpty: selecting the "(unbound)" entry
+// (index 0) persists an empty profile name.
+func TestProjectForm_ProfileUnboundPersistsEmpty(t *testing.T) {
+	pf := NewProjectForm()
+	pf.LoadProject("proj", config.Project{Path: "/p", Profile: "lean"})
+	pf.SetProfileOptions([]string{"lean"}, "lean")
+
+	// Cycle left from index 1 (lean) → index 0 ("(unbound)").
+	pf.focused = pfFieldProfile
+	pf.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone))
+	testutil.Equal(t, pf.profileOpts[pf.profileIdx], pfProfileUnbound)
+	_, proj := pf.Result()
+	testutil.Equal(t, proj.Profile, "")
+}
+
+// TestProjectForm_ProfileOnlyValidOffered: SetProfileOptions is fed ONLY valid
+// names (the App filters via ValidateName), so the selector never offers an
+// invalid profile — but a currently-bound-yet-invalid name stays visible so the
+// operator can see + keep it.
+func TestProjectForm_ProfileOnlyValidOffered(t *testing.T) {
+	pf := NewProjectForm()
+	pf.LoadProject("proj", config.Project{Path: "/p", Profile: "stale"})
+	// "stale" is NOT in the valid set (it failed validation) but is the binding.
+	pf.SetProfileOptions([]string{"lean", "customer_grade"}, "stale")
+
+	// The offered options: "(unbound)", the two valid names, and the bound stale name.
+	testutil.Equal(t, pf.profileOpts[0], pfProfileUnbound)
+	has := func(n string) bool {
+		for _, o := range pf.profileOpts {
+			if o == n {
+				return true
+			}
+		}
+		return false
+	}
+	testutil.Equal(t, has("lean"), true)
+	testutil.Equal(t, has("customer_grade"), true)
+	testutil.Equal(t, has("stale"), true) // bound-but-invalid kept visible
+	// Pre-positioned on the bound name.
+	testutil.Equal(t, pf.profileValue(), "stale")
 }

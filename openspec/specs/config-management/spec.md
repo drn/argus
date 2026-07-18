@@ -133,3 +133,33 @@ A backend configuration entry MAY carry an optional `models` list naming the mod
 - **WHEN** the opencode backend has no `models` entry
 - **THEN** the new-task model selector offers only the `default` and `custom…` options (no curated list), so any `provider/model` is reachable by typing
 
+### Requirement: Project profile binding
+
+Project configuration SHALL support an optional `profile` field naming the diligence profile bound to
+that project, storing the profile **name only** (never the profile body). When a project's `profile` is
+empty or absent, the project SHALL be treated as bound to the `default` profile for resolution purposes.
+
+#### Scenario: Project carries a profile name
+
+- **WHEN** a project entry declares `profile = "customer_grade"`
+- **THEN** the loaded project exposes `customer_grade` as its bound profile name
+
+#### Scenario: Absent profile resolves default
+
+- **WHEN** a project entry omits `profile`
+- **THEN** the project is treated as bound to the `default` profile
+
+### Requirement: Coordinator context budget configuration
+
+The system SHALL provide a `coordinator_context_budget` integer field on `HeraConfig` (`config.toml` key `hera.coordinator_context_budget`), naming the token count at or above which the context-budget Stop hook (see `coordinator-context-management`) begins nudging a coordinator to recycle. When absent from config, the system SHALL default it to `200000`.
+
+#### Scenario: Default budget applies when unset
+
+- **WHEN** a project's config.toml has no `hera.coordinator_context_budget` key
+- **THEN** the effective budget is `200000`
+
+#### Scenario: Explicit budget overrides the default
+
+- **WHEN** a project's config.toml sets `hera.coordinator_context_budget = 350000`
+- **THEN** the effective budget for that project is `350000`
+

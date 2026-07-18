@@ -339,3 +339,71 @@ func TestSupListInfo(t *testing.T) {
 		t.Fatalf("expected live session %s in ListSessionInfo, got %+v", task.ID, infos)
 	}
 }
+
+// TestSupArchModel is the regression test for the reported
+// bug: a hera worker's diligence-profile model resolution (task.Archetype +
+// the project's bound profile) was silently dropped when the session started
+// through the daemon→supervisor RPC boundary. agent.ResolveModel/BuildCmd
+// resolve correctly when handed a fully-populated *model.Task directly (see
+// internal/agent/profile_resolve_test.go) — the loss happens one layer
+// further out: StartReq (the wire message client.Start sends and
+// sessionCore.StartSession decodes into a FRESH *model.Task) never carried
+// Archetype/Profile, so the reconstructed task on the supervisor side always
+// resolved as archetype-less, even though the DB row and the original task
+// object were correct. Supervisor mode is the P4 default, so this was the
+// live path for every real spawn.
+//
+// We prove it by running a REAL session through the full client→RPC→
+// supervisor→BuildCmd→exec.Cmd chain (not calling ResolveModel/BuildCmd
+// directly) with a fake "claude" binary on PATH that records its argv, and
+// asserting the resolved model actually reached the invoked command line.
+func TestSupArchModel(t *testing.T) {
+	d, sc, database := supE2E(t)
+	_ = d
+
+	// Project "app" is bound to profile "lean" (mirrors the live repro: ARGUS
+	// bound to "lean"); "lean" resolves archetype "docs" to model "haiku".
+	testutil.NoError(t, database.SetProject("app", config.Project{Path: t.TempDir(), Profile: "lean"}))
+	profDir := filepath.Join(db.DataDir(), "profiles")
+	testutil.NoError(t, os.MkdirAll(profDir, 0o750))
+	testutil.NoError(t, os.WriteFile(filepath.Join(profDir, "lean.toml"), []byte("[archetype.docs]\nmodel = \"haiku\"\n"), 0o600))
+
+	// A fake "claude" binary on PATH records its argv so the assertion below
+	// observes the command line the supervisor ACTUALLY executed, not just
+	// what a resolution function returned in isolation.
+	binDir := t.TempDir()
+	argvFile := filepath.Join(t.TempDir(), "argv.txt")
+	script := "#!/bin/sh\necho \"$@\" > " + argvFile + "\n"
+	testutil.NoError(t, os.WriteFile(filepath.Join(binDir, "claude"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	bk := "be-archrpc"
+	testutil.NoError(t, database.SetBackend(bk, config.Backend{Command: "claude"}))
+	task := &model.Task{
+		ID: "archrpc", Name: "archrpc", Status: model.StatusInProgress,
+		Backend: bk, Worktree: t.TempDir(),
+		Project: "app", Archetype: "docs",
+	}
+	testutil.NoError(t, database.Add(task))
+
+	// cfg arg is ignored on the wire — the supervisor resolves config (and
+	// thus the project→profile binding) via its own cfgFn.
+	_, err := sc.Start(task, config.Config{}, 24, 80, false)
+	testutil.NoError(t, err)
+
+	var argv string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, rerr := os.ReadFile(argvFile); rerr == nil {
+			argv = string(data)
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if argv == "" {
+		t.Fatal("fake claude binary never recorded its argv — session did not run")
+	}
+	if !strings.Contains(argv, "--model haiku") {
+		t.Fatalf("resolved profile model did not reach the spawned process through the daemon→supervisor RPC boundary; argv = %q", argv)
+	}
+}

@@ -48,6 +48,19 @@ func TestHeraConfig_TOMLOverride(t *testing.T) {
 	}
 }
 
+// TestHeraConfig_CoordinatorContextBudget_Default pins the
+// add-coordinator-context-management config-management delta's "Default budget
+// applies when unset" scenario: HeraConfig.CoordinatorContextBudget must
+// default to 200000 (the token count at/above which the context-budget Stop
+// hook begins nudging a coordinator to recycle). The field does not exist yet,
+// so this fails to compile until Stage 2 adds it.
+func TestHeraConfig_CoordinatorContextBudget_Default(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Hera.CoordinatorContextBudget != 200000 {
+		t.Errorf("Hera.CoordinatorContextBudget = %d, want 200000 (default)", cfg.Hera.CoordinatorContextBudget)
+	}
+}
+
 // TestSupervisorConfig_DefaultEnabled pins the P4 flip: an absent key ⇒
 // supervisor mode ON, mirroring hera.enabled. The in-process runner is reached
 // only via an explicit "false" (the retained rollback).

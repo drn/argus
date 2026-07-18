@@ -26,7 +26,17 @@ type HeraWorkerSpawnInput struct {
 	Branch         string // optional base branch
 	Backend        string // optional backend override
 	Model          string // optional per-worker model override (empty = backend default)
+	Archetype      string // optional diligence archetype; defaults to code_slice when empty
+	Profile        string // optional per-spawn profile override; empty = use project binding
 }
+
+// Default archetypes applied at the spawn layer when the caller supplies none
+// (add-diligence-profiles). Both MUST be members of profiles.CanonicalArchetypes:
+// a born-bound worker is a code_slice unit, a born-bound coordinator orchestrates.
+const (
+	defaultWorkerArchetype      = "code_slice"
+	defaultCoordinatorArchetype = "orchestrator"
+)
 
 // HeraWorkerSpawnResult is the success payload from SpawnHeraWorker.
 type HeraWorkerSpawnResult struct {
@@ -55,6 +65,15 @@ func SpawnHeraWorker(database *db.DB, runner SessionProvider, in HeraWorkerSpawn
 		return nil, err
 	}
 
+	// Default an omitted archetype to code_slice (add-diligence-profiles): a
+	// born-bound worker is a code-slice unit unless the coordinator says otherwise.
+	// The resolved value is both the task's model-resolution key and the role's
+	// mirrored display value, so resolve it once here.
+	archetype := strings.TrimSpace(in.Archetype)
+	if archetype == "" {
+		archetype = defaultWorkerArchetype
+	}
+
 	var role *db.HeraRole
 	var binding *db.HeraBinding
 	task, _, err := CreateAndStart(database, runner, CreateInput{
@@ -63,6 +82,8 @@ func SpawnHeraWorker(database *db.DB, runner SessionProvider, in HeraWorkerSpawn
 		Project:    in.Project,
 		Backend:    in.Backend,
 		Model:      in.Model,
+		Archetype:  archetype,
+		Profile:    in.Profile,
 		BaseBranch: in.Branch,
 		AutoName:   false, // name is the meaningful role slug — no Haiku rename
 		AfterPersist: func(t *model.Task) (func(), error) {
@@ -77,6 +98,7 @@ func SpawnHeraWorker(database *db.DB, runner SessionProvider, in HeraWorkerSpawn
 				Kind:           db.HeraKindWorker,
 				ArgusProject:   in.Project,
 				Prompt:         in.RolePrompt,
+				Archetype:      archetype,
 			}, t.ID, t.Worktree)
 			if cErr != nil {
 				// Returning the error makes CreateAndStart unwind the task row +
@@ -134,11 +156,14 @@ func MaterializeHeraWorker(database *db.DB, runner SessionProvider, in HeraMater
 	}
 	var binding *db.HeraBinding
 	task, _, err := CreateAndStart(database, runner, CreateInput{
-		Name:       in.Role.Name,
-		Prompt:     in.TaskPrompt,
-		Project:    in.Project,
-		Backend:    in.Backend,
-		Model:      in.Model,
+		Name:    in.Role.Name,
+		Prompt:  in.TaskPrompt,
+		Project: in.Project,
+		Backend: in.Backend,
+		Model:   in.Model,
+		// The planned role's authored archetype (add-diligence-profiles) propagates
+		// onto the materialized task; empty stays empty (resolution falls open).
+		Archetype:  in.Role.Archetype,
 		BaseBranch: in.Branch,
 		AutoName:   false, // name is the planner-assigned short-id slug — never rename
 		AfterPersist: func(t *model.Task) (func(), error) {
@@ -227,11 +252,14 @@ func MaterializeHeraSubCoordinator(database *db.DB, runner SessionProvider, in H
 		coordBinding  *db.HeraBinding
 	)
 	task, _, err := CreateAndStart(database, runner, CreateInput{
-		Name:       in.Role.Name,
-		Prompt:     in.TaskPrompt,
-		Project:    in.Project,
-		Backend:    in.Backend,
-		Model:      in.Model,
+		Name:    in.Role.Name,
+		Prompt:  in.TaskPrompt,
+		Project: in.Project,
+		Backend: in.Backend,
+		Model:   in.Model,
+		// The planned subcoord role's authored archetype propagates onto the
+		// materialized task (add-diligence-profiles); empty stays empty.
+		Archetype:  in.Role.Archetype,
 		BaseBranch: in.Branch,
 		AutoName:   false, // name is the planner-assigned short-id slug — never rename
 		AfterPersist: func(t *model.Task) (func(), error) {
@@ -370,6 +398,7 @@ type HeraCoordinatorSpawnInput struct {
 	Branch               string // optional base branch
 	Backend              string // optional backend override
 	Model                string // optional model override (empty = backend default)
+	Archetype            string // optional diligence archetype; defaults to orchestrator when empty
 }
 
 // HeraCoordinatorSpawnResult is the success payload from SpawnHeraCoordinator.
@@ -414,6 +443,13 @@ func SpawnHeraCoordinator(database *db.DB, runner SessionProvider, in HeraCoordi
 		taskName = orchName
 	}
 
+	// Default an omitted archetype to orchestrator (add-diligence-profiles): a
+	// born-bound coordinator orchestrates unless told otherwise.
+	archetype := strings.TrimSpace(in.Archetype)
+	if archetype == "" {
+		archetype = defaultCoordinatorArchetype
+	}
+
 	var role *db.HeraRole
 	var binding *db.HeraBinding
 	task, _, err := CreateAndStart(database, runner, CreateInput{
@@ -422,6 +458,7 @@ func SpawnHeraCoordinator(database *db.DB, runner SessionProvider, in HeraCoordi
 		Project:    in.Project,
 		Backend:    in.Backend,
 		Model:      in.Model,
+		Archetype:  archetype,
 		BaseBranch: in.Branch,
 		AutoName:   false, // name is the orchestrator slug — no Haiku rename
 		AfterPersist: func(t *model.Task) (func(), error) {
@@ -434,6 +471,7 @@ func SpawnHeraCoordinator(database *db.DB, runner SessionProvider, in HeraCoordi
 				Kind:           db.HeraKindCoordinator,
 				ArgusProject:   in.Project,
 				Prompt:         in.RolePrompt,
+				Archetype:      archetype,
 			}, t.ID, t.Worktree)
 			if cErr != nil {
 				return nil, cErr
@@ -472,6 +510,13 @@ func SpawnHeraCoordinator(database *db.DB, runner SessionProvider, in HeraCoordi
 // do the work), obtained via a new session (worker-promotion or a kind=subcoord
 // plan node). Also points at the coordination tools + the iris PR convention.
 // Shared by the native Hera view's `n` key.
+//
+// It also carries the five context-discipline habits from
+// add-coordinator-context-management D4: a coordinator is long-lived and
+// personally accumulates every token it reads, delegates, or relays for the
+// life of the orchestration, unlike a disposable worker — so these habits are
+// baked into the spawn prompt itself rather than left to be discovered after a
+// coordinator has already bloated past its budget.
 func HeraCoordinatorOrientation(orchestrator string) string {
 	return fmt.Sprintf(
 		"You are the coordinator of hera orchestrator %q. Your job is to DISPATCH, track, and "+
@@ -488,7 +533,32 @@ func HeraCoordinatorOrientation(orchestrator string) string {
 			"whose prompt tells IT to call hera_new_orchestrator once started (the worker-promotion "+
 			"pattern), or a kind=subcoord hera_plan_node the gater materializes. When opening pull "+
 			"requests, use mcp__argus__iris_gh_pr_create (not gh pr create directly) so argus records "+
-			"the PR URL and the hera rail shows the PR indicator.",
+			"the PR URL and the hera rail shows the PR indicator.\n\n"+
+			"You are long-lived: unlike a worker spawned for one slice and then discarded, you "+
+			"personally accumulate every token you read, delegate, or relay for the entire life of "+
+			"this orchestration. Run on these five habits from the start, not just once you feel slow:\n"+
+			"1. Keep a small window. Behave as if context is precious regardless of your actual model's "+
+			"window size — your accumulation is permanent for this orchestration's lifetime in a way a "+
+			"worker's never is.\n"+
+			"2. Default to low reasoning effort. Routine coordination (relay a report, decide what to "+
+			"spawn next) is cheap cognitive work — escalate effort deliberately only for genuine "+
+			"judgment calls (an architectural decision, reconciling conflicting worker reports, a "+
+			"plan-DAG fan-in reconciliation).\n"+
+			"3. Delegate with prejudice, but don't be dumb about it. Investigation-class work — read a "+
+			"file, understand a function, check why a test failed — goes to Claude's native sub-agent "+
+			"(Agent/Task) tool, not hera_spawn_worker: a worktree/branch/task/binding is real overhead "+
+			"for something that just needs an answer back. A single small file or a one-shot grep with a "+
+			"few hits is cheaper read inline than round-tripped through a sub-agent — delegate when the "+
+			"exploration volume clearly dwarfs the answer needed back, not reflexively for every read. "+
+			"Reserve hera_spawn_worker for work that needs its own git worktree, branch, or PR.\n"+
+			"4. Send pointers, not payloads. Reference path:line, branch names, and task IDs in messages "+
+			"and reports — never paste full file contents or long logs into a hera_send body; that "+
+			"duplicates the content into both your context and the recipient's at once.\n"+
+			"5. Harvest a distillate before you retire. Before recycling (self-service or anticipating a "+
+			"forced one): bring design.md's Open Questions / discovery-findings sections current, then "+
+			"call hera_status(handoff_note=\"...\", request_recycle=true) with a short note capturing "+
+			"anything not already durably captured in the plan-DAG or design.md — why a non-obvious call "+
+			"was made, what to watch for.",
 		orchestrator)
 }
 

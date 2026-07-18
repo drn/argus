@@ -148,7 +148,7 @@ Derived from: `internal/mcp/hera.go:640` (`toolHeraJoin`).
 
 ### Requirement: hera_spawn_worker creates a born-bound worker transactionally
 
-The system SHALL, on `hera_spawn_worker`, require the caller to hold a live COORDINATOR binding and create a new argus task (worktree + session) plus, transactionally, a worker role+binding pre-bound to it. The role+binding write is an `AfterPersist` hook inside `agent.CreateAndStart`, joining its LIFO compensating-cleanup stack so any failure unwinds every prior step. The worker's project defaults to the COORDINATOR'S OWN TASK project (authoritative, not `role.ArgusProject`). The role name defaults to a slug of the prompt and is uniquified within the orchestrator. An orientation prefix naming the coordinator + orchestrator is prepended to the delivered prompt; the verbatim prompt is also stored on the role. An optional per-worker `model` is passed through. Required args: `cwd`, `prompt`.
+The system SHALL, on `hera_spawn_worker`, require the caller to hold a live COORDINATOR binding and create a new argus task (worktree + session) plus, transactionally, a worker role+binding pre-bound to it. The role+binding write is an `AfterPersist` hook inside `agent.CreateAndStart`, joining its LIFO compensating-cleanup stack so any failure unwinds every prior step. The worker's project defaults to the COORDINATOR'S OWN TASK project (authoritative, not `role.ArgusProject`). The role name defaults to a slug of the prompt and is uniquified within the orchestrator. An orientation prefix naming the coordinator + orchestrator is prepended to the delivered prompt; the verbatim prompt is also stored on the role. An optional per-worker `model` is passed through. An optional per-worker `archetype` is passed through to `agent.CreateAndStart` and persisted on the spawned task (and mirrored on the role); when omitted, the worker defaults to the `code_slice` archetype. Required args: `cwd`, `prompt`.
 
 The same born-bound transactional spawn SHALL also be reachable as a **materialization** path against a **pre-created planned role**: instead of minting a fresh role, `agent.CreateAndStart` binds and starts the supplied planned role (created earlier via the plan-authoring tools), reusing the identical `AfterPersist` + LIFO-cleanup machinery. Materialization is the only way a planned node acquires a binding, agent, worktree, and inbox; born-bound `hera_spawn_worker` (no pre-created role) remains the immediate "spawn now" path and is unchanged.
 
@@ -172,15 +172,27 @@ The same born-bound transactional spawn SHALL also be reachable as a **materiali
 - **WHEN** a planned role is materialized
 - **THEN** CreateAndStart binds and starts that existing role (rather than creating a new one), reusing the same AfterPersist and LIFO-cleanup machinery
 
+#### Scenario: Archetype passed through to the worker task
+
+- **WHEN** hera_spawn_worker is called with `archetype = "ci_loop"`
+- **THEN** the spawned worker task carries `ci_loop` as its archetype
+
+#### Scenario: Worker archetype defaults when omitted
+
+- **WHEN** hera_spawn_worker omits `archetype`
+- **THEN** the spawned worker task defaults to the `code_slice` archetype
+
 ### Requirement: hera_status updates role status and rolls a finished worker
 
-The system SHALL, on `hera_status`, validate the status as one of idle/working/blocked/done, upsert it on the caller's role, and mirror it to the `task_meta` "hera" namespace best-effort. When a WORKER role reports `done` the system SHALL roll its bound task to in_review and stamp `ready_to_close` via `RollHeraWorkerToReview` — the primary BUG-050 trigger for the idle-but-done case the exit hook misses. That roll is worker-kind only, no-ops unless the task is currently in_progress (so it never clobbers a human-set in_review/complete and never auto-completes), leaves the live session running, is idempotent, and is soft-fail (a failure never blocks the status update).
+The system SHALL, on `hera_status`, validate the status as one of idle/working/blocked/done/failed, upsert it on the caller's role, and mirror it to the `task_meta` "hera" namespace best-effort. When a WORKER role reports `done` the system SHALL roll its bound task to in_review and stamp `ready_to_close` via `RollHeraWorkerToReview` — the primary BUG-050 trigger for the idle-but-done case the exit hook misses. That roll is worker-kind only, no-ops unless the task is currently in_progress (so it never clobbers a human-set in_review/complete and never auto-completes), leaves the live session running, is idempotent, and is soft-fail (a failure never blocks the status update).
+
+`hera_status` SHALL additionally accept two optional parameters, valid only for a `coordinator`-kind caller: `handoff_note` (a short free-text string) and `request_recycle` (a boolean). When `handoff_note` is supplied, the system SHALL overwrite `task_meta` (namespace `hera`, key `handoff_note`) with it in the same call. When `request_recycle` is `true`, the system SHALL record a pending-recycle intent for the caller's task, which the `recycle_coord` primitive (see `coordinator-context-management`) consumes to defer the actual restart until the session is idle. Supplying either parameter for a non-coordinator caller SHALL be rejected with an error naming the parameter.
 
 Derived from: `internal/mcp/hera.go:643` (`toolHeraStatus`), `internal/mcp/hera.go:691` (BUG-050 worker roll), `internal/tui/hera/ops.go:193` (the same roll mirrored on the rail `s` key).
 
 #### Scenario: Invalid status is rejected
 
-- **WHEN** hera_status is called with a status other than idle/working/blocked/done
+- **WHEN** hera_status is called with a status other than idle/working/blocked/done/failed
 - **THEN** the tool errors naming the valid values
 
 #### Scenario: Worker done rolls to in_review
@@ -192,6 +204,21 @@ Derived from: `internal/mcp/hera.go:643` (`toolHeraStatus`), `internal/mcp/hera.
 
 - **WHEN** a worker reports done but its task is already in_review or complete
 - **THEN** RollHeraWorkerToReview no-ops and the status update still succeeds
+
+#### Scenario: Coordinator can record a handoff note
+
+- **WHEN** a coordinator calls hera_status with a non-empty handoff_note
+- **THEN** task_meta (hera, handoff_note) is overwritten with that text in the same call
+
+#### Scenario: Coordinator can request recycle
+
+- **WHEN** a coordinator calls hera_status with request_recycle=true
+- **THEN** a pending-recycle intent is recorded for the caller's task
+
+#### Scenario: Non-coordinator cannot use the new parameters
+
+- **WHEN** a worker or freelance role calls hera_status with handoff_note or request_recycle set
+- **THEN** the tool errors naming the offending parameter, and no task_meta write or recycle intent occurs
 
 ### Requirement: Subtree TLDR roll-up via hera_tree_updates
 

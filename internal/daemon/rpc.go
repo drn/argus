@@ -1,9 +1,12 @@
 package daemon
 
 import (
+	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/selfupdate"
 	"github.com/drn/argus/internal/uxlog"
@@ -222,6 +225,65 @@ func (s *RPCService) ClipboardGet(req *ClipboardGetReq, resp *ClipboardGetResp) 
 func (s *RPCService) ClipboardClear(req *ClipboardClearReq, resp *StatusResp) error {
 	slog.Info("rpc.ClipboardClear", "task", req.TaskID)
 	s.daemon.clipboard.Clear(req.TaskID)
+	resp.OK = true
+	return nil
+}
+
+// ForceRecycleCoordinator kills and restarts the coordinator role bound to
+// req.TaskID immediately, ignoring recycle_coord's idle gate entirely
+// (add-coordinator-context-management D5's human-forced path). It is
+// `argus coord-hook`'s hard-stop escalation trigger (fix-coordhook-idle-
+// deadlock, Part B): once a coordinator's context_size crosses 1.5x its
+// budget, the hook calls this over the daemon socket rather than trust the
+// graceful path, which can be stuck waiting for idleness that never comes.
+//
+// Mirrors internal/tui/heraactions.go's heraDoForceRecycle (the rail's `B`
+// key) exactly — same coordinator-role resolution shape as
+// hera.RecycleWatcher.tickTask (ListHeraLiveBindingsByTask, first
+// coordinator-kind binding found), same daemon.NewHeraRecycleRunner, same
+// hera.RecycleCoord call with hera.RecycleHumanForced — so both entry points
+// kill/restart identically.
+func (s *RPCService) ForceRecycleCoordinator(req *TaskIDReq, resp *StatusResp) error {
+	slog.Info("rpc.ForceRecycleCoordinator", "task", req.TaskID)
+
+	bindings, err := s.daemon.db.ListHeraLiveBindingsByTask(req.TaskID)
+	if err != nil {
+		resp.Error = logRPCErr("rpc.ForceRecycleCoordinator",
+			fmt.Errorf("list bindings for task %s: %w", req.TaskID, err))
+		return nil
+	}
+	var coordRoleID int64
+	found := false
+	for _, b := range bindings {
+		role, err := s.daemon.db.HeraRole(b.RoleID)
+		if err != nil {
+			resp.Error = logRPCErr("rpc.ForceRecycleCoordinator",
+				fmt.Errorf("resolve role %d: %w", b.RoleID, err))
+			return nil
+		}
+		if role.Kind == db.HeraKindCoordinator {
+			coordRoleID = role.ID
+			found = true
+			break
+		}
+	}
+	if !found {
+		resp.Error = logRPCErr("rpc.ForceRecycleCoordinator",
+			fmt.Errorf("no coordinator role bound to task %s", req.TaskID))
+		return nil
+	}
+
+	sessionID := ""
+	if task, err := s.daemon.db.Get(req.TaskID); err == nil && task != nil {
+		sessionID = task.SessionID
+	}
+
+	rr := NewHeraRecycleRunner(s.daemon.db, s.runner, s.cfgFn)
+	if err := hera.RecycleCoord(s.daemon.db, rr, coordRoleID, sessionID, hera.RecycleHumanForced); err != nil {
+		resp.Error = logRPCErr("rpc.ForceRecycleCoordinator",
+			fmt.Errorf("recycle task %s: %w", req.TaskID, err))
+		return nil
+	}
 	resp.OK = true
 	return nil
 }

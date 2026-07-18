@@ -197,13 +197,15 @@ var heraToolDefs = []Tool{
 	},
 	{
 		Name:        "hera_status",
-		Description: "Update the calling role's status within its orchestrator. Also mirrors the status to the argus task_meta sidecar (best-effort).",
+		Description: "Update the calling role's status within its orchestrator. Also mirrors the status to the argus task_meta sidecar (best-effort). Coordinator-only: handoff_note and request_recycle let a coordinator record distilled context and signal a self-service recycle in the same call.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"cwd":          map[string]interface{}{"type": "string", "description": "Caller's worktree path (use $PWD)"},
-				"status":       map[string]interface{}{"type": "string", "enum": []string{"idle", "working", "blocked", "done"}, "description": "New role status"},
-				"orchestrator": map[string]interface{}{"type": "string", "description": "(required when the caller's argus task holds 2+ live bindings; optional when it holds exactly one) The orchestrator whose binding identifies the calling role."},
+				"cwd":             map[string]interface{}{"type": "string", "description": "Caller's worktree path (use $PWD)"},
+				"status":          map[string]interface{}{"type": "string", "enum": []string{"idle", "working", "blocked", "done"}, "description": "New role status"},
+				"orchestrator":    map[string]interface{}{"type": "string", "description": "(required when the caller's argus task holds 2+ live bindings; optional when it holds exactly one) The orchestrator whose binding identifies the calling role."},
+				"handoff_note":    map[string]interface{}{"type": "string", "description": "(coordinator-only) Short free-text distilled context, overwritten into task_meta(hera, handoff_note) in the same call. Rejected for worker/freelance callers."},
+				"request_recycle": map[string]interface{}{"type": "boolean", "description": "(coordinator-only) When true, records a pending-recycle intent for the caller's task, consumed by the recycle_coord primitive once the session goes idle. Rejected for worker/freelance callers."},
 			},
 			"required": []string{"cwd", "status"},
 		},
@@ -222,6 +224,7 @@ var heraToolDefs = []Tool{
 				"branch":       map[string]interface{}{"type": "string", "description": "(optional) Branch passed to argus CreateTask. Defaults to project default"},
 				"backend":      map[string]interface{}{"type": "string", "description": "(optional) Backend passed to argus CreateTask. Defaults to project default"},
 				"model":        map[string]interface{}{"type": "string", "description": "(optional) Per-worker model override; choose by task complexity. Must be valid for the worker's resolved backend (claude: opus/sonnet/haiku/fable; codex: e.g. gpt-5; pi: its model ids). Empty = backend default. Only claude/codex/pi backends receive --model; ignored if the backend command already hard-codes --model"},
+				"archetype":    map[string]interface{}{"type": "string", "description": "(optional) Diligence archetype for the worker (e.g. code_slice, bug_fix, big_build, review, ci_loop). Selects the per-archetype model from the project's bound profile and is exported as ARGUS_ARCHETYPE to the worker. Defaults to code_slice when omitted"},
 			},
 			"required": []string{"cwd", "prompt"},
 		},
@@ -262,6 +265,7 @@ var heraToolDefs = []Tool{
 				"name":         map[string]interface{}{"type": "string", "description": "Short-id-prefixed node name (e.g. '2c-fact-checker'); made unique within the orchestrator automatically"},
 				"prompt":       map[string]interface{}{"type": "string", "description": "The worker's MISSION/task only, delivered when the node materializes and stored verbatim as the node's description in the plan-DAG view. Do NOT prepend organization or security policy: every spawned worker session receives its org instructions independently (harness-injected), so a prepended copy is redundant and pollutes the stored prompt and the plan-DAG view"},
 				"project":      map[string]interface{}{"type": "string", "description": "(optional) argus project for the worker. Defaults to the coordinator's own project"},
+				"archetype":    map[string]interface{}{"type": "string", "description": "(optional) Diligence archetype for the worker (e.g. code_slice, review, ci_loop); persisted on the planned node and copied onto the task when it materializes"},
 				"orchestrator": map[string]interface{}{"type": "string", "description": "(optional) Disambiguates when the calling task holds multiple live coordinator bindings"},
 			},
 			"required": []string{"cwd", "name", "prompt"},
@@ -290,13 +294,14 @@ var heraToolDefs = []Tool{
 				"cwd": map[string]interface{}{"type": "string", "description": "Coordinator's worktree path (use $PWD)"},
 				"nodes": map[string]interface{}{
 					"type":        "array",
-					"description": "Planned nodes. Each: {name (short-id-prefixed), prompt, project (optional)}",
+					"description": "Planned nodes. Each: {name (short-id-prefixed), prompt, project (optional), archetype (optional)}",
 					"items": map[string]interface{}{
 						"type": "object",
 						"properties": map[string]interface{}{
-							"name":    map[string]interface{}{"type": "string"},
-							"prompt":  map[string]interface{}{"type": "string"},
-							"project": map[string]interface{}{"type": "string"},
+							"name":      map[string]interface{}{"type": "string"},
+							"prompt":    map[string]interface{}{"type": "string"},
+							"project":   map[string]interface{}{"type": "string"},
+							"archetype": map[string]interface{}{"type": "string", "description": "(optional) Diligence archetype; copied onto the task when the node materializes"},
 						},
 						"required": []string{"name", "prompt"},
 					},
@@ -1398,9 +1403,11 @@ func (s *Server) toolHeraStatus(id interface{}, args json.RawMessage) *Response 
 		return toolError(id, "hera not configured")
 	}
 	var p struct {
-		Cwd          string `json:"cwd"`
-		Status       string `json:"status"`
-		Orchestrator string `json:"orchestrator"`
+		Cwd            string `json:"cwd"`
+		Status         string `json:"status"`
+		Orchestrator   string `json:"orchestrator"`
+		HandoffNote    string `json:"handoff_note"`
+		RequestRecycle bool   `json:"request_recycle"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
 
@@ -1423,8 +1430,41 @@ func (s *Server) toolHeraStatus(id interface{}, args json.RawMessage) *Response 
 		return toolError(id, err.Error())
 	}
 
+	// D5 (add-coordinator-context-management): handoff_note / request_recycle
+	// are coordinator-only. Reject BEFORE applying the status update or writing
+	// any task_meta so a rejected call has zero side effects.
+	if caller.role.Kind != db.HeraKindCoordinator {
+		var offending []string
+		if p.HandoffNote != "" {
+			offending = append(offending, "handoff_note")
+		}
+		if p.RequestRecycle {
+			offending = append(offending, "request_recycle")
+		}
+		if len(offending) > 0 {
+			return toolError(id, fmt.Sprintf(
+				"%s is coordinator-only; caller role %q has kind %q",
+				strings.Join(offending, ", "), caller.role.Name, caller.role.Kind))
+		}
+	}
+
 	if err := s.applyRoleStatus(caller, sv); err != nil {
 		return toolError(id, err.Error())
+	}
+
+	// Coordinator-only extension: distillate-harvest-before-retire (D4/D5). Both
+	// writes are best-effort/soft-fail, matching the status mirror above.
+	if caller.role.Kind == db.HeraKindCoordinator {
+		if p.HandoffNote != "" {
+			if metaErr := s.heraStore.SetMeta(caller.binding.ArgusTaskID, db.HeraMetaNamespace, db.HeraMetaKeyHandoffNote, p.HandoffNote); metaErr != nil {
+				slog.Warn("[hera] status: handoff_note meta write failed", "role", caller.role.Name, "task_id", caller.binding.ArgusTaskID, "err", metaErr)
+			}
+		}
+		if p.RequestRecycle {
+			if metaErr := s.heraStore.SetMeta(caller.binding.ArgusTaskID, db.HeraMetaNamespace, db.HeraMetaKeyPendingRecycle, "true"); metaErr != nil {
+				slog.Warn("[hera] status: request_recycle meta write failed", "role", caller.role.Name, "task_id", caller.binding.ArgusTaskID, "err", metaErr)
+			}
+		}
 	}
 
 	slog.Info("[hera] status ok", "role", caller.role.Name, "status", p.Status, "orch", caller.orch.Name)
@@ -1433,6 +1473,12 @@ func (s *Server) toolHeraStatus(id interface{}, args json.RawMessage) *Response 
 	fmt.Fprintf(&b, "- **role**: %s\n", caller.role.Name)
 	fmt.Fprintf(&b, "- **status**: %s\n", p.Status)
 	fmt.Fprintf(&b, "- **orchestrator**: %s\n", caller.orch.Name)
+	if p.HandoffNote != "" {
+		fmt.Fprintf(&b, "- **handoff_note**: recorded\n")
+	}
+	if p.RequestRecycle {
+		fmt.Fprintf(&b, "- **request_recycle**: pending\n")
+	}
 	return toolResult(id, b.String())
 }
 
@@ -1452,6 +1498,7 @@ func (s *Server) toolHeraSpawnWorker(id interface{}, args json.RawMessage) *Resp
 		Branch       string `json:"branch"`
 		Backend      string `json:"backend"`
 		Model        string `json:"model"`
+		Archetype    string `json:"archetype"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
 
@@ -1505,6 +1552,7 @@ func (s *Server) toolHeraSpawnWorker(id interface{}, args json.RawMessage) *Resp
 		Branch:         p.Branch,
 		Backend:        p.Backend,
 		Model:          strings.TrimSpace(p.Model),
+		Archetype:      strings.TrimSpace(p.Archetype),
 		OrchestratorID: caller.orch.ID,
 	})
 	if err != nil {

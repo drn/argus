@@ -609,3 +609,71 @@ func TestPlanNodeIcon_CancelledUsesStateOverlay(t *testing.T) {
 	icon := projectWorkerIcon(t, RoleView{RoleID: 2, Name: "w-cancelled", Cancelled: true})
 	testutil.Nil(t, icon)
 }
+
+// TestHeraPlanNodes_TierFieldsRide pins that the pure projection copies the
+// diligence-tiering readout (Archetype + the App-stamped AppliedModel/Effort and
+// ProfileWarning) from the RoleView onto the planview.Node (add-diligence-profiles
+// D-VIEW). Built from a hand-made OrchView so the test stays pure (no DB).
+func TestHeraPlanNodes_TierFieldsRide(t *testing.T) {
+	ov := &OrchView{
+		ID:   1,
+		Name: "orch",
+		Roles: []RoleView{
+			{
+				RoleID:         10,
+				Name:           "1a-build",
+				Kind:           db.HeraKindWorker,
+				TaskID:         "t-1a",
+				Live:           true,
+				TaskStatus:     model.StatusInProgress.String(),
+				Archetype:      "code_slice",
+				AppliedModel:   "sonnet",
+				AppliedEffort:  "high",
+				ProfileWarning: "",
+			},
+			{
+				RoleID:         11,
+				Name:           "2a-warned",
+				Kind:           db.HeraKindWorker,
+				Planned:        true,
+				Archetype:      "review",
+				ProfileWarning: `profile "ghost" missing or invalid`,
+			},
+		},
+	}
+	nodes, _ := heraPlanNodes(ov)
+
+	n1a, ok := findNode(nodes, "t-1a")
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, n1a.Archetype, "code_slice")
+	testutil.Equal(t, n1a.Model, "sonnet")
+	testutil.Equal(t, n1a.Effort, "high")
+	testutil.Equal(t, n1a.ProfileWarning, "")
+
+	n2a, ok := findNode(nodes, "plan:11")
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, n2a.Archetype, "review")
+	testutil.Equal(t, n2a.ProfileWarning, `profile "ghost" missing or invalid`)
+}
+
+// TestModelAnnotateRoles_StampsEverySection pins that Model.annotateRoles applies
+// the resolver to every RoleView across all sections (pinned/active/archived +
+// freelance) in place — the seam HeraPage.doRefresh uses to stamp tiering.
+func TestModelAnnotateRoles_StampsEverySection(t *testing.T) {
+	m := Model{
+		Pinned:    []OrchView{{Roles: []RoleView{{Name: "p"}}}},
+		Active:    []OrchView{{Roles: []RoleView{{Name: "a1"}, {Name: "a2"}}}},
+		Archived:  []OrchView{{Roles: []RoleView{{Name: "z"}}}},
+		Freelance: []RoleView{{Name: "f"}},
+	}
+	count := 0
+	m.annotateRoles(func(r *RoleView) {
+		count++
+		r.AppliedModel = "stamped"
+	})
+	testutil.Equal(t, count, 5)
+	testutil.Equal(t, m.Active[0].Roles[1].AppliedModel, "stamped")
+	testutil.Equal(t, m.Freelance[0].AppliedModel, "stamped")
+	// nil resolver is a safe no-op.
+	m.annotateRoles(nil)
+}

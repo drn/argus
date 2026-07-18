@@ -6,7 +6,9 @@ import (
 	"strings"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/db"
+	herasvc "github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/hera"
 	"github.com/drn/argus/internal/tui/modal"
@@ -58,7 +60,7 @@ func (a *App) heraSpawnWorker(sel hera.Selection) {
 	// BUG-005: spawn from the FULL new-task modal (project/branch/backend/model/
 	// prompt), project defaulting to the coordinator's. On submit, spawn a
 	// born-bound worker under the current coordinator via the shared primitive.
-	a.openHeraNewTaskForm(fmt.Sprintf(" Spawn worker under %s ", orchName), project, func(task *model.Task, name string) {
+	a.openHeraNewTaskForm(fmt.Sprintf(" Spawn worker under %s ", orchName), project, false, func(task *model.Task, name string) {
 		a.heraDoSpawnWorker(orchID, orchName, coordName, name, task)
 	})
 }
@@ -107,6 +109,8 @@ func (a *App) heraDoSpawnWorker(orchID int64, orchName, coordName, name string, 
 			Branch:         task.Branch,
 			Backend:        task.Backend,
 			Model:          task.Model,
+			Archetype:      task.Archetype,
+			Profile:        task.Profile,
 		})
 		a.tapp.QueueUpdateDraw(func() {
 			if err != nil {
@@ -137,7 +141,7 @@ func (a *App) heraNewCoordinator(sel hera.Selection) {
 			project = t.Project
 		}
 	}
-	a.openHeraNewTaskForm(" New coordinator ", project, func(task *model.Task, name string) {
+	a.openHeraNewTaskForm(" New coordinator ", project, true, func(task *model.Task, name string) {
 		a.heraDoNewCoordinator(name, task)
 	})
 }
@@ -630,6 +634,77 @@ func (a *App) heraDoClearArchive(roles []hera.RoleView) {
 		n++
 	}
 	uxlog.Log("[hera-view] clear archive: %d hidden role(s) nuked, %d worktree(s) reclaimed", n, wt)
+	a.heraRefresh()
+}
+
+// --- `B` force-recycle (add-coordinator-context-management) -----------------
+
+// heraOpenForceRecycle is the `B` key: confirm, then kill-and-restart the
+// selected coordinator's session in place via recycle_coord's human-forced
+// (immediate, no idle wait) path — the must-have escalation for a coordinator
+// that is wedged and will never go idle on its own (design.md D5). A no-op on
+// anything but a coordinator selection: page.go's handleRailMutation already
+// gates on IsCoordinator before firing this callback, but the check is
+// repeated here since this is also the seam deciding whether to open a modal
+// at all (mirrors heraOps-nil guards elsewhere in this file for remote mode).
+func (a *App) heraOpenForceRecycle(sel hera.Selection) {
+	if a.heraOps == nil || !sel.IsCoordinator() {
+		return
+	}
+	role := sel.StatusRole()
+	if role == nil {
+		return
+	}
+	a.openHeraConfirm("Force recycle "+role.Name+"?",
+		"Kills and restarts its session on the same task/worktree/branch, seeded from its mission, plan-DAG state, and any handoff note. Use only when the coordinator is wedged and unresponsive.",
+		func() { a.heraDoForceRecycle(role) })
+}
+
+// heraDoForceRecycle runs recycle_coord's human-forced path (internal/hera):
+// it never waits for idleness, unlike the self-service path a coordinator
+// triggers itself via hera_status request_recycle=true — a genuinely wedged
+// coordinator would never go idle on its own. Local-mode only (needs a real
+// *db.DB and an agent.SessionRunner, the same constraint reviveHeraWorker's
+// KickRerender has); reuses the identical daemon.HeraRecycleRunner the
+// background RecycleWatcher runs on, so both paths kill/restart identically.
+func (a *App) heraDoForceRecycle(role *hera.RoleView) {
+	d, ok := a.db.(*db.DB)
+	if !ok {
+		return
+	}
+	runner, ok := a.runner.(agent.SessionRunner)
+	if !ok {
+		uxlog.Log("[hera-view] force recycle: runner has no Recycle (remote?) — skipping role %d", role.RoleID)
+		a.statusbar.SetError("Force recycle: unavailable in this mode")
+		return
+	}
+	taskID := roleReclaimTask(role)
+	sessionID := ""
+	if taskID != "" {
+		if t, err := d.Get(taskID); err == nil && t != nil {
+			sessionID = t.SessionID
+		}
+	}
+	// Mirror maybeKickRerender's pendingRerenderRestart bookkeeping (app.go):
+	// RecycleCoord's kill+respawn is the same "session dies non-cleanly, a
+	// fresh one for the SAME task follows" shape a rerender kick is, so
+	// handleSessionExitUI's dedicated immediate-resume branch should handle
+	// it too rather than falling through to the generic crash/stop path —
+	// otherwise a coordinator open in the plain (non-hera) agent view flashes
+	// an "exited" state instead of resuming gaplessly in place.
+	if taskID != "" {
+		a.pendingRerenderRestart[taskID] = true
+	}
+	rr := daemon.NewHeraRecycleRunner(d, runner, d.Config)
+	if err := herasvc.RecycleCoord(d, rr, role.RoleID, sessionID, herasvc.RecycleHumanForced); err != nil {
+		if taskID != "" {
+			delete(a.pendingRerenderRestart, taskID)
+		}
+		a.statusbar.SetError("Force recycle failed: " + err.Error())
+		uxlog.Log("[hera-view] force recycle failed: role=%d: %v", role.RoleID, err)
+		return
+	}
+	uxlog.Log("[hera-view] force recycle: role=%d restarted", role.RoleID)
 	a.heraRefresh()
 }
 

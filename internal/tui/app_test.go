@@ -2421,7 +2421,7 @@ func TestApp_HandleProjectFormKey_DoneEmptyName(t *testing.T) {
 
 	app.openProjectForm(false, "", config.Project{})
 
-	app.projectForm.focused = pfFieldSandbox
+	app.projectForm.focused = pfFieldProfile // last field — advance submits
 	app.handleProjectFormKey(formAdvanceKey)
 	testutil.Equal(t, app.projectForm.done, false)
 	testutil.Contains(t, app.projectForm.errMsg, "Name cannot be empty")
@@ -2434,7 +2434,7 @@ func TestApp_HandleProjectFormKey_DoneEmptyPath(t *testing.T) {
 
 	app.openProjectForm(false, "", config.Project{})
 	app.projectForm.fields[pfFieldName] = []rune("name")
-	app.projectForm.focused = pfFieldSandbox
+	app.projectForm.focused = pfFieldProfile // last field — advance submits
 	app.handleProjectFormKey(formAdvanceKey)
 	testutil.Equal(t, app.projectForm.done, false)
 	testutil.Contains(t, app.projectForm.errMsg, "Path cannot be empty")
@@ -2448,7 +2448,7 @@ func TestApp_HandleProjectFormKey_DoneSuccess(t *testing.T) {
 	app.openProjectForm(false, "", config.Project{})
 	app.projectForm.fields[pfFieldName] = []rune("newproj")
 	app.projectForm.fields[pfFieldPath] = []rune(t.TempDir())
-	app.projectForm.focused = pfFieldSandbox
+	app.projectForm.focused = pfFieldProfile // last field — advance submits
 	app.handleProjectFormKey(formAdvanceKey)
 	testutil.Equal(t, app.mode, modeTaskList)
 	cfg := d.Config()

@@ -62,6 +62,61 @@ func TestHeraPlanNode_CreatesBindinglessRole(t *testing.T) {
 	testutil.Equal(t, role.ArgusProject, coord.Project)
 }
 
+// TestHeraPlanNode_PersistsArchetype asserts an `archetype` arg on hera_plan_node
+// is persisted on the planned hera_roles row (the intent the gater later copies
+// onto the materialized task).
+func TestHeraPlanNode_PersistsArchetype(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "orch", "/wt/coord")
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_plan_node",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "name": "2c-rev", "prompt": "review it", "archetype": "review"
+		}`, coord.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+
+	orch, err := d.HeraOrchestratorByName("orch")
+	testutil.NoError(t, err)
+	role, err := d.HeraRoleByName(orch.ID, "2c-rev")
+	testutil.NoError(t, err)
+	testutil.Equal(t, role.Archetype, "review")
+}
+
+// TestHeraPlan_PersistsNodeArchetype asserts a per-node `archetype` in the
+// whole-graph hera_plan batch is persisted on the planned role.
+func TestHeraPlan_PersistsNodeArchetype(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "orch", "/wt/coord")
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_plan",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q,
+			"nodes": [
+				{"name": "build", "prompt": "build it", "archetype": "big_build"},
+				{"name": "rev", "prompt": "review it", "archetype": "review"}
+			],
+			"edges": [{"blocked": "rev", "blocker": "build"}]
+		}`, coord.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+
+	orch, err := d.HeraOrchestratorByName("orch")
+	testutil.NoError(t, err)
+	build, err := d.HeraRoleByName(orch.ID, "build")
+	testutil.NoError(t, err)
+	testutil.Equal(t, build.Archetype, "big_build")
+	rev, err := d.HeraRoleByName(orch.ID, "rev")
+	testutil.NoError(t, err)
+	testutil.Equal(t, rev.Archetype, "review")
+}
+
 func TestHeraPlanNode_NonCoordinatorRejected(t *testing.T) {
 	s, d := testHeraServer(t)
 	seedCoordinator(t, s, d, "orch", "/wt/coord")

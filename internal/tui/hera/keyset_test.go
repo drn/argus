@@ -66,6 +66,52 @@ func TestKeyset_FiresCallbacksOnSelectedRole(t *testing.T) {
 	}
 }
 
+// --- B (force recycle) — add-coordinator-context-management ---
+//
+// These pin the hera-view delta spec's "Force-recycle key requires
+// confirmation" / "Force-recycle key is a no-op on a non-coordinator
+// selection" scenarios at the page-dispatch layer: `B` fires OnForceRecycle
+// only when the current rail selection is a coordinator. The confirmation
+// modal itself is an App-level (heraactions.go) concern, covered separately in
+// internal/tui/heraactions_test.go. HeraPage.OnForceRecycle does not exist yet
+// (Stage 7), so this fails to compile until then.
+
+// railPageWithCursorOnCoordinator builds a page whose rail cursor rests on the
+// coordinator's (folded) orchestrator header row.
+func railPageWithCursorOnCoordinator(t *testing.T) (*HeraPage, *db.DB) {
+	t.Helper()
+	d := memDB(t)
+	orch := seedOrch(t, d, "o")
+	seedBoundRole(t, d, orch, "c", db.HeraKindCoordinator, "tc")
+	p := NewHeraPage(d)
+	p.Refresh()
+	return p, d
+}
+
+func TestKeyset_ForceRecycleKeyFiresOnCoordinatorSelection(t *testing.T) {
+	p, _ := railPageWithCursorOnCoordinator(t)
+	var got string
+	var gotSel Selection
+	p.OnForceRecycle = func(s Selection) { got = "force-recycle"; gotSel = s }
+
+	h := p.InputHandler()
+	h(tcell.NewEventKey(tcell.KeyRune, 'B', tcell.ModNone), noFocus)
+
+	testutil.Equal(t, got, "force-recycle")
+	testutil.Equal(t, gotSel.IsCoordinator(), true)
+}
+
+func TestKeyset_ForceRecycleKeyNoOpOnWorkerSelection(t *testing.T) {
+	p, _ := railPageWithCursorOnWorker(t)
+	fired := false
+	p.OnForceRecycle = func(Selection) { fired = true }
+
+	h := p.InputHandler()
+	h(tcell.NewEventKey(tcell.KeyRune, 'B', tcell.ModNone), noFocus)
+
+	testutil.Equal(t, fired, false)
+}
+
 func TestKeyset_EOLKeysFire(t *testing.T) {
 	p, _ := railPageWithCursorOnWorker(t)
 	var got string
@@ -148,6 +194,7 @@ func TestKeyset_NilCallbacksAreNoOps(t *testing.T) {
 	h(tcell.NewEventKey(tcell.KeyRune, 'w', tcell.ModNone), noFocus)
 	h(tcell.NewEventKey(tcell.KeyCtrlD, 0, tcell.ModNone), noFocus)
 	h(tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModNone), noFocus)
+	h(tcell.NewEventKey(tcell.KeyRune, 'B', tcell.ModNone), noFocus)
 	// Cursor unaffected by unconsumed mutation keys with no callback.
 	testutil.Equal(t, p.Rail().CursorIndex(), 1)
 }

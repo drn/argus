@@ -12,20 +12,27 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/profiles"
 	"github.com/drn/argus/internal/skills"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
 )
 
 const (
-	ntFieldProject = 0
-	ntFieldBranch  = 1
-	ntFieldBackend = 2
-	ntFieldModel   = 3
-	ntFieldPrompt  = 4
-	ntFieldName    = 5
-	ntFieldCount   = 6
+	ntFieldProject   = 0
+	ntFieldBranch    = 1
+	ntFieldBackend   = 2
+	ntFieldModel     = 3
+	ntFieldProfile   = 4
+	ntFieldArchetype = 5
+	ntFieldPrompt    = 6
+	ntFieldName      = 7
+	ntFieldCount     = 8
 )
+
+// ntArchetypeNone is the archetype selector's first entry — no archetype, so no
+// diligence profile is consulted at spawn (add-diligence-profiles default).
+const ntArchetypeNone = "(none)"
 
 // maxPromptLines is the maximum visible lines for the prompt textarea.
 const maxPromptLines = 10
@@ -44,7 +51,7 @@ type NewTaskForm struct {
 	cursorPos    int    // cursor position in prompt runes
 	scrollOffset int    // first visible wrapped line (for scrolling)
 	promptWidth  int    // cached inner width from last Draw, used by cursor movement
-	focused      int    // 0=project, 1=branch, 2=backend, 3=model, 4=prompt, 5=name
+	focused      int    // 0=project, 1=branch, 2=backend, 3=model, 4=profile, 5=archetype, 6=prompt, 7=name
 
 	// optional task-name field: a single-line input rendered after the prompt.
 	// Empty (or whitespace-only) ⇒ the task name is derived from the prompt as
@@ -65,6 +72,21 @@ type NewTaskForm struct {
 	done           bool
 	canceled       bool
 	errMsg         string
+
+	// Diligence-profile + archetype cycling selectors (add-diligence-profiles,
+	// forms-and-modals). profileOptions is the cycler's display list: index 0 is
+	// the project's BOUND profile (the default), followed by the other valid on-disk
+	// profiles (profileValidNames, supplied by the App). Cycling to a name other
+	// than the bound default is a per-spawn override (ProfileOverride). The archetype
+	// cycler offers ntArchetypeNone + the 13 canonical archetypes, default
+	// ntArchetypeNone (Archetype() == ""). hideArchetype suppresses the archetype
+	// selector for the new-coordinator prompt (a coordinator is always the
+	// `orchestrator` archetype, set programmatically).
+	profileValidNames []string
+	profileOptions    []string
+	profileIdx        int
+	archetypeIdx      int
+	hideArchetype     bool
 
 	projects map[string]config.Project
 	backends map[string]config.Backend
@@ -153,6 +175,9 @@ func NewNewTaskForm(projects map[string]config.Project, defaultProject string, b
 	f.loadSkills()
 	// Populate the model selector for the initially selected backend.
 	f.rebuildModelOptions()
+	// Seed the profile cycler with the default project's bound profile (the App
+	// later supplies the valid on-disk names via SetProfileOptions).
+	f.rebuildProfileOptions()
 	return f
 }
 
@@ -203,13 +228,15 @@ func (f *NewTaskForm) Task() *model.Task {
 		name = model.GenerateNameFromPrompt(prompt)
 	}
 	return &model.Task{
-		Name:    name,
-		Status:  model.StatusPending,
-		Project: proj,
-		Branch:  branch,
-		Prompt:  prompt,
-		Backend: backend,
-		Model:   f.modelValue(),
+		Name:      name,
+		Status:    model.StatusPending,
+		Project:   proj,
+		Branch:    branch,
+		Prompt:    prompt,
+		Backend:   backend,
+		Model:     f.modelValue(),
+		Archetype: f.Archetype(),
+		Profile:   f.ProfileOverride(),
 	}
 }
 
@@ -292,6 +319,83 @@ func (f *NewTaskForm) modelDisplayLabel() string {
 		return f.modelOptions[f.modelIdx-1]
 	}
 	return "default"
+}
+
+// boundProfile returns the diligence profile NAME bound to the currently
+// selected project (config.Project.ResolveProfileName: the explicit binding, else
+// "default"). The cycler defaults to this so the operator sees what the project
+// would resolve.
+func (f *NewTaskForm) boundProfile() string {
+	if p, ok := f.projects[f.resolveProject()]; ok {
+		return p.ResolveProfileName()
+	}
+	return "default"
+}
+
+// rebuildProfileOptions rebuilds the profile cycler: index 0 is the current
+// project's bound profile (the default position), followed by the other valid
+// on-disk profile names (deduped). Resets the selection to the bound default —
+// called on construction, on SetProfileOptions, and on a project change.
+func (f *NewTaskForm) rebuildProfileOptions() {
+	bound := f.boundProfile()
+	opts := []string{bound}
+	seen := map[string]bool{bound: true}
+	for _, n := range f.profileValidNames {
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		opts = append(opts, n)
+	}
+	f.profileOptions = opts
+	f.profileIdx = 0
+}
+
+// SetProfileOptions supplies the valid on-disk profile names (the App filters via
+// profiles.Loader.ValidateName) for the per-spawn override cycler, then rebuilds
+// the option list pre-positioned on the project's bound default.
+func (f *NewTaskForm) SetProfileOptions(valid []string) {
+	f.profileValidNames = valid
+	f.rebuildProfileOptions()
+}
+
+// SetHideArchetype suppresses the archetype selector (the new-coordinator prompt
+// — a coordinator is always the `orchestrator` archetype, set programmatically).
+func (f *NewTaskForm) SetHideArchetype(hide bool) { f.hideArchetype = hide }
+
+// profileDisplayLabel is the cycler's current display value.
+func (f *NewTaskForm) profileDisplayLabel() string {
+	if f.profileIdx >= 0 && f.profileIdx < len(f.profileOptions) {
+		return f.profileOptions[f.profileIdx]
+	}
+	return f.boundProfile()
+}
+
+// ProfileOverride returns the per-spawn profile override the operator selected —
+// the chosen name when it differs from the project's bound default, else "" (no
+// override). Passed to the spawn caller (forms-and-modals requirement).
+func (f *NewTaskForm) ProfileOverride() string {
+	sel := f.profileDisplayLabel()
+	if sel == f.boundProfile() {
+		return ""
+	}
+	return sel
+}
+
+// ntArchetypeOptions is the archetype cycler's display list: "(none)" + the 13
+// canonical archetypes. Built fresh each call (callers must not mutate).
+func ntArchetypeOptions() []string {
+	return append([]string{ntArchetypeNone}, profiles.CanonicalArchetypes...)
+}
+
+// Archetype returns the selected archetype, or "" when on "(none)" — the value
+// that rides the submitted task (Task().Archetype). Empty means no profile is
+// consulted at spawn.
+func (f *NewTaskForm) Archetype() string {
+	if f.archetypeIdx <= 0 || f.archetypeIdx > len(profiles.CanonicalArchetypes) {
+		return ""
+	}
+	return profiles.CanonicalArchetypes[f.archetypeIdx-1]
 }
 
 // resolvedBranch returns the branch to use: the typed text if non-empty,
@@ -427,7 +531,24 @@ func (f *NewTaskForm) onProjectChanged() {
 	f.branchACMatches = nil
 	f.branchACOpen = false
 	f.branchPath = "" // clear so maybeLoadBranches reloads even for the same project
+	// Re-default the profile cycler to the new project's bound profile.
+	f.rebuildProfileOptions()
 	f.maybeLoadBranches()
+}
+
+// visibleField returns the next/previous focusable field from start in direction
+// dir (+1 / -1), skipping the archetype field when it is hidden (new-coordinator
+// prompt). All other fields are always visible.
+func (f *NewTaskForm) visibleField(start, dir int) int {
+	n := start
+	for i := 0; i < ntFieldCount; i++ {
+		n = (n + dir + ntFieldCount) % ntFieldCount
+		if n == ntFieldArchetype && f.hideArchetype {
+			continue
+		}
+		return n
+	}
+	return start
 }
 
 // SetBranchOptions populates the branch autocomplete options. Called from a
@@ -667,7 +788,8 @@ func (f *NewTaskForm) PasteHandler() func(pastedText string, setFocus func(p tvi
 			newInput = append(newInput, f.nameInput[f.nameCursorPos:]...)
 			f.nameInput = newInput
 			f.nameCursorPos += len(runes)
-			// ntFieldBackend: backend selector ignores paste
+			// ntFieldBackend / ntFieldProfile / ntFieldArchetype: selector fields
+			// have no case and ignore pasted text (no free-text entry).
 		}
 	})
 }
@@ -707,7 +829,7 @@ func (f *NewTaskForm) InputHandler() func(event *tcell.EventKey, setFocus func(p
 			f.projACOpen = false
 			f.branchACOpen = false
 			prev := f.focused
-			f.focused = (f.focused + 1) % ntFieldCount
+			f.focused = f.visibleField(f.focused, +1)
 			if prev == ntFieldProject && f.focused == ntFieldBranch {
 				f.maybeLoadBranches()
 			}
@@ -729,7 +851,7 @@ func (f *NewTaskForm) InputHandler() func(event *tcell.EventKey, setFocus func(p
 			f.closeAC()
 			f.projACOpen = false
 			f.branchACOpen = false
-			f.focused = (f.focused + ntFieldCount - 1) % ntFieldCount
+			f.focused = f.visibleField(f.focused, -1)
 			if f.focused == ntFieldBranch {
 				f.maybeLoadBranches()
 			}
@@ -745,6 +867,10 @@ func (f *NewTaskForm) InputHandler() func(event *tcell.EventKey, setFocus func(p
 			f.handleSelectorKey(event, &f.backendIdx, len(f.backendNames))
 		case ntFieldModel:
 			f.handleModelKey(event)
+		case ntFieldProfile:
+			f.handleProfileKey(event)
+		case ntFieldArchetype:
+			f.handleArchetypeKey(event)
 		case ntFieldPrompt:
 			f.handlePromptKey(event)
 		case ntFieldName:
@@ -1074,7 +1200,7 @@ func (f *NewTaskForm) handleNameKey(event *tcell.EventKey) {
 func (f *NewTaskForm) handleModelKey(event *tcell.EventKey) {
 	switch event.Key() {
 	case tcell.KeyEnter, tcell.KeyDown:
-		f.focused = ntFieldPrompt
+		f.focused = ntFieldProfile
 		return
 	case tcell.KeyUp:
 		f.focused = ntFieldBackend
@@ -1094,6 +1220,42 @@ func (f *NewTaskForm) handleModelKey(event *tcell.EventKey) {
 		return
 	}
 	f.handleModelCustomKey(event)
+}
+
+// handleProfileKey handles the profile cycling selector: left/right cycle the
+// project's bound profile + the other valid on-disk profiles; up/down move field
+// focus (down skips the archetype field to the prompt when it is hidden).
+func (f *NewTaskForm) handleProfileKey(event *tcell.EventKey) {
+	switch event.Key() {
+	case tcell.KeyEnter, tcell.KeyDown:
+		f.focused = f.visibleField(ntFieldProfile, +1)
+	case tcell.KeyUp:
+		f.focused = ntFieldModel
+	case tcell.KeyLeft:
+		if n := len(f.profileOptions); n > 0 {
+			f.profileIdx = (f.profileIdx - 1 + n) % n
+		}
+	case tcell.KeyRight:
+		if n := len(f.profileOptions); n > 0 {
+			f.profileIdx = (f.profileIdx + 1) % n
+		}
+	}
+}
+
+// handleArchetypeKey handles the archetype cycling selector: left/right cycle
+// "(none)" + the 13 canonical archetypes; up/down move field focus.
+func (f *NewTaskForm) handleArchetypeKey(event *tcell.EventKey) {
+	count := len(profiles.CanonicalArchetypes) + 1 // "(none)" + canonical
+	switch event.Key() {
+	case tcell.KeyEnter, tcell.KeyDown:
+		f.focused = ntFieldPrompt
+	case tcell.KeyUp:
+		f.focused = ntFieldProfile
+	case tcell.KeyLeft:
+		f.archetypeIdx = (f.archetypeIdx - 1 + count) % count
+	case tcell.KeyRight:
+		f.archetypeIdx = (f.archetypeIdx + 1) % count
+	}
 }
 
 // handleModelCustomKey edits the free-text modelInput while the "custom…" entry
@@ -1273,8 +1435,9 @@ func (f *NewTaskForm) handlePromptKey(event *tcell.EventKey) {
 			return
 		}
 		// Move cursor up one wrapped line if possible, otherwise leave prompt field
+		// (to the archetype selector, or profile when archetype is hidden).
 		if !f.moveCursorUp() {
-			f.focused = ntFieldModel
+			f.focused = f.visibleField(ntFieldPrompt, -1)
 		}
 		return
 	case tcell.KeyDown:
@@ -1511,8 +1674,15 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 		}
 	}
 
-	// Modal height: border(1) + padding(1) + project(1) + projAC(P) + branch(1) + branchAC(B) + backend(1) + model(1) + label(1) + prompt(N) + ac(M) + name(1) + gap(1) + help(1) + padding(1) + border(1)
-	modalH := 12 + visiblePromptLines + acRows + projACRows + branchACRows
+	// Extra selector rows beyond backend/model: profile (always) + archetype
+	// (unless hidden for the new-coordinator prompt).
+	selectorRows := 1
+	if !f.hideArchetype {
+		selectorRows++
+	}
+
+	// Modal height: border(1) + padding(1) + project(1) + projAC(P) + branch(1) + branchAC(B) + backend(1) + model(1) + profile/archetype(selectorRows) + label(1) + prompt(N) + ac(M) + name(1) + gap(1) + help(1) + padding(1) + border(1)
+	modalH := 12 + selectorRows + visiblePromptLines + acRows + projACRows + branchACRows
 	if f.errMsg != "" {
 		modalH += 2
 	}
@@ -1572,6 +1742,17 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 	// Model override field
 	f.drawModelField(screen, innerX, row, innerW)
 	row++
+
+	// Profile selector (per-spawn diligence-profile override; defaults to the
+	// project's bound profile).
+	f.drawSelector(screen, innerX, row, innerW, "Profile", f.profileOptions, f.profileIdx, f.focused == ntFieldProfile)
+	row++
+
+	// Archetype selector — hidden for the new-coordinator prompt.
+	if !f.hideArchetype {
+		f.drawSelector(screen, innerX, row, innerW, "Archetype", ntArchetypeOptions(), f.archetypeIdx, f.focused == ntFieldArchetype)
+		row++
+	}
 
 	// Prompt field
 	labelStyle := theme.StyleDimmed

@@ -152,15 +152,15 @@ Derived from: `internal/tui/hera/rail.go` (`statusIcon`), `internal/tui/hera/mod
 
 ### Requirement: Rail keybindings (area 4)
 
-The system SHALL bind the following keys while the rail holds focus: `j`/`k` and Down/Up move the cursor; Left walks to the parent; Space collapses/expands the row under the cursor; `Tab`/`Backtab` and `Ctrl+Alt+Left`/`Ctrl+Alt+Right` walk the focus ladder; `Ctrl+Q` returns focus to the rail; `Enter` enters the selected role's pane (restarting a dead/suspended session first); `w` spawns a worker under the selected coordinator's orchestrator via the full new-task modal; `n` creates a new top-level coordinator via the full new-task modal; `r` renames the selected role/orchestrator; `a` HIDES the selected worker / sub-coordinator into its parent coordinator's nested archive (Tier 1 — reversible, keeps the session + worktree alive); `P` toggles pin; `s`/`S` advance/revert the selected role's hera status; `J` adopts a freelancer / re-parents a coordinator; `C` clears the selected coordinator's archive (NUKES every Tier-1 hidden item under it); `Ctrl+Z` fullscreens the focused pane; `Ctrl+J` opens the unified task/role switcher (see the switcher requirement below) — like `Ctrl+Z`, this fires regardless of which region (rail, coordinator pane, or agent pane) holds focus; `/` filters the rail by name; `Ctrl+D` NUKES the selected role/orchestrator (Tier 2 — removes it and its whole subtree from the rail, reclaims worktrees). Every bound key SHALL appear in the help overlay's "Hera View (rail)" section.
+The system SHALL bind the following keys while the rail holds focus: `j`/`k` and Down/Up move the cursor; Left walks to the parent; Space collapses/expands the row under the cursor; `Tab`/`Backtab` and `Ctrl+Alt+Left`/`Ctrl+Alt+Right` walk the focus ladder; `Ctrl+Q` returns focus to the rail; `Enter` enters the selected role's pane (restarting a dead/suspended session first); `w` spawns a worker under the selected coordinator's orchestrator via the full new-task modal; `n` creates a new top-level coordinator via the full new-task modal; `r` renames the selected role/orchestrator; `a` HIDES the selected worker / sub-coordinator into its parent coordinator's nested archive (Tier 1 — reversible, keeps the session + worktree alive); `P` toggles pin; `s`/`S` advance/revert the selected role's hera status; `J` adopts a freelancer / re-parents a coordinator; `B` forces an immediate recycle of the selected coordinator (kills and restarts its session on the same task, seeded from its mission, plan-DAG state, and any handoff note — see `coordinator-context-management`), behind a confirmation modal, and is a no-op on a non-coordinator selection; `C` clears the selected coordinator's archive (NUKES every Tier-1 hidden item under it); `Ctrl+Z` fullscreens the focused pane; `Ctrl+J` opens the unified task/role switcher (see the switcher requirement below) — like `Ctrl+Z`, this fires regardless of which region (rail, coordinator pane, or agent pane) holds focus; `/` filters the rail by name; `Ctrl+D` NUKES the selected role/orchestrator (Tier 2 — removes it and its whole subtree from the rail, reclaims worktrees). Every bound key SHALL appear in the help overlay's "Hera View (rail)" section.
 
-The rail SHALL NOT bind `R` (retire) or a rail-wide `Ctrl+R` (prune) — both are removed by this redesign. All rail mutation keys SHALL be suppressed while the rail is in `/` filter INPUT mode (every keystroke is filter input). Selection-acting keys (`w`, `r`, `a`, `P`, `s`/`S`, `J`, `C`, `Ctrl+D`) are no-ops on an empty selection; `n` is selection-INDEPENDENT and fires even on an empty rail.
+The rail SHALL NOT bind `R` (retire) or a rail-wide `Ctrl+R` (prune) — both are removed by this redesign. All rail mutation keys SHALL be suppressed while the rail is in `/` filter INPUT mode (every keystroke is filter input). Selection-acting keys (`w`, `r`, `a`, `P`, `s`/`S`, `J`, `B`, `C`, `Ctrl+D`) are no-ops on an empty selection; `n` is selection-INDEPENDENT and fires even on an empty rail.
 
 `Ctrl+K` SHALL NOT be a rail or Hera-page key at all — it is intercepted globally (see the `command-palette` capability) before the Hera page ever sees it, so it never forwards to a focused pane's PTY and never collides with any rail-focus key.
 
 Derived from: `internal/tui/hera/rail.go` (rail `InputHandler`), `internal/tui/hera/page.go` (page `InputHandler` focus ladder + `handleRailMutation`), `internal/tui/heraactions.go` (handlers), `internal/tui/modal/help.go` (help overlay Hera section).
 
-`NOTE:` `Ctrl+D` is the only key that NUKES a live selection directly (`C` nukes only the selected coordinator's already-hidden Tier-1 archive items); the rail binds no `R` (retire) or rail-wide `Ctrl+R` (prune). `Ctrl+D` never collides with the agent-view `Ctrl+R` (Claude session switcher), which runs in a different mode/widget. A focused content pane forwards `C`/`a`/`Ctrl+D` to its PTY.
+`NOTE:` `Ctrl+D` is the only key that NUKES a live selection directly (`C` nukes only the selected coordinator's already-hidden Tier-1 archive items); the rail binds no `R` (retire) or rail-wide `Ctrl+R` (prune). `Ctrl+D` never collides with the agent-view `Ctrl+R` (Claude session switcher), which runs in a different mode/widget. `B` (force recycle) acts on a live coordinator session directly (kill-and-restart) but preserves the task/worktree/branch/binding — unlike `Ctrl+D`, nothing is removed from the rail. A focused content pane forwards `C`/`a`/`Ctrl+D` to its PTY.
 
 #### Scenario: Hide key acts on the current selection
 
@@ -175,12 +175,22 @@ Derived from: `internal/tui/hera/rail.go` (rail `InputHandler`), `internal/tui/h
 #### Scenario: Help overlay lists every rail key
 
 - **WHEN** the help overlay is opened
-- **THEN** its "Hera View (rail)" section lists `j`/`k`, space, Left, Tab/Ctrl+Q, Enter, `w`, `n`, `r`, `a` (hide), `P`, `s`/`S`, `J`, `C` (clear archive), `Ctrl+Z`, `Ctrl+J` (switcher), `/`, and `Ctrl+D` (nuke), and does NOT list `R`, a rail-wide `Ctrl+R`, or `Ctrl+K` (which is not a Hera-page key)
+- **THEN** its "Hera View (rail)" section lists `j`/`k`, space, Left, Tab/Ctrl+Q, Enter, `w`, `n`, `r`, `a` (hide), `P`, `s`/`S`, `J`, `B` (force recycle), `C` (clear archive), `Ctrl+Z`, `Ctrl+J` (switcher), `/`, and `Ctrl+D` (nuke), and does NOT list `R`, a rail-wide `Ctrl+R`, or `Ctrl+K` (which is not a Hera-page key)
 
 #### Scenario: ctrl+j opens the switcher regardless of focused region
 
 - **WHEN** the user presses `ctrl+j` while the rail, the coordinator pane, or the agent pane holds focus
 - **THEN** the unified task/role switcher opens in every case, and the key never reaches a focused pane's PTY
+
+#### Scenario: Force-recycle key requires confirmation
+
+- **WHEN** the rail is focused, a coordinator row is selected, and the user presses `B`
+- **THEN** a confirmation modal appears before the recycle proceeds
+
+#### Scenario: Force-recycle key is a no-op on a non-coordinator selection
+
+- **WHEN** the rail is focused and a worker or freelance row is selected and the user presses `B`
+- **THEN** nothing happens — no modal, no recycle
 
 ### Requirement: Three-region focus model and ladder (area 5)
 
@@ -286,23 +296,14 @@ Derived from: `internal/tui/hera/panes.go:59` (`applySelection` detailsMode), `i
 
 ### Requirement: PR indicator in the roster (area 6)
 
-The system SHALL mark a roster task with a `PR` indicator when that task's
-cached `task_meta` "pr" namespace `state` parses (via `model.ParsePRState`) to
-an actionable review state — `awaiting-review`, `changes-requested`, or
-`approved` (`model.PRState.IsActionable()`). A `merged-closed`, `draft`,
-`unknown`, or empty/unparseable state SHALL NOT show the mark, even when the
-namespace's `url` field is still populated (the poller retains `url` after a
-PR merges or closes). The indicator is best-effort and read once per refresh
-via `ListMetaByNamespace("pr")`; it is never fetched by the view. A `ready`
-mark renders for a `ready_to_close` worker, and both marks may appear
-together.
+The system SHALL mark a roster row's status cell with a trailing `PR` token when that row's task's cached `task_meta` "pr" namespace `state` parses (via `model.ParsePRState`) to an actionable review state — `awaiting-review`, `changes-requested`, or `approved` (`model.PRState.IsActionable()`). A `merged-closed`, `draft`, `unknown`, or empty/unparseable state SHALL NOT show the mark, even when the namespace's `url` field is still populated (the poller retains `url` after a PR merges or closes). The indicator is best-effort and read once per refresh via `ListMetaByNamespace("pr")`; it is never fetched by the view. The `PR` token composes with whatever status text the row already shows (e.g. `ready PR`, `idle PR`, `needs-input PR`) rather than being a mark appended after the agent's name.
 
-Derived from: `internal/tui/hera/details.go` (`roleMark`), `internal/tui/hera/page.go` (`doRefresh` reads "pr" namespace).
+Derived from: `internal/tui/hera/details.go` (`hasPR`, `rosterStatusText`), `internal/tui/hera/page.go` (`doRefresh` reads the "pr" namespace).
 
 #### Scenario: PR mark from an actionable cached state
 
-- **WHEN** a roster task's "pr" meta has `state: "awaiting-review"` (or `changes-requested` / `approved`)
-- **THEN** its roster row shows a `PR` mark
+- **WHEN** a roster row's "pr" meta has `state: "awaiting-review"` (or `changes-requested` / `approved`)
+- **THEN** its status cell's text carries a trailing `PR` token, composed with whatever status label the row already shows
 
 #### Scenario: No mark for a merged or closed PR
 
@@ -1183,7 +1184,15 @@ is not needlessly reset. A live, present session SHALL be left alone (this never
 restarts or navigates a live coordinator — that remains the `Enter`-reattach
 path's responsibility).
 
-Derived from: `internal/tui/hera/panes.go` (`reconcileOne` dead-handle branch, `reconcileSessions`, `paneBinding`), `internal/daemon/client/client.go` (`Get` re-dials on a cache-miss when the daemon reports the process alive).
+Every genuine swap onto a different session handle (this reconcile
+replacement, and `bindPane`'s task-changed rebind) SHALL reset the pane's
+VT/replay state (`ResetVT`) before attaching the new handle, so no emulator
+state, cached replay content, or scroll anchor left over from the outgoing
+session can survive into the incoming session's render — the same
+`SetTaskID→ResetVT→SetSession` order the main (non-Hera) agent view already
+follows on every task/session transition.
+
+Derived from: `internal/tui/hera/panes.go` (`reconcileOne` dead-handle branch, `bindPane`, `reconcileSessions`, `paneBinding`), `internal/daemon/client/client.go` (`Get` re-dials on a cache-miss when the daemon reports the process alive).
 
 #### Scenario: A dead pane session is replaced on the next tick
 
@@ -1194,6 +1203,11 @@ Derived from: `internal/tui/hera/panes.go` (`reconcileOne` dead-handle branch, `
 
 - **WHEN** a pane holds a `!Alive()` session and the provider returns nil (process gone) or the same dead handle (cache not yet evicted)
 - **THEN** the pane keeps its current handle (its buffered output still backs log replay) and is not reset
+
+#### Scenario: A same-task session swap (e.g. `recycle_coord`) leaves no stale render state
+
+- **WHEN** a pane's bound task is recycled — the session dies and a fresh, distinct live handle for the SAME task ID is resolved on a later reconcile
+- **THEN** the swap resets the pane's VT/replay state before attaching the fresh handle, so the fresh session's render cannot show any cell or replay content carried over from the outgoing session
 
 ### Requirement: A dropped pane keystroke is logged, not silently swallowed (area 6)
 
@@ -1913,6 +1927,23 @@ Derived from: `internal/tui/hera/rail.go` (`rolePR`), `internal/tui/hera/page.go
 - **WHEN** a managed role's bound task has "pr" meta `state: "merged-closed"` and a non-empty `url`
 - **THEN** its rail row renders no `PR` indicator
 
+### Requirement: Plan view archetype and model readout with missing-profile warning
+
+The plan/DAG view SHALL display, for each node, the node's selected archetype and the model/effort
+applied to it, so the operator can see what tiering each unit of work received. The view SHALL also
+surface a warning decoration on a node or project that points at a missing or invalid profile, matching
+the runtime fail-open behavior (the agent runs on the CLI default, and the operator is told why).
+
+#### Scenario: Node shows archetype and applied model
+
+- **WHEN** a plan node has archetype `code_slice` resolving to model `sonnet`
+- **THEN** the node's rendering shows the `code_slice` archetype and the applied `sonnet` model
+
+#### Scenario: Missing profile warned
+
+- **WHEN** a project points at a profile name that is absent or fails validation
+- **THEN** the plan/DAG view shows a warning indicating the profile is missing or invalid
+
 ### Requirement: Plan-DAG node description shows the mission's first lines (area 6)
 
 The plan view SHALL, in the coordinator Details region's embedded `" Plan "`
@@ -2034,4 +2065,60 @@ When a coordinator or nested sub-coordinator row is folded (collapsed) and any d
 
 - **WHEN** the user presses `Space` on a coordinator whose subtree is partially revealed via this behavior
 - **THEN** the fold fully expands (or collapses) exactly as it would have before this change — the reveal does not change what `Space` does or leave any different post-toggle state
+### Requirement: Agents roster renders as an aligned, scrollable table (area 6)
+
+The Details pane's `Agents (N):` roster SHALL render as a compact, left-aligned table with four columns, in this order — **name** (the role name), **archetype** (the role's diligence archetype, `RoleView.Archetype`), **model** (the resolved LLM model applied to that role, `RoleView.AppliedModel`), and **status** (the existing status icon plus a short text label mirroring `widget.RoleStatusIcon`'s precedence: needs-input / working / ready / failed / done / idle / live / unbound, with a `PR` token composed in per the PR-indicator requirement) — preceded by a `NAME  ARCHETYPE  MODEL  STATUS` column-header row. Name leads so the identifying column reads immediately; status trails so its icon+label reads as a per-row trailing verdict rather than a leading marker. Archetype and model are read directly from the already-annotated `RoleView` the rail's model already carries (`Archetype` from the role row; `AppliedModel` stamped by `HeraPage`'s `tierResolver` during `doRefresh`, off the Draw path) — no additional daemon, store, or MCP read. A role with no resolved archetype or model (no profile consulted, or the CLI/backend default applied) renders `—` in that cell, never a blank.
+
+The resolved archetype and model values SHALL render in the same bright, readable foreground the NAME cell uses (`theme.StyleNormal`), not a dimmed style — the unresolved `—` placeholder is the ONLY case in either column that renders dimmed (`theme.StyleDimmed`), so an absent value reads as visually secondary to real data rather than the two being equally hard to read.
+
+Column widths size to the widest cell in each column, capped at a per-column maximum — name's cap fits real project agent/coordinator names (~30 chars) in full — and shrink toward zero when the pane is narrower than the ideal total width, in priority order: **status first, then model, then archetype, then name last** — so the identifying NAME column is the last to give up width and is truncated only on a genuinely narrow pane. Every cell value is truncated RUNE-safely (never a byte slice mid-codepoint), with a trailing `…` when clipped. A column shrunk to zero width simply stops rendering rather than corrupting the row layout or bleeding into a neighboring pane. `DetailsView.ContentHeight()` includes the column-header row in the roster's row budget whenever the roster is non-empty (an empty roster still renders the single `(none)` line with no header), staying in exact lockstep with `Draw`'s emitted rows.
+
+When the roster has more agents than the row budget its allotted pane height affords (`DetailsView.rosterVisibleRows`, cached from the current Draw's remaining row budget), the system SHALL render a SCROLLABLE window of `rosterVisibleRows` agents starting at `DetailsView.rosterScroll`, rather than silently truncating the tail — every agent SHALL be reachable by scrolling. The window is `[rosterScroll, rosterScroll+rosterVisibleRows)` into the agent list; `rosterScroll` is clamped into `[0, max(0, total-rosterVisibleRows)]` on every Draw (`clampRosterScroll`), so a shrinking pane or a shrinking roster (an agent completing and dropping off) always re-clamps rather than leaving the window stranded past the end of the list. `j`/`k`/`Up`/`Down` in the focused Details region SHALL scroll the roster FIRST (`HeraPage.handleDetailsKey` tries `DetailsView.ScrollRoster` before forwarding to the embedded plan widget) — the SAME physical keys the plan widget already binds for its own stage navigation, layered rather than duplicated: `ScrollRoster` consumes the key only while the roster can still move in the requested direction; once at a bound (or when the roster fits entirely, so it never needed to scroll), the key falls through to the plan widget's navigation unchanged, so the two surfaces never fight over a keystroke. The roster's scroll offset resets to the top on a genuine selection change (a different orchestrator, or none previously selected) but is PRESERVED across a same-orchestrator refresh (the ~1s debounced tick re-selecting the same coordinator), so an operator's mid-read scroll position never snaps back unexpectedly.
+
+Derived from: `internal/tui/hera/details.go` (`computeRosterColumns`, `rosterColStarts`, `rosterTruncate`, `archetypeDisplay`/`modelDisplay`, `rosterValueStyle`, `rosterStatusText`, `drawRosterHeader`, `drawRosterRow`, `ContentHeight`, `rosterScroll`/`rosterVisibleRows`, `rosterMaxScroll`, `clampRosterScroll`, `ScrollRoster`, `SetOrch`), `internal/tui/hera/model.go` (`RoleView.Archetype`/`AppliedModel`), `internal/tui/hera/page.go` (`SetTierResolver`, `doRefresh`, `handleDetailsKey`, `rosterScrollDelta`).
+
+#### Scenario: Roster shows the column header and per-agent archetype/model, name first and status last
+
+- **WHEN** a coordinator with at least one worker role is selected
+- **THEN** the Details pane's roster shows a `NAME  ARCHETYPE  MODEL  STATUS` header row (name first, status last) followed by one row per agent in the same column order, each showing its resolved archetype and model
+
+#### Scenario: Unresolved archetype/model renders a dimmed em-dash placeholder; resolved values render bright
+
+- **WHEN** a worker role carries no diligence archetype or no resolved model (fail-open / no profile consulted)
+- **THEN** its ARCHETYPE and/or MODEL cell renders a dimmed `—`, not a blank cell, while a worker WITH a resolved archetype/model renders that value in the same bright foreground the NAME cell uses
+
+#### Scenario: Status icon and label never disagree with the rail
+
+- **WHEN** a roster row's status cell renders its text label
+- **THEN** the label is derived from the SAME precedence (`widget.RoleStatusIcon`'s inputs) that chose the row's status icon, so the two never contradict each other
+
+#### Scenario: Narrow pane shrinks columns instead of corrupting the layout, protecting the name column longest
+
+- **WHEN** the Details pane is narrower than the roster's ideal total column width
+- **THEN** columns shrink — status first, then model, then archetype, then name last — toward zero width, truncating cell values rune-safely, without panicking or misaligning the table
+
+#### Scenario: ContentHeight includes the header row
+
+- **WHEN** the Details region sizes the roster panel via `ContentHeight()` and the roster is non-empty
+- **THEN** the returned height accounts for the column-header row in addition to one row per agent, matching exactly what `Draw` emits
+
+#### Scenario: A long roster scrolls instead of truncating the tail
+
+- **WHEN** a coordinator's roster has more agents than the roster panel's row budget affords
+- **THEN** only a window of agents is drawn, and scrolling down with `j`/`Down` brings later agents — including the last one — into view; every agent is reachable
+
+#### Scenario: Roster scroll clamps at both ends
+
+- **WHEN** the roster is already showing its first agent (scrolled fully up) or its last agent (scrolled fully down)
+- **THEN** a further scroll-up (respectively scroll-down) key is a no-op — the offset never goes negative or past the point where the last agent is visible
+
+#### Scenario: Roster scroll takes priority, then falls through to the plan widget
+
+- **WHEN** the focused Details region receives `j`/`k`/`Up`/`Down` and the roster still has room to scroll in that direction
+- **THEN** the roster scrolls and the embedded plan widget's stage cursor does NOT move; once the roster can't scroll further in that direction, the SAME key reaches the plan widget's own navigation instead
+
+#### Scenario: Roster scroll survives a same-orchestrator refresh but resets on a real selection change
+
+- **WHEN** the operator has scrolled a coordinator's roster and a refresh tick re-selects the SAME orchestrator
+- **THEN** the scroll position is unchanged; selecting a DIFFERENT orchestrator (or no orchestrator) resets the scroll position to the top
 

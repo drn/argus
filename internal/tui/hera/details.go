@@ -30,6 +30,19 @@ type DetailsView struct {
 	orch   *OrchView
 	prMeta map[string]map[string]string // taskID -> pr meta (namespace "pr")
 	meta   coordMeta                    // derived once in SetOrch (pure over orch)
+
+	// rosterScroll is the roster's scroll offset (index of the first agent
+	// row shown), clamped every Draw against the live agent count and the
+	// visible-row budget the CURRENT pane height affords — the same
+	// clamped-scrollOffset idiom terminal panes use (gotchas/pty-terminal.md),
+	// applied here as direct j/k/Up/Down increments rather than a
+	// cursor-following window (the roster has no selectable row).
+	rosterScroll int
+	// rosterVisibleRows is the number of agent DATA rows (excluding the
+	// header) the roster's row budget affords, cached from the most recent
+	// Draw so ScrollRoster (called from key handling, between Draw calls)
+	// can compute the same clamp bound without redoing Draw's layout math.
+	rosterVisibleRows int
 }
 
 // coordMeta is the rich metadata block the Details pane renders for a selected
@@ -90,13 +103,23 @@ func NewDetailsView() *DetailsView { return &DetailsView{} }
 // nil when unavailable — the PR mark just won't render (best-effort, no fetch).
 // The rich metadata block is derived once here so Draw + ContentHeight share
 // the same (immutable) inputs and never drift.
+//
+// The roster's scroll offset resets to the top ONLY on a genuine selection
+// change (a different orchestrator, or none previously selected) — SetOrch
+// also runs on every ~1s refresh tick for the SAME selected coordinator
+// (doRefresh -> applySelection), and resetting scroll on every one of those
+// would snap a mid-read scroll position back to the top every tick.
 func (d *DetailsView) SetOrch(o *OrchView, prMeta map[string]map[string]string) {
+	changedOrch := d.orch == nil || o == nil || d.orch.ID != o.ID
 	d.orch = o
 	d.prMeta = prMeta
 	if o != nil {
 		d.meta = deriveCoordMeta(o)
 	} else {
 		d.meta = coordMeta{}
+	}
+	if changedOrch {
+		d.rosterScroll = 0
 	}
 }
 
@@ -129,9 +152,11 @@ func (d *DetailsView) ContentHeight() int {
 	if reposRows == 0 {
 		reposRows = 1 // the "(none)" line
 	}
-	workerRows := len(d.workers())
-	if workerRows == 0 {
+	var workerRows int
+	if n := len(d.workers()); n == 0 {
 		workerRows = 1 // the "(none)" line
+	} else {
+		workerRows = 1 + n // column header + one row per agent
 	}
 	return border + content + reposRows + workerRows
 }
@@ -216,26 +241,45 @@ func (d *DetailsView) Draw(screen tcell.Screen, x, y, w, h int, focused bool) {
 	}
 	row++ // blank spacer
 
-	// Worker roster — every non-coordinator role under the orchestrator, with
-	// its status glyph, ready_to_close / PR marks.
+	// Worker roster — every non-coordinator role under the orchestrator,
+	// rendered as an aligned, SCROLLABLE table: status (icon + label), name,
+	// diligence archetype, resolved model. When there are more agents than
+	// the remaining row budget affords, only a window starting at
+	// d.rosterScroll renders — j/k/Up/Down (routed by HeraPage.handleDetailsKey
+	// before the embedded plan widget's own nav) move the window so every
+	// agent stays reachable instead of the tail being silently cut off.
 	workers := d.workers()
 	draw(inner.X, fmt.Sprintf("Agents (%d):", len(workers)), theme.StyleDimmed)
 	if len(workers) == 0 {
+		d.rosterVisibleRows = 0
 		draw(inner.X+2, "(none)", theme.StyleDimmed)
-	}
-	for i := range workers {
-		w := &workers[i]
-		if row >= maxRow {
-			break
+	} else {
+		cols := computeRosterColumns(workers, inner.W-2)
+		// Budget = remaining rows minus the header row. Computed BEFORE
+		// consuming it, so it reflects the CURRENT pane height regardless of
+		// scroll position — the recompute-on-resize contract clampRosterScroll
+		// and ScrollRoster rely on.
+		budget := maxRow - row - 1
+		if budget < 0 {
+			budget = 0
 		}
-		glyph, gstyle := statusIcon(w, d.orch.Archived, frame)
-		screen.SetContent(inner.X+2, row, glyph, nil, gstyle)
-		label := w.Name
-		if mark := d.roleMark(w); mark != "" {
-			label += "  " + mark
+		d.rosterVisibleRows = budget
+		d.clampRosterScroll(len(workers))
+		if budget > 0 && row < maxRow {
+			drawRosterHeader(screen, inner.X+2, row, cols)
+			row++
 		}
-		widget.DrawText(screen, inner.X+4, row, inner.W-4, label, theme.StyleNormal)
-		row++
+		end := d.rosterScroll + budget
+		if end > len(workers) {
+			end = len(workers)
+		}
+		for i := d.rosterScroll; i < end; i++ {
+			if row >= maxRow {
+				break
+			}
+			d.drawRosterRow(screen, inner.X+2, row, cols, &workers[i], frame)
+			row++
+		}
 	}
 	row++ // blank spacer
 
@@ -290,28 +334,273 @@ func (d *DetailsView) workers() []RoleView {
 	return out
 }
 
-// roleMark composes the trailing indicators for a roster row: a "ready" mark
-// for a finished worker awaiting close-out (M4 meta:hera.ready_to_close) and a
-// "PR" mark when the bound task's cached "pr" meta state is still actionable
-// (mirrors theme.PRGlyph / model.PRState.IsActionable, best-effort like the
-// task list — never fetched here). A merged/closed/draft/unknown PR retains
-// its url in the cache but must not show the mark.
-func (d *DetailsView) roleMark(r *RoleView) string {
-	mark := ""
-	if r.ReadyToClose {
-		mark = "ready"
+// rosterMaxScroll bounds how far the roster can scroll for a given agent
+// count: enough to bring the LAST rosterVisibleRows agents into view, never
+// negative (a roster that already fits entirely has maxScroll 0).
+func (d *DetailsView) rosterMaxScroll(total int) int {
+	max := total - d.rosterVisibleRows
+	if max < 0 {
+		return 0
 	}
-	if r.TaskID != "" && d.prMeta != nil {
-		if kv := d.prMeta[r.TaskID]; kv != nil {
-			if s, err := model.ParsePRState(kv["state"]); err == nil && s.IsActionable() {
-				if mark != "" {
-					mark += " "
-				}
-				mark += "PR"
-			}
+	return max
+}
+
+// clampRosterScroll re-bounds the roster's scroll offset into [0, maxScroll]
+// against the CURRENT agent count and the visible-row budget Draw just
+// computed for the CURRENT pane height — called every Draw, so a shrinking
+// pane or a shrinking roster (an agent completing and dropping off) always
+// re-clamps rather than leaving the window stranded past the end of the list.
+func (d *DetailsView) clampRosterScroll(total int) {
+	if max := d.rosterMaxScroll(total); d.rosterScroll > max {
+		d.rosterScroll = max
+	}
+	if d.rosterScroll < 0 {
+		d.rosterScroll = 0
+	}
+}
+
+// ScrollRoster moves the roster's scroll offset by delta rows (+1 down, -1
+// up), clamped to [0, maxScroll]. Returns false — a no-op — when the roster
+// is already at the requested bound, or hasn't been drawn yet (rosterVisibleRows
+// still zero): the caller (HeraPage.handleDetailsKey) falls through to the
+// embedded plan widget's own navigation in that case, so j/k/Up/Down scroll
+// the roster first and only reach the plan once the roster can't move
+// further in that direction — the two never fight over the same keystroke.
+func (d *DetailsView) ScrollRoster(delta int) bool {
+	if d.orch == nil || d.rosterVisibleRows <= 0 {
+		return false
+	}
+	next := d.rosterScroll + delta
+	if next < 0 {
+		next = 0
+	}
+	if max := d.rosterMaxScroll(len(d.workers())); next > max {
+		next = max
+	}
+	if next == d.rosterScroll {
+		return false
+	}
+	d.rosterScroll = next
+	return true
+}
+
+// hasPR reports whether the role's bound task's cached "pr" meta state parses
+// to an ACTIONABLE review state (awaiting-review / changes-requested /
+// approved), not merely a non-empty url — the poller retains `url` after a
+// PR merges or closes, so gating on url alone would show the mark forever on
+// a merged/closed PR (best-effort, like the task list — never fetched here).
+func (d *DetailsView) hasPR(r *RoleView) bool {
+	if r.TaskID == "" || d.prMeta == nil {
+		return false
+	}
+	kv := d.prMeta[r.TaskID]
+	if kv == nil {
+		return false
+	}
+	st, err := model.ParsePRState(kv["state"])
+	return err == nil && st.IsActionable()
+}
+
+// --- Roster table ------------------------------------------------------
+//
+// The Agents roster renders as a compact, left-aligned table: name, diligence
+// archetype, resolved model, status (icon + label) — in that order, name
+// first so the identifying column reads immediately and status last so its
+// icon+label reads as a trailing verdict. Column widths size to the widest
+// cell (capped) and shrink — status, then model, then archetype, then name,
+// in that priority order — when the pane is narrower than the ideal total
+// width, so the name (up to ~30 chars, the longest real agent/coordinator
+// names in this project) is the LAST column to give up width. Every value is
+// truncated RUNE-safely (never a byte slice mid-codepoint), and a zero-width
+// column simply stops rendering rather than corrupting the layout.
+
+const (
+	rosterColGap      = 2  // spaces between columns
+	rosterIconGutter  = 2  // icon rune + 1 space, before the status column's text starts
+	rosterStatusWidth = 14 // fits the longest label, "needs-input PR"
+	rosterNameMin     = 6
+	rosterNameMax     = 30 // fits real agent/coordinator names (~29 chars) in full
+	rosterArchMin     = 9  // fits the "ARCHETYPE" header
+	rosterArchMax     = 12
+	rosterModelMin    = 6
+	rosterModelMax    = 20
+)
+
+// rosterCols holds the resolved content width (not counting gaps/gutter) for
+// each roster column.
+type rosterCols struct {
+	name, archetype, model, status int
+}
+
+// rosterTotalWidth is the full row width the given columns need: each
+// column's content width, the icon gutter, and a gap between every column.
+func rosterTotalWidth(c rosterCols) int {
+	return c.name + c.archetype + c.model + rosterIconGutter + c.status + 3*rosterColGap
+}
+
+// rosterColStarts returns the x-offset (relative to a row's leading edge)
+// where each column's TEXT begins, so the header and data rows always agree.
+// STATUS trails the other three columns; its icon glyph is drawn at statusX
+// and its text label rosterIconGutter further along.
+func rosterColStarts(c rosterCols) (nameX, archX, modelX, statusX int) {
+	nameX = 0
+	archX = nameX + c.name + rosterColGap
+	modelX = archX + c.archetype + rosterColGap
+	statusX = modelX + c.model + rosterColGap
+	return
+}
+
+// computeRosterColumns sizes the roster's four columns from the widest cell
+// value in each (capped at a sane maximum), then shrinks them — status
+// first, then model, then archetype, then name as the last resort — down to
+// zero when avail is narrower than the ideal total width. Name is preserved
+// longest so a real agent/coordinator name stays fully readable on all but
+// the narrowest panes.
+func computeRosterColumns(workers []RoleView, avail int) rosterCols {
+	cols := rosterCols{status: rosterStatusWidth, name: rosterNameMin, archetype: rosterArchMin, model: rosterModelMin}
+	for i := range workers {
+		if n := utf8.RuneCountInString(workers[i].Name); n > cols.name {
+			cols.name = n
+		}
+		if n := utf8.RuneCountInString(archetypeDisplay(workers[i].Archetype)); n > cols.archetype {
+			cols.archetype = n
+		}
+		if n := utf8.RuneCountInString(modelDisplay(workers[i].AppliedModel)); n > cols.model {
+			cols.model = n
 		}
 	}
-	return mark
+	if cols.name > rosterNameMax {
+		cols.name = rosterNameMax
+	}
+	if cols.archetype > rosterArchMax {
+		cols.archetype = rosterArchMax
+	}
+	if cols.model > rosterModelMax {
+		cols.model = rosterModelMax
+	}
+	if avail <= 0 {
+		return rosterCols{}
+	}
+	overflow := rosterTotalWidth(cols) - avail
+	shrink := func(w *int) {
+		if overflow <= 0 {
+			return
+		}
+		cut := *w
+		if cut > overflow {
+			cut = overflow
+		}
+		*w -= cut
+		overflow -= cut
+	}
+	shrink(&cols.status)
+	shrink(&cols.model)
+	shrink(&cols.archetype)
+	shrink(&cols.name)
+	return cols
+}
+
+// rosterTruncate clamps s to w runes, appending a trailing "…" when clipped.
+// Rune-aware so multibyte values (names, model ids) never split mid-codepoint.
+func rosterTruncate(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= w {
+		return s
+	}
+	if w == 1 {
+		return string(r[:1])
+	}
+	return string(r[:w-1]) + "…"
+}
+
+// archetypeDisplay / modelDisplay render the roster's ARCHETYPE / MODEL cells:
+// "—" when the role carries no archetype (no profile consulted) or no
+// resolved model (CLI/backend default applied) — never blank, so the column
+// never reads as misaligned or broken.
+func archetypeDisplay(a string) string {
+	if a == "" {
+		return "—"
+	}
+	return a
+}
+
+func modelDisplay(m string) string {
+	if m == "" {
+		return "—"
+	}
+	return m
+}
+
+// rosterValueStyle picks the roster ARCHETYPE/MODEL cell style: the same
+// bright, readable foreground the NAME cell renders in (theme.StyleNormal)
+// for a resolved value, or theme.StyleDimmed for the "—" empty placeholder so
+// an absent value doesn't visually compete with real data.
+func rosterValueStyle(raw string) tcell.Style {
+	if raw == "" {
+		return theme.StyleDimmed
+	}
+	return theme.StyleNormal
+}
+
+// rosterStatusText renders the roster status cell's text, mirroring
+// statusIcon's precedence exactly (widget.RoleStatusIcon) so the glyph and
+// the label never disagree. A "PR" suffix is appended whenever the role's
+// bound task carries an open PR, independent of the underlying status.
+func rosterStatusText(r *RoleView, hasPR bool) string {
+	in := roleStatusInputs(r)
+	var text string
+	switch {
+	case in.NeedsInput:
+		text = "needs-input"
+	case in.Active:
+		text = "working"
+	case in.ReadyToClose:
+		text = "ready"
+	case in.Failed:
+		text = "failed"
+	case in.Done:
+		text = "done"
+	case in.Idle:
+		text = "idle"
+	case in.Live:
+		text = "live"
+	default:
+		text = "—"
+	}
+	if hasPR {
+		text += " PR"
+	}
+	return text
+}
+
+// drawRosterHeader paints the roster's column header row (NAME / ARCHETYPE /
+// MODEL / STATUS), aligned to the same columns the data rows use. The STATUS
+// header text aligns with where the data rows' status TEXT starts (past the
+// icon gutter), not the icon column itself.
+func drawRosterHeader(screen tcell.Screen, x, y int, cols rosterCols) {
+	nameX, archX, modelX, statusX := rosterColStarts(cols)
+	widget.DrawText(screen, x+nameX, y, cols.name, rosterTruncate("NAME", cols.name), theme.StyleDimmed)
+	widget.DrawText(screen, x+archX, y, cols.archetype, rosterTruncate("ARCHETYPE", cols.archetype), theme.StyleDimmed)
+	widget.DrawText(screen, x+modelX, y, cols.model, rosterTruncate("MODEL", cols.model), theme.StyleDimmed)
+	widget.DrawText(screen, x+statusX+rosterIconGutter, y, cols.status, rosterTruncate("STATUS", cols.status), theme.StyleDimmed)
+}
+
+// drawRosterRow paints one agent's roster row: name, archetype, model, status
+// icon + label — aligned to cols. The icon glyph reuses statusIcon (the SAME
+// precedence the rail uses) so this table never disagrees with the rail.
+func (d *DetailsView) drawRosterRow(screen tcell.Screen, x, y int, cols rosterCols, r *RoleView, frame int) {
+	nameX, archX, modelX, statusX := rosterColStarts(cols)
+	widget.DrawText(screen, x+nameX, y, cols.name, rosterTruncate(r.Name, cols.name), theme.StyleNormal)
+	widget.DrawText(screen, x+archX, y, cols.archetype, rosterTruncate(archetypeDisplay(r.Archetype), cols.archetype), rosterValueStyle(r.Archetype))
+	widget.DrawText(screen, x+modelX, y, cols.model, rosterTruncate(modelDisplay(r.AppliedModel), cols.model), rosterValueStyle(r.AppliedModel))
+
+	glyph, gstyle := statusIcon(r, d.orch.Archived, frame)
+	screen.SetContent(x+statusX, y, glyph, nil, gstyle)
+	text := rosterStatusText(r, d.hasPR(r))
+	widget.DrawText(screen, x+statusX+rosterIconGutter, y, cols.status, rosterTruncate(text, cols.status), gstyle)
 }
 
 // coordStatusLabel renders the coordinator status line for the Details pane. It

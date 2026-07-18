@@ -107,7 +107,7 @@ func Connect(sockPath string) (*Client, error) {
 	}
 
 	// Eagerly verify daemon is alive before returning the client.
-	c.Ping() //nolint:errcheck — best-effort; health check will retry
+	c.Ping() //nolint:errcheck // best-effort; health check will retry
 
 	return c, nil
 }
@@ -165,6 +165,8 @@ func (c *Client) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 		Project:   task.Project,
 		Backend:   task.Backend,
 		Model:     task.Model,
+		Archetype: task.Archetype,
+		Profile:   task.Profile,
 		Worktree:  task.Worktree,
 		Branch:    task.Branch,
 		Rows:      rows,
@@ -394,6 +396,40 @@ func (c *Client) KickRerender(task *model.Task, _ config.Config, rows, cols uint
 		Project:   task.Project,
 		Backend:   task.Backend,
 		Model:     task.Model,
+		Archetype: task.Archetype,
+		Profile:   task.Profile,
+		Worktree:  task.Worktree,
+		Branch:    task.Branch,
+		Rows:      rows,
+		Cols:      cols,
+	}, &resp); err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("%s", resp.Error)
+	}
+	return nil
+}
+
+// Recycle drives a same-task restart with a fresh (empty) context through the
+// daemon/supervisor (add-coordinator-context-management D5). Mirrors
+// KickRerender's wire contract exactly except resume is always false and no
+// SessionID is shipped — the caller (internal/daemon's RecycleRunner adapter)
+// must already have persisted task.SessionID="" and task.Prompt=<seed prompt>
+// before calling. Against a supervisor that predates this RPC method the call
+// errors, which the caller (RecycleCoord) surfaces rather than silently
+// no-ops — unlike a kick-rerender, a failed recycle must not look like
+// success to the coordinator waiting on it.
+func (c *Client) Recycle(task *model.Task, _ config.Config, rows, cols uint16) error {
+	var resp daemon.StatusResp
+	if err := c.call("Daemon.Recycle", &daemon.RecycleReq{
+		TaskID:    task.ID,
+		Prompt:    task.Prompt,
+		Project:   task.Project,
+		Backend:   task.Backend,
+		Model:     task.Model,
+		Archetype: task.Archetype,
+		Profile:   task.Profile,
 		Worktree:  task.Worktree,
 		Branch:    task.Branch,
 		Rows:      rows,
