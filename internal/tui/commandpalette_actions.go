@@ -345,6 +345,8 @@ func (a *App) closeCommandPaletteModal() {
 		a.tapp.SetFocus(a.agentPane)
 	case a.header.ActiveTab() == widget.TabHera:
 		a.tapp.SetFocus(a.heraPage)
+	case a.header.ActiveTab() == widget.TabSettings:
+		a.tapp.SetFocus(a.settingsPage)
 	default:
 		a.tapp.SetFocus(a.tasklist)
 	}

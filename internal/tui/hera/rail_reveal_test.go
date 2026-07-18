@@ -157,3 +157,31 @@ func TestRail_RevealDoesNotChangeSpaceToggleBehavior(t *testing.T) {
 	testutil.Equal(t, r.depthOf("w1") >= 0, true)
 	testutil.Equal(t, r.depthOf("w2"), -1)
 }
+
+// TestRail_PinnedRoleBridgedChildRevealsNeedsInputLeaf covers the reveal path
+// specific to appendPinnedRole: a pinned non-root role ("w") floats into the
+// Pinned section and bridges a child orchestrator ("sub") that is CLOSED.
+// Before this feature a closed bridged child hid its whole subtree
+// regardless of what it contained; now a needs-input leaf inside it still
+// reveals through the fold, mirroring the general appendOrchWorkers reveal.
+func TestRail_PinnedRoleBridgedChildRevealsNeedsInputLeaf(t *testing.T) {
+	m := nestedSubCoordModel(true, false) // pin "w" (bridges "sub")
+	for i := range m.Active {
+		if m.Active[i].ID != 2 {
+			continue
+		}
+		for j := range m.Active[i].Roles {
+			if m.Active[i].Roles[j].Name == "leaf" {
+				m.Active[i].Roles[j].NeedsInput = true
+				m.Active[i].Roles[j].SubtreeNeedsInput = true
+			}
+		}
+		m.Active[i].SubtreeNeedsInput = true
+	}
+
+	r := NewRail()
+	r.collapsed[2] = true // "sub" starts closed
+	r.SetModel(m)
+
+	testutil.Equal(t, r.nestedRoleRows("leaf"), 1)
+}
