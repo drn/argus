@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/config"
@@ -191,6 +192,11 @@ window = "1m"
 
 [archetype.docs]
 model = "haiku"
+
+[rigor]
+review_passes = 2
+gating = true
+security_spot_check = true
 `)
 
 	out, cr := callProfileResolve(t, s, `{"profile": "full"}`)
@@ -206,6 +212,25 @@ model = "haiku"
 	testutil.Equal(t, review.Model, "opus")
 	testutil.Equal(t, review.Effort, "high")
 	testutil.Equal(t, review.Window, "1m")
+
+	// Raw-string assertions (not just a case-insensitive struct unmarshal,
+	// which would mask a marshal-side tag regression): the wire format must
+	// actually use the lowercase/snake_case keys the base spec documents,
+	// since a non-Go consumer (an LLM agent, jq, a JS/Python script) reading
+	// the raw JSON needs the exact case, not just something Go's
+	// case-insensitive json.Unmarshal happens to tolerate.
+	raw := cr.Content[0].Text
+	testutil.Contains(t, raw, `"model":"opus"`)
+	testutil.Contains(t, raw, `"effort":"high"`)
+	testutil.Contains(t, raw, `"window":"1m"`)
+	testutil.Contains(t, raw, `"review_passes":2`)
+	testutil.Contains(t, raw, `"gating":true`)
+	testutil.Contains(t, raw, `"security_spot_check":true`)
+	for _, badKey := range []string{`"Model"`, `"Effort"`, `"Window"`, `"ReviewPasses"`, `"Gating"`, `"SecuritySpotCheck"`} {
+		if strings.Contains(raw, badKey) {
+			t.Fatalf("raw JSON contains PascalCase key %s (wire format must be lowercase/snake_case): %s", badKey, raw)
+		}
+	}
 }
 
 func TestProfileResolve_RejectsPathTraversalInExplicitProfile(t *testing.T) {

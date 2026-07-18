@@ -53,16 +53,16 @@ var ValidWindows = []string{"200k", "1m"}
 // optional; an empty field means "unset" (and is skipped during validation and
 // inherited from a parent during extends overlay).
 type Archetype struct {
-	Model  string `toml:"model"`
-	Effort string `toml:"effort"`
-	Window string `toml:"window"`
+	Model  string `toml:"model" json:"model,omitempty"`
+	Effort string `toml:"effort" json:"effort,omitempty"`
+	Window string `toml:"window" json:"window,omitempty"`
 }
 
 // Rigor holds the per-profile process/diligence flags.
 type Rigor struct {
-	ReviewPasses      int  `toml:"review_passes"`
-	Gating            bool `toml:"gating"`
-	SecuritySpotCheck bool `toml:"security_spot_check"`
+	ReviewPasses      int  `toml:"review_passes" json:"review_passes,omitempty"`
+	Gating            bool `toml:"gating" json:"gating,omitempty"`
+	SecuritySpotCheck bool `toml:"security_spot_check" json:"security_spot_check,omitempty"`
 }
 
 // Profile is a parsed (and, after Load, fully extends-resolved) diligence

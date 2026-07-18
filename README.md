@@ -415,8 +415,9 @@ The DB stores **only** the project→profile *name* – never a profile body, an
   - `lean` – `extends = "default"`, minimal process (single review pass, no gating) for daily-driven personal tooling.
   - `customer_grade` – `extends = "default"`, turned-up rigor (two review passes, gating, a security spot-check) plus a reviewer `[panel]`, for customer-facing code with no dogfooding loop.
 - **Project binding** – **Settings → project view** shows a validated select-list of on-disk profiles; only profiles that pass validation are selectable, and the chosen name persists as the project's default binding. The new-agent modal also lets you pick a profile for that spawn. An unbound project resolves the `default` profile.
-- **`effort` / `window`** – each `[archetype.<name>]` entry may also carry `effort` (∈ `low`/`medium`/`high`) and `window` (∈ `200k`/`1m`). These are validated and surfaced in the plan/DAG view, but currently only `model` is wired into resolution.
-- **Reviewer `[panel]`** – a profile may carry an opaque `[panel]` block. Its composition grammar is a forward-reference owned by the cross-vendor review work and is **not consumed yet**; validation checks only that the block is structurally well-formed.
+- **`effort` / `window`** – each `[archetype.<name>]` entry may also carry `effort` (∈ `low`/`medium`/`high`) and `window` (∈ `200k`/`1m`). These are validated and surfaced in the plan/DAG view, but currently only `model` is wired into hera spawn resolution — and, for Claude's native sub-agent dispatch, `effort` is threadable only through a `Workflow` script's `agent()` (`opts.effort`), since the built-in `Agent`/`Task` tool has no effort parameter as of this writing (see the [`resolve-archetype-model`](#agent-facing-skills) skill).
+- **Reviewer `[panel]`** – a profile may carry an opaque `[panel]` block, composed and consumed by the cross-vendor review work (`hera-spawn-review`); validation enforces its grammar when the reviewer-panel validator is wired in, falling back to structural well-formedness otherwise.
+- **Native sub-agent dispatch** – hera worker spawn resolves an archetype's model automatically at spawn time; Claude's native sub-agent dispatch (the `Agent`/`Task` tool, or a `Workflow` script) has no such automatic path and must resolve it explicitly via `mcp__argus__profile_resolve` — see the [`resolve-archetype-model`](#agent-facing-skills) skill for the documented convention (resolve once per pipeline, gate the resolved model against the four in-session values, thread effort only where the mechanism accepts it).
 - **Env vars** – when a bound profile actively contributes a backend-valid model, the spawn exports `ARGUS_PROFILE`, `ARGUS_ARCHETYPE`, and `ARGUS_MODEL` to the agent (mirroring `ARGUS_TASK_ID`); when no profile resolves, none of the three are exported.
 - **Plan/DAG view** – each node shows its archetype and the applied model/effort, and a node/project is flagged with a warning when its bound profile is missing or invalid.
 - **Fail-open** – a missing or invalid bound profile never hard-fails a spawn: Argus logs it and passes **no** `--model`, so the agent uses its own CLI default. Validation is the loud surface (the CLI, the Settings select-list, the DAG warning); resolution itself fails open.
@@ -587,6 +588,12 @@ If the recipient has a live agent session the daemon also writes a single notifi
 | `hera_unblock`          | Remove a blocking edge between two roles. Idempotent. Re-pointing an edge is `hera_unblock` + `hera_block`.                                      |
 | `hera_plan_node_cancel` | Cancel a planned node: stamps `cancelled_at`, excludes it from materialization, unblocks dependents. Kept visible in the plan DAG as grey ✕.     |
 
+**Diligence Profiles:**
+
+| Tool              | Description                                                                                                                                                                                                                                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `profile_resolve` | Resolve the [diligence profile](#diligence-profiles-model-tiering) in effect for the caller and return its full body (per-archetype `model`/`effort`/`window`, `[rigor]`, `[panel]`) as structured JSON. Works from any `cwd`/task, not just hera-bound ones. Optional explicit `profile` name bypasses `cwd` resolution. Fails open: `{"resolved": false, "errors": [...]}` rather than a hard error. The [`resolve-archetype-model`](#agent-facing-skills) skill is the documented convention for using this to pick a model for Claude's native sub-agent dispatch (the `Agent`/`Task` tool), as opposed to hera worker spawn, which resolves archetypes automatically at spawn time. |
+
 **Schedule Management:**
 
 | Tool               | Description                                                                                                                                                                                               |
@@ -615,8 +622,9 @@ A Claude session inside an argus worktree sees the `mcp__argus__*` tool names bu
 
 - `.claude/skills/hera/SKILL.md` — coordinate multi-agent work over hera's `mcp__argus__hera_*` tools (bootstrap an orchestrator, claim or attach a worker/freelance role, message other roles); carries the decision rule for in-session sub-agents vs hera workers vs the plan-DAG.
 - `.claude/skills/hera-plan/SKILL.md` — the on-demand plan-DAG companion: author staged, dependency-ordered multi-worker plans (planned nodes + blocking edges) that the daemon gater materializes in order, with branch-stacking, short-id naming, and self-guard prompt patterns.
+- `.claude/skills/resolve-archetype-model/SKILL.md` — resolve a diligence profile's per-archetype model/effort for Claude's *native* sub-agent dispatch (the `Agent`/`Task` tool, or a `Workflow` script's `agent()`) — the counterpart to hera worker spawn's automatic archetype resolution, for in-context pipeline stages with no worktree/branch/PR of their own.
 - `.claude/skills/{archive,argus-complete,argus-schedule}/SKILL.md` — let an agent finalize, archive, and schedule its own argus task via `cwd` resolution.
-- `claude/snippets/*.md` — always-loaded orientation snippets (`hera.md`, `argus-tasks.md`) that point the agent at the skills above.
+- `claude/snippets/*.md` — always-loaded orientation snippets (`hera.md`, `argus-tasks.md`, `resolve-archetype-model.md`) that point the agent at the skills above.
 
 Install them:
 
