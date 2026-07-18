@@ -624,7 +624,7 @@ A Claude session inside an argus worktree sees the `mcp__argus__*` tool names bu
 - `.claude/skills/hera-plan/SKILL.md` — the on-demand plan-DAG companion: author staged, dependency-ordered multi-worker plans (planned nodes + blocking edges) that the daemon gater materializes in order, with branch-stacking, short-id naming, and self-guard prompt patterns.
 - `.claude/skills/resolve-archetype-model/SKILL.md` — resolve a diligence profile's per-archetype model/effort for Claude's *native* sub-agent dispatch (the `Agent`/`Task` tool, or a `Workflow` script's `agent()`) — the counterpart to hera worker spawn's automatic archetype resolution, for in-context pipeline stages with no worktree/branch/PR of their own.
 - `.claude/skills/{archive,argus-complete,argus-schedule}/SKILL.md` — let an agent finalize, archive, and schedule its own argus task via `cwd` resolution.
-- `claude/snippets/*.md` — always-loaded orientation snippets (`hera.md`, `argus-tasks.md`) that point the agent at the skills above.
+- `claude/snippets/*.md` — always-loaded orientation snippets (`hera.md`, `argus-tasks.md`, `resolve-archetype-model.md`) that point the agent at the skills above.
 
 Install them:
 
