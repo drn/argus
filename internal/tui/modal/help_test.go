@@ -72,7 +72,12 @@ func TestHelpModal_Draw(t *testing.T) {
 	// Sample a few bindings to catch regressions in the section list.
 	testutil.Contains(t, body, "new task")
 	testutil.Contains(t, body, "fork task")
-	testutil.Contains(t, body, "task switcher")
+	testutil.Contains(t, body, "task/role switcher")
+	// ctrl+j/ctrl+k rebind (hera-nav-palette): the switcher moved off ctrl+k,
+	// freeing it for the new global command palette action — fail the build
+	// if either regresses silently.
+	testutil.Contains(t, body, "ctrl+j")
+	testutil.Contains(t, body, "command palette")
 	testutil.Contains(t, body, "show/hide hera-managed (workers+coords)")
 	// Task-list `c` opens the copy menu (name / prompt) — fail the build if the
 	// binding text is silently reverted (keybinding-help contract).
