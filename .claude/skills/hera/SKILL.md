@@ -22,13 +22,29 @@ plumbing; you call the tools.
 
 ## 1. When this applies (and when it does NOT)
 
-This skill applies **only inside an argus task sandbox**. You are in one if **either** holds:
+The `mcp__argus__hera_*` tools are only *registered* inside an argus task sandbox. You are in one if
+**either** holds:
 
 - `ARGUS_TASK_ID` is set, **or**
 - the current working directory is under `~/.argus/worktrees/`.
 
-**If neither holds, stop.** The `mcp__argus__hera_*` tools are not registered in this session — there
-is no CLI fallback and nothing below applies.
+**If neither holds, stop.** The tools are not registered in this session — there is no CLI fallback and
+nothing below applies.
+
+**Sandbox residency alone is NOT a reason to use hera.** Most argus sessions are plain solo tasks that
+should stay solo. The "coordinate via hera, never hand-roll it" imperative in this skill applies only
+once this session already has evidence of being hera-managed:
+
+- it was **spawned as a hera worker** — its prompt carries the orientation prefix naming the
+  coordinator + orchestrator (see `hera_spawn_worker`'s prompt contract in §3), or
+- it already **holds, or is actively creating** (e.g. via `hera_new_orchestrator`), a
+  coordinator/freelance binding for this session.
+
+**No such evidence?** This is a bare argus task the human is driving directly. Don't assume hera and
+don't self-promote into a coordinator just because the work could be split up — at most, mention hera as
+an available option for multi-session work ("this could be split into a hera team with its own
+worktrees/PRs per stage if you want — say so, or I'll keep it in this session") and only act on it if
+they opt in. Once you're spawned/promoted per the bullets above, everything below governs.
 
 **Every hera tool takes `cwd` — always pass `cwd=$PWD`.** That is how hera resolves which argus task
 (and therefore which role) this session is. There is no separate "auth" or session handle.
