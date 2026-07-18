@@ -486,6 +486,48 @@ func TestPlanLeafEnter_ExpandsCollapsedAncestorBeforeJoin(t *testing.T) {
 	testutil.Equal(t, got.FocusTaskID(), "t-wkr") // join (reattach) fired
 }
 
+// TestJumpToTask_ExpandsCollapsedAncestorAndReturnsTrue pins the exported
+// entry point (extracted from jumpToLeaf for the unified task/role switcher,
+// hera-nav-palette): calling JumpToTask directly does the same ancestor
+// expansion + reattach + focus jumpToLeaf does, and reports success via its
+// return value (jumpToLeaf, still the plan widget's OnEnter, ignores it).
+func TestJumpToTask_ExpandsCollapsedAncestorAndReturnsTrue(t *testing.T) {
+	p := leafPlanPage(t)
+	var got Selection
+	p.OnReattach = func(s Selection) { got = s }
+
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
+	orchID := p.Rail().Model().Active[0].ID
+	p.Rail().seekCursor(t, func(row railRow) bool { return row.orch != nil && row.orch.ID == orchID })
+	p.Rail().ToggleCollapse()
+	testutil.Equal(t, p.Rail().OrchCollapsed(orchID), true)
+
+	ok := p.JumpToTask("t-wkr")
+
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, p.Rail().OrchCollapsed(orchID), false)
+	testutil.Equal(t, p.SelectionContext().TaskID(), "t-wkr")
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
+	testutil.Equal(t, got.FocusTaskID(), "t-wkr")
+}
+
+// TestJumpToTask_UnknownTaskReturnsFalse: no rail row for the id → no-op,
+// reported via the return value (the switcher falls back to the classic
+// per-task agent view on false).
+func TestJumpToTask_UnknownTaskReturnsFalse(t *testing.T) {
+	p := leafPlanPage(t)
+	testutil.Equal(t, p.JumpToTask("no-such-task"), false)
+}
+
+// TestJumpToTask_RemoteAndEmptyIDAreNoops mirrors jumpToLeaf's original guard.
+func TestJumpToTask_RemoteAndEmptyIDAreNoops(t *testing.T) {
+	remote := NewHeraPage(nil) // remote: no hera reader
+	testutil.Equal(t, remote.JumpToTask("t-wkr"), false)
+
+	p := leafPlanPage(t)
+	testutil.Equal(t, p.JumpToTask(""), false)
+}
+
 // TestPlanEnter_DrillInDoesNotReattach: a Drillable sub-coordinator node fires
 // OnDrillIn (the page-owned drill-in path), NOT OnEnter/jumpToLeaf, so the
 // BUG-009 reattach must never fire for it. The planview widget routes the Enter
