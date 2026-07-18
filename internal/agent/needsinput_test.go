@@ -900,3 +900,128 @@ func TestContentIdle(t *testing.T) {
 		testutil.Equal(t, len(idle), 0)
 	})
 }
+
+// blinkCycle reproduces the exact ~65-byte redraw Claude Code emits for its
+// blinking cursor/status-glyph animation, observed live in a BUG-061 repro:
+// a cursor reposition + 24-bit color-code + one glyph, toggling between a
+// space and "⏺" at a fixed screen position. It never stops, even while
+// genuinely parked at a permission prompt.
+func blinkCycle(glyph string) string {
+	return "\x1b[?2026l\x1b[?2026h\x1b[H\r\x1b[29B\x1b[38;2;153;153;153m" + glyph + "\x1b[39m\x1b[50;1H\x1b[43;2H"
+}
+
+// TestDegenerateSuffixStart pins BUG-061's root cause: a fixed-size tail
+// window can be entirely consumed by Claude's blinking-cursor redraw, pushing
+// real content (here, the permission prompt) out of any FLAT last-N-bytes
+// scan permanently — not intermittently, unlike the isolated-miss case
+// BUG-029/060 targeted.
+func TestDegenerateSuffixStart(t *testing.T) {
+	real := "Do you want to proceed?\n❯ 1. Yes\n  2. No\n"
+
+	t.Run("finds the boundary behind many blink cycles", func(t *testing.T) {
+		var blink strings.Builder
+		for i := 0; i < 200; i++ {
+			if i%2 == 0 {
+				blink.WriteString(blinkCycle(" "))
+			} else {
+				blink.WriteString(blinkCycle("⏺"))
+			}
+		}
+		buf := []byte(real + blink.String())
+		end := degenerateSuffixStart(buf)
+		testutil.Equal(t, end, len(real))
+		testutil.Equal(t, string(TrimToSubstantiveTail(buf)), real)
+	})
+
+	t.Run("a short coincidental repeat below the minimum does not trigger", func(t *testing.T) {
+		buf := []byte(real + strings.Repeat("ab", blinkMinRepeats-1))
+		testutil.Equal(t, degenerateSuffixStart(buf), -1)
+		testutil.Equal(t, string(TrimToSubstantiveTail(buf)), real+strings.Repeat("ab", blinkMinRepeats-1))
+	})
+
+	t.Run("ordinary streaming content is never trimmed", func(t *testing.T) {
+		buf := []byte("Reading internal/foo.go\nEditing internal/bar.go\nRunning go test ./...\n")
+		testutil.Equal(t, degenerateSuffixStart(buf), -1)
+	})
+
+	t.Run("entirely-blink buffer (real content not yet within reach) returns 0", func(t *testing.T) {
+		var blink strings.Builder
+		for i := 0; i < 50; i++ {
+			blink.WriteString(blinkCycle("⏺"))
+		}
+		buf := []byte(blink.String())
+		testutil.Equal(t, degenerateSuffixStart(buf), 0)
+	})
+}
+
+// TestSubstantiveTail pins the expand-on-degenerate-tail behavior: a caller
+// asking for a small window gets progressively more of the source until real
+// content surfaces, capped at maxBytes.
+func TestSubstantiveTail(t *testing.T) {
+	real := "Do you want to proceed?\n❯ 1. Yes\n  2. No\n"
+	var blink strings.Builder
+	for i := 0; i < 2000; i++ { // ~130KB of pure blink noise, well past a 16KB window
+		if i%2 == 0 {
+			blink.WriteString(blinkCycle(" "))
+		} else {
+			blink.WriteString(blinkCycle("⏺"))
+		}
+	}
+	full := []byte(real + blink.String())
+
+	// readN simulates a source (file/ring) that returns the last n bytes of
+	// `full`, tracking the largest n it was ever asked for.
+	maxAsked := 0
+	readN := func(n int) []byte {
+		if n > maxAsked {
+			maxAsked = n
+		}
+		if n >= len(full) {
+			return full
+		}
+		return full[len(full)-n:]
+	}
+
+	t.Run("expands past the blink flood to recover real content", func(t *testing.T) {
+		maxAsked = 0
+		got := SubstantiveTail(readN, 4096, NeedsInputMaxExpandBytes)
+		testutil.Equal(t, strings.Contains(string(got), "proceed"), true)
+		testutil.Equal(t, needsInputSelectionRe.MatchString(string(got)), true)
+		// Must have actually expanded beyond the initial ask.
+		if maxAsked <= 4096 {
+			t.Fatalf("expected SubstantiveTail to expand past 4096 bytes, only asked for %d", maxAsked)
+		}
+	})
+
+	t.Run("does not expand when the window already has real content", func(t *testing.T) {
+		maxAsked = 0
+		small := []byte(real)
+		readSmall := func(n int) []byte {
+			maxAsked = n
+			return small
+		}
+		got := SubstantiveTail(readSmall, 4096, NeedsInputMaxExpandBytes)
+		testutil.Equal(t, string(got), real)
+		testutil.Equal(t, maxAsked, 4096) // exactly one read, no expansion
+	})
+
+	t.Run("gives up at maxBytes without finding real content", func(t *testing.T) {
+		var onlyBlink strings.Builder
+		for i := 0; i < 20000; i++ {
+			onlyBlink.WriteString(blinkCycle("⏺"))
+		}
+		src := []byte(onlyBlink.String())
+		readAll := func(n int) []byte {
+			if n >= len(src) {
+				return src
+			}
+			return src[len(src)-n:]
+		}
+		got := SubstantiveTail(readAll, 4096, 8192)
+		// No real content anywhere within reach of the cap — must not panic or
+		// hang, and must return SOMETHING (old flat-tail behavior), not empty.
+		if len(got) == 0 {
+			t.Fatalf("expected a non-empty fallback tail, got empty")
+		}
+	})
+}

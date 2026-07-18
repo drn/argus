@@ -743,6 +743,139 @@ func ContentIdle(running []string, rawIdle map[string]bool, tailOf func(string) 
 	return idle, next
 }
 
+// blinkProbeWindow bounds how many trailing bytes degenerateSuffixStart scans
+// to IDENTIFY a repeating cycle (cheap, fixed cost); once a period is found it
+// walks the FULL buffer backward to find where the run actually starts.
+const blinkProbeWindow = 4096
+
+// blinkMaxPeriod is the longest single repeat cycle degenerateSuffixStart will
+// recognize. Chosen comfortably above the two-frame (on/off) blink cycle
+// observed in the wild (~130 bytes: a cursor-position + color-code + one-glyph
+// redraw, alternating a single space and a single multi-byte UTF-8 glyph), so
+// a real BUG-061 blink cycle is always found on the FIRST qualifying (small)
+// period rather than requiring the full range.
+const blinkMaxPeriod = 512
+
+// blinkMinRepeats is the minimum number of consecutive repeats of a candidate
+// period required before degenerateSuffixStart calls it a degenerate run
+// rather than a coincidental short match. Low enough to catch a run within one
+// tick of it starting, high enough that ordinary content (which occasionally
+// repeats a byte or two by chance) never false-positives.
+const blinkMinRepeats = 6
+
+// degenerateSuffixStart finds where a long run — ending at the very end of
+// buf — of some short byte sequence (length <= blinkMaxPeriod) repeating at
+// least blinkMinRepeats times begins, or returns -1 if the tail isn't
+// dominated by such a run.
+//
+// This is BUG-061's root cause: Claude Code renders a blinking cursor/status
+// glyph (observed: a fixed ~130-byte cursor-reposition + color-code + single-
+// glyph redraw, toggling a space and "⏺" at a fixed screen position) that
+// NEVER STOPS, even while genuinely parked at a permission prompt with the
+// "esc to interrupt" working-affordance correctly absent. A detector that
+// scans only a fixed-size tail of raw bytes (needsInputTailWindow) can have
+// that ENTIRE window consumed by this repeating redraw once enough real time
+// passes — permanently, not intermittently, since the byte gap between "most
+// recent bytes" and "the last real content" only grows. Confirmed via live
+// repro: a session's on-disk log had "proceed" (the permission dialog text)
+// sitting 37KB+ behind the current end of a 59KB file after ~4 minutes
+// parked, while `DetectNeedsInputScreen`/`ParkedSelectionSignal` missed 100%
+// of the time across a 9-second, 6-round sampling window — a deterministic
+// loss, not the "occasional torn read" BUG-029/060 targeted. No escalation-
+// counter retuning can fix this: escalation requires the raw per-tick signal
+// to be true SOMETIMES; once flooded it is false ALWAYS.
+func degenerateSuffixStart(buf []byte) int {
+	n := len(buf)
+	if n < blinkMinRepeats*2 {
+		return -1
+	}
+	probeLen := n
+	if probeLen > blinkProbeWindow {
+		probeLen = blinkProbeWindow
+	}
+	maxP := blinkMaxPeriod
+	if maxP > probeLen/blinkMinRepeats {
+		maxP = probeLen / blinkMinRepeats
+	}
+	for p := 1; p <= maxP; p++ {
+		repeatBytes := p * blinkMinRepeats
+		qualifies := true
+		for i := n - repeatBytes; i < n-p; i++ {
+			if buf[i] != buf[i+p] {
+				qualifies = false
+				break
+			}
+		}
+		if !qualifies {
+			continue
+		}
+		// Found a qualifying period within the probe window — walk it backward
+		// through the WHOLE buffer to find the true start of the run (which may
+		// extend further back than the probe window itself, in which case the
+		// caller should expand its read and try again).
+		j := n - p - 1
+		for j >= 0 && buf[j] == buf[j+p] {
+			j--
+		}
+		return j + 1
+	}
+	return -1
+}
+
+// TrimToSubstantiveTail drops a trailing degenerate repeat run (see
+// degenerateSuffixStart) from buf, so a detector sees the last GENUINE content
+// instead of however many blink-redraw cycles happen to fit in the window.
+// Returns buf unchanged when no qualifying run is found.
+func TrimToSubstantiveTail(buf []byte) []byte {
+	if end := degenerateSuffixStart(buf); end >= 0 {
+		return buf[:end]
+	}
+	return buf
+}
+
+// NeedsInputMaxExpandBytes bounds how far back SubstantiveTail will expand its
+// read in search of real content past a degenerate blink run. A hard ceiling
+// so a session parked for a very long time (beyond what this budget's blink
+// rate could fill) has a bounded, documented worst case rather than an
+// unbounded per-tick disk/ring read.
+const NeedsInputMaxExpandBytes = 2 * 1024 * 1024
+
+// SubstantiveTail reads a session's recent output via readN — which returns
+// the last n bytes from whatever source a caller has (an on-disk log file, an
+// in-memory ring buffer) for a requested n — and, if the result is dominated
+// by a trailing degenerate repeat run (BUG-061), asks for progressively more
+// (doubling n) until real content surfaces, readN stops returning more data
+// (source exhausted), or maxBytes is reached. Returns up to the last
+// wantBytes of that real content.
+//
+// Falls back to the raw, untrimmed read when no qualifying run is ever found
+// (the common case — most sessions are actively producing real content, so
+// the degenerate-run check fails fast and this never expands) or when
+// trimming leaves nothing at all (better than returning empty). A caller is
+// therefore never worse off than the pre-fix flat read.
+func SubstantiveTail(readN func(n int) []byte, wantBytes, maxBytes int) []byte {
+	n := wantBytes
+	var buf, trimmed []byte
+	for {
+		buf = readN(n)
+		trimmed = TrimToSubstantiveTail(buf)
+		if len(trimmed) >= wantBytes || len(buf) < n || n >= maxBytes {
+			break
+		}
+		n *= 2
+		if n > maxBytes {
+			n = maxBytes
+		}
+	}
+	if len(trimmed) == 0 {
+		return buf
+	}
+	if len(trimmed) > wantBytes {
+		trimmed = trimmed[len(trimmed)-wantBytes:]
+	}
+	return trimmed
+}
+
 // DetectNeedsInputScreen is the alt-screen-aware form of DetectNeedsInput. It
 // first matches the raw byte stream (fast path — linear / main-screen agents
 // behave EXACTLY as DetectNeedsInput, and the emulator is never touched), and

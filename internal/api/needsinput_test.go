@@ -157,11 +157,17 @@ func TestComputeNeedsInput(t *testing.T) {
 			want:    []string{"blocked"},
 		},
 		{
-			name:    "sticky clears when marker scrolled out of tail",
+			// BUG-061: the sticky pass no longer clears just because the marker
+			// isn't in THIS tick's tail — a flat tail window can be permanently
+			// flooded by Claude's blinking-cursor redraw long after the prompt
+			// itself scrolled out of reach, which is indistinguishable from a
+			// genuine answer at this layer. NeedsInputClear (exercised by
+			// TestComputeNeedsInput_ClearOnInput) is now the only way this clears.
+			name:    "sticky stays flagged even once the marker scrolls out of tail",
 			idle:    nil,
 			running: []string{"answered"},
 			prev:    []string{"answered"},
-			want:    []string{},
+			want:    []string{"answered"},
 		},
 		{
 			name:    "sticky clears when session no longer running",
@@ -303,23 +309,19 @@ func TestDetectNeedsInputTick(t *testing.T) {
 	testutil.NoError(t, json.Unmarshal(ev[0].Payload, &p1))
 	testutil.Equal(t, p1["needs_input"], true)
 
-	// Tick 2: "a" answered the prompt — marker gone from tail, still running.
-	// No re-entry event (steady state was just cleared), one clear event.
+	// Tick 2 (BUG-061): the marker scrolls out of "a"'s tail (e.g. Claude's
+	// blinking-cursor redraw flooded the window) but no genuine user input
+	// arrived — the sticky carry-forward pass no longer clears on a tail miss
+	// alone, only NeedsInputClear (real input or archive) does. "a" stays
+	// flagged and no new event fires (steady state).
 	tails["a"] = idleTail
 	srv.detectNeedsInputTick(state, []string{"a", "b"}, []string{"a", "b"}, tailOf)
-	testutil.Equal(t, srv.runner.(*agent.Runner).NeedsInput("a"), false)
-
-	ev = sink.events()
-	testutil.Equal(t, len(ev), 2)
-	testutil.Equal(t, ev[1].Type, model.EventTypeSessionNeedsInput)
-	testutil.Equal(t, ev[1].TaskID, "a")
-	var p2 map[string]bool
-	testutil.NoError(t, json.Unmarshal(ev[1].Payload, &p2))
-	testutil.Equal(t, p2["needs_input"], false)
+	testutil.Equal(t, srv.runner.(*agent.Runner).NeedsInput("a"), true)
+	testutil.Equal(t, len(sink.events()), 1)
 
 	// Tick 3: steady state, nothing blocked → no new events.
 	srv.detectNeedsInputTick(state, []string{"a", "b"}, []string{"a", "b"}, tailOf)
-	testutil.Equal(t, len(sink.events()), 2)
+	testutil.Equal(t, len(sink.events()), 1)
 }
 
 // TestHandleListTasks_NeedsInput verifies the runner's needs-input set surfaces
