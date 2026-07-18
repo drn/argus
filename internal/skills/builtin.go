@@ -103,7 +103,7 @@ func EnsureBuiltinSkills() (string, error) {
 	existingDirs, _ := os.ReadDir(skillsDir)
 	for _, d := range existingDirs {
 		if d.IsDir() && !present[d.Name()] {
-			os.RemoveAll(filepath.Join(skillsDir, d.Name()))
+			_ = os.RemoveAll(filepath.Join(skillsDir, d.Name()))
 		}
 	}
 	return workspaceRoot, nil
