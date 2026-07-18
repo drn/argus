@@ -165,7 +165,7 @@ func TestOpenTaskSwitcher_NoOtherTasksOpensEmpty(t *testing.T) {
 	testutil.Equal(t, len(app.taskSwitcherModal.all), 0)
 }
 
-func TestSmoke_TaskSwitcherOpenViaCtrlK(t *testing.T) {
+func TestSmoke_TaskSwitcherOpenViaCtrlJ(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	d := testDB(t)
@@ -180,7 +180,7 @@ func TestSmoke_TaskSwitcherOpenViaCtrlK(t *testing.T) {
 		app.mode = modeAgent
 	})
 
-	sim.InjectKey(tcell.KeyCtrlK, 0, 0)
+	sim.InjectKey(tcell.KeyCtrlJ, 0, 0)
 	syncUI(t, app.tapp)
 
 	var mode viewMode

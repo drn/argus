@@ -733,9 +733,18 @@ func (r *Rail) appendOrch(o *OrchView, depth int, dim bool, canonical map[int64]
 		ancestryOnly: r.filterActive() && !r.orchMatchesOwnQuery(o),
 	})
 	if r.isCollapsed(o.ID) {
+		// Partial-fold reveal: a closed coordinator whose subtree needs input
+		// still peeks through to the specific ancestor chain(s) down to each
+		// needs-input leaf, even though the fold stays visually closed —
+		// every other sibling at every level stays fully hidden (add-hera-
+		// jump-question). Pure rendering: fold state (isCollapsed) is never
+		// mutated by this branch.
+		if o.SubtreeNeedsInput {
+			r.appendOrchWorkers(o, depth+1, dim, canonical, placed, true)
+		}
 		return
 	}
-	r.appendOrchWorkers(o, depth+1, dim, canonical, placed)
+	r.appendOrchWorkers(o, depth+1, dim, canonical, placed, false)
 }
 
 // appendOrchWorkers emits o's non-coordinator role rows at `depth`. A worker
@@ -749,7 +758,17 @@ func (r *Rail) appendOrch(o *OrchView, depth int, dim bool, canonical map[int64]
 // The bridging row keeps its PARENT worker selection context (a worker role
 // under o): nesting is purely visual, so mutations (notably Ctrl+D) act on the
 // worker role, never the child orchestrator — conservative multi-binding safety.
-func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, canonical map[int64]canonParent, placed map[int64]bool) {
+// revealOnly restricts this call to the partial-fold-reveal path: o is a
+// closed ancestor whose subtree needs input, so ONLY children whose own
+// SubtreeNeedsInput is true are emitted (recursively, at every level below —
+// each level's OWN collapse flag is ignored, since the operator can't see or
+// toggle a fold inside a subtree that isn't otherwise visible). Archived and
+// pinned-floated roles are skipped exactly as in normal mode (they already
+// have their own, independent visibility mechanisms — Archive expando /
+// Pinned section — so the reveal leaves them alone rather than layering a
+// third), and the per-coordinator Archive expando itself is never rendered
+// in reveal mode.
+func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, canonical map[int64]canonParent, placed map[int64]bool, revealOnly bool) {
 	var archived []*RoleView
 	for i := range o.Roles {
 		w := &o.Roles[i]
@@ -762,26 +781,36 @@ func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, canonical map
 		if r.pinnedFloat[w.RoleID] {
 			continue
 		}
-		// BUG-022 Q3: HIDING a worker (or a bridging sub-coordinator) folds it into
-		// the per-coordinator Archive expando — and a bridging sub-coord drags its
-		// WHOLE subtree in with it (structure retained INSIDE the expando), NOT
-		// rendered dimmed-in-place. ALL archived workers go to the expando here; the
-		// expando's appendWorkerRow (below) nests any bridged sub-team beneath the
-		// hidden worker when the expando is open. The orphaning hazard the old
-		// in-place rule guarded against (an archived bridging worker hoisted while its
-		// child is left unplaced → safety-swept flat to the top) is now closed by
-		// `structuralReach`: a child whose canonical-parent chain reaches a root is
-		// never re-leaked by the safety sweep, so when the expando is COLLAPSED the
-		// child stays hidden under its hidden parent instead of leaking. See
-		// TestRail_HiddenSubCoordCollapsesSubtreeIntoExpando (both fold states).
 		if w.Archived {
-			archived = append(archived, w)
+			if !revealOnly {
+				// BUG-022 Q3: HIDING a worker (or a bridging sub-coordinator) folds it
+				// into the per-coordinator Archive expando — and a bridging sub-coord
+				// drags its WHOLE subtree in with it (structure retained INSIDE the
+				// expando), NOT rendered dimmed-in-place. ALL archived workers go to
+				// the expando here; the expando's appendWorkerRow (below) nests any
+				// bridged sub-team beneath the hidden worker when the expando is open.
+				// The orphaning hazard the old in-place rule guarded against (an
+				// archived bridging worker hoisted while its child is left unplaced →
+				// safety-swept flat to the top) is now closed by `structuralReach`: a
+				// child whose canonical-parent chain reaches a root is never re-leaked
+				// by the safety sweep, so when the expando is COLLAPSED the child stays
+				// hidden under its hidden parent instead of leaking. See
+				// TestRail_HiddenSubCoordCollapsesSubtreeIntoExpando (both fold states).
+				archived = append(archived, w)
+			}
+			continue
+		}
+		if revealOnly {
+			if !w.SubtreeNeedsInput {
+				continue // prune — no needs-input descendant on this path
+			}
+			r.appendWorkerRow(o.ID, w, depth, dim, canonical, placed, true)
 			continue
 		}
 		if !r.workerRowVisible(o.ID, w, canonical, placed) {
 			continue // filtered out (no name match, bridges no visible child)
 		}
-		r.appendWorkerRow(o.ID, w, depth, dim, canonical, placed)
+		r.appendWorkerRow(o.ID, w, depth, dim, canonical, placed, false)
 	}
 
 	// Coordinator-spawned sub-teams: a child orchestrator whose coordinator is the
@@ -798,7 +827,18 @@ func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, canonical map
 		if cp, ok := canonical[child.ID]; !ok || !cp.coordSpawn || cp.orchID != o.ID {
 			continue
 		}
+		if revealOnly {
+			if !child.SubtreeNeedsInput {
+				continue
+			}
+			r.appendOrchRevealPath(child, depth, dim, canonical, placed)
+			continue
+		}
 		r.appendOrch(child, depth, dim, canonical, placed)
+	}
+
+	if revealOnly {
+		return // no per-coordinator Archive expando in reveal mode
 	}
 
 	// Per-coordinator Archive (N) expando: HIDDEN (archived) roles fold under their
@@ -828,10 +868,33 @@ func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, canonical map
 		})
 		if r.isCoordArchiveOpen(o.ID) {
 			for _, w := range visibleArchived {
-				r.appendWorkerRow(o.ID, w, depth+1, true, canonical, placed)
+				r.appendWorkerRow(o.ID, w, depth+1, true, canonical, placed, false)
 			}
 		}
 	}
+}
+
+// appendOrchRevealPath emits a coordinator-spawned child orchestrator's own
+// header row and recurses into it in reveal-only mode, UNCONDITIONALLY —
+// ignoring the child's own collapse flag entirely. It is only ever reached
+// from appendOrchWorkers' revealOnly branch, already gated on the child's
+// SubtreeNeedsInput being true, for a closed ANCESTOR the operator can't see
+// into — so the child's own fold state is not meaningful here (there is
+// nothing visible for the operator to have toggled), unlike appendOrch's
+// normal collapsed-vs-expanded gate at the top level.
+func (r *Rail) appendOrchRevealPath(o *OrchView, depth int, dim bool, canonical map[int64]canonParent, placed map[int64]bool) {
+	if placed[o.ID] {
+		return
+	}
+	placed[o.ID] = true
+	r.rows = append(r.rows, railRow{
+		kind:       rrOrch,
+		orch:       o,
+		depth:      depth,
+		dim:        dim,
+		collOrchID: o.ID,
+	})
+	r.appendOrchWorkers(o, depth+1, dim, canonical, placed, true)
 }
 
 // workerBridgeChild returns the not-yet-placed child orchestrator that nests under
@@ -873,12 +936,22 @@ func (r *Rail) workerBridgeChild(ownerID int64, w *RoleView, canonical map[int64
 // signal); the child subtree dims only from inherited dim or the CHILD's own
 // archived state — an active child under an archived bridging worker stays
 // normal (it is live work, not archived placement).
-func (r *Rail) appendWorkerRow(ownerID int64, w *RoleView, depth int, dim bool, canonical map[int64]canonParent, placed map[int64]bool) {
+//
+// revealOnly (partial-fold reveal): when true, the bridged child — a nested
+// sub-coordinator whose worker row IS its coordinator, so it gets no separate
+// header — recurses in reveal-only mode UNCONDITIONALLY, ignoring the
+// child's own collapse flag, mirroring appendOrchRevealPath's rationale (the
+// caller already gated this row on w.SubtreeNeedsInput being true before
+// calling appendWorkerRow, so the child is known to need the reveal).
+func (r *Rail) appendWorkerRow(ownerID int64, w *RoleView, depth int, dim bool, canonical map[int64]canonParent, placed map[int64]bool, revealOnly bool) {
 	rowDim := dim || w.Archived
 	child := r.workerBridgeChild(ownerID, w, canonical, placed)
 	// Under an active filter, only bridge a VISIBLE child: a non-matching subtree
-	// must not surface (and the bridging row drops its chevron).
-	if child != nil && r.filterActive() && !r.filterVis[child.ID] {
+	// must not surface (and the bridging row drops its chevron). Filtering and
+	// reveal never overlap in practice (the `/` filter force-expands every
+	// fold, so appendOrch's revealOnly branch — gated on isCollapsed — never
+	// triggers while filtering), so this check is skipped in reveal mode.
+	if child != nil && !revealOnly && r.filterActive() && !r.filterVis[child.ID] {
 		child = nil
 	}
 	collID := int64(0)
@@ -891,12 +964,14 @@ func (r *Rail) appendWorkerRow(ownerID int64, w *RoleView, depth int, dim bool, 
 		depth:        depth,
 		dim:          rowDim,
 		collOrchID:   collID,
-		ancestryOnly: r.filterActive() && !r.filterMatches(w.Name),
+		ancestryOnly: !revealOnly && r.filterActive() && !r.filterMatches(w.Name),
 	})
 	if child != nil {
 		placed[child.ID] = true
-		if !r.isCollapsed(child.ID) {
-			r.appendOrchWorkers(child, depth+1, dim || child.Archived, canonical, placed)
+		if revealOnly {
+			r.appendOrchWorkers(child, depth+1, dim || child.Archived, canonical, placed, true)
+		} else if !r.isCollapsed(child.ID) {
+			r.appendOrchWorkers(child, depth+1, dim || child.Archived, canonical, placed, false)
 		}
 	}
 }
@@ -1008,7 +1083,11 @@ func (r *Rail) appendPinnedRole(pe pinnedRoleEntry, canonical map[int64]canonPar
 	if child != nil {
 		placed[child.ID] = true
 		if !r.isCollapsed(child.ID) {
-			r.appendOrchWorkers(child, 2, child.Archived, canonical, placed)
+			r.appendOrchWorkers(child, 2, child.Archived, canonical, placed, false)
+		} else if child.SubtreeNeedsInput {
+			// Partial-fold reveal applies here too: a pinned role's own bridged
+			// child can be closed with a hidden needs-input descendant.
+			r.appendOrchWorkers(child, 2, child.Archived, canonical, placed, true)
 		}
 	}
 }
