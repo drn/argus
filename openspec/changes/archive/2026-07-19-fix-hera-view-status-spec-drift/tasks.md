@@ -16,5 +16,5 @@ archives it.
 
 **Depends on:** Stage 1
 
-- [ ] 2.1 Run `openspec archive fix-hera-view-status-spec-drift` (merges the delta into `openspec/specs/hera-view/spec.md`, moves the change folder to `openspec/changes/archive/<date>-fix-hera-view-status-spec-drift/`), committed on this branch.
-- [ ] 2.2 Run `openspec validate --all --strict` and confirm it passes against the merged base spec.
+- [x] 2.1 Run `openspec archive fix-hera-view-status-spec-drift` (merges the delta into `openspec/specs/hera-view/spec.md`, moves the change folder to `openspec/changes/archive/<date>-fix-hera-view-status-spec-drift/`), committed on this branch.
+- [x] 2.2 Run `openspec validate --all --strict` and confirm it passes against the merged base spec. (57/57 passed)
