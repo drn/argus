@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/uxlog"
@@ -43,11 +44,41 @@ func testGuard(path string) bool {
 	return true
 }
 
+// repoLocks serializes concurrent worktree/branch cleanup against the SAME
+// repository. A bulk delete (Hera cascade-nuke, prune) fans out one goroutine
+// per task; without this, dozens of concurrent `git worktree remove`/`prune`/
+// `branch -D` calls against one repo's shared `.git` administrative area can
+// contend on git's own lock files and fail unpredictably (see
+// gotchas/worktree.md). Keyed by repoDir so unrelated repos are never
+// serialized against each other — cross-repo cascades still clean up fully in
+// parallel; only same-repo work is bounded to one in-flight cleanup at a time.
+// Entries are never removed: the key space is the small, bounded set of repos
+// a user actually has configured, not per-task.
+var repoLocks sync.Map // map[string]*sync.Mutex
+
+// lockRepo acquires the per-repo cleanup lock for repoDir and returns the
+// unlock function. A blank repoDir (no shared administrative area to
+// contend over) is a no-op.
+func lockRepo(repoDir string) (unlock func()) {
+	if repoDir == "" {
+		return func() {}
+	}
+	v, _ := repoLocks.LoadOrStore(repoDir, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
 // RemoveWorktreeAndBranch removes a git worktree and deletes its local and
 // remote branches. Best-effort: failures are logged, never returned — callers
 // use this as a compensating cleanup action where a partial failure must not
 // block the rest of the unwind chain.
+//
+// Serializes against other calls targeting the SAME repoDir (see repoLocks) —
+// callers routinely fan this out one-goroutine-per-task for a bulk delete.
 func RemoveWorktreeAndBranch(worktreePath, branch, repoDir string) {
+	unlock := lockRepo(repoDir)
+	defer unlock()
 	if testGuard(worktreePath) {
 		return
 	}

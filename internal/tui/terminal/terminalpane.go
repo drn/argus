@@ -397,10 +397,20 @@ func (tp *TerminalPane) ForceResyncPTY() {
 	tp.mu.Unlock()
 }
 
-// SyncPTYSize performs a pending PTY resize (RPC). Called from the tick
-// goroutine — safe to block here. Draw() sets pendingResize* when panel
-// dimensions change; this method consumes them and issues the resize RPC.
+// SyncPTYSize performs a pending PTY resize (RPC). Called from the tick AND
+// spinner goroutines — safe to block here. Draw() sets pendingResize* when
+// panel dimensions change; this method consumes them and issues the resize
+// RPC. Recovers any panic (mirrors Draw()'s guard): unlike a panic reached via
+// Draw(), a panic here runs on a background goroutine with nothing else
+// awaiting it, so an unrecovered one would crash the whole TUI process with no
+// other backstop.
 func (tp *TerminalPane) SyncPTYSize() {
+	defer func() {
+		if r := recover(); r != nil {
+			uxlog.Log("[terminalpane] PANIC in SyncPTYSize: %v\n%s", r, debug.Stack())
+		}
+	}()
+
 	tp.mu.Lock()
 	sess := tp.session
 	rows := tp.pendingResizeRows
