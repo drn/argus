@@ -1332,10 +1332,28 @@ coordinator's rail status icon SHALL show the needs-input "(?)" indicator
 ITSELF is in needs-input OR ANY descendant role in its orchestration subtree is
 in needs-input. The descendant walk SHALL be transitive across nested and
 BRIDGED sub-orchestrators (a sub-coordinator is a separate orchestrator bridged
-in as a worker row) and SHALL be cycle-safe, reusing the same
-`BridgeSubtree`/`bridgeIndex` traversal that drives rail nesting and the Ctrl+D
-cascade. The indicator SHALL clear on an ancestor as soon as no descendant (and
-not the ancestor itself) needs input.
+in as a worker row) and SHALL be cycle-safe, using the same visited-set guard
+and the same two descent mechanisms (`bridgeIndex` worker-bridging and
+`coordBridgeChildren`) as the `BridgeSubtree` traversal that drives rail
+nesting and the Ctrl+D cascade — but the rollup's OWN traversal, not
+`BridgeSubtree` itself, because the rollup additionally prunes archived roles
+(see below) while rendering and the cascade must NOT. The indicator SHALL
+clear on an ancestor as soon as no descendant (and not the ancestor itself)
+needs input.
+
+An ARCHIVED role (`role.ArchivedAt` set, e.g. via the rail's `a` Tier-1 hide)
+SHALL be excluded from the needs-input rollup counted toward its ancestors:
+neither the archived role's own needs-input signal, NOR — when the archived
+role is a bridging row into a nested sub-orchestrator — anything needing input
+within that bridged subtree, SHALL propagate past the archived role to any
+ancestor coordinator or coordinator-less orchestrator header. This applies
+identically when the bridged child is reached through a worker-bridge (a
+directly-archived bridging role) or when the whole child orchestrator is
+itself archived (already excluded from `coordBridgeChildren`, and excluded
+here for the worker-bridge path too). The exclusion applies ONLY to what
+counts toward ANCESTORS — an archived role's OWN rail row SHALL continue to
+show the needs-input "(?)" glyph on itself exactly as an unarchived role
+would, since it is unaffected by whether IT counts toward something above it.
 
 A live needs-input signal SHALL surface for a blocked role even when its bound
 argus task is NO LONGER `in_progress`, for any role that does not "finish" by task
@@ -1434,6 +1452,36 @@ surfaces `OrchView.SubtreeNeedsInput` when no coordinator role is present),
 
 - **WHEN** a worker's bound task has rolled to complete/in_review (finished) but the sticky needs-input set still flags it
 - **THEN** the worker's row and its ancestor rollup do NOT render "(?)" — the in_progress gate stays worker-only (BUG-023 preserved)
+
+#### Scenario: Archiving a blocked leaf worker stops it flagging its parent coordinator
+
+- **GIVEN** a worker directly under a coordinator is in needs-input, and the coordinator currently renders "(?)"
+- **WHEN** the user archives that worker's role (`a`)
+- **THEN** the coordinator's rail row stops rendering "(?)" on the next refresh (assuming no other descendant needs input)
+
+#### Scenario: Archiving a blocked leaf worker stops it flagging the root across multiple bridge levels
+
+- **GIVEN** a leaf worker two or more bridge levels below the root is in needs-input, and every intervening sub-coordinator plus the root render "(?)"
+- **WHEN** the user archives that leaf worker's role
+- **THEN** every intervening sub-coordinator AND the root coordinator stop rendering "(?)" on the next refresh
+
+#### Scenario: Archiving a nested sub-coordinator's bridging row hides its whole subtree from the parent
+
+- **GIVEN** a nested sub-coordinator's bridging row (a role in the parent orchestrator with a structurally intact bridge into a child orchestrator) is NOT itself in needs-input, but a worker within its bridged child orchestrator IS
+- **WHEN** the user archives the bridging row's role
+- **THEN** the parent coordinator (and any further ancestor) stops rendering "(?)" on the next refresh, even though the blocked worker in the child orchestrator is still genuinely in needs-input
+
+#### Scenario: Archiving a whole sub-orchestrator excludes it when reached via a worker-bridge
+
+- **GIVEN** a child orchestrator reached from a live parent via a worker-bridge is itself archived (`archived_at` set on the orchestrator, not just a role within it) and contains a blocked worker
+- **WHEN** the rollup is computed for the live parent
+- **THEN** the parent does NOT render "(?)" on account of that archived child orchestrator's subtree
+
+#### Scenario: An archived role's own row keeps showing its own needs-input glyph
+
+- **GIVEN** a worker's role is archived while it is genuinely in needs-input
+- **WHEN** the rollup is recomputed
+- **THEN** the archived worker's OWN rail row still renders the needs-input "(?)" glyph on itself, even though it no longer counts toward any ancestor
 
 ### Requirement: Needs-input "(?)" CLEARS and propagates up when a descendant resolves (area rail)
 
