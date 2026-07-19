@@ -137,8 +137,9 @@ func TestHeraPage_CmdArrowMovesRailSelectionWithoutChangingFocus(t *testing.T) {
 	p := NewHeraPage(d)
 	p.Refresh()
 
-	// Cursor starts on the orchestrator header (row 0 = the coordinator).
-	testutil.Equal(t, p.Rail().CursorIndex(), 0)
+	// Cursor starts on the orchestrator header (row 2 = the coordinator — rows
+	// 0/1 are the leading rule + "Active (1)" header, add-kanban-focus-fold).
+	testutil.Equal(t, p.Rail().CursorIndex(), 2)
 
 	// Move focus into the coordinator pane — simulating the user typing while
 	// watching the coordinator's output.
@@ -150,20 +151,20 @@ func TestHeraPage_CmdArrowMovesRailSelectionWithoutChangingFocus(t *testing.T) {
 	// Cmd+Down must move the rail cursor to the worker row without changing focus.
 	cmdDown := tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModCtrl|tcell.ModAlt)
 	h(cmdDown, noFocus)
-	testutil.Equal(t, p.Rail().CursorIndex(), 1)
+	testutil.Equal(t, p.Rail().CursorIndex(), 3)
 	testutil.Equal(t, p.Machine().State(), FocusCoord) // focus unchanged
 
 	// Cmd+Up must move the rail cursor back to the header.
 	cmdUp := tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModCtrl|tcell.ModAlt)
 	h(cmdUp, noFocus)
-	testutil.Equal(t, p.Rail().CursorIndex(), 0)
+	testutil.Equal(t, p.Rail().CursorIndex(), 2)
 	testutil.Equal(t, p.Machine().State(), FocusCoord) // focus still unchanged
 
 	// Same behaviour when focused on the agent pane.
 	p.Machine().Advance() // coord → agent
 	testutil.Equal(t, p.Machine().State(), FocusAgent)
 	h(cmdDown, noFocus)
-	testutil.Equal(t, p.Rail().CursorIndex(), 1)
+	testutil.Equal(t, p.Rail().CursorIndex(), 3)
 	testutil.Equal(t, p.Machine().State(), FocusAgent)
 }
 
@@ -236,22 +237,22 @@ func TestHeraPage_LeftArrowMovesSelectionToParentOnRailFocus(t *testing.T) {
 	p.Refresh()
 
 	h := p.InputHandler()
-	// Start: cursor row 0 = orch header; row 1 = worker.
-	testutil.Equal(t, p.Rail().CursorIndex(), 0)
+	// Start: rule(0), "Active (1)" header(1), orch header(2), worker(3).
+	testutil.Equal(t, p.Rail().CursorIndex(), 2)
 	testutil.Equal(t, p.Machine().State(), FocusRail)
 
 	// Move to the worker row.
 	h(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus)
-	testutil.Equal(t, p.Rail().CursorIndex(), 1)
+	testutil.Equal(t, p.Rail().CursorIndex(), 3)
 
-	// Left on the worker → should jump to orch header (row 0).
+	// Left on the worker → should jump to orch header (row 2).
 	h(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone), noFocus)
-	testutil.Equal(t, p.Rail().CursorIndex(), 0)
+	testutil.Equal(t, p.Rail().CursorIndex(), 2)
 	testutil.Equal(t, p.Machine().State(), FocusRail) // focus unchanged
 
 	// Left again on the orch header (depth 0) → no-op.
 	h(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone), noFocus)
-	testutil.Equal(t, p.Rail().CursorIndex(), 0)
+	testutil.Equal(t, p.Rail().CursorIndex(), 2)
 }
 
 // TestHeraPage_LeftArrowFromPaneDoesNotMoveRail verifies that Left from a
@@ -266,9 +267,10 @@ func TestHeraPage_LeftArrowFromPaneDoesNotMoveRail(t *testing.T) {
 	p.Refresh()
 
 	h := p.InputHandler()
-	// Move rail cursor to the worker.
+	// Move rail cursor to the worker (row 3; rows 0/1 are the leading rule +
+	// "Active (1)" header, row 2 the orch header).
 	h(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus)
-	testutil.Equal(t, p.Rail().CursorIndex(), 1)
+	testutil.Equal(t, p.Rail().CursorIndex(), 3)
 
 	// Move focus to the coordinator pane.
 	p.Machine().Advance()
@@ -276,14 +278,14 @@ func TestHeraPage_LeftArrowFromPaneDoesNotMoveRail(t *testing.T) {
 
 	// Left while pane is focused — must NOT move rail cursor.
 	h(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone), noFocus)
-	testutil.Equal(t, p.Rail().CursorIndex(), 1)       // cursor unchanged
+	testutil.Equal(t, p.Rail().CursorIndex(), 3)       // cursor unchanged
 	testutil.Equal(t, p.Machine().State(), FocusCoord) // focus unchanged
 
 	// Same for FocusAgent.
 	p.Machine().Advance()
 	testutil.Equal(t, p.Machine().State(), FocusAgent)
 	h(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone), noFocus)
-	testutil.Equal(t, p.Rail().CursorIndex(), 1) // still unchanged
+	testutil.Equal(t, p.Rail().CursorIndex(), 3) // still unchanged
 }
 
 // TestHeraPage_OnFocusChange_FiresOnEveryKey asserts that OnFocusChange fires

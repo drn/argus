@@ -113,18 +113,20 @@ func TestSmoke_HeraRailCursorNavAndCollapse(t *testing.T) {
 	sim.InjectKey(tcell.KeyRune, '2', 0)
 	syncUI(t, app.tapp)
 
-	// First-run (no saved state): the orchestrator starts fully collapsed — only
-	// the header row is visible. Space expands it to show the worker.
+	// First-run (no saved state): the orchestrator starts fully collapsed —
+	// only the leading rule + "Active (1)" group header (add-kanban-focus-fold)
+	// + the collapsed orch header are visible. Space expands it to show the
+	// worker.
 	readUI(t, app.tapp, func() {
-		testutil.Equal(t, app.heraPage.Rail().Rows(), 1)        // collapsed: only header
-		testutil.Equal(t, app.heraPage.Rail().CursorIndex(), 0) // cursor on header
+		testutil.Equal(t, app.heraPage.Rail().Rows(), 3)        // rule + "Active (1)" header + collapsed orch header
+		testutil.Equal(t, app.heraPage.Rail().CursorIndex(), 2) // cursor on the orch header, first selectable row
 		testutil.Equal(t, app.heraPage.Rail().OrchCollapsed(orch), true)
 	})
 
 	sim.InjectKey(tcell.KeyRune, ' ', 0) // expand
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() {
-		testutil.Equal(t, app.heraPage.Rail().Rows(), 2) // header + worker
+		testutil.Equal(t, app.heraPage.Rail().Rows(), 4) // + worker
 		testutil.Equal(t, app.heraPage.Rail().OrchCollapsed(orch), false)
 	})
 
@@ -132,7 +134,7 @@ func TestSmoke_HeraRailCursorNavAndCollapse(t *testing.T) {
 	syncUI(t, app.tapp)
 	var cursorAfterJ int
 	readUI(t, app.tapp, func() { cursorAfterJ = app.heraPage.Rail().CursorIndex() })
-	testutil.Equal(t, cursorAfterJ, 1)
+	testutil.Equal(t, cursorAfterJ, 3)
 
 	// Cursor back to the orch header, then Space to collapse → roles vanish.
 	sim.InjectKey(tcell.KeyRune, 'k', 0)
@@ -140,7 +142,7 @@ func TestSmoke_HeraRailCursorNavAndCollapse(t *testing.T) {
 	sim.InjectKey(tcell.KeyRune, ' ', 0)
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() {
-		testutil.Equal(t, app.heraPage.Rail().Rows(), 1) // only the collapsed orch header
+		testutil.Equal(t, app.heraPage.Rail().Rows(), 3) // rule + header + the collapsed orch header
 	})
 }
 
