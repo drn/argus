@@ -135,6 +135,13 @@ type idleWatcherState struct {
 	// the flag once the session's last-input advances past it (the user
 	// responded), even while the stale question still matches in the tail.
 	needsInputSince map[string]time.Time
+	// needsInputCleared carries the BUG-063 cleared-marker map: the session's
+	// last-input timestamp recorded at the moment a real clear fired, threaded
+	// forward for every RUNNING task regardless of candidacy so a later stale
+	// content-fingerprint re-flag of already-answered content at the same
+	// timestamp cannot recapture a stuck baseline. Mirrors the TUI's
+	// App.needsInputCleared.
+	needsInputCleared map[string]time.Time
 	// screen reconstructs the visible terminal screen from a session's raw tail
 	// so detection matches the EMULATED screen, catching fullscreen (alt-screen)
 	// prompts whose cursor-addressed glyphs aren't linearly present in the bytes
@@ -152,13 +159,14 @@ type idleWatcherState struct {
 
 func newIdleWatcherState() *idleWatcherState {
 	return &idleWatcherState{
-		idleNow:         make(map[string]bool),
-		seenBefore:      make(map[string]bool),
-		pushedAt:        make(map[string]time.Time),
-		needsInputNow:   make(map[string]bool),
-		contentFP:       make(map[string]uint64),
-		needsInputSince: make(map[string]time.Time),
-		screen:          &agent.ScreenRenderer{},
+		idleNow:           make(map[string]bool),
+		seenBefore:        make(map[string]bool),
+		pushedAt:          make(map[string]time.Time),
+		needsInputNow:     make(map[string]bool),
+		contentFP:         make(map[string]uint64),
+		needsInputSince:   make(map[string]time.Time),
+		needsInputCleared: make(map[string]time.Time),
+		screen:            &agent.ScreenRenderer{},
 	}
 }
 
@@ -220,10 +228,14 @@ func sessionScreenSize(taskID string) (cols, rows int) {
 // applies the BUG-034 clear conditions: a task whose session received new input
 // after the flag was raised (lastInputOf advanced past the baseline carried in
 // prevSince) or whose task is archived (archivedOf) is dropped — deterministic,
-// independent of the stale question scrolling out of the tail. The returned
-// newSince carries the baselines forward; nil lastInputOf/archivedOf degrade to
-// pre-BUG-034 behavior (no clear).
-func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uint64, prevSince map[string]time.Time, tailOf func(string) []byte, lastInputOf func(string) time.Time, archivedOf func(string) bool, screen *agent.ScreenRenderer, sizeOf func(string) (cols, rows int)) ([]string, map[string]uint64, map[string]time.Time) {
+// independent of the stale question scrolling out of the tail. It also applies
+// the BUG-063 guard: runningIDs/prevCleared let a real clear's settled input
+// timestamp survive ticks where a task isn't a candidate at all, so a LATER
+// stale content-fingerprint re-flag at that same timestamp (nothing new having
+// happened) cannot recapture a stuck baseline. The returned newSince/newCleared
+// carry both maps forward; nil lastInputOf/archivedOf degrade to pre-BUG-034
+// behavior (no clear).
+func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uint64, prevSince map[string]time.Time, prevCleared map[string]time.Time, tailOf func(string) []byte, lastInputOf func(string) time.Time, archivedOf func(string) bool, screen *agent.ScreenRenderer, sizeOf func(string) (cols, rows int)) ([]string, map[string]uint64, map[string]time.Time, map[string]time.Time) {
 	out := make([]string, 0, len(idleIDs))
 	seen := make(map[string]bool, len(idleIDs))
 	newFP := make(map[string]uint64)
@@ -278,9 +290,11 @@ func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uin
 		flag(id)
 	}
 
-	// BUG-034: clear the flag for tasks the user has responded to or archived.
-	out, newSince := agent.NeedsInputClear(out, prevSince, lastInputOf, archivedOf)
-	return out, newFP, newSince
+	// BUG-034/BUG-063: clear the flag for tasks the user has responded to or
+	// archived, and suppress a stale re-candidacy at an already-settled
+	// timestamp for a still-running task.
+	out, newSince, newCleared := agent.NeedsInputClear(out, runningIDs, prevSince, prevCleared, lastInputOf, archivedOf)
+	return out, newFP, newSince, newCleared
 }
 
 // idleWatcher periodically polls all running sessions and fires
@@ -539,9 +553,10 @@ func (s *Server) detectNeedsInputTick(state *idleWatcherState, running, idle []s
 		}
 	}
 	archivedOf := func(id string) bool { return archived[id] }
-	needs, newFP, newSince := computeNeedsInput(idle, running, prev, state.contentFP, state.needsInputSince, tailOf, lastInputOf, archivedOf, state.screen, sessionScreenSize)
+	needs, newFP, newSince, newCleared := computeNeedsInput(idle, running, prev, state.contentFP, state.needsInputSince, state.needsInputCleared, tailOf, lastInputOf, archivedOf, state.screen, sessionScreenSize)
 	state.contentFP = newFP
 	state.needsInputSince = newSince
+	state.needsInputCleared = newCleared
 	needsSet := make(map[string]bool, len(needs))
 	for _, id := range needs {
 		needsSet[id] = true

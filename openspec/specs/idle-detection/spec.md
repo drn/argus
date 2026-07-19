@@ -373,13 +373,26 @@ flagged task, the session's last-input timestamp observed when the task first
 entered the needs-input set, and removes the task from the set — and suppresses
 re-adding it on the same tick — once the session's last-input timestamp advances
 past that recorded baseline, even if the question text still matches in the tail.
-The recorded baseline SHALL be dropped when the task leaves the set (its signal
-disappears), so that a fresh question raised after the user's response re-arms
-the flag.
+
+The system SHALL ALSO record, per task, the session's last-input timestamp
+observed at the moment a REAL clear fires (the "cleared marker"), and SHALL
+carry that marker forward across ticks for as long as the task's session
+remains running — independent of whether the task is a needs-input candidate on
+any given tick. If a task is re-presented as a candidate on a LATER tick while
+its cleared marker is still current (the session's last-input timestamp has not
+advanced past the marker), the system SHALL treat this as a stale re-detection
+and SHALL NOT re-add the task to the needs-input set and SHALL NOT recapture a
+new baseline for it. The cleared marker's suppression ends, without any
+explicit expiry, the moment the session's last-input timestamp genuinely
+advances past it — at which point a subsequent candidacy re-arms normally,
+capturing a fresh baseline exactly like a task's first-ever candidacy. The
+cleared marker SHALL be dropped when the task's session stops running or the
+task is archived, so a later restart or un-archive re-arms cleanly.
 
 Clear-on-archive SHALL remove an archived task from the needs-input set
 regardless of its detection signal, so it stops surfacing `?` and stops rolling
-up to ancestor coordinators.
+up to ancestor coordinators, and SHALL drop both the recorded baseline and the
+cleared marker.
 
 The sticky carry-forward pass — which keeps a task already in the needs-input
 set flagged across ticks while its session remains running — SHALL NOT require
@@ -395,7 +408,8 @@ equivalent to a genuine answer.
 This clear logic SHALL be applied identically by the daemon-side detector and
 the TUI-side detector. The trailing-question entry heuristic, the idle gate, and
 the content-stability / emulated-screen guards are unchanged; this requirement
-governs only when an already-detected signal is removed from the published set.
+governs only when an already-detected signal is removed from the published set
+and when a subsequent candidacy for the same task is allowed to re-arm it.
 
 #### Scenario: Free-text question is flagged and persists indefinitely without input
 
@@ -424,12 +438,31 @@ governs only when an already-detected signal is removed from the published set.
 - **THEN** the system removes it from the needs-input set regardless of its
   detection signal
 
-#### Scenario: A fresh question after a response re-arms the flag
+#### Scenario: A fresh question after a response re-arms the flag once the session leaves the running set
 
-- **WHEN** a session's flag was cleared by user input, the agent then produces
-  output that no longer shows any needs-input signal, and later ends a new turn
-  on another question
-- **THEN** the system reports the agent is waiting for input again
+- **WHEN** a session's flag was cleared by user input, the task's session then
+  stops running (or the task cycles out of the tracked set entirely), and later
+  a new candidacy for the same task ID arrives with no further input
+- **THEN** the system reports the agent is waiting for input again, capturing a
+  fresh baseline
+
+#### Scenario: A stale re-candidacy at the same input timestamp does not re-stick the flag (BUG-063)
+
+- **WHEN** a session's flag was correctly cleared by user input, the task's
+  session REMAINS running throughout, a later tick presents no candidacy for it
+  at all (a gap), and a STILL LATER tick re-presents the same task as a
+  candidate while the session's last-input timestamp is unchanged since the
+  clear
+- **THEN** the system does NOT re-add the task to the needs-input set, and this
+  holds across any number of subsequent ticks until either the session's
+  last-input timestamp genuinely advances or the task leaves the running set
+
+#### Scenario: A genuinely newer input after a stale-suppressed clear re-arms normally
+
+- **WHEN** a task's needs-input flag is being suppressed by a cleared marker (as
+  above) and the session then receives genuinely new user input
+- **THEN** the next candidacy for that task re-arms the flag, capturing a fresh
+  baseline at the new input timestamp
 
 #### Scenario: A previously-flagged, still-running task stays flagged when the tail no longer shows the signal
 

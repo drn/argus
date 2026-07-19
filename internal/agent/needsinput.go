@@ -434,8 +434,8 @@ func safeEmuWrite(emu *xvt.SafeEmulator, data []byte) {
 
 // NeedsInputClear filters a candidate needs-input set (already computed by the
 // idle / content-stability / sticky passes) down to the set that should still
-// surface "(?)", applying the two BUG-034 clear conditions that the entry
-// heuristics never apply on their own:
+// surface "(?)", applying the BUG-034 clear conditions plus the BUG-063
+// stale-re-candidacy guard the entry heuristics never apply on their own:
 //
 //	(a) Clear on user input. A free-text question (endsInQuestion) leaves its
 //	    "?" in the recent-output tail indefinitely, so the entry heuristic
@@ -456,37 +456,102 @@ func safeEmuWrite(emu *xvt.SafeEmulator, data []byte) {
 // archived — so a fresh question raised after the user's response re-captures a
 // new baseline and re-arms the flag.
 //
+// BUG-063: candidates is NOT a monotonic, always-growing set — a task drops
+// out of it the instant it clears, and its baseline is forgotten in that same
+// instant (the baseline map is rebuilt fresh from `candidates` every call). A
+// LATER tick's content-stability fingerprint match or BUG-060 escalation grace
+// tick (both scan every RUNNING session independent of candidacy — see
+// detectNeedsInputSticky / computeNeedsInput) can re-present the SAME task as
+// a candidate with NOTHING new having happened — lastInputOf(id) is still the
+// exact timestamp that already cleared it. Without a guard, that re-candidacy
+// looks identical to a task's first-ever candidacy: it recaptures
+// baseline = lastInputOf(id), which can never be "after" itself, sticking the
+// task in the set until the user produces a strictly newer timestamp.
+//
+// running (the full set of currently-running task IDs — a superset of
+// candidates; both callers already have this) and prevCleared/newCleared (the
+// carry-forward state, threaded exactly like prevBaseline/newBaseline) close
+// this gap: whenever a real clear fires for a task, the lastInputOf value at
+// that moment is recorded as its cleared marker and threaded forward for every
+// ID in running, regardless of whether that ID is a candidate on any given
+// tick. A later candidacy is checked against this marker BEFORE the ordinary
+// fresh-baseline path: if lastInputOf(id) has not advanced past the marker,
+// the candidacy is stale and is suppressed outright (not added to out, no
+// baseline recaptured). A genuinely newer lastInputOf(id) fails that check on
+// its own — no explicit expiry needed — and falls through to re-arm normally,
+// capturing a fresh baseline exactly like a first-ever candidacy. The marker
+// is dropped (not carried into newCleared) when a task is archived or leaves
+// running, mirroring the baseline's existing archive-drop behavior, so a
+// restart or un-archive re-arms cleanly.
+//
+// Accepted scope limit: this cannot distinguish "the same already-answered
+// content re-detected" from "a second, textually distinct, still-unanswered
+// prompt that happens to arrive before the user's next keystroke" — both
+// present as the same task ID at the same lastInputOf timestamp. See
+// context/knowledge/gotchas/events.md (BUG-063) for why this trade-off is
+// accepted rather than threading a content signature through this function.
+//
 // lastInputOf returns a session's most-recent-input wall-clock time (zero if
 // never / unknown); a nil func disables clear-on-input (every baseline stays
-// zero, nothing ever advances past it). archivedOf reports whether a task is
-// archived; a nil func disables clear-on-archive. With both nil the candidate
-// set passes through unchanged, so callers that cannot observe input/archive
-// state degrade to pre-BUG-034 behavior.
-func NeedsInputClear(candidates []string, prevBaseline map[string]time.Time, lastInputOf func(string) time.Time, archivedOf func(string) bool) (out []string, newBaseline map[string]time.Time) {
+// zero, nothing ever advances past it, and no cleared marker is ever
+// recorded). archivedOf reports whether a task is archived; a nil func
+// disables clear-on-archive. With both nil the candidate set passes through
+// unchanged, so callers that cannot observe input/archive state degrade to
+// pre-BUG-034 behavior.
+func NeedsInputClear(candidates []string, running []string, prevBaseline map[string]time.Time, prevCleared map[string]time.Time, lastInputOf func(string) time.Time, archivedOf func(string) bool) (out []string, newBaseline map[string]time.Time, newCleared map[string]time.Time) {
 	out = make([]string, 0, len(candidates))
 	newBaseline = make(map[string]time.Time, len(candidates))
+	newCleared = make(map[string]time.Time, len(running))
+
+	lastInput := func(id string) time.Time {
+		if lastInputOf == nil {
+			return time.Time{}
+		}
+		return lastInputOf(id)
+	}
+
+	// Carry forward a still-settled cleared marker for every RUNNING task,
+	// independent of whether it is a candidate this tick — a stale re-flag can
+	// arrive any number of ticks after the real clear that produced it.
+	for _, id := range running {
+		if archivedOf != nil && archivedOf(id) {
+			continue
+		}
+		if clearedAt, ok := prevCleared[id]; ok && !lastInput(id).After(clearedAt) {
+			newCleared[id] = clearedAt
+		}
+	}
+
 	for _, id := range candidates {
 		if archivedOf != nil && archivedOf(id) {
-			// Archived: drop from the set AND from the baseline map (so an
-			// un-archive later re-arms cleanly).
+			// Archived: drop from the set AND from the baseline/cleared maps
+			// (so an un-archive later re-arms cleanly).
+			continue
+		}
+		li := lastInput(id)
+		if clearedAt, ok := newCleared[id]; ok && !li.After(clearedAt) {
+			// Stale re-candidacy: nothing has happened since the real clear
+			// that produced this marker. Suppress outright — do not recapture
+			// a baseline that could never advance past itself (BUG-063).
 			continue
 		}
 		// Capture the baseline on first entry; freeze it across subsequent
 		// ticks while the task stays a candidate.
 		baseline, tracked := prevBaseline[id]
 		if !tracked {
-			if lastInputOf != nil {
-				baseline = lastInputOf(id)
-			}
+			baseline = li
 		}
-		newBaseline[id] = baseline
-		// Input arrived after the flag was raised → the user responded → clear.
-		if lastInputOf != nil && lastInputOf(id).After(baseline) {
+		// Input arrived after the flag was raised → the user responded →
+		// clear, and remember the input timestamp that cleared it so a later
+		// stale re-candidacy at this same timestamp is recognized too.
+		if lastInputOf != nil && li.After(baseline) {
+			newCleared[id] = li
 			continue
 		}
+		newBaseline[id] = baseline
 		out = append(out, id)
 	}
-	return out, newBaseline
+	return out, newBaseline, newCleared
 }
 
 // ContentIdleFingerprint powers content-aware idle classification (BUG-036). It

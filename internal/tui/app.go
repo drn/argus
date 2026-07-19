@@ -260,6 +260,13 @@ type App struct {
 	// question still matches in the log tail. Mirrors the daemon's
 	// idleWatcherState.needsInputSince.
 	needsInputSince map[string]time.Time
+	// needsInputCleared carries the BUG-063 cleared-marker map: the session's
+	// last-input timestamp recorded at the moment a real clear fired, threaded
+	// forward for every RUNNING task regardless of candidacy so a later stale
+	// re-candidacy at the same timestamp (a content-fingerprint or escalation
+	// re-flag of already-answered content) cannot recapture a stuck baseline.
+	// Mirrors the daemon's idleWatcherState.needsInputCleared.
+	needsInputCleared map[string]time.Time
 	// needsInputScreen re-emulates a session's log tail to the visible screen so
 	// needs-input detection matches the rendered screen, not StripANSI(raw) —
 	// catching fullscreen (alt-screen) prompts whose cursor-addressed glyphs are
@@ -1089,11 +1096,28 @@ func (a *App) handleRestartSupervisorKey(event *tcell.EventKey) {
 // without side effects (no raw-mode Start() is called), so a failure here
 // reliably predicts Init()'s failure. See gotchas/ui-threading.md.
 var probeTerminal = func() error {
-	tty, err := tcell.NewDevTty()
+	return probeTerminalDev("/dev/tty")
+}
+
+// probeTerminalDev does the real work of probeTerminal against an explicit
+// device path, split out so tests can point it at a pty slave instead of the
+// process's own (possibly absent) controlling terminal — see run_test.go.
+func probeTerminalDev(dev string) error {
+	tty, err := tcell.NewDevTtyFromDev(dev)
 	if err != nil {
 		return err
 	}
-	return tty.Close()
+	// Discard the Close() error: tcell's devTty.Close() (v2.13.8) closes its
+	// internal `f` handle, which is only populated by Start() — never called
+	// here, since this probe deliberately avoids raw-mode side effects (see
+	// doc comment above). That leaves `f` nil, and (*os.File)(nil).Close()
+	// returns os.ErrInvalid ("invalid argument"), NOT nil. Propagating that
+	// as a probe failure was a false positive on every real terminal — the
+	// open/IsTerminal/GetState calls inside NewDevTtyFromDev already did the
+	// actual verification and succeeded. BUG: this made the TUI refuse to
+	// start at all, everywhere, immediately after landing (regression in #868).
+	_ = tty.Close()
+	return nil
 }
 
 // Run starts the application event loop.
@@ -2079,9 +2103,10 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	// in-process mode; in daemon-client mode it captures input sent through this
 	// TUI's agent pane — cross-surface input clears via the natural log-content
 	// change instead). archivedOf reads the cached task list (a.tasks is set by
-	// the caller before this runs).
+	// the caller before this runs). runningIDs lets the BUG-063 cleared-marker
+	// survive a candidacy gap for a task that is still running.
 	var out []string
-	out, a.needsInputSince = agent.NeedsInputClear(fresh, a.needsInputSince, a.lastSessionInput, a.archivedTaskSet())
+	out, a.needsInputSince, a.needsInputCleared = agent.NeedsInputClear(fresh, runningIDs, a.needsInputSince, a.needsInputCleared, a.lastSessionInput, a.archivedTaskSet())
 	return out
 }
 
