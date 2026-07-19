@@ -20,6 +20,8 @@ func TestBuiltinItems_IncludesAllExpectedSkills(t *testing.T) {
 		"hera-plan",
 		"hera-review",
 		"hera-review-test-adversary",
+		"hera-spawn-review",
+		"resolve-archetype-model",
 	})
 }
 
@@ -37,5 +39,13 @@ func TestBuiltinItems_ReviewSkillsHaveDescriptions(t *testing.T) {
 	adversaryDesc, ok := byName["hera-review-test-adversary"]
 	if !ok || adversaryDesc == "" {
 		t.Fatalf("expected non-empty description for hera-review-test-adversary, got %q (present: %v)", adversaryDesc, ok)
+	}
+	spawnReviewDesc, ok := byName["hera-spawn-review"]
+	if !ok || spawnReviewDesc == "" {
+		t.Fatalf("expected non-empty description for hera-spawn-review, got %q (present: %v)", spawnReviewDesc, ok)
+	}
+	resolveModelDesc, ok := byName["resolve-archetype-model"]
+	if !ok || resolveModelDesc == "" {
+		t.Fatalf("expected non-empty description for resolve-archetype-model, got %q (present: %v)", resolveModelDesc, ok)
 	}
 }
