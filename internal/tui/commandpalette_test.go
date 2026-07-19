@@ -403,3 +403,43 @@ func TestSettingsActionRegistry_NilWhileEditing(t *testing.T) {
 		t.Fatal("expected a nil registry while a settings field is being edited")
 	}
 }
+
+// TestSmoke_CommandPaletteOpensFromPlainTaskList is the real end-to-end
+// dispatch regression the unit-level TestPaletteApplicableActions_* tests
+// didn't cover: driving ctrl+k through the actual handleGlobalKey SetInputCapture
+// path from the plain Tasks tab (no Hera, no agent view) — the exact gap a
+// live QA pass found dead.
+func TestSmoke_CommandPaletteOpensFromPlainTaskList(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	seedSwitcherTasks(t, app)
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	readUI(t, app.tapp, func() {
+		if app.mode != modeTaskList || app.header.ActiveTab() != widget.TabTasks {
+			t.Fatalf("setup: expected modeTaskList/TabTasks, got mode=%v tab=%v", app.mode, app.header.ActiveTab())
+		}
+	})
+
+	sim.InjectKey(tcell.KeyCtrlK, 0, 0)
+	syncUI(t, app.tapp)
+
+	var mode viewMode
+	var rowCount int
+	readUI(t, app.tapp, func() {
+		mode = app.mode
+		if app.commandPaletteModal != nil {
+			rowCount = len(app.commandPaletteModal.all)
+		}
+	})
+	testutil.Equal(t, mode, modeCommandPalette)
+	if rowCount == 0 {
+		t.Fatal("expected at least one applicable action from the plain Tasks tab")
+	}
+
+	sim.InjectKey(tcell.KeyEscape, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { mode = app.mode })
+	testutil.Equal(t, mode, modeTaskList)
+}
