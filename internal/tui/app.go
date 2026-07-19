@@ -2953,7 +2953,30 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 				// interceptions above while staying a normal rebindable action.
 				a.openCommandPalette()
 				return nil
+			case keymap.ActGlobalJumpNeedsInput:
+				// Same unconditional reach as ActGlobalPalette above — one
+				// dispatch point covers every context (fullscreen agent view,
+				// task list, Hera rail, Hera pane) uniformly, unlike Ctrl+J's
+				// switcher, whose Hera reach is a separate page-local literal
+				// case (add-hera-jump-question).
+				a.jumpToNextNeedsInput()
+				return nil
 			}
+		}
+	}
+
+	// Task/role switcher (ctrl+j) reaching the plain Tasks list: CtxAgent's
+	// ActAgentSwitcher only ever reached handleAgentKey (modeAgent) and Hera's
+	// own reach is a separate hardcoded literal case in HeraPage.InputHandler
+	// (page.go) — neither covers the plain task list, so ctrl+j was dead here
+	// (the bug add-hera-jump-question fixes). Resolving CtxAgent's own binding
+	// table (rather than adding a new CtxTaskList entry) means a config
+	// override of agent.switcher applies here too, matching the classic agent
+	// view's behavior.
+	if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
+		if act, ok := a.activeKeymap().Resolve(keymap.CtxAgent, event); ok && act == keymap.ActAgentSwitcher {
+			a.openTaskSwitcher()
+			return nil
 		}
 	}
 
@@ -4732,6 +4755,46 @@ func (a *App) closeSessionPickerModal() {
 	a.tapp.SetFocus(a.agentPane)
 }
 
+// jumpToNextNeedsInput is Ctrl+G's App-level entry point (add-hera-jump-
+// question): a dedicated, popup-free jump straight to the next role needing
+// input, independent of the Ctrl+J switcher. The Hera rail is the single
+// canonical "which role needs input, in what order" traversal (its own
+// buildRows order — Pinned → Active depth-first → Freelance → Archive, the
+// SAME order the rail's own partial-fold reveal already surfaces a hidden
+// needs-input leaf through), so every calling context funnels into
+// HeraPage.JumpToNextNeedsInput regardless of where Ctrl+G was pressed.
+//
+// PEEKS first via the non-mutating Rail.NextNeedsInputTaskID before doing
+// anything else: a caught-in-review bug had this tear down a live fullscreen
+// agent view and switch tabs BEFORE learning there was no candidate, yanking
+// the operator out of their agent view for a pure no-op. Only once a
+// candidate is confirmed does it switch to the Hera tab — exactly as the
+// switcher's own hera-managed landing already does (handleTaskSwitcherKey),
+// tearing down the classic agent view first when active (exitAgentView, same
+// precedent) — and jump. A safe no-op (flashed notice, no teardown, no tab
+// switch) when nothing currently needs input.
+func (a *App) jumpToNextNeedsInput() {
+	if a.heraPage == nil || a.heraPage.IsRemote() {
+		a.flashNotice("No role needs input")
+		return
+	}
+	if _, ok := a.heraPage.Rail().NextNeedsInputTaskID(); !ok {
+		a.flashNotice("No role needs input")
+		return
+	}
+	if a.mode == modeAgent {
+		a.exitAgentView()
+	}
+	a.switchTab(widget.TabHera)
+	if !a.heraPage.JumpToNextNeedsInput() {
+		// Belt-and-braces: the peek above and this call are two separate rail
+		// scans, so an infinitesimal state change between them (a tick landing
+		// mid-way) could in principle flip the outcome. Still flash rather than
+		// leave the operator on the Hera tab with no feedback.
+		a.flashNotice("No role needs input")
+	}
+}
+
 // openTaskSwitcher builds the unified task/role switcher entries from the
 // cached task list and the current needs-input set, then opens the switcher
 // modal. Both a.tasks and a.needsInputIDs are maintained on the tview
@@ -4878,12 +4941,17 @@ func (a *App) closeTaskSwitcherModal() {
 	a.mode = a.taskSwitcherReturnMode
 	a.taskSwitcherModal = nil
 	a.pages.RemovePage("taskswitcher")
-	if a.mode == modeAgent {
+	switch {
+	case a.mode == modeAgent:
 		a.tapp.SetFocus(a.agentPane)
-	} else {
-		// Opened from Hera (rail or pane focus) — the only other reachable
-		// origin (see openTaskSwitcherModal/OnSwitcher wiring).
+	case a.header.ActiveTab() == widget.TabHera:
 		a.tapp.SetFocus(a.heraPage)
+	default:
+		// Opened from the plain Tasks list (add-hera-jump-question fixed
+		// ctrl+j's reach here too) — mirrors closeCommandPaletteModal's same
+		// fallback chain rather than assuming Hera is the only non-agent
+		// origin, which stopped being true once this dead gap was fixed.
+		a.tapp.SetFocus(a.tasklist)
 	}
 }
 

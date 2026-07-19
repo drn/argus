@@ -78,6 +78,11 @@ func TestHelpModal_Draw(t *testing.T) {
 	// if either regresses silently.
 	testutil.Contains(t, body, "ctrl+j")
 	testutil.Contains(t, body, "command palette")
+	// ctrl+g global jump-to-next-needs-input (add-hera-jump-question): a new
+	// CtxGlobal action generated straight from the keymap, same as the
+	// palette above — fail the build if it silently regresses.
+	testutil.Contains(t, body, "ctrl+g")
+	testutil.Contains(t, body, "jump to next needs-input (?)")
 	testutil.Contains(t, body, "show/hide hera-managed (workers+coords)")
 	// Task-list `c` opens the copy menu (name / prompt) — fail the build if the
 	// binding text is silently reverted (keybinding-help contract).

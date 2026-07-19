@@ -1475,6 +1475,64 @@ func (r *Rail) EnsureAncestorsExpanded(orchID int64) {
 	r.persist() // fold change (BUG-002), like ToggleCollapse
 }
 
+// needsInputTaskID returns the argus task id this row's OWN needs-input
+// signal points at, and whether the row qualifies as a jump target at all
+// (add-hera-jump-question, Ctrl+G). "Own" — needsInputOwn(), the same unit
+// the switcher's needs-input-first sort and the rail's leaf "(?)" glyph both
+// key on — deliberately requires row.role (a genuine rrRole/rrFreelanceRole/
+// rrPinnedBreadcrumb row): a top-level orchestrator's rrOrch HEADER row never
+// qualifies, even when the coordinator's OWN signal (not just the rolled-up
+// SubtreeNeedsInput a folded header always shows for any descendant) is set —
+// appendOrchWorkers folds a top-level coordinator's role entirely into the
+// header (never emitting it as its own row), so SelectByTaskID — which only
+// ever matches row.role — could never land the jump on it; offering it as a
+// candidate would produce a "found but unreachable" dead cycle stop. A NESTED
+// sub-coordinator is unaffected: it bridges as an ordinary role-bearing worker
+// row in its PARENT orchestrator (appendWorkerRow), so its own need is a
+// perfectly reachable candidate here. A non-selectable row (e.g. a pinned
+// entry's non-selectable continuation line) never qualifies either, mirroring
+// SelectByTaskID's own selectable() gate.
+func (row railRow) needsInputTaskID() (string, bool) {
+	if !row.selectable() || row.role == nil {
+		return "", false
+	}
+	if row.role.needsInputOwn() && row.role.TaskID != "" {
+		return row.role.TaskID, true
+	}
+	return "", false
+}
+
+// NextNeedsInputTaskID returns the argus task id of the next row — in today's
+// built rail order (Pinned → Active depth-first → Freelance → Archive), the
+// SAME traversal appendOrchWorkers already reveals a hidden needs-input leaf
+// through when its ancestor is folded — whose own signal needs input,
+// scanning strictly AFTER the current cursor and wrapping around the whole
+// ring back to (and including) the cursor itself. Mirrors SelectByTaskID's
+// scan-and-select shape, but position- rather than id-driven: repeated calls
+// therefore cycle forward through every candidate in turn (never repeatedly
+// returning the row the cursor already sits on) while a single remaining
+// candidate keeps re-selecting itself once the ring wraps all the way
+// around — the caller (HeraPage.JumpToNextNeedsInput) does the actual
+// ancestor-expand + select. Returns ("", false) when no row qualifies or the
+// rail is empty.
+func (r *Rail) NextNeedsInputTaskID() (string, bool) {
+	n := len(r.rows)
+	if n == 0 {
+		return "", false
+	}
+	cursor := r.cursor
+	if cursor < 0 || cursor >= n {
+		cursor = 0
+	}
+	for step := 1; step <= n; step++ {
+		i := (cursor + step) % n
+		if id, ok := r.rows[i].needsInputTaskID(); ok {
+			return id, true
+		}
+	}
+	return "", false
+}
+
 // Selected returns the RoleView under the cursor, or nil when the cursor is on
 // a header/orchestrator. 6b uses this to bind the panes.
 func (r *Rail) Selected() *RoleView {

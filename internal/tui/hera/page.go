@@ -338,6 +338,26 @@ func (p *HeraPage) JumpToTask(id string) bool {
 	return true
 }
 
+// JumpToNextNeedsInput cycles to the next role in rail order whose own
+// signal needs input (add-hera-jump-question's Ctrl+G — a dedicated,
+// popup-free jump, independent of the Ctrl+J switcher): finds the target via
+// Rail.NextNeedsInputTaskID, then lands on it via JumpToTask, reusing the
+// exact same ancestor-expand + reattach + focus sequence every other jump
+// (the switcher, the plan widget's leaf-Enter) already goes through rather
+// than re-deriving it here. Returns false — a safe no-op — in remote mode or
+// when no role currently needs input.
+func (p *HeraPage) JumpToNextNeedsInput() bool {
+	if p.remote {
+		return false
+	}
+	id, ok := p.rail.NextNeedsInputTaskID()
+	if !ok {
+		uxlog.Log("[hera-view] jump to next needs-input: no role needs input")
+		return false
+	}
+	return p.JumpToTask(id)
+}
+
 // Reconcile late-binds live sessions and is the App-tick hook (main thread).
 // Exposed so the App can drive the nil→live upgrade each tick while the Hera
 // tab is active. No-op in remote mode.
