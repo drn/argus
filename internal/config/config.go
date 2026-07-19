@@ -47,6 +47,11 @@ type HeraConfig struct {
 	// context-budget Stop hook (argus coord-hook) begins nudging a
 	// coordinator to recycle. Defaults to 200000.
 	CoordinatorContextBudget int `toml:"coordinator_context_budget"`
+
+	// CoordinatorNudgeIncrement is the amount context_size must grow, past the
+	// value at which the over-budget nudge last fired, before the context-budget
+	// Stop hook (argus coord-hook) re-emits it. Defaults to 50000.
+	CoordinatorNudgeIncrement int `toml:"coordinator_nudge_increment"`
 }
 
 // ArgusConfig holds settings for self-updating the Argus binary.
@@ -328,8 +333,9 @@ func DefaultConfig() Config {
 			HTTPPort: 7743,
 		},
 		Hera: HeraConfig{
-			Enabled:                  true, // default on; only explicit "false" in DB/toml disables it
-			CoordinatorContextBudget: 200000,
+			Enabled:                   true, // default on; only explicit "false" in DB/toml disables it
+			CoordinatorContextBudget:  200000,
+			CoordinatorNudgeIncrement: 50000,
 		},
 		Supervisor: SupervisorConfig{
 			// Default ON as of P4: agents run under the out-of-process

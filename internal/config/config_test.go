@@ -61,6 +61,19 @@ func TestHeraConfig_CoordinatorContextBudget_Default(t *testing.T) {
 	}
 }
 
+// TestHeraConfig_CoordinatorNudgeIncrement_Default pins the
+// throttle-coord-hook-nudge config delta's "Default increment applies when
+// unset" scenario: HeraConfig.CoordinatorNudgeIncrement must default to 50000
+// (the amount context_size must grow, past the size at which the over-budget
+// nudge last fired, before the context-budget Stop hook re-emits it). The
+// field does not exist yet, so this fails to compile until Stage 2 adds it.
+func TestHeraConfig_CoordinatorNudgeIncrement_Default(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Hera.CoordinatorNudgeIncrement != 50000 {
+		t.Errorf("Hera.CoordinatorNudgeIncrement = %d, want 50000 (default)", cfg.Hera.CoordinatorNudgeIncrement)
+	}
+}
+
 // TestSupervisorConfig_DefaultEnabled pins the P4 flip: an absent key ⇒
 // supervisor mode ON, mirroring hera.enabled. The in-process runner is reached
 // only via an explicit "false" (the retained rollback).
