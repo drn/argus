@@ -46,3 +46,5 @@ Pure rail-rendering change, no data migration. Ships as a normal PR; no feature 
 ## Open Questions
 
 None outstanding — the quick-confirm round resolved the two ambiguous points (Active's participation, and header-selectability during crossing).
+
+**Status (as of this writing):** design approved via plan mode; implementation delegated to hera worker role `kanban-focus-fold` (argus task `1784479174020396000`, branch stacked on `argus/hera-kanban` — i.e. current master + this change folder's commit `1b917a93`). No implementation-driven design changes expected, but if the worker surfaces a real ambiguity `tasks.md` doesn't cover, it reports back via `hera_send(status="blocked", …)` rather than guessing — resolve here and update this file before it resumes.
