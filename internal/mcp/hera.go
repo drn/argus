@@ -831,6 +831,22 @@ func (s *Server) toolHeraMove(id interface{}, args json.RawMessage) *Response {
 		return toolError(id, err.Error())
 	}
 
+	// A coordinator's live binding IS its orchestrator's coordination — ending
+	// it (what a move does) orphans the whole subtree the coordinator was
+	// running, and the destination kind (worker/freelance) carries no
+	// structural link back to that subtree (hera-freelancer-bug: this
+	// silently produced two disconnected "freelance" stubs while their
+	// original orchestrators were left coordinator-less). There is no
+	// agent-facing tool to properly nest an existing coordinator + subtree
+	// under a new parent — that is the Hera TUI's `J` adopt/reparent key,
+	// human-only — so reject rather than silently orphaning it.
+	if caller.role.Kind == db.HeraKindCoordinator {
+		return toolError(id, fmt.Sprintf(
+			"%q is the live coordinator of orchestrator %q; hera_move would end that coordinator binding and orphan its whole subtree instead of moving it. "+
+				"There is no tool for an agent to nest an existing coordinator under a new parent — ask a human to use the Hera TUI's `J` (adopt) key on %q to reparent it under %q",
+			caller.role.Name, caller.orch.Name, caller.orch.Name, p.Orchestrator))
+	}
+
 	targetOrch, err := s.heraStore.HeraOrchestratorByName(p.Orchestrator)
 	if errors.Is(err, db.ErrHeraNotFound) {
 		return toolError(id, fmt.Sprintf("unknown orchestrator %q", p.Orchestrator))

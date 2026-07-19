@@ -172,6 +172,13 @@ or using in-session sub-agents.
 - **`spawn_worker` vs adopt:** native hera has **no adopt step** — workers are born bound at spawn time.
   (The old `depends_on`-driven auto-adopt watcher was retired with the DAG.) To delegate, just
   `hera_spawn_worker`.
+- **Never `hera_move` your OWN coordinator binding to join another team.** `hera_move`'s `kind` is
+  `worker`/`freelance` only — moving away from a live coordinator role ends that binding and orphans
+  the whole orchestrator/subtree you were coordinating, leaving a disconnected freelance/worker stub
+  under the target with no link back to it (hera-freelancer-bug; the tool now rejects this outright).
+  There is no agent-facing tool to nest an existing coordinator + subtree under a new parent — that's
+  the Hera TUI's `J` (adopt/reparent) key, human-only. If a human wants your whole team folded under
+  another coordinator, tell them to press `J` on your orchestrator; don't try to self-relocate.
 - **The coordination decision — in-session sub-agents vs hera workers vs the plan-DAG (settle this
   BEFORE delegating):**
   1. **Ephemeral, in-session work** — research, review, fan-out reads, anything that returns results
