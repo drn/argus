@@ -70,13 +70,13 @@ func TestSeeds_DefaultArchetypeDefaultsMatchFramework(t *testing.T) {
 	testutil.NoError(t, err)
 	want := map[string]string{
 		"brainstorm":      "opus",
-		"orchestrator":    "opus",
-		"big_build":       "opus",
+		"orchestrator":    "sonnet",
+		"big_build":       "sonnet",
 		"code_slice":      "sonnet",
 		"bug_fix":         "sonnet",
 		"review":          "opus",
 		"security_review": "opus",
-		"synthesis":       "opus",
+		"synthesis":       "sonnet",
 		"spec_audit":      "sonnet",
 		"ci_loop":         "haiku",
 		"verify":          "haiku",
