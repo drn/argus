@@ -1122,6 +1122,13 @@ func (r *Rail) appendWorkerRow(ownerID int64, w *RoleView, depth int, dim bool, 
 			r.appendOrchWorkers(child, depth+1, dim || child.Archived, canonical, placed, true)
 		} else if !r.isCollapsed(child.ID) {
 			r.appendOrchWorkers(child, depth+1, dim || child.Archived, canonical, placed, false)
+		} else if child.SubtreeNeedsInput {
+			// Partial-fold reveal (BUG-064): the child is still collapsed even
+			// though its ancestor (o) just expanded — reveal-only mirrors
+			// appendPinnedRole's identical fallback so re-expanding an outer
+			// coordinator doesn't blank out a still-closed nested
+			// coordinator's own needs-input leaf.
+			r.appendOrchWorkers(child, depth+1, dim || child.Archived, canonical, placed, true)
 		}
 	}
 }

@@ -91,6 +91,53 @@ func TestRail_RevealNestedClosedCoordinatorsFullChain(t *testing.T) {
 	testutil.Equal(t, r.depthOf("bsib"), -1)
 }
 
+// TestRail_RevealSurvivesReexpandingParent is BUG-064: an outer coordinator P
+// is collapsed, then its nested sub-coordinator B is ALSO collapsed — B's own
+// needs-input leaf C reveals through both closed folds (matching
+// TestRail_RevealNestedClosedCoordinatorsFullChain). Re-expanding ONLY P (B
+// stays collapsed) must not blank out B's own reveal: C is still hidden behind
+// a closed fold (B's), so it must still peek through, exactly as it did before
+// P was expanded. Before the fix, appendWorkerRow had no fallback for "child
+// still collapsed, not in revealOnly mode" and rendered nothing beneath B.
+func TestRail_RevealSurvivesReexpandingParent(t *testing.T) {
+	p := coordOf(1, "P", 100, "tp",
+		RoleView{RoleID: 101, Name: "B", Kind: db.HeraKindWorker, Live: true, TaskID: "tb", BridgeTaskID: "tb", SubtreeNeedsInput: true},
+		RoleView{RoleID: 102, Name: "sib", Kind: db.HeraKindWorker, Live: true, TaskID: "tsib"},
+	)
+	p.SubtreeNeedsInput = true
+	b := coordOf(2, "B", 200, "tb",
+		RoleView{RoleID: 201, Name: "C", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", NeedsInput: true, SubtreeNeedsInput: true},
+		RoleView{RoleID: 202, Name: "bsib", Kind: db.HeraKindWorker, Live: true, TaskID: "tbsib"},
+	)
+	b.SubtreeNeedsInput = true
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{p, b}})
+
+	// Collapse P, then collapse B (nested), same setup as
+	// TestRail_RevealNestedClosedCoordinatorsFullChain.
+	collapseByName(t, r, "P")
+	for r.rows[r.cursor].collOrchID != 2 {
+		r.CursorDown()
+	}
+	r.ToggleCollapse()
+	testutil.Equal(t, r.depthOf("C") >= 0, true)
+
+	// Re-expand P only (Space again on P's header) — B remains collapsed.
+	// Reset the cursor to the top first: it currently sits on B's row (past
+	// P), and collapseByName only walks forward.
+	r.cursor = 0
+	collapseByName(t, r, "P")
+
+	// P is now fully expanded: its other worker "sib" is back.
+	testutil.Equal(t, r.depthOf("sib") >= 0, true)
+	// B is still collapsed but still renders (it bridges a needs-input subtree).
+	testutil.Equal(t, r.depthOf("B") >= 0, true)
+	// C must still be revealed through B's still-closed fold — this is the bug.
+	testutil.Equal(t, r.depthOf("C") >= 0, true)
+	// B's OTHER sibling worker stays hidden (only C's path reveals).
+	testutil.Equal(t, r.depthOf("bsib"), -1)
+}
+
 // TestRail_RevealMultipleNeedsInputLeaves ensures the reveal does not stop at
 // the first match: every needs-input descendant under a closed coordinator
 // gets its own revealed path.
