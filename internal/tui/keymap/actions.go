@@ -101,16 +101,24 @@ const (
 	ActSettingsModel    Action = "settings.edit_model"
 
 	// Hera rail mutations (Enter + nav are structural)
-	ActHeraDelete   Action = "hera_rail.delete"
-	ActHeraSpawn    Action = "hera_rail.spawn_worker"
-	ActHeraRename   Action = "hera_rail.rename"
-	ActHeraArchive  Action = "hera_rail.archive"
-	ActHeraPin      Action = "hera_rail.pin"
-	ActHeraStatAdv  Action = "hera_rail.status_advance"
-	ActHeraStatRev  Action = "hera_rail.status_revert"
-	ActHeraAdopt    Action = "hera_rail.adopt"
-	ActHeraNewCoord Action = "hera_rail.new_coordinator"
-	ActHeraClear    Action = "hera_rail.clear_archive"
+	ActHeraDelete  Action = "hera_rail.delete"
+	ActHeraSpawn   Action = "hera_rail.spawn_worker"
+	ActHeraRename  Action = "hera_rail.rename"
+	ActHeraArchive Action = "hera_rail.archive"
+	ActHeraPin     Action = "hera_rail.pin"
+	ActHeraStatAdv Action = "hera_rail.status_advance"
+	ActHeraStatRev Action = "hera_rail.status_revert"
+	// ActHeraKanbanAdv/ActHeraKanbanRev step a TOP-LEVEL coordinator's
+	// independent kanban_status (add-hera-kanban-status) — a wholly separate
+	// axis from ActHeraStatAdv/ActHeraStatRev, which step a ROLE's
+	// hera_role_status. Never confuse the two: different data, different
+	// selection gate (kanban fires only on a top-level orchestrator header),
+	// different stepping rule (kanban wraps; status clamps).
+	ActHeraKanbanAdv Action = "hera_rail.kanban_advance"
+	ActHeraKanbanRev Action = "hera_rail.kanban_revert"
+	ActHeraAdopt     Action = "hera_rail.adopt"
+	ActHeraNewCoord  Action = "hera_rail.new_coordinator"
+	ActHeraClear     Action = "hera_rail.clear_archive"
 )
 
 // defaultSpecs is THE source of truth for argus's built-in bindings, mirroring
@@ -153,6 +161,7 @@ var defaultSpecs = map[Context]map[Action]string{
 	CtxHeraRail: {
 		ActHeraDelete: "ctrl+d", ActHeraSpawn: "w", ActHeraRename: "r",
 		ActHeraArchive: "a", ActHeraPin: "P", ActHeraStatAdv: "s", ActHeraStatRev: "S",
+		ActHeraKanbanAdv: "m", ActHeraKanbanRev: "M",
 		ActHeraAdopt: "J", ActHeraNewCoord: "n", ActHeraClear: "C",
 	},
 }
@@ -190,6 +199,7 @@ var actionLabels = map[Action]string{
 	ActHeraDelete: "nuke role/orchestrator (whole sub-team if nested)", ActHeraSpawn: "spawn worker under coordinator (new-task modal)",
 	ActHeraRename: "rename role/orchestrator", ActHeraArchive: "hide worker in coord's archive (reversible)",
 	ActHeraPin: "toggle pin", ActHeraStatAdv: "advance status", ActHeraStatRev: "revert status",
+	ActHeraKanbanAdv: "advance kanban status (top-level coord)", ActHeraKanbanRev: "revert kanban status (top-level coord)",
 	ActHeraAdopt: "adopt freelancer / reparent coordinator", ActHeraNewCoord: "new coordinator (new-task modal)",
 	ActHeraClear: "clear coord's archive (nuke hidden agents)",
 }
@@ -238,5 +248,5 @@ var contextOrder = map[Context][]Action{
 	CtxSettings: {ActSettingsDown, ActSettingsUp, ActSettingsNew, ActSettingsEdit, ActSettingsDelete,
 		ActSettingsQuickAdd, ActSettingsApple, ActSettingsToggle, ActSettingsRun, ActSettingsModel},
 	CtxHeraRail: {ActHeraSpawn, ActHeraNewCoord, ActHeraRename, ActHeraArchive, ActHeraPin,
-		ActHeraStatAdv, ActHeraStatRev, ActHeraAdopt, ActHeraClear, ActHeraDelete},
+		ActHeraStatAdv, ActHeraStatRev, ActHeraKanbanAdv, ActHeraKanbanRev, ActHeraAdopt, ActHeraClear, ActHeraDelete},
 }

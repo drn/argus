@@ -157,6 +157,13 @@ type Rail struct {
 	// + placed in the Pinned pass) from the active tree. nil when nothing floats.
 	pinnedFloat map[int64]bool
 
+	// canonical is the per-build canonical-parent map (add-hera-kanban-status),
+	// recomputed each buildRows and reused by Selection() to stamp
+	// Selection.TopLevelOrch — an orchestrator absent from this map is a true
+	// root. nil after the empty-model early return (no orchestrators to have
+	// parents at all).
+	canonical map[int64]canonParent
+
 	focused   bool // drives the border-highlight style
 	animFrame int  // spinner frame for in-motion role glyphs (recomputed each Draw)
 
@@ -537,6 +544,7 @@ func (r *Rail) buildRows() {
 
 	if r.model.IsEmpty() {
 		r.rows = append(r.rows, railRow{kind: rrEmpty, label: "No hera orchestrators"})
+		r.canonical = nil
 		return
 	}
 
@@ -560,6 +568,7 @@ func (r *Rail) buildRows() {
 	// `placed` guards single-placement + cycles across the whole build (an
 	// orchestrator is rendered at most once, breaking any bridge cycle).
 	canonical := r.model.canonicalParents()
+	r.canonical = canonical
 	consumed := make(map[int64]bool, len(canonical))
 	for id := range canonical {
 		consumed[id] = true
@@ -601,32 +610,74 @@ func (r *Rail) buildRows() {
 		}
 	}
 
-	// 2. Active orchestrators (no section header). Render roots (no canonical
-	// parent) first; then a safety sweep rescues only TRUE cycle-orphans — an
-	// orchestrator left unplaced AND whose canonical chain reaches no root. A child
-	// that is merely hidden because an ancestor is collapsed/archived is
-	// structurally reachable, so it stays folded instead of leaking to the top.
+	// 2. Active orchestrators, partitioned into kanban-status sub-groups
+	// (add-hera-kanban-status): active (headerless, exactly the historical
+	// rendering) → Backlog (N) → Blocked (N) → Done (N). Each group is scoped
+	// to TOP-LEVEL (root — no canonical parent) orchestrators only; a
+	// nested/bridged orchestrator's own kanban status is never consulted for
+	// placement — it always nests under its canonical parent regardless of
+	// these section boundaries. Within each group: render roots first; then a
+	// safety sweep rescues only TRUE cycle-orphans carrying that group's status
+	// — an orchestrator left unplaced AND whose canonical chain reaches no
+	// root. A child that is merely hidden because an ancestor is
+	// collapsed/archived is structurally reachable, so it stays folded instead
+	// of leaking to the top.
 	//
-	// A horizontal-rule divider (BUG-027) separates the Pinned section from the
-	// Active list — the same rrRule the Freelance / Archive sections use —
-	// inserted at activeStart only when the Pinned section rendered AND the Active
-	// loops produced ≥1 row (no stray rule when nothing is pinned, none when
-	// Pinned is the only content).
-	activeStart := len(r.rows)
-	for i := range r.model.Active {
-		if !consumed[r.model.Active[i].ID] {
-			r.appendOrch(&r.model.Active[i], 0, false, canonical, placed)
-		}
+	// The headerless `active` group preserves the historical horizontal-rule
+	// divider (BUG-027) separating the Pinned section from it — inserted only
+	// when the Pinned section rendered AND this group produced ≥1 row (no
+	// stray rule when nothing is pinned, none when Pinned is the only
+	// content). The backlog/blocked/done groups instead get their OWN
+	// unconditioned leading divider whenever non-empty — the SAME convention
+	// the Freelance/Archive sections below already use (always lead with a
+	// divider when non-empty, regardless of what rendered above) — so no
+	// "was anything rendered above" state needs tracking across three more
+	// group boundaries. An empty group renders neither its header nor a
+	// divider.
+	kanbanGroups := []struct {
+		status db.HeraKanbanStatus
+		label  string // "" marks the headerless active group
+	}{
+		{db.HeraKanbanActive, ""},
+		{db.HeraKanbanBacklog, "Backlog"},
+		{db.HeraKanbanBlocked, "Blocked"},
+		{db.HeraKanbanDone, "Done"},
 	}
-	for i := range r.model.Active {
-		id := r.model.Active[i].ID
-		if !placed[id] && !structReach[id] {
-			r.appendOrch(&r.model.Active[i], 0, false, canonical, placed)
+	for _, g := range kanbanGroups {
+		groupStart := len(r.rows)
+		n := 0 // count of top-level orchestrators actually placed in this group
+		for i := range r.model.Active {
+			ov := &r.model.Active[i]
+			if consumed[ov.ID] || placed[ov.ID] || kanbanStatusOf(ov) != g.status {
+				continue
+			}
+			r.appendOrch(ov, 0, false, canonical, placed)
+			if placed[ov.ID] {
+				n++
+			}
 		}
-	}
-	if pinnedRendered && len(r.rows) > activeStart {
-		// Insert the divider between the last Pinned row and the first Active row.
-		r.rows = append(r.rows[:activeStart], append([]railRow{{kind: rrRule}}, r.rows[activeStart:]...)...)
+		for i := range r.model.Active {
+			ov := &r.model.Active[i]
+			if placed[ov.ID] || structReach[ov.ID] || kanbanStatusOf(ov) != g.status {
+				continue
+			}
+			r.appendOrch(ov, 0, false, canonical, placed)
+			if placed[ov.ID] {
+				n++
+			}
+		}
+		if n == 0 {
+			continue
+		}
+		if g.label == "" {
+			if pinnedRendered {
+				// Insert the divider between the last Pinned row and the first active row.
+				r.rows = append(r.rows[:groupStart], append([]railRow{{kind: rrRule}}, r.rows[groupStart:]...)...)
+			}
+			continue
+		}
+		header := railRow{kind: rrSectionHeader, label: fmt.Sprintf("%s (%d)", g.label, n)}
+		r.rows = append(r.rows[:groupStart], append([]railRow{{kind: rrRule}, header}, r.rows[groupStart:]...)...)
 	}
 
 	// 3. Freelance section. The header + separator are pruned when no freelance
@@ -1196,6 +1247,10 @@ func (r *Rail) Selection() Selection {
 		orch = r.model.OrchByID(role.OrchID)
 	}
 	sel := Selection{Role: role, Orch: orch}
+	if orch != nil {
+		_, hasParent := r.canonical[orch.ID]
+		sel.TopLevelOrch = !hasParent
+	}
 	// A role row whose collOrchID is set is a bridging sub-coordinator row; carry
 	// the child orchestrator id so Ctrl+D can cascade the nested sub-team.
 	if r.cursor >= 0 && r.cursor < len(r.rows) {
@@ -1542,6 +1597,19 @@ func chevron(collapsed bool) string {
 		return "▸"
 	}
 	return "▾"
+}
+
+// kanbanStatusOf returns o's kanban status, defaulting an unset/empty value to
+// active (add-hera-kanban-status). BuildModel always populates KanbanStatus
+// from the DB's NOT NULL DEFAULT 'active' column, so this default only matters
+// for hand-built test fixtures (and any other OrchView constructed outside
+// BuildModel) that never set the field — treating them as active preserves
+// their historical headerless-active-group placement.
+func kanbanStatusOf(o *OrchView) db.HeraKanbanStatus {
+	if o.KanbanStatus == "" {
+		return db.HeraKanbanActive
+	}
+	return o.KanbanStatus
 }
 
 // liveRoleCount counts live, non-coordinator roles (the agents shown under the

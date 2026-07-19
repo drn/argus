@@ -41,6 +41,8 @@ func TestKeyset_FiresCallbacksOnSelectedRole(t *testing.T) {
 	p.OnStatusRevert = record("rev")
 	p.OnDelete = record("delete")
 	p.OnAdopt = record("adopt")
+	p.OnKanbanAdvance = record("kanban-adv")
+	p.OnKanbanRevert = record("kanban-rev")
 
 	h := p.InputHandler()
 	cases := []struct {
@@ -55,6 +57,12 @@ func TestKeyset_FiresCallbacksOnSelectedRole(t *testing.T) {
 		{tcell.NewEventKey(tcell.KeyRune, 'S', tcell.ModNone), "rev"},
 		{tcell.NewEventKey(tcell.KeyCtrlD, 0, tcell.ModNone), "delete"},
 		{tcell.NewEventKey(tcell.KeyRune, 'J', tcell.ModNone), "adopt"},
+		// m/M dispatch at the PAGE layer for any non-empty selection, same as
+		// every other rail mutation key — the TOP-LEVEL-coordinator-only gate
+		// lives one layer up, in Selection.KanbanTarget()/Ops.KanbanStep (see
+		// TestOps_KanbanStep_NoopOnNonTopLevel), not in handleRailMutation.
+		{tcell.NewEventKey(tcell.KeyRune, 'm', tcell.ModNone), "kanban-adv"},
+		{tcell.NewEventKey(tcell.KeyRune, 'M', tcell.ModNone), "kanban-rev"},
 	}
 	for _, c := range cases {
 		got = ""

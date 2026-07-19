@@ -288,6 +288,26 @@ func (a *App) heraStatusStep(sel hera.Selection, dir int) {
 	a.heraRefresh()
 }
 
+// heraKanbanStep is the `m`/`M` key (add-hera-kanban-status): cycles the
+// SELECTED TOP-LEVEL coordinator's independent kanban status, wrapping.
+// Wholly separate from heraStatusStep (a role's hera_role_status, s/S): the
+// gate here is Selection.KanbanTarget(), which resolves nil for a role
+// selection, an empty rail, or a nested/bridged orchestrator header — none of
+// those are a top-level coordinator's own header row.
+func (a *App) heraKanbanStep(sel hera.Selection, dir int) {
+	if a.heraOps == nil {
+		return
+	}
+	if sel.KanbanTarget() == nil {
+		return // empty selection, a role, or a non-top-level orchestrator header
+	}
+	if err := a.heraOps.KanbanStep(sel, dir); err != nil {
+		a.statusbar.SetError("Kanban step failed: " + err.Error())
+		return
+	}
+	a.heraRefresh()
+}
+
 // heraOpenDelete is the `Ctrl+D` key: Tier-2 NUKE of the selected role or
 // orchestrator (BUG-022). Nuke NEVER hard-deletes a DB row: it stamps the hera
 // rows NUKED (nuked_at, so they leave the rail ENTIRELY — not shown in any

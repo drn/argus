@@ -93,6 +93,10 @@ func TestHelpModal_Draw(t *testing.T) {
 	// discoverable in the overlay — fail the build if it's ever silently dropped.
 	testutil.Contains(t, body, "force recycle coordinator")
 	testutil.Contains(t, body, "filter rail by name") // Hera rail `/` filter
+	// add-hera-kanban-status: the `m`/`M` kanban-status keys must be
+	// discoverable in the overlay — fail the build if silently dropped.
+	testutil.Contains(t, body, "advance kanban status (top-level coord)")
+	testutil.Contains(t, body, "revert kanban status (top-level coord)")
 	// Rail key family (BUG-005/006/010/011/012): every new/changed rail key must
 	// be discoverable in the overlay.
 	testutil.Contains(t, body, "spawn worker under coordinator (new-task modal)")

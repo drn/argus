@@ -81,6 +81,31 @@ func TestSelection_StatusRole(t *testing.T) {
 	testutil.Nil(t, Selection{}.StatusRole())
 }
 
+// TestSelection_KanbanTarget pins the m/M gating (add-hera-kanban-status):
+// KanbanTarget resolves the selected orchestrator ONLY for a top-level
+// (root) orchestrator HEADER selection — never a role row, never a nested
+// orchestrator, never an empty selection.
+func TestSelection_KanbanTarget(t *testing.T) {
+	m := sampleModel()
+	coord := &m.Active[0].Roles[0]
+	orch := &m.Active[0]
+
+	// Header selection (Role nil) on a top-level orchestrator → that orchestrator.
+	got := Selection{Orch: orch, TopLevelOrch: true}.KanbanTarget()
+	testutil.Equal(t, got != nil, true)
+	testutil.Equal(t, got.ID, orch.ID)
+
+	// A role selected (even the coordinator's own role) is never a kanban target —
+	// mutations only fire from the folded HEADER row, not a role row.
+	testutil.Nil(t, Selection{Role: coord, Orch: orch, TopLevelOrch: true}.KanbanTarget())
+
+	// Header selection on a NESTED (non-root) orchestrator → nil.
+	testutil.Nil(t, Selection{Orch: orch, TopLevelOrch: false}.KanbanTarget())
+
+	// Empty selection → nil.
+	testutil.Nil(t, Selection{}.KanbanTarget())
+}
+
 func TestRail_SelectionResolvesOrch(t *testing.T) {
 	r := NewRail()
 	r.SetModel(sampleModel())

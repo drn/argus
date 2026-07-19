@@ -33,6 +33,7 @@ type MutateStore interface {
 	UnpinHeraOrchestrator(id int64) error
 	RenameHeraOrchestrator(id int64, newName string) error
 	NukeHeraOrchestrator(id int64) error
+	SetHeraOrchestratorKanbanStatus(id int64, status db.HeraKanbanStatus) error
 
 	ArchiveHeraRole(id int64) error
 	UnarchiveHeraRole(id int64) error
@@ -221,6 +222,51 @@ func (o *Ops) StepStatus(sel Selection, dir int) error {
 				uxlog.Log("[hera-view] status step: clear ready_to_close failed for %s (status still set): %v", r.TaskID, cErr)
 			}
 		}
+	}
+	return nil
+}
+
+// kanbanOrder is the rail-order cycle the m/M rail keys step through
+// (add-hera-kanban-status). Deliberately its own ladder/index pair, distinct
+// from heraStatusLadder/ladderIndex above: those CLAMP at both ends (s/S
+// steps a role's hera_role_status); this one WRAPS at both ends (m/M steps an
+// orchestrator's kanban_status) per Aaron's explicit "wrapping to active"
+// instruction — overloading one shared ladder with a wrap flag would make the
+// existing clamped caller (StepStatus) harder to read for no shared benefit.
+var kanbanOrder = []db.HeraKanbanStatus{
+	db.HeraKanbanActive,
+	db.HeraKanbanBacklog,
+	db.HeraKanbanBlocked,
+	db.HeraKanbanDone,
+}
+
+func kanbanIndex(s db.HeraKanbanStatus) int {
+	for i, v := range kanbanOrder {
+		if v == s {
+			return i
+		}
+	}
+	return 0 // unknown/unset → treat as active (the default's rung)
+}
+
+// KanbanStep advances (dir>0) or reverts (dir<0) the selected TOP-LEVEL
+// coordinator's kanban status one rung along kanbanOrder, WRAPPING at both
+// ends (active→backlog→blocked→done→active forward; the reverse backward) —
+// unlike StepStatus, which clamps. The target is sel.KanbanTarget(): an
+// orchestrator HEADER selection (no role selected) that is a true root (no
+// canonical parent). A role selection, a nested orchestrator header, or an
+// empty selection resolve to nil and are a silent no-op (errNoTarget).
+func (o *Ops) KanbanStep(sel Selection, dir int) error {
+	ov := sel.KanbanTarget()
+	if ov == nil {
+		return errNoTarget
+	}
+	idx := (kanbanIndex(ov.KanbanStatus) + sign(dir) + len(kanbanOrder)) % len(kanbanOrder)
+	next := kanbanOrder[idx]
+	uxlog.Log("[hera-view] kanban step orch %d (%s) %s → %s", ov.ID, ov.Name, ov.KanbanStatus, next)
+	if err := o.store.SetHeraOrchestratorKanbanStatus(ov.ID, next); err != nil {
+		uxlog.Log("[hera-view] kanban step orch %d failed: %v", ov.ID, err)
+		return err
 	}
 	return nil
 }

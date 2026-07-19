@@ -76,6 +76,8 @@ func TestResolve_Defaults(t *testing.T) {
 		{CtxAgent, ev(tcell.KeyDown, 0, tcell.ModShift), ActAgentScrollDown},
 		{CtxHeraRail, ev(tcell.KeyRune, 'w', 0), ActHeraSpawn},
 		{CtxHeraRail, ev(tcell.KeyCtrlD, 0, 0), ActHeraDelete},
+		{CtxHeraRail, ev(tcell.KeyRune, 'm', 0), ActHeraKanbanAdv},
+		{CtxHeraRail, ev(tcell.KeyRune, 'M', 0), ActHeraKanbanRev},
 		{CtxDiff, ev(tcell.KeyRune, 's', 0), ActDiffSplit},
 		{CtxDiff, ev(tcell.KeyRune, 'f', 0), ActDiffFinder},
 		{CtxDiff, ev(tcell.KeyRune, 'o', 0), ActDiffOpen},

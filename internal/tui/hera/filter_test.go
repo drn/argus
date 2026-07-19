@@ -426,13 +426,15 @@ func TestPage_MutationKeysAreFilterInputWhileTyping(t *testing.T) {
 	p := NewHeraPage(d)
 	p.Refresh()
 
-	spawned, renamed, archived, pinned, deleted, stepped := 0, 0, 0, 0, 0, 0
+	spawned, renamed, archived, pinned, deleted, stepped, kanbanAdv, kanbanRev := 0, 0, 0, 0, 0, 0, 0, 0
 	p.OnSpawnWorker = func(Selection) { spawned++ }
 	p.OnRename = func(Selection) { renamed++ }
 	p.OnArchiveToggle = func(Selection) { archived++ }
 	p.OnPinToggle = func(Selection) { pinned++ }
 	p.OnDelete = func(Selection) { deleted++ }
 	p.OnStatusAdvance = func(Selection) { stepped++ }
+	p.OnKanbanAdvance = func(Selection) { kanbanAdv++ }
+	p.OnKanbanRevert = func(Selection) { kanbanRev++ }
 
 	h := p.InputHandler()
 	// `/` enters input mode (consumed by the rail, not a mutation).
@@ -440,11 +442,11 @@ func TestPage_MutationKeysAreFilterInputWhileTyping(t *testing.T) {
 	testutil.Equal(t, p.RailFiltering(), true)
 
 	// Mutation rune-keys typed while filtering append to the query and fire NO
-	// callback (covers w/a/r/P and the status-step `s`).
-	for _, ru := range "warPs" {
+	// callback (covers w/a/r/P, the status-step `s`, and the kanban-step `m`/`M`).
+	for _, ru := range "warPsmM" {
 		h(tcell.NewEventKey(tcell.KeyRune, ru, tcell.ModNone), noFocus)
 	}
-	testutil.Equal(t, p.Rail().filterQuery, "warPs")
+	testutil.Equal(t, p.Rail().filterQuery, "warPsmM")
 
 	// Ctrl+D (the destructive delete/cascade) must ALSO be suppressed while
 	// typing — its handleRailMutation branch bails before Selection().
@@ -456,6 +458,8 @@ func TestPage_MutationKeysAreFilterInputWhileTyping(t *testing.T) {
 	testutil.Equal(t, pinned, 0)
 	testutil.Equal(t, deleted, 0)
 	testutil.Equal(t, stepped, 0)
+	testutil.Equal(t, kanbanAdv, 0)
+	testutil.Equal(t, kanbanRev, 0)
 
 	// Enter accepts — normal mutation routing resumes.
 	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)

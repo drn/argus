@@ -210,6 +210,13 @@ type OrchView struct {
 	// the same value, but a coordinator-less orchestrator (e.g. its coordinator
 	// role was nuked) would otherwise render no needs-input cue at all.
 	SubtreeNeedsInput bool
+	// KanbanStatus (add-hera-kanban-status) is the independent, operator-set
+	// kanban axis for a TOP-LEVEL coordinator — see db.HeraKanbanStatus. Always
+	// populated (mirrors the orchestrator row's kanban_status column, which is
+	// NOT NULL DEFAULT 'active'); meaningless for a nested/bridged orchestrator,
+	// which the rail never groups by it (only a root orchestrator's value drives
+	// placement — see the rail sections requirement).
+	KanbanStatus db.HeraKanbanStatus
 }
 
 // Model is the full read-only snapshot the rail renders. Orchestrators are
@@ -656,6 +663,11 @@ type Selection struct {
 	// mutations ignore it (they act on the worker Role), but Ctrl+D uses it to
 	// cascade-tear-down the whole nested sub-team rooted at this child.
 	BridgeChildOrchID int64
+	// TopLevelOrch (add-hera-kanban-status) is true when Orch is a TRUE ROOT —
+	// absent from Model.canonicalParents() — stamped by Rail.Selection() from
+	// the same canonical map buildRows computes. Only meaningful alongside a
+	// header selection (Role nil); see KanbanTarget, which the m/M rail keys use.
+	TopLevelOrch bool
 }
 
 // TaskID returns the selected role's bound argus task, or "" when none.
@@ -717,6 +729,20 @@ func (s Selection) CoordTaskID() string {
 		return ""
 	}
 	return s.Orch.CoordTaskID()
+}
+
+// KanbanTarget resolves the orchestrator the m/M rail keys act on
+// (add-hera-kanban-status): the selected orchestrator HEADER — Role nil, Orch
+// set — but ONLY when it is a top-level (root) orchestrator. Returns nil for
+// a role selection (a worker, freelance, or bridging sub-coordinator row that
+// visually resembles a coordinator but is structurally a worker role), a
+// nested orchestrator header reached only through a canonical parent, or an
+// empty selection — in every such case the kanban step is a silent no-op.
+func (s Selection) KanbanTarget() *OrchView {
+	if s.Role != nil || s.Orch == nil || !s.TopLevelOrch {
+		return nil
+	}
+	return s.Orch
 }
 
 // BuildModel reads the hera store and assembles the read-only rail snapshot.
@@ -803,11 +829,12 @@ func BuildModel(r HeraReader, needsInput map[string]bool, sessionIdle map[string
 			continue
 		}
 		ov := OrchView{
-			ID:        o.ID,
-			Name:      o.Name,
-			Pinned:    o.PinnedAt != nil,
-			Archived:  o.ArchivedAt != nil,
-			CreatedAt: o.CreatedAt,
+			ID:           o.ID,
+			Name:         o.Name,
+			Pinned:       o.PinnedAt != nil,
+			Archived:     o.ArchivedAt != nil,
+			CreatedAt:    o.CreatedAt,
+			KanbanStatus: o.KanbanStatus,
 		}
 		roles, err := r.ListHeraRoles(o.ID, true) // include archived roles
 		if err != nil {
