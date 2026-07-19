@@ -35,6 +35,39 @@ func TestHeraCoordinatorOrientation_NamesOrch(t *testing.T) {
 	testutil.Equal(t, strings.Contains(got, `"my-orch"`), true)
 }
 
+// TestHeraCoordinatorOrientation_CarriesFiveDisciplineHabits is a snapshot-style
+// test asserting the add-coordinator-context-management D4 habits all survive in
+// the spawn orientation text: small window, low-default-effort-with-escalation,
+// the sharpened delegation rule, pointers-not-payloads, and
+// distillate-harvest-before-retire (design.md D4 acceptance criterion).
+func TestHeraCoordinatorOrientation_CarriesFiveDisciplineHabits(t *testing.T) {
+	got := strings.ToLower(HeraCoordinatorOrientation("my-orch"))
+
+	// 1. Small window (habit, not a model setting).
+	testutil.Equal(t, strings.Contains(got, "small window"), true)
+
+	// 2. Low default reasoning effort, escalate for real judgment calls.
+	testutil.Equal(t, strings.Contains(got, "low reasoning effort"), true)
+	testutil.Equal(t, strings.Contains(got, "escalate"), true)
+
+	// 3. Delegation bias sharpened to a concrete rule: native sub-agent for
+	// investigation, hera_spawn_worker reserved for its-own-worktree work.
+	testutil.Equal(t, strings.Contains(got, "delegate with prejudice"), true)
+	testutil.Equal(t, strings.Contains(got, "agent/task"), true)
+	testutil.Equal(t, strings.Contains(got, "hera_spawn_worker"), true)
+
+	// 4. Pointers, not payloads.
+	testutil.Equal(t, strings.Contains(got, "pointers, not payloads"), true)
+	testutil.Equal(t, strings.Contains(got, "path:line"), true)
+
+	// 5. Distillate-harvest-before-retire: design.md checkpoint + handoff_note
+	// via the extended hera_status call.
+	testutil.Equal(t, strings.Contains(got, "harvest a distillate"), true)
+	testutil.Equal(t, strings.Contains(got, "design.md"), true)
+	testutil.Equal(t, strings.Contains(got, "handoff_note"), true)
+	testutil.Equal(t, strings.Contains(got, "request_recycle"), true)
+}
+
 // TestHeraCoordinatorOrientation_NoSelfPromotion guards the coordinator's core
 // contract. The HEADLINE rule is dispatch-don't-implement: a coordinator with
 // actual work calls hera_spawn_worker (regardless of repo) and never implements
@@ -264,6 +297,100 @@ func TestSpawnHeraWorker_EmptyModelDefaults(t *testing.T) {
 	got, err := d.Get(res.Task.ID)
 	testutil.NoError(t, err)
 	testutil.Equal(t, got.Model, "")
+}
+
+// TestSpawnHeraWorker_ArchetypePassthrough asserts an explicit Archetype flows
+// onto BOTH the spawned task (the model-resolution key) and the worker role (the
+// mirrored display value).
+func TestSpawnHeraWorker_ArchetypePassthrough(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{}
+	orch, err := d.CreateHeraOrchestrator("orch", "")
+	testutil.NoError(t, err)
+
+	res, err := SpawnHeraWorker(d, fr, HeraWorkerSpawnInput{
+		OrchestratorID: orch.ID,
+		BaseName:       "ci",
+		TaskPrompt:     "body",
+		Project:        "proj",
+		Archetype:      "ci_loop",
+	})
+	testutil.NoError(t, err)
+
+	// Mirrored onto the role.
+	testutil.Equal(t, res.Role.Archetype, "ci_loop")
+	// Persisted onto the task (the authoritative resolution key).
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Archetype, "ci_loop")
+}
+
+// TestSpawnHeraWorker_ArchetypeDefaultsCodeSlice asserts an omitted archetype
+// defaults to code_slice on both the task and the role.
+func TestSpawnHeraWorker_ArchetypeDefaultsCodeSlice(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{}
+	orch, err := d.CreateHeraOrchestrator("orch", "")
+	testutil.NoError(t, err)
+
+	res, err := SpawnHeraWorker(d, fr, HeraWorkerSpawnInput{
+		OrchestratorID: orch.ID,
+		BaseName:       "plain",
+		TaskPrompt:     "body",
+		Project:        "proj",
+	})
+	testutil.NoError(t, err)
+
+	testutil.Equal(t, res.Role.Archetype, "code_slice")
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Archetype, "code_slice")
+}
+
+// TestSpawnHeraCoordinator_ArchetypeDefaultsOrchestrator asserts a born-bound
+// coordinator defaults to the orchestrator archetype on the task + coord role.
+func TestSpawnHeraCoordinator_ArchetypeDefaultsOrchestrator(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{}
+
+	res, err := SpawnHeraCoordinator(d, fr, HeraCoordinatorSpawnInput{
+		OrchestratorBaseName: "coord-orch",
+		TaskPrompt:           "body",
+		Project:              "proj",
+	})
+	testutil.NoError(t, err)
+
+	testutil.Equal(t, res.Role.Archetype, "orchestrator")
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Archetype, "orchestrator")
+}
+
+// TestMaterializeHeraWorker_ArchetypePropagates asserts a planned role's authored
+// archetype is copied onto the materialized task (the gater propagation path).
+func TestMaterializeHeraWorker_ArchetypePropagates(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{}
+	orch, err := d.CreateHeraOrchestrator("orch", "")
+	testutil.NoError(t, err)
+
+	planned, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID, Name: "rev", ArgusProject: "proj", Prompt: "v", Archetype: "review",
+	})
+	testutil.NoError(t, err)
+
+	res, err := MaterializeHeraWorker(d, fr, HeraMaterializeInput{
+		Role: planned, TaskPrompt: "body", Project: "proj",
+	})
+	testutil.NoError(t, err)
+
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Archetype, "review")
 }
 
 // TestSpawnHeraWorker_UniquifiesName verifies a second spawn of the same base

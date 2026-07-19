@@ -3,9 +3,7 @@
 ## Purpose
 
 Argus runs coding tasks through command-template LLM backends (Claude Code, Codex, custom CLIs). Some backends depend on a local inference daemon being warm before the agent's first request, and Argus also uses a cheap LLM call to auto-name tasks. This capability covers the local-ollama prelaunch path (ensure the daemon is up and the target model is loaded) and the non-interactive task-name generator that shells out to the local `claude` CLI. Both paths are best-effort utilities that must fail predictably so the surrounding task workflow can proceed or fall back cleanly.
-
 ## Requirements
-
 ### Requirement: Ollama daemon liveness probe
 
 The system SHALL determine whether the local ollama daemon is reachable by issuing a single short-timeout liveness probe to its tags endpoint. The probe SHALL report "running" only when the daemon answers with an HTTP 200 within the timeout, and SHALL report "not running" for any network failure, non-200 status, or cancelled/expired context.
@@ -138,3 +136,34 @@ The system SHALL sanitize a raw model response before validating it: trim surrou
 
 - **WHEN** the sanitized candidate contains underscores, spaces, slashes, a leading or trailing hyphen, doubled hyphens, or exceeds the maximum length
 - **THEN** the candidate is rejected and no name is returned
+
+### Requirement: Backend credential environment mapping definition
+
+A backend definition SHALL be able to carry an optional credential environment
+mapping: a set of entries mapping a target environment-variable name to a
+source descriptor. The mapping SHALL hold only descriptors and SHALL NOT store
+a secret value. The mapping SHALL be persisted with the backend definition and
+read back with it. The default `codex` backend SHALL be seeded with the mapping
+`OPENAI_API_KEY -> HERA_OPENAI` so a Codex (OpenAI) agent can receive its key
+under the expected variable name. No `gemini` backend SHALL be added by this
+change.
+
+#### Scenario: Codex default carries the OpenAI mapping
+
+- **WHEN** the default backend set is seeded into a fresh database
+- **THEN** the `codex` backend carries a credential mapping
+  `OPENAI_API_KEY -> HERA_OPENAI` and no secret value is stored
+
+#### Scenario: Existing database picks up the codex mapping
+
+- **WHEN** a database that predates this change is opened and the existing
+  `codex` row has no credential mapping
+- **THEN** the `codex` row is updated to carry `OPENAI_API_KEY -> HERA_OPENAI`
+  without overwriting a mapping a user has already customized
+
+#### Scenario: Mapping round-trips without a value
+
+- **WHEN** a backend with a credential mapping is written and read back
+- **THEN** the mapping is preserved as target-to-source descriptors with no
+  secret value
+

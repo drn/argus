@@ -307,6 +307,84 @@ At startup, before any new sessions are started, the system SHALL flip every tas
 - **WHEN** reconciliation runs over tasks that are pending or complete
 - **THEN** those tasks keep their status and are not counted as reconciled
 
+### Requirement: Per-backend credential environment mapping
+
+The system SHALL allow a backend definition to carry a credential environment
+mapping from a target environment-variable name (set in the spawned agent's
+child process) to a source descriptor resolved at spawn time. When building the
+agent command, after assembling the inherited environment, forced terminal
+variables, and task ID, the system SHALL resolve each mapping's source through
+a pluggable secret-resolver seam and, for every source that resolves, append
+`TARGET=value` to the child environment. A source that does not resolve SHALL
+leave the target variable unset and SHALL be logged as a non-sensitive warning
+that names only the variable, never the resolved value. The secret-resolver
+seam SHALL default to reading the daemon's own process environment by the
+source name, and SHALL be replaceable without modifying the command builder so
+a future credential resolver (e.g. an `op`/1Password resolver) can be wired in.
+The mapping SHALL hold only the target-to-source descriptor and SHALL NOT carry
+a secret value; no resolved value SHALL be persisted or logged.
+
+#### Scenario: Resolved source injected into child environment
+
+- **WHEN** a backend defines a mapping `OPENAI_API_KEY -> HERA_OPENAI` and the
+  secret resolver resolves `HERA_OPENAI` to a value
+- **THEN** the built command's environment contains `OPENAI_API_KEY` set to that
+  value
+
+#### Scenario: Unresolved source leaves the variable unset and warns without the value
+
+- **WHEN** a backend defines a mapping whose source does not resolve
+- **THEN** the target variable is absent from the built command's environment
+- **AND** a warning is logged that names the variable but contains no value
+
+#### Scenario: Mapping carries no secret value
+
+- **WHEN** a backend's credential mapping is stored or read back
+- **THEN** it contains only target-to-source descriptors and no resolved secret
+  value
+
+#### Scenario: Resolver is pluggable
+
+- **WHEN** an alternate secret resolver is installed in place of the default
+  process-environment resolver
+- **THEN** subsequent command builds resolve sources through the alternate
+  resolver without any change to the command builder
+
+### Requirement: Archetype carried at task creation
+
+The system SHALL accept an optional `archetype` at the single fresh-task creation chokepoint
+(`agent.CreateAndStart`) and persist it on the created task, so that any spawn path — interactive
+new-task creation, hera worker spawn, and freelance creation — can set a task's archetype uniformly.
+When no archetype is supplied, the task SHALL carry an empty archetype and profile-based resolution
+SHALL NOT apply.
+
+#### Scenario: Archetype persisted on the task
+
+- **WHEN** a task is created through `CreateAndStart` with `archetype = "security_review"`
+- **THEN** the created task carries `security_review` as its archetype
+
+#### Scenario: Absent archetype leaves the task unmarked
+
+- **WHEN** a task is created with no archetype
+- **THEN** the task's archetype is empty and no profile is consulted for its model resolution
+
+### Requirement: Profile environment exported alongside the task ID
+
+When a profile resolves for a spawned agent, the system SHALL export `ARGUS_PROFILE`, `ARGUS_ARCHETYPE`,
+and `ARGUS_MODEL` into the agent command's environment, in addition to the existing task-ID export, so
+in-repo skills can read the active profile and archetype. When no profile resolves, these variables
+SHALL be omitted.
+
+#### Scenario: Profile env present when a profile resolves
+
+- **WHEN** a command is built for a task whose archetype resolves a valid bound profile
+- **THEN** the command environment exports `ARGUS_PROFILE`, `ARGUS_ARCHETYPE`, and `ARGUS_MODEL`
+
+#### Scenario: Profile env absent without a profile
+
+- **WHEN** a command is built for a task that carries no archetype or whose profile does not resolve
+- **THEN** the command environment contains none of the profile variables
+
 ### Requirement: Resume-time session-ID refresh for Claude backends
 
 Before resuming a Claude-style backend, the system SHALL re-derive the most-recently-updated transcript UUID for the task's worktree and persist it as the task's session ID, so the resume targets the newest in-place session rather than a stale earlier one. This is the resume-time analog of post-exit capture, required because sessions that idle or lose their stream (hera workers) never reach the post-exit capture and so accrue newer transcripts while their recorded session ID stays pinned to the create-time value.
@@ -351,4 +429,3 @@ The system SHALL make argus's builtin hera-coordination and argus-task-managemen
 
 - **WHEN** the routing content cannot be materialized (e.g. a filesystem error)
 - **THEN** command construction still succeeds without the `--append-system-prompt-file` flag, and the failure is logged
-

@@ -55,6 +55,7 @@ const (
 	srPluginField
 	srPluginSubmit
 	srPermissionMode
+	srInstallProfiles
 )
 
 // settingsCategory groups related settings rows into a left-rail entry.
@@ -280,6 +281,12 @@ type SettingsView struct {
 	updateStatus    string // last-result status line shown in detail panel
 	updateOutput    string // last go-install output (for detail panel)
 
+	// Diligence-profile defaults install (Hera category).
+	installingProfiles    bool     // true while InstallDefaults is running
+	installProfilesStatus string   // last-result status line shown in detail panel
+	installedProfileNames []string // names installed on the last run
+	skippedProfileNames   []string // names already present on the last run
+
 	// Plugin settings sections. Mirrors the daemon's `plugin_settings` table
 	// via store.Store.PluginSections (the same path local and remote modes
 	// share). pluginValues holds the user-entered draft per (scope, title,
@@ -329,8 +336,12 @@ type SettingsView struct {
 	// SIGHUPs every running agent), so the row handler does NOT optimistically
 	// flip supervisorRestarting — the app calls SetSupervisorRestarting(true)
 	// only after the user confirms.
-	OnRestartSupervisor      func()
-	OnUpdateArgus            func()                        // triggered by the "Update Argus" row
+	OnRestartSupervisor func()
+	OnUpdateArgus       func() // triggered by the "Update Argus" row
+	// OnInstallProfiles fires when the user activates the "Install Default
+	// Profiles" row (catHera). The app dispatches profiles.InstallDefaults off
+	// the UI thread and reports back via SetInstallProfilesResult.
+	OnInstallProfiles        func()
 	OnToggleAutoStart        func(currentlyInstalled bool) // dispatched off the UI thread by app.go
 	OnNewProject             func()
 	OnEditProject            func(name string, p config.Project)
@@ -945,6 +956,18 @@ func (sv *SettingsView) rebuildRows() {
 		}
 		sv.rows = append(sv.rows, settingsRow{kind: srHera, label: heraLabel, key: "_hera"})
 
+		// Writes directly to this process's ~/.argus/profiles/ (the same
+		// canonical path internal/tui/hera_tiering.go resolves against) —
+		// meaningless from a --remote client, which would write to the wrong
+		// machine. Hidden in remote mode, same as the other daemon-admin rows.
+		if !sv.remote {
+			installLabel := "Install Default Profiles"
+			if sv.installingProfiles {
+				installLabel = "Installing..."
+			}
+			sv.rows = append(sv.rows, settingsRow{kind: srInstallProfiles, label: installLabel, key: "_install_profiles"})
+		}
+
 	case catDefaults:
 		pmLabel := fmt.Sprintf("Permission mode: %s", config.PermissionModeLabel(sv.permissionMode))
 		sv.rows = append(sv.rows, settingsRow{kind: srPermissionMode, label: pmLabel, key: "_permission_mode"})
@@ -1534,6 +1557,16 @@ func (sv *SettingsView) handleEnter() bool {
 	case srAutoStart:
 		sv.toggleAutoStart()
 		return true
+	case srInstallProfiles:
+		if !sv.installingProfiles && sv.OnInstallProfiles != nil {
+			sv.installingProfiles = true
+			sv.installProfilesStatus = "Installing default profiles..."
+			sv.installedProfileNames = nil
+			sv.skippedProfileNames = nil
+			sv.rebuildRows()
+			sv.OnInstallProfiles()
+		}
+		return true
 	case srPluginField:
 		return sv.handlePluginFieldEnter()
 	case srPluginSubmit:
@@ -1791,6 +1824,24 @@ func (sv *SettingsView) SetUpdateResult(output, status string) {
 	sv.updating = false
 	sv.updateOutput = output
 	sv.updateStatus = status
+	sv.rebuildRows()
+}
+
+// SetInstallProfilesResult records the outcome of an InstallDefaults run for
+// display, clearing the in-flight flag. Called from the app goroutine via
+// QueueUpdateDraw.
+func (sv *SettingsView) SetInstallProfilesResult(installed, skipped []string, err error) {
+	sv.installingProfiles = false
+	sv.installedProfileNames = installed
+	sv.skippedProfileNames = skipped
+	switch {
+	case err != nil:
+		sv.installProfilesStatus = "Failed: " + err.Error()
+	case len(installed) == 0:
+		sv.installProfilesStatus = fmt.Sprintf("All %d profiles already present — nothing to do", len(skipped))
+	default:
+		sv.installProfilesStatus = fmt.Sprintf("Installed %d profile(s)", len(installed))
+	}
 	sv.rebuildRows()
 }
 
@@ -2179,6 +2230,8 @@ func (sv *SettingsView) renderRowDetail(screen tcell.Screen, x, y, w, h int, row
 		sv.renderSourcePathDetail(screen, x, y, w, h)
 	case srUpdateArgus:
 		sv.renderUpdateArgusDetail(screen, x, y, w, h)
+	case srInstallProfiles:
+		sv.renderInstallProfilesDetail(screen, x, y, w, h)
 	case srSchedule:
 		sv.renderScheduleDetail(screen, x, y, w, h)
 	case srAutoStart:
@@ -2401,6 +2454,45 @@ func (sv *SettingsView) renderUpdateArgusDetail(screen tcell.Screen, x, y, w, h 
 	}
 	if h > 1 {
 		widget.DrawText(screen, x, y+h-1, w, "[enter] update & restart", theme.StyleDimmed)
+	}
+}
+
+// renderInstallProfilesDetail draws the "Install Default Profiles" detail
+// pane: installs the embedded diligence-profile seeds (default, lean,
+// customer_grade) into ~/.argus/profiles/, skipping any name that already
+// exists there (never overwrites a customized profile).
+func (sv *SettingsView) renderInstallProfilesDetail(screen tcell.Screen, x, y, w, h int) {
+	widget.DrawText(screen, x, y, w, "Install Default Profiles", theme.StyleTitle)
+	r := 2
+	widget.DrawText(screen, x, y+r, w, "Seeds the default, lean, and customer_grade", theme.StyleDimmed)
+	r++
+	widget.DrawText(screen, x, y+r, w, "diligence profiles into ~/.argus/profiles/.", theme.StyleDimmed)
+	r += 2
+
+	if sv.installingProfiles {
+		widget.DrawText(screen, x, y+r, w, "Installing...", tcell.StyleDefault.Foreground(theme.ColorInProgress))
+		r++
+	} else if sv.installProfilesStatus != "" {
+		widget.DrawText(screen, x, y+r, w, sv.installProfilesStatus, tcell.StyleDefault.Foreground(theme.ColorComplete))
+		r += 2
+		if len(sv.installedProfileNames) > 0 && r < h-1 {
+			widget.DrawText(screen, x, y+r, w, "Installed: "+strings.Join(sv.installedProfileNames, ", "), theme.StyleDimmed)
+			r++
+		}
+		if len(sv.skippedProfileNames) > 0 && r < h-1 {
+			widget.DrawText(screen, x, y+r, w, "Already present: "+strings.Join(sv.skippedProfileNames, ", "), theme.StyleDimmed)
+			r++
+		}
+	}
+
+	if !sv.installingProfiles && sv.installProfilesStatus == "" && r < h-1 {
+		widget.DrawText(screen, x, y+r, w, "Never overwrites a file that already exists —", theme.StyleDimmed)
+		r++
+		widget.DrawText(screen, x, y+r, w, "safe to run even if you've customized one.", theme.StyleDimmed)
+	}
+
+	if h > 1 {
+		widget.DrawText(screen, x, y+h-1, w, "[enter] install", theme.StyleDimmed)
 	}
 }
 

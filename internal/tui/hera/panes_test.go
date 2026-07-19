@@ -1,6 +1,7 @@
 package hera
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,21 @@ import (
 	"github.com/drn/argus/internal/tui/planview"
 	"github.com/gdamore/tcell/v2"
 )
+
+// simScreenText renders sim's full cell grid to a newline-joined string, for
+// substring assertions against whatever a pane's Draw painted.
+func simScreenText(sim tcell.SimulationScreen) string {
+	w, h := sim.Size()
+	var b strings.Builder
+	for row := 0; row < h; row++ {
+		for col := 0; col < w; col++ {
+			content, _, _ := sim.Get(col, row)
+			b.WriteString(content)
+		}
+		b.WriteRune('\n')
+	}
+	return b.String()
+}
 
 // fakeSession is a minimal agentview.TerminalAdapter identified by task ID, so
 // tests can assert which task's session a pane is feeding from.
@@ -373,6 +389,67 @@ func TestPanes_ReconcileReplacesDeadSession(t *testing.T) {
 	p.Reconcile()
 	got := p.AgentPane().Session().(*fakeSession)
 	testutil.Equal(t, got, live2) // dead handle replaced, not left frozen
+}
+
+// TestPanes_ReconcileResetsVTOnSessionSwap is the recycle-pane-artifact
+// regression: a recycle_coord kill+respawn keeps the SAME task ID, so
+// reconcileOne — not bindPane, which no-ops on an unchanged task — is the ONLY
+// site that observes the session swap. It must fully reset the pane's VT/view
+// state (ResetVT), not rely on SetSession's narrower reset (which only clears
+// emu/emuFedTotal/scrollOffset/paintCacheValid). Diff mode is used here as a
+// deterministic, exported-API-only stand-in for that broader state: Draw()
+// short-circuits entirely while diffMode is set, so a pane left showing a diff
+// overlay when the old session died would keep repainting that stale overlay
+// forever instead of ever showing the freshly-recycled session's output —
+// the same class of "prior session's cells survive the swap" bug that let the
+// reported garbled text linger at the top of a just-recycled coordinator pane.
+func TestPanes_ReconcileResetsVTOnSessionSwap(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+
+	live1 := &fakeSession{id: "t-wkr", alive: true}
+	coordSess := &fakeSession{id: "t-coord", alive: true}
+	sessions := map[string]*fakeSession{"t-coord": coordSess, "t-wkr": live1}
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(sessions))
+	p.Refresh()
+	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
+	testutil.Equal(t, p.AgentPane().Session().(*fakeSession).id, "t-wkr")
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(40, 10)
+	p.AgentPane().SetRect(0, 0, 40, 10)
+
+	// The pane happens to be showing a diff overlay (e.g. the user opened a
+	// file diff on it) at the moment the coordinator recycles.
+	p.AgentPane().EnterDiffMode("--- a/f\n+++ b/f\n@@ -1 +1 @@\n-old\n+new\n", "STALE-DIFF-MARKER")
+	testutil.Equal(t, p.AgentPane().InDiffMode(), true)
+	p.AgentPane().Draw(sim)
+	sim.Show()
+	testutil.Equal(t, strings.Contains(simScreenText(sim), "STALE-DIFF-MARKER"), true)
+
+	// recycle_coord: same task, session killed and replaced by a fresh,
+	// distinct live handle.
+	live1.alive = false
+	live2 := &fakeSession{id: "t-wkr", alive: true}
+	sessions["t-wkr"] = live2
+
+	p.Reconcile()
+
+	got := p.AgentPane().Session().(*fakeSession)
+	testutil.Equal(t, got, live2) // dead handle replaced, not left frozen
+	// BUG: without ResetVT, diffMode (and the rest of the state SetSession
+	// doesn't touch) survives the swap — the recycled session's own output
+	// would never render.
+	testutil.Equal(t, p.AgentPane().InDiffMode(), false)
+
+	p.AgentPane().Draw(sim)
+	sim.Show()
+	testutil.Equal(t, strings.Contains(simScreenText(sim), "STALE-DIFF-MARKER"), false)
 }
 
 // TestPanes_ReconcileLeavesDeadSessionWhenNoLiveReplacement proves the pane is

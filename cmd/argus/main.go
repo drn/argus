@@ -75,11 +75,17 @@ func main() {
 		case "token":
 			runTokenCommand(os.Args[2:])
 			return
-		case "doctor":
-			runDoctor()
+		case "validate":
+			runValidateCommand(os.Args[2:])
+			return
+		case "profiles":
+			runProfilesCommand(os.Args[2:])
 			return
 		case "coord-hook":
 			runCoordHookCommand()
+			return
+		case "doctor":
+			runDoctor()
 			return
 		}
 	}

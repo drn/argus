@@ -3,9 +3,7 @@
 ## Purpose
 
 The Settings View is the configuration tab of the argus TUI. It presents a two-panel layout — a left rail of categories and a right pane that renders the selected category's rows and per-row detail. It lets the user inspect and change system, sandbox, project, backend, schedule, knowledge-base, remote-API, appearance, and logging configuration, and renders plugin-registered settings sections (forms and live streams) alongside the built-in categories.
-
 ## Requirements
-
 ### Requirement: Category rail navigation
 
 The view SHALL present a fixed set of built-in categories (System, Sandbox, Projects, Backends, Schedules, Knowledge Base, Remote API, Appearance, Logs) in a left rail and let the user move focus between the rail and the right pane. Selecting a category SHALL load that category's rows into the pane and reset the row cursor to the top.
@@ -295,3 +293,57 @@ Refreshing settings data SHALL tolerate failures loading projects, tasks, schedu
 
 - **WHEN** the projects datastore returns an error during refresh
 - **THEN** the Projects category renders as an empty list (its placeholder row) instead of failing
+
+### Requirement: Project profile selection from validated on-disk profiles
+
+The Settings project view SHALL present the project's bound profile as a select-list populated from the
+profiles discoverable on disk (the per-user library and any in-repo directory). Only profiles that pass
+validation SHALL be selectable; invalid profiles SHALL be shown as non-selectable (or excluded) so the
+operator cannot bind a project to a malformed profile. Selecting a profile SHALL persist its name on the
+project; the profile body SHALL NOT be persisted.
+
+#### Scenario: Valid profiles are offered
+
+- **WHEN** the project view is opened and the disk holds a mix of valid and invalid profiles
+- **THEN** the select-list offers the valid profiles and the currently bound name
+
+#### Scenario: Invalid profiles are not selectable
+
+- **WHEN** a profile on disk fails validation
+- **THEN** it cannot be chosen as a project's binding
+
+#### Scenario: Selection persists the name only
+
+- **WHEN** the operator selects a profile for a project
+- **THEN** the project's stored binding is the profile name, and no profile body is written
+
+### Requirement: Install default profile seeds from the Hera settings category
+
+The Hera settings category SHALL offer an action row that installs the embedded default diligence
+profile seeds into the per-user profile library. Activating it SHALL mark the action busy, dispatch the
+install via a callback, and report back which seed names were newly installed and which were already
+present (skipped); a second activation while busy SHALL be ignored. This follows the same in-flight /
+async-result shape as the existing Update Argus action.
+
+#### Scenario: Installing into an empty library
+
+- **WHEN** the cursor is on the install-profiles row and the per-user library has none of the seed
+  profiles
+- **THEN** activating it installs all seeds and the detail pane reports them as installed
+
+#### Scenario: Installing when some seeds already exist
+
+- **WHEN** the per-user library already contains one of the seed names
+- **THEN** activating the row installs only the missing seeds and the detail pane reports the existing
+  one as already present, without altering its contents
+
+#### Scenario: Busy state ignores re-activation
+
+- **WHEN** the install is in flight and the user activates the row again
+- **THEN** the callback does not fire a second time
+
+#### Scenario: Result clears busy state
+
+- **WHEN** an install result is reported back to the view
+- **THEN** the busy flag clears and the installed/skipped names are shown in the detail pane
+

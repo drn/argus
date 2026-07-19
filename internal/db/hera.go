@@ -84,6 +84,15 @@ const (
 	// HeraMetaKeyPrompt optionally carries a worker's verbatim prompt so the
 	// auto-adopt path can populate the adopted role's prompt. Tolerated absent.
 	HeraMetaKeyPrompt = "prompt"
+	// HeraMetaKeyHandoffNote carries a coordinator's distilled context ahead of
+	// a recycle (add-coordinator-context-management D5) — the new session's
+	// seed prompt reads it so the successor never needs a tool call to
+	// reconstruct why a non-obvious call was made.
+	HeraMetaKeyHandoffNote = "handoff_note"
+	// HeraMetaKeyPendingRecycle marks a coordinator's self-service recycle
+	// request ("true"). The recycle_coord primitive consumes it and defers the
+	// actual kill-and-restart until the session goes idle.
+	HeraMetaKeyPendingRecycle = "pending_recycle"
 	// HeraMetaKeyContextSize mirrors a coordinator's last-observed
 	// cache_read_input_tokens count (add-coordinator-context-management D1),
 	// overwritten on every Stop-hook invocation (`argus coord-hook`) — a
@@ -173,6 +182,11 @@ type HeraRole struct {
 	PinnedAt       *time.Time
 	NukedAt        *time.Time
 	CancelledAt    *time.Time
+	// Archetype is the planned node's intended diligence archetype
+	// (add-diligence-profiles), mirrored onto the live role for display. Empty
+	// means no archetype. Stored as the nullable hera_roles.archetype column;
+	// the gater copies it into the materialized task's archetype.
+	Archetype string
 }
 
 // HeraBinding is one (role, argus task) incarnation. OrchestratorID is
@@ -209,6 +223,9 @@ type CreateHeraRoleInput struct {
 	NodeKind       HeraNodeKind
 	ArgusProject   string
 	Prompt         string
+	// Archetype is the optional diligence archetype (add-diligence-profiles)
+	// persisted on the role's hera_roles.archetype column. Empty stores NULL.
+	Archetype string
 }
 
 // CreateHeraBindingInput captures the fields needed to start a binding.
@@ -456,7 +473,7 @@ func (d *DB) ListHeraRoles(orchID int64, includeArchived bool) ([]*HeraRole, err
 
 	// Nuked roles (Tier-2 EOL) are invisible to the rail-feeding list regardless
 	// of includeArchived — recoverable only by id lookup (HeraRole).
-	query := `SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at
+	query := `SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at, archetype
 	          FROM hera_roles WHERE orchestrator_id=? AND nuked_at IS NULL`
 	if !includeArchived {
 		query += ` AND archived_at IS NULL`
@@ -487,7 +504,7 @@ func (d *DB) ListHeraRolesByKind(orchID int64, kind HeraRoleKind) ([]*HeraRole, 
 	defer d.mu.Unlock()
 
 	rows, err := d.conn.Query(
-		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at, archetype
 		 FROM hera_roles WHERE orchestrator_id=? AND kind=? AND archived_at IS NULL ORDER BY name ASC`,
 		orchID, string(kind))
 	if err != nil {
@@ -595,14 +612,14 @@ func (d *DB) DeleteHeraRole(id int64) error {
 
 func (d *DB) heraRoleByID(id int64) (*HeraRole, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at, archetype
 		 FROM hera_roles WHERE id=?`, id)
 	return scanHeraRole(row)
 }
 
 func (d *DB) heraRoleByActiveName(orchID int64, name string) (*HeraRole, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at, node_kind, cancelled_at, archetype
 		 FROM hera_roles WHERE orchestrator_id=? AND name=? AND archived_at IS NULL`, orchID, name)
 	return scanHeraRole(row)
 }
@@ -617,10 +634,17 @@ func insertHeraRole(ex execer, in CreateHeraRoleInput, now string) (*HeraRole, e
 		s := string(in.NodeKind)
 		nodeKindVal = &s
 	}
+	// archetype: store NULL when empty (sparse column, same pattern as node_kind)
+	// so pre-existing rows that never had the column scan identically.
+	var archetypeVal *string
+	if in.Archetype != "" {
+		s := in.Archetype
+		archetypeVal = &s
+	}
 	res, err := ex.Exec(
-		`INSERT INTO hera_roles (orchestrator_id, name, kind, argus_project, prompt, created_at, node_kind)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		in.OrchestratorID, in.Name, string(in.Kind), in.ArgusProject, in.Prompt, now, nodeKindVal)
+		`INSERT INTO hera_roles (orchestrator_id, name, kind, argus_project, prompt, created_at, node_kind, archetype)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		in.OrchestratorID, in.Name, string(in.Kind), in.ArgusProject, in.Prompt, now, nodeKindVal, archetypeVal)
 	if err != nil {
 		return nil, fmt.Errorf("insert hera role: %w", err)
 	}
@@ -641,6 +665,7 @@ func insertHeraRole(ex execer, in CreateHeraRoleInput, now string) (*HeraRole, e
 		ArgusProject:   in.ArgusProject,
 		Prompt:         in.Prompt,
 		CreatedAt:      parseTime(now),
+		Archetype:      in.Archetype,
 	}, nil
 }
 
@@ -1443,9 +1468,9 @@ func scanHeraOrchestrator(s rowScanner) (*HeraOrchestrator, error) {
 func scanHeraRole(s rowScanner) (*HeraRole, error) {
 	var r HeraRole
 	var kind, createdAt string
-	var archivedAt, pinnedAt, nukedAt, nodeKind, cancelledAt sql.NullString
+	var archivedAt, pinnedAt, nukedAt, nodeKind, cancelledAt, archetype sql.NullString
 	if err := s.Scan(&r.ID, &r.OrchestratorID, &r.Name, &kind, &r.ArgusProject, &r.Prompt,
-		&createdAt, &archivedAt, &pinnedAt, &nukedAt, &nodeKind, &cancelledAt); err != nil {
+		&createdAt, &archivedAt, &pinnedAt, &nukedAt, &nodeKind, &cancelledAt, &archetype); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrHeraNotFound
 		}
@@ -1464,6 +1489,9 @@ func scanHeraRole(s rowScanner) (*HeraRole, error) {
 		r.NodeKind = HeraNodeKindWorker
 	}
 	r.CancelledAt = nullTimePtr(cancelledAt)
+	if archetype.Valid {
+		r.Archetype = archetype.String
+	}
 	return &r, nil
 }
 

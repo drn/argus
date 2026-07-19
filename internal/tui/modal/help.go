@@ -81,6 +81,7 @@ var helpLayout = []helpGroup{
 		{"ctrl+alt+← / →", "move between panes; ctrl+q back to rail"},
 		{"ctrl+z", "fullscreen pane"},
 		{"ctrl+y", "copy staged text (focused pane)"},
+		{"B", "force recycle coordinator (kill + restart, confirm)"},
 		{"←", "move to parent coordinator (rail focused)"},
 		{"Cmd+↑ / Cmd+↓", "move rail selection (stay focused in pane)"},
 	}},

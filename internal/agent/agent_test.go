@@ -1793,7 +1793,11 @@ func TestResolveModel(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			task := &model.Task{Model: tc.taskModel}
 			b := config.Backend{Model: tc.backendModel}
-			testutil.Equal(t, ResolveModel(task, b), tc.want)
+			// No archetype on these tasks, so profile resolution short-circuits
+			// (no disk access) and the second return is always nil.
+			got, prof := ResolveModel(task, b, config.Config{})
+			testutil.Equal(t, got, tc.want)
+			testutil.Nil(t, prof)
 		})
 	}
 }

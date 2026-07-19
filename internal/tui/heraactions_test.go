@@ -114,6 +114,58 @@ func TestHeraActions_ClearArchiveBranches(t *testing.T) {
 	testutil.Equal(t, app.mode, modeHeraConfirm)
 }
 
+// TestHeraActions_ForceRecycleBranches pins the `B` force-recycle key
+// (add-coordinator-context-management, hera-view delta): a coordinator
+// selection opens a confirmation modal before the recycle proceeds; a worker
+// selection is a no-op — no modal, no recycle. app.heraOpenForceRecycle does
+// not exist yet (Stage 7), so this fails to compile until then.
+func TestHeraActions_ForceRecycleBranches(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.heraOps = hera.NewOps(d)
+
+	// Coordinator selection → confirmation modal opens, no recycle yet.
+	app.heraOpenForceRecycle(heraCoordSel(1, "tc"))
+	testutil.Equal(t, app.mode, modeHeraConfirm)
+
+	// Reset and try a worker selection → no-op (no modal, no recycle).
+	app.closeHeraConfirm()
+	orch := seedHeraOrch(t, d, "o")
+	role := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
+	sel := hera.Selection{Role: &hera.RoleView{RoleID: role.ID, OrchID: orch, Name: "w", Kind: db.HeraKindWorker, TaskID: "tw", Live: true}}
+	app.heraOpenForceRecycle(sel)
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+// TestHeraActions_ForceRecycleCleansUpPendingFlagOnError pins the
+// recycle-pane-artifact-fix wiring in heraDoForceRecycle: it mirrors
+// maybeKickRerender by staging a.pendingRerenderRestart[taskID] before handing
+// off to recycle_coord, so handleSessionExitUI's immediate-resume branch can
+// treat a recycle-triggered exit the same way a rerender kick's exit is
+// treated. When recycle_coord fails before ever touching the session (no live
+// hera binding for the role), that staged flag must be rolled back — else a
+// failed recycle attempt would leave a phantom flag wedging some LATER,
+// unrelated exit of the same task into the wrong handling branch.
+func TestHeraActions_ForceRecycleCleansUpPendingFlagOnError(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.heraOps = hera.NewOps(d)
+
+	orch := seedHeraOrch(t, d, "o")
+	// A real role with NO binding: RecycleCoord's first step (resolve the live
+	// binding) fails immediately, before any session interaction — the
+	// cheapest way to exercise the error-cleanup path without spawning a real
+	// backend process.
+	role, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: orch, Name: "coord", Kind: db.HeraKindCoordinator, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	rv := &hera.RoleView{RoleID: role.ID, OrchID: orch, Name: "coord", Kind: db.HeraKindCoordinator, TaskID: "tc", Live: true}
+
+	app.heraDoForceRecycle(rv)
+
+	testutil.Contains(t, app.statusbar.Error(), "Force recycle failed")
+	testutil.Equal(t, app.pendingRerenderRestart["tc"], false) // rolled back, not leaked
+}
+
 // TestHeraActions_ClearArchiveScopesToSubCoordinator pins BUG-003: pressing `C`
 // on a SUB-coordinator (a bridging worker row whose Selection carries the child
 // orch id) must scope the nuke set to that sub-coordinator's OWN subtree — not
@@ -172,7 +224,7 @@ func TestHeraActions_NewTaskOverrideInvokesOnDone(t *testing.T) {
 
 	var gotTask *model.Task
 	var gotName string
-	app.openHeraNewTaskForm(" Test ", "p", func(task *model.Task, name string) {
+	app.openHeraNewTaskForm(" Test ", "p", false, func(task *model.Task, name string) {
 		gotTask = task
 		gotName = name
 	})

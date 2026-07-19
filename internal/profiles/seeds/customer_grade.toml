@@ -1,0 +1,39 @@
+# customer_grade diligence profile
+#
+# For customer-facing code with no dogfooding loop: inherits default's model
+# allocation but turns up the rigor — two review passes, gating enabled, and a
+# security spot-check — plus a reviewer panel.
+#
+# Documented EXAMPLE, embedded as an install seed — Settings > Hera > "Install
+# Default Profiles", `argus profiles install-defaults`, or copy + adapt by
+# hand. Never auto-installed on daemon startup.
+# Validate with: argus validate customer_grade
+
+extends = "default"
+
+[rigor]
+review_passes       = 2
+gating              = true
+security_spot_check = true
+
+# Reviewer panel (grammar owned by internal/review — see D7 in
+# add-cross-vendor-review/design.md). Fable+Opus-first per D-SCOPE: codex is a
+# RESERVED, valid finder id but is not composed into any shipped profile until
+# the foreign-reviewer-capture primitive lands. Full rigor for customer-facing
+# code: both broad finders, the test-adversary corrective lens, and
+# fix-verification.
+#
+# GOTCHA (D7): a "fable" finder means Fable:LOW. Fable reliably falls back to
+# Opus at medium/high effort (silently — you'd believe you ran Fable and get
+# Opus), which would corrupt the diversity assumption. There is no per-finder
+# effort field in this grammar yet, so this is an operational note, not an
+# enforced setting — do not "upgrade" the Fable leg without a per-finder effort
+# knob to pin it.
+[panel]
+finders          = ["opus", "fable"]
+fix_verification = true
+
+[[panel.lens]]
+name  = "test-adversary"
+model = "opus"
+skill = "hera-review-test-adversary"

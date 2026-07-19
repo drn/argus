@@ -31,6 +31,7 @@ import (
 	"github.com/drn/argus/internal/launchagent"
 	"github.com/drn/argus/internal/macapps"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/profiles"
 	"github.com/drn/argus/internal/scheduler"
 	"github.com/drn/argus/internal/tui/gitpanel"
 	"github.com/drn/argus/internal/tui/hera"
@@ -510,6 +511,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 	}
 	app.settings.OnRestartSupervisor = func() { app.openRestartSupervisorPrompt() }
 	app.settings.OnUpdateArgus = func() { go app.updateArgus() }
+	app.settings.OnInstallProfiles = func() { go app.installDefaultProfiles() }
 	app.settings.OnToggleAutoStart = func(installed bool) { go app.toggleAutoStart(installed) }
 	app.settings.OnNewProject = func() { app.openProjectForm(false, "", config.Project{}) }
 	app.settings.OnEditProject = func(name string, p config.Project) { app.openProjectForm(true, name, p) }
@@ -686,6 +688,12 @@ func (a *App) buildUI() {
 		// (BUG-002). Local-only: remote mode (apistore) has no config table seam,
 		// so persistence stays off. Mirrors the heraReader / heraOps type-assert.
 		a.heraPage.SetRailStateStore(d)
+		// Plan-view diligence-tiering readout (add-diligence-profiles D-VIEW):
+		// stamp each role's applied model/effort + missing-profile warning during
+		// doRefresh. Local-only — resolution reads disk + the task row, which is
+		// inert/expensive over the remote apistore, so remote leaves it nil (the
+		// plan view then shows archetype only).
+		a.heraPage.SetTierResolver(a.resolveHeraTier)
 	}
 	if heraReader != nil {
 		// In-process runner feed seam (replaces Hera's proxy/ SSE fan-out). Read
@@ -747,6 +755,9 @@ func (a *App) buildUI() {
 		// (retire `R` and the rail-wide `Ctrl+R` prune were removed).
 		a.heraPage.OnNewCoordinator = a.heraNewCoordinator
 		a.heraPage.OnClearArchive = a.heraClearArchive
+		// `B` force-recycle (add-coordinator-context-management): confirm, then
+		// kill-and-restart the selected coordinator's session in place.
+		a.heraPage.OnForceRecycle = a.heraOpenForceRecycle
 		// ctrl+y copies the agent-staged clipboard payload for the focused pane's
 		// task (resolved by the page from FocusedTerminalTaskID). Daemon-backed
 		// only — the copy method no-ops gracefully under the in-process runner.
@@ -1400,6 +1411,19 @@ func (a *App) updateArgus() {
 	a.restartDaemonFn()
 }
 
+// installDefaultProfiles installs the embedded default diligence profile
+// seeds into ~/.argus/profiles/, skipping any that already exist. Must run
+// in a goroutine — disk I/O off the UI thread, same as every other settings
+// action that shells out or touches the filesystem.
+func (a *App) installDefaultProfiles() {
+	dir := filepath.Join(db.DataDir(), "profiles")
+	installed, skipped, err := profiles.InstallDefaults(dir)
+	uxlog.Log("[settings] install default profiles: installed=%v skipped=%v err=%v", installed, skipped, err)
+	a.tapp.QueueUpdateDraw(func() {
+		a.settings.SetInstallProfilesResult(installed, skipped, err)
+	})
+}
+
 // toggleAutoStart installs or uninstalls the LaunchAgent. Must run in a
 // goroutine so launchctl invocations don't block the tview event loop.
 // Reports back via QueueUpdateDraw → SetAutoStartResult.
@@ -1747,6 +1771,12 @@ func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool)
 			// pre-existing out-of-scope case.
 			t.SetStatus(model.StatusInProgress)
 			a.db.Update(t) //nolint:errcheck
+			// startSession attaches the fresh session via SetSession alone;
+			// ResetVT here clears whatever emulator/replay/scroll-anchor state
+			// the OUTGOING session left behind so it can't bleed into the
+			// resumed one's first render (the same "new content incoming"
+			// contract bindPane/reconcileOne follow for the hera panes).
+			a.agentPane.ResetVT()
 			a.startSession(t)
 			a.statusbar.ClearInfo()
 			a.refreshTasksAsync()
@@ -3945,6 +3975,10 @@ func (a *App) reapStaleRerenderRestart(taskID string, sess agent.SessionHandle) 
 func (a *App) buildNewTaskForm(defaultProject string) *NewTaskForm {
 	cfg := a.db.Config()
 	f := NewNewTaskForm(cfg.Projects, defaultProject, cfg.Backends, cfg.Defaults.Backend)
+	// Supply the valid on-disk profile names for the per-spawn override cycler
+	// (add-diligence-profiles forms-and-modals), scoped to the default project's
+	// in-repo dir + the per-user library.
+	f.SetProfileOptions(a.validProfileNames(cfg.Projects[defaultProject].Path))
 	f.OnBranchFocus = func(path string) {
 		go func() {
 			branches := gitutil.ListRemoteBranches(path)
@@ -3980,13 +4014,19 @@ func autoNameOnCreate(enteredName string) bool { return enteredName == "" }
 
 // openHeraNewTaskForm opens the shared new-task modal for the Hera tab. title
 // labels the modal (e.g. "Spawn worker"); defaultProject pre-fills the project;
+// hideArchetype hides the archetype selector (a new coordinator is always the
+// `orchestrator` archetype, set programmatically; the worker prompt shows it).
 // onDone runs with the assembled task + the optional entered name ("" when
 // blank) on submit (the form is already closed and focus has returned to the
 // Hera tab). The project is resolved from the task; the name lets the handler
 // override the prompt-derived worker/orchestrator name.
-func (a *App) openHeraNewTaskForm(title, defaultProject string, onDone func(task *model.Task, name string)) {
+func (a *App) openHeraNewTaskForm(title, defaultProject string, hideArchetype bool, onDone func(task *model.Task, name string)) {
 	a.newTaskForm = a.buildNewTaskForm(defaultProject)
 	a.newTaskForm.SetTitle(title)
+	// The new-coordinator prompt hides the archetype selector (a coordinator is
+	// always the `orchestrator` archetype, set programmatically); the worker prompt
+	// shows it.
+	a.newTaskForm.SetHideArchetype(hideArchetype)
 	a.newTaskOnDone = onDone
 	a.newTaskReturnPage = "hera"
 	a.newTaskForm.maybeLoadBranches()
@@ -4016,6 +4056,13 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 
 		// Capture form data before closing.
 		proj := a.newTaskForm.SelectedProject()
+		// task.Profile carries the per-spawn profile override (non-empty when the
+		// operator picked a different profile for this one spawn). It is persisted on
+		// the task row and takes precedence over the project's bound profile during
+		// model resolution (agent.resolveProfile). Log it for observability.
+		if task.Profile != "" {
+			uxlog.Log("[newtask] per-spawn profile override selected: %q (archetype=%q)", task.Profile, task.Archetype)
+		}
 		enteredName := a.newTaskForm.EnteredName()
 		onDone := a.newTaskOnDone
 		var projCfg config.Project
@@ -4059,6 +4106,8 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 			Project:    proj,
 			Backend:    task.Backend,
 			Model:      task.Model,
+			Archetype:  task.Archetype,
+			Profile:    task.Profile,
 			BaseBranch: task.Branch,
 			// Background LLM auto-rename runs ONLY when the user left the name
 			// field blank. A user-supplied name is authoritative and must never
@@ -5236,6 +5285,10 @@ func (a *App) openProjectForm(edit bool, name string, p config.Project) {
 	if edit {
 		a.projectForm.LoadProject(name, p)
 	}
+	// Populate the diligence-profile select-list with the VALID on-disk profiles
+	// for this project (in-repo .argus/profiles + the ~/.argus/profiles library),
+	// pre-positioned on the current binding (add-diligence-profiles settings-view).
+	a.projectForm.SetProfileOptions(a.validProfileNames(p.Path), p.Profile)
 	a.mode = modeProjectForm
 	a.pages.AddPage("projectform", a.projectForm, true, true)
 	a.pages.SwitchToPage("projectform")

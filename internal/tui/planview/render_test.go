@@ -846,6 +846,68 @@ func TestTruncateLabel_RuneAware(t *testing.T) {
 	testutil.Equal(t, strings.HasSuffix(got, "…"), true)
 }
 
+// --- add-diligence-profiles: per-node tiering readout + warning (D-VIEW, 5.4) ---
+
+// TestHeader_NodeTierReadout covers the hera-view scenario "Node shows archetype
+// and applied model": a node with archetype code_slice resolving to model sonnet
+// shows both in its rendered header.
+func TestHeader_NodeTierReadout(t *testing.T) {
+	w := New()
+	n := liveNode("1a", StateWorking)
+	n.Archetype = "code_slice"
+	n.Model = "sonnet"
+	n.Effort = "high"
+	w.SetData([]Node{n}, nil)
+	w.SetFocused(true)
+
+	joined := joinLines(w.HeaderLines())
+	testutil.Contains(t, joined, "Tier:")
+	testutil.Contains(t, joined, "code_slice")
+	testutil.Contains(t, joined, "sonnet")
+	testutil.Contains(t, joined, "high")
+
+	// And it actually paints (smoke render; no Sync — drawToString uses the diff path).
+	out := drawToString(t, w, 70, 16)
+	testutil.Contains(t, out, "code_slice")
+	testutil.Contains(t, out, "sonnet")
+}
+
+// TestHeader_NodeTierNoneAndDefault: a node with no archetype shows "(none)"; an
+// archetype with no resolved model shows "(default)".
+func TestHeader_NodeTierNoneAndDefault(t *testing.T) {
+	w := New()
+	w.SetData([]Node{liveNode("1a", StateWorking)}, nil) // no archetype/model
+	w.SetFocused(true)
+	testutil.Contains(t, joinLines(w.HeaderLines()), "Tier: (none)")
+
+	w2 := New()
+	n := liveNode("1a", StateWorking)
+	n.Archetype = "ci_loop" // archetype set, model unresolved
+	w2.SetData([]Node{n}, nil)
+	w2.SetFocused(true)
+	joined := joinLines(w2.HeaderLines())
+	testutil.Contains(t, joined, "ci_loop")
+	testutil.Contains(t, joined, "(default)")
+}
+
+// TestHeader_NodeProfileWarning covers "Missing profile warned": a node whose
+// project points at a missing/invalid profile renders a ⚠ warning.
+func TestHeader_NodeProfileWarning(t *testing.T) {
+	w := New()
+	n := liveNode("1a", StateWorking)
+	n.Archetype = "code_slice"
+	n.ProfileWarning = `profile "ghost" missing or invalid`
+	w.SetData([]Node{n}, nil)
+	w.SetFocused(true)
+
+	joined := joinLines(w.HeaderLines())
+	testutil.Contains(t, joined, string(warnGlyph))
+	testutil.Contains(t, joined, "missing or invalid")
+
+	out := drawToString(t, w, 70, 16)
+	testutil.Contains(t, out, string(warnGlyph))
+}
+
 // TestDraw_NodeDescriptionRendersMultipleLines exercises the full render path for
 // the grown master-detail header (improve-hera-node-descriptions): a selected
 // node with a multi-line prompt paints its first NON-EMPTY lines as distinct

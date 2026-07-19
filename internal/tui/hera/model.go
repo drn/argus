@@ -112,6 +112,24 @@ type RoleView struct {
 	BindingStartedAt time.Time // live binding's start time (zero when unbound)
 	StatusUpdatedAt  time.Time // role-status row's last update (zero when none)
 	TaskName         string    // bound argus task's name ("" when unbound)
+
+	// Archetype is the role's diligence archetype (hera_roles.archetype), read
+	// straight from the role row (no I/O). It is the planned-node intent and
+	// mirrors the live value; the plan-view tier readout shows it
+	// (add-diligence-profiles, D-ARCHETYPE). Empty = none.
+	Archetype string
+
+	// AppliedModel / AppliedEffort / ProfileWarning are the resolved diligence
+	// tiering for the plan-view readout (D-VIEW). Unlike the fields above they are
+	// NOT read from the hera store — resolution (agent.ResolveModel + profile load)
+	// reads disk, so it CANNOT run in the pure projection (heraPlanNodes) on the
+	// tview thread. The App stamps these via HeraPage.SetTierResolver during the
+	// debounced doRefresh (off the Draw path), local mode only; remote leaves them
+	// empty. AppliedModel "" = the CLI/backend default applied; ProfileWarning
+	// non-empty = the project's bound profile is missing/invalid (fail-open).
+	AppliedModel   string
+	AppliedEffort  string
+	ProfileWarning string
 }
 
 // IsActive reports whether the role is genuinely producing output right now: it
@@ -208,6 +226,28 @@ type Model struct {
 	Active    []OrchView // active, non-pinned orchestrators
 	Archived  []OrchView // archived orchestrators (archived_at set)
 	Freelance []RoleView // freelance-kind roles across active orchestrators
+}
+
+// annotateRoles applies fn to every RoleView in the model in place — across the
+// Pinned/Active/Archived orchestrator sections and the Freelance section. Used by
+// HeraPage.doRefresh to stamp the diligence-tiering readout (AppliedModel/Effort +
+// ProfileWarning) before the model reaches the rail (add-diligence-profiles
+// D-VIEW). Indexed loops (not range-by-value) so the stamp mutates the slice
+// element, not a copy.
+func (m *Model) annotateRoles(fn func(*RoleView)) {
+	if fn == nil {
+		return
+	}
+	for _, secs := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
+		for oi := range secs {
+			for ri := range secs[oi].Roles {
+				fn(&secs[oi].Roles[ri])
+			}
+		}
+	}
+	for fi := range m.Freelance {
+		fn(&m.Freelance[fi])
+	}
 }
 
 // IsEmpty reports whether the snapshot has no content at all (used to render
@@ -894,6 +934,7 @@ func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.
 		CreatedAt:    role.CreatedAt,
 		ArgusProject: role.ArgusProject,
 		Prompt:       role.Prompt,
+		Archetype:    role.Archetype,
 	}
 	if b := roleToBinding[role.ID]; b != nil {
 		taskID := b.ArgusTaskID

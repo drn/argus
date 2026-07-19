@@ -409,8 +409,10 @@ func TestNewTaskForm_UpArrowLeavesPrompt(t *testing.T) {
 	f.cursorPos = 3
 	handler := f.InputHandler()
 	handler(tcell.NewEventKey(tcell.KeyUp, 0, 0), func(p tview.Primitive) {})
-	if f.focused != ntFieldModel {
-		t.Errorf("up on first line should move to model, got focused=%d", f.focused)
+	// Up out of the prompt lands on the field just above it — the archetype
+	// selector (add-diligence-profiles inserted Profile + Archetype before Prompt).
+	if f.focused != ntFieldArchetype {
+		t.Errorf("up on first line should move to archetype, got focused=%d", f.focused)
 	}
 }
 
@@ -921,10 +923,22 @@ func TestNewTaskForm_EnterOnSelector(t *testing.T) {
 		t.Errorf("enter on backend: focused = %d, want model", f.focused)
 	}
 
-	// Enter on model → prompt
+	// Enter on model → profile (add-diligence-profiles inserted Profile + Archetype)
+	handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
+	if f.focused != ntFieldProfile {
+		t.Errorf("enter on model: focused = %d, want profile", f.focused)
+	}
+
+	// Enter on profile → archetype
+	handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
+	if f.focused != ntFieldArchetype {
+		t.Errorf("enter on profile: focused = %d, want archetype", f.focused)
+	}
+
+	// Enter on archetype → prompt
 	handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
 	if f.focused != ntFieldPrompt {
-		t.Errorf("enter on model: focused = %d, want prompt", f.focused)
+		t.Errorf("enter on archetype: focused = %d, want prompt", f.focused)
 	}
 }
 
@@ -1848,19 +1862,20 @@ func TestNewTaskForm_ModelFieldNavigation(t *testing.T) {
 	f.focused = ntFieldModel
 	handler := f.InputHandler()
 
-	// Enter → prompt.
+	// Enter → profile (add-diligence-profiles inserted Profile + Archetype between
+	// model and prompt).
 	handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), nil)
-	testutil.Equal(t, f.focused, ntFieldPrompt)
+	testutil.Equal(t, f.focused, ntFieldProfile)
 
 	// Up from model → backend.
 	f.focused = ntFieldModel
 	handler(tcell.NewEventKey(tcell.KeyUp, 0, 0), nil)
 	testutil.Equal(t, f.focused, ntFieldBackend)
 
-	// Down from model → prompt.
+	// Down from model → profile.
 	f.focused = ntFieldModel
 	handler(tcell.NewEventKey(tcell.KeyDown, 0, 0), nil)
-	testutil.Equal(t, f.focused, ntFieldPrompt)
+	testutil.Equal(t, f.focused, ntFieldProfile)
 }
 
 func TestNewTaskForm_ModelCustomAltWordOps(t *testing.T) {
@@ -2003,4 +2018,146 @@ func TestNewTaskForm_DrawModelField(t *testing.T) {
 	line = simRowText(sim, modelRow)
 	testutil.Contains(t, line, "custom")
 	testutil.Contains(t, line, "glm-4.6")
+}
+
+// --- add-diligence-profiles: Profile + Archetype selectors (5.1/5.2) ---
+
+// TestNewTaskForm_SelectorsPresentWithDefaults covers the forms-and-modals
+// scenario "Selectors present on the new-task prompt": the form shows a Profile
+// selector defaulting to the project's bound profile and an Archetype selector
+// defaulting to "(none)".
+func TestNewTaskForm_SelectorsPresentWithDefaults(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {Profile: "lean"}}, "p",
+		map[string]config.Backend{"b": {Command: "claude"}}, "b",
+	)
+	f.SetRect(0, 0, 80, 30)
+	sim := drawSim(t)
+	f.focused = ntFieldPrompt
+	f.Draw(sim)
+
+	var profileRow, archetypeRow int
+	_, h := sim.Size()
+	for row := 0; row < h; row++ {
+		line := simRowText(sim, row)
+		if strings.Contains(line, "Profile:") {
+			profileRow = row
+			testutil.Contains(t, line, "lean") // defaults to the project's bound profile
+		}
+		if strings.Contains(line, "Archetype:") {
+			archetypeRow = row
+			testutil.Contains(t, line, ntArchetypeNone) // defaults to "(none)"
+		}
+	}
+	if profileRow == 0 {
+		t.Fatal("Profile selector not rendered")
+	}
+	if archetypeRow == 0 {
+		t.Fatal("Archetype selector not rendered")
+	}
+	// Default values exposed via the accessors.
+	testutil.Equal(t, f.profileDisplayLabel(), "lean")
+	testutil.Equal(t, f.Archetype(), "")
+	testutil.Equal(t, f.ProfileOverride(), "") // default == bound → no override
+}
+
+// TestNewTaskForm_CoordinatorOmitsArchetype covers "Coordinator prompt omits the
+// archetype selector".
+func TestNewTaskForm_CoordinatorOmitsArchetype(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"b": {Command: "claude"}}, "b",
+	)
+	f.SetHideArchetype(true)
+	f.SetRect(0, 0, 80, 30)
+	sim := drawSim(t)
+	f.focused = ntFieldPrompt
+	f.Draw(sim)
+
+	_, h := sim.Size()
+	sawProfile, sawArchetype := false, false
+	for row := 0; row < h; row++ {
+		line := simRowText(sim, row)
+		if strings.Contains(line, "Profile:") {
+			sawProfile = true
+		}
+		if strings.Contains(line, "Archetype:") {
+			sawArchetype = true
+		}
+	}
+	testutil.Equal(t, sawProfile, true)    // profile still shown
+	testutil.Equal(t, sawArchetype, false) // archetype hidden for the coordinator prompt
+}
+
+// TestNewTaskForm_SelectedArchetypeRidesTask covers "Selected archetype rides the
+// submitted task": cycling the Archetype selector to code_slice makes the produced
+// task carry code_slice.
+func TestNewTaskForm_SelectedArchetypeRidesTask(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"b": {Command: "claude"}}, "b",
+	)
+	handler := f.InputHandler()
+	// Navigate to the archetype field and cycle right once: "(none)" → first
+	// canonical archetype (brainstorm). Cycle until we land on code_slice.
+	f.focused = ntFieldArchetype
+	for f.Archetype() != "code_slice" {
+		prev := f.archetypeIdx
+		handler(tcell.NewEventKey(tcell.KeyRight, 0, 0), nil)
+		if f.archetypeIdx == prev {
+			t.Fatal("archetype cycle made no progress")
+		}
+	}
+	f.prompt = []rune("do the thing")
+	task := f.Task()
+	testutil.Equal(t, task.Archetype, "code_slice")
+}
+
+// TestNewTaskForm_NoneArchetypeEmpty covers "None archetype yields an empty value".
+func TestNewTaskForm_NoneArchetypeEmpty(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"b": {Command: "claude"}}, "b",
+	)
+	f.prompt = []rune("do the thing")
+	testutil.Equal(t, f.archetypeIdx, 0) // default "(none)"
+	testutil.Equal(t, f.Task().Archetype, "")
+}
+
+// TestNewTaskForm_ProfileOverrideReturned covers the per-spawn override: cycling
+// to a profile other than the project's bound default returns it from
+// ProfileOverride; the bound default returns "".
+func TestNewTaskForm_ProfileOverrideReturned(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {Profile: "lean"}}, "p",
+		map[string]config.Backend{"b": {Command: "claude"}}, "b",
+	)
+	f.SetProfileOptions([]string{"lean", "customer_grade"})
+	testutil.Equal(t, f.profileDisplayLabel(), "lean") // bound default at index 0
+	testutil.Equal(t, f.ProfileOverride(), "")
+
+	handler := f.InputHandler()
+	f.focused = ntFieldProfile
+	handler(tcell.NewEventKey(tcell.KeyRight, 0, 0), nil) // → customer_grade
+	testutil.Equal(t, f.profileDisplayLabel(), "customer_grade")
+	testutil.Equal(t, f.ProfileOverride(), "customer_grade")
+}
+
+// TestNewTaskForm_HiddenArchetypeNavSkips ensures Tab/Up navigation skips the
+// hidden archetype field on the coordinator prompt (model → profile → prompt).
+func TestNewTaskForm_HiddenArchetypeNavSkips(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"b": {Command: "claude"}}, "b",
+	)
+	f.SetHideArchetype(true)
+	handler := f.InputHandler()
+
+	f.focused = ntFieldProfile
+	handler(tcell.NewEventKey(tcell.KeyTab, 0, 0), nil) // profile → prompt (skip archetype)
+	testutil.Equal(t, f.focused, ntFieldPrompt)
+
+	// Backtab from prompt → profile (skip archetype).
+	handler(tcell.NewEventKey(tcell.KeyBacktab, 0, 0), nil)
+	testutil.Equal(t, f.focused, ntFieldProfile)
 }

@@ -165,6 +165,15 @@ type Backend struct {
 	// config.toml overlay field only (no DB column); it overrides the built-in
 	// list for power users who run models the curated list does not name.
 	Models []string `toml:"models"`
+	// EnvVars is a per-backend credential environment mapping consulted by
+	// agent.BuildCmd: each entry maps a TARGET environment-variable name (set in
+	// the spawned agent's child process) to a SOURCE descriptor resolved at spawn
+	// time through agent's pluggable secret-resolver seam. It holds the MAPPING
+	// ONLY — never a secret value — so it is safe to persist (a JSON env_vars DB
+	// column) and to log by key. Example: {"OPENAI_API_KEY": "HERA_OPENAI"} copies
+	// the daemon-side HERA_OPENAI into the child's OPENAI_API_KEY. An unresolved
+	// source sets nothing (see agent.BuildCmd).
+	EnvVars map[string]string `toml:"env_vars"`
 }
 
 // ProjectSandboxConfig holds per-project sandbox overrides.
@@ -197,6 +206,24 @@ type Project struct {
 	Branch  string               `toml:"branch"`
 	Backend string               `toml:"backend"`
 	Sandbox ProjectSandboxConfig `toml:"sandbox"`
+	// Profile names the diligence profile bound to this project
+	// (add-diligence-profiles). Stores the profile NAME only, never the body.
+	// Empty/absent is treated as bound to the "default" profile for resolution.
+	// Like the other scalar fields, a partial [projects.<name>] entry in
+	// config.toml zeroes this (BurntSushi decodes into a fresh struct) — define
+	// projects wholesale in the file. See ResolveProfileName.
+	Profile string `toml:"profile"`
+}
+
+// ResolveProfileName returns the project's bound profile name, resolving an
+// empty/absent binding to the canonical "default" profile. Centralizing the
+// empty→default rule keeps the binding semantics in one place for callers that
+// resolve a project's profile (Settings select-list, spawn-layer resolution).
+func (p Project) ResolveProfileName() string {
+	if p.Profile == "" {
+		return "default"
+	}
+	return p.Profile
 }
 
 // Keybindings holds user keybinding OVERRIDES, scoped by TUI context. Each inner
@@ -265,6 +292,11 @@ func DefaultConfig() Config {
 			"codex": {
 				Command:    "codex --dangerously-bypass-approvals-and-sandbox",
 				PromptFlag: "",
+				// Credential mapping ONLY (never a value): copy the daemon-side
+				// HERA_OPENAI into the child's OPENAI_API_KEY so a Codex (OpenAI)
+				// agent — e.g. a cross-vendor reviewer — receives its key under the
+				// expected name. Resolved at spawn via agent's secret-resolver seam.
+				EnvVars: map[string]string{"OPENAI_API_KEY": "HERA_OPENAI"},
 			},
 			"pi": {
 				Command:    "pi",

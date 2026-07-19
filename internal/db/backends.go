@@ -1,6 +1,7 @@
 package db
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/drn/argus/internal/config"
@@ -10,7 +11,10 @@ func (d *DB) Backends() (map[string]config.Backend, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	rows, err := d.conn.Query(`SELECT name, command, prompt_flag, model FROM backends ORDER BY name`)
+	// NOTE: the SELECT deliberately omits resume_command (a dead column); mirror
+	// that care for any future column. env_vars is a JSON credential MAPPING
+	// (target -> source descriptor), never a secret value.
+	rows, err := d.conn.Query(`SELECT name, command, prompt_flag, model, env_vars FROM backends ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("query backends: %w", err)
 	}
@@ -18,10 +22,15 @@ func (d *DB) Backends() (map[string]config.Backend, error) {
 
 	backends := make(map[string]config.Backend)
 	for rows.Next() {
-		var name string
+		var name, envVars string
 		var b config.Backend
-		if err := rows.Scan(&name, &b.Command, &b.PromptFlag, &b.Model); err != nil {
+		if err := rows.Scan(&name, &b.Command, &b.PromptFlag, &b.Model, &envVars); err != nil {
 			continue
+		}
+		// '' (and 'null') decode to a nil/empty mapping. Malformed JSON is
+		// ignored (b.EnvVars stays nil) rather than failing the whole query.
+		if envVars != "" {
+			_ = json.Unmarshal([]byte(envVars), &b.EnvVars)
 		}
 		backends[name] = b
 	}
@@ -44,9 +53,27 @@ func (d *DB) SetBackend(name string, b config.Backend) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	_, err := d.conn.Exec(`INSERT OR REPLACE INTO backends (name, command, prompt_flag, model) VALUES (?, ?, ?, ?)`,
-		name, b.Command, b.PromptFlag, b.Model)
+	envVars, err := marshalEnvVars(b.EnvVars)
+	if err != nil {
+		return err
+	}
+	_, err = d.conn.Exec(`INSERT OR REPLACE INTO backends (name, command, prompt_flag, model, env_vars) VALUES (?, ?, ?, ?, ?)`,
+		name, b.Command, b.PromptFlag, b.Model, envVars)
 	return err
+}
+
+// marshalEnvVars encodes a backend credential mapping for the env_vars column.
+// An empty/nil mapping stores ” (which decodes back to nil) so a round-trip is
+// stable. The mapping holds only target -> source descriptors, never a value.
+func marshalEnvVars(m map[string]string) (string, error) {
+	if len(m) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "", fmt.Errorf("marshal backend env_vars: %w", err)
+	}
+	return string(b), nil
 }
 
 // DeleteBackend removes a backend row. Called by `handleDeleteBackend` in

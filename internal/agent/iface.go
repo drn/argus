@@ -54,6 +54,15 @@ type SessionRunner interface {
 	// flipping task status — callers MUST NOT emulate it with Stop+Start.
 	KickRerender(task *model.Task, cfg config.Config, rows, cols uint16) error
 
+	// Recycle stops a live session and queues a same-task restart with
+	// resume=false (add-coordinator-context-management D5) — a fresh,
+	// empty-context session on the identical task/worktree/branch, rather
+	// than KickRerender's re-emitted conversation. Same pendingRestart
+	// bookkeeping contract as KickRerender: callers MUST NOT emulate it with
+	// Stop+Start. The caller must clear task.SessionID and set task.Prompt to
+	// the desired seed prompt before calling.
+	Recycle(task *model.Task, cfg config.Config, rows, cols uint16) error
+
 	// NeedsInputIDs / SetNeedsInputIDs hold the daemon-computed "this session is
 	// waiting on the user" set. It is derived state owned by whatever runner the
 	// daemon process holds (in-process runner OFF; supervisor-client ON, where it
