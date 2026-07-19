@@ -9,9 +9,9 @@ import (
 )
 
 // railPageWithCursorOnWorker builds a page whose rail cursor rests on the first
-// WORKER role of orchestrator "o". After the coordinator fold the rows are
-// cursor 0 = orch header (the coordinator) and cursor 1 = the worker, so one
-// Down lands on the worker.
+// WORKER role of orchestrator "o". Rows: rule(0), "Active (1)" header(1), orch
+// header(2, the coordinator, first selectable — the cursor auto-clamps there),
+// worker(3), so one Down lands on the worker.
 func railPageWithCursorOnWorker(t *testing.T) (*HeraPage, *db.DB) {
 	t.Helper()
 	d := memDB(t)
@@ -20,7 +20,7 @@ func railPageWithCursorOnWorker(t *testing.T) (*HeraPage, *db.DB) {
 	seedBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
 	p := NewHeraPage(d)
 	p.Refresh()
-	// Move cursor to the worker role (row 1; coord is folded into the header).
+	// Move cursor to the worker role (row 3; coord is folded into the header).
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus) // → worker
 	return p, d
@@ -203,8 +203,9 @@ func TestKeyset_NilCallbacksAreNoOps(t *testing.T) {
 	h(tcell.NewEventKey(tcell.KeyCtrlD, 0, tcell.ModNone), noFocus)
 	h(tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModNone), noFocus)
 	h(tcell.NewEventKey(tcell.KeyRune, 'B', tcell.ModNone), noFocus)
-	// Cursor unaffected by unconsumed mutation keys with no callback.
-	testutil.Equal(t, p.Rail().CursorIndex(), 1)
+	// Cursor unaffected by unconsumed mutation keys with no callback. Rows:
+	// rule(0), "Active (1)" header(1), orch header(2), worker(3).
+	testutil.Equal(t, p.Rail().CursorIndex(), 3)
 }
 
 func TestKeyset_NavStillWorksAlongsideMutations(t *testing.T) {
@@ -212,11 +213,11 @@ func TestKeyset_NavStillWorksAlongsideMutations(t *testing.T) {
 	p.OnArchiveToggle = func(Selection) {}
 	h := p.InputHandler()
 	// j/k still navigate (not swallowed by the mutation handler). Cursor starts
-	// on the worker (row 1); k → header (0); j → worker (1).
+	// on the worker (row 3); k → header (2); j → worker (3).
 	h(tcell.NewEventKey(tcell.KeyRune, 'k', tcell.ModNone), noFocus)
-	testutil.Equal(t, p.Rail().CursorIndex(), 0)
+	testutil.Equal(t, p.Rail().CursorIndex(), 2)
 	h(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone), noFocus)
-	testutil.Equal(t, p.Rail().CursorIndex(), 1)
+	testutil.Equal(t, p.Rail().CursorIndex(), 3)
 }
 
 func TestKeyset_EnterReattachOnDeadSessionThenFocus(t *testing.T) {

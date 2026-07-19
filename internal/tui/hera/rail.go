@@ -85,6 +85,24 @@ type railRow struct {
 	// name line that pairs with the preceding rrPinnedBreadcrumb row.
 	breadcrumb     string
 	breadcrumbCont bool
+
+	// kanbanGroup (add-kanban-focus-fold) is set ONLY on the four kanban
+	// sub-group header rows (rrSectionHeader, label "Active (N)" / "Backlog
+	// (N)" / "Blocked (N)" / "Done (N)") to the group it represents. Zero
+	// value "" on every other row (including the "Pinned" and "Freelance"
+	// section headers), so kanbanGroupHeader() below never mistakes them for
+	// a kanban boundary.
+	kanbanGroup db.HeraKanbanStatus
+}
+
+// kanbanGroupHeader reports whether row is a kanban sub-group header (Active/
+// Backlog/Blocked/Done) and, if so, which group — used by step() to detect a
+// boundary crossing. Never true for "Pinned"/"Freelance"/rule/orch/role rows.
+func (row railRow) kanbanGroupHeader() (db.HeraKanbanStatus, bool) {
+	if row.kind == rrSectionHeader && row.kanbanGroup != "" {
+		return row.kanbanGroup, true
+	}
+	return "", false
 }
 
 func (r railRow) selectable() bool {
@@ -164,6 +182,17 @@ type Rail struct {
 	// parents at all).
 	canonical map[int64]canonParent
 
+	// focusedKanban (add-kanban-focus-fold) is the ONE kanban sub-group
+	// (Active/Backlog/Blocked/Done) currently expanded in buildRows; the other
+	// three render header+count only. Defaults to db.HeraKanbanActive (NewRail).
+	// NOT persisted (unlike collapsed/freelanceCollap/archiveCollapsed) — every
+	// code path that moves the selection to a target outside the focused group
+	// (SetModel's restore, SelectByTaskID, EnsureAncestorsExpanded, and step()'s
+	// boundary-crossing) re-derives it from the target via focusGroupOf BEFORE
+	// buildRows runs, since buildRows itself needs to know which group to expand
+	// to lay out the target row at all (see design.md decision 1).
+	focusedKanban db.HeraKanbanStatus
+
 	focused   bool // drives the border-highlight style
 	animFrame int  // spinner frame for in-motion role glyphs (recomputed each Draw)
 
@@ -199,6 +228,7 @@ func NewRail() *Rail {
 		collapsed:        make(map[int64]bool),
 		archiveCollapsed: true,
 		coordArchiveOpen: make(map[int64]bool),
+		focusedKanban:    db.HeraKanbanActive,
 	}
 }
 
@@ -234,16 +264,23 @@ func (r *Rail) rolePR(role *RoleView) bool {
 func (r *Rail) SetModel(m Model) {
 	prev := r.currentRef()
 	r.model = m
-	r.buildRows()
 	// A persisted selection (BUG-002) takes precedence on the FIRST build after a
 	// restore — the rows didn't exist when SetStateStore ran. It is one-shot:
 	// once applied here it's zeroed, so later rebuilds keep the live cursor. The
 	// cursor is written directly (not via setCursor), so the restore never
-	// re-persists.
+	// re-persists. Resolved BEFORE buildRows (add-kanban-focus-fold) since the
+	// override changes which ref the focused-kanban-group resolution below uses.
 	if r.pendingSelRef != 0 {
 		prev = r.pendingSelRef
 		r.pendingSelRef = 0
 	}
+	// Re-focus the kanban group containing prev's target BEFORE buildRows —
+	// buildRows itself needs r.focusedKanban to decide which group to expand,
+	// so this must run first (design.md decision 1). A ref of 0 (nothing
+	// resolvable — e.g. the very first build) leaves r.focusedKanban at
+	// NewRail's `active` default.
+	r.focusGroupFromRef(prev)
+	r.buildRows()
 	r.restoreCursor(prev)
 	r.clampCursor()
 }
@@ -519,6 +556,62 @@ func (r *Rail) currentRef() int64 {
 	}
 }
 
+// focusGroupOf resolves orchID's top-level (root) orchestrator by walking
+// canonicalParents() and returns that root's kanban status. Computed fresh
+// from r.model each call — never from r.canonical, which is a buildRows
+// side-effect that does not exist yet at the point this needs to run (this
+// must be callable BEFORE buildRows, to decide which group buildRows should
+// expand — design.md decision 1's chicken-and-egg resolution). ok is false
+// when orchID does not resolve to a live orchestrator in the model (a stale
+// id, or a canonical-parent cycle).
+func (r *Rail) focusGroupOf(orchID int64) (db.HeraKanbanStatus, bool) {
+	canonical := r.model.canonicalParents()
+	seen := make(map[int64]bool)
+	id := orchID
+	for {
+		if seen[id] {
+			return "", false // cycle guard
+		}
+		seen[id] = true
+		cp, ok := canonical[id]
+		if !ok {
+			break // id is now the top-level root
+		}
+		id = cp.orchID
+	}
+	o := r.model.OrchByID(id)
+	if o == nil {
+		return "", false
+	}
+	return kanbanStatusOf(o), true
+}
+
+// focusGroupFromRef resolves the kanban group containing ref — a
+// currentRef()-style identity: a positive role id, or a negated orchestrator
+// id — and sets r.focusedKanban to it. A ref of 0 (nothing previously
+// selected), a ref that no longer resolves (stale id, or a Freelance role,
+// which sits outside the kanban partition entirely), all leave r.focusedKanban
+// untouched — preserving NewRail's `active` default on the very first
+// non-empty build (design.md decision 5). Must run BEFORE buildRows.
+func (r *Rail) focusGroupFromRef(ref int64) {
+	if ref == 0 {
+		return
+	}
+	var orchID int64
+	if ref < 0 {
+		orchID = -ref
+	} else {
+		id, ok := r.model.roleOrchID(ref)
+		if !ok {
+			return
+		}
+		orchID = id
+	}
+	if group, ok := r.focusGroupOf(orchID); ok {
+		r.focusedKanban = group
+	}
+}
+
 func (r *Rail) restoreCursor(ref int64) {
 	if ref == 0 {
 		return
@@ -611,40 +704,44 @@ func (r *Rail) buildRows() {
 	}
 
 	// 2. Active orchestrators, partitioned into kanban-status sub-groups
-	// (add-hera-kanban-status): active (headerless, exactly the historical
-	// rendering) → Backlog (N) → Blocked (N) → Done (N). Each group is scoped
-	// to TOP-LEVEL (root — no canonical parent) orchestrators only; a
-	// nested/bridged orchestrator's own kanban status is never consulted for
-	// placement — it always nests under its canonical parent regardless of
-	// these section boundaries. Within each group: render roots first; then a
-	// safety sweep rescues only TRUE cycle-orphans carrying that group's status
-	// — an orchestrator left unplaced AND whose canonical chain reaches no
-	// root. A child that is merely hidden because an ancestor is
-	// collapsed/archived is structurally reachable, so it stays folded instead
-	// of leaking to the top.
+	// (add-hera-kanban-status, add-kanban-focus-fold): Active (N) → Backlog
+	// (N) → Blocked (N) → Done (N), uniformly — Active is no longer a
+	// headerless special case. Each group is scoped to TOP-LEVEL (root — no
+	// canonical parent) orchestrators only; a nested/bridged orchestrator's own
+	// kanban status is never consulted for placement — it always nests under
+	// its canonical parent regardless of these section boundaries. Within each
+	// group: render roots first; then a safety sweep rescues only TRUE
+	// cycle-orphans carrying that group's status — an orchestrator left
+	// unplaced AND whose canonical chain reaches no root. A child that is
+	// merely hidden because an ancestor is collapsed/archived is structurally
+	// reachable, so it stays folded instead of leaking to the top.
 	//
-	// The headerless `active` group preserves the historical horizontal-rule
-	// divider (BUG-027) separating the Pinned section from it — inserted only
-	// when the Pinned section rendered AND this group produced ≥1 row (no
-	// stray rule when nothing is pinned, none when Pinned is the only
-	// content). The backlog/blocked/done groups instead get their OWN
-	// unconditioned leading divider whenever non-empty — the SAME convention
-	// the Freelance/Archive sections below already use (always lead with a
-	// divider when non-empty, regardless of what rendered above) — so no
-	// "was anything rendered above" state needs tracking across three more
-	// group boundaries. An empty group renders neither its header nor a
-	// divider.
+	// Every non-empty group gets its OWN unconditioned leading divider — the
+	// SAME convention the Freelance/Archive sections below already use (always
+	// lead with a divider when non-empty, regardless of what rendered above) —
+	// there is no longer a distinct Pinned→Active divider special case.
+	//
+	// Fold gating (add-kanban-focus-fold): a group's member subtree renders
+	// only when it is the currently FOCUSED group (r.focusedKanban); the other
+	// three show their header line only. The member-building pass still runs
+	// for every group regardless of focus — via appendOrch/the safety sweep,
+	// exactly as before — so `n`, filter visibility, `placed` marking, and
+	// nested-child recursion all stay correct even for a collapsed group; only
+	// the ACCUMULATED ROWS are conditionally kept. r.rows is temporarily
+	// swapped for a scratch buffer during that pass so appendOrch's normal
+	// r.rows-append machinery needs no changes.
 	kanbanGroups := []struct {
 		status db.HeraKanbanStatus
-		label  string // "" marks the headerless active group
+		label  string
 	}{
-		{db.HeraKanbanActive, ""},
+		{db.HeraKanbanActive, "Active"},
 		{db.HeraKanbanBacklog, "Backlog"},
 		{db.HeraKanbanBlocked, "Blocked"},
 		{db.HeraKanbanDone, "Done"},
 	}
 	for _, g := range kanbanGroups {
-		groupStart := len(r.rows)
+		saved := r.rows
+		r.rows = nil
 		n := 0 // count of top-level orchestrators actually placed in this group
 		for i := range r.model.Active {
 			ov := &r.model.Active[i]
@@ -666,18 +763,20 @@ func (r *Rail) buildRows() {
 				n++
 			}
 		}
+		members := r.rows
+		r.rows = saved
 		if n == 0 {
-			continue
+			continue // no header, no divider, no rows — group truly empty
 		}
-		if g.label == "" {
-			if pinnedRendered {
-				// Insert the divider between the last Pinned row and the first active row.
-				r.rows = append(r.rows[:groupStart], append([]railRow{{kind: rrRule}}, r.rows[groupStart:]...)...)
-			}
-			continue
+		r.rows = append(r.rows, railRow{kind: rrRule})
+		r.rows = append(r.rows, railRow{
+			kind:        rrSectionHeader,
+			label:       fmt.Sprintf("%s (%d)", g.label, n),
+			kanbanGroup: g.status,
+		})
+		if g.status == r.focusedKanban {
+			r.rows = append(r.rows, members...)
 		}
-		header := railRow{kind: rrSectionHeader, label: fmt.Sprintf("%s (%d)", g.label, n)}
-		r.rows = append(r.rows[:groupStart], append([]railRow{{kind: rrRule}, header}, r.rows[groupStart:]...)...)
 	}
 
 	// 3. Freelance section. The header + separator are pruned when no freelance
@@ -1082,10 +1181,72 @@ func (r *Rail) step(dir int) {
 		if i < 0 || i >= len(r.rows) {
 			return // no further selectable row; leave cursor put
 		}
-		if r.rows[i].selectable() {
+		row := r.rows[i]
+		// Crossing INTO a differently-focused kanban group's header (BUG-independent,
+		// add-kanban-focus-fold, design.md decision 3): re-focus rather than treat the
+		// header as just another non-selectable row to skip. A header belonging to the
+		// group ALREADY focused (e.g. stepping up into your own group's own header) is
+		// not a crossing — group == r.focusedKanban falls through to the ordinary
+		// non-selectable skip below, exactly as today.
+		if group, ok := row.kanbanGroupHeader(); ok && group != r.focusedKanban {
+			r.crossKanbanBoundary(group, dir)
+			return
+		}
+		if row.selectable() {
 			r.setCursor(i)
 			return
 		}
+	}
+}
+
+// crossKanbanBoundary re-focuses the rail on `group` — expanding it and
+// collapsing whichever group was focused before — and lands the cursor on its
+// first (dir>0, stepping down) or last (dir<0, stepping up) member row. The
+// header itself is never a landing spot. No restoreCursor/currentRef is
+// involved: this is a brand-new landing spot, not preserving an old one
+// (design.md decision 3).
+func (r *Rail) crossKanbanBoundary(group db.HeraKanbanStatus, dir int) {
+	r.focusedKanban = group
+	r.buildRows()
+	for i, row := range r.rows {
+		if g, ok := row.kanbanGroupHeader(); ok && g == group {
+			r.landOnGroupMember(i, dir)
+			return
+		}
+	}
+}
+
+// landOnGroupMember sets the cursor to the first (dir>0) or last (dir<0)
+// selectable row belonging to the group whose header sits at headerIdx — the
+// span of rows between the header and the next section boundary (the next
+// rrRule, or the end of the rail). Bounding the scan at the next rrRule keeps
+// it from wandering into a LATER section (Freelance/Archive/the next kanban
+// group), whose rows are selectable too but belong to a different group
+// entirely.
+func (r *Rail) landOnGroupMember(headerIdx int, dir int) {
+	if dir > 0 {
+		for i := headerIdx + 1; i < len(r.rows); i++ {
+			if r.rows[i].kind == rrRule {
+				return
+			}
+			if r.rows[i].selectable() {
+				r.setCursor(i)
+				return
+			}
+		}
+		return
+	}
+	last := -1
+	for i := headerIdx + 1; i < len(r.rows); i++ {
+		if r.rows[i].kind == rrRule {
+			break
+		}
+		if r.rows[i].selectable() {
+			last = i
+		}
+	}
+	if last >= 0 {
+		r.setCursor(last)
 	}
 }
 
@@ -1167,6 +1328,17 @@ func (r *Rail) SelectByTaskID(taskID string) bool {
 	if taskID == "" {
 		return false
 	}
+	// Re-focus the target's kanban group BEFORE scanning rows (add-kanban-focus-
+	// fold): a role bound to taskID may live in a group other than the one
+	// currently focused, in which case its row does not exist in r.rows at all
+	// yet — resolved independently of EnsureAncestorsExpanded (callers may
+	// invoke this directly without it) via the model, not the built rows.
+	if orchIDs := r.model.OrchIDsForTask(taskID); len(orchIDs) > 0 {
+		if group, ok := r.focusGroupOf(orchIDs[0]); ok && group != r.focusedKanban {
+			r.focusedKanban = group
+			r.buildRows()
+		}
+	}
 	for i, row := range r.rows {
 		if row.selectable() && row.role != nil && row.role.TaskID == taskID {
 			r.setCursor(i) // funnels through onSelectionChanged + persist
@@ -1206,6 +1378,13 @@ func (r *Rail) EnsureAncestorsExpanded(orchID int64) {
 			break // reached a top-level root
 		}
 		id = cp.orchID
+	}
+	// Re-focus orchID's kanban group too (add-kanban-focus-fold): even when no
+	// per-orchestrator fold changed above, the target row still won't exist in
+	// the built rows unless its top-level group is the focused one.
+	if group, ok := r.focusGroupOf(orchID); ok && group != r.focusedKanban {
+		r.focusedKanban = group
+		changed = true
 	}
 	if !changed {
 		return
@@ -1269,6 +1448,10 @@ func (r *Rail) OrchCollapsed(id int64) bool { return r.collapsed[id] }
 
 // CursorIndex returns the cursor's row index (test seam).
 func (r *Rail) CursorIndex() int { return r.cursor }
+
+// FocusedKanban returns the currently-expanded kanban sub-group (test seam,
+// add-kanban-focus-fold).
+func (r *Rail) FocusedKanban() db.HeraKanbanStatus { return r.focusedKanban }
 
 // --- rendering ---
 
