@@ -588,6 +588,140 @@ func TestRollupNeedsInput_CycleSafe(t *testing.T) {
 	testutil.Equal(t, coordSubtreeNI(t, &m, 2), true)
 }
 
+// TestRollupNeedsInput_ArchivedLeafExcludedFromParent: a leaf worker directly
+// under a coordinator is blocked, but once its role is ARCHIVED (`a`) its own
+// needs-input signal SHALL NOT count toward its parent coordinator's rollup
+// (exclude-archived-from-needs-input-rollup). The archive is a reversible "hide"
+// that keeps the binding live, so the signal is still genuinely true — it just
+// stops propagating up.
+func TestRollupNeedsInput_ArchivedLeafExcludedFromParent(t *testing.T) {
+	r := orchView(1, "R", "tr", wk("w", "tw"))
+	m := Model{Active: []OrchView{r}}
+	w := roleByName(t, &m, 1, "w")
+	w.NeedsInput = true
+	w.Archived = true
+	m.rollupNeedsInput()
+	// The archived leaf no longer flags its parent coordinator.
+	testutil.Equal(t, coordSubtreeNI(t, &m, 1), false)
+}
+
+// TestRollupNeedsInput_ArchivedLeafExcludedAcrossMultipleBridgeLevels reuses the
+// R → C → G bridge chain from TestRollupNeedsInput_BubblesToParentAndRoot: the
+// deepest leaf is blocked and would bubble to the root, but archiving that leaf's
+// role stops it at every level — its parent G, the intervening sub-coordinators C
+// and R, and the bridging worker rows that represent them all report false.
+func TestRollupNeedsInput_ArchivedLeafExcludedAcrossMultipleBridgeLevels(t *testing.T) {
+	// R(coord tr, worker w→tc) → C(coord tc, worker wc→tg) → G(coord tg, worker wg→twg).
+	r := orchView(1, "R", "tr", wk("w", "tc"))
+	c := orchView(2, "C", "tc", wk("wc", "tg"))
+	g := orchView(3, "G", "tg", wk("wg", "twg"))
+	m := Model{Active: []OrchView{r, c, g}}
+
+	// The deepest leaf needs input, then is archived to dismiss it.
+	wg := roleByName(t, &m, 3, "wg")
+	wg.NeedsInput = true
+	wg.Archived = true
+	m.rollupNeedsInput()
+
+	// Excluded at every coordinator level, root included.
+	testutil.Equal(t, coordSubtreeNI(t, &m, 3), false) // G (immediate parent)
+	testutil.Equal(t, coordSubtreeNI(t, &m, 2), false) // C (sub-coordinator)
+	testutil.Equal(t, coordSubtreeNI(t, &m, 1), false) // R (ROOT)
+	// And the intervening bridging worker rows (each a nested sub-coordinator).
+	testutil.Equal(t, roleByName(t, &m, 1, "w").SubtreeNeedsInput, false)
+	testutil.Equal(t, roleByName(t, &m, 2, "wc").SubtreeNeedsInput, false)
+}
+
+// TestRollupNeedsInput_ArchivedBridgingRowHidesSubtree is the reported case that
+// a post-filter over BridgeSubtree's flattened output would MISS: the bridging
+// worker row is itself NOT blocked, but a worker inside its bridged child
+// orchestrator IS. Archiving the BRIDGING ROW (its child orchestrator's own
+// archived_at stays unset) must stop that whole hidden subtree from bubbling up
+// to the parent and any further ancestor — while the child orchestrator, reached
+// as its own root, still surfaces its genuine signal.
+func TestRollupNeedsInput_ArchivedBridgingRowHidesSubtree(t *testing.T) {
+	// R(coord tr, worker w→tc) → C(coord tc, worker wc→tg) → G(coord tg, worker wg→twg).
+	r := orchView(1, "R", "tr", wk("w", "tc"))
+	c := orchView(2, "C", "tc", wk("wc", "tg"))
+	g := orchView(3, "G", "tg", wk("wg", "twg"))
+	m := Model{Active: []OrchView{r, c, g}}
+
+	// The deepest leaf genuinely needs input.
+	roleByName(t, &m, 3, "wg").NeedsInput = true
+	// Archive the bridging row in C that represents nested sub-coordinator G.
+	// G itself (and G's roles) are NOT archived.
+	roleByName(t, &m, 2, "wc").Archived = true
+	m.rollupNeedsInput()
+
+	// G is unarchived and its worker is genuinely blocked, so G still surfaces on
+	// its own header (archiving stops propagation to ancestors, not the node's own
+	// rollup over its own children).
+	testutil.Equal(t, coordSubtreeNI(t, &m, 3), true)
+	// But the archived bridging row hides the subtree from C (parent) and R (ancestor).
+	testutil.Equal(t, coordSubtreeNI(t, &m, 2), false)
+	testutil.Equal(t, coordSubtreeNI(t, &m, 1), false)
+}
+
+// TestRollupNeedsInput_ArchivedOrchestratorExcludedViaWorkerBridge: a whole child
+// orchestrator archived via its OWN header (OrchView.Archived), reached from a
+// LIVE ancestor through a worker-bridge, must be excluded from that ancestor's
+// rollup even though it contains a genuinely blocked worker. ArchiveHeraOrchestrator
+// stamps only the orchestrator's archived_at, so the child's roles stay unarchived —
+// the exclusion keys on the containing orchestrator's Archived flag.
+func TestRollupNeedsInput_ArchivedOrchestratorExcludedViaWorkerBridge(t *testing.T) {
+	r := orchView(1, "R", "tr", wk("w", "tc"))
+	c := orchView(2, "C", "tc", wk("wc", "twc"))
+	c.Archived = true // whole sub-orchestrator archived via its header
+	m := Model{Active: []OrchView{r}, Archived: []OrchView{c}}
+
+	roleByName(t, &m, 2, "wc").NeedsInput = true
+	m.rollupNeedsInput()
+
+	// The live parent excludes the archived worker-bridged child's subtree.
+	testutil.Equal(t, coordSubtreeNI(t, &m, 1), false)
+}
+
+// TestRollupNeedsInput_ArchivedRoleStillShowsOwnGlyph pins Goal #3: archiving a
+// blocked role removes it from ancestor rollups but NEVER blanks its OWN row —
+// the archived leaf keeps rendering its own "(?)" glyph in place, exactly as
+// today, while its parent coordinator stops counting it.
+func TestRollupNeedsInput_ArchivedRoleStillShowsOwnGlyph(t *testing.T) {
+	r := orchView(1, "R", "tr", wk("w", "tw"))
+	m := Model{Active: []OrchView{r}}
+	w := roleByName(t, &m, 1, "w")
+	w.NeedsInput = true
+	w.Archived = true
+	m.rollupNeedsInput()
+
+	// The archived row itself still shows its own needs-input glyph (unchanged).
+	testutil.Equal(t, w.needsInputOwn(), true)
+	testutil.Equal(t, w.ShowsNeedsInput(), true)
+	testutil.Equal(t, roleByName(t, &m, 1, "w").SubtreeNeedsInput, true)
+	// But it is excluded from its parent coordinator's rollup.
+	testutil.Equal(t, coordSubtreeNI(t, &m, 1), false)
+}
+
+// TestRollupNeedsInput_ArchivedCycleSafe extends the A↔B bridge cycle from
+// TestRollupNeedsInput_CycleSafe with one cyclic member archived: A's worker is
+// genuinely blocked, but B's bridging row back into A is archived. The rollup must
+// still terminate (visited-set cycle guard) and report correctly — A's own signal
+// surfaces, while B no longer bubbles A's signal across the archived back-edge.
+func TestRollupNeedsInput_ArchivedCycleSafe(t *testing.T) {
+	// A(coord ta, worker wa→tb) and B(coord tb, worker wb→ta) bridge each other.
+	a := orchView(1, "A", "ta", wk("wa", "tb"))
+	b := orchView(2, "B", "tb", wk("wb", "ta"))
+	m := Model{Active: []OrchView{a, b}}
+	roleByName(t, &m, 1, "wa").NeedsInput = true
+	// Archive B's bridging row back into A (one cyclic member archived).
+	roleByName(t, &m, 2, "wb").Archived = true
+	m.rollupNeedsInput() // must not hang
+
+	// A's genuine, non-archived signal still surfaces.
+	testutil.Equal(t, coordSubtreeNI(t, &m, 1), true)
+	// B no longer rolls up A's signal across the archived back-edge.
+	testutil.Equal(t, coordSubtreeNI(t, &m, 2), false)
+}
+
 // TestBuildModel_NeedsInputStamped proves the end-to-end seam: the authoritative
 // per-task needs-input set threaded into BuildModel stamps the live role's own
 // flag and the rollup reaches its coordinator.

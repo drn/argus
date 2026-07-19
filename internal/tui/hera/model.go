@@ -936,16 +936,50 @@ func (m *Model) rollupNeedsInput() {
 
 // orchSubtreeNeedsInput reports whether any role in the orchestration subtree
 // rooted at orchID (inclusive, transitively across bridged sub-orchestrators)
-// has an OWN needs-input signal. Walks BridgeSubtree (cycle-safe visited set).
+// has an OWN needs-input signal. It mirrors BridgeSubtree's shape (same visited
+// cycle guard, same worker-bridge + coordBridgeChildren descent) but prunes
+// archived nodes: an archived role's own signal is skipped, an archived bridging
+// row does not descend into its hidden child, and a worker-bridged child
+// orchestrator that is itself archived (ArchiveHeraOrchestrator stamps only the
+// orchestrator's archived_at, not the bridging role's) is not walked into. The
+// root (start) is always fully evaluated over its own non-archived roles —
+// archiving prunes contribution to ANCESTORS, not a node's own header rollup.
+// See exclude-archived-from-needs-input-rollup.
 func (m *Model) orchSubtreeNeedsInput(orchID int64) bool {
-	for _, o := range m.BridgeSubtree(orchID) {
+	start := m.OrchByID(orchID)
+	if start == nil {
+		return false
+	}
+	bridge := m.bridgeIndex()
+	visited := make(map[int64]bool)
+	var walk func(o *OrchView) bool
+	walk = func(o *OrchView) bool {
+		if o == nil || visited[o.ID] {
+			return false
+		}
+		visited[o.ID] = true
 		for i := range o.Roles {
-			if o.Roles[i].needsInputOwn() {
+			w := &o.Roles[i]
+			if w.Archived {
+				continue
+			}
+			if w.needsInputOwn() {
+				return true
+			}
+			if w.Kind != db.HeraKindCoordinator && roleBridges(w) {
+				if c := bridge[bridgeTaskID(w)]; c != nil && !c.Archived && c.ID != o.ID && walk(c) {
+					return true
+				}
+			}
+		}
+		for _, c := range m.coordBridgeChildren(o) { // already excludes archived children
+			if walk(c) {
 				return true
 			}
 		}
+		return false
 	}
-	return false
+	return walk(start)
 }
 
 // buildRoleView projects one db.HeraRole into a RoleView, resolving its live
