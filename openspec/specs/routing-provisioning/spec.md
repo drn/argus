@@ -6,12 +6,12 @@ Routing Provisioning embeds argus's builtin hera-coordination and argus-task-man
 ## Requirements
 ### Requirement: Builtin routing content bundle
 
-The system SHALL embed argus's hera-coordination and argus-task-management orientation content — the same content distributed for manual installation as `claude/snippets/hera.md` and `claude/snippets/argus-tasks.md` — directly into the argus binary via `go:embed`. The embedded copies SHALL be kept byte-identical to those source snippets, verified by a test that reads the source files directly (not through the embed) and compares them against the embedded content.
+The system SHALL embed argus's hera-coordination and argus-task-management orientation content directly into the argus binary via `go:embed`, as the sole, authoritative source of that content. The manual distribution path this superseded — `install-claude-skills.sh`/`uninstall-claude-skills.sh` and the `claude/snippets/*.md` files it distributed — is retired; there is no external copy for the embedded content to drift from or be verified against.
 
-#### Scenario: Embedded content matches the source snippets
+#### Scenario: Embedded content contains both orientation sections
 
-- **WHEN** the embedded routing content is compared against `claude/snippets/hera.md` and `claude/snippets/argus-tasks.md` read directly from disk
-- **THEN** the two are byte-identical
+- **WHEN** the embedded routing content is read
+- **THEN** it contains both the hera-coordination and argus-task-management orientation sections
 
 ### Requirement: Idempotent materialization to a stable path
 

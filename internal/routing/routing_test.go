@@ -16,33 +16,6 @@ func TestBuiltinContent_ContainsBothSnippets(t *testing.T) {
 	testutil.Contains(t, s, "## Argus task self-management (argus sandboxes)")
 }
 
-// TestBuiltinContent_MatchesRepoSnippets is a drift guard: it reads
-// claude/snippets/*.md directly off disk (not through go:embed) and asserts
-// byte-identity against the embedded copies. Without this, an edit to the
-// canonical snippet that isn't mirrored into internal/routing/builtin/ would
-// silently drift — exactly what happened, unguarded, between
-// internal/skills/builtin/hera/SKILL.md and .claude/skills/hera/SKILL.md.
-func TestBuiltinContent_MatchesRepoSnippets(t *testing.T) {
-	repoRoot := filepath.Join("..", "..")
-
-	cases := []struct {
-		snippet string
-		builtin string
-	}{
-		{filepath.Join(repoRoot, "claude", "snippets", "hera.md"), filepath.Join("builtin", "hera.md")},
-		{filepath.Join(repoRoot, "claude", "snippets", "argus-tasks.md"), filepath.Join("builtin", "argus-tasks.md")},
-	}
-	for _, tc := range cases {
-		t.Run(tc.snippet, func(t *testing.T) {
-			want, err := os.ReadFile(tc.snippet)
-			testutil.NoError(t, err)
-			got, err := os.ReadFile(tc.builtin)
-			testutil.NoError(t, err)
-			testutil.DeepEqual(t, got, want)
-		})
-	}
-}
-
 func TestBuiltinContent_DeterministicOrder(t *testing.T) {
 	c1, err := BuiltinContent()
 	testutil.NoError(t, err)

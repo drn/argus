@@ -504,7 +504,7 @@ Argus runs an MCP server on port 7742 and auto-injects it into every agent workt
 | `task_complete`        | Mark a task as complete (sets status, stamps `EndedAt`). Pass `cwd` or `id`. Does NOT stop a running agent — call `task_stop` first if needed.                     |
 | `task_set_result`      | Persist an opaque JSON result blob the orchestrator can read (PR URL, milestone, failure reason). Pass `cwd` or `id` plus `result`. Up to 64 KiB.                  |
 
-The bundled skills (`.claude/skills/{archive,argus-complete,argus-schedule,hera,hera-plan}`, installed via `./install-claude-skills.sh` — see [Agent-facing skills](#agent-facing-skills)) let an agent finalize, schedule, and coordinate its own work via `cwd` resolution. Completing and archiving are independent axes.
+The bundled skills (`internal/skills/builtin/{archive,argus-complete,argus-schedule,hera,hera-plan}`, auto-available in every spawned session — see [Agent-facing skills](#agent-facing-skills)) let an agent finalize, schedule, and coordinate its own work via `cwd` resolution. Completing and archiving are independent axes.
 
 **Inter-Task Messaging** (peer-to-peer between live or paused tasks):
 
@@ -563,27 +563,12 @@ If the recipient has a live agent session the daemon also writes a single notifi
 
 ### Agent-facing skills
 
-A Claude session inside an argus worktree sees the `mcp__argus__*` tool names but not when to reach for them or how they compose. Argus ships that orientation as installable Claude assets, gated at runtime so they stay inert outside argus sandboxes:
+A Claude session inside an argus worktree sees the `mcp__argus__*` tool names but not when to reach for them or how they compose. Argus ships that orientation automatically — no install step, nothing to symlink or append:
 
-- `.claude/skills/hera/SKILL.md` — coordinate multi-agent work over hera's `mcp__argus__hera_*` tools (bootstrap an orchestrator, claim or attach a worker/freelance role, message other roles); carries the decision rule for in-session sub-agents vs hera workers vs the plan-DAG.
-- `.claude/skills/hera-plan/SKILL.md` — the on-demand plan-DAG companion: author staged, dependency-ordered multi-worker plans (planned nodes + blocking edges) that the daemon gater materializes in order, with branch-stacking, short-id naming, and self-guard prompt patterns.
-- `.claude/skills/{archive,argus-complete,argus-schedule}/SKILL.md` — let an agent finalize, archive, and schedule its own argus task via `cwd` resolution.
-- `claude/snippets/*.md` — always-loaded orientation snippets (`hera.md`, `argus-tasks.md`) that point the agent at the skills above.
+- **Skill bodies** (`internal/skills/builtin/{archive,argus-complete,argus-schedule,hera,hera-plan}/SKILL.md`, embedded via `go:embed`) are materialized into `~/.argus/skills/.claude/skills/<name>` and reach every spawned Claude backend session via an appended `--add-dir` flag — a documented exception where Claude Code loads `.claude/skills/` from an `--add-dir` root instead of just granting file access.
+- **Routing content** (`internal/routing/builtin/{hera,argus-tasks}.md`, embedded the same way) — orientation text that points the agent at the skills above — is materialized and injected into every spawned Claude backend session via an appended `--append-system-prompt-file` flag.
 
-Install them:
-
-```sh
-./install-claude-skills.sh        # prompts (Y/n) for the skill symlinks, then again for the snippet wiring
-./install-claude-skills.sh --yes  # accept both steps without prompting
-```
-
-This symlinks each `.claude/skills/*` into `~/.claude/skills/<name>` and (optionally) appends each `claude/snippets/*.md` into `~/.claude/CLAUDE.md` between managed markers. It's idempotent — re-runs report what's already current and replace each snippet block in place rather than duplicating it. Remove everything later:
-
-```sh
-./uninstall-claude-skills.sh      # removes repo-owned skill symlinks + strips the snippet blocks
-```
-
-Uninstall only removes a `~/.claude/skills/<name>` symlink when it points back at this repo, and strips snippet blocks by their markers — your own CLAUDE.md content is left intact.
+Both are unconditional across every session kind (coordinator, worker, freelance, plain solo task) and self-gating at read time — each section checks `ARGUS_TASK_ID`/`$PWD` sandbox residency, so injecting them into a non-argus spawn is inert. Materialization failure is logged and the launch continues without them rather than blocking. See `internal/skills/builtin.go` and `internal/routing/routing.go`.
 
 ### Remote Control: REST API
 
