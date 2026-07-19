@@ -78,11 +78,11 @@ counts toward ANCESTORS — an archived role's OWN rail row SHALL continue to
 show the needs-input "(?)" glyph on itself exactly as an unarchived role
 would, since it is unaffected by whether IT counts toward something above it.
 
-A live needs-input signal SHALL surface for ANY role kind — worker,
-coordinator, or freelance — regardless of the bound argus task's status, as
-long as the role's live binding shows a current, content-aware needs-input
-signal (see "Needs-input (?) CLEARS and propagates up" for the exact clearing
-mechanism). This holds uniformly: a COORDINATOR routinely rolls its bound
+A live needs-input signal SHALL surface for a WORKER or COORDINATOR role,
+regardless of the bound argus task's status, as long as the role's live
+binding shows a current, content-aware needs-input signal (see "Needs-input
+(?) CLEARS and propagates up" for the exact clearing mechanism). This holds
+uniformly: a COORDINATOR routinely rolls its bound
 task to complete/in_review while its session stays alive and keeps
 coordinating, and may itself block on a user prompt (BUG-028); a WORKER MAY
 likewise sit in `in_review` with its session still alive while the
@@ -94,10 +94,11 @@ protected because a role's live binding ends the moment its session exits,
 and the needs-input signal itself is content-aware rather than a stale
 carry-forward (see "CLEARS" below) — so there is no stale-marker hazard once
 the session is gone. The App's Hera-rail needs-input feed SHALL admit a task
-that is `in_progress` OR bound to a hera coordinator role (regardless of task
-status); admitting a non-in_progress coordinator (a MANAGED task) SHALL NOT
-affect the unmanaged attention-summary count (BUG-005), which stays
-`in_progress`-gated for unmanaged tasks.
+that is `in_progress` OR bound to ANY hera role — coordinator OR worker —
+regardless of task status; admitting a non-in_progress hera-managed task (a
+MANAGED task, worker or coordinator) SHALL NOT affect the unmanaged
+attention-summary count (BUG-005), which stays `in_progress`-gated for
+unmanaged tasks.
 
 When an orchestrator has NO coordinator role to carry the glyph (for example its
 coordinator role was nuked, BUG-022 Tier-2), the orchestrator HEADER itself SHALL

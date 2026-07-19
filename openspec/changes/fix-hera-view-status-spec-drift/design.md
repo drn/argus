@@ -89,9 +89,11 @@ liveness-gated. Its precedence sentence (`:1395-1400`) says the rollup ranks
 win."
 
 **Actual** (`model.go:1020-1054`, `allowNeedsInput := taskInProgress ||
-rv.Live`): every live role of ANY kind — worker, coordinator, or freelance —
-surfaces needs-input when the App's content-aware `needsInputIDs` set flags
-it, regardless of task status. A worker deliberately sitting in `in_review`
+rv.Live`): every live WORKER or COORDINATOR role surfaces needs-input when
+the App's content-aware `needsInputIDs` set flags it, regardless of task
+status (freelance-kind roles are excluded from the admission feed —
+`readManagedTasks`/`ManagedTaskIDs` only count coordinator- and worker-kind
+bindings, see `internal/db/hera.go`). A worker deliberately sitting in `in_review`
 with its session alive CAN and MUST surface a fresh `(?)` (BUG-A, #707) — the
 opposite of what BUG-023 is described as guarding here. BUG-023 (a *finished*
 worker never pinning `(?)` forever) is actually protected because: (a) the
