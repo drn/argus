@@ -3669,3 +3669,73 @@ func TestDetectNeedsInputSticky_ClearOnArchive(t *testing.T) {
 	got := a.detectNeedsInputSticky([]string{"c1"}, []string{"c1"}, nil)
 	testutil.Equal(t, len(got), 0)
 }
+
+// TestDetectNeedsInputSticky_BUG063_StaleReflagDoesNotReStick reproduces the
+// exact race through the REAL detectNeedsInputSticky (not just the pure
+// agent.NeedsInputClear unit): a task clears on genuine user input, then a
+// LATER tick — after a gap tick with no candidacy at all — re-presents the
+// SAME stale, already-answered prompt content while the session's session is
+// still running and no new input has arrived. Before the BUG-063 fix, the
+// gap tick would have forgotten the task's baseline entirely, so the stale
+// re-candidacy would recapture baseline == lastInput(id) and get stuck
+// flagged forever.
+func TestDetectNeedsInputSticky_BUG063_StaleReflagDoesNotReStick(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeLog := func(taskID, content string) {
+		logPath := agent.SessionLogPath(taskID)
+		testutil.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0o755))
+		testutil.NoError(t, os.WriteFile(logPath, []byte(content), 0o644))
+	}
+	const prompt = "Do you want to proceed?\n❯ 1. Yes\n  2. No\n"
+	const plain = "Reading foo.go\nDone.\n"
+
+	t0 := time.Unix(1000, 0)
+	t1 := time.Unix(2000, 0)
+	t2 := time.Unix(3000, 0)
+	s1 := &fakeInputSession{fakeKickSession: &fakeKickSession{}, last: t0}
+	a := &App{runner: &fakeInputRunner{
+		Runner:   agent.NewRunner(nil),
+		sessions: map[string]agent.SessionHandle{"c1": s1},
+	}}
+	running := []string{"c1"}
+
+	// Tick 1: idle on a selection prompt, no input since → flagged.
+	writeLog("c1", prompt)
+	got := a.detectNeedsInputSticky([]string{"c1"}, running, nil)
+	testutil.DeepEqual(t, got, []string{"c1"})
+
+	// Tick 2: user responds (lastUserInput advances past the baseline). The
+	// stale prompt is STILL in the log (unchanged) — must clear anyway.
+	s1.last = t1
+	got = a.detectNeedsInputSticky([]string{"c1"}, running, got)
+	testutil.Equal(t, len(got), 0)
+
+	// Tick 3: a genuine gap — the log shows plain, non-blocking output, so
+	// NEITHER the idle-gated pass nor the content-fingerprint pass sees any
+	// signal at all. The session is still running throughout.
+	writeLog("c1", plain)
+	got = a.detectNeedsInputSticky(nil, running, got)
+	testutil.Equal(t, len(got), 0)
+
+	// Tick 4: the log reverts to the EXACT SAME already-answered prompt (a
+	// stale re-detection — e.g. a rendering catch-up artifact), with NO new
+	// input since t1. This must NOT re-stick the flag.
+	writeLog("c1", prompt)
+	got = a.detectNeedsInputSticky([]string{"c1"}, running, got)
+	if len(got) != 0 {
+		t.Fatalf("BUG-063 REGRESSION: stale re-candidacy at the same input timestamp re-stuck the flag: %v", got)
+	}
+
+	// It stays clear across further stale re-candidacies too, not just once.
+	for i := 0; i < 3; i++ {
+		got = a.detectNeedsInputSticky([]string{"c1"}, running, got)
+		if len(got) != 0 {
+			t.Fatalf("BUG-063 REGRESSION: flag re-stuck on a later tick: %v", got)
+		}
+	}
+
+	// A genuinely newer input finally arrives → re-arms normally.
+	s1.last = t2
+	got = a.detectNeedsInputSticky([]string{"c1"}, running, got)
+	testutil.DeepEqual(t, got, []string{"c1"})
+}

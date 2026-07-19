@@ -259,6 +259,13 @@ type App struct {
 	// question still matches in the log tail. Mirrors the daemon's
 	// idleWatcherState.needsInputSince.
 	needsInputSince map[string]time.Time
+	// needsInputCleared carries the BUG-063 cleared-marker map: the session's
+	// last-input timestamp recorded at the moment a real clear fired, threaded
+	// forward for every RUNNING task regardless of candidacy so a later stale
+	// re-candidacy at the same timestamp (a content-fingerprint or escalation
+	// re-flag of already-answered content) cannot recapture a stuck baseline.
+	// Mirrors the daemon's idleWatcherState.needsInputCleared.
+	needsInputCleared map[string]time.Time
 	// needsInputScreen re-emulates a session's log tail to the visible screen so
 	// needs-input detection matches the rendered screen, not StripANSI(raw) —
 	// catching fullscreen (alt-screen) prompts whose cursor-addressed glyphs are
@@ -2047,9 +2054,10 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	// in-process mode; in daemon-client mode it captures input sent through this
 	// TUI's agent pane — cross-surface input clears via the natural log-content
 	// change instead). archivedOf reads the cached task list (a.tasks is set by
-	// the caller before this runs).
+	// the caller before this runs). runningIDs lets the BUG-063 cleared-marker
+	// survive a candidacy gap for a task that is still running.
 	var out []string
-	out, a.needsInputSince = agent.NeedsInputClear(fresh, a.needsInputSince, a.lastSessionInput, a.archivedTaskSet())
+	out, a.needsInputSince, a.needsInputCleared = agent.NeedsInputClear(fresh, runningIDs, a.needsInputSince, a.needsInputCleared, a.lastSessionInput, a.archivedTaskSet())
 	return out
 }
 
