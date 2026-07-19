@@ -97,6 +97,37 @@ func TestHandleHera_OrchestratorWithBoundCoordinator(t *testing.T) {
 	testutil.Equal(t, worker.ReadyToClose, false)
 }
 
+// TestHandleHera_KanbanStatus pins add-hera-kanban-status: the orchestrator
+// envelope's kanban_status field defaults to "active" and reflects an
+// explicit value, regardless of nesting (the endpoint does not resolve
+// canonical parents — see the rest-api delta spec).
+func TestHandleHera_KanbanStatus(t *testing.T) {
+	srv, d := testServer(t)
+
+	_, err := d.CreateHeraOrchestrator("kb-default", "")
+	testutil.NoError(t, err)
+	blocked, err := d.CreateHeraOrchestrator("kb-blocked", "")
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.SetHeraOrchestratorKanbanStatus(blocked.ID, db.HeraKanbanBlocked))
+
+	resp := getHera(t, srv)
+	testutil.Equal(t, len(resp.Orchestrators), 2)
+
+	var gotDefault, gotBlocked *heraOrchJSON
+	for i := range resp.Orchestrators {
+		switch resp.Orchestrators[i].Name {
+		case "kb-default":
+			gotDefault = &resp.Orchestrators[i]
+		case "kb-blocked":
+			gotBlocked = &resp.Orchestrators[i]
+		}
+	}
+	testutil.NotNil(t, gotDefault)
+	testutil.NotNil(t, gotBlocked)
+	testutil.Equal(t, gotDefault.KanbanStatus, "active")
+	testutil.Equal(t, gotBlocked.KanbanStatus, "blocked")
+}
+
 func TestHandleHera_FreelanceHoistedAndPinArchiveFlags(t *testing.T) {
 	srv, d := testServer(t)
 

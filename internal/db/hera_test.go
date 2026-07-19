@@ -1050,3 +1050,65 @@ func TestNukeHeraOrchestrator(t *testing.T) {
 		testutil.ErrorIs(t, d.NukeHeraOrchestrator(9999), ErrHeraNotFound)
 	})
 }
+
+// TestHeraOrchestratorKanbanStatus pins the add-hera-kanban-status axis: default
+// value, round-tripping through Set + both read paths, independence from
+// pin/archive, and the missing-row error.
+func TestHeraOrchestratorKanbanStatus(t *testing.T) {
+	t.Run("defaults to active for a freshly created orchestrator", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "kb-default")
+		testutil.Equal(t, o.KanbanStatus, HeraKanbanActive)
+
+		got, err := d.HeraOrchestrator(o.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.KanbanStatus, HeraKanbanActive)
+	})
+
+	t.Run("set round-trips through HeraOrchestrator and ListHeraOrchestrators", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "kb-roundtrip")
+
+		testutil.NoError(t, d.SetHeraOrchestratorKanbanStatus(o.ID, HeraKanbanBlocked))
+
+		got, err := d.HeraOrchestrator(o.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.KanbanStatus, HeraKanbanBlocked)
+
+		list, err := d.ListHeraOrchestrators(true)
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(list), 1)
+		testutil.Equal(t, list[0].KanbanStatus, HeraKanbanBlocked)
+	})
+
+	t.Run("independent of pin and archive", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "kb-independent")
+
+		testutil.NoError(t, d.SetHeraOrchestratorKanbanStatus(o.ID, HeraKanbanDone))
+		testutil.NoError(t, d.PinHeraOrchestrator(o.ID))
+		testutil.NoError(t, d.ArchiveHeraOrchestrator(o.ID))
+
+		got, err := d.HeraOrchestrator(o.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.KanbanStatus, HeraKanbanDone)
+		if got.ArchivedAt == nil {
+			t.Fatal("expected archived_at set")
+		}
+		testutil.Nil(t, got.PinnedAt) // archive clears pin, unaffected by kanban
+
+		// Setting kanban status does not touch pin/archive.
+		testutil.NoError(t, d.SetHeraOrchestratorKanbanStatus(o.ID, HeraKanbanActive))
+		got, err = d.HeraOrchestrator(o.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.KanbanStatus, HeraKanbanActive)
+		if got.ArchivedAt == nil {
+			t.Fatal("expected archived_at still set")
+		}
+	})
+
+	t.Run("missing row returns ErrHeraNotFound", func(t *testing.T) {
+		d := heraTestDB(t)
+		testutil.ErrorIs(t, d.SetHeraOrchestratorKanbanStatus(9999, HeraKanbanBacklog), ErrHeraNotFound)
+	})
+}

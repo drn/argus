@@ -30,11 +30,16 @@ type heraRoleJSON struct {
 // workers). Freelance-kind roles are hoisted into the top-level freelance list,
 // mirroring the TUI Model partition.
 type heraOrchJSON struct {
-	ID       int64          `json:"id"`
-	Name     string         `json:"name"`
-	Pinned   bool           `json:"pinned"`
-	Archived bool           `json:"archived"`
-	Roles    []heraRoleJSON `json:"roles"`
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	Pinned   bool   `json:"pinned"`
+	Archived bool   `json:"archived"`
+	// KanbanStatus (add-hera-kanban-status) is the independent, operator-set
+	// kanban axis (active/backlog/blocked/done, default active) — read-only
+	// here; emitted as-is regardless of nesting (this endpoint does not
+	// resolve canonical parents). See db.HeraKanbanStatus.
+	KanbanStatus string         `json:"kanban_status"`
+	Roles        []heraRoleJSON `json:"roles"`
 }
 
 // heraJSON is the full read-only snapshot the webapp Hera tab renders. The SPA
@@ -85,11 +90,12 @@ func (s *Server) handleHera(w http.ResponseWriter, r *http.Request) {
 	out := heraJSON{Orchestrators: []heraOrchJSON{}, Freelance: []heraRoleJSON{}}
 	for _, o := range orchs {
 		oj := heraOrchJSON{
-			ID:       o.ID,
-			Name:     o.Name,
-			Pinned:   o.PinnedAt != nil,
-			Archived: o.ArchivedAt != nil,
-			Roles:    []heraRoleJSON{},
+			ID:           o.ID,
+			Name:         o.Name,
+			Pinned:       o.PinnedAt != nil,
+			Archived:     o.ArchivedAt != nil,
+			KanbanStatus: string(o.KanbanStatus),
+			Roles:        []heraRoleJSON{},
 		}
 		roles, rerr := s.db.ListHeraRoles(o.ID, true) // include archived roles
 		if rerr != nil {

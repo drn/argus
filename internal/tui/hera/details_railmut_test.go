@@ -34,6 +34,8 @@ func TestDetailsMode_RailMutationKeysRouted(t *testing.T) {
 	p.OnDelete = record("delete")
 	p.OnAdopt = record("adopt")
 	p.OnClearArchive = record("clear")
+	p.OnKanbanAdvance = record("kanban-adv")
+	p.OnKanbanRevert = record("kanban-rev")
 
 	h := p.InputHandler()
 	cases := []struct {
@@ -46,6 +48,8 @@ func TestDetailsMode_RailMutationKeysRouted(t *testing.T) {
 		{tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModNone), "archive"},
 		{tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone), "adv"},
 		{tcell.NewEventKey(tcell.KeyRune, 'S', tcell.ModNone), "rev"},
+		{tcell.NewEventKey(tcell.KeyRune, 'm', tcell.ModNone), "kanban-adv"},
+		{tcell.NewEventKey(tcell.KeyRune, 'M', tcell.ModNone), "kanban-rev"},
 		{tcell.NewEventKey(tcell.KeyRune, 'J', tcell.ModNone), "adopt"},
 		{tcell.NewEventKey(tcell.KeyRune, 'C', tcell.ModNone), "clear"},
 		{tcell.NewEventKey(tcell.KeyCtrlD, 0, tcell.ModNone), "delete"},
@@ -97,6 +101,8 @@ func TestDetailsMode_PlanNavKeysNotHijacked(t *testing.T) {
 	p.OnAdopt = func(Selection) { mutated = true }
 	p.OnClearArchive = func(Selection) { mutated = true }
 	p.OnNewCoordinator = func(Selection) { mutated = true }
+	p.OnKanbanAdvance = func(Selection) { mutated = true }
+	p.OnKanbanRevert = func(Selection) { mutated = true }
 
 	testutil.Equal(t, p.Plan().CursorPos().Stage, 0)
 	h := p.InputHandler()

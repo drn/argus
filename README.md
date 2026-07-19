@@ -212,7 +212,7 @@ below. The `?` overlay always shows your active bindings.
 
 #### Projects Tab
 
-The Projects tab (`2`) has three regions: a left **rail**, a middle **coordinator pane**, and a right **details** region. The rail lists active orchestrators with their coordinator/worker roles, plus **Pinned**, **Freelance**, and a collapsed **Archive** section. Keys act on the rail selection:
+The Projects tab (`2`) has three regions: a left **rail**, a middle **coordinator pane**, and a right **details** region. The rail lists active orchestrators with their coordinator/worker roles, plus **Pinned**, **Freelance**, and a collapsed **Archive** section. Every TOP-LEVEL coordinator also carries an independent **kanban status** (`active` / `backlog` / `blocked` / `done`, default `active`) — the active list is grouped by it, in that order, with a labeled divider ahead of any non-empty Backlog/Blocked/Done group (an empty group renders nothing). This is fully independent of pin/archive and of the `s`/`S` role-status keys below. Keys act on the rail selection:
 
 | Key             | Action                                                                                 |
 | --------------- | -------------------------------------------------------------------------------------- |
@@ -230,6 +230,7 @@ The Projects tab (`2`) has three regions: a left **rail**, a middle **coordinato
 | `a`             | **Hide** the selected worker / sub-coordinator into its parent coordinator's nested archive (Tier 1): reversible toggle, **keeps the session + worktree alive**, no confirm. A top-level coordinator has no parent archive, so `a` is a feedback no-op there |
 | `P`             | Pin / unpin the selected role / orchestrator                                            |
 | `s` / `S`       | Advance / revert the selected **Hera role** status (`idle → working → blocked → done`)  |
+| `m` / `M`       | Advance / revert the selected **top-level coordinator's** kanban status (`active → backlog → blocked → done`, wrapping); a no-op on a role, a nested/bridged sub-coordinator, or an empty selection |
 | `J`             | Adopt a freelancer into, or re-parent a coordinator under, a chosen orchestrator (type-to-filter picker) |
 | `B`             | **Force-recycle** the selected coordinator (confirm): kill its session and restart it immediately on the same task/worktree/branch, no idle wait — the human-forced counterpart to the coordinator's own self-service recycle (see [Context-budget Stop hook](#context-budget-stop-hook)). No-op on a non-coordinator selection |
 | `C`             | **Clear** the selected coordinator's archive (confirm): NUKE every Tier-1 hidden agent under it — reclaim their worktrees + branches, archive their tasks, remove them from the rail (rows retained for DB recovery). Scoped to the selected coordinator, never global |

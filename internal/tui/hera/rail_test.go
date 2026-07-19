@@ -236,6 +236,44 @@ func TestRail_NestsCoordinatorSpawnedSubteam(t *testing.T) {
 	testutil.Equal(t, roots, 1)
 }
 
+// TestRail_SelectionTopLevelOrch pins add-hera-kanban-status's m/M gating:
+// Selection.TopLevelOrch is true ONLY for a root orchestrator header (no
+// canonical parent), false for a nested sub-orchestrator header reached only
+// through one, and false for a plain role row.
+func TestRail_SelectionTopLevelOrch(t *testing.T) {
+	p := coordOf(1, "P", 100, "T",
+		RoleView{RoleID: 101, Name: "pw", Kind: db.HeraKindWorker, Live: true, TaskID: "tpw", BridgeTaskID: "tpw"})
+	q := coordOf(2, "Q", 200, "T",
+		RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{p, q}})
+
+	// P header(0): root, no canonical parent.
+	r.cursor = 0
+	sel := r.Selection()
+	testutil.Equal(t, sel.Role == nil, true)
+	testutil.Equal(t, sel.Orch.Name, "P")
+	testutil.Equal(t, sel.TopLevelOrch, true)
+	testutil.Equal(t, sel.KanbanTarget() != nil, true)
+
+	// pw worker row(1): a role selection, never a kanban target regardless of
+	// TopLevelOrch (which still reflects P, the role's containing orchestrator).
+	r.cursor = 1
+	sel = r.Selection()
+	testutil.Equal(t, sel.Role.Name, "pw")
+	testutil.Nil(t, sel.KanbanTarget())
+
+	// Q's nested header(1 depth, row 2): canonical parent is P, so NOT top-level.
+	for r.rows[r.cursor].orch == nil || r.rows[r.cursor].orch.Name != "Q" {
+		r.CursorDown()
+	}
+	sel = r.Selection()
+	testutil.Equal(t, sel.Role == nil, true)
+	testutil.Equal(t, sel.Orch.Name, "Q")
+	testutil.Equal(t, sel.TopLevelOrch, false)
+	testutil.Nil(t, sel.KanbanTarget())
+}
+
 func TestRail_CoordSpawnedSubteamCollapses(t *testing.T) {
 	p := coordOf(1, "P", 100, "T")
 	q := coordOf(2, "Q", 200, "T",
@@ -1007,6 +1045,105 @@ func TestRail_NoPinnedDividerWithoutActive(t *testing.T) {
 	// Rows: Pinned header + pinned-orch = 2, no divider.
 	testutil.Equal(t, r.Rows(), 2)
 	testutil.Equal(t, len(r.ruleIndexes()), 0)
+}
+
+// TestRail_KanbanGrouping pins add-hera-kanban-status: the active list is
+// partitioned into active (headerless) → Backlog (N) → Blocked (N) → Done
+// (N), each preceded by a divider except the headerless group (which keeps
+// the historical Pinned-only divider rule), empty groups suppressed
+// entirely, and a nested orchestrator's own kanban status never affecting
+// placement.
+func TestRail_KanbanGrouping(t *testing.T) {
+	t.Run("all-active (default/unset) renders headerless, no section headers at all", func(t *testing.T) {
+		r := NewRail()
+		r.SetModel(twoOrchModel()) // neither orchestrator sets KanbanStatus
+		for _, row := range r.rows {
+			testutil.Equal(t, row.kind == rrSectionHeader, false)
+		}
+		testutil.Equal(t, len(r.ruleIndexes()), 0)
+	})
+
+	t.Run("non-empty backlog/blocked/done render labeled headers with dividers, in rail order", func(t *testing.T) {
+		r := NewRail()
+		r.SetModel(Model{Active: []OrchView{
+			{ID: 1, Name: "act", KanbanStatus: db.HeraKanbanActive},
+			{ID: 2, Name: "bl", KanbanStatus: db.HeraKanbanBacklog},
+			{ID: 3, Name: "blk", KanbanStatus: db.HeraKanbanBlocked},
+			{ID: 4, Name: "dn", KanbanStatus: db.HeraKanbanDone},
+		}})
+
+		// act(0) | rule(1) Backlog-header(2) bl(3) | rule(4) Blocked-header(5) blk(6) | rule(7) Done-header(8) dn(9)
+		testutil.Equal(t, r.Rows(), 10)
+		testutil.Equal(t, r.rows[0].orch.Name, "act")
+
+		testutil.Equal(t, r.rows[1].kind, rrRule)
+		testutil.Equal(t, r.rows[2].kind, rrSectionHeader)
+		testutil.Equal(t, r.rows[2].label, "Backlog (1)")
+		testutil.Equal(t, r.rows[3].orch.Name, "bl")
+
+		testutil.Equal(t, r.rows[4].kind, rrRule)
+		testutil.Equal(t, r.rows[5].kind, rrSectionHeader)
+		testutil.Equal(t, r.rows[5].label, "Blocked (1)")
+		testutil.Equal(t, r.rows[6].orch.Name, "blk")
+
+		testutil.Equal(t, r.rows[7].kind, rrRule)
+		testutil.Equal(t, r.rows[8].kind, rrSectionHeader)
+		testutil.Equal(t, r.rows[8].label, "Done (1)")
+		testutil.Equal(t, r.rows[9].orch.Name, "dn")
+	})
+
+	t.Run("an empty group renders neither header nor divider", func(t *testing.T) {
+		r := NewRail()
+		r.SetModel(Model{Active: []OrchView{
+			{ID: 1, Name: "act", KanbanStatus: db.HeraKanbanActive},
+			{ID: 2, Name: "dn", KanbanStatus: db.HeraKanbanDone},
+		}})
+		// act(0) | rule(1) Done-header(2) dn(3) — no Backlog/Blocked rows at all.
+		testutil.Equal(t, r.Rows(), 4)
+		testutil.Equal(t, len(r.ruleIndexes()), 1)
+		testutil.Equal(t, r.rows[2].label, "Done (1)")
+	})
+
+	t.Run("Pinned divider still fires ahead of the headerless active group only", func(t *testing.T) {
+		r := NewRail()
+		r.SetModel(Model{
+			Pinned: []OrchView{{ID: 9, Name: "pin"}},
+			Active: []OrchView{{ID: 1, Name: "act", KanbanStatus: db.HeraKanbanActive}},
+		})
+		// Pinned-header(0) pin(1) | rule(2) act(3)
+		testutil.Equal(t, len(r.ruleIndexes()), 1)
+		testutil.Equal(t, r.rows[2].kind, rrRule)
+		testutil.Equal(t, r.rows[3].orch.Name, "act")
+	})
+
+	t.Run("no stray Pinned divider when the active group is empty but Backlog is not", func(t *testing.T) {
+		r := NewRail()
+		r.SetModel(Model{
+			Pinned: []OrchView{{ID: 9, Name: "pin"}},
+			Active: []OrchView{{ID: 2, Name: "bl", KanbanStatus: db.HeraKanbanBacklog}},
+		})
+		// Pinned-header(0) pin(1) | rule(2) Backlog-header(3) bl(4) — exactly one
+		// divider (Backlog's own unconditioned rule), not a stray extra one.
+		testutil.Equal(t, len(r.ruleIndexes()), 1)
+		testutil.Equal(t, r.rows[2].kind, rrRule)
+		testutil.Equal(t, r.rows[3].label, "Backlog (1)")
+	})
+
+	t.Run("a nested orchestrator's own kanban status never affects placement", func(t *testing.T) {
+		root := orchView(1, "R", "tr", wk("w", "tc"))
+		child := orchView(2, "C", "tc", wk("wc", "twc"))
+		child.KanbanStatus = db.HeraKanbanDone // nested — must be ignored for grouping
+		r := NewRail()
+		r.SetModel(Model{Active: []OrchView{root, child}})
+
+		// C never surfaces as a top-level "Done" group; it still nests under R
+		// exactly as the pre-kanban behavior (R header, bridging w, nested wc).
+		testutil.Equal(t, r.Rows(), 3)
+		testutil.Equal(t, r.hasOrchHeader("C"), false)
+		for _, row := range r.rows {
+			testutil.Equal(t, row.kind == rrSectionHeader, false)
+		}
+	})
 }
 
 func TestRail_EmptyModel(t *testing.T) {

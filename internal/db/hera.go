@@ -141,6 +141,25 @@ const (
 	HeraStatusFailed  HeraRoleStatusValue = "failed"
 )
 
+// HeraKanbanStatus is the independent, operator-set "where does this
+// orchestration effort stand" axis for a TOP-LEVEL coordinator
+// (add-hera-kanban-status) — active/backlog/blocked/done, default active.
+// Deliberately its own type, never HeraRoleStatusValue: two of its four
+// values ("blocked", "done") share a NAME with hera_role_status values but
+// are a completely different column (kanban_status on hera_orchestrators,
+// not hera_role_status on a role) with different semantics (an operator-set
+// project-tracking marker, not a role's live progress) and a different
+// stepping rule (the rail's m/M keys wrap; s/S clamps). See
+// context/knowledge/gotchas/hera-view.md.
+type HeraKanbanStatus string
+
+const (
+	HeraKanbanActive  HeraKanbanStatus = "active"
+	HeraKanbanBacklog HeraKanbanStatus = "backlog"
+	HeraKanbanBlocked HeraKanbanStatus = "blocked"
+	HeraKanbanDone    HeraKanbanStatus = "done"
+)
+
 // HeraOrchestrator is one coordination group. ArchivedAt is non-nil for
 // archived rows; PinnedAt is non-nil for pinned rows. Pin and archive are
 // mutually exclusive — the Pin/Archive verbs clear the other. NukedAt is the
@@ -159,6 +178,11 @@ type HeraOrchestrator struct {
 	// stack on (add-hera-plan-base-branch). Empty means root nodes default to the
 	// coordinator's branch, then the project default. Set once at bootstrap.
 	BaseBranch string
+	// KanbanStatus (add-hera-kanban-status) is the independent kanban axis — see
+	// HeraKanbanStatus. Always non-empty (NOT NULL DEFAULT 'active' at the schema
+	// level); reads as HeraKanbanActive for every orchestrator that predates this
+	// column.
+	KanbanStatus HeraKanbanStatus
 }
 
 // HeraRole is a participant in an orchestrator. Prompt is the only free-form
@@ -271,7 +295,7 @@ func (d *DB) CreateHeraOrchestrator(name, baseBranch string) (*HeraOrchestrator,
 	if err != nil {
 		return nil, fmt.Errorf("create hera orchestrator: last insert id: %w", err)
 	}
-	return &HeraOrchestrator{ID: id, Name: name, CreatedAt: parseTime(now), BaseBranch: baseBranch}, nil
+	return &HeraOrchestrator{ID: id, Name: name, CreatedAt: parseTime(now), BaseBranch: baseBranch, KanbanStatus: HeraKanbanActive}, nil
 }
 
 // HeraOrchestrator loads an orchestrator by id. Archived rows are returned —
@@ -299,7 +323,7 @@ func (d *DB) ListHeraOrchestrators(includeArchived bool) ([]*HeraOrchestrator, e
 
 	// Nuked rows (Tier-2 EOL) are invisible to the rail-feeding lists regardless
 	// of includeArchived — they are recoverable only by primary-key id lookup.
-	query := `SELECT id, name, created_at, archived_at, pinned_at, nuked_at, base_branch FROM hera_orchestrators WHERE nuked_at IS NULL`
+	query := `SELECT id, name, created_at, archived_at, pinned_at, nuked_at, base_branch, kanban_status FROM hera_orchestrators WHERE nuked_at IS NULL`
 	if !includeArchived {
 		query += ` AND archived_at IS NULL`
 	}
@@ -367,6 +391,16 @@ func (d *DB) NukeHeraOrchestrator(id int64) error {
 		heraOrchExistsProbe, id, now, now)
 }
 
+// SetHeraOrchestratorKanbanStatus sets the orchestrator's independent kanban
+// status (add-hera-kanban-status) — a data axis wholly separate from
+// pinned_at/archived_at and from any role's hera_role_status; setting it never
+// touches either. Idempotent (re-setting the current value is a harmless
+// no-op write). Returns ErrHeraNotFound if no row matches id.
+func (d *DB) SetHeraOrchestratorKanbanStatus(id int64, status HeraKanbanStatus) error {
+	return d.heraSetFlag(`UPDATE hera_orchestrators SET kanban_status=? WHERE id=?`,
+		heraOrchExistsProbe, id, string(status))
+}
+
 // RenameHeraOrchestrator updates the name. The new name must be free among
 // active orchestrators; archived rows with the same name do not block. Returns
 // ErrHeraNotFound if no row matches id, or ErrHeraNameConflict on collision.
@@ -414,13 +448,13 @@ func (d *DB) DeleteHeraOrchestrator(id int64) error {
 }
 
 func (d *DB) heraOrchestratorByID(id int64) (*HeraOrchestrator, error) {
-	row := d.conn.QueryRow(`SELECT id, name, created_at, archived_at, pinned_at, nuked_at, base_branch FROM hera_orchestrators WHERE id=?`, id)
+	row := d.conn.QueryRow(`SELECT id, name, created_at, archived_at, pinned_at, nuked_at, base_branch, kanban_status FROM hera_orchestrators WHERE id=?`, id)
 	return scanHeraOrchestrator(row)
 }
 
 func (d *DB) heraOrchestratorByActiveName(name string) (*HeraOrchestrator, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, name, created_at, archived_at, pinned_at, nuked_at, base_branch FROM hera_orchestrators WHERE name=? AND archived_at IS NULL`,
+		`SELECT id, name, created_at, archived_at, pinned_at, nuked_at, base_branch, kanban_status FROM hera_orchestrators WHERE name=? AND archived_at IS NULL`,
 		name)
 	return scanHeraOrchestrator(row)
 }
@@ -1449,9 +1483,9 @@ type rowScanner interface {
 
 func scanHeraOrchestrator(s rowScanner) (*HeraOrchestrator, error) {
 	var o HeraOrchestrator
-	var createdAt string
+	var createdAt, kanbanStatus string
 	var archivedAt, pinnedAt, nukedAt, baseBranch sql.NullString
-	if err := s.Scan(&o.ID, &o.Name, &createdAt, &archivedAt, &pinnedAt, &nukedAt, &baseBranch); err != nil {
+	if err := s.Scan(&o.ID, &o.Name, &createdAt, &archivedAt, &pinnedAt, &nukedAt, &baseBranch, &kanbanStatus); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrHeraNotFound
 		}
@@ -1462,6 +1496,7 @@ func scanHeraOrchestrator(s rowScanner) (*HeraOrchestrator, error) {
 	o.PinnedAt = nullTimePtr(pinnedAt)
 	o.NukedAt = nullTimePtr(nukedAt)
 	o.BaseBranch = baseBranch.String
+	o.KanbanStatus = HeraKanbanStatus(kanbanStatus)
 	return &o, nil
 }
 

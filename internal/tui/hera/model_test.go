@@ -77,6 +77,21 @@ func TestBuildModel_NilReaderEmpty(t *testing.T) {
 	testutil.Equal(t, m.IsEmpty(), true)
 }
 
+// TestBuildModel_PopulatesKanbanStatus pins add-hera-kanban-status: OrchView
+// carries the orchestrator's kanban_status, defaulting to active and
+// reflecting an explicit value.
+func TestBuildModel_PopulatesKanbanStatus(t *testing.T) {
+	d := memDB(t)
+	def := seedOrch(t, d, "kb-default")
+	blocked := seedOrch(t, d, "kb-blocked")
+	testutil.NoError(t, d.SetHeraOrchestratorKanbanStatus(blocked, db.HeraKanbanBlocked))
+
+	m, err := BuildModel(d, nil, nil, nil)
+	testutil.NoError(t, err)
+	testutil.Equal(t, m.OrchByID(def).KanbanStatus, db.HeraKanbanActive)
+	testutil.Equal(t, m.OrchByID(blocked).KanbanStatus, db.HeraKanbanBlocked)
+}
+
 func TestBuildModel_PartitionsSections(t *testing.T) {
 	d := memDB(t)
 	active := seedOrch(t, d, "active-orch")

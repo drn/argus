@@ -132,6 +132,14 @@ type HeraPage struct {
 	OnPinToggle     func(Selection) // `P` — pin/unpin selected role/orchestrator
 	OnStatusAdvance func(Selection) // `s` — advance selected role status one rung
 	OnStatusRevert  func(Selection) // `S` — revert selected role status one rung
+	// OnKanbanAdvance/OnKanbanRevert (add-hera-kanban-status) are `m`/`M` —
+	// cycle the SELECTED TOP-LEVEL coordinator's kanban status, wrapping.
+	// Wholly separate from OnStatusAdvance/OnStatusRevert (a role's
+	// hera_role_status): the App-side handler gates on Selection.KanbanTarget()
+	// (nil for a role selection, an empty rail, or a nested orchestrator
+	// header), never firing outside a top-level coordinator's header row.
+	OnKanbanAdvance func(Selection) // `m` — advance selected top-level coordinator's kanban status one rung, wrapping
+	OnKanbanRevert  func(Selection) // `M` — revert selected top-level coordinator's kanban status one rung, wrapping
 	OnDelete        func(Selection) // ctrl+d — NUKE selected role/orchestrator (Tier-2 EOL; removes from rail + reclaims worktree, confirm)
 	OnReattach      func(Selection) // Enter on a dead-session row — restart its session
 	OnAdopt         func(Selection) // `J` — adopt freelancer / reparent coordinator (orch picker)
@@ -895,15 +903,15 @@ func (p *HeraPage) rebuildPlan(root *OrchView) {
 
 // isRailMutationKey reports whether event is one of the rail-FOCUS mutation
 // commands that handleRailMutation acts on — spawn `w`, rename `r`, archive `a`,
-// pin `P`, status `s`/`S`, adopt `J`, new-coordinator `n`, clear-archive `C`,
-// force-recycle `B`, and Ctrl+D nuke. It deliberately EXCLUDES Enter and the
-// navigation keys (j/k/h/l/Space/Esc/arrows): in details mode those belong to
-// the embedded plan widget, so they must reach handleDetailsKey untouched. The
-// details-mode branch of InputHandler consults this to route rail mutations to
-// handleRailMutation while a coordinator's plan is focused, without hijacking
-// plan navigation (BUG-010). The rune set is kept in lock-step with
-// handleRailMutation's switch below and the help modal's "Hera View (rail)"
-// section.
+// pin `P`, status `s`/`S`, kanban `m`/`M`, adopt `J`, new-coordinator `n`,
+// clear-archive `C`, force-recycle `B`, and Ctrl+D nuke. It deliberately
+// EXCLUDES Enter and the navigation keys (j/k/h/l/Space/Esc/arrows): in
+// details mode those belong to the embedded plan widget, so they must reach
+// handleDetailsKey untouched. The details-mode branch of InputHandler
+// consults this to route rail mutations to handleRailMutation while a
+// coordinator's plan is focused, without hijacking plan navigation
+// (BUG-010). The rune set is kept in lock-step with handleRailMutation's
+// switch below and the help modal's "Hera View (rail)" section.
 func (p *HeraPage) isRailMutationKey(event *tcell.EventKey) bool {
 	// 'B' (force-recycle, add-coordinator-context-management) is a hardcoded
 	// structural key, not yet part of the rebindable keymap system — checked
@@ -1020,6 +1028,10 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 			return p.fire(p.OnStatusAdvance, sel)
 		case keymap.ActHeraStatRev:
 			return p.fire(p.OnStatusRevert, sel)
+		case keymap.ActHeraKanbanAdv:
+			return p.fire(p.OnKanbanAdvance, sel)
+		case keymap.ActHeraKanbanRev:
+			return p.fire(p.OnKanbanRevert, sel)
 		case keymap.ActHeraAdopt:
 			// Adopt a freelancer into / re-parent a coordinator under a chosen
 			// orchestrator. Rail-focus-only (a focused pane forwards the key to the

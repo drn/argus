@@ -754,6 +754,8 @@ func (a *App) buildUI() {
 		a.heraPage.OnPinToggle = a.heraPinToggle
 		a.heraPage.OnStatusAdvance = func(sel hera.Selection) { a.heraStatusStep(sel, +1) }
 		a.heraPage.OnStatusRevert = func(sel hera.Selection) { a.heraStatusStep(sel, -1) }
+		a.heraPage.OnKanbanAdvance = func(sel hera.Selection) { a.heraKanbanStep(sel, +1) }
+		a.heraPage.OnKanbanRevert = func(sel hera.Selection) { a.heraKanbanStep(sel, -1) }
 		a.heraPage.OnDelete = a.heraOpenDelete
 		a.heraPage.OnReattach = a.heraReattach
 		a.heraPage.OnAdopt = a.heraOpenAdopt

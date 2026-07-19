@@ -24,6 +24,13 @@ func orchSel(orchID int64, name string) Selection {
 	return Selection{Orch: &OrchView{ID: orchID, Name: name}}
 }
 
+// topLevelOrchSel builds a HEADER selection for a TOP-LEVEL orchestrator —
+// what the rail hands KanbanStep when the cursor rests on a root orchestrator
+// header. kanban is the orchestrator's current kanban status.
+func topLevelOrchSel(orchID int64, name string, kanban db.HeraKanbanStatus) Selection {
+	return Selection{Orch: &OrchView{ID: orchID, Name: name, KanbanStatus: kanban}, TopLevelOrch: true}
+}
+
 func TestOps_ArchiveToggle_Role(t *testing.T) {
 	d := memDB(t)
 	o := seedOrch(t, d, "o")
@@ -266,6 +273,62 @@ func TestOps_MultiBindingIsolation(t *testing.T) {
 	testutil.NoError(t, err) // B's binding to the shared task survives
 }
 
+// TestOps_KanbanStep_WrapForwardBackward pins add-hera-kanban-status: m/M
+// step active→backlog→blocked→done→active (and the reverse), WRAPPING at
+// both ends — deliberately unlike StepStatus, which clamps.
+func TestOps_KanbanStep_WrapForwardBackward(t *testing.T) {
+	d := memDB(t)
+	o := seedOrch(t, d, "kb")
+	ops := NewOps(d)
+
+	step := func(dir int) db.HeraKanbanStatus {
+		cur, err := d.HeraOrchestrator(o)
+		testutil.NoError(t, err)
+		testutil.NoError(t, ops.KanbanStep(topLevelOrchSel(o, "kb", cur.KanbanStatus), dir))
+		got, err := d.HeraOrchestrator(o)
+		testutil.NoError(t, err)
+		return got.KanbanStatus
+	}
+
+	// Forward: active → backlog → blocked → done → active (wraps).
+	testutil.Equal(t, step(+1), db.HeraKanbanBacklog)
+	testutil.Equal(t, step(+1), db.HeraKanbanBlocked)
+	testutil.Equal(t, step(+1), db.HeraKanbanDone)
+	testutil.Equal(t, step(+1), db.HeraKanbanActive) // wraps
+
+	// Backward: active → done → blocked → backlog → active (wraps).
+	testutil.Equal(t, step(-1), db.HeraKanbanDone)
+	testutil.Equal(t, step(-1), db.HeraKanbanBlocked)
+	testutil.Equal(t, step(-1), db.HeraKanbanBacklog)
+	testutil.Equal(t, step(-1), db.HeraKanbanActive) // wraps
+}
+
+// TestOps_KanbanStep_NoopOnNonTopLevel pins the m/M selection gate: it fires
+// ONLY on a top-level orchestrator HEADER selection.
+func TestOps_KanbanStep_NoopOnNonTopLevel(t *testing.T) {
+	d := memDB(t)
+	o := seedOrch(t, d, "kb")
+	role := seedBoundRole(t, d, o, "w", db.HeraKindWorker, "t1")
+	ops := NewOps(d)
+
+	// A role selection is never a kanban target, even with TopLevelOrch true on
+	// its containing orchestrator.
+	roleSelection := roleSel(t, d, role, "t1")
+	roleSelection.TopLevelOrch = true
+	testutil.ErrorIs(t, ops.KanbanStep(roleSelection, +1), errNoTarget)
+
+	// A header selection whose orchestrator is NOT top-level (nested).
+	testutil.ErrorIs(t, ops.KanbanStep(Selection{Orch: &OrchView{ID: o, Name: "kb"}, TopLevelOrch: false}, +1), errNoTarget)
+
+	// Empty selection.
+	testutil.ErrorIs(t, ops.KanbanStep(Selection{}, +1), errNoTarget)
+
+	// Confirm none of the no-ops actually wrote anything.
+	got, err := d.HeraOrchestrator(o)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.KanbanStatus, db.HeraKanbanActive)
+}
+
 func TestOps_EmptySelectionNoTarget(t *testing.T) {
 	d := memDB(t)
 	ops := NewOps(d)
@@ -273,4 +336,5 @@ func TestOps_EmptySelectionNoTarget(t *testing.T) {
 	testutil.ErrorIs(t, ops.PinToggle(Selection{}), errNoTarget)
 	testutil.ErrorIs(t, ops.Rename(Selection{}, "x"), errNoTarget)
 	testutil.ErrorIs(t, ops.NukeRole(nil), errNoTarget)
+	testutil.ErrorIs(t, ops.KanbanStep(Selection{}, +1), errNoTarget)
 }

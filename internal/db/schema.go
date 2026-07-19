@@ -462,6 +462,17 @@ func (d *DB) createHeraTables() error {
 	// read back NULL (no archetype). Fails on a fresh DB (table not yet created)
 	// and is intentionally ignored; the CREATE TABLE below carries it inline.
 	d.conn.Exec(`ALTER TABLE hera_roles ADD COLUMN archetype TEXT`) //nolint:errcheck
+	// Idempotent ADD COLUMN migration for the orchestrator-level kanban_status
+	// (add-hera-kanban-status). NOT NULL DEFAULT 'active' is SQLite-safe on
+	// ALTER TABLE ADD COLUMN (a constant default backfills every existing row).
+	// Deliberately no CHECK constraint: SQLite cannot widen/add a CHECK via
+	// ALTER TABLE ADD COLUMN, so one written only in the CREATE TABLE branch
+	// below would be inert on every already-existing DB (the exact
+	// hera_role_status CHECK-widening footgun make-hera-plan-living hit) —
+	// db.HeraKanbanStatus is the only writer. Fails on a fresh DB (table not
+	// yet created) and is intentionally ignored; the CREATE TABLE below
+	// carries the column inline.
+	d.conn.Exec(`ALTER TABLE hera_orchestrators ADD COLUMN kanban_status TEXT NOT NULL DEFAULT 'active'`) //nolint:errcheck
 
 	ddl := `
 		CREATE TABLE IF NOT EXISTS hera_orchestrators (
@@ -481,7 +492,13 @@ func (d *DB) createHeraTables() error {
 			-- plan-DAG's ROOT nodes stack on, set optionally at bootstrap. NULL/empty
 			-- means root nodes default to the coordinator's branch (then the project
 			-- default). Has no effect on blocker-having nodes.
-			base_branch TEXT
+			base_branch TEXT,
+			-- kanban_status (add-hera-kanban-status): the independent operator-set
+			-- "where does this effort stand" axis for a TOP-LEVEL coordinator —
+			-- active/backlog/blocked/done, default active. Wholly separate from
+			-- pinned_at/archived_at and from any role's hera_role_status; see
+			-- db.HeraKanbanStatus. No CHECK constraint (see the ALTER comment above).
+			kanban_status TEXT NOT NULL DEFAULT 'active'
 		);
 		-- Partial unique on name scoped to active rows: an archived orchestrator
 		-- may coexist with a fresh active row of the same name (Hera migration 0003).
