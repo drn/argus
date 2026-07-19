@@ -17,6 +17,17 @@ func heraTestDB(t *testing.T) *DB {
 	return d
 }
 
+// TestHeraMetaKeyLastNudgedContextSize_Value pins the throttle-coord-hook-nudge
+// mirror-key constant's exact string value: task_meta rows are addressed by
+// this literal key from the coord-hook subcommand (cmd/argus/coord_hook.go), so
+// a renamed constant with a different string value would silently start a new
+// column of task_meta rows instead of continuing the existing one. Mirrors how
+// HeraMetaKeyPendingRecycle/HeraMetaKeyContextSize are pinned. The constant
+// does not exist yet, so this fails to compile until Stage 3 adds it.
+func TestHeraMetaKeyLastNudgedContextSize_Value(t *testing.T) {
+	testutil.Equal(t, HeraMetaKeyLastNudgedContextSize, "last_nudged_context_size")
+}
+
 // TestCreateHeraTables_MigratesPreNukedAtDB pins the BUG-022 migration-order fix:
 // a DB created before the nuked_at column (hera_orchestrators / hera_roles lacking
 // it) must be migrated in place, not error with "no such column: nuked_at". The

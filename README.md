@@ -358,7 +358,7 @@ The two run **independently and share no state.** Switching to native Hera perfo
 
 #### Context-budget Stop hook
 
-A long-lived coordinator accumulates context for the life of its orchestration in a way a disposable worker never does. `argus coord-hook` is a CLI subcommand meant to run as a Claude Code `Stop` hook: on every turn of a hera **coordinator**'s session it self-discovers the daemon's REST port + API token, tails the session transcript for the latest `cache_read_input_tokens`, stamps it into `task_meta` (`hera`, `context_size`), and – once that value reaches the project's `coordinator_context_budget` (`[hera] coordinator_context_budget`, default `200000`) – blocks the `Stop` event with a "reach a safe seam and recycle" nudge that repeats every turn until the coordinator drops back under budget (typically via a recycle). It self-gates hard on `ARGUS_TASK_ID` plus a resolved coordinator role, so it is a silent no-op for every other Claude Code session.
+A long-lived coordinator accumulates context for the life of its orchestration in a way a disposable worker never does. `argus coord-hook` is a CLI subcommand meant to run as a Claude Code `Stop` hook: on every turn of a hera **coordinator**'s session it self-discovers the daemon's REST port + API token, tails the session transcript for the latest `cache_read_input_tokens`, stamps it into `task_meta` (`hera`, `context_size`), and – once that value reaches the project's `coordinator_context_budget` (`[hera] coordinator_context_budget`, default `200000`) – blocks the `Stop` event with a "reach a safe seam and recycle" nudge. The nudge is throttled: it recurs only after `context_size` grows by another `coordinator_nudge_increment` (default `50000`) past the size at which it last fired, or immediately on a fresh over-budget episode following a drop back under budget (typically via a recycle). It self-gates hard on `ARGUS_TASK_ID` plus a resolved coordinator role, so it is a silent no-op for every other Claude Code session.
 
 Because every Argus-spawned agent inherits the daemon's real `HOME` regardless of which project it's working in, the hook is registered **once, globally** – Argus cannot write to a user's global settings file on their behalf, so this is a one-time manual step. Add to `~/.claude/settings.json`:
 
@@ -944,6 +944,7 @@ Full enable/verify walkthrough: **[docs/knowledge-base.md](docs/knowledge-base.m
 |-----|------|---------|-------------|
 | `enabled` | bool | `true` | Enable [native Hera](#hera-native-multi-agent-coordination) — serves the `hera_*` MCP tools in-process, backed by the `hera_*` tables in `data.sql`. Set `false` to serve the external Hera *plugin*'s tools instead (its `~/.hera` state is independent; no migration is performed). The TUI's second tab is always the native Hera view regardless of this flag. |
 | `coordinator_context_budget` | int | `200000` | Cache-read-token threshold (see [Context-budget Stop hook](#context-budget-stop-hook)) past which `argus coord-hook` blocks a coordinator's `Stop` event with a reach-a-seam recycle nudge. |
+| `coordinator_nudge_increment` | int | `50000` | Cache-read-token growth past the last-fired size (see [Context-budget Stop hook](#context-budget-stop-hook)) before `argus coord-hook`'s over-budget nudge is allowed to re-fire. |
 
 #### `[supervisor]`
 
