@@ -16,6 +16,15 @@ func TestBuiltinContent_ContainsBothSnippets(t *testing.T) {
 	testutil.Contains(t, s, "## Argus task self-management (argus sandboxes)")
 }
 
+func TestBuiltinContent_ContainsCodeReviewSection(t *testing.T) {
+	content, err := BuiltinContent()
+	testutil.NoError(t, err)
+	s := string(content)
+	testutil.Contains(t, s, "## Code review methodology (argus sandboxes)")
+	testutil.Contains(t, s, "hera-review")
+	testutil.Contains(t, s, "hera-review-test-adversary")
+}
+
 func TestBuiltinContent_DeterministicOrder(t *testing.T) {
 	c1, err := BuiltinContent()
 	testutil.NoError(t, err)
