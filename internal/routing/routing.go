@@ -15,11 +15,10 @@ import (
 	"strings"
 )
 
-// builtinFS embeds argus's own routing-content sources — manually-synced
-// copies of claude/snippets/hera.md and claude/snippets/argus-tasks.md. The
-// embed directive below cannot reach outside this package's directory tree,
-// so the repo's canonical claude/snippets/*.md files are the source of truth
-// and these are kept in sync with them (routing_test.go asserts byte-identity).
+// builtinFS embeds argus's own routing-content sources — the single source of
+// truth for the hera/argus-task orientation text injected into every spawned
+// Claude backend session (the manual claude/snippets/*.md + install script
+// path this superseded is retired).
 //
 //go:embed builtin
 var builtinFS embed.FS
