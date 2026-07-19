@@ -25,18 +25,19 @@ type Action string
 
 const (
 	// Global
-	ActGlobalQuit        Action = "global.quit"
-	ActGlobalHelp        Action = "global.help"
-	ActGlobalTabTasks    Action = "global.tab_tasks"
-	ActGlobalTabHera     Action = "global.tab_hera"
-	ActGlobalTabSettings Action = "global.tab_settings"
-	ActGlobalRefresh     Action = "global.refresh"
-	ActGlobalDestroy     Action = "global.destroy"
-	ActGlobalFork        Action = "global.fork"
-	ActGlobalOpenRepo    Action = "global.open_repo"
-	ActGlobalOpenPR      Action = "global.open_pr"
-	ActGlobalPrune       Action = "global.prune"
-	ActGlobalPalette     Action = "global.palette"
+	ActGlobalQuit           Action = "global.quit"
+	ActGlobalHelp           Action = "global.help"
+	ActGlobalTabTasks       Action = "global.tab_tasks"
+	ActGlobalTabHera        Action = "global.tab_hera"
+	ActGlobalTabSettings    Action = "global.tab_settings"
+	ActGlobalRefresh        Action = "global.refresh"
+	ActGlobalDestroy        Action = "global.destroy"
+	ActGlobalFork           Action = "global.fork"
+	ActGlobalOpenRepo       Action = "global.open_repo"
+	ActGlobalOpenPR         Action = "global.open_pr"
+	ActGlobalPrune          Action = "global.prune"
+	ActGlobalPalette        Action = "global.palette"
+	ActGlobalJumpNeedsInput Action = "global.jump_needs_input"
 
 	// Task list
 	ActTaskNew       Action = "tasklist.new"
@@ -130,7 +131,7 @@ var defaultSpecs = map[Context]map[Action]string{
 		ActGlobalTabTasks: "1", ActGlobalTabHera: "2", ActGlobalTabSettings: "3",
 		ActGlobalRefresh: "ctrl+l", ActGlobalDestroy: "ctrl+d", ActGlobalFork: "ctrl+f",
 		ActGlobalOpenRepo: "ctrl+o", ActGlobalOpenPR: "ctrl+p", ActGlobalPrune: "ctrl+r",
-		ActGlobalPalette: "ctrl+k",
+		ActGlobalPalette: "ctrl+k", ActGlobalJumpNeedsInput: "ctrl+g",
 	},
 	CtxTaskList: {
 		ActTaskNew: "n", ActTaskStatusAdv: "s", ActTaskStatusRev: "S",
@@ -174,7 +175,7 @@ var actionLabels = map[Action]string{
 	ActGlobalTabHera: "switch to Projects tab", ActGlobalTabSettings: "switch to Settings tab",
 	ActGlobalRefresh: "refresh screen", ActGlobalDestroy: "destroy task", ActGlobalFork: "fork task",
 	ActGlobalOpenRepo: "open repo", ActGlobalOpenPR: "open PR", ActGlobalPrune: "prune completed",
-	ActGlobalPalette: "command palette",
+	ActGlobalPalette: "command palette", ActGlobalJumpNeedsInput: "jump to next needs-input (?)",
 
 	ActTaskNew: "new task", ActTaskStatusAdv: "advance status", ActTaskStatusRev: "revert status",
 	ActTaskArchive: "toggle archive", ActTaskPin: "toggle pin", ActTaskRename: "rename",
@@ -259,7 +260,7 @@ func (k *Keymap) ActionLabel(a Action) string {
 var contextOrder = map[Context][]Action{
 	CtxGlobal: {ActGlobalQuit, ActGlobalHelp, ActGlobalTabTasks, ActGlobalTabHera, ActGlobalTabSettings,
 		ActGlobalRefresh, ActGlobalDestroy, ActGlobalFork, ActGlobalOpenRepo, ActGlobalOpenPR, ActGlobalPrune,
-		ActGlobalPalette},
+		ActGlobalPalette, ActGlobalJumpNeedsInput},
 	CtxTaskList: {ActTaskNew, ActTaskDown, ActTaskUp, ActTaskStatusAdv, ActTaskStatusRev, ActTaskArchive,
 		ActTaskPin, ActTaskRename, ActTaskCopy, ActTaskFilter, ActTaskHera},
 	CtxAgent: {ActAgentLinks, ActAgentSession, ActAgentSwitcher, ActAgentOpenPR, ActAgentZoom, ActAgentCopy,

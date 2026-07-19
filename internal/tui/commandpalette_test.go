@@ -84,6 +84,7 @@ func TestPaletteApplicableActions_ClassicAgentViewIsCtxAgentOnly(t *testing.T) {
 	// actions (quit/tab-switch/help) leak into the agent-view palette.
 	testutil.Equal(t, containsLabel(rows, "quit"), false)
 	testutil.Equal(t, containsLabel(rows, "switch to Tasks tab"), false)
+	testutil.Equal(t, containsLabel(rows, "jump to next needs-input (?)"), false)
 }
 
 func TestPaletteApplicableActions_TaskListIsGlobalPlusTaskList(t *testing.T) {
@@ -95,6 +96,9 @@ func TestPaletteApplicableActions_TaskListIsGlobalPlusTaskList(t *testing.T) {
 	rows := app.paletteApplicableActions()
 	testutil.Equal(t, containsLabel(rows, "quit"), true)
 	testutil.Equal(t, containsLabel(rows, "new task"), true)
+	// A new CtxGlobal action (add-hera-jump-question) is reachable here too,
+	// like every other global action.
+	testutil.Equal(t, containsLabel(rows, "jump to next needs-input (?)"), true)
 	// No cross-tab bleed: Hera rail actions absent from the Tasks-tab palette.
 	testutil.Equal(t, containsLabel(rows, "spawn worker under coordinator (new-task modal)"), false)
 }
@@ -441,5 +445,58 @@ func TestSmoke_CommandPaletteOpensFromPlainTaskList(t *testing.T) {
 	sim.InjectKey(tcell.KeyEscape, 0, 0)
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() { mode = app.mode })
+	testutil.Equal(t, mode, modeTaskList)
+}
+
+// TestSmoke_TaskSwitcherOpensFromPlainTaskList is the end-to-end regression
+// covering the exact gap add-hera-jump-question fixes: ctrl+j previously never
+// reached the plain Tasks tab at all — ActAgentSwitcher (CtxAgent) only ever
+// resolved from handleAgentKey (modeAgent), and Hera's own reach is a
+// separate hardcoded literal case in HeraPage.InputHandler (page.go), neither
+// of which covers the plain task list — so the keypress fell through to
+// TaskListView's own InputHandler, which has no case for it, and was
+// silently swallowed. Mirrors TestSmoke_CommandPaletteOpensFromPlainTaskList's
+// shape (the same kind of live QA-caught dispatch gap, for ctrl+k) but for
+// ctrl+j opening the switcher instead.
+func TestSmoke_TaskSwitcherOpensFromPlainTaskList(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	seedSwitcherTasks(t, app)
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	readUI(t, app.tapp, func() {
+		if app.mode != modeTaskList || app.header.ActiveTab() != widget.TabTasks {
+			t.Fatalf("setup: expected modeTaskList/TabTasks, got mode=%v tab=%v", app.mode, app.header.ActiveTab())
+		}
+	})
+
+	sim.InjectKey(tcell.KeyCtrlJ, 0, 0)
+	syncUI(t, app.tapp)
+
+	var mode viewMode
+	var rowCount int
+	readUI(t, app.tapp, func() {
+		mode = app.mode
+		if app.taskSwitcherModal != nil {
+			rowCount = len(app.taskSwitcherModal.all)
+		}
+	})
+	testutil.Equal(t, mode, modeTaskSwitcher)
+	if rowCount == 0 {
+		t.Fatal("expected at least one candidate task from the plain Tasks tab")
+	}
+
+	// Esc closes and returns to the Tasks tab (not Hera — opened from the
+	// plain task list; closeTaskSwitcherModal must not assume Hera is the
+	// only non-agent origin).
+	sim.InjectKey(tcell.KeyEscape, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		mode = app.mode
+		if app.header.ActiveTab() != widget.TabTasks {
+			t.Fatalf("expected to stay on the Tasks tab, got %v", app.header.ActiveTab())
+		}
+	})
 	testutil.Equal(t, mode, modeTaskList)
 }

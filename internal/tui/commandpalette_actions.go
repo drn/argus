@@ -118,6 +118,7 @@ func (a *App) globalActionRegistry() map[keymap.Action]func() {
 				a.openConfirmPrune()
 			}
 		},
+		keymap.ActGlobalJumpNeedsInput: func() { a.jumpToNextNeedsInput() },
 	}
 }
 
