@@ -2,7 +2,9 @@
 #
 # For customer-facing code with no dogfooding loop: inherits default's model
 # allocation but turns up the rigor — two review passes, gating enabled, and a
-# security spot-check — plus a reviewer panel.
+# security spot-check — plus a reviewer panel. Also re-escalates a few
+# archetypes default cheapened to sonnet (orchestrator, big_build) back up,
+# and swaps brainstorm/review to fable for this tier specifically.
 #
 # Documented EXAMPLE, embedded as an install seed — Settings > Hera > "Install
 # Default Profiles", `argus profiles install-defaults`, or copy + adapt by
@@ -10,6 +12,22 @@
 # Validate with: argus validate customer_grade
 
 extends = "default"
+
+[archetype.brainstorm]
+model  = "fable"
+effort = "high"
+
+[archetype.orchestrator]
+model = "opus"
+
+[archetype.big_build]
+model = "opus"
+
+[archetype.spec_audit]
+model = "opus"
+
+[archetype.review]
+model = "fable"
 
 [rigor]
 review_passes       = 2

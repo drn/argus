@@ -385,13 +385,13 @@ A task's **archetype** names *what kind of job* it is. It is an optional task pr
 | Archetype | What it is | `default` model |
 |-----------|------------|-----------------|
 | `brainstorm` | Exploratory design / ideation | `opus` |
-| `orchestrator` | Coordinator that delegates and routes work (default for hera coordinators) | `opus` |
-| `big_build` | Large, multi-file implementation | `opus` |
+| `orchestrator` | Coordinator that delegates and routes work (default for hera coordinators) | `sonnet` |
+| `big_build` | Large, multi-file implementation | `sonnet` |
 | `code_slice` | A scoped implementation slice (default for hera workers) | `sonnet` |
 | `bug_fix` | A targeted defect fix | `sonnet` |
 | `review` | A code / plan review pass | `opus` |
 | `security_review` | A security-focused review | `opus` |
-| `synthesis` | Consolidating multiple inputs into one result | `opus` |
+| `synthesis` | Consolidating multiple inputs into one result | `sonnet` |
 | `spec_audit` | Auditing spec coverage / conformance | `sonnet` |
 | `ci_loop` | A mechanical CI-green loop | `haiku` |
 | `verify` | Verification / acceptance checking | `haiku` |
@@ -416,7 +416,7 @@ The DB stores **only** the project→profile *name* – never a profile body, an
 - **Seed profiles** – three documented examples ship embedded in the binary (`internal/profiles/seeds/`), installable via **Settings → Hera → "Install Default Profiles"** or `argus profiles install-defaults`; either writes any seed name not already present into `~/.argus/profiles/` and never overwrites an existing (possibly customized) file. Installation is always an explicit action – nothing auto-installs on daemon startup. You can also copy a seed by hand into `~/.argus/profiles/` or a repo's `.argus/profiles/` and adapt it.
   - `default` – balanced allocation across all 13 archetypes (the table above).
   - `lean` – `extends = "default"`, minimal process (single review pass, no gating) for daily-driven personal tooling.
-  - `customer_grade` – `extends = "default"`, turned-up rigor (two review passes, gating, a security spot-check) plus a reviewer `[panel]`, for customer-facing code with no dogfooding loop.
+  - `customer_grade` – `extends = "default"`, turned-up rigor (two review passes, gating, a security spot-check) plus a reviewer `[panel]`, for customer-facing code with no dogfooding loop. Also re-escalates `orchestrator`/`big_build`/`spec_audit` back to `opus` and swaps `brainstorm`/`review` to `fable` for this tier specifically.
 - **Project binding** – **Settings → project view** shows a validated select-list of on-disk profiles; only profiles that pass validation are selectable, and the chosen name persists as the project's default binding. The new-agent modal also lets you pick a profile for that spawn. An unbound project resolves the `default` profile.
 - **`effort` / `window`** – each `[archetype.<name>]` entry may also carry `effort` (∈ `low`/`medium`/`high`) and `window` (∈ `200k`/`1m`). These are validated and surfaced in the plan/DAG view, but currently only `model` is wired into hera spawn resolution — and, for Claude's native sub-agent dispatch, `effort` is threadable only through a `Workflow` script's `agent()` (`opts.effort`), since the built-in `Agent`/`Task` tool has no effort parameter as of this writing (see the [`resolve-archetype-model`](#agent-facing-skills) skill).
 - **Reviewer `[panel]`** – a profile may carry an opaque `[panel]` block, composed and consumed by the cross-vendor review work (`hera-spawn-review`); validation enforces its grammar when the reviewer-panel validator is wired in, falling back to structural well-formedness otherwise.

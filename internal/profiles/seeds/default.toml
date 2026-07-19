@@ -23,10 +23,10 @@ model  = "opus"
 effort = "high"
 
 [archetype.orchestrator]
-model = "opus"
+model = "sonnet"
 
 [archetype.big_build]
-model = "opus"
+model = "sonnet"
 
 [archetype.code_slice]
 model = "sonnet"
@@ -41,7 +41,7 @@ model = "opus"
 model = "opus"
 
 [archetype.synthesis]
-model = "opus"
+model = "sonnet"
 
 [archetype.spec_audit]
 model = "sonnet"
