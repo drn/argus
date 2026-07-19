@@ -289,6 +289,32 @@ func TestKeyset_EnterDeadCoordinatorReattaches(t *testing.T) {
 	testutil.Equal(t, p.Machine().State(), FocusCoord)
 }
 
+// TestKeyset_EnterDisconnectedCoordinatorReattaches is the BUG-013-on-Enter
+// regression guard: the resolver can return a CACHED but non-alive handle for
+// a coordinator whose stream the daemon tore down while the process is still
+// running (StreamLost relay/bounce) — disconnected, not dead-and-nil. Before
+// the fix, `live` only checked the handle was non-nil, so this case was
+// wrongly treated as "live" and Enter skipped reattach, silently moving focus
+// into the coord pane instead. A second Enter (now routed through the pane's
+// own InputHandler, which correctly checks Alive()) was needed to actually
+// restart it. Enter must reattach in ONE press.
+func TestKeyset_EnterDisconnectedCoordinatorReattaches(t *testing.T) {
+	p, _ := railPageWithCursorOnWorker(t)
+	h := p.InputHandler()
+	h(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone), noFocus) // → coord header
+	// Resolver returns a non-nil but NOT-alive handle — the disconnected case.
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"tc": {id: "tc", alive: false}}))
+	var got Selection
+	called := false
+	p.OnReattach = func(s Selection) { got = s; called = true }
+
+	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
+
+	testutil.Equal(t, called, true)
+	testutil.Equal(t, got.FocusTaskID(), "tc")
+	testutil.Equal(t, p.Machine().State(), FocusCoord)
+}
+
 // TestKeyset_EnterCoordinatorFocusesCoordPane verifies that Enter on a live
 // coordinator header (navigate-only) advances focus to FocusCoord, not FocusAgent.
 func TestKeyset_EnterCoordinatorFocusesCoordPane(t *testing.T) {
