@@ -520,6 +520,26 @@ func (m Model) OrchIDsForTask(taskID string) []int64 {
 	return out
 }
 
+// roleOrchID returns the OrchID of the role with the given RoleID, searching
+// every non-freelance section (Pinned, Active, Archived) — Freelance roles
+// have no owning orchestrator and sit outside the kanban partition entirely,
+// so they are deliberately not searched here. ok is false when no such role
+// exists (a stale ref, or a freelance role id) — used by
+// Rail.focusGroupFromRef to resolve which kanban group a role-identified
+// selection ref belongs to (add-kanban-focus-fold).
+func (m Model) roleOrchID(roleID int64) (int64, bool) {
+	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
+		for i := range sec {
+			for j := range sec[i].Roles {
+				if sec[i].Roles[j].RoleID == roleID {
+					return sec[i].Roles[j].OrchID, true
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
 func (m Model) canonicalParents() map[int64]canonParent {
 	var all []*OrchView
 	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
