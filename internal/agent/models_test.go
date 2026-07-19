@@ -13,8 +13,8 @@ func TestKnownModels(t *testing.T) {
 		command string
 		want    []string
 	}{
-		{"claude bare", "claude", []string{"opus", "sonnet", "haiku"}},
-		{"claude abs path", "/usr/local/bin/claude", []string{"opus", "sonnet", "haiku"}},
+		{"claude bare", "claude", []string{"opus", "sonnet", "haiku", "fable"}},
+		{"claude abs path", "/usr/local/bin/claude", []string{"opus", "sonnet", "haiku", "fable"}},
 		{"codex with flags", "codex --dangerously-bypass-approvals-and-sandbox", []string{"gpt-5-codex", "gpt-5"}},
 		{"pi is empty", "pi", nil},
 		{"opencode is empty (custom-only)", "opencode", nil},
@@ -37,7 +37,7 @@ func TestKnownModels_ReturnsFreshSlice(t *testing.T) {
 
 func TestBackendModels(t *testing.T) {
 	t.Run("falls back to built-in when no override", func(t *testing.T) {
-		testutil.DeepEqual(t, BackendModels(config.Backend{Command: "claude"}), []string{"opus", "sonnet", "haiku"})
+		testutil.DeepEqual(t, BackendModels(config.Backend{Command: "claude"}), []string{"opus", "sonnet", "haiku", "fable"})
 	})
 	t.Run("override wins when non-empty", func(t *testing.T) {
 		got := BackendModels(config.Backend{Command: "claude", Models: []string{"x", "y"}})

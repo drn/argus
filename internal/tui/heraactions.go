@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"strings"
 
 	"github.com/drn/argus/internal/agent"
@@ -16,6 +17,24 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
+
+// heraGoSafe runs fn in a new detached goroutine, recovering and logging any
+// panic instead of letting it crash the whole TUI process. Detached
+// goroutines (nothing awaits them, no QueueUpdateDraw at the end) have no
+// other panic backstop: the main goroutine's recover in cmd/argus/main.go
+// only covers its OWN stack, and a panic here would kill the process with no
+// diagnostic surfaced anywhere the operator would see it in time. label
+// identifies the call site in the log.
+func heraGoSafe(label string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				uxlog.Log("[hera-view] PANIC in %s: %v\n%s", label, r, debug.Stack())
+			}
+		}()
+		fn()
+	}()
+}
 
 // heraactions.go owns the App side of the M6c Hera-view mutation keyset: the
 // modal / confirm / refresh orchestration that the rail's key handler triggers
@@ -359,28 +378,43 @@ func (a *App) heraNukeRole(r *hera.RoleView) {
 // task row (db.SetArchived, NEVER db.Delete). The task survives in the Archive
 // section as history; only the worktree directory + git branch are reclaimed.
 // Returns whether a worktree-removal was kicked off (for the prune count/log).
+//
+// The session stop is backgrounded (heraGoSafe), not run inline: in a
+// daemon-connected TUI, HasSession/Stop are blocking RPC round-trips
+// (client.Stop → Daemon.StopSession, possibly proxied again to the
+// session-supervisor), not the in-process runner's near-instant SIGTERM.
+// heraDoCascadeNuke calls this once per nuked task on the tview main
+// goroutine — running Stop() inline there means a bulk cascade (dozens of
+// tasks across several coordinators) blocks Draw/input/tick for N times the
+// per-call RPC latency: a multi-second total UI freeze with nothing to panic
+// on, which reads as a silent crash to the operator (see
+// gotchas/hera-view.md). Deferring it only changes WHEN the SIGTERM lands,
+// never what's safe to read concurrently — Stop() never mutates anything a
+// pane poller touches without its own lock.
 func (a *App) heraReclaimAndArchiveTask(taskID string) (reclaimed bool) {
 	t, err := a.db.Get(taskID)
 	if err != nil || t == nil {
 		uxlog.Log("[hera-view] nuke: task %s not found, skip reclaim: %v", taskID, err)
 		return false
 	}
-	if a.runner.HasSession(t.ID) {
-		if sErr := a.runner.Stop(t.ID); sErr != nil {
-			uxlog.Log("[hera-view] nuke: stop session failed task=%s: %v", t.ID, sErr)
+	heraGoSafe("nuke: stop session "+taskID, func() {
+		if a.runner.HasSession(taskID) {
+			if sErr := a.runner.Stop(taskID); sErr != nil {
+				uxlog.Log("[hera-view] nuke: stop session failed task=%s: %v", taskID, sErr)
+			}
 		}
-	}
+	})
 	cfg := a.db.Config()
 	repoDir := agent.ResolveDir(t, cfg)
 	wt, br := t.Worktree, t.Branch
 	if wt != "" {
 		reclaimed = true
-		go func() { agent.RemoveWorktreeAndBranch(wt, br, repoDir) }()
+		heraGoSafe("nuke: remove worktree "+taskID, func() { agent.RemoveWorktreeAndBranch(wt, br, repoDir) })
 	} else if br != "" && repoDir != "" {
-		go func() {
+		heraGoSafe("nuke: delete branch "+taskID, func() {
 			agent.DeleteBranch(repoDir, br)
 			agent.DeleteRemoteBranch(repoDir, br)
-		}()
+		})
 	}
 	if aErr := a.db.SetArchived(t.ID, true); aErr != nil {
 		uxlog.Log("[hera-view] nuke: archive task failed task=%s: %v", t.ID, aErr)

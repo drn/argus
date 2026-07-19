@@ -2460,33 +2460,25 @@ func TestRefreshTasks_NeedsInputSticky(t *testing.T) {
 		t.Fatalf("tick 2 (sticky): expected %q to persist in needsInputIDs even when not idle, got %v", other.ID, got)
 	}
 
-	// Tick 3: agent moved past the question (user responded elsewhere) — log
-	// no longer contains the marker. Sticky pass must drop the task.
+	// Tick 3 (BUG-061): the marker scrolls out of the log tail (e.g. Claude's
+	// blinking-cursor redraw flooded the window) but nobody actually answered
+	// — no real user input was sent, the task wasn't archived. The sticky pass
+	// no longer drops on a tail miss alone (that was indistinguishable from a
+	// genuine answer and is exactly what silently hid a live permission
+	// prompt); it stays flagged until NeedsInputClear says otherwise.
 	if err := os.WriteFile(logPath, []byte("agent is working on something else\n"), 0o600); err != nil {
 		t.Fatalf("overwrite log: %v", err)
 	}
 	readUI(t, app.tapp, func() {
 		app.refreshTasksWithIDs([]string{viewed.ID, other.ID}, nil)
 	})
-	if got := snapshotIDs(); containsString(got, other.ID) {
-		t.Fatalf("tick 3: expected %q to drop after marker cleared, got %v", other.ID, got)
+	if got := snapshotIDs(); !containsString(got, other.ID) {
+		t.Fatalf("tick 3: expected %q to stay in needsInputIDs after the marker scrolls out of tail, got %v", other.ID, got)
 	}
 
-	// Tick 4: task no longer running — sticky must drop it even if the
-	// marker is still in the log tail (rewrite it back to ensure that's the
-	// scenario the test is exercising).
-	if err := os.WriteFile(logPath, withMarker, 0o600); err != nil {
-		t.Fatalf("rewrite log with marker: %v", err)
-	}
-	// Re-detect via a fresh tick where it IS idle so the sticky branch has
-	// something to carry forward.
-	readUI(t, app.tapp, func() {
-		app.refreshTasksWithIDs([]string{viewed.ID, other.ID}, []string{other.ID})
-	})
-	if got := snapshotIDs(); !containsString(got, other.ID) {
-		t.Fatalf("tick 4 setup: expected %q in needsInputIDs, got %v", other.ID, got)
-	}
-	// Now exclude other from runningIDs entirely.
+	// Tick 4: task no longer running — sticky must drop it even though the
+	// marker is still absent from the tail (this is the ONLY way the sticky
+	// carry-forward loses a task, short of NeedsInputClear).
 	readUI(t, app.tapp, func() {
 		app.refreshTasksWithIDs([]string{viewed.ID}, nil)
 	})

@@ -80,7 +80,7 @@
 
 - **The new-task form's Model field is a per-backend cycling selector, not free text.** `modelIdx` indexes a virtual list: `0` = `default` (empty model → backend/CLI default), `1..len(modelOptions)` = a known model, `len+1` = `custom…` (free text via `modelInput`). Left/right cycle the selector — **even in custom mode** (so left/right are NOT cursor movement there; custom-text positioning is Home/End + Ctrl-U/W/K only). `Task().Model` resolves via `modelValue()`.
 - **`rebuildModelOptions()` MUST run on every backend change** (wired into `handleSelectorKey`'s `idx == &f.backendIdx` branch, beside `updateAutocomplete`) and in the constructor. It repopulates `modelOptions` via `agent.BackendModels(currentBackend)` and resets `modelIdx=0` + clears `modelInput` — so the model never carries over a stale value from the previous backend.
-- **Model options come from `agent.BackendModels`** = the backend's config `Models` override (config.toml only) if set, else built-in `agent.KnownModels(command)` (claude → opus/sonnet/haiku CLI aliases; codex → gpt-5-codex/gpt-5; else empty → only `default` + `custom…`). The Claude aliases are stable CLI aliases that map to current models, so the list does not churn per release.
+- **Model options come from `agent.BackendModels`** = the backend's config `Models` override (config.toml only) if set, else built-in `agent.KnownModels(command)` (claude → opus/sonnet/haiku/fable CLI aliases; codex → gpt-5-codex/gpt-5; else empty → only `default` + `custom…`). The Claude aliases are stable CLI aliases that map to current models, so the list does not churn per release.
 
 ## New-task optional name field
 

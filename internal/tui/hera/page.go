@@ -1,8 +1,6 @@
 package hera
 
 import (
-	"strings"
-
 	"github.com/drn/argus/internal/tui/keymap"
 	"github.com/drn/argus/internal/tui/planview"
 	"github.com/drn/argus/internal/tui/terminal"
@@ -24,16 +22,20 @@ const (
 	agentPaneTitle = " Agent "
 )
 
-// clipboardHintTitle returns base with a "(ctrl+y copy)" affordance appended
-// when show is true. Kept ASCII so each rune is exactly one terminal cell (the
-// border-title truncation math assumes single-width runes — see the agent
-// header's matching note). The Hera-view analogue of the agent header's
-// "ctrl+y to copy" hint, consistent with how the view labels panes.
-func clipboardHintTitle(base string, show bool) string {
+// clipboardHintSuffix is drawn via TerminalPane.SetBorderHint (a distinct
+// highlight style) right after the pane's plain border title, rather than
+// being concatenated into the title string itself. Kept ASCII so each rune is
+// exactly one terminal cell (see the agent header's matching note). The
+// Hera-view analogue of the agent header's "ctrl+y to copy" hint, consistent
+// with how the view labels panes.
+const clipboardHintSuffix = "(ctrl+y copy) "
+
+// heraClipboardHint returns clipboardHintSuffix when show is true, else "".
+func heraClipboardHint(show bool) string {
 	if !show {
-		return base
+		return ""
 	}
-	return strings.TrimRight(base, " ") + " (ctrl+y copy) "
+	return clipboardHintSuffix
 }
 
 // HeraPage is the top-level Hera-view page added to the App's Pages. It lays
@@ -212,6 +214,7 @@ func NewHeraPage(reader HeraReader) *HeraPage {
 		summary:   widget.NewAttentionSummary(),
 	}
 	p.coordPane.SetBorderTitle(coordPaneTitle)
+	p.agentPane.SetBorderTitle(agentPaneTitle)
 	// Retitle the embedded graph so it reads as the plan DAG, not a second
 	// top-level " DAG " tab (gotchas/hera-view.md).
 	p.plan.SetTitle(" Plan ")
@@ -504,10 +507,10 @@ func (p *HeraPage) Draw(screen tcell.Screen) {
 	p.focus.SetAgentPresent(agentW >= 2)
 
 	// Advertise a staged clipboard payload on the focused terminal pane via a
-	// `(ctrl+y copy)` border-title affordance. clipReady is the focused pane's
+	// `(ctrl+y copy)` border-hint affordance. clipReady is the focused pane's
 	// hint state (refreshed each tick), so at most one pane shows it.
-	p.coordPane.SetBorderTitle(clipboardHintTitle(coordPaneTitle, p.clipReady && p.focus.State() == FocusCoord))
-	p.agentPane.SetBorderTitle(clipboardHintTitle(agentPaneTitle, p.clipReady && !p.detailsMode && p.focus.State() == FocusAgent))
+	p.coordPane.SetBorderHint(heraClipboardHint(p.clipReady && p.focus.State() == FocusCoord))
+	p.agentPane.SetBorderHint(heraClipboardHint(p.clipReady && !p.detailsMode && p.focus.State() == FocusAgent))
 
 	// Needs-input summary box atop the rail column: count tasks blocked on a
 	// prompt that have NO presence in the Hera model (invisible from this tab),

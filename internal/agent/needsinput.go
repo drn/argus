@@ -578,19 +578,63 @@ func ParkedSelectionSignal(r *ScreenRenderer, buf []byte, cols, rows int) bool {
 // It returns the new count and whether the session has now reached
 // NeedsInputEscalationTicks.
 //
-// A non-qualifying tick RESETS the counter to zero rather than merely
-// pausing it — the escalation is meant to catch a combination that holds
-// CONTINUOUSLY, so a broken streak (the prompt disappears, or the working
-// affordance appears, even for a single tick) must restart the wait from
-// scratch. This is a pure step function; callers own the per-ID map (see
+// A non-qualifying tick that follows an ONGOING streak is held in a one-tick
+// GRACE PERIOD rather than discarding the streak outright (BUG-060): a
+// negative return value encodes "streak of -newTicks, one miss pending
+// confirmation". The very next tick either resumes the streak (qualifies
+// again — the miss was a transient blip) or confirms a genuine break (misses
+// again — two CONSECUTIVE non-qualifying ticks reset to zero for real). A
+// streak that was already at zero (nothing accumulated, or grace already
+// consumed) simply stays at zero on a miss.
+//
+// A grace tick's `escalated` return STAYS true when the streak had ALREADY
+// reached NeedsInputEscalationTicks before the miss — a session that has
+// already escalated must not visibly flicker back to "not flagged" for the
+// one tick a blip is being confirmed or forgiven; it only actually
+// de-escalates once the SECOND consecutive miss confirms a real break (which
+// resets to zero, `escalated` false, same as any other confirmed break).
+//
+// This grace tolerance exists because Claude's own fullscreen redraw can
+// produce an isolated tick where ParkedSelectionSignal misses even though the
+// session is genuinely, continuously parked at the SAME prompt: the widget's
+// cursor glyph can blink off for a single redraw frame, and
+// readSessionLogTailBytes has no synchronization with the daemon's concurrent
+// log-file writer, so an occasional read can land on a torn/partial frame
+// mid-redraw. Under the OLD all-or-nothing reset, either of these — recurring
+// roughly once every few ticks — could permanently prevent the streak from
+// EVER reaching NeedsInputEscalationTicks, even though the session never
+// stopped being parked: a hera worker whose blocked-prompt frame happened to
+// hit this cadence would never surface "(?)", while a sibling whose ticks
+// landed cleanly would. Two consecutive misses still reset for real — the
+// anti-false-positive guarantee BUG-029 established is unchanged: a genuinely
+// busy/streaming agent showing only sparse, ISOLATED coincidental matches
+// (not a real parked streak) never accumulates escalation credit under this
+// scheme either, because each such match is immediately followed by more
+// misses that confirm the surrounding non-parked state.
+//
+// This is a pure step function; callers own the per-ID map (see
 // ContentIdleState.esc and the TUI's needsInputEscalation field) exactly like
-// the fingerprint/since carry-forward maps elsewhere in this file.
+// the fingerprint/since carry-forward maps elsewhere in this file — the
+// negative-sentinel encoding keeps the map value type (plain int) unchanged.
 func EscalateParkedSelection(prevTicks int, qualifies bool) (newTicks int, escalated bool) {
-	if !qualifies {
-		return 0, false
+	if qualifies {
+		streak := prevTicks
+		if streak < 0 {
+			streak = -streak // resume the streak a prior isolated miss held in grace
+		}
+		newTicks = streak + 1
+		return newTicks, newTicks >= NeedsInputEscalationTicks
 	}
-	newTicks = prevTicks + 1
-	return newTicks, newTicks >= NeedsInputEscalationTicks
+	if prevTicks > 0 {
+		// First miss after a streak: hold it in grace rather than discarding —
+		// confirmed or forgiven by the very next tick. Stay escalated through
+		// this one grace tick if the streak had already crossed the threshold,
+		// so an already-flagged session doesn't flicker off for a single blip.
+		return -prevTicks, prevTicks >= NeedsInputEscalationTicks
+	}
+	// prevTicks <= 0: already at zero, or this is the SECOND consecutive miss
+	// while already in grace — a genuine break, reset for real.
+	return 0, false
 }
 
 // ContentIdleState carries the per-task content-idle bookkeeping across ticks:
@@ -669,7 +713,11 @@ func ContentIdle(running []string, rawIdle map[string]bool, tailOf func(string) 
 			prevTicks = prev.esc[id]
 		}
 		newTicks, escalated := EscalateParkedSelection(prevTicks, ParkedSelectionSignal(screen, tail, cols, rows))
-		if newTicks > 0 {
+		if newTicks != 0 {
+			// A negative value is a BUG-060 one-tick grace state (an isolated
+			// miss holding the streak pending the next tick), not "nothing to
+			// store" — only a true zero (no streak, or a confirmed break) needs
+			// no entry, since a missing map key already reads back as zero.
 			next.esc[id] = newTicks
 		}
 
@@ -693,6 +741,139 @@ func ContentIdle(running []string, rawIdle map[string]bool, tailOf func(string) 
 		}
 	}
 	return idle, next
+}
+
+// blinkProbeWindow bounds how many trailing bytes degenerateSuffixStart scans
+// to IDENTIFY a repeating cycle (cheap, fixed cost); once a period is found it
+// walks the FULL buffer backward to find where the run actually starts.
+const blinkProbeWindow = 4096
+
+// blinkMaxPeriod is the longest single repeat cycle degenerateSuffixStart will
+// recognize. Chosen comfortably above the two-frame (on/off) blink cycle
+// observed in the wild (~130 bytes: a cursor-position + color-code + one-glyph
+// redraw, alternating a single space and a single multi-byte UTF-8 glyph), so
+// a real BUG-061 blink cycle is always found on the FIRST qualifying (small)
+// period rather than requiring the full range.
+const blinkMaxPeriod = 512
+
+// blinkMinRepeats is the minimum number of consecutive repeats of a candidate
+// period required before degenerateSuffixStart calls it a degenerate run
+// rather than a coincidental short match. Low enough to catch a run within one
+// tick of it starting, high enough that ordinary content (which occasionally
+// repeats a byte or two by chance) never false-positives.
+const blinkMinRepeats = 6
+
+// degenerateSuffixStart finds where a long run — ending at the very end of
+// buf — of some short byte sequence (length <= blinkMaxPeriod) repeating at
+// least blinkMinRepeats times begins, or returns -1 if the tail isn't
+// dominated by such a run.
+//
+// This is BUG-061's root cause: Claude Code renders a blinking cursor/status
+// glyph (observed: a fixed ~130-byte cursor-reposition + color-code + single-
+// glyph redraw, toggling a space and "⏺" at a fixed screen position) that
+// NEVER STOPS, even while genuinely parked at a permission prompt with the
+// "esc to interrupt" working-affordance correctly absent. A detector that
+// scans only a fixed-size tail of raw bytes (needsInputTailWindow) can have
+// that ENTIRE window consumed by this repeating redraw once enough real time
+// passes — permanently, not intermittently, since the byte gap between "most
+// recent bytes" and "the last real content" only grows. Confirmed via live
+// repro: a session's on-disk log had "proceed" (the permission dialog text)
+// sitting 37KB+ behind the current end of a 59KB file after ~4 minutes
+// parked, while `DetectNeedsInputScreen`/`ParkedSelectionSignal` missed 100%
+// of the time across a 9-second, 6-round sampling window — a deterministic
+// loss, not the "occasional torn read" BUG-029/060 targeted. No escalation-
+// counter retuning can fix this: escalation requires the raw per-tick signal
+// to be true SOMETIMES; once flooded it is false ALWAYS.
+func degenerateSuffixStart(buf []byte) int {
+	n := len(buf)
+	if n < blinkMinRepeats*2 {
+		return -1
+	}
+	probeLen := n
+	if probeLen > blinkProbeWindow {
+		probeLen = blinkProbeWindow
+	}
+	maxP := blinkMaxPeriod
+	if maxP > probeLen/blinkMinRepeats {
+		maxP = probeLen / blinkMinRepeats
+	}
+	for p := 1; p <= maxP; p++ {
+		repeatBytes := p * blinkMinRepeats
+		qualifies := true
+		for i := n - repeatBytes; i < n-p; i++ {
+			if buf[i] != buf[i+p] {
+				qualifies = false
+				break
+			}
+		}
+		if !qualifies {
+			continue
+		}
+		// Found a qualifying period within the probe window — walk it backward
+		// through the WHOLE buffer to find the true start of the run (which may
+		// extend further back than the probe window itself, in which case the
+		// caller should expand its read and try again).
+		j := n - p - 1
+		for j >= 0 && buf[j] == buf[j+p] {
+			j--
+		}
+		return j + 1
+	}
+	return -1
+}
+
+// TrimToSubstantiveTail drops a trailing degenerate repeat run (see
+// degenerateSuffixStart) from buf, so a detector sees the last GENUINE content
+// instead of however many blink-redraw cycles happen to fit in the window.
+// Returns buf unchanged when no qualifying run is found.
+func TrimToSubstantiveTail(buf []byte) []byte {
+	if end := degenerateSuffixStart(buf); end >= 0 {
+		return buf[:end]
+	}
+	return buf
+}
+
+// NeedsInputMaxExpandBytes bounds how far back SubstantiveTail will expand its
+// read in search of real content past a degenerate blink run. A hard ceiling
+// so a session parked for a very long time (beyond what this budget's blink
+// rate could fill) has a bounded, documented worst case rather than an
+// unbounded per-tick disk/ring read.
+const NeedsInputMaxExpandBytes = 2 * 1024 * 1024
+
+// SubstantiveTail reads a session's recent output via readN — which returns
+// the last n bytes from whatever source a caller has (an on-disk log file, an
+// in-memory ring buffer) for a requested n — and, if the result is dominated
+// by a trailing degenerate repeat run (BUG-061), asks for progressively more
+// (doubling n) until real content surfaces, readN stops returning more data
+// (source exhausted), or maxBytes is reached. Returns up to the last
+// wantBytes of that real content.
+//
+// Falls back to the raw, untrimmed read when no qualifying run is ever found
+// (the common case — most sessions are actively producing real content, so
+// the degenerate-run check fails fast and this never expands) or when
+// trimming leaves nothing at all (better than returning empty). A caller is
+// therefore never worse off than the pre-fix flat read.
+func SubstantiveTail(readN func(n int) []byte, wantBytes, maxBytes int) []byte {
+	n := wantBytes
+	var buf, trimmed []byte
+	for {
+		buf = readN(n)
+		trimmed = TrimToSubstantiveTail(buf)
+		if len(trimmed) >= wantBytes || len(buf) < n || n >= maxBytes {
+			break
+		}
+		n *= 2
+		if n > maxBytes {
+			n = maxBytes
+		}
+	}
+	if len(trimmed) == 0 {
+		return buf
+	}
+	if len(trimmed) > wantBytes {
+		trimmed = trimmed[len(trimmed)-wantBytes:]
+	}
+	return trimmed
 }
 
 // DetectNeedsInputScreen is the alt-screen-aware form of DetectNeedsInput. It

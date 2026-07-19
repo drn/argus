@@ -1073,8 +1073,33 @@ func (a *App) handleRestartSupervisorKey(event *tcell.EventKey) {
 	}
 }
 
+// probeTerminal reports whether a real controlling terminal is available,
+// overridable in tests. tcell.Screen.Init() lazily opens one itself (e.g.
+// tcell.NewDevTty → /dev/tty on Unix) the first time it's used — inside
+// tview's SetScreen below — but SetScreen calls Init() and discards its
+// returned error entirely (rivo/tview@v0.42.0 application.go SetScreen never
+// checks it). Without a controlling terminal (process launched with no ctty:
+// a script/tool sandbox, a detached/headless process, etc.) Init() fails and
+// the screen's tty writer is left nil, so the very next EnableMouse() call
+// panics several frames deep inside tcell/terminfo (io.WriteString on a nil
+// io.Writer) instead of surfacing a clean error. Opening and immediately
+// closing tcell's own Tty handle mirrors exactly what Init() would do,
+// without side effects (no raw-mode Start() is called), so a failure here
+// reliably predicts Init()'s failure. See gotchas/ui-threading.md.
+var probeTerminal = func() error {
+	tty, err := tcell.NewDevTty()
+	if err != nil {
+		return err
+	}
+	return tty.Close()
+}
+
 // Run starts the application event loop.
 func (a *App) Run() error {
+	if err := probeTerminal(); err != nil {
+		return fmt.Errorf("no interactive terminal available: %w", err)
+	}
+
 	// Wrap the tcell screen in lazyScreen. The wrapper is a passthrough
 	// today; keeping the indirection lets smoke tests inject a
 	// SimulationScreen through the same path production uses.
@@ -1949,10 +1974,12 @@ func needsInputScreenSize(taskID string) (cols, rows int) {
 //     chrome) is unchanged from the previous tick. A streaming agent's
 //     fingerprint shifts every tick, so it is never flagged here — the
 //     false-positive guard. Fingerprints persist on a.needsInputFP.
-//   - Sticky carry-forward: a previously-flagged task still running and still
-//     showing the marker rides through a one-tick content blip without
-//     oscillating; it self-clears when the marker scrolls out of the 16 KB
-//     tail (question answered) or the task stops running.
+//   - Sticky carry-forward: a previously-flagged task still running stays
+//     flagged unconditionally (BUG-061) — it no longer re-requires a fresh
+//     tail match, since a flat tail window can be permanently flooded by
+//     Claude's blinking-cursor redraw long after the prompt itself scrolled
+//     out of reach. NeedsInputClear below is the only way this flag clears
+//     (user input past baseline, archive, or the task stops running).
 //   - Escalation fallback (BUG-029): the content-stability pass above requires
 //     the FULL fingerprint to match across exactly two ticks. A session whose
 //     tail keeps showing UNRELATED per-tick-varying content elsewhere in the
@@ -2013,7 +2040,11 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 		// independently of the fingerprint match above — see
 		// agent.EscalateParkedSelection.
 		newTicks, escalated := agent.EscalateParkedSelection(a.needsInputEscalation[id], agent.ParkedSelectionSignal(a.needsInputScreen, tail, cols, rows))
-		if newTicks > 0 {
+		if newTicks != 0 {
+			// A negative value is a BUG-060 one-tick grace state (an isolated
+			// miss holding the streak pending the next tick), not "nothing to
+			// store" — only a true zero (no streak, or a confirmed break) needs
+			// no entry, since a missing map key already reads back as zero.
 			newEsc[id] = newTicks
 		}
 		if escalated {
@@ -2023,18 +2054,21 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	a.needsInputFP = newFP
 	a.needsInputEscalation = newEsc
 
+	// Sticky carry-forward (BUG-061 hardening): a task already flagged last tick
+	// and still running stays flagged WITHOUT re-requiring a fresh tail match.
+	// The prior re-match requirement meant a previously-correct "(?)" could
+	// silently vanish on any tick whose read came back inconclusive — including,
+	// pre-fix, every tick once Claude's blinking-cursor redraw had flooded the
+	// tail window past the real prompt content (BUG-061's root cause; see
+	// agent.SubstantiveTail). NeedsInputClear below is the sole, deterministic
+	// clearing mechanism (user input advanced past baseline, or archived) — it
+	// does not depend on the marker still being visible in the tail, so this
+	// carry-forward can never leak a flag past a genuine answer.
 	for _, id := range prevNeedsInput {
 		if freshSet[id] || !runningSet[id] {
 			continue
 		}
-		tail := readSessionLogTailBytes(id, detectNeedsInputTailBytes)
-		if len(tail) == 0 {
-			continue
-		}
-		cols, rows := needsInputScreenSize(id)
-		if agent.DetectNeedsInputScreen(a.needsInputScreen, tail, cols, rows) {
-			flag(id)
-		}
+		flag(id)
 	}
 
 	// BUG-034: clear the flag for sessions the user has responded to or tasks
@@ -2086,9 +2120,14 @@ func (a *App) archivedTaskSet() func(string) bool {
 const detectNeedsInputTailBytes = 16 * 1024
 
 // readSessionLogTailBytes returns the last n raw bytes of a task's session
-// log, or nil on any error. Unlike readSessionLogTail (which strips ANSI for
-// human display), this preserves the raw stream so the caller can do its own
-// ANSI handling.
+// log — or, if that flat window turns out to be dominated by a trailing
+// degenerate repeat run (BUG-061: Claude Code's blinking cursor/status glyph,
+// which never stops even while genuinely parked at a prompt and can flood a
+// fixed-size window until real content falls permanently out of reach), reads
+// progressively further back via agent.SubstantiveTail until real content is
+// found or agent.NeedsInputMaxExpandBytes is reached. Unlike readSessionLogTail
+// (which strips ANSI for human display), this preserves the raw stream so the
+// caller can do its own ANSI handling.
 //
 // detectNeedsInput reads here instead of through SessionHandle.RecentOutputTail
 // because in daemon-client mode the local ring buffer only fills after the
@@ -2096,6 +2135,15 @@ const detectNeedsInputTailBytes = 16 * 1024
 // visited it. The disk log captures every byte the daemon ever wrote, so the
 // detector can flag a blocked agent the user has never opened.
 func readSessionLogTailBytes(taskID string, n int) []byte {
+	return agent.SubstantiveTail(func(want int) []byte {
+		return readSessionLogRawTail(taskID, want)
+	}, n, agent.NeedsInputMaxExpandBytes)
+}
+
+// readSessionLogRawTail returns the last n raw bytes of a task's session log,
+// or nil on any error — the flat, un-trimmed read readSessionLogTailBytes
+// builds on.
+func readSessionLogRawTail(taskID string, n int) []byte {
 	f, err := os.Open(agent.SessionLogPath(taskID))
 	if err != nil {
 		return nil
@@ -3221,6 +3269,18 @@ func (a *App) handleDiffKey(event *tcell.EventKey) *tcell.EventKey {
 			case keymap.ActDiffScrollUp:
 				a.agentPane.DiffScrollUp(1)
 				return nil
+			case keymap.ActDiffFinder:
+				a.openInFinder()
+				return nil
+			case keymap.ActDiffOpen:
+				a.openFile()
+				return nil
+			case keymap.ActDiffEditor:
+				a.openInEditor()
+				return nil
+			case keymap.ActDiffTerminal:
+				a.openTerminal()
+				return nil
 			}
 		}
 		// `q` exits diff mode — structural "back", reserved (not rebindable in
@@ -4274,6 +4334,23 @@ func PTYSizeForRect(r Rect) (rows, cols uint16) {
 //
 // For *fresh* task creation, callers use agent.CreateAndStart instead, which
 // unwinds the worktree and DB row on failure so no orphans remain.
+// refreshResumeSessionID re-derives the newest Claude transcript for a task
+// about to resume and persists it, so the resume targets the MOST RECENT
+// in-place session rather than the stale create-time UUID. It runs only on a
+// resume (a fresh start has nothing to refresh) and only in local mode: in
+// --remote mode a.db is *apistore.Store, which has no local worktree or
+// transcripts, so the daemon on the far end owns the recapture. The underlying
+// agent.RefreshResumeSessionID is itself Claude-only, idempotent, and
+// never-blank, so this wrapper only owns the resume/local guards.
+func (a *App) refreshResumeSessionID(task *model.Task, resume bool) {
+	if !resume {
+		return
+	}
+	if d, ok := a.db.(*db.DB); ok {
+		agent.RefreshResumeSessionID(d, task)
+	}
+}
+
 func (a *App) startSession(task *model.Task) {
 	cfg := a.db.Config()
 	rows, cols := a.computePTYSize()
@@ -4297,6 +4374,13 @@ func (a *App) startSession(task *model.Task) {
 			uxlog.Log("[tui] generated session ID %s for task %s", task.SessionID, task.ID)
 		}
 	}
+
+	// Resume-time recapture: for a Claude resume, re-derive the newest worktree
+	// transcript so we resume the MOST RECENT in-place session, not the stale
+	// create-time UUID (hera workers idle / lose their stream and never reach the
+	// post-exit recapture). No-op for a fresh start, non-Claude, no-change, or
+	// remote mode — see refreshResumeSessionID / agent.RefreshResumeSessionID.
+	a.refreshResumeSessionID(task, resume)
 
 	// Bump generation BEFORE the RPC so any tick that captured runningIDs
 	// before this session exists will detect the change and skip reconciliation.

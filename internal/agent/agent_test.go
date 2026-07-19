@@ -291,6 +291,83 @@ func TestBuildCmd_PermissionMode_BeforeSessionID(t *testing.T) {
 		"claude --dangerously-skip-permissions --session-id 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee'")
 }
 
+// TestBuildCmd_RoutingPromptFlag_AppendedForClaude confirms the routing
+// content path is appended via --append-system-prompt-file for Claude
+// backends. The real ensureBuiltinRoutingFn (routing.EnsureBuiltinRouting) is
+// isTestBinary()-gated to ("", nil) under go test — like
+// skills.EnsureBuiltinSkills — so this stubs the seam to observe the
+// otherwise-untestable happy path.
+func TestBuildCmd_RoutingPromptFlag_AppendedForClaude(t *testing.T) {
+	restore := SetEnsureBuiltinRoutingForTest(func() (string, error) {
+		return "/fake/home/.argus/routing/system-prompt.md", nil
+	})
+	defer restore()
+
+	cfg := testConfig()
+	task := &model.Task{Name: "t", Prompt: "go", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2],
+		"claude --dangerously-skip-permissions --permission-mode plan --append-system-prompt-file '/fake/home/.argus/routing/system-prompt.md' -- 'go'")
+}
+
+// TestBuildCmd_RoutingPromptFlag_SkippedForNonClaude confirms the flag is
+// withheld for non-Claude backends even when materialization would succeed —
+// mirroring TestBuildCmd_PermissionMode_SkippedForNonClaude.
+func TestBuildCmd_RoutingPromptFlag_SkippedForNonClaude(t *testing.T) {
+	restore := SetEnsureBuiltinRoutingForTest(func() (string, error) {
+		return "/fake/home/.argus/routing/system-prompt.md", nil
+	})
+	defer restore()
+
+	cfg := testConfig()
+
+	t.Run("codex", func(t *testing.T) {
+		task := &model.Task{Name: "t", Backend: "codex", Prompt: "go", Worktree: t.TempDir()}
+		cmd, _, err := BuildCmd(task, cfg, false)
+		testutil.NoError(t, err)
+		testutil.Equal(t, cmd.Args[2], "codex --dangerously-bypass-approvals-and-sandbox -- 'go'")
+	})
+
+	t.Run("pi", func(t *testing.T) {
+		task := &model.Task{Name: "t", Backend: "pi", Prompt: "go", Worktree: t.TempDir()}
+		cmd, _, err := BuildCmd(task, cfg, false)
+		testutil.NoError(t, err)
+		testutil.Equal(t, cmd.Args[2], "pi 'go'")
+	})
+
+	t.Run("opencode", func(t *testing.T) {
+		task := &model.Task{Name: "t", Backend: "opencode", Prompt: "go", Worktree: t.TempDir()}
+		cmd, _, err := BuildCmd(task, cfg, false)
+		testutil.NoError(t, err)
+		testutil.Equal(t, cmd.Args[2], "opencode --prompt 'go'")
+	})
+
+	t.Run("bare custom command", func(t *testing.T) {
+		task := &model.Task{Name: "t", Backend: "bare", Prompt: "go", Worktree: t.TempDir()}
+		cmd, _, err := BuildCmd(task, cfg, false)
+		testutil.NoError(t, err)
+		testutil.Equal(t, cmd.Args[2], "my-agent -- 'go'")
+	})
+}
+
+// TestBuildCmd_RoutingPromptFlag_MaterializeErrorNonFatal confirms a
+// materialization error is logged (not asserted here) but does not block
+// command construction or append a broken flag.
+func TestBuildCmd_RoutingPromptFlag_MaterializeErrorNonFatal(t *testing.T) {
+	restore := SetEnsureBuiltinRoutingForTest(func() (string, error) {
+		return "", errors.New("materialize failed")
+	})
+	defer restore()
+
+	cfg := testConfig()
+	task := &model.Task{Name: "t", Prompt: "go", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2],
+		"claude --dangerously-skip-permissions --permission-mode plan -- 'go'")
+}
+
 // TestBuildCmd_ExportsTaskID confirms ARGUS_TASK_ID lands in the spawned
 // shell's environment. Orchestration sub-tasks rely on this to call
 // task_set_result(id: ENV) without scraping cwd.

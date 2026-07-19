@@ -112,6 +112,10 @@ The system SHALL treat the agent as waiting for input when the last non-blank li
 
 The system SHALL only inspect a bounded window at the end of the output buffer. Signals appearing only in output older than this window SHALL NOT be detected, while a signal landing at the very end of the buffer MUST be detected even when far more older output precedes it.
 
+When the fixed-size window at the very end of the buffer is dominated by a long run of some short byte sequence repeating many times in place (e.g. an agent's blinking cursor/status-glyph redraw, which can recur indefinitely even while the agent is genuinely parked awaiting input), the system SHALL expand its read backward, in bounded steps up to a hard ceiling, until it finds a window containing real (non-repeating) content, or the ceiling is reached, or the underlying source is exhausted. The final window handed to detection SHALL be anchored on the last real content found this way (not on the literal end of the buffer) and SHALL still be no larger than the base window size. This closes the gap where a signal that once appeared inside the window becomes PERMANENTLY unreachable — not merely delayed — once enough repeating redraw output accumulates after it, since a flat "last N bytes" cut has no way to recover content that has scrolled out.
+
+A buffer whose window is NOT dominated by such a repeating run SHALL be scanned exactly as before, with no expansion and no added cost.
+
 #### Scenario: Signal at the end of a large buffer is detected
 
 - **WHEN** the selection prompt appears at the very end of a buffer larger than the scan window
@@ -119,8 +123,23 @@ The system SHALL only inspect a bounded window at the end of the output buffer. 
 
 #### Scenario: Signal older than the scan window is not detected
 
-- **WHEN** the selection prompt appears only at the start of a buffer and is followed by more output than the scan window
+- **WHEN** the selection prompt appears only at the start of a buffer and is followed by more output than the scan window, and that trailing output is NOT a repeating redraw run
 - **THEN** the system reports the agent is not waiting for input
+
+#### Scenario: Signal recoverable behind a long repeating redraw run is still detected
+
+- **WHEN** the selection prompt appears earlier in the buffer and is followed, all the way to the end of the buffer, by a short byte sequence repeating far more times than fits in the base scan window (e.g. a blinking cursor/status glyph that never stops)
+- **THEN** the system expands its read backward until it reaches the prompt and reports the agent is waiting for input
+
+#### Scenario: A signal beyond the hard expansion ceiling is not detected
+
+- **WHEN** the selection prompt sits behind a repeating redraw run so long that recovering it would require reading further back than the configured expansion ceiling
+- **THEN** the system gives up at the ceiling and reports the agent is not waiting for input, rather than reading unbounded amounts of data
+
+#### Scenario: An ordinary, non-repeating tail is scanned without expansion
+
+- **WHEN** the buffer's base window contains ordinary varying content (not a long repeating run)
+- **THEN** the system scans exactly that window with no backward expansion
 
 ### Requirement: Session-level blocked check over the live output ring
 
@@ -362,11 +381,21 @@ Clear-on-archive SHALL remove an archived task from the needs-input set
 regardless of its detection signal, so it stops surfacing `?` and stops rolling
 up to ancestor coordinators.
 
+The sticky carry-forward pass — which keeps a task already in the needs-input
+set flagged across ticks while its session remains running — SHALL NOT require
+re-matching the detection signal against the CURRENT tick's tail to stay
+flagged. A task already in the set, whose session is still running, SHALL
+remain in the set unconditionally until removed by clear-on-input,
+clear-on-archive, or the session no longer running. The recent-output tail
+scanned on any given tick MAY fail to re-show the signal for reasons unrelated
+to the user having answered (e.g. the signal has scrolled behind other content
+still within the bounded/expanded window); such a miss SHALL NOT be treated as
+equivalent to a genuine answer.
+
 This clear logic SHALL be applied identically by the daemon-side detector and
-the TUI-side detector. The trailing-question entry heuristic, the idle gate, the
-sticky carry-forward pass, and the content-stability / emulated-screen guards
-are unchanged; this requirement governs only when an already-detected signal is
-removed from the published set.
+the TUI-side detector. The trailing-question entry heuristic, the idle gate, and
+the content-stability / emulated-screen guards are unchanged; this requirement
+governs only when an already-detected signal is removed from the published set.
 
 #### Scenario: Free-text question is flagged and persists indefinitely without input
 
@@ -401,6 +430,19 @@ removed from the published set.
   output that no longer shows any needs-input signal, and later ends a new turn
   on another question
 - **THEN** the system reports the agent is waiting for input again
+
+#### Scenario: A previously-flagged, still-running task stays flagged when the tail no longer shows the signal
+
+- **WHEN** a task is already in the needs-input set, its session is still
+  running, and the current tick's recent-output tail no longer shows the
+  needs-input signal, but no user input was delivered and the task was not
+  archived
+- **THEN** the task remains in the needs-input set
+
+#### Scenario: A previously-flagged task still drops when its session stops running
+
+- **WHEN** a task is in the needs-input set and its session is no longer running
+- **THEN** the task is removed from the needs-input set
 
 ### Requirement: Content-aware idle for continuously-repainting (fullscreen) agents
 
@@ -601,11 +643,34 @@ fingerprint-convergence match — it does not alter fingerprinting itself, does
 not loosen the shared chrome-recognition allowlist
 (`fingerprintVolatileLine` / `decorationLine`), and does not apply to the
 free-text trailing-question signal (only the unambiguous selection-prompt
-shape is strong enough to escalate on its own). The consecutive-tick counter
-resets to zero the moment either half of the combination stops holding
-(selection signal disappears, or the working affordance appears) — a
-transient or coincidental match that does not persist for the full window
-SHALL NOT escalate.
+shape is strong enough to escalate on its own).
+
+A single non-qualifying tick that interrupts an otherwise-ongoing streak SHALL
+be held in a one-tick GRACE period rather than immediately discarding the
+streak: a genuinely, continuously-parked session can still produce an
+isolated single-tick miss (the agent's own fullscreen redraw can blink the
+selection-cursor glyph off for one frame as an animation, or a read of the
+session's recent output can occasionally land on a partial/torn frame mid
+redraw, independent of whether the agent is actually parked). The very next
+tick either resumes the streak in full — the interruption was transient — or,
+if it ALSO fails to qualify, confirms a genuine break: the consecutive-tick
+counter resets to zero only after TWO CONSECUTIVE non-qualifying ticks. A
+session already past the escalation threshold SHALL remain flagged
+needs-input / content-idle through a single grace-held miss — it does not
+flicker the indicator off for that one tick and back on the next.
+
+A transient or coincidental match that does not hold for the full escalation
+window SHALL still not escalate: a busy/streaming session showing the
+selection shape for only an isolated tick or two, surrounded by non-qualifying
+ticks, never accumulates enough consecutive credit to reach the threshold —
+each such isolated match is itself surrounded by two or more non-qualifying
+ticks, which confirm the non-parked state before any credit could build past
+one or two ticks.
+
+Derived from: `internal/agent/needsinput.go` (`EscalateParkedSelection`,
+`NeedsInputEscalationTicks`), `internal/tui/app.go`
+(`detectNeedsInputSticky`'s escalation persistence), `internal/agent/needsinput.go`
+(`ContentIdle`'s escalation persistence).
 
 #### Scenario: Selection prompt with no working affordance escalates after N ticks despite a non-converging fingerprint
 
@@ -616,21 +681,42 @@ SHALL NOT escalate.
 - **THEN** the system reports the agent is waiting for input and classifies it
   content-idle once the escalation window elapses
 
-#### Scenario: Transient selection-shape match does not escalate
+#### Scenario: An isolated single-tick miss does not reset an ongoing streak (BUG-060)
 
-- **WHEN** a running session's tail matches the selection-prompt shape (with
-  the working affordance absent) for fewer than N consecutive ticks before the
-  match stops holding — e.g. the agent scrolls a `❯ 1.`-looking line past
-  while still genuinely generating
-- **THEN** the system does not escalate, and the consecutive-tick counter
-  resets
+- **WHEN** a running session's tail has matched the selection-prompt shape
+  (with the working affordance absent) for one or more consecutive ticks, then
+  misses on exactly one tick (the selection shape momentarily absent, or the
+  working affordance momentarily present), then matches again on the very next
+  tick
+- **THEN** the streak resumes in full from where it left off — it is NOT
+  discarded and does not restart from one
 
-#### Scenario: Working affordance present never escalates
+#### Scenario: An already-escalated session stays flagged through a single grace-held miss (BUG-060)
 
-- **WHEN** a running session's tail matches the selection-prompt shape but the
-  working affordance is present on any tick within the window
-- **THEN** the consecutive-tick counter resets on that tick and escalation
-  does not fire
+- **WHEN** a running session has already reached the escalation threshold and
+  its next tick is an isolated miss, immediately followed by a tick that
+  matches again
+- **THEN** the session remains reported as needs-input / content-idle
+  throughout — it does not visibly clear and re-flag across that single miss
+
+#### Scenario: Two consecutive misses confirm a genuine break
+
+- **WHEN** a running session's tail fails to match the selection-prompt shape
+  (with the working affordance absent) for TWO OR MORE CONSECUTIVE ticks —
+  e.g. the agent resumes genuinely generating, or the selection widget
+  scrolls out of view for a sustained period
+- **THEN** the consecutive-tick counter resets to zero for real, and any
+  future streak must accumulate from scratch
+
+#### Scenario: Sparse isolated matches amid an otherwise-busy session never escalate
+
+- **WHEN** a running session's tail matches the selection-prompt shape only
+  occasionally (e.g. the agent scrolls a `❯ 1.`-looking line past while still
+  genuinely generating), with two or more non-qualifying ticks between each
+  isolated match
+- **THEN** the system does not escalate — each isolated match is surrounded
+  by enough non-qualifying ticks to confirm the session is not genuinely
+  parked before any meaningful credit could accumulate
 
 #### Scenario: Escalation does not change fingerprint-converging behavior
 

@@ -384,14 +384,21 @@ func (d *DetailsView) ScrollRoster(delta int) bool {
 	return true
 }
 
-// hasPR reports whether the role's bound task carries an open "pr" meta url
-// (best-effort, like the task list — never fetched here).
+// hasPR reports whether the role's bound task carries a still-actionable "pr"
+// meta state — gated on model.PRState.IsActionable() (the same predicate the
+// rail's rolePR and the task list's theme.PRGlyph use), NOT on url presence: a
+// merged/closed/draft/unknown PR retains its url in the cache but must not show
+// the mark. Best-effort, like the task list — never fetched here.
 func (d *DetailsView) hasPR(r *RoleView) bool {
 	if r.TaskID == "" || d.prMeta == nil {
 		return false
 	}
 	kv := d.prMeta[r.TaskID]
-	return kv != nil && kv["url"] != ""
+	if kv == nil {
+		return false
+	}
+	s, err := model.ParsePRState(kv["state"])
+	return err == nil && s.IsActionable()
 }
 
 // --- Roster table ------------------------------------------------------

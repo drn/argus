@@ -67,14 +67,48 @@ func TestDetails_NilOrchAndMarks(t *testing.T) {
 	// Nil orch → placeholder, no panic.
 	testutil.Contains(t, drawnText(t, func(s tcell.Screen) { d.Draw(s, 0, 0, 40, 10, false) }, 1, 1, 26), "no coordinator")
 
-	// hasPR + rosterStatusText compose "ready PR" the same way roleMark used to.
-	d.prMeta = map[string]map[string]string{"t": {"url": "u"}}
+	// hasPR (state-gated, not url-presence) + rosterStatusText compose "ready PR":
+	// an actionable review state shows PR; a merged/closed state retains the url
+	// in the cache but must not.
+	d.prMeta = map[string]map[string]string{"t": {"url": "u", "state": "awaiting-review"}}
 	rc := &RoleView{TaskID: "t", ReadyToClose: true}
 	testutil.Equal(t, d.hasPR(rc), true)
 	testutil.Equal(t, rosterStatusText(rc, d.hasPR(rc)), "ready PR")
+
+	d.prMeta = map[string]map[string]string{"t": {"url": "u", "state": "merged-closed"}}
+	testutil.Equal(t, d.hasPR(rc), false)
+	testutil.Equal(t, rosterStatusText(rc, d.hasPR(rc)), "ready")
+
 	noMark := &RoleView{TaskID: "none"}
 	testutil.Equal(t, d.hasPR(noMark), false)
 	testutil.Equal(t, rosterStatusText(noMark, d.hasPR(noMark)), "—")
+}
+
+// TestDetails_HasPR_PRStateTable locks the PR-state gating (ported from the
+// pre-merge roleMark table): only actionable review states show the PR mark;
+// merged/closed, draft, unknown, and empty/unparseable states never do, even
+// with a url still cached.
+func TestDetails_HasPR_PRStateTable(t *testing.T) {
+	d := NewDetailsView()
+	cases := []struct {
+		name  string
+		state string
+		want  bool
+	}{
+		{"awaiting-review", "awaiting-review", true},
+		{"changes-requested", "changes-requested", true},
+		{"approved", "approved", true},
+		{"merged-closed", "merged-closed", false},
+		{"draft", "draft", false},
+		{"unknown", "unknown", false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d.prMeta = map[string]map[string]string{"t": {"url": "u", "state": tc.state}}
+			testutil.Equal(t, d.hasPR(&RoleView{TaskID: "t"}), tc.want)
+		})
+	}
 }
 
 func TestDetails_TinyRectNoPanic(t *testing.T) {

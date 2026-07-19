@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/testutil"
@@ -41,6 +42,16 @@ func gitRun(t *testing.T, dir string, args ...string) {
 	if out, err := c.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
 	}
+}
+
+func headSHA(t *testing.T, dir string) string {
+	t.Helper()
+	c := exec.Command("git", "-C", dir, "rev-parse", "HEAD")
+	out, err := c.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func TestFetchGitStatus(t *testing.T) {
@@ -107,6 +118,35 @@ func TestFindMergeBase(t *testing.T) {
 		if got == "" {
 			t.Error("expected non-empty merge-base")
 		}
+	})
+
+	t.Run("prefers origin/master over local master", func(t *testing.T) {
+		dir := initRepo(t, t.TempDir())
+		gitRun(t, dir, "checkout", "-b", "feature")
+		if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitRun(t, dir, "add", "feature.txt")
+		gitRun(t, dir, "commit", "-m", "add feature")
+		featureSHA := headSHA(t, dir)
+
+		// Diverge local master onto its own commit, simulating another
+		// worktree or the primary checkout rewriting the shared local
+		// branch ref (e.g. via rebase).
+		gitRun(t, dir, "checkout", "master")
+		if err := os.WriteFile(filepath.Join(dir, "master-only.txt"), []byte("m\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitRun(t, dir, "add", "master-only.txt")
+		gitRun(t, dir, "commit", "-m", "master-only commit")
+
+		// Simulate a fetched origin/master that already contains feature's
+		// commit (e.g. merged upstream), independent of local master.
+		gitRun(t, dir, "update-ref", "refs/remotes/origin/master", featureSHA)
+
+		gitRun(t, dir, "checkout", "feature")
+		got := findMergeBase(dir)
+		testutil.Equal(t, got, featureSHA)
 	})
 
 	t.Run("falls back to main branch when master absent", func(t *testing.T) {
@@ -241,16 +281,9 @@ func TestListRemoteBranches_Repo(t *testing.T) {
 	dir := initRepo(t, t.TempDir())
 	// Create a fake remote-tracking ref by adding a remote and fetching a fake URL.
 	// Instead we just create the ref directly via update-ref.
-	headSHA := func() string {
-		c := exec.Command("git", "-C", dir, "rev-parse", "HEAD")
-		out, err := c.Output()
-		if err != nil {
-			t.Fatal(err)
-		}
-		return string(out[:len(out)-1])
-	}()
-	gitRun(t, dir, "update-ref", "refs/remotes/origin/master", headSHA)
-	gitRun(t, dir, "update-ref", "refs/remotes/origin/feature", headSHA)
+	sha := headSHA(t, dir)
+	gitRun(t, dir, "update-ref", "refs/remotes/origin/master", sha)
+	gitRun(t, dir, "update-ref", "refs/remotes/origin/feature", sha)
 	// HEAD ref should be ignored.
 	gitRun(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
 

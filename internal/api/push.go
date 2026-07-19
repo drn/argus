@@ -200,9 +200,11 @@ func sessionScreenSize(taskID string) (cols, rows int) {
 //     A streaming agent's fingerprint changes every tick, so it is never
 //     flagged here. prevFP supplies last tick's fingerprints; the returned map
 //     carries this tick's forward.
-//   - Sticky carry-forward: a previously-flagged task still running and still
-//     showing the signature stays flagged through a one-tick content blip,
-//     preventing the flag (and its SSE events) from oscillating.
+//   - Sticky carry-forward: a previously-flagged task still running stays
+//     flagged unconditionally (BUG-061) — it no longer re-requires a fresh
+//     tail match, since a flat tail window can be permanently flooded by
+//     Claude's blinking-cursor redraw long after the prompt itself scrolled
+//     out of reach. NeedsInputClear below is the only way this flag clears.
 //
 // tailOf returns the recent output tail for a task (nil if unavailable);
 // injected so the watcher reads the live session ring while tests supply
@@ -264,14 +266,16 @@ func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uin
 		}
 	}
 
+	// Sticky carry-forward (BUG-061 hardening): a task already flagged last tick
+	// and still running stays flagged WITHOUT re-requiring a fresh tail match —
+	// mirrors the TUI's detectNeedsInputSticky. NeedsInputClear below is the
+	// sole, deterministic clearing mechanism, so this can never leak a flag past
+	// a genuine answer.
 	for _, id := range prev {
 		if seen[id] || !runningSet[id] {
 			continue
 		}
-		cols, rows := sizeOf(id)
-		if agent.DetectNeedsInputScreen(screen, tailOf(id), cols, rows) {
-			flag(id)
-		}
+		flag(id)
 	}
 
 	// BUG-034: clear the flag for tasks the user has responded to or archived.
@@ -387,12 +391,18 @@ func (s *Server) idleWatcherTick(state *idleWatcherState) {
 
 	// tailOf reads a task's recent PTY output from the live session ring (the
 	// daemon is the sole PTY reader, so the ring is populated with no TUI). Shared
-	// by the content-idle pass and the needs-input pass below.
+	// by the content-idle pass and the needs-input pass below. Routed through
+	// agent.SubstantiveTail (BUG-061): a flat needsInputScanBytes window can be
+	// entirely consumed by Claude's blinking cursor/status-glyph redraw, which
+	// never stops even at a genuinely parked prompt — SubstantiveTail expands the
+	// ring read backward (bounded by the ring's own defaultBufSize ceiling) until
+	// real content surfaces.
 	tailOf := func(id string) []byte {
-		if sess := s.runner.Get(id); sess != nil {
-			return sess.RecentOutputTail(needsInputScanBytes)
+		sess := s.runner.Get(id)
+		if sess == nil {
+			return nil
 		}
-		return nil
+		return agent.SubstantiveTail(sess.RecentOutputTail, needsInputScanBytes, agent.NeedsInputMaxExpandBytes)
 	}
 
 	// Content-aware idle (BUG-036): a fullscreen (alt-screen) agent parked at its

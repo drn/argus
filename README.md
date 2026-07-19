@@ -371,6 +371,8 @@ Because every Argus-spawned agent inherits the daemon's real `HOME` regardless o
 }
 ```
 
+`argus doctor` checks whether this hook is registered and warns if it's missing – see [Diagnosing binary skew](#diagnosing-binary-skew-argus-doctor) below.
+
 ### Diligence profiles (model tiering)
 
 **Diligence profiles** route model choice *per archetype* and vary process rigor *per project*: spend premium models up the tree (plan / orchestrate / review / synthesize), where leverage is high and output is hard to verify; save cheaper models down the tree (CI loops, verification, docs), where work is high-volume and verifiable. A profile is a named, on-disk TOML preset; a project points at one *by name*. At spawn, Argus resolves the bound profile, feeds the per-archetype model into the existing model-resolution chain, and exports the resolution to the agent's environment so the in-repo hera/DAG skill is profile-aware.
@@ -470,6 +472,8 @@ argus doctor   # read-only: enumerate every argus binary + running process, prin
 - **PATH DIVERGENCE** — the daemon symlink target and your `PATH` `argus` resolve to **different files** (the real footgun — a plain restart just relaunches the divergent binary and loops); the fix re-points/reinstalls so both point at one build.
 
 It is strictly **read-only** (never touches a symlink, binary, `PATH`, or process) and best-effort — an unresolvable row degrades to "unknown" rather than aborting. Exits non-zero on any non-healthy verdict.
+
+`doctor` also independently reports whether the [context-budget Stop hook](#context-budget-stop-hook) is registered — **REGISTERED**, **NOT REGISTERED** (prints the exact snippet to add), or **UNKNOWN** (`~/.claude/settings.json` missing/unreadable, reported distinctly rather than assumed absent). This check is purely advisory and never affects the exit code above, which stays governed solely by the binary-coherence verdict.
 
 ### Auto-start at Login (macOS)
 
@@ -574,6 +578,7 @@ If the recipient has a live agent session the daemon also writes a single notifi
 | `hera_new_orchestrator` | Bootstrap a new orchestrator and claim its `coordinator` role for the calling task.                                                               |
 | `hera_join`             | Claim the calling task's existing role + unread count, or (with `role_name` + `kind`) attach a new `worker`/`freelance` role under an orchestrator. Attach mode rejects (directing to `hera_move`) when the caller already holds a live binding under a different orchestrator. |
 | `hera_move`             | Relocate the caller's live binding to a different orchestrator: ends the current binding (`end_reason: "moved"`) and creates a new `worker`/`freelance` role+binding under the target, in one transaction. Use instead of `hera_join` when already bound elsewhere. |
+| `hera_rebind`           | Repair a binding stuck claim-says-none / attach-says-exists (a reused worktree path left the live binding pointing at a stale argus task): reconciles the binding to the caller's real live task without tearing down the session — the role, its prompt, messages, and status all survive. Refuses when genuinely ambiguous. |
 | `hera_spawn_worker`     | Spawn a born-bound worker task + session under the caller's orchestrator (caller must hold a live coordinator binding). Optional `model` picks the worker's model by task complexity (backend-scoped; empty = backend default). Optional `archetype` ([diligence profile](#diligence-profiles-model-tiering)) rides onto the task; defaults to `code_slice` when omitted. |
 | `hera_send`             | Send a role-addressed message. **`status` is required for worker/freelance senders** (`idle`/`working`/`blocked`/`done`/`failed`) and is applied synchronously before send. Workers/freelancers default to the coordinator when `to` is omitted; coordinators must name a recipient. |
 | `hera_inbox`            | Fetch the caller role's unread messages (oldest first), cancel their pending pane deliveries, and mark them read.                                 |
@@ -853,7 +858,7 @@ Command templates, keyed by name. Seeded with `claude`, `codex`, `pi`, and `open
 | `command` | string | — | Executable plus base flags for the agent CLI (e.g. `claude`, `codex --dangerously-bypass-approvals-and-sandbox`). Permission flags come from `defaults.permission_mode` and are **not** baked in here. |
 | `prompt_flag` | string | `""` | Flag used to pass the initial prompt to the backend (empty = positional/piped). |
 | `model` | string | `""` | Default model for this backend, injected as `--model <value>` for known CLIs (claude, codex, pi, opencode — opencode takes a `provider/model` value). Empty = the CLI's own default. A per-task model overrides it. |
-| `models` | array | `[]` | Option list for the new-task model selector for this backend. Empty = built-in list (claude → `opus`/`sonnet`/`haiku`, codex → `gpt-5-codex`/`gpt-5`, others including opencode → none, so `custom…` only). A `custom…` entry always lets you type a model not in the list. |
+| `models` | array | `[]` | Option list for the new-task model selector for this backend. Empty = built-in list (claude → `opus`/`sonnet`/`haiku`/`fable`, codex → `gpt-5-codex`/`gpt-5`, others including opencode → none, so `custom…` only). A `custom…` entry always lets you type a model not in the list. |
 
 #### `[projects.<name>]`
 

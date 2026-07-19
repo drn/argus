@@ -49,7 +49,19 @@ type HeraStore interface {
 	// Bindings
 	HeraLiveBindingByTask(taskID string) (*db.HeraBinding, error)
 	HeraLiveBindingByTaskAndOrchestrator(taskID string, orchID int64) (*db.HeraBinding, error)
+	// HeraLiveBindingByWorktreeAndOrchestrator and HeraLiveBindingByWorktree
+	// are the worktree-keyed fallback used by resolveCallerRole and the
+	// attach/bootstrap collision guards (BUG-059): a cwd that resolves to a
+	// stale/colliding argus task still has the correct worktree_path, so a
+	// worktree-keyed lookup finds the live binding a task-keyed lookup missed.
+	HeraLiveBindingByWorktreeAndOrchestrator(worktreePath string, orchID int64) (*db.HeraBinding, error)
+	HeraLiveBindingByWorktree(worktreePath string) (*db.HeraBinding, error)
+	HeraLiveBindingByRole(roleID int64) (*db.HeraBinding, error)
 	ListHeraLiveBindingsByTask(taskID string) ([]*db.HeraBinding, error)
+	// EndHeraBinding and CreateHeraBinding back hera_rebind's end-stale +
+	// insert-clean reconciliation (BUG-059 repair path).
+	EndHeraBinding(bindingID int64, reason string) error
+	CreateHeraBinding(in db.CreateHeraBindingInput) (*db.HeraBinding, error)
 	// Role status
 	UpsertHeraRoleStatus(roleID int64, status db.HeraRoleStatusValue) error
 	// Inbox count for hera_join claim response (does NOT cancel deliveries).
@@ -129,6 +141,19 @@ var heraToolDefs = []Tool{
 		},
 	},
 	{
+		Name:        "hera_rebind",
+		Description: "Repair a stuck/ambiguous hera binding without tearing down the argus session. Use when a born-bound worker can neither claim its binding (hera_join claim says none) nor attach a new one (hera_join attach hits a UNIQUE constraint / worktree-collision error) — the sign that a reused worktree path left the live binding pointing at a stale argus task. Reconciles the binding for the given orchestrator to the caller's real live task so both lookup paths agree; the role (and its prompt, messages, status) is preserved. Refuses when the state is genuinely ambiguous (two live in_progress tasks share the worktree, or multiple roles are bound here and no role_name is given).",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"cwd":          map[string]interface{}{"type": "string", "description": "Caller's worktree path (use $PWD)"},
+				"orchestrator": map[string]interface{}{"type": "string", "description": "The orchestrator whose binding for this worktree should be reconciled"},
+				"role_name":    map[string]interface{}{"type": "string", "description": "(optional) Required only when more than one role holds a live binding at this worktree; names the role to reconcile"},
+			},
+			"required": []string{"cwd", "orchestrator"},
+		},
+	},
+	{
 		Name:        "hera_send",
 		Description: "Send a message to another role in the same orchestrator. Workers/freelancers default to the coordinator when 'to' is omitted. Coordinators must supply an explicit 'to'. Worker/freelance senders MUST supply 'status' (one of idle/working/blocked/done/failed) — it is applied to the sender's role synchronously before the message is sent.",
 		InputSchema: map[string]interface{}{
@@ -198,7 +223,7 @@ var heraToolDefs = []Tool{
 				"project":      map[string]interface{}{"type": "string", "description": "(optional) Override the argus project. Defaults to the coordinator's own project"},
 				"branch":       map[string]interface{}{"type": "string", "description": "(optional) Branch passed to argus CreateTask. Defaults to project default"},
 				"backend":      map[string]interface{}{"type": "string", "description": "(optional) Backend passed to argus CreateTask. Defaults to project default"},
-				"model":        map[string]interface{}{"type": "string", "description": "(optional) Per-worker model override; choose by task complexity. Must be valid for the worker's resolved backend (claude: opus/sonnet/haiku; codex: e.g. gpt-5; pi: its model ids). Empty = backend default. Only claude/codex/pi backends receive --model; ignored if the backend command already hard-codes --model"},
+				"model":        map[string]interface{}{"type": "string", "description": "(optional) Per-worker model override; choose by task complexity. Must be valid for the worker's resolved backend (claude: opus/sonnet/haiku/fable; codex: e.g. gpt-5; pi: its model ids). Empty = backend default. Only claude/codex/pi backends receive --model; ignored if the backend command already hard-codes --model"},
 				"archetype":    map[string]interface{}{"type": "string", "description": "(optional) Diligence archetype for the worker (e.g. code_slice, bug_fix, big_build, review, ci_loop). Selects the per-archetype model from the project's bound profile and is exported as ARGUS_ARCHETYPE to the worker. Defaults to code_slice when omitted"},
 			},
 			"required": []string{"cwd", "prompt"},
@@ -389,7 +414,7 @@ func (s *Server) resolveCallerRole(cwd, orchestratorName string) (*callerRoleRes
 		if err != nil {
 			return nil, fmt.Errorf("resolve orchestrator: %w", err)
 		}
-		binding, err := s.heraStore.HeraLiveBindingByTaskAndOrchestrator(task.ID, orch.ID)
+		binding, err := s.liveBindingForOrch(task, orch.ID)
 		if errors.Is(err, db.ErrHeraNotFound) {
 			return nil, fmt.Errorf("task has no live hera binding under orchestrator %q; call hera_join first", orchestratorName)
 		}
@@ -403,7 +428,7 @@ func (s *Server) resolveCallerRole(cwd, orchestratorName string) (*callerRoleRes
 		return &callerRoleResult{task: task, binding: binding, role: role, orch: orch}, nil
 	}
 
-	binding, err := s.heraStore.HeraLiveBindingByTask(task.ID)
+	binding, err := s.liveBindingForTask(task)
 	if errors.Is(err, db.ErrHeraNotFound) {
 		return nil, fmt.Errorf("this argus task is not bound to any hera role; call hera_join with orchestrator+role_name+kind to attach, or hera_new_orchestrator to create one")
 	}
@@ -423,6 +448,50 @@ func (s *Server) resolveCallerRole(cwd, orchestratorName string) (*callerRoleRes
 		return nil, fmt.Errorf("resolve orchestrator: %w", err)
 	}
 	return &callerRoleResult{task: task, binding: binding, role: role, orch: orch}, nil
+}
+
+// liveBindingForOrch resolves the caller's live binding under orchID. It keys
+// first on the resolved argus_task_id (the exact, historical path) and, on a
+// miss, falls back to the caller's worktree_path. The fallback closes the
+// BUG-059 gap: when cwd resolved to a colliding/stale task id, the task-keyed
+// lookup misses the live binding, but the (worktree_path, orchestrator_id)
+// live-uniqueness guarantees the worktree-keyed lookup finds the one binding
+// an attach INSERT would collide with. Orchestrator scoping makes the
+// fallback safe — a stale binding for a DIFFERENT orchestrator sharing the
+// worktree is never returned.
+func (s *Server) liveBindingForOrch(task *model.Task, orchID int64) (*db.HeraBinding, error) {
+	bnd, err := s.heraStore.HeraLiveBindingByTaskAndOrchestrator(task.ID, orchID)
+	if err == nil {
+		return bnd, nil
+	}
+	if !errors.Is(err, db.ErrHeraNotFound) {
+		return nil, err
+	}
+	if task.Worktree == "" {
+		return nil, db.ErrHeraNotFound
+	}
+	return s.heraStore.HeraLiveBindingByWorktreeAndOrchestrator(task.Worktree, orchID)
+}
+
+// liveBindingForTask resolves the caller's live binding with no orchestrator
+// given to disambiguate. Keys first on argus_task_id and, on a miss, falls
+// back to worktree_path (BUG-059) via the same ambiguous-aware single-row
+// lookup HeraLiveBindingByTask uses (ErrHeraAmbiguous on 2+ live bindings
+// across different orchestrators sharing the worktree), so a genuine
+// multi-binding collision still surfaces for disambiguation instead of
+// silently picking one.
+func (s *Server) liveBindingForTask(task *model.Task) (*db.HeraBinding, error) {
+	bnd, err := s.heraStore.HeraLiveBindingByTask(task.ID)
+	if err == nil || errors.Is(err, db.ErrHeraAmbiguous) {
+		return bnd, err
+	}
+	if !errors.Is(err, db.ErrHeraNotFound) {
+		return nil, err
+	}
+	if task.Worktree == "" {
+		return nil, db.ErrHeraNotFound
+	}
+	return s.heraStore.HeraLiveBindingByWorktree(task.Worktree)
 }
 
 // buildHeraAmbiguousError returns a disambiguation error listing the
@@ -523,6 +592,24 @@ func (s *Server) toolHeraNewOrchestrator(id interface{}, args json.RawMessage) *
 		return toolError(id, fmt.Sprintf(
 			"task already has a live binding under orchestrator %q (binding_id=%d); use hera_join to retrieve your current role",
 			p.Name, existing.ID))
+	} else if checkErr != nil && !errors.Is(checkErr, db.ErrHeraNotFound) {
+		return toolError(id, fmt.Sprintf("lookup existing binding: %v", checkErr))
+	}
+
+	// Reject if this WORKTREE already holds a live binding under the target
+	// orchestrator, even when the task-keyed check above missed (BUG-059): a
+	// reused worktree path can make cwd resolve to a stale/colliding task id
+	// while the binding INSERT below is still constrained by (worktree_path,
+	// orchestrator_id) uniqueness. Pre-checking it here yields an actionable
+	// resume hint instead of a raw constraint error.
+	if task.Worktree != "" {
+		if _, wtErr := s.heraStore.HeraLiveBindingByWorktreeAndOrchestrator(task.Worktree, orch.ID); wtErr == nil {
+			return toolError(id, fmt.Sprintf(
+				"this worktree already holds a live binding to orchestrator %q; resume via hera_join(cwd, orchestrator=%q) instead",
+				p.Name, p.Name))
+		} else if !errors.Is(wtErr, db.ErrHeraNotFound) {
+			return toolError(id, fmt.Sprintf("lookup existing worktree binding: %v", wtErr))
+		}
 	}
 
 	role, binding, err := s.heraStore.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
@@ -617,10 +704,36 @@ func (s *Server) toolHeraJoin(id interface{}, args json.RawMessage) *Response {
 		return toolError(id, fmt.Sprintf("resolve orchestrator: %v", err))
 	}
 
-	// Reject if already bound to this orchestrator.
+	// Reject if already bound to this orchestrator — either keyed by the
+	// resolved argus_task_id OR by the worktree path. Bindings to OTHER
+	// orchestrators are handled by the different-orchestrator guard below.
 	existing, checkErr := s.heraStore.HeraLiveBindingByTaskAndOrchestrator(task.ID, orch.ID)
 	if checkErr == nil && existing != nil {
 		return toolError(id, fmt.Sprintf("task already has a live binding under orchestrator %q; call hera_join(cwd) without role_name to retrieve your current role", p.Orchestrator))
+	} else if checkErr != nil && !errors.Is(checkErr, db.ErrHeraNotFound) {
+		return toolError(id, fmt.Sprintf("lookup existing binding: %v", checkErr))
+	}
+
+	// The worktree-keyed check is what keeps attach in agreement with claim
+	// under BUG-059: a reused worktree path can make cwd resolve to a
+	// stale/colliding task id, so the task-keyed check above misses a binding
+	// that the (worktree_path, orchestrator_id) uniqueness will nonetheless
+	// reject on the INSERT below. Pre-checking it here converts that raw
+	// constraint error into an actionable message — claim it, or hera_rebind
+	// when the existing binding's argus_task_id has drifted from the caller's.
+	if task.Worktree != "" {
+		if wtExisting, wtErr := s.heraStore.HeraLiveBindingByWorktreeAndOrchestrator(task.Worktree, orch.ID); wtErr == nil {
+			hint := fmt.Sprintf("call hera_join(cwd, orchestrator=%q) with no role_name to claim it", p.Orchestrator)
+			if wtExisting.ArgusTaskID != task.ID {
+				hint += fmt.Sprintf(
+					"; if delivery to this worker is broken (the binding still points at stale argus task %s), call hera_rebind(cwd, orchestrator=%q) to reconcile it",
+					wtExisting.ArgusTaskID, p.Orchestrator)
+			}
+			return toolError(id, fmt.Sprintf(
+				"this worktree already holds a live binding to orchestrator %q; %s", p.Orchestrator, hint))
+		} else if !errors.Is(wtErr, db.ErrHeraNotFound) {
+			return toolError(id, fmt.Sprintf("lookup existing worktree binding: %v", wtErr))
+		}
 	}
 
 	// Reject if bound under a DIFFERENT orchestrator — attach mode is for an
@@ -770,6 +883,260 @@ func (s *Server) toolHeraMove(id interface{}, args json.RawMessage) *Response {
 	fmt.Fprintf(&b, "- **binding_id**: %d\n", result.NewBinding.ID)
 	fmt.Fprintf(&b, "- **argus_task_id**: %s\n", caller.task.ID)
 	return toolResult(id, b.String())
+}
+
+// toolHeraRebind implements hera_rebind — the supported repair path for a
+// hera binding stuck in the claim-says-none / attach-says-exists state
+// (BUG-059). A reused worktree_path can leave a live binding pointing at a
+// stale argus_task_id, so delivery and status routing (which key on the
+// binding's argus_task_id) go nowhere even though the task-then-worktree
+// fallback (liveBindingForOrch/liveBindingForTask) already lets a plain claim
+// resolve the binding row as-is. hera_rebind handles the harder case where
+// the binding row ITSELF needs to change: it reconciles the binding to the
+// caller's real live argus task WITHOUT tearing down the argus session — the
+// role (and thus its prompt, messages, and status, all keyed on role_id)
+// survives; only the binding row is refreshed (end the stale one, insert a
+// clean one under the same role).
+//
+// It refuses rather than guesses whenever the state is genuinely ambiguous:
+// two live in_progress tasks share the worktree (surfaced by resolveTask's
+// CwdAmbiguousError), multiple roles hold a live binding here and no
+// role_name disambiguates, or a DIFFERENT role's live binding already
+// occupies the caller's target task or worktree slot.
+func (s *Server) toolHeraRebind(id interface{}, args json.RawMessage) *Response {
+	if !s.heraEnabled() {
+		return toolError(id, "hera not configured")
+	}
+	var p struct {
+		Cwd          string `json:"cwd"`
+		Orchestrator string `json:"orchestrator"`
+		RoleName     string `json:"role_name"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if p.Cwd == "" {
+		return toolError(id, "hera_rebind: cwd is required")
+	}
+	if p.Orchestrator == "" {
+		return toolError(id, "hera_rebind: orchestrator is required")
+	}
+
+	// The caller's real live task. resolveTask's disambiguation (BUG-059)
+	// resolves a shared worktree to the single in_progress task; a genuinely
+	// ambiguous cwd (2+ in_progress tasks) surfaces here so this refuses
+	// rather than repair against the wrong identity.
+	task, err := s.resolveTask("", p.Cwd)
+	if err != nil {
+		return toolError(id, "hera_rebind: "+err.Error())
+	}
+
+	orch, err := s.heraStore.HeraOrchestratorByName(p.Orchestrator)
+	if errors.Is(err, db.ErrHeraNotFound) {
+		return toolError(id, fmt.Sprintf("hera_rebind: orchestrator %q does not exist", p.Orchestrator))
+	}
+	if err != nil {
+		return toolError(id, fmt.Sprintf("hera_rebind: %v", err))
+	}
+
+	// Gather the caller's live bindings under this orchestrator, keyed both by
+	// the resolved task id and by the worktree path. Under BUG-059 these can
+	// disagree; the union (de-duplicated) is the full set of rows in play.
+	candidates, err := s.heraRebindCandidates(task, orch.ID)
+	if err != nil {
+		return toolError(id, fmt.Sprintf("hera_rebind: %v", err))
+	}
+	if len(candidates) == 0 {
+		return toolError(id, fmt.Sprintf(
+			"hera_rebind: no live binding to orchestrator %q at this worktree or task; nothing to reconcile. To create a binding, use hera_join with role_name and kind.",
+			p.Orchestrator))
+	}
+
+	keeperRole, errMsg := s.pickHeraRebindKeeper(orch.ID, candidates, p.RoleName)
+	if errMsg != "" {
+		return toolError(id, "hera_rebind: "+errMsg)
+	}
+
+	// The keeper role's own live binding (role-unique, so at most one).
+	var keeperBnd *db.HeraBinding
+	if b, bErr := s.heraStore.HeraLiveBindingByRole(keeperRole.ID); bErr == nil {
+		keeperBnd = b
+	} else if !errors.Is(bErr, db.ErrHeraNotFound) {
+		return toolError(id, fmt.Sprintf("hera_rebind: load keeper binding: %v", bErr))
+	}
+
+	// Who currently occupies the TARGET slots the reconciled binding must own.
+	taskOcc, err := heraLiveOrNil(s.heraStore.HeraLiveBindingByTaskAndOrchestrator(task.ID, orch.ID))
+	if err != nil {
+		return toolError(id, fmt.Sprintf("hera_rebind: %v", err))
+	}
+	wtOcc, err := heraLiveOrNil(s.heraStore.HeraLiveBindingByWorktreeAndOrchestrator(task.Worktree, orch.ID))
+	if err != nil {
+		return toolError(id, fmt.Sprintf("hera_rebind: %v", err))
+	}
+
+	// Already consistent: the keeper binding is the sole occupant of both
+	// target slots and already points at the caller's task + worktree.
+	if keeperBnd != nil &&
+		keeperBnd.ArgusTaskID == task.ID &&
+		keeperBnd.WorktreePath == task.Worktree &&
+		keeperBnd.OrchestratorID == orch.ID &&
+		taskOcc != nil && taskOcc.ID == keeperBnd.ID &&
+		wtOcc != nil && wtOcc.ID == keeperBnd.ID {
+		var b strings.Builder
+		fmt.Fprintf(&b, "Binding already consistent; no change needed.\n\n")
+		fmt.Fprintf(&b, "- **orchestrator**: %s\n", orch.Name)
+		fmt.Fprintf(&b, "- **role_name**: %s\n", keeperRole.Name)
+		fmt.Fprintf(&b, "- **kind**: %s\n", keeperRole.Kind)
+		fmt.Fprintf(&b, "- **binding_id**: %d\n", keeperBnd.ID)
+		fmt.Fprintf(&b, "- **argus_task_id**: %s\n", keeperBnd.ArgusTaskID)
+		fmt.Fprintf(&b, "- **reconciled**: false\n")
+		return toolResult(id, b.String())
+	}
+
+	// Refuse if a DIFFERENT role's live binding holds a target slot — a
+	// genuine two-role conflict this verb must not silently resolve.
+	if taskOcc != nil && taskOcc.RoleID != keeperRole.ID {
+		return toolError(id, fmt.Sprintf(
+			"hera_rebind: argus task %s under orchestrator %q is already live-bound to a different role (binding %d); refusing to steal it",
+			task.ID, p.Orchestrator, taskOcc.ID))
+	}
+	if wtOcc != nil && wtOcc.RoleID != keeperRole.ID {
+		return toolError(id, fmt.Sprintf(
+			"hera_rebind: worktree %q under orchestrator %q is already live-bound to a different role (binding %d); refusing to steal it",
+			task.Worktree, p.Orchestrator, wtOcc.ID))
+	}
+
+	// Reconcile: end the keeper's stale binding, then insert one clean row
+	// pointing at the caller's real task + worktree. Ending + recreating
+	// (rather than UPDATE) reuses the DAO's uniqueness enforcement and
+	// preserves the role — so messages/status/prompt survive.
+	var endedIDs []int64
+	if keeperBnd != nil {
+		if eErr := s.heraStore.EndHeraBinding(keeperBnd.ID, "hera_rebind"); eErr != nil && !errors.Is(eErr, db.ErrHeraNotFound) {
+			return toolError(id, fmt.Sprintf("hera_rebind: end stale binding: %v", eErr))
+		}
+		endedIDs = append(endedIDs, keeperBnd.ID)
+	}
+
+	fresh, err := s.heraStore.CreateHeraBinding(db.CreateHeraBindingInput{
+		RoleID:         keeperRole.ID,
+		OrchestratorID: orch.ID,
+		ArgusTaskID:    task.ID,
+		WorktreePath:   task.Worktree,
+	})
+	if err != nil {
+		return toolError(id, fmt.Sprintf("hera_rebind: create reconciled binding: %v", err))
+	}
+
+	// Mirror role kind to argus task_meta so the rail + auto-adopt see it.
+	// Best-effort: a transient failure must not undo the reconcile.
+	if metaErr := s.heraStore.SetMeta(task.ID, db.HeraMetaNamespace, db.HeraMetaKeyRole, string(keeperRole.Kind)); metaErr != nil {
+		slog.Warn("[hera] meta mirror failed", "tool", "hera_rebind", "task_id", task.ID, "err", metaErr)
+	}
+
+	slog.Info("[hera] rebind ok", "orch", orch.Name, "role", keeperRole.Name, "binding_id", fresh.ID, "task_id", task.ID, "ended", endedIDs)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Binding reconciled to the caller's live argus task.\n\n")
+	fmt.Fprintf(&b, "- **orchestrator**: %s\n", orch.Name)
+	fmt.Fprintf(&b, "- **role_name**: %s\n", keeperRole.Name)
+	fmt.Fprintf(&b, "- **kind**: %s\n", keeperRole.Kind)
+	fmt.Fprintf(&b, "- **binding_id**: %d\n", fresh.ID)
+	fmt.Fprintf(&b, "- **argus_task_id**: %s\n", fresh.ArgusTaskID)
+	fmt.Fprintf(&b, "- **reconciled**: true\n")
+	if len(endedIDs) > 0 {
+		fmt.Fprintf(&b, "- **ended_binding_ids**: %v\n", endedIDs)
+	}
+	return toolResult(id, b.String())
+}
+
+// heraRebindCandidates returns the caller's live bindings under orchID, keyed
+// by the resolved task id and by the worktree path, de-duplicated by binding
+// id — the union is the full set of rows BUG-059 can leave disagreeing.
+func (s *Server) heraRebindCandidates(task *model.Task, orchID int64) ([]*db.HeraBinding, error) {
+	seen := map[int64]bool{}
+	var out []*db.HeraBinding
+	add := func(b *db.HeraBinding) {
+		if b != nil && !seen[b.ID] {
+			seen[b.ID] = true
+			out = append(out, b)
+		}
+	}
+	if b, err := s.heraStore.HeraLiveBindingByTaskAndOrchestrator(task.ID, orchID); err == nil {
+		add(b)
+	} else if !errors.Is(err, db.ErrHeraNotFound) {
+		return nil, err
+	}
+	if task.Worktree != "" {
+		if b, err := s.heraStore.HeraLiveBindingByWorktreeAndOrchestrator(task.Worktree, orchID); err == nil {
+			add(b)
+		} else if !errors.Is(err, db.ErrHeraNotFound) {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// pickHeraRebindKeeper resolves which role's binding hera_rebind should
+// reconcile. With an explicit role_name it must name a role that actually
+// holds one of the candidate bindings; without one, exactly one role must be
+// represented among the candidates. Any other shape is genuinely ambiguous
+// and refused (the returned string is non-empty on refusal).
+func (s *Server) pickHeraRebindKeeper(orchID int64, candidates []*db.HeraBinding, roleName string) (*db.HeraRole, string) {
+	roleIDs := map[int64]bool{}
+	for _, b := range candidates {
+		roleIDs[b.RoleID] = true
+	}
+
+	if roleName != "" {
+		role, err := s.heraStore.HeraRoleByName(orchID, roleName)
+		if errors.Is(err, db.ErrHeraNotFound) {
+			return nil, fmt.Sprintf("role %q does not exist under this orchestrator", roleName)
+		}
+		if err != nil {
+			return nil, fmt.Sprintf("load role: %v", err)
+		}
+		if !roleIDs[role.ID] {
+			return nil, fmt.Sprintf("role %q has no live binding at this worktree or task; candidates: %s", roleName, s.heraRoleNames(candidates))
+		}
+		return role, ""
+	}
+
+	if len(roleIDs) > 1 {
+		return nil, fmt.Sprintf("multiple roles hold live bindings here (%s); pass role_name to pick which to reconcile", s.heraRoleNames(candidates))
+	}
+
+	role, err := s.heraStore.HeraRole(candidates[0].RoleID)
+	if err != nil {
+		return nil, fmt.Sprintf("load role: %v", err)
+	}
+	return role, ""
+}
+
+// heraRoleNames renders a comma-joined list of the candidate bindings' role
+// names for ambiguity messages. Unresolvable ids fall back to a "role <id>"
+// token rather than erroring the whole message.
+func (s *Server) heraRoleNames(candidates []*db.HeraBinding) string {
+	names := make([]string, 0, len(candidates))
+	for _, b := range candidates {
+		name := fmt.Sprintf("role %d", b.RoleID)
+		if role, err := s.heraStore.HeraRole(b.RoleID); err == nil {
+			name = role.Name
+		}
+		names = append(names, name)
+	}
+	return strings.Join(names, ", ")
+}
+
+// heraLiveOrNil folds ErrHeraNotFound into (nil, nil) so call sites can treat
+// "no live binding" as a plain nil value instead of a special-cased error.
+func heraLiveOrNil(b *db.HeraBinding, err error) (*db.HeraBinding, error) {
+	if errors.Is(err, db.ErrHeraNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
 }
 
 func (s *Server) toolHeraSend(id interface{}, args json.RawMessage) *Response {

@@ -19,6 +19,7 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/profiles"
 	"github.com/drn/argus/internal/review"
+	"github.com/drn/argus/internal/skills"
 	"github.com/drn/argus/internal/uxlog"
 	_ "modernc.org/sqlite"
 )
@@ -203,8 +204,8 @@ func backendAllowsModel(m string, backend config.Backend) bool {
 
 // KnownModels returns the curated list of selectable model identifiers for a
 // backend command, used to populate the new-task model selector. The Claude
-// entries are the stable `claude` CLI aliases (opus / sonnet / haiku) that
-// always map to the current models, so the list does not churn per model
+// entries are the stable `claude` CLI aliases (opus / sonnet / haiku / fable)
+// that always map to the current models, so the list does not churn per model
 // release; the Codex entries are the current Codex CLI model names. Unknown,
 // Pi, and custom backends return nil — the model selector then offers only its
 // "default" and "custom…" options, so any model is still reachable by typing.
@@ -212,7 +213,7 @@ func backendAllowsModel(m string, backend config.Backend) bool {
 func KnownModels(command string) []string {
 	switch {
 	case IsClaudeBackend(command):
-		return []string{"opus", "sonnet", "haiku"}
+		return []string{"opus", "sonnet", "haiku", "fable"}
 	case IsCodexBackend(command):
 		return []string{"gpt-5-codex", "gpt-5"}
 	default:
@@ -689,6 +690,37 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		modelFlag = " --model " + shellQuote(resolvedModel)
 	}
 	cmdStr += modelFlag
+
+	// Make argus's own builtin skills (archive, hera, ...) available to Claude
+	// backends by materializing them and appending --add-dir. Claude Code loads
+	// .claude/skills/ from a --add-dir directory as a documented exception to
+	// --add-dir otherwise granting file access only. Additive to any --add-dir
+	// already present in the backend command — repeatable flag, no conflict.
+	// Materialization failure is logged and skipped rather than blocking launch.
+	if IsClaudeBackend(backend.Command) {
+		if root, err := skills.EnsureBuiltinSkills(); err != nil {
+			uxlog.Log("[skills] builtin skills materialize failed (continuing without them): %v", err)
+		} else if root != "" {
+			cmdStr += " --add-dir " + shellQuote(root)
+		}
+	}
+
+	// Make argus's own builtin routing content (hera coordination, argus-task
+	// self-management) reach every Claude backend session by materializing it
+	// and appending --append-system-prompt-file — the injection-side
+	// counterpart to the --add-dir skills block above. Unconditional across
+	// every session kind (coordinator, worker, freelance) and NOT gated on
+	// cfg.Hera.Enabled: the content is self-gating at read time (each section
+	// checks ARGUS_TASK_ID/$PWD sandbox residency), so injecting it into a
+	// non-argus spawn is inert. Materialization failure is logged and skipped
+	// rather than blocking launch.
+	if IsClaudeBackend(backend.Command) {
+		if path, err := ensureBuiltinRoutingFn(); err != nil {
+			uxlog.Log("[routing] builtin routing content materialize failed (continuing without it): %v", err)
+		} else if path != "" {
+			cmdStr += " --append-system-prompt-file " + shellQuote(path)
+		}
+	}
 
 	if resume {
 		// Codex resumes by replacing the base command unconditionally — that's

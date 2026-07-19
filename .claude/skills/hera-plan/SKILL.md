@@ -19,6 +19,11 @@ coordinator binding and know the base hera model (roles, bindings, messaging, `h
 status/tree) from the `hera` skill — **load that first if you haven't.** Every tool here takes
 `cwd` (pass `cwd=$PWD`) and `orchestrator` is required when your task holds 2+ live bindings.
 
+Like the base `hera` skill, this only applies once you already hold that coordinator binding — merely
+running inside an argus sandbox is not a reason to author a plan-DAG. A bare argus task with no
+coordinator binding should stay solo (or, at most, offer hera as an option to the human) rather than
+reach for this skill.
+
 **Plan nodes land under your EXISTING orchestrator – the one you already coordinate.** Authoring a
 plan-DAG is *not* a bootstrap step: you do **not** call `hera_new_orchestrator` to hold your plan.
 The `hera_plan` / `hera_plan_node` verbs add nodes to the orchestrator you already coordinate, and

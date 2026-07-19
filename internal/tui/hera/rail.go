@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/drn/argus/internal/uxlog"
@@ -205,14 +206,20 @@ func (r *Rail) SetFocused(v bool) { r.focused = v }
 // render a PR indicator. Pass nil to clear it (the indicator just won't render).
 func (r *Rail) SetPRMeta(m map[string]map[string]string) { r.prMeta = m }
 
-// rolePR reports whether the role's bound task has a non-empty "pr" url in the
-// cache (an open pull request worth flagging on the rail row).
+// rolePR reports whether the role's bound task has a PR in an actionable
+// review state (mirrors theme.PRGlyph / model.PRState.IsActionable) — a
+// merged, closed, draft, or unknown-state PR leaves a url in the cache but
+// must not flag the rail row.
 func (r *Rail) rolePR(role *RoleView) bool {
 	if role == nil || role.TaskID == "" || r.prMeta == nil {
 		return false
 	}
 	kv := r.prMeta[role.TaskID]
-	return kv != nil && kv["url"] != ""
+	if kv == nil {
+		return false
+	}
+	s, err := model.ParsePRState(kv["state"])
+	return err == nil && s.IsActionable()
 }
 
 // SetModel replaces the snapshot and rebuilds rows, preserving the cursor's
