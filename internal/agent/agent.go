@@ -608,6 +608,23 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		}
 	}
 
+	// Make argus's own builtin routing content (hera coordination, argus-task
+	// self-management) reach every Claude backend session by materializing it
+	// and appending --append-system-prompt-file — the injection-side
+	// counterpart to the --add-dir skills block above. Unconditional across
+	// every session kind (coordinator, worker, freelance) and NOT gated on
+	// cfg.Hera.Enabled: the content is self-gating at read time (each section
+	// checks ARGUS_TASK_ID/$PWD sandbox residency), so injecting it into a
+	// non-argus spawn is inert. Materialization failure is logged and skipped
+	// rather than blocking launch.
+	if IsClaudeBackend(backend.Command) {
+		if path, err := ensureBuiltinRoutingFn(); err != nil {
+			uxlog.Log("[routing] builtin routing content materialize failed (continuing without it): %v", err)
+		} else if path != "" {
+			cmdStr += " --append-system-prompt-file " + shellQuote(path)
+		}
+	}
+
 	if resume {
 		// Codex resumes by replacing the base command unconditionally — that's
 		// codex's contract and TestBuildCmd_Resume pins it. Claude and pi only
