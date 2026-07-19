@@ -25,6 +25,22 @@ func TestBuiltinContent_ContainsCodeReviewSection(t *testing.T) {
 	testutil.Contains(t, s, "hera-review-test-adversary")
 }
 
+func TestBuiltinContent_ContainsPanelReviewSection(t *testing.T) {
+	content, err := BuiltinContent()
+	testutil.NoError(t, err)
+	s := string(content)
+	testutil.Contains(t, s, "## Panel review orchestration (argus sandboxes)")
+	testutil.Contains(t, s, "hera-spawn-review")
+}
+
+func TestBuiltinContent_ContainsArchetypeModelSection(t *testing.T) {
+	content, err := BuiltinContent()
+	testutil.NoError(t, err)
+	s := string(content)
+	testutil.Contains(t, s, "## Archetype→model resolution for native sub-agent dispatch (argus sandboxes)")
+	testutil.Contains(t, s, "resolve-archetype-model")
+}
+
 func TestBuiltinContent_DeterministicOrder(t *testing.T) {
 	c1, err := BuiltinContent()
 	testutil.NoError(t, err)

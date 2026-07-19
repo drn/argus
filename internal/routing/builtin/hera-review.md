@@ -16,6 +16,5 @@ that assumes a green test run proves nothing and checks whether the tests would 
 plausible regression. It complements `hera-review`'s broader audit; run both when test coverage is
 in scope.
 
-Both currently run as a single reviewer. `hera-spawn-review`, the panel orchestrator that spawns
-multiple reviewers and synthesizes across them, has not shipped yet — don't expect multi-finder
-behavior until it lands.
+Both run as a single reviewer. For a panel pass — multiple reviewers spawned and synthesized
+together — use `hera-spawn-review` instead; see its own routing section for when to prefer it.
