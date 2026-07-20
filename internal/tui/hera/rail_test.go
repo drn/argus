@@ -1447,21 +1447,24 @@ func TestStatusIcon_NeedsInputSources(t *testing.T) {
 		testutil.Equal(t, icon, theme.IconNeedsInput)
 		testutil.Equal(t, style, theme.StyleNeedsInput)
 	})
-	t.Run("subtree rollup shows (?) on an otherwise-idle coordinator", func(t *testing.T) {
+	t.Run("subtree rollup alone does not surface (?) on an otherwise-idle coordinator", func(t *testing.T) {
 		// A coordinator with no own signal (idle/working) but a needs-input
-		// descendant: the rollup must surface "(?)".
+		// descendant: the rollup no longer drives the coordinator's own glyph
+		// (remove-needs-input-rollup-glyph) — its own status glyph shows instead.
 		icon, _ := statusIcon(&RoleView{Live: true, HasStatus: true, Status: db.HeraStatusWorking, SubtreeNeedsInput: true}, false, 0)
-		testutil.Equal(t, icon, theme.IconNeedsInput)
+		if icon == theme.IconNeedsInput {
+			t.Fatalf("expected the coordinator's own status glyph, got needs-input %q", icon)
+		}
 	})
-	t.Run("rollup beats a done coordinator", func(t *testing.T) {
+	t.Run("a done coordinator's own glyph is unaffected by a descendant's rollup", func(t *testing.T) {
 		icon, _ := statusIcon(&RoleView{Live: true, HasStatus: true, Status: db.HeraStatusDone, SubtreeNeedsInput: true}, false, 0)
-		testutil.Equal(t, icon, theme.IconNeedsInput)
+		testutil.Equal(t, icon, '✓')
 	})
-	t.Run("needs-input rollup wins over ready_to_close (BUG-A)", func(t *testing.T) {
+	t.Run("needs-input wins over ready_to_close (BUG-A)", func(t *testing.T) {
 		// A worker stamped ready_to_close (done-roll) that is ALSO genuinely
-		// blocked must surface "(?)", not the review glyph — the actionable block
-		// outranks the now-contradicted "ready to close out" stamp.
-		icon, _ := statusIcon(&RoleView{Live: true, ReadyToClose: true, SubtreeNeedsInput: true}, false, 0)
+		// blocked (its OWN signal) must surface "(?)", not the review glyph — the
+		// actionable block outranks the now-contradicted "ready to close out" stamp.
+		icon, _ := statusIcon(&RoleView{Live: true, ReadyToClose: true, NeedsInput: true}, false, 0)
 		testutil.Equal(t, icon, theme.IconNeedsInput)
 	})
 	t.Run("ready_to_close shows review glyph when not blocked", func(t *testing.T) {
@@ -1495,7 +1498,7 @@ func TestStatusIcon_Failed(t *testing.T) {
 	})
 
 	t.Run("needs-input beats failed", func(t *testing.T) {
-		// ShowsNeedsInput uses NeedsInput || SubtreeNeedsInput.
+		// ShowsNeedsInput is the role's own needs-input signal only.
 		icon, _ := statusIcon(&RoleView{
 			HasStatus: true, Status: db.HeraStatusFailed, NeedsInput: true,
 		}, false, 0)

@@ -76,10 +76,13 @@ func driveNeedsInput(t *testing.T, app *App, wkrTask string) {
 
 // TestBUG028_Integration_HeraRailShowsNeedsInputForBlockedWorker exercises the
 // full end-to-end render path for the realistic orchestrator shape (coordinator
-// + worker). The needs-input "(?)" glyph must appear on the COLLAPSED coordinator
-// header (default "tidy summary" view rolls it up) AND on the worker's own row
-// once expanded. This path was correct before BUG-028 (shipped with BUG-023);
-// the test guards against regression of the wiring + rollup + render chain.
+// + worker). The needs-input "(?)" glyph must appear somewhere on screen in the
+// COLLAPSED default view AND on the worker's own row once expanded. Since
+// remove-needs-input-rollup-glyph, the collapsed-view glyph is supplied by the
+// worker's OWN row, peeked through the closed coordinator fold via the
+// partial-fold-reveal mechanism — NOT by the coordinator header, which now shows
+// only its own signal. The test guards against regression of the wiring +
+// reveal + render chain (the header no longer carries this signal at all).
 func TestBUG028_Integration_HeraRailShowsNeedsInputForBlockedWorker(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
@@ -102,9 +105,11 @@ func TestBUG028_Integration_HeraRailShowsNeedsInputForBlockedWorker(t *testing.T
 	if app.header.ActiveTab() != widget.TabHera {
 		t.Fatalf("setup: expected TabHera, got %v", app.header.ActiveTab())
 	}
-	// (1) Default collapsed view: coordinator header surfaces the rollup.
+	// (1) Default collapsed view: the reveal mechanism peeks the blocked worker's
+	// own row through the closed coordinator fold — the header itself carries no
+	// rollup anymore (remove-needs-input-rollup-glyph).
 	if !screenHasRune(sim, theme.IconNeedsInput) {
-		t.Errorf("collapsed: Hera rail header did not surface needs-input glyph %q", theme.IconNeedsInput)
+		t.Errorf("collapsed: Hera rail did not surface needs-input glyph %q via the revealed worker row", theme.IconNeedsInput)
 	}
 	// (2) Expanded view: the worker's own row renders the glyph.
 	readUI(t, app.tapp, func() { app.heraPage.Rail().ToggleCollapse() })
@@ -115,11 +120,14 @@ func TestBUG028_Integration_HeraRailShowsNeedsInputForBlockedWorker(t *testing.T
 }
 
 // TestBUG028_Integration_CoordinatorlessHeaderSurfacesNeedsInput is the BUG-028
-// fix at the render seam: a COLLAPSED, coordinator-less orchestrator (its
-// coordinator role nuked, say) must still surface a blocked worker's needs-input
-// on its header — there is no coordinator glyph to carry the rollup, and the
-// worker row is hidden by the default collapse. Before the fix the header showed
-// no needs-input cue at all, unlike the always-flat task list.
+// render-seam test, updated for remove-needs-input-rollup-glyph: a COLLAPSED,
+// coordinator-less orchestrator (its coordinator role nuked, say) has no
+// coordinator glyph and, since this change, no header-level rollup fallback
+// either — but the blocked worker's OWN row is still rendered, peeked through
+// the closed fold via the partial-fold-reveal mechanism (gated on
+// OrchView.SubtreeNeedsInput, which does not require a coordinator role to be
+// present). So the glyph still appears on screen, now supplied entirely by the
+// revealed worker row rather than the header.
 func TestBUG028_Integration_CoordinatorlessHeaderSurfacesNeedsInput(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
@@ -139,10 +147,11 @@ func TestBUG028_Integration_CoordinatorlessHeaderSurfacesNeedsInput(t *testing.T
 
 	driveNeedsInput(t, app, wkrTask)
 
-	// The orchestrator stays COLLAPSED (default) — the worker row is hidden, so
-	// the glyph can only come from the header rollup.
+	// The orchestrator stays COLLAPSED (default) — the header renders no glyph at
+	// all (no coordinator, and the fallback is removed); the reveal mechanism
+	// still surfaces the blocked worker's own row underneath.
 	if !screenHasRune(sim, theme.IconNeedsInput) {
-		t.Errorf("BUG-028: collapsed coordinator-less header did not surface needs-input glyph %q", theme.IconNeedsInput)
+		t.Errorf("collapsed coordinator-less orchestrator did not surface needs-input glyph %q via the revealed worker row", theme.IconNeedsInput)
 	}
 }
 
@@ -240,7 +249,9 @@ func TestBUGA_Integration_LiveInReviewWorkerAtPromptSurfaces(t *testing.T) {
 
 	driveNeedsInput(t, app, wkrTask)
 
-	// Collapsed coordinator-less header rolls up the live worker's "(?)".
+	// Collapsed coordinator-less orchestrator: the reveal mechanism peeks the
+	// live worker's own row through the closed fold (the header itself carries
+	// no rollup, per remove-needs-input-rollup-glyph).
 	if !screenHasRune(sim, theme.IconNeedsInput) {
 		t.Errorf("BUG-A: live in_review worker at a prompt did not surface needs-input glyph %q (ready_to_close masked it?)", theme.IconNeedsInput)
 	}

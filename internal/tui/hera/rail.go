@@ -1488,10 +1488,11 @@ func (r *Rail) EnsureAncestorsExpanded(orchID int64) {
 // the switcher's needs-input-first sort and the rail's leaf "(?)" glyph both
 // key on — deliberately requires row.role (a genuine rrRole/rrFreelanceRole/
 // rrPinnedBreadcrumb row): a top-level orchestrator's rrOrch HEADER row never
-// qualifies, even when the coordinator's OWN signal (not just the rolled-up
-// SubtreeNeedsInput a folded header always shows for any descendant) is set —
-// appendOrchWorkers folds a top-level coordinator's role entirely into the
-// header (never emitting it as its own row), so SelectByTaskID — which only
+// qualifies, even when the coordinator's OWN signal is set (the header no
+// longer shows anything for a mere descendant rollup at all, since
+// remove-needs-input-rollup-glyph) — appendOrchWorkers folds a top-level
+// coordinator's role entirely into the header (never emitting it as its own
+// row), so SelectByTaskID — which only
 // ever matches row.role — could never land the jump on it; offering it as a
 // candidate would produce a "found but unreachable" dead cycle stop. A NESTED
 // sub-coordinator is unaffected: it bridges as an ordinary role-bearing worker
@@ -1753,20 +1754,13 @@ func (r *Rail) drawOrchRow(screen tcell.Screen, x, y, w int, row railRow, select
 		glyph, gstyle := statusIcon(coord, greyed, r.animFrame)
 		screen.SetContent(col, y, glyph, nil, gstyle)
 		col += 2
-	} else if o.SubtreeNeedsInput {
-		// Coordinator-less orchestrator (e.g. its coordinator role was nuked):
-		// no coord glyph carries the needs-input rollup, so surface it directly
-		// (BUG-028-RAIL). Without this, a blocked worker under a collapsed header — the
-		// default "tidy summary" view — shows no needs-input cue at all, unlike the
-		// always-flat task list. Style stays needs-input even when dimmed/selected
-		// (the glyph never lies), matching statusIcon's ready_to_close/needs-input.
-		gstyle := theme.StyleNeedsInput
-		if greyed {
-			gstyle = theme.StyleDimmed
-		}
-		screen.SetContent(col, y, theme.IconNeedsInput, nil, gstyle)
-		col += 2
 	}
+	// A coordinator-less orchestrator (e.g. its coordinator role was nuked) has
+	// no "own" signal and renders no needs-input glyph on its header at all —
+	// the BUG-028 fallback that once surfaced OrchView.SubtreeNeedsInput directly
+	// here was retired by remove-needs-input-rollup-glyph. A blocked descendant
+	// stays visible via its own row, peeked through the closed fold by the
+	// partial-fold-reveal mechanism below.
 	// chevron
 	if col < x+w {
 		screen.SetContent(col, y, []rune(chevron(r.isCollapsed(o.ID)))[0], nil, nameStyle)
@@ -1943,10 +1937,12 @@ func kanbanStatusOf(o *OrchView) db.HeraKanbanStatus {
 // classifier widget.RoleStatusIcon (widget/rolestatusicon.go), whose precedence
 // is needs-input → active → ready_to_close → failed → done → idle → live →
 // default. needs-input "(?)" outranks everything (BUG-A): it is the role's OWN
-// signal (authoritative needs-input flag or a self-asserted blocked status) OR
-// the subtree ROLLUP (any descendant needs input, transitively across bridges),
-// so attention bubbles up to every ancestor coordinator and the root (BUG-018).
-// GENUINE activity (role.IsActive — Live && SessionRunning && !SessionIdle, NOT
+// signal ONLY (authoritative needs-input flag or a self-asserted blocked
+// status) — a descendant's rollup does NOT bubble up to an ancestor's own icon
+// (remove-needs-input-rollup-glyph retired that; a needs-input descendant stays
+// visible via its own row, peeked through a closed ancestor fold by the
+// partial-fold-reveal mechanism instead). GENUINE activity (role.IsActive —
+// Live && SessionRunning && !SessionIdle, NOT
 // a task-status term) ranks next, animates the spinner, and OUTRANKS the
 // stale-able resting stamps ready_to_close/failed/done (BUG-F); when no higher
 // signal applies, ready_to_close/failed/done/idle/live each map to their own
@@ -1963,9 +1959,10 @@ func statusIcon(role *RoleView, dim bool, frame int) (rune, tcell.Style) {
 	// Single source of truth shared with the plan-view node projection
 	// (widget.RoleStatusIcon) so the two surfaces render 1:1 (BUG-007). The
 	// precedence + vocabulary live in widget; this only maps RoleView → inputs.
-	// ShowsNeedsInput folds in the BuildModel subtree rollup (BUG-018); IsActive is
-	// the honest live-running-and-not-idle "working" signal (Live && SessionRunning
-	// && !SessionIdle), never the stale hera status (BUG-003).
+	// ShowsNeedsInput is the role's OWN needs-input signal only
+	// (remove-needs-input-rollup-glyph); IsActive is the honest
+	// live-running-and-not-idle "working" signal (Live && SessionRunning &&
+	// !SessionIdle), never the stale hera status (BUG-003).
 	return widget.RoleStatusIcon(roleStatusInputs(role), dim, frame)
 }
 
