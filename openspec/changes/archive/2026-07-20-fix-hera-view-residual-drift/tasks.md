@@ -24,5 +24,5 @@ requirements; Stage 3 verifies and archives.
 
 - [x] 3.1 Re-read both corrected spec requirements against `internal/tui/hera/model.go` (`buildRoleView`, `IsActive`), `internal/tui/app.go` (`needsInputInProgress`, `needsInputForHeraRail`), and `internal/tui/hera/plan.go` (needs-input-outranks-active handling) to confirm the new prose matches the code exactly.
 - [x] 3.2 Run `make pre-pr` and confirm it passes clean (comment-only Go changes must not affect build/vet/lint/tests).
-- [ ] 3.3 Run `openspec archive fix-hera-view-residual-drift` (merges the delta into `openspec/specs/hera-view/spec.md`, moves the change folder to `openspec/changes/archive/<date>-fix-hera-view-residual-drift/`), committed on this branch.
-- [ ] 3.4 Run `openspec validate --all --strict` and confirm it passes against the merged base spec.
+- [x] 3.3 Run `openspec archive fix-hera-view-residual-drift` (merges the delta into `openspec/specs/hera-view/spec.md`, moves the change folder to `openspec/changes/archive/<date>-fix-hera-view-residual-drift/`), committed on this branch.
+- [x] 3.4 Run `openspec validate --all --strict` and confirm it passes against the merged base spec.
