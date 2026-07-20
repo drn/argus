@@ -1811,7 +1811,7 @@ func (r *Rail) drawOrchRow(screen tcell.Screen, x, y, w int, row railRow, select
 	}
 	agents := r.model.SubtreeAgentCount(o.ID)
 	label := o.Name
-	count := fmt.Sprintf(" (%d)", agents)
+	count := fmt.Sprintf(" %d", agents)
 	if len(label)+len(count) > remaining {
 		widget.DrawText(screen, col, y, remaining, label, nameStyle)
 		return
@@ -1861,6 +1861,31 @@ func (r *Rail) drawRoleRow(screen tcell.Screen, x, y, w int, row railRow, select
 	if remaining <= 0 {
 		return
 	}
+
+	// Context-pressure indicator (add-worker-context-indicator): a worker or
+	// freelance role reserves a trailing 2-column slot (a blank separator
+	// column + the glyph column) regardless of its current percentage, so the
+	// name never reflows the instant a row crosses a threshold. Coordinators
+	// never reserve it — they keep the live-count badge in that position
+	// (drawOrchRow) instead. Reserved BEFORE the PR tag below so both
+	// trailing marks compose rather than overwrite each other.
+	reserveInd, indGlyph, indStyle := contextIndicator(role)
+	indW := 0
+	if reserveInd {
+		indW = 2
+	}
+	drawInd := func() {
+		if indGlyph != 0 {
+			screen.SetContent(x+w-1, y, indGlyph, nil, indStyle)
+		}
+	}
+	rightW := w - indW
+	remaining = rightW - (col - x)
+	if remaining <= 0 {
+		drawInd()
+		return
+	}
+
 	// PR indicator: a managed row whose bound task has an open PR renders a
 	// right-aligned "PR" tag, reserving space so the name truncates instead of
 	// overwriting it. Mirrors the Details roster's PR mark, on the rail row.
@@ -1871,10 +1896,40 @@ func (r *Rail) drawRoleRow(screen tcell.Screen, x, y, w int, row railRow, select
 		if row.dim {
 			prStyle = theme.StyleDimmed
 		}
-		widget.DrawText(screen, x+w-len(prTag), y, len(prTag), prTag, prStyle)
+		widget.DrawText(screen, x+rightW-len(prTag), y, len(prTag), prTag, prStyle)
+		drawInd()
 		return
 	}
 	widget.DrawText(screen, col, y, remaining, role.Name, nameStyle)
+	drawInd()
+}
+
+// contextIndicator reports the trailing context-pressure mark for a role row
+// (add-worker-context-indicator): whether the row's kind reserves the
+// 2-column slot at all (workers and freelance — coordinators are excluded,
+// they already have the coord-hook's budget/nudge/recycle guard,
+// cmd/argus/coord_hook.go), and if so, what glyph and style to draw there
+// right now. reserve is independent of the current percentage so a name
+// never reflows the instant a row crosses the 40% threshold; glyph is 0
+// (draw nothing) when the role is not live, is archived, or is under 40%.
+func contextIndicator(role *RoleView) (reserve bool, glyph rune, style tcell.Style) {
+	if role == nil || role.Kind == db.HeraKindCoordinator {
+		return false, 0, tcell.StyleDefault
+	}
+	reserve = true
+	if !role.Live || role.Archived {
+		return reserve, 0, tcell.StyleDefault
+	}
+	switch {
+	case role.ContextPercent >= 90:
+		return reserve, '!', theme.StyleContextCritical
+	case role.ContextPercent >= 65:
+		return reserve, '•', theme.StyleContextHot
+	case role.ContextPercent >= 40:
+		return reserve, '•', theme.StyleContextWarm
+	default:
+		return reserve, 0, tcell.StyleDefault
+	}
 }
 
 // drawPinnedBreadcrumbRow renders line 1 of a two-line pinned non-root entry:

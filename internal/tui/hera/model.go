@@ -3,6 +3,7 @@ package hera
 import (
 	"errors"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/drn/argus/internal/db"
@@ -136,6 +137,25 @@ type RoleView struct {
 	AppliedModel   string
 	AppliedEffort  string
 	ProfileWarning string
+
+	// ContextSize is the bound task's last-observed cache_read_input_tokens
+	// count, mirrored from task_meta(hera, context_size) — the same stamp
+	// `argus coord-hook` writes on every Stop event for a coordinator, worker,
+	// or freelance role alike (add-worker-context-indicator widened it from
+	// coordinator-only). A pure read off the already-fetched heraMeta map, like
+	// ReadyToClose above — 0 when absent or unparseable (fail-open).
+	ContextSize int
+
+	// ContextPercent is ContextSize expressed as a percentage of the project's
+	// configured coordinator_context_budget (0 when unbound, when the budget
+	// is not configured, or when running remote). Unlike ContextSize this is
+	// NOT read from the hera store — it needs cfg, which is only available
+	// via a.db.Config() in local mode — so it is stamped by the SAME
+	// resolveHeraTier closure that already annotates AppliedModel/Effort above
+	// (HeraPage.SetTierResolver, local mode only, off the Draw path). The rail's
+	// worker/freelance context-pressure indicator reads this field directly and
+	// never computes a percentage itself.
+	ContextPercent int
 }
 
 // IsActive reports whether the role is genuinely producing output right now: it
@@ -1076,8 +1096,13 @@ func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.
 		rv.Live = true
 		rv.WorktreePath = b.WorktreePath
 		rv.BindingStartedAt = b.StartedAt
-		if kv := heraMeta[taskID]; kv != nil && kv[db.HeraMetaKeyReadyToClose] == "true" {
-			rv.ReadyToClose = true
+		if kv := heraMeta[taskID]; kv != nil {
+			if kv[db.HeraMetaKeyReadyToClose] == "true" {
+				rv.ReadyToClose = true
+			}
+			if size, err := strconv.Atoi(kv[db.HeraMetaKeyContextSize]); err == nil {
+				rv.ContextSize = size
+			}
 		}
 		taskInProgress := false
 		if t := taskByID[taskID]; t != nil {

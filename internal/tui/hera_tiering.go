@@ -34,6 +34,13 @@ func (a *App) resolveHeraTier(rv *hera.RoleView) {
 	}
 	cfg := a.db.Config()
 
+	// Unconditional, regardless of archetype/profile — ContextPercent has
+	// nothing to do with diligence tiering, it just needs cfg (rail-context-
+	// high). Computed here rather than in buildRoleView because cfg is only
+	// available in local mode; rail.go's contextIndicator, not this function,
+	// is what excludes coordinators from ever rendering the indicator.
+	rv.ContextPercent = contextPercent(rv.ContextSize, cfg.Hera.CoordinatorContextBudget)
+
 	explicit := ""
 	if rv.ArgusProject != "" {
 		if p, ok := cfg.Projects[rv.ArgusProject]; ok {
@@ -76,6 +83,23 @@ func (a *App) resolveHeraTier(rv *hera.RoleView) {
 	}
 	applied, _ := agent.ResolveModel(t, backend, cfg)
 	rv.AppliedModel = applied
+}
+
+// contextPercent converts a raw context_size token count into a 0-100
+// percentage of the project's configured coordinator_context_budget. budget
+// <= 0 (unconfigured) and size <= 0 both resolve to 0 rather than dividing by
+// zero or reporting a negative percentage. A worker carries no hard-stop
+// (unlike a coordinator), so size can run past budget — the result caps at
+// 100 rather than reporting e.g. 150.
+func contextPercent(size, budget int) int {
+	if budget <= 0 || size <= 0 {
+		return 0
+	}
+	pct := size * 100 / budget
+	if pct > 100 {
+		pct = 100
+	}
+	return pct
 }
 
 // validProfileNames returns the names of on-disk diligence profiles that pass

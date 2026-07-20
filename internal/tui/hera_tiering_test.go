@@ -88,6 +88,43 @@ func TestResolveHeraTier_NoArchetypeNoModel(t *testing.T) {
 	testutil.Equal(t, rv.ProfileWarning, "")
 }
 
+// TestResolveHeraTier_ContextPercent pins the widened resolveHeraTier
+// contract (add-worker-context-indicator): ContextPercent is computed from
+// ContextSize against the project's configured coordinator_context_budget —
+// the DefaultConfig value (200000) here, since no override is set.
+func TestResolveHeraTier_ContextPercent(t *testing.T) {
+	app := tierTestApp(t)
+
+	rv := &hera.RoleView{Kind: db.HeraKindWorker, ContextSize: 130000} // 65% of 200000
+	app.resolveHeraTier(rv)
+	testutil.Equal(t, rv.ContextPercent, 65)
+}
+
+// TestResolveHeraTier_ContextPercent_Coordinator pins that ContextPercent is
+// computed uniformly regardless of role kind — rail.go, not resolveHeraTier,
+// is what excludes coordinators from ever rendering the indicator.
+func TestResolveHeraTier_ContextPercent_Coordinator(t *testing.T) {
+	app := tierTestApp(t)
+
+	rv := &hera.RoleView{Kind: db.HeraKindCoordinator, ContextSize: 20000} // 10% of 200000
+	app.resolveHeraTier(rv)
+	testutil.Equal(t, rv.ContextPercent, 10)
+}
+
+// TestContextPercent_ZeroBudget pins the divide-by-zero guard: an
+// unconfigured (zero, or otherwise non-positive) budget resolves to 0 rather
+// than panicking or reporting a nonsensical percentage.
+func TestContextPercent_ZeroBudget(t *testing.T) {
+	testutil.Equal(t, contextPercent(80000, 0), 0)
+}
+
+// TestContextPercent_CapsAtHundred pins the clamp: a worker's context_size
+// can run past the coordinator-oriented budget (workers carry no hard-stop),
+// and the percentage caps at 100 rather than reporting e.g. 150.
+func TestContextPercent_CapsAtHundred(t *testing.T) {
+	testutil.Equal(t, contextPercent(300000, 200000), 100)
+}
+
 // TestValidProfileNames_OnlyValid: validProfileNames returns only profiles that
 // pass validation — a malformed profile (unknown archetype) is excluded.
 func TestValidProfileNames_OnlyValid(t *testing.T) {

@@ -29,6 +29,15 @@ var (
 	ColorFilter     = tcell.Color201                   // magenta — active filter query
 	ColorNeedsInput = tcell.NewRGBColor(250, 163, 120) // #faa378 light orange — agent blocked on user prompt
 
+	// Worker/freelance context-pressure indicator colors (add-worker-context-
+	// indicator). A three-stage temperature ramp distinct from ColorNeedsInput
+	// (deliberately — the rail's needs-input glyph already owns that hue) that
+	// tops out in a red shared with ColorError, since past 90% is genuinely an
+	// error-adjacent state worth the same alarm color.
+	ColorContextWarm     = tcell.NewRGBColor(214, 193, 90) // #d6c15a pale yellow — 40-65% context
+	ColorContextHot      = tcell.NewRGBColor(221, 122, 53) // #dd7a35 hot orange — 65-90% context
+	ColorContextCritical = tcell.NewRGBColor(226, 102, 92) // #e2665c red — 90%+ context
+
 	// PR review indicator colors (add-pr-review-indicator). One per actionable
 	// review state; non-actionable states render no cell so they need no color.
 	ColorPRAwaiting = tcell.NewRGBColor(178, 148, 250) // #b294fa purple — PR open, awaiting review
@@ -94,6 +103,13 @@ var (
 	StyleError         = tcell.StyleDefault.Foreground(ColorError)
 	StyleFilter        = tcell.StyleDefault.Foreground(ColorFilter).Bold(true)
 	StyleNeedsInput    = tcell.StyleDefault.Foreground(ColorNeedsInput).Bold(true)
+
+	// Worker/freelance context-pressure indicator styles (add-worker-context-
+	// indicator). Only the critical (bang) stage is bold — the two dot stages
+	// stay unbold so they read as ambient, not urgent.
+	StyleContextWarm     = tcell.StyleDefault.Foreground(ColorContextWarm)
+	StyleContextHot      = tcell.StyleDefault.Foreground(ColorContextHot)
+	StyleContextCritical = tcell.StyleDefault.Foreground(ColorContextCritical).Bold(true)
 
 	// PR review indicator styles (add-pr-review-indicator).
 	StylePRAwaiting = tcell.StyleDefault.Foreground(ColorPRAwaiting).Bold(true)

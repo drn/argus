@@ -93,10 +93,12 @@ const (
 	// request ("true"). The recycle_coord primitive consumes it and defers the
 	// actual kill-and-restart until the session goes idle.
 	HeraMetaKeyPendingRecycle = "pending_recycle"
-	// HeraMetaKeyContextSize mirrors a coordinator's last-observed
-	// cache_read_input_tokens count (add-coordinator-context-management D1),
-	// overwritten on every Stop-hook invocation (`argus coord-hook`) — a
-	// single scalar, not a time series.
+	// HeraMetaKeyContextSize mirrors a hera-bound role's last-observed
+	// cache_read_input_tokens count (add-coordinator-context-management D1;
+	// widened from coordinator-only to any bound role by rail-context-high so
+	// the hera-view rail's context-pressure indicator has a live signal for
+	// workers and freelance roles too), overwritten on every Stop-hook
+	// invocation (`argus coord-hook`) — a single scalar, not a time series.
 	HeraMetaKeyContextSize = "context_size"
 	// HeraMetaKeyLastNudgedContextSize mirrors the context_size at which the
 	// over-budget Stop-hook nudge (argus coord-hook) last fired

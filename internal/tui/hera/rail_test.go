@@ -2,6 +2,7 @@ package hera
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/db"
@@ -1524,6 +1525,175 @@ func TestStatusIcon_Failed(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestContextIndicator_Tiers pins the add-worker-context-indicator delta's
+// four-tier ramp (unit-level, mirroring how statusIcon itself is tested
+// directly rather than only through a full Draw pass): no glyph under 40%,
+// a pale-yellow dot 40-64%, a hot-orange dot 65-89%, a red bang 90%+.
+func TestContextIndicator_Tiers(t *testing.T) {
+	cases := []struct {
+		name      string
+		pct       int
+		wantGlyph rune
+		wantStyle tcell.Style
+	}{
+		{"under 40 is blank", 0, 0, tcell.StyleDefault},
+		{"39 is still blank", 39, 0, tcell.StyleDefault},
+		{"40 starts the warm dot", 40, '•', theme.StyleContextWarm},
+		{"64 is still warm", 64, '•', theme.StyleContextWarm},
+		{"65 starts the hot dot", 65, '•', theme.StyleContextHot},
+		{"89 is still hot", 89, '•', theme.StyleContextHot},
+		{"90 starts the bang", 90, '!', theme.StyleContextCritical},
+		{"100 is still the bang", 100, '!', theme.StyleContextCritical},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			role := &RoleView{Kind: db.HeraKindWorker, Live: true, ContextPercent: c.pct}
+			reserve, glyph, style := contextIndicator(role)
+			testutil.Equal(t, reserve, true)
+			testutil.Equal(t, glyph, c.wantGlyph)
+			testutil.Equal(t, style, c.wantStyle)
+		})
+	}
+}
+
+// TestContextIndicator_CoordinatorNeverReserves pins that a coordinator role
+// never reserves or renders the slot at all, regardless of context
+// percentage — it keeps its live-count badge in that position instead.
+func TestContextIndicator_CoordinatorNeverReserves(t *testing.T) {
+	role := &RoleView{Kind: db.HeraKindCoordinator, Live: true, ContextPercent: 95}
+	reserve, glyph, _ := contextIndicator(role)
+	testutil.Equal(t, reserve, false)
+	testutil.Equal(t, glyph, rune(0))
+}
+
+// TestContextIndicator_FreelanceEligible pins that freelance is eligible on
+// the same terms as worker — the exclusion is specifically "coordinator",
+// not "anything that isn't worker".
+func TestContextIndicator_FreelanceEligible(t *testing.T) {
+	role := &RoleView{Kind: db.HeraKindFreelance, Live: true, ContextPercent: 92}
+	reserve, glyph, style := contextIndicator(role)
+	testutil.Equal(t, reserve, true)
+	testutil.Equal(t, glyph, '!')
+	testutil.Equal(t, style, theme.StyleContextCritical)
+}
+
+// TestContextIndicator_DeadOrArchivedRendersNoGlyph pins that a worker row
+// still reserves its slot (for column-alignment stability) when not live or
+// when archived, but never actually draws a glyph into it — a stale
+// ContextPercent from a previous session must not paint a bang on a dead row.
+func TestContextIndicator_DeadOrArchivedRendersNoGlyph(t *testing.T) {
+	t.Run("not live", func(t *testing.T) {
+		role := &RoleView{Kind: db.HeraKindWorker, Live: false, ContextPercent: 95}
+		reserve, glyph, _ := contextIndicator(role)
+		testutil.Equal(t, reserve, true)
+		testutil.Equal(t, glyph, rune(0))
+	})
+	t.Run("archived", func(t *testing.T) {
+		role := &RoleView{Kind: db.HeraKindWorker, Live: true, Archived: true, ContextPercent: 95}
+		reserve, glyph, _ := contextIndicator(role)
+		testutil.Equal(t, reserve, true)
+		testutil.Equal(t, glyph, rune(0))
+	})
+}
+
+// TestDrawOrchRow_BareCount pins the hera-view delta's other half: the
+// coordinator live-count badge drops its parentheses entirely.
+func TestDrawOrchRow_BareCount(t *testing.T) {
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(40, 10)
+
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{{ID: 1, Name: "orch", Roles: []RoleView{
+		{RoleID: 11, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc"},
+		{RoleID: 12, Name: "wkr1", Kind: db.HeraKindWorker, Live: true, TaskID: "t1"},
+		{RoleID: 13, Name: "wkr2", Kind: db.HeraKindWorker, Live: true, TaskID: "t2"},
+	}}}})
+	r.SetRect(0, 0, 40, 10)
+	r.Draw(sim)
+	sim.Show()
+
+	// Row 3 = the orch header (row 1 = the leading rule, row 2 = "Active (1)").
+	// liveRoleCount excludes the coordinator itself, so 2 live workers -> "2".
+	var line string
+	for x := 0; x < 40; x++ {
+		s, _, _ := sim.Get(x, 3)
+		line += s
+	}
+	testutil.Contains(t, line, "2")
+	if strings.ContainsAny(line, "()") {
+		t.Errorf("orchestrator header must render a bare count with no parens; got %q", line)
+	}
+}
+
+// TestRail_ContextIndicatorRendersOnWorkerRow is the SimulationScreen
+// integration proof (mirrors TestRail_PRIndicatorOnManagedRow's shape): the
+// bang actually reaches the screen on a critical worker row, and never
+// appears on the coordinator's own row.
+func TestRail_ContextIndicatorRendersOnWorkerRow(t *testing.T) {
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(40, 10)
+
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{{ID: 1, Name: "orch", Roles: []RoleView{
+		{RoleID: 11, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc", ContextPercent: 95},
+		{RoleID: 12, Name: "wkr", Kind: db.HeraKindWorker, Live: true, TaskID: "twk", ContextPercent: 95},
+	}}}})
+	r.SetRect(0, 0, 40, 10)
+	r.Draw(sim)
+	sim.Show()
+
+	// Row 3 = orch header, row 4 = the worker (row 1 leading rule, row 2 group header).
+	foundOnWorker := false
+	for x := 0; x < 40; x++ {
+		s, _, _ := sim.Get(x, 4)
+		if s == "!" {
+			foundOnWorker = true
+			break
+		}
+	}
+	testutil.Equal(t, foundOnWorker, true)
+
+	for x := 0; x < 40; x++ {
+		s, _, _ := sim.Get(x, 3)
+		if s == "!" {
+			t.Fatalf("coordinator row must never render the context bang; found one at x=%d", x)
+		}
+	}
+}
+
+// TestRail_ContextIndicatorComposesWithPRTag pins that a row eligible for
+// both the PR tag and the context bang renders both, per the hera-view
+// delta's composition scenario.
+func TestRail_ContextIndicatorComposesWithPRTag(t *testing.T) {
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(40, 10)
+
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{{ID: 1, Name: "orch", Roles: []RoleView{
+		{RoleID: 11, Name: "wkr", Kind: db.HeraKindWorker, Live: true, TaskID: "twk", ContextPercent: 95},
+	}}}})
+	r.SetPRMeta(map[string]map[string]string{"twk": {"url": "https://example/pr/1", "state": "awaiting-review"}})
+	r.SetRect(0, 0, 40, 10)
+	r.Draw(sim)
+	sim.Show()
+
+	// Row 4 = the worker row (row 1 leading rule, row 2 group header, row 3 the
+	// orch header that always renders even for a coordinator-less orchestrator).
+	var line string
+	for x := 0; x < 40; x++ {
+		s, _, _ := sim.Get(x, 4)
+		line += s
+	}
+	testutil.Contains(t, line, "PR")
+	testutil.Contains(t, line, "!")
 }
 
 // TestRail_DrawDoesNotPanic exercises every drawRow branch against a real
