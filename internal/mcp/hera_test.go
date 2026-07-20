@@ -813,6 +813,63 @@ func TestHera_Move_CoordinatorKindRejected(t *testing.T) {
 	testutil.Contains(t, cr.Content[0].Text, "hera_new_orchestrator")
 }
 
+// TestHera_Move_SourceCoordinatorRejected covers hera-freelancer-bug: a
+// coordinator calling hera_move on ITSELF (moving away from its own
+// coordinator binding to a worker/freelance role elsewhere) must be rejected,
+// not silently orphan its whole orchestrator subtree. Ground truth: a live
+// coordinator called hera_move(kind="freelance") to join another team,
+// leaving its own orchestrator coordinator-less while creating a disconnected
+// freelance stub under the target with no link back to its former subtree.
+func TestHera_Move_SourceCoordinatorRejected(t *testing.T) {
+	s, d := testHeraServer(t)
+
+	coordTask := addHeraTestTask(t, d, "/wt/source-coord")
+	doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_new_orchestrator",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"name":"orch-source-coord","coordinator_role_name":"coord"
+		}`, coordTask.Worktree)),
+	})
+	orchSource, err := d.HeraOrchestratorByName("orch-source-coord")
+	testutil.NoError(t, err)
+	origBinding, err := d.HeraLiveBindingByTaskAndOrchestrator(coordTask.ID, orchSource.ID)
+	testutil.NoError(t, err)
+
+	targetCoord := addHeraTestTask(t, d, "/wt/target-coord")
+	doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_new_orchestrator",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"name":"orch-target-coord","coordinator_role_name":"coord"
+		}`, targetCoord.Worktree)),
+	})
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_move",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd":%q,"orchestrator":"orch-target-coord","role_name":"coordTask","kind":"freelance"
+		}`, coordTask.Worktree)),
+	})
+	if resp.Error != nil {
+		t.Fatalf("hera_move rpc error: %v", resp.Error)
+	}
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "coordinator")
+	testutil.Contains(t, cr.Content[0].Text, "orch-source-coord")
+
+	// The original coordinator binding is untouched — no orphaned orchestrator.
+	stillLive, err := d.HeraLiveBindingByTaskAndOrchestrator(coordTask.ID, orchSource.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, stillLive.ID, origBinding.ID)
+	testutil.Nil(t, stillLive.EndedAt)
+
+	// Nothing created under the target orchestrator.
+	orchTarget, err := d.HeraOrchestratorByName("orch-target-coord")
+	testutil.NoError(t, err)
+	_, err = d.HeraRoleByName(orchTarget.ID, "coordTask")
+	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+}
+
 // --- CallerContext / resolveCallerRole ---
 
 func TestHera_CallerContext_ZeroBindings(t *testing.T) {
