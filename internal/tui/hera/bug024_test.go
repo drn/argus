@@ -116,8 +116,8 @@ func TestRail_StatusStepAnchorsCursorAndUpdatesGlyph(t *testing.T) {
 	postGlyph, _ := statusIcon(after, false, 0)
 	testutil.Equal(t, postGlyph, theme.IconNeedsInput)
 
-	// The coordinator's live-role count badge stays numeric (never "(?)").
-	testutil.Equal(t, liveRoleCount(&r.model.Active[0]), 2)
+	// The coordinator's agent-count badge stays numeric (never "(?)").
+	testutil.Equal(t, r.model.SubtreeAgentCount(o), 2)
 }
 
 // roleViewByID builds the model and returns the RoleView for roleID under orch.

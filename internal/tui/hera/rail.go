@@ -1781,9 +1781,9 @@ func (r *Rail) drawOrchRow(screen tcell.Screen, x, y, w int, row railRow, select
 	if remaining <= 0 {
 		return
 	}
-	live := liveRoleCount(o)
+	agents := r.model.SubtreeAgentCount(o.ID)
 	label := o.Name
-	count := fmt.Sprintf(" (%d)", live)
+	count := fmt.Sprintf(" (%d)", agents)
 	if len(label)+len(count) > remaining {
 		widget.DrawText(screen, col, y, remaining, label, nameStyle)
 		return
@@ -1937,19 +1937,6 @@ func kanbanStatusOf(o *OrchView) db.HeraKanbanStatus {
 		return db.HeraKanbanActive
 	}
 	return o.KanbanStatus
-}
-
-// liveRoleCount counts live, non-coordinator roles (the agents shown under the
-// header). The coordinator is folded into the header itself, so it never inflates
-// the (N) child count.
-func liveRoleCount(o *OrchView) int {
-	n := 0
-	for i := range o.Roles {
-		if o.Roles[i].Live && o.Roles[i].Kind != db.HeraKindCoordinator {
-			n++
-		}
-	}
-	return n
 }
 
 // statusIcon picks the glyph + style for a role row by delegating to the shared

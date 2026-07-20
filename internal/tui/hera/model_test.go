@@ -409,6 +409,45 @@ func TestModel_CoordBridgeNoFalsePositives(t *testing.T) {
 	testutil.Equal(t, len(m.consumedSet(m.bridgeIndex())), 0)
 }
 
+// TestModel_SubtreeAgentCount_IncludesArchivedRegardlessOfLiveness pins the
+// rail header badge fix: archiving a role (the `a` hide key) only stamps
+// hera_roles.archived_at — it never ends the role's binding — so a role
+// tucked into the coordinator's greyed-out Archive bucket keeps Live=true
+// forever. The badge must count it anyway (a Live-gated count silently
+// double-reports it as still "current"); Live plays no part in the count at
+// all, archived or not.
+func TestModel_SubtreeAgentCount_IncludesArchivedRegardlessOfLiveness(t *testing.T) {
+	o := orchView(1, "orch", "tc", wk("current", "t1"))
+	o.Roles = append(o.Roles,
+		RoleView{Name: "hidden-not-torn-down", Kind: db.HeraKindWorker, Live: true, Archived: true, TaskID: "t2"},
+		RoleView{Name: "hidden-binding-ended", Kind: db.HeraKindWorker, Live: false, Archived: true, TaskID: "t3"},
+	)
+	m := Model{Active: []OrchView{o}}
+
+	// coord excluded, all 3 workers counted regardless of Live/Archived.
+	testutil.Equal(t, m.SubtreeAgentCount(1), 3)
+}
+
+// TestModel_SubtreeAgentCount_RecursesIntoNestedSubcoordAndItsArchive pins the
+// other half of the fix: the badge must recurse into bridged sub-coordinators
+// (a nested sub-team spawned from a worker row) rather than stopping at the
+// orchestrator's own direct roles, and it must count that nested subtree's
+// own archived workers too — while never double-counting the bridging worker
+// row in the parent against the SAME agent's coordinator role in the child.
+func TestModel_SubtreeAgentCount_RecursesIntoNestedSubcoordAndItsArchive(t *testing.T) {
+	// R(coord tr, worker bridge→tc) → C(coord tc, worker wc, archived worker).
+	r := orchView(1, "R", "tr", wk("bridge", "tc"))
+	c := orchView(2, "C", "tc", wk("wc", "twc"))
+	c.Roles = append(c.Roles, RoleView{Name: "hidden", Kind: db.HeraKindWorker, Live: true, Archived: true, TaskID: "t-hidden"})
+	m := Model{Active: []OrchView{r, c}}
+
+	// C alone: its own coord excluded, wc + hidden counted = 2.
+	testutil.Equal(t, m.SubtreeAgentCount(2), 2)
+	// R's subtree: R's coord excluded, "bridge" counted once (not also C's
+	// coord, the same underlying task) + C's wc + hidden = 3.
+	testutil.Equal(t, m.SubtreeAgentCount(1), 3)
+}
+
 // TestBuildModel_PopulatesDetailsFields proves the additive coordinator-Details
 // projection inputs (orch + role creation, the live binding's worktree + start,
 // the role-status update time, and the bound task name) flow into the model.
