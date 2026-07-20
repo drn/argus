@@ -212,7 +212,7 @@ below. The `?` overlay always shows your active bindings.
 
 #### Projects Tab
 
-The Projects tab (`2`) has three regions: a left **rail**, a middle **coordinator pane**, and a right **details** region. The rail lists active orchestrators with their coordinator/worker roles, plus **Pinned**, **Freelance**, and a collapsed **Archive** section. Every TOP-LEVEL coordinator also carries an independent **kanban status** (`active` / `backlog` / `blocked` / `done`, default `active`) — the active list is grouped by it, in that order, with a labeled divider ahead of any non-empty Backlog/Blocked/Done group (an empty group renders nothing). This is fully independent of pin/archive and of the `s`/`S` role-status keys below. Keys act on the rail selection:
+The Projects tab (`2`) has three regions: a left **rail**, a middle **coordinator pane**, and a right **details** region. The rail lists active orchestrators with their coordinator/worker roles, plus **Pinned**, **Freelance**, and a collapsed **Archive** section. Every TOP-LEVEL coordinator also carries an independent **kanban status** (`active` / `backlog` / `blocked` / `done`, default `active`) — the active list is grouped by it, in that order, each group with its own labeled divider (an empty group renders nothing). Only the group holding the current rail selection is expanded; the other three collapse to their header line, and stepping past a group's edge transparently expands the next one. This is fully independent of pin/archive and of the `s`/`S` role-status keys below. Keys act on the rail selection:
 
 | Key             | Action                                                                                 |
 | --------------- | -------------------------------------------------------------------------------------- |
@@ -358,7 +358,7 @@ The two run **independently and share no state.** Switching to native Hera perfo
 
 #### Context-budget Stop hook
 
-A long-lived coordinator accumulates context for the life of its orchestration in a way a disposable worker never does. `argus coord-hook` is a CLI subcommand meant to run as a Claude Code `Stop` hook: on every turn of a hera **coordinator**'s session it self-discovers the daemon's REST port + API token, tails the session transcript for the latest `cache_read_input_tokens`, stamps it into `task_meta` (`hera`, `context_size`), and – once that value reaches the project's `coordinator_context_budget` (`[hera] coordinator_context_budget`, default `200000`) – blocks the `Stop` event with a "reach a safe seam and recycle" nudge that repeats every turn until the coordinator drops back under budget (typically via a recycle). It self-gates hard on `ARGUS_TASK_ID` plus a resolved coordinator role, so it is a silent no-op for every other Claude Code session.
+A long-lived coordinator accumulates context for the life of its orchestration in a way a disposable worker never does. `argus coord-hook` is a CLI subcommand meant to run as a Claude Code `Stop` hook: on every turn of a hera **coordinator**'s session it self-discovers the daemon's REST port + API token, tails the session transcript for the latest `cache_read_input_tokens`, stamps it into `task_meta` (`hera`, `context_size`), and – once that value reaches the project's `coordinator_context_budget` (`[hera] coordinator_context_budget`, default `200000`) – blocks the `Stop` event with a "reach a safe seam and recycle" nudge. The nudge is throttled: it recurs only after `context_size` grows by another `coordinator_nudge_increment` (default `50000`) past the size at which it last fired, or immediately on a fresh over-budget episode following a drop back under budget (typically via a recycle). It self-gates hard on `ARGUS_TASK_ID` plus a resolved coordinator role, so it is a silent no-op for every other Claude Code session.
 
 Because every Argus-spawned agent inherits the daemon's real `HOME` regardless of which project it's working in, the hook is registered **once, globally** – Argus cannot write to a user's global settings file on their behalf, so this is a one-time manual step. Add to `~/.claude/settings.json`:
 
@@ -385,13 +385,13 @@ A task's **archetype** names *what kind of job* it is. It is an optional task pr
 | Archetype | What it is | `default` model |
 |-----------|------------|-----------------|
 | `brainstorm` | Exploratory design / ideation | `opus` |
-| `orchestrator` | Coordinator that delegates and routes work (default for hera coordinators) | `opus` |
-| `big_build` | Large, multi-file implementation | `opus` |
+| `orchestrator` | Coordinator that delegates and routes work (default for hera coordinators) | `sonnet` |
+| `big_build` | Large, multi-file implementation | `sonnet` |
 | `code_slice` | A scoped implementation slice (default for hera workers) | `sonnet` |
 | `bug_fix` | A targeted defect fix | `sonnet` |
 | `review` | A code / plan review pass | `opus` |
 | `security_review` | A security-focused review | `opus` |
-| `synthesis` | Consolidating multiple inputs into one result | `opus` |
+| `synthesis` | Consolidating multiple inputs into one result | `sonnet` |
 | `spec_audit` | Auditing spec coverage / conformance | `sonnet` |
 | `ci_loop` | A mechanical CI-green loop | `haiku` |
 | `verify` | Verification / acceptance checking | `haiku` |
@@ -416,7 +416,7 @@ The DB stores **only** the project→profile *name* – never a profile body, an
 - **Seed profiles** – three documented examples ship embedded in the binary (`internal/profiles/seeds/`), installable via **Settings → Hera → "Install Default Profiles"** or `argus profiles install-defaults`; either writes any seed name not already present into `~/.argus/profiles/` and never overwrites an existing (possibly customized) file. Installation is always an explicit action – nothing auto-installs on daemon startup. You can also copy a seed by hand into `~/.argus/profiles/` or a repo's `.argus/profiles/` and adapt it.
   - `default` – balanced allocation across all 13 archetypes (the table above).
   - `lean` – `extends = "default"`, minimal process (single review pass, no gating) for daily-driven personal tooling.
-  - `customer_grade` – `extends = "default"`, turned-up rigor (two review passes, gating, a security spot-check) plus a reviewer `[panel]`, for customer-facing code with no dogfooding loop.
+  - `customer_grade` – `extends = "default"`, turned-up rigor (two review passes, gating, a security spot-check) plus a reviewer `[panel]`, for customer-facing code with no dogfooding loop. Also re-escalates `orchestrator`/`big_build`/`spec_audit` back to `opus` and swaps `brainstorm`/`review` to `fable` for this tier specifically.
 - **Project binding** – **Settings → project view** shows a validated select-list of on-disk profiles; only profiles that pass validation are selectable, and the chosen name persists as the project's default binding. The new-agent modal also lets you pick a profile for that spawn. An unbound project resolves the `default` profile.
 - **`effort` / `window`** – each `[archetype.<name>]` entry may also carry `effort` (∈ `low`/`medium`/`high`) and `window` (∈ `200k`/`1m`). These are validated and surfaced in the plan/DAG view, but currently only `model` is wired into hera spawn resolution — and, for Claude's native sub-agent dispatch, `effort` is threadable only through a `Workflow` script's `agent()` (`opts.effort`), since the built-in `Agent`/`Task` tool has no effort parameter as of this writing (see the [`resolve-archetype-model`](#agent-facing-skills) skill).
 - **Reviewer `[panel]`** – a profile may carry an opaque `[panel]` block, composed and consumed by the cross-vendor review work (`hera-spawn-review`); validation enforces its grammar when the reviewer-panel validator is wired in, falling back to structural well-formedness otherwise.
@@ -944,6 +944,7 @@ Full enable/verify walkthrough: **[docs/knowledge-base.md](docs/knowledge-base.m
 |-----|------|---------|-------------|
 | `enabled` | bool | `true` | Enable [native Hera](#hera-native-multi-agent-coordination) — serves the `hera_*` MCP tools in-process, backed by the `hera_*` tables in `data.sql`. Set `false` to serve the external Hera *plugin*'s tools instead (its `~/.hera` state is independent; no migration is performed). The TUI's second tab is always the native Hera view regardless of this flag. |
 | `coordinator_context_budget` | int | `200000` | Cache-read-token threshold (see [Context-budget Stop hook](#context-budget-stop-hook)) past which `argus coord-hook` blocks a coordinator's `Stop` event with a reach-a-seam recycle nudge. |
+| `coordinator_nudge_increment` | int | `50000` | Cache-read-token growth past the last-fired size (see [Context-budget Stop hook](#context-budget-stop-hook)) before `argus coord-hook`'s over-budget nudge is allowed to re-fire. |
 
 #### `[supervisor]`
 

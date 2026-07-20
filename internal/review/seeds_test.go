@@ -15,7 +15,7 @@ import (
 func testKnownModels(command string) []string {
 	switch command {
 	case "claude":
-		return []string{"opus", "sonnet", "haiku"}
+		return []string{"opus", "sonnet", "haiku", "fable"}
 	case "codex":
 		return []string{"gpt-5-codex", "gpt-5"}
 	default:

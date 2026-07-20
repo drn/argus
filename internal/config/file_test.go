@@ -128,6 +128,26 @@ coordinator_context_budget = 350000
 	testutil.Equal(t, base.Hera.CoordinatorContextBudget, 200000)
 }
 
+// TestFileLoader_HeraCoordinatorNudgeIncrementOverlay pins the
+// throttle-coord-hook-nudge config delta's override precedence: a config.toml
+// `hera.coordinator_nudge_increment` value must win over the 50000 default,
+// mirroring TestFileLoader_HeraCoordinatorContextBudgetOverlay's shape exactly.
+func TestFileLoader_HeraCoordinatorNudgeIncrementOverlay(t *testing.T) {
+	path := writeFile(t, `
+[hera]
+coordinator_nudge_increment = 75000
+`)
+	l := NewFileLoader(path)
+	base := DefaultConfig()
+
+	got := l.Apply(base)
+	testutil.NoError(t, l.Err())
+
+	testutil.Equal(t, got.Hera.CoordinatorNudgeIncrement, 75000)
+	// The base value is untouched.
+	testutil.Equal(t, base.Hera.CoordinatorNudgeIncrement, 50000)
+}
+
 func TestFileLoader_BackendModelsOverlay(t *testing.T) {
 	path := writeFile(t, `
 [backends.claude]

@@ -298,7 +298,7 @@ func (p *HeraPage) jumpToLeaf(id string) {
 	// OnDrillIn), so drill-in is unaffected.
 	sel := p.rail.Selection()
 	if taskID := sel.FocusTaskID(); taskID != "" && p.OnReattach != nil {
-		live := p.resolve != nil && p.resolve(taskID) != nil
+		live := p.sessionLive(taskID)
 		if !live || !sel.IsCoordinator() {
 			uxlog.Log("[hera-view] plan leaf-enter reattach task=%s (live=%v coordinator=%v)", taskID, live, sel.IsCoordinator())
 			p.OnReattach(sel)
@@ -925,6 +925,22 @@ func (p *HeraPage) isRailMutationKey(event *tcell.EventKey) bool {
 	return ok
 }
 
+// sessionLive reports whether the resolver yields a genuinely LIVE session for
+// taskID — non-nil AND Alive(). A resolver can return a cached handle whose
+// stream the daemon tore down while the process is still running (BUG-013:
+// StreamLost relay/bounce) — that handle is disconnected, not live. Treating
+// mere non-nil-ness as "live" (the pre-fix bug) let Enter on a disconnected
+// coordinator skip reattach and only move focus, leaving a second Enter
+// (now routed through the pane's own InputHandler, which correctly checks
+// Alive()) to actually trigger the revive.
+func (p *HeraPage) sessionLive(taskID string) bool {
+	if p.resolve == nil {
+		return false
+	}
+	sess := p.resolve(taskID)
+	return sess != nil && sess.Alive()
+}
+
 // keys returns the live keymap, falling back to defaults when no accessor is set.
 func (p *HeraPage) keys() *keymap.Keymap {
 	if p.Keys != nil {
@@ -982,7 +998,7 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 		// reattaches a DEAD coordinator session (and is navigate-only when live).
 		taskID := sel.FocusTaskID()
 		if taskID != "" && p.OnReattach != nil {
-			live := p.resolve != nil && p.resolve(taskID) != nil
+			live := p.sessionLive(taskID)
 			if !live || !sel.IsCoordinator() {
 				uxlog.Log("[hera-view] reattach key on task=%s (live=%v coordinator=%v)", taskID, live, sel.IsCoordinator())
 				p.OnReattach(sel)

@@ -98,6 +98,12 @@ const (
 	// overwritten on every Stop-hook invocation (`argus coord-hook`) — a
 	// single scalar, not a time series.
 	HeraMetaKeyContextSize = "context_size"
+	// HeraMetaKeyLastNudgedContextSize mirrors the context_size at which the
+	// over-budget Stop-hook nudge (argus coord-hook) last fired
+	// (throttle-coord-hook-nudge) — a single scalar, not history, overwritten
+	// each time the nudge fires. Used to throttle nudge recurrence to once per
+	// coordinator_nudge_increment of growth, rather than firing every turn.
+	HeraMetaKeyLastNudgedContextSize = "last_nudged_context_size"
 )
 
 // HeraRoleKind enumerates the valid kinds for a hera_roles row.

@@ -60,6 +60,20 @@ type coordHookEnv struct {
 	// whether PendingRecycleAlready is true — the safety net for when the
 	// graceful path is stuck waiting for idleness that never comes.
 	ForceRecycle func(taskID string) error
+	// ReadLastNudgedContextSize reads the context_size at which the
+	// over-budget nudge last fired (task_meta hera/last_nudged_context_size,
+	// throttle-coord-hook-nudge) — ok is false when the key has never been
+	// stamped (no prior nudge this episode).
+	ReadLastNudgedContextSize func(taskID string) (size int, ok bool, err error)
+	// StampLastNudgedContextSize overwrites task_meta(hera,
+	// last_nudged_context_size) with the size at which the nudge just fired —
+	// called only on the path that actually emits a block decision, never on a
+	// suppressed (throttled or pending-recycle) turn.
+	StampLastNudgedContextSize func(taskID string, size int) error
+	// NudgeIncrement reads the configured coordinator_nudge_increment: the
+	// amount context_size must grow past the last-nudged size before the
+	// nudge is allowed to re-fire.
+	NudgeIncrement func(taskID string) (int, error)
 }
 
 // stopHookInput is the subset of Claude Code's Stop hook stdin payload this
@@ -85,8 +99,11 @@ type stopHookDecision struct {
 // unconditionally stamps task_meta(hera, context_size) for a coordinator
 // session regardless of budget, and writes a Stop-hook block decision to out
 // only when at/over budget. Re-evaluates fresh on every invocation — nothing
-// is remembered between processes, so the nudge recurs every turn the
-// condition holds and stops the very turn it doesn't.
+// is remembered between processes — but the nudge itself is throttled
+// (throttle-coord-hook-nudge): once it fires, it recurs only after
+// context_size has grown by at least the configured increment past the size
+// at which it last fired, not on every subsequent turn, and stops the very
+// turn context_size drops back under budget.
 func runCoordHook(stdin io.Reader, out, errOut io.Writer, env coordHookEnv) {
 	taskID := env.Getenv("ARGUS_TASK_ID")
 	if taskID == "" {
@@ -145,6 +162,29 @@ func runCoordHook(stdin io.Reader, out, errOut io.Writer, env coordHookEnv) {
 		return
 	}
 
+	// Nudge increment throttle (throttle-coord-hook-nudge): once the nudge has
+	// fired, it recurs only after context_size has grown by at least the
+	// configured increment past the size at which it last fired — not on every
+	// subsequent turn. The `size >= lastNudged` guard is required: without it, a
+	// fresh over-budget episode following a recycle (context_size reset low, but
+	// a stale-and-larger last_nudged_context_size still on record from the prior
+	// session) would be wrongly suppressed by `size < lastNudged+increment`
+	// alone. Read errors fail open (treated as "no prior nudge"/"no increment
+	// configured") so a read failure never silently drops the nudge.
+	lastNudged, hadLastNudged, err := env.ReadLastNudgedContextSize(taskID)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "coord-hook: read last nudged context size: %v\n", err)
+		hadLastNudged = false
+	}
+	increment, err := env.NudgeIncrement(taskID)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "coord-hook: read nudge increment: %v\n", err)
+		increment = 0
+	}
+	if hadLastNudged && size >= lastNudged && size < lastNudged+increment {
+		return
+	}
+
 	// Part A idempotency: once the coordinator has already requested a
 	// self-service recycle, re-blocking here would force immediate
 	// re-engagement on every subsequent Stop, so the session's PTY never
@@ -170,6 +210,15 @@ func runCoordHook(stdin io.Reader, out, errOut io.Writer, env coordHookEnv) {
 	}
 	if err := json.NewEncoder(out).Encode(dec); err != nil {
 		_, _ = fmt.Fprintf(errOut, "coord-hook: encode decision: %v\n", err)
+		return
+	}
+
+	// Record the size at which this nudge fired so the increment throttle above
+	// has a baseline for the next invocation. Only reached on the path that
+	// actually emits a block decision — never on a turn suppressed by the
+	// increment gate or by pending_recycle.
+	if err := env.StampLastNudgedContextSize(taskID, size); err != nil {
+		_, _ = fmt.Fprintf(errOut, "coord-hook: stamp last nudged context size: %v\n", err)
 	}
 }
 
@@ -200,13 +249,16 @@ func runCoordHookCommand() {
 // JSONL named in the hook's stdin.
 func realCoordHookEnv() coordHookEnv {
 	return coordHookEnv{
-		Getenv:                os.Getenv,
-		ResolveRoleKind:       resolveRoleKindReal,
-		PendingRecycleAlready: pendingRecycleAlreadyReal,
-		ReadContextSize:       readContextSizeReal,
-		StampContextSize:      stampContextSizeReal,
-		Budget:                budgetReal,
-		ForceRecycle:          forceRecycleReal,
+		Getenv:                     os.Getenv,
+		ResolveRoleKind:            resolveRoleKindReal,
+		PendingRecycleAlready:      pendingRecycleAlreadyReal,
+		ReadContextSize:            readContextSizeReal,
+		StampContextSize:           stampContextSizeReal,
+		Budget:                     budgetReal,
+		ForceRecycle:               forceRecycleReal,
+		ReadLastNudgedContextSize:  readLastNudgedContextSizeReal,
+		StampLastNudgedContextSize: stampLastNudgedContextSizeReal,
+		NudgeIncrement:             nudgeIncrementReal,
 	}
 }
 
@@ -409,6 +461,73 @@ func stampContextSizeReal(taskID string, size int) error {
 	}
 	_, err = coordHookRequest(http.MethodPut, "/api/tasks/"+taskID+"/meta", bytes.NewReader(payload))
 	return err
+}
+
+// readLastNudgedContextSizeReal reads task_meta(hera, last_nudged_context_size)
+// for the given task (db.HeraMetaKeyLastNudgedContextSize) — mirrors
+// resolveRoleKindReal/pendingRecycleAlreadyReal's shape exactly, against the
+// same GET /api/tasks/{id}/meta?namespace=hera endpoint, just reading a
+// different key and parsing it as an int. ok is false (with no error) when the
+// key is absent from the entries — no prior nudge this episode.
+func readLastNudgedContextSizeReal(taskID string) (int, bool, error) {
+	respBody, err := coordHookRequest(http.MethodGet,
+		"/api/tasks/"+taskID+"/meta?namespace="+db.HeraMetaNamespace, nil)
+	if err != nil {
+		return 0, false, err
+	}
+
+	var parsed struct {
+		Entries []struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return 0, false, fmt.Errorf("decode task meta: %w", err)
+	}
+	for _, e := range parsed.Entries {
+		if e.Key == db.HeraMetaKeyLastNudgedContextSize {
+			size, err := strconv.Atoi(e.Value)
+			if err != nil {
+				return 0, false, fmt.Errorf("parse last nudged context size: %w", err)
+			}
+			return size, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
+// stampLastNudgedContextSizeReal overwrites task_meta(hera,
+// last_nudged_context_size) via the same PUT /api/tasks/{id}/meta endpoint —
+// mirrors stampContextSizeReal's shape exactly, just writing a different key.
+func stampLastNudgedContextSizeReal(taskID string, size int) error {
+	payload, err := json.Marshal(map[string]string{
+		"namespace": db.HeraMetaNamespace,
+		"key":       db.HeraMetaKeyLastNudgedContextSize,
+		"value":     strconv.Itoa(size),
+	})
+	if err != nil {
+		return fmt.Errorf("encode meta payload: %w", err)
+	}
+	_, err = coordHookRequest(http.MethodPut, "/api/tasks/"+taskID+"/meta", bytes.NewReader(payload))
+	return err
+}
+
+// nudgeIncrementReal reads the project's configured coordinator_nudge_increment
+// via GET /api/config — mirrors budgetReal's shape exactly. taskID is accepted
+// (not currently used — the increment is a single global HeraConfig field, not
+// per-project) to keep the same per-task signature as the other Real
+// implementations, in case it ever becomes per-project.
+func nudgeIncrementReal(_ string) (int, error) {
+	respBody, err := coordHookRequest(http.MethodGet, "/api/config", nil)
+	if err != nil {
+		return 0, err
+	}
+	var cfg config.Config
+	if err := json.Unmarshal(respBody, &cfg); err != nil {
+		return 0, fmt.Errorf("decode config: %w", err)
+	}
+	return cfg.Hera.CoordinatorNudgeIncrement, nil
 }
 
 // budgetReal reads the project's configured coordinator_context_budget via

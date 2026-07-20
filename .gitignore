@@ -65,3 +65,4 @@ macos/.build/
 
 # macOS .app bundle assembled by `make mac-app` (scripts/mac-app.sh)
 macos/dist/
+.claude/reviews/

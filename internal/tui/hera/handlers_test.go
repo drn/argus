@@ -16,24 +16,28 @@ func TestRail_InputHandlerKeys(t *testing.T) {
 	r.SetModel(twoOrchModel())
 	h := r.InputHandler()
 
+	// twoOrchModel's Active group renders behind its own "Active (2)" header
+	// (add-kanban-focus-fold): rule(0), header(1), orch-1 header(2), wkr(3),
+	// orch-2 header(4). The cursor auto-clamps forward onto the first
+	// selectable row (2) since the header itself is never a landing spot.
 	h(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus)
-	testutil.Equal(t, r.CursorIndex(), 1)
+	testutil.Equal(t, r.CursorIndex(), 3)
 	h(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone), noFocus)
-	testutil.Equal(t, r.CursorIndex(), 0)
+	testutil.Equal(t, r.CursorIndex(), 2)
 
 	h(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone), noFocus)
-	testutil.Equal(t, r.CursorIndex(), 1)
+	testutil.Equal(t, r.CursorIndex(), 3)
 	h(tcell.NewEventKey(tcell.KeyRune, 'k', tcell.ModNone), noFocus)
-	testutil.Equal(t, r.CursorIndex(), 0)
+	testutil.Equal(t, r.CursorIndex(), 2)
 
-	// Space on the orch header collapses it (worker row vanishes); orch-1
-	// collapsed header + orch-2 (coordinator-only) header = 2 rows.
+	// Space on the orch header collapses it (worker row vanishes); rule +
+	// "Active (2)" header + orch-1 (collapsed) header + orch-2 header = 4 rows.
 	h(tcell.NewEventKey(tcell.KeyRune, ' ', tcell.ModNone), noFocus)
-	testutil.Equal(t, r.Rows(), 2)
+	testutil.Equal(t, r.Rows(), 4)
 
 	// An unhandled key is a no-op.
 	h(tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone), noFocus)
-	testutil.Equal(t, r.Rows(), 2)
+	testutil.Equal(t, r.Rows(), 4)
 }
 
 func TestPage_InputHandlerDelegatesToRail(t *testing.T) {
@@ -44,9 +48,11 @@ func TestPage_InputHandlerDelegatesToRail(t *testing.T) {
 	p := NewHeraPage(d)
 	p.Refresh()
 
+	// rule(0), "Active (1)" header(1), orch header(2), w(3) — cursor starts on
+	// the orch header (2), first selectable row.
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone), noFocus)
-	testutil.Equal(t, p.Rail().CursorIndex(), 1)
+	testutil.Equal(t, p.Rail().CursorIndex(), 3)
 }
 
 // TestPage_CtrlAltArrowWalksFocus pins the Ctrl+Alt+Left/Right focus ladder:
@@ -146,10 +152,13 @@ func TestRail_ScrollOffsetTracksCursor(t *testing.T) {
 		t.Error("expected offset to advance when cursor scrolled past viewport")
 	}
 
-	// Back to the top; offset must rewind.
+	// Back to the top; offset must rewind to the first selectable row (2) — the
+	// leading rule + "Active (1)" header (add-kanban-focus-fold) are never a
+	// cursor landing spot, so the viewport follows the cursor there, not to
+	// absolute row 0.
 	for i := 0; i < 21; i++ {
 		r.CursorUp()
 	}
 	r.Draw(sim)
-	testutil.Equal(t, r.offset, 0)
+	testutil.Equal(t, r.offset, 2)
 }

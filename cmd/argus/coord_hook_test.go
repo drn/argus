@@ -74,6 +74,18 @@ type fakeCoordHookEnv struct {
 	forceRecycleErr    error
 	forceRecycleCalled bool
 	forceRecycleTaskID string
+
+	// lastNudged / nudgeIncrement (throttle-coord-hook-nudge) — throttles the
+	// over-budget nudge to only re-fire after context_size has grown by a
+	// configurable increment past the size at which it last fired.
+	lastNudged            int
+	hadLastNudged         bool
+	lastNudgedErr         error
+	stampedLastNudgedSize int
+	stampLastNudgedCalled bool
+	stampLastNudgedErr    error
+	nudgeIncrement        int
+	nudgeIncrementErr     error
 }
 
 func (f *fakeCoordHookEnv) env() coordHookEnv {
@@ -108,6 +120,17 @@ func (f *fakeCoordHookEnv) env() coordHookEnv {
 			f.forceRecycleCalled = true
 			f.forceRecycleTaskID = taskID
 			return f.forceRecycleErr
+		},
+		ReadLastNudgedContextSize: func(taskID string) (int, bool, error) {
+			return f.lastNudged, f.hadLastNudged, f.lastNudgedErr
+		},
+		StampLastNudgedContextSize: func(taskID string, size int) error {
+			f.stampLastNudgedCalled = true
+			f.stampedLastNudgedSize = size
+			return f.stampLastNudgedErr
+		},
+		NudgeIncrement: func(taskID string) (int, error) {
+			return f.nudgeIncrement, f.nudgeIncrementErr
 		},
 	}
 }
@@ -184,10 +207,11 @@ func TestCoordHook_Coordinator_AlwaysStampsContextSize(t *testing.T) {
 	}
 }
 
-// TestCoordHook_Coordinator_OverBudget_EmitsNudge pins "Over-budget nudge
-// repeats every turn until resolved" (first-turn half): at/over budget must
-// emit a Stop hook block decision instructing the coordinator to reach a safe
-// seam and recycle.
+// TestCoordHook_Coordinator_OverBudget_EmitsNudge pins "Nudge fires on the
+// first over-budget turn": at/over budget must emit a Stop hook block
+// decision instructing the coordinator to reach a safe seam and recycle.
+// (TestCoordHook_Nudge_FiresOnFirstOverBudgetTurn additionally pins the
+// last_nudged_context_size stamp this test doesn't check.)
 func TestCoordHook_Coordinator_OverBudget_EmitsNudge(t *testing.T) {
 	f := &fakeCoordHookEnv{
 		getenv:      map[string]string{"ARGUS_TASK_ID": "task-1"},
@@ -207,25 +231,31 @@ func TestCoordHook_Coordinator_OverBudget_EmitsNudge(t *testing.T) {
 	testutil.Contains(t, out.String(), "seam")
 }
 
-// TestCoordHook_OverBudgetNudge_RecursThenStops pins both "Over-budget nudge
-// repeats every turn until resolved" (recurrence across two independent
-// invocations, since each Stop event is a fresh process) and "Nudge stops the
+// TestCoordHook_OverBudgetNudge_RecursThenStops pins both "Nudge is suppressed
+// within the same increment window" (recurrence is throttled across two
+// independent invocations, since each Stop event is a fresh process, once the
+// prior turn already stamped last_nudged_context_size) and "Nudge stops the
 // turn context drops back below budget".
 func TestCoordHook_OverBudgetNudge_RecursThenStops(t *testing.T) {
 	env := map[string]string{"ARGUS_TASK_ID": "task-1"}
 
-	// Turn 1: over budget.
+	// Turn 1: over budget, no prior nudge stamped yet — fires and stamps 250000.
 	f1 := &fakeCoordHookEnv{getenv: env, roleKind: "coordinator", contextSize: 250000, budget: 200000}
 	var out1, errOut1 bytes.Buffer
 	runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out1, &errOut1, f1.env())
 	testutil.Contains(t, out1.String(), "block")
 
-	// Turn 2: still over budget — the nudge must recur (each hook invocation
-	// re-evaluates fresh; nothing is remembered between processes).
-	f2 := &fakeCoordHookEnv{getenv: env, roleKind: "coordinator", contextSize: 260000, budget: 200000}
+	// Turn 2: still over budget, but only 10000 of the 50000 default increment
+	// has elapsed since turn 1's nudge at 250000 — the nudge must be suppressed.
+	f2 := &fakeCoordHookEnv{
+		getenv: env, roleKind: "coordinator", contextSize: 260000, budget: 200000,
+		hadLastNudged: true, lastNudged: 250000, nudgeIncrement: 50000,
+	}
 	var out2, errOut2 bytes.Buffer
 	runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out2, &errOut2, f2.env())
-	testutil.Contains(t, out2.String(), "block")
+	if strings.Contains(out2.String(), "block") {
+		t.Errorf("nudge must be suppressed within the increment window; got stdout=%q", out2.String())
+	}
 
 	// Turn 3: a recycle reset context_size back under budget — the nudge must
 	// stop the very turn the condition becomes false.
@@ -236,6 +266,169 @@ func TestCoordHook_OverBudgetNudge_RecursThenStops(t *testing.T) {
 		t.Errorf("nudge must stop once context_size drops below budget; got stdout=%q", out3.String())
 	}
 	testutil.Equal(t, f3.stampCalled, true) // still stamps, just doesn't block
+}
+
+// --- Nudge increment throttle (throttle-coord-hook-nudge) -------------------
+//
+// The over-budget nudge used to re-fire on EVERY Stop event once context_size
+// was at/above budget. These tests pin the throttle: the nudge only re-fires
+// once context_size has grown by at least the configured increment past the
+// size at which it last fired.
+
+// TestCoordHook_Nudge_FiresOnFirstOverBudgetTurn pins the very first over-budget
+// turn (no last-nudged size recorded yet): the nudge must fire and stamp
+// last_nudged_context_size with the current size.
+func TestCoordHook_Nudge_FiresOnFirstOverBudgetTurn(t *testing.T) {
+	f := &fakeCoordHookEnv{
+		getenv:        map[string]string{"ARGUS_TASK_ID": "task-1"},
+		roleKind:      "coordinator",
+		contextSize:   250000,
+		budget:        200000,
+		hadLastNudged: false,
+	}
+	var out, errOut bytes.Buffer
+
+	runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out, &errOut, f.env())
+
+	testutil.Contains(t, out.String(), "block")
+	testutil.Equal(t, f.stampLastNudgedCalled, true)
+	testutil.Equal(t, f.stampedLastNudgedSize, 250000)
+}
+
+// TestCoordHook_Nudge_SuppressedWithinIncrementWindow pins the throttle's core
+// scenario: context_size has grown, but not by the full increment past the
+// size at which the nudge last fired — no nudge, and no re-stamp.
+func TestCoordHook_Nudge_SuppressedWithinIncrementWindow(t *testing.T) {
+	f := &fakeCoordHookEnv{
+		getenv:         map[string]string{"ARGUS_TASK_ID": "task-1"},
+		roleKind:       "coordinator",
+		contextSize:    260000,
+		budget:         200000,
+		hadLastNudged:  true,
+		lastNudged:     250000,
+		nudgeIncrement: 50000,
+	}
+	var out, errOut bytes.Buffer
+
+	runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out, &errOut, f.env())
+
+	if strings.Contains(out.String(), "block") {
+		t.Errorf("nudge must be suppressed within the increment window; got stdout=%q", out.String())
+	}
+	testutil.Equal(t, f.stampLastNudgedCalled, false)
+}
+
+// TestCoordHook_Nudge_RepeatsAfterFullIncrement pins both sides of the
+// increment boundary: exactly the increment past last_nudged fires again (and
+// re-stamps), one token under does not. Uses budget=250000 (rather than the
+// 200000 used elsewhere in this file) so contextSize=300000 stays clear of the
+// UNRELATED 1.5x hard-stop threshold (which would be exactly 300000 at
+// budget=200000, per TestCoordHook_HardStop_AtThreshold_ForcesRecycle) —
+// this test is exercising the increment gate, not the hard-stop escalation.
+func TestCoordHook_Nudge_RepeatsAfterFullIncrement(t *testing.T) {
+	t.Run("at exactly the increment", func(t *testing.T) {
+		f := &fakeCoordHookEnv{
+			getenv:         map[string]string{"ARGUS_TASK_ID": "task-1"},
+			roleKind:       "coordinator",
+			contextSize:    300000,
+			budget:         250000,
+			hadLastNudged:  true,
+			lastNudged:     250000,
+			nudgeIncrement: 50000,
+		}
+		var out, errOut bytes.Buffer
+
+		runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out, &errOut, f.env())
+
+		testutil.Contains(t, out.String(), "block")
+		testutil.Equal(t, f.stampLastNudgedCalled, true)
+		testutil.Equal(t, f.stampedLastNudgedSize, 300000)
+	})
+
+	t.Run("one under the increment", func(t *testing.T) {
+		f := &fakeCoordHookEnv{
+			getenv:         map[string]string{"ARGUS_TASK_ID": "task-1"},
+			roleKind:       "coordinator",
+			contextSize:    299999,
+			budget:         250000,
+			hadLastNudged:  true,
+			lastNudged:     250000,
+			nudgeIncrement: 50000,
+		}
+		var out, errOut bytes.Buffer
+
+		runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out, &errOut, f.env())
+
+		if strings.Contains(out.String(), "block") {
+			t.Errorf("one token under the increment must still be suppressed; got stdout=%q", out.String())
+		}
+		testutil.Equal(t, f.stampLastNudgedCalled, false)
+	})
+}
+
+// TestCoordHook_Nudge_FiresImmediatelyOnFreshEpisode is the regression test for
+// the "fresh episode" trap: a coordinator recycles, context_size resets low,
+// but the stale last_nudged_context_size from the PRIOR session is still
+// large. The gating logic must include a `size >= lastNudged` guard — without
+// it, `size < lastNudged+increment` alone would wrongly suppress the nudge on
+// this fresh over-budget episode, since a stale-and-larger lastNudged makes
+// that comparison trivially true.
+func TestCoordHook_Nudge_FiresImmediatelyOnFreshEpisode(t *testing.T) {
+	f := &fakeCoordHookEnv{
+		getenv:         map[string]string{"ARGUS_TASK_ID": "task-1"},
+		roleKind:       "coordinator",
+		contextSize:    210000, // fresh session, back over budget=200000
+		budget:         200000,
+		hadLastNudged:  true,
+		lastNudged:     300000, // stale, from a prior session
+		nudgeIncrement: 50000,
+	}
+	var out, errOut bytes.Buffer
+
+	runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out, &errOut, f.env())
+
+	testutil.Contains(t, out.String(), "block")
+	testutil.Equal(t, f.stampLastNudgedCalled, true)
+	testutil.Equal(t, f.stampedLastNudgedSize, 210000)
+}
+
+// TestCoordHook_Nudge_ReadLastNudgedError_StillBlocks pins the fail-open
+// behavior when the last-nudged read errors: the hook must log the error but
+// still fall back to emitting the graceful block (treating an unreadable
+// value as "no prior nudge") rather than silently dropping the nudge.
+func TestCoordHook_Nudge_ReadLastNudgedError_StillBlocks(t *testing.T) {
+	f := &fakeCoordHookEnv{
+		getenv:        map[string]string{"ARGUS_TASK_ID": "task-1"},
+		roleKind:      "coordinator",
+		contextSize:   250000,
+		budget:        200000,
+		lastNudgedErr: errors.New("meta unavailable"),
+	}
+	var out, errOut bytes.Buffer
+
+	runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out, &errOut, f.env())
+
+	testutil.Contains(t, errOut.String(), "meta unavailable")
+	testutil.Contains(t, out.String(), "block")
+}
+
+// TestCoordHook_Nudge_ReadIncrementError_StillBlocks pins the fail-open
+// behavior when the increment read errors: the hook must log the error but
+// still fall back to emitting the graceful block.
+func TestCoordHook_Nudge_ReadIncrementError_StillBlocks(t *testing.T) {
+	f := &fakeCoordHookEnv{
+		getenv:            map[string]string{"ARGUS_TASK_ID": "task-1"},
+		roleKind:          "coordinator",
+		contextSize:       250000,
+		budget:            200000,
+		nudgeIncrementErr: errors.New("config unavailable"),
+	}
+	var out, errOut bytes.Buffer
+
+	runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out, &errOut, f.env())
+
+	testutil.Contains(t, errOut.String(), "config unavailable")
+	testutil.Contains(t, out.String(), "block")
 }
 
 // --- Part A: idempotent coord-hook (fix-coordhook-idle-deadlock) -----------
@@ -519,6 +712,23 @@ func TestCoordHookReal_REST(t *testing.T) {
 	budget, err := budgetReal(task.ID)
 	testutil.NoError(t, err)
 	testutil.Equal(t, budget, 200000)
+
+	// throttle-coord-hook-nudge: round-trip last_nudged_context_size and the
+	// configured nudge increment through the same REST endpoints, mirroring
+	// the context_size/budget round trips above.
+	_, hadLastNudged, err := readLastNudgedContextSizeReal(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, hadLastNudged, false) // never stamped yet — absent-key branch
+
+	testutil.NoError(t, stampLastNudgedContextSizeReal(task.ID, 54321))
+	lastNudged, hadLastNudged, err := readLastNudgedContextSizeReal(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, hadLastNudged, true)
+	testutil.Equal(t, lastNudged, 54321)
+
+	nudgeIncrement, err := nudgeIncrementReal(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, nudgeIncrement, 50000)
 
 	if _, err := resolveRoleKindReal("no-such-task"); err == nil {
 		t.Fatal("expected an error resolving role kind for an unknown task id")
