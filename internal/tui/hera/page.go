@@ -151,6 +151,16 @@ type HeraPage struct {
 	// A no-op on a non-coordinator selection (see handleRailMutation).
 	OnForceRecycle func(Selection)
 
+	// OnBounceWorker fires on `B` when the current selection is a worker or
+	// freelance role (add-worker-bounce, hera-view delta): distinct from
+	// OnForceRecycle — it never kills or restarts anything itself. It sends
+	// the role's live session a system-input instruction asking it to call
+	// hera_status(handoff_note=..., request_recycle=true) itself, and the
+	// existing self-service recycle path (RecycleWatcher, now widened beyond
+	// coordinator-only) completes the restart once the role's session goes
+	// idle and makes that call. A no-op on a coordinator or empty selection.
+	OnBounceWorker func(Selection)
+
 	// Creation + EOL keys (BUG-006/022). OnNewCoordinator is selection-INDEPENDENT
 	// — it fires even on an empty rail, so it is dispatched directly (not via the
 	// selection-gated `fire`). OnClearArchive acts on the current Selection.
@@ -1067,17 +1077,24 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 		}
 		return true
 	}
-	// 'B' (force-recycle, add-coordinator-context-management) is a hardcoded
-	// structural key, not yet part of the rebindable keymap system — handled
-	// before the keymap-derived switch below (mirroring Enter above). A no-op —
-	// no modal, no callback — on anything but a coordinator selection
-	// (hera-view delta: "Force-recycle key is a no-op on a non-coordinator
-	// selection"). The key is still consumed so it never leaks to rail navigation.
+	// 'B' (force-recycle / bounce, add-coordinator-context-management +
+	// add-worker-bounce) is a hardcoded structural key, not yet part of the
+	// rebindable keymap system — handled before the keymap-derived switch
+	// below (mirroring Enter above). A coordinator selection fires
+	// OnForceRecycle (immediate kill+restart, unchanged); a worker or
+	// freelance selection instead fires OnBounceWorker (self-service
+	// instruct-and-wait, add-worker-bounce). A no-op — no modal, no callback —
+	// on an empty selection. The key is still consumed so it never leaks to
+	// rail navigation.
 	if event.Key() == tcell.KeyRune && event.Rune() == 'B' {
-		if !sel.IsCoordinator() {
+		switch {
+		case sel.IsCoordinator():
+			return p.fire(p.OnForceRecycle, sel)
+		case sel.IsWorkerOrFreelance():
+			return p.fire(p.OnBounceWorker, sel)
+		default:
 			return true
 		}
-		return p.fire(p.OnForceRecycle, sel)
 	}
 	if act, ok := p.keys().Resolve(keymap.CtxHeraRail, event); ok {
 		switch act {

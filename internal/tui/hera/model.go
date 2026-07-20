@@ -638,6 +638,38 @@ func (m Model) BridgeSubtree(rootID int64) []*OrchView {
 	return out
 }
 
+// SubtreeAgentCount returns the total number of non-coordinator roles — every
+// worker row plus every bridged sub-coordinator row — across the WHOLE
+// orchestration subtree rooted at orchID: itself plus every orchestrator
+// nested beneath it through the worker→coordinator bridge, at any depth. It
+// counts archived (Tier-1 hidden, greyed-into-the-per-coordinator-Archive-
+// bucket) roles too: this is the "expand every fold and count the rows
+// yourself" number, not a liveness count — a role does not stop being an
+// on-disk agent just because it was tucked into the Archive bucket (archiving
+// a role only stamps hera_roles.archived_at; it never ends the role's
+// binding, so a stale Live-only count would still include it, just silently,
+// which is the rail's original miscount). A NUKED role or orchestrator can
+// never inflate this: BuildModel excludes both from the Model entirely, so
+// only a role whose on-disk workspace has genuinely never been reclaimed (or
+// was reclaimed via plain task-archive, not nuke) is counted. Each
+// orchestrator's OWN coordinator role is excluded (folded into its header);
+// a nested sub-coordinator is counted exactly once — via the bridging WORKER
+// row in its parent — because its own coordinator role (the SAME underlying
+// task, reached when its orchestrator is visited in the walk) is likewise
+// excluded, so the two representations of one agent are never double-counted.
+// Zero when orchID is unknown.
+func (m Model) SubtreeAgentCount(orchID int64) int {
+	n := 0
+	for _, o := range m.BridgeSubtree(orchID) {
+		for i := range o.Roles {
+			if o.Roles[i].Kind == db.HeraKindWorker {
+				n++
+			}
+		}
+	}
+	return n
+}
+
 // bridgeTaskID returns a role's structural bridge key: its latest-binding task
 // (BridgeTaskID), falling back to the live TaskID when the model did not
 // populate the bridge field (older callers / hand-built test fixtures). In
@@ -740,6 +772,15 @@ func (s Selection) IsCoordinator() bool {
 		return s.Role.Kind == db.HeraKindCoordinator
 	}
 	return s.Orch != nil
+}
+
+// IsWorkerOrFreelance reports whether the selection is a worker- or
+// freelance-kind role (add-worker-bounce): the set the `B` rail key's bounce
+// action (self-service instruct-and-wait) targets, as opposed to a
+// coordinator selection (immediate force-recycle, see IsCoordinator) or an
+// empty selection (Role nil, Orch nil — B is a no-op).
+func (s Selection) IsWorkerOrFreelance() bool {
+	return s.Role != nil && (s.Role.Kind == db.HeraKindWorker || s.Role.Kind == db.HeraKindFreelance)
 }
 
 // CoordTaskID returns the live coordinator task of the selected orchestrator,

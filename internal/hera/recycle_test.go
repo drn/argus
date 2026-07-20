@@ -62,8 +62,18 @@ func (f *fakeRecycleRunner) Restart(taskID string) error {
 // tests below.
 func seedRecycleCoordinator(t *testing.T, d *db.DB, orchName, taskWorktree, taskBranch, mission string) (*model.Task, *db.HeraOrchestrator, *db.HeraRole) {
 	t.Helper()
+	return seedRecycleRole(t, d, db.HeraKindCoordinator, orchName, "coord", taskWorktree, taskBranch, mission)
+}
+
+// seedRecycleRole creates an orchestrator + bound role of the given kind on a
+// real task row, returning the task, orchestrator, and role for use by the
+// tests below. Parameterized on kind (add-worker-bounce) so worker/freelance
+// self-service recycle coverage can reuse the same fixture shape as the
+// coordinator-only tests this file started with.
+func seedRecycleRole(t *testing.T, d *db.DB, kind db.HeraRoleKind, orchName, roleName, taskWorktree, taskBranch, mission string) (*model.Task, *db.HeraOrchestrator, *db.HeraRole) {
+	t.Helper()
 	task := &model.Task{
-		Name:     "coord-task",
+		Name:     roleName + "-task",
 		Status:   model.StatusInProgress,
 		Project:  "test-project",
 		Worktree: taskWorktree,
@@ -76,8 +86,8 @@ func seedRecycleCoordinator(t *testing.T, d *db.DB, orchName, taskWorktree, task
 
 	role, _, err := d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
 		OrchestratorID: orch.ID,
-		Name:           "coord",
-		Kind:           db.HeraKindCoordinator,
+		Name:           roleName,
+		Kind:           kind,
 		ArgusProject:   task.Project,
 		Prompt:         mission,
 	}, task.ID, task.Worktree)
@@ -199,4 +209,27 @@ func TestBuildRecycleSeedPrompt_ComposesMissionPlanStateAndHandoffNote(t *testin
 	testutil.Equal(t, true, planStateIdx < missionIdx)
 	testutil.Equal(t, true, handoffIdx < missionIdx)
 	testutil.Equal(t, true, historicalMarkerIdx < missionIdx)
+}
+
+// TestBuildRecycleSeedPrompt_WorkerRoleWordingNotCoordinatorSpecific pins
+// design.md D4 (add-worker-bounce): the seed prompt's opening line must not
+// assume the recycled role is a coordinator when seeding a worker (or
+// freelance) role's fresh session.
+func TestBuildRecycleSeedPrompt_WorkerRoleWordingNotCoordinatorSpecific(t *testing.T) {
+	d, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	_, _, role := seedRecycleRole(t, d, db.HeraKindWorker, "myorch", "w1", "/wt/w1", "argus/w1-branch",
+		"You are the worker implementing the config-management rollout.")
+
+	prompt, err := BuildRecycleSeedPrompt(d, role.ID)
+	testutil.NoError(t, err)
+
+	testutil.Contains(t, prompt, "You are the worker implementing the config-management rollout.")
+	testutil.Contains(t, prompt, "do NOT treat this as your current instruction")
+
+	if strings.Contains(prompt, "prior coordinator session") {
+		t.Fatalf("seed prompt still uses coordinator-specific wording for a worker role: %q", prompt)
+	}
 }

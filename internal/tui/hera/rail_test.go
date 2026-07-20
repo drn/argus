@@ -9,6 +9,7 @@ import (
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 )
 
 func twoOrchModel() Model {
@@ -90,8 +91,8 @@ func TestRail_CoordinatorFoldsIntoHeader(t *testing.T) {
 	// "Active (2)" header (add-kanban-focus-fold).
 	testutil.Equal(t, r.Rows(), 5)
 
-	// liveRoleCount excludes the folded coordinator: orch-1 has 1 live worker.
-	testutil.Equal(t, liveRoleCount(&r.model.Active[0]), 1)
+	// SubtreeAgentCount excludes the folded coordinator: orch-1 has 1 worker.
+	testutil.Equal(t, r.model.SubtreeAgentCount(1), 1)
 }
 
 func TestRail_OrchHeaderCarriesCoordinatorGlyph(t *testing.T) {
@@ -1205,6 +1206,52 @@ func TestRail_CursorRestoredAcrossRebuild(t *testing.T) {
 	// Rebuild with the same model — cursor should stay on role 12 (wkr).
 	r.SetModel(twoOrchModel())
 	testutil.Equal(t, r.Selected().Name, "wkr")
+}
+
+func TestRail_MouseHandler_Scroll(t *testing.T) {
+	r := NewRail()
+	r.SetModel(twoOrchModel())
+	r.SetRect(0, 0, 40, 20)
+	handler := r.MouseHandler()
+	setFocus := func(tview.Primitive) {}
+
+	// Cursor starts on orch-1's header (first selectable row).
+	testutil.Equal(t, r.SelectedOrch().Name, "orch-1")
+
+	// The cursor is what scroll drags, not an independent viewport, so a
+	// scroll gesture moves the cursor in the SAME direction as the wheel
+	// (trackpad "natural" scrolling) — MouseScrollUp advances the cursor.
+	consumed, _ := handler(tview.MouseScrollUp, tcell.NewEventMouse(2, 2, tcell.ButtonNone, 0), setFocus)
+	testutil.Equal(t, consumed, true)
+	testutil.Equal(t, r.Selected().Name, "wkr") // coord folds into the header, so one step lands on wkr
+
+	consumed, _ = handler(tview.MouseScrollDown, tcell.NewEventMouse(2, 2, tcell.ButtonNone, 0), setFocus)
+	testutil.Equal(t, consumed, true)
+	testutil.Equal(t, r.SelectedOrch().Name, "orch-1")
+}
+
+func TestRail_MouseHandler_LeftDownFocuses(t *testing.T) {
+	r := NewRail()
+	r.SetModel(twoOrchModel())
+	r.SetRect(0, 0, 40, 20)
+	handler := r.MouseHandler()
+
+	var focused tview.Primitive
+	consumed, _ := handler(tview.MouseLeftDown, tcell.NewEventMouse(2, 2, tcell.Button1, 0), func(p tview.Primitive) { focused = p })
+	testutil.Equal(t, consumed, true)
+	testutil.Equal(t, focused, tview.Primitive(r))
+}
+
+func TestRail_MouseHandler_OutOfRectIgnored(t *testing.T) {
+	r := NewRail()
+	r.SetModel(twoOrchModel())
+	r.SetRect(0, 0, 40, 20)
+	handler := r.MouseHandler()
+
+	before := r.CursorIndex()
+	consumed, _ := handler(tview.MouseScrollDown, tcell.NewEventMouse(100, 100, tcell.ButtonNone, 0), func(tview.Primitive) {})
+	testutil.Equal(t, consumed, false)
+	testutil.Equal(t, r.CursorIndex(), before)
 }
 
 func TestStatusIcon_ReadyToCloseWins(t *testing.T) {

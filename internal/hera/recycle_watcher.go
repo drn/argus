@@ -119,40 +119,41 @@ func (w *RecycleWatcher) Tick() {
 	}
 }
 
-// tickTask resolves the coordinator-kind role bound to taskID and drives it
-// through RecycleCoord. Uses ListHeraLiveBindingsByTask (not the single-
-// binding HeraLiveBindingByTask) because a task legitimately holds 2+ live
-// bindings when it's joined more than one orchestrator (e.g. a nested
+// tickTask resolves the role bound to taskID whose pending-recycle request
+// should be driven through RecycleCoord (add-worker-bounce: any hera-bound
+// role kind, not just coordinator). Uses ListHeraLiveBindingsByTask (not the
+// single-binding HeraLiveBindingByTask) because a task legitimately holds 2+
+// live bindings when it's joined more than one orchestrator (e.g. a nested
 // sub-coordinator bound as coordinator of its own team while also live under
 // its parent's) — HeraLiveBindingByTask would return ErrHeraAmbiguous for
 // that task and leave a real pending-recycle request stuck retrying forever.
-// Bindings are ordered oldest-first; the first coordinator-kind one found is
-// used, mirroring the single-coordinator-per-task assumption the rest of this
-// primitive already makes.
+// Bindings are ordered oldest-first: the coordinator-kind one is preferred
+// when the task holds one among 2+ live bindings (mirrors the
+// single-coordinator-per-task assumption the rest of this primitive already
+// makes); otherwise the first binding found is used, since a task with no
+// coordinator binding has at most one live binding to recycle anyway.
 func (w *RecycleWatcher) tickTask(taskID string) error {
 	bindings, err := w.store.ListHeraLiveBindingsByTask(taskID)
 	if err != nil {
 		return fmt.Errorf("list bindings: %w", err)
 	}
-	var coordRoleID int64
-	found := false
+	if len(bindings) == 0 {
+		return nil
+	}
+	roleID := bindings[0].RoleID
 	for _, b := range bindings {
 		role, err := w.store.HeraRole(b.RoleID)
 		if err != nil {
 			return fmt.Errorf("resolve role %d: %w", b.RoleID, err)
 		}
 		if role.Kind == db.HeraKindCoordinator {
-			coordRoleID = role.ID
-			found = true
+			roleID = role.ID
 			break
 		}
-	}
-	if !found {
-		return nil // pending_recycle is coordinator-only (hera_status rejects it otherwise)
 	}
 	task, err := w.store.Get(taskID)
 	if err != nil {
 		return fmt.Errorf("resolve session id: %w", err)
 	}
-	return RecycleCoord(w.store, w.runner, coordRoleID, task.SessionID, RecycleSelfService)
+	return RecycleCoord(w.store, w.runner, roleID, task.SessionID, RecycleSelfService)
 }

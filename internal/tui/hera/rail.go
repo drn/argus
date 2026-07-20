@@ -1812,9 +1812,9 @@ func (r *Rail) drawOrchRow(screen tcell.Screen, x, y, w int, row railRow, select
 	if remaining <= 0 {
 		return
 	}
-	live := liveRoleCount(o)
+	agents := r.model.SubtreeAgentCount(o.ID)
 	label := o.Name
-	count := fmt.Sprintf(" (%d)", live)
+	count := fmt.Sprintf(" (%d)", agents)
 	if len(label)+len(count) > remaining {
 		widget.DrawText(screen, col, y, remaining, label, nameStyle)
 		return
@@ -1970,19 +1970,6 @@ func kanbanStatusOf(o *OrchView) db.HeraKanbanStatus {
 	return o.KanbanStatus
 }
 
-// liveRoleCount counts live, non-coordinator roles (the agents shown under the
-// header). The coordinator is folded into the header itself, so it never inflates
-// the (N) child count.
-func liveRoleCount(o *OrchView) int {
-	n := 0
-	for i := range o.Roles {
-		if o.Roles[i].Live && o.Roles[i].Kind != db.HeraKindCoordinator {
-			n++
-		}
-	}
-	return n
-}
-
 // statusIcon picks the glyph + style for a role row by delegating to the shared
 // classifier widget.RoleStatusIcon (widget/rolestatusicon.go), whose precedence
 // is needs-input → active → ready_to_close → failed → done → idle → live →
@@ -2084,6 +2071,39 @@ func (r *Rail) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.
 				r.enterFilter()
 			}
 		}
+	})
+}
+
+// MouseHandler handles mouse events over the rail: left-click focuses it
+// (matching tview's Box default), and wheel scroll moves the cursor up/down
+// one selectable row per notch via the same step() the keyboard bindings use
+// (mirrors gitpanel.FilePanel and taskview.TaskListView). page.go's own
+// MouseHandler already gates dispatch here on the click column falling in the
+// rail's region; the InRect check below additionally protects direct callers
+// (tests, or a future non-region-gated caller) from acting on out-of-rect events.
+//
+// The scroll-to-cursor mapping is inverted relative to a plain content pan:
+// this widget moves the CURSOR, not an independent viewport, so a scroll
+// gesture reads as "drag the cursor," not "drag the pane" — the cursor
+// should move in the same direction as the fingers (trackpad "natural"
+// scrolling), the opposite of FilePanel's pane-scroll convention.
+func (r *Rail) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
+	return r.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (consumed bool, capture tview.Primitive) {
+		if !r.InRect(event.Position()) {
+			return false, nil
+		}
+		switch action {
+		case tview.MouseLeftDown:
+			setFocus(r)
+			consumed = true
+		case tview.MouseScrollUp:
+			r.CursorDown()
+			consumed = true
+		case tview.MouseScrollDown:
+			r.CursorUp()
+			consumed = true
+		}
+		return
 	})
 }
 

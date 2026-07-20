@@ -127,14 +127,19 @@ Derived from: `internal/tui/hera/rail.go` (`buildRows`), `internal/tui/hera/rail
 
 ### Requirement: Orchestrator and role row rendering (area 3)
 
-The system SHALL render an orchestrator header with a fold chevron (▸ collapsed / ▾ expanded), a coordinator marker glyph, the orchestrator name, and a right-aligned live-role count `(N)` (count of roles with a live binding). It SHALL render a role row with a status glyph (see status-icon precedence) followed by the role name. Selection is indicated by a `›` marker in the gutter and the selected palette; archived placement dims the row's text style (the glyph itself never lies — only the style dims).
+The system SHALL render an orchestrator header with a fold chevron (▸ collapsed / ▾ expanded), a coordinator marker glyph, the orchestrator name, and a right-aligned agent count `(N)`. The count SHALL be the total number of non-coordinator roles (worker rows, including bridged sub-coordinator rows) across the orchestrator's WHOLE bridge subtree — itself plus every orchestrator nested beneath it through the worker→coordinator bridge, at any depth — INCLUDING roles currently hidden in a per-coordinator Archive bucket, regardless of whether any role's binding is still live. A nuked role or orchestrator is never counted (the Model excludes both entirely). Each orchestrator's own coordinator role is excluded at every level in the subtree (folded into its own header, or already represented one level up by the bridging worker row that reaches it), so a nested sub-coordinator's agent is counted exactly once. It SHALL render a role row with a status glyph (see status-icon precedence) followed by the role name. Selection is indicated by a `›` marker in the gutter and the selected palette; archived placement dims the row's text style (the glyph itself never lies — only the style dims).
 
-Derived from: `internal/tui/hera/rail.go:391` (`drawRow`), `internal/tui/hera/rail.go:437` (`drawOrchRow`), `internal/tui/hera/rail.go:470` (`drawRoleRow`), `internal/tui/hera/rail.go:498` (`liveRoleCount`).
+Derived from: `internal/tui/hera/rail.go` (`drawRow`, `drawOrchRow`, `drawRoleRow`), `internal/tui/hera/model.go` (`Model.SubtreeAgentCount`, `Model.BridgeSubtree`).
 
-#### Scenario: Orchestrator header shows live count
+#### Scenario: Orchestrator header counts its whole subtree, archive included
 
-- **WHEN** an orchestrator has three roles, two of which hold live bindings
-- **THEN** its header renders `(2)` right-aligned
+- **WHEN** an orchestrator has one live worker and two archived (Tier-1 hidden) workers, one of which still holds a live binding (its role was archived without ending its binding)
+- **THEN** its header renders `(3)` right-aligned — all three count, regardless of liveness
+
+#### Scenario: A nested sub-coordinator's own archive rolls up to its parent's badge
+
+- **WHEN** a root orchestrator bridges to a child sub-coordinator via a worker row, and that child has two workers of its own (one archived)
+- **THEN** the root's badge counts the bridging row once plus both of the child's workers, and the child's own badge (viewed on its own) counts just its own two workers — neither count double-counts the bridging row against the child's own coordinator role
 
 #### Scenario: Archived row dims without changing its glyph
 
@@ -189,7 +194,7 @@ Derived from: `internal/tui/widget/rolestatusicon.go` (`RoleStatusIcon`, `RoleSt
 
 ### Requirement: Rail keybindings (area 4)
 
-The system SHALL bind the following keys while the rail holds focus: `j`/`k` and Down/Up move the cursor; Left walks to the parent; Space collapses/expands the row under the cursor; `Tab`/`Backtab` and `Ctrl+Alt+Left`/`Ctrl+Alt+Right` walk the focus ladder; `Ctrl+Q` returns focus to the rail; `Enter` enters the selected role's pane (restarting a dead/suspended session first); `w` spawns a worker under the selected coordinator's orchestrator via the full new-task modal; `n` creates a new top-level coordinator via the full new-task modal; `r` renames the selected role/orchestrator; `a` HIDES the selected worker / sub-coordinator into its parent coordinator's nested archive (Tier 1 — reversible, keeps the session + worktree alive); `P` toggles pin; `s`/`S` advance/revert the selected role's hera status; `m`/`M` advance/revert the selected TOP-LEVEL coordinator's kanban status (see the dedicated kanban requirement — a wholly separate axis from `s`/`S`); `J` adopts a freelancer / re-parents a coordinator; `B` forces an immediate recycle of the selected coordinator (kills and restarts its session on the same task, seeded from its mission, plan-DAG state, and any handoff note — see `coordinator-context-management`), behind a confirmation modal, and is a no-op on a non-coordinator selection; `C` clears the selected coordinator's archive (NUKES every Tier-1 hidden item under it); `Ctrl+Z` fullscreens the focused pane; `Ctrl+J` opens the unified task/role switcher (see the switcher requirement below) — like `Ctrl+Z`, this fires regardless of which region (rail, coordinator pane, or agent pane) holds focus; `/` filters the rail by name; `Ctrl+D` NUKES the selected role/orchestrator (Tier 2 — removes it and its whole subtree from the rail, reclaims worktrees). Every bound key SHALL appear in the help overlay's "Hera View (rail)" section.
+The system SHALL bind the following keys while the rail holds focus: `j`/`k` and Down/Up move the cursor; Left walks to the parent; Space collapses/expands the row under the cursor; `Tab`/`Backtab` and `Ctrl+Alt+Left`/`Ctrl+Alt+Right` walk the focus ladder; `Ctrl+Q` returns focus to the rail; `Enter` enters the selected role's pane (restarting a dead/suspended session first); `w` spawns a worker under the selected coordinator's orchestrator via the full new-task modal; `n` creates a new top-level coordinator via the full new-task modal; `r` renames the selected role/orchestrator; `a` HIDES the selected worker / sub-coordinator into its parent coordinator's nested archive (Tier 1 — reversible, keeps the session + worktree alive); `P` toggles pin; `s`/`S` advance/revert the selected role's hera status; `m`/`M` advance/revert the selected TOP-LEVEL coordinator's kanban status (see the dedicated kanban requirement — a wholly separate axis from `s`/`S`); `J` adopts a freelancer / re-parents a coordinator; `B` bounces the selected role — on a coordinator selection it forces an immediate recycle (kills and restarts its session on the same task, seeded from its mission, plan-DAG state, and any handoff note — see `coordinator-context-management`); on a worker or freelance selection it instead sends the role's live session a system-input instruction asking it to call `hera_status(handoff_note=..., request_recycle=true)` itself, which the existing self-service recycle path (see `coordinator-context-management`) then completes once the role's session goes idle — both variants sit behind a confirmation modal, and `B` remains a no-op on an empty selection; `C` clears the selected coordinator's archive (NUKES every Tier-1 hidden item under it); `Ctrl+Z` fullscreens the focused pane; `Ctrl+J` opens the unified task/role switcher (see the switcher requirement below) — like `Ctrl+Z`, this fires regardless of which region (rail, coordinator pane, or agent pane) holds focus; `/` filters the rail by name; `Ctrl+D` NUKES the selected role/orchestrator (Tier 2 — removes it and its whole subtree from the rail, reclaims worktrees). Every bound key SHALL appear in the help overlay's "Hera View (rail)" section.
 
 The rail SHALL NOT bind `R` (retire) or a rail-wide `Ctrl+R` (prune) — both are removed by this redesign. All rail mutation keys SHALL be suppressed while the rail is in `/` filter INPUT mode (every keystroke is filter input). Selection-acting keys (`w`, `r`, `a`, `P`, `s`/`S`, `m`/`M`, `J`, `B`, `C`, `Ctrl+D`) are no-ops on an empty selection; `n` is selection-INDEPENDENT and fires even on an empty rail. `m`/`M` additionally no-op on any non-empty selection that is not a top-level coordinator header (a role row, a nested/bridged sub-coordinator row, or a Freelance row) — see the dedicated kanban requirement.
 
@@ -197,7 +202,7 @@ The rail SHALL NOT bind `R` (retire) or a rail-wide `Ctrl+R` (prune) — both ar
 
 Derived from: `internal/tui/hera/rail.go` (rail `InputHandler`), `internal/tui/hera/page.go` (page `InputHandler` focus ladder + `handleRailMutation`), `internal/tui/heraactions.go` (handlers), `internal/tui/modal/help.go` (help overlay Hera section), `internal/tui/keymap/actions.go` (`ActHeraKanbanAdv`/`ActHeraKanbanRev`).
 
-`NOTE:` `Ctrl+D` is the only key that NUKES a live selection directly (`C` nukes only the selected coordinator's already-hidden Tier-1 archive items); the rail binds no `R` (retire) or rail-wide `Ctrl+R` (prune). `Ctrl+D` never collides with the agent-view `Ctrl+R` (Claude session switcher), which runs in a different mode/widget. `B` (force recycle) acts on a live coordinator session directly (kill-and-restart) but preserves the task/worktree/branch/binding — unlike `Ctrl+D`, nothing is removed from the rail. A focused content pane forwards `C`/`a`/`Ctrl+D` to its PTY. `m`/`M` never collides with `s`/`S`: the two step entirely independent data (an orchestrator's `kanban_status` column vs. a role's `hera_role_status` row) and use independent stepping rules (`m`/`M` wraps; `s`/`S` clamps).
+`NOTE:` `Ctrl+D` is the only key that NUKES a live selection directly (`C` nukes only the selected coordinator's already-hidden Tier-1 archive items); the rail binds no `R` (retire) or rail-wide `Ctrl+R` (prune). `Ctrl+D` never collides with the agent-view `Ctrl+R` (Claude session switcher), which runs in a different mode/widget. `B` acts on a live coordinator, worker, or freelance session — immediate kill-and-restart for a coordinator, a self-service instruct-and-wait bounce for a worker/freelance role — but in every case preserves the task/worktree/branch/binding; unlike `Ctrl+D`, nothing is removed from the rail. A focused content pane forwards `C`/`a`/`Ctrl+D` to its PTY. `m`/`M` never collides with `s`/`S`: the two step entirely independent data (an orchestrator's `kanban_status` column vs. a role's `hera_role_status` row) and use independent stepping rules (`m`/`M` wraps; `s`/`S` clamps).
 
 #### Scenario: Hide key acts on the current selection
 
@@ -214,15 +219,20 @@ Derived from: `internal/tui/hera/rail.go` (rail `InputHandler`), `internal/tui/h
 - **WHEN** the help overlay is opened
 - **THEN** its "Hera View (rail)" section lists `j`/`k`, space, Left, Tab/Ctrl+Q, Enter, `w`, `n`, `r`, `a` (hide), `P`, `s`/`S`, `m`/`M`, `J`, `B` (force recycle), `C` (clear archive), `Ctrl+Z`, `Ctrl+J` (switcher), `/`, and `Ctrl+D` (nuke), and does NOT list `R`, a rail-wide `Ctrl+R`, or `Ctrl+K` (which is not a Hera-page key)
 
-#### Scenario: Force-recycle key requires confirmation
+#### Scenario: Force-recycle key requires confirmation on a coordinator selection
 
 - **WHEN** the rail is focused, a coordinator row is selected, and the user presses `B`
-- **THEN** a confirmation modal appears before the recycle proceeds
+- **THEN** a confirmation modal appears before the recycle proceeds immediately
 
-#### Scenario: Force-recycle key is a no-op on a non-coordinator selection
+#### Scenario: Bounce key requires confirmation on a worker or freelance selection
 
-- **WHEN** the rail is focused and a worker or freelance row is selected and the user presses `B`
-- **THEN** nothing happens — no modal, no recycle
+- **WHEN** the rail is focused, a worker or freelance row is selected, and the user presses `B`
+- **THEN** a confirmation modal appears before anything is sent to the role's session
+
+#### Scenario: Bounce key sends a self-service recycle instruction to a worker or freelance role
+
+- **WHEN** the confirmation is accepted for a worker or freelance selection
+- **THEN** a system-input instruction is sent to the role's live session asking it to call `hera_status(handoff_note=..., request_recycle=true)`, and no session is killed or restarted directly by this key press
 
 #### Scenario: ctrl+j opens the switcher regardless of focused region
 
@@ -2381,4 +2391,28 @@ Derived from: `internal/tui/hera/rail.go` (`railRow.needsInputTaskID`, `Rail.Nex
 
 - **WHEN** a coordinator-spawned sub-team's parent and child headers both qualify because they share the same underlying coordinator task, and that task needs input
 - **THEN** `ctrl+g` lands on whichever of the two headers `SelectByTaskID` matches first in rail row order, consistently — matching the existing multi-binding convention rather than alternating between them
+
+### Requirement: Mouse wheel scrolls the rail
+
+The rail SHALL respond to mouse wheel scroll events within its rect by moving the cursor: scroll-up moves the cursor to the NEXT selectable row, scroll-down moves it to the PREVIOUS selectable row, including kanban-group boundary crossing and cursor persistence, identically to keyboard navigation. This mapping is deliberately inverted relative to a plain content-pane scroll — the cursor is what the gesture drags, so it moves in the same direction as the operator's fingers (trackpad "natural" scrolling) rather than the direction a viewport would pan. A left-click within the rail's rect SHALL focus it. Mouse events outside the rail's rect SHALL NOT be consumed.
+
+#### Scenario: Scroll up moves the cursor to the next selectable row
+
+- **WHEN** the operator scrolls the mouse wheel up while the pointer is over the rail
+- **THEN** the cursor moves to the next selectable row, the same target `CursorDown` would select
+
+#### Scenario: Scroll down moves the cursor to the previous selectable row
+
+- **WHEN** the operator scrolls the mouse wheel down while the pointer is over the rail
+- **THEN** the cursor moves to the previous selectable row, the same target `CursorUp` would select
+
+#### Scenario: A click focuses the rail
+
+- **WHEN** the operator left-clicks within the rail's rect
+- **THEN** the rail receives focus
+
+#### Scenario: Mouse events outside the rect are ignored
+
+- **WHEN** a mouse event's position falls outside the rail's current rect
+- **THEN** the event is not consumed and the cursor does not move
 

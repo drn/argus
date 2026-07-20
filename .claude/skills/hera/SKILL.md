@@ -108,7 +108,7 @@ this section).
     base-branch gotcha in §6.**
   - `backend` — defaults to project default.
   - `model` — per-worker model override, scoped to the worker's resolved backend (claude: opus/sonnet/
-    haiku; codex: e.g. gpt-5; pi: its ids). Empty = backend default. Match it to task complexity.
+    haiku; codex: e.g. gpt-5; pi: its ids). Empty = backend default. Match it to task complexity. Leave it unset when you pass `archetype=` so the archetype picks the tier — see §9.
   - `archetype` — the worker's **diligence archetype** (e.g. `code_slice`, `bug_fix`, `review`, `ci_loop`;
     defaults to `code_slice`). Selects the per-archetype model from the project's bound profile and is
     exported to the worker as `ARGUS_ARCHETYPE`. An explicit `model` still wins over the profile. See §9.
@@ -369,6 +369,13 @@ hint, but never assume it exists, and never block on it.
 that is exactly why resolution runs daemon-side and arrives by env. If you spawn workers yourself, pass
 `archetype=` on `hera_spawn_worker` (and on plan-DAG nodes — see the `hera-plan` skill) to set *their*
 archetype; you do not set your own.
+
+Let the archetype resolve the model: omit `model` on `hera_spawn_worker` whenever you pass `archetype=`,
+so the profile's per-archetype tier actually takes effect (precedence is `task.Model → profile[archetype].model
+→ backend default` — an explicit `model` always wins over the profile). Only pass an explicit `model`
+alongside `archetype=` when you deliberately want to override that tier for this one spawn — otherwise you
+silently defeat the archetype's whole purpose (e.g. a `ci_loop` worker spawned with `model="opus"` throws away
+the cheap tier `ci_loop` exists to select, and just runs at full price with no signal anything went wrong).
 
 **Reviewer panels are NOT driven here (deferred).** A `customer_grade`-style profile may carry a `[panel]`
 reviewer block, but **this skill does not consume it** — composing and running a reviewer panel is owned by
