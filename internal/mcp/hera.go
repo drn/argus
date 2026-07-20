@@ -197,15 +197,15 @@ var heraToolDefs = []Tool{
 	},
 	{
 		Name:        "hera_status",
-		Description: "Update the calling role's status within its orchestrator. Also mirrors the status to the argus task_meta sidecar (best-effort). Coordinator-only: handoff_note and request_recycle let a coordinator record distilled context and signal a self-service recycle in the same call.",
+		Description: "Update the calling role's status within its orchestrator. Also mirrors the status to the argus task_meta sidecar (best-effort). handoff_note and request_recycle let ANY hera-bound role (coordinator, worker, or freelance) record distilled context and signal a self-service recycle in the same call — the daemon defers the actual kill-and-restart until the session goes idle.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"cwd":             map[string]interface{}{"type": "string", "description": "Caller's worktree path (use $PWD)"},
 				"status":          map[string]interface{}{"type": "string", "enum": []string{"idle", "working", "blocked", "done"}, "description": "New role status"},
 				"orchestrator":    map[string]interface{}{"type": "string", "description": "(required when the caller's argus task holds 2+ live bindings; optional when it holds exactly one) The orchestrator whose binding identifies the calling role."},
-				"handoff_note":    map[string]interface{}{"type": "string", "description": "(coordinator-only) Short free-text distilled context, overwritten into task_meta(hera, handoff_note) in the same call. Rejected for worker/freelance callers."},
-				"request_recycle": map[string]interface{}{"type": "boolean", "description": "(coordinator-only) When true, records a pending-recycle intent for the caller's task, consumed by the recycle_coord primitive once the session goes idle. Rejected for worker/freelance callers."},
+				"handoff_note":    map[string]interface{}{"type": "string", "description": "Short free-text distilled context, overwritten into task_meta(hera, handoff_note) in the same call. Accepted from any hera-bound role kind."},
+				"request_recycle": map[string]interface{}{"type": "boolean", "description": "When true, records a pending-recycle intent for the caller's task, consumed by the recycle_coord primitive once the session goes idle. Accepted from any hera-bound role kind."},
 			},
 			"required": []string{"cwd", "status"},
 		},
@@ -1446,40 +1446,22 @@ func (s *Server) toolHeraStatus(id interface{}, args json.RawMessage) *Response 
 		return toolError(id, err.Error())
 	}
 
-	// D5 (add-coordinator-context-management): handoff_note / request_recycle
-	// are coordinator-only. Reject BEFORE applying the status update or writing
-	// any task_meta so a rejected call has zero side effects.
-	if caller.role.Kind != db.HeraKindCoordinator {
-		var offending []string
-		if p.HandoffNote != "" {
-			offending = append(offending, "handoff_note")
-		}
-		if p.RequestRecycle {
-			offending = append(offending, "request_recycle")
-		}
-		if len(offending) > 0 {
-			return toolError(id, fmt.Sprintf(
-				"%s is coordinator-only; caller role %q has kind %q",
-				strings.Join(offending, ", "), caller.role.Name, caller.role.Kind))
-		}
-	}
-
 	if err := s.applyRoleStatus(caller, sv); err != nil {
 		return toolError(id, err.Error())
 	}
 
-	// Coordinator-only extension: distillate-harvest-before-retire (D4/D5). Both
-	// writes are best-effort/soft-fail, matching the status mirror above.
-	if caller.role.Kind == db.HeraKindCoordinator {
-		if p.HandoffNote != "" {
-			if metaErr := s.heraStore.SetMeta(caller.binding.ArgusTaskID, db.HeraMetaNamespace, db.HeraMetaKeyHandoffNote, p.HandoffNote); metaErr != nil {
-				slog.Warn("[hera] status: handoff_note meta write failed", "role", caller.role.Name, "task_id", caller.binding.ArgusTaskID, "err", metaErr)
-			}
+	// handoff_note / request_recycle (add-coordinator-context-management,
+	// widened to any hera-bound role kind by add-worker-bounce): distillate-
+	// harvest-before-retire. Both writes are best-effort/soft-fail, matching
+	// the status mirror above.
+	if p.HandoffNote != "" {
+		if metaErr := s.heraStore.SetMeta(caller.binding.ArgusTaskID, db.HeraMetaNamespace, db.HeraMetaKeyHandoffNote, p.HandoffNote); metaErr != nil {
+			slog.Warn("[hera] status: handoff_note meta write failed", "role", caller.role.Name, "task_id", caller.binding.ArgusTaskID, "err", metaErr)
 		}
-		if p.RequestRecycle {
-			if metaErr := s.heraStore.SetMeta(caller.binding.ArgusTaskID, db.HeraMetaNamespace, db.HeraMetaKeyPendingRecycle, "true"); metaErr != nil {
-				slog.Warn("[hera] status: request_recycle meta write failed", "role", caller.role.Name, "task_id", caller.binding.ArgusTaskID, "err", metaErr)
-			}
+	}
+	if p.RequestRecycle {
+		if metaErr := s.heraStore.SetMeta(caller.binding.ArgusTaskID, db.HeraMetaNamespace, db.HeraMetaKeyPendingRecycle, "true"); metaErr != nil {
+			slog.Warn("[hera] status: request_recycle meta write failed", "role", caller.role.Name, "task_id", caller.binding.ArgusTaskID, "err", metaErr)
 		}
 	}
 

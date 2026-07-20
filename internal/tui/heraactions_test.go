@@ -137,6 +137,109 @@ func TestHeraActions_ForceRecycleBranches(t *testing.T) {
 	testutil.Equal(t, app.mode, modeTaskList)
 }
 
+// --- `B` bounce (add-worker-bounce) -----------------------------------------
+//
+// recordingWriteSession is a fakeKickSession (app_test.go) that records every
+// WriteInputSystem call, for asserting the bounce action's system-input
+// instruction without a real PTY.
+type recordingWriteSession struct {
+	*fakeKickSession
+	writes [][]byte
+}
+
+func (f *recordingWriteSession) WriteInputSystem(p []byte) (int, error) {
+	f.writes = append(f.writes, append([]byte(nil), p...))
+	return len(p), nil
+}
+
+// bounceTestRunner is an agent.SessionProvider whose Get returns a canned
+// session, mirroring fakeInputRunner (app_test.go) for the bounce action's
+// runner.Get(taskID) lookup.
+type bounceTestRunner struct {
+	*agent.Runner
+	sessions map[string]agent.SessionHandle
+}
+
+func (r *bounceTestRunner) Get(id string) agent.SessionHandle { return r.sessions[id] }
+
+// TestHeraActions_BounceBranches pins the `B` bounce key (add-worker-bounce,
+// hera-view delta): a worker/freelance selection opens a confirmation modal —
+// the same human speed bump as the coordinator's force-recycle — while a
+// coordinator selection is untouched by this action (it routes through
+// heraOpenForceRecycle instead, never this one). app.heraOpenBounceWorker does
+// not exist yet (Stage 5), so this fails to compile until then.
+func TestHeraActions_BounceBranches(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.heraOps = hera.NewOps(d)
+
+	orch := seedHeraOrch(t, d, "o")
+	role := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
+	sel := hera.Selection{Role: &hera.RoleView{RoleID: role.ID, OrchID: orch, Name: "w", Kind: db.HeraKindWorker, TaskID: "tw", Live: true}}
+
+	app.heraOpenBounceWorker(sel)
+	testutil.Equal(t, app.mode, modeHeraConfirm)
+
+	// A coordinator selection is a no-op for this action.
+	app.closeHeraConfirm()
+	app.heraOpenBounceWorker(heraCoordSel(1, "tc"))
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+// TestHeraActions_BounceBranchesFreelance mirrors TestHeraActions_BounceBranches
+// for a freelance selection (design.md D7: both kinds widened identically).
+func TestHeraActions_BounceBranchesFreelance(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.heraOps = hera.NewOps(d)
+
+	orch := seedHeraOrch(t, d, "o")
+	role := seedHeraBoundRole(t, d, orch, "free", db.HeraKindFreelance, "tfree")
+	sel := hera.Selection{Role: &hera.RoleView{RoleID: role.ID, OrchID: orch, Name: "free", Kind: db.HeraKindFreelance, TaskID: "tfree", Live: true}}
+
+	app.heraOpenBounceWorker(sel)
+	testutil.Equal(t, app.mode, modeHeraConfirm)
+}
+
+// TestHeraActions_BounceSendsSelfServiceInstruction pins the confirm-accept
+// path (design.md D1/D5): it writes a system-input instruction to the role's
+// live session asking it to call hera_status(handoff_note=...,
+// request_recycle=true) itself, and never kills/restarts anything directly —
+// the existing self-service pipeline (widened hera_status + RecycleWatcher)
+// completes the recycle once the role goes idle and makes that call.
+func TestHeraActions_BounceSendsSelfServiceInstruction(t *testing.T) {
+	d := testDB(t)
+	orch := seedHeraOrch(t, d, "o")
+	role := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
+
+	sess := &recordingWriteSession{fakeKickSession: &fakeKickSession{alive: true}}
+	runner := &bounceTestRunner{Runner: agent.NewRunner(nil), sessions: map[string]agent.SessionHandle{"tw": sess}}
+	app := New(d, runner, false)
+	app.heraOps = hera.NewOps(d)
+
+	rv := &hera.RoleView{RoleID: role.ID, OrchID: orch, Name: "w", Kind: db.HeraKindWorker, TaskID: "tw", Live: true}
+	app.heraDoBounceWorker(rv)
+
+	testutil.Equal(t, len(sess.writes), 1)
+	testutil.Contains(t, string(sess.writes[0]), "hera_status")
+	testutil.Contains(t, string(sess.writes[0]), "request_recycle")
+}
+
+// TestHeraActions_BounceNoOpWhenSessionNotLive pins the no-live-session guard:
+// nothing is written and nothing panics when the role's task has no live
+// session (e.g. it already exited between selection and confirm).
+func TestHeraActions_BounceNoOpWhenSessionNotLive(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.heraOps = hera.NewOps(d)
+
+	orch := seedHeraOrch(t, d, "o")
+	role := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
+	rv := &hera.RoleView{RoleID: role.ID, OrchID: orch, Name: "w", Kind: db.HeraKindWorker, TaskID: "tw", Live: true}
+
+	app.heraDoBounceWorker(rv) // runner.Get("tw") returns nil — no panic, no-op
+}
+
 // TestHeraActions_ForceRecycleCleansUpPendingFlagOnError pins the
 // recycle-pane-artifact-fix wiring in heraDoForceRecycle: it mirrors
 // maybeKickRerender by staging a.pendingRerenderRestart[taskID] before handing

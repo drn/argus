@@ -774,6 +774,15 @@ func (s Selection) IsCoordinator() bool {
 	return s.Orch != nil
 }
 
+// IsWorkerOrFreelance reports whether the selection is a worker- or
+// freelance-kind role (add-worker-bounce): the set the `B` rail key's bounce
+// action (self-service instruct-and-wait) targets, as opposed to a
+// coordinator selection (immediate force-recycle, see IsCoordinator) or an
+// empty selection (Role nil, Orch nil — B is a no-op).
+func (s Selection) IsWorkerOrFreelance() bool {
+	return s.Role != nil && (s.Role.Kind == db.HeraKindWorker || s.Role.Kind == db.HeraKindFreelance)
+}
+
 // CoordTaskID returns the live coordinator task of the selected orchestrator,
 // or "" when none. The HERA (middle) pane feeds from this.
 func (s Selection) CoordTaskID() string {

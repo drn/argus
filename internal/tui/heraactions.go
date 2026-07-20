@@ -762,6 +762,67 @@ func (a *App) heraDoForceRecycle(role *hera.RoleView) {
 	a.heraRefresh()
 }
 
+// --- `B` bounce worker/freelance (add-worker-bounce) ------------------------
+
+// heraOpenBounceWorker is the `B` key on a worker or freelance selection
+// (design.md D5): confirm, then instruct the role's own live session to
+// self-service recycle itself via hera_status(handoff_note=...,
+// request_recycle=true). Distinct from heraOpenForceRecycle (coordinator-
+// only, immediate kill+restart): this action never kills or restarts
+// anything itself — it only asks, and the existing self-service pipeline
+// (widened hera_status + RecycleWatcher, see internal/hera) completes the
+// recycle once the role goes idle and makes that call (D1: no new
+// RecycleTrigger, no daemon-side harvesting of the response). page.go's
+// handleRailMutation already gates on Selection.IsWorkerOrFreelance before
+// firing this callback, but the check is repeated here since this is also
+// the seam deciding whether to open a modal at all (mirrors
+// heraOpenForceRecycle's own repeated guard).
+func (a *App) heraOpenBounceWorker(sel hera.Selection) {
+	if a.heraOps == nil || !sel.IsWorkerOrFreelance() {
+		return
+	}
+	role := sel.StatusRole()
+	if role == nil {
+		return
+	}
+	a.openHeraConfirm("Bounce "+role.Name+"?",
+		"Asks it to hand off its current state, then restarts fresh once it does.",
+		func() { a.heraDoBounceWorker(role) })
+}
+
+// heraBounceInstruction is the system-input instruction sent to a role's live
+// session on confirm. It never mentions "coordinator" — the same wording
+// applies to a worker or freelance role (design.md D7).
+const heraBounceInstruction = "You've been asked to bounce (fresh session, same task/worktree/branch). " +
+	"Please wrap up: call hera_status with handoff_note summarizing what's done, the current state, and what's next, and request_recycle=true, so your session restarts fresh once you go idle."
+
+// heraDoBounceWorker sends heraBounceInstruction to role's live session via
+// WriteInputSystem — a plain queued input, not a reliable-notify delivery
+// (no idle gating, no retry): the confirm modal is the human speed bump this
+// path relies on (design.md Risks), and D6 explicitly rules out a
+// fallback/timeout if the role never responds. No daemon-side kill/restart
+// call happens here; the role's own subsequent hera_status call is what
+// drives the rest via the widened self-service pipeline (Stages 2-3).
+func (a *App) heraDoBounceWorker(role *hera.RoleView) {
+	taskID := roleReclaimTask(role)
+	if taskID == "" {
+		return
+	}
+	sess := a.runner.Get(taskID)
+	if sess == nil || !sess.Alive() {
+		uxlog.Log("[hera-view] bounce: no live session for role=%d task=%s — skipping", role.RoleID, taskID)
+		a.statusbar.SetError("Bounce: session not live")
+		return
+	}
+	if _, err := sess.WriteInputSystem([]byte(heraBounceInstruction)); err != nil {
+		uxlog.Log("[hera-view] bounce: write failed role=%d task=%s: %v", role.RoleID, taskID, err)
+		a.statusbar.SetError("Bounce failed: " + err.Error())
+		return
+	}
+	uxlog.Log("[hera-view] bounce: instruction sent role=%d task=%s", role.RoleID, taskID)
+	a.statusbar.SetInfo("Bounce instruction sent to " + role.Name)
+}
+
 // heraReattach revives the session backing the selected role's task. The page
 // fires it on Enter for a dead session (any role) or a live worker/freelance
 // role. Two branches:

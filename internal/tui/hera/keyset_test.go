@@ -120,6 +120,97 @@ func TestKeyset_ForceRecycleKeyNoOpOnWorkerSelection(t *testing.T) {
 	testutil.Equal(t, fired, false)
 }
 
+// --- B (bounce worker/freelance) — add-worker-bounce ---
+//
+// These pin the hera-view delta spec's "Bounce key requires confirmation" /
+// "Bounce key sends a self-service recycle instruction" scenarios at the
+// page-dispatch layer: `B` fires OnBounceWorker (never OnForceRecycle — that
+// stays the coordinator-only immediate-kill path, see
+// TestKeyset_ForceRecycleKeyNoOpOnWorkerSelection above) when the current rail
+// selection is a worker or freelance role. HeraPage.OnBounceWorker does not
+// exist yet (Stage 5), so this fails to compile until then.
+
+// railPageWithCursorOnFreelance builds a page whose rail cursor rests on a
+// freelance role, via SelectByTaskID rather than counting Down presses (the
+// Freelance section's row offset depends on how many other sections precede
+// it, so a fixed key count would be fragile).
+func railPageWithCursorOnFreelance(t *testing.T) (*HeraPage, *db.DB) {
+	t.Helper()
+	d := memDB(t)
+	orch := seedOrch(t, d, "o")
+	seedBoundRole(t, d, orch, "c", db.HeraKindCoordinator, "tc")
+	seedBoundRole(t, d, orch, "free", db.HeraKindFreelance, "tfree")
+	p := NewHeraPage(d)
+	p.Refresh()
+	if !p.Rail().SelectByTaskID("tfree") {
+		t.Fatal("could not select freelance role by task id")
+	}
+	return p, d
+}
+
+func TestKeyset_BounceKeyFiresOnWorkerSelection(t *testing.T) {
+	p, _ := railPageWithCursorOnWorker(t)
+	var got string
+	var gotSel Selection
+	p.OnBounceWorker = func(s Selection) { got = "bounce"; gotSel = s }
+
+	h := p.InputHandler()
+	h(tcell.NewEventKey(tcell.KeyRune, 'B', tcell.ModNone), noFocus)
+
+	testutil.Equal(t, got, "bounce")
+	testutil.Equal(t, gotSel.Role != nil, true)
+	testutil.Equal(t, gotSel.Role.Kind, db.HeraKindWorker)
+}
+
+// TestKeyset_BounceKeyFiresOnFreelanceSelection mirrors the worker case for a
+// freelance role (design.md D7: both kinds widened identically).
+func TestKeyset_BounceKeyFiresOnFreelanceSelection(t *testing.T) {
+	p, _ := railPageWithCursorOnFreelance(t)
+	var got string
+	var gotSel Selection
+	p.OnBounceWorker = func(s Selection) { got = "bounce"; gotSel = s }
+
+	h := p.InputHandler()
+	h(tcell.NewEventKey(tcell.KeyRune, 'B', tcell.ModNone), noFocus)
+
+	testutil.Equal(t, got, "bounce")
+	testutil.Equal(t, gotSel.Role != nil, true)
+	testutil.Equal(t, gotSel.Role.Kind, db.HeraKindFreelance)
+}
+
+// TestKeyset_ForceRecycleKeyDoesNotFireBounceOnCoordinatorSelection
+// regression-pins that the coordinator path is completely unchanged: `B` on a
+// coordinator selection still fires ONLY OnForceRecycle, never OnBounceWorker.
+func TestKeyset_ForceRecycleKeyDoesNotFireBounceOnCoordinatorSelection(t *testing.T) {
+	p, _ := railPageWithCursorOnCoordinator(t)
+	var forceFired, bounceFired bool
+	p.OnForceRecycle = func(Selection) { forceFired = true }
+	p.OnBounceWorker = func(Selection) { bounceFired = true }
+
+	h := p.InputHandler()
+	h(tcell.NewEventKey(tcell.KeyRune, 'B', tcell.ModNone), noFocus)
+
+	testutil.Equal(t, forceFired, true)
+	testutil.Equal(t, bounceFired, false)
+}
+
+// TestKeyset_BounceKeyNoOpOnEmptySelection pins the "B remains a no-op on an
+// empty selection" scenario carried over from the force-recycle requirement.
+func TestKeyset_BounceKeyNoOpOnEmptySelection(t *testing.T) {
+	d := memDB(t)
+	p := NewHeraPage(d) // empty rail, no orchestrators
+	p.Refresh()
+	var forceFired, bounceFired bool
+	p.OnForceRecycle = func(Selection) { forceFired = true }
+	p.OnBounceWorker = func(Selection) { bounceFired = true }
+
+	h := p.InputHandler()
+	h(tcell.NewEventKey(tcell.KeyRune, 'B', tcell.ModNone), noFocus)
+
+	testutil.Equal(t, forceFired, false)
+	testutil.Equal(t, bounceFired, false)
+}
+
 func TestKeyset_EOLKeysFire(t *testing.T) {
 	p, _ := railPageWithCursorOnWorker(t)
 	var got string

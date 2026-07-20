@@ -14,18 +14,23 @@ import (
 type RecycleTrigger int
 
 const (
-	// RecycleSelfService is the graceful path: a coordinator has signaled
-	// recycle intent (hera_status request_recycle=true, see the
-	// hera-coordination extension). RecycleCoord defers the actual
-	// kill-and-restart until the session is genuinely idle — it is a
-	// no-op (not an error) while the session is still producing output, so
-	// callers are expected to invoke it repeatedly (once per background-
-	// watcher tick; see RecycleWatcher) until it takes effect.
+	// RecycleSelfService is the graceful path: a hera-bound role (coordinator,
+	// worker, or freelance — add-worker-bounce widened this beyond
+	// coordinator-only) has signaled recycle intent (hera_status
+	// request_recycle=true, see the hera-coordination extension). RecycleCoord
+	// defers the actual kill-and-restart until the session is genuinely idle —
+	// it is a no-op (not an error) while the session is still producing
+	// output, so callers are expected to invoke it repeatedly (once per
+	// background-watcher tick; see RecycleWatcher) until it takes effect.
 	RecycleSelfService RecycleTrigger = iota
 	// RecycleHumanForced is the immediate path: an operator forces a
 	// recycle on a coordinator (e.g. the hera-view rail keybinding)
 	// regardless of activity state. This is the must-have path for a
 	// coordinator that is wedged and will never become idle on its own.
+	// This trigger remains coordinator-only (design.md D1, add-worker-bounce):
+	// a worker or freelance role is reachable only via RecycleSelfService,
+	// instructed by a human via the rail's bounce action rather than killed
+	// directly.
 	RecycleHumanForced
 )
 
@@ -46,8 +51,8 @@ type RecycleStore interface {
 // IsIdle/Restart to *agent.Runner (or the supervisor-client) and StopStrayJobs
 // to agent.StopStrayJobs.
 type RecycleRunner interface {
-	// IsIdle reports whether the coordinator's session for taskID is
-	// currently idle (no output being actively produced).
+	// IsIdle reports whether the role's session for taskID is currently idle
+	// (no output being actively produced).
 	IsIdle(taskID string) bool
 	// StopStrayJobs terminates any background job tied to sessionID that
 	// survives independently of the primary PTY (the task_stop-doesn't-
@@ -55,14 +60,15 @@ type RecycleRunner interface {
 	// run before Restart so a surviving job cannot conflict with the fresh
 	// session's worktree writes.
 	StopStrayJobs(taskID, sessionID string) error
-	// Restart kills the coordinator's current session (if any) and starts a
-	// fresh one on the same task — same worktree, same branch, same hera
-	// binding, resume=false so the new session starts with empty context.
+	// Restart kills the role's current session (if any) and starts a fresh
+	// one on the same task — same worktree, same branch, same hera binding,
+	// resume=false so the new session starts with empty context.
 	Restart(taskID string) error
 }
 
-// RecycleCoord kills and restarts a coordinator role's session on its
-// existing argus task, per design.md D5. It never rebinds or mints a new
+// RecycleCoord kills and restarts a hera role's session (coordinator, worker,
+// or freelance — add-worker-bounce widened this beyond coordinator-only) on
+// its existing argus task, per design.md D5. It never rebinds or mints a new
 // task/worktree — hera bindings key on (role, orchestrator, task), not
 // session ID, so nothing about the binding needs to change.
 //
@@ -132,7 +138,7 @@ func BuildRecycleSeedPrompt(store RecycleStore, roleID int64) (string, error) {
 	}
 
 	var b strings.Builder
-	b.WriteString("You are a fresh session recycled from a prior coordinator session on this same task. ")
+	b.WriteString("You are a fresh session recycled from a prior session on this same task. ")
 	b.WriteString("Below is the current state of your orchestration and any handoff note your prior session left, followed by your ORIGINAL prompt from when this task began. ")
 	b.WriteString("The current state and handoff note supersede the original prompt — read them FIRST and act on them; no tool call is needed to obtain them.\n")
 

@@ -783,6 +783,9 @@ func (a *App) buildUI() {
 		// `B` force-recycle (add-coordinator-context-management): confirm, then
 		// kill-and-restart the selected coordinator's session in place.
 		a.heraPage.OnForceRecycle = a.heraOpenForceRecycle
+		// `B` bounce (add-worker-bounce): confirm, then instruct the selected
+		// worker/freelance role's live session to self-service recycle itself.
+		a.heraPage.OnBounceWorker = a.heraOpenBounceWorker
 		// ctrl+y copies the agent-staged clipboard payload for the focused pane's
 		// task (resolved by the page from FocusedTerminalTaskID). Daemon-backed
 		// only — the copy method no-ops gracefully under the in-process runner.
