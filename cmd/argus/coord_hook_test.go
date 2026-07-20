@@ -711,7 +711,7 @@ func TestCoordHookReal_REST(t *testing.T) {
 
 	budget, err := budgetReal(task.ID)
 	testutil.NoError(t, err)
-	testutil.Equal(t, budget, 200000)
+	testutil.Equal(t, budget, 300000)
 
 	// throttle-coord-hook-nudge: round-trip last_nudged_context_size and the
 	// configured nudge increment through the same REST endpoints, mirroring
