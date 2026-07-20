@@ -1111,3 +1111,138 @@ func TestHeraActions_OrchHeaderDeleteCascadesNestedSubtree(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, to.Archived, false)
 }
+
+// TestHeraActions_ClearArchiveCascadesArchivedBridge pins the hit-rail-clear-huge
+// fix: archiving a sub-coordinator hides its bridging worker row in the parent
+// WITHOUT ending its binding (archiving only stamps archived_at), so pressing
+// `C` on the parent must fully cascade-delete the hidden child's whole subtree
+// in ADDITION to ending the bridging role's own binding — not merely the
+// latter. Ending only the bridging role's binding (the pre-fix behaviour)
+// stranded the child orchestrator with no parent link, so it reappeared as a
+// brand-new top-level root on the next rail rebuild instead of being removed
+// along with the rest of the archive.
+func TestHeraActions_ClearArchiveCascadesArchivedBridge(t *testing.T) {
+	d := testDB(t)
+	t.Setenv("HOME", t.TempDir())
+	app := New(d, agent.NewRunner(nil), false)
+
+	for _, id := range []string{"tP", "tC", "tWC"} {
+		testutil.NoError(t, d.Add(&model.Task{ID: id, Name: id, Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}))
+	}
+	p := seedHeraOrch(t, d, "P")
+	c := seedHeraOrch(t, d, "C")
+	seedHeraRoleOnTask(t, d, p, "coord", db.HeraKindCoordinator, "tP", "/wt/tP")
+	wP := seedHeraRoleOnTask(t, d, p, "wP", db.HeraKindWorker, "tC", "/wt/tC-p")
+	testutil.NoError(t, d.ArchiveHeraRole(wP.ID)) // hidden, binding stays live
+
+	seedHeraRoleOnTask(t, d, c, "coord", db.HeraKindCoordinator, "tC", "/wt/tC")
+	wC := seedHeraRoleOnTask(t, d, c, "wC", db.HeraKindWorker, "tWC", "/wt/tWC")
+	app.heraPage.Refresh()
+
+	// Sanity: C nests under P before the clear (bridge intact).
+	subtree := app.heraPage.Rail().Model().BridgeSubtree(p)
+	names := make([]string, len(subtree))
+	for i, ov := range subtree {
+		names[i] = ov.Name
+	}
+	testutil.DeepEqual(t, names, []string{"P", "C"})
+
+	app.heraClearArchive(hera.Selection{Orch: &hera.OrchView{ID: p, Name: "P"}})
+	testutil.Equal(t, app.mode, modeHeraConfirm)
+	msg := app.heraConfirmModal.Message()
+	testutil.Contains(t, msg, "Nukes 1 hidden agent(s)") // wP itself
+	testutil.Contains(t, msg, "fully removes 1 hidden nested sub-team(s)")
+	testutil.Contains(t, msg, "1 orchestrator(s)") // C
+	// The shared bridge task tC is about to be reclaimed by the cascade (its
+	// only OTHER live binding is wP's, which heraDoClearArchive ends first, in
+	// the same confirm action) — the preview must say so accurately: 2
+	// worktrees (tC + tWC), 0 preserved. Getting this wrong (still counting tC
+	// as "preserved" here) was the message-accuracy bug this pins.
+	testutil.Contains(t, msg, "reclaiming 2 worktree(s)+branch(es) (0 preserved)")
+
+	app.heraConfirmDo()
+
+	// C is fully NUKED, not stranded as an orphan.
+	gotC, err := d.HeraOrchestrator(c)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotC.NukedAt != nil, true)
+
+	// wP's own binding ended (the pre-existing flat leaf-nuke half, unchanged).
+	gotWP, err := d.HeraRole(wP.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotWP.NukedAt != nil, true)
+	_, bErr := d.HeraLiveBindingByRole(wP.ID)
+	testutil.ErrorIs(t, bErr, db.ErrHeraNotFound)
+
+	// wC, inside the cascaded child subtree, nuked too.
+	gotWC, err := d.HeraRole(wC.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotWC.NukedAt != nil, true)
+
+	// The shared bridge task tC converges to reclaimed+archived exactly once —
+	// the multi-binding convergence the preview count above must match.
+	tc, err := d.Get("tC")
+	testutil.NoError(t, err)
+	testutil.Equal(t, tc.Archived, true)
+
+	// C is gone from the Model entirely post-nuke — it does NOT resurface as a
+	// new top-level orchestrator (the bug this fixes).
+	rebuilt := app.heraPage.Rail().Model()
+	testutil.Equal(t, rebuilt.OrchByID(c) == nil, true)
+}
+
+// TestHeraActions_ClearArchiveCascadesMultiLevelArchivedBridge extends the
+// single-level case above to a 3-level chain: P →(archived bridge)→ C
+// →(LIVE bridge, never itself archived)→ D. SubtreeArchivedBridges only finds
+// the ONE archived bridge (P→C); D is reached purely because BridgeSubtree's
+// walk ignores the Archived flag entirely (ANY non-teardown parent-side
+// binding nests a child, archived or not) — so a single `C` press on P must
+// still fully nuke D too, not just C.
+func TestHeraActions_ClearArchiveCascadesMultiLevelArchivedBridge(t *testing.T) {
+	d := testDB(t)
+	t.Setenv("HOME", t.TempDir())
+	app := New(d, agent.NewRunner(nil), false)
+
+	for _, id := range []string{"tP", "tC", "tD", "tWD"} {
+		testutil.NoError(t, d.Add(&model.Task{ID: id, Name: id, Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}))
+	}
+	p := seedHeraOrch(t, d, "P")
+	c := seedHeraOrch(t, d, "C")
+	dOrch := seedHeraOrch(t, d, "D")
+	seedHeraRoleOnTask(t, d, p, "coord", db.HeraKindCoordinator, "tP", "/wt/tP")
+	wP := seedHeraRoleOnTask(t, d, p, "wP", db.HeraKindWorker, "tC", "/wt/tC-p")
+	testutil.NoError(t, d.ArchiveHeraRole(wP.ID)) // ONLY this bridge is archived
+
+	seedHeraRoleOnTask(t, d, c, "coord", db.HeraKindCoordinator, "tC", "/wt/tC")
+	// C's own bridge to D is LIVE (never archived) — D nests purely via the
+	// worker→coordinator bridge, not via any archived-row sweep of its own.
+	seedHeraRoleOnTask(t, d, c, "wD", db.HeraKindWorker, "tD", "/wt/tD-c")
+	seedHeraRoleOnTask(t, d, dOrch, "coord", db.HeraKindCoordinator, "tD", "/wt/tD")
+	wD := seedHeraRoleOnTask(t, d, dOrch, "wD-leaf", db.HeraKindWorker, "tWD", "/wt/tWD")
+	app.heraPage.Refresh()
+
+	// Sanity: full 3-level chain nests under P before the clear.
+	subtree := app.heraPage.Rail().Model().BridgeSubtree(p)
+	names := make([]string, len(subtree))
+	for i, ov := range subtree {
+		names[i] = ov.Name
+	}
+	testutil.DeepEqual(t, names, []string{"P", "C", "D"})
+
+	app.heraClearArchive(hera.Selection{Orch: &hera.OrchView{ID: p, Name: "P"}})
+	testutil.Equal(t, app.mode, modeHeraConfirm)
+	app.heraConfirmDo()
+
+	// D — reached only via C's un-archived bridge, two hops below the single
+	// archived row on P — is fully nuked too, not left behind.
+	gotD, err := d.HeraOrchestrator(dOrch)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotD.NukedAt != nil, true)
+	gotWD, err := d.HeraRole(wD.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotWD.NukedAt != nil, true)
+
+	rebuilt := app.heraPage.Rail().Model()
+	testutil.Equal(t, rebuilt.OrchByID(c) == nil, true)
+	testutil.Equal(t, rebuilt.OrchByID(dOrch) == nil, true)
+}

@@ -479,7 +479,22 @@ func (a *App) heraCascadeNukeFrom(rootID int64) {
 	// the subtree (an internal bridge task between two subtree orchestrators counts
 	// as in-subtree and IS reclaimed). This matches the action below exactly, so the
 	// modal never undercounts internal-bridge worktrees in a deep (≥2 level) subtree.
-	agents, worktrees, preserved := 0, 0, 0
+	agents, worktrees, preserved := a.countCascadeSubtree(subtree, subtreeIDs, nil)
+	title := "Nuke " + subtree[0].Name + " and its whole team?"
+	msg := fmt.Sprintf(
+		"This removes %d orchestrator(s) and %d agent(s) from the rail and reclaims %d worktree(s) + branch(es), stopping their sessions. Rows are retained (recoverable via the DB). %d task(s) bound in another orchestrator are preserved.",
+		len(subtree), agents, worktrees, preserved)
+	a.openHeraConfirm(title, msg, func() { a.heraDoCascadeNuke(subtree, subtreeIDs) })
+}
+
+// countCascadeSubtree tallies a cascade-nuke subtree for a confirm message:
+// live non-coordinator agents, and how many distinct bound tasks get their
+// worktree reclaimed vs preserved (bound live outside the subtree —
+// multi-binding safety). Shared by heraCascadeNukeFrom (Ctrl+D, which passes a
+// nil excludeRoleIDs — nothing else is being nuked alongside its cascade) and
+// heraClearArchive (`C`, when the archive contains a hidden bridging sub-team
+// — see excludeRoleIDs below for why that caller passes a non-nil set).
+func (a *App) countCascadeSubtree(subtree []*hera.OrchView, subtreeIDs map[int64]bool, excludeRoleIDs map[int64]bool) (agents, worktrees, preserved int) {
 	seen := make(map[string]bool)
 	for _, o := range subtree {
 		for i := range o.Roles {
@@ -494,18 +509,14 @@ func (a *App) heraCascadeNukeFrom(rootID int64) {
 				continue
 			}
 			seen[r.TaskID] = true
-			if a.heraTaskBoundOutside(r.TaskID, subtreeIDs) {
+			if a.heraTaskBoundOutside(r.TaskID, subtreeIDs, excludeRoleIDs) {
 				preserved++
 			} else {
 				worktrees++
 			}
 		}
 	}
-	title := "Nuke " + subtree[0].Name + " and its whole team?"
-	msg := fmt.Sprintf(
-		"This removes %d orchestrator(s) and %d agent(s) from the rail and reclaims %d worktree(s) + branch(es), stopping their sessions. Rows are retained (recoverable via the DB). %d task(s) bound in another orchestrator are preserved.",
-		len(subtree), agents, worktrees, preserved)
-	a.openHeraConfirm(title, msg, func() { a.heraDoCascadeNuke(subtree, subtreeIDs) })
+	return
 }
 
 // heraTaskBoundOutside reports whether taskID holds at least one LIVE binding to
@@ -514,7 +525,18 @@ func (a *App) heraCascadeNukeFrom(rootID int64) {
 // bound only within the subtree (including an internal bridge between two subtree
 // orchestrators) returns false and is reclaimed + archived. A query error errs on
 // the side of preserving (returns true).
-func (a *App) heraTaskBoundOutside(taskID string, subtreeIDs map[int64]bool) bool {
+//
+// excludeRoleIDs additionally treats a live binding held by one of those roles
+// as NOT counting toward "outside" — pass nil/empty for the actual nuke
+// execution (heraDoCascadeNuke), which always runs after any role in
+// excludeRoleIDs would already be nuked so the plain re-query already sees the
+// truth. heraClearArchive's confirm-MESSAGE tally is the one caller that needs
+// a non-nil set: it computes the cascade sub-team's preview counts BEFORE
+// heraDoClearArchive has ended the flat leaf/bridge roles' own bindings, so
+// without the exclusion a bridge task whose only "outside" binding belongs to
+// one of those about-to-be-nuked roles would be previewed as "preserved" when
+// it is actually about to be reclaimed by the cascade that runs right after.
+func (a *App) heraTaskBoundOutside(taskID string, subtreeIDs map[int64]bool, excludeRoleIDs map[int64]bool) bool {
 	d, ok := a.db.(*db.DB)
 	if !ok {
 		return true
@@ -524,6 +546,9 @@ func (a *App) heraTaskBoundOutside(taskID string, subtreeIDs map[int64]bool) boo
 		return true
 	}
 	for _, b := range live {
+		if excludeRoleIDs[b.RoleID] {
+			continue
+		}
 		if !subtreeIDs[b.OrchestratorID] {
 			return true
 		}
@@ -552,7 +577,7 @@ func (a *App) heraDoCascadeNuke(subtree []*hera.OrchView, subtreeIDs map[int64]b
 	for _, o := range subtree {
 		for i := range o.Roles {
 			r := &o.Roles[i]
-			if r.Live && r.TaskID != "" && !reclaimed[r.TaskID] && !a.heraTaskBoundOutside(r.TaskID, subtreeIDs) {
+			if r.Live && r.TaskID != "" && !reclaimed[r.TaskID] && !a.heraTaskBoundOutside(r.TaskID, subtreeIDs, nil) {
 				reclaimed[r.TaskID] = true
 				a.heraReclaimAndArchiveTask(r.TaskID)
 			}
@@ -640,6 +665,13 @@ func (a *App) heraNukeArchivedRole(r *hera.RoleView) (reclaimed bool) {
 // descendant WORKER in the selected coordinator's subtree — equivalent to Ctrl+D
 // on each: reclaim its worktree+branch (unless bound live elsewhere), archive its
 // task, and mark its role row NUKED (removed from the rail, retained in the DB).
+// A hidden descendant that BRIDGES a nested sub-coordinator is not just a leaf
+// agent — archiving a sub-coordinator cascades to hide its whole team, so `C`
+// ALSO fully cascade-deletes that team (via the same subtree teardown Ctrl+D
+// uses), in addition to ending the bridging role's own binding. Ending only that
+// one binding (the pre-fix behaviour) would leave the child orchestrator's row
+// with no parent link, so it would reappear as a new top-level root on the next
+// rail rebuild instead of being removed along with the rest of the archive.
 // Scoped to the SELECTED coordinator's archive, never global. An empty archive
 // surfaces "nothing to clear".
 func (a *App) heraClearArchive(sel hera.Selection) {
@@ -665,16 +697,51 @@ func (a *App) heraClearArchive(sel hera.Selection) {
 		}
 	}
 	workers := model.SubtreeArchivedWorkers(scopeID)
-	if len(workers) == 0 {
+
+	// Hidden bridging rows are whole sub-teams, not leaf agents — merge every
+	// archived bridge's full nested subtree into one combined cascade set (the
+	// same shape heraCascadeNukeFrom tears down for Ctrl+D).
+	archivedBridges := model.SubtreeArchivedBridges(scopeID)
+	var teamSubtree []*hera.OrchView
+	teamIDs := make(map[int64]bool)
+	for _, childID := range archivedBridges {
+		for _, o := range model.BridgeSubtree(childID) {
+			if !teamIDs[o.ID] {
+				teamIDs[o.ID] = true
+				teamSubtree = append(teamSubtree, o)
+			}
+		}
+	}
+
+	if len(workers) == 0 && len(teamSubtree) == 0 {
 		a.statusbar.SetInfo("Nothing to clear")
 		return
 	}
 	reclaim, preserved := a.heraCountReclaimable(workers)
 	msg := fmt.Sprintf(
-		"Nukes %d hidden agent(s) and reclaims %d worktree(s)+branch(es). %d preserved (bound elsewhere). Rows are retained (recoverable via the DB).",
+		"Nukes %d hidden agent(s) and reclaims %d worktree(s)+branch(es). %d preserved (bound elsewhere).",
 		len(workers), reclaim, preserved)
+	if len(teamSubtree) > 0 {
+		// workers' own bindings always end FIRST, in the same confirm action
+		// (heraDoClearArchive runs before heraDoCascadeNuke below) — exclude their
+		// role IDs from the "bound outside" check so the preview doesn't call a
+		// bridge task "preserved" when it is actually about to be reclaimed by
+		// the cascade that runs right after (see heraTaskBoundOutside's doc).
+		workerRoleIDs := make(map[int64]bool, len(workers))
+		for i := range workers {
+			workerRoleIDs[workers[i].RoleID] = true
+		}
+		teamAgents, teamWorktrees, teamPreserved := a.countCascadeSubtree(teamSubtree, teamIDs, workerRoleIDs)
+		msg += fmt.Sprintf(
+			" Also fully removes %d hidden nested sub-team(s): %d orchestrator(s) and %d agent(s), reclaiming %d worktree(s)+branch(es) (%d preserved).",
+			len(archivedBridges), len(teamSubtree), teamAgents, teamWorktrees, teamPreserved)
+	}
+	msg += " Rows are retained (recoverable via the DB)."
 	a.openHeraConfirm("Clear "+scopeName+"'s archive?", msg, func() {
 		a.heraDoClearArchive(workers)
+		if len(teamSubtree) > 0 {
+			a.heraDoCascadeNuke(teamSubtree, teamIDs)
+		}
 	})
 }
 
