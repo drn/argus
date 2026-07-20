@@ -40,8 +40,8 @@ Derived from: `internal/tui/hera/rail.go` (`railRow.needsInputTaskID`, `Rail.Nex
 
 #### Scenario: A coordinator-spawned nested sub-team's own need is reachable
 
-- **WHEN** a coordinator-spawned nested sub-team's coordinator role itself needs input (the parent orchestrator's coordinator agent also drives this child orchestrator)
-- **THEN** `ctrl+g` finds it, expands any collapsed ancestor, and lands the selection on the child orchestrator's own header row
+- **WHEN** a coordinator-spawned nested sub-team's coordinator role itself needs input (the parent orchestrator's coordinator agent also drives this child orchestrator) and no other role does
+- **THEN** `ctrl+g` finds it (via the child's own signal) and expands any collapsed ancestor; because the parent and child headers share the identical underlying coordinator task, landing resolves to whichever of the two `SelectByTaskID` matches first in rail row order — structurally always the parent header, since a header row is placed before any of its nested children's rows — moving focus to the coordinator pane for that (shared) task. This is the same first-match convention the next scenario documents, not a distinct landing rule.
 
 #### Scenario: A nested sub-coordinator bridging as a worker row remains reachable
 
