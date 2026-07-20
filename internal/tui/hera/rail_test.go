@@ -90,8 +90,8 @@ func TestRail_CoordinatorFoldsIntoHeader(t *testing.T) {
 	// "Active (2)" header (add-kanban-focus-fold).
 	testutil.Equal(t, r.Rows(), 5)
 
-	// liveRoleCount excludes the folded coordinator: orch-1 has 1 live worker.
-	testutil.Equal(t, liveRoleCount(&r.model.Active[0]), 1)
+	// SubtreeAgentCount excludes the folded coordinator: orch-1 has 1 worker.
+	testutil.Equal(t, r.model.SubtreeAgentCount(1), 1)
 }
 
 func TestRail_OrchHeaderCarriesCoordinatorGlyph(t *testing.T) {
