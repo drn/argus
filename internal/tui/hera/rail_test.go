@@ -1218,11 +1218,14 @@ func TestRail_MouseHandler_Scroll(t *testing.T) {
 	// Cursor starts on orch-1's header (first selectable row).
 	testutil.Equal(t, r.SelectedOrch().Name, "orch-1")
 
-	consumed, _ := handler(tview.MouseScrollDown, tcell.NewEventMouse(2, 2, tcell.ButtonNone, 0), setFocus)
+	// The cursor is what scroll drags, not an independent viewport, so a
+	// scroll gesture moves the cursor in the SAME direction as the wheel
+	// (trackpad "natural" scrolling) — MouseScrollUp advances the cursor.
+	consumed, _ := handler(tview.MouseScrollUp, tcell.NewEventMouse(2, 2, tcell.ButtonNone, 0), setFocus)
 	testutil.Equal(t, consumed, true)
 	testutil.Equal(t, r.Selected().Name, "wkr") // coord folds into the header, so one step lands on wkr
 
-	consumed, _ = handler(tview.MouseScrollUp, tcell.NewEventMouse(2, 2, tcell.ButtonNone, 0), setFocus)
+	consumed, _ = handler(tview.MouseScrollDown, tcell.NewEventMouse(2, 2, tcell.ButtonNone, 0), setFocus)
 	testutil.Equal(t, consumed, true)
 	testutil.Equal(t, r.SelectedOrch().Name, "orch-1")
 }

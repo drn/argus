@@ -1027,6 +1027,12 @@ func (tl *TaskListView) keys() *keymap.Keymap {
 // (matching tview's Box default), and wheel scroll moves the cursor up/down
 // one row per notch, skipping headers exactly like the keyboard bindings
 // (mirrors gitpanel.FilePanel and hera.Rail).
+//
+// The scroll-to-cursor mapping is inverted relative to a plain content pan:
+// this widget moves the CURSOR, not an independent viewport, so a scroll
+// gesture reads as "drag the cursor," not "drag the pane" — the cursor
+// should move in the same direction as the fingers (trackpad "natural"
+// scrolling), the opposite of FilePanel's pane-scroll convention.
 func (tl *TaskListView) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
 	return tl.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (consumed bool, capture tview.Primitive) {
 		if !tl.InRect(event.Position()) {
@@ -1037,10 +1043,10 @@ func (tl *TaskListView) MouseHandler() func(action tview.MouseAction, event *tce
 			setFocus(tl)
 			consumed = true
 		case tview.MouseScrollUp:
-			tl.CursorUp()
+			tl.CursorDown()
 			consumed = true
 		case tview.MouseScrollDown:
-			tl.CursorDown()
+			tl.CursorUp()
 			consumed = true
 		}
 		return

@@ -2063,6 +2063,12 @@ func (r *Rail) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.
 // MouseHandler already gates dispatch here on the click column falling in the
 // rail's region; the InRect check below additionally protects direct callers
 // (tests, or a future non-region-gated caller) from acting on out-of-rect events.
+//
+// The scroll-to-cursor mapping is inverted relative to a plain content pan:
+// this widget moves the CURSOR, not an independent viewport, so a scroll
+// gesture reads as "drag the cursor," not "drag the pane" — the cursor
+// should move in the same direction as the fingers (trackpad "natural"
+// scrolling), the opposite of FilePanel's pane-scroll convention.
 func (r *Rail) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
 	return r.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (consumed bool, capture tview.Primitive) {
 		if !r.InRect(event.Position()) {
@@ -2073,10 +2079,10 @@ func (r *Rail) MouseHandler() func(action tview.MouseAction, event *tcell.EventM
 			setFocus(r)
 			consumed = true
 		case tview.MouseScrollUp:
-			r.CursorUp()
+			r.CursorDown()
 			consumed = true
 		case tview.MouseScrollDown:
-			r.CursorDown()
+			r.CursorUp()
 			consumed = true
 		}
 		return

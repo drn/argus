@@ -108,22 +108,25 @@ func TestTaskListView_MouseHandler_Scroll(t *testing.T) {
 		t.Fatal("expected a task at cursor position")
 	}
 
-	consumed, _ := handler(tview.MouseScrollDown, tcell.NewEventMouse(2, 2, tcell.ButtonNone, 0), setFocus)
-	if !consumed {
-		t.Error("scroll down should be consumed")
-	}
-	task2 := tl.SelectedTask()
-	if task2 == nil || task2.ID == task.ID {
-		t.Error("scroll down should move the cursor to a different task")
-	}
-
-	consumed, _ = handler(tview.MouseScrollUp, tcell.NewEventMouse(2, 2, tcell.ButtonNone, 0), setFocus)
+	// The cursor is what scroll drags, not an independent viewport, so a
+	// scroll gesture moves the cursor in the SAME direction as the wheel
+	// (trackpad "natural" scrolling) — MouseScrollUp advances the cursor.
+	consumed, _ := handler(tview.MouseScrollUp, tcell.NewEventMouse(2, 2, tcell.ButtonNone, 0), setFocus)
 	if !consumed {
 		t.Error("scroll up should be consumed")
 	}
+	task2 := tl.SelectedTask()
+	if task2 == nil || task2.ID == task.ID {
+		t.Error("scroll up should move the cursor to a different task")
+	}
+
+	consumed, _ = handler(tview.MouseScrollDown, tcell.NewEventMouse(2, 2, tcell.ButtonNone, 0), setFocus)
+	if !consumed {
+		t.Error("scroll down should be consumed")
+	}
 	task3 := tl.SelectedTask()
 	if task3 == nil || task3.ID != task.ID {
-		t.Error("scroll up should return the cursor to the original task")
+		t.Error("scroll down should return the cursor to the original task")
 	}
 }
 
