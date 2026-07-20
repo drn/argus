@@ -43,17 +43,16 @@ func TestRail_NextNeedsInputTaskID_FindsWorkerCandidate(t *testing.T) {
 	}
 }
 
-// TestRail_NextNeedsInputTaskID_TopLevelCoordinatorOwnNeedIsNotACandidate
-// documents a deliberate scoping decision: a TOP-LEVEL orchestrator's
-// coordinator role is folded entirely into the rrOrch HEADER row
-// (appendOrchWorkers skips db.HeraKindCoordinator, "folded into the header")
-// — it never gets its own row.role-bearing row, so SelectByTaskID (which only
-// ever matches row.role) could never land a jump on it. If the coordinator's
-// OWN signal needs input (not merely a descendant's rollup) it must NOT be
-// offered as a candidate — that would be a "found but unreachable" dead cycle
-// stop. With no worker present, the coordinator's own need is therefore
-// correctly invisible to the cycle.
-func TestRail_NextNeedsInputTaskID_TopLevelCoordinatorOwnNeedIsNotACandidate(t *testing.T) {
+// TestRail_NextNeedsInputTaskID_TopLevelCoordinatorOwnNeedIsReachable
+// (fix-ctrlg-coordinator-own-need) reverses a prior deliberate exclusion: a
+// TOP-LEVEL orchestrator's coordinator role is folded entirely into the
+// rrOrch HEADER row (appendOrchWorkers skips db.HeraKindCoordinator, "folded
+// into the header") — it never gets its own role-bearing row, so it can only
+// ever be reached through the header itself. needsInputTaskID now qualifies a
+// header row via its coordinator's OWN signal (CoordRole().needsInputOwn()),
+// and SelectByTaskID gained a matching header-row scan, so with no worker
+// present, the coordinator's own need IS now a reachable candidate.
+func TestRail_NextNeedsInputTaskID_TopLevelCoordinatorOwnNeedIsReachable(t *testing.T) {
 	d := memDB(t)
 	orch := seedOrch(t, d, "orch")
 	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
@@ -62,11 +61,140 @@ func TestRail_NextNeedsInputTaskID_TopLevelCoordinatorOwnNeedIsNotACandidate(t *
 	p.Refresh()
 
 	m := p.Rail().Model()
-	testutil.Equal(t, m.OrchByID(orch).CoordRole().NeedsInput, true) // the signal IS set...
+	testutil.Equal(t, m.OrchByID(orch).CoordRole().NeedsInput, true) // the signal is set...
 
 	id, ok := p.Rail().NextNeedsInputTaskID()
-	testutil.Equal(t, ok, false) // ...but is not a reachable jump target
-	testutil.Equal(t, id, "")
+	testutil.Equal(t, ok, true) // ...and is now a reachable jump target
+	testutil.Equal(t, id, "tc")
+}
+
+// TestRail_SelectByTaskID_ResolvesTopLevelCoordinatorHeader (fix-ctrlg-
+// coordinator-own-need) confirms SelectByTaskID's new header-row match pass
+// can land directly on a top-level coordinator's own task id when no role row
+// matches it — the coordinator is folded entirely into the rrOrch header, so
+// the ONLY possible match is the header's CoordRole().TaskID.
+func TestRail_SelectByTaskID_ResolvesTopLevelCoordinatorHeader(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+	p := NewHeraPage(d)
+	p.Refresh()
+
+	r := p.Rail()
+	testutil.Equal(t, r.SelectByTaskID("tc"), true)
+	sel := r.Selection()
+	testutil.Equal(t, sel.Role == nil, true)
+	testutil.Equal(t, sel.Orch != nil && sel.Orch.ID == orch, true)
+	testutil.Equal(t, sel.IsCoordinator(), true)
+}
+
+// TestHeraPage_JumpToNextNeedsInput_TopLevelCoordinatorOwnNeed (fix-ctrlg-
+// coordinator-own-need) is the end-to-end contract: a top-level orchestrator
+// with ONLY a coordinator (no worker at all) whose own signal needs input is
+// now a reachable ctrl+g target, landing selection in the coordinator pane.
+func TestHeraPage_JumpToNextNeedsInput_TopLevelCoordinatorOwnNeed(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{
+		"tc": {id: "tc", alive: true},
+	}))
+	p.SetNeedsInput([]string{"tc"})
+	p.Refresh()
+
+	testutil.Equal(t, p.JumpToNextNeedsInput(), true)
+	sel := p.SelectionContext()
+	testutil.Equal(t, sel.Role == nil, true)
+	testutil.Equal(t, sel.Orch != nil && sel.Orch.ID == orch, true)
+	testutil.Equal(t, sel.IsCoordinator(), true)
+	testutil.Equal(t, sel.FocusTaskID(), "tc")
+	testutil.Equal(t, p.Machine().State(), FocusCoord)
+}
+
+// TestHeraPage_JumpToNextNeedsInput_CoordSpawnedNestedSubteamOwnNeed
+// (fix-ctrlg-coordinator-own-need) covers the coordinator-spawned nested
+// sub-team shape: one coordinator agent/task simultaneously drives BOTH a
+// parent orchestrator P and a nested child orchestrator Q (the
+// hera_new_orchestrator self-promotion shape — mirrors the seeding pattern in
+// TestModel_CoordSpawnedSubteamBridge, model_test.go). Only Q's own
+// coordinator role is marked as needing input. With P collapsed (hiding Q's
+// header), ctrl+g must still find it (via the rail's partial-fold reveal),
+// expand P, and land on a coordinator selection for the shared task.
+//
+// Because P and Q's coordinator roles share the IDENTICAL underlying task
+// (one physical agent, two role bindings), SelectByTaskID's plain task-id
+// match — by design, see design.md Decision 3 — always resolves to whichever
+// header is FIRST in rail row order. A header row is placed unconditionally
+// before any of its nested children's rows, so that is structurally always
+// the PARENT's header (P), never the child's, regardless of which one's own
+// signal triggered the candidate scan. This is not a regression: it is the
+// same first-match convention TestRail_SelectByTaskID_SharedTaskMultiHeader...
+// below exercises directly.
+func TestHeraPage_JumpToNextNeedsInput_CoordSpawnedNestedSubteamOwnNeed(t *testing.T) {
+	p := coordOf(1, "P", 100, "tc",
+		RoleView{RoleID: 101, Name: "pw", Kind: db.HeraKindWorker, Live: true, TaskID: "tpw", BridgeTaskID: "tpw"})
+	q := coordOf(2, "Q", 200, "tc",
+		RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
+	m := Model{Active: []OrchView{p, q}}
+	roleByName(t, &m, 2, "coord").NeedsInput = true // only Q's own coordinator need
+	m.rollupNeedsInput()                            // propagates SubtreeNeedsInput for the fold-reveal
+
+	page := NewHeraPage(memDB(t))
+	page.Rail().SetModel(m)
+	page.applySelection() // mirrors doRefresh's post-SetModel re-sync
+
+	page.Rail().seekCursor(t, func(row railRow) bool { return row.orch != nil && row.orch.Name == "P" })
+	page.Rail().ToggleCollapse()
+	testutil.Equal(t, page.Rail().OrchCollapsed(1), true)
+	page.Rail().cursor = 0 // cursor starts away from the target, like real usage
+
+	testutil.Equal(t, page.JumpToNextNeedsInput(), true)
+	testutil.Equal(t, page.Rail().OrchCollapsed(1), false) // parent ancestor re-expanded
+	sel := page.SelectionContext()
+	testutil.Equal(t, sel.Role == nil, true)
+	testutil.Equal(t, sel.IsCoordinator(), true)
+	testutil.Equal(t, sel.FocusTaskID(), "tc")
+	testutil.Equal(t, sel.Orch.Name, "P") // first-match: the parent header, see comment above
+	testutil.Equal(t, page.Machine().State(), FocusCoord)
+}
+
+// TestRail_SelectByTaskID_SharedTaskMultiHeaderConsistentlyResolvesFirstMatch
+// (fix-ctrlg-coordinator-own-need, design.md Decision 3) is the shared-task
+// multi-header edge case: P and Q's coordinator roles share the SAME task, and
+// BOTH their own needs-input signals are set (the realistic outcome when a
+// live coordinator agent's task is flagged, since every role bound to that
+// task lights up independently). ctrl+g must consistently resolve to the SAME
+// first-matching header (P, the parent) regardless of where the cursor
+// starts — never alternate between P and Q, never crash, never spin.
+func TestRail_SelectByTaskID_SharedTaskMultiHeaderConsistentlyResolvesFirstMatch(t *testing.T) {
+	p := coordOf(1, "P", 100, "tc",
+		RoleView{RoleID: 101, Name: "pw", Kind: db.HeraKindWorker, Live: true, TaskID: "tpw", BridgeTaskID: "tpw"})
+	q := coordOf(2, "Q", 200, "tc",
+		RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
+	m := Model{Active: []OrchView{p, q}}
+	roleByName(t, &m, 1, "coord").NeedsInput = true
+	roleByName(t, &m, 2, "coord").NeedsInput = true
+
+	r := NewRail()
+	r.SetModel(m)
+	testutil.Equal(t, r.depthOf("P"), 0)
+	testutil.Equal(t, r.depthOf("Q"), 1) // nested under P, confirming the coord-bridge shape
+
+	for start := 0; start < r.Rows(); start++ {
+		r.cursor = start
+		id, ok := r.NextNeedsInputTaskID()
+		testutil.Equal(t, ok, true)
+		testutil.Equal(t, id, "tc")
+		testutil.Equal(t, r.SelectByTaskID(id), true)
+		sel := r.Selection()
+		testutil.Equal(t, sel.Role == nil, true)
+		if sel.Orch != nil {
+			testutil.Equal(t, sel.Orch.Name, "P") // always the first match, never Q
+		} else {
+			t.Errorf("start=%d: Selection().Orch is nil", start)
+		}
+	}
 }
 
 // TestRail_NextNeedsInputTaskID_HeaderRollupIsNotADistinctCandidate confirms
@@ -192,8 +320,7 @@ func TestHeraPage_JumpToNextNeedsInput_ExpandsAncestorAndSelects(t *testing.T) {
 }
 
 // TestHeraPage_JumpToNextNeedsInput_NoneNeedsInput is the safe no-op case —
-// confirms it doesn't crash or mutate selection when there is nothing (or
-// only an unreachable top-level-coordinator-own-need) to jump to.
+// confirms it doesn't crash or mutate selection when nothing needs input.
 func TestHeraPage_JumpToNextNeedsInput_NoneNeedsInput(t *testing.T) {
 	d := memDB(t)
 	orch := seedOrch(t, d, "orch")

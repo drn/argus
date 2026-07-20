@@ -1405,11 +1405,15 @@ func (r *Rail) ToggleCollapse() {
 }
 
 // SelectByTaskID moves the cursor to the first selectable role row whose bound
-// task is taskID, firing onSelectionChanged so the panes rebind. Returns true
-// when such a row exists in the CURRENT (built) row set. Used by the plan view's
-// leaf-Enter to jump to a node's role WITHIN the Hera view (BUG-002) — never a
-// Tasks-tab switch. A taskID with no visible row (e.g. under a collapsed branch
-// the plan never surfaces) is a no-op returning false.
+// task is taskID, firing onSelectionChanged so the panes rebind. Falling back
+// when no role row matches, it also resolves a coordinator's own task id to
+// its orchestrator's rrOrch HEADER row (fix-ctrlg-coordinator-own-need) — a
+// coordinator is never its own role-bearing row, so this is the only way its
+// own task id can land the cursor at all. Returns true when either scan finds
+// a row in the CURRENT (built) row set. Used by the plan view's leaf-Enter to
+// jump to a node's role WITHIN the Hera view (BUG-002) — never a Tasks-tab
+// switch. A taskID with no visible row (e.g. under a collapsed branch the plan
+// never surfaces) is a no-op returning false.
 func (r *Rail) SelectByTaskID(taskID string) bool {
 	if taskID == "" {
 		return false
@@ -1428,6 +1432,21 @@ func (r *Rail) SelectByTaskID(taskID string) bool {
 	for i, row := range r.rows {
 		if row.selectable() && row.role != nil && row.role.TaskID == taskID {
 			r.setCursor(i) // funnels through onSelectionChanged + persist
+			return true
+		}
+	}
+	// A coordinator role never gets its own role-bearing row — it is folded
+	// entirely into its orchestrator's rrOrch HEADER row (appendOrchWorkers
+	// skips db.HeraKindCoordinator). Run only when the role-row scan above
+	// found nothing, so a header never shadows a genuine role match. When two
+	// header rows share the SAME coordinator task (a coordinator-spawned
+	// nested sub-team — one coordinator agent driving both a parent and child
+	// orchestrator), this resolves to whichever header appears FIRST in row
+	// order — the same first-match convention already governing any other
+	// multi-binding task (design.md Decision 3, fix-ctrlg-coordinator-own-need).
+	for i, row := range r.rows {
+		if row.kind == rrOrch && row.orch.CoordRole() != nil && row.orch.CoordRole().TaskID == taskID {
+			r.setCursor(i)
 			return true
 		}
 	}
@@ -1484,28 +1503,43 @@ func (r *Rail) EnsureAncestorsExpanded(orchID int64) {
 
 // needsInputTaskID returns the argus task id this row's OWN needs-input
 // signal points at, and whether the row qualifies as a jump target at all
-// (add-hera-jump-question, Ctrl+G). "Own" — needsInputOwn(), the same unit
-// the switcher's needs-input-first sort and the rail's leaf "(?)" glyph both
-// key on — deliberately requires row.role (a genuine rrRole/rrFreelanceRole/
-// rrPinnedBreadcrumb row): a top-level orchestrator's rrOrch HEADER row never
-// qualifies, even when the coordinator's OWN signal is set (the header no
-// longer shows anything for a mere descendant rollup at all, since
-// remove-needs-input-rollup-glyph) — appendOrchWorkers folds a top-level
-// coordinator's role entirely into the header (never emitting it as its own
-// row), so SelectByTaskID — which only
-// ever matches row.role — could never land the jump on it; offering it as a
-// candidate would produce a "found but unreachable" dead cycle stop. A NESTED
-// sub-coordinator is unaffected: it bridges as an ordinary role-bearing worker
-// row in its PARENT orchestrator (appendWorkerRow), so its own need is a
-// perfectly reachable candidate here. A non-selectable row (e.g. a pinned
-// entry's non-selectable continuation line) never qualifies either, mirroring
-// SelectByTaskID's own selectable() gate.
+// (add-hera-jump-question, Ctrl+G; extended by fix-ctrlg-coordinator-own-need
+// to also reach a coordinator's own need). "Own" — needsInputOwn(), the same
+// unit the switcher's needs-input-first sort and the rail's leaf "(?)" glyph
+// both key on. For a genuine role-bearing row (rrRole/rrFreelanceRole/
+// rrPinnedBreadcrumb), it qualifies via row.role.needsInputOwn(). A top-level
+// orchestrator's rrOrch HEADER row — and, identically, a coordinator-spawned
+// nested sub-team's own header row (one coordinator agent simultaneously
+// driving a second orchestrator) — ALSO qualifies now, via its coordinator's
+// OWN signal (row.orch.CoordRole().needsInputOwn()), NEVER the rolled-up
+// SubtreeNeedsInput: remove-needs-input-rollup-glyph retired the BUG-028
+// fallback that once surfaced the rollup on a coordinator-less header, so the
+// header glyph itself (statusIcon, drawOrchRow) now shows only a coordinator's
+// own signal too — this jump target and the glyph agree by construction, and
+// a descendant that actually needs input still surfaces as its own, separate
+// candidate through the partial-fold-reveal mechanism rather than being
+// double-counted here. SelectByTaskID gained a matching header-row scan, so a
+// coordinator's own need is now reachable rather than a "found but
+// unreachable" dead cycle stop. A NESTED sub-coordinator that bridges as an
+// ordinary role-bearing worker row in its PARENT orchestrator
+// (appendWorkerRow) is unaffected either way — its own need was already a
+// reachable candidate here. A non-selectable row (e.g. a pinned entry's
+// non-selectable continuation line) never qualifies, mirroring
+
 func (row railRow) needsInputTaskID() (string, bool) {
-	if !row.selectable() || row.role == nil {
+	if !row.selectable() {
 		return "", false
 	}
-	if row.role.needsInputOwn() && row.role.TaskID != "" {
-		return row.role.TaskID, true
+	if row.role != nil {
+		if row.role.needsInputOwn() && row.role.TaskID != "" {
+			return row.role.TaskID, true
+		}
+		return "", false
+	}
+	if row.kind == rrOrch && row.orch != nil {
+		if coord := row.orch.CoordRole(); coord != nil && coord.needsInputOwn() && coord.TaskID != "" {
+			return coord.TaskID, true
+		}
 	}
 	return "", false
 }
