@@ -143,33 +143,48 @@ Derived from: `internal/tui/hera/rail.go:391` (`drawRow`), `internal/tui/hera/ra
 
 ### Requirement: Status-icon precedence on role rows (area 3)
 
-The system SHALL choose a role row's status glyph by this precedence: (1) `ready_to_close` wins over everything with a distinct review glyph; otherwise (2) an operator/agent-set `blocked` or `done` hera role status renders its distinct static glyph; otherwise (3) GENUINE activity (`RoleView.IsActive` — a live binding whose bound argus task is `in_progress`) renders the ACTIVE SPINNER's animated frame (see "Active agents animate a spinner glyph"); otherwise (4) an `idle` hera role status renders the static idle glyph; otherwise (5) binding presence (`Live`) renders a "live" glyph; otherwise (6) an unbound/dimmed glyph. The spinner is sourced from REAL session activity, never the stale `working` hera role status (BUG-003): a `working` role that is not genuinely active falls through to (5)/(6) and renders a static glyph. `ready_to_close` is read from the task-addressed `task_meta` "hera" namespace, not the hera tables.
+The system SHALL choose a role row's status glyph by this precedence: (1) `NeedsInput` — the role's own needs-input signal (a PTY prompt or a `blocked` hera role status) OR its subtree rollup — wins over EVERYTHING, including a role's own `ready_to_close` mark (BUG-A: a role genuinely blocked on a user prompt is the one actionable thing in the subtree, and must never be masked); otherwise (2) GENUINE activity (`RoleView.IsActive` — `Live && SessionRunning && !SessionIdle`, a session/content-derived signal, NOT gated on the bound argus task's status, BUG-C) renders the ACTIVE SPINNER's animated frame (see "Active agents animate a spinner glyph") — this outranks the stale-able resting states below it (BUG-F), because a role producing output again is more current than any of those stamps; otherwise (3) `ready_to_close` renders a distinct review glyph; otherwise (4) an operator/agent-set `failed` hera role status renders a distinct red `✕` (D2, `make-hera-plan-living`), never conflated with `done`; otherwise (5) a `done` hera role status renders its distinct static glyph; otherwise (6) an `idle` hera role status renders the static idle glyph; otherwise (7) binding presence (`Live`) renders a "live" glyph; otherwise (8) an unbound/dimmed glyph. The spinner is sourced from REAL session activity, never the stale `working` hera role status (BUG-003): a `working` role that is not genuinely active falls through to (7)/(8) and renders a static glyph. `ready_to_close` is read from the task-addressed `task_meta` "hera" namespace, not the hera tables.
 
-Derived from: `internal/tui/hera/rail.go` (`statusIcon`), `internal/tui/hera/model.go` (`RoleView.IsActive`, `buildRoleView` reads `ready_to_close`).
+Derived from: `internal/tui/widget/rolestatusicon.go` (`RoleStatusIcon`, `RoleStatusInputs`), `internal/tui/hera/rail.go` (`statusIcon`), `internal/tui/hera/model.go` (`RoleView.IsActive`, `RoleView.ShowsNeedsInput`, `buildRoleView` reads `ready_to_close`).
 
-#### Scenario: ready_to_close overrides status
+#### Scenario: Needs-input overrides ready_to_close and everything else
 
-- **WHEN** a role's bound task carries `meta:hera.ready_to_close=true` AND the role status is working
-- **THEN** the row renders the review/ready glyph, not the working spinner
+- **WHEN** a role shows its needs-input "(?)" signal (own or subtree rollup) AND also carries `meta:hera.ready_to_close=true`
+- **THEN** the row renders the needs-input glyph, not the review/ready glyph
+
+#### Scenario: ready_to_close overrides a stale working status
+
+- **WHEN** a role's bound task carries `meta:hera.ready_to_close=true`, the role status is working, and the role is not genuinely active and not in needs-input
+- **THEN** the row renders the review/ready glyph, not a spinner
 
 #### Scenario: Genuine activity renders the animated spinner
 
-- **WHEN** a role holds a live binding whose bound argus task is `in_progress` and is not blocked/done/ready_to_close
-- **THEN** the row renders the active spinner's frame (animated), not a static glyph
+- **WHEN** a role holds a live binding whose session is running and not content-idle, and it is not in needs-input
+- **THEN** the row renders the active spinner's frame (animated), not a static glyph — regardless of the bound argus task's status
+
+#### Scenario: Genuine activity outranks ready_to_close, failed, and done
+
+- **WHEN** a role is genuinely active (per the previous scenario) AND also carries `ready_to_close`, `failed`, or `done`
+- **THEN** the row renders the active spinner, not the resting glyph — the resting glyph returns once the role goes idle or the session ends (BUG-F)
 
 #### Scenario: Stale working role-status does not animate
 
-- **WHEN** a role's hera status is `working` but it is not genuinely active (no live binding, or its bound task is no longer `in_progress`)
-- **THEN** the row renders a static glyph (live or dimmed-unbound), not the spinner
+- **WHEN** a role's hera status is `working` but it is not genuinely active (no live binding, the session is not running, or the session is content-idle)
+- **THEN** the row renders a static glyph (its resting state, live, or dimmed-unbound), not the spinner
+
+#### Scenario: Failed renders a distinct glyph
+
+- **WHEN** a role's hera status is `failed` and it is not in needs-input, not genuinely active, and not ready_to_close
+- **THEN** the row renders a distinct red `✕`, never the `done` checkmark
 
 #### Scenario: Blocked outranks activity
 
-- **WHEN** a role has a status row of `blocked` and is not ready_to_close (even while its bound task is still `in_progress`)
+- **WHEN** a role has a status row of `blocked` (a needs-input source) and is not ready_to_close
 - **THEN** the row renders the needs-input/blocked glyph (static), not the spinner
 
 #### Scenario: Live-but-statusless role
 
-- **WHEN** a role holds a live binding but has no status row and is not ready_to_close
+- **WHEN** a role holds a live binding but has no status row and is not ready_to_close and not in needs-input
 - **THEN** the row renders the in-review "live" glyph rather than the unbound glyph
 
 ### Requirement: Rail keybindings (area 4)
@@ -693,7 +708,7 @@ The operator leaves the plan pane via the focus ladder (`Ctrl+Q` / `Tab`), never
 
 ### Requirement: Live plan node icons are 1:1 with the rail (area 6)
 
-A LIVE plan node's status icon (glyph AND style, including the animated spinner for a genuinely-active node) SHALL be identical to what the rail's status icon renders for the same role, computed through a SINGLE shared classifier so the two surfaces can never drift — not a parallel glyph table. The shared vocabulary: ready-to-close → review clipboard; needs-input → the needs-input glyph (so a worker blocked on a prompt is actionable from the DAG); done → `✓`; genuinely-active → the animated spinner (the plan view recomputes the frame at draw so it animates in lockstep); idle → moon-outline; live-quiet → moon-stars. Two plan-view-specific overlays the rail has no concept of: a PLANNED (never-bound) node renders the `○` circle, and a FAILED node (bound task result reports failure) renders `✕`. The header Status line uses the same resolved icon. The animated-spinner re-resolution applies ONLY when the shared classifier actually resolved to the spinner; a higher-precedence signal (notably needs-input on a still-active in_progress role) resolves to its STATIC glyph and the node SHALL NOT animate, so it renders 1:1 with the rail's `?` rather than swapping in the spinner frame.
+A LIVE plan node's status icon (glyph AND style, including the animated spinner for a genuinely-active node) SHALL be identical to what the rail's status icon renders for the same role, computed through a SINGLE shared classifier so the two surfaces can never drift — not a parallel glyph table. The shared vocabulary: ready-to-close → review clipboard; needs-input → the needs-input glyph (so a worker blocked on a prompt is actionable from the DAG); done → `✓`; genuinely-active → the animated spinner (the plan view recomputes the frame at draw so it animates in lockstep); idle → moon-outline; live-quiet → moon-stars. Two plan-view-specific overlays the rail has no concept of: a PLANNED (never-bound) node renders the `○` circle, and a FAILED node (bound task result reports failure) renders `✕`. The header Status line uses the same resolved icon. The animated-spinner re-resolution applies ONLY when the shared classifier actually resolved to the spinner; a higher-precedence signal (notably needs-input on a genuinely-active role) resolves to its STATIC glyph and the node SHALL NOT animate, so it renders 1:1 with the rail's `?` rather than swapping in the spinner frame.
 
 #### Scenario: A live node's icon equals the rail's
 
@@ -702,7 +717,7 @@ A LIVE plan node's status icon (glyph AND style, including the animated spinner 
 
 #### Scenario: Needs-input outranks active without animating (BUG-012)
 
-- **WHEN** a live worker role's bound task is in_progress (genuinely active) AND the role also needs input (blocked on a prompt, or a descendant in its subtree does)
+- **WHEN** a live worker role is genuinely active (`Live && SessionRunning && !SessionIdle`, independent of its bound task's status) AND the role also needs input (blocked on a prompt, or a descendant in its subtree does)
 - **THEN** its plan node renders the static needs-input `?` glyph and style — identical to the rail row — and is NOT flagged animated, so the widget does not swap the `?` for the live spinner frame at draw
 
 #### Scenario: Planned and failed overlays
@@ -1337,27 +1352,50 @@ coordinator's rail status icon SHALL show the needs-input "(?)" indicator
 ITSELF is in needs-input OR ANY descendant role in its orchestration subtree is
 in needs-input. The descendant walk SHALL be transitive across nested and
 BRIDGED sub-orchestrators (a sub-coordinator is a separate orchestrator bridged
-in as a worker row) and SHALL be cycle-safe, reusing the same
-`BridgeSubtree`/`bridgeIndex` traversal that drives rail nesting and the Ctrl+D
-cascade. The indicator SHALL clear on an ancestor as soon as no descendant (and
-not the ancestor itself) needs input.
+in as a worker row) and SHALL be cycle-safe, using the same visited-set guard
+and the same two descent mechanisms (`bridgeIndex` worker-bridging and
+`coordBridgeChildren`) as the `BridgeSubtree` traversal that drives rail
+nesting and the Ctrl+D cascade — but the rollup's OWN traversal, not
+`BridgeSubtree` itself, because the rollup additionally prunes archived roles
+(see below) while rendering and the cascade must NOT. The indicator SHALL
+clear on an ancestor as soon as no descendant (and not the ancestor itself)
+needs input.
 
-A live needs-input signal SHALL surface for a blocked role even when its bound
-argus task is NO LONGER `in_progress`, for any role that does not "finish" by task
-status while its session is alive — specifically a COORDINATOR (and freelance)
-role. A coordinator routinely rolls its bound task to complete/in_review while its
-session stays alive and keeps coordinating, and may itself block on a user prompt;
-gating its needs-input on `in_progress` hid the "(?)" on its (usually collapsed)
-header. The in_progress gate SHALL therefore apply ONLY to WORKER-kind roles (the
-finished-worker clear, BUG-023): a worker that leaves `in_progress` is finished
-and its lingering sticky marker SHALL NOT keep "(?)" pinned, whereas a live
-non-worker role SHALL surface "(?)" regardless of task status. A non-worker role's
-"finished" condition is its session exiting, which drops it from the sticky
-needs-input set upstream, so there is no stale-marker hazard. The App's Hera-rail
-needs-input feed SHALL admit a task that is `in_progress` OR bound to a hera
-coordinator role (regardless of task status); admitting a non-in_progress
-coordinator (a MANAGED task) SHALL NOT affect the unmanaged attention-summary
-count (BUG-005), which stays `in_progress`-gated for unmanaged tasks.
+An ARCHIVED role (`role.ArchivedAt` set, e.g. via the rail's `a` Tier-1 hide)
+SHALL be excluded from the needs-input rollup counted toward its ancestors:
+neither the archived role's own needs-input signal, NOR — when the archived
+role is a bridging row into a nested sub-orchestrator — anything needing input
+within that bridged subtree, SHALL propagate past the archived role to any
+ancestor coordinator or coordinator-less orchestrator header. This applies
+identically when the bridged child is reached through a worker-bridge (a
+directly-archived bridging role) or when the whole child orchestrator is
+itself archived (already excluded from `coordBridgeChildren`, and excluded
+here for the worker-bridge path too). The exclusion applies ONLY to what
+counts toward ANCESTORS — an archived role's OWN rail row SHALL continue to
+show the needs-input "(?)" glyph on itself exactly as an unarchived role
+would, since it is unaffected by whether IT counts toward something above it.
+
+A live needs-input signal SHALL surface for a WORKER or COORDINATOR role,
+regardless of the bound argus task's status, as long as the role's live
+binding shows a current, content-aware needs-input signal (see "Needs-input
+(?) CLEARS and propagates up" for the exact clearing mechanism). This holds
+uniformly: a COORDINATOR routinely rolls its bound
+task to complete/in_review while its session stays alive and keeps
+coordinating, and may itself block on a user prompt (BUG-028); a WORKER MAY
+likewise sit in `in_review` with its session still alive while the
+coordinator closes it out (#707), and can genuinely ask a fresh question in
+that state — it SHALL surface "(?)" then, the same as any other live role
+(BUG-A). There is NO worker-specific `in_progress` gate. The earlier BUG-023
+concern (a finished worker's stale marker pinning "(?)" forever) is instead
+protected because a role's live binding ends the moment its session exits,
+and the needs-input signal itself is content-aware rather than a stale
+carry-forward (see "CLEARS" below) — so there is no stale-marker hazard once
+the session is gone. The App's Hera-rail needs-input feed SHALL admit a task
+that is `in_progress` OR bound to ANY hera role — coordinator OR worker —
+regardless of task status; admitting a non-in_progress hera-managed task (a
+MANAGED task, worker or coordinator) SHALL NOT affect the unmanaged
+attention-summary count (BUG-005), which stays `in_progress`-gated for
+unmanaged tasks.
 
 When an orchestrator has NO coordinator role to carry the glyph (for example its
 coordinator role was nuked, BUG-022 Tier-2), the orchestrator HEADER itself SHALL
@@ -1379,12 +1417,15 @@ exposed as a `RoleView` field (and an `OrchView` field for the header), so
 `statusIcon` and `drawOrchRow` stay pure projections that only read it (no
 Draw-time I/O, no `screen.Sync()`).
 
-Precedence: the needs-input rollup SHALL rank immediately below a role's OWN
-`ready_to_close` mark and ABOVE the role's `done`, active-spinner, idle, and live
-glyphs — so a descendant needing input surfaces on an ancestor even when the
-ancestor is itself idle, working, or done. A role's own `ready_to_close`
-(a distinct actionable check-off mark) SHALL still win on the role that carries
-it.
+Precedence: the needs-input rollup SHALL rank ABOVE every other role glyph,
+including a role's own `ready_to_close` mark, the active spinner, `failed`,
+`done`, `idle`, and `live` (BUG-A) — a descendant needing input surfaces on an
+ancestor even when the ancestor is itself active, ready_to_close, idle,
+working, or done, and a role's OWN needs-input signal masks its own
+`ready_to_close`/active/resting glyph the same way (see "Status-icon
+precedence on role rows"). Needs-input is content-aware upstream (see
+"Needs-input (?) CLEARS and propagates up"), so this never falsely masks a
+role merely idling at a stale done/ready_to_close summary.
 
 Derived from: `internal/tui/hera/model.go` (`RoleView.NeedsInput`,
 `RoleView.SubtreeNeedsInput`, `OrchView.SubtreeNeedsInput`, `needsInputOwn`,
@@ -1425,20 +1466,50 @@ surfaces `OrchView.SubtreeNeedsInput` when no coordinator role is present),
 - **WHEN** a collapsed orchestrator has a blocked (needs-input) worker in its subtree but no coordinator role (e.g. the coordinator was nuked)
 - **THEN** the orchestrator header renders the needs-input "(?)" indicator so the blocked worker is visible without expanding
 
-#### Scenario: A coordinator-less header rollup clears when the worker finishes
+#### Scenario: A coordinator-less header rollup clears when the worker's session resolves or exits
 
-- **WHEN** the only blocked worker under a coordinator-less orchestrator finishes (its bound task rolls to in_review) even though the App's sticky needs-input set still flags it
+- **WHEN** the only needs-input worker under a coordinator-less orchestrator either resolves its prompt or its session exits — not merely because its bound task rolls to in_review
 - **THEN** the orchestrator header stops rendering "(?)" on the next refresh
 
 #### Scenario: A blocked coordinator surfaces "(?)" even when its task is complete
 
 - **WHEN** a coordinator's bound task has rolled to complete/in_review but its session is alive and blocked on a user prompt (its task is in the needs-input set)
-- **THEN** the coordinator's (collapsed) header renders the needs-input "(?)" indicator, instead of being hidden by the in_progress gate
+- **THEN** the coordinator's (collapsed) header renders the needs-input "(?)" indicator — task status is never a gate for a live role
 
-#### Scenario: A finished worker stays cleared even when its task is complete
+#### Scenario: A worker whose session has exited stays cleared even though its task shows complete
 
-- **WHEN** a worker's bound task has rolled to complete/in_review (finished) but the sticky needs-input set still flags it
-- **THEN** the worker's row and its ancestor rollup do NOT render "(?)" — the in_progress gate stays worker-only (BUG-023 preserved)
+- **WHEN** a worker's bound task has rolled to complete/in_review AND its session has exited (its live binding ended)
+- **THEN** the worker's row and its ancestor rollup do NOT render "(?)" — a dead binding cannot contribute a needs-input signal (BUG-023 preserved)
+
+#### Scenario: Archiving a blocked leaf worker stops it flagging its parent coordinator
+
+- **GIVEN** a worker directly under a coordinator is in needs-input, and the coordinator currently renders "(?)"
+- **WHEN** the user archives that worker's role (`a`)
+- **THEN** the coordinator's rail row stops rendering "(?)" on the next refresh (assuming no other descendant needs input)
+
+#### Scenario: Archiving a blocked leaf worker stops it flagging the root across multiple bridge levels
+
+- **GIVEN** a leaf worker two or more bridge levels below the root is in needs-input, and every intervening sub-coordinator plus the root render "(?)"
+- **WHEN** the user archives that leaf worker's role
+- **THEN** every intervening sub-coordinator AND the root coordinator stop rendering "(?)" on the next refresh
+
+#### Scenario: Archiving a nested sub-coordinator's bridging row hides its whole subtree from the parent
+
+- **GIVEN** a nested sub-coordinator's bridging row (a role in the parent orchestrator with a structurally intact bridge into a child orchestrator) is NOT itself in needs-input, but a worker within its bridged child orchestrator IS
+- **WHEN** the user archives the bridging row's role
+- **THEN** the parent coordinator (and any further ancestor) stops rendering "(?)" on the next refresh, even though the blocked worker in the child orchestrator is still genuinely in needs-input
+
+#### Scenario: Archiving a whole sub-orchestrator excludes it when reached via a worker-bridge
+
+- **GIVEN** a child orchestrator reached from a live parent via a worker-bridge is itself archived (`archived_at` set on the orchestrator, not just a role within it) and contains a blocked worker
+- **WHEN** the rollup is computed for the live parent
+- **THEN** the parent does NOT render "(?)" on account of that archived child orchestrator's subtree
+
+#### Scenario: An archived role's own row keeps showing its own needs-input glyph
+
+- **GIVEN** a worker's role is archived while it is genuinely in needs-input
+- **WHEN** the rollup is recomputed
+- **THEN** the archived worker's OWN rail row still renders the needs-input "(?)" glyph on itself, even though it no longer counts toward any ancestor
 
 ### Requirement: Needs-input "(?)" CLEARS and propagates up when a descendant resolves (area rail)
 
@@ -1450,30 +1521,41 @@ while the Hera tab is active, and after each `s`/`S` status step), so a cleared
 descendant clears its ancestors with no stale `SubtreeNeedsInput` carried between
 builds.
 
-Because the authoritative PTY needs-input scan (`App.needsInputIDs`) is STICKY —
-it carries a task forward while the `agent.DetectNeedsInput` marker remains in
-the session log tail and the session is still running — the system SHALL gate the
-per-role PTY needs-input signal on the bound task being `in_progress`. A worker
-whose task has finished (rolled to `in_review`/`complete`) SHALL NOT contribute
-the PTY needs-input signal to the rollup even while its task remains in the
-`needsInputIDs` set, so an ancestor coordinator's "(?)" clears as soon as the
-descendant finishes. A task missing from the task snapshot (read failure) SHALL
-be treated as not in_progress.
+The authoritative PTY needs-input scan (`App.needsInputIDs`) SHALL be
+content-aware, not a stale carry-forward: a task is a member of the set only
+while it currently shows an unresolved `agent.DetectNeedsInput` signal, and it
+clears once the signal resolves (the user provides input, the underlying
+content changes, or the session is archived) — it does NOT linger on a
+stale/already-answered prompt. The system SHALL gate a role's contribution to
+the rollup on the role's LIVE BINDING, not the bound task's status: a live
+role's needs-input persists for as long as its content-aware signal remains
+current, even while its task has already rolled to `in_review`/`complete`
+(BUG-A, #707) — task status alone is NOT a clearing condition. A role's
+needs-input clears when either (a) the content-aware signal itself resolves,
+or (b) the role's live binding ends (its session exits), whichever comes
+first.
 
 The role's own hera `blocked` status SHALL remain an INDEPENDENT, ungated
-needs-input source (it is a deliberate "I'm blocked" assertion, honest even while
-the task is in_progress); it SHALL clear by stepping the role off `blocked`
+needs-input source (it is a deliberate "I'm blocked" assertion, honest
+regardless of task status); it SHALL clear by stepping the role off `blocked`
 (`s`/`S`). The gate SHALL be hera-view-local: the task list's sticky needs-input
 semantics are unchanged.
 
-Derived from: `internal/tui/hera/model.go` (`buildRoleView` gates `RoleView.NeedsInput`
-on `task.Status == in_progress`; `rollupNeedsInput` recomputed per `BuildModel`),
-`internal/tui/heraactions.go` (`heraStatusStep` → `heraRefresh`),
-`internal/tui/app.go` (`SetNeedsInput` + `ScheduleRefresh` each tick).
+Derived from: `internal/tui/hera/model.go` (`buildRoleView` surfaces
+`RoleView.NeedsInput` for any live role currently in the App's content-aware
+`needsInputIDs` set, independent of `task.Status`; `rollupNeedsInput`
+recomputed per `BuildModel`), `internal/tui/heraactions.go` (`heraStatusStep`
+→ `heraRefresh`), `internal/tui/app.go` (`SetNeedsInput` + `ScheduleRefresh`
+each tick).
 
-#### Scenario: A finished worker stops rolling up "(?)" even while still flagged
+#### Scenario: A live worker's needs-input persists through in_review if the session is still asking
 
-- **WHEN** a worker that was in needs-input finishes (its bound task rolls to in_review) but the App's needs-input set still flags the task because its final prompt lingers in the log tail
+- **WHEN** a worker's task rolls to in_review while its session stays alive and is still genuinely at an unanswered prompt
+- **THEN** the worker's row and every ancestor coordinator continue rendering "(?)" — the task-status transition alone does not clear it (BUG-A, #707)
+
+#### Scenario: A worker's needs-input clears once the session resolves or exits
+
+- **WHEN** a worker's session either receives the awaited input (its content-aware needs-input signal resolves) or exits entirely (ending its live binding)
 - **THEN** the worker's own row and every ancestor coordinator stop rendering "(?)" on the next refresh
 
 #### Scenario: Stepping a descendant off `blocked` clears the ancestor rollup
@@ -1590,11 +1672,11 @@ The system SHALL draw a fixed one-line bordered "Needs input" summary box at the
 
 The counted set is the needs-input set pushed by the App (`SetNeedsInput`) MINUS every argus task the Hera model knows: each role's live and structural binding (`TaskID` and `BridgeTaskID`) across the Pinned, Active, and Archived orchestrator sections and the Freelance section. Coordinators, managed workers (including those whose subtree row is folded — their cue already bubbles up via the subtree rollup), Hera freelance-roles, and tasks bound to ARCHIVED roles (their `BridgeTaskID` survives the binding ending) are therefore never counted; only tasks invisible from the Hera tab are.
 
-The App SHALL feed the box only needs-input tasks that are currently `in_progress`. The needs-input scan is sticky (a finished task idling at its final prompt keeps the marker in its log tail), and both the task list (which shows `(?)` only on an in_progress task) and the per-role rollup gate on in_progress; the box applies the SAME gate so it never tallies a finished/unmanaged task that shows no `(?)` anywhere.
+The box SHALL count only UNMANAGED needs-input tasks that are currently `in_progress` — task-list parity (the SAME `(?)` gate the flat task list applies). It shares the rail rollup's single feed rather than taking its own: the App pushes `needsInputForHeraRail`'s set (`in_progress OR hera-managed`) into `SetNeedsInput`, and the box's `UnmanagedNeedsInputCount` subtracts every managed task, so an unmanaged task reaches the count ONLY through that feed's `in_progress` branch (never the managed one). Its effective gate is therefore DELIBERATELY NARROWER than the per-role rollup's `in_progress OR live` (BUG-A, #707) — computed off the SAME fed map — because the rollup additionally surfaces a live managed role whose task is not in_progress, whereas the box drops every managed task and keeps only in_progress unmanaged ones: an unmanaged task has no Hera presence at all, so there is no live-role signal to admit on and `in_progress` is the only gate. The needs-input scan is sticky (a finished task idling at its final prompt keeps the marker in its log tail); this gate keeps the box from tallying a finished/unmanaged task that shows no `(?)` anywhere.
 
 The box is a passive heads-up: it has no keybinding, no focus, and no click-to-jump. Geometry is computed in `Draw` (no tview.Flex, no `screen.Sync()`); the box and the rail each paint their full bounding rect through `widget.DrawBorderedPanel`. The text is left-padded one cell from the border. On a terminal too short to keep the rail usable the box yields and is not drawn. The box is never drawn in remote mode (the page short-circuits to its unavailable banner first).
 
-Derived from: `internal/tui/widget/attentionsummary.go` (the widget + left padding), `internal/tui/hera/page.go` (`Draw` geometry + count), `internal/tui/app.go` (`needsInputInProgress` gate → `SetNeedsInput` feed), `internal/tui/hera/model.go` (managed-task-id walk over role `TaskID`/`BridgeTaskID`), `context/knowledge/gotchas/hera-view.md` (no-Sync / full-rect rules).
+Derived from: `internal/tui/widget/attentionsummary.go` (the widget + left padding), `internal/tui/hera/page.go` (`Draw` geometry + count), `internal/tui/app.go` (`needsInputForHeraRail` → `SetNeedsInput` feed), `internal/tui/hera/model.go` (`UnmanagedNeedsInputCount` managed-subtraction + managed-task-id walk over role `TaskID`/`BridgeTaskID`), `context/knowledge/gotchas/hera-view.md` (no-Sync / full-rect rules).
 
 #### Scenario: An unmanaged needs-input task is summarised
 
@@ -1879,37 +1961,42 @@ Derived from: `internal/tui/hera/rail.go` (per-orchestrator archive expando in `
 
 ### Requirement: Active agents animate a spinner glyph (area 3)
 
-The system SHALL render a genuinely-active role's status glyph as an animated spinner frame from the active spinner (`widget.SpinnerFrame`), advancing with the wall-clock frame counter, rather than a static glyph. A role is genuinely active (`RoleView.IsActive`) when it holds a live binding AND its bound argus task is `in_progress` AND its session is NOT content-idle — sourced from REAL session activity, NOT the hera role `working` status field. The hera role status is a manual/MCP-set ladder value that never reconciles down (it stays `working` after a session idles, stops, or dies), so it MUST NOT drive the spinner: a stale-`working` role whose binding is gone, dead, or no longer `in_progress` is static (BUG-003).
+The system SHALL render a genuinely-active role's status glyph as an animated spinner frame from the active spinner (`widget.SpinnerFrame`), advancing with the wall-clock frame counter, rather than a static glyph. A role is genuinely active (`RoleView.IsActive`) when it holds a live binding AND its session is RUNNING AND NOT content-idle (`Live && SessionRunning && !SessionIdle`) — sourced from REAL session activity, NOT the hera role `working` status field, and NOT gated on the bound argus task's status (BUG-C). The hera role status is a manual/MCP-set ladder value that never reconciles down (it stays `working` after a session idles, stops, or dies), so it MUST NOT drive the spinner. A dead/stopped session is excluded via the `SessionRunning` gate (BUG-003) — a hera binding does NOT end when its session exits, so liveness alone cannot exclude a dead worker; `SessionRunning` does, since a dead session drops out of the App's running set.
 
-The content-idle gate fixes a fullscreen (alt-screen) agent parked at its prompt (BUG-036): such an agent repaints continuously, so it never reaches the raw-byte idle set and would otherwise animate the spinner forever even though it is doing nothing. When the App's content-idle signal (the animation-stripped emulated-screen stability classification) marks the role's bound session idle, the role is NOT active and renders a static idle/live glyph (or the needs-input glyph if it is at a prompt, which already outranks the spinner). A genuinely content-ACTIVE agent — emulated content changing tick-to-tick, or showing the "working" affordance — still spins. This mirrors the plugin's `stateGlyph`, which animates only on a known `in_progress` + running argus state.
+The content-idle gate fixes a fullscreen (alt-screen) agent parked at its prompt (BUG-036): such an agent repaints continuously, so it never reaches the raw-byte idle set and would otherwise animate the spinner forever even though it is doing nothing. When the App's content-idle signal (the animation-stripped emulated-screen stability classification) marks the role's bound session idle, the role is NOT active and renders a static idle/live glyph (or the needs-input glyph if it is at a prompt, which already outranks the spinner). A genuinely content-ACTIVE agent — emulated content changing tick-to-tick, or showing the "working" affordance — still spins, REGARDLESS of its bound task's status, including a worker deliberately sitting in `in_review` with its session still alive and producing output (BUG-C, #707).
 
-An operator/agent-set `blocked` assertion takes precedence over the spinner (the needs-input glyph renders even while the task is still `in_progress`), as does `done` and `ready_to_close`. Non-active states (idle, content-idle, blocked, done, ready_to_close, unbound, stopped) remain static.
+A role's own needs-input signal (including an operator/agent-set `blocked` assertion) takes precedence over the spinner regardless of the bound task's status (BUG-A). Genuine activity, however, now OUTRANKS the stale-able resting states below it: `ready_to_close`, `failed`, and `done` no longer take precedence over the spinner (BUG-F) — a role producing output again is more current than any of those stamps, and the resting glyph returns once the role goes idle or its session ends. Non-active states (idle, content-idle, needs-input/blocked, done, ready_to_close, failed, unbound, stopped) remain static.
 
-Derived from: `internal/tui/hera/rail.go` (`statusIcon`), `internal/tui/hera/model.go` (`RoleView.IsActive`, `RoleView.SessionIdle`), `internal/tui/widget/spinnerstate.go` (`SpinnerFrame`).
+Derived from: `internal/tui/widget/rolestatusicon.go` (`RoleStatusIcon`), `internal/tui/hera/rail.go` (`statusIcon`), `internal/tui/hera/model.go` (`RoleView.IsActive`, `RoleView.SessionRunning`, `RoleView.SessionIdle`), `internal/tui/widget/spinnerstate.go` (`SpinnerFrame`).
 
 #### Scenario: Genuinely active role spins
 
-- **WHEN** a role holds a live binding and its bound argus task is `in_progress`, its session is not content-idle, and it is not blocked/done/ready_to_close
-- **THEN** its status glyph is the active spinner's frame for the current animation frame, and the glyph differs across frames
+- **WHEN** a role holds a live binding, its session is running and not content-idle, and it is not in needs-input
+- **THEN** its status glyph is the active spinner's frame for the current animation frame, and the glyph differs across frames — regardless of its bound argus task's status
+
+#### Scenario: Genuine activity outranks ready_to_close, failed, and done
+
+- **WHEN** a role is genuinely active (live, running, not content-idle) AND also carries `ready_to_close`, `failed`, or `done`
+- **THEN** its status glyph is the animated spinner, not the resting glyph (BUG-F)
 
 #### Scenario: Stale-working stopped role is static
 
-- **WHEN** a role's hera status is `working` but it holds no live binding (a stopped/dead session)
+- **WHEN** a role's hera status is `working` but it holds no live binding, or its session is no longer running (a stopped/dead session)
 - **THEN** its status glyph does not animate
 
-#### Scenario: Live-but-not-in_progress role is static
+#### Scenario: A live in_review role still spins if genuinely active
 
-- **WHEN** a role holds a live binding but its bound argus task has left `in_progress` (e.g. an auto-completed coordinator now `in_review`), even with a stale `working` hera status
-- **THEN** its status glyph does not animate
+- **WHEN** a role holds a live binding whose bound argus task has left `in_progress` (e.g. an auto-completed coordinator or worker now `in_review`), its session is running, and it is content-active (not content-idle)
+- **THEN** its status glyph still animates — the task-status transition alone does not stop the spinner (BUG-C, #707)
 
 #### Scenario: Content-idle fullscreen role is static
 
-- **WHEN** a role holds a live binding and its bound argus task is `in_progress`, but the App marks its session content-idle (parked fullscreen agent, stable emulated screen, no "working" affordance)
+- **WHEN** a role holds a live binding and a running session, but the App marks its session content-idle (parked fullscreen agent, stable emulated screen, no "working" affordance)
 - **THEN** its status glyph does not animate — it renders a static idle/live glyph (or the needs-input glyph if it is at a prompt)
 
 #### Scenario: Blocked outranks activity
 
-- **WHEN** a role's hera status is `blocked` and its bound argus task is still `in_progress`
+- **WHEN** a role's hera status is `blocked` (or it is otherwise in needs-input)
 - **THEN** its status glyph is the needs-input glyph, not the spinner
 
 #### Scenario: Details coordinator label is honest about stale working

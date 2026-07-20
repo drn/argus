@@ -956,16 +956,50 @@ func (m *Model) rollupNeedsInput() {
 
 // orchSubtreeNeedsInput reports whether any role in the orchestration subtree
 // rooted at orchID (inclusive, transitively across bridged sub-orchestrators)
-// has an OWN needs-input signal. Walks BridgeSubtree (cycle-safe visited set).
+// has an OWN needs-input signal. It mirrors BridgeSubtree's shape (same visited
+// cycle guard, same worker-bridge + coordBridgeChildren descent) but prunes
+// archived nodes: an archived role's own signal is skipped, an archived bridging
+// row does not descend into its hidden child, and a worker-bridged child
+// orchestrator that is itself archived (ArchiveHeraOrchestrator stamps only the
+// orchestrator's archived_at, not the bridging role's) is not walked into. The
+// root (start) is always fully evaluated over its own non-archived roles —
+// archiving prunes contribution to ANCESTORS, not a node's own header rollup.
+// See exclude-archived-from-needs-input-rollup.
 func (m *Model) orchSubtreeNeedsInput(orchID int64) bool {
-	for _, o := range m.BridgeSubtree(orchID) {
+	start := m.OrchByID(orchID)
+	if start == nil {
+		return false
+	}
+	bridge := m.bridgeIndex()
+	visited := make(map[int64]bool)
+	var walk func(o *OrchView) bool
+	walk = func(o *OrchView) bool {
+		if o == nil || visited[o.ID] {
+			return false
+		}
+		visited[o.ID] = true
 		for i := range o.Roles {
-			if o.Roles[i].needsInputOwn() {
+			w := &o.Roles[i]
+			if w.Archived {
+				continue
+			}
+			if w.needsInputOwn() {
+				return true
+			}
+			if w.Kind != db.HeraKindCoordinator && roleBridges(w) {
+				if c := bridge[bridgeTaskID(w)]; c != nil && !c.Archived && c.ID != o.ID && walk(c) {
+					return true
+				}
+			}
+		}
+		for _, c := range m.coordBridgeChildren(o) { // already excludes archived children
+			if walk(c) {
 				return true
 			}
 		}
+		return false
 	}
-	return false
+	return walk(start)
 }
 
 // buildRoleView projects one db.HeraRole into a RoleView, resolving its live
@@ -1015,14 +1049,17 @@ func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.
 		// genuinely at a prompt right now."
 		//
 		// This whole branch runs under a LIVE binding (rv.Live is unconditionally
-		// true here), so a live role of ANY kind — worker, coordinator, or
-		// freelance — surfaces needs-input when it is in the content-aware set,
-		// regardless of task status:
+		// true here), so a live WORKER or COORDINATOR role surfaces needs-input when
+		// it is in the content-aware set, regardless of task status:
 		//   - A COORDINATOR routinely rolls to complete/in_review while its session
 		//     stays alive and can itself block on a user prompt (BUG-028).
 		//   - A WORKER deliberately sits in in_review while its session lingers
 		//     alive for the coordinator to close out (#707) and can genuinely ask a
 		//     fresh question in that state — it MUST surface "(?)" then (BUG-A).
+		// A FREELANCE role is excluded from this status-independent path: the App's
+		// needsInputForHeraRail feed admits only worker- and coordinator-kind roles
+		// regardless of status, so a freelance task surfaces "(?)" only while it is
+		// literally in_progress.
 		//
 		// BUG-023 (a FINISHED worker pinning "(?)" forever on every ancestor) stays
 		// protected without a task-status gate: a worker is "finished" when its

@@ -1808,31 +1808,33 @@ func liveRoleCount(o *OrchView) int {
 	return n
 }
 
-// statusIcon picks the glyph + style for a role row. ready_to_close (M4) wins
-// over everything else with a distinct "ready to check off" mark; the
-// needs-input "(?)" indicator is honoured next — the role's OWN signal
-// (authoritative needs-input flag or a self-asserted blocked status) OR the
-// subtree ROLLUP (any descendant needs input, transitively across bridges), so
-// attention bubbles up to every ancestor coordinator and the root (BUG-018);
-// then a done assertion, then GENUINE activity (a live binding whose bound argus
-// task is in_progress — role.IsActive) animates the spinner; otherwise the hera
-// role status / binding presence drives a static glyph. dim forces the dimmed
-// style for archived placement (the glyph never lies — only the style dims).
+// statusIcon picks the glyph + style for a role row by delegating to the shared
+// classifier widget.RoleStatusIcon (widget/rolestatusicon.go), whose precedence
+// is needs-input → active → ready_to_close → failed → done → idle → live →
+// default. needs-input "(?)" outranks everything (BUG-A): it is the role's OWN
+// signal (authoritative needs-input flag or a self-asserted blocked status) OR
+// the subtree ROLLUP (any descendant needs input, transitively across bridges),
+// so attention bubbles up to every ancestor coordinator and the root (BUG-018).
+// GENUINE activity (role.IsActive — Live && SessionRunning && !SessionIdle, NOT
+// a task-status term) ranks next, animates the spinner, and OUTRANKS the
+// stale-able resting stamps ready_to_close/failed/done (BUG-F); when no higher
+// signal applies, ready_to_close/failed/done/idle/live each map to their own
+// static glyph. dim forces the dimmed style for archived placement (the glyph
+// never lies — only the style dims).
 //
 // frame is the current spinner animation frame: only a genuinely-active role
 // renders the active spinner's frame so it animates. The animated "working"
 // glyph is sourced from REAL session activity (role.IsActive), NOT the hera role
 // Status "working" field — that field is a manual/MCP-set ladder value that goes
 // stale (it stays "working" after a session idles, stops, or dies), so binding
-// the spinner to it made idle/stopped/dead roles animate. Mirrors the plugin's
-// stateGlyph (spinner on in_progress + running). See BUG-003.
+// the spinner to it made idle/stopped/dead roles animate. See BUG-003.
 func statusIcon(role *RoleView, dim bool, frame int) (rune, tcell.Style) {
 	// Single source of truth shared with the plan-view node projection
 	// (widget.RoleStatusIcon) so the two surfaces render 1:1 (BUG-007). The
 	// precedence + vocabulary live in widget; this only maps RoleView → inputs.
 	// ShowsNeedsInput folds in the BuildModel subtree rollup (BUG-018); IsActive is
-	// the honest live+in_progress "working" signal, never the stale hera status
-	// (BUG-003).
+	// the honest live-running-and-not-idle "working" signal (Live && SessionRunning
+	// && !SessionIdle), never the stale hera status (BUG-003).
 	return widget.RoleStatusIcon(roleStatusInputs(role), dim, frame)
 }
 
