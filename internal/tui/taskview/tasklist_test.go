@@ -94,6 +94,72 @@ func TestTaskListView_CursorNavigation(t *testing.T) {
 	}
 }
 
+func TestTaskListView_MouseHandler_Scroll(t *testing.T) {
+	tl := NewTaskListView()
+	tl.expanded = "alpha"
+	tl.SetTasks(makeTasks())
+	tl.SetRect(0, 0, 40, 20)
+
+	handler := tl.MouseHandler()
+	setFocus := func(tview.Primitive) {}
+
+	task := tl.SelectedTask()
+	if task == nil {
+		t.Fatal("expected a task at cursor position")
+	}
+
+	consumed, _ := handler(tview.MouseScrollDown, tcell.NewEventMouse(2, 2, tcell.ButtonNone, 0), setFocus)
+	if !consumed {
+		t.Error("scroll down should be consumed")
+	}
+	task2 := tl.SelectedTask()
+	if task2 == nil || task2.ID == task.ID {
+		t.Error("scroll down should move the cursor to a different task")
+	}
+
+	consumed, _ = handler(tview.MouseScrollUp, tcell.NewEventMouse(2, 2, tcell.ButtonNone, 0), setFocus)
+	if !consumed {
+		t.Error("scroll up should be consumed")
+	}
+	task3 := tl.SelectedTask()
+	if task3 == nil || task3.ID != task.ID {
+		t.Error("scroll up should return the cursor to the original task")
+	}
+}
+
+func TestTaskListView_MouseHandler_LeftDownFocuses(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks(makeTasks())
+	tl.SetRect(0, 0, 40, 20)
+
+	handler := tl.MouseHandler()
+	var focused tview.Primitive
+	consumed, _ := handler(tview.MouseLeftDown, tcell.NewEventMouse(2, 2, tcell.Button1, 0), func(p tview.Primitive) { focused = p })
+	if !consumed {
+		t.Error("MouseLeftDown should be consumed")
+	}
+	if focused != tview.Primitive(tl) {
+		t.Error("MouseLeftDown should focus the task list")
+	}
+}
+
+func TestTaskListView_MouseHandler_OutOfRectIgnored(t *testing.T) {
+	tl := NewTaskListView()
+	tl.expanded = "alpha"
+	tl.SetTasks(makeTasks())
+	tl.SetRect(0, 0, 40, 20)
+
+	handler := tl.MouseHandler()
+	task := tl.SelectedTask()
+	consumed, _ := handler(tview.MouseScrollDown, tcell.NewEventMouse(100, 100, tcell.ButtonNone, 0), func(tview.Primitive) {})
+	if consumed {
+		t.Error("scroll outside the rect should not be consumed")
+	}
+	if got := tl.SelectedTask(); got == nil || got.ID != task.ID {
+		t.Error("scroll outside the rect should not move the cursor")
+	}
+}
+
 func TestTaskListView_SetRunning(t *testing.T) {
 	tl := NewTaskListView()
 	tl.SetTasks(makeTasks())

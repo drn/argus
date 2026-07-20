@@ -1023,6 +1023,30 @@ func (tl *TaskListView) keys() *keymap.Keymap {
 	return keymap.DefaultKeymap()
 }
 
+// MouseHandler handles mouse events over the task list: left-click focuses it
+// (matching tview's Box default), and wheel scroll moves the cursor up/down
+// one row per notch, skipping headers exactly like the keyboard bindings
+// (mirrors gitpanel.FilePanel and hera.Rail).
+func (tl *TaskListView) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
+	return tl.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (consumed bool, capture tview.Primitive) {
+		if !tl.InRect(event.Position()) {
+			return false, nil
+		}
+		switch action {
+		case tview.MouseLeftDown:
+			setFocus(tl)
+			consumed = true
+		case tview.MouseScrollUp:
+			tl.CursorUp()
+			consumed = true
+		case tview.MouseScrollDown:
+			tl.CursorDown()
+			consumed = true
+		}
+		return
+	})
+}
+
 // PasteHandler handles bracketed paste events in filter mode.
 func (tl *TaskListView) PasteHandler() func(pastedText string, setFocus func(p tview.Primitive)) {
 	return tl.WrapPasteHandler(func(pastedText string, setFocus func(p tview.Primitive)) {

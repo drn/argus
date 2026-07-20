@@ -2056,6 +2056,33 @@ func (r *Rail) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.
 	})
 }
 
+// MouseHandler handles mouse events over the rail: left-click focuses it
+// (matching tview's Box default), and wheel scroll moves the cursor up/down
+// one selectable row per notch via the same step() the keyboard bindings use
+// (mirrors gitpanel.FilePanel and taskview.TaskListView). page.go's own
+// MouseHandler already gates dispatch here on the click column falling in the
+// rail's region; the InRect check below additionally protects direct callers
+// (tests, or a future non-region-gated caller) from acting on out-of-rect events.
+func (r *Rail) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
+	return r.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (consumed bool, capture tview.Primitive) {
+		if !r.InRect(event.Position()) {
+			return false, nil
+		}
+		switch action {
+		case tview.MouseLeftDown:
+			setFocus(r)
+			consumed = true
+		case tview.MouseScrollUp:
+			r.CursorUp()
+			consumed = true
+		case tview.MouseScrollDown:
+			r.CursorDown()
+			consumed = true
+		}
+		return
+	})
+}
+
 // enterFilter switches the rail into search INPUT mode. filterQuery is always
 // "" here — Enter and Esc both fully clear it on exit (BUG-028-RAIL), so there is no
 // "accepted but still narrowed" state to resume; every `/` press starts a fresh

@@ -118,12 +118,12 @@ func drawnPageSelecting(t *testing.T, selectFn func(*HeraPage) bool) *HeraPage {
 
 // TestPanes_MouseScrollRoutesToWorkerPane is the BUG-026 regression: a mouse
 // wheel-up over the agent region must reach the selected worker's TerminalPane
-// and scroll its scrollback — NOT fall through regionAt to the rail. The rail
-// has no MouseHandler, so a misrouted wheel hits Box.MouseHandler, is NOT
-// consumed, and tview never redraws (Application redraws a mouse event only when
-// consumed) — i.e. scroll-up silently does nothing. This pins regionAt → agent
-// pane routing for a live worker selection. (The existing
-// TestPanes_MouseRoutingByRegion scrolls but never asserts the scroll landed.)
+// and scroll its scrollback — NOT fall through regionAt to the rail (which now
+// has its own MouseHandler and would otherwise happily consume a misrouted
+// wheel event itself, masking the routing bug rather than surfacing it as a
+// silent no-op). This pins regionAt → agent pane routing for a live worker
+// selection. (The existing TestPanes_MouseRoutingByRegion scrolls but never
+// asserts the scroll landed.)
 func TestPanes_MouseScrollRoutesToWorkerPane(t *testing.T) {
 	p := drawnPageSelecting(t, func(p *HeraPage) bool { return selectRoleByName(p, "wkr") })
 	testutil.Equal(t, p.detailsMode, false)
