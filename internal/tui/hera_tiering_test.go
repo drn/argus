@@ -88,27 +88,56 @@ func TestResolveHeraTier_NoArchetypeNoModel(t *testing.T) {
 	testutil.Equal(t, rv.ProfileWarning, "")
 }
 
-// TestResolveHeraTier_ContextPercent pins the widened resolveHeraTier
-// contract (add-worker-context-indicator): ContextPercent is computed from
-// ContextSize against the project's configured coordinator_context_budget —
-// the DefaultConfig value (200000) here, since no override is set.
-func TestResolveHeraTier_ContextPercent(t *testing.T) {
+// TestResolveHeraTier_ContextPercent_Worker pins the rail-context-high
+// correction: a worker's ContextPercent is computed against
+// Hera.WorkerContextWindow (the DefaultConfig value, 1000000, here) — NOT
+// CoordinatorContextBudget, which is a coordinator-specific recycle-nudge
+// policy threshold, not a context window size.
+func TestResolveHeraTier_ContextPercent_Worker(t *testing.T) {
 	app := tierTestApp(t)
 
-	rv := &hera.RoleView{Kind: db.HeraKindWorker, ContextSize: 130000} // 65% of 200000
+	rv := &hera.RoleView{Kind: db.HeraKindWorker, ContextSize: 400000} // 40% of 1000000
+	app.resolveHeraTier(rv)
+	testutil.Equal(t, rv.ContextPercent, 40)
+}
+
+// TestResolveHeraTier_ContextPercent_Freelance mirrors the worker test for
+// the other non-coordinator kind, confirming the denominator switch is
+// "coordinator vs everything else", not "worker specifically".
+func TestResolveHeraTier_ContextPercent_Freelance(t *testing.T) {
+	app := tierTestApp(t)
+
+	rv := &hera.RoleView{Kind: db.HeraKindFreelance, ContextSize: 650000} // 65% of 1000000
 	app.resolveHeraTier(rv)
 	testutil.Equal(t, rv.ContextPercent, 65)
 }
 
-// TestResolveHeraTier_ContextPercent_Coordinator pins that ContextPercent is
-// computed uniformly regardless of role kind — rail.go, not resolveHeraTier,
-// is what excludes coordinators from ever rendering the indicator.
+// TestResolveHeraTier_ContextPercent_Coordinator pins that a coordinator's
+// ContextPercent still uses CoordinatorContextBudget (300000), unchanged —
+// rail.go, not resolveHeraTier, is what excludes coordinators from ever
+// rendering the indicator, so this value is computed but never displayed.
 func TestResolveHeraTier_ContextPercent_Coordinator(t *testing.T) {
 	app := tierTestApp(t)
 
-	rv := &hera.RoleView{Kind: db.HeraKindCoordinator, ContextSize: 20000} // 10% of 200000
+	rv := &hera.RoleView{Kind: db.HeraKindCoordinator, ContextSize: 30000} // 10% of 300000
 	app.resolveHeraTier(rv)
 	testutil.Equal(t, rv.ContextPercent, 10)
+}
+
+// TestResolveHeraTier_ContextPercent_SameSizeDifferentKind_DifferentPercent
+// makes the denominator split concrete: the IDENTICAL raw ContextSize reads
+// as a much higher percentage for a coordinator (small policy budget) than
+// for a worker (large real context window).
+func TestResolveHeraTier_ContextPercent_SameSizeDifferentKind_DifferentPercent(t *testing.T) {
+	app := tierTestApp(t)
+
+	coord := &hera.RoleView{Kind: db.HeraKindCoordinator, ContextSize: 300000}
+	app.resolveHeraTier(coord)
+	testutil.Equal(t, coord.ContextPercent, 100) // at its 300000 budget
+
+	worker := &hera.RoleView{Kind: db.HeraKindWorker, ContextSize: 300000}
+	app.resolveHeraTier(worker)
+	testutil.Equal(t, worker.ContextPercent, 30) // only 30% of its 1000000 window
 }
 
 // TestContextPercent_ZeroBudget pins the divide-by-zero guard: an

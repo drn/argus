@@ -39,7 +39,19 @@ func (a *App) resolveHeraTier(rv *hera.RoleView) {
 	// high). Computed here rather than in buildRoleView because cfg is only
 	// available in local mode; rail.go's contextIndicator, not this function,
 	// is what excludes coordinators from ever rendering the indicator.
-	rv.ContextPercent = contextPercent(rv.ContextSize, cfg.Hera.CoordinatorContextBudget)
+	//
+	// The denominator is kind-dependent: CoordinatorContextBudget (200000) is
+	// a coordinator-specific recycle-nudge POLICY threshold, deliberately set
+	// well below a coordinator's real context window so it has room to wrap up
+	// gracefully — it is not a context window size, and reusing it for a
+	// worker/freelance role would make the indicator's 40/65/90 tiers fire at
+	// 80k/130k/180k tokens instead of the intended 400k/650k/900k against a
+	// worker's actual (much larger) context window.
+	budget := cfg.Hera.CoordinatorContextBudget
+	if rv.Kind != db.HeraKindCoordinator {
+		budget = cfg.Hera.WorkerContextWindow
+	}
+	rv.ContextPercent = contextPercent(rv.ContextSize, budget)
 
 	explicit := ""
 	if rv.ArgusProject != "" {

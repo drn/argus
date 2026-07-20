@@ -52,6 +52,16 @@ type HeraConfig struct {
 	// value at which the over-budget nudge last fired, before the context-budget
 	// Stop hook (argus coord-hook) re-emits it. Defaults to 50000.
 	CoordinatorNudgeIncrement int `toml:"coordinator_nudge_increment"`
+
+	// WorkerContextWindow is the reference denominator the Hera rail's
+	// worker/freelance context-pressure indicator (rail-context-high) divides
+	// ContextSize by to compute ContextPercent — deliberately separate from
+	// CoordinatorContextBudget, which is a coordinator-specific recycle-nudge
+	// policy threshold (200000), not a context window size. Workers run with a
+	// much larger real context window; defaults to 1000000 so the indicator's
+	// 40/65/90 percent tiers land at 400k/650k/900k tokens for a worker, not
+	// 80k/130k/180k.
+	WorkerContextWindow int `toml:"worker_context_window"`
 }
 
 // ArgusConfig holds settings for self-updating the Argus binary.
@@ -336,6 +346,7 @@ func DefaultConfig() Config {
 			Enabled:                   true, // default on; only explicit "false" in DB/toml disables it
 			CoordinatorContextBudget:  300000,
 			CoordinatorNudgeIncrement: 50000,
+			WorkerContextWindow:       1000000,
 		},
 		Supervisor: SupervisorConfig{
 			// Default ON as of P4: agents run under the out-of-process

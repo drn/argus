@@ -2251,9 +2251,11 @@ context percentage, so a row's name width never changes as it crosses a threshol
 rows SHALL NOT reserve or render this slot; they carry the live-count badge in that position
 instead (see the requirement above).
 
-The glyph column SHALL render, based on the role's context percentage (`ContextSize` relative to
-the project's configured `coordinator_context_budget`, resolved locally — see the capability's
-Non-Goals for remote mode):
+The glyph column SHALL render, based on the role's context percentage — `ContextSize` relative to
+the project's configured `worker_context_window` for a worker or freelance role (see
+`config-management`; NOT `coordinator_context_budget`, which is a coordinator-specific recycle-nudge
+policy threshold, not a context window size), resolved locally — see the capability's Non-Goals for
+remote mode:
 
 - nothing, when the percentage is under 40
 - a dot (`•`) in a pale-yellow style, when the percentage is 40 up to (not including) 65
@@ -2287,6 +2289,12 @@ Derived from: `internal/tui/hera/rail.go` (`drawRoleRow`, `contextIndicator`), `
 
 - **WHEN** a live worker or freelance role's context percentage is 90 or more
 - **THEN** its row renders a `!` in the red, bold style
+
+#### Scenario: Percentage is computed against the worker context window, not the coordinator budget
+
+- **WHEN** a worker role's `ContextSize` is `400000` and the project's `worker_context_window` is
+  the default `1000000`
+- **THEN** its context percentage is `40`, not a value computed against `coordinator_context_budget`
 
 #### Scenario: Coordinator rows never show the indicator
 
