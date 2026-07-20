@@ -10,17 +10,16 @@ import (
 	"github.com/drn/argus/internal/testutil"
 )
 
-// --- hera_status handoff_note / request_recycle (add-coordinator-context-management) ---
+// --- hera_status handoff_note / request_recycle (add-coordinator-context-management,
+// widened to all role kinds by add-worker-bounce) ---
 //
 // These tests pin the `hera-coordination` delta spec's extension of hera_status
-// with two optional, coordinator-only parameters: handoff_note (recorded into
-// task_meta) and request_recycle (records a pending-recycle intent, consumed by
-// the recycle_coord primitive). Neither parameter exists on toolHeraStatus yet,
-// so every test below is expected to fail until Stage 3 (hera_status extension)
-// lands. The pending-recycle intent is assumed to be mirrored into task_meta
-// (namespace "hera", key "pending_recycle") — the same sidecar convention
-// already used for context_size/handoff_note/ready_to_close — since design.md
-// does not name an alternate storage location.
+// with two optional parameters, now accepted from ANY hera-bound role kind
+// (coordinator, worker, freelance): handoff_note (recorded into task_meta) and
+// request_recycle (records a pending-recycle intent, consumed by the
+// recycle_coord primitive). The pending-recycle intent is mirrored into
+// task_meta (namespace "hera", key "pending_recycle") — the same sidecar
+// convention already used for context_size/handoff_note/ready_to_close.
 
 // heraStatusExtended calls hera_status with the optional handoff_note /
 // request_recycle parameters alongside status, mirroring the heraStatus helper
@@ -123,23 +122,23 @@ func TestHeraStatus_Coordinator_HandoffNoteAndRecycle_SameCall(t *testing.T) {
 	}
 }
 
-// TestHeraStatus_NonCoordinator_NewParams_Rejected pins the "Non-coordinator
-// cannot use the new parameters" scenario for both worker and freelance
-// callers, and for each of the two new parameters individually: the tool must
-// error naming the offending parameter, and no task_meta write or recycle
-// intent may occur.
-func TestHeraStatus_NonCoordinator_NewParams_Rejected(t *testing.T) {
+// TestHeraStatus_NonCoordinator_NewParams_Accepted pins the add-worker-bounce
+// widening: a worker or freelance caller can set handoff_note and/or
+// request_recycle via hera_status exactly like a coordinator — no rejection,
+// task_meta is written, and the status update itself still succeeds.
+func TestHeraStatus_NonCoordinator_NewParams_Accepted(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		kind           string
 		handoffNote    string
 		requestRecycle bool
-		wantParamName  string
 	}{
-		{"worker handoff_note", "worker", "should not be allowed", false, "handoff_note"},
-		{"worker request_recycle", "worker", "", true, "request_recycle"},
-		{"freelance handoff_note", "freelance", "should not be allowed", false, "handoff_note"},
-		{"freelance request_recycle", "freelance", "", true, "request_recycle"},
+		{"worker handoff_note", "worker", "wrapping up, ready for a fresh session", false},
+		{"worker request_recycle", "worker", "", true},
+		{"worker both", "worker", "done with the migration, next up is cleanup", true},
+		{"freelance handoff_note", "freelance", "wrapping up, ready for a fresh session", false},
+		{"freelance request_recycle", "freelance", "", true},
+		{"freelance both", "freelance", "done with the migration, next up is cleanup", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, d := testHeraServer(t)
@@ -156,15 +155,13 @@ func TestHeraStatus_NonCoordinator_NewParams_Rejected(t *testing.T) {
 			}
 
 			cr := heraStatusExtended(t, s, caller.Worktree, "working", tc.handoffNote, tc.requestRecycle)
-			testutil.Equal(t, cr.IsError, true)
-			testutil.Contains(t, cr.Content[0].Text, tc.wantParamName)
+			testutil.Equal(t, cr.IsError, false)
 
-			// No task_meta write should have occurred for the rejected parameter.
-			if tc.handoffNote != "" && metaHas(t, d, caller.ID, "handoff_note", tc.handoffNote) {
-				t.Fatalf("handoff_note was written despite rejection")
+			if tc.handoffNote != "" && !metaHas(t, d, caller.ID, "handoff_note", tc.handoffNote) {
+				t.Fatalf("handoff_note was not recorded for %s caller", tc.kind)
 			}
-			if tc.requestRecycle && metaHas(t, d, caller.ID, "pending_recycle", "true") {
-				t.Fatalf("pending-recycle intent was recorded despite rejection")
+			if tc.requestRecycle && !metaHas(t, d, caller.ID, "pending_recycle", "true") {
+				t.Fatalf("pending-recycle intent was not recorded for %s caller", tc.kind)
 			}
 		})
 	}

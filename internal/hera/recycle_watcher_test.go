@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/db"
-	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
 
@@ -50,34 +49,48 @@ func TestRecycleWatcher_Tick_LeavesBusyCoordinatorPending(t *testing.T) {
 	}
 }
 
-func TestRecycleWatcher_Tick_IgnoresNonCoordinatorPendingFlag(t *testing.T) {
+// TestRecycleWatcher_Tick_RestartsIdlePendingWorker pins design.md's "Self-
+// service recycle works for a worker role" scenario (add-worker-bounce):
+// RecycleWatcher.tickTask no longer filters to coordinator-kind bindings
+// only, so a worker role's pending_recycle request drives it through
+// RecycleCoord's self-service path exactly like a coordinator's.
+func TestRecycleWatcher_Tick_RestartsIdlePendingWorker(t *testing.T) {
 	d, err := db.OpenInMemory()
 	testutil.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
 
-	orch, err := d.CreateHeraOrchestrator("myorch", "master")
-	testutil.NoError(t, err)
-
-	workerTask := &model.Task{Name: "worker-task", Status: model.StatusInProgress, Project: "test-project", Worktree: "/wt/w1"}
-	testutil.NoError(t, d.Add(workerTask))
-	_, _, err = d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
-		OrchestratorID: orch.ID,
-		Name:           "w1",
-		Kind:           db.HeraKindWorker,
-		ArgusProject:   workerTask.Project,
-	}, workerTask.ID, workerTask.Worktree)
-	testutil.NoError(t, err)
-
-	// A worker somehow ends up with a pending_recycle flag (should never
-	// happen via hera_status, which rejects it for non-coordinators) — the
-	// watcher must ignore it rather than recycling a worker's session.
-	testutil.NoError(t, d.SetMeta(workerTask.ID, db.HeraMetaNamespace, db.HeraMetaKeyPendingRecycle, "true"))
+	task, _, _ := seedRecycleRole(t, d, db.HeraKindWorker, "myorch", "w1", "/wt/w1", "argus/w1-branch", "mission")
+	testutil.NoError(t, d.SetMeta(task.ID, db.HeraMetaNamespace, db.HeraMetaKeyPendingRecycle, "true"))
 
 	runner := &fakeRecycleRunner{idle: true}
 	w := NewRecycleWatcher(d, runner)
 	w.Tick()
 
-	testutil.Equal(t, runner.restartCalled, false)
+	testutil.Equal(t, runner.restartCalled, true)
+	testutil.Equal(t, runner.restartTaskID, task.ID)
+
+	if metaHasValue(t, d, task.ID, db.HeraMetaKeyPendingRecycle, "true") {
+		t.Fatalf("pending_recycle was not cleared after a successful restart")
+	}
+}
+
+// TestRecycleWatcher_Tick_RestartsIdlePendingFreelance mirrors the worker case
+// above for a freelance-kind role (design.md D7: both kinds widened
+// identically).
+func TestRecycleWatcher_Tick_RestartsIdlePendingFreelance(t *testing.T) {
+	d, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	task, _, _ := seedRecycleRole(t, d, db.HeraKindFreelance, "myorch", "fl1", "/wt/fl1", "argus/fl1-branch", "mission")
+	testutil.NoError(t, d.SetMeta(task.ID, db.HeraMetaNamespace, db.HeraMetaKeyPendingRecycle, "true"))
+
+	runner := &fakeRecycleRunner{idle: true}
+	w := NewRecycleWatcher(d, runner)
+	w.Tick()
+
+	testutil.Equal(t, runner.restartCalled, true)
+	testutil.Equal(t, runner.restartTaskID, task.ID)
 }
 
 // TestRecycleWatcher_Tick_MultiBindingTaskFindsCoordinatorBinding pins a fix

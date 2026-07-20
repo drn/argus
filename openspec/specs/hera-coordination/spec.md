@@ -186,7 +186,7 @@ The same born-bound transactional spawn SHALL also be reachable as a **materiali
 
 The system SHALL, on `hera_status`, validate the status as one of idle/working/blocked/done/failed, upsert it on the caller's role, and mirror it to the `task_meta` "hera" namespace best-effort. When a WORKER role reports `done` the system SHALL roll its bound task to in_review and stamp `ready_to_close` via `RollHeraWorkerToReview` — the primary BUG-050 trigger for the idle-but-done case the exit hook misses. That roll is worker-kind only, no-ops unless the task is currently in_progress (so it never clobbers a human-set in_review/complete and never auto-completes), leaves the live session running, is idempotent, and is soft-fail (a failure never blocks the status update).
 
-`hera_status` SHALL additionally accept two optional parameters, valid only for a `coordinator`-kind caller: `handoff_note` (a short free-text string) and `request_recycle` (a boolean). When `handoff_note` is supplied, the system SHALL overwrite `task_meta` (namespace `hera`, key `handoff_note`) with it in the same call. When `request_recycle` is `true`, the system SHALL record a pending-recycle intent for the caller's task, which the `recycle_coord` primitive (see `coordinator-context-management`) consumes to defer the actual restart until the session is idle. Supplying either parameter for a non-coordinator caller SHALL be rejected with an error naming the parameter.
+`hera_status` SHALL additionally accept two optional parameters, valid for a caller of ANY hera-bound role kind (coordinator, worker, or freelance): `handoff_note` (a short free-text string) and `request_recycle` (a boolean). When `handoff_note` is supplied, the system SHALL overwrite `task_meta` (namespace `hera`, key `handoff_note`) with it in the same call, regardless of the caller's role kind. When `request_recycle` is `true`, the system SHALL record a pending-recycle intent for the caller's task, regardless of the caller's role kind, which the `recycle_coord` primitive (see `coordinator-context-management`) consumes to defer the actual restart until the session is idle.
 
 Derived from: `internal/mcp/hera.go:643` (`toolHeraStatus`), `internal/mcp/hera.go:691` (BUG-050 worker roll), `internal/tui/hera/ops.go:193` (the same roll mirrored on the rail `s` key).
 
@@ -205,20 +205,25 @@ Derived from: `internal/mcp/hera.go:643` (`toolHeraStatus`), `internal/mcp/hera.
 - **WHEN** a worker reports done but its task is already in_review or complete
 - **THEN** RollHeraWorkerToReview no-ops and the status update still succeeds
 
-#### Scenario: Coordinator can record a handoff note
+#### Scenario: A coordinator can record a handoff note
 
 - **WHEN** a coordinator calls hera_status with a non-empty handoff_note
 - **THEN** task_meta (hera, handoff_note) is overwritten with that text in the same call
 
-#### Scenario: Coordinator can request recycle
+#### Scenario: A coordinator can request recycle
 
 - **WHEN** a coordinator calls hera_status with request_recycle=true
 - **THEN** a pending-recycle intent is recorded for the caller's task
 
-#### Scenario: Non-coordinator cannot use the new parameters
+#### Scenario: A worker can record a handoff note and request recycle
 
-- **WHEN** a worker or freelance role calls hera_status with handoff_note or request_recycle set
-- **THEN** the tool errors naming the offending parameter, and no task_meta write or recycle intent occurs
+- **WHEN** a worker role calls hera_status with a non-empty handoff_note and request_recycle=true
+- **THEN** task_meta (hera, handoff_note) is overwritten with that text, and a pending-recycle intent is recorded for the caller's task, in the same call
+
+#### Scenario: A freelance role can record a handoff note and request recycle
+
+- **WHEN** a freelance role calls hera_status with a non-empty handoff_note and request_recycle=true
+- **THEN** task_meta (hera, handoff_note) is overwritten with that text, and a pending-recycle intent is recorded for the caller's task, in the same call
 
 ### Requirement: Subtree TLDR roll-up via hera_tree_updates
 
