@@ -1029,14 +1029,17 @@ func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.
 		// genuinely at a prompt right now."
 		//
 		// This whole branch runs under a LIVE binding (rv.Live is unconditionally
-		// true here), so a live role of ANY kind — worker, coordinator, or
-		// freelance — surfaces needs-input when it is in the content-aware set,
-		// regardless of task status:
+		// true here), so a live WORKER or COORDINATOR role surfaces needs-input when
+		// it is in the content-aware set, regardless of task status:
 		//   - A COORDINATOR routinely rolls to complete/in_review while its session
 		//     stays alive and can itself block on a user prompt (BUG-028).
 		//   - A WORKER deliberately sits in in_review while its session lingers
 		//     alive for the coordinator to close out (#707) and can genuinely ask a
 		//     fresh question in that state — it MUST surface "(?)" then (BUG-A).
+		// A FREELANCE role is excluded from this status-independent path: the App's
+		// needsInputForHeraRail feed admits only worker- and coordinator-kind roles
+		// regardless of status, so a freelance task surfaces "(?)" only while it is
+		// literally in_progress.
 		//
 		// BUG-023 (a FINISHED worker pinning "(?)" forever on every ancestor) stays
 		// protected without a task-status gate: a worker is "finished" when its

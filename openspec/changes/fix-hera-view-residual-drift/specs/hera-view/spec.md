@@ -6,11 +6,11 @@ The system SHALL draw a fixed one-line bordered "Needs input" summary box at the
 
 The counted set is the needs-input set pushed by the App (`SetNeedsInput`) MINUS every argus task the Hera model knows: each role's live and structural binding (`TaskID` and `BridgeTaskID`) across the Pinned, Active, and Archived orchestrator sections and the Freelance section. Coordinators, managed workers (including those whose subtree row is folded — their cue already bubbles up via the subtree rollup), Hera freelance-roles, and tasks bound to ARCHIVED roles (their `BridgeTaskID` survives the binding ending) are therefore never counted; only tasks invisible from the Hera tab are.
 
-The App SHALL feed the box only needs-input tasks that are currently `in_progress` (`needsInputInProgress` — task-list-parity, the SAME gate the flat task list uses for its own `(?)`). This is a DELIBERATELY NARROWER gate than the per-role rollup's `in_progress OR live` (BUG-A, #707) — the box only ever surfaces UNMANAGED tasks (ones with no Hera presence at all, so there is no live-role signal to consult), so it has no liveness signal to admit on and intentionally stays `in_progress`-scoped like the task list it mirrors. The needs-input scan is sticky (a finished task idling at its final prompt keeps the marker in its log tail); this gate keeps the box from tallying a finished/unmanaged task that shows no `(?)` anywhere.
+The box SHALL count only UNMANAGED needs-input tasks that are currently `in_progress` — task-list parity (the SAME `(?)` gate the flat task list applies). It shares the rail rollup's single feed rather than taking its own: the App pushes `needsInputForHeraRail`'s set (`in_progress OR hera-managed`) into `SetNeedsInput`, and the box's `UnmanagedNeedsInputCount` subtracts every managed task, so an unmanaged task reaches the count ONLY through that feed's `in_progress` branch (never the managed one). Its effective gate is therefore DELIBERATELY NARROWER than the per-role rollup's `in_progress OR live` (BUG-A, #707) — computed off the SAME fed map — because the rollup additionally surfaces a live managed role whose task is not in_progress, whereas the box drops every managed task and keeps only in_progress unmanaged ones: an unmanaged task has no Hera presence at all, so there is no live-role signal to admit on and `in_progress` is the only gate. The needs-input scan is sticky (a finished task idling at its final prompt keeps the marker in its log tail); this gate keeps the box from tallying a finished/unmanaged task that shows no `(?)` anywhere.
 
 The box is a passive heads-up: it has no keybinding, no focus, and no click-to-jump. Geometry is computed in `Draw` (no tview.Flex, no `screen.Sync()`); the box and the rail each paint their full bounding rect through `widget.DrawBorderedPanel`. The text is left-padded one cell from the border. On a terminal too short to keep the rail usable the box yields and is not drawn. The box is never drawn in remote mode (the page short-circuits to its unavailable banner first).
 
-Derived from: `internal/tui/widget/attentionsummary.go` (the widget + left padding), `internal/tui/hera/page.go` (`Draw` geometry + count), `internal/tui/app.go` (`needsInputInProgress` gate → `SetNeedsInput` feed), `internal/tui/hera/model.go` (managed-task-id walk over role `TaskID`/`BridgeTaskID`), `context/knowledge/gotchas/hera-view.md` (no-Sync / full-rect rules).
+Derived from: `internal/tui/widget/attentionsummary.go` (the widget + left padding), `internal/tui/hera/page.go` (`Draw` geometry + count), `internal/tui/app.go` (`needsInputForHeraRail` → `SetNeedsInput` feed), `internal/tui/hera/model.go` (`UnmanagedNeedsInputCount` managed-subtraction + managed-task-id walk over role `TaskID`/`BridgeTaskID`), `context/knowledge/gotchas/hera-view.md` (no-Sync / full-rect rules).
 
 #### Scenario: An unmanaged needs-input task is summarised
 
@@ -36,6 +36,16 @@ Derived from: `internal/tui/widget/attentionsummary.go` (the widget + left paddi
 
 - **WHEN** a needs-input task is bound to an archived Hera role whose live binding has ended
 - **THEN** the count excludes it, because the role's structural binding (`BridgeTaskID`) keeps Hera presence after the binding ends
+
+#### Scenario: No unmanaged task needs input
+
+- **WHEN** every needs-input task is known to the Hera model (or none needs input)
+- **THEN** the box has zero height and the rail occupies the full column
+
+#### Scenario: Box is never drawn in remote mode
+
+- **WHEN** the Hera page is in remote mode
+- **THEN** the summary box is not drawn (the page renders only its unavailable banner)
 
 ### Requirement: Live plan node icons are 1:1 with the rail (area 6)
 
