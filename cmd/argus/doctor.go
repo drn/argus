@@ -7,12 +7,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/buildid"
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
 	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/doctor"
+	"github.com/drn/argus/internal/profiles"
+	"github.com/drn/argus/internal/review"
 )
 
 // runDoctor implements `argus doctor`: a strictly READ-ONLY diagnostic that
@@ -30,6 +35,7 @@ func runDoctor() {
 	actors := gatherActors()
 	fmt.Print(doctor.Render(actors))
 	fmt.Print(doctor.RenderStopHook(gatherStopHookStatus()))
+	fmt.Print(doctor.RenderProfileLibrary(gatherProfileLibraryStatus()))
 	if doctor.Diagnose(actors).Verdict != doctor.Healthy {
 		os.Exit(1)
 	}
@@ -224,6 +230,41 @@ func claudeSettingsPath() string {
 		return ""
 	}
 	return filepath.Join(home, ".claude", "settings.json")
+}
+
+// gatherProfileLibraryStatus classifies the per-user diligence-profile
+// library (~/.argus/profiles/) — global library only; no repo-local
+// .argus/profiles/ and no per-project binding, both out of scope for this
+// check (add-doctor-profile-check).
+func gatherProfileLibraryStatus() doctor.ProfileLibraryStatus {
+	cfg := config.DefaultConfig()
+	cfg = config.NewFileLoader(filepath.Join(db.DataDir(), config.FileName)).Apply(cfg)
+	return diagnoseProfileLibraryAt(filepath.Join(db.DataDir(), "profiles"), cfg)
+}
+
+// diagnoseProfileLibraryAt lists dir and validates every *.toml profile file
+// found in it against cfg, classifying the result via
+// doctor.DiagnoseProfileLibrary. Takes an explicit dir/cfg (rather than
+// resolving $HOME itself) so it's testable against a temp library without
+// touching the real ~/.argus/profiles/ or config.toml.
+func diagnoseProfileLibraryAt(dir string, cfg config.Config) doctor.ProfileLibraryStatus {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return doctor.DiagnoseProfileLibrary(nil, os.IsNotExist(err), err)
+	}
+
+	loader := &profiles.Loader{LibraryDir: dir}
+	var validNames []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".toml") {
+			continue
+		}
+		name := strings.TrimSuffix(e.Name(), ".toml")
+		if p, errs := loader.ValidateName(name, cfg, agent.KnownModels, review.NewValidator(cfg)); p != nil && len(errs) == 0 {
+			validNames = append(validNames, name)
+		}
+	}
+	return doctor.DiagnoseProfileLibrary(validNames, false, nil)
 }
 
 // readStopHookCommands reads and parses the Claude Code settings file at
