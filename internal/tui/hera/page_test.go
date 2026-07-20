@@ -124,6 +124,56 @@ func TestHeraPage_CtrlZTogglesFullscreen(t *testing.T) {
 	testutil.Equal(t, p.Machine().Fullscreen(), false)
 }
 
+// TestHeraPage_CtrlJOpensSwitcherRegardlessOfFocus pins the hera-nav-palette
+// reach: ctrl+j fires OnSwitcher (and is ALWAYS consumed, never forwarded to a
+// focused pane's PTY) whether the rail, the coordinator pane, or the agent
+// pane holds focus — mirroring TestHeraPage_CtrlZTogglesFullscreen's pattern
+// for the sibling literal case.
+func TestHeraPage_CtrlJOpensSwitcherRegardlessOfFocus(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "w", db.HeraKindWorker, "t-w")
+	p := NewHeraPage(d)
+	p.Refresh()
+	calls := 0
+	p.OnSwitcher = func() { calls++ }
+	h := p.InputHandler()
+
+	// On the rail.
+	h(tcell.NewEventKey(tcell.KeyCtrlJ, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, calls, 1)
+	testutil.Equal(t, p.Machine().State(), FocusRail) // unchanged — the rail nav is untouched
+
+	// Coordinator pane.
+	h(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusCoord)
+	h(tcell.NewEventKey(tcell.KeyCtrlJ, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, calls, 2)
+
+	// Agent pane — once a terminal pane is focused, plain Tab passes through to
+	// the PTY (BUG-019), so advance via the Ctrl+Alt+Right ladder instead.
+	h(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModCtrl|tcell.ModAlt), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
+	h(tcell.NewEventKey(tcell.KeyCtrlJ, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, calls, 3)
+}
+
+// TestHeraPage_CtrlJNoopWhenUnwired confirms ctrl+j is still consumed (never
+// leaks to a focused pane's PTY) even when OnSwitcher is nil (e.g. remote
+// mode never wires it, though remote itself short-circuits earlier — this
+// guards a direct-construction test double that leaves it nil).
+func TestHeraPage_CtrlJNoopWhenUnwired(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	p := NewHeraPage(d)
+	p.Refresh()
+	h := p.InputHandler()
+	// Must not panic.
+	h(tcell.NewEventKey(tcell.KeyCtrlJ, 0, tcell.ModNone), noFocus)
+}
+
 // TestHeraPage_CmdArrowMovesRailSelectionWithoutChangingFocus verifies that
 // Cmd+Down / Cmd+Up (tcell: KeyDown/KeyUp + ModCtrl|ModAlt) move the rail
 // cursor regardless of which pane is focused, and do NOT change focus.

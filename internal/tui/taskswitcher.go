@@ -28,6 +28,11 @@ type taskSwitcherEntry struct {
 	Running       bool
 	Idle          bool
 	IdleUnvisited bool
+	// HeraManaged marks a task that holds a live hera binding (worker or
+	// coordinator role). Selecting such an entry jumps into the native Hera
+	// view (rail + pane) instead of the classic per-task agent view, since the
+	// entry represents a role within Hera's own rail structure.
+	HeraManaged bool
 }
 
 // statusIcon resolves this entry's status glyph + style via the shared helper,
@@ -42,7 +47,7 @@ func (e taskSwitcherEntry) statusIcon() (rune, tcell.Style) {
 }
 
 // switcherRowKind distinguishes a project-folder header from a task row in the
-// grouped (folder-structure) rendering used by the Ctrl+K switcher.
+// grouped (folder-structure) rendering used by the Ctrl+J switcher.
 type switcherRowKind uint8
 
 const (
@@ -59,8 +64,9 @@ type switcherRow struct {
 	count   int               // tasks in this project in the current (filtered) view; valid when kind == switcherRowProjectHeader
 }
 
-// TaskSwitcherModal presents a filterable list of tasks for jumping directly to
-// another task's agent view (Ctrl+K).
+// TaskSwitcherModal presents a filterable list of tasks (and, unified,
+// hera-managed roles) for jumping directly to another task's agent view or
+// role within the Projects tab (Ctrl+J).
 //
 // It has two rendering modes:
 //
@@ -70,7 +76,7 @@ type switcherRow struct {
 //     tasks nested under collapsible project headers, one project expanded at a
 //     time (all expanded while filtering). Filtering uses the same whitespace-
 //     split, all-terms-substring match across project + task name as the task
-//     list. Used by the Ctrl+K task switcher.
+//     list. Used by the Ctrl+J task switcher.
 type TaskSwitcherModal struct {
 	*tview.Box
 	all      []taskSwitcherEntry // full set, pre-sorted (needs-input first)
@@ -102,7 +108,7 @@ func NewTaskSwitcherModal(entries []taskSwitcherEntry) *TaskSwitcherModal {
 }
 
 // SetGrouped switches the modal into the folder-structure rendering used by the
-// Ctrl+K task switcher: tasks nested under project headers with task-list-style
+// Ctrl+J task switcher: tasks nested under project headers with task-list-style
 // search. It rebuilds the row projection and parks the cursor on the first task.
 func (m *TaskSwitcherModal) SetGrouped(v bool) {
 	m.grouped = v
@@ -133,16 +139,33 @@ func (m *TaskSwitcherModal) Canceled() bool { return m.canceled }
 
 // SelectedTask returns the chosen task's ID (empty if none).
 func (m *TaskSwitcherModal) SelectedTask() string {
-	if m.grouped {
-		if m.cursor >= 0 && m.cursor < len(m.rows) && m.rows[m.cursor].kind == switcherRowTaskItem {
-			return m.rows[m.cursor].entry.ID
-		}
+	e := m.selectedEntry()
+	if e == nil {
 		return ""
 	}
-	if m.cursor >= 0 && m.cursor < len(m.filtered) {
-		return m.filtered[m.cursor].ID
+	return e.ID
+}
+
+// SelectedHeraManaged reports whether the chosen entry is hera-managed (should
+// jump into the Hera view rather than the classic per-task agent view).
+func (m *TaskSwitcherModal) SelectedHeraManaged() bool {
+	e := m.selectedEntry()
+	return e != nil && e.HeraManaged
+}
+
+// selectedEntry resolves the entry under the cursor in either render mode, or
+// nil when the cursor isn't parked on a task row.
+func (m *TaskSwitcherModal) selectedEntry() *taskSwitcherEntry {
+	if m.grouped {
+		if m.cursor >= 0 && m.cursor < len(m.rows) && m.rows[m.cursor].kind == switcherRowTaskItem {
+			return &m.rows[m.cursor].entry
+		}
+		return nil
 	}
-	return ""
+	if m.cursor >= 0 && m.cursor < len(m.filtered) {
+		return &m.filtered[m.cursor]
+	}
+	return nil
 }
 
 // PasteHandler handles bracketed paste into the filter field.

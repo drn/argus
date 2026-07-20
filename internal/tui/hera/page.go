@@ -169,6 +169,15 @@ type HeraPage struct {
 	// runner is not daemon-backed, in which case ctrl+y is an inert no-op.
 	OnCopyClipboard func(taskID string)
 
+	// OnSwitcher fires on `ctrl+j`, regardless of focus region (rail, coordinator
+	// pane, or agent pane) — the SAME "always intercepted" pattern as the Ctrl+Z
+	// fullscreen toggle below, so the byte never leaks to a focused pane's PTY.
+	// Wired to the App's unified task/role switcher (openTaskSwitcher); it is
+	// hera-page-local (not a keymap.Action) for the same reason Ctrl+Z/Ctrl+Y are:
+	// nothing about it is rail-mutation-shaped, and Hera's page-level keys have
+	// never gone through keymap.Resolve. nil-safe: unwired in remote mode.
+	OnSwitcher func()
+
 	// clipReady is set by the App each tick (SetClipboardHint): true when the
 	// focused terminal pane's task has an agent-staged clipboard payload. It no
 	// longer gates the `ctrl+y` interception (ctrl+y always fires
@@ -270,23 +279,35 @@ func (p *HeraPage) drillIntoChild(id string) {
 // where the rail is inert) leaves focus on the plan region. MUST run on the tview
 // main thread (rail + focus mutations).
 func (p *HeraPage) jumpToLeaf(id string) {
+	p.JumpToTask(id)
+}
+
+// JumpToTask selects the rail row bound to the given argus task id, expanding
+// any collapsed ancestor coordinators first (BUG-007: fold-independent, via
+// the full model) so the jump lands even when the role is nested under a
+// closed fold, reattaches a dead/suspended session (mirroring the rail's own
+// Enter, BUG-009), and moves focus onto the resolved pane (agent or
+// coordinator). Returns false — a no-op — in remote mode, for an empty id, or
+// when the task has no rail row at all (multi-binding: SelectByTaskID lands on
+// whichever bound orchestrator's row it resolves first).
+//
+// Exported so callers outside this package can reuse the exact ancestor-
+// expansion + reattach + focus behavior that originally backed only the plan
+// widget's own leaf-Enter (jumpToLeaf, still the plan widget's OnEnter
+// handler and now a thin wrapper over this). The unified task/role switcher
+// (Ctrl+J) is the other caller: selecting a hera-managed entry from anywhere
+// (including the classic agent view) calls this after switching to the Hera
+// tab.
+func (p *HeraPage) JumpToTask(id string) bool {
 	if p.remote || id == "" {
-		return
+		return false
 	}
-	// BUG-007: expand any folded ancestor coordinators BEFORE selecting. The plan
-	// graph projects from the full model, so it surfaces a node even when its
-	// coordinator is collapsed in the rail — but SelectByTaskID only scans the
-	// currently-built rows, so the join would silently no-op. Resolve the target's
-	// containing orchestrator(s) from the full model (fold-independent) and
-	// uncollapse each ancestor chain, exactly as a user Space-expand would, so the
-	// row is built and the join lands regardless of fold state. Multi-binding fans
-	// to multiple orchestrators; expand them all.
 	for _, orchID := range p.rail.Model().OrchIDsForTask(id) {
 		p.rail.EnsureAncestorsExpanded(orchID)
 	}
 	if !p.rail.SelectByTaskID(id) {
-		uxlog.Log("[hera-view] plan leaf-enter: no rail row for task=%s (focus unchanged)", id)
-		return
+		uxlog.Log("[hera-view] jump to task: no rail row for task=%s (focus unchanged)", id)
+		return false
 	}
 	// Mirror the rail's Enter-reattach (BUG-009): a plan-leaf node whose agent
 	// session has EXITED must restart-and-join it, exactly as the rail's Enter
@@ -294,13 +315,13 @@ func (p *HeraPage) jumpToLeaf(id string) {
 	// Reuse the same OnReattach plumbing under the SAME liveness gate the rail
 	// Enter uses (page.go ~712): a dead session (any role) or a live
 	// non-coordinator role fires it; a live coordinator stays navigate-only. Only
-	// leaf nodes reach jumpToLeaf (planview routes Drillable sub-coordinators to
-	// OnDrillIn), so drill-in is unaffected.
+	// leaf nodes reach this path (plan drill-in and rail Space/fold are separate
+	// callers), so drill-in is unaffected.
 	sel := p.rail.Selection()
 	if taskID := sel.FocusTaskID(); taskID != "" && p.OnReattach != nil {
 		live := p.sessionLive(taskID)
 		if !live || !sel.IsCoordinator() {
-			uxlog.Log("[hera-view] plan leaf-enter reattach task=%s (live=%v coordinator=%v)", taskID, live, sel.IsCoordinator())
+			uxlog.Log("[hera-view] jump to task reattach task=%s (live=%v coordinator=%v)", taskID, live, sel.IsCoordinator())
 			p.OnReattach(sel)
 		}
 	}
@@ -313,7 +334,28 @@ func (p *HeraPage) jumpToLeaf(id string) {
 	} else {
 		p.focus.SetRegion(FocusCoord)
 	}
-	uxlog.Log("[hera-view] plan leaf-enter: jumped to task=%s within hera (detailsMode=%v)", id, p.detailsMode)
+	uxlog.Log("[hera-view] jump to task: landed on task=%s within hera (detailsMode=%v)", id, p.detailsMode)
+	return true
+}
+
+// JumpToNextNeedsInput cycles to the next role in rail order whose own
+// signal needs input (add-hera-jump-question's Ctrl+G — a dedicated,
+// popup-free jump, independent of the Ctrl+J switcher): finds the target via
+// Rail.NextNeedsInputTaskID, then lands on it via JumpToTask, reusing the
+// exact same ancestor-expand + reattach + focus sequence every other jump
+// (the switcher, the plan widget's leaf-Enter) already goes through rather
+// than re-deriving it here. Returns false — a safe no-op — in remote mode or
+// when no role currently needs input.
+func (p *HeraPage) JumpToNextNeedsInput() bool {
+	if p.remote {
+		return false
+	}
+	id, ok := p.rail.NextNeedsInputTaskID()
+	if !ok {
+		uxlog.Log("[hera-view] jump to next needs-input: no role needs input")
+		return false
+	}
+	return p.JumpToTask(id)
 }
 
 // Reconcile late-binds live sessions and is the App-tick hook (main thread).
@@ -683,6 +725,15 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 			// That silent fall-through was the footgun this binding closes.
 			p.focus.ToggleFullscreen()
 			uxlog.Log("[hera-view] ctrl+z fullscreen toggle: state=%d fullscreen=%v", p.focus.State(), p.focus.Fullscreen())
+			return
+		case tcell.KeyCtrlJ:
+			// Unified task/role switcher (Ctrl+J). ALWAYS consumed — even on the
+			// rail, where it's simply "open the switcher" rather than a no-op —
+			// so the byte can never fall through to a focused pane's PTY. Mirrors
+			// the Ctrl+Z case immediately above.
+			if p.OnSwitcher != nil {
+				p.OnSwitcher()
+			}
 			return
 		case tcell.KeyTab, tcell.KeyBacktab:
 			// Tab / Shift-Tab walk the focus ladder ONLY from the rail (entering a

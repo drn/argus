@@ -79,6 +79,7 @@ const (
 	modeHeraInput      // Hera-view rename / spawn-prompt input modal
 	modeHeraConfirm    // Hera-view archive-of-live / delete confirmation modal
 	modeHeraOrchPicker // Hera-view `J` adopt/reparent orchestrator picker
+	modeCommandPalette // Global command palette (ctrl+k)
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -195,6 +196,16 @@ type App struct {
 	fuzzyLinkPickerModal *FuzzyLinkPickerModal
 	sessionPickerModal   *SessionPickerModal
 	taskSwitcherModal    *TaskSwitcherModal
+	// taskSwitcherReturnMode is the mode to restore on close: modeAgent when
+	// opened from the classic agent view, modeTaskList when opened from Hera
+	// (rail or pane focus) via HeraPage.OnSwitcher.
+	taskSwitcherReturnMode viewMode
+
+	// Command palette (ctrl+k, global.palette). commandPaletteReturnMode
+	// mirrors taskSwitcherReturnMode: whichever mode/focus was active when the
+	// palette opened, restored on close.
+	commandPaletteModal      *CommandPaletteModal
+	commandPaletteReturnMode viewMode
 
 	// Fork task modal (created on demand)
 	forkModal *ForkTaskModal
@@ -728,6 +739,11 @@ func (a *App) buildUI() {
 	// BUG-031: transient status-bar notice for the alt-screen scroll affordance.
 	// Purely a UI hint, so it is wired unconditionally (safe in remote mode).
 	a.heraPage.OnInfo = func(msg string) { a.statusbar.SetInfo(msg) }
+
+	// Unified task/role switcher (ctrl+j), reachable from any Hera focus region.
+	// Wired unconditionally like OnInfo/OnFocusChange — HeraPage.InputHandler
+	// itself no-ops in remote mode, so this is safe there too.
+	a.heraPage.OnSwitcher = a.openTaskSwitcher
 
 	// Wire the hera panes' redraw callbacks exactly like the main agent pane:
 	// OnBranchChange is log-only (forceRedraw never Syncs), OnNeedRedraw bounces
@@ -2767,6 +2783,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	// Command palette modal (global, ctrl+k)
+	if a.mode == modeCommandPalette && a.commandPaletteModal != nil {
+		a.handleCommandPaletteKey(event)
+		return nil
+	}
+
 	// Rename task modal — delegate everything to the modal
 	if a.mode == modeRenameTask && a.renameModal != nil {
 		a.handleRenameTaskKey(event)
@@ -2901,13 +2923,7 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			case keymap.ActGlobalOpenRepo:
 				if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
 					if t := a.tasklist.SelectedTask(); t != nil {
-						dir := ""
-						if p, ok := a.db.Config().Projects[t.Project]; ok && p.Path != "" {
-							dir = p.Path
-						} else if t.Worktree != "" {
-							dir = t.Worktree
-						}
-						if dir != "" {
+						if dir := a.resolveRepoDir(t); dir != "" {
 							if err := repoOpener(dir); err != nil {
 								uxlog.Log("[tui] open repo failed: %v", err)
 							}
@@ -2929,7 +2945,38 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 					a.openConfirmPrune()
 					return nil
 				}
+			case keymap.ActGlobalPalette:
+				// Deliberately UNGUARDED by a.mode — this is the one CtxGlobal
+				// action that must fire regardless of mode/focus (fullscreen
+				// agent view, task list, or any Hera focus region), mirroring
+				// the reach of the hardcoded Ctrl+Q/Ctrl+Z structural
+				// interceptions above while staying a normal rebindable action.
+				a.openCommandPalette()
+				return nil
+			case keymap.ActGlobalJumpNeedsInput:
+				// Same unconditional reach as ActGlobalPalette above — one
+				// dispatch point covers every context (fullscreen agent view,
+				// task list, Hera rail, Hera pane) uniformly, unlike Ctrl+J's
+				// switcher, whose Hera reach is a separate page-local literal
+				// case (add-hera-jump-question).
+				a.jumpToNextNeedsInput()
+				return nil
 			}
+		}
+	}
+
+	// Task/role switcher (ctrl+j) reaching the plain Tasks list: CtxAgent's
+	// ActAgentSwitcher only ever reached handleAgentKey (modeAgent) and Hera's
+	// own reach is a separate hardcoded literal case in HeraPage.InputHandler
+	// (page.go) — neither covers the plain task list, so ctrl+j was dead here
+	// (the bug add-hera-jump-question fixes). Resolving CtxAgent's own binding
+	// table (rather than adding a new CtxTaskList entry) means a config
+	// override of agent.switcher applies here too, matching the classic agent
+	// view's behavior.
+	if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
+		if act, ok := a.activeKeymap().Resolve(keymap.CtxAgent, event); ok && act == keymap.ActAgentSwitcher {
+			a.openTaskSwitcher()
+			return nil
 		}
 	}
 
@@ -3062,7 +3109,7 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 		case keymap.ActAgentSession: // Switch Claude session (shadows Claude's transcript toggle)
 			a.openSessionPicker()
 			return nil
-		case keymap.ActAgentSwitcher: // Task switcher (shadows readline kill-line)
+		case keymap.ActAgentSwitcher: // Unified task/role switcher (ctrl+j; some readline configs bind ctrl+j to accept-line)
 			a.openTaskSwitcher()
 			return nil
 		case keymap.ActAgentOpenPR: // Open PR for the worktree's branch via gh
@@ -4708,18 +4755,70 @@ func (a *App) closeSessionPickerModal() {
 	a.tapp.SetFocus(a.agentPane)
 }
 
-// openTaskSwitcher builds the task switcher entries from the cached task list
-// and the current needs-input set, then opens the switcher modal. Both
-// a.tasks and a.needsInputIDs are maintained on the tview goroutine by the
-// tick loop, so the switcher is built synchronously with no disk I/O. Entries
-// are sorted needs-input-first (then alphabetically), and the currently-viewed
-// task plus archived tasks are excluded.
+// jumpToNextNeedsInput is Ctrl+G's App-level entry point (add-hera-jump-
+// question): a dedicated, popup-free jump straight to the next role needing
+// input, independent of the Ctrl+J switcher. The Hera rail is the single
+// canonical "which role needs input, in what order" traversal (its own
+// buildRows order — Pinned → Active depth-first → Freelance → Archive, the
+// SAME order the rail's own partial-fold reveal already surfaces a hidden
+// needs-input leaf through), so every calling context funnels into
+// HeraPage.JumpToNextNeedsInput regardless of where Ctrl+G was pressed.
+//
+// PEEKS first via the non-mutating Rail.NextNeedsInputTaskID before doing
+// anything else: a caught-in-review bug had this tear down a live fullscreen
+// agent view and switch tabs BEFORE learning there was no candidate, yanking
+// the operator out of their agent view for a pure no-op. Only once a
+// candidate is confirmed does it switch to the Hera tab — exactly as the
+// switcher's own hera-managed landing already does (handleTaskSwitcherKey),
+// tearing down the classic agent view first when active (exitAgentView, same
+// precedent) — and jump. A safe no-op (flashed notice, no teardown, no tab
+// switch) when nothing currently needs input.
+func (a *App) jumpToNextNeedsInput() {
+	if a.heraPage == nil || a.heraPage.IsRemote() {
+		a.flashNotice("No role needs input")
+		return
+	}
+	if _, ok := a.heraPage.Rail().NextNeedsInputTaskID(); !ok {
+		a.flashNotice("No role needs input")
+		return
+	}
+	if a.mode == modeAgent {
+		a.exitAgentView()
+	}
+	a.switchTab(widget.TabHera)
+	if !a.heraPage.JumpToNextNeedsInput() {
+		// Belt-and-braces: the peek above and this call are two separate rail
+		// scans, so an infinitesimal state change between them (a tick landing
+		// mid-way) could in principle flip the outcome. Still flash rather than
+		// leave the operator on the Hera tab with no feedback.
+		a.flashNotice("No role needs input")
+	}
+}
+
+// openTaskSwitcher builds the unified task/role switcher entries from the
+// cached task list and the current needs-input set, then opens the switcher
+// modal. Both a.tasks and a.needsInputIDs are maintained on the tview
+// goroutine by the tick loop, so the switcher is built synchronously with no
+// disk I/O. Entries are sorted needs-input-first (then alphabetically), and
+// the currently-viewed task plus archived tasks are excluded.
+//
+// "Unified" means the entry list includes hera-managed tasks (coordinator or
+// worker roles) alongside plain argus tasks — ONE entry-building path rather
+// than a separate Hera-only list — reusing the SAME needsInputForHeraRail
+// union the Hera rail's own rollup feed computes, so the switcher's
+// needs-input flag never drifts from what the rail itself shows. Reachable
+// from the classic agent view (ctrl+j, CtxAgent) and from the native Hera
+// view (ctrl+j, any focus region, via HeraPage.OnSwitcher) — see
+// handleTaskSwitcherKey for how a hera-managed selection routes into the Hera
+// tab instead of the classic per-task agent view.
 func (a *App) openTaskSwitcher() {
 	a.mu.Lock()
 	currentID := a.agentState.TaskID
 	a.mu.Unlock()
-	needs := make(map[string]bool, len(a.needsInputIDs))
-	for _, id := range a.needsInputIDs {
+	managed := a.readManagedTasks()
+	needsList := needsInputForHeraRail(a.needsInputIDs, a.tasks, managed)
+	needs := make(map[string]bool, len(needsList))
+	for _, id := range needsList {
 		needs[id] = true
 	}
 	// Mirror the task list's per-task state maps so the switcher's status icon
@@ -4746,6 +4845,7 @@ func (a *App) openTaskSwitcher() {
 			Running:       running[t.ID],
 			Idle:          idle[t.ID],
 			IdleUnvisited: a.idleUnvisited[t.ID],
+			HeraManaged:   managed[t.ID],
 		})
 	}
 	// Needs-input first, then alphabetical by name (case-insensitive),
@@ -4764,13 +4864,16 @@ func (a *App) openTaskSwitcher() {
 	a.openTaskSwitcherModal(entries)
 }
 
-// openTaskSwitcherModal shows the task switcher dialog.
-// Only callable from modeAgent — close always restores modeAgent.
+// openTaskSwitcherModal shows the task switcher dialog. Callable from the
+// classic agent view (modeAgent) or from Hera (modeTaskList, any Hera focus
+// region) via HeraPage.OnSwitcher — close restores whichever mode was active
+// when it opened (taskSwitcherReturnMode).
 func (a *App) openTaskSwitcherModal(entries []taskSwitcherEntry) {
 	a.taskSwitcherModal = NewTaskSwitcherModal(entries)
-	// The Ctrl+K switcher mirrors the task list: tasks nested under project
+	// The Ctrl+J switcher mirrors the task list: tasks nested under project
 	// folders, with task-list-style (whitespace-split substring) search.
 	a.taskSwitcherModal.SetGrouped(true)
+	a.taskSwitcherReturnMode = a.mode
 	a.mode = modeTaskSwitcher
 	a.pages.AddPage("taskswitcher", a.taskSwitcherModal, true, true)
 	a.tapp.SetFocus(a.taskSwitcherModal)
@@ -4787,9 +4890,34 @@ func (a *App) handleTaskSwitcherKey(event *tcell.EventKey) {
 	}
 	if a.taskSwitcherModal.Selected() {
 		chosen := a.taskSwitcherModal.SelectedTask()
+		heraManaged := a.taskSwitcherModal.SelectedHeraManaged()
 		a.closeTaskSwitcherModal()
 		if chosen == "" {
 			return
+		}
+		// A hera-managed entry represents a role within Hera's own rail
+		// structure — jump into the Hera tab and land on it there (ancestor
+		// expansion + reattach + focus, JumpToTask) rather than the classic
+		// per-task agent view. Falls through to the classic path if the Hera
+		// page can't resolve a rail row for it (e.g. remote mode, or a stale
+		// entry whose binding just ended).
+		if heraManaged && a.heraPage != nil && !a.heraPage.IsRemote() {
+			if a.mode == modeAgent {
+				// switchTab's TabHera case is a plain mode/page swap — it does
+				// NOT perform the modeAgent teardown exitAgentView does
+				// (restoring the tab header hidden by agentZen, detaching the
+				// old session from agentPane, clearing worktreeDir). Run that
+				// teardown explicitly before landing on the Hera tab, or the
+				// header stays hidden and the prior session lingers teed to a
+				// now-invisible pane.
+				a.exitAgentView()
+			}
+			a.switchTab(widget.TabHera)
+			if a.heraPage.JumpToTask(chosen) {
+				uxlog.Log("[tui] task switcher: jumped to hera-managed task %s within Projects tab", chosen)
+				return
+			}
+			uxlog.Log("[tui] task switcher: hera jump for task %s found no rail row, falling back to classic view", chosen)
 		}
 		task, err := a.db.Get(chosen)
 		if err != nil || task == nil {
@@ -4807,12 +4935,24 @@ func (a *App) handleTaskSwitcherKey(event *tcell.EventKey) {
 	}
 }
 
-// closeTaskSwitcherModal closes the switcher and restores agent view.
+// closeTaskSwitcherModal closes the switcher and restores whichever mode
+// (classic agent view or Hera-focused task list) was active when it opened.
 func (a *App) closeTaskSwitcherModal() {
-	a.mode = modeAgent
+	a.mode = a.taskSwitcherReturnMode
 	a.taskSwitcherModal = nil
 	a.pages.RemovePage("taskswitcher")
-	a.tapp.SetFocus(a.agentPane)
+	switch {
+	case a.mode == modeAgent:
+		a.tapp.SetFocus(a.agentPane)
+	case a.header.ActiveTab() == widget.TabHera:
+		a.tapp.SetFocus(a.heraPage)
+	default:
+		// Opened from the plain Tasks list (add-hera-jump-question fixed
+		// ctrl+j's reach here too) — mirrors closeCommandPaletteModal's same
+		// fallback chain rather than assuming Hera is the only non-agent
+		// origin, which stopped being true once this dead gap was fixed.
+		a.tapp.SetFocus(a.tasklist)
+	}
 }
 
 // switchSession rebinds the current agent task to a different Claude session

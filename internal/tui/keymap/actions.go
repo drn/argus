@@ -25,17 +25,19 @@ type Action string
 
 const (
 	// Global
-	ActGlobalQuit        Action = "global.quit"
-	ActGlobalHelp        Action = "global.help"
-	ActGlobalTabTasks    Action = "global.tab_tasks"
-	ActGlobalTabHera     Action = "global.tab_hera"
-	ActGlobalTabSettings Action = "global.tab_settings"
-	ActGlobalRefresh     Action = "global.refresh"
-	ActGlobalDestroy     Action = "global.destroy"
-	ActGlobalFork        Action = "global.fork"
-	ActGlobalOpenRepo    Action = "global.open_repo"
-	ActGlobalOpenPR      Action = "global.open_pr"
-	ActGlobalPrune       Action = "global.prune"
+	ActGlobalQuit           Action = "global.quit"
+	ActGlobalHelp           Action = "global.help"
+	ActGlobalTabTasks       Action = "global.tab_tasks"
+	ActGlobalTabHera        Action = "global.tab_hera"
+	ActGlobalTabSettings    Action = "global.tab_settings"
+	ActGlobalRefresh        Action = "global.refresh"
+	ActGlobalDestroy        Action = "global.destroy"
+	ActGlobalFork           Action = "global.fork"
+	ActGlobalOpenRepo       Action = "global.open_repo"
+	ActGlobalOpenPR         Action = "global.open_pr"
+	ActGlobalPrune          Action = "global.prune"
+	ActGlobalPalette        Action = "global.palette"
+	ActGlobalJumpNeedsInput Action = "global.jump_needs_input"
 
 	// Task list
 	ActTaskNew       Action = "tasklist.new"
@@ -129,6 +131,7 @@ var defaultSpecs = map[Context]map[Action]string{
 		ActGlobalTabTasks: "1", ActGlobalTabHera: "2", ActGlobalTabSettings: "3",
 		ActGlobalRefresh: "ctrl+l", ActGlobalDestroy: "ctrl+d", ActGlobalFork: "ctrl+f",
 		ActGlobalOpenRepo: "ctrl+o", ActGlobalOpenPR: "ctrl+p", ActGlobalPrune: "ctrl+r",
+		ActGlobalPalette: "ctrl+k", ActGlobalJumpNeedsInput: "ctrl+g",
 	},
 	CtxTaskList: {
 		ActTaskNew: "n", ActTaskStatusAdv: "s", ActTaskStatusRev: "S",
@@ -136,7 +139,7 @@ var defaultSpecs = map[Context]map[Action]string{
 		ActTaskFilter: "/", ActTaskHera: "H", ActTaskDown: "j", ActTaskUp: "k",
 	},
 	CtxAgent: {
-		ActAgentLinks: "ctrl+l", ActAgentSession: "ctrl+r", ActAgentSwitcher: "ctrl+k",
+		ActAgentLinks: "ctrl+l", ActAgentSession: "ctrl+r", ActAgentSwitcher: "ctrl+j",
 		ActAgentOpenPR: "ctrl+p", ActAgentZoom: "ctrl+z", ActAgentCopy: "ctrl+y",
 		ActAgentPaneLeft: "cmd+left", ActAgentPaneRight: "cmd+right",
 		ActAgentTaskPrev: "cmd+up", ActAgentTaskNext: "cmd+down",
@@ -172,13 +175,14 @@ var actionLabels = map[Action]string{
 	ActGlobalTabHera: "switch to Projects tab", ActGlobalTabSettings: "switch to Settings tab",
 	ActGlobalRefresh: "refresh screen", ActGlobalDestroy: "destroy task", ActGlobalFork: "fork task",
 	ActGlobalOpenRepo: "open repo", ActGlobalOpenPR: "open PR", ActGlobalPrune: "prune completed",
+	ActGlobalPalette: "command palette", ActGlobalJumpNeedsInput: "jump to next needs-input (?)",
 
 	ActTaskNew: "new task", ActTaskStatusAdv: "advance status", ActTaskStatusRev: "revert status",
 	ActTaskArchive: "toggle archive", ActTaskPin: "toggle pin", ActTaskRename: "rename",
 	ActTaskCopy: "copy name / prompt", ActTaskFilter: "filter", ActTaskHera: "show/hide hera-managed (workers+coords)",
 	ActTaskDown: "navigate down", ActTaskUp: "navigate up",
 
-	ActAgentLinks: "link picker", ActAgentSession: "switch Claude session", ActAgentSwitcher: "task switcher",
+	ActAgentLinks: "link picker", ActAgentSession: "switch Claude session", ActAgentSwitcher: "task/role switcher",
 	ActAgentOpenPR: "open PR", ActAgentZoom: "toggle single-pane (zoom)", ActAgentCopy: "copy staged text",
 	ActAgentPaneLeft: "focus pane left", ActAgentPaneRight: "focus pane right",
 	ActAgentTaskPrev: "previous task", ActAgentTaskNext: "next task",
@@ -222,6 +226,25 @@ func (k *Keymap) HelpRows(ctx Context) []HelpRow {
 	return rows
 }
 
+// ContextOrder returns the ordered action list for a context — the same
+// order HelpRows and the generated `?` overlay use. An action absent from
+// this list still resolves via Resolve but isn't surfaced in generated UI
+// (help overlay, command palette).
+func ContextOrder(ctx Context) []Action {
+	return contextOrder[ctx]
+}
+
+// BindingFor returns the binding currently resolved for a context+action pair
+// (defaults overlaid with config overrides) — the reverse of Resolve. Used by
+// callers that need to go from action back to key: the command palette's
+// key-chord display column, and synthesizing a key event to reuse a widget's
+// own InputHandler dispatch for a context whose case bodies live outside this
+// package (e.g. CtxTaskList/CtxSettings, implemented in their own widgets).
+func (k *Keymap) BindingFor(ctx Context, act Action) (Binding, bool) {
+	b, ok := k.fwd[ctx][act]
+	return b, ok
+}
+
 // ActionLabel returns the human-readable description for an action, or the
 // action id when no label is registered.
 func (k *Keymap) ActionLabel(a Action) string {
@@ -236,7 +259,8 @@ func (k *Keymap) ActionLabel(a Action) string {
 // from this list still resolves but won't show in help.
 var contextOrder = map[Context][]Action{
 	CtxGlobal: {ActGlobalQuit, ActGlobalHelp, ActGlobalTabTasks, ActGlobalTabHera, ActGlobalTabSettings,
-		ActGlobalRefresh, ActGlobalDestroy, ActGlobalFork, ActGlobalOpenRepo, ActGlobalOpenPR, ActGlobalPrune},
+		ActGlobalRefresh, ActGlobalDestroy, ActGlobalFork, ActGlobalOpenRepo, ActGlobalOpenPR, ActGlobalPrune,
+		ActGlobalPalette, ActGlobalJumpNeedsInput},
 	CtxTaskList: {ActTaskNew, ActTaskDown, ActTaskUp, ActTaskStatusAdv, ActTaskStatusRev, ActTaskArchive,
 		ActTaskPin, ActTaskRename, ActTaskCopy, ActTaskFilter, ActTaskHera},
 	CtxAgent: {ActAgentLinks, ActAgentSession, ActAgentSwitcher, ActAgentOpenPR, ActAgentZoom, ActAgentCopy,
