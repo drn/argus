@@ -45,7 +45,7 @@ type HeraConfig struct {
 
 	// CoordinatorContextBudget is the token count at/above which the
 	// context-budget Stop hook (argus coord-hook) begins nudging a
-	// coordinator to recycle. Defaults to 200000.
+	// coordinator to recycle. Defaults to 300000.
 	CoordinatorContextBudget int `toml:"coordinator_context_budget"`
 
 	// CoordinatorNudgeIncrement is the amount context_size must grow, past the
@@ -334,7 +334,7 @@ func DefaultConfig() Config {
 		},
 		Hera: HeraConfig{
 			Enabled:                   true, // default on; only explicit "false" in DB/toml disables it
-			CoordinatorContextBudget:  200000,
+			CoordinatorContextBudget:  300000,
 			CoordinatorNudgeIncrement: 50000,
 		},
 		Supervisor: SupervisorConfig{

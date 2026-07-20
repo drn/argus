@@ -109,7 +109,7 @@ command = "claude --custom"
 // TestFileLoader_HeraCoordinatorContextBudgetOverlay pins the
 // add-coordinator-context-management config-management delta's "Explicit
 // budget overrides the default" scenario: a config.toml
-// `hera.coordinator_context_budget` value must win over the 200000 default.
+// `hera.coordinator_context_budget` value must win over the 300000 default.
 // The field does not exist on HeraConfig yet, so this fails to compile until
 // Stage 2 adds it.
 func TestFileLoader_HeraCoordinatorContextBudgetOverlay(t *testing.T) {
@@ -125,7 +125,7 @@ coordinator_context_budget = 350000
 
 	testutil.Equal(t, got.Hera.CoordinatorContextBudget, 350000)
 	// The base value is untouched.
-	testutil.Equal(t, base.Hera.CoordinatorContextBudget, 200000)
+	testutil.Equal(t, base.Hera.CoordinatorContextBudget, 300000)
 }
 
 // TestFileLoader_HeraCoordinatorNudgeIncrementOverlay pins the
