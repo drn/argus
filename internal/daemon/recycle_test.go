@@ -110,7 +110,7 @@ func TestHeraRecycleRunner_Restart_EndToEnd(t *testing.T) {
 	testutil.NoError(t, err)
 	t.Cleanup(func() { _ = database.Close() })
 
-	task, _ := seedHeraRecycleCoordinator(t, database, t.TempDir(), "You are the coordinator.")
+	task, role := seedHeraRecycleCoordinator(t, database, t.TempDir(), "You are the coordinator.")
 	task.SessionID = "stale-sid-1"
 	testutil.NoError(t, database.Update(task))
 
@@ -122,7 +122,7 @@ func TestHeraRecycleRunner_Restart_EndToEnd(t *testing.T) {
 	t.Cleanup(runner.StopAll)
 
 	r := NewHeraRecycleRunner(database, runner, func() config.Config { return cfg })
-	testutil.NoError(t, r.Restart(task.ID))
+	testutil.NoError(t, r.Restart(task.ID, role.ID))
 
 	// Persisted row must have its stale SessionID cleared and a non-empty
 	// seed prompt (mission text) set before the restart landed.
@@ -160,13 +160,13 @@ func TestHeraRecycleRunner_Restart_NoLiveSession_StartsFresh(t *testing.T) {
 	testutil.NoError(t, err)
 	t.Cleanup(func() { _ = database.Close() })
 
-	task, _ := seedHeraRecycleCoordinator(t, database, t.TempDir(), "You are the coordinator.")
+	task, role := seedHeraRecycleCoordinator(t, database, t.TempDir(), "You are the coordinator.")
 
 	runner := agent.NewRunner(nil) // no session ever started for this task
 	cfg := recycleTestConfig()
 	r := NewHeraRecycleRunner(database, runner, func() config.Config { return cfg })
 
-	testutil.NoError(t, r.Restart(task.ID))
+	testutil.NoError(t, r.Restart(task.ID, role.ID))
 	t.Cleanup(runner.StopAll)
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -179,6 +179,58 @@ func TestHeraRecycleRunner_Restart_NoLiveSession_StartsFresh(t *testing.T) {
 	t.Fatal("timeout waiting for Restart to start a fresh session when none existed")
 }
 
+// TestHeraRecycleRunner_Restart_DualLiveBindingResolvesViaRoleID pins the fix
+// for a task that legitimately holds 2+ live hera bindings — e.g. bound as
+// coordinator of its own orchestrator while also joined as a plain worker
+// under a second one. Before the fix, Restart re-derived the binding from
+// taskID alone via the single-binding HeraLiveBindingByTask, which returns
+// ErrHeraAmbiguous for such a task even though the caller (RecycleCoord, via
+// the already-resolved roleID) had no ambiguity at all. Restart must resolve
+// via HeraLiveBindingByRole(roleID) instead, so the already-disambiguated
+// role is never re-derived ambiguously.
+func TestHeraRecycleRunner_Restart_DualLiveBindingResolvesViaRoleID(t *testing.T) {
+	database, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+
+	task, role := seedHeraRecycleCoordinator(t, database, t.TempDir(), "You are the coordinator.")
+
+	// The SAME task also joins a second orchestrator as a plain worker,
+	// giving it 2 live bindings.
+	otherOrch, err := database.CreateHeraOrchestrator("other-orch", "master")
+	testutil.NoError(t, err)
+	_, _, err = database.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: otherOrch.ID,
+		Name:           "w-in-other-orch",
+		Kind:           db.HeraKindWorker,
+		ArgusProject:   task.Project,
+	}, task.ID, task.Worktree)
+	testutil.NoError(t, err)
+
+	// Sanity: the task really is ambiguous under the single-binding lookup —
+	// this is exactly what tripped up the pre-fix Restart.
+	_, err = database.HeraLiveBindingByTask(task.ID)
+	if err == nil {
+		t.Fatal("expected HeraLiveBindingByTask to be ambiguous for a task with 2 live bindings")
+	}
+
+	runner := agent.NewRunner(nil) // no session ever started for this task
+	cfg := recycleTestConfig()
+	r := NewHeraRecycleRunner(database, runner, func() config.Config { return cfg })
+
+	testutil.NoError(t, r.Restart(task.ID, role.ID))
+	t.Cleanup(runner.StopAll)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if sess := runner.Get(task.ID); sess != nil && sess.Alive() {
+			return // success
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timeout waiting for Restart to start a fresh session for a dual-bound task")
+}
+
 func TestHeraRecycleRunner_Restart_UnknownTaskErrors(t *testing.T) {
 	database, err := db.OpenInMemory()
 	testutil.NoError(t, err)
@@ -188,7 +240,7 @@ func TestHeraRecycleRunner_Restart_UnknownTaskErrors(t *testing.T) {
 	cfg := recycleTestConfig()
 	r := NewHeraRecycleRunner(database, runner, func() config.Config { return cfg })
 
-	err = r.Restart("no-such-task")
+	err = r.Restart("no-such-task", 0)
 	if err == nil {
 		t.Fatal("expected an error for an unknown task")
 	}

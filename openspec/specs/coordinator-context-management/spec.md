@@ -97,6 +97,8 @@ The system SHALL provide a `recycle_coord` primitive that terminates a hera role
 
 Before restarting, the primitive SHALL check for and terminate any stray background job tied to the outgoing session (via the session's own agent-registry lookup) in addition to the primary session kill, so a surviving background job cannot cause a worktree-write conflict with the new session.
 
+The kill-and-restart step SHALL resolve the outgoing session's hera binding via the role ID already disambiguated earlier in the same `recycle_coord` call — never by re-deriving the binding from the argus task ID alone. This matters when the task holds 2+ live hera bindings (e.g. bound as a worker in one orchestrator and a coordinator in another — an already-supported configuration): a task-ID-keyed binding lookup at restart time is ambiguous and must not be used, or the primitive fails every time for such a task regardless of how correctly the role was resolved upstream.
+
 The fresh session's opening prompt SHALL be assembled entirely server-side, before the session starts, from: the role's stored mission prompt, the current plan-DAG node states for the role's orchestrator, and any `handoff_note` present in `task_meta`. The new session SHALL NOT be required to make any tool call to obtain any of these three — they arrive already present in its first message. The assembled prompt SHALL clearly mark the role's stored mission text as historical background — not a live instruction to act on now — and SHALL state, ahead of showing that mission text, that the current plan-DAG state and handoff note (which follow) supersede it. This guards against a fresh session anchoring on a stale original mission as its primary directive when the current state shows the work it describes is already done or superseded. This framing, and the whole seed-assembly process, SHALL apply identically regardless of the recycled role's kind — the prompt SHALL NOT assume the recycled role is a coordinator.
 
 #### Scenario: Same task survives a recycle
@@ -143,6 +145,11 @@ The fresh session's opening prompt SHALL be assembled entirely server-side, befo
 
 - **WHEN** a fresh session's opening prompt is assembled after a recycle
 - **THEN** the mission text is preceded by framing marking it as background/historical and stating that the current plan-DAG state and handoff note below supersede it, so the mission does not read as a live directive to act on now
+
+#### Scenario: A task with 2+ live hera bindings still recycles successfully
+
+- **WHEN** `recycle_coord` restarts a role bound to a task that ALSO holds a second live hera binding under a different orchestrator (e.g. the task is a worker in one orchestrator and a coordinator in another)
+- **THEN** the kill-and-restart succeeds using the already-resolved role's binding, rather than failing with an ambiguous-lookup error
 
 ### Requirement: Hard-stop escalation forces a recycle at 1.5x budget
 

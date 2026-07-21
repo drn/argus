@@ -53,20 +53,23 @@ func (r *HeraRecycleRunner) StopStrayJobs(taskID, sessionID string) error {
 	return agent.StopStrayJobs(task, r.cfgFn(), sessionID)
 }
 
-// Restart resolves the coordinator role bound to taskID, assembles the fresh
-// session's seed prompt (mission + plan-DAG state + handoff note), clears any
-// stale SessionID so BuildCmd starts genuinely fresh rather than colliding on
-// an already-used UUID, persists both, and hands off to the runner's
-// same-task recycle primitive.
-func (r *HeraRecycleRunner) Restart(taskID string) error {
+// Restart assembles the fresh session's seed prompt (mission + plan-DAG
+// state + handoff note) for the already-resolved roleID, clears any stale
+// SessionID so BuildCmd starts genuinely fresh rather than colliding on an
+// already-used UUID, persists both, and hands off to the runner's same-task
+// recycle primitive. roleID is resolved directly via HeraLiveBindingByRole —
+// never re-derived from taskID alone — because a task holding 2+ live
+// bindings (e.g. a worker in one orchestrator and a coordinator in another)
+// would make a task-keyed lookup (HeraLiveBindingByTask) ambiguous.
+func (r *HeraRecycleRunner) Restart(taskID string, roleID int64) error {
 	task, err := r.database.Get(taskID)
 	if err != nil {
 		return fmt.Errorf("recycle restart: load task %s: %w", taskID, err)
 	}
 
-	binding, err := r.database.HeraLiveBindingByTask(taskID)
+	binding, err := r.database.HeraLiveBindingByRole(roleID)
 	if err != nil {
-		return fmt.Errorf("recycle restart: resolve binding for task %s: %w", taskID, err)
+		return fmt.Errorf("recycle restart: resolve binding for role %d: %w", roleID, err)
 	}
 
 	seedPrompt, err := hera.BuildRecycleSeedPrompt(r.database, binding.RoleID)
