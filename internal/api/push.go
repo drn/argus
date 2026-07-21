@@ -149,6 +149,14 @@ type idleWatcherState struct {
 	// coordinator's relayed answer (WriteInputSystem) could otherwise never
 	// clear. Mirrors the TUI's App.needsInputResume.
 	needsInputResume map[string]int
+	// heraBlockedResume carries the resumed-activity counter (see
+	// agent.ResumeActivityTick) for the SEPARATE self-reported hera_status
+	// "blocked" auto-clear pass (Server.autoClearBlockedHeraRoles) — keyed by
+	// task ID like needsInputResume, but tracked independently since it is
+	// only advanced for the (usually empty) set of tasks currently holding a
+	// live hera binding with status=="blocked", not every running session.
+	// Mirrors the TUI's App.heraBlockedResume.
+	heraBlockedResume map[string]int
 	// screen reconstructs the visible terminal screen from a session's raw tail
 	// so detection matches the EMULATED screen, catching fullscreen (alt-screen)
 	// prompts whose cursor-addressed glyphs aren't linearly present in the bytes
@@ -174,6 +182,7 @@ func newIdleWatcherState() *idleWatcherState {
 		needsInputSince:   make(map[string]time.Time),
 		needsInputCleared: make(map[string]time.Time),
 		needsInputResume:  make(map[string]int),
+		heraBlockedResume: make(map[string]int),
 		screen:            &agent.ScreenRenderer{},
 	}
 }
@@ -530,6 +539,13 @@ func (s *Server) idleWatcherTick(state *idleWatcherState) {
 	}
 
 	s.detectNeedsInputTick(state, running, idle, tailOf)
+	lastUserInputOf := func(id string) time.Time {
+		if sess := s.runner.Get(id); sess != nil {
+			return sess.LastUserInput()
+		}
+		return time.Time{}
+	}
+	s.autoClearBlockedHeraRoles(state, running, tailOf, lastUserInputOf)
 
 	// Drop entries for sessions that exited.
 	for id := range state.idleNow {
@@ -618,4 +634,58 @@ func (s *Server) detectNeedsInputTick(state *idleWatcherState, running, idle []s
 	}
 	state.needsInputNow = needsSet
 	s.runner.SetNeedsInputIDs(needs)
+}
+
+// autoClearBlockedHeraRoles auto-clears a role's self-reported hera_status
+// ("blocked") once its underlying block has demonstrably resolved — see
+// agent.ClearBlockedRoleStatus for the two clear conditions (a direct reply in
+// the session, or BUG-065's sustained resumed-activity signal for a
+// coordinator-relayed answer). Mirrors the TUI's App.autoClearBlockedHeraRoles
+// — see its doc comment for the "why" — but runs daemon-side so the auto-clear
+// still applies with no TUI attached (REST/web/macOS clients all read the same
+// hera_role_status row via the DB).
+//
+// Scoped to the live hera bindings CURRENTLY status=="blocked" (usually zero,
+// via db.ListBlockedHeraRoleBindings' indexed join) rather than every running
+// session — cheap even on every 5s tick.
+//
+// lastUserInputOf is injected (mirrors detectNeedsInputTick's own lastInputOf)
+// so this stays testable without a full agent.SessionHandle fake — the daemon
+// caller wires it to the runner, tests supply a canned closure.
+func (s *Server) autoClearBlockedHeraRoles(state *idleWatcherState, running []string, tailOf func(string) []byte, lastUserInputOf func(string) time.Time) {
+	if s.db == nil {
+		return
+	}
+	blocked, err := s.db.ListBlockedHeraRoleBindings()
+	if err != nil || len(blocked) == 0 {
+		state.heraBlockedResume = nil
+		return
+	}
+	runningSet := make(map[string]bool, len(running))
+	for _, id := range running {
+		runningSet[id] = true
+	}
+	next := make(map[string]int, len(blocked))
+	workingOf := make(map[string]bool, len(blocked))
+	for _, b := range blocked {
+		if !runningSet[b.TaskID] {
+			continue
+		}
+		working, computed := workingOf[b.TaskID]
+		if !computed {
+			cols, rows := sessionScreenSize(b.TaskID)
+			_, working = agent.ContentIdleFingerprint(state.screen, tailOf(b.TaskID), cols, rows)
+			workingOf[b.TaskID] = working
+		}
+		ticks, resumed := agent.ResumeActivityTick(state.heraBlockedResume[b.TaskID], working)
+		if ticks != 0 {
+			next[b.TaskID] = ticks
+		}
+		if agent.ClearBlockedRoleStatus(b.BlockedAt, lastUserInputOf(b.TaskID), resumed) {
+			if err := s.db.ClearBlockedRoleStatus(b.RoleID); err == nil {
+				uxlog.Log("[hera-view] auto-cleared blocked hera_status role=%d task=%s", b.RoleID, b.TaskID)
+			}
+		}
+	}
+	state.heraBlockedResume = next
 }

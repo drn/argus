@@ -777,6 +777,40 @@ func ResumeActivityTick(prevTicks int, workingNow bool) (newTicks int, resumed b
 	return newTicks, newTicks >= NeedsInputResumeTicks
 }
 
+// ClearBlockedRoleStatus reports whether a hera role's self-reported
+// hera_status ("blocked") should auto-clear back to "working". hera_status is
+// a WHOLLY SEPARATE signal from the PTY-content needs-input flag
+// NeedsInputClear governs — it is set only by an explicit hera_status tool
+// call or a manual rail s/S step, and ORs into the rail's "(?)" glyph
+// alongside that flag (RoleView.needsInputOwn) with no auto-clear of its own.
+// A role that marked itself blocked (e.g. awaiting a check-in) and was then
+// answered directly in its pane, with the agent replying conversationally
+// rather than re-invoking hera_status, showed a stale "(?)" that nothing but a
+// manual s/S step could ever clear — this is the fix.
+//
+// Two independent conditions, mirroring NeedsInputClear's own two-tier design
+// for the separate PTY flag:
+//
+//  1. lastUserInput is strictly after blockedAt — the user replied directly in
+//     the pane after the block was raised. Fires immediately, no threshold: a
+//     genuine reply is a genuine reply however brief the agent's own response
+//     afterward is (unlike the resumed-activity condition below, this one
+//     cannot be defeated by a short acknowledgment).
+//  2. resumed is true — the session has shown ResumeActivityTick's sustained
+//     "working" streak since being flagged blocked. This is the ONLY signal
+//     available when the block was resolved via a coordinator-relayed answer
+//     (WriteInputSystem, which never advances LastUserInput — see
+//     NeedsInputClear) rather than a direct keystroke.
+//
+// Unlike NeedsInputClear, this needs no BUG-063 stale-recandidacy guard:
+// hera_status is an authoritative DB row, read fresh each check, not a fuzzy
+// content match that can spuriously re-present an already-resolved signal —
+// so a direct timestamp comparison is sufficient, no baseline/cleared-marker
+// bookkeeping required.
+func ClearBlockedRoleStatus(blockedAt, lastUserInput time.Time, resumed bool) bool {
+	return lastUserInput.After(blockedAt) || resumed
+}
+
 // ContentIdleState carries the per-task content-idle bookkeeping across ticks:
 // each tracked session's last emulated-screen fingerprint and the wall-clock
 // time that fingerprint was FIRST observed at its current value. Pass nil to

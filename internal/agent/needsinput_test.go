@@ -704,6 +704,47 @@ func TestResumeActivityTick(t *testing.T) {
 	})
 }
 
+// TestClearBlockedRoleStatus pins the pure decision function backing the
+// hera_status "blocked" auto-clear (root-cause-and-fix-a-live): unlike
+// NeedsInputClear (which governs the SEPARATE, auto-detected PTY needs-input
+// flag), hera_status is a self-asserted signal set only via an explicit
+// hera_status tool call or a manual rail s/S step — so this reproduces the
+// EXACT live repro: a worker marks itself blocked, the coordinator/human
+// replies DIRECTLY in the pane (a real keystroke, not a coordinator-relayed
+// system message), and the agent's own follow-up reply is brief. The direct-
+// reply condition must fire immediately regardless of how long the agent's
+// own response takes — it must not need the resumed-activity threshold at all.
+func TestClearBlockedRoleStatus(t *testing.T) {
+	blockedAt := time.Unix(1000, 0)
+
+	t.Run("no clear condition met stays blocked", func(t *testing.T) {
+		testutil.Equal(t, ClearBlockedRoleStatus(blockedAt, time.Time{}, false), false)
+	})
+
+	t.Run("no clear condition met with input BEFORE the block stays blocked", func(t *testing.T) {
+		before := blockedAt.Add(-time.Second)
+		testutil.Equal(t, ClearBlockedRoleStatus(blockedAt, before, false), false)
+	})
+
+	t.Run("direct reply after the block clears immediately, even with no resumed activity", func(t *testing.T) {
+		// This is the exact live repro: the user answers directly in the pane
+		// ("all good.") and the agent's own reply is brief — it must not need
+		// to sustain agent.NeedsInputResumeTicks of "working" affordance.
+		after := blockedAt.Add(time.Second)
+		testutil.Equal(t, ClearBlockedRoleStatus(blockedAt, after, false), true)
+	})
+
+	t.Run("input exactly at the block timestamp does not clear (strictly after required)", func(t *testing.T) {
+		testutil.Equal(t, ClearBlockedRoleStatus(blockedAt, blockedAt, false), false)
+	})
+
+	t.Run("sustained resumed activity clears even with no direct user input", func(t *testing.T) {
+		// Mirrors BUG-065: a coordinator-relayed answer (WriteInputSystem) never
+		// advances LastUserInput, so resumed activity is the only signal.
+		testutil.Equal(t, ClearBlockedRoleStatus(blockedAt, time.Time{}, true), true)
+	})
+}
+
 func TestBlockedOnPrompt(t *testing.T) {
 	t.Run("nil session is not blocked", func(t *testing.T) {
 		testutil.Equal(t, BlockedOnPrompt(nil), false)

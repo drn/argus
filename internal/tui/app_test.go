@@ -3836,3 +3836,124 @@ func TestDetectNeedsInputSticky_ResumedActivityBriefBurstDoesNotClear(t *testing
 		t.Fatalf("BUG-034 REGRESSION: a brief working burst falsely cleared a still-parked agent, got %v", got)
 	}
 }
+
+// mkHeraBlockedRole creates an orchestrator + worker role bound live to
+// taskID, with hera_status already set to "blocked" — the fixture shared by
+// the autoClearBlockedHeraRoles tests below. Returns the role's live status
+// row (for its BlockedAt timestamp).
+func mkHeraBlockedRole(t *testing.T, d *db.DB, taskID string) *db.HeraRoleStatus {
+	t.Helper()
+	o, err := d.CreateHeraOrchestrator("orch", "")
+	testutil.NoError(t, err)
+	role, err := d.CreateHeraRole(db.CreateHeraRoleInput{
+		OrchestratorID: o.ID, Name: "worker", Kind: db.HeraKindWorker, ArgusProject: "proj",
+	})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{
+		RoleID: role.ID, ArgusTaskID: taskID, WorktreePath: "/w/" + taskID,
+	})
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.UpsertHeraRoleStatus(role.ID, db.HeraStatusBlocked))
+	st, err := d.HeraRoleStatusFor(role.ID)
+	testutil.NoError(t, err)
+	return st
+}
+
+// TestAutoClearBlockedHeraRoles_DirectReply reproduces the exact live repro
+// (root-cause-and-fix-a-live): a hera role marks itself "blocked" (e.g.
+// awaiting a check-in), the user answers DIRECTLY in the pane — a real
+// keystroke, advancing LastUserInput — and the agent's own follow-up reply is
+// brief ("Sounds good. Standing by."). hera_status must auto-clear back to
+// "working" immediately: it must NOT depend on the resumed-activity threshold,
+// since a brief acknowledgment reply may never sustain
+// agent.NeedsInputResumeTicks of Claude's "working" affordance. Before this
+// fix, hera_status had no auto-clear at all — RoleView.needsInputOwn ORs it
+// into the rail's "(?)" alongside the separate, auto-clearing PTY needs-input
+// flag, so the glyph stayed lit forever.
+func TestAutoClearBlockedHeraRoles_DirectReply(t *testing.T) {
+	d := testDB(t)
+	st := mkHeraBlockedRole(t, d, "c1")
+
+	s1 := &fakeInputSession{fakeKickSession: &fakeKickSession{}, last: st.UpdatedAt.Add(-time.Second)}
+	a := &App{
+		db: d,
+		runner: &fakeInputRunner{
+			Runner:   agent.NewRunner(nil),
+			sessions: map[string]agent.SessionHandle{"c1": s1},
+		},
+	}
+
+	// Before the user replies: still blocked.
+	a.autoClearBlockedHeraRoles([]string{"c1"})
+	got, err := d.HeraRoleStatusFor(st.RoleID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Status, db.HeraStatusBlocked)
+
+	// The user replies directly in the pane.
+	s1.last = st.UpdatedAt.Add(time.Second)
+	a.autoClearBlockedHeraRoles([]string{"c1"})
+	got, err = d.HeraRoleStatusFor(st.RoleID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Status, db.HeraStatusWorking)
+}
+
+// TestAutoClearBlockedHeraRoles_ResumedActivityClears covers the symmetric
+// BUG-065-style case: the block was resolved via a coordinator-relayed answer
+// (WriteInputSystem), which never advances LastUserInput, so the direct-reply
+// condition can never fire — only sustained resumed activity can clear it.
+func TestAutoClearBlockedHeraRoles_ResumedActivityClears(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	d := testDB(t)
+	st := mkHeraBlockedRole(t, d, "c1")
+
+	logPath := agent.SessionLogPath("c1")
+	testutil.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0o755))
+	testutil.NoError(t, os.WriteFile(logPath, []byte(workingBurstLog), 0o644))
+
+	// LastUserInput never advances past the block — models a system-relayed
+	// answer, not a direct keystroke.
+	s1 := &fakeInputSession{fakeKickSession: &fakeKickSession{}, last: st.UpdatedAt.Add(-time.Second)}
+	a := &App{
+		db: d,
+		runner: &fakeInputRunner{
+			Runner:   agent.NewRunner(nil),
+			sessions: map[string]agent.SessionHandle{"c1": s1},
+		},
+	}
+
+	for i := 0; i < agent.NeedsInputResumeTicks-1; i++ {
+		a.autoClearBlockedHeraRoles([]string{"c1"})
+		got, err := d.HeraRoleStatusFor(st.RoleID)
+		testutil.NoError(t, err)
+		if got.Status != db.HeraStatusBlocked {
+			t.Fatalf("cleared too early, before sustaining %d working ticks (tick %d): %v", agent.NeedsInputResumeTicks, i+1, got.Status)
+		}
+	}
+	a.autoClearBlockedHeraRoles([]string{"c1"})
+	got, err := d.HeraRoleStatusFor(st.RoleID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Status, db.HeraStatusWorking)
+}
+
+// TestAutoClearBlockedHeraRoles_NotRunningStaysBlocked guards against clearing
+// a role whose bound task isn't in the running set at all (e.g. the session
+// has exited) — no signal should be trusted for a task that isn't live.
+func TestAutoClearBlockedHeraRoles_NotRunningStaysBlocked(t *testing.T) {
+	d := testDB(t)
+	st := mkHeraBlockedRole(t, d, "c1")
+	a := &App{db: d, runner: &fakeInputRunner{Runner: agent.NewRunner(nil), sessions: map[string]agent.SessionHandle{}}}
+
+	a.autoClearBlockedHeraRoles(nil)
+
+	got, err := d.HeraRoleStatusFor(st.RoleID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Status, db.HeraStatusBlocked)
+}
+
+// TestAutoClearBlockedHeraRoles_RemoteModeNoOp guards the local-only
+// type-assert: in --remote mode a.db is *apistore.Store (no hera methods), so
+// this must be a silent no-op, not a panic.
+func TestAutoClearBlockedHeraRoles_RemoteModeNoOp(t *testing.T) {
+	a := &App{}
+	a.autoClearBlockedHeraRoles([]string{"c1"}) // must not panic
+}

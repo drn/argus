@@ -1453,6 +1453,72 @@ func (d *DB) HeraRoleStatusFor(roleID int64) (*HeraRoleStatus, error) {
 	return &rs, nil
 }
 
+// BlockedHeraRoleBinding pairs a LIVE hera binding with the timestamp its
+// role's self-reported hera_status was last set to "blocked" — the baseline
+// the auto-clear pass (agent.ClearBlockedRoleStatus) compares fresh session
+// activity against. See ListBlockedHeraRoleBindings.
+type BlockedHeraRoleBinding struct {
+	RoleID    int64
+	TaskID    string
+	BlockedAt time.Time
+}
+
+// ListBlockedHeraRoleBindings returns every LIVE hera binding whose role's
+// self-reported hera_status is CURRENTLY "blocked", for the resumed-activity /
+// direct-reply auto-clear pass (see agent.ClearBlockedRoleStatus). hera_status
+// is set only by an explicit hera_status tool call or a manual rail s/S step
+// — it has no auto-clear of its own, so a role that marked itself blocked and
+// was then answered directly in its pane (bypassing hera_send/hera_status)
+// would otherwise show a stale rail "(?)" forever (RoleView.needsInputOwn ORs
+// it in alongside the separate, auto-clearing PTY needs-input flag). Both the
+// daemon and TUI call this every detection tick; the result set is normally
+// empty, and the underlying index (idx_hera_bindings_live_task_orch) keeps the
+// join cheap even so.
+func (d *DB) ListBlockedHeraRoleBindings() ([]BlockedHeraRoleBinding, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	rows, err := d.conn.Query(
+		`SELECT hb.role_id, hb.argus_task_id, hrs.updated_at
+		 FROM hera_bindings hb
+		 JOIN hera_role_status hrs ON hrs.role_id = hb.role_id
+		 WHERE hb.ended_at IS NULL AND hrs.status = ?`, string(HeraStatusBlocked))
+	if err != nil {
+		return nil, fmt.Errorf("list blocked hera role bindings: %w", err)
+	}
+	defer rows.Close()
+	var out []BlockedHeraRoleBinding
+	for rows.Next() {
+		var b BlockedHeraRoleBinding
+		var updatedAt string
+		if err := rows.Scan(&b.RoleID, &b.TaskID, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan blocked hera role binding: %w", err)
+		}
+		b.BlockedAt = parseTime(updatedAt)
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// ClearBlockedRoleStatus transitions role roleID's self-reported hera_status
+// from "blocked" to "working" — the write half of the auto-clear pass (see
+// ListBlockedHeraRoleBindings for the read half, agent.ClearBlockedRoleStatus
+// for the decision). No-op if the role is no longer blocked (a concurrent
+// manual s/S step, or a second call in the same tick) or no longer exists —
+// safe to call more than once.
+func (d *DB) ClearBlockedRoleStatus(roleID int64) error {
+	st, err := d.HeraRoleStatusFor(roleID)
+	if err != nil {
+		if errors.Is(err, ErrHeraNotFound) {
+			return nil
+		}
+		return err
+	}
+	if st.Status != HeraStatusBlocked {
+		return nil
+	}
+	return d.UpsertHeraRoleStatus(roleID, HeraStatusWorking)
+}
+
 // --- shared flag-setter + scanners ---
 
 // Existence probes for the zero-rows disambiguation in heraSetFlag. Constant
