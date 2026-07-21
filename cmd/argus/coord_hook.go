@@ -639,26 +639,34 @@ var contextSizeReadPrevious = readPreviousContextSizeReal
 
 // readContextSizeReal scans the transcript JSONL for the latest main-chain
 // assistant message's total input token count. It first tries a single
-// scan; when that value already reflects at least as much growth as the
-// PREVIOUSLY-stamped context_size for this task (task_meta hera/
-// context_size, fetched via contextSizeReadPrevious), it returns
-// immediately — the common case, since a growing session's usage only ever
-// increases turn over turn, so a fresh scan at or above the last known value
-// is definitionally not stale. Only when the first scan comes back BELOW
-// the previous stamp (the actual lagging-write symptom this fix targets),
-// or there's no previous stamp yet (the task's first Stop event, where we
-// have no baseline to judge freshness against), does it fall into a bounded
-// retry across contextSizeRetryBudget, keeping the LARGEST size observed: a
-// stale read can only ever undercount, never overcount, since context size
-// is monotonically non-decreasing within one transcript file, so the max
+// scan; when that value shows STRICTLY MORE growth than the PREVIOUSLY-
+// stamped context_size for this task (task_meta hera/context_size, fetched
+// via contextSizeReadPrevious), it returns immediately — the common case,
+// since a growing session's usage only ever increases turn over turn, so a
+// fresh scan strictly above the last known value is definitionally not
+// stale. An EXACT match against the previous stamp is deliberately NOT
+// treated as fresh: if the current turn's transcript write genuinely hasn't
+// landed yet, the latest main-chain line in the file is still the prior
+// turn's, so a fresh scan comes back exactly equal to what was already
+// stamped — the precise undercount race this fix exists to catch, so an
+// exact tie must fall into the retry below rather than short-circuit past
+// it. Only when the first scan comes back AT OR BELOW the previous stamp
+// (the actual lagging-write symptom this fix targets), or there's no
+// previous stamp yet (the task's first Stop event, where we have no
+// baseline to judge freshness against), does it fall into a bounded retry
+// across contextSizeRetryBudget, keeping the LARGEST size observed: a stale
+// read can only ever undercount, never overcount, since context size is
+// monotonically non-decreasing within one transcript file, so the max
 // across polls is always at least as fresh as any single poll and
-// self-corrects the instant the pending write lands within the budget. A
-// failure reading the previous stamp (e.g. daemon unreachable) fails open
-// into the retry path — never worse than always retrying, and never masks
-// a genuinely stale read behind an unrelated REST error. A later poll that
-// fails to open/scan (transient) is skipped rather than discarded — only
-// the very first scan failing is a hard error, matching the pre-existing
-// contract (TestReadContextSizeReal_MissingFile_Errors).
+// self-corrects the instant the pending write lands within the budget (and
+// on an exact-tie false alarm, the retry is a harmless bounded no-op, since
+// nothing was actually lagging). A failure reading the previous stamp (e.g.
+// daemon unreachable) fails open into the retry path — never worse than
+// always retrying, and never masks a genuinely stale read behind an
+// unrelated REST error. A later poll that fails to open/scan (transient) is
+// skipped rather than discarded — only the very first scan failing is a
+// hard error, matching the pre-existing contract
+// (TestReadContextSizeReal_MissingFile_Errors).
 func readContextSizeReal(taskID, transcriptPath string) (int, error) {
 	first, err := scanContextSize(transcriptPath)
 	if err != nil {
@@ -666,7 +674,7 @@ func readContextSizeReal(taskID, transcriptPath string) (int, error) {
 	}
 
 	prev, hadPrev, prevErr := contextSizeReadPrevious(taskID)
-	if prevErr == nil && hadPrev && first >= prev {
+	if prevErr == nil && hadPrev && first > prev {
 		return first, nil
 	}
 

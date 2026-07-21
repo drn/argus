@@ -759,6 +759,35 @@ func TestReadContextSizeReal_EarlyExit_SkipsRetryWhenAlreadyCaughtUp(t *testing.
 	}
 }
 
+// TestReadContextSizeReal_EarlyExit_ExactTieTriggersRetry pins a review fix
+// on PR #903: the early-exit comparison must be STRICT (first > prev), not
+// first >= prev. When the current turn's transcript write genuinely hasn't
+// landed yet, the latest main-chain line in the file is still the PRIOR
+// turn's, so a fresh scan comes back EXACTLY EQUAL to the previously-stamped
+// context_size — the precise undercount race fix-context-stop-lag exists to
+// catch. Under the buggy >= comparison this would incorrectly early-exit on
+// the stale value with no retry at all; the fix requires an exact tie to
+// fall into the bounded retry instead, so a write landing mid-budget is
+// still captured.
+func TestReadContextSizeReal_EarlyExit_ExactTieTriggersRetry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		stubContextSizeReadPrevious(t, 100001, true, nil)
+		path := filepath.Join(t.TempDir(), "transcript.jsonl")
+		stale := `{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":100000}}}`
+		fresh := `{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":5000,"cache_read_input_tokens":405000}}}`
+		testutil.NoError(t, os.WriteFile(path, []byte(stale), 0o600))
+
+		go func() {
+			time.Sleep(contextSizeRetryInterval + contextSizeRetryInterval/2)
+			_ = os.WriteFile(path, []byte(fresh), 0o600)
+		}()
+
+		size, err := readContextSizeReal("task-1", path)
+		testutil.NoError(t, err)
+		testutil.Equal(t, size, 410002)
+	})
+}
+
 // TestReadContextSizeReal_EarlyExit_RetriesWhenFirstScanIsBelowPriorStamp
 // confirms the early exit's flip side: when the first scan comes back BELOW
 // the previously-stamped context_size — the actual lagging-write symptom —
