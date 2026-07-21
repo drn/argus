@@ -278,6 +278,13 @@ type App struct {
 	// re-flag of already-answered content) cannot recapture a stuck baseline.
 	// Mirrors the daemon's idleWatcherState.needsInputCleared.
 	needsInputCleared map[string]time.Time
+	// needsInputResume carries the resumed-activity escalation counter (see
+	// agent.ResumeActivityTick): consecutive ticks a flagged session has shown
+	// Claude's "working" affordance, independent of whether any input was ever
+	// recorded as user-typed. Lets agent.NeedsInputClear resolve a flag a hera
+	// coordinator's relayed answer (WriteInputSystem) could otherwise never
+	// clear. Mirrors the daemon's idleWatcherState.needsInputResume.
+	needsInputResume map[string]int
 	// needsInputScreen re-emulates a session's log tail to the visible screen so
 	// needs-input detection matches the rendered screen, not StripANSI(raw) —
 	// catching fullscreen (alt-screen) prompts whose cursor-addressed glyphs are
@@ -2116,16 +2123,44 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 		flag(id)
 	}
 
-	// BUG-034: clear the flag for sessions the user has responded to or tasks
-	// that have been archived. Mirrors the daemon's computeNeedsInput. The
-	// last-input timestamp comes from the local session handle (authoritative in
-	// in-process mode; in daemon-client mode it captures input sent through this
-	// TUI's agent pane — cross-surface input clears via the natural log-content
-	// change instead). archivedOf reads the cached task list (a.tasks is set by
-	// the caller before this runs). runningIDs lets the BUG-063 cleared-marker
-	// survive a candidacy gap for a task that is still running.
+	// Resumed-activity pass: independent of candidacy (every running session is
+	// tracked, mirroring the content-stability pass above), advance each
+	// session's consecutive "working" streak (agent.ResumeActivityTick). A hera
+	// coordinator's relayed answer is delivered via WriteInputSystem, which
+	// never advances LastUserInput (see lastSessionInput) — this is the only
+	// signal that can resolve a flag raised on a worker who was genuinely
+	// un-stuck by that relayed answer rather than direct user input.
+	newResume := make(map[string]int, len(runningIDs))
+	resumed := make(map[string]bool)
+	for _, id := range runningIDs {
+		tail := readSessionLogTailBytes(id, detectNeedsInputTailBytes)
+		if len(tail) == 0 {
+			continue
+		}
+		cols, rows := needsInputScreenSize(id)
+		_, working := agent.ContentIdleFingerprint(a.needsInputScreen, tail, cols, rows)
+		ticks, isResumed := agent.ResumeActivityTick(a.needsInputResume[id], working)
+		if ticks != 0 {
+			newResume[id] = ticks
+		}
+		if isResumed {
+			resumed[id] = true
+		}
+	}
+	a.needsInputResume = newResume
+	resumedOf := func(id string) bool { return resumed[id] }
+
+	// BUG-034: clear the flag for sessions the user has responded to, tasks
+	// that have been archived, or sessions with sustained resumed activity.
+	// Mirrors the daemon's computeNeedsInput. The last-input timestamp comes
+	// from the local session handle (authoritative in in-process mode; in
+	// daemon-client mode it captures input sent through this TUI's agent pane —
+	// cross-surface input clears via the natural log-content change instead).
+	// archivedOf reads the cached task list (a.tasks is set by the caller
+	// before this runs). runningIDs lets the BUG-063 cleared-marker survive a
+	// candidacy gap for a task that is still running.
 	var out []string
-	out, a.needsInputSince, a.needsInputCleared = agent.NeedsInputClear(fresh, runningIDs, a.needsInputSince, a.needsInputCleared, a.lastSessionInput, a.archivedTaskSet())
+	out, a.needsInputSince, a.needsInputCleared = agent.NeedsInputClear(fresh, runningIDs, a.needsInputSince, a.needsInputCleared, a.lastSessionInput, a.archivedTaskSet(), resumedOf)
 	return out
 }
 

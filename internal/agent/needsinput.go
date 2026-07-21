@@ -448,6 +448,17 @@ func safeEmuWrite(emu *xvt.SafeEmulator, data []byte) {
 //	    input remains the latest, even though the stale "?" still matches.
 //	(b) Clear on archive. An archived task is dropped regardless of its signal
 //	    so it stops lighting "(?)" and stops rolling up to ancestor coordinators.
+//	(c) Clear on demonstrated resumed activity (resumedOf, see
+//	    ResumeActivityTick). A hera coordinator relays the human's answer via
+//	    reliable-notify delivery (WriteInputSystem), which deliberately does
+//	    NOT advance lastUserInput (that is the whole point of the BUG-034 fix
+//	    below) — so (a) can never fire for a relayed answer, and the task would
+//	    stay flagged forever even after the worker provably resumes real work.
+//	    resumedOf reports whether the session has shown Claude's "working"
+//	    affordance for NeedsInputResumeTicks CONSECUTIVE ticks since being
+//	    flagged, which only a genuinely un-stuck agent can sustain (an
+//	    unrelated system nudge to a still-parked agent does not make it
+//	    generate/execute for a sustained stretch) — see ResumeActivityTick.
 //
 // The baseline map is the carry-forward state: pass the previous tick's return
 // as prevBaseline. An entry is kept (frozen) as long as the task remains a
@@ -495,10 +506,12 @@ func safeEmuWrite(emu *xvt.SafeEmulator, data []byte) {
 // never / unknown); a nil func disables clear-on-input (every baseline stays
 // zero, nothing ever advances past it, and no cleared marker is ever
 // recorded). archivedOf reports whether a task is archived; a nil func
-// disables clear-on-archive. With both nil the candidate set passes through
-// unchanged, so callers that cannot observe input/archive state degrade to
-// pre-BUG-034 behavior.
-func NeedsInputClear(candidates []string, running []string, prevBaseline map[string]time.Time, prevCleared map[string]time.Time, lastInputOf func(string) time.Time, archivedOf func(string) bool) (out []string, newBaseline map[string]time.Time, newCleared map[string]time.Time) {
+// disables clear-on-archive. resumedOf reports whether a task has
+// demonstrated sustained resumed activity (see ResumeActivityTick); a nil func
+// disables clear-on-resume. With all three nil the candidate set passes
+// through unchanged, so callers that cannot observe input/archive/activity
+// state degrade to pre-BUG-034 behavior.
+func NeedsInputClear(candidates []string, running []string, prevBaseline map[string]time.Time, prevCleared map[string]time.Time, lastInputOf func(string) time.Time, archivedOf func(string) bool, resumedOf func(string) bool) (out []string, newBaseline map[string]time.Time, newCleared map[string]time.Time) {
 	out = make([]string, 0, len(candidates))
 	newBaseline = make(map[string]time.Time, len(candidates))
 	newCleared = make(map[string]time.Time, len(running))
@@ -545,6 +558,16 @@ func NeedsInputClear(candidates []string, running []string, prevBaseline map[str
 		// clear, and remember the input timestamp that cleared it so a later
 		// stale re-candidacy at this same timestamp is recognized too.
 		if lastInputOf != nil && li.After(baseline) {
+			newCleared[id] = li
+			continue
+		}
+		// The session has demonstrated sustained resumed activity since being
+		// flagged — clear regardless of who delivered the input that unstuck
+		// it (user keystroke or a coordinator's relayed answer). Marked with
+		// the SAME cleared-marker mechanism as the user-input clear above, so
+		// a later stale re-candidacy of the identical already-resolved tail
+		// content is suppressed exactly like BUG-063 already guards.
+		if resumedOf != nil && resumedOf(id) {
 			newCleared[id] = li
 			continue
 		}
@@ -700,6 +723,58 @@ func EscalateParkedSelection(prevTicks int, qualifies bool) (newTicks int, escal
 	// prevTicks <= 0: already at zero, or this is the SECOND consecutive miss
 	// while already in grace — a genuine break, reset for real.
 	return 0, false
+}
+
+// NeedsInputResumeTicks bounds how many CONSECUTIVE ticks a flagged session
+// must show Claude's "working" affordance (the same needsInputWorkingRe
+// discriminator ContentIdleFingerprint/BUG-035/036 use for "genuinely
+// generating or executing a tool, not merely idling/animating") before its
+// sticky needs-input flag is treated as resolved by demonstrated resumed
+// activity — see NeedsInputClear's resumedOf parameter.
+//
+// A coordinator's reliable-notify delivery (WriteInputSystem) deliberately
+// does not advance lastUserInput (BUG-034), so a relayed human answer can
+// never clear the flag through the existing clear-on-input path even after
+// the worker provably resumes real work — this is the gap this counter
+// closes. No grace period is needed on a miss (unlike EscalateParkedSelection):
+// the failure mode of clearing too SLOWLY (the flag lingers a few extra ticks
+// after a genuine resume) is safe, while the failure mode this guards against
+// — clearing a still-stuck agent — is not, so a single non-working tick resets
+// the streak outright.
+//
+// Deliberately independent of NeedsInputEscalationTicks even though the same
+// tick-count style applies: escalation bounds a false-negative (never
+// flagging a genuinely parked session); this bounds how confidently "resumed"
+// can be claimed before trusting it enough to clear an existing flag — a
+// distinct, independently-tunable dial. Short enough that a genuinely
+// resumed worker (running shell commands, ticking off task checkboxes —
+// producing many seconds of continuous tool-call/generation activity) clears
+// promptly; long enough that a brief single-utterance acknowledgment ("still
+// blocked on X") from an agent that immediately re-parks at the same or a new
+// prompt cannot cross the threshold before the awaiting-input shape
+// reappears and the resumed pass's own working=false reading resets the
+// streak.
+const NeedsInputResumeTicks = 5
+
+// ResumeActivityTick advances the per-session "sustained resumed activity"
+// counter that backs the NeedsInputClear resumedOf clear path: prevTicks is
+// the previous tick's count (0 if never tracked / first tick), workingNow is
+// this tick's Claude "working" affordance reading (see
+// ContentIdleFingerprint's working return value). Returns the new count and
+// whether the session has now sustained it for NeedsInputResumeTicks
+// consecutive ticks.
+//
+// This is a pure step function; callers own the per-ID map exactly like
+// EscalateParkedSelection's callers own ContentIdleState.esc /
+// App.needsInputEscalation — a fresh map each tick, rebuilt only from
+// currently-running sessions, so a task that stops running is dropped, not
+// leaked.
+func ResumeActivityTick(prevTicks int, workingNow bool) (newTicks int, resumed bool) {
+	if !workingNow {
+		return 0, false
+	}
+	newTicks = prevTicks + 1
+	return newTicks, newTicks >= NeedsInputResumeTicks
 }
 
 // ContentIdleState carries the per-task content-idle bookkeeping across ticks:

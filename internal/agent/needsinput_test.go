@@ -637,6 +637,73 @@ func TestEscalateParkedSelection(t *testing.T) {
 	})
 }
 
+func TestResumeActivityTick(t *testing.T) {
+	t.Run("a single non-working tick with no prior streak stays at zero and never resumes", func(t *testing.T) {
+		ticks, resumed := ResumeActivityTick(0, false)
+		testutil.Equal(t, ticks, 0)
+		testutil.Equal(t, resumed, false)
+	})
+
+	t.Run("a sustained working streak resumes exactly at the threshold, not before", func(t *testing.T) {
+		ticks := 0
+		resumed := false
+		for i := 0; i < NeedsInputResumeTicks-1; i++ {
+			ticks, resumed = ResumeActivityTick(ticks, true)
+			testutil.Equal(t, resumed, false)
+		}
+		testutil.Equal(t, ticks, NeedsInputResumeTicks-1)
+		ticks, resumed = ResumeActivityTick(ticks, true)
+		testutil.Equal(t, ticks, NeedsInputResumeTicks)
+		testutil.Equal(t, resumed, true)
+	})
+
+	// Unlike EscalateParkedSelection, there is deliberately NO grace period on a
+	// miss: the asymmetry is that clearing too slowly (the flag lingers a few
+	// extra ticks after a genuine resume) is safe, while clearing a still-stuck
+	// agent is not — so a single non-working tick resets the streak outright,
+	// even one tick before it would have crossed the threshold.
+	t.Run("a single miss resets the streak immediately, even one tick before threshold", func(t *testing.T) {
+		ticks := NeedsInputResumeTicks - 1
+		ticks, resumed := ResumeActivityTick(ticks, false)
+		testutil.Equal(t, ticks, 0)
+		testutil.Equal(t, resumed, false)
+	})
+
+	t.Run("an already-resumed streak still resets to zero on a miss (no stickiness)", func(t *testing.T) {
+		ticks := NeedsInputResumeTicks
+		ticks, resumed := ResumeActivityTick(ticks, false)
+		testutil.Equal(t, ticks, 0)
+		testutil.Equal(t, resumed, false)
+	})
+
+	t.Run("resuming after a break starts over from 1, not the prior streak", func(t *testing.T) {
+		ticks, resumed := ResumeActivityTick(0, false)
+		testutil.Equal(t, ticks, 0)
+		testutil.Equal(t, resumed, false)
+		ticks, resumed = ResumeActivityTick(ticks, true)
+		testutil.Equal(t, ticks, 1)
+		testutil.Equal(t, resumed, false)
+	})
+
+	t.Run("sparse isolated working ticks amid misses never accumulate (anti-false-clear)", func(t *testing.T) {
+		// A brief single-utterance acknowledgment from an agent that is still
+		// genuinely blocked (e.g. "still waiting on X") shows only a FEW
+		// working ticks before re-parking — must never cross the threshold.
+		ticks := 0
+		var resumed bool
+		pattern := []bool{false, true, true, false, false, true, false, true, true, false}
+		for _, w := range pattern {
+			ticks, resumed = ResumeActivityTick(ticks, w)
+			if resumed {
+				t.Fatalf("resumed on a sparse/non-continuous working pattern: %v", pattern)
+			}
+		}
+		if ticks > 2 {
+			t.Fatalf("expected no meaningful accumulated credit from sparse working ticks, got %d", ticks)
+		}
+	})
+}
+
 func TestBlockedOnPrompt(t *testing.T) {
 	t.Run("nil session is not blocked", func(t *testing.T) {
 		testutil.Equal(t, BlockedOnPrompt(nil), false)
@@ -662,7 +729,7 @@ func TestNeedsInputClear(t *testing.T) {
 	t2 := time.Unix(3000, 0) // strictly after t1
 
 	t.Run("nil deps pass candidates through unchanged", func(t *testing.T) {
-		out, base, _ := NeedsInputClear([]string{"a", "b"}, []string{"a", "b"}, nil, nil, nil, nil)
+		out, base, _ := NeedsInputClear([]string{"a", "b"}, []string{"a", "b"}, nil, nil, nil, nil, nil)
 		testutil.DeepEqual(t, out, []string{"a", "b"})
 		// Baselines are captured (zero) so subsequent ticks have state.
 		testutil.Equal(t, len(base), 2)
@@ -673,7 +740,7 @@ func TestNeedsInputClear(t *testing.T) {
 		var base, cleared map[string]time.Time
 		var out []string
 		for i := 0; i < 5; i++ {
-			out, base, cleared = NeedsInputClear([]string{"a"}, []string{"a"}, base, cleared, lastInput, nil)
+			out, base, cleared = NeedsInputClear([]string{"a"}, []string{"a"}, base, cleared, lastInput, nil, nil)
 			testutil.DeepEqual(t, out, []string{"a"})
 		}
 		// Baseline frozen at the first-seen input time.
@@ -684,18 +751,18 @@ func TestNeedsInputClear(t *testing.T) {
 		// Tick 1: flagged; baseline captured at t0 (no input since the question).
 		input := t0
 		lastInput := func(string) time.Time { return input }
-		out, base, cleared := NeedsInputClear([]string{"a"}, []string{"a"}, nil, nil, lastInput, nil)
+		out, base, cleared := NeedsInputClear([]string{"a"}, []string{"a"}, nil, nil, lastInput, nil, nil)
 		testutil.DeepEqual(t, out, []string{"a"})
 
 		// Tick 2: user responds (lastInput advances past the baseline). The
 		// candidate is STILL passed in (the "?" is still in the tail), but it
 		// must be cleared anyway — that is the crux.
 		input = t1
-		out, base, cleared = NeedsInputClear([]string{"a"}, []string{"a"}, base, cleared, lastInput, nil)
+		out, base, cleared = NeedsInputClear([]string{"a"}, []string{"a"}, base, cleared, lastInput, nil, nil)
 		testutil.Equal(t, len(out), 0)
 
 		// Tick 3: still a candidate (stale tail), no new input → stays cleared.
-		out, _, _ = NeedsInputClear([]string{"a"}, []string{"a"}, base, cleared, lastInput, nil)
+		out, _, _ = NeedsInputClear([]string{"a"}, []string{"a"}, base, cleared, lastInput, nil, nil)
 		testutil.Equal(t, len(out), 0)
 	})
 
@@ -709,7 +776,7 @@ func TestNeedsInputClear(t *testing.T) {
 		}
 		// Prime baselines for both at t0 by seeding the prev map.
 		prev := map[string]time.Time{"a": t0, "b": t0}
-		out, _, _ := NeedsInputClear([]string{"a", "b"}, []string{"a", "b"}, prev, nil, lastInput, nil)
+		out, _, _ := NeedsInputClear([]string{"a", "b"}, []string{"a", "b"}, prev, nil, lastInput, nil, nil)
 		testutil.DeepEqual(t, out, []string{"a"}) // a kept, b cleared
 	})
 
@@ -719,7 +786,7 @@ func TestNeedsInputClear(t *testing.T) {
 		// Only "a" (the archived task) carries a pre-existing cleared marker;
 		// "b" has none, so it is unaffected and stays flagged via its baseline.
 		prevCleared := map[string]time.Time{"a": t0}
-		out, base, cleared := NeedsInputClear([]string{"a", "b"}, []string{"a", "b"}, prev, prevCleared, nil, archived)
+		out, base, cleared := NeedsInputClear([]string{"a", "b"}, []string{"a", "b"}, prev, prevCleared, nil, archived, nil)
 		testutil.DeepEqual(t, out, []string{"b"})
 		if _, ok := base["a"]; ok {
 			t.Error("archived task baseline should be dropped")
@@ -738,14 +805,14 @@ func TestNeedsInputClear(t *testing.T) {
 		lastInput := func(string) time.Time { return input }
 
 		// Flagged, then user responds at t1 → cleared.
-		_, base, cleared := NeedsInputClear([]string{"a"}, []string{"a"}, nil, nil, lastInput, nil)
+		_, base, cleared := NeedsInputClear([]string{"a"}, []string{"a"}, nil, nil, lastInput, nil, nil)
 		input = t1
-		out, base, cleared := NeedsInputClear([]string{"a"}, []string{"a"}, base, cleared, lastInput, nil)
+		out, base, cleared := NeedsInputClear([]string{"a"}, []string{"a"}, base, cleared, lastInput, nil, nil)
 		testutil.Equal(t, len(out), 0)
 
 		// "a" leaves the running set entirely (not merely a candidacy gap) —
 		// both the baseline and the cleared marker are dropped.
-		_, base, cleared = NeedsInputClear(nil, nil, base, cleared, lastInput, nil)
+		_, base, cleared = NeedsInputClear(nil, nil, base, cleared, lastInput, nil, nil)
 		if _, ok := base["a"]; ok {
 			t.Error("baseline should drop when the task leaves the running set")
 		}
@@ -755,7 +822,7 @@ func TestNeedsInputClear(t *testing.T) {
 
 		// "a" comes back (still running) with a fresh candidacy, no further
 		// input since t1 → re-arms like a brand-new candidacy.
-		out, _, _ = NeedsInputClear([]string{"a"}, []string{"a"}, base, cleared, lastInput, nil)
+		out, _, _ = NeedsInputClear([]string{"a"}, []string{"a"}, base, cleared, lastInput, nil, nil)
 		testutil.DeepEqual(t, out, []string{"a"})
 	})
 
@@ -771,17 +838,17 @@ func TestNeedsInputClear(t *testing.T) {
 		running := []string{"a"} // "a" is running for the whole scenario
 
 		// Tick 1: flagged.
-		out, base, cleared := NeedsInputClear([]string{"a"}, running, nil, nil, lastInput, nil)
+		out, base, cleared := NeedsInputClear([]string{"a"}, running, nil, nil, lastInput, nil, nil)
 		testutil.DeepEqual(t, out, []string{"a"})
 
 		// Tick 2: user answers (lastInput advances past baseline) → real clear.
 		input = t1
-		out, base, cleared = NeedsInputClear([]string{"a"}, running, base, cleared, lastInput, nil)
+		out, base, cleared = NeedsInputClear([]string{"a"}, running, base, cleared, lastInput, nil, nil)
 		testutil.Equal(t, len(out), 0)
 
 		// Tick 3: gap — no detection pass flags "a" this tick, but its session
 		// is still running.
-		out, base, cleared = NeedsInputClear(nil, running, base, cleared, lastInput, nil)
+		out, base, cleared = NeedsInputClear(nil, running, base, cleared, lastInput, nil, nil)
 		testutil.Equal(t, len(out), 0)
 
 		// Tick 4: a stale content-heuristic re-flag presents "a" as a candidate
@@ -789,20 +856,72 @@ func TestNeedsInputClear(t *testing.T) {
 		// the exact race: the old implementation had forgotten "a"'s baseline
 		// at tick 3, so it would recapture baseline == lastInput(id) here and
 		// get stuck forever. Must NOT re-stick.
-		out, base, cleared = NeedsInputClear([]string{"a"}, running, base, cleared, lastInput, nil)
+		out, base, cleared = NeedsInputClear([]string{"a"}, running, base, cleared, lastInput, nil, nil)
 		testutil.Equal(t, len(out), 0)
 
 		// And it stays cleared across further ticks too — not just a one-tick
 		// reprieve — even with repeated stale re-candidacy.
 		for i := 0; i < 3; i++ {
-			out, base, cleared = NeedsInputClear([]string{"a"}, running, base, cleared, lastInput, nil)
+			out, base, cleared = NeedsInputClear([]string{"a"}, running, base, cleared, lastInput, nil, nil)
 			testutil.Equal(t, len(out), 0)
 		}
 
 		// A genuinely NEWER input finally arrives → re-arms normally.
 		input = t2
-		out, _, _ = NeedsInputClear([]string{"a"}, running, base, cleared, lastInput, nil)
+		out, _, _ = NeedsInputClear([]string{"a"}, running, base, cleared, lastInput, nil, nil)
 		testutil.DeepEqual(t, out, []string{"a"})
+	})
+
+	// Resumed-activity clear (see ResumeActivityTick): a hera coordinator's
+	// relayed answer is delivered via WriteInputSystem, which never advances
+	// LastUserInput, so lastInputOf never progresses past baseline for this
+	// scenario — resumedOf is the ONLY thing that clears it.
+	t.Run("resumed activity clears despite no user input and a stale tail", func(t *testing.T) {
+		lastInput := func(string) time.Time { return t0 } // never advances past baseline
+		resumed := func(id string) bool { return id == "a" }
+		out, base, cleared := NeedsInputClear([]string{"a", "b"}, []string{"a", "b"}, nil, nil, lastInput, nil, resumed)
+		testutil.DeepEqual(t, out, []string{"b"}) // "a" cleared via resumedOf, "b" stays flagged
+		if _, ok := base["a"]; ok {
+			t.Error("resumed task should not carry a baseline forward")
+		}
+		if _, ok := cleared["a"]; !ok {
+			t.Error("resumed task should record a cleared marker")
+		}
+	})
+
+	// The resumed clear reuses the SAME cleared-marker machinery as the
+	// input-based clear, so it inherits the BUG-063 stale-recandidacy guard for
+	// free: once resumedOf's own signal later goes quiet again (e.g. the
+	// caller's consecutive-tick streak resets), a stale re-candidacy at the
+	// same lastInputOf timestamp must not re-stick the flag.
+	t.Run("resumed clear is protected by the BUG-063 stale-recandidacy guard", func(t *testing.T) {
+		lastInput := func(string) time.Time { return t0 }
+		running := []string{"a"}
+		resumedNow := true
+		resumed := func(string) bool { return resumedNow }
+
+		out, base, cleared := NeedsInputClear([]string{"a"}, running, nil, nil, lastInput, nil, resumed)
+		testutil.Equal(t, len(out), 0)
+
+		resumedNow = false
+		for i := 0; i < 3; i++ {
+			out, base, cleared = NeedsInputClear([]string{"a"}, running, base, cleared, lastInput, nil, resumed)
+			testutil.Equal(t, len(out), 0)
+		}
+	})
+
+	// Regression guard for BUG-034: a resumedOf that never reports true (no
+	// sustained activity observed — e.g. an unrelated system nudge to a
+	// genuinely still-parked agent) must never clear the flag on its own.
+	t.Run("resumedOf false never clears a still-parked agent", func(t *testing.T) {
+		lastInput := func(string) time.Time { return t0 } // predates the flag, never advances
+		resumed := func(string) bool { return false }
+		var base, cleared map[string]time.Time
+		var out []string
+		for i := 0; i < 5; i++ {
+			out, base, cleared = NeedsInputClear([]string{"a"}, []string{"a"}, base, cleared, lastInput, nil, resumed)
+			testutil.DeepEqual(t, out, []string{"a"})
+		}
 	})
 }
 

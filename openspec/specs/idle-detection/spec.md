@@ -363,9 +363,11 @@ without waiting for a view-triggered resize/repaint.
 The system SHALL keep a session flagged as waiting for user input — including a
 flag raised by the trailing-question heuristic (the last transcript line ends in
 `?`) — for as long as the signal remains present, with NO time-based or
-idle-based decay. The flag SHALL clear only when EITHER (a) the user delivers new
-input to that session after the flag was raised, OR (b) the session's task is
-archived. Input delivered to a DIFFERENT session SHALL NOT clear this one.
+idle-based decay. The flag SHALL clear only when ONE OF the following holds:
+(a) the user delivers new input to that session after the flag was raised, (b)
+the session's task is archived, or (c) the session demonstrates sustained
+resumed activity (defined below). Input delivered to a DIFFERENT session SHALL
+NOT clear this one.
 
 Clear-on-input SHALL be deterministic and MUST NOT depend on the prompt or
 question text scrolling out of the recent-output tail: the system records, per
@@ -373,21 +375,43 @@ flagged task, the session's last-input timestamp observed when the task first
 entered the needs-input set, and removes the task from the set — and suppresses
 re-adding it on the same tick — once the session's last-input timestamp advances
 past that recorded baseline, even if the question text still matches in the tail.
+Clear-on-input SHALL count only genuine user-delivered input, never
+system-injected delivery (e.g. a coordinator's relayed message) — so an
+unrelated system nudge to a genuinely still-parked agent MUST NOT clear the
+flag through this path.
 
-The system SHALL ALSO record, per task, the session's last-input timestamp
-observed at the moment a REAL clear fires (the "cleared marker"), and SHALL
-carry that marker forward across ticks for as long as the task's session
-remains running — independent of whether the task is a needs-input candidate on
-any given tick. If a task is re-presented as a candidate on a LATER tick while
-its cleared marker is still current (the session's last-input timestamp has not
+The system SHALL ALSO clear the flag when the session demonstrates SUSTAINED
+resumed activity since the flag was raised, independent of whether any input
+was ever recorded as user-delivered. Sustained resumed activity is defined as
+the session showing Claude's active-generation/tool-execution affordance for a
+bounded number of CONSECUTIVE detection ticks with no intervening tick lacking
+it. A single tick without the affordance SHALL reset this streak to zero
+immediately (no grace tolerance for an isolated miss) — the system SHALL
+require the FULL consecutive-tick run to complete before treating the session
+as resumed, so a brief acknowledgment burst that re-parks at a blocking prompt
+before the streak completes SHALL NOT clear the flag. This clear path exists
+specifically to resolve a flag whose triggering block was answered via
+system-delivered input (which clear-on-input above deliberately does not
+count): a coordinator relaying the human's real decision does not, by itself,
+count as user input, but the worker's demonstrated resumption of real,
+sustained work SHALL still resolve the flag.
+
+The system SHALL record, per task, the session's last-input timestamp observed
+at the moment ANY real clear fires — whether via user input, archive, or
+demonstrated resumed activity — (the "cleared marker"), and SHALL carry that
+marker forward across ticks for as long as the task's session remains running
+— independent of whether the task is a needs-input candidate on any given
+tick. If a task is re-presented as a candidate on a LATER tick while its
+cleared marker is still current (the session's last-input timestamp has not
 advanced past the marker), the system SHALL treat this as a stale re-detection
 and SHALL NOT re-add the task to the needs-input set and SHALL NOT recapture a
-new baseline for it. The cleared marker's suppression ends, without any
-explicit expiry, the moment the session's last-input timestamp genuinely
-advances past it — at which point a subsequent candidacy re-arms normally,
-capturing a fresh baseline exactly like a task's first-ever candidacy. The
-cleared marker SHALL be dropped when the task's session stops running or the
-task is archived, so a later restart or un-archive re-arms cleanly.
+new baseline for it, REGARDLESS of which clear path produced the marker. The
+cleared marker's suppression ends, without any explicit expiry, the moment the
+session's last-input timestamp genuinely advances past it — at which point a
+subsequent candidacy re-arms normally, capturing a fresh baseline exactly like
+a task's first-ever candidacy. The cleared marker SHALL be dropped when the
+task's session stops running or the task is archived, so a later restart or
+un-archive re-arms cleanly.
 
 Clear-on-archive SHALL remove an archived task from the needs-input set
 regardless of its detection signal, so it stops surfacing `?` and stops rolling
@@ -399,11 +423,11 @@ set flagged across ticks while its session remains running — SHALL NOT require
 re-matching the detection signal against the CURRENT tick's tail to stay
 flagged. A task already in the set, whose session is still running, SHALL
 remain in the set unconditionally until removed by clear-on-input,
-clear-on-archive, or the session no longer running. The recent-output tail
-scanned on any given tick MAY fail to re-show the signal for reasons unrelated
-to the user having answered (e.g. the signal has scrolled behind other content
-still within the bounded/expanded window); such a miss SHALL NOT be treated as
-equivalent to a genuine answer.
+clear-on-archive, clear-on-resumed-activity, or the session no longer running.
+The recent-output tail scanned on any given tick MAY fail to re-show the
+signal for reasons unrelated to the user having answered (e.g. the signal has
+scrolled behind other content still within the bounded/expanded window); such
+a miss SHALL NOT be treated as equivalent to a genuine answer.
 
 This clear logic SHALL be applied identically by the daemon-side detector and
 the TUI-side detector. The trailing-question entry heuristic, the idle gate, and
@@ -476,6 +500,32 @@ and when a subsequent candidacy for the same task is allowed to re-arm it.
 
 - **WHEN** a task is in the needs-input set and its session is no longer running
 - **THEN** the task is removed from the needs-input set
+
+#### Scenario: System-delivered input alone does not clear the flag (BUG-034 regression guard)
+
+- **WHEN** a session is flagged waiting for input and receives ONLY
+  system-injected input (e.g. a coordinator's relayed message, delivered via
+  reliable pane delivery) with no subsequent sustained resumed activity
+- **THEN** the session remains flagged waiting for input
+
+#### Scenario: Sustained resumed activity clears the flag despite no recorded user input (BUG-065)
+
+- **WHEN** a session is flagged waiting for input, its session's last-input
+  timestamp never advances past the flag's baseline (e.g. the unblocking
+  message arrived via system-injected delivery only), and the session then
+  shows Claude's active-generation/tool-execution affordance for the full
+  required run of consecutive detection ticks with no interruption
+- **THEN** the system removes the session from the needs-input set on
+  reaching that consecutive-tick run, and records a cleared marker exactly as
+  the user-input clear path does
+
+#### Scenario: A brief resumed-activity burst that re-parks does not clear the flag (BUG-065 regression guard)
+
+- **WHEN** a session is flagged waiting for input and shows the
+  active-generation/tool-execution affordance for FEWER than the required
+  consecutive-tick run before reverting to showing the identical blocking
+  signal that originally raised the flag
+- **THEN** the session remains flagged waiting for input
 
 ### Requirement: Content-aware idle for continuously-repainting (fullscreen) agents
 

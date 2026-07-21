@@ -142,6 +142,13 @@ type idleWatcherState struct {
 	// timestamp cannot recapture a stuck baseline. Mirrors the TUI's
 	// App.needsInputCleared.
 	needsInputCleared map[string]time.Time
+	// needsInputResume carries the resumed-activity escalation counter (see
+	// agent.ResumeActivityTick): consecutive ticks a flagged session has shown
+	// Claude's "working" affordance, independent of whether any input was ever
+	// recorded as user-typed. Lets NeedsInputClear resolve a flag a
+	// coordinator's relayed answer (WriteInputSystem) could otherwise never
+	// clear. Mirrors the TUI's App.needsInputResume.
+	needsInputResume map[string]int
 	// screen reconstructs the visible terminal screen from a session's raw tail
 	// so detection matches the EMULATED screen, catching fullscreen (alt-screen)
 	// prompts whose cursor-addressed glyphs aren't linearly present in the bytes
@@ -166,6 +173,7 @@ func newIdleWatcherState() *idleWatcherState {
 		contentFP:         make(map[string]uint64),
 		needsInputSince:   make(map[string]time.Time),
 		needsInputCleared: make(map[string]time.Time),
+		needsInputResume:  make(map[string]int),
 		screen:            &agent.ScreenRenderer{},
 	}
 }
@@ -224,18 +232,30 @@ func sessionScreenSize(taskID string) (cols, rows int) {
 // addressed prompt is caught without a view-triggered repaint. A nil screen
 // disables the fallback (raw-only), matching pre-BUG-033 behavior.
 //
-// After the three entry passes build the candidate set, agent.NeedsInputClear
-// applies the BUG-034 clear conditions: a task whose session received new input
-// after the flag was raised (lastInputOf advanced past the baseline carried in
-// prevSince) or whose task is archived (archivedOf) is dropped — deterministic,
-// independent of the stale question scrolling out of the tail. It also applies
-// the BUG-063 guard: runningIDs/prevCleared let a real clear's settled input
-// timestamp survive ticks where a task isn't a candidate at all, so a LATER
-// stale content-fingerprint re-flag at that same timestamp (nothing new having
-// happened) cannot recapture a stuck baseline. The returned newSince/newCleared
-// carry both maps forward; nil lastInputOf/archivedOf degrade to pre-BUG-034
-// behavior (no clear).
-func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uint64, prevSince map[string]time.Time, prevCleared map[string]time.Time, tailOf func(string) []byte, lastInputOf func(string) time.Time, archivedOf func(string) bool, screen *agent.ScreenRenderer, sizeOf func(string) (cols, rows int)) ([]string, map[string]uint64, map[string]time.Time, map[string]time.Time) {
+// After the three entry passes build the candidate set, a resumed-activity
+// pass computes, for every running session, whether it has shown Claude's
+// "working" affordance (agent.ContentIdleFingerprint's working return) for
+// agent.NeedsInputResumeTicks consecutive ticks — independent of the
+// candidate set, mirroring how the content-stability pass above scans every
+// running session regardless of candidacy. This is what lets a hera
+// coordinator's relayed answer (delivered via WriteInputSystem, which never
+// advances lastUserInput — see agent.NeedsInputClear) resolve a flag once the
+// worker demonstrably resumes real work, not just when the human types
+// directly into the session.
+//
+// Then agent.NeedsInputClear applies the clear conditions: a task whose
+// session received new input after the flag was raised (lastInputOf advanced
+// past the baseline carried in prevSince), whose task is archived
+// (archivedOf), or which has sustained resumed activity (resumedOf, fed by
+// this pass) is dropped — deterministic, independent of the stale question
+// scrolling out of the tail. It also applies the BUG-063 guard: runningIDs/
+// prevCleared let a real clear's settled input timestamp survive ticks where a
+// task isn't a candidate at all, so a LATER stale content-fingerprint re-flag
+// at that same timestamp (nothing new having happened) cannot recapture a
+// stuck baseline. The returned newSince/newCleared/newResume carry all three
+// maps forward; nil lastInputOf/archivedOf degrade to pre-BUG-034 behavior (no
+// clear).
+func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uint64, prevSince map[string]time.Time, prevCleared map[string]time.Time, prevResume map[string]int, tailOf func(string) []byte, lastInputOf func(string) time.Time, archivedOf func(string) bool, screen *agent.ScreenRenderer, sizeOf func(string) (cols, rows int)) ([]string, map[string]uint64, map[string]time.Time, map[string]time.Time, map[string]int) {
 	out := make([]string, 0, len(idleIDs))
 	seen := make(map[string]bool, len(idleIDs))
 	newFP := make(map[string]uint64)
@@ -290,11 +310,33 @@ func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uin
 		flag(id)
 	}
 
-	// BUG-034/BUG-063: clear the flag for tasks the user has responded to or
-	// archived, and suppress a stale re-candidacy at an already-settled
-	// timestamp for a still-running task.
-	out, newSince, newCleared := agent.NeedsInputClear(out, runningIDs, prevSince, prevCleared, lastInputOf, archivedOf)
-	return out, newFP, newSince, newCleared
+	// Resumed-activity pass: independent of candidacy (every running session is
+	// tracked, mirroring the content-stability pass above), advance each
+	// session's consecutive "working" streak. A hera coordinator's relayed
+	// answer is delivered via WriteInputSystem, which never advances
+	// lastUserInput (see agent.NeedsInputClear) — this is the only signal that
+	// can resolve a flag raised on a worker who was genuinely un-stuck by that
+	// relayed answer rather than direct user input.
+	newResume := make(map[string]int, len(runningIDs))
+	resumed := make(map[string]bool)
+	for _, id := range runningIDs {
+		cols, rows := sizeOf(id)
+		_, working := agent.ContentIdleFingerprint(screen, tailOf(id), cols, rows)
+		ticks, isResumed := agent.ResumeActivityTick(prevResume[id], working)
+		if ticks != 0 {
+			newResume[id] = ticks
+		}
+		if isResumed {
+			resumed[id] = true
+		}
+	}
+	resumedOf := func(id string) bool { return resumed[id] }
+
+	// BUG-034/BUG-063: clear the flag for tasks the user has responded to,
+	// archived, or that have sustained resumed activity, and suppress a stale
+	// re-candidacy at an already-settled timestamp for a still-running task.
+	out, newSince, newCleared := agent.NeedsInputClear(out, runningIDs, prevSince, prevCleared, lastInputOf, archivedOf, resumedOf)
+	return out, newFP, newSince, newCleared, newResume
 }
 
 // idleWatcher periodically polls all running sessions and fires
@@ -553,10 +595,11 @@ func (s *Server) detectNeedsInputTick(state *idleWatcherState, running, idle []s
 		}
 	}
 	archivedOf := func(id string) bool { return archived[id] }
-	needs, newFP, newSince, newCleared := computeNeedsInput(idle, running, prev, state.contentFP, state.needsInputSince, state.needsInputCleared, tailOf, lastInputOf, archivedOf, state.screen, sessionScreenSize)
+	needs, newFP, newSince, newCleared, newResume := computeNeedsInput(idle, running, prev, state.contentFP, state.needsInputSince, state.needsInputCleared, state.needsInputResume, tailOf, lastInputOf, archivedOf, state.screen, sessionScreenSize)
 	state.contentFP = newFP
 	state.needsInputSince = newSince
 	state.needsInputCleared = newCleared
+	state.needsInputResume = newResume
 	needsSet := make(map[string]bool, len(needs))
 	for _, id := range needs {
 		needsSet[id] = true
