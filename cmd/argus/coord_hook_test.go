@@ -104,7 +104,7 @@ func (f *fakeCoordHookEnv) env() coordHookEnv {
 			f.pendingRecycleCalled = true
 			return f.pendingRecycle, f.pendingRecycleErr
 		},
-		ReadContextSize: func(transcriptPath string) (int, error) {
+		ReadContextSize: func(taskID, transcriptPath string) (int, error) {
 			f.readCalled = true
 			f.readTranscript = transcriptPath
 			return f.contextSize, f.readContextErr
@@ -642,15 +642,30 @@ func TestCoordHook_HardStop_ForceRecycleError_LogsToStderr(t *testing.T) {
 // REST round trip against a live daemon — so the wiring itself (paths,
 // header names, JSON field/key names) is proven, not just the contract.
 
+// stubContextSizeReadPrevious overrides the package-level contextSizeReadPrevious
+// seam for the duration of the test, restoring the original on cleanup. Every
+// test that calls readContextSizeReal directly MUST stub this — the real
+// readPreviousContextSizeReal makes a REST call that would otherwise dial
+// the real daemon socket at $HOME/.argus/daemon.sock (context/knowledge/
+// testing.md: tests never touch the live daemon).
+func stubContextSizeReadPrevious(t *testing.T, size int, ok bool, err error) {
+	t.Helper()
+	orig := contextSizeReadPrevious
+	contextSizeReadPrevious = func(string) (int, bool, error) { return size, ok, err }
+	t.Cleanup(func() { contextSizeReadPrevious = orig })
+}
+
 // TestReadContextSizeReal_TailsLatestAssistantUsage confirms the scan finds
 // the LAST assistant message's usage, tolerating blank and non-JSON lines
 // and non-assistant event types interleaved in a real transcript, and sums
 // cache_read + cache_creation + input tokens rather than reading
 // cache_read_input_tokens alone. Wrapped in synctest so
 // readContextSizeReal's retry-budget sleeps advance instantly instead of
-// costing real wall-clock time on every run of this table.
+// costing real wall-clock time on every run of this table. Stubs "no prior
+// stamp" so the early exit never short-circuits the scan being tested here.
 func TestReadContextSizeReal_TailsLatestAssistantUsage(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		stubContextSizeReadPrevious(t, 0, false, nil)
 		path := filepath.Join(t.TempDir(), "transcript.jsonl")
 		lines := []string{
 			`{"type":"user","message":{}}`,
@@ -661,7 +676,7 @@ func TestReadContextSizeReal_TailsLatestAssistantUsage(t *testing.T) {
 		}
 		testutil.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600))
 
-		size, err := readContextSizeReal(path)
+		size, err := readContextSizeReal("task-1", path)
 		testutil.NoError(t, err)
 		testutil.Equal(t, size, 45002)
 	})
@@ -676,13 +691,14 @@ func TestReadContextSizeReal_TailsLatestAssistantUsage(t *testing.T) {
 // the true total.
 func TestReadContextSizeReal_CacheMissStillCountsFullContext(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		stubContextSizeReadPrevious(t, 0, false, nil)
 		path := filepath.Join(t.TempDir(), "transcript.jsonl")
 		lines := []string{
 			`{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":399236,"cache_read_input_tokens":0}}}`,
 		}
 		testutil.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600))
 
-		size, err := readContextSizeReal(path)
+		size, err := readContextSizeReal("task-1", path)
 		testutil.NoError(t, err)
 		testutil.Equal(t, size, 399238)
 	})
@@ -696,6 +712,7 @@ func TestReadContextSizeReal_CacheMissStillCountsFullContext(t *testing.T) {
 // chain's much larger cumulative usage.
 func TestReadContextSizeReal_SkipsSidechainAssistantLines(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		stubContextSizeReadPrevious(t, 0, false, nil)
 		path := filepath.Join(t.TempDir(), "transcript.jsonl")
 		lines := []string{
 			`{"type":"user","message":{}}`,
@@ -704,17 +721,140 @@ func TestReadContextSizeReal_SkipsSidechainAssistantLines(t *testing.T) {
 		}
 		testutil.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600))
 
-		size, err := readContextSizeReal(path)
+		size, err := readContextSizeReal("task-1", path)
 		testutil.NoError(t, err)
 		testutil.Equal(t, size, 410010)
 	})
 }
 
 func TestReadContextSizeReal_MissingFile_Errors(t *testing.T) {
-	_, err := readContextSizeReal(filepath.Join(t.TempDir(), "missing.jsonl"))
+	_, err := readContextSizeReal("task-1", filepath.Join(t.TempDir(), "missing.jsonl"))
 	if err == nil {
 		t.Fatal("expected an error for a missing transcript file")
 	}
+}
+
+// TestReadContextSizeReal_EarlyExit_SkipsRetryWhenAlreadyCaughtUp pins
+// fix-context-stop-lag's early exit (added after review on PR #901): the
+// common case, where the first scan already reflects at least as much
+// growth as the previously-stamped context_size, must return immediately —
+// no retry budget paid — since this hook now runs on every hera-managed
+// Stop event (coordinator, worker, and freelance), not just coordinators.
+// Asserted via real wall-clock elapsed time (no synctest): a genuinely fast
+// path takes microseconds, nowhere near contextSizeRetryInterval.
+func TestReadContextSizeReal_EarlyExit_SkipsRetryWhenAlreadyCaughtUp(t *testing.T) {
+	stubContextSizeReadPrevious(t, 42, true, nil)
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	line := `{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":100000}}}`
+	testutil.NoError(t, os.WriteFile(path, []byte(line), 0o600))
+
+	start := time.Now()
+	size, err := readContextSizeReal("task-1", path)
+	elapsed := time.Since(start)
+
+	testutil.NoError(t, err)
+	testutil.Equal(t, size, 100001)
+	if elapsed >= contextSizeRetryInterval {
+		t.Fatalf("expected an immediate return with no retry wait, took %s", elapsed)
+	}
+}
+
+// TestReadContextSizeReal_EarlyExit_ExactTieTriggersRetry pins a review fix
+// on PR #903: the early-exit comparison must be STRICT (first > prev), not
+// first >= prev. When the current turn's transcript write genuinely hasn't
+// landed yet, the latest main-chain line in the file is still the PRIOR
+// turn's, so a fresh scan comes back EXACTLY EQUAL to the previously-stamped
+// context_size — the precise undercount race fix-context-stop-lag exists to
+// catch. Under the buggy >= comparison this would incorrectly early-exit on
+// the stale value with no retry at all; the fix requires an exact tie to
+// fall into the bounded retry instead, so a write landing mid-budget is
+// still captured.
+func TestReadContextSizeReal_EarlyExit_ExactTieTriggersRetry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		stubContextSizeReadPrevious(t, 100001, true, nil)
+		path := filepath.Join(t.TempDir(), "transcript.jsonl")
+		stale := `{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":100000}}}`
+		fresh := `{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":5000,"cache_read_input_tokens":405000}}}`
+		testutil.NoError(t, os.WriteFile(path, []byte(stale), 0o600))
+
+		go func() {
+			time.Sleep(contextSizeRetryInterval + contextSizeRetryInterval/2)
+			_ = os.WriteFile(path, []byte(fresh), 0o600)
+		}()
+
+		size, err := readContextSizeReal("task-1", path)
+		testutil.NoError(t, err)
+		testutil.Equal(t, size, 410002)
+	})
+}
+
+// TestReadContextSizeReal_EarlyExit_RetriesWhenFirstScanIsBelowPriorStamp
+// confirms the early exit's flip side: when the first scan comes back BELOW
+// the previously-stamped context_size — the actual lagging-write symptom —
+// readContextSizeReal must still fall into the bounded retry rather than
+// trusting the stale first scan.
+func TestReadContextSizeReal_EarlyExit_RetriesWhenFirstScanIsBelowPriorStamp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		stubContextSizeReadPrevious(t, 500000, true, nil)
+		path := filepath.Join(t.TempDir(), "transcript.jsonl")
+		stale := `{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":100000}}}`
+		fresh := `{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":5000,"cache_read_input_tokens":600000}}}`
+		testutil.NoError(t, os.WriteFile(path, []byte(stale), 0o600))
+
+		go func() {
+			time.Sleep(contextSizeRetryInterval + contextSizeRetryInterval/2)
+			_ = os.WriteFile(path, []byte(fresh), 0o600)
+		}()
+
+		size, err := readContextSizeReal("task-1", path)
+		testutil.NoError(t, err)
+		testutil.Equal(t, size, 605002)
+	})
+}
+
+// TestReadContextSizeReal_EarlyExit_RetriesWhenNoPriorStamp confirms a task's
+// very first Stop event ever (no prior stamp to compare against) still
+// retries rather than trusting a possibly-stale first scan blindly — there
+// is no baseline to judge freshness against, so the safe default is to wait.
+func TestReadContextSizeReal_EarlyExit_RetriesWhenNoPriorStamp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		stubContextSizeReadPrevious(t, 0, false, nil)
+		path := filepath.Join(t.TempDir(), "transcript.jsonl")
+		stale := `{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":100000}}}`
+		fresh := `{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":5000,"cache_read_input_tokens":405000}}}`
+		testutil.NoError(t, os.WriteFile(path, []byte(stale), 0o600))
+
+		go func() {
+			time.Sleep(contextSizeRetryInterval + contextSizeRetryInterval/2)
+			_ = os.WriteFile(path, []byte(fresh), 0o600)
+		}()
+
+		size, err := readContextSizeReal("task-1", path)
+		testutil.NoError(t, err)
+		testutil.Equal(t, size, 410002)
+	})
+}
+
+// TestReadContextSizeReal_EarlyExit_FailedPreviousReadFallsIntoRetry confirms
+// a failure reading the previous stamp (e.g. the daemon is unreachable) fails
+// open into the retry path rather than trusting the first scan unconditionally.
+func TestReadContextSizeReal_EarlyExit_FailedPreviousReadFallsIntoRetry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		stubContextSizeReadPrevious(t, 0, false, errors.New("daemon unreachable"))
+		path := filepath.Join(t.TempDir(), "transcript.jsonl")
+		stale := `{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":100000}}}`
+		fresh := `{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":5000,"cache_read_input_tokens":405000}}}`
+		testutil.NoError(t, os.WriteFile(path, []byte(stale), 0o600))
+
+		go func() {
+			time.Sleep(contextSizeRetryInterval + contextSizeRetryInterval/2)
+			_ = os.WriteFile(path, []byte(fresh), 0o600)
+		}()
+
+		size, err := readContextSizeReal("task-1", path)
+		testutil.NoError(t, err)
+		testutil.Equal(t, size, 410002)
+	})
 }
 
 // TestReadContextSizeReal_RetryCatchesLaggingTranscriptWrite pins
@@ -730,9 +870,12 @@ func TestReadContextSizeReal_MissingFile_Errors(t *testing.T) {
 // stale number (the exact bug: the rail dot missing real ~41-42% usage,
 // only appearing once a LATER turn's read happened to already be fresh).
 // synctest makes the writer's simulated delay and the retry loop's sleeps
-// resolve deterministically and instantly, no real wall-clock wait.
+// resolve deterministically and instantly, no real wall-clock wait. Stubs a
+// prior stamp BELOW the stale value so the retry path (not the early exit)
+// is what's under test.
 func TestReadContextSizeReal_RetryCatchesLaggingTranscriptWrite(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		stubContextSizeReadPrevious(t, 500000, true, nil)
 		path := filepath.Join(t.TempDir(), "transcript.jsonl")
 		stale := `{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":100000}}}`
 		fresh := `{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":5000,"cache_read_input_tokens":405000}}}`
@@ -748,7 +891,7 @@ func TestReadContextSizeReal_RetryCatchesLaggingTranscriptWrite(t *testing.T) {
 			_ = os.WriteFile(path, []byte(fresh), 0o600)
 		}()
 
-		size, err := readContextSizeReal(path)
+		size, err := readContextSizeReal("task-1", path)
 		testutil.NoError(t, err)
 		testutil.Equal(t, size, 410002)
 	})
@@ -763,6 +906,7 @@ func TestReadContextSizeReal_RetryCatchesLaggingTranscriptWrite(t *testing.T) {
 // behavior, which never retried at all.
 func TestReadContextSizeReal_RetryBounded_GivesUpAfterBudget(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		stubContextSizeReadPrevious(t, 500000, true, nil)
 		path := filepath.Join(t.TempDir(), "transcript.jsonl")
 		stale := `{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":100000}}}`
 		tooLate := `{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":5000,"cache_read_input_tokens":405000}}}`
@@ -773,7 +917,7 @@ func TestReadContextSizeReal_RetryBounded_GivesUpAfterBudget(t *testing.T) {
 			_ = os.WriteFile(path, []byte(tooLate), 0o600)
 		}()
 
-		size, err := readContextSizeReal(path)
+		size, err := readContextSizeReal("task-1", path)
 		testutil.NoError(t, err)
 		testutil.Equal(t, size, 100001)
 
@@ -872,6 +1016,15 @@ func TestCoordHookReal_REST(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, kind, string(db.HeraKindCoordinator))
 
+	// fix-context-stop-lag: round-trip readPreviousContextSizeReal (the
+	// early-exit's freshness signal) against the same context_size key
+	// stampContextSizeReal writes, mirroring the last-nudged round trip
+	// below — absent before the first stamp, present with the stamped value
+	// after.
+	_, hadPrevContextSize, err := readPreviousContextSizeReal(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, hadPrevContextSize, false) // never stamped yet — absent-key branch
+
 	testutil.NoError(t, stampContextSizeReal(task.ID, 12345))
 	entries, err := database.ListMeta(task.ID, db.HeraMetaNamespace)
 	testutil.NoError(t, err)
@@ -882,6 +1035,11 @@ func TestCoordHookReal_REST(t *testing.T) {
 		}
 	}
 	testutil.Equal(t, stamped, "12345")
+
+	prevContextSize, hadPrevContextSize, err := readPreviousContextSizeReal(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, hadPrevContextSize, true)
+	testutil.Equal(t, prevContextSize, 12345)
 
 	budget, err := budgetReal(task.ID)
 	testutil.NoError(t, err)
