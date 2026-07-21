@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/drn/argus/internal/daemon"
@@ -645,21 +646,25 @@ func TestCoordHook_HardStop_ForceRecycleError_LogsToStderr(t *testing.T) {
 // the LAST assistant message's usage, tolerating blank and non-JSON lines
 // and non-assistant event types interleaved in a real transcript, and sums
 // cache_read + cache_creation + input tokens rather than reading
-// cache_read_input_tokens alone.
+// cache_read_input_tokens alone. Wrapped in synctest so
+// readContextSizeReal's retry-budget sleeps advance instantly instead of
+// costing real wall-clock time on every run of this table.
 func TestReadContextSizeReal_TailsLatestAssistantUsage(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "transcript.jsonl")
-	lines := []string{
-		`{"type":"user","message":{}}`,
-		`{"type":"assistant","message":{"usage":{"cache_read_input_tokens":100}}}`,
-		"",
-		"not json",
-		`{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":3000,"cache_read_input_tokens":42000}}}`,
-	}
-	testutil.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600))
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "transcript.jsonl")
+		lines := []string{
+			`{"type":"user","message":{}}`,
+			`{"type":"assistant","message":{"usage":{"cache_read_input_tokens":100}}}`,
+			"",
+			"not json",
+			`{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":3000,"cache_read_input_tokens":42000}}}`,
+		}
+		testutil.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600))
 
-	size, err := readContextSizeReal(path)
-	testutil.NoError(t, err)
-	testutil.Equal(t, size, 45002)
+		size, err := readContextSizeReal(path)
+		testutil.NoError(t, err)
+		testutil.Equal(t, size, 45002)
+	})
 }
 
 // TestReadContextSizeReal_CacheMissStillCountsFullContext pins the exact
@@ -670,15 +675,39 @@ func TestReadContextSizeReal_TailsLatestAssistantUsage(t *testing.T) {
 // is unchanged or larger. Summing all three usage fields must still report
 // the true total.
 func TestReadContextSizeReal_CacheMissStillCountsFullContext(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "transcript.jsonl")
-	lines := []string{
-		`{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":399236,"cache_read_input_tokens":0}}}`,
-	}
-	testutil.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600))
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "transcript.jsonl")
+		lines := []string{
+			`{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":399236,"cache_read_input_tokens":0}}}`,
+		}
+		testutil.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600))
 
-	size, err := readContextSizeReal(path)
-	testutil.NoError(t, err)
-	testutil.Equal(t, size, 399238)
+		size, err := readContextSizeReal(path)
+		testutil.NoError(t, err)
+		testutil.Equal(t, size, 399238)
+	})
+}
+
+// TestReadContextSizeReal_SkipsSidechainAssistantLines pins
+// fix-sidechain-context-size (originally PR #900, folded into this rewrite
+// since it touches the same function): a dispatched sub-agent's (Task tool)
+// own assistant turns carry isSidechain=true and a tiny, fresh usage number.
+// If one lands physically last in the file, it must not override the main
+// chain's much larger cumulative usage.
+func TestReadContextSizeReal_SkipsSidechainAssistantLines(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "transcript.jsonl")
+		lines := []string{
+			`{"type":"user","message":{}}`,
+			`{"type":"assistant","isSidechain":false,"message":{"usage":{"input_tokens":10,"cache_creation_input_tokens":5000,"cache_read_input_tokens":405000}}}`,
+			`{"type":"assistant","isSidechain":true,"message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":300,"cache_read_input_tokens":1200}}}`,
+		}
+		testutil.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600))
+
+		size, err := readContextSizeReal(path)
+		testutil.NoError(t, err)
+		testutil.Equal(t, size, 410010)
+	})
 }
 
 func TestReadContextSizeReal_MissingFile_Errors(t *testing.T) {
@@ -686,6 +715,74 @@ func TestReadContextSizeReal_MissingFile_Errors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for a missing transcript file")
 	}
+}
+
+// TestReadContextSizeReal_RetryCatchesLaggingTranscriptWrite pins
+// fix-context-stop-lag's actual root-cause fix: Claude Code's hooks
+// reference documents transcript_path as "written asynchronously" and
+// warns it "may not yet include the current turn's most recent messages"
+// at the moment a Stop hook fires. This reproduces exactly that: the file
+// holds a stale (smaller) usage number at the instant readContextSizeReal
+// starts reading, and the real, larger current-turn write lands midway
+// through the retry budget from a concurrent writer — simulating the async
+// transcript writer finishing its flush after the hook began polling.
+// Without the bounded retry, readContextSizeReal would return only the
+// stale number (the exact bug: the rail dot missing real ~41-42% usage,
+// only appearing once a LATER turn's read happened to already be fresh).
+// synctest makes the writer's simulated delay and the retry loop's sleeps
+// resolve deterministically and instantly, no real wall-clock wait.
+func TestReadContextSizeReal_RetryCatchesLaggingTranscriptWrite(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "transcript.jsonl")
+		stale := `{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":100000}}}`
+		fresh := `{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":5000,"cache_read_input_tokens":405000}}}`
+		testutil.NoError(t, os.WriteFile(path, []byte(stale), 0o600))
+
+		go func() {
+			// Lands after the retry loop's first couple of polls but well
+			// within contextSizeRetryBudget — the documented async-writer
+			// lag, not an instantaneous write. Offset deliberately avoids an
+			// exact multiple of contextSizeRetryInterval so it never ties
+			// with a poll tick under synctest's simulated clock.
+			time.Sleep(contextSizeRetryInterval + contextSizeRetryInterval/2)
+			_ = os.WriteFile(path, []byte(fresh), 0o600)
+		}()
+
+		size, err := readContextSizeReal(path)
+		testutil.NoError(t, err)
+		testutil.Equal(t, size, 410002)
+	})
+}
+
+// TestReadContextSizeReal_RetryBounded_GivesUpAfterBudget confirms the
+// retry loop is bounded, not an indefinite wait: a write landing AFTER
+// contextSizeRetryBudget has elapsed is never observed, and
+// readContextSizeReal falls back to the last value it could read rather
+// than hanging. This is the honest scope limit of a bounded mitigation for
+// an inherently asynchronous write — never worse than the pre-fix
+// behavior, which never retried at all.
+func TestReadContextSizeReal_RetryBounded_GivesUpAfterBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "transcript.jsonl")
+		stale := `{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":100000}}}`
+		tooLate := `{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":5000,"cache_read_input_tokens":405000}}}`
+		testutil.NoError(t, os.WriteFile(path, []byte(stale), 0o600))
+
+		go func() {
+			time.Sleep(contextSizeRetryBudget + contextSizeRetryBudget/2)
+			_ = os.WriteFile(path, []byte(tooLate), 0o600)
+		}()
+
+		size, err := readContextSizeReal(path)
+		testutil.NoError(t, err)
+		testutil.Equal(t, size, 100001)
+
+		// Let the background writer's already-scheduled (but too-late) wake
+		// actually fire and the goroutine exit before this bubble's main
+		// goroutine returns — synctest requires every spawned goroutine to
+		// finish, not merely be durably blocked, when the test func returns.
+		time.Sleep(contextSizeRetryBudget * 2)
+	})
 }
 
 // TestDiscoverAPIToken_ReadsWellKnownPath pins the well-known path

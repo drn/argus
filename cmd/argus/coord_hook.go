@@ -563,25 +563,80 @@ func budgetReal(_ string) (int, error) {
 	return cfg.Hera.CoordinatorContextBudget, nil
 }
 
-// readContextSizeReal scans the transcript JSONL for the latest assistant
-// message's total input token count: cache_read_input_tokens +
-// cache_creation_input_tokens + input_tokens. cache_read_input_tokens ALONE
-// is not a safe proxy for context size — it only counts tokens actually
-// served from Anthropic's prompt cache this turn, and collapses toward zero
-// on any cache miss (a long idle gap crossing the cache TTL is the common
-// case for an idle hera worker), even though the real context is unchanged
-// or larger: a cache miss rewrites the whole prior context as
-// cache_creation_input_tokens instead of reading it, so summing all three
-// fields is what actually tracks total context regardless of cache hit/miss
-// state (rail-context-size-metric-fix). Reads the file in full rather than
-// seeking from the end: JSONL has no fixed record size, so a true tail
-// would need its own reverse-line-scan; a coordinator's Stop hook already
-// pays one HTTP round trip per turn, so a linear file scan is not the
-// dominant cost. Lines that aren't valid JSON, or aren't an assistant
-// message, are skipped rather than erroring — a Stop hook must degrade
-// gracefully on a transcript with interleaved event types it doesn't care
-// about.
+// contextSizeRetryInterval / contextSizeRetryBudget bound readContextSizeReal's
+// wait for the transcript file's async writer to catch up with the turn that
+// just finished (fix-context-stop-lag). Claude Code's own hooks reference
+// documents transcript_path as "written asynchronously" and warns it "may
+// not yet include the current turn's most recent messages" at the moment a
+// hook fires, recommending hooks use the Stop/SubagentStop event's own
+// last_assistant_message field instead of reading the transcript for
+// exactly this reason — but last_assistant_message is documented (and
+// confirmed via the shipped feature request, github.com/anthropics/
+// claude-code#10610) to be a plain string of the final response TEXT, not a
+// structured object, and no Claude Code hook event of any kind exposes a
+// token-usage object directly: "hooks that need token usage information
+// must parse transcript_path themselves." So the transcript file remains
+// the only source; this bounded poll-and-take-the-max is the best available
+// mitigation for its documented lag, not a way to route around it.
+const (
+	contextSizeRetryInterval = 20 * time.Millisecond
+	contextSizeRetryBudget   = 200 * time.Millisecond
+)
+
+// readContextSizeReal scans the transcript JSONL for the latest main-chain
+// assistant message's total input token count, retrying across
+// contextSizeRetryBudget and keeping the LARGEST size observed: a stale read
+// (the transcript's async writer hasn't yet flushed the turn that just
+// finished) can only ever undercount, never overcount, since context size is
+// monotonically non-decreasing within one transcript file, so the max across
+// polls is always at least as fresh as any single poll and self-corrects the
+// instant the pending write lands within the budget. A later poll that fails
+// to open/scan (transient) is skipped rather than discarded — only the very
+// first read failing is a hard error, matching the pre-existing contract
+// (TestReadContextSizeReal_MissingFile_Errors).
 func readContextSizeReal(transcriptPath string) (int, error) {
+	best, err := scanContextSize(transcriptPath)
+	if err != nil {
+		return 0, err
+	}
+	deadline := time.Now().Add(contextSizeRetryBudget)
+	for time.Now().Before(deadline) {
+		time.Sleep(contextSizeRetryInterval)
+		size, err := scanContextSize(transcriptPath)
+		if err != nil {
+			continue
+		}
+		if size > best {
+			best = size
+		}
+	}
+	return best, nil
+}
+
+// scanContextSize does the actual one-shot transcript scan: the latest
+// main-chain assistant message's total input token count, summing
+// cache_read_input_tokens + cache_creation_input_tokens + input_tokens.
+// cache_read_input_tokens ALONE is not a safe proxy for context size — it
+// only counts tokens actually served from Anthropic's prompt cache this
+// turn, and collapses toward zero on any cache miss (a long idle gap
+// crossing the cache TTL is the common case for an idle hera worker), even
+// though the real context is unchanged or larger: a cache miss rewrites the
+// whole prior context as cache_creation_input_tokens instead of reading it,
+// so summing all three fields is what actually tracks total context
+// regardless of cache hit/miss state (rail-context-size-metric-fix). Reads
+// the file in full rather than seeking from the end: JSONL has no fixed
+// record size, so a true tail would need its own reverse-line-scan; a
+// coordinator's Stop hook already pays one HTTP round trip per turn plus
+// readContextSizeReal's own bounded retry budget, so a linear file scan is
+// not the dominant cost. Lines that aren't valid JSON, or aren't a
+// main-chain assistant message, are skipped rather than erroring — a Stop
+// hook must degrade gracefully on a transcript with interleaved event types
+// it doesn't care about. Lines with isSidechain=true are also skipped
+// (fix-sidechain-context-size): a dispatched sub-agent's (Task tool) own
+// turns carry the same "assistant" type but a tiny, fresh usage number
+// unrelated to the main conversation's cumulative context, so counting one
+// as "the latest" would understate the real size.
+func scanContextSize(transcriptPath string) (int, error) {
 	f, err := os.Open(transcriptPath)
 	if err != nil {
 		return 0, fmt.Errorf("open transcript: %w", err)
@@ -600,8 +655,9 @@ func readContextSizeReal(transcriptPath string) (int, error) {
 			continue
 		}
 		var entry struct {
-			Type    string `json:"type"`
-			Message struct {
+			Type        string `json:"type"`
+			IsSidechain bool   `json:"isSidechain"`
+			Message     struct {
 				Usage struct {
 					InputTokens              int `json:"input_tokens"`
 					CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
@@ -613,6 +669,9 @@ func readContextSizeReal(transcriptPath string) (int, error) {
 			continue
 		}
 		if entry.Type != "assistant" {
+			continue
+		}
+		if entry.IsSidechain {
 			continue
 		}
 		u := entry.Message.Usage
