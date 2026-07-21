@@ -27,19 +27,22 @@ import (
 //
 // The seams below (coordHookEnv's function fields) are the contract the
 // Stage 4 implementation is expected to satisfy: gate on ARGUS_TASK_ID +
-// resolved role kind BEFORE touching the transcript or the REST API, always
-// stamp context_size for a coordinator regardless of budget, and emit a Stop
-// hook "block" decision (Claude Code's hook contract: JSON on stdout) only
-// when at/over budget. Role resolution, transcript tailing, task_meta
-// stamping, and budget lookup are injected via coordHookEnv rather than
-// wired to the real daemon/REST/DB, matching this repo's function-field
+// resolved role kind (unbound resolves to "" and no-ops) BEFORE touching the
+// transcript or the REST API, always stamp context_size for ANY hera-bound
+// role (coordinator, worker, or freelance — rail-context-high widened this
+// from coordinator-only) regardless of budget, and emit a Stop hook "block"
+// decision (Claude Code's hook contract: JSON on stdout) only when the role
+// is a coordinator AND at/over budget. Role resolution, transcript tailing,
+// task_meta stamping, and budget lookup are injected via coordHookEnv rather
+// than wired to the real daemon/REST/DB, matching this repo's function-field
 // injection convention (context/knowledge/testing.md) so the gating and
 // nudge-recurrence logic can be unit tested without a live daemon.
 //
 // coordHookEnv, stopHookStdin, and runCoordHook's exact shape are a
 // reasonable proposal, not a mandate — Stage 4 may adjust the seam as long as
-// the five scenarios below (no-op on missing ARGUS_TASK_ID, no-op on
-// non-coordinator, unconditional stamp, over-budget nudge, nudge
+// the scenarios below (no-op on missing ARGUS_TASK_ID, no-op on unbound task,
+// unconditional stamp for coordinator/worker/freelance, budget/nudge
+// enforcement scoped to coordinator only, over-budget nudge, nudge
 // recurrence/stop) keep passing.
 
 // fakeCoordHookEnv builds a coordHookEnv backed by simple in-memory fakes,
@@ -159,13 +162,14 @@ func TestCoordHook_NoTaskID_NoOp(t *testing.T) {
 	}
 }
 
-// TestCoordHook_NonCoordinatorRole_NoOp pins "Worker session is a no-op":
-// with ARGUS_TASK_ID set but the bound role resolving to a non-coordinator
-// kind, the hook must exit with no side effects.
-func TestCoordHook_NonCoordinatorRole_NoOp(t *testing.T) {
+// TestCoordHook_UnboundRole_NoOp pins "Non-hera session is a no-op" for the
+// case where ARGUS_TASK_ID is set but the task carries no hera role binding
+// at all (ResolveRoleKind resolves to ""): the hook must still exit with no
+// side effects — it is not enough to gate on ARGUS_TASK_ID alone.
+func TestCoordHook_UnboundRole_NoOp(t *testing.T) {
 	f := &fakeCoordHookEnv{
 		getenv:   map[string]string{"ARGUS_TASK_ID": "task-1"},
-		roleKind: "worker",
+		roleKind: "",
 	}
 	var out, errOut bytes.Buffer
 
@@ -174,10 +178,62 @@ func TestCoordHook_NonCoordinatorRole_NoOp(t *testing.T) {
 	testutil.Equal(t, f.resolveCalled, true)
 	testutil.Equal(t, f.readCalled, false)
 	testutil.Equal(t, f.stampCalled, false)
+	testutil.Equal(t, f.budgetCalled, false)
 	testutil.Equal(t, f.pendingRecycleCalled, false)
 	testutil.Equal(t, f.forceRecycleCalled, false)
 	if strings.Contains(out.String(), "block") {
-		t.Errorf("worker no-op path must not emit a block decision; got stdout=%q", out.String())
+		t.Errorf("unbound no-op path must not emit a block decision; got stdout=%q", out.String())
+	}
+}
+
+// TestCoordHook_WorkerRole_StampsButSkipsBudgetEnforcement pins the widened
+// "Context size is stamped for any hera-bound role" behavior
+// (rail-context-high): a worker-kind role now gets its context_size stamped
+// exactly like a coordinator, since the rail's context-pressure indicator
+// needs a live signal for workers too, but it must never reach the
+// budget/nudge/hard-stop/recycle machinery below — that stays coordinator-only.
+func TestCoordHook_WorkerRole_StampsButSkipsBudgetEnforcement(t *testing.T) {
+	f := &fakeCoordHookEnv{
+		getenv:      map[string]string{"ARGUS_TASK_ID": "task-1"},
+		roleKind:    "worker",
+		contextSize: 999999, // deliberately far over any plausible budget
+	}
+	var out, errOut bytes.Buffer
+
+	runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out, &errOut, f.env())
+
+	testutil.Equal(t, f.resolveCalled, true)
+	testutil.Equal(t, f.readCalled, true)
+	testutil.Equal(t, f.stampCalled, true)
+	testutil.Equal(t, f.stampedTaskID, "task-1")
+	testutil.Equal(t, f.stampedSize, 999999)
+	testutil.Equal(t, f.budgetCalled, false)
+	testutil.Equal(t, f.pendingRecycleCalled, false)
+	testutil.Equal(t, f.forceRecycleCalled, false)
+	if strings.Contains(out.String(), "block") {
+		t.Errorf("worker path must never emit a block decision; got stdout=%q", out.String())
+	}
+}
+
+// TestCoordHook_FreelanceRole_StampsButSkipsBudgetEnforcement mirrors the
+// worker test for a freelance-kind role — the third non-coordinator hera
+// kind — to confirm the gate change is "any bound role" and not accidentally
+// scoped to "worker" specifically.
+func TestCoordHook_FreelanceRole_StampsButSkipsBudgetEnforcement(t *testing.T) {
+	f := &fakeCoordHookEnv{
+		getenv:      map[string]string{"ARGUS_TASK_ID": "task-1"},
+		roleKind:    "freelance",
+		contextSize: 5000,
+	}
+	var out, errOut bytes.Buffer
+
+	runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out, &errOut, f.env())
+
+	testutil.Equal(t, f.stampCalled, true)
+	testutil.Equal(t, f.stampedSize, 5000)
+	testutil.Equal(t, f.budgetCalled, false)
+	if strings.Contains(out.String(), "block") {
+		t.Errorf("freelance path must never emit a block decision; got stdout=%q", out.String())
 	}
 }
 

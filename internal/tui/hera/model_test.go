@@ -232,6 +232,49 @@ func TestBuildModel_ReadyToCloseAndStatus(t *testing.T) {
 	testutil.Equal(t, rv.Status, db.HeraStatusWorking)
 }
 
+// TestBuildModel_ContextSize pins RoleView.ContextSize's population from
+// task_meta(hera, context_size) — the same stamp `argus coord-hook` now
+// writes for coordinator, worker, and freelance roles alike
+// (add-worker-context-indicator). Mirrors TestBuildModel_ReadyToCloseAndStatus's
+// shape: a pure read off the already-fetched heraMeta map, no I/O of its own.
+func TestBuildModel_ContextSize(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-ctx")
+	testutil.NoError(t, d.SetMeta("t-ctx", db.HeraMetaNamespace, db.HeraMetaKeyContextSize, "48213"))
+
+	m, err := BuildModel(d, nil, nil, nil)
+	testutil.NoError(t, err)
+	rv := m.Active[0].Roles[0]
+	testutil.Equal(t, rv.ContextSize, 48213)
+}
+
+// TestBuildModel_ContextSize_AbsentOrMalformed pins the fail-open default: no
+// stamped value, or a value that fails to parse as an int, both resolve to 0
+// rather than erroring buildRoleView or the whole model build.
+func TestBuildModel_ContextSize_AbsentOrMalformed(t *testing.T) {
+	t.Run("absent", func(t *testing.T) {
+		d := memDB(t)
+		orch := seedOrch(t, d, "orch")
+		seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-ctx-absent")
+
+		m, err := BuildModel(d, nil, nil, nil)
+		testutil.NoError(t, err)
+		testutil.Equal(t, m.Active[0].Roles[0].ContextSize, 0)
+	})
+
+	t.Run("malformed", func(t *testing.T) {
+		d := memDB(t)
+		orch := seedOrch(t, d, "orch")
+		seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-ctx-bad")
+		testutil.NoError(t, d.SetMeta("t-ctx-bad", db.HeraMetaNamespace, db.HeraMetaKeyContextSize, "not-a-number"))
+
+		m, err := BuildModel(d, nil, nil, nil)
+		testutil.NoError(t, err)
+		testutil.Equal(t, m.Active[0].Roles[0].ContextSize, 0)
+	})
+}
+
 func TestBuildModel_BridgeTaskID(t *testing.T) {
 	d := memDB(t)
 	orch := seedOrch(t, d, "orch")

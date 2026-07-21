@@ -31,8 +31,11 @@ import (
 // Because the registration is global, this fires on EVERY Claude Code
 // session on the machine, including sessions with no relation to Argus. It
 // self-gates hard: the very first check is ARGUS_TASK_ID (only set for
-// Argus-spawned sessions — internal/agent/agent.go) plus the bound role
-// being a hera coordinator; anything else is a silent no-op.
+// Argus-spawned sessions — internal/agent/agent.go) plus the task carrying
+// ANY hera role binding (coordinator, worker, or freelance); an unbound task
+// is a silent no-op. Only a coordinator reaches the budget/nudge/hard-stop/
+// recycle machinery — a worker or freelance session gets its context_size
+// stamped (for the rail's context-pressure indicator) and stops there.
 //
 // See openspec/changes/add-coordinator-context-management/design.md
 // Decision 1 and specs/coordinator-context-management/spec.md.
@@ -94,13 +97,19 @@ type stopHookDecision struct {
 }
 
 // runCoordHook is the pure, testable core of the coord-hook subcommand. It
-// gates on ARGUS_TASK_ID + a resolved coordinator role BEFORE touching the
-// transcript or the REST API (no-op with zero side effects otherwise),
-// unconditionally stamps task_meta(hera, context_size) for a coordinator
-// session regardless of budget, and writes a Stop-hook block decision to out
-// only when at/over budget. Re-evaluates fresh on every invocation — nothing
-// is remembered between processes — but the nudge itself is throttled
-// (throttle-coord-hook-nudge): once it fires, it recurs only after
+// gates on ARGUS_TASK_ID + a resolved hera role BEFORE touching the
+// transcript or the REST API (no-op with zero side effects when the task
+// carries no hera binding at all — ResolveRoleKind resolves unbound tasks to
+// ""), unconditionally stamps task_meta(hera, context_size) for ANY
+// hera-bound role — coordinator, worker, or freelance (rail-context-high
+// widened this from coordinator-only, so the rail's context-pressure
+// indicator has a live signal for workers too) — regardless of budget, and
+// writes a Stop-hook block decision to out only when the role is a
+// coordinator AND at/over budget: the budget/nudge/hard-stop/recycle
+// machinery below remains coordinator-only, since only a coordinator is
+// long-lived enough to need it. Re-evaluates fresh on every invocation —
+// nothing is remembered between processes — but the nudge itself is
+// throttled (throttle-coord-hook-nudge): once it fires, it recurs only after
 // context_size has grown by at least the configured increment past the size
 // at which it last fired, not on every subsequent turn, and stops the very
 // turn context_size drops back under budget.
@@ -115,7 +124,7 @@ func runCoordHook(stdin io.Reader, out, errOut io.Writer, env coordHookEnv) {
 		_, _ = fmt.Fprintf(errOut, "coord-hook: resolve role kind: %v\n", err)
 		return
 	}
-	if kind != string(db.HeraKindCoordinator) {
+	if kind == "" {
 		return
 	}
 
@@ -131,11 +140,17 @@ func runCoordHook(stdin io.Reader, out, errOut io.Writer, env coordHookEnv) {
 		return
 	}
 
-	// Always stamp, regardless of budget — this is the live signal a human
-	// or the recycle mechanism reads, with zero dependency on the
-	// coordinator's cooperation.
+	// Always stamp, regardless of kind or budget — this is the live signal a
+	// human, the rail's context-pressure indicator, or the recycle mechanism
+	// reads, with zero dependency on the session's cooperation.
 	if err := env.StampContextSize(taskID, size); err != nil {
 		_, _ = fmt.Fprintf(errOut, "coord-hook: stamp context size: %v\n", err)
+	}
+
+	// Budget/nudge/hard-stop/recycle enforcement is coordinator-only: a
+	// worker or freelance session is stamped above and stops here.
+	if kind != string(db.HeraKindCoordinator) {
+		return
 	}
 
 	budget, err := env.Budget(taskID)

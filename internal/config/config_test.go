@@ -74,6 +74,20 @@ func TestHeraConfig_CoordinatorNudgeIncrement_Default(t *testing.T) {
 	}
 }
 
+// TestHeraConfig_WorkerContextWindow_Default pins the rail-context-high
+// config delta's "Default worker context window applies when unset" scenario:
+// HeraConfig.WorkerContextWindow must default to 1000000 — deliberately
+// separate from CoordinatorContextBudget (a coordinator recycle-nudge policy
+// threshold, not a context window size), since a worker runs with a much
+// larger real context window than the 200000 a coordinator is nudged to
+// recycle at.
+func TestHeraConfig_WorkerContextWindow_Default(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Hera.WorkerContextWindow != 1000000 {
+		t.Errorf("Hera.WorkerContextWindow = %d, want 1000000 (default)", cfg.Hera.WorkerContextWindow)
+	}
+}
+
 // TestSupervisorConfig_DefaultEnabled pins the P4 flip: an absent key ⇒
 // supervisor mode ON, mirroring hera.enabled. The in-process runner is reached
 // only via an explicit "false" (the retained rollback).

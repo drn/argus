@@ -148,6 +148,26 @@ coordinator_nudge_increment = 75000
 	testutil.Equal(t, base.Hera.CoordinatorNudgeIncrement, 50000)
 }
 
+// TestFileLoader_HeraWorkerContextWindowOverlay pins the rail-context-high
+// config delta's override precedence: a config.toml `hera.worker_context_window`
+// value must win over the 1000000 default, mirroring
+// TestFileLoader_HeraCoordinatorContextBudgetOverlay's shape exactly.
+func TestFileLoader_HeraWorkerContextWindowOverlay(t *testing.T) {
+	path := writeFile(t, `
+[hera]
+worker_context_window = 500000
+`)
+	l := NewFileLoader(path)
+	base := DefaultConfig()
+
+	got := l.Apply(base)
+	testutil.NoError(t, l.Err())
+
+	testutil.Equal(t, got.Hera.WorkerContextWindow, 500000)
+	// The base value is untouched.
+	testutil.Equal(t, base.Hera.WorkerContextWindow, 1000000)
+}
+
 func TestFileLoader_BackendModelsOverlay(t *testing.T) {
 	path := writeFile(t, `
 [backends.claude]
