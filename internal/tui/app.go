@@ -285,6 +285,13 @@ type App struct {
 	// coordinator's relayed answer (WriteInputSystem) could otherwise never
 	// clear. Mirrors the daemon's idleWatcherState.needsInputResume.
 	needsInputResume map[string]int
+	// heraBlockedResume carries the resumed-activity counter (see
+	// agent.ResumeActivityTick) for the SEPARATE self-reported hera_status
+	// "blocked" auto-clear pass (autoClearBlockedHeraRoles) — keyed by task ID
+	// like needsInputResume, but tracked independently since it is only
+	// advanced for the (usually empty) set of tasks currently holding a live
+	// hera binding with status=="blocked", not every running session.
+	heraBlockedResume map[string]int
 	// needsInputScreen re-emulates a session's log tail to the visible screen so
 	// needs-input detection matches the rendered screen, not StripANSI(raw) —
 	// catching fullscreen (alt-screen) prompts whose cursor-addressed glyphs are
@@ -2192,6 +2199,67 @@ func (a *App) archivedTaskSet() func(string) bool {
 	return func(id string) bool { return archived[id] }
 }
 
+// autoClearBlockedHeraRoles auto-clears a role's self-reported hera_status
+// ("blocked") once its underlying block has demonstrably resolved — see
+// agent.ClearBlockedRoleStatus for the two clear conditions (a direct reply in
+// the pane, or BUG-065's sustained resumed-activity signal for a
+// coordinator-relayed answer). hera_status is a WHOLLY SEPARATE, self-asserted
+// signal from the PTY-content needs-input flag detectNeedsInputSticky governs
+// — set only by an explicit hera_status tool call or a manual rail s/S step —
+// that ORs into the rail's "(?)" glyph (RoleView.needsInputOwn). None of the
+// BUG-029..065 fixes touch it: a role that marked itself blocked (e.g.
+// awaiting a check-in) and was then answered directly in its pane, with the
+// agent replying conversationally rather than re-invoking hera_status, showed
+// a stale rail "(?)" that nothing but a manual s/S step could ever clear.
+//
+// Scoped to the live hera bindings CURRENTLY status=="blocked" (usually zero)
+// via one indexed DB join (db.ListBlockedHeraRoleBindings) — cheap even at the
+// TUI's 1s tick, unlike scanning every running session. Local-only,
+// best-effort: a.db is *apistore.Store in --remote mode (no hera methods);
+// any lookup/write failure just leaves the stale flag for the operator to
+// clear manually via s/S.
+func (a *App) autoClearBlockedHeraRoles(runningIDs []string) {
+	d, ok := a.db.(*db.DB)
+	if !ok {
+		return
+	}
+	blocked, err := d.ListBlockedHeraRoleBindings()
+	if err != nil || len(blocked) == 0 {
+		a.heraBlockedResume = nil
+		return
+	}
+	runningSet := make(map[string]bool, len(runningIDs))
+	for _, id := range runningIDs {
+		runningSet[id] = true
+	}
+	next := make(map[string]int, len(blocked))
+	workingOf := make(map[string]bool, len(blocked))
+	for _, b := range blocked {
+		if !runningSet[b.TaskID] {
+			continue
+		}
+		working, computed := workingOf[b.TaskID]
+		if !computed {
+			tail := readSessionLogTailBytes(b.TaskID, detectNeedsInputTailBytes)
+			if len(tail) > 0 {
+				cols, rows := needsInputScreenSize(b.TaskID)
+				_, working = agent.ContentIdleFingerprint(a.needsInputScreen, tail, cols, rows)
+			}
+			workingOf[b.TaskID] = working
+		}
+		ticks, resumed := agent.ResumeActivityTick(a.heraBlockedResume[b.TaskID], working)
+		if ticks != 0 {
+			next[b.TaskID] = ticks
+		}
+		if agent.ClearBlockedRoleStatus(b.BlockedAt, a.lastSessionInput(b.TaskID), resumed) {
+			if err := d.ClearBlockedRoleStatus(b.RoleID); err == nil {
+				uxlog.Log("[hera-view] auto-cleared blocked hera_status role=%d task=%s", b.RoleID, b.TaskID)
+			}
+		}
+	}
+	a.heraBlockedResume = next
+}
+
 // detectNeedsInputTailBytes is how many bytes to read from the end of each
 // idle task's session log per tick. Large enough to contain Claude's full
 // selection-UI overlay after the colorized repaint inflates line widths.
@@ -2420,6 +2488,7 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	a.syncIdleUnvisited()
 	a.needsInputIDs = a.detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput)
 	a.tasklist.SetNeedsInput(a.needsInputIDs)
+	a.autoClearBlockedHeraRoles(runningIDs)
 	heraWorkers, heraCoordinators := a.readHeraRoles()
 	// Feed the authoritative needs-input set to the Hera rail so a blocked role
 	// shows "(?)" and the rollup bubbles it up to ancestor coordinators (BUG-018).

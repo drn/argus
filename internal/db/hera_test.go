@@ -2,6 +2,7 @@ package db
 
 import (
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
@@ -1121,5 +1122,125 @@ func TestHeraOrchestratorKanbanStatus(t *testing.T) {
 	t.Run("missing row returns ErrHeraNotFound", func(t *testing.T) {
 		d := heraTestDB(t)
 		testutil.ErrorIs(t, d.SetHeraOrchestratorKanbanStatus(9999, HeraKanbanBacklog), ErrHeraNotFound)
+	})
+}
+
+// TestListBlockedHeraRoleBindings covers the read half of the hera_status
+// "blocked" auto-clear pass (root-cause-and-fix-a-live): the rail's "(?)"
+// glyph ORs a role's self-reported hera_status=="blocked" together with the
+// separate, auto-clearing PTY needs-input flag (RoleView.needsInputOwn), but
+// unlike that flag, nothing previously cleared hera_status automatically — a
+// role that marked itself blocked and was then answered directly in its pane
+// kept showing "(?)" forever. ListBlockedHeraRoleBindings is the read side of
+// the fix: it must surface exactly the live bindings whose role is CURRENTLY
+// blocked, with the right blocked-at timestamp, and nothing else.
+func TestListBlockedHeraRoleBindings(t *testing.T) {
+	t.Run("only live+blocked bindings are returned", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "o")
+
+		blockedRole := mkRole(t, d, o.ID, "blocked-worker", HeraKindWorker)
+		mkBinding(t, d, blockedRole.ID, "t-blocked", "/w/t-blocked")
+		testutil.NoError(t, d.UpsertHeraRoleStatus(blockedRole.ID, HeraStatusBlocked))
+
+		workingRole := mkRole(t, d, o.ID, "working-worker", HeraKindWorker)
+		mkBinding(t, d, workingRole.ID, "t-working", "/w/t-working")
+		testutil.NoError(t, d.UpsertHeraRoleStatus(workingRole.ID, HeraStatusWorking))
+
+		noStatusRole := mkRole(t, d, o.ID, "no-status-worker", HeraKindWorker)
+		mkBinding(t, d, noStatusRole.ID, "t-no-status", "/w/t-no-status")
+
+		endedRole := mkRole(t, d, o.ID, "ended-worker", HeraKindWorker)
+		endedBinding := mkBinding(t, d, endedRole.ID, "t-ended", "/w/t-ended")
+		testutil.NoError(t, d.UpsertHeraRoleStatus(endedRole.ID, HeraStatusBlocked))
+		testutil.NoError(t, d.EndHeraBinding(endedBinding.ID, "done"))
+
+		got, err := d.ListBlockedHeraRoleBindings()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 1)
+		testutil.Equal(t, got[0].RoleID, blockedRole.ID)
+		testutil.Equal(t, got[0].TaskID, "t-blocked")
+		if got[0].BlockedAt.IsZero() {
+			t.Fatal("expected a non-zero BlockedAt timestamp")
+		}
+	})
+
+	t.Run("empty when nothing is blocked", func(t *testing.T) {
+		d := heraTestDB(t)
+		got, err := d.ListBlockedHeraRoleBindings()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 0)
+	})
+
+	t.Run("BlockedAt reflects the latest status update", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "o")
+		r := mkRole(t, d, o.ID, "w", HeraKindWorker)
+		mkBinding(t, d, r.ID, "t", "/w/t")
+
+		testutil.NoError(t, d.UpsertHeraRoleStatus(r.ID, HeraStatusWorking))
+		testutil.NoError(t, d.UpsertHeraRoleStatus(r.ID, HeraStatusBlocked))
+		before := time.Now()
+
+		got, err := d.ListBlockedHeraRoleBindings()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 1)
+		if got[0].BlockedAt.After(before) {
+			t.Fatalf("BlockedAt %v should not be after the query time %v", got[0].BlockedAt, before)
+		}
+	})
+}
+
+// TestClearBlockedRoleStatus covers the write half of the auto-clear pass.
+func TestClearBlockedRoleStatus(t *testing.T) {
+	t.Run("blocked role transitions to working", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "o")
+		r := mkRole(t, d, o.ID, "w", HeraKindWorker)
+		testutil.NoError(t, d.UpsertHeraRoleStatus(r.ID, HeraStatusBlocked))
+
+		testutil.NoError(t, d.ClearBlockedRoleStatus(r.ID))
+
+		got, err := d.HeraRoleStatusFor(r.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.Status, HeraStatusWorking)
+	})
+
+	t.Run("no-op when not currently blocked", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "o")
+		r := mkRole(t, d, o.ID, "w", HeraKindWorker)
+		testutil.NoError(t, d.UpsertHeraRoleStatus(r.ID, HeraStatusDone))
+
+		testutil.NoError(t, d.ClearBlockedRoleStatus(r.ID))
+
+		got, err := d.HeraRoleStatusFor(r.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.Status, HeraStatusDone)
+	})
+
+	t.Run("no-op when the role has no status row at all", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "o")
+		r := mkRole(t, d, o.ID, "w", HeraKindWorker)
+
+		testutil.NoError(t, d.ClearBlockedRoleStatus(r.ID))
+
+		_, err := d.HeraRoleStatusFor(r.ID)
+		testutil.ErrorIs(t, err, ErrHeraNotFound)
+	})
+
+	t.Run("safe to call twice", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "o")
+		r := mkRole(t, d, o.ID, "w", HeraKindWorker)
+		testutil.NoError(t, d.UpsertHeraRoleStatus(r.ID, HeraStatusBlocked))
+
+		testutil.NoError(t, d.ClearBlockedRoleStatus(r.ID))
+		testutil.NoError(t, d.ClearBlockedRoleStatus(r.ID))
+
+		got, err := d.HeraRoleStatusFor(r.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.Status, HeraStatusWorking)
 	})
 }
