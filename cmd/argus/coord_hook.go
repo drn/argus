@@ -54,9 +54,14 @@ type coordHookEnv struct {
 	// coordhook-idle-deadlock: re-blocking never lets the session go idle,
 	// so RecycleWatcher's IsIdle gate never actually fires).
 	PendingRecycleAlready func(taskID string) (bool, error)
-	ReadContextSize       func(transcriptPath string) (int, error)
-	StampContextSize      func(taskID string, size int) error
-	Budget                func(taskID string) (int, error)
+	// ReadContextSize computes the context_size for the given task's
+	// transcript. taskID lets the real implementation fetch the
+	// previously-stamped value and skip its retry loop when the fresh scan
+	// already reflects it (fix-context-stop-lag's early exit) — see
+	// readContextSizeReal.
+	ReadContextSize  func(taskID, transcriptPath string) (int, error)
+	StampContextSize func(taskID string, size int) error
+	Budget           func(taskID string) (int, error)
 	// ForceRecycle calls the daemon's hard-stop escalation (Part B): an
 	// immediate, idle-gate-free kill-and-restart of the coordinator's
 	// session, fired once context_size crosses 1.5x budget regardless of
@@ -134,7 +139,7 @@ func runCoordHook(stdin io.Reader, out, errOut io.Writer, env coordHookEnv) {
 		return
 	}
 
-	size, err := env.ReadContextSize(in.TranscriptPath)
+	size, err := env.ReadContextSize(taskID, in.TranscriptPath)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "coord-hook: read context size: %v\n", err)
 		return
@@ -478,6 +483,43 @@ func stampContextSizeReal(taskID string, size int) error {
 	return err
 }
 
+// readPreviousContextSizeReal reads task_meta(hera, context_size) for the
+// given task — the value THIS SAME hook stamped on some earlier Stop event —
+// mirroring resolveRoleKindReal/pendingRecycleAlreadyReal/
+// readLastNudgedContextSizeReal's shape exactly, against the same GET
+// /api/tasks/{id}/meta?namespace=hera endpoint, just reading a different
+// key. readContextSizeReal uses this as a cheap freshness signal (fix-
+// context-stop-lag's early exit): a fresh scan at or above this value needs
+// no retry. ok is false (with no error) when the key is absent — no prior
+// stamp exists yet (this task's first Stop event ever).
+func readPreviousContextSizeReal(taskID string) (int, bool, error) {
+	respBody, err := coordHookRequest(http.MethodGet,
+		"/api/tasks/"+taskID+"/meta?namespace="+db.HeraMetaNamespace, nil)
+	if err != nil {
+		return 0, false, err
+	}
+
+	var parsed struct {
+		Entries []struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return 0, false, fmt.Errorf("decode task meta: %w", err)
+	}
+	for _, e := range parsed.Entries {
+		if e.Key == db.HeraMetaKeyContextSize {
+			size, err := strconv.Atoi(e.Value)
+			if err != nil {
+				return 0, false, fmt.Errorf("parse previous context size: %w", err)
+			}
+			return size, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
 // readLastNudgedContextSizeReal reads task_meta(hera, last_nudged_context_size)
 // for the given task (db.HeraMetaKeyLastNudgedContextSize) — mirrors
 // resolveRoleKindReal/pendingRecycleAlreadyReal's shape exactly, against the
@@ -577,28 +619,58 @@ func budgetReal(_ string) (int, error) {
 // token-usage object directly: "hooks that need token usage information
 // must parse transcript_path themselves." So the transcript file remains
 // the only source; this bounded poll-and-take-the-max is the best available
-// mitigation for its documented lag, not a way to route around it.
+// mitigation for its documented lag, not a way to route around it. The retry
+// loop only ever runs when there's actual evidence of a stale read (see
+// readContextSizeReal's early exit below) — it is NOT paid on every Stop
+// event, since this hook now stamps context_size for every hera-bound role
+// (coordinator, worker, AND freelance), not just coordinators.
 const (
 	contextSizeRetryInterval = 20 * time.Millisecond
 	contextSizeRetryBudget   = 200 * time.Millisecond
 )
 
+// contextSizeReadPrevious is a package-level test seam (context/knowledge/
+// testing.md's function-field injection convention, applied at package scope
+// since readContextSizeReal is a leaf function with no struct to hang a
+// field off): production wiring is readPreviousContextSizeReal (a REST round
+// trip); tests override it with an in-memory fake so the early-exit decision
+// is unit-testable without a live daemon.
+var contextSizeReadPrevious = readPreviousContextSizeReal
+
 // readContextSizeReal scans the transcript JSONL for the latest main-chain
-// assistant message's total input token count, retrying across
-// contextSizeRetryBudget and keeping the LARGEST size observed: a stale read
-// (the transcript's async writer hasn't yet flushed the turn that just
-// finished) can only ever undercount, never overcount, since context size is
-// monotonically non-decreasing within one transcript file, so the max across
-// polls is always at least as fresh as any single poll and self-corrects the
-// instant the pending write lands within the budget. A later poll that fails
-// to open/scan (transient) is skipped rather than discarded — only the very
-// first read failing is a hard error, matching the pre-existing contract
-// (TestReadContextSizeReal_MissingFile_Errors).
-func readContextSizeReal(transcriptPath string) (int, error) {
-	best, err := scanContextSize(transcriptPath)
+// assistant message's total input token count. It first tries a single
+// scan; when that value already reflects at least as much growth as the
+// PREVIOUSLY-stamped context_size for this task (task_meta hera/
+// context_size, fetched via contextSizeReadPrevious), it returns
+// immediately — the common case, since a growing session's usage only ever
+// increases turn over turn, so a fresh scan at or above the last known value
+// is definitionally not stale. Only when the first scan comes back BELOW
+// the previous stamp (the actual lagging-write symptom this fix targets),
+// or there's no previous stamp yet (the task's first Stop event, where we
+// have no baseline to judge freshness against), does it fall into a bounded
+// retry across contextSizeRetryBudget, keeping the LARGEST size observed: a
+// stale read can only ever undercount, never overcount, since context size
+// is monotonically non-decreasing within one transcript file, so the max
+// across polls is always at least as fresh as any single poll and
+// self-corrects the instant the pending write lands within the budget. A
+// failure reading the previous stamp (e.g. daemon unreachable) fails open
+// into the retry path — never worse than always retrying, and never masks
+// a genuinely stale read behind an unrelated REST error. A later poll that
+// fails to open/scan (transient) is skipped rather than discarded — only
+// the very first scan failing is a hard error, matching the pre-existing
+// contract (TestReadContextSizeReal_MissingFile_Errors).
+func readContextSizeReal(taskID, transcriptPath string) (int, error) {
+	first, err := scanContextSize(transcriptPath)
 	if err != nil {
 		return 0, err
 	}
+
+	prev, hadPrev, prevErr := contextSizeReadPrevious(taskID)
+	if prevErr == nil && hadPrev && first >= prev {
+		return first, nil
+	}
+
+	best := first
 	deadline := time.Now().Add(contextSizeRetryBudget)
 	for time.Now().Before(deadline) {
 		time.Sleep(contextSizeRetryInterval)
