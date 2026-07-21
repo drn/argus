@@ -148,13 +148,15 @@ Derived from: `internal/tui/hera/rail.go` (`drawRow`, `drawOrchRow`, `drawRoleRo
 
 ### Requirement: Status-icon precedence on role rows (area 3)
 
-The system SHALL choose a role row's status glyph by this precedence: (1) `NeedsInput` — the role's own needs-input signal (a PTY prompt or a `blocked` hera role status) OR its subtree rollup — wins over EVERYTHING, including a role's own `ready_to_close` mark (BUG-A: a role genuinely blocked on a user prompt is the one actionable thing in the subtree, and must never be masked); otherwise (2) GENUINE activity (`RoleView.IsActive` — `Live && SessionRunning && !SessionIdle`, a session/content-derived signal, NOT gated on the bound argus task's status, BUG-C) renders the ACTIVE SPINNER's animated frame (see "Active agents animate a spinner glyph") — this outranks the stale-able resting states below it (BUG-F), because a role producing output again is more current than any of those stamps; otherwise (3) `ready_to_close` renders a distinct review glyph; otherwise (4) an operator/agent-set `failed` hera role status renders a distinct red `✕` (D2, `make-hera-plan-living`), never conflated with `done`; otherwise (5) a `done` hera role status renders its distinct static glyph; otherwise (6) an `idle` hera role status renders the static idle glyph; otherwise (7) binding presence (`Live`) renders a "live" glyph; otherwise (8) an unbound/dimmed glyph. The spinner is sourced from REAL session activity, never the stale `working` hera role status (BUG-003): a `working` role that is not genuinely active falls through to (7)/(8) and renders a static glyph. `ready_to_close` is read from the task-addressed `task_meta` "hera" namespace, not the hera tables.
+The system SHALL choose a role row's status glyph by this precedence: (1) `NeedsInput` — the role's OWN needs-input signal (a PTY prompt or a `blocked` hera role status) — wins over EVERYTHING, including a role's own `ready_to_close` mark (BUG-A: a role genuinely blocked on a user prompt is the one actionable thing in the subtree, and must never be masked); otherwise (2) GENUINE activity (`RoleView.IsActive` — `Live && SessionRunning && !SessionIdle`, a session/content-derived signal, NOT gated on the bound argus task's status, BUG-C) renders the ACTIVE SPINNER's animated frame (see "Active agents animate a spinner glyph") — this outranks the stale-able resting states below it (BUG-F), because a role producing output again is more current than any of those stamps; otherwise (3) `ready_to_close` renders a distinct review glyph; otherwise (4) an operator/agent-set `failed` hera role status renders a distinct red `✕` (D2, `make-hera-plan-living`), never conflated with `done`; otherwise (5) a `done` hera role status renders its distinct static glyph; otherwise (6) an `idle` hera role status renders the static idle glyph; otherwise (7) binding presence (`Live`) renders a "live" glyph; otherwise (8) an unbound/dimmed glyph. The spinner is sourced from REAL session activity, never the stale `working` hera role status (BUG-003): a `working` role that is not genuinely active falls through to (7)/(8) and renders a static glyph. `ready_to_close` is read from the task-addressed `task_meta` "hera" namespace, not the hera tables.
+
+This precedence applies identically to a coordinator-shaped row (an orchestrator header, or a bridging worker row that is itself a nested sub-coordinator): its `NeedsInput` term is its OWN signal only, never a descendant's rollup — see "Needs-input '(?)' reflects only a role's own signal on every surface."
 
 Derived from: `internal/tui/widget/rolestatusicon.go` (`RoleStatusIcon`, `RoleStatusInputs`), `internal/tui/hera/rail.go` (`statusIcon`), `internal/tui/hera/model.go` (`RoleView.IsActive`, `RoleView.ShowsNeedsInput`, `buildRoleView` reads `ready_to_close`).
 
 #### Scenario: Needs-input overrides ready_to_close and everything else
 
-- **WHEN** a role shows its needs-input "(?)" signal (own or subtree rollup) AND also carries `meta:hera.ready_to_close=true`
+- **WHEN** a role shows its own needs-input "(?)" signal AND also carries `meta:hera.ready_to_close=true`
 - **THEN** the row renders the needs-input glyph, not the review/ready glyph
 
 #### Scenario: ready_to_close overrides a stale working status
@@ -191,6 +193,11 @@ Derived from: `internal/tui/widget/rolestatusicon.go` (`RoleStatusIcon`, `RoleSt
 
 - **WHEN** a role holds a live binding but has no status row and is not ready_to_close and not in needs-input
 - **THEN** the row renders the in-review "live" glyph rather than the unbound glyph
+
+#### Scenario: A coordinator's own status glyph is unaffected by a blocked descendant
+
+- **WHEN** a coordinator role is idle/working/done and is NOT itself in needs-input, but some descendant role in its orchestration subtree IS
+- **THEN** the coordinator's row renders its own status glyph (idle/working/done), never the needs-input glyph
 
 ### Requirement: Rail keybindings (area 4)
 
@@ -734,13 +741,18 @@ A LIVE plan node's status icon (glyph AND style, including the animated spinner 
 
 #### Scenario: Needs-input outranks active without animating (BUG-012)
 
-- **WHEN** a live worker role is genuinely active (`Live && SessionRunning && !SessionIdle`, independent of its bound task's status) AND the role also needs input (blocked on a prompt, or a descendant in its subtree does)
+- **WHEN** a live worker role is genuinely active (`Live && SessionRunning && !SessionIdle`, independent of its bound task's status) AND the role itself also needs input (blocked on a prompt)
 - **THEN** its plan node renders the static needs-input `?` glyph and style — identical to the rail row — and is NOT flagged animated, so the widget does not swap the `?` for the live spinner frame at draw
 
 #### Scenario: Planned and failed overlays
 
 - **WHEN** a node is a never-bound planned role, or a bound role whose task reports failure
 - **THEN** the planned node renders `○` and the failed node renders `✕`
+
+#### Scenario: A genuinely-active bridging sub-coordinator node is unaffected by a blocked descendant
+
+- **WHEN** a plan node represents a bridging worker row that is itself a nested sub-coordinator, that role is genuinely active, and some descendant in its bridged child orchestrator needs input
+- **THEN** the node renders the active spinner (animated), not the static needs-input glyph — identical to what the rail row for that same role renders
 
 ### Requirement: Plan nodes render as boxes with a double-line border selection cue (area 6)
 
@@ -1359,226 +1371,6 @@ The binding SHALL appear in the Hera rail section of the help overlay (`?`) and 
 - **THEN** the rail cursor does NOT move
 - **THEN** the `FocusMachine` state does NOT change
 - **THEN** the key is forwarded to the pane's PTY via `forwardKey`
-
-### Requirement: Needs-input "(?)" propagates up the orchestration tree to the root (area rail)
-
-The system SHALL surface the needs-input attention state of any role on ALL of
-its ancestor coordinators, transitively up to the root coordinator. A
-coordinator's rail status icon SHALL show the needs-input "(?)" indicator
-(`theme.IconNeedsInput` / `theme.StyleNeedsInput`) when the coordinator role
-ITSELF is in needs-input OR ANY descendant role in its orchestration subtree is
-in needs-input. The descendant walk SHALL be transitive across nested and
-BRIDGED sub-orchestrators (a sub-coordinator is a separate orchestrator bridged
-in as a worker row) and SHALL be cycle-safe, using the same visited-set guard
-and the same two descent mechanisms (`bridgeIndex` worker-bridging and
-`coordBridgeChildren`) as the `BridgeSubtree` traversal that drives rail
-nesting and the Ctrl+D cascade — but the rollup's OWN traversal, not
-`BridgeSubtree` itself, because the rollup additionally prunes archived roles
-(see below) while rendering and the cascade must NOT. The indicator SHALL
-clear on an ancestor as soon as no descendant (and not the ancestor itself)
-needs input.
-
-An ARCHIVED role (`role.ArchivedAt` set, e.g. via the rail's `a` Tier-1 hide)
-SHALL be excluded from the needs-input rollup counted toward its ancestors:
-neither the archived role's own needs-input signal, NOR — when the archived
-role is a bridging row into a nested sub-orchestrator — anything needing input
-within that bridged subtree, SHALL propagate past the archived role to any
-ancestor coordinator or coordinator-less orchestrator header. This applies
-identically when the bridged child is reached through a worker-bridge (a
-directly-archived bridging role) or when the whole child orchestrator is
-itself archived (already excluded from `coordBridgeChildren`, and excluded
-here for the worker-bridge path too). The exclusion applies ONLY to what
-counts toward ANCESTORS — an archived role's OWN rail row SHALL continue to
-show the needs-input "(?)" glyph on itself exactly as an unarchived role
-would, since it is unaffected by whether IT counts toward something above it.
-
-A live needs-input signal SHALL surface for a WORKER or COORDINATOR role,
-regardless of the bound argus task's status, as long as the role's live
-binding shows a current, content-aware needs-input signal (see "Needs-input
-(?) CLEARS and propagates up" for the exact clearing mechanism). This holds
-uniformly: a COORDINATOR routinely rolls its bound
-task to complete/in_review while its session stays alive and keeps
-coordinating, and may itself block on a user prompt (BUG-028); a WORKER MAY
-likewise sit in `in_review` with its session still alive while the
-coordinator closes it out (#707), and can genuinely ask a fresh question in
-that state — it SHALL surface "(?)" then, the same as any other live role
-(BUG-A). There is NO worker-specific `in_progress` gate. The earlier BUG-023
-concern (a finished worker's stale marker pinning "(?)" forever) is instead
-protected because a role's live binding ends the moment its session exits,
-and the needs-input signal itself is content-aware rather than a stale
-carry-forward (see "CLEARS" below) — so there is no stale-marker hazard once
-the session is gone. The App's Hera-rail needs-input feed SHALL admit a task
-that is `in_progress` OR bound to ANY hera role — coordinator OR worker —
-regardless of task status; admitting a non-in_progress hera-managed task (a
-MANAGED task, worker or coordinator) SHALL NOT affect the unmanaged
-attention-summary count (BUG-005), which stays `in_progress`-gated for
-unmanaged tasks.
-
-When an orchestrator has NO coordinator role to carry the glyph (for example its
-coordinator role was nuked, BUG-022 Tier-2), the orchestrator HEADER itself SHALL
-surface the subtree needs-input rollup with the SAME `theme.IconNeedsInput` /
-`theme.StyleNeedsInput` indicator, so a blocked worker is visible from the
-default collapsed ("tidy summary") view without expanding — mirroring the task
-list's project-folder aggregate, which always shows "(?)" for any blocked task.
-The per-orchestrator rollup SHALL therefore be exposed on the `OrchView`
-(`SubtreeNeedsInput`), not only on the coordinator role. When a coordinator role
-IS present its status glyph already carries the rollup and the header SHALL NOT
-double-render the indicator.
-
-The authoritative per-role needs-input signal SHALL be the SAME set the task
-list consumes — the App's `needsInputIDs` (the idle-gated, sticky
-`agent.DetectNeedsInput` PTY-tail scan) — threaded into `BuildModel`, plus the
-role's own hera `blocked` status. No new needs-input detection SHALL be invented
-for the rail. The rollup SHALL be computed in the MODEL (`BuildModel`) and
-exposed as a `RoleView` field (and an `OrchView` field for the header), so
-`statusIcon` and `drawOrchRow` stay pure projections that only read it (no
-Draw-time I/O, no `screen.Sync()`).
-
-Precedence: the needs-input rollup SHALL rank ABOVE every other role glyph,
-including a role's own `ready_to_close` mark, the active spinner, `failed`,
-`done`, `idle`, and `live` (BUG-A) — a descendant needing input surfaces on an
-ancestor even when the ancestor is itself active, ready_to_close, idle,
-working, or done, and a role's OWN needs-input signal masks its own
-`ready_to_close`/active/resting glyph the same way (see "Status-icon
-precedence on role rows"). Needs-input is content-aware upstream (see
-"Needs-input (?) CLEARS and propagates up"), so this never falsely masks a
-role merely idling at a stale done/ready_to_close summary.
-
-Derived from: `internal/tui/hera/model.go` (`RoleView.NeedsInput`,
-`RoleView.SubtreeNeedsInput`, `OrchView.SubtreeNeedsInput`, `needsInputOwn`,
-`ShowsNeedsInput`, `BuildModel` needs-input parameter, `rollupNeedsInput`,
-`orchSubtreeNeedsInput`),
-`internal/tui/hera/rail.go` (`statusIcon` reads `ShowsNeedsInput`; `drawOrchRow`
-surfaces `OrchView.SubtreeNeedsInput` when no coordinator role is present),
-`internal/tui/hera/page.go` (`SetNeedsInput`, `doRefresh`),
-`internal/tui/app.go` (push `needsInputIDs` to the Hera page each tick).
-
-#### Scenario: A blocked worker bubbles "(?)" to its parent and the root coordinator
-
-- **WHEN** a worker bound under a sub-coordinator enters needs-input and that sub-coordinator is bridged under a root coordinator
-- **THEN** the worker row, the sub-coordinator's rail row, AND the root coordinator's header all render the needs-input "(?)" indicator
-
-#### Scenario: The rollup clears when the descendant resolves
-
-- **WHEN** the only needs-input descendant in a subtree is no longer in needs-input
-- **THEN** the ancestor coordinators stop rendering "(?)" and revert to their own status glyph
-
-#### Scenario: Propagation crosses multiple bridge levels
-
-- **WHEN** a needs-input role sits two or more bridged sub-orchestrator levels below the root
-- **THEN** every intervening sub-coordinator AND the root coordinator render "(?)"
-
-#### Scenario: No false-positive without a needs-input descendant
-
-- **WHEN** no role anywhere in a coordinator's subtree is in needs-input
-- **THEN** that coordinator does NOT render "(?)" and shows its own status glyph
-
-#### Scenario: The rollup is cycle-safe
-
-- **WHEN** the orchestration subtree contains a bridge cycle (A bridges B and B bridges A)
-- **THEN** the rollup terminates and still reports needs-input for the reachable members
-
-#### Scenario: A coordinator-less orchestrator header surfaces a blocked worker
-
-- **WHEN** a collapsed orchestrator has a blocked (needs-input) worker in its subtree but no coordinator role (e.g. the coordinator was nuked)
-- **THEN** the orchestrator header renders the needs-input "(?)" indicator so the blocked worker is visible without expanding
-
-#### Scenario: A coordinator-less header rollup clears when the worker's session resolves or exits
-
-- **WHEN** the only needs-input worker under a coordinator-less orchestrator either resolves its prompt or its session exits — not merely because its bound task rolls to in_review
-- **THEN** the orchestrator header stops rendering "(?)" on the next refresh
-
-#### Scenario: A blocked coordinator surfaces "(?)" even when its task is complete
-
-- **WHEN** a coordinator's bound task has rolled to complete/in_review but its session is alive and blocked on a user prompt (its task is in the needs-input set)
-- **THEN** the coordinator's (collapsed) header renders the needs-input "(?)" indicator — task status is never a gate for a live role
-
-#### Scenario: A worker whose session has exited stays cleared even though its task shows complete
-
-- **WHEN** a worker's bound task has rolled to complete/in_review AND its session has exited (its live binding ended)
-- **THEN** the worker's row and its ancestor rollup do NOT render "(?)" — a dead binding cannot contribute a needs-input signal (BUG-023 preserved)
-
-#### Scenario: Archiving a blocked leaf worker stops it flagging its parent coordinator
-
-- **GIVEN** a worker directly under a coordinator is in needs-input, and the coordinator currently renders "(?)"
-- **WHEN** the user archives that worker's role (`a`)
-- **THEN** the coordinator's rail row stops rendering "(?)" on the next refresh (assuming no other descendant needs input)
-
-#### Scenario: Archiving a blocked leaf worker stops it flagging the root across multiple bridge levels
-
-- **GIVEN** a leaf worker two or more bridge levels below the root is in needs-input, and every intervening sub-coordinator plus the root render "(?)"
-- **WHEN** the user archives that leaf worker's role
-- **THEN** every intervening sub-coordinator AND the root coordinator stop rendering "(?)" on the next refresh
-
-#### Scenario: Archiving a nested sub-coordinator's bridging row hides its whole subtree from the parent
-
-- **GIVEN** a nested sub-coordinator's bridging row (a role in the parent orchestrator with a structurally intact bridge into a child orchestrator) is NOT itself in needs-input, but a worker within its bridged child orchestrator IS
-- **WHEN** the user archives the bridging row's role
-- **THEN** the parent coordinator (and any further ancestor) stops rendering "(?)" on the next refresh, even though the blocked worker in the child orchestrator is still genuinely in needs-input
-
-#### Scenario: Archiving a whole sub-orchestrator excludes it when reached via a worker-bridge
-
-- **GIVEN** a child orchestrator reached from a live parent via a worker-bridge is itself archived (`archived_at` set on the orchestrator, not just a role within it) and contains a blocked worker
-- **WHEN** the rollup is computed for the live parent
-- **THEN** the parent does NOT render "(?)" on account of that archived child orchestrator's subtree
-
-#### Scenario: An archived role's own row keeps showing its own needs-input glyph
-
-- **GIVEN** a worker's role is archived while it is genuinely in needs-input
-- **WHEN** the rollup is recomputed
-- **THEN** the archived worker's OWN rail row still renders the needs-input "(?)" glyph on itself, even though it no longer counts toward any ancestor
-
-### Requirement: Needs-input "(?)" CLEARS and propagates up when a descendant resolves (area rail)
-
-The needs-input "(?)" rollup SHALL clear on every ancestor coordinator,
-transitively to the root, as soon as a descendant's needs-input resolves —
-mirroring the SET propagation in reverse — on the next rail refresh. The system
-SHALL recompute the rollup from the current model on each refresh (each app tick
-while the Hera tab is active, and after each `s`/`S` status step), so a cleared
-descendant clears its ancestors with no stale `SubtreeNeedsInput` carried between
-builds.
-
-The authoritative PTY needs-input scan (`App.needsInputIDs`) SHALL be
-content-aware, not a stale carry-forward: a task is a member of the set only
-while it currently shows an unresolved `agent.DetectNeedsInput` signal, and it
-clears once the signal resolves (the user provides input, the underlying
-content changes, or the session is archived) — it does NOT linger on a
-stale/already-answered prompt. The system SHALL gate a role's contribution to
-the rollup on the role's LIVE BINDING, not the bound task's status: a live
-role's needs-input persists for as long as its content-aware signal remains
-current, even while its task has already rolled to `in_review`/`complete`
-(BUG-A, #707) — task status alone is NOT a clearing condition. A role's
-needs-input clears when either (a) the content-aware signal itself resolves,
-or (b) the role's live binding ends (its session exits), whichever comes
-first.
-
-The role's own hera `blocked` status SHALL remain an INDEPENDENT, ungated
-needs-input source (it is a deliberate "I'm blocked" assertion, honest
-regardless of task status); it SHALL clear by stepping the role off `blocked`
-(`s`/`S`). The gate SHALL be hera-view-local: the task list's sticky needs-input
-semantics are unchanged.
-
-Derived from: `internal/tui/hera/model.go` (`buildRoleView` surfaces
-`RoleView.NeedsInput` for any live role currently in the App's content-aware
-`needsInputIDs` set, independent of `task.Status`; `rollupNeedsInput`
-recomputed per `BuildModel`), `internal/tui/heraactions.go` (`heraStatusStep`
-→ `heraRefresh`), `internal/tui/app.go` (`SetNeedsInput` + `ScheduleRefresh`
-each tick).
-
-#### Scenario: A live worker's needs-input persists through in_review if the session is still asking
-
-- **WHEN** a worker's task rolls to in_review while its session stays alive and is still genuinely at an unanswered prompt
-- **THEN** the worker's row and every ancestor coordinator continue rendering "(?)" — the task-status transition alone does not clear it (BUG-A, #707)
-
-#### Scenario: A worker's needs-input clears once the session resolves or exits
-
-- **WHEN** a worker's session either receives the awaited input (its content-aware needs-input signal resolves) or exits entirely (ending its live binding)
-- **THEN** the worker's own row and every ancestor coordinator stop rendering "(?)" on the next refresh
-
-#### Scenario: Stepping a descendant off `blocked` clears the ancestor rollup
-
-- **WHEN** a deep worker's hera status is stepped off `blocked` (and it has no live PTY needs-input)
-- **THEN** every intervening sub-coordinator AND the root coordinator stop rendering "(?)" on the next refresh
 
 ### Requirement: Two resting states — hide (Tier 1) and nuke (Tier 2) (area 7)
 
@@ -2415,4 +2207,39 @@ The rail SHALL respond to mouse wheel scroll events within its rect by moving th
 
 - **WHEN** a mouse event's position falls outside the rail's current rect
 - **THEN** the event is not consumed and the cursor does not move
+
+### Requirement: Needs-input "(?)" reflects only a role's own signal on every surface (area rail)
+
+The system SHALL derive the needs-input "(?)" indicator on EVERY coordinator-shaped render surface — the rail's collapsed orchestrator header, a bridging worker row that is itself a nested sub-coordinator, the Details pane's `coordinator:` status line, a Details roster row, and a plan-DAG node icon — EXCLUSIVELY from that role's OWN needs-input signal (`RoleView.needsInputOwn()`: a current, content-aware PTY prompt or a self-asserted `blocked` hera status), computed identically to how a plain leaf role's own glyph is derived. A descendant role's needs-input state — however deep, and across however many bridged sub-orchestrator levels — SHALL NOT cause any ancestor's own icon to render the needs-input indicator. This holds uniformly across all five surfaces because they share one classifier (`roleStatusInputs`/`widget.RoleStatusIcon`, reading `RoleView.ShowsNeedsInput()`, which returns `needsInputOwn()` alone) — not five independent implementations that could drift.
+
+An orchestrator with NO coordinator role (its coordinator role was deleted/nuked) SHALL NOT surface any needs-input indicator on its header, in any state — there being no "own" signal for such a header to derive from, the fallback that once rendered the rollup directly on this header is removed outright, not narrowed.
+
+The needs-input ROLLUP COMPUTATION itself (`RoleView.SubtreeNeedsInput`, `OrchView.SubtreeNeedsInput`, populated by `rollupNeedsInput`/`orchSubtreeNeedsInput`) is UNCHANGED by this requirement: it remains transitive across bridged sub-orchestrators, cycle-safe, and excludes archived roles from counting toward an ancestor, exactly as before. Its role is narrowed, not removed — it exists solely to gate the partial-fold-reveal mechanism (deciding which specific closed-fold descendant rows to peek through), never to drive any icon's display directly anymore. A blocked descendant therefore remains fully visible — as its OWN row, peeked through any number of closed ancestor folds — via "Rail reveals the ancestor path to a hidden needs-input descendant through closed folds," which this requirement does not change and does not duplicate.
+
+Derived from: `internal/tui/hera/model.go` (`RoleView.ShowsNeedsInput` returns `needsInputOwn()` alone; `RoleView.SubtreeNeedsInput`, `OrchView.SubtreeNeedsInput`, `rollupNeedsInput`, `orchSubtreeNeedsInput` unchanged), `internal/tui/hera/rail.go` (`statusIcon`/`roleStatusInputs` read `ShowsNeedsInput`; `drawOrchRow`'s coordinator-less fallback branch removed; the reveal gates in `appendOrch`/`appendOrchWorkers`/`appendOrchRevealPath`/`appendWorkerRow`/`appendPinnedRole` unchanged), `internal/tui/hera/details.go` (`coordinator:` status line and `rosterStatusText`/`drawRosterRow`, both reading the same shared classifier, unchanged code), `internal/tui/hera/plan.go` (`planNodeIcon`, unchanged code, reads the same shared classifier).
+
+#### Scenario: A blocked worker's own row shows "(?)"; its ancestor coordinators do not
+
+- **WHEN** a worker two or more bridged sub-orchestrator levels below the root is blocked on a prompt, and no coordinator in the chain is itself blocked
+- **THEN** the worker's own row renders "(?)", and every intervening sub-coordinator's row and the root coordinator's header render their OWN status glyphs, never "(?)"
+
+#### Scenario: A coordinator-less orchestrator header never shows "(?)", even with a blocked descendant
+
+- **WHEN** a collapsed orchestrator has a blocked (needs-input) worker in its subtree but no coordinator role (e.g. the coordinator was nuked)
+- **THEN** the orchestrator header renders no needs-input indicator, regardless of the descendant's state
+
+#### Scenario: A blocked descendant remains reachable via the closed-fold reveal despite no header glyph
+
+- **WHEN** a coordinator's fold is collapsed and a descendant several levels down is blocked, and the coordinator itself is not
+- **THEN** the coordinator's header shows its own status glyph (not "(?)"), while the specific blocked descendant's row is still rendered, peeked through the closed fold, exactly as the reveal mechanism already provides
+
+#### Scenario: A coordinator's own needs-input signal still surfaces on its header regardless of descendants
+
+- **WHEN** a coordinator role is itself blocked on a prompt (own signal), independent of whatever state its descendants are in
+- **THEN** the coordinator's header renders the needs-input "(?)" indicator, exactly as any other role's own signal would
+
+#### Scenario: The Details status line and roster follow the same own-signal-only rule
+
+- **WHEN** the Details pane is showing a coordinator whose own signal is clear but which has a blocked descendant, and its roster includes a bridging worker row that is itself a nested sub-coordinator with a blocked descendant but no own signal
+- **THEN** neither the `coordinator:` status line nor that roster row renders the needs-input glyph or the `"needs-input"` text label
 

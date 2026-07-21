@@ -63,8 +63,14 @@ type RoleView struct {
 	// orchestration subtree (transitively across BRIDGED sub-orchestrators) needs
 	// input. For a coordinator role it covers the whole orchestrator subtree; for
 	// a bridging worker row it covers the bridged child's subtree; for a leaf /
-	// freelance role it equals the role's own needs-input signal. statusIcon reads
-	// it (via ShowsNeedsInput) so it stays a pure projection (BUG-018).
+	// freelance role it equals the role's own needs-input signal.
+	//
+	// It no longer drives ANY icon's display (remove-needs-input-rollup-glyph):
+	// ShowsNeedsInput ignores it and reads only the role's own signal. Its sole
+	// remaining purpose is to gate the partial-fold-reveal mechanism (appendOrch
+	// and friends in rail.go), which peeks a needs-input descendant's own row
+	// through a closed ancestor fold without needing this field to reach the
+	// ancestor's icon at all.
 	SubtreeNeedsInput bool
 	// BridgeTaskID is the role's LATEST binding argus task regardless of liveness
 	// (== TaskID when Live). It is the STRUCTURAL nesting key: a worker bridges a
@@ -178,12 +184,14 @@ func (r *RoleView) needsInputOwn() bool {
 }
 
 // ShowsNeedsInput reports whether this row renders the needs-input "(?)" glyph:
-// the BuildModel subtree rollup (SubtreeNeedsInput, which already folds in this
-// role's own signal) OR — as a safety net for hand-built RoleViews that never
-// ran BuildModel's post-pass — the role's own needs-input signal directly.
-// statusIcon reads this so it stays a pure projection (BUG-018).
+// the role's OWN needs-input signal, and ONLY that (remove-needs-input-rollup-
+// glyph) — a descendant's rollup (SubtreeNeedsInput) never lights up an
+// ancestor's icon, on any surface. A blocked descendant remains visible via its
+// own row, peeked through a closed ancestor fold by the partial-fold-reveal
+// mechanism, which reads SubtreeNeedsInput directly and is unaffected by this
+// method. statusIcon reads this so it stays a pure projection (BUG-018).
 func (r *RoleView) ShowsNeedsInput() bool {
-	return r.SubtreeNeedsInput || r.needsInputOwn()
+	return r.needsInputOwn()
 }
 
 // OrchView is the render projection of one orchestrator and its non-freelance
@@ -203,12 +211,12 @@ type OrchView struct {
 	Blocks []db.HeraBlock
 	// SubtreeNeedsInput is the orchestrator-level needs-input rollup (any role in
 	// this orchestrator's subtree, transitively across bridges, is blocked on a
-	// user prompt). Stamped by rollupNeedsInput. The rail's collapsed header
-	// surfaces it (BUG-028) so a blocked worker is visible without expanding —
-	// mirroring the task list's project-folder aggregate (projectStatusIcon),
-	// which always shows "(?)" for any blocked task. The coordinator role carries
-	// the same value, but a coordinator-less orchestrator (e.g. its coordinator
-	// role was nuked) would otherwise render no needs-input cue at all.
+	// user prompt). Stamped by rollupNeedsInput. It no longer drives the header's
+	// display (remove-needs-input-rollup-glyph retired the BUG-028 coordinator-
+	// less-header fallback that once read this field directly) — its sole
+	// remaining purpose is gating the rail's partial-fold-reveal mechanism, which
+	// peeks a blocked descendant's own row through a closed fold regardless of
+	// whether a coordinator role exists to carry an icon at all.
 	SubtreeNeedsInput bool
 	// KanbanStatus (add-hera-kanban-status) is the independent, operator-set
 	// kanban axis for a TOP-LEVEL coordinator — see db.HeraKanbanStatus. Always
@@ -938,7 +946,9 @@ func BuildModel(r HeraReader, needsInput map[string]bool, sessionIdle map[string
 	})
 
 	// Needs-input rollup: now that every OrchView/RoleView is assembled, stamp
-	// each role's SubtreeNeedsInput so the rail can project "(?)" up the tree.
+	// each role's SubtreeNeedsInput so the rail's partial-fold-reveal mechanism
+	// can peek a blocked descendant's own row through a closed ancestor fold (it
+	// no longer drives any ancestor's own icon — see ShowsNeedsInput).
 	m.rollupNeedsInput()
 	return m, nil
 }
@@ -954,8 +964,10 @@ func BuildModel(r HeraReader, needsInput map[string]bool, sessionIdle map[string
 // matches rail nesting and the Ctrl+D cascade exactly. See BUG-018.
 func (m *Model) rollupNeedsInput() {
 	// Phase 1: per-orchestrator subtree rollup (transitive across bridges). Also
-	// stamp the OrchView so the rail's collapsed header can surface it even when
-	// no coordinator role exists to carry the glyph (BUG-028).
+	// stamp the OrchView so the rail's partial-fold-reveal mechanism can gate on
+	// it regardless of whether a coordinator role exists to carry an icon at all
+	// (the BUG-028 header-display fallback itself was retired by
+	// remove-needs-input-rollup-glyph; this stamp now serves the reveal only).
 	subtree := make(map[int64]bool)
 	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
 		for i := range sec {

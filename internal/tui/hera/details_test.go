@@ -414,6 +414,103 @@ func TestCoordStatusLabel_Combined(t *testing.T) {
 	testutil.Equal(t, coordStatusLabel(&RoleView{}), "—")
 }
 
+// findRune scans the full w×h rect drawn by draw and reports whether r appears
+// anywhere on screen — used below to locate the needs-input glyph without
+// hardcoding row offsets that would drift with the panel's content layout.
+func findRune(t *testing.T, draw func(tcell.Screen), w, h int, r rune) bool {
+	t.Helper()
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	t.Cleanup(sim.Fini)
+	sim.SetSize(w, h)
+	draw(sim)
+	sim.Show()
+	cells, sw, sh := sim.GetContents()
+	for i := 0; i < sw*sh; i++ {
+		for _, cr := range cells[i].Runes {
+			if cr == r {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestDetails_CoordinatorStatusLine_NeedsInputOwnSignalOnly
+// (remove-needs-input-rollup-glyph) pins the Details pane's `coordinator:`
+// status line glyph to the SAME own-signal-only rule the rail now uses: the
+// glyph reuses statusIcon (via roleStatusInputs -> ShowsNeedsInput), so a
+// coordinator with only a blocked DESCENDANT (no own signal) must not show
+// needs-input on its own status line, while a coordinator that is itself
+// blocked must. Neither case was previously covered — existing Details
+// coordinator-status tests (TestCoordStatusLabel_Combined etc.) only assert
+// the TEXT label, never the glyph.
+func TestDetails_CoordinatorStatusLine_NeedsInputOwnSignalOnly(t *testing.T) {
+	draw := func(coord RoleView) func(tcell.Screen) {
+		orch := &OrchView{ID: 1, Name: "orch", Roles: []RoleView{coord}}
+		d := NewDetailsView()
+		d.SetOrch(orch, nil)
+		return func(s tcell.Screen) { d.Draw(s, 0, 0, 60, 20, false) }
+	}
+
+	t.Run("own signal shows the glyph", func(t *testing.T) {
+		coord := RoleView{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c", NeedsInput: true}
+		testutil.Equal(t, findRune(t, draw(coord), 60, 20, theme.IconNeedsInput), true)
+	})
+
+	t.Run("descendant-only rollup does not show the glyph", func(t *testing.T) {
+		// Simulates what BuildModel's rollupNeedsInput would stamp on a coordinator
+		// whose descendant (not itself) is blocked: SubtreeNeedsInput true, own
+		// signal false.
+		coord := RoleView{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c", HasStatus: true, Status: db.HeraStatusWorking, SubtreeNeedsInput: true}
+		testutil.Equal(t, findRune(t, draw(coord), 60, 20, theme.IconNeedsInput), false)
+	})
+}
+
+// TestDetails_RosterRow_NeedsInputOwnSignalOnly
+// (remove-needs-input-rollup-glyph) is the roster-row half of the same rule: a
+// bridging worker row that is itself a nested sub-coordinator (only reachable
+// via a rollup on the un-narrowed classifier) must not show "(?)" from a
+// descendant's rollup, in either the glyph (drawRosterRow -> statusIcon) or the
+// text label (rosterStatusText). A row with its own signal set still must.
+func TestDetails_RosterRow_NeedsInputOwnSignalOnly(t *testing.T) {
+	t.Run("own signal: glyph and text both show needs-input", func(t *testing.T) {
+		row := &RoleView{RoleID: 2, Name: "sub-coord", Kind: db.HeraKindWorker, Live: true, TaskID: "t-w", BridgeTaskID: "t-w", NeedsInput: true}
+		testutil.Equal(t, rosterStatusText(row, false), "needs-input")
+
+		orch := &OrchView{ID: 1, Name: "orch", Roles: []RoleView{
+			{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c"},
+			*row,
+		}}
+		d := NewDetailsView()
+		d.SetOrch(orch, nil)
+		draw := func(s tcell.Screen) { d.Draw(s, 0, 0, 60, 20, false) }
+		testutil.Equal(t, findRune(t, draw, 60, 20, theme.IconNeedsInput), true)
+	})
+
+	t.Run("descendant-only rollup: neither glyph nor text shows needs-input", func(t *testing.T) {
+		// A bridging worker row that is itself a nested sub-coordinator, genuinely
+		// active, with only a blocked descendant in its bridged child orchestrator
+		// (SubtreeNeedsInput true, own signal false) — exactly the shape
+		// TestPlanNodeIcon_BridgingSubCoordUnaffectedByDescendantRollup exercises
+		// for the plan view.
+		row := &RoleView{RoleID: 2, Name: "sub-coord", Kind: db.HeraKindWorker, Live: true, TaskID: "t-w", BridgeTaskID: "t-w", SessionRunning: true, SubtreeNeedsInput: true}
+		text := rosterStatusText(row, false)
+		if text == "needs-input" {
+			t.Fatalf("expected a non-needs-input status text, got %q", text)
+		}
+
+		orch := &OrchView{ID: 1, Name: "orch", Roles: []RoleView{
+			{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c"},
+			*row,
+		}}
+		d := NewDetailsView()
+		d.SetOrch(orch, nil)
+		draw := func(s tcell.Screen) { d.Draw(s, 0, 0, 60, 20, false) }
+		testutil.Equal(t, findRune(t, draw, 60, 20, theme.IconNeedsInput), false)
+	})
+}
+
 // testContains is a tiny substring helper (avoids importing strings just here).
 func testContains(s, sub string) bool {
 	if len(sub) == 0 {
