@@ -3739,3 +3739,100 @@ func TestDetectNeedsInputSticky_BUG063_StaleReflagDoesNotReStick(t *testing.T) {
 	got = a.detectNeedsInputSticky([]string{"c1"}, running, got)
 	testutil.DeepEqual(t, got, []string{"c1"})
 }
+
+// workingBurstLog is a log tail showing Claude's "working" affordance ("esc to
+// interrupt") — the same discriminator BUG-035/036 use for "genuinely
+// generating or executing a tool, not merely idling/animating". Used to drive
+// the resumed-activity pass (agent.ResumeActivityTick) in the tests below.
+const workingBurstLog = "⏺ Want me to ship it?\r\r✻ Cogitating… (12s · esc to interrupt)\r\r╭───╮\r│ > │\r╰───╯\r  ? for shortcuts\r"
+
+// TestDetectNeedsInputSticky_ResumedActivityClears reproduces the live hera-
+// worker bug through the REAL detectNeedsInputSticky (not just the pure
+// agent.NeedsInputClear unit): a coordinator relays the human's real answer
+// via reliable-notify delivery (WriteInputSystem), which never advances
+// LastUserInput — so the BUG-034 clear-on-input path can never fire — yet the
+// worker demonstrably resumes real work (Claude's "working" affordance,
+// sustained across ticks). The flag must clear via the resumed-activity pass
+// alone.
+func TestDetectNeedsInputSticky_ResumedActivityClears(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeLog := func(taskID, content string) {
+		logPath := agent.SessionLogPath(taskID)
+		testutil.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0o755))
+		testutil.NoError(t, os.WriteFile(logPath, []byte(content), 0o644))
+	}
+	const prompt = "Do you want to proceed?\n❯ 1. Yes\n  2. No\n"
+
+	t0 := time.Unix(1000, 0)
+	s1 := &fakeInputSession{fakeKickSession: &fakeKickSession{}, last: t0}
+	a := &App{runner: &fakeInputRunner{
+		Runner:   agent.NewRunner(nil),
+		sessions: map[string]agent.SessionHandle{"c1": s1},
+	}}
+	running := []string{"c1"}
+
+	// Tick 1: idle on the selection prompt → flagged.
+	writeLog("c1", prompt)
+	got := a.detectNeedsInputSticky([]string{"c1"}, running, nil)
+	testutil.DeepEqual(t, got, []string{"c1"})
+
+	// The worker resumes real work: it is no longer idle, and its log now
+	// shows Claude's "working" affordance, sustained across several ticks.
+	// s1.last (LastUserInput) never advances — simulating a coordinator's
+	// relayed answer (WriteInputSystem) — only sustained activity can clear
+	// this.
+	writeLog("c1", workingBurstLog)
+	for i := 0; i < agent.NeedsInputResumeTicks-1; i++ {
+		got = a.detectNeedsInputSticky(nil, running, got)
+		if len(got) == 0 {
+			t.Fatalf("cleared too early, before sustaining %d working ticks (tick %d)", agent.NeedsInputResumeTicks, i+1)
+		}
+	}
+	got = a.detectNeedsInputSticky(nil, running, got)
+	if len(got) != 0 {
+		t.Fatalf("expected the resumed-activity pass to clear the flag after %d sustained working ticks, got %v", agent.NeedsInputResumeTicks, got)
+	}
+}
+
+// TestDetectNeedsInputSticky_ResumedActivityBriefBurstDoesNotClear guards the
+// BUG-034 regression this fix must not reintroduce: a brief working burst —
+// fewer than agent.NeedsInputResumeTicks consecutive ticks — followed by
+// re-parking at the EXACT SAME blocking prompt must not clear the flag. An
+// unrelated system nudge to a genuinely still-parked agent must stay flagged;
+// only SUSTAINED resumed activity clears it.
+func TestDetectNeedsInputSticky_ResumedActivityBriefBurstDoesNotClear(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeLog := func(taskID, content string) {
+		logPath := agent.SessionLogPath(taskID)
+		testutil.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0o755))
+		testutil.NoError(t, os.WriteFile(logPath, []byte(content), 0o644))
+	}
+	const prompt = "Do you want to proceed?\n❯ 1. Yes\n  2. No\n"
+
+	t0 := time.Unix(1000, 0)
+	s1 := &fakeInputSession{fakeKickSession: &fakeKickSession{}, last: t0}
+	a := &App{runner: &fakeInputRunner{
+		Runner:   agent.NewRunner(nil),
+		sessions: map[string]agent.SessionHandle{"c1": s1},
+	}}
+	running := []string{"c1"}
+
+	writeLog("c1", prompt)
+	got := a.detectNeedsInputSticky([]string{"c1"}, running, nil)
+	testutil.DeepEqual(t, got, []string{"c1"})
+
+	// A brief burst of working ticks — one short of the threshold — then it
+	// re-parks at the identical blocking prompt.
+	writeLog("c1", workingBurstLog)
+	for i := 0; i < agent.NeedsInputResumeTicks-2; i++ {
+		got = a.detectNeedsInputSticky(nil, running, got)
+		if len(got) == 0 {
+			t.Fatalf("cleared too early, during the brief working burst (tick %d)", i+1)
+		}
+	}
+	writeLog("c1", prompt)
+	got = a.detectNeedsInputSticky([]string{"c1"}, running, got)
+	if len(got) != 1 || got[0] != "c1" {
+		t.Fatalf("BUG-034 REGRESSION: a brief working burst falsely cleared a still-parked agent, got %v", got)
+	}
+}
