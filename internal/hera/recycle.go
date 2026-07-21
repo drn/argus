@@ -62,8 +62,13 @@ type RecycleRunner interface {
 	StopStrayJobs(taskID, sessionID string) error
 	// Restart kills the role's current session (if any) and starts a fresh
 	// one on the same task — same worktree, same branch, same hera binding,
-	// resume=false so the new session starts with empty context.
-	Restart(taskID string) error
+	// resume=false so the new session starts with empty context. roleID is
+	// the already-resolved binding (see RecycleCoord) — implementations must
+	// resolve off roleID directly (e.g. HeraLiveBindingByRole), never
+	// re-derive it from taskID alone, since a task holding 2+ live bindings
+	// (e.g. a worker in one orchestrator and a coordinator in another) would
+	// make a task-keyed lookup ambiguous.
+	Restart(taskID string, roleID int64) error
 }
 
 // RecycleCoord kills and restarts a hera role's session (coordinator, worker,
@@ -100,7 +105,7 @@ func RecycleCoord(store RecycleStore, runner RecycleRunner, roleID int64, sessio
 		return fmt.Errorf("recycle_coord: stop stray jobs for task %s: %w", taskID, err)
 	}
 
-	if err := runner.Restart(taskID); err != nil {
+	if err := runner.Restart(taskID, roleID); err != nil {
 		return fmt.Errorf("recycle_coord: restart task %s: %w", taskID, err)
 	}
 

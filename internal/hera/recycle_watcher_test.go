@@ -150,7 +150,7 @@ func (f *concurrentRecycleRunner) IsIdle(string) bool { return true }
 func (f *concurrentRecycleRunner) StopStrayJobs(string, string) error {
 	return nil
 }
-func (f *concurrentRecycleRunner) Restart(taskID string) error {
+func (f *concurrentRecycleRunner) Restart(taskID string, roleID int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.restartCalled = true

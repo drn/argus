@@ -38,6 +38,7 @@ type fakeRecycleRunner struct {
 	idle          bool
 	restartCalled bool
 	restartTaskID string
+	restartRoleID int64
 	stopStrayErr  error
 	restartErr    error
 	calls         []string
@@ -50,10 +51,11 @@ func (f *fakeRecycleRunner) StopStrayJobs(taskID, sessionID string) error {
 	return f.stopStrayErr
 }
 
-func (f *fakeRecycleRunner) Restart(taskID string) error {
+func (f *fakeRecycleRunner) Restart(taskID string, roleID int64) error {
 	f.calls = append(f.calls, "restart")
 	f.restartCalled = true
 	f.restartTaskID = taskID
+	f.restartRoleID = roleID
 	return f.restartErr
 }
 
