@@ -543,6 +543,109 @@ func TestComputeNeedsInput_ResumedActivityBriefBurstDoesNotClear(t *testing.T) {
 	}
 }
 
+// askUserQuestionChooserTail mirrors Claude Code's AskUserQuestion tool-call
+// widget: the chooser footer ("Enter to select ... Esc to cancel") with NO
+// ❯ N. numbered-selection glyph, so it exercises needsInputChooserFooterRe
+// specifically (not needsInputSelectionRe) — distinct from blockedTail's
+// permission-check numbered-selection shape.
+var askUserQuestionChooserTail = []byte("⏺ Which approach should I take?\n\n  1) Approach A\n  2) Approach B\n\nEnter to select · ↑/↓ to navigate · Esc to cancel\n")
+
+// TestComputeNeedsInput_ResumedActivityClears_ChooserFooter verifies the
+// resumed-activity clear path (BUG-065) also resolves a flag raised by
+// Claude's AskUserQuestion tool-call chooser widget, not just the
+// permission-check numbered-selection shape
+// TestComputeNeedsInput_ResumedActivityClears already covers. The clear
+// mechanism (agent.ResumeActivityTick, fed purely by the "working" affordance)
+// is entry-heuristic-agnostic by construction, but this pins that guarantee
+// with an explicit repro rather than relying on the reasoning alone.
+func TestComputeNeedsInput_ResumedActivityClears_ChooserFooter(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	screen := &agent.ScreenRenderer{}
+	lastInputOf := func(string) time.Time { return t0 } // frozen: models WriteInputSystem-only delivery
+
+	var tail []byte
+	tailOf := func(string) []byte { return tail }
+
+	tail = askUserQuestionChooserTail
+	got, fp, since, cleared, resume := computeNeedsInput([]string{"a"}, []string{"a"}, nil, nil, nil, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	testutil.DeepEqual(t, got, []string{"a"})
+
+	tail = workingQuestionTail
+	for i := 0; i < agent.NeedsInputResumeTicks-1; i++ {
+		got, fp, since, cleared, resume = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+		if len(got) == 0 {
+			t.Fatalf("cleared too early, before sustaining %d working ticks (tick %d)", agent.NeedsInputResumeTicks, i+1)
+		}
+	}
+	got, _, _, _, _ = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	if len(got) != 0 {
+		t.Fatalf("expected the resumed-activity pass to clear a flag raised by an AskUserQuestion chooser after %d sustained working ticks, got %v", agent.NeedsInputResumeTicks, got)
+	}
+}
+
+// TestComputeNeedsInput_ResumedActivityBriefBurstDoesNotClear_ChooserFooter
+// mirrors TestComputeNeedsInput_ResumedActivityBriefBurstDoesNotClear but for
+// a flag raised by an AskUserQuestion chooser — the BUG-034 regression guard
+// must apply uniformly regardless of which entry shape raised the flag.
+func TestComputeNeedsInput_ResumedActivityBriefBurstDoesNotClear_ChooserFooter(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	screen := &agent.ScreenRenderer{}
+	lastInputOf := func(string) time.Time { return t0 }
+
+	var tail []byte
+	tailOf := func(string) []byte { return tail }
+
+	tail = askUserQuestionChooserTail
+	got, fp, since, cleared, resume := computeNeedsInput([]string{"a"}, []string{"a"}, nil, nil, nil, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	testutil.DeepEqual(t, got, []string{"a"})
+
+	tail = workingQuestionTail
+	for i := 0; i < agent.NeedsInputResumeTicks-2; i++ {
+		got, fp, since, cleared, resume = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+		if len(got) == 0 {
+			t.Fatalf("cleared too early, during the brief working burst (tick %d)", i+1)
+		}
+	}
+	tail = askUserQuestionChooserTail
+	got, _, _, _, _ = computeNeedsInput([]string{"a"}, []string{"a"}, got, fp, since, cleared, resume, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	if len(got) != 1 || got[0] != "a" {
+		t.Fatalf("BUG-034 REGRESSION: a brief working burst falsely cleared a still-parked AskUserQuestion prompt, got %v", got)
+	}
+}
+
+// TestComputeNeedsInput_ResumedActivityClears_FreeTextQuestion verifies the
+// resumed-activity clear path (BUG-065) also resolves a flag raised by a
+// free-text trailing question (no selection widget at all — the shape a
+// worker's plain conversational check-in uses, e.g. "awaiting go"), distinct
+// from any structured tool-call widget.
+func TestComputeNeedsInput_ResumedActivityClears_FreeTextQuestion(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	screen := &agent.ScreenRenderer{}
+	lastInputOf := func(string) time.Time { return t0 } // frozen: models WriteInputSystem-only delivery
+
+	var tail []byte
+	tailOf := func(string) []byte { return tail }
+
+	// The content-stability pass needs the SAME fingerprint across two
+	// consecutive ticks to flag a never-idle free-text question (BUG-032).
+	tail = awaitingQuestionTail
+	_, fp, since, cleared, resume := computeNeedsInput(nil, []string{"a"}, nil, nil, nil, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	got, fp, since, cleared, resume := computeNeedsInput(nil, []string{"a"}, nil, fp, since, cleared, resume, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	testutil.DeepEqual(t, got, []string{"a"})
+
+	tail = workingQuestionTail
+	for i := 0; i < agent.NeedsInputResumeTicks-1; i++ {
+		got, fp, since, cleared, resume = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+		if len(got) == 0 {
+			t.Fatalf("cleared too early, before sustaining %d working ticks (tick %d)", agent.NeedsInputResumeTicks, i+1)
+		}
+	}
+	got, _, _, _, _ = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	if len(got) != 0 {
+		t.Fatalf("expected the resumed-activity pass to clear a flag raised by a free-text question after %d sustained working ticks, got %v", agent.NeedsInputResumeTicks, got)
+	}
+}
+
 // altScreenPromptTail mirrors agent.altScreenPromptFrame (unexported there): a
 // fullscreen (alt-screen) selection prompt whose ❯ cursor is painted LAST, to
 // the LEFT of "1." — so in raw byte order ❯ TRAILS "1." and DetectNeedsInput's
