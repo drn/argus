@@ -662,6 +662,25 @@ func TestReadContextSizeReal_TailsLatestAssistantUsage(t *testing.T) {
 	testutil.Equal(t, size, 45002)
 }
 
+// TestReadContextSizeReal_SkipsSidechainAssistantLines pins fix-sidechain-
+// context-size: a dispatched sub-agent's (Task tool) own assistant turns
+// carry isSidechain=true and a tiny, fresh usage number. If one lands physically
+// last in the file, it must not override the main chain's much larger
+// cumulative usage.
+func TestReadContextSizeReal_SkipsSidechainAssistantLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	lines := []string{
+		`{"type":"user","message":{}}`,
+		`{"type":"assistant","isSidechain":false,"message":{"usage":{"input_tokens":10,"cache_creation_input_tokens":5000,"cache_read_input_tokens":405000}}}`,
+		`{"type":"assistant","isSidechain":true,"message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":300,"cache_read_input_tokens":1200}}}`,
+	}
+	testutil.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600))
+
+	size, err := readContextSizeReal(path)
+	testutil.NoError(t, err)
+	testutil.Equal(t, size, 410010)
+}
+
 // TestReadContextSizeReal_CacheMissStillCountsFullContext pins the exact
 // production bug (rail-context-size-metric-fix): a prompt-cache miss (e.g. an
 // idle gap crossing the cache TTL) rewrites the ENTIRE prior context as

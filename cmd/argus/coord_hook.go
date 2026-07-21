@@ -563,8 +563,8 @@ func budgetReal(_ string) (int, error) {
 	return cfg.Hera.CoordinatorContextBudget, nil
 }
 
-// readContextSizeReal scans the transcript JSONL for the latest assistant
-// message's total input token count: cache_read_input_tokens +
+// readContextSizeReal scans the transcript JSONL for the latest MAIN-CHAIN
+// assistant message's total input token count: cache_read_input_tokens +
 // cache_creation_input_tokens + input_tokens. cache_read_input_tokens ALONE
 // is not a safe proxy for context size — it only counts tokens actually
 // served from Anthropic's prompt cache this turn, and collapses toward zero
@@ -580,7 +580,11 @@ func budgetReal(_ string) (int, error) {
 // dominant cost. Lines that aren't valid JSON, or aren't an assistant
 // message, are skipped rather than erroring — a Stop hook must degrade
 // gracefully on a transcript with interleaved event types it doesn't care
-// about.
+// about. Lines with isSidechain=true are also skipped (fix-sidechain-
+// context-size): a dispatched sub-agent's (Task tool) own turns carry the
+// same "assistant" type but a tiny, fresh usage number unrelated to the
+// main conversation's cumulative context, so counting one as "the latest"
+// would understate the real size.
 func readContextSizeReal(transcriptPath string) (int, error) {
 	f, err := os.Open(transcriptPath)
 	if err != nil {
@@ -600,8 +604,9 @@ func readContextSizeReal(transcriptPath string) (int, error) {
 			continue
 		}
 		var entry struct {
-			Type    string `json:"type"`
-			Message struct {
+			Type        string `json:"type"`
+			IsSidechain bool   `json:"isSidechain"`
+			Message     struct {
 				Usage struct {
 					InputTokens              int `json:"input_tokens"`
 					CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
@@ -613,6 +618,9 @@ func readContextSizeReal(transcriptPath string) (int, error) {
 			continue
 		}
 		if entry.Type != "assistant" {
+			continue
+		}
+		if entry.IsSidechain {
 			continue
 		}
 		u := entry.Message.Usage
