@@ -643,7 +643,9 @@ func TestCoordHook_HardStop_ForceRecycleError_LogsToStderr(t *testing.T) {
 
 // TestReadContextSizeReal_TailsLatestAssistantUsage confirms the scan finds
 // the LAST assistant message's usage, tolerating blank and non-JSON lines
-// and non-assistant event types interleaved in a real transcript.
+// and non-assistant event types interleaved in a real transcript, and sums
+// cache_read + cache_creation + input tokens rather than reading
+// cache_read_input_tokens alone.
 func TestReadContextSizeReal_TailsLatestAssistantUsage(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "transcript.jsonl")
 	lines := []string{
@@ -651,13 +653,32 @@ func TestReadContextSizeReal_TailsLatestAssistantUsage(t *testing.T) {
 		`{"type":"assistant","message":{"usage":{"cache_read_input_tokens":100}}}`,
 		"",
 		"not json",
-		`{"type":"assistant","message":{"usage":{"cache_read_input_tokens":42000}}}`,
+		`{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":3000,"cache_read_input_tokens":42000}}}`,
 	}
 	testutil.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600))
 
 	size, err := readContextSizeReal(path)
 	testutil.NoError(t, err)
-	testutil.Equal(t, size, 42000)
+	testutil.Equal(t, size, 45002)
+}
+
+// TestReadContextSizeReal_CacheMissStillCountsFullContext pins the exact
+// production bug (rail-context-size-metric-fix): a prompt-cache miss (e.g. an
+// idle gap crossing the cache TTL) rewrites the ENTIRE prior context as
+// cache_creation_input_tokens instead of cache_read_input_tokens, so
+// cache_read_input_tokens alone collapses to 0 even though the real context
+// is unchanged or larger. Summing all three usage fields must still report
+// the true total.
+func TestReadContextSizeReal_CacheMissStillCountsFullContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	lines := []string{
+		`{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":399236,"cache_read_input_tokens":0}}}`,
+	}
+	testutil.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600))
+
+	size, err := readContextSizeReal(path)
+	testutil.NoError(t, err)
+	testutil.Equal(t, size, 399238)
 }
 
 func TestReadContextSizeReal_MissingFile_Errors(t *testing.T) {

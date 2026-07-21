@@ -564,8 +564,17 @@ func budgetReal(_ string) (int, error) {
 }
 
 // readContextSizeReal scans the transcript JSONL for the latest assistant
-// message's usage.cache_read_input_tokens. Reads the file in full rather
-// than seeking from the end: JSONL has no fixed record size, so a true tail
+// message's total input token count: cache_read_input_tokens +
+// cache_creation_input_tokens + input_tokens. cache_read_input_tokens ALONE
+// is not a safe proxy for context size — it only counts tokens actually
+// served from Anthropic's prompt cache this turn, and collapses toward zero
+// on any cache miss (a long idle gap crossing the cache TTL is the common
+// case for an idle hera worker), even though the real context is unchanged
+// or larger: a cache miss rewrites the whole prior context as
+// cache_creation_input_tokens instead of reading it, so summing all three
+// fields is what actually tracks total context regardless of cache hit/miss
+// state (rail-context-size-metric-fix). Reads the file in full rather than
+// seeking from the end: JSONL has no fixed record size, so a true tail
 // would need its own reverse-line-scan; a coordinator's Stop hook already
 // pays one HTTP round trip per turn, so a linear file scan is not the
 // dominant cost. Lines that aren't valid JSON, or aren't an assistant
@@ -594,7 +603,9 @@ func readContextSizeReal(transcriptPath string) (int, error) {
 			Type    string `json:"type"`
 			Message struct {
 				Usage struct {
-					CacheReadInputTokens int `json:"cache_read_input_tokens"`
+					InputTokens              int `json:"input_tokens"`
+					CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+					CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 				} `json:"usage"`
 			} `json:"message"`
 		}
@@ -604,7 +615,8 @@ func readContextSizeReal(transcriptPath string) (int, error) {
 		if entry.Type != "assistant" {
 			continue
 		}
-		size = entry.Message.Usage.CacheReadInputTokens
+		u := entry.Message.Usage
+		size = u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
 	}
 	if err := sc.Err(); err != nil {
 		return 0, fmt.Errorf("scan transcript: %w", err)

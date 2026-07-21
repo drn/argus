@@ -138,8 +138,10 @@ type RoleView struct {
 	AppliedEffort  string
 	ProfileWarning string
 
-	// ContextSize is the bound task's last-observed cache_read_input_tokens
-	// count, mirrored from task_meta(hera, context_size) — the same stamp
+	// ContextSize is the bound task's last-observed total input token count
+	// (cache_read_input_tokens + cache_creation_input_tokens + input_tokens,
+	// NOT cache_read_input_tokens alone — see db.HeraMetaKeyContextSize),
+	// mirrored from task_meta(hera, context_size) — the same stamp
 	// `argus coord-hook` writes on every Stop event for a coordinator, worker,
 	// or freelance role alike (add-worker-context-indicator widened it from
 	// coordinator-only). A pure read off the already-fetched heraMeta map, like
