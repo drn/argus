@@ -3837,6 +3837,67 @@ func TestDetectNeedsInputSticky_ResumedActivityBriefBurstDoesNotClear(t *testing
 	}
 }
 
+// TestDetectNeedsInputSticky_BUG067_DistinctSequentialPromptReflags reproduces
+// the live repro (orchestrator "sketch-handoffs", roles
+// 12a-blueprint-ui-lifecycle / 13a-blueprint-restore-version, 2026-07-21):
+// Claude's /brainstorm flow asks several DISTINCT AskUserQuestion-style
+// prompts in sequence within one session. The user answers question 1
+// directly in the pane (a real keystroke, advancing LastUserInput) — a
+// genuine, correct clear. Question 2 — a different, still-unanswered prompt —
+// then appears before the user types anything else, so LastUserInput is
+// UNCHANGED since the question-1 clear. Before this fix, BUG-063's
+// stale-recandidacy guard could not tell "the same already-answered content
+// re-detected" apart from "a distinct new prompt at the same timestamp" and
+// suppressed question 2 forever, even though the agent sat there genuinely
+// waiting on it.
+func TestDetectNeedsInputSticky_BUG067_DistinctSequentialPromptReflags(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeLog := func(taskID, content string) {
+		logPath := agent.SessionLogPath(taskID)
+		testutil.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0o755))
+		testutil.NoError(t, os.WriteFile(logPath, []byte(content), 0o644))
+	}
+	const q1 = "Where should the four lifecycle affordances live in the UI?\n❯ 1. List-centric (card kebab menu)\n  2. Detail-page only\n"
+	const q2 = "What should the 'New Blueprint' button do?\n❯ 1. Bare create, open viewer\n  2. Bare create + copy hint\n"
+
+	t0 := time.Unix(1000, 0)
+	s1 := &fakeInputSession{fakeKickSession: &fakeKickSession{}, last: t0}
+	a := &App{runner: &fakeInputRunner{
+		Runner:   agent.NewRunner(nil),
+		sessions: map[string]agent.SessionHandle{"c1": s1},
+	}}
+	running := []string{"c1"}
+
+	// Tick 1: question 1 shown, idle on the selection prompt → flagged.
+	writeLog("c1", q1)
+	got := a.detectNeedsInputSticky([]string{"c1"}, running, nil)
+	testutil.DeepEqual(t, got, []string{"c1"})
+
+	// Tick 2: the user answers question 1 directly in the pane (LastUserInput
+	// advances past the baseline) → a genuine, correct clear.
+	t1 := time.Unix(2000, 0)
+	s1.last = t1
+	got = a.detectNeedsInputSticky([]string{"c1"}, running, got)
+	testutil.Equal(t, len(got), 0)
+
+	// Tick 3: Claude asks question 2 — a DIFFERENT, still-unanswered prompt —
+	// moments later. No further input has arrived (LastUserInput is still
+	// t1, identical to the question-1 clear's timestamp). Must re-flag.
+	writeLog("c1", q2)
+	got = a.detectNeedsInputSticky([]string{"c1"}, running, got)
+	if len(got) != 1 || got[0] != "c1" {
+		t.Fatalf("BUG-067 REGRESSION: a distinct, unanswered second prompt was suppressed by the BUG-063 stale-marker guard: got %v", got)
+	}
+
+	// It stays flagged across subsequent ticks too (not just a one-tick blip).
+	for i := 0; i < 3; i++ {
+		got = a.detectNeedsInputSticky([]string{"c1"}, running, got)
+		if len(got) != 1 || got[0] != "c1" {
+			t.Fatalf("BUG-067 REGRESSION: flag dropped on a later tick: got %v", got)
+		}
+	}
+}
+
 // mkHeraBlockedRole creates an orchestrator + worker role bound live to
 // taskID, with hera_status already set to "blocked" — the fixture shared by
 // the autoClearBlockedHeraRoles tests below. Returns the role's live status

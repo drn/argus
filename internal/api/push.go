@@ -135,13 +135,16 @@ type idleWatcherState struct {
 	// the flag once the session's last-input advances past it (the user
 	// responded), even while the stale question still matches in the tail.
 	needsInputSince map[string]time.Time
-	// needsInputCleared carries the BUG-063 cleared-marker map: the session's
-	// last-input timestamp recorded at the moment a real clear fired, threaded
-	// forward for every RUNNING task regardless of candidacy so a later stale
-	// content-fingerprint re-flag of already-answered content at the same
-	// timestamp cannot recapture a stuck baseline. Mirrors the TUI's
+	// needsInputCleared carries the BUG-063/BUG-067 cleared-marker map: the
+	// session's last-input timestamp (and, when known, content fingerprint)
+	// recorded at the moment a real clear fired, threaded forward for every
+	// RUNNING task regardless of candidacy so a later stale content-fingerprint
+	// re-flag of already-answered content at the same timestamp AND content
+	// cannot recapture a stuck baseline — while a later candidacy with
+	// DIFFERENT content (e.g. the next distinct question in a multi-question
+	// brainstorm flow) re-arms instead of being suppressed. Mirrors the TUI's
 	// App.needsInputCleared.
-	needsInputCleared map[string]time.Time
+	needsInputCleared map[string]agent.ClearedMarker
 	// needsInputResume carries the resumed-activity escalation counter (see
 	// agent.ResumeActivityTick): consecutive ticks a flagged session has shown
 	// Claude's "working" affordance, independent of whether any input was ever
@@ -180,7 +183,7 @@ func newIdleWatcherState() *idleWatcherState {
 		needsInputNow:     make(map[string]bool),
 		contentFP:         make(map[string]uint64),
 		needsInputSince:   make(map[string]time.Time),
-		needsInputCleared: make(map[string]time.Time),
+		needsInputCleared: make(map[string]agent.ClearedMarker),
 		needsInputResume:  make(map[string]int),
 		heraBlockedResume: make(map[string]int),
 		screen:            &agent.ScreenRenderer{},
@@ -261,10 +264,19 @@ func sessionScreenSize(taskID string) (cols, rows int) {
 // prevCleared let a real clear's settled input timestamp survive ticks where a
 // task isn't a candidate at all, so a LATER stale content-fingerprint re-flag
 // at that same timestamp (nothing new having happened) cannot recapture a
-// stuck baseline. The returned newSince/newCleared/newResume carry all three
-// maps forward; nil lastInputOf/archivedOf degrade to pre-BUG-034 behavior (no
-// clear).
-func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uint64, prevSince map[string]time.Time, prevCleared map[string]time.Time, prevResume map[string]int, tailOf func(string) []byte, lastInputOf func(string) time.Time, archivedOf func(string) bool, screen *agent.ScreenRenderer, sizeOf func(string) (cols, rows int)) ([]string, map[string]uint64, map[string]time.Time, map[string]time.Time, map[string]int) {
+// stuck baseline — UNLESS (BUG-067) the later candidacy's content fingerprint
+// provably differs from what was showing when the marker was recorded, which
+// means it is a genuinely distinct, still-unanswered prompt (e.g. the next
+// question in a multi-question brainstorm flow) rather than a stale
+// re-detection, and must re-arm. The fingerprint fed to NeedsInputClear here
+// is this tick's AwaitingInputFingerprint value merged over the previous
+// tick's (current wins) — the previous tick's often still holds the
+// fingerprint of content that just got answered, since the tick a flag
+// actually clears on is frequently the same tick the screen has already moved
+// on to a busy/narrating frame with no awaiting-input signal of its own. The
+// returned newSince/newCleared/newResume carry all three maps forward; nil
+// lastInputOf/archivedOf degrade to pre-BUG-034 behavior (no clear).
+func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uint64, prevSince map[string]time.Time, prevCleared map[string]agent.ClearedMarker, prevResume map[string]int, tailOf func(string) []byte, lastInputOf func(string) time.Time, archivedOf func(string) bool, screen *agent.ScreenRenderer, sizeOf func(string) (cols, rows int)) ([]string, map[string]uint64, map[string]time.Time, map[string]agent.ClearedMarker, map[string]int) {
 	out := make([]string, 0, len(idleIDs))
 	seen := make(map[string]bool, len(idleIDs))
 	newFP := make(map[string]uint64)
@@ -341,10 +353,25 @@ func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uin
 	}
 	resumedOf := func(id string) bool { return resumed[id] }
 
-	// BUG-034/BUG-063: clear the flag for tasks the user has responded to,
-	// archived, or that have sustained resumed activity, and suppress a stale
-	// re-candidacy at an already-settled timestamp for a still-running task.
-	out, newSince, newCleared := agent.NeedsInputClear(out, runningIDs, prevSince, prevCleared, lastInputOf, archivedOf, resumedOf)
+	// BUG-067: merge this tick's and the PREVIOUS tick's content fingerprints
+	// (current wins) for NeedsInputClear's stale-marker content comparison —
+	// see computeNeedsInput's doc comment for why the previous tick's value is
+	// needed too.
+	mergedFP := make(map[string]uint64, len(newFP)+len(prevFP))
+	for id, fp := range prevFP {
+		mergedFP[id] = fp
+	}
+	for id, fp := range newFP {
+		mergedFP[id] = fp
+	}
+	fingerprintOf := func(id string) (uint64, bool) { fp, ok := mergedFP[id]; return fp, ok }
+
+	// BUG-034/BUG-063/BUG-067: clear the flag for tasks the user has responded
+	// to, archived, or that have sustained resumed activity; suppress a stale
+	// re-candidacy at an already-settled timestamp AND content for a
+	// still-running task, but let a distinct later prompt at that same
+	// timestamp re-arm.
+	out, newSince, newCleared := agent.NeedsInputClear(out, runningIDs, prevSince, prevCleared, lastInputOf, archivedOf, resumedOf, fingerprintOf)
 	return out, newFP, newSince, newCleared, newResume
 }
 

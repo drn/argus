@@ -271,13 +271,16 @@ type App struct {
 	// question still matches in the log tail. Mirrors the daemon's
 	// idleWatcherState.needsInputSince.
 	needsInputSince map[string]time.Time
-	// needsInputCleared carries the BUG-063 cleared-marker map: the session's
-	// last-input timestamp recorded at the moment a real clear fired, threaded
-	// forward for every RUNNING task regardless of candidacy so a later stale
-	// re-candidacy at the same timestamp (a content-fingerprint or escalation
-	// re-flag of already-answered content) cannot recapture a stuck baseline.
+	// needsInputCleared carries the BUG-063/BUG-067 cleared-marker map: the
+	// session's last-input timestamp (and, when known, content fingerprint)
+	// recorded at the moment a real clear fired, threaded forward for every
+	// RUNNING task regardless of candidacy so a later stale re-candidacy at the
+	// same timestamp AND content (a content-fingerprint or escalation re-flag
+	// of already-answered content) cannot recapture a stuck baseline — while a
+	// later candidacy with DIFFERENT content (e.g. the next distinct question
+	// in a multi-question brainstorm flow) re-arms instead of being suppressed.
 	// Mirrors the daemon's idleWatcherState.needsInputCleared.
-	needsInputCleared map[string]time.Time
+	needsInputCleared map[string]agent.ClearedMarker
 	// needsInputResume carries the resumed-activity escalation counter (see
 	// agent.ResumeActivityTick): consecutive ticks a flagged session has shown
 	// Claude's "working" affordance, independent of whether any input was ever
@@ -2076,6 +2079,7 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	// affordance absent — this pass has no idle gate, so a busy agent that is
 	// still working must not qualify), compare against last tick, carry this
 	// tick's forward.
+	prevFP := a.needsInputFP
 	newFP := make(map[string]uint64)
 	newEsc := make(map[string]int)
 	for _, id := range runningIDs {
@@ -2087,7 +2091,7 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 		fp, ok := agent.AwaitingInputFingerprint(a.needsInputScreen, tail, cols, rows)
 		if ok {
 			newFP[id] = fp
-			if last, ok := a.needsInputFP[id]; ok && last == fp {
+			if last, ok := prevFP[id]; ok && last == fp {
 				flag(id)
 			}
 		}
@@ -2157,6 +2161,22 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	a.needsInputResume = newResume
 	resumedOf := func(id string) bool { return resumed[id] }
 
+	// BUG-067: merge this tick's and the PREVIOUS tick's content fingerprints
+	// (current wins) into a single lookup for NeedsInputClear's stale-marker
+	// content comparison. The previous tick's value matters because the tick a
+	// flag actually clears on is often the SAME tick the screen has already
+	// moved on to a busy/narrating frame with no awaiting-input signal (so
+	// newFP has no entry for it that tick) — prevFP is what still holds the
+	// fingerprint of the content that just got answered.
+	mergedFP := make(map[string]uint64, len(newFP)+len(prevFP))
+	for id, fp := range prevFP {
+		mergedFP[id] = fp
+	}
+	for id, fp := range newFP {
+		mergedFP[id] = fp
+	}
+	fingerprintOf := func(id string) (uint64, bool) { fp, ok := mergedFP[id]; return fp, ok }
+
 	// BUG-034: clear the flag for sessions the user has responded to, tasks
 	// that have been archived, or sessions with sustained resumed activity.
 	// Mirrors the daemon's computeNeedsInput. The last-input timestamp comes
@@ -2165,9 +2185,11 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	// cross-surface input clears via the natural log-content change instead).
 	// archivedOf reads the cached task list (a.tasks is set by the caller
 	// before this runs). runningIDs lets the BUG-063 cleared-marker survive a
-	// candidacy gap for a task that is still running.
+	// candidacy gap for a task that is still running. fingerprintOf lets
+	// BUG-067 distinguish a stale re-detection of the same content from a
+	// genuinely distinct, still-unanswered later prompt at the same timestamp.
 	var out []string
-	out, a.needsInputSince, a.needsInputCleared = agent.NeedsInputClear(fresh, runningIDs, a.needsInputSince, a.needsInputCleared, a.lastSessionInput, a.archivedTaskSet(), resumedOf)
+	out, a.needsInputSince, a.needsInputCleared = agent.NeedsInputClear(fresh, runningIDs, a.needsInputSince, a.needsInputCleared, a.lastSessionInput, a.archivedTaskSet(), resumedOf, fingerprintOf)
 	return out
 }
 
