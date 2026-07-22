@@ -495,12 +495,20 @@ func safeEmuWrite(emu *xvt.SafeEmulator, data []byte) {
 // running, mirroring the baseline's existing archive-drop behavior, so a
 // restart or un-archive re-arms cleanly.
 //
-// Accepted scope limit: this cannot distinguish "the same already-answered
+// Scope limit fixed by BUG-067 (see context/knowledge/gotchas/events.md): this
+// function originally could not distinguish "the same already-answered
 // content re-detected" from "a second, textually distinct, still-unanswered
 // prompt that happens to arrive before the user's next keystroke" — both
-// present as the same task ID at the same lastInputOf timestamp. See
-// context/knowledge/gotchas/events.md (BUG-063) for why this trade-off is
-// accepted rather than threading a content signature through this function.
+// present as the same task ID at the same lastInputOf timestamp. That was
+// evaluated and ACCEPTED as a trade-off at the time (BUG-063), on the
+// assumption that a second distinct prompt arriving before the user's next
+// keystroke was a rare, bounded scenario. It is not: Claude Code's
+// AskUserQuestion / /brainstorm flow routinely asks several DISTINCT
+// questions in sequence within one session, each one answered directly in the
+// pane — exactly the shape that collides with the stale-marker guard.
+// fingerprintOf (see below) closes this gap by comparing content, not just
+// timestamp, so a genuinely distinct later prompt re-arms instead of being
+// silently swallowed forever.
 //
 // lastInputOf returns a session's most-recent-input wall-clock time (zero if
 // never / unknown); a nil func disables clear-on-input (every baseline stays
@@ -508,19 +516,31 @@ func safeEmuWrite(emu *xvt.SafeEmulator, data []byte) {
 // recorded). archivedOf reports whether a task is archived; a nil func
 // disables clear-on-archive. resumedOf reports whether a task has
 // demonstrated sustained resumed activity (see ResumeActivityTick); a nil func
-// disables clear-on-resume. With all three nil the candidate set passes
-// through unchanged, so callers that cannot observe input/archive/activity
-// state degrade to pre-BUG-034 behavior.
-func NeedsInputClear(candidates []string, running []string, prevBaseline map[string]time.Time, prevCleared map[string]time.Time, lastInputOf func(string) time.Time, archivedOf func(string) bool, resumedOf func(string) bool) (out []string, newBaseline map[string]time.Time, newCleared map[string]time.Time) {
+// disables clear-on-resume. fingerprintOf returns a task's CURRENT content
+// fingerprint (e.g. agent.AwaitingInputFingerprint's fp, as already computed
+// by both callers' content-stability pass) and whether one is available this
+// tick; a nil func (or an unavailable fingerprint on either side of a
+// comparison) degrades to the pre-BUG-067 timestamp-only behavior — safe,
+// since it only widens what gets suppressed, never what gets surfaced. With
+// all four nil the candidate set passes through unchanged, so callers that
+// cannot observe input/archive/activity/content state degrade to
+// pre-BUG-034 behavior.
+func NeedsInputClear(candidates []string, running []string, prevBaseline map[string]time.Time, prevCleared map[string]ClearedMarker, lastInputOf func(string) time.Time, archivedOf func(string) bool, resumedOf func(string) bool, fingerprintOf func(string) (uint64, bool)) (out []string, newBaseline map[string]time.Time, newCleared map[string]ClearedMarker) {
 	out = make([]string, 0, len(candidates))
 	newBaseline = make(map[string]time.Time, len(candidates))
-	newCleared = make(map[string]time.Time, len(running))
+	newCleared = make(map[string]ClearedMarker, len(running))
 
 	lastInput := func(id string) time.Time {
 		if lastInputOf == nil {
 			return time.Time{}
 		}
 		return lastInputOf(id)
+	}
+	fingerprint := func(id string) (uint64, bool) {
+		if fingerprintOf == nil {
+			return 0, false
+		}
+		return fingerprintOf(id)
 	}
 
 	// Carry forward a still-settled cleared marker for every RUNNING task,
@@ -530,8 +550,8 @@ func NeedsInputClear(candidates []string, running []string, prevBaseline map[str
 		if archivedOf != nil && archivedOf(id) {
 			continue
 		}
-		if clearedAt, ok := prevCleared[id]; ok && !lastInput(id).After(clearedAt) {
-			newCleared[id] = clearedAt
+		if marker, ok := prevCleared[id]; ok && !lastInput(id).After(marker.At) {
+			newCleared[id] = marker
 		}
 	}
 
@@ -542,11 +562,16 @@ func NeedsInputClear(candidates []string, running []string, prevBaseline map[str
 			continue
 		}
 		li := lastInput(id)
-		if clearedAt, ok := newCleared[id]; ok && !li.After(clearedAt) {
-			// Stale re-candidacy: nothing has happened since the real clear
-			// that produced this marker. Suppress outright — do not recapture
-			// a baseline that could never advance past itself (BUG-063).
-			continue
+		if marker, ok := newCleared[id]; ok && !li.After(marker.At) {
+			// Same timestamp as a real clear. BUG-067: only suppress if the
+			// content also matches (or can't be compared) — a fingerprint
+			// that provably DIFFERS means this is a distinct, still-unanswered
+			// prompt (e.g. the next question in a multi-question brainstorm
+			// flow), not a stale re-detection of the already-resolved one.
+			curFP, curOK := fingerprint(id)
+			if !marker.HasFP || !curOK || curFP == marker.FP {
+				continue
+			}
 		}
 		// Capture the baseline on first entry; freeze it across subsequent
 		// ticks while the task stays a candidate.
@@ -555,10 +580,12 @@ func NeedsInputClear(candidates []string, running []string, prevBaseline map[str
 			baseline = li
 		}
 		// Input arrived after the flag was raised → the user responded →
-		// clear, and remember the input timestamp that cleared it so a later
-		// stale re-candidacy at this same timestamp is recognized too.
+		// clear, and remember the input timestamp (and content fingerprint,
+		// when known) that cleared it so a later stale re-candidacy at this
+		// same timestamp AND content is recognized too.
 		if lastInputOf != nil && li.After(baseline) {
-			newCleared[id] = li
+			fp, ok := fingerprint(id)
+			newCleared[id] = ClearedMarker{At: li, FP: fp, HasFP: ok}
 			continue
 		}
 		// The session has demonstrated sustained resumed activity since being
@@ -568,13 +595,30 @@ func NeedsInputClear(candidates []string, running []string, prevBaseline map[str
 		// a later stale re-candidacy of the identical already-resolved tail
 		// content is suppressed exactly like BUG-063 already guards.
 		if resumedOf != nil && resumedOf(id) {
-			newCleared[id] = li
+			fp, ok := fingerprint(id)
+			newCleared[id] = ClearedMarker{At: li, FP: fp, HasFP: ok}
 			continue
 		}
 		newBaseline[id] = baseline
 		out = append(out, id)
 	}
 	return out, newBaseline, newCleared
+}
+
+// ClearedMarker is the BUG-034/BUG-063/BUG-067 cleared-marker NeedsInputClear
+// threads across ticks: the wall-clock lastInputOf value observed at the
+// moment a needs-input flag cleared, plus — when known — the content
+// fingerprint that was showing at (or just before) that moment. A later
+// candidacy at the identical timestamp is only suppressed as a stale
+// re-detection when the content ALSO matches; see NeedsInputClear's BUG-067
+// doc comment. HasFP is false when no fingerprint could be determined at
+// clear time (e.g. the screen had already moved on to a busy/narrating frame
+// with no awaiting-input signal) — the suppression then falls back to the
+// pre-BUG-067 timestamp-only comparison.
+type ClearedMarker struct {
+	At    time.Time
+	FP    uint64
+	HasFP bool
 }
 
 // ContentIdleFingerprint powers content-aware idle classification (BUG-036). It

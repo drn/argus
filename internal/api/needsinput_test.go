@@ -899,3 +899,102 @@ func TestAutoClearBlockedHeraRoles_NothingBlockedNoOp(t *testing.T) {
 	srv.autoClearBlockedHeraRoles(state, []string{"a"}, func(string) []byte { return nil }, func(string) time.Time { return time.Time{} })
 	testutil.Equal(t, len(state.heraBlockedResume), 0)
 }
+
+// TestComputeNeedsInput_BUG067_DistinctSequentialPromptReflagsAlongsideUnrelatedAutoClear
+// reproduces the live repro (orchestrator "sketch-handoffs", roles
+// 12a-blueprint-ui-lifecycle / 13a-blueprint-restore-version, 2026-07-21)
+// daemon-side, AND directly tests the suspicion that the PR #904
+// autoClearBlockedHeraRoles pass — which reuses the SAME shared
+// idleWatcherState.screen ScreenRenderer as computeNeedsInput/detectNeedsInputTick
+// — could corrupt an unrelated task's needs-input detection by rendering a
+// DIFFERENT task's tail through it in the same tick. It does not: task "a"
+// runs the BUG-067 sequential-distinct-prompt scenario through
+// computeNeedsInput while task "b" (an unrelated hera role, self-reported
+// blocked) is processed by autoClearBlockedHeraRoles in the SAME tick,
+// sharing the SAME *agent.ScreenRenderer — task "a"'s detection must be
+// unaffected by task "b"'s render, and vice versa.
+func TestComputeNeedsInput_BUG067_DistinctSequentialPromptReflagsAlongsideUnrelatedAutoClear(t *testing.T) {
+	srv, d := testServer(t)
+	st := mkBlockedHeraRole(t, d, "b")
+
+	q1 := []byte("Where should the four lifecycle affordances live in the UI?\n❯ 1. List-centric (card kebab menu)\n  2. Detail-page only\n")
+	q2 := []byte("What should the 'New Blueprint' button do?\n❯ 1. Bare create, open viewer\n  2. Bare create + copy hint\n")
+
+	aTail := q1
+	tailOf := func(id string) []byte {
+		if id == "a" {
+			return aTail
+		}
+		return idleTail // task "b"'s own tail is irrelevant; it's driven via hera_status, not PTY content
+	}
+	t0 := time.Unix(1000, 0)
+	t1 := time.Unix(2000, 0)
+	aLastInput := t0
+	lastInputOf := func(id string) time.Time {
+		if id == "a" {
+			return aLastInput
+		}
+		return time.Time{}
+	}
+	archivedOf := func(string) bool { return false }
+	// "b" never receives a direct reply and never shows working — it must stay
+	// blocked, untouched by whatever happens to task "a" in the same tick.
+	bLastUserInputOf := func(string) time.Time { return st.UpdatedAt.Add(-time.Second) }
+
+	state := newIdleWatcherState()
+	running := []string{"a", "b"}
+
+	tick := func() []string {
+		needs, newFP, newSince, newCleared, newResume := computeNeedsInput(
+			[]string{"a"}, running, prevNeeds(state), state.contentFP, state.needsInputSince,
+			state.needsInputCleared, state.needsInputResume, tailOf, lastInputOf, archivedOf,
+			state.screen, defaultSizeOf,
+		)
+		state.contentFP, state.needsInputSince, state.needsInputCleared, state.needsInputResume = newFP, newSince, newCleared, newResume
+		state.needsInputNow = make(map[string]bool, len(needs))
+		for _, id := range needs {
+			state.needsInputNow[id] = true
+		}
+		srv.autoClearBlockedHeraRoles(state, running, tailOf, bLastUserInputOf)
+		return needs
+	}
+
+	// Tick 1: question 1 shown for "a" → flagged. "b" stays blocked.
+	got := tick()
+	testutil.DeepEqual(t, got, []string{"a"})
+	bStatus, err := d.HeraRoleStatusFor(st.RoleID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, bStatus.Status, db.HeraStatusBlocked)
+
+	// Tick 2: "a" is answered directly (lastInput advances past baseline) →
+	// real clear. "b" is untouched by "a"'s render sharing the same screen.
+	aLastInput = t1
+	got = tick()
+	testutil.Equal(t, len(got), 0)
+	bStatus, err = d.HeraRoleStatusFor(st.RoleID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, bStatus.Status, db.HeraStatusBlocked)
+
+	// Tick 3: Claude asks "a" a DIFFERENT, still-unanswered question — no
+	// further input has arrived (still t1, identical to the clear). Must
+	// re-flag despite the unrelated auto-clear pass rendering "b" in the same
+	// tick via the same ScreenRenderer.
+	aTail = q2
+	got = tick()
+	if len(got) != 1 || got[0] != "a" {
+		t.Fatalf("BUG-067 REGRESSION (shared renderer w/ unrelated auto-clear pass): distinct second prompt was suppressed: got %v", got)
+	}
+	bStatus, err = d.HeraRoleStatusFor(st.RoleID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, bStatus.Status, db.HeraStatusBlocked)
+}
+
+// prevNeeds extracts the previous tick's needs-input set from state, mirroring
+// how Server.detectNeedsInputTick builds it from state.needsInputNow.
+func prevNeeds(state *idleWatcherState) []string {
+	prev := make([]string, 0, len(state.needsInputNow))
+	for id := range state.needsInputNow {
+		prev = append(prev, id)
+	}
+	return prev
+}
