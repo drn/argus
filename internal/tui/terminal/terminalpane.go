@@ -1544,8 +1544,9 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 		totalWritten = sess.TotalWritten()
 	}
 
-	needRebuild := tp.emu == nil || tp.emuCols != ptyCols || tp.emuRows != ptyRows
-	if needRebuild {
+	emuMissing := tp.emu == nil
+	sizeChanged := !emuMissing && (tp.emuCols != ptyCols || tp.emuRows != ptyRows)
+	if emuMissing {
 		tp.emu = tp.newTrackedEmulator(ptyCols, ptyRows)
 		tp.oscStrip.reset()
 		tp.emuFedTotal = 0
@@ -1556,27 +1557,46 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 		// Invalidate the paint cache so the next paintEmu rebuilds from
 		// scratch instead of replaying stale SetContent calls.
 		tp.paintCacheValid = false
+	} else if sizeChanged {
+		// Resize the EXISTING emulator in place instead of discarding it
+		// and replaying from the on-disk log. x/vt's Resize (like a real
+		// terminal's SIGWINCH) preserves scrollback, alt-screen mode,
+		// cursor position, and SGR state exactly — the discard+replay this
+		// replaced fed a fresh emulator only the last liveRebuildHistorySize
+		// (8MB) of on-disk log, which can start well after crucial earlier
+		// context (which rows were on screen, true scrollback depth, current
+		// alt-screen mode) for any session with more history than that
+		// window. x/vt's parser then reconstructs an internally-consistent
+		// but WRONG screen: multiple historical redraw frames land on top of
+		// each other, visible as overlapping/garbled stale text that
+		// persists until something forces a further repaint. See
+		// gotchas/pty-terminal.md.
+		tp.emu.Resize(ptyCols, ptyRows)
+		tp.emuCols = ptyCols
+		tp.emuRows = ptyRows
+		tp.paintCacheValid = false
 	}
 
 	newBytes := totalWritten - tp.emuFedTotal
 
-	if newBytes > 0 || needRebuild {
+	if newBytes > 0 || emuMissing {
 		var raw []byte
 		if sess != nil {
 			raw = sess.RecentOutput()
 		}
-		// "Full replay" is required when the emulator was just rebuilt
-		// (dimension change) OR the ring wrapped past our last cursor —
-		// in either case the incremental tail in `raw` no longer aligns
-		// with what the emulator already parsed. Use the on-disk session
-		// log (up to 8MB) to give the new emu meaningful history instead
-		// of the ring's last 256KB sliver; without this, earlier status
-		// bars and framing the old emu had absorbed get re-emitted by
-		// the agent, producing stacked-status-bar artifacts at the
-		// bottom of the pane (defect 3).
-		fullReplay := needRebuild || newBytes > uint64(len(raw))
+		// "Full replay" is required when the emulator was just created
+		// (no prior state to preserve) OR the ring wrapped past our last
+		// cursor — in either case the incremental tail in `raw` no longer
+		// aligns with what the emulator already parsed. Use the on-disk
+		// session log (up to 8MB) to give the new emu meaningful history
+		// instead of the ring's last 256KB sliver; without this, earlier
+		// status bars and framing the old emu had absorbed get re-emitted
+		// by the agent, producing stacked-status-bar artifacts at the
+		// bottom of the pane (defect 3). A pure dimension change no longer
+		// takes this path at all — see the Resize call above.
+		fullReplay := emuMissing || newBytes > uint64(len(raw))
 		if fullReplay {
-			if !needRebuild {
+			if !emuMissing {
 				tp.emu = tp.newTrackedEmulator(ptyCols, ptyRows)
 				tp.oscStrip.reset()
 				tp.paintCacheValid = false
@@ -1586,7 +1606,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 				if tp.emuFedTotal == 0 {
 					msg := "Waiting for output..."
 					// Fill first: this fires right after a fresh session
-					// attaches (needRebuild) with no history yet — e.g. the
+					// attaches (emuMissing) with no history yet — e.g. the
 					// recycled/resumed session's first frame — so the pane
 					// must never rely on a caller having already blanked it.
 					widget.FillArea(screen, x, y, w, h, ' ', tcell.StyleDefault)
