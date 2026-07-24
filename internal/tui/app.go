@@ -3090,6 +3090,13 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 				// case (add-hera-jump-question).
 				a.jumpToNextNeedsInput()
 				return nil
+			case keymap.ActGlobalRestoreRail:
+				// Same unconditional reach as ActGlobalJumpNeedsInput above
+				// (add-ctrlg-excursion) — the manual "end excursion" discharge
+				// works from anywhere, any time, regardless of the remaining
+				// needs-input count.
+				a.restoreHeraRailExcursion()
+				return nil
 			}
 		}
 	}
@@ -4884,43 +4891,77 @@ func (a *App) closeSessionPickerModal() {
 	a.tapp.SetFocus(a.agentPane)
 }
 
-// jumpToNextNeedsInput is Ctrl+G's App-level entry point (add-hera-jump-
-// question): a dedicated, popup-free jump straight to the next role needing
-// input, independent of the Ctrl+J switcher. The Hera rail is the single
-// canonical "which role needs input, in what order" traversal (its own
-// buildRows order — Pinned → Active depth-first → Freelance → Archive, the
-// SAME order the rail's own partial-fold reveal already surfaces a hidden
-// needs-input leaf through), so every calling context funnels into
-// HeraPage.JumpToNextNeedsInput regardless of where Ctrl+G was pressed.
+// jumpToNextNeedsInput is Ctrl+G's App-level entry point, reworked by
+// add-ctrlg-excursion into the "problem-child excursion" state machine: while
+// one or more roles need input it behaves exactly as it always has (jump/
+// cycle to the next candidate, independent of the Ctrl+J switcher); once the
+// count drops to zero, a repeat press instead RESTORES the rail's
+// pre-interruption fold/selection layout captured by
+// hera.Rail.noteExcursionTransition the instant the operator was first
+// interrupted (never at keypress time — see that method's doc for the full
+// arm/re-arm rules). The Hera rail is the single canonical "which role needs
+// input, in what order" traversal (its own buildRows order — Pinned →
+// Active depth-first → Freelance → Archive, the SAME order the rail's own
+// partial-fold reveal already surfaces a hidden needs-input leaf through), so
+// every calling context funnels into HeraPage.JumpToNextNeedsInput regardless
+// of where Ctrl+G was pressed.
 //
-// PEEKS first via the non-mutating Rail.NextNeedsInputTaskID before doing
-// anything else: a caught-in-review bug had this tear down a live fullscreen
-// agent view and switch tabs BEFORE learning there was no candidate, yanking
-// the operator out of their agent view for a pure no-op. Only once a
-// candidate is confirmed does it switch to the Hera tab — exactly as the
-// switcher's own hera-managed landing already does (handleTaskSwitcherKey),
-// tearing down the classic agent view first when active (exitAgentView, same
-// precedent) — and jump. A safe no-op (flashed notice, no teardown, no tab
-// switch) when nothing currently needs input.
+// The count>=1 branch PEEKS first via the non-mutating Rail.NeedsInputCount
+// before doing anything else: a caught-in-review bug had an earlier version
+// tear down a live fullscreen agent view and switch tabs BEFORE learning
+// there was no candidate, yanking the operator out of their agent view for a
+// pure no-op. Only once a candidate is confirmed does it switch to the Hera
+// tab — exactly as the switcher's own hera-managed landing already does
+// (handleTaskSwitcherKey), tearing down the classic agent view first when
+// active (exitAgentView, same precedent) — and jump.
+//
+// The count==0 branch never switches tabs or tears down the agent view — a
+// restore is a background rail-state fix, not something that needs to be
+// watched happen; the operator can switch to the Projects tab themselves
+// (`2`) to see the result. A safe no-op (flashed notice) when there is
+// nothing to jump to AND nothing held to restore.
 func (a *App) jumpToNextNeedsInput() {
 	if a.heraPage == nil || a.heraPage.IsRemote() {
 		a.flashNotice("No role needs input")
 		return
 	}
-	if _, ok := a.heraPage.Rail().NextNeedsInputTaskID(); !ok {
-		a.flashNotice("No role needs input")
+	rail := a.heraPage.Rail()
+	if rail.NeedsInputCount() >= 1 {
+		rail.EnsureExcursionArmed() // belt-and-suspenders; normally already armed
+		if a.mode == modeAgent {
+			a.exitAgentView()
+		}
+		a.switchTab(widget.TabHera)
+		if !a.heraPage.JumpToNextNeedsInput() {
+			// Belt-and-braces: the count check above and this call are two
+			// separate rail scans, so an infinitesimal state change between
+			// them (a tick landing mid-way) could in principle flip the
+			// outcome. Still flash rather than leave the operator on the Hera
+			// tab with no feedback.
+			a.flashNotice("No role needs input")
+		}
 		return
 	}
-	if a.mode == modeAgent {
-		a.exitAgentView()
+	if rail.RestoreExcursion() {
+		a.flashNotice("Rail restored")
+		return
 	}
-	a.switchTab(widget.TabHera)
-	if !a.heraPage.JumpToNextNeedsInput() {
-		// Belt-and-braces: the peek above and this call are two separate rail
-		// scans, so an infinitesimal state change between them (a tick landing
-		// mid-way) could in principle flip the outcome. Still flash rather than
-		// leave the operator on the Hera tab with no feedback.
-		a.flashNotice("No role needs input")
+	a.flashNotice("No role needs input")
+}
+
+// restoreHeraRailExcursion is Ctrl+B's App-level entry point
+// (add-ctrlg-excursion): a manual, unconditional "end excursion" discharge —
+// works at any time regardless of the remaining needs-input count, unlike
+// Ctrl+G's count==0-gated restore branch above. Never switches tabs or tears
+// down the agent view (see jumpToNextNeedsInput's count==0 branch doc); a
+// silent no-op when no excursion is currently held, matching the design's
+// "manual restore end" semantics (nothing to discharge, nothing to say).
+func (a *App) restoreHeraRailExcursion() {
+	if a.heraPage == nil || a.heraPage.IsRemote() {
+		return
+	}
+	if a.heraPage.Rail().RestoreExcursion() {
+		a.flashNotice("Rail restored")
 	}
 }
 

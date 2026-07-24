@@ -218,6 +218,38 @@ type Rail struct {
 	// so the rail starts fully collapsed instead of fully expanded. One-shot:
 	// cleared after the seed, just like pendingSelRef.
 	firstRunCollapse bool
+
+	// excursion (add-ctrlg-excursion) holds the fold/selection snapshot taken at
+	// the instant the rail's needs-input count last transitioned from fully-at-
+	// rest (0) to interrupted (>=1), or nil when no excursion is currently held.
+	// See noteExcursionTransition for the full arm/re-arm state machine and
+	// RestoreExcursion for the ctrl+g (count==0)/ctrl+b (any time) discharge path.
+	excursion *railSnapshot
+	// prevNeedsInputCount is the whole-rail needs-input count (Model.
+	// NeedsInputTotalCount) as of the last SetModel call, compared against the
+	// fresh count on the NEXT call to detect the 0->=1 transition. Starts at 0
+	// (NewRail), matching "no problems yet" before the first model ever loads.
+	prevNeedsInputCount int
+}
+
+// railSnapshot captures the rail's fold/expand state and prior selection for
+// the ctrl+g/ctrl+b problem-child excursion (add-ctrlg-excursion): enough to
+// restore the operator's pre-interruption layout exactly via RestoreExcursion.
+type railSnapshot struct {
+	collapsed        map[int64]bool
+	coordArchiveOpen map[int64]bool
+	freelanceCollap  bool
+	archiveCollapsed bool
+	focusedKanban    db.HeraKanbanStatus
+	selRef           int64 // currentRef() identity at capture time
+}
+
+func cloneInt64BoolMap(m map[int64]bool) map[int64]bool {
+	c := make(map[int64]bool, len(m))
+	for k, v := range m {
+		c[k] = v
+	}
+	return c
 }
 
 // NewRail builds an empty rail. Archive starts collapsed (matches the task
@@ -262,6 +294,7 @@ func (r *Rail) rolePR(role *RoleView) bool {
 // SetModel replaces the snapshot and rebuilds rows, preserving the cursor's
 // selectable target where possible.
 func (r *Rail) SetModel(m Model) {
+	r.noteExcursionTransition(m)
 	prev := r.currentRef()
 	r.model = m
 	// A persisted selection (BUG-002) takes precedence on the FIRST build after a
@@ -367,6 +400,93 @@ func trueKeys(m map[int64]bool) []int64 {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
+}
+
+// --- problem-child excursion (ctrl+g / ctrl+b, add-ctrlg-excursion) ---
+
+// NeedsInputCount returns the current whole-rail needs-input count
+// (Model.NeedsInputTotalCount), fold-independent — the same figure the
+// excursion state machine below tracks and the one ctrl+g/ctrl+b consult at
+// keypress time to decide whether to cycle, arm, or restore.
+func (r *Rail) NeedsInputCount() int { return r.model.NeedsInputTotalCount() }
+
+// HasExcursionSnapshot reports whether a snapshot is currently held (an
+// excursion is open). Exposed mainly for tests.
+func (r *Rail) HasExcursionSnapshot() bool { return r.excursion != nil }
+
+// noteExcursionTransition is the SOLE place a snapshot is captured — never at
+// keypress time. It runs on every SetModel (the rail's one rebuild point,
+// wherever the count is recomputed), comparing the fresh whole-rail
+// needs-input count against the count as of the last rebuild:
+//
+//   - A transition from fully-at-rest (0) to interrupted (>=1) captures a
+//     FRESH snapshot unconditionally, discarding any stale one still held —
+//     this is the operator's true pre-interruption layout, captured before
+//     they have had any chance to react and fold/select things themselves.
+//   - A second (or third...) needs-input signal appearing while one is
+//     already open does NOT retrigger a capture (prevNeedsInputCount was
+//     already >=1, excursion != nil) — it folds into the SAME excursion.
+//   - The other arming path (excursion == nil but count >= 1) is reachable
+//     ONLY right after an explicit ctrl+b restore fired mid-excursion (some
+//     problems still outstanding): that clears excursion while count stays
+//     >=1, so the NEXT rebuild re-arms a fresh snapshot from however the
+//     operator has the rail folded at that point.
+//
+// No wall-clock or idle-time heuristics — purely a function of the count and
+// whether a snapshot is currently held.
+func (r *Rail) noteExcursionTransition(m Model) {
+	count := m.NeedsInputTotalCount()
+	if (r.prevNeedsInputCount == 0 && count >= 1) || (r.excursion == nil && count >= 1) {
+		r.excursion = r.captureExcursionSnapshot()
+	}
+	r.prevNeedsInputCount = count
+}
+
+// EnsureExcursionArmed captures a snapshot now if none is held yet — ctrl+g's
+// belt-and-suspenders call before it cycles to the next candidate. Under
+// normal operation noteExcursionTransition already armed it at the last
+// rebuild; this only matters if a caller reaches ctrl+g before any rebuild
+// has observed the transition.
+func (r *Rail) EnsureExcursionArmed() {
+	if r.excursion == nil {
+		r.excursion = r.captureExcursionSnapshot()
+	}
+}
+
+// captureExcursionSnapshot clones the live fold maps + section bools and
+// records the current selection identity (currentRef, the same stable
+// role-id/-orch-id ref restoreCursor already knows how to re-pin).
+func (r *Rail) captureExcursionSnapshot() *railSnapshot {
+	return &railSnapshot{
+		collapsed:        cloneInt64BoolMap(r.collapsed),
+		coordArchiveOpen: cloneInt64BoolMap(r.coordArchiveOpen),
+		freelanceCollap:  r.freelanceCollap,
+		archiveCollapsed: r.archiveCollapsed,
+		focusedKanban:    r.focusedKanban,
+		selRef:           r.currentRef(),
+	}
+}
+
+// RestoreExcursion re-applies a held snapshot's fold/selection state and
+// discards it, returning true. Returns false — a no-op — when no snapshot is
+// held. Used by ctrl+g when the count has dropped back to 0, and by ctrl+b
+// (manual "restore rail") at any time regardless of the remaining count.
+func (r *Rail) RestoreExcursion() bool {
+	if r.excursion == nil {
+		return false
+	}
+	snap := r.excursion
+	r.excursion = nil
+	r.collapsed = snap.collapsed
+	r.coordArchiveOpen = snap.coordArchiveOpen
+	r.freelanceCollap = snap.freelanceCollap
+	r.archiveCollapsed = snap.archiveCollapsed
+	r.focusedKanban = snap.focusedKanban
+	r.buildRows()
+	r.restoreCursor(snap.selRef)
+	r.clampCursor()
+	r.persist() // fold change (BUG-002), like ToggleCollapse/EnsureAncestorsExpanded
+	return true
 }
 
 // --- filter ---

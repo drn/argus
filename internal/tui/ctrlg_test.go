@@ -261,3 +261,113 @@ func TestSmoke_CtrlGNoopFromAgentViewDoesNotTearDown(t *testing.T) {
 		}
 	})
 }
+
+// --- add-ctrlg-excursion: ctrl+g count==0 restore + ctrl+b manual restore ---
+
+// TestSmoke_CtrlGRestoresRailWhenClear drives the count==0 restore branch
+// end-to-end: an excursion snapshot armed while a role needed input survives
+// the problem resolving on its own (no auto-discharge), and the NEXT ctrl+g
+// press — now with nothing left to jump to — restores it instead of just
+// flashing the old "No role needs input" notice.
+func TestSmoke_CtrlGRestoresRailWhenClear(t *testing.T) {
+	d := testDB(t)
+	seedNeedsInputWorker(t, d, "orch", "tw")
+	app := New(d, agent.NewRunner(nil), false)
+	sim, stop := wireApp(t, app)
+	defer stop()
+	markNeedsInput(t, app, "tw") // 0 -> 1 transition: arms an excursion snapshot
+
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.heraPage.Rail().HasExcursionSnapshot(), true)
+	})
+
+	markNeedsInput(t, app) // the problem resolves on its own (count back to 0)
+
+	sim.InjectKey(tcell.KeyCtrlG, 0, 0)
+	syncUI(t, app.tapp)
+
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.header.Notice(), "Rail restored")
+		testutil.Equal(t, app.heraPage.Rail().HasExcursionSnapshot(), false)
+		// A restore is a background rail-state fix, not a "come look at this"
+		// jump — it must never switch tabs or leave the plain task list.
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
+		testutil.Equal(t, app.mode, modeTaskList)
+	})
+}
+
+// TestSmoke_CtrlBRestoresRailManually confirms ctrl+b works at any time
+// regardless of the remaining needs-input count (unlike ctrl+g, which only
+// restores once the count is back to 0) and — like the count==0 restore
+// above — never tears down a live fullscreen agent view or switches tabs. A
+// subsequent ctrl+g still reaches the still-outstanding problem afterward: a
+// manual restore discharges only the fold snapshot, never the candidate ring.
+func TestSmoke_CtrlBRestoresRailManually(t *testing.T) {
+	d := testDB(t)
+	seedNeedsInputWorker(t, d, "orch", "tw")
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	seedSwitcherTasks(t, app) // gives an unrelated "current" task to view in modeAgent
+	sim, stop := wireApp(t, app)
+	defer stop()
+	markNeedsInput(t, app, "tw") // arms an excursion; the role still needs input (count stays >=1)
+
+	curTask, err := d.Get("ts-cur")
+	testutil.NoError(t, err)
+	curTask.Backend = "test"
+	cfg := config.DefaultConfig()
+	cfg.Backends["test"] = config.Backend{Command: "sleep 30"}
+	sess, err := runner.Start(curTask, cfg, 24, 80, false)
+	testutil.NoError(t, err)
+	defer runner.Stop(curTask.ID) //nolint:errcheck
+
+	readUI(t, app.tapp, func() {
+		app.mode = modeAgent
+		app.agentState.Reset(curTask.ID, curTask.Name)
+		app.agentPane.SetSession(sess)
+		app.worktreeDir = curTask.Worktree
+		app.root.ResizeItem(app.header, 0, 0) // mirrors real agent-view entry (header hidden)
+	})
+
+	sim.InjectKey(tcell.KeyCtrlB, 0, 0)
+	syncUI(t, app.tapp)
+
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.header.Notice(), "Rail restored")
+		testutil.Equal(t, app.heraPage.Rail().HasExcursionSnapshot(), false)
+		testutil.Equal(t, app.mode, modeAgent) // never torn down
+		if app.agentPane.Session() == nil {
+			t.Fatal("expected the agent session to remain attached — ctrl+b must not touch the agent view")
+		}
+		_, _, headerW, headerH := app.header.GetRect()
+		if headerW != 0 && headerH != 0 {
+			t.Errorf("expected the tab header to stay hidden (still in modeAgent), got %dx%d", headerW, headerH)
+		}
+	})
+
+	// The underlying problem is still outstanding — ctrl+g must still reach it.
+	sim.InjectKey(tcell.KeyCtrlG, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.heraPage.SelectionContext().TaskID(), "tw")
+	})
+}
+
+// TestSmoke_CtrlBNoopWhenNothingHeld confirms ctrl+b is a silent no-op — no
+// flash, no navigation — when no excursion snapshot is currently held (never
+// opened, or already discharged).
+func TestSmoke_CtrlBNoopWhenNothingHeld(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	sim.InjectKey(tcell.KeyCtrlB, 0, 0)
+	syncUI(t, app.tapp)
+
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.header.Notice(), "")
+		testutil.Equal(t, app.mode, modeTaskList)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
+	})
+}
