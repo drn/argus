@@ -84,10 +84,10 @@ func TestHelpModal_Draw(t *testing.T) {
 	testutil.Contains(t, body, "ctrl+g")
 	testutil.Contains(t, body, "jump to next needs-input (?)")
 	// ctrl+b manual rail restore (add-ctrlg-excursion): the ctrl+g problem-child
-	// excursion's explicit "end excursion" counterpart — fail the build if it's
+	// excursion's explicit manual-restore counterpart — fail the build if it's
 	// ever silently dropped from the generated overlay.
 	testutil.Contains(t, body, "ctrl+b")
-	testutil.Contains(t, body, "restore rail (end excursion)")
+	testutil.Contains(t, body, "jump back now, even with (?) still open")
 	testutil.Contains(t, body, "show/hide hera-managed (workers+coords)")
 	// Task-list `c` opens the copy menu (name / prompt) — fail the build if the
 	// binding text is silently reverted (keybinding-help contract).
