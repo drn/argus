@@ -2318,30 +2318,37 @@ Derived from: `internal/tui/hera/rail.go` (`drawRoleRow`, `contextIndicator`), `
 - **WHEN** a live worker role's bound task has an actionable PR state AND its context percentage is 90 or more
 - **THEN** its row renders both the `PR` tag and the `!` indicator, with the role name truncated to make room for both, and neither overwrites the other
 
-### Requirement: The rail captures a problem-child excursion snapshot at the needs-input 0→≥1 transition
+### Requirement: The rail captures a problem-child excursion snapshot at the needs-input 0→≥1 transition, re-arming only on a genuinely new distinct interruption
 
-The system SHALL maintain, in-memory only (never persisted, never part of the `hera.rail_view_state` DB blob), an optional excursion snapshot capturing every orchestrator's fold/collapse state, the per-coordinator archive-expando state, the freelance/archive section fold state, the focused kanban group, and the previously-selected role/orchestrator. This snapshot SHALL be captured the instant a fold-independent whole-rail needs-input count (every role's own needs-input signal across every orchestrator, including coordinator-kind roles, plus freelance roles — regardless of fold, archive-section, or kanban-group-focus state) transitions from zero to one or more — NEVER at the moment a jump key is pressed, so the captured layout reflects the operator's true state immediately before the interruption rather than anything they have since done in reaction to it. A capture taken while a snapshot is ALREADY held (a second or further needs-input signal appearing before the first excursion has been discharged) SHALL be suppressed — the existing snapshot survives — UNLESS no snapshot is currently held despite the count already being one or more, which happens only immediately after an explicit restore fired while problems remained outstanding (see the restore requirement below); that case SHALL re-arm a fresh capture from the rail's current state.
+The system SHALL maintain, in-memory only (never persisted, never part of the `hera.rail_view_state` DB blob), an optional excursion snapshot capturing every orchestrator's fold/collapse state, the per-coordinator archive-expando state, the freelance/archive section fold state, the focused kanban group, and the previously-selected role/orchestrator. This snapshot SHALL be captured the instant a fold-independent whole-rail needs-input SET (every role's own needs-input signal across every orchestrator, including coordinator-kind roles, plus freelance roles — regardless of fold, archive-section, or kanban-group-focus state — tracked by role identity, not merely counted) transitions from empty to non-empty — NEVER at the moment a jump key is pressed, so the captured layout reflects the operator's true state immediately before the interruption rather than anything they have since done in reaction to it. A capture taken while a snapshot is ALREADY held (a second or further needs-input signal appearing before the first excursion has been discharged) SHALL be suppressed — the existing snapshot survives.
 
-Derived from: `internal/tui/hera/rail.go` (`Rail.noteExcursionTransition`, `Rail.captureExcursionSnapshot`, `Rail.EnsureExcursionArmed`, `railSnapshot`), `internal/tui/hera/model.go` (`Model.NeedsInputTotalCount`).
+When no snapshot is held despite the needs-input set being non-empty — reachable only immediately after an explicit restore (`ctrl+g`/`ctrl+b`) fired while some role still needed input — the system SHALL track the needs-input set by role identity and continuously refresh a live candidate (the rail's CURRENT fold/selection state) on every rebuild for as long as the set stays a subset of (or equal to) the set as of the last capture/refresh: the SAME still-outstanding role reappearing across rebuilds — however long it stays unresolved — SHALL NOT by itself trigger a re-arm, so any fold/selection change the operator makes in the meantime is tracked, not discarded. A re-arm — freezing a fresh snapshot from the rail's state as it stands at that rebuild — SHALL fire only the instant a role id appears in the needs-input set that was NOT present in the tracked baseline: a genuinely new, distinct interruption. Identity-based tracking (not a bare count) is required to make this distinction: a count cannot tell "the same stale problem, still unresolved" apart from "a different problem, newly arrived."
+
+Derived from: `internal/tui/hera/rail.go` (`Rail.noteExcursionTransition`, `Rail.captureExcursionSnapshot`, `Rail.EnsureExcursionArmed`, `railSnapshot`, `hasNewNeedsInputID`), `internal/tui/hera/model.go` (`Model.NeedsInputTotalCount`, `Model.needsInputRoleIDs`).
 
 #### Scenario: A fresh interruption after being fully at rest captures a snapshot
 
-- **WHEN** the whole-rail needs-input count is zero, the operator has the rail folded in some particular way, and a role's needs-input signal newly becomes true (count goes from zero to one)
+- **WHEN** the whole-rail needs-input set is empty, the operator has the rail folded in some particular way, and a role's needs-input signal newly becomes true (the set goes from empty to one role)
 - **THEN** the rail captures a snapshot of the current fold/selection state before anything else changes
 
 #### Scenario: A second interruption during an open excursion does not overwrite the snapshot
 
-- **WHEN** an excursion snapshot is already held (from an earlier 0→≥1 transition) and, while it is still held, a second, unrelated role's needs-input signal becomes true (count goes from one to two)
+- **WHEN** an excursion snapshot is already held (from an earlier empty→non-empty transition) and, while it is still held, a second, unrelated role's needs-input signal becomes true
 - **THEN** no new snapshot is captured — the ORIGINAL snapshot (from before the operator reacted to the first problem) is what a later restore re-applies, even if the operator changed the fold state in between
 
-#### Scenario: An explicit restore while problems remain re-arms on the next interruption tick
+#### Scenario: An explicit restore while one stale problem remains does not re-arm until a genuinely new one appears
 
-- **WHEN** an excursion snapshot is discharged (via `ctrl+g` or `ctrl+b`) while the needs-input count is still one or more, and the rail subsequently rebuilds
-- **THEN** a fresh snapshot is captured from the rail's fold/selection state as it stands at that rebuild, ready for a later restore to reproduce
+- **WHEN** an excursion snapshot is discharged (via `ctrl+g` or `ctrl+b`) while a role still needs input, and the operator then navigates or folds the rail manually across any number of rebuilds while that SAME role remains the only one needing input
+- **THEN** no snapshot is re-armed at any point during that span — the rail keeps tracking the operator's latest fold/selection state live — until a DIFFERENT, previously-unseen role's needs-input signal becomes true, at which point a fresh snapshot is captured from the rail's state as it stands at that moment (the operator's latest position, not the position at the time of the earlier restore)
+
+#### Scenario: A role absorbed into an open excursion does not spuriously re-arm after a later discharge
+
+- **WHEN** a role's needs-input signal becomes true WHILE an excursion is already held (folding into that same excursion per the scenario above) and, after a later explicit restore discharges it, that same role is still the only one needing input
+- **THEN** the rebuild immediately following the discharge does NOT re-arm — the role is already accounted for in the tracked baseline, even though it was never individually captured by its own freeze
 
 #### Scenario: A resolved excursion is not auto-discharged
 
-- **WHEN** an excursion snapshot is held and the needs-input count later drops back to zero on its own (every outstanding problem resolves)
+- **WHEN** an excursion snapshot is held and the needs-input set later becomes empty on its own (every outstanding problem resolves)
 - **THEN** the snapshot remains held until the operator explicitly discharges it via `ctrl+g` or `ctrl+b` — nothing auto-clears it
 
 ### Requirement: ctrl+b manually restores the rail's excursion snapshot at any time

@@ -368,6 +368,33 @@ func (m Model) NeedsInputTotalCount() int {
 	return n
 }
 
+// needsInputRoleIDs returns the SAME whole-model needs-input membership
+// NeedsInputTotalCount sums, keyed by role id rather than counted. The rail's
+// ctrl+g/ctrl+b excursion state machine (rail.go) needs identity, not a bare
+// count: a count alone cannot distinguish "the same still-outstanding problem
+// reappearing across rebuilds" from "a genuinely new, distinct interruption"
+// (see noteExcursionTransition). nil when nothing needs input.
+func (m Model) needsInputRoleIDs() map[int64]bool {
+	var ids map[int64]bool
+	collect := func(roles []RoleView) {
+		for i := range roles {
+			if roles[i].needsInputOwn() {
+				if ids == nil {
+					ids = make(map[int64]bool)
+				}
+				ids[roles[i].RoleID] = true
+			}
+		}
+	}
+	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
+		for i := range sec {
+			collect(sec[i].Roles)
+		}
+	}
+	collect(m.Freelance)
+	return ids
+}
+
 // OrchByID finds the OrchView with the given id across every non-freelance
 // section, returning a pointer into the model's backing array (so callers read
 // the live projection, never a copy), or nil when not found. Used to resolve a
