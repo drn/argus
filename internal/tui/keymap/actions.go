@@ -177,8 +177,8 @@ var actionLabels = map[Action]string{
 	ActGlobalTabHera: "switch to Projects tab", ActGlobalTabSettings: "switch to Settings tab",
 	ActGlobalRefresh: "refresh screen", ActGlobalDestroy: "destroy task", ActGlobalFork: "fork task",
 	ActGlobalOpenRepo: "open repo", ActGlobalOpenPR: "open PR", ActGlobalPrune: "prune completed",
-	ActGlobalPalette: "command palette", ActGlobalJumpNeedsInput: "jump to next needs-input (?) / restore when clear",
-	ActGlobalRestoreRail: "restore rail (end excursion)",
+	ActGlobalPalette: "command palette", ActGlobalJumpNeedsInput: "jump to next needs-input (?); jumps back once all clear",
+	ActGlobalRestoreRail: "jump back now, even with (?) still open",
 
 	ActTaskNew: "new task", ActTaskStatusAdv: "advance status", ActTaskStatusRev: "revert status",
 	ActTaskArchive: "toggle archive", ActTaskPin: "toggle pin", ActTaskRename: "rename",
