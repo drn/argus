@@ -3136,6 +3136,67 @@ func TestRenderLive_EmuRebuildInvalidatesPaintCache(t *testing.T) {
 	}
 }
 
+// TestTerminalPane_ResizePreservesEmulatorState is a regression test for a
+// bug where a PTY dimension change (a real terminal resize, the Ctrl+Z
+// fullscreen toggle, a split/zoom layout change — anything that alters the
+// pane's cols/rows) discarded the live emulator and rebuilt a fresh one from
+// only the last liveRebuildHistorySize (8MB) of on-disk session log. For any
+// session with more history than that window, the rebuilt emulator started
+// from an arbitrary mid-stream position with no memory of the terminal's
+// actual prior state (alt-screen mode, cursor position, true scrollback
+// depth) — x/vt then reconstructed an internally-consistent but WRONG
+// screen, visible as old and new redraw frames overlapping into garbled
+// text. See gotchas/pty-terminal.md for the full writeup with a real capture.
+//
+// The fix resizes the EXISTING emulator in place (x/vt's own Resize, exactly
+// like a real terminal's SIGWINCH) instead of discarding and replaying. This
+// test proves the fix by making history recovery via ring/log IMPOSSIBLE
+// (nils the mock's output with no on-disk log) after establishing alt-screen
+// content — the old discard-and-rebuild code has nothing to rebuild from and
+// would show "Waiting for output...", losing all content; the fix needs no
+// history at all because it never discards the emulator.
+func TestTerminalPane_ResizePreservesEmulatorState(t *testing.T) {
+	tp := NewTerminalPane()
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen.Init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 24)
+
+	content := []byte("\x1b[?1049h\x1b[2J\x1b[HALT SCREEN MARKER")
+	sess := &mockAdapter{alive: true, totalWritten: uint64(len(content)), output: content}
+	tp.SetSession(sess)
+	tp.renderLive(screen, 0, 0, 40, 10, 40, 10)
+
+	if tp.emu == nil || !tp.emu.IsAltScreen() {
+		t.Fatal("expected alt-screen mode after the first render")
+	}
+	if s, _, _ := screen.Get(0, 0); s != "A" {
+		t.Fatalf("content before resize: got %q at (0,0), want \"A\"", s)
+	}
+
+	// The ring has moved on (evicted) and there is no on-disk log for this
+	// task — any attempt to rebuild from history now finds nothing.
+	sess.output = nil
+
+	screen2 := tcell.NewSimulationScreen("UTF-8")
+	if err := screen2.Init(); err != nil {
+		t.Fatalf("screen2.Init: %v", err)
+	}
+	defer screen2.Fini()
+	screen2.SetSize(80, 24)
+	// Dimension change only — totalWritten is unchanged, so no new bytes.
+	tp.renderLive(screen2, 0, 0, 60, 15, 60, 15)
+
+	if !tp.emu.IsAltScreen() {
+		t.Error("alt-screen mode should survive a resize (Resize in place, not a history rebuild)")
+	}
+	if s, _, _ := screen2.Get(0, 0); s != "A" {
+		t.Errorf("content after resize: got %q at (0,0), want \"A\" — a history rebuild would have found nothing and shown a placeholder", s)
+	}
+}
+
 // TestPaintEmu_BlanksRowsBelowContent verifies defect 6: when the
 // emulator's content is shorter than the viewport, paintEmu blanks the
 // trailing rows so stale cells from a previous frame don't leak through.
