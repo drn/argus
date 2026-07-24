@@ -38,6 +38,7 @@ const (
 	ActGlobalPrune          Action = "global.prune"
 	ActGlobalPalette        Action = "global.palette"
 	ActGlobalJumpNeedsInput Action = "global.jump_needs_input"
+	ActGlobalRestoreRail    Action = "global.restore_rail"
 
 	// Task list
 	ActTaskNew       Action = "tasklist.new"
@@ -132,6 +133,7 @@ var defaultSpecs = map[Context]map[Action]string{
 		ActGlobalRefresh: "ctrl+l", ActGlobalDestroy: "ctrl+d", ActGlobalFork: "ctrl+f",
 		ActGlobalOpenRepo: "ctrl+o", ActGlobalOpenPR: "ctrl+p", ActGlobalPrune: "ctrl+r",
 		ActGlobalPalette: "ctrl+k", ActGlobalJumpNeedsInput: "ctrl+g",
+		ActGlobalRestoreRail: "ctrl+b",
 	},
 	CtxTaskList: {
 		ActTaskNew: "n", ActTaskStatusAdv: "s", ActTaskStatusRev: "S",
@@ -175,7 +177,8 @@ var actionLabels = map[Action]string{
 	ActGlobalTabHera: "switch to Projects tab", ActGlobalTabSettings: "switch to Settings tab",
 	ActGlobalRefresh: "refresh screen", ActGlobalDestroy: "destroy task", ActGlobalFork: "fork task",
 	ActGlobalOpenRepo: "open repo", ActGlobalOpenPR: "open PR", ActGlobalPrune: "prune completed",
-	ActGlobalPalette: "command palette", ActGlobalJumpNeedsInput: "jump to next needs-input (?)",
+	ActGlobalPalette: "command palette", ActGlobalJumpNeedsInput: "jump to next needs-input (?) / restore when clear",
+	ActGlobalRestoreRail: "restore rail (end excursion)",
 
 	ActTaskNew: "new task", ActTaskStatusAdv: "advance status", ActTaskStatusRev: "revert status",
 	ActTaskArchive: "toggle archive", ActTaskPin: "toggle pin", ActTaskRename: "rename",
@@ -260,7 +263,7 @@ func (k *Keymap) ActionLabel(a Action) string {
 var contextOrder = map[Context][]Action{
 	CtxGlobal: {ActGlobalQuit, ActGlobalHelp, ActGlobalTabTasks, ActGlobalTabHera, ActGlobalTabSettings,
 		ActGlobalRefresh, ActGlobalDestroy, ActGlobalFork, ActGlobalOpenRepo, ActGlobalOpenPR, ActGlobalPrune,
-		ActGlobalPalette, ActGlobalJumpNeedsInput},
+		ActGlobalPalette, ActGlobalJumpNeedsInput, ActGlobalRestoreRail},
 	CtxTaskList: {ActTaskNew, ActTaskDown, ActTaskUp, ActTaskStatusAdv, ActTaskStatusRev, ActTaskArchive,
 		ActTaskPin, ActTaskRename, ActTaskCopy, ActTaskFilter, ActTaskHera},
 	CtxAgent: {ActAgentLinks, ActAgentSession, ActAgentSwitcher, ActAgentOpenPR, ActAgentZoom, ActAgentCopy,

@@ -194,7 +194,8 @@ below. The `?` overlay always shows your active bindings.
 | `ctrl+l`  | Refresh screen (wipe ghost cells; works in every non-agent tab) |
 | `ctrl+j`  | Open the unified **task/role switcher** (see the Agent View table below — same global action, also reachable from the plain Task List) |
 | `ctrl+k`  | Open the **command palette** — type to filter the actions applicable right here (this tab/pane's own actions + the always-available globals), `↑`/`↓` to select, `Enter` runs it immediately. Works from every tab and pane, including inside the agent view and a live Projects-tab pane |
-| `ctrl+g`  | Jump directly to the next role needing input (no popup, no typing) — press again to cycle to the next one, wrapping around. Works from every tab and pane |
+| `ctrl+g`  | Jump directly to the next role needing input (no popup, no typing) — press again to cycle to the next one, wrapping around. The rail's fold/selection state is snapshotted the instant you're first interrupted; once every role is clear, pressing `ctrl+g` again restores that snapshot instead of just saying there's nothing to do. Works from every tab and pane |
+| `ctrl+b`  | Restore the rail to its pre-interruption fold/selection snapshot, at any time — even with roles still needing input (unlike `ctrl+g` above, which only restores once they're all clear). No-op if nothing is snapshotted. Works from every tab and pane |
 | `q`       | Quit                                                            |
 
 #### Agent View
@@ -208,6 +209,7 @@ below. The `?` overlay always shows your active bindings.
 | `ctrl+j`              | Open the unified **task/role switcher** (fuzzy-search all tasks AND Hera-managed roles by name; entries needing input are pinned to the top, so an empty-filter `Enter` jumps straight to the first one). Selecting a Hera-managed entry switches to the Projects tab and lands on it there (expanding any folded ancestor coordinator first) instead of opening the classic per-task view |
 | `ctrl+k`              | Open the command palette (see the Task List table above — same global action) |
 | `ctrl+g`              | Jump directly to the next role needing input — no popup, no typing, independent of the switcher above (see the Task List table above — same global action) |
+| `ctrl+b`              | Restore the rail's pre-interruption fold/selection snapshot at any time (see the Task List table above — same global action) |
 | `ctrl+z`              | Toggle the git + file side panes (default layout set by Settings → Appearance → "Default agent view") |
 | `ctrl+l`              | Open link picker (fuzzy search all session URLs)                          |
 | `ctrl+r`              | Switch Claude session (searchable picker of this task's conversations; resumes the chosen one). Claude backends only |
@@ -230,6 +232,7 @@ The Projects tab (`2`) has three regions: a left **rail**, a middle **coordinato
 | `ctrl+j`        | Open the unified task/role switcher — works from the rail AND from a focused pane (never reaches the PTY). See the Agent View table above |
 | `ctrl+k`        | Open the command palette — works from the rail AND from a focused pane (never reaches the PTY; this replaces the old raw pass-through of `ctrl+k` into a pane). From a pane its rows also include that pane's own fullscreen/copy actions |
 | `ctrl+g`        | Jump directly to the next role needing input, cycling on repeat (wraps around) — works from the rail AND from a focused pane (never reaches the PTY). See the Agent View table above |
+| `ctrl+b`        | Restore the rail's pre-interruption fold/selection snapshot at any time — works from the rail AND from a focused pane (never reaches the PTY). See the Agent View table above |
 | `ctrl+y`        | Copy the agent-staged clipboard payload for the **focused pane's** task (coordinator or worker) — the Projects view shows several tasks at once, so the copy is scoped to whichever pane has focus. Always steals the key (the pane's title shows `(ctrl+y copy)` when a payload is staged); flashes "Nothing to copy" otherwise — never falls through to the PTY |
 | `Enter`         | Enter the selected role's pane, reviving its session first — a dead session is restarted, and a suspended/stuck worker is resumed in place via `--session-id` |
 | `w`             | Spawn a worker under the selected coordinator (opens the full new-task modal: project / branch / backend / model / prompt, project defaulted to the coordinator's) |

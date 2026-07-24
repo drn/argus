@@ -84,7 +84,7 @@ func TestPaletteApplicableActions_ClassicAgentViewIsCtxAgentOnly(t *testing.T) {
 	// actions (quit/tab-switch/help) leak into the agent-view palette.
 	testutil.Equal(t, containsLabel(rows, "quit"), false)
 	testutil.Equal(t, containsLabel(rows, "switch to Tasks tab"), false)
-	testutil.Equal(t, containsLabel(rows, "jump to next needs-input (?)"), false)
+	testutil.Equal(t, containsLabel(rows, "jump to next needs-input (?) / restore when clear"), false)
 }
 
 func TestPaletteApplicableActions_TaskListIsGlobalPlusTaskList(t *testing.T) {
@@ -98,7 +98,7 @@ func TestPaletteApplicableActions_TaskListIsGlobalPlusTaskList(t *testing.T) {
 	testutil.Equal(t, containsLabel(rows, "new task"), true)
 	// A new CtxGlobal action (add-hera-jump-question) is reachable here too,
 	// like every other global action.
-	testutil.Equal(t, containsLabel(rows, "jump to next needs-input (?)"), true)
+	testutil.Equal(t, containsLabel(rows, "jump to next needs-input (?) / restore when clear"), true)
 	// No cross-tab bleed: Hera rail actions absent from the Tasks-tab palette.
 	testutil.Equal(t, containsLabel(rows, "spawn worker under coordinator (new-task modal)"), false)
 }

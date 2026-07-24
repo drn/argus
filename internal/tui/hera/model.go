@@ -340,6 +340,34 @@ func (m Model) UnmanagedNeedsInputCount(needsInput map[string]bool) int {
 	return n
 }
 
+// NeedsInputTotalCount returns how many roles across the WHOLE model —
+// every orchestrator's roles (workers, freelance, AND coordinators) —
+// currently carry their OWN needs-input signal (needsInputOwn), regardless of
+// fold, archive-section, or kanban-group-focus state. It walks the model
+// directly rather than the rail's rendered row set, which only reflects the
+// currently-focused kanban group and expanded folds — this count must stay
+// fold-independent since it is what the ctrl+g/ctrl+b problem-child excursion
+// state machine (rail.go) uses to detect the operator has been interrupted
+// (0 → ≥1) or has cleared every outstanding problem (≥1 → 0), regardless of
+// how the rail happens to be folded at that instant.
+func (m Model) NeedsInputTotalCount() int {
+	n := 0
+	count := func(roles []RoleView) {
+		for i := range roles {
+			if roles[i].needsInputOwn() {
+				n++
+			}
+		}
+	}
+	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
+		for i := range sec {
+			count(sec[i].Roles)
+		}
+	}
+	count(m.Freelance)
+	return n
+}
+
 // OrchByID finds the OrchView with the given id across every non-freelance
 // section, returning a pointer into the model's backing array (so callers read
 // the live projection, never a copy), or nil when not found. Used to resolve a

@@ -69,6 +69,7 @@ func TestResolve_Defaults(t *testing.T) {
 		{CtxGlobal, ev(tcell.KeyCtrlF, 0, 0), ActGlobalFork},
 		{CtxGlobal, ev(tcell.KeyCtrlK, 0, 0), ActGlobalPalette},
 		{CtxGlobal, ev(tcell.KeyCtrlG, 0, 0), ActGlobalJumpNeedsInput},
+		{CtxGlobal, ev(tcell.KeyCtrlB, 0, 0), ActGlobalRestoreRail},
 		{CtxAgent, ev(tcell.KeyCtrlJ, 0, 0), ActAgentSwitcher},
 		{CtxTaskList, ev(tcell.KeyRune, 'n', 0), ActTaskNew},
 		{CtxTaskList, ev(tcell.KeyRune, 'S', 0), ActTaskStatusRev},

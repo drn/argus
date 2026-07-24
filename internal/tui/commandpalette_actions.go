@@ -119,6 +119,7 @@ func (a *App) globalActionRegistry() map[keymap.Action]func() {
 			}
 		},
 		keymap.ActGlobalJumpNeedsInput: func() { a.jumpToNextNeedsInput() },
+		keymap.ActGlobalRestoreRail:    func() { a.restoreHeraRailExcursion() },
 	}
 }
 
