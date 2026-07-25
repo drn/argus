@@ -275,6 +275,13 @@ func TestSmoke_CtrlGRestoresRailWhenClear(t *testing.T) {
 	app := New(d, agent.NewRunner(nil), false)
 	sim, stop := wireApp(t, app)
 	defer stop()
+	// Prime the rail with one settled, empty-needs-input render first — like
+	// the real app's own natural startup tick — so the excursion arms off a
+	// genuine 0->1 transition rather than tripping the BUG-070 cold-start
+	// guard (noteExcursionTransition never arms on a Rail's literal first-
+	// ever SetModel call, since it has no prior rows to resolve a cursor
+	// against).
+	markNeedsInput(t, app)
 	markNeedsInput(t, app, "tw") // 0 -> 1 transition: arms an excursion snapshot
 
 	readUI(t, app.tapp, func() {
@@ -310,6 +317,9 @@ func TestSmoke_CtrlBRestoresRailManually(t *testing.T) {
 	seedSwitcherTasks(t, app) // gives an unrelated "current" task to view in modeAgent
 	sim, stop := wireApp(t, app)
 	defer stop()
+	// Prime with one settled, empty-needs-input render first (see the
+	// matching comment in TestSmoke_CtrlGRestoresRailWhenClear — BUG-070).
+	markNeedsInput(t, app)
 	markNeedsInput(t, app, "tw") // arms an excursion; the role still needs input (count stays >=1)
 
 	curTask, err := d.Get("ts-cur")

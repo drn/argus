@@ -255,6 +255,71 @@ func TestRail_ExcursionSnapshot_StaleItemDoesNotFreezeAwayManualNavigation(t *te
 	testutil.Equal(t, r.OrchCollapsed(1), false) // F3 (expanded) — latest position, not stale F1/F2
 }
 
+// TestRail_ExcursionSnapshot_ColdStartDoesNotCaptureBogusSnapshot is the
+// live-repro regression test for BUG-070 (Aaron, 2026-07-25, discovered
+// dogfood-testing the BUG-069 fix — reproduced once, then "worked as
+// expected" on a retry without relaunching, exactly matching a cold-start-
+// only trigger): a fresh Rail's VERY FIRST SetModel call — right after a TUI
+// launch/relaunch — already sees a stale, pre-existing needs-input role that
+// predates the launch. That call must NOT freeze a snapshot: buildRows has
+// never run yet, so currentRef() has no rows to resolve and r.collapsed only
+// holds whatever the PREVIOUS session persisted, not this session's
+// operator navigation. The eventual freeze (once a genuinely new, distinct
+// entrant appears) must reflect the operator's actual current-session
+// position, and the cursor restore must not silently no-op.
+func TestRail_ExcursionSnapshot_ColdStartDoesNotCaptureBogusSnapshot(t *testing.T) {
+	r := NewRail()
+	// The FIRST SetModel call this Rail instance ever sees already has a
+	// stale, pre-existing needs-input role (t12) — simulates relaunching the
+	// TUI while a permanently-stuck "?" predates the launch.
+	r.SetModel(twoOrchModelNeedsInput("t12"))
+	testutil.Equal(t, r.HasExcursionSnapshot(), false) // no bogus cold-start capture
+
+	// The operator navigates THIS session: collapses orch-2 (its
+	// coordinator, t21, folds into the header row) and selects orch-1's
+	// worker role.
+	testutil.Equal(t, r.SelectByTaskID("t21"), true) // cursor -> orch-2 header
+	r.ToggleCollapse()
+	testutil.Equal(t, r.OrchCollapsed(2), true)
+	testutil.Equal(t, r.SelectByTaskID("t12"), true) // cursor -> t12's worker row
+
+	// The same stale problem persisting across rebuilds must still not arm —
+	// no genuinely new entrant (mirrors idle ticks after the relaunch).
+	r.SetModel(twoOrchModelNeedsInput("t12"))
+	testutil.Equal(t, r.HasExcursionSnapshot(), false)
+
+	// A genuinely new, distinct interruption appears elsewhere — NOW it
+	// should freeze, capturing the operator's actual current-session
+	// position (orch-2 collapsed, cursor on t12's role), not a cold-start
+	// ghost.
+	r.SetModel(twoOrchModelNeedsInput("t12", "t21"))
+	testutil.Equal(t, r.HasExcursionSnapshot(), true)
+
+	// Poke the fold + cursor once more mid-excursion to prove the eventual
+	// restore reflects the real capture, not merely "whatever it already was".
+	r.collapsed[2] = false
+	r.SelectByTaskID("t21")
+
+	testutil.Equal(t, r.RestoreExcursion(), true)
+	testutil.Equal(t, r.OrchCollapsed(2), true)  // real capture, not the poke or a cold-start ghost
+	testutil.Equal(t, r.currentRef(), int64(12)) // cursor re-pinned to t12's role — not a silent no-op
+}
+
+// TestRail_ExcursionSnapshot_ColdStartWithNoPriorNeedsInputArmsNormally pins
+// the non-regression complement of the BUG-070 fix: a fresh Rail whose first
+// SetModel call has NO needs-input yet (the ordinary case every other test in
+// this file exercises) must still arm exactly as before once a real
+// interruption arrives — the cold-start guard must not delay or suppress
+// arming beyond that literal first call.
+func TestRail_ExcursionSnapshot_ColdStartWithNoPriorNeedsInputArmsNormally(t *testing.T) {
+	r := NewRail()
+	r.SetModel(twoOrchModelNeedsInput()) // first-ever call, count=0
+	testutil.Equal(t, r.HasExcursionSnapshot(), false)
+
+	r.SetModel(twoOrchModelNeedsInput("t12")) // 0 -> 1 on the SECOND call
+	testutil.Equal(t, r.HasExcursionSnapshot(), true)
+}
+
 // TestRail_NeedsInputCount mirrors Model.NeedsInputTotalCount through the
 // Rail accessor ctrl+g/ctrl+b read at keypress time.
 func TestRail_NeedsInputCount(t *testing.T) {

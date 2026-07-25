@@ -451,6 +451,27 @@ func (r *Rail) HasExcursionSnapshot() bool { return r.excursion != nil }
 //     so the eventual freeze always reflects the operator's latest organic
 //     fold/selection, never a stale one.
 //
+// BUG-070: neither branch above may fire on the very first SetModel call a
+// Rail instance ever sees (r.rows still nil — buildRows has not run once
+// yet), which happens right after a fresh TUI launch/relaunch. If a stale,
+// already-outstanding needs-input role predates the launch (a permanently
+// stuck "?", or simply a coordinator left blocked overnight), that first
+// call satisfies the fully-at-rest case unconditionally — but currentRef()
+// can only return 0 with no rows to search, and r.collapsed at that instant
+// holds whatever SetStateStore loaded from the PREVIOUS session's persisted
+// disk state, not anything from the operator's current session. Freezing
+// there captures a bogus snapshot the operator can never meaningfully
+// restore to (selRef==0 silently no-ops the cursor; the fold state reverts
+// to wherever they left off last time, not where they are now) — live
+// repro: cursor and both panes went empty on ctrl+b, and unrelated
+// orchestrators flipped fold state to a stale prior-session layout. Instead,
+// the first-ever call only seeds the baseline (below); the normal machinery
+// arms correctly from the second call onward once rows exist, and ctrl+g's
+// EnsureExcursionArmed belt-and-suspenders still arms from the operator's
+// real live position if nothing has interrupted them by the time they first
+// press it — there is no earlier "pre-interruption layout" to capture when
+// the problem already existed before the app ever opened.
+//
 // armedNeedsInputIDs is updated to the current set unconditionally at the end
 // of every call, including while an excursion is already held — so an
 // entrant that merely folds into an open excursion is absorbed into the
@@ -460,6 +481,12 @@ func (r *Rail) HasExcursionSnapshot() bool { return r.excursion != nil }
 // whether a snapshot is currently held.
 func (r *Rail) noteExcursionTransition(m Model) {
 	current := m.needsInputRoleIDs()
+	if r.rows == nil {
+		// BUG-070: first-ever call, rows don't exist yet — seed only, never
+		// capture (see doc above).
+		r.armedNeedsInputIDs = current
+		return
+	}
 	switch {
 	case len(r.armedNeedsInputIDs) == 0 && len(current) >= 1:
 		r.excursion = r.captureExcursionSnapshot()
