@@ -315,6 +315,12 @@ func (r *Rail) SetModel(m Model) {
 		prev = r.pendingSelRef
 		r.pendingSelRef = 0
 	}
+	// Keep the previously-selected row revealed through this rebuild even if
+	// its own needs-input signal (the thing that was revealing it) just
+	// cleared (BUG-071) — before buildRows runs, so the reveal machinery below
+	// sees it like any other still-outstanding needs-input path. No-op when
+	// prev was already visible through ordinary expansion.
+	r.applyStickyReveal(prev)
 	// Re-focus the kanban group containing prev's target BEFORE buildRows —
 	// buildRows itself needs r.focusedKanban to decide which group to expand,
 	// so this must run first (design.md decision 1). A ref of 0 (nothing
@@ -324,6 +330,75 @@ func (r *Rail) SetModel(m Model) {
 	r.buildRows()
 	r.restoreCursor(prev)
 	r.clampCursor()
+}
+
+// applyStickyReveal keeps ref's row peeking through a closed ancestor fold for
+// THIS rebuild, even when ref's own needs-input signal (the thing that would
+// otherwise earn it a peek via the partial-fold-reveal mechanism) has just
+// cleared in the freshly-received r.model — fixing the "yank" where a role
+// the operator is actively viewing vanishes, and the cursor with it, the
+// instant they resolve its prompt (BUG-071).
+//
+// It reuses the reveal mechanism verbatim rather than adding parallel gates:
+// force SubtreeNeedsInput true on ref's own role (for a role ref) and on
+// every ancestor orchestrator up to the root via canonicalParents — plus, for
+// each worker-bridge (non-coordinator-spawn) hop, the PARENT's bridging role,
+// since appendOrchWorkers' per-role reveal gate reads the bridging role's own
+// SubtreeNeedsInput, not merely the child orchestrator's. ref follows
+// currentRef()'s identity: positive is a role id, negative is an
+// orchestrator's header (-OrchID), zero (or an id that no longer resolves —
+// e.g. the role/orchestrator was deleted) is a no-op.
+//
+// This has NO effect when ref's row was already visible through ordinary
+// (non-collapsed) expansion: the non-revealOnly render path never consults
+// SubtreeNeedsInput at all. And because it is re-derived from r.currentRef()
+// on every SetModel call, it only lasts as long as the cursor keeps
+// resolving to the SAME ref — the moment the operator (or a cursor-restore)
+// lands on a different row, the next call computes stickiness from THAT
+// identity instead, and the old row is free to fold away normally.
+func (r *Rail) applyStickyReveal(ref int64) {
+	if ref == 0 {
+		return
+	}
+	var orchID int64
+	if ref < 0 {
+		orchID = -ref
+		if r.model.OrchByID(orchID) == nil {
+			return
+		}
+	} else {
+		role := r.model.roleByID(ref)
+		if role == nil {
+			return
+		}
+		role.SubtreeNeedsInput = true
+		orchID = role.OrchID
+	}
+	canonical := r.model.canonicalParents()
+	seen := make(map[int64]bool)
+	for id := orchID; ; {
+		if seen[id] {
+			return // cycle guard (matches EnsureAncestorsExpanded's discipline)
+		}
+		seen[id] = true
+		o := r.model.OrchByID(id)
+		if o == nil {
+			return
+		}
+		o.SubtreeNeedsInput = true
+		cp, ok := canonical[id]
+		if !ok {
+			return // reached a top-level root
+		}
+		if !cp.coordSpawn {
+			if parent := r.model.OrchByID(cp.orchID); parent != nil {
+				if br := parent.bridgingRoleFor(o.CoordBridgeTaskID()); br != nil {
+					br.SubtreeNeedsInput = true
+				}
+			}
+		}
+		id = cp.orchID
+	}
 }
 
 // Model returns the current snapshot (read-only; for tests/inspection).
