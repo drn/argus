@@ -225,11 +225,19 @@ type Rail struct {
 	// See noteExcursionTransition for the full arm/re-arm state machine and
 	// RestoreExcursion for the ctrl+g (count==0)/ctrl+b (any time) discharge path.
 	excursion *railSnapshot
-	// prevNeedsInputCount is the whole-rail needs-input count (Model.
-	// NeedsInputTotalCount) as of the last SetModel call, compared against the
-	// fresh count on the NEXT call to detect the 0->=1 transition. Starts at 0
-	// (NewRail), matching "no problems yet" before the first model ever loads.
-	prevNeedsInputCount int
+	// armedNeedsInputIDs is the whole-rail needs-input role-ID SET (Model.
+	// needsInputRoleIDs) as of the last SetModel call — the baseline the next
+	// rebuild's set is compared against to detect (a) the fully-at-rest ->
+	// interrupted transition (nil/empty -> non-empty) and (b) a genuinely NEW,
+	// distinct entrant while no excursion is held. Updated on EVERY rebuild,
+	// including while an excursion is held (frozen) or the model is fully at
+	// rest — never gated to only the branches that act on it — so an entrant
+	// that merely folds into an already-open excursion is still absorbed into
+	// the baseline; otherwise it would look "new" again immediately after a
+	// later discharge and cause a spurious re-freeze (see
+	// TestRail_ExcursionSnapshot_EntrantAbsorbedWhileFrozenDoesNotReFreezeAfterDischarge).
+	// nil (NewRail) matches "no problems yet" before the first model ever loads.
+	armedNeedsInputIDs map[int64]bool
 }
 
 // railSnapshot captures the rail's fold/expand state and prior selection for
@@ -417,29 +425,88 @@ func (r *Rail) HasExcursionSnapshot() bool { return r.excursion != nil }
 // noteExcursionTransition is the SOLE place a snapshot is captured — never at
 // keypress time. It runs on every SetModel (the rail's one rebuild point,
 // wherever the count is recomputed), comparing the fresh whole-rail
-// needs-input count against the count as of the last rebuild:
+// needs-input role-ID SET against the set as of the last rebuild — identity,
+// not a bare count, is required (BUG-069, see the re-arm bullet below):
 //
-//   - A transition from fully-at-rest (0) to interrupted (>=1) captures a
-//     FRESH snapshot unconditionally, discarding any stale one still held —
+//   - A transition from fully-at-rest (empty) to interrupted (>=1 id) captures
+//     a FRESH snapshot unconditionally, discarding any stale one still held —
 //     this is the operator's true pre-interruption layout, captured before
 //     they have had any chance to react and fold/select things themselves.
 //   - A second (or third...) needs-input signal appearing while one is
-//     already open does NOT retrigger a capture (prevNeedsInputCount was
-//     already >=1, excursion != nil) — it folds into the SAME excursion.
-//   - The other arming path (excursion == nil but count >= 1) is reachable
-//     ONLY right after an explicit ctrl+b restore fired mid-excursion (some
-//     problems still outstanding): that clears excursion while count stays
-//     >=1, so the NEXT rebuild re-arms a fresh snapshot from however the
-//     operator has the rail folded at that point.
+//     already open does NOT retrigger a capture (excursion != nil) — it folds
+//     into the SAME excursion.
+//   - The other arming path (excursion == nil but the set is non-empty) is
+//     reachable ONLY right after an explicit ctrl+b restore fired mid-
+//     excursion (some problems still outstanding). BUG-069: this must NOT
+//     unconditionally re-arm on the very next rebuild — a still-outstanding,
+//     never-resolved role (however stale) is not a new interruption, and
+//     freezing immediately would silently discard any fold/selection change
+//     the operator makes afterward until the next explicit restore (the live
+//     repro: ctrl+b replayed a stale, much-earlier layout instead of the
+//     operator's latest position). Instead the tracked baseline
+//     (armedNeedsInputIDs) keeps refreshing to the CURRENT set on every
+//     rebuild for as long as it stays a subset of (or equal to) that
+//     baseline, and a fresh snapshot freezes only the instant a role id
+//     appears that was NOT in it — a genuinely new, distinct interruption —
+//     so the eventual freeze always reflects the operator's latest organic
+//     fold/selection, never a stale one.
 //
-// No wall-clock or idle-time heuristics — purely a function of the count and
+// BUG-070: neither branch above may fire on the very first SetModel call a
+// Rail instance ever sees (r.rows still nil — buildRows has not run once
+// yet), which happens right after a fresh TUI launch/relaunch. If a stale,
+// already-outstanding needs-input role predates the launch (a permanently
+// stuck "?", or simply a coordinator left blocked overnight), that first
+// call satisfies the fully-at-rest case unconditionally — but currentRef()
+// can only return 0 with no rows to search, and r.collapsed at that instant
+// holds whatever SetStateStore loaded from the PREVIOUS session's persisted
+// disk state, not anything from the operator's current session. Freezing
+// there captures a bogus snapshot the operator can never meaningfully
+// restore to (selRef==0 silently no-ops the cursor; the fold state reverts
+// to wherever they left off last time, not where they are now) — live
+// repro: cursor and both panes went empty on ctrl+b, and unrelated
+// orchestrators flipped fold state to a stale prior-session layout. Instead,
+// the first-ever call only seeds the baseline (below); the normal machinery
+// arms correctly from the second call onward once rows exist, and ctrl+g's
+// EnsureExcursionArmed belt-and-suspenders still arms from the operator's
+// real live position if nothing has interrupted them by the time they first
+// press it — there is no earlier "pre-interruption layout" to capture when
+// the problem already existed before the app ever opened.
+//
+// armedNeedsInputIDs is updated to the current set unconditionally at the end
+// of every call, including while an excursion is already held — so an
+// entrant that merely folds into an open excursion is absorbed into the
+// baseline and does not look "new" again immediately after a later discharge.
+//
+// No wall-clock or idle-time heuristics — purely a function of the set and
 // whether a snapshot is currently held.
 func (r *Rail) noteExcursionTransition(m Model) {
-	count := m.NeedsInputTotalCount()
-	if (r.prevNeedsInputCount == 0 && count >= 1) || (r.excursion == nil && count >= 1) {
+	current := m.needsInputRoleIDs()
+	if r.rows == nil {
+		// BUG-070: first-ever call, rows don't exist yet — seed only, never
+		// capture (see doc above).
+		r.armedNeedsInputIDs = current
+		return
+	}
+	switch {
+	case len(r.armedNeedsInputIDs) == 0 && len(current) >= 1:
+		r.excursion = r.captureExcursionSnapshot()
+	case r.excursion == nil && hasNewNeedsInputID(current, r.armedNeedsInputIDs):
 		r.excursion = r.captureExcursionSnapshot()
 	}
-	r.prevNeedsInputCount = count
+	r.armedNeedsInputIDs = current
+}
+
+// hasNewNeedsInputID reports whether current contains a role id absent from
+// baseline — a genuinely new, distinct needs-input entrant relative to the
+// last capture/refresh, as opposed to the same still-outstanding role(s)
+// reappearing across rebuilds.
+func hasNewNeedsInputID(current, baseline map[int64]bool) bool {
+	for id := range current {
+		if !baseline[id] {
+			return true
+		}
+	}
+	return false
 }
 
 // EnsureExcursionArmed captures a snapshot now if none is held yet — ctrl+g's
@@ -661,6 +728,18 @@ func (r *Rail) workerRowVisible(ownerID int64, w *RoleView, canonical map[int64]
 // currentRef returns a stable identity for the row under the cursor so the
 // cursor can be re-pinned after a rebuild. RoleID for roles, OrchID (negated
 // to avoid colliding with role ids) for orch headers, 0 otherwise.
+//
+// Known gap (pre-existing, shared with the BUG-002 persisted-selection
+// mechanism this excursion snapshot's selRef also reuses — not introduced or
+// fixed by add-ctrlg-excursion/BUG-069): a cursor resting on a selectable
+// fold row with no role/orch identity of its own — the bottom Archive
+// expando, a per-coordinator Archive expando, or the Freelance fold header —
+// returns 0 here, and restoreCursor(0) is then a silent no-op, leaving the
+// cursor wherever it already was rather than re-pinning it. Confirmed via
+// TestRail_CurrentRef_ZeroOnArchiveExpandoRow; left unfixed here since it is
+// narrow (the cursor must sit on one of these specific fold rows, not a role
+// or orchestrator header, at the exact moment of capture) and orthogonal to
+// BUG-069 — worth a dedicated follow-up if it recurs in practice.
 func (r *Rail) currentRef() int64 {
 	if r.cursor < 0 || r.cursor >= len(r.rows) {
 		return 0
