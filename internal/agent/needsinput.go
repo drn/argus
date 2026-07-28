@@ -459,6 +459,18 @@ func safeEmuWrite(emu *xvt.SafeEmulator, data []byte) {
 //	    flagged, which only a genuinely un-stuck agent can sustain (an
 //	    unrelated system nudge to a still-parked agent does not make it
 //	    generate/execute for a sustained stretch) — see ResumeActivityTick.
+//	(d) Clear on demonstrated settlement (settledOf, see SettleTick; BUG-072).
+//	    resumedOf (c) can only fire while the session is ACTIVELY showing the
+//	    working affordance — its streak resets to zero the instant the session
+//	    goes idle. A worker that resolves its own block and wraps up in FEWER
+//	    than NeedsInputResumeTicks consecutive ticks settles into idle before
+//	    that streak can ever reach threshold, and can never resume it afterward
+//	    (an idle session never shows the working affordance again) — so without
+//	    a separate path, such a worker stays flagged until an unrelated,
+//	    incidental keystroke happens to advance LastUserInput. settledOf reports
+//	    whether the session has been genuinely idle AND shown NONE of the
+//	    needs-input signals for NeedsInputSettleTicks CONSECUTIVE ticks — see
+//	    SettleTick.
 //
 // The baseline map is the carry-forward state: pass the previous tick's return
 // as prevBaseline. An entry is kept (frozen) as long as the task remains a
@@ -516,16 +528,19 @@ func safeEmuWrite(emu *xvt.SafeEmulator, data []byte) {
 // recorded). archivedOf reports whether a task is archived; a nil func
 // disables clear-on-archive. resumedOf reports whether a task has
 // demonstrated sustained resumed activity (see ResumeActivityTick); a nil func
-// disables clear-on-resume. fingerprintOf returns a task's CURRENT content
-// fingerprint (e.g. agent.AwaitingInputFingerprint's fp, as already computed
-// by both callers' content-stability pass) and whether one is available this
-// tick; a nil func (or an unavailable fingerprint on either side of a
-// comparison) degrades to the pre-BUG-067 timestamp-only behavior — safe,
-// since it only widens what gets suppressed, never what gets surfaced. With
-// all four nil the candidate set passes through unchanged, so callers that
-// cannot observe input/archive/activity/content state degrade to
-// pre-BUG-034 behavior.
-func NeedsInputClear(candidates []string, running []string, prevBaseline map[string]time.Time, prevCleared map[string]ClearedMarker, lastInputOf func(string) time.Time, archivedOf func(string) bool, resumedOf func(string) bool, fingerprintOf func(string) (uint64, bool)) (out []string, newBaseline map[string]time.Time, newCleared map[string]ClearedMarker) {
+// disables clear-on-resume. settledOf reports whether a task has demonstrated
+// settlement — genuinely idle with no current needs-input signal, sustained
+// for NeedsInputSettleTicks consecutive ticks (see SettleTick, BUG-072); a nil
+// func disables clear-on-settle. fingerprintOf returns a task's CURRENT
+// content fingerprint (e.g. agent.AwaitingInputFingerprint's fp, as already
+// computed by both callers' content-stability pass) and whether one is
+// available this tick; a nil func (or an unavailable fingerprint on either
+// side of a comparison) degrades to the pre-BUG-067 timestamp-only behavior —
+// safe, since it only widens what gets suppressed, never what gets surfaced.
+// With all five nil the candidate set passes through unchanged, so callers
+// that cannot observe input/archive/activity/settlement/content state degrade
+// to pre-BUG-034 behavior.
+func NeedsInputClear(candidates []string, running []string, prevBaseline map[string]time.Time, prevCleared map[string]ClearedMarker, lastInputOf func(string) time.Time, archivedOf func(string) bool, resumedOf func(string) bool, settledOf func(string) bool, fingerprintOf func(string) (uint64, bool)) (out []string, newBaseline map[string]time.Time, newCleared map[string]ClearedMarker) {
 	out = make([]string, 0, len(candidates))
 	newBaseline = make(map[string]time.Time, len(candidates))
 	newCleared = make(map[string]ClearedMarker, len(running))
@@ -595,6 +610,19 @@ func NeedsInputClear(candidates []string, running []string, prevBaseline map[str
 		// a later stale re-candidacy of the identical already-resolved tail
 		// content is suppressed exactly like BUG-063 already guards.
 		if resumedOf != nil && resumedOf(id) {
+			fp, ok := fingerprint(id)
+			newCleared[id] = ClearedMarker{At: li, FP: fp, HasFP: ok}
+			continue
+		}
+		// The session has settled: genuinely idle with no current
+		// needs-input signal, sustained for NeedsInputSettleTicks (BUG-072).
+		// This is the complementary case to resumedOf above — a worker that
+		// resolves its own block and wraps up FASTER than
+		// NeedsInputResumeTicks never sustains that streak, and once idle it
+		// can never resume it (an idle session never shows the working
+		// affordance again), so without this path such a worker would stay
+		// flagged until an unrelated, incidental keystroke arrived.
+		if settledOf != nil && settledOf(id) {
 			fp, ok := fingerprint(id)
 			newCleared[id] = ClearedMarker{At: li, FP: fp, HasFP: ok}
 			continue
@@ -819,6 +847,60 @@ func ResumeActivityTick(prevTicks int, workingNow bool) (newTicks int, resumed b
 	}
 	newTicks = prevTicks + 1
 	return newTicks, newTicks >= NeedsInputResumeTicks
+}
+
+// NeedsInputSettleTicks bounds how many CONSECUTIVE ticks a flagged session
+// must be genuinely RAW-IDLE (Session.IsIdle — no new PTY output, not merely
+// "not currently generating") with NO current needs-input signal in its tail
+// before NeedsInputClear's settledOf clear path (BUG-072) treats it as
+// settled and clears the flag. See SettleTick.
+//
+// Deliberately much smaller than NeedsInputEscalationTicks (8) or
+// NeedsInputResumeTicks (5): SettleTick is not guarding against the BUG-061
+// tail-flooding hazard (that requires the session to keep producing bytes
+// indefinitely, which raw-idle means has stopped) or a BUG-065-style brief
+// acknowledgment burst (that risk only applies while the session is still
+// actively producing). A session that has gone genuinely raw-idle cannot be
+// mid-flood by construction, so a fresh read of its tail is trustworthy — two
+// ticks purely guards against an isolated torn read, the same category
+// BUG-060 named for the escalation counter's own grace period.
+const NeedsInputSettleTicks = 2
+
+// SettleTick advances the per-session "settled" counter backing
+// NeedsInputClear's settledOf clear path (BUG-072) — the complementary case
+// to ResumeActivityTick. ResumeActivityTick clears when the agent SUSTAINS
+// visible work for NeedsInputResumeTicks consecutive ticks; it can never fire
+// for a worker that wraps up in FEWER ticks and settles straight into idle,
+// because going idle drives workingNow false and resets that streak to zero
+// the instant work stops — and a genuinely idle session never shows the
+// working affordance again, so the streak can never resume either. SettleTick
+// recognizes exactly that case: a flagged session that goes genuinely idle
+// (no new output) AND whose current tail no longer shows any of the three
+// DetectNeedsInput signals — the same idle-gated check that raises the flag
+// in the first place, re-applied here as a negative/clearing signal.
+//
+// prevTicks is the previous tick's count; idleNow is this tick's raw-idle
+// reading; awaitingNow is whether the CURRENT tail still shows a blocking
+// signal (agent.DetectNeedsInputScreen). Not idle, or still showing the
+// signal, resets the streak to zero outright — no grace period, mirroring
+// ResumeActivityTick: under-clearing (staying flagged a tick or two longer)
+// is safe, a false clear is not. In particular, a session that is idle but
+// STILL genuinely blocked (its tail still shows the signal) never qualifies —
+// it is indistinguishable, by design, from the ordinary idle-gated
+// re-detection case, and correctly stays flagged.
+//
+// Safe against the BUG-061 tail-flooding hazard that motivated removing the
+// sticky pass's own re-match requirement: flooding is caused by Claude's
+// continuous blinking-cursor redraw, which by construction keeps the session
+// OUT of raw-idle (every redraw byte bumps lastOutput). A session that has
+// gone genuinely raw-idle has, by definition, stopped producing those bytes,
+// so it cannot be flooding its own tail — a fresh read is trustworthy.
+func SettleTick(prevTicks int, idleNow, awaitingNow bool) (newTicks int, settled bool) {
+	if !idleNow || awaitingNow {
+		return 0, false
+	}
+	newTicks = prevTicks + 1
+	return newTicks, newTicks >= NeedsInputSettleTicks
 }
 
 // ClearBlockedRoleStatus reports whether a hera role's self-reported

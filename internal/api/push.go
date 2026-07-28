@@ -152,6 +152,15 @@ type idleWatcherState struct {
 	// coordinator's relayed answer (WriteInputSystem) could otherwise never
 	// clear. Mirrors the TUI's App.needsInputResume.
 	needsInputResume map[string]int
+	// needsInputSettle carries the settlement counter (see agent.SettleTick,
+	// BUG-072): consecutive ticks a flagged session has been genuinely idle
+	// with no current needs-input signal in its tail. Complementary to
+	// needsInputResume — a session that resolves its own block and settles
+	// into idle FASTER than needsInputResume's sustained-working-streak
+	// threshold can never satisfy that threshold (going idle resets it, and it
+	// can never resume once idle), so without this it would stay flagged until
+	// an unrelated keystroke. Mirrors the TUI's App.needsInputSettle.
+	needsInputSettle map[string]int
 	// heraBlockedResume carries the resumed-activity counter (see
 	// agent.ResumeActivityTick) for the SEPARATE self-reported hera_status
 	// "blocked" auto-clear pass (Server.autoClearBlockedHeraRoles) — keyed by
@@ -185,6 +194,7 @@ func newIdleWatcherState() *idleWatcherState {
 		needsInputSince:   make(map[string]time.Time),
 		needsInputCleared: make(map[string]agent.ClearedMarker),
 		needsInputResume:  make(map[string]int),
+		needsInputSettle:  make(map[string]int),
 		heraBlockedResume: make(map[string]int),
 		screen:            &agent.ScreenRenderer{},
 	}
@@ -255,28 +265,39 @@ func sessionScreenSize(taskID string) (cols, rows int) {
 // worker demonstrably resumes real work, not just when the human types
 // directly into the session.
 //
+// A settlement pass (BUG-072) then computes, for every running session,
+// whether it is genuinely idle with its CURRENT tail showing NONE of the
+// needs-input signals, sustained for agent.NeedsInputSettleTicks consecutive
+// ticks — the complementary case to the resumed-activity pass: a session that
+// resolves its own block and settles into idle FASTER than
+// agent.NeedsInputResumeTicks can never satisfy that pass (going idle resets
+// its streak, and an idle session never shows the working affordance again),
+// so without this pass such a session would stay flagged until an unrelated,
+// incidental input arrived.
+//
 // Then agent.NeedsInputClear applies the clear conditions: a task whose
 // session received new input after the flag was raised (lastInputOf advanced
 // past the baseline carried in prevSince), whose task is archived
-// (archivedOf), or which has sustained resumed activity (resumedOf, fed by
-// this pass) is dropped — deterministic, independent of the stale question
-// scrolling out of the tail. It also applies the BUG-063 guard: runningIDs/
-// prevCleared let a real clear's settled input timestamp survive ticks where a
-// task isn't a candidate at all, so a LATER stale content-fingerprint re-flag
-// at that same timestamp (nothing new having happened) cannot recapture a
-// stuck baseline — UNLESS (BUG-067) the later candidacy's content fingerprint
-// provably differs from what was showing when the marker was recorded, which
-// means it is a genuinely distinct, still-unanswered prompt (e.g. the next
-// question in a multi-question brainstorm flow) rather than a stale
-// re-detection, and must re-arm. The fingerprint fed to NeedsInputClear here
-// is this tick's AwaitingInputFingerprint value merged over the previous
-// tick's (current wins) — the previous tick's often still holds the
-// fingerprint of content that just got answered, since the tick a flag
-// actually clears on is frequently the same tick the screen has already moved
-// on to a busy/narrating frame with no awaiting-input signal of its own. The
-// returned newSince/newCleared/newResume carry all three maps forward; nil
+// (archivedOf), which has sustained resumed activity (resumedOf, fed by that
+// pass), or which has settled (settledOf, fed by the settlement pass) is
+// dropped — deterministic, independent of the stale question scrolling out of
+// the tail. It also applies the BUG-063 guard: runningIDs/prevCleared let a
+// real clear's settled input timestamp survive ticks where a task isn't a
+// candidate at all, so a LATER stale content-fingerprint re-flag at that same
+// timestamp (nothing new having happened) cannot recapture a stuck baseline —
+// UNLESS (BUG-067) the later candidacy's content fingerprint provably differs
+// from what was showing when the marker was recorded, which means it is a
+// genuinely distinct, still-unanswered prompt (e.g. the next question in a
+// multi-question brainstorm flow) rather than a stale re-detection, and must
+// re-arm. The fingerprint fed to NeedsInputClear here is this tick's
+// AwaitingInputFingerprint value merged over the previous tick's (current
+// wins) — the previous tick's often still holds the fingerprint of content
+// that just got answered, since the tick a flag actually clears on is
+// frequently the same tick the screen has already moved on to a
+// busy/narrating frame with no awaiting-input signal of its own. The returned
+// newSince/newCleared/newResume/newSettle carry all four maps forward; nil
 // lastInputOf/archivedOf degrade to pre-BUG-034 behavior (no clear).
-func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uint64, prevSince map[string]time.Time, prevCleared map[string]agent.ClearedMarker, prevResume map[string]int, tailOf func(string) []byte, lastInputOf func(string) time.Time, archivedOf func(string) bool, screen *agent.ScreenRenderer, sizeOf func(string) (cols, rows int)) ([]string, map[string]uint64, map[string]time.Time, map[string]agent.ClearedMarker, map[string]int) {
+func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uint64, prevSince map[string]time.Time, prevCleared map[string]agent.ClearedMarker, prevResume map[string]int, prevSettle map[string]int, tailOf func(string) []byte, lastInputOf func(string) time.Time, archivedOf func(string) bool, screen *agent.ScreenRenderer, sizeOf func(string) (cols, rows int)) ([]string, map[string]uint64, map[string]time.Time, map[string]agent.ClearedMarker, map[string]int, map[string]int) {
 	out := make([]string, 0, len(idleIDs))
 	seen := make(map[string]bool, len(idleIDs))
 	newFP := make(map[string]uint64)
@@ -300,6 +321,10 @@ func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uin
 	runningSet := make(map[string]bool, len(runningIDs))
 	for _, id := range runningIDs {
 		runningSet[id] = true
+	}
+	idleSet := make(map[string]bool, len(idleIDs))
+	for _, id := range idleIDs {
+		idleSet[id] = true
 	}
 
 	// Content-stability pass: only sessions showing an awaiting-input signal
@@ -353,6 +378,34 @@ func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uin
 	}
 	resumedOf := func(id string) bool { return resumed[id] }
 
+	// Settlement pass (BUG-072): independent of candidacy, mirroring the
+	// resumed-activity pass above, but tracking the OPPOSITE resolution shape —
+	// a session that goes genuinely idle with its CURRENT tail no longer
+	// showing any needs-input signal. A session that resolves its own block
+	// and wraps up faster than the resumed-activity pass's consecutive-tick
+	// threshold can never satisfy that pass (once idle it can never show the
+	// working affordance again), so without this pass it would stay flagged
+	// until an unrelated input arrived. Only re-runs the idle-gated detector
+	// for IDLE sessions — a busy session never qualifies regardless of tail.
+	newSettle := make(map[string]int, len(runningIDs))
+	settled := make(map[string]bool)
+	for _, id := range runningIDs {
+		idleNow := idleSet[id]
+		var awaitingNow bool
+		if idleNow {
+			cols, rows := sizeOf(id)
+			awaitingNow = agent.DetectNeedsInputScreen(screen, tailOf(id), cols, rows)
+		}
+		ticks, isSettled := agent.SettleTick(prevSettle[id], idleNow, awaitingNow)
+		if ticks != 0 {
+			newSettle[id] = ticks
+		}
+		if isSettled {
+			settled[id] = true
+		}
+	}
+	settledOf := func(id string) bool { return settled[id] }
+
 	// BUG-067: merge this tick's and the PREVIOUS tick's content fingerprints
 	// (current wins) for NeedsInputClear's stale-marker content comparison —
 	// see computeNeedsInput's doc comment for why the previous tick's value is
@@ -366,13 +419,13 @@ func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uin
 	}
 	fingerprintOf := func(id string) (uint64, bool) { fp, ok := mergedFP[id]; return fp, ok }
 
-	// BUG-034/BUG-063/BUG-067: clear the flag for tasks the user has responded
-	// to, archived, or that have sustained resumed activity; suppress a stale
-	// re-candidacy at an already-settled timestamp AND content for a
-	// still-running task, but let a distinct later prompt at that same
-	// timestamp re-arm.
-	out, newSince, newCleared := agent.NeedsInputClear(out, runningIDs, prevSince, prevCleared, lastInputOf, archivedOf, resumedOf, fingerprintOf)
-	return out, newFP, newSince, newCleared, newResume
+	// BUG-034/BUG-063/BUG-065/BUG-067/BUG-072: clear the flag for tasks the
+	// user has responded to, archived, that have sustained resumed activity, or
+	// that have settled; suppress a stale re-candidacy at an already-settled
+	// timestamp AND content for a still-running task, but let a distinct later
+	// prompt at that same timestamp re-arm.
+	out, newSince, newCleared := agent.NeedsInputClear(out, runningIDs, prevSince, prevCleared, lastInputOf, archivedOf, resumedOf, settledOf, fingerprintOf)
+	return out, newFP, newSince, newCleared, newResume, newSettle
 }
 
 // idleWatcher periodically polls all running sessions and fires
@@ -638,11 +691,12 @@ func (s *Server) detectNeedsInputTick(state *idleWatcherState, running, idle []s
 		}
 	}
 	archivedOf := func(id string) bool { return archived[id] }
-	needs, newFP, newSince, newCleared, newResume := computeNeedsInput(idle, running, prev, state.contentFP, state.needsInputSince, state.needsInputCleared, state.needsInputResume, tailOf, lastInputOf, archivedOf, state.screen, sessionScreenSize)
+	needs, newFP, newSince, newCleared, newResume, newSettle := computeNeedsInput(idle, running, prev, state.contentFP, state.needsInputSince, state.needsInputCleared, state.needsInputResume, state.needsInputSettle, tailOf, lastInputOf, archivedOf, state.screen, sessionScreenSize)
 	state.contentFP = newFP
 	state.needsInputSince = newSince
 	state.needsInputCleared = newCleared
 	state.needsInputResume = newResume
+	state.needsInputSettle = newSettle
 	needsSet := make(map[string]bool, len(needs))
 	for _, id := range needs {
 		needsSet[id] = true

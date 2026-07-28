@@ -288,6 +288,15 @@ type App struct {
 	// coordinator's relayed answer (WriteInputSystem) could otherwise never
 	// clear. Mirrors the daemon's idleWatcherState.needsInputResume.
 	needsInputResume map[string]int
+	// needsInputSettle carries the settlement counter (see agent.SettleTick,
+	// BUG-072): consecutive ticks a flagged session has been genuinely idle
+	// with no current needs-input signal in its tail. Complementary to
+	// needsInputResume — lets agent.NeedsInputClear resolve a flag on a
+	// session that resolves its own block and settles into idle FASTER than
+	// needsInputResume's sustained-working-streak threshold, which such a
+	// session can never satisfy (going idle resets that streak and it can
+	// never resume). Mirrors the daemon's idleWatcherState.needsInputSettle.
+	needsInputSettle map[string]int
 	// heraBlockedResume carries the resumed-activity counter (see
 	// agent.ResumeActivityTick) for the SEPARATE self-reported hera_status
 	// "blocked" auto-clear pass (autoClearBlockedHeraRoles) — keyed by task ID
@@ -2053,6 +2062,17 @@ func needsInputScreenSize(taskID string) (cols, rows int) {
 //     agent.NeedsInputEscalationTicks consecutive ticks, it is flagged
 //     regardless of whether the fingerprint ever converged. Counters persist
 //     on a.needsInputEscalation, independent of a.needsInputFP.
+//   - Settlement pass (BUG-072): agent.ResumeActivityTick (below) can only
+//     clear a flag while the session actively shows the working affordance —
+//     its streak resets to zero the instant the session goes idle, and a
+//     genuinely idle session never shows that affordance again, so a worker
+//     that resolves its own block and wraps up in FEWER than
+//     agent.NeedsInputResumeTicks consecutive ticks can never clear through
+//     that path. This pass re-runs the same idle-gated detector that raises
+//     the flag, as a negative signal: a flagged session that is genuinely
+//     idle AND shows none of the needs-input signals for
+//     agent.NeedsInputSettleTicks consecutive ticks is treated as settled.
+//     Counters persist on a.needsInputSettle.
 func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []string) []string {
 	if a.needsInputScreen == nil {
 		a.needsInputScreen = &agent.ScreenRenderer{}
@@ -2071,6 +2091,10 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	runningSet := make(map[string]bool, len(runningIDs))
 	for _, id := range runningIDs {
 		runningSet[id] = true
+	}
+	idleSet := make(map[string]bool, len(idleIDs))
+	for _, id := range idleIDs {
+		idleSet[id] = true
 	}
 
 	// Content-stability pass: fingerprint only sessions showing an
@@ -2161,6 +2185,37 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	a.needsInputResume = newResume
 	resumedOf := func(id string) bool { return resumed[id] }
 
+	// Settlement pass (BUG-072): independent of candidacy, mirroring the
+	// resumed-activity pass above, but tracking the OPPOSITE resolution shape —
+	// a session that goes genuinely idle with its CURRENT tail no longer
+	// showing any needs-input signal. This is what a worker that resolves its
+	// own block and wraps up faster than the resumed-activity pass's
+	// consecutive-tick threshold needs: once idle, it can never show the
+	// working affordance again, so resumedOf can never fire for it, and
+	// without this pass it would stay flagged until an unrelated keystroke.
+	// Only reads the tail (and re-runs the idle-gated detector) for IDLE
+	// sessions — a busy session never qualifies regardless of its tail.
+	newSettle := make(map[string]int, len(runningIDs))
+	settled := make(map[string]bool)
+	for _, id := range runningIDs {
+		idleNow := idleSet[id]
+		var awaitingNow bool
+		if idleNow {
+			tail := readSessionLogTailBytes(id, detectNeedsInputTailBytes)
+			cols, rows := needsInputScreenSize(id)
+			awaitingNow = agent.DetectNeedsInputScreen(a.needsInputScreen, tail, cols, rows)
+		}
+		ticks, isSettled := agent.SettleTick(a.needsInputSettle[id], idleNow, awaitingNow)
+		if ticks != 0 {
+			newSettle[id] = ticks
+		}
+		if isSettled {
+			settled[id] = true
+		}
+	}
+	a.needsInputSettle = newSettle
+	settledOf := func(id string) bool { return settled[id] }
+
 	// BUG-067: merge this tick's and the PREVIOUS tick's content fingerprints
 	// (current wins) into a single lookup for NeedsInputClear's stale-marker
 	// content comparison. The previous tick's value matters because the tick a
@@ -2185,11 +2240,13 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	// cross-surface input clears via the natural log-content change instead).
 	// archivedOf reads the cached task list (a.tasks is set by the caller
 	// before this runs). runningIDs lets the BUG-063 cleared-marker survive a
-	// candidacy gap for a task that is still running. fingerprintOf lets
+	// candidacy gap for a task that is still running. settledOf (BUG-072) lets
+	// a quick self-resolution that never sustains resumedOf's streak still
+	// clear once genuinely idle with no current signal. fingerprintOf lets
 	// BUG-067 distinguish a stale re-detection of the same content from a
 	// genuinely distinct, still-unanswered later prompt at the same timestamp.
 	var out []string
-	out, a.needsInputSince, a.needsInputCleared = agent.NeedsInputClear(fresh, runningIDs, a.needsInputSince, a.needsInputCleared, a.lastSessionInput, a.archivedTaskSet(), resumedOf, fingerprintOf)
+	out, a.needsInputSince, a.needsInputCleared = agent.NeedsInputClear(fresh, runningIDs, a.needsInputSince, a.needsInputCleared, a.lastSessionInput, a.archivedTaskSet(), resumedOf, settledOf, fingerprintOf)
 	return out
 }
 
