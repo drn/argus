@@ -625,6 +625,26 @@ func (m Model) roleOrchID(roleID int64) (int64, bool) {
 	return 0, false
 }
 
+// roleByID returns a pointer to the RoleView with the given id, searching
+// every non-freelance section (Pinned, Active, Archived) — Freelance roles
+// have no owning orchestrator and can't be walked to a root via
+// canonicalParents, so they are deliberately excluded, mirroring roleOrchID's
+// scoping. The pointer indexes into the model's own backing array (like
+// OrchByID), so a caller may mutate the returned RoleView in place. nil when
+// no such role exists.
+func (m *Model) roleByID(id int64) *RoleView {
+	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
+		for i := range sec {
+			for j := range sec[i].Roles {
+				if sec[i].Roles[j].RoleID == id {
+					return &sec[i].Roles[j]
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func (m Model) canonicalParents() map[int64]canonParent {
 	var all []*OrchView
 	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
@@ -670,6 +690,25 @@ func (m Model) canonicalParents() map[int64]canonParent {
 		}
 	}
 	return out
+}
+
+// bridgingRoleFor returns the non-coordinator role in o.Roles whose
+// structurally-intact bridge task equals ck (the worker-bridge nesting key),
+// or nil. The pointer indexes into o's own backing array (mutable in place),
+// so a caller can force this specific role's SubtreeNeedsInput the same way
+// Rail.applyStickyReveal does. Mirrors hasWorkerBridging's predicate but
+// returns the role itself rather than a bool.
+func (o *OrchView) bridgingRoleFor(ck string) *RoleView {
+	for i := range o.Roles {
+		w := &o.Roles[i]
+		if w.Kind == db.HeraKindCoordinator || !roleBridges(w) {
+			continue
+		}
+		if bridgeTaskID(w) == ck {
+			return w
+		}
+	}
+	return nil
 }
 
 // hasWorkerBridging reports whether the orchestrator has a non-coordinator role
