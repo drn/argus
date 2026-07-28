@@ -180,7 +180,7 @@ func TestComputeNeedsInput(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, gotFP, _, _, _ := computeNeedsInput(tc.idle, tc.running, tc.prev, tc.prevFP, nil, nil, nil, tailOf, noInput, notArchived, &agent.ScreenRenderer{}, defaultSizeOf)
+			got, gotFP, _, _, _, _ := computeNeedsInput(tc.idle, tc.running, tc.prev, tc.prevFP, nil, nil, nil, nil, tailOf, noInput, notArchived, &agent.ScreenRenderer{}, defaultSizeOf)
 			gotSet := map[string]bool{}
 			for _, id := range got {
 				gotSet[id] = true
@@ -212,12 +212,12 @@ func TestComputeNeedsInput_StabilityAcrossTicks(t *testing.T) {
 
 	screen := &agent.ScreenRenderer{}
 	// Tick 1: not idle, no prior fingerprint → record only, do not flag.
-	got1, fp1, _, _, _ := computeNeedsInput(nil, []string{"blocked"}, nil, nil, nil, nil, nil, tailOf, noInput, notArchived, screen, defaultSizeOf)
+	got1, fp1, _, _, _, _ := computeNeedsInput(nil, []string{"blocked"}, nil, nil, nil, nil, nil, nil, tailOf, noInput, notArchived, screen, defaultSizeOf)
 	testutil.Equal(t, len(got1), 0)
 	testutil.Equal(t, len(fp1), 1)
 
 	// Tick 2: still not idle, content unchanged → flagged.
-	got2, _, _, _, _ := computeNeedsInput(nil, []string{"blocked"}, nil, fp1, nil, nil, nil, tailOf, noInput, notArchived, screen, defaultSizeOf)
+	got2, _, _, _, _, _ := computeNeedsInput(nil, []string{"blocked"}, nil, fp1, nil, nil, nil, nil, tailOf, noInput, notArchived, screen, defaultSizeOf)
 	testutil.Equal(t, len(got2), 1)
 	testutil.Equal(t, got2[0], "blocked")
 }
@@ -253,13 +253,13 @@ func TestComputeNeedsInput_AltScreenFreeTextQuestion(t *testing.T) {
 		tailOf := func(string) []byte { return altScreenQuestionTail("3s", "✻", false) }
 
 		// Tick 1: first observation — record fingerprint, do not flag.
-		got1, fp1, _, _, _ := computeNeedsInput(nil, []string{"w"}, nil, nil, nil, nil, nil, tailOf, noInput, notArchived, screen, defaultSizeOf)
+		got1, fp1, _, _, _, _ := computeNeedsInput(nil, []string{"w"}, nil, nil, nil, nil, nil, nil, tailOf, noInput, notArchived, screen, defaultSizeOf)
 		testutil.Equal(t, len(got1), 0)
 		testutil.Equal(t, len(fp1), 1)
 
 		// Tick 2: content stable (only spinner seconds changed) → flagged.
 		tailOf = func(string) []byte { return altScreenQuestionTail("9s", "✶", false) }
-		got2, _, _, _, _ := computeNeedsInput(nil, []string{"w"}, nil, fp1, nil, nil, nil, tailOf, noInput, notArchived, screen, defaultSizeOf)
+		got2, _, _, _, _, _ := computeNeedsInput(nil, []string{"w"}, nil, fp1, nil, nil, nil, nil, tailOf, noInput, notArchived, screen, defaultSizeOf)
 		testutil.DeepEqual(t, got2, []string{"w"})
 	})
 
@@ -268,12 +268,12 @@ func TestComputeNeedsInput_AltScreenFreeTextQuestion(t *testing.T) {
 		tailOf := func(string) []byte { return altScreenQuestionTail("3s", "✻", true) }
 
 		// Tick 1: working agent shows no awaiting-input signal → no fingerprint.
-		got1, fp1, _, _, _ := computeNeedsInput(nil, []string{"w"}, nil, nil, nil, nil, nil, tailOf, noInput, notArchived, screen, defaultSizeOf)
+		got1, fp1, _, _, _, _ := computeNeedsInput(nil, []string{"w"}, nil, nil, nil, nil, nil, nil, tailOf, noInput, notArchived, screen, defaultSizeOf)
 		testutil.Equal(t, len(got1), 0)
 		testutil.Equal(t, len(fp1), 0) // gated out: not recorded
 
 		// Tick 2: still working → still not flagged.
-		got2, _, _, _, _ := computeNeedsInput(nil, []string{"w"}, nil, fp1, nil, nil, nil, tailOf, noInput, notArchived, screen, defaultSizeOf)
+		got2, _, _, _, _, _ := computeNeedsInput(nil, []string{"w"}, nil, fp1, nil, nil, nil, nil, tailOf, noInput, notArchived, screen, defaultSizeOf)
 		testutil.Equal(t, len(got2), 0)
 	})
 }
@@ -311,18 +311,77 @@ func TestDetectNeedsInputTick(t *testing.T) {
 	testutil.Equal(t, p1["needs_input"], true)
 
 	// Tick 2 (BUG-061): the marker scrolls out of "a"'s tail (e.g. Claude's
-	// blinking-cursor redraw flooded the window) but no genuine user input
-	// arrived — the sticky carry-forward pass no longer clears on a tail miss
-	// alone, only NeedsInputClear (real input or archive) does. "a" stays
-	// flagged and no new event fires (steady state).
+	// blinking-cursor redraw flooded the window) but "a" is genuinely still
+	// BUSY (never idle — the real flooding mechanism requires continuous byte
+	// production, which is exactly what raw idleness means has NOT happened),
+	// so the settlement pass (BUG-072) never engages, and no genuine user
+	// input arrived — the sticky carry-forward pass no longer clears on a
+	// tail miss alone, only NeedsInputClear (real input, archive, sustained
+	// resumed activity, or genuine settlement) does. "a" stays flagged and no
+	// new event fires (steady state).
 	tails["a"] = idleTail
-	srv.detectNeedsInputTick(state, []string{"a", "b"}, []string{"a", "b"}, tailOf)
+	srv.detectNeedsInputTick(state, []string{"a", "b"}, []string{"b"}, tailOf)
 	testutil.Equal(t, srv.runner.(*agent.Runner).NeedsInput("a"), true)
 	testutil.Equal(t, len(sink.events()), 1)
 
 	// Tick 3: steady state, nothing blocked → no new events.
-	srv.detectNeedsInputTick(state, []string{"a", "b"}, []string{"a", "b"}, tailOf)
+	srv.detectNeedsInputTick(state, []string{"a", "b"}, []string{"b"}, tailOf)
 	testutil.Equal(t, len(sink.events()), 1)
+}
+
+// TestDetectNeedsInputTick_SettledActivityClears reproduces BUG-072 through the
+// REAL daemon entry point: a flag raised on an idle-gated selection prompt is
+// never answered by the user and never sustains agent.NeedsInputResumeTicks of
+// working — it simply goes genuinely idle with the tail no longer showing any
+// blocking signal, for agent.NeedsInputSettleTicks consecutive ticks. This is
+// the exact live repro: the task has already settled (e.g. rolled to
+// in_review) with nothing further needed, but nothing had ever cleared the
+// flag until now.
+func TestDetectNeedsInputTick_SettledActivityClears(t *testing.T) {
+	srv, _ := testServer(t)
+	close(srv.stopCh)
+
+	tails := map[string][]byte{"a": blockedTail}
+	tailOf := func(id string) []byte { return tails[id] }
+	state := newIdleWatcherState()
+
+	// Tick 1: idle + blocked → flagged.
+	srv.detectNeedsInputTick(state, []string{"a"}, []string{"a"}, tailOf)
+	testutil.Equal(t, srv.runner.(*agent.Runner).NeedsInput("a"), true)
+
+	// The worker resolves its own block and goes idle with no blocking signal
+	// showing — but for FEWER than NeedsInputSettleTicks consecutive ticks, so
+	// it must not clear yet.
+	tails["a"] = idleTail
+	for i := 0; i < agent.NeedsInputSettleTicks-1; i++ {
+		srv.detectNeedsInputTick(state, []string{"a"}, []string{"a"}, tailOf)
+		if !srv.runner.(*agent.Runner).NeedsInput("a") {
+			t.Fatalf("cleared too early, before sustaining %d settled ticks (tick %d)", agent.NeedsInputSettleTicks, i+1)
+		}
+	}
+	// The Nth consecutive settled tick clears it.
+	srv.detectNeedsInputTick(state, []string{"a"}, []string{"a"}, tailOf)
+	testutil.Equal(t, srv.runner.(*agent.Runner).NeedsInput("a"), false)
+}
+
+// TestDetectNeedsInputTick_StillBlockedIdleDoesNotSettle guards the BUG-072
+// regression this fix must not introduce: an idle session whose tail STILL
+// shows the identical blocking signal must never be cleared by the settlement
+// pass, however many consecutive idle ticks elapse — it is indistinguishable,
+// by design, from the ordinary still-genuinely-blocked case.
+func TestDetectNeedsInputTick_StillBlockedIdleDoesNotSettle(t *testing.T) {
+	srv, _ := testServer(t)
+	close(srv.stopCh)
+
+	tailOf := func(string) []byte { return blockedTail }
+	state := newIdleWatcherState()
+
+	for i := 0; i < agent.NeedsInputSettleTicks+3; i++ {
+		srv.detectNeedsInputTick(state, []string{"a"}, []string{"a"}, tailOf)
+		if !srv.runner.(*agent.Runner).NeedsInput("a") {
+			t.Fatalf("BUG-072 REGRESSION: a still-blocked idle session settled and cleared on tick %d", i+1)
+		}
+	}
 }
 
 // TestHandleListTasks_NeedsInput verifies the runner's needs-input set surfaces
@@ -394,13 +453,13 @@ func TestComputeNeedsInput_ClearOnInput(t *testing.T) {
 	// Tick 1: no input yet (t0 predates the flag) → both flagged, baselines t0.
 	lastInput := map[string]time.Time{"a": t0, "b": t0}
 	lastInputOf := func(id string) time.Time { return lastInput[id] }
-	got1, _, since1, cleared1, _ := computeNeedsInput([]string{"a", "b"}, []string{"a", "b"}, nil, nil, nil, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	got1, _, since1, cleared1, _, _ := computeNeedsInput([]string{"a", "b"}, []string{"a", "b"}, nil, nil, nil, nil, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 	testutil.Equal(t, len(got1), 2)
 
 	// Tick 2: user responds to "a" only (advances past its baseline). "a" clears
 	// despite the stale prompt still in the tail; "b" stays flagged.
 	lastInput["a"] = t1
-	got2, _, _, _, _ := computeNeedsInput([]string{"a", "b"}, []string{"a", "b"}, got1, nil, since1, cleared1, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	got2, _, _, _, _, _ := computeNeedsInput([]string{"a", "b"}, []string{"a", "b"}, got1, nil, since1, cleared1, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 	gotSet := map[string]bool{}
 	for _, id := range got2 {
 		gotSet[id] = true
@@ -429,26 +488,26 @@ func TestComputeNeedsInput_BUG063_StaleReflagDoesNotReStick(t *testing.T) {
 
 	// Tick 1: idle on a selection prompt, no input since → flagged.
 	tail = blockedTail
-	got1, fp1, since1, cleared1, _ := computeNeedsInput([]string{"a"}, []string{"a"}, nil, nil, nil, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	got1, fp1, since1, cleared1, _, _ := computeNeedsInput([]string{"a"}, []string{"a"}, nil, nil, nil, nil, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 	testutil.DeepEqual(t, got1, []string{"a"})
 
 	// Tick 2: user responds (lastInputOf advances past baseline). The stale
 	// prompt is STILL in the tail (unchanged) — must clear anyway.
 	lastInput = t1
-	got2, fp2, since2, cleared2, _ := computeNeedsInput([]string{"a"}, []string{"a"}, got1, fp1, since1, cleared1, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	got2, fp2, since2, cleared2, _, _ := computeNeedsInput([]string{"a"}, []string{"a"}, got1, fp1, since1, cleared1, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 	testutil.Equal(t, len(got2), 0)
 
 	// Tick 3: a genuine gap — the tail shows plain, non-blocking output, so
 	// neither the idle-gated pass nor the content-fingerprint pass sees any
 	// signal at all. The session stays running throughout.
 	tail = idleTail
-	got3, fp3, since3, cleared3, _ := computeNeedsInput(nil, []string{"a"}, got2, fp2, since2, cleared2, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	got3, fp3, since3, cleared3, _, _ := computeNeedsInput(nil, []string{"a"}, got2, fp2, since2, cleared2, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 	testutil.Equal(t, len(got3), 0)
 
 	// Tick 4: the tail reverts to the EXACT SAME already-answered prompt (a
 	// stale re-detection), with no new input since t1. Must NOT re-stick.
 	tail = blockedTail
-	got4, fp4, since4, cleared4, _ := computeNeedsInput([]string{"a"}, []string{"a"}, got3, fp3, since3, cleared3, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	got4, fp4, since4, cleared4, _, _ := computeNeedsInput([]string{"a"}, []string{"a"}, got3, fp3, since3, cleared3, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 	if len(got4) != 0 {
 		t.Fatalf("BUG-063 REGRESSION: stale re-candidacy at the same input timestamp re-stuck the flag: %v", got4)
 	}
@@ -456,7 +515,7 @@ func TestComputeNeedsInput_BUG063_StaleReflagDoesNotReStick(t *testing.T) {
 	// Stays clear across further stale re-candidacies too.
 	got, fp, since, cleared := got4, fp4, since4, cleared4
 	for i := 0; i < 3; i++ {
-		got, fp, since, cleared, _ = computeNeedsInput([]string{"a"}, []string{"a"}, got, fp, since, cleared, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+		got, fp, since, cleared, _, _ = computeNeedsInput([]string{"a"}, []string{"a"}, got, fp, since, cleared, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 		if len(got) != 0 {
 			t.Fatalf("BUG-063 REGRESSION: flag re-stuck on a later tick: %v", got)
 		}
@@ -464,7 +523,7 @@ func TestComputeNeedsInput_BUG063_StaleReflagDoesNotReStick(t *testing.T) {
 
 	// A genuinely newer input finally arrives → re-arms normally.
 	lastInput = t2
-	got, _, _, _, _ = computeNeedsInput([]string{"a"}, []string{"a"}, got, fp, since, cleared, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	got, _, _, _, _, _ = computeNeedsInput([]string{"a"}, []string{"a"}, got, fp, since, cleared, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 	testutil.DeepEqual(t, got, []string{"a"})
 }
 
@@ -489,7 +548,7 @@ func TestComputeNeedsInput_ResumedActivityClears(t *testing.T) {
 
 	// Tick 1: idle on the selection prompt → flagged.
 	tail = blockedTail
-	got, fp, since, cleared, resume := computeNeedsInput([]string{"a"}, []string{"a"}, nil, nil, nil, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	got, fp, since, cleared, resume, _ := computeNeedsInput([]string{"a"}, []string{"a"}, nil, nil, nil, nil, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 	testutil.DeepEqual(t, got, []string{"a"})
 
 	// The worker resumes real work: it is no longer idle, and its tail now
@@ -497,13 +556,13 @@ func TestComputeNeedsInput_ResumedActivityClears(t *testing.T) {
 	// lastInputOf never advances — only sustained activity can clear this.
 	tail = workingQuestionTail
 	for i := 0; i < agent.NeedsInputResumeTicks-1; i++ {
-		got, fp, since, cleared, resume = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+		got, fp, since, cleared, resume, _ = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 		if len(got) == 0 {
 			t.Fatalf("cleared too early, before sustaining %d working ticks (tick %d)", agent.NeedsInputResumeTicks, i+1)
 		}
 	}
 	// The Nth consecutive working tick clears it.
-	got, _, _, _, _ = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	got, _, _, _, _, _ = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 	if len(got) != 0 {
 		t.Fatalf("expected the resumed-activity pass to clear the flag after %d sustained working ticks, got %v", agent.NeedsInputResumeTicks, got)
 	}
@@ -525,20 +584,20 @@ func TestComputeNeedsInput_ResumedActivityBriefBurstDoesNotClear(t *testing.T) {
 	tailOf := func(string) []byte { return tail }
 
 	tail = blockedTail
-	got, fp, since, cleared, resume := computeNeedsInput([]string{"a"}, []string{"a"}, nil, nil, nil, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	got, fp, since, cleared, resume, _ := computeNeedsInput([]string{"a"}, []string{"a"}, nil, nil, nil, nil, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 	testutil.DeepEqual(t, got, []string{"a"})
 
 	// A brief burst of working ticks — one short of the threshold — then it
 	// re-parks at the identical blocking prompt.
 	tail = workingQuestionTail
 	for i := 0; i < agent.NeedsInputResumeTicks-2; i++ {
-		got, fp, since, cleared, resume = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+		got, fp, since, cleared, resume, _ = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 		if len(got) == 0 {
 			t.Fatalf("cleared too early, during the brief working burst (tick %d)", i+1)
 		}
 	}
 	tail = blockedTail
-	got, _, _, _, _ = computeNeedsInput([]string{"a"}, []string{"a"}, got, fp, since, cleared, resume, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	got, _, _, _, _, _ = computeNeedsInput([]string{"a"}, []string{"a"}, got, fp, since, cleared, resume, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 	if len(got) != 1 || got[0] != "a" {
 		t.Fatalf("BUG-034 REGRESSION: a brief working burst falsely cleared a still-parked agent, got %v", got)
 	}
@@ -568,17 +627,17 @@ func TestComputeNeedsInput_ResumedActivityClears_ChooserFooter(t *testing.T) {
 	tailOf := func(string) []byte { return tail }
 
 	tail = askUserQuestionChooserTail
-	got, fp, since, cleared, resume := computeNeedsInput([]string{"a"}, []string{"a"}, nil, nil, nil, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	got, fp, since, cleared, resume, _ := computeNeedsInput([]string{"a"}, []string{"a"}, nil, nil, nil, nil, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 	testutil.DeepEqual(t, got, []string{"a"})
 
 	tail = workingQuestionTail
 	for i := 0; i < agent.NeedsInputResumeTicks-1; i++ {
-		got, fp, since, cleared, resume = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+		got, fp, since, cleared, resume, _ = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 		if len(got) == 0 {
 			t.Fatalf("cleared too early, before sustaining %d working ticks (tick %d)", agent.NeedsInputResumeTicks, i+1)
 		}
 	}
-	got, _, _, _, _ = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	got, _, _, _, _, _ = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 	if len(got) != 0 {
 		t.Fatalf("expected the resumed-activity pass to clear a flag raised by an AskUserQuestion chooser after %d sustained working ticks, got %v", agent.NeedsInputResumeTicks, got)
 	}
@@ -597,18 +656,18 @@ func TestComputeNeedsInput_ResumedActivityBriefBurstDoesNotClear_ChooserFooter(t
 	tailOf := func(string) []byte { return tail }
 
 	tail = askUserQuestionChooserTail
-	got, fp, since, cleared, resume := computeNeedsInput([]string{"a"}, []string{"a"}, nil, nil, nil, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	got, fp, since, cleared, resume, _ := computeNeedsInput([]string{"a"}, []string{"a"}, nil, nil, nil, nil, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 	testutil.DeepEqual(t, got, []string{"a"})
 
 	tail = workingQuestionTail
 	for i := 0; i < agent.NeedsInputResumeTicks-2; i++ {
-		got, fp, since, cleared, resume = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+		got, fp, since, cleared, resume, _ = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 		if len(got) == 0 {
 			t.Fatalf("cleared too early, during the brief working burst (tick %d)", i+1)
 		}
 	}
 	tail = askUserQuestionChooserTail
-	got, _, _, _, _ = computeNeedsInput([]string{"a"}, []string{"a"}, got, fp, since, cleared, resume, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	got, _, _, _, _, _ = computeNeedsInput([]string{"a"}, []string{"a"}, got, fp, since, cleared, resume, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 	if len(got) != 1 || got[0] != "a" {
 		t.Fatalf("BUG-034 REGRESSION: a brief working burst falsely cleared a still-parked AskUserQuestion prompt, got %v", got)
 	}
@@ -630,21 +689,101 @@ func TestComputeNeedsInput_ResumedActivityClears_FreeTextQuestion(t *testing.T) 
 	// The content-stability pass needs the SAME fingerprint across two
 	// consecutive ticks to flag a never-idle free-text question (BUG-032).
 	tail = awaitingQuestionTail
-	_, fp, since, cleared, resume := computeNeedsInput(nil, []string{"a"}, nil, nil, nil, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
-	got, fp, since, cleared, resume := computeNeedsInput(nil, []string{"a"}, nil, fp, since, cleared, resume, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	_, fp, since, cleared, resume, _ := computeNeedsInput(nil, []string{"a"}, nil, nil, nil, nil, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	got, fp, since, cleared, resume, _ := computeNeedsInput(nil, []string{"a"}, nil, fp, since, cleared, resume, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 	testutil.DeepEqual(t, got, []string{"a"})
 
 	tail = workingQuestionTail
 	for i := 0; i < agent.NeedsInputResumeTicks-1; i++ {
-		got, fp, since, cleared, resume = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+		got, fp, since, cleared, resume, _ = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 		if len(got) == 0 {
 			t.Fatalf("cleared too early, before sustaining %d working ticks (tick %d)", agent.NeedsInputResumeTicks, i+1)
 		}
 	}
-	got, _, _, _, _ = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	got, _, _, _, _, _ = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
 	if len(got) != 0 {
 		t.Fatalf("expected the resumed-activity pass to clear a flag raised by a free-text question after %d sustained working ticks, got %v", agent.NeedsInputResumeTicks, got)
 	}
+}
+
+// TestComputeNeedsInput_SettledActivityClears reproduces BUG-072: a worker
+// resolves its own block and settles into idle FASTER than
+// agent.NeedsInputResumeTicks consecutive ticks of visible work — too fast for
+// the resumed-activity pass to ever fire (going idle drives workingNow false,
+// resetting that streak, and an idle session never shows the working
+// affordance again) — with no recorded user input either. Only the settlement
+// pass (agent.SettleTick) can resolve this.
+func TestComputeNeedsInput_SettledActivityClears(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	screen := &agent.ScreenRenderer{}
+	lastInputOf := func(string) time.Time { return t0 } // never advances
+
+	var tail []byte
+	idle := []string{"a"}
+	tailOf := func(string) []byte { return tail }
+
+	// Tick 1: idle on the selection prompt → flagged.
+	tail = blockedTail
+	got, fp, since, cleared, resume, settle := computeNeedsInput(idle, []string{"a"}, nil, nil, nil, nil, nil, nil, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	testutil.DeepEqual(t, got, []string{"a"})
+
+	// The worker resolves its own block and goes idle with the blocking signal
+	// gone from the tail — for FEWER than agent.NeedsInputSettleTicks
+	// consecutive ticks, so it must not clear yet.
+	tail = idleTail
+	for i := 0; i < agent.NeedsInputSettleTicks-1; i++ {
+		got, fp, since, cleared, resume, settle = computeNeedsInput(idle, []string{"a"}, got, fp, since, cleared, resume, settle, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+		if len(got) == 0 {
+			t.Fatalf("cleared too early, before sustaining %d settled ticks (tick %d)", agent.NeedsInputSettleTicks, i+1)
+		}
+	}
+	// The Nth consecutive settled tick clears it.
+	got, _, _, _, _, _ = computeNeedsInput(idle, []string{"a"}, got, fp, since, cleared, resume, settle, tailOf, lastInputOf, notArchived, screen, defaultSizeOf)
+	if len(got) != 0 {
+		t.Fatalf("expected the settlement pass to clear the flag after %d settled ticks, got %v", agent.NeedsInputSettleTicks, got)
+	}
+}
+
+// TestComputeNeedsInput_StillBlockedIdleDoesNotSettle guards the BUG-072
+// regression this fix must not introduce: an idle session whose tail STILL
+// shows the identical blocking signal must never be cleared by the settlement
+// pass, however many consecutive idle ticks elapse.
+func TestComputeNeedsInput_StillBlockedIdleDoesNotSettle(t *testing.T) {
+	screen := &agent.ScreenRenderer{}
+	idle := []string{"a"}
+	tailOf := func(string) []byte { return blockedTail }
+
+	var got []string
+	var fp map[string]uint64
+	var since map[string]time.Time
+	var cleared map[string]agent.ClearedMarker
+	var resume, settle map[string]int
+	for i := 0; i < agent.NeedsInputSettleTicks+3; i++ {
+		got, fp, since, cleared, resume, settle = computeNeedsInput(idle, []string{"a"}, got, fp, since, cleared, resume, settle, tailOf, noInput, notArchived, screen, defaultSizeOf)
+		if len(got) != 1 || got[0] != "a" {
+			t.Fatalf("BUG-072 REGRESSION: a still-blocked idle session settled and cleared on tick %d: %v", i+1, got)
+		}
+	}
+}
+
+// TestComputeNeedsInput_NotIdleNeverSettles guards against conflating "signal
+// absent" with "settled": a session that keeps producing new output (never
+// reaches genuine raw idleness) must never accumulate settlement credit,
+// however long its tail shows no blocking signal.
+func TestComputeNeedsInput_NotIdleNeverSettles(t *testing.T) {
+	screen := &agent.ScreenRenderer{}
+	tailOf := func(string) []byte { return idleTail }
+
+	var got []string
+	var fp map[string]uint64
+	var since map[string]time.Time
+	var cleared map[string]agent.ClearedMarker
+	var resume, settle map[string]int
+	for i := 0; i < agent.NeedsInputSettleTicks+3; i++ {
+		got, fp, since, cleared, resume, settle = computeNeedsInput(nil, []string{"a"}, got, fp, since, cleared, resume, settle, tailOf, noInput, notArchived, screen, defaultSizeOf)
+	}
+	testutil.Equal(t, len(got), 0)
+	testutil.Equal(t, settle["a"], 0)
 }
 
 // altScreenPromptTail mirrors agent.altScreenPromptFrame (unexported there): a
@@ -783,7 +922,7 @@ func TestDetectNeedsInputTick_UserInputClears(t *testing.T) {
 func TestComputeNeedsInput_ClearOnArchive(t *testing.T) {
 	tailOf := func(string) []byte { return blockedTail }
 	archivedOf := func(id string) bool { return id == "a" }
-	got, _, _, _, _ := computeNeedsInput([]string{"a", "b"}, []string{"a", "b"}, nil, nil, nil, nil, nil, tailOf, noInput, archivedOf, &agent.ScreenRenderer{}, defaultSizeOf)
+	got, _, _, _, _, _ := computeNeedsInput([]string{"a", "b"}, []string{"a", "b"}, nil, nil, nil, nil, nil, nil, tailOf, noInput, archivedOf, &agent.ScreenRenderer{}, defaultSizeOf)
 	testutil.DeepEqual(t, got, []string{"b"})
 }
 
@@ -945,12 +1084,12 @@ func TestComputeNeedsInput_BUG067_DistinctSequentialPromptReflagsAlongsideUnrela
 	running := []string{"a", "b"}
 
 	tick := func() []string {
-		needs, newFP, newSince, newCleared, newResume := computeNeedsInput(
+		needs, newFP, newSince, newCleared, newResume, newSettle := computeNeedsInput(
 			[]string{"a"}, running, prevNeeds(state), state.contentFP, state.needsInputSince,
-			state.needsInputCleared, state.needsInputResume, tailOf, lastInputOf, archivedOf,
+			state.needsInputCleared, state.needsInputResume, state.needsInputSettle, tailOf, lastInputOf, archivedOf,
 			state.screen, defaultSizeOf,
 		)
-		state.contentFP, state.needsInputSince, state.needsInputCleared, state.needsInputResume = newFP, newSince, newCleared, newResume
+		state.contentFP, state.needsInputSince, state.needsInputCleared, state.needsInputResume, state.needsInputSettle = newFP, newSince, newCleared, newResume, newSettle
 		state.needsInputNow = make(map[string]bool, len(needs))
 		for _, id := range needs {
 			state.needsInputNow[id] = true

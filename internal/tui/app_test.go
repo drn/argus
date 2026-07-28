@@ -3837,6 +3837,82 @@ func TestDetectNeedsInputSticky_ResumedActivityBriefBurstDoesNotClear(t *testing
 	}
 }
 
+// TestDetectNeedsInputSticky_SettledActivityClears reproduces BUG-072 through
+// the REAL detectNeedsInputSticky: a worker resolves its own block and settles
+// into idle FASTER than agent.NeedsInputResumeTicks consecutive ticks of
+// visible work — too fast for the resumed-activity pass to ever fire (going
+// idle drives workingNow false, resetting that streak, and an idle session
+// never shows the working affordance again) — with no recorded user input
+// either (models a coordinator-relayed resolution, or simply no keystroke).
+// Only the settlement pass (agent.SettleTick) can resolve this — the exact
+// live repro: the Details pane already showed the session idle and the task
+// in_review, yet the rail still showed "(?)" until an incidental keystroke.
+func TestDetectNeedsInputSticky_SettledActivityClears(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeLog := func(taskID, content string) {
+		logPath := agent.SessionLogPath(taskID)
+		testutil.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0o755))
+		testutil.NoError(t, os.WriteFile(logPath, []byte(content), 0o644))
+	}
+	const prompt = "Do you want to proceed?\n❯ 1. Yes\n  2. No\n"
+	const settledLog = "Reading foo.go\nDone.\n"
+
+	t0 := time.Unix(1000, 0)
+	s1 := &fakeInputSession{fakeKickSession: &fakeKickSession{}, last: t0}
+	a := &App{runner: &fakeInputRunner{
+		Runner:   agent.NewRunner(nil),
+		sessions: map[string]agent.SessionHandle{"c1": s1},
+	}}
+	running := []string{"c1"}
+
+	// Tick 1: idle on the selection prompt → flagged.
+	writeLog("c1", prompt)
+	got := a.detectNeedsInputSticky([]string{"c1"}, running, nil)
+	testutil.DeepEqual(t, got, []string{"c1"})
+
+	// The worker resolves its own block and goes idle with the blocking signal
+	// gone from the log — for FEWER than agent.NeedsInputSettleTicks
+	// consecutive ticks, so it must not clear yet. s1.last (LastUserInput)
+	// never advances throughout.
+	writeLog("c1", settledLog)
+	for i := 0; i < agent.NeedsInputSettleTicks-1; i++ {
+		got = a.detectNeedsInputSticky([]string{"c1"}, running, got)
+		if len(got) == 0 {
+			t.Fatalf("cleared too early, before sustaining %d settled ticks (tick %d)", agent.NeedsInputSettleTicks, i+1)
+		}
+	}
+	// The Nth consecutive settled tick clears it.
+	got = a.detectNeedsInputSticky([]string{"c1"}, running, got)
+	if len(got) != 0 {
+		t.Fatalf("expected the settlement pass to clear the flag after %d settled ticks, got %v", agent.NeedsInputSettleTicks, got)
+	}
+}
+
+// TestDetectNeedsInputSticky_StillBlockedIdleDoesNotSettle guards the BUG-072
+// regression this fix must not introduce: an idle session whose log STILL
+// shows the identical blocking signal must never be cleared by the settlement
+// pass, however many consecutive idle ticks elapse.
+func TestDetectNeedsInputSticky_StillBlockedIdleDoesNotSettle(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeLog := func(taskID, content string) {
+		logPath := agent.SessionLogPath(taskID)
+		testutil.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0o755))
+		testutil.NoError(t, os.WriteFile(logPath, []byte(content), 0o644))
+	}
+	const prompt = "Do you want to proceed?\n❯ 1. Yes\n  2. No\n"
+	writeLog("c1", prompt)
+
+	a := &App{}
+	running := []string{"c1"}
+	var got []string
+	for i := 0; i < agent.NeedsInputSettleTicks+3; i++ {
+		got = a.detectNeedsInputSticky([]string{"c1"}, running, got)
+		if len(got) != 1 || got[0] != "c1" {
+			t.Fatalf("BUG-072 REGRESSION: a still-blocked idle session settled and cleared on tick %d: %v", i+1, got)
+		}
+	}
+}
+
 // TestDetectNeedsInputSticky_BUG067_DistinctSequentialPromptReflags reproduces
 // the live repro (orchestrator "sketch-handoffs", roles
 // 12a-blueprint-ui-lifecycle / 13a-blueprint-restore-version, 2026-07-21):
