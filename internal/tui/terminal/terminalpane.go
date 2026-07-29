@@ -729,6 +729,54 @@ func readLogTailForTask(taskID string, size int64) ([]byte, int64) {
 	return buf[:n], fileSize
 }
 
+// logRangeCatchUpMaxBytes bounds the exact incremental catch-up read below —
+// beyond this, fall back to the existing approximate tail rebuild rather than
+// risk a large synchronous read/parse on the main goroutine (renderLive runs
+// on tview's Draw path). Reuses liveRebuildHistorySize's 8MB budget: a gap
+// this large is already an extreme case (a task backgrounded while its agent
+// produced more than 8MB of raw PTY output), and the fallback's own read is
+// bounded by the same constant, so this introduces no new worst case.
+const logRangeCatchUpMaxBytes = liveRebuildHistorySize
+
+// readLogRangeForTask reads the EXACT byte range [offset, offset+length) from
+// a session log file. Because readLoop writes the ring buffer and the log
+// file from the same `data` slice in the same iteration (see Session.readLoop
+// in internal/agent/session.go), a TerminalPane's emuFedTotal — a count of
+// bytes already fed from the ring — is in the identical coordinate space as
+// the log file's byte offsets. That makes an exact, lossless incremental
+// catch-up possible whenever the ring buffer has evicted bytes before the
+// pane could consume them (the pane's Draw wasn't called for a while — e.g.
+// the user was viewing a different task — while the agent produced more than
+// the ring's 256KB capacity of output).
+//
+// Returns ok=false (nil bytes) when the exact range isn't available on disk
+// — missing log, a length beyond logRangeCatchUpMaxBytes, or a file shorter
+// than the requested range (external truncation, a prune race, or a log
+// predating this code path) — so the caller can fall back to the existing
+// approximate tail rebuild.
+func readLogRangeForTask(taskID string, offset, length int64) ([]byte, bool) {
+	if length <= 0 || offset < 0 || length > logRangeCatchUpMaxBytes {
+		return nil, false
+	}
+	logPath := agent.SessionLogPath(taskID)
+	f, err := os.Open(logPath)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.Size() < offset+length {
+		return nil, false
+	}
+
+	buf := make([]byte, length)
+	if _, err := f.ReadAt(buf, offset); err != nil {
+		return nil, false
+	}
+	return buf, true
+}
+
 // scrollExtendChunk is how much further back a ceiling-hit rebuild reads
 // beyond the previous window's first byte. The (scrollOffset+viewport)*cols*3
 // heuristic maps *visible lines* to *log bytes*, but escape-dense agent output
@@ -1595,6 +1643,32 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 		// bottom of the pane (defect 3). A pure dimension change no longer
 		// takes this path at all — see the Resize call above.
 		fullReplay := emuMissing || newBytes > uint64(len(raw))
+		ringWrapCaughtUp := false
+		if fullReplay && !emuMissing {
+			// Ring-wrap with an emulator we can still feed incrementally:
+			// recover the EXACT missing bytes from the on-disk log at the
+			// precise offset (see readLogRangeForTask) instead of discarding
+			// the emulator and rebuilding from the approximate 8MB tail
+			// window below. The approximate window is BUG-068's failure
+			// mode reached by a different trigger — a session with more
+			// history than the window loses true prior state (scrollback
+			// depth, cursor position, alt-screen mode) and x/vt reconstructs
+			// an internally-consistent but WRONG screen. The exact range is
+			// contiguous with what the emulator already parsed, so — like
+			// the ordinary incremental feed below — it needs no ESC
+			// realignment and no oscStrip reset.
+			// emuFedTotal/newBytes are monotonic and bounded by realistic
+			// session sizes (an agent producing 8EiB of output is not a real
+			// case); gosec G115 flags the uint64->int64 conversion but the
+			// casts are safe, matching readLiveRebuildHistory's overflow calc
+			// above.
+			if gap, ok := readLogRangeForTask(tp.taskID, int64(tp.emuFedTotal), int64(newBytes)); ok { //nolint:gosec // see comment
+				_, _ = SafeEmuWrite(tp.emu, tp.oscStrip.filter(gap))
+				tp.emuFedTotal = totalWritten
+				fullReplay = false
+				ringWrapCaughtUp = true
+			}
+		}
 		if fullReplay {
 			if !emuMissing {
 				tp.emu = tp.newTrackedEmulator(ptyCols, ptyRows)
@@ -1627,6 +1701,11 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 				_, _ = SafeEmuWrite(tp.emu, tp.oscStrip.filter(AlignToEscBoundary(history)))
 				tp.emuFedTotal = finalTotal
 			}
+		} else if ringWrapCaughtUp {
+			// Already fed the exact gap bytes above (see readLogRangeForTask);
+			// `raw` is the ring buffer's short tail, which does NOT cover the
+			// full delta here — falling into the incremental-feed branch below
+			// would slice raw[len(raw)-int(newBytes):] with a negative index.
 		} else if len(raw) > 0 {
 			// Incremental feed: the delta is contiguous with what the
 			// emulator has already parsed, so no ESC realignment is
