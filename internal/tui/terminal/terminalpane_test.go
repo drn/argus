@@ -3197,6 +3197,193 @@ func TestTerminalPane_ResizePreservesEmulatorState(t *testing.T) {
 	}
 }
 
+// TestReadLogRangeForTask_ExactRange verifies the exact-offset read used by
+// the ring-wrap catch-up: given a log file and a byte range fully contained
+// within it, the returned bytes match exactly and ok is true.
+func TestReadLogRangeForTask_ExactRange(t *testing.T) {
+	setupTaskLog(t, "range-1", "0123456789ABCDEF")
+	got, ok := readLogRangeForTask("range-1", 4, 6)
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	testutil.Equal(t, string(got), "456789")
+}
+
+// TestReadLogRangeForTask_BeyondEOF verifies that a range extending past the
+// end of the on-disk log (external truncation, a prune race, or a stale
+// emuFedTotal from before a session resume re-truncated the log) reports
+// ok=false rather than returning a short/garbage read.
+func TestReadLogRangeForTask_BeyondEOF(t *testing.T) {
+	setupTaskLog(t, "range-2", "short")
+	if _, ok := readLogRangeForTask("range-2", 0, 100); ok {
+		t.Error("ok = true for a range beyond EOF, want false")
+	}
+}
+
+// TestReadLogRangeForTask_MissingLog verifies a nonexistent task log reports
+// ok=false instead of erroring.
+func TestReadLogRangeForTask_MissingLog(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if _, ok := readLogRangeForTask("no-such-task", 0, 10); ok {
+		t.Error("ok = true for a missing log, want false")
+	}
+}
+
+// TestReadLogRangeForTask_InvalidArgs verifies the defensive bounds: a
+// negative offset, non-positive length, or a length beyond
+// logRangeCatchUpMaxBytes are all rejected without touching disk.
+func TestReadLogRangeForTask_InvalidArgs(t *testing.T) {
+	setupTaskLog(t, "range-3", "content")
+	cases := []struct {
+		name   string
+		offset int64
+		length int64
+	}{
+		{"negative offset", -1, 4},
+		{"zero length", 0, 0},
+		{"negative length", 0, -1},
+		{"length over cap", 0, logRangeCatchUpMaxBytes + 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, ok := readLogRangeForTask("range-3", tc.offset, tc.length); ok {
+				t.Errorf("ok = true, want false")
+			}
+		})
+	}
+}
+
+// TestRenderLive_RingWrapRecoversExactBytesWithoutDiscardingEmulator is a
+// regression test for the ring-wrap sibling of BUG-068: BUG-068 fixed the
+// resize trigger (a PTY dimension change discarded the live emulator and
+// rebuilt from an approximate 8MB log-tail window, losing true prior state
+// for long sessions). The identical lossy rebuild is also reachable via
+// "ring wrap" — the pane's Draw wasn't called for a while (e.g. the user was
+// viewing a different task) while the agent produced more than the ring
+// buffer's 256KB capacity, so the incremental tail in RecentOutput() no
+// longer covers the full delta.
+//
+// Unlike a resize, ring-wrap doesn't need to fall back to an approximate
+// window at all: readLoop writes the ring buffer and the on-disk log from
+// the same bytes in the same iteration, so emuFedTotal is in the exact same
+// coordinate space as the log's byte offsets. This test proves the fix reads
+// the EXACT gap from the log and feeds it into the EXISTING emulator —
+// never discarding it — by establishing alt-screen content, forcing a
+// ring-wrap gap the mock's short RecentOutput() can't cover, and checking
+// the emulator instance, its fed-total, and both the pre- and post-gap
+// content survive.
+func TestRenderLive_RingWrapRecoversExactBytesWithoutDiscardingEmulator(t *testing.T) {
+	prefix := "\x1b[?1049h\x1b[2J\x1b[HMARKER-A"
+	gap := "\x1b[3;1HMARKER-B"
+	// The log starts with only `prefix` — matching totalWritten below — not
+	// the eventual prefix+gap. A real session log never runs ahead of
+	// TotalWritten (readLoop writes both from the same bytes in the same
+	// iteration); pre-writing the gap here too would let the FIRST render
+	// silently absorb it via the log-tail path, defeating the point of this
+	// test (proving the SECOND render's ring-wrap catch-up is what recovers
+	// it).
+	setupTaskLog(t, "ringwrap-1", prefix)
+
+	tp := NewTerminalPane()
+	tp.taskID = "ringwrap-1"
+	sess := &mockAdapter{alive: true, totalWritten: uint64(len(prefix)), output: []byte(prefix)}
+	tp.SetSession(sess)
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen.Init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 24)
+	tp.renderLive(screen, 0, 0, 80, 10, 80, 10)
+
+	if tp.emu == nil || !tp.emu.IsAltScreen() {
+		t.Fatal("expected alt-screen mode after establishing the prefix")
+	}
+	if s, _, _ := screen.Get(0, 0); s != "M" {
+		t.Fatalf("content before ring-wrap: got %q at (0,0), want \"M\"", s)
+	}
+	emuBefore := tp.emu
+
+	// The agent produced `gap` while this pane wasn't being drawn: the log
+	// now holds prefix+gap (readLoop flushed it, in lockstep with the ring),
+	// but RecentOutput() only covers the gap's last 2 bytes — far short of
+	// the full gap — simulating the ring buffer having evicted the rest.
+	setupTaskLog(t, "ringwrap-1", prefix+gap)
+	sess.totalWritten = uint64(len(prefix) + len(gap))
+	sess.output = []byte(gap)[len(gap)-2:]
+
+	screen2 := tcell.NewSimulationScreen("UTF-8")
+	if err := screen2.Init(); err != nil {
+		t.Fatalf("screen2.Init: %v", err)
+	}
+	defer screen2.Fini()
+	screen2.SetSize(80, 24)
+	tp.renderLive(screen2, 0, 0, 80, 10, 80, 10)
+
+	if tp.emu != emuBefore {
+		t.Error("emulator was discarded and rebuilt; ring-wrap catch-up must feed the EXISTING emulator")
+	}
+	if tp.emuFedTotal != sess.totalWritten {
+		t.Errorf("emuFedTotal = %d, want %d (fully caught up)", tp.emuFedTotal, sess.totalWritten)
+	}
+	if !tp.emu.IsAltScreen() {
+		t.Error("alt-screen mode lost after ring-wrap catch-up")
+	}
+	if s, _, _ := screen2.Get(0, 0); s != "M" {
+		t.Errorf("MARKER-A lost after ring-wrap catch-up: got %q at (0,0), want \"M\"", s)
+	}
+	if s, _, _ := screen2.Get(0, 2); s != "M" {
+		t.Errorf("MARKER-B missing after ring-wrap catch-up: got %q at (0,2), want \"M\"", s)
+	}
+}
+
+// TestRenderLive_RingWrapFallsBackWithoutPanicWhenLogUnavailable verifies
+// the degraded case — the exact on-disk range isn't available (no log for
+// this task) — still falls back to the existing approximate rebuild without
+// panicking. Guards against the negative-slice-index hazard: a ring-wrap
+// gap is, by construction, longer than RecentOutput()'s tail, so any branch
+// that reaches the ordinary incremental-feed slice
+// (raw[len(raw)-int(newBytes):]) instead of a dedicated fallback would
+// panic on a negative index.
+func TestRenderLive_RingWrapFallsBackWithoutPanicWhenLogUnavailable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // no session log written for this task
+	tp := NewTerminalPane()
+	tp.taskID = "ringwrap-no-log"
+	sess := &mockAdapter{alive: true, totalWritten: 5, output: []byte("hello")}
+	tp.SetSession(sess)
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen.Init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 24)
+	tp.renderLive(screen, 0, 0, 80, 10, 80, 10)
+
+	// Ring-wrap: totalWritten jumps far ahead, RecentOutput() only covers a
+	// short, unrelated tail.
+	sess.totalWritten = 5000
+	sess.output = []byte("XY")
+
+	screen2 := tcell.NewSimulationScreen("UTF-8")
+	if err := screen2.Init(); err != nil {
+		t.Fatalf("screen2.Init: %v", err)
+	}
+	defer screen2.Fini()
+	screen2.SetSize(80, 24)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("renderLive panicked on ring-wrap fallback: %v", r)
+		}
+	}()
+	tp.renderLive(screen2, 0, 0, 80, 10, 80, 10)
+	if tp.emuFedTotal != sess.totalWritten {
+		t.Errorf("emuFedTotal = %d, want %d", tp.emuFedTotal, sess.totalWritten)
+	}
+}
+
 // TestPaintEmu_BlanksRowsBelowContent verifies defect 6: when the
 // emulator's content is shorter than the viewport, paintEmu blanks the
 // trailing rows so stale cells from a previous frame don't leak through.
