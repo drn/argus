@@ -360,9 +360,21 @@ func (d *DB) ListHeraOrchestrators(includeArchived bool) ([]*HeraOrchestrator, e
 // ArchiveHeraOrchestrator stamps archived_at (current time) and CLEARS
 // pinned_at — pin and archive are mutually exclusive. Idempotent: re-archiving
 // preserves the original archived_at. Returns ErrHeraNotFound if no row matches.
+//
+// Cascade-cancels the orchestrator's still-planned (never-materialized) child
+// roles (add-hera-plan-hygiene Bug A) — a planned node whose parent just ended
+// would otherwise retry materialization forever with no coordinator to ping.
+// The cascade is best-effort: a failure is logged, never returned, so archive's
+// existing error contract (nil / ErrHeraNotFound) is unchanged.
 func (d *DB) ArchiveHeraOrchestrator(id int64) error {
-	return d.heraSetFlag(`UPDATE hera_orchestrators SET archived_at=?, pinned_at=NULL WHERE id=? AND archived_at IS NULL`,
-		heraOrchExistsProbe, id, formatTime(time.Now()))
+	if err := d.heraSetFlag(`UPDATE hera_orchestrators SET archived_at=?, pinned_at=NULL WHERE id=? AND archived_at IS NULL`,
+		heraOrchExistsProbe, id, formatTime(time.Now())); err != nil {
+		return err
+	}
+	if err := d.cancelStillPlannedChildRoles(id); err != nil {
+		slog.Warn("ArchiveHeraOrchestrator: cascade-cancel planned children failed", "orchestrator_id", id, "err", err)
+	}
+	return nil
 }
 
 // UnarchiveHeraOrchestrator clears archived_at. Idempotent. Returns
@@ -395,11 +407,41 @@ func (d *DB) UnpinHeraOrchestrator(id int64) error {
 // rail-feeding lists (ListHeraOrchestrators) but its row is retained and still
 // returned by id (HeraOrchestrator) for DB-only recovery. NEVER a hard delete.
 // Returns ErrHeraNotFound if no row matches id.
+//
+// Cascade-cancels still-planned child roles exactly like ArchiveHeraOrchestrator
+// (add-hera-plan-hygiene Bug A) — same best-effort, log-only-on-failure contract.
 func (d *DB) NukeHeraOrchestrator(id int64) error {
 	now := formatTime(time.Now())
-	return d.heraSetFlag(
+	if err := d.heraSetFlag(
 		`UPDATE hera_orchestrators SET nuked_at=COALESCE(nuked_at, ?), archived_at=COALESCE(archived_at, ?), pinned_at=NULL WHERE id=?`,
-		heraOrchExistsProbe, id, now, now)
+		heraOrchExistsProbe, id, now, now); err != nil {
+		return err
+	}
+	if err := d.cancelStillPlannedChildRoles(id); err != nil {
+		slog.Warn("NukeHeraOrchestrator: cascade-cancel planned children failed", "orchestrator_id", id, "err", err)
+	}
+	return nil
+}
+
+// cancelStillPlannedChildRoles stamps cancelled_at on every still-planned
+// (never-materialized) worker-kind child role of an orchestrator — mirrors
+// ListHeraPlannedNodes's own definition of a planned node exactly (kind=worker,
+// not archived, not cancelled, no binding ever) so the cascade only ever
+// touches rows that query would otherwise keep surfacing forever. Idempotent
+// (COALESCE) and scoped to one orchestrator; a materialized (bound) child is
+// never touched.
+func (d *DB) cancelStillPlannedChildRoles(orchID int64) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.conn.Exec(
+		`UPDATE hera_roles SET cancelled_at=COALESCE(cancelled_at, ?)
+		 WHERE orchestrator_id=? AND kind=? AND archived_at IS NULL AND cancelled_at IS NULL
+		   AND NOT EXISTS (SELECT 1 FROM hera_bindings b WHERE b.role_id = hera_roles.id)`,
+		formatTime(time.Now()), orchID, string(HeraKindWorker))
+	if err != nil {
+		return fmt.Errorf("cancel still-planned child roles: %w", err)
+	}
+	return nil
 }
 
 // SetHeraOrchestratorKanbanStatus sets the orchestrator's independent kanban

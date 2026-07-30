@@ -1063,6 +1063,69 @@ func TestNukeHeraOrchestrator(t *testing.T) {
 	})
 }
 
+// TestArchiveNukeOrchestrator_CascadeCancelPlannedChildren pins the
+// add-hera-plan-hygiene Bug A cascade: archiving or nuking an orchestrator
+// stamps cancelled_at on its still-planned (never-materialized) worker-kind
+// children, so they stop being retried by the gater forever, while an
+// already-materialized (bound) child is left untouched.
+func TestArchiveNukeOrchestrator_CascadeCancelPlannedChildren(t *testing.T) {
+	t.Run("archive cancels a still-planned child", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "alpha")
+		planned := mkRole(t, d, o.ID, "planned", HeraKindWorker)
+
+		testutil.NoError(t, d.ArchiveHeraOrchestrator(o.ID))
+
+		got, err := d.HeraRole(planned.ID)
+		testutil.NoError(t, err)
+		if got.CancelledAt == nil {
+			t.Fatal("expected the still-planned child role to be cancelled")
+		}
+	})
+
+	t.Run("nuke cancels a still-planned child", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "beta")
+		planned := mkRole(t, d, o.ID, "planned", HeraKindWorker)
+
+		testutil.NoError(t, d.NukeHeraOrchestrator(o.ID))
+
+		got, err := d.HeraRole(planned.ID)
+		testutil.NoError(t, err)
+		if got.CancelledAt == nil {
+			t.Fatal("expected the still-planned child role to be cancelled")
+		}
+	})
+
+	t.Run("a materialized (bound) child is left untouched", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "gamma")
+		bound, _, err := d.CreateHeraRoleWithBinding(CreateHeraRoleInput{
+			OrchestratorID: o.ID, Name: "bound", Kind: HeraKindWorker, ArgusProject: "proj",
+		}, "task-1", "/wt/bound")
+		testutil.NoError(t, err)
+
+		testutil.NoError(t, d.ArchiveHeraOrchestrator(o.ID))
+
+		got, err := d.HeraRole(bound.ID)
+		testutil.NoError(t, err)
+		testutil.Nil(t, got.CancelledAt)
+	})
+
+	t.Run("an already-cancelled or already-archived child is left as-is", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "delta")
+		archived := mkRole(t, d, o.ID, "archived", HeraKindWorker)
+		testutil.NoError(t, d.ArchiveHeraRole(archived.ID))
+
+		testutil.NoError(t, d.ArchiveHeraOrchestrator(o.ID))
+
+		got, err := d.HeraRole(archived.ID)
+		testutil.NoError(t, err)
+		testutil.Nil(t, got.CancelledAt) // archived, not cancelled — cascade skips it
+	})
+}
+
 // TestHeraOrchestratorKanbanStatus pins the add-hera-kanban-status axis: default
 // value, round-tripping through Set + both read paths, independence from
 // pin/archive, and the missing-row error.

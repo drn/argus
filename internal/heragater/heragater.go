@@ -41,6 +41,18 @@ import (
 // Tests override via SetInterval.
 const defaultInterval = time.Minute
 
+// materializeFailureEscalationTicks is the number of CONSECUTIVE materialize
+// failures a planned node tolerates before the gater stops retrying in total
+// silence and pings the coordinator once (add-hera-plan-hygiene Bug B).
+// Deliberately smaller than agent.EscalateParkedSelection's
+// NeedsInputEscalationTicks (8, see context/knowledge/gotchas/events.md
+// BUG-029/BUG-060): that counter guards against isolated torn reads on a
+// fast, sub-second polling loop, a noise source that does not exist here — a
+// materialize failure is a fully synchronous, deterministic result (config
+// resolves or it doesn't), so the threshold only needs to rule out "the very
+// next tick will succeed," not survive flaky reads.
+const materializeFailureEscalationTicks = 5
+
 // Materializer binds + starts a pre-created planned role. agent.MaterializeHeraWorker
 // satisfies this via the daemon adapter; tests inject a fake. Returns the live
 // task or an error (a materialize failure HOLDS the node — it stays planned and
@@ -71,17 +83,27 @@ type Watcher struct {
 	// heldPings dedups failure-hold pings per (blockedRole, blockerRole) so a
 	// holding node doesn't spam the coordinator every tick.
 	heldPings map[[2]int64]bool
+
+	// materializeFailures counts CONSECUTIVE materialize failures per node id
+	// (add-hera-plan-hygiene Bug B); escalatedMaterializeFailures dedups the
+	// one-shot escalation notice per node id the same way heldPings dedups
+	// hold notices. Both are swept in sweepMaterializeFailures once a node
+	// leaves the planned set.
+	materializeFailures          map[int64]int
+	escalatedMaterializeFailures map[int64]bool
 }
 
 // New builds a Watcher. It does not tick until Start is called.
 func New(database *db.DB, materialize Materializer, ping CoordinatorPinger) *Watcher {
 	return &Watcher{
-		db:          database,
-		materialize: materialize,
-		ping:        ping,
-		interval:    defaultInterval,
-		stopCh:      make(chan struct{}),
-		heldPings:   map[[2]int64]bool{},
+		db:                           database,
+		materialize:                  materialize,
+		ping:                         ping,
+		interval:                     defaultInterval,
+		stopCh:                       make(chan struct{}),
+		heldPings:                    map[[2]int64]bool{},
+		materializeFailures:          map[int64]int{},
+		escalatedMaterializeFailures: map[int64]bool{},
 	}
 }
 
@@ -190,6 +212,23 @@ func (w *Watcher) Tick() {
 		}
 	}
 	w.rearmHeldPings(plannedByID)
+	w.sweepMaterializeFailures(plannedByID)
+}
+
+// sweepMaterializeFailures discards any per-node failure/escalation bookkeeping
+// for a node that is no longer in the planned set — materialized, cancelled, or
+// removed (add-hera-plan-hygiene Bug B). Mirrors rearmHeldPings's cleanup of
+// heldPings: without this, both maps would grow one stale entry per node ever
+// planned, for the lifetime of the daemon process.
+func (w *Watcher) sweepMaterializeFailures(plannedByID map[int64]*db.HeraRole) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for id := range w.materializeFailures {
+		if _, ok := plannedByID[id]; !ok {
+			delete(w.materializeFailures, id)
+			delete(w.escalatedMaterializeFailures, id)
+		}
+	}
 }
 
 // rearmHeldPings sweeps the held-ping dedup (D4) so a held node is re-reported
@@ -468,8 +507,10 @@ func (w *Watcher) materializeNode(node *db.HeraRole) {
 
 	if err := w.materialize(node, taskPrompt, project, branch, "", ""); err != nil {
 		w.logf("[heragater] materialize %d (%s) FAILED (stays planned, retry next tick): %v", node.ID, node.Name, err)
+		w.recordMaterializeFailure(node, err)
 		return
 	}
+	w.clearMaterializeFailures(node.ID)
 	w.logf("[heragater] materialized node %d (%s) in orch %q (base_branch=%q)", node.ID, node.Name, orch.Name, branch)
 	if len(blockerIDs) > 1 && winningBlockerID != 0 {
 		w.pingFanIn(node, blockerIDs, winningBlockerID, branch)
@@ -503,8 +544,10 @@ func (w *Watcher) materializeSubCoord(node *db.HeraRole, parentOrchName, coordNa
 
 	if err := seam(node, taskPrompt, project, branch, "", ""); err != nil {
 		w.logf("[heragater] materialize SUBCOORD %d (%s) FAILED (stays planned, retry next tick): %v", node.ID, node.Name, err)
+		w.recordMaterializeFailure(node, err)
 		return
 	}
+	w.clearMaterializeFailures(node.ID)
 	w.logf("[heragater] materialized SUBCOORD node %d (%s) in orch %q (child_orch=%s, base_branch=%q)", node.ID, node.Name, parentOrchName, node.Name, branch)
 	if cb := w.materializeCallback(); cb != nil {
 		cb(node)
@@ -685,6 +728,61 @@ func (w *Watcher) pingFanIn(node *db.HeraRole, blockerIDs []int64, winningBlocke
 	}
 	w.logf("[heragater] fan-in: node %d (%s) materialized on %q (blocker %s); %d sibling(s) not merged; notified coordinator",
 		node.ID, node.Name, branch, winnerName, len(siblingNames))
+}
+
+// recordMaterializeFailure increments a planned node's consecutive-failure
+// counter and, once it crosses materializeFailureEscalationTicks, pings the
+// coordinator EXACTLY ONCE (add-hera-plan-hygiene Bug B) — a node that can
+// never materialize (e.g. a blank argus_project) must not retry in total
+// silence forever. Mirrors holdAndPing's ping-once-per-condition dedup, keyed
+// on node id alone (this escalation is per-node, not per-blocker). Never
+// cancels or reconfigures the node — escalation is advisory only.
+func (w *Watcher) recordMaterializeFailure(node *db.HeraRole, cause error) {
+	w.mu.Lock()
+	if w.materializeFailures == nil {
+		w.materializeFailures = map[int64]int{}
+	}
+	w.materializeFailures[node.ID]++
+	count := w.materializeFailures[node.ID]
+	alreadyEscalated := w.escalatedMaterializeFailures[node.ID]
+	w.mu.Unlock()
+
+	if count < materializeFailureEscalationTicks || alreadyEscalated {
+		return
+	}
+	coords, err := w.db.ListHeraRolesByKind(node.OrchestratorID, db.HeraKindCoordinator)
+	if err != nil || len(coords) == 0 {
+		w.logf("[heragater] escalate %d: no coordinator to ping: %v", node.ID, err)
+		return
+	}
+	body := fmt.Sprintf(
+		"Planned node %s has FAILED to materialize %d consecutive ticks and will keep retrying silently forever unless you intervene. Last error: %v",
+		node.Name, count, cause)
+	tldr := fmt.Sprintf("stuck: %s failed to materialize %d times", node.Name, count)
+	if w.ping != nil {
+		if pErr := w.ping(node.ID, coords[0].ID, body, tldr); pErr != nil {
+			w.logf("[heragater] escalate %d: notify coordinator failed (will retry once threshold is crossed again next tick): %v", node.ID, pErr)
+			return
+		}
+	}
+	w.mu.Lock()
+	if w.escalatedMaterializeFailures == nil {
+		w.escalatedMaterializeFailures = map[int64]bool{}
+	}
+	w.escalatedMaterializeFailures[node.ID] = true
+	w.mu.Unlock()
+	w.logf("[heragater] escalated node %d (%s): %d consecutive materialize failures; pinged coordinator", node.ID, node.Name, count)
+}
+
+// clearMaterializeFailures resets a node's failure counter and escalation flag
+// once materialization succeeds. A node that fails a few times and later
+// succeeds (e.g. because a config gap was fixed concurrently) must not carry a
+// stale escalated-flag forward if it is ever re-planned.
+func (w *Watcher) clearMaterializeFailures(nodeID int64) {
+	w.mu.Lock()
+	delete(w.materializeFailures, nodeID)
+	delete(w.escalatedMaterializeFailures, nodeID)
+	w.mu.Unlock()
 }
 
 // roleName resolves a role id to its display name, degrading to a placeholder
