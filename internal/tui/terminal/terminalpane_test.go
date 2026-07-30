@@ -1057,15 +1057,21 @@ func TestTerminalPane_ResetVTClearsReplayCache(t *testing.T) {
 	}
 }
 
-// countingAdapter wraps mockAdapter and counts RecentOutput calls.
+// countingAdapter wraps mockAdapter and counts the expensive ring-buffer
+// copy calls renderLive's live-feed path makes. It instruments
+// RecentOutputTailWithTotal — the atomic (raw, total) snapshot renderLive
+// uses — not RecentOutput, which that path no longer calls (see the
+// live-streaming-race fix: reading totalWritten and raw via two separate,
+// unsynchronized calls let readLoop advance the ring in between for an
+// actively streaming session, misaligning the incremental-feed slice).
 type countingAdapter struct {
 	mockAdapter
 	recentOutputCalls int
 }
 
-func (c *countingAdapter) RecentOutput() []byte {
+func (c *countingAdapter) RecentOutputTailWithTotal(n int) ([]byte, uint64) {
 	c.recentOutputCalls++
-	return c.mockAdapter.RecentOutput()
+	return c.mockAdapter.RecentOutputTailWithTotal(n)
 }
 
 func TestTerminalPane_RenderLiveSkipsCopyWhenIdle(t *testing.T) {
@@ -1087,7 +1093,7 @@ func TestTerminalPane_RenderLiveSkipsCopyWhenIdle(t *testing.T) {
 
 	firstEmu := tp.emu
 
-	// Second render with same TotalWritten — should NOT call RecentOutput.
+	// Second render with same TotalWritten — should NOT call RecentOutputTailWithTotal.
 	tp.renderLive(screen, 0, 0, 40, 10, 40, 10)
 	testutil.Equal(t, sess.recentOutputCalls, 1) // still 1
 	if tp.emu != firstEmu {
@@ -3133,6 +3139,98 @@ func TestRenderLive_EmuRebuildInvalidatesPaintCache(t *testing.T) {
 	// on each side) at the new dimensions.
 	if tp.emuCols <= 80 {
 		t.Errorf("emuCols = %d after resize to 100, want > 80 (rebuilt at new width)", tp.emuCols)
+	}
+}
+
+// raceAdapter simulates the live-streaming TOCTOU race renderLive must not
+// be vulnerable to: TotalWritten() always reports an EARLIER snapshot
+// (staleTotal), while RecentOutput()/RecentOutputTailWithTotal() always
+// report a LATER one (freshOutput/freshTotal) — exactly what a real Session
+// looks like when readLoop advances the ring between two separately-called,
+// unsynchronized accessors. A correct renderLive must derive newBytes from
+// the SAME atomic call that produced raw (RecentOutputTailWithTotal), never
+// from a totalWritten sampled by a separate, earlier TotalWritten() call.
+type raceAdapter struct {
+	alive       bool
+	staleTotal  uint64
+	freshOutput []byte
+	freshTotal  uint64
+}
+
+func (r *raceAdapter) WriteInput(p []byte) (int, error) { return len(p), nil }
+func (r *raceAdapter) Resize(rows, cols uint16) error   { return nil }
+func (r *raceAdapter) RecentOutput() []byte             { return r.freshOutput }
+func (r *raceAdapter) RecentOutputTail(n int) []byte {
+	if n >= len(r.freshOutput) {
+		return r.freshOutput
+	}
+	return r.freshOutput[len(r.freshOutput)-n:]
+}
+func (r *raceAdapter) RecentOutputTailWithTotal(n int) ([]byte, uint64) {
+	return r.RecentOutputTail(n), r.freshTotal
+}
+func (r *raceAdapter) TotalWritten() uint64 { return r.staleTotal }
+func (r *raceAdapter) Alive() bool          { return r.alive }
+func (r *raceAdapter) PTYSize() (int, int)  { return 80, 24 }
+
+// TestRenderLive_LiveFeedUsesAtomicSnapshotNotStaleTotal is a regression test
+// for a live-streaming race distinct from BUG-068/BUG-073/BUG-074 (all of
+// which fire only around a bind/resize/rebuild event): renderLive samples
+// totalWritten via a separate, EARLIER TotalWritten() call, then later reads
+// raw via RecentOutput() — readLoop is a live, independent goroutine, so for
+// an actively streaming session (no pane switch, no resize, nothing but
+// ordinary output arriving) bytes can land in the gap between those two
+// calls, making raw longer than the earlier totalWritten accounts for.
+// Slicing raw[len(raw)-newBytes:] against that stale newBytes feeds the
+// WRONG suffix — it silently skips the true next bytes (dropped characters)
+// and instead feeds bytes from further ahead, understating emuFedTotal; the
+// very next frame then re-feeds that same already-fed tail (a duplicated
+// recent phrase) — together producing exactly the "duplicated recent text +
+// a couple of dropped characters, on an actively-worked pane, no bind
+// involved" signature. Fix: re-derive totalWritten from the SAME atomic
+// RecentOutputTailWithTotal call that produces raw.
+func TestRenderLive_LiveFeedUsesAtomicSnapshotNotStaleTotal(t *testing.T) {
+	tp := NewTerminalPane()
+	sess := &raceAdapter{alive: true, staleTotal: 5, freshOutput: []byte("HELLO"), freshTotal: 5}
+	tp.SetSession(sess)
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen.Init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 24)
+	tp.renderLive(screen, 0, 0, 80, 10, 80, 10)
+
+	// Simulate the race: by the time TotalWritten() was sampled, only "WO"
+	// (2 of the next 5 bytes) had landed — but by the time RecentOutput()
+	// (or, post-fix, the atomic RecentOutputTailWithTotal) is actually
+	// called, all 5 new bytes ("WORLD") are already in the ring.
+	sess.staleTotal = 7 // 5 + 2: what a separately-called TotalWritten() would have seen
+	sess.freshOutput = []byte("HELLOWORLD")
+	sess.freshTotal = 10 // the true total by the time output is read
+
+	screen2 := tcell.NewSimulationScreen("UTF-8")
+	if err := screen2.Init(); err != nil {
+		t.Fatalf("screen2.Init: %v", err)
+	}
+	defer screen2.Fini()
+	screen2.SetSize(80, 24)
+	tp.renderLive(screen2, 0, 0, 80, 10, 80, 10)
+
+	if tp.emuFedTotal != 10 {
+		t.Errorf("emuFedTotal = %d, want 10 (fully caught up to the TRUE total, not the stale TotalWritten() sample)", tp.emuFedTotal)
+	}
+	if s, _, _ := screen2.Get(0, 0); s != "H" {
+		t.Fatalf("row corrupted at (0,0): got %q, want \"H\" (start of HELLOWORLD)", s)
+	}
+	got := ""
+	for col := 0; col < len("HELLOWORLD"); col++ {
+		s, _, _ := screen2.Get(col, 0)
+		got += s
+	}
+	if got != "HELLOWORLD" {
+		t.Errorf("row 0 = %q, want \"HELLOWORLD\" (no dropped chars, no duplicated tail from the race)", got)
 	}
 }
 

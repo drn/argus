@@ -1629,8 +1629,33 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 
 	if newBytes > 0 || emuMissing {
 		var raw []byte
-		if sess != nil {
-			raw = sess.RecentOutput()
+		if sess != nil && !emuMissing {
+			// Atomic (raw, total) snapshot — NOT the totalWritten sampled
+			// above paired with a separate RecentOutput() call. readLoop is
+			// a live, independent goroutine: for an actively streaming
+			// session, bytes can arrive in the gap between two
+			// unsynchronized calls, making raw LONGER than the earlier
+			// totalWritten accounts for. Slicing raw[len(raw)-newBytes:]
+			// against that stale newBytes then feeds the WRONG suffix — it
+			// silently skips the true next bytes (dropped characters) and
+			// instead feeds bytes from further ahead, recording emuFedTotal
+			// short of what was actually fed; the next frame re-feeds that
+			// same already-fed tail (a duplicated recent phrase). Reachable
+			// on an actively-worked pane with no bind/resize/rebuild
+			// involved at all — the resulting garble sits alongside, and is
+			// easy to mistake for, the bind-time reconstruction defects
+			// (BUG-068/BUG-073/BUG-074) since it looks similar, but this is
+			// a plain TOCTOU race in the steady-state live-feed path. Re-
+			// deriving totalWritten from this SAME atomic read (discarding
+			// the racy one above) keeps raw and newBytes always consistent.
+			//
+			// Skipped when emuMissing: fullReplay is unconditionally true
+			// in that case (short-circuited below), and the fullReplay
+			// branch calls readLiveRebuildHistory, which does its own
+			// independent ring read — fetching raw/totalWritten here too
+			// would just be a wasted extra 256KB copy.
+			raw, totalWritten = sess.RecentOutputTailWithTotal(256 * 1024)
+			newBytes = totalWritten - tp.emuFedTotal
 		}
 		// "Full replay" is required when the emulator was just created
 		// (no prior state to preserve) OR the ring wrapped past our last
