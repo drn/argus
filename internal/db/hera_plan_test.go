@@ -109,6 +109,61 @@ func TestListHeraPlannedNodes_StaysPlannedAfterBindingEnds(t *testing.T) {
 	_ = role
 }
 
+func TestListHeraPlannedNodes_ExcludesArchivedOrNukedOrchestrator(t *testing.T) {
+	// add-hera-plan-hygiene Bug A: a planned node whose PARENT orchestrator has
+	// ended must not keep surfacing forever, even if the node's own
+	// cancelled_at was never stamped (the defensive read-path filter must work
+	// independent of ArchiveHeraOrchestrator/NukeHeraOrchestrator's cascade —
+	// this is what makes the fix retroactive for rows that predate it).
+	t.Run("archived orchestrator", func(t *testing.T) {
+		d := testDB(t)
+		orch := planTestOrch(t, d, "archived-orch")
+		node := plannedRole(t, d, orch, "node")
+
+		// Stamp archived_at directly, bypassing ArchiveHeraOrchestrator's own
+		// cascade, to prove the list query itself excludes the node.
+		_, err := d.conn.Exec(`UPDATE hera_orchestrators SET archived_at=? WHERE id=?`, "2026-06-20T00:00:00Z", orch)
+		testutil.NoError(t, err)
+
+		got, err := d.ListHeraPlannedNodes()
+		testutil.NoError(t, err)
+		for _, r := range got {
+			if r.ID == node.ID {
+				t.Fatalf("planned node %d under an archived orchestrator must not be listed", node.ID)
+			}
+		}
+	})
+
+	t.Run("nuked orchestrator", func(t *testing.T) {
+		d := testDB(t)
+		orch := planTestOrch(t, d, "nuked-orch")
+		node := plannedRole(t, d, orch, "node")
+
+		_, err := d.conn.Exec(`UPDATE hera_orchestrators SET nuked_at=?, archived_at=? WHERE id=?`,
+			"2026-06-20T00:00:00Z", "2026-06-20T00:00:00Z", orch)
+		testutil.NoError(t, err)
+
+		got, err := d.ListHeraPlannedNodes()
+		testutil.NoError(t, err)
+		for _, r := range got {
+			if r.ID == node.ID {
+				t.Fatalf("planned node %d under a nuked orchestrator must not be listed", node.ID)
+			}
+		}
+	})
+
+	t.Run("active orchestrator's planned node is unaffected", func(t *testing.T) {
+		d := testDB(t)
+		orch := planTestOrch(t, d, "active-orch")
+		node := plannedRole(t, d, orch, "node")
+
+		got, err := d.ListHeraPlannedNodes()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 1)
+		testutil.Equal(t, got[0].ID, node.ID)
+	})
+}
+
 func TestPlannedNode_ShortIDIsStableAcrossPlanEdits(t *testing.T) {
 	// The planner-assigned short-id-prefixed name is a durable handle: it is
 	// persisted verbatim and never recomputed by a plan operation (adding or

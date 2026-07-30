@@ -356,6 +356,13 @@ type HeraPlannedNode struct {
 // materialized (it has a binding row, live or ended) is NOT a planned node, even
 // if its binding has since ended; the gater never re-materializes. Archived
 // roles are excluded.
+//
+// The parent orchestrator's own archived_at/nuked_at is ALSO checked (JOIN,
+// not just the node's own columns) — a defensive filter independent of
+// ArchiveHeraOrchestrator/NukeHeraOrchestrator's cascade-cancel of still-planned
+// children. The cascade prevents the state going forward; this filter tolerates
+// it regardless of cause, including rows that predate the cascade existing at
+// all, with no data migration required (add-hera-plan-hygiene Bug A).
 func (d *DB) ListHeraPlannedNodes() ([]*HeraRole, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -363,7 +370,9 @@ func (d *DB) ListHeraPlannedNodes() ([]*HeraRole, error) {
 		`SELECT r.id, r.orchestrator_id, r.name, r.kind, r.argus_project, r.prompt,
 		        r.created_at, r.archived_at, r.pinned_at, r.nuked_at, r.node_kind, r.cancelled_at, r.archetype
 		 FROM hera_roles r
+		 JOIN hera_orchestrators o ON o.id = r.orchestrator_id
 		 WHERE r.kind=? AND r.archived_at IS NULL AND r.cancelled_at IS NULL
+		   AND o.archived_at IS NULL AND o.nuked_at IS NULL
 		   AND NOT EXISTS (SELECT 1 FROM hera_bindings b WHERE b.role_id = r.id)
 		 ORDER BY r.id ASC`,
 		string(HeraKindWorker))

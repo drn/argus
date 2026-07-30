@@ -434,6 +434,114 @@ func TestGater_MaterializeFailureLeavesNodePlanned(t *testing.T) {
 	testutil.Equal(t, planned[0].ID, node.ID)
 }
 
+// TestGater_MaterializeFailureBelowThresholdNoEscalation pins add-hera-plan-
+// hygiene Bug B: a node that has failed fewer than
+// materializeFailureEscalationTicks consecutive times retries in silence, with
+// no coordinator notice yet.
+func TestGater_MaterializeFailureBelowThresholdNoEscalation(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	f.planned(t, orch, "1a")
+	f.matFail = true
+
+	for i := 0; i < materializeFailureEscalationTicks-1; i++ {
+		f.w.Tick()
+	}
+
+	testutil.Equal(t, f.pingCount(), 0)
+}
+
+// TestGater_MaterializeFailureEscalatesAtThreshold pins the crossing behavior:
+// on the Nth consecutive failure the coordinator gets exactly one notice
+// naming the node, instead of retrying in total silence forever.
+func TestGater_MaterializeFailureEscalatesAtThreshold(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	node := f.planned(t, orch, "2a-team")
+	f.matFail = true
+
+	for i := 0; i < materializeFailureEscalationTicks; i++ {
+		f.w.Tick()
+	}
+
+	testutil.Equal(t, f.pingCount(), 1)
+	last := f.lastPing()
+	testutil.Equal(t, last.from, node.ID)
+	testutil.Equal(t, strings.Contains(last.tldr, "stuck"), true)
+	testutil.Equal(t, strings.Contains(last.body, node.Name), true)
+	// Never auto-cancelled or reconfigured — escalation is advisory only.
+	got, err := f.d.HeraRole(node.ID)
+	testutil.NoError(t, err)
+	testutil.Nil(t, got.CancelledAt)
+}
+
+// TestGater_MaterializeFailureEscalationDoesNotRepeat pins the one-shot
+// contract: once escalated, continued failure does not re-ping every tick.
+func TestGater_MaterializeFailureEscalationDoesNotRepeat(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	f.planned(t, orch, "2a")
+	f.matFail = true
+
+	for i := 0; i < materializeFailureEscalationTicks+3; i++ {
+		f.w.Tick()
+	}
+
+	testutil.Equal(t, f.pingCount(), 1)
+}
+
+// TestGater_MaterializeFailureSuccessClearsCounter pins that a node which
+// later succeeds has its failure/escalation bookkeeping cleared, so a
+// re-planned node under the same id (a re-plan is a fresh row in practice, but
+// the counter must not leak stale state regardless) never inherits it.
+func TestGater_MaterializeFailureSuccessClearsCounter(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	node := f.planned(t, orch, "1a")
+	f.matFail = true
+
+	for i := 0; i < materializeFailureEscalationTicks-1; i++ {
+		f.w.Tick()
+	}
+	testutil.Equal(t, f.pingCount(), 0) // not yet escalated
+
+	f.matFail = false
+	f.w.Tick() // succeeds this time — materializes
+
+	testutil.Equal(t, len(f.materialized()), 1)
+	f.w.mu.Lock()
+	_, stillCounted := f.w.materializeFailures[node.ID]
+	_, stillEscalated := f.w.escalatedMaterializeFailures[node.ID]
+	f.w.mu.Unlock()
+	testutil.Equal(t, stillCounted, false)
+	testutil.Equal(t, stillEscalated, false)
+}
+
+// TestGater_MaterializeFailureSweptOnNodeRemoval pins sweepMaterializeFailures:
+// once a node leaves the planned set for any reason other than success (here,
+// cancellation), its failure/escalation bookkeeping is discarded rather than
+// growing the map forever.
+func TestGater_MaterializeFailureSweptOnNodeRemoval(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	node := f.planned(t, orch, "1a")
+	f.matFail = true
+
+	f.w.Tick() // one recorded failure, well under threshold
+	f.w.mu.Lock()
+	_, counted := f.w.materializeFailures[node.ID]
+	f.w.mu.Unlock()
+	testutil.Equal(t, counted, true)
+
+	testutil.NoError(t, f.d.CancelHeraPlannedNode(node.ID))
+	f.w.Tick() // node no longer planned; sweep runs
+
+	f.w.mu.Lock()
+	_, stillCounted := f.w.materializeFailures[node.ID]
+	f.w.mu.Unlock()
+	testutil.Equal(t, stillCounted, false)
+}
+
 // TestGater_HoldNoCoordinatorNoPanic covers the holdAndPing path when no
 // coordinator exists to ping (logged, no panic, no ping recorded).
 func TestGater_HoldNoCoordinatorNoPanic(t *testing.T) {
