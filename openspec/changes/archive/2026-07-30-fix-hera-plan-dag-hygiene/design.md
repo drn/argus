@@ -68,11 +68,11 @@ Considered and rejected: auto-archiving a freelance role once its binding ends (
 2. `CancelHeraPlannedNode(343)`, `CancelHeraPlannedNode(358)` — the exact pre-existing store method Bug A's own fix relies on; this migration is effectively "run the same cascade the code fix would have run, had it existed a month ago."
 3. `ArchiveHeraRole(813)`, `ArchiveHeraRole(814)` — pre-existing store method.
 4. `EndHeraBinding(803, endReason)`, `EndHeraBinding(804, endReason)` (or the equivalent store call — see `internal/db/hera.go` for the exact signature) with an end reason describing "task finished, binding never closed."
-5. Node 184 is explicitly excluded — no mutation touches it.
-6. Verify via `sqlite3 -readonly ~/.argus/data.sql`: 343/358 no longer satisfy `ListHeraPlannedNodes`'s WHERE clause; 813/814 have non-null `archived_at`; bindings 803/804 have non-null `ended_at`; role 184 is unchanged.
+5. `CancelHeraPlannedNode(184)` — added after Aaron's 2026-07-30 decision (see Open Questions below): rather than assign role 184 a project, he chose to cancel the node outright. Same store method as step 2; no special-casing needed since a coordinator-approved cancel and a cascade-triggered cancel are indistinguishable at the store layer.
+6. Verify via `sqlite3 -readonly ~/.argus/data.sql`: 343/358/184 no longer satisfy `ListHeraPlannedNodes`'s WHERE clause; 813/814 have non-null `archived_at`; bindings 803/804 have non-null `ended_at`.
 
-**Rollback:** restore from the fresh pre-mutation backup; all four mutations are simple column stamps with no cascading side effects (cancel/archive do not touch bindings; ending a binding does not touch the role), so no compensating script is needed beyond a straight file restore.
+**Rollback:** restore from the fresh pre-mutation backup; all five mutations are simple column stamps with no cascading side effects (cancel/archive do not touch bindings; ending a binding does not touch the role), so no compensating script is needed beyond a straight file restore.
 
 ## Open Questions
 
-- What `argus_project` should role 184 ("2a-team" under "sherlock-mvp") target? Left to Aaron — reported back via `hera_send` as an open question, not resolved in this change.
+- ~~What `argus_project` should role 184 ("2a-team" under "sherlock-mvp") target?~~ **Resolved 2026-07-30**: Aaron decided to cancel the node rather than assign it a project (relayed via the "hera-leaks" coordinator, message #3875). Folded into the Migration Plan's Part 2 cleanup above as step 5 — no code change, since `CancelHeraPlannedNode` already exists and needs no new caller.
