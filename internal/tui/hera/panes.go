@@ -28,6 +28,26 @@ type SessionResolver func(taskID string) agentview.TerminalAdapter
 // mode; left nil in remote mode.
 func (p *HeraPage) SetSessionResolver(fn SessionResolver) { p.resolve = fn }
 
+// RerenderKicker evaluates the shared size-drift kill+resume decision
+// (agent.ShouldKickRerender) for taskID's session at panelCols — the SAME
+// decision the main agent view applies on entry (App.maybeKickRerender), but
+// using the CALLING PANE's own current width rather than the main agent
+// view's. A plain PTY resize (ForceResyncPTY) only re-flows live UI; it
+// cannot repair scrollback already committed at a different width, because
+// cursor-positioning codes baked into earlier PTY output stay wrong once
+// re-emulated at a new size (BUG-073's sibling, reached by a fresh Hera pane
+// bind rather than a resize or a ring-buffer wrap — see
+// gotchas/pty-terminal.md and gotchas/hera-view.md). No-op on a nil/errored
+// task lookup, a dead/absent session, an already-pending kick, a
+// non-resumable backend, a busy agent, or one blocked on a user prompt — see
+// agent.ShouldKickRerender for the full gate list.
+type RerenderKicker func(taskID string, panelCols uint16)
+
+// SetRerenderKicker wires the size-drift kill+resume seam. Called once by the
+// App in local mode (next to SetSessionResolver); left nil in remote mode, so
+// bindPane's guard below is a no-op there exactly like resolve's.
+func (p *HeraPage) SetRerenderKicker(fn RerenderKicker) { p.kickRerender = fn }
+
 // --- the coord-vs-agent session-selection rule (documented in gotchas) -------
 //
 // On every rail selection change applySelection rebinds the two right-hand
@@ -76,16 +96,16 @@ func (p *HeraPage) applySelection() {
 	// orchestrator's coordinator (== the sub-coord's own session for a bridge row),
 	// for a worker it is the selected orchestrator's coordinator.
 	if p.detailsMode {
-		p.bindPane(p.coordPane, &p.coordBound, detailsOrch.CoordTaskID(), "coord")
-		p.bindPane(p.agentPane, &p.agentBound, "", "agent")
+		p.bindPane(p.coordPane, &p.coordBound, &p.coordKickedFor, detailsOrch.CoordTaskID(), "coord")
+		p.bindPane(p.agentPane, &p.agentBound, &p.agentKickedFor, "", "agent")
 		p.details.SetOrch(detailsOrch, p.prMeta)
 		// The Details region stacks the roster over the plan graph, so reproject
 		// this coordinator's plan DAG on every selection (the roster reads straight
 		// from the model; the plan widget needs the scoped node/edge set rebuilt).
 		p.rebuildPlan(detailsOrch)
 	} else {
-		p.bindPane(p.coordPane, &p.coordBound, p.sel.CoordTaskID(), "coord")
-		p.bindPane(p.agentPane, &p.agentBound, p.sel.TaskID(), "agent")
+		p.bindPane(p.coordPane, &p.coordBound, &p.coordKickedFor, p.sel.CoordTaskID(), "coord")
+		p.bindPane(p.agentPane, &p.agentBound, &p.agentKickedFor, p.sel.TaskID(), "agent")
 	}
 }
 
@@ -124,8 +144,11 @@ func (p *HeraPage) detailsOrch() *OrchView {
 // bindPane feeds tp from the runner session for taskID (or unbinds it when
 // taskID is ""). It is a no-op when the bound task is unchanged so the tick's
 // repeated calls don't reset the emulator. bound is the page's record of which
-// task the pane currently shows.
-func (p *HeraPage) bindPane(tp *terminal.TerminalPane, bound *string, taskID, label string) {
+// task the pane currently shows. kickedFor tracks which bound taskID has
+// already had its size-drift kick evaluated (see maybeKickPaneRerender) —
+// reset here on unbind so a later rebind to the SAME task gets a fresh
+// evaluation rather than being silently skipped by a stale marker.
+func (p *HeraPage) bindPane(tp *terminal.TerminalPane, bound, kickedFor *string, taskID, label string) {
 	if *bound == taskID {
 		return
 	}
@@ -135,6 +158,7 @@ func (p *HeraPage) bindPane(tp *terminal.TerminalPane, bound *string, taskID, la
 		tp.ResetVT()
 		tp.SetSession(nil)
 		*bound = ""
+		*kickedFor = ""
 		return
 	}
 	var sess agentview.TerminalAdapter
@@ -162,12 +186,47 @@ func (p *HeraPage) bindPane(tp *terminal.TerminalPane, bound *string, taskID, la
 		// Draw even when the seeded ptyCols already matches; SyncPanes then
 		// applies it off the main thread. This is the CLAUDE.md rule-5 size
 		// alignment — never papered over with Sync.
+		//
+		// The size-drift kill+resume kick (a plain resize can't repair
+		// scrollback already committed at a different width) is deliberately
+		// NOT evaluated here: bindPane runs synchronously in the input
+		// handler, before Draw() has had a chance to give a newly-shown pane
+		// (e.g. the agent pane, hidden while a coordinator was selected in
+		// details mode) its real rect — this pane's own tracked width can
+		// still be 0 (or stale) at this point. See maybeKickPaneRerender,
+		// called from Draw() right after SetRect, once the width is fresh.
 		tp.ForceResyncPTY()
 		uxlog.Log("[hera-view] %s pane feed-start task=%s (live)", label, taskID)
 	} else {
 		uxlog.Log("[hera-view] %s pane bind task=%s (no live session; replay)", label, taskID)
 	}
 	*bound = taskID
+}
+
+// maybeKickPaneRerender evaluates the shared size-drift kill+resume decision
+// (see RerenderKicker) for a pane's currently bound task, using cols from the
+// rect Draw() JUST set on it. Called from each of Draw's four SetRect+Draw
+// call sites (fullscreen coord/agent, split coord/agent) right after
+// SetRect, so cols is always fresh — never bindPane's own possibly-stale
+// tracked width (see bindPane's doc comment for why).
+//
+// kickedFor is a per-pane marker (HeraPage.coordKickedFor / agentKickedFor)
+// preventing a redundant call every frame while the SAME task stays bound and
+// visible; it is NOT the correctness gate against re-kicking (that is
+// App.isRedundantAttach's job, keyed by task ID and width) — it only avoids
+// paying for a DB lookup + runner.Get on every Draw. bindPane resets it to ""
+// on unbind, so a later rebind to the same task still gets a fresh
+// evaluation.
+func (p *HeraPage) maybeKickPaneRerender(bound string, kickedFor *string, cols int) {
+	if p.kickRerender == nil || bound == "" || cols <= 0 || *kickedFor == bound {
+		return
+	}
+	*kickedFor = bound
+	// cols is a terminal column count — bounded by realistic screen widths,
+	// nowhere near uint16's range; gosec G115 flags the conversion but it's
+	// safe (matches the pattern already used for the analogous conversion in
+	// terminalpane.go's ring-wrap catch-up).
+	p.kickRerender(bound, uint16(cols)) //nolint:gosec // see comment
 }
 
 // reconcileSessions (re)resolves the live session for each fed pane on the tick,

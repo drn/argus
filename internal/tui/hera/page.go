@@ -72,7 +72,11 @@ type HeraPage struct {
 	agentPane *terminal.TerminalPane // right: worker/leaf session (terminal mode)
 	details   *DetailsView           // right: coordinator roster (details mode)
 	resolve   SessionResolver        // runner seam; nil in remote mode
-	prMeta    map[string]map[string]string
+	// kickRerender evaluates the shared size-drift kill+resume decision
+	// (agent.ShouldKickRerender, via the App) for a freshly bound pane. Nil
+	// in remote mode, matching resolve — see SetRerenderKicker.
+	kickRerender RerenderKicker
+	prMeta       map[string]map[string]string
 	// needsInput is the authoritative per-task needs-input set the App pushes each
 	// tick (App.needsInputIDs — the SAME idle-gated agent.DetectNeedsInput set the
 	// task list consumes). doRefresh threads it into BuildModel so each live role
@@ -118,6 +122,10 @@ type HeraPage struct {
 	detailsMode bool
 	coordBound  string
 	agentBound  string
+	// coordKickedFor / agentKickedFor track which bound task has already had
+	// its size-drift kick evaluated this binding — see maybeKickPaneRerender.
+	coordKickedFor string
+	agentKickedFor string
 
 	// 6c mutation callbacks. The rail-focus key handler maps keys to these,
 	// passing the current Selection (the multi-binding-disambiguated (role,orch)
@@ -605,6 +613,7 @@ func (p *HeraPage) Draw(screen tcell.Screen) {
 			p.agentX, p.agentW = rx+rw, 0
 			p.coordPane.SetFocused(true)
 			p.coordPane.SetRect(rx, y, rw, h)
+			p.maybeKickPaneRerender(p.coordBound, &p.coordKickedFor, rw)
 			p.coordPane.Draw(screen)
 		case FocusAgent:
 			p.agentX, p.agentW = rx, rw
@@ -614,6 +623,7 @@ func (p *HeraPage) Draw(screen tcell.Screen) {
 			} else {
 				p.agentPane.SetFocused(true)
 				p.agentPane.SetRect(p.agentX, y, rw, h)
+				p.maybeKickPaneRerender(p.agentBound, &p.agentKickedFor, rw)
 				p.agentPane.Draw(screen)
 			}
 		}
@@ -628,6 +638,7 @@ func (p *HeraPage) Draw(screen tcell.Screen) {
 	if coordW >= 2 {
 		p.coordPane.SetFocused(p.focus.State() == FocusCoord)
 		p.coordPane.SetRect(rx, y, coordW, h)
+		p.maybeKickPaneRerender(p.coordBound, &p.coordKickedFor, coordW)
 		p.coordPane.Draw(screen)
 	}
 	if agentW >= 2 {
@@ -636,6 +647,7 @@ func (p *HeraPage) Draw(screen tcell.Screen) {
 		} else {
 			p.agentPane.SetFocused(p.focus.State() == FocusAgent)
 			p.agentPane.SetRect(p.agentX, y, agentW, h)
+			p.maybeKickPaneRerender(p.agentBound, &p.agentKickedFor, agentW)
 			p.agentPane.Draw(screen)
 		}
 	}

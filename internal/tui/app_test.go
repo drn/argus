@@ -409,6 +409,70 @@ func TestMaybeKickRerender_TUIDefersWhenBlockedOnPrompt(t *testing.T) {
 	testutil.Equal(t, sess.stopCalled.Load(), false)
 }
 
+// TestMaybeKickRerenderAtWidth_KicksOnGenuineDrift drives the shared core
+// (extracted from maybeKickRerender so the Hera view can supply its own
+// panel width — see heraKickRerender) all the way to the RerenderKick
+// branch: an idle session with no prompt marker and a width delta past
+// RerenderMargin must be stopped, with pendingRerenderRestart set so the
+// exit-handler resumes it. Regression coverage for the extraction — this
+// exact branch previously had no TUI-level test (only the pure predicate in
+// internal/agent/rerender_test.go and the DeferPrompt branch above).
+func TestMaybeKickRerenderAtWidth_KicksOnGenuineDrift(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // no session log — no prompt marker to find
+	const taskID = "tui-kick"
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	task := &model.Task{ID: taskID, Name: "kick-me", Status: model.StatusInProgress, SessionID: "sid-resume", Worktree: t.TempDir()}
+	sess := &fakeKickSession{idle: true, alive: true, initCols: 20}
+
+	readUI(t, app.tapp, func() { app.maybeKickRerenderAtWidth(task, sess, 120) })
+
+	deadline := time.Now().Add(uiTimeout)
+	stopped := false
+	for time.Now().Before(deadline) {
+		if sess.stopCalled.Load() {
+			stopped = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !stopped {
+		t.Fatal("RerenderKick never called sess.Stop()")
+	}
+	readUI(t, app.tapp, func() {
+		if !app.pendingRerenderRestart[taskID] {
+			t.Error("pendingRerenderRestart not set after a successful kick")
+		}
+	})
+}
+
+// TestHeraKickRerender_UnknownTaskIsNoop proves the Hera-facing entry point
+// no-ops cleanly (no panic, no decision made) when the task ID doesn't
+// resolve — e.g. a stale/torn-down binding racing the callback.
+func TestHeraKickRerender_UnknownTaskIsNoop(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.heraKickRerender("does-not-exist", 88) // must not panic
+}
+
+// TestHeraKickRerender_NoRunnerSessionIsNoop proves a task that exists in the
+// DB but has no live runner session (e.g. a completed/dead task shown in a
+// Hera pane via replay) is a clean no-op — mirrors maybeKickRerenderAtWidth's
+// own nil-session guard, exercised through the Hera entry point specifically.
+func TestHeraKickRerender_NoRunnerSessionIsNoop(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{Name: "dead-in-hera", Status: model.StatusComplete, Worktree: t.TempDir()}
+	testutil.NoError(t, d.Add(task))
+	app.heraKickRerender(task.ID, 88) // no runner session registered — must not panic
+}
+
 func TestHandleSessionExitUI_SkipsTransitionWhenPendingRestart(t *testing.T) {
 	// Regression test for the TUI-during-API-kick race: if a kick-restart is
 	// in flight, handleSessionExitUI must not flip the row to InReview —
