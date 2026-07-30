@@ -753,6 +753,9 @@ func (a *App) buildUI() {
 			}
 			return sess
 		})
+		// Size-drift kill+resume seam (see heraKickRerender) — same runner/db
+		// access as the resolver above, wired unconditionally alongside it.
+		a.heraPage.SetRerenderKicker(a.heraKickRerender)
 	}
 	// Focus-aware status bar: update heraFocus whenever the Hera focus machine
 	// changes state (keyboard or mouse). The statusbar renders different hint
@@ -4108,15 +4111,47 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 	}
 }
 
-// maybeKickRerender detects sessions whose committed scrollback width differs
-// meaningfully from the current panel — either because the session started
-// narrow (the original bug) or because a different viewer (web app, resized
-// terminal) committed at a different width earlier. Triggers a kill+resume
-// cycle so the resumed session re-emits the conversation history at the
-// current panel size. The deferred restart fires in handleSessionExitUI via
-// pendingRerenderRestart. No-op for backends that can't resume (no SessionID),
-// for already-restarted tasks, or when the session is busy (don't kill mid
+// maybeKickRerender is the main-agent-view entry point for the size-drift
+// kill+resume decision — see maybeKickRerenderAtWidth for the mechanism.
+// panelCols comes from the main agent view's own pane rect.
+func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
+	_, panelCols := a.computePTYSize() // safe: GetInnerRect on the main goroutine
+	a.maybeKickRerenderAtWidth(task, sess, panelCols)
+}
+
+// heraKickRerender is the Hera-view entry point for the same decision.
+// Wired into HeraPage via SetRerenderKicker so bindPane can evaluate it right
+// after resolving a session for a (re)bound pane, using THAT PANE's own
+// current width — never the main agent view's, which may not even be active.
+// Resolves task/session by ID itself (mirrors the SetSessionResolver wiring
+// pattern) so internal/tui/hera never needs direct db/runner access.
+func (a *App) heraKickRerender(taskID string, panelCols uint16) {
+	task, err := a.db.Get(taskID)
+	if err != nil || task == nil {
+		return
+	}
+	sess := a.runner.Get(taskID)
+	a.maybeKickRerenderAtWidth(task, sess, panelCols)
+}
+
+// maybeKickRerenderAtWidth detects sessions whose committed scrollback width
+// differs meaningfully from panelCols — either because the session started
+// narrow (the original bug), because a different viewer (web app, resized
+// terminal, or now a Hera pane) committed at a different width earlier, or
+// because a Hera pane is simply narrower than the main agent view. Triggers a
+// kill+resume cycle so the resumed session re-emits the conversation history
+// at panelCols. The deferred restart fires in handleSessionExitUI via
+// pendingRerenderRestart — that hook is task-keyed and already global (driven
+// by the runner's onFinish / the daemon client's exit callback), so it fires
+// regardless of which surface (main agent view or a Hera pane) triggered the
+// stop. No-op for backends that can't resume (no SessionID), for
+// already-restarted tasks, or when the session is busy (don't kill mid
 // tool-call).
+//
+// panelCols is caller-supplied rather than computed here because the two
+// callers read it from different places: the main agent view's own pane rect
+// (maybeKickRerender) or a Hera pane's current width (heraKickRerender) — the
+// two can legitimately differ for the same task.
 //
 // The decision RPCs (`InitialPTYSize`, `IsIdle`) hit the daemon over the
 // Unix socket, so we do them on a background goroutine and dispatch the
@@ -4126,7 +4161,7 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 //
 // Shared predicate with the API's resize handler — see
 // `agent.ShouldKickRerender` for the gating logic.
-func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
+func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandle, panelCols uint16) {
 	if task == nil || sess == nil || !sess.Alive() {
 		return
 	}
@@ -4134,7 +4169,6 @@ func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 		return // a kick is already in flight for this task
 	}
 	taskID := task.ID
-	_, panelCols := a.computePTYSize() // safe: GetInnerRect on the main goroutine
 
 	// Cache gate runs before the SessionID check so Codex tasks (which
 	// have SessionID=="" and can never be kicked) still benefit from the

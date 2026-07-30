@@ -147,6 +147,88 @@ func TestPanes_WorkerSelectionFeedsAgentPane(t *testing.T) {
 	testutil.Equal(t, p.SelectionContext().TaskID(), "t-wkr")
 }
 
+// TestPanes_DrawInvokesRerenderKicker proves Draw calls the wired
+// RerenderKicker with each pane's OWN fresh width — for BOTH the coordinator
+// pane and the worker/agent pane — exactly once per genuine bind, and that a
+// repeated Draw at the SAME bound task does not re-invoke it. The check is
+// evaluated from Draw (not bindPane) specifically because bindPane runs in
+// the input handler, before Draw has had a chance to give a newly-shown pane
+// (e.g. the agent pane, hidden while a coordinator was selected in details
+// mode) a real rect — see maybeKickPaneRerender's doc comment.
+func TestPanes_DrawInvokesRerenderKicker(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+
+	coordSess := &fakeSession{id: "t-coord", alive: true}
+	wkrSess := &fakeSession{id: "t-wkr", alive: true}
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-coord": coordSess, "t-wkr": wkrSess}))
+
+	type kick struct {
+		taskID string
+		cols   uint16
+	}
+	var kicks []kick
+	p.SetRerenderKicker(func(taskID string, cols uint16) {
+		kicks = append(kicks, kick{taskID, cols})
+	})
+	p.Refresh()
+
+	// Select the worker BEFORE any Draw — this is exactly the sequence that
+	// would silently miss the kick if it were evaluated in bindPane instead
+	// of Draw: the agent pane has never been shown yet (details mode, since
+	// Refresh's default selection lands on the coordinator/orch header), so
+	// its tracked width is still zero at bind time.
+	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
+	testutil.Equal(t, p.agentBound, "t-wkr")
+	testutil.Equal(t, p.coordBound, "t-coord")
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(120, 30)
+	p.SetRect(0, 0, 120, 30)
+	p.Draw(sim)
+
+	kicksFor := func(taskID string) []uint16 {
+		var cols []uint16
+		for _, k := range kicks {
+			if k.taskID == taskID {
+				cols = append(cols, k.cols)
+			}
+		}
+		return cols
+	}
+	wkrKicks := kicksFor("t-wkr")
+	coordKicks := kicksFor("t-coord")
+	if len(wkrKicks) != 1 {
+		t.Fatalf("expected exactly one kick check for the worker/agent pane bind, got %d", len(wkrKicks))
+	}
+	if len(coordKicks) != 1 {
+		t.Fatalf("expected exactly one kick check for the coordinator pane bind, got %d", len(coordKicks))
+	}
+	for _, c := range append(wkrKicks, coordKicks...) {
+		if c == 0 {
+			t.Errorf("kick check used cols=0 — pane width wasn't resolved from a real rect")
+		}
+	}
+
+	// A second Draw at the same bound tasks must not re-invoke the kicker.
+	kicks = nil
+	p.Draw(sim)
+	testutil.Equal(t, len(kicks), 0)
+
+	// Unbinding and rebinding to the SAME task must re-evaluate (kickedFor is
+	// reset on unbind) rather than being silently suppressed forever.
+	p.bindPane(p.AgentPane(), &p.agentBound, &p.agentKickedFor, "", "agent")
+	p.bindPane(p.AgentPane(), &p.agentBound, &p.agentKickedFor, "t-wkr", "agent")
+	kicks = nil
+	p.Draw(sim)
+	testutil.Equal(t, len(kicksFor("t-wkr")), 1)
+}
+
 // TestPanes_CoordinatorSelectionShowsDetails is a locked must-have: selecting a
 // coordinator role renders the worker-list Details (no agent terminal) and
 // feeds the HERA pane from the coordinator's session.
@@ -332,7 +414,7 @@ func TestPanes_BindLifecycle(t *testing.T) {
 	testutil.Equal(t, p.AgentPane().Session(), prev)
 
 	// Unbind: bindPane with "" clears the pane.
-	p.bindPane(p.AgentPane(), &p.agentBound, "", "agent")
+	p.bindPane(p.AgentPane(), &p.agentBound, &p.agentKickedFor, "", "agent")
 	testutil.Equal(t, p.agentBound, "")
 	testutil.Nil(t, p.AgentPane().Session())
 }
