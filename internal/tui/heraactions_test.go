@@ -1061,6 +1061,73 @@ func TestSmoke_HeraReattachRestartsSession(t *testing.T) {
 	testutil.Equal(t, started, true)
 }
 
+// TestHandleSessionExitUI_RerenderRestartsWhenViewedViaHeraPane is the BUG-076
+// regression: a size-drift kick's auto-restart (handleSessionExitUI's
+// pendingRerenderRestart branch) used to gate "is the user still watching"
+// on a.mode==modeAgent alone, which is NEVER true while on the Hera tab (it
+// stays modeTaskList with ActiveTab()==TabHera). So a kick fired from a Hera
+// pane (heraKickRerender, BUG-074) always fell through to "user navigated
+// away", leaving the task stuck at InReview with a genuinely-dead session —
+// exactly the "Session not running" false detach reported after ordinary
+// rail navigation. This proves the coordinator pane being bound in the Hera
+// view (no rail navigation away at all) is now sufficient for the kick's
+// exit handler to restart in place instead of settling.
+func TestHandleSessionExitUI_RerenderRestartsWhenViewedViaHeraPane(t *testing.T) {
+	app, d := heraRepoApp(t)
+	orch := seedHeraOrch(t, d, "orch")
+	repo := d.Config().Projects["p"].Path
+	testutil.NoError(t, d.Add(&model.Task{
+		ID: "tc", Name: "tc", Status: model.StatusInProgress, SessionID: "sid-1",
+		Project: "p", Worktree: repo, CreatedAt: time.Now(),
+	}))
+	coord, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: orch, Name: "coord", Kind: db.HeraKindCoordinator, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: coord.ID, ArgusTaskID: "tc", WorktreePath: repo})
+	testutil.NoError(t, err)
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+	t.Cleanup(func() { app.runner.StopAll() })
+
+	sim.InjectKey(tcell.KeyRune, '2', 0) // → Hera tab; orch header (the coordinator) selects
+	syncUI(t, app.tapp)
+
+	// Simulate a size-drift kick that already stopped the session (mirrors what
+	// heraKickRerender's async goroutine does), then run the exit handler —
+	// the SAME path a real kick's Stop() would trigger.
+	var boundToHera bool
+	readUI(t, app.tapp, func() {
+		boundToHera = app.heraPage.IsBoundToTask("tc")
+		app.pendingRerenderRestart["tc"] = true
+		app.handleSessionExitUI("tc", false /* non-clean: kick-induced stop */, false)
+	})
+	if !boundToHera {
+		t.Fatal("expected the coordinator pane bound to tc after selecting the Hera tab")
+	}
+
+	// The restart branch must have fired: status back to InProgress (not left
+	// at InReview) and startSession invoked. Poll since startSession's DB
+	// write happens inline but the process spawn is fire-and-forget.
+	deadline := time.Now().Add(3 * time.Second)
+	restarted := false
+	for time.Now().Before(deadline) {
+		syncUI(t, app.tapp)
+		if got, _ := d.Get("tc"); got != nil && got.Status == model.StatusInProgress {
+			restarted = true
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if !restarted {
+		got, _ := d.Get("tc")
+		status := "?"
+		if got != nil {
+			status = got.Status.String()
+		}
+		t.Fatalf("BUG-076 regression: task did not auto-restart while viewed via the Hera pane (status=%s)", status)
+	}
+}
+
 // --- BUG-017: coord/orchestrator HEADER delete cascades the full subtree ------
 
 // seedHeraRoleOnTask binds a NEW role under orchID to an ALREADY-EXISTING argus

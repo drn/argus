@@ -147,6 +147,35 @@ func TestPanes_WorkerSelectionFeedsAgentPane(t *testing.T) {
 	testutil.Equal(t, p.SelectionContext().TaskID(), "t-wkr")
 }
 
+// TestPanes_IsBoundToTask proves IsBoundToTask recognizes both the
+// coordinator and the selected worker's task as "currently shown by the Hera
+// view" — regardless of which pane has keyboard focus — and rejects an
+// unrelated or empty task ID. The App uses this (via isViewingTaskSession) to
+// decide whether a size-drift kick's exit handler should auto-restart in
+// place instead of letting the task settle at InReview (BUG-076): the
+// coordinator pane is bound the whole time a worker under it is selected, so
+// a live coordinator must read as "bound" even while the rail cursor sits on
+// the worker row.
+func TestPanes_IsBoundToTask(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+
+	coordSess := &fakeSession{id: "t-coord", alive: true}
+	wkrSess := &fakeSession{id: "t-wkr", alive: true}
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-coord": coordSess, "t-wkr": wkrSess}))
+	p.Refresh()
+	testutil.Equal(t, p.IsBoundToTask(""), false)
+
+	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
+	testutil.Equal(t, p.IsBoundToTask("t-wkr"), true)   // agent pane
+	testutil.Equal(t, p.IsBoundToTask("t-coord"), true) // coord pane, unfocused
+	testutil.Equal(t, p.IsBoundToTask("unrelated-task"), false)
+	testutil.Equal(t, p.IsBoundToTask(""), false)
+}
+
 // TestPanes_DrawInvokesRerenderKicker proves Draw calls the wired
 // RerenderKicker with each pane's OWN fresh width — for BOTH the coordinator
 // pane and the worker/agent pane — exactly once per genuine bind, and that a

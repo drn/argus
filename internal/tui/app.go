@@ -1679,6 +1679,35 @@ func (a *App) HandleSessionExit(taskID string, info daemon.ExitInfo) {
 	})
 }
 
+// isViewingTaskSession reports whether the operator is currently watching
+// taskID's live output — either the classic fullscreen agent view, or the
+// native Hera view with taskID bound to one of its two terminal panes
+// (coordinator or agent/worker), regardless of which pane the rail cursor
+// currently selects. Used by handleSessionExitUI to decide whether a
+// size-drift kill+resume kick should auto-restart in place.
+//
+// BUG-076: heraKickRerender (BUG-074) reuses the same pendingRerenderRestart
+// + Stop() mechanism as the classic agent view's maybeKickRerender, but the
+// Hera tab never sets a.mode to modeAgent — it stays modeTaskList with
+// ActiveTab()==TabHera. Gating the restart on modeAgent alone meant EVERY
+// kick fired from a Hera pane (which is nearly every task's first Hera-view
+// bind, since Hera panes are narrower than the main agent view) stopped the
+// session and then always skipped the auto-restart as "user navigated
+// away" — even though the operator was still looking right at it, just
+// through the Hera view. The task settled at InReview and the pane showed
+// "Session not running" until a manual Enter (heraReattach) restarted it.
+// See gotchas/hera-view.md BUG-076.
+func (a *App) isViewingTaskSession(taskID string) bool {
+	a.mu.Lock()
+	viewingAgent := a.mode == modeAgent && a.agentState.TaskID == taskID
+	viewingHeraTab := a.mode == modeTaskList && a.header.ActiveTab() == widget.TabHera
+	a.mu.Unlock()
+	if viewingAgent {
+		return true
+	}
+	return viewingHeraTab && a.heraPage.IsBoundToTask(taskID)
+}
+
 // handleSessionExitUI runs on the tview main goroutine (inside QueueUpdateDraw).
 // Called by both NotifySessionExit (in-process) and HandleSessionExit (daemon).
 // pendingRestart is captured by the caller from a non-RPC source (in-process:
@@ -1825,9 +1854,7 @@ func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool)
 	// settles at InReview and the user can resume it manually later.
 	if !cleanExit && a.pendingRerenderRestart[taskID] {
 		delete(a.pendingRerenderRestart, taskID)
-		a.mu.Lock()
-		stillViewing := a.mode == modeAgent && a.agentState.TaskID == taskID
-		a.mu.Unlock()
+		stillViewing := a.isViewingTaskSession(taskID)
 		if !stillViewing {
 			uxlog.Log("[tui] rerender: user navigated away from task=%s, skipping auto-restart", taskID)
 			a.statusbar.ClearInfo()
