@@ -265,19 +265,81 @@ func TestDetailsPlan_KeyForwardsToWidget(t *testing.T) {
 	testutil.Equal(t, p.Plan().CursorPos().Stage, 0)
 }
 
-// TestHandleDetailsKey_ScrollsRosterBeforePlan: a coordinator with far more
-// agents than a short pane can show must scroll the roster FIRST on
-// j/k/Up/Down — the plan widget's own stage cursor must NOT move while the
-// roster still has room to scroll. Only once the roster is fully scrolled
-// does the SAME keystroke reach the plan widget again (ScrollRoster's false
-// return falls through), so the two never fight over a keypress.
-func TestHandleDetailsKey_ScrollsRosterBeforePlan(t *testing.T) {
+// TestFocusRouting_ArrowKeysStayWithinFocusedRegion is the end-to-end
+// regression guard for the arrow-key focus-routing fix, driven through the
+// real SimulationScreen + full page InputHandler dispatch (planPage/
+// toAgentFocus): while the RAIL is focused, arrow-driven cursor nav and other
+// rail keys (s/S status-step, etc.) behave exactly as before and never touch
+// the plan widget; once focus moves to the Details/plan region (a coordinator
+// selection), arrow keys drive the plan widget's stage cursor exclusively and
+// never move the rail's cursor or the roster's scroll offset — closing the
+// reported "arrow keys meant for the DAG instead move the rail/agent list" gap
+// in both directions.
+func TestFocusRouting_ArrowKeysStayWithinFocusedRegion(t *testing.T) {
+	p := planPage(t)
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
+	h := p.InputHandler()
+
+	// -- Rail focus: existing nav + mutation keys are unaffected by the fix. --
+	testutil.Equal(t, p.Machine().State(), FocusRail)
+	railCursorBefore := p.Rail().CursorIndex()
+	advanced := false
+	p.OnStatusAdvance = func(Selection) { advanced = true }
+	h(tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone), noFocus)
+	testutil.Equal(t, advanced, true)                // rail mutation key still fires
+	testutil.Equal(t, p.Plan().CursorPos().Stage, 0) // plan untouched by a rail-focused key
+	// Down still drives ordinary rail cursor nav (moves onto the orchestrator's
+	// planned-role rows) — unaffected by the fix, which only touches the
+	// Details/plan region's own key routing.
+	h(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Rail().CursorIndex() != railCursorBefore, true)
+	testutil.Equal(t, p.Plan().CursorPos().Stage, 0) // still untouched
+	// Return the cursor to the coordinator header so the Details/plan region
+	// (below) is exercised against the coordinator selection.
+	h(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Rail().CursorIndex(), railCursorBefore)
+	testutil.Equal(t, p.detailsMode, true)
+
+	// -- Move focus onto the Details/plan region (Tab, then Ctrl+Alt+Right). --
+	toAgentFocus(p)
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
+	testutil.Equal(t, p.detailsMode, true)
+
+	// Arrow keys move the plan's stage cursor and leave the rail's cursor
+	// (still parked on the coordinator header) and the roster's scroll offset
+	// untouched.
+	rosterBefore := p.details.rosterScroll
+	h(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Plan().CursorPos().Stage, 1)
+	testutil.Equal(t, p.Rail().CursorIndex(), railCursorBefore)
+	testutil.Equal(t, p.details.rosterScroll, rosterBefore)
+
+	h(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Plan().CursorPos().Stage, 0)
+	testutil.Equal(t, p.Rail().CursorIndex(), railCursorBefore)
+	testutil.Equal(t, p.details.rosterScroll, rosterBefore)
+
+	// Focus itself never moved off the Details/plan region during any of this.
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
+}
+
+// TestHandleDetailsKey_ArrowsAlwaysReachPlanNeverRoster: a coordinator with far
+// more agents than a short pane can show must NOT have its roster steal
+// j/k/Up/Down from the embedded plan widget (BUG: reported "arrow keys used to
+// navigate the DAG instead scroll the agent roster"). Those keys are the plan
+// widget's own stage-nav keys, so they must reach it unconditionally and the
+// roster's scroll offset must never move in response to them, regardless of
+// how many agents overflow the roster panel.
+func TestHandleDetailsKey_ArrowsAlwaysReachPlanNeverRoster(t *testing.T) {
 	d := memDB(t)
 	orch := seedOrch(t, d, "big-orch")
 	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
 	for i := 1; i <= 20; i++ {
 		seedBoundRole(t, d, orch, fmt.Sprintf("agent-%02d", i), db.HeraKindWorker, fmt.Sprintf("t-w%02d", i))
 	}
+	a := seedPlannedRole(t, d, orch, "1a-research")
+	b := seedPlannedRole(t, d, orch, "2a-write")
+	testutil.NoError(t, d.AddHeraBlock(b.ID, a.ID)) // 2a←1a, so the plan has 2 stages to move between
 	p := NewHeraPage(d)
 	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-coord": {id: "t-coord", alive: true}}))
 	p.Refresh()
@@ -300,10 +362,57 @@ func TestHandleDetailsKey_ScrollsRosterBeforePlan(t *testing.T) {
 	h := p.InputHandler()
 	planStage := func() int { return p.Plan().CursorPos().Stage }
 	startStage := planStage()
+	testutil.Equal(t, startStage, 0)
+	for _, key := range []tcell.Key{tcell.KeyDown, tcell.KeyDown, tcell.KeyUp} {
+		before := p.details.rosterScroll
+		h(tcell.NewEventKey(key, 0, tcell.ModNone), noFocus)
+		testutil.Equal(t, p.details.rosterScroll, before) // roster never moves on an arrow key
+		p.Draw(sim)
+	}
+	// j moved the plan cursor down a stage, k moved it back — the roster's
+	// scroll offset stayed put throughout.
+	rosterBefore := p.details.rosterScroll
+	h(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone), noFocus)
+	testutil.Equal(t, planStage(), 1)
+	testutil.Equal(t, p.details.rosterScroll, rosterBefore)
+	h(tcell.NewEventKey(tcell.KeyRune, 'k', tcell.ModNone), noFocus)
+	testutil.Equal(t, planStage(), startStage)
+	testutil.Equal(t, p.details.rosterScroll, rosterBefore)
+}
+
+// TestHandleDetailsKey_PgDnPgUpScrollRoster: PgDn/PgUp are the roster's
+// dedicated scroll keys (moved off j/k/Up/Down, which now belong exclusively
+// to the plan widget — see TestHandleDetailsKey_ArrowsAlwaysReachPlanNeverRoster).
+// The plan widget's stage cursor must not move in response to them.
+func TestHandleDetailsKey_PgDnPgUpScrollRoster(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "big-orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	for i := 1; i <= 20; i++ {
+		seedBoundRole(t, d, orch, fmt.Sprintf("agent-%02d", i), db.HeraKindWorker, fmt.Sprintf("t-w%02d", i))
+	}
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-coord": {id: "t-coord", alive: true}}))
+	p.Refresh()
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	t.Cleanup(sim.Fini)
+	sim.SetSize(80, 50)
+	p.SetRect(0, 0, 80, 50)
+	p.Draw(sim)
+
+	testutil.Equal(t, selectOrchByName(p, "big-orch"), true)
+	toAgentFocus(p)
+	p.Draw(sim)
+
+	h := p.InputHandler()
+	planStage := func() int { return p.Plan().CursorPos().Stage }
+	startStage := planStage()
 	scrolledRoster := false
 	for i := 0; i < 30; i++ { // far more than needed; ScrollRoster clamps at the bound
 		before := p.details.rosterScroll
-		h(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone), noFocus)
+		h(tcell.NewEventKey(tcell.KeyPgDn, 0, tcell.ModNone), noFocus)
 		if p.details.rosterScroll != before {
 			scrolledRoster = true
 		}
@@ -311,10 +420,13 @@ func TestHandleDetailsKey_ScrollsRosterBeforePlan(t *testing.T) {
 	}
 	testutil.Equal(t, scrolledRoster, true)
 	testutil.Equal(t, p.details.rosterScroll, p.details.rosterMaxScroll(len(p.details.workers())))
-	// This fixture has no authored plan (no planned nodes, no edges) — the
-	// plan widget's degenerate empty-plan stage never moves regardless, so
-	// the assertion that matters is that scrolling the roster didn't need the
-	// plan widget's cursor to change AT ALL.
+	testutil.Equal(t, planStage(), startStage) // the plan cursor never moved
+
+	for i := 0; i < 30; i++ {
+		h(tcell.NewEventKey(tcell.KeyPgUp, 0, tcell.ModNone), noFocus)
+		p.Draw(sim)
+	}
+	testutil.Equal(t, p.details.rosterScroll, 0)
 	testutil.Equal(t, planStage(), startStage)
 }
 

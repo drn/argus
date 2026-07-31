@@ -879,17 +879,17 @@ func (p *HeraPage) terminalPaneFocused() bool {
 
 // handleDetailsKey routes keys for a focused Details region (coordinator
 // selected). The region stacks the read-only roster over the embedded plan
-// graph. j/k/Up/Down scroll the roster FIRST when it has more agents than fit
-// (DetailsView.ScrollRoster) — the SAME physical keys the plan widget already
-// binds for stage nav, layered rather than duplicated: once the roster can't
-// move further in the requested direction (or never needed to scroll),
-// ScrollRoster returns false and the key falls through to the plan widget
-// unchanged, so the two never fight over a keystroke. Every other key (h/l,
-// Enter/Space, Esc) always goes straight to the plan widget, the only OTHER
-// interactive surface: nav, Enter/Space (fan-out/collapse a group, drill into
-// a sub-coordinator, or jump to a leaf's agent view via the wired OnEnter
-// callback), and Esc ("back out one level": un-fan a fanned group → drill out
-// → root no-op).
+// graph, and the plan graph is the ONLY interactive surface here — so j/k/
+// Up/Down/h/l/Enter/Space/Esc all go straight to it, unconditionally. The
+// roster scrolls on its OWN dedicated keys (PgUp/PgDn, rosterScrollDelta)
+// instead of sharing the plan widget's stage-nav keys — a prior "layered, not
+// duplicated" design let the roster claim j/k/Up/Down FIRST whenever it had
+// unseen rows, so arrow keys aimed at the DAG graph silently scrolled the
+// agent roster instead until the roster ran out of room to scroll (reported:
+// "pressing Up/Down while trying to navigate the DAG instead scrolls the
+// agent list"). Splitting the keysets removes the contention entirely: arrows
+// always drive the DAG, PgUp/PgDn always drive the roster, and neither can
+// ever steal the other's keystroke. See gotchas/hera-view.md.
 //
 // Esc is ALWAYS forwarded to the widget, which CONSUMES it in every case (see
 // Widget.EscBack); it never jumps to the rail. The operator leaves the pane via
@@ -898,29 +898,24 @@ func (p *HeraPage) terminalPaneFocused() bool {
 // swallow Esc at the root.) The global handler reserves only 1/2/3/q/? — see
 // gotchas/keybindings.md.
 func (p *HeraPage) handleDetailsKey(event *tcell.EventKey, setFocus func(tview.Primitive)) {
-	if delta, ok := rosterScrollDelta(event); ok && p.details.ScrollRoster(delta) {
+	if delta, ok := rosterScrollDelta(event); ok {
+		p.details.ScrollRoster(delta)
 		return
 	}
 	p.plan.InputHandler()(event, setFocus)
 }
 
 // rosterScrollDelta maps a key event to a roster-scroll direction (+1 down,
-// -1 up) using the same j/k/Up/Down keys already bound for plan-stage nav in
-// this region. Any other key (h/l, Enter, Space, Esc, …) is not a scroll key
-// and always falls through to the plan widget.
+// -1 up). PgDn/PgUp are the roster's OWN keys, deliberately disjoint from the
+// plan widget's j/k/Up/Down/h/l stage-and-slot nav (see handleDetailsKey) so
+// the two surfaces never contend for the same keystroke. Any other key is not
+// a scroll key and always falls through to the plan widget.
 func rosterScrollDelta(event *tcell.EventKey) (int, bool) {
 	switch event.Key() {
-	case tcell.KeyDown:
+	case tcell.KeyPgDn:
 		return 1, true
-	case tcell.KeyUp:
+	case tcell.KeyPgUp:
 		return -1, true
-	case tcell.KeyRune:
-		switch event.Rune() {
-		case 'j':
-			return 1, true
-		case 'k':
-			return -1, true
-		}
 	}
 	return 0, false
 }
