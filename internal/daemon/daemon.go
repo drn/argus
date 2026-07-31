@@ -500,6 +500,24 @@ func (d *Daemon) heraSpawnWorker(in mcp.HeraSpawnInput) (*mcp.HeraSpawnResult, e
 	return &mcp.HeraSpawnResult{Task: res.Task, Role: res.Role, Binding: res.Binding}, nil
 }
 
+// heraReviveRole performs the PULL-revive gating+action (add-hera-revive) for
+// the hera_revive MCP tool, injected via SetHeraReviver. The gating sequence
+// lives in the shared hera.ReviveRole primitive (mirrors RecycleCoord's
+// architecture); this method just supplies the real daemon.HeraReviveRunner
+// adapter over d.db + d.runner. See design.md D3 for why the TUI's Enter-key
+// revive (internal/tui/heraactions.go) is NOT routed through this same call —
+// it keeps its own inline implementation, sharing every underlying primitive
+// (agent.BlockedOnPrompt, db.ReviveHeraWorkerToInProgress,
+// SessionRunner.KickRerender/StartOrReattach) but not the top-level orchestration.
+func (d *Daemon) heraReviveRole(in mcp.HeraReviveInput) (string, error) {
+	rr := NewHeraReviveRunner(d.db, d.runner, d.cfgFn)
+	outcome, err := hera.ReviveRole(d.db, rr, in.TaskID, in.IsCoordinator)
+	if err != nil {
+		return "", err
+	}
+	return string(outcome), nil
+}
+
 // heraGaterMaterialize is the gater's Materializer adapter (add-hera-plan-substrate):
 // it binds + starts a pre-created planned role via the shared
 // agent.MaterializeHeraWorker primitive. The gater resolves project / base_branch /
@@ -1081,6 +1099,7 @@ func (d *Daemon) Serve(sockPath string) error {
 		// in place when the native service is wired, and is simply absent here.
 		if cfg.Hera.Enabled {
 			mcpSrv.SetHeraService(hera.New(d.db, d.notifier), d.db, d.heraSpawnWorker)
+			mcpSrv.SetHeraReviver(d.heraReviveRole)
 		}
 		mcpSrv.SetArtifactManager(d.db)
 		mcpSrv.SetProfileResolver(d.db)

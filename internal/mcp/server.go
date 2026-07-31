@@ -83,6 +83,21 @@ type HeraSpawnResult struct {
 // failure (the AfterPersist LIFO-cleanup contract).
 type HeraSpawner func(in HeraSpawnInput) (*HeraSpawnResult, error)
 
+// HeraReviveInput carries a resolved PULL-revive target (add-hera-revive) into
+// the daemon's shared primitive. TaskID is the target role's live-bound argus
+// task; IsCoordinator identifies the TARGET role's kind (not the caller's) —
+// a live coordinator is never auto-restarted.
+type HeraReviveInput struct {
+	TaskID        string
+	IsCoordinator bool
+}
+
+// HeraReviver invokes the daemon's shared PULL-revive primitive
+// (internal/hera.ReviveRole) against the daemon's real runner+DB and returns
+// the resulting hera.ReviveOutcome as a string. Injected via SetHeraReviver;
+// nil when hera is disabled or the daemon did not wire it.
+type HeraReviver func(in HeraReviveInput) (string, error)
+
 // TaskCreator creates a task with worktree and starts an agent session.
 // Same call shape used by daemon.HeadlessCreateTask (the daemon wraps it to
 // avoid an import cycle on the mcp package).
@@ -166,6 +181,7 @@ type Server struct {
 	heraSvc     *hera.Service   // optional; set via SetHeraService
 	heraStore   HeraStore       // optional; set via SetHeraService
 	heraSpawn   HeraSpawner     // optional; set via SetHeraService (born-bound spawn)
+	heraRevive  HeraReviver     // optional; set via SetHeraReviver (PULL-revive, add-hera-revive)
 	profileCfg  ConfigStore     // optional; set via SetProfileResolver
 	createMu    sync.Mutex
 	creating    int // number of in-flight task_create calls
@@ -935,6 +951,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolHeraUnblock(req.ID, params.Arguments)
 	case "hera_plan_node_cancel":
 		return s.toolHeraPlanNodeCancel(req.ID, params.Arguments)
+	case "hera_revive":
+		return s.toolHeraRevive(req.ID, params.Arguments)
 	case "profile_resolve":
 		return s.toolProfileResolve(req.ID, params.Arguments)
 	default:
