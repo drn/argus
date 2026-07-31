@@ -71,9 +71,9 @@ they opt in. Once you're spawned/promoted per the bullets above, everything belo
 ## 3. The coordination tools
 
 All take `cwd`. `orchestrator` is optional with exactly one live binding and **required** with 2+.
-Arg names below are exact — do not invent others. These nine cover bootstrap, messaging, and status;
-the plan-DAG authoring/mutation tools live in the companion `hera-plan` skill (pointer at the end of
-this section).
+Arg names below are exact — do not invent others. These ten cover bootstrap, messaging, status, and
+revive; the plan-DAG authoring/mutation tools live in the companion `hera-plan` skill (pointer at the
+end of this section).
 
 ### Bootstrap / join
 
@@ -148,6 +148,18 @@ this section).
   The gater treats a `failed` blocker as explicitly failed (no need to wait for session death).
   Coordinators/freelancers just update status.
 
+- **`hera_revive(cwd, role_name, [orchestrator])`** — coordinator-only PULL-revive of one role you
+  coordinate. Reach for this when a role you spawned looks stuck — `hera_tree_updates`/`hera_status`
+  show no progress, especially after something like a session-supervisor restart (which SIGHUPs every
+  PTY it owns, leaving a worker dead or suspended). It inspects the role's live session and takes
+  exactly one action: a dead session is restarted in place; a live-but-genuinely-stuck session (idle,
+  NOT parked at a prompt) is kicked (stopped and resumed in place); anything else — busy, blocked on a
+  question, a live coordinator, or a kick already in flight — is left untouched and reported as such
+  (`skipped_busy` / `skipped_blocked_on_prompt` / `skipped_coordinator_live` / `skipped_restart_pending`).
+  This is **pull-only** — nothing calls it automatically, and it can never thrash a session that is
+  actually working or waiting on an answer, since it applies the identical idle+not-blocked gate the
+  TUI's own `Enter`-key revive uses. It targets a DIFFERENT role than your own (self-targeting errors).
+
 - **`hera_tree_updates(cwd, [orchestrator], [since])`** — scan the caller's orchestrator **subtree**
   (nested sub-orchestrators included) for messages since a cursor. Returns **TLDR-only subject lines —
   no bodies** (capped at 200), plus a `next_cursor`. The cursor is stored **per-role** and auto-advances
@@ -220,6 +232,9 @@ or using in-session sub-agents.
   doorbell line.
 - **Want whole-team state?** `hera_tree_updates(cwd=$PWD)`, then `hera_get_messages(ids=[…])` for the
   ones worth reading.
+- **A role looks stuck (no progress, especially after a session-supervisor restart)?** Don't spawn a
+  duplicate worker on a hunch — try `hera_revive(cwd=$PWD, role_name=<name>)` first. It's a safe,
+  idle+not-blocked-gated no-op if the role turns out to be fine, busy, or waiting on a question.
 - **How completion flows back:** a worker finishing sends a closing `hera_send(status="done", …)` — the
   synchronous status apply rolls its task to `in_review` + `ready_to_close`, visible in the rail. A
   worker that cannot complete sends `hera_send(status="failed", …)` — rolls to `in_review` WITHOUT

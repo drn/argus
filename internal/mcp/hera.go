@@ -83,15 +83,17 @@ type HeraStore interface {
 	RollHeraWorkerFailed(taskID string) (bool, error)
 }
 
-// heraToolDefs contains the 16 hera_* tool schemas. The first 9 are ported
+// heraToolDefs contains the 18 hera_* tool schemas. The first 9 are ported
 // verbatim from Hera's daemon.toolDefinitions() — same param names,
 // descriptions, and required lists as the external Hera daemon so agents have an
 // identical surface when running natively. hera_move (fix-hera-join-move-binding)
 // is native-only — the external daemon has no equivalent. The next 3 (hera_plan_node /
 // hera_block / hera_plan) are the native plan-DAG authoring tools
 // (add-hera-plan-substrate); they are coordinator-only like hera_spawn_worker.
-// The last 3 (hera_plan_node_update / hera_unblock / hera_plan_node_cancel) are
-// the plan-mutation verbs (make-hera-plan-living D5).
+// The next 3 (hera_plan_node_update / hera_unblock / hera_plan_node_cancel) are
+// the plan-mutation verbs (make-hera-plan-living D5). The last (hera_revive) is
+// the coordinator-only PULL-revive tool (add-hera-revive); its gating logic
+// lives in the shared internal/hera.ReviveRole primitive.
 var heraToolDefs = []Tool{
 	{
 		Name:        "hera_new_orchestrator",
@@ -208,6 +210,19 @@ var heraToolDefs = []Tool{
 				"request_recycle": map[string]interface{}{"type": "boolean", "description": "When true, records a pending-recycle intent for the caller's task, consumed by the recycle_coord primitive once the session goes idle. Accepted from any hera-bound role kind."},
 			},
 			"required": []string{"cwd", "status"},
+		},
+	},
+	{
+		Name:        "hera_revive",
+		Description: "PULL-revive a hera role this coordinator coordinates. If its session is dead (no live process) it is restarted in place (--session-id resume when the task has one). If it's alive but genuinely stuck (idle, NOT blocked on a user prompt) its session is stopped and resumed in place at its existing size. A live coordinator role, a busy (actively working) role, one parked at a question, or one with a restart already in flight is left untouched and reported as such — this can never thrash a session that is actually working or waiting on an answer. Coordinator-only. Use when hera_status/hera_tree_updates show no progress from a role — e.g. after a session-supervisor restart SIGHUPs its PTY. This is pull/on-demand: nothing calls this automatically.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"cwd":          map[string]interface{}{"type": "string", "description": "Caller's worktree path (use $PWD)"},
+				"role_name":    map[string]interface{}{"type": "string", "description": "Name of the role to revive, within the caller's orchestrator. Must not be the caller's own role."},
+				"orchestrator": map[string]interface{}{"type": "string", "description": "(optional) Disambiguates when the calling task holds multiple live coordinator bindings"},
+			},
+			"required": []string{"cwd", "role_name"},
 		},
 	},
 	{
@@ -388,6 +403,17 @@ func (s *Server) SetHeraService(svc *hera.Service, store HeraStore, spawner Hera
 	s.heraSvc = svc
 	s.heraStore = store
 	s.heraSpawn = spawner
+}
+
+// SetHeraReviver wires the hera_revive MCP tool (add-hera-revive) to the
+// daemon's shared PULL-revive primitive. A new, independent setter (rather
+// than a fourth SetHeraService parameter) matching the Server's existing
+// multi-setter pattern (SetClipboard, SetScheduleManager, ...). Must be
+// called before ListenAndServe, like every other Set* method. reviver may be
+// nil — hera_revive then returns a "revive not configured" error rather than
+// panicking.
+func (s *Server) SetHeraReviver(reviver HeraReviver) {
+	s.heraRevive = reviver
 }
 
 // heraEnabled returns true when the hera service is wired AND task management
@@ -1478,6 +1504,102 @@ func (s *Server) toolHeraStatus(id interface{}, args json.RawMessage) *Response 
 		fmt.Fprintf(&b, "- **request_recycle**: pending\n")
 	}
 	return toolResult(id, b.String())
+}
+
+// toolHeraRevive implements the hera_revive MCP tool (add-hera-revive):
+// coordinator-only PULL-revive of one role the caller coordinates. All gating
+// logic (dead vs. stuck vs. skip) lives in the shared internal/hera.ReviveRole
+// primitive, invoked here via s.heraRevive (wired by the daemon).
+func (s *Server) toolHeraRevive(id interface{}, args json.RawMessage) *Response {
+	if !s.heraEnabled() {
+		return toolError(id, "hera not configured")
+	}
+	if s.heraRevive == nil {
+		return toolError(id, "hera revive not configured (daemon did not wire a reviver)")
+	}
+	var p struct {
+		Cwd          string `json:"cwd"`
+		RoleName     string `json:"role_name"`
+		Orchestrator string `json:"orchestrator"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if p.Cwd == "" {
+		return toolError(id, "cwd is required")
+	}
+	roleName := strings.TrimSpace(p.RoleName)
+	if roleName == "" {
+		return toolError(id, "role_name is required")
+	}
+
+	caller, err := s.resolveCallerRole(p.Cwd, p.Orchestrator)
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+	if caller.role.Kind != db.HeraKindCoordinator {
+		return toolError(id, fmt.Sprintf(
+			"caller role %q has kind %q; only coordinators may revive a role",
+			caller.role.Name, caller.role.Kind))
+	}
+
+	target, errResp := s.resolveOrchRole(id, caller.orch.ID, caller.orch.Name, roleName)
+	if errResp != nil {
+		return errResp
+	}
+	if target.ID == caller.role.ID {
+		return toolError(id, fmt.Sprintf(
+			"role %q is your own (live, calling) role; hera_revive targets a DIFFERENT role you coordinate",
+			target.Name))
+	}
+
+	binding, err := s.heraStore.HeraLiveBindingByRole(target.ID)
+	if errors.Is(err, db.ErrHeraNotFound) {
+		return toolError(id, fmt.Sprintf("role %q has no live binding (never spawned, or ended)", target.Name))
+	}
+	if err != nil {
+		return toolError(id, fmt.Sprintf("resolve binding for role %q: %v", target.Name, err))
+	}
+
+	outcome, err := s.heraRevive(HeraReviveInput{
+		TaskID:        binding.ArgusTaskID,
+		IsCoordinator: target.Kind == db.HeraKindCoordinator,
+	})
+	if err != nil {
+		return toolError(id, fmt.Sprintf("revive %q: %v", target.Name, err))
+	}
+
+	slog.Info("[hera] revive", "orch", caller.orch.Name, "role", target.Name, "task_id", binding.ArgusTaskID, "outcome", outcome)
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n\n", heraReviveOutcomeMessage(outcome, target.Name))
+	fmt.Fprintf(&b, "- **role**: %s\n", target.Name)
+	fmt.Fprintf(&b, "- **argus_task_id**: %s\n", binding.ArgusTaskID)
+	fmt.Fprintf(&b, "- **outcome**: %s\n", outcome)
+	return toolResult(id, b.String())
+}
+
+// heraReviveOutcomeMessage renders a hera.ReviveOutcome (passed as its
+// underlying string via HeraReviver, so the mcp package's function signatures
+// stay independent of internal/hera's type per the HeraSpawner precedent)
+// into a human-readable summary line for the tool response.
+func heraReviveOutcomeMessage(outcome, roleName string) string {
+	switch outcome {
+	case string(hera.ReviveRestartedDead):
+		return fmt.Sprintf("%s's session was dead — restarted it in place.", roleName)
+	case string(hera.ReviveKickedStuck):
+		return fmt.Sprintf("%s was alive but stuck (idle, not blocked) — kicked it to resume.", roleName)
+	case string(hera.ReviveSkippedCoordinatorLive):
+		return fmt.Sprintf("%s is a live coordinator — never auto-revived; navigate to it or message it directly if it needs attention.", roleName)
+	case string(hera.ReviveSkippedBusy):
+		return fmt.Sprintf("%s is alive and actively working — left untouched.", roleName)
+	case string(hera.ReviveSkippedBlocked):
+		return fmt.Sprintf("%s is idle but parked at a question — left untouched to avoid dismissing it.", roleName)
+	case string(hera.ReviveSkippedPending):
+		return fmt.Sprintf("%s already has a revive/restart in flight — no action taken.", roleName)
+	case string(hera.ReviveSkippedNoSessionID):
+		return fmt.Sprintf("%s's session is alive but has no session id to resume — left untouched.", roleName)
+	default:
+		return fmt.Sprintf("%s: outcome %q.", roleName, outcome)
+	}
 }
 
 func (s *Server) toolHeraSpawnWorker(id interface{}, args json.RawMessage) *Response {
