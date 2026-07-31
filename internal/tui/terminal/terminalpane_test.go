@@ -2606,6 +2606,44 @@ func TestReadLiveRebuildHistory_OverflowMerge(t *testing.T) {
 	testutil.Equal(t, total, uint64(6))
 }
 
+// TestReadLiveRebuildHistory_UnrecoverableGapDoesNotSpliceNonContiguousBytes
+// is a regression test for a pre-existing gap the function's own comment
+// already named ("readLoop flushes log writes chunk-by-chunk... rare") but
+// never guarded against: when the on-disk log lags the ring by MORE than the
+// ring's own capacity (a heavy output burst that outpaces a momentarily-slow
+// disk write), the old code clamped the overflow and concatenated the
+// log-covered prefix directly with the ring's overflow tail as if they were
+// contiguous — but they are NOT: the bytes in between were evicted from the
+// ring before the log could catch up, and are unrecoverable from either
+// source right now. Splicing them together feeds x/vt content whose escape
+// sequences and cursor state were never actually adjacent, producing
+// unexplained missing characters/words and garbled symbols at the seam
+// (BUG-076) — distinct from BUG-075 (which fired on a plain incremental
+// feed with no log involved at all) but easy to confuse with it since both
+// show up on an actively-streaming pane with no bind event.
+func TestReadLiveRebuildHistory_UnrecoverableGapDoesNotSpliceNonContiguousBytes(t *testing.T) {
+	setupTaskLog(t, "rebuild-gap", "AAAA") // log covers bytes [0,4)
+	// Ring has wrapped past the gap: it currently holds only the LAST 2
+	// bytes ("YY", representing bytes [8,10)) — bytes [4,8) were evicted
+	// from the ring before the log could catch up, and are unrecoverable
+	// from either source right now.
+	sess := &mockAdapter{alive: true, totalWritten: 10, output: []byte("YY")}
+	raw, total := readLiveRebuildHistory(sess, "rebuild-gap")
+
+	// The caller records `total` as emuFedTotal, so raw and total must
+	// always describe the SAME prefix of the stream — never claim more (or
+	// less) was fed than `raw` actually contains.
+	if uint64(len(raw)) != total {
+		t.Fatalf("raw/total mismatch: len(raw)=%d, total=%d — caller would believe a different amount was fed than actually was", len(raw), total)
+	}
+	if string(raw) != "AAAA" {
+		t.Errorf("raw = %q, want \"AAAA\" — must return only the log-covered prefix, never splice the ring's non-contiguous overflow tail onto it", raw)
+	}
+	if total != 4 {
+		t.Errorf("total = %d, want 4 (logSize) — NOT ringTotal (10), which would overstate progress past an unrecoverable gap and permanently strand it", total)
+	}
+}
+
 // TestReadLiveRebuildHistory_NoLogFallback verifies that a missing log
 // falls back to the ring buffer alone (and uses atomic
 // RecentOutputTailWithTotal to avoid the tail/total race).
