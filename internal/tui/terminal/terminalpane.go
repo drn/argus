@@ -949,11 +949,22 @@ func readLiveRebuildHistory(sess agentview.TerminalAdapter, taskID string) (raw 
 	if overflowInt > len(ringTail) {
 		// Log lags ring by more than the ring's capacity — should not
 		// happen under normal operation (readLoop flushes log writes
-		// chunk-by-chunk). Best effort: concat both. The bytes
-		// [logSize, ringTotal-len(ringTail)) are unrecoverable; emulator
-		// will be missing those, but the next incremental feed brings
-		// it back to live.
-		overflowInt = len(ringTail)
+		// chunk-by-chunk), but a heavy output burst can outpace a
+		// momentarily-slow disk write (BUG-076). The bytes
+		// [logSize, ringTotal-len(ringTail)) are genuinely unrecoverable
+		// from either source right now — clamping overflowInt and
+		// concatenating logRaw directly with ringTail's overflow tail
+		// anyway (the old behavior) would splice two NON-contiguous byte
+		// ranges together with no realignment, corrupting whatever
+		// content or escape sequence straddles the gap (unexplained
+		// missing characters/words, garbled symbols at the seam). Return
+		// just the log-covered prefix and ITS total (logSize, not
+		// ringTotal): the caller records this as emuFedTotal, so
+		// understating it defers the unrecoverable range to the next
+		// Draw's ring-wrap check, which naturally retries the exact
+		// catch-up (readLogRangeForTask) once the log has had a chance to
+		// catch up — never silently losing or mis-splicing content.
+		return logRaw, uint64(logSize) //nolint:gosec // logSize is a file size, always non-negative
 	}
 	extra := ringTail[len(ringTail)-overflowInt:]
 	out := make([]byte, 0, len(logRaw)+len(extra))
