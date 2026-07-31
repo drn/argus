@@ -245,9 +245,9 @@ func (d *DetailsView) Draw(screen tcell.Screen, x, y, w, h int, focused bool) {
 	// rendered as an aligned, SCROLLABLE table: status (icon + label), name,
 	// diligence archetype, resolved model. When there are more agents than
 	// the remaining row budget affords, only a window starting at
-	// d.rosterScroll renders — j/k/Up/Down (routed by HeraPage.handleDetailsKey
-	// before the embedded plan widget's own nav) move the window so every
-	// agent stays reachable instead of the tail being silently cut off.
+	// d.rosterScroll renders — PgUp/PgDn (routed by HeraPage.handleDetailsKey,
+	// its OWN dedicated keys — see that function's doc) move the window so
+	// every agent stays reachable instead of the tail being silently cut off.
 	workers := d.workers()
 	draw(inner.X, fmt.Sprintf("Agents (%d):", len(workers)), theme.StyleDimmed)
 	if len(workers) == 0 {
@@ -361,11 +361,11 @@ func (d *DetailsView) clampRosterScroll(total int) {
 
 // ScrollRoster moves the roster's scroll offset by delta rows (+1 down, -1
 // up), clamped to [0, maxScroll]. Returns false — a no-op — when the roster
-// is already at the requested bound, or hasn't been drawn yet (rosterVisibleRows
-// still zero): the caller (HeraPage.handleDetailsKey) falls through to the
-// embedded plan widget's own navigation in that case, so j/k/Up/Down scroll
-// the roster first and only reach the plan once the roster can't move
-// further in that direction — the two never fight over the same keystroke.
+// is already at the requested bound, or hasn't been drawn yet
+// (rosterVisibleRows still zero). Driven exclusively by PgUp/PgDn
+// (HeraPage.rosterScrollDelta) — disjoint from the plan widget's j/k/Up/Down/
+// h/l stage-and-slot nav keys, so the roster and the plan graph never contend
+// for the same keystroke (see HeraPage.handleDetailsKey).
 func (d *DetailsView) ScrollRoster(delta int) bool {
 	if d.orch == nil || d.rosterVisibleRows <= 0 {
 		return false

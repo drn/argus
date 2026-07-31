@@ -820,25 +820,28 @@ func TestDetails_ClampRosterScrollAboveMax(t *testing.T) {
 	testutil.Equal(t, d.rosterScroll < 100, true)
 }
 
+// TestRosterScrollDelta pins the roster's OWN scroll keyset — PgDn/PgUp —
+// deliberately disjoint from the plan widget's j/k/Up/Down/h/l stage-and-slot
+// nav keys, so the two surfaces never contend for the same keystroke (a
+// reported bug: arrow keys aimed at the DAG graph were being consumed by the
+// roster instead). See HeraPage.handleDetailsKey.
 func TestRosterScrollDelta(t *testing.T) {
-	down, ok := rosterScrollDelta(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	down, ok := rosterScrollDelta(tcell.NewEventKey(tcell.KeyPgDn, 0, tcell.ModNone))
 	testutil.Equal(t, ok, true)
 	testutil.Equal(t, down, 1)
 
-	up, ok := rosterScrollDelta(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone))
+	up, ok := rosterScrollDelta(tcell.NewEventKey(tcell.KeyPgUp, 0, tcell.ModNone))
 	testutil.Equal(t, ok, true)
 	testutil.Equal(t, up, -1)
 
-	jDown, ok := rosterScrollDelta(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone))
-	testutil.Equal(t, ok, true)
-	testutil.Equal(t, jDown, 1)
-
-	kUp, ok := rosterScrollDelta(tcell.NewEventKey(tcell.KeyRune, 'k', tcell.ModNone))
-	testutil.Equal(t, ok, true)
-	testutil.Equal(t, kUp, -1)
-
-	// Any other key (h/l, Enter, Esc, an unrelated rune) is not a scroll key.
+	// Every plan-widget nav key (arrows, j/k/h/l, Enter, Esc) and any other
+	// rune is NOT a roster scroll key — they must reach the plan widget
+	// unconditionally, never the roster.
 	for _, ev := range []*tcell.EventKey{
+		tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone),
+		tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone),
+		tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone),
+		tcell.NewEventKey(tcell.KeyRune, 'k', tcell.ModNone),
 		tcell.NewEventKey(tcell.KeyRune, 'h', tcell.ModNone),
 		tcell.NewEventKey(tcell.KeyRune, 'l', tcell.ModNone),
 		tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone),
