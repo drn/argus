@@ -849,6 +849,50 @@ func ResumeActivityTick(prevTicks int, workingNow bool) (newTicks int, resumed b
 	return newTicks, newTicks >= NeedsInputResumeTicks
 }
 
+// SustainedActivityTick is a grace-tolerant sibling of ResumeActivityTick, used
+// ONLY by the Hera rail's SustainedActive signal (narrow-needs-input-sustained-
+// active) — NOT by NeedsInputClear's resumedOf (BUG-065) or
+// autoClearBlockedHeraRoles' per-role blocked-status auto-clear, both of which
+// keep calling ResumeActivityTick unchanged.
+//
+// ResumeActivityTick's zero-grace design is deliberately strict for BUG-065's
+// coordinator-relay-answer clear path: clearing a still-genuinely-stuck agent is
+// unsafe, so a single non-working tick resets the streak outright (see its own
+// doc comment). But TestResumeActivityTick's "mostly-working... never converges
+// either" case demonstrates that same strictness never lets a genuinely,
+// substantially active agent reach the threshold at all when its content
+// classification is bursty — an occasional single-tick miss amid mostly-working
+// output (ordinary tool-call-to-tool-call pacing), rather than a session that is
+// still genuinely parked — which is exactly the false-positive this signal
+// exists to suppress (ground-truth repro: hera role contrib-classifier, active
+// 7+ minutes / 30k+ tokens, its content classifier alternating "busy"/"blocked on
+// user prompt" within seconds).
+//
+// Mirrors EscalateParkedSelection's BUG-060 one-tick grace exactly: a single
+// ISOLATED miss holds the streak pending the next tick (encoded as a negative
+// sentinel, matching EscalateParkedSelection's own encoding) rather than
+// discarding it outright; a SECOND consecutive miss while already in grace is a
+// genuine break and resets for real. Reuses NeedsInputResumeTicks as the
+// threshold — no new dial.
+func SustainedActivityTick(prevTicks int, workingNow bool) (newTicks int, sustained bool) {
+	if workingNow {
+		streak := prevTicks
+		if streak < 0 {
+			streak = -streak // resume the streak a prior isolated miss held in grace
+		}
+		newTicks = streak + 1
+		return newTicks, newTicks >= NeedsInputResumeTicks
+	}
+	if prevTicks > 0 {
+		// First miss after a streak: hold it in grace rather than discarding —
+		// confirmed or forgiven by the very next tick.
+		return -prevTicks, prevTicks >= NeedsInputResumeTicks
+	}
+	// prevTicks <= 0: already at zero, or this is the SECOND consecutive miss
+	// while already in grace — a genuine break, reset for real.
+	return 0, false
+}
+
 // NeedsInputSettleTicks bounds how many CONSECUTIVE ticks a flagged session
 // must be genuinely RAW-IDLE (Session.IsIdle — no new PTY output, not merely
 // "not currently generating") with NO current needs-input signal in its tail
