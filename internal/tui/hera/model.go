@@ -59,6 +59,17 @@ type RoleView struct {
 	// running" from "dead worker, binding lingering"; the running signal does, and
 	// gates the spinner (IsActive) so a dead worker never animates.
 	SessionRunning bool
+	// SustainedActive reports whether this role's bound task has demonstrated
+	// several CONSECUTIVE ticks of genuine working activity (the App's
+	// agent.ResumeActivityTick debounce — the SAME signal that already clears
+	// the content-scan needs-input flag, no new threshold). Unlike IsActive
+	// (single-tick liveness), this requires SUSTAINED activity before it is
+	// trusted enough to suppress a needs-input signal — see needsInputOwn.
+	// Computed per TASK (not per role), so two roles sharing one live binding's
+	// task ID (a dual-bound sub-coordinator's parent-orchestrator worker hat and
+	// its own child-orchestrator coordinator hat) read the identical value
+	// (narrow-needs-input-sustained-active).
+	SustainedActive bool
 	// SubtreeNeedsInput is the needs-input ROLLUP computed by BuildModel's
 	// post-pass: true when this role itself OR any descendant role in its
 	// orchestration subtree (transitively across BRIDGED sub-orchestrators) needs
@@ -201,7 +212,22 @@ func (r *RoleView) IsActive() bool {
 // row render the "(?)" attention glyph: the authoritative per-task needs-input
 // flag (NeedsInput) OR the role's self-asserted hera `blocked` status. This is
 // the unit the BuildModel rollup aggregates over a subtree.
+//
+// SustainedActive is checked FIRST and, when true, suppresses BOTH of the OR'd
+// sources unconditionally (narrow-needs-input-sustained-active, sharpening
+// BUG-A): "(?)" is meant to mean "genuinely stuck, no path forward without a
+// human," and a role that has demonstrated several consecutive ticks of real
+// working activity is not stuck — regardless of the bound task's workflow
+// status (in_review/ready_to_close) or a stale self-reported `blocked` value
+// left over from an earlier phase or a DIFFERENT hat bound to the same
+// dual-bound task (SustainedActive is computed per TASK, so it is naturally
+// shared across every role bound to that task). A role that is merely IsActive
+// (one tick) but not yet SustainedActive is unaffected — this narrowing applies
+// only once activity is sustained long enough to be trusted.
 func (r *RoleView) needsInputOwn() bool {
+	if r.SustainedActive {
+		return false
+	}
 	return r.NeedsInput || (r.HasStatus && r.Status == db.HeraStatusBlocked)
 }
 
@@ -953,7 +979,15 @@ func (s Selection) KanbanTarget() *OrchView {
 // fine (no role counts as active). It feeds RoleView.SessionRunning so the
 // spinner is suppressed for a dead worker whose binding lingers (BUG-C); it does
 // NOT affect the needs-input rollup.
-func BuildModel(r HeraReader, needsInput map[string]bool, sessionIdle map[string]bool, sessionRunning map[string]bool) (Model, error) {
+// sustainedActive is the authoritative per-task sustained-activity set (the
+// App's agent.ResumeActivityTick debounce — several CONSECUTIVE ticks of
+// demonstrated working content), keyed by live argus task ID. nil/empty is fine
+// (no role is treated as sustained-active). It feeds RoleView.SustainedActive,
+// which suppresses needsInputOwn() unconditionally — regardless of the bound
+// task's workflow status or a stale self-reported `blocked` hera status on any
+// hat bound to the same task (narrow-needs-input-sustained-active, sharpening
+// BUG-A).
+func BuildModel(r HeraReader, needsInput map[string]bool, sessionIdle map[string]bool, sessionRunning map[string]bool, sustainedActive map[string]bool) (Model, error) {
 	var m Model
 	if r == nil {
 		return m, nil
@@ -1039,7 +1073,7 @@ func BuildModel(r HeraReader, needsInput map[string]bool, sessionIdle map[string
 			if role.NukedAt != nil {
 				continue
 			}
-			rv := buildRoleView(r, role, roleToBinding, roleToLatest, heraMeta, taskByID, needsInput, sessionIdle, sessionRunning)
+			rv := buildRoleView(r, role, roleToBinding, roleToLatest, heraMeta, taskByID, needsInput, sessionIdle, sessionRunning, sustainedActive)
 			if role.Kind == db.HeraKindFreelance && role.ArchivedAt == nil && o.ArchivedAt == nil {
 				// Active freelance roles live in their own top-level section.
 				m.Freelance = append(m.Freelance, rv)
@@ -1173,7 +1207,7 @@ func (m *Model) orchSubtreeNeedsInput(orchID int64) bool {
 
 // buildRoleView projects one db.HeraRole into a RoleView, resolving its live
 // binding's task, status row, and ready_to_close flag.
-func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.HeraBinding, roleToLatest map[int64]*db.HeraBinding, heraMeta map[string]map[string]string, taskByID map[string]*model.Task, needsInput map[string]bool, sessionIdle map[string]bool, sessionRunning map[string]bool) RoleView {
+func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.HeraBinding, roleToLatest map[int64]*db.HeraBinding, heraMeta map[string]map[string]string, taskByID map[string]*model.Task, needsInput map[string]bool, sessionIdle map[string]bool, sessionRunning map[string]bool, sustainedActive map[string]bool) RoleView {
 	rv := RoleView{
 		RoleID:       role.ID,
 		OrchID:       role.OrchestratorID,
@@ -1215,6 +1249,14 @@ func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.
 		// does not end on session exit, so rv.Live alone would still spin a dead
 		// worker; gating IsActive on SessionRunning excludes it.
 		rv.SessionRunning = sessionRunning[taskID]
+		// Sustained-active (narrow-needs-input-sustained-active): the App's
+		// per-tick agent.ResumeActivityTick debounce, keyed by live task. Suppresses
+		// needsInputOwn() unconditionally — see RoleView.SustainedActive. Two roles
+		// sharing this SAME taskID (a dual-bound sub-coordinator's parent-orchestrator
+		// worker hat and its own child-orchestrator coordinator hat) read the
+		// identical value, so a stale blocked flag on one hat is suppressed the
+		// moment the shared session demonstrates sustained activity.
+		rv.SustainedActive = sustainedActive[taskID]
 		// Own needs-input from the authoritative App-tick set (keyed by live task).
 		// The App's needsInputIDs scan is content-aware (post-BUG-032/034/035): a
 		// task is in the set only while it shows a CURRENT awaiting-input signal,

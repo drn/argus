@@ -23,7 +23,7 @@ func TestBUG028_PermissionBlockedWorkerRowShowsNeedsInput(t *testing.T) {
 	// at a permission prompt (PTY idle, task not yet finished).
 	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
 
-	m, err := BuildModel(d, map[string]bool{"t-wkr": true}, nil, nil)
+	m, err := BuildModel(d, map[string]bool{"t-wkr": true}, nil, nil, nil)
 	testutil.NoError(t, err)
 
 	wkr := roleByName(t, &m, orch, "wkr")
@@ -46,7 +46,7 @@ func TestBUG028_CoordinatorlessOrchSurfacesSubtreeNeedsInput(t *testing.T) {
 	// Worker only — no coordinator role (e.g. it was nuked).
 	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
 
-	m, err := BuildModel(d, map[string]bool{"t-wkr": true}, nil, nil)
+	m, err := BuildModel(d, map[string]bool{"t-wkr": true}, nil, nil, nil)
 	testutil.NoError(t, err)
 
 	ov := m.OrchByID(orch)
@@ -58,7 +58,7 @@ func TestBUG028_CoordinatorlessOrchSurfacesSubtreeNeedsInput(t *testing.T) {
 	// can genuinely ask a fresh question in that state, so "(?)" must persist.
 	flagged := map[string]bool{"t-wkr": true}
 	testutil.NoError(t, d.SetStatus("t-wkr", model.StatusInReview))
-	m2, err := BuildModel(d, flagged, nil, nil)
+	m2, err := BuildModel(d, flagged, nil, nil, nil)
 	testutil.NoError(t, err)
 	testutil.Equal(t, m2.OrchByID(orch).SubtreeNeedsInput, true)
 
@@ -66,7 +66,7 @@ func TestBUG028_CoordinatorlessOrchSurfacesSubtreeNeedsInput(t *testing.T) {
 	// header rollup clears even though the App still names the task in its set.
 	_, err = d.EndHeraBindingsForTask("t-wkr", "exit")
 	testutil.NoError(t, err)
-	m3, err := BuildModel(d, flagged, nil, nil)
+	m3, err := BuildModel(d, flagged, nil, nil, nil)
 	testutil.NoError(t, err)
 	testutil.Equal(t, m3.OrchByID(orch).SubtreeNeedsInput, false)
 }
@@ -86,7 +86,7 @@ func TestBUG028_BlockedCoordinatorSurfacesEvenWhenTaskComplete(t *testing.T) {
 	// Coordinator task rolled to complete while its session stays alive + blocked.
 	testutil.NoError(t, d.SetStatus("t-coord", model.StatusComplete))
 
-	m, err := BuildModel(d, map[string]bool{"t-coord": true}, nil, nil)
+	m, err := BuildModel(d, map[string]bool{"t-coord": true}, nil, nil, nil)
 	testutil.NoError(t, err)
 	cr := m.OrchByID(orch).CoordRole()
 	testutil.Equal(t, cr.TaskStatus, "complete")
@@ -112,7 +112,7 @@ func TestBUG028_ExitedWorkerStaysCleared(t *testing.T) {
 	_, err := d.EndHeraBindingsForTask("t-wkr", "exit")             // session exited → binding ends
 	testutil.NoError(t, err)
 
-	m, err := BuildModel(d, map[string]bool{"t-wkr": true}, nil, nil) // sticky marker lingers
+	m, err := BuildModel(d, map[string]bool{"t-wkr": true}, nil, nil, nil) // sticky marker lingers
 	testutil.NoError(t, err)
 	testutil.Equal(t, roleByName(t, &m, orch, "wkr").NeedsInput, false)
 	testutil.Equal(t, m.OrchByID(orch).CoordRole().SubtreeNeedsInput, false)

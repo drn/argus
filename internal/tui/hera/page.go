@@ -92,6 +92,13 @@ type HeraPage struct {
 	// BuildModel so a dead worker whose binding lingers stops its spinner
 	// (RoleView.SessionRunning → IsActive false; BUG-C).
 	sessionRunning map[string]bool
+	// sustainedActive is the authoritative per-task sustained-activity set the App
+	// pushes each tick (the same agent.ResumeActivityTick debounce that already
+	// clears the content-scan needs-input flag). doRefresh threads it into
+	// BuildModel so RoleView.SustainedActive can suppress the rail's "(?)" glyph
+	// for a role whose bound task has demonstrated several consecutive ticks of
+	// genuine activity (narrow-needs-input-sustained-active).
+	sustainedActive map[string]bool
 
 	// tierResolver stamps the diligence-tiering readout (AppliedModel/Effort +
 	// ProfileWarning) onto each RoleView during doRefresh. The App wires it (local
@@ -476,6 +483,27 @@ func (p *HeraPage) SetSessionRunning(ids []string) {
 	p.sessionRunning = m
 }
 
+// SetSustainedActive records the task IDs the App classified as sustained-active
+// this tick — several CONSECUTIVE ticks of demonstrated working content
+// (agent.ResumeActivityTick's existing debounce, the same signal that already
+// clears the content-scan needs-input flag). doRefresh threads it into
+// BuildModel so RoleView.SustainedActive can suppress the rail's "(?)" glyph for
+// a genuinely sustained-active role, regardless of the bound task's workflow
+// status or a stale self-reported `blocked` hera status on any hat bound to the
+// same task (narrow-needs-input-sustained-active). Pure setter; the tick
+// already schedules the rebuild. MUST run on the tview thread.
+func (p *HeraPage) SetSustainedActive(ids []string) {
+	if len(ids) == 0 {
+		p.sustainedActive = nil
+		return
+	}
+	m := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		m[id] = true
+	}
+	p.sustainedActive = m
+}
+
 // SetClipboardHint toggles whether the focused terminal pane advertises a
 // staged agent clipboard payload via a `(ctrl+y copy)` border-title affordance.
 // The App refreshes it each tick from the daemon for the focused pane's task
@@ -506,7 +534,7 @@ func (p *HeraPage) Refresh() {
 // remote mode the reader is nil → BuildModel returns an empty model and Draw
 // renders the unavailable banner, so this stays a cheap no-op.
 func (p *HeraPage) doRefresh() {
-	m, err := BuildModel(p.reader, p.needsInput, p.sessionIdle, p.sessionRunning)
+	m, err := BuildModel(p.reader, p.needsInput, p.sessionIdle, p.sessionRunning, p.sustainedActive)
 	if err != nil {
 		uxlog.Log("[hera-view] rail refresh failed: %v", err)
 		return

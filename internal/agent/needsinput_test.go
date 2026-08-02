@@ -702,6 +702,123 @@ func TestResumeActivityTick(t *testing.T) {
 			t.Fatalf("expected no meaningful accumulated credit from sparse working ticks, got %d", ticks)
 		}
 	})
+
+	// narrow-needs-input-sustained-active: reproduces the contrib-classifier
+	// ground-truth finding — a role demonstrably, substantially active for many
+	// minutes (30k+ tokens streamed over 7+ minutes) whose PTY content
+	// nonetheless periodically LOOKS like a parked selection prompt to the
+	// content classifier (ux.log showed this exact task's rerender/revive logic
+	// alternating "busy" / "blocked on user prompt" within seconds, repeatedly).
+	// Unlike the sparse single-utterance-acknowledgment pattern above (clearly
+	// still blocked), this models MOSTLY-working output with only an OCCASIONAL
+	// single-tick miss — the kind of variance ordinary tool-call-to-tool-call
+	// pacing produces from a genuinely active agent, not a re-parking one.
+	t.Run("mostly-working output with occasional single-tick misses never converges either (zero grace period)", func(t *testing.T) {
+		ticks := 0
+		var resumed bool
+		// 40 ticks, one miss every 4th tick (75% "working") — never 5 CONSECUTIVE
+		// working ticks, so under the current zero-grace design this can run
+		// indefinitely without ever crossing NeedsInputResumeTicks.
+		everConverged := false
+		for i := 0; i < 40; i++ {
+			working := i%4 != 3
+			ticks, resumed = ResumeActivityTick(ticks, working)
+			if resumed {
+				everConverged = true
+			}
+		}
+		if everConverged {
+			t.Fatalf("did not expect convergence under the current zero-grace ResumeActivityTick for a mostly-working (miss every 4th tick) pattern — ticks=%d", ticks)
+		}
+	})
+}
+
+// TestSustainedActivityTick pins the grace-tolerant sibling introduced by
+// narrow-needs-input-sustained-active — used ONLY by the Hera rail's
+// SustainedActive signal, never by ResumeActivityTick's existing callers.
+func TestSustainedActivityTick(t *testing.T) {
+	t.Run("a sustained working streak resumes exactly at the threshold, not before (matches ResumeActivityTick)", func(t *testing.T) {
+		ticks := 0
+		var sustained bool
+		for i := 0; i < NeedsInputResumeTicks-1; i++ {
+			ticks, sustained = SustainedActivityTick(ticks, true)
+			testutil.Equal(t, sustained, false)
+		}
+		testutil.Equal(t, ticks, NeedsInputResumeTicks-1)
+		ticks, sustained = SustainedActivityTick(ticks, true)
+		testutil.Equal(t, ticks, NeedsInputResumeTicks)
+		testutil.Equal(t, sustained, true)
+	})
+
+	t.Run("mostly-working output with a miss every 4th tick DOES converge (the fix for finding #3)", func(t *testing.T) {
+		ticks := 0
+		var sustained bool
+		converged := false
+		convergedAtTick := -1
+		for i := 0; i < 40; i++ {
+			working := i%4 != 3
+			ticks, sustained = SustainedActivityTick(ticks, working)
+			if sustained && !converged {
+				converged = true
+				convergedAtTick = i
+			}
+		}
+		if !converged {
+			t.Fatalf("expected SustainedActivityTick to converge on a mostly-working (miss every 4th tick) pattern via its one-tick grace, ticks=%d", ticks)
+		}
+		if convergedAtTick > 10 {
+			t.Fatalf("expected prompt convergence (well under 40 ticks), converged at tick %d", convergedAtTick)
+		}
+	})
+
+	t.Run("a single isolated miss is forgiven — the streak resumes rather than resetting", func(t *testing.T) {
+		ticks := 0
+		ticks, _ = SustainedActivityTick(ticks, true) // 1
+		ticks, _ = SustainedActivityTick(ticks, true) // 2
+		ticks, _ = SustainedActivityTick(ticks, true) // 3
+		ticks, sustained := SustainedActivityTick(ticks, false)
+		if sustained {
+			t.Fatalf("did not expect sustained on the grace tick itself")
+		}
+		// The held streak (3) must resume, not reset to 1, on the very next
+		// working tick.
+		ticks, sustained = SustainedActivityTick(ticks, true)
+		testutil.Equal(t, ticks, 4)
+		testutil.Equal(t, sustained, false)
+		ticks, sustained = SustainedActivityTick(ticks, true)
+		testutil.Equal(t, ticks, 5)
+		testutil.Equal(t, sustained, true)
+	})
+
+	t.Run("two consecutive misses is a genuine break, not grace", func(t *testing.T) {
+		ticks := 0
+		ticks, _ = SustainedActivityTick(ticks, true)  // 1
+		ticks, _ = SustainedActivityTick(ticks, true)  // 2
+		ticks, _ = SustainedActivityTick(ticks, true)  // 3
+		ticks, _ = SustainedActivityTick(ticks, false) // grace (held at -3)
+		ticks, sustained := SustainedActivityTick(ticks, false)
+		testutil.Equal(t, ticks, 0)
+		testutil.Equal(t, sustained, false)
+		// Must start over from 1, not resume the discarded streak.
+		ticks, sustained = SustainedActivityTick(ticks, true)
+		testutil.Equal(t, ticks, 1)
+		testutil.Equal(t, sustained, false)
+	})
+
+	t.Run("a sparse still-genuinely-blocked pattern still never converges despite the grace tolerance", func(t *testing.T) {
+		// Same anti-false-clear pattern as ResumeActivityTick's sparse test above
+		// (a brief single-utterance acknowledgment, still genuinely blocked) — the
+		// one-tick grace must not be generous enough to let this converge.
+		ticks := 0
+		var sustained bool
+		pattern := []bool{false, true, true, false, false, true, false, true, true, false}
+		for _, w := range pattern {
+			ticks, sustained = SustainedActivityTick(ticks, w)
+			if sustained {
+				t.Fatalf("sustained on a sparse/non-continuous working pattern despite grace: %v", pattern)
+			}
+		}
+	})
 }
 
 // TestSettleTick pins the pure step function backing NeedsInputClear's
