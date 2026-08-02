@@ -344,6 +344,21 @@ func (p *HeraPage) FocusedTerminalTaskID() string {
 	return ""
 }
 
+// IsBoundToTask reports whether taskID currently feeds either terminal pane
+// (coordinator or agent/worker) — regardless of which pane has keyboard
+// focus, or whether the agent region is showing Details instead of a
+// terminal. Unlike FocusedTerminalTaskID (scoped to the one focused pane,
+// for the clipboard/copy seam), this answers "is the Hera view showing this
+// task's live output at all" — the App uses it (alongside the classic
+// fullscreen agent view's own TaskID check) to decide whether a
+// size-drift kill+resume kick (heraKickRerender, BUG-074) should
+// auto-restart in place instead of silently letting the task settle at
+// InReview, since the Hera tab never sets the App's mode to its fullscreen
+// agent-view mode (BUG-076 — see gotchas/hera-view.md).
+func (p *HeraPage) IsBoundToTask(taskID string) bool {
+	return taskID != "" && (p.coordBound == taskID || p.agentBound == taskID)
+}
+
 // SelectionContext returns the current (role, orchestrator, task) selection.
 //
 // 6c EXTENSION POINT: this is the clean seam mutations hang off. A mutation

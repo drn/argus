@@ -3089,6 +3089,52 @@ func TestApp_HandleSessionExitUI_FlipToInReview(t *testing.T) {
 	testutil.Equal(t, got.Status, model.StatusInReview)
 }
 
+// TestApp_IsViewingTaskSession is the BUG-076 regression at the unit level:
+// the classic fullscreen agent view (modeAgent) is one way to be "viewing" a
+// task's live session, but the native Hera view — which never sets
+// a.mode to modeAgent, staying modeTaskList with ActiveTab()==TabHera — is
+// another, and the old check only recognized the first. A task bound to
+// either the coordinator or agent/worker pane while the Hera tab is active
+// must count as viewed; an unbound task, a different tab, or a Hera binding
+// while some other tab is active must not.
+func TestApp_IsViewingTaskSession(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	t.Run("classic agent view", func(t *testing.T) {
+		app.mode = modeAgent
+		app.agentState.Reset("t1", "n")
+		testutil.Equal(t, app.isViewingTaskSession("t1"), true)
+		testutil.Equal(t, app.isViewingTaskSession("other"), false)
+	})
+
+	orch := seedHeraOrch(t, d, "orch")
+	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedHeraBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	app.heraPage.Refresh()
+
+	t.Run("hera tab with worker selected: both coord and worker panes count as viewed", func(t *testing.T) {
+		app.mode = modeTaskList
+		app.header.SetTab(widget.TabHera)
+		// The worker's row lives under the orchestrator's fold — expand it first
+		// (mirrors JumpToTask's own ancestor-expand step) so SelectByTaskID finds it.
+		app.heraPage.Rail().EnsureAncestorsExpanded(orch)
+		if !app.heraPage.Rail().SelectByTaskID("t-wkr") {
+			t.Fatal("expected a rail row for t-wkr")
+		}
+		testutil.Equal(t, app.isViewingTaskSession("t-wkr"), true)
+		testutil.Equal(t, app.isViewingTaskSession("t-coord"), true)
+		testutil.Equal(t, app.isViewingTaskSession("unrelated"), false)
+	})
+
+	t.Run("hera binding present but a different tab is active", func(t *testing.T) {
+		app.mode = modeTaskList
+		app.header.SetTab(widget.TabTasks)
+		testutil.Equal(t, app.isViewingTaskSession("t-wkr"), false)
+		testutil.Equal(t, app.isViewingTaskSession("t-coord"), false)
+	})
+}
+
 // TestHandleSessionExitUI_RerenderGateEntersOnNonCleanExit pins that the
 // pendingRerenderRestart gate (now keyed on !cleanExit, not "stopped") is
 // entered for ANY non-clean exit — including a crash (err!=nil), not just a
