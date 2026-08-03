@@ -1271,6 +1271,31 @@ func (s *Server) toolHeraSend(id interface{}, args json.RawMessage) *Response {
 		}
 	}
 
+	// Auto-revive (add-hera-send-auto-revive): a coordinator sending to an
+	// explicitly named, different role gets the exact same PULL-revive
+	// hera_revive already provides — reused verbatim via s.heraRevive /
+	// internal/hera.ReviveRole, no new gating logic. Soft-fail throughout: a
+	// missing binding, a lookup error, a revive error, or heraRevive not
+	// being wired all skip silently (or Warn-log) and never block the send.
+	var reviveOutcome string
+	if caller.role.Kind == db.HeraKindCoordinator && p.To != "" && toRole.ID != caller.role.ID && s.heraRevive != nil {
+		binding, bindErr := heraLiveOrNil(s.heraStore.HeraLiveBindingByRole(toRole.ID))
+		if bindErr != nil {
+			slog.Warn("[hera] send: auto-revive binding lookup failed", "to_role", toRole.Name, "err", bindErr)
+		} else if binding != nil {
+			outcome, reviveErr := s.heraRevive(HeraReviveInput{
+				TaskID:        binding.ArgusTaskID,
+				IsCoordinator: toRole.Kind == db.HeraKindCoordinator,
+			})
+			if reviveErr != nil {
+				slog.Warn("[hera] send: auto-revive failed", "to_role", toRole.Name, "task_id", binding.ArgusTaskID, "err", reviveErr)
+			} else {
+				reviveOutcome = outcome
+				slog.Info("[hera] revive", "orch", caller.orch.Name, "role", toRole.Name, "task_id", binding.ArgusTaskID, "outcome", outcome)
+			}
+		}
+	}
+
 	msg, err := s.heraSvc.Send(caller.role.ID, toRole.ID, p.Body, p.Tldr, p.InReplyTo)
 	if err != nil {
 		switch {
@@ -1300,6 +1325,9 @@ func (s *Server) toolHeraSend(id interface{}, args json.RawMessage) *Response {
 	fmt.Fprintf(&b, "- **message_id**: %d\n", msg.ID)
 	fmt.Fprintf(&b, "- **to**: %s\n", toRole.Name)
 	fmt.Fprintf(&b, "- **delivery_mode**: %s\n", msg.DeliveryMode)
+	if reviveOutcome != "" {
+		fmt.Fprintf(&b, "- **revive**: %s\n", heraReviveOutcomeMessage(reviveOutcome, toRole.Name))
+	}
 	return toolResult(id, b.String())
 }
 
