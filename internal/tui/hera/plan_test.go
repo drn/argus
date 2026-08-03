@@ -28,7 +28,7 @@ func seedPlannedRole(t *testing.T, d *db.DB, orchID int64, name string) *db.Hera
 // RoleView.Planned discriminator (Stage 2).
 func orchViewByName(t *testing.T, d *db.DB, name string) *OrchView {
 	t.Helper()
-	m, err := BuildModel(d, nil, nil, nil)
+	m, err := BuildModel(d, nil, nil, nil, nil)
 	testutil.NoError(t, err)
 	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
 		for i := range sec {
