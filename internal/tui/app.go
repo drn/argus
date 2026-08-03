@@ -304,6 +304,20 @@ type App struct {
 	// advanced for the (usually empty) set of tasks currently holding a live
 	// hera binding with status=="blocked", not every running session.
 	heraBlockedResume map[string]int
+	// sustainedActiveTicks carries the agent.SustainedActivityTick counter (a
+	// grace-tolerant SIBLING of agent.ResumeActivityTick / needsInputResume
+	// above, tracked independently so its one-tick grace tolerance never leaks
+	// into BUG-065's strict resumedOf path): consecutive ticks (tolerating a
+	// single isolated miss) a running task has shown the "working" affordance.
+	sustainedActiveTicks map[string]int
+	// sustainedActiveIDs carries this tick's per-task sustained-activity reading
+	// (agent.SustainedActivityTick, backed by sustainedActiveTicks above) — task
+	// IDs that have shown several CONSECUTIVE (grace-tolerant) ticks of
+	// demonstrated "working" content. Fed to HeraPage.SetSustainedActive each
+	// tick so RoleView.SustainedActive can suppress the rail's "(?)" glyph for a
+	// genuinely sustained-active role, regardless of task status or a stale
+	// self-reported `blocked` hera status (narrow-needs-input-sustained-active).
+	sustainedActiveIDs []string
 	// needsInputScreen re-emulates a session's log tail to the visible screen so
 	// needs-input detection matches the rendered screen, not StripANSI(raw) —
 	// catching fullscreen (alt-screen) prompts whose cursor-addressed glyphs are
@@ -2215,6 +2229,46 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	a.needsInputResume = newResume
 	resumedOf := func(id string) bool { return resumed[id] }
 
+	// Sustained-active pass for the Hera rail's needs-input display gate
+	// (narrow-needs-input-sustained-active): a role whose bound task has
+	// demonstrated several consecutive "working" ticks must never show "(?)",
+	// regardless of task status or a stale self-reported `blocked` hera status
+	// on any hat bound to the same task. Computed once per TASK ID here (not
+	// per role), so two hera roles sharing one live binding's task ID (a
+	// dual-bound sub-coordinator's parent-orchestrator worker hat and its own
+	// child-orchestrator coordinator hat) automatically read the identical
+	// value — no per-role lookup needed.
+	//
+	// Uses agent.SustainedActivityTick — a grace-tolerant SIBLING of
+	// agent.ResumeActivityTick above, not the same call — because
+	// ResumeActivityTick's zero-grace-period design (deliberately strict for
+	// BUG-065's coordinator-relay-answer clear path immediately above) never
+	// lets a genuinely, substantially active-but-bursty session (ordinary
+	// tool-call-to-tool-call pacing occasionally reading as non-"working")
+	// cross the threshold at all — see TestResumeActivityTick's "mostly-working
+	// ... never converges either" case. Tracked in its own tick-counter map
+	// (a.sustainedActiveTicks), independent of a.needsInputResume, so this
+	// grace tolerance never leaks into BUG-065's strict path.
+	newSustainedTicks := make(map[string]int, len(runningIDs))
+	sustainedActiveIDs := make([]string, 0, len(runningIDs))
+	for _, id := range runningIDs {
+		tail := readSessionLogTailBytes(id, detectNeedsInputTailBytes)
+		if len(tail) == 0 {
+			continue
+		}
+		cols, rows := needsInputScreenSize(id)
+		_, working := agent.ContentIdleFingerprint(a.needsInputScreen, tail, cols, rows)
+		ticks, sustained := agent.SustainedActivityTick(a.sustainedActiveTicks[id], working)
+		if ticks != 0 {
+			newSustainedTicks[id] = ticks
+		}
+		if sustained {
+			sustainedActiveIDs = append(sustainedActiveIDs, id)
+		}
+	}
+	a.sustainedActiveTicks = newSustainedTicks
+	a.sustainedActiveIDs = sustainedActiveIDs
+
 	// Settlement pass (BUG-072): independent of candidacy, mirroring the
 	// resumed-activity pass above, but tracking the OPPOSITE resolution shape —
 	// a session that goes genuinely idle with its CURRENT tail no longer
@@ -2640,6 +2694,12 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	// the App's running list so the rail spinner (IsActive) is gated on a RUNNING
 	// session, not just a live binding — a dead worker never animates.
 	a.heraPage.SetSessionRunning(runningIDs)
+	// Sustained-active set (narrow-needs-input-sustained-active): the SAME
+	// per-task agent.ResumeActivityTick reading detectNeedsInputSticky already
+	// computed this tick, exposed so the rail's needs-input gate can suppress a
+	// genuinely sustained-active role's "(?)" glyph regardless of task status
+	// or a stale self-reported `blocked` hera status.
+	a.heraPage.SetSustainedActive(a.sustainedActiveIDs)
 	a.tasklist.SetPRStates(a.readPRStates())
 	a.tasklist.SetHeraWorkers(heraWorkers)
 	a.tasklist.SetHeraCoordinators(heraCoordinators)
