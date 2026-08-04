@@ -48,7 +48,14 @@ const replayScrollbackSize = 50_000
 // (50K lines, built fresh for scroll mode), and paintEmu's anchor-locked
 // steady state reads almost entirely from the main screen buffer, not
 // scrollback. Capping this 10x smaller cuts the per-push shift cost
-// proportionally with no loss of user-visible history.
+// proportionally with no loss of user-visible history for the common case —
+// though it's a mitigation, not a fix of the underlying O(n) eviction:
+// measured on a 500-line synthetic burst feed (Apple M5 Max), the 1K cap
+// costs ~5.0ms vs ~7.9ms at the old 10K default — real output (with ANSI
+// escape parsing overhead) or a slower machine will cost more in absolute
+// terms, and an even larger burst still pays a proportionally larger shift.
+// See gotchas/pty-terminal.md for the resize-taller edge case this trades
+// off, and the residual-cost caveat.
 const liveScrollbackSize = 1_000
 
 // NewDrainedEmulator creates an x/vt SafeEmulator with a goroutine that drains
