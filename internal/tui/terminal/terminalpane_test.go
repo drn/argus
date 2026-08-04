@@ -1611,6 +1611,32 @@ func TestTerminalPane_ReplayEmulatorHasLargeScrollback(t *testing.T) {
 	}
 }
 
+// TestTerminalPane_LiveEmulatorHasBoundedScrollback is the regression guard
+// for the O(n)-eviction input-lag fix (noticing-lag-inputting-text): the LIVE
+// emulator must cap its scrollback well below x/vt's 10K default, since
+// Scrollback.Push evicts via an O(cap) slice shift on every scrolled line
+// once at capacity — a smaller cap bounds that per-push cost. If
+// SetScrollbackSize(liveScrollbackSize) were removed from
+// newTrackedEmulatorWithCallback, this test fails because the live emulator
+// would silently fall back to x/vt's 10K default.
+func TestTerminalPane_LiveEmulatorHasBoundedScrollback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("feeds 2K lines to emulator")
+	}
+	tp := NewTerminalPane()
+	emu := tp.newTrackedEmulator(80, 24)
+
+	// Feed well past liveScrollbackSize (1K) to prove the cap actually holds.
+	for i := 0; i < 2_000; i++ {
+		emu.Write([]byte("line of content for scrollback testing\n")) //nolint:errcheck
+	}
+
+	sbLen := emu.ScrollbackLen()
+	if sbLen > liveScrollbackSize {
+		t.Errorf("live emulator scrollback=%d, want <=%d (SetScrollbackSize regression?)", sbLen, liveScrollbackSize)
+	}
+}
+
 func TestTerminalPane_ScrollUpWhileAlreadyScrolled(t *testing.T) {
 	// Scrolling further up while already scrolled should NOT invalidate
 	// the replay emu — it's still current for the scrolled region.

@@ -28,9 +28,35 @@ import (
 
 // replayScrollbackSize is the scrollback buffer for replay emulators used
 // during scrollback browsing. 50K lines (~2500 screens at 20 rows) allows
-// deep scrolling in long sessions without constant rebuilds. The live emulator
-// uses x/vt's default (10K lines) since only the current viewport matters.
+// deep scrolling in long sessions without constant rebuilds.
 const replayScrollbackSize = 50_000
+
+// liveScrollbackSize bounds the LIVE emulator's own scrollback buffer. x/vt's
+// Scrollback.Push evicts the oldest line via slices.Delete(s.lines, 0, 1) once
+// at capacity — an O(cap) shift of the whole backing slice, paid on every
+// single line that scrolls off the top of the screen. x/vt's own default
+// (10K lines) was never overridden here, so any live session whose output has
+// scrolled past 10K total lines pays that shift on every subsequent scrolled
+// line, on the tview main goroutine inside SafeEmuWrite — the same goroutine
+// that processes keyboard input. A single large output burst that scrolls
+// hundreds of lines in one feed does hundreds of these shifts back-to-back,
+// which is exactly the input-lag symptom reported for a long-running,
+// high-output solo task (noticing-lag-inputting-text).
+//
+// The live emulator doesn't need deep scrollback to begin with: real
+// scroll-back-in-history already goes through the separate replayEmu above
+// (50K lines, built fresh for scroll mode), and paintEmu's anchor-locked
+// steady state reads almost entirely from the main screen buffer, not
+// scrollback. Capping this 10x smaller cuts the per-push shift cost
+// proportionally with no loss of user-visible history for the common case —
+// though it's a mitigation, not a fix of the underlying O(n) eviction:
+// measured on a 500-line synthetic burst feed (Apple M5 Max), the 1K cap
+// costs ~5.0ms vs ~7.9ms at the old 10K default — real output (with ANSI
+// escape parsing overhead) or a slower machine will cost more in absolute
+// terms, and an even larger burst still pays a proportionally larger shift.
+// See gotchas/pty-terminal.md for the resize-taller edge case this trades
+// off, and the residual-cost caveat.
+const liveScrollbackSize = 1_000
 
 // NewDrainedEmulator creates an x/vt SafeEmulator with a goroutine that drains
 // the response pipe. x/vt uses io.Pipe() internally — when the emulator
@@ -1952,6 +1978,7 @@ func (tp *TerminalPane) newTrackedEmulator(cols, rows int) *xvt.SafeEmulator {
 
 func (tp *TerminalPane) newTrackedEmulatorWithCallback(cols, rows int, onCursorVisible func(bool)) *xvt.SafeEmulator {
 	emu := NewDrainedEmulator(cols, rows)
+	emu.Emulator.SetScrollbackSize(liveScrollbackSize)
 	if onCursorVisible != nil {
 		emu.Emulator.SetCallbacks(xvt.Callbacks{
 			CursorVisibility: onCursorVisible,
