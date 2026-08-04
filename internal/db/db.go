@@ -131,6 +131,27 @@ func (d *DB) WithTx(fn func(tx *sql.Tx) error) error {
 	return tx.Commit()
 }
 
+// DataVersion returns SQLite's PRAGMA data_version counter for this
+// connection: a cheap (near-O(1)) fingerprint that changes whenever ANY
+// OTHER connection commits a write to this database file (confirmed to work
+// identically in WAL mode, which this DB always opens with). It is a
+// cache-invalidation probe, not a general change feed: SQLite does NOT bump
+// the value THIS connection reads back for a write made through itself (the
+// documented same-connection blind spot — verified against this driver).
+// Callers that also write through d must pair this with their own explicit
+// invalidation for writes made via this connection rather than relying on
+// the returned value alone. See gotchas/hera-view.md.
+func (d *DB) DataVersion() (int64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	var v int64
+	if err := d.conn.QueryRow(`PRAGMA data_version`).Scan(&v); err != nil {
+		return 0, fmt.Errorf("data_version: %w", err)
+	}
+	return v, nil
+}
+
 // --- Helpers ---
 
 func formatTime(t time.Time) string {

@@ -176,14 +176,45 @@ func TestPanes_IsBoundToTask(t *testing.T) {
 	testutil.Equal(t, p.IsBoundToTask(""), false)
 }
 
-// TestPanes_DrawInvokesRerenderKicker proves Draw calls the wired
+// kickRecorder wires a HeraPage's RerenderKicker to a capturing slice plus a
+// fake, test-controlled clock (see HeraPage.SetKickClock) so debounce tests
+// can advance time deterministically without a real 300ms sleep.
+type kickRecord struct {
+	taskID string
+	cols   uint16
+}
+
+func newKickRecorder(p *HeraPage) (kicks *[]kickRecord, advance func(time.Duration)) {
+	var recorded []kickRecord
+	p.SetRerenderKicker(func(taskID string, cols uint16) {
+		recorded = append(recorded, kickRecord{taskID, cols})
+	})
+	now := time.Now()
+	p.SetKickClock(func() time.Time { return now })
+	return &recorded, func(d time.Duration) { now = now.Add(d) }
+}
+
+func kicksFor(kicks []kickRecord, taskID string) []uint16 {
+	var cols []uint16
+	for _, k := range kicks {
+		if k.taskID == taskID {
+			cols = append(cols, k.cols)
+		}
+	}
+	return cols
+}
+
+// TestPanes_DrawInvokesRerenderKicker proves Draw evaluates the wired
 // RerenderKicker with each pane's OWN fresh width — for BOTH the coordinator
-// pane and the worker/agent pane — exactly once per genuine bind, and that a
-// repeated Draw at the SAME bound task does not re-invoke it. The check is
-// evaluated from Draw (not bindPane) specifically because bindPane runs in
-// the input handler, before Draw has had a chance to give a newly-shown pane
-// (e.g. the agent pane, hidden while a coordinator was selected in details
-// mode) a real rect — see maybeKickPaneRerender's doc comment.
+// pane and the worker/agent pane — but debounces the actual invocation: the
+// FIRST Draw after a genuine bind only arms the pending kick (KickDebounce
+// design), it does not fire immediately. Only a LATER Draw, once the dwell
+// has elapsed for the SAME bound task, actually invokes the kicker, exactly
+// once. The check is evaluated from Draw (not bindPane) specifically because
+// bindPane runs in the input handler, before Draw has had a chance to give a
+// newly-shown pane (e.g. the agent pane, hidden while a coordinator was
+// selected in details mode) a real rect — see maybeKickPaneRerender's doc
+// comment.
 func TestPanes_DrawInvokesRerenderKicker(t *testing.T) {
 	d := memDB(t)
 	orch := seedOrch(t, d, "orch")
@@ -194,15 +225,7 @@ func TestPanes_DrawInvokesRerenderKicker(t *testing.T) {
 	wkrSess := &fakeSession{id: "t-wkr", alive: true}
 	p := NewHeraPage(d)
 	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-coord": coordSess, "t-wkr": wkrSess}))
-
-	type kick struct {
-		taskID string
-		cols   uint16
-	}
-	var kicks []kick
-	p.SetRerenderKicker(func(taskID string, cols uint16) {
-		kicks = append(kicks, kick{taskID, cols})
-	})
+	kicks, advance := newKickRecorder(p)
 	p.Refresh()
 
 	// Select the worker BEFORE any Draw — this is exactly the sequence that
@@ -221,41 +244,155 @@ func TestPanes_DrawInvokesRerenderKicker(t *testing.T) {
 	p.SetRect(0, 0, 120, 30)
 	p.Draw(sim)
 
-	kicksFor := func(taskID string) []uint16 {
-		var cols []uint16
-		for _, k := range kicks {
-			if k.taskID == taskID {
-				cols = append(cols, k.cols)
-			}
-		}
-		return cols
-	}
-	wkrKicks := kicksFor("t-wkr")
-	coordKicks := kicksFor("t-coord")
+	// First Draw after a genuine bind only ARMS the dwell — no kick yet.
+	testutil.Equal(t, len(*kicks), 0)
+
+	// Advance the clock past the dwell and draw again: the SAME tasks are
+	// still bound, so the kick fires now, exactly once per pane.
+	advance(KickDebounce)
+	p.Draw(sim)
+
+	wkrKicks := kicksFor(*kicks, "t-wkr")
+	coordKicks := kicksFor(*kicks, "t-coord")
 	if len(wkrKicks) != 1 {
-		t.Fatalf("expected exactly one kick check for the worker/agent pane bind, got %d", len(wkrKicks))
+		t.Fatalf("expected exactly one kick for the worker/agent pane bind, got %d", len(wkrKicks))
 	}
 	if len(coordKicks) != 1 {
-		t.Fatalf("expected exactly one kick check for the coordinator pane bind, got %d", len(coordKicks))
+		t.Fatalf("expected exactly one kick for the coordinator pane bind, got %d", len(coordKicks))
 	}
 	for _, c := range append(wkrKicks, coordKicks...) {
 		if c == 0 {
-			t.Errorf("kick check used cols=0 — pane width wasn't resolved from a real rect")
+			t.Errorf("kick used cols=0 — pane width wasn't resolved from a real rect")
 		}
 	}
 
-	// A second Draw at the same bound tasks must not re-invoke the kicker.
-	kicks = nil
+	// A further Draw at the same bound tasks must not re-invoke the kicker.
+	*kicks = nil
 	p.Draw(sim)
-	testutil.Equal(t, len(kicks), 0)
+	testutil.Equal(t, len(*kicks), 0)
 
 	// Unbinding and rebinding to the SAME task must re-evaluate (kickedFor is
-	// reset on unbind) rather than being silently suppressed forever.
-	p.bindPane(p.AgentPane(), &p.agentBound, &p.agentKickedFor, "", "agent")
-	p.bindPane(p.AgentPane(), &p.agentBound, &p.agentKickedFor, "t-wkr", "agent")
-	kicks = nil
+	// reset on unbind) rather than being silently suppressed forever — but it
+	// still goes through the dwell again.
+	p.bindPane(p.AgentPane(), &p.agentBound, &p.agentKickedFor, &p.agentKickPending, "", "agent")
+	p.bindPane(p.AgentPane(), &p.agentBound, &p.agentKickedFor, &p.agentKickPending, "t-wkr", "agent")
+	*kicks = nil
 	p.Draw(sim)
-	testutil.Equal(t, len(kicksFor("t-wkr")), 1)
+	testutil.Equal(t, len(kicksFor(*kicks, "t-wkr")), 0) // armed, not yet fired
+	advance(KickDebounce)
+	p.Draw(sim)
+	testutil.Equal(t, len(kicksFor(*kicks, "t-wkr")), 1)
+}
+
+// TestPanes_KickDebounce_FastTraversalNeverKicks is the kick-storm regression:
+// a fast multi-row rail traversal (Cmd+Arrow across several rows) rebinds the
+// agent pane to a DIFFERENT task on every hop, none of them staying bound for
+// the full debounce dwell. None of the transiently-bound tasks should ever be
+// kicked — each hop's pending kick must be discarded, un-fired, by the next
+// hop's rebind.
+func TestPanes_KickDebounce_FastTraversalNeverKicks(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	for _, name := range []string{"a", "b", "c"} {
+		seedBoundRole(t, d, orch, name, db.HeraKindWorker, "t-"+name)
+	}
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{
+		"t-a": {id: "t-a", alive: true},
+		"t-b": {id: "t-b", alive: true},
+		"t-c": {id: "t-c", alive: true},
+	}))
+	kicks, advance := newKickRecorder(p)
+	p.Refresh()
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(120, 30)
+	p.SetRect(0, 0, 120, 30)
+
+	// Hop across all three rows in quick succession, well under the dwell
+	// between each hop — exactly a fast Cmd+Arrow traversal.
+	for _, name := range []string{"a", "b", "c"} {
+		testutil.Equal(t, selectRoleByName(p, name), true)
+		p.Draw(sim)
+		advance(KickDebounce / 10)
+	}
+
+	testutil.Equal(t, len(*kicks), 0)
+
+	// Confirm the mechanism isn't just permanently wedged: staying on the
+	// LAST row past the dwell still kicks it.
+	advance(KickDebounce)
+	p.Draw(sim)
+	testutil.Equal(t, len(kicksFor(*kicks, "t-c")) >= 1, true)
+	testutil.Equal(t, len(kicksFor(*kicks, "t-a")), 0)
+	testutil.Equal(t, len(kicksFor(*kicks, "t-b")), 0)
+}
+
+// TestPanes_KickDebounce_DwellAndStayStillKicks proves the anti-corruption
+// kick is not silently lost — only delayed — for the legitimate case: a rail
+// selection that stays put past the dwell still fires exactly once.
+func TestPanes_KickDebounce_DwellAndStayStillKicks(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-wkr": {id: "t-wkr", alive: true}}))
+	kicks, advance := newKickRecorder(p)
+	p.Refresh()
+	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(120, 30)
+	p.SetRect(0, 0, 120, 30)
+
+	p.Draw(sim) // arms
+	testutil.Equal(t, len(*kicks), 0)
+	advance(KickDebounce)
+	p.Draw(sim) // fires
+	testutil.Equal(t, len(kicksFor(*kicks, "t-wkr")), 1)
+}
+
+// TestPanes_KickDebounce_UnbindMidDwellThenRebindSameTask proves an unbind
+// that happens mid-dwell doesn't let a rebind to the SAME task fire the kick
+// any earlier than a fresh dwell would — bindPane's unbind path resets
+// kickedFor, and the rebind's taskID comparison in maybeKickPaneRerender is
+// what re-arms pending, so the dwell always restarts cleanly rather than
+// firing on stale pending state (design.md Decision 2).
+func TestPanes_KickDebounce_UnbindMidDwellThenRebindSameTask(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-wkr": {id: "t-wkr", alive: true}}))
+	kicks, advance := newKickRecorder(p)
+	p.Refresh()
+	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(120, 30)
+	p.SetRect(0, 0, 120, 30)
+
+	p.Draw(sim) // arms against t-wkr
+	advance(KickDebounce / 2)
+
+	// Unbind, then immediately rebind to the SAME task mid-dwell.
+	p.bindPane(p.AgentPane(), &p.agentBound, &p.agentKickedFor, &p.agentKickPending, "", "agent")
+	p.bindPane(p.AgentPane(), &p.agentBound, &p.agentKickedFor, &p.agentKickPending, "t-wkr", "agent")
+
+	// Only half the ORIGINAL dwell has elapsed — not yet due.
+	p.Draw(sim)
+	testutil.Equal(t, len(*kicks), 0)
+
+	// A full dwell past the rebind fires exactly once.
+	advance(KickDebounce)
+	p.Draw(sim)
+	testutil.Equal(t, len(kicksFor(*kicks, "t-wkr")), 1)
 }
 
 // TestPanes_CoordinatorSelectionShowsDetails is a locked must-have: selecting a
@@ -443,7 +580,7 @@ func TestPanes_BindLifecycle(t *testing.T) {
 	testutil.Equal(t, p.AgentPane().Session(), prev)
 
 	// Unbind: bindPane with "" clears the pane.
-	p.bindPane(p.AgentPane(), &p.agentBound, &p.agentKickedFor, "", "agent")
+	p.bindPane(p.AgentPane(), &p.agentBound, &p.agentKickedFor, &p.agentKickPending, "", "agent")
 	testutil.Equal(t, p.agentBound, "")
 	testutil.Nil(t, p.AgentPane().Session())
 }

@@ -403,6 +403,56 @@ func TestDB_PruneCompleted_NoneToRemove(t *testing.T) {
 	}
 }
 
+// TestDB_DataVersion pins the cross-connection cache-invalidation contract
+// DataVersion exists for (see gotchas/hera-view.md and
+// openspec/changes/fix-hera-tick-and-kick-perf/design.md Decision 4): a write
+// through a DIFFERENT connection to the same file bumps the value THIS
+// connection reads, a write through THIS SAME connection does NOT (the
+// documented same-connection blind spot — verified against modernc.org/sqlite
+// under the exact WAL DSN Open uses), and the value is stable across repeated
+// reads when nothing wrote in between. Uses two real file-backed *DB
+// instances (t.TempDir()-backed, never touching real ~/.argus/) since
+// OpenInMemory's `:memory:` DSN gives each connection its own private
+// database — cross-connection visibility can't be exercised there.
+func TestDB_DataVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.sql")
+
+	d1, err := Open(path)
+	testutil.NoError(t, err)
+	defer func() { _ = d1.Close() }()
+	d2, err := Open(path)
+	testutil.NoError(t, err)
+	defer func() { _ = d2.Close() }()
+
+	before, err := d2.DataVersion()
+	testutil.NoError(t, err)
+
+	testutil.NoError(t, d1.Add(&model.Task{Name: "t1"}))
+
+	after, err := d2.DataVersion()
+	testutil.NoError(t, err)
+	if after == before {
+		t.Fatalf("expected data_version to change after a cross-connection write, both = %d", before)
+	}
+
+	// Stable across repeated reads with no intervening write.
+	stable1, err := d2.DataVersion()
+	testutil.NoError(t, err)
+	stable2, err := d2.DataVersion()
+	testutil.NoError(t, err)
+	testutil.Equal(t, stable1, stable2)
+
+	// Same-connection blind spot: d1's own next write does not change what
+	// d1 itself reads back.
+	sameBefore, err := d1.DataVersion()
+	testutil.NoError(t, err)
+	testutil.NoError(t, d1.Add(&model.Task{Name: "t2"}))
+	sameAfter, err := d1.DataVersion()
+	testutil.NoError(t, err)
+	testutil.Equal(t, sameAfter, sameBefore)
+}
+
 func TestDB_TaskPersistence(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "data.sql")

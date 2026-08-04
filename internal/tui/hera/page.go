@@ -1,6 +1,10 @@
 package hera
 
 import (
+	"maps"
+	"time"
+
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/keymap"
 	"github.com/drn/argus/internal/tui/planview"
 	"github.com/drn/argus/internal/tui/terminal"
@@ -99,6 +103,31 @@ type HeraPage struct {
 	// for a role whose bound task has demonstrated several consecutive ticks of
 	// genuine activity (narrow-needs-input-sustained-active).
 	sustainedActive map[string]bool
+	// tasks is the App's already-fetched full task snapshot this tick
+	// (App.tasks), set via SetTasks. doRefresh wraps the reader with it so
+	// BuildModel's Tasks() call is served from here instead of a second,
+	// redundant fetch of the same data refreshTasksWithIDs already performed
+	// this tick — see gotchas/hera-view.md. tasksKnown distinguishes "never
+	// supplied" (nil tasks is ambiguous with a genuinely empty task list) so
+	// a caller/test that never calls SetTasks still gets BuildModel's
+	// original self-fetch behavior, unchanged.
+	tasks      []*model.Task
+	tasksKnown bool
+
+	// --- tick change-detection gate (fix-hera-tick-and-kick-perf) ---
+	//
+	// fpKnown/lastFingerprint/lastNeedsInput/lastSessionIdle/
+	// lastSessionRunning/lastSustainedActive cache the state observed at the
+	// LAST full rebuild, so shouldRebuild can cheaply prove "nothing that
+	// could affect the rendered rail has changed" and doRefresh can skip
+	// BuildModel+SetModel entirely. See shouldRebuild/markRebuilt and
+	// design.md Decision 4.
+	fpKnown             bool
+	lastFingerprint     int64
+	lastNeedsInput      map[string]bool
+	lastSessionIdle     map[string]bool
+	lastSessionRunning  map[string]bool
+	lastSustainedActive map[string]bool
 
 	// tierResolver stamps the diligence-tiering readout (AppliedModel/Effort +
 	// ProfileWarning) onto each RoleView during doRefresh. The App wires it (local
@@ -133,6 +162,13 @@ type HeraPage struct {
 	// its size-drift kick evaluated this binding — see maybeKickPaneRerender.
 	coordKickedFor string
 	agentKickedFor string
+	// coordKickPending / agentKickPending are the armed-but-unfired kick-
+	// debounce state per pane (see kickPending, maybeKickPaneRerender).
+	coordKickPending kickPending
+	agentKickPending kickPending
+	// kickNow overrides the kick-debounce clock in tests (SetKickClock); nil
+	// in production, where kickClockNow falls back to time.Now.
+	kickNow func() time.Time
 
 	// 6c mutation callbacks. The rail-focus key handler maps keys to these,
 	// passing the current Selection (the multi-binding-disambiguated (role,orch)
@@ -504,6 +540,31 @@ func (p *HeraPage) SetSustainedActive(ids []string) {
 	p.sustainedActive = m
 }
 
+// SetTasks records the App's already-fetched full task snapshot for this
+// tick (App.tasks — the same list refreshTasksWithIDs fetched moments ago for
+// the plain task list). doRefresh reuses it instead of paying for a second,
+// redundant full-table fetch inside BuildModel. Pure setter; MUST run on the
+// tview thread. Never calling this (remote mode, or a test that constructs a
+// HeraPage without wiring it) leaves BuildModel's own self-fetch behavior
+// completely unchanged.
+func (p *HeraPage) SetTasks(tasks []*model.Task) {
+	p.tasks = tasks
+	p.tasksKnown = true
+}
+
+// tasksReader wraps a HeraReader and serves a pre-fetched task snapshot from
+// Tasks() instead of the wrapped reader's own fetch — see SetTasks. Every
+// other HeraReader method passes through unchanged via interface embedding.
+// Constructed transiently at the BuildModel call site (never stored back
+// into HeraPage.reader itself), so it never interferes with dbFingerprint's
+// type-assertion against the original, unwrapped reader.
+type tasksReader struct {
+	HeraReader
+	tasks []*model.Task
+}
+
+func (r *tasksReader) Tasks() ([]*model.Task, error) { return r.tasks, nil }
+
 // SetClipboardHint toggles whether the focused terminal pane advertises a
 // staged agent clipboard payload via a `(ctrl+y copy)` border-title affordance.
 // The App refreshes it each tick from the daemon for the focused pane's task
@@ -524,8 +585,16 @@ func (p *HeraPage) ClipboardHint() bool { return p.clipReady }
 func (p *HeraPage) ScheduleRefresh() { p.refresher.Schedule() }
 
 // Refresh forces an immediate rail rebuild (used on tab entry so the rail is
-// fresh the instant the tab opens). MUST run on the tview thread.
+// fresh the instant the tab opens, and by every hera-mutation handler via
+// App.heraRefresh). "Forces" means it — InvalidateChangeGate runs first, so
+// doRefresh's change-detection gate (see shouldRebuild) never silently turns
+// this into a no-op, even for a caller whose preceding write went through the
+// SAME store connection this page reads from (PRAGMA data_version's
+// documented same-connection blind spot — see design.md Decision 5). Callers
+// that only want a rebuild WHEN something changed should call ScheduleRefresh
+// instead, which is subject to the gate. MUST run on the tview thread.
 func (p *HeraPage) Refresh() {
+	p.InvalidateChangeGate()
 	p.refresher.Schedule()
 	p.refresher.Flush()
 }
@@ -534,7 +603,17 @@ func (p *HeraPage) Refresh() {
 // remote mode the reader is nil → BuildModel returns an empty model and Draw
 // renders the unavailable banner, so this stays a cheap no-op.
 func (p *HeraPage) doRefresh() {
-	m, err := BuildModel(p.reader, p.needsInput, p.sessionIdle, p.sessionRunning, p.sustainedActive)
+	if !p.shouldRebuild() {
+		uxlog.Log("[hera-view] rail refresh skipped: no change since last rebuild (fingerprint=%d)", p.lastFingerprint)
+		return
+	}
+	start := time.Now()
+
+	reader := p.reader
+	if reader != nil && p.tasksKnown {
+		reader = &tasksReader{HeraReader: reader, tasks: p.tasks}
+	}
+	m, err := BuildModel(reader, p.needsInput, p.sessionIdle, p.sessionRunning, p.sustainedActive)
 	if err != nil {
 		uxlog.Log("[hera-view] rail refresh failed: %v", err)
 		return
@@ -561,9 +640,88 @@ func (p *HeraPage) doRefresh() {
 	// pointers are stale — re-derive and rebind (task IDs usually unchanged, so
 	// bindPane is a no-op and the emulators are preserved).
 	p.applySelection()
-	uxlog.Log("[hera-view] rail refreshed: pinned=%d active=%d archived=%d freelance=%d (remote=%v)",
-		len(m.Pinned), len(m.Active), len(m.Archived), len(m.Freelance), p.remote)
+	p.markRebuilt()
+	uxlog.Log("[hera-view] rail refreshed: pinned=%d active=%d archived=%d freelance=%d (remote=%v) took=%s",
+		len(m.Pinned), len(m.Active), len(m.Archived), len(m.Freelance), p.remote, time.Since(start).Round(time.Microsecond))
 }
+
+// dataVersioner is implemented by *db.DB (checked via a type assertion, not
+// added to the HeraReader interface itself, so test fakes and the remote nil
+// reader are unaffected). See db.DB.DataVersion.
+type dataVersioner interface {
+	DataVersion() (int64, error)
+}
+
+// dbFingerprint returns the underlying store's cheap change-fingerprint, or
+// (0, false) when the reader doesn't support one (remote mode's nil reader,
+// or a test HeraReader fake) — shouldRebuild always treats that as "changed"
+// so the gate never suppresses a rebuild it cannot prove is safe to skip.
+func (p *HeraPage) dbFingerprint() (int64, bool) {
+	dv, ok := p.reader.(dataVersioner)
+	if !ok {
+		return 0, false
+	}
+	v, err := dv.DataVersion()
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+// shouldRebuild reports whether doRefresh's full BuildModel+SetModel pass is
+// worth paying for: true on the very first call (no prior snapshot to compare
+// against), whenever the reader's cheap DB fingerprint is unsupported or has
+// moved since the last rebuild, or whenever any of the four per-tick runtime
+// maps that also feed the model (needsInput/sessionIdle/sessionRunning/
+// sustainedActive) differs from the snapshot taken at the last rebuild. Those
+// four are bounded by LIVE/ACTIVE session count, not total history, so
+// comparing them is cheap even when the DB fingerprint is stable — gating on
+// DB state alone would freeze the rail's spinner/needs-input glyphs whenever
+// the DB is quiet but agents are still actively producing output (see
+// gotchas/hera-view.md and design.md Decision 4).
+func (p *HeraPage) shouldRebuild() bool {
+	if !p.fpKnown {
+		return true
+	}
+	fp, hasFP := p.dbFingerprint()
+	if !hasFP || fp != p.lastFingerprint {
+		return true
+	}
+	return !maps.Equal(p.needsInput, p.lastNeedsInput) ||
+		!maps.Equal(p.sessionIdle, p.lastSessionIdle) ||
+		!maps.Equal(p.sessionRunning, p.lastSessionRunning) ||
+		!maps.Equal(p.sustainedActive, p.lastSustainedActive)
+}
+
+// markRebuilt snapshots the state a just-completed rebuild was based on, for
+// the NEXT shouldRebuild call to compare against. The four runtime maps are
+// stored by reference, not deep-cloned: every SetXxx setter always assigns a
+// freshly-allocated map (or nil) rather than mutating one in place (confirmed
+// by reading all four), so the map this rebuild read is never subsequently
+// mutated out from under the stored snapshot — the NEXT tick's setter call
+// replaces p.needsInput etc. with an entirely new map object instead.
+func (p *HeraPage) markRebuilt() {
+	p.fpKnown = true
+	if fp, ok := p.dbFingerprint(); ok {
+		p.lastFingerprint = fp
+	}
+	p.lastNeedsInput = p.needsInput
+	p.lastSessionIdle = p.sessionIdle
+	p.lastSessionRunning = p.sessionRunning
+	p.lastSustainedActive = p.sustainedActive
+}
+
+// InvalidateChangeGate forces the NEXT shouldRebuild call to return true
+// regardless of what the DB fingerprint reports. PRAGMA data_version (the
+// fingerprint source) does not change what THIS connection reads back after
+// a write made through itself (SQLite's documented same-connection blind
+// spot — see db.DB.DataVersion) — App.heraRefresh calls this right alongside
+// its existing forced Refresh() after every interactive hera mutation, so a
+// local write is never silently missed by the gate on the next tick, even
+// though the mutating user already sees their own change instantly via that
+// same forced Refresh() (which bypasses this gate entirely — see design.md
+// Decision 5).
+func (p *HeraPage) InvalidateChangeGate() { p.fpKnown = false }
 
 // Draw computes the three-region layout and paints each region, covering the
 // full bounding rect (DrawBorderedPanel / FillArea) so no stale cells survive —
@@ -641,7 +799,7 @@ func (p *HeraPage) Draw(screen tcell.Screen) {
 			p.agentX, p.agentW = rx+rw, 0
 			p.coordPane.SetFocused(true)
 			p.coordPane.SetRect(rx, y, rw, h)
-			p.maybeKickPaneRerender(p.coordBound, &p.coordKickedFor, rw)
+			p.maybeKickPaneRerender(p.coordBound, &p.coordKickedFor, rw, &p.coordKickPending)
 			p.coordPane.Draw(screen)
 		case FocusAgent:
 			p.agentX, p.agentW = rx, rw
@@ -651,7 +809,7 @@ func (p *HeraPage) Draw(screen tcell.Screen) {
 			} else {
 				p.agentPane.SetFocused(true)
 				p.agentPane.SetRect(p.agentX, y, rw, h)
-				p.maybeKickPaneRerender(p.agentBound, &p.agentKickedFor, rw)
+				p.maybeKickPaneRerender(p.agentBound, &p.agentKickedFor, rw, &p.agentKickPending)
 				p.agentPane.Draw(screen)
 			}
 		}
@@ -666,7 +824,7 @@ func (p *HeraPage) Draw(screen tcell.Screen) {
 	if coordW >= 2 {
 		p.coordPane.SetFocused(p.focus.State() == FocusCoord)
 		p.coordPane.SetRect(rx, y, coordW, h)
-		p.maybeKickPaneRerender(p.coordBound, &p.coordKickedFor, coordW)
+		p.maybeKickPaneRerender(p.coordBound, &p.coordKickedFor, coordW, &p.coordKickPending)
 		p.coordPane.Draw(screen)
 	}
 	if agentW >= 2 {
@@ -675,7 +833,7 @@ func (p *HeraPage) Draw(screen tcell.Screen) {
 		} else {
 			p.agentPane.SetFocused(p.focus.State() == FocusAgent)
 			p.agentPane.SetRect(p.agentX, y, agentW, h)
-			p.maybeKickPaneRerender(p.agentBound, &p.agentKickedFor, agentW)
+			p.maybeKickPaneRerender(p.agentBound, &p.agentKickedFor, agentW, &p.agentKickPending)
 			p.agentPane.Draw(screen)
 		}
 	}

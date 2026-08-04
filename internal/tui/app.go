@@ -2559,6 +2559,10 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 		return
 	}
 	a.tasks = tasks
+	// Feed the Hera rail's own model rebuild from the snapshot just fetched
+	// above, so it doesn't pay for a second, redundant full-table fetch of
+	// the same data (see gotchas/hera-view.md).
+	a.heraPage.SetTasks(a.tasks)
 	// Snapshot the previous needs-input set before we overwrite it. The
 	// sticky pass below uses this to carry forward detections that have
 	// fallen out of idleIDs — Claude's prompt UI emits periodic animation

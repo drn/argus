@@ -45,6 +45,12 @@ func heraGoSafe(label string, fn func()) {
 // main thread; the only slow op (spawn) is dispatched to a goroutine.
 
 // heraRefresh rebuilds the rail immediately after a mutation and repaints.
+// HeraPage.Refresh() (called below) always forces the rebuild — it
+// invalidates doRefresh's change-detection gate itself before flushing, so a
+// mutation just written through a.db (invisible to the tick's OWN next
+// PRAGMA data_version read — SQLite's documented same-connection blind spot,
+// see design.md Decision 5) is never silently missed here or on the tick
+// immediately following.
 func (a *App) heraRefresh() {
 	a.heraPage.Refresh()
 	a.forceRedraw("hera mutation")
