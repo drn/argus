@@ -1,6 +1,8 @@
 package hera
 
 import (
+	"time"
+
 	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/tui/keyenc"
 	"github.com/drn/argus/internal/tui/terminal"
@@ -96,16 +98,16 @@ func (p *HeraPage) applySelection() {
 	// orchestrator's coordinator (== the sub-coord's own session for a bridge row),
 	// for a worker it is the selected orchestrator's coordinator.
 	if p.detailsMode {
-		p.bindPane(p.coordPane, &p.coordBound, &p.coordKickedFor, detailsOrch.CoordTaskID(), "coord")
-		p.bindPane(p.agentPane, &p.agentBound, &p.agentKickedFor, "", "agent")
+		p.bindPane(p.coordPane, &p.coordBound, &p.coordKickedFor, &p.coordKickPending, detailsOrch.CoordTaskID(), "coord")
+		p.bindPane(p.agentPane, &p.agentBound, &p.agentKickedFor, &p.agentKickPending, "", "agent")
 		p.details.SetOrch(detailsOrch, p.prMeta)
 		// The Details region stacks the roster over the plan graph, so reproject
 		// this coordinator's plan DAG on every selection (the roster reads straight
 		// from the model; the plan widget needs the scoped node/edge set rebuilt).
 		p.rebuildPlan(detailsOrch)
 	} else {
-		p.bindPane(p.coordPane, &p.coordBound, &p.coordKickedFor, p.sel.CoordTaskID(), "coord")
-		p.bindPane(p.agentPane, &p.agentBound, &p.agentKickedFor, p.sel.TaskID(), "agent")
+		p.bindPane(p.coordPane, &p.coordBound, &p.coordKickedFor, &p.coordKickPending, p.sel.CoordTaskID(), "coord")
+		p.bindPane(p.agentPane, &p.agentBound, &p.agentKickedFor, &p.agentKickPending, p.sel.TaskID(), "agent")
 	}
 }
 
@@ -147,8 +149,13 @@ func (p *HeraPage) detailsOrch() *OrchView {
 // task the pane currently shows. kickedFor tracks which bound taskID has
 // already had its size-drift kick evaluated (see maybeKickPaneRerender) —
 // reset here on unbind so a later rebind to the SAME task gets a fresh
-// evaluation rather than being silently skipped by a stale marker.
-func (p *HeraPage) bindPane(tp *terminal.TerminalPane, bound, kickedFor *string, taskID, label string) {
+// evaluation rather than being silently skipped by a stale marker. pending is
+// the paired kick-debounce state (see kickPending); it is ALSO reset to its
+// zero value on unbind — without this, a rebind to the SAME task after an
+// unbind would compare equal to the stale pending.taskID and keep the OLD
+// (possibly long-past) deadline, firing the kick immediately instead of
+// dwelling afresh.
+func (p *HeraPage) bindPane(tp *terminal.TerminalPane, bound, kickedFor *string, pending *kickPending, taskID, label string) {
 	if *bound == taskID {
 		return
 	}
@@ -159,6 +166,7 @@ func (p *HeraPage) bindPane(tp *terminal.TerminalPane, bound, kickedFor *string,
 		tp.SetSession(nil)
 		*bound = ""
 		*kickedFor = ""
+		*pending = kickPending{}
 		return
 	}
 	var sess agentview.TerminalAdapter
@@ -203,6 +211,31 @@ func (p *HeraPage) bindPane(tp *terminal.TerminalPane, bound, kickedFor *string,
 	*bound = taskID
 }
 
+// KickDebounce is the wall-clock dwell maybeKickPaneRerender waits, once a
+// bound pane's width first crosses agent.RerenderMargin, before it actually
+// invokes the wired RerenderKicker. Hera's own layout swings a coordinator/
+// agent pane between full-width (fullscreen/Details mode) and roughly
+// half-width (split mode) on ORDINARY RAIL NAV ALONE — no fullscreen toggle
+// or terminal resize needed — so crossing the margin on every hop of a rapid
+// Cmd+Arrow traversal binds several distinct tasks in quick succession. Each
+// kick is a real Session.Stop()+restart+full-conversation replay, so without
+// a dwell a fast multi-row traversal bursts many of these back to back (the
+// "kick storm" — see gotchas/hera-view.md). 300ms is comfortably longer than
+// a single keystroke-to-Draw round trip yet short enough that a genuine
+// dwell-and-stay still kicks promptly.
+const KickDebounce = 300 * time.Millisecond
+
+// kickPending tracks an armed-but-unfired size-drift kick candidate for one
+// pane (HeraPage.coordKickPending / agentKickPending). The zero value means
+// nothing is pending. cols is updated on every Draw so the eventual kick (if
+// it fires) uses the LATEST observed width, not the width from the moment
+// the dwell first armed.
+type kickPending struct {
+	taskID   string
+	cols     int
+	deadline time.Time
+}
+
 // maybeKickPaneRerender evaluates the shared size-drift kill+resume decision
 // (see RerenderKicker) for a pane's currently bound task, using cols from the
 // rect Draw() JUST set on it. Called from each of Draw's four SetRect+Draw
@@ -210,24 +243,59 @@ func (p *HeraPage) bindPane(tp *terminal.TerminalPane, bound, kickedFor *string,
 // SetRect, so cols is always fresh — never bindPane's own possibly-stale
 // tracked width (see bindPane's doc comment for why).
 //
+// The actual kickRerender call is debounced by KickDebounce (see its doc
+// comment): the first call that sees a newly-bound task (pending.taskID !=
+// bound) arms pending with a fresh deadline instead of firing immediately.
+// Only a LATER call, once the dwell has elapsed AND the SAME task is still
+// bound, actually invokes kickRerender. A rebind to a DIFFERENT task before
+// the dwell elapses re-arms pending against the new task, discarding the old
+// one un-fired — this is what suppresses the kick storm from a fast rail
+// traversal. bindPane ALSO resets pending to its zero value on unbind: without
+// that, a rebind to the SAME task after an intervening unbind would compare
+// equal to the stale pending.taskID and keep the OLD deadline, firing
+// immediately instead of dwelling afresh — caught by
+// TestPanes_KickDebounce_UnbindMidDwellThenRebindSameTask (see design.md
+// Decision 2).
+//
 // kickedFor is a per-pane marker (HeraPage.coordKickedFor / agentKickedFor)
-// preventing a redundant call every frame while the SAME task stays bound and
-// visible; it is NOT the correctness gate against re-kicking (that is
-// App.isRedundantAttach's job, keyed by task ID and width) — it only avoids
-// paying for a DB lookup + runner.Get on every Draw. bindPane resets it to ""
-// on unbind, so a later rebind to the same task still gets a fresh
-// evaluation.
-func (p *HeraPage) maybeKickPaneRerender(bound string, kickedFor *string, cols int) {
+// preventing a redundant evaluation every frame once the kick has actually
+// fired for the current bind; it is NOT the correctness gate against
+// re-kicking (that is App.isRedundantAttach's job, keyed by task ID and
+// width) — it only avoids paying for a DB lookup + runner.Get on every Draw
+// after the kick already fired. bindPane resets it to "" on unbind, so a
+// later rebind to the same task still gets a fresh evaluation.
+func (p *HeraPage) maybeKickPaneRerender(bound string, kickedFor *string, cols int, pending *kickPending) {
 	if p.kickRerender == nil || bound == "" || cols <= 0 || *kickedFor == bound {
 		return
+	}
+	now := p.kickClockNow()
+	if pending.taskID != bound {
+		*pending = kickPending{taskID: bound, deadline: now.Add(KickDebounce)}
+	}
+	pending.cols = cols
+	if now.Before(pending.deadline) {
+		return // still dwelling
 	}
 	*kickedFor = bound
 	// cols is a terminal column count — bounded by realistic screen widths,
 	// nowhere near uint16's range; gosec G115 flags the conversion but it's
 	// safe (matches the pattern already used for the analogous conversion in
 	// terminalpane.go's ring-wrap catch-up).
-	p.kickRerender(bound, uint16(cols)) //nolint:gosec // see comment
+	p.kickRerender(bound, uint16(pending.cols)) //nolint:gosec // see comment
 }
+
+// kickClockNow returns the current time for the kick debounce, defaulting to
+// time.Now and overridable via SetKickClock (test seam).
+func (p *HeraPage) kickClockNow() time.Time {
+	if p.kickNow != nil {
+		return p.kickNow()
+	}
+	return time.Now()
+}
+
+// SetKickClock overrides the kick-debounce clock (test seam) — mirrors
+// Refresher.SetNow. Production code never calls this.
+func (p *HeraPage) SetKickClock(fn func() time.Time) { p.kickNow = fn }
 
 // reconcileSessions (re)resolves the live session for each fed pane on the tick,
 // mirror of the main agent view's tick re-resolution. MUST run on the tview main
