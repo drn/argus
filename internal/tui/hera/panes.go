@@ -40,10 +40,19 @@ func (p *HeraPage) SetSessionResolver(fn SessionResolver) { p.resolve = fn }
 // re-emulated at a new size (BUG-073's sibling, reached by a fresh Hera pane
 // bind rather than a resize or a ring-buffer wrap — see
 // gotchas/pty-terminal.md and gotchas/hera-view.md). No-op on a nil/errored
-// task lookup, a dead/absent session, an already-pending kick, a
-// non-resumable backend, a busy agent, or one blocked on a user prompt — see
-// agent.ShouldKickRerender for the full gate list.
-type RerenderKicker func(taskID string, panelCols uint16)
+// task lookup, a dead/absent session, an already-pending kick, or a
+// non-resumable backend.
+//
+// A busy agent or one blocked on a user prompt (agent.RerenderDeferBusy /
+// RerenderDeferPrompt) is NOT a terminal outcome: the decision resolves
+// asynchronously (an RPC round-trip dispatched via QueueUpdateDraw, well
+// after this call returns), and rerender.go's own doc comment on
+// RerenderDeferBusy requires the caller to "retry on the next opportunity."
+// onDeferred is invoked (later, on the tview main goroutine) exactly when
+// that happens, so the Hera-side caller can re-arm and try again — see
+// maybeKickPaneRerender and BUG-077 in gotchas/hera-view.md. Called with nil
+// for outcomes that need no retry (fired, skipped, unresumable).
+type RerenderKicker func(taskID string, panelCols uint16, onDeferred func())
 
 // SetRerenderKicker wires the size-drift kill+resume seam. Called once by the
 // App in local mode (next to SetSessionResolver); left nil in remote mode, so
@@ -225,6 +234,18 @@ func (p *HeraPage) bindPane(tp *terminal.TerminalPane, bound, kickedFor *string,
 // dwell-and-stay still kicks promptly.
 const KickDebounce = 300 * time.Millisecond
 
+// KickRetryInterval is the wall-clock dwell maybeKickPaneRerender waits
+// before retrying a kick that the App deferred (agent.RerenderDeferBusy /
+// RerenderDeferPrompt — see RerenderKicker's onDeferred). Deliberately much
+// longer than KickDebounce: the initial dwell only has to survive a single
+// fast rail traversal, but a busy agent can legitimately stay busy for the
+// entire remainder of a long tool call — retrying at the same 300ms cadence
+// would re-issue the decision RPCs (IsIdle/InitialPTYSize) and repeat the
+// "rerender deferred" uxlog line every 300ms for the whole busy stretch
+// (BUG-077). 10s keeps retry pressure on the daemon negligible while still
+// catching the agent going idle well within a session's lifetime.
+const KickRetryInterval = 10 * time.Second
+
 // kickPending tracks an armed-but-unfired size-drift kick candidate for one
 // pane (HeraPage.coordKickPending / agentKickPending). The zero value means
 // nothing is pending. cols is updated on every Draw so the eventual kick (if
@@ -258,12 +279,28 @@ type kickPending struct {
 // Decision 2).
 //
 // kickedFor is a per-pane marker (HeraPage.coordKickedFor / agentKickedFor)
-// preventing a redundant evaluation every frame once the kick has actually
-// fired for the current bind; it is NOT the correctness gate against
-// re-kicking (that is App.isRedundantAttach's job, keyed by task ID and
-// width) — it only avoids paying for a DB lookup + runner.Get on every Draw
-// after the kick already fired. bindPane resets it to "" on unbind, so a
-// later rebind to the same task still gets a fresh evaluation.
+// preventing a redundant evaluation every frame while the current bind's
+// decision is still outstanding OR already resolved with nothing left to do;
+// it is NOT the correctness gate against re-kicking (that is
+// App.isRedundantAttach's job, keyed by task ID and width) — it only avoids
+// paying for a DB lookup + runner.Get on every Draw. bindPane resets it to ""
+// on unbind, so a later rebind to the same task still gets a fresh
+// evaluation.
+//
+// BUG-077: kickedFor must NOT be sticky across a DEFERRED outcome
+// (agent.RerenderDeferBusy / RerenderDeferPrompt). rerender.go's own doc
+// comment on RerenderDeferBusy requires the caller to "retry on the next
+// opportunity" — a pane bound while its agent is busy (exactly "mid active
+// streaming," the common case) would otherwise never get a second chance at
+// the kill+resume for the rest of that bind's lifetime, leaving it exposed to
+// Hera's own resize churn (see KickDebounce's doc comment) with only a plain
+// SIGWINCH — which cannot repair scrollback already committed at a different
+// width — for as long as the pane stays bound. The onDeferred callback fires
+// later, asynchronously, on the tview main goroutine (via QueueUpdateDraw)
+// once the App resolves the decision; it re-arms kickedFor/pending for a
+// retry after KickRetryInterval, guarded on kickedFor still naming THIS
+// bind's task (a rebind — same task or different — already reset kickedFor
+// itself and must win over a late-arriving stale callback).
 func (p *HeraPage) maybeKickPaneRerender(bound string, kickedFor *string, cols int, pending *kickPending) {
 	if p.kickRerender == nil || bound == "" || cols <= 0 || *kickedFor == bound {
 		return
@@ -277,11 +314,18 @@ func (p *HeraPage) maybeKickPaneRerender(bound string, kickedFor *string, cols i
 		return // still dwelling
 	}
 	*kickedFor = bound
+	deferredFor := bound
 	// cols is a terminal column count — bounded by realistic screen widths,
 	// nowhere near uint16's range; gosec G115 flags the conversion but it's
 	// safe (matches the pattern already used for the analogous conversion in
 	// terminalpane.go's ring-wrap catch-up).
-	p.kickRerender(bound, uint16(pending.cols)) //nolint:gosec // see comment
+	p.kickRerender(bound, uint16(pending.cols), func() { //nolint:gosec // see comment
+		if *kickedFor != deferredFor {
+			return // superseded by a rebind — don't clobber its fresh state
+		}
+		*kickedFor = ""
+		*pending = kickPending{taskID: deferredFor, deadline: p.kickClockNow().Add(KickRetryInterval)}
+	})
 }
 
 // kickClockNow returns the current time for the kick debounce, defaulting to
