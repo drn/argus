@@ -429,7 +429,7 @@ func TestMaybeKickRerenderAtWidth_KicksOnGenuineDrift(t *testing.T) {
 	task := &model.Task{ID: taskID, Name: "kick-me", Status: model.StatusInProgress, SessionID: "sid-resume", Worktree: t.TempDir()}
 	sess := &fakeKickSession{idle: true, alive: true, initCols: 20}
 
-	readUI(t, app.tapp, func() { app.maybeKickRerenderAtWidth(task, sess, 120) })
+	readUI(t, app.tapp, func() { app.maybeKickRerenderAtWidth(task, sess, 120, nil) })
 
 	deadline := time.Now().Add(uiTimeout)
 	stopped := false
@@ -450,6 +450,42 @@ func TestMaybeKickRerenderAtWidth_KicksOnGenuineDrift(t *testing.T) {
 	})
 }
 
+// TestMaybeKickRerenderAtWidth_CallsOnDeferredWhenBusy is the BUG-077
+// regression at the App layer: RerenderDeferBusy's own doc comment
+// (internal/agent/rerender.go) requires the caller to "retry on the next
+// opportunity" — this proves maybeKickRerenderAtWidth actually invokes the
+// supplied onDeferred callback on that branch (a busy agent, width past the
+// margin), which is the signal a Hera pane's kickedFor/pending bookkeeping
+// depends on to ever get a second try. The main agent view passes nil here
+// (see maybeKickRerender's doc comment) since it retries via its own
+// re-entry path instead.
+func TestMaybeKickRerenderAtWidth_CallsOnDeferredWhenBusy(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const taskID = "tui-busy"
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	task := &model.Task{ID: taskID, Name: "busy", Status: model.StatusInProgress, SessionID: "sid-resume", Worktree: t.TempDir()}
+	sess := &fakeKickSession{idle: false, alive: true, initCols: 20} // busy: not idle
+
+	var deferred atomic.Bool
+	readUI(t, app.tapp, func() {
+		app.maybeKickRerenderAtWidth(task, sess, 120, func() { deferred.Store(true) })
+	})
+
+	deadline := time.Now().Add(uiTimeout)
+	for time.Now().Before(deadline) && !deferred.Load() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !deferred.Load() {
+		t.Fatal("onDeferred was never invoked for a busy agent past the rerender margin")
+	}
+	testutil.Equal(t, sess.stopCalled.Load(), false) // must not kill a busy agent
+}
+
 // TestHeraKickRerender_UnknownTaskIsNoop proves the Hera-facing entry point
 // no-ops cleanly (no panic, no decision made) when the task ID doesn't
 // resolve — e.g. a stale/torn-down binding racing the callback.
@@ -457,7 +493,7 @@ func TestHeraKickRerender_UnknownTaskIsNoop(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
-	app.heraKickRerender("does-not-exist", 88) // must not panic
+	app.heraKickRerender("does-not-exist", 88, nil) // must not panic
 }
 
 // TestHeraKickRerender_NoRunnerSessionIsNoop proves a task that exists in the
@@ -470,7 +506,7 @@ func TestHeraKickRerender_NoRunnerSessionIsNoop(t *testing.T) {
 	app := New(d, runner, false)
 	task := &model.Task{Name: "dead-in-hera", Status: model.StatusComplete, Worktree: t.TempDir()}
 	testutil.NoError(t, d.Add(task))
-	app.heraKickRerender(task.ID, 88) // no runner session registered — must not panic
+	app.heraKickRerender(task.ID, 88, nil) // no runner session registered — must not panic
 }
 
 func TestHandleSessionExitUI_SkipsTransitionWhenPendingRestart(t *testing.T) {

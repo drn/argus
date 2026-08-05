@@ -4204,10 +4204,15 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 
 // maybeKickRerender is the main-agent-view entry point for the size-drift
 // kill+resume decision — see maybeKickRerenderAtWidth for the mechanism.
-// panelCols comes from the main agent view's own pane rect.
+// panelCols comes from the main agent view's own pane rect. No onDeferred
+// callback: the main agent view naturally re-evaluates on every fresh entry
+// (onTaskSelect / enterPendingAgentView), which already satisfies
+// RerenderDeferBusy's "retry on next opportunity" contract — unlike a Hera
+// pane, which stays bound with no analogous re-entry event (see
+// heraKickRerender, BUG-077).
 func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 	_, panelCols := a.computePTYSize() // safe: GetInnerRect on the main goroutine
-	a.maybeKickRerenderAtWidth(task, sess, panelCols)
+	a.maybeKickRerenderAtWidth(task, sess, panelCols, nil)
 }
 
 // heraKickRerender is the Hera-view entry point for the same decision.
@@ -4216,13 +4221,19 @@ func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 // current width — never the main agent view's, which may not even be active.
 // Resolves task/session by ID itself (mirrors the SetSessionResolver wiring
 // pattern) so internal/tui/hera never needs direct db/runner access.
-func (a *App) heraKickRerender(taskID string, panelCols uint16) {
+//
+// onDeferred (see RerenderKicker) is threaded straight through to
+// maybeKickRerenderAtWidth: a Hera pane, unlike the main agent view, has no
+// natural "re-entry" event to retry on, so it depends on this callback to
+// honor RerenderDeferBusy/RerenderDeferPrompt's documented retry contract
+// (BUG-077 — see gotchas/hera-view.md).
+func (a *App) heraKickRerender(taskID string, panelCols uint16, onDeferred func()) {
 	task, err := a.db.Get(taskID)
 	if err != nil || task == nil {
 		return
 	}
 	sess := a.runner.Get(taskID)
-	a.maybeKickRerenderAtWidth(task, sess, panelCols)
+	a.maybeKickRerenderAtWidth(task, sess, panelCols, onDeferred)
 }
 
 // maybeKickRerenderAtWidth detects sessions whose committed scrollback width
@@ -4250,9 +4261,17 @@ func (a *App) heraKickRerender(taskID string, panelCols uint16) {
 // network I/O. The panel size and the session pointer are captured up front
 // on the main goroutine where it's safe to read them.
 //
+// onDeferred, when non-nil, is invoked (on the tview main goroutine, from
+// inside the QueueUpdateDraw callback below) for every outcome that leaves
+// something worth retrying later: RerenderDeferBusy, RerenderDeferPrompt, and
+// a failed Stop() attempt. It is NOT called for RerenderSkip (no drift — a
+// stable no-op) or a successful RerenderKick (the resume itself re-emits at
+// the new width, nothing left to fix). Callers with a natural retry path of
+// their own (maybeKickRerender) pass nil.
+//
 // Shared predicate with the API's resize handler — see
 // `agent.ShouldKickRerender` for the gating logic.
-func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandle, panelCols uint16) {
+func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandle, panelCols uint16, onDeferred func()) {
 	if task == nil || sess == nil || !sess.Alive() {
 		return
 	}
@@ -4293,6 +4312,9 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 				// same-cols reopen re-evaluates when the agent goes idle.
 				a.invalidateAttachCache(taskID)
 				uxlog.Log("[tui] rerender deferred: task=%s busy (init=%d panel=%d)", taskID, initCols, panelCols)
+				if onDeferred != nil {
+					onDeferred()
+				}
 				return
 			case agent.RerenderDeferPrompt:
 				// Agent is blocked on a user prompt — kicking would dismiss
@@ -4300,6 +4322,9 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 				// once the user has answered and the agent moves on.
 				a.invalidateAttachCache(taskID)
 				uxlog.Log("[tui] rerender deferred: task=%s blocked on user prompt — preserving question (init=%d panel=%d)", taskID, initCols, panelCols)
+				if onDeferred != nil {
+					onDeferred()
+				}
 				return
 			case agent.RerenderKick:
 				uxlog.Log("[tui] rerender: stopping task=%s session=%s (init=%dx panel=%dx)", taskID, task.SessionID, initCols, panelCols)
@@ -4312,6 +4337,9 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 					// same-cols reopen retries (mirrors DeferBusy).
 					a.invalidateAttachCache(taskID)
 					a.statusbar.ClearInfo()
+					if onDeferred != nil {
+						onDeferred()
+					}
 				}
 			}
 		})

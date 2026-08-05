@@ -186,8 +186,24 @@ type kickRecord struct {
 
 func newKickRecorder(p *HeraPage) (kicks *[]kickRecord, advance func(time.Duration)) {
 	var recorded []kickRecord
-	p.SetRerenderKicker(func(taskID string, cols uint16) {
+	p.SetRerenderKicker(func(taskID string, cols uint16, onDeferred func()) {
 		recorded = append(recorded, kickRecord{taskID, cols})
+	})
+	now := time.Now()
+	p.SetKickClock(func() time.Time { return now })
+	return &recorded, func(d time.Duration) { now = now.Add(d) }
+}
+
+// newDeferringKickRecorder is like newKickRecorder but every recorded kick
+// also immediately invokes its onDeferred callback — simulating the App
+// resolving the decision as RerenderDeferBusy/RerenderDeferPrompt (BUG-077).
+func newDeferringKickRecorder(p *HeraPage) (kicks *[]kickRecord, advance func(time.Duration)) {
+	var recorded []kickRecord
+	p.SetRerenderKicker(func(taskID string, cols uint16, onDeferred func()) {
+		recorded = append(recorded, kickRecord{taskID, cols})
+		if onDeferred != nil {
+			onDeferred()
+		}
 	})
 	now := time.Now()
 	p.SetKickClock(func() time.Time { return now })
@@ -393,6 +409,153 @@ func TestPanes_KickDebounce_UnbindMidDwellThenRebindSameTask(t *testing.T) {
 	advance(KickDebounce)
 	p.Draw(sim)
 	testutil.Equal(t, len(kicksFor(*kicks, "t-wkr")), 1)
+}
+
+// TestPanes_KickRetriesAfterDeferred is the BUG-077 regression: a kick that
+// the App reports as deferred (agent.RerenderDeferBusy / RerenderDeferPrompt
+// — simulated here by a kicker that immediately invokes its onDeferred
+// callback) must NOT permanently stop maybeKickPaneRerender from trying
+// again. Before the fix, kickedFor was set unconditionally at the moment
+// kickRerender was CALLED, regardless of whether the underlying decision
+// fired or deferred — so a pane bound while its agent was busy (the ordinary
+// case for "mid active streaming") never got a second chance at the
+// kill+resume for the rest of that bind, exactly the reported garbled-Hera-
+// pane symptom. The retry must wait a full KickRetryInterval, not just
+// another KickDebounce — see KickRetryInterval's doc comment.
+func TestPanes_KickRetriesAfterDeferred(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-wkr": {id: "t-wkr", alive: true}}))
+	kicks, advance := newDeferringKickRecorder(p)
+	p.Refresh()
+	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(120, 30)
+	p.SetRect(0, 0, 120, 30)
+
+	p.Draw(sim) // arms
+	testutil.Equal(t, len(*kicks), 0)
+	advance(KickDebounce)
+	p.Draw(sim) // fires — the recorder immediately defers it
+	testutil.Equal(t, len(kicksFor(*kicks, "t-wkr")), 1)
+
+	// Staying bound past another KickDebounce (but short of KickRetryInterval)
+	// must NOT retry yet — a deferred outcome waits the LONGER interval, not
+	// the initial per-bind dwell.
+	advance(KickDebounce)
+	p.Draw(sim)
+	testutil.Equal(t, len(kicksFor(*kicks, "t-wkr")), 1)
+
+	// Once the full retry interval has elapsed, the SAME still-bound task is
+	// retried — exactly once.
+	advance(KickRetryInterval)
+	p.Draw(sim)
+	testutil.Equal(t, len(kicksFor(*kicks, "t-wkr")), 2)
+}
+
+// TestPanes_KickDoesNotRetryWhenResolved proves the mirror image: a kick that
+// resolves WITHOUT deferring (never calls onDeferred — matching a fired
+// RerenderKick or a no-drift RerenderSkip) must stay a one-shot even across a
+// KickRetryInterval-sized gap, not just the single extra Draw the older
+// TestPanes_DrawInvokesRerenderKicker checked.
+func TestPanes_KickDoesNotRetryWhenResolved(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-wkr": {id: "t-wkr", alive: true}}))
+	kicks, advance := newKickRecorder(p)
+	p.Refresh()
+	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(120, 30)
+	p.SetRect(0, 0, 120, 30)
+
+	p.Draw(sim)
+	advance(KickDebounce)
+	p.Draw(sim)
+	testutil.Equal(t, len(kicksFor(*kicks, "t-wkr")), 1)
+
+	advance(KickRetryInterval * 2)
+	p.Draw(sim)
+	testutil.Equal(t, len(kicksFor(*kicks, "t-wkr")), 1)
+}
+
+// TestPanes_KickDeferredCallback_StaleAfterRebindIsNoop proves a late-arriving
+// onDeferred callback from a PREVIOUS bind cannot clobber a DIFFERENT task's
+// freshly-armed kick state after a rebind — mirroring the existing
+// unbind/rebind-mid-dwell rigor (TestPanes_KickDebounce_UnbindMidDwellThenRebindSameTask)
+// for the new retry path.
+func TestPanes_KickDeferredCallback_StaleAfterRebindIsNoop(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "a", db.HeraKindWorker, "t-a")
+	seedBoundRole(t, d, orch, "b", db.HeraKindWorker, "t-b")
+	p := NewHeraPage(d)
+
+	var pendingDeferred func()
+	var recorded []kickRecord
+	p.SetRerenderKicker(func(taskID string, cols uint16, onDeferred func()) {
+		recorded = append(recorded, kickRecord{taskID, cols})
+		pendingDeferred = onDeferred // capture — invoked manually, late, below
+	})
+	now := time.Now()
+	p.SetKickClock(func() time.Time { return now })
+	advance := func(d time.Duration) { now = now.Add(d) }
+
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{
+		"t-a": {id: "t-a", alive: true},
+		"t-b": {id: "t-b", alive: true},
+	}))
+	p.Refresh()
+	testutil.Equal(t, selectRoleByName(p, "a"), true)
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(120, 30)
+	p.SetRect(0, 0, 120, 30)
+
+	p.Draw(sim)
+	advance(KickDebounce)
+	p.Draw(sim) // fires the kick for t-a; onDeferred captured, NOT yet invoked
+	testutil.Equal(t, len(kicksFor(recorded, "t-a")), 1)
+	deferredForA := pendingDeferred
+	if deferredForA == nil {
+		t.Fatal("expected onDeferred to be captured for t-a's kick")
+	}
+
+	// Rebind the SAME pane to a different task before the stale callback ever
+	// fires, and let ITS kick fire too (first Draw only arms the fresh bind's
+	// dwell — same two-Draw shape as every other kick test in this file).
+	testutil.Equal(t, selectRoleByName(p, "b"), true)
+	testutil.Equal(t, p.agentBound, "t-b")
+	p.Draw(sim) // arms
+	advance(KickDebounce)
+	p.Draw(sim) // fires
+	testutil.Equal(t, len(kicksFor(recorded, "t-b")), 1)
+	testutil.Equal(t, p.agentKickedFor, "t-b")
+
+	// The stale t-a callback arrives late — it must be a no-op: it must NOT
+	// reset agentKickedFor (currently "t-b") or re-arm agentKickPending, which
+	// would corrupt t-b's already-resolved state.
+	deferredForA()
+	testutil.Equal(t, p.agentKickedFor, "t-b")
+	testutil.Equal(t, p.agentKickPending.taskID, "t-b")
+
+	// Confirm it wasn't silently re-armed for a retry either.
+	advance(KickRetryInterval * 2)
+	p.Draw(sim)
+	testutil.Equal(t, len(kicksFor(recorded, "t-a")), 1)
+	testutil.Equal(t, len(kicksFor(recorded, "t-b")), 1)
 }
 
 // TestPanes_CoordinatorSelectionShowsDetails is a locked must-have: selecting a
