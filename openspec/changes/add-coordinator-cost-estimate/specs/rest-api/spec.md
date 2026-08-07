@@ -2,7 +2,7 @@
 
 ### Requirement: Hera orchestration roster endpoint
 
-The REST API SHALL expose `GET /api/hera`, a read-only endpoint returning the Hera orchestration roster: a list of orchestrators — each with `id`, `name`, `pinned`, `archived`, `kanban_status` (`active`/`backlog`/`blocked`/`done`), `subtree_cost_usd`, and its non-freelance `roles` — plus a top-level `freelance` list of hoisted freelance roles. Each role SHALL carry `role_id`, `orch_id`, `name`, `kind` (`coordinator`/`worker`/`freelance`), `status` (`idle`/`working`/`blocked`/`done`, or empty when no status row exists), `task_id`, `task_name`, `task_status`, `live`, `ready_to_close`, `archived`, `tokens_input`, `tokens_cache_write`, `tokens_cache_read`, `tokens_output`, and `cost_usd` (omitted or null when the role's resolved model has no rate-table entry, or when its token totals are all zero — see `cost-estimation`). The endpoint MUST be authenticated like every other `/api/*` route. The handler MUST source all data from the database and MUST NOT import the TUI Hera package (to keep tview out of the API binary).
+The REST API SHALL expose `GET /api/hera`, a read-only endpoint returning the Hera orchestration roster: a list of orchestrators — each with `id`, `name`, `pinned`, `archived`, `kanban_status` (`active`/`backlog`/`blocked`/`done`), `subtree_cost_usd`, and its non-freelance `roles` — plus a top-level `freelance` list of hoisted freelance roles. Each role SHALL carry `role_id`, `orch_id`, `name`, `kind` (`coordinator`/`worker`/`freelance`), `status` (`idle`/`working`/`blocked`/`done`, or empty when no status row exists), `task_id`, `task_name`, `task_status`, `live`, `ready_to_close`, `archived`, `tokens_input`, `tokens_cache_write_1h`, `tokens_cache_write_5m`, `tokens_cache_read`, `tokens_output`, and `cost_usd` (omitted or null when the role's resolved model has no rate-table entry for its accrued usage, or when its token totals are all zero — see `cost-estimation`). Both `cost_usd` and `subtree_cost_usd` SHALL be the PERSISTED, already-priced `cost_usd_accrued` values described in `cost-estimation`'s accrual-time-stamping requirement — the endpoint SHALL NOT compute or reprice cost against a live rate table on read. The endpoint MUST be authenticated like every other `/api/*` route. The handler MUST source all data from the database and MUST NOT import the TUI Hera package (to keep tview out of the API binary).
 
 `kanban_status` is emitted as-is for every orchestrator regardless of nesting — the endpoint does not resolve canonical parents or otherwise distinguish top-level from nested orchestrators, so a nested orchestrator's own (rail-inert) `kanban_status` value is still visible in its envelope. `subtree_cost_usd` and every per-role cost/token field are likewise read-only: mutating any of them, or the underlying rate table, over REST is out of scope — this stays under the existing standing exception that Hera mutations are TUI-only (`GET /api/hera` stays read-only in every field).
 
@@ -40,8 +40,8 @@ Derived from: `internal/api/hera.go` (`heraOrchJSON`, `heraRoleJSON`, `handleHer
 
 #### Scenario: A role's cost fields reflect its accumulated token totals
 
-- **WHEN** a role's live or ended binding carries nonzero `tokens_input`/`tokens_cache_write`/`tokens_cache_read`/`tokens_output`, and its resolved model has a rate-table entry
-- **THEN** the role's JSON carries those four token totals and a computed `cost_usd`
+- **WHEN** a role's live or ended binding carries nonzero raw token totals and a nonzero persisted `cost_usd_accrued`
+- **THEN** the role's JSON carries those five token totals and its persisted `cost_usd`, with no rate-table lookup performed by this endpoint
 
 #### Scenario: An unmeasured role carries no cost figure
 
