@@ -276,6 +276,29 @@ func TestDeriveCoordMeta_AgentAndWorktreeFromCoord(t *testing.T) {
 	testutil.Equal(t, m.Worktree, "/home/u/.argus/worktrees/Hera/the-hera-detail")
 }
 
+// TestDeriveCoordMeta_CostSumsAllOwnRoles pins add-coordinator-cost-estimate's
+// Details-pane surfacing: the coordinator's OWN plus every direct worker's
+// CostUSDAccrued sums into meta.Cost — a non-recursive, this-orchestrator-only
+// figure (deriveCoordMeta has no access to the whole Model for a true
+// bridge-subtree walk; see Model.SubtreeCostUSD for that).
+func TestDeriveCoordMeta_CostSumsAllOwnRoles(t *testing.T) {
+	orch := &OrchView{
+		ID: 1,
+		Roles: []RoleView{
+			{RoleID: 1, Kind: db.HeraKindCoordinator, CostUSDAccrued: 1.5},
+			{RoleID: 2, Kind: db.HeraKindWorker, CostUSDAccrued: 2.25},
+		},
+	}
+	m := deriveCoordMeta(orch)
+	testutil.Equal(t, m.Cost, 3.75)
+}
+
+func TestDeriveCoordMeta_CostZeroWhenUnmeasured(t *testing.T) {
+	orch := &OrchView{ID: 1, Roles: []RoleView{{RoleID: 1, Kind: db.HeraKindCoordinator}}}
+	m := deriveCoordMeta(orch)
+	testutil.Equal(t, m.Cost, 0.0)
+}
+
 // TestDetails_RendersMetadataBlock asserts the restored metadata fields render
 // for a bound coordinator (Created, Last activity, Agent, Worktree, Repos in
 // scope, and the Summary placeholder), alongside the existing roster.
@@ -318,6 +341,63 @@ func TestDetails_RendersMetadataBlock(t *testing.T) {
 			t.Errorf("expected Details render to contain %q", sub)
 		}
 	}
+}
+
+// TestDetails_RendersCostFieldWhenMeasured pins add-coordinator-cost-estimate:
+// the "Cost" field renders with the blended figure when the orchestrator's
+// roles have accrued anything.
+func TestDetails_RendersCostFieldWhenMeasured(t *testing.T) {
+	orch := &OrchView{
+		ID: 1, Name: "my-orch",
+		Roles: []RoleView{
+			{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c", CostUSDAccrued: 1.5},
+		},
+	}
+	d := NewDetailsView()
+	d.SetOrch(orch, nil)
+
+	if !rosterContains(t, d, 40, "Cost:") {
+		t.Error("expected Details render to contain the Cost field label")
+	}
+	if !rosterContains(t, d, 40, "$1.50") {
+		t.Error("expected Details render to contain the blended cost figure")
+	}
+}
+
+// TestDetails_OmitsCostFieldWhenUnmeasured pins Decision 6's "n/a, not
+// $0.00" contract at the Details-pane layer.
+func TestDetails_OmitsCostFieldWhenUnmeasured(t *testing.T) {
+	orch := &OrchView{
+		ID: 1, Name: "my-orch",
+		Roles: []RoleView{{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c"}},
+	}
+	d := NewDetailsView()
+	d.SetOrch(orch, nil)
+
+	// A safe height well under the fixed 80x30 sim screen drawnText uses:
+	// rosterContains's row scan indexes past the screen (and panics) once y
+	// reaches 30 without an early match — fine for the existing positive
+	// assertions (which always match well before then), not safe for a
+	// negative assertion that must scan the whole range.
+	if rosterContains(t, d, 20, "Cost:") {
+		t.Error("expected no Cost field when the orchestrator has never accrued anything")
+	}
+}
+
+// TestDetailsView_ContentHeight_AccountsForCostField pins the ContentHeight/
+// Draw parity contract this view's doc comment requires: adding the
+// conditional Cost row must bump ContentHeight by exactly one line, or the
+// stacked Details region would truncate/overflow.
+func TestDetailsView_ContentHeight_AccountsForCostField(t *testing.T) {
+	withoutCost := &OrchView{ID: 1, Roles: []RoleView{{RoleID: 1, Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c"}}}
+	withCost := &OrchView{ID: 1, Roles: []RoleView{{RoleID: 1, Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c", CostUSDAccrued: 1.5}}}
+
+	d := NewDetailsView()
+	d.SetOrch(withoutCost, nil)
+	base := d.ContentHeight()
+
+	d.SetOrch(withCost, nil)
+	testutil.Equal(t, d.ContentHeight(), base+1)
 }
 
 // TestDetails_UnboundCoordOmitsAgentWorktree pins that Agent/Worktree are

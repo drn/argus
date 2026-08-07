@@ -491,6 +491,121 @@ func TestModel_SubtreeAgentCount_RecursesIntoNestedSubcoordAndItsArchive(t *test
 	testutil.Equal(t, m.SubtreeAgentCount(1), 3)
 }
 
+// TestModel_SubtreeCostUSD_SumsWorkersAndRootCoordinator pins
+// add-coordinator-cost-estimate's inclusion of the coordinator's OWN cost
+// (unlike SubtreeAgentCount, which excludes every coordinator role).
+func TestModel_SubtreeCostUSD_SumsWorkersAndRootCoordinator(t *testing.T) {
+	o := orchView(1, "orch", "tc", wk("w1", "t1"), wk("w2", "t2"))
+	o.Roles[0].CostUSDAccrued = 1.0 // coord
+	o.Roles[1].CostUSDAccrued = 2.0 // w1
+	o.Roles[2].CostUSDAccrued = 3.0 // w2
+	m := Model{Active: []OrchView{o}}
+
+	total, any := m.SubtreeCostUSD(1)
+	testutil.Equal(t, total, 6.0)
+	testutil.Equal(t, any, true)
+}
+
+// TestModel_SubtreeCostUSD_NestedSubCoordinatorCountedOnce mirrors
+// TestModel_SubtreeAgentCount_RecursesIntoNestedSubcoordAndItsArchive's
+// exact scenario: a nested sub-coordinator's cost must be counted exactly
+// once — via its bridging worker row in the parent, not also via its own
+// coordinator role in the child.
+func TestModel_SubtreeCostUSD_NestedSubCoordinatorCountedOnce(t *testing.T) {
+	r := orchView(1, "R", "tr", wk("bridge", "tc")) // bridging worker row, task "tc"
+	c := orchView(2, "C", "tc", wk("wc", "twc"))    // C's own coord is ALSO task "tc"
+	r.Roles[0].CostUSDAccrued = 5.0                 // R's own coordinator
+	r.Roles[1].CostUSDAccrued = 7.0                 // the bridging worker row (task tc)
+	c.Roles[0].CostUSDAccrued = 999.0               // C's coordinator role for the SAME task tc — must be excluded
+	c.Roles[1].CostUSDAccrued = 11.0                // wc
+	m := Model{Active: []OrchView{r, c}}
+
+	// C alone (as its own subtree root): its own coord IS included (root exception) + wc.
+	total, any := m.SubtreeCostUSD(2)
+	testutil.Equal(t, total, 999.0+11.0)
+	testutil.Equal(t, any, true)
+
+	// R's subtree: R's coord (5) + bridging worker row (7) + C's wc (11) — C's
+	// coordinator role (999) is excluded, since it's the same underlying task
+	// as the bridging worker row already counted.
+	total, any = m.SubtreeCostUSD(1)
+	testutil.Equal(t, total, 5.0+7.0+11.0)
+	testutil.Equal(t, any, true)
+}
+
+// TestModel_SubtreeCostUSD_IncludesNukedRolesCost pins the deliberate
+// divergence from SubtreeAgentCount: a nuked role's recorded cost still
+// counts toward its (still-active) coordinator's subtree total.
+func TestModel_SubtreeCostUSD_IncludesNukedRolesCost(t *testing.T) {
+	o := orchView(1, "orch", "tc", wk("w1", "t1"))
+	o.Roles[1].CostUSDAccrued = 2.0
+	o.NukedRolesCostUSD = 4.0 // a since-nuked sibling's recorded spend
+	m := Model{Active: []OrchView{o}}
+
+	total, any := m.SubtreeCostUSD(1)
+	testutil.Equal(t, total, 2.0+4.0)
+	testutil.Equal(t, any, true)
+}
+
+// TestModel_SubtreeCostUSD_NothingMeasured_AnyMeasuredFalse pins Decision
+// 6's "n/a, not $0.00" contract: callers distinguish genuinely-zero from
+// never-measured via the anyMeasured return.
+func TestModel_SubtreeCostUSD_NothingMeasured_AnyMeasuredFalse(t *testing.T) {
+	o := orchView(1, "orch", "tc", wk("w1", "t1"))
+	m := Model{Active: []OrchView{o}}
+
+	total, any := m.SubtreeCostUSD(1)
+	testutil.Equal(t, total, 0.0)
+	testutil.Equal(t, any, false)
+}
+
+// TestBuildModel_PopulatesCostFields proves the end-to-end wiring: per-role
+// cost_usd_accrued sums flow through BuildModel into RoleView.CostUSDAccrued,
+// a nuked sibling's cost flows into OrchView.NukedRolesCostUSD, and
+// SubtreeCostUSD combines both correctly against a REAL database (not a
+// hand-built fixture).
+func TestBuildModel_PopulatesCostFields(t *testing.T) {
+	d := memDB(t)
+	orchID := seedOrch(t, d, "orch")
+	coord := seedBoundRole(t, d, orchID, "coord", db.HeraKindCoordinator, "t-coord")
+	worker := seedBoundRole(t, d, orchID, "worker-1", db.HeraKindWorker, "t-worker")
+	nuked := seedBoundRole(t, d, orchID, "since-nuked", db.HeraKindWorker, "t-nuked")
+
+	coordBinding, err := d.HeraLiveBindingByRole(coord.ID)
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.UpdateHeraBindingCostTotals(coordBinding.ID, db.HeraBindingCostTotals{CostUSDAccrued: 1.5}))
+
+	workerBinding, err := d.HeraLiveBindingByRole(worker.ID)
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.UpdateHeraBindingCostTotals(workerBinding.ID, db.HeraBindingCostTotals{CostUSDAccrued: 2.5}))
+
+	nukedBinding, err := d.HeraLiveBindingByRole(nuked.ID)
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.UpdateHeraBindingCostTotals(nukedBinding.ID, db.HeraBindingCostTotals{CostUSDAccrued: 4.0}))
+	testutil.NoError(t, d.NukeHeraRole(nuked.ID))
+
+	m, err := BuildModel(d, nil, nil, nil, nil)
+	testutil.NoError(t, err)
+
+	ov := m.Active[0]
+	testutil.Equal(t, ov.NukedRolesCostUSD, 4.0)
+	var gotCoord, gotWorker float64
+	for _, rv := range ov.Roles {
+		switch rv.Name {
+		case "coord":
+			gotCoord = rv.CostUSDAccrued
+		case "worker-1":
+			gotWorker = rv.CostUSDAccrued
+		}
+	}
+	testutil.Equal(t, gotCoord, 1.5)
+	testutil.Equal(t, gotWorker, 2.5)
+
+	total, any := m.SubtreeCostUSD(orchID)
+	testutil.Equal(t, total, 1.5+2.5+4.0)
+	testutil.Equal(t, any, true)
+}
+
 // TestBuildModel_PopulatesDetailsFields proves the additive coordinator-Details
 // projection inputs (orch + role creation, the live binding's worktree + start,
 // the role-status update time, and the bound task name) flow into the model.

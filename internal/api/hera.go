@@ -6,6 +6,7 @@ import (
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // heraRoleJSON is the read-only projection of one hera role for the webapp's
@@ -24,6 +25,17 @@ type heraRoleJSON struct {
 	Live         bool   `json:"live"`           // has a live binding
 	ReadyToClose bool   `json:"ready_to_close"` // bound task carries meta:hera.ready_to_close=true
 	Archived     bool   `json:"archived"`       // role archived_at set
+	// TokensInput..TokensOutput and CostUSD (add-coordinator-cost-estimate)
+	// are sourced directly from persisted, already-priced values
+	// (hera_bindings) — this handler never computes or reprices cost. Zero
+	// (omitted) means never measured, per design.md Decision 6 — never a
+	// fabricated "$0.00".
+	TokensInput        int64   `json:"tokens_input,omitempty"`
+	TokensCacheWrite1h int64   `json:"tokens_cache_write_1h,omitempty"`
+	TokensCacheWrite5m int64   `json:"tokens_cache_write_5m,omitempty"`
+	TokensCacheRead    int64   `json:"tokens_cache_read,omitempty"`
+	TokensOutput       int64   `json:"tokens_output,omitempty"`
+	CostUSD            float64 `json:"cost_usd,omitempty"`
 }
 
 // heraOrchJSON is one orchestrator with its non-freelance roles (coordinator +
@@ -40,6 +52,17 @@ type heraOrchJSON struct {
 	// resolve canonical parents). See db.HeraKanbanStatus.
 	KanbanStatus string         `json:"kanban_status"`
 	Roles        []heraRoleJSON `json:"roles"`
+	// SubtreeCostUSD (add-coordinator-cost-estimate) sums this orchestrator's
+	// OWN roles' cost (all kinds, including nuked ones) — NOT a recursive
+	// walk into nested sub-coordinators reached via the worker→coordinator
+	// bridge. The TUI's LOCAL-mode rollup (Model.SubtreeCostUSD) IS the full
+	// recursive subtree total; reproducing that walk here would require
+	// importing internal/tui/hera, which this handler deliberately avoids
+	// (see handleHera's doc comment — "free of TUI deps"). A true
+	// cross-orchestrator recursive total for remote-mode/REST consumers is a
+	// named follow-up, not shipped in this change. Zero (omitted) means
+	// never measured.
+	SubtreeCostUSD float64 `json:"subtree_cost_usd,omitempty"`
 }
 
 // heraJSON is the full read-only snapshot the webapp Hera tab renders. The SPA
@@ -102,8 +125,40 @@ func (s *Server) handleHera(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "failed to load roles", rerr)
 			return
 		}
+		// Token-cost accrual (add-coordinator-cost-estimate): one bulk read per
+		// orchestrator, mirroring hera.BuildModel's own convention for this same
+		// data. Non-fatal on error — roles just render costless.
+		costByRole, cerr := s.db.SumHeraRoleCostAccruedByOrchestrator(o.ID)
+		if cerr != nil {
+			uxlog.Log("[api] sum role cost accrued failed for orch %d, rendering costless: %v", o.ID, cerr)
+		}
+		tokensByRole, tokErr := s.db.SumHeraRoleRawTokensByOrchestrator(o.ID)
+		if tokErr != nil {
+			uxlog.Log("[api] sum role raw tokens failed for orch %d, rendering tokenless: %v", o.ID, tokErr)
+		}
+		nukedCost, nerr := s.db.SumNukedHeraRolesCostByOrchestrator(o.ID)
+		if nerr == nil {
+			oj.SubtreeCostUSD = nukedCost
+		} else {
+			uxlog.Log("[api] sum nuked role cost failed for orch %d: %v", o.ID, nerr)
+		}
 		for _, role := range roles {
 			rj := s.buildHeraRoleJSON(role, roleToTask, heraMeta, taskByID)
+			if cerr == nil {
+				if cost := costByRole[role.ID]; cost != 0 {
+					rj.CostUSD = cost
+					oj.SubtreeCostUSD += cost
+				}
+			}
+			if tokErr == nil {
+				if t, ok := tokensByRole[role.ID]; ok {
+					rj.TokensInput = t.TokensInput
+					rj.TokensCacheWrite1h = t.TokensCacheWrite1h
+					rj.TokensCacheWrite5m = t.TokensCacheWrite5m
+					rj.TokensCacheRead = t.TokensCacheRead
+					rj.TokensOutput = t.TokensOutput
+				}
+			}
 			// Active freelance roles live in their own top-level section,
 			// mirroring the TUI Model partition.
 			if role.Kind == db.HeraKindFreelance && role.ArchivedAt == nil && o.ArchivedAt == nil {

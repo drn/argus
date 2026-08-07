@@ -473,6 +473,20 @@ func (d *DB) createHeraTables() error {
 	// yet created) and is intentionally ignored; the CREATE TABLE below
 	// carries the column inline.
 	d.conn.Exec(`ALTER TABLE hera_orchestrators ADD COLUMN kanban_status TEXT NOT NULL DEFAULT 'active'`) //nolint:errcheck
+	// Idempotent ADD COLUMN migration for the binding-level token/cost accrual
+	// columns (add-coordinator-cost-estimate). Same additive pattern as the
+	// columns above: raw per-rate-class totals default to 0 (never measured
+	// reads back identically to genuinely zero — see design.md Decision 6),
+	// cost_usd_accrued is an incrementally-accumulated dollar total, never
+	// recomputed from a later rate table (Decision 2). Fails on a fresh DB
+	// (table not yet created) and is intentionally ignored; the CREATE TABLE
+	// below carries the columns inline.
+	d.conn.Exec(`ALTER TABLE hera_bindings ADD COLUMN tokens_input INTEGER NOT NULL DEFAULT 0`)          //nolint:errcheck
+	d.conn.Exec(`ALTER TABLE hera_bindings ADD COLUMN tokens_cache_write_1h INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck
+	d.conn.Exec(`ALTER TABLE hera_bindings ADD COLUMN tokens_cache_write_5m INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck
+	d.conn.Exec(`ALTER TABLE hera_bindings ADD COLUMN tokens_cache_read INTEGER NOT NULL DEFAULT 0`)     //nolint:errcheck
+	d.conn.Exec(`ALTER TABLE hera_bindings ADD COLUMN tokens_output INTEGER NOT NULL DEFAULT 0`)         //nolint:errcheck
+	d.conn.Exec(`ALTER TABLE hera_bindings ADD COLUMN cost_usd_accrued REAL NOT NULL DEFAULT 0`)         //nolint:errcheck
 
 	ddl := `
 		CREATE TABLE IF NOT EXISTS hera_orchestrators (
@@ -551,7 +565,21 @@ func (d *DB) createHeraTables() error {
 			worktree_path   TEXT NOT NULL,
 			started_at      TEXT NOT NULL,
 			ended_at        TEXT,
-			end_reason      TEXT
+			end_reason      TEXT,
+			-- Token/cost accrual columns (add-coordinator-cost-estimate). Raw
+			-- per-rate-class totals are a full-resum overwrite on every Stop-hook
+			-- invocation (monotonic, idempotent — see design.md Decision 1).
+			-- cost_usd_accrued is a SEPARATE incrementally-accumulated dollar
+			-- total, priced at accrual time against the rate table as it stood at
+			-- that moment — never recomputed from a later rate table (Decision 2).
+			-- Survives task archiving: this table has no archive-triggered
+			-- deletion, unlike task_meta (see DeleteMetaForTask).
+			tokens_input          INTEGER NOT NULL DEFAULT 0,
+			tokens_cache_write_1h INTEGER NOT NULL DEFAULT 0,
+			tokens_cache_write_5m INTEGER NOT NULL DEFAULT 0,
+			tokens_cache_read     INTEGER NOT NULL DEFAULT 0,
+			tokens_output         INTEGER NOT NULL DEFAULT 0,
+			cost_usd_accrued      REAL NOT NULL DEFAULT 0
 		);
 		-- THE multi-binding invariant (Hera migration 0004): live-uniqueness is
 		-- per-(task, orchestrator), NOT per-task. One argus task may simultaneously

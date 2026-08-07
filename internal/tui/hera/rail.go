@@ -2086,6 +2086,13 @@ func (r *Rail) drawOrchRow(screen tcell.Screen, x, y, w int, row railRow, select
 	agents := r.model.SubtreeAgentCount(o.ID)
 	label := o.Name
 	count := fmt.Sprintf(" %d", agents)
+	// Subtree cost figure (add-coordinator-cost-estimate, design.md Decision
+	// 5/7): appended alongside the existing agent-count badge, omitted
+	// entirely when nothing in the subtree has ever accrued anything — never
+	// a misleading "$0.00" (Decision 6).
+	if cost, any := r.model.SubtreeCostUSD(o.ID); any {
+		count += " · " + formatCostUSD(cost)
+	}
 	if len(label)+len(count) > remaining {
 		widget.DrawText(screen, col, y, remaining, label, nameStyle)
 		return

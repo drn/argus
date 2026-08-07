@@ -144,6 +144,12 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/tasks/{id}/meta", s.handleGetMeta)
 	mux.HandleFunc("PUT /api/tasks/{id}/meta", s.handlePutMeta)
 
+	// Hera token/cost accrual (add-coordinator-cost-estimate): hook-facing,
+	// not user-facing — distinct from the generic sidecar above because
+	// task_meta rows are deleted on task archive (DeleteMetaForTask), which
+	// would silently drop recorded spend. See design.md Decision 2.
+	mux.HandleFunc("PUT /api/tasks/{id}/hera/tokens", s.handleHeraTokensPut)
+
 	// Plugin-registered settings sections (PR 7). POST takes a scope-tagged
 	// token (the scope becomes the section's namespace); GET is open to any
 	// authenticated request so the TUI can list registered sections. DELETE

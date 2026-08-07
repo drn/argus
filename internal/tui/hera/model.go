@@ -2,6 +2,7 @@ package hera
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"time"
@@ -169,6 +170,16 @@ type RoleView struct {
 	// worker/freelance context-pressure indicator reads this field directly and
 	// never computes a percentage itself.
 	ContextPercent int
+
+	// CostUSDAccrued is this role's ALREADY-PRICED lifetime cost
+	// (add-coordinator-cost-estimate): the sum of cost_usd_accrued across
+	// every one of the role's bindings, live and ended alike, populated by
+	// BuildModel from SumHeraRoleCostAccruedByOrchestrator's bulk read — pure
+	// addition, no rate-table lookup at this layer (design.md Decision 4/7).
+	// Zero for a role that has never accrued anything, per Decision 6's
+	// "unmeasured, not free" contract — SubtreeCostUSD's anyMeasured return
+	// is how callers distinguish the two.
+	CostUSDAccrued float64
 }
 
 // IsActive reports whether the role is genuinely producing output right now: it
@@ -273,6 +284,14 @@ type OrchView struct {
 	// which the rail never groups by it (only a root orchestrator's value drives
 	// placement — see the rail sections requirement).
 	KanbanStatus db.HeraKanbanStatus
+	// NukedRolesCostUSD (add-coordinator-cost-estimate) is the sum of
+	// cost_usd_accrued across every NUKED role's bindings under this
+	// orchestrator (SumNukedHeraRolesCostByOrchestrator) — the deliberate
+	// divergence from every other rollup on this struct, which excludes
+	// nuked roles entirely. SubtreeCostUSD adds this in per orchestrator in
+	// the bridge subtree, since a nuked role never appears in Roles to be
+	// summed there (design.md Decision 4).
+	NukedRolesCostUSD float64
 }
 
 // Model is the full read-only snapshot the rail renders. Orchestrators are
@@ -820,6 +839,50 @@ func (m Model) SubtreeAgentCount(orchID int64) int {
 	return n
 }
 
+// SubtreeCostUSD sums the ALREADY-PRICED cost_usd_accrued across orchID's
+// whole bridge subtree — itself plus every orchestrator nested beneath it
+// through the worker→coordinator bridge (add-coordinator-cost-estimate,
+// design.md Decision 4). Unlike SubtreeAgentCount, this SHALL include a
+// coordinator's own cost (a coordinator spends real tokens too) — but ONLY
+// the SUBTREE ROOT's coordinator role (BridgeSubtree visits the root
+// first, at index 0): a NESTED orchestrator's coordinator-kind role is
+// skipped, because that same underlying agent is already represented, via
+// its bridging WORKER row in its parent, one level up — mirroring
+// SubtreeAgentCount's own exactly-once convention for the identical
+// double-counting hazard.
+//
+// This also includes each visited orchestrator's NukedRolesCostUSD — a
+// nuked role never appears in Roles to be summed by the loop above, but its
+// recorded spend must still count (the deliberate divergence from every
+// other rollup on this struct, all of which exclude nuked roles). anyMeasured
+// is false when nothing in the whole subtree has ever accrued anything —
+// callers use it to render "n/a" rather than a misleading $0.00 (Decision 6).
+func (m Model) SubtreeCostUSD(orchID int64) (total float64, anyMeasured bool) {
+	subtree := m.BridgeSubtree(orchID)
+	for idx, o := range subtree {
+		for i := range o.Roles {
+			if o.Roles[i].Kind == db.HeraKindCoordinator && idx != 0 {
+				continue // nested coordinator: represented via its parent's bridging worker row instead
+			}
+			total += o.Roles[i].CostUSDAccrued
+		}
+		total += o.NukedRolesCostUSD
+	}
+	return total, total != 0
+}
+
+// formatCostUSD renders a blended dollar figure for display (Decision 7:
+// blended total only, never the raw per-rate-class breakdown). A genuinely
+// nonzero amount under a cent would round to "$0.00" under %.2f, which is
+// indistinguishable from Decision 6's "unmeasured" zero — rendered as
+// "<$0.01" instead so a real, tiny accrued cost never looks like free.
+func formatCostUSD(v float64) string {
+	if v > 0 && v < 0.01 {
+		return "<$0.01"
+	}
+	return fmt.Sprintf("$%.2f", v)
+}
+
 // bridgeTaskID returns a role's structural bridge key: its latest-binding task
 // (BridgeTaskID), falling back to the live TaskID when the model did not
 // populate the bridge field (older callers / hand-built test fixtures). In
@@ -1068,12 +1131,26 @@ func BuildModel(r HeraReader, needsInput map[string]bool, sessionIdle map[string
 		} else {
 			uxlog.Log("[hera-view] list hera blocks failed for orch %d, rendering edgeless: %v", o.ID, berr)
 		}
+		// Token-cost accrual (add-coordinator-cost-estimate): one bulk read per
+		// orchestrator, matching the ListHeraBlocks convention above. A read
+		// error is non-fatal — costByRole nil / NukedRolesCostUSD 0 just render
+		// as unmeasured rather than aborting the whole rebuild.
+		costByRole, cerr := r.SumHeraRoleCostAccruedByOrchestrator(o.ID)
+		if cerr != nil {
+			uxlog.Log("[hera-view] sum role cost accrued failed for orch %d, rendering costless: %v", o.ID, cerr)
+		}
+		if nuked, nerr := r.SumNukedHeraRolesCostByOrchestrator(o.ID); nerr == nil {
+			ov.NukedRolesCostUSD = nuked
+		} else {
+			uxlog.Log("[hera-view] sum nuked role cost failed for orch %d: %v", o.ID, nerr)
+		}
 		for _, role := range roles {
 			// Same Tier-2 guard for roles — a nuked role never renders.
 			if role.NukedAt != nil {
 				continue
 			}
 			rv := buildRoleView(r, role, roleToBinding, roleToLatest, heraMeta, taskByID, needsInput, sessionIdle, sessionRunning, sustainedActive)
+			rv.CostUSDAccrued = costByRole[role.ID] // zero value on nil map or missing key
 			if role.Kind == db.HeraKindFreelance && role.ArchivedAt == nil && o.ArchivedAt == nil {
 				// Active freelance roles live in their own top-level section.
 				m.Freelance = append(m.Freelance, rv)

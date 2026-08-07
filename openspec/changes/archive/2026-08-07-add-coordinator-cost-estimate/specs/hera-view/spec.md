@@ -4,7 +4,7 @@
 
 The system SHALL render an orchestrator header with a fold chevron (▸ collapsed / ▾ expanded), a coordinator marker glyph, the orchestrator name, a right-aligned agent count rendered as a bare number (no parentheses — e.g. `17`, not `(17)`), and — when the subtree's rollup cost is available (see `cost-estimation`) — a subtree cost figure rendered alongside the agent count (e.g. `17 · $4.82`), omitted entirely when no role in the subtree has an accrued cost. The count SHALL be the total number of non-coordinator roles (worker rows, including bridged sub-coordinator rows) across the orchestrator's WHOLE bridge subtree — itself plus every orchestrator nested beneath it through the worker→coordinator bridge, at any depth — INCLUDING roles currently hidden in a per-coordinator Archive bucket, regardless of whether any role's binding is still live. A nuked role or orchestrator is never counted in the agent count (the Model excludes both entirely) — this exclusion is unchanged by this requirement's cost addition; the subtree cost figure, by contrast, DOES include a nuked role's recorded cost, per `cost-estimation`'s subtree-rollup requirement, since it is a financial total rather than a display census. Each orchestrator's own coordinator role is excluded from the agent count at every level in the subtree (folded into its own header, or already represented one level up by the bridging worker row that reaches it), so a nested sub-coordinator's agent is counted exactly once; the cost figure applies the same exactly-once convention to a nested sub-coordinator's own cost. It SHALL render a role row with a status glyph (see status-icon precedence) followed by the role name, and — for a worker or freelance role (see the context-pressure indicator requirement below) — a reserved trailing indicator slot. Selection is indicated by a `›` marker in the gutter and the selected palette; archived placement dims the row's text style (the glyph itself never lies — only the style dims).
 
-Per-role cost/token detail is NOT rendered on the rail row itself — the row is already width-constrained by the reserved context-pressure indicator slot — and instead surfaces in the details pane's per-role view.
+Per-role cost/token detail is NOT rendered on the rail row itself — the row is already width-constrained by the reserved context-pressure indicator slot. Instead, the Details pane's coordinator summary block (see the Details-pane requirement below) surfaces a single "Cost" line — the SUM of the selected orchestrator's OWN roles' cost (not a recursive subtree walk: the Details pane's metadata derivation is a pure per-`OrchView` projection with no access to the whole `Model`, unlike the rail header's `SubtreeCostUSD`).
 
 Derived from: `internal/tui/hera/rail.go` (`drawRow`, `drawOrchRow`, `drawRoleRow`), `internal/tui/hera/model.go` (`Model.SubtreeAgentCount`, `Model.BridgeSubtree`, and the new subtree-cost rollup from `cost-estimation`).
 
@@ -37,3 +37,21 @@ Derived from: `internal/tui/hera/rail.go` (`drawRow`, `drawOrchRow`, `drawRoleRo
 
 - **WHEN** a nuked role in the subtree had accrued nonzero cost before being nuked
 - **THEN** the header's cost figure includes that nuked role's cost even though the same header's agent-count badge does not count it
+
+## ADDED Requirements
+
+### Requirement: Details-pane coordinator summary shows a per-orchestrator Cost line
+
+The Details pane's coordinator summary block SHALL render a "Cost" field, alongside the existing Created / Last activity / Agent / Worktree fields, showing the sum of `CostUSDAccrued` across the selected orchestrator's OWN roles (any kind) — omitted entirely when that sum is zero, per the "n/a, not $0.00" contract (see `cost-estimation`'s no-retroactive-cost requirement). This figure SHALL NOT recurse into nested sub-coordinators reached via the worker→coordinator bridge (unlike the rail header's subtree cost) — the Details pane's metadata derivation (`deriveCoordMeta`) is a pure per-`OrchView` projection with no access to the whole `Model`.
+
+Derived from: `internal/tui/hera/details.go` (`coordMeta.Cost`, `deriveCoordMeta`, `DetailsView.Draw`, `DetailsView.ContentHeight`).
+
+#### Scenario: Cost field renders when the orchestrator's own roles have accrued something
+
+- **WHEN** the selected orchestrator's coordinator or a direct worker role has a nonzero `CostUSDAccrued`
+- **THEN** the Details pane renders a "Cost" field with the summed, blended dollar figure
+
+#### Scenario: Cost field is omitted when nothing is measured
+
+- **WHEN** none of the selected orchestrator's own roles have ever accrued anything
+- **THEN** the Details pane renders no "Cost" field at all — not "$0.00"

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/db"
@@ -272,6 +273,103 @@ func TestHandleHera_DBError(t *testing.T) {
 		srv.routes().ServeHTTP(w, authedReq("GET", "/api/hera", ""))
 		testutil.Equal(t, w.Code, http.StatusInternalServerError)
 	})
+}
+
+// TestHandleHera_CostFieldsPopulated pins add-coordinator-cost-estimate's
+// GET /api/hera contract: per-role token/cost fields and the orchestrator's
+// subtree_cost_usd are sourced directly from persisted values, with no
+// rate-table lookup or repricing performed by this endpoint.
+func TestHandleHera_CostFieldsPopulated(t *testing.T) {
+	srv, d := testServer(t)
+	task := &model.Task{Name: "cost-role"}
+	testutil.NoError(t, d.Add(task))
+	orch, err := d.CreateHeraOrchestrator("costs", "")
+	testutil.NoError(t, err)
+	role, binding, err := d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID, Name: "worker-1", Kind: db.HeraKindWorker, ArgusProject: "p",
+	}, task.ID, "/tmp/wt")
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.UpdateHeraBindingCostTotals(binding.ID, db.HeraBindingCostTotals{
+		TokensInput: 10, TokensCacheWrite1h: 20, TokensCacheWrite5m: 30, TokensCacheRead: 40, TokensOutput: 50,
+		CostUSDAccrued: 3.5,
+	}))
+	_ = role
+
+	resp := getHera(t, srv)
+	testutil.Equal(t, len(resp.Orchestrators), 1)
+	oj := resp.Orchestrators[0]
+	testutil.Equal(t, len(oj.Roles), 1)
+	rj := oj.Roles[0]
+	testutil.Equal(t, rj.TokensInput, int64(10))
+	testutil.Equal(t, rj.TokensCacheWrite1h, int64(20))
+	testutil.Equal(t, rj.TokensCacheWrite5m, int64(30))
+	testutil.Equal(t, rj.TokensCacheRead, int64(40))
+	testutil.Equal(t, rj.TokensOutput, int64(50))
+	testutil.Equal(t, rj.CostUSD, 3.5)
+	testutil.Equal(t, oj.SubtreeCostUSD, 3.5)
+}
+
+// TestHandleHera_UnmeasuredRoleOmitsCostFields pins Decision 6: an unmeasured
+// role's cost/token fields are omitted, not a fabricated $0.00.
+func TestHandleHera_UnmeasuredRoleOmitsCostFields(t *testing.T) {
+	srv, d := testServer(t)
+	_, err := d.CreateHeraRole(db.CreateHeraRoleInput{
+		OrchestratorID: mustOrch(t, d, "orch"), Name: "worker-1", Kind: db.HeraKindWorker, ArgusProject: "p",
+	})
+	testutil.NoError(t, err)
+
+	resp := getHera(t, srv)
+	oj := resp.Orchestrators[0]
+	rj := oj.Roles[0]
+	testutil.Equal(t, rj.CostUSD, 0.0)
+	testutil.Equal(t, oj.SubtreeCostUSD, 0.0)
+
+	// Confirm the JSON literally omits the field rather than emitting 0.
+	body := getHeraRaw(t, srv)
+	if strings.Contains(body, `"cost_usd"`) {
+		t.Errorf("expected cost_usd to be omitted for an unmeasured role, got body=%s", body)
+	}
+}
+
+// TestHandleHera_SubtreeCostIncludesNukedRole pins the deliberate divergence
+// from every other rollup on this endpoint: a nuked role's recorded cost
+// still counts toward its orchestrator's subtree_cost_usd.
+func TestHandleHera_SubtreeCostIncludesNukedRole(t *testing.T) {
+	srv, d := testServer(t)
+	orchID := mustOrch(t, d, "orch")
+	nukedRole, err := d.CreateHeraRole(db.CreateHeraRoleInput{
+		OrchestratorID: orchID, Name: "since-nuked", Kind: db.HeraKindWorker, ArgusProject: "p",
+	})
+	testutil.NoError(t, err)
+	task := &model.Task{Name: "nuked-task"}
+	testutil.NoError(t, d.Add(task))
+	binding, err := d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: nukedRole.ID, ArgusTaskID: task.ID, WorktreePath: "/tmp/wt"})
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.UpdateHeraBindingCostTotals(binding.ID, db.HeraBindingCostTotals{CostUSDAccrued: 7.0}))
+	testutil.NoError(t, d.NukeHeraRole(nukedRole.ID))
+
+	resp := getHera(t, srv)
+	testutil.Equal(t, len(resp.Orchestrators), 1)
+	oj := resp.Orchestrators[0]
+	testutil.Equal(t, len(oj.Roles), 0) // the nuked role itself never renders
+	testutil.Equal(t, oj.SubtreeCostUSD, 7.0)
+}
+
+func mustOrch(t *testing.T, d *db.DB, name string) int64 {
+	t.Helper()
+	o, err := d.CreateHeraOrchestrator(name, "")
+	testutil.NoError(t, err)
+	return o.ID
+}
+
+// getHeraRaw runs GET /api/hera and returns the raw response body, for
+// asserting on literal field presence/absence (omitempty behavior).
+func getHeraRaw(t *testing.T, srv *Server) string {
+	t.Helper()
+	w := httptest.NewRecorder()
+	srv.routes().ServeHTTP(w, authedReq("GET", "/api/hera", ""))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	return w.Body.String()
 }
 
 // TestHandleHera_RequiresAuth pins that /api/hera sits behind the global auth
