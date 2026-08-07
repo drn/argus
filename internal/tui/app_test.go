@@ -1670,6 +1670,73 @@ func TestPruneCompletedTasks(t *testing.T) {
 	}
 }
 
+// TestPruneCompletedTasks_SkipsLiveHeraBoundAndNotifies verifies the TUI
+// prune flow leaves a completed task with a live Hera binding in place and
+// tells the operator why via a statusbar notice (BUG: Ctrl+R used to silently
+// orphan live Hera roles since hera_bindings has no FK to tasks).
+func TestPruneCompletedTasks_SkipsLiveHeraBoundAndNotifies(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.wtRoot = t.TempDir()
+
+	testutil.NoError(t, d.Add(&model.Task{ID: "bound", Name: "bound", Status: model.StatusComplete, Project: "p", CreatedAt: time.Now()}))
+	testutil.NoError(t, d.Add(&model.Task{ID: "unbound", Name: "unbound", Status: model.StatusComplete, Project: "p", CreatedAt: time.Now()}))
+
+	orch, err := d.CreateHeraOrchestrator("orch", "")
+	testutil.NoError(t, err)
+	role, err := d.CreateHeraRole(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID, Name: "role", Kind: db.HeraKindWorker, ArgusProject: "p",
+	})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{
+		RoleID: role.ID, OrchestratorID: orch.ID, ArgusTaskID: "bound", WorktreePath: "/tmp/wt/bound",
+	})
+	testutil.NoError(t, err)
+
+	app.refreshTasks()
+	app.pruneCompletedTasks()
+
+	if _, err := d.Get("bound"); err != nil {
+		t.Errorf("live-hera-bound task should not have been pruned: %v", err)
+	}
+	if _, err := d.Get("unbound"); err == nil {
+		t.Error("unbound completed task should have been pruned")
+	}
+	testutil.Contains(t, app.statusbar.Info(), "still active in Hera")
+}
+
+// TestPruneCompletedTasks_AllSkippedStillNotifies covers the branch where
+// every completed task is Hera-bound and nothing is actually pruned — the
+// operator should still learn why nothing happened instead of silence.
+func TestPruneCompletedTasks_AllSkippedStillNotifies(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.wtRoot = t.TempDir()
+
+	testutil.NoError(t, d.Add(&model.Task{ID: "bound", Name: "bound", Status: model.StatusComplete, Project: "p", CreatedAt: time.Now()}))
+
+	orch, err := d.CreateHeraOrchestrator("orch", "")
+	testutil.NoError(t, err)
+	role, err := d.CreateHeraRole(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID, Name: "role", Kind: db.HeraKindWorker, ArgusProject: "p",
+	})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{
+		RoleID: role.ID, OrchestratorID: orch.ID, ArgusTaskID: "bound", WorktreePath: "/tmp/wt/bound",
+	})
+	testutil.NoError(t, err)
+
+	app.refreshTasks()
+	app.pruneCompletedTasks()
+
+	if _, err := d.Get("bound"); err != nil {
+		t.Errorf("live-hera-bound task should not have been pruned: %v", err)
+	}
+	testutil.Contains(t, app.statusbar.Info(), "still active in Hera")
+}
+
 func TestPruneDoesNotDoubleCountWorktrees(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)

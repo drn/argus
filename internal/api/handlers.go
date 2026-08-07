@@ -810,13 +810,14 @@ func (s *Server) handlePruneCompleted(w http.ResponseWriter, r *http.Request) {
 	for _, t := range plan.Pruned {
 		events.Emit(model.EventTypeTaskDeleted, t.ID, nil)
 	}
-	uxlog.Log("[api] prune-completed: pruned=%d worktrees=%d orphans=%d",
-		len(plan.Pruned), plan.WorktreeCount, plan.OrphanCount)
+	uxlog.Log("[api] prune-completed: pruned=%d worktrees=%d orphans=%d skippedHeraBound=%d",
+		len(plan.Pruned), plan.WorktreeCount, plan.OrphanCount, plan.SkippedHeraBound)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"pruned":    len(plan.Pruned),
-		"worktrees": plan.WorktreeCount,
-		"orphans":   plan.OrphanCount,
+		"pruned":           len(plan.Pruned),
+		"worktrees":        plan.WorktreeCount,
+		"orphans":          plan.OrphanCount,
+		"skippedHeraBound": plan.SkippedHeraBound,
 	})
 }
 

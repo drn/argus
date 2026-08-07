@@ -163,9 +163,10 @@ func (c *Client) StopAll(ctx context.Context) (int, error) {
 
 // PruneReport is the prune-completed response envelope.
 type PruneReport struct {
-	Pruned    int `json:"pruned"`
-	Worktrees int `json:"worktrees"`
-	Orphans   int `json:"orphans"`
+	Pruned           int `json:"pruned"`
+	Worktrees        int `json:"worktrees"`
+	Orphans          int `json:"orphans"`
+	SkippedHeraBound int `json:"skippedHeraBound"`
 }
 
 // PruneCompleted removes every task with status=complete, sweeps orphan

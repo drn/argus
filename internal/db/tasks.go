@@ -501,32 +501,44 @@ func (d *DB) Get(id string) (*model.Task, error) {
 	return t, nil
 }
 
-func (d *DB) PruneCompleted() ([]*model.Task, error) {
+// PruneCompleted deletes every task with status='complete' and returns them,
+// except a task that still holds a live Hera role binding
+// (hera_bindings.ended_at IS NULL) — hera_bindings has no foreign key to
+// tasks, so deleting such a task's row would leave its Hera role pointing at
+// a task that no longer exists instead of properly ending it. skippedHeraBound
+// reports how many otherwise-eligible completed tasks were left in place for
+// that reason.
+func (d *DB) PruneCompleted() (pruned []*model.Task, skippedHeraBound int, err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	rows, err := d.conn.Query(`SELECT ` + taskColumns + ` FROM tasks WHERE status='complete'`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+	const notLiveHeraBound = `id NOT IN (SELECT argus_task_id FROM hera_bindings WHERE ended_at IS NULL)`
 
-	var pruned []*model.Task
+	rows, err := d.conn.Query(`SELECT ` + taskColumns + ` FROM tasks WHERE status='complete' AND ` + notLiveHeraBound)
+	if err != nil {
+		return nil, 0, err
+	}
 	for rows.Next() {
 		if t, err := scanTask(rows); err == nil {
 			pruned = append(pruned, t)
 		}
 	}
+	rows.Close()
+
+	if err := d.conn.QueryRow(
+		`SELECT COUNT(*) FROM tasks WHERE status='complete' AND NOT (` + notLiveHeraBound + `)`,
+	).Scan(&skippedHeraBound); err != nil {
+		return nil, 0, err
+	}
 
 	if len(pruned) == 0 {
-		return nil, nil
+		return nil, skippedHeraBound, nil
 	}
 
-	_, err = d.conn.Exec(`DELETE FROM tasks WHERE status='complete'`)
-	if err != nil {
-		return nil, err
+	if _, err := d.conn.Exec(`DELETE FROM tasks WHERE status='complete' AND ` + notLiveHeraBound); err != nil {
+		return nil, 0, err
 	}
-	return pruned, nil
+	return pruned, skippedHeraBound, nil
 }
 
 // WorktreePaths returns the set of all non-empty worktree paths currently in the DB.

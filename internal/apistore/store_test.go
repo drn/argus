@@ -399,16 +399,17 @@ func TestStore_PruneCompleted(t *testing.T) {
 	f.mux.HandleFunc("/api/maintenance/prune-completed", func(w http.ResponseWriter, r *http.Request) {
 		method, path = r.Method, r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"pruned":3,"worktrees":2,"orphans":1}`))
+		_, _ = w.Write([]byte(`{"pruned":3,"worktrees":2,"orphans":1,"skippedHeraBound":4}`))
 	})
 
-	pruned, worktrees, orphans, err := f.store().PruneCompleted(context.Background())
+	pruned, worktrees, orphans, skippedHeraBound, err := f.store().PruneCompleted(context.Background())
 	testutil.NoError(t, err)
 	testutil.Equal(t, method, "POST")
 	testutil.Equal(t, path, "/api/maintenance/prune-completed")
 	testutil.Equal(t, pruned, 3)
 	testutil.Equal(t, worktrees, 2)
 	testutil.Equal(t, orphans, 1)
+	testutil.Equal(t, skippedHeraBound, 4)
 }
 
 func TestStore_PruneCompleted_ErrorPropagates(t *testing.T) {
@@ -416,13 +417,14 @@ func TestStore_PruneCompleted_ErrorPropagates(t *testing.T) {
 	f.mux.HandleFunc("/api/maintenance/prune-completed", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	})
-	pruned, worktrees, orphans, err := f.store().PruneCompleted(context.Background())
+	pruned, worktrees, orphans, skippedHeraBound, err := f.store().PruneCompleted(context.Background())
 	if err == nil {
 		t.Fatal("expected error")
 	}
 	testutil.Equal(t, pruned, 0)
 	testutil.Equal(t, worktrees, 0)
 	testutil.Equal(t, orphans, 0)
+	testutil.Equal(t, skippedHeraBound, 0)
 }
 
 func TestStore_ForkTask(t *testing.T) {
