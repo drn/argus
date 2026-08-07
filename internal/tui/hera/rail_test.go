@@ -1629,6 +1629,61 @@ func TestDrawOrchRow_BareCount(t *testing.T) {
 	}
 }
 
+// TestRail_OrchHeaderRendersSubtreeCost is the SimulationScreen integration
+// proof for add-coordinator-cost-estimate's Decision 5/7: the orchestrator
+// header renders the blended subtree cost alongside the existing
+// agent-count badge when the subtree has accrued anything measured.
+func TestRail_OrchHeaderRendersSubtreeCost(t *testing.T) {
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(40, 10)
+
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{{ID: 1, Name: "orch", Roles: []RoleView{
+		{RoleID: 11, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc", CostUSDAccrued: 1.5},
+		{RoleID: 12, Name: "wkr", Kind: db.HeraKindWorker, Live: true, TaskID: "twk", CostUSDAccrued: 3.25},
+	}}}})
+	r.SetRect(0, 0, 40, 10)
+	r.Draw(sim)
+	sim.Show()
+
+	// Row 3 = the orch header (row 1 leading rule, row 2 group header).
+	var line string
+	for x := 0; x < 40; x++ {
+		s, _, _ := sim.Get(x, 3)
+		line += s
+	}
+	testutil.Contains(t, line, "$4.75") // 1.5 + 3.25
+}
+
+// TestRail_OrchHeaderOmitsCostWhenUnmeasured pins the "n/a, not $0.00"
+// contract at the rendering layer: an orchestrator whose subtree has never
+// accrued anything shows no cost figure at all, not "$0.00".
+func TestRail_OrchHeaderOmitsCostWhenUnmeasured(t *testing.T) {
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(40, 10)
+
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{{ID: 1, Name: "orch", Roles: []RoleView{
+		{RoleID: 11, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc"},
+	}}}})
+	r.SetRect(0, 0, 40, 10)
+	r.Draw(sim)
+	sim.Show()
+
+	var line string
+	for x := 0; x < 40; x++ {
+		s, _, _ := sim.Get(x, 3)
+		line += s
+	}
+	if strings.Contains(line, "$") {
+		t.Errorf("expected no cost figure on an unmeasured orchestrator header; got %q", line)
+	}
+}
+
 // TestRail_ContextIndicatorRendersOnWorkerRow is the SimulationScreen
 // integration proof (mirrors TestRail_PRIndicatorOnManagedRow's shape): the
 // bang actually reaches the screen on a critical worker row, and never

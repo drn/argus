@@ -61,7 +61,17 @@ type coordHookEnv struct {
 	// readContextSizeReal.
 	ReadContextSize  func(taskID, transcriptPath string) (int, error)
 	StampContextSize func(taskID string, size int) error
-	Budget           func(taskID string) (int, error)
+	// ReadTokenTotals scans transcriptPath for the five running per-rate-class
+	// token totals (add-coordinator-cost-estimate) — a pure, taskID-free scan,
+	// unlike ReadContextSize which needs taskID for its early-exit freshness
+	// check. See scanTokenTotals.
+	ReadTokenTotals func(transcriptPath string) (tokenTotals, error)
+	// StampTokenAccrual POSTs the freshly-scanned raw totals to the daemon,
+	// which diffs them against the binding's previously-persisted totals and
+	// prices the delta at accrual time (design.md Decision 2) — the actual
+	// read-modify-write and rate lookup happen server-side, not here.
+	StampTokenAccrual func(taskID string, totals tokenTotals) error
+	Budget            func(taskID string) (int, error)
 	// ForceRecycle calls the daemon's hard-stop escalation (Part B): an
 	// immediate, idle-gate-free kill-and-restart of the coordinator's
 	// session, fired once context_size crosses 1.5x budget regardless of
@@ -150,6 +160,17 @@ func runCoordHook(stdin io.Reader, out, errOut io.Writer, env coordHookEnv) {
 	// reads, with zero dependency on the session's cooperation.
 	if err := env.StampContextSize(taskID, size); err != nil {
 		_, _ = fmt.Fprintf(errOut, "coord-hook: stamp context size: %v\n", err)
+	}
+
+	// Token-usage accrual (add-coordinator-cost-estimate): same unconditional
+	// scope as the context_size stamp above — every hera-bound role kind,
+	// regardless of budget — best-effort and non-fatal, since this is cost
+	// telemetry, not the hook's primary budget/nudge responsibility.
+	totals, err := env.ReadTokenTotals(in.TranscriptPath)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "coord-hook: read token totals: %v\n", err)
+	} else if err := env.StampTokenAccrual(taskID, totals); err != nil {
+		_, _ = fmt.Fprintf(errOut, "coord-hook: stamp token accrual: %v\n", err)
 	}
 
 	// Budget/nudge/hard-stop/recycle enforcement is coordinator-only: a
@@ -274,6 +295,8 @@ func realCoordHookEnv() coordHookEnv {
 		PendingRecycleAlready:      pendingRecycleAlreadyReal,
 		ReadContextSize:            readContextSizeReal,
 		StampContextSize:           stampContextSizeReal,
+		ReadTokenTotals:            scanTokenTotals,
+		StampTokenAccrual:          stampTokenAccrualReal,
 		Budget:                     budgetReal,
 		ForceRecycle:               forceRecycleReal,
 		ReadLastNudgedContextSize:  readLastNudgedContextSizeReal,
@@ -480,6 +503,39 @@ func stampContextSizeReal(taskID string, size int) error {
 		return fmt.Errorf("encode meta payload: %w", err)
 	}
 	_, err = coordHookRequest(http.MethodPut, "/api/tasks/"+taskID+"/meta", bytes.NewReader(payload))
+	return err
+}
+
+// heraTokensPutBody mirrors internal/api/hera_cost.go's heraTokensPutReq —
+// duplicated here rather than imported to keep this CLI binary's coord-hook
+// path free of an internal/api dependency, matching how every other
+// coord-hook REST call already hand-encodes its own JSON body.
+type heraTokensPutBody struct {
+	TokensInput        int64 `json:"tokens_input"`
+	TokensCacheWrite1h int64 `json:"tokens_cache_write_1h"`
+	TokensCacheWrite5m int64 `json:"tokens_cache_write_5m"`
+	TokensCacheRead    int64 `json:"tokens_cache_read"`
+	TokensOutput       int64 `json:"tokens_output"`
+}
+
+// stampTokenAccrualReal POSTs the freshly-scanned raw totals to
+// PUT /api/tasks/{id}/hera/tokens — distinct from the generic
+// /api/tasks/{id}/meta endpoint stampContextSizeReal uses, precisely
+// because task_meta rows are deleted on task archive (design.md Decision
+// 2). The daemon-side handler does the read-modify-write delta pricing;
+// this function only ships the fresh totals.
+func stampTokenAccrualReal(taskID string, totals tokenTotals) error {
+	payload, err := json.Marshal(heraTokensPutBody{
+		TokensInput:        totals.Input,
+		TokensCacheWrite1h: totals.CacheWrite1h,
+		TokensCacheWrite5m: totals.CacheWrite5m,
+		TokensCacheRead:    totals.CacheRead,
+		TokensOutput:       totals.Output,
+	})
+	if err != nil {
+		return fmt.Errorf("encode token totals payload: %w", err)
+	}
+	_, err = coordHookRequest(http.MethodPut, "/api/tasks/"+taskID+"/hera/tokens", bytes.NewReader(payload))
 	return err
 }
 
@@ -761,4 +817,96 @@ func scanContextSize(transcriptPath string) (int, error) {
 		return 0, fmt.Errorf("scan transcript: %w", err)
 	}
 	return size, nil
+}
+
+// tokenTotals is the five running per-rate-class token totals scanTokenTotals
+// computes (add-coordinator-cost-estimate) — a SUM across every qualifying
+// transcript line, in contrast to scanContextSize's latest-value snapshot
+// (see the doc comment above and design.md Decision 1 for why these need
+// different semantics).
+type tokenTotals struct {
+	Input        int64
+	CacheWrite1h int64
+	CacheWrite5m int64
+	CacheRead    int64
+	Output       int64
+}
+
+// scanTokenTotals sums input_tokens, cache_read_input_tokens, output_tokens,
+// and the TTL-split cache_creation.ephemeral_1h_input_tokens /
+// ephemeral_5m_input_tokens across EVERY non-sidechain main-chain assistant
+// message in the transcript — a running SUM, not scanContextSize's
+// latest-value snapshot, because Anthropic bills every API call
+// independently for its own usage regardless of what a prior call already
+// paid for (design.md Decision 1). Re-scans the full file and returns a
+// fresh total on every call: the caller (coord-hook) diffs this against the
+// previously-persisted total server-side rather than this function tracking
+// any delta itself, so a duplicate/retried invocation naturally computes a
+// zero delta rather than double-counting.
+//
+// A line whose flat cache_creation_input_tokens is nonzero but whose nested
+// cache_creation object is absent attributes that value to the 5-minute
+// tier as an accepted approximation (design.md Decision 3) — not observed
+// in practice (confirmed via direct inspection of a real transcript that
+// the nested object is always present), but kept as defensive handling for
+// an unanticipated transcript shape.
+//
+// Same skip rules as scanContextSize: non-JSON lines, non-"assistant" lines,
+// and isSidechain=true lines are all skipped rather than erroring.
+func scanTokenTotals(transcriptPath string) (tokenTotals, error) {
+	f, err := os.Open(transcriptPath)
+	if err != nil {
+		return tokenTotals{}, fmt.Errorf("open transcript: %w", err)
+	}
+	defer f.Close() //nolint:errcheck // read-only fd; close error is non-actionable
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+
+	var totals tokenTotals
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var entry struct {
+			Type        string `json:"type"`
+			IsSidechain bool   `json:"isSidechain"`
+			Message     struct {
+				Usage struct {
+					InputTokens              int64 `json:"input_tokens"`
+					CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+					CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+					OutputTokens             int64 `json:"output_tokens"`
+					CacheCreation            *struct {
+						Ephemeral1hInputTokens int64 `json:"ephemeral_1h_input_tokens"`
+						Ephemeral5mInputTokens int64 `json:"ephemeral_5m_input_tokens"`
+					} `json:"cache_creation"`
+				} `json:"usage"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+		if entry.Type != "assistant" {
+			continue
+		}
+		if entry.IsSidechain {
+			continue
+		}
+		u := entry.Message.Usage
+		totals.Input += u.InputTokens
+		totals.CacheRead += u.CacheReadInputTokens
+		totals.Output += u.OutputTokens
+		if u.CacheCreation != nil {
+			totals.CacheWrite1h += u.CacheCreation.Ephemeral1hInputTokens
+			totals.CacheWrite5m += u.CacheCreation.Ephemeral5mInputTokens
+		} else {
+			totals.CacheWrite5m += u.CacheCreationInputTokens
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return tokenTotals{}, fmt.Errorf("scan transcript: %w", err)
+	}
+	return totals, nil
 }

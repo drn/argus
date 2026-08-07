@@ -1,0 +1,64 @@
+# rates.toml — cost-estimate seed rate table (internal/pricing/seed.go embeds this).
+#
+# One [models.<alias>] table per model identifier, keyed by the SAME alias
+# strings agent.KnownModels / RoleView.AppliedModel already produce (CLI
+# aliases like "sonnet", NOT versioned model IDs — see design.md's
+# alias-drift risk: correcting a stale rate after Anthropic rotates which
+# model version an alias points to is a hand-edit here, not a rebuild).
+#
+# Each field is USD per MILLION tokens for that rate class:
+#   input           - fresh (uncached) input tokens
+#   cache_write_1h  - tokens written to a 1-hour prompt cache
+#   cache_write_5m  - tokens written to a 5-minute prompt cache
+#   cache_read      - tokens served from either cache tier (billed the same
+#                     regardless of which tier wrote them)
+#   output          - generated output tokens
+#
+# A model with no [models.<alias>] entry here (and none in an in-repo or
+# installed override copy) accrues no cost — never a guess, never zero.
+#
+# Codex aliases ("gpt-5-codex", "gpt-5") are deliberately NOT seeded: the
+# accrual mechanism runs entirely off `argus coord-hook`, which is registered
+# purely as a Claude Code Stop hook (internal/doctor/stophook.go) and never
+# fires for a Codex-backend session at all — a rate entry for those aliases
+# would sit unreachable and imply a capability that doesn't exist yet.
+#
+# Installed to ~/.argus/rates.toml on first daemon start if absent (never
+# overwrites an existing file); an in-repo rates.toml takes precedence over
+# the installed copy. Hand-edit either file directly to correct pricing — no
+# restart needed, no config.toml involvement, no live-reload machinery (the
+# loader re-reads fresh from disk on every lookup).
+#
+# Pricing below is a best-effort snapshot, not a live feed — verify against
+# Anthropic's current published pricing before relying on this for real
+# financial decisions.
+
+[models.opus]
+input          = 15.00
+cache_write_1h = 30.00
+cache_write_5m = 18.75
+cache_read     = 1.50
+output         = 75.00
+
+[models.sonnet]
+input          = 3.00
+cache_write_1h = 6.00
+cache_write_5m = 3.75
+cache_read     = 0.30
+output         = 15.00
+
+[models.haiku]
+input          = 1.00
+cache_write_1h = 2.00
+cache_write_5m = 1.25
+cache_read     = 0.10
+output         = 5.00
+
+[models.fable]
+# Fable's independent pricing is not yet published as of this writing;
+# mirrors sonnet-tier as the closest placeholder pending a real figure.
+input          = 3.00
+cache_write_1h = 6.00
+cache_write_5m = 3.75
+cache_read     = 0.30
+output         = 15.00

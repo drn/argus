@@ -37,4 +37,11 @@ type HeraReader interface {
 	// dependency edges). One bulk read per BuildModel; *db.DB satisfies it,
 	// remote mode's nil reader degrades unchanged. See add-hera-plan-view D8.
 	ListHeraBlocks(orchID int64) ([]db.HeraBlock, error)
+	// SumHeraRoleCostAccruedByOrchestrator and SumNukedHeraRolesCostByOrchestrator
+	// (add-coordinator-cost-estimate) are the bulk, one-query-per-orchestrator
+	// reads feeding RoleView.CostUSDAccrued and OrchView.NukedRolesCostUSD —
+	// see design.md Decision 4 for why the nuked sum is a separate, dedicated
+	// query rather than an ListHeraRoles parameter.
+	SumHeraRoleCostAccruedByOrchestrator(orchID int64) (map[int64]float64, error)
+	SumNukedHeraRolesCostByOrchestrator(orchID int64) (float64, error)
 }

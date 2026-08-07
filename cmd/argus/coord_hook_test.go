@@ -90,6 +90,18 @@ type fakeCoordHookEnv struct {
 	stampLastNudgedErr    error
 	nudgeIncrement        int
 	nudgeIncrementErr     error
+
+	// tokenTotals / stampTokenAccrual (add-coordinator-cost-estimate) — the
+	// accrual-time token-usage scan and stamp, unconditional for every
+	// hera-bound role kind (same scope as ReadContextSize/StampContextSize).
+	tokenTotalsResult       tokenTotals
+	readTokenTotalsErr      error
+	readTokenTotalsCalled   bool
+	readTokenTotalsPath     string
+	stampTokenAccrualCalled bool
+	stampedTokenTotalsTask  string
+	stampedTokenTotals      tokenTotals
+	stampTokenAccrualErr    error
 }
 
 func (f *fakeCoordHookEnv) env() coordHookEnv {
@@ -135,6 +147,17 @@ func (f *fakeCoordHookEnv) env() coordHookEnv {
 		},
 		NudgeIncrement: func(taskID string) (int, error) {
 			return f.nudgeIncrement, f.nudgeIncrementErr
+		},
+		ReadTokenTotals: func(transcriptPath string) (tokenTotals, error) {
+			f.readTokenTotalsCalled = true
+			f.readTokenTotalsPath = transcriptPath
+			return f.tokenTotalsResult, f.readTokenTotalsErr
+		},
+		StampTokenAccrual: func(taskID string, totals tokenTotals) error {
+			f.stampTokenAccrualCalled = true
+			f.stampedTokenTotalsTask = taskID
+			f.stampedTokenTotals = totals
+			return f.stampTokenAccrualErr
 		},
 	}
 }
@@ -214,6 +237,64 @@ func TestCoordHook_WorkerRole_StampsButSkipsBudgetEnforcement(t *testing.T) {
 	if strings.Contains(out.String(), "block") {
 		t.Errorf("worker path must never emit a block decision; got stdout=%q", out.String())
 	}
+}
+
+// TestCoordHook_TokenAccrual_RunsForEveryRoleKind pins
+// add-coordinator-cost-estimate's requirement that token-usage accrual runs
+// in the SAME unconditional scope as the context_size stamp — every
+// hera-bound role kind, regardless of budget — not gated to coordinator-only
+// like the budget/nudge machinery below it.
+func TestCoordHook_TokenAccrual_RunsForEveryRoleKind(t *testing.T) {
+	for _, kind := range []string{"coordinator", "worker", "freelance"} {
+		t.Run(kind, func(t *testing.T) {
+			f := &fakeCoordHookEnv{
+				getenv:            map[string]string{"ARGUS_TASK_ID": "task-1"},
+				roleKind:          kind,
+				budget:            999999999, // coordinator path: stay under budget, no block noise
+				tokenTotalsResult: tokenTotals{Input: 10, CacheWrite1h: 20, CacheWrite5m: 30, CacheRead: 40, Output: 50},
+			}
+			var out, errOut bytes.Buffer
+			runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out, &errOut, f.env())
+
+			testutil.Equal(t, f.readTokenTotalsCalled, true)
+			testutil.Equal(t, f.readTokenTotalsPath, "/tmp/transcript.jsonl")
+			testutil.Equal(t, f.stampTokenAccrualCalled, true)
+			testutil.Equal(t, f.stampedTokenTotalsTask, "task-1")
+			testutil.DeepEqual(t, f.stampedTokenTotals, tokenTotals{Input: 10, CacheWrite1h: 20, CacheWrite5m: 30, CacheRead: 40, Output: 50})
+		})
+	}
+}
+
+// TestCoordHook_TokenAccrual_ReadError_StillStampsContextSize pins that a
+// token-scan failure is soft-fail (logged, not fatal) and does not prevent
+// the hook's primary context_size responsibility from completing.
+func TestCoordHook_TokenAccrual_ReadError_StillStampsContextSize(t *testing.T) {
+	f := &fakeCoordHookEnv{
+		getenv:             map[string]string{"ARGUS_TASK_ID": "task-1"},
+		roleKind:           "worker",
+		readTokenTotalsErr: errors.New("boom"),
+	}
+	var out, errOut bytes.Buffer
+	runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out, &errOut, f.env())
+
+	testutil.Equal(t, f.stampCalled, true) // context_size still stamped
+	testutil.Equal(t, f.stampTokenAccrualCalled, false)
+	testutil.Contains(t, errOut.String(), "read token totals")
+}
+
+// TestCoordHook_TokenAccrual_StampError_IsLoggedNotFatal mirrors the
+// StampContextSize error-logging contract for the accrual stamp.
+func TestCoordHook_TokenAccrual_StampError_IsLoggedNotFatal(t *testing.T) {
+	f := &fakeCoordHookEnv{
+		getenv:               map[string]string{"ARGUS_TASK_ID": "task-1"},
+		roleKind:             "worker",
+		stampTokenAccrualErr: errors.New("boom"),
+	}
+	var out, errOut bytes.Buffer
+	runCoordHook(stopHookStdin("/tmp/transcript.jsonl"), &out, &errOut, f.env())
+
+	testutil.Equal(t, f.stampTokenAccrualCalled, true)
+	testutil.Contains(t, errOut.String(), "stamp token accrual")
 }
 
 // TestCoordHook_FreelanceRole_StampsButSkipsBudgetEnforcement mirrors the
@@ -729,6 +810,85 @@ func TestReadContextSizeReal_SkipsSidechainAssistantLines(t *testing.T) {
 
 func TestReadContextSizeReal_MissingFile_Errors(t *testing.T) {
 	_, err := readContextSizeReal("task-1", filepath.Join(t.TempDir(), "missing.jsonl"))
+	if err == nil {
+		t.Fatal("expected an error for a missing transcript file")
+	}
+}
+
+// TestScanTokenTotals_SumsAcrossEveryTurn pins the core distinction from
+// scanContextSize (design.md Decision 1): a SUM across every qualifying
+// line, not a latest-value snapshot — two turns' input_tokens both
+// contribute, unlike context_size where only the last would count.
+func TestScanTokenTotals_SumsAcrossEveryTurn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	lines := []string{
+		`{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":100,"cache_creation":{"ephemeral_1h_input_tokens":50,"ephemeral_5m_input_tokens":0}}}}`,
+		`{"type":"assistant","message":{"usage":{"input_tokens":20,"output_tokens":7,"cache_read_input_tokens":200,"cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":30}}}}`,
+	}
+	testutil.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600))
+
+	got, err := scanTokenTotals(path)
+	testutil.NoError(t, err)
+	testutil.DeepEqual(t, got, tokenTotals{
+		Input: 30, CacheWrite1h: 50, CacheWrite5m: 30, CacheRead: 300, Output: 12,
+	})
+}
+
+// TestScanTokenTotals_MissingCacheCreationObject_FallsBackTo5m pins the
+// defensive fallback (design.md Decision 3): a line whose flat
+// cache_creation_input_tokens is nonzero but whose nested cache_creation
+// object is absent attributes that value to the 5-minute tier.
+func TestScanTokenTotals_MissingCacheCreationObject_FallsBackTo5m(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	lines := []string{
+		`{"type":"assistant","message":{"usage":{"cache_creation_input_tokens":777}}}`,
+	}
+	testutil.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600))
+
+	got, err := scanTokenTotals(path)
+	testutil.NoError(t, err)
+	testutil.DeepEqual(t, got, tokenTotals{CacheWrite5m: 777})
+}
+
+// TestScanTokenTotals_SkipsSidechainAndNonAssistantLines mirrors
+// scanContextSize's exact skip rules (design.md: "mirroring context_size's
+// existing exclusion").
+func TestScanTokenTotals_SkipsSidechainAndNonAssistantLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	lines := []string{
+		`{"type":"user","message":{"usage":{"input_tokens":999}}}`,
+		"",
+		"not json",
+		`{"type":"assistant","isSidechain":true,"message":{"usage":{"input_tokens":999}}}`,
+		`{"type":"assistant","message":{"usage":{"input_tokens":10}}}`,
+	}
+	testutil.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600))
+
+	got, err := scanTokenTotals(path)
+	testutil.NoError(t, err)
+	testutil.DeepEqual(t, got, tokenTotals{Input: 10})
+}
+
+// TestScanTokenTotals_ReScanIsIdempotent pins the property Decision 2's
+// accrual-safety argument depends on: re-scanning an UNCHANGED transcript
+// produces the identical totals, so a duplicate hook invocation computes a
+// zero delta server-side rather than double-counting.
+func TestScanTokenTotals_ReScanIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	lines := []string{
+		`{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5}}}`,
+	}
+	testutil.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600))
+
+	first, err := scanTokenTotals(path)
+	testutil.NoError(t, err)
+	second, err := scanTokenTotals(path)
+	testutil.NoError(t, err)
+	testutil.DeepEqual(t, first, second)
+}
+
+func TestScanTokenTotals_MissingFile_Errors(t *testing.T) {
+	_, err := scanTokenTotals(filepath.Join(t.TempDir(), "missing.jsonl"))
 	if err == nil {
 		t.Fatal("expected an error for a missing transcript file")
 	}

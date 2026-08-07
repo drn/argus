@@ -55,6 +55,13 @@ type coordMeta struct {
 	AgentName    string    // coordinator role's bound argus task name ("" when unbound)
 	Worktree     string    // coordinator role's live-binding worktree ("" when absent)
 	Repos        []string  // distinct argus projects across roster roles, sorted
+	// Cost (add-coordinator-cost-estimate) is the sum of CostUSDAccrued
+	// across this orchestrator's OWN roles (any kind) — NOT a recursive
+	// bridge-subtree walk like Model.SubtreeCostUSD, since deriveCoordMeta is
+	// a pure OrchView projection with no access to the whole Model. Zero
+	// means never measured (Decision 6) — Draw omits the field rather than
+	// showing "$0.00".
+	Cost float64
 }
 
 // deriveCoordMeta computes the coordinator Details metadata from an OrchView.
@@ -85,6 +92,7 @@ func deriveCoordMeta(o *OrchView) coordMeta {
 			m.AgentName = r.TaskName
 			m.Worktree = r.WorktreePath
 		}
+		m.Cost += r.CostUSDAccrued
 	}
 	repos := make([]string, 0, len(repoSet))
 	for p := range repoSet {
@@ -146,6 +154,9 @@ func (d *DetailsView) ContentHeight() int {
 		content++
 	}
 	if d.meta.Worktree != "" {
+		content++
+	}
+	if d.meta.Cost != 0 {
 		content++
 	}
 	reposRows := len(d.meta.Repos)
@@ -228,6 +239,9 @@ func (d *DetailsView) Draw(screen tcell.Screen, x, y, w, h int, focused bool) {
 	}
 	if meta.Worktree != "" {
 		field("Worktree", worktreeDisplay(meta.Worktree, inner.W))
+	}
+	if meta.Cost != 0 {
+		field("Cost", formatCostUSD(meta.Cost))
 	}
 	row++ // blank spacer
 
