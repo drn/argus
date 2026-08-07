@@ -4,30 +4,32 @@ Argus tracks per-role token telemetry as a live, overwritten snapshot (`task_met
 
 ## What Changes
 
-- Extend the `argus coord-hook` `Stop`-hook's transcript scan to additionally SUM (not snapshot) `input_tokens`/`cache_creation_input_tokens`/`cache_read_input_tokens`/`output_tokens` across every turn, and persist the running per-rate-class totals.
-- Add four new columns to `hera_bindings` (`tokens_input`, `tokens_cache_write`, `tokens_cache_read`, `tokens_output`) as the persistence target — deliberately NOT `task_meta`, because `task_meta` rows are deleted when the underlying task is archived, which would silently drop recorded spend on a routine lifecycle event.
-- Add a new hera-scoped REST write path for the hook to stamp a live binding's token totals, distinct from the existing generic `task_meta` write endpoint.
-- Add a deterministic $/token rate table (embedded Go default; `config.toml` override still open, see design.md Open Question 2), keyed by the same model-alias strings `agent.KnownModels`/`RoleView.AppliedModel` already use, with FIVE distinct rates (fresh-input, cache-write-1h, cache-write-5m, cache-read, output — the transcript carries an exact per-TTL cache-write breakdown, confirmed by direct inspection, so no blending is needed).
-- Price each newly-observed slice of token usage AT ACCRUAL TIME (the moment the Stop hook observes it), against the rate table as it stands at that moment, and add the result to a persisted `cost_usd_accrued` running total — never recomputed live at read/display time. This is a corrected mechanism (see design.md's revision note): a later rate-table change must never retroactively shift an already-recorded historical cost. A per-role total sums a role's already-priced `cost_usd_accrued` across all its bindings, and a per-coordinator/orchestrator subtree-cost rollup mirrors `Model.SubtreeAgentCount`'s existing double-count-safe subtree walk (pure addition of already-priced values), summing every role kind and deliberately including nuked children's recorded spend (a new, narrow DB query path — the existing `ListHeraRoles` nuked-exclusion behavior is left untouched for every other caller — decided, see design.md Decision 4).
-- Surface the resulting cost figures on `GET /api/hera` (new fields), the TUI's Hera orchestrator header, the web SPA's Hera tab, and the macOS app's Hera tab — display-only, no new mutation surface on any client.
-- No retroactive cost for bindings that predate this change; a binding with no recorded usage shows "n/a", not "$0.00".
+- Extend the `argus coord-hook` `Stop`-hook's transcript scan to additionally SUM (not snapshot) five token-usage classes across every turn — `input_tokens`, the TTL-split `cache_creation.ephemeral_1h_input_tokens`/`ephemeral_5m_input_tokens` (confirmed present in real transcripts by direct inspection, not guessed), `cache_read_input_tokens`, and `output_tokens` — and persist the running per-rate-class raw totals.
+- Add five new raw-count columns plus a `cost_usd_accrued` dollar column to `hera_bindings` — deliberately NOT `task_meta`, because `task_meta` rows are deleted when the underlying task is archived, which would silently drop recorded spend on a routine lifecycle event.
+- Add a new hera-scoped REST write path for the hook to stamp a live binding's raw totals; its daemon-side handler prices the DELTA since the previous stamp against the rate table AS IT STANDS AT THAT MOMENT and adds the result to `cost_usd_accrued` — accrual-time stamping, not a value recomputed live at read time. A later rate-table change therefore affects only future deltas; it can never retroactively shift an already-recorded historical cost.
+- Add a deterministic five-class $/token rate table (fresh-input, cache-write-1h, cache-write-5m, cache-read, output), keyed by the same model-alias strings `agent.KnownModels`/`RoleView.AppliedModel` already use. Sourced from a committed `rates.toml` seed file mirroring the diligence-profiles seed/install/precedence pattern exactly (embed → install-to-`~/.argus/rates.toml`-if-absent, never overwrite, in-repo copy takes precedence) rather than an embedded-Go-map-plus-config-override — no live-reload mechanism is needed, since that pattern's loader already re-reads fresh from disk on every lookup.
+- Add a per-role cost total (sum of a role's already-priced `cost_usd_accrued` across all its bindings — pure addition, no repricing) and a per-coordinator/orchestrator subtree-cost rollup mirroring `Model.SubtreeAgentCount`'s existing double-count-safe subtree walk, summing every role kind and deliberately including nuked children's recorded spend (a new, narrow DB query path — the existing `ListHeraRoles` nuked-exclusion behavior is left untouched for every other caller).
+- Surface the resulting cost figures on `GET /api/hera` (new fields) and the TUI's Hera orchestrator header/details pane — blended total only, no raw per-rate-class breakdown rendered anywhere. **TUI-only for this change**: the web SPA and macOS Hera tabs render no cost UI here — an explicit, named follow-up (mirroring the existing "hera mutations are TUI-only" standing exception), not silence, per CLAUDE.md's Frontend Parity rule. The REST fields ship now regardless, so that follow-up needs no further backend work.
+- Display-only, no new mutation surface on any client.
+- No retroactive cost for bindings that predate this change, or for any accrual period whose model lacked a rate entry at the time; a binding with no recorded usage shows "n/a", not "$0.00".
 
 ## Capabilities
 
 ### New Capabilities
 
-- `cost-estimation`: the token-sum hook extension, `hera_bindings` persistence, rate table, and per-role/per-coordinator cost rollup computation.
+- `cost-estimation`: the token-sum hook extension, `hera_bindings` persistence, the `rates.toml` seed/install/precedence mechanism, accrual-time cost stamping, and per-role/per-coordinator cost rollup computation.
 
 ### Modified Capabilities
 
-- `rest-api`: `GET /api/hera`'s `heraRoleJSON`/`heraOrchJSON` response shape gains per-role token/cost fields and a per-orchestrator subtree-cost field.
-- `hera-view`: the TUI's orchestrator header row (the existing agent-count badge requirement) gains a subtree-cost display.
-- `mobile-pwa`: the web SPA's Hera tab role rows render the new REST cost fields, read-only.
-- `macos-app`: the macOS app's Hera tab role rows render the new REST cost fields, read-only.
+- `rest-api`: `GET /api/hera`'s `heraRoleJSON`/`heraOrchJSON` response shape gains per-role token/cost fields and a per-orchestrator subtree-cost field — populated regardless of which client renders them (native TUI in `--remote` mode reads through this same endpoint).
+- `hera-view`: the TUI's orchestrator header row (the existing agent-count badge requirement) gains a blended subtree-cost display.
+
+**Not modified in this change (explicit named follow-up, not silence):** `mobile-pwa` and `macos-app` — their Hera tabs render no cost UI yet. Tracked here as the required Frontend-Parity follow-up rather than a separate untracked gap.
 
 ## Impact
 
-- **Code:** `cmd/argus/coord_hook.go` (new token-sum scan function alongside `scanContextSize`), `internal/db/schema.go` + a new `internal/db` accessor (new `hera_bindings` columns and their read/write helpers), a new `internal/db` cost-rollup query (nuked-inclusive), a new `internal/cost` (or similar) package for the rate table and USD computation, `internal/api/hera.go` (new REST write endpoint + extended roster DTO fields), `internal/tui/hera/` (`model.go`, `rail.go` — subtree-cost display), `internal/api/static/` (SPA Hera tab rendering), `macos/Sources/ArgusKit/Models+Hera.swift` and the SwiftUI Hera tab view.
-- **Data:** additive `hera_bindings` schema columns (idempotent, self-evolving, no migration script, no backfill).
+- **Code:** `cmd/argus/coord_hook.go` (new five-class token-sum scan alongside `scanContextSize`), `internal/db/schema.go` + new `internal/db` accessors (new `hera_bindings` columns, read-modify-write helpers for accrual, nuked-inclusive cost-rollup query), a new `internal/pricing` (or similar) package mirroring `internal/profiles`'s seed/install/load shape for `rates.toml`, `internal/api/hera.go` (new REST write endpoint + extended roster DTO fields), `internal/tui/hera/` (`model.go`, `rail.go` — subtree-cost display, blended total only).
+- **Data:** additive `hera_bindings` schema columns (idempotent, self-evolving, no migration script, no backfill); a new committed `rates.toml` seed file, installed to `~/.argus/rates.toml` on first absence.
 - **APIs:** one new REST endpoint (hook-facing, not user-facing); `GET /api/hera`'s response shape grows new fields (additive, non-breaking for existing consumers).
-- **No changes** to `ListHeraRoles`'s existing signature/behavior, to `task_meta`/`context_size`'s existing storage or budget/nudge logic, or to any existing mutation surface.
+- **No changes** to `ListHeraRoles`'s existing signature/behavior, to `task_meta`/`context_size`'s existing storage or budget/nudge logic, to `profiles.InstallDefaults`/`Loader` themselves (mirrored, not modified), or to any existing mutation surface.
+- **Explicitly out of scope for this change:** `internal/api/static/` (web SPA Hera tab rendering) and `macos/Sources/ArgusKit/` (macOS Hera tab rendering) — named follow-up, see Capabilities.

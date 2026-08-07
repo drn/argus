@@ -9,6 +9,8 @@ Model/backend per role is resolved live, not stored on `hera_roles` (which has n
 Three frontends read hera data today: the TUI native Hera view (`internal/tui/hera/`), the web SPA's Hera tab (`internal/api/static/`, fed by `GET /api/hera`), and the macOS app's read-only Hera tab (`macos/Sources/ArgusKit/Models+Hera.swift`, same endpoint). CLAUDE.md's Frontend Parity rule requires evaluating any user-facing/REST-exposed change against all three in the same PR, or an explicit named follow-up if deferred.
 
 > **Revision note:** Decisions 2 and 3 below were corrected after coordinator/Aaron review (hera message #4764). The original draft computed USD live at display time against "the current rate table," which Aaron flagged as wrong: a later rate change must never retroactively shift an already-recorded historical cost. The corrected mechanism (accrual-time stamping, Decision 2) and a resolved TTL question (Decision 3) are reflected below; superseded reasoning is called out explicitly rather than silently deleted, so the "why" of the correction stays visible.
+>
+> **Second revision note:** all five Open Questions are now resolved (hera message #4770). Decision 3's rate-table HOME changed again — from "embedded Go map + `config.toml` override" to a committed seed `rates.toml`, mirroring the diligence-profiles seed/install/precedence pattern exactly (no config-override layer, no live-reload machinery). Decision 5's UI scope narrowed to TUI-only for this change, with the web SPA and macOS Hera tabs named as an explicit deferred follow-up (mirroring the existing "hera mutations are TUI-only" precedent) rather than shipped silently-incomplete. A new UI-detail decision (Q5) confines rendering to the blended total, never the five-class raw breakdown, though the breakdown remains stored and REST-exposed.
 
 ## Goals / Non-Goals
 
@@ -18,7 +20,7 @@ Three frontends read hera data today: the TUI native Hera view (`internal/tui/he
 - Extend the existing per-turn transcript parse rather than add new instrumentation.
 - Beat a duration × hourly-rate proxy on accuracy by pricing actual input/cache/output tokens per model.
 - Price each slice of usage at the rate in effect when it was incurred — a later rate-table correction must never retroactively change an already-recorded historical cost.
-- Surface the figure on all three frontends per the Frontend Parity rule (display-only; no new mutation surface).
+- Surface a blended cost figure on the TUI Hera rail/details pane for this change (Decision 5); the underlying data stays REST-exposed so the deferred web/macOS follow-up (below) can reuse it without further backend work.
 
 **Non-Goals:**
 
@@ -27,6 +29,9 @@ Three frontends read hera data today: the TUI native Hera view (`internal/tui/he
 - Cost for non-Claude backends beyond whatever `KnownModels` already curates (Codex's two aliases); opencode/Pi/custom models show no cost figure, not a fabricated one.
 - Any new mutation surface (setting/editing rates from the UI, disputing a cost figure, budgets/alerts on cost) — this change is read-only telemetry, same posture as the existing REST hera roster.
 - Rebuilding `scanContextSize`'s own retry-and-max-across-scans logic for the raw-token-count path — see Decision 1 for why a sum doesn't need it.
+- A `config.toml`-based rate override, or any live-reload mechanism for rates — superseded by Decision 3's seed-file approach, which needs neither.
+- **Web SPA and macOS Hera-tab cost rendering** (decided, Open Question 4 resolved per Aaron, hera message #4770): this change is TUI-only. Per CLAUDE.md's Frontend Parity rule, this is an explicit NAMED gap, not silence — mirroring the existing standing exception that "hera mutations are TUI-only; over REST hera is read-only." `GET /api/hera`'s new fields still populate (Decision 5) so a future follow-up change can add rendering to both without further backend work; this is the named follow-up itself, tracked here rather than as a separate change yet.
+- **A raw per-rate-class token/cost breakdown rendered in any UI** (decided, Open Question 5 resolved per Aaron, hera message #4770): only the blended `cost_usd`/`subtree_cost_usd` total renders anywhere. The five raw token-count columns and the per-accrual pricing detail still exist in the DB and are still exposed via `GET /api/hera` (useful for debugging and for the deferred web/macOS follow-up) — this Non-Goal governs rendering only, not storage or REST exposure.
 
 ## Decisions
 
@@ -85,11 +90,16 @@ The rate table therefore needs FIVE rates per model, not four: fresh input, cach
 
 **Defensive fallback, not the primary path:** a transcript line whose flat `cache_creation_input_tokens` is nonzero but whose nested `cache_creation` object is absent (a hypothetical older/different transcript shape, not observed in the sampled data above) is treated as an accepted approximation attributed to the 5-minute tier — the non-opted-in default — rather than blocking accumulation entirely.
 
-A default rate table ships embedded in Go (e.g. `internal/cost`), versioned in source the same way `KnownModels` is. Whether `config.toml` may additionally override it (mirroring the project's existing config-override-layer precedent) is Aaron's call and remains **Open Question 2** below — this decision fixes the five-class shape and the accrual-time pricing point, not the embed-vs-override question.
+**Rate table home — REVISED again (Open Question 2 resolved, Aaron, hera message #4770):** not an embedded Go map with an open `config.toml`-override question, but a committed seed file mirroring the diligence-profiles seed/install/precedence pattern EXACTLY, rather than inventing a new shape:
 
-A model outside the curated set (opencode/custom/Pi backends, which return `nil` from `KnownModels`) has no rate entry and accrues no cost figure for that period — surfaced as "n/a", not a fabricated guess (Decision 6's corollary).
+- A `rates.toml` file is authored and committed in the repo (e.g. `internal/pricing/rates.toml`), `//go:embed`-ed as a single seed default — the same shape as `internal/profiles/seeds.go`'s `seedFS`/`SeedNames`, just one file instead of three.
+- An install function mirroring `profiles.InstallDefaults` (`internal/profiles/install.go:15-35`) writes the embedded seed to `~/.argus/rates.toml` ONLY if that path doesn't already exist — it never overwrites an operator's hand-edited copy. `InstallDefaults` itself is only ever invoked explicitly (a Settings UI action, `internal/tui/app.go:1508`) — never automatically at daemon startup. Rates differ from profiles here: pricing data is required infrastructure for an always-on background accrual mechanism (the Stop hook), not an opt-in customization a user deliberately turns on, so this design calls the install function automatically and idempotently (e.g. at daemon startup, a no-op if the file already exists) rather than gating it behind a manual Settings action — a deliberate, reasoned divergence from the mirrored pattern's call site, not the storage/lookup mechanism itself.
+- Lookup precedence mirrors `profiles.Loader.locate` (`internal/profiles/load.go:33-47`): an in-repo copy (e.g. `<worktree>/.argus/rates.toml`) takes precedence over the installed library copy (`~/.argus/rates.toml`) when present, letting a specific project pin custom test rates without touching the shared library file.
+- **No live-reload mechanism is needed, and none is built:** `profiles.Loader.Load` (`internal/profiles/load.go:91-105,111-113`) has no caching layer at all — every lookup calls `toml.DecodeFile` fresh from disk. Reusing this exact pattern for rates means a hand-edit to `~/.argus/rates.toml` takes effect on the very next accrual-time pricing lookup (Decision 2, step 4), with no mtime-watch or reload trigger to build — this is why no live-reload requirement was needed here, unlike `config.toml`'s override layer elsewhere in the project, which DOES need one because it caches.
 
-**Named risk, still open, reframed for accrual-time pricing:** a CLI alias like `"sonnet"` always resolves to "whatever Anthropic currently designates," so if Anthropic rotates the underlying model version at a different price, newly-accrued deltas are priced at the STALE rate until someone notices and corrects the table. Because pricing is now accrual-time-stamped (Decision 2), this mispricing is confined to the window between the actual price change and the correction — it can no longer cascade into retroactively corrupting history, but the live window itself is still a real risk. See Risks.
+A model outside the curated set (opencode/custom/Pi backends, which return `nil` from `KnownModels`), or simply absent from `rates.toml`, has no rate entry and accrues no cost figure for that period — surfaced as "n/a", not a fabricated guess (Decision 6's corollary).
+
+**Named risk, reframed for accrual-time pricing:** a CLI alias like `"sonnet"` always resolves to "whatever Anthropic currently designates," so if Anthropic rotates the underlying model version at a different price, newly-accrued deltas are priced at the STALE rate until someone notices and hand-edits `~/.argus/rates.toml` (or the in-repo override copy). Because pricing is now accrual-time-stamped (Decision 2), this mispricing is confined to the window between the actual price change and the correction — it can no longer cascade into retroactively corrupting history, but the live window itself is still a real risk, and there is no live-reload watcher to surface that the table has gone stale. See Risks.
 
 ### Decision 4: Per-coordinator total mirrors `SubtreeAgentCount`'s double-count-safe walk, but sums every role kind's ALREADY-PRICED cost and bypasses the `nuked_at` exclusion
 
@@ -99,14 +109,13 @@ Because `cost_usd_accrued` is already fully priced at write time (Decision 2), t
 
 The `nuked_at IS NULL` exclusion baked unconditionally into `ListHeraRoles` (`internal/db/hera.go:557-568`, specifically line 564, confirmed to apply even when `includeArchived=true`) is correct for DISPLAY (a nuked role is fully torn down and hidden everywhere) but wrong for a financial rollup — money genuinely accrued by a since-nuked child must still count, or the total silently under-reports every time a coordinator nukes a finished child, which is normal cleanup. **Decided (Aaron, hera message #4764, Open Question 1 resolved):** this is implemented via a NEW, dedicated DB query path (e.g. `ListHeraRolesForCostRollup`) rather than an `includeNuked` parameter added to `ListHeraRoles` itself — `ListHeraRoles`'s existing signature and behavior stay untouched for every other caller.
 
-### Decision 5: Implement all three frontends (TUI, web SPA, macOS) in the same change, not a named-gap deferral
+### Decision 5: TUI-only rendering for this change, with an explicit named follow-up for web SPA and macOS — DECIDED (Open Question 4 resolved, Aaron, hera message #4770)
 
-Per CLAUDE.md's Frontend Parity rule (this remains **Open Question 4** — the plan below is the default shape if all three ship together, not yet confirmed as the final scope). Every figure surfaced below is the PERSISTED, already-priced `cost_usd_accrued` sum (Decision 2/4) — never a value recomputed live against "the current rate table" at display time.
+CLAUDE.md's Frontend Parity rule requires either shipping a user-facing/REST-exposed change on all three frontends in the same PR, or an explicit named follow-up if deferred — never silence. Aaron chose the deferral: this change renders cost ONLY in the TUI. Every figure surfaced below is the PERSISTED, already-priced `cost_usd_accrued` sum (Decision 2/4) — never a value recomputed live against "the current rate table" at display time.
 
-- **REST** (`internal/api/hera.go`): extend `heraRoleJSON` (lines 15-27) with per-role token totals and `cost_usd`, and `heraOrchJSON` (lines 32-43) with a `subtree_cost_usd` field (the Decision-4 rollup). This is the single source both other clients read.
-- **TUI**: the natural fit is NOT the rail's per-role row — that row is already width-squeezed (the existing "Worker/freelance rail rows show a context-pressure indicator" requirement reserves an exact 2-character trailing slot and truncates the role name to make room). Instead, extend the orchestrator header's existing right-aligned bare-number agent-count badge (the "Orchestrator and role row rendering (area 3)" requirement, `internal/tui/hera/rail.go` `drawOrchRow`) with the subtree cost total, and surface the per-role breakdown in the details pane rather than the rail row.
-- **Web SPA** (`internal/api/static/`): the Hera tab's existing role-row rendering (per "Hera orchestration tab" in `mobile-pwa`) gets the new REST field rendered read-only, consistent with the existing "hera mutations are TUI-only, REST is read-only" standing gap already named in CLAUDE.md.
-- **macOS** (`macos/Sources/ArgusKit/Models+Hera.swift`): extend `HeraRole`/`HeraOrchestrator` (struct at line 5) with the matching decoded field(s) and render in the SwiftUI Hera tab's role-row view.
+- **REST** (`internal/api/hera.go`): STILL extended — `heraRoleJSON` (lines 15-27) gains per-role token totals and `cost_usd`, and `heraOrchJSON` (lines 32-43) gains a `subtree_cost_usd` field (the Decision-4 rollup). This is not optional scope-creep: the native TUI itself reads through this same REST surface in `--remote` mode (per the `remote-tui` capability's `apistore`/`apiclient` architecture), so the fields are load-bearing for TUI-only rendering, not just a courtesy to the deferred clients. Shipping them now also means the named follow-up below needs no further backend work.
+- **TUI**: the natural fit is NOT the rail's per-role row — that row is already width-squeezed (the existing "Worker/freelance rail rows show a context-pressure indicator" requirement reserves an exact 2-character trailing slot and truncates the role name to make room). Instead, extend the orchestrator header's existing right-aligned bare-number agent-count badge (the "Orchestrator and role row rendering (area 3)" requirement, `internal/tui/hera/rail.go` `drawOrchRow`) with the subtree cost total, and surface the per-role figure in the details pane rather than the rail row. Per Decision 7 below, both render ONLY the blended total — no per-rate-class breakdown.
+- **Web SPA and macOS: explicitly NOT in this change.** Named here as the required follow-up (mirroring the existing standing exception "hera mutations are TUI-only; over REST hera is read-only") rather than a silent gap — see the Non-Goals bullet added for this. The REST fields above are already in place for whenever that follow-up lands.
 
 Cost is display-only on every surface — no editing rates, no per-role cost mutation, matching the existing read-only REST hera posture.
 
@@ -116,30 +125,38 @@ A binding whose session ran (and possibly ended) before this ships never had its
 
 Per Decision 2's corollary, this now also covers a SECOND case beyond pre-ship history: any accrual period whose role had no matching rate-table entry at the time, whose usage is permanently excluded from `cost_usd_accrued` even if a rate for that model is added later (raw token counts still advance regardless — only the dollar figure has gaps). Both cases render identically as "unmeasured," and neither is ever backfilled.
 
+### Decision 7: Blended total only in the UI — DECIDED (Open Question 5 resolved, Aaron, hera message #4770)
+
+The TUI renders only the single blended `cost_usd` / `subtree_cost_usd` figure — never the five raw rate-class token counts or their individual priced contributions. This governs RENDERING only: the five raw columns and `cost_usd_accrued` remain fully persisted (Decision 2) and fully exposed via `GET /api/hera` (Decision 5) regardless of this choice, so a future UI (including the deferred web/macOS follow-up, or a debugging curl against the REST endpoint) can still see the breakdown even though the TUI itself does not render it.
+
 ## Risks / Trade-offs
 
-- **[Risk]** Alias-keyed rate table (Decision 3) goes stale when Anthropic rotates which model version underlies a CLI alias (e.g. `"sonnet"`) at a different price — now confined to a LIVE mispricing window rather than a retroactive one (Decision 2's accrual-time stamping prevents it from corrupting history), but the window itself is still real. → **Mitigation:** whatever mechanism Open Question 2 settles on for correcting rates, document the alias-not-version caveat prominently so a "wrong-looking NEW cost" after a model swap isn't mistaken for a logic bug.
+- **[Risk]** Alias-keyed rate table (Decision 3) goes stale when Anthropic rotates which model version underlies a CLI alias (e.g. `"sonnet"`) at a different price — now confined to a LIVE mispricing window rather than a retroactive one (Decision 2's accrual-time stamping prevents it from corrupting history), but the window itself is still real, and there is no live-reload watcher to surface that the table has gone stale. → **Mitigation:** correcting `~/.argus/rates.toml` (or an in-repo override copy) takes effect on the very next accrual-time lookup with no restart needed (Decision 3's no-caching property); document the alias-not-version caveat prominently so a "wrong-looking NEW cost" after a model swap isn't mistaken for a logic bug.
 - **[Risk]** Custom/opencode/Pi-backend models have no curated identifier (`KnownModels` returns `nil`) and so no rate entry, ever, for any accrual period. → **Mitigation:** cost shows "n/a" for those roles rather than a fabricated guess; explicitly a Non-Goal to cover them.
 - **[Risk]** The accrual mechanism (Decision 2) requires a read-modify-write on the daemon side (read previous totals + previous accrued cost, compute a delta, write both) rather than `context_size`'s simpler blind overwrite — a more complex REST handler contract than any existing hera-hook endpoint. → **Mitigation:** confined entirely to the one new endpoint; proven safe against duplicate/retried hook fires via the zero-delta argument in Decision 2; no change to the existing `context_size` path.
 - **[Risk]** The new cost-rollup DB query path deliberately includes nuked roles, diverging from every other existing hera rollup (agent count, needs-input rollup, etc.), which all exclude them (Decision 4). → **Mitigation:** implemented as a wholly separate function (decided, Open Question 1 resolved), not a change to `ListHeraRoles`'s existing behavior/callers; the divergence itself needs this doc's rationale so a future reader doesn't "fix" it back into consistency with the display rollups.
 - **[Risk]** Full-transcript resum on every Stop-hook call grows linearly with conversation length. → **Mitigation:** none needed beyond the existing precedent — `scanContextSize`'s own doc comment (coord_hook.go:709-710) already accepts this cost class, reasoning the HTTP round-trip dominates; the raw-count path is actually CHEAPER than context_size's, since it needs no retry-and-max loop (Decision 1).
 - **[Risk]** A new REST write path is additional daemon-side surface that will 405 on a stale-binary daemon until rebuilt+restarted (the existing `hera_send 405` class of issue). → **Mitigation:** none beyond the existing rebuild-and-restart playbook; noted so implementers don't chase a phantom bug.
+- **[Risk]** Installing `rates.toml` automatically at daemon startup (Decision 3's deliberate divergence from the profiles precedent's manual-only trigger) means the install path runs unattended, unlike every other consumer of the `InstallDefaults` shape. → **Mitigation:** the install function's own existing contract (never overwrite an existing file) makes repeated automatic calls safe/idempotent by construction; no new safeguard needed beyond reusing that contract as-is.
+- **[Risk]** Deferring web SPA and macOS rendering (Decision 5) means an operator using either of those surfaces sees no cost figure at all, even though the REST data exists. → **Mitigation:** named explicitly as a Non-Goal + follow-up per CLAUDE.md's Frontend Parity rule, not silent; the REST fields ship now so the follow-up needs no backend work.
 
 ## Migration Plan
 
-New `hera_bindings` columns (five raw INTEGER token-count columns plus `cost_usd_accrued` REAL) land via the schema's existing idempotent self-evolving pattern (CREATE-TABLE-carries-column-inline for fresh DBs; ALTER for existing ones) — no explicit migration script. No backfill for historical bindings or for any accrual period whose model lacked a rate entry at the time (Decision 6) — additive only, consistent with the project's no-legacy-migration-code policy.
+New `hera_bindings` columns (five raw INTEGER token-count columns plus `cost_usd_accrued` REAL) land via the schema's existing idempotent self-evolving pattern (CREATE-TABLE-carries-column-inline for fresh DBs; ALTER for existing ones) — no explicit migration script. A new committed `rates.toml` seed file (e.g. `internal/pricing/rates.toml`) ships in the repo, `go:embed`-ed and installed to `~/.argus/rates.toml` on daemon startup if absent (Decision 3) — no config-file migration, no schema for it beyond the TOML file itself. No backfill for historical bindings or for any accrual period whose model lacked a rate entry at the time (Decision 6) — additive only, consistent with the project's no-legacy-migration-code policy.
 
-Suggested build order (detailed in `tasks.md`): (1) hook raw-token-count accumulation (five classes) + `hera_bindings` columns; (2) rate table (five classes) + the new REST endpoint's read-modify-write accrual handler; (3) rollup queries (per-role, per-coordinator, including the nuked-inclusive carve-out — now pure addition); (4) REST DTO fields; (5) TUI render; (6) web SPA render; (7) macOS render.
+Suggested build order (detailed in `tasks.md`): (1) `rates.toml` seed + install/lookup mechanism (five classes); (2) hook raw-token-count accumulation (five classes) + `hera_bindings` columns + the new REST endpoint's read-modify-write accrual handler; (3) rollup queries (per-role, per-coordinator, including the nuked-inclusive carve-out — now pure addition); (4) REST DTO fields; (5) TUI render (blended total only, per Decision 7). Web SPA and macOS rendering are explicitly OUT of this build order (Decision 5) — a separate future change.
 
 ## Open Questions
 
-1. ~~**Nuked-inclusive rollup query shape**~~ — **RESOLVED** (Aaron, hera message #4764): a dedicated new DB function, not an `includeNuked` parameter on `ListHeraRoles`. See Decision 4.
-2. **Rate table home** (Decision 3): embedded-default-plus-`config.toml`-override, or embedded-only with no override (simpler, but a rebuild+redeploy is needed every time Anthropic changes pricing)? Still open — coordinator is working this with Aaron.
-3. ~~**Cache-write TTL granularity**~~ — **RESOLVED**: the transcript's nested `usage.cache_creation.ephemeral_1h_input_tokens`/`ephemeral_5m_input_tokens` fields give an exact, deterministic per-TTL breakdown (confirmed via direct inspection — see Decision 3). No blending needed; a flattened-only fallback is kept as defensive-only handling for an unobserved transcript shape.
-4. **UI parity scope** (Decision 5): implement all three surfaces in this same change as currently designed, or explicitly defer web SPA and/or macOS with a named follow-up? Still open — coordinator is working this with Aaron.
-5. **Per-role token breakdown visibility**: expose the five raw rate-class token counts anywhere in the UI (for transparency/debugging), or only the final `cost_usd_accrued` figure? Still open — coordinator is working this with Aaron.
+All five are now resolved (Aaron, hera messages #4764 and #4770); kept here for traceability rather than deleted.
 
-**No implementation work will start until all five are resolved and Aaron gives explicit approval** — this PR stays proposal-only until then.
+1. ~~**Nuked-inclusive rollup query shape**~~ — **RESOLVED**: a dedicated new DB function, not an `includeNuked` parameter on `ListHeraRoles`. See Decision 4.
+2. ~~**Rate table home**~~ — **RESOLVED**: not an embedded Go map with a `config.toml` override, but a committed seed `rates.toml` mirroring the diligence-profiles seed/install/precedence pattern, with no live-reload mechanism (none needed — see Decision 3).
+3. ~~**Cache-write TTL granularity**~~ — **RESOLVED**: the transcript's nested `usage.cache_creation.ephemeral_1h_input_tokens`/`ephemeral_5m_input_tokens` fields give an exact, deterministic per-TTL breakdown (confirmed via direct inspection — see Decision 3). No blending needed; a flattened-only fallback is kept as defensive-only handling for an unobserved transcript shape.
+4. ~~**UI parity scope**~~ — **RESOLVED**: TUI-only for this change; web SPA and macOS are an explicit named follow-up, not silence. See Decision 5.
+5. ~~**Per-role token breakdown visibility**~~ — **RESOLVED**: only the blended total renders in the UI; the raw breakdown stays stored and REST-exposed for a future consumer. See Decision 7.
+
+**No implementation work has started. `tasks.md` is not yet approved to execute — Aaron still needs to give explicit go-ahead after reviewing this updated design**, per the coordinator's message resolving these questions.
 
 ## Acceptance criteria
 
@@ -160,12 +177,15 @@ Suggested build order (detailed in `tasks.md`): (1) hook raw-token-count accumul
 - it should leave every already-accrued `cost_usd_accrued` value unchanged when the rate table later changes — only future deltas use the new rate
 - it should never assign a cost, even after a rate is later added for that model, to a delta that was observed while no rate-table entry existed
 
-**Decision 3 (five-class rate table, TTL-split):**
+**Decision 3 (five-class rate table, TTL-split, seed-file mechanism):**
 
 - it should look up rates by the same model-alias string already resolved into `RoleView.AppliedModel`
 - it should read `usage.cache_creation.ephemeral_1h_input_tokens` and `usage.cache_creation.ephemeral_5m_input_tokens` as two separate running totals, not the flattened `cache_creation_input_tokens`
 - it should apply distinct rates for fresh-input, cache-write-1h, cache-write-5m, cache-read, and output tokens
 - it should surface no cost figure (not a zero, not a guess) for a model absent from the rate table at accrual time
+- it should never overwrite an existing `~/.argus/rates.toml`, mirroring `InstallDefaults`'s existing never-overwrite contract
+- it should prefer an in-repo `rates.toml` copy over the installed library copy when both are present
+- it should reflect a hand-edit to `rates.toml` on the very next accrual-time lookup, with no restart and no explicit reload call
 
 **Decision 4 (subtree rollup):**
 
@@ -174,18 +194,22 @@ Suggested build order (detailed in `tasks.md`): (1) hook raw-token-count accumul
 - it should include a nuked child role's recorded cost in its coordinator's subtree total, via the dedicated new query path
 - it should exclude a nuked child role from every OTHER existing rollup's behavior (agent count, needs-input) unchanged — this design touches only the new cost-rollup query path
 
-**Decision 5 (UI parity):**
+**Decision 5 (TUI-only, REST stays extended):**
 
 - it should expose per-role token totals and `cost_usd`, and per-orchestrator `subtree_cost_usd`, on `GET /api/hera`, all sourced from persisted accrued values
 - it should render the subtree cost total on the TUI orchestrator header alongside the existing agent-count badge
-- it should render the REST cost fields, read-only, on the web SPA's Hera tab role rows
-- it should render the REST cost fields, read-only, on the macOS app's Hera tab role rows
+- it should render NO cost figure on the web SPA's Hera tab or the macOS app's Hera tab in this change (explicitly deferred, not silently missing — see the Non-Goals bullet)
 - it should expose no control on any surface that edits a rate, edits a recorded token total, or otherwise mutates cost data
 
 **Decision 6 (no retroactive cost):**
 
 - it should render "n/a" (not "$0.00") for a binding whose raw columns and `cost_usd_accrued` are all still 0
 - it should apply no backfill or migration to bindings that predate this change, or to any accrual period whose model lacked a rate entry at the time
+
+**Decision 7 (blended total only in the UI):**
+
+- it should render only the single blended cost figure in the TUI (orchestrator header and details pane) — never the five raw rate-class token counts
+- it should still expose the five raw rate-class token counts via `GET /api/hera`, unaffected by this rendering choice
 
 ## Discovery findings
 
@@ -198,3 +222,5 @@ Suggested build order (detailed in `tasks.md`): (1) hook raw-token-count accumul
 - `Model.SubtreeAgentCount` / `BridgeSubtree` (model.go:811-821) already solve double-count-safe subtree aggregation for a different metric (agent count) — the cost rollup reuses the walk, diverging only in which role kinds it sums and in bypassing the nuked-role exclusion; because cost is now pre-priced at accrual time, the rollup itself is pure addition, simpler than originally drafted.
 - `internal/llm/namegen.go`'s ~$0.0034/call figure is a one-off comment justifying a timeout constant, not a reusable cost module — there is no existing pricing infrastructure to build on.
 - The existing "Orchestrator and role row rendering (area 3)" hera-view requirement's agent-count badge is the natural home for a subtree cost figure in the TUI (not the width-constrained rail row, which is already fully committed to the context-pressure indicator's reserved 2-column slot).
+- **`internal/profiles/` already ships the exact seed/install/precedence shape `rates.toml` needs** (found while resolving Open Question 2): `seeds.go`'s `//go:embed seeds/*.toml` + `SeedNames`, `install.go`'s `InstallDefaults` (skip-if-exists, never overwrite, explicit-invocation-only), and `load.go`'s `Loader.locate` (RepoDir checked before LibraryDir). Confirmed `Loader.Load` has NO caching layer at all (`grep` for `[Cc]ache` in that package returns nothing) — every lookup re-reads the TOML file from disk, which is exactly why reusing this shape needs no live-reload mechanism for rates, unlike `config.toml`'s override layer elsewhere in the project.
+- **`InstallDefaults` itself is only ever invoked explicitly today**, from a Settings UI action (`internal/tui/app.go:1508`), never automatically at daemon startup — a deliberate divergence point this design calls out rather than silently mirroring, since rates (unlike opt-in diligence profiles) must be present for an always-on background mechanism to function at all.

@@ -6,6 +6,8 @@ The REST API SHALL expose `GET /api/hera`, a read-only endpoint returning the He
 
 `kanban_status` is emitted as-is for every orchestrator regardless of nesting — the endpoint does not resolve canonical parents or otherwise distinguish top-level from nested orchestrators, so a nested orchestrator's own (rail-inert) `kanban_status` value is still visible in its envelope. `subtree_cost_usd` and every per-role cost/token field are likewise read-only: mutating any of them, or the underlying rate table, over REST is out of scope — this stays under the existing standing exception that Hera mutations are TUI-only (`GET /api/hera` stays read-only in every field).
 
+These fields SHALL be populated regardless of which client renders them: the native TUI itself reads through this endpoint in `--remote` mode, and the web SPA and macOS app render no cost UI yet (an explicit, separately-tracked follow-up, not a reason to omit the data here).
+
 Derived from: `internal/api/hera.go` (`heraOrchJSON`, `heraRoleJSON`, `handleHera`).
 
 #### Scenario: Empty roster

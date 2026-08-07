@@ -1,24 +1,29 @@
 **Design doc:** `openspec/changes/add-coordinator-cost-estimate/design.md`
 
-**Status:** Proposal only. Do NOT execute this plan until Aaron has approved the design and answered the Open Questions in `design.md`. No implementation has been started.
+**Status:** Proposal only. Do NOT execute this plan until Aaron gives explicit go-ahead after reviewing the updated design (all five Open Questions are resolved as of hera messages #4764/#4770, but implementation has not been approved to start). No implementation has been started.
+
+**Scope note:** this change is TUI-only (Decision 5) and renders the blended total only (Decision 7). Web SPA and macOS Hera-tab rendering are an explicit named follow-up, NOT a stage below — see `design.md`'s Non-Goals.
 
 ## 1. Tests
 
 - [ ] 1.1 Write failing tests for the Stop-hook raw-token scan (sidechain exclusion, idempotent resum, all-role-kind accumulation, output-token capture, TTL-split cache-write fields, missing-breakdown fallback to 5-minute tier) from `specs/cost-estimation/spec.md`
-- [ ] 1.2 Write failing tests for `hera_bindings` token-column and `cost_usd_accrued` persistence and archive-independence (archiving a task leaves both unchanged; a recycled role's total spans every incarnation)
-- [ ] 1.3 Write failing tests for the five-class rate table (curated-model lookup, uncurated-model no-figure) and for accrual-time stamping specifically (a rate-table change affects only future deltas, never already-accrued cost; a duplicate hook invocation with a zero delta adds nothing; a rate added later never retroactively prices earlier unrated usage)
-- [ ] 1.4 Write failing tests for the subtree cost rollup (pure addition of already-priced `cost_usd_accrued`, nuked-inclusion, exactly-once nested-sub-coordinator counting, `ListHeraRoles`'s other callers unaffected)
-- [ ] 1.5 Write failing tests for the extended `GET /api/hera` DTO fields (populated vs. omitted-when-unmeasured, on both role and orchestrator envelopes)
-- [ ] 1.6 Confirm every acceptance criterion in `design.md` maps to a failing test written above (Prove-It Pattern) before starting Stage 2
+- [ ] 1.2 Write failing tests for the `rates.toml` seed/install/precedence mechanism (never-overwrite-existing, in-repo-takes-precedence, no-restart-needed-on-hand-edit)
+- [ ] 1.3 Write failing tests for `hera_bindings` token-column and `cost_usd_accrued` persistence and archive-independence (archiving a task leaves both unchanged; a recycled role's total spans every incarnation)
+- [ ] 1.4 Write failing tests for accrual-time stamping specifically (a rate-table change affects only future deltas, never already-accrued cost; a duplicate hook invocation with a zero delta adds nothing; a rate added later never retroactively prices earlier unrated usage)
+- [ ] 1.5 Write failing tests for the subtree cost rollup (pure addition of already-priced `cost_usd_accrued`, nuked-inclusion, exactly-once nested-sub-coordinator counting, `ListHeraRoles`'s other callers unaffected)
+- [ ] 1.6 Write failing tests for the extended `GET /api/hera` DTO fields (populated vs. omitted-when-unmeasured, on both role and orchestrator envelopes)
+- [ ] 1.7 Confirm every acceptance criterion in `design.md` maps to a failing test written above (Prove-It Pattern) before starting Stage 2
 
-## 2. Rate table
+## 2. Rate table (rates.toml seed/install/precedence)
 
 **Depends on:** Stage 1
 
-- [ ] 2.1 Add a new package (e.g. `internal/cost`) defining a per-model rate struct with FIVE classes (input / cache-write-1h / cache-write-5m / cache-read / output, $ per token) and an embedded default map keyed by `agent.KnownModels`'s alias strings
-- [ ] 2.2 Resolve Open Question 2 (embedded-only vs `config.toml` override) with Aaron before implementing; if override is chosen, add `config.toml` loading following the project's existing config-override-layer precedence and mtime live-reload pattern
-- [ ] 2.3 Add a `PriceDelta(tokenDeltas, rate) -> costDelta` helper for pricing a single accrual increment — NOT a whole-total pricing function; a model with no rate entry yields "not priced," never zero
-- [ ] 2.4 Unit tests: per-class pricing correctness, no-rate-entry-yields-unpriced
+- [ ] 2.1 Author a committed `rates.toml` seed file (e.g. `internal/pricing/rates.toml`) with five per-model rate classes (input / cache-write-1h / cache-write-5m / cache-read / output), covering at minimum the Claude and Codex aliases `agent.KnownModels` curates
+- [ ] 2.2 `//go:embed` the seed, mirroring `internal/profiles/seeds.go`'s `seedFS` shape (one file, not a named set)
+- [ ] 2.3 Add an install function mirroring `profiles.InstallDefaults` (`internal/profiles/install.go:15-35`): write the embedded seed to `~/.argus/rates.toml` only if absent, never overwrite. Unlike `InstallDefaults`'s explicit-invocation-only contract, wire this to run automatically and idempotently (e.g. at daemon startup)
+- [ ] 2.4 Add a lookup function mirroring `profiles.Loader.locate` (`internal/profiles/load.go:33-47`): check an in-repo `rates.toml` before the installed library copy; read fresh from disk on every call, no caching
+- [ ] 2.5 Add a `PriceDelta(tokenDeltas, rate) -> costDelta` helper for pricing a single accrual increment — NOT a whole-total pricing function; a model with no rate entry yields "not priced," never zero
+- [ ] 2.6 Unit tests: never-overwrite, in-repo-precedence, no-caching (hand-edit visible on next call), per-class pricing correctness, no-rate-entry-yields-unpriced
 
 ## 3. Hook token-accumulation, binding persistence, and accrual-time cost stamping
 
@@ -49,36 +54,20 @@
 - [ ] 5.3 Wire `handleHera` to populate the new fields, omitting (not zeroing) unmeasured/uncurated cases
 - [ ] 5.4 Tests: populated-when-measured, omitted-when-unmeasured, on both role and orchestrator envelopes
 
-## 6. TUI render
+## 6. TUI render (blended total only)
 
 **Depends on:** Stage 5
 
-- [ ] 6.1 Extend `RoleView` (`internal/tui/hera/model.go`) with per-role cost/token fields, and the Model with a subtree-cost accessor
+- [ ] 6.1 Extend `RoleView` (`internal/tui/hera/model.go`) with the per-role blended `cost_usd` field only (no per-rate-class fields — Decision 7), and the Model with a subtree-cost accessor
 - [ ] 6.2 Render the subtree cost figure alongside the existing agent-count badge in the orchestrator header (`drawOrchRow`, `internal/tui/hera/rail.go`), omitted when nothing in the subtree is measured
-- [ ] 6.3 Render per-role cost/token breakdown in the details pane (not the width-constrained rail row)
+- [ ] 6.3 Render the per-role blended cost figure in the details pane (not the width-constrained rail row) — no raw token/rate-class breakdown
 - [ ] 6.4 Smoke test asserting the header renders the cost figure when present and omits it when absent
 
-## 7. Web SPA render
+## 7. Documentation and gotchas
 
-**Depends on:** Stage 5
+**Depends on:** Stages 2-6
 
-- [ ] 7.1 Render `subtree_cost_usd` on orchestrator rows and `cost_usd` on role rows in the Hera tab (`internal/api/static/`)
-- [ ] 7.2 HTML-escape as required by the existing Hera tab requirement; omit cleanly (no `$0.00`) when the field is absent
-- [ ] 7.3 Bump `SW_VERSION` in `internal/api/static/sw.js` per the shell-asset-change rule
-
-## 8. macOS render
-
-**Depends on:** Stage 5
-
-- [ ] 8.1 Extend `HeraRole`/`HeraOrchestrator` (`macos/Sources/ArgusKit/Models+Hera.swift`) with the matching decoded cost/token fields
-- [ ] 8.2 Render the figures in the SwiftUI Hera tab's role-row view, omitted cleanly when absent
-- [ ] 8.3 `make mac-test` coverage for the new decode fields and row rendering
-
-## 9. Documentation and gotchas
-
-**Depends on:** Stages 3-8
-
-- [ ] 9.1 Document the token-sum-vs-snapshot distinction, the `task_meta`-archive-deletion rationale for choosing `hera_bindings`, and the accrual-time-stamping-vs-read-time-repricing correction (why it matters, cite hera message #4764) in `context/knowledge/gotchas/` (per CLAUDE.md's non-obvious-gotcha documentation rule)
-- [ ] 9.2 Add `uxlog` calls for the new REST write path and rollup failures (state transitions, silently-skipped work) per CLAUDE.md's Logging Requirements
-- [ ] 9.3 Update the README Reference appendix's REST endpoint table for the new `PUT /api/hera/bindings/current/tokens` endpoint and the extended `GET /api/hera` fields
-- [ ] 9.4 Run `make pre-pr` and `make mac-test`; confirm coverage floor on touched packages
+- [ ] 7.1 Document the token-sum-vs-snapshot distinction, the `task_meta`-archive-deletion rationale for choosing `hera_bindings`, the accrual-time-stamping-vs-read-time-repricing correction, and the `rates.toml` seed/install pattern's deliberate divergence from the profiles precedent's manual-only trigger (cite hera messages #4764/#4770) in `context/knowledge/gotchas/` (per CLAUDE.md's non-obvious-gotcha documentation rule)
+- [ ] 7.2 Add `uxlog` calls for the new REST write path and rollup failures (state transitions, silently-skipped work) per CLAUDE.md's Logging Requirements
+- [ ] 7.3 Update the README Reference appendix's REST endpoint table for the new `PUT /api/hera/bindings/current/tokens` endpoint and the extended `GET /api/hera` fields
+- [ ] 7.4 Run `make pre-pr`; confirm coverage floor on touched packages

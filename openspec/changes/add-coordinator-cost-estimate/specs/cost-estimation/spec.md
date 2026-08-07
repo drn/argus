@@ -58,11 +58,13 @@ Derived from: `internal/db/schema.go` (`hera_bindings`), `internal/db/hera.go` (
 - **WHEN** a role has been re-bound (ended one binding, started a new one) one or more times over its lifetime
 - **THEN** the role's total token usage sums the five columns across every one of its bindings, live and ended alike
 
-### Requirement: Deterministic five-class per-model rate table
+### Requirement: Deterministic five-class per-model rate table, seeded and installed like diligence profiles
 
-The system SHALL maintain a $/token rate table with five rate classes (fresh input, cache-write-1h, cache-write-5m, cache-read, output) per model identifier, keyed by the same model-alias strings already produced by `agent.ResolveModel` and surfaced as `RoleView.AppliedModel`. The table SHALL ship an embedded default. A model with no rate entry SHALL yield no cost figure for a role resolved to that model, for any accrual period observed while it lacked an entry, rather than a zero or an approximated figure.
+The system SHALL maintain a $/token rate table with five rate classes (fresh input, cache-write-1h, cache-write-5m, cache-read, output) per model identifier, keyed by the same model-alias strings already produced by `agent.ResolveModel` and surfaced as `RoleView.AppliedModel`. A model with no rate entry SHALL yield no cost figure for a role resolved to that model, for any accrual period observed while it lacked an entry, rather than a zero or an approximated figure.
 
-Derived from: `internal/agent/agent.go` (`KnownModels`, `ResolveModel`), `internal/tui/hera_tiering.go` (`resolveHeraTier`, `RoleView.AppliedModel`).
+The table SHALL be sourced from a `rates.toml` file, mirroring the diligence-profiles seed/install/precedence mechanism rather than an embedded Go map with a config-file override: a default `rates.toml` SHALL be committed in the repository and embedded into the binary at build time; the system SHALL install the embedded default to `~/.argus/rates.toml` when that path does not already exist, and SHALL NEVER overwrite an existing file at that path; an in-repo `rates.toml` (analogous to a profile's `RepoDir`) SHALL take precedence over the installed library copy when both are present. Unlike the profiles precedent's explicit-invocation-only install trigger, the system SHALL invoke the install step automatically (idempotently, at daemon startup or equivalent) since rate data is required for the always-on Stop-hook accrual mechanism rather than an opt-in customization. Lookup SHALL re-read the file fresh on every access, with no caching and no separate reload mechanism — a hand-edit takes effect on the next lookup.
+
+Derived from: `internal/agent/agent.go` (`KnownModels`, `ResolveModel`), `internal/tui/hera_tiering.go` (`resolveHeraTier`, `RoleView.AppliedModel`), `internal/profiles/seeds.go` (`seedFS`, `SeedNames`), `internal/profiles/install.go` (`InstallDefaults`), `internal/profiles/load.go` (`Loader.locate`, `Loader.Load` — the pattern this requirement mirrors).
 
 #### Scenario: A curated model produces a computed cost
 
@@ -73,6 +75,21 @@ Derived from: `internal/agent/agent.go` (`KnownModels`, `ResolveModel`), `intern
 
 - **WHEN** a role is resolved to a model identifier absent from the rate table (e.g. an opencode/custom/Pi backend's free-form model string)
 - **THEN** no cost is accrued for that role for as long as it lacks a rate entry — not zero, not an approximation
+
+#### Scenario: An existing rates.toml is never overwritten
+
+- **WHEN** `~/.argus/rates.toml` already exists (an operator has hand-edited it, or a prior daemon startup already installed it)
+- **THEN** the install step leaves it untouched, regardless of how it differs from the embedded default
+
+#### Scenario: An in-repo rates.toml takes precedence
+
+- **WHEN** both an in-repo `rates.toml` and the installed `~/.argus/rates.toml` are present
+- **THEN** the in-repo copy is used for rate lookups
+
+#### Scenario: A hand-edit takes effect without a restart
+
+- **WHEN** an operator edits `~/.argus/rates.toml` (or the in-repo override) directly
+- **THEN** the very next accrual-time pricing lookup reflects the edit, with no daemon restart and no explicit reload call
 
 ### Requirement: Accrual-time cost stamping — historical cost is immutable
 
