@@ -5481,6 +5481,7 @@ async function pruneCompleted() {
     const parts = [`${j.pruned} task${j.pruned === 1 ? '' : 's'} pruned`];
     if (j.worktrees) parts.push(`${j.worktrees} worktree${j.worktrees === 1 ? '' : 's'}`);
     if (j.orphans) parts.push(`${j.orphans} orphan${j.orphans === 1 ? '' : 's'}`);
+    if (j.skippedHeraBound) parts.push(`${j.skippedHeraBound} skipped (active in Hera)`);
     showToast(parts.join(', '));
     refresh();
   } catch(e) {

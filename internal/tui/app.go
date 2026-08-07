@@ -6428,6 +6428,13 @@ func (a *App) pruneCompletedTasks() {
 		uxlog.Log("[tui] prune error: %v", err)
 		return
 	}
+	if preview.SkippedHeraBound > 0 {
+		noun := "task"
+		if preview.SkippedHeraBound != 1 {
+			noun = "tasks"
+		}
+		a.statusbar.SetInfo(fmt.Sprintf("Skipped %d completed %s still active in Hera", preview.SkippedHeraBound, noun))
+	}
 	if len(preview.Pruned) == 0 {
 		return
 	}
@@ -6477,7 +6484,7 @@ func (a *App) pruneCompletedTasks() {
 // cleanup) runs server-side on the daemon; the client only fires the request
 // and refreshes the task list with the result.
 type remotePruner interface {
-	PruneCompleted(ctx context.Context) (pruned, worktrees, orphans int, err error)
+	PruneCompleted(ctx context.Context) (pruned, worktrees, orphans, skippedHeraBound int, err error)
 }
 
 // pruneCompletedRemote delegates prune-completed to the daemon over REST.
@@ -6497,7 +6504,7 @@ func (a *App) pruneCompletedRemote() {
 
 	a.header.SetNotice("Pruning completed tasks…")
 	go func() {
-		pruned, worktrees, orphans, err := pruner.PruneCompleted(context.Background())
+		pruned, worktrees, orphans, skippedHeraBound, err := pruner.PruneCompleted(context.Background())
 		a.tapp.QueueUpdateDraw(func() {
 			a.header.ClearNotice()
 			if err != nil {
@@ -6505,7 +6512,15 @@ func (a *App) pruneCompletedRemote() {
 				a.statusbar.SetError("Prune failed: " + err.Error())
 				return
 			}
-			uxlog.Log("[tui] remote prune: pruned=%d worktrees=%d orphans=%d", pruned, worktrees, orphans)
+			uxlog.Log("[tui] remote prune: pruned=%d worktrees=%d orphans=%d skippedHeraBound=%d",
+				pruned, worktrees, orphans, skippedHeraBound)
+			if skippedHeraBound > 0 {
+				noun := "task"
+				if skippedHeraBound != 1 {
+					noun = "tasks"
+				}
+				a.statusbar.SetInfo(fmt.Sprintf("Skipped %d completed %s still active in Hera", skippedHeraBound, noun))
+			}
 			a.refreshTasksLocal()
 		})
 	}()

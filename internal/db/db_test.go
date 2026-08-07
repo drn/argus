@@ -365,12 +365,15 @@ func TestDB_PruneCompleted(t *testing.T) {
 	_ = d.Add(&model.Task{Name: "in progress", Status: model.StatusInProgress})
 	_ = d.Add(&model.Task{Name: "done2", Status: model.StatusComplete})
 
-	pruned, err := d.PruneCompleted()
+	pruned, skipped, err := d.PruneCompleted()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(pruned) != 2 {
 		t.Errorf("expected 2 pruned, got %d", len(pruned))
+	}
+	if skipped != 0 {
+		t.Errorf("expected 0 skipped, got %d", skipped)
 	}
 	remaining, err := d.Tasks()
 	testutil.NoError(t, err)
@@ -389,17 +392,98 @@ func TestDB_PruneCompleted_NoneToRemove(t *testing.T) {
 
 	_ = d.Add(&model.Task{Name: "pending", Status: model.StatusPending})
 
-	pruned, err := d.PruneCompleted()
+	pruned, skipped, err := d.PruneCompleted()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if pruned != nil {
 		t.Errorf("expected nil pruned, got %d", len(pruned))
 	}
+	if skipped != 0 {
+		t.Errorf("expected 0 skipped, got %d", skipped)
+	}
 	tasksAfterPrune, err := d.Tasks()
 	testutil.NoError(t, err)
 	if len(tasksAfterPrune) != 1 {
 		t.Error("expected task count unchanged")
+	}
+}
+
+// mkCompleteTaskWithHeraBinding adds a completed task and gives it a Hera
+// binding under a fresh orchestrator/role. When live is false the binding is
+// ended immediately. Returns the created task.
+func mkCompleteTaskWithHeraBinding(t *testing.T, d *DB, name string, live bool) *model.Task {
+	t.Helper()
+	task := &model.Task{Name: name, Status: model.StatusComplete, Worktree: "/tmp/wt/" + name}
+	testutil.NoError(t, d.Add(task))
+
+	orch := mkOrch(t, d, name+"-orch")
+	role := mkRole(t, d, orch.ID, name+"-role", HeraKindWorker)
+	binding, err := d.CreateHeraBinding(CreateHeraBindingInput{
+		RoleID:         role.ID,
+		OrchestratorID: orch.ID,
+		ArgusTaskID:    task.ID,
+		WorktreePath:   task.Worktree,
+	})
+	testutil.NoError(t, err)
+	if !live {
+		testutil.NoError(t, d.EndHeraBinding(binding.ID, "test-teardown"))
+	}
+	return task
+}
+
+func TestDB_PruneCompleted_SkipsLiveHeraBinding(t *testing.T) {
+	d := testDB(t)
+
+	bound := mkCompleteTaskWithHeraBinding(t, d, "bound", true)
+	_ = d.Add(&model.Task{Name: "unbound", Status: model.StatusComplete})
+
+	pruned, skipped, err := d.PruneCompleted()
+	testutil.NoError(t, err)
+	if len(pruned) != 1 || pruned[0].Name != "unbound" {
+		t.Errorf("expected only the unbound task pruned, got %+v", pruned)
+	}
+	if skipped != 1 {
+		t.Errorf("expected 1 skipped, got %d", skipped)
+	}
+
+	still, err := d.Get(bound.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, still.Status, model.StatusComplete)
+}
+
+func TestDB_PruneCompleted_EndedHeraBindingStillPruned(t *testing.T) {
+	d := testDB(t)
+
+	ended := mkCompleteTaskWithHeraBinding(t, d, "ended", false)
+
+	pruned, skipped, err := d.PruneCompleted()
+	testutil.NoError(t, err)
+	if len(pruned) != 1 || pruned[0].ID != ended.ID {
+		t.Errorf("expected the ended-binding task pruned, got %+v", pruned)
+	}
+	if skipped != 0 {
+		t.Errorf("expected 0 skipped, got %d", skipped)
+	}
+	if _, err := d.Get(ended.ID); err == nil {
+		t.Error("expected task to be deleted")
+	}
+}
+
+func TestDB_PruneCompleted_SkippedCountWithMix(t *testing.T) {
+	d := testDB(t)
+
+	mkCompleteTaskWithHeraBinding(t, d, "live", true)
+	mkCompleteTaskWithHeraBinding(t, d, "ended", false)
+	_ = d.Add(&model.Task{Name: "unbound", Status: model.StatusComplete})
+
+	pruned, skipped, err := d.PruneCompleted()
+	testutil.NoError(t, err)
+	if len(pruned) != 2 {
+		t.Errorf("expected 2 pruned (ended + unbound), got %d", len(pruned))
+	}
+	if skipped != 1 {
+		t.Errorf("expected 1 skipped (live), got %d", skipped)
 	}
 }
 
@@ -1360,7 +1444,7 @@ func TestDB_PruneCompleted_ReturnsWorktreeInfo(t *testing.T) {
 	_ = d.Add(&model.Task{Name: "done2", Status: model.StatusComplete, Worktree: "/tmp/wt/done2"})
 	_ = d.Add(&model.Task{Name: "active", Status: model.StatusInProgress, Worktree: "/tmp/wt/active"})
 
-	pruned, err := d.PruneCompleted()
+	pruned, _, err := d.PruneCompleted()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1877,7 +1961,7 @@ func TestDB_PruneCompleted_AllStatuses(t *testing.T) {
 	_ = d.Add(&model.Task{Name: "in_review", Status: model.StatusInReview})
 	_ = d.Add(&model.Task{Name: "complete", Status: model.StatusComplete})
 
-	pruned, err := d.PruneCompleted()
+	pruned, _, err := d.PruneCompleted()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2075,7 +2159,7 @@ func TestDB_ErrorPaths(t *testing.T) {
 
 	t.Run("PruneCompleted query error", func(t *testing.T) {
 		d := closedDB(t)
-		_, err := d.PruneCompleted()
+		_, _, err := d.PruneCompleted()
 		testutil.Error(t, err)
 	})
 

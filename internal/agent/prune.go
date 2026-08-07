@@ -135,6 +135,10 @@ type PrunePlan struct {
 	// cleaned by Run.
 	OrphanCount int
 
+	// SkippedHeraBound is the number of otherwise-eligible completed tasks
+	// left in place because they still hold a live Hera role binding.
+	SkippedHeraBound int
+
 	toClean        []*model.Task
 	wtRoot         string
 	projects       map[string]string
@@ -148,12 +152,15 @@ type PrunePlan struct {
 // logs, and computes the count of remaining worktree cleanup work. Call Run
 // on the returned plan to execute the slow worktree/branch cleanup.
 func PrunePrepare(database *db.DB, opts PruneOptions) (*PrunePlan, error) {
-	pruned, err := database.PruneCompleted()
+	pruned, skippedHeraBound, err := database.PruneCompleted()
 	if err != nil {
 		return nil, err
 	}
+	if skippedHeraBound > 0 {
+		uxlog.Log("[prune] skipped %d completed task(s) still live in Hera (not pruned)", skippedHeraBound)
+	}
 	if len(pruned) == 0 {
-		return &PrunePlan{}, nil
+		return &PrunePlan{SkippedHeraBound: skippedHeraBound}, nil
 	}
 
 	uxlog.Log("[prune] pruning %d completed tasks", len(pruned))
@@ -202,14 +209,15 @@ func PrunePrepare(database *db.DB, opts PruneOptions) (*PrunePlan, error) {
 	}
 
 	return &PrunePlan{
-		Pruned:         pruned,
-		WorktreeCount:  len(toClean),
-		OrphanCount:    orphanCount,
-		toClean:        toClean,
-		wtRoot:         opts.WtRoot,
-		projects:       opts.Projects,
-		knownPaths:     knownPaths,
-		resolveRepoDir: opts.ResolveRepoDir,
+		Pruned:           pruned,
+		WorktreeCount:    len(toClean),
+		OrphanCount:      orphanCount,
+		SkippedHeraBound: skippedHeraBound,
+		toClean:          toClean,
+		wtRoot:           opts.WtRoot,
+		projects:         opts.Projects,
+		knownPaths:       knownPaths,
+		resolveRepoDir:   opts.ResolveRepoDir,
 	}, nil
 }
 

@@ -209,6 +209,41 @@ func TestPruneCompleted(t *testing.T) {
 	}
 }
 
+// TestPruneCompleted_SkipsLiveHeraBound verifies the skip count surfaces
+// end-to-end through agent.PruneCompleted: a completed task with a live Hera
+// binding is left alone and counted separately from the pruned set.
+func TestPruneCompleted_SkipsLiveHeraBound(t *testing.T) {
+	d, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	testutil.NoError(t, d.Add(&model.Task{ID: "bound-1", Name: "bound", Status: model.StatusComplete}))
+	testutil.NoError(t, d.Add(&model.Task{ID: "unbound-1", Name: "unbound", Status: model.StatusComplete}))
+
+	orch, err := d.CreateHeraOrchestrator("orch", "")
+	testutil.NoError(t, err)
+	role, err := d.CreateHeraRole(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID,
+		Name:           "role",
+		Kind:           db.HeraKindWorker,
+		ArgusProject:   "proj",
+	})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{
+		RoleID:         role.ID,
+		OrchestratorID: orch.ID,
+		ArgusTaskID:    "bound-1",
+		WorktreePath:   "/tmp/wt/bound",
+	})
+	testutil.NoError(t, err)
+
+	plan, err := PruneCompleted(d, PruneOptions{})
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(plan.Pruned), 1)
+	testutil.Equal(t, plan.Pruned[0].Name, "unbound")
+	testutil.Equal(t, plan.SkippedHeraBound, 1)
+}
+
 func TestPruneCompleted_NoneToPrune(t *testing.T) {
 	d, err := db.OpenInMemory()
 	testutil.NoError(t, err)

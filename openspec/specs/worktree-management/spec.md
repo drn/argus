@@ -3,9 +3,7 @@
 ## Purpose
 
 Argus isolates every task in its own git worktree and branch so concurrent agent sessions never collide in a shared working tree. This capability owns the deterministic worktree path layout, branch naming, name-conflict resolution, transactional task creation (with full rollback on any failure), and the removal/pruning of worktrees and branches when tasks finish or go orphaned.
-
 ## Requirements
-
 ### Requirement: Deterministic worktree path layout
 
 The system SHALL place each task's worktree at a deterministic path under the Argus data directory, namespaced by project and task name, so the same project/task pair always resolves to the same location.
@@ -192,7 +190,17 @@ The system SHALL identify worktree directories under the worktree root that are 
 
 ### Requirement: Pruning completed tasks
 
-The system SHALL prune completed tasks in two phases: a synchronous phase that removes completed rows from the database, stops their sessions, removes their session logs, and computes the remaining worktree and orphan cleanup counts; and a slow phase that removes each task's worktree and branch in parallel and runs the orphan sweep. The slow phase SHALL execute at most once per plan; subsequent invocations SHALL be no-ops.
+The system SHALL prune completed tasks in two phases: a synchronous phase
+that removes completed rows from the database, stops their sessions, removes
+their session logs, and computes the remaining worktree and orphan cleanup
+counts; and a slow phase that removes each task's worktree and branch in
+parallel and runs the orphan sweep. The slow phase SHALL execute at most once
+per plan; subsequent invocations SHALL be no-ops. A completed task that still
+holds a live Hera role binding (a `hera_bindings` row with `ended_at IS NULL`)
+SHALL be excluded from both phases — `hera_bindings` holds no foreign key to
+`tasks`, so deleting such a task's row would leave its Hera role pointing at a
+task that no longer exists instead of properly ending it. The system SHALL
+report the number of completed tasks skipped for this reason.
 
 #### Scenario: Completed tasks pruned, active tasks retained
 
@@ -209,6 +217,16 @@ The system SHALL prune completed tasks in two phases: a synchronous phase that r
 - **WHEN** the slow prune phase is invoked a second time on the same plan
 - **THEN** the second invocation is a no-op and fires no progress callbacks
 
+#### Scenario: Completed task with a live Hera binding is skipped
+
+- **WHEN** a prune runs with a completed task that still has a live (`ended_at IS NULL`) Hera role binding
+- **THEN** that task's row, worktree, and branch are NOT removed, and it is counted separately as skipped rather than pruned
+
+#### Scenario: Completed task with only an ended Hera binding is pruned normally
+
+- **WHEN** a prune runs with a completed task whose Hera binding(s) all have `ended_at` set
+- **THEN** the task is pruned exactly as a never-bound completed task would be
+
 ### Requirement: Test-environment write guard
 
 The system SHALL refuse worktree removal operations that target the real Argus data directory while running inside a test binary, while still permitting operations on paths under the OS temporary directory so tests using a redirected HOME can clean up their synthetic data dirs.
@@ -222,3 +240,4 @@ The system SHALL refuse worktree removal operations that target the real Argus d
 
 - **WHEN** a removal targets a path under the OS temporary directory during a test run
 - **THEN** the operation is permitted
+
