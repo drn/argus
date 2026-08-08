@@ -33,6 +33,7 @@ Thumbs.db
 
 # Claude Code worktrees (ephemeral, per-session)
 .claude/worktrees/
+.claude/worktree/
 
 # Claude Code runtime artifacts (scheduled wakeups, etc.)
 .claude/scheduled_tasks.lock
