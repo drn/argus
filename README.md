@@ -861,6 +861,28 @@ Command templates, keyed by name. Seeded with `claude`, `codex`, `pi`, and `open
 | `model` | string | `""` | Default model for this backend, injected as `--model <value>` for known CLIs (claude, codex, pi, opencode — opencode takes a `provider/model` value). Empty = the CLI's own default. A per-task model overrides it. |
 | `models` | array | `[]` | Option list for the new-task model selector for this backend. Empty = built-in list (claude → `opus`/`sonnet`/`haiku`/`fable`, codex → `gpt-5-codex`/`gpt-5`, others including opencode → none, so `custom…` only). A `custom…` entry always lets you type a model not in the list. |
 
+#### `[secrets]`
+
+Selects how a backend's `env_vars` credential mapping (target env var → source descriptor) is resolved into an actual value at agent-spawn time. Global — one mode for the whole daemon, not per-backend.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `resolver` | string | `"env"` | `"env"` reads the daemon's own process environment by source name (`os.LookupEnv`) — today's only behavior, zero config required. `"op"` additionally resolves via the 1Password CLI (`op read`), configured below. Any unrecognized value falls back to `"env"` with a logged warning. |
+
+`[secrets.op]` — only consulted when `resolver = "op"`. Every field is your own 1Password layout; nothing here has a real-looking default, so `"op"` mode silently falls back to the `"env"` resolver (logged) until you set `reference_template` yourself.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `reference_template` | string | `""` | Builds the `op read` object reference for each `env_vars` source descriptor: the literal token `{source}` is replaced with the mapping's source string (e.g. `"HERA_OPENAI"`). Example: `"op://<vault>/<item>/{source}"`. Empty (the default) means `"op"` mode isn't actually configured — falls back to the `"env"` resolver. |
+| `command` | string | `"op"` | The `op` executable: an absolute path, or a bare name resolved via `PATH`. Override with an absolute path if the daemon runs under a minimal-`PATH` environment (e.g. launchd) that doesn't expose `op` — the same constraint `env_vars` sources like `HERA_OPENAI` already hit under launchd (see `[backends.<name>]` above). |
+| `timeout_seconds` | int | `5` | Bounds each `op read` invocation, so a hung or interactively-blocked `op` CLI can't stall an agent spawn indefinitely. |
+
+**Precondition, not something argus manages:** `op` itself must already be able to authenticate non-interactively from the daemon's own process environment (e.g. an `OP_SERVICE_ACCOUNT_TOKEN`-style variable, set however your OS starts the daemon — launchd `EnvironmentVariables`, systemd `Environment=`, a container's env injection, ...). That's one-time, host-specific operator setup, identical in shape to the daemon needing `HERA_OPENAI` in its own environment for the default resolver — argus documents the precondition and stops there.
+
+A failed `op read` (not signed in, item not found, timeout, `op` missing) is treated exactly like an unresolved `"env"` source: the target variable is left unset, a warning is logged (naming the variable and source, never the value or the expanded reference), and the agent still spawns.
+
+`[secrets]`/`[secrets.op]` (never a resolved secret value) is visible over `GET /api/config` to any authenticated device token, same as `env_vars` mappings already are via `GET /api/backends` — not a new category of exposure, just worth knowing before putting anything you'd rather not broadcast tailnet-wide into `reference_template`.
+
 #### `[projects.<name>]`
 
 Registered repos, keyed by name. The DB projects table is the primary source; entries here override it.

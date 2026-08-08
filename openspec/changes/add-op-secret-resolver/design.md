@@ -264,6 +264,17 @@ precedent (DB-backed with a config.toml overlay):
 - No new schema migration, no new Settings-pane category, no new REST
   endpoint. Smaller surface area for a feature whose entire audience is "an
   operator who already knows what `op` is and already runs it."
+- **"No new REST endpoint" is not "not REST-visible."** `GET /api/config`
+  already serializes the whole `db.Config()` value to any authenticated
+  device token (its own doc comment: "Read-only; open to any authenticated
+  token — the backend command templates it discloses are already readable
+  via `GET /api/backends`"). `[secrets]`/`[secrets.op]` rides that same
+  existing endpoint with no special-casing, exactly like `Backend.EnvVars`
+  already does — so `reference_template`, `command`, and `timeout_seconds`
+  (never a resolved value) are visible to any device holding a token. This is
+  consistent with the existing precedent, not a new category of exposure;
+  called out explicitly here (and in the README/gotcha note) so it's a stated
+  fact instead of an implied-but-untrue stronger containment.
 - Named follow-ups (not silently dropped, see Open Questions): a
   `[secrets]`-aware `argus doctor` advisory check (mirroring the existing
   diligence-profile-library check's FOUND/NONE FOUND/UNKNOWN shape) and,
@@ -420,8 +431,19 @@ migrate back.
   name not on PATH)
 - it should build and use the op resolver when `Resolver` is `"op"`, the
   template is non-empty, and the command resolves
+- it should use the env resolver and log a degrade notice when `Resolver` is
+  `"op"` but `Op.ReferenceTemplate` has no `{source}` token — a template
+  missing the token is a MISCONFIGURATION to fall open on, not a template to
+  use as-is (using it as-is would silently resolve every mapping to the same
+  literal reference instead of leaving them unresolved)
+- it should treat a directory, or a file lacking the execute bit, at
+  `Op.Command`'s path as NOT resolvable (an existence-only check would wrongly
+  pass either and build an op resolver that then fails every read, defeating
+  this fallback)
 - it should re-evaluate resolver selection fresh on each `BuildCmd` call
   (config edits take effect on the next spawn, no restart)
+- it should skip resolver selection entirely (no PATH lookup, no possible
+  degrade-notice log line) when the backend's `EnvVars` mapping is empty
 
 **Op resolver invocation (D-OP-INVOCATION)**
 
@@ -433,6 +455,11 @@ migrate back.
 - it should bound the invocation with `Op.TimeoutSeconds` (default 5 when
   zero/unset)
 - it should never attach the daemon's stdin to the `op` subprocess
+- it should kill the whole process group (not just the direct child) on
+  timeout, so a descendant that inherited the stdout/stderr pipes cannot keep
+  them open and stall `Wait()` past the configured timeout
+- it should force-close the subprocess's pipes via a bounded `WaitDelay` even
+  if a descendant escapes the process group entirely
 
 **Failure semantics (D-FAIL)**
 

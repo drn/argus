@@ -168,6 +168,35 @@ worker_context_window = 500000
 	testutil.Equal(t, base.Hera.WorkerContextWindow, 1000000)
 }
 
+// TestFileLoader_SecretsOverlay pins the add-op-secret-resolver config
+// surface: a [secrets]/[secrets.op] table in config.toml overrides the
+// DefaultConfig() "env" default, and an absent [secrets] table (exercised by
+// TestFileLoader_NilAndEmptyAreNoOps and every other overlay test's base
+// config) leaves the default untouched.
+func TestFileLoader_SecretsOverlay(t *testing.T) {
+	path := writeFile(t, `
+[secrets]
+resolver = "op"
+
+[secrets.op]
+reference_template = "op://vault/item/{source}"
+command = "/usr/local/bin/op"
+timeout_seconds = 3
+`)
+	l := NewFileLoader(path)
+	base := DefaultConfig()
+
+	got := l.Apply(base)
+	testutil.NoError(t, l.Err())
+
+	testutil.Equal(t, got.Secrets.Resolver, "op")
+	testutil.Equal(t, got.Secrets.Op.ReferenceTemplate, "op://vault/item/{source}")
+	testutil.Equal(t, got.Secrets.Op.Command, "/usr/local/bin/op")
+	testutil.Equal(t, got.Secrets.Op.TimeoutSeconds, 3)
+	// The base value is untouched.
+	testutil.Equal(t, base.Secrets.Resolver, "env")
+}
+
 func TestFileLoader_BackendModelsOverlay(t *testing.T) {
 	path := writeFile(t, `
 [backends.claude]

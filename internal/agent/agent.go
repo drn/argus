@@ -851,16 +851,26 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 
 	// Per-backend credential env mapping. backend.EnvVars maps a TARGET env var
 	// (set in the child) to a SOURCE descriptor resolved at spawn time via the
-	// pluggable secretResolver (default: the daemon's own environment). The
+	// resolver selected by cfg.Secrets (default: the daemon's own environment;
+	// see secretResolverFor / add-op-secret-resolver for the "op" mode). The
 	// mapping carries NO secret value — only the descriptor. A resolved value is
 	// appended to the child env (later entries win per exec.Cmd.Env semantics);
 	// an unresolved source sets nothing and logs a non-sensitive warning naming
 	// ONLY the variable, never the value. We never log the resolved value.
+	// resolve is selected fresh from the live cfg on every call — no caching,
+	// no daemon-startup wiring — so a config.toml secrets edit takes effect on
+	// the next spawn. Skipped entirely when this backend has no mapping, so a
+	// plain claude spawn (no EnvVars) never pays the "op" mode's PATH lookup
+	// or risks a misconfiguration warning it has no stake in.
+	var resolve SecretResolver
+	if len(backend.EnvVars) > 0 {
+		resolve = secretResolverFor(cfg.Secrets)
+	}
 	for target, source := range backend.EnvVars {
 		if target == "" || source == "" {
 			continue
 		}
-		value, ok := secretResolver(source)
+		value, ok := resolve(source)
 		if !ok {
 			uxlog.Log("[agent] backend %q: credential source %q did not resolve; %q left unset in child env", backend.Command, source, target)
 			continue

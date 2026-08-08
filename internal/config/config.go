@@ -18,6 +18,45 @@ type Config struct {
 	Hera        HeraConfig         `toml:"hera"`
 	Supervisor  SupervisorConfig   `toml:"supervisor"`
 	Argus       ArgusConfig        `toml:"argus"`
+	Secrets     SecretsConfig      `toml:"secrets"`
+}
+
+// SecretsConfig selects and configures the secret-resolver mode consulted by
+// agent.BuildCmd when resolving a backend's EnvVars credential mapping
+// (Backend.EnvVars above). config.toml-only (no DB table, no Settings UI) —
+// mirrors Keybindings.
+type SecretsConfig struct {
+	// Resolver selects the resolution strategy: "env" (default, or any
+	// unset/unrecognized value) reads the daemon's own process environment via
+	// os.LookupEnv — today's only behavior, zero config required. "op"
+	// additionally resolves via the 1Password CLI (`op read`), built from Op
+	// below. An unrecognized value fails open to "env" with a logged warning;
+	// see internal/agent/secret.go's secretResolverFor.
+	Resolver string           `toml:"resolver"`
+	Op       OpResolverConfig `toml:"op"`
+}
+
+// OpResolverConfig configures the "op" secret-resolver mode. Every field here
+// is the OPERATOR'S OWN 1Password layout — argus hardcodes no vault, account,
+// or item name, and ships no default ReferenceTemplate.
+type OpResolverConfig struct {
+	// ReferenceTemplate builds the `op read` object reference for each EnvVars
+	// source descriptor: the literal token "{source}" is substituted with the
+	// mapping's source string (e.g. "HERA_OPENAI"). Example:
+	// "op://<vault>/<item>/{source}". Empty (the default) means op mode is not
+	// actually configured — resolution degrades to the env resolver.
+	ReferenceTemplate string `toml:"reference_template"`
+	// Command is the `op` executable to invoke: an absolute path, or a bare
+	// name resolved via PATH. Empty defaults to "op" at resolver-construction
+	// time. Override with an absolute path if the daemon runs under a
+	// minimal-PATH environment (e.g. launchd) that doesn't expose "op" on
+	// PATH — the same constraint already documented for HERA_OPENAI not
+	// reaching a launchd daemon's environment.
+	Command string `toml:"command"`
+	// TimeoutSeconds bounds each `op read` invocation. Zero/unset defaults to
+	// 5 at resolver-construction time, so a hung or interactively-blocked op
+	// CLI cannot stall an agent spawn indefinitely.
+	TimeoutSeconds int `toml:"timeout_seconds"`
 }
 
 // SupervisorConfig controls whether the daemon drives agent PTYs through the
@@ -354,6 +393,13 @@ func DefaultConfig() Config {
 			// them. Only an explicit "false" in DB/toml rolls back to the
 			// retained in-process runner path.
 			Enabled: true,
+		},
+		Secrets: SecretsConfig{
+			// "env" is today's only behavior (os.LookupEnv passthrough). Op
+			// is left at its zero value deliberately: no default
+			// ReferenceTemplate, so opting into "op" mode requires an
+			// explicit, operator-authored reference template.
+			Resolver: "env",
 		},
 	}
 }

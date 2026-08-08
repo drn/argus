@@ -33,6 +33,26 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+// TestSecretsConfig_Default pins the add-op-secret-resolver default: the
+// secret-resolver mode is "env" (today's only behavior, unchanged), and the
+// op sub-table carries no default reference template — no install is
+// defaulted toward assuming a particular 1Password vault/item exists.
+func TestSecretsConfig_Default(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Secrets.Resolver != "env" {
+		t.Errorf("Secrets.Resolver = %q, want %q", cfg.Secrets.Resolver, "env")
+	}
+	if cfg.Secrets.Op.ReferenceTemplate != "" {
+		t.Errorf("Secrets.Op.ReferenceTemplate = %q, want empty (no default vault/item)", cfg.Secrets.Op.ReferenceTemplate)
+	}
+	if cfg.Secrets.Op.Command != "" {
+		t.Errorf("Secrets.Op.Command = %q, want empty (resolver defaults to \"op\" at use time)", cfg.Secrets.Op.Command)
+	}
+	if cfg.Secrets.Op.TimeoutSeconds != 0 {
+		t.Errorf("Secrets.Op.TimeoutSeconds = %d, want 0 (resolver defaults to 5s at use time)", cfg.Secrets.Op.TimeoutSeconds)
+	}
+}
+
 func TestHeraConfig_DefaultEnabled(t *testing.T) {
 	cfg := DefaultConfig()
 	if !cfg.Hera.Enabled {
