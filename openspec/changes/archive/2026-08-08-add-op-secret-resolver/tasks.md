@@ -107,5 +107,6 @@ unrelated to this change).
       the delta requirements into `openspec/specs/agent-execution/spec.md` and
       `openspec/specs/config-management/spec.md`, move this folder to
       `openspec/changes/archive/<YYYY-MM-DD>-add-op-secret-resolver/`.
-- [ ] 4.4 Open the PR via `mcp__argus__iris_gh_pr_create` (never bare `gh pr
-      create` from inside an argus sandbox).
+- [x] 4.4 Open the PR via `mcp__argus__iris_gh_pr_create` (never bare `gh pr
+      create` from inside an argus sandbox). PR #928:
+      https://github.com/drn/argus/pull/928
