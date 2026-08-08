@@ -103,7 +103,7 @@ unrelated to this change).
       mis-credentialing gap on a template missing `{source}`, a resolver-only-
       when-EnvVars-present efficiency fix, a REST-visibility documentation
       gap, and the missing success-path-log test — all addressed.)
-- [ ] 4.3 Archive this change in the same PR per this repo's CLAUDE.md: merge
+- [x] 4.3 Archive this change in the same PR per this repo's CLAUDE.md: merge
       the delta requirements into `openspec/specs/agent-execution/spec.md` and
       `openspec/specs/config-management/spec.md`, move this folder to
       `openspec/changes/archive/<YYYY-MM-DD>-add-op-secret-resolver/`.
