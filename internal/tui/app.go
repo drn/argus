@@ -1545,14 +1545,29 @@ func (a *App) toggleAutoStart(installed bool) {
 	})
 }
 
+// gracefulDaemonShutdown asks the connected daemon to exit via its Shutdown
+// RPC before the caller closes the local connection. Close() alone only tears
+// down the TUI's side of the connection, leaving the remote daemon process
+// alive — recovery would then depend entirely on the replacement daemon's own
+// PID-file kill at startup, racing AutoStart's fixed readiness timeout. A
+// Shutdown failure (e.g. the connection is already dead) is logged and
+// swallowed: the caller proceeds to close the local connection and start a
+// replacement regardless, unchanged from before this function existed.
+func gracefulDaemonShutdown(c *dclient.Client) {
+	if serr := c.Shutdown(); serr != nil {
+		uxlog.Log("[tui] daemon shutdown RPC error: %v", serr)
+	}
+	c.Close() //nolint:errcheck // best-effort local teardown; close error is non-actionable
+}
+
 // restartDaemon kills the old daemon, auto-starts a new one, and reconnects.
 // Must be called from a goroutine (not UI thread).
 func (a *App) restartDaemon() {
 	uxlog.Log("[tui] restarting daemon...")
 
-	// Try graceful shutdown via RPC.
+	// Ask the daemon to exit via RPC before tearing down our local connection.
 	if a.daemonClient != nil {
-		a.daemonClient.Close()
+		gracefulDaemonShutdown(a.daemonClient)
 	}
 
 	sockPath := daemon.DefaultSocketPath()
