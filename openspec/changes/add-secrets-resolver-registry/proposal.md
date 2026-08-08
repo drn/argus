@@ -29,8 +29,9 @@ Argus's daemon and session-supervisor sometimes need a credential (today, specif
 
 ## Impact
 
-- `internal/agent/secret.go` — the `SecretResolver` seam (PR #822) gains the scheme-dispatch registry implementation, the `keychain`/`op` resolvers, and the memoization cache.
-- `internal/agent/runner.go`'s `Start` (the sole `BuildCmd` caller) — unchanged call site; the pluggable resolver behind it now does real work instead of only `os.LookupEnv`.
+- `internal/agent/secret.go` — the existing `SecretResolver` seam (its origin PR is closed/unmerged under any number we could find; the seam itself is real and working on `origin/master` today, verified directly) gains a companion `internal/agent/secretregistry.go` with the scheme-dispatch registry, `keychain`/`op` resolvers, and memoization cache.
+- `internal/agent/agent.go`'s `BuildCmd` — the `backend.EnvVars` resolution loop gains scheme-prefixed dispatch through the new registry (built fresh from the `cfg` parameter it already receives), while a bare-string source keeps resolving through the existing swappable `secretResolver` var unchanged.
+- `internal/agent/runner.go`'s `Start` (the sole `BuildCmd` caller) — unchanged call site.
 - `internal/daemon` (`buildSupervisorStartCmd` / `autoStartSupervisorFork`) and `internal/daemon/client/autostart_fork.go` (`AutoStart` / `autoStartFork`) — the two daemon/TUI-owned respawn paths identified as silently dropping the credential; fixed structurally by resolving at point-of-use inside the session-supervisor rather than depending on env inheritance from whichever process forked it.
 - `internal/launchagent/launchagent_darwin.go` (`Install()` / `renderPlist()`) — unchanged; re-invoked as part of migration to drop the wrapper.
 - `~/.argus/argusd-launcher.sh` — deleted; no longer referenced by the plist or anything else.

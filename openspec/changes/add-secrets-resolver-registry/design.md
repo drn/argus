@@ -6,16 +6,47 @@ credential that must not be hardcoded or committed — today, specifically
 secrets (e.g. a per-backend API key, or a Socket Firewall registry password
 needed by an agent working in another project).
 
-Argus already has one piece of this designed: `internal/agent/secret.go`'s
-`SecretResolver` seam, landed in PR #822. A backend definition carries an
-`EnvVars` mapping (target env var → source descriptor), and `BuildCmd` resolves
-each source through a pluggable resolver function before injecting it into a
-spawned agent's environment. The default resolver is `os.LookupEnv` against the
-daemon's own process environment. The PR's own doc comment named the production
-follow-up explicitly and left it undone: "a production deployment can swap in a
-resolver that shells out to the `op` (1Password) CLI... That production
-resolver, and how the daemon authenticates to 1Password without a plaintext key
-on disk, is a separate follow-up." This change is that follow-up.
+Argus already has one piece of this designed and **currently working on
+`origin/master`** (verified directly by reading the code, not by citing a PR
+number — a prior draft of this document cited "PR #822" for this seam, but
+`gh pr view 822` shows `state: CLOSED`, `mergedAt: null`, and its commit is
+confirmed not an ancestor of `origin/master`; the feature nonetheless ships
+today under some other, unidentified merge — not material to this change):
+`internal/agent/secret.go`'s `SecretResolver` seam. A backend definition
+carries an `EnvVars` mapping (target env var → source descriptor), and
+`BuildCmd` resolves each source through a pluggable resolver function before
+injecting it into a spawned agent's environment. The default resolver is
+`os.LookupEnv` against the daemon's own process environment. The seam's own
+doc comment names the production follow-up explicitly and leaves it undone:
+"a production deployment can swap in a resolver that shells out to the `op`
+(1Password) CLI... That production resolver, and how the daemon authenticates
+to 1Password without a plaintext key on disk, is a separate follow-up." This
+change is that follow-up.
+
+**A second, more recent attempt at this same follow-up exists and is also
+unmerged:** commit `b6813697` ("Implement configurable op (1Password) secret
+resolver," 2026-08-07 23:44 PT) on branch `argus/op-secret-resolver-proposal`,
+opened as PR #928 and closed without merging (no review comments). It is a
+different, incompatible design — a global `[secrets].resolver = "op"` mode
+with a single `{source}`-templated reference string, resolved fresh inside
+`BuildCmd` from the `cfg config.Config` parameter it already receives (no
+`SetSecretResolver`/startup-wiring step) — and its own PR body explicitly
+lists "bootstrapping the daemon's own process environment so `op` itself can
+authenticate" as out of scope, "host/OS-specific one-time operator setup" —
+exactly the assumption that causes the live incident below. It does not make
+this change redundant, but two things from it are reused rather than
+rediscovered (see Decisions): the `exec.LookPath`-based command-resolvability
+check (its review caught `os.Stat` wrongly accepting a directory or
+non-executable file) and the process-group `Setpgid`+`Cancel`+`WaitDelay`
+subprocess-timeout-kill pattern (its review caught `exec.CommandContext`'s
+default `Cancel` only signalling the direct child, silently defeating a
+configured timeout when that child forks a descendant holding the output
+pipes open — proven empirically: a 300ms timeout waited the full 30s without
+this fix). Its `{source}`-templated global-mode design is NOT reused — this
+change's scheme-prefixed descriptors replace that mechanism entirely, and are
+the only one of the two designs that can express "the daemon/supervisor's own
+bootstrap credential" as a first-class, separately-configurable resolve
+rather than an unstated ambient assumption.
 
 **Why now:** a live incident (2026-08-08) made the gap concrete. A hand-written
 LaunchAgent wrapper script (`~/.argus/argusd-launcher.sh`) was introduced to
@@ -133,6 +164,18 @@ spawn. A *failed* resolve is not memoized, so a transient failure (e.g. a
 `op` CLI network blip) can succeed on the next attempt rather than being
 poisoned for the process's lifetime.
 
+**Integration point, simplified after reviewing PR #928's code:** `BuildCmd`
+(`internal/agent/agent.go`) already receives `cfg config.Config` as a
+parameter on every call — that PR's `secretResolverFor(cfg.Secrets)` reads its
+resolver config straight from that parameter, fresh, with no separate
+`SetSecretResolver`-at-startup wiring step at all. This change adopts that
+same integration shape for selecting/constructing the registry (the
+VALUE-memoization cache above is a separate, additional layer keyed by
+resolved descriptor, not affected by this): no change needed to
+`cmd/argus/main.go`'s `runDaemon()`/`runSupervisor()`, and a `[secrets]`
+edit in `config.toml` takes effect on the very next spawn rather than
+requiring a daemon/supervisor restart to pick up.
+
 **Alternative considered:** ambient injection via `os.Setenv` at daemon startup
 (Approach A), relying on `exec.Command`'s default env inheritance to propagate
 it to the supervisor and then to agents. Rejected — it doesn't hold in the
@@ -171,9 +214,17 @@ CONFIGURED, surfaced in `argus doctor`'s output and a Settings → System row.
   synchronous subprocess calls on whatever goroutine first needs a secret
   (e.g. the first agent spawn after a supervisor restart) → **[Mitigation]**
   memoization means this cost is paid once per process lifetime per source,
-  not per spawn; a slow/hung `op` call is bounded by a context timeout on the
-  resolver's own `exec.CommandContext` call (matches the existing pattern in
-  `internal/gitutil` for external command calls with a deadline).
+  not per spawn; a slow/hung call is bounded by `exec.CommandContext` with a
+  timeout, but the timeout alone is NOT sufficient — reuse PR #928's two
+  empirically-proven fixes rather than rediscovering them via fresh TDD:
+  `exec.LookPath` (not `os.Stat`) to check the configured command is actually
+  resolvable (`os.Stat` wrongly accepts a directory or non-executable file),
+  and a process-group kill (`cmd.SysProcAttr.Setpgid = true` + a `cmd.Cancel`
+  that `syscall.Kill`s the whole group + a `cmd.WaitDelay` backstop) rather
+  than relying on `exec.CommandContext`'s default `Cancel`, which only
+  signals the direct child and silently fails to bound the call when that
+  child forks a descendant holding the output pipes open (proven in that PR:
+  a 300ms configured timeout waited the full 30s without this fix).
 - **[Risk]** Removing the wrapper script changes an already-working (if
   fragile) setup → **[Mitigation]** this change explicitly re-runs
   `internal/launchagent.Install()`'s existing plist-generation path (already
@@ -226,11 +277,19 @@ descriptors).
   via grep. In supervisor mode this executes inside the session-supervisor
   process, not the daemon, which is the basis for the point-of-use resolution
   decision above.
-- The existing `SecretResolver` seam (`internal/agent/secret.go`, PR #822) is
-  already spec'd under `agent-execution`'s "Per-backend credential environment
+- The existing `SecretResolver` seam (`internal/agent/secret.go`) is already
+  spec'd under `agent-execution`'s "Per-backend credential environment
   mapping" requirement and already deliberately designed to be swapped without
   touching `BuildCmd` — this change fulfills that seam's own stated intent
-  rather than introducing a new one.
+  rather than introducing a new one. (Its origin was mis-cited in an earlier
+  draft as "PR #822" — that PR is closed/unmerged; the feature is real on
+  `origin/master` today regardless, see Context.)
+- A second, independent attempt at the same follow-up (PR #928,
+  `argus/op-secret-resolver-proposal`, commit `b6813697`) is also closed and
+  unmerged — a different, incompatible global-mode design that explicitly
+  left the daemon-bootstrap problem out of scope. Its two empirically-found
+  subprocess-safety fixes (`exec.LookPath`, process-group timeout-kill) are
+  reused; its design is not. See Context and Risks/Trade-offs.
 - A related-sounding symptom (`secret BUNDLE_PACKAGES__THANX__COM` failing
   inside an argus-spawned Thanx sandbox) led to a detour building
   [thanx/sketch#160](https://github.com/thanx/sketch/pull/160) (Socket
