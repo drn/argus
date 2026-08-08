@@ -2086,3 +2086,64 @@ func TestSettingsView_BackendDetailHintsFitReserve(t *testing.T) {
 		}
 	}
 }
+
+// --- Secrets bootstrap status row in System category
+// (add-secrets-resolver-registry, Task 1.12) ---
+// Uses testDBWithConfig (keymap_smoke_test.go, same package) for a real
+// config.toml round-trip, since [secrets] is config.toml-only (mirrors
+// [keybindings], no DB-backed setting). Fails to compile until Stage 6 adds
+// the srSecretsBootstrap settingsRowKind and wires the row into
+// rebuildRows's catSystem branch.
+
+// secretsBootstrapRow finds the secrets-bootstrap-status row in rows, or nil.
+func secretsBootstrapRow(rows []settingsRow) *settingsRow {
+	for i := range rows {
+		if rows[i].kind == srSecretsBootstrap {
+			return &rows[i]
+		}
+	}
+	return nil
+}
+
+func TestSettingsView_SecretsBootstrapRow_Resolved(t *testing.T) {
+	t.Setenv("SETTINGS_SECRETS_TEST_VAR", "value")
+	d := testDBWithConfig(t, "[secrets.op]\nbootstrap_source = \"env://SETTINGS_SECRETS_TEST_VAR\"\nbootstrap_target = \"OP_SERVICE_ACCOUNT_TOKEN\"\n")
+	sv := NewSettingsView(d)
+	sv.Refresh()
+	sv.setCategory(catSystem)
+
+	row := secretsBootstrapRow(sv.rows)
+	if row == nil {
+		t.Fatal("expected a secrets bootstrap status row in the System category")
+	}
+	testutil.Contains(t, row.label, "RESOLVED")
+	if strings.Contains(row.label, "NOT RESOLVED") || strings.Contains(row.label, "NOT CONFIGURED") {
+		t.Errorf("expected a RESOLVED-only row label, got %q", row.label)
+	}
+}
+
+func TestSettingsView_SecretsBootstrapRow_NotResolved(t *testing.T) {
+	d := testDBWithConfig(t, "[secrets.op]\nbootstrap_source = \"env://SETTINGS_SECRETS_DEFINITELY_UNSET_XYZ\"\nbootstrap_target = \"OP_SERVICE_ACCOUNT_TOKEN\"\n")
+	sv := NewSettingsView(d)
+	sv.Refresh()
+	sv.setCategory(catSystem)
+
+	row := secretsBootstrapRow(sv.rows)
+	if row == nil {
+		t.Fatal("expected a secrets bootstrap status row in the System category")
+	}
+	testutil.Contains(t, row.label, "NOT RESOLVED")
+}
+
+func TestSettingsView_SecretsBootstrapRow_NotConfigured(t *testing.T) {
+	d := testDBWithConfig(t, "") // no [secrets] block at all
+	sv := NewSettingsView(d)
+	sv.Refresh()
+	sv.setCategory(catSystem)
+
+	row := secretsBootstrapRow(sv.rows)
+	if row == nil {
+		t.Fatal("expected a secrets bootstrap status row in the System category")
+	}
+	testutil.Contains(t, row.label, "NOT CONFIGURED")
+}
