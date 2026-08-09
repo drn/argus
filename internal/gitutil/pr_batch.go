@@ -60,7 +60,9 @@ type graphQLConnection struct {
 // graphQLBatchResponse is the subset of the `gh api graphql` JSON envelope we
 // parse. The `repo` object's keys are the per-branch aliases (sanitized task
 // ids) supplied by the caller; json.Unmarshal into a map preserves them so we
-// can map each alias back to its branch.
+// can map each alias back to its branch. Shared by every aliased-per-repo
+// query this package issues (PR-badge state, merge-candidate lookup) — only
+// the per-alias field selection inside `repo` differs between them.
 type graphQLBatchResponse struct {
 	Data struct {
 		RateLimit struct {
@@ -69,6 +71,48 @@ type graphQLBatchResponse struct {
 		} `json:"rateLimit"`
 		Repo map[string]json.RawMessage `json:"repo"`
 	} `json:"data"`
+}
+
+// runAliasedRepoQuery executes a single aliased `repository(owner,name){...}`
+// GraphQL query via `gh api graphql` (written to a temp file to avoid argv
+// limits on large aliased queries) and returns the raw per-alias JSON map
+// plus the billed GraphQL cost (data.rateLimit.cost). Shared by every
+// batched query this package builds (FetchPRStatesBatch,
+// FetchMergeCandidatesBatch) — the only difference between them is the query
+// text each builds (field selection, `first` count); execution, temp-file
+// handling, and rate-limit-cost parsing are identical.
+func runAliasedRepoQuery(ctx context.Context, query string) (map[string]json.RawMessage, int, error) {
+	const timeout = 10 * time.Second
+	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	tmp, err := os.CreateTemp("", "argus-ghquery-*.graphql")
+	if err != nil {
+		return nil, 0, fmt.Errorf("create graphql query temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if _, err := tmp.WriteString(query); err != nil {
+		_ = tmp.Close()
+		return nil, 0, fmt.Errorf("write graphql query temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, 0, fmt.Errorf("close graphql query temp file: %w", err)
+	}
+
+	raw, code, runErr := prGraphQLRunner(fetchCtx, "", "api", "graphql", "-F", "query=@"+tmpPath)
+	if runErr != nil {
+		return nil, 0, fmt.Errorf("gh api graphql: %w", runErr)
+	}
+	if code != 0 {
+		return nil, 0, fmt.Errorf("gh api graphql exited %d: %s", code, strings.TrimSpace(raw))
+	}
+
+	var resp graphQLBatchResponse
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		return nil, 0, fmt.Errorf("parse graphql json: %w", err)
+	}
+	return resp.Data.Repo, resp.Data.RateLimit.Cost, nil
 }
 
 // FetchPRStatesBatch resolves PR state for every branch in branches with a
@@ -104,36 +148,9 @@ func FetchPRStatesBatch(ctx context.Context, repo string, branches map[string]st
 	}
 
 	query := buildBatchQuery(owner, name, branches)
-
-	const timeout = 10 * time.Second
-	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	tmp, err := os.CreateTemp("", "argus-prquery-*.graphql")
+	repoMap, cost, err := runAliasedRepoQuery(ctx, query)
 	if err != nil {
-		return nil, 0, fmt.Errorf("create graphql query temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-	if _, err := tmp.WriteString(query); err != nil {
-		_ = tmp.Close()
-		return nil, 0, fmt.Errorf("write graphql query temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return nil, 0, fmt.Errorf("close graphql query temp file: %w", err)
-	}
-
-	raw, code, runErr := prGraphQLRunner(fetchCtx, "", "api", "graphql", "-F", "query=@"+tmpPath)
-	if runErr != nil {
-		return nil, 0, fmt.Errorf("gh api graphql: %w", runErr)
-	}
-	if code != 0 {
-		return nil, 0, fmt.Errorf("gh api graphql exited %d: %s", code, strings.TrimSpace(raw))
-	}
-
-	var resp graphQLBatchResponse
-	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
-		return nil, 0, fmt.Errorf("parse graphql json: %w", err)
+		return nil, 0, err
 	}
 
 	// Invert branch→alias so we can map each alias key back to its branch.
@@ -142,7 +159,7 @@ func FetchPRStatesBatch(ctx context.Context, repo string, branches map[string]st
 		aliasToBranch[alias] = branch
 	}
 
-	for alias, rawConn := range resp.Data.Repo {
+	for alias, rawConn := range repoMap {
 		branch, known := aliasToBranch[alias]
 		if !known {
 			continue
@@ -154,7 +171,7 @@ func FetchPRStatesBatch(ctx context.Context, repo string, branches map[string]st
 		out[branch] = mapBatchNode(conn.Nodes)
 	}
 
-	return out, resp.Data.RateLimit.Cost, nil
+	return out, cost, nil
 }
 
 // mapBatchNode converts a pullRequests connection's nodes into a PRResult,
