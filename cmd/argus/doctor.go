@@ -36,6 +36,7 @@ func runDoctor() {
 	fmt.Print(doctor.Render(actors))
 	fmt.Print(doctor.RenderStopHook(gatherStopHookStatus()))
 	fmt.Print(doctor.RenderProfileLibrary(gatherProfileLibraryStatus()))
+	fmt.Print(doctor.RenderDevStackOrphans(gatherDevStackOrphans()))
 	if doctor.Diagnose(actors).Verdict != doctor.Healthy {
 		os.Exit(1)
 	}
@@ -265,6 +266,31 @@ func diagnoseProfileLibraryAt(dir string, cfg config.Config) doctor.ProfileLibra
 		}
 	}
 	return doctor.DiagnoseProfileLibrary(validNames, false, nil)
+}
+
+// gatherDevStackOrphans scans the process table for dev-stack processes
+// (mysqld/redis-server/postgres/caddy/process-compose) and classifies any
+// whose embedded worktree path no longer exists on disk. Read-only: never
+// signals or otherwise mutates a reported process.
+func gatherDevStackOrphans() (doctor.DevStackOrphanStatus, []doctor.DevStackOrphan) {
+	procs, err := agent.ScanDevStackProcesses()
+	return diagnoseDevStackOrphansFrom(procs, err, agent.DirExists)
+}
+
+// diagnoseDevStackOrphansFrom classifies already-scanned dev-stack processes
+// against an injectable existence check (rather than calling os.Stat itself),
+// so it's testable without touching the real process table or filesystem.
+func diagnoseDevStackOrphansFrom(procs []agent.DevStackProc, scanErr error, exists func(string) bool) (doctor.DevStackOrphanStatus, []doctor.DevStackOrphan) {
+	if scanErr != nil {
+		return doctor.DiagnoseDevStackOrphans(nil, scanErr)
+	}
+	var orphans []doctor.DevStackOrphan
+	for _, p := range procs {
+		if !exists(p.WorktreePath) {
+			orphans = append(orphans, doctor.DevStackOrphan{PID: p.PID, Name: p.Name, WorktreePath: p.WorktreePath})
+		}
+	}
+	return doctor.DiagnoseDevStackOrphans(orphans, nil)
 }
 
 // readStopHookCommands reads and parses the Claude Code settings file at
