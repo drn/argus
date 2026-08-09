@@ -62,9 +62,9 @@ next spawn, not only after a daemon/supervisor restart.
 
 **Depends on:** Stage 3
 
-- [ ] 5.1 Add `internal/doctor/secretsstatus.go` mirroring `profilelib.go`'s shape: a `SecretsBootstrapStatus` enum (Resolved / NotResolved / NotConfigured) and a pure `RenderSecretsBootstrap(status) string` function producing its own printed section (independent of the binary-coherence table/verdict, the Stop-hook section, and the profile-library section)
-- [ ] 5.2 In `cmd/argus/doctor.go`, add a `gatherSecretsBootstrapStatus()` that loads config and calls Stage 3.4's tri-state query, and add `fmt.Print(doctor.RenderSecretsBootstrap(gatherSecretsBootstrapStatus()))` to `runDoctor()` — after the existing profile-library line, still **before** the `Diagnose(actors).Verdict` exit-code check, and without that check reading the new status at all
-- [ ] 5.3 `internal/doctor/secretsstatus_test.go` and `cmd/argus/doctor_test.go` — confirm Stage 1.10-1.11 now pass, including the exit-code-unaffected assertion
+- [x] 5.1 Add `internal/doctor/secretsstatus.go` mirroring `profilelib.go`'s shape: a `SecretsBootstrapStatus` enum (Resolved / NotResolved / NotConfigured) and a pure `RenderSecretsBootstrap(status) string` function producing its own printed section (independent of the binary-coherence table/verdict, the Stop-hook section, and the profile-library section)
+- [x] 5.2 In `cmd/argus/doctor.go`, add a `gatherSecretsBootstrapStatus()` that loads config and calls Stage 3.4's tri-state query, and add `fmt.Print(doctor.RenderSecretsBootstrap(gatherSecretsBootstrapStatus()))` to `runDoctor()` — after the existing profile-library line, still **before** the `Diagnose(actors).Verdict` exit-code check, and without that check reading the new status at all
+- [x] 5.3 `internal/doctor/secretsstatus_test.go` and `cmd/argus/doctor_test.go` — confirm Stage 1.10-1.11 now pass, including the exit-code-unaffected assertion
 
 ## 6. Settings System row for secrets bootstrap status
 
