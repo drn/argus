@@ -62,6 +62,14 @@ func (s *Server) routes() *http.ServeMux {
 
 	mux.HandleFunc("POST /api/sessions/stop-all", s.handleStopAll)
 	mux.HandleFunc("POST /api/maintenance/prune-completed", s.handlePruneCompleted)
+	// Merge-safety review global Cleanup (openspec add-merge-safety-review):
+	// compute/list are read/trigger-tier (any authenticated token, like
+	// prune-completed above); clean is master-gated (see requireMaster
+	// inside handleCleanupCandidatesClean) since it immediately deletes
+	// across every eligible task in the system.
+	mux.HandleFunc("POST /api/maintenance/cleanup-candidates/compute", s.handleCleanupCandidatesCompute)
+	mux.HandleFunc("GET /api/maintenance/cleanup-candidates", s.handleCleanupCandidatesList)
+	mux.HandleFunc("POST /api/maintenance/cleanup-candidates/clean", s.handleCleanupCandidatesClean)
 	mux.HandleFunc("GET /api/projects/full", s.handleListProjectsFull)
 	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
 	mux.HandleFunc("PUT /api/projects/{name}", s.handleUpdateProject)

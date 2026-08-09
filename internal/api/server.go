@@ -93,6 +93,19 @@ type Server struct {
 	// ticker and caches the latest snapshot; handleSystemMetrics serves it.
 	// Started in New, stopped in Shutdown.
 	metrics *sysmetrics.Collector
+
+	// cleanup tracks whether a merge-safety review background classification
+	// pass (openspec add-merge-safety-review) is currently running, so a
+	// second POST .../compute while one is in flight is a no-op. Cached
+	// verdicts themselves live in task_meta (namespace "cleanup"), not here —
+	// this only guards against a concurrent duplicate pass.
+	cleanup cleanupComputeState
+
+	// cleanupComputeFn is the test seam for the compute pass's actual work
+	// (mirrors pluginSubmitFn). Production leaves this nil, which resolves to
+	// s.runCleanupCompute; tests override it to control timing without
+	// spinning up real git/gh processes.
+	cleanupComputeFn func(ctx context.Context)
 }
 
 // SetNotifier wires the reliable pane-delivery service into the API server.

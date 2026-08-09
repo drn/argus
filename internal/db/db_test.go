@@ -580,6 +580,73 @@ func TestDB_PruneCompleted_StillIgnoresNonCompleteStatuses(t *testing.T) {
 	testutil.Equal(t, still.Status, model.StatusInReview)
 }
 
+// --- StuckTaskCandidates (global Cleanup backlog predicate, add-merge-safety-review) ---
+
+func TestDB_StuckTaskCandidates(t *testing.T) {
+	t.Run("matches archived+in_review+no live binding", func(t *testing.T) {
+		d := testDB(t)
+		want := &model.Task{Name: "stuck", Status: model.StatusInReview, Archived: true}
+		testutil.NoError(t, d.Add(want))
+
+		got, err := d.StuckTaskCandidates()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 1)
+		testutil.Equal(t, got[0].ID, want.ID)
+	})
+
+	t.Run("excludes a non-archived task", func(t *testing.T) {
+		d := testDB(t)
+		testutil.NoError(t, d.Add(&model.Task{Name: "not-archived", Status: model.StatusInReview}))
+
+		got, err := d.StuckTaskCandidates()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 0)
+	})
+
+	t.Run("excludes an archived task with a non-in_review status", func(t *testing.T) {
+		d := testDB(t)
+		testutil.NoError(t, d.Add(&model.Task{Name: "done", Status: model.StatusComplete, Archived: true}))
+
+		got, err := d.StuckTaskCandidates()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 0)
+	})
+
+	t.Run("excludes a task with a live Hera binding", func(t *testing.T) {
+		d := testDB(t)
+		bound := &model.Task{Name: "bound", Status: model.StatusInReview, Archived: true, Worktree: "/tmp/wt/bound"}
+		testutil.NoError(t, d.Add(bound))
+		orch := mkOrch(t, d, "bound-orch")
+		role := mkRole(t, d, orch.ID, "bound-role", HeraKindWorker)
+		_, err := d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: role.ID, OrchestratorID: orch.ID, ArgusTaskID: bound.ID, WorktreePath: bound.Worktree,
+		})
+		testutil.NoError(t, err)
+
+		got, err := d.StuckTaskCandidates()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 0)
+	})
+
+	t.Run("includes a task whose only Hera binding has ended", func(t *testing.T) {
+		d := testDB(t)
+		ended := &model.Task{Name: "ended", Status: model.StatusInReview, Archived: true, Worktree: "/tmp/wt/ended"}
+		testutil.NoError(t, d.Add(ended))
+		orch := mkOrch(t, d, "ended-orch")
+		role := mkRole(t, d, orch.ID, "ended-role", HeraKindWorker)
+		binding, err := d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: role.ID, OrchestratorID: orch.ID, ArgusTaskID: ended.ID, WorktreePath: ended.Worktree,
+		})
+		testutil.NoError(t, err)
+		testutil.NoError(t, d.EndHeraBinding(binding.ID, "test-teardown"))
+
+		got, err := d.StuckTaskCandidates()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 1)
+		testutil.Equal(t, got[0].ID, ended.ID)
+	})
+}
+
 // TestDB_DataVersion pins the cross-connection cache-invalidation contract
 // DataVersion exists for (see gotchas/hera-view.md and
 // openspec/changes/fix-hera-tick-and-kick-perf/design.md Decision 4): a write
