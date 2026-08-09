@@ -1,8 +1,10 @@
 # Binaries
 /argus
 /argus-plugin-smoke
+/argus-secrets-smoke
 /cmd/argus/argus
 /cmd/argus-plugin-smoke/argus-plugin-smoke
+/cmd/argus-secrets-smoke/argus-secrets-smoke
 *.exe
 *.dll
 *.so

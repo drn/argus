@@ -32,6 +32,16 @@ cmd/argus-test-server/main.go
 # orchestrator main.go is excluded. Covered end-to-end by `make plugin-smoke`.
 cmd/argus-plugin-smoke/main.go
 
+# Test-only black-box verifier for the secrets-resolver registry (PR #932).
+# Same shape as cmd/argus-plugin-smoke above: main.go holds main(), run(),
+# cleanup(), and the phaseN* orchestration functions, each of which blocks on
+# a real HTTP call to a live argus daemon (and, for phase2, a real subprocess
+# `security` Keychain lookup on the daemon side) — none of that is
+# exercisable under `go test`. The supporting secretsbackend.go (REST/DB
+# helpers + the pure output-assertion function) IS unit tested
+# (secretsbackend_test.go). Covered end-to-end by `make secrets-smoke`.
+cmd/argus-secrets-smoke/main.go
+
 # Raw terminal mode + ioctl glue. CLAUDE.md exempts "real terminal functions
 # (raw mode, ioctl)".
 internal/agent/attach.go
