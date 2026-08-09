@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // This file implements the add-secrets-resolver-registry secrets-resolution
@@ -243,6 +244,10 @@ func QueryOpBootstrapStatus(sc config.SecretsConfig) OpBootstrapStatus {
 		return OpBootstrapNotConfigured
 	}
 	if _, ok := Resolve(sc, sc.Op.BootstrapSource); !ok {
+		// Logged here (not by each caller) because this is the single
+		// implementation both `argus doctor` and the Settings System row
+		// call — a descriptor, never a resolved value, is safe to log.
+		uxlog.Log("[agent] secrets bootstrap: [secrets.op].bootstrap_source %q did not resolve", sc.Op.BootstrapSource)
 		return OpBootstrapNotResolved
 	}
 	return OpBootstrapResolved

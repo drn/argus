@@ -78,10 +78,10 @@ next spawn, not only after a daemon/supervisor restart.
 
 **Depends on:** Stages 4, 5, 6
 
-- [ ] 7.1 Add a gotcha bullet to `context/knowledge/gotchas/daemon-rpc.md` (or `misc.md` if it reads more as a config/DB pattern than a daemon-lifecycle one) covering: the resolver-registry-resolves-at-point-of-use-not-ambient-injection invariant, why the wiring lives in both `runDaemon()` and `runSupervisor()` (BuildCmd runs inside whichever one is actually active per `cfg.Supervisor.Enabled`), the op-resolver's self-referential bootstrap (no special "how op authenticates" path), and the success-only memoization semantics — per CLAUDE.md's "every new feature documents its non-obvious gotchas" rule
-- [ ] 7.2 Update `context/knowledge/index.md`'s coverage-bullet cell for whichever gotcha file gained the entry (per that file's existing convention of listing coverage inline in the index table)
-- [ ] 7.3 Add `uxlog` calls for resolve failures at the point `BuildCmd` leaves a target variable unset (naming only the variable, never a value) and for the doctor/Settings tri-state computation's failure path, per CLAUDE.md's Logging Requirements
-- [ ] 7.4 Update the README Reference appendix if a new Settings row or `argus doctor` section warrants a table entry (factual-change bar per CLAUDE.md — likely yes for the doctor output table)
+- [x] 7.1 Add a gotcha bullet to `context/knowledge/gotchas/daemon-rpc.md` (or `misc.md` if it reads more as a config/DB pattern than a daemon-lifecycle one) covering: the resolver-registry-resolves-at-point-of-use-not-ambient-injection invariant, why the wiring lives in both `runDaemon()` and `runSupervisor()` (BuildCmd runs inside whichever one is actually active per `cfg.Supervisor.Enabled`), the op-resolver's self-referential bootstrap (no special "how op authenticates" path), and the success-only memoization semantics — per CLAUDE.md's "every new feature documents its non-obvious gotchas" rule
+- [x] 7.2 Update `context/knowledge/index.md`'s coverage-bullet cell for whichever gotcha file gained the entry (per that file's existing convention of listing coverage inline in the index table)
+- [x] 7.3 Add `uxlog` calls for resolve failures at the point `BuildCmd` leaves a target variable unset (naming only the variable, never a value) and for the doctor/Settings tri-state computation's failure path, per CLAUDE.md's Logging Requirements
+- [x] 7.4 Update the README Reference appendix if a new Settings row or `argus doctor` section warrants a table entry (factual-change bar per CLAUDE.md — likely yes for the doctor output table)
 
 ## 8. Verification
 
