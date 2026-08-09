@@ -1,10 +1,12 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/doctor"
 	"github.com/drn/argus/internal/testutil"
@@ -134,4 +136,44 @@ func TestDiagnoseProfileLibraryAt_UnreadableDirectoryIsUnknown(t *testing.T) {
 	defer os.Chmod(dir, 0o755) //nolint:errcheck,gosec // test cleanup restoring +x so t.TempDir() can remove the dir
 	got := diagnoseProfileLibraryAt(dir, config.DefaultConfig())
 	testutil.Equal(t, got, doctor.ProfileLibraryUnknown)
+}
+
+// --- Dev-stack orphan check (fix-devstack-orphaning) ---
+
+func TestDiagnoseDevStackOrphansFrom_NoneRunning(t *testing.T) {
+	status, orphans := diagnoseDevStackOrphansFrom(nil, nil, func(string) bool { return true })
+	testutil.Equal(t, status, doctor.DevStackOrphanNone)
+	testutil.Equal(t, len(orphans), 0)
+}
+
+func TestDiagnoseDevStackOrphansFrom_AllReferenceExistingWorktrees(t *testing.T) {
+	procs := []agent.DevStackProc{
+		{PID: 1, Name: "mysqld", WorktreePath: "/x/still-here"},
+		{PID: 2, Name: "redis-server", WorktreePath: "/x/also-still-here"},
+	}
+	status, orphans := diagnoseDevStackOrphansFrom(procs, nil, func(string) bool { return true })
+	testutil.Equal(t, status, doctor.DevStackOrphanNone)
+	testutil.Equal(t, len(orphans), 0)
+}
+
+func TestDiagnoseDevStackOrphansFrom_SomeReferenceDeletedWorktrees(t *testing.T) {
+	procs := []agent.DevStackProc{
+		{PID: 1, Name: "mysqld", WorktreePath: "/x/still-here"},
+		{PID: 2, Name: "redis-server", WorktreePath: "/x/deleted"},
+	}
+	exists := func(path string) bool { return path != "/x/deleted" }
+
+	status, orphans := diagnoseDevStackOrphansFrom(procs, nil, exists)
+	testutil.Equal(t, status, doctor.DevStackOrphanFound)
+	testutil.Equal(t, len(orphans), 1)
+	testutil.Equal(t, orphans[0].PID, 2)
+	testutil.Equal(t, orphans[0].Name, "redis-server")
+	testutil.Equal(t, orphans[0].WorktreePath, "/x/deleted")
+}
+
+func TestDiagnoseDevStackOrphansFrom_ScanErrorIsUnknown(t *testing.T) {
+	procs := []agent.DevStackProc{{PID: 1, Name: "mysqld", WorktreePath: "/x/deleted"}}
+	status, orphans := diagnoseDevStackOrphansFrom(procs, errors.New("pgrep unavailable"), func(string) bool { return false })
+	testutil.Equal(t, status, doctor.DevStackOrphanUnknown)
+	testutil.Equal(t, len(orphans), 0)
 }

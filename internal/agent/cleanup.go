@@ -166,6 +166,13 @@ func RemoveWorktree(worktreePath, repoDir string) {
 		uxlog.Log("[worktree] RemoveWorktree: path %q is not a worktree subdir, skipping", worktreePath)
 		return
 	}
+
+	// Stop any devbox/process-compose dev stack (mysqld/redis-server/
+	// postgres/caddy/process-compose) still running against this worktree
+	// before removing its files — otherwise it leaks, orphaned to launchd,
+	// pointed at a directory that no longer exists. See
+	// gotchas/worktree.md and fix-devstack-orphaning.
+	stopDevStackFor(worktreePath)
 	cleaned := filepath.Clean(worktreePath)
 	cmd := exec.Command("git", "worktree", "remove", "--force", cleaned)
 	if repoDir != "" {
