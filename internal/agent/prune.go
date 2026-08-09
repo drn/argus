@@ -97,6 +97,15 @@ func walkOrphanedWorktrees(wtRoot string, knownPaths map[string]bool, projects m
 
 // PruneOptions configures PrunePrepare and PruneCompleted.
 type PruneOptions struct {
+	// TaskIDs, when non-empty, sources PrunePrepare's task list from exactly
+	// these IDs (db.PruneTasks) instead of the default "every status=complete
+	// task" sweep (db.PruneCompleted) — the merge-safety review popup's
+	// Clean actions use this to prune a reviewed, cached candidate snapshot
+	// that may include non-complete (e.g. in_review) statuses. Both modes
+	// apply the identical live-Hera-binding guard; the slow worktree/branch
+	// removal phase (PrunePlan.Run) is unaffected either way.
+	TaskIDs []string
+
 	// WtRoot is the worktree root directory (~/.argus/worktrees). Required for
 	// the orphan sweep. If empty, the orphan sweep is skipped.
 	WtRoot string
@@ -152,7 +161,14 @@ type PrunePlan struct {
 // logs, and computes the count of remaining worktree cleanup work. Call Run
 // on the returned plan to execute the slow worktree/branch cleanup.
 func PrunePrepare(database *db.DB, opts PruneOptions) (*PrunePlan, error) {
-	pruned, skippedHeraBound, err := database.PruneCompleted()
+	var pruned []*model.Task
+	var skippedHeraBound int
+	var err error
+	if len(opts.TaskIDs) > 0 {
+		pruned, skippedHeraBound, err = database.PruneTasks(opts.TaskIDs)
+	} else {
+		pruned, skippedHeraBound, err = database.PruneCompleted()
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -257,6 +257,96 @@ func TestPruneCompleted_NoneToPrune(t *testing.T) {
 	testutil.Equal(t, plan.WorktreeCount, 0)
 }
 
+// --- PruneOptions.TaskIDs (explicit-ID-list mode, add-merge-safety-review) ---
+
+// TestPrunePrepare_TaskIDsSourcesExplicitList proves PrunePrepare, when given
+// TaskIDs, prunes exactly that set — including a status (in_review) the
+// default all-complete sweep would never touch — and leaves every other task
+// (even another in_review one, and even an otherwise-complete one NOT in the
+// list) fully alone.
+func TestPrunePrepare_TaskIDsSourcesExplicitList(t *testing.T) {
+	d, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	wtRoot := filepath.Join(t.TempDir(), ".argus", "worktrees")
+	stuckWT := filepath.Join(wtRoot, "proj", "stuck")
+	testutil.NoError(t, os.MkdirAll(stuckWT, 0o755))
+	testutil.NoError(t, d.Add(&model.Task{
+		ID: "stuck-1", Name: "stuck", Status: model.StatusInReview,
+		Project: "proj", Worktree: stuckWT,
+	}))
+	// Same status, NOT in the explicit list — must survive.
+	testutil.NoError(t, d.Add(&model.Task{ID: "stuck-2", Name: "stuck-other", Status: model.StatusInReview, Project: "proj"}))
+	// status=complete but NOT in the explicit list — must survive too (this
+	// is the collateral-deletion case the design doc explicitly rejected).
+	testutil.NoError(t, d.Add(&model.Task{ID: "complete-1", Name: "complete-other", Status: model.StatusComplete, Project: "proj"}))
+
+	plan, err := PrunePrepare(d, PruneOptions{
+		TaskIDs:  []string{"stuck-1"},
+		WtRoot:   wtRoot,
+		Projects: map[string]string{"proj": ""},
+	})
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(plan.Pruned), 1)
+	testutil.Equal(t, plan.Pruned[0].ID, "stuck-1")
+	plan.Run(nil)
+
+	tasks, err := d.Tasks()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(tasks), 2)
+	for _, tk := range tasks {
+		if tk.ID == "stuck-1" {
+			t.Errorf("stuck-1 should have been pruned")
+		}
+	}
+	if DirExists(stuckWT) {
+		t.Error("stuck-1's worktree should be removed")
+	}
+}
+
+// TestPrunePrepare_TaskIDsRespectsLiveHeraBindingGuard proves the
+// explicit-ID-list mode shares the exact same live-Hera-binding guard as the
+// default sweep.
+func TestPrunePrepare_TaskIDsRespectsLiveHeraBindingGuard(t *testing.T) {
+	d, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	testutil.NoError(t, d.Add(&model.Task{ID: "bound-1", Name: "bound", Status: model.StatusInReview}))
+	orch, err := d.CreateHeraOrchestrator("orch", "")
+	testutil.NoError(t, err)
+	role, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: orch.ID, Name: "role", Kind: db.HeraKindWorker, ArgusProject: "proj"})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: role.ID, OrchestratorID: orch.ID, ArgusTaskID: "bound-1", WorktreePath: "/tmp/wt/bound"})
+	testutil.NoError(t, err)
+
+	plan, err := PrunePrepare(d, PruneOptions{TaskIDs: []string{"bound-1"}})
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(plan.Pruned), 0)
+	testutil.Equal(t, plan.SkippedHeraBound, 1)
+
+	still, err := d.Get("bound-1")
+	testutil.NoError(t, err)
+	testutil.Equal(t, still.Status, model.StatusInReview)
+}
+
+// TestPrunePrepare_NoTaskIDsUsesDefaultSweep proves the zero-value (unset
+// TaskIDs) path is byte-for-byte unchanged — the default all-complete sweep.
+func TestPrunePrepare_NoTaskIDsUsesDefaultSweep(t *testing.T) {
+	d, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	testutil.NoError(t, d.Add(&model.Task{ID: "done-1", Name: "done", Status: model.StatusComplete}))
+	testutil.NoError(t, d.Add(&model.Task{ID: "stuck-1", Name: "stuck", Status: model.StatusInReview}))
+
+	plan, err := PrunePrepare(d, PruneOptions{})
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(plan.Pruned), 1)
+	testutil.Equal(t, plan.Pruned[0].ID, "done-1")
+}
+
 // TestPlanRun_NoOpForEmpty ensures Run is safe to call on an empty plan
 // (PrunePrepare returned early because no rows matched).
 func TestPlanRun_NoOpForEmpty(t *testing.T) {

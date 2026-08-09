@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/drn/argus/internal/events"
@@ -512,9 +513,69 @@ func (d *DB) PruneCompleted() (pruned []*model.Task, skippedHeraBound int, err e
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	ids, err := d.taskIDsWhereLocked("status='complete'")
+	if err != nil {
+		return nil, 0, err
+	}
+	return d.pruneTasksLocked(ids)
+}
+
+// PruneTasks deletes exactly the given task IDs, re-verifying at delete time
+// that each has no live Hera role binding (`hera_bindings.ended_at IS NULL`)
+// — the same guard PruneCompleted has always applied, generalized to an
+// explicit candidate set instead of an implicit "all status=complete" query.
+// An ID that fails this guard is skipped (counted in skippedHeraBound), not
+// deleted. This does NOT independently re-check status/archived — selecting
+// the right set of IDs to pass in is the caller's responsibility (e.g. the
+// merge-safety review popup's cached, already-reviewed candidate snapshot);
+// the live-binding guard is the one invariant every caller shares and that
+// is unsafe to skip (see openspec add-merge-safety-review design.md).
+func (d *DB) PruneTasks(ids []string) (pruned []*model.Task, skippedHeraBound int, err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.pruneTasksLocked(ids)
+}
+
+// taskIDsWhereLocked returns the IDs of every task matching the given raw
+// SQL WHERE fragment. Callers control the fragment (never user input), so
+// this is a plain string concatenation, matching this file's existing
+// convention (e.g. the notLiveHeraBound fragment below).
+func (d *DB) taskIDsWhereLocked(whereSQL string) ([]string, error) {
+	rows, err := d.conn.Query(`SELECT id FROM tasks WHERE ` + whereSQL)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// pruneTasksLocked assumes d.mu is already held. It selects, from exactly
+// the given ids, those with no live Hera binding, returns them, and deletes
+// them in the same pass every existing caller relies on for atomicity.
+func (d *DB) pruneTasksLocked(ids []string) (pruned []*model.Task, skippedHeraBound int, err error) {
+	if len(ids) == 0 {
+		return nil, 0, nil
+	}
+
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	//nolint:gosec // G202: placeholders are a fixed list of `?` literals; ids are bound parameters.
+	inClause := `id IN (` + strings.Join(placeholders, ",") + `)`
 	const notLiveHeraBound = `id NOT IN (SELECT argus_task_id FROM hera_bindings WHERE ended_at IS NULL)`
 
-	rows, err := d.conn.Query(`SELECT ` + taskColumns + ` FROM tasks WHERE status='complete' AND ` + notLiveHeraBound)
+	rows, err := d.conn.Query(`SELECT `+taskColumns+` FROM tasks WHERE `+inClause+` AND `+notLiveHeraBound, args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -526,7 +587,7 @@ func (d *DB) PruneCompleted() (pruned []*model.Task, skippedHeraBound int, err e
 	rows.Close()
 
 	if err := d.conn.QueryRow(
-		`SELECT COUNT(*) FROM tasks WHERE status='complete' AND NOT (` + notLiveHeraBound + `)`,
+		`SELECT COUNT(*) FROM tasks WHERE `+inClause+` AND NOT (`+notLiveHeraBound+`)`, args...,
 	).Scan(&skippedHeraBound); err != nil {
 		return nil, 0, err
 	}
@@ -535,7 +596,7 @@ func (d *DB) PruneCompleted() (pruned []*model.Task, skippedHeraBound int, err e
 		return nil, skippedHeraBound, nil
 	}
 
-	if _, err := d.conn.Exec(`DELETE FROM tasks WHERE status='complete' AND ` + notLiveHeraBound); err != nil {
+	if _, err := d.conn.Exec(`DELETE FROM tasks WHERE `+inClause+` AND `+notLiveHeraBound, args...); err != nil {
 		return nil, 0, err
 	}
 	return pruned, skippedHeraBound, nil

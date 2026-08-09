@@ -487,6 +487,99 @@ func TestDB_PruneCompleted_SkippedCountWithMix(t *testing.T) {
 	}
 }
 
+// --- PruneTasks (explicit-ID-list generalization, add-merge-safety-review) ---
+
+func TestDB_PruneTasks_DeletesExactlyGivenIDsRegardlessOfStatus(t *testing.T) {
+	d := testDB(t)
+
+	inReview := &model.Task{Name: "stuck", Status: model.StatusInReview}
+	testutil.NoError(t, d.Add(inReview))
+	other := &model.Task{Name: "other-in-review", Status: model.StatusInReview}
+	testutil.NoError(t, d.Add(other))
+	pending := &model.Task{Name: "pending", Status: model.StatusPending}
+	testutil.NoError(t, d.Add(pending))
+
+	pruned, skipped, err := d.PruneTasks([]string{inReview.ID})
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(pruned), 1)
+	testutil.Equal(t, pruned[0].ID, inReview.ID)
+	testutil.Equal(t, skipped, 0)
+
+	// The other in_review task (same status, NOT in the explicit list) and
+	// the pending task must both survive untouched.
+	_, err = d.Get(inReview.ID)
+	testutil.Error(t, err)
+	still, err := d.Get(other.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, still.Status, model.StatusInReview)
+	_, err = d.Get(pending.ID)
+	testutil.NoError(t, err)
+}
+
+func TestDB_PruneTasks_ReverifiesLiveHeraBindingGuard(t *testing.T) {
+	d := testDB(t)
+
+	bound := mkCompleteTaskWithHeraBinding(t, d, "bound", true)
+	unbound := &model.Task{Name: "unbound", Status: model.StatusInReview}
+	testutil.NoError(t, d.Add(unbound))
+
+	pruned, skipped, err := d.PruneTasks([]string{bound.ID, unbound.ID})
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(pruned), 1)
+	testutil.Equal(t, pruned[0].ID, unbound.ID)
+	testutil.Equal(t, skipped, 1)
+
+	still, err := d.Get(bound.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, still.Status, model.StatusComplete)
+}
+
+func TestDB_PruneTasks_EmptyIDsIsNoOp(t *testing.T) {
+	d := testDB(t)
+	_ = d.Add(&model.Task{Name: "keep", Status: model.StatusInReview})
+
+	pruned, skipped, err := d.PruneTasks(nil)
+	testutil.NoError(t, err)
+	if pruned != nil {
+		t.Errorf("expected nil pruned, got %d", len(pruned))
+	}
+	testutil.Equal(t, skipped, 0)
+
+	remaining, err := d.Tasks()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(remaining), 1)
+}
+
+func TestDB_PruneTasks_UnknownIDIgnored(t *testing.T) {
+	d := testDB(t)
+	pruned, skipped, err := d.PruneTasks([]string{"does-not-exist"})
+	testutil.NoError(t, err)
+	if pruned != nil {
+		t.Errorf("expected nil pruned, got %d", len(pruned))
+	}
+	testutil.Equal(t, skipped, 0)
+}
+
+// PruneCompleted must remain byte-for-byte equivalent now that it is
+// re-expressed in terms of PruneTasks — this pins that the all-complete
+// sweep still touches ONLY status=complete rows.
+func TestDB_PruneCompleted_StillIgnoresNonCompleteStatuses(t *testing.T) {
+	d := testDB(t)
+	stuck := &model.Task{Name: "stuck-in-review", Status: model.StatusInReview}
+	testutil.NoError(t, d.Add(stuck))
+	done := &model.Task{Name: "done", Status: model.StatusComplete}
+	testutil.NoError(t, d.Add(done))
+
+	pruned, _, err := d.PruneCompleted()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(pruned), 1)
+	testutil.Equal(t, pruned[0].ID, done.ID)
+
+	still, err := d.Get(stuck.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, still.Status, model.StatusInReview)
+}
+
 // TestDB_DataVersion pins the cross-connection cache-invalidation contract
 // DataVersion exists for (see gotchas/hera-view.md and
 // openspec/changes/fix-hera-tick-and-kick-perf/design.md Decision 4): a write
