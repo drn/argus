@@ -21,18 +21,26 @@ import (
 // fresh, at the point of use (inside whichever process calls BuildCmd), never
 // via os.Setenv-based ambient injection.
 //
-// STAGE NOTE: this stage (2) lands scheme dispatch, the env scheme (wired
-// through the EXISTING secret.go seam, not a hardcoded os.LookupEnv call), the
-// keychain resolver, and memoization. The op scheme, OpBootstrapStatus's real
-// tri-state logic, and BuildCmd's own dispatch through this registry are a
-// later stage's job — see internal/agent/secret_test.go /
-// secretregistry_test.go for the full, already-committed test surface this
-// stage is proving out.
+// STAGE NOTE: Stage 2 landed scheme dispatch, the env scheme (wired through
+// the EXISTING secret.go seam, not a hardcoded os.LookupEnv call), the
+// keychain resolver, and memoization. This stage (3) adds the op scheme (with
+// its self-referential bootstrap, resolved through this SAME Resolve
+// function — no special-cased "how does op authenticate" code path) and
+// OpBootstrapStatus's real tri-state logic. BuildCmd's own dispatch through
+// this registry (wiring cfg.Secrets into a fresh registry call per spawn) is
+// still a later stage's job — see internal/agent/secret_test.go's
+// TestBuildCmd_EnvVarMapping_KeychainSourceDispatchesThroughRegistry /
+// ...OpSourceDispatchesThroughRegistry, which remain red until then.
 
 // keychainCommandTimeout bounds a `security find-generic-password` subprocess
 // call. Keychain lookups are local and should return near-instantly; this is
 // generous headroom, not an expected steady-state latency.
 const keychainCommandTimeout = 5 * time.Second
+
+// opCommandTimeout bounds an `op read` subprocess call. Unlike the keychain
+// lookup, this may cross the network (op Connect/cloud), so it gets more
+// headroom than keychainCommandTimeout.
+const opCommandTimeout = 15 * time.Second
 
 // secretSubprocessWaitDelay backstops cmd.Wait() after a process-group kill.
 // The kill itself (see defaultSecretSubprocessRunner) should close the
@@ -50,15 +58,31 @@ func splitSecretScheme(source string) (scheme, rest string) {
 	return "env", source
 }
 
-// secretSchemeResolvers dispatches a source descriptor's scheme to its
-// resolver. An unrecognized scheme is simply absent from this map — Resolve
-// treats a missing entry as "not-ok", never an error. keychain/op are new,
-// config-driven dispatch branches that do NOT go through the pluggable
-// secretResolver seam (that seam stays env-only, preserving
-// SetSecretResolver's existing contract for bare-string/env:// sources).
-var secretSchemeResolvers = map[string]func(sc config.SecretsConfig, rest string) (string, bool){
-	"env":      envSchemeResolve,
-	"keychain": keychainSchemeResolve,
+// secretSchemeResolver dispatches a source descriptor's scheme to its
+// resolver. An unrecognized scheme returns ok=false — Resolve treats that as
+// "not-ok", never an error. keychain/op are new, config-driven dispatch
+// branches that do NOT go through the pluggable secretResolver seam (that
+// seam stays env-only, preserving SetSecretResolver's existing contract for
+// bare-string/env:// sources).
+//
+// This is a function (a switch), not a package-level map var, deliberately:
+// a map literal listing opSchemeResolve as a value would create a Go
+// package-initialization cycle, since opSchemeResolve calls Resolve, and
+// Resolve reads this same dispatch table — the compiler's (conservative,
+// static) dependency analysis flags that as a cyclic variable initializer
+// even though the actual read only ever happens at call time, long after
+// init. A function has no initializer for that analysis to trip on.
+func secretSchemeResolver(scheme string) (func(sc config.SecretsConfig, rest string) (string, bool), bool) {
+	switch scheme {
+	case "env":
+		return envSchemeResolve, true
+	case "keychain":
+		return keychainSchemeResolve, true
+	case "op":
+		return opSchemeResolve, true
+	default:
+		return nil, false
+	}
 }
 
 // envSchemeResolve resolves an env:// (or bare-string) source through the
@@ -70,7 +94,7 @@ func envSchemeResolve(_ config.SecretsConfig, rest string) (string, bool) {
 }
 
 // keychainSchemeResolve adapts keychainResolve to the uniform
-// secretSchemeResolvers signature; the keychain scheme needs no config.
+// secretSchemeResolver signature; the keychain scheme needs no config.
 func keychainSchemeResolve(_ config.SecretsConfig, rest string) (string, bool) {
 	return keychainResolve(rest)
 }
@@ -89,6 +113,37 @@ func keychainResolve(rest string) (string, bool) {
 	args = append(args, "-w")
 
 	stdout, exitedZero := secretSubprocessRunner(context.Background(), "security", args, nil, keychainCommandTimeout)
+	if !exitedZero || stdout == "" {
+		return "", false
+	}
+	return stdout, true
+}
+
+// opSchemeResolve resolves "op://<vault>/<item>/<field>" by first resolving
+// [secrets.op].bootstrap_source through the SAME registry Resolve function
+// used for any other source descriptor — deliberately no special-cased "how
+// does op authenticate" code path (bootstrap_source may itself be
+// keychain://, env://, or any other scheme this registry supports). If the
+// bootstrap resolve fails (or [secrets.op] is unconfigured, i.e.
+// BootstrapSource is empty), the op:// resolve fails immediately and `op
+// read` is never even attempted. On a successful bootstrap, the resolved
+// bootstrap credential is set under BootstrapTarget ONLY in the `op read`
+// subprocess's own environment (via secretSubprocessRunner's extraEnv param,
+// built from a copy of the ambient env) — never via os.Setenv on the calling
+// process.
+func opSchemeResolve(sc config.SecretsConfig, rest string) (string, bool) {
+	if sc.Op.BootstrapSource == "" {
+		return "", false
+	}
+	bootstrap, ok := Resolve(sc, sc.Op.BootstrapSource)
+	if !ok {
+		return "", false
+	}
+
+	args := []string{"read", "op://" + rest}
+	extraEnv := []string{sc.Op.BootstrapTarget + "=" + bootstrap}
+
+	stdout, exitedZero := secretSubprocessRunner(context.Background(), "op", args, extraEnv, opCommandTimeout)
 	if !exitedZero || stdout == "" {
 		return "", false
 	}
@@ -117,7 +172,8 @@ func ResetSecretMemoCache() {
 // passed in. A failed resolve is never cached, so a transient failure (e.g.
 // an `op`/`security` blip) can succeed on a later attempt. sc supplies any
 // scheme-specific configuration a resolver needs (currently unused by env/
-// keychain; the op scheme, added in a later stage, reads sc.Op from it).
+// keychain; the op scheme reads sc.Op from it, including recursively — see
+// opSchemeResolve's self-referential bootstrap).
 func Resolve(sc config.SecretsConfig, source string) (string, bool) {
 	secretMemoMu.Lock()
 	if v, ok := secretMemo[source]; ok {
@@ -127,7 +183,7 @@ func Resolve(sc config.SecretsConfig, source string) (string, bool) {
 	secretMemoMu.Unlock()
 
 	scheme, rest := splitSecretScheme(source)
-	resolver, ok := secretSchemeResolvers[scheme]
+	resolver, ok := secretSchemeResolver(scheme)
 	if !ok {
 		return "", false
 	}
@@ -143,15 +199,6 @@ func Resolve(sc config.SecretsConfig, source string) (string, bool) {
 }
 
 // --- op bootstrap resolution status tri-state ---
-//
-// STAGE NOTE: OpBootstrapStatus's real RESOLVED/NOT-RESOLVED/NOT-CONFIGURED
-// logic is a later stage's job (it needs the op resolver, which this stage
-// deliberately does not implement — see the file header). The type and its
-// constants are declared here only so internal/agent compiles against the
-// already-committed secretregistry_test.go; QueryOpBootstrapStatus is a
-// placeholder that always reports NOT CONFIGURED, so
-// TestQueryOpBootstrapStatus's RESOLVED/NOT-RESOLVED cases are EXPECTED to
-// remain red until that later stage lands.
 
 // OpBootstrapStatus is the op bootstrap resolution status tri-state,
 // surfaced by `argus doctor` and the Settings System panel.
@@ -168,10 +215,22 @@ const (
 	OpBootstrapNotResolved
 )
 
-// QueryOpBootstrapStatus is a placeholder for a later stage's
-// resolve-and-discard tri-state query; see the STAGE NOTE above.
-func QueryOpBootstrapStatus(_ config.SecretsConfig) OpBootstrapStatus {
-	return OpBootstrapNotConfigured
+// QueryOpBootstrapStatus computes the op bootstrap resolution status
+// tri-state via a single resolve-and-discard of [secrets.op].bootstrap_source
+// through the SAME Resolve function every other caller uses — no separate
+// classification logic. NOT CONFIGURED (bootstrap_source empty/absent) is
+// reported WITHOUT attempting a resolve at all, distinctly from a
+// configured-but-failing source (NOT RESOLVED). This is the single
+// implementation `argus doctor` and the Settings System row each call; the
+// resolved value itself is discarded, never logged or returned.
+func QueryOpBootstrapStatus(sc config.SecretsConfig) OpBootstrapStatus {
+	if sc.Op.BootstrapSource == "" {
+		return OpBootstrapNotConfigured
+	}
+	if _, ok := Resolve(sc, sc.Op.BootstrapSource); !ok {
+		return OpBootstrapNotResolved
+	}
+	return OpBootstrapResolved
 }
 
 // --- injectable subprocess execution seam ---
