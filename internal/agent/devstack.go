@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -33,8 +34,24 @@ type DevStackProc struct {
 
 // pgrepOutput is the exec seam; tests swap it to avoid shelling out to a
 // real pgrep. Mirrors the cmdFactory seam in internal/claudeagents.
+//
+// The full-command-line-output flag differs between BSD pgrep (macOS) and
+// GNU procps pgrep (Linux) even though both accept `-f` identically for
+// MATCHING against the full argument list: BSD's `-l` prints the full args
+// when combined with `-f`, but GNU's `-l` prints only the short process
+// name — `-a` is GNU's flag for full-command-line output, which on BSD
+// means something unrelated ("include process ancestors in the match
+// list"). Using the wrong flag per platform silently degrades every parsed
+// line to just a bare name with no worktree path, which parsePgrepOutput
+// then filters out entirely — caught via a real CI failure on Linux, not
+// locally on macOS, and confirmed against a real Ubuntu container before
+// fixing (see fix-devstack-orphaning PR #933 review).
 var pgrepOutput = func() ([]byte, error) {
-	return exec.Command("pgrep", "-fl", strings.Join(devStackProcessNames, "|")).Output()
+	fullOutputFlag := "-l"
+	if runtime.GOOS == "linux" {
+		fullOutputFlag = "-a"
+	}
+	return exec.Command("pgrep", "-f", fullOutputFlag, strings.Join(devStackProcessNames, "|")).Output()
 }
 
 // signalPID is the signal-sending seam; tests swap it to observe calls
