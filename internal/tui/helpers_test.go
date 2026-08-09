@@ -34,3 +34,33 @@ func drawSim(t *testing.T) tcell.SimulationScreen {
 // form HandleKey paths without polluting any text field. KeyEnter on the
 // last field (sandbox) sets done=true; on earlier fields it advances focus.
 var formAdvanceKey = tcell.NewEventKey(tcell.KeyEnter, 0, 0)
+
+// findScreenText scans sim's rendered cells for the first occurrence of
+// needle (read left-to-right, top-to-bottom) and returns the (col, row) of
+// its starting cell, or (-1, -1) when not found. Useful for asserting a
+// render actually painted specific text (catching a silently-blank pane)
+// and for reading back the tcell.Style of a known text run via
+// GetContent(col, row).
+func findScreenText(sim tcell.SimulationScreen, needle string) (int, int) {
+	w, h := sim.Size()
+	runes := []rune(needle)
+	if len(runes) == 0 || len(runes) > w {
+		return -1, -1
+	}
+	for row := 0; row < h; row++ {
+		for col := 0; col <= w-len(runes); col++ {
+			match := true
+			for i, want := range runes {
+				r, _, _, _ := sim.GetContent(col+i, row)
+				if r != want {
+					match = false
+					break
+				}
+			}
+			if match {
+				return col, row
+			}
+		}
+	}
+	return -1, -1
+}

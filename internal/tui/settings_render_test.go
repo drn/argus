@@ -12,6 +12,7 @@ import (
 	"github.com/drn/argus/internal/launchagent"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/theme"
 )
 
 // --- Settings detail render functions ---
@@ -131,9 +132,13 @@ func TestSettings_RemoteHidesDaemonAdmin(t *testing.T) {
 	testutil.Equal(t, hasRowKind(sv, srSupervisor), true)
 	testutil.Equal(t, hasRowKind(sv, srSourcePath), true)
 	testutil.Equal(t, hasRowKind(sv, srUpdateArgus), true)
+	testutil.Equal(t, hasRowKind(sv, srSecretsBootstrap), true)
 
 	// Remote mode hides every daemon-admin action — they'd target the wrong
-	// (client) machine.
+	// (client) machine. The secrets-bootstrap row is gated the same way: the
+	// resolve is inherently local (env/Keychain/`op` CLI on whatever machine
+	// runs this process), so it's meaningless — and would target the wrong
+	// host — from a remote client.
 	sv.SetRemote(true)
 	sv.setCategory(catSystem)
 	testutil.Equal(t, hasRowKind(sv, srDaemon), false)
@@ -141,6 +146,7 @@ func TestSettings_RemoteHidesDaemonAdmin(t *testing.T) {
 	testutil.Equal(t, hasRowKind(sv, srSourcePath), false)
 	testutil.Equal(t, hasRowKind(sv, srUpdateArgus), false)
 	testutil.Equal(t, hasRowKind(sv, srAutoStart), false)
+	testutil.Equal(t, hasRowKind(sv, srSecretsBootstrap), false)
 }
 
 func TestSettings_RenderDaemonDetail(t *testing.T) {
@@ -302,6 +308,67 @@ func TestSettings_RenderWarningDetail_OK(t *testing.T) {
 	selectRowInCategory(t, sv, catSystem, srWarning, "_ok")
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
+}
+
+// TestSettings_RenderSecretsBootstrapDetail pins that selecting the
+// srSecretsBootstrap row renders an actual detail block — title + current
+// tri-state — rather than leaving the right-hand detail pane blank (which is
+// what renderRowDetail's switch produced before it gained a case for this
+// row kind).
+func TestSettings_RenderSecretsBootstrapDetail(t *testing.T) {
+	sv := makeSettings(t)
+	sv.secretsBootstrapStatus = agent.OpBootstrapResolved
+	sv.rebuildRows()
+	selectRowInCategory(t, sv, catSystem, srSecretsBootstrap, "_secrets_bootstrap")
+	sv.SetRect(0, 0, 100, 30)
+	screen := drawSim(t)
+	sv.Draw(screen)
+
+	if col, _ := findScreenText(screen, "Secrets Bootstrap"); col < 0 {
+		t.Fatal("expected detail pane to render a 'Secrets Bootstrap' title, got a blank pane")
+	}
+	if col, _ := findScreenText(screen, "Status: RESOLVED"); col < 0 {
+		t.Fatal("expected detail pane to render the current tri-state status")
+	}
+}
+
+// TestSettings_SecretsBootstrapRowColor pins that the System-category row
+// list color-codes the secrets-bootstrap row by its tri-state, the same way
+// other status rows in this file (e.g. Remote API's Enabled/Disabled) use
+// theme.ColorComplete/ColorError/ColorDimmed — rather than rendering all
+// three states in the same uncolored default style.
+func TestSettings_SecretsBootstrapRowColor(t *testing.T) {
+	tests := []struct {
+		name   string
+		status agent.OpBootstrapStatus
+		color  tcell.Color
+	}{
+		{"resolved", agent.OpBootstrapResolved, theme.ColorComplete},
+		{"not_resolved", agent.OpBootstrapNotResolved, theme.ColorError},
+		{"not_configured", agent.OpBootstrapNotConfigured, theme.ColorDimmed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sv := makeSettings(t)
+			sv.secretsBootstrapStatus = tt.status
+			sv.rebuildRows()
+			// Park the cursor on a different row so the assertion exercises
+			// the row LIST coloring, not the cursor-selected-row override
+			// (which always paints ColorSelected regardless of row kind).
+			selectRowInCategory(t, sv, catSystem, srWarning, "")
+			sv.SetRect(0, 0, 100, 30)
+			screen := drawSim(t)
+			sv.Draw(screen)
+
+			col, row := findScreenText(screen, "Secrets bootstrap:")
+			if col < 0 {
+				t.Fatal("secrets bootstrap row not found on screen")
+			}
+			_, _, style, _ := screen.GetContent(col, row)
+			fg, _, _ := style.Decompose()
+			testutil.Equal(t, fg, tt.color)
+		})
+	}
 }
 
 func TestSettings_TinyRect(t *testing.T) {
