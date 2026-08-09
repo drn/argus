@@ -36,6 +36,7 @@ func runDoctor() {
 	fmt.Print(doctor.Render(actors))
 	fmt.Print(doctor.RenderStopHook(gatherStopHookStatus()))
 	fmt.Print(doctor.RenderProfileLibrary(gatherProfileLibraryStatus()))
+	fmt.Print(doctor.RenderSecretsBootstrap(gatherSecretsBootstrapStatus()))
 	if doctor.Diagnose(actors).Verdict != doctor.Healthy {
 		os.Exit(1)
 	}
@@ -265,6 +266,34 @@ func diagnoseProfileLibraryAt(dir string, cfg config.Config) doctor.ProfileLibra
 		}
 	}
 	return doctor.DiagnoseProfileLibrary(validNames, false, nil)
+}
+
+// gatherSecretsBootstrapStatus loads config.toml from disk and classifies
+// the [secrets.op] bootstrap-source resolution tri-state
+// (add-secrets-resolver-registry) — independent of the binary-coherence
+// actors above; never affects runDoctor's exit code.
+func gatherSecretsBootstrapStatus() doctor.SecretsBootstrapStatus {
+	cfg := config.DefaultConfig()
+	cfg = config.NewFileLoader(filepath.Join(db.DataDir(), config.FileName)).Apply(cfg)
+	return secretsBootstrapStatusFor(cfg)
+}
+
+// secretsBootstrapStatusFor classifies cfg's [secrets.op] bootstrap-source
+// resolution status via a single resolve-and-discard through the Stage 3
+// registry tri-state query (agent.QueryOpBootstrapStatus), translated into
+// doctor's own SecretsBootstrapStatus via doctor.DiagnoseSecretsBootstrap.
+// Takes an explicit cfg (rather than resolving $HOME/config.toml itself) so
+// it's testable without touching the real ~/.argus/config.toml — mirrors
+// diagnoseProfileLibraryAt's explicit-input testability pattern.
+func secretsBootstrapStatusFor(cfg config.Config) doctor.SecretsBootstrapStatus {
+	switch agent.QueryOpBootstrapStatus(cfg.Secrets) {
+	case agent.OpBootstrapResolved:
+		return doctor.DiagnoseSecretsBootstrap(true, true)
+	case agent.OpBootstrapNotResolved:
+		return doctor.DiagnoseSecretsBootstrap(true, false)
+	default:
+		return doctor.DiagnoseSecretsBootstrap(false, false)
+	}
 }
 
 // readStopHookCommands reads and parses the Claude Code settings file at
