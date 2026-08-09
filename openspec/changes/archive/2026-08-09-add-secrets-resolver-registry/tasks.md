@@ -94,6 +94,6 @@ next spawn, not only after a daemon/supervisor restart.
 
 **Depends on:** Stage 8
 
-- [ ] 9.1 Run `openspec archive add-secrets-resolver-registry` (or, if the CLI is unavailable, apply it by hand: merge each delta spec's requirements into the corresponding base spec under `openspec/specs/<capability>/spec.md` — creating `openspec/specs/secrets-resolution/spec.md` new, and updating `agent-execution`, `config-management`, `binary-coherence`, `settings-view` in place — then move the change folder to `openspec/changes/archive/<YYYY-MM-DD>-add-secrets-resolver-registry/`)
-- [ ] 9.2 Confirm `openspec validate --all --strict` passes after archiving
-- [ ] 9.3 Commit the archived specs and moved change folder on the same PR branch, before merge — per this project's CLAUDE.md archiving rule (never a post-merge step)
+- [x] 9.1 Run `openspec archive add-secrets-resolver-registry` (or, if the CLI is unavailable, apply it by hand: merge each delta spec's requirements into the corresponding base spec under `openspec/specs/<capability>/spec.md` — creating `openspec/specs/secrets-resolution/spec.md` new, and updating `agent-execution`, `config-management`, `binary-coherence`, `settings-view` in place — then move the change folder to `openspec/changes/archive/<YYYY-MM-DD>-add-secrets-resolver-registry/`)
+- [x] 9.2 Confirm `openspec validate --all --strict` passes after archiving
+- [x] 9.3 Commit the archived specs and moved change folder on the same PR branch, before merge — per this project's CLAUDE.md archiving rule (never a post-merge step)
