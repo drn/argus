@@ -85,13 +85,7 @@ func FetchMergeCandidatesBatch(ctx context.Context, repo string, branches map[st
 			return nil, 0, fmt.Errorf("parse graphql alias %q: %w", alias, err)
 		}
 		for _, n := range conn.Nodes {
-			out[branch] = append(out[branch], MergeCandidate{
-				State:       n.State,
-				BaseRefName: n.BaseRefName,
-				MergedAt:    n.MergedAt,
-				CreatedAt:   n.CreatedAt,
-				URL:         n.URL,
-			})
+			out[branch] = append(out[branch], MergeCandidate(n))
 		}
 	}
 
