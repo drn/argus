@@ -18,6 +18,34 @@ type Config struct {
 	Hera        HeraConfig         `toml:"hera"`
 	Supervisor  SupervisorConfig   `toml:"supervisor"`
 	Argus       ArgusConfig        `toml:"argus"`
+	Secrets     SecretsConfig      `toml:"secrets"`
+}
+
+// SecretsConfig configures the internal/agent secrets-resolution registry
+// (add-secrets-resolver-registry). An absent [secrets] block leaves this at
+// its zero value, which is a strict no-op: no op:// source can resolve, and
+// bare-string/env:// sources are completely unaffected (they never consult
+// this struct at all — see internal/agent's secretResolver seam).
+type SecretsConfig struct {
+	Op OpConfig `toml:"op"`
+}
+
+// OpConfig configures the op (1Password) resolver's self-referential
+// bootstrap: to run `op read`, the resolver first needs its OWN credential
+// (an `op` service-account token), obtained by resolving BootstrapSource
+// through the very same registry (so BootstrapSource may itself be any
+// supported scheme — env://, keychain:// — with no special-casing) and
+// exposing the result to the `op` subprocess only, under the environment
+// variable name BootstrapTarget.
+type OpConfig struct {
+	// BootstrapSource is a secret source descriptor (any scheme the registry
+	// supports) resolved to obtain the op CLI's own credential.
+	BootstrapSource string `toml:"bootstrap_source"`
+	// BootstrapTarget is the environment variable name the resolved
+	// bootstrap credential is exposed under, but ONLY in the `op` read
+	// subprocess's own environment — never via os.Setenv on the calling
+	// process.
+	BootstrapTarget string `toml:"bootstrap_target"`
 }
 
 // SupervisorConfig controls whether the daemon drives agent PTYs through the
