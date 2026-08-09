@@ -405,6 +405,20 @@ func (a *App) heraNukeRole(r *hera.RoleView) {
 // section as history; only the worktree directory + git branch are reclaimed.
 // Returns whether a worktree-removal was kicked off (for the prune count/log).
 //
+// If the task is currently in_review, its status is ALSO advanced to complete
+// — this is what makes an archived Hera task reachable by PruneCompleted, which
+// only ever looks at status=complete rows. The gate is an exact-status check
+// (in_review only), mirroring RollHeraWorkerToReview's own never-clobber-active-
+// work invariant one step later in the chain: a task still pending or
+// in_progress at archive time (e.g. an operator force-nuking a live,
+// still-working role) is archived with its status left untouched, never forced
+// to complete. The check reads the task's OWN status column, so it applies
+// identically regardless of which hera role kind (coordinator/worker/freelance)
+// is being reclaimed — RollHeraWorkerToReview itself is worker-kind only, but a
+// task can reach in_review by that path, a coordinator's own workflow, or a
+// human hand-set value, and all three are equally "resting, safe to complete"
+// once an operator has chosen to nuke/reclaim it.
+//
 // The session stop is backgrounded (heraGoSafe), not run inline: in a
 // daemon-connected TUI, HasSession/Stop are blocking RPC round-trips
 // (client.Stop → Daemon.StopSession, possibly proxied again to the
@@ -441,6 +455,11 @@ func (a *App) heraReclaimAndArchiveTask(taskID string) (reclaimed bool) {
 			agent.DeleteBranch(repoDir, br)
 			agent.DeleteRemoteBranch(repoDir, br)
 		})
+	}
+	if t.Status == model.StatusInReview {
+		if sErr := a.db.SetStatus(t.ID, model.StatusComplete); sErr != nil {
+			uxlog.Log("[hera-view] nuke: complete task failed task=%s: %v", t.ID, sErr)
+		}
 	}
 	if aErr := a.db.SetArchived(t.ID, true); aErr != nil {
 		uxlog.Log("[hera-view] nuke: archive task failed task=%s: %v", t.ID, aErr)
