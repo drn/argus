@@ -852,29 +852,36 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// Per-backend credential env mapping. backend.EnvVars maps a TARGET env var
 	// (set in the child) to a SOURCE descriptor resolved at spawn time. A
 	// bare-string or env://-prefixed source keeps resolving through the
-	// existing pluggable secretResolver var exactly as before (preserving
-	// SetSecretResolver's contract unchanged); a scheme-prefixed source
-	// ("://" present, e.g. keychain:// or op://) dispatches instead through the
-	// secrets-resolution registry, built fresh from cfg.Secrets so a [secrets]
-	// config edit takes effect on the very next spawn — never wired once at
-	// daemon/supervisor startup. The registry resolver is constructed only when
-	// there's an EnvVars mapping to resolve, so a plain spawn with no credential
-	// mapping pays no PATH-lookup or config-read cost it has no stake in. The
-	// mapping carries NO secret value — only the descriptor. A resolved value is
-	// appended to the child env (later entries win per exec.Cmd.Env semantics);
-	// an unresolved source sets nothing and logs a non-sensitive warning naming
-	// ONLY the variable, never the value. We never log the resolved value.
+	// existing pluggable secretResolver var directly, unmemoized, exactly as
+	// before this registry existed (preserving SetSecretResolver's contract
+	// unchanged); only a source whose scheme (per splitSecretScheme,
+	// secretregistry.go) is something OTHER than "env" — keychain:// or op://
+	// — dispatches instead through the secrets-resolution registry, built
+	// fresh from cfg.Secrets so a [secrets] config edit takes effect on the
+	// very next spawn — never wired once at daemon/supervisor startup.
+	// splitSecretScheme is reused here rather than re-parsed so this dispatch
+	// predicate can never drift from the registry's own scheme splitting. The
+	// registry resolver is constructed only when there's an EnvVars mapping to
+	// resolve, skipping a closure allocation a plain spawn has no stake in —
+	// ResolverFor itself is cheap either way (it only closes over cfg.Secrets;
+	// no PATH lookup or config read happens at construction time, only later,
+	// on an actual scheme-prefixed resolve). The mapping carries NO secret
+	// value — only the descriptor. A resolved value is appended to the child
+	// env (later entries win per exec.Cmd.Env semantics); an unresolved source
+	// sets nothing and logs a non-sensitive warning naming ONLY the variable,
+	// never the value. We never log the resolved value.
 	if len(backend.EnvVars) > 0 {
 		registryResolve := ResolverFor(cfg.Secrets)
 		for target, source := range backend.EnvVars {
 			if target == "" || source == "" {
 				continue
 			}
-			resolve := secretResolver
-			if strings.Contains(source, "://") {
-				resolve = registryResolve
+			scheme, rest := splitSecretScheme(source)
+			resolve, resolveInput := secretResolver, rest
+			if scheme != "env" {
+				resolve, resolveInput = registryResolve, source
 			}
-			value, ok := resolve(source)
+			value, ok := resolve(resolveInput)
 			if !ok {
 				uxlog.Log("[agent] backend %q: credential source %q did not resolve; %q left unset in child env", backend.Command, source, target)
 				continue
