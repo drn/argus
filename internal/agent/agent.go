@@ -850,22 +850,37 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	}
 
 	// Per-backend credential env mapping. backend.EnvVars maps a TARGET env var
-	// (set in the child) to a SOURCE descriptor resolved at spawn time via the
-	// pluggable secretResolver (default: the daemon's own environment). The
+	// (set in the child) to a SOURCE descriptor resolved at spawn time. A
+	// bare-string or env://-prefixed source keeps resolving through the
+	// existing pluggable secretResolver var exactly as before (preserving
+	// SetSecretResolver's contract unchanged); a scheme-prefixed source
+	// ("://" present, e.g. keychain:// or op://) dispatches instead through the
+	// secrets-resolution registry, built fresh from cfg.Secrets so a [secrets]
+	// config edit takes effect on the very next spawn — never wired once at
+	// daemon/supervisor startup. The registry resolver is constructed only when
+	// there's an EnvVars mapping to resolve, so a plain spawn with no credential
+	// mapping pays no PATH-lookup or config-read cost it has no stake in. The
 	// mapping carries NO secret value — only the descriptor. A resolved value is
 	// appended to the child env (later entries win per exec.Cmd.Env semantics);
 	// an unresolved source sets nothing and logs a non-sensitive warning naming
 	// ONLY the variable, never the value. We never log the resolved value.
-	for target, source := range backend.EnvVars {
-		if target == "" || source == "" {
-			continue
+	if len(backend.EnvVars) > 0 {
+		registryResolve := ResolverFor(cfg.Secrets)
+		for target, source := range backend.EnvVars {
+			if target == "" || source == "" {
+				continue
+			}
+			resolve := secretResolver
+			if strings.Contains(source, "://") {
+				resolve = registryResolve
+			}
+			value, ok := resolve(source)
+			if !ok {
+				uxlog.Log("[agent] backend %q: credential source %q did not resolve; %q left unset in child env", backend.Command, source, target)
+				continue
+			}
+			cmd.Env = append(cmd.Env, target+"="+value)
 		}
-		value, ok := secretResolver(source)
-		if !ok {
-			uxlog.Log("[agent] backend %q: credential source %q did not resolve; %q left unset in child env", backend.Command, source, target)
-			continue
-		}
-		cmd.Env = append(cmd.Env, target+"="+value)
 	}
 
 	committed = true

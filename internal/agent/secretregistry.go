@@ -23,14 +23,14 @@ import (
 //
 // STAGE NOTE: Stage 2 landed scheme dispatch, the env scheme (wired through
 // the EXISTING secret.go seam, not a hardcoded os.LookupEnv call), the
-// keychain resolver, and memoization. This stage (3) adds the op scheme (with
-// its self-referential bootstrap, resolved through this SAME Resolve
-// function — no special-cased "how does op authenticate" code path) and
-// OpBootstrapStatus's real tri-state logic. BuildCmd's own dispatch through
-// this registry (wiring cfg.Secrets into a fresh registry call per spawn) is
-// still a later stage's job — see internal/agent/secret_test.go's
+// keychain resolver, and memoization. Stage 3 added the op scheme (with its
+// self-referential bootstrap, resolved through this SAME Resolve function —
+// no special-cased "how does op authenticate" code path) and
+// OpBootstrapStatus's real tri-state logic. Stage 4 wired BuildCmd
+// (agent.go) itself to dispatch a scheme-prefixed EnvVars source through
+// ResolverFor(cfg.Secrets) — see internal/agent/secret_test.go's
 // TestBuildCmd_EnvVarMapping_KeychainSourceDispatchesThroughRegistry /
-// ...OpSourceDispatchesThroughRegistry, which remain red until then.
+// ...OpSourceDispatchesThroughRegistry, both green as of that stage.
 
 // keychainCommandTimeout bounds a `security find-generic-password` subprocess
 // call. Keychain lookups are local and should return near-instantly; this is
@@ -196,6 +196,21 @@ func Resolve(sc config.SecretsConfig, source string) (string, bool) {
 	secretMemo[source] = v
 	secretMemoMu.Unlock()
 	return v, true
+}
+
+// ResolverFor returns a SecretResolver bound to sc, dispatching any source
+// descriptor (bare-string, env://, keychain://, op://) through the
+// scheme-prefixed registry's Resolve function. Built fresh per call (cheap —
+// it only closes over sc) rather than cached, so a [secrets] edit in
+// config.toml takes effect on the very next spawn without a daemon/supervisor
+// restart. This is the seam BuildCmd (agent.go) uses for a scheme-prefixed
+// EnvVars source ("://" present); a bare-string/env:// source keeps calling
+// the existing package-level secretResolver var directly, unchanged, so
+// SetSecretResolver's pluggability contract for that path is untouched.
+func ResolverFor(sc config.SecretsConfig) SecretResolver {
+	return func(source string) (string, bool) {
+		return Resolve(sc, source)
+	}
 }
 
 // --- op bootstrap resolution status tri-state ---
