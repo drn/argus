@@ -541,7 +541,9 @@ func (d *DB) PruneTasks(ids []string) (pruned []*model.Task, skippedHeraBound in
 // this is a plain string concatenation, matching this file's existing
 // convention (e.g. the notLiveHeraBound fragment below).
 func (d *DB) taskIDsWhereLocked(whereSQL string) ([]string, error) {
-	rows, err := d.conn.Query(`SELECT id FROM tasks WHERE ` + whereSQL)
+	//nolint:gosec // G202: whereSQL is a fixed literal supplied by the caller, never user input.
+	q := `SELECT id FROM tasks WHERE ` + whereSQL
+	rows, err := d.conn.Query(q)
 	if err != nil {
 		return nil, err
 	}
@@ -571,11 +573,12 @@ func (d *DB) pruneTasksLocked(ids []string) (pruned []*model.Task, skippedHeraBo
 		placeholders[i] = "?"
 		args[i] = id
 	}
-	//nolint:gosec // G202: placeholders are a fixed list of `?` literals; ids are bound parameters.
 	inClause := `id IN (` + strings.Join(placeholders, ",") + `)`
 	const notLiveHeraBound = `id NOT IN (SELECT argus_task_id FROM hera_bindings WHERE ended_at IS NULL)`
 
-	rows, err := d.conn.Query(`SELECT `+taskColumns+` FROM tasks WHERE `+inClause+` AND `+notLiveHeraBound, args...)
+	//nolint:gosec // G202: inClause is a fixed list of `?` literals and notLiveHeraBound is a constant; ids are bound parameters.
+	selectQ := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + inClause + ` AND ` + notLiveHeraBound
+	rows, err := d.conn.Query(selectQ, args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -586,9 +589,9 @@ func (d *DB) pruneTasksLocked(ids []string) (pruned []*model.Task, skippedHeraBo
 	}
 	rows.Close()
 
-	if err := d.conn.QueryRow(
-		`SELECT COUNT(*) FROM tasks WHERE `+inClause+` AND NOT (`+notLiveHeraBound+`)`, args...,
-	).Scan(&skippedHeraBound); err != nil {
+	//nolint:gosec // G202: inClause is a fixed list of `?` literals and notLiveHeraBound is a constant; ids are bound parameters.
+	countQ := `SELECT COUNT(*) FROM tasks WHERE ` + inClause + ` AND NOT (` + notLiveHeraBound + `)`
+	if err := d.conn.QueryRow(countQ, args...).Scan(&skippedHeraBound); err != nil {
 		return nil, 0, err
 	}
 
@@ -596,7 +599,9 @@ func (d *DB) pruneTasksLocked(ids []string) (pruned []*model.Task, skippedHeraBo
 		return nil, skippedHeraBound, nil
 	}
 
-	if _, err := d.conn.Exec(`DELETE FROM tasks WHERE `+inClause+` AND `+notLiveHeraBound, args...); err != nil {
+	//nolint:gosec // G202: inClause is a fixed list of `?` literals and notLiveHeraBound is a constant; ids are bound parameters.
+	deleteQ := `DELETE FROM tasks WHERE ` + inClause + ` AND ` + notLiveHeraBound
+	if _, err := d.conn.Exec(deleteQ, args...); err != nil {
 		return nil, 0, err
 	}
 	return pruned, skippedHeraBound, nil
