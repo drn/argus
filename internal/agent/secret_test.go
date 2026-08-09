@@ -220,8 +220,8 @@ func TestSetSecretResolver_SwapAndReset(t *testing.T) {
 // secretResolver seam, completely unaffected by a populated [secrets.op]
 // block on cfg — only a scheme-prefixed source ever consults the registry.
 func TestBuildCmd_EnvVarMapping_BareStringIgnoresSecretsConfig(t *testing.T) {
-	const secret = "bare-string-still-resolves-via-process-env"
-	t.Setenv("BARE_STRING_IGNORES_SECRETS_CFG", secret)
+	const wantEnvValue = "bare-string-still-resolves-via-process-env"
+	t.Setenv("BARE_STRING_IGNORES_SECRETS_CFG", wantEnvValue)
 
 	cfg := envVarConfig(map[string]string{"OPENAI_API_KEY": "BARE_STRING_IGNORES_SECRETS_CFG"})
 	cfg.Secrets = config.SecretsConfig{Op: config.OpConfig{
@@ -240,7 +240,7 @@ func TestBuildCmd_EnvVarMapping_BareStringIgnoresSecretsConfig(t *testing.T) {
 	if !ok {
 		t.Fatal("expected bare-string source to resolve against the process environment regardless of [secrets.op] config")
 	}
-	testutil.Equal(t, got, secret)
+	testutil.Equal(t, got, wantEnvValue)
 }
 
 // TestBackendEnvVars_MappingCarriesOnlyDescriptors_NoResolvedValue pins the

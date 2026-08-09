@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
 )
@@ -40,7 +41,7 @@ var formAdvanceKey = tcell.NewEventKey(tcell.KeyEnter, 0, 0)
 // its starting cell, or (-1, -1) when not found. Useful for asserting a
 // render actually painted specific text (catching a silently-blank pane)
 // and for reading back the tcell.Style of a known text run via
-// GetContent(col, row).
+// Get(col, row).
 func findScreenText(sim tcell.SimulationScreen, needle string) (int, int) {
 	w, h := sim.Size()
 	runes := []rune(needle)
@@ -51,7 +52,8 @@ func findScreenText(sim tcell.SimulationScreen, needle string) (int, int) {
 		for col := 0; col <= w-len(runes); col++ {
 			match := true
 			for i, want := range runes {
-				r, _, _, _ := sim.GetContent(col+i, row)
+				s, _, _ := sim.Get(col+i, row)
+				r, _ := utf8.DecodeRuneInString(s)
 				if r != want {
 					match = false
 					break

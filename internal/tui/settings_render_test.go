@@ -364,7 +364,7 @@ func TestSettings_SecretsBootstrapRowColor(t *testing.T) {
 			if col < 0 {
 				t.Fatal("secrets bootstrap row not found on screen")
 			}
-			_, _, style, _ := screen.GetContent(col, row)
+			_, style, _ := screen.Get(col, row)
 			fg, _, _ := style.Decompose()
 			testutil.Equal(t, fg, tt.color)
 		})
