@@ -4,7 +4,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/testutil"
 )
@@ -131,6 +134,66 @@ func branchExists(repoDir, branch string) bool {
 	cmd := exec.Command("git", "rev-parse", "--verify", branch)
 	cmd.Dir = repoDir
 	return cmd.Run() == nil
+}
+
+func TestRemoveWorktree_StopsDevStackBeforeRemoval(t *testing.T) {
+	repoDir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	run("init")
+	run("config", "user.email", "test@test.com")
+	run("config", "user.name", "Test")
+	os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("hello"), 0o644) //nolint:errcheck
+	run("add", ".")
+	run("commit", "-m", "init")
+
+	wtBase := filepath.Join(t.TempDir(), ".argus", "worktrees", "proj")
+	os.MkdirAll(wtBase, 0o755) //nolint:errcheck
+	wtPath := filepath.Join(wtBase, "my-task")
+	run("worktree", "add", "-b", "argus/my-task", wtPath, "HEAD")
+
+	prevPgrep := pgrepOutput
+	t.Cleanup(func() { pgrepOutput = prevPgrep })
+	pgrepOutput = func() ([]byte, error) {
+		return []byte("999 process-compose -f " + wtPath + "/.devbox/virtenv/redis/process-compose.yaml\n"), nil
+	}
+
+	var mu sync.Mutex
+	var signaledBeforeRemoveAll bool
+	prevSignal := signalPID
+	t.Cleanup(func() { signalPID = prevSignal })
+	signalPID = func(pid int, sig syscall.Signal) error {
+		mu.Lock()
+		defer mu.Unlock()
+		// The worktree must still be on disk at the moment the dev stack is
+		// signaled — proves the teardown runs BEFORE removal, not after.
+		if dirExists(wtPath) {
+			signaledBeforeRemoveAll = true
+		}
+		return nil
+	}
+
+	origGrace := devStackGracePeriod
+	devStackGracePeriod = time.Millisecond
+	t.Cleanup(func() { devStackGracePeriod = origGrace })
+
+	RemoveWorktree(wtPath, repoDir)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !signaledBeforeRemoveAll {
+		t.Error("expected the dev-stack process to be signaled while the worktree still existed on disk")
+	}
+	if dirExists(wtPath) {
+		t.Error("worktree dir should still be removed after the teardown step")
+	}
 }
 
 func TestIsTestBinary(t *testing.T) {
