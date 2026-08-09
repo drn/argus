@@ -361,3 +361,61 @@ func TestBuildCmd_EnvVarMapping_BareStringStillDispatchesThroughPluggableResolve
 	}
 	testutil.Equal(t, got, "still-uses-pluggable-seam")
 }
+
+// TestBuildCmd_EnvVarMapping_ExplicitEnvSchemeStillDispatchesThroughPluggableResolverUnmemoized
+// pins the agent-execution "A bare string or env://-prefixed source SHALL
+// resolve against the daemon's own process environment, unchanged from prior
+// behavior" requirement for the EXPLICIT `env://`-prefixed form specifically
+// (mirroring ...BareStringStillDispatchesThroughPluggableResolver above, which
+// only covers the bare-string form). An `env://VAR` source must (a) resolve to
+// the same value a bare `VAR` source would, and (b) NEVER be memoized by the
+// registry's process-lifetime cache: swapping the pluggable resolver between
+// two BuildCmd calls for the identical "env://HERA_OPENAI" descriptor must
+// change what the SECOND call resolves. Before the fix, `strings.Contains(source,
+// "://")` wrongly routed "env://HERA_OPENAI" into the registry's Resolve,
+// which memoizes a successful resolve keyed on the literal descriptor string
+// — so the second call would still observe the first call's stale value.
+func TestBuildCmd_EnvVarMapping_ExplicitEnvSchemeStillDispatchesThroughPluggableResolverUnmemoized(t *testing.T) {
+	ResetSecretMemoCache()
+	cfg := envVarConfig(map[string]string{"OPENAI_API_KEY": "env://HERA_OPENAI"})
+	task := &model.Task{Name: "review", Backend: "codex", Worktree: t.TempDir()}
+
+	installResolver(t, func(source string) (string, bool) {
+		if source == "HERA_OPENAI" {
+			return "first-value", true
+		}
+		return "", false
+	})
+
+	cmd, cleanup, err := BuildCmd(task, cfg, false)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	testutil.NoError(t, err)
+	got, ok := envValue(cmd.Env, "OPENAI_API_KEY")
+	if !ok {
+		t.Fatalf("expected OPENAI_API_KEY resolved via env:// through the pluggable resolver; got env %v", cmd.Env)
+	}
+	testutil.Equal(t, got, "first-value")
+
+	// Swap the resolver and rebuild with the IDENTICAL "env://HERA_OPENAI"
+	// source. If it were wrongly memoized under that literal descriptor key,
+	// this second call would still observe "first-value".
+	installResolver(t, func(source string) (string, bool) {
+		if source == "HERA_OPENAI" {
+			return "second-value", true
+		}
+		return "", false
+	})
+
+	cmd2, cleanup2, err := BuildCmd(task, cfg, false)
+	if cleanup2 != nil {
+		defer cleanup2()
+	}
+	testutil.NoError(t, err)
+	got2, ok := envValue(cmd2.Env, "OPENAI_API_KEY")
+	if !ok {
+		t.Fatalf("expected OPENAI_API_KEY resolved via env:// on the second BuildCmd call; got env %v", cmd2.Env)
+	}
+	testutil.Equal(t, got2, "second-value")
+}
