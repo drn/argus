@@ -285,6 +285,7 @@ type cleanupCandidateJSON struct {
 	Project string `json:"project"`
 	Safe    bool   `json:"safe"`
 	Reason  string `json:"reason"`
+	Pending bool   `json:"pending"`
 }
 
 // cleanupCandidatesResp is GET /api/maintenance/cleanup-candidates' response
@@ -399,7 +400,7 @@ func cleanupCandidatesToRows(candidates []cleanupCandidateJSON) []mergeSafetyCan
 		if c.Project != "" {
 			name = c.Name + "  ·  " + c.Project
 		}
-		rows[i] = mergeSafetyCandidate{TaskID: c.ID, Name: name, Safe: c.Safe, Reason: c.Reason}
+		rows[i] = mergeSafetyCandidate{TaskID: c.ID, Name: name, Safe: c.Safe, Reason: c.Reason, Pending: c.Pending}
 	}
 	return rows
 }

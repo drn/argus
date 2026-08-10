@@ -98,6 +98,7 @@ func TestHandleCleanupCandidatesList_ReturnsCachedResultsAndComputing(t *testing
 	testutil.Equal(t, len(resp.Candidates), 1)
 	testutil.Equal(t, resp.Candidates[0].TaskID, stuck.ID)
 	testutil.False(t, resp.Candidates[0].Safe)
+	testutil.True(t, resp.Candidates[0].Pending)
 	testutil.Equal(t, resp.Candidates[0].Reason, "not yet classified")
 	testutil.False(t, resp.Computing)
 
@@ -120,6 +121,7 @@ func TestHandleCleanupCandidatesList_ReturnsCachedResultsAndComputing(t *testing
 	testutil.NoError(t, json.Unmarshal(w2.Body.Bytes(), &resp2))
 	testutil.Equal(t, len(resp2.Candidates), 1)
 	testutil.True(t, resp2.Candidates[0].Safe)
+	testutil.False(t, resp2.Candidates[0].Pending)
 	testutil.Equal(t, resp2.Candidates[0].Tier, "local-ancestor")
 }
 
@@ -177,6 +179,36 @@ func TestRunCleanupCompute_NeverReclassifiesTerminalSafeVerdict(t *testing.T) {
 	}
 	testutil.Equal(t, got[cleanupMetaSafe], "true")
 	testutil.Equal(t, got[cleanupMetaReason], "previously confirmed merged")
+}
+
+// TestRunCleanupCompute_CachesEachTaskIndividually proves the
+// fix-hera-reclaim-status wiring: runCleanupCompute drives
+// mergesafety.ClassifyBatchFunc (the incremental per-candidate form) rather
+// than the old all-at-once ClassifyBatch, writing EACH task's own cache entry
+// as its own verdict arrives rather than a single shared write after the
+// whole batch finishes. Multiple tasks in one compute pass each end up with
+// their own distinct, correctly-keyed cache row — not cross-contaminated by
+// another task's outcome or a shared/batched write.
+func TestRunCleanupCompute_CachesEachTaskIndividually(t *testing.T) {
+	srv, d := testServer(t)
+
+	taskA := &model.Task{Name: "orphan-a", Status: model.StatusInReview, Archived: true, Project: "ghost", Branch: "argus/a"}
+	taskB := &model.Task{Name: "orphan-b", Status: model.StatusInReview, Archived: true, Project: "ghost", Branch: "argus/b"}
+	testutil.NoError(t, d.Add(taskA))
+	testutil.NoError(t, d.Add(taskB))
+
+	srv.runCleanupCompute(context.Background())
+
+	for _, task := range []*model.Task{taskA, taskB} {
+		entries, err := d.ListMeta(task.ID, cleanupMetaNamespace)
+		testutil.NoError(t, err)
+		got := map[string]string{}
+		for _, e := range entries {
+			got[e.Key] = e.Value
+		}
+		testutil.Equal(t, got[cleanupMetaSafe], "false")
+		testutil.Contains(t, got[cleanupMetaReason], "no repo resolvable")
+	}
 }
 
 // --- POST /api/maintenance/cleanup-candidates/clean ---

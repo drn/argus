@@ -96,8 +96,21 @@ func (s *Server) startCleanupCompute() {
 
 // runCleanupCompute classifies every currently-eligible (stuck-task-predicate
 // matching) task that does not already have a terminal (confirmed-safe)
-// cached verdict, via mergesafety.ClassifyBatch (which itself groups Tier B
-// lookups per repo), and caches each result to task_meta.
+// cached verdict, via mergesafety.ClassifyBatchFunc, caching EACH verdict to
+// task_meta the moment it's produced rather than waiting for the whole batch.
+//
+// This incremental caching is the fix for a real observability bug
+// (fix-hera-reclaim-status): ClassifyBatchFunc's Tier B network call is
+// grouped one-per-repo and can legitimately take a while (each `gh api
+// graphql` invocation carries its own 10s timeout — gitutil.runAliasedRepoQuery
+// — and a backlog spanning N repos runs those N calls SEQUENTIALLY here), so
+// on a large backlog where most branches have long since had their local
+// copies cleaned up (Tier A misses, falling through to Tier B), the previous
+// all-at-once mergesafety.ClassifyBatch call left every candidate showing as
+// uncached until the ENTIRE multi-repo pass finished — up to ~10s per repo
+// group with zero visible progress in between. Caching incrementally means a
+// concurrent GET (the poll driving the cleanup popup) can observe real
+// progress after every repo group lands, not just at the very end.
 func (s *Server) runCleanupCompute(ctx context.Context) {
 	tasks, err := s.db.StuckTaskCandidates()
 	if err != nil {
@@ -125,8 +138,9 @@ func (s *Server) runCleanupCompute(ctx context.Context) {
 		return
 	}
 
-	verdicts := mergesafety.ClassifyBatch(ctx, toClassify)
-	for id, v := range verdicts {
+	uxlog.Log("[cleanup] compute: starting classification of %d of %d eligible task(s)", len(toClassify), len(tasks))
+	classified := 0
+	mergesafety.ClassifyBatchFunc(ctx, toClassify, func(id string, v mergesafety.Verdict) {
 		entries := map[string]string{
 			cleanupMetaSafe:   boolStr(v.Safe),
 			cleanupMetaTier:   v.Tier,
@@ -134,9 +148,11 @@ func (s *Server) runCleanupCompute(ctx context.Context) {
 		}
 		if err := s.db.SetMetaBatch(id, cleanupMetaNamespace, entries); err != nil {
 			uxlog.Log("[cleanup] compute: cache write failed for task=%s: %v", id, err)
+			return
 		}
-	}
-	uxlog.Log("[cleanup] compute: classified %d of %d eligible task(s)", len(toClassify), len(tasks))
+		classified++
+	})
+	uxlog.Log("[cleanup] compute: classified %d of %d eligible task(s)", classified, len(tasks))
 }
 
 // cleanupCandidateFor resolves one task's mergesafety.Candidate via its
@@ -170,6 +186,13 @@ func verdictIsSafe(m map[string]string) bool {
 }
 
 // cleanupCandidateJSON is one row of GET /api/maintenance/cleanup-candidates.
+// Pending is true when this task has no cached verdict yet — the caller MUST
+// treat that as "not yet checked," never as a confirmed-unsafe result, even
+// though Safe is also false in that case (there is nothing safe to report
+// yet). See fix-hera-reclaim-status: the popup used to render every
+// not-yet-classified task under its NOT-SAFE header from the moment it
+// opened, implying 737 confirmed verdicts when zero classification had
+// actually happened.
 type cleanupCandidateJSON struct {
 	TaskID  string `json:"task_id"`
 	Name    string `json:"name"`
@@ -178,6 +201,7 @@ type cleanupCandidateJSON struct {
 	Safe    bool   `json:"safe"`
 	Tier    string `json:"tier,omitempty"`
 	Reason  string `json:"reason"`
+	Pending bool   `json:"pending"`
 }
 
 // handleCleanupCandidatesList returns the current cached classification for
@@ -203,6 +227,7 @@ func (s *Server) handleCleanupCandidatesList(w http.ResponseWriter, r *http.Requ
 			c.Tier = m[cleanupMetaTier]
 			c.Reason = m[cleanupMetaReason]
 		} else {
+			c.Pending = true
 			c.Reason = "not yet classified"
 		}
 		candidates = append(candidates, c)

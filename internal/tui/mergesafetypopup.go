@@ -26,11 +26,21 @@ const (
 // mirror mergesafety.Verdict (this package deliberately doesn't import
 // internal/mergesafety here — the popup is a pure display/choice widget, so
 // callers convert their own Verdict values into this shape).
+//
+// Pending is true when this candidate has not actually been classified yet
+// (fix-hera-reclaim-status) — it MUST NOT be confused with a confirmed
+// NOT-SAFE verdict, even though Safe is also false for a pending candidate.
+// Zero value is false, so every existing caller that always classifies
+// before constructing a candidate (the single-role nuke, cascade nuke)
+// unambiguously means "classified" without needing to set this explicitly —
+// only the global Cleanup action's live poll (which can observe a task with
+// no cached verdict yet) ever sets it true.
 type mergeSafetyCandidate struct {
-	TaskID string
-	Name   string
-	Safe   bool
-	Reason string // shown for NOT-SAFE rows only
+	TaskID  string
+	Name    string
+	Safe    bool
+	Reason  string // shown for NOT-SAFE and PENDING rows
+	Pending bool
 }
 
 // mergeSafetyRowKind distinguishes a section header from a candidate row in
@@ -65,14 +75,15 @@ type mergeSafetyRow struct {
 // the single-role site, a REST scope for the global Cleanup site).
 type MergeSafetyPopup struct {
 	*tview.Box
-	title      string
-	candidates []mergeSafetyCandidate
-	rows       []mergeSafetyRow
-	scrollOff  int
-	actionIdx  int // 0 Clean safe (default), 1 Clean all, 2 Cancel
-	confirmed  bool
-	canceled   bool
-	scanning   bool
+	title        string
+	candidates   []mergeSafetyCandidate
+	rows         []mergeSafetyRow
+	pendingCount int // how many of candidates are still unclassified — drives the "X of Y classified" progress footer
+	scrollOff    int
+	actionIdx    int // 0 Clean safe (default), 1 Clean all, 2 Cancel
+	confirmed    bool
+	canceled     bool
+	scanning     bool
 }
 
 // mergeSafetyActionLabels is the fixed 3-action set, in display order — index
@@ -87,21 +98,32 @@ func NewMergeSafetyPopup(title string, candidates []mergeSafetyCandidate) *Merge
 	return m
 }
 
-// SetCandidates (re)builds the popup's candidate list and its rendered rows,
-// NOT-SAFE section first, then SAFE — the spec's required section order.
+// SetCandidates (re)builds the popup's candidate list and its rendered rows:
+// PENDING first (fix-hera-reclaim-status — candidates with no verdict yet,
+// so the operator never mistakes "not yet checked" for a confirmed result),
+// then NOT-SAFE, then SAFE — the spec's required order for the latter two.
 // Called both at construction and, for the global Cleanup action, on every
 // classification poll tick as fresh results arrive.
 func (m *MergeSafetyPopup) SetCandidates(candidates []mergeSafetyCandidate) {
 	m.candidates = candidates
-	var notSafe, safe []mergeSafetyCandidate
+	var pending, notSafe, safe []mergeSafetyCandidate
 	for _, c := range candidates {
-		if c.Safe {
+		switch {
+		case c.Pending:
+			pending = append(pending, c)
+		case c.Safe:
 			safe = append(safe, c)
-		} else {
+		default:
 			notSafe = append(notSafe, c)
 		}
 	}
-	rows := make([]mergeSafetyRow, 0, len(candidates)+2)
+	rows := make([]mergeSafetyRow, 0, len(candidates)+3)
+	if len(pending) > 0 {
+		rows = append(rows, mergeSafetyRow{kind: mergeSafetyRowHeader, text: fmt.Sprintf("PENDING (%d)", len(pending))})
+		for _, c := range pending {
+			rows = append(rows, mergeSafetyRow{kind: mergeSafetyRowItem, cand: c})
+		}
+	}
 	if len(notSafe) > 0 {
 		rows = append(rows, mergeSafetyRow{kind: mergeSafetyRowHeader, text: fmt.Sprintf("NOT-SAFE (%d)", len(notSafe))})
 		for _, c := range notSafe {
@@ -115,6 +137,7 @@ func (m *MergeSafetyPopup) SetCandidates(candidates []mergeSafetyCandidate) {
 		}
 	}
 	m.rows = rows
+	m.pendingCount = len(pending)
 	if maxOff := max(len(rows)-1, 0); m.scrollOff > maxOff {
 		m.scrollOff = maxOff
 	}
@@ -238,23 +261,44 @@ func (m *MergeSafetyPopup) Draw(screen tcell.Screen) {
 
 	footer := "←/→ choose action   ↑/↓ scroll   Enter confirm   Esc cancel"
 	if m.scanning {
-		footer = "Scanning… (results update live)   " + footer
+		prefix := "Scanning… (results update live)   "
+		if total := len(m.candidates); total > 0 {
+			prefix = fmt.Sprintf("Scanning… %d of %d classified (results update live)   ", total-m.pendingCount, total)
+		}
+		footer = prefix + footer
 	}
 	widget.DrawText(screen, innerX, modalY+modalH-2, innerW, footer, theme.StyleDimmed)
 }
 
-// drawRows renders the visible window of the flattened NOT-SAFE/SAFE row list
-// starting at m.scrollOff, clipped to h rows.
+// drawRows renders the visible window of the flattened PENDING/NOT-SAFE/SAFE
+// row list starting at m.scrollOff, clipped to h rows.
+//
+// Clamps (and self-heals) m.scrollOff to the largest offset that still lets
+// the final screenful fill the window — mirroring SettingsView's own
+// pane/log scroll clamps (settings.go), which key off the visible capacity
+// rather than the row count. The clamp used to be len(m.rows)-1 (the last
+// ROW index, not "rows-that-fit"), so scrolling to the bottom of a list
+// taller than the window left only the single last row visible with the
+// rest of the body blank, and Up needed several "dead" presses before the
+// view visibly moved again — self-healing the field here (not just a local
+// copy) means the very next Draw already shows the corrected position, so
+// there's no dead zone in the running app, where a redraw follows every key.
 func (m *MergeSafetyPopup) drawRows(screen tcell.Screen, x, y, w, h int) {
-	off := min(m.scrollOff, max(len(m.rows)-1, 0))
+	if maxOff := max(len(m.rows)-h, 0); m.scrollOff > maxOff {
+		m.scrollOff = maxOff
+	}
+	off := m.scrollOff
 	visible := min(h, len(m.rows)-off)
 	for i := 0; i < visible; i++ {
 		r := m.rows[off+i]
 		rowY := y + i
 		if r.kind == mergeSafetyRowHeader {
 			style := theme.StyleComplete.Bold(true)
-			if strings.HasPrefix(r.text, "NOT-SAFE") {
+			switch {
+			case strings.HasPrefix(r.text, "NOT-SAFE"):
 				style = theme.StyleError.Bold(true)
+			case strings.HasPrefix(r.text, "PENDING"):
+				style = theme.StyleDimmed.Bold(true)
 			}
 			widget.DrawText(screen, x, rowY, w, r.text, style)
 			continue
@@ -267,8 +311,41 @@ func (m *MergeSafetyPopup) drawRows(screen tcell.Screen, x, y, w, h int) {
 		if rw := utf8.RuneCountInString(text); rw > textW && textW > 1 {
 			text = string([]rune(text)[:textW-1]) + "…"
 		}
-		widget.DrawText(screen, x+2, rowY, textW, text, theme.StyleNormal)
+		style := theme.StyleNormal
+		if r.cand.Pending {
+			style = theme.StyleDimmed
+		}
+		widget.DrawText(screen, x+2, rowY, textW, text, style)
 	}
+}
+
+// MouseHandler handles wheel-scroll over the popup body, advancing
+// m.scrollOff the same one-row-per-notch amount the keyboard Up/Down
+// bindings do. This widget's scrollOff is a content viewport pan, not a
+// cursor position, so the scroll direction maps directly (mirrors
+// SettingsView.HandleMouse's log-panel scroll — NOT Rail.MouseHandler's
+// inverted cursor-drag convention, since there is no cursor here to drag).
+// Previously absent entirely, which made the wheel a complete no-op over
+// this popup (fix-hera-reclaim-status BUG 2).
+func (m *MergeSafetyPopup) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
+	return m.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (consumed bool, capture tview.Primitive) {
+		if !m.InRect(event.Position()) {
+			return false, nil
+		}
+		switch action {
+		case tview.MouseScrollUp:
+			if m.scrollOff > 0 {
+				m.scrollOff--
+			}
+			consumed = true
+		case tview.MouseScrollDown:
+			if maxOff := max(len(m.rows)-1, 0); m.scrollOff < maxOff {
+				m.scrollOff++
+			}
+			consumed = true
+		}
+		return
+	})
 }
 
 // drawActions renders the 3-action row, highlighting the currently selected one.
