@@ -95,23 +95,33 @@ func TestHeraActions_HideBranches(t *testing.T) {
 // hidden worker → confirm opens.
 func TestHeraActions_ClearArchiveBranches(t *testing.T) {
 	d := testDB(t)
+	t.Setenv("HOME", t.TempDir())
 	app := New(d, agent.NewRunner(nil), false)
 
 	orch := seedHeraOrch(t, d, "o")
 	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
 	app.heraPage.Refresh()
 
-	// No hidden descendant workers → "nothing to clear", no modal.
+	// No hidden descendant workers → "nothing to clear", no modal. Nothing to
+	// classify either, so this stays synchronous.
 	app.heraClearArchive(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "o"}})
 	testutil.Contains(t, app.statusbar.Info(), "Nothing to clear")
 	testutil.Equal(t, app.mode, modeTaskList)
 
-	// Hide a worker so the subtree has a Tier-1 hidden descendant.
+	// Hide a worker so the subtree has a Tier-1 hidden descendant with a real
+	// bound task — the merge-safety classification (add-merge-safety-review)
+	// now runs off the UI thread before the confirm opens, so this needs a
+	// real running event loop.
 	w := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
 	testutil.NoError(t, d.ArchiveHeraRole(w.ID))
 	app.heraPage.Refresh()
-	app.heraClearArchive(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "o"}})
-	testutil.Equal(t, app.mode, modeHeraConfirm)
+
+	_, stop := wireApp(t, app)
+	defer stop()
+	readUI(t, app.tapp, func() {
+		app.heraClearArchive(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "o"}})
+	})
+	waitForMode(t, app, modeHeraConfirm)
 }
 
 // TestHeraActions_ForceRecycleBranches pins the `B` force-recycle key
@@ -1155,21 +1165,30 @@ func TestHeraActions_OrchHeaderDeleteCascadesSingleOrch(t *testing.T) {
 	wkr := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
 	app.heraPage.Refresh()
 
-	app.heraOpenDelete(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "solo"}})
+	// add-merge-safety-review: the cascade confirm now opens only after an
+	// off-UI-thread Tier-A classification pass, so this needs a real running
+	// event loop rather than a synchronous direct call.
+	_, stop := wireApp(t, app)
+	defer stop()
+	readUI(t, app.tapp, func() {
+		app.heraOpenDelete(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "solo"}})
+	})
+	waitForMode(t, app, modeHeraConfirm)
 
 	// The count-bearing cascade confirm opens, worded "removes" + "reclaims".
-	testutil.Equal(t, app.mode, modeHeraConfirm)
-	msg := app.heraConfirmModal.Message()
+	var msg string
+	readUI(t, app.tapp, func() { msg = app.heraConfirmModal.Message() })
 	testutil.Contains(t, msg, "removes")
 	testutil.Contains(t, msg, "reclaims")
 	testutil.Contains(t, msg, "1 orchestrator(s)")
 	testutil.Contains(t, msg, "1 agent(s)")      // the worker (coordinator not counted)
 	testutil.Contains(t, msg, "2 worktree(s)")   // coord task + worker task
 	testutil.Contains(t, msg, "0 task(s) bound") // none preserved
+	testutil.Contains(t, msg, "of 2 reclaimed tasks confirmed merged")
 
 	// Accept → cascade NUKES the orchestrator + roles (no hard deletes) and
 	// ARCHIVES the tasks.
-	app.heraConfirmDo()
+	readUI(t, app.tapp, func() { app.heraConfirmDo() })
 
 	gotOrch, err := d.HeraOrchestrator(orch) // still exists, NUKED
 	testutil.NoError(t, err)
@@ -1231,16 +1250,26 @@ func TestHeraActions_OrchHeaderDeleteCascadesNestedSubtree(t *testing.T) {
 	}
 	testutil.DeepEqual(t, names, []string{"P", "C"})
 
-	app.heraOpenDelete(hera.Selection{Orch: &hera.OrchView{ID: p, Name: "P"}})
-	testutil.Equal(t, app.mode, modeHeraConfirm)
-	msg := app.heraConfirmModal.Message()
+	// add-merge-safety-review: the cascade confirm now opens only after an
+	// off-UI-thread Tier-A classification pass, so this needs a real running
+	// event loop rather than a synchronous direct call.
+	_, stop := wireApp(t, app)
+	defer stop()
+	readUI(t, app.tapp, func() {
+		app.heraOpenDelete(hera.Selection{Orch: &hera.OrchView{ID: p, Name: "P"}})
+	})
+	waitForMode(t, app, modeHeraConfirm)
+
+	var msg string
+	readUI(t, app.tapp, func() { msg = app.heraConfirmModal.Message() })
 	testutil.Contains(t, msg, "removes")
 	testutil.Contains(t, msg, "2 orchestrator(s)")
 	testutil.Contains(t, msg, "2 agent(s)")      // wP + wC
 	testutil.Contains(t, msg, "2 worktree(s)")   // tP + tC (internal bridge); tShared preserved
 	testutil.Contains(t, msg, "1 task(s) bound") // tShared preserved
+	testutil.Contains(t, msg, "of 2 reclaimed tasks confirmed merged")
 
-	app.heraConfirmDo()
+	readUI(t, app.tapp, func() { app.heraConfirmDo() })
 
 	// Both subtree orchestrators NUKED (still present); the outside one untouched.
 	for _, id := range []int64{p, c} {

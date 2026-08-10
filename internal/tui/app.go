@@ -30,6 +30,7 @@ import (
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/launchagent"
 	"github.com/drn/argus/internal/macapps"
+	"github.com/drn/argus/internal/mergesafety"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/profiles"
 	"github.com/drn/argus/internal/scheduler"
@@ -76,10 +77,11 @@ const (
 	modeHelp
 	modeErrorModal
 	modePluginView
-	modeHeraInput      // Hera-view rename / spawn-prompt input modal
-	modeHeraConfirm    // Hera-view archive-of-live / delete confirmation modal
-	modeHeraOrchPicker // Hera-view `J` adopt/reparent orchestrator picker
-	modeCommandPalette // Global command palette (ctrl+k)
+	modeHeraInput        // Hera-view rename / spawn-prompt input modal
+	modeHeraConfirm      // Hera-view archive-of-live / delete confirmation modal
+	modeHeraOrchPicker   // Hera-view `J` adopt/reparent orchestrator picker
+	modeCommandPalette   // Global command palette (ctrl+k)
+	modeMergeSafetyPopup // Merge-safety review popup (single-role nuke / global Cleanup)
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -140,6 +142,33 @@ type App struct {
 	heraAdoptOps       *hera.AdoptOps
 	heraOrchPicker     *OrchPickerModal
 	heraOrchPickerPick func(*db.HeraOrchestrator)
+
+	// Merge-safety review popup (add-merge-safety-review) — created on demand
+	// by either the single-role nuke path (heraOpenDelete) or the global
+	// Cleanup action (heraOpenGlobalCleanup). mergeSafetyPopupOnClean is
+	// called with the operator's chosen scope + the popup's full candidate
+	// list on Clean safe/Clean all; never called on Cancel. mergeSafetyGen is
+	// bumped on every open/close so an in-flight classification goroutine (the
+	// global Cleanup poll loop) can detect the popup was closed/replaced out
+	// from under it and stop polling rather than reopening/repainting a stale
+	// dialog (mirrors startGen's staleness-guard pattern).
+	mergeSafetyPopup        *MergeSafetyPopup
+	mergeSafetyPopupOnClean func(scope mergeSafetyScope, candidates []mergeSafetyCandidate)
+	mergeSafetyGen          int
+
+	// maintenanceClientFactory builds the HTTP client the global Cleanup
+	// action uses to reach the daemon's own REST maintenance endpoints
+	// (add-merge-safety-review's rest-api delta). Defaults to
+	// a.newLocalMaintenanceClient; tests override it to point at an
+	// httptest.Server instead of a real local daemon.
+	maintenanceClientFactory func() (*localMaintenanceClient, error)
+
+	// classifyNukeCandidateFn is the Tier-A-only merge-safety check used by
+	// the single-role nuke review and the cascade/clear-archive count
+	// augmentation. Defaults to a.classifyNukeCandidate; tests override it to
+	// control classification timing deterministically (e.g. to exercise the
+	// single-role popup's staleness guard) without shelling out to real git.
+	classifyNukeCandidateFn func(taskID string) mergesafety.Verdict
 
 	// New task form (created on demand)
 	newTaskForm *NewTaskForm
@@ -551,6 +580,8 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 	app.restartDaemonFn = app.restartDaemon
 	app.restartSupervisorFn = app.restartSupervisor
 	app.agentCountFn = app.liveAgentCount
+	app.maintenanceClientFactory = app.newLocalMaintenanceClient
+	app.classifyNukeCandidateFn = app.classifyNukeCandidate
 
 	app.settings = NewSettingsView(database)
 	app.settings.Keys = app.activeKeymap
@@ -787,6 +818,14 @@ func (a *App) buildUI() {
 	// Wired unconditionally like OnInfo/OnFocusChange — HeraPage.InputHandler
 	// itself no-ops in remote mode, so this is safe there too.
 	a.heraPage.OnSwitcher = a.openTaskSwitcher
+
+	// Global Cleanup (`c`, add-merge-safety-review) reaches the daemon's own
+	// REST maintenance endpoints rather than a.heraOps (unlike every other
+	// mutation callback below), so it's wired unconditionally here rather than
+	// inside the `if d, ok := a.db.(*db.DB)` block — heraOpenGlobalCleanup
+	// itself detects local vs. remote mode and surfaces a clear error rather
+	// than panicking or silently no-oping.
+	a.heraPage.OnCleanup = a.heraOpenGlobalCleanup
 
 	// Wire the hera panes' redraw callbacks exactly like the main agent pane:
 	// OnBranchChange is log-only (forceRedraw never Syncs), OnNeedRedraw bounces
@@ -3111,6 +3150,13 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Hera-view `J` adopt/reparent orchestrator picker — delegate to the modal.
 	if a.mode == modeHeraOrchPicker && a.heraOrchPicker != nil {
 		a.handleHeraOrchPickerKey(event)
+		return nil
+	}
+
+	// Merge-safety review popup (single-role nuke / global Cleanup) — delegate
+	// to the modal.
+	if a.mode == modeMergeSafetyPopup && a.mergeSafetyPopup != nil {
+		a.handleMergeSafetyPopupKey(event)
 		return nil
 	}
 

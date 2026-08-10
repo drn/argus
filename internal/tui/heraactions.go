@@ -343,11 +343,17 @@ func (a *App) heraOpenDelete(sel hera.Selection) {
 		a.heraCascadeNukeFrom(sel.BridgeChildOrchID)
 	case sel.Role != nil:
 		r := sel.Role
-		msg := "Removes the role from the rail and ends its binding (row retained for DB recovery)"
 		if r.Live && a.heraTaskSolelyBoundTo(r) {
-			// Sole binding → reclaim the worktree and archive the task too.
-			msg = "Stops the session, reclaims its worktree + branch, removes the role from the rail, and archives the task (all rows retained for DB recovery)"
-		} else if r.Live {
+			// Sole binding → reclaim the worktree and archive the task too. This
+			// is the ONE nuke path the merge-safety review popup covers
+			// (add-merge-safety-review): classify Tier A off the UI thread, then
+			// open the popup with this task as its sole candidate, in place of
+			// the plain confirm below.
+			a.heraOpenSingleNukeReview(r)
+			return
+		}
+		msg := "Removes the role from the rail and ends its binding (row retained for DB recovery)"
+		if r.Live {
 			// Multi-bound task → preserve it (archiving/reclaiming it would strand the
 			// SAME task's binding in another orchestrator — violates isolation).
 			msg = "Removes this role from the rail + ends its binding; the task stays (it is bound elsewhere)"
@@ -506,6 +512,7 @@ func (a *App) heraCascadeNukeFrom(rootID int64) {
 	// modal never undercounts internal-bridge worktrees in a deep (≥2 level) subtree.
 	agents, worktrees, preserved := 0, 0, 0
 	seen := make(map[string]bool)
+	var reclaimIDs []string
 	for _, o := range subtree {
 		for i := range o.Roles {
 			r := &o.Roles[i]
@@ -523,14 +530,34 @@ func (a *App) heraCascadeNukeFrom(rootID int64) {
 				preserved++
 			} else {
 				worktrees++
+				reclaimIDs = append(reclaimIDs, r.TaskID)
 			}
 		}
 	}
 	title := "Nuke " + subtree[0].Name + " and its whole team?"
-	msg := fmt.Sprintf(
-		"This removes %d orchestrator(s) and %d agent(s) from the rail and reclaims %d worktree(s) + branch(es), stopping their sessions. Rows are retained (recoverable via the DB). %d task(s) bound in another orchestrator are preserved.",
-		len(subtree), agents, worktrees, preserved)
-	a.openHeraConfirm(title, msg, func() { a.heraDoCascadeNuke(subtree, subtreeIDs) })
+	openConfirm := func(confirmed int) {
+		msg := fmt.Sprintf(
+			"This removes %d orchestrator(s) and %d agent(s) from the rail and reclaims %d worktree(s) + branch(es), stopping their sessions. Rows are retained (recoverable via the DB). %d task(s) bound in another orchestrator are preserved. %d of %d reclaimed tasks confirmed merged.",
+			len(subtree), agents, worktrees, preserved, confirmed, len(reclaimIDs))
+		a.openHeraConfirm(title, msg, func() { a.heraDoCascadeNuke(subtree, subtreeIDs) })
+	}
+	if len(reclaimIDs) == 0 {
+		// Nothing to classify (e.g. every managed task is preserved) — open
+		// immediately rather than paying a goroutine + QueueUpdateDraw round
+		// trip for zero work.
+		openConfirm(0)
+		return
+	}
+	// Merge-safety classification (Tier A only, bounded concurrency) runs off
+	// the UI thread BEFORE the confirm opens — same compute-first idiom as the
+	// single-role popup, just folded into an augmented count rather than a
+	// full popup (cascade nuke keeps its existing all-or-nothing confirm;
+	// add-merge-safety-review's design explicitly scopes the review popup to
+	// the single-role and global-Cleanup entry points only).
+	go func() {
+		confirmed := a.classifyTasksConcurrently(reclaimIDs)
+		a.tapp.QueueUpdateDraw(func() { openConfirm(confirmed) })
+	}()
 }
 
 // heraTaskBoundOutside reports whether taskID holds at least one LIVE binding to
@@ -695,12 +722,40 @@ func (a *App) heraClearArchive(sel hera.Selection) {
 		return
 	}
 	reclaim, preserved := a.heraCountReclaimable(workers)
-	msg := fmt.Sprintf(
-		"Nukes %d hidden agent(s) and reclaims %d worktree(s)+branch(es). %d preserved (bound elsewhere). Rows are retained (recoverable via the DB).",
-		len(workers), reclaim, preserved)
-	a.openHeraConfirm("Clear "+scopeName+"'s archive?", msg, func() {
-		a.heraDoClearArchive(workers)
-	})
+	// Collect the task IDs that WILL actually be reclaimed (mirrors
+	// heraCountReclaimable's own reclaimable check) so the merge-safety
+	// classification below only checks tasks this action is about to destroy.
+	var reclaimIDs []string
+	for i := range workers {
+		tid := roleReclaimTask(&workers[i])
+		if tid != "" && a.heraTaskReclaimable(tid, workers[i].RoleID) {
+			reclaimIDs = append(reclaimIDs, tid)
+		}
+	}
+	openConfirm := func(confirmed int) {
+		msg := fmt.Sprintf(
+			"Nukes %d hidden agent(s) and reclaims %d worktree(s)+branch(es). %d preserved (bound elsewhere). Rows are retained (recoverable via the DB). %d of %d reclaimed tasks confirmed merged.",
+			len(workers), reclaim, preserved, confirmed, len(reclaimIDs))
+		a.openHeraConfirm("Clear "+scopeName+"'s archive?", msg, func() {
+			a.heraDoClearArchive(workers)
+		})
+	}
+	if len(reclaimIDs) == 0 {
+		// Nothing to classify (every hidden worker's task is bound elsewhere) —
+		// open immediately rather than paying a goroutine + QueueUpdateDraw
+		// round trip for zero work.
+		openConfirm(0)
+		return
+	}
+	// Tier A classification runs off the UI thread before the confirm opens —
+	// same compute-first idiom as the cascade path above; clear-archive keeps
+	// its own existing aggregate-count confirm rather than the review popup
+	// (add-merge-safety-review's design scopes the popup to single-role nuke
+	// and the global Cleanup action only).
+	go func() {
+		confirmed := a.classifyTasksConcurrently(reclaimIDs)
+		a.tapp.QueueUpdateDraw(func() { openConfirm(confirmed) })
+	}()
 }
 
 // heraDoClearArchive nukes each hidden role in the set and refreshes.

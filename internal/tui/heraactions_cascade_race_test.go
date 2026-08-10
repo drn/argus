@@ -68,11 +68,22 @@ func TestHeraCascadeNuke_BulkDeleteDoesNotBlockCaller(t *testing.T) {
 	}
 	app.heraPage.Refresh()
 
-	app.heraOpenDelete(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "bulk"}})
-	testutil.Equal(t, app.mode, modeHeraConfirm)
+	// add-merge-safety-review: the cascade confirm now opens only after an
+	// off-UI-thread Tier-A classification pass completes (QueueUpdateDraw),
+	// so a real running event loop is required here — a bare New() app with
+	// no Run() loop would deadlock the classify goroutine's QueueUpdateDraw
+	// forever, as this test used to invoke heraOpenDelete/heraConfirmDo
+	// directly with no loop at all.
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	readUI(t, app.tapp, func() {
+		app.heraOpenDelete(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "bulk"}})
+	})
+	waitForMode(t, app, modeHeraConfirm)
 
 	start := time.Now()
-	app.heraConfirmDo()
+	readUI(t, app.tapp, func() { app.heraConfirmDo() })
 	elapsed := time.Since(start)
 
 	// n workers + 1 coordinator = n+1 live sessions, each with a 15ms Stop().

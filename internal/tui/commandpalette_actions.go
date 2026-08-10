@@ -183,6 +183,7 @@ func (a *App) heraRailActionRegistry() map[keymap.Action]func() {
 	add(keymap.ActHeraAdopt, a.heraPage.OnAdopt)
 	add(keymap.ActHeraNewCoord, a.heraPage.OnNewCoordinator)
 	add(keymap.ActHeraClear, a.heraPage.OnClearArchive)
+	add(keymap.ActHeraCleanup, a.heraPage.OnCleanup)
 	return reg
 }
 

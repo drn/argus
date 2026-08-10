@@ -121,6 +121,10 @@ func TestHelpModal_Draw(t *testing.T) {
 	testutil.Contains(t, body, "hide worker in coord's archive (reversible)")
 	testutil.Contains(t, body, "clear coord's archive (nuke hidden agents)")
 	testutil.Contains(t, body, "nuke role/orchestrator")
+	// add-merge-safety-review: the `c` global Cleanup rail key must be
+	// discoverable in the overlay — fail the build if it's ever silently
+	// dropped.
+	testutil.Contains(t, body, "cleanup stuck-task backlog (all projects)")
 	if strings.Contains(body, "retire worker") {
 		t.Errorf("help overlay still lists the removed `R` retire key")
 	}

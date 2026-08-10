@@ -140,9 +140,11 @@ func TestSmoke_HeraDeleteRoleConfirmCancelKeepsIt(t *testing.T) {
 	defer stop()
 	heraTabCursorOnWorker(t, app, sim)
 
+	// add-merge-safety-review: a sole-bound role nuke now opens the
+	// merge-safety review popup (classified off the UI thread), not the
+	// plain y/N confirm — wait for it rather than asserting synchronously.
 	sim.InjectKey(tcell.KeyCtrlD, 0, 0)
-	syncUI(t, app.tapp)
-	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeHeraConfirm) })
+	waitForMode(t, app, modeMergeSafetyPopup)
 
 	sim.InjectKey(tcell.KeyEscape, 0, 0) // cancel
 	syncUI(t, app.tapp)
@@ -167,8 +169,11 @@ func TestSmoke_HeraDeleteOrchestratorCascadesReclaimsTask(t *testing.T) {
 	sim.InjectKey(tcell.KeyRune, '2', 0)
 	syncUI(t, app.tapp)
 
+	// add-merge-safety-review: the cascade confirm now opens only after an
+	// off-UI-thread Tier-A classification pass — wait for it rather than
+	// assuming a single syncUI settle window covers the classify goroutine.
 	sim.InjectKey(tcell.KeyCtrlD, 0, 0)
-	syncUI(t, app.tapp)
+	waitForMode(t, app, modeHeraConfirm)
 	sim.InjectKey(tcell.KeyRune, 'y', 0) // confirm
 	syncUI(t, app.tapp)
 
@@ -295,8 +300,10 @@ func TestSmoke_HeraCascadeDeleteSubtree(t *testing.T) {
 	sim.InjectKey(tcell.KeyRune, 'j', 0)
 	syncUI(t, app.tapp)
 
+	// add-merge-safety-review: the cascade confirm now opens only after an
+	// off-UI-thread Tier-A classification pass — wait for it.
 	sim.InjectKey(tcell.KeyCtrlD, 0, 0)
-	syncUI(t, app.tapp)
+	waitForMode(t, app, modeHeraConfirm)
 	// The confirm modal must spell out the cascade (remove from rail, reclaim worktrees).
 	readUI(t, app.tapp, func() {
 		testutil.Contains(t, app.heraConfirmModal.Message(), "removes")
@@ -366,8 +373,10 @@ func TestSmoke_HeraCascadeDeleteDepth2Count(t *testing.T) {
 	// Row 1 is orch-a's workerR (bridges orch-c); cascade subtree = {orch-c, orch-g}.
 	sim.InjectKey(tcell.KeyRune, 'j', 0)
 	syncUI(t, app.tapp)
+	// add-merge-safety-review: the cascade confirm now opens only after an
+	// off-UI-thread Tier-A classification pass — wait for it.
 	sim.InjectKey(tcell.KeyCtrlD, 0, 0)
-	syncUI(t, app.tapp)
+	waitForMode(t, app, modeHeraConfirm)
 
 	// tg (internal bridge c↔g) + twg (leaf) = 2 worktrees; tc preserved (bound
 	// under orch-a, outside the subtree). The count must NOT undercount tg.
