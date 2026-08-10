@@ -275,11 +275,12 @@ func (c *localMaintenanceClient) do(ctx context.Context, method, path string, bo
 }
 
 // cleanupCandidateJSON mirrors the per-task classification row returned by
-// GET /api/maintenance/cleanup-candidates (add-merge-safety-review's rest-api
-// delta — field names chosen to match the existing TaskJSON convention
-// elsewhere in this codebase, e.g. internal/apiclient/tasks.go).
+// GET /api/maintenance/cleanup-candidates (internal/api/cleanup_candidates.go's
+// cleanupCandidateJSON — the daemon-side implementation, built in parallel
+// with this file, is the actual wire contract; the field tags here must
+// match it exactly). Tier is present on the wire but unused for display here.
 type cleanupCandidateJSON struct {
-	ID      string `json:"id"`
+	ID      string `json:"task_id"`
 	Name    string `json:"name"`
 	Project string `json:"project"`
 	Safe    bool   `json:"safe"`
