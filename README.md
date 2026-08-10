@@ -705,6 +705,9 @@ Every authenticated token has the same permissions **except** a small master-onl
 | Method | Endpoint                            | Description                                                                                  |
 | ------ | ----------------------------------- | -------------------------------------------------------------------------------------------- |
 | `POST` | `/api/maintenance/prune-completed`  | Delete all completed tasks — removes worktrees/branches and sweeps orphans (mirrors TUI `ctrl+r`) |
+| `POST` | `/api/maintenance/cleanup-candidates/compute` | Start (or no-op onto) a background merge-safety classification pass over the stuck-task backlog |
+| `GET`  | `/api/maintenance/cleanup-candidates` | List the cached classification (safe/not-safe + reason) for every stuck-task candidate, plus whether a pass is in flight |
+| `POST` | `/api/maintenance/cleanup-candidates/clean` | Master-only. Immediately delete the given `scope` ("safe" or "all") of the last-computed candidate snapshot — removes worktrees/branches, same guards as prune-completed |
 
 #### Projects & backends (full CRUD)
 
