@@ -79,6 +79,8 @@ Derived from: `internal/tui/heraactions.go` (`heraOpenDelete`, `heraNukeRole`, `
 - **WHEN** any nuke's merge-safety check is being prepared (single-role or cascade)
 - **THEN** it runs in a background goroutine, invokes no `gh`/GitHub network call, and the relevant popup/confirm only opens once the check completes
 
+## ADDED Requirements
+
 ### Requirement: Merge-safety review popup
 
 The Hera view SHALL provide a review popup with two sections — **NOT-SAFE** listed first, then **SAFE** — each row showing its task name and, for NOT-SAFE rows, the specific reason it wasn't confirmed merged. The popup offers three actions: **Clean safe** (the default-selected action, acting only on the SAFE section), **Clean all** (acting on every listed task, an explicit override the operator reaches only after seeing the NOT-SAFE list), and **Cancel** (no-op). Both Clean actions act immediately — this popup has no separate later step.
