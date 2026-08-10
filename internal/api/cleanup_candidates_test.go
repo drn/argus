@@ -125,6 +125,49 @@ func TestHandleCleanupCandidatesList_ReturnsCachedResultsAndComputing(t *testing
 	testutil.Equal(t, resp2.Candidates[0].Tier, "local-ancestor")
 }
 
+// TestHandleCleanupCandidatesList_IncludesOrchestratorName covers
+// 5a-cleanup-tree-view: a candidate that once held a Hera role reports the
+// orchestrator it belonged to (surviving the binding ending), while a plain
+// non-Hera candidate reports none.
+func TestHandleCleanupCandidatesList_IncludesOrchestratorName(t *testing.T) {
+	srv, d := testServer(t)
+	mux := srv.routes()
+
+	heraTask := &model.Task{Name: "1a-build", Status: model.StatusInReview, Archived: true, Worktree: "/tmp/wt/1a-build"}
+	testutil.NoError(t, d.Add(heraTask))
+	orch, err := d.CreateHeraOrchestrator("fix-widget", "")
+	testutil.NoError(t, err)
+	_, binding, err := d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID,
+		Name:           "1a-build",
+		Kind:           db.HeraKindWorker,
+		ArgusProject:   "p",
+	}, heraTask.ID, heraTask.Worktree)
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.EndHeraBinding(binding.ID, "test-teardown"))
+
+	plainTask := &model.Task{Name: "plain-stuck", Status: model.StatusInReview, Archived: true}
+	testutil.NoError(t, d.Add(plainTask))
+
+	req := authedReq("GET", "/api/maintenance/cleanup-candidates", "")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusOK)
+
+	var resp struct {
+		Candidates []cleanupCandidateJSON `json:"candidates"`
+	}
+	testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	testutil.Equal(t, len(resp.Candidates), 2)
+
+	byID := map[string]cleanupCandidateJSON{}
+	for _, c := range resp.Candidates {
+		byID[c.TaskID] = c
+	}
+	testutil.Equal(t, byID[heraTask.ID].Orchestrator, "fix-widget")
+	testutil.Equal(t, byID[plainTask.ID].Orchestrator, "")
+}
+
 // --- runCleanupCompute: repo resolution + fail-closed classification,
 // exercised end to end with zero real git/gh processes spawned. ---
 

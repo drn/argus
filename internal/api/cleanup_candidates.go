@@ -128,11 +128,11 @@ func (s *Server) runCleanupCompute(ctx context.Context) {
 
 	cfg := s.db.Config()
 	var toClassify []mergesafety.Candidate
-	for _, t := range tasks {
-		if verdictIsSafe(cached[t.ID]) {
+	for _, c := range tasks {
+		if verdictIsSafe(cached[c.Task.ID]) {
 			continue // terminal — never re-classified
 		}
-		toClassify = append(toClassify, cleanupCandidateFor(ctx, cfg, t))
+		toClassify = append(toClassify, cleanupCandidateFor(ctx, cfg, c.Task))
 	}
 	if len(toClassify) == 0 {
 		return
@@ -193,15 +193,21 @@ func verdictIsSafe(m map[string]string) bool {
 // not-yet-classified task under its NOT-SAFE header from the moment it
 // opened, implying 737 confirmed verdicts when zero classification had
 // actually happened.
+//
+// Orchestrator (5a-cleanup-tree-view) is the name of the Hera orchestrator
+// this task's most-recent hera_roles/hera_bindings row belonged to — empty
+// when the task never held a Hera role at all. Mirrors
+// db.StuckTaskCandidate.Orchestrator verbatim.
 type cleanupCandidateJSON struct {
-	TaskID  string `json:"task_id"`
-	Name    string `json:"name"`
-	Project string `json:"project"`
-	Branch  string `json:"branch"`
-	Safe    bool   `json:"safe"`
-	Tier    string `json:"tier,omitempty"`
-	Reason  string `json:"reason"`
-	Pending bool   `json:"pending"`
+	TaskID       string `json:"task_id"`
+	Name         string `json:"name"`
+	Project      string `json:"project"`
+	Branch       string `json:"branch"`
+	Safe         bool   `json:"safe"`
+	Tier         string `json:"tier,omitempty"`
+	Reason       string `json:"reason"`
+	Pending      bool   `json:"pending"`
+	Orchestrator string `json:"orchestrator,omitempty"`
 }
 
 // handleCleanupCandidatesList returns the current cached classification for
@@ -220,8 +226,9 @@ func (s *Server) handleCleanupCandidatesList(w http.ResponseWriter, r *http.Requ
 	}
 
 	candidates := make([]cleanupCandidateJSON, 0, len(tasks))
-	for _, t := range tasks {
-		c := cleanupCandidateJSON{TaskID: t.ID, Name: t.Name, Project: t.Project, Branch: t.Branch}
+	for _, sc := range tasks {
+		t := sc.Task
+		c := cleanupCandidateJSON{TaskID: t.ID, Name: t.Name, Project: t.Project, Branch: t.Branch, Orchestrator: sc.Orchestrator}
 		if m := cached[t.ID]; m != nil {
 			c.Safe = verdictIsSafe(m)
 			c.Tier = m[cleanupMetaTier]
@@ -281,11 +288,11 @@ func (s *Server) handleCleanupCandidatesClean(w http.ResponseWriter, r *http.Req
 	}
 
 	var ids []string
-	for _, t := range tasks {
-		if req.Scope == cleanupScopeSafe && !verdictIsSafe(cached[t.ID]) {
+	for _, sc := range tasks {
+		if req.Scope == cleanupScopeSafe && !verdictIsSafe(cached[sc.Task.ID]) {
 			continue
 		}
-		ids = append(ids, t.ID)
+		ids = append(ids, sc.Task.ID)
 	}
 
 	// agent.PrunePrepare treats an EMPTY TaskIDs slice as "not set" and falls

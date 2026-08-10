@@ -29,10 +29,21 @@ type scanner interface {
 
 // scanTask reads a task from a row using the canonical column order.
 func scanTask(row scanner) (*model.Task, error) {
+	return scanTaskExtra(row)
+}
+
+// scanTaskExtra reads a task using the canonical column order, plus any extra
+// trailing SELECT columns a caller appended after taskColumns (e.g.
+// StuckTaskCandidates' correlated-subquery orchestrator name) — extra dest
+// pointers are scanned in the same call, in the order they appear in the
+// query, so the row is read exactly once.
+func scanTaskExtra(row scanner, extra ...any) (*model.Task, error) {
 	t := &model.Task{}
 	var status, createdAt, startedAt, endedAt string
 	var sandboxed, archived, pinned int
-	if err := row.Scan(&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Model, &t.Worktree, &t.AgentPID, &t.SessionID, &sandboxed, &archived, &pinned, &t.BaseBranch, &t.Result, &t.Archetype, &t.Profile, &createdAt, &startedAt, &endedAt); err != nil {
+	dest := []any{&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Model, &t.Worktree, &t.AgentPID, &t.SessionID, &sandboxed, &archived, &pinned, &t.BaseBranch, &t.Result, &t.Archetype, &t.Profile, &createdAt, &startedAt, &endedAt}
+	dest = append(dest, extra...)
+	if err := row.Scan(dest...); err != nil {
 		return nil, err
 	}
 	t.Status, _ = model.ParseStatus(status)
@@ -536,6 +547,20 @@ func (d *DB) PruneTasks(ids []string) (pruned []*model.Task, skippedHeraBound in
 	return d.pruneTasksLocked(ids)
 }
 
+// StuckTaskCandidate pairs a task matching the merge-safety review's
+// stuck-task predicate with the name of the Hera orchestrator its most
+// recent hera_roles/hera_bindings row belonged to (5a-cleanup-tree-view).
+// Orchestrator is empty when the task never held a Hera role at all — a
+// plain non-Hera task can still match the stuck-task predicate for unrelated
+// reasons. Hera never hard-deletes role/binding/orchestrator rows on archive
+// or nuke, so this reaches back through ended, archived, and nuked bindings
+// alike; a task that has held roles across more than one orchestrator over
+// time resolves to the most recent binding by started_at.
+type StuckTaskCandidate struct {
+	Task         *model.Task
+	Orchestrator string
+}
+
 // StuckTaskCandidates returns every task matching the merge-safety review's
 // stuck-task predicate (openspec add-merge-safety-review): archived,
 // status='in_review', and holding no live Hera role binding
@@ -543,11 +568,25 @@ func (d *DB) PruneTasks(ids []string) (pruned []*model.Task, skippedHeraBound in
 // the global Cleanup action's on-demand classification — a task Hera still
 // owns is excluded up front rather than merely relying on PruneTasks' own
 // (re-verified) guard at delete time.
-func (d *DB) StuckTaskCandidates() ([]*model.Task, error) {
+//
+// Each result also carries the resolved Orchestrator name (5a-cleanup-tree-
+// view, see StuckTaskCandidate) via a correlated subquery over
+// hera_bindings/hera_roles/hera_orchestrators keyed on the task id, joining
+// through hera_roles.orchestrator_id (the role's own NOT NULL FK) rather than
+// hera_bindings' denormalized copy, and ordered by hera_bindings.started_at
+// DESC so a task with more than one historical binding resolves to the most
+// recent orchestrator.
+func (d *DB) StuckTaskCandidates() ([]*StuckTaskCandidate, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	rows, err := d.conn.Query(`SELECT ` + taskColumns + ` FROM tasks t
+	rows, err := d.conn.Query(`SELECT ` + taskColumns + `,
+		(SELECT ho.name FROM hera_bindings hb
+		 JOIN hera_roles hr ON hr.id = hb.role_id
+		 JOIN hera_orchestrators ho ON ho.id = hr.orchestrator_id
+		 WHERE hb.argus_task_id = t.id
+		 ORDER BY hb.started_at DESC LIMIT 1) AS orchestrator_name
+		FROM tasks t
 		WHERE t.archived=1 AND t.status='in_review'
 		AND NOT EXISTS (SELECT 1 FROM hera_bindings hb WHERE hb.argus_task_id=t.id AND hb.ended_at IS NULL)
 		ORDER BY t.created_at ASC`)
@@ -556,13 +595,16 @@ func (d *DB) StuckTaskCandidates() ([]*model.Task, error) {
 	}
 	defer rows.Close()
 
-	var tasks []*model.Task
+	var out []*StuckTaskCandidate
 	for rows.Next() {
-		if t, err := scanTask(rows); err == nil {
-			tasks = append(tasks, t)
+		var orchName sql.NullString
+		t, err := scanTaskExtra(rows, &orchName)
+		if err != nil {
+			continue
 		}
+		out = append(out, &StuckTaskCandidate{Task: t, Orchestrator: orchName.String})
 	}
-	return tasks, rows.Err()
+	return out, rows.Err()
 }
 
 // taskIDsWhereLocked returns the IDs of every task matching the given raw

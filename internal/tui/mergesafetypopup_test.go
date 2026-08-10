@@ -356,6 +356,121 @@ func TestMergeSafetyPopup_ScrollToBottomFillsViewport(t *testing.T) {
 	testutil.Contains(t, out, "task-15") // first of the final 15-row screenful
 }
 
+// --- Tree grouping by originating Hera coordinator (5a-cleanup-tree-view) ---
+
+// TestMergeSafetyPopup_GroupsCandidatesByCoordinator covers the core ask: a
+// candidate carrying a Coordinator name renders nested under a coordinator
+// group header instead of as a flat top-level row.
+func TestMergeSafetyPopup_GroupsCandidatesByCoordinator(t *testing.T) {
+	cands := []mergeSafetyCandidate{
+		{TaskID: "n1", Name: "1a-build", Safe: false, Reason: "no matching merged pull request found", Coordinator: "fix-widget"},
+	}
+	m := NewMergeSafetyPopup(" Cleanup ", cands)
+	out := drawMergeSafetyPopupToString(t, m, 100, 24)
+
+	notSafeIdx := strings.Index(out, "NOT-SAFE (1)")
+	groupIdx := strings.Index(out, "fix-widget")
+	itemIdx := strings.Index(out, "1a-build")
+	if notSafeIdx < 0 || groupIdx < 0 || itemIdx < 0 {
+		t.Fatalf("expected section header, coordinator group, and item all to render; got:\n%s", out)
+	}
+	if notSafeIdx >= groupIdx || groupIdx >= itemIdx {
+		t.Errorf("expected order NOT-SAFE section -> coordinator group -> item; got NOT-SAFE=%d group=%d item=%d\n%s", notSafeIdx, groupIdx, itemIdx, out)
+	}
+}
+
+// TestMergeSafetyPopup_UngroupedCandidatesRenderFlatNoFakeHeader is the
+// explicit regression guard the mission called out: a candidate with no
+// Coordinator must render as a flat top-level entry, never nested under a
+// fabricated header.
+func TestMergeSafetyPopup_UngroupedCandidatesRenderFlatNoFakeHeader(t *testing.T) {
+	cands := []mergeSafetyCandidate{
+		{TaskID: "n1", Name: "orphan-task", Safe: false, Reason: "no matching merged pull request found"},
+	}
+	m := NewMergeSafetyPopup(" Cleanup ", cands)
+	out := drawMergeSafetyPopupToString(t, m, 100, 24)
+
+	testutil.Contains(t, out, "orphan-task")
+	// No group header of any kind — the ONLY heading present is the
+	// NOT-SAFE/SAFE/PENDING section header itself.
+	testutil.Equal(t, strings.Count(out, "NOT-SAFE"), 1)
+}
+
+// TestMergeSafetyPopup_MixedGroupedAndUngroupedCandidatesInSameSection covers
+// a section containing both an ungrouped candidate and a grouped one: the
+// ungrouped row still renders flat, and the grouped row still gets its own
+// coordinator header — mirrors a real backlog where only SOME stuck tasks
+// ever held a Hera role.
+func TestMergeSafetyPopup_MixedGroupedAndUngroupedCandidatesInSameSection(t *testing.T) {
+	cands := []mergeSafetyCandidate{
+		{TaskID: "p1", Name: "plain-stuck", Safe: false, Reason: "no matching merged pull request found"},
+		{TaskID: "n1", Name: "1a-build", Safe: false, Reason: "no matching merged pull request found", Coordinator: "fix-widget"},
+	}
+	m := NewMergeSafetyPopup(" Cleanup ", cands)
+	out := drawMergeSafetyPopupToString(t, m, 100, 24)
+
+	testutil.Contains(t, out, "plain-stuck")
+	testutil.Contains(t, out, "fix-widget")
+	testutil.Contains(t, out, "1a-build")
+}
+
+// TestMergeSafetyPopup_MultipleCoordinatorsEachGetOwnGroupHeader covers two
+// distinct coordinators within the same section, each with its own header
+// and its own candidates nested beneath it (not merged into one group).
+func TestMergeSafetyPopup_MultipleCoordinatorsEachGetOwnGroupHeader(t *testing.T) {
+	cands := []mergeSafetyCandidate{
+		{TaskID: "n1", Name: "1a-build", Safe: false, Reason: "not safe", Coordinator: "fix-widget"},
+		{TaskID: "n2", Name: "2b-deploy", Safe: false, Reason: "not safe", Coordinator: "ship-feature"},
+	}
+	m := NewMergeSafetyPopup(" Cleanup ", cands)
+	out := drawMergeSafetyPopupToString(t, m, 100, 24)
+
+	testutil.Contains(t, out, "fix-widget")
+	testutil.Contains(t, out, "ship-feature")
+	testutil.Contains(t, out, "1a-build")
+	testutil.Contains(t, out, "2b-deploy")
+}
+
+// TestMergeSafetyPopup_CoordinatorGroupingPreservesNotSafeThenSafeOrdering
+// proves grouping is a sub-structure WITHIN each safety section, not a
+// replacement for the NOT-SAFE-before-SAFE ordering: a coordinator whose only
+// candidate is SAFE must still render inside the SAFE section, after every
+// NOT-SAFE row (grouped or not).
+func TestMergeSafetyPopup_CoordinatorGroupingPreservesNotSafeThenSafeOrdering(t *testing.T) {
+	cands := []mergeSafetyCandidate{
+		{TaskID: "s1", Name: "1a-build", Safe: true, Reason: "confirmed merged", Coordinator: "fix-widget"},
+		{TaskID: "n1", Name: "orphan-unsafe", Safe: false, Reason: "no matching merged pull request found"},
+	}
+	m := NewMergeSafetyPopup(" Cleanup ", cands)
+	out := drawMergeSafetyPopupToString(t, m, 100, 24)
+
+	notSafeIdx := strings.Index(out, "NOT-SAFE")
+	safeIdx := strings.Index(out, "SAFE (1)")
+	groupIdx := strings.Index(out, "fix-widget")
+	if notSafeIdx < 0 || safeIdx < 0 || groupIdx < 0 {
+		t.Fatalf("expected NOT-SAFE, SAFE, and the coordinator group all to render; got:\n%s", out)
+	}
+	if notSafeIdx >= safeIdx || safeIdx >= groupIdx {
+		t.Errorf("expected NOT-SAFE section, then SAFE section, then its coordinator group; got NOT-SAFE=%d SAFE=%d group=%d\n%s", notSafeIdx, safeIdx, groupIdx, out)
+	}
+}
+
+// TestMergeSafetyPopup_SameCoordinatorCandidatesInOneSectionShareOneHeader
+// proves a coordinator with multiple candidates in the same section gets
+// exactly ONE group header, not one per candidate.
+func TestMergeSafetyPopup_SameCoordinatorCandidatesInOneSectionShareOneHeader(t *testing.T) {
+	cands := []mergeSafetyCandidate{
+		{TaskID: "n1", Name: "1a-build", Safe: false, Reason: "not safe", Coordinator: "fix-widget"},
+		{TaskID: "n2", Name: "1b-test", Safe: false, Reason: "not safe", Coordinator: "fix-widget"},
+	}
+	m := NewMergeSafetyPopup(" Cleanup ", cands)
+	out := drawMergeSafetyPopupToString(t, m, 100, 24)
+
+	testutil.Equal(t, strings.Count(out, "fix-widget"), 1)
+	testutil.Contains(t, out, "1a-build")
+	testutil.Contains(t, out, "1b-test")
+}
+
 // TestMergeSafetyPopup_ScrollUpAfterOvershootMovesImmediately proves the
 // "dead zone" is gone: after scrolling down far past the true bottom (which
 // used to leave m.scrollOff sitting well beyond the point drawRows actually

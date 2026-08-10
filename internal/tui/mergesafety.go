@@ -279,13 +279,17 @@ func (c *localMaintenanceClient) do(ctx context.Context, method, path string, bo
 // cleanupCandidateJSON — the daemon-side implementation, built in parallel
 // with this file, is the actual wire contract; the field tags here must
 // match it exactly). Tier is present on the wire but unused for display here.
+// Orchestrator (5a-cleanup-tree-view) is the name of the Hera orchestrator
+// this candidate's most-recent role belonged to, empty when it never held
+// one — feeds the popup's tree grouping (see cleanupCandidatesToRows).
 type cleanupCandidateJSON struct {
-	ID      string `json:"task_id"`
-	Name    string `json:"name"`
-	Project string `json:"project"`
-	Safe    bool   `json:"safe"`
-	Reason  string `json:"reason"`
-	Pending bool   `json:"pending"`
+	ID           string `json:"task_id"`
+	Name         string `json:"name"`
+	Project      string `json:"project"`
+	Safe         bool   `json:"safe"`
+	Reason       string `json:"reason"`
+	Pending      bool   `json:"pending"`
+	Orchestrator string `json:"orchestrator,omitempty"`
 }
 
 // cleanupCandidatesResp is GET /api/maintenance/cleanup-candidates' response
@@ -392,7 +396,8 @@ func (a *App) pollCleanupCandidates(client *localMaintenanceClient, gen int) {
 // cleanupCandidatesToRows converts the REST response shape into the popup
 // widget's candidate shape, folding the project name into the display label
 // (the global Cleanup backlog spans every project, unlike the single-role
-// site's one-task popup).
+// site's one-task popup). Coordinator carries the wire Orchestrator name
+// straight through — MergeSafetyPopup groups by it (5a-cleanup-tree-view).
 func cleanupCandidatesToRows(candidates []cleanupCandidateJSON) []mergeSafetyCandidate {
 	rows := make([]mergeSafetyCandidate, len(candidates))
 	for i, c := range candidates {
@@ -400,7 +405,7 @@ func cleanupCandidatesToRows(candidates []cleanupCandidateJSON) []mergeSafetyCan
 		if c.Project != "" {
 			name = c.Name + "  ·  " + c.Project
 		}
-		rows[i] = mergeSafetyCandidate{TaskID: c.ID, Name: name, Safe: c.Safe, Reason: c.Reason, Pending: c.Pending}
+		rows[i] = mergeSafetyCandidate{TaskID: c.ID, Name: name, Safe: c.Safe, Reason: c.Reason, Pending: c.Pending, Coordinator: c.Orchestrator}
 	}
 	return rows
 }

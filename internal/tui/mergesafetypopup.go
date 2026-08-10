@@ -35,27 +35,39 @@ const (
 // unambiguously means "classified" without needing to set this explicitly —
 // only the global Cleanup action's live poll (which can observe a task with
 // no cached verdict yet) ever sets it true.
+//
+// Coordinator (5a-cleanup-tree-view) is the name of the Hera orchestrator
+// this candidate's task most recently belonged to — empty when the task
+// never held a Hera role at all. Empty is the common case for the
+// single-role nuke site (its sole candidate is always the task being nuked
+// right now, not a backlog reconstruction) and is also valid for the global
+// Cleanup backlog's plain non-Hera candidates; either way it means "render
+// this row flat, not nested under a group header" (see SetCandidates).
 type mergeSafetyCandidate struct {
-	TaskID  string
-	Name    string
-	Safe    bool
-	Reason  string // shown for NOT-SAFE and PENDING rows
-	Pending bool
+	TaskID      string
+	Name        string
+	Safe        bool
+	Reason      string // shown for NOT-SAFE and PENDING rows
+	Pending     bool
+	Coordinator string
 }
 
-// mergeSafetyRowKind distinguishes a section header from a candidate row in
-// MergeSafetyPopup's flattened render list (mirrors switcherRowKind).
+// mergeSafetyRowKind distinguishes a section header, a coordinator group
+// header, and a candidate row in MergeSafetyPopup's flattened render list
+// (mirrors switcherRowKind).
 type mergeSafetyRowKind uint8
 
 const (
 	mergeSafetyRowHeader mergeSafetyRowKind = iota
 	mergeSafetyRowItem
+	mergeSafetyRowGroup
 )
 
 type mergeSafetyRow struct {
-	kind mergeSafetyRowKind
-	text string // header text
-	cand mergeSafetyCandidate
+	kind    mergeSafetyRowKind
+	text    string // header/group text
+	cand    mergeSafetyCandidate
+	grouped bool // item nested under a coordinator group header (deeper indent)
 }
 
 // MergeSafetyPopup is the "merge-safety review popup" (add-merge-safety-review):
@@ -102,7 +114,10 @@ func NewMergeSafetyPopup(title string, candidates []mergeSafetyCandidate) *Merge
 // PENDING first (fix-hera-reclaim-status — candidates with no verdict yet,
 // so the operator never mistakes "not yet checked" for a confirmed result),
 // then NOT-SAFE, then SAFE — the spec's required order for the latter two.
-// Called both at construction and, for the global Cleanup action, on every
+// Within each of those three sections, candidates are further grouped by
+// Coordinator (5a-cleanup-tree-view) via appendSectionRows — grouping is a
+// sub-structure of the safety split, not a replacement for it. Called both
+// at construction and, for the global Cleanup action, on every
 // classification poll tick as fresh results arrive.
 func (m *MergeSafetyPopup) SetCandidates(candidates []mergeSafetyCandidate) {
 	m.candidates = candidates
@@ -120,27 +135,51 @@ func (m *MergeSafetyPopup) SetCandidates(candidates []mergeSafetyCandidate) {
 	rows := make([]mergeSafetyRow, 0, len(candidates)+3)
 	if len(pending) > 0 {
 		rows = append(rows, mergeSafetyRow{kind: mergeSafetyRowHeader, text: fmt.Sprintf("PENDING (%d)", len(pending))})
-		for _, c := range pending {
-			rows = append(rows, mergeSafetyRow{kind: mergeSafetyRowItem, cand: c})
-		}
+		rows = appendSectionRows(rows, pending)
 	}
 	if len(notSafe) > 0 {
 		rows = append(rows, mergeSafetyRow{kind: mergeSafetyRowHeader, text: fmt.Sprintf("NOT-SAFE (%d)", len(notSafe))})
-		for _, c := range notSafe {
-			rows = append(rows, mergeSafetyRow{kind: mergeSafetyRowItem, cand: c})
-		}
+		rows = appendSectionRows(rows, notSafe)
 	}
 	if len(safe) > 0 {
 		rows = append(rows, mergeSafetyRow{kind: mergeSafetyRowHeader, text: fmt.Sprintf("SAFE (%d)", len(safe))})
-		for _, c := range safe {
-			rows = append(rows, mergeSafetyRow{kind: mergeSafetyRowItem, cand: c})
-		}
+		rows = appendSectionRows(rows, safe)
 	}
 	m.rows = rows
 	m.pendingCount = len(pending)
 	if maxOff := max(len(rows)-1, 0); m.scrollOff > maxOff {
 		m.scrollOff = maxOff
 	}
+}
+
+// appendSectionRows appends one safety section's candidate rows to rows:
+// candidates with no Coordinator render flat (in their original relative
+// order — never nested under a fabricated header), followed by one group
+// header per distinct Coordinator (in order of first appearance within this
+// section), each followed by every one of that coordinator's candidates in
+// this section (in their original relative order, even if they weren't
+// contiguous in the input — a tree groups ALL of a coordinator's children
+// under its one header, not one header per contiguous run).
+func appendSectionRows(rows []mergeSafetyRow, cands []mergeSafetyCandidate) []mergeSafetyRow {
+	var order []string
+	groups := make(map[string][]mergeSafetyCandidate)
+	for _, c := range cands {
+		if c.Coordinator == "" {
+			rows = append(rows, mergeSafetyRow{kind: mergeSafetyRowItem, cand: c})
+			continue
+		}
+		if _, seen := groups[c.Coordinator]; !seen {
+			order = append(order, c.Coordinator)
+		}
+		groups[c.Coordinator] = append(groups[c.Coordinator], c)
+	}
+	for _, name := range order {
+		rows = append(rows, mergeSafetyRow{kind: mergeSafetyRowGroup, text: name})
+		for _, c := range groups[name] {
+			rows = append(rows, mergeSafetyRow{kind: mergeSafetyRowItem, cand: c, grouped: true})
+		}
+	}
+	return rows
 }
 
 // SetScanning toggles the "scanning…" wait state (global Cleanup only — the
@@ -292,7 +331,8 @@ func (m *MergeSafetyPopup) drawRows(screen tcell.Screen, x, y, w, h int) {
 	for i := 0; i < visible; i++ {
 		r := m.rows[off+i]
 		rowY := y + i
-		if r.kind == mergeSafetyRowHeader {
+		switch r.kind {
+		case mergeSafetyRowHeader:
 			style := theme.StyleComplete.Bold(true)
 			switch {
 			case strings.HasPrefix(r.text, "NOT-SAFE"):
@@ -302,12 +342,30 @@ func (m *MergeSafetyPopup) drawRows(screen tcell.Screen, x, y, w, h int) {
 			}
 			widget.DrawText(screen, x, rowY, w, r.text, style)
 			continue
+		case mergeSafetyRowGroup:
+			// Coordinator group header (5a-cleanup-tree-view): one indent level
+			// in from the section header, matching where a flat item would sit —
+			// the coordinator icon is what marks it as a group, mirroring the
+			// native Hera rail's own orchestrator-header convention
+			// (internal/tui/hera/rail.go's drawOrchRow: icon + name, no fixed
+			// "coordinator"/"orchestrator" label word).
+			text := string(theme.IconCoordinator) + " " + r.text
+			textW := max(w-2, 1)
+			if rw := utf8.RuneCountInString(text); rw > textW && textW > 1 {
+				text = string([]rune(text)[:textW-1]) + "…"
+			}
+			widget.DrawText(screen, x+2, rowY, textW, text, theme.StyleCoordinator)
+			continue
 		}
 		text := r.cand.Name
 		if !r.cand.Safe && r.cand.Reason != "" {
 			text = text + "  —  " + r.cand.Reason
 		}
-		textW := max(w-2, 1)
+		indent := 2
+		if r.grouped {
+			indent = 4 // nested one level deeper than a flat item, under its group header
+		}
+		textW := max(w-indent, 1)
 		if rw := utf8.RuneCountInString(text); rw > textW && textW > 1 {
 			text = string([]rune(text)[:textW-1]) + "…"
 		}
@@ -315,7 +373,7 @@ func (m *MergeSafetyPopup) drawRows(screen tcell.Screen, x, y, w, h int) {
 		if r.cand.Pending {
 			style = theme.StyleDimmed
 		}
-		widget.DrawText(screen, x+2, rowY, textW, text, style)
+		widget.DrawText(screen, x+indent, rowY, textW, text, style)
 	}
 }
 
