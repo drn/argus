@@ -222,7 +222,7 @@ func TestKeyset_EOLKeysFire(t *testing.T) {
 		ev   *tcell.EventKey
 		want string
 	}{
-		{tcell.NewEventKey(tcell.KeyRune, 'C', tcell.ModNone), "clear-archive"},
+		{tcell.NewEventKey(tcell.KeyRune, 'c', tcell.ModNone), "clear-archive"},
 		{tcell.NewEventKey(tcell.KeyRune, 'n', tcell.ModNone), "new-coord"},
 	}
 	for _, c := range cases {
@@ -252,7 +252,7 @@ func TestKeyset_RetireAndRailPruneUnbound(t *testing.T) {
 
 // TestKeyset_NewCoordFiresOnEmptySelection verifies the selection-INDEPENDENT
 // `n` (bootstrap key) fires even when nothing is selected, while the
-// selection-gated `C` does not.
+// selection-gated `c` does not.
 func TestKeyset_NewCoordFiresOnEmptySelection(t *testing.T) {
 	d := memDB(t)
 	p := NewHeraPage(d) // empty rail, no orchestrators
@@ -264,7 +264,7 @@ func TestKeyset_NewCoordFiresOnEmptySelection(t *testing.T) {
 
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyRune, 'n', tcell.ModNone), noFocus)
-	h(tcell.NewEventKey(tcell.KeyRune, 'C', tcell.ModNone), noFocus)
+	h(tcell.NewEventKey(tcell.KeyRune, 'c', tcell.ModNone), noFocus)
 
 	testutil.Equal(t, len(fired), 1)
 	testutil.Equal(t, fired[0], "new-coord")
@@ -282,7 +282,7 @@ func TestKeyset_EOLKeysSuppressedWhileFiltering(t *testing.T) {
 	h(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), noFocus) // enter filter input
 	testutil.Equal(t, p.RailFiltering(), true)
 	h(tcell.NewEventKey(tcell.KeyRune, 'n', tcell.ModNone), noFocus)
-	h(tcell.NewEventKey(tcell.KeyRune, 'C', tcell.ModNone), noFocus)
+	h(tcell.NewEventKey(tcell.KeyRune, 'c', tcell.ModNone), noFocus)
 	testutil.Equal(t, fired, false)
 }
 

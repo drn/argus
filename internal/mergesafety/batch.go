@@ -51,6 +51,13 @@ func ClassifyBatchFunc(ctx context.Context, candidates []Candidate, onResult fun
 		members  []Candidate       // every candidate needing this repo's Tier B lookup
 	}
 	groups := map[string]*repoGroup{}
+	// repoOrder preserves first-seen-in-candidates order for the loop below —
+	// ranging over groups directly would iterate in Go's randomized map
+	// order, so which repo's (slow) Tier B call runs first would vary from
+	// call to call, needlessly reordering when each repo's incremental result
+	// lands for no benefit (see the doc comment above: Tier B is already
+	// accepted as sequential, this only fixes WHICH sequence).
+	var repoOrder []string
 
 	for _, c := range candidates {
 		if v, ok := classifyLocal(c.RepoDir, c.Branch, c.DefaultRef); ok {
@@ -65,6 +72,7 @@ func ClassifyBatchFunc(ctx context.Context, candidates []Candidate, onResult fun
 		if g == nil {
 			g = &repoGroup{branches: map[string]string{}}
 			groups[c.RepoSlug] = g
+			repoOrder = append(repoOrder, c.RepoSlug)
 		}
 		if _, known := g.branches[c.Branch]; !known {
 			g.branches[c.Branch] = fmt.Sprintf("b%d", len(g.branches))
@@ -72,7 +80,8 @@ func ClassifyBatchFunc(ctx context.Context, candidates []Candidate, onResult fun
 		g.members = append(g.members, c)
 	}
 
-	for repo, g := range groups {
+	for _, repo := range repoOrder {
+		g := groups[repo]
 		candResults, _, err := fetchMergeCandidates(ctx, repo, g.branches)
 		for _, c := range g.members {
 			if err != nil {

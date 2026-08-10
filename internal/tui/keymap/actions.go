@@ -173,8 +173,8 @@ var defaultSpecs = map[Context]map[Action]string{
 		ActHeraDelete: "ctrl+d", ActHeraSpawn: "w", ActHeraRename: "r",
 		ActHeraArchive: "a", ActHeraPin: "P", ActHeraStatAdv: "s", ActHeraStatRev: "S",
 		ActHeraKanbanAdv: "m", ActHeraKanbanRev: "M",
-		ActHeraAdopt: "J", ActHeraNewCoord: "n", ActHeraClear: "C",
-		ActHeraCleanup: "c",
+		ActHeraAdopt: "J", ActHeraNewCoord: "n", ActHeraClear: "c",
+		ActHeraCleanup: "C",
 	},
 }
 
