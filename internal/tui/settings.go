@@ -56,6 +56,7 @@ const (
 	srPluginSubmit
 	srPermissionMode
 	srInstallProfiles
+	srSecretsBootstrap
 )
 
 // settingsCategory groups related settings rows into a left-rail entry.
@@ -221,6 +222,16 @@ type SettingsView struct {
 
 	// Hera.
 	heraEnabled bool
+
+	// Secrets bootstrap status (System category). Computed once per Refresh
+	// via agent.QueryOpBootstrapStatus — the SAME one-resolve-and-discard of
+	// [secrets.op].bootstrap_source that `argus doctor` reports (see
+	// add-secrets-resolver-registry). Never computed in --remote mode: the
+	// resolve is inherently local (env/Keychain/`op` CLI on whatever machine
+	// runs this process), and [secrets.op] describes the DAEMON's own
+	// machine — resolving it from a remote client would shell out on the
+	// wrong host and misreport the daemon's actual status.
+	secretsBootstrapStatus agent.OpBootstrapStatus
 
 	// Spinner.
 	spinnerStyle string // current spinner style name
@@ -493,6 +504,13 @@ func (sv *SettingsView) Refresh() {
 
 	// Hera.
 	sv.heraEnabled = cfg.Hera.Enabled
+
+	// Secrets bootstrap status. Never resolved locally in --remote mode —
+	// see the secretsBootstrapStatus field's doc comment; a remote client
+	// resolving [secrets.op] would shell out on the wrong machine.
+	if !sv.remote {
+		sv.secretsBootstrapStatus = agent.QueryOpBootstrapStatus(cfg.Secrets)
+	}
 
 	// Session-supervisor (controls whether the Restart Session Supervisor row
 	// is offered — see the System category in rebuildRows).
@@ -815,6 +833,39 @@ func (sv *SettingsView) setPluginValue(sec *pluginsettings.Section, key string, 
 	sv.pluginValues[k][key] = v
 }
 
+// secretsBootstrapStatusLabel renders the op bootstrap tri-state
+// (agent.OpBootstrapStatus) for the System category row. Kept as a small
+// pure function, mirroring config.PermissionModeLabel, so the mapping is
+// unit-testable independent of row construction.
+func secretsBootstrapStatusLabel(status agent.OpBootstrapStatus) string {
+	switch status {
+	case agent.OpBootstrapResolved:
+		return "RESOLVED"
+	case agent.OpBootstrapNotResolved:
+		return "NOT RESOLVED"
+	default:
+		return "NOT CONFIGURED"
+	}
+}
+
+// secretsBootstrapStatusColor returns the foreground color for the op
+// bootstrap tri-state, used both for the row-list entry and its detail
+// block. Mirrors the RESOLVED (success/green) / NOT RESOLVED (error/red) /
+// NOT CONFIGURED (neutral/dim) semantics other status rows in this file use
+// — e.g. renderAPIDetail's Enabled/Disabled coloring — kept as a small pure
+// function alongside secretsBootstrapStatusLabel so the mapping is
+// unit-testable independent of row/detail rendering.
+func secretsBootstrapStatusColor(status agent.OpBootstrapStatus) tcell.Color {
+	switch status {
+	case agent.OpBootstrapResolved:
+		return theme.ColorComplete
+	case agent.OpBootstrapNotResolved:
+		return theme.ColorError
+	default:
+		return theme.ColorDimmed
+	}
+}
+
 // rebuildRows rebuilds sv.rows for the active category only. The left rail
 // is fixed and not part of sv.rows.
 func (sv *SettingsView) rebuildRows() {
@@ -829,6 +880,20 @@ func (sv *SettingsView) rebuildRows() {
 				sv.rows = append(sv.rows, settingsRow{kind: srWarning, label: "⚠ " + w, key: fmt.Sprintf("_warn_%d", i)})
 			}
 		}
+		// Secrets bootstrap status — the same RESOLVED / NOT RESOLVED / NOT
+		// CONFIGURED tri-state `argus doctor` reports for [secrets.op]'s
+		// bootstrap_source. Not gated on daemonConnected (it's a config-only
+		// read, not a daemon action) but hidden in --remote mode, same as the
+		// other daemon-local rows below — see secretsBootstrapStatus's doc
+		// comment.
+		if !sv.remote {
+			sv.rows = append(sv.rows, settingsRow{
+				kind:  srSecretsBootstrap,
+				label: "Secrets bootstrap: " + secretsBootstrapStatusLabel(sv.secretsBootstrapStatus),
+				key:   "_secrets_bootstrap",
+			})
+		}
+
 		// Daemon-admin actions manage the local OS install; hide them in
 		// --remote mode where they'd target the wrong (client) machine.
 		if sv.daemonConnected && !sv.remote {
@@ -2157,6 +2222,8 @@ func (sv *SettingsView) renderPane(screen tcell.Screen, x, y, w, h int) {
 			style := tcell.StyleDefault
 			if r.kind == srWarning {
 				style = style.Foreground(theme.ColorInProgress)
+			} else if r.kind == srSecretsBootstrap {
+				style = style.Foreground(secretsBootstrapStatusColor(sv.secretsBootstrapStatus))
 			}
 			prefix := "  "
 			if idx == sv.cursor {
@@ -2202,6 +2269,8 @@ func (sv *SettingsView) renderRowDetail(screen tcell.Screen, x, y, w, h int, row
 	switch row.kind {
 	case srWarning:
 		sv.renderWarningDetail(screen, x, y, w, h, row)
+	case srSecretsBootstrap:
+		sv.renderSecretsBootstrapDetail(screen, x, y, w, h)
 	case srSandbox:
 		sv.renderSandboxDetail(screen, x, y, w, h)
 	case srProject:
@@ -2503,6 +2572,32 @@ func (sv *SettingsView) renderWarningDetail(screen tcell.Screen, x, y, w, h int,
 	} else {
 		widget.DrawText(screen, x, y, w, "Warning", theme.StyleTitle)
 		widget.DrawText(screen, x, y+2, w, row.label, tcell.StyleDefault.Foreground(theme.ColorInProgress))
+	}
+}
+
+// renderSecretsBootstrapDetail draws the op bootstrap tri-state detail block
+// in the right pane — the same RESOLVED / NOT RESOLVED / NOT CONFIGURED
+// status `argus doctor` reports for [secrets.op].bootstrap_source (see
+// add-secrets-resolver-registry). Mirrors renderAPIDetail's small
+// title+status+description shape.
+func (sv *SettingsView) renderSecretsBootstrapDetail(screen tcell.Screen, x, y, w, h int) {
+	widget.DrawText(screen, x, y, w, "Secrets Bootstrap", theme.StyleTitle)
+	r := 2
+
+	status := secretsBootstrapStatusLabel(sv.secretsBootstrapStatus)
+	statusColor := secretsBootstrapStatusColor(sv.secretsBootstrapStatus)
+	widget.DrawText(screen, x, y+r, w, "Status: "+status, tcell.StyleDefault.Foreground(statusColor))
+	r += 2
+
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "[secrets.op].bootstrap_source resolution —", theme.StyleDimmed)
+		r++
+		if r < h {
+			widget.DrawText(screen, x, y+r, w, "the same check `argus doctor` reports.", theme.StyleDimmed)
+		}
+	}
+	if h > 1 {
+		widget.DrawText(screen, x, y+h-1, w, "[◀] rail", theme.StyleDimmed)
 	}
 }
 

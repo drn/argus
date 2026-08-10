@@ -1,4 +1,4 @@
-.PHONY: build vet test test-watch test-cover test-cover-gate test-pkg lint-pr fmt fmt-check vuln pre-pr plugin-smoke install-signed mac-build mac-test mac-run mac-app
+.PHONY: build vet test test-watch test-cover test-cover-gate test-pkg lint-pr fmt fmt-check vuln pre-pr plugin-smoke secrets-smoke install-signed mac-build mac-test mac-run mac-app
 
 build:
 	go build ./...
@@ -122,6 +122,14 @@ test-pkg:
 # transient backends/tasks/views/sections/MCP tools on exit.
 plugin-smoke:
 	go run ./cmd/argus-plugin-smoke -verbose
+
+# Black-box smoke test the secrets-resolver registry (add-secrets-resolver-
+# registry, PR #932) against the locally running daemon: a real spawned agent
+# actually receiving a keychain://-resolved credential in its own live
+# environment. Reuses argus-plugin-smoke's existing tokens; mints nothing.
+# Cleans up its own sacrificial backend + throwaway task on exit.
+secrets-smoke:
+	go run ./cmd/argus-secrets-smoke -verbose
 
 # --- macOS GUI (Argus) -------------------------------------------------------
 # The native SwiftUI app (a Conductor-style GUI) lives in ./macos as a pure

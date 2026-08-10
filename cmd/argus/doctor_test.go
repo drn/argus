@@ -138,6 +138,69 @@ func TestDiagnoseProfileLibraryAt_UnreadableDirectoryIsUnknown(t *testing.T) {
 	testutil.Equal(t, got, doctor.ProfileLibraryUnknown)
 }
 
+// --- Secrets bootstrap diagnostic (add-secrets-resolver-registry, Task 1.11)
+// ---
+// secretsBootstrapStatusFor(cfg) is the testable, cfg-injectable counterpart
+// to the production gatherSecretsBootstrapStatus() (which loads cfg from the
+// real ~/.argus/config.toml, mirroring gatherProfileLibraryStatus ->
+// diagnoseProfileLibraryAt). Fails to compile until Stage 5.2 adds both to
+// cmd/argus/doctor.go.
+
+func TestSecretsBootstrapStatusFor_Resolved(t *testing.T) {
+	t.Setenv("DOCTOR_SECRETS_TEST_VAR", "value")
+	cfg := config.Config{Secrets: config.SecretsConfig{Op: config.OpConfig{
+		BootstrapSource: "env://DOCTOR_SECRETS_TEST_VAR",
+		BootstrapTarget: "OP_SERVICE_ACCOUNT_TOKEN",
+	}}}
+	got := secretsBootstrapStatusFor(cfg)
+	testutil.Equal(t, got, doctor.SecretsBootstrapResolved)
+}
+
+func TestSecretsBootstrapStatusFor_NotResolved(t *testing.T) {
+	cfg := config.Config{Secrets: config.SecretsConfig{Op: config.OpConfig{
+		BootstrapSource: "env://DOCTOR_SECRETS_DEFINITELY_UNSET_VAR_XYZ",
+		BootstrapTarget: "OP_SERVICE_ACCOUNT_TOKEN",
+	}}}
+	got := secretsBootstrapStatusFor(cfg)
+	testutil.Equal(t, got, doctor.SecretsBootstrapNotResolved)
+}
+
+func TestSecretsBootstrapStatusFor_NotConfigured(t *testing.T) {
+	got := secretsBootstrapStatusFor(config.Config{})
+	testutil.Equal(t, got, doctor.SecretsBootstrapNotConfigured)
+}
+
+// TestSecretsBootstrapStatusFor_DoesNotAffectExitCodeContract pins the
+// binary-coherence delta's "Check does not change the exit-code contract"
+// scenario: argus doctor's exit code (runDoctor calls os.Exit(1) only when
+// doctor.Diagnose(actors).Verdict != doctor.Healthy) is governed solely by
+// the binary-coherence actors. doctor.Diagnose's signature takes only
+// []doctor.Actor, so a NOT RESOLVED secrets bootstrap status computed
+// alongside a Healthy actor set can never influence it — proven here by
+// computing both from independent inputs and asserting the verdict is
+// unchanged by the secrets status either way.
+func TestSecretsBootstrapStatusFor_DoesNotAffectExitCodeContract(t *testing.T) {
+	actors := []doctor.Actor{
+		{Role: doctor.RolePathArgus, ResolvedPath: "/opt/bin/argus", Hash: "h", Resolved: true},
+		{Role: doctor.RoleArgusdTarget, ResolvedPath: "/opt/bin/argus", Hash: "h", Resolved: true},
+		{Role: doctor.RoleGoInstall, ResolvedPath: "/opt/bin/argus", Hash: "h", Resolved: true},
+		{Role: doctor.RoleDaemon, ResolvedPath: "/opt/bin/argus", Hash: "h", Resolved: true},
+		{Role: doctor.RoleSupervisor, ResolvedPath: "/opt/bin/argus", Hash: "h", Resolved: true},
+		{Role: doctor.RoleTUI, ResolvedPath: "/opt/bin/argus", Hash: "h", Resolved: true},
+	}
+	testutil.Equal(t, doctor.Diagnose(actors).Verdict, doctor.Healthy)
+
+	cfg := config.Config{Secrets: config.SecretsConfig{Op: config.OpConfig{
+		BootstrapSource: "env://DOCTOR_EXITCODE_TEST_DEFINITELY_UNSET_VAR",
+		BootstrapTarget: "OP_SERVICE_ACCOUNT_TOKEN",
+	}}}
+	testutil.Equal(t, secretsBootstrapStatusFor(cfg), doctor.SecretsBootstrapNotResolved)
+
+	// The binary-coherence verdict computed from the SAME actors is untouched
+	// by the secrets status computed above.
+	testutil.Equal(t, doctor.Diagnose(actors).Verdict, doctor.Healthy)
+}
+
 // --- Dev-stack orphan check (fix-devstack-orphaning) ---
 
 func TestDiagnoseDevStackOrphansFrom_NoneRunning(t *testing.T) {

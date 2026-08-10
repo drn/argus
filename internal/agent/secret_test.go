@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
@@ -206,4 +208,214 @@ func TestSetSecretResolver_SwapAndReset(t *testing.T) {
 	if !ok || v != "env-value" {
 		t.Fatalf("expected default resolver to read process env; got %q ok=%v", v, ok)
 	}
+}
+
+// --- add-secrets-resolver-registry: bare-string/env:// regression guards and
+// scheme-prefixed registry dispatch (Tasks 1.1, 1.7, 1.8) ---
+
+// TestBuildCmd_EnvVarMapping_BareStringIgnoresSecretsConfig pins the
+// secrets-resolution "Bare string resolves as env" scenario at BuildCmd's own
+// call site (existing behavior, regression guard): a bare-string source keeps
+// resolving against the process environment via the existing pluggable
+// secretResolver seam, completely unaffected by a populated [secrets.op]
+// block on cfg — only a scheme-prefixed source ever consults the registry.
+func TestBuildCmd_EnvVarMapping_BareStringIgnoresSecretsConfig(t *testing.T) {
+	const wantEnvValue = "bare-string-still-resolves-via-process-env"
+	t.Setenv("BARE_STRING_IGNORES_SECRETS_CFG", wantEnvValue)
+
+	cfg := envVarConfig(map[string]string{"OPENAI_API_KEY": "BARE_STRING_IGNORES_SECRETS_CFG"})
+	cfg.Secrets = config.SecretsConfig{Op: config.OpConfig{
+		BootstrapSource: "env://SOME_OTHER_VAR_ENTIRELY",
+		BootstrapTarget: "OP_SERVICE_ACCOUNT_TOKEN",
+	}}
+	task := &model.Task{Name: "review", Backend: "codex", Worktree: t.TempDir()}
+
+	cmd, cleanup, err := BuildCmd(task, cfg, false)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	testutil.NoError(t, err)
+
+	got, ok := envValue(cmd.Env, "OPENAI_API_KEY")
+	if !ok {
+		t.Fatal("expected bare-string source to resolve against the process environment regardless of [secrets.op] config")
+	}
+	testutil.Equal(t, got, wantEnvValue)
+}
+
+// TestBackendEnvVars_MappingCarriesOnlyDescriptors_NoResolvedValue pins the
+// agent-execution "Mapping carries no secret value" scenario: a backend's
+// EnvVars mapping holds only target-to-source descriptors, never a resolved
+// secret value — BuildCmd must not write a resolved value back into it.
+func TestBackendEnvVars_MappingCarriesOnlyDescriptors_NoResolvedValue(t *testing.T) {
+	cfg := envVarConfig(map[string]string{"OPENAI_API_KEY": "op://vault/item/field"})
+	testutil.Equal(t, cfg.Backends["codex"].EnvVars["OPENAI_API_KEY"], "op://vault/item/field")
+
+	installResolver(t, func(string) (string, bool) { return "should-never-appear-in-envvars-map", true })
+	task := &model.Task{Name: "review", Backend: "codex", Worktree: t.TempDir()}
+	cmd, cleanup, err := BuildCmd(task, cfg, false)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	testutil.NoError(t, err)
+	_ = cmd
+
+	// BuildCmd must not have mutated the mapping in cfg with a resolved value.
+	testutil.Equal(t, cfg.Backends["codex"].EnvVars["OPENAI_API_KEY"], "op://vault/item/field")
+}
+
+// TestBuildCmd_EnvVarMapping_KeychainSourceDispatchesThroughRegistry pins the
+// agent-execution "Scheme-prefixed source dispatches through the registry"
+// scenario: a keychain://-prefixed EnvVars source is resolved through the
+// secrets-resolution registry's keychain resolver (built fresh from the cfg
+// parameter BuildCmd already receives), not treated as a bare env-var name.
+// The fake secretSubprocessRunner (secretregistry_test.go) means this never
+// shells out to a real `security` binary.
+func TestBuildCmd_EnvVarMapping_KeychainSourceDispatchesThroughRegistry(t *testing.T) {
+	ResetSecretMemoCache()
+	installSubprocessRunner(t, func(_ context.Context, name string, _ []string, _ []string, _ time.Duration) (string, bool) {
+		if name == "security" {
+			return "keychain-resolved-value", true
+		}
+		return "", false
+	})
+
+	cfg := envVarConfig(map[string]string{"OPENAI_API_KEY": "keychain://some-service"})
+	task := &model.Task{Name: "review", Backend: "codex", Worktree: t.TempDir()}
+
+	cmd, cleanup, err := BuildCmd(task, cfg, false)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	testutil.NoError(t, err)
+
+	got, ok := envValue(cmd.Env, "OPENAI_API_KEY")
+	if !ok {
+		t.Fatalf("expected OPENAI_API_KEY resolved via the keychain scheme; got env %v", cmd.Env)
+	}
+	testutil.Equal(t, got, "keychain-resolved-value")
+}
+
+// TestBuildCmd_EnvVarMapping_OpSourceDispatchesThroughRegistry extends the
+// same scenario to an op://-prefixed source, backed by a [secrets.op]
+// bootstrap block on cfg — proving BuildCmd threads cfg.Secrets through to
+// the registry with no separate wiring/installation step.
+func TestBuildCmd_EnvVarMapping_OpSourceDispatchesThroughRegistry(t *testing.T) {
+	ResetSecretMemoCache()
+	installSubprocessRunner(t, func(_ context.Context, name string, _ []string, _ []string, _ time.Duration) (string, bool) {
+		switch name {
+		case "security":
+			return "bootstrap-token", true
+		case "op":
+			return "op-resolved-value", true
+		}
+		return "", false
+	})
+
+	cfg := envVarConfig(map[string]string{"OPENAI_API_KEY": "op://vault/item/field"})
+	cfg.Secrets = config.SecretsConfig{Op: config.OpConfig{
+		BootstrapSource: "keychain://op-service-account-claude",
+		BootstrapTarget: "OP_SERVICE_ACCOUNT_TOKEN",
+	}}
+	task := &model.Task{Name: "review", Backend: "codex", Worktree: t.TempDir()}
+
+	cmd, cleanup, err := BuildCmd(task, cfg, false)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	testutil.NoError(t, err)
+
+	got, ok := envValue(cmd.Env, "OPENAI_API_KEY")
+	if !ok {
+		t.Fatalf("expected OPENAI_API_KEY resolved via the op scheme; got env %v", cmd.Env)
+	}
+	testutil.Equal(t, got, "op-resolved-value")
+}
+
+// TestBuildCmd_EnvVarMapping_BareStringStillDispatchesThroughPluggableResolver
+// pins the agent-execution "Resolver is pluggable" scenario for the env path
+// specifically: swapping the resolver via SetSecretResolver still changes
+// what the very next BuildCmd call resolves for a bare-string/env:// source,
+// even though scheme-prefixed sources (keychain://, op://) now dispatch
+// through the new secrets-resolution registry instead.
+func TestBuildCmd_EnvVarMapping_BareStringStillDispatchesThroughPluggableResolver(t *testing.T) {
+	installResolver(t, func(source string) (string, bool) {
+		if source == "HERA_OPENAI" {
+			return "still-uses-pluggable-seam", true
+		}
+		return "", false
+	})
+
+	cfg := envVarConfig(map[string]string{"OPENAI_API_KEY": "HERA_OPENAI"})
+	task := &model.Task{Name: "review", Backend: "codex", Worktree: t.TempDir()}
+
+	cmd, cleanup, err := BuildCmd(task, cfg, false)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	testutil.NoError(t, err)
+
+	got, ok := envValue(cmd.Env, "OPENAI_API_KEY")
+	if !ok {
+		t.Fatal("expected OPENAI_API_KEY to resolve via the pluggable resolver seam")
+	}
+	testutil.Equal(t, got, "still-uses-pluggable-seam")
+}
+
+// TestBuildCmd_EnvVarMapping_ExplicitEnvSchemeStillDispatchesThroughPluggableResolverUnmemoized
+// pins the agent-execution "A bare string or env://-prefixed source SHALL
+// resolve against the daemon's own process environment, unchanged from prior
+// behavior" requirement for the EXPLICIT `env://`-prefixed form specifically
+// (mirroring ...BareStringStillDispatchesThroughPluggableResolver above, which
+// only covers the bare-string form). An `env://VAR` source must (a) resolve to
+// the same value a bare `VAR` source would, and (b) NEVER be memoized by the
+// registry's process-lifetime cache: swapping the pluggable resolver between
+// two BuildCmd calls for the identical "env://HERA_OPENAI" descriptor must
+// change what the SECOND call resolves. Before the fix, `strings.Contains(source,
+// "://")` wrongly routed "env://HERA_OPENAI" into the registry's Resolve,
+// which memoizes a successful resolve keyed on the literal descriptor string
+// — so the second call would still observe the first call's stale value.
+func TestBuildCmd_EnvVarMapping_ExplicitEnvSchemeStillDispatchesThroughPluggableResolverUnmemoized(t *testing.T) {
+	ResetSecretMemoCache()
+	cfg := envVarConfig(map[string]string{"OPENAI_API_KEY": "env://HERA_OPENAI"})
+	task := &model.Task{Name: "review", Backend: "codex", Worktree: t.TempDir()}
+
+	installResolver(t, func(source string) (string, bool) {
+		if source == "HERA_OPENAI" {
+			return "first-value", true
+		}
+		return "", false
+	})
+
+	cmd, cleanup, err := BuildCmd(task, cfg, false)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	testutil.NoError(t, err)
+	got, ok := envValue(cmd.Env, "OPENAI_API_KEY")
+	if !ok {
+		t.Fatalf("expected OPENAI_API_KEY resolved via env:// through the pluggable resolver; got env %v", cmd.Env)
+	}
+	testutil.Equal(t, got, "first-value")
+
+	// Swap the resolver and rebuild with the IDENTICAL "env://HERA_OPENAI"
+	// source. If it were wrongly memoized under that literal descriptor key,
+	// this second call would still observe "first-value".
+	installResolver(t, func(source string) (string, bool) {
+		if source == "HERA_OPENAI" {
+			return "second-value", true
+		}
+		return "", false
+	})
+
+	cmd2, cleanup2, err := BuildCmd(task, cfg, false)
+	if cleanup2 != nil {
+		defer cleanup2()
+	}
+	testutil.NoError(t, err)
+	got2, ok := envValue(cmd2.Env, "OPENAI_API_KEY")
+	if !ok {
+		t.Fatalf("expected OPENAI_API_KEY resolved via env:// on the second BuildCmd call; got env %v", cmd2.Env)
+	}
+	testutil.Equal(t, got2, "second-value")
 }

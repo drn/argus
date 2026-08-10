@@ -2,6 +2,8 @@ package config
 
 import (
 	"testing"
+
+	"github.com/drn/argus/internal/testutil"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -172,6 +174,71 @@ func TestPermissionModeLabel(t *testing.T) {
 	if got := PermissionModeLabel("custom"); got != "custom" {
 		t.Errorf("PermissionModeLabel(custom) = %q, want custom", got)
 	}
+}
+
+// --- add-secrets-resolver-registry: [secrets]/[secrets.op] config schema
+// (Task 1.9, config-management's "Secrets resolver configuration block") ---
+// Uses writeFile (file_test.go, same package) for a real TOML round-trip via
+// FileLoader.Apply, mirroring TestFileLoader_HeraCoordinatorContextBudgetOverlay's
+// shape. Fails to compile until Stage 3.1 adds Config.Secrets (SecretsConfig)
+// and SecretsConfig.Op (OpConfig) to config.go.
+
+// TestSecretsConfig_AbsentBlockIsZeroValue pins "Absent secrets block is a
+// no-op": a config.toml with no [secrets] block leaves cfg.Secrets at its
+// zero value — no op:// source can resolve, bare/env:// stays unaffected
+// (that downstream guarantee is pinned in internal/agent's
+// TestQueryOpBootstrapStatus "not configured" cases).
+func TestSecretsConfig_AbsentBlockIsZeroValue(t *testing.T) {
+	path := writeFile(t, `
+[ui]
+theme = "dark"
+`)
+	l := NewFileLoader(path)
+	base := DefaultConfig()
+
+	got := l.Apply(base)
+	testutil.NoError(t, l.Err())
+
+	testutil.DeepEqual(t, got.Secrets, SecretsConfig{})
+}
+
+// TestSecretsConfig_OpBootstrapOverlay pins "Configured op bootstrap
+// parameters": a config.toml [secrets.op] block with bootstrap_source and
+// bootstrap_target round-trips through the FileLoader overlay unchanged.
+func TestSecretsConfig_OpBootstrapOverlay(t *testing.T) {
+	path := writeFile(t, `
+[secrets.op]
+bootstrap_source = "keychain://op-service-account-claude"
+bootstrap_target = "OP_SERVICE_ACCOUNT_TOKEN"
+`)
+	l := NewFileLoader(path)
+	base := DefaultConfig()
+
+	got := l.Apply(base)
+	testutil.NoError(t, l.Err())
+
+	testutil.Equal(t, got.Secrets.Op.BootstrapSource, "keychain://op-service-account-claude")
+	testutil.Equal(t, got.Secrets.Op.BootstrapTarget, "OP_SERVICE_ACCOUNT_TOKEN")
+	// The base value is untouched.
+	testutil.DeepEqual(t, base.Secrets, SecretsConfig{})
+}
+
+// TestSecretsConfig_OpBootstrapSourceAcceptsEnvScheme pins "bootstrap_source
+// accepts any supported scheme": an env://-prefixed bootstrap_source
+// round-trips identically to a keychain:// one, with no special-casing at
+// the config layer for which scheme is used.
+func TestSecretsConfig_OpBootstrapSourceAcceptsEnvScheme(t *testing.T) {
+	path := writeFile(t, `
+[secrets.op]
+bootstrap_source = "env://OP_SERVICE_ACCOUNT_TOKEN_LOCAL"
+bootstrap_target = "OP_SERVICE_ACCOUNT_TOKEN"
+`)
+	l := NewFileLoader(path)
+	got := l.Apply(DefaultConfig())
+	testutil.NoError(t, l.Err())
+
+	testutil.Equal(t, got.Secrets.Op.BootstrapSource, "env://OP_SERVICE_ACCOUNT_TOKEN_LOCAL")
+	testutil.Equal(t, got.Secrets.Op.BootstrapTarget, "OP_SERVICE_ACCOUNT_TOKEN")
 }
 
 func TestDefaultConfig_PermissionModeAndCleanCommand(t *testing.T) {

@@ -1,8 +1,10 @@
 # Binaries
 /argus
 /argus-plugin-smoke
+/argus-secrets-smoke
 /cmd/argus/argus
 /cmd/argus-plugin-smoke/argus-plugin-smoke
+/cmd/argus-secrets-smoke/argus-secrets-smoke
 *.exe
 *.dll
 *.so
@@ -33,6 +35,7 @@ Thumbs.db
 
 # Claude Code worktrees (ephemeral, per-session)
 .claude/worktrees/
+.claude/worktree/
 
 # Claude Code runtime artifacts (scheduled wakeups, etc.)
 .claude/scheduled_tasks.lock

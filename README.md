@@ -490,6 +490,8 @@ It is strictly **read-only** (never touches a symlink, binary, `PATH`, or proces
 
 `doctor` also independently reports whether the per-user [diligence-profile](#diligence-profiles-model-tiering) library (`~/.argus/profiles/`) has anything in it — **FOUND** (at least one profile file validates), **NONE FOUND** (prints the `argus profiles install-defaults` remediation), or **UNKNOWN** (the directory couldn't be listed for a reason other than not existing). This checks the library's existence only, not whether any given project is bound to a profile — an unbound project is expected and unwarned. Like the Stop-hook check, it is purely advisory and never affects the exit code.
 
+`doctor` also independently reports the `[secrets.op]` bootstrap-credential status — **RESOLVED** (`bootstrap_source` is configured and resolves), **NOT RESOLVED** (configured but the resolve failed — e.g. 1Password signed out or a renamed Keychain item), or **NOT CONFIGURED** (`[secrets]`/`[secrets.op]` absent, a no-op). The same tri-state is mirrored live in **Settings → System**. Like the checks above, it's purely advisory and never affects the exit code; the resolved credential value itself is never printed or logged, only the tri-state.
+
 ### Auto-start at Login (macOS)
 
 Toggle from **Settings → Status → Auto-start at login** (Enter), or use the CLI:
