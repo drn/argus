@@ -24,6 +24,17 @@ import (
 const (
 	TierLocalAncestor = "local-ancestor"
 	TierMergedPR      = "merged-pr"
+	// TierCoordinatorInferred labels a verdict produced NOT by this package
+	// but by a caller inferring a Hera-descended worker task's safety from
+	// its own coordinator's confirmed-merged status (add-coordinator-inferred-
+	// safety) — the fallback for a worker folded into its coordinator's
+	// branch via a plain `git merge` and never given its own standalone PR,
+	// where squash-merge has already severed both branch-name and SHA
+	// ancestry (see openspec/changes/archive/2026-08-10-add-merge-safety-review/
+	// design.md's Open Questions). This package never produces this tier
+	// itself — it is a label only, defined here so every caller shares one
+	// constant instead of a duplicated string literal.
+	TierCoordinatorInferred = "coordinator-inferred"
 )
 
 // skewSlack is the clock-skew allowance applied when checking that a

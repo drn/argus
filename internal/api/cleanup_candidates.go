@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"sync"
@@ -140,7 +141,9 @@ func (s *Server) runCleanupCompute(ctx context.Context) {
 
 	uxlog.Log("[cleanup] compute: starting classification of %d of %d eligible task(s)", len(toClassify), len(tasks))
 	classified := 0
+	verdicts := make(map[string]mergesafety.Verdict, len(toClassify))
 	mergesafety.ClassifyBatchFunc(ctx, toClassify, func(id string, v mergesafety.Verdict) {
+		verdicts[id] = v
 		entries := map[string]string{
 			cleanupMetaSafe:   boolStr(v.Safe),
 			cleanupMetaTier:   v.Tier,
@@ -153,6 +156,108 @@ func (s *Server) runCleanupCompute(ctx context.Context) {
 		classified++
 	})
 	uxlog.Log("[cleanup] compute: classified %d of %d eligible task(s)", classified, len(tasks))
+
+	s.runCoordinatorInferencePass(ctx, tasks, verdicts)
+}
+
+// runCoordinatorInferencePass is Tier C (add-coordinator-inferred-safety): a
+// bounded, ONE-HOP fallback for a Hera-descended worker task folded into its
+// coordinator's branch via a plain `git merge`, which never had — and can
+// never retroactively be given — a standalone PR of its own, so Tier A/B can
+// never confirm it (see openspec/changes/archive/2026-08-10-add-merge-safety-
+// review/design.md's Open Questions). Every not-safe, orchestrator-bearing
+// candidate from THIS pass's fresh Tier A/B verdicts is grouped by
+// orchestrator name; each distinct orchestrator's coordinator task is
+// resolved and classified via Tier A/B EXACTLY ONCE (never re-entering this
+// same inference — that is what caps it at one hop, structurally: the
+// coordinator's own classification call has no notion of orchestrators and
+// cannot recurse into this grouping logic even in principle). A safe
+// coordinator verdict overrides every one of its not-safe candidates to
+// Safe=true/TierCoordinatorInferred; a not-safe or unresolvable coordinator
+// leaves its candidates exactly as their own Tier A/B verdict said — fail
+// closed, never an error.
+func (s *Server) runCoordinatorInferencePass(ctx context.Context, tasks []*db.StuckTaskCandidate, verdicts map[string]mergesafety.Verdict) {
+	var orchOrder []string
+	groups := map[string][]string{} // orchestrator name -> candidate task IDs to (maybe) rescue
+	for _, c := range tasks {
+		if c.Orchestrator == "" {
+			continue
+		}
+		v, ok := verdicts[c.Task.ID]
+		if !ok || v.Safe {
+			continue
+		}
+		if _, seen := groups[c.Orchestrator]; !seen {
+			orchOrder = append(orchOrder, c.Orchestrator)
+		}
+		groups[c.Orchestrator] = append(groups[c.Orchestrator], c.Task.ID)
+	}
+
+	for _, orchName := range orchOrder {
+		ids := groups[orchName]
+		coordTask, ok, err := s.db.CoordinatorTaskForOrchestrator(orchName)
+		if err != nil {
+			uxlog.Log("[cleanup] compute: coordinator-inferred: lookup failed for orchestrator=%s: %v", orchName, err)
+			continue
+		}
+		if !ok {
+			uxlog.Log("[cleanup] compute: coordinator-inferred: no coordinator task resolvable for orchestrator=%s, leaving %d candidate(s) unchanged", orchName, len(ids))
+			continue
+		}
+
+		fn := s.classifyCoordinatorFn
+		if fn == nil {
+			fn = s.classifyCoordinatorTask
+		}
+		coordVerdict, err := fn(ctx, coordTask)
+		if err != nil {
+			uxlog.Log("[cleanup] compute: coordinator-inferred: classify failed for orchestrator=%s coordinator=%s: %v", orchName, coordTask.ID, err)
+			continue
+		}
+		if !coordVerdict.Safe {
+			uxlog.Log("[cleanup] compute: coordinator-inferred: coordinator=%s (orchestrator=%s) not safe, leaving %d candidate(s) unchanged", coordTask.ID, orchName, len(ids))
+			continue
+		}
+
+		reason := fmt.Sprintf("coordinator task %s (branch %q) confirmed via %s: %s", coordTask.Name, coordTask.Branch, coordVerdict.Tier, coordVerdict.Reason)
+		entries := map[string]string{
+			cleanupMetaSafe:   boolStr(true),
+			cleanupMetaTier:   mergesafety.TierCoordinatorInferred,
+			cleanupMetaReason: reason,
+		}
+		for _, id := range ids {
+			if err := s.db.SetMetaBatch(id, cleanupMetaNamespace, entries); err != nil {
+				uxlog.Log("[cleanup] compute: coordinator-inferred: cache write failed for task=%s: %v", id, err)
+				continue
+			}
+		}
+		uxlog.Log("[cleanup] compute: coordinator-inferred: rescued %d candidate(s) under orchestrator=%s via coordinator=%s", len(ids), orchName, coordTask.ID)
+	}
+}
+
+// classifyCoordinatorTask is the production classifyCoordinatorFn: a plain
+// Tier A/B mergesafety.Classify call over the coordinator task's own
+// resolved Params — never anything that itself performs coordinator
+// inference, which is what makes the one-hop cap structural (see
+// runCoordinatorInferencePass's doc comment).
+func (s *Server) classifyCoordinatorTask(ctx context.Context, t *model.Task) (mergesafety.Verdict, error) {
+	cfg := s.db.Config()
+	return mergesafety.Classify(ctx, candidateToParams(cleanupCandidateFor(ctx, cfg, t)))
+}
+
+// candidateToParams adapts a mergesafety.Candidate (the batch-shaped request)
+// into mergesafety.Params (the single-classification shape Classify takes) —
+// the two carry the identical repo-resolution fields, Candidate just adds an
+// ID for batch result keying that Params has no use for.
+func candidateToParams(c mergesafety.Candidate) mergesafety.Params {
+	return mergesafety.Params{
+		RepoDir:       c.RepoDir,
+		RepoSlug:      c.RepoSlug,
+		Branch:        c.Branch,
+		DefaultRef:    c.DefaultRef,
+		DefaultShort:  c.DefaultShort,
+		TaskCreatedAt: c.TaskCreatedAt,
+	}
 }
 
 // cleanupCandidateFor resolves one task's mergesafety.Candidate via its

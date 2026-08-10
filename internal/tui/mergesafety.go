@@ -278,15 +278,18 @@ func (c *localMaintenanceClient) do(ctx context.Context, method, path string, bo
 // GET /api/maintenance/cleanup-candidates (internal/api/cleanup_candidates.go's
 // cleanupCandidateJSON — the daemon-side implementation, built in parallel
 // with this file, is the actual wire contract; the field tags here must
-// match it exactly). Tier is present on the wire but unused for display here.
-// Orchestrator (5a-cleanup-tree-view) is the name of the Hera orchestrator
-// this candidate's most-recent role belonged to, empty when it never held
-// one — feeds the popup's tree grouping (see cleanupCandidatesToRows).
+// match it exactly). Orchestrator (5a-cleanup-tree-view) is the name of the
+// Hera orchestrator this candidate's most-recent role belonged to, empty when
+// it never held one — feeds the popup's tree grouping (see
+// cleanupCandidatesToRows). Tier (add-coordinator-inferred-safety) is
+// threaded through to the popup so it can render the coordinator-inferred
+// annotation on SAFE rows — see mergeSafetyCandidate.Tier.
 type cleanupCandidateJSON struct {
 	ID           string `json:"task_id"`
 	Name         string `json:"name"`
 	Project      string `json:"project"`
 	Safe         bool   `json:"safe"`
+	Tier         string `json:"tier,omitempty"`
 	Reason       string `json:"reason"`
 	Pending      bool   `json:"pending"`
 	Orchestrator string `json:"orchestrator,omitempty"`
@@ -405,7 +408,7 @@ func cleanupCandidatesToRows(candidates []cleanupCandidateJSON) []mergeSafetyCan
 		if c.Project != "" {
 			name = c.Name + "  ·  " + c.Project
 		}
-		rows[i] = mergeSafetyCandidate{TaskID: c.ID, Name: name, Safe: c.Safe, Reason: c.Reason, Pending: c.Pending, Coordinator: c.Orchestrator}
+		rows[i] = mergeSafetyCandidate{TaskID: c.ID, Name: name, Safe: c.Safe, Tier: c.Tier, Reason: c.Reason, Pending: c.Pending, Coordinator: c.Orchestrator}
 	}
 	return rows
 }

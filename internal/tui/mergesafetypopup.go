@@ -43,6 +43,13 @@ const (
 // right now, not a backlog reconstruction) and is also valid for the global
 // Cleanup backlog's plain non-Hera candidates; either way it means "render
 // this row flat, not nested under a group header" (see SetCandidates).
+//
+// Tier (add-coordinator-inferred-safety) mirrors mergesafety.Verdict.Tier
+// verbatim — a plain string, not an import of internal/mergesafety (see this
+// file's own doc comment on staying a pure display/choice widget). Only one
+// value is ever compared against directly: mergeSafetyTierCoordinatorInferred,
+// which drives a SAFE row's extra annotation (see drawRows). Empty for a
+// Tier-A-only site (the single-role nuke) that never sets it.
 type mergeSafetyCandidate struct {
 	TaskID      string
 	Name        string
@@ -50,7 +57,14 @@ type mergeSafetyCandidate struct {
 	Reason      string // shown for NOT-SAFE and PENDING rows
 	Pending     bool
 	Coordinator string
+	Tier        string
 }
+
+// mergeSafetyTierCoordinatorInferred mirrors mergesafety.TierCoordinatorInferred
+// verbatim (add-coordinator-inferred-safety) — kept as a local string constant
+// rather than an internal/mergesafety import, matching how Safe/Reason are
+// already handled in this file.
+const mergeSafetyTierCoordinatorInferred = "coordinator-inferred"
 
 // mergeSafetyRowKind distinguishes a section header, a coordinator group
 // header, and a candidate row in MergeSafetyPopup's flattened render list
@@ -358,8 +372,16 @@ func (m *MergeSafetyPopup) drawRows(screen tcell.Screen, x, y, w, h int) {
 			continue
 		}
 		text := r.cand.Name
-		if !r.cand.Safe && r.cand.Reason != "" {
+		switch {
+		case !r.cand.Safe && r.cand.Reason != "":
 			text = text + "  —  " + r.cand.Reason
+		case r.cand.Safe && r.cand.Tier == mergeSafetyTierCoordinatorInferred:
+			// add-coordinator-inferred-safety: the visibility condition this
+			// tier's whole existence was contingent on — a coordinator-
+			// inferred SAFE row must never look indistinguishable from a
+			// directly-confirmed one. Every other SAFE row's rendering is
+			// unaffected (Reason is deliberately never shown for those).
+			text = text + "  (safe via coordinator)"
 		}
 		indent := 2
 		if r.grouped {

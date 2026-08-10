@@ -22,6 +22,20 @@ var ErrTaskNotFound = errors.New("task not found")
 // match scanTask's Scan call and the INSERT/UPDATE statements below.
 const taskColumns = `id, name, status, project, branch, prompt, backend, model, worktree, agent_pid, session_id, sandboxed, archived, pinned, base_branch, result, archetype, profile, created_at, started_at, ended_at`
 
+// qualifyColumns prefixes each column in a comma-separated column list with
+// "alias." — needed when selecting taskColumns from a query that JOINs tasks
+// against other tables sharing column names (e.g. "id", "name"), which
+// SQLite otherwise rejects as an ambiguous column reference. Callers with no
+// top-level join (a correlated subquery doesn't count) can keep using the
+// unqualified taskColumns directly.
+func qualifyColumns(alias, columns string) string {
+	parts := strings.Split(columns, ", ")
+	for i, p := range parts {
+		parts[i] = alias + "." + p
+	}
+	return strings.Join(parts, ", ")
+}
+
 // scanner is implemented by both *sql.Row and *sql.Rows.
 type scanner interface {
 	Scan(dest ...any) error
@@ -605,6 +619,39 @@ func (d *DB) StuckTaskCandidates() ([]*StuckTaskCandidate, error) {
 		out = append(out, &StuckTaskCandidate{Task: t, Orchestrator: orchName.String})
 	}
 	return out, rows.Err()
+}
+
+// CoordinatorTaskForOrchestrator resolves the argus task most recently bound
+// as orchestrator name's coordinator role (add-coordinator-inferred-safety):
+// hera_orchestrators (by name) -> hera_roles (kind='coordinator') ->
+// hera_bindings, most recent by started_at — mirroring StuckTaskCandidates'
+// own correlated-subquery style, including reaching through ended, archived,
+// and nuked rows alike (Hera never hard-deletes them).
+//
+// ok is false, with a nil error, when no such coordinator task row exists —
+// e.g. the orchestrator name never resolves, or its coordinator role/binding
+// was pruned before this feature existed. Callers MUST treat that as
+// "unresolvable" and fail closed, not as an error.
+func (d *DB) CoordinatorTaskForOrchestrator(name string) (*model.Task, bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	//nolint:gosec // G202: qualifyColumns(taskColumns) is a fixed compile-time column list; name is a bound parameter.
+	row := d.conn.QueryRow(`SELECT `+qualifyColumns("t", taskColumns)+`
+		FROM tasks t
+		JOIN hera_bindings hb ON hb.argus_task_id = t.id
+		JOIN hera_roles hr ON hr.id = hb.role_id AND hr.kind = 'coordinator'
+		JOIN hera_orchestrators ho ON ho.id = hr.orchestrator_id
+		WHERE ho.name = ?
+		ORDER BY hb.started_at DESC LIMIT 1`, name)
+	t, err := scanTask(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("resolve coordinator task for orchestrator %q: %w", name, err)
+	}
+	return t, true, nil
 }
 
 // taskIDsWhereLocked returns the IDs of every task matching the given raw

@@ -715,6 +715,102 @@ func TestDB_StuckTaskCandidates(t *testing.T) {
 	})
 }
 
+// TestDB_CoordinatorTaskForOrchestrator covers add-coordinator-inferred-safety's
+// new orchestrator-name -> coordinator-task resolution.
+func TestDB_CoordinatorTaskForOrchestrator(t *testing.T) {
+	t.Run("resolves the coordinator role's bound task", func(t *testing.T) {
+		d := testDB(t)
+		coordTask := &model.Task{Name: "coord", Status: model.StatusInProgress, Worktree: "/tmp/wt/coord"}
+		testutil.NoError(t, d.Add(coordTask))
+		orch := mkOrch(t, d, "fix-widget")
+		coordRole := mkRole(t, d, orch.ID, "coord", HeraKindCoordinator)
+		_, err := d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: coordRole.ID, OrchestratorID: orch.ID, ArgusTaskID: coordTask.ID, WorktreePath: coordTask.Worktree,
+		})
+		testutil.NoError(t, err)
+
+		got, ok, err := d.CoordinatorTaskForOrchestrator("fix-widget")
+		testutil.NoError(t, err)
+		testutil.True(t, ok)
+		testutil.Equal(t, got.ID, coordTask.ID)
+	})
+
+	t.Run("unresolvable orchestrator name returns ok=false, no error", func(t *testing.T) {
+		d := testDB(t)
+
+		got, ok, err := d.CoordinatorTaskForOrchestrator("never-existed")
+		testutil.NoError(t, err)
+		testutil.False(t, ok)
+		testutil.Nil(t, got)
+	})
+
+	t.Run("an orchestrator with only a worker role (no coordinator) is unresolvable", func(t *testing.T) {
+		d := testDB(t)
+		workerTask := &model.Task{Name: "worker", Status: model.StatusInReview, Worktree: "/tmp/wt/worker"}
+		testutil.NoError(t, d.Add(workerTask))
+		orch := mkOrch(t, d, "worker-only")
+		workerRole := mkRole(t, d, orch.ID, "worker", HeraKindWorker)
+		_, err := d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: workerRole.ID, OrchestratorID: orch.ID, ArgusTaskID: workerTask.ID, WorktreePath: workerTask.Worktree,
+		})
+		testutil.NoError(t, err)
+
+		got, ok, err := d.CoordinatorTaskForOrchestrator("worker-only")
+		testutil.NoError(t, err)
+		testutil.False(t, ok)
+		testutil.Nil(t, got)
+	})
+
+	t.Run("picks the MOST RECENT coordinator binding when the role has been rebound", func(t *testing.T) {
+		d := testDB(t)
+		firstTask := &model.Task{Name: "coord-1", Status: model.StatusComplete, Worktree: "/tmp/wt/coord-1"}
+		testutil.NoError(t, d.Add(firstTask))
+		orch := mkOrch(t, d, "rebound-orch")
+		coordRole := mkRole(t, d, orch.ID, "coord", HeraKindCoordinator)
+		firstBinding, err := d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: coordRole.ID, OrchestratorID: orch.ID, ArgusTaskID: firstTask.ID, WorktreePath: firstTask.Worktree,
+		})
+		testutil.NoError(t, err)
+		testutil.NoError(t, d.EndHeraBinding(firstBinding.ID, "test-teardown"))
+
+		// Sleep so the second binding's started_at is unambiguously later (see
+		// StuckTaskCandidates' own multi-binding test for the same rationale).
+		time.Sleep(2 * time.Millisecond)
+
+		secondTask := &model.Task{Name: "coord-2", Status: model.StatusInProgress, Worktree: "/tmp/wt/coord-2"}
+		testutil.NoError(t, d.Add(secondTask))
+		_, err = d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: coordRole.ID, OrchestratorID: orch.ID, ArgusTaskID: secondTask.ID, WorktreePath: secondTask.Worktree,
+		})
+		testutil.NoError(t, err)
+
+		got, ok, err := d.CoordinatorTaskForOrchestrator("rebound-orch")
+		testutil.NoError(t, err)
+		testutil.True(t, ok)
+		testutil.Equal(t, got.ID, secondTask.ID)
+	})
+
+	t.Run("survives coordinator role and orchestrator archive/nuke", func(t *testing.T) {
+		d := testDB(t)
+		coordTask := &model.Task{Name: "coord", Status: model.StatusInReview, Archived: true, Worktree: "/tmp/wt/coord-nuked"}
+		testutil.NoError(t, d.Add(coordTask))
+		orch := mkOrch(t, d, "nuked-orch")
+		coordRole := mkRole(t, d, orch.ID, "coord", HeraKindCoordinator)
+		binding, err := d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: coordRole.ID, OrchestratorID: orch.ID, ArgusTaskID: coordTask.ID, WorktreePath: coordTask.Worktree,
+		})
+		testutil.NoError(t, err)
+		testutil.NoError(t, d.EndHeraBinding(binding.ID, "done"))
+		testutil.NoError(t, d.NukeHeraRole(coordRole.ID))
+		testutil.NoError(t, d.NukeHeraOrchestrator(orch.ID))
+
+		got, ok, err := d.CoordinatorTaskForOrchestrator("nuked-orch")
+		testutil.NoError(t, err)
+		testutil.True(t, ok)
+		testutil.Equal(t, got.ID, coordTask.ID)
+	})
+}
+
 // TestDB_DataVersion pins the cross-connection cache-invalidation contract
 // DataVersion exists for (see gotchas/hera-view.md and
 // openspec/changes/fix-hera-tick-and-kick-perf/design.md Decision 4): a write

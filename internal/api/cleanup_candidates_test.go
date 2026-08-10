@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/mergesafety"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -252,6 +253,207 @@ func TestRunCleanupCompute_CachesEachTaskIndividually(t *testing.T) {
 		testutil.Equal(t, got[cleanupMetaSafe], "false")
 		testutil.Contains(t, got[cleanupMetaReason], "no repo resolvable")
 	}
+}
+
+// --- Tier C: coordinator-inferred safety (add-coordinator-inferred-safety) ---
+
+// seedOrchestratorWithCoordinator creates a fresh orchestrator named orchName
+// with a coordinator role bound to coordTask, and returns the orchestrator so
+// callers can bind further roles (workers, or — for the one-hop-cap test — a
+// second coordinator role elsewhere) to it.
+func seedOrchestratorWithCoordinator(t *testing.T, d *db.DB, orchName string, coordTask *model.Task) *db.HeraOrchestrator {
+	t.Helper()
+	orch, err := d.CreateHeraOrchestrator(orchName, "")
+	testutil.NoError(t, err)
+	_, _, err = d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID,
+		Name:           orchName + "-coord",
+		Kind:           db.HeraKindCoordinator,
+		ArgusProject:   "p",
+	}, coordTask.ID, coordTask.Worktree)
+	testutil.NoError(t, err)
+	return orch
+}
+
+// seedOrchestratedWorker creates a stuck-task-predicate-matching task
+// (archived, in_review, no live binding) whose most recent Hera role was a
+// worker under orch.
+func seedOrchestratedWorker(t *testing.T, d *db.DB, orch *db.HeraOrchestrator, name string) *model.Task {
+	t.Helper()
+	task := &model.Task{Name: name, Status: model.StatusInReview, Archived: true, Worktree: "/tmp/wt/" + name}
+	testutil.NoError(t, d.Add(task))
+	_, binding, err := d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID,
+		Name:           name,
+		Kind:           db.HeraKindWorker,
+		ArgusProject:   "p",
+	}, task.ID, task.Worktree)
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.EndHeraBinding(binding.ID, "done"))
+	return task
+}
+
+// metaMap collects a task's cleanup-namespace task_meta entries into a plain
+// map for convenient assertion.
+func metaMap(t *testing.T, d *db.DB, taskID string) map[string]string {
+	t.Helper()
+	entries, err := d.ListMeta(taskID, cleanupMetaNamespace)
+	testutil.NoError(t, err)
+	got := map[string]string{}
+	for _, e := range entries {
+		got[e.Key] = e.Value
+	}
+	return got
+}
+
+// TestRunCleanupCompute_CoordinatorInferredSafety_RescuesNotSafeWorker proves
+// the core Tier C behavior: a worker task that classifies not-safe on its own
+// (no resolvable project/repo, matching the "folded into the coordinator's
+// branch via git merge, no standalone PR" scenario) is rescued when its
+// coordinator's own task classifies confirmed-safe.
+func TestRunCleanupCompute_CoordinatorInferredSafety_RescuesNotSafeWorker(t *testing.T) {
+	srv, d := testServer(t)
+
+	coordTask := &model.Task{Name: "coord-1a", Status: model.StatusInProgress, Worktree: "/tmp/wt/coord-1a"}
+	testutil.NoError(t, d.Add(coordTask))
+	orch := seedOrchestratorWithCoordinator(t, d, "fix-widget", coordTask)
+	worker := seedOrchestratedWorker(t, d, orch, "1a-build")
+
+	srv.classifyCoordinatorFn = func(ctx context.Context, task *model.Task) (mergesafety.Verdict, error) {
+		testutil.Equal(t, task.ID, coordTask.ID)
+		return mergesafety.Verdict{Safe: true, Tier: mergesafety.TierMergedPR, Reason: `merged PR https://x confirmed merged into "master"`}, nil
+	}
+
+	srv.runCleanupCompute(context.Background())
+
+	got := metaMap(t, d, worker.ID)
+	testutil.Equal(t, got[cleanupMetaSafe], "true")
+	testutil.Equal(t, got[cleanupMetaTier], mergesafety.TierCoordinatorInferred)
+	testutil.Contains(t, got[cleanupMetaReason], coordTask.Name)
+	testutil.Contains(t, got[cleanupMetaReason], mergesafety.TierMergedPR)
+}
+
+// TestRunCleanupCompute_CoordinatorInferredSafety_NotSafeCoordinatorLeavesWorkerUnchanged
+// proves the fail-closed side: a not-safe coordinator verdict never rescues
+// its workers — the worker's own Tier A/B verdict is left exactly as-is.
+func TestRunCleanupCompute_CoordinatorInferredSafety_NotSafeCoordinatorLeavesWorkerUnchanged(t *testing.T) {
+	srv, d := testServer(t)
+
+	coordTask := &model.Task{Name: "coord-2", Status: model.StatusInProgress, Worktree: "/tmp/wt/coord-2"}
+	testutil.NoError(t, d.Add(coordTask))
+	orch := seedOrchestratorWithCoordinator(t, d, "not-safe-orch", coordTask)
+	worker := seedOrchestratedWorker(t, d, orch, "2a-build")
+
+	srv.classifyCoordinatorFn = func(ctx context.Context, task *model.Task) (mergesafety.Verdict, error) {
+		return mergesafety.Verdict{Safe: false, Reason: "no matching merged pull request found"}, nil
+	}
+
+	srv.runCleanupCompute(context.Background())
+
+	got := metaMap(t, d, worker.ID)
+	testutil.Equal(t, got[cleanupMetaSafe], "false")
+	testutil.Equal(t, got[cleanupMetaReason], "no repo resolvable for a merged-PR lookup")
+}
+
+// TestRunCleanupCompute_CoordinatorInferredSafety_UnresolvableCoordinatorLeavesWorkerUnchanged
+// proves the other fail-closed path: an orchestrator with no resolvable
+// coordinator role/binding at all (e.g. pruned before this feature existed)
+// never invokes coordinator classification and leaves the worker unchanged.
+func TestRunCleanupCompute_CoordinatorInferredSafety_UnresolvableCoordinatorLeavesWorkerUnchanged(t *testing.T) {
+	srv, d := testServer(t)
+
+	orch, err := d.CreateHeraOrchestrator("coordless-orch", "")
+	testutil.NoError(t, err)
+	worker := seedOrchestratedWorker(t, d, orch, "3a-build")
+
+	called := false
+	srv.classifyCoordinatorFn = func(ctx context.Context, task *model.Task) (mergesafety.Verdict, error) {
+		called = true
+		return mergesafety.Verdict{Safe: true, Tier: mergesafety.TierMergedPR}, nil
+	}
+
+	srv.runCleanupCompute(context.Background())
+
+	testutil.False(t, called)
+	got := metaMap(t, d, worker.ID)
+	testutil.Equal(t, got[cleanupMetaSafe], "false")
+	testutil.Equal(t, got[cleanupMetaReason], "no repo resolvable for a merged-PR lookup")
+}
+
+// TestRunCleanupCompute_CoordinatorInferredSafety_ClassifiesCoordinatorExactlyOnce
+// proves the per-orchestrator dedup: two not-safe workers under the same
+// orchestrator must not each trigger their own coordinator classification.
+func TestRunCleanupCompute_CoordinatorInferredSafety_ClassifiesCoordinatorExactlyOnce(t *testing.T) {
+	srv, d := testServer(t)
+
+	coordTask := &model.Task{Name: "coord-4", Status: model.StatusInProgress, Worktree: "/tmp/wt/coord-4"}
+	testutil.NoError(t, d.Add(coordTask))
+	orch := seedOrchestratorWithCoordinator(t, d, "shared-orch", coordTask)
+	workerA := seedOrchestratedWorker(t, d, orch, "4a-build")
+	workerB := seedOrchestratedWorker(t, d, orch, "4b-build")
+
+	var callCount int
+	srv.classifyCoordinatorFn = func(ctx context.Context, task *model.Task) (mergesafety.Verdict, error) {
+		callCount++
+		return mergesafety.Verdict{Safe: true, Tier: mergesafety.TierLocalAncestor, Reason: "test-seeded"}, nil
+	}
+
+	srv.runCleanupCompute(context.Background())
+
+	testutil.Equal(t, callCount, 1)
+	for _, w := range []*model.Task{workerA, workerB} {
+		got := metaMap(t, d, w.ID)
+		testutil.Equal(t, got[cleanupMetaSafe], "true")
+		testutil.Equal(t, got[cleanupMetaTier], mergesafety.TierCoordinatorInferred)
+	}
+}
+
+// TestRunCleanupCompute_CoordinatorInferredSafety_CapsAtOneHop is the test
+// that actually proves the one-hop Non-Goal: the immediate coordinator is
+// itself a worker under a "grandparent" orchestrator whose own coordinator
+// would classify safe if it were ever consulted (mirroring the hera
+// sub-coordinator nesting shape — a task simultaneously a worker in one
+// orchestrator and the coordinator of another). The not-safe immediate
+// coordinator must NOT be rescued by chasing that grandparent, and the
+// grandparent's coordinator must never even be classified.
+func TestRunCleanupCompute_CoordinatorInferredSafety_CapsAtOneHop(t *testing.T) {
+	srv, d := testServer(t)
+
+	grandparentCoordTask := &model.Task{Name: "grandparent-coord", Status: model.StatusInProgress, Worktree: "/tmp/wt/gp-coord"}
+	testutil.NoError(t, d.Add(grandparentCoordTask))
+	parentOrch := seedOrchestratorWithCoordinator(t, d, "parent-orch", grandparentCoordTask)
+
+	immediateCoordTask := &model.Task{Name: "immediate-coord", Status: model.StatusInProgress, Worktree: "/tmp/wt/imm-coord"}
+	testutil.NoError(t, d.Add(immediateCoordTask))
+	// immediateCoordTask is a WORKER under parent-orch (the bridging shape)...
+	_, immBinding, err := d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: parentOrch.ID, Name: "immediate-worker", Kind: db.HeraKindWorker, ArgusProject: "p",
+	}, immediateCoordTask.ID, immediateCoordTask.Worktree)
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.EndHeraBinding(immBinding.ID, "done"))
+	// ...AND separately the COORDINATOR of its own child-orch.
+	childOrch := seedOrchestratorWithCoordinator(t, d, "child-orch", immediateCoordTask)
+
+	workerA := seedOrchestratedWorker(t, d, childOrch, "grandchild-worker")
+
+	var calledFor []string
+	srv.classifyCoordinatorFn = func(ctx context.Context, task *model.Task) (mergesafety.Verdict, error) {
+		calledFor = append(calledFor, task.ID)
+		if task.ID == immediateCoordTask.ID {
+			return mergesafety.Verdict{Safe: false, Reason: "not safe"}, nil
+		}
+		// Never legitimately reached — the grandparent must not be classified.
+		return mergesafety.Verdict{Safe: true, Tier: mergesafety.TierMergedPR}, nil
+	}
+
+	srv.runCleanupCompute(context.Background())
+
+	testutil.Equal(t, len(calledFor), 1)
+	testutil.Equal(t, calledFor[0], immediateCoordTask.ID)
+
+	got := metaMap(t, d, workerA.ID)
+	testutil.Equal(t, got[cleanupMetaSafe], "false")
+	testutil.Equal(t, got[cleanupMetaReason], "no repo resolvable for a merged-PR lookup")
 }
 
 // --- POST /api/maintenance/cleanup-candidates/clean ---

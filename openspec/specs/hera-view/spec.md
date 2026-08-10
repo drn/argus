@@ -2582,6 +2582,8 @@ The popup is used by exactly two entry points: the single-role nuke (candidate s
 
 Within each section, candidates are further grouped by their originating Hera coordinator/orchestrator: a candidate whose task most recently held a Hera role renders nested under a group header bearing that orchestrator's name, alongside every other candidate in the same section that shares it; a candidate whose task never held a Hera role (or held one for a different reason entirely) renders as a flat top-level row, never nested under a fabricated header. Grouping is a sub-structure within each NOT-SAFE/SAFE section, not a replacement for that ordering.
 
+A SAFE row whose verdict was produced by the coordinator-inferred fallback (see the `merge-safety` capability) SHALL render a distinct trailing annotation marking it as inferred rather than directly confirmed. Every other SAFE row's rendering SHALL be unaffected — the annotation is additive and applies only to this one case.
+
 #### Scenario: Sections are ordered NOT-SAFE then SAFE
 - **WHEN** the popup renders
 - **THEN** the NOT-SAFE section appears before the SAFE section
@@ -2613,6 +2615,14 @@ Within each section, candidates are further grouped by their originating Hera co
 #### Scenario: Grouping does not disturb NOT-SAFE-before-SAFE ordering
 - **WHEN** a coordinator's only candidate in the popup is SAFE while another, ungrouped candidate is NOT-SAFE
 - **THEN** the NOT-SAFE section (and its row) still renders entirely before the SAFE section (and the coordinator's group within it)
+
+#### Scenario: A coordinator-inferred SAFE row is visibly annotated
+- **WHEN** a SAFE row's tier is the coordinator-inferred fallback
+- **THEN** that row renders a distinct trailing annotation marking it as inferred, distinguishing it from a directly-confirmed SAFE row
+
+#### Scenario: A directly-confirmed SAFE row is unaffected
+- **WHEN** a SAFE row's tier is `local-ancestor` or `merged-pr` (a directly-confirmed verdict)
+- **THEN** that row renders exactly as before this change, with no annotation
 
 ### Requirement: Global Cleanup action for the stuck-task backlog
 

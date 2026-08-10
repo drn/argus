@@ -499,3 +499,41 @@ func TestMergeSafetyPopup_ScrollUpAfterOvershootMovesImmediately(t *testing.T) {
 		t.Errorf("expected the view to move after a single KeyUp; got:\n%s", afterOneUp)
 	}
 }
+
+// TestMergeSafetyPopup_CoordinatorInferredSafeRowShowsAnnotation covers the
+// add-coordinator-inferred-safety spec scenario "A coordinator-inferred SAFE
+// row is visibly annotated" — the visibility condition this tier's existence
+// was contingent on.
+func TestMergeSafetyPopup_CoordinatorInferredSafeRowShowsAnnotation(t *testing.T) {
+	cands := []mergeSafetyCandidate{
+		{TaskID: "t1", Name: "rescued-task", Safe: true, Tier: mergeSafetyTierCoordinatorInferred,
+			Reason: `coordinator task coord-1a (branch "argus/coord-1a") confirmed via merged-pr: merged PR https://x confirmed merged into "master"`},
+	}
+	m := NewMergeSafetyPopup(" Cleanup ", cands)
+	out := drawMergeSafetyPopupToString(t, m, 100, 24)
+
+	testutil.Contains(t, out, "rescued-task")
+	testutil.Contains(t, out, "(safe via coordinator)")
+}
+
+// TestMergeSafetyPopup_DirectlyConfirmedSafeRowHasNoAnnotation is the
+// regression guard from design.md: a directly-confirmed SAFE row (any tier
+// other than coordinator-inferred, including the zero value used by every
+// Tier-A-only site) renders exactly as before this change — no annotation,
+// and its Reason (populated on the candidate, mirroring a real Verdict) is
+// still never shown, same as any other SAFE row.
+func TestMergeSafetyPopup_DirectlyConfirmedSafeRowHasNoAnnotation(t *testing.T) {
+	cands := []mergeSafetyCandidate{
+		{TaskID: "t1", Name: "alpha-task", Safe: true, Tier: "local-ancestor", Reason: `branch "alpha" is an ancestor of "master"`},
+	}
+	m := NewMergeSafetyPopup(" Cleanup ", cands)
+	out := drawMergeSafetyPopupToString(t, m, 100, 24)
+
+	testutil.Contains(t, out, "alpha-task")
+	if strings.Contains(out, "(safe via coordinator)") {
+		t.Errorf("expected no coordinator-inferred annotation on a directly-confirmed SAFE row; got:\n%s", out)
+	}
+	if strings.Contains(out, "ancestor of") {
+		t.Errorf("expected a SAFE row's Reason not to render (unchanged from before this change); got:\n%s", out)
+	}
+}

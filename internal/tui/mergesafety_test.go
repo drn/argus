@@ -257,6 +257,51 @@ func TestHeraOpenGlobalCleanup_ScansThenPopulates(t *testing.T) {
 	testutil.Equal(t, srv.computeCallCount(), 1)
 }
 
+// TestHeraOpenGlobalCleanup_ThreadsCoordinatorInferredTierIntoPopup covers
+// add-coordinator-inferred-safety's wire-to-widget threading: a SAFE
+// candidate carrying the coordinator-inferred tier over the wire round-trips
+// through cleanupCandidatesToRows into the popup's own candidate shape.
+func TestHeraOpenGlobalCleanup_ThreadsCoordinatorInferredTierIntoPopup(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	srv := newCleanupTestServer(t, []cleanupCandidateJSON{
+		{ID: "t1", Name: "rescued", Project: "p1", Safe: true, Tier: mergesafety.TierCoordinatorInferred, Reason: "coordinator task coord-1a confirmed via merged-pr: ..."},
+	}, 0) // computing=false immediately — a single settled batch is enough here
+	app.maintenanceClientFactory = func() (*localMaintenanceClient, error) { return srv.client(), nil }
+	cleanupPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { cleanupPollInterval = 700 * time.Millisecond })
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+	sim.InjectKey(tcell.KeyRune, '2', 0)
+	syncUI(t, app.tapp)
+
+	readUI(t, app.tapp, func() { app.heraOpenGlobalCleanup(hera.Selection{}) })
+	waitForMode(t, app, modeMergeSafetyPopup)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var scanning bool
+		readUI(t, app.tapp, func() {
+			if app.mergeSafetyPopup != nil {
+				scanning = app.mergeSafetyPopup.Scanning()
+			}
+		})
+		if !scanning {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the cleanup classification pass to finish")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	readUI(t, app.tapp, func() {
+		cands := app.mergeSafetyPopup.Candidates()
+		testutil.Equal(t, len(cands), 1)
+		testutil.Equal(t, cands[0].Tier, mergesafety.TierCoordinatorInferred)
+	})
+}
+
 // TestHeraDoGlobalClean_PostsChosenScope covers the "Clean safe/Clean all"
 // scope reaching the master-gated clean endpoint, and the status-bar result.
 func TestHeraDoGlobalClean_PostsChosenScope(t *testing.T) {
