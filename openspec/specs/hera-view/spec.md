@@ -526,9 +526,10 @@ Derived from: `internal/tui/hera/ops.go:85` (`ArchiveToggle`), `internal/tui/her
 - marks the hera role row(s) NUKED and ENDS their live binding (never `DeleteHeraRole`);
 - marks the orchestrator row NUKED (for a coordinator/header or whole-subtree nuke), never `DeleteHeraOrchestrator`;
 - ARCHIVES the argus task row (`db.SetArchived`), never `db.Delete`;
-- ADVANCES the argus task's status from in_review to complete WHEN the task is currently in_review at the moment of archive — never when it is pending or in_progress (a still-active or never-reviewed task is archived with its status left untouched), and it is a no-op when the task is already complete. This applies identically regardless of which hera role kind (coordinator, worker, or freelance) is being nuked, since the check reads the task's own status column, not the hera role's kind or status;
+- ADVANCES the argus task's status from in_review to complete WHEN the task is currently in_review AT THE MOMENT OF ARCHIVE — never synchronously when it is pending or in_progress (a still-active or never-reviewed task is archived with its status left untouched at that instant), and it is a no-op when the task is already complete. This applies identically regardless of which hera role kind (coordinator, worker, or freelance) is being nuked, since the check reads the task's own status column, not the hera role's kind or status;
+- for a task that IS in_progress (actively live) at the moment of reclaim, GUARANTEES it still reaches complete once the reclaim's own session stop (below) actually exits — even though the moment-of-archive snapshot above leaves its status untouched. Reclaim marks such a task as awaiting forced completion before backgrounding its stop; the session-exit handler that later observes that stop's exit (an unavoidably asynchronous event, since the stop itself is backgrounded to avoid blocking the UI thread on a bulk cascade) consults that mark and lands the task at complete instead of the ordinary crash/stop/fast-fail → in_review rule that governs an otherwise-identical, non-reclaim exit. This does not override a task that still holds a live worker-kind hera binding at exit time — that invariant (a task never self-completes while worker-bound) always wins if it somehow still applies;
 - retains the role's inbox/messages — because the role row is retained (only stamped nuked/archived), its messages stay attached as history (no message rows are deleted, no message-archive column is required, and a nuked role's inbox stays readable);
-- RECLAIMS only the real resources: stops the session and removes the worktree + LOCAL and REMOTE branch.
+- RECLAIMS only the real resources: stops the session (backgrounded) and removes the worktree + LOCAL and REMOTE branch (also backgrounded).
 
 Nuking a SINGLE ROLE (not a cascade) SHALL first run the merge-safety classifier's Tier A (local-only, no network) check against that role's task, computed off the UI thread, and open the merge-safety review popup (see "Merge-safety review popup") with that one task as its sole candidate, in place of a plain confirm — choosing to clean (via either popup action, which are equivalent at a single candidate) proceeds with the nuke exactly as described above; choosing Cancel aborts it. This is a WARNING, never a gate: a not-confirmed-merged task can still be cleaned via the popup's override action.
 
@@ -540,7 +541,7 @@ The cascade gates behind a count-bearing confirmation modal that states how many
 
 The difference from the `a` HIDE key: `a` HIDES (Tier 1) — the row moves into its parent coordinator's nested archive and the worktree/session stay ALIVE, fully reversible; `Ctrl+D` NUKES (Tier 2) — the row leaves the rail entirely and its worktree/session are reclaimed, recoverable only via the DB.
 
-Derived from: `internal/tui/heraactions.go` (`heraOpenDelete`, `heraNukeRole`, `heraReclaimAndArchiveTask`, `heraCascadeNukeFrom`, `heraDoCascadeNuke`, `heraTaskBoundOutside`), `internal/tui/hera/ops.go` (`NukeRole`, `NukeOrchestrator`), `internal/tui/hera/model.go` (`BridgeSubtree`), `internal/db/hera.go` (`NukeHeraRole`, `NukeHeraOrchestrator`), `internal/db/tasks.go` (`SetStatus`), `internal/mergesafety` (Tier A classification), `context/knowledge/gotchas/hera-view.md`.
+Derived from: `internal/tui/heraactions.go` (`heraOpenDelete`, `heraNukeRole`, `heraReclaimAndArchiveTask`, `heraCascadeNukeFrom`, `heraDoCascadeNuke`, `heraTaskBoundOutside`), `internal/tui/app.go` (`handleSessionExitUI`, `pendingHeraReclaim`), `internal/tui/hera/ops.go` (`NukeRole`, `NukeOrchestrator`), `internal/tui/hera/model.go` (`BridgeSubtree`), `internal/db/hera.go` (`NukeHeraRole`, `NukeHeraOrchestrator`, `RollHeraWorkerToReview`), `internal/db/tasks.go` (`SetStatus`), `internal/mergesafety` (Tier A classification), `context/knowledge/gotchas/hera-view.md`.
 
 `NOTE:` NET zero hard deletes from any hera table — every nuked role, orchestrator, inbox, and task row is retained and retrievable via the DB. The one remaining non-hera delete (`db.SetArchived` dropping a task's queued LEGACY `task_messages`, a different table) is established archive behavior and out of scope.
 
@@ -570,10 +571,21 @@ Derived from: `internal/tui/heraactions.go` (`heraOpenDelete`, `heraNukeRole`, `
 - **WHEN** a task with status `in_review` is reclaimed and archived by a nuke (a sole-bound role nuke, a cascade, or clearing a hidden archive)
 - **THEN** the task's status is advanced to `complete` in addition to being archived
 
-#### Scenario: Reclaiming a still-active task leaves its status untouched
+#### Scenario: Reclaiming a still-active task leaves its status untouched at the moment of archive
 
 - **WHEN** a task with status `pending` or `in_progress` is reclaimed and archived by a nuke
-- **THEN** the task is archived exactly as before and its status is left unchanged — it is NOT advanced to `complete`
+- **THEN** the task is archived exactly as before and its status is left unchanged AT THAT INSTANT — it is NOT synchronously advanced to `complete`
+
+#### Scenario: Reclaiming a live task still completes once its stop settles
+
+- **WHEN** a task with status `in_progress` is reclaimed and archived by a nuke, and the session stop that reclaim fired (backgrounded) subsequently exits
+- **THEN** the task's status lands at `complete` — never the ordinary `in_review` that an otherwise-identical, non-reclaim stop/crash would produce — once that exit is observed, even though the archive itself left the status column untouched at the moment of reclaim
+- **AND** this applies regardless of whether the exit is reported as clean or non-clean, since a deliberate reclaim stop is terminal-by-design either way
+
+#### Scenario: A reclaimed task still holding a live worker-kind hera binding is not force-completed
+
+- **WHEN** a task's reclaim-triggered exit lands while the task still holds a live worker-kind hera binding (the PR #707 / BUG-050 invariant's precondition)
+- **THEN** the task rolls to `in_review` via the existing worker-finish policy, never `complete` — the invariant wins over the forced-completion guarantee above
 
 #### Scenario: Reclaiming an already-complete task is idempotent
 

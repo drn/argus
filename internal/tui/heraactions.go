@@ -417,13 +417,27 @@ func (a *App) heraNukeRole(r *hera.RoleView) {
 // (in_review only), mirroring RollHeraWorkerToReview's own never-clobber-active-
 // work invariant one step later in the chain: a task still pending or
 // in_progress at archive time (e.g. an operator force-nuking a live,
-// still-working role) is archived with its status left untouched, never forced
-// to complete. The check reads the task's OWN status column, so it applies
-// identically regardless of which hera role kind (coordinator/worker/freelance)
-// is being reclaimed — RollHeraWorkerToReview itself is worker-kind only, but a
-// task can reach in_review by that path, a coordinator's own workflow, or a
-// human hand-set value, and all three are equally "resting, safe to complete"
-// once an operator has chosen to nuke/reclaim it.
+// still-working role) is archived with its status left untouched AT THAT
+// INSTANT, never forced to complete synchronously. The check reads the task's
+// OWN status column, so it applies identically regardless of which hera role
+// kind (coordinator/worker/freelance) is being reclaimed — RollHeraWorkerToReview
+// itself is worker-kind only, but a task can reach in_review by that path, a
+// coordinator's own workflow, or a human hand-set value, and all three are
+// equally "resting, safe to complete" once an operator has chosen to
+// nuke/reclaim it.
+//
+// A task that IS in_progress (actively live) at this instant is a different
+// story: its OWN session stop below (heraGoSafe) fires next, and that stop's
+// eventual exit must still land the task at complete once observed — not get
+// permanently stranded at in_review by handleSessionExitUI's ordinary
+// crash/stop/fast-fail rule, which has no way to tell a deliberate, terminal
+// reclaim stop apart from a recoverable one (fix-nuke-completion-race). We
+// arm markHeraReclaimPending BEFORE backgrounding the stop, on this (the
+// tview main) goroutine, so handleSessionExitUI is guaranteed to see it set
+// by the time its own, later QueueUpdateDraw dispatch runs. The two "no exit
+// notification is ever coming" branches below (no live session; Stop errors)
+// clear it immediately instead, so it can never leak into a later, unrelated
+// exit of the same task ID.
 //
 // The session stop is backgrounded (heraGoSafe), not run inline: in a
 // daemon-connected TUI, HasSession/Stop are blocking RPC round-trips
@@ -443,11 +457,22 @@ func (a *App) heraReclaimAndArchiveTask(taskID string) (reclaimed bool) {
 		uxlog.Log("[hera-view] nuke: task %s not found, skip reclaim: %v", taskID, err)
 		return false
 	}
+	wasLive := t.Status == model.StatusInProgress
+	if wasLive {
+		a.markHeraReclaimPending(taskID)
+	}
 	heraGoSafe("nuke: stop session "+taskID, func() {
 		if a.runner.HasSession(taskID) {
 			if sErr := a.runner.Stop(taskID); sErr != nil {
 				uxlog.Log("[hera-view] nuke: stop session failed task=%s: %v", taskID, sErr)
+				if wasLive {
+					a.clearHeraReclaimPending(taskID)
+				}
 			}
+		} else if wasLive {
+			// No live session to stop — no exit notification is ever coming
+			// to consume the marker.
+			a.clearHeraReclaimPending(taskID)
 		}
 	})
 	cfg := a.db.Config()

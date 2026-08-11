@@ -400,6 +400,21 @@ type App struct {
 	// re-renders the conversation history at the current (wider) PTY.
 	pendingRerenderRestart map[string]bool
 
+	// pendingHeraReclaim marks tasks that were in_progress (actively live) at
+	// the moment a Hera nuke/reclaim (heraReclaimAndArchiveTask) fired their
+	// session stop. That stop is backgrounded (BUG-062: never block the tview
+	// goroutine on a bulk cascade's RPC round-trips), so its exit notification
+	// arrives independently and later, via handleSessionExitUI — which cannot
+	// otherwise distinguish a deliberate, terminal reclaim stop from an
+	// ordinary recoverable one and would land the task at in_review forever
+	// (fix-nuke-completion-race: the task is already archived with its hera
+	// binding ended by then, so nothing is left to ever revisit it). Guarded
+	// by a.mu (not tapp.QueueUpdateDraw) because it's cleared from both the
+	// tview main goroutine and the backgrounded nuke-stop goroutine, and
+	// several existing unit tests exercise heraReclaimAndArchiveTask with no
+	// tview event loop running.
+	pendingHeraReclaim map[string]bool
+
 	// lastAttachCols caches the panel cols at which we most recently evaluated
 	// the rerender predicate for each task. The gate is "panel size unchanged
 	// since the last attach" — if the user closes the agent view and reopens
@@ -568,6 +583,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 		idleUnvisited:          make(map[string]bool),
 		viewedWhileAgent:       make(map[string]bool),
 		pendingRerenderRestart: make(map[string]bool),
+		pendingHeraReclaim:     make(map[string]bool),
 		lastAttachCols:         make(map[string]uint16),
 		wtRoot:                 filepath.Join(db.DataDir(), "worktrees"),
 		clipboardWriter:        pbcopyWriter,
@@ -1776,6 +1792,39 @@ func (a *App) isViewingTaskSession(taskID string) bool {
 	return viewingHeraTab && a.heraPage.IsBoundToTask(taskID)
 }
 
+// markHeraReclaimPending arms the fix-nuke-completion-race marker for taskID.
+// Called by heraReclaimAndArchiveTask on the tview main goroutine before it
+// backgrounds the task's session stop.
+func (a *App) markHeraReclaimPending(taskID string) {
+	a.mu.Lock()
+	a.pendingHeraReclaim[taskID] = true
+	a.mu.Unlock()
+}
+
+// clearHeraReclaimPending disarms the marker without consuming a terminal
+// decision — used when no exit notification is ever coming for this stop
+// attempt (no live session to stop, or the stop call itself errored), so the
+// marker can't leak into a later, unrelated exit of the same task ID.
+func (a *App) clearHeraReclaimPending(taskID string) {
+	a.mu.Lock()
+	delete(a.pendingHeraReclaim, taskID)
+	a.mu.Unlock()
+}
+
+// consumeHeraReclaimPending reports whether taskID was armed by
+// heraReclaimAndArchiveTask and clears it either way. Called once, at the
+// point handleSessionExitUI resolves a StatusInProgress task's terminal
+// state, so the marker can never survive to influence a later exit.
+func (a *App) consumeHeraReclaimPending(taskID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.pendingHeraReclaim[taskID] {
+		return false
+	}
+	delete(a.pendingHeraReclaim, taskID)
+	return true
+}
+
 // handleSessionExitUI runs on the tview main goroutine (inside QueueUpdateDraw).
 // Called by both NotifySessionExit (in-process) and HandleSessionExit (daemon).
 // pendingRestart is captured by the caller from a non-RPC source (in-process:
@@ -1827,6 +1876,12 @@ func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool)
 			// mode, where this is the ONLY flip site. Local-only: a.db is *db.DB
 			// locally and satisfies heraFinishStore; in --remote mode it does not,
 			// so we fall through to the plain rule (remote daemon is authoritative).
+			// fix-nuke-completion-race: consume the reclaim marker (if any)
+			// exactly once, here, regardless of which branch below ultimately
+			// decides — a task's in_progress window that the marker was
+			// scoped to has ended the moment this decision point runs, so it
+			// must not survive to influence a later, unrelated exit.
+			forceComplete := a.consumeHeraReclaimPending(t.ID)
 			rolled := false
 			if fs, ok := a.db.(heraFinishStore); ok {
 				if f, err := fs.RollHeraWorkerToReview(t.ID); err != nil {
@@ -1836,7 +1891,18 @@ func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool)
 				}
 			}
 			if rolled {
+				// PR #707 invariant always wins: a task still holding a live
+				// worker-kind hera binding never self-completes, even if a
+				// reclaim marker is also (unexpectedly) set — see design.md.
 				uxlog.Log("[tui] task %s (%s) → in_review (hera worker close-out)", t.ID, t.Name)
+			} else if forceComplete {
+				// This exit is a deliberate, terminal Hera nuke/reclaim stop
+				// (see heraReclaimAndArchiveTask) — it lands at complete
+				// regardless of the exit's clean/non-clean verdict, unlike an
+				// ordinary stop/crash/fast-fail below.
+				t.SetStatus(model.StatusComplete)
+				a.db.SetStatus(t.ID, t.Status) //nolint:errcheck
+				uxlog.Log("[tui] task %s (%s) → complete (hera reclaim finalized)", t.ID, t.Name)
 			} else {
 				if cleanExit {
 					t.SetStatus(model.StatusComplete)
