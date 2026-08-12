@@ -7,14 +7,21 @@ import (
 	"github.com/drn/argus/internal/model"
 )
 
-// acceptDefaultBody is the notification sent to an accepted role, per Aaron's
+// acceptDefaultBody is the check-in sent to an accepted role, per Aaron's
 // framing of the protocol (add-hera-accept-lifecycle): the coordinator's
-// accept tells the agent it may wind down if it has nothing else pending.
-// This is a message only – AcceptRole never stops or restarts a session.
-const acceptDefaultBody = "Your work has been accepted and your task is now marked complete. If you have no other tasks to complete, you're free to consider yourself done and wind down."
+// accept is a closed loop, not a one-way notice, so it explicitly instructs
+// the recipient to reply with exactly one of (1) confirming it is winding
+// down with nothing else pending, (2) telling the coordinator it still has
+// more work to do, or (3) a question when it isn't sure which applies. The
+// reply is informational only – it never auto-reverts the completion; a
+// premature accept is only ever undone by an explicit revive (the
+// ReviveHeraWorkerToInProgress complete-source path), never by the content
+// of the reply itself. This is a message only – AcceptRole never stops or
+// restarts a session.
+const acceptDefaultBody = "Your work has been accepted and the task is now marked complete. Please reply with exactly one of the following: (1) confirm you have no other tasks pending and are winding down, (2) tell me you still have more work to do, or (3) ask a question if you're not sure which applies. Your reply is informational only – it does not automatically reopen the task; if the completion turns out to be premature, reopening only happens via an explicit revive."
 
 // AcceptTldr is the fixed tldr for an AcceptRole notification.
-const AcceptTldr = "Your work has been accepted – you're marked complete"
+const AcceptTldr = "You're marked complete – please confirm"
 
 // AcceptStore is the narrow DB surface AcceptRole needs. Satisfied by the
 // real *db.DB.

@@ -124,6 +124,32 @@ func TestAcceptRole_EmptyMessageSendsDefaultBodyOnly(t *testing.T) {
 	testutil.Equal(t, sender.calls[0].body, acceptDefaultBody)
 }
 
+// TestAcceptRole_DefaultBodyRequiresAReply pins the closed-loop check-in
+// wording: the message must explicitly instruct the recipient to reply with
+// one of the three outcomes, and must state that the reply never
+// auto-reopens the task, so this can't silently regress back into a one-way
+// notice.
+func TestAcceptRole_DefaultBodyRequiresAReply(t *testing.T) {
+	d, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	_, _, role := seedRecycleRole(t, d, db.HeraKindWorker, "orch", "worker-1", "/wt/w1", "argus/w1", "mission")
+	_, _, coord := seedRecycleRole(t, d, db.HeraKindCoordinator, "orch", "coord", "/wt/coord", "argus/coord", "coordinate")
+
+	sender := &fakeAcceptSender{}
+	_, err = AcceptRole(d, sender, coord.ID, role.ID, "")
+	testutil.NoError(t, err)
+
+	body := sender.calls[0].body
+	testutil.Contains(t, body, "reply")
+	testutil.Contains(t, body, "winding down")
+	testutil.Contains(t, body, "more work to do")
+	testutil.Contains(t, body, "question")
+	testutil.Contains(t, body, "does not automatically reopen")
+	testutil.Contains(t, sender.calls[0].tldr, "confirm")
+}
+
 func TestAcceptRole_SendFailurePropagatesButStatusStands(t *testing.T) {
 	d, err := db.OpenInMemory()
 	testutil.NoError(t, err)

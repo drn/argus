@@ -237,7 +237,7 @@ var heraToolDefs = []Tool{
 	},
 	{
 		Name:        "hera_accept",
-		Description: "Accept a hera role's work: marks the role's bound task complete and sends it a message saying its work has been accepted and, if it has no other tasks to complete, it is free to wind down. Never stops or restarts the target's session – completion and detachment are separate concerns. Acts from any non-complete status (in_progress, in_review, or otherwise); a no-op (still succeeds) if the task is already complete. Coordinator-only. The plan-DAG gater fires the same accept automatically for a node's blockers when that node materializes, so this tool is for accepting work OUTSIDE that automatic flow (e.g. ad hoc, or a role with no plan-DAG dependents).",
+		Description: "Accept a hera role's work: marks the role's bound task complete and sends it a check-in message asking it to reply with exactly one of: confirming it has no other tasks and is winding down, telling you it still has more work to do, or a question if it isn't sure which applies. The reply is informational only – it never auto-reopens the task; a premature accept can only be undone via an explicit revive. Never stops or restarts the target's session – completion and detachment are separate concerns. Acts from any non-complete status (in_progress, in_review, or otherwise); a no-op (still succeeds) if the task is already complete. Coordinator-only. The plan-DAG gater fires the same accept automatically for a node's blockers when that node materializes, so this tool is for accepting work OUTSIDE that automatic flow (e.g. ad hoc, or a role with no plan-DAG dependents).",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

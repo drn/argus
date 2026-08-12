@@ -84,3 +84,13 @@
 - [x] 7.2 `openspec validate add-hera-accept-lifecycle --strict` passes (if the CLI is available; otherwise eyeball the delta files against this repo's format conventions).
 - [x] 7.3 Archive this change into its base specs (`hera-coordination`, `task-orchestration`, `hera-view`, `pr-status`) in the same branch, before the final commit, per this repo's CLAUDE.md.
 - [x] 7.4 Add gotchas to `context/knowledge/gotchas/orchestration.md` (gater auto-accept) and `context/knowledge/gotchas/hera-view.md` (`ArchiveToggle` direction + session-stop-on-hide) documenting the new invariants; bump `context/knowledge/index.md`'s bullet counts.
+
+## 8. Post-review refinement: the acceptance message requires a reply
+
+**Depends on:** Stages 1-7 (a coordinator ground-truth review after archive found a mid-flight refinement message had been missed)
+
+- [x] 8.1 `internal/hera/accept.go`: rewrite `acceptDefaultBody`/`AcceptTldr` and their doc comment so the message is a closed-loop check-in that explicitly instructs the recipient to reply with exactly one of confirming it's winding down, telling the coordinator it has more work, or asking a question – and states plainly that the reply is informational only and never auto-reopens the task.
+- [x] 8.2 `internal/hera/accept_test.go`: new `TestAcceptRole_DefaultBodyRequiresAReply` pins the reply-required wording (substring checks on "reply", "winding down", "more work to do", "question", "does not automatically reopen") so it can't silently regress back into a one-way notice.
+- [x] 8.3 Sync every place quoting or paraphrasing the old wording so nothing in the code/specs/docs contradicts the actual string: `internal/mcp/hera.go`'s `hera_accept` tool `Description`, the `hera-coordination` base spec's `hera_accept` requirement + scenarios (both `openspec/specs/` and this archived snapshot), and this change's own `design.md`/`proposal.md` prose.
+- [x] 8.4 New commit on top (not amended into the original), per the coordinator's explicit instruction – keeps this stack's history clean for the eventual combined PR.
+- [x] 8.5 Re-run `make pre-pr` and confirm it still passes clean.

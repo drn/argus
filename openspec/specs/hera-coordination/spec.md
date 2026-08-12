@@ -575,7 +575,7 @@ Derived from: `internal/hera/revive.go` (`ReviveRole`), `internal/daemon/revive.
 
 The system SHALL provide a coordinator-only `hera_accept(cwd, role_name, [orchestrator], [message])` MCP tool that marks a role's bound task `complete` – the operator/coordinator-facing counterpart to the worker's own `hera_status(done)` self-report. Unlike the worker-done roll (which requires the task be `in_progress`), `hera_accept` acts from ANY non-complete status (`in_progress`, `in_review`, or otherwise) – the coordinator's explicit accept is authoritative regardless of whether the target already self-reported done.
 
-On a genuine flip, the system SHALL send the target role a message (never a forced session stop or restart) whose default body tells it: its work has been accepted and marked complete, and if it has no other tasks to complete it is free to consider itself done and wind down. An optional `message` is appended to that default body. On a target task that is ALREADY `complete`, the tool SHALL return success describing a no-op – no second status write, no second message – rather than erroring or re-notifying.
+On a genuine flip, the system SHALL send the target role a check-in message (never a forced session stop or restart) whose default body tells it its work has been accepted and marked complete, and explicitly instructs it to reply with exactly one of: confirming it has no other tasks and is winding down, telling the coordinator it still has more work to do, or a question if it isn't sure which applies. That reply is informational only – it SHALL NOT automatically reopen the task; a premature accept is undone only via the explicit revive path (`ReviveHeraWorkerToInProgress`'s `complete` source, see below), never by the reply's content. An optional `message` is appended to that default body. On a target task that is ALREADY `complete`, the tool SHALL return success describing a no-op – no second status write, no second message – rather than erroring or re-notifying.
 
 The underlying status flip and notification SHALL be implemented by a single shared primitive (`internal/hera.AcceptRole`) also called by the plan-DAG gater's auto-accept (see the `task-orchestration` capability's "Gater auto-accepts a materialized node's blockers" requirement), so the two trigger paths can never drift.
 
@@ -586,7 +586,7 @@ Derived from: `internal/hera/accept.go` (`AcceptRole`), `internal/mcp/hera.go` (
 #### Scenario: Accept flips an in-progress worker to complete and notifies it
 
 - **WHEN** a coordinator calls `hera_accept` on a worker role whose task is `in_progress`
-- **THEN** the task's status flips to `complete` and the worker role receives a message stating its work was accepted and it may wind down if nothing else is pending
+- **THEN** the task's status flips to `complete` and the worker role receives a message stating its work was accepted and asking it to reply confirming it is winding down, telling the coordinator it has more work, or asking a question
 
 #### Scenario: Accept flips an in-review worker (the ordinary done-report state) to complete
 
@@ -602,6 +602,11 @@ Derived from: `internal/hera/accept.go` (`AcceptRole`), `internal/mcp/hera.go` (
 
 - **WHEN** a coordinator calls `hera_accept` with a non-empty `message`
 - **THEN** the sent notification includes that message alongside the default acceptance body
+
+#### Scenario: The acceptance message is a closed-loop check-in, not a one-way notice
+
+- **WHEN** `hera_accept` sends its default acceptance message to the target role
+- **THEN** the message explicitly instructs the recipient to reply with exactly one of confirming it is winding down, telling the coordinator it has more work to do, or asking a question, and states that the reply never automatically reopens the task
 
 #### Scenario: hera_accept is coordinator-only
 

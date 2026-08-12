@@ -6,7 +6,7 @@ Aaron (the human operator) specified the lifecycle he wants: a worker reporting 
 
 ## What Changes
 
-- New coordinator-only `hera_accept` MCP tool: flips a bound role's task to `complete` (via the existing, idempotent `db.SetStatus`) and sends the role a message ("you're marked complete; free to wind down if nothing else is pending") – never stops or restarts the agent's session.
+- New coordinator-only `hera_accept` MCP tool: flips a bound role's task to `complete` (via the existing, idempotent `db.SetStatus`) and sends the role a closed-loop check-in asking it to reply confirming it's winding down, telling the coordinator it has more work, or asking a question – the reply never auto-reopens the task; never stops or restarts the agent's session.
 - The plan-DAG gater (`internal/heragater`) auto-fires the same accept-equivalent for every blocker of a node it just materialized – "the coordinator rolling forward to the next item" is exactly this trigger. Best-effort: a failure never blocks materialization; idempotent against an already-complete task.
 - `ReviveHeraWorkerToInProgress` additionally accepts `complete` as a valid source state (previously `in_review` only) – an accepted-then-stopped task can be revived back to `in_progress` later, making completion revocable.
 - The Hera rail's `a` (HIDE) key now also stops the role's live session, but ONLY on the hide direction (never on un-hide), and never touches the worktree/branch – archiving stays otherwise non-destructive and reversible.

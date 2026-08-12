@@ -8,7 +8,7 @@ Aaron's own framing of the intended protocol: the agent signals "I need a review
 
 **Goals:**
 
-- Give the coordinator an explicit, first-class "accept this work" action (`hera_accept`) that flips the bound task to `complete` and tells the agent it may wind down – never a forced stop.
+- Give the coordinator an explicit, first-class "accept this work" action (`hera_accept`) that flips the bound task to `complete` and checks in with the agent, asking it to confirm whether it's winding down, has more work, or needs to ask a question – never a forced stop.
 - Auto-fire the same accept-equivalent when the coordinator's own plan-DAG rolls forward past a node's blockers – that IS the coordinator moving on, whether or not the coordinator ever calls `hera_accept` by hand.
 - Make completion revocable: an accepted task, if its session is later stopped, can still be revived back to `in_progress`.
 - Let the operator's existing `a` (HIDE) key additionally free the completed agent's memory, as an operator-driven, reversible-in-spirit action – never automatic, never forced by acceptance itself.
@@ -33,7 +33,11 @@ Mirrors the existing `ReviveRole`/`RecycleCoord` shape in the same package: a na
 
 **Decision: idempotency is "second+ call against an already-complete task is a full no-op – status untouched, no message sent" – not merely "the status flip is idempotent."**
 
-A blocker with multiple dependent nodes would otherwise get the "you're marked complete, wind down" notification once per dependent that materializes – spam that grows with fan-out. `AcceptRole` checks the task's current status BEFORE flipping and returns immediately (no error) when it is already `complete`, so only the FIRST accept (whichever dependent materializes first) produces a status flip and a message; every subsequent one is silent.
+A blocker with multiple dependent nodes would otherwise get the reply-required check-in notification once per dependent that materializes – spam that grows with fan-out (and repeated, contradictory demands for a reply). `AcceptRole` checks the task's current status BEFORE flipping and returns immediately (no error) when it is already `complete`, so only the FIRST accept (whichever dependent materializes first) produces a status flip and a message; every subsequent one is silent.
+
+**Decision (refinement, post-implementation): the acceptance message is a closed-loop check-in that demands a reply, not a one-way FYI.**
+
+Aaron's follow-up refinement: the default message must explicitly instruct the recipient to reply with exactly one of (1) confirming it has no other tasks and is winding down, (2) telling the coordinator it still has more work to do, or (3) a question if it isn't sure which applies. The reply is informational only – it never automatically reopens the task; a premature accept is undone only through the existing revive-from-complete path (the decision immediately below), never by the reply's content. This changes only what `acceptDefaultBody`/`AcceptTldr` say and that a reply is expected – it does NOT change the state machine: the status flip in `AcceptRole` stays authoritative and immediate, exactly as originally speced.
 
 **Decision: `hera_accept` mirrors `hera_revive`'s exact authorization shape – coordinator-only, rejects the caller's own role as a target – rather than inventing a new authorization pattern.**
 
@@ -54,7 +58,7 @@ The eligibility loop's existing terminal-state skip (a `merged`/`merged-closed` 
 ## Risks / Trade-offs
 
 - **[Risk]** The gater's auto-accept only fires for the worker-kind materialize path, not `subcoord` materialization. → **Mitigation**: explicitly scoped and documented (mirrors the existing fan-in notice's own worker-only scope); a sub-coordinator's blockers are still accepted whenever ITS parent's dependents materialize through the ordinary path – only the subcoord node's OWN newly-materialized agent doesn't retroactively accept its blockers via this mechanism today. Named as a follow-up, not silently dropped.
-- **[Risk]** `hera_accept`'s notification is best-effort (matches `hera_send`'s own soft-fail delivery contract) – a coordinator that calls it while the target has no live binding still flips status but the "you're free to wind down" message is queued-no-binding, never delivered. → **Mitigation**: this is the existing, well-understood `hera.Service.Send` contract every other hera message already lives with; no new risk introduced.
+- **[Risk]** `hera_accept`'s notification is best-effort (matches `hera_send`'s own soft-fail delivery contract) – a coordinator that calls it while the target has no live binding still flips status but the reply-required check-in message is queued-no-binding, never delivered, so no reply is ever prompted. → **Mitigation**: this is the existing, well-understood `hera.Service.Send` contract every other hera message already lives with; no new risk introduced. The status flip itself is unaffected either way – delivery failure never blocks or reverts it.
 - **[Risk]** `Ops.ArchiveToggle`'s signature change touches several test call sites. → **Mitigation**: mechanical, caught immediately by `go build`/`go vet`; no behavior change for any existing caller that only checked the error.
 
 ## Open Questions
