@@ -2049,7 +2049,7 @@ Derived from: `internal/tui/hera/plan.go` (`heraPlanNodesWithBridge`,
 
 ### Requirement: Agents roster renders as an aligned, scrollable table (area 6)
 
-The Details pane's `Agents (N):` roster SHALL render as a compact, left-aligned table with four columns, in this order — **name** (the role name), **archetype** (the role's diligence archetype, `RoleView.Archetype`), **model** (the resolved LLM model applied to that role, `RoleView.AppliedModel`), and **status** (the existing status icon plus a short text label mirroring `widget.RoleStatusIcon`'s precedence: needs-input / working / ready / failed / done / idle / live / unbound, with a `PR` token composed in per the PR-indicator requirement) — preceded by a `NAME  ARCHETYPE  MODEL  STATUS` column-header row. Name leads so the identifying column reads immediately; status trails so its icon+label reads as a per-row trailing verdict rather than a leading marker. Archetype and model are read directly from the already-annotated `RoleView` the rail's model already carries (`Archetype` from the role row; `AppliedModel` stamped by `HeraPage`'s `tierResolver` during `doRefresh`, off the Draw path) — no additional daemon, store, or MCP read. A role with no resolved archetype or model (no profile consulted, or the CLI/backend default applied) renders `—` in that cell, never a blank.
+The Details pane's `Agents (N):` roster SHALL render as a compact, left-aligned table with four columns, in this order — **name** (the role name), **archetype** (the role's diligence archetype, `RoleView.Archetype`), **model** (the resolved LLM model applied to that role, `RoleView.AppliedModel`), and **status** (the existing status icon plus a short text label mirroring `widget.RoleStatusIcon`'s precedence: needs-input / working / accepted / ready / failed / done / idle / live / unbound, with a `PR` token composed in per the PR-indicator requirement) — preceded by a `NAME  ARCHETYPE  MODEL  STATUS` column-header row. Name leads so the identifying column reads immediately; status trails so its icon+label reads as a per-row trailing verdict rather than a leading marker. Archetype and model are read directly from the already-annotated `RoleView` the rail's model already carries (`Archetype` from the role row; `AppliedModel` stamped by `HeraPage`'s `tierResolver` during `doRefresh`, off the Draw path) — no additional daemon, store, or MCP read. A role with no resolved archetype or model (no profile consulted, or the CLI/backend default applied) renders `—` in that cell, never a blank.
 
 The resolved archetype and model values SHALL render in the same bright, readable foreground the NAME cell uses (`theme.StyleNormal`), not a dimmed style — the unresolved `—` placeholder is the ONLY case in either column that renders dimmed (`theme.StyleDimmed`), so an absent value reads as visually secondary to real data rather than the two being equally hard to read.
 
@@ -2073,6 +2073,11 @@ Derived from: `internal/tui/hera/details.go` (`computeRosterColumns`, `rosterCol
 
 - **WHEN** a roster row's status cell renders its text label
 - **THEN** the label is derived from the SAME precedence (`widget.RoleStatusIcon`'s inputs) that chose the row's status icon, so the two never contradict each other
+
+#### Scenario: A coordinator-accepted worker reads distinctly from a merely self-reported ready_to_close one
+
+- **WHEN** a worker's bound task's `TaskStatus` is `complete` (coordinator-accepted via `hera_accept`, or the plan-DAG gater's auto-accept — `add-hera-accept-lifecycle`), regardless of whether it also carries `ready_to_close`
+- **THEN** its status cell reads `"accepted"` with a BOLD checkmark icon distinct from both a plain `"done"` worker's checkmark and a `"ready"` (self-reported `ready_to_close`) worker's clipboard-check icon — `"accepted"` outranks `ready` / `failed` / `done` / `idle` / `live`, but a role still genuinely `needs-input` or actively `working` shows that label first
 
 #### Scenario: Narrow pane shrinks columns instead of corrupting the layout, protecting the name column longest
 

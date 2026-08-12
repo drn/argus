@@ -571,6 +571,8 @@ func rosterStatusText(r *RoleView, hasPR bool) string {
 		text = "needs-input"
 	case in.Active:
 		text = "working"
+	case in.Accepted:
+		text = "accepted"
 	case in.ReadyToClose:
 		text = "ready"
 	case in.Failed:

@@ -12,6 +12,14 @@ import (
 // The caller derives these from its RoleView; this package stays hera-agnostic
 // (it must not import hera, which would cycle).
 type RoleStatusInputs struct {
+	// Accepted: bound task's TaskStatus is complete — coordinator-accepted via
+	// hera_accept, or gater auto-accept on plan-DAG rollforward
+	// (add-hera-accept-lifecycle). A coordinator-authoritative terminal signal
+	// that supersedes the self-reported ladder (ReadyToClose/Failed/Done/Idle/
+	// Live), but still ranks below needs-input (BUG-A) and active (BUG-F) — a
+	// role genuinely blocked on input or still producing output shows that
+	// first, even if its task was accepted out from under it.
+	Accepted bool
 	// ReadyToClose: bound task carries meta:hera.ready_to_close — a finished worker
 	// awaiting close-out. Ranks below needs-input (BUG-A) and active (BUG-F),
 	// above failed/done.
@@ -43,10 +51,18 @@ type RoleStatusInputs struct {
 // (BUG-007). `frame` is the current spinner animation frame (the Active case
 // animates via SpinnerFrame); `dim` forces the dimmed style for archived
 // placement (the glyph never lies — only the style dims). Precedence:
-// needs-input → active(spinner) → ready_to_close → failed(red ✕) → done → idle → live → default.
+// needs-input → active(spinner) → accepted(bold ✓) → ready_to_close → failed(red ✕) → done → idle → live → default.
 //
 // needs-input outranks everything (BUG-A): a worker GENUINELY blocked on a user
 // prompt is the one actionable thing in the subtree — it must never be masked.
+//
+// accepted (add-hera-accept-lifecycle) outranks the self-reported ladder
+// ready_to_close/failed/done/idle/live — a coordinator's hera_accept (or the
+// gater's auto-accept) is an authoritative decision, so it must read as
+// visibly distinct from a merely self-reported ready_to_close. It renders a
+// BOLD ✓ (theme.StyleComplete), distinct from both plain Done's ✓ (not bold)
+// and ReadyToClose's bold clipboard-check icon — three separate glyphs for
+// three separate states rather than reusing one across two of them.
 //
 // active outranks the stale-able resting states ready_to_close/failed/done
 // (BUG-F, the icon-precedence completion of BUG-C). Active is the HONEST,
@@ -72,6 +88,10 @@ func RoleStatusIcon(in RoleStatusInputs, dim bool, frame int) (rune, tcell.Style
 		// stale-able ready_to_close/failed/done stamps below. Drops to false the
 		// moment the session idles/exits, so those resting glyphs then return.
 		glyph, style = SpinnerFrame(frame), theme.StyleInProgress
+	case in.Accepted:
+		// add-hera-accept-lifecycle: bold checkmark, distinct from Done's plain
+		// checkmark and ReadyToClose's bold clipboard-check icon.
+		glyph, style = '✓', theme.StyleComplete.Bold(true)
 	case in.ReadyToClose:
 		glyph, style = theme.IconReview, tcell.StyleDefault.Foreground(theme.ColorComplete).Bold(true)
 	case in.Failed:

@@ -50,3 +50,21 @@ Derived from: `internal/tui/heraactions.go` (`heraHide`), `internal/tui/hera/ops
 
 - **WHEN** the user presses `C` on a coordinator that has Tier-1 hidden descendants and confirms
 - **THEN** each hidden descendant is NUKED (worktree + branch reclaimed unless bound live elsewhere, role marked nuked, sole-bound task archived) and the confirm modal showed the count; a coordinator with an empty archive shows "nothing to clear" and opens no confirm
+
+### Requirement: Agents roster renders as an aligned, scrollable table (area 6)
+
+The Details pane's `Agents (N):` roster SHALL render as a compact, left-aligned table with four columns, in this order — **name** (the role name), **archetype** (the role's diligence archetype, `RoleView.Archetype`), **model** (the resolved LLM model applied to that role, `RoleView.AppliedModel`), and **status** (the existing status icon plus a short text label mirroring `widget.RoleStatusIcon`'s precedence: needs-input / working / accepted / ready / failed / done / idle / live / unbound, with a `PR` token composed in per the PR-indicator requirement) — preceded by a `NAME  ARCHETYPE  MODEL  STATUS` column-header row. Name leads so the identifying column reads immediately; status trails so its icon+label reads as a per-row trailing verdict rather than a leading marker. Archetype and model are read directly from the already-annotated `RoleView` the rail's model already carries (`Archetype` from the role row; `AppliedModel` stamped by `HeraPage`'s `tierResolver` during `doRefresh`, off the Draw path) — no additional daemon, store, or MCP read. A role with no resolved archetype or model (no profile consulted, or the CLI/backend default applied) renders `—` in that cell, never a blank.
+
+`add-hera-accept-lifecycle` inserted the `accepted` rung: a worker whose bound task's `TaskStatus` is `complete` (coordinator-accepted via `hera_accept`, or the plan-DAG gater's auto-accept) reads `"accepted"` with a BOLD checkmark, distinct from a plain `"done"` worker's checkmark and a `"ready"` (self-reported `ready_to_close`) worker's clipboard-check icon — ranked below `needs-input`/`working` (a role still genuinely blocked or producing output shows that first) but above `ready`/`failed`/`done`/`idle`/`live` (a coordinator's accept is authoritative over the self-reported ladder). Wired via a new `RoleStatusInputs.Accepted` field (`role.TaskStatus == model.StatusComplete.String()`), consulted identically by `widget.RoleStatusIcon` (the rail's icon) and `rosterStatusText` (this roster's label), so the two never disagree.
+
+Derived from: `internal/tui/hera/details.go` (`computeRosterColumns`, `rosterColStarts`, `rosterTruncate`, `archetypeDisplay`/`modelDisplay`, `rosterValueStyle`, `rosterStatusText`, `drawRosterHeader`, `drawRosterRow`, `ContentHeight`, `rosterScroll`/`rosterVisibleRows`, `rosterMaxScroll`, `clampRosterScroll`, `ScrollRoster`, `SetOrch`), `internal/tui/hera/rail.go` (`roleStatusInputs`), `internal/tui/widget/rolestatusicon.go` (`RoleStatusInputs.Accepted`, `RoleStatusIcon`), `internal/tui/hera/model.go` (`RoleView.Archetype`/`AppliedModel`/`TaskStatus`), `internal/tui/hera/page.go` (`SetTierResolver`, `doRefresh`, `handleDetailsKey`, `rosterScrollDelta`).
+
+#### Scenario: Status icon and label never disagree with the rail
+
+- **WHEN** a roster row's status cell renders its text label
+- **THEN** the label is derived from the SAME precedence (`widget.RoleStatusIcon`'s inputs) that chose the row's status icon, so the two never contradict each other
+
+#### Scenario: A coordinator-accepted worker reads distinctly from a merely self-reported ready_to_close one
+
+- **WHEN** a worker's bound task's `TaskStatus` is `complete` (coordinator-accepted via `hera_accept`, or the plan-DAG gater's auto-accept), regardless of whether it also carries `ready_to_close`
+- **THEN** its status cell reads `"accepted"` with a BOLD checkmark icon distinct from both a plain `"done"` worker's checkmark and a `"ready"` (self-reported `ready_to_close`) worker's clipboard-check icon — `"accepted"` outranks `ready` / `failed` / `done` / `idle` / `live`, but a role still genuinely `needs-input` or actively `working` shows that label first

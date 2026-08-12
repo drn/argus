@@ -105,3 +105,15 @@
 - [x] 9.4 `internal/tui/heraactions_test.go`: `TestSmoke_HeraReattachStillRestartsNonClosedOutWorker` regression-guards the unchanged path – a dead-session worker with NO close-out marker still restarts normally through `startSession`.
 - [x] 9.5 Sync the `hera-coordination` spec (both `openspec/specs/` and this archived snapshot) with a new "Enter refuses to restart a dead-session worker awaiting close-out" requirement, and this change's own `design.md`/`proposal.md` prose.
 - [x] 9.6 Run `make pre-pr` and confirm it passes clean (the documented ARGUS_* env-leak on 2 unrelated `internal/agent` tests inside this hera-worker sandbox is pre-existing – confirmed clean with those excluded; the 3 stdlib-only `govulncheck` findings are confirmed pre-existing on a clean tree too, toolchain-only, CI runs `continue-on-error`).
+
+## 10. Additive requirement: roster/rail must show accepted distinctly from ready
+
+**Depends on:** Stages 1-9 (Aaron approved folding this into 8a rather than a separate follow-up)
+
+- [x] 10.1 `internal/tui/widget/rolestatusicon.go`: add `Accepted bool` to `RoleStatusInputs`; give it precedence in `RoleStatusIcon` below `NeedsInput`/`Active`, above `ReadyToClose`/`Failed`/`Done`/`Idle`/`Live` — a bold `✓` on `theme.StyleComplete`, distinct from plain Done's `✓` and ReadyToClose's bold clipboard-check icon. Update the precedence doc comment.
+- [x] 10.2 `internal/tui/hera/rail.go` (`roleStatusInputs`): wire `Accepted: role.TaskStatus == model.StatusComplete.String()`.
+- [x] 10.3 `internal/tui/hera/details.go` (`rosterStatusText`): add the matching `"accepted"` case in the same relative precedence position. `hasPR` suffix behavior unchanged. `coordStatusLabel`/`coordTaskStatusLabel` (the coordinator-only path) left untouched per scope.
+- [x] 10.4 `internal/tui/hera/rail_test.go`: `TestStatusIcon_AcceptedDistinctAndPrecedence` — Accepted's glyph/style distinct from both Done and ReadyToClose; dominated by NeedsInput/Active; dominates ReadyToClose/Failed/Done/Idle/Live.
+- [x] 10.5 `internal/tui/hera/details_test.go`: extend `TestRosterStatusText_Precedence` with `{ReadyToClose:true, TaskStatus: model.StatusComplete.String()}` → `"accepted"` (not `"ready"`), plus a precedence case proving NeedsInput/Active still outrank Accepted.
+- [x] 10.6 Sync the `hera-view` spec (both `openspec/specs/` and this archived snapshot): insert `accepted` into the roster-table requirement's precedence enumeration and add an "accepted worker reads distinctly" scenario.
+- [x] 10.7 Run `make pre-pr` and confirm it passes clean (same pre-existing ARGUS_* env-leak and stdlib-only `govulncheck` exclusions as Stage 9). Commit locally only — no push, no PR, per the coordinator's instruction; report back via `hera_send` when both this and Stage 9 are committed.

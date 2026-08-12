@@ -2341,6 +2341,7 @@ func statusIcon(role *RoleView, dim bool, frame int) (rune, tcell.Style) {
 // visible; the plan-view projection builds the same inputs from its own RoleView.
 func roleStatusInputs(role *RoleView) widget.RoleStatusInputs {
 	return widget.RoleStatusInputs{
+		Accepted:     role.TaskStatus == model.StatusComplete.String(),
 		ReadyToClose: role.ReadyToClose,
 		NeedsInput:   role.ShowsNeedsInput(),
 		Failed:       role.HasStatus && role.Status == db.HeraStatusFailed,
