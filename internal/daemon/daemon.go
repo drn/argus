@@ -756,6 +756,9 @@ func (d *Daemon) pollPRStatesOnce(ctx context.Context) {
 						continue
 					}
 					written++
+					if res.Merged {
+						d.notifyCoordinatorOfMergedPR(t, res.URL)
+					}
 				}
 			}
 		}
@@ -766,6 +769,54 @@ func (d *Daemon) pollPRStatesOnce(ctx context.Context) {
 	}
 
 	uxlog.Log("[pr] poll: eligible=%d skipped=%d written=%d errored=%d", len(eligible), skipped, written, errored)
+}
+
+// notifyCoordinatorOfMergedPR sends a nudge (never a status or hera
+// role-status change) to a task's Hera coordinator once its PR resolves as
+// genuinely merged (add-hera-accept-lifecycle) – a strong signal the work is
+// worth reviewing/accepting, never treated as proof it is done. Resolves the
+// task's most recent Hera role (any binding, live or ended, via
+// ListHeraBindingsByTask's most-recent-first order) and that role's
+// orchestrator's coordinator, mirroring the coordinator-resolution pattern
+// the plan-DAG gater already uses for its own hold/fan-in notices.
+//
+// Entirely silent (no error, no log spam) on every resolution miss: most
+// PR-tracked tasks are not Hera-bound at all, so a missing role or
+// coordinator is the common case, not a failure. Delivery itself is
+// best-effort – a send failure is logged, never returned, since a poll cycle
+// must never fail over a notification.
+func (d *Daemon) notifyCoordinatorOfMergedPR(t *model.Task, prURL string) {
+	bindings, err := d.db.ListHeraBindingsByTask(t.ID)
+	if err != nil || len(bindings) == 0 {
+		return
+	}
+	role, err := d.db.HeraRole(bindings[0].RoleID)
+	if err != nil {
+		return
+	}
+	coords, err := d.db.ListHeraRolesByKind(role.OrchestratorID, db.HeraKindCoordinator)
+	if err != nil || len(coords) == 0 {
+		return
+	}
+	coord := coords[0]
+	if coord.ID == role.ID {
+		return // the coordinator's own PR merged; it does not need telling
+	}
+	body := fmt.Sprintf("PR merged for %s (%s) - worth reviewing/accepting its work.", t.Name, prURL)
+	tldr := fmt.Sprintf("PR merged: %s", t.Name)
+	// d.notifier is a concrete *notify.Notifier, set once by Serve before the
+	// PR poller ever starts; guarded here (rather than passed unconditionally)
+	// so a bare Daemon built via New() without Serve() (every test in this
+	// package) gets a TRUE nil hera.Notifier interface instead of a non-nil
+	// interface wrapping a nil pointer, which panics on the first Send.
+	var notifier hera.Notifier
+	if d.notifier != nil {
+		notifier = d.notifier
+	}
+	svc := hera.New(d.db, notifier)
+	if _, sErr := svc.Send(role.ID, coord.ID, body, tldr, nil); sErr != nil {
+		uxlog.Log("[pr] poll: merge nudge failed for %s: %v", t.ID, sErr)
+	}
 }
 
 // prPollCadenceStride returns how many poll cycles apart a task should be
@@ -1061,6 +1112,14 @@ func (d *Daemon) Serve(sockPath string) error {
 		// path (add-hera-subcoord-nodes); without this the gater would fall back to
 		// the worker path and never spawn a sub-coordinator agent.
 		d.heraGater.SetSubCoordMaterializer(d.heraGaterMaterializeSubCoord)
+		// Auto-accept a materialized node's blockers (add-hera-accept-lifecycle):
+		// the same shared hera.AcceptRole primitive the hera_accept MCP tool
+		// calls, reusing gaterSvc as the AcceptSender exactly as the ping
+		// adapter above reuses it for Send.
+		d.heraGater.SetAccepter(func(coordRoleID, blockerRoleID int64) error {
+			_, err := hera.AcceptRole(d.db, gaterSvc, coordRoleID, blockerRoleID, "")
+			return err
+		})
 		go d.heraGater.Start()
 
 		// Self-service recycle_coord sweep (add-coordinator-context-management

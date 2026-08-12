@@ -1122,24 +1122,27 @@ func (d *DB) RollHeraWorkerFailed(taskID string) (bool, error) {
 }
 
 // ReviveHeraWorkerToInProgress is the precise inverse of RollHeraWorkerToReview
-// (BUG-B): it restores a worker-bound task from in_review back to in_progress
+// (BUG-B) AND of AcceptRole's completion flip (add-hera-accept-lifecycle): it
+// restores a worker-bound task from in_review OR complete back to in_progress
 // when its session is genuinely revived/resumed and working again. It is the
-// SINGLE shared helper behind BOTH revive triggers — the TUI's reviveHeraWorker
-// (KickRerender on a suspended worker) and the daemon's supervisor-mode startup
-// reattach (a session the supervisor confirms still alive) — so the two cannot
-// drift.
+// SINGLE shared helper behind every revive trigger – the TUI's reviveHeraWorker
+// (KickRerender on a suspended worker), the daemon's supervisor-mode startup
+// reattach (a session the supervisor confirms still alive), and hera_revive's
+// shared ReviveRole primitive – so none of them can drift.
 //
 // It acts ONLY when the task holds a live worker-kind binding AND is currently
-// in StatusInReview AND is NOT awaiting close-out. A worker is awaiting close-out
-// — and is LEFT in in_review — when it carries meta:hera.ready_to_close (the
-// BUG-050 done / clean-exit stamp set by RollHeraWorkerToReview) OR any of its
-// live worker roles has a terminal role-status (done or failed). That guard is
-// what preserves the #707 / BUG-050 invariant: a genuinely-finished worker never
-// auto-resumes — even though its idle session is still alive — because a worker
-// never self-completes; the coordinator/human closes it out or decides on a
-// failure. It never clobbers a complete/pending/in_progress task and never
-// touches the live session (DB status only). Returns (true, nil) when it
-// restored the task, (false, nil) on any no-op. Idempotent.
+// in StatusInReview or StatusComplete AND is NOT awaiting close-out. A worker
+// is awaiting close-out – and is LEFT at its current status – when it carries
+// meta:hera.ready_to_close (the BUG-050 done / clean-exit stamp set by
+// RollHeraWorkerToReview) OR any of its live worker roles has a terminal
+// role-status (done or failed). That guard is re-evaluated identically for
+// BOTH source statuses (never bypassed for the complete source): it preserves
+// the #707 / BUG-050 invariant that a genuinely-finished worker never
+// auto-resumes – even though its idle session is still alive – because a
+// worker never self-completes; the coordinator/human closes it out or decides
+// on a failure. It never clobbers a pending/in_progress task and never touches
+// the live session (DB status only). Returns (true, nil) when it restored the
+// task, (false, nil) on any no-op. Idempotent.
 func (d *DB) ReviveHeraWorkerToInProgress(taskID string) (bool, error) {
 	worker, err := d.TaskHoldsLiveHeraWorkerBinding(taskID)
 	if err != nil {
@@ -1152,8 +1155,8 @@ func (d *DB) ReviveHeraWorkerToInProgress(taskID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if t == nil || t.Status != model.StatusInReview {
-		return false, nil // only un-roll a review-parked worker; never clobber complete/pending/in_progress
+	if t == nil || (t.Status != model.StatusInReview && t.Status != model.StatusComplete) {
+		return false, nil // only un-roll a review-parked or accepted worker; never clobber pending/in_progress
 	}
 	awaiting, err := d.heraWorkerAwaitingCloseout(taskID)
 	if err != nil {

@@ -38,12 +38,16 @@ func TestOps_ArchiveToggle_Role(t *testing.T) {
 	ops := NewOps(d)
 
 	// Active → archive.
-	testutil.NoError(t, ops.ArchiveToggle(roleSel(t, d, role, "t1")))
+	archived, err := ops.ArchiveToggle(roleSel(t, d, role, "t1"))
+	testutil.NoError(t, err)
+	testutil.Equal(t, archived, true)
 	got, _ := d.HeraRole(role.ID)
 	testutil.Equal(t, got.ArchivedAt != nil, true)
 
 	// Archived → unarchive.
-	testutil.NoError(t, ops.ArchiveToggle(roleSel(t, d, role, "t1")))
+	archived, err = ops.ArchiveToggle(roleSel(t, d, role, "t1"))
+	testutil.NoError(t, err)
+	testutil.Equal(t, archived, false)
 	got, _ = d.HeraRole(role.ID)
 	testutil.Equal(t, got.ArchivedAt == nil, true)
 }
@@ -53,11 +57,15 @@ func TestOps_ArchiveToggle_Orchestrator(t *testing.T) {
 	o := seedOrch(t, d, "o")
 	ops := NewOps(d)
 
-	testutil.NoError(t, ops.ArchiveToggle(orchSel(o, "o")))
+	archived, err := ops.ArchiveToggle(orchSel(o, "o"))
+	testutil.NoError(t, err)
+	testutil.Equal(t, archived, true)
 	got, _ := d.HeraOrchestrator(o)
 	testutil.Equal(t, got.ArchivedAt != nil, true)
 
-	testutil.NoError(t, ops.ArchiveToggle(orchSel(o, "o")))
+	archived, err = ops.ArchiveToggle(orchSel(o, "o"))
+	testutil.NoError(t, err)
+	testutil.Equal(t, archived, false)
 	got, _ = d.HeraOrchestrator(o)
 	testutil.Equal(t, got.ArchivedAt == nil, true)
 }
@@ -332,7 +340,8 @@ func TestOps_KanbanStep_NoopOnNonTopLevel(t *testing.T) {
 func TestOps_EmptySelectionNoTarget(t *testing.T) {
 	d := memDB(t)
 	ops := NewOps(d)
-	testutil.ErrorIs(t, ops.ArchiveToggle(Selection{}), errNoTarget)
+	_, archiveErr := ops.ArchiveToggle(Selection{})
+	testutil.ErrorIs(t, archiveErr, errNoTarget)
 	testutil.ErrorIs(t, ops.PinToggle(Selection{}), errNoTarget)
 	testutil.ErrorIs(t, ops.Rename(Selection{}, "x"), errNoTarget)
 	testutil.ErrorIs(t, ops.NukeRole(nil), errNoTarget)

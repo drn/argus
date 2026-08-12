@@ -238,19 +238,28 @@ func (a *App) heraOpenRename(sel hera.Selection) {
 
 // heraHide is the `a` key: Tier-1 HIDE/unhide of the selected WORKER (BUG-022).
 // Hiding archives the role row so it nests in its PARENT coordinator's "Archive
-// (N)" expando; the session + worktree stay ALIVE (no detach) and it is a
-// reversible toggle (pressing `a` on a hidden worker unhides it exactly), so
-// there is NO confirmation. Hide applies to workers / sub-coordinators only — on
-// a top-level coordinator or orchestrator header (no parent archive to nest
+// (N)" expando; the worktree stays ALIVE and it is a reversible toggle
+// (pressing `a` on a hidden worker unhides it exactly), so there is NO
+// confirmation. Hide applies to workers / sub-coordinators only – on a
+// top-level coordinator or orchestrator header (no parent archive to nest
 // under) it surfaces feedback and is a no-op. A sub-coordinator rendered as a
 // bridging worker row is worker-kind, so it hides through this same path; its
-// whole subtree collapses into the parent's Archive expando (Q3 — see rail.go
+// whole subtree collapses into the parent's Archive expando (Q3 – see rail.go
 // appendOrchWorkers), structure retained.
 //
-// Q2 (LOCKED): HIDE is RAIL-ONLY — it archives the hera ROLE row only and does
-// NOT db.SetArchived the bound argus task. The worker keeps running and still
-// shows in the Tasks tab; only NUKE (Ctrl+D/C) archives the task + reclaims the
-// worktree. Un-hide just clears archived_at and the rail row returns exactly.
+// On the HIDE direction only (add-hera-accept-lifecycle), the role's live
+// agent session is ALSO stopped (backgrounded, mirroring
+// heraReclaimAndArchiveTask's own session-stop pattern) – freeing its memory
+// is a nice-to-have follow-through of the operator's choice to hide, never a
+// requirement of Hera task completion itself, which stays a wholly separate
+// concern. The UN-HIDE direction never touches any session. Either direction
+// never touches the worktree or branch.
+//
+// Q2 (LOCKED): HIDE is RAIL-ONLY – it archives the hera ROLE row only and does
+// NOT db.SetArchived the bound argus task. The worker's argus task row stays
+// untouched and still shows in the Tasks tab; only NUKE (Ctrl+D/C) archives
+// the task + reclaims the worktree. Un-hide just clears archived_at and the
+// rail row returns exactly.
 func (a *App) heraHide(sel hera.Selection) {
 	if a.heraOps == nil {
 		return
@@ -260,9 +269,18 @@ func (a *App) heraHide(sel hera.Selection) {
 		a.statusbar.SetError("Hide applies to workers and sub-coordinators")
 		return
 	}
-	if err := a.heraOps.ArchiveToggle(sel); err != nil {
+	archived, err := a.heraOps.ArchiveToggle(sel)
+	if err != nil {
 		a.statusbar.SetError("Hide failed: " + err.Error())
 		return
+	}
+	if archived && r.TaskID != "" && a.runner.HasSession(r.TaskID) {
+		taskID := r.TaskID
+		heraGoSafe("hide: stop session "+taskID, func() {
+			if sErr := a.runner.Stop(taskID); sErr != nil {
+				uxlog.Log("[hera-view] hide: stop session failed task=%s: %v", taskID, sErr)
+			}
+		})
 	}
 	a.heraRefresh()
 }

@@ -89,13 +89,42 @@ func TestReviveHeraWorkerToInProgress(t *testing.T) {
 		testutil.Equal(t, got.Status, model.StatusInProgress)
 	})
 
-	t.Run("complete -> never clobbered", func(t *testing.T) {
+	t.Run("complete, no close-out marker -> flips to in_progress (add-hera-accept-lifecycle)", func(t *testing.T) {
 		d, id, _ := setup(t, model.StatusComplete, HeraKindWorker, true)
+		restored, err := d.ReviveHeraWorkerToInProgress(id)
+		testutil.NoError(t, err)
+		testutil.Equal(t, restored, true)
+		got, _ := d.Get(id)
+		testutil.Equal(t, got.Status, model.StatusInProgress)
+	})
+
+	t.Run("complete with ready_to_close -> stays complete", func(t *testing.T) {
+		d, id, _ := setup(t, model.StatusComplete, HeraKindWorker, true)
+		testutil.NoError(t, d.SetMeta(id, HeraMetaNamespace, HeraMetaKeyReadyToClose, "true"))
 		restored, err := d.ReviveHeraWorkerToInProgress(id)
 		testutil.NoError(t, err)
 		testutil.Equal(t, restored, false)
 		got, _ := d.Get(id)
 		testutil.Equal(t, got.Status, model.StatusComplete)
+	})
+
+	t.Run("complete with terminal role-status done -> stays complete", func(t *testing.T) {
+		d, id, roleID := setup(t, model.StatusComplete, HeraKindWorker, true)
+		testutil.NoError(t, d.UpsertHeraRoleStatus(roleID, HeraStatusDone))
+		restored, err := d.ReviveHeraWorkerToInProgress(id)
+		testutil.NoError(t, err)
+		testutil.Equal(t, restored, false)
+		got, _ := d.Get(id)
+		testutil.Equal(t, got.Status, model.StatusComplete)
+	})
+
+	t.Run("pending -> no-op (still refused, not a valid source)", func(t *testing.T) {
+		d, id, _ := setup(t, model.StatusPending, HeraKindWorker, true)
+		restored, err := d.ReviveHeraWorkerToInProgress(id)
+		testutil.NoError(t, err)
+		testutil.Equal(t, restored, false)
+		got, _ := d.Get(id)
+		testutil.Equal(t, got.Status, model.StatusPending)
 	})
 
 	t.Run("coordinator-kind -> no-op", func(t *testing.T) {

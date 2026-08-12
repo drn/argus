@@ -14,16 +14,19 @@ import (
 )
 
 // gaterFixture wires a Watcher to a real in-memory DB with recording fake
-// materialize/ping seams.
+// materialize/ping/accept seams.
 type gaterFixture struct {
-	d         *db.DB
-	w         *Watcher
-	mu        sync.Mutex
-	mat       []*db.HeraRole // roles passed to materialize, in order
-	matBranch map[int64]string
-	matFail   bool // when true, materialize returns an error (HOLD-by-failure)
-	pingFail  bool // when true, ping returns an error (delivery failure)
-	pings     []ping
+	d              *db.DB
+	w              *Watcher
+	mu             sync.Mutex
+	mat            []*db.HeraRole // roles passed to materialize, in order
+	matBranch      map[int64]string
+	matFail        bool // when true, materialize returns an error (HOLD-by-failure)
+	pingFail       bool // when true, ping returns an error (delivery failure)
+	pings          []ping
+	acceptFail     bool // when true, accept returns an error for every call
+	accepts        []accept
+	acceptAttempts int // incremented on every accept call, success or failure
 }
 
 type ping struct {
@@ -31,6 +34,12 @@ type ping struct {
 	coord int64
 	body  string
 	tldr  string
+}
+
+// accept records one Accepter call (add-hera-accept-lifecycle).
+type accept struct {
+	coord   int64
+	blocker int64
 }
 
 func newGaterFixture(t *testing.T) *gaterFixture {
@@ -68,6 +77,16 @@ func newGaterFixture(t *testing.T) *gaterFixture {
 			return nil
 		},
 	)
+	f.w.SetAccepter(func(coordRoleID, blockerRoleID int64) error {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.acceptAttempts++
+		if f.acceptFail {
+			return errors.New("accept boom")
+		}
+		f.accepts = append(f.accepts, accept{coord: coordRoleID, blocker: blockerRoleID})
+		return nil
+	})
 	return f
 }
 
@@ -91,6 +110,18 @@ func (f *gaterFixture) lastPing() ping {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.pings[len(f.pings)-1]
+}
+
+// acceptedBlockers returns the blocker role IDs recorded across every
+// successful accept call, in call order.
+func (f *gaterFixture) acceptedBlockers() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]int64, len(f.accepts))
+	for i, a := range f.accepts {
+		out[i] = a.blocker
+	}
+	return out
 }
 
 // seedCoord creates an orchestrator + a coordinator role+binding (so a coord
@@ -1002,6 +1033,130 @@ func TestGater_FanInNoCoordinatorNoPanic(t *testing.T) {
 
 	testutil.Equal(t, len(f.materialized()), 1)
 	testutil.Equal(t, f.pingCount(), 0)
+}
+
+// --- gater auto-accept on materialize (add-hera-accept-lifecycle) ---
+
+// TestGater_AcceptsSingleBlockerOnMaterialize covers the ordinary
+// single-blocker path: materializing the dependent fires exactly one accept
+// call for its blocker, from the orchestrator's coordinator role.
+func TestGater_AcceptsSingleBlockerOnMaterialize(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	blocker := f.boundWorker(t, orch, "1a", model.StatusInReview, db.HeraStatusDone)
+	node := f.planned(t, orch, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, blocker.ID))
+
+	f.w.Tick()
+
+	testutil.Equal(t, len(f.materialized()), 1)
+	blocked := f.acceptedBlockers()
+	testutil.Equal(t, len(blocked), 1)
+	testutil.Equal(t, blocked[0], blocker.ID)
+	testutil.Equal(t, f.accepts[0].coord, f.coordRole(t, orch).ID)
+}
+
+// TestGater_AcceptsEveryBlockerOnFanInMaterialize covers the fan-in path
+// (2+ blockers): every one of the node's blockers gets its own accept call,
+// exactly once each.
+func TestGater_AcceptsEveryBlockerOnFanInMaterialize(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	a := f.boundWorker(t, orch, "1a", model.StatusInReview, db.HeraStatusDone)
+	b := f.boundWorker(t, orch, "1b", model.StatusInReview, db.HeraStatusDone)
+	node := f.planned(t, orch, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, a.ID))
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, b.ID))
+
+	f.w.Tick()
+
+	testutil.Equal(t, len(f.materialized()), 1)
+	blocked := f.acceptedBlockers()
+	testutil.Equal(t, len(blocked), 2)
+	testutil.Equal(t, (blocked[0] == a.ID && blocked[1] == b.ID) || (blocked[0] == b.ID && blocked[1] == a.ID), true)
+}
+
+// TestGater_AcceptFiresOncePerDependentForASharedBlocker covers the
+// idempotency-relevant shape at the gater layer: two SEPARATE dependents
+// blocked on the SAME blocker both become ready in the same tick, so the
+// gater attempts an accept call once per dependent (two calls total) – the
+// actual "second call against an already-complete task is a no-op" guarantee
+// is AcceptRole's own responsibility (internal/hera/accept_test.go), not
+// re-tested here; this only pins that the gater does not dedup or skip a
+// blocker just because another dependent already accepted it this tick.
+func TestGater_AcceptFiresOncePerDependentForASharedBlocker(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	shared := f.boundWorker(t, orch, "1a", model.StatusInReview, db.HeraStatusDone)
+	n1 := f.planned(t, orch, "2a")
+	n2 := f.planned(t, orch, "2b")
+	testutil.NoError(t, f.d.AddHeraBlock(n1.ID, shared.ID))
+	testutil.NoError(t, f.d.AddHeraBlock(n2.ID, shared.ID))
+
+	f.w.Tick()
+
+	testutil.Equal(t, len(f.materialized()), 2)
+	blocked := f.acceptedBlockers()
+	testutil.Equal(t, len(blocked), 2)
+	testutil.Equal(t, blocked[0], shared.ID)
+	testutil.Equal(t, blocked[1], shared.ID)
+}
+
+// TestGater_AcceptFailureDoesNotAffectMaterializeOrSiblingBlockers covers the
+// best-effort contract: an accept failure for one blocker of a fan-in node is
+// logged and dropped, the already-successful materialization is unaffected,
+// and the accept-equivalent is still attempted for the node's other blocker.
+func TestGater_AcceptFailureDoesNotAffectMaterializeOrSiblingBlockers(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	a := f.boundWorker(t, orch, "1a", model.StatusInReview, db.HeraStatusDone)
+	b := f.boundWorker(t, orch, "1b", model.StatusInReview, db.HeraStatusDone)
+	node := f.planned(t, orch, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, a.ID))
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, b.ID))
+
+	f.acceptFail = true
+	f.w.Tick()
+
+	mat := f.materialized()
+	testutil.Equal(t, len(mat), 1)
+	testutil.Equal(t, mat[0].ID, node.ID)
+	testutil.Equal(t, len(f.acceptedBlockers()), 0) // failed accepts are not recorded
+
+	f.mu.Lock()
+	attempts := f.acceptAttempts
+	f.mu.Unlock()
+	testutil.Equal(t, attempts, 2) // both blockers were attempted despite the failure
+}
+
+// TestGater_RootMaterializeNoAcceptCalls is a regression guard: a root node
+// (no blockers) has nothing to accept.
+func TestGater_RootMaterializeNoAcceptCalls(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	f.planned(t, orch, "1a")
+
+	f.w.Tick()
+
+	testutil.Equal(t, len(f.materialized()), 1)
+	testutil.Equal(t, len(f.acceptedBlockers()), 0)
+}
+
+// TestGater_AcceptNoCoordinatorNoPanic covers the acceptBlockers path when no
+// coordinator exists to accept as (logged, no panic, no accept call) –
+// mirrors TestGater_FanInNoCoordinatorNoPanic for the fan-in ping seam.
+func TestGater_AcceptNoCoordinatorNoPanic(t *testing.T) {
+	f := newGaterFixture(t)
+	o, err := f.d.CreateHeraOrchestrator("nocoord", "")
+	testutil.NoError(t, err)
+	blocker := f.boundWorker(t, o.ID, "1a", model.StatusInReview, db.HeraStatusDone)
+	node := f.planned(t, o.ID, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, blocker.ID))
+
+	f.w.Tick() // must not panic; no coordinator → no accept call
+
+	testutil.Equal(t, len(f.materialized()), 1)
+	testutil.Equal(t, len(f.acceptedBlockers()), 0)
 }
 
 func TestGater_StartStop(t *testing.T) {

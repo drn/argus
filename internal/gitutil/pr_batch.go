@@ -19,9 +19,17 @@ import (
 // minus the error — a batched query either succeeds for the whole group
 // (per-branch results) or fails wholesale (the caller keeps every cached
 // value stale; see Decision 4 in the change design doc).
+//
+// Merged carries the raw GraphQL distinction State itself discards (State
+// collapses MERGED and CLOSED into the single PRMergedClosed value): true
+// only when the underlying PR's raw state was exactly "MERGED", false for
+// CLOSED-without-merge or no PR. Added for the PR-merge coordinator nudge
+// (add-hera-accept-lifecycle), which must never conflate an unmerged close
+// with an actual merge.
 type PRResult struct {
-	State model.PRState
-	URL   string
+	State  model.PRState
+	URL    string
+	Merged bool
 }
 
 // prGraphQLRunner is the test seam for executing `gh api graphql`, mirroring
@@ -182,7 +190,7 @@ func mapBatchNode(nodes []prJSON) PRResult {
 		return PRResult{State: model.PRNone}
 	}
 	state, url := mapPRStateFromJSON(nodes[0])
-	return PRResult{State: state, URL: url}
+	return PRResult{State: state, URL: url, Merged: nodes[0].State == "MERGED"}
 }
 
 // buildBatchQuery assembles the single aliased GraphQL query for a repo group.
