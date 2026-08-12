@@ -11,6 +11,7 @@ Aaron (the human operator) specified the lifecycle he wants: a worker reporting 
 - `ReviveHeraWorkerToInProgress` additionally accepts `complete` as a valid source state (previously `in_review` only) – an accepted-then-stopped task can be revived back to `in_progress` later, making completion revocable.
 - The Hera rail's `a` (HIDE) key now also stops the role's live session, but ONLY on the hide direction (never on un-hide), and never touches the worktree/branch – archiving stays otherwise non-destructive and reversible.
 - The PR-status poller nudges the task's Hera coordinator (a message only, no status change) the one time a tracked task's PR state transitions to `merged`. Silent no-op for non-Hera tasks or when no coordinator resolves.
+- Pressing `Enter` on a dead-session worker/freelance row now refuses to restart it when the task is awaiting coordinator close-out (`ready_to_close`, or a terminal role-status) – found via live-testing `hera_accept`, since `startSession` previously ran unconditionally and silently undid the close-out once the resumed-then-exited session rolled the task back to `in_review`. Coordinators are unaffected.
 
 ## Capabilities
 
@@ -20,7 +21,7 @@ Aaron (the human operator) specified the lifecycle he wants: a worker reporting 
 
 ### Modified Capabilities
 
-- `hera-coordination`: adds the `hera_accept` MCP tool (18 → 19 native tools) and extends `ReviveHeraWorkerToInProgress` to accept `complete` as a source state.
+- `hera-coordination`: adds the `hera_accept` MCP tool (18 → 19 native tools), extends `ReviveHeraWorkerToInProgress` to accept `complete` as a source state, and refuses `Enter`'s dead-session restart for a worker/freelance task that is awaiting close-out.
 - `task-orchestration`: the plan-DAG gater additionally auto-accepts every blocker of a node it materializes.
 - `hera-view`: the `a` (HIDE) key additionally stops the role's live session on the hide direction only.
 - `pr-status`: a genuine PR-state transition to `merged` nudges the task's Hera coordinator, when one resolves.
@@ -33,4 +34,5 @@ Aaron (the human operator) specified the lifecycle he wants: a worker reporting 
 - `internal/daemon/daemon.go`: wires the gater's `Accepter` to `hera.AcceptRole`; PR-poller nudge on a genuine merge transition.
 - `internal/db/hera.go`: `ReviveHeraWorkerToInProgress` accepts `complete` as a source status.
 - `internal/tui/hera/ops.go`, `internal/tui/heraactions.go`: `ArchiveToggle` reports which direction fired; `heraHide` stops the session (backgrounded) only on hide.
+- `internal/db/hera.go`: `heraWorkerAwaitingCloseout` exported as `HeraWorkerAwaitingCloseout` so the TUI can reuse it; `internal/tui/heraactions.go`: `heraReattach`'s dead-session branch consults it (via new helper `heraTaskClosedOut`) for worker/freelance selections before calling `startSession`.
 - No schema change, no new MCP tool beyond `hera_accept`, no change to `RollHeraWorkerToReview`/`RollHeraWorkerFailed` or the existing `in_review` semantics.

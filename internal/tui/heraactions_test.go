@@ -1071,6 +1071,104 @@ func TestSmoke_HeraReattachRestartsSession(t *testing.T) {
 	testutil.Equal(t, started, true)
 }
 
+// TestSmoke_HeraReattachRefusesClosedOutDeadWorker is the live regression from
+// msg #4917: pressing Enter on a dead-session worker row that is awaiting
+// coordinator close-out (accepted → complete, or self-reported-done →
+// in_review) used to unconditionally call startSession, which flips the task
+// straight to in_progress with zero Hera awareness — the session then exits
+// almost immediately (nothing to resume), and the ordinary post-exit rule
+// rolled it back to in_review, silently undoing the close-out. heraReattach's
+// dead-session branch must now consult HeraWorkerAwaitingCloseout first (the
+// SAME guard ReviveHeraWorkerToInProgress applies) and refuse: task status
+// untouched, no session started, a clear statusbar message instead.
+func TestSmoke_HeraReattachRefusesClosedOutDeadWorker(t *testing.T) {
+	cases := []struct {
+		name         string
+		status       model.Status
+		readyToClose bool
+		roleStatus   db.HeraRoleStatusValue // "" to skip
+	}{
+		{name: "accepted complete + ready_to_close", status: model.StatusComplete, readyToClose: true},
+		{name: "self-reported-done in_review + ready_to_close", status: model.StatusInReview, readyToClose: true},
+		{name: "in_review + terminal role-status done (no ready_to_close)", status: model.StatusInReview, roleStatus: db.HeraStatusDone},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := testDB(t)
+			orch := seedHeraOrch(t, d, "orch")
+			seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+			role := seedHeraBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
+			testutil.NoError(t, d.SetStatus("tw", tc.status))
+			if tc.readyToClose {
+				testutil.NoError(t, d.SetMeta("tw", db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"))
+			}
+			if tc.roleStatus != "" {
+				testutil.NoError(t, d.UpsertHeraRoleStatus(role.ID, tc.roleStatus))
+			}
+
+			app := New(d, agent.NewRunner(nil), false)
+			sim, stop := wireApp(t, app)
+			defer stop()
+			heraTabCursorOnWorker(t, app, sim)
+
+			sim.InjectKey(tcell.KeyEnter, 0, 0) // Enter → reattach (dead session, closed out)
+			syncUI(t, app.tapp)
+
+			got, err := d.Get("tw")
+			testutil.NoError(t, err)
+			testutil.Equal(t, got.Status, tc.status) // unchanged — never clobbered
+			testutil.Equal(t, got.SessionID, "")     // no session started
+			var statusErr string
+			readUI(t, app.tapp, func() { statusErr = app.statusbar.Error() })
+			testutil.Contains(t, statusErr, "closed out")
+		})
+	}
+}
+
+// TestSmoke_HeraReattachStillRestartsNonClosedOutWorker guards against an
+// overbroad fix: a plain dead-session worker with no close-out marker (e.g.
+// parked in in_review by a human, or mid-flight before any close-out) must
+// still restart through the unchanged path — the new guard only refuses a
+// GENUINELY closed-out worker, mirroring HeraWorkerAwaitingCloseout exactly.
+func TestSmoke_HeraReattachStillRestartsNonClosedOutWorker(t *testing.T) {
+	app, d := heraRepoApp(t)
+	orch := seedHeraOrch(t, d, "orch")
+	repo := d.Config().Projects["p"].Path
+	testutil.NoError(t, d.Add(&model.Task{ID: "tc", Name: "tc", Status: model.StatusInProgress, Project: "p", Worktree: repo, CreatedAt: time.Now()}))
+	coord, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: orch, Name: "coord", Kind: db.HeraKindCoordinator, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: coord.ID, ArgusTaskID: "tc", WorktreePath: repo + "#coord"})
+	testutil.NoError(t, err)
+
+	testutil.NoError(t, d.Add(&model.Task{ID: "tw", Name: "tw", Status: model.StatusInReview, Project: "p", Worktree: repo, CreatedAt: time.Now()}))
+	worker, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: orch, Name: "wkr", Kind: db.HeraKindWorker, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	// Distinct WorktreePath from the coordinator's binding (DB uniqueness is
+	// per (worktree_path, orchestrator_id) metadata, independent of the task's
+	// actual real Worktree dir both roles share above for runner.Start to cd into).
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: worker.ID, ArgusTaskID: "tw", WorktreePath: repo + "#worker"})
+	testutil.NoError(t, err)
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+	t.Cleanup(func() { app.runner.StopAll() })
+	heraTabCursorOnWorker(t, app, sim)
+
+	sim.InjectKey(tcell.KeyEnter, 0, 0) // Enter → reattach (dead session, NOT closed out)
+
+	deadline := time.Now().Add(3 * time.Second)
+	started := false
+	for time.Now().Before(deadline) {
+		syncUI(t, app.tapp)
+		if got, _ := d.Get("tw"); got != nil && got.SessionID != "" {
+			started = true
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	testutil.Equal(t, started, true)
+}
+
 // TestHandleSessionExitUI_RerenderRestartsWhenViewedViaHeraPane is the BUG-076
 // regression: a size-drift kick's auto-restart (handleSessionExitUI's
 // pendingRerenderRestart branch) used to gate "is the user still watching"

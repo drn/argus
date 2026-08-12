@@ -134,3 +134,31 @@ Derived from: `internal/hera/accept.go` (`AcceptRole`), `internal/mcp/hera.go` (
 
 - **WHEN** `hera_accept` flips a task's status to complete
 - **THEN** the target role's live session, if any, is left completely untouched – no stop, no restart, no detach
+
+### Requirement: Enter refuses to restart a dead-session worker awaiting close-out
+
+Pressing `Enter` on a hera rail row with a DEAD session (no live process at all) SHALL start it via the ordinary dead-session restart path (`startSession`) for a coordinator role, UNCHANGED. For a worker or freelance role, the system SHALL first check the SAME `HeraWorkerAwaitingCloseout` predicate the `Worker revive restores in_progress` requirement's guard uses (`meta:hera.ready_to_close`, or a terminal `done`/`failed` role-status) and, if the task is awaiting close-out, SHALL refuse to restart the session: the task's status is left completely unchanged and a clear status-bar message is surfaced instead (e.g. "Task is closed out – use hera_revive to reopen").
+
+This closes a gap discovered by live-testing `hera_accept`: the dead-session branch previously called `startSession` unconditionally for every role kind, which unconditionally flips the task to in_progress with zero Hera awareness. Because the underlying session had nothing left to resume, it exited almost immediately, and the ordinary post-exit rule then rolled the task to in_review – silently undoing an explicit `hera_accept` (or a self-reported-done worker's `ready_to_close` stamp) even though `Enter` is not itself an explicit revive. The refusal makes the "a premature accept can only be undone via an explicit revive" guarantee (`hera_accept`'s own tool description) hold for every UI trigger, not only the two that happened to call `ReviveHeraWorkerToInProgress` already (the live-session kick and `hera_revive`).
+
+Derived from: `internal/tui/heraactions.go` (`heraReattach`, `heraTaskClosedOut`), `internal/db/hera.go` (`HeraWorkerAwaitingCloseout`).
+
+#### Scenario: Enter on a dead-session accepted (complete) worker is refused
+
+- **WHEN** a worker's task is `complete` (accepted via `hera_accept`) and has no live session, and the operator presses `Enter` on its rail row
+- **THEN** no session is started, the task's status stays `complete`, and the status bar shows a closed-out message
+
+#### Scenario: Enter on a dead-session self-reported-done worker is refused
+
+- **WHEN** a worker's task carries `meta:hera.ready_to_close` (or a terminal `done`/`failed` role-status) and has no live session, and the operator presses `Enter` on its rail row
+- **THEN** no session is started and the task's status is left unchanged
+
+#### Scenario: Enter still restarts a dead session with no close-out marker
+
+- **WHEN** a worker or freelance task has no live session and carries no close-out marker
+- **THEN** `Enter` restarts it exactly as before this change
+
+#### Scenario: Coordinators are unaffected
+
+- **WHEN** a coordinator role's dead session is reattached via `Enter`
+- **THEN** it is restarted unconditionally, exactly as before this change – coordinators have no close-out concept

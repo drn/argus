@@ -951,8 +951,10 @@ func (a *App) heraDoBounceWorker(role *hera.RoleView) {
 // role. Two branches:
 //
 //   - DEAD session (runner has no live session) → restart it via startSession
-//     (resumes via --session-id when a SessionID exists). Same as before, and
-//     the only path used for coordinators.
+//     (resumes via --session-id when a SessionID exists), UNLESS the selection
+//     is a worker/freelance role whose task is awaiting coordinator close-out
+//     (add-enter-closeout-guard) — see heraTaskClosedOut. Coordinators are
+//     unaffected (no ready_to_close concept; always restarted).
 //   - LIVE worker/freelance session → it may be SIGTSTP-suspended or otherwise
 //     stuck while still "alive" (Alive() can't tell a stopped process from a
 //     running one). Revive it the same way the Tasks pane reconnects a live
@@ -972,6 +974,19 @@ func (a *App) heraReattach(sel hera.Selection) {
 	}
 	sess := a.runner.Get(taskID)
 	if sess == nil || !sess.Alive() {
+		if sel.IsWorkerOrFreelance() {
+			closedOut, err := a.heraTaskClosedOut(taskID)
+			if err != nil {
+				uxlog.Log("[hera-view] reattach: closeout check failed task=%s: %v", taskID, err)
+				a.statusbar.SetError("Reattach check failed: " + err.Error())
+				return
+			}
+			if closedOut {
+				uxlog.Log("[hera-view] reattach: refusing dead-session restart for closed-out task %s (%s)", t.ID, t.Name)
+				a.statusbar.SetError("Task is closed out — use hera_revive to reopen")
+				return
+			}
+		}
 		uxlog.Log("[hera-view] reattach: restarting dead session for task %s (%s)", t.ID, t.Name)
 		a.startSession(t)
 		a.heraRefresh()
@@ -983,6 +998,30 @@ func (a *App) heraReattach(sel hera.Selection) {
 		return
 	}
 	a.reviveHeraWorker(t, sess)
+}
+
+// heraTaskClosedOut reports whether taskID's worker/freelance binding is
+// awaiting coordinator close-out — the SAME guard ReviveHeraWorkerToInProgress
+// applies (meta:hera.ready_to_close, or a terminal done/failed role-status),
+// reused here so heraReattach's dead-session branch can't casually undo an
+// accepted or self-reported-done worker's completion just because its session
+// happens to be dead (add-enter-closeout-guard: pressing Enter on such a row
+// used to call startSession unconditionally, which flips the task straight to
+// in_progress with zero Hera awareness — the session then exits almost
+// immediately with nothing to resume, and the ordinary post-exit rule rolls it
+// to in_review, silently undoing the close-out).
+//
+// Local-mode only: heraReattach's only caller (the native Hera page) already
+// renders an "unavailable" banner in remote mode (see gotchas/remote-tui.md),
+// so this type assertion always succeeds in practice; the false/nil fallback
+// exists only so a future remote-reachable caller degrades safely (fails
+// open, matching the pre-fix behavior) instead of panicking.
+func (a *App) heraTaskClosedOut(taskID string) (bool, error) {
+	dbv, ok := a.db.(*db.DB)
+	if !ok {
+		return false, nil
+	}
+	return dbv.HeraWorkerAwaitingCloseout(taskID)
 }
 
 // reviveHeraWorker brings a live-but-stuck worker session back. A SIGTSTP'd or

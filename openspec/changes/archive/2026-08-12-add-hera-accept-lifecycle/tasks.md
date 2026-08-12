@@ -94,3 +94,14 @@
 - [x] 8.3 Sync every place quoting or paraphrasing the old wording so nothing in the code/specs/docs contradicts the actual string: `internal/mcp/hera.go`'s `hera_accept` tool `Description`, the `hera-coordination` base spec's `hera_accept` requirement + scenarios (both `openspec/specs/` and this archived snapshot), and this change's own `design.md`/`proposal.md` prose.
 - [x] 8.4 New commit on top (not amended into the original), per the coordinator's explicit instruction – keeps this stack's history clean for the eventual combined PR.
 - [x] 8.5 Re-run `make pre-pr` and confirm it still passes clean.
+
+## 9. Post-review refinement: Enter on a closed-out dead-session worker must refuse, not restart
+
+**Depends on:** Stages 1-8 (found via a coordinator's live-testing session: accept a self-reported-done worker with a dead session, then press `Enter` on the now-`complete` row)
+
+- [x] 9.1 `internal/db/hera.go`: export `heraWorkerAwaitingCloseout` as `HeraWorkerAwaitingCloseout` so the TUI can reuse the exact same close-out predicate `ReviveHeraWorkerToInProgress` already applies; update its one internal call site and doc comment. No behavior change to `ReviveHeraWorkerToInProgress` itself.
+- [x] 9.2 `internal/tui/heraactions.go`: `heraReattach`'s dead-session branch calls a new `heraTaskClosedOut(taskID)` helper for worker/freelance selections (`sel.IsWorkerOrFreelance()`) BEFORE calling `startSession`; on a closeout-check error, refuse and surface the error; when awaiting close-out, refuse (no status write, no session start) and set a clear status-bar message ("Task is closed out – use hera_revive to reopen"). Coordinators are unaffected (unconditional restart, unchanged).
+- [x] 9.3 `internal/tui/heraactions_test.go`: `TestSmoke_HeraReattachRefusesClosedOutDeadWorker` (table-driven: accepted-complete + ready_to_close, self-reported-done in_review + ready_to_close, in_review + terminal role-status done) asserts Enter is refused – task status unchanged, no `SessionID` set, status bar shows the closed-out message.
+- [x] 9.4 `internal/tui/heraactions_test.go`: `TestSmoke_HeraReattachStillRestartsNonClosedOutWorker` regression-guards the unchanged path – a dead-session worker with NO close-out marker still restarts normally through `startSession`.
+- [x] 9.5 Sync the `hera-coordination` spec (both `openspec/specs/` and this archived snapshot) with a new "Enter refuses to restart a dead-session worker awaiting close-out" requirement, and this change's own `design.md`/`proposal.md` prose.
+- [x] 9.6 Run `make pre-pr` and confirm it passes clean (the documented ARGUS_* env-leak on 2 unrelated `internal/agent` tests inside this hera-worker sandbox is pre-existing – confirmed clean with those excluded; the 3 stdlib-only `govulncheck` findings are confirmed pre-existing on a clean tree too, toolchain-only, CI runs `continue-on-error`).

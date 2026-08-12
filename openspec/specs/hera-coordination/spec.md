@@ -432,6 +432,34 @@ Derived from: `internal/db/hera.go` (`ReviveHeraWorkerToInProgress`), `internal/
 - **WHEN** a coordinator calls `hera_revive` on a stuck worker and the kick succeeds
 - **THEN** the same `ReviveHeraWorkerToInProgress` guard applies (restored unless awaiting close-out), exactly as the TUI's Enter-key kick
 
+### Requirement: Enter refuses to restart a dead-session worker awaiting close-out
+
+Pressing `Enter` on a hera rail row with a DEAD session (no live process at all) SHALL start it via the ordinary dead-session restart path (`startSession`) for a coordinator role, UNCHANGED. For a worker or freelance role, the system SHALL first check the SAME `HeraWorkerAwaitingCloseout` predicate the `Worker revive restores in_progress` requirement's guard uses (`meta:hera.ready_to_close`, or a terminal `done`/`failed` role-status) and, if the task is awaiting close-out, SHALL refuse to restart the session: the task's status is left completely unchanged and a clear status-bar message is surfaced instead (e.g. "Task is closed out – use hera_revive to reopen").
+
+This closes a gap discovered by live-testing `hera_accept`: the dead-session branch previously called `startSession` unconditionally for every role kind, which unconditionally flips the task to in_progress with zero Hera awareness. Because the underlying session had nothing left to resume, it exited almost immediately, and the ordinary post-exit rule then rolled the task to in_review – silently undoing an explicit `hera_accept` (or a self-reported-done worker's `ready_to_close` stamp) even though `Enter` is not itself an explicit revive. The refusal makes the "a premature accept can only be undone via an explicit revive" guarantee (`hera_accept`'s own tool description) hold for every UI trigger, not only the two that happened to call `ReviveHeraWorkerToInProgress` already (the live-session kick and `hera_revive`).
+
+Derived from: `internal/tui/heraactions.go` (`heraReattach`, `heraTaskClosedOut`), `internal/db/hera.go` (`HeraWorkerAwaitingCloseout`).
+
+#### Scenario: Enter on a dead-session accepted (complete) worker is refused
+
+- **WHEN** a worker's task is `complete` (accepted via `hera_accept`) and has no live session, and the operator presses `Enter` on its rail row
+- **THEN** no session is started, the task's status stays `complete`, and the status bar shows a closed-out message
+
+#### Scenario: Enter on a dead-session self-reported-done worker is refused
+
+- **WHEN** a worker's task carries `meta:hera.ready_to_close` (or a terminal `done`/`failed` role-status) and has no live session, and the operator presses `Enter` on its rail row
+- **THEN** no session is started and the task's status is left unchanged
+
+#### Scenario: Enter still restarts a dead session with no close-out marker
+
+- **WHEN** a worker or freelance task has no live session and carries no close-out marker
+- **THEN** `Enter` restarts it exactly as before this change
+
+#### Scenario: Coordinators are unaffected
+
+- **WHEN** a coordinator role's dead session is reattached via `Enter`
+- **THEN** it is restarted unconditionally, exactly as before this change – coordinators have no close-out concept
+
 ### Requirement: hera_move relocates the caller's binding to a different orchestrator
 
 The system SHALL, on `hera_move`, relocate the calling task's live hera binding to a different orchestrator: it SHALL resolve the caller's current live binding (via the same cwd→task→binding resolution used elsewhere, accepting an optional `from_orchestrator` to disambiguate when the task holds 2+ live bindings), then — transactionally — end that binding (`ended_at`/`end_reason: "moved"`) and create a new role+binding of kind `worker` or `freelance` under the target `orchestrator` (rejecting `coordinator`, mirroring `hera_join`). It SHALL reject the call, ending and creating nothing, when the calling task holds no live binding at all (directing the caller to `hera_join` or `hera_new_orchestrator` instead — there is nothing to move), when the resolved source orchestrator equals the target orchestrator (a no-op; directing the caller to `hera_join` without `role_name` to see its current binding), or when the resolved SOURCE binding's role is coordinator-kind (a coordinator's binding IS its orchestrator's coordination — ending it would orphan the whole subtree the coordinator was running, leaving a disconnected worker/freelance stub under the target with no structural link back; the rejection names the caller's role and orchestrator and directs the caller to ask a human to use the Hera TUI's `J` adopt/reparent key instead, since no agent-facing tool nests an existing coordinator + subtree under a new parent). The response SHALL report the source orchestrator and role name that were moved, plus the new binding id. Required args: `cwd`, `orchestrator`, `role_name`, `kind`. Optional args: `from_orchestrator`, `status`.

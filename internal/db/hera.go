@@ -1158,7 +1158,7 @@ func (d *DB) ReviveHeraWorkerToInProgress(taskID string) (bool, error) {
 	if t == nil || (t.Status != model.StatusInReview && t.Status != model.StatusComplete) {
 		return false, nil // only un-roll a review-parked or accepted worker; never clobber pending/in_progress
 	}
-	awaiting, err := d.heraWorkerAwaitingCloseout(taskID)
+	awaiting, err := d.HeraWorkerAwaitingCloseout(taskID)
 	if err != nil {
 		return false, err
 	}
@@ -1171,14 +1171,17 @@ func (d *DB) ReviveHeraWorkerToInProgress(taskID string) (bool, error) {
 	return true, nil
 }
 
-// heraWorkerAwaitingCloseout reports whether a worker-bound task is in the
+// HeraWorkerAwaitingCloseout reports whether a worker-bound task is in the
 // terminal "awaiting coordinator close-out" state: either it carries
 // meta:hera.ready_to_close=true (RollHeraWorkerToReview's done / clean-exit
 // stamp) or any of its live worker roles has a terminal role-status (done or
 // failed). Used by ReviveHeraWorkerToInProgress to refuse to un-roll a
-// genuinely-finished worker. A role with no status row, or whose status is
-// non-terminal (idle/working/blocked), does not count.
-func (d *DB) heraWorkerAwaitingCloseout(taskID string) (bool, error) {
+// genuinely-finished worker, AND by the TUI's heraReattach (add-enter-closeout-
+// guard) to refuse to restart a dead session for a closed-out worker/freelance
+// task — the same guard, reused rather than reimplemented, so the two paths
+// can't drift. A role with no status row, or whose status is non-terminal
+// (idle/working/blocked), does not count.
+func (d *DB) HeraWorkerAwaitingCloseout(taskID string) (bool, error) {
 	meta, err := d.ListMeta(taskID, HeraMetaNamespace)
 	if err != nil {
 		return false, err
