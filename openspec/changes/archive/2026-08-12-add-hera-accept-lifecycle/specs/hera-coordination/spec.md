@@ -162,3 +162,31 @@ Derived from: `internal/tui/heraactions.go` (`heraReattach`, `heraTaskClosedOut`
 
 - **WHEN** a coordinator role's dead session is reattached via `Enter`
 - **THEN** it is restarted unconditionally, exactly as before this change – coordinators have no close-out concept
+
+### Requirement: The size-drift kick refuses to auto-restart a closed-out worker
+
+The TUI's size-drift kill+resume "kick" (`handleSessionExitUI`'s `pendingRerenderRestart` branch, which auto-restarts a task's session in place when the operator is still viewing it after a stale-PTY-width repair stop) SHALL, for a worker or freelance task, check the SAME `HeraWorkerAwaitingCloseout` predicate the `Enter refuses to restart a dead-session worker awaiting close-out` requirement's guard uses, evaluated from the task's state as it stood BEFORE this exit's own status-transition logic ran. If the task is awaiting close-out, the kick SHALL skip the restart silently: no status write, no session start, the task left exactly as close-out left it. A coordinator task is unaffected — the kick always proceeds for it, exactly as before this change.
+
+This is a SIBLING gap to the Enter-key requirement above, not a duplicate of it: the size-drift kick is a keypress-less entry point (an operator merely navigating onto a closed-out worker's row at a different terminal width can trigger it) into the exact same unconditional-restart hole `heraReattach`'s Enter-path guard closed — confirmed live via daemon-log correlation (`StopSession` → `StartSession(resume=true)` within milliseconds of the operator viewing the row, no `Enter` press at all). Because this call site has no `hera.Selection` to call `IsWorkerOrFreelance()` on (only a bare task ID), the worker/freelance scoping is resolved via a new predicate, `TaskHoldsLiveHeraWorkerOrFreelanceBinding`, before delegating to the shared close-out check. The pre-transition-snapshot requirement matters because this same exit handler's `StatusInProgress` branch can itself stamp `ready_to_close=true` on a healthy, merely-idle in-progress worker as a side effect of the very same exit event (the BUG-050 roll) — checking the guard afterward would misread that fresh stamp as a pre-existing close-out and wrongly refuse to restart an actively-in-flight worker.
+
+Derived from: `internal/tui/app.go` (`handleSessionExitUI`), `internal/tui/heraactions.go` (`heraKickRestartClosedOut`), `internal/db/hera.go` (`HeraWorkerAwaitingCloseout`, `TaskHoldsLiveHeraWorkerOrFreelanceBinding`).
+
+#### Scenario: The kick refuses to restart an accepted (complete) worker
+
+- **WHEN** a worker's task is `complete` (accepted via `hera_accept`) and the size-drift kick stops its session while the operator is still viewing the row
+- **THEN** no session is restarted, the task's status stays `complete`
+
+#### Scenario: The kick refuses to restart a self-reported-done worker
+
+- **WHEN** a worker's task carries `meta:hera.ready_to_close` (or a terminal `done`/`failed` role-status) and the size-drift kick stops its session while the operator is still viewing the row
+- **THEN** no session is restarted and the task's status is left unchanged
+
+#### Scenario: The kick still restarts a healthy in-progress worker
+
+- **WHEN** a worker's task is genuinely in_progress (not awaiting close-out) and the size-drift kick stops its session while the operator is still viewing the row
+- **THEN** the kick restarts the session in place exactly as before this change, even though the exit handler's own BUG-050 roll may have momentarily stamped `ready_to_close` as a side effect of this same exit
+
+#### Scenario: Coordinators are unaffected
+
+- **WHEN** a coordinator task's session is stopped by the size-drift kick while the operator is still viewing it
+- **THEN** the kick restarts it unconditionally, exactly as before this change – coordinators have no close-out concept

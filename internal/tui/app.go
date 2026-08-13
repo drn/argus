@@ -1847,6 +1847,22 @@ func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool)
 		uxlog.Log("[tui] handleSessionExitUI: task %s lookup failed: %v", taskID, err)
 		return
 	}
+	// Snapshot whether taskID was ALREADY awaiting hera close-out BEFORE
+	// anything below mutates it (add-fix-resize-kick-closeout). The
+	// StatusInProgress branch just below can itself stamp ready_to_close=true
+	// as a side effect of THIS SAME exit (BUG-050's roll fires for any
+	// in-progress worker exit, kick-induced or not) — the pendingRerenderRestart
+	// guard further down must judge the task's state walking IN to this call,
+	// not a closeout this call itself just created, or every routine
+	// size-drift kick of an idle-but-still-in-progress worker would wrongly
+	// refuse to restart. Only computed when the kick-restart branch could
+	// possibly fire (mirrors that branch's own gate) to skip the lookup on
+	// the common exit path.
+	var kickClosedOut bool
+	var kickClosedOutErr error
+	if !cleanExit && a.pendingRerenderRestart[taskID] {
+		kickClosedOut, kickClosedOutErr = a.heraKickRestartClosedOut(taskID)
+	}
 	if t.Worktree != "" {
 		// Snapshot the task for the capture goroutine, which resolves the
 		// backend and decides whether to recapture (agent.NeedsSessionRecapture)
@@ -1991,6 +2007,21 @@ func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool)
 		stillViewing := a.isViewingTaskSession(taskID)
 		if !stillViewing {
 			uxlog.Log("[tui] rerender: user navigated away from task=%s, skipping auto-restart", taskID)
+			a.statusbar.ClearInfo()
+		} else if kickClosedOutErr != nil {
+			// Fail closed, mirroring heraReattach's Enter-path guard: an
+			// uncertain closeout check skips the auto-repair rather than risk
+			// clobbering a task that turns out to be closed out.
+			uxlog.Log("[tui] rerender: closeout check failed for task=%s, skipping auto-restart: %v", taskID, kickClosedOutErr)
+			a.statusbar.ClearInfo()
+		} else if kickClosedOut {
+			// add-fix-resize-kick-closeout: a worker/freelance task awaiting
+			// hera close-out (accepted, or self-reported-done) never gets the
+			// stale-width repair — its session stays stopped and its status
+			// stays exactly as close-out left it. Nobody should be actively
+			// typing into an accepted task, so the repair simply doesn't run;
+			// this is the same trade heraReattach's Enter-path guard makes.
+			uxlog.Log("[tui] rerender: refusing size-drift kick restart for closed-out task %s", taskID)
 			a.statusbar.ClearInfo()
 		} else if t, err := a.db.Get(taskID); err == nil && t != nil {
 			uxlog.Log("[tui] rerender: restarting task=%s session=%s", t.ID, t.SessionID)

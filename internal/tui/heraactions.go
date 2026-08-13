@@ -1024,6 +1024,34 @@ func (a *App) heraTaskClosedOut(taskID string) (bool, error) {
 	return dbv.HeraWorkerAwaitingCloseout(taskID)
 }
 
+// heraKickRestartClosedOut is the SIBLING guard to heraTaskClosedOut, applied
+// at handleSessionExitUI's pendingRerenderRestart branch (the size-drift
+// kill+resume "kick", BUG-074/BUG-076) instead of heraReattach's Enter-key
+// path — a second, keypress-less entry point into the exact same unconditional
+// startSession-on-a-closed-out-task gap (add-fix-resize-kick-closeout). That
+// branch has no hera.Selection to call IsWorkerOrFreelance() on (it only has a
+// bare taskID), so this resolves the equivalent scoping itself via
+// TaskHoldsLiveHeraWorkerOrFreelanceBinding before delegating to the SAME
+// heraTaskClosedOut predicate, reused rather than reimplemented — keeping a
+// coordinator's own task unaffected (always eligible for the kick-restart,
+// exactly as heraReattach leaves it) even though a coordinator's role status
+// CAN independently reach `done` via BUG-014's header s/S cycling.
+//
+// Local-mode only, matching heraTaskClosedOut: the false/nil fallback lets a
+// future remote-reachable caller fail open (restart proceeds) rather than
+// panic.
+func (a *App) heraKickRestartClosedOut(taskID string) (bool, error) {
+	dbv, ok := a.db.(*db.DB)
+	if !ok {
+		return false, nil
+	}
+	workerOrFreelance, err := dbv.TaskHoldsLiveHeraWorkerOrFreelanceBinding(taskID)
+	if err != nil || !workerOrFreelance {
+		return false, err
+	}
+	return a.heraTaskClosedOut(taskID)
+}
+
 // reviveHeraWorker brings a live-but-stuck worker session back. A SIGTSTP'd or
 // otherwise stalled agent is idle (no recent output) and not parked at a user
 // prompt; that is the signature we revive. The revive reuses the runner's

@@ -1020,6 +1020,29 @@ func (d *DB) TaskHoldsLiveHeraWorkerBinding(taskID string) (bool, error) {
 	return n > 0, nil
 }
 
+// TaskHoldsLiveHeraWorkerOrFreelanceBinding reports whether taskID has at
+// least one live binding whose role is worker- OR freelance-kind — the same
+// pair hera.Selection.IsWorkerOrFreelance() covers for a rail Selection, for
+// callers that only have a bare taskID (add-fix-resize-kick-closeout). Used to
+// scope the size-drift kick's auto-restart guard (heraKickRestartClosedOut) to
+// the same role kinds heraReattach's Enter-key guard applies to, so a
+// coordinator whose own role status happens to be manually stepped to `done`
+// (BUG-014's header `s`/`S` cycling) is never mistaken for a closed-out
+// worker — coordinators stay unaffected, same as the Enter path.
+func (d *DB) TaskHoldsLiveHeraWorkerOrFreelanceBinding(taskID string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var n int
+	err := d.conn.QueryRow(
+		`SELECT COUNT(*) FROM hera_bindings b JOIN hera_roles r ON r.id = b.role_id
+		 WHERE b.argus_task_id=? AND b.ended_at IS NULL AND r.kind IN (?, ?)`,
+		taskID, string(HeraKindWorker), string(HeraKindFreelance)).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("task holds live worker/freelance binding: %w", err)
+	}
+	return n > 0, nil
+}
+
 // ManagedTaskIDs returns the set of argus task IDs that currently hold at least
 // one live hera binding (ended_at IS NULL) to a coordinator- or worker-kind
 // role. Freelance-kind bindings do NOT count. Used by the Tasks tab
