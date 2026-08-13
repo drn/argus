@@ -238,19 +238,28 @@ func (a *App) heraOpenRename(sel hera.Selection) {
 
 // heraHide is the `a` key: Tier-1 HIDE/unhide of the selected WORKER (BUG-022).
 // Hiding archives the role row so it nests in its PARENT coordinator's "Archive
-// (N)" expando; the session + worktree stay ALIVE (no detach) and it is a
-// reversible toggle (pressing `a` on a hidden worker unhides it exactly), so
-// there is NO confirmation. Hide applies to workers / sub-coordinators only — on
-// a top-level coordinator or orchestrator header (no parent archive to nest
+// (N)" expando; the worktree stays ALIVE and it is a reversible toggle
+// (pressing `a` on a hidden worker unhides it exactly), so there is NO
+// confirmation. Hide applies to workers / sub-coordinators only – on a
+// top-level coordinator or orchestrator header (no parent archive to nest
 // under) it surfaces feedback and is a no-op. A sub-coordinator rendered as a
 // bridging worker row is worker-kind, so it hides through this same path; its
-// whole subtree collapses into the parent's Archive expando (Q3 — see rail.go
+// whole subtree collapses into the parent's Archive expando (Q3 – see rail.go
 // appendOrchWorkers), structure retained.
 //
-// Q2 (LOCKED): HIDE is RAIL-ONLY — it archives the hera ROLE row only and does
-// NOT db.SetArchived the bound argus task. The worker keeps running and still
-// shows in the Tasks tab; only NUKE (Ctrl+D/C) archives the task + reclaims the
-// worktree. Un-hide just clears archived_at and the rail row returns exactly.
+// On the HIDE direction only (add-hera-accept-lifecycle), the role's live
+// agent session is ALSO stopped (backgrounded, mirroring
+// heraReclaimAndArchiveTask's own session-stop pattern) – freeing its memory
+// is a nice-to-have follow-through of the operator's choice to hide, never a
+// requirement of Hera task completion itself, which stays a wholly separate
+// concern. The UN-HIDE direction never touches any session. Either direction
+// never touches the worktree or branch.
+//
+// Q2 (LOCKED): HIDE is RAIL-ONLY – it archives the hera ROLE row only and does
+// NOT db.SetArchived the bound argus task. The worker's argus task row stays
+// untouched and still shows in the Tasks tab; only NUKE (Ctrl+D/C) archives
+// the task + reclaims the worktree. Un-hide just clears archived_at and the
+// rail row returns exactly.
 func (a *App) heraHide(sel hera.Selection) {
 	if a.heraOps == nil {
 		return
@@ -260,9 +269,18 @@ func (a *App) heraHide(sel hera.Selection) {
 		a.statusbar.SetError("Hide applies to workers and sub-coordinators")
 		return
 	}
-	if err := a.heraOps.ArchiveToggle(sel); err != nil {
+	archived, err := a.heraOps.ArchiveToggle(sel)
+	if err != nil {
 		a.statusbar.SetError("Hide failed: " + err.Error())
 		return
+	}
+	if archived && r.TaskID != "" && a.runner.HasSession(r.TaskID) {
+		taskID := r.TaskID
+		heraGoSafe("hide: stop session "+taskID, func() {
+			if sErr := a.runner.Stop(taskID); sErr != nil {
+				uxlog.Log("[hera-view] hide: stop session failed task=%s: %v", taskID, sErr)
+			}
+		})
 	}
 	a.heraRefresh()
 }
@@ -343,11 +361,17 @@ func (a *App) heraOpenDelete(sel hera.Selection) {
 		a.heraCascadeNukeFrom(sel.BridgeChildOrchID)
 	case sel.Role != nil:
 		r := sel.Role
-		msg := "Removes the role from the rail and ends its binding (row retained for DB recovery)"
 		if r.Live && a.heraTaskSolelyBoundTo(r) {
-			// Sole binding → reclaim the worktree and archive the task too.
-			msg = "Stops the session, reclaims its worktree + branch, removes the role from the rail, and archives the task (all rows retained for DB recovery)"
-		} else if r.Live {
+			// Sole binding → reclaim the worktree and archive the task too. This
+			// is the ONE nuke path the merge-safety review popup covers
+			// (add-merge-safety-review): classify Tier A off the UI thread, then
+			// open the popup with this task as its sole candidate, in place of
+			// the plain confirm below.
+			a.heraOpenSingleNukeReview(r)
+			return
+		}
+		msg := "Removes the role from the rail and ends its binding (row retained for DB recovery)"
+		if r.Live {
 			// Multi-bound task → preserve it (archiving/reclaiming it would strand the
 			// SAME task's binding in another orchestrator — violates isolation).
 			msg = "Removes this role from the rail + ends its binding; the task stays (it is bound elsewhere)"
@@ -411,13 +435,27 @@ func (a *App) heraNukeRole(r *hera.RoleView) {
 // (in_review only), mirroring RollHeraWorkerToReview's own never-clobber-active-
 // work invariant one step later in the chain: a task still pending or
 // in_progress at archive time (e.g. an operator force-nuking a live,
-// still-working role) is archived with its status left untouched, never forced
-// to complete. The check reads the task's OWN status column, so it applies
-// identically regardless of which hera role kind (coordinator/worker/freelance)
-// is being reclaimed — RollHeraWorkerToReview itself is worker-kind only, but a
-// task can reach in_review by that path, a coordinator's own workflow, or a
-// human hand-set value, and all three are equally "resting, safe to complete"
-// once an operator has chosen to nuke/reclaim it.
+// still-working role) is archived with its status left untouched AT THAT
+// INSTANT, never forced to complete synchronously. The check reads the task's
+// OWN status column, so it applies identically regardless of which hera role
+// kind (coordinator/worker/freelance) is being reclaimed — RollHeraWorkerToReview
+// itself is worker-kind only, but a task can reach in_review by that path, a
+// coordinator's own workflow, or a human hand-set value, and all three are
+// equally "resting, safe to complete" once an operator has chosen to
+// nuke/reclaim it.
+//
+// A task that IS in_progress (actively live) at this instant is a different
+// story: its OWN session stop below (heraGoSafe) fires next, and that stop's
+// eventual exit must still land the task at complete once observed — not get
+// permanently stranded at in_review by handleSessionExitUI's ordinary
+// crash/stop/fast-fail rule, which has no way to tell a deliberate, terminal
+// reclaim stop apart from a recoverable one (fix-nuke-completion-race). We
+// arm markHeraReclaimPending BEFORE backgrounding the stop, on this (the
+// tview main) goroutine, so handleSessionExitUI is guaranteed to see it set
+// by the time its own, later QueueUpdateDraw dispatch runs. The two "no exit
+// notification is ever coming" branches below (no live session; Stop errors)
+// clear it immediately instead, so it can never leak into a later, unrelated
+// exit of the same task ID.
 //
 // The session stop is backgrounded (heraGoSafe), not run inline: in a
 // daemon-connected TUI, HasSession/Stop are blocking RPC round-trips
@@ -437,11 +475,22 @@ func (a *App) heraReclaimAndArchiveTask(taskID string) (reclaimed bool) {
 		uxlog.Log("[hera-view] nuke: task %s not found, skip reclaim: %v", taskID, err)
 		return false
 	}
+	wasLive := t.Status == model.StatusInProgress
+	if wasLive {
+		a.markHeraReclaimPending(taskID)
+	}
 	heraGoSafe("nuke: stop session "+taskID, func() {
 		if a.runner.HasSession(taskID) {
 			if sErr := a.runner.Stop(taskID); sErr != nil {
 				uxlog.Log("[hera-view] nuke: stop session failed task=%s: %v", taskID, sErr)
+				if wasLive {
+					a.clearHeraReclaimPending(taskID)
+				}
 			}
+		} else if wasLive {
+			// No live session to stop — no exit notification is ever coming
+			// to consume the marker.
+			a.clearHeraReclaimPending(taskID)
 		}
 	})
 	cfg := a.db.Config()
@@ -506,6 +555,7 @@ func (a *App) heraCascadeNukeFrom(rootID int64) {
 	// modal never undercounts internal-bridge worktrees in a deep (≥2 level) subtree.
 	agents, worktrees, preserved := 0, 0, 0
 	seen := make(map[string]bool)
+	var reclaimIDs []string
 	for _, o := range subtree {
 		for i := range o.Roles {
 			r := &o.Roles[i]
@@ -523,14 +573,34 @@ func (a *App) heraCascadeNukeFrom(rootID int64) {
 				preserved++
 			} else {
 				worktrees++
+				reclaimIDs = append(reclaimIDs, r.TaskID)
 			}
 		}
 	}
 	title := "Nuke " + subtree[0].Name + " and its whole team?"
-	msg := fmt.Sprintf(
-		"This removes %d orchestrator(s) and %d agent(s) from the rail and reclaims %d worktree(s) + branch(es), stopping their sessions. Rows are retained (recoverable via the DB). %d task(s) bound in another orchestrator are preserved.",
-		len(subtree), agents, worktrees, preserved)
-	a.openHeraConfirm(title, msg, func() { a.heraDoCascadeNuke(subtree, subtreeIDs) })
+	openConfirm := func(confirmed int) {
+		msg := fmt.Sprintf(
+			"This removes %d orchestrator(s) and %d agent(s) from the rail and reclaims %d worktree(s) + branch(es), stopping their sessions. Rows are retained (recoverable via the DB). %d task(s) bound in another orchestrator are preserved. %d of %d reclaimed tasks confirmed merged.",
+			len(subtree), agents, worktrees, preserved, confirmed, len(reclaimIDs))
+		a.openHeraConfirm(title, msg, func() { a.heraDoCascadeNuke(subtree, subtreeIDs) })
+	}
+	if len(reclaimIDs) == 0 {
+		// Nothing to classify (e.g. every managed task is preserved) — open
+		// immediately rather than paying a goroutine + QueueUpdateDraw round
+		// trip for zero work.
+		openConfirm(0)
+		return
+	}
+	// Merge-safety classification (Tier A only, bounded concurrency) runs off
+	// the UI thread BEFORE the confirm opens — same compute-first idiom as the
+	// single-role popup, just folded into an augmented count rather than a
+	// full popup (cascade nuke keeps its existing all-or-nothing confirm;
+	// add-merge-safety-review's design explicitly scopes the review popup to
+	// the single-role and global-Cleanup entry points only).
+	go func() {
+		confirmed := a.classifyTasksConcurrently(reclaimIDs)
+		a.tapp.QueueUpdateDraw(func() { openConfirm(confirmed) })
+	}()
 }
 
 // heraTaskBoundOutside reports whether taskID holds at least one LIVE binding to
@@ -695,12 +765,40 @@ func (a *App) heraClearArchive(sel hera.Selection) {
 		return
 	}
 	reclaim, preserved := a.heraCountReclaimable(workers)
-	msg := fmt.Sprintf(
-		"Nukes %d hidden agent(s) and reclaims %d worktree(s)+branch(es). %d preserved (bound elsewhere). Rows are retained (recoverable via the DB).",
-		len(workers), reclaim, preserved)
-	a.openHeraConfirm("Clear "+scopeName+"'s archive?", msg, func() {
-		a.heraDoClearArchive(workers)
-	})
+	// Collect the task IDs that WILL actually be reclaimed (mirrors
+	// heraCountReclaimable's own reclaimable check) so the merge-safety
+	// classification below only checks tasks this action is about to destroy.
+	var reclaimIDs []string
+	for i := range workers {
+		tid := roleReclaimTask(&workers[i])
+		if tid != "" && a.heraTaskReclaimable(tid, workers[i].RoleID) {
+			reclaimIDs = append(reclaimIDs, tid)
+		}
+	}
+	openConfirm := func(confirmed int) {
+		msg := fmt.Sprintf(
+			"Nukes %d hidden agent(s) and reclaims %d worktree(s)+branch(es). %d preserved (bound elsewhere). Rows are retained (recoverable via the DB). %d of %d reclaimed tasks confirmed merged.",
+			len(workers), reclaim, preserved, confirmed, len(reclaimIDs))
+		a.openHeraConfirm("Clear "+scopeName+"'s archive?", msg, func() {
+			a.heraDoClearArchive(workers)
+		})
+	}
+	if len(reclaimIDs) == 0 {
+		// Nothing to classify (every hidden worker's task is bound elsewhere) —
+		// open immediately rather than paying a goroutine + QueueUpdateDraw
+		// round trip for zero work.
+		openConfirm(0)
+		return
+	}
+	// Tier A classification runs off the UI thread before the confirm opens —
+	// same compute-first idiom as the cascade path above; clear-archive keeps
+	// its own existing aggregate-count confirm rather than the review popup
+	// (add-merge-safety-review's design scopes the popup to single-role nuke
+	// and the global Cleanup action only).
+	go func() {
+		confirmed := a.classifyTasksConcurrently(reclaimIDs)
+		a.tapp.QueueUpdateDraw(func() { openConfirm(confirmed) })
+	}()
 }
 
 // heraDoClearArchive nukes each hidden role in the set and refreshes.
@@ -853,8 +951,10 @@ func (a *App) heraDoBounceWorker(role *hera.RoleView) {
 // role. Two branches:
 //
 //   - DEAD session (runner has no live session) → restart it via startSession
-//     (resumes via --session-id when a SessionID exists). Same as before, and
-//     the only path used for coordinators.
+//     (resumes via --session-id when a SessionID exists), UNLESS the selection
+//     is a worker/freelance role whose task is awaiting coordinator close-out
+//     (add-enter-closeout-guard) — see heraTaskClosedOut. Coordinators are
+//     unaffected (no ready_to_close concept; always restarted).
 //   - LIVE worker/freelance session → it may be SIGTSTP-suspended or otherwise
 //     stuck while still "alive" (Alive() can't tell a stopped process from a
 //     running one). Revive it the same way the Tasks pane reconnects a live
@@ -874,6 +974,19 @@ func (a *App) heraReattach(sel hera.Selection) {
 	}
 	sess := a.runner.Get(taskID)
 	if sess == nil || !sess.Alive() {
+		if sel.IsWorkerOrFreelance() {
+			closedOut, err := a.heraTaskClosedOut(taskID)
+			if err != nil {
+				uxlog.Log("[hera-view] reattach: closeout check failed task=%s: %v", taskID, err)
+				a.statusbar.SetError("Reattach check failed: " + err.Error())
+				return
+			}
+			if closedOut {
+				uxlog.Log("[hera-view] reattach: refusing dead-session restart for closed-out task %s (%s)", t.ID, t.Name)
+				a.statusbar.SetError("Task is closed out — use hera_revive to reopen")
+				return
+			}
+		}
 		uxlog.Log("[hera-view] reattach: restarting dead session for task %s (%s)", t.ID, t.Name)
 		a.startSession(t)
 		a.heraRefresh()
@@ -885,6 +998,58 @@ func (a *App) heraReattach(sel hera.Selection) {
 		return
 	}
 	a.reviveHeraWorker(t, sess)
+}
+
+// heraTaskClosedOut reports whether taskID's worker/freelance binding is
+// awaiting coordinator close-out — the SAME guard ReviveHeraWorkerToInProgress
+// applies (meta:hera.ready_to_close, or a terminal done/failed role-status),
+// reused here so heraReattach's dead-session branch can't casually undo an
+// accepted or self-reported-done worker's completion just because its session
+// happens to be dead (add-enter-closeout-guard: pressing Enter on such a row
+// used to call startSession unconditionally, which flips the task straight to
+// in_progress with zero Hera awareness — the session then exits almost
+// immediately with nothing to resume, and the ordinary post-exit rule rolls it
+// to in_review, silently undoing the close-out).
+//
+// Local-mode only: heraReattach's only caller (the native Hera page) already
+// renders an "unavailable" banner in remote mode (see gotchas/remote-tui.md),
+// so this type assertion always succeeds in practice; the false/nil fallback
+// exists only so a future remote-reachable caller degrades safely (fails
+// open, matching the pre-fix behavior) instead of panicking.
+func (a *App) heraTaskClosedOut(taskID string) (bool, error) {
+	dbv, ok := a.db.(*db.DB)
+	if !ok {
+		return false, nil
+	}
+	return dbv.HeraWorkerAwaitingCloseout(taskID)
+}
+
+// heraKickRestartClosedOut is the SIBLING guard to heraTaskClosedOut, applied
+// at handleSessionExitUI's pendingRerenderRestart branch (the size-drift
+// kill+resume "kick", BUG-074/BUG-076) instead of heraReattach's Enter-key
+// path — a second, keypress-less entry point into the exact same unconditional
+// startSession-on-a-closed-out-task gap (add-fix-resize-kick-closeout). That
+// branch has no hera.Selection to call IsWorkerOrFreelance() on (it only has a
+// bare taskID), so this resolves the equivalent scoping itself via
+// TaskHoldsLiveHeraWorkerOrFreelanceBinding before delegating to the SAME
+// heraTaskClosedOut predicate, reused rather than reimplemented — keeping a
+// coordinator's own task unaffected (always eligible for the kick-restart,
+// exactly as heraReattach leaves it) even though a coordinator's role status
+// CAN independently reach `done` via BUG-014's header s/S cycling.
+//
+// Local-mode only, matching heraTaskClosedOut: the false/nil fallback lets a
+// future remote-reachable caller fail open (restart proceeds) rather than
+// panic.
+func (a *App) heraKickRestartClosedOut(taskID string) (bool, error) {
+	dbv, ok := a.db.(*db.DB)
+	if !ok {
+		return false, nil
+	}
+	workerOrFreelance, err := dbv.TaskHoldsLiveHeraWorkerOrFreelanceBinding(taskID)
+	if err != nil || !workerOrFreelance {
+		return false, err
+	}
+	return a.heraTaskClosedOut(taskID)
 }
 
 // reviveHeraWorker brings a live-but-stuck worker session back. A SIGTSTP'd or

@@ -1020,6 +1020,29 @@ func (d *DB) TaskHoldsLiveHeraWorkerBinding(taskID string) (bool, error) {
 	return n > 0, nil
 }
 
+// TaskHoldsLiveHeraWorkerOrFreelanceBinding reports whether taskID has at
+// least one live binding whose role is worker- OR freelance-kind — the same
+// pair hera.Selection.IsWorkerOrFreelance() covers for a rail Selection, for
+// callers that only have a bare taskID (add-fix-resize-kick-closeout). Used to
+// scope the size-drift kick's auto-restart guard (heraKickRestartClosedOut) to
+// the same role kinds heraReattach's Enter-key guard applies to, so a
+// coordinator whose own role status happens to be manually stepped to `done`
+// (BUG-014's header `s`/`S` cycling) is never mistaken for a closed-out
+// worker — coordinators stay unaffected, same as the Enter path.
+func (d *DB) TaskHoldsLiveHeraWorkerOrFreelanceBinding(taskID string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var n int
+	err := d.conn.QueryRow(
+		`SELECT COUNT(*) FROM hera_bindings b JOIN hera_roles r ON r.id = b.role_id
+		 WHERE b.argus_task_id=? AND b.ended_at IS NULL AND r.kind IN (?, ?)`,
+		taskID, string(HeraKindWorker), string(HeraKindFreelance)).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("task holds live worker/freelance binding: %w", err)
+	}
+	return n > 0, nil
+}
+
 // ManagedTaskIDs returns the set of argus task IDs that currently hold at least
 // one live hera binding (ended_at IS NULL) to a coordinator- or worker-kind
 // role. Freelance-kind bindings do NOT count. Used by the Tasks tab
@@ -1122,24 +1145,27 @@ func (d *DB) RollHeraWorkerFailed(taskID string) (bool, error) {
 }
 
 // ReviveHeraWorkerToInProgress is the precise inverse of RollHeraWorkerToReview
-// (BUG-B): it restores a worker-bound task from in_review back to in_progress
+// (BUG-B) AND of AcceptRole's completion flip (add-hera-accept-lifecycle): it
+// restores a worker-bound task from in_review OR complete back to in_progress
 // when its session is genuinely revived/resumed and working again. It is the
-// SINGLE shared helper behind BOTH revive triggers — the TUI's reviveHeraWorker
-// (KickRerender on a suspended worker) and the daemon's supervisor-mode startup
-// reattach (a session the supervisor confirms still alive) — so the two cannot
-// drift.
+// SINGLE shared helper behind every revive trigger – the TUI's reviveHeraWorker
+// (KickRerender on a suspended worker), the daemon's supervisor-mode startup
+// reattach (a session the supervisor confirms still alive), and hera_revive's
+// shared ReviveRole primitive – so none of them can drift.
 //
 // It acts ONLY when the task holds a live worker-kind binding AND is currently
-// in StatusInReview AND is NOT awaiting close-out. A worker is awaiting close-out
-// — and is LEFT in in_review — when it carries meta:hera.ready_to_close (the
-// BUG-050 done / clean-exit stamp set by RollHeraWorkerToReview) OR any of its
-// live worker roles has a terminal role-status (done or failed). That guard is
-// what preserves the #707 / BUG-050 invariant: a genuinely-finished worker never
-// auto-resumes — even though its idle session is still alive — because a worker
-// never self-completes; the coordinator/human closes it out or decides on a
-// failure. It never clobbers a complete/pending/in_progress task and never
-// touches the live session (DB status only). Returns (true, nil) when it
-// restored the task, (false, nil) on any no-op. Idempotent.
+// in StatusInReview or StatusComplete AND is NOT awaiting close-out. A worker
+// is awaiting close-out – and is LEFT at its current status – when it carries
+// meta:hera.ready_to_close (the BUG-050 done / clean-exit stamp set by
+// RollHeraWorkerToReview) OR any of its live worker roles has a terminal
+// role-status (done or failed). That guard is re-evaluated identically for
+// BOTH source statuses (never bypassed for the complete source): it preserves
+// the #707 / BUG-050 invariant that a genuinely-finished worker never
+// auto-resumes – even though its idle session is still alive – because a
+// worker never self-completes; the coordinator/human closes it out or decides
+// on a failure. It never clobbers a pending/in_progress task and never touches
+// the live session (DB status only). Returns (true, nil) when it restored the
+// task, (false, nil) on any no-op. Idempotent.
 func (d *DB) ReviveHeraWorkerToInProgress(taskID string) (bool, error) {
 	worker, err := d.TaskHoldsLiveHeraWorkerBinding(taskID)
 	if err != nil {
@@ -1152,10 +1178,10 @@ func (d *DB) ReviveHeraWorkerToInProgress(taskID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if t == nil || t.Status != model.StatusInReview {
-		return false, nil // only un-roll a review-parked worker; never clobber complete/pending/in_progress
+	if t == nil || (t.Status != model.StatusInReview && t.Status != model.StatusComplete) {
+		return false, nil // only un-roll a review-parked or accepted worker; never clobber pending/in_progress
 	}
-	awaiting, err := d.heraWorkerAwaitingCloseout(taskID)
+	awaiting, err := d.HeraWorkerAwaitingCloseout(taskID)
 	if err != nil {
 		return false, err
 	}
@@ -1168,14 +1194,17 @@ func (d *DB) ReviveHeraWorkerToInProgress(taskID string) (bool, error) {
 	return true, nil
 }
 
-// heraWorkerAwaitingCloseout reports whether a worker-bound task is in the
+// HeraWorkerAwaitingCloseout reports whether a worker-bound task is in the
 // terminal "awaiting coordinator close-out" state: either it carries
 // meta:hera.ready_to_close=true (RollHeraWorkerToReview's done / clean-exit
 // stamp) or any of its live worker roles has a terminal role-status (done or
 // failed). Used by ReviveHeraWorkerToInProgress to refuse to un-roll a
-// genuinely-finished worker. A role with no status row, or whose status is
-// non-terminal (idle/working/blocked), does not count.
-func (d *DB) heraWorkerAwaitingCloseout(taskID string) (bool, error) {
+// genuinely-finished worker, AND by the TUI's heraReattach (add-enter-closeout-
+// guard) to refuse to restart a dead session for a closed-out worker/freelance
+// task — the same guard, reused rather than reimplemented, so the two paths
+// can't drift. A role with no status row, or whose status is non-terminal
+// (idle/working/blocked), does not count.
+func (d *DB) HeraWorkerAwaitingCloseout(taskID string) (bool, error) {
 	meta, err := d.ListMeta(taskID, HeraMetaNamespace)
 	if err != nil {
 		return false, err

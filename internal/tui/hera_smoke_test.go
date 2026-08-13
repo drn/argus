@@ -13,6 +13,26 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
+// waitForMode polls (bounded, 2s) until app.mode == want, reading it safely
+// off the tview goroutine via readUI each iteration. add-merge-safety-review
+// made the cascade-nuke and clear-archive confirms open only after an
+// off-UI-thread Tier-A classification pass completes (QueueUpdateDraw), so
+// any test that triggers one of those confirms needs a real running event
+// loop (wireApp) plus this poll instead of asserting the mode synchronously.
+func waitForMode(t *testing.T, app *App, want viewMode) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var got viewMode
+	for time.Now().Before(deadline) {
+		readUI(t, app.tapp, func() { got = app.mode })
+		if got == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	testutil.Equal(t, got, want)
+}
+
 // idsContain reports whether ids contains want.
 func idsContain(ids []string, want string) bool {
 	for _, id := range ids {

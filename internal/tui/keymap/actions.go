@@ -122,6 +122,12 @@ const (
 	ActHeraAdopt     Action = "hera_rail.adopt"
 	ActHeraNewCoord  Action = "hera_rail.new_coordinator"
 	ActHeraClear     Action = "hera_rail.clear_archive"
+	// ActHeraCleanup (add-merge-safety-review) is the global Cleanup action:
+	// opens the merge-safety review popup over the full cross-project
+	// stuck-task backlog. Selection-INDEPENDENT like ActHeraNewCoord — it
+	// fires even on an empty rail, since its candidate set is never scoped to
+	// a coordinator.
+	ActHeraCleanup Action = "hera_rail.cleanup"
 )
 
 // defaultSpecs is THE source of truth for argus's built-in bindings, mirroring
@@ -167,7 +173,8 @@ var defaultSpecs = map[Context]map[Action]string{
 		ActHeraDelete: "ctrl+d", ActHeraSpawn: "w", ActHeraRename: "r",
 		ActHeraArchive: "a", ActHeraPin: "P", ActHeraStatAdv: "s", ActHeraStatRev: "S",
 		ActHeraKanbanAdv: "m", ActHeraKanbanRev: "M",
-		ActHeraAdopt: "J", ActHeraNewCoord: "n", ActHeraClear: "C",
+		ActHeraAdopt: "J", ActHeraNewCoord: "n", ActHeraClear: "c",
+		ActHeraCleanup: "C",
 	},
 }
 
@@ -208,7 +215,8 @@ var actionLabels = map[Action]string{
 	ActHeraPin: "toggle pin", ActHeraStatAdv: "advance status", ActHeraStatRev: "revert status",
 	ActHeraKanbanAdv: "advance kanban status (top-level coord)", ActHeraKanbanRev: "revert kanban status (top-level coord)",
 	ActHeraAdopt: "adopt freelancer / reparent coordinator", ActHeraNewCoord: "new coordinator (new-task modal)",
-	ActHeraClear: "clear coord's archive (nuke hidden agents)",
+	ActHeraClear:   "clear coord's archive (nuke hidden agents)",
+	ActHeraCleanup: "cleanup stuck-task backlog (all projects)",
 }
 
 // HelpRow is one rendered help line: the key chord and its action label.
@@ -275,5 +283,6 @@ var contextOrder = map[Context][]Action{
 	CtxSettings: {ActSettingsDown, ActSettingsUp, ActSettingsNew, ActSettingsEdit, ActSettingsDelete,
 		ActSettingsQuickAdd, ActSettingsApple, ActSettingsToggle, ActSettingsRun, ActSettingsModel},
 	CtxHeraRail: {ActHeraSpawn, ActHeraNewCoord, ActHeraRename, ActHeraArchive, ActHeraPin,
-		ActHeraStatAdv, ActHeraStatRev, ActHeraKanbanAdv, ActHeraKanbanRev, ActHeraAdopt, ActHeraClear, ActHeraDelete},
+		ActHeraStatAdv, ActHeraStatRev, ActHeraKanbanAdv, ActHeraKanbanRev, ActHeraAdopt, ActHeraClear,
+		ActHeraCleanup, ActHeraDelete},
 }

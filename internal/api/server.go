@@ -17,6 +17,7 @@ import (
 	"github.com/drn/argus/internal/clipboard"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/mcp"
+	"github.com/drn/argus/internal/mergesafety"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/notify"
 	"github.com/drn/argus/internal/push"
@@ -93,6 +94,30 @@ type Server struct {
 	// ticker and caches the latest snapshot; handleSystemMetrics serves it.
 	// Started in New, stopped in Shutdown.
 	metrics *sysmetrics.Collector
+
+	// cleanup tracks whether a merge-safety review background classification
+	// pass (openspec add-merge-safety-review) is currently running, so a
+	// second POST .../compute while one is in flight is a no-op. Cached
+	// verdicts themselves live in task_meta (namespace "cleanup"), not here —
+	// this only guards against a concurrent duplicate pass.
+	cleanup cleanupComputeState
+
+	// cleanupComputeFn is the test seam for the compute pass's actual work
+	// (mirrors pluginSubmitFn). Production leaves this nil, which resolves to
+	// s.runCleanupCompute; tests override it to control timing without
+	// spinning up real git/gh processes.
+	cleanupComputeFn func(ctx context.Context)
+
+	// classifyCoordinatorFn is the test seam for the coordinator-inferred
+	// safety pass's own coordinator classification call
+	// (add-coordinator-inferred-safety; mirrors cleanupComputeFn/
+	// pluginSubmitFn above). Production leaves this nil, which resolves to
+	// s.classifyCoordinatorTask (a real Tier A/B mergesafety.Classify call);
+	// tests override it to assert call counts (one classification per
+	// orchestrator, never a second hop into a grandparent orchestrator)
+	// without reaching into mergesafety's own private Tier B seam or
+	// spawning real git/gh processes.
+	classifyCoordinatorFn func(ctx context.Context, t *model.Task) (mergesafety.Verdict, error)
 }
 
 // SetNotifier wires the reliable pane-delivery service into the API server.

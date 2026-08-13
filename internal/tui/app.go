@@ -30,6 +30,7 @@ import (
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/launchagent"
 	"github.com/drn/argus/internal/macapps"
+	"github.com/drn/argus/internal/mergesafety"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/profiles"
 	"github.com/drn/argus/internal/scheduler"
@@ -76,10 +77,11 @@ const (
 	modeHelp
 	modeErrorModal
 	modePluginView
-	modeHeraInput      // Hera-view rename / spawn-prompt input modal
-	modeHeraConfirm    // Hera-view archive-of-live / delete confirmation modal
-	modeHeraOrchPicker // Hera-view `J` adopt/reparent orchestrator picker
-	modeCommandPalette // Global command palette (ctrl+k)
+	modeHeraInput        // Hera-view rename / spawn-prompt input modal
+	modeHeraConfirm      // Hera-view archive-of-live / delete confirmation modal
+	modeHeraOrchPicker   // Hera-view `J` adopt/reparent orchestrator picker
+	modeCommandPalette   // Global command palette (ctrl+k)
+	modeMergeSafetyPopup // Merge-safety review popup (single-role nuke / global Cleanup)
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -140,6 +142,33 @@ type App struct {
 	heraAdoptOps       *hera.AdoptOps
 	heraOrchPicker     *OrchPickerModal
 	heraOrchPickerPick func(*db.HeraOrchestrator)
+
+	// Merge-safety review popup (add-merge-safety-review) — created on demand
+	// by either the single-role nuke path (heraOpenDelete) or the global
+	// Cleanup action (heraOpenGlobalCleanup). mergeSafetyPopupOnClean is
+	// called with the operator's chosen scope + the popup's full candidate
+	// list on Clean safe/Clean all; never called on Cancel. mergeSafetyGen is
+	// bumped on every open/close so an in-flight classification goroutine (the
+	// global Cleanup poll loop) can detect the popup was closed/replaced out
+	// from under it and stop polling rather than reopening/repainting a stale
+	// dialog (mirrors startGen's staleness-guard pattern).
+	mergeSafetyPopup        *MergeSafetyPopup
+	mergeSafetyPopupOnClean func(scope mergeSafetyScope, candidates []mergeSafetyCandidate)
+	mergeSafetyGen          int
+
+	// maintenanceClientFactory builds the HTTP client the global Cleanup
+	// action uses to reach the daemon's own REST maintenance endpoints
+	// (add-merge-safety-review's rest-api delta). Defaults to
+	// a.newLocalMaintenanceClient; tests override it to point at an
+	// httptest.Server instead of a real local daemon.
+	maintenanceClientFactory func() (*localMaintenanceClient, error)
+
+	// classifyNukeCandidateFn is the Tier-A-only merge-safety check used by
+	// the single-role nuke review and the cascade/clear-archive count
+	// augmentation. Defaults to a.classifyNukeCandidate; tests override it to
+	// control classification timing deterministically (e.g. to exercise the
+	// single-role popup's staleness guard) without shelling out to real git.
+	classifyNukeCandidateFn func(taskID string) mergesafety.Verdict
 
 	// New task form (created on demand)
 	newTaskForm *NewTaskForm
@@ -371,6 +400,21 @@ type App struct {
 	// re-renders the conversation history at the current (wider) PTY.
 	pendingRerenderRestart map[string]bool
 
+	// pendingHeraReclaim marks tasks that were in_progress (actively live) at
+	// the moment a Hera nuke/reclaim (heraReclaimAndArchiveTask) fired their
+	// session stop. That stop is backgrounded (BUG-062: never block the tview
+	// goroutine on a bulk cascade's RPC round-trips), so its exit notification
+	// arrives independently and later, via handleSessionExitUI — which cannot
+	// otherwise distinguish a deliberate, terminal reclaim stop from an
+	// ordinary recoverable one and would land the task at in_review forever
+	// (fix-nuke-completion-race: the task is already archived with its hera
+	// binding ended by then, so nothing is left to ever revisit it). Guarded
+	// by a.mu (not tapp.QueueUpdateDraw) because it's cleared from both the
+	// tview main goroutine and the backgrounded nuke-stop goroutine, and
+	// several existing unit tests exercise heraReclaimAndArchiveTask with no
+	// tview event loop running.
+	pendingHeraReclaim map[string]bool
+
 	// lastAttachCols caches the panel cols at which we most recently evaluated
 	// the rerender predicate for each task. The gate is "panel size unchanged
 	// since the last attach" — if the user closes the agent view and reopens
@@ -539,6 +583,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 		idleUnvisited:          make(map[string]bool),
 		viewedWhileAgent:       make(map[string]bool),
 		pendingRerenderRestart: make(map[string]bool),
+		pendingHeraReclaim:     make(map[string]bool),
 		lastAttachCols:         make(map[string]uint16),
 		wtRoot:                 filepath.Join(db.DataDir(), "worktrees"),
 		clipboardWriter:        pbcopyWriter,
@@ -551,6 +596,8 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 	app.restartDaemonFn = app.restartDaemon
 	app.restartSupervisorFn = app.restartSupervisor
 	app.agentCountFn = app.liveAgentCount
+	app.maintenanceClientFactory = app.newLocalMaintenanceClient
+	app.classifyNukeCandidateFn = app.classifyNukeCandidate
 
 	app.settings = NewSettingsView(database)
 	app.settings.Keys = app.activeKeymap
@@ -787,6 +834,14 @@ func (a *App) buildUI() {
 	// Wired unconditionally like OnInfo/OnFocusChange — HeraPage.InputHandler
 	// itself no-ops in remote mode, so this is safe there too.
 	a.heraPage.OnSwitcher = a.openTaskSwitcher
+
+	// Global Cleanup (`c`, add-merge-safety-review) reaches the daemon's own
+	// REST maintenance endpoints rather than a.heraOps (unlike every other
+	// mutation callback below), so it's wired unconditionally here rather than
+	// inside the `if d, ok := a.db.(*db.DB)` block — heraOpenGlobalCleanup
+	// itself detects local vs. remote mode and surfaces a clear error rather
+	// than panicking or silently no-oping.
+	a.heraPage.OnCleanup = a.heraOpenGlobalCleanup
 
 	// Wire the hera panes' redraw callbacks exactly like the main agent pane:
 	// OnBranchChange is log-only (forceRedraw never Syncs), OnNeedRedraw bounces
@@ -1737,6 +1792,39 @@ func (a *App) isViewingTaskSession(taskID string) bool {
 	return viewingHeraTab && a.heraPage.IsBoundToTask(taskID)
 }
 
+// markHeraReclaimPending arms the fix-nuke-completion-race marker for taskID.
+// Called by heraReclaimAndArchiveTask on the tview main goroutine before it
+// backgrounds the task's session stop.
+func (a *App) markHeraReclaimPending(taskID string) {
+	a.mu.Lock()
+	a.pendingHeraReclaim[taskID] = true
+	a.mu.Unlock()
+}
+
+// clearHeraReclaimPending disarms the marker without consuming a terminal
+// decision — used when no exit notification is ever coming for this stop
+// attempt (no live session to stop, or the stop call itself errored), so the
+// marker can't leak into a later, unrelated exit of the same task ID.
+func (a *App) clearHeraReclaimPending(taskID string) {
+	a.mu.Lock()
+	delete(a.pendingHeraReclaim, taskID)
+	a.mu.Unlock()
+}
+
+// consumeHeraReclaimPending reports whether taskID was armed by
+// heraReclaimAndArchiveTask and clears it either way. Called once, at the
+// point handleSessionExitUI resolves a StatusInProgress task's terminal
+// state, so the marker can never survive to influence a later exit.
+func (a *App) consumeHeraReclaimPending(taskID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.pendingHeraReclaim[taskID] {
+		return false
+	}
+	delete(a.pendingHeraReclaim, taskID)
+	return true
+}
+
 // handleSessionExitUI runs on the tview main goroutine (inside QueueUpdateDraw).
 // Called by both NotifySessionExit (in-process) and HandleSessionExit (daemon).
 // pendingRestart is captured by the caller from a non-RPC source (in-process:
@@ -1758,6 +1846,22 @@ func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool)
 	if err != nil || t == nil {
 		uxlog.Log("[tui] handleSessionExitUI: task %s lookup failed: %v", taskID, err)
 		return
+	}
+	// Snapshot whether taskID was ALREADY awaiting hera close-out BEFORE
+	// anything below mutates it (add-fix-resize-kick-closeout). The
+	// StatusInProgress branch just below can itself stamp ready_to_close=true
+	// as a side effect of THIS SAME exit (BUG-050's roll fires for any
+	// in-progress worker exit, kick-induced or not) — the pendingRerenderRestart
+	// guard further down must judge the task's state walking IN to this call,
+	// not a closeout this call itself just created, or every routine
+	// size-drift kick of an idle-but-still-in-progress worker would wrongly
+	// refuse to restart. Only computed when the kick-restart branch could
+	// possibly fire (mirrors that branch's own gate) to skip the lookup on
+	// the common exit path.
+	var kickClosedOut bool
+	var kickClosedOutErr error
+	if !cleanExit && a.pendingRerenderRestart[taskID] {
+		kickClosedOut, kickClosedOutErr = a.heraKickRestartClosedOut(taskID)
 	}
 	if t.Worktree != "" {
 		// Snapshot the task for the capture goroutine, which resolves the
@@ -1788,6 +1892,12 @@ func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool)
 			// mode, where this is the ONLY flip site. Local-only: a.db is *db.DB
 			// locally and satisfies heraFinishStore; in --remote mode it does not,
 			// so we fall through to the plain rule (remote daemon is authoritative).
+			// fix-nuke-completion-race: consume the reclaim marker (if any)
+			// exactly once, here, regardless of which branch below ultimately
+			// decides — a task's in_progress window that the marker was
+			// scoped to has ended the moment this decision point runs, so it
+			// must not survive to influence a later, unrelated exit.
+			forceComplete := a.consumeHeraReclaimPending(t.ID)
 			rolled := false
 			if fs, ok := a.db.(heraFinishStore); ok {
 				if f, err := fs.RollHeraWorkerToReview(t.ID); err != nil {
@@ -1797,7 +1907,18 @@ func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool)
 				}
 			}
 			if rolled {
+				// PR #707 invariant always wins: a task still holding a live
+				// worker-kind hera binding never self-completes, even if a
+				// reclaim marker is also (unexpectedly) set — see design.md.
 				uxlog.Log("[tui] task %s (%s) → in_review (hera worker close-out)", t.ID, t.Name)
+			} else if forceComplete {
+				// This exit is a deliberate, terminal Hera nuke/reclaim stop
+				// (see heraReclaimAndArchiveTask) — it lands at complete
+				// regardless of the exit's clean/non-clean verdict, unlike an
+				// ordinary stop/crash/fast-fail below.
+				t.SetStatus(model.StatusComplete)
+				a.db.SetStatus(t.ID, t.Status) //nolint:errcheck
+				uxlog.Log("[tui] task %s (%s) → complete (hera reclaim finalized)", t.ID, t.Name)
 			} else {
 				if cleanExit {
 					t.SetStatus(model.StatusComplete)
@@ -1886,6 +2007,21 @@ func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool)
 		stillViewing := a.isViewingTaskSession(taskID)
 		if !stillViewing {
 			uxlog.Log("[tui] rerender: user navigated away from task=%s, skipping auto-restart", taskID)
+			a.statusbar.ClearInfo()
+		} else if kickClosedOutErr != nil {
+			// Fail closed, mirroring heraReattach's Enter-path guard: an
+			// uncertain closeout check skips the auto-repair rather than risk
+			// clobbering a task that turns out to be closed out.
+			uxlog.Log("[tui] rerender: closeout check failed for task=%s, skipping auto-restart: %v", taskID, kickClosedOutErr)
+			a.statusbar.ClearInfo()
+		} else if kickClosedOut {
+			// add-fix-resize-kick-closeout: a worker/freelance task awaiting
+			// hera close-out (accepted, or self-reported-done) never gets the
+			// stale-width repair — its session stays stopped and its status
+			// stays exactly as close-out left it. Nobody should be actively
+			// typing into an accepted task, so the repair simply doesn't run;
+			// this is the same trade heraReattach's Enter-path guard makes.
+			uxlog.Log("[tui] rerender: refusing size-drift kick restart for closed-out task %s", taskID)
 			a.statusbar.ClearInfo()
 		} else if t, err := a.db.Get(taskID); err == nil && t != nil {
 			uxlog.Log("[tui] rerender: restarting task=%s session=%s", t.ID, t.SessionID)
@@ -3111,6 +3247,13 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Hera-view `J` adopt/reparent orchestrator picker — delegate to the modal.
 	if a.mode == modeHeraOrchPicker && a.heraOrchPicker != nil {
 		a.handleHeraOrchPickerKey(event)
+		return nil
+	}
+
+	// Merge-safety review popup (single-role nuke / global Cleanup) — delegate
+	// to the modal.
+	if a.mode == modeMergeSafetyPopup && a.mergeSafetyPopup != nil {
+		a.handleMergeSafetyPopupKey(event)
 		return nil
 	}
 

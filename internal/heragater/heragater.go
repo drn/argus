@@ -66,6 +66,17 @@ type Materializer func(role *db.HeraRole, taskPrompt, project, branch, backend, 
 // "the node telling its coordinator it can't start".
 type CoordinatorPinger func(fromRoleID, coordRoleID int64, body, tldr string) error
 
+// Accepter marks a blocker role's bound task complete and notifies it,
+// mirroring hera_accept's coordinator-accept semantics (add-hera-accept-
+// lifecycle) – fired automatically once the coordinator's plan-DAG rolls
+// forward past that blocker (i.e. a dependent gated on it has just
+// materialized). Wired to internal/hera.AcceptRole via the daemon adapter;
+// tests inject a fake. coordRoleID identifies the sender for the
+// notification (the orchestrator's coordinator role); blockerRoleID is the
+// role being accepted. Best-effort: a failure here is logged and MUST NEVER
+// block or fail the materialization that already succeeded.
+type Accepter func(coordRoleID, blockerRoleID int64) error
+
 // Watcher polls the DB for ready planned nodes and materializes them. Embed-
 // friendly: configuration via Set* methods, no exported state.
 type Watcher struct {
@@ -73,6 +84,7 @@ type Watcher struct {
 	materialize      Materializer
 	subCoordMaterial Materializer
 	ping             CoordinatorPinger
+	accept           Accepter
 	interval         time.Duration
 
 	stopCh chan struct{}
@@ -160,6 +172,16 @@ func (w *Watcher) SetSubCoordMaterializer(fn Materializer) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.subCoordMaterial = fn
+}
+
+// SetAccepter registers the accept-equivalent hook (add-hera-accept-
+// lifecycle) fired for every blocker of a node this gater materializes.
+// Unset (nil) means no accept calls are ever made – the same
+// defensive-default shape SetSubCoordMaterializer uses.
+func (w *Watcher) SetAccepter(fn Accepter) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.accept = fn
 }
 
 // SetOnMaterialize registers a callback fired after a node is materialized.
@@ -482,8 +504,10 @@ func (w *Watcher) materializeNode(node *db.HeraRole) {
 		return
 	}
 	coordName := "coord"
+	var coordRoleID int64
 	if coords, cErr := w.db.ListHeraRolesByKind(node.OrchestratorID, db.HeraKindCoordinator); cErr == nil && len(coords) > 0 {
 		coordName = coords[0].Name
+		coordRoleID = coords[0].ID
 	}
 	project := node.ArgusProject
 	// blockerIDs is re-fetched here (classify and resolveBaseBranch each already
@@ -512,11 +536,45 @@ func (w *Watcher) materializeNode(node *db.HeraRole) {
 	}
 	w.clearMaterializeFailures(node.ID)
 	w.logf("[heragater] materialized node %d (%s) in orch %q (base_branch=%q)", node.ID, node.Name, orch.Name, branch)
+	w.acceptBlockers(node, blockerIDs, coordRoleID)
 	if len(blockerIDs) > 1 && winningBlockerID != 0 {
 		w.pingFanIn(node, blockerIDs, winningBlockerID, branch)
 	}
 	if cb := w.materializeCallback(); cb != nil {
 		cb(node)
+	}
+}
+
+// acceptBlockers fires the accept-equivalent hera_accept provides
+// (add-hera-accept-lifecycle) for every one of node's blockers, once node has
+// successfully materialized – the gater's own version of "the coordinator
+// rolls forward to the next item": every blocker just had its `done` signal
+// consumed by the DAG moving past it. Sourced from the SAME blockerIDs already
+// resolved for the fan-in notice below – no new query, no new trigger point.
+//
+// Scoped to this ordinary worker-kind materialize path only, mirroring
+// pingFanIn's own existing worker-kind-only scope (see materializeNode's
+// routing comment) – materializeSubCoord does not call this.
+//
+// Best-effort: a failure for one blocker is logged and never blocks or fails
+// the materialization, which has already succeeded by the time this runs, nor
+// does it prevent the accept-equivalent from being attempted for the node's
+// other blockers. Idempotent via AcceptRole itself: a blocker gated by
+// multiple dependents only flips (and is notified) once, on whichever
+// dependent's materialization reaches it first – every subsequent call is a
+// silent no-op against the already-complete task.
+func (w *Watcher) acceptBlockers(node *db.HeraRole, blockerIDs []int64, coordRoleID int64) {
+	if w.accept == nil || len(blockerIDs) == 0 {
+		return
+	}
+	if coordRoleID == 0 {
+		w.logf("[heragater] accept %d: no coordinator to accept as", node.ID)
+		return
+	}
+	for _, bid := range blockerIDs {
+		if err := w.accept(coordRoleID, bid); err != nil {
+			w.logf("[heragater] accept blocker %d (dependent %d materialized): %v", bid, node.ID, err)
+		}
 	}
 }
 

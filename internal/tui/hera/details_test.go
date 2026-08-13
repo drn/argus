@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
@@ -641,6 +642,22 @@ func TestRosterStatusText_Precedence(t *testing.T) {
 	testutil.Equal(t, rosterStatusText(needsInput, false), "needs-input")
 	// PR suffix composes with any underlying status, not just "ready".
 	testutil.Equal(t, rosterStatusText(&RoleView{HasStatus: true, Status: db.HeraStatusIdle}, true), "idle PR")
+
+	// add-hera-accept-lifecycle: a coordinator-accepted (task.Status=complete)
+	// worker reads "accepted", distinctly from a merely self-reported
+	// ready_to_close worker's "ready" — Accepted outranks ReadyToClose.
+	testutil.Equal(t, rosterStatusText(&RoleView{ReadyToClose: true, TaskStatus: model.StatusComplete.String()}, false), "accepted")
+	// NeedsInput and Active still outrank Accepted.
+	acceptedNeedsInput := &RoleView{TaskStatus: model.StatusComplete.String(), NeedsInput: true}
+	testutil.Equal(t, rosterStatusText(acceptedNeedsInput, false), "needs-input")
+	acceptedActive := &RoleView{TaskStatus: model.StatusComplete.String(), Live: true, SessionRunning: true}
+	testutil.Equal(t, rosterStatusText(acceptedActive, false), "working")
+
+	// A coordinator's own task reaching StatusComplete carries no accept
+	// semantics (hera_accept/gater auto-accept only ever act on a worker's
+	// bound task) — the roster cell must not read "accepted" for it.
+	coordAccepted := &RoleView{Kind: db.HeraKindCoordinator, TaskStatus: model.StatusComplete.String()}
+	testutil.Equal(t, rosterStatusText(coordAccepted, false), "—")
 }
 
 func TestComputeRosterColumns(t *testing.T) {

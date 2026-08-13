@@ -93,34 +93,45 @@ func ladderIndex(s db.HeraRoleStatusValue) int {
 // ArchiveToggle archives or unarchives the selected role (or its orchestrator
 // when the cursor is on an orchestrator header). Direction is read from the
 // CURRENT row state so the toggle always matches what the operator sees.
-func (o *Ops) ArchiveToggle(sel Selection) error {
+// Returns archived=true when this call just moved the row from active to
+// archived (the HIDE direction) and archived=false on the un-hide direction
+// or on any error – callers that need to react ONLY to the hide direction
+// (e.g. heraHide's session-stop, add-hera-accept-lifecycle) read this return
+// value instead of re-deriving it with a second read.
+func (o *Ops) ArchiveToggle(sel Selection) (archived bool, err error) {
 	if r := sel.Role; r != nil {
 		cur, err := o.store.HeraRole(r.RoleID)
 		if err != nil {
 			uxlog.Log("[hera-view] archive role %d: read failed: %v", r.RoleID, err)
-			return err
+			return false, err
 		}
 		if cur.ArchivedAt != nil {
 			uxlog.Log("[hera-view] unarchive role %d (%s) orch=%d", r.RoleID, r.Name, r.OrchID)
-			return o.store.UnarchiveHeraRole(r.RoleID)
+			return false, o.store.UnarchiveHeraRole(r.RoleID)
 		}
 		uxlog.Log("[hera-view] archive role %d (%s) orch=%d", r.RoleID, r.Name, r.OrchID)
-		return o.store.ArchiveHeraRole(r.RoleID)
+		if err := o.store.ArchiveHeraRole(r.RoleID); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	if ov := sel.Orch; ov != nil {
 		cur, err := o.store.HeraOrchestrator(ov.ID)
 		if err != nil {
 			uxlog.Log("[hera-view] archive orch %d: read failed: %v", ov.ID, err)
-			return err
+			return false, err
 		}
 		if cur.ArchivedAt != nil {
 			uxlog.Log("[hera-view] unarchive orch %d (%s)", ov.ID, ov.Name)
-			return o.store.UnarchiveHeraOrchestrator(ov.ID)
+			return false, o.store.UnarchiveHeraOrchestrator(ov.ID)
 		}
 		uxlog.Log("[hera-view] archive orch %d (%s)", ov.ID, ov.Name)
-		return o.store.ArchiveHeraOrchestrator(ov.ID)
+		if err := o.store.ArchiveHeraOrchestrator(ov.ID); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
-	return errNoTarget
+	return false, errNoTarget
 }
 
 // PinToggle pins or unpins the selected role (or orchestrator). Direction is

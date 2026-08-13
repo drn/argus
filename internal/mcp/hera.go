@@ -81,9 +81,15 @@ type HeraStore interface {
 	// stamping ready_to_close (D2, make-hera-plan-living). Called when a worker
 	// reports status="failed"; same invariants as RollHeraWorkerToReview.
 	RollHeraWorkerFailed(taskID string) (bool, error)
+	// Get and SetStatus back hera_accept's coordinator-accept status flip
+	// (add-hera-accept-lifecycle) via the shared internal/hera.AcceptRole
+	// primitive, which this store also satisfies structurally as an
+	// hera.AcceptStore.
+	Get(taskID string) (*model.Task, error)
+	SetStatus(taskID string, status model.Status) error
 }
 
-// heraToolDefs contains the 18 hera_* tool schemas. The first 9 are ported
+// heraToolDefs contains the 19 hera_* tool schemas. The first 9 are ported
 // verbatim from Hera's daemon.toolDefinitions() — same param names,
 // descriptions, and required lists as the external Hera daemon so agents have an
 // identical surface when running natively. hera_move (fix-hera-join-move-binding)
@@ -91,9 +97,13 @@ type HeraStore interface {
 // hera_block / hera_plan) are the native plan-DAG authoring tools
 // (add-hera-plan-substrate); they are coordinator-only like hera_spawn_worker.
 // The next 3 (hera_plan_node_update / hera_unblock / hera_plan_node_cancel) are
-// the plan-mutation verbs (make-hera-plan-living D5). The last (hera_revive) is
-// the coordinator-only PULL-revive tool (add-hera-revive); its gating logic
-// lives in the shared internal/hera.ReviveRole primitive.
+// the plan-mutation verbs (make-hera-plan-living D5). hera_revive is the
+// coordinator-only PULL-revive tool (add-hera-revive); its gating logic lives
+// in the shared internal/hera.ReviveRole primitive. The last (hera_accept) is
+// the coordinator-only accept-and-complete tool (add-hera-accept-lifecycle);
+// its status-flip-plus-notify logic lives in the shared
+// internal/hera.AcceptRole primitive, also called by the plan-DAG gater's
+// auto-accept-on-materialize.
 var heraToolDefs = []Tool{
 	{
 		Name:        "hera_new_orchestrator",
@@ -221,6 +231,20 @@ var heraToolDefs = []Tool{
 				"cwd":          map[string]interface{}{"type": "string", "description": "Caller's worktree path (use $PWD)"},
 				"role_name":    map[string]interface{}{"type": "string", "description": "Name of the role to revive, within the caller's orchestrator. Must not be the caller's own role."},
 				"orchestrator": map[string]interface{}{"type": "string", "description": "(optional) Disambiguates when the calling task holds multiple live coordinator bindings"},
+			},
+			"required": []string{"cwd", "role_name"},
+		},
+	},
+	{
+		Name:        "hera_accept",
+		Description: "Accept a hera role's work: marks the role's bound task complete and sends it a check-in message asking it to reply with exactly one of: confirming it has no other tasks and is winding down, telling you it still has more work to do, or a question if it isn't sure which applies. The reply is informational only – it never auto-reopens the task; a premature accept can only be undone via an explicit revive. Never stops or restarts the target's session – completion and detachment are separate concerns. Acts from any non-complete status (in_progress, in_review, or otherwise); a no-op (still succeeds) if the task is already complete. Coordinator-only. The plan-DAG gater fires the same accept automatically for a node's blockers when that node materializes, so this tool is for accepting work OUTSIDE that automatic flow (e.g. ad hoc, or a role with no plan-DAG dependents).",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"cwd":          map[string]interface{}{"type": "string", "description": "Caller's worktree path (use $PWD)"},
+				"role_name":    map[string]interface{}{"type": "string", "description": "Name of the role to accept, within the caller's orchestrator. Must not be the caller's own role."},
+				"orchestrator": map[string]interface{}{"type": "string", "description": "(optional) Disambiguates when the calling task holds multiple live coordinator bindings"},
+				"message":      map[string]interface{}{"type": "string", "description": "(optional) Custom note appended to the acceptance message sent to the role"},
 			},
 			"required": []string{"cwd", "role_name"},
 		},
@@ -1628,6 +1652,75 @@ func heraReviveOutcomeMessage(outcome, roleName string) string {
 	default:
 		return fmt.Sprintf("%s: outcome %q.", roleName, outcome)
 	}
+}
+
+// toolHeraAccept implements the hera_accept MCP tool
+// (add-hera-accept-lifecycle): coordinator-only accept-and-complete of one
+// role the caller coordinates. Mirrors toolHeraRevive's exact authorization
+// shape (coordinator-only, target must not be the caller's own role); the
+// status-flip-plus-notify logic itself lives in the shared
+// internal/hera.AcceptRole primitive, also called by the plan-DAG gater.
+func (s *Server) toolHeraAccept(id interface{}, args json.RawMessage) *Response {
+	if !s.heraEnabled() {
+		return toolError(id, "hera not configured")
+	}
+	var p struct {
+		Cwd          string `json:"cwd"`
+		RoleName     string `json:"role_name"`
+		Orchestrator string `json:"orchestrator"`
+		Message      string `json:"message"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if p.Cwd == "" {
+		return toolError(id, "cwd is required")
+	}
+	roleName := strings.TrimSpace(p.RoleName)
+	if roleName == "" {
+		return toolError(id, "role_name is required")
+	}
+
+	caller, err := s.resolveCallerRole(p.Cwd, p.Orchestrator)
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+	if caller.role.Kind != db.HeraKindCoordinator {
+		return toolError(id, fmt.Sprintf(
+			"caller role %q has kind %q; only coordinators may accept a role's work",
+			caller.role.Name, caller.role.Kind))
+	}
+
+	target, errResp := s.resolveOrchRole(id, caller.orch.ID, caller.orch.Name, roleName)
+	if errResp != nil {
+		return errResp
+	}
+	if target.ID == caller.role.ID {
+		return toolError(id, fmt.Sprintf(
+			"role %q is your own (live, calling) role; hera_accept targets a DIFFERENT role you coordinate",
+			target.Name))
+	}
+
+	if _, err := s.heraStore.HeraLiveBindingByRole(target.ID); errors.Is(err, db.ErrHeraNotFound) {
+		return toolError(id, fmt.Sprintf("role %q has no live binding (never spawned, or ended)", target.Name))
+	} else if err != nil {
+		return toolError(id, fmt.Sprintf("resolve binding for role %q: %v", target.Name, err))
+	}
+
+	flipped, err := hera.AcceptRole(s.heraStore, s.heraSvc, caller.role.ID, target.ID, p.Message)
+	if err != nil {
+		return toolError(id, fmt.Sprintf("accept %q: %v", target.Name, err))
+	}
+
+	slog.Info("[hera] accept", "orch", caller.orch.Name, "role", target.Name, "flipped", flipped)
+	var b strings.Builder
+	if flipped {
+		fmt.Fprintf(&b, "%s's work has been accepted; its task is now complete.\n\n", target.Name)
+	} else {
+		fmt.Fprintf(&b, "%s's task was already complete; no-op.\n\n", target.Name)
+	}
+	fmt.Fprintf(&b, "- **role**: %s\n", target.Name)
+	fmt.Fprintf(&b, "- **flipped**: %v\n", flipped)
+	return toolResult(id, b.String())
 }
 
 func (s *Server) toolHeraSpawnWorker(id interface{}, args json.RawMessage) *Response {
