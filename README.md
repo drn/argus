@@ -386,6 +386,20 @@ Because every Argus-spawned agent inherits the daemon's real `HOME` regardless o
 
 `argus doctor` checks whether this hook is registered and warns if it's missing – see [Diagnosing binary skew](#diagnosing-binary-skew-argus-doctor) below.
 
+### Claude Code session retention (`cleanupPeriodDays`)
+
+Claude Code itself – not Argus – deletes session transcripts and other local state older than `cleanupPeriodDays` (default **30 days**, minimum 1) at every `claude` process startup. The sweep is global across all of `~/.claude`, not scoped to whichever project or tool launched that process, so a task you haven't touched in over a month can fail to resume with Claude Code's own `No conversation found with session ID: <uuid>` error – the transcript is simply gone.
+
+There's no per-session exemption and no way to scope retention to Argus-created sessions only (no `CLAUDE_CONFIG_DIR`-style per-launch override changes this – cleanup always sweeps the whole directory using whatever `cleanupPeriodDays` that particular startup resolves to). The only fix is to raise the value in `~/.claude/settings.json`, which affects retention for **all** Claude Code usage on the machine, not just Argus:
+
+```json
+{
+  "cleanupPeriodDays": 3650
+}
+```
+
+If a task's session does get swept, resuming it now shows a status-bar notice explaining the transcript is gone (not an Argus failure) instead of a bare crash, and both `argus doctor` and **Settings → System** report whether `cleanupPeriodDays` is currently OK / LOW / UNKNOWN — see [Diagnosing binary skew](#diagnosing-binary-skew-argus-doctor) below.
+
 ### Diligence profiles (model tiering)
 
 **Diligence profiles** route model choice *per archetype* and vary process rigor *per project*: spend premium models up the tree (plan / orchestrate / review / synthesize), where leverage is high and output is hard to verify; save cheaper models down the tree (CI loops, verification, docs), where work is high-volume and verifiable. A profile is a named, on-disk TOML preset; a project points at one *by name*. At spawn, Argus resolves the bound profile, feeds the per-archetype model into the existing model-resolution chain, and exports the resolution to the agent's environment so the in-repo hera/DAG skill is profile-aware.
@@ -491,6 +505,8 @@ It is strictly **read-only** (never touches a symlink, binary, `PATH`, or proces
 `doctor` also independently reports whether the per-user [diligence-profile](#diligence-profiles-model-tiering) library (`~/.argus/profiles/`) has anything in it — **FOUND** (at least one profile file validates), **NONE FOUND** (prints the `argus profiles install-defaults` remediation), or **UNKNOWN** (the directory couldn't be listed for a reason other than not existing). This checks the library's existence only, not whether any given project is bound to a profile — an unbound project is expected and unwarned. Like the Stop-hook check, it is purely advisory and never affects the exit code.
 
 `doctor` also independently reports the `[secrets.op]` bootstrap-credential status — **RESOLVED** (`bootstrap_source` is configured and resolves), **NOT RESOLVED** (configured but the resolve failed — e.g. 1Password signed out or a renamed Keychain item), or **NOT CONFIGURED** (`[secrets]`/`[secrets.op]` absent, a no-op). The same tri-state is mirrored live in **Settings → System**. Like the checks above, it's purely advisory and never affects the exit code; the resolved credential value itself is never printed or logged, only the tri-state.
+
+`doctor` also independently reports Claude Code's [session retention](#claude-code-session-retention-cleanupperioddays) window — **OK** (`cleanupPeriodDays` explicitly raised above the 30-day default), **LOW** (unset or ≤30 — prints the fix snippet), or **UNKNOWN** (`~/.claude/settings.json` unreadable/unparseable). The same tri-state is mirrored live in **Settings → System**. Like the checks above, it's purely advisory and never affects the exit code.
 
 ### Auto-start at Login (macOS)
 

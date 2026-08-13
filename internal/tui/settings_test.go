@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -2146,4 +2147,88 @@ func TestSettingsView_SecretsBootstrapRow_NotConfigured(t *testing.T) {
 		t.Fatal("expected a secrets bootstrap status row in the System category")
 	}
 	testutil.Contains(t, row.label, "NOT CONFIGURED")
+}
+
+// --- Claude session retention status row in System category
+// (add-claude-retention-diagnostics) ---
+// testDBWithConfig already redirects HOME to a temp dir; writeHomeClaudeSettings
+// drops a ~/.claude/settings.json fixture into that same redirected home so
+// the row is computed against a fixture, never the real
+// ~/.claude/settings.json. Fails to compile until the srClaudeRetention
+// settingsRowKind is added and wired into rebuildRows's catSystem branch.
+
+// claudeRetentionRow finds the Claude-session-retention row in rows, or nil.
+func claudeRetentionRow(rows []settingsRow) *settingsRow {
+	for i := range rows {
+		if rows[i].kind == srClaudeRetention {
+			return &rows[i]
+		}
+	}
+	return nil
+}
+
+// writeHomeClaudeSettings writes body to $HOME/.claude/settings.json. Must be
+// called after HOME has already been redirected to a temp dir (e.g. via
+// testDBWithConfig), never touching the real ~/.claude/settings.json.
+func writeHomeClaudeSettings(t *testing.T, body string) {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	testutil.NoError(t, err)
+	dir := filepath.Join(home, ".claude")
+	testutil.NoError(t, os.MkdirAll(dir, 0o755))
+	testutil.NoError(t, os.WriteFile(filepath.Join(dir, "settings.json"), []byte(body), 0o644))
+}
+
+func TestSettingsView_ClaudeRetentionRow_OK(t *testing.T) {
+	d := testDBWithConfig(t, "")
+	writeHomeClaudeSettings(t, `{"cleanupPeriodDays": 3650}`)
+	sv := NewSettingsView(d)
+	sv.Refresh()
+	sv.setCategory(catSystem)
+
+	row := claudeRetentionRow(sv.rows)
+	if row == nil {
+		t.Fatal("expected a Claude session retention row in the System category")
+	}
+	testutil.Contains(t, row.label, "OK")
+}
+
+func TestSettingsView_ClaudeRetentionRow_LowUnset(t *testing.T) {
+	d := testDBWithConfig(t, "")
+	writeHomeClaudeSettings(t, `{"model": "opus"}`)
+	sv := NewSettingsView(d)
+	sv.Refresh()
+	sv.setCategory(catSystem)
+
+	row := claudeRetentionRow(sv.rows)
+	if row == nil {
+		t.Fatal("expected a Claude session retention row in the System category")
+	}
+	testutil.Contains(t, row.label, "LOW")
+}
+
+func TestSettingsView_ClaudeRetentionRow_Unknown(t *testing.T) {
+	d := testDBWithConfig(t, "") // no ~/.claude/settings.json written at all
+	sv := NewSettingsView(d)
+	sv.Refresh()
+	sv.setCategory(catSystem)
+
+	row := claudeRetentionRow(sv.rows)
+	if row == nil {
+		t.Fatal("expected a Claude session retention row in the System category")
+	}
+	testutil.Contains(t, row.label, "UNKNOWN")
+}
+
+func TestSettingsView_ClaudeRetentionRow_HiddenInRemoteMode(t *testing.T) {
+	d := testDBWithConfig(t, "")
+	writeHomeClaudeSettings(t, `{"cleanupPeriodDays": 3650}`)
+	sv := NewSettingsView(d)
+	sv.SetRemote(true)
+	sv.Refresh()
+	sv.setCategory(catSystem)
+
+	if row := claudeRetentionRow(sv.rows); row != nil {
+		t.Fatalf("expected no Claude session retention row in remote mode, got %q", row.label)
+	}
 }

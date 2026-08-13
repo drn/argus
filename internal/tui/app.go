@@ -1667,7 +1667,6 @@ func (a *App) RestartedClient() *dclient.Client {
 // It triggers a UI refresh so session exits are detected immediately (not on next tick).
 func (a *App) NotifySessionExit(taskID string, err error, stopped bool, lastOutput []byte) {
 	uxlog.Log("[tui] session exit (in-process): task=%s stopped=%v err=%v", taskID, stopped, err)
-	_ = lastOutput
 	// In-process mode reads HasPendingRestart synchronously off the local
 	// runner — no RPC, no main-thread stall.
 	pending := a.runner.HasPendingRestart(taskID)
@@ -1683,8 +1682,22 @@ func (a *App) NotifySessionExit(taskID string, err error, stopped bool, lastOutp
 	}
 	cleanExit := (daemon.ExitInfo{Stopped: stopped, Err: errStr}).CleanExit()
 	a.tapp.QueueUpdateDraw(func() {
+		a.noticeRetentionSweptExit(cleanExit, lastOutput)
 		a.handleSessionExitUI(taskID, cleanExit, pending)
 	})
+}
+
+// noticeRetentionSweptExit sets an explanatory status-bar notice when a
+// non-clean exit's last output matches Claude Code's own resume-target-not-
+// found signature (add-claude-retention-diagnostics) — distinguishing a
+// transcript swept by cleanupPeriodDays from a generic crash, which
+// otherwise leaves the user with no explanation for why the task landed in
+// InReview. A clean exit or unrelated crash output is left untouched.
+func (a *App) noticeRetentionSweptExit(cleanExit bool, lastOutput []byte) {
+	if cleanExit || !agent.IsRetentionSweptResumeFailure(lastOutput) {
+		return
+	}
+	a.statusbar.SetInfo("Claude Code couldn't find this session's transcript — likely swept by its own cleanupPeriodDays retention, not an Argus bug. See Settings → System or `argus doctor`.")
 }
 
 // HandleSessionExit is called from the daemon client's OnSessionExit callback.
@@ -1704,6 +1717,7 @@ func (a *App) HandleSessionExit(taskID string, info daemon.ExitInfo) {
 		// the TUI never has to RPC from the main goroutine. CleanExit() is the
 		// shared predicate the daemon used for its own flip — reuse it so the
 		// two sites can never reach different terminal statuses.
+		a.noticeRetentionSweptExit(info.CleanExit(), info.LastOutput)
 		a.handleSessionExitUI(taskID, info.CleanExit(), info.PendingRestart)
 	})
 }

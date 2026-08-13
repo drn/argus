@@ -616,6 +616,59 @@ func TestHandleSessionExitUI_ClaudeRefreshesSessionID(t *testing.T) {
 	testutil.Equal(t, got.SessionID, postClear)
 }
 
+// TestNotifySessionExit_RetentionSweptFailureSetsNotice pins the
+// add-claude-retention-diagnostics tui-shell delta: a resume failure whose
+// last output matches Claude Code's "transcript not found" signature sets an
+// explanatory status-bar notice instead of leaving the user with no
+// explanation for the crash.
+func TestNotifySessionExit_RetentionSweptFailureSetsNotice(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	task := &model.Task{Name: "expired-resume", Status: model.StatusInProgress, Worktree: t.TempDir()}
+	testutil.NoError(t, d.Add(task))
+
+	lastOutput := []byte("No conversation found with session ID: 00000000-0000-0000-0000-000000000000\n")
+	app.NotifySessionExit(task.ID, errors.New("exit status 1"), false, lastOutput)
+
+	deadline := time.Now().Add(uiTimeout)
+	for time.Now().Before(deadline) {
+		if app.statusbar.Info() != "" || app.statusbar.Error() != "" {
+			break
+		}
+		syncUI(t, app.tapp)
+	}
+	notice := app.statusbar.Info() + app.statusbar.Error()
+	testutil.Contains(t, notice, "cleanupPeriodDays")
+}
+
+// TestNotifySessionExit_GenericCrashDoesNotSetRetentionNotice proves a
+// generic (non-matching) crash does not trigger the retention-specific
+// notice — the classifier must not false-positive on unrelated failures.
+func TestNotifySessionExit_GenericCrashDoesNotSetRetentionNotice(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	task := &model.Task{Name: "generic-crash", Status: model.StatusInProgress, Worktree: t.TempDir()}
+	testutil.NoError(t, d.Add(task))
+
+	app.NotifySessionExit(task.ID, errors.New("exit status 1"), false, []byte("panic: runtime error\n"))
+
+	// Give QueueUpdateDraw a chance to run, then assert no retention notice.
+	syncUI(t, app.tapp)
+	syncUI(t, app.tapp)
+	notice := app.statusbar.Info() + app.statusbar.Error()
+	if strings.Contains(notice, "cleanupPeriodDays") {
+		t.Fatalf("expected no retention notice for a generic crash, got %q", notice)
+	}
+}
+
 func TestNew(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)

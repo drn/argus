@@ -37,6 +37,8 @@ func runDoctor() {
 	fmt.Print(doctor.RenderStopHook(gatherStopHookStatus()))
 	fmt.Print(doctor.RenderProfileLibrary(gatherProfileLibraryStatus()))
 	fmt.Print(doctor.RenderSecretsBootstrap(gatherSecretsBootstrapStatus()))
+	cleanupStatus, cleanupDays := gatherCleanupPeriodStatus()
+	fmt.Print(doctor.RenderCleanupPeriod(cleanupStatus, cleanupDays))
 	fmt.Print(doctor.RenderDevStackOrphans(gatherDevStackOrphans()))
 	if doctor.Diagnose(actors).Verdict != doctor.Healthy {
 		os.Exit(1)
@@ -232,6 +234,25 @@ func claudeSettingsPath() string {
 		return ""
 	}
 	return filepath.Join(home, ".claude", "settings.json")
+}
+
+// gatherCleanupPeriodStatus reads Claude Code's effective cleanupPeriodDays
+// (add-claude-retention-diagnostics) and classifies it. Independent of the
+// binary-coherence actors above — never affects runDoctor's exit code. The
+// returned *int is passed through to RenderCleanupPeriod for display; it may
+// be non-nil even on a LOW verdict (an explicit value at or below 30).
+func gatherCleanupPeriodStatus() (doctor.CleanupPeriodStatus, *int) {
+	days, err := agent.QueryClaudeCleanupPeriodDays()
+	return doctor.DiagnoseCleanupPeriod(days, err), days
+}
+
+// cleanupPeriodStatusAt is the testable, path-injectable counterpart to
+// gatherCleanupPeriodStatus, mirroring gatherStopHookStatus's
+// claudeSettingsPath/readStopHookCommands split so tests never touch the
+// real ~/.claude/settings.json.
+func cleanupPeriodStatusAt(path string) doctor.CleanupPeriodStatus {
+	days, err := agent.ReadClaudeCleanupPeriodDaysAt(path)
+	return doctor.DiagnoseCleanupPeriod(days, err)
 }
 
 // gatherProfileLibraryStatus classifies the per-user diligence-profile

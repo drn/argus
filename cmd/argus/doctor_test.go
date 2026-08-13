@@ -201,6 +201,57 @@ func TestSecretsBootstrapStatusFor_DoesNotAffectExitCodeContract(t *testing.T) {
 	testutil.Equal(t, doctor.Diagnose(actors).Verdict, doctor.Healthy)
 }
 
+// --- Claude session retention check (add-claude-retention-diagnostics) ---
+//
+// cleanupPeriodStatusAt(path) is the testable, path-injectable counterpart to
+// the production gatherCleanupPeriodStatus() (which resolves the real
+// ~/.claude/settings.json), mirroring gatherStopHookStatus's
+// claudeSettingsPath/readStopHookCommands split.
+
+func TestCleanupPeriodStatusAt_OK(t *testing.T) {
+	path := writeSettingsJSON(t, `{"cleanupPeriodDays": 3650}`)
+	got := cleanupPeriodStatusAt(path)
+	testutil.Equal(t, got, doctor.CleanupPeriodOK)
+}
+
+func TestCleanupPeriodStatusAt_LowUnset(t *testing.T) {
+	path := writeSettingsJSON(t, `{"model": "opus"}`)
+	got := cleanupPeriodStatusAt(path)
+	testutil.Equal(t, got, doctor.CleanupPeriodLow)
+}
+
+func TestCleanupPeriodStatusAt_LowExplicit(t *testing.T) {
+	path := writeSettingsJSON(t, `{"cleanupPeriodDays": 30}`)
+	got := cleanupPeriodStatusAt(path)
+	testutil.Equal(t, got, doctor.CleanupPeriodLow)
+}
+
+func TestCleanupPeriodStatusAt_UnknownWhenUnreadable(t *testing.T) {
+	got := cleanupPeriodStatusAt(filepath.Join(t.TempDir(), "does-not-exist.json"))
+	testutil.Equal(t, got, doctor.CleanupPeriodUnknown)
+}
+
+// TestCleanupPeriodStatusAt_DoesNotAffectExitCodeContract pins the
+// binary-coherence delta's "Check does not change the exit-code contract"
+// scenario for the retention check, mirroring
+// TestSecretsBootstrapStatusFor_DoesNotAffectExitCodeContract above.
+func TestCleanupPeriodStatusAt_DoesNotAffectExitCodeContract(t *testing.T) {
+	actors := []doctor.Actor{
+		{Role: doctor.RolePathArgus, ResolvedPath: "/opt/bin/argus", Hash: "h", Resolved: true},
+		{Role: doctor.RoleArgusdTarget, ResolvedPath: "/opt/bin/argus", Hash: "h", Resolved: true},
+		{Role: doctor.RoleGoInstall, ResolvedPath: "/opt/bin/argus", Hash: "h", Resolved: true},
+		{Role: doctor.RoleDaemon, ResolvedPath: "/opt/bin/argus", Hash: "h", Resolved: true},
+		{Role: doctor.RoleSupervisor, ResolvedPath: "/opt/bin/argus", Hash: "h", Resolved: true},
+		{Role: doctor.RoleTUI, ResolvedPath: "/opt/bin/argus", Hash: "h", Resolved: true},
+	}
+	testutil.Equal(t, doctor.Diagnose(actors).Verdict, doctor.Healthy)
+
+	path := writeSettingsJSON(t, `{"model": "opus"}`)
+	testutil.Equal(t, cleanupPeriodStatusAt(path), doctor.CleanupPeriodLow)
+
+	testutil.Equal(t, doctor.Diagnose(actors).Verdict, doctor.Healthy)
+}
+
 // --- Dev-stack orphan check (fix-devstack-orphaning) ---
 
 func TestDiagnoseDevStackOrphansFrom_NoneRunning(t *testing.T) {

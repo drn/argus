@@ -57,6 +57,7 @@ const (
 	srPermissionMode
 	srInstallProfiles
 	srSecretsBootstrap
+	srClaudeRetention
 )
 
 // settingsCategory groups related settings rows into a left-rail entry.
@@ -232,6 +233,15 @@ type SettingsView struct {
 	// machine — resolving it from a remote client would shell out on the
 	// wrong host and misreport the daemon's actual status.
 	secretsBootstrapStatus agent.OpBootstrapStatus
+
+	// Claude session retention status (System category). Computed once per
+	// Refresh via agent.QueryClaudeCleanupPeriodDays — the SAME
+	// ~/.claude/settings.json read `argus doctor` uses (see
+	// add-claude-retention-diagnostics). Never computed in --remote mode:
+	// the setting lives on the local machine's ~/.claude/settings.json, not
+	// the remote daemon's.
+	claudeCleanupDays *int
+	claudeCleanupErr  error
 
 	// Spinner.
 	spinnerStyle string // current spinner style name
@@ -510,6 +520,7 @@ func (sv *SettingsView) Refresh() {
 	// resolving [secrets.op] would shell out on the wrong machine.
 	if !sv.remote {
 		sv.secretsBootstrapStatus = agent.QueryOpBootstrapStatus(cfg.Secrets)
+		sv.claudeCleanupDays, sv.claudeCleanupErr = agent.QueryClaudeCleanupPeriodDays()
 	}
 
 	// Session-supervisor (controls whether the Restart Session Supervisor row
@@ -866,6 +877,39 @@ func secretsBootstrapStatusColor(status agent.OpBootstrapStatus) tcell.Color {
 	}
 }
 
+// claudeRetentionLabel renders the Claude session retention tri-state (OK /
+// LOW / UNKNOWN) for the System category row from the raw query result
+// (mirrors doctor.DiagnoseCleanupPeriod's classification without importing
+// internal/doctor — internal/tui has no existing dependency on it, and this
+// mapping is small enough not to warrant introducing one). Kept as a small
+// pure function alongside claudeRetentionColor so the mapping is
+// unit-testable independent of row construction.
+func claudeRetentionLabel(days *int, err error) string {
+	switch {
+	case err != nil:
+		return "UNKNOWN"
+	case days == nil || *days <= 30:
+		return "LOW"
+	default:
+		return "OK"
+	}
+}
+
+// claudeRetentionColor returns the foreground color for the Claude session
+// retention tri-state, used both for the row-list entry and its detail
+// block. Mirrors secretsBootstrapStatusColor's OK(green)/LOW(error)/
+// UNKNOWN(dim) semantics.
+func claudeRetentionColor(days *int, err error) tcell.Color {
+	switch {
+	case err != nil:
+		return theme.ColorDimmed
+	case days == nil || *days <= 30:
+		return theme.ColorError
+	default:
+		return theme.ColorComplete
+	}
+}
+
 // rebuildRows rebuilds sv.rows for the active category only. The left rail
 // is fixed and not part of sv.rows.
 func (sv *SettingsView) rebuildRows() {
@@ -891,6 +935,11 @@ func (sv *SettingsView) rebuildRows() {
 				kind:  srSecretsBootstrap,
 				label: "Secrets bootstrap: " + secretsBootstrapStatusLabel(sv.secretsBootstrapStatus),
 				key:   "_secrets_bootstrap",
+			})
+			sv.rows = append(sv.rows, settingsRow{
+				kind:  srClaudeRetention,
+				label: "Claude session retention: " + claudeRetentionLabel(sv.claudeCleanupDays, sv.claudeCleanupErr),
+				key:   "_claude_retention",
 			})
 		}
 
@@ -2224,6 +2273,8 @@ func (sv *SettingsView) renderPane(screen tcell.Screen, x, y, w, h int) {
 				style = style.Foreground(theme.ColorInProgress)
 			} else if r.kind == srSecretsBootstrap {
 				style = style.Foreground(secretsBootstrapStatusColor(sv.secretsBootstrapStatus))
+			} else if r.kind == srClaudeRetention {
+				style = style.Foreground(claudeRetentionColor(sv.claudeCleanupDays, sv.claudeCleanupErr))
 			}
 			prefix := "  "
 			if idx == sv.cursor {
@@ -2271,6 +2322,8 @@ func (sv *SettingsView) renderRowDetail(screen tcell.Screen, x, y, w, h int, row
 		sv.renderWarningDetail(screen, x, y, w, h, row)
 	case srSecretsBootstrap:
 		sv.renderSecretsBootstrapDetail(screen, x, y, w, h)
+	case srClaudeRetention:
+		sv.renderClaudeRetentionDetail(screen, x, y, w, h)
 	case srSandbox:
 		sv.renderSandboxDetail(screen, x, y, w, h)
 	case srProject:
@@ -2594,6 +2647,53 @@ func (sv *SettingsView) renderSecretsBootstrapDetail(screen tcell.Screen, x, y, 
 		r++
 		if r < h {
 			widget.DrawText(screen, x, y+r, w, "the same check `argus doctor` reports.", theme.StyleDimmed)
+		}
+	}
+	if h > 1 {
+		widget.DrawText(screen, x, y+h-1, w, "[◀] rail", theme.StyleDimmed)
+	}
+}
+
+// renderClaudeRetentionDetail draws the Claude session retention tri-state
+// detail block in the right pane — the same OK / LOW / UNKNOWN status
+// `argus doctor` reports for cleanupPeriodDays (see
+// add-claude-retention-diagnostics). Mirrors renderSecretsBootstrapDetail's
+// small title+status+description shape, adding the current effective value
+// and (when LOW) the fix snippet.
+func (sv *SettingsView) renderClaudeRetentionDetail(screen tcell.Screen, x, y, w, h int) {
+	widget.DrawText(screen, x, y, w, "Claude Session Retention", theme.StyleTitle)
+	r := 2
+
+	status := claudeRetentionLabel(sv.claudeCleanupDays, sv.claudeCleanupErr)
+	statusColor := claudeRetentionColor(sv.claudeCleanupDays, sv.claudeCleanupErr)
+	widget.DrawText(screen, x, y+r, w, "Status: "+status, tcell.StyleDefault.Foreground(statusColor))
+	r += 2
+
+	current := "unset — defaults to 30 days"
+	if sv.claudeCleanupErr == nil && sv.claudeCleanupDays != nil {
+		current = fmt.Sprintf("%d days", *sv.claudeCleanupDays)
+	}
+	if sv.claudeCleanupErr != nil {
+		current = "could not read ~/.claude/settings.json"
+	}
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "cleanupPeriodDays: "+current, theme.StyleDimmed)
+		r += 2
+	}
+
+	if status == "LOW" {
+		lines := []string{
+			"Claude Code deletes session transcripts older than this",
+			"window at every startup — a task left untouched past it",
+			"will fail to resume. Add to ~/.claude/settings.json:",
+			`{"cleanupPeriodDays": 3650}`,
+		}
+		for _, line := range lines {
+			if r >= h {
+				break
+			}
+			widget.DrawText(screen, x, y+r, w, line, theme.StyleDimmed)
+			r++
 		}
 	}
 	if h > 1 {
