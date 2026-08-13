@@ -1,0 +1,61 @@
+## Context
+
+`heraReclaimAndArchiveTask` (`internal/tui/heraactions.go`) is the single code path behind every Hera nuke/reclaim entry point (`heraNukeRole`, `heraDoCascadeNuke`, `heraNukeArchivedRole`). It snapshots the task via `a.db.Get(taskID)`, backgrounds the session stop (`heraGoSafe`, per BUG-062 — a bulk cascade over dozens of tasks must not block Draw/input/tick on N sequential blocking RPC stops), backgrounds the worktree/branch reclaim, then — still on the calling (tview main) goroutine — checks `if t.Status == model.StatusInReview { SetStatus(complete) }` using the stale pre-stop snapshot, and archives the row.
+
+Separately, `handleSessionExitUI` (`internal/tui/app.go`) is the general-purpose session-exit handler, invoked via `QueueUpdateDraw` from both `NotifySessionExit` (in-process runner) and `HandleSessionExit` (daemon client) whenever a session's stream actually ends. For a `StatusInProgress` task with no live worker-kind hera binding, it decides `complete` on a clean (self-driven, zero-exit) exit, or `in_review` ("crash/stop/fast-fail → recoverable") on anything else — including a deliberate `Stop()` call, which always produces a non-clean exit (observed as `exit status 143`, a SIGTERM).
+
+**The race:** `heraReclaimAndArchiveTask`'s stop is backgrounded, so the corresponding `handleSessionExitUI` invocation for that exit fires independently and later (its own `QueueUpdateDraw` dispatch, scheduled once the process actually dies — real wall-clock time after the synchronous archive-time check already ran and found nothing to do, since the task was `in_progress`, not `in_review`, at that instant). `handleSessionExitUI` has no way to distinguish "this non-clean exit is a deliberate, terminal nuke stop" from "this non-clean exit is an ordinary crash/Ctrl+Q stop that should stay recoverable" — it applies the ordinary rule and lands the task at `in_review`. By then the task is archived, its hera binding ended, and its worktree/branch reclaimed: there is no live binding and no rail entry left to ever revisit it, so it is permanently stranded.
+
+The prior `fix-hera-archive-status` change (2026-08-09) fixed the case where the task was ALREADY `in_review` at reclaim time (the common case — a finished worker rolled to `in_review` by `RollHeraWorkerToReview` before a human ever nukes it). It explicitly left the `in_progress`-at-reclaim-time case untouched as a Non-Goal, reasoning that forcing `complete` synchronously on a still-active task would misrepresent genuinely-abandoned mid-flight work. That reasoning still holds for the SYNCHRONOUS instant of archiving — but it didn't anticipate that the task's own stop (which reclaim unconditionally fires) would later resolve to `in_review` via the general exit handler and then have nothing left to ever move it further. This change closes that specific gap: the archive-time snapshot still leaves status untouched, but the reclaim-triggered stop's eventual exit is now guaranteed to land at `complete`, not get stuck at `in_review`.
+
+## Goals / Non-Goals
+
+**Goals:**
+
+- A task that is `in_progress` (live) at the moment of reclaim reaches `status=complete` once its reclaim-triggered session stop's exit is observed — deterministically, not by timing luck.
+- The fix applies uniformly to every `heraReclaimAndArchiveTask` caller (single-role nuke, cascade nuke, clear-archive), since they all share this one function.
+- An ordinary (non-reclaim) stop/crash/fast-fail exit is completely unaffected — it must still land at `in_review`, recoverable, exactly as today.
+- The existing PR #707 / BUG-050 invariant (a task holding a live worker-kind hera binding never self-completes; `RollHeraWorkerToReview` owns that) is not disturbed — it still runs first and wins if it fires.
+- The marker must not leak into a later, unrelated exit of the same (or a reused) task ID.
+- `heraReclaimAndArchiveTask`'s session stop stays backgrounded (BUG-062) — no reintroducing the bulk-cascade UI freeze by making it synchronous.
+
+**Non-Goals:**
+
+- No change to the synchronous archive-time status check (`t.Status == StatusInReview → complete`) — that stays exactly as `fix-hera-archive-status` left it; this change is purely about the asynchronous follow-through for the live case.
+- No change to task deletion/pruning (`PruneTasks`, `PruneCompleted`, the merge-safety cleanup popup) — orthogonal.
+- No change to `handleSessionExitUI`'s general clean/non-clean decision for any exit that isn't reclaim-marked.
+- No handling of a genuinely compound race (e.g. a task simultaneously subject to a rerender kick-restart AND a nuke) beyond "the existing `pendingRestart` skip still applies, so the marker simply persists to the next real exit" — this is an accepted, narrow limitation (see Risks).
+
+## Decisions
+
+**Decision: a marker set BEFORE the backgrounded stop fires, consulted by `handleSessionExitUI`, rather than resolving the race by timing or by widening the synchronous check.**
+
+This mirrors the existing `pendingRerenderRestart` shape (a marker set before an async `Stop()`, consulted later by the same `handleSessionExitUI` decision point) rather than inventing a new mechanism. Alternatives considered:
+
+- *Make the archive-time check re-run later, after the stop settles (e.g. a callback from the stop goroutine that re-checks and force-completes).* Rejected: this duplicates `handleSessionExitUI`'s own status-transition logic in a second place, risking the two ever disagreeing (exactly the kind of drift `RollHeraWorkerToReview` was extracted to prevent for the worker-finish case). The marker keeps `handleSessionExitUI` as the single place a task's terminal status is decided.
+- *Make the session stop synchronous so the archive-time check can wait for the real exit before deciding.* Rejected outright — this is BUG-062, the multi-second bulk-cascade UI freeze that `heraGoSafe` was introduced specifically to fix. Explicitly called out as forbidden in the mission.
+- *Widen the synchronous check to `t.Status == StatusInReview || t.Status == StatusInProgress`.* Rejected: this is exactly the case `fix-hera-archive-status` deliberately excluded — a task still `in_progress` at the SYNCHRONOUS instant of archiving may be genuinely abandoned mid-flight (an operator force-nuking a still-working role), not finished. Forcing `complete` right then, before the operator's own stop has even had a chance to land, would misrepresent that. The marker instead defers the decision to the one place that already observes the actual exit.
+
+**Decision: guard the marker with the existing `a.mu` mutex, not `tapp.QueueUpdateDraw`-only access.**
+
+`heraReclaimAndArchiveTask` runs on the tview main goroutine (per its own existing doc comment — callers invoke it directly from confirm-modal callbacks/key handlers), so the initial "arm the marker" write is already main-goroutine-safe with no extra work. But the marker also needs clearing from INSIDE the backgrounded `heraGoSafe` goroutine on two paths that guarantee no exit notification is coming: no live session to stop, or the stop call itself erroring. Those clears run on a different goroutine than `handleSessionExitUI`'s later read/consume (which itself runs inside `QueueUpdateDraw`, i.e. the tview main goroutine). Two options:
+
+- *Route the goroutine-side clears through `a.tapp.QueueUpdateDraw` too*, matching the `pendingRerenderRestart` precedent (every access to that map is main-goroutine-only, either called directly on the main goroutine or wrapped in `QueueUpdateDraw`). Rejected for this specific field: `pendingRerenderRestart`'s access pattern relies on a running `tview.Application.Run()` event loop draining its internal `updates` channel; several of the existing plain unit tests for `heraReclaimAndArchiveTask` (`heraactions_archive_status_test.go`) construct an `App` via bare `New(...)` with no `Run()` loop active, and a `QueueUpdateDraw` call from a background goroutine in that context blocks forever (goroutine leak) rather than executing — acceptable for tests that never rely on the queued work running, but adding a NEW callsite that depends on a loop those tests don't run would either leak silently or require retrofitting every existing test with `wireApp`/`runApp` for no benefit (the marker itself never touches the screen or needs draw-serialization).
+- *Guard the map with the existing `a.mu` mutex* (already used for other cross-goroutine `App` fields — `restartedClient`, `daemonRestarting`, `mode` — see `isViewingTaskSession`/`RestartedClient`). Chosen: this is plain synchronized memory, correct under `-race` regardless of whether a tview event loop is running, and testable with direct function calls (`heraReclaimAndArchiveTask` then `handleSessionExitUI`, no `wireApp`/`SimulationScreen` needed) — matching how the existing `heraactions_archive_status_test.go` suite already tests this function.
+
+**Decision: the marker is consumed (checked-and-cleared) exactly once, at the first point `handleSessionExitUI` resolves a `StatusInProgress` task's terminal state — regardless of which branch (the PR #707 roll, the forced-complete, or the ordinary clean/non-clean rule) ultimately fires.**
+
+This is what prevents the marker from surviving to influence a later, unrelated exit of the same task ID: once a `StatusInProgress` decision point has run for this task, whatever set the marker no longer applies (the task's `in_progress` window that the marker was scoped to has ended). The `pendingRestart`-skip branch is the one exception: when a kick-restart is in flight, `handleSessionExitUI` doesn't reach the decision point at all, so the marker is deliberately left untouched — the task isn't really exiting yet, and this exact exit doesn't count.
+
+**Decision: order the marker check AFTER the `RollHeraWorkerToReview` roll, so the PR #707 invariant always wins if it somehow fires.**
+
+By the time a reclaim's backgrounded stop actually exits, the task's hera binding has already been ended (nuke ends the binding before stopping the session — a hard ordering guarantee of the existing `NukeRole`/`NukeOrchestrator` DB writes that run before `heraReclaimAndArchiveTask` is ever called). So `RollHeraWorkerToReview` is expected to always no-op (`rolled=false`) in this path. But putting the forced-complete check AFTER it, rather than short-circuiting before it, costs nothing and means a violated assumption (e.g. some future caller invoking `heraReclaimAndArchiveTask` before ending a binding) fails safe toward the pre-existing, well-tested invariant rather than silently overriding it.
+
+## Risks / Trade-offs
+
+- **[Risk]** A task simultaneously subject to a rerender kick-restart (`pendingRerenderRestart`) and a nuke at the same moment: the reclaim marker would be set, but `handleSessionExitUI`'s `pendingRestart`-skip branch means it isn't consumed on that first exit — it persists to whatever the task's NEXT real exit turns out to be, which may be unrelated to the nuke. → **Mitigation**: not handled — this is a compound double-async-race edge case outside this mission's explicit scope (a task actively being torn down by an operator's nuke while ALSO mid-kick-restart is vanishingly rare in practice, and the existing `pendingRestart` mechanism already takes priority for its own, separately-scoped reasons). Documented here rather than silently ignored; a future fix could scope the marker's consumption to also require the task still being archived at the time it's read, if this ever surfaces in practice.
+- **[Risk]** If `a.runner.HasSession(taskID)` is true but the process was already dying for unrelated reasons at the exact moment reclaim's own `Stop()` call races it, two distinct exit notifications could theoretically arrive for the same task. → **Mitigation**: not a new risk introduced by this change — `handleSessionExitUI` already has no general de-duplication for double-exit-notification races, and the marker's consume-once semantics don't make this any worse (the first exit to reach the decision point consumes the marker; a second, spurious notification for an already-non-`in_progress` task is a no-op at the very first `if t.Status == model.StatusInProgress` gate).
+
+## Open Questions
+
+None.

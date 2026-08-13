@@ -487,6 +487,330 @@ func TestDB_PruneCompleted_SkippedCountWithMix(t *testing.T) {
 	}
 }
 
+// --- PruneTasks (explicit-ID-list generalization, add-merge-safety-review) ---
+
+func TestDB_PruneTasks_DeletesExactlyGivenIDsRegardlessOfStatus(t *testing.T) {
+	d := testDB(t)
+
+	inReview := &model.Task{Name: "stuck", Status: model.StatusInReview}
+	testutil.NoError(t, d.Add(inReview))
+	other := &model.Task{Name: "other-in-review", Status: model.StatusInReview}
+	testutil.NoError(t, d.Add(other))
+	pending := &model.Task{Name: "pending", Status: model.StatusPending}
+	testutil.NoError(t, d.Add(pending))
+
+	pruned, skipped, err := d.PruneTasks([]string{inReview.ID})
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(pruned), 1)
+	testutil.Equal(t, pruned[0].ID, inReview.ID)
+	testutil.Equal(t, skipped, 0)
+
+	// The other in_review task (same status, NOT in the explicit list) and
+	// the pending task must both survive untouched.
+	_, err = d.Get(inReview.ID)
+	testutil.Error(t, err)
+	still, err := d.Get(other.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, still.Status, model.StatusInReview)
+	_, err = d.Get(pending.ID)
+	testutil.NoError(t, err)
+}
+
+func TestDB_PruneTasks_ReverifiesLiveHeraBindingGuard(t *testing.T) {
+	d := testDB(t)
+
+	bound := mkCompleteTaskWithHeraBinding(t, d, "bound", true)
+	unbound := &model.Task{Name: "unbound", Status: model.StatusInReview}
+	testutil.NoError(t, d.Add(unbound))
+
+	pruned, skipped, err := d.PruneTasks([]string{bound.ID, unbound.ID})
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(pruned), 1)
+	testutil.Equal(t, pruned[0].ID, unbound.ID)
+	testutil.Equal(t, skipped, 1)
+
+	still, err := d.Get(bound.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, still.Status, model.StatusComplete)
+}
+
+func TestDB_PruneTasks_EmptyIDsIsNoOp(t *testing.T) {
+	d := testDB(t)
+	_ = d.Add(&model.Task{Name: "keep", Status: model.StatusInReview})
+
+	pruned, skipped, err := d.PruneTasks(nil)
+	testutil.NoError(t, err)
+	if pruned != nil {
+		t.Errorf("expected nil pruned, got %d", len(pruned))
+	}
+	testutil.Equal(t, skipped, 0)
+
+	remaining, err := d.Tasks()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(remaining), 1)
+}
+
+func TestDB_PruneTasks_UnknownIDIgnored(t *testing.T) {
+	d := testDB(t)
+	pruned, skipped, err := d.PruneTasks([]string{"does-not-exist"})
+	testutil.NoError(t, err)
+	if pruned != nil {
+		t.Errorf("expected nil pruned, got %d", len(pruned))
+	}
+	testutil.Equal(t, skipped, 0)
+}
+
+// PruneCompleted must remain byte-for-byte equivalent now that it is
+// re-expressed in terms of PruneTasks — this pins that the all-complete
+// sweep still touches ONLY status=complete rows.
+func TestDB_PruneCompleted_StillIgnoresNonCompleteStatuses(t *testing.T) {
+	d := testDB(t)
+	stuck := &model.Task{Name: "stuck-in-review", Status: model.StatusInReview}
+	testutil.NoError(t, d.Add(stuck))
+	done := &model.Task{Name: "done", Status: model.StatusComplete}
+	testutil.NoError(t, d.Add(done))
+
+	pruned, _, err := d.PruneCompleted()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(pruned), 1)
+	testutil.Equal(t, pruned[0].ID, done.ID)
+
+	still, err := d.Get(stuck.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, still.Status, model.StatusInReview)
+}
+
+// --- StuckTaskCandidates (global Cleanup backlog predicate, add-merge-safety-review) ---
+
+func TestDB_StuckTaskCandidates(t *testing.T) {
+	t.Run("matches archived+in_review+no live binding", func(t *testing.T) {
+		d := testDB(t)
+		want := &model.Task{Name: "stuck", Status: model.StatusInReview, Archived: true}
+		testutil.NoError(t, d.Add(want))
+
+		got, err := d.StuckTaskCandidates()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 1)
+		testutil.Equal(t, got[0].Task.ID, want.ID)
+	})
+
+	t.Run("excludes a non-archived task", func(t *testing.T) {
+		d := testDB(t)
+		testutil.NoError(t, d.Add(&model.Task{Name: "not-archived", Status: model.StatusInReview}))
+
+		got, err := d.StuckTaskCandidates()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 0)
+	})
+
+	t.Run("excludes an archived task with a non-in_review status", func(t *testing.T) {
+		d := testDB(t)
+		testutil.NoError(t, d.Add(&model.Task{Name: "done", Status: model.StatusComplete, Archived: true}))
+
+		got, err := d.StuckTaskCandidates()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 0)
+	})
+
+	t.Run("excludes a task with a live Hera binding", func(t *testing.T) {
+		d := testDB(t)
+		bound := &model.Task{Name: "bound", Status: model.StatusInReview, Archived: true, Worktree: "/tmp/wt/bound"}
+		testutil.NoError(t, d.Add(bound))
+		orch := mkOrch(t, d, "bound-orch")
+		role := mkRole(t, d, orch.ID, "bound-role", HeraKindWorker)
+		_, err := d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: role.ID, OrchestratorID: orch.ID, ArgusTaskID: bound.ID, WorktreePath: bound.Worktree,
+		})
+		testutil.NoError(t, err)
+
+		got, err := d.StuckTaskCandidates()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 0)
+	})
+
+	t.Run("includes a task whose only Hera binding has ended", func(t *testing.T) {
+		d := testDB(t)
+		ended := &model.Task{Name: "ended", Status: model.StatusInReview, Archived: true, Worktree: "/tmp/wt/ended"}
+		testutil.NoError(t, d.Add(ended))
+		orch := mkOrch(t, d, "ended-orch")
+		role := mkRole(t, d, orch.ID, "ended-role", HeraKindWorker)
+		binding, err := d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: role.ID, OrchestratorID: orch.ID, ArgusTaskID: ended.ID, WorktreePath: ended.Worktree,
+		})
+		testutil.NoError(t, err)
+		testutil.NoError(t, d.EndHeraBinding(binding.ID, "test-teardown"))
+
+		got, err := d.StuckTaskCandidates()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 1)
+		testutil.Equal(t, got[0].Task.ID, ended.ID)
+	})
+
+	// --- Orchestrator resolution (5a-cleanup-tree-view) ---
+
+	t.Run("Orchestrator is empty for a task that never held a Hera role", func(t *testing.T) {
+		d := testDB(t)
+		want := &model.Task{Name: "never-hera", Status: model.StatusInReview, Archived: true}
+		testutil.NoError(t, d.Add(want))
+
+		got, err := d.StuckTaskCandidates()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 1)
+		testutil.Equal(t, got[0].Orchestrator, "")
+	})
+
+	t.Run("Orchestrator resolves from an ended binding, surviving role+orchestrator archive", func(t *testing.T) {
+		d := testDB(t)
+		task := &model.Task{Name: "1a-build", Status: model.StatusInReview, Archived: true, Worktree: "/tmp/wt/1a-build"}
+		testutil.NoError(t, d.Add(task))
+		orch := mkOrch(t, d, "fix-widget")
+		role := mkRole(t, d, orch.ID, "1a-build", HeraKindWorker)
+		binding, err := d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: role.ID, OrchestratorID: orch.ID, ArgusTaskID: task.ID, WorktreePath: task.Worktree,
+		})
+		testutil.NoError(t, err)
+		testutil.NoError(t, d.EndHeraBinding(binding.ID, "done"))
+		// Hera never hard-deletes on archive/nuke — resolution must still work
+		// after both the role and its orchestrator are archived/nuked.
+		testutil.NoError(t, d.NukeHeraRole(role.ID))
+		testutil.NoError(t, d.NukeHeraOrchestrator(orch.ID))
+
+		got, err := d.StuckTaskCandidates()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 1)
+		testutil.Equal(t, got[0].Orchestrator, "fix-widget")
+	})
+
+	t.Run("Orchestrator picks the MOST RECENT binding when a task has held roles in two orchestrators over time", func(t *testing.T) {
+		d := testDB(t)
+		task := &model.Task{Name: "multi-orch", Status: model.StatusInReview, Archived: true, Worktree: "/tmp/wt/multi-orch"}
+		testutil.NoError(t, d.Add(task))
+
+		firstOrch := mkOrch(t, d, "first-effort")
+		firstRole := mkRole(t, d, firstOrch.ID, "multi-orch", HeraKindWorker)
+		firstBinding, err := d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: firstRole.ID, OrchestratorID: firstOrch.ID, ArgusTaskID: task.ID, WorktreePath: task.Worktree,
+		})
+		testutil.NoError(t, err)
+		testutil.NoError(t, d.EndHeraBinding(firstBinding.ID, "done"))
+
+		// Sleep so the second binding's started_at is unambiguously later —
+		// formatTime uses RFC3339Nano, and the two calls happen close enough in
+		// a fast test run that relying on raw timestamp resolution alone would
+		// be a flaky assumption.
+		time.Sleep(2 * time.Millisecond)
+
+		secondOrch := mkOrch(t, d, "second-effort")
+		secondRole := mkRole(t, d, secondOrch.ID, "multi-orch-2", HeraKindWorker)
+		secondBinding, err := d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: secondRole.ID, OrchestratorID: secondOrch.ID, ArgusTaskID: task.ID, WorktreePath: task.Worktree,
+		})
+		testutil.NoError(t, err)
+		testutil.NoError(t, d.EndHeraBinding(secondBinding.ID, "done"))
+
+		got, err := d.StuckTaskCandidates()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 1)
+		testutil.Equal(t, got[0].Orchestrator, "second-effort")
+	})
+}
+
+// TestDB_CoordinatorTaskForOrchestrator covers add-coordinator-inferred-safety's
+// new orchestrator-name -> coordinator-task resolution.
+func TestDB_CoordinatorTaskForOrchestrator(t *testing.T) {
+	t.Run("resolves the coordinator role's bound task", func(t *testing.T) {
+		d := testDB(t)
+		coordTask := &model.Task{Name: "coord", Status: model.StatusInProgress, Worktree: "/tmp/wt/coord"}
+		testutil.NoError(t, d.Add(coordTask))
+		orch := mkOrch(t, d, "fix-widget")
+		coordRole := mkRole(t, d, orch.ID, "coord", HeraKindCoordinator)
+		_, err := d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: coordRole.ID, OrchestratorID: orch.ID, ArgusTaskID: coordTask.ID, WorktreePath: coordTask.Worktree,
+		})
+		testutil.NoError(t, err)
+
+		got, ok, err := d.CoordinatorTaskForOrchestrator("fix-widget")
+		testutil.NoError(t, err)
+		testutil.True(t, ok)
+		testutil.Equal(t, got.ID, coordTask.ID)
+	})
+
+	t.Run("unresolvable orchestrator name returns ok=false, no error", func(t *testing.T) {
+		d := testDB(t)
+
+		got, ok, err := d.CoordinatorTaskForOrchestrator("never-existed")
+		testutil.NoError(t, err)
+		testutil.False(t, ok)
+		testutil.Nil(t, got)
+	})
+
+	t.Run("an orchestrator with only a worker role (no coordinator) is unresolvable", func(t *testing.T) {
+		d := testDB(t)
+		workerTask := &model.Task{Name: "worker", Status: model.StatusInReview, Worktree: "/tmp/wt/worker"}
+		testutil.NoError(t, d.Add(workerTask))
+		orch := mkOrch(t, d, "worker-only")
+		workerRole := mkRole(t, d, orch.ID, "worker", HeraKindWorker)
+		_, err := d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: workerRole.ID, OrchestratorID: orch.ID, ArgusTaskID: workerTask.ID, WorktreePath: workerTask.Worktree,
+		})
+		testutil.NoError(t, err)
+
+		got, ok, err := d.CoordinatorTaskForOrchestrator("worker-only")
+		testutil.NoError(t, err)
+		testutil.False(t, ok)
+		testutil.Nil(t, got)
+	})
+
+	t.Run("picks the MOST RECENT coordinator binding when the role has been rebound", func(t *testing.T) {
+		d := testDB(t)
+		firstTask := &model.Task{Name: "coord-1", Status: model.StatusComplete, Worktree: "/tmp/wt/coord-1"}
+		testutil.NoError(t, d.Add(firstTask))
+		orch := mkOrch(t, d, "rebound-orch")
+		coordRole := mkRole(t, d, orch.ID, "coord", HeraKindCoordinator)
+		firstBinding, err := d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: coordRole.ID, OrchestratorID: orch.ID, ArgusTaskID: firstTask.ID, WorktreePath: firstTask.Worktree,
+		})
+		testutil.NoError(t, err)
+		testutil.NoError(t, d.EndHeraBinding(firstBinding.ID, "test-teardown"))
+
+		// Sleep so the second binding's started_at is unambiguously later (see
+		// StuckTaskCandidates' own multi-binding test for the same rationale).
+		time.Sleep(2 * time.Millisecond)
+
+		secondTask := &model.Task{Name: "coord-2", Status: model.StatusInProgress, Worktree: "/tmp/wt/coord-2"}
+		testutil.NoError(t, d.Add(secondTask))
+		_, err = d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: coordRole.ID, OrchestratorID: orch.ID, ArgusTaskID: secondTask.ID, WorktreePath: secondTask.Worktree,
+		})
+		testutil.NoError(t, err)
+
+		got, ok, err := d.CoordinatorTaskForOrchestrator("rebound-orch")
+		testutil.NoError(t, err)
+		testutil.True(t, ok)
+		testutil.Equal(t, got.ID, secondTask.ID)
+	})
+
+	t.Run("survives coordinator role and orchestrator archive/nuke", func(t *testing.T) {
+		d := testDB(t)
+		coordTask := &model.Task{Name: "coord", Status: model.StatusInReview, Archived: true, Worktree: "/tmp/wt/coord-nuked"}
+		testutil.NoError(t, d.Add(coordTask))
+		orch := mkOrch(t, d, "nuked-orch")
+		coordRole := mkRole(t, d, orch.ID, "coord", HeraKindCoordinator)
+		binding, err := d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: coordRole.ID, OrchestratorID: orch.ID, ArgusTaskID: coordTask.ID, WorktreePath: coordTask.Worktree,
+		})
+		testutil.NoError(t, err)
+		testutil.NoError(t, d.EndHeraBinding(binding.ID, "done"))
+		testutil.NoError(t, d.NukeHeraRole(coordRole.ID))
+		testutil.NoError(t, d.NukeHeraOrchestrator(orch.ID))
+
+		got, ok, err := d.CoordinatorTaskForOrchestrator("nuked-orch")
+		testutil.NoError(t, err)
+		testutil.True(t, ok)
+		testutil.Equal(t, got.ID, coordTask.ID)
+	})
+}
+
 // TestDB_DataVersion pins the cross-connection cache-invalidation contract
 // DataVersion exists for (see gotchas/hera-view.md and
 // openspec/changes/fix-hera-tick-and-kick-perf/design.md Decision 4): a write

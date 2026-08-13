@@ -84,13 +84,37 @@ func TestFetchPRStatesBatch_ParsesPerBranchResults(t *testing.T) {
 
 	testutil.Equal(t, res["argus/open"].State, model.PRApproved)
 	testutil.Equal(t, res["argus/open"].URL, "https://github.com/drn/argus/pull/11")
+	testutil.Equal(t, res["argus/open"].Merged, false)
 
 	// Empty nodes → none.
 	testutil.Equal(t, res["argus/none"].State, model.PRNone)
+	testutil.Equal(t, res["argus/none"].Merged, false)
 
 	// Merged PR with a deleted head branch still resolves to merged-closed.
 	testutil.Equal(t, res["argus/deleted"].State, model.PRMergedClosed)
 	testutil.Equal(t, res["argus/deleted"].URL, "https://github.com/drn/argus/pull/13")
+	testutil.Equal(t, res["argus/deleted"].Merged, true)
+}
+
+// TestMapBatchNode_MergedDistinguishesFromClosed pins PRResult.Merged
+// (add-hera-accept-lifecycle): State collapses MERGED and CLOSED into the
+// same PRMergedClosed value, but Merged must tell them apart – the PR-merge
+// coordinator nudge must never fire for an unmerged close.
+func TestMapBatchNode_MergedDistinguishesFromClosed(t *testing.T) {
+	merged := mapBatchNode([]prJSON{{State: "MERGED", URL: "https://example/pr/1"}})
+	testutil.Equal(t, merged.State, model.PRMergedClosed)
+	testutil.Equal(t, merged.Merged, true)
+
+	closed := mapBatchNode([]prJSON{{State: "CLOSED", URL: "https://example/pr/2"}})
+	testutil.Equal(t, closed.State, model.PRMergedClosed)
+	testutil.Equal(t, closed.Merged, false)
+
+	open := mapBatchNode([]prJSON{{State: "OPEN", URL: "https://example/pr/3"}})
+	testutil.Equal(t, open.Merged, false)
+
+	none := mapBatchNode(nil)
+	testutil.Equal(t, none.State, model.PRNone)
+	testutil.Equal(t, none.Merged, false)
 }
 
 // Scenario: One query per repo, not per task — the builder emits a single

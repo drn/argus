@@ -95,23 +95,33 @@ func TestHeraActions_HideBranches(t *testing.T) {
 // hidden worker → confirm opens.
 func TestHeraActions_ClearArchiveBranches(t *testing.T) {
 	d := testDB(t)
+	t.Setenv("HOME", t.TempDir())
 	app := New(d, agent.NewRunner(nil), false)
 
 	orch := seedHeraOrch(t, d, "o")
 	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
 	app.heraPage.Refresh()
 
-	// No hidden descendant workers → "nothing to clear", no modal.
+	// No hidden descendant workers → "nothing to clear", no modal. Nothing to
+	// classify either, so this stays synchronous.
 	app.heraClearArchive(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "o"}})
 	testutil.Contains(t, app.statusbar.Info(), "Nothing to clear")
 	testutil.Equal(t, app.mode, modeTaskList)
 
-	// Hide a worker so the subtree has a Tier-1 hidden descendant.
+	// Hide a worker so the subtree has a Tier-1 hidden descendant with a real
+	// bound task — the merge-safety classification (add-merge-safety-review)
+	// now runs off the UI thread before the confirm opens, so this needs a
+	// real running event loop.
 	w := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
 	testutil.NoError(t, d.ArchiveHeraRole(w.ID))
 	app.heraPage.Refresh()
-	app.heraClearArchive(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "o"}})
-	testutil.Equal(t, app.mode, modeHeraConfirm)
+
+	_, stop := wireApp(t, app)
+	defer stop()
+	readUI(t, app.tapp, func() {
+		app.heraClearArchive(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "o"}})
+	})
+	waitForMode(t, app, modeHeraConfirm)
 }
 
 // TestHeraActions_ForceRecycleBranches pins the `B` force-recycle key
@@ -1061,6 +1071,104 @@ func TestSmoke_HeraReattachRestartsSession(t *testing.T) {
 	testutil.Equal(t, started, true)
 }
 
+// TestSmoke_HeraReattachRefusesClosedOutDeadWorker is the live regression from
+// msg #4917: pressing Enter on a dead-session worker row that is awaiting
+// coordinator close-out (accepted → complete, or self-reported-done →
+// in_review) used to unconditionally call startSession, which flips the task
+// straight to in_progress with zero Hera awareness — the session then exits
+// almost immediately (nothing to resume), and the ordinary post-exit rule
+// rolled it back to in_review, silently undoing the close-out. heraReattach's
+// dead-session branch must now consult HeraWorkerAwaitingCloseout first (the
+// SAME guard ReviveHeraWorkerToInProgress applies) and refuse: task status
+// untouched, no session started, a clear statusbar message instead.
+func TestSmoke_HeraReattachRefusesClosedOutDeadWorker(t *testing.T) {
+	cases := []struct {
+		name         string
+		status       model.Status
+		readyToClose bool
+		roleStatus   db.HeraRoleStatusValue // "" to skip
+	}{
+		{name: "accepted complete + ready_to_close", status: model.StatusComplete, readyToClose: true},
+		{name: "self-reported-done in_review + ready_to_close", status: model.StatusInReview, readyToClose: true},
+		{name: "in_review + terminal role-status done (no ready_to_close)", status: model.StatusInReview, roleStatus: db.HeraStatusDone},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := testDB(t)
+			orch := seedHeraOrch(t, d, "orch")
+			seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+			role := seedHeraBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
+			testutil.NoError(t, d.SetStatus("tw", tc.status))
+			if tc.readyToClose {
+				testutil.NoError(t, d.SetMeta("tw", db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"))
+			}
+			if tc.roleStatus != "" {
+				testutil.NoError(t, d.UpsertHeraRoleStatus(role.ID, tc.roleStatus))
+			}
+
+			app := New(d, agent.NewRunner(nil), false)
+			sim, stop := wireApp(t, app)
+			defer stop()
+			heraTabCursorOnWorker(t, app, sim)
+
+			sim.InjectKey(tcell.KeyEnter, 0, 0) // Enter → reattach (dead session, closed out)
+			syncUI(t, app.tapp)
+
+			got, err := d.Get("tw")
+			testutil.NoError(t, err)
+			testutil.Equal(t, got.Status, tc.status) // unchanged — never clobbered
+			testutil.Equal(t, got.SessionID, "")     // no session started
+			var statusErr string
+			readUI(t, app.tapp, func() { statusErr = app.statusbar.Error() })
+			testutil.Contains(t, statusErr, "closed out")
+		})
+	}
+}
+
+// TestSmoke_HeraReattachStillRestartsNonClosedOutWorker guards against an
+// overbroad fix: a plain dead-session worker with no close-out marker (e.g.
+// parked in in_review by a human, or mid-flight before any close-out) must
+// still restart through the unchanged path — the new guard only refuses a
+// GENUINELY closed-out worker, mirroring HeraWorkerAwaitingCloseout exactly.
+func TestSmoke_HeraReattachStillRestartsNonClosedOutWorker(t *testing.T) {
+	app, d := heraRepoApp(t)
+	orch := seedHeraOrch(t, d, "orch")
+	repo := d.Config().Projects["p"].Path
+	testutil.NoError(t, d.Add(&model.Task{ID: "tc", Name: "tc", Status: model.StatusInProgress, Project: "p", Worktree: repo, CreatedAt: time.Now()}))
+	coord, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: orch, Name: "coord", Kind: db.HeraKindCoordinator, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: coord.ID, ArgusTaskID: "tc", WorktreePath: repo + "#coord"})
+	testutil.NoError(t, err)
+
+	testutil.NoError(t, d.Add(&model.Task{ID: "tw", Name: "tw", Status: model.StatusInReview, Project: "p", Worktree: repo, CreatedAt: time.Now()}))
+	worker, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: orch, Name: "wkr", Kind: db.HeraKindWorker, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	// Distinct WorktreePath from the coordinator's binding (DB uniqueness is
+	// per (worktree_path, orchestrator_id) metadata, independent of the task's
+	// actual real Worktree dir both roles share above for runner.Start to cd into).
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: worker.ID, ArgusTaskID: "tw", WorktreePath: repo + "#worker"})
+	testutil.NoError(t, err)
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+	t.Cleanup(func() { app.runner.StopAll() })
+	heraTabCursorOnWorker(t, app, sim)
+
+	sim.InjectKey(tcell.KeyEnter, 0, 0) // Enter → reattach (dead session, NOT closed out)
+
+	deadline := time.Now().Add(3 * time.Second)
+	started := false
+	for time.Now().Before(deadline) {
+		syncUI(t, app.tapp)
+		if got, _ := d.Get("tw"); got != nil && got.SessionID != "" {
+			started = true
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	testutil.Equal(t, started, true)
+}
+
 // TestHandleSessionExitUI_RerenderRestartsWhenViewedViaHeraPane is the BUG-076
 // regression: a size-drift kick's auto-restart (handleSessionExitUI's
 // pendingRerenderRestart branch) used to gate "is the user still watching"
@@ -1128,6 +1236,120 @@ func TestHandleSessionExitUI_RerenderRestartsWhenViewedViaHeraPane(t *testing.T)
 	}
 }
 
+// TestHandleSessionExitUI_RerenderRefusesClosedOutWorker is the SIBLING gap to
+// TestSmoke_HeraReattachRefusesClosedOutDeadWorker (16ca217e): that fix only
+// gated the Enter-KEY reattach path (heraReattach). handleSessionExitUI's OWN
+// pendingRerenderRestart branch — the size-drift kick's auto-restart (BUG-074/
+// BUG-076) — is a SEPARATE entry point with no keypress at all: an operator
+// merely navigating onto a closed-out worker's row while their terminal size
+// differs from the session's last-recorded size fires the same unconditional
+// flip-to-in_progress + startSession, silently undoing an accepted or
+// self-reported-done worker's close-out (confirmed live via daemon.log
+// correlation — StopSession x2 → StartSession(resume=true) within ~20ms of the
+// operator merely navigating onto the row, no Enter involved). Fixed: the
+// branch now consults the SAME HeraWorkerAwaitingCloseout guard heraReattach
+// uses, via heraKickRestartClosedOut, before restarting — and skips the
+// restart silently (no status write, no session start) when the task is
+// closed out, leaving it exactly as hera_accept/close-out left it.
+func TestHandleSessionExitUI_RerenderRefusesClosedOutWorker(t *testing.T) {
+	cases := []struct {
+		name         string
+		status       model.Status
+		readyToClose bool
+		roleStatus   db.HeraRoleStatusValue // "" to skip
+	}{
+		{name: "accepted complete + ready_to_close", status: model.StatusComplete, readyToClose: true},
+		{name: "self-reported-done in_review + ready_to_close", status: model.StatusInReview, readyToClose: true},
+		{name: "in_review + terminal role-status done (no ready_to_close)", status: model.StatusInReview, roleStatus: db.HeraStatusDone},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := testDB(t)
+			orch := seedHeraOrch(t, d, "orch")
+			seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+			role := seedHeraBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
+			testutil.NoError(t, d.SetStatus("tw", tc.status))
+			if tc.readyToClose {
+				testutil.NoError(t, d.SetMeta("tw", db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"))
+			}
+			if tc.roleStatus != "" {
+				testutil.NoError(t, d.UpsertHeraRoleStatus(role.ID, tc.roleStatus))
+			}
+
+			app := New(d, agent.NewRunner(nil), false)
+			sim, stop := wireApp(t, app)
+			defer stop()
+			heraTabCursorOnWorker(t, app, sim)
+
+			var boundToHera bool
+			readUI(t, app.tapp, func() {
+				boundToHera = app.heraPage.IsBoundToTask("tw")
+				app.pendingRerenderRestart["tw"] = true
+				app.handleSessionExitUI("tw", false /* non-clean: kick-induced stop */, false)
+			})
+			if !boundToHera {
+				t.Fatal("expected the worker pane bound to tw after cursoring onto it")
+			}
+
+			got, err := d.Get("tw")
+			testutil.NoError(t, err)
+			testutil.Equal(t, got.Status, tc.status) // unchanged — never clobbered
+			testutil.Equal(t, got.SessionID, "")     // no session started
+		})
+	}
+}
+
+// TestHandleSessionExitUI_RerenderStillRestartsNonClosedOutWorker guards
+// against an overbroad fix: a plain worker with no close-out marker (in
+// in_progress, mid-flight) must still restart through the size-drift kick's
+// pendingRerenderRestart branch — the new guard only refuses a GENUINELY
+// closed-out worker, mirroring HeraWorkerAwaitingCloseout exactly.
+func TestHandleSessionExitUI_RerenderStillRestartsNonClosedOutWorker(t *testing.T) {
+	app, d := heraRepoApp(t)
+	orch := seedHeraOrch(t, d, "orch")
+	repo := d.Config().Projects["p"].Path
+	testutil.NoError(t, d.Add(&model.Task{ID: "tc", Name: "tc", Status: model.StatusInProgress, Project: "p", Worktree: repo, CreatedAt: time.Now()}))
+	coord, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: orch, Name: "coord", Kind: db.HeraKindCoordinator, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: coord.ID, ArgusTaskID: "tc", WorktreePath: repo + "#coord"})
+	testutil.NoError(t, err)
+
+	testutil.NoError(t, d.Add(&model.Task{ID: "tw", Name: "tw", Status: model.StatusInProgress, Project: "p", Worktree: repo, CreatedAt: time.Now()}))
+	worker, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: orch, Name: "wkr", Kind: db.HeraKindWorker, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: worker.ID, ArgusTaskID: "tw", WorktreePath: repo + "#worker"})
+	testutil.NoError(t, err)
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+	t.Cleanup(func() { app.runner.StopAll() })
+	heraTabCursorOnWorker(t, app, sim)
+
+	var boundToHera bool
+	readUI(t, app.tapp, func() {
+		boundToHera = app.heraPage.IsBoundToTask("tw")
+		app.pendingRerenderRestart["tw"] = true
+		app.handleSessionExitUI("tw", false /* non-clean: kick-induced stop */, false)
+	})
+	if !boundToHera {
+		t.Fatal("expected the worker pane bound to tw after cursoring onto it")
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	restarted := false
+	for time.Now().Before(deadline) {
+		syncUI(t, app.tapp)
+		if got, _ := d.Get("tw"); got != nil && got.Status == model.StatusInProgress && got.SessionID != "" {
+			restarted = true
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if !restarted {
+		t.Fatal("expected a non-closed-out worker to still auto-restart via the size-drift kick")
+	}
+}
+
 // --- BUG-017: coord/orchestrator HEADER delete cascades the full subtree ------
 
 // seedHeraRoleOnTask binds a NEW role under orchID to an ALREADY-EXISTING argus
@@ -1155,21 +1377,30 @@ func TestHeraActions_OrchHeaderDeleteCascadesSingleOrch(t *testing.T) {
 	wkr := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
 	app.heraPage.Refresh()
 
-	app.heraOpenDelete(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "solo"}})
+	// add-merge-safety-review: the cascade confirm now opens only after an
+	// off-UI-thread Tier-A classification pass, so this needs a real running
+	// event loop rather than a synchronous direct call.
+	_, stop := wireApp(t, app)
+	defer stop()
+	readUI(t, app.tapp, func() {
+		app.heraOpenDelete(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "solo"}})
+	})
+	waitForMode(t, app, modeHeraConfirm)
 
 	// The count-bearing cascade confirm opens, worded "removes" + "reclaims".
-	testutil.Equal(t, app.mode, modeHeraConfirm)
-	msg := app.heraConfirmModal.Message()
+	var msg string
+	readUI(t, app.tapp, func() { msg = app.heraConfirmModal.Message() })
 	testutil.Contains(t, msg, "removes")
 	testutil.Contains(t, msg, "reclaims")
 	testutil.Contains(t, msg, "1 orchestrator(s)")
 	testutil.Contains(t, msg, "1 agent(s)")      // the worker (coordinator not counted)
 	testutil.Contains(t, msg, "2 worktree(s)")   // coord task + worker task
 	testutil.Contains(t, msg, "0 task(s) bound") // none preserved
+	testutil.Contains(t, msg, "of 2 reclaimed tasks confirmed merged")
 
 	// Accept → cascade NUKES the orchestrator + roles (no hard deletes) and
 	// ARCHIVES the tasks.
-	app.heraConfirmDo()
+	readUI(t, app.tapp, func() { app.heraConfirmDo() })
 
 	gotOrch, err := d.HeraOrchestrator(orch) // still exists, NUKED
 	testutil.NoError(t, err)
@@ -1231,16 +1462,26 @@ func TestHeraActions_OrchHeaderDeleteCascadesNestedSubtree(t *testing.T) {
 	}
 	testutil.DeepEqual(t, names, []string{"P", "C"})
 
-	app.heraOpenDelete(hera.Selection{Orch: &hera.OrchView{ID: p, Name: "P"}})
-	testutil.Equal(t, app.mode, modeHeraConfirm)
-	msg := app.heraConfirmModal.Message()
+	// add-merge-safety-review: the cascade confirm now opens only after an
+	// off-UI-thread Tier-A classification pass, so this needs a real running
+	// event loop rather than a synchronous direct call.
+	_, stop := wireApp(t, app)
+	defer stop()
+	readUI(t, app.tapp, func() {
+		app.heraOpenDelete(hera.Selection{Orch: &hera.OrchView{ID: p, Name: "P"}})
+	})
+	waitForMode(t, app, modeHeraConfirm)
+
+	var msg string
+	readUI(t, app.tapp, func() { msg = app.heraConfirmModal.Message() })
 	testutil.Contains(t, msg, "removes")
 	testutil.Contains(t, msg, "2 orchestrator(s)")
 	testutil.Contains(t, msg, "2 agent(s)")      // wP + wC
 	testutil.Contains(t, msg, "2 worktree(s)")   // tP + tC (internal bridge); tShared preserved
 	testutil.Contains(t, msg, "1 task(s) bound") // tShared preserved
+	testutil.Contains(t, msg, "of 2 reclaimed tasks confirmed merged")
 
-	app.heraConfirmDo()
+	readUI(t, app.tapp, func() { app.heraConfirmDo() })
 
 	// Both subtree orchestrators NUKED (still present); the outside one untouched.
 	for _, id := range []int64{p, c} {

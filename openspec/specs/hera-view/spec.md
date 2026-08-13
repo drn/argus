@@ -526,19 +526,22 @@ Derived from: `internal/tui/hera/ops.go:85` (`ArchiveToggle`), `internal/tui/her
 - marks the hera role row(s) NUKED and ENDS their live binding (never `DeleteHeraRole`);
 - marks the orchestrator row NUKED (for a coordinator/header or whole-subtree nuke), never `DeleteHeraOrchestrator`;
 - ARCHIVES the argus task row (`db.SetArchived`), never `db.Delete`;
-- ADVANCES the argus task's status from in_review to complete WHEN the task is currently in_review at the moment of archive — never when it is pending or in_progress (a still-active or never-reviewed task is archived with its status left untouched), and it is a no-op when the task is already complete. This applies identically regardless of which hera role kind (coordinator, worker, or freelance) is being nuked, since the check reads the task's own status column, not the hera role's kind or status;
+- ADVANCES the argus task's status from in_review to complete WHEN the task is currently in_review AT THE MOMENT OF ARCHIVE — never synchronously when it is pending or in_progress (a still-active or never-reviewed task is archived with its status left untouched at that instant), and it is a no-op when the task is already complete. This applies identically regardless of which hera role kind (coordinator, worker, or freelance) is being nuked, since the check reads the task's own status column, not the hera role's kind or status;
+- for a task that IS in_progress (actively live) at the moment of reclaim, GUARANTEES it still reaches complete once the reclaim's own session stop (below) actually exits — even though the moment-of-archive snapshot above leaves its status untouched. Reclaim marks such a task as awaiting forced completion before backgrounding its stop; the session-exit handler that later observes that stop's exit (an unavoidably asynchronous event, since the stop itself is backgrounded to avoid blocking the UI thread on a bulk cascade) consults that mark and lands the task at complete instead of the ordinary crash/stop/fast-fail → in_review rule that governs an otherwise-identical, non-reclaim exit. This does not override a task that still holds a live worker-kind hera binding at exit time — that invariant (a task never self-completes while worker-bound) always wins if it somehow still applies;
 - retains the role's inbox/messages — because the role row is retained (only stamped nuked/archived), its messages stay attached as history (no message rows are deleted, no message-archive column is required, and a nuked role's inbox stays readable);
-- RECLAIMS only the real resources: stops the session and removes the worktree + LOCAL and REMOTE branch.
+- RECLAIMS only the real resources: stops the session (backgrounded) and removes the worktree + LOCAL and REMOTE branch (also backgrounded).
+
+Nuking a SINGLE ROLE (not a cascade) SHALL first run the merge-safety classifier's Tier A (local-only, no network) check against that role's task, computed off the UI thread, and open the merge-safety review popup (see "Merge-safety review popup") with that one task as its sole candidate, in place of a plain confirm — choosing to clean (via either popup action, which are equivalent at a single candidate) proceeds with the nuke exactly as described above; choosing Cancel aborts it. This is a WARNING, never a gate: a not-confirmed-merged task can still be cleaned via the popup's override action.
 
 Nuking a ROLE reclaims the worktree + archives the task ONLY if that task has exactly one live binding; a MULTI-bound task is PRESERVED — left fully alone (not archived, worktree kept, status untouched). The role row is marked nuked + its binding ended either way.
 
-Nuking a COORDINATOR / orchestrator HEADER SHALL cascade the SAME mark-nuked-and-reclaim over the full subtree rooted at the selected orchestrator (`BridgeSubtree(root)`): that orchestrator, every nested sub-coordinator, and all their agents are marked nuked + their worktrees reclaimed. A task bound live in an orchestrator OUTSIDE the subtree is PRESERVED (left fully alone).
+Nuking a COORDINATOR / orchestrator HEADER SHALL cascade the SAME mark-nuked-and-reclaim over the full subtree rooted at the selected orchestrator (`BridgeSubtree(root)`): that orchestrator, every nested sub-coordinator, and all their agents are marked nuked + their worktrees reclaimed. A task bound live in an orchestrator OUTSIDE the subtree is PRESERVED (left fully alone). This cascade path does NOT use the merge-safety review popup (see "Merge-safety review popup is scoped to single-role nuke and the global Cleanup action, not cascade or clear-archived") — it keeps its existing all-or-nothing confirm, augmented only with a confirmed/not-confirmed count.
 
-The cascade gates behind a count-bearing confirmation modal that states how many orchestrators and agents are removed, how many worktrees + branches are reclaimed (including any internal-bridge worktree between two subtree orchestrators), and how many tasks are preserved.
+The cascade gates behind a count-bearing confirmation modal that states how many orchestrators and agents are removed, how many worktrees + branches are reclaimed (including any internal-bridge worktree between two subtree orchestrators), how many tasks are preserved, and how many of the reclaimed tasks are confirmed merged vs. not confirmed (via the same Tier A check, computed off the UI thread before the confirm opens).
 
 The difference from the `a` HIDE key: `a` HIDES (Tier 1) — the row moves into its parent coordinator's nested archive and the worktree/session stay ALIVE, fully reversible; `Ctrl+D` NUKES (Tier 2) — the row leaves the rail entirely and its worktree/session are reclaimed, recoverable only via the DB.
 
-Derived from: `internal/tui/heraactions.go` (`heraOpenDelete`, `heraNukeRole`, `heraReclaimAndArchiveTask`, `heraCascadeNukeFrom`, `heraDoCascadeNuke`, `heraTaskBoundOutside`), `internal/tui/hera/ops.go` (`NukeRole`, `NukeOrchestrator`), `internal/tui/hera/model.go` (`BridgeSubtree`), `internal/db/hera.go` (`NukeHeraRole`, `NukeHeraOrchestrator`), `internal/db/tasks.go` (`SetStatus`), `context/knowledge/gotchas/hera-view.md`.
+Derived from: `internal/tui/heraactions.go` (`heraOpenDelete`, `heraNukeRole`, `heraReclaimAndArchiveTask`, `heraCascadeNukeFrom`, `heraDoCascadeNuke`, `heraTaskBoundOutside`), `internal/tui/app.go` (`handleSessionExitUI`, `pendingHeraReclaim`), `internal/tui/hera/ops.go` (`NukeRole`, `NukeOrchestrator`), `internal/tui/hera/model.go` (`BridgeSubtree`), `internal/db/hera.go` (`NukeHeraRole`, `NukeHeraOrchestrator`, `RollHeraWorkerToReview`), `internal/db/tasks.go` (`SetStatus`), `internal/mergesafety` (Tier A classification), `context/knowledge/gotchas/hera-view.md`.
 
 `NOTE:` NET zero hard deletes from any hera table — every nuked role, orchestrator, inbox, and task row is retained and retrievable via the DB. The one remaining non-hera delete (`db.SetArchived` dropping a task's queued LEGACY `task_messages`, a different table) is established archive behavior and out of scope.
 
@@ -561,7 +564,51 @@ Derived from: `internal/tui/heraactions.go` (`heraOpenDelete`, `heraNukeRole`, `
 #### Scenario: Cascade confirm states the counts
 
 - **WHEN** `Ctrl+D` is pressed on a coordinator / orchestrator header
-- **THEN** a confirmation modal opens stating how many orchestrators and agents are removed, how many worktrees + branches are reclaimed (counting the internal-bridge worktree in a multi-level subtree), and how many tasks are preserved
+- **THEN** a confirmation modal opens stating how many orchestrators and agents are removed, how many worktrees + branches are reclaimed (counting the internal-bridge worktree in a multi-level subtree), how many tasks are preserved, and how many of the reclaimed tasks are confirmed merged vs. not confirmed
+
+#### Scenario: Reclaiming an in_review task advances it to complete
+
+- **WHEN** a task with status `in_review` is reclaimed and archived by a nuke (a sole-bound role nuke, a cascade, or clearing a hidden archive)
+- **THEN** the task's status is advanced to `complete` in addition to being archived
+
+#### Scenario: Reclaiming a still-active task leaves its status untouched at the moment of archive
+
+- **WHEN** a task with status `pending` or `in_progress` is reclaimed and archived by a nuke
+- **THEN** the task is archived exactly as before and its status is left unchanged AT THAT INSTANT — it is NOT synchronously advanced to `complete`
+
+#### Scenario: Reclaiming a live task still completes once its stop settles
+
+- **WHEN** a task with status `in_progress` is reclaimed and archived by a nuke, and the session stop that reclaim fired (backgrounded) subsequently exits
+- **THEN** the task's status lands at `complete` — never the ordinary `in_review` that an otherwise-identical, non-reclaim stop/crash would produce — once that exit is observed, even though the archive itself left the status column untouched at the moment of reclaim
+- **AND** this applies regardless of whether the exit is reported as clean or non-clean, since a deliberate reclaim stop is terminal-by-design either way
+
+#### Scenario: A reclaimed task still holding a live worker-kind hera binding is not force-completed
+
+- **WHEN** a task's reclaim-triggered exit lands while the task still holds a live worker-kind hera binding (the PR #707 / BUG-050 invariant's precondition)
+- **THEN** the task rolls to `in_review` via the existing worker-finish policy, never `complete` — the invariant wins over the forced-completion guarantee above
+
+#### Scenario: Reclaiming an already-complete task is idempotent
+
+- **WHEN** a task with status `complete` is reclaimed and archived by a nuke
+- **THEN** the task is archived and its status remains `complete` (no-op status write)
+
+#### Scenario: The status advancement is uniform across role kinds
+
+- **WHEN** the reclaimed task's bound role is a coordinator, a worker, or a freelance role, and the task's status is `in_review` at the moment of reclaim
+- **THEN** the status is advanced to `complete` in every case — the decision depends only on the task's own status column, not on the role's kind
+
+#### Scenario: Single-role nuke opens the review popup instead of a plain confirm
+
+- **WHEN** a role is nuked and its task has exactly one live binding
+- **THEN** the merge-safety review popup opens with that task as its sole candidate, sectioned as SAFE or NOT-SAFE per the Tier A check, instead of a plain y/N confirm
+
+#### Scenario: A not-confirmed single-role nuke can still be cleaned via the override
+- **WHEN** the single candidate in the popup is NOT-SAFE
+- **THEN** `Clean safe` acts on nothing, and `Clean all` proceeds with the nuke exactly as if it had been confirmed merged — the operator is never blocked
+
+#### Scenario: The merge-safety check runs off the UI thread and does not call the network for a nuke
+- **WHEN** any nuke's merge-safety check is being prepared (single-role or cascade)
+- **THEN** it runs in a background goroutine, invokes no `gh`/GitHub network call, and the relevant popup/confirm only opens once the check completes
 
 #### Scenario: Reclaiming an in_review task advances it to complete
 
@@ -1489,22 +1536,37 @@ The binding SHALL appear in the Hera rail section of the help overlay (`?`) and 
 
 The Hera rail SHALL offer exactly two end-of-life resting states for a role or orchestrator, both of which retain every DB row (the bedrock rule: a hera row is never hard-deleted):
 
-- **HIDDEN (Tier 1)** — reached by `a`. The row is `archived_at`-stamped on the hera ROLE only (NOT `nuked_at`, and NOT `db.SetArchived` on the argus task — HIDE is rail-only, so the worker keeps running and still shows in the Tasks tab) and renders inside its PARENT coordinator's nested "Archive (N)" expando. Hiding a bridging sub-coordinator collapses its WHOLE subtree into that expando (structure retained — the sub-coord's agents nest beneath it inside the expando), never leaking a descendant to a top-level root. The worktree and session stay ALIVE (no detach). It is a reversible toggle (un-hide restores it exactly to the rail) and is NOT confirmed. `a` applies to a WORKER or a sub-coordinator only; on a top-level coordinator (no parent to nest under) it surfaces feedback and is a no-op.
-- **NUKED (Tier 2)** — reached by `Ctrl+D` (any worker or coordinator, including top-level) or `C` (the selected coordinator's hidden descendants). The row is `nuked_at`-stamped and is REMOVED from the rail entirely — it appears in no visible archive. Its worktree + local/remote branch are reclaimed from disk and its session stopped; its DB rows (role + orchestrator + inbox + argus task) are retained. Recovery is via the DB only (re-spin a fresh worktree); a nuked role's inbox stays readable.
+- **HIDDEN (Tier 1)** – reached by `a`. The row is `archived_at`-stamped on the hera ROLE only (NOT `nuked_at`, and NOT `db.SetArchived` on the argus task – HIDE is rail-only, so the worker's argus task row and its worktree stay ALIVE and it still shows in the Tasks tab) and renders inside its PARENT coordinator's nested "Archive (N)" expando. Hiding a bridging sub-coordinator collapses its WHOLE subtree into that expando (structure retained – the sub-coord's agents nest beneath it inside the expando), never leaking a descendant to a top-level root. On the HIDE direction only (the role was active and becomes archived), the system SHALL additionally stop the role's live agent session – freeing its memory – if one exists (`add-hera-accept-lifecycle`: freeing memory is a nice-to-have follow-through of the operator choosing to hide, never a requirement of Hera task completion itself, which stays a wholly separate concern). The stop is backgrounded (mirrors the nuke path's own `heraGoSafe` session-stop, so hiding many roles in quick succession never blocks the UI thread) and touches the SESSION ONLY – the worktree and local/remote branch are NEVER touched by hide, on either direction. The UN-HIDE direction (pressing `a` again) SHALL NEVER stop, restart, or otherwise touch any session – it is a pure row-level toggle. It is a reversible toggle (un-hide restores the role's rail visibility exactly; a stopped session can be brought back via the ordinary dead-session revive path, `Enter` on the row) and neither direction is confirmed. `a` applies to a WORKER or a sub-coordinator only; on a top-level coordinator (no parent to nest under) it surfaces feedback and is a no-op.
+- **NUKED (Tier 2)** – reached by `Ctrl+D` (any worker or coordinator, including top-level) or `C` (the selected coordinator's hidden descendants). The row is `nuked_at`-stamped and is REMOVED from the rail entirely – it appears in no visible archive. Its worktree + local/remote branch are reclaimed from disk and its session stopped; its DB rows (role + orchestrator + inbox + argus task) are retained. Recovery is via the DB only (re-spin a fresh worktree); a nuked role's inbox stays readable.
 
-`C` SHALL be scoped to the SELECTED coordinator's archive — it nukes every Tier-1 hidden item under that coordinator (equivalent to `Ctrl+D` on each), never a global sweep, and is confirmed with a count. When the selected coordinator's archive is empty it surfaces "nothing to clear" and opens no confirm.
+`C` SHALL be scoped to the SELECTED coordinator's archive – it nukes every Tier-1 hidden item under that coordinator (equivalent to `Ctrl+D` on each), never a global sweep, and is confirmed with a count. When the selected coordinator's archive is empty it surfaces "nothing to clear" and opens no confirm.
 
-Derived from: `internal/tui/heraactions.go` (`heraHide`, `heraClearArchive`), `internal/tui/hera/ops.go` (`Hide`/`Unhide` toggle, `NukeRole`/`NukeOrchestrator`), `internal/tui/hera/model.go` (BuildModel skips db rows with `nuked_at` set), `internal/db/hera.go` (`nuked_at`).
+Derived from: `internal/tui/heraactions.go` (`heraHide`), `internal/tui/hera/ops.go` (`ArchiveToggle` direction-reporting), `internal/tui/hera/model.go` (BuildModel skips db rows with `nuked_at` set), `internal/db/hera.go` (`nuked_at`).
 
-#### Scenario: Hide keeps the session and worktree alive (rail-only)
+#### Scenario: Hide keeps the worktree and argus task alive (rail-only)
 
 - **WHEN** the user presses `a` on a live worker
-- **THEN** the worker's hera role is archived and renders in its parent coordinator's nested archive expando, while its session, worktree, and argus task row are all left untouched (the task still appears in the Tasks tab), and pressing `a` again un-hides it exactly
+- **THEN** the worker's hera role is archived and renders in its parent coordinator's nested archive expando, while its worktree and argus task row are left untouched (the task still appears in the Tasks tab), and pressing `a` again un-hides it exactly
+
+#### Scenario: Hide stops the role's live session
+
+- **WHEN** the user presses `a` on a role with a live agent session (the HIDE direction – the role was active immediately before the press)
+- **THEN** the session is stopped in the background, while the worktree and local/remote branch are left completely untouched
+
+#### Scenario: Hide with no live session is a clean no-op on the stop path
+
+- **WHEN** the user presses `a` on a role with no live agent session
+- **THEN** the role is archived exactly as usual and no stop attempt is made (nothing to stop)
+
+#### Scenario: Un-hide never touches the session
+
+- **WHEN** the user presses `a` on an already-hidden (archived) role (the UN-HIDE direction)
+- **THEN** the role is unarchived and no session stop, restart, or any other session action occurs, regardless of whether a session happens to be live at that moment
 
 #### Scenario: Hiding a sub-coordinator collapses its subtree into the parent's archive
 
 - **WHEN** the user presses `a` on a bridging sub-coordinator that has its own nested agents
-- **THEN** the sub-coordinator and its whole subtree fold into the parent coordinator's "Archive (N)" expando — its agents render nested beneath it inside the expando when it is opened, are hidden when it is collapsed, and are never hoisted to a top-level root in either fold state
+- **THEN** the sub-coordinator and its whole subtree fold into the parent coordinator's "Archive (N)" expando – its agents render nested beneath it inside the expando when it is opened, are hidden when it is collapsed, and are never hoisted to a top-level root in either fold state
 
 #### Scenario: Hide on a top-level coordinator is feedback-only
 
@@ -2007,7 +2069,7 @@ Derived from: `internal/tui/hera/plan.go` (`heraPlanNodesWithBridge`,
 
 ### Requirement: Agents roster renders as an aligned, scrollable table (area 6)
 
-The Details pane's `Agents (N):` roster SHALL render as a compact, left-aligned table with four columns, in this order — **name** (the role name), **archetype** (the role's diligence archetype, `RoleView.Archetype`), **model** (the resolved LLM model applied to that role, `RoleView.AppliedModel`), and **status** (the existing status icon plus a short text label mirroring `widget.RoleStatusIcon`'s precedence: needs-input / working / ready / failed / done / idle / live / unbound, with a `PR` token composed in per the PR-indicator requirement) — preceded by a `NAME  ARCHETYPE  MODEL  STATUS` column-header row. Name leads so the identifying column reads immediately; status trails so its icon+label reads as a per-row trailing verdict rather than a leading marker. Archetype and model are read directly from the already-annotated `RoleView` the rail's model already carries (`Archetype` from the role row; `AppliedModel` stamped by `HeraPage`'s `tierResolver` during `doRefresh`, off the Draw path) — no additional daemon, store, or MCP read. A role with no resolved archetype or model (no profile consulted, or the CLI/backend default applied) renders `—` in that cell, never a blank.
+The Details pane's `Agents (N):` roster SHALL render as a compact, left-aligned table with four columns, in this order — **name** (the role name), **archetype** (the role's diligence archetype, `RoleView.Archetype`), **model** (the resolved LLM model applied to that role, `RoleView.AppliedModel`), and **status** (the existing status icon plus a short text label mirroring `widget.RoleStatusIcon`'s precedence: needs-input / working / accepted / ready / failed / done / idle / live / unbound, with a `PR` token composed in per the PR-indicator requirement) — preceded by a `NAME  ARCHETYPE  MODEL  STATUS` column-header row. Name leads so the identifying column reads immediately; status trails so its icon+label reads as a per-row trailing verdict rather than a leading marker. Archetype and model are read directly from the already-annotated `RoleView` the rail's model already carries (`Archetype` from the role row; `AppliedModel` stamped by `HeraPage`'s `tierResolver` during `doRefresh`, off the Draw path) — no additional daemon, store, or MCP read. A role with no resolved archetype or model (no profile consulted, or the CLI/backend default applied) renders `—` in that cell, never a blank.
 
 The resolved archetype and model values SHALL render in the same bright, readable foreground the NAME cell uses (`theme.StyleNormal`), not a dimmed style — the unresolved `—` placeholder is the ONLY case in either column that renders dimmed (`theme.StyleDimmed`), so an absent value reads as visually secondary to real data rather than the two being equally hard to read.
 
@@ -2031,6 +2093,11 @@ Derived from: `internal/tui/hera/details.go` (`computeRosterColumns`, `rosterCol
 
 - **WHEN** a roster row's status cell renders its text label
 - **THEN** the label is derived from the SAME precedence (`widget.RoleStatusIcon`'s inputs) that chose the row's status icon, so the two never contradict each other
+
+#### Scenario: A coordinator-accepted worker reads distinctly from a merely self-reported ready_to_close one
+
+- **WHEN** a worker's bound task's `TaskStatus` is `complete` (coordinator-accepted via `hera_accept`, or the plan-DAG gater's auto-accept — `add-hera-accept-lifecycle`), regardless of whether it also carries `ready_to_close`
+- **THEN** its status cell reads `"accepted"` with a BOLD checkmark icon distinct from both a plain `"done"` worker's checkmark and a `"ready"` (self-reported `ready_to_close`) worker's clipboard-check icon — `"accepted"` outranks `ready` / `failed` / `done` / `idle` / `live`, but a role still genuinely `needs-input` or actively `working` shows that label first
 
 #### Scenario: Narrow pane shrinks columns instead of corrupting the layout, protecting the name column longest
 
@@ -2558,4 +2625,92 @@ Derived from: `internal/tui/hera/details.go` (`coordMeta.Cost`, `deriveCoordMeta
 
 - **WHEN** none of the selected orchestrator's own roles have ever accrued anything
 - **THEN** the Details pane renders no "Cost" field at all — not "$0.00"
+
+### Requirement: Merge-safety review popup
+
+The Hera view SHALL provide a review popup with two sections — **NOT-SAFE** listed first, then **SAFE** — each row showing its task name and, for NOT-SAFE rows, the specific reason it wasn't confirmed merged. The popup offers three actions: **Clean safe** (the default-selected action, acting only on the SAFE section), **Clean all** (acting on every listed task, an explicit override the operator reaches only after seeing the NOT-SAFE list), and **Cancel** (no-op). Both Clean actions act immediately — this popup has no separate later step.
+
+The popup is used by exactly two entry points: the single-role nuke (candidate set of one, Tier A only) and the global Cleanup action (candidate set of the full stuck-task backlog across all projects, Tier A and Tier B). It is NOT used by cascade nuke or clear-archived, which keep their own aggregate-count confirms.
+
+Within each section, candidates are further grouped by their originating Hera coordinator/orchestrator: a candidate whose task most recently held a Hera role renders nested under a group header bearing that orchestrator's name, alongside every other candidate in the same section that shares it; a candidate whose task never held a Hera role (or held one for a different reason entirely) renders as a flat top-level row, never nested under a fabricated header. Grouping is a sub-structure within each NOT-SAFE/SAFE section, not a replacement for that ordering.
+
+A SAFE row whose verdict was produced by the coordinator-inferred fallback (see the `merge-safety` capability) SHALL render a distinct trailing annotation marking it as inferred rather than directly confirmed. Every other SAFE row's rendering SHALL be unaffected — the annotation is additive and applies only to this one case.
+
+#### Scenario: Sections are ordered NOT-SAFE then SAFE
+- **WHEN** the popup renders
+- **THEN** the NOT-SAFE section appears before the SAFE section
+
+#### Scenario: Clean safe is the default-selected action
+- **WHEN** the popup opens
+- **THEN** `Clean safe` is the initially focused/selected action
+
+#### Scenario: Clean safe acts only on the SAFE section
+- **WHEN** the operator chooses `Clean safe`
+- **THEN** only the tasks listed under SAFE are cleaned; NOT-SAFE tasks are left untouched
+
+#### Scenario: Clean all acts on every listed task
+- **WHEN** the operator chooses `Clean all`
+- **THEN** every listed task, in both sections, is cleaned
+
+#### Scenario: Cancel performs no action
+- **WHEN** the operator chooses `Cancel`
+- **THEN** no task is cleaned and the popup closes
+
+#### Scenario: Candidates sharing an originating coordinator are grouped
+- **WHEN** two or more candidates in the same section most recently held a Hera role in the same orchestrator
+- **THEN** they render nested under one shared group header bearing that orchestrator's name, not one header per candidate
+
+#### Scenario: A candidate with no originating coordinator renders flat
+- **WHEN** a candidate's task never held a Hera role
+- **THEN** it renders as a flat top-level row in its section, not nested under any group header
+
+#### Scenario: Grouping does not disturb NOT-SAFE-before-SAFE ordering
+- **WHEN** a coordinator's only candidate in the popup is SAFE while another, ungrouped candidate is NOT-SAFE
+- **THEN** the NOT-SAFE section (and its row) still renders entirely before the SAFE section (and the coordinator's group within it)
+
+#### Scenario: A coordinator-inferred SAFE row is visibly annotated
+- **WHEN** a SAFE row's tier is the coordinator-inferred fallback
+- **THEN** that row renders a distinct trailing annotation marking it as inferred, distinguishing it from a directly-confirmed SAFE row
+
+#### Scenario: A directly-confirmed SAFE row is unaffected
+- **WHEN** a SAFE row's tier is `local-ancestor` or `merged-pr` (a directly-confirmed verdict)
+- **THEN** that row renders exactly as before this change, with no annotation
+
+### Requirement: Global Cleanup action for the stuck-task backlog
+
+The Hera view SHALL provide a global Cleanup action, reachable via the Ctrl+K command palette (not scoped to any coordinator/orchestrator), that opens the merge-safety review popup with every task matching the stuck-task predicate (`archived=1`, `status=in_review`, no live Hera binding) across ALL projects as its candidate set, classified via both Tier A and Tier B. Choosing a Clean action immediately deletes the chosen scope's task rows, worktrees, and branches, reusing the same guarded deletion primitive the `Ctrl+R` prune-completed flow uses — never a separate, forked deletion path, and never requiring a subsequent manual prune step.
+
+Each candidate's most recent originating Hera orchestrator (if any) is resolved from `hera_roles`/`hera_bindings` — surviving role/orchestrator archive or nuke, since Hera never hard-deletes those rows — and carried through the REST response and the popup's tree grouping (see "Merge-safety review popup"). A task with more than one historical binding across different orchestrators resolves to the most recent by `started_at`.
+
+#### Scenario: Cleanup lists the full cross-project backlog
+- **WHEN** the global Cleanup action is opened
+- **THEN** the popup's candidate set includes every task matching the stuck-task predicate across every project, not just the currently-selected coordinator's tasks
+
+#### Scenario: First open triggers classification with a visible wait state
+- **WHEN** the Cleanup action is opened and candidates exist without a cached classification
+- **THEN** the popup shows a scanning/in-progress state until results are ready, rather than appearing empty or frozen
+
+#### Scenario: Clean safe immediately deletes the safe set
+- **WHEN** the operator chooses `Clean safe` in the global Cleanup popup
+- **THEN** every SAFE-listed task's row, worktree, and branch are deleted immediately, using the same guarded deletion primitive as `Ctrl+R` — no separate later step is required
+
+#### Scenario: Clean all immediately deletes everything shown
+- **WHEN** the operator chooses `Clean all` in the global Cleanup popup
+- **THEN** every listed task's row, worktree, and branch are deleted immediately, including NOT-SAFE ones
+
+#### Scenario: A task that stopped qualifying is skipped, not errored
+- **WHEN** a Clean action processes a task that no longer matches the stuck-task predicate or no longer passes the live-binding guard at the moment of deletion
+- **THEN** that task is left untouched and the rest of the batch proceeds normally
+
+#### Scenario: Cascade nuke and clear-archived do not use this popup
+- **WHEN** `Ctrl+D` is pressed on a coordinator/orchestrator header, or `C` is pressed to clear a hidden archive
+- **THEN** neither opens the merge-safety review popup — both keep their existing aggregate count-based confirm, unchanged mechanics
+
+#### Scenario: A candidate's originating orchestrator survives role/orchestrator archive or nuke
+- **WHEN** a candidate's most recent Hera role and its orchestrator have both since been archived or nuked
+- **THEN** the candidate still resolves and displays that orchestrator's name — Hera's retained (never hard-deleted) role/binding rows make this possible
+
+#### Scenario: A task with roles in two orchestrators over time resolves to the most recent
+- **WHEN** a candidate's task has held Hera roles in two different orchestrators at different times, both bindings since ended
+- **THEN** the candidate resolves to the orchestrator of the more recent binding, by `started_at`
 

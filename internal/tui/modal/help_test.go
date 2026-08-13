@@ -116,11 +116,15 @@ func TestHelpModal_Draw(t *testing.T) {
 	// be discoverable in the overlay.
 	testutil.Contains(t, body, "spawn worker under coordinator (new-task modal)")
 	testutil.Contains(t, body, "new coordinator (new-task modal)")
-	// BUG-022 two-state EOL: `a` HIDE, `C` clear-archive (nuke), `Ctrl+D` nuke;
+	// BUG-022 two-state EOL: `a` HIDE, `c` clear-archive (nuke), `Ctrl+D` nuke;
 	// `R` retire and the rail-wide `Ctrl+R` prune are GONE.
 	testutil.Contains(t, body, "hide worker in coord's archive (reversible)")
 	testutil.Contains(t, body, "clear coord's archive (nuke hidden agents)")
 	testutil.Contains(t, body, "nuke role/orchestrator")
+	// add-merge-safety-review: the `C` global Cleanup rail key must be
+	// discoverable in the overlay — fail the build if it's ever silently
+	// dropped.
+	testutil.Contains(t, body, "cleanup stuck-task backlog (all projects)")
 	if strings.Contains(body, "retire worker") {
 		t.Errorf("help overlay still lists the removed `R` retire key")
 	}

@@ -1287,6 +1287,93 @@ func TestStatusIcon_ActiveOutranksReadyToClose(t *testing.T) {
 	testutil.Equal(t, r0, theme.IconReview)
 }
 
+// TestStatusIcon_AcceptedDistinctAndPrecedence pins add-hera-accept-lifecycle's
+// roster-visibility fix: a coordinator-accepted (task.Status=complete) worker
+// renders a BOLD checkmark distinct from both plain Done's checkmark and
+// ReadyToClose's bold clipboard-check icon, so an operator can tell a
+// coordinator-authoritative accept apart from a merely self-reported
+// ready_to_close. Accepted is dominated by needs-input/active (a role still
+// genuinely blocked or producing output shows that first) but dominates
+// ready_to_close/failed/done/idle/live (an accept is authoritative over the
+// self-reported ladder).
+func TestStatusIcon_AcceptedDistinctAndPrecedence(t *testing.T) {
+	accepted := &RoleView{TaskStatus: "complete"}
+	g, s := statusIcon(accepted, false, 0)
+	testutil.Equal(t, g, '✓')
+	testutil.Equal(t, s, theme.StyleComplete.Bold(true))
+
+	done := &RoleView{HasStatus: true, Status: db.HeraStatusDone}
+	dg, ds := statusIcon(done, false, 0)
+	testutil.Equal(t, dg, rune('✓')) // same glyph as accepted...
+	if ds == s {
+		t.Error("accepted style must be distinct from plain Done's style")
+	}
+
+	readyToClose := &RoleView{ReadyToClose: true}
+	rg, rs := statusIcon(readyToClose, false, 0)
+	if rg == g && rs == s {
+		t.Error("accepted must render distinctly from ready_to_close")
+	}
+
+	// Dominates the self-reported ladder.
+	testutil.Equal(t, mustAcceptedWins(t, &RoleView{TaskStatus: "complete", ReadyToClose: true}), true)
+	testutil.Equal(t, mustAcceptedWins(t, &RoleView{TaskStatus: "complete", HasStatus: true, Status: db.HeraStatusFailed}), true)
+	testutil.Equal(t, mustAcceptedWins(t, &RoleView{TaskStatus: "complete", HasStatus: true, Status: db.HeraStatusDone}), true)
+	testutil.Equal(t, mustAcceptedWins(t, &RoleView{TaskStatus: "complete", HasStatus: true, Status: db.HeraStatusIdle}), true)
+	testutil.Equal(t, mustAcceptedWins(t, &RoleView{TaskStatus: "complete", Live: true}), true)
+
+	// Dominated by needs-input and active.
+	widget.SetActiveSpinner("progress")
+	defer widget.SetActiveSpinner("progress")
+	needsInput := &RoleView{TaskStatus: "complete", NeedsInput: true}
+	ng, _ := statusIcon(needsInput, false, 0)
+	testutil.Equal(t, ng, theme.IconNeedsInput)
+
+	active := &RoleView{TaskStatus: "complete", Live: true, SessionRunning: true}
+	ag, _ := statusIcon(active, false, 0)
+	testutil.Equal(t, ag, widget.SpinnerFrame(0))
+}
+
+// mustAcceptedWins reports whether role — which always carries
+// TaskStatus:"complete" alongside a lower-precedence signal — renders the
+// Accepted glyph/style rather than the lower-precedence one.
+func mustAcceptedWins(t *testing.T, role *RoleView) bool {
+	t.Helper()
+	g, s := statusIcon(role, false, 0)
+	wantG, wantS := statusIcon(&RoleView{TaskStatus: "complete"}, false, 0)
+	return g == wantG && s == wantS
+}
+
+// TestStatusIcon_AcceptedExcludesCoordinator pins the coordinator-header-leak
+// fix: hera_accept and the gater's auto-accept both act on a WORKER's bound
+// task, never a coordinator's own, so a coordinator role whose OWN task
+// independently reaches StatusComplete (e.g. via task_complete on itself, no
+// accept semantics involved) must NOT render the worker-ladder's Accepted
+// glyph on its rail header row (drawOrchRow feeds the coordinator's own
+// RoleView through the same statusIcon/roleStatusInputs path as a worker row).
+func TestStatusIcon_AcceptedExcludesCoordinator(t *testing.T) {
+	coordAccepted := &RoleView{Kind: db.HeraKindCoordinator, TaskStatus: "complete"}
+	g, s := statusIcon(coordAccepted, false, 0)
+	if g == '✓' && s == theme.StyleComplete.Bold(true) {
+		t.Error("coordinator row must not render the Accepted glyph")
+	}
+	// No other signal applies either, so it falls all the way to the default
+	// resting glyph — same as a coordinator with no TaskStatus at all.
+	testutil.Equal(t, g, theme.IconMoonOutline)
+	testutil.Equal(t, s, theme.StyleDimmed)
+
+	// A worker/freelance role in the identical state is unaffected by the fix.
+	workerAccepted := &RoleView{Kind: db.HeraKindWorker, TaskStatus: "complete"}
+	wg, ws := statusIcon(workerAccepted, false, 0)
+	testutil.Equal(t, wg, '✓')
+	testutil.Equal(t, ws, theme.StyleComplete.Bold(true))
+
+	freelanceAccepted := &RoleView{Kind: db.HeraKindFreelance, TaskStatus: "complete"}
+	fg, fs := statusIcon(freelanceAccepted, false, 0)
+	testutil.Equal(t, fg, '✓')
+	testutil.Equal(t, fs, theme.StyleComplete.Bold(true))
+}
+
 func TestStatusIcon_StatusMapping(t *testing.T) {
 	cases := []struct {
 		status db.HeraRoleStatusValue

@@ -953,6 +953,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolHeraPlanNodeCancel(req.ID, params.Arguments)
 	case "hera_revive":
 		return s.toolHeraRevive(req.ID, params.Arguments)
+	case "hera_accept":
+		return s.toolHeraAccept(req.ID, params.Arguments)
 	case "profile_resolve":
 		return s.toolProfileResolve(req.ID, params.Arguments)
 	default:

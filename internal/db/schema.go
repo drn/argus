@@ -589,6 +589,10 @@ func (d *DB) createHeraTables() error {
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_hera_bindings_live_role          ON hera_bindings(role_id) WHERE ended_at IS NULL;
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_hera_bindings_live_task_orch     ON hera_bindings(argus_task_id, orchestrator_id) WHERE ended_at IS NULL;
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_hera_bindings_live_worktree_orch ON hera_bindings(worktree_path, orchestrator_id) WHERE ended_at IS NULL;
+		-- Supports StuckTaskCandidates' per-task "most recent binding" correlated
+		-- subquery (5a-cleanup-tree-view) — NOT partial (unlike the live-* indexes
+		-- above), since that query deliberately reaches ended/archived/nuked rows too.
+		CREATE INDEX IF NOT EXISTS idx_hera_bindings_task_started ON hera_bindings(argus_task_id, started_at);
 
 		CREATE TABLE IF NOT EXISTS hera_role_status (
 			role_id    INTEGER PRIMARY KEY REFERENCES hera_roles(id) ON DELETE CASCADE,

@@ -51,7 +51,7 @@ func TestDetailsMode_RailMutationKeysRouted(t *testing.T) {
 		{tcell.NewEventKey(tcell.KeyRune, 'm', tcell.ModNone), "kanban-adv"},
 		{tcell.NewEventKey(tcell.KeyRune, 'M', tcell.ModNone), "kanban-rev"},
 		{tcell.NewEventKey(tcell.KeyRune, 'J', tcell.ModNone), "adopt"},
-		{tcell.NewEventKey(tcell.KeyRune, 'C', tcell.ModNone), "clear"},
+		{tcell.NewEventKey(tcell.KeyRune, 'c', tcell.ModNone), "clear"},
 		{tcell.NewEventKey(tcell.KeyCtrlD, 0, tcell.ModNone), "delete"},
 	}
 	for _, c := range cases {

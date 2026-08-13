@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/drn/argus/internal/events"
@@ -21,6 +22,20 @@ var ErrTaskNotFound = errors.New("task not found")
 // match scanTask's Scan call and the INSERT/UPDATE statements below.
 const taskColumns = `id, name, status, project, branch, prompt, backend, model, worktree, agent_pid, session_id, sandboxed, archived, pinned, base_branch, result, archetype, profile, created_at, started_at, ended_at`
 
+// qualifyColumns prefixes each column in a comma-separated column list with
+// "alias." — needed when selecting taskColumns from a query that JOINs tasks
+// against other tables sharing column names (e.g. "id", "name"), which
+// SQLite otherwise rejects as an ambiguous column reference. Callers with no
+// top-level join (a correlated subquery doesn't count) can keep using the
+// unqualified taskColumns directly.
+func qualifyColumns(alias, columns string) string {
+	parts := strings.Split(columns, ", ")
+	for i, p := range parts {
+		parts[i] = alias + "." + p
+	}
+	return strings.Join(parts, ", ")
+}
+
 // scanner is implemented by both *sql.Row and *sql.Rows.
 type scanner interface {
 	Scan(dest ...any) error
@@ -28,10 +43,21 @@ type scanner interface {
 
 // scanTask reads a task from a row using the canonical column order.
 func scanTask(row scanner) (*model.Task, error) {
+	return scanTaskExtra(row)
+}
+
+// scanTaskExtra reads a task using the canonical column order, plus any extra
+// trailing SELECT columns a caller appended after taskColumns (e.g.
+// StuckTaskCandidates' correlated-subquery orchestrator name) — extra dest
+// pointers are scanned in the same call, in the order they appear in the
+// query, so the row is read exactly once.
+func scanTaskExtra(row scanner, extra ...any) (*model.Task, error) {
 	t := &model.Task{}
 	var status, createdAt, startedAt, endedAt string
 	var sandboxed, archived, pinned int
-	if err := row.Scan(&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Model, &t.Worktree, &t.AgentPID, &t.SessionID, &sandboxed, &archived, &pinned, &t.BaseBranch, &t.Result, &t.Archetype, &t.Profile, &createdAt, &startedAt, &endedAt); err != nil {
+	dest := []any{&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Model, &t.Worktree, &t.AgentPID, &t.SessionID, &sandboxed, &archived, &pinned, &t.BaseBranch, &t.Result, &t.Archetype, &t.Profile, &createdAt, &startedAt, &endedAt}
+	dest = append(dest, extra...)
+	if err := row.Scan(dest...); err != nil {
 		return nil, err
 	}
 	t.Status, _ = model.ParseStatus(status)
@@ -512,9 +538,165 @@ func (d *DB) PruneCompleted() (pruned []*model.Task, skippedHeraBound int, err e
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	ids, err := d.taskIDsWhereLocked("status='complete'")
+	if err != nil {
+		return nil, 0, err
+	}
+	return d.pruneTasksLocked(ids)
+}
+
+// PruneTasks deletes exactly the given task IDs, re-verifying at delete time
+// that each has no live Hera role binding (`hera_bindings.ended_at IS NULL`)
+// — the same guard PruneCompleted has always applied, generalized to an
+// explicit candidate set instead of an implicit "all status=complete" query.
+// An ID that fails this guard is skipped (counted in skippedHeraBound), not
+// deleted. This does NOT independently re-check status/archived — selecting
+// the right set of IDs to pass in is the caller's responsibility (e.g. the
+// merge-safety review popup's cached, already-reviewed candidate snapshot);
+// the live-binding guard is the one invariant every caller shares and that
+// is unsafe to skip (see openspec add-merge-safety-review design.md).
+func (d *DB) PruneTasks(ids []string) (pruned []*model.Task, skippedHeraBound int, err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.pruneTasksLocked(ids)
+}
+
+// StuckTaskCandidate pairs a task matching the merge-safety review's
+// stuck-task predicate with the name of the Hera orchestrator its most
+// recent hera_roles/hera_bindings row belonged to (5a-cleanup-tree-view).
+// Orchestrator is empty when the task never held a Hera role at all — a
+// plain non-Hera task can still match the stuck-task predicate for unrelated
+// reasons. Hera never hard-deletes role/binding/orchestrator rows on archive
+// or nuke, so this reaches back through ended, archived, and nuked bindings
+// alike; a task that has held roles across more than one orchestrator over
+// time resolves to the most recent binding by started_at.
+type StuckTaskCandidate struct {
+	Task         *model.Task
+	Orchestrator string
+}
+
+// StuckTaskCandidates returns every task matching the merge-safety review's
+// stuck-task predicate (openspec add-merge-safety-review): archived,
+// status='in_review', and holding no live Hera role binding
+// (hera_bindings.ended_at IS NULL). This is the daemon-side candidate set for
+// the global Cleanup action's on-demand classification — a task Hera still
+// owns is excluded up front rather than merely relying on PruneTasks' own
+// (re-verified) guard at delete time.
+//
+// Each result also carries the resolved Orchestrator name (5a-cleanup-tree-
+// view, see StuckTaskCandidate) via a correlated subquery over
+// hera_bindings/hera_roles/hera_orchestrators keyed on the task id, joining
+// through hera_roles.orchestrator_id (the role's own NOT NULL FK) rather than
+// hera_bindings' denormalized copy, and ordered by hera_bindings.started_at
+// DESC so a task with more than one historical binding resolves to the most
+// recent orchestrator.
+func (d *DB) StuckTaskCandidates() ([]*StuckTaskCandidate, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	rows, err := d.conn.Query(`SELECT ` + taskColumns + `,
+		(SELECT ho.name FROM hera_bindings hb
+		 JOIN hera_roles hr ON hr.id = hb.role_id
+		 JOIN hera_orchestrators ho ON ho.id = hr.orchestrator_id
+		 WHERE hb.argus_task_id = t.id
+		 ORDER BY hb.started_at DESC LIMIT 1) AS orchestrator_name
+		FROM tasks t
+		WHERE t.archived=1 AND t.status='in_review'
+		AND NOT EXISTS (SELECT 1 FROM hera_bindings hb WHERE hb.argus_task_id=t.id AND hb.ended_at IS NULL)
+		ORDER BY t.created_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("query stuck task candidates: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*StuckTaskCandidate
+	for rows.Next() {
+		var orchName sql.NullString
+		t, err := scanTaskExtra(rows, &orchName)
+		if err != nil {
+			continue
+		}
+		out = append(out, &StuckTaskCandidate{Task: t, Orchestrator: orchName.String})
+	}
+	return out, rows.Err()
+}
+
+// CoordinatorTaskForOrchestrator resolves the argus task most recently bound
+// as orchestrator name's coordinator role (add-coordinator-inferred-safety):
+// hera_orchestrators (by name) -> hera_roles (kind='coordinator') ->
+// hera_bindings, most recent by started_at — mirroring StuckTaskCandidates'
+// own correlated-subquery style, including reaching through ended, archived,
+// and nuked rows alike (Hera never hard-deletes them).
+//
+// ok is false, with a nil error, when no such coordinator task row exists —
+// e.g. the orchestrator name never resolves, or its coordinator role/binding
+// was pruned before this feature existed. Callers MUST treat that as
+// "unresolvable" and fail closed, not as an error.
+func (d *DB) CoordinatorTaskForOrchestrator(name string) (*model.Task, bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	//nolint:gosec // G202: qualifyColumns(taskColumns) is a fixed compile-time column list; name is a bound parameter.
+	row := d.conn.QueryRow(`SELECT `+qualifyColumns("t", taskColumns)+`
+		FROM tasks t
+		JOIN hera_bindings hb ON hb.argus_task_id = t.id
+		JOIN hera_roles hr ON hr.id = hb.role_id AND hr.kind = 'coordinator'
+		JOIN hera_orchestrators ho ON ho.id = hr.orchestrator_id
+		WHERE ho.name = ?
+		ORDER BY hb.started_at DESC LIMIT 1`, name)
+	t, err := scanTask(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("resolve coordinator task for orchestrator %q: %w", name, err)
+	}
+	return t, true, nil
+}
+
+// taskIDsWhereLocked returns the IDs of every task matching the given raw
+// SQL WHERE fragment. Callers control the fragment (never user input), so
+// this is a plain string concatenation, matching this file's existing
+// convention (e.g. the notLiveHeraBound fragment below).
+func (d *DB) taskIDsWhereLocked(whereSQL string) ([]string, error) {
+	//nolint:gosec // G202: whereSQL is a fixed literal supplied by the caller, never user input.
+	q := `SELECT id FROM tasks WHERE ` + whereSQL
+	rows, err := d.conn.Query(q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// pruneTasksLocked assumes d.mu is already held. It selects, from exactly
+// the given ids, those with no live Hera binding, returns them, and deletes
+// them in the same pass every existing caller relies on for atomicity.
+func (d *DB) pruneTasksLocked(ids []string) (pruned []*model.Task, skippedHeraBound int, err error) {
+	if len(ids) == 0 {
+		return nil, 0, nil
+	}
+
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	inClause := `id IN (` + strings.Join(placeholders, ",") + `)`
 	const notLiveHeraBound = `id NOT IN (SELECT argus_task_id FROM hera_bindings WHERE ended_at IS NULL)`
 
-	rows, err := d.conn.Query(`SELECT ` + taskColumns + ` FROM tasks WHERE status='complete' AND ` + notLiveHeraBound)
+	//nolint:gosec // G202: inClause is a fixed list of `?` literals and notLiveHeraBound is a constant; ids are bound parameters.
+	selectQ := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + inClause + ` AND ` + notLiveHeraBound
+	rows, err := d.conn.Query(selectQ, args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -525,9 +707,9 @@ func (d *DB) PruneCompleted() (pruned []*model.Task, skippedHeraBound int, err e
 	}
 	rows.Close()
 
-	if err := d.conn.QueryRow(
-		`SELECT COUNT(*) FROM tasks WHERE status='complete' AND NOT (` + notLiveHeraBound + `)`,
-	).Scan(&skippedHeraBound); err != nil {
+	//nolint:gosec // G202: inClause is a fixed list of `?` literals and notLiveHeraBound is a constant; ids are bound parameters.
+	countQ := `SELECT COUNT(*) FROM tasks WHERE ` + inClause + ` AND NOT (` + notLiveHeraBound + `)`
+	if err := d.conn.QueryRow(countQ, args...).Scan(&skippedHeraBound); err != nil {
 		return nil, 0, err
 	}
 
@@ -535,7 +717,9 @@ func (d *DB) PruneCompleted() (pruned []*model.Task, skippedHeraBound int, err e
 		return nil, skippedHeraBound, nil
 	}
 
-	if _, err := d.conn.Exec(`DELETE FROM tasks WHERE status='complete' AND ` + notLiveHeraBound); err != nil {
+	//nolint:gosec // G202: inClause is a fixed list of `?` literals and notLiveHeraBound is a constant; ids are bound parameters.
+	deleteQ := `DELETE FROM tasks WHERE ` + inClause + ` AND ` + notLiveHeraBound
+	if _, err := d.conn.Exec(deleteQ, args...); err != nil {
 		return nil, 0, err
 	}
 	return pruned, skippedHeraBound, nil

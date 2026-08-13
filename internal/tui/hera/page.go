@@ -220,6 +220,13 @@ type HeraPage struct {
 	OnNewCoordinator func(Selection) // `n` — new top-level coordinator (full new-task modal; selection used only to default the project, fires even when empty)
 	OnClearArchive   func(Selection) // `C` — NUKE every Tier-1 hidden item in the selected coordinator's archive (confirm)
 
+	// OnCleanup fires on `c` (add-merge-safety-review): opens the merge-safety
+	// review popup over the full cross-project stuck-task backlog. Like
+	// OnNewCoordinator it is selection-INDEPENDENT — the candidate set is
+	// never scoped to a coordinator, so it fires even on an empty rail and is
+	// dispatched directly rather than through the selection-gated `fire`.
+	OnCleanup func(Selection)
+
 	// OnCopyClipboard fires on `ctrl+y` whenever a TERMINAL pane (coordinator or
 	// worker) is focused, passing the focused pane's bound task ID — regardless
 	// of whether that task has an agent-staged clipboard payload. The App
@@ -1158,7 +1165,7 @@ func (p *HeraPage) rebuildPlan(root *OrchView) {
 // isRailMutationKey reports whether event is one of the rail-FOCUS mutation
 // commands that handleRailMutation acts on — spawn `w`, rename `r`, archive `a`,
 // pin `P`, status `s`/`S`, kanban `m`/`M`, adopt `J`, new-coordinator `n`,
-// clear-archive `C`, force-recycle `B`, and Ctrl+D nuke. It deliberately
+// clear-archive `C`, cleanup `c`, force-recycle `B`, and Ctrl+D nuke. It deliberately
 // EXCLUDES Enter and the navigation keys (j/k/h/l/Space/Esc/arrows): in
 // details mode those belong to the embedded plan widget, so they must reach
 // handleDetailsKey untouched. The details-mode branch of InputHandler
@@ -1327,6 +1334,13 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 			// Clear the selected coordinator's archive: NUKE every Tier-1 hidden
 			// item under it (BUG-022). Acts on the selection.
 			return p.fire(p.OnClearArchive, sel)
+		case keymap.ActHeraCleanup:
+			// Global Cleanup (add-merge-safety-review): selection-INDEPENDENT,
+			// same "fires even on an empty rail" shape as ActHeraNewCoord above.
+			if p.OnCleanup != nil {
+				p.OnCleanup(sel)
+			}
+			return true
 		}
 	}
 	return false

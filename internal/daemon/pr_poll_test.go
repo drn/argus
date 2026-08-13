@@ -533,3 +533,177 @@ func TestPollPR_PausedByKillSwitch(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, meta["live"]["state"], "approved")
 }
+
+// --- PR-merge nudges the task's Hera coordinator (add-hera-accept-lifecycle) ---
+
+// seedHeraWorkerWithCoordinator creates an orchestrator with a coordinator
+// role (its own task) and a worker role bound to taskID (which the caller
+// must have already added via seedTask, at worktree "/tmp/wt/"+taskID),
+// returning both role rows so tests can assert on their inboxes.
+func seedHeraWorkerWithCoordinator(t *testing.T, database *db.DB, orchName, taskID string) (workerRole, coordRole *db.HeraRole) {
+	t.Helper()
+	orch, err := database.CreateHeraOrchestrator(orchName, "")
+	testutil.NoError(t, err)
+
+	coordTask := &model.Task{Name: orchName + "-coord", Status: model.StatusInProgress, Project: "p"}
+	testutil.NoError(t, database.Add(coordTask))
+	coordRole, _, err = database.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.HeraKindCoordinator, ArgusProject: "p",
+	}, coordTask.ID, "/wt/"+coordTask.ID)
+	testutil.NoError(t, err)
+
+	workerRole, _, err = database.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID, Name: "worker", Kind: db.HeraKindWorker, ArgusProject: "p",
+	}, taskID, "/tmp/wt/"+taskID)
+	testutil.NoError(t, err)
+	return workerRole, coordRole
+}
+
+func TestPollPR_MergedTransitionNudgesCoordinator(t *testing.T) {
+	d, _ := testDaemon(t)
+	seedTask(t, d.db, "worker-task", "argus/worker", false)
+	_, coordRole := seedHeraWorkerWithCoordinator(t, d.db, "O", "worker-task")
+
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
+		out := map[string]gitutil.PRResult{}
+		for branch := range branches {
+			out[branch] = gitutil.PRResult{State: model.PRMergedClosed, URL: "https://example/pr/1", Merged: true}
+		}
+		return out, 1, nil
+	}
+	d.prResolveRepo = resolveAll("drn/argus")
+	d.pollPRStatesOnce(context.Background())
+
+	msgs, err := d.db.HeraInbox(coordRole.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(msgs), 1)
+	testutil.Contains(t, msgs[0].Body, "worker-task")
+	testutil.Contains(t, msgs[0].Body, "https://example/pr/1")
+
+	// Never a status or hera role-status change (seedTask seeds StatusInReview).
+	got, err := d.db.Get("worker-task")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Status, model.StatusInReview)
+}
+
+func TestPollPR_NonHeraTaskNeverNudges(t *testing.T) {
+	d, _ := testDaemon(t)
+	seedTask(t, d.db, "plain-task", "argus/plain", false)
+
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
+		out := map[string]gitutil.PRResult{}
+		for branch := range branches {
+			out[branch] = gitutil.PRResult{State: model.PRMergedClosed, URL: "https://example/pr/1", Merged: true}
+		}
+		return out, 1, nil
+	}
+	d.prResolveRepo = resolveAll("drn/argus")
+
+	// Must not panic or error even though the task never held a Hera role.
+	d.pollPRStatesOnce(context.Background())
+
+	meta, err := d.db.ListMeta("plain-task", "pr")
+	testutil.NoError(t, err)
+	got := map[string]string{}
+	for _, e := range meta {
+		got[e.Key] = e.Value
+	}
+	testutil.Equal(t, got["state"], "merged-closed")
+}
+
+func TestPollPR_UnmergedCloseNeverNudges(t *testing.T) {
+	d, _ := testDaemon(t)
+	seedTask(t, d.db, "worker-task", "argus/worker", false)
+	_, coordRole := seedHeraWorkerWithCoordinator(t, d.db, "O", "worker-task")
+
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
+		out := map[string]gitutil.PRResult{}
+		for branch := range branches {
+			// State collapses to merged-closed too, but Merged is false.
+			out[branch] = gitutil.PRResult{State: model.PRMergedClosed, URL: "https://example/pr/1", Merged: false}
+		}
+		return out, 1, nil
+	}
+	d.prResolveRepo = resolveAll("drn/argus")
+	d.pollPRStatesOnce(context.Background())
+
+	msgs, err := d.db.HeraInbox(coordRole.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(msgs), 0)
+}
+
+func TestPollPR_NoResolvableCoordinatorIsSilentNoOp(t *testing.T) {
+	d, _ := testDaemon(t)
+	seedTask(t, d.db, "worker-task", "argus/worker", false)
+
+	orch, err := d.db.CreateHeraOrchestrator("O", "")
+	testutil.NoError(t, err)
+	_, _, err = d.db.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID, Name: "worker", Kind: db.HeraKindWorker, ArgusProject: "p",
+	}, "worker-task", "/tmp/wt/worker-task")
+	testutil.NoError(t, err)
+	// No coordinator role in this orchestrator at all.
+
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
+		out := map[string]gitutil.PRResult{}
+		for branch := range branches {
+			out[branch] = gitutil.PRResult{State: model.PRMergedClosed, URL: "https://example/pr/1", Merged: true}
+		}
+		return out, 1, nil
+	}
+	d.prResolveRepo = resolveAll("drn/argus")
+
+	// Must not panic or error with no coordinator to notify.
+	d.pollPRStatesOnce(context.Background())
+}
+
+func TestPollPR_CoordinatorsOwnMergedPRDoesNotSelfNudge(t *testing.T) {
+	d, _ := testDaemon(t)
+	seedTask(t, d.db, "coord-task", "argus/coord", false)
+
+	orch, err := d.db.CreateHeraOrchestrator("O", "")
+	testutil.NoError(t, err)
+	coordRole, _, err := d.db.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.HeraKindCoordinator, ArgusProject: "p",
+	}, "coord-task", "/tmp/wt/coord-task")
+	testutil.NoError(t, err)
+
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
+		out := map[string]gitutil.PRResult{}
+		for branch := range branches {
+			out[branch] = gitutil.PRResult{State: model.PRMergedClosed, URL: "https://example/pr/1", Merged: true}
+		}
+		return out, 1, nil
+	}
+	d.prResolveRepo = resolveAll("drn/argus")
+	d.pollPRStatesOnce(context.Background())
+
+	msgs, err := d.db.HeraInbox(coordRole.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(msgs), 0)
+}
+
+func TestPollPR_MergeNudgeNeverFiresTwice(t *testing.T) {
+	d, _ := testDaemon(t)
+	seedTask(t, d.db, "worker-task", "argus/worker", false)
+	_, coordRole := seedHeraWorkerWithCoordinator(t, d.db, "O", "worker-task")
+
+	var calls int
+	d.prBatchFetch = func(_ context.Context, _ string, branches map[string]string) (map[string]gitutil.PRResult, int, error) {
+		calls++
+		out := map[string]gitutil.PRResult{}
+		for branch := range branches {
+			out[branch] = gitutil.PRResult{State: model.PRMergedClosed, URL: "https://example/pr/1", Merged: true}
+		}
+		return out, 1, nil
+	}
+	d.prResolveRepo = resolveAll("drn/argus")
+
+	d.pollPRStatesOnce(context.Background())
+	d.pollPRStatesOnce(context.Background()) // second cycle: already terminal, excluded entirely
+
+	testutil.Equal(t, calls, 1) // the terminal-state skip means only the first cycle ever fetched
+	msgs, err := d.db.HeraInbox(coordRole.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(msgs), 1)
+}
