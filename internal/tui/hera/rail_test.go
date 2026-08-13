@@ -1344,6 +1344,36 @@ func mustAcceptedWins(t *testing.T, role *RoleView) bool {
 	return g == wantG && s == wantS
 }
 
+// TestStatusIcon_AcceptedExcludesCoordinator pins the coordinator-header-leak
+// fix: hera_accept and the gater's auto-accept both act on a WORKER's bound
+// task, never a coordinator's own, so a coordinator role whose OWN task
+// independently reaches StatusComplete (e.g. via task_complete on itself, no
+// accept semantics involved) must NOT render the worker-ladder's Accepted
+// glyph on its rail header row (drawOrchRow feeds the coordinator's own
+// RoleView through the same statusIcon/roleStatusInputs path as a worker row).
+func TestStatusIcon_AcceptedExcludesCoordinator(t *testing.T) {
+	coordAccepted := &RoleView{Kind: db.HeraKindCoordinator, TaskStatus: "complete"}
+	g, s := statusIcon(coordAccepted, false, 0)
+	if g == '✓' && s == theme.StyleComplete.Bold(true) {
+		t.Error("coordinator row must not render the Accepted glyph")
+	}
+	// No other signal applies either, so it falls all the way to the default
+	// resting glyph — same as a coordinator with no TaskStatus at all.
+	testutil.Equal(t, g, theme.IconMoonOutline)
+	testutil.Equal(t, s, theme.StyleDimmed)
+
+	// A worker/freelance role in the identical state is unaffected by the fix.
+	workerAccepted := &RoleView{Kind: db.HeraKindWorker, TaskStatus: "complete"}
+	wg, ws := statusIcon(workerAccepted, false, 0)
+	testutil.Equal(t, wg, '✓')
+	testutil.Equal(t, ws, theme.StyleComplete.Bold(true))
+
+	freelanceAccepted := &RoleView{Kind: db.HeraKindFreelance, TaskStatus: "complete"}
+	fg, fs := statusIcon(freelanceAccepted, false, 0)
+	testutil.Equal(t, fg, '✓')
+	testutil.Equal(t, fs, theme.StyleComplete.Bold(true))
+}
+
 func TestStatusIcon_StatusMapping(t *testing.T) {
 	cases := []struct {
 		status db.HeraRoleStatusValue

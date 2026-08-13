@@ -652,6 +652,12 @@ func TestRosterStatusText_Precedence(t *testing.T) {
 	testutil.Equal(t, rosterStatusText(acceptedNeedsInput, false), "needs-input")
 	acceptedActive := &RoleView{TaskStatus: model.StatusComplete.String(), Live: true, SessionRunning: true}
 	testutil.Equal(t, rosterStatusText(acceptedActive, false), "working")
+
+	// A coordinator's own task reaching StatusComplete carries no accept
+	// semantics (hera_accept/gater auto-accept only ever act on a worker's
+	// bound task) — the roster cell must not read "accepted" for it.
+	coordAccepted := &RoleView{Kind: db.HeraKindCoordinator, TaskStatus: model.StatusComplete.String()}
+	testutil.Equal(t, rosterStatusText(coordAccepted, false), "—")
 }
 
 func TestComputeRosterColumns(t *testing.T) {

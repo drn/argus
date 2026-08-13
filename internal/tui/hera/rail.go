@@ -2341,7 +2341,14 @@ func statusIcon(role *RoleView, dim bool, frame int) (rune, tcell.Style) {
 // visible; the plan-view projection builds the same inputs from its own RoleView.
 func roleStatusInputs(role *RoleView) widget.RoleStatusInputs {
 	return widget.RoleStatusInputs{
-		Accepted:     role.TaskStatus == model.StatusComplete.String(),
+		// Accepted is a worker/freelance-only signal (add-hera-accept-lifecycle):
+		// hera_accept and the gater's auto-accept both act on a WORKER's bound
+		// task, never a coordinator's own. A coordinator's own task can
+		// independently reach StatusComplete (e.g. via task_complete on itself)
+		// with no accept semantics at all, so the header row must not borrow the
+		// worker-ladder's "accepted" glyph — same coordinator exclusion pattern
+		// as contextIndicator above.
+		Accepted:     role.Kind != db.HeraKindCoordinator && role.TaskStatus == model.StatusComplete.String(),
 		ReadyToClose: role.ReadyToClose,
 		NeedsInput:   role.ShowsNeedsInput(),
 		Failed:       role.HasStatus && role.Status == db.HeraStatusFailed,
