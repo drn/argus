@@ -75,4 +75,6 @@ The eligibility loop's existing terminal-state skip (a `merged`/`merged-closed` 
 
 ## Open Questions
 
-None.
+None outstanding. A sibling gap was found in live testing after this change shipped and has since been fixed in the same change:
+
+- **RESOLVED — the Enter-guard fix only covered the manual Enter-key dead-session-restart path (`heraReattach`); a sibling automatic path had no closeout check at all.** Found live (2026-08-12): `handleSessionExitUI`'s `pendingRerenderRestart` branch (the size-drift pane-resize "kick", BUG-074/076/077) unconditionally restarted a worker/freelance session with zero `heraTaskClosedOut` check — confirmed via daemon.log correlation on a coordinator-accepted task that got silently reverted to `in_progress` just from the operator navigating onto its row at a mismatched terminal width, no Enter press involved. Fixed by this change's own `ab7dcd51`: `handleSessionExitUI` now snapshots the same closeout guard (via the new `heraKickRestartClosedOut`/`TaskHoldsLiveHeraWorkerOrFreelanceBinding`) BEFORE its own BUG-050 status roll runs, and reuses it to skip the kick-restart silently when the task is already closed out.
