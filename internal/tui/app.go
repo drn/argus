@@ -427,6 +427,23 @@ type App struct {
 	// -size short-circuit, while genuine resizes still fall through.
 	lastAttachCols map[string]uint16
 
+	// committedCols tracks, per task, the last panel width at which the
+	// rerender-kick predicate actually fired or was deferred (i.e., crossed
+	// RerenderMargin against SOME anchor) — NOT merely "the last width
+	// evaluated" (that's lastAttachCols). Unlike initialCols (immutable,
+	// fixed at session start) and lastAttachCols (invalidated on every
+	// deferred outcome so a same-width retry can re-evaluate), committedCols
+	// deliberately SURVIVES a defer, an unbind/rebind, and a switch between
+	// viewers (main agent view vs. a Hera pane) — because it exists to answer
+	// "what width is this session's live scrollback ACTUALLY drifted to right
+	// now," not "what did we just check." A zero/absent entry means
+	// "nothing tracked yet" (falls back to comparing against initialCols
+	// only). Cleared when a kick actually fires (the resumed session's own
+	// InitialPTYSize takes over as the fresh reference) and on task delete.
+	// See ShouldKickRerender's committedCols param and
+	// gotchas/pty-terminal.md (fix-committed-width-drift / BUG-078).
+	committedCols map[string]uint16
+
 	// Worktree root for orphan sweep (default: ~/.argus/worktrees/).
 	// Overridden in tests to avoid scanning real worktrees.
 	wtRoot string
@@ -585,6 +602,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 		pendingRerenderRestart: make(map[string]bool),
 		pendingHeraReclaim:     make(map[string]bool),
 		lastAttachCols:         make(map[string]uint16),
+		committedCols:          make(map[string]uint16),
 		wtRoot:                 filepath.Join(db.DataDir(), "worktrees"),
 		clipboardWriter:        pbcopyWriter,
 		nowFn:                  time.Now,
@@ -4461,7 +4479,8 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 			if !sess.Alive() || a.pendingRerenderRestart[taskID] {
 				return
 			}
-			decision := agent.ShouldKickRerender(true, initCols, int(panelCols), idle, false, needsInput)
+			committed := int(a.committedCols[taskID])
+			decision := agent.ShouldKickRerender(true, initCols, committed, int(panelCols), idle, false, needsInput)
 			switch decision {
 			case agent.RerenderSkip:
 				return
@@ -4469,7 +4488,13 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 				// Agent is mid-tool-call — invalidate so the next
 				// same-cols reopen re-evaluates when the agent goes idle.
 				a.invalidateAttachCache(taskID)
-				uxlog.Log("[tui] rerender deferred: task=%s busy (init=%d panel=%d)", taskID, initCols, panelCols)
+				// Record panelCols as the width this session's live content
+				// is actually drifting toward, even though the kick itself
+				// never landed — a LATER bind near initCols (or matching some
+				// unrelated viewer's cached width) must still see this drift
+				// (fix-committed-width-drift / BUG-078).
+				a.committedCols[taskID] = panelCols
+				uxlog.Log("[tui] rerender deferred: task=%s busy (init=%d committed=%d panel=%d)", taskID, initCols, committed, panelCols)
 				if onDeferred != nil {
 					onDeferred()
 				}
@@ -4479,13 +4504,14 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 				// the question. Invalidate so a later resize re-evaluates
 				// once the user has answered and the agent moves on.
 				a.invalidateAttachCache(taskID)
-				uxlog.Log("[tui] rerender deferred: task=%s blocked on user prompt — preserving question (init=%d panel=%d)", taskID, initCols, panelCols)
+				a.committedCols[taskID] = panelCols
+				uxlog.Log("[tui] rerender deferred: task=%s blocked on user prompt — preserving question (init=%d committed=%d panel=%d)", taskID, initCols, committed, panelCols)
 				if onDeferred != nil {
 					onDeferred()
 				}
 				return
 			case agent.RerenderKick:
-				uxlog.Log("[tui] rerender: stopping task=%s session=%s (init=%dx panel=%dx)", taskID, task.SessionID, initCols, panelCols)
+				uxlog.Log("[tui] rerender: stopping task=%s session=%s (init=%dx committed=%dx panel=%dx)", taskID, task.SessionID, initCols, committed, panelCols)
 				a.statusbar.SetInfo("Re-rendering at full width…")
 				a.pendingRerenderRestart[taskID] = true
 				if err := sess.Stop(); err != nil {
@@ -4494,10 +4520,18 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 					// Stop attempt failed — invalidate so the next
 					// same-cols reopen retries (mirrors DeferBusy).
 					a.invalidateAttachCache(taskID)
+					a.committedCols[taskID] = panelCols
 					a.statusbar.ClearInfo()
 					if onDeferred != nil {
 						onDeferred()
 					}
+				} else {
+					// The resumed session re-emits its entire conversation at
+					// panelCols, so any previously-recorded drift is resolved
+					// — the new session's own InitialPTYSize becomes the
+					// fresh reference. Clear rather than update, so a stale
+					// entry can't outlive the incarnation it described.
+					delete(a.committedCols, taskID)
 				}
 			}
 		})
@@ -4512,8 +4546,21 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 // caches the current cols so a subsequent reopen at the same size short
 // -circuits. Genuine resizes fall through because panelCols differs from
 // the cached value, so the kick predicate still runs.
+//
+// An exact cache match is overridden (falls through to the predicate) when
+// committedCols shows this session's live scrollback has drifted meaningfully
+// from panelCols — e.g. a Hera pane bound wide while the agent was busy,
+// deferred forever (BUG-077), then a DIFFERENT viewer (another Hera pane, or
+// the main agent view) independently cached this exact panelCols from an
+// unrelated visit. Without this check, the exact-match short-circuit would
+// suppress the predicate — and therefore the still-owed kick — forever, even
+// though the session's actual committed width diverges wildly from panelCols
+// (fix-committed-width-drift / BUG-078).
 func (a *App) isRedundantAttach(taskID string, panelCols uint16) bool {
 	if prev, ok := a.lastAttachCols[taskID]; ok && prev == panelCols {
+		if committed, ok := a.committedCols[taskID]; ok && agent.MarginExceedsRerenderThreshold(int(committed), int(panelCols)) {
+			return false
+		}
 		return true
 	}
 	a.lastAttachCols[taskID] = panelCols
@@ -6466,6 +6513,7 @@ func (a *App) deleteTask(t *model.Task) {
 	// pendingRerenderRestart (in handleSessionExitUI).
 	a.invalidateAttachCache(t.ID)
 	delete(a.pendingRerenderRestart, t.ID)
+	delete(a.committedCols, t.ID)
 	a.refreshTasksLocal()
 
 	// Clean up worktree and branch in background — git operations can take seconds.

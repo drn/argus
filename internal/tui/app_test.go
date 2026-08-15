@@ -486,6 +486,82 @@ func TestMaybeKickRerenderAtWidth_CallsOnDeferredWhenBusy(t *testing.T) {
 	testutil.Equal(t, sess.stopCalled.Load(), false) // must not kill a busy agent
 }
 
+// TestMaybeKickRerenderAtWidth_LaterNarrowRebindStillKicksAfterDeferredWideBind
+// is the fix-committed-width-drift regression (BUG-078), reproducing the live
+// ux.log evidence exactly: a session starts at initCols=80, a pane binds WIDE
+// (142) while the agent is busy — the predicate matches but defers, and it
+// never lands (mirrors 15 real minutes of "busy"/"blocked on prompt" retries
+// with the agent never going idle at 142). The pane then moves on; LATER, a
+// DIFFERENT bind lands at 90 — close enough to initCols (80) that the margin
+// check alone would skip (delta 10 < RerenderMargin), and ALSO the exact
+// width some UNRELATED earlier viewer already cached via isRedundantAttach
+// (simulated directly here, matching the real trace: the main agent view had
+// independently visited this task at 90). Before the fix, BOTH gates silently
+// swallowed this forever — the coordinator's pane stayed permanently garbled.
+// After the fix, committedCols (recorded from the deferred 142 bind) makes
+// both gates recognize the drift and the kick fires.
+func TestMaybeKickRerenderAtWidth_LaterNarrowRebindStillKicksAfterDeferredWideBind(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const taskID = "tui-drift"
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	task := &model.Task{ID: taskID, Name: "drift", Status: model.StatusInProgress, SessionID: "sid-resume", Worktree: t.TempDir()}
+	sess := &fakeKickSession{idle: false, alive: true, initCols: 80} // busy: bind-142 defers
+
+	var deferred atomic.Bool
+	readUI(t, app.tapp, func() {
+		app.maybeKickRerenderAtWidth(task, sess, 142, func() { deferred.Store(true) })
+	})
+	deadline := time.Now().Add(uiTimeout)
+	for time.Now().Before(deadline) && !deferred.Load() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !deferred.Load() {
+		t.Fatal("bind at 142 while busy never deferred — test setup is broken")
+	}
+	testutil.Equal(t, sess.stopCalled.Load(), false) // never kicked — stayed deferred, as in the live repro
+
+	readUI(t, app.tapp, func() {
+		if got := app.committedCols[taskID]; got != 142 {
+			t.Errorf("committedCols after a deferred wide bind = %d, want 142", got)
+		}
+		// Simulate an UNRELATED earlier viewer (e.g. the main agent view, or a
+		// different Hera pane) independently caching this EXACT width from a
+		// visit that didn't cross the margin against initCols (80 vs 90 =
+		// delta 10 < 15). Without the committedCols-aware bypass, this alone
+		// would make isRedundantAttach short-circuit the next check forever.
+		app.lastAttachCols[taskID] = 90
+	})
+
+	// The agent goes idle and a pane rebinds narrower (90) — still close to
+	// initCols (80) but nowhere near the 142 the content actually committed
+	// to while busy.
+	sess.idle = true
+	readUI(t, app.tapp, func() { app.maybeKickRerenderAtWidth(task, sess, 90, nil) })
+
+	deadline = time.Now().Add(uiTimeout)
+	stopped := false
+	for time.Now().Before(deadline) {
+		if sess.stopCalled.Load() {
+			stopped = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !stopped {
+		t.Fatal("a later narrow rebind (90) did not kick despite the session's committed width having drifted to 142 during a deferred wide bind")
+	}
+	readUI(t, app.tapp, func() {
+		if _, cached := app.committedCols[taskID]; cached {
+			t.Error("committedCols should be cleared once a kick actually fires")
+		}
+	})
+}
+
 // TestHeraKickRerender_UnknownTaskIsNoop proves the Hera-facing entry point
 // no-ops cleanly (no panic, no decision made) when the task ID doesn't
 // resolve — e.g. a stale/torn-down binding racing the callback.

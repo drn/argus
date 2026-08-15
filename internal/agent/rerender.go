@@ -81,16 +81,34 @@ func MarginExceedsRerenderThreshold(initCols, panelCols int) bool {
 // move it — they only affect live UI, leaving scrollback baked at the original
 // width.
 //
+// committedCols is a SECOND, caller-tracked anchor (0 means "none tracked
+// yet") covering a gap initCols can't: a mid-session bind at a width that
+// crosses the margin but never resolves (deferred while busy/blocked, never
+// goes idle at that width, then the pane moves on) leaves the session's real
+// scrollback drifted to that width forever, while initCols stays fixed at
+// session start. A LATER bind back near initCols (or matching some OTHER
+// viewer's cached width) would otherwise read as "no drift" even though the
+// content actually on screen is still committed at the abandoned width. The
+// decision fires if EITHER anchor shows drift — this can only WIDEN which
+// candidates trigger a kick, never narrow it, so it can't regress the
+// existing initCols-only retry behavior for repeated same-width evaluations.
+// See gotchas/pty-terminal.md (fix-committed-width-drift) and BUG-078 in
+// gotchas/hera-view.md.
+//
 // needsInput gates the kick on whether the agent is blocked on a user prompt.
 // An agent waiting on an AskUserQuestion overlay (or any selection/confirm UI)
 // reads as idle, so without this gate a resize that crosses the margin would
 // stop+restart it and dismiss the prompt the user returned to answer. The kick
 // only repairs scrollback wrapping — never worth losing an in-flight question.
-func ShouldKickRerender(hasSessionID bool, initCols, panelCols int, idle, alreadyPending, needsInput bool) RerenderDecision {
+func ShouldKickRerender(hasSessionID bool, initCols, committedCols, panelCols int, idle, alreadyPending, needsInput bool) RerenderDecision {
 	if !hasSessionID || alreadyPending {
 		return RerenderSkip
 	}
-	if !MarginExceedsRerenderThreshold(initCols, panelCols) {
+	exceeds := MarginExceedsRerenderThreshold(initCols, panelCols)
+	if !exceeds && committedCols > 0 {
+		exceeds = MarginExceedsRerenderThreshold(committedCols, panelCols)
+	}
+	if !exceeds {
 		return RerenderSkip
 	}
 	if !idle {
