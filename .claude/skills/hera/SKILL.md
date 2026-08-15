@@ -71,9 +71,9 @@ they opt in. Once you're spawned/promoted per the bullets above, everything belo
 ## 3. The coordination tools
 
 All take `cwd`. `orchestrator` is optional with exactly one live binding and **required** with 2+.
-Arg names below are exact — do not invent others. These ten cover bootstrap, messaging, status, and
-revive; the plan-DAG authoring/mutation tools live in the companion `hera-plan` skill (pointer at the
-end of this section).
+Arg names below are exact — do not invent others. These eleven cover bootstrap, messaging, status,
+revive, and completion; the plan-DAG authoring/mutation tools live in the companion `hera-plan` skill
+(pointer at the end of this section).
 
 ### Bootstrap / join
 
@@ -160,6 +160,14 @@ end of this section).
   actually working or waiting on an answer, since it applies the identical idle+not-blocked gate the
   TUI's own `Enter`-key revive uses. It targets a DIFFERENT role than your own (self-targeting errors).
 
+- **`hera_accept(cwd, role_name, [orchestrator], [message])`** — coordinator-only: mark a role's bound
+  task complete and send it a check-in asking whether it's winding down, has more work to do, or is
+  unsure. The reply is informational only — never auto-reopens the task; a premature accept is undone
+  via `hera_revive` alone. Never stops the session (completion and detachment are separate). Acts from
+  any non-complete status; a no-op if already complete. The plan-DAG gater fires this automatically
+  for blockers when dependent nodes materialize — use this tool for accepting work *outside* that flow
+  (ad hoc spawns, or roles with no plan-DAG dependents).
+
 - **`hera_tree_updates(cwd, [orchestrator], [since])`** — scan the caller's orchestrator **subtree**
   (nested sub-orchestrators included) for messages since a cursor. Returns **TLDR-only subject lines —
   no bodies** (capped at 200), plus a `next_cursor`. The cursor is stored **per-role** and auto-advances
@@ -236,11 +244,15 @@ or using in-session sub-agents.
   duplicate worker on a hunch — try `hera_revive(cwd=$PWD, role_name=<name>)` first. It's a safe,
   idle+not-blocked-gated no-op if the role turns out to be fine, busy, or waiting on a question.
 - **How completion flows back:** a worker finishing sends a closing `hera_send(status="done", …)` — the
-  synchronous status apply rolls its task to `in_review` + `ready_to_close`, visible in the rail. A
-  worker that cannot complete sends `hera_send(status="failed", …)` — rolls to `in_review` WITHOUT
-  `ready_to_close` (needs attention, not ready to check off); the gater holds any dependent planned
-  nodes and pings you. Both rolls are idempotent and only fire when the task is still `in_progress`.
-  The live session is left running.
+  synchronous status apply rolls its task to `in_review` + `ready_to_close`, visible in the rail.
+  **This is the worker's self-report, NOT task closure.** Once you (the coordinator) have independently
+  verified the outcome (the PR actually merged, CI green, deliverables shipped—not just taken the worker's
+  word for it), **call `hera_accept(cwd=$PWD, role_name=<name>)` in the SAME turn.** Don't wait to be
+  asked, and don't treat a status message alone as sufficient closure. A worker that cannot complete
+  sends `hera_send(status="failed", …)` — rolls to `in_review` WITHOUT `ready_to_close` (needs
+  attention, not ready to check off); the gater holds any dependent planned nodes and pings you. Both
+  rolls are idempotent and only fire when the task is still `in_progress`. The live session is left
+  running.
 - **Don't** use `hera_send` to talk to the human — the human reads the coordinator's own agent pane;
   the bus is role-to-role only.
 
@@ -297,8 +309,9 @@ You are a coordinator-to-be in your argus sandbox:
 3. Poll progress without flooding context: `hera_tree_updates(cwd=$PWD)` → scan TLDRs →
    `hera_get_messages(cwd=$PWD, ids=[…])` for the interesting ones.
 4. When a worker reports `done` (its task rolls to in_review + ready_to_close in the rail), review its
-   branch/PR, then reply or spawn the next stage. To stack work, branch the next worker off the prior
-   worker's branch via `branch=`.
+   branch/PR independently (verify the PR merged, tests actually green, etc.). Once satisfied, call
+   `hera_accept(cwd=$PWD, role_name=<worker-name>)` to mark the task complete, then reply or spawn the
+   next stage. To stack work, branch the next worker off the prior worker's branch via `branch=`.
 
 ### (b) A spawned worker reports completion
 
