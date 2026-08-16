@@ -11,6 +11,7 @@ func TestShouldKickRerender(t *testing.T) {
 		name           string
 		hasSessionID   bool
 		initCols       int
+		committedCols  int
 		panelCols      int
 		idle           bool
 		alreadyPending bool
@@ -117,10 +118,35 @@ func TestShouldKickRerender(t *testing.T) {
 			hasSessionID: true, initCols: 100, panelCols: 105, idle: true, needsInput: true,
 			want: RerenderSkip,
 		},
+		{
+			// fix-committed-width-drift / BUG-078: a mid-session bind at 142
+			// while busy (deferred forever, never lands) leaves the session's
+			// real scrollback committed at 142. A later bind at 90 is still
+			// sub-margin against the immutable initCols (80) alone, but
+			// committedCols (142, tracked by the caller across the deferred
+			// bind) shows the true drift — the kick must still fire.
+			name:         "kick via committedCols drift when initCols alone is sub-margin",
+			hasSessionID: true, initCols: 80, committedCols: 142, panelCols: 90, idle: true,
+			want: RerenderKick,
+		},
+		{
+			// Same drift, but the agent is busy again at the new width — defer,
+			// not skip, exactly as the initCols-only busy case does.
+			name:         "defer via committedCols drift when busy",
+			hasSessionID: true, initCols: 80, committedCols: 142, panelCols: 90, idle: false,
+			want: RerenderDeferBusy,
+		},
+		{
+			// committedCols == 0 is the "nothing tracked yet" sentinel — must
+			// not itself be treated as a committed width to diff against.
+			name:         "committedCols zero is untracked, not a real width",
+			hasSessionID: true, initCols: 100, committedCols: 0, panelCols: 105, idle: true,
+			want: RerenderSkip,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ShouldKickRerender(tc.hasSessionID, tc.initCols, tc.panelCols, tc.idle, tc.alreadyPending, tc.needsInput)
+			got := ShouldKickRerender(tc.hasSessionID, tc.initCols, tc.committedCols, tc.panelCols, tc.idle, tc.alreadyPending, tc.needsInput)
 			testutil.Equal(t, got, tc.want)
 		})
 	}
