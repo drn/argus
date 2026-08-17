@@ -758,6 +758,7 @@ func (d *Daemon) pollPRStatesOnce(ctx context.Context) {
 					written++
 					if res.Merged {
 						d.notifyCoordinatorOfMergedPR(t, res.URL)
+						d.notifyRoleOfMergedPR(t, res.URL)
 					}
 				}
 			}
@@ -771,14 +772,49 @@ func (d *Daemon) pollPRStatesOnce(ctx context.Context) {
 	uxlog.Log("[pr] poll: eligible=%d skipped=%d written=%d errored=%d", len(eligible), skipped, written, errored)
 }
 
+// resolveHeraRoleAndCoordinator resolves a task's most recent Hera role (any
+// binding, live or ended, via ListHeraBindingsByTask's most-recent-first
+// order) and that role's orchestrator's coordinator, mirroring the
+// coordinator-resolution pattern the plan-DAG gater already uses for its own
+// hold/fan-in notices. Shared by both merge-triggered notifications below so
+// neither can drift on how the role/coordinator pair is found. Returns
+// ok=false when the task never held a Hera role at all (the common case,
+// since most PR-tracked tasks are not Hera-bound) or no coordinator role
+// resolves for that orchestrator.
+func (d *Daemon) resolveHeraRoleAndCoordinator(taskID string) (role, coord *db.HeraRole, ok bool) {
+	bindings, err := d.db.ListHeraBindingsByTask(taskID)
+	if err != nil || len(bindings) == 0 {
+		return nil, nil, false
+	}
+	role, err = d.db.HeraRole(bindings[0].RoleID)
+	if err != nil {
+		return nil, nil, false
+	}
+	coords, err := d.db.ListHeraRolesByKind(role.OrchestratorID, db.HeraKindCoordinator)
+	if err != nil || len(coords) == 0 {
+		return nil, nil, false
+	}
+	return role, coords[0], true
+}
+
+// heraNotifyService builds a hera.Service for a merge-triggered notification.
+// d.notifier is a concrete *notify.Notifier, set once by Serve before the PR
+// poller ever starts; guarded here (rather than passed unconditionally) so a
+// bare Daemon built via New() without Serve() (every test in this package)
+// gets a TRUE nil hera.Notifier interface instead of a non-nil interface
+// wrapping a nil pointer, which panics on the first Send.
+func (d *Daemon) heraNotifyService() *hera.Service {
+	var notifier hera.Notifier
+	if d.notifier != nil {
+		notifier = d.notifier
+	}
+	return hera.New(d.db, notifier)
+}
+
 // notifyCoordinatorOfMergedPR sends a nudge (never a status or hera
 // role-status change) to a task's Hera coordinator once its PR resolves as
 // genuinely merged (add-hera-accept-lifecycle) – a strong signal the work is
-// worth reviewing/accepting, never treated as proof it is done. Resolves the
-// task's most recent Hera role (any binding, live or ended, via
-// ListHeraBindingsByTask's most-recent-first order) and that role's
-// orchestrator's coordinator, mirroring the coordinator-resolution pattern
-// the plan-DAG gater already uses for its own hold/fan-in notices.
+// worth reviewing/accepting, never treated as proof it is done.
 //
 // Entirely silent (no error, no log spam) on every resolution miss: most
 // PR-tracked tasks are not Hera-bound at all, so a missing role or
@@ -786,36 +822,62 @@ func (d *Daemon) pollPRStatesOnce(ctx context.Context) {
 // best-effort – a send failure is logged, never returned, since a poll cycle
 // must never fail over a notification.
 func (d *Daemon) notifyCoordinatorOfMergedPR(t *model.Task, prURL string) {
-	bindings, err := d.db.ListHeraBindingsByTask(t.ID)
-	if err != nil || len(bindings) == 0 {
+	role, coord, ok := d.resolveHeraRoleAndCoordinator(t.ID)
+	if !ok {
 		return
 	}
-	role, err := d.db.HeraRole(bindings[0].RoleID)
-	if err != nil {
-		return
-	}
-	coords, err := d.db.ListHeraRolesByKind(role.OrchestratorID, db.HeraKindCoordinator)
-	if err != nil || len(coords) == 0 {
-		return
-	}
-	coord := coords[0]
 	if coord.ID == role.ID {
 		return // the coordinator's own PR merged; it does not need telling
 	}
 	body := fmt.Sprintf("PR merged for %s (%s) - worth reviewing/accepting its work.", t.Name, prURL)
 	tldr := fmt.Sprintf("PR merged: %s", t.Name)
-	// d.notifier is a concrete *notify.Notifier, set once by Serve before the
-	// PR poller ever starts; guarded here (rather than passed unconditionally)
-	// so a bare Daemon built via New() without Serve() (every test in this
-	// package) gets a TRUE nil hera.Notifier interface instead of a non-nil
-	// interface wrapping a nil pointer, which panics on the first Send.
-	var notifier hera.Notifier
-	if d.notifier != nil {
-		notifier = d.notifier
-	}
-	svc := hera.New(d.db, notifier)
-	if _, sErr := svc.Send(role.ID, coord.ID, body, tldr, nil); sErr != nil {
+	if _, sErr := d.heraNotifyService().Send(role.ID, coord.ID, body, tldr, nil); sErr != nil {
 		uxlog.Log("[pr] poll: merge nudge failed for %s: %v", t.ID, sErr)
+	}
+}
+
+// notifyRoleOfMergedPR asks the task's OWN Hera role to decide, on its own
+// judgment, whether the just-merged PR means it's actually done
+// (add-pr-merge-autocomplete). Rather than the daemon mechanically inferring
+// "done" from structural signals (which a prior explicit decision – see
+// context/knowledge/gotchas/orchestration.md – judged too ambiguous for
+// Hera-descended tasks: squash merges, folded-in workers with no PR of their
+// own), this hands the decision to the agent that actually has the context:
+// the message tells it the PR merged and instructs it, if it has no further
+// tasks here, to inform its coordinator (hera_send/hera_status) and mark
+// itself complete via its own existing task_complete tool. No new
+// completion primitive is introduced; the daemon only delivers information.
+//
+// Deliberately NOT scoped to worker-kind or gated on task status: a
+// coordinator's or freelance role's own merged PR is an equally valid prompt
+// for the same self-assessment, and a role still actively in_progress simply
+// answers "yes, more to do" and continues – the agent's own judgment is the
+// gate, not a role-kind or status precondition here. Fires independently of
+// (and in addition to) notifyCoordinatorOfMergedPR above; the two target
+// different recipients for different purposes (this one is actionable
+// instruction to the role itself, the other is passive visibility for the
+// coordinator) and neither is skipped because the other fired.
+//
+// Silent no-op when the task never held a Hera role, no coordinator role
+// resolves (needed to identify the sender), or the resolved role IS ITSELF
+// the coordinator: db.SendHeraMessage hard-rejects fromRoleID==toRoleID
+// (ErrHeraMessageSelfSend) with no exception, so a coordinator's own bound
+// task can never receive this notice via the hera_messages channel at all –
+// an accepted structural gap, not a deliberate design choice (unlike
+// notifyCoordinatorOfMergedPR's own self-skip above, which is a judgment
+// call: "it does not need telling"). Best-effort delivery otherwise: a send
+// failure is logged, never returned.
+func (d *Daemon) notifyRoleOfMergedPR(t *model.Task, prURL string) {
+	role, coord, ok := d.resolveHeraRoleAndCoordinator(t.ID)
+	if !ok || role.ID == coord.ID {
+		return
+	}
+	body := fmt.Sprintf(
+		"Your PR merged: %s\n\nIf you have no further tasks on %s, please inform your coordinator and mark yourself complete (task_complete). If you still have work to do here, no action is needed — just continue.",
+		prURL, t.Name)
+	tldr := fmt.Sprintf("PR merged: %s — check for further tasks", t.Name)
+	if _, sErr := d.heraNotifyService().Send(coord.ID, role.ID, body, tldr, nil); sErr != nil {
+		uxlog.Log("[pr] poll: role merge notice failed for %s: %v", t.ID, sErr)
 	}
 }
 
