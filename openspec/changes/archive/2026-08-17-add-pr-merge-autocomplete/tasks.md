@@ -28,4 +28,4 @@
 ## 5. Verification
 
 - [x] 5.1 Run `make pre-pr` clean.
-- [ ] 5.2 Open the PR via `mcp__argus__iris_gh_pr_create`.
+- [x] 5.2 Open the PR via `mcp__argus__iris_gh_pr_create`.
