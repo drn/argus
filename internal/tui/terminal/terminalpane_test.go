@@ -2685,6 +2685,104 @@ func TestReadLiveRebuildHistory_NoLogFallback(t *testing.T) {
 	testutil.Equal(t, total, uint64(5))
 }
 
+// TestReadLiveRebuildHistory_NoLogRingWrapWithNoEscapeIsDeferred is a
+// regression test for BUG-079: when there is no on-disk log AND the ring
+// has already evicted everything before its own capacity (totalWritten far
+// exceeds what RecentOutputTailWithTotal returns — an ARBITRARY, non-zero-
+// start tail, not a from-the-start read), a tail that happens to contain no
+// ESC byte at all must NOT be treated as safe plain text. The exact shape
+// reproduced live on a Hera Agent pane: the orphaned tail of a 24-bit
+// truecolor SGR sequence ("38;2;230;149;117mCoalescing…", missing its
+// leading ESC because the ring's own capacity cut if off) rendered as
+// literal ground text instead of a color change, because
+// AlignToEscBoundary's "no ESC found -> likely plain text" fallback assumed
+// any from-scratch read starts at a genuine boundary — true for a log-tail
+// read (which always starts at position 0 for any realistic session size)
+// but NOT for this ring-only fallback once the ring wraps. Fix: defer (nil,
+// 0) instead of returning the ambiguous tail — the caller's existing
+// len(history)==0 handling shows the placeholder or leaves prior content
+// alone, and the next Draw retries once more of the stream is available.
+func TestReadLiveRebuildHistory_NoLogRingWrapWithNoEscapeIsDeferred(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // no session log written
+	sess := &mockAdapter{
+		alive:        true,
+		totalWritten: 10_000, // far exceeds len(output) below -> ring has evicted the true start
+		output:       []byte("38;2;230;149;117mCoalescing"),
+	}
+	raw, total := readLiveRebuildHistory(sess, "no-log-ring-wrap-task")
+	if raw != nil || total != 0 {
+		t.Fatalf("raw=%q total=%d, want (nil, 0) — an ambiguous ring-only tail with no ESC boundary must be deferred, never fed as literal text", raw, total)
+	}
+}
+
+// TestReadLiveRebuildHistory_NoLogRingWrapWithEscapeStillFeeds is the
+// companion sanity check: the SAME ring-wrap shape (no log, totalWritten far
+// exceeding the returned tail) but WITH a leading ESC present must still be
+// returned normally. The BUG-079 fix must only suppress the genuinely
+// ambiguous (no ESC anywhere) case — AlignToEscBoundary already handles a
+// buffer that starts mid-sequence as long as there IS an ESC to realign to,
+// and this guard must not regress that path.
+func TestReadLiveRebuildHistory_NoLogRingWrapWithEscapeStillFeeds(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	sess := &mockAdapter{
+		alive:        true,
+		totalWritten: 10_000,
+		output:       []byte("\x1b[38;2;230;149;117mCoalescing"),
+	}
+	raw, total := readLiveRebuildHistory(sess, "no-log-ring-wrap-task-2")
+	testutil.Equal(t, string(raw), "\x1b[38;2;230;149;117mCoalescing")
+	testutil.Equal(t, total, uint64(10_000))
+}
+
+// TestRenderLive_HeraBindDoesNotLeakEscapeAfterRingWrap is an end-to-end
+// BUG-079 regression test through the real renderLive call path (not just
+// readLiveRebuildHistory in isolation): mirrors HeraPage.bindPane's exact
+// sequence on every rail navigation (SetTaskID, then ResetVT, then
+// SetSession — unconditionally discarding any prior emulator) landing on a
+// session with no on-disk log whose ring has already evicted its true start,
+// leaving only the orphaned tail of a truecolor SGR sequence with no other
+// ESC present. Before the fix, the freshly-created emulator rendered the
+// literal parameter list plus trailing text as ground text instead of
+// interpreting it as a color change; after the fix, renderLive shows nothing
+// until more of the stream is available to realign against.
+func TestRenderLive_HeraBindDoesNotLeakEscapeAfterRingWrap(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // no session log for this task
+	tp := NewTerminalPane()
+
+	sess := &mockAdapter{
+		alive:        true,
+		totalWritten: 10_000,
+		output:       []byte("38;2;230;149;117mCoalescing"),
+	}
+	tp.SetTaskID("bug078-task")
+	tp.ResetVT()
+	tp.SetSession(sess)
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen.Init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(50, 20)
+
+	tp.renderLive(screen, 0, 0, 40, 10, 40, 10)
+
+	if tp.emu == nil {
+		return // no history fed yet — safe, nothing to check
+	}
+	for y := 0; y < 10; y++ {
+		var line []byte
+		for x := 0; x < 40; x++ {
+			if c := tp.emu.CellAt(x, y); c != nil {
+				line = append(line, c.Content...)
+			}
+		}
+		if strings.Contains(string(line), "38;2;") {
+			t.Fatalf("row %d leaked raw escape text: %q", y, line)
+		}
+	}
+}
+
 // TestReadLiveRebuildHistory_NilSession returns empty without panic.
 func TestReadLiveRebuildHistory_NilSession(t *testing.T) {
 	raw, total := readLiveRebuildHistory(nil, "any")
@@ -3508,6 +3606,13 @@ func TestRenderLive_RingWrapRecoversExactBytesWithoutDiscardingEmulator(t *testi
 // that reaches the ordinary incremental-feed slice
 // (raw[len(raw)-int(newBytes):]) instead of a dedicated fallback would
 // panic on a negative index.
+//
+// emuFedTotal staying at 5 (not jumping to totalWritten=5000) is the BUG-079
+// fix in action: the ring's post-wrap tail ("XY") is an arbitrary, evicted
+// cut with no ESC byte to verify a clean boundary against, so
+// readLiveRebuildHistory now defers (nil, 0) instead of accepting it as-is —
+// the caller's existing len(history)==0 handling repaints without advancing,
+// and a later Draw retries once more of the stream is available.
 func TestRenderLive_RingWrapFallsBackWithoutPanicWhenLogUnavailable(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // no session log written for this task
 	tp := NewTerminalPane()
@@ -3541,8 +3646,8 @@ func TestRenderLive_RingWrapFallsBackWithoutPanicWhenLogUnavailable(t *testing.T
 		}
 	}()
 	tp.renderLive(screen2, 0, 0, 80, 10, 80, 10)
-	if tp.emuFedTotal != sess.totalWritten {
-		t.Errorf("emuFedTotal = %d, want %d", tp.emuFedTotal, sess.totalWritten)
+	if tp.emuFedTotal != 5 {
+		t.Errorf("emuFedTotal = %d, want 5 (deferred — no ESC boundary to verify in the wrapped tail)", tp.emuFedTotal)
 	}
 }
 

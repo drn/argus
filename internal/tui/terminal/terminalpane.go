@@ -955,6 +955,32 @@ func readLiveRebuildHistory(sess agentview.TerminalAdapter, taskID string) (raw 
 		// separate TotalWritten() call leaves a window where readLoop
 		// advances total past the bytes we sampled.
 		ring, ringTotal := sess.RecentOutputTailWithTotal(256 * 1024)
+		if ringTotal > uint64(len(ring)) && bytes.IndexByte(ring, 0x1B) < 0 {
+			// The ring has evicted everything before its own capacity, so
+			// this tail is an ARBITRARY cut — unlike a from-the-start read,
+			// nothing guarantees it begins at a clean escape boundary.
+			// AlignToEscBoundary's caller-side realignment only fixes a
+			// buffer whose start is mid-sequence IF some LATER byte in the
+			// same buffer is a fresh ESC to skip forward to; when the whole
+			// tail happens to be short and contains no ESC at all (e.g. it
+			// is entirely the orphaned parameter tail of one truecolor SGR
+			// sequence whose leading ESC fell just before this window's
+			// start — "38;2;230;149;117mCoalescing…" with no ESC anywhere),
+			// AlignToEscBoundary's "no ESC found -> likely plain text, safe
+			// to feed" fallback is wrong: x/vt parses the orphaned params
+			// and trailing text as literal ground characters instead of a
+			// color change (the escape-leak bug — see gotchas/pty-terminal.md).
+			// Treat this the same as "no history yet": the caller's existing
+			// len(history)==0 handling shows the placeholder (first attach)
+			// or leaves prior content on screen without advancing
+			// emuFedTotal, and the very next Draw retries via the ordinary
+			// ring-wrap/incremental catch-up once more of the stream is
+			// available to realign against. A log-backed read never reaches
+			// this branch: any TUI agent's realistic escape density makes a
+			// multi-KB-or-larger window with zero ESC bytes anywhere
+			// implausible, so this stays scoped to the truly ambiguous case.
+			return nil, 0
+		}
 		return ring, ringTotal
 	}
 	ringTail, ringTotal := sess.RecentOutputTailWithTotal(256 * 1024)
