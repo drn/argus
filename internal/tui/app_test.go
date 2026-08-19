@@ -3735,6 +3735,64 @@ func TestApp_ForceRedrawDoesNotSync(t *testing.T) {
 	testutil.Equal(t, rec.syncCount, 0)
 }
 
+// TestApp_RedrawLoopGenSupersedesStaleLoop pins the fix for the
+// startAgentRedrawLoop leak: leaving and returning to the same task's agent
+// view faster than the loop's 200ms wake-up used to leave the old loop
+// believing it was still current forever (stillViewing alone can't detect the
+// departure it never observed). A newer startAgentRedrawLoop call for the
+// same task must bump redrawLoopGen so the stale loop's very next check
+// reports "should exit" regardless of what stillViewing reads.
+func TestApp_RedrawLoopGenSupersedesStaleLoop(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	const taskID = "redraw-loop-task"
+	app.mode = modeAgent
+	app.agentState.TaskID = taskID
+
+	// Simulate the first startAgentRedrawLoop call's generation bump.
+	app.mu.Lock()
+	app.redrawLoopGen[taskID]++
+	staleGen := app.redrawLoopGen[taskID]
+	app.mu.Unlock()
+
+	// Still current: the user hasn't left, and no newer loop has started.
+	testutil.Equal(t, app.redrawLoopShouldExit(taskID, staleGen), false)
+
+	// A revisit to the same task's agent view (fast enough that the stale
+	// loop never observed the departure) triggers a second
+	// startAgentRedrawLoop call, bumping the generation again.
+	app.mu.Lock()
+	app.redrawLoopGen[taskID]++
+	app.mu.Unlock()
+
+	// stillViewing still reads true (we're back on the same task), but the
+	// stale loop must exit anyway because it's been superseded.
+	testutil.Equal(t, app.redrawLoopShouldExit(taskID, staleGen), true)
+}
+
+// TestApp_RedrawLoopGenClearedOnDelete pins the map cleanup that keeps
+// redrawLoopGen from accumulating one entry per task forever in long-lived
+// TUI sessions, mirroring the existing pendingRerenderRestart/committedCols
+// cleanup on task delete.
+func TestApp_RedrawLoopGenClearedOnDelete(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	task := &model.Task{ID: "del-me", Name: "del-me", Status: model.StatusPending}
+	testutil.NoError(t, d.Add(task))
+
+	app.redrawLoopGen[task.ID] = 3
+
+	app.deleteTask(task)
+
+	if _, ok := app.redrawLoopGen[task.ID]; ok {
+		t.Fatal("expected redrawLoopGen entry to be cleared on task delete")
+	}
+}
+
 // TestApp_AfterDrawSyncsOnResizeOnly pins the post-cleanup contract for
 // afterDraw: it Syncs exactly once per resize event and never otherwise.
 // The full pendingSync/forceRedraw/OnContentChange scaffolding is deleted

@@ -444,6 +444,20 @@ type App struct {
 	// gotchas/pty-terminal.md (fix-committed-width-drift / BUG-078).
 	committedCols map[string]uint16
 
+	// redrawLoopGen supersedes a stale startAgentRedrawLoop goroutine when a
+	// newer one starts for the same task. The loop's own "stillViewing" check
+	// only fires on its 200ms wake-up, so leaving a task's agent view and
+	// returning to it before that check runs (trivially fast via task
+	// switching/nav) left the old loop believing it was still current — it
+	// never observed the departure and ran forever alongside the new loop,
+	// each firing an RPC (SyncPTYSize) and a synchronous QueueUpdateDraw every
+	// 200ms. Enough accumulated zombies saturate the tview event loop that
+	// also dispatches keystrokes, causing global input lag that only a
+	// restart clears. Bumped under a.mu on every startAgentRedrawLoop call;
+	// each loop captures its own generation and exits the instant a newer one
+	// supersedes it, regardless of what stillViewing reads.
+	redrawLoopGen map[string]uint64
+
 	// Worktree root for orphan sweep (default: ~/.argus/worktrees/).
 	// Overridden in tests to avoid scanning real worktrees.
 	wtRoot string
@@ -603,6 +617,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 		pendingHeraReclaim:     make(map[string]bool),
 		lastAttachCols:         make(map[string]uint16),
 		committedCols:          make(map[string]uint16),
+		redrawLoopGen:          make(map[string]uint64),
 		wtRoot:                 filepath.Join(db.DataDir(), "worktrees"),
 		clipboardWriter:        pbcopyWriter,
 		nowFn:                  time.Now,
@@ -5061,10 +5076,17 @@ func (a *App) startSession(task *model.Task) {
 
 // startAgentRedrawLoop runs a goroutine that triggers redraws every 200ms
 // while the session is alive and the agent view is active. The 1-second tick
-// is too slow for a live terminal. Self-terminates when the session exits or
-// the user leaves the agent view.
+// is too slow for a live terminal. Self-terminates when the session exits,
+// the user leaves the agent view, or a newer redraw loop supersedes it for
+// the same task (see redrawLoopGen — the "stillViewing" check alone can't
+// detect a leave-then-return that happens faster than this loop's own 200ms
+// wake-up, which used to leave stale loops running forever).
 func (a *App) startAgentRedrawLoop(taskID string, sess agent.SessionHandle) {
 	uxlog.Log("[tui] startAgentRedrawLoop: taskID=%s", taskID)
+	a.mu.Lock()
+	a.redrawLoopGen[taskID]++
+	myGen := a.redrawLoopGen[taskID]
+	a.mu.Unlock()
 	go func() {
 		var lastTotalWritten uint64
 		for {
@@ -5074,10 +5096,7 @@ func (a *App) startAgentRedrawLoop(taskID string, sess agent.SessionHandle) {
 				a.tapp.QueueUpdateDraw(func() {})
 				return
 			}
-			a.mu.Lock()
-			stillViewing := a.mode == modeAgent && a.agentState.TaskID == taskID
-			a.mu.Unlock()
-			if !stillViewing {
+			if a.redrawLoopShouldExit(taskID, myGen) {
 				return
 			}
 			// Sync PTY size on every redraw cycle — the 1-second tick is too
@@ -5095,6 +5114,19 @@ func (a *App) startAgentRedrawLoop(taskID string, sess agent.SessionHandle) {
 			}
 		}
 	}()
+}
+
+// redrawLoopShouldExit reports whether an agent redraw loop for taskID
+// (started with generation myGen) must stop: the user is no longer viewing
+// that task's agent view, or a newer startAgentRedrawLoop call for the same
+// task has superseded it. Extracted as a pure predicate so the supersede
+// race fix is directly unit-testable without spinning real goroutines.
+func (a *App) redrawLoopShouldExit(taskID string, myGen uint64) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	stillViewing := a.mode == modeAgent && a.agentState.TaskID == taskID
+	superseded := a.redrawLoopGen[taskID] != myGen
+	return !stillViewing || superseded
 }
 
 func (a *App) closeNewTaskForm() {
@@ -6514,6 +6546,7 @@ func (a *App) deleteTask(t *model.Task) {
 	a.invalidateAttachCache(t.ID)
 	delete(a.pendingRerenderRestart, t.ID)
 	delete(a.committedCols, t.ID)
+	delete(a.redrawLoopGen, t.ID)
 	a.refreshTasksLocal()
 
 	// Clean up worktree and branch in background — git operations can take seconds.
