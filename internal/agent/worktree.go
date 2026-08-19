@@ -103,10 +103,14 @@ func isValidRef(repoDir, ref string) bool {
 	return cmd.Run() == nil
 }
 
-// isUnbornRepo reports whether repoDir's checked-out branch has zero commits
-// (a freshly `git init`'d repo). On an unborn branch, HEAD does not resolve
-// to a commit, so it cannot be used as a `git worktree add` start point.
-func isUnbornRepo(repoDir string) bool {
+// isHeadUnborn reports whether repoDir's currently checked-out branch has
+// zero commits (e.g. a freshly `git init`'d repo before its first commit).
+// On an unborn branch, HEAD does not resolve to a commit, so it cannot be
+// used as a `git worktree add` start point. This says nothing about other
+// branches in the same repo, which may well have commits of their own
+// (e.g. a sibling task's `argus/<task>` branch) — checking this is only
+// meaningful when the caller is about to rely on HEAD specifically.
+func isHeadUnborn(repoDir string) bool {
 	return !isValidRef(repoDir, "HEAD")
 }
 
@@ -126,24 +130,29 @@ func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPa
 		baseBranch = "HEAD"
 	}
 
-	// A freshly `git init`'d repo with zero commits has an unborn HEAD: no
-	// ref (including HEAD itself) resolves to a commit, so there is nothing
-	// to fetch or base a start point on. Detect this up front — the worktree
-	// is created as an orphan branch instead (see below).
-	emptyRepo := isUnbornRepo(projectPath)
+	// When no explicit base branch was requested (baseBranch defaulted to
+	// "HEAD" above) and HEAD itself is unborn — a freshly `git init`'d repo
+	// before its first commit — there is no start point to branch from.
+	// Detect this up front and create an orphan branch instead (see below).
+	// Scoped to the "HEAD" default specifically: an explicit base branch
+	// (e.g. a sibling task's already-committed branch, used for git-stacking
+	// a brand-new project) is still resolved and honored normally even
+	// while the project's own checkout remains unborn.
+	emptyRepo := baseBranch == "HEAD" && isHeadUnborn(projectPath)
 	if emptyRepo {
 		uxlog.Log("[worktree] project has no commits yet (unborn HEAD); creating orphan branch")
 	}
 
 	// Fetch all remotes so remote-tracking branches are up to date before
 	// we resolve the start point or create the worktree. Skip for HEAD
-	// (pure-local, no remote needed) and for an empty repo (nothing to
-	// fetch or resolve against yet). Timeout prevents blocking the TUI
-	// on slow or unreachable networks. NOTE: --prune is intentionally
-	// omitted — on macOS case-insensitive filesystems, it deletes
-	// origin/HEAD (confusing the symbolic ref with branch "head"),
-	// which causes origin/master to be lost on alternating fetches.
-	if !emptyRepo && baseBranch != "HEAD" {
+	// (pure-local, no remote needed) — note emptyRepo implies baseBranch ==
+	// "HEAD", so this condition already covers that case too. Timeout
+	// prevents blocking the TUI on slow or unreachable networks. NOTE:
+	// --prune is intentionally omitted — on macOS case-insensitive
+	// filesystems, it deletes origin/HEAD (confusing the symbolic ref with
+	// branch "head"), which causes origin/master to be lost on alternating
+	// fetches.
+	if baseBranch != "HEAD" {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		fetchCmd := exec.CommandContext(ctx, "git", "fetch", "--all")
@@ -155,8 +164,8 @@ func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPa
 
 	// Resolve baseBranch to a valid ref. If the local branch doesn't exist,
 	// try remote-tracking branches (origin/<branch>, upstream/<branch>).
-	// Skipped for an empty repo: no ref can resolve yet, and the orphan path
-	// below ignores baseBranch entirely.
+	// Skipped when emptyRepo: baseBranch is "HEAD" and already confirmed
+	// unresolvable, and the orphan path below ignores it entirely.
 	if !emptyRepo {
 		baseBranch = resolveStartPoint(projectPath, baseBranch)
 	}
@@ -211,7 +220,10 @@ func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPa
 				return wtDir, candidate, branch, nil
 			}
 
-			// If branch already exists, try without -b (attach to existing branch).
+			// If branch already exists, try without -b (attach to existing
+			// branch). Also covers a partially-completed --orphan attempt
+			// (branch created, worktree dir not): "worktree add <dir> <branch>"
+			// needs no start point for an unborn branch either.
 			cmd2 := exec.Command("git", "worktree", "add", wtDir, branch)
 			cmd2.Dir = projectPath
 			if out2, cmdErr2 := cmd2.CombinedOutput(); cmdErr2 != nil {

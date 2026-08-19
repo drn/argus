@@ -12,6 +12,12 @@
 - [x] 1.4 Leave the post-checkout-hook-failure guard and the
   attach-to-existing-branch fallback unchanged; both already omit a
   start-point and continue to work once the orphan branch exists.
+- [x] 1.5 Scope the unborn check to the no-explicit-base-branch case
+  (`baseBranch == "HEAD"`, the post-default value) — found in review — so an
+  explicit base branch (e.g. a sibling task's already-committed branch, used
+  for git-stacking) is still resolved and honored normally even while the
+  project's own checkout remains unborn, instead of being silently forced
+  through the orphan path.
 
 ## 2. Tests
 
@@ -22,6 +28,9 @@
   state before this first commit).
 - [x] 2.2 A non-empty repo (existing tests) is unaffected — no behavior change
   when `HEAD` already resolves.
+- [x] 2.3 An explicit base branch that resolves to a valid, already-committed
+  branch is honored (not forced to orphan) even while the project's own
+  checkout remains unborn (`TestCreateWorktree_StackedOnUnbornProjectHEAD`).
 
 ## 3. Docs
 
