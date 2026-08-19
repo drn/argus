@@ -121,6 +121,56 @@ func TestCreateWorktree(t *testing.T) {
 	}
 }
 
+func TestCreateWorktree_EmptyRepo(t *testing.T) {
+	// A freshly `git init`'d repo with zero commits has an unborn HEAD.
+	// CreateWorktree must fall back to `git worktree add --orphan` instead
+	// of trying to base the worktree on HEAD (BUG-080).
+	repoDir := t.TempDir()
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+
+	// Sanity check: HEAD does not resolve in this repo yet.
+	checkCmd := exec.Command("git", "rev-parse", "--verify", "--quiet", "HEAD")
+	checkCmd.Dir = repoDir
+	if checkCmd.Run() == nil {
+		t.Fatal("expected HEAD to be unresolvable in a repo with zero commits")
+	}
+
+	t.Setenv("HOME", t.TempDir())
+
+	wtPath, finalName, branchName, err := CreateWorktree(repoDir, "emptyproj", "first-task", "")
+	testutil.NoError(t, err)
+	testutil.Equal(t, finalName, "first-task")
+	testutil.Equal(t, branchName, "argus/first-task")
+	if _, err := os.Stat(filepath.Join(wtPath, ".git")); err != nil {
+		t.Errorf("expected .git to exist in worktree at %q", wtPath)
+	}
+
+	// The worktree's own HEAD is unborn too (nothing was checked out from).
+	wtHead := exec.Command("git", "rev-parse", "--verify", "--quiet", "HEAD")
+	wtHead.Dir = wtPath
+	if wtHead.Run() == nil {
+		t.Error("expected the new worktree's HEAD to also be unborn (no commits yet)")
+	}
+
+	// A second task in the same empty repo should also succeed.
+	wtPath2, finalName2, _, err := CreateWorktree(repoDir, "emptyproj", "second-task", "")
+	testutil.NoError(t, err)
+	testutil.Equal(t, finalName2, "second-task")
+	if _, err := os.Stat(filepath.Join(wtPath2, ".git")); err != nil {
+		t.Errorf("expected .git to exist in worktree at %q", wtPath2)
+	}
+}
+
 func TestCreateWorktree_RemoteBranch(t *testing.T) {
 	// Test that CreateWorktree falls back to origin/<branch> when the local
 	// branch doesn't exist (e.g., a bare clone with only remote-tracking refs).
@@ -395,6 +445,37 @@ func TestResolveStartPoint(t *testing.T) {
 	// HEAD should always be returned as-is.
 	if got := resolveStartPoint("/nonexistent", "HEAD"); got != "HEAD" {
 		t.Errorf("expected HEAD, got %q", got)
+	}
+}
+
+func TestIsUnbornRepo(t *testing.T) {
+	repoDir := t.TempDir()
+	cmd := exec.Command("git", "init")
+	cmd.Dir = repoDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %s\n%s", err, out)
+	}
+	if !isUnbornRepo(repoDir) {
+		t.Error("expected a freshly init'd repo with no commits to be unborn")
+	}
+
+	for _, args := range [][]string{
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		c := exec.Command("git", args...)
+		c.Dir = repoDir
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+	commitCmd := exec.Command("git", "commit", "--allow-empty", "-m", "init")
+	commitCmd.Dir = repoDir
+	if out, err := commitCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %s\n%s", err, out)
+	}
+	if isUnbornRepo(repoDir) {
+		t.Error("expected a repo with a commit to not be unborn")
 	}
 }
 

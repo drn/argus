@@ -103,6 +103,13 @@ func isValidRef(repoDir, ref string) bool {
 	return cmd.Run() == nil
 }
 
+// isUnbornRepo reports whether repoDir's checked-out branch has zero commits
+// (a freshly `git init`'d repo). On an unborn branch, HEAD does not resolve
+// to a commit, so it cannot be used as a `git worktree add` start point.
+func isUnbornRepo(repoDir string) bool {
+	return !isValidRef(repoDir, "HEAD")
+}
+
 // WorktreeDir returns the deterministic worktree path for a task:
 // ~/.argus/worktrees/<projectName>/<taskName>
 func WorktreeDir(projectName, taskName string) string {
@@ -119,14 +126,24 @@ func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPa
 		baseBranch = "HEAD"
 	}
 
+	// A freshly `git init`'d repo with zero commits has an unborn HEAD: no
+	// ref (including HEAD itself) resolves to a commit, so there is nothing
+	// to fetch or base a start point on. Detect this up front — the worktree
+	// is created as an orphan branch instead (see below).
+	emptyRepo := isUnbornRepo(projectPath)
+	if emptyRepo {
+		uxlog.Log("[worktree] project has no commits yet (unborn HEAD); creating orphan branch")
+	}
+
 	// Fetch all remotes so remote-tracking branches are up to date before
 	// we resolve the start point or create the worktree. Skip for HEAD
-	// (pure-local, no remote needed). Timeout prevents blocking the TUI
+	// (pure-local, no remote needed) and for an empty repo (nothing to
+	// fetch or resolve against yet). Timeout prevents blocking the TUI
 	// on slow or unreachable networks. NOTE: --prune is intentionally
 	// omitted — on macOS case-insensitive filesystems, it deletes
 	// origin/HEAD (confusing the symbolic ref with branch "head"),
 	// which causes origin/master to be lost on alternating fetches.
-	if baseBranch != "HEAD" {
+	if !emptyRepo && baseBranch != "HEAD" {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		fetchCmd := exec.CommandContext(ctx, "git", "fetch", "--all")
@@ -138,7 +155,11 @@ func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPa
 
 	// Resolve baseBranch to a valid ref. If the local branch doesn't exist,
 	// try remote-tracking branches (origin/<branch>, upstream/<branch>).
-	baseBranch = resolveStartPoint(projectPath, baseBranch)
+	// Skipped for an empty repo: no ref can resolve yet, and the orphan path
+	// below ignores baseBranch entirely.
+	if !emptyRepo {
+		baseBranch = resolveStartPoint(projectPath, baseBranch)
+	}
 
 	// Prune stale worktree references. If a previous worktree directory was
 	// deleted without `git worktree remove`, git still locks the branch to
@@ -170,7 +191,14 @@ func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPa
 		}
 
 		branch := "argus/" + candidate
-		cmd := exec.Command("git", "worktree", "add", "-b", branch, wtDir, baseBranch)
+		var cmd *exec.Cmd
+		if emptyRepo {
+			// No start point exists yet (unborn HEAD) — create the branch as
+			// an orphan instead of basing it on an unresolvable ref.
+			cmd = exec.Command("git", "worktree", "add", "--orphan", "-b", branch, wtDir)
+		} else {
+			cmd = exec.Command("git", "worktree", "add", "-b", branch, wtDir, baseBranch)
+		}
 		cmd.Dir = projectPath
 		if out, cmdErr := cmd.CombinedOutput(); cmdErr != nil {
 			uxlog.Log("[worktree] cmd1 failed: %v: %s", cmdErr, strings.TrimSpace(string(out)))
