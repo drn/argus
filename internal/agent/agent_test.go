@@ -422,6 +422,67 @@ func TestBuildCmd_ForcesTerminalEnv(t *testing.T) {
 	testutil.Equal(t, last["COLORTERM="], "truecolor")
 }
 
+// TestBuildCmd_RedirectsBuildCaches confirms GOCACHE and PLAYWRIGHT_BROWSERS_PATH
+// are forced onto every spawned agent, out from under ~/Library/Caches. Both
+// tools default there, and macOS TCC gates writes under
+// ~/Library/{Application Support,Containers,Caches} behind an "access data
+// from other apps" prompt attributed to the responsible argus process — so
+// heavy concurrent build/test activity across worktrees was generating
+// repeated prompts even with a stably-signed argus binary.
+func TestBuildCmd_RedirectsBuildCaches(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg := testConfig()
+	task := &model.Task{ID: "task-id-8", Name: "x", Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Later entries win per exec.Cmd.Env dedup semantics, so scan for the
+	// LAST value of each key.
+	last := map[string]string{}
+	for _, kv := range cmd.Env {
+		for _, key := range []string{"GOCACHE=", "PLAYWRIGHT_BROWSERS_PATH="} {
+			if len(kv) >= len(key) && kv[:len(key)] == key {
+				last[key] = kv[len(key):]
+			}
+		}
+	}
+	testutil.Equal(t, last["GOCACHE="], filepath.Join(db.DataDir(), "cache", "go-build"))
+	testutil.Equal(t, last["PLAYWRIGHT_BROWSERS_PATH="], filepath.Join(db.DataDir(), "cache", "ms-playwright"))
+}
+
+// TestBuildCmd_RedirectsBuildCaches_OverridesInheritedValue confirms the forced
+// cache paths win even when the parent environment already set these vars to
+// something else — e.g. a shell profile exporting a custom GOCACHE. Argus's
+// TCC-avoidance redirect must not be silently defeated by inheritance.
+func TestBuildCmd_RedirectsBuildCaches_OverridesInheritedValue(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GOCACHE", "/tmp/some-other-go-cache")
+	t.Setenv("PLAYWRIGHT_BROWSERS_PATH", "/tmp/some-other-playwright-cache")
+
+	cfg := testConfig()
+	task := &model.Task{ID: "task-id-9", Name: "x", Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := map[string]string{}
+	for _, kv := range cmd.Env {
+		for _, key := range []string{"GOCACHE=", "PLAYWRIGHT_BROWSERS_PATH="} {
+			if len(kv) >= len(key) && kv[:len(key)] == key {
+				last[key] = kv[len(key):]
+			}
+		}
+	}
+	testutil.Equal(t, last["GOCACHE="], filepath.Join(db.DataDir(), "cache", "go-build"))
+	testutil.Equal(t, last["PLAYWRIGHT_BROWSERS_PATH="], filepath.Join(db.DataDir(), "cache", "ms-playwright"))
+}
+
 // TestBuildCmd_NoEnvOverrideWhenIDEmpty defends the defensive skip: a task
 // row pre-Add has no ID, and emitting a literal "ARGUS_TASK_ID=" would be
 // worse than not exporting at all. CreateAndStart guards against this in
