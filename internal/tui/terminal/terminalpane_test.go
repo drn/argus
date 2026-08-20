@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -149,11 +150,28 @@ type mockAdapter struct {
 	output       []byte
 	ptyCols      int // 0 → PTYSize reports "unknown" (0,0)
 	ptyRows      int
+
+	writeMu sync.Mutex
+	written []byte
 }
 
-func (m *mockAdapter) WriteInput(p []byte) (int, error) { return len(p), nil }
-func (m *mockAdapter) Resize(rows, cols uint16) error   { return nil }
-func (m *mockAdapter) RecentOutput() []byte             { return m.output }
+func (m *mockAdapter) WriteInput(p []byte) (int, error) {
+	m.writeMu.Lock()
+	m.written = append(m.written, p...)
+	m.writeMu.Unlock()
+	return len(p), nil
+}
+
+// Written returns a snapshot of everything WriteInput has received so far.
+// Safe to call concurrently with WriteInput (used to poll for bytes forwarded
+// from a background emulator-drain goroutine).
+func (m *mockAdapter) Written() []byte {
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
+	return append([]byte(nil), m.written...)
+}
+func (m *mockAdapter) Resize(rows, cols uint16) error { return nil }
+func (m *mockAdapter) RecentOutput() []byte           { return m.output }
 func (m *mockAdapter) RecentOutputTail(n int) []byte {
 	if n >= len(m.output) {
 		return m.output
@@ -661,6 +679,182 @@ func TestNewTrackedEmulator_DefaultCursorHidden(t *testing.T) {
 	})
 	if cursorVisible {
 		t.Fatal("new emulator should default cursor to hidden (agents hide cursor)")
+	}
+}
+
+func TestNewLiveEmulator_AnswersBackgroundColorQuery(t *testing.T) {
+	got := make(chan []byte, 1)
+	emu := NewLiveEmulator(80, 24, func(p []byte) {
+		got <- append([]byte(nil), p...)
+	})
+	if _, err := emu.Write([]byte(ansi.RequestBackgroundColor)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	want := ansi.SetBackgroundColor(ansi.XRGBColor{Color: assumedTerminalBG}.String())
+	select {
+	case p := <-got:
+		if string(p) != want {
+			t.Fatalf("forwarded response = %q, want %q", p, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("forward callback was never invoked for an OSC 11 query")
+	}
+}
+
+func TestNewLiveEmulator_AnswersForegroundColorQuery(t *testing.T) {
+	got := make(chan []byte, 1)
+	emu := NewLiveEmulator(80, 24, func(p []byte) {
+		got <- append([]byte(nil), p...)
+	})
+	if _, err := emu.Write([]byte(ansi.RequestForegroundColor)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	want := ansi.SetForegroundColor(ansi.XRGBColor{Color: assumedTerminalFG}.String())
+	select {
+	case p := <-got:
+		if string(p) != want {
+			t.Fatalf("forwarded response = %q, want %q", p, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("forward callback was never invoked for an OSC 10 query")
+	}
+}
+
+func TestNewLiveEmulator_SlowForwardDoesNotBlockDrainLoop(t *testing.T) {
+	// forward ultimately reaches a real PTY write, which — unlike the
+	// discard sink — can block if the agent process stalls. The drain loop
+	// must stay decoupled from that: a forward call stuck on the FIRST
+	// response must not stop the emulator from accepting further queries,
+	// or the emulator's own Write() (called synchronously from the main
+	// goroutine in production) would hang right along with it.
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	emu := NewLiveEmulator(80, 24, func(p []byte) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release // simulate a stalled agent process never draining stdin
+	})
+	defer close(release)
+
+	if _, err := emu.Write([]byte(ansi.RequestBackgroundColor)); err != nil {
+		t.Fatalf("Write (1st query): %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("forward was never invoked for the first query")
+	}
+
+	// The forwarding goroutine is now stuck inside forward(). Further
+	// queries must still complete without hanging.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 3; i++ {
+			if _, err := emu.Write([]byte(ansi.RequestForegroundColor)); err != nil {
+				t.Errorf("Write (query %d): %v", i, err)
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("emu.Write blocked while forward() was stalled on an earlier response — the drain loop is not decoupled from forward")
+	}
+}
+
+func TestNewLiveEmulator_NilForwardDoesNotPanic(t *testing.T) {
+	emu := NewLiveEmulator(80, 24, nil)
+	if _, err := emu.Write([]byte(ansi.RequestBackgroundColor)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	// Give the drain goroutine a chance to run; there is nothing to
+	// assert beyond "this didn't panic".
+	time.Sleep(10 * time.Millisecond)
+}
+
+func TestTerminalPane_ForwardEmulatorResponse_NoSession(t *testing.T) {
+	tp := NewTerminalPane()
+	// No session attached — must no-op rather than panic.
+	tp.forwardEmulatorResponse(nil, []byte("anything"))
+}
+
+func TestTerminalPane_ForwardEmulatorResponse_ForwardsToSession(t *testing.T) {
+	tp := NewTerminalPane()
+	sess := &mockAdapter{alive: true}
+	tp.SetSession(sess)
+
+	tp.forwardEmulatorResponse(sess, []byte("hello"))
+
+	if got := string(sess.Written()); got != "hello" {
+		t.Fatalf("session received %q, want %q", got, "hello")
+	}
+}
+
+func TestTerminalPane_ForwardEmulatorResponse_DropsStaleOwner(t *testing.T) {
+	// Simulates an orphaned emulator's drain goroutine delivering a response
+	// after the pane has moved on to a different session: owner (the OLD
+	// session) no longer matches tp.session (the NEW one), so the response
+	// must be dropped rather than misdelivered into the new session.
+	tp := NewTerminalPane()
+	oldSess := &mockAdapter{alive: true}
+	tp.SetSession(oldSess)
+
+	newSess := &mockAdapter{alive: true}
+	tp.SetSession(newSess)
+
+	tp.forwardEmulatorResponse(oldSess, []byte("stale response"))
+
+	if got := oldSess.Written(); len(got) != 0 {
+		t.Fatalf("stale response delivered to the old (no longer current) session: %q", got)
+	}
+	if got := newSess.Written(); len(got) != 0 {
+		t.Fatalf("stale response misdelivered into the new session: %q", got)
+	}
+}
+
+func TestTerminalPane_LiveEmulatorForwardsQueryResponseToSession(t *testing.T) {
+	tp := NewTerminalPane()
+	sess := &mockAdapter{alive: true}
+	tp.SetSession(sess)
+
+	emu := tp.newTrackedEmulatorWithCallback(80, 24, func(bool) {})
+	if _, err := emu.Write([]byte(ansi.RequestBackgroundColor)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(sess.Written()) > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if len(sess.Written()) == 0 {
+		t.Fatal("expected the live emulator's OSC 11 response to be forwarded to the attached session")
+	}
+}
+
+func TestNewTrackedReplayEmulator_DoesNotForwardResponses(t *testing.T) {
+	tp := NewTerminalPane()
+	sess := &mockAdapter{alive: true}
+	tp.SetSession(sess)
+
+	// The replay/preview emulator constructor must stay discard-only: it
+	// takes no forward callback and must never write into the attached
+	// session even though one is present.
+	emu := tp.newTrackedReplayEmulatorWithCallback(80, 24, func(bool) {})
+	if _, err := emu.Write([]byte(ansi.RequestBackgroundColor)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	if got := sess.Written(); len(got) != 0 {
+		t.Fatalf("replay emulator forwarded a response to the live session: %q", got)
 	}
 }
 
