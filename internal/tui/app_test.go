@@ -270,7 +270,7 @@ func TestDetectNeedsInputSticky_DirtyCheck(t *testing.T) {
 		// check must replay tick 11's cached `parked=false` reading, not some
 		// stale earlier value. A SECOND consecutive non-qualifying tick
 		// confirms a genuine break.
-		got = a.detectNeedsInputSticky(nil, []string{"wkr"}, got)
+		a.detectNeedsInputSticky(nil, []string{"wkr"}, got)
 		if _, ok := a.needsInputEscalation["wkr"]; ok {
 			t.Fatalf("expected escalation counter to reset to absent (confirmed break) after two consecutive non-qualifying ticks, got present: %d", a.needsInputEscalation["wkr"])
 		}
@@ -299,7 +299,7 @@ func TestDetectNeedsInputSticky_DirtyCheck(t *testing.T) {
 
 		// A genuine change to non-working content, forced-distinct mtime.
 		writeLogAt("res", notWorking, base.Add(time.Hour))
-		got = a.detectNeedsInputSticky(nil, []string{"res"}, got)
+		a.detectNeedsInputSticky(nil, []string{"res"}, got)
 		// ResumeActivityTick has NO grace period — a single non-working tick
 		// resets it outright to absent.
 		if _, ok := a.needsInputResume["res"]; ok {
@@ -329,7 +329,7 @@ func TestDetectNeedsInputSticky_DirtyCheck(t *testing.T) {
 		// idleNow is ALWAYS read fresh from the caller-supplied idle set,
 		// never gated by the dirty check — going non-idle (no file rewrite at
 		// all) must reset the counter to absent on this SAME tick.
-		got = a.detectNeedsInputSticky(nil /* no longer idle */, []string{"settle"}, got)
+		a.detectNeedsInputSticky(nil /* no longer idle */, []string{"settle"}, got)
 		if _, ok := a.needsInputSettle["settle"]; ok {
 			t.Fatalf("expected settle counter to reset to absent once no longer idle, got present: %d", a.needsInputSettle["settle"])
 		}
