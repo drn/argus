@@ -79,6 +79,85 @@ func NewDrainedEmulator(cols, rows int) *xvt.SafeEmulator {
 	return emu
 }
 
+// assumedTerminalBG/FG answer OSC 10/11 (foreground/background color)
+// queries from a live emulator (see NewLiveEmulator). Argus itself never
+// assumes a background — its own chrome uses tcell.ColorDefault everywhere
+// — so these are a best-effort dark-terminal guess, not a queried truth:
+// they exist only so an agent CLI that conditions its own styling on a color
+// query (Codex skips a background-dependent composer highlight when it
+// can't determine the terminal's background — see gotchas/pty-terminal.md)
+// gets *an* answer instead of the query going unanswered.
+var (
+	assumedTerminalBG = color.RGBA{A: 0xff}
+	assumedTerminalFG = color.RGBA{R: 0xe5, G: 0xe5, B: 0xe5, A: 0xff}
+)
+
+// pendingResponseQueueSize bounds NewLiveEmulator's forward hand-off queue.
+// Capability-query responses are rare (a handful per session) and small, so
+// this is generous headroom, not a throughput budget.
+const pendingResponseQueueSize = 8
+
+// NewLiveEmulator creates an x/vt SafeEmulator for a pane's live agent
+// session. Like NewDrainedEmulator, it drains the emulator's internal
+// response pipe so terminal query sequences (DA1, DA2, DSR, OSC 10/11, etc.)
+// never hang Write(). Unlike NewDrainedEmulator, the emulator reports
+// assumedTerminalFG/BG and its generated response bytes are passed to
+// forward (writing them to the agent process's stdin) instead of discarded
+// — so a color-aware agent CLI sees a normal, answering terminal.
+//
+// forward runs on its own goroutine, decoupled from the read loop that
+// drains the emulator's pipe: forward ultimately reaches a real PTY write
+// (TerminalAdapter.WriteInput), which — unlike io.Discard — CAN block if the
+// agent process isn't promptly reading its stdin. If that blocking write
+// happened inline in the read loop, the loop would stop calling emu.Read(),
+// and the emulator's NEXT query response would then block on the unbuffered
+// pipe with nobody left to read it — hanging the main-goroutine emu.Write()
+// call this whole mechanism exists to keep from hanging (see
+// gotchas/pty-terminal.md). Responses are handed off over a small buffered
+// channel; a full channel drops the response rather than blocking the read
+// loop — losing one stale capability-query answer is harmless, hanging the
+// UI is not. forward may be called after the pane's session has changed or
+// gone away; it is responsible for no-op'ing safely in that case.
+//
+// Only use this for a pane's live emulator. Replay/preview emulators
+// reconstruct historical output for a process that isn't listening (or
+// isn't the same live process) — forwarding responses into them would be
+// meaningless at best and cross-wired at worst, so they keep using
+// NewDrainedEmulator.
+func NewLiveEmulator(cols, rows int, forward func([]byte)) *xvt.SafeEmulator {
+	emu := xvt.NewSafeEmulator(cols, rows)
+	emu.Emulator.SetBackgroundColor(assumedTerminalBG)
+	emu.Emulator.SetForegroundColor(assumedTerminalFG)
+
+	pending := make(chan []byte, pendingResponseQueueSize)
+	go func() {
+		for p := range pending {
+			if forward != nil {
+				forward(p)
+			}
+		}
+	}()
+	go func() {
+		defer close(pending)
+		buf := make([]byte, 4096)
+		for {
+			n, err := emu.Read(buf)
+			if n > 0 {
+				select {
+				case pending <- append([]byte(nil), buf[:n]...):
+				default:
+					// Forwarding goroutine is stuck on a prior response
+					// (agent stalled); drop rather than block this loop.
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return emu
+}
+
 // newDrainedReplayEmulator creates an emulator with a large scrollback buffer
 // for scrollback browsing. This avoids frequent rebuilds when scrolling up
 // through long session output.
@@ -2003,7 +2082,12 @@ func (tp *TerminalPane) newTrackedEmulator(cols, rows int) *xvt.SafeEmulator {
 }
 
 func (tp *TerminalPane) newTrackedEmulatorWithCallback(cols, rows int, onCursorVisible func(bool)) *xvt.SafeEmulator {
-	emu := NewDrainedEmulator(cols, rows)
+	tp.mu.Lock()
+	owner := tp.session
+	tp.mu.Unlock()
+	emu := NewLiveEmulator(cols, rows, func(p []byte) {
+		tp.forwardEmulatorResponse(owner, p)
+	})
 	emu.Emulator.SetScrollbackSize(liveScrollbackSize)
 	if onCursorVisible != nil {
 		emu.Emulator.SetCallbacks(xvt.Callbacks{
@@ -2019,6 +2103,26 @@ func (tp *TerminalPane) newTrackedEmulatorWithCallback(cols, rows int, onCursorV
 		onCursorVisible(false)
 	}
 	return emu
+}
+
+// forwardEmulatorResponse writes a live emulator's generated query-response
+// bytes (OSC 10/11 answers, etc.) into owner — the session that was current
+// when the emulator that produced p was created — but only if owner is
+// STILL the pane's current session. SetSession always replaces tp.emu when
+// the session pointer actually changes (see SetSession), so for the pane's
+// live, non-orphaned emulator owner and tp.session never diverge; the check
+// exists for the narrow race where THIS emulator has already been replaced
+// (a new session attached, a new emulator created) but its old drain
+// goroutine still had a response in flight — without the owner check, that
+// stale response would be misdelivered into the new, unrelated session
+// instead of correctly dropped.
+func (tp *TerminalPane) forwardEmulatorResponse(owner agentview.TerminalAdapter, p []byte) {
+	tp.mu.Lock()
+	sess := tp.session
+	tp.mu.Unlock()
+	if sess != nil && sess == owner {
+		_, _ = sess.WriteInput(p)
+	}
 }
 
 // newTrackedReplayEmulatorWithCallback creates a replay emulator with a large
