@@ -399,8 +399,26 @@ func (tp *TerminalPane) notifyBranchChange() {
 func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 	tp.mu.Lock()
 	if tp.session == sess {
+		// Same session — skip the reset below (the tick calls this every
+		// second with the same live session, and resetting would destroy
+		// incremental rendering state). A dead/nil session still needs its
+		// replay content loaded exactly once, though: EVERY caller (bindPane,
+		// reconcileOne, the main agent view's onTaskSelect) runs
+		// SetTaskID -> ResetVT -> SetSession in that order, and ResetVT ALWAYS
+		// wipes whatever SetTaskID's own eager load just produced — SetTaskID
+		// runs FIRST, before the caller has resolved whether the session will
+		// come back nil, so its load is systematically undone by the very
+		// next call. SetSession is the last step with the definitive answer,
+		// so it's the only place this can reliably happen (fix-closeout-
+		// replay-load-order; see gotchas/hera-view.md).
+		taskID := tp.taskID
+		needsReplayLoad := sess == nil && taskID != "" && len(tp.replayData) == 0
 		tp.mu.Unlock()
-		return // same session, skip reset
+		if needsReplayLoad {
+			tp.loadSessionLog(taskID)
+			tp.notifyBranchChange()
+		}
+		return
 	}
 	if sess != nil {
 		uxlog.Log("[terminalpane] SetSession: sess=%p totalWritten=%d", sess, sess.TotalWritten())
@@ -413,6 +431,10 @@ func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
 	tp.paintCacheValid = false
+	// See the "same session" branch above for why this has to happen here,
+	// not in SetTaskID.
+	taskID := tp.taskID
+	needsReplayLoad := sess == nil && taskID != "" && len(tp.replayData) == 0
 	// Seed PTY size from the visible inner rect — Draw() will refine on first
 	// render. GetInnerRect returns the pane's OUTER rect because TerminalPane
 	// is a bare tview.Box with no native border; DrawBorderedPanel paints a
@@ -443,6 +465,9 @@ func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 		}
 	}
 	tp.mu.Unlock()
+	if needsReplayLoad {
+		tp.loadSessionLog(taskID)
+	}
 	// Branch change: nil↔live↔replay paint different cells in the same rect.
 	// Fire AFTER releasing the lock — the app-side handler may take other locks.
 	tp.notifyBranchChange()

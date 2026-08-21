@@ -1233,6 +1233,68 @@ func TestSmoke_HeraReattachClosedOutTogglesBannerThenReadOnly(t *testing.T) {
 	testutil.Equal(t, armed, true)
 }
 
+// TestSmoke_HeraReattachClosedOutSecondEnterShowsRealReplayContent is the
+// live regression reported after add-hera-closeout-banner shipped: the
+// SECOND Enter fell back to the "Session not running" placeholder instead of
+// the promised read-only replay of the task's last recorded output.
+//
+// Root cause: TerminalPane.SetSession's "same session" fast path skipped
+// loading replay content for a dead/nil session — every real caller
+// (bindPane, reconcileOne, the main agent view's onTaskSelect) runs
+// SetTaskID -> ResetVT -> SetSession in that order, and ResetVT ALWAYS wipes
+// whatever SetTaskID's own eager load just produced (SetTaskID runs FIRST,
+// before the caller has resolved whether the session will come back nil).
+// The isolated unit tests in internal/tui/terminal (e.g.
+// TestTerminalPane_Draw_ClosedOutBanner_OverridesReplay) called SetTaskID
+// directly without the intervening ResetVT, so they never exercised the
+// wipe and passed despite the bug. This test seeds a REAL on-disk session
+// log and drives the full bindPane path via the Hera tab, so it would have
+// caught the regression.
+func TestSmoke_HeraReattachClosedOutSecondEnterShowsRealReplayContent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	logDir := filepath.Join(os.Getenv("HOME"), ".argus", "sessions")
+	testutil.NoError(t, os.MkdirAll(logDir, 0o755))
+	testutil.NoError(t, os.WriteFile(filepath.Join(logDir, "tw.log"), []byte("replaymarker\r\n"), 0o644))
+
+	d := testDB(t)
+	orch := seedHeraOrch(t, d, "orch")
+	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+	seedHeraBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
+	testutil.NoError(t, d.SetStatus("tw", model.StatusComplete))
+	testutil.NoError(t, d.SetMeta("tw", db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"))
+
+	app := New(d, agent.NewRunner(nil), false)
+	sim, stop := wireApp(t, app)
+	defer stop()
+	heraTabCursorOnWorker(t, app, sim)
+
+	sim.InjectKey(tcell.KeyEnter, 0, 0) // first Enter → arms the banner
+	syncUI(t, app.tapp)
+	if col, _ := findScreenText(sim, "Task closed out"); col < 0 {
+		t.Fatal("expected the closed-out banner on screen after the first Enter")
+	}
+
+	sim.InjectKey(tcell.KeyEnter, 0, 0) // second Enter → dismiss, read-only replay
+	syncUI(t, app.tapp)
+
+	deadline := time.Now().Add(2 * time.Second)
+	found := false
+	for time.Now().Before(deadline) {
+		syncUI(t, app.tapp)
+		if col, _ := findScreenText(sim, "replaymarker"); col >= 0 {
+			found = true
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if !found {
+		if col, _ := findScreenText(sim, "Session not running"); col >= 0 {
+			t.Fatal("BUG: second Enter fell back to the 'Session not running' placeholder instead of the recorded output")
+		}
+		t.Fatal("expected the task's recorded output to appear read-only after the second Enter")
+	}
+}
+
 // TestSmoke_HeraReattachClosedOutBannerResetsOnLeaveAndReturn pins the
 // "state resets per visit" requirement: the banner is live, in-memory,
 // per-binding state — navigating the rail cursor off the closed-out row
