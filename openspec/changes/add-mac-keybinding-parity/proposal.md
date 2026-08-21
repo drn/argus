@@ -9,7 +9,7 @@ The macOS companion app has only four keyboard shortcuts today (new task, rename
 - Add a right-click context menu on task rail rows for status advance/revert.
 - Add a keyboard shortcut to the existing archive action, and a new pin action (with its own shortcut) where none existed before.
 - Add a Cmd+F shortcut that focuses the sidebar's filter field, and a visible toggle in the filter bar for showing/hiding hera-managed tasks.
-- Add Cmd+↑/↓ (task switch), Cmd+←/→ (pane focus), and Shift+↑/↓/PageUp/PageDown/End (scrollback) handling in the Terminal tab, intercepted before reaching SwiftTerm so they never leak into the PTY stream.
+- Add Cmd+↑/↓ (task switch), Cmd+←/→ (detail-tab cycling — the resolved analog to the TUI's pane focus, since the mac app has no split-pane view), and Shift+↑/↓/PageUp/PageDown/End (scrollback) handling in the Terminal tab, intercepted before reaching SwiftTerm so they never leak into the PTY stream.
 - Add a keyboard shortcut for copying the terminal's visible output.
 - Add a toolbar button in the Terminal tab that opens a "Switch Claude session" picker sheet for the current task.
 - Explicitly defer (named follow-ups, not silently dropped): a global command palette, a global task/role switcher beyond direct sidebar selection, restore-rail, copy branch/path, manual refresh and the agent-view "show links" affordance, Files-tab per-row actions, and all Hera-rail mutation keys (relocated to the separate Hera-rail-toggle change).

@@ -79,17 +79,17 @@ The system SHALL provide a keyboard shortcut that focuses the sidebar's filter f
 
 ### Requirement: Terminal view keyboard shortcuts
 
-The system SHALL intercept a fixed allowlist of Cmd- and Shift-modified key chords in the Terminal tab — Cmd+Up/Down (previous/next task), Cmd+Left/Right (pane focus), Shift+Up/Down/PageUp/PageDown/End (scrollback), and a copy-visible-output shortcut — before they reach the terminal surface, and SHALL forward every other keystroke to `POST /api/tasks/{id}/input` unchanged, identically to current behavior.
+The system SHALL intercept a fixed allowlist of Cmd- and Shift-modified key chords in the Terminal tab — Cmd+Up/Down (previous/next task), Cmd+Left/Right (detail-tab cycling — no split-pane view exists in the mac app; this is the resolved analog to the TUI's pane-focus chord), Shift+Up/Down/PageUp/PageDown/End (scrollback), and a copy-visible-output shortcut — before they reach the terminal surface, and SHALL forward every other keystroke to `POST /api/tasks/{id}/input` unchanged, identically to current behavior.
 
 #### Scenario: Switch tasks via Cmd+Up/Down without PTY leak
 
 - **WHEN** the terminal has focus and the user presses Cmd+Up or Cmd+Down
 - **THEN** the rail selection moves to the previous/next task and no bytes for that keystroke are sent to `POST /input`
 
-#### Scenario: Switch pane focus via Cmd+Left/Right without PTY leak
+#### Scenario: Cycle the detail tab via Cmd+Left/Right without PTY leak
 
 - **WHEN** the terminal has focus and the user presses Cmd+Left or Cmd+Right
-- **THEN** focus moves between panes and no bytes for that keystroke are sent to `POST /input`
+- **THEN** the active detail tab (Terminal/Diff/Files/Info) cycles to the previous/next tab and no bytes for that keystroke are sent to `POST /input`
 
 #### Scenario: Scroll via Shift chords without PTY leak
 

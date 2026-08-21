@@ -38,6 +38,8 @@ The mac app already attaches `.keyboardShortcut` directly to the button/menu com
 
 `TerminalTab.swift` already has a local `NSEvent` monitor guarding mouse-click focus-stealing. This change extends that same monitor to intercept a small, explicit allowlist of Cmd-modified chords — Cmd+↑/↓ (task switch), Cmd+←/→ (pane focus), Shift+↑/↓/PageUp/PageDown/End (scroll) — before they reach SwiftTerm. Every other keystroke, including all Ctrl chords and plain arrows, falls through untouched to `POST /input`, exactly matching today's behavior.
 
+**Resolved during implementation:** the mac app's detail pane has no split-pane view (unlike the TUI's agent view) — there is exactly one terminal surface per task. Cmd+←/→ therefore cycles the detail tab (Terminal→Diff→Files→Info, wrapping) instead, the closest structural analog to "move focus to an adjacent view without leaving the keyboard." Acceptance criteria and the delta spec's scenario wording below have been updated to reflect this.
+
 This mirrors why the TUI itself gates these exact bindings behind Cmd instead of Ctrl in agent view: Cmd-modified chords are not something a CLI running inside the terminal would ever consume, so intercepting only that allowlist carries no risk of stealing a keystroke the inner agent needs. Whether SwiftTerm's own key handling would otherwise swallow these chords before they reach a SwiftUI Command is untested; routing them through the pre-existing local monitor sidesteps the question entirely by intercepting before SwiftTerm's `keyDown` runs.
 
 **Risk:** the allowlist must stay in one place (a single Swift constant) so it can't drift from the chrome-level shortcuts declared elsewhere. See Risks below.
@@ -94,7 +96,7 @@ Low-frequency maintenance action → a new item in the existing toolbar overflow
 **Agent/Terminal view (D2, D3):**
 
 - It should move the task selection to the previous/next task via Cmd+↑/Cmd+↓ while the terminal has focus, without those keystrokes reaching `POST /input`.
-- It should move focus between panes via Cmd+←/Cmd+→ while the terminal has focus, without those keystrokes reaching `POST /input`.
+- It should cycle the active detail tab via Cmd+←/Cmd+→ while the terminal has focus, without those keystrokes reaching `POST /input`.
 - It should scroll the terminal's scrollback via Shift+↑/↓/PageUp/PageDown/End while the terminal has focus, without those keystrokes reaching `POST /input`.
 - It should copy the terminal's visible output via a shortcut.
 - It should open a "Switch Claude session" picker sheet via a toolbar button in the Terminal tab, listing that task's available sessions.
