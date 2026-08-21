@@ -39,6 +39,9 @@ final class AppState {
     /// `@State`) so an out-of-window trigger still works.
     var isPresentingNewTask = false
 
+    /// Bound to the shortcuts-help sheet's presentation (Cmd+Shift+/).
+    var isPresentingShortcutsHelp = false
+
     // MARK: - Settings mirrors (observable; persisted via Preferences)
 
     /// Whether to post a notification when a task needs input.
@@ -95,6 +98,10 @@ final class AppState {
     enum PendingConfirmation {
         case stop(ArgusTask)
         case delete(ArgusTask)
+        /// The toolbar overflow menu's "Prune stale worktrees" item — global
+        /// and cross-task (not scoped to one ``ArgusTask``), so it carries no
+        /// associated value, mirroring the TUI's own Ctrl+R caution gate.
+        case pruneCompleted
     }
     var pendingConfirmation: PendingConfirmation?
 
@@ -529,6 +536,65 @@ final class AppState {
     func delete(_ task: ArgusTask) async {
         if selectedTaskID == task.id { selectedTaskID = nil }
         await perform(task, label: "delete") { try await $0.deleteTask(id: task.id) }
+    }
+
+    /// Opens the task's worktree root in Finder — the mac equivalent of the
+    /// TUI's "open repo" action. Mirrors ``FilesTab``'s per-file "Reveal in
+    /// Finder" (`NSWorkspace.shared.selectFile`), but for the whole worktree
+    /// root rather than one file, so it uses `open(_:)` instead. A missing or
+    /// empty `worktreePath` (a task whose worktree was never created, or one
+    /// already torn down) is a silent no-op rather than opening garbage.
+    func openRepo(_ task: ArgusTask) {
+        guard let path = task.worktreePath, !path.isEmpty else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
+    /// Opens the task's pull request in the default browser — the mac
+    /// equivalent of ``DetailHeaderChips``'s `PRChip` tap handler, reachable
+    /// from a shortcut instead of a click. Fetches the task's links fresh
+    /// (mirroring ``fetchLinks(taskID:)``'s own no-cache behavior) and opens
+    /// the first PR link found. No PR for this task is a normal, expected
+    /// outcome — surfaced via the same non-blocking ``actionError`` banner
+    /// every other action failure uses, not a crash or a silent no-op.
+    func openPR(for task: ArgusTask) async {
+        let links = await fetchLinks(taskID: task.id)
+        guard let prLink = links.first(where: { $0.isPR }), let url = prLink.webURL else {
+            showActionError("No PR found for \u{201C}\(task.name)\u{201D}.")
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Moves the sidebar selection to the next task whose session needs
+    /// input (mirroring the TUI's jump-to-next-needs-input rail action). A
+    /// nil result (nothing currently needs input) is a no-op — the selection
+    /// is left untouched. Ordering follows the sidebar's own visual order
+    /// (``tasksByFolder``, project-folder then creation order) so cycling
+    /// matches what the user sees scanning the rail top to bottom.
+    func jumpToNextNeedsInput() {
+        let orderedIDs = tasksByFolder.flatMap { $0.tasks.map(\.id) }
+        guard let next = NeedsInputNavigation.next(orderedIDs: orderedIDs,
+                                                    needingInput: needsInputTaskIDs,
+                                                    current: selectedTaskID) else { return }
+        selectedTaskID = next
+    }
+
+    /// `POST /api/maintenance/prune-completed` — removes every completed
+    /// task, its worktree, and branch, and sweeps orphaned worktree
+    /// directories. Mirrors the TUI's Ctrl+R "Prune completed tasks" action,
+    /// reached here from the toolbar's overflow menu after a confirmation
+    /// dialog (``AppState/PendingConfirmation/pruneCompleted``). Same
+    /// success/failure shape as ``perform(_:label:_:)`` (refresh on success,
+    /// ``showActionError`` on failure) but not task-scoped, so it can't reuse
+    /// that helper directly.
+    func pruneCompleted() async {
+        guard let client else { return }
+        do {
+            _ = try await client.pruneCompleted()
+            await refreshOnce()
+        } catch {
+            showActionError("Failed to prune completed tasks: \(Self.describe(error))")
+        }
     }
 
     /// Dismisses the action-error toast immediately (wired to its close
