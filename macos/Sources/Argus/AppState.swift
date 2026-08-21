@@ -102,6 +102,20 @@ final class AppState {
     /// renamed. Driven by a single `.sheet(item:)` in ``ContentView``.
     var renamingTask: ArgusTask?
 
+    /// Non-nil while the Claude session picker sheet is open, carrying the
+    /// task, its available sessions (newest first), and the currently-active
+    /// session id (may be `""`). Populated up front by
+    /// ``openClaudeSessionPicker(for:)`` — never opened empty/broken on a
+    /// fetch failure — and driven by a single `.sheet(item:)` in
+    /// ``ContentView``, mirroring ``renamingTask``'s presentation mechanics.
+    struct ClaudeSessionPickerState: Identifiable, Equatable {
+        let task: ArgusTask
+        let sessions: [ClaudeSession]
+        let currentSessionID: String
+        var id: String { task.id }
+    }
+    var claudeSessionPicker: ClaudeSessionPickerState?
+
     /// A transient, non-blocking error surfaced after a failed task action
     /// (stop/restart/resume/archive/rename/fork/delete). Auto-dismisses after
     /// a few seconds; visually mirrors ``ConnectionBanner`` but is
@@ -529,6 +543,71 @@ final class AppState {
     func delete(_ task: ArgusTask) async {
         if selectedTaskID == task.id { selectedTaskID = nil }
         await perform(task, label: "delete") { try await $0.deleteTask(id: task.id) }
+    }
+
+    // MARK: - Claude session switcher
+
+    /// Best-effort client-side mirror of the daemon's own
+    /// `!IsCodexBackend && !IsPiBackend && !IsOpencodeBackend` guard
+    /// (`internal/agent/agent.go`) that gates `/claude-sessions` /
+    /// `/claude-session` — an unset, `"claude"`, or custom backend name is
+    /// treated as Claude-eligible, and only the three known non-Claude
+    /// backend names are excluded. Lets the toolbar button hide itself for
+    /// an obviously-ineligible task without a doomed round trip; the
+    /// daemon's own 400 (handled in ``openClaudeSessionPicker(for:)``) stays
+    /// the authoritative check for anything this heuristic can't see (e.g. a
+    /// custom backend *name* that happens to run a non-Claude command).
+    static func isLikelyClaudeBacked(_ task: ArgusTask) -> Bool {
+        guard let backend = task.backend?.lowercased(), !backend.isEmpty else { return true }
+        return !["codex", "pi", "opencode"].contains(backend)
+    }
+
+    /// Fetches the task's Claude sessions and opens the picker sheet on
+    /// success — the sheet is never presented empty/broken. A 400 (the
+    /// task's backend isn't Claude) or any other failure surfaces via
+    /// ``ActionErrorBanner`` instead.
+    func openClaudeSessionPicker(for task: ArgusTask) async {
+        guard let client else { return }
+        do {
+            let (sessions, currentID) = try await client.claudeSessions(taskID: task.id)
+            claudeSessionPicker = ClaudeSessionPickerState(task: task, sessions: sessions,
+                                                            currentSessionID: currentID)
+        } catch {
+            if let argusError = error as? ArgusError, argusError.isBadRequest {
+                showActionError("\"\(task.name)\" isn't a Claude-backed task — session switching isn't available.")
+            } else {
+                showActionError("Failed to load Claude sessions for \"\(task.name)\": \(Self.describe(error))")
+            }
+        }
+    }
+
+    /// Dismisses the Claude session picker sheet (its Cancel button, or after
+    /// a successful switch).
+    func dismissClaudeSessionPicker() {
+        claudeSessionPicker = nil
+    }
+
+    /// Switches the task to a different Claude session. Both the
+    /// `"switched"` and `"unchanged"` responses from
+    /// ``ArgusClient/switchClaudeSession(taskID:sessionID:)`` are successful
+    /// outcomes — either way the sheet dismisses with no further client
+    /// action: a `"switched"` response means the daemon already stopped and
+    /// restarted the task's live PTY, resuming with the new session, and the
+    /// Terminal tab's existing SSE reconnect (`TerminalStreamSession`'s
+    /// `exit {"rerendering":true}` path — the same mechanism an ordinary
+    /// resize-triggered kick-restart already relies on) picks up the fresh
+    /// session's output once the daemon's stream emits that exit. On
+    /// failure the sheet stays open (so the user can pick something else or
+    /// cancel) and the error surfaces via ``ActionErrorBanner``, matching
+    /// every other task action's failure UX.
+    func selectClaudeSession(_ session: ClaudeSession, for task: ArgusTask) async {
+        guard let client else { return }
+        do {
+            _ = try await client.switchClaudeSession(taskID: task.id, sessionID: session.id)
+            claudeSessionPicker = nil
+        } catch {
+            showActionError("Failed to switch Claude session for \"\(task.name)\": \(Self.describe(error))")
+        }
     }
 
     /// Dismisses the action-error toast immediately (wired to its close

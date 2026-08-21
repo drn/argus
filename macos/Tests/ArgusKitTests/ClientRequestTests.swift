@@ -260,6 +260,93 @@ struct ClientRequestTests {
         #expect(MockURLProtocol.lastRequest?.url?.path == "/api/maintenance/prune-completed")
     }
 
+    // MARK: - Claude session switcher (add-mac-keybinding-parity Stage 6b)
+
+    @Test("claudeSessions GETs the right path and decodes sessions + current id")
+    func claudeSessionsRequest() async throws {
+        MockURLProtocol.stubJSON(body: Data("""
+        {"sessions":[
+          {"id":"s1","title":"newest","branch":"argus/a","pr_ref":"o/r#1",
+           "mod_time":"2026-08-21T10:00:00Z","size_bytes":100},
+          {"id":"s2","title":"older","branch":"argus/b","pr_ref":"",
+           "mod_time":"2026-08-20T10:00:00Z","size_bytes":200}
+        ],"current_session_id":"s1"}
+        """.utf8))
+
+        let (sessions, currentID) = try await makeClient().claudeSessions(taskID: "t1")
+
+        #expect(MockURLProtocol.lastRequest?.httpMethod == "GET")
+        #expect(MockURLProtocol.lastRequest?.url?.path == "/api/tasks/t1/claude-sessions")
+        #expect(sessions.count == 2)
+        #expect(sessions[0].id == "s1")
+        #expect(sessions[1].branch == "argus/b")
+        #expect(currentID == "s1")
+    }
+
+    @Test("claudeSessions surfaces a 400 (non-Claude backend) as ArgusError.isBadRequest")
+    func claudeSessionsBadRequest() async throws {
+        MockURLProtocol.stubJSON(status: 400,
+                                 body: Data(#"{"error":"session listing is Claude-only"}"#.utf8))
+        let client = makeClient()
+        do {
+            _ = try await client.claudeSessions(taskID: "t1")
+            Issue.record("expected throw")
+        } catch let error as ArgusError {
+            #expect(error.isBadRequest)
+            #expect(!error.isNotFound)
+        }
+    }
+
+    @Test("claudeSessions surfaces a 404 as ArgusError.isNotFound")
+    func claudeSessionsNotFound() async throws {
+        MockURLProtocol.stubJSON(status: 404, body: Data(#"{"error":"task not found"}"#.utf8))
+        let client = makeClient()
+        do {
+            _ = try await client.claudeSessions(taskID: "nope")
+            Issue.record("expected throw")
+        } catch let error as ArgusError {
+            #expect(error.isNotFound)
+        }
+    }
+
+    @Test("switchClaudeSession POSTs the session_id body to the right path")
+    func switchClaudeSessionRequest() async throws {
+        MockURLProtocol.stubJSON(body: Data(#"{"status":"switched","pid":4242}"#.utf8))
+
+        let (status, pid) = try await makeClient().switchClaudeSession(taskID: "t1", sessionID: "s2")
+
+        #expect(MockURLProtocol.lastRequest?.httpMethod == "POST")
+        #expect(MockURLProtocol.lastRequest?.url?.path == "/api/tasks/t1/claude-session")
+        let body = try #require(MockURLProtocol.lastBody)
+        let obj = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(obj["session_id"] as? String == "s2")
+        #expect(status == "switched")
+        #expect(pid == 4242)
+    }
+
+    @Test("switchClaudeSession decodes the unchanged no-op with a nil pid")
+    func switchClaudeSessionUnchanged() async throws {
+        MockURLProtocol.stubJSON(body: Data(#"{"status":"unchanged"}"#.utf8))
+
+        let (status, pid) = try await makeClient().switchClaudeSession(taskID: "t1", sessionID: "s1")
+
+        #expect(status == "unchanged")
+        #expect(pid == nil)
+    }
+
+    @Test("switchClaudeSession surfaces a 500 as a generic ArgusError.http")
+    func switchClaudeSessionServerError() async throws {
+        MockURLProtocol.stubJSON(status: 500, body: Data(#"{"error":"failed to restart session"}"#.utf8))
+        let client = makeClient()
+        do {
+            _ = try await client.switchClaudeSession(taskID: "t1", sessionID: "s2")
+            Issue.record("expected throw")
+        } catch let error as ArgusError {
+            #expect(error.httpStatus == 500)
+            #expect(!error.isBadRequest)
+        }
+    }
+
     // MARK: - Error mapping
 
     @Test("404 maps to ArgusError.http with isNotFound")

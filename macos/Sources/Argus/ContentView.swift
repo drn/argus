@@ -65,6 +65,9 @@ struct ContentView: View {
         .sheet(item: $app.renamingTask) { task in
             RenameSheet(task: task)
         }
+        .sheet(item: $app.claudeSessionPicker) { state in
+            ClaudeSessionPickerSheet(state: state)
+        }
         .taskConfirmationDialog(app: app)
     }
 }
