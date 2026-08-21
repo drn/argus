@@ -1,4 +1,3 @@
-import Foundation
 import SwiftUI
 import ArgusKit
 
@@ -121,17 +120,13 @@ struct Sidebar: View {
         .padding(.vertical, 6)
     }
 
-    /// Applies the free-text substring filter (case-insensitive, on
-    /// ``ArgusTask/name``) and the hera-managed visibility toggle to a list
-    /// of project folders, dropping any folder left with no tasks.
+    /// Thin view-state adapter over ``ArgusKit/TaskFiltering/filteredFolders(_:filterText:showHeraManaged:heraManagedTaskIDs:)``
+    /// — the actual filter predicate is a pure ArgusKit function (unit-tested
+    /// in `TaskFilteringTests.swift`) so it can be exercised without
+    /// instantiating this view's `@State`/`@Environment`.
     private func filteredFolders(_ folders: [TaskFolder]) -> [TaskFolder] {
-        let needle = filterText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return folders.compactMap { folder in
-            let tasks = folder.tasks.filter { task in
-                (showHeraManaged || !app.heraManagedTaskIDs.contains(task.id))
-                    && (needle.isEmpty || task.name.localizedCaseInsensitiveContains(needle))
-            }
-            return tasks.isEmpty ? nil : TaskFolder(project: folder.project, tasks: tasks)
-        }
+        TaskFiltering.filteredFolders(folders, filterText: filterText,
+                                       showHeraManaged: showHeraManaged,
+                                       heraManagedTaskIDs: app.heraManagedTaskIDs)
     }
 }
