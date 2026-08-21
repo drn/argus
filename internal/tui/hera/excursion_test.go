@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/db"
+	heramodel "github.com/drn/argus/internal/hera/model"
 	"github.com/drn/argus/internal/testutil"
 )
 
@@ -11,7 +12,7 @@ import (
 // whichever roles' TaskID appears in taskIDs — a tiny variant used to drive
 // the excursion state machine's count transitions across repeated SetModel
 // calls without needing a DB-backed HeraPage.
-func twoOrchModelNeedsInput(taskIDs ...string) Model {
+func twoOrchModelNeedsInput(taskIDs ...string) heramodel.Model {
 	m := twoOrchModel()
 	set := make(map[string]bool, len(taskIDs))
 	for _, id := range taskIDs {
@@ -33,16 +34,16 @@ func twoOrchModelNeedsInput(taskIDs ...string) Model {
 // roles (which never get their own rail row — they fold into the
 // orchestrator header — but still count here).
 func TestModel_NeedsInputTotalCount(t *testing.T) {
-	m := Model{
-		Active: []OrchView{
-			{ID: 1, Name: "orch-1", Roles: []RoleView{
+	m := heramodel.Model{
+		Active: []heramodel.OrchView{
+			{ID: 1, Name: "orch-1", Roles: []heramodel.RoleView{
 				{RoleID: 11, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t11", NeedsInput: true},
 				{RoleID: 12, OrchID: 1, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "t12", NeedsInput: true},
 				{RoleID: 13, OrchID: 1, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "t13", HasStatus: true, Status: db.HeraStatusBlocked},
 				{RoleID: 14, OrchID: 1, Name: "w3", Kind: db.HeraKindWorker, Live: true, TaskID: "t14"}, // no signal
 			}},
 		},
-		Freelance: []RoleView{
+		Freelance: []heramodel.RoleView{
 			{RoleID: 21, Name: "f1", Kind: db.HeraKindFreelance, Live: true, TaskID: "t21", NeedsInput: true},
 		},
 	}
@@ -50,7 +51,7 @@ func TestModel_NeedsInputTotalCount(t *testing.T) {
 }
 
 func TestModel_NeedsInputTotalCount_ZeroOnEmptyModel(t *testing.T) {
-	testutil.Equal(t, Model{}.NeedsInputTotalCount(), 0)
+	testutil.Equal(t, heramodel.Model{}.NeedsInputTotalCount(), 0)
 }
 
 // TestRail_ExcursionSnapshot_CapturesOnFreshInterruption pins the core
@@ -341,7 +342,7 @@ func TestModel_NeedsInputRoleIDs(t *testing.T) {
 	testutil.Equal(t, ids[21], true) // orch-2's coordinator (TaskID t21)
 	testutil.Equal(t, ids[11], false)
 
-	testutil.Nil(t, Model{}.NeedsInputRoleIDs())
+	testutil.Nil(t, heramodel.Model{}.NeedsInputRoleIDs())
 }
 
 // TestRail_CurrentRef_ZeroOnArchiveExpandoRow documents a known, PRE-EXISTING
@@ -353,14 +354,14 @@ func TestModel_NeedsInputRoleIDs(t *testing.T) {
 // here so the limitation is explicit rather than silently rediscovered.
 func TestRail_CurrentRef_ZeroOnArchiveExpandoRow(t *testing.T) {
 	r := NewRail()
-	r.SetModel(Model{
-		Active: []OrchView{
-			{ID: 1, Name: "orch-1", Roles: []RoleView{
+	r.SetModel(heramodel.Model{
+		Active: []heramodel.OrchView{
+			{ID: 1, Name: "orch-1", Roles: []heramodel.RoleView{
 				{RoleID: 11, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t11"},
 			}},
 		},
-		Archived: []OrchView{
-			{ID: 2, Name: "orch-2-archived", Archived: true, Roles: []RoleView{
+		Archived: []heramodel.OrchView{
+			{ID: 2, Name: "orch-2-archived", Archived: true, Roles: []heramodel.RoleView{
 				{RoleID: 21, OrchID: 2, Name: "coord2", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t21"},
 			}},
 		},

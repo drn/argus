@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	heramodel "github.com/drn/argus/internal/hera/model"
+
 	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
@@ -953,8 +955,8 @@ func TestPanes_ForwardKeyEnterRevivesDeadPane(t *testing.T) {
 		"t-coord": {id: "t-coord", alive: true},
 		"t-wkr":   dead,
 	}))
-	var got []Selection
-	p.OnReattach = func(sel Selection) { got = append(got, sel) }
+	var got []heramodel.Selection
+	p.OnReattach = func(sel heramodel.Selection) { got = append(got, sel) }
 	p.Refresh()
 	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
 
@@ -987,7 +989,7 @@ func TestSmoke_HeraPaneEnterRevivesDeadSession(t *testing.T) {
 		"t-wkr":   deadWkr,
 	}))
 	var revived []string
-	p.OnReattach = func(sel Selection) { revived = append(revived, sel.FocusTaskID()) }
+	p.OnReattach = func(sel heramodel.Selection) { revived = append(revived, sel.FocusTaskID()) }
 	p.Refresh()
 	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
 

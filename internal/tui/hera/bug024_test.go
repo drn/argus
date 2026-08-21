@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/db"
+	heramodel "github.com/drn/argus/internal/hera/model"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/theme"
@@ -68,7 +69,7 @@ func TestOps_StepStatus_AdvanceToDoneKeepsReadyToClose(t *testing.T) {
 // End-to-end through the rail: stepping the SELECTED worker out of review must
 // (a) keep the cursor anchored on that worker (no drift to the next sibling)
 // and (b) visibly change its glyph. Mirrors the heraRefresh path (mutate →
-// BuildModel → SetModel).
+// heramodel.BuildModel → SetModel).
 func TestRail_StatusStepAnchorsCursorAndUpdatesGlyph(t *testing.T) {
 	d := memDB(t)
 	o := seedOrch(t, d, "plan-view-dogfood")
@@ -84,7 +85,7 @@ func TestRail_StatusStepAnchorsCursorAndUpdatesGlyph(t *testing.T) {
 
 	r := NewRail()
 	rebuild := func() {
-		m, err := BuildModel(d, nil, nil, nil, nil)
+		m, err := heramodel.BuildModel(d, nil, nil, nil, nil)
 		testutil.NoError(t, err)
 		r.SetModel(m)
 	}
@@ -120,12 +121,12 @@ func TestRail_StatusStepAnchorsCursorAndUpdatesGlyph(t *testing.T) {
 	testutil.Equal(t, r.model.SubtreeAgentCount(o), 2)
 }
 
-// roleViewByID builds the model and returns the RoleView for roleID under orch.
-func roleViewByID(t *testing.T, d *db.DB, orchID, roleID int64) *RoleView {
+// roleViewByID builds the model and returns the heramodel.RoleView for roleID under orch.
+func roleViewByID(t *testing.T, d *db.DB, orchID, roleID int64) *heramodel.RoleView {
 	t.Helper()
-	m, err := BuildModel(d, nil, nil, nil, nil)
+	m, err := heramodel.BuildModel(d, nil, nil, nil, nil)
 	testutil.NoError(t, err)
-	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
+	for _, sec := range [][]heramodel.OrchView{m.Pinned, m.Active, m.Archived} {
 		for i := range sec {
 			if sec[i].ID != orchID {
 				continue

@@ -3,6 +3,8 @@ package hera
 import (
 	"fmt"
 
+	heramodel "github.com/drn/argus/internal/hera/model"
+
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -59,7 +61,7 @@ type MutateStore interface {
 // M1 methods on *db.DB.
 //
 // Multi-binding isolation: every op acts on a specific role id or orchestrator
-// id taken from the SELECTED Selection — never on a bare task id — so deleting
+// id taken from the SELECTED heramodel.Selection — never on a bare task id — so deleting
 // role R in orchestrator A never touches the same task's role in orchestrator B
 // (they are distinct role rows).
 type Ops struct {
@@ -98,7 +100,7 @@ func ladderIndex(s db.HeraRoleStatusValue) int {
 // or on any error – callers that need to react ONLY to the hide direction
 // (e.g. heraHide's session-stop, add-hera-accept-lifecycle) read this return
 // value instead of re-deriving it with a second read.
-func (o *Ops) ArchiveToggle(sel Selection) (archived bool, err error) {
+func (o *Ops) ArchiveToggle(sel heramodel.Selection) (archived bool, err error) {
 	if r := sel.Role; r != nil {
 		cur, err := o.store.HeraRole(r.RoleID)
 		if err != nil {
@@ -137,7 +139,7 @@ func (o *Ops) ArchiveToggle(sel Selection) (archived bool, err error) {
 // PinToggle pins or unpins the selected role (or orchestrator). Direction is
 // read from the current row state. Pin and archive are mutually exclusive — the
 // M1 Pin verbs clear archived_at, so pinning an archived row unarchives it.
-func (o *Ops) PinToggle(sel Selection) error {
+func (o *Ops) PinToggle(sel heramodel.Selection) error {
 	if r := sel.Role; r != nil {
 		cur, err := o.store.HeraRole(r.RoleID)
 		if err != nil {
@@ -169,7 +171,7 @@ func (o *Ops) PinToggle(sel Selection) error {
 
 // Rename renames the selected role (or orchestrator) to newName. A name
 // conflict surfaces db.ErrHeraNameConflict for the caller to show.
-func (o *Ops) Rename(sel Selection, newName string) error {
+func (o *Ops) Rename(sel heramodel.Selection, newName string) error {
 	if r := sel.Role; r != nil {
 		uxlog.Log("[hera-view] rename role %d (%s) → %q orch=%d", r.RoleID, r.Name, newName, r.OrchID)
 		return o.store.RenameHeraRole(r.RoleID, newName)
@@ -191,7 +193,7 @@ func (o *Ops) Rename(sel Selection, newName string) error {
 // ready_to_close (BUG-050 parity with hera_status("done")); that roll is
 // soft-fail so the status update always lands, and it is GUARDED on Kind ==
 // worker so stepping a coordinator to `done` never rolls a task.
-func (o *Ops) StepStatus(sel Selection, dir int) error {
+func (o *Ops) StepStatus(sel heramodel.Selection, dir int) error {
 	r := sel.StatusRole()
 	if r == nil {
 		return errNoTarget
@@ -267,7 +269,7 @@ func kanbanIndex(s db.HeraKanbanStatus) int {
 // orchestrator HEADER selection (no role selected) that is a true root (no
 // canonical parent). A role selection, a nested orchestrator header, or an
 // empty selection resolve to nil and are a silent no-op (errNoTarget).
-func (o *Ops) KanbanStep(sel Selection, dir int) error {
+func (o *Ops) KanbanStep(sel heramodel.Selection, dir int) error {
 	ov := sel.KanbanTarget()
 	if ov == nil {
 		return errNoTarget
@@ -290,7 +292,7 @@ func (o *Ops) KanbanStep(sel Selection, dir int) error {
 // App owns the argus-task + worktree side (stop session, reclaim worktree, archive
 // task when sole-bound) BEFORE calling this. The binding-end is soft-fail so a
 // transient error still lands the nuke mark.
-func (o *Ops) NukeRole(r *RoleView) error {
+func (o *Ops) NukeRole(r *heramodel.RoleView) error {
 	if r == nil {
 		return errNoTarget
 	}

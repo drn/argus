@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/db"
+	heramodel "github.com/drn/argus/internal/hera/model"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/planview"
@@ -23,14 +24,14 @@ func seedPlannedRole(t *testing.T, d *db.DB, orchID int64, name string) *db.Hera
 	return r
 }
 
-// orchViewByName builds the model and returns the OrchView with the given name
-// (across all sections), or nil. BuildModel populates OrchView.Blocks and the
-// RoleView.Planned discriminator (Stage 2).
-func orchViewByName(t *testing.T, d *db.DB, name string) *OrchView {
+// orchViewByName builds the model and returns the heramodel.OrchView with the given name
+// (across all sections), or nil. heramodel.BuildModel populates heramodel.OrchView.Blocks and the
+// heramodel.RoleView.Planned discriminator (Stage 2).
+func orchViewByName(t *testing.T, d *db.DB, name string) *heramodel.OrchView {
 	t.Helper()
-	m, err := BuildModel(d, nil, nil, nil, nil)
+	m, err := heramodel.BuildModel(d, nil, nil, nil, nil)
 	testutil.NoError(t, err)
-	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
+	for _, sec := range [][]heramodel.OrchView{m.Pinned, m.Active, m.Archived} {
 		for i := range sec {
 			if sec[i].Name == name {
 				return &sec[i]
@@ -50,7 +51,7 @@ func findNode(nodes []planview.Node, id string) (planview.Node, bool) {
 	return planview.Node{}, false
 }
 
-// --- RoleView.Planned discriminator (hera-view delta) ---
+// --- heramodel.RoleView.Planned discriminator (hera-view delta) ---
 
 // TestRoleViewPlanned_NeverBoundIsPlanned mirrors "it should mark a never-bound
 // worker role as planned and a bound (live or ended) role as not planned".
@@ -64,7 +65,7 @@ func TestRoleViewPlanned_NeverBoundIsPlanned(t *testing.T) {
 	ov := orchViewByName(t, d, "orch")
 	testutil.Equal(t, ov != nil, true)
 
-	byID := map[int64]RoleView{}
+	byID := map[int64]heramodel.RoleView{}
 	for _, r := range ov.Roles {
 		byID[r.RoleID] = r
 	}
@@ -98,10 +99,10 @@ func TestRoleViewPlanned_EndedBindingIsNotPlanned(t *testing.T) {
 	}
 }
 
-// --- OrchView.Blocks population (hera-view delta D8) ---
+// --- heramodel.OrchView.Blocks population (hera-view delta D8) ---
 
-// TestBuildModel_PopulatesOrchBlocks: BuildModel attaches the orchestrator's
-// blocking edges to OrchView.Blocks (one bulk read).
+// TestBuildModel_PopulatesOrchBlocks: heramodel.BuildModel attaches the orchestrator's
+// blocking edges to heramodel.OrchView.Blocks (one bulk read).
 func TestBuildModel_PopulatesOrchBlocks(t *testing.T) {
 	d := memDB(t)
 	orch := seedOrch(t, d, "orch")
@@ -237,12 +238,12 @@ func TestHeraPlanNodes_NilOrchEmpty(t *testing.T) {
 // --- BUG-007: plan node icons 1:1 with the rail's statusIcon ---
 
 // projectWorkerIcon builds a one-coordinator/one-worker orchestrator from the
-// given worker RoleView, projects it, and returns the worker node's resolved Icon
+// given worker heramodel.RoleView, projects it, and returns the worker node's resolved Icon
 // (nil for planned/failed, which use the State overlay).
-func projectWorkerIcon(t *testing.T, wkr RoleView) *planview.NodeIcon {
+func projectWorkerIcon(t *testing.T, wkr heramodel.RoleView) *planview.NodeIcon {
 	t.Helper()
 	wkr.Kind = db.HeraKindWorker
-	ov := &OrchView{ID: 1, Name: "orch", Roles: []RoleView{
+	ov := &heramodel.OrchView{ID: 1, Name: "orch", Roles: []heramodel.RoleView{
 		{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-coord"},
 		wkr,
 	}}
@@ -264,14 +265,14 @@ func projectWorkerIcon(t *testing.T, wkr RoleView) *planview.NodeIcon {
 func TestPlanNodeIcon_LiveMatchesRailStatusIcon(t *testing.T) {
 	cases := []struct {
 		name string
-		role RoleView
+		role heramodel.RoleView
 	}{
-		{"done", RoleView{RoleID: 2, Name: "w-done", Live: true, TaskID: "t1", BridgeTaskID: "t1", HasStatus: true, Status: db.HeraStatusDone, TaskStatus: model.StatusInReview.String()}},
-		{"working/active", RoleView{RoleID: 2, Name: "w-work", Live: true, TaskID: "t1", BridgeTaskID: "t1", TaskStatus: model.StatusInProgress.String()}},
-		{"idle", RoleView{RoleID: 2, Name: "w-idle", Live: true, TaskID: "t1", BridgeTaskID: "t1", HasStatus: true, Status: db.HeraStatusIdle}},
-		{"in-review/ready", RoleView{RoleID: 2, Name: "w-rev", Live: true, TaskID: "t1", BridgeTaskID: "t1", ReadyToClose: true}},
-		{"needs-input", RoleView{RoleID: 2, Name: "w-ni", Live: true, TaskID: "t1", BridgeTaskID: "t1", NeedsInput: true}},
-		{"live-quiet", RoleView{RoleID: 2, Name: "w-live", Live: true, TaskID: "t1", BridgeTaskID: "t1"}},
+		{"done", heramodel.RoleView{RoleID: 2, Name: "w-done", Live: true, TaskID: "t1", BridgeTaskID: "t1", HasStatus: true, Status: db.HeraStatusDone, TaskStatus: model.StatusInReview.String()}},
+		{"working/active", heramodel.RoleView{RoleID: 2, Name: "w-work", Live: true, TaskID: "t1", BridgeTaskID: "t1", TaskStatus: model.StatusInProgress.String()}},
+		{"idle", heramodel.RoleView{RoleID: 2, Name: "w-idle", Live: true, TaskID: "t1", BridgeTaskID: "t1", HasStatus: true, Status: db.HeraStatusIdle}},
+		{"in-review/ready", heramodel.RoleView{RoleID: 2, Name: "w-rev", Live: true, TaskID: "t1", BridgeTaskID: "t1", ReadyToClose: true}},
+		{"needs-input", heramodel.RoleView{RoleID: 2, Name: "w-ni", Live: true, TaskID: "t1", BridgeTaskID: "t1", NeedsInput: true}},
+		{"live-quiet", heramodel.RoleView{RoleID: 2, Name: "w-live", Live: true, TaskID: "t1", BridgeTaskID: "t1"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -315,7 +316,7 @@ func TestPlanNodeIcon_NeedsInputNotAnimated(t *testing.T) {
 	t.Run("own signal (blocked + in_progress)", func(t *testing.T) {
 		// A worker blocked on a prompt while its task is still in_progress: active
 		// AND needs-input. The rail shows "?"; the plan node must too.
-		role := RoleView{
+		role := heramodel.RoleView{
 			RoleID: 2, Name: "2b-prompter", Kind: db.HeraKindWorker,
 			Live: true, TaskID: "t1", BridgeTaskID: "t1",
 			TaskStatus: model.StatusInProgress.String(), SessionRunning: true,
@@ -350,7 +351,7 @@ func TestPlanNodeIcon_BridgingSubCoordUnaffectedByDescendantRollup(t *testing.T)
 	// (active) but not itself blocked.
 	r := orchView(1, "R", "tr", wk("w", "tc"))
 	c := orchView(2, "C", "tc", wk("wc", "twc"))
-	m := Model{Active: []OrchView{r, c}}
+	m := heramodel.Model{Active: []heramodel.OrchView{r, c}}
 	roleByName(t, &m, 2, "wc").NeedsInput = true
 	m.RollupNeedsInput()
 
@@ -374,7 +375,7 @@ func TestPlanNodeIcon_BridgingSubCoordUnaffectedByDescendantRollup(t *testing.T)
 // flagged Animated so the plan view renders the live spinner frame (1:1 with the
 // rail's animated row), not a frozen glyph.
 func TestPlanNodeIcon_WorkingIsAnimated(t *testing.T) {
-	icon := projectWorkerIcon(t, RoleView{RoleID: 2, Name: "w", Live: true, SessionRunning: true, TaskID: "t1", BridgeTaskID: "t1", TaskStatus: model.StatusInProgress.String()})
+	icon := projectWorkerIcon(t, heramodel.RoleView{RoleID: 2, Name: "w", Live: true, SessionRunning: true, TaskID: "t1", BridgeTaskID: "t1", TaskStatus: model.StatusInProgress.String()})
 	testutil.Equal(t, icon != nil, true)
 	testutil.Equal(t, icon.Animated, true)
 }
@@ -383,10 +384,10 @@ func TestPlanNodeIcon_WorkingIsAnimated(t *testing.T) {
 // states the rail has no concept of leave Icon nil → the widget renders the State
 // overlay (planned ○ / failed ✕).
 func TestPlanNodeIcon_PlannedAndFailedUseStateOverlay(t *testing.T) {
-	planned := projectWorkerIcon(t, RoleView{RoleID: 2, Name: "w-planned", Planned: true})
+	planned := projectWorkerIcon(t, heramodel.RoleView{RoleID: 2, Name: "w-planned", Planned: true})
 	testutil.Nil(t, planned)
 
-	failed := projectWorkerIcon(t, RoleView{RoleID: 2, Name: "w-failed", Live: true, TaskID: "t1", BridgeTaskID: "t1", TaskStatus: model.StatusInReview.String(), TaskResult: `{"failed":true}`})
+	failed := projectWorkerIcon(t, heramodel.RoleView{RoleID: 2, Name: "w-failed", Live: true, TaskID: "t1", BridgeTaskID: "t1", TaskStatus: model.StatusInReview.String(), TaskResult: `{"failed":true}`})
 	testutil.Nil(t, failed)
 }
 
@@ -537,7 +538,7 @@ func TestRefresh_StatusStepReprojectsPlanNode(t *testing.T) {
 // --- Cancelled planned node rendering (make-hera-plan-living B3) ---
 
 // TestRoleViewCancelled_SetFromCancelledAt: a role whose CancelledAt is set
-// projects Cancelled=true in the RoleView.
+// projects Cancelled=true in the heramodel.RoleView.
 func TestRoleViewCancelled_SetFromCancelledAt(t *testing.T) {
 	d := memDB(t)
 	orch := seedOrch(t, d, "orch")
@@ -596,7 +597,7 @@ func TestHeraPlanNodes_CancelledWinsOverPlanned(t *testing.T) {
 	ov := orchViewByName(t, d, "orch")
 	testutil.Equal(t, ov != nil, true)
 
-	// Confirm the RoleView carries Planned=true AND Cancelled=true (double flag).
+	// Confirm the heramodel.RoleView carries Planned=true AND Cancelled=true (double flag).
 	for _, rv := range ov.Roles {
 		if rv.RoleID == r.ID {
 			testutil.Equal(t, rv.Planned, true)
@@ -614,19 +615,19 @@ func TestHeraPlanNodes_CancelledWinsOverPlanned(t *testing.T) {
 // TestPlanNodeIcon_CancelledUsesStateOverlay: a cancelled node leaves Icon nil
 // so the widget renders the State overlay (grey ✕) rather than an Icon glyph.
 func TestPlanNodeIcon_CancelledUsesStateOverlay(t *testing.T) {
-	icon := projectWorkerIcon(t, RoleView{RoleID: 2, Name: "w-cancelled", Cancelled: true})
+	icon := projectWorkerIcon(t, heramodel.RoleView{RoleID: 2, Name: "w-cancelled", Cancelled: true})
 	testutil.Nil(t, icon)
 }
 
 // TestHeraPlanNodes_TierFieldsRide pins that the pure projection copies the
 // diligence-tiering readout (Archetype + the App-stamped AppliedModel/Effort and
-// ProfileWarning) from the RoleView onto the planview.Node (add-diligence-profiles
-// D-VIEW). Built from a hand-made OrchView so the test stays pure (no DB).
+// ProfileWarning) from the heramodel.RoleView onto the planview.Node (add-diligence-profiles
+// D-VIEW). Built from a hand-made heramodel.OrchView so the test stays pure (no DB).
 func TestHeraPlanNodes_TierFieldsRide(t *testing.T) {
-	ov := &OrchView{
+	ov := &heramodel.OrchView{
 		ID:   1,
 		Name: "orch",
-		Roles: []RoleView{
+		Roles: []heramodel.RoleView{
 			{
 				RoleID:         10,
 				Name:           "1a-build",
@@ -665,17 +666,17 @@ func TestHeraPlanNodes_TierFieldsRide(t *testing.T) {
 }
 
 // TestModelAnnotateRoles_StampsEverySection pins that Model.AnnotateRoles applies
-// the resolver to every RoleView across all sections (pinned/active/archived +
+// the resolver to every heramodel.RoleView across all sections (pinned/active/archived +
 // freelance) in place — the seam HeraPage.doRefresh uses to stamp tiering.
 func TestModelAnnotateRoles_StampsEverySection(t *testing.T) {
-	m := Model{
-		Pinned:    []OrchView{{Roles: []RoleView{{Name: "p"}}}},
-		Active:    []OrchView{{Roles: []RoleView{{Name: "a1"}, {Name: "a2"}}}},
-		Archived:  []OrchView{{Roles: []RoleView{{Name: "z"}}}},
-		Freelance: []RoleView{{Name: "f"}},
+	m := heramodel.Model{
+		Pinned:    []heramodel.OrchView{{Roles: []heramodel.RoleView{{Name: "p"}}}},
+		Active:    []heramodel.OrchView{{Roles: []heramodel.RoleView{{Name: "a1"}, {Name: "a2"}}}},
+		Archived:  []heramodel.OrchView{{Roles: []heramodel.RoleView{{Name: "z"}}}},
+		Freelance: []heramodel.RoleView{{Name: "f"}},
 	}
 	count := 0
-	m.AnnotateRoles(func(r *RoleView) {
+	m.AnnotateRoles(func(r *heramodel.RoleView) {
 		count++
 		r.AppliedModel = "stamped"
 	})

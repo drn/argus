@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/db"
+	heramodel "github.com/drn/argus/internal/hera/model"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -21,7 +22,7 @@ func TestBuildModel_SustainedActiveSuppressesContentNeedsInput(t *testing.T) {
 	flagged := map[string]bool{"t-wkr": true}
 
 	// Without SustainedActive, the flag surfaces as before (no regression).
-	m, err := BuildModel(d, flagged, nil, nil, nil)
+	m, err := heramodel.BuildModel(d, flagged, nil, nil, nil)
 	testutil.NoError(t, err)
 	wkr := roleByName(t, &m, orch, "wkr")
 	testutil.Equal(t, wkr.NeedsInput, true)
@@ -31,7 +32,7 @@ func TestBuildModel_SustainedActiveSuppressesContentNeedsInput(t *testing.T) {
 	// With SustainedActive on the same task, "(?)" is suppressed even though the
 	// content-scan flag is still set.
 	sustained := map[string]bool{"t-wkr": true}
-	m2, err := BuildModel(d, flagged, nil, nil, sustained)
+	m2, err := heramodel.BuildModel(d, flagged, nil, nil, sustained)
 	testutil.NoError(t, err)
 	wkr2 := roleByName(t, &m2, orch, "wkr")
 	testutil.Equal(t, wkr2.NeedsInput, true) // raw signal still recorded
@@ -51,7 +52,7 @@ func TestBuildModel_SustainedActiveSuppressesBlockedRoleStatus(t *testing.T) {
 	testutil.NoError(t, d.UpsertHeraRoleStatus(wkr.ID, db.HeraStatusBlocked))
 
 	// Without SustainedActive, a self-reported blocked status surfaces "(?)".
-	m, err := BuildModel(d, nil, nil, nil, nil)
+	m, err := heramodel.BuildModel(d, nil, nil, nil, nil)
 	testutil.NoError(t, err)
 	rv := roleByName(t, &m, orch, "wkr")
 	testutil.Equal(t, rv.HasStatus, true)
@@ -60,7 +61,7 @@ func TestBuildModel_SustainedActiveSuppressesBlockedRoleStatus(t *testing.T) {
 
 	// SustainedActive on the same task suppresses it.
 	sustained := map[string]bool{"t-wkr": true}
-	m2, err := BuildModel(d, nil, nil, nil, sustained)
+	m2, err := heramodel.BuildModel(d, nil, nil, nil, sustained)
 	testutil.NoError(t, err)
 	rv2 := roleByName(t, &m2, orch, "wkr")
 	testutil.Equal(t, rv2.Status, db.HeraStatusBlocked) // raw ladder value unchanged
@@ -102,7 +103,7 @@ func TestBuildModel_SustainedActiveSuppressesAcrossDualBoundHats(t *testing.T) {
 	testutil.NoError(t, d.SetStatus(sharedTask, model.StatusInReview))
 
 	// Without SustainedActive: the stale blocked worker hat surfaces "(?)".
-	m, err := BuildModel(d, nil, nil, nil, nil)
+	m, err := heramodel.BuildModel(d, nil, nil, nil, nil)
 	testutil.NoError(t, err)
 	workerRV := roleByName(t, &m, parentOrch, "contribution-classifier")
 	testutil.Equal(t, workerRV.ShowsNeedsInput(), true)
@@ -110,7 +111,7 @@ func TestBuildModel_SustainedActiveSuppressesAcrossDualBoundHats(t *testing.T) {
 	// With the shared task SustainedActive: BOTH hats suppress "(?)" — the
 	// worker hat's stale blocked status included — with no per-hat logic.
 	sustained := map[string]bool{sharedTask: true}
-	m2, err := BuildModel(d, nil, nil, nil, sustained)
+	m2, err := heramodel.BuildModel(d, nil, nil, nil, sustained)
 	testutil.NoError(t, err)
 	workerRV2 := roleByName(t, &m2, parentOrch, "contribution-classifier")
 	coordRV2 := roleByName(t, &m2, childOrch, "coord")
@@ -134,7 +135,7 @@ func TestBuildModel_SustainedActiveDoesNotMaskUnrelatedIdleBlocked(t *testing.T)
 
 	// A DIFFERENT task ("t-other") is sustained-active; "t-blocked" is not.
 	sustained := map[string]bool{"t-other": true}
-	m, err := BuildModel(d, nil, nil, nil, sustained)
+	m, err := heramodel.BuildModel(d, nil, nil, nil, sustained)
 	testutil.NoError(t, err)
 	testutil.Equal(t, roleByName(t, &m, orch, "blocked-wkr").ShowsNeedsInput(), true)
 	testutil.Equal(t, roleByName(t, &m, orch, "other-wkr").ShowsNeedsInput(), false)

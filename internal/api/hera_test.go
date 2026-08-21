@@ -372,6 +372,164 @@ func getHeraRaw(t *testing.T, srv *Server) string {
 	return w.Body.String()
 }
 
+// TestHandleHera_TopLevelOrchestratorHasNoBridgeParent pins the
+// add-mac-hera-rail-toggle rest-api delta: an orchestrator with no worker role
+// bridging into it from another orchestrator carries null bridge_parent_orch_id
+// and bridge_parent_role_id.
+func TestHandleHera_TopLevelOrchestratorHasNoBridgeParent(t *testing.T) {
+	srv, d := testServer(t)
+	_, err := d.CreateHeraOrchestrator("solo", "")
+	testutil.NoError(t, err)
+
+	resp := getHera(t, srv)
+	testutil.Equal(t, len(resp.Orchestrators), 1)
+	oj := resp.Orchestrators[0]
+	testutil.Nil(t, oj.BridgeParentOrchID)
+	testutil.Nil(t, oj.BridgeParentRoleID)
+}
+
+// TestHandleHera_NestedOrchestratorSurfacesBridgeParent pins the worker-bridge
+// nesting shape: a worker role in the PARENT orchestrator and the CHILD
+// orchestrator's coordinator role share the same bound task, so the child
+// nests under the parent's worker role. bridge_parent_orch_id/role_id must
+// identify that parent orchestrator and role.
+func TestHandleHera_NestedOrchestratorSurfacesBridgeParent(t *testing.T) {
+	srv, d := testServer(t)
+
+	parent, err := d.CreateHeraOrchestrator("parent", "")
+	testutil.NoError(t, err)
+	child, err := d.CreateHeraOrchestrator("child", "")
+	testutil.NoError(t, err)
+
+	bridgeWorker, err := d.CreateHeraRole(db.CreateHeraRoleInput{
+		OrchestratorID: parent.ID, Name: "bridge-worker", Kind: db.HeraKindWorker, ArgusProject: "p",
+	})
+	testutil.NoError(t, err)
+	childCoord, err := d.CreateHeraRole(db.CreateHeraRoleInput{
+		OrchestratorID: child.ID, Name: "coord", Kind: db.HeraKindCoordinator, ArgusProject: "p",
+	})
+	testutil.NoError(t, err)
+
+	const sharedTask = "bridge-task"
+	testutil.NoError(t, d.Add(&model.Task{ID: sharedTask, Name: sharedTask, Status: model.StatusInProgress}))
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: bridgeWorker.ID, ArgusTaskID: sharedTask, WorktreePath: "/wt/a"})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: childCoord.ID, ArgusTaskID: sharedTask, WorktreePath: "/wt/b"})
+	testutil.NoError(t, err)
+
+	resp := getHera(t, srv)
+	var parentJSON, childJSON *heraOrchJSON
+	for i := range resp.Orchestrators {
+		switch resp.Orchestrators[i].Name {
+		case "parent":
+			parentJSON = &resp.Orchestrators[i]
+		case "child":
+			childJSON = &resp.Orchestrators[i]
+		}
+	}
+	testutil.NotNil(t, parentJSON)
+	testutil.NotNil(t, childJSON)
+
+	testutil.Nil(t, parentJSON.BridgeParentOrchID)
+	testutil.NotNil(t, childJSON.BridgeParentOrchID)
+	testutil.NotNil(t, childJSON.BridgeParentRoleID)
+	testutil.Equal(t, *childJSON.BridgeParentOrchID, parent.ID)
+	testutil.Equal(t, *childJSON.BridgeParentRoleID, bridgeWorker.ID)
+}
+
+// TestHandleHera_RoleNeedsInputMirrorsRunnerSignal pins that a role's
+// needs_input field mirrors the same daemon-authoritative idle-detection
+// signal (Server.runner.NeedsInputIDs) that backs GET /api/tasks and the SSE
+// events stream — set directly on the runner here rather than driving a real
+// PTY session.
+func TestHandleHera_RoleNeedsInputMirrorsRunnerSignal(t *testing.T) {
+	srv, d := testServer(t)
+	orch, err := d.CreateHeraOrchestrator("orch", "")
+	testutil.NoError(t, err)
+	role, _, err := d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID, Name: "worker-1", Kind: db.HeraKindWorker, ArgusProject: "p",
+	}, "blocked-task", "/tmp/wt")
+	testutil.NoError(t, err)
+	other, _, err := d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID, Name: "worker-2", Kind: db.HeraKindWorker, ArgusProject: "p",
+	}, "fine-task", "/tmp/wt2")
+	testutil.NoError(t, err)
+	_ = role
+	_ = other
+
+	srv.runner.SetNeedsInputIDs([]string{"blocked-task"})
+
+	resp := getHera(t, srv)
+	testutil.Equal(t, len(resp.Orchestrators), 1)
+	var blocked, fine *heraRoleJSON
+	for i := range resp.Orchestrators[0].Roles {
+		switch resp.Orchestrators[0].Roles[i].Name {
+		case "worker-1":
+			blocked = &resp.Orchestrators[0].Roles[i]
+		case "worker-2":
+			fine = &resp.Orchestrators[0].Roles[i]
+		}
+	}
+	testutil.NotNil(t, blocked)
+	testutil.NotNil(t, fine)
+	testutil.Equal(t, blocked.NeedsInput, true)
+	testutil.Equal(t, fine.NeedsInput, false)
+}
+
+// TestHandleHera_SubtreeNeedsInputRollsUpAcrossBridge pins the orchestrator
+// rollup: a leaf worker needing input in a NESTED sub-orchestrator (reached
+// via a worker→coordinator bridge) makes both the child's own
+// subtree_needs_input AND the parent's roll up to true.
+func TestHandleHera_SubtreeNeedsInputRollsUpAcrossBridge(t *testing.T) {
+	srv, d := testServer(t)
+
+	parent, err := d.CreateHeraOrchestrator("parent", "")
+	testutil.NoError(t, err)
+	child, err := d.CreateHeraOrchestrator("child", "")
+	testutil.NoError(t, err)
+
+	bridgeWorker, err := d.CreateHeraRole(db.CreateHeraRoleInput{
+		OrchestratorID: parent.ID, Name: "bridge-worker", Kind: db.HeraKindWorker, ArgusProject: "p",
+	})
+	testutil.NoError(t, err)
+	childCoord, err := d.CreateHeraRole(db.CreateHeraRoleInput{
+		OrchestratorID: child.ID, Name: "coord", Kind: db.HeraKindCoordinator, ArgusProject: "p",
+	})
+	testutil.NoError(t, err)
+	childWorker, err := d.CreateHeraRole(db.CreateHeraRoleInput{
+		OrchestratorID: child.ID, Name: "leaf", Kind: db.HeraKindWorker, ArgusProject: "p",
+	})
+	testutil.NoError(t, err)
+
+	const bridgeTask = "bridge-task"
+	const leafTask = "leaf-task"
+	testutil.NoError(t, d.Add(&model.Task{ID: bridgeTask, Name: bridgeTask, Status: model.StatusInProgress}))
+	testutil.NoError(t, d.Add(&model.Task{ID: leafTask, Name: leafTask, Status: model.StatusInProgress}))
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: bridgeWorker.ID, ArgusTaskID: bridgeTask, WorktreePath: "/wt/a"})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: childCoord.ID, ArgusTaskID: bridgeTask, WorktreePath: "/wt/b"})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: childWorker.ID, ArgusTaskID: leafTask, WorktreePath: "/wt/c"})
+	testutil.NoError(t, err)
+
+	srv.runner.SetNeedsInputIDs([]string{leafTask})
+
+	resp := getHera(t, srv)
+	var parentJSON, childJSON *heraOrchJSON
+	for i := range resp.Orchestrators {
+		switch resp.Orchestrators[i].Name {
+		case "parent":
+			parentJSON = &resp.Orchestrators[i]
+		case "child":
+			childJSON = &resp.Orchestrators[i]
+		}
+	}
+	testutil.NotNil(t, parentJSON)
+	testutil.NotNil(t, childJSON)
+	testutil.Equal(t, childJSON.SubtreeNeedsInput, true)
+	testutil.Equal(t, parentJSON.SubtreeNeedsInput, true)
+}
+
 // TestHandleHera_RequiresAuth pins that /api/hera sits behind the global auth
 // middleware (it is not in the unauthenticated skip-paths list). Tests
 // elsewhere drive srv.routes() directly (no auth), so wrap the mux in

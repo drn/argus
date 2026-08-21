@@ -1,4 +1,12 @@
-package hera
+// Package model is the tview-free hera orchestration data model: the
+// RoleView/OrchView/Model read-only projection and BuildModel, the pure
+// database-to-projection read shared by the native TUI Hera view
+// (internal/tui/hera) and the daemon's REST API (internal/api), so nesting
+// and needs-input rollup are computed once, not reimplemented per consumer.
+// It imports only errors/fmt/sort/strconv/time, internal/db, internal/model,
+// and internal/uxlog — deliberately no tview/tcell — so importing it never
+// pulls terminal-UI dependencies into the daemon's REST API binary.
+package model
 
 import (
 	"errors"
@@ -735,6 +743,42 @@ func (m Model) CanonicalParents() map[int64]CanonParent {
 		}
 	}
 	return out
+}
+
+// BridgeParentOf reports childOrchID's canonical bridge parent orchestrator
+// and the specific parent-side ROLE that supplies the bridge, or ok=false when
+// childOrchID is top-level (absent from CanonicalParents) or its parent can't
+// be resolved. Wraps CanonicalParents — the single source of nesting truth the
+// rail also renders from — with the role id a REST consumer needs to identify
+// the bridge: the parent's own coordinator role for a coordinator-spawned
+// sub-team (one coordinator agent runs both orchestrators, so the parent's
+// coordinator role IS the bridge), or the parent's specific bridging WORKER
+// role for a worker-bridge nesting. Added for the daemon's REST API
+// (bridge_parent_orch_id/bridge_parent_role_id) — CanonicalParents itself
+// carries no role id, only the TUI rail's fold-independent parent orchestrator.
+func (m Model) BridgeParentOf(childOrchID int64) (parentOrchID int64, parentRoleID int64, ok bool) {
+	cp, found := m.CanonicalParents()[childOrchID]
+	if !found {
+		return 0, 0, false
+	}
+	parent := m.OrchByID(cp.OrchID)
+	if parent == nil {
+		return 0, 0, false
+	}
+	if cp.CoordSpawn {
+		if coord := parent.CoordRole(); coord != nil {
+			return parent.ID, coord.RoleID, true
+		}
+		return 0, 0, false
+	}
+	child := m.OrchByID(childOrchID)
+	if child == nil {
+		return 0, 0, false
+	}
+	if role := parent.BridgingRoleFor(child.CoordBridgeTaskID()); role != nil {
+		return parent.ID, role.RoleID, true
+	}
+	return 0, 0, false
 }
 
 // BridgingRoleFor returns the non-coordinator role in o.Roles whose

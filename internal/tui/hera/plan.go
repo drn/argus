@@ -3,6 +3,8 @@ package hera
 import (
 	"fmt"
 
+	heramodel "github.com/drn/argus/internal/hera/model"
+
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/planview"
@@ -16,8 +18,8 @@ import (
 // retired heraTreeNodes (which projected the role hierarchy); this projects the
 // order-of-ops graph the coordinator authored.
 //
-// It is a pure function over the already-built OrchView (the rail's snapshot,
-// with OrchView.Blocks populated by BuildModel) — no DB read, no I/O — so it is
+// It is a pure function over the already-built heramodel.OrchView (the rail's snapshot,
+// with heramodel.OrchView.Blocks populated by heramodel.BuildModel) — no DB read, no I/O — so it is
 // safe on the tview thread and trivially testable. A live node carries its
 // bound task's status/result (the colour source); a planned node carries
 // State=StatePlanned. The projection ALWAYS surfaces every live worker role as a
@@ -29,10 +31,10 @@ import (
 // never drawn as a flat pseudo-DAG stage (BUG-013).
 //
 // Sub-coordinator drill-in (Node.Drillable, D6) needs the whole Model to see
-// sibling orchestrators, which a lone OrchView cannot; this single-arg form (the
+// sibling orchestrators, which a lone heramodel.OrchView cannot; this single-arg form (the
 // test surface) leaves every node un-drillable. The Hera page calls
 // heraPlanNodesWithBridge with the rail's bridge index to stamp Drillable.
-func heraPlanNodes(orch *OrchView) ([]planview.Node, []planview.Edge) {
+func heraPlanNodes(orch *heramodel.OrchView) ([]planview.Node, []planview.Edge) {
 	return heraPlanNodesWithBridge(orch, nil)
 }
 
@@ -40,8 +42,8 @@ func heraPlanNodes(orch *OrchView) ([]planview.Node, []planview.Edge) {
 // orchestrator's coordinator bridge task to the orchestrator it coordinates
 // (Model.BridgeIndex). A worker node whose bound task is a key in that map IS a
 // sub-coordinator (its task is some child orchestrator's coordinator) and is
-// marked Drillable. Pass nil bridge to disable drill-in (the lone-OrchView path).
-func heraPlanNodesWithBridge(orch *OrchView, bridge map[string]*OrchView) ([]planview.Node, []planview.Edge) {
+// marked Drillable. Pass nil bridge to disable drill-in (the lone-heramodel.OrchView path).
+func heraPlanNodesWithBridge(orch *heramodel.OrchView, bridge map[string]*heramodel.OrchView) ([]planview.Node, []planview.Edge) {
 	if orch == nil {
 		return nil, nil
 	}
@@ -139,7 +141,7 @@ func planIsAuthored(nodes []planview.Node, edges []planview.Edge) bool {
 // (so the planview OnEnter can jump to its agent view) or, for a never-bound
 // planned role, a synthetic key derived from the role id. The two id spaces
 // cannot collide — a synthetic key is prefixed, a task id never is.
-func planNodeID(r *RoleView) string {
+func planNodeID(r *heramodel.RoleView) string {
 	if r.TaskID != "" {
 		return r.TaskID
 	}
@@ -156,7 +158,7 @@ func planNodeID(r *RoleView) string {
 // (violet ○). A live/finished role colours from its bound argus task status +
 // result, with the {"failed":true} result winning over the workflow status (red ✕)
 // — reusing coordTaskFailed (details.go), not a third copy.
-func planNodeState(r *RoleView) planview.State {
+func planNodeState(r *heramodel.RoleView) planview.State {
 	if r.Cancelled {
 		return planview.StateCancelled
 	}
@@ -197,7 +199,7 @@ func planNodeState(r *RoleView) planview.State {
 // "?"). Comparing the resolved glyph to the spinner keeps Animated true ONLY when
 // the spinner actually won, with zero duplication of the classifier's precedence
 // (and it tracks the active spinner style, which both sides read). See BUG-012.
-func planNodeIcon(r *RoleView, state planview.State) *planview.NodeIcon {
+func planNodeIcon(r *heramodel.RoleView, state planview.State) *planview.NodeIcon {
 	if state == planview.StatePlanned || state == planview.StateFailed || state == planview.StateCancelled {
 		return nil // ○ / ✕ / cancelled ✕ overlays come from State (the rail has no concept of these)
 	}

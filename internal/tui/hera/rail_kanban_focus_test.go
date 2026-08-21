@@ -5,14 +5,15 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/db"
+	heramodel "github.com/drn/argus/internal/hera/model"
 	"github.com/drn/argus/internal/testutil"
 )
 
 // fourGroupModel seeds one top-level orchestrator per kanban group — used
 // throughout this file to exercise the focus-fold invariant (add-kanban-
 // focus-fold): exactly one group's member rows render at a time.
-func fourGroupModel() Model {
-	return Model{Active: []OrchView{
+func fourGroupModel() heramodel.Model {
+	return heramodel.Model{Active: []heramodel.OrchView{
 		{ID: 1, Name: "act", KanbanStatus: db.HeraKanbanActive},
 		{ID: 2, Name: "bl", KanbanStatus: db.HeraKanbanBacklog},
 		{ID: 3, Name: "blk", KanbanStatus: db.HeraKanbanBlocked},
@@ -63,7 +64,7 @@ func TestRail_OnlyFocusedGroupRendersMembers(t *testing.T) {
 // lands the cursor on the new group's first/last member row — never resting
 // on the header itself.
 func TestRail_StepCrossesGroupBoundaries(t *testing.T) {
-	m := Model{Active: []OrchView{
+	m := heramodel.Model{Active: []heramodel.OrchView{
 		{ID: 1, Name: "act1", KanbanStatus: db.HeraKanbanActive},
 		{ID: 2, Name: "act2", KanbanStatus: db.HeraKanbanActive},
 		{ID: 3, Name: "bl", KanbanStatus: db.HeraKanbanBacklog},
@@ -101,7 +102,7 @@ func TestRail_StepCrossesGroupBoundaries(t *testing.T) {
 // all) — stepping down from Backlog's last row lands directly in Done's first
 // row, never pausing on a nonexistent Blocked boundary.
 func TestRail_StepSkipsEmptyIntermediateGroup(t *testing.T) {
-	m := Model{Active: []OrchView{
+	m := heramodel.Model{Active: []heramodel.OrchView{
 		{ID: 1, Name: "act", KanbanStatus: db.HeraKanbanActive},
 		{ID: 2, Name: "bl", KanbanStatus: db.HeraKanbanBacklog},
 		{ID: 3, Name: "dn", KanbanStatus: db.HeraKanbanDone},
@@ -126,10 +127,10 @@ func TestRail_StepSkipsEmptyIntermediateGroup(t *testing.T) {
 // rebuilt model) — and the coordinator stays selected, with its new group now
 // focused.
 func TestRail_KanbanKeyRefocusesOnStatusChange(t *testing.T) {
-	build := func(status db.HeraKanbanStatus) Model {
-		return Model{Active: []OrchView{
+	build := func(status db.HeraKanbanStatus) heramodel.Model {
+		return heramodel.Model{Active: []heramodel.OrchView{
 			{ID: 1, Name: "act", KanbanStatus: db.HeraKanbanActive},
-			{ID: 2, Name: "coord", KanbanStatus: status, Roles: []RoleView{
+			{ID: 2, Name: "coord", KanbanStatus: status, Roles: []heramodel.RoleView{
 				{RoleID: 21, OrchID: 2, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc"},
 			}},
 		}}
@@ -157,11 +158,11 @@ func TestRail_KanbanKeyRefocusesOnStatusChange(t *testing.T) {
 // the row, so the jump succeeds instead of silently failing (the row would
 // not exist in the built rows otherwise).
 func TestRail_SelectByTaskIDRefocusesNonFocusedGroup(t *testing.T) {
-	m := Model{Active: []OrchView{
-		{ID: 1, Name: "act", KanbanStatus: db.HeraKanbanActive, Roles: []RoleView{
+	m := heramodel.Model{Active: []heramodel.OrchView{
+		{ID: 1, Name: "act", KanbanStatus: db.HeraKanbanActive, Roles: []heramodel.RoleView{
 			{RoleID: 11, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "ta"},
 		}},
-		{ID: 2, Name: "bl", KanbanStatus: db.HeraKanbanBacklog, Roles: []RoleView{
+		{ID: 2, Name: "bl", KanbanStatus: db.HeraKanbanBacklog, Roles: []heramodel.RoleView{
 			{RoleID: 21, OrchID: 2, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tb"},
 			{RoleID: 22, OrchID: 2, Name: "wkr", Kind: db.HeraKindWorker, Live: true, TaskID: "tw"},
 		}},
@@ -186,9 +187,9 @@ func TestRail_EnsureAncestorsExpandedRefocusesNonFocusedGroup(t *testing.T) {
 	root := orchView(1, "R", "tr", wk("w", "tc"))
 	root.KanbanStatus = db.HeraKanbanBacklog
 	child := orchView(2, "C", "tc", wk("wc", "twc"))
-	act := OrchView{ID: 3, Name: "act", KanbanStatus: db.HeraKanbanActive}
+	act := heramodel.OrchView{ID: 3, Name: "act", KanbanStatus: db.HeraKanbanActive}
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{act, root, child}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{act, root, child}})
 	testutil.Equal(t, r.FocusedKanban(), db.HeraKanbanActive)
 	testutil.Equal(t, r.hasOrchHeader("R"), false) // Backlog not focused yet
 
@@ -206,7 +207,7 @@ func TestRail_DefaultFocusedGroupIsActive(t *testing.T) {
 	r := NewRail()
 	testutil.Equal(t, r.FocusedKanban(), db.HeraKanbanActive)
 
-	r.SetModel(Model{Active: []OrchView{{ID: 1, Name: "o", KanbanStatus: db.HeraKanbanBacklog}}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{{ID: 1, Name: "o", KanbanStatus: db.HeraKanbanBacklog}}})
 	testutil.Equal(t, r.FocusedKanban(), db.HeraKanbanActive)
 }
 

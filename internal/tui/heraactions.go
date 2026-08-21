@@ -759,7 +759,7 @@ func (a *App) heraClearArchive(sel hera.Selection) {
 			scopeName = child.Name
 		}
 	}
-	workers := model.SubtreeArchivedWorkers(scopeID)
+	workers := hera.SubtreeArchivedWorkers(model, scopeID)
 	if len(workers) == 0 {
 		a.statusbar.SetInfo("Nothing to clear")
 		return

@@ -4,6 +4,8 @@ import (
 	"maps"
 	"time"
 
+	heramodel "github.com/drn/argus/internal/hera/model"
+
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/keymap"
 	"github.com/drn/argus/internal/tui/planview"
@@ -68,7 +70,7 @@ type HeraPage struct {
 	rail      *Rail
 	focus     *FocusMachine
 	refresher *Refresher
-	reader    HeraReader
+	reader    heramodel.HeraReader
 	remote    bool
 
 	// 6b pane feeds.
@@ -83,33 +85,33 @@ type HeraPage struct {
 	prMeta       map[string]map[string]string
 	// needsInput is the authoritative per-task needs-input set the App pushes each
 	// tick (App.needsInputIDs — the SAME idle-gated agent.DetectNeedsInput set the
-	// task list consumes). doRefresh threads it into BuildModel so each live role
+	// task list consumes). doRefresh threads it into heramodel.BuildModel so each live role
 	// carries its own needs-input flag and the subtree rollup is computed (BUG-018).
 	needsInput map[string]bool
 	// sessionIdle is the authoritative per-task content-aware idle set the App
 	// pushes each tick (raw-byte idle ∪ fullscreen content-idle). doRefresh
-	// threads it into BuildModel so a parked fullscreen role's spinner stops
-	// (RoleView.SessionIdle → IsActive false; BUG-036).
+	// threads it into heramodel.BuildModel so a parked fullscreen role's spinner stops
+	// (heramodel.RoleView.SessionIdle → IsActive false; BUG-036).
 	sessionIdle map[string]bool
 	// sessionRunning is the authoritative per-task RUNNING set the App pushes each
 	// tick (runner.RunningAndIdle running list). doRefresh threads it into
-	// BuildModel so a dead worker whose binding lingers stops its spinner
-	// (RoleView.SessionRunning → IsActive false; BUG-C).
+	// heramodel.BuildModel so a dead worker whose binding lingers stops its spinner
+	// (heramodel.RoleView.SessionRunning → IsActive false; BUG-C).
 	sessionRunning map[string]bool
 	// sustainedActive is the authoritative per-task sustained-activity set the App
 	// pushes each tick (the same agent.ResumeActivityTick debounce that already
 	// clears the content-scan needs-input flag). doRefresh threads it into
-	// BuildModel so RoleView.SustainedActive can suppress the rail's "(?)" glyph
+	// heramodel.BuildModel so heramodel.RoleView.SustainedActive can suppress the rail's "(?)" glyph
 	// for a role whose bound task has demonstrated several consecutive ticks of
 	// genuine activity (narrow-needs-input-sustained-active).
 	sustainedActive map[string]bool
 	// tasks is the App's already-fetched full task snapshot this tick
 	// (App.tasks), set via SetTasks. doRefresh wraps the reader with it so
-	// BuildModel's Tasks() call is served from here instead of a second,
+	// heramodel.BuildModel's Tasks() call is served from here instead of a second,
 	// redundant fetch of the same data refreshTasksWithIDs already performed
 	// this tick — see gotchas/hera-view.md. tasksKnown distinguishes "never
 	// supplied" (nil tasks is ambiguous with a genuinely empty task list) so
-	// a caller/test that never calls SetTasks still gets BuildModel's
+	// a caller/test that never calls SetTasks still gets heramodel.BuildModel's
 	// original self-fetch behavior, unchanged.
 	tasks      []*model.Task
 	tasksKnown bool
@@ -120,7 +122,7 @@ type HeraPage struct {
 	// lastSessionRunning/lastSustainedActive cache the state observed at the
 	// LAST full rebuild, so shouldRebuild can cheaply prove "nothing that
 	// could affect the rendered rail has changed" and doRefresh can skip
-	// BuildModel+SetModel entirely. See shouldRebuild/markRebuilt and
+	// heramodel.BuildModel+SetModel entirely. See shouldRebuild/markRebuilt and
 	// design.md Decision 4.
 	fpKnown             bool
 	lastFingerprint     int64
@@ -130,12 +132,12 @@ type HeraPage struct {
 	lastSustainedActive map[string]bool
 
 	// tierResolver stamps the diligence-tiering readout (AppliedModel/Effort +
-	// ProfileWarning) onto each RoleView during doRefresh. The App wires it (local
+	// ProfileWarning) onto each heramodel.RoleView during doRefresh. The App wires it (local
 	// mode only) because resolution reads disk (agent.ResolveModel + profile load),
 	// which must NOT run in the pure projection on the tview thread. nil → the plan
 	// view shows the archetype (free from the role) but no model/warning (remote
 	// mode / tests). See add-diligence-profiles D-VIEW.
-	tierResolver func(*RoleView)
+	tierResolver func(*heramodel.RoleView)
 
 	// Plan-DAG render mode of the Details region (coordinator selection only).
 	// When a coordinator is selected the Details region stacks the read-only
@@ -153,8 +155,8 @@ type HeraPage struct {
 	// operator's cursor + fanned groups). See gotchas/hera-view.md.
 	planOrchID int64
 
-	// Selection + per-pane bound task (so SetSession only fires on change).
-	sel         Selection
+	// heramodel.Selection + per-pane bound task (so SetSession only fires on change).
+	sel         heramodel.Selection
 	detailsMode bool
 	coordBound  string
 	agentBound  string
@@ -171,36 +173,36 @@ type HeraPage struct {
 	kickNow func() time.Time
 
 	// 6c mutation callbacks. The rail-focus key handler maps keys to these,
-	// passing the current Selection (the multi-binding-disambiguated (role,orch)
+	// passing the current heramodel.Selection (the multi-binding-disambiguated (role,orch)
 	// context). The App wires them to handlers that own the modals / confirms /
 	// refresh; the thin DB writes themselves live in hera.Ops + agent.SpawnHeraWorker.
 	//
 	// nil-safe: a nil callback (remote mode never wires them; an intentionally
 	// unbound action) makes the key an inert no-op — never a panic.
-	OnSpawnWorker   func(Selection) // `w` — spawn worker under selected coordinator's orchestrator
-	OnRename        func(Selection) // `r` — rename selected role/orchestrator (modal)
-	OnArchiveToggle func(Selection) // `a` — HIDE/unhide selected worker (Tier-1 EOL; reversible, keeps session+worktree)
-	OnPinToggle     func(Selection) // `P` — pin/unpin selected role/orchestrator
-	OnStatusAdvance func(Selection) // `s` — advance selected role status one rung
-	OnStatusRevert  func(Selection) // `S` — revert selected role status one rung
+	OnSpawnWorker   func(heramodel.Selection) // `w` — spawn worker under selected coordinator's orchestrator
+	OnRename        func(heramodel.Selection) // `r` — rename selected role/orchestrator (modal)
+	OnArchiveToggle func(heramodel.Selection) // `a` — HIDE/unhide selected worker (Tier-1 EOL; reversible, keeps session+worktree)
+	OnPinToggle     func(heramodel.Selection) // `P` — pin/unpin selected role/orchestrator
+	OnStatusAdvance func(heramodel.Selection) // `s` — advance selected role status one rung
+	OnStatusRevert  func(heramodel.Selection) // `S` — revert selected role status one rung
 	// OnKanbanAdvance/OnKanbanRevert (add-hera-kanban-status) are `m`/`M` —
 	// cycle the SELECTED TOP-LEVEL coordinator's kanban status, wrapping.
 	// Wholly separate from OnStatusAdvance/OnStatusRevert (a role's
-	// hera_role_status): the App-side handler gates on Selection.KanbanTarget()
+	// hera_role_status): the App-side handler gates on heramodel.Selection.KanbanTarget()
 	// (nil for a role selection, an empty rail, or a nested orchestrator
 	// header), never firing outside a top-level coordinator's header row.
-	OnKanbanAdvance func(Selection) // `m` — advance selected top-level coordinator's kanban status one rung, wrapping
-	OnKanbanRevert  func(Selection) // `M` — revert selected top-level coordinator's kanban status one rung, wrapping
-	OnDelete        func(Selection) // ctrl+d — NUKE selected role/orchestrator (Tier-2 EOL; removes from rail + reclaims worktree, confirm)
-	OnReattach      func(Selection) // Enter on a dead-session row — restart its session
-	OnAdopt         func(Selection) // `J` — adopt freelancer / reparent coordinator (orch picker)
+	OnKanbanAdvance func(heramodel.Selection) // `m` — advance selected top-level coordinator's kanban status one rung, wrapping
+	OnKanbanRevert  func(heramodel.Selection) // `M` — revert selected top-level coordinator's kanban status one rung, wrapping
+	OnDelete        func(heramodel.Selection) // ctrl+d — NUKE selected role/orchestrator (Tier-2 EOL; removes from rail + reclaims worktree, confirm)
+	OnReattach      func(heramodel.Selection) // Enter on a dead-session row — restart its session
+	OnAdopt         func(heramodel.Selection) // `J` — adopt freelancer / reparent coordinator (orch picker)
 
 	// OnForceRecycle fires on `B` when the current selection is a coordinator
 	// (add-coordinator-context-management, hera-view delta): kills and
 	// restarts the coordinator's session on the same task/worktree/branch/
 	// binding — recycle_coord's human-forced (immediate, no idle wait) path.
 	// A no-op on a non-coordinator selection (see handleRailMutation).
-	OnForceRecycle func(Selection)
+	OnForceRecycle func(heramodel.Selection)
 
 	// OnBounceWorker fires on `B` when the current selection is a worker or
 	// freelance role (add-worker-bounce, hera-view delta): distinct from
@@ -210,22 +212,22 @@ type HeraPage struct {
 	// existing self-service recycle path (RecycleWatcher, now widened beyond
 	// coordinator-only) completes the restart once the role's session goes
 	// idle and makes that call. A no-op on a coordinator or empty selection.
-	OnBounceWorker func(Selection)
+	OnBounceWorker func(heramodel.Selection)
 
 	// Creation + EOL keys (BUG-006/022). OnNewCoordinator is selection-INDEPENDENT
 	// — it fires even on an empty rail, so it is dispatched directly (not via the
-	// selection-gated `fire`). OnClearArchive acts on the current Selection.
+	// selection-gated `fire`). OnClearArchive acts on the current heramodel.Selection.
 	// (BUG-022 removed `R` retire and the rail-wide `Ctrl+R` prune — the two-state
 	// model is `a` HIDE / `Ctrl+D` NUKE / `C` clear-this-coordinator's-archive.)
-	OnNewCoordinator func(Selection) // `n` — new top-level coordinator (full new-task modal; selection used only to default the project, fires even when empty)
-	OnClearArchive   func(Selection) // `C` — NUKE every Tier-1 hidden item in the selected coordinator's archive (confirm)
+	OnNewCoordinator func(heramodel.Selection) // `n` — new top-level coordinator (full new-task modal; selection used only to default the project, fires even when empty)
+	OnClearArchive   func(heramodel.Selection) // `C` — NUKE every Tier-1 hidden item in the selected coordinator's archive (confirm)
 
 	// OnCleanup fires on `c` (add-merge-safety-review): opens the merge-safety
 	// review popup over the full cross-project stuck-task backlog. Like
 	// OnNewCoordinator it is selection-INDEPENDENT — the candidate set is
 	// never scoped to a coordinator, so it fires even on an empty rail and is
 	// dispatched directly rather than through the selection-gated `fire`.
-	OnCleanup func(Selection)
+	OnCleanup func(heramodel.Selection)
 
 	// OnCopyClipboard fires on `ctrl+y` whenever a TERMINAL pane (coordinator or
 	// worker) is focused, passing the focused pane's bound task ID — regardless
@@ -285,7 +287,7 @@ type HeraPage struct {
 const minRailHeight = 4
 
 // NewHeraPage builds the page against a hera reader. Pass nil for remote mode.
-func NewHeraPage(reader HeraReader) *HeraPage {
+func NewHeraPage(reader heramodel.HeraReader) *HeraPage {
 	p := &HeraPage{
 		Box:       tview.NewBox(),
 		rail:      NewRail(),
@@ -461,11 +463,11 @@ func (p *HeraPage) SetRailStateStore(s RailStateStore) { p.rail.SetStateStore(s)
 
 // SetTierResolver wires the diligence-tiering annotation seam (add-diligence-
 // profiles D-VIEW). The App calls it (local mode only) with a closure that stamps
-// AppliedModel/AppliedEffort/ProfileWarning onto each RoleView using cfg + a
+// AppliedModel/AppliedEffort/ProfileWarning onto each heramodel.RoleView using cfg + a
 // profiles loader + agent.ResolveModel. It runs during doRefresh, off the Draw
 // path, because resolution reads disk (the pure projection cannot). Remote mode
 // never calls it, so the plan view then shows archetype only (no model/warning).
-func (p *HeraPage) SetTierResolver(fn func(*RoleView)) { p.tierResolver = fn }
+func (p *HeraPage) SetTierResolver(fn func(*heramodel.RoleView)) { p.tierResolver = fn }
 
 // Machine exposes the focus machine (test seam + 6b wiring). Not named Focus()
 // because that collides with tview.Primitive's Focus(func(tview.Primitive)).
@@ -477,7 +479,7 @@ func (p *HeraPage) IsRemote() bool { return p.remote }
 // SetNeedsInput records the task IDs the App detected as blocked on a user
 // prompt this tick (App.needsInputIDs — the SAME authoritative, idle-gated
 // agent.DetectNeedsInput set the task list consumes). doRefresh threads it into
-// BuildModel so each live role carries its own needs-input flag and the subtree
+// heramodel.BuildModel so each live role carries its own needs-input flag and the subtree
 // rollup is computed (BUG-018). Pure setter — the tick already schedules the
 // rebuild. MUST run on the tview thread (main-goroutine-only, like SetModel).
 func (p *HeraPage) SetNeedsInput(ids []string) {
@@ -494,8 +496,8 @@ func (p *HeraPage) SetNeedsInput(ids []string) {
 
 // SetSessionIdle records the task IDs the App classified as idle this tick — the
 // content-aware idle set (raw-byte idle ∪ fullscreen content-idle, BUG-036).
-// doRefresh threads it into BuildModel so a parked fullscreen role stops
-// animating its spinner (RoleView.SessionIdle → IsActive false). Pure setter;
+// doRefresh threads it into heramodel.BuildModel so a parked fullscreen role stops
+// animating its spinner (heramodel.RoleView.SessionIdle → IsActive false). Pure setter;
 // the tick already schedules the rebuild. MUST run on the tview thread.
 func (p *HeraPage) SetSessionIdle(ids []string) {
 	if len(ids) == 0 {
@@ -511,8 +513,8 @@ func (p *HeraPage) SetSessionIdle(ids []string) {
 
 // SetSessionRunning records the task IDs whose sessions have a RUNNING PTY this
 // tick (the App's runner.RunningAndIdle running list). doRefresh threads it into
-// BuildModel so a dead worker whose binding lingers stops animating its spinner
-// (RoleView.SessionRunning → IsActive false, BUG-C). Pure setter; the tick
+// heramodel.BuildModel so a dead worker whose binding lingers stops animating its spinner
+// (heramodel.RoleView.SessionRunning → IsActive false, BUG-C). Pure setter; the tick
 // already schedules the rebuild. MUST run on the tview thread.
 func (p *HeraPage) SetSessionRunning(ids []string) {
 	if len(ids) == 0 {
@@ -530,7 +532,7 @@ func (p *HeraPage) SetSessionRunning(ids []string) {
 // this tick — several CONSECUTIVE ticks of demonstrated working content
 // (agent.ResumeActivityTick's existing debounce, the same signal that already
 // clears the content-scan needs-input flag). doRefresh threads it into
-// BuildModel so RoleView.SustainedActive can suppress the rail's "(?)" glyph for
+// heramodel.BuildModel so heramodel.RoleView.SustainedActive can suppress the rail's "(?)" glyph for
 // a genuinely sustained-active role, regardless of the bound task's workflow
 // status or a stale self-reported `blocked` hera status on any hat bound to the
 // same task (narrow-needs-input-sustained-active). Pure setter; the tick
@@ -550,23 +552,23 @@ func (p *HeraPage) SetSustainedActive(ids []string) {
 // SetTasks records the App's already-fetched full task snapshot for this
 // tick (App.tasks — the same list refreshTasksWithIDs fetched moments ago for
 // the plain task list). doRefresh reuses it instead of paying for a second,
-// redundant full-table fetch inside BuildModel. Pure setter; MUST run on the
+// redundant full-table fetch inside heramodel.BuildModel. Pure setter; MUST run on the
 // tview thread. Never calling this (remote mode, or a test that constructs a
-// HeraPage without wiring it) leaves BuildModel's own self-fetch behavior
+// HeraPage without wiring it) leaves heramodel.BuildModel's own self-fetch behavior
 // completely unchanged.
 func (p *HeraPage) SetTasks(tasks []*model.Task) {
 	p.tasks = tasks
 	p.tasksKnown = true
 }
 
-// tasksReader wraps a HeraReader and serves a pre-fetched task snapshot from
+// tasksReader wraps a heramodel.HeraReader and serves a pre-fetched task snapshot from
 // Tasks() instead of the wrapped reader's own fetch — see SetTasks. Every
-// other HeraReader method passes through unchanged via interface embedding.
-// Constructed transiently at the BuildModel call site (never stored back
+// other heramodel.HeraReader method passes through unchanged via interface embedding.
+// Constructed transiently at the heramodel.BuildModel call site (never stored back
 // into HeraPage.reader itself), so it never interferes with dbFingerprint's
 // type-assertion against the original, unwrapped reader.
 type tasksReader struct {
-	HeraReader
+	heramodel.HeraReader
 	tasks []*model.Task
 }
 
@@ -607,7 +609,7 @@ func (p *HeraPage) Refresh() {
 }
 
 // doRefresh rebuilds the model from the reader and hands it to the rail. In
-// remote mode the reader is nil → BuildModel returns an empty model and Draw
+// remote mode the reader is nil → heramodel.BuildModel returns an empty model and Draw
 // renders the unavailable banner, so this stays a cheap no-op.
 func (p *HeraPage) doRefresh() {
 	if !p.shouldRebuild() {
@@ -620,7 +622,7 @@ func (p *HeraPage) doRefresh() {
 	if reader != nil && p.tasksKnown {
 		reader = &tasksReader{HeraReader: reader, tasks: p.tasks}
 	}
-	m, err := BuildModel(reader, p.needsInput, p.sessionIdle, p.sessionRunning, p.sustainedActive)
+	m, err := heramodel.BuildModel(reader, p.needsInput, p.sessionIdle, p.sessionRunning, p.sustainedActive)
 	if err != nil {
 		uxlog.Log("[hera-view] rail refresh failed: %v", err)
 		return
@@ -643,7 +645,7 @@ func (p *HeraPage) doRefresh() {
 	// Feed the same PR cache to the rail so managed rows render a PR indicator
 	// (best-effort; nil just leaves the cells off).
 	p.rail.SetPRMeta(p.prMeta)
-	// SetModel rebuilt the model's backing arrays, so the prior Selection
+	// SetModel rebuilt the model's backing arrays, so the prior heramodel.Selection
 	// pointers are stale — re-derive and rebind (task IDs usually unchanged, so
 	// bindPane is a no-op and the emulators are preserved).
 	p.applySelection()
@@ -653,7 +655,7 @@ func (p *HeraPage) doRefresh() {
 }
 
 // dataVersioner is implemented by *db.DB (checked via a type assertion, not
-// added to the HeraReader interface itself, so test fakes and the remote nil
+// added to the heramodel.HeraReader interface itself, so test fakes and the remote nil
 // reader are unaffected). See db.DB.DataVersion.
 type dataVersioner interface {
 	DataVersion() (int64, error)
@@ -661,7 +663,7 @@ type dataVersioner interface {
 
 // dbFingerprint returns the underlying store's cheap change-fingerprint, or
 // (0, false) when the reader doesn't support one (remote mode's nil reader,
-// or a test HeraReader fake) — shouldRebuild always treats that as "changed"
+// or a test heramodel.HeraReader fake) — shouldRebuild always treats that as "changed"
 // so the gate never suppresses a rebuild it cannot prove is safe to skip.
 func (p *HeraPage) dbFingerprint() (int64, bool) {
 	dv, ok := p.reader.(dataVersioner)
@@ -675,7 +677,7 @@ func (p *HeraPage) dbFingerprint() (int64, bool) {
 	return v, true
 }
 
-// shouldRebuild reports whether doRefresh's full BuildModel+SetModel pass is
+// shouldRebuild reports whether doRefresh's full heramodel.BuildModel+SetModel pass is
 // worth paying for: true on the very first call (no prior snapshot to compare
 // against), whenever the reader's cheap DB fingerprint is unsupported or has
 // moved since the last rebuild, or whenever any of the four per-tick runtime
@@ -1127,7 +1129,7 @@ func rosterScrollDelta(event *tcell.EventKey) (int, bool) {
 // as a flat pseudo-DAG (BUG-013). MUST run on the tview main thread
 // (heraPlanNodesWithBridge is a pure read over the rail's already-built model;
 // SetData recomputes layout but touches no I/O).
-func (p *HeraPage) rebuildPlan(root *OrchView) {
+func (p *HeraPage) rebuildPlan(root *heramodel.OrchView) {
 	// Same orchestrator as the last projection (and not drilled in) → this is a
 	// refresh tick re-projecting an unchanged-or-evolved plan: route through
 	// UpdateData so the operator's cursor and fanned groups survive. A different
@@ -1323,7 +1325,7 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 			// freelance vs coordinator vs not-applicable and surfaces feedback.
 			return p.fire(p.OnAdopt, sel)
 		case keymap.ActHeraNewCoord:
-			// New top-level coordinator (BUG-006). Selection-INDEPENDENT — it is
+			// New top-level coordinator (BUG-006). heramodel.Selection-INDEPENDENT — it is
 			// the bootstrap affordance, so it fires even on an empty rail and does
 			// NOT route through the selection-gated `fire`.
 			if p.OnNewCoordinator != nil {
@@ -1360,7 +1362,7 @@ func (p *HeraPage) notifyFocusChange() {
 // target, returning whether the key was consumed. A wired callback always
 // consumes its key (even on an empty selection) so the keystroke never leaks
 // to rail navigation; an unwired callback lets the key fall through.
-func (p *HeraPage) fire(cb func(Selection), sel Selection) bool {
+func (p *HeraPage) fire(cb func(heramodel.Selection), sel heramodel.Selection) bool {
 	if cb == nil {
 		return false
 	}

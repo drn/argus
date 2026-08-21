@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/db"
+	heramodel "github.com/drn/argus/internal/hera/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -135,12 +136,12 @@ func TestRail_ScrollOffsetTracksCursor(t *testing.T) {
 	testutil.NoError(t, sim.Init())
 	defer sim.Fini()
 
-	roles := make([]RoleView, 20)
+	roles := make([]heramodel.RoleView, 20)
 	for i := range roles {
-		roles[i] = RoleView{RoleID: int64(100 + i), Name: "r", Live: true}
+		roles[i] = heramodel.RoleView{RoleID: int64(100 + i), Name: "r", Live: true}
 	}
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{{ID: 1, Name: "o", Roles: roles}}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{{ID: 1, Name: "o", Roles: roles}}})
 	r.SetRect(0, 0, 30, 6) // tiny viewport forces scrolling
 
 	// Drive the cursor to the bottom; offset must advance.

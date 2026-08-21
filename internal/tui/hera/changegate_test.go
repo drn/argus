@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/db"
+	heramodel "github.com/drn/argus/internal/hera/model"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -23,13 +24,13 @@ func openFileDB(t *testing.T) *db.DB {
 	return d
 }
 
-// noFingerprintReader wraps a HeraReader so its OWN method set is exactly
-// HeraReader's declared methods — DataVersion is NOT promoted even though the
+// noFingerprintReader wraps a heramodel.HeraReader so its OWN method set is exactly
+// heramodel.HeraReader's declared methods — DataVersion is NOT promoted even though the
 // wrapped value implements it (Go only promotes an embedded INTERFACE
 // field's declared methods, never the dynamic value's full method set beyond
-// that interface). Mirrors the remote-mode nil reader and any HeraReader test
+// that interface). Mirrors the remote-mode nil reader and any heramodel.HeraReader test
 // double that never grows a DataVersion method.
-type noFingerprintReader struct{ HeraReader }
+type noFingerprintReader struct{ heramodel.HeraReader }
 
 // TestHeraPage_ShouldRebuild_FirstCallAlwaysTrue: no prior snapshot exists yet.
 func TestHeraPage_ShouldRebuild_FirstCallAlwaysTrue(t *testing.T) {
@@ -102,7 +103,7 @@ func TestHeraPage_ShouldRebuild_RuntimeMapChangesTriggerRebuild(t *testing.T) {
 }
 
 // TestHeraPage_ShouldRebuild_UnsupportedFingerprintAlwaysRebuilds proves a
-// reader without a DataVersion method (any HeraReader test double, or the
+// reader without a DataVersion method (any heramodel.HeraReader test double, or the
 // remote-mode nil reader) is always treated as "changed" — the gate must
 // never suppress a rebuild it cannot prove is safe to skip.
 func TestHeraPage_ShouldRebuild_UnsupportedFingerprintAlwaysRebuilds(t *testing.T) {
@@ -168,7 +169,7 @@ func TestHeraPage_Refresh_ForcesRebuildDespiteSameConnectionBlindSpot(t *testing
 
 // coordRoleView finds the "coord"-named role in m's first Active orchestrator
 // (test helper for asserting on rebuilt-model content).
-func coordRoleView(t *testing.T, m Model) RoleView {
+func coordRoleView(t *testing.T, m heramodel.Model) heramodel.RoleView {
 	t.Helper()
 	for _, rv := range m.Active[0].Roles {
 		if rv.Name == "coord" {
@@ -176,12 +177,12 @@ func coordRoleView(t *testing.T, m Model) RoleView {
 		}
 	}
 	t.Fatal("coord role not found in rebuilt model")
-	return RoleView{}
+	return heramodel.RoleView{}
 }
 
 // TestHeraPage_DoRefresh_SkipsRebuildWhenQuiescent proves doRefresh itself
 // (not just the shouldRebuild unit) honors the gate: calling it again with
-// nothing changed does not re-run BuildModel (the rail's model keeps the
+// nothing changed does not re-run heramodel.BuildModel (the rail's model keeps the
 // role's NeedsInput=false it was built with), while a genuine runtime-map
 // change (needsInput) is picked up on the very next call.
 func TestHeraPage_DoRefresh_SkipsRebuildWhenQuiescent(t *testing.T) {
@@ -206,11 +207,11 @@ func TestHeraPage_DoRefresh_SkipsRebuildWhenQuiescent(t *testing.T) {
 	testutil.Equal(t, coordRoleView(t, p.Rail().Model()).NeedsInput, true)
 }
 
-// countingTasksReader wraps a HeraReader and counts calls to Tasks(), so
-// tests can assert whether BuildModel's Tasks() call actually reached the
+// countingTasksReader wraps a heramodel.HeraReader and counts calls to Tasks(), so
+// tests can assert whether heramodel.BuildModel's Tasks() call actually reached the
 // underlying store or was served from a supplied snapshot instead.
 type countingTasksReader struct {
-	HeraReader
+	heramodel.HeraReader
 	calls int
 }
 
@@ -220,7 +221,7 @@ func (r *countingTasksReader) Tasks() ([]*model.Task, error) {
 }
 
 // TestHeraPage_SetTasks_AvoidsRedundantFetch proves doRefresh serves
-// BuildModel's Tasks() call from a snapshot supplied via SetTasks instead of
+// heramodel.BuildModel's Tasks() call from a snapshot supplied via SetTasks instead of
 // hitting the underlying reader a second time, when one has been supplied —
 // and falls back to the reader's own fetch, unchanged, when it hasn't.
 func TestHeraPage_SetTasks_AvoidsRedundantFetch(t *testing.T) {

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	heramodel "github.com/drn/argus/internal/hera/model"
+
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/planview"
@@ -284,7 +286,7 @@ func TestFocusRouting_ArrowKeysStayWithinFocusedRegion(t *testing.T) {
 	testutil.Equal(t, p.Machine().State(), FocusRail)
 	railCursorBefore := p.Rail().CursorIndex()
 	advanced := false
-	p.OnStatusAdvance = func(Selection) { advanced = true }
+	p.OnStatusAdvance = func(heramodel.Selection) { advanced = true }
 	h(tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone), noFocus)
 	testutil.Equal(t, advanced, true)                // rail mutation key still fires
 	testutil.Equal(t, p.Plan().CursorPos().Stage, 0) // plan untouched by a rail-focused key
@@ -548,9 +550,9 @@ func TestPlanLeafEnter_DeadSessionFiresReattach(t *testing.T) {
 	testutil.NoError(t, d.AddHeraBlock(plan2a.ID, wkr.ID))
 	p := NewHeraPage(d)
 	// No SetSessionResolver → p.resolve == nil → the worker session is dead.
-	var reattached Selection
+	var reattached heramodel.Selection
 	called := false
-	p.OnReattach = func(s Selection) { reattached = s; called = true }
+	p.OnReattach = func(s heramodel.Selection) { reattached = s; called = true }
 	p.Refresh()
 	sim := tcell.NewSimulationScreen("UTF-8")
 	testutil.NoError(t, sim.Init())
@@ -579,9 +581,9 @@ func TestPlanLeafEnter_DeadSessionFiresReattach(t *testing.T) {
 // actually revive it; the view fires the same callback either way.
 func TestPlanLeafEnter_LiveWorkerFiresReattach(t *testing.T) {
 	p := leafPlanPage(t) // wires a LIVE resolver for t-coord and t-wkr
-	var got Selection
+	var got heramodel.Selection
 	called := false
-	p.OnReattach = func(s Selection) { got = s; called = true }
+	p.OnReattach = func(s heramodel.Selection) { got = s; called = true }
 
 	testutil.Equal(t, selectOrchByName(p, "orch"), true)
 	pl := p.Plan()
@@ -608,7 +610,7 @@ func TestPlanLeafEnter_LiveCoordinatorDoesNotReattach(t *testing.T) {
 	p := NewHeraPage(d)
 	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-coord": {id: "t-coord", alive: true}}))
 	called := false
-	p.OnReattach = func(Selection) { called = true }
+	p.OnReattach = func(heramodel.Selection) { called = true }
 	p.Refresh()
 
 	p.jumpToLeaf("t-coord") // jumpToLeaf is the wired Plan().OnEnter handler
@@ -624,8 +626,8 @@ func TestPlanLeafEnter_LiveCoordinatorDoesNotReattach(t *testing.T) {
 // only the built rows, so the folded coordinator swallowed the join.
 func TestPlanLeafEnter_ExpandsCollapsedAncestorBeforeJoin(t *testing.T) {
 	p := leafPlanPage(t) // LIVE resolver for t-coord + t-wkr
-	var got Selection
-	p.OnReattach = func(s Selection) { got = s }
+	var got heramodel.Selection
+	p.OnReattach = func(s heramodel.Selection) { got = s }
 
 	testutil.Equal(t, selectOrchByName(p, "orch"), true)
 	testutil.Equal(t, p.detailsMode, true) // coordinator selected → details/plan
@@ -659,8 +661,8 @@ func TestPlanLeafEnter_ExpandsCollapsedAncestorBeforeJoin(t *testing.T) {
 // return value (jumpToLeaf, still the plan widget's OnEnter, ignores it).
 func TestJumpToTask_ExpandsCollapsedAncestorAndReturnsTrue(t *testing.T) {
 	p := leafPlanPage(t)
-	var got Selection
-	p.OnReattach = func(s Selection) { got = s }
+	var got heramodel.Selection
+	p.OnReattach = func(s heramodel.Selection) { got = s }
 
 	testutil.Equal(t, selectOrchByName(p, "orch"), true)
 	orchID := p.Rail().Model().Active[0].ID
@@ -702,7 +704,7 @@ func TestJumpToTask_RemoteAndEmptyIDAreNoops(t *testing.T) {
 func TestPlanEnter_DrillInDoesNotReattach(t *testing.T) {
 	p := NewHeraPage(memDB(t))
 	reattached := false
-	p.OnReattach = func(Selection) { reattached = true }
+	p.OnReattach = func(heramodel.Selection) { reattached = true }
 	drilled := ""
 	p.Plan().OnDrillIn = func(id string) { drilled = id }
 

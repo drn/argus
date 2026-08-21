@@ -8,6 +8,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	heramodel "github.com/drn/argus/internal/hera/model"
+
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/theme"
@@ -27,7 +29,7 @@ import (
 // It holds no live session and issues no I/O at Draw time — it is a pure
 // projection renderer, safe on the tview main thread.
 type DetailsView struct {
-	orch   *OrchView
+	orch   *heramodel.OrchView
 	prMeta map[string]map[string]string // taskID -> pr meta (namespace "pr")
 	meta   coordMeta                    // derived once in SetOrch (pure over orch)
 
@@ -46,7 +48,7 @@ type DetailsView struct {
 }
 
 // coordMeta is the rich metadata block the Details pane renders for a selected
-// coordinator, derived purely from the rail's OrchView projection (no DB read).
+// coordinator, derived purely from the rail's heramodel.OrchView projection (no DB read).
 // It is the native port of the plugin's coordDetails metadata fields (created /
 // last-activity / repos-in-scope / agent / worktree).
 type coordMeta struct {
@@ -58,21 +60,21 @@ type coordMeta struct {
 	// Cost (add-coordinator-cost-estimate) is the sum of CostUSDAccrued
 	// across this orchestrator's OWN roles (any kind) — NOT a recursive
 	// bridge-subtree walk like Model.SubtreeCostUSD, since deriveCoordMeta is
-	// a pure OrchView projection with no access to the whole Model. Zero
+	// a pure heramodel.OrchView projection with no access to the whole Model. Zero
 	// means never measured (Decision 6) — Draw omits the field rather than
 	// showing "$0.00".
 	Cost float64
 }
 
-// deriveCoordMeta computes the coordinator Details metadata from an OrchView.
+// deriveCoordMeta computes the coordinator Details metadata from an heramodel.OrchView.
 // It is a pure projection (no I/O), so it is unit-testable from a constructed
-// OrchView and safe to call on the tview main thread. Last-activity is the max
+// heramodel.OrchView and safe to call on the tview main thread. Last-activity is the max
 // over the orchestrator's creation time and every role's creation time, live-
 // binding start, and status-update time. Repos-in-scope are the distinct argus
 // projects across the orchestrator's roster roles (the same role set the roster
 // shows — hoisted freelance roles are not included), sorted. Agent + Worktree
 // come from the coordinator role.
-func deriveCoordMeta(o *OrchView) coordMeta {
+func deriveCoordMeta(o *heramodel.OrchView) coordMeta {
 	m := coordMeta{Created: o.CreatedAt, LastActivity: o.CreatedAt}
 	bump := func(t time.Time) {
 		if t.After(m.LastActivity) {
@@ -117,7 +119,7 @@ func NewDetailsView() *DetailsView { return &DetailsView{} }
 // also runs on every ~1s refresh tick for the SAME selected coordinator
 // (doRefresh -> applySelection), and resetting scroll on every one of those
 // would snap a mid-read scroll position back to the top every tick.
-func (d *DetailsView) SetOrch(o *OrchView, prMeta map[string]map[string]string) {
+func (d *DetailsView) SetOrch(o *heramodel.OrchView, prMeta map[string]map[string]string) {
 	changedOrch := d.orch == nil || o == nil || d.orch.ID != o.ID
 	d.orch = o
 	d.prMeta = prMeta
@@ -241,7 +243,7 @@ func (d *DetailsView) Draw(screen tcell.Screen, x, y, w, h int, focused bool) {
 		field("Worktree", worktreeDisplay(meta.Worktree, inner.W))
 	}
 	if meta.Cost != 0 {
-		field("Cost", FormatCostUSD(meta.Cost))
+		field("Cost", heramodel.FormatCostUSD(meta.Cost))
 	}
 	row++ // blank spacer
 
@@ -328,7 +330,7 @@ func worktreeDisplay(path string, availWidth int) string {
 }
 
 // coordRole returns the orchestrator's coordinator role, or nil.
-func (d *DetailsView) coordRole() *RoleView {
+func (d *DetailsView) coordRole() *heramodel.RoleView {
 	for i := range d.orch.Roles {
 		if d.orch.Roles[i].Kind == db.HeraKindCoordinator {
 			return &d.orch.Roles[i]
@@ -338,8 +340,8 @@ func (d *DetailsView) coordRole() *RoleView {
 }
 
 // workers returns the non-coordinator roles under the orchestrator.
-func (d *DetailsView) workers() []RoleView {
-	out := make([]RoleView, 0, len(d.orch.Roles))
+func (d *DetailsView) workers() []heramodel.RoleView {
+	out := make([]heramodel.RoleView, 0, len(d.orch.Roles))
 	for i := range d.orch.Roles {
 		if d.orch.Roles[i].Kind != db.HeraKindCoordinator {
 			out = append(out, d.orch.Roles[i])
@@ -403,7 +405,7 @@ func (d *DetailsView) ScrollRoster(delta int) bool {
 // rail's rolePR and the task list's theme.PRGlyph use), NOT on url presence: a
 // merged/closed/draft/unknown PR retains its url in the cache but must not show
 // the mark. Best-effort, like the task list — never fetched here.
-func (d *DetailsView) hasPR(r *RoleView) bool {
+func (d *DetailsView) hasPR(r *heramodel.RoleView) bool {
 	if r.TaskID == "" || d.prMeta == nil {
 		return false
 	}
@@ -470,7 +472,7 @@ func rosterColStarts(c rosterCols) (nameX, archX, modelX, statusX int) {
 // zero when avail is narrower than the ideal total width. Name is preserved
 // longest so a real agent/coordinator name stays fully readable on all but
 // the narrowest panes.
-func computeRosterColumns(workers []RoleView, avail int) rosterCols {
+func computeRosterColumns(workers []heramodel.RoleView, avail int) rosterCols {
 	cols := rosterCols{status: rosterStatusWidth, name: rosterNameMin, archetype: rosterArchMin, model: rosterModelMin}
 	for i := range workers {
 		if n := utf8.RuneCountInString(workers[i].Name); n > cols.name {
@@ -563,7 +565,7 @@ func rosterValueStyle(raw string) tcell.Style {
 // statusIcon's precedence exactly (widget.RoleStatusIcon) so the glyph and
 // the label never disagree. A "PR" suffix is appended whenever the role's
 // bound task carries an open PR, independent of the underlying status.
-func rosterStatusText(r *RoleView, hasPR bool) string {
+func rosterStatusText(r *heramodel.RoleView, hasPR bool) string {
 	in := roleStatusInputs(r)
 	var text string
 	switch {
@@ -607,7 +609,7 @@ func drawRosterHeader(screen tcell.Screen, x, y int, cols rosterCols) {
 // drawRosterRow paints one agent's roster row: name, archetype, model, status
 // icon + label — aligned to cols. The icon glyph reuses statusIcon (the SAME
 // precedence the rail uses) so this table never disagrees with the rail.
-func (d *DetailsView) drawRosterRow(screen tcell.Screen, x, y int, cols rosterCols, r *RoleView, frame int) {
+func (d *DetailsView) drawRosterRow(screen tcell.Screen, x, y int, cols rosterCols, r *heramodel.RoleView, frame int) {
 	nameX, archX, modelX, statusX := rosterColStarts(cols)
 	widget.DrawText(screen, x+nameX, y, cols.name, rosterTruncate(r.Name, cols.name), theme.StyleNormal)
 	widget.DrawText(screen, x+archX, y, cols.archetype, rosterTruncate(archetypeDisplay(r.Archetype), cols.archetype), rosterValueStyle(r.Archetype))
@@ -626,7 +628,7 @@ func (d *DetailsView) drawRosterRow(screen tcell.Screen, x, y int, cols rosterCo
 // owned by the session lifecycle, not the manual hera ladder, so a coordinator
 // whose task has finished (in_review / complete / failed) otherwise gives no
 // hint in the Details pane (BUG-015). One row — ContentHeight is unaffected.
-func coordStatusLabel(r *RoleView) string {
+func coordStatusLabel(r *heramodel.RoleView) string {
 	label := coordRoleStatusLabel(r)
 	if task := coordTaskStatusLabel(r); task != "" {
 		label += " · task " + task
@@ -644,7 +646,7 @@ func coordStatusLabel(r *RoleView) string {
 // (SessionIdle) and "stopped" when the binding is gone; a live, content-active
 // role reads "working" honestly regardless of task status. Every other
 // role-status passes through verbatim.
-func coordRoleStatusLabel(r *RoleView) string {
+func coordRoleStatusLabel(r *heramodel.RoleView) string {
 	switch {
 	case r.HasStatus && r.Status == db.HeraStatusWorking && !r.IsActive():
 		if r.Live {
@@ -665,7 +667,7 @@ func coordRoleStatusLabel(r *RoleView) string {
 // "failed" is derived from the task's opaque result blob {"failed":true},
 // mirroring dagview.parseFailed and winning over the workflow status. Ongoing
 // (pending / in_progress) or unbound tasks add no signal (returns "").
-func coordTaskStatusLabel(r *RoleView) string {
+func coordTaskStatusLabel(r *heramodel.RoleView) string {
 	if coordTaskFailed(r.TaskResult) {
 		return "failed"
 	}

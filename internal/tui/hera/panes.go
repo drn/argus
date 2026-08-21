@@ -3,6 +3,8 @@ package hera
 import (
 	"time"
 
+	heramodel "github.com/drn/argus/internal/hera/model"
+
 	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/tui/keyenc"
 	"github.com/drn/argus/internal/tui/terminal"
@@ -80,14 +82,14 @@ func (p *HeraPage) SetRerenderKicker(fn RerenderKicker) { p.kickRerender = fn }
 // role-under-A feeds the AGENT pane from that task and the HERA pane from A's
 // coordinator; selecting the role-under-B feeds the HERA pane from that task
 // (B's coordinator = the task itself) and renders B's roster in Details. The
-// disambiguator is ALWAYS the selected role's orchestrator (Selection.Orch),
+// disambiguator is ALWAYS the selected role's orchestrator (heramodel.Selection.Orch),
 // never the bare task ID — so the two roles drive two different contexts.
 
 // applySelection recomputes the selection from the rail cursor and rebinds the
 // panes accordingly. MUST run on the tview main thread (it calls SetSession,
 // which is main-goroutine-only — see terminalpane.go). Called from
 // rail.onSelectionChanged (cursor move) and from doRefresh (after SetModel
-// rebuilds the model's backing arrays, so the stale Selection pointers refresh).
+// rebuilds the model's backing arrays, so the stale heramodel.Selection pointers refresh).
 func (p *HeraPage) applySelection() {
 	if p.remote {
 		return
@@ -125,15 +127,15 @@ func (p *HeraPage) applySelection() {
 // the selection is a plain worker/leaf that renders the agent terminal instead.
 //
 //   - top-level coordinator (an orch header row, or an explicit coordinator-kind
-//     role): the selected orchestrator itself (Selection.Orch).
+//     role): the selected orchestrator itself (heramodel.Selection.Orch).
 //   - worker-bridge sub-coordinator (a worker ROW that bridges a child
-//     orchestrator — Selection.BridgeChildOrchID != 0): the CHILD orchestrator.
+//     orchestrator — heramodel.Selection.BridgeChildOrchID != 0): the CHILD orchestrator.
 //     The bridging worker IS the child's coordinator (it holds the same argus task
 //     the child's coordinator role is bound to), so its Details view must reflect
 //     the child's roster + subtree, exactly like any other coordinator — never the
 //     agent terminal. This is the BUG-004 fix.
 //
-// Selection.BridgeChildOrchID is set by Rail.Selection when the cursor rests on a
+// heramodel.Selection.BridgeChildOrchID is set by Rail.Selection when the cursor rests on a
 // bridging worker row (its collOrchID). Coordinator-spawned sub-teams already
 // select as their OWN header row, so they hit the first case and are unaffected.
 //
@@ -141,7 +143,7 @@ func (p *HeraPage) applySelection() {
 // context read via SelectionContext) is left pointing at the parent worker role,
 // so Ctrl+D and the other mutations still act on the worker, never the child
 // orchestrator — the conservative multi-binding safety the rail nesting documents.
-func (p *HeraPage) detailsOrch() *OrchView {
+func (p *HeraPage) detailsOrch() *heramodel.OrchView {
 	if p.sel.IsCoordinator() {
 		return p.sel.Orch
 	}
@@ -475,9 +477,9 @@ func (p *HeraPage) IsBoundToTask(taskID string) bool {
 //
 // 6c EXTENSION POINT: this is the clean seam mutations hang off. A mutation
 // (promote / archive / link / open-PR / status advance, etc.) reads this to act
-// on Selection.Role under Selection.Orch — the orchestrator is the multi-binding
+// on heramodel.Selection.Role under heramodel.Selection.Orch — the orchestrator is the multi-binding
 // disambiguator. 6b only feeds panes; it implements no mutations.
-func (p *HeraPage) SelectionContext() Selection { return p.sel }
+func (p *HeraPage) SelectionContext() heramodel.Selection { return p.sel }
 
 // forwardKey routes a key to a focused terminal pane: PgUp/PgDn scroll its
 // scrollback; everything else is encoded (shared keyenc, identical to the main
@@ -539,10 +541,10 @@ func (p *HeraPage) forwardKey(tp *terminal.TerminalPane, ev *tcell.EventKey) {
 
 // reattachPane revives the session backing tp via the page's OnReattach callback
 // (wired by the App to heraReattach — the SAME revive path the rail's Enter uses).
-// It builds a Selection targeting THIS pane's bound task: the agent pane revives
+// It builds a heramodel.Selection targeting THIS pane's bound task: the agent pane revives
 // the selected worker (p.sel), while the coordinator pane revives the orchestrator
 // whose coordinator it shows — the resolved details orchestrator in detailsMode,
-// else the selected orchestrator. A Selection with only Orch set is a coordinator
+// else the selected orchestrator. A heramodel.Selection with only Orch set is a coordinator
 // selection (FocusTaskID → the coordinator task), so heraReattach treats it
 // correctly (dead → restart, live coordinator → navigate-only).
 func (p *HeraPage) reattachPane(tp *terminal.TerminalPane) {
@@ -555,7 +557,7 @@ func (p *HeraPage) reattachPane(tp *terminal.TerminalPane) {
 		if p.detailsMode {
 			orch = p.detailsOrch()
 		}
-		sel = Selection{Orch: orch}
+		sel = heramodel.Selection{Orch: orch}
 	}
 	if sel.FocusTaskID() == "" {
 		return
