@@ -59,6 +59,13 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/tasks/{id}/rename", s.handleRenameTask)
 	mux.HandleFunc("POST /api/tasks/{id}/status", s.handleSetStatus)
 	mux.HandleFunc("POST /api/tasks/{id}/fork", s.handleForkTask)
+	// Claude session listing/switching (openspec add-mac-keybinding-parity
+	// D3): REST mirror of the TUI's ctrl+r session switcher, added so a
+	// REST-only client (the mac app) can reach internal/claudesession without
+	// Go coupling. Open to any authenticated token, same tier as the other
+	// per-task endpoints above — not requireMaster-gated.
+	mux.HandleFunc("GET /api/tasks/{id}/claude-sessions", s.handleListClaudeSessions)
+	mux.HandleFunc("POST /api/tasks/{id}/claude-session", s.handleSwitchClaudeSession)
 
 	mux.HandleFunc("POST /api/sessions/stop-all", s.handleStopAll)
 	mux.HandleFunc("POST /api/maintenance/prune-completed", s.handlePruneCompleted)
