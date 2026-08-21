@@ -31,6 +31,36 @@ public enum TaskStatus: Sendable, Equatable, RawRepresentable {
     }
 }
 
+extension TaskStatus {
+    /// Advances to the next status in the `pending → inProgress → inReview →
+    /// complete` ladder, clamping at `.complete` (advancing the terminal
+    /// status is a no-op). Mirrors `internal/model/status.go`'s
+    /// `Status.Next()` exactly. `.other(_)` — an unrecognized/future status
+    /// string this client doesn't understand — has no defined position on
+    /// the ladder, so it's a safe no-op rather than a guess.
+    public func advanced() -> TaskStatus {
+        switch self {
+        case .pending: return .inProgress
+        case .inProgress: return .inReview
+        case .inReview: return .complete
+        case .complete, .other: return self
+        }
+    }
+
+    /// Reverts to the previous status, clamping at `.pending` (reverting the
+    /// initial status is a no-op). Mirrors `internal/model/status.go`'s
+    /// `Status.Prev()` exactly. `.other(_)` is a safe no-op, same rationale
+    /// as ``advanced()``.
+    public func reverted() -> TaskStatus {
+        switch self {
+        case .complete: return .inReview
+        case .inReview: return .inProgress
+        case .inProgress: return .pending
+        case .pending, .other: return self
+        }
+    }
+}
+
 /// A task as returned by `GET /api/tasks` and `GET /api/tasks/{id}` — the SPA
 /// wire shape (`taskJSON` in `internal/api/handlers.go`).
 ///

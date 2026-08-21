@@ -160,13 +160,18 @@ struct ClientRequestTests {
         "worktree", "session_id", "pinned", "result", "created_at",
     ]
 
-    private func rawTaskFixture(pinned: Bool) -> Data {
-        Data("""
+    /// `archived` present (with the given value) adds the `"archived"` key to
+    /// the fixture; `nil` (the default) omits it entirely, matching a real
+    /// `archived:false` row's `omitempty` wire behavior
+    /// (`internal/model/task.go`'s `Archived bool \`json:"archived,omitempty"\`\`).
+    private func rawTaskFixture(pinned: Bool, archived: Bool? = nil) -> Data {
+        let archivedField = archived.map { #","archived":\#($0)"# } ?? ""
+        return Data("""
         {"id":"t1","name":"task-one","status":"in_progress","project":"argus",
          "branch":"feature-x","prompt":"do the thing",
          "worktree":"/Users/x/.argus/worktrees/argus/task-one",
          "session_id":"sess-abc-123","pinned":\(pinned),"result":"some result blob",
-         "created_at":"2026-08-01T00:00:00Z"}
+         "created_at":"2026-08-01T00:00:00Z"\(archivedField)}
         """.utf8)
     }
 
@@ -240,6 +245,95 @@ struct ClientRequestTests {
         let body = try #require(put.body)
         let obj = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
         #expect(obj["pinned"] as? Bool == false)
+    }
+
+    // MARK: - Pinning an already-archived task (mutual-exclusivity mirror)
+    //
+    // `handleUpdateTaskRaw` (`internal/api/raw.go`) writes through the plain
+    // `db.Update`, NOT the dedicated `db.SetPinned`/`db.SetArchived` methods
+    // that enforce "at most one of {Pinned, Archived} is true"
+    // (`internal/model/task.go`'s `Task.SetPinned`/`SetArchived`) — it
+    // persists whatever the PUT body says verbatim. `setPinned` must
+    // therefore mirror that invariant itself when pinning: flip an
+    // already-`true` `archived` key back to `false` in the object before
+    // PUTting it back, so the round trip can never produce a
+    // `(pinned: true, archived: true)` row.
+
+    @Test("setPinned(pinned: true) on an already-archived task clears archived, still flips pinned, and preserves every other field")
+    func setPinnedTrueClearsArchived() async throws {
+        let fixture = rawTaskFixture(pinned: false, archived: true)
+        MockURLProtocol.handler = { req in
+            let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Type": "application/json"])!
+            return (resp, req.httpMethod == "GET" ? fixture : Data("{}".utf8))
+        }
+
+        try await makeClient().setPinned(id: "t1", pinned: true)
+
+        let put = try #require(MockURLProtocol.requestLog.last)
+        let body = try #require(put.body)
+        let obj = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+
+        // The mutual-exclusivity flip: archived goes to false even though
+        // the fetched row had it true.
+        #expect(obj["archived"] as? Bool == false)
+        // The field setPinned is asked to change.
+        #expect(obj["pinned"] as? Bool == true)
+
+        // No field silently dropped, none silently added beyond the expected
+        // "archived" key (present here, unlike the no-archived-key fixture
+        // used by the other round-trip tests).
+        #expect(Set(obj.keys) == Self.rawTaskFixtureKeys.union(["archived"]))
+        #expect(obj["id"] as? String == "t1")
+        #expect(obj["name"] as? String == "task-one")
+        #expect(obj["status"] as? String == "in_progress")
+        #expect(obj["project"] as? String == "argus")
+        #expect(obj["branch"] as? String == "feature-x")
+        #expect(obj["prompt"] as? String == "do the thing")
+        #expect(obj["session_id"] as? String == "sess-abc-123")
+        #expect(obj["result"] as? String == "some result blob")
+        #expect(obj["created_at"] as? String == "2026-08-01T00:00:00Z")
+    }
+
+    @Test("setPinned(pinned: true) leaves an already-false archived key unchanged, not removed")
+    func setPinnedTrueLeavesFalseArchivedAlone() async throws {
+        let fixture = rawTaskFixture(pinned: false, archived: false)
+        MockURLProtocol.handler = { req in
+            let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Type": "application/json"])!
+            return (resp, req.httpMethod == "GET" ? fixture : Data("{}".utf8))
+        }
+
+        try await makeClient().setPinned(id: "t1", pinned: true)
+
+        let put = try #require(MockURLProtocol.requestLog.last)
+        let body = try #require(put.body)
+        let obj = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+
+        #expect(obj["archived"] as? Bool == false)
+        #expect(obj["pinned"] as? Bool == true)
+        #expect(Set(obj.keys) == Self.rawTaskFixtureKeys.union(["archived"]))
+    }
+
+    @Test("setPinned(pinned: true) never inserts an archived key when the fetched row omitted it entirely")
+    func setPinnedTrueDoesNotInsertMissingArchived() async throws {
+        // Same fixture the other round-trip tests use — no "archived" key at
+        // all, mirroring a real archived:false row's omitempty wire shape.
+        let fixture = rawTaskFixture(pinned: false)
+        MockURLProtocol.handler = { req in
+            let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Type": "application/json"])!
+            return (resp, req.httpMethod == "GET" ? fixture : Data("{}".utf8))
+        }
+
+        try await makeClient().setPinned(id: "t1", pinned: true)
+
+        let put = try #require(MockURLProtocol.requestLog.last)
+        let body = try #require(put.body)
+        let obj = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+
+        #expect(obj["archived"] == nil)
+        #expect(Set(obj.keys) == Self.rawTaskFixtureKeys)
     }
 
     // MARK: - Maintenance (add-mac-keybinding-parity Stage 1 red:

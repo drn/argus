@@ -45,6 +45,14 @@ struct TaskDetailTabs: View {
         }
         .navigationTitle(task.name)
         .navigationSubtitle(task.project)
+        // Belt-and-braces alongside TaskRow's own `.task(id:)`: the overflow
+        // menu below reads `AppState.isPinned(_:)` (a client-side-only cache)
+        // when built, so make sure it's fresh for the selected task even if
+        // its sidebar row hasn't rendered yet (e.g. a filtered/collapsed
+        // section).
+        .task(id: task.id) {
+            await app.refreshPinnedState(taskID: task.id)
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
