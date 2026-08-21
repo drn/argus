@@ -16,6 +16,8 @@ This design was converged interactively (see the coordinator/user brainstorm tra
 
 **Non-Goals (deferred, named follow-ups — not silently dropped):**
 
+- Web SPA equivalent of the Claude session switcher (D3) — the two new daemon endpoints this change adds (`GET`/`POST /api/tasks/{id}/claude-sessions...`, see `specs/rest-api/spec.md`) are REST-reachable by any client, but this change only wires the mac app's UI to them. Follow-up: add a session-switcher affordance to the web SPA's terminal tab. Same shape as the existing "hera mutations are TUI-only" carve-out (CLAUDE.md's Frontend Parity section).
+
 - A global command palette (Ctrl+K equivalent) — new UI, bigger lift than this change.
 - A global task/role switcher beyond direct sidebar row selection (Ctrl+J equivalent) — the task-jump portion is already covered by clicking a row plus the new filter field; the Hera-role-jump portion is meaningless until the mac app has a Hera rail (separate change).
 - Restore-rail (Ctrl+B equivalent) — no mac-app concept of a collapsed rail today; SwiftUI's native sidebar toggle already covers the underlying need.
@@ -43,6 +45,8 @@ This mirrors why the TUI itself gates these exact bindings behind Cmd instead of
 ### D3: "Switch Claude session" gets a scoped picker, not the deferred global switcher
 
 The TUI's `ctrl+r` in agent view (switch which Claude session is attached to this task, via `internal/claudesession`) has no mac-app equivalent today, and the user explicitly asked for a mechanism rather than a deferral. Scope: a toolbar button in the Terminal tab (near the existing tab bar) opens a picker sheet — same UI pattern already used for rename/new-task — listing that task's available Claude sessions. This is materially smaller than the deferred global task/role switcher (which spans all tasks/roles, not one task's session history), so it's in scope for this change.
+
+**Correction discovered during implementation:** this requirement is the one exception to this change's "no daemon/REST API changes" framing (see Impact note below). `internal/claudesession` is a pure Go package the TUI calls in-process (`internal/tui/app.go`'s `openSessionPickerModal`/`switchSession`) — there is no REST route exposing it, and the mac app, as a REST-only client with zero Go coupling, cannot reach it any other way. This change therefore adds two minimal daemon endpoints (`GET /api/tasks/{id}/claude-sessions`, `POST /api/tasks/{id}/claude-session`) mirroring the TUI's list/switch flow — see the delta at `specs/rest-api/spec.md`. Per this repo's Frontend Parity rule, the web SPA's own equivalent affordance is an explicit, named non-goal (see Non-Goals below), not a silent gap — same precedent as the existing "hera mutations are TUI-only" carve-out.
 
 ### D4: Right-click context menus absorb the vi-style single-letter actions
 

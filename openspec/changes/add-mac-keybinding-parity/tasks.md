@@ -2,12 +2,12 @@
 
 ## 1. Tests
 
-- [ ] 1.1 Write failing tests for each scenario in `specs/macos-app/spec.md`: global shortcuts (tab switch, help, destroy, fork, open-repo, open-PR, jump-to-needs-input, overflow prune)
-- [ ] 1.2 Write failing tests for task rail quick actions (context menu status advance/revert, archive shortcut, pin shortcut)
-- [ ] 1.3 Write failing tests for task rail filter access (Cmd+F focus, hera-managed toggle)
-- [ ] 1.4 Write failing tests for terminal view shortcuts (Cmd+arrows nav, Shift+scroll, copy-output) and the non-regression scenario (unclaimed keystrokes still reach `POST /input` unchanged)
-- [ ] 1.5 Write failing tests for the Claude session switcher (toolbar button opens picker, selecting a session attaches to it)
-- [ ] 1.6 Confirm every "it should" criterion in `design.md`'s Acceptance criteria section has a corresponding failing test (Prove-It Pattern)
+- [x] 1.1 Write failing tests for each scenario in `specs/macos-app/spec.md`: global shortcuts (tab switch, help, destroy, fork, open-repo, open-PR, jump-to-needs-input, overflow prune) — pure-logic seams tested (needs-input nav, prune client call); pure SwiftUI-wiring scenarios documented as untestable glue (no XCUITest harness exists in this repo)
+- [x] 1.2 Write failing tests for task rail quick actions (context menu status advance/revert, archive shortcut, pin shortcut) — status cycling + pin round-trip tested; menu-wiring documented as untestable glue
+- [x] 1.3 Write failing tests for task rail filter access (Cmd+F focus, hera-managed toggle) — no new logic; documented as untestable glue
+- [ ] 1.4 Write failing tests for terminal view shortcuts (Cmd+arrows nav, Shift+scroll, copy-output) and the non-regression scenario (unclaimed keystrokes still reach `POST /input` unchanged) — allowlist-membership tested (`TerminalChordsTests.swift`); live NSEvent-monitor dispatch + full non-regression smoke test deferred to Stage 5 (5.4/5.5)
+- [ ] 1.5 Write failing tests for the Claude session switcher (toolbar button opens picker, selecting a session attaches to it) — BLOCKED: escalated to coordinator (no daemon REST endpoint exists for `internal/claudesession`); paused pending decision
+- [x] 1.6 Confirm every "it should" criterion in `design.md`'s Acceptance criteria section has a corresponding failing test (Prove-It Pattern) — done for all except the paused session-switcher requirement
 
 ## 2. Global keyboard shortcuts and overflow actions
 
@@ -50,10 +50,13 @@
 
 **Depends on:** Stage 1
 
+Resolved mid-implementation: this requirement needs two new minimal daemon REST endpoints (`internal/claudesession` had no HTTP route) — escalated to and approved by the coordinator; see design.md D3 and `specs/rest-api/spec.md`. Split into 6a (daemon) and 6b (mac client), dispatched in parallel against a fixed contract.
+
+- [ ] 6a.1 Add `GET /api/tasks/{id}/claude-sessions` and `POST /api/tasks/{id}/claude-session` per `specs/rest-api/spec.md`'s scenarios, with Go tests
 - [ ] 6.1 Add a toolbar button in the Terminal tab (near the existing tab bar) that opens a picker sheet
 - [ ] 6.2 Build the picker sheet listing the current task's available Claude sessions (reuse the existing sheet pattern from rename/new-task)
 - [ ] 6.3 Wire session selection to attach the terminal view to the chosen session
-- [ ] 6.4 Verify tests from 1.5 pass
+- [ ] 6.4 Verify tests from 1.5 pass (written as part of Stage 6 itself, since Stage 1 explicitly excluded this requirement pending the endpoint decision)
 
 ## 7. Documentation and wrap-up
 

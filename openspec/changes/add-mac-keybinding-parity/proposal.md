@@ -23,10 +23,11 @@ The macOS companion app has only four keyboard shortcuts today (new task, rename
 ### Modified Capabilities
 
 - `macos-app`: adds keyboard-shortcut, context-menu, and toolbar requirements across the app shell/rail (existing "App shell & task rail" requirement) and the terminal surface (existing "Live terminal streaming" requirement), plus a new requirement for the terminal-safe key-interception mechanism and the deferred-scope statement.
+- `rest-api`: adds two new endpoints (list / switch a task's Claude sessions) so the mac app can reach `internal/claudesession`, which previously had no REST route (see design.md D3).
 
 ## Impact
 
 - `macos/Sources/Argus/Sidebar.swift`, `TaskRow.swift`, `TaskActions.swift` — context menu, filter field, hera-managed toggle, archive/pin shortcuts.
 - `macos/Sources/Argus/ContentView.swift`, `ArgusApp.swift` — new `.commands`/menu items for global chrome shortcuts and the overflow-menu prune item.
 - `macos/Sources/Argus/TerminalTab.swift`, `TerminalController.swift` — extended local `NSEvent` monitor for terminal-safe chords; new toolbar button + session-picker sheet.
-- No daemon/REST API changes — all actions already exist as endpoints; this change only adds mac-app-side affordances to reach them.
+- `internal/api/routes.go`, `internal/api/handlers.go` (or a dedicated new handler file) — two new minimal REST endpoints (`GET`/`POST /api/tasks/{id}/claude-session(s)`) so the mac app can reach `internal/claudesession`, which today is only called in-process by the TUI. Every other action in this change already exists as a daemon endpoint; this one exception is called out in `design.md` D3 and delta-specced under `specs/rest-api/spec.md`. The web SPA's own use of these new endpoints is an explicit follow-up, not implemented in this change (see design.md Non-Goals).
