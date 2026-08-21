@@ -354,6 +354,31 @@ ARGUS_MAC_SELECT_TASK=my-task ARGUS_MAC_INITIAL_TAB=diff \
 
 **Parity note:** the **Hera view is read-only in both the macOS app and the web app** — they render the roster and plan but expose no coordinator mutations (spawn / block / status). Driving a hera team stays **TUI-only** until the hera mutation endpoints are exposed over REST. Everything else — task lifecycle, terminal I/O, diffs, schedules, settings — is at full parity across all three clients.
 
+**Keyboard shortcuts:**
+
+| Shortcut | Action |
+| --- | --- |
+| ⌘N | New task |
+| ⌘R | Rename selected task |
+| ⇧⌘S | Schedules window |
+| ⌘Q | Quit |
+| ⌘1 / ⌘2 / ⌘3 / ⌘4 | Switch detail tab: Terminal / Diff / Files / Info |
+| ⇧⌘/ | Shortcuts help sheet |
+| ⌘⌫ | Destroy selected task (with confirmation) |
+| ⇧⌘B | Fork selected task |
+| ⇧⌘E | Open selected task's worktree in Finder |
+| ⇧⌘U | Open selected task's PR in the browser — works from the app's global scope and while the Terminal tab has focus |
+| ⇧⌘J | Jump to the next task whose session needs input |
+| ⇧⌘A | Archive/unarchive selected task |
+| ⇧⌘P | Pin/unpin selected task |
+| ⌘F | Focus the sidebar's filter field |
+| ⌘↑ / ⌘↓ | Previous/next task, while the Terminal tab has focus |
+| ⌘← / ⌘→ | Cycle the detail tab, while the Terminal tab has focus |
+| ⇧↑ / ⇧↓ / ⇧PageUp / ⇧PageDown / ⇧End | Scroll the terminal's scrollback, while the Terminal tab has focus |
+| ⇧⌘C | Copy the terminal's visible output |
+
+The Cmd-modified chords listed as "while the Terminal tab has focus" are intercepted by a local key monitor before they reach the live terminal — they never leak into the agent's input stream. Every other keystroke, including all Ctrl chords, reaches the agent unchanged. Right-clicking a task row also surfaces status-advance/status-revert; the toolbar's "…" overflow menu has "Prune Stale Worktrees"; the sidebar's filter bar has a persistent hera-managed-tasks visibility toggle; and the Terminal tab's toolbar has a button that opens the Claude session switcher (see the REST endpoints above).
+
 ### Self-Update
 
 From the **Settings tab** (Status section, when the daemon is connected) the **Source path** row holds the path to your local Argus checkout, and the **Update Argus** row runs `git pull --ff-only` followed by `go install ./...` and then restarts the daemon so the new binary takes over. Active sessions reattach across the restart. The same controls are exposed in the web UI under **Settings → Argus update** (master token only).

@@ -62,7 +62,7 @@ Resolved mid-implementation: this requirement needs two new minimal daemon REST 
 
 **Depends on:** Stages 2-6
 
-- [ ] 7.1 Document the terminal-safe-chord allowlist mechanism as a gotcha in `context/knowledge/gotchas/macos-app.md` (non-obvious invariant: why Cmd-chords are intercepted pre-SwiftTerm rather than via SwiftUI Commands)
-- [ ] 7.2 Update the README's Reference keybinding table if one covers the mac app (check first; skip if none exists)
-- [ ] 7.3 Run `make mac-build` and `make mac-test`; fix any failures
+- [x] 7.1 Document the terminal-safe-chord allowlist mechanism as a gotcha in `context/knowledge/gotchas/macos-app.md` (non-obvious invariant: why Cmd-chords are intercepted pre-SwiftTerm rather than via SwiftUI Commands) — done as part of Stage 5
+- [x] 7.2 Update the README's Reference keybinding table if one covers the mac app (check first; skip if none exists) — no dedicated mac-app keybinding table existed; added one to the "macOS app" Reference section, plus Stage 6a already added the two new REST endpoints to the REST reference table
+- [x] 7.3 Run `make mac-build` and `make mac-test`; fix any failures — 244/244 tests, 19 suites, clean build on the fully-merged branch
 - [ ] 7.4 `openspec archive add-mac-keybinding-parity` (or the manual merge-and-move fallback) on the change branch before merge, per this repo's CLAUDE.md
