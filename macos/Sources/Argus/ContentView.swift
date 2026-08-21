@@ -72,6 +72,9 @@ struct ContentView: View {
         .sheet(isPresented: $app.isPresentingShortcutsHelp) {
             ShortcutsHelpSheet()
         }
+        .sheet(item: $app.claudeSessionPicker) { state in
+            ClaudeSessionPickerSheet(state: state)
+        }
         .taskConfirmationDialog(app: app)
     }
 

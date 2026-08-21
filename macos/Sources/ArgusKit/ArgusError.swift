@@ -39,6 +39,15 @@ public enum ArgusError: Error, Sendable, Equatable {
         return false
     }
 
+    /// True when the error is an HTTP 400 — a request the server rejected as
+    /// malformed for this task (e.g. `/claude-sessions` on a non-Claude-backed
+    /// task). Callers use this to distinguish "not applicable to this task"
+    /// from a generic failure worth retrying.
+    public var isBadRequest: Bool {
+        if case let .http(status, _) = self { return status == 400 }
+        return false
+    }
+
     /// The HTTP status code, when this is a ``http(status:body:)`` error.
     public var httpStatus: Int? {
         if case let .http(status, _) = self { return status }

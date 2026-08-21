@@ -54,6 +54,21 @@ struct TaskDetailTabs: View {
             await app.refreshPinnedState(taskID: task.id)
         }
         .toolbar {
+            // Only meaningful on the Terminal tab, and only for a
+            // Claude-backed task (client-side pre-filter — see
+            // AppState.isLikelyClaudeBacked; the daemon's 400 is the
+            // authoritative check either way, surfaced via ActionErrorBanner
+            // by openClaudeSessionPicker(for:) for anything this misses).
+            if app.activeDetailTab == .terminal && AppState.isLikelyClaudeBacked(task) {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        _Concurrency.Task { await app.openClaudeSessionPicker(for: task) }
+                    } label: {
+                        Label("Switch Claude Session", systemImage: "clock.arrow.circlepath")
+                    }
+                    .help("Switch Claude Session")
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     TaskActionMenuItems(task: task, showShortcuts: true)
