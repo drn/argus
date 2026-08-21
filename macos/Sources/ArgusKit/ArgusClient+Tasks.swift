@@ -84,4 +84,14 @@ extension ArgusClient {
         let env: LinksEnvelope = try await getDecoding("/api/tasks/\(pc(taskID))/links")
         return env.links
     }
+
+    /// `POST /api/maintenance/prune-completed` — removes every task with
+    /// status=complete, stops their sessions, and cleans up their worktrees +
+    /// branches; also sweeps orphaned worktree directories that no longer
+    /// correspond to any DB row. Mirrors the TUI's Ctrl+R "Prune completed
+    /// tasks" action (see `internal/api/handlers.go`'s `handlePruneCompleted`,
+    /// `internal/apiclient.PruneReport`). No request body.
+    public func pruneCompleted() async throws -> PruneReport {
+        try await sendDecoding("POST", "/api/maintenance/prune-completed")
+    }
 }

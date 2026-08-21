@@ -146,6 +146,19 @@ public struct CreateTaskResponse: Sendable, Equatable, Decodable {
     public let status: String
 }
 
+/// The response envelope from `POST /api/maintenance/prune-completed`,
+/// mirroring `internal/apiclient.PruneReport`'s JSON shape verbatim.
+public struct PruneReport: Sendable, Equatable, Decodable {
+    /// Number of completed tasks removed.
+    public let pruned: Int
+    /// Number of worktrees cleaned up.
+    public let worktrees: Int
+    /// Number of orphaned worktree directories swept (no corresponding DB row).
+    public let orphans: Int
+    /// Number of completed tasks skipped because they hold a live hera binding.
+    public let skippedHeraBound: Int
+}
+
 /// The response from `POST /api/tasks/{id}/restart` and `/resume`.
 public struct SessionActionResult: Sendable, Equatable, Decodable {
     public let status: String

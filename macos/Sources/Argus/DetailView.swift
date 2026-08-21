@@ -54,6 +54,27 @@ struct TaskDetailTabs: View {
                 }
             }
         }
+        .background(tabSwitchShortcuts)
+    }
+
+    /// Cmd+1/2/3/4 tab-switch shortcuts (design.md's Cmd+digit framing).
+    /// Hidden, zero-size buttons rather than a centralized dispatch table
+    /// (D1) — attached to this persistently-mounted view (rather than, say,
+    /// the sidebar) so they're only live while a task's detail pane is
+    /// actually showing tabs.
+    private var tabSwitchShortcuts: some View {
+        Group {
+            Button("") { app.activeDetailTab = .terminal }
+                .keyboardShortcut("1", modifiers: .command)
+            Button("") { app.activeDetailTab = .diff }
+                .keyboardShortcut("2", modifiers: .command)
+            Button("") { app.activeDetailTab = .files }
+                .keyboardShortcut("3", modifiers: .command)
+            Button("") { app.activeDetailTab = .info }
+                .keyboardShortcut("4", modifiers: .command)
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
     }
 }
 
