@@ -46,7 +46,7 @@ The system SHALL provide keyboard shortcuts for switching the active detail tab,
 
 ### Requirement: Task rail quick actions
 
-The system SHALL show status-advance and status-revert as right-click context-menu items on a task rail row, and SHALL provide keyboard shortcuts for the existing archive and pin actions.
+The system SHALL show status-advance and status-revert as right-click context-menu items on a task rail row, and SHALL provide keyboard shortcuts for the existing archive action and a new pin action.
 
 #### Scenario: Status advance/revert via context menu
 
@@ -61,7 +61,7 @@ The system SHALL show status-advance and status-revert as right-click context-me
 #### Scenario: Pin via shortcut
 
 - **WHEN** the user presses the pin shortcut with a task selected
-- **THEN** the existing pin action is triggered identically to its mouse-driven equivalent
+- **THEN** the task is pinned/unpinned via the daemon's raw-task round-trip (no dedicated pin endpoint exists), reflected in the UI identically to a hypothetical mouse-driven equivalent
 
 ### Requirement: Task rail filter access
 

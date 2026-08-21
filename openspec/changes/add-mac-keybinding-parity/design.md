@@ -87,7 +87,7 @@ Low-frequency maintenance action → a new item in the existing toolbar overflow
 
 - It should show status-advance and status-revert as right-click context-menu items on a task row.
 - It should trigger the existing archive action via a shortcut.
-- It should trigger the existing pin action via a shortcut.
+- It should trigger a new pin action (no pin affordance existed in the mac app before this change) via a shortcut.
 - It should focus the sidebar's filter field via Cmd+F.
 - It should show a persistent, visible toggle in the sidebar's filter bar that shows/hides hera-managed tasks.
 

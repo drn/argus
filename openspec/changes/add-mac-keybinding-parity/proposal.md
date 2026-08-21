@@ -7,7 +7,7 @@ The macOS companion app has only four keyboard shortcuts today (new task, rename
 - Add mac-native keyboard shortcuts for: tab switching, help, destroy, fork, open-repo, open-PR, jump-to-next-needs-input (global chrome).
 - Add a "Prune stale worktrees" item to the toolbar overflow menu.
 - Add a right-click context menu on task rail rows for status advance/revert.
-- Add keyboard shortcuts to the existing archive and pin actions.
+- Add a keyboard shortcut to the existing archive action, and a new pin action (with its own shortcut) where none existed before.
 - Add a Cmd+F shortcut that focuses the sidebar's filter field, and a visible toggle in the filter bar for showing/hiding hera-managed tasks.
 - Add Cmd+↑/↓ (task switch), Cmd+←/→ (pane focus), and Shift+↑/↓/PageUp/PageDown/End (scrollback) handling in the Terminal tab, intercepted before reaching SwiftTerm so they never leak into the PTY stream.
 - Add a keyboard shortcut for copying the terminal's visible output.
