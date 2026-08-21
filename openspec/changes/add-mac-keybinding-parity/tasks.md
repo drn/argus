@@ -13,27 +13,27 @@
 
 **Depends on:** Stage 1
 
-- [ ] 2.1 Check each candidate chord (tab switch, help, destroy, fork, open-repo, open-PR, jump-to-needs-input) against macOS HIG reserved shortcuts; pick a Shift/Option-augmented alternative wherever the natural TUI-mirroring chord collides (per design.md Risks)
-- [ ] 2.2 Add `.commands`/`.keyboardShortcut` wiring in `ArgusApp.swift`/`ContentView.swift` for tab switch, help-sheet, destroy, fork, open-repo, open-PR, jump-to-needs-input
-- [ ] 2.3 Build the shortcuts-help sheet view
-- [ ] 2.4 Add "Prune stale worktrees" to the toolbar overflow menu, wired to the existing prune action
-- [ ] 2.5 Verify tests from 1.1 pass
+- [x] 2.1 Check each candidate chord (tab switch, help, destroy, fork, open-repo, open-PR, jump-to-needs-input) against macOS HIG reserved shortcuts; pick a Shift/Option-augmented alternative wherever the natural TUI-mirroring chord collides (per design.md Risks) — final: ⌘1-4 tabs, ⇧⌘/ help, ⌘⌫ destroy, ⇧⌘B fork, ⇧⌘E open-repo, ⇧⌘U open-PR, ⇧⌘J jump-to-needs-input
+- [x] 2.2 Add `.commands`/`.keyboardShortcut` wiring in `ArgusApp.swift`/`ContentView.swift` for tab switch, help-sheet, destroy, fork, open-repo, open-PR, jump-to-needs-input
+- [x] 2.3 Build the shortcuts-help sheet view
+- [x] 2.4 Add "Prune stale worktrees" to the toolbar overflow menu, wired to the existing prune action (new app-chrome-level overflow menu; new `ArgusClient.pruneCompleted()` client method added, no daemon change needed)
+- [x] 2.5 Verify tests from 1.1 pass
 
 ## 3. Task rail quick actions
 
 **Depends on:** Stage 1
 
-- [ ] 3.1 Add a `.contextMenu` to `TaskRow.swift` with status-advance/status-revert items calling the existing status-transition logic
-- [ ] 3.2 Add `.keyboardShortcut` to the existing archive and pin actions in `TaskActions.swift`
-- [ ] 3.3 Verify tests from 1.2 pass
+- [x] 3.1 Add a `.contextMenu` to `TaskRow.swift` with status-advance/status-revert items calling the existing status-transition logic
+- [x] 3.2 Add `.keyboardShortcut` to the existing archive action and the new pin action (net-new UI; no pin affordance existed before this change) in `TaskActions.swift`
+- [x] 3.3 Verify tests from 1.2 pass
 
 ## 4. Task rail filter access
 
 **Depends on:** Stage 1
 
-- [ ] 4.1 Add Cmd+F shortcut in `Sidebar.swift` that moves keyboard focus to the filter field
-- [ ] 4.2 Add a persistent, visible toggle control in the sidebar's filter bar for hera-managed task visibility, wired to the existing filter state
-- [ ] 4.3 Verify tests from 1.3 pass
+- [x] 4.1 Add Cmd+F shortcut in `Sidebar.swift` that moves keyboard focus to the filter field
+- [x] 4.2 Add a persistent, visible toggle control in the sidebar's filter bar for hera-managed task visibility, wired to the existing filter state
+- [x] 4.3 Verify tests from 1.3 pass
 
 ## 5. Terminal view keyboard shortcuts
 
@@ -52,11 +52,11 @@
 
 Resolved mid-implementation: this requirement needs two new minimal daemon REST endpoints (`internal/claudesession` had no HTTP route) — escalated to and approved by the coordinator; see design.md D3 and `specs/rest-api/spec.md`. Split into 6a (daemon) and 6b (mac client), dispatched in parallel against a fixed contract.
 
-- [ ] 6a.1 Add `GET /api/tasks/{id}/claude-sessions` and `POST /api/tasks/{id}/claude-session` per `specs/rest-api/spec.md`'s scenarios, with Go tests
-- [ ] 6.1 Add a toolbar button in the Terminal tab (near the existing tab bar) that opens a picker sheet
-- [ ] 6.2 Build the picker sheet listing the current task's available Claude sessions (reuse the existing sheet pattern from rename/new-task)
-- [ ] 6.3 Wire session selection to attach the terminal view to the chosen session
-- [ ] 6.4 Verify tests from 1.5 pass (written as part of Stage 6 itself, since Stage 1 explicitly excluded this requirement pending the endpoint decision)
+- [x] 6a.1 Add `GET /api/tasks/{id}/claude-sessions` and `POST /api/tasks/{id}/claude-session` per `specs/rest-api/spec.md`'s scenarios, with Go tests (switch reuses the existing `Runner.KickRerender` primitive, not a hand-rolled stop+start, to avoid a session-map race)
+- [x] 6.1 Add a toolbar button in the Terminal tab (near the existing tab bar) that opens a picker sheet
+- [x] 6.2 Build the picker sheet listing the current task's available Claude sessions (reuse the existing sheet pattern from rename/new-task)
+- [x] 6.3 Wire session selection to attach the terminal view to the chosen session
+- [x] 6.4 Verify tests from 1.5 pass (written as part of Stage 6 itself, since Stage 1 explicitly excluded this requirement pending the endpoint decision)
 
 ## 7. Documentation and wrap-up
 
