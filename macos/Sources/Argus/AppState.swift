@@ -221,6 +221,18 @@ final class AppState {
         return tasks.first { $0.id == id }
     }
 
+    /// Looks up a task by id outside the `selectedTaskID`-scoped
+    /// ``selectedTask``. Used by the Terminal tab's local key monitor to
+    /// resolve "the task currently showing in this terminal" (via
+    /// `TerminalController.taskID`) for its Cmd+Shift+U open-PR fallback
+    /// (add-mac-keybinding-parity Stage 5) — the terminal's bound task
+    /// isn't necessarily `selectedTask` the instant a rebuild is in
+    /// flight, so this looks it up directly rather than assuming they
+    /// match.
+    func task(withID id: String) -> ArgusTask? {
+        tasks.first { $0.id == id }
+    }
+
     // MARK: - Grouping (drives the sidebar sections)
 
     /// Active = not archived and pending or in_progress. Feeds the launch
@@ -287,6 +299,16 @@ final class AppState {
         if let existing = terminalControllers[taskID] { return existing }
         guard let client else { return nil }
         let controller = TerminalController(taskID: taskID, client: client)
+        // The Terminal tab's local key monitor (`FocusTakingTerminalView`,
+        // add-mac-keybinding-parity Stage 5) needs both this controller
+        // (to run the scroll/copy actions) and this AppState (to run the
+        // task-switch/tab-cycle/open-PR actions) — wired here, the one
+        // place that constructs the view's backing controller, rather than
+        // widening `TerminalController`'s own init signature for it.
+        if let view = controller.terminalView as? FocusTakingTerminalView {
+            view.controller = controller
+            view.appState = self
+        }
         terminalControllers[taskID] = controller
         return controller
     }
@@ -697,6 +719,50 @@ final class AppState {
                                                     current: selectedTaskID) else { return }
         selectedTaskID = next
     }
+
+    /// Moves the sidebar selection to the previous/next task in the
+    /// sidebar's own visual order (``tasksByFolder``, project-folder then
+    /// creation order) — the Terminal tab's Cmd+Up/Cmd+Down shortcut
+    /// (spec.md "Switch tasks via Cmd+Up/Down without PTY leak"). Pure
+    /// index math lives in ``TaskNavigation`` (ArgusKit) so it has real
+    /// tests; this is just the ordered-id-list wiring. Distinct from
+    /// ``jumpToNextNeedsInput()``: this is a plain adjacent move over
+    /// EVERY task, not one filtered to tasks needing input, and — per
+    /// ``TaskNavigation``'s own doc comment — it CLAMPS at the rail's ends
+    /// rather than wrapping. Reaching either end (or an empty rail) is a
+    /// no-op.
+    func selectPreviousTask() {
+        let orderedIDs = tasksByFolder.flatMap { $0.tasks.map(\.id) }
+        guard let next = TaskNavigation.adjacent(orderedIDs: orderedIDs,
+                                                  current: selectedTaskID,
+                                                  direction: .previous) else { return }
+        selectedTaskID = next
+    }
+
+    /// See ``selectPreviousTask()`` — the Cmd+Down half of the same
+    /// shortcut pair, stepping toward the bottom of the rail instead.
+    func selectNextTask() {
+        let orderedIDs = tasksByFolder.flatMap { $0.tasks.map(\.id) }
+        guard let next = TaskNavigation.adjacent(orderedIDs: orderedIDs,
+                                                  current: selectedTaskID,
+                                                  direction: .next) else { return }
+        selectedTaskID = next
+    }
+
+    /// The Terminal tab's Cmd+Left/Cmd+Right "pane focus" shortcut
+    /// (spec.md "Switch pane focus via Cmd+Left/Right without PTY leak").
+    /// The mac app has no split-pane terminal view to move focus between
+    /// (design.md's Stage 5 resolution notes `TerminalController.swift`
+    /// has zero "pane" concept) — cycling the detail pane's active tab
+    /// through the same Terminal→Diff→Files→Info order Stage 2's Cmd+1-4
+    /// direct-select shortcuts already use is the closest structural
+    /// analog. Wraps at both ends (``CyclicSelection``, ArgusKit); `true`
+    /// cycles forward (Cmd+Right), `false` backward (Cmd+Left).
+    func cycleDetailTab(forward: Bool) {
+        activeDetailTab = CyclicSelection.step(Self.detailTabCycleOrder, current: activeDetailTab, forward: forward)
+    }
+
+    private static let detailTabCycleOrder: [DetailTab] = [.terminal, .diff, .files, .info]
 
     /// `POST /api/maintenance/prune-completed` — removes every completed
     /// task, its worktree, and branch, and sweeps orphaned worktree
