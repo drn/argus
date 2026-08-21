@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"time"
 
@@ -262,7 +263,7 @@ func (s *Server) performClaudeSessionSwitch(task *model.Task, cfg config.Config)
 	// Preserve the live session's current PTY size across the restart —
 	// this is a session switch, not a resize.
 	cols, rows := sess.PTYSize()
-	if err := s.runner.KickRerender(task, cfg, uint16(rows), uint16(cols)); err != nil {
+	if err := s.runner.KickRerender(task, cfg, clampToUint16(rows), clampToUint16(cols)); err != nil {
 		return 0, err
 	}
 
@@ -284,4 +285,19 @@ func (s *Server) performClaudeSessionSwitch(task *model.Task, cfg config.Config)
 		return 0, err
 	}
 	return newSess.PID(), nil
+}
+
+// clampToUint16 bounds an int PTY dimension into uint16 range. PTYSize's
+// int-typed return is not itself bounds-guaranteed, so a direct uint16(v)
+// conversion trips gosec's G115 integer-overflow check; a negative or
+// implausibly large value clamps to the nearest valid endpoint instead of
+// wrapping.
+func clampToUint16(v int) uint16 {
+	if v <= 0 {
+		return 0
+	}
+	if v > math.MaxUint16 {
+		return math.MaxUint16
+	}
+	return uint16(v)
 }
