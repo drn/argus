@@ -335,13 +335,13 @@ func TestRail_NeedsInputCount(t *testing.T) {
 // traversal, keyed by role id rather than counted.
 func TestModel_NeedsInputRoleIDs(t *testing.T) {
 	m := twoOrchModelNeedsInput("t12", "t21")
-	ids := m.needsInputRoleIDs()
+	ids := m.NeedsInputRoleIDs()
 	testutil.Equal(t, len(ids), 2)
 	testutil.Equal(t, ids[12], true) // orch-1's worker (TaskID t12)
 	testutil.Equal(t, ids[21], true) // orch-2's coordinator (TaskID t21)
 	testutil.Equal(t, ids[11], false)
 
-	testutil.Nil(t, Model{}.needsInputRoleIDs())
+	testutil.Nil(t, Model{}.NeedsInputRoleIDs())
 }
 
 // TestRail_CurrentRef_ZeroOnArchiveExpandoRow documents a known, PRE-EXISTING

@@ -686,7 +686,7 @@ func TestPanes_SubCoordSelectionShowsDetails(t *testing.T) {
 	// for the child, whose worker roles project as plan nodes (the child's own
 	// worker is in; coordinators — including the parent's — are never plan nodes).
 	m := p.Rail().Model()
-	nodes, _ := heraPlanNodesWithBridge(m.OrchByID(child), m.bridgeIndex())
+	nodes, _ := heraPlanNodesWithBridge(m.OrchByID(child), m.BridgeIndex())
 	ids := planTaskIDs(nodes)
 	testutil.Equal(t, ids["t-cwkr"], true)    // child's worker is a plan node
 	testutil.Equal(t, ids["t-pcoord"], false) // the PARENT coordinator is not

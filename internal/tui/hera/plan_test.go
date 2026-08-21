@@ -352,7 +352,7 @@ func TestPlanNodeIcon_BridgingSubCoordUnaffectedByDescendantRollup(t *testing.T)
 	c := orchView(2, "C", "tc", wk("wc", "twc"))
 	m := Model{Active: []OrchView{r, c}}
 	roleByName(t, &m, 2, "wc").NeedsInput = true
-	m.rollupNeedsInput()
+	m.RollupNeedsInput()
 
 	w := roleByName(t, &m, 1, "w")
 	testutil.Equal(t, w.IsActive(), true)         // bridging sub-coord is working...
@@ -361,7 +361,7 @@ func TestPlanNodeIcon_BridgingSubCoordUnaffectedByDescendantRollup(t *testing.T)
 	wantGlyph, wantStyle := statusIcon(w, false, 0)
 	testutil.Equal(t, wantGlyph, widget.SpinnerFrame(0))
 
-	nodes, _ := heraPlanNodesWithBridge(m.OrchByID(1), m.bridgeIndex())
+	nodes, _ := heraPlanNodesWithBridge(m.OrchByID(1), m.BridgeIndex())
 	n, ok := findNode(nodes, planNodeID(w))
 	testutil.Equal(t, ok, true)
 	testutil.Equal(t, n.Icon != nil, true)
@@ -664,7 +664,7 @@ func TestHeraPlanNodes_TierFieldsRide(t *testing.T) {
 	testutil.Equal(t, n2a.ProfileWarning, `profile "ghost" missing or invalid`)
 }
 
-// TestModelAnnotateRoles_StampsEverySection pins that Model.annotateRoles applies
+// TestModelAnnotateRoles_StampsEverySection pins that Model.AnnotateRoles applies
 // the resolver to every RoleView across all sections (pinned/active/archived +
 // freelance) in place — the seam HeraPage.doRefresh uses to stamp tiering.
 func TestModelAnnotateRoles_StampsEverySection(t *testing.T) {
@@ -675,7 +675,7 @@ func TestModelAnnotateRoles_StampsEverySection(t *testing.T) {
 		Freelance: []RoleView{{Name: "f"}},
 	}
 	count := 0
-	m.annotateRoles(func(r *RoleView) {
+	m.AnnotateRoles(func(r *RoleView) {
 		count++
 		r.AppliedModel = "stamped"
 	})
@@ -683,5 +683,5 @@ func TestModelAnnotateRoles_StampsEverySection(t *testing.T) {
 	testutil.Equal(t, m.Active[0].Roles[1].AppliedModel, "stamped")
 	testutil.Equal(t, m.Freelance[0].AppliedModel, "stamped")
 	// nil resolver is a safe no-op.
-	m.annotateRoles(nil)
+	m.AnnotateRoles(nil)
 }

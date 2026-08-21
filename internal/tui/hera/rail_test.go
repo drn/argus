@@ -702,7 +702,7 @@ func TestRail_LargeShapeSixRootsManyNested(t *testing.T) {
 	m := Model{Active: active}
 
 	// 6 roots, 24 nested.
-	consumed := m.consumedSet(m.bridgeIndex())
+	consumed := m.ConsumedSet(m.BridgeIndex())
 	testutil.Equal(t, len(consumed), 24)
 
 	r := NewRail()

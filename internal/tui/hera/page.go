@@ -327,12 +327,12 @@ func NewHeraPage(reader HeraReader) *HeraPage {
 // widget stays on the parent plan. MUST run on the tview main thread (it reads
 // the rail model and reprojects — pure in-memory, no I/O).
 func (p *HeraPage) drillIntoChild(id string) {
-	child := p.rail.Model().bridgeIndex()[id]
+	child := p.rail.Model().BridgeIndex()[id]
 	if child == nil {
 		uxlog.Log("[hera-view] plan drill-in: no child orch for task=%s", id)
 		return
 	}
-	nodes, edges := heraPlanNodesWithBridge(child, p.rail.Model().bridgeIndex())
+	nodes, edges := heraPlanNodesWithBridge(child, p.rail.Model().BridgeIndex())
 	p.plan.PushOrch("Details ▸ "+child.Name+" · Plan", nodes, edges)
 	uxlog.Log("[hera-view] plan drill-in: task=%s child=%s nodes=%d edges=%d depth=%d",
 		id, child.Name, len(nodes), len(edges), p.plan.DrillDepth())
@@ -629,7 +629,7 @@ func (p *HeraPage) doRefresh() {
 	// before handing the model to the rail — local mode only (the resolver is nil
 	// in remote/tests). Runs here, off the Draw path, because resolution reads disk.
 	if p.tierResolver != nil {
-		m.annotateRoles(p.tierResolver)
+		m.AnnotateRoles(p.tierResolver)
 	}
 	p.rail.SetModel(m)
 	// Best-effort PR indicator source (namespace "pr", same daemon-populated
@@ -1118,7 +1118,7 @@ func rosterScrollDelta(event *tcell.EventKey) (int, bool) {
 // as dependency edges — into the embedded plan widget. `root` is the
 // orchestrator in Details view — the selected one for a top-level coordinator,
 // or the bridged CHILD for a worker-bridge sub-coord (BUG-004). A nil root
-// yields an empty graph. The bridge index (Model.bridgeIndex) lets the
+// yields an empty graph. The bridge index (Model.BridgeIndex) lets the
 // projection stamp Node.Drillable on a worker whose bound task coordinates a
 // child orchestrator (D6), so the single-arg heraPlanNodes is NOT used here —
 // it leaves Drillable false. When the projection is NOT an authored plan
@@ -1143,7 +1143,7 @@ func (p *HeraPage) rebuildPlan(root *OrchView) {
 		p.plan.SetData(nil, nil)
 		return
 	}
-	nodes, edges := heraPlanNodesWithBridge(root, p.rail.Model().bridgeIndex())
+	nodes, edges := heraPlanNodesWithBridge(root, p.rail.Model().BridgeIndex())
 	authored := planIsAuthored(nodes, edges)
 	if !authored {
 		// No authored plan (no planned nodes, no blocking edges) — feed the widget

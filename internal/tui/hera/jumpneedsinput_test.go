@@ -138,7 +138,7 @@ func TestHeraPage_JumpToNextNeedsInput_CoordSpawnedNestedSubteamOwnNeed(t *testi
 		RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
 	m := Model{Active: []OrchView{p, q}}
 	roleByName(t, &m, 2, "coord").NeedsInput = true // only Q's own coordinator need
-	m.rollupNeedsInput()                            // propagates SubtreeNeedsInput for the fold-reveal
+	m.RollupNeedsInput()                            // propagates SubtreeNeedsInput for the fold-reveal
 
 	page := NewHeraPage(memDB(t))
 	page.Rail().SetModel(m)

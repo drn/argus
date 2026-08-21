@@ -241,7 +241,7 @@ func (d *DetailsView) Draw(screen tcell.Screen, x, y, w, h int, focused bool) {
 		field("Worktree", worktreeDisplay(meta.Worktree, inner.W))
 	}
 	if meta.Cost != 0 {
-		field("Cost", formatCostUSD(meta.Cost))
+		field("Cost", FormatCostUSD(meta.Cost))
 	}
 	row++ // blank spacer
 

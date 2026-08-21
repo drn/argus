@@ -38,7 +38,7 @@ func heraPlanNodes(orch *OrchView) ([]planview.Node, []planview.Edge) {
 
 // heraPlanNodesWithBridge is the Model-aware projection: `bridge` maps each
 // orchestrator's coordinator bridge task to the orchestrator it coordinates
-// (Model.bridgeIndex). A worker node whose bound task is a key in that map IS a
+// (Model.BridgeIndex). A worker node whose bound task is a key in that map IS a
 // sub-coordinator (its task is some child orchestrator's coordinator) and is
 // marked Drillable. Pass nil bridge to disable drill-in (the lone-OrchView path).
 func heraPlanNodesWithBridge(orch *OrchView, bridge map[string]*OrchView) ([]planview.Node, []planview.Edge) {

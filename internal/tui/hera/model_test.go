@@ -400,17 +400,17 @@ func TestModel_CoordSpawnedSubteamBridge(t *testing.T) {
 	m := Model{Active: []OrchView{p, q}}
 
 	t.Run("consumed set nests the later-id orchestrator only", func(t *testing.T) {
-		consumed := m.consumedSet(m.bridgeIndex())
+		consumed := m.ConsumedSet(m.BridgeIndex())
 		testutil.Equal(t, consumed[2], true)  // Q nested under P
 		testutil.Equal(t, consumed[1], false) // P stays a root
 	})
 
-	t.Run("coordBridgeChildren is asymmetric by coordinator role id", func(t *testing.T) {
-		pc := m.coordBridgeChildren(&m.Active[0])
+	t.Run("CoordBridgeChildren is asymmetric by coordinator role id", func(t *testing.T) {
+		pc := m.CoordBridgeChildren(&m.Active[0])
 		testutil.Equal(t, len(pc), 1)
 		testutil.Equal(t, pc[0].Name, "Q")
 		// Q is the later id, so it parents nothing (no A↔B cycle).
-		testutil.Equal(t, len(m.coordBridgeChildren(&m.Active[1])), 0)
+		testutil.Equal(t, len(m.CoordBridgeChildren(&m.Active[1])), 0)
 	})
 
 	t.Run("coordBridgeParentOf direction", func(t *testing.T) {
@@ -421,7 +421,7 @@ func TestModel_CoordSpawnedSubteamBridge(t *testing.T) {
 
 // TestCoordBridge_UnifiedResolution: in the defensive multi-coordinator case
 // (first coord role unbound, a later one bound), coordBridgeParentOf must key off
-// the SAME coordinator role that CoordBridgeTaskID/bridgeIndex use — the first
+// the SAME coordinator role that CoordBridgeTaskID/BridgeIndex use — the first
 // with a non-empty bridge task — so the worker path and coord path never resolve
 // different coordinator tasks/ids.
 func TestCoordBridge_UnifiedResolution(t *testing.T) {
@@ -448,8 +448,8 @@ func TestModel_CoordBridgeNoFalsePositives(t *testing.T) {
 	b := coordOf(2, "B", 200, "tb")
 	m := Model{Active: []OrchView{a, b}}
 	testutil.Equal(t, coordBridgeParentOf(&m.Active[0], &m.Active[1]), false)
-	testutil.Equal(t, len(m.coordBridgeChildren(&m.Active[0])), 0)
-	testutil.Equal(t, len(m.consumedSet(m.bridgeIndex())), 0)
+	testutil.Equal(t, len(m.CoordBridgeChildren(&m.Active[0])), 0)
+	testutil.Equal(t, len(m.ConsumedSet(m.BridgeIndex())), 0)
 }
 
 // TestModel_SubtreeAgentCount_IncludesArchivedRegardlessOfLiveness pins the
@@ -682,7 +682,7 @@ func TestRollupNeedsInput_BubblesToParentAndRoot(t *testing.T) {
 
 	// The deepest leaf needs input.
 	roleByName(t, &m, 3, "wg").NeedsInput = true
-	m.rollupNeedsInput()
+	m.RollupNeedsInput()
 
 	// Every coordinator in the chain, root included, rolls it up.
 	testutil.Equal(t, coordSubtreeNI(t, &m, 3), true) // G (parent of the leaf)
@@ -696,7 +696,7 @@ func TestRollupNeedsInput_BubblesToParentAndRoot(t *testing.T) {
 
 	// Resolve the leaf → the whole chain clears.
 	roleByName(t, &m, 3, "wg").NeedsInput = false
-	m.rollupNeedsInput()
+	m.RollupNeedsInput()
 	testutil.Equal(t, coordSubtreeNI(t, &m, 1), false)
 	testutil.Equal(t, coordSubtreeNI(t, &m, 2), false)
 	testutil.Equal(t, coordSubtreeNI(t, &m, 3), false)
@@ -713,7 +713,7 @@ func TestRollupNeedsInput_BlockedStatusCounts(t *testing.T) {
 	wc := roleByName(t, &m, 2, "wc")
 	wc.HasStatus = true
 	wc.Status = db.HeraStatusBlocked
-	m.rollupNeedsInput()
+	m.RollupNeedsInput()
 	testutil.Equal(t, coordSubtreeNI(t, &m, 2), true)
 	testutil.Equal(t, coordSubtreeNI(t, &m, 1), true)
 }
@@ -730,14 +730,14 @@ func TestRollupNeedsInput_BlockedClearsToRoot(t *testing.T) {
 	wc := roleByName(t, &m, 2, "wc")
 	wc.HasStatus = true
 	wc.Status = db.HeraStatusBlocked
-	m.rollupNeedsInput()
+	m.RollupNeedsInput()
 	testutil.Equal(t, coordSubtreeNI(t, &m, 1), true) // ROOT shows "(?)"
 	testutil.Equal(t, coordSubtreeNI(t, &m, 2), true)
 
 	// Step the worker OFF blocked (→ working, as `S` revert does). The rollup
 	// recomputes and the "(?)" clears on the sub-coordinator AND the root.
 	wc.Status = db.HeraStatusWorking
-	m.rollupNeedsInput()
+	m.RollupNeedsInput()
 	testutil.Equal(t, coordSubtreeNI(t, &m, 1), false)
 	testutil.Equal(t, coordSubtreeNI(t, &m, 2), false)
 	testutil.Equal(t, roleByName(t, &m, 1, "w").SubtreeNeedsInput, false)
@@ -749,14 +749,14 @@ func TestRollupNeedsInput_NoFalsePositive(t *testing.T) {
 	r := orchView(1, "R", "tr", wk("w", "tc"))
 	c := orchView(2, "C", "tc", wk("wc", "twc"))
 	m := Model{Active: []OrchView{r, c}}
-	m.rollupNeedsInput()
+	m.RollupNeedsInput()
 	testutil.Equal(t, coordSubtreeNI(t, &m, 1), false)
 	testutil.Equal(t, coordSubtreeNI(t, &m, 2), false)
 	testutil.Equal(t, roleByName(t, &m, 1, "w").SubtreeNeedsInput, false)
 }
 
 // TestRollupNeedsInput_CoordSpawnedSubteam: a coordinator-spawned sub-team
-// (shared coord task, child nests via coordBridgeChildren, NOT a worker bridge)
+// (shared coord task, child nests via CoordBridgeChildren, NOT a worker bridge)
 // also propagates needs-input across the bridge to the parent coordinator.
 func TestRollupNeedsInput_CoordSpawnedSubteam(t *testing.T) {
 	// Task T coordinates P (coord role 100) and S (coord role 200). S nests under P.
@@ -767,7 +767,7 @@ func TestRollupNeedsInput_CoordSpawnedSubteam(t *testing.T) {
 	m := Model{Active: []OrchView{p, s}}
 
 	roleByName(t, &m, 2, "sw").NeedsInput = true
-	m.rollupNeedsInput()
+	m.RollupNeedsInput()
 	testutil.Equal(t, coordSubtreeNI(t, &m, 2), true) // S (the sub-team)
 	testutil.Equal(t, coordSubtreeNI(t, &m, 1), true) // P (the parent) rolls it up
 }
@@ -780,7 +780,7 @@ func TestRollupNeedsInput_CycleSafe(t *testing.T) {
 	b := orchView(2, "B", "tb", wk("wb", "ta"))
 	m := Model{Active: []OrchView{a, b}}
 	roleByName(t, &m, 1, "wa").NeedsInput = true
-	m.rollupNeedsInput() // must not hang
+	m.RollupNeedsInput() // must not hang
 	testutil.Equal(t, coordSubtreeNI(t, &m, 1), true)
 	testutil.Equal(t, coordSubtreeNI(t, &m, 2), true)
 }
@@ -797,7 +797,7 @@ func TestRollupNeedsInput_ArchivedLeafExcludedFromParent(t *testing.T) {
 	w := roleByName(t, &m, 1, "w")
 	w.NeedsInput = true
 	w.Archived = true
-	m.rollupNeedsInput()
+	m.RollupNeedsInput()
 	// The archived leaf no longer flags its parent coordinator.
 	testutil.Equal(t, coordSubtreeNI(t, &m, 1), false)
 }
@@ -818,7 +818,7 @@ func TestRollupNeedsInput_ArchivedLeafExcludedAcrossMultipleBridgeLevels(t *test
 	wg := roleByName(t, &m, 3, "wg")
 	wg.NeedsInput = true
 	wg.Archived = true
-	m.rollupNeedsInput()
+	m.RollupNeedsInput()
 
 	// Excluded at every coordinator level, root included.
 	testutil.Equal(t, coordSubtreeNI(t, &m, 3), false) // G (immediate parent)
@@ -848,7 +848,7 @@ func TestRollupNeedsInput_ArchivedBridgingRowHidesSubtree(t *testing.T) {
 	// Archive the bridging row in C that represents nested sub-coordinator G.
 	// G itself (and G's roles) are NOT archived.
 	roleByName(t, &m, 2, "wc").Archived = true
-	m.rollupNeedsInput()
+	m.RollupNeedsInput()
 
 	// G is unarchived and its worker is genuinely blocked, so G still surfaces on
 	// its own header (archiving stops propagation to ancestors, not the node's own
@@ -872,7 +872,7 @@ func TestRollupNeedsInput_ArchivedOrchestratorExcludedViaWorkerBridge(t *testing
 	m := Model{Active: []OrchView{r}, Archived: []OrchView{c}}
 
 	roleByName(t, &m, 2, "wc").NeedsInput = true
-	m.rollupNeedsInput()
+	m.RollupNeedsInput()
 
 	// The live parent excludes the archived worker-bridged child's subtree.
 	testutil.Equal(t, coordSubtreeNI(t, &m, 1), false)
@@ -888,7 +888,7 @@ func TestRollupNeedsInput_ArchivedRoleStillShowsOwnGlyph(t *testing.T) {
 	w := roleByName(t, &m, 1, "w")
 	w.NeedsInput = true
 	w.Archived = true
-	m.rollupNeedsInput()
+	m.RollupNeedsInput()
 
 	// The archived row itself still shows its own needs-input glyph (unchanged).
 	testutil.Equal(t, w.needsInputOwn(), true)
@@ -911,7 +911,7 @@ func TestRollupNeedsInput_ArchivedCycleSafe(t *testing.T) {
 	roleByName(t, &m, 1, "wa").NeedsInput = true
 	// Archive B's bridging row back into A (one cyclic member archived).
 	roleByName(t, &m, 2, "wb").Archived = true
-	m.rollupNeedsInput() // must not hang
+	m.RollupNeedsInput() // must not hang
 
 	// A's genuine, non-archived signal still surfaces.
 	testutil.Equal(t, coordSubtreeNI(t, &m, 1), true)

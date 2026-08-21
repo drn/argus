@@ -95,7 +95,7 @@ func TestRail_PinnedLeafFloatsAsBreadcrumb(t *testing.T) {
 	testutil.Equal(t, bc, "root › ")
 }
 
-// 1.3: lineage spans the full canonicalParents chain for a deeply-nested role.
+// 1.3: lineage spans the full CanonicalParents chain for a deeply-nested role.
 func TestRail_PinnedBreadcrumbLineageIsCanonicalChain(t *testing.T) {
 	r := NewRail()
 	r.SetModel(nestedSubCoordModel(false, true)) // pin the deep leaf under "sub"

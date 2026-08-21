@@ -91,7 +91,7 @@ func TestDetailsPlan_ProjectedOnCoordSelect(t *testing.T) {
 func TestDetailsPlan_EdgeDrivesStages(t *testing.T) {
 	p := planPage(t)
 	testutil.Equal(t, selectOrchByName(p, "orch"), true)
-	nodes, edges := heraPlanNodesWithBridge(p.SelectionContext().Orch, p.Rail().Model().bridgeIndex())
+	nodes, edges := heraPlanNodesWithBridge(p.SelectionContext().Orch, p.Rail().Model().BridgeIndex())
 	testutil.Equal(t, len(nodes), 2)
 	testutil.Equal(t, len(edges), 1)
 	// The plan widget computed distinct stages for the two planned roles.

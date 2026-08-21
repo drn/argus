@@ -540,7 +540,7 @@ func TestDetails_CoordinatorStatusLine_NeedsInputOwnSignalOnly(t *testing.T) {
 	})
 
 	t.Run("descendant-only rollup does not show the glyph", func(t *testing.T) {
-		// Simulates what BuildModel's rollupNeedsInput would stamp on a coordinator
+		// Simulates what BuildModel's RollupNeedsInput would stamp on a coordinator
 		// whose descendant (not itself) is blocked: SubtreeNeedsInput true, own
 		// signal false.
 		coord := RoleView{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c", HasStatus: true, Status: db.HeraStatusWorking, SubtreeNeedsInput: true}
