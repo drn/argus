@@ -76,6 +76,50 @@ extension ArgusClient {
         try await sendDecoding("POST", "/api/tasks/\(pc(id))/fork", body: req)
     }
 
+    /// `GET /api/tasks/{id}/raw` — the full `model.Task` shape (`internal/api/raw.go`),
+    /// exposed as a type-erased ``JSONValue`` rather than the lossy ``Task``
+    /// model. Includes fields (`session_id`, `result`, …) the lossy model
+    /// never decodes; ``setPinned(id:pinned:)`` relies on this to round-trip
+    /// them untouched.
+    public func rawTask(id: String) async throws -> JSONValue {
+        try await getDecoding("/api/tasks/\(pc(id))/raw")
+    }
+
+    /// `PUT /api/tasks/{id}/raw` — flips the `pinned` flag by GETting the raw
+    /// task, mutating only that key, and PUTting the same object back.
+    ///
+    /// This goes through the raw ``JSONValue`` object rather than decoding
+    /// into the lossy ``Task`` model (which has no property for
+    /// `session_id`/`result`/etc.) so those fields survive the round trip
+    /// unchanged. Per `internal/api/raw.go`'s `handleUpdateTaskRaw`, the
+    /// server re-pins `worktree`/`branch`/`base_branch` to the existing row
+    /// regardless of what's sent, so those three don't need special handling
+    /// here.
+    ///
+    /// `handleUpdateTaskRaw` writes through `db.Update`, NOT the dedicated
+    /// `db.SetPinned`/`db.SetArchived` methods that enforce "at most one of
+    /// {Pinned, Archived} is true" (see `internal/model/task.go`'s
+    /// `Task.SetPinned`/`SetArchived`) — `db.Update` persists whatever this
+    /// object says verbatim. So when pinning (`pinned == true`), this also
+    /// clears an already-`true` `archived` key client-side, mirroring
+    /// `Task.SetPinned`'s own invariant, rather than risking a
+    /// `(pinned: true, archived: true)` row the task list would render in
+    /// both sections. It only *flips* an existing key — never inserts one
+    /// that wasn't already present — since `archived` is `omitempty` on the
+    /// wire and absence means false. Unpinning leaves `archived` untouched,
+    /// matching `SetPinned`'s own asymmetry.
+    public func setPinned(id: String, pinned: Bool) async throws {
+        let raw = try await rawTask(id: id)
+        guard case .object(var obj) = raw else {
+            throw ArgusError.decoding("raw task \(id) is not a JSON object")
+        }
+        obj["pinned"] = .bool(pinned)
+        if pinned, case .bool(true)? = obj["archived"] {
+            obj["archived"] = .bool(false)
+        }
+        try await sendVoid("PUT", "/api/tasks/\(pc(id))/raw", body: JSONValue.object(obj))
+    }
+
     private struct LinksEnvelope: Decodable { let links: [Link] }
 
     /// `GET /api/tasks/{id}/links` — http/https URLs extracted from the task's

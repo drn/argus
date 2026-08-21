@@ -53,15 +53,9 @@ struct TaskActionMenuItems: View {
                 _Concurrency.Task { await app.fork(task) }
             }
 
-            if task.archived {
-                Button("Unarchive") {
-                    _Concurrency.Task { await app.unarchive(task) }
-                }
-            } else {
-                Button("Archive") {
-                    _Concurrency.Task { await app.archive(task) }
-                }
-            }
+            archiveButton
+
+            pinButton
 
             Divider()
 
@@ -76,6 +70,54 @@ struct TaskActionMenuItems: View {
         let button = Button("Rename") { app.renamingTask = task }
         if showShortcuts {
             button.keyboardShortcut("r", modifiers: .command)
+        } else {
+            button
+        }
+    }
+
+    /// Archive/Unarchive, now reachable via Cmd+Shift+A (design.md acceptance
+    /// criteria "Archive via shortcut") in addition to the existing
+    /// mouse-driven button. The chord is fixed by the wider
+    /// add-mac-keybinding-parity change (Stage 5's terminal-safe-chord
+    /// collision test relies on this exact value) — not a free pick here.
+    @ViewBuilder
+    private var archiveButton: some View {
+        let label = task.archived ? "Unarchive" : "Archive"
+        let button = Button(label) {
+            _Concurrency.Task {
+                if task.archived {
+                    await app.unarchive(task)
+                } else {
+                    await app.archive(task)
+                }
+            }
+        }
+        if showShortcuts {
+            button.keyboardShortcut("a", modifiers: [.command, .shift])
+        } else {
+            button
+        }
+    }
+
+    /// Pin/Unpin — net-new UI (design.md acceptance criteria "Pin via
+    /// shortcut"; no pin affordance existed anywhere in the mac app before
+    /// this change). Mirrors ``archiveButton``'s structure exactly. Cmd+Shift+P
+    /// mirrors the TUI's own `P` (Shift+p) mnemonic for pin, augmented with
+    /// Cmd the same way Archive's `a` became Cmd+Shift+A — Cmd+P alone is
+    /// the system-reserved Print shortcut.
+    ///
+    /// The label (and which direction the shortcut toggles) reads
+    /// ``AppState/isPinned(_:)``, a client-side-only cache — see that
+    /// property's doc comment for why `/api/tasks`'s lossy wire shape can't
+    /// answer this directly.
+    @ViewBuilder
+    private var pinButton: some View {
+        let pinned = app.isPinned(task)
+        let button = Button(pinned ? "Unpin" : "Pin") {
+            _Concurrency.Task { await app.setPinned(task, pinned: !pinned) }
+        }
+        if showShortcuts {
+            button.keyboardShortcut("p", modifiers: [.command, .shift])
         } else {
             button
         }

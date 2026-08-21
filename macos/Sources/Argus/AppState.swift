@@ -34,6 +34,19 @@ final class AppState {
     /// and the sidebar needs-input marker.
     private(set) var needsInputTaskIDs: Set<String> = []
 
+    /// Task ids known to be pinned — tracked purely client-side because
+    /// `/api/tasks`'s lossy wire shape (`taskJSON` in
+    /// `internal/api/handlers.go`) omits `pinned` entirely; only the raw
+    /// endpoint (`GET /api/tasks/{id}/raw`) carries it. Unlike
+    /// ``needsInputTaskIDs``, this set is NOT rebuilt from every `/api/tasks`
+    /// snapshot — it starts empty on every ``connect()`` and is populated
+    /// lazily via ``refreshPinnedState(taskID:)`` (called as each sidebar row
+    /// appears) and kept current afterward by this app's own optimistic
+    /// updates in ``setPinned(_:pinned:)``. A pin/unpin made from another
+    /// client (the TUI, the web SPA) is invisible to this cache until the
+    /// row is re-fetched — an accepted client-side-tracking gap, not a bug.
+    private(set) var pinnedTaskIDs: Set<String> = []
+
     /// Bound to the New Task sheet's presentation so both the toolbar `+` and the
     /// menu-bar "New Task…" item can open it. Owned here (not in a view's local
     /// `@State`) so an out-of-window trigger still works.
@@ -336,6 +349,14 @@ final class AppState {
         }
         needsInputTaskIDs = rebuilt
         updateBadge()
+        // Archiving clears `pinned` server-side (`model.Task.SetArchived`), and a
+        // deleted task obviously can't still be pinned — reconcile the
+        // client-only cache against the authoritative snapshot so it can't
+        // drift stale after either transition, regardless of which client (or
+        // this one, via a stale local toggle) caused it.
+        let archivedOrGone = Set(fetched.filter(\.archived).map(\.id))
+            .union(pinnedTaskIDs.subtracting(fetched.map(\.id)))
+        pinnedTaskIDs.subtract(archivedOrGone)
         applyLaunchStateIfNeeded(fetched)
     }
 
@@ -500,6 +521,59 @@ final class AppState {
 
     func unarchive(_ task: ArgusTask) async {
         await perform(task, label: "unarchive") { try await $0.unarchiveTask(id: task.id) }
+    }
+
+    /// `POST /api/tasks/{id}/status` — the sidebar row context menu's
+    /// status-advance/status-revert actions (mirrors the TUI's `s`/`S` keys).
+    /// Callers pass ``TaskStatus/advanced()``/``TaskStatus/reverted()``;
+    /// those clamp at the ladder's ends, so this is always a well-formed
+    /// transition (or a harmless no-op at `.complete`/`.pending`).
+    func setStatus(_ task: ArgusTask, to status: TaskStatus) async {
+        await perform(task, label: "update status") {
+            try await $0.setStatus(id: task.id, status: status.rawValue)
+        }
+    }
+
+    /// Returns whether ``task`` is known to be pinned. Backed by
+    /// ``pinnedTaskIDs``, a client-side-only cache — see its doc comment for
+    /// why `/api/tasks`'s lossy shape can't answer this directly.
+    func isPinned(_ task: ArgusTask) -> Bool {
+        pinnedTaskIDs.contains(task.id)
+    }
+
+    /// Lazily backfills ``pinnedTaskIDs`` for one task via the raw endpoint.
+    /// Called as each sidebar row appears (see ``TaskRow``) so its Pin/Unpin
+    /// label renders correctly without an eager bulk fetch of every task's
+    /// raw representation. Silent on failure — falls back to the "not
+    /// pinned" default rather than surfacing an error toast for a
+    /// non-interactive background refresh.
+    func refreshPinnedState(taskID: String) async {
+        guard let client, let raw = try? await client.rawTask(id: taskID) else { return }
+        if raw["pinned"]?.boolValue == true {
+            pinnedTaskIDs.insert(taskID)
+        } else {
+            pinnedTaskIDs.remove(taskID)
+        }
+    }
+
+    /// `PUT /api/tasks/{id}/raw` via ``ArgusClient/setPinned(id:pinned:)``.
+    /// Updates ``pinnedTaskIDs`` optimistically, but only on success (unlike
+    /// ``perform(_:label:_:)``'s callers, this one's success/failure
+    /// distinction matters: the client-side cache is this app's ONLY record
+    /// of pin state, so marking it pinned after a failed request would lie).
+    func setPinned(_ task: ArgusTask, pinned: Bool) async {
+        guard let client else { return }
+        do {
+            try await client.setPinned(id: task.id, pinned: pinned)
+            if pinned {
+                pinnedTaskIDs.insert(task.id)
+            } else {
+                pinnedTaskIDs.remove(task.id)
+            }
+            await refreshOnce()
+        } catch {
+            showActionError("Failed to \(pinned ? "pin" : "unpin") \"\(task.name)\": \(Self.describe(error))")
+        }
     }
 
     func rename(_ task: ArgusTask, to name: String) async {
@@ -722,11 +796,13 @@ final class AppState {
         case .taskArchived(let id):
             patchTask(id: id) { $0.with(archived: true) }
             clearNeedsInput(id)
+            pinnedTaskIDs.remove(id) // archiving clears pinned server-side too
             if selectedTaskID == id { selectedTaskID = nil }
         case .taskDeleted(let id):
             tasks.removeAll { $0.id == id }
             pruneTerminalControllers(keeping: Set(tasks.map(\.id)))
             clearNeedsInput(id)
+            pinnedTaskIDs.remove(id)
             if selectedTaskID == id { selectedTaskID = nil }
         case .sessionNeedsInput(let id, let needs):
             if needs { addNeedsInput(id, notify: notify) } else { clearNeedsInput(id) }
