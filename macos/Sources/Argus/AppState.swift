@@ -34,6 +34,16 @@ final class AppState {
     /// and the sidebar needs-input marker.
     private(set) var needsInputTaskIDs: Set<String> = []
 
+    /// Task ids currently bound to a live Hera role (worker or coordinator),
+    /// mirroring the TUI's "hera-managed" classification (`hideHeraManaged` /
+    /// `isHeraSpawnedWorker` in `internal/tui/taskview/tasklist.go`): a task
+    /// with a live binding in the `/api/hera` roster. There is no such field
+    /// on ``ArgusKit/Task`` itself — `GET /api/hera` is a separate endpoint —
+    /// so this is rebuilt wholesale alongside every task snapshot
+    /// (``refreshHeraManagedTaskIDs()``), the same cadence ``HeraTab`` already
+    /// polls on its own. Drives the sidebar's hera-managed visibility toggle.
+    private(set) var heraManagedTaskIDs: Set<String> = []
+
     /// Bound to the New Task sheet's presentation so both the toolbar `+` and the
     /// menu-bar "New Task…" item can open it. Owned here (not in a view's local
     /// `@State`) so an out-of-window trigger still works.
@@ -320,7 +330,28 @@ final class AppState {
             return
         } catch {
             connection = .error(Self.describe(error))
+            return
         }
+        await refreshHeraManagedTaskIDs()
+    }
+
+    /// Best-effort refresh of ``heraManagedTaskIDs`` from `GET /api/hera`.
+    /// Silent on failure (mirrors ``fetchLinks(taskID:)``'s non-throwing
+    /// pattern) — a stale hera-managed set just leaves the sidebar toggle's
+    /// filter a beat behind, never a hard error surfaced to the user.
+    private func refreshHeraManagedTaskIDs() async {
+        guard let client else { return }
+        guard let roster = try? await client.heraRoster() else { return }
+        var ids: Set<String> = []
+        for orch in roster.orchestrators {
+            for role in orch.roles where role.live && !role.taskID.isEmpty {
+                ids.insert(role.taskID)
+            }
+        }
+        for role in roster.freelance where role.live && !role.taskID.isEmpty {
+            ids.insert(role.taskID)
+        }
+        heraManagedTaskIDs = ids
     }
 
     /// Applies a fresh `/api/tasks` result: replaces the list, prunes dead
