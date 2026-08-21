@@ -823,9 +823,21 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// colored agents. Forcing both keys makes agent color detection independent
 	// of daemon provenance; appending wins over earlier duplicates per
 	// exec.Cmd.Env semantics.
+	//
+	// Also force GOCACHE and PLAYWRIGHT_BROWSERS_PATH out from under
+	// ~/Library/Caches (their tool defaults) and into ~/.argus/cache/. macOS
+	// TCC gates writes under ~/Library/{Application Support,Containers,Caches}
+	// behind an "access data from other apps" prompt attributed to the
+	// responsible argus process, even when a spawned agent's build/test tool
+	// (not argus itself) is the actual writer — so heavy concurrent build/test
+	// activity across worktrees kept re-triggering the prompt regardless of
+	// how the argus binary itself was signed. Both tools fully honor the
+	// override.
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",
+		"GOCACHE="+filepath.Join(db.DataDir(), "cache", "go-build"),
+		"PLAYWRIGHT_BROWSERS_PATH="+filepath.Join(db.DataDir(), "cache", "ms-playwright"),
 	)
 	// Surface the task ID to the agent process so MCP sub-tasks (task_complete,
 	// task_set_result, argus_clipboard_set, …) can target it explicitly
