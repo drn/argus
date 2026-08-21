@@ -1174,6 +1174,121 @@ func TestSmoke_HeraReattachStillRestartsNonClosedOutWorker(t *testing.T) {
 	testutil.Equal(t, started, true)
 }
 
+// TestSmoke_HeraReattachClosedOutTogglesBannerThenReadOnly is the live UX
+// regression add-hera-closeout-banner fixes: pressing Enter on a closed-out
+// worker's dead-session row used to be a total dead end beyond a 15s-TTL
+// footer notice — the pane's own content never changed, so an operator who
+// wasn't looking at the footer got no feedback at all. The FIRST Enter must
+// now arm a persistent in-pane banner on the bound agent pane; a SECOND,
+// immediately-following Enter must dismiss it, falling through to the
+// pane's ordinary dead-session rendering. Neither press starts a session.
+func TestSmoke_HeraReattachClosedOutTogglesBannerThenReadOnly(t *testing.T) {
+	d := testDB(t)
+	orch := seedHeraOrch(t, d, "orch")
+	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+	seedHeraBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
+	testutil.NoError(t, d.SetStatus("tw", model.StatusComplete))
+	testutil.NoError(t, d.SetMeta("tw", db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"))
+
+	app := New(d, agent.NewRunner(nil), false)
+	sim, stop := wireApp(t, app)
+	defer stop()
+	heraTabCursorOnWorker(t, app, sim)
+
+	sim.InjectKey(tcell.KeyEnter, 0, 0) // first Enter → arms the banner
+	syncUI(t, app.tapp)
+
+	var armed bool
+	var statusErr string
+	readUI(t, app.tapp, func() {
+		armed = app.heraPage.AgentPane().ClosedOutBannerShown()
+		statusErr = app.statusbar.Error()
+	})
+	testutil.Equal(t, armed, true)
+	testutil.Contains(t, statusErr, "closed out")
+
+	sim.InjectKey(tcell.KeyEnter, 0, 0) // second, immediately-following Enter → dismisses
+	syncUI(t, app.tapp)
+
+	var stillArmed bool
+	var statusInfo string
+	readUI(t, app.tapp, func() {
+		stillArmed = app.heraPage.AgentPane().ClosedOutBannerShown()
+		statusInfo = app.statusbar.Info()
+	})
+	testutil.Equal(t, stillArmed, false)
+	testutil.Contains(t, statusInfo, "read-only")
+
+	// Neither press touched the task: no session started, status untouched.
+	got, err := d.Get("tw")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.SessionID, "")
+	testutil.Equal(t, got.Status, model.StatusComplete)
+
+	// A third Enter re-arms the banner — the toggle has no separate third
+	// state (design.md Decision 4).
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { armed = app.heraPage.AgentPane().ClosedOutBannerShown() })
+	testutil.Equal(t, armed, true)
+}
+
+// TestSmoke_HeraReattachClosedOutBannerResetsOnLeaveAndReturn pins the
+// "state resets per visit" requirement: the banner is live, in-memory,
+// per-binding state — navigating the rail cursor off the closed-out row
+// (unbinding the agent pane) and back must NOT leave a dismissed/armed
+// banner in place; the very next Enter on the row must show the banner
+// again, exactly like a fresh visit.
+func TestSmoke_HeraReattachClosedOutBannerResetsOnLeaveAndReturn(t *testing.T) {
+	d := testDB(t)
+	orch := seedHeraOrch(t, d, "orch")
+	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+	seedHeraBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
+	testutil.NoError(t, d.SetStatus("tw", model.StatusComplete))
+	testutil.NoError(t, d.SetMeta("tw", db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"))
+
+	app := New(d, agent.NewRunner(nil), false)
+	sim, stop := wireApp(t, app)
+	defer stop()
+	heraTabCursorOnWorker(t, app, sim)
+
+	sim.InjectKey(tcell.KeyEnter, 0, 0) // arm the banner
+	syncUI(t, app.tapp)
+	var armed bool
+	readUI(t, app.tapp, func() { armed = app.heraPage.AgentPane().ClosedOutBannerShown() })
+	testutil.Equal(t, armed, true)
+
+	// Enter also advanced focus into the (dead) agent pane, where only Enter
+	// is intercepted — a plain nav key would be swallowed there. Return focus
+	// to the rail first, mirroring the documented Ctrl+Q behavior.
+	sim.InjectKey(tcell.KeyCtrlQ, 0, 0)
+	syncUI(t, app.tapp)
+
+	// Navigate the cursor up onto the (folded) orchestrator header — a
+	// coordinator selection unbinds the agent pane entirely (detailsMode),
+	// which is the same unbind bindPane performs on any navigate-away.
+	sim.InjectKey(tcell.KeyRune, 'k', 0)
+	syncUI(t, app.tapp)
+	var unboundArmed bool
+	readUI(t, app.tapp, func() { unboundArmed = app.heraPage.AgentPane().ClosedOutBannerShown() })
+	testutil.Equal(t, unboundArmed, false)
+
+	// ...and back down onto the worker row: the rebind must not resurrect the
+	// dismissed/armed state from before the visit.
+	sim.InjectKey(tcell.KeyRune, 'j', 0)
+	syncUI(t, app.tapp)
+	var rearmedOnReturn bool
+	readUI(t, app.tapp, func() { rearmedOnReturn = app.heraPage.AgentPane().ClosedOutBannerShown() })
+	testutil.Equal(t, rearmedOnReturn, false)
+
+	// A fresh Enter on the return visit shows the banner again, exactly like
+	// the very first visit.
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { armed = app.heraPage.AgentPane().ClosedOutBannerShown() })
+	testutil.Equal(t, armed, true)
+}
+
 // TestHandleSessionExitUI_RerenderRestartsWhenViewedViaHeraPane is the BUG-076
 // regression: a size-drift kick's auto-restart (handleSessionExitUI's
 // pendingRerenderRestart branch) used to gate "is the user still watching"

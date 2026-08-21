@@ -994,8 +994,7 @@ func (a *App) heraReattach(sel hera.Selection) {
 				return
 			}
 			if closedOut {
-				uxlog.Log("[hera-view] reattach: refusing dead-session restart for closed-out task %s (%s)", t.ID, t.Name)
-				a.statusbar.SetError("Task is closed out — use hera_revive to reopen")
+				a.heraReattachClosedOut(t)
 				return
 			}
 		}
@@ -1010,6 +1009,34 @@ func (a *App) heraReattach(sel hera.Selection) {
 		return
 	}
 	a.reviveHeraWorker(t, sess)
+}
+
+// heraReattachClosedOut handles Enter on a closed-out worker/freelance task's
+// dead session (add-hera-closeout-banner). Rather than only the footer's
+// 15s-TTL notice, it toggles a persistent IN-PANE banner on the agent pane
+// bound to t.ID: the first Enter arms the banner (replacing the previous
+// dead end); a second, immediately-following Enter dismisses it, letting
+// TerminalPane.Draw fall through to its existing dead-session rendering —
+// the SAME read-only replay path an ordinary finished task's pane already
+// uses, so no new PTY/process/emulator is spawned for this view. Further
+// Enters keep toggling between the two; there is no separate third state
+// (see design.md Decision 4).
+//
+// heraReattach only calls this when sel.IsWorkerOrFreelance() is true, which
+// — per applySelection's routing (internal/tui/hera/panes.go) — always means
+// the agent pane (never the coordinator pane) is the one bound to t.ID, so
+// AgentPane() needs no taskID-matching accessor.
+func (a *App) heraReattachClosedOut(t *model.Task) {
+	pane := a.heraPage.AgentPane()
+	if pane.ClosedOutBannerShown() {
+		pane.DismissClosedOutBanner()
+		uxlog.Log("[hera-view] reattach: dismissing closed-out banner for task %s (%s) — viewing read-only", t.ID, t.Name)
+		a.statusbar.SetInfo("Viewing last known output (read-only)")
+		return
+	}
+	pane.ShowClosedOutBanner()
+	uxlog.Log("[hera-view] reattach: refusing dead-session restart for closed-out task %s (%s)", t.ID, t.Name)
+	a.statusbar.SetError("Task is closed out — press Enter again to view read-only, or hera_revive to reopen")
 }
 
 // heraTaskClosedOut reports whether taskID's worker/freelance binding is

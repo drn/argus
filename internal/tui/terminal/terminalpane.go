@@ -300,6 +300,20 @@ type TerminalPane struct {
 	// "No active session".
 	pending bool
 
+	// closedOutBannerShown is true while the closed-out-task banner overlay
+	// is showing INSTEAD of the pane's ordinary dead-session rendering
+	// (replay content or the "Session not running" placeholder). Hera's
+	// heraReattach (add-hera-closeout-banner) arms it on the first Enter
+	// against a closed-out worker/freelance task and dismisses it on the
+	// immediately-following second press, which lets Draw() fall through to
+	// its ordinary dead-session rendering — the SAME read-only replay path an
+	// ordinary finished task's pane already uses, so no new PTY/process/
+	// emulator is spawned for this override. Reset by ResetVT (fired on
+	// every hera pane rebind via panes.go's bindPane), so leaving and
+	// returning to the same closed-out task re-arms the banner on the next
+	// Enter, exactly like a fresh visit.
+	closedOutBannerShown bool
+
 	// borderTitle overrides the bordered-panel title. Empty → " Agent " (the
 	// main agent view's default). The native Hera view sets " Coordinator " on
 	// its middle pane so the same widget reads correctly in both surfaces.
@@ -492,6 +506,42 @@ func (tp *TerminalPane) SetPending(v bool) {
 	}
 }
 
+// ShowClosedOutBanner arms the closed-out banner overlay — the first Enter
+// press against a closed-out worker/freelance task (see heraReattach in
+// internal/tui/heraactions.go). No-op if already shown.
+func (tp *TerminalPane) ShowClosedOutBanner() {
+	tp.mu.Lock()
+	changed := !tp.closedOutBannerShown
+	tp.closedOutBannerShown = true
+	tp.mu.Unlock()
+	if changed {
+		// Branch change: banner ↔ replay/placeholder.
+		tp.notifyBranchChange()
+	}
+}
+
+// DismissClosedOutBanner clears the closed-out banner overlay — the second,
+// immediately-following Enter press — letting Draw() fall through to its
+// ordinary dead-session rendering (replay content, or the "Session not
+// running" placeholder if none was recorded).
+func (tp *TerminalPane) DismissClosedOutBanner() {
+	tp.mu.Lock()
+	changed := tp.closedOutBannerShown
+	tp.closedOutBannerShown = false
+	tp.mu.Unlock()
+	if changed {
+		tp.notifyBranchChange()
+	}
+}
+
+// ClosedOutBannerShown reports whether the closed-out banner overlay is
+// currently armed for this pane's bound task.
+func (tp *TerminalPane) ClosedOutBannerShown() bool {
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	return tp.closedOutBannerShown
+}
+
 // ForceResyncPTY schedules a one-shot unconditional resize on the next Draw().
 // Call this on agent-view entry so a session whose PTY is stuck at a stale
 // width gets reconciled to the current panel dimensions even when the delta
@@ -600,6 +650,7 @@ func (tp *TerminalPane) ResetVT() {
 	tp.replayNoDataUntil = time.Time{}
 	tp.replayData = nil
 	tp.paintCacheValid = false
+	tp.closedOutBannerShown = false
 	tp.mu.Unlock()
 	tp.ExitDiffMode()
 }
@@ -1291,6 +1342,45 @@ func (tp *TerminalPane) DiffScrollDown(n int) {
 	tp.diffScroll += n
 }
 
+// closedOutBannerLines is the persistent in-pane message shown while
+// closedOutBannerShown is armed (see ShowClosedOutBanner). It replaces the
+// footer-only "Task is closed out" notice (15s TTL, easy to miss) with a
+// message that stays on screen for as long as the pane stays bound to this
+// task. styleIdx indexes closedOutBannerStyles below.
+var closedOutBannerLines = [...]string{
+	"Task closed out",
+	"",
+	"This worker's session will not be restarted.",
+	"Press Enter again to view its last output (read-only).",
+	"Use hera_revive to reopen it for real work.",
+}
+
+// closedOutBannerStyle returns the style for closedOutBannerLines[i]: the
+// title stands out, the two action-relevant lines get a highlight, and the
+// rest stay dimmed like the ordinary placeholder text.
+func closedOutBannerStyle(i int) tcell.Style {
+	switch i {
+	case 0:
+		return theme.StyleComplete
+	case 3, 4:
+		return theme.StyleClipboardHint
+	default:
+		return theme.StyleDimmed
+	}
+}
+
+// drawClosedOutBanner renders the closed-out banner centered in the given
+// rect. Mirrors the "No active session" placeholder's fill-then-draw
+// pattern so a partially-repainted pane never leaks a prior frame's cells.
+func drawClosedOutBanner(screen tcell.Screen, x, y, width, height int) {
+	widget.FillArea(screen, x, y, width, height, ' ', tcell.StyleDefault)
+	startY := y + max((height-len(closedOutBannerLines))/2, 0)
+	for i, line := range closedOutBannerLines {
+		midX := x + max((width-len(line))/2, 0)
+		widget.DrawText(screen, midX, startY+i, width, line, closedOutBannerStyle(i))
+	}
+}
+
 // --- Draw ---
 
 func (tp *TerminalPane) Draw(screen tcell.Screen) {
@@ -1342,6 +1432,7 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	tp.mu.Lock()
 	sess := tp.session
 	pending := tp.pending
+	closedOutBanner := tp.closedOutBannerShown
 	// Compute PTY size from panel dimensions (main goroutine — safe to call GetInnerRect).
 	wantCols := max(width, 20)
 	wantRows := max(height, 5)
@@ -1378,6 +1469,20 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	}
 	tp.mu.Unlock()
 
+	alive := sess != nil && sess.Alive()
+
+	if closedOutBanner && !alive {
+		// The closed-out banner takes priority over BOTH the placeholder
+		// below and the replay/live paths further down — it stays up until
+		// the immediately-following second Enter dismisses it (heraReattach,
+		// add-hera-closeout-banner). Guarded on !alive so an armed banner
+		// can never paint over a session that somehow came back alive
+		// before the next Draw (heraReattach only arms it from the
+		// dead-session branch, so this is defensive, not expected).
+		drawClosedOutBanner(screen, x, y, width, height)
+		return
+	}
+
 	if sess == nil && !tp.HasContent() {
 		if pending {
 			// Show launch banner while worktree is being created.
@@ -1406,11 +1511,6 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		widget.FillArea(screen, x, y, width, height, ' ', tcell.StyleDefault)
 		widget.DrawText(screen, midX, midY, width, msg, theme.StyleDimmed)
 		return
-	}
-
-	alive := false
-	if sess != nil {
-		alive = sess.Alive()
 	}
 
 	if ptyCols < 20 {
