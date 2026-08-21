@@ -128,7 +128,7 @@ func (s *Server) handleHera(w http.ResponseWriter, r *http.Request) {
 
 	for _, sec := range [][]heramodel.OrchView{m.Pinned, m.Active, m.Archived} {
 		for _, o := range sec {
-			oj := s.buildHeraOrchJSON(&m, o)
+			oj := buildHeraOrchJSON(&m, o)
 
 			// Token-breakdown fields aren't part of heramodel.RoleView (BuildModel
 			// only carries the already-priced CostUSDAccrued); one bulk read per
@@ -181,7 +181,7 @@ func (s *Server) handleHera(w http.ResponseWriter, r *http.Request) {
 // including its already-priced subtree_cost_usd (own roles + nuked siblings,
 // no recursion — see the field's doc comment) and its bridge-parent/
 // needs-input rollup resolved against the whole model m.
-func (s *Server) buildHeraOrchJSON(m *heramodel.Model, o heramodel.OrchView) heraOrchJSON {
+func buildHeraOrchJSON(m *heramodel.Model, o heramodel.OrchView) heraOrchJSON {
 	oj := heraOrchJSON{
 		ID:                o.ID,
 		Name:              o.Name,
