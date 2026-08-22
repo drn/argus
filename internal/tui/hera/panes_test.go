@@ -42,6 +42,10 @@ func (f *fakeSession) WriteInput(p []byte) (int, error) {
 	f.wrote = append(f.wrote, p...)
 	return len(p), nil
 }
+func (f *fakeSession) WriteInputSystem(p []byte) (int, error) {
+	f.wrote = append(f.wrote, p...)
+	return len(p), nil
+}
 func (f *fakeSession) Resize(rows, cols uint16) error { f.resize = [2]uint16{rows, cols}; return nil }
 func (f *fakeSession) RecentOutput() []byte           { return f.output }
 func (f *fakeSession) RecentOutputTail(n int) []byte {

@@ -3,6 +3,7 @@ package terminal
 import (
 	"image/color"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/theme"
@@ -151,13 +153,24 @@ type mockAdapter struct {
 	ptyCols      int // 0 → PTYSize reports "unknown" (0,0)
 	ptyRows      int
 
-	writeMu sync.Mutex
-	written []byte
+	writeMu       sync.Mutex
+	written       []byte
+	writtenSystem []byte
 }
 
 func (m *mockAdapter) WriteInput(p []byte) (int, error) {
 	m.writeMu.Lock()
 	m.written = append(m.written, p...)
+	m.writeMu.Unlock()
+	return len(p), nil
+}
+
+// WriteInputSystem mirrors WriteInput but records into a SEPARATE buffer, so
+// tests can assert which delivery path a caller used — the exact distinction
+// the WriteInput-vs-WriteInputSystem fix turns on (see forwardEmulatorResponse).
+func (m *mockAdapter) WriteInputSystem(p []byte) (int, error) {
+	m.writeMu.Lock()
+	m.writtenSystem = append(m.writtenSystem, p...)
 	m.writeMu.Unlock()
 	return len(p), nil
 }
@@ -169,6 +182,14 @@ func (m *mockAdapter) Written() []byte {
 	m.writeMu.Lock()
 	defer m.writeMu.Unlock()
 	return append([]byte(nil), m.written...)
+}
+
+// WrittenSystem returns a snapshot of everything WriteInputSystem has
+// received so far. Safe to call concurrently with WriteInputSystem.
+func (m *mockAdapter) WrittenSystem() []byte {
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
+	return append([]byte(nil), m.writtenSystem...)
 }
 func (m *mockAdapter) Resize(rows, cols uint16) error { return nil }
 func (m *mockAdapter) RecentOutput() []byte           { return m.output }
@@ -790,8 +811,16 @@ func TestTerminalPane_ForwardEmulatorResponse_ForwardsToSession(t *testing.T) {
 
 	tp.forwardEmulatorResponse(sess, []byte("hello"))
 
-	if got := string(sess.Written()); got != "hello" {
-		t.Fatalf("session received %q, want %q", got, "hello")
+	if got := string(sess.WrittenSystem()); got != "hello" {
+		t.Fatalf("session received via WriteInputSystem %q, want %q", got, "hello")
+	}
+	// The fix under test: a query-response forward must go through
+	// WriteInputSystem, never WriteInput — WriteInput stamps lastUserInput,
+	// which idle-detection's clear-on-input logic reads as "the user
+	// answered," falsely clearing a still-pending needs-input flag (the
+	// focus-gated (?)/moon bounce this test guards against).
+	if got := string(sess.Written()); got != "" {
+		t.Fatalf("session received %q via WriteInput, want nothing — forwarding must use WriteInputSystem", got)
 	}
 }
 
@@ -809,11 +838,44 @@ func TestTerminalPane_ForwardEmulatorResponse_DropsStaleOwner(t *testing.T) {
 
 	tp.forwardEmulatorResponse(oldSess, []byte("stale response"))
 
-	if got := oldSess.Written(); len(got) != 0 {
+	if got := oldSess.WrittenSystem(); len(got) != 0 {
 		t.Fatalf("stale response delivered to the old (no longer current) session: %q", got)
 	}
-	if got := newSess.Written(); len(got) != 0 {
+	if got := newSess.WrittenSystem(); len(got) != 0 {
 		t.Fatalf("stale response misdelivered into the new session: %q", got)
+	}
+}
+
+// TestTerminalPane_ForwardEmulatorResponse_DoesNotAdvanceLastUserInput is the
+// end-to-end regression for the focus-gated needs-input bounce: forwarding a
+// live emulator's query response into a REAL *agent.Session must advance
+// only the work-cycle timestamp (LastInput), never the user-input timestamp
+// (LastUserInput) that idle-detection's clear-on-input logic reads to decide
+// the user answered a pending "(?)" prompt. Before the fix,
+// forwardEmulatorResponse called WriteInput, which advances both — this test
+// pins the session-level effect of the WriteInput-vs-WriteInputSystem choice
+// verified structurally by TestTerminalPane_ForwardEmulatorResponse_ForwardsToSession.
+func TestTerminalPane_ForwardEmulatorResponse_DoesNotAdvanceLastUserInput(t *testing.T) {
+	sess, err := agent.StartSession("forward-resp-1", exec.Command("cat"), 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Stop() }()
+
+	if !sess.LastUserInput().IsZero() {
+		t.Fatalf("fresh session LastUserInput = %v, want zero", sess.LastUserInput())
+	}
+
+	tp := NewTerminalPane()
+	tp.SetSession(sess)
+
+	tp.forwardEmulatorResponse(sess, []byte("\x1b]11;rgb:0000/0000/0000\x1b\\"))
+
+	if sess.LastInput().IsZero() {
+		t.Error("forwardEmulatorResponse did not advance LastInput (work cycle)")
+	}
+	if !sess.LastUserInput().IsZero() {
+		t.Error("forwardEmulatorResponse wrongly advanced LastUserInput — would falsely clear a pending needs-input flag")
 	}
 }
 
@@ -829,13 +891,18 @@ func TestTerminalPane_LiveEmulatorForwardsQueryResponseToSession(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(sess.Written()) > 0 {
+		if len(sess.WrittenSystem()) > 0 {
 			break
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if len(sess.Written()) == 0 {
-		t.Fatal("expected the live emulator's OSC 11 response to be forwarded to the attached session")
+	if len(sess.WrittenSystem()) == 0 {
+		t.Fatal("expected the live emulator's OSC 11 response to be forwarded to the attached session via WriteInputSystem")
+	}
+	// The fix under test: this must never go through WriteInput (which would
+	// stamp lastUserInput and falsely clear a pending needs-input flag).
+	if got := sess.Written(); len(got) != 0 {
+		t.Fatalf("response delivered via WriteInput, want WriteInputSystem only: %q", got)
 	}
 }
 
@@ -3513,9 +3580,10 @@ type raceAdapter struct {
 	freshTotal  uint64
 }
 
-func (r *raceAdapter) WriteInput(p []byte) (int, error) { return len(p), nil }
-func (r *raceAdapter) Resize(rows, cols uint16) error   { return nil }
-func (r *raceAdapter) RecentOutput() []byte             { return r.freshOutput }
+func (r *raceAdapter) WriteInput(p []byte) (int, error)       { return len(p), nil }
+func (r *raceAdapter) WriteInputSystem(p []byte) (int, error) { return len(p), nil }
+func (r *raceAdapter) Resize(rows, cols uint16) error         { return nil }
+func (r *raceAdapter) RecentOutput() []byte                   { return r.freshOutput }
 func (r *raceAdapter) RecentOutputTail(n int) []byte {
 	if n >= len(r.freshOutput) {
 		return r.freshOutput

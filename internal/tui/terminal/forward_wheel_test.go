@@ -20,6 +20,10 @@ func (a *recAdapter) WriteInput(p []byte) (int, error) {
 	a.wrote = append(a.wrote, p...)
 	return len(p), nil
 }
+func (a *recAdapter) WriteInputSystem(p []byte) (int, error) {
+	a.wrote = append(a.wrote, p...)
+	return len(p), nil
+}
 func (a *recAdapter) Resize(rows, cols uint16) error { return nil }
 func (a *recAdapter) RecentOutput() []byte           { return a.output }
 func (a *recAdapter) RecentOutputTail(n int) []byte {
