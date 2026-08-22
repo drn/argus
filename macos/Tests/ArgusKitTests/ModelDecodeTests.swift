@@ -275,6 +275,93 @@ struct ModelDecodeTests {
         #expect(e.value == "awaiting-review")
     }
 
+    // Shape: internal/claudesession.Session via internal/api's claude-sessions
+    // handler (see specs/rest-api/spec.md). mod_time is a Go time.Time,
+    // JSON-marshaled as RFC3339 with a variable-length (possibly absent)
+    // fractional-second component.
+    @Test("ClaudeSession decodes with a zero-fractional mod_time")
+    func claudeSessionZeroFractional() throws {
+        let json = """
+        {"id":"abc-123","title":"fix the thing","branch":"argus/fix",
+         "pr_ref":"o/r#42","mod_time":"2026-08-21T10:00:00Z","size_bytes":4096}
+        """
+        let s = try decode(ClaudeSession.self, json)
+        #expect(s.id == "abc-123")
+        #expect(s.title == "fix the thing")
+        #expect(s.branch == "argus/fix")
+        #expect(s.prRef == "o/r#42")
+        #expect(s.sizeBytes == 4096)
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        let comps = cal.dateComponents([.year, .month, .day, .hour, .minute, .second], from: s.modTime)
+        #expect(comps.year == 2026 && comps.month == 8 && comps.day == 21)
+        #expect(comps.hour == 10 && comps.minute == 0 && comps.second == 0)
+    }
+
+    @Test("ClaudeSession decodes a fractional-second mod_time, ignoring sub-second precision")
+    func claudeSessionFractional() throws {
+        let json = """
+        {"id":"abc-124","title":"t","branch":"","pr_ref":"",
+         "mod_time":"2026-08-21T10:00:00.123456789Z","size_bytes":0}
+        """
+        let s = try decode(ClaudeSession.self, json)
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        let comps = cal.dateComponents([.year, .month, .day, .hour, .minute, .second], from: s.modTime)
+        #expect(comps.hour == 10 && comps.minute == 0 && comps.second == 0)
+        #expect(s.branch == "")
+        #expect(s.prRef == "")
+    }
+
+    @Test("ClaudeSession fails to decode an unparseable mod_time")
+    func claudeSessionBadModTime() throws {
+        let json = """
+        {"id":"x","title":"t","branch":"","pr_ref":"","mod_time":"not-a-date","size_bytes":0}
+        """
+        #expect(throws: (any Error).self) {
+            try decode(ClaudeSession.self, json)
+        }
+    }
+
+    // Shape: GET /api/tasks/{id}/claude-sessions response envelope.
+    @Test("ClaudeSessionsResponse decodes sessions + current_session_id")
+    func claudeSessionsResponse() throws {
+        let json = """
+        {"sessions":[
+          {"id":"s1","title":"newest","branch":"b1","pr_ref":"",
+           "mod_time":"2026-08-21T10:00:00Z","size_bytes":100},
+          {"id":"s2","title":"older","branch":"b2","pr_ref":"o/r#1",
+           "mod_time":"2026-08-20T10:00:00Z","size_bytes":200}
+        ],"current_session_id":"s1"}
+        """
+        let r = try decode(ClaudeSessionsResponse.self, json)
+        #expect(r.sessions.count == 2)
+        #expect(r.sessions[0].id == "s1")
+        #expect(r.currentSessionID == "s1")
+    }
+
+    @Test("ClaudeSessionsResponse decodes an empty current_session_id")
+    func claudeSessionsResponseEmptyCurrent() throws {
+        let r = try decode(ClaudeSessionsResponse.self, #"{"sessions":[],"current_session_id":""}"#)
+        #expect(r.sessions.isEmpty)
+        #expect(r.currentSessionID == "")
+    }
+
+    // Shape: POST /api/tasks/{id}/claude-session response.
+    @Test("ClaudeSessionSwitchResponse decodes the switched shape with pid")
+    func claudeSessionSwitchResponseSwitched() throws {
+        let r = try decode(ClaudeSessionSwitchResponse.self, #"{"status":"switched","pid":4242}"#)
+        #expect(r.status == "switched")
+        #expect(r.pid == 4242)
+    }
+
+    @Test("ClaudeSessionSwitchResponse decodes the unchanged shape with no pid key")
+    func claudeSessionSwitchResponseUnchanged() throws {
+        let r = try decode(ClaudeSessionSwitchResponse.self, #"{"status":"unchanged"}"#)
+        #expect(r.status == "unchanged")
+        #expect(r.pid == nil)
+    }
+
     // Shape: internal/api/handlers.go handleGetConfig returns config.Config.
     @Test("JSONValue decodes an arbitrary config object")
     func jsonValueConfig() throws {
