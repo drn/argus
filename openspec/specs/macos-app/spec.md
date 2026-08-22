@@ -116,9 +116,17 @@ task (`GET /api/tasks/{id}/links`).
 
 The system SHALL consume `GET /api/events/stream` (named SSE events, resumed
 from a since-cursor, with resync handling on cursor-invalid responses) to
-drive live task-list updates without polling, and SHALL raise a native macOS
+drive live task-list updates without polling, and — subject to the user's
+notification preferences in Settings — SHALL raise a native macOS
 notification plus increment a dock badge count when a `session.needs_input`
-or `session.idle` event names a task that is not currently focused in the UI.
+event names a task that is not currently focused in the UI, and SHALL raise a
+native macOS notification when a `session.idle` event names a task that is
+not currently focused in the UI. The needs-input notification preference
+SHALL default to enabled (opt-out). The idle notification preference SHALL
+default to disabled (opt-in) — idle events fire far more often than
+needs-input across a fleet of concurrently-running tasks, so an enabled-by-
+default idle notification floods the user; anyone who wants idle banners can
+still turn them on in Settings.
 
 #### Scenario: Task list updates without polling
 
@@ -134,6 +142,19 @@ or `session.idle` event names a task that is not currently focused in the UI.
   currently-selected task in the app
 - **THEN** the app raises a native macOS notification and increments the dock
   badge count; no notification fires if that task is already focused
+
+#### Scenario: Idle notifications are off by default
+
+- **WHEN** the user has never changed the idle-notification setting in
+  Settings
+- **THEN** a `session.idle` event naming an unfocused task raises no native
+  macOS notification
+
+#### Scenario: Idle notifications fire once explicitly enabled
+
+- **WHEN** the user turns on the idle-notification toggle in Settings
+- **THEN** a subsequent `session.idle` event naming a task that is not
+  currently focused in the UI raises a native macOS notification
 
 #### Scenario: Resync on invalid cursor
 
