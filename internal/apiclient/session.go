@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -73,27 +74,20 @@ func (s *Session) PID() int {
 }
 
 // WriteInput POSTs to /api/tasks/{id}/input. p is copied — caller may reuse.
-func (s *Session) WriteInput(p []byte) (int, error) {
-	return s.writeInput(p, true)
-}
-
-// WriteInputSystem POSTs like WriteInput but records only the work-cycle
-// timestamp, not the user-input timestamp (BUG-034). On the remote-TUI path
-// notify does not run, so this exists only to satisfy SessionHandle.
-func (s *Session) WriteInputSystem(p []byte) (int, error) {
-	return s.writeInput(p, false)
-}
-
-func (s *Session) writeInput(p []byte, user bool) (int, error) {
+// origin threads through to the server as the X-Input-Origin header (see
+// apiclient.Client.WriteInput), closing the gap where a system-origin write
+// on the remote-TUI path used to be indistinguishable from a user write once
+// it crossed the REST hop.
+func (s *Session) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
 	cp := make([]byte, len(p))
 	copy(cp, p)
-	if err := s.p.c.WriteInput(context.Background(), s.taskID, cp); err != nil {
+	if err := s.p.c.WriteInput(context.Background(), s.taskID, cp, origin); err != nil {
 		return 0, err
 	}
 	now := time.Now()
 	s.mu.Lock()
 	s.lastInput = now
-	if user {
+	if origin == agentview.OriginUser {
 		s.lastUserInput = now
 	}
 	s.mu.Unlock()

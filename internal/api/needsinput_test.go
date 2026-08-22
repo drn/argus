@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/events"
 	"github.com/drn/argus/internal/model"
@@ -908,7 +909,7 @@ func TestDetectNeedsInputTick_UserInputClears(t *testing.T) {
 	testutil.Equal(t, rnr.NeedsInput("w"), true)
 
 	// The user answers the prompt: a real keystroke through the agent pane.
-	_, err = sess.WriteInput([]byte("1\r"))
+	_, err = sess.WriteInput([]byte("1\r"), agentview.OriginUser)
 	testutil.NoError(t, err)
 
 	// Tick 2: user responded → cleared, even though the prompt still matches the

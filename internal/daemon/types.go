@@ -3,6 +3,7 @@ package daemon
 import (
 	"time"
 
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/buildid"
 )
 
@@ -68,7 +69,18 @@ type BootInfoResp struct {
 //     and a Recycle RPC against it errors — unlike KickRerender, the daemon
 //     surfaces that error rather than treating it as a no-op, since a silently
 //     no-op'd recycle would strand a coordinator that thinks it recycled.
-const ProtocolVersion = 4
+//   - v5 (unify-writeinput-origin): + WriteReq.Origin (agentview.InputOrigin,
+//     distinguishing a real keystroke from argus-injected input — see
+//     agentview.InputOrigin). Additive and zero-value-safe in BOTH directions:
+//     Origin's zero value is agentview.OriginUser, which is the only behavior
+//     any pre-v5 peer ever had, so a v4 supervisor talking to a v5 daemon (the
+//     field is simply absent on its wire type, ignored by JSON decode) and a
+//     v5 supervisor talking to a v4-shaped request (the field decodes as its
+//     zero value) both behave exactly as before. No supervisor restart is
+//     required to adopt this version; only a same-side rebuild that wants a
+//     System-origin write to actually apply on the OTHER side of the RPC hop
+//     needs both peers rebuilt.
+const ProtocolVersion = 5
 
 // SupervisorProtocolMatch reports whether a supervisor's handshake version
 // equals the daemon's. A mismatch is NOT fatal and NEVER triggers an auto-
@@ -170,9 +182,14 @@ type SessionInfo struct {
 }
 
 // WriteReq is the RPC request to send input to a session's PTY.
+//
+// Origin was added in ProtocolVersion 5 (unify-writeinput-origin). Its zero
+// value is agentview.OriginUser — see ProtocolVersion's v5 history note for
+// why that makes the field safely additive without a peer version check.
 type WriteReq struct {
 	TaskID string
 	Data   []byte
+	Origin agentview.InputOrigin
 }
 
 // ResizeReq is the RPC request to resize a session's PTY.

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/drn/argus/internal/app/agentview"
 )
 
 const defaultBufSize = 256 * 1024 // 256KB ring buffer; session log file handles full scrollback
@@ -49,12 +50,13 @@ type Session struct {
 	initialCols uint16    // PTY width at StartSession; never mutated after init
 	initialRows uint16    // PTY height at StartSession; never mutated after init
 	lastOutput  time.Time // last time output was received from PTY
-	lastInput   time.Time // last time ANY input was written (WriteInput or WriteInputSystem); idle-push gate uses this to detect new work cycles
-	// lastUserInput is the last time a USER keystroke was written (WriteInput
-	// only — NOT system delivery via WriteInputSystem). The needs-input
-	// clear-on-input filter (BUG-034) reads this so a reliable-notify delivery
-	// (hera/task message: Ctrl+U + text + CR) does not masquerade as the user
-	// answering a prompt and wrongly clear the "(?)" indicator.
+	lastInput   time.Time // last time ANY input was written (WriteInput, either origin); idle-push gate uses this to detect new work cycles
+	// lastUserInput is the last time WriteInput was called with
+	// agentview.OriginUser (a real keystroke) — NOT agentview.OriginSystem
+	// (system delivery). The needs-input clear-on-input filter (BUG-034)
+	// reads this so a reliable-notify delivery (hera/task message: Ctrl+U +
+	// text + CR) does not masquerade as the user answering a prompt and
+	// wrongly clear the "(?)" indicator.
 	lastUserInput time.Time
 	ptmxClosed    bool // true after waitLoop closes ptmx; guards Resize/WriteInput
 
@@ -590,37 +592,30 @@ func (s *Session) InitialPTYSize() (cols, rows int) {
 // WriteInput writes raw bytes to the PTY master (stdin of the child process).
 // Used by the agent view to forward keyboard input without full Attach.
 //
-// Records the wall-clock time of the call ONLY on a successful write. The
-// idle-push watcher reads this via LastInput() to decide whether a busy→idle
-// transition represents a new work cycle (input arrived since the last push)
-// or just incidental output from a stale, long-idle session — so a failed
-// write (e.g. ptmx already closed by waitLoop) must not advance the
-// timestamp, or a subsequent blip-idle would falsely re-arm the gate.
-func (s *Session) WriteInput(p []byte) (int, error) {
+// origin states whether this is a genuine human keystroke
+// (agentview.OriginUser) or input argus itself injected — reliable-notify
+// pane delivery of hera/task messages, a hera bounce instruction, a live
+// emulator's auto-answered terminal capability query (agentview.OriginSystem).
+// OriginUser advances both lastInput and lastUserInput; OriginSystem advances
+// only lastInput — it must NOT count as the user answering a prompt, so it
+// never clears the needs-input "(?)" flag (BUG-034). There is no default:
+// every caller states an origin.
+//
+// Records the timestamp(s) ONLY on a successful write. The idle-push watcher
+// reads lastInput via LastInput() to decide whether a busy→idle transition
+// represents a new work cycle (input arrived since the last push) or just
+// incidental output from a stale, long-idle session — so a failed write
+// (e.g. ptmx already closed by waitLoop) must not advance the timestamp, or a
+// subsequent blip-idle would falsely re-arm the gate.
+func (s *Session) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
 	n, err := s.ptmx.Write(p)
 	if err == nil {
 		now := time.Now()
 		s.mu.Lock()
 		s.lastInput = now
-		s.lastUserInput = now
-		s.mu.Unlock()
-	}
-	return n, err
-}
-
-// WriteInputSystem writes bytes to the PTY exactly like WriteInput but records
-// only the work-cycle timestamp (lastInput), NOT the user-input timestamp
-// (lastUserInput). It is the path for SYSTEM-injected input — reliable-notify
-// pane delivery (hera/task messages) — which advances the agent's work cycle
-// (so the idle-push gate still sees new work) but must NOT count as the user
-// answering a prompt (so it never clears the needs-input "(?)" flag; BUG-034).
-//
-// Records the timestamp only on a successful write, mirroring WriteInput.
-func (s *Session) WriteInputSystem(p []byte) (int, error) {
-	n, err := s.ptmx.Write(p)
-	if err == nil {
-		s.mu.Lock()
-		s.lastInput = time.Now()
+		if origin == agentview.OriginUser {
+			s.lastUserInput = now
+		}
 		s.mu.Unlock()
 	}
 	return n, err
@@ -634,10 +629,11 @@ func (s *Session) LastInput() time.Time {
 	return s.lastInput
 }
 
-// LastUserInput returns the wall-clock time of the most recent USER keystroke
-// (WriteInput), or the zero time if the user has never typed. System delivery
-// (WriteInputSystem) does NOT advance it. The needs-input clear-on-input filter
-// reads this so only a genuine user response clears the "(?)" flag (BUG-034).
+// LastUserInput returns the wall-clock time of the most recent WriteInput
+// call made with agentview.OriginUser, or the zero time if the user has
+// never typed. A call made with agentview.OriginSystem does NOT advance it.
+// The needs-input clear-on-input filter reads this so only a genuine user
+// response clears the "(?)" flag (BUG-034).
 func (s *Session) LastUserInput() time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()

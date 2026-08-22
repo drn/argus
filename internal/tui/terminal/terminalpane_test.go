@@ -17,6 +17,7 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/theme"
@@ -158,34 +159,33 @@ type mockAdapter struct {
 	writtenSystem []byte
 }
 
-func (m *mockAdapter) WriteInput(p []byte) (int, error) {
+// WriteInput records into a SEPARATE buffer per origin, so tests can assert
+// which origin a caller used — the exact distinction the OriginUser-vs-
+// OriginSystem fix turns on (see forwardEmulatorResponse).
+func (m *mockAdapter) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
 	m.writeMu.Lock()
-	m.written = append(m.written, p...)
+	if origin == agentview.OriginSystem {
+		m.writtenSystem = append(m.writtenSystem, p...)
+	} else {
+		m.written = append(m.written, p...)
+	}
 	m.writeMu.Unlock()
 	return len(p), nil
 }
 
-// WriteInputSystem mirrors WriteInput but records into a SEPARATE buffer, so
-// tests can assert which delivery path a caller used — the exact distinction
-// the WriteInput-vs-WriteInputSystem fix turns on (see forwardEmulatorResponse).
-func (m *mockAdapter) WriteInputSystem(p []byte) (int, error) {
-	m.writeMu.Lock()
-	m.writtenSystem = append(m.writtenSystem, p...)
-	m.writeMu.Unlock()
-	return len(p), nil
-}
-
-// Written returns a snapshot of everything WriteInput has received so far.
-// Safe to call concurrently with WriteInput (used to poll for bytes forwarded
-// from a background emulator-drain goroutine).
+// Written returns a snapshot of everything WriteInput has received with
+// agentview.OriginUser so far. Safe to call concurrently with WriteInput
+// (used to poll for bytes forwarded from a background emulator-drain
+// goroutine).
 func (m *mockAdapter) Written() []byte {
 	m.writeMu.Lock()
 	defer m.writeMu.Unlock()
 	return append([]byte(nil), m.written...)
 }
 
-// WrittenSystem returns a snapshot of everything WriteInputSystem has
-// received so far. Safe to call concurrently with WriteInputSystem.
+// WrittenSystem returns a snapshot of everything WriteInput has received
+// with agentview.OriginSystem so far. Safe to call concurrently with
+// WriteInput.
 func (m *mockAdapter) WrittenSystem() []byte {
 	m.writeMu.Lock()
 	defer m.writeMu.Unlock()
@@ -2311,7 +2311,7 @@ type pasteRecorder struct {
 	written []byte
 }
 
-func (p *pasteRecorder) WriteInput(b []byte) (int, error) {
+func (p *pasteRecorder) WriteInput(b []byte, origin agentview.InputOrigin) (int, error) {
 	p.written = append(p.written, b...)
 	return len(b), nil
 }
@@ -3580,10 +3580,11 @@ type raceAdapter struct {
 	freshTotal  uint64
 }
 
-func (r *raceAdapter) WriteInput(p []byte) (int, error)       { return len(p), nil }
-func (r *raceAdapter) WriteInputSystem(p []byte) (int, error) { return len(p), nil }
-func (r *raceAdapter) Resize(rows, cols uint16) error         { return nil }
-func (r *raceAdapter) RecentOutput() []byte                   { return r.freshOutput }
+func (r *raceAdapter) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
+	return len(p), nil
+}
+func (r *raceAdapter) Resize(rows, cols uint16) error { return nil }
+func (r *raceAdapter) RecentOutput() []byte           { return r.freshOutput }
 func (r *raceAdapter) RecentOutputTail(n int) []byte {
 	if n >= len(r.freshOutput) {
 		return r.freshOutput

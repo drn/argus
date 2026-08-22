@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/clipboard"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
@@ -1467,6 +1468,53 @@ func TestHandleWriteInput(t *testing.T) {
 		testutil.Equal(t, w.Code, http.StatusOK)
 	})
 
+	// TestHandleWriteInput/X-Input-Origin pins the REST hop of the
+	// origin-preservation contract: an X-Input-Origin: system request must
+	// reach the real session as agentview.OriginSystem (advancing LastInput
+	// but NOT LastUserInput), while an absent header — the pre-existing wire
+	// shape every prior client sends — must still resolve to
+	// agentview.OriginUser (advancing both), so this endpoint's default
+	// behavior for every caller that predates this header is unchanged.
+	t.Run("X-Input-Origin header threads origin to the session", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("starts a real PTY-backed sleep; skipped in -short")
+		}
+		srv, d := testServer(t)
+		mux := srv.routes()
+		testutil.NoError(t, d.SetBackend("sh-sleep", config.Backend{Command: "sleep 30"}))
+		task := &model.Task{
+			Name:     "origin-task",
+			Status:   model.StatusInProgress,
+			Backend:  "sh-sleep",
+			Worktree: t.TempDir(),
+		}
+		testutil.NoError(t, d.Add(task))
+		sess, err := srv.runner.Start(task, d.Config(), 24, 80, false)
+		testutil.NoError(t, err)
+		t.Cleanup(func() {
+			_ = srv.runner.Stop(task.ID)
+			<-sess.Done()
+		})
+
+		testutil.True(t, sess.LastUserInput().IsZero())
+
+		// No header: defaults to OriginUser — advances LastUserInput.
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, authedReq("POST", "/api/tasks/"+task.ID+"/input", "hi"))
+		testutil.Equal(t, w.Code, http.StatusOK)
+		testutil.False(t, sess.LastUserInput().IsZero())
+
+		userLastUserInput := sess.LastUserInput()
+
+		// X-Input-Origin: system — advances LastInput but not LastUserInput.
+		req := authedReq("POST", "/api/tasks/"+task.ID+"/input", "sys")
+		req.Header.Set("X-Input-Origin", "system")
+		w = httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusOK)
+		testutil.Equal(t, sess.LastUserInput(), userLastUserInput)
+	})
+
 	// PR 5 pins /input as a stable plugin-callable surface. The three subtests
 	// below validate two contracts:
 	//
@@ -1656,7 +1704,7 @@ func TestHandleStreamOutput(t *testing.T) {
 		testutil.NoError(t, err)
 		// Stage some PTY input so the ring buffer has bytes the SSE will
 		// replay as a `data:` line.
-		_, _ = sess.WriteInput([]byte("hello world\n"))
+		_, _ = sess.WriteInput([]byte("hello world\n"), agentview.OriginUser)
 		t.Cleanup(func() {
 			_ = srv.runner.Stop(task.ID)
 			<-sess.Done()
@@ -2948,7 +2996,7 @@ func TestHandleGetOutput_RingFallback(t *testing.T) {
 		<-sess.Done()
 	})
 	// Pump some bytes through.
-	_, _ = sess.WriteInput([]byte("ringtest\n"))
+	_, _ = sess.WriteInput([]byte("ringtest\n"), agentview.OriginUser)
 	time.Sleep(100 * time.Millisecond)
 
 	// Remove the on-disk log to force the ring branch.
@@ -2977,7 +3025,7 @@ func TestHandleGetOutput_LivePrefersLog(t *testing.T) {
 		_ = srv.runner.Stop(task.ID)
 		<-sess.Done()
 	})
-	_, _ = sess.WriteInput([]byte("livelog\n"))
+	_, _ = sess.WriteInput([]byte("livelog\n"), agentview.OriginUser)
 	time.Sleep(100 * time.Millisecond)
 
 	w := httptest.NewRecorder()
@@ -3027,7 +3075,7 @@ func TestHandleGetLinks_LiveSession(t *testing.T) {
 		<-sess.Done()
 	})
 
-	_, _ = sess.WriteInput([]byte("see https://example.com/x\n"))
+	_, _ = sess.WriteInput([]byte("see https://example.com/x\n"), agentview.OriginUser)
 	time.Sleep(100 * time.Millisecond)
 
 	w := httptest.NewRecorder()
@@ -3471,7 +3519,7 @@ func TestIdleWatcherTick_DrivesNotifyPath(t *testing.T) {
 
 	// Now write some input so lastInputAt > zero and prime the
 	// shouldFireIdlePush input-presence gate.
-	_, _ = sess.WriteInput([]byte("primer\n"))
+	_, _ = sess.WriteInput([]byte("primer\n"), agentview.OriginUser)
 	time.Sleep(50 * time.Millisecond)
 
 	// Force the state into "busy seen" so the next tick can transition to
@@ -4064,7 +4112,7 @@ func TestHandleGetOutput_CleanLive(t *testing.T) {
 		_ = srv.runner.Stop(task.ID)
 		<-sess.Done()
 	})
-	_, _ = sess.WriteInput([]byte("\x1b[31mhi\x1b[0m\n"))
+	_, _ = sess.WriteInput([]byte("\x1b[31mhi\x1b[0m\n"), agentview.OriginUser)
 	time.Sleep(100 * time.Millisecond)
 	_ = os.Remove(agent.SessionLogPath(task.ID))
 
@@ -4119,7 +4167,7 @@ func TestIdleWatcherTick_FullFiringPath(t *testing.T) {
 	})
 
 	// Push some input through so lastInput is set in the past.
-	_, _ = sess.WriteInput([]byte("primer\n"))
+	_, _ = sess.WriteInput([]byte("primer\n"), agentview.OriginUser)
 	time.Sleep(150 * time.Millisecond)
 
 	// First tick: session is busy (recently produced output). Records baseline.
@@ -4161,7 +4209,7 @@ func TestIdleWatcherTick_DBGetReturnsNil(t *testing.T) {
 		<-sess.Done()
 	})
 
-	_, _ = sess.WriteInput([]byte("primer\n"))
+	_, _ = sess.WriteInput([]byte("primer\n"), agentview.OriginUser)
 	time.Sleep(150 * time.Millisecond)
 
 	state := newIdleWatcherState()

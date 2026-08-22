@@ -531,7 +531,7 @@ func (p *HeraPage) forwardKey(tp *terminal.TerminalPane, ev *tcell.EventKey) {
 		// returned above, so only genuine input reaches here. Output-driven
 		// growth is unaffected (anchor-lock still pins scrolled-up content).
 		tp.ResetScroll()
-		if _, err := sess.WriteInput(b); err != nil {
+		if _, err := sess.WriteInput(b, agentview.OriginUser); err != nil {
 			uxlog.Log("[hera-view] pane write failed: %v", err)
 		}
 	}

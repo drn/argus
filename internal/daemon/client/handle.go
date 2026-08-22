@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -37,9 +38,15 @@ type RemoteSession struct {
 	info          daemon.SessionInfo // cached session info
 	done          chan struct{}      // closed when stream EOF
 	closeOnce     sync.Once          // guards close(done) — see close()
-	inputCh       chan []byte        // async input channel for WriteInput
-	lastInput     time.Time          // wall-clock time of last input write (user or system)
-	lastUserInput time.Time          // wall-clock time of last USER keystroke (WriteInput only; not WriteInputSystem) — BUG-034 clear-on-input source
+	inputCh       chan inputItem     // async input channel for WriteInput
+	lastInput     time.Time          // wall-clock time of last input write (either origin)
+	lastUserInput time.Time          // wall-clock time of last agentview.OriginUser write — BUG-034 clear-on-input source
+}
+
+// inputItem is one queued WriteInput call awaiting its RPC.
+type inputItem struct {
+	data   []byte
+	origin agentview.InputOrigin
 }
 
 func newRemoteSession(taskID string, c *Client) *RemoteSession {
@@ -48,50 +55,72 @@ func newRemoteSession(taskID string, c *Client) *RemoteSession {
 		client:  c,
 		buf:     agent.NewRingBuffer(defaultBufSize),
 		done:    make(chan struct{}),
-		inputCh: make(chan []byte, 64),
+		inputCh: make(chan inputItem, 64),
 	}
 	go rs.inputLoop()
 	return rs
 }
 
 // inputLoop drains the input channel and sends coalesced bytes to the daemon
-// via RPC. Runs until the done channel is closed.
+// via RPC, one Origin per RPC call. Runs until the done channel is closed.
+//
+// carry holds an item drainInput already dequeued but could not merge into
+// the batch just sent (an origin boundary) — inputLoop must send it next
+// instead of blocking on <-rs.inputCh, or it would be lost.
 func (rs *RemoteSession) inputLoop() {
+	var carry *inputItem
 	for {
-		// Block until at least one input arrives or session closes.
-		select {
-		case b := <-rs.inputCh:
-			buf := drainInput(b, rs.inputCh)
-			var resp daemon.StatusResp
-			if err := rs.client.call("Daemon.WriteInput", &daemon.WriteReq{
-				TaskID: rs.taskID,
-				Data:   buf,
-			}, &resp); err != nil {
-				uxlog.Log("[client] inputLoop WriteInput failed: task=%s err=%v", rs.taskID, err)
+		var item inputItem
+		if carry != nil {
+			// carry is unconditionally overwritten by drainInput below, so
+			// clearing it here would be an ineffectual assignment.
+			item = *carry
+		} else {
+			select {
+			case item = <-rs.inputCh:
+			case <-rs.done:
+				return
 			}
-		case <-rs.done:
-			return
+		}
+		var batch inputItem
+		batch, carry = drainInput(item, rs.inputCh)
+		var resp daemon.StatusResp
+		if err := rs.client.call("Daemon.WriteInput", &daemon.WriteReq{
+			TaskID: rs.taskID,
+			Data:   batch.data,
+			Origin: batch.origin,
+		}, &resp); err != nil {
+			uxlog.Log("[client] inputLoop WriteInput failed: task=%s err=%v", rs.taskID, err)
 		}
 	}
 }
 
-// drainInput coalesces additional pending messages from ch into initial,
-// returning the combined buffer ready for one RPC. Drain stops as soon as
-// either (a) the channel has no immediately-available message, or (b) the
-// buffer ends with a bracketed-paste end sequence — coalescing across that
-// boundary risks merging two `\x1b[200~..\x1b[201~` cycles into one PTY
-// write, which the receiver may parse as a single paste.
-func drainInput(initial []byte, ch <-chan []byte) []byte {
-	buf := initial
+// drainInput coalesces additional pending items from ch into initial,
+// returning the combined batch ready for one RPC plus an optional carry item
+// that could not be merged in (returned, not lost, for the next RPC). Drain
+// stops as soon as any of: (a) the channel has no immediately-available
+// item, (b) the batch ends with a bracketed-paste end sequence — coalescing
+// across that boundary risks merging two `\x1b[200~..\x1b[201~` cycles into
+// one PTY write, which the receiver may parse as a single paste — or (c) the
+// next queued item has a DIFFERENT origin than the batch being built: origin
+// is a per-RPC attribute (WriteReq.Origin), so merging a System-origin write
+// and a User-origin write into one call would misattribute one of them —
+// e.g. a hera bounce instruction queued back-to-back with a real keystroke
+// must not stamp the keystroke's bytes (or vice versa) with the wrong origin.
+func drainInput(initial inputItem, ch <-chan inputItem) (batch inputItem, carry *inputItem) {
+	buf := initial.data
 	for !bytes.HasSuffix(buf, pasteEndBytes) {
 		select {
 		case more := <-ch:
-			buf = append(buf, more...)
+			if more.origin != initial.origin {
+				return inputItem{data: buf, origin: initial.origin}, &more
+			}
+			buf = append(buf, more.data...)
 		default:
-			return buf
+			return inputItem{data: buf, origin: initial.origin}, nil
 		}
 	}
-	return buf
+	return inputItem{data: buf, origin: initial.origin}, nil
 }
 
 func (rs *RemoteSession) PID() int {
@@ -101,7 +130,10 @@ func (rs *RemoteSession) PID() int {
 }
 
 // WriteInput enqueues p onto the input channel; inputLoop drains the channel
-// and sends one or more RPCs to the daemon.
+// and sends one or more RPCs to the daemon. origin is carried on the wire via
+// WriteReq.Origin (see drainInput for why differently-origined items are
+// never coalesced into the same RPC) and, locally, decides whether
+// lastUserInput advances (see agentview.InputOrigin).
 //
 // Invariant relied on by drainInput: only PasteHandler writes data ending in
 // the bracketed-paste end sequence (\x1b[201~). drainInput uses that suffix
@@ -109,29 +141,16 @@ func (rs *RemoteSession) PID() int {
 // into one PTY write. Any future caller that writes bracketed-paste content
 // must wrap the whole cycle in a single WriteInput call (start sequence,
 // payload, and end sequence) — never split it across calls.
-func (rs *RemoteSession) WriteInput(p []byte) (int, error) {
-	return rs.writeInput(p, true)
-}
-
-// WriteInputSystem enqueues p like WriteInput but records only the work-cycle
-// timestamp (lastInput), NOT the user-input timestamp (lastUserInput) — the
-// system-delivery path (reliable-notify) so a delivered message never clears
-// the needs-input "(?)" flag (BUG-034). The wire RPC is identical; the
-// supervisor types the bytes the same way regardless.
-func (rs *RemoteSession) WriteInputSystem(p []byte) (int, error) {
-	return rs.writeInput(p, false)
-}
-
-func (rs *RemoteSession) writeInput(p []byte, user bool) (int, error) {
+func (rs *RemoteSession) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
 	// Copy so the caller can reuse the slice.
 	cp := make([]byte, len(p))
 	copy(cp, p)
 	select {
-	case rs.inputCh <- cp:
+	case rs.inputCh <- inputItem{data: cp, origin: origin}:
 		now := time.Now()
 		rs.mu.Lock()
 		rs.lastInput = now
-		if user {
+		if origin == agentview.OriginUser {
 			rs.lastUserInput = now
 		}
 		rs.mu.Unlock()
@@ -155,10 +174,11 @@ func (rs *RemoteSession) LastInput() time.Time {
 	return rs.lastInput
 }
 
-// LastUserInput returns the wall-clock time of the most recent USER keystroke
-// written through this handle (WriteInput), or zero. WriteInputSystem does not
-// advance it. Like LastInput, this is tracked client-side to satisfy the
-// SessionHandle contract; the daemon watcher reads the in-process session.
+// LastUserInput returns the wall-clock time of the most recent WriteInput
+// call made through this handle with agentview.OriginUser, or zero. A call
+// made with agentview.OriginSystem does not advance it. Like LastInput, this
+// is tracked client-side to satisfy the SessionHandle contract; the daemon
+// watcher reads the in-process session.
 func (rs *RemoteSession) LastUserInput() time.Time {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()

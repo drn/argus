@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/gdamore/tcell/v2"
 )
@@ -12,10 +13,11 @@ import (
 // pane's emulator into alternate-screen mode (DECSET 1049) — a full-screen agent.
 type altScreenAdapter struct{ out []byte }
 
-func (a *altScreenAdapter) WriteInput(p []byte) (int, error)       { return len(p), nil }
-func (a *altScreenAdapter) WriteInputSystem(p []byte) (int, error) { return len(p), nil }
-func (a *altScreenAdapter) Resize(rows, cols uint16) error         { return nil }
-func (a *altScreenAdapter) RecentOutput() []byte                   { return a.out }
+func (a *altScreenAdapter) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
+	return len(p), nil
+}
+func (a *altScreenAdapter) Resize(rows, cols uint16) error { return nil }
+func (a *altScreenAdapter) RecentOutput() []byte           { return a.out }
 func (a *altScreenAdapter) RecentOutputTail(n int) []byte {
 	if n >= len(a.out) {
 		return a.out

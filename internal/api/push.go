@@ -149,7 +149,7 @@ type idleWatcherState struct {
 	// agent.ResumeActivityTick): consecutive ticks a flagged session has shown
 	// Claude's "working" affordance, independent of whether any input was ever
 	// recorded as user-typed. Lets NeedsInputClear resolve a flag a
-	// coordinator's relayed answer (WriteInputSystem) could otherwise never
+	// coordinator's relayed answer (WriteInput with agentview.OriginSystem) could otherwise never
 	// clear. Mirrors the TUI's App.needsInputResume.
 	needsInputResume map[string]int
 	// needsInputSettle carries the settlement counter (see agent.SettleTick,
@@ -260,7 +260,7 @@ func sessionScreenSize(taskID string) (cols, rows int) {
 // agent.NeedsInputResumeTicks consecutive ticks — independent of the
 // candidate set, mirroring how the content-stability pass above scans every
 // running session regardless of candidacy. This is what lets a hera
-// coordinator's relayed answer (delivered via WriteInputSystem, which never
+// coordinator's relayed answer (delivered via WriteInput with agentview.OriginSystem, which never
 // advances lastUserInput — see agent.NeedsInputClear) resolve a flag once the
 // worker demonstrably resumes real work, not just when the human types
 // directly into the session.
@@ -359,7 +359,7 @@ func computeNeedsInput(idleIDs, runningIDs, prev []string, prevFP map[string]uin
 	// Resumed-activity pass: independent of candidacy (every running session is
 	// tracked, mirroring the content-stability pass above), advance each
 	// session's consecutive "working" streak. A hera coordinator's relayed
-	// answer is delivered via WriteInputSystem, which never advances
+	// answer is delivered via WriteInput with agentview.OriginSystem, which never advances
 	// lastUserInput (see agent.NeedsInputClear) — this is the only signal that
 	// can resolve a flag raised on a worker who was genuinely un-stuck by that
 	// relayed answer rather than direct user input.
@@ -666,9 +666,9 @@ func (s *Server) detectNeedsInputTick(state *idleWatcherState, running, idle []s
 	// timestamp (BUG-034 clear-on-input). It MUST be LastUserInput, not
 	// LastInput: every input surface — TUI socket, REST — funnels through this
 	// handle, but so does reliable pane delivery (hera/task messages), which is
-	// SYSTEM input, not the user answering the prompt. Reliable delivery uses
-	// WriteInputSystem, which advances LastInput (work cycle) but NOT
-	// LastUserInput — so reading LastUserInput here keeps a delivered coordinator
+	// SYSTEM input, not the user answering the prompt. Reliable delivery calls
+	// WriteInput with agentview.OriginSystem, which advances LastInput (work
+	// cycle) but NOT LastUserInput — so reading LastUserInput here keeps a delivered coordinator
 	// message from clearing a parked worker's "(?)" (the regression this fixes).
 	// In-process mode reads the real *agent.Session; supervisor mode reads the
 	// daemon-side client handle, both of which track the user/system split.

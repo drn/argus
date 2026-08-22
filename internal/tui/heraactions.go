@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/db"
 	herasvc "github.com/drn/argus/internal/hera"
@@ -920,8 +921,9 @@ const heraBounceInstruction = "You've been asked to bounce (fresh session, same 
 	"Please wrap up: call hera_status with handoff_note summarizing what's done, the current state, and what's next, and request_recycle=true, so your session restarts fresh once you go idle."
 
 // heraDoBounceWorker sends heraBounceInstruction to role's live session via
-// WriteInputSystem — a plain queued input, not a reliable-notify delivery
-// (no idle gating, no retry): the confirm modal is the human speed bump this
+// WriteInput with agentview.OriginSystem — a plain queued input, not a
+// reliable-notify delivery (no idle gating, no retry): the confirm modal is
+// the human speed bump this
 // path relies on (design.md Risks), and D6 explicitly rules out a
 // fallback/timeout if the role never responds. No daemon-side kill/restart
 // call happens here; the role's own subsequent hera_status call is what
@@ -937,7 +939,7 @@ func (a *App) heraDoBounceWorker(role *hera.RoleView) {
 		a.statusbar.SetError("Bounce: session not live")
 		return
 	}
-	if _, err := sess.WriteInputSystem([]byte(heraBounceInstruction)); err != nil {
+	if _, err := sess.WriteInput([]byte(heraBounceInstruction), agentview.OriginSystem); err != nil {
 		uxlog.Log("[hera-view] bounce: write failed role=%d task=%s: %v", role.RoleID, taskID, err)
 		a.statusbar.SetError("Bounce failed: " + err.Error())
 		return

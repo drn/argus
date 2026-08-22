@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -197,26 +198,27 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 	}
 
 	// All gates passed: submit.
-	// Three separate WriteInputSystem calls, with a brief pause before the third
-	// (system path: advances the work cycle but not the user-input timestamp, so
-	// the delivery never clears a needs-input "(?)" flag — BUG-034):
+	// Three separate OriginSystem WriteInput calls, with a brief pause before
+	// the third (system origin: advances the work cycle but not the
+	// user-input timestamp, so the delivery never clears a needs-input "(?)"
+	// flag — BUG-034):
 	//   1. Ctrl+U – kill any stale partial input
 	//   2. text   – prime the input buffer (no trailing CR)
 	//      (submitCRDelay pause here — ensures CR arrives as a distinct keypress)
 	//   3. \r     – submit; must be its own call, never appended to text
 	// The glued ctrl+u+text+CR sequence leaves the line un-submitted in some
 	// shell/agent configurations; the separated form is empirically reliable.
-	if _, err := sess.WriteInputSystem([]byte("\x15")); err != nil {
+	if _, err := sess.WriteInput([]byte("\x15"), agentview.OriginSystem); err != nil {
 		uxlog.Log("[notify] delivery ctrl+u failed task=%s id=%s err=%v", taskID, d.deliveryID, err)
 		return
 	}
-	if _, err := sess.WriteInputSystem([]byte(d.text)); err != nil {
+	if _, err := sess.WriteInput([]byte(d.text), agentview.OriginSystem); err != nil {
 		uxlog.Log("[notify] delivery text write failed task=%s id=%s err=%v", taskID, d.deliveryID, err)
 		return
 	}
 	// processOne runs without n.mu held; this sleep is safe.
 	time.Sleep(submitCRDelay)
-	if _, err := sess.WriteInputSystem([]byte("\r")); err != nil {
+	if _, err := sess.WriteInput([]byte("\r"), agentview.OriginSystem); err != nil {
 		uxlog.Log("[notify] delivery enter write failed task=%s id=%s err=%v", taskID, d.deliveryID, err)
 		// Text is now in the buffer without a CR. The next Reconcile will
 		// ctrl+U (clearing the stale text) then retry the full sequence.
