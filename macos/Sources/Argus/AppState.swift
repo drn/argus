@@ -131,6 +131,11 @@ final class AppState {
 
     let notificationManager = NotificationManager()
 
+    /// Burst policy for needs-input notifications (see ``NotificationFloodGate``);
+    /// owned here rather than in ``NotificationManager`` so it can be driven
+    /// purely by ids/names, matching that pure ArgusKit type's signature.
+    private var needsInputFloodGate = NotificationFloodGate()
+
     /// Slow safety-net poll interval. The 2s poll is gone — the event stream is
     /// the live path; this only heals a silently-wedged stream or a delta the
     /// buffering window happened to miss.
@@ -759,7 +764,12 @@ final class AppState {
         needsInputTaskIDs.insert(id)
         updateBadge()
         guard notify, notifyOnNeedsInput, let task = tasks.first(where: { $0.id == id }) else { return }
-        notificationManager.notifyNeedsInput(taskID: id, taskName: task.name)
+        switch needsInputFloodGate.decide(taskID: id, taskName: task.name) {
+        case .postIndividual:
+            notificationManager.notifyNeedsInput(taskID: id, taskName: task.name)
+        case .coalesce(let summary):
+            notificationManager.notifyNeedsInputSummary(summary)
+        }
     }
 
     private func clearNeedsInput(_ id: String) {

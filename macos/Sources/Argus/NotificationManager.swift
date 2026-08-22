@@ -1,14 +1,17 @@
 import AppKit
+import ArgusKit
 import UserNotifications
 import os
 
 /// Owns the app's native notifications (UNUserNotificationCenter): lazy
-/// authorization, needs-input / idle banners, tap-to-select, and needs-input
-/// dedupe. ``AppState`` drives it from the event stream.
+/// authorization, needs-input / idle banners, tap-to-select, needs-input
+/// dedupe, and burst-summary posting. ``AppState`` drives it from the event
+/// stream.
 ///
-/// Deliberately does NOT import ArgusKit — it deals only in ids + display
-/// strings, which keeps `Task` unambiguously Swift Concurrency's here (ArgusKit
-/// exports a `Task` model that shadows it elsewhere in the app).
+/// Imports ArgusKit ONLY for ``NotificationBurstSummary``, a pure value type
+/// that deals in ids/names — never the ArgusKit `Task` domain model, so
+/// `Task { … }` stays unambiguous here as long as it stays fully qualified
+/// (`_Concurrency.Task`, used throughout below).
 ///
 /// ## Non-bundled safety
 /// `UNUserNotificationCenter.current()` traps when the process has no bundle
@@ -80,6 +83,28 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         Self.log.info("[notify] needs-input posted task=\(taskID, privacy: .public)")
     }
 
+    /// Posts (or, while a burst is ongoing, updates in place) a single
+    /// coalesced banner summarizing a burst of needs-input arrivals — see
+    /// ``NotificationFloodGate`` in ArgusKit for the burst policy that
+    /// produces `summary`. Uses a fixed identifier so repeated calls during
+    /// the same burst replace the previous banner rather than restacking.
+    func notifyNeedsInputSummary(_ summary: NotificationBurstSummary) {
+        guard let center else { return }
+        requestAuthorizationIfNeeded()
+        let content = UNMutableNotificationContent()
+        content.title = summary.title
+        content.body = summary.body
+        content.threadIdentifier = Self.needsInputSummaryID
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: Self.needsInputSummaryID, content: content, trigger: nil)
+        center.add(request) { error in
+            if let error {
+                Self.log.error("[notify] summary post failed err=\(String(describing: error), privacy: .public)")
+            }
+        }
+        Self.log.info("[notify] needs-input coalesced count=\(summary.taskNames.count, privacy: .public)")
+    }
+
     /// Posts an "is idle" banner for a task. The frontmost-app gate lives in the
     /// caller (``AppState``); this just posts.
     func notifyIdle(taskID: String, taskName: String) {
@@ -117,6 +142,10 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     private static func needsInputID(_ taskID: String) -> String { "needs-input.\(taskID)" }
     private static func idleID(_ taskID: String) -> String { "idle.\(taskID)" }
+    /// Distinct from `needsInputID`'s per-task scheme (never collides with a
+    /// real task id) so a coalesced-burst banner and an individual banner
+    /// never share an identifier.
+    private static let needsInputSummaryID = "needs-input-summary"
 
     // MARK: - UNUserNotificationCenterDelegate (nonisolated: protocol isn't MainActor)
 
