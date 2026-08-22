@@ -1327,6 +1327,74 @@ func TestContentIdleFingerprint(t *testing.T) {
 	})
 }
 
+// TestScreenRenderer_RepeatedIdenticalRenderIsIdempotent verifies, empirically
+// rather than by assumption, the reuse-safety property the tui package's
+// per-tick tail/fingerprint caching (dedupe-redundant-needsinput-reads) depends
+// on: ScreenRenderer.render RIS-resets the emulator before every render after
+// the first (see render's doc comment), so two calls with byte-identical
+// (tail, cols, rows) — even with OTHER, DIFFERENT renders on the SAME shared
+// renderer interleaved between them, exactly like one detectNeedsInputSticky
+// tick's multiple passes over multiple sessions — must return byte-identical
+// results. If this were false (cumulative emulator state bleeding across
+// calls), caching a pass's ContentIdleFingerprint result for reuse in a LATER
+// pass would be unsound and would need per-(id,tail-hash) memoization of the
+// return value instead of relying on "call it again gets the same answer".
+func TestScreenRenderer_RepeatedIdenticalRenderIsIdempotent(t *testing.T) {
+	t.Run("ContentIdleFingerprint: identical args interleaved with other renders stay identical", func(t *testing.T) {
+		r := &ScreenRenderer{}
+		tailA := []byte(altScreenPromptFrame("3s", "✻"))
+		tailB := []byte(altScreenQuestionFrame("5s", "✶", true))
+
+		fp1, work1 := ContentIdleFingerprint(r, tailA, 80, 24)
+		// Interleave unrelated renders on the SAME renderer — different
+		// content, different dimensions — mirroring how detectNeedsInputSticky
+		// shares one a.needsInputScreen across every session's passes in a
+		// single tick.
+		ContentIdleFingerprint(r, tailB, 100, 30)
+		ContentIdleFingerprint(r, []byte("plain linear output, no prompt\n"), 80, 24)
+		fp2, work2 := ContentIdleFingerprint(r, tailA, 80, 24)
+
+		testutil.Equal(t, fp1, fp2)
+		testutil.Equal(t, work1, work2)
+	})
+
+	t.Run("render (via DetectNeedsInputScreen) is idempotent across a busy interleaving session", func(t *testing.T) {
+		r := &ScreenRenderer{}
+		altScreen := []byte(altScreenPromptFrame("3s", "✻"))
+
+		got1 := DetectNeedsInputScreen(r, altScreen, 80, 24)
+		for i := 0; i < 5; i++ {
+			// Simulate other sessions' tail reads landing on the shared
+			// renderer in between, each at varying sizes.
+			DetectNeedsInputScreen(r, []byte("\x1b[?1049h\x1b[2J\x1b[2;5HBusy..."), 120, 40)
+		}
+		got2 := DetectNeedsInputScreen(r, altScreen, 80, 24)
+
+		testutil.Equal(t, got1, true)
+		testutil.Equal(t, got2, true)
+	})
+
+	t.Run("resumed-activity and sustained-active passes read the SAME (fp, working) for identical args", func(t *testing.T) {
+		// Mirrors the exact call shape detectNeedsInputSticky's resumed-activity
+		// pass and sustained-active pass make for the SAME session in one tick:
+		// both call ContentIdleFingerprint(r, tail, cols, rows) with byte-
+		// identical arguments, with the content-stability pass's own renders
+		// for OTHER sessions having already touched the shared renderer first.
+		r := &ScreenRenderer{}
+		tail := []byte(altScreenQuestionFrame("4s", "✻", true))
+
+		// Simulate the content-stability pass rendering a handful of other
+		// sessions first (the loop order in detectNeedsInputSticky).
+		ContentIdleFingerprint(r, []byte(altScreenPromptFrame("1s", "✻")), 80, 24)
+		ContentIdleFingerprint(r, []byte("linear, no prompt\n"), 80, 24)
+
+		_, workingResumePass := ContentIdleFingerprint(r, tail, 80, 24)
+		_, workingSustainedPass := ContentIdleFingerprint(r, tail, 80, 24)
+		testutil.Equal(t, workingResumePass, workingSustainedPass)
+		testutil.Equal(t, workingResumePass, true)
+	})
+}
+
 // TestContentIdle drives the content-aware idle classification end to end through
 // the real ScreenRenderer + fingerprint path, both directions (BUG-036).
 func TestContentIdle(t *testing.T) {

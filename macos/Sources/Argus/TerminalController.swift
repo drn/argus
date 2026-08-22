@@ -303,6 +303,75 @@ final class TerminalController {
         }
     }
 
+    // MARK: - Terminal-safe chord actions (add-mac-keybinding-parity Stage 5)
+
+    /// Small per-press line scroll for Shift+Up/Down (spec.md "Scroll via
+    /// Shift chords without PTY leak"). Chosen over a 1-line bump so a
+    /// single keypress reads as a deliberate nudge; still small relative
+    /// to ``scrollPageUp()``/``scrollPageDown()``'s full-viewport jump.
+    private static let lineScrollStep = 3
+
+    /// All five scroll actions go through SwiftTerm's `scrollUp`/
+    /// `scrollDown`/`scroll(toPosition:)` — deliberately NOT its
+    /// `pageUp()`/`pageDown()` convenience methods, which fall back to
+    /// sending a raw escape sequence to the PTY (via the terminal
+    /// delegate's `send`, i.e. `POST /input`) whenever the alt screen is
+    /// active (no scrollback to move through). That fallback would leak
+    /// bytes to the agent for a chord this change promises never reaches
+    /// it (spec.md's non-regression scenario). `scrollUp`/`scrollDown`/
+    /// `scroll(toPosition:)` have no such fallback — in alt-screen mode
+    /// they are simply clamped no-ops, which is the correct behavior here.
+    func scrollLineUp() {
+        terminalView.scrollUp(lines: Self.lineScrollStep)
+    }
+
+    func scrollLineDown() {
+        terminalView.scrollDown(lines: Self.lineScrollStep)
+    }
+
+    /// A full-viewport-height scroll for Shift+PageUp/PageDown.
+    func scrollPageUp() {
+        terminalView.scrollUp(lines: terminalView.getTerminal().rows)
+    }
+
+    func scrollPageDown() {
+        terminalView.scrollDown(lines: terminalView.getTerminal().rows)
+    }
+
+    /// Scrolls all the way to the live/most-recent output for Shift+End.
+    /// `scroll(toPosition:)` clamps `1.0` to the maximum scroll offset
+    /// itself, so this needs no scrollback-length arithmetic here.
+    func scrollToBottom() {
+        terminalView.scroll(toPosition: 1.0)
+    }
+
+    /// Copies the terminal's currently VISIBLE viewport — not the full
+    /// scrollback — to the system pasteboard (spec.md "Copy visible
+    /// output via shortcut"). Reads each on-screen row directly via
+    /// `Terminal.getLine(row:)` + `BufferLine.translateToString(...)`
+    /// rather than SwiftTerm's selection APIs (`selectAll()` +
+    /// `getSelection()`), which select the WHOLE scrollback, not just
+    /// what's on screen. Despite `getLine(row:)`'s doc comment ("counted
+    /// from start of scroll back, not what the terminal has visible right
+    /// now" — misleading; it looks copy-pasted from the sibling
+    /// `getScrollInvariantLine`), its actual implementation indexes
+    /// `buffer.lines[row + buffer.yDisp]` bounded to `row < rows`: that IS
+    /// the visible-row accessor, already offset by the current scroll
+    /// position — so this reflects whatever's on screen right now,
+    /// including after a Shift+scroll chord moved the viewport.
+    func copyVisibleOutput() {
+        let terminal = terminalView.getTerminal()
+        var lines: [String] = []
+        for row in 0..<terminal.rows {
+            guard let line = terminal.getLine(row: row) else { break }
+            lines.append(line.translateToString(trimRight: true))
+        }
+        let text = lines.joined(separator: "\n")
+        guard !text.isEmpty else { return }
+        writeToPasteboard(text)
+        showToast("Copied visible output")
+    }
+
     // MARK: - Clipboard
 
     /// Handles an agent-staged clipboard change from the SSE stream. A nil text

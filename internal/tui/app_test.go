@@ -206,6 +206,207 @@ func TestDetectNeedsInputSticky_ContentStability(t *testing.T) {
 	})
 }
 
+// TestDetectNeedsInputSticky_DirtyCheck covers the Stat()-based dirty check
+// (dedupe-redundant-needsinput-reads, Fix 2): when a session's on-disk log
+// hasn't been written to at all since the previous tick (identical size AND
+// mtime — the log is append-only outside the one O_TRUNC at session start, so
+// this is a safe proxy for byte-identical content), the expensive tail
+// read + VT re-emulation is skipped and last tick's own computed raw signal is
+// replayed instead — but every tick-counter step function
+// (EscalateParkedSelection/ResumeActivityTick/SustainedActivityTick/
+// SettleTick) must still advance exactly once per tick, and a GENUINE content
+// change (forced via a deliberately-distinct mtime, so the assertions never
+// depend on real wall-clock write timing or filesystem mtime granularity)
+// must be caught on the very tick it happens — never delayed, never missed.
+func TestDetectNeedsInputSticky_DirtyCheck(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeLogAt := func(taskID, content string, mtime time.Time) {
+		logPath := agent.SessionLogPath(taskID)
+		testutil.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0o755))
+		testutil.NoError(t, os.WriteFile(logPath, []byte(content), 0o644))
+		testutil.NoError(t, os.Chtimes(logPath, mtime, mtime))
+	}
+
+	t.Run("escalation counter advances identically across unchanged replayed ticks; a genuine change is caught the same tick it happens", func(t *testing.T) {
+		a := &App{}
+		const parked = "❯ 1. Yes\n  2. No\n"
+		const busy = "Reading foo.go\nDone.\n"
+		base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+		// Tick 1: first time this id is seen — no previous Stat snapshot
+		// exists, so the dirty check can never short-circuit this one; a
+		// genuinely fresh read + escalation step.
+		writeLogAt("wkr", parked, base)
+		a.detectNeedsInputSticky(nil, []string{"wkr"}, nil)
+		testutil.Equal(t, a.needsInputEscalation["wkr"], 1)
+
+		// Ticks 2-10: the file is NEVER rewritten (identical size+mtime as
+		// tick 1) — the dirty check must short-circuit the read+re-emulation
+		// and replay tick 1's cached `parked` reading, yet the counter must
+		// still advance by exactly one per tick — identically to what a fresh
+		// re-read of this UNCHANGED content would also produce, since the
+		// content is static and ParkedSelectionSignal would return the same
+		// `true` every time regardless of whether it's freshly computed or
+		// replayed.
+		var got []string
+		for i := 2; i <= 10; i++ {
+			got = a.detectNeedsInputSticky(nil, []string{"wkr"}, got)
+			testutil.Equal(t, a.needsInputEscalation["wkr"], i)
+		}
+		testutil.Equal(t, a.needsInputEscalation["wkr"], 10) // past NeedsInputEscalationTicks(8) — already escalated, still incrementing
+
+		// Tick 11: rewrite to non-qualifying content with a DEFINITELY
+		// different mtime (base + 1h — never ambiguous under any filesystem's
+		// mtime granularity). The dirty check must detect this as changed and
+		// do a fresh read, catching the change on THIS tick.
+		writeLogAt("wkr", busy, base.Add(time.Hour))
+		got = a.detectNeedsInputSticky(nil, []string{"wkr"}, got)
+		// A single non-qualifying tick after an ongoing (already-escalated)
+		// streak is a BUG-060 one-tick grace period: held as a negative
+		// sentinel, magnitude preserved.
+		testutil.Equal(t, a.needsInputEscalation["wkr"], -10)
+
+		// Tick 12: file untouched again (same mtime as tick 11) — the dirty
+		// check must replay tick 11's cached `parked=false` reading, not some
+		// stale earlier value. A SECOND consecutive non-qualifying tick
+		// confirms a genuine break.
+		a.detectNeedsInputSticky(nil, []string{"wkr"}, got)
+		if _, ok := a.needsInputEscalation["wkr"]; ok {
+			t.Fatalf("expected escalation counter to reset to absent (confirmed break) after two consecutive non-qualifying ticks, got present: %d", a.needsInputEscalation["wkr"])
+		}
+	})
+
+	t.Run("resumed-activity and sustained-active counters advance identically across unchanged replayed ticks (Fix 1 within-tick reuse composed with Fix 2 cross-tick reuse)", func(t *testing.T) {
+		a := &App{}
+		const working = "⏺ Want me to ship it?\r✻ Cogitating… (12s · esc to interrupt)\r\r╭───╮\r│ > │\r╰───╯\r  ? for shortcuts\r"
+		const notWorking = "⏺ Want me to ship it?\r✻ Brewed for 12s\r\r╭───╮\r│ > │\r╰───╯\r  ? for shortcuts\r"
+		base := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+
+		writeLogAt("res", working, base)
+		a.detectNeedsInputSticky(nil, []string{"res"}, nil)
+		testutil.Equal(t, a.needsInputResume["res"], 1)
+		testutil.Equal(t, a.sustainedActiveTicks["res"], 1)
+
+		// Ticks 2-5: file untouched — both counters (independently tracked,
+		// but fed the SAME shared `working` reading per Fix 1) must advance
+		// in lockstep whether freshly computed or replayed from cache.
+		var got []string
+		for i := 2; i <= 5; i++ {
+			got = a.detectNeedsInputSticky(nil, []string{"res"}, got)
+			testutil.Equal(t, a.needsInputResume["res"], i)
+			testutil.Equal(t, a.sustainedActiveTicks["res"], i)
+		}
+
+		// A genuine change to non-working content, forced-distinct mtime.
+		writeLogAt("res", notWorking, base.Add(time.Hour))
+		a.detectNeedsInputSticky(nil, []string{"res"}, got)
+		// ResumeActivityTick has NO grace period — a single non-working tick
+		// resets it outright to absent.
+		if _, ok := a.needsInputResume["res"]; ok {
+			t.Fatalf("expected resume counter to reset to absent (no grace period), got present: %d", a.needsInputResume["res"])
+		}
+		// SustainedActivityTick DOES have a one-tick grace — the prior streak
+		// (5) is held as a negative sentinel, not discarded.
+		testutil.Equal(t, a.sustainedActiveTicks["res"], -5)
+	})
+
+	t.Run("settlement counter advances identically across unchanged replayed idle ticks; going non-idle resets immediately regardless of the log", func(t *testing.T) {
+		a := &App{}
+		const plain = "Reading foo.go\nDone.\n"
+		base := time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC)
+
+		writeLogAt("settle", plain, base)
+		a.detectNeedsInputSticky([]string{"settle"}, []string{"settle"}, nil)
+		testutil.Equal(t, a.needsInputSettle["settle"], 1)
+
+		// Untouched idle ticks — replayed from cache (awaitingComputed was
+		// true and idleNow still holds), counter still advances by one.
+		got := a.detectNeedsInputSticky([]string{"settle"}, []string{"settle"}, nil)
+		testutil.Equal(t, a.needsInputSettle["settle"], 2)
+		got = a.detectNeedsInputSticky([]string{"settle"}, []string{"settle"}, got)
+		testutil.Equal(t, a.needsInputSettle["settle"], 3) // past NeedsInputSettleTicks(2)
+
+		// idleNow is ALWAYS read fresh from the caller-supplied idle set,
+		// never gated by the dirty check — going non-idle (no file rewrite at
+		// all) must reset the counter to absent on this SAME tick.
+		a.detectNeedsInputSticky(nil /* no longer idle */, []string{"settle"}, got)
+		if _, ok := a.needsInputSettle["settle"]; ok {
+			t.Fatalf("expected settle counter to reset to absent once no longer idle, got present: %d", a.needsInputSettle["settle"])
+		}
+	})
+}
+
+// TestDetectNeedsInputSticky_ArchivePrefilter covers the archive pre-filter
+// (dedupe-redundant-needsinput-reads, Fix 3): archiving a task does NOT stop
+// its live session (db.SetArchived / the REST and MCP archive endpoints are
+// pure DB flag flips — see internal/api/handlers.go's setArchive and
+// internal/mcp/server.go's toolTaskArchive, neither of which touches the
+// session), so an archived task CAN still appear in runningIDs. Filtering it
+// out of the expensive passes never changes the RETURNED needs-input set —
+// agent.NeedsInputClear already drops every archived candidate
+// unconditionally regardless of what the passes compute for it — but it DOES
+// mean an archived-while-running task's internal counters/signal caches reset
+// to a cold start rather than continuing to accumulate silently in the
+// background. This test pins the ACCEPTED, bounded trade-off that causes: a
+// short transient re-detection delay after archive→unarchive-without-restart,
+// but NEVER a permanent miss and NEVER a false positive.
+func TestDetectNeedsInputSticky_ArchivePrefilter(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	logPath := agent.SessionLogPath("c1")
+	testutil.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0o755))
+	const parked = "Do you want to proceed?\n❯ 1. Yes\n  2. No\n"
+	testutil.NoError(t, os.WriteFile(logPath, []byte(parked), 0o644))
+
+	task := &model.Task{ID: "c1", Archived: false}
+	a := &App{tasks: []*model.Task{task}}
+	running := []string{"c1"}
+
+	// Ticks 1-2: not archived — ordinary 2-tick content-stability flagging.
+	got := a.detectNeedsInputSticky(nil, running, nil)
+	testutil.Equal(t, len(got), 0)
+	if _, ok := a.needsInputFP["c1"]; !ok {
+		t.Fatal("expected fingerprint recorded on first tick")
+	}
+	got = a.detectNeedsInputSticky(nil, running, got)
+	testutil.Equal(t, len(got), 1)
+	testutil.Equal(t, got[0], "c1")
+
+	// Archive the task WHILE STILL RUNNING (session never stopped) — the
+	// pre-filter must exclude it from the expensive passes from this tick
+	// onward: its raw-signal/fingerprint/escalation cache entries are DROPPED
+	// (not merely "not surfaced"), and — independently, already guaranteed by
+	// agent.NeedsInputClear's own unconditional archivedOf check regardless of
+	// this filter — it must never appear in the returned set while archived.
+	task.Archived = true
+	got = a.detectNeedsInputSticky(nil, running, got)
+	testutil.Equal(t, len(got), 0)
+	if _, ok := a.needsInputFP["c1"]; ok {
+		t.Fatal("expected fingerprint entry dropped for an archived-but-running task (pre-filter skip)")
+	}
+	// Stays out while archived over several more ticks, log untouched.
+	for i := 0; i < 3; i++ {
+		got = a.detectNeedsInputSticky(nil, running, got)
+		testutil.Equal(t, len(got), 0)
+	}
+
+	// Un-archive WITHOUT restarting the session (log content never changed
+	// throughout). The accepted trade-off: this is a COLD START, exactly like
+	// the task's very first-ever tick — not yet flagged this tick, needs one
+	// more stable observation.
+	task.Archived = false
+	got = a.detectNeedsInputSticky(nil, running, got)
+	testutil.Equal(t, len(got), 0)
+	if _, ok := a.needsInputFP["c1"]; !ok {
+		t.Fatal("expected fingerprint re-recorded on the first post-unarchive tick (cold restart, not a permanent miss)")
+	}
+	// The very next tick (content still unchanged) re-converges and flags —
+	// proving the trade-off is a bounded, transient delay, never a permanent
+	// miss.
+	got = a.detectNeedsInputSticky(nil, running, got)
+	testutil.Equal(t, len(got), 1)
+	testutil.Equal(t, got[0], "c1")
+}
+
 // TestDetectNeedsInputSticky_Escalation covers BUG-029: a session parked at a
 // selection prompt whose surrounding tail ALSO carries an unrelated line that
 // changes every tick (an unrecognized status/counter, or genuinely new but

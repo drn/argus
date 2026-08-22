@@ -14,6 +14,13 @@ final class MockURLProtocol: URLProtocol {
     nonisolated(unsafe) static var lastRequest: URLRequest?
     /// The most recent intercepted request body (recovered from the body stream).
     nonisolated(unsafe) static var lastBody: Data?
+    /// Every intercepted request in issue order, each paired with its
+    /// recovered body. `lastRequest`/`lastBody` only ever reflect the most
+    /// recent call, which can't distinguish "GET then PUT" ordering when a
+    /// single client method issues more than one request (e.g. a
+    /// read-modify-write round trip) — tests asserting that ordering read
+    /// this instead.
+    nonisolated(unsafe) static var requestLog: [(request: URLRequest, body: Data?)] = []
 
     static let lock = NSLock()
 
@@ -22,6 +29,7 @@ final class MockURLProtocol: URLProtocol {
         handler = nil
         lastRequest = nil
         lastBody = nil
+        requestLog = []
         lock.unlock()
     }
 
@@ -53,6 +61,7 @@ final class MockURLProtocol: URLProtocol {
         MockURLProtocol.lock.lock()
         MockURLProtocol.lastRequest = request
         MockURLProtocol.lastBody = MockURLProtocol.bodyData(request)
+        MockURLProtocol.requestLog.append((request, MockURLProtocol.lastBody))
         let handler = MockURLProtocol.handler
         MockURLProtocol.lock.unlock()
 
