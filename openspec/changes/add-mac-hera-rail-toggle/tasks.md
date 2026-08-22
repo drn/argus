@@ -3,7 +3,7 @@
 ## 1. Tests
 
 - [x] 1.1 Write failing tests for each scenario in `specs/rest-api/spec.md` (nesting fields, subtree_needs_input, needs_input, unchanged existing fields/scenarios)
-- [x] 1.2 Write failing tests for each scenario in `specs/macos-app/spec.md` that pertain to sidebar mode (sidebar mode toggle, kanban grouping, nested rendering, fold state) — the dual-pane/coordinator-roster/no-mutation-controls scenarios are Stage 5's to test, left unchecked
+- [x] 1.2 Write failing tests for each scenario in `specs/macos-app/spec.md` that pertain to sidebar mode (sidebar mode toggle, kanban grouping, nested rendering, fold state) — the dual-pane/coordinator-roster/no-mutation-controls scenarios are covered by `HeraDetailPaneResolverTests.swift` (the pure pane-selection decision) plus manual/build verification for the SwiftUI wiring, since `ArgusKitTests` has no SwiftUI/AppState harness
 - [x] 1.3 Confirm every "it should" criterion in `design.md`'s Acceptance criteria section has a corresponding failing test (Prove-It Pattern) — daemon D1/D2 portion only
 
 ## 2. Extract shared nesting package (daemon)
@@ -40,11 +40,11 @@
 
 **Depends on:** Stage 3
 
-- [ ] 5.1 Build `HeraDetailView.swift`: a new dual-pane container, distinct from `DetailView.swift`, hosting two task-bound panels side by side
-- [ ] 5.2 Left pane always binds to the active orchestrator's coordinator task; right pane binds to the selected role's task
-- [ ] 5.3 When the selected role's `kind` is `coordinator`, swap the right pane's content to a read-only roster-list details region (reusing the roster row rendering from the old `HeraTab`) instead of a terminal
-- [ ] 5.4 Mount `HeraDetailView` in place of `DetailView` only while the sidebar is in Hera mode; confirm `DetailView`'s flat-mode behavior is untouched
-- [ ] 5.5 Verify tests from 1.2 (dual-pane scenarios) pass
+- [x] 5.1 Build `HeraDetailView.swift`: a new dual-pane container, distinct from `DetailView.swift`, hosting two task-bound panels side by side
+- [x] 5.2 Left pane always binds to the active orchestrator's coordinator task; right pane binds to the selected role's task
+- [x] 5.3 When the selected role's `kind` is `coordinator`, swap the right pane's content to a read-only roster-list details region (reusing the roster row rendering from the old `HeraTab`) instead of a terminal
+- [x] 5.4 Mount `HeraDetailView` in place of `DetailView` only while the sidebar is in Hera mode; confirm `DetailView`'s flat-mode behavior is untouched
+- [x] 5.5 Verify tests from 1.2 (dual-pane scenarios) pass
 
 ## 6. Retire the old toolbar Hera toggle
 

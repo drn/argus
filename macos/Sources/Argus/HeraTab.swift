@@ -92,8 +92,10 @@ struct HeraTab: View {
 }
 
 /// An orchestrator section header: the coordinator's name/bound task, pinned
-/// marker, and role count.
-private struct HeraOrchestratorHeader: View {
+/// marker, and role count. Internal (not private) so ``HeraDetailView`` can
+/// reuse it for the dual-pane view's coordinator roster-list region
+/// (`add-mac-hera-rail-toggle`, Stage 5).
+struct HeraOrchestratorHeader: View {
     let orch: HeraOrchestrator
 
     var body: some View {
@@ -120,8 +122,10 @@ private struct HeraOrchestratorHeader: View {
 
 /// One role row: kind badge, role name, bound task (if any) with a status
 /// icon, and needs-input / ready-to-close markers. Clicking a row whose role
-/// has a live binding selects that task in the main task list.
-private struct HeraRoleRow: View {
+/// has a live binding selects that task in the main task list. Internal (not
+/// private) so ``HeraDetailView`` can reuse it for the dual-pane view's
+/// coordinator roster-list region (`add-mac-hera-rail-toggle`, Stage 5).
+struct HeraRoleRow: View {
     let role: HeraRole
 
     @Environment(AppState.self) private var app

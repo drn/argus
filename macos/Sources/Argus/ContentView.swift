@@ -18,9 +18,7 @@ struct ContentView: View {
             if app.showingHera {
                 HeraTab()
             } else if app.sidebarMode == .hera {
-                // TEMPORARY: Stage 5 (add-mac-hera-rail-toggle) replaces this
-                // with the real dual-pane HeraDetailView.
-                HeraTreeDetailPlaceholder()
+                HeraDetailView()
             } else {
                 DetailView()
             }
@@ -71,46 +69,5 @@ struct ContentView: View {
             RenameSheet(task: task)
         }
         .taskConfirmationDialog(app: app)
-    }
-}
-
-/// TEMPORARY: Stage 5 (`add-mac-hera-rail-toggle`) replaces this with the
-/// real dual-pane `HeraDetailView` (coordinator pane + selected-role pane, or
-/// a roster region when the selection is itself a coordinator). Shown only
-/// while the sidebar is in Hera-tree mode (``AppState/sidebarMode``) and the
-/// old toolbar roster (``AppState/showingHera``) isn't also active.
-private struct HeraTreeDetailPlaceholder: View {
-    @Environment(AppState.self) private var app
-
-    private var selectedRole: HeraRole? {
-        guard let roleID = app.selectedHeraRoleID, let roster = app.currentHeraRoster else { return nil }
-        return (roster.orchestrators.flatMap(\.roles) + roster.freelance)
-            .first { $0.roleID == roleID }
-    }
-
-    var body: some View {
-        if let role = selectedRole {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(role.name)
-                    .font(.title2.bold())
-                Text("\(role.kind) · \(role.status.isEmpty ? "no status yet" : role.status)")
-                    .foregroundStyle(.secondary)
-                if role.live, !role.taskID.isEmpty {
-                    Text("Bound to \(role.taskName.isEmpty ? role.taskID : role.taskName)")
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Unbound")
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .padding()
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        } else {
-            ContentUnavailableView {
-                Label("No role selected", systemImage: "point.3.filled.connected.trianglepath.dotted")
-            } description: {
-                Text("Select a role from the Projects tree to see its details.")
-            }
-        }
     }
 }
