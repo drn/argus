@@ -4,14 +4,11 @@ import SwiftUI
 /// The sidebar's nested Hera-tree mode (`add-mac-hera-rail-toggle`): top-level
 /// orchestrators grouped by kanban status, with bridge-nested sub-orchestrators
 /// folded under their parent's bridging role — mirroring the TUI rail's
-/// structure, unlike ``HeraTab``'s flat all-orchestrators roster.
+/// nested structure, unlike the retired flat all-orchestrators roster.
 ///
 /// Mounted by ``Sidebar`` in place of the flat task list while
-/// ``AppState/sidebarMode`` is `.hera`. Mirrors ``HeraTab``'s fetch-call and
-/// poll-loop pattern (same `app.heraRoster()`-backed call via
-/// ``AppState/refreshHeraRoster()``, same ~5s interval) rather than sharing
-/// its private state, since `HeraTab` itself stays untouched until Stage 6
-/// retires it.
+/// ``AppState/sidebarMode`` is `.hera`. Polls `app.heraRoster()` (via
+/// ``AppState/refreshHeraRoster()``) on its own ~5s cadence.
 struct HeraTreeSidebar: View {
     @Environment(AppState.self) private var app
 
@@ -200,7 +197,7 @@ private struct HeraTreeRoleRow: View {
             app.selectHeraRole(role.roleID)
         } label: {
             HStack(spacing: 8) {
-                HeraKindBadge(kind: role.kind)
+                KindBadge(kind: role.kind)
                 Text(role.name)
                     .lineLimit(1)
                 if role.live {
@@ -233,30 +230,5 @@ private struct HeraTreeRoleRow: View {
         }
         .buttonStyle(.plain)
         .listRowBackground(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
-    }
-}
-
-/// Small kind badge (coordinator / worker / freelance) — a copy of `HeraTab`'s
-/// `KindBadge` (kept private there, and `HeraTab.swift` is untouched until
-/// Stage 6 retires it).
-private struct HeraKindBadge: View {
-    let kind: String
-
-    var body: some View {
-        Text(kind)
-            .font(.caption2.weight(.medium))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.15), in: Capsule())
-            .foregroundStyle(color)
-    }
-
-    private var color: Color {
-        switch kind {
-        case "coordinator": return .purple
-        case "worker": return .blue
-        case "freelance": return .teal
-        default: return .secondary
-        }
     }
 }

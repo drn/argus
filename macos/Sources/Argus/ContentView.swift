@@ -15,9 +15,7 @@ struct ContentView: View {
             Sidebar()
                 .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 420)
         } detail: {
-            if app.showingHera {
-                HeraTab()
-            } else if app.sidebarMode == .hera {
+            if app.sidebarMode == .hera {
                 HeraDetailView()
             } else {
                 DetailView()
@@ -32,14 +30,6 @@ struct ContentView: View {
                 }
                 .keyboardShortcut("n", modifiers: .command)
                 .help("New Task (\u{2318}N)")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    app.showingHera.toggle()
-                } label: {
-                    Label("Projects", systemImage: "point.3.filled.connected.trianglepath.dotted")
-                }
-                .help("Toggle the Projects roster")
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {

@@ -86,11 +86,11 @@ struct HeraDetailView: View {
 
 /// The read-only roster-list details region shown in place of a terminal when
 /// the selected role is itself a coordinator (design.md D4 / task 5.3).
-/// Reuses ``HeraOrchestratorHeader``/``HeraRoleRow`` verbatim from the old
-/// `HeraTab` roster rendering rather than rebuilding it — scoped to this one
-/// orchestrator's own roles, matching the TUI's per-orchestrator roster
-/// region. Purely a navigation view: no Hera mutation control is presented
-/// here or anywhere else in this file.
+/// Reuses ``HeraOrchestratorHeader``/``HeraRoleRow`` (`HeraRosterComponents.swift`)
+/// rather than rebuilding them — scoped to this one orchestrator's own roles,
+/// matching the TUI's per-orchestrator roster region. Purely a navigation
+/// view: no Hera mutation control is presented here or anywhere else in this
+/// file.
 private struct HeraRosterPane: View {
     let orch: HeraOrchestrator
 

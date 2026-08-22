@@ -50,9 +50,9 @@
 
 **Depends on:** Stages 4, 5
 
-- [ ] 6.1 Remove the toolbar's Hera toggle control and `HeraTab.swift`'s standalone mount point
-- [ ] 6.2 Confirm no dangling references remain (build clean)
-- [ ] 6.3 Verify the REMOVED-requirement migration path in `specs/macos-app/spec.md` matches actual behavior (sidebar toggle is the only way in)
+- [x] 6.1 Remove the toolbar's Hera toggle control and `HeraTab.swift`'s standalone mount point
+- [x] 6.2 Confirm no dangling references remain (build clean)
+- [x] 6.3 Verify the REMOVED-requirement migration path in `specs/macos-app/spec.md` matches actual behavior (sidebar toggle is the only way in)
 
 ## 7. Documentation and wrap-up
 
