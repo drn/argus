@@ -88,6 +88,47 @@ final class AppState {
     /// terminal.
     var showingHera = false
 
+    /// Which content the sidebar itself shows (`add-mac-hera-rail-toggle`).
+    /// Independent of ``showingHera`` (the OLD toolbar toggle, which swaps the
+    /// whole detail pane and stays functional until Stage 6 retires it) — this
+    /// is the NEW sidebar-local toggle between the flat task list and the
+    /// nested Hera tree.
+    enum SidebarMode: Hashable {
+        case tasks, hera
+    }
+    var sidebarMode: SidebarMode = .tasks
+
+    /// The role currently selected in the Hera-tree sidebar mode. Separate
+    /// from ``selectedTaskID`` so switching ``sidebarMode`` never disturbs
+    /// either selection — each mode keeps its own. Set by the tree view's row
+    /// taps; Stage 5's dual-pane view reacts to this (and
+    /// ``activeHeraOrchestrator``) instead of ``selectedTaskID``.
+    var selectedHeraRoleID: Int64?
+
+    /// Local (unpersisted) expand/collapse state for the Hera-tree sidebar's
+    /// nodes — never synced to the daemon or across clients. Survives a
+    /// roster refresh because ``HeraTreeNode/id`` is stable across polls.
+    var heraFoldState = HeraFoldState()
+
+    /// The most recently fetched `GET /api/hera` roster, cached for the
+    /// Hera-tree sidebar and Stage 5's dual-pane view (``activeHeraOrchestrator``).
+    /// Populated by ``refreshHeraRoster()``, which the tree sidebar's own poll
+    /// loop drives — mirrors ``HeraTab``'s fetch call rather than duplicating
+    /// it, but keeps its own polling cadence since `HeraTab` stays untouched
+    /// until Stage 6.
+    private(set) var currentHeraRoster: HeraRoster?
+
+    /// The orchestrator containing the currently selected Hera role — i.e.
+    /// the orchestrator whose coordinator task Stage 5's dual-pane view pins
+    /// to its left pane. `nil` when nothing is selected or the roster hasn't
+    /// loaded yet.
+    var activeHeraOrchestrator: HeraOrchestrator? {
+        guard let currentHeraRoster, let selectedHeraRoleID else { return nil }
+        let allRoles = currentHeraRoster.orchestrators.flatMap(\.roles) + currentHeraRoster.freelance
+        guard let role = allRoles.first(where: { $0.roleID == selectedHeraRoleID }) else { return nil }
+        return currentHeraRoster.orchestrators.first { $0.id == role.orchID }
+    }
+
     /// A destructive/interrupting task action awaiting user confirmation.
     /// Driven by a single `.confirmationDialog` mounted once in
     /// ``ContentView`` — the sidebar context menu and the detail pane's
@@ -301,6 +342,15 @@ final class AppState {
         showingHera = false
     }
 
+    /// Selects a role in the Hera-tree sidebar mode. Unlike
+    /// ``selectHeraTask(_:)`` (the old toolbar roster's handler), this does
+    /// NOT touch ``showingHera``/``selectedTaskID``/``activeDetailTab`` — the
+    /// sidebar stays in Hera-tree mode and Stage 5's dual-pane view reacts to
+    /// this id (plus ``activeHeraOrchestrator``) instead.
+    func selectHeraRole(_ roleID: Int64) {
+        selectedHeraRoleID = roleID
+    }
+
     // MARK: - Data fetch
 
     /// Fetches `/api/tasks` and applies it as the authoritative baseline: the
@@ -415,6 +465,18 @@ final class AppState {
     func heraRoster() async throws -> HeraRoster {
         guard let client else { throw ArgusError.invalidResponse("not connected") }
         return try await client.heraRoster()
+    }
+
+    /// Same fetch as ``heraRoster()``, but also caches the result as
+    /// ``currentHeraRoster`` for ``activeHeraOrchestrator`` and the Hera-tree
+    /// sidebar. Called from that view's own poll loop (mirrors ``HeraTab``'s
+    /// pattern rather than sharing its private `@State`, since `HeraTab`
+    /// itself stays untouched until Stage 6).
+    @discardableResult
+    func refreshHeraRoster() async throws -> HeraRoster {
+        let roster = try await heraRoster()
+        currentHeraRoster = roster
+        return roster
     }
 
     func schedules() async throws -> [Schedule] {

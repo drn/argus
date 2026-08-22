@@ -3,7 +3,7 @@
 ## 1. Tests
 
 - [x] 1.1 Write failing tests for each scenario in `specs/rest-api/spec.md` (nesting fields, subtree_needs_input, needs_input, unchanged existing fields/scenarios)
-- [ ] 1.2 Write failing tests for each scenario in `specs/macos-app/spec.md` (sidebar mode toggle, kanban grouping, nested rendering, fold state, dual-pane view, coordinator roster region, flat-mode non-regression, no mutation controls)
+- [x] 1.2 Write failing tests for each scenario in `specs/macos-app/spec.md` that pertain to sidebar mode (sidebar mode toggle, kanban grouping, nested rendering, fold state) — the dual-pane/coordinator-roster/no-mutation-controls scenarios are Stage 5's to test, left unchecked
 - [x] 1.3 Confirm every "it should" criterion in `design.md`'s Acceptance criteria section has a corresponding failing test (Prove-It Pattern) — daemon D1/D2 portion only
 
 ## 2. Extract shared nesting package (daemon)
@@ -29,12 +29,12 @@
 
 **Depends on:** Stage 3
 
-- [ ] 4.1 Decode `kanban_status` and the new nesting/needs-input fields in `Models+Hera.swift`
-- [ ] 4.2 Add the sidebar mode toggle (flat task list ↔ Hera tree)
-- [ ] 4.3 Build the tree row-producing pipeline: group top-level orchestrators (null `bridge_parent_orch_id`) by `kanban_status`; nest orchestrators with a set `bridge_parent_orch_id` under their parent's bridging role
-- [ ] 4.4 Wire local (unpersisted) fold/expand state per tree node
-- [ ] 4.5 Reuse `HeraTab`'s existing data-fetch polling and `selectHeraTask` wiring inside the new tree view rather than duplicating it
-- [ ] 4.6 Verify tests from 1.2 (sidebar-mode scenarios) pass
+- [x] 4.1 Decode `kanban_status` and the new nesting/needs-input fields in `Models+Hera.swift`
+- [x] 4.2 Add the sidebar mode toggle (flat task list ↔ Hera tree)
+- [x] 4.3 Build the tree row-producing pipeline: group top-level orchestrators (null `bridge_parent_orch_id`) by `kanban_status`; nest orchestrators with a set `bridge_parent_orch_id` under their parent's bridging role
+- [x] 4.4 Wire local (unpersisted) fold/expand state per tree node
+- [x] 4.5 Reuse `HeraTab`'s existing data-fetch polling and `selectHeraTask` wiring inside the new tree view rather than duplicating it — mirrors the same fetch call (`AppState.heraRoster()`, via a new `refreshHeraRoster()` wrapper) and poll cadence since `HeraTab.swift` itself stays untouched until Stage 6; `selectHeraRole(_:)` is a new, deliberately separate selection handler (see design notes in AppState.swift)
+- [x] 4.6 Verify tests from 1.2 (sidebar-mode scenarios) pass
 
 ## 5. Dual-pane Hera detail view (mac app)
 
