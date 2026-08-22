@@ -996,6 +996,14 @@ type ContentIdleState struct {
 	esc map[string]int
 }
 
+// ContentIdleSignal is the (fp, working, parked) triple ContentIdle needs for
+// one session this tick — see ContentIdle's cachedSignal parameter.
+type ContentIdleSignal struct {
+	FP      uint64
+	Working bool
+	Parked  bool
+}
+
 // ContentIdle returns the subset of running task IDs that are CONTENT-IDLE — a
 // session that is NOT already raw-idle but whose animation-stripped
 // emulated-screen fingerprint has been unchanged for at least idleThreshold AND
@@ -1029,7 +1037,20 @@ type ContentIdleState struct {
 // (nil/empty → skipped). sizeOf returns its PTY dims for the emulator. screen is
 // the reused per-context ScreenRenderer (single-goroutine). The returned state
 // must be threaded back as `prev` next tick.
-func ContentIdle(running []string, rawIdle map[string]bool, tailOf func(string) []byte, sizeOf func(string) (cols, rows int), screen *ScreenRenderer, prev *ContentIdleState, now time.Time) (idle []string, next *ContentIdleState) {
+//
+// cachedSignal, when non-nil, lets a caller that already computed this tick's
+// ContentIdleFingerprint/ParkedSelectionSignal for a session — the TUI's
+// detectNeedsInputSticky calls both against the IDENTICAL tail moments earlier
+// in the same tick (dedupe-redundant-contentidle-reads) — hand the result
+// straight in instead of paying for a second tail read + VT re-emulation
+// pass. ok=false (including a nil cachedSignal, or no entry for this id — e.g.
+// an archived-but-still-running task detectNeedsInputSticky's own archive
+// pre-filter skips) falls back to the original independent tailOf/sizeOf/
+// screen computation, so behavior for any id without a cached signal is
+// byte-for-byte unchanged from before cachedSignal existed. The daemon's push
+// watcher (internal/api/push.go), which has no such shared per-tick pass,
+// always passes nil.
+func ContentIdle(running []string, rawIdle map[string]bool, tailOf func(string) []byte, sizeOf func(string) (cols, rows int), screen *ScreenRenderer, prev *ContentIdleState, now time.Time, cachedSignal func(id string) (ContentIdleSignal, bool)) (idle []string, next *ContentIdleState) {
 	next = &ContentIdleState{
 		fp:    make(map[string]uint64),
 		since: make(map[string]time.Time),
@@ -1039,12 +1060,10 @@ func ContentIdle(running []string, rawIdle map[string]bool, tailOf func(string) 
 		if rawIdle[id] {
 			continue // already idle — not an augmentation, and reset its tracking
 		}
-		tail := tailOf(id)
-		if len(tail) == 0 {
+		fp, working, parked, ok := contentIdleSignalFor(id, tailOf, sizeOf, screen, cachedSignal)
+		if !ok {
 			continue
 		}
-		cols, rows := sizeOf(id)
-		fp, working := ContentIdleFingerprint(screen, tail, cols, rows)
 
 		// BUG-029 escalation: advance the consecutive-tick counter regardless of
 		// whether the fingerprint itself converged this tick (see
@@ -1056,7 +1075,7 @@ func ContentIdle(running []string, rawIdle map[string]bool, tailOf func(string) 
 		if prev != nil {
 			prevTicks = prev.esc[id]
 		}
-		newTicks, escalated := EscalateParkedSelection(prevTicks, ParkedSelectionSignal(screen, tail, cols, rows))
+		newTicks, escalated := EscalateParkedSelection(prevTicks, parked)
 		if newTicks != 0 {
 			// A negative value is a BUG-060 one-tick grace state (an isolated
 			// miss holding the streak pending the next tick), not "nothing to
@@ -1085,6 +1104,41 @@ func ContentIdle(running []string, rawIdle map[string]bool, tailOf func(string) 
 		}
 	}
 	return idle, next
+}
+
+// contentIdleSignalFor resolves the (fp, working, parked) triple for one
+// session this tick — see ContentIdle's cachedSignal parameter. Preferring a
+// value the caller already computed this tick over an independent tail read +
+// VT-emulation pass is the whole point of cachedSignal; falling back to the
+// exact pre-existing computation (tailOf → ContentIdleFingerprint +
+// ParkedSelectionSignal) whenever it has nothing to offer keeps that path
+// byte-for-byte identical to ContentIdle's behavior before cachedSignal
+// existed. The fallback's own ok=false means "skip this id" for an empty
+// tail (nothing to classify).
+//
+// Requirement on cachedSignal itself (not enforced here — this function
+// trusts a cok=true return verbatim): it MUST report ok=false, not a
+// zero-valued ContentIdleSignal, for a session whose tail was empty when it
+// computed the cached reading. A zero-valued {FP:0, Working:false,
+// Parked:false} is indistinguishable from a genuine reading of all-idle,
+// all-parked content, so returning it as ok=true would make ContentIdle
+// accrue stability where the old (uncached) path would instead have
+// `continue`d and dropped tracking. App.contentIdleSignalOf satisfies this by
+// checking its cache entry's hasTail before returning ok=true.
+func contentIdleSignalFor(id string, tailOf func(string) []byte, sizeOf func(string) (cols, rows int), screen *ScreenRenderer, cachedSignal func(string) (ContentIdleSignal, bool)) (fp uint64, working, parked, ok bool) {
+	if cachedSignal != nil {
+		if sig, cok := cachedSignal(id); cok {
+			return sig.FP, sig.Working, sig.Parked, true
+		}
+	}
+	tail := tailOf(id)
+	if len(tail) == 0 {
+		return 0, false, false, false
+	}
+	cols, rows := sizeOf(id)
+	fp, working = ContentIdleFingerprint(screen, tail, cols, rows)
+	parked = ParkedSelectionSignal(screen, tail, cols, rows)
+	return fp, working, parked, true
 }
 
 // blinkProbeWindow bounds how many trailing bytes degenerateSuffixStart scans

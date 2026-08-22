@@ -1413,12 +1413,12 @@ func TestContentIdle(t *testing.T) {
 
 		// Tick 1: first observation → since=t0 → 0 < threshold → not idle yet.
 		frame = []byte(altScreenPromptFrame("3s", "✻"))
-		idle, st := ContentIdle([]string{"w"}, nil, tailOf, size, r, nil, t0)
+		idle, st := ContentIdle([]string{"w"}, nil, tailOf, size, r, nil, t0, nil)
 		testutil.Equal(t, len(idle), 0)
 
 		// Tick 2: same rendered screen (new spinner chrome), idleThreshold later.
 		frame = []byte(altScreenPromptFrame("8s", "✶"))
-		idle, _ = ContentIdle([]string{"w"}, nil, tailOf, size, r, st, t0.Add(idleThreshold))
+		idle, _ = ContentIdle([]string{"w"}, nil, tailOf, size, r, st, t0.Add(idleThreshold), nil)
 		testutil.DeepEqual(t, idle, []string{"w"})
 	})
 
@@ -1429,7 +1429,7 @@ func TestContentIdle(t *testing.T) {
 		var st *ContentIdleState
 		for i := 0; i < 4; i++ {
 			var idle []string
-			idle, st = ContentIdle([]string{"w"}, nil, tailOf, size, r, st, t0.Add(time.Duration(i)*idleThreshold))
+			idle, st = ContentIdle([]string{"w"}, nil, tailOf, size, r, st, t0.Add(time.Duration(i)*idleThreshold), nil)
 			testutil.Equal(t, len(idle), 0)
 		}
 	})
@@ -1442,7 +1442,7 @@ func TestContentIdle(t *testing.T) {
 		for i := 0; i < 4; i++ {
 			n = string(rune('0' + i)) // content changes every tick
 			var idle []string
-			idle, st = ContentIdle([]string{"w"}, nil, tailOf, size, r, st, t0.Add(time.Duration(i)*idleThreshold))
+			idle, st = ContentIdle([]string{"w"}, nil, tailOf, size, r, st, t0.Add(time.Duration(i)*idleThreshold), nil)
 			testutil.Equal(t, len(idle), 0)
 		}
 	})
@@ -1452,15 +1452,15 @@ func TestContentIdle(t *testing.T) {
 		tailOf := func(string) []byte { return []byte(altScreenPromptFrame("3s", "✻")) }
 		rawIdle := map[string]bool{"w": true}
 		// Even after threshold, a raw-idle session is not returned by the augmentation.
-		_, st := ContentIdle([]string{"w"}, rawIdle, tailOf, size, r, nil, t0)
-		idle, _ := ContentIdle([]string{"w"}, rawIdle, tailOf, size, r, st, t0.Add(idleThreshold))
+		_, st := ContentIdle([]string{"w"}, rawIdle, tailOf, size, r, nil, t0, nil)
+		idle, _ := ContentIdle([]string{"w"}, rawIdle, tailOf, size, r, st, t0.Add(idleThreshold), nil)
 		testutil.Equal(t, len(idle), 0)
 	})
 
 	t.Run("empty tail is skipped", func(t *testing.T) {
 		r := &ScreenRenderer{}
 		tailOf := func(string) []byte { return nil }
-		idle, _ := ContentIdle([]string{"w"}, nil, tailOf, size, r, nil, t0)
+		idle, _ := ContentIdle([]string{"w"}, nil, tailOf, size, r, nil, t0, nil)
 		testutil.Equal(t, len(idle), 0)
 	})
 
@@ -1483,11 +1483,11 @@ func TestContentIdle(t *testing.T) {
 			var idle []string
 			// Advance by only 1s per tick (well under idleThreshold=3s) so the
 			// ordinary wall-clock stability path cannot be what fires idle.
-			idle, st = ContentIdle([]string{"w"}, nil, tailOf, size, r, st, t0.Add(time.Duration(i)*time.Second))
+			idle, st = ContentIdle([]string{"w"}, nil, tailOf, size, r, st, t0.Add(time.Duration(i)*time.Second), nil)
 			testutil.Equal(t, len(idle), 0)
 		}
 		n = NeedsInputEscalationTicks - 1
-		idle, _ := ContentIdle([]string{"w"}, nil, tailOf, size, r, st, t0.Add(time.Duration(NeedsInputEscalationTicks-1)*time.Second))
+		idle, _ := ContentIdle([]string{"w"}, nil, tailOf, size, r, st, t0.Add(time.Duration(NeedsInputEscalationTicks-1)*time.Second), nil)
 		testutil.DeepEqual(t, idle, []string{"w"})
 	})
 
@@ -1513,17 +1513,122 @@ func TestContentIdle(t *testing.T) {
 		for i := 0; i < half; i++ {
 			n = i
 			var idle []string
-			idle, st = ContentIdle([]string{"w"}, nil, tailOf, size, r, st, t0.Add(time.Duration(i)*time.Second))
+			idle, st = ContentIdle([]string{"w"}, nil, tailOf, size, r, st, t0.Add(time.Duration(i)*time.Second), nil)
 			testutil.Equal(t, len(idle), 0)
 		}
 		// Working affordance appears for one tick — must reset the counter.
-		idle, st2 := ContentIdle([]string{"w"}, nil, workingTail, size, r, st, t0.Add(time.Duration(half)*time.Second))
+		idle, st2 := ContentIdle([]string{"w"}, nil, workingTail, size, r, st, t0.Add(time.Duration(half)*time.Second), nil)
 		testutil.Equal(t, len(idle), 0)
 		// Resume the parked prompt: must NOT immediately escalate since the
 		// streak restarted rather than resumed from half.
 		n = half + 1
-		idle, _ = ContentIdle([]string{"w"}, nil, tailOf, size, r, st2, t0.Add(time.Duration(half+1)*time.Second))
+		idle, _ = ContentIdle([]string{"w"}, nil, tailOf, size, r, st2, t0.Add(time.Duration(half+1)*time.Second), nil)
 		testutil.Equal(t, len(idle), 0)
+	})
+}
+
+// TestContentIdle_CachedSignal covers dedupe-redundant-contentidle-reads: the
+// TUI's refreshTasksWithIDs calls agent.ContentIdle right after
+// detectNeedsInputSticky has already computed the IDENTICAL
+// ContentIdleFingerprint/ParkedSelectionSignal readings for every running
+// session's tail this tick. cachedSignal lets ContentIdle reuse those
+// readings instead of paying for a second tail read + VT re-emulation pass —
+// these tests pin (1) a cache hit never touches tailOf/sizeOf at all, (2) a
+// cache miss (or nil cachedSignal) falls back to the exact pre-existing
+// independent computation, and (3) end-to-end, driving a real multi-tick
+// escalation scenario through both paths produces byte-for-byte identical
+// output every tick.
+func TestContentIdle_CachedSignal(t *testing.T) {
+	t0 := time.Unix(2000, 0)
+	size := func(string) (int, int) { return 80, 24 }
+
+	t.Run("cache hit never calls tailOf or sizeOf", func(t *testing.T) {
+		tailCalls, sizeCalls := 0, 0
+		tailOf := func(string) []byte {
+			tailCalls++
+			return []byte(altScreenPromptFrame("3s", "✻")) // would be a valid tail if called
+		}
+		sizeOf := func(string) (int, int) {
+			sizeCalls++
+			return 80, 24
+		}
+		cached := func(id string) (ContentIdleSignal, bool) {
+			return ContentIdleSignal{FP: 42, Working: false, Parked: false}, true
+		}
+		idle, _ := ContentIdle([]string{"w"}, nil, tailOf, sizeOf, nil, nil, t0, cached)
+		testutil.Equal(t, len(idle), 0) // since=now on first observation, not yet past threshold
+		testutil.Equal(t, tailCalls, 0)
+		testutil.Equal(t, sizeCalls, 0)
+	})
+
+	t.Run("cache miss falls back to the independent computation", func(t *testing.T) {
+		r := &ScreenRenderer{}
+		tailCalls := 0
+		tailOf := func(string) []byte {
+			tailCalls++
+			return []byte(altScreenPromptFrame("3s", "✻"))
+		}
+		cached := func(id string) (ContentIdleSignal, bool) { return ContentIdleSignal{}, false }
+		idle, st := ContentIdle([]string{"w"}, nil, tailOf, size, r, nil, t0, cached)
+		testutil.Equal(t, len(idle), 0)
+		testutil.Equal(t, tailCalls, 1)
+		if _, ok := st.fp["w"]; !ok {
+			t.Fatal("expected the fallback path to still record a fingerprint")
+		}
+	})
+
+	t.Run("a nil cachedSignal is equivalent to a cachedSignal that always misses", func(t *testing.T) {
+		tailOf := func(string) []byte { return []byte(altScreenPromptFrame("3s", "✻")) }
+		alwaysMiss := func(string) (ContentIdleSignal, bool) { return ContentIdleSignal{}, false }
+
+		idleNil, stNil := ContentIdle([]string{"w"}, nil, tailOf, size, &ScreenRenderer{}, nil, t0, nil)
+		idleMiss, stMiss := ContentIdle([]string{"w"}, nil, tailOf, size, &ScreenRenderer{}, nil, t0, alwaysMiss)
+		testutil.DeepEqual(t, idleNil, idleMiss)
+		testutil.Equal(t, stNil.fp["w"], stMiss.fp["w"])
+	})
+
+	t.Run("cached readings produce byte-for-byte identical output to independent computation across a multi-tick escalation", func(t *testing.T) {
+		// Mirrors the "never-converging fingerprint escalates" scenario above:
+		// unrelated per-tick-varying content keeps the fingerprint from
+		// converging, so only the escalation counter can ever fire.
+		n := 0
+		tailFor := func() []byte {
+			return []byte(altScreenPromptFrame("3s", "✻") + "\x1b[10;1Hnoise " + string(rune('a'+n))) //nolint:gosec // G115: n bounded to [0,NeedsInputEscalationTicks)
+		}
+		tailOf := func(string) []byte { return tailFor() }
+
+		// Baseline: ContentIdle computes everything itself (cachedSignal=nil).
+		rBaseline := &ScreenRenderer{}
+		var stBaseline *ContentIdleState
+
+		// Shared: the (fp, working, parked) triple is computed ONCE per tick —
+		// exactly mirroring what detectNeedsInputSticky's resumed-activity /
+		// content-stability passes already do — and handed to ContentIdle via
+		// cachedSignal instead of letting it recompute.
+		rShared := &ScreenRenderer{}
+		var stShared *ContentIdleState
+
+		for i := 0; i < NeedsInputEscalationTicks+2; i++ {
+			n = i
+			now := t0.Add(time.Duration(i) * time.Second)
+
+			idleBaseline, nextBaseline := ContentIdle([]string{"w"}, nil, tailOf, size, rBaseline, stBaseline, now, nil)
+			stBaseline = nextBaseline
+
+			tail := tailFor()
+			fp, working := ContentIdleFingerprint(rShared, tail, 80, 24)
+			parked := ParkedSelectionSignal(rShared, tail, 80, 24)
+			cached := func(id string) (ContentIdleSignal, bool) {
+				return ContentIdleSignal{FP: fp, Working: working, Parked: parked}, true
+			}
+			idleShared, nextShared := ContentIdle([]string{"w"}, nil, tailOf, size, rShared, stShared, now, cached)
+			stShared = nextShared
+
+			testutil.DeepEqual(t, idleShared, idleBaseline)
+			testutil.Equal(t, stShared.fp["w"], stBaseline.fp["w"])
+			testutil.Equal(t, stShared.since["w"], stBaseline.since["w"])
+			testutil.Equal(t, stShared.esc["w"], stBaseline.esc["w"])
+		}
 	})
 }
 

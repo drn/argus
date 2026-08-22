@@ -24,6 +24,7 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/modal"
+	"github.com/drn/argus/internal/tui/store"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -524,6 +525,91 @@ func TestDetectNeedsInputSticky_AltScreen(t *testing.T) {
 		writeLog("altbusy", "\x1b[?1049h\x1b[2J\x1b[2;5HApplying edit 2 of 3\x1b[3;5HRunning tests...")
 		testutil.Equal(t, len(b.detectNeedsInputSticky(nil, []string{"altbusy"}, nil)), 0)
 	})
+}
+
+// TestContentIdleSignalOf covers dedupe-redundant-contentidle-reads: the
+// App.contentIdleSignalOf closure refreshTasksWithIDs hands to
+// agent.ContentIdle as its cachedSignal parameter, sourced from
+// a.needsInputRawSignals — the SAME per-tick cache detectNeedsInputSticky's
+// resumed-activity (working + contentFP) and content-stability (parked)
+// passes already populate moments earlier in the same tick.
+func TestContentIdleSignalOf(t *testing.T) {
+	t.Run("a session with a recorded tail reading is served straight from the cache", func(t *testing.T) {
+		a := &App{needsInputRawSignals: map[string]needsInputRawSignals{
+			"w": {hasTail: true, working: true, parked: false, contentFP: 12345},
+		}}
+		sig, ok := a.contentIdleSignalOf("w")
+		testutil.Equal(t, ok, true)
+		testutil.Equal(t, sig.FP, uint64(12345))
+		testutil.Equal(t, sig.Working, true)
+		testutil.Equal(t, sig.Parked, false)
+	})
+
+	t.Run("an id absent from the map falls back (e.g. an archived-but-running task)", func(t *testing.T) {
+		a := &App{needsInputRawSignals: map[string]needsInputRawSignals{
+			"other": {hasTail: true},
+		}}
+		_, ok := a.contentIdleSignalOf("archived-but-running")
+		testutil.Equal(t, ok, false)
+	})
+
+	t.Run("an id recorded with an empty tail this tick falls back rather than serving zero values", func(t *testing.T) {
+		a := &App{needsInputRawSignals: map[string]needsInputRawSignals{
+			"empty": {hasTail: false},
+		}}
+		_, ok := a.contentIdleSignalOf("empty")
+		testutil.Equal(t, ok, false)
+	})
+
+	t.Run("a nil map (detectNeedsInputSticky never ran) always falls back", func(t *testing.T) {
+		a := &App{}
+		_, ok := a.contentIdleSignalOf("w")
+		testutil.Equal(t, ok, false)
+	})
+}
+
+// TestRefreshTasksWithIDs_ContentIdleReusesStickySignals is an end-to-end
+// differential test for dedupe-redundant-contentidle-reads: it drives the
+// REAL refreshTasksWithIDs (detectNeedsInputSticky followed by the wired
+// agent.ContentIdle(..., a.contentIdleSignalOf) call) against a fullscreen
+// parked-prompt session and checks that the cache a.contentIdleSignalOf
+// serves matches — value for value — an independent computation of
+// agent.ContentIdleFingerprint/agent.ParkedSelectionSignal over the identical
+// tail, proving the production wiring hands ContentIdle the SAME reading
+// detectNeedsInputSticky already computed rather than something else.
+func TestRefreshTasksWithIDs_ContentIdleReusesStickySignals(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	const taskID = "parked"
+	testutil.NoError(t, d.Add(&model.Task{ID: taskID, Name: "parked", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}))
+
+	logPath := agent.SessionLogPath(taskID)
+	testutil.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0o755))
+	const frame = "\x1b[?1049h\x1b[2J\x1b[1;1H✻ Brewed for 3s\x1b[3;5HDo you want to proceed?\x1b[5;5H1. Yes\x1b[6;5H2. No\x1b[5;3H❯\x1b[8;1H\x1b[?25l"
+	testutil.NoError(t, os.WriteFile(logPath, []byte(frame), 0o644))
+
+	// A fullscreen permission prompt: never raw-idle, so ContentIdle (not the
+	// raw idle set) is what has to classify it. false: this test only wants
+	// the sticky pass + cache wiring to run, not the cached-tasks gate.
+	app.refreshTasksWithIDs([]string{taskID}, nil, false)
+
+	sig, ok := app.contentIdleSignalOf(taskID)
+	if !ok {
+		t.Fatal("expected a cached content-idle signal after refreshTasksWithIDs ran detectNeedsInputSticky")
+	}
+
+	// Independent computation over the IDENTICAL tail bytes, completely
+	// decoupled from the app's own needsInputScreen renderer instance.
+	independentScreen := &agent.ScreenRenderer{}
+	wantFP, wantWorking := agent.ContentIdleFingerprint(independentScreen, []byte(frame), int(agent.DefaultTermCols), int(agent.DefaultTermRows))
+	wantParked := agent.ParkedSelectionSignal(independentScreen, []byte(frame), int(agent.DefaultTermCols), int(agent.DefaultTermRows))
+
+	testutil.Equal(t, sig.FP, wantFP)
+	testutil.Equal(t, sig.Working, wantWorking)
+	testutil.Equal(t, sig.Parked, wantParked)
 }
 
 // fakeKickSession is a minimal agent.SessionHandle for driving
@@ -1871,6 +1957,316 @@ func TestRefreshTasksLocal(t *testing.T) {
 	}
 }
 
+// countingTaskStore wraps a *db.DB and counts Tasks() calls, so a test can
+// prove the add-tasks-fetch-dirty-check gate actually skipped (or didn't
+// skip) the underlying fetch — not just that the returned task list happens
+// to be right, which would be true either way.
+type countingTaskStore struct {
+	*db.DB
+	tasksCalls int
+}
+
+var _ store.Store = (*countingTaskStore)(nil)
+
+func (c *countingTaskStore) Tasks() ([]*model.Task, error) {
+	c.tasksCalls++
+	return c.DB.Tasks()
+}
+
+// TestRefreshTasksWithIDs_GatedFetch covers add-tasks-fetch-dirty-check: the
+// onTick-driven path (allowCachedTasks=true) skips the full a.db.Tasks()
+// fetch when the store's PRAGMA data_version fingerprint hasn't moved since
+// the last fetch, and correctly refetches once a genuinely EXTERNAL write (a
+// different connection to the same file — the daemon, the REST API, another
+// argus process) bumps it. Mirrors hera.HeraPage's own shouldRebuild tests.
+func TestRefreshTasksWithIDs_GatedFetch(t *testing.T) {
+	t.Run("skips the fetch across repeated ticks with no DB change", func(t *testing.T) {
+		d := testDB(t)
+		wrapped := &countingTaskStore{DB: d}
+		app := New(wrapped, agent.NewRunner(nil), false) // New() itself does one initial (ungated) fetch
+		baseline := wrapped.tasksCalls
+
+		testutil.NoError(t, d.Add(&model.Task{ID: "t1", Name: "task1", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()}))
+		// Prime the snapshot with an UNGATED call — mirrors the real
+		// post-mutation refresh a UI handler makes right after its own write
+		// (this is what a live mutation always pairs with; a gated call alone
+		// can't be expected to see a same-connection write it has no way to
+		// observe — see shouldRefetchTasks's doc comment).
+		app.refreshTasksWithIDs(nil, nil, false)
+		testutil.Equal(t, wrapped.tasksCalls, baseline+1)
+		testutil.Equal(t, len(app.tasks), 1)
+
+		// Repeated GATED calls with nothing changed since: must keep skipping
+		// and reusing the cached snapshot, not re-fetch every tick.
+		for i := 0; i < 3; i++ {
+			app.refreshTasksWithIDs(nil, nil, true)
+			testutil.Equal(t, wrapped.tasksCalls, baseline+1)
+			testutil.Equal(t, len(app.tasks), 1)
+		}
+	})
+
+	t.Run("a genuinely external write is detected and triggers a refetch", func(t *testing.T) {
+		// A real file-backed DB (not OpenInMemory's private-per-connection
+		// :memory:) so a SECOND connection can exercise a true cross-connection
+		// write — see db.TestDB_DataVersion.
+		dir := t.TempDir()
+		path := filepath.Join(dir, "data.sql")
+		d1, err := db.Open(path)
+		testutil.NoError(t, err)
+		t.Cleanup(func() { _ = d1.Close() })
+		d2, err := db.Open(path)
+		testutil.NoError(t, err)
+		t.Cleanup(func() { _ = d2.Close() })
+
+		wrapped := &countingTaskStore{DB: d1}
+		app := New(wrapped, agent.NewRunner(nil), false)
+		baseline := wrapped.tasksCalls
+
+		testutil.NoError(t, d1.Add(&model.Task{ID: "t1", Name: "task1", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()}))
+		// Prime via d1's own connection with an ungated call (same-connection
+		// blind-spot rationale as above).
+		app.refreshTasksWithIDs(nil, nil, false)
+		testutil.Equal(t, wrapped.tasksCalls, baseline+1)
+		testutil.Equal(t, len(app.tasks), 1)
+
+		// Nothing changed: the very next gated tick must still skip.
+		app.refreshTasksWithIDs(nil, nil, true)
+		testutil.Equal(t, wrapped.tasksCalls, baseline+1)
+
+		// A write through the OTHER connection to the same file — genuinely
+		// external, and (unlike d1's own writes above) correctly visible via
+		// d1's own DataVersion() reads (db.TestDB_DataVersion).
+		testutil.NoError(t, d2.Add(&model.Task{ID: "t2", Name: "task2", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()}))
+
+		app.refreshTasksWithIDs(nil, nil, true)
+		testutil.Equal(t, wrapped.tasksCalls, baseline+2)
+		testutil.Equal(t, len(app.tasks), 2)
+	})
+
+	t.Run("allowCachedTasks=false always fetches, regardless of DB state", func(t *testing.T) {
+		// Every non-onTick caller (refreshTasksLocal, refreshTasksAsync, a
+		// direct UI mutation reacting to its own write) must keep this
+		// pre-existing unconditional-fetch behavior — see shouldRefetchTasks's
+		// doc comment for why they can never rely on the gate.
+		d := testDB(t)
+		wrapped := &countingTaskStore{DB: d}
+		app := New(wrapped, agent.NewRunner(nil), false)
+		baseline := wrapped.tasksCalls
+
+		testutil.NoError(t, d.Add(&model.Task{ID: "t1", Name: "task1", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()}))
+
+		for i := 1; i <= 3; i++ {
+			app.refreshTasksWithIDs(nil, nil, false)
+			testutil.Equal(t, wrapped.tasksCalls, baseline+i)
+		}
+	})
+
+	t.Run("the reconciliation SetStatus write invalidates the gate for the next gated tick", func(t *testing.T) {
+		// A real file-backed DB, not OpenInMemory: db.TestDB_DataVersion proves
+		// a write made through THIS SAME connection never bumps what this same
+		// connection reads back afterward (the documented same-connection
+		// blind spot) — so this test only means something against a real
+		// single-connection *db.DB, matching production. Without the explicit
+		// invalidateTasksChangeGate call, the gated tick below would wrongly
+		// believe nothing changed and skip.
+		dir := t.TempDir()
+		path := filepath.Join(dir, "data.sql")
+		d, err := db.Open(path)
+		testutil.NoError(t, err)
+		t.Cleanup(func() { _ = d.Close() })
+
+		wrapped := &countingTaskStore{DB: d}
+		app := New(wrapped, agent.NewRunner(nil), true) // daemonConnected=true: required for reconciliation to run
+		baseline := wrapped.tasksCalls
+
+		testutil.NoError(t, d.Add(&model.Task{ID: "stale", Name: "stale", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}))
+
+		// Prime the snapshot with an UNGATED call so the freshly-added
+		// InProgress task is actually visible to a.tasks (same-connection
+		// blind-spot rationale as the first two subtests above) — this is also
+		// the call whose reconciliation pass performs the SetStatus write and
+		// the invalidate under test, exactly like a real onTick would.
+		app.refreshTasksWithIDs([]string{}, nil, false)
+		testutil.Equal(t, wrapped.tasksCalls, baseline+1)
+		testutil.Equal(t, app.tasks[0].Status, model.StatusInReview)
+
+		// A gated tick right after: must refetch (proving the invalidate
+		// fired) despite no OTHER write having happened since — a naive gate
+		// relying on DataVersion() alone would see the same (pre-write)
+		// fingerprint and wrongly skip.
+		app.refreshTasksWithIDs([]string{}, nil, true)
+		testutil.Equal(t, wrapped.tasksCalls, baseline+2)
+
+		// A further gated tick with nothing changed since: must settle and
+		// skip again, proving this isn't just "always refetch after any
+		// reconciliation pass ran."
+		app.refreshTasksWithIDs([]string{}, nil, true)
+		testutil.Equal(t, wrapped.tasksCalls, baseline+2)
+	})
+}
+
+// TestHeraRefresh_InvalidatesTasksChangeGate pins one of the write sites a
+// code review of add-tasks-fetch-dirty-check found missing from the initial
+// implementation: several hera mutations (heraNukeRole/heraDoCascadeNuke/
+// heraNukeArchivedRole's a.db.SetStatus/SetArchived via heraReclaimAndArchiveTask,
+// heraStatusStep's RollHeraWorkerToReview/ClearHeraReadyToClose) write the
+// plain tasks table through a.db and then call ONLY heraRefresh() — which
+// invalidates the SEPARATE HeraPage gate but, before this fix, had no effect
+// on the newer plain-task-list gate at all. Simulates that shape directly:
+// write via d (the same connection as a.db) then call heraRefresh(), exactly
+// like heraReclaimAndArchiveTask does.
+func TestHeraRefresh_InvalidatesTasksChangeGate(t *testing.T) {
+	d := testDB(t)
+	wrapped := &countingTaskStore{DB: d}
+	app := New(wrapped, agent.NewRunner(nil), false)
+	baseline := wrapped.tasksCalls
+
+	testutil.NoError(t, d.Add(&model.Task{ID: "t1", Name: "t1", Status: model.StatusInReview, Project: "p", CreatedAt: time.Now()}))
+	app.refreshTasksWithIDs(nil, nil, false) // prime, mirrors a normal tick
+	testutil.Equal(t, wrapped.tasksCalls, baseline+1)
+	testutil.Equal(t, app.tasks[0].Archived, false)
+
+	// Mirrors heraReclaimAndArchiveTask: archives the task through the SAME
+	// a.db connection, then calls heraRefresh — NOT any task-list refresh.
+	testutil.NoError(t, d.SetArchived("t1", true))
+	app.heraRefresh()
+
+	// A gated tick right after must see the archived flag — proving
+	// heraRefresh's invalidate fired despite the same-connection blind spot.
+	app.refreshTasksWithIDs(nil, nil, true)
+	testutil.Equal(t, wrapped.tasksCalls, baseline+2)
+	testutil.Equal(t, app.tasks[0].Archived, true)
+}
+
+// TestStartSession_InvalidatesTasksChangeGate pins another write site the
+// same review found missing: startSession persists status/SessionID/AgentPID
+// via a.db.Update but is called from five sites, only two of which
+// separately force a refetch afterward (heraReattach and the plain
+// Enter-to-restart / auto-start paths do not). Fixed by invalidating INSIDE
+// startSession itself so every caller is covered uniformly.
+func TestStartSession_InvalidatesTasksChangeGate(t *testing.T) {
+	d := testDB(t)
+	wrapped := &countingTaskStore{DB: d}
+	app := New(wrapped, agent.NewRunner(nil), false)
+	baseline := wrapped.tasksCalls
+
+	// No worktree configured — runner.Start will fail, exercising
+	// startSession's failure-path a.db.Update (the generated-SessionID write
+	// fires first, then the failure-revert write).
+	task := &model.Task{ID: "t1", Name: "t1", Project: "p", CreatedAt: time.Now()}
+	task.SetStatus(model.StatusPending)
+	testutil.NoError(t, d.Add(task))
+	app.refreshTasksWithIDs(nil, nil, false) // prime
+	testutil.Equal(t, wrapped.tasksCalls, baseline+1)
+
+	app.startSession(task) // writes through a.db, no refresh call of its own
+
+	app.refreshTasksWithIDs(nil, nil, true)
+	testutil.Equal(t, wrapped.tasksCalls, baseline+2)
+}
+
+// TestSwitchSession_LiveSessionInvalidatesTasksChangeGate pins the third
+// write site the same review found: switchSession's LIVE-session branch
+// persists the new SessionID then stops the session and returns — the actual
+// restart (and its own refresh) happens later, asynchronously, once
+// handleSessionExitUI's exit notification arrives. In between, a gated tick
+// must not show the pre-switch SessionID.
+func TestSwitchSession_LiveSessionInvalidatesTasksChangeGate(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	d := testDB(t)
+	wrapped := &countingTaskStore{DB: d}
+	runner := agent.NewRunner(nil)
+	app := New(wrapped, runner, false)
+
+	task := &model.Task{
+		ID: "sw-live", Name: "live", Status: model.StatusInProgress,
+		Worktree: t.TempDir(), Backend: "test", SessionID: "old-session",
+		CreatedAt: time.Now(),
+	}
+	testutil.NoError(t, d.Add(task))
+	app.refreshTasksWithIDs(nil, nil, false) // prime
+	baseline := wrapped.tasksCalls
+	testutil.Equal(t, app.tasks[0].SessionID, "old-session")
+
+	cfg := config.DefaultConfig()
+	cfg.Backends["test"] = config.Backend{Command: "sh -c 'sleep 30'"}
+	sess, err := runner.Start(task, cfg, 24, 80, false)
+	testutil.NoError(t, err)
+	defer runner.Stop(task.ID) //nolint:errcheck
+
+	app.mode = modeAgent
+	app.agentState.Reset(task.ID, task.Name)
+	app.agentPane.SetSession(sess)
+	if !sess.Alive() {
+		t.Fatal("expected a live session")
+	}
+
+	app.switchSession("cccccccc-cccc-4ccc-8ccc-cccccccccccc", "New convo")
+
+	// A gated tick right after must see the newly-persisted SessionID.
+	app.refreshTasksWithIDs(nil, nil, true)
+	testutil.Equal(t, wrapped.tasksCalls, baseline+1)
+	testutil.Equal(t, app.tasks[0].SessionID, "cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+}
+
+// TestHandleSessionExitUI_RecaptureInvalidatesTasksChangeGate pins the fourth
+// write site the same review found: the async session-ID recapture goroutine
+// dispatched at the end of handleSessionExitUI writes a.db.Update well AFTER
+// that function's own unconditional refreshTasksAsync call already ran (the
+// goroutine does a disk scan first), so that earlier refresh cannot have
+// covered it.
+func TestHandleSessionExitUI_RecaptureInvalidatesTasksChangeGate(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	worktree := t.TempDir()
+	const oldID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	const newID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	seedClaudeSession(t, home, worktree, newID, "Recaptured title")
+
+	d := testDB(t)
+	wrapped := &countingTaskStore{DB: d}
+	app := New(wrapped, agent.NewRunner(nil), false)
+
+	task := &model.Task{
+		ID: "t1", Name: "t1", Status: model.StatusInProgress,
+		Project: "p", Worktree: worktree, SessionID: oldID, CreatedAt: time.Now(),
+	}
+	testutil.NoError(t, d.Add(task))
+	app.refreshTasksWithIDs(nil, nil, false) // prime
+	baseline := wrapped.tasksCalls
+
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	app.handleSessionExitUI(task.ID, true /* cleanExit */, false)
+	syncUI(t, app.tapp) // let the function's OWN refreshTasksAsync land first
+
+	// Poll for the async capture goroutine's QueueUpdateDraw to land — it does
+	// a disk scan before writing, so it lands strictly after the above.
+	deadline := time.Now().Add(uiTimeout)
+	for time.Now().Before(deadline) {
+		got, err := d.Get(task.ID)
+		testutil.NoError(t, err)
+		if got.SessionID == newID {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	got, err := d.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.SessionID, newID)
+
+	// A gated tick right after must see the recaptured SessionID. Two fetches
+	// happened by this point: handleSessionExitUI's own (unconditional)
+	// refreshTasksAsync, and this call itself — gated, but forced to refetch
+	// by the recapture goroutine's invalidateTasksChangeGate despite the
+	// write having gone through the same connection.
+	app.refreshTasksWithIDs(nil, nil, true)
+	testutil.Equal(t, wrapped.tasksCalls, baseline+2)
+	testutil.Equal(t, app.tasks[0].SessionID, newID)
+}
+
 func TestCtrlDOpensConfirmDelete(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
@@ -2363,7 +2759,7 @@ func TestReconcileSkipsOnNilRunning(t *testing.T) {
 	d.Add(&model.Task{ID: "t2", Name: "also-active", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()})
 
 	// Pass nil runningIDs (simulates RPC failure) — should NOT reconcile
-	app.refreshTasksWithIDs(nil, nil)
+	app.refreshTasksWithIDs(nil, nil, false)
 
 	for _, task := range app.tasks {
 		if task.Status != model.StatusInProgress {
@@ -2390,7 +2786,7 @@ func TestReconcileSkipsNonInProgress(t *testing.T) {
 	// Hold a.mu to honor refreshTasksWithIDs' documented caller contract (its
 	// production callers lock first).
 	app.mu.Lock()
-	app.refreshTasksWithIDs([]string{}, []string{})
+	app.refreshTasksWithIDs([]string{}, []string{}, false)
 	app.mu.Unlock()
 
 	got, _ := d.Get("done")
@@ -2411,7 +2807,7 @@ func TestReconcileWorksOnEmptyRunning(t *testing.T) {
 
 	// Pass empty non-nil runningIDs (daemon confirmed nothing running) — should
 	// reconcile to InReview (inferred absence, no observed exit → never Complete).
-	app.refreshTasksWithIDs([]string{}, []string{})
+	app.refreshTasksWithIDs([]string{}, []string{}, false)
 
 	found := false
 	for _, task := range app.tasks {
@@ -2491,7 +2887,7 @@ func TestReconcileSkipsOnStaleStartGen(t *testing.T) {
 	if app.startGen.Load() != startGen {
 		runningIDs = nil
 	}
-	app.refreshTasksWithIDs(runningIDs, []string{})
+	app.refreshTasksWithIDs(runningIDs, []string{}, false)
 
 	for _, task := range app.tasks {
 		if task.ID == "t1" {
@@ -2527,7 +2923,7 @@ func TestRefreshTasksAsyncStartGenGuard(t *testing.T) {
 	if app.startGen.Load() != startGen {
 		runningIDs = nil
 	}
-	app.refreshTasksWithIDs(runningIDs, []string{})
+	app.refreshTasksWithIDs(runningIDs, []string{}, false)
 
 	for _, task := range app.tasks {
 		if task.ID == "t1" {
@@ -2547,7 +2943,7 @@ func TestReconcileWorksWhenStartGenUnchanged(t *testing.T) {
 
 	// No startGen change — runningIDs are fresh and trustworthy.
 	// (No guard needed; startGen unchanged means reconciliation proceeds normally.)
-	app.refreshTasksWithIDs([]string{}, []string{})
+	app.refreshTasksWithIDs([]string{}, []string{}, false)
 
 	for _, task := range app.tasks {
 		if task.ID == "t1" {
@@ -2573,7 +2969,7 @@ func TestReconcileGracePeriodProtectsRecentStarts(t *testing.T) {
 	app.recentStarts["t1"] = time.Now()
 
 	// Empty running set — session not yet visible to ListSessions.
-	app.refreshTasksWithIDs([]string{}, []string{})
+	app.refreshTasksWithIDs([]string{}, []string{}, false)
 
 	// Task should be protected by grace period.
 	for _, task := range app.tasks {
@@ -2597,7 +2993,7 @@ func TestReconcileGracePeriodExpiresAfterTimeout(t *testing.T) {
 	// Set start time in the past (beyond grace period).
 	app.recentStarts["t1"] = time.Now().Add(-10 * time.Second)
 
-	app.refreshTasksWithIDs([]string{}, []string{})
+	app.refreshTasksWithIDs([]string{}, []string{}, false)
 
 	for _, task := range app.tasks {
 		if task.ID == "t1" {

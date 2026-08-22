@@ -417,7 +417,7 @@ func TestSmoke_ReconciliationUsesNameSafeStatusWrite(t *testing.T) {
 		// refreshTasksWithIDs is documented to run with a.mu held (its callers
 		// refreshTasks/refreshTasksLocal lock first); replicate that contract.
 		app.mu.Lock()
-		app.refreshTasksWithIDs([]string{}, nil)
+		app.refreshTasksWithIDs([]string{}, nil, false)
 		app.mu.Unlock()
 	})
 	syncUI(t, app.tapp)
@@ -2445,7 +2445,7 @@ func TestRefreshTasks_NeedsInputSticky(t *testing.T) {
 
 	// Tick 1: other is idle → detected via the normal path.
 	readUI(t, app.tapp, func() {
-		app.refreshTasksWithIDs([]string{viewed.ID, other.ID}, []string{other.ID})
+		app.refreshTasksWithIDs([]string{viewed.ID, other.ID}, []string{other.ID}, false)
 	})
 	if got := snapshotIDs(); !containsString(got, other.ID) {
 		t.Fatalf("tick 1: expected %q in needsInputIDs, got %v", other.ID, got)
@@ -2454,7 +2454,7 @@ func TestRefreshTasks_NeedsInputSticky(t *testing.T) {
 	// Tick 2: Claude emitted an animation byte → other is no longer in
 	// idleIDs. Sticky pass must keep it because the marker is still on disk.
 	readUI(t, app.tapp, func() {
-		app.refreshTasksWithIDs([]string{viewed.ID, other.ID}, nil)
+		app.refreshTasksWithIDs([]string{viewed.ID, other.ID}, nil, false)
 	})
 	if got := snapshotIDs(); !containsString(got, other.ID) {
 		t.Fatalf("tick 2 (sticky): expected %q to persist in needsInputIDs even when not idle, got %v", other.ID, got)
@@ -2470,7 +2470,7 @@ func TestRefreshTasks_NeedsInputSticky(t *testing.T) {
 		t.Fatalf("overwrite log: %v", err)
 	}
 	readUI(t, app.tapp, func() {
-		app.refreshTasksWithIDs([]string{viewed.ID, other.ID}, nil)
+		app.refreshTasksWithIDs([]string{viewed.ID, other.ID}, nil, false)
 	})
 	if got := snapshotIDs(); !containsString(got, other.ID) {
 		t.Fatalf("tick 3: expected %q to stay in needsInputIDs after the marker scrolls out of tail, got %v", other.ID, got)
@@ -2480,7 +2480,7 @@ func TestRefreshTasks_NeedsInputSticky(t *testing.T) {
 	// marker is still absent from the tail (this is the ONLY way the sticky
 	// carry-forward loses a task, short of NeedsInputClear).
 	readUI(t, app.tapp, func() {
-		app.refreshTasksWithIDs([]string{viewed.ID}, nil)
+		app.refreshTasksWithIDs([]string{viewed.ID}, nil, false)
 	})
 	if got := snapshotIDs(); containsString(got, other.ID) {
 		t.Fatalf("tick 4: expected %q to drop when no longer running, got %v", other.ID, got)
