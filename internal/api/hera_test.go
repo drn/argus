@@ -437,6 +437,68 @@ func TestHandleHera_NestedOrchestratorSurfacesBridgeParent(t *testing.T) {
 	testutil.Equal(t, *childJSON.BridgeParentRoleID, bridgeWorker.ID)
 }
 
+// TestHandleHera_SubtreeCostDoesNotRecurseIntoNestedSubCoordinator pins the
+// rest-api delta spec's scope note: an orchestrator's subtree_cost_usd sums
+// only its OWN roles' cost — a nested sub-coordinator reached via a
+// worker→coordinator bridge has its own recorded cost, but that cost is NOT
+// added into the PARENT's subtree_cost_usd (only the TUI's local-mode
+// Model.SubtreeCostUSD recurses; this REST endpoint deliberately does not).
+func TestHandleHera_SubtreeCostDoesNotRecurseIntoNestedSubCoordinator(t *testing.T) {
+	srv, d := testServer(t)
+
+	parent, err := d.CreateHeraOrchestrator("parent", "")
+	testutil.NoError(t, err)
+	child, err := d.CreateHeraOrchestrator("child", "")
+	testutil.NoError(t, err)
+
+	bridgeWorker, err := d.CreateHeraRole(db.CreateHeraRoleInput{
+		OrchestratorID: parent.ID, Name: "bridge-worker", Kind: db.HeraKindWorker, ArgusProject: "p",
+	})
+	testutil.NoError(t, err)
+	childCoord, err := d.CreateHeraRole(db.CreateHeraRoleInput{
+		OrchestratorID: child.ID, Name: "coord", Kind: db.HeraKindCoordinator, ArgusProject: "p",
+	})
+	testutil.NoError(t, err)
+	childWorker, err := d.CreateHeraRole(db.CreateHeraRoleInput{
+		OrchestratorID: child.ID, Name: "leaf", Kind: db.HeraKindWorker, ArgusProject: "p",
+	})
+	testutil.NoError(t, err)
+
+	const bridgeTask = "bridge-task"
+	const leafTask = "leaf-task"
+	testutil.NoError(t, d.Add(&model.Task{ID: bridgeTask, Name: bridgeTask, Status: model.StatusInProgress}))
+	testutil.NoError(t, d.Add(&model.Task{ID: leafTask, Name: leafTask, Status: model.StatusInProgress}))
+
+	bridgeBinding, err := d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: bridgeWorker.ID, ArgusTaskID: bridgeTask, WorktreePath: "/wt/a"})
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.UpdateHeraBindingCostTotals(bridgeBinding.ID, db.HeraBindingCostTotals{CostUSDAccrued: 2.0}))
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: childCoord.ID, ArgusTaskID: bridgeTask, WorktreePath: "/wt/b"})
+	testutil.NoError(t, err)
+	leafBinding, err := d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: childWorker.ID, ArgusTaskID: leafTask, WorktreePath: "/wt/c"})
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.UpdateHeraBindingCostTotals(leafBinding.ID, db.HeraBindingCostTotals{CostUSDAccrued: 100.0}))
+
+	resp := getHera(t, srv)
+	var parentJSON, childJSON *heraOrchJSON
+	for i := range resp.Orchestrators {
+		switch resp.Orchestrators[i].Name {
+		case "parent":
+			parentJSON = &resp.Orchestrators[i]
+		case "child":
+			childJSON = &resp.Orchestrators[i]
+		}
+	}
+	testutil.NotNil(t, parentJSON)
+	testutil.NotNil(t, childJSON)
+
+	// The child's own subtree_cost_usd includes its leaf worker's cost.
+	testutil.Equal(t, childJSON.SubtreeCostUSD, 100.0)
+	// The parent's subtree_cost_usd reflects ONLY its own bridge-worker role's
+	// cost (2.0) — the child's 100.0 is NOT recursed in, even though the
+	// bridge relationship is the same one bridge_parent_orch_id exposes.
+	testutil.Equal(t, parentJSON.SubtreeCostUSD, 2.0)
+}
+
 // TestHandleHera_RoleNeedsInputMirrorsRunnerSignal pins that a role's
 // needs_input field mirrors the same daemon-authoritative idle-detection
 // signal (Server.runner.NeedsInputIDs) that backs GET /api/tasks and the SSE
