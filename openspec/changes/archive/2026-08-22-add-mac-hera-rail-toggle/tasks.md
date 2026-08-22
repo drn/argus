@@ -58,7 +58,7 @@
 
 **Depends on:** Stages 2-6
 
-- [ ] 7.1 Document the `internal/hera/model` package extraction and the REST-vs-TUI live-state-source distinction as a gotcha in `context/knowledge/gotchas/hera-view.md` or `daemon-rpc.md` (whichever fits) and `gotchas/macos-app.md`
-- [ ] 7.2 Update the README's Reference section for the new `/api/hera` fields if it documents REST fields at that level of detail (check first; skip if it doesn't)
-- [ ] 7.3 Run `make test` (daemon/Go side), `make mac-build`, and `make mac-test`; fix any failures
-- [ ] 7.4 `openspec archive add-mac-hera-rail-toggle` (or the manual merge-and-move fallback) on the change branch before merge, per this repo's CLAUDE.md
+- [x] 7.1 Document the `internal/hera/model` package extraction and the REST-vs-TUI live-state-source distinction as a gotcha in `context/knowledge/gotchas/hera-view.md` or `daemon-rpc.md` (whichever fits) and `gotchas/macos-app.md` — the package-extraction gotcha was already documented in `hera-view.md` by an earlier stage; added the REST-vs-TUI live-state-source bullet there plus a new `HeraTreeBuilder`/`HeraDetailPaneResolver` pure-logic + single-poll-loop entry in `gotchas/macos-app.md`
+- [x] 7.2 Update the README's Reference section for the new `/api/hera` fields if it documents REST fields at that level of detail (check first; skip if it doesn't) — updated the `GET /api/hera` row (line ~733) with `kanban_status`, `bridge_parent_orch_id`/`bridge_parent_role_id`, `subtree_needs_input`, `needs_input`; no other README text described the retired toolbar toggle specifically
+- [x] 7.3 Run `make test` (daemon/Go side), `make mac-build`, and `make mac-test`; fix any failures — all green (the 2 known env-contamination false-failures in `internal/agent` confirmed and excluded per this session's own leaked `ARGUS_*` vars)
+- [x] 7.4 `openspec archive add-mac-hera-rail-toggle` (or the manual merge-and-move fallback) on the change branch before merge, per this repo's CLAUDE.md — archived via CLI as `2026-08-22-add-mac-hera-rail-toggle` (UTC-dated by the CLI's own clock; local date was still 2026-08-21 at archive time)

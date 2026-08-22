@@ -314,15 +314,15 @@ The server SHALL return a curated settings view (sandbox, KB, API, defaults) and
 
 ### Requirement: Hera orchestration roster endpoint
 
-The REST API SHALL expose `GET /api/hera`, a read-only endpoint returning the Hera orchestration roster: a list of orchestrators — each with `id`, `name`, `pinned`, `archived`, `kanban_status` (`active`/`backlog`/`blocked`/`done`), `subtree_cost_usd`, and its non-freelance `roles` — plus a top-level `freelance` list of hoisted freelance roles. Each role SHALL carry `role_id`, `orch_id`, `name`, `kind` (`coordinator`/`worker`/`freelance`), `status` (`idle`/`working`/`blocked`/`done`, or empty when no status row exists), `task_id`, `task_name`, `task_status`, `live`, `ready_to_close`, `archived`, `tokens_input`, `tokens_cache_write_1h`, `tokens_cache_write_5m`, `tokens_cache_read`, `tokens_output`, and `cost_usd` (omitted or null when the role's resolved model has no rate-table entry for its accrued usage, or when its token totals are all zero — see `cost-estimation`). Both `cost_usd` and `subtree_cost_usd` SHALL be the PERSISTED, already-priced `cost_usd_accrued` values described in `cost-estimation`'s accrual-time-stamping requirement — the endpoint SHALL NOT compute or reprice cost against a live rate table on read. The endpoint MUST be authenticated like every other `/api/*` route. The handler MUST source all data from the database and MUST NOT import the TUI Hera package (to keep tview out of the API binary).
+The REST API SHALL expose `GET /api/hera`, a read-only endpoint returning the Hera orchestration roster: a list of orchestrators — each with `id`, `name`, `pinned`, `archived`, `kanban_status` (`active`/`backlog`/`blocked`/`done`), `subtree_cost_usd`, `bridge_parent_orch_id` and `bridge_parent_role_id` (both null when the orchestrator is top-level, both set to the parent orchestrator/role when it is nested beneath another orchestrator via a worker→coordinator bridge), `subtree_needs_input` (a boolean rollup, true when any role in the orchestrator's subtree needs input), and its non-freelance `roles` — plus a top-level `freelance` list of hoisted freelance roles. Each role SHALL carry `role_id`, `orch_id`, `name`, `kind` (`coordinator`/`worker`/`freelance`), `status` (`idle`/`working`/`blocked`/`done`, or empty when no status row exists), `task_id`, `task_name`, `task_status`, `live`, `ready_to_close`, `archived`, `needs_input` (a boolean mirroring the same daemon-authoritative idle-detection signal that drives `GET /api/tasks` and the SSE events stream), `tokens_input`, `tokens_cache_write_1h`, `tokens_cache_write_5m`, `tokens_cache_read`, `tokens_output`, and `cost_usd` (omitted or null when the role's resolved model has no rate-table entry for its accrued usage, or when its token totals are all zero — see `cost-estimation`). Both `cost_usd` and `subtree_cost_usd` SHALL be the PERSISTED, already-priced `cost_usd_accrued` values described in `cost-estimation`'s accrual-time-stamping requirement — the endpoint SHALL NOT compute or reprice cost against a live rate table on read. The endpoint MUST be authenticated like every other `/api/*` route. The handler MUST source all data from the database; nesting/bridging computation (canonical-parent resolution, `bridge_parent_orch_id`/`bridge_parent_role_id`, `subtree_needs_input`) MUST use the shared, tview-free `internal/hera/model` package rather than importing `internal/tui/hera` directly, keeping tview/tcell out of the API binary.
 
-**Scope note, discovered during implementation:** `subtree_cost_usd` at THIS endpoint SHALL be the sum of the orchestrator's OWN roles' cost (every kind, including nuked ones) — it SHALL NOT recurse into orchestrators nested beneath it via the worker→coordinator bridge. Reproducing that recursive walk here would require importing `internal/tui/hera` (where the bridge-discovery logic — `Model.BridgeSubtree` — already lives), which this handler deliberately avoids per the constraint above: the `hera` package's rail/rendering code (tview/tcell) lives in the SAME Go package as its Model/BuildModel logic, so importing any part of it pulls in the whole thing. The TUI's LOCAL-mode rollup (`Model.SubtreeCostUSD`, in `hera-view`) computes the FULL recursive total directly against the database, with no REST round-trip — this scope note affects ONLY what a REST/remote-mode consumer sees, not local-mode TUI accuracy. A true cross-orchestrator recursive total for REST/remote-mode consumers is a named follow-up, not shipped in this change.
+**Scope note (unchanged from prior scope):** `subtree_cost_usd` at THIS endpoint SHALL still be the sum of the orchestrator's OWN roles' cost only (every kind, including nuked ones) — it SHALL NOT recurse into orchestrators nested beneath it, even though `bridge_parent_orch_id` now exposes the same underlying bridge relationship. Extending `subtree_cost_usd` itself to recurse remains a separate, still-deferred follow-up; this change does not alter that field's semantics, only adds the new nesting/needs-input fields alongside it.
 
-`kanban_status` is emitted as-is for every orchestrator regardless of nesting — the endpoint does not resolve canonical parents or otherwise distinguish top-level from nested orchestrators, so a nested orchestrator's own (rail-inert) `kanban_status` value is still visible in its envelope. `subtree_cost_usd` and every per-role cost/token field are likewise read-only: mutating any of them, or the underlying rate table, over REST is out of scope — this stays under the existing standing exception that Hera mutations are TUI-only (`GET /api/hera` stays read-only in every field).
+`kanban_status` continues to be emitted as-is for every orchestrator regardless of nesting (a nested orchestrator's own, rail-inert `kanban_status` value is still visible in its envelope) — but a client can now distinguish top-level from nested orchestrators itself via `bridge_parent_orch_id`, rather than needing to infer it. `subtree_cost_usd`, `bridge_parent_orch_id`/`bridge_parent_role_id`, `subtree_needs_input`, `needs_input`, and every per-role cost/token field are read-only: mutating any of them over REST is out of scope — this stays under the existing standing exception that Hera mutations are TUI-only (`GET /api/hera` stays read-only in every field).
 
-These fields SHALL be populated regardless of which client renders them: the native TUI itself reads through this endpoint in `--remote` mode, and the web SPA and macOS app render no cost UI yet (an explicit, separately-tracked follow-up, not a reason to omit the data here).
+These fields SHALL be populated regardless of which client renders them: the native TUI itself reads through this endpoint in `--remote` mode, and the web SPA renders no nesting/needs-input Hera UI yet (an explicit, separately-tracked follow-up, not a reason to omit the data here).
 
-Derived from: `internal/api/hera.go` (`heraOrchJSON`, `heraRoleJSON`, `handleHera`).
+Derived from: `internal/api/hera.go` (`heraOrchJSON`, `heraRoleJSON`, `handleHera`), `internal/hera/model` (`BuildModel`, extracted from the former `internal/tui/hera/model.go`).
 
 #### Scenario: Empty roster
 
@@ -373,6 +373,26 @@ Derived from: `internal/api/hera.go` (`heraOrchJSON`, `heraRoleJSON`, `handleHer
 
 - **WHEN** an orchestrator bridges to a nested sub-coordinator via a worker row, and that nested orchestrator has its own recorded cost
 - **THEN** THIS orchestrator's `subtree_cost_usd` reflects only its own roles' cost — the nested orchestrator's cost is NOT added in (see the scope note above; the TUI's local-mode `Model.SubtreeCostUSD` computes the full recursive figure separately, not through this endpoint)
+
+#### Scenario: A top-level orchestrator carries no bridge parent
+
+- **WHEN** an orchestrator has no worker role bridging into it from another orchestrator
+- **THEN** its `bridge_parent_orch_id` and `bridge_parent_role_id` fields are both null
+
+#### Scenario: A nested orchestrator surfaces its bridge parent
+
+- **WHEN** an orchestrator is nested beneath another orchestrator's worker role via a coordinator bridge
+- **THEN** its `bridge_parent_orch_id` and `bridge_parent_role_id` identify that parent orchestrator and role
+
+#### Scenario: subtree_needs_input rolls up from any role in the subtree
+
+- **WHEN** any role within an orchestrator's subtree (including nested sub-orchestrators reached via bridges) currently needs input
+- **THEN** that orchestrator's `subtree_needs_input` field is `true`
+
+#### Scenario: A role's needs_input mirrors the daemon's idle-detection signal
+
+- **WHEN** a role's bound task is flagged by the daemon's idle-detection system as needing input
+- **THEN** that role's `needs_input` field is `true`, and `false` otherwise
 
 ### Requirement: Reliable pane-delivery endpoint
 
