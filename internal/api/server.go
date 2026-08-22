@@ -15,6 +15,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/clipboard"
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/mcp"
 	"github.com/drn/argus/internal/mergesafety"
@@ -118,6 +119,16 @@ type Server struct {
 	// without reaching into mergesafety's own private Tier B seam or
 	// spawning real git/gh processes.
 	classifyCoordinatorFn func(ctx context.Context, t *model.Task) (mergesafety.Verdict, error)
+
+	// performClaudeSessionSwitchFn is the test seam for
+	// handleSwitchClaudeSession's stop/restart step (mirrors cleanupComputeFn/
+	// pluginSubmitFn above). Production leaves this nil, which resolves to
+	// s.performClaudeSessionSwitch (a real Runner.KickRerender / StartOrReattach
+	// call); tests override it to assert the handler's own request/response
+	// handling (persisted SessionID, "unchanged" no-op, error mapping) without
+	// spinning up a real PTY-backed session for every case. See
+	// internal/api/claudesessions.go.
+	performClaudeSessionSwitchFn func(task *model.Task, cfg config.Config) (int, error)
 }
 
 // SetNotifier wires the reliable pane-delivery service into the API server.

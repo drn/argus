@@ -34,10 +34,36 @@ final class AppState {
     /// and the sidebar needs-input marker.
     private(set) var needsInputTaskIDs: Set<String> = []
 
+    /// Task ids currently bound to a live Hera role (worker or coordinator),
+    /// mirroring the TUI's "hera-managed" classification (`hideHeraManaged` /
+    /// `isHeraSpawnedWorker` in `internal/tui/taskview/tasklist.go`): a task
+    /// with a live binding in the `/api/hera` roster. There is no such field
+    /// on ``ArgusKit/Task`` itself — `GET /api/hera` is a separate endpoint —
+    /// so this is rebuilt wholesale alongside every task snapshot
+    /// (``refreshHeraManagedTaskIDs()``), the same cadence ``HeraTab`` already
+    /// polls on its own. Drives the sidebar's hera-managed visibility toggle.
+    private(set) var heraManagedTaskIDs: Set<String> = []
+
+    /// Task ids known to be pinned — tracked purely client-side because
+    /// `/api/tasks`'s lossy wire shape (`taskJSON` in
+    /// `internal/api/handlers.go`) omits `pinned` entirely; only the raw
+    /// endpoint (`GET /api/tasks/{id}/raw`) carries it. Unlike
+    /// ``needsInputTaskIDs``, this set is NOT rebuilt from every `/api/tasks`
+    /// snapshot — it starts empty on every ``connect()`` and is populated
+    /// lazily via ``refreshPinnedState(taskID:)`` (called as each sidebar row
+    /// appears) and kept current afterward by this app's own optimistic
+    /// updates in ``setPinned(_:pinned:)``. A pin/unpin made from another
+    /// client (the TUI, the web SPA) is invisible to this cache until the
+    /// row is re-fetched — an accepted client-side-tracking gap, not a bug.
+    private(set) var pinnedTaskIDs: Set<String> = []
+
     /// Bound to the New Task sheet's presentation so both the toolbar `+` and the
     /// menu-bar "New Task…" item can open it. Owned here (not in a view's local
     /// `@State`) so an out-of-window trigger still works.
     var isPresentingNewTask = false
+
+    /// Bound to the shortcuts-help sheet's presentation (Cmd+Shift+/).
+    var isPresentingShortcutsHelp = false
 
     // MARK: - Settings mirrors (observable; persisted via Preferences)
 
@@ -95,12 +121,30 @@ final class AppState {
     enum PendingConfirmation {
         case stop(ArgusTask)
         case delete(ArgusTask)
+        /// The toolbar overflow menu's "Prune stale worktrees" item — global
+        /// and cross-task (not scoped to one ``ArgusTask``), so it carries no
+        /// associated value, mirroring the TUI's own Ctrl+R caution gate.
+        case pruneCompleted
     }
     var pendingConfirmation: PendingConfirmation?
 
     /// Non-nil while the rename sheet is open, carrying the task being
     /// renamed. Driven by a single `.sheet(item:)` in ``ContentView``.
     var renamingTask: ArgusTask?
+
+    /// Non-nil while the Claude session picker sheet is open, carrying the
+    /// task, its available sessions (newest first), and the currently-active
+    /// session id (may be `""`). Populated up front by
+    /// ``openClaudeSessionPicker(for:)`` — never opened empty/broken on a
+    /// fetch failure — and driven by a single `.sheet(item:)` in
+    /// ``ContentView``, mirroring ``renamingTask``'s presentation mechanics.
+    struct ClaudeSessionPickerState: Identifiable, Equatable {
+        let task: ArgusTask
+        let sessions: [ClaudeSession]
+        let currentSessionID: String
+        var id: String { task.id }
+    }
+    var claudeSessionPicker: ClaudeSessionPickerState?
 
     /// A transient, non-blocking error surfaced after a failed task action
     /// (stop/restart/resume/archive/rename/fork/delete). Auto-dismisses after
@@ -182,6 +226,18 @@ final class AppState {
         return tasks.first { $0.id == id }
     }
 
+    /// Looks up a task by id outside the `selectedTaskID`-scoped
+    /// ``selectedTask``. Used by the Terminal tab's local key monitor to
+    /// resolve "the task currently showing in this terminal" (via
+    /// `TerminalController.taskID`) for its Cmd+Shift+U open-PR fallback
+    /// (add-mac-keybinding-parity Stage 5) — the terminal's bound task
+    /// isn't necessarily `selectedTask` the instant a rebuild is in
+    /// flight, so this looks it up directly rather than assuming they
+    /// match.
+    func task(withID id: String) -> ArgusTask? {
+        tasks.first { $0.id == id }
+    }
+
     // MARK: - Grouping (drives the sidebar sections)
 
     /// Active = not archived and pending or in_progress. Feeds the launch
@@ -248,6 +304,16 @@ final class AppState {
         if let existing = terminalControllers[taskID] { return existing }
         guard let client else { return nil }
         let controller = TerminalController(taskID: taskID, client: client)
+        // The Terminal tab's local key monitor (`FocusTakingTerminalView`,
+        // add-mac-keybinding-parity Stage 5) needs both this controller
+        // (to run the scroll/copy actions) and this AppState (to run the
+        // task-switch/tab-cycle/open-PR actions) — wired here, the one
+        // place that constructs the view's backing controller, rather than
+        // widening `TerminalController`'s own init signature for it.
+        if let view = controller.terminalView as? FocusTakingTerminalView {
+            view.controller = controller
+            view.appState = self
+        }
         terminalControllers[taskID] = controller
         return controller
     }
@@ -325,7 +391,28 @@ final class AppState {
             return
         } catch {
             connection = .error(Self.describe(error))
+            return
         }
+        await refreshHeraManagedTaskIDs()
+    }
+
+    /// Best-effort refresh of ``heraManagedTaskIDs`` from `GET /api/hera`.
+    /// Silent on failure (mirrors ``fetchLinks(taskID:)``'s non-throwing
+    /// pattern) — a stale hera-managed set just leaves the sidebar toggle's
+    /// filter a beat behind, never a hard error surfaced to the user.
+    private func refreshHeraManagedTaskIDs() async {
+        guard let client else { return }
+        guard let roster = try? await client.heraRoster() else { return }
+        var ids: Set<String> = []
+        for orch in roster.orchestrators {
+            for role in orch.roles where role.live && !role.taskID.isEmpty {
+                ids.insert(role.taskID)
+            }
+        }
+        for role in roster.freelance where role.live && !role.taskID.isEmpty {
+            ids.insert(role.taskID)
+        }
+        heraManagedTaskIDs = ids
     }
 
     /// Applies a fresh `/api/tasks` result: replaces the list, prunes dead
@@ -341,6 +428,14 @@ final class AppState {
         }
         needsInputTaskIDs = rebuilt
         updateBadge()
+        // Archiving clears `pinned` server-side (`model.Task.SetArchived`), and a
+        // deleted task obviously can't still be pinned — reconcile the
+        // client-only cache against the authoritative snapshot so it can't
+        // drift stale after either transition, regardless of which client (or
+        // this one, via a stale local toggle) caused it.
+        let archivedOrGone = Set(fetched.filter(\.archived).map(\.id))
+            .union(pinnedTaskIDs.subtracting(fetched.map(\.id)))
+        pinnedTaskIDs.subtract(archivedOrGone)
         applyLaunchStateIfNeeded(fetched)
     }
 
@@ -507,6 +602,59 @@ final class AppState {
         await perform(task, label: "unarchive") { try await $0.unarchiveTask(id: task.id) }
     }
 
+    /// `POST /api/tasks/{id}/status` — the sidebar row context menu's
+    /// status-advance/status-revert actions (mirrors the TUI's `s`/`S` keys).
+    /// Callers pass ``TaskStatus/advanced()``/``TaskStatus/reverted()``;
+    /// those clamp at the ladder's ends, so this is always a well-formed
+    /// transition (or a harmless no-op at `.complete`/`.pending`).
+    func setStatus(_ task: ArgusTask, to status: TaskStatus) async {
+        await perform(task, label: "update status") {
+            try await $0.setStatus(id: task.id, status: status.rawValue)
+        }
+    }
+
+    /// Returns whether ``task`` is known to be pinned. Backed by
+    /// ``pinnedTaskIDs``, a client-side-only cache — see its doc comment for
+    /// why `/api/tasks`'s lossy shape can't answer this directly.
+    func isPinned(_ task: ArgusTask) -> Bool {
+        pinnedTaskIDs.contains(task.id)
+    }
+
+    /// Lazily backfills ``pinnedTaskIDs`` for one task via the raw endpoint.
+    /// Called as each sidebar row appears (see ``TaskRow``) so its Pin/Unpin
+    /// label renders correctly without an eager bulk fetch of every task's
+    /// raw representation. Silent on failure — falls back to the "not
+    /// pinned" default rather than surfacing an error toast for a
+    /// non-interactive background refresh.
+    func refreshPinnedState(taskID: String) async {
+        guard let client, let raw = try? await client.rawTask(id: taskID) else { return }
+        if raw["pinned"]?.boolValue == true {
+            pinnedTaskIDs.insert(taskID)
+        } else {
+            pinnedTaskIDs.remove(taskID)
+        }
+    }
+
+    /// `PUT /api/tasks/{id}/raw` via ``ArgusClient/setPinned(id:pinned:)``.
+    /// Updates ``pinnedTaskIDs`` optimistically, but only on success (unlike
+    /// ``perform(_:label:_:)``'s callers, this one's success/failure
+    /// distinction matters: the client-side cache is this app's ONLY record
+    /// of pin state, so marking it pinned after a failed request would lie).
+    func setPinned(_ task: ArgusTask, pinned: Bool) async {
+        guard let client else { return }
+        do {
+            try await client.setPinned(id: task.id, pinned: pinned)
+            if pinned {
+                pinnedTaskIDs.insert(task.id)
+            } else {
+                pinnedTaskIDs.remove(task.id)
+            }
+            await refreshOnce()
+        } catch {
+            showActionError("Failed to \(pinned ? "pin" : "unpin") \"\(task.name)\": \(Self.describe(error))")
+        }
+    }
+
     func rename(_ task: ArgusTask, to name: String) async {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -534,6 +682,174 @@ final class AppState {
     func delete(_ task: ArgusTask) async {
         if selectedTaskID == task.id { selectedTaskID = nil }
         await perform(task, label: "delete") { try await $0.deleteTask(id: task.id) }
+    }
+
+    /// Opens the task's worktree root in Finder — the mac equivalent of the
+    /// TUI's "open repo" action. Mirrors ``FilesTab``'s per-file "Reveal in
+    /// Finder" (`NSWorkspace.shared.selectFile`), but for the whole worktree
+    /// root rather than one file, so it uses `open(_:)` instead. A missing or
+    /// empty `worktreePath` (a task whose worktree was never created, or one
+    /// already torn down) is a silent no-op rather than opening garbage.
+    func openRepo(_ task: ArgusTask) {
+        guard let path = task.worktreePath, !path.isEmpty else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
+    /// Opens the task's pull request in the default browser — the mac
+    /// equivalent of ``DetailHeaderChips``'s `PRChip` tap handler, reachable
+    /// from a shortcut instead of a click. Fetches the task's links fresh
+    /// (mirroring ``fetchLinks(taskID:)``'s own no-cache behavior) and opens
+    /// the first PR link found. No PR for this task is a normal, expected
+    /// outcome — surfaced via the same non-blocking ``actionError`` banner
+    /// every other action failure uses, not a crash or a silent no-op.
+    func openPR(for task: ArgusTask) async {
+        let links = await fetchLinks(taskID: task.id)
+        guard let prLink = links.first(where: { $0.isPR }), let url = prLink.webURL else {
+            showActionError("No PR found for \u{201C}\(task.name)\u{201D}.")
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Moves the sidebar selection to the next task whose session needs
+    /// input (mirroring the TUI's jump-to-next-needs-input rail action). A
+    /// nil result (nothing currently needs input) is a no-op — the selection
+    /// is left untouched. Ordering follows the sidebar's own visual order
+    /// (``tasksByFolder``, project-folder then creation order) so cycling
+    /// matches what the user sees scanning the rail top to bottom.
+    func jumpToNextNeedsInput() {
+        let orderedIDs = tasksByFolder.flatMap { $0.tasks.map(\.id) }
+        guard let next = NeedsInputNavigation.next(orderedIDs: orderedIDs,
+                                                    needingInput: needsInputTaskIDs,
+                                                    current: selectedTaskID) else { return }
+        selectedTaskID = next
+    }
+
+    /// Moves the sidebar selection to the previous/next task in the
+    /// sidebar's own visual order (``tasksByFolder``, project-folder then
+    /// creation order) — the Terminal tab's Cmd+Up/Cmd+Down shortcut
+    /// (spec.md "Switch tasks via Cmd+Up/Down without PTY leak"). Pure
+    /// index math lives in ``TaskNavigation`` (ArgusKit) so it has real
+    /// tests; this is just the ordered-id-list wiring. Distinct from
+    /// ``jumpToNextNeedsInput()``: this is a plain adjacent move over
+    /// EVERY task, not one filtered to tasks needing input, and — per
+    /// ``TaskNavigation``'s own doc comment — it CLAMPS at the rail's ends
+    /// rather than wrapping. Reaching either end (or an empty rail) is a
+    /// no-op.
+    func selectPreviousTask() {
+        let orderedIDs = tasksByFolder.flatMap { $0.tasks.map(\.id) }
+        guard let next = TaskNavigation.adjacent(orderedIDs: orderedIDs,
+                                                  current: selectedTaskID,
+                                                  direction: .previous) else { return }
+        selectedTaskID = next
+    }
+
+    /// See ``selectPreviousTask()`` — the Cmd+Down half of the same
+    /// shortcut pair, stepping toward the bottom of the rail instead.
+    func selectNextTask() {
+        let orderedIDs = tasksByFolder.flatMap { $0.tasks.map(\.id) }
+        guard let next = TaskNavigation.adjacent(orderedIDs: orderedIDs,
+                                                  current: selectedTaskID,
+                                                  direction: .next) else { return }
+        selectedTaskID = next
+    }
+
+    /// The Terminal tab's Cmd+Left/Cmd+Right "pane focus" shortcut
+    /// (spec.md "Switch pane focus via Cmd+Left/Right without PTY leak").
+    /// The mac app has no split-pane terminal view to move focus between
+    /// (design.md's Stage 5 resolution notes `TerminalController.swift`
+    /// has zero "pane" concept) — cycling the detail pane's active tab
+    /// through the same Terminal→Diff→Files→Info order Stage 2's Cmd+1-4
+    /// direct-select shortcuts already use is the closest structural
+    /// analog. Wraps at both ends (``CyclicSelection``, ArgusKit); `true`
+    /// cycles forward (Cmd+Right), `false` backward (Cmd+Left).
+    func cycleDetailTab(forward: Bool) {
+        activeDetailTab = CyclicSelection.step(Self.detailTabCycleOrder, current: activeDetailTab, forward: forward)
+    }
+
+    private static let detailTabCycleOrder: [DetailTab] = [.terminal, .diff, .files, .info]
+
+    /// `POST /api/maintenance/prune-completed` — removes every completed
+    /// task, its worktree, and branch, and sweeps orphaned worktree
+    /// directories. Mirrors the TUI's Ctrl+R "Prune completed tasks" action,
+    /// reached here from the toolbar's overflow menu after a confirmation
+    /// dialog (``AppState/PendingConfirmation/pruneCompleted``). Same
+    /// success/failure shape as ``perform(_:label:_:)`` (refresh on success,
+    /// ``showActionError`` on failure) but not task-scoped, so it can't reuse
+    /// that helper directly.
+    func pruneCompleted() async {
+        guard let client else { return }
+        do {
+            _ = try await client.pruneCompleted()
+            await refreshOnce()
+        } catch {
+            showActionError("Failed to prune completed tasks: \(Self.describe(error))")
+        }
+    }
+
+    // MARK: - Claude session switcher
+
+    /// Best-effort client-side mirror of the daemon's own
+    /// `!IsCodexBackend && !IsPiBackend && !IsOpencodeBackend` guard
+    /// (`internal/agent/agent.go`) that gates `/claude-sessions` /
+    /// `/claude-session` — an unset, `"claude"`, or custom backend name is
+    /// treated as Claude-eligible, and only the three known non-Claude
+    /// backend names are excluded. Lets the toolbar button hide itself for
+    /// an obviously-ineligible task without a doomed round trip; the
+    /// daemon's own 400 (handled in ``openClaudeSessionPicker(for:)``) stays
+    /// the authoritative check for anything this heuristic can't see (e.g. a
+    /// custom backend *name* that happens to run a non-Claude command).
+    static func isLikelyClaudeBacked(_ task: ArgusTask) -> Bool {
+        guard let backend = task.backend?.lowercased(), !backend.isEmpty else { return true }
+        return !["codex", "pi", "opencode"].contains(backend)
+    }
+
+    /// Fetches the task's Claude sessions and opens the picker sheet on
+    /// success — the sheet is never presented empty/broken. A 400 (the
+    /// task's backend isn't Claude) or any other failure surfaces via
+    /// ``ActionErrorBanner`` instead.
+    func openClaudeSessionPicker(for task: ArgusTask) async {
+        guard let client else { return }
+        do {
+            let (sessions, currentID) = try await client.claudeSessions(taskID: task.id)
+            claudeSessionPicker = ClaudeSessionPickerState(task: task, sessions: sessions,
+                                                            currentSessionID: currentID)
+        } catch {
+            if let argusError = error as? ArgusError, argusError.isBadRequest {
+                showActionError("\"\(task.name)\" isn't a Claude-backed task — session switching isn't available.")
+            } else {
+                showActionError("Failed to load Claude sessions for \"\(task.name)\": \(Self.describe(error))")
+            }
+        }
+    }
+
+    /// Dismisses the Claude session picker sheet (its Cancel button, or after
+    /// a successful switch).
+    func dismissClaudeSessionPicker() {
+        claudeSessionPicker = nil
+    }
+
+    /// Switches the task to a different Claude session. Both the
+    /// `"switched"` and `"unchanged"` responses from
+    /// ``ArgusClient/switchClaudeSession(taskID:sessionID:)`` are successful
+    /// outcomes — either way the sheet dismisses with no further client
+    /// action: a `"switched"` response means the daemon already stopped and
+    /// restarted the task's live PTY, resuming with the new session, and the
+    /// Terminal tab's existing SSE reconnect (`TerminalStreamSession`'s
+    /// `exit {"rerendering":true}` path — the same mechanism an ordinary
+    /// resize-triggered kick-restart already relies on) picks up the fresh
+    /// session's output once the daemon's stream emits that exit. On
+    /// failure the sheet stays open (so the user can pick something else or
+    /// cancel) and the error surfaces via ``ActionErrorBanner``, matching
+    /// every other task action's failure UX.
+    func selectClaudeSession(_ session: ClaudeSession, for task: ArgusTask) async {
+        guard let client else { return }
+        do {
+            _ = try await client.switchClaudeSession(taskID: task.id, sessionID: session.id)
+            claudeSessionPicker = nil
+        } catch {
+            showActionError("Failed to switch Claude session for \"\(task.name)\": \(Self.describe(error))")
+        }
     }
 
     /// Dismisses the action-error toast immediately (wired to its close
@@ -727,11 +1043,13 @@ final class AppState {
         case .taskArchived(let id):
             patchTask(id: id) { $0.with(archived: true) }
             clearNeedsInput(id)
+            pinnedTaskIDs.remove(id) // archiving clears pinned server-side too
             if selectedTaskID == id { selectedTaskID = nil }
         case .taskDeleted(let id):
             tasks.removeAll { $0.id == id }
             pruneTerminalControllers(keeping: Set(tasks.map(\.id)))
             clearNeedsInput(id)
+            pinnedTaskIDs.remove(id)
             if selectedTaskID == id { selectedTaskID = nil }
         case .sessionNeedsInput(let id, let needs):
             if needs { addNeedsInput(id, notify: notify) } else { clearNeedsInput(id) }

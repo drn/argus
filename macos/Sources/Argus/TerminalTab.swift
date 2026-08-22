@@ -43,12 +43,37 @@ struct TerminalSurface: NSViewRepresentable {
 /// `viewDidMoveToWindow` (inherited open from NSView) grabs it on mount.
 final class FocusTakingTerminalView: TerminalView {
     private var clickMonitor: Any?
+    private var keyMonitor: Any?
+
+    /// Back-references wired by `AppState.terminalController(for:)` right
+    /// after constructing this view's owning controller
+    /// (add-mac-keybinding-parity Stage 5) — needed by the key monitor
+    /// below to dispatch task-switch/tab-cycle/open-PR actions (`appState`)
+    /// and scroll/copy actions (`controller`).
+    weak var controller: TerminalController?
+    weak var appState: AppState?
+
+    /// Cmd+Shift+U ("Open PR") is a chrome-level `.keyboardShortcut`
+    /// (`TaskActions.swift`) that ALSO needs to fire while this terminal
+    /// has focus (spec.md "Open PR via shortcut from either context") —
+    /// per an earlier stage's review finding, the same D2 risk that
+    /// motivates ``TerminalChords`` could apply to it too (SwiftTerm may
+    /// swallow the chord before a SwiftUI Command ever sees it).
+    /// Deliberately a SEPARATE constant from ``TerminalChords/intercepted``
+    /// — that set is exactly design.md D2's fixed 10 chords (pinned by
+    /// `ChromeShortcutCollisionTests`, tasks.md 5.4) and must never absorb
+    /// a chrome-level shortcut's fallback path.
+    private static let openPRFallbackChord = KeyChord(.character("u"), [.command, .shift])
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if let clickMonitor {
             NSEvent.removeMonitor(clickMonitor)
             self.clickMonitor = nil
+        }
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
         }
         guard window != nil else { return }
         // Grab focus when (re)mounted so typing works without a click. Async:
@@ -71,11 +96,116 @@ final class FocusTakingTerminalView: TerminalView {
             }
             return event
         }
+        // Terminal-safe chord interception (design.md D2): swallow the
+        // fixed allowlist (`TerminalChords.intercepted`) — plus the one
+        // Cmd+Shift+U defensive fallback above — before SwiftTerm's own
+        // `keyDown` ever runs, so they never reach `send(source:data:)`
+        // and therefore never reach `POST /input`. This is a SEPARATE
+        // monitor from `clickMonitor` above (different event mask,
+        // different concern) so neither's logic has to be threaded through
+        // the other. Every other keystroke returns the event completely
+        // unmodified — the non-regression guarantee (spec.md "Unclaimed
+        // keystrokes still reach the PTY unchanged").
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            guard let self, let window = self.window, event.window === window else { return event }
+            // A local `.keyDown` monitor sees every keystroke in the whole
+            // app, regardless of which view is focused — only act while
+            // THIS terminal itself is the first responder.
+            guard window.firstResponder === self else { return event }
+            guard let chord = KeyChord(event) else { return event }
+
+            // These dispatch methods reach into `@MainActor` types
+            // (`AppState`/`TerminalController`) from this nonisolated
+            // `NSEvent` monitor closure — `MainActor.assumeIsolated` is
+            // safe because AppKit always invokes local event monitors on
+            // the main thread, mirroring `TerminalCoordinator.send`'s own
+            // `MainActor.assumeIsolated { controller?.enqueueInput(...) }`
+            // just below in `TerminalController.swift`.
+            if TerminalChords.isIntercepted(chord) {
+                MainActor.assumeIsolated { self.dispatchInterceptedChord(chord) }
+                return nil
+            }
+            if chord == Self.openPRFallbackChord {
+                MainActor.assumeIsolated { self.dispatchOpenPRFallback() }
+                return nil
+            }
+            return event
+        }
+    }
+
+    @MainActor
+    private func dispatchInterceptedChord(_ chord: KeyChord) {
+        // Each case optional-chains only the back-reference it actually
+        // needs (`appState` for task-switch/tab-cycle, `controller` for
+        // scroll/copy) rather than bailing the whole dispatch out on a nil
+        // `controller` — the two references are set together in practice
+        // (`AppState.terminalController(for:)`), but there's no reason to
+        // couple an appState-only action's availability to controller's.
+        switch chord {
+        case KeyChord(.up, [.command]):
+            appState?.selectPreviousTask()
+        case KeyChord(.down, [.command]):
+            appState?.selectNextTask()
+        case KeyChord(.left, [.command]):
+            appState?.cycleDetailTab(forward: false)
+        case KeyChord(.right, [.command]):
+            appState?.cycleDetailTab(forward: true)
+        case KeyChord(.up, [.shift]):
+            controller?.scrollLineUp()
+        case KeyChord(.down, [.shift]):
+            controller?.scrollLineDown()
+        case KeyChord(.pageUp, [.shift]):
+            controller?.scrollPageUp()
+        case KeyChord(.pageDown, [.shift]):
+            controller?.scrollPageDown()
+        case KeyChord(.end, [.shift]):
+            controller?.scrollToBottom()
+        case KeyChord(.character("c"), [.command, .shift]):
+            controller?.copyVisibleOutput()
+        default:
+            break // unreachable: only called once `isIntercepted` matched.
+        }
+    }
+
+    @MainActor
+    private func dispatchOpenPRFallback() {
+        guard let controller, let appState, let task = appState.task(withID: controller.taskID) else { return }
+        _Concurrency.Task { await appState.openPR(for: task) }
     }
 
     // No deinit cleanup needed (and Swift 6 forbids touching the non-Sendable
     // monitor from a nonisolated deinit): leaving a window always fires
-    // viewDidMoveToWindow with window == nil, which removes the monitor above.
+    // viewDidMoveToWindow with window == nil, which removes the monitors above.
+}
+
+// MARK: - NSEvent → KeyChord conversion
+
+/// The only piece of the Terminal tab's chord-interception mechanism
+/// (design.md D2) that has to touch `NSEvent`, so it lives here in the App
+/// target rather than in ArgusKit (which can't import AppKit). The harder,
+/// more error-prone half — the virtual-keycode table — is pure Foundation
+/// and lives in ArgusKit's `KeyChordDecoding`, where `KeyChordDecodingTests`
+/// pins it; this initializer only layers on the AppKit-specific
+/// modifier-flag mapping. Untestable glue (no App-target test harness
+/// exists in this repo), but small and easy to eyeball-verify.
+private extension KeyChord {
+    /// `nil` for a non-keyDown event, or one whose key resolves to nothing
+    /// (e.g. a bare modifier-flags-changed event, or a dead key with no
+    /// committed character).
+    init?(_ event: NSEvent) {
+        guard event.type == .keyDown else { return nil }
+        guard let key = KeyChordDecoding.key(forKeyCode: event.keyCode,
+                                              charactersIgnoringModifiers: event.charactersIgnoringModifiers) else {
+            return nil
+        }
+        let flags = event.modifierFlags
+        var modifiers: Set<Modifier> = []
+        if flags.contains(.command) { modifiers.insert(.command) }
+        if flags.contains(.shift) { modifiers.insert(.shift) }
+        if flags.contains(.option) { modifiers.insert(.option) }
+        if flags.contains(.control) { modifiers.insert(.control) }
+        self.init(key, modifiers)
+    }
 }
 
 /// The Terminal tab: a live streaming terminal, or the connecting / ended /

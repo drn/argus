@@ -50,9 +50,12 @@ final class Preferences {
     }
 
     /// Post a notification when a task goes idle (only while the app is not
-    /// frontmost — that gate lives in ``AppState``). Default on.
+    /// frontmost — that gate lives in ``AppState``). Default OFF: idle events
+    /// fire far more often than needs-input across a fleet of concurrently
+    /// running tasks, so an enabled-by-default idle notification floods the
+    /// user. Opt-in via Settings.
     var notifyOnIdle: Bool {
-        get { boolDefaultingTrue(Self.notifyIdleKey) }
+        get { defaults.bool(forKey: Self.notifyIdleKey) }
         set { defaults.set(newValue, forKey: Self.notifyIdleKey) }
     }
 

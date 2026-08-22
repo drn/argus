@@ -326,6 +326,25 @@ type App struct {
 	// session can never satisfy (going idle resets that streak and it can
 	// never resume). Mirrors the daemon's idleWatcherState.needsInputSettle.
 	needsInputSettle map[string]int
+	// needsInputLogStat carries the Stat()-based dirty-check snapshot
+	// (dedupe-redundant-needsinput-reads, Fix 2): each running session's
+	// on-disk log (size, mtime) as observed at the END of the previous tick.
+	// detectNeedsInputSticky compares a fresh os.Stat against this snapshot —
+	// identical (size, mtime) means no write syscall touched the log since
+	// then (the log is append-only outside the one O_TRUNC at session start,
+	// which itself changes size/mtime), so the expensive tail read + VT
+	// re-emulation can be skipped entirely and last tick's own computed
+	// signals (needsInputRawSignals) replayed instead.
+	needsInputLogStat map[string]needsInputLogStat
+	// needsInputRawSignals carries the raw per-session boolean/fingerprint
+	// signals detectNeedsInputSticky's passes compute from a log tail
+	// (dedupe-redundant-needsinput-reads, Fix 2) — NOT the tick-counters
+	// themselves (those stay in needsInputEscalation/needsInputResume/
+	// sustainedActiveTicks/needsInputSettle above), but the raw inputs those
+	// counters are stepped with, so an unchanged-log tick can replay them
+	// instead of re-reading+re-emulating. See needsInputRawSignals's own doc
+	// comment for the field-by-field validity contract.
+	needsInputRawSignals map[string]needsInputRawSignals
 	// heraBlockedResume carries the resumed-activity counter (see
 	// agent.ResumeActivityTick) for the SEPARATE self-reported hera_status
 	// "blocked" auto-clear pass (autoClearBlockedHeraRoles) — keyed by task ID
@@ -2249,6 +2268,49 @@ func needsInputScreenSize(taskID string) (cols, rows int) {
 	return int(agent.DefaultTermCols), int(agent.DefaultTermRows)
 }
 
+// needsInputLogStat is one session log's os.Stat() snapshot (size + mtime)
+// from the previous tick — see App.needsInputLogStat's doc comment.
+type needsInputLogStat struct {
+	size  int64
+	mtime time.Time
+}
+
+// needsInputRawSignals caches, per session, the raw per-tick boolean signals
+// detectNeedsInputSticky's passes compute from a session's log tail — carried
+// forward (App.needsInputRawSignals) so a Stat()-unchanged tick can replay
+// them instead of re-reading and re-emulating an unchanged log
+// (dedupe-redundant-needsinput-reads, Fix 2). Every field beyond hasTail is
+// only meaningful when its paired "computed this reading" condition holds —
+// mirrors the ORIGINAL code's early `continue` (empty tail) / gated read
+// (not-idle) behavior, which must be replayed exactly, not just the raw
+// booleans themselves:
+//
+//   - hasTail: the session's log tail was non-empty when last computed.
+//     Shared by the content-stability, escalation, resumed-activity, and
+//     sustained-active passes — all four read the IDENTICAL tail, so all four
+//     see the identical hasTail reading for a given tick.
+//   - parked: agent.ParkedSelectionSignal's reading (escalation pass). Only
+//     meaningful when hasTail is true (mirrors the original: escalation runs
+//     only past the empty-tail `continue`).
+//   - working: agent.ContentIdleFingerprint's `working` return (resumed- and
+//     sustained-activity passes — Fix 1 computes this ONCE per session per
+//     tick and reuses it for both). Only meaningful when hasTail is true.
+//   - awaitingComputed / awaitingNow: agent.DetectNeedsInputScreen's reading
+//     (settlement pass), which the ORIGINAL code only ever computes when the
+//     session is idle (`if idleNow { ... }`). awaitingComputed records
+//     whether idleNow held (and awaitingNow was therefore genuinely
+//     computed) the tick these values were last written — a later tick may
+//     only replay awaitingNow when idleNow ALSO holds this tick (checked by
+//     the caller) AND awaitingComputed was true, otherwise it must read
+//     fresh (idleNow just transitioned true with no valid prior reading).
+type needsInputRawSignals struct {
+	hasTail          bool
+	parked           bool
+	working          bool
+	awaitingComputed bool
+	awaitingNow      bool
+}
+
 // detectNeedsInputSticky augments the idle-gated detection with two passes that
 // keep a genuinely-blocked agent flagged even though Claude's prompt UI emits
 // periodic redraw/animation bytes (cursor blink, spinner, alt-screen repaint)
@@ -2314,6 +2376,91 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 		idleSet[id] = true
 	}
 
+	// Archive pre-filter (dedupe-redundant-needsinput-reads, Fix 3):
+	// archiving a task (db.SetArchived, via the REST/MCP archive endpoints)
+	// does NOT stop its live session — it is a pure DB flag flip, so an
+	// archived task can still be running until its session separately exits
+	// or is stopped. agent.NeedsInputClear (below) already drops every
+	// archived candidate from the RETURNED set unconditionally, regardless of
+	// what the passes below compute for it — so pre-filtering runningIDs here
+	// can only skip WASTED work, never change `out`. It CAN, in the narrow
+	// case of a task archived-while-running and later un-archived without a
+	// session restart, cause that task's internal counters
+	// (needsInputFP/Escalation/Resume/sustainedActiveTicks/Settle/
+	// LogStat/RawSignals) to reset to a cold start rather than having kept
+	// accumulating in the background — see
+	// TestDetectNeedsInputSticky_ArchivePrefilter_UnarchiveResetsCountersButNeverMisses
+	// for the accepted, bounded trade-off this causes (a short transient
+	// delay in re-flagging, NEVER a permanent miss or a false positive).
+	// archivedOf is computed once here and reused for the final
+	// NeedsInputClear call below instead of a second a.archivedTaskSet() call.
+	archivedOf := a.archivedTaskSet()
+	activeRunningIDs := make([]string, 0, len(runningIDs))
+	for _, id := range runningIDs {
+		if !archivedOf(id) {
+			activeRunningIDs = append(activeRunningIDs, id)
+		}
+	}
+
+	// dedupe-redundant-needsinput-reads (Fix 1 + Fix 2): the four passes below
+	// all read the SAME session log tail via readSessionLogTailBytes(id,
+	// detectNeedsInputTailBytes) and re-run the SAME agent.ScreenRenderer VT
+	// emulation over it — up to four redundant disk reads + re-emulations per
+	// session per tick. getTail (Fix 1) memoizes that read to at most once per
+	// id THIS tick, and the resumed-activity / sustained-active passes share
+	// ONE agent.ContentIdleFingerprint call via workingOf below instead of
+	// each calling it independently.
+	//
+	// logUnchanged (Fix 2) goes further: a cheap os.Stat (size+mtime)
+	// comparison against the previous tick's snapshot (a.needsInputLogStat)
+	// detects when a session's on-disk log hasn't been written to AT ALL
+	// since then — the log is append-only outside the one O_TRUNC at session
+	// start (which itself changes size/mtime), so identical (size, mtime) is
+	// a safe proxy for byte-identical content, meaning a fresh read+re-emulate
+	// would reproduce EXACTLY last tick's own computed signals (verified in
+	// TestScreenRenderer_RepeatedIdenticalRenderIsIdempotent:
+	// agent.ScreenRenderer.render RIS-resets before every call, so it carries
+	// no cross-call state that could make a repeat call differ). On an
+	// unchanged tick, the raw signals are replayed from last tick's cache
+	// (a.needsInputRawSignals / prevFP) instead of recomputed — but the
+	// tick-COUNTER step functions (EscalateParkedSelection/ResumeActivityTick/
+	// SustainedActivityTick/SettleTick) still run every tick with that
+	// (replayed) signal as input: several BUG-* fixes in this file depend on
+	// the counters advancing exactly once per ~1s tick regardless of whether
+	// the expensive read was skipped.
+	tailCache := make(map[string][]byte, len(activeRunningIDs))
+	getTail := func(id string) []byte {
+		if t, ok := tailCache[id]; ok {
+			return t
+		}
+		t := readSessionLogTailBytes(id, detectNeedsInputTailBytes)
+		tailCache[id] = t
+		return t
+	}
+	prevLogStat := a.needsInputLogStat
+	newLogStat := make(map[string]needsInputLogStat, len(activeRunningIDs))
+	unchangedCache := make(map[string]bool, len(activeRunningIDs))
+	logUnchanged := func(id string) bool {
+		if u, ok := unchangedCache[id]; ok {
+			return u
+		}
+		info, err := os.Stat(agent.SessionLogPath(id))
+		if err != nil {
+			unchangedCache[id] = false
+			return false
+		}
+		cur := needsInputLogStat{size: info.Size(), mtime: info.ModTime()}
+		newLogStat[id] = cur
+		u := false
+		if prev, hadPrev := prevLogStat[id]; hadPrev {
+			u = prev.size == cur.size && prev.mtime.Equal(cur.mtime)
+		}
+		unchangedCache[id] = u
+		return u
+	}
+	prevRaw := a.needsInputRawSignals
+	newRaw := make(map[string]needsInputRawSignals, len(activeRunningIDs))
+
 	// Content-stability pass: fingerprint only sessions showing an
 	// awaiting-input signal (agent.AwaitingInputFingerprint: the UNAMBIGUOUS
 	// selection widget, OR a free-text trailing question with the "working"
@@ -2323,16 +2470,34 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	prevFP := a.needsInputFP
 	newFP := make(map[string]uint64)
 	newEsc := make(map[string]int)
-	for _, id := range runningIDs {
-		tail := readSessionLogTailBytes(id, detectNeedsInputTailBytes)
-		if len(tail) == 0 {
+	for _, id := range activeRunningIDs {
+		var hasTail, ok, parked bool
+		var fp uint64
+		if logUnchanged(id) {
+			pr := prevRaw[id]
+			hasTail = pr.hasTail
+			if hasTail {
+				fp, ok = prevFP[id]
+				parked = pr.parked
+			}
+		} else {
+			tail := getTail(id)
+			hasTail = len(tail) != 0
+			if hasTail {
+				cols, rows := needsInputScreenSize(id)
+				fp, ok = agent.AwaitingInputFingerprint(a.needsInputScreen, tail, cols, rows)
+				parked = agent.ParkedSelectionSignal(a.needsInputScreen, tail, cols, rows)
+			}
+		}
+		nr := newRaw[id]
+		nr.hasTail, nr.parked = hasTail, parked
+		newRaw[id] = nr
+		if !hasTail {
 			continue
 		}
-		cols, rows := needsInputScreenSize(id)
-		fp, ok := agent.AwaitingInputFingerprint(a.needsInputScreen, tail, cols, rows)
 		if ok {
 			newFP[id] = fp
-			if last, ok := prevFP[id]; ok && last == fp {
+			if last, hadLast := prevFP[id]; hadLast && last == fp {
 				flag(id)
 			}
 		}
@@ -2343,7 +2508,7 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 		// genuinely showing Claude's parked selection-prompt widget. Advanced
 		// independently of the fingerprint match above — see
 		// agent.EscalateParkedSelection.
-		newTicks, escalated := agent.EscalateParkedSelection(a.needsInputEscalation[id], agent.ParkedSelectionSignal(a.needsInputScreen, tail, cols, rows))
+		newTicks, escalated := agent.EscalateParkedSelection(a.needsInputEscalation[id], parked)
 		if newTicks != 0 {
 			// A negative value is a BUG-060 one-tick grace state (an isolated
 			// miss holding the streak pending the next tick), not "nothing to
@@ -2382,15 +2547,36 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	// never advances LastUserInput (see lastSessionInput) — this is the only
 	// signal that can resolve a flag raised on a worker who was genuinely
 	// un-stuck by that relayed answer rather than direct user input.
-	newResume := make(map[string]int, len(runningIDs))
+	//
+	// workingOf (Fix 1) caches this pass's agent.ContentIdleFingerprint
+	// reading per session so the sustained-active pass below reuses it
+	// instead of calling ContentIdleFingerprint a second time with identical
+	// arguments (verified safe to reuse — not just skip — by
+	// TestScreenRenderer_RepeatedIdenticalRenderIsIdempotent).
+	newResume := make(map[string]int, len(activeRunningIDs))
 	resumed := make(map[string]bool)
-	for _, id := range runningIDs {
-		tail := readSessionLogTailBytes(id, detectNeedsInputTailBytes)
-		if len(tail) == 0 {
+	workingOf := make(map[string]bool, len(activeRunningIDs))
+	for _, id := range activeRunningIDs {
+		var hasTail, working bool
+		if logUnchanged(id) {
+			pr := prevRaw[id]
+			hasTail = pr.hasTail
+			working = pr.working
+		} else {
+			tail := getTail(id)
+			hasTail = len(tail) != 0
+			if hasTail {
+				cols, rows := needsInputScreenSize(id)
+				_, working = agent.ContentIdleFingerprint(a.needsInputScreen, tail, cols, rows)
+			}
+		}
+		nr := newRaw[id]
+		nr.working = working
+		newRaw[id] = nr
+		if !hasTail {
 			continue
 		}
-		cols, rows := needsInputScreenSize(id)
-		_, working := agent.ContentIdleFingerprint(a.needsInputScreen, tail, cols, rows)
+		workingOf[id] = working
 		ticks, isResumed := agent.ResumeActivityTick(a.needsInputResume[id], working)
 		if ticks != 0 {
 			newResume[id] = ticks
@@ -2422,15 +2608,18 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	// ... never converges either" case. Tracked in its own tick-counter map
 	// (a.sustainedActiveTicks), independent of a.needsInputResume, so this
 	// grace tolerance never leaks into BUG-065's strict path.
-	newSustainedTicks := make(map[string]int, len(runningIDs))
-	sustainedActiveIDs := make([]string, 0, len(runningIDs))
-	for _, id := range runningIDs {
-		tail := readSessionLogTailBytes(id, detectNeedsInputTailBytes)
-		if len(tail) == 0 {
+	//
+	// Reads workingOf (populated by the resumed-activity pass immediately
+	// above) instead of re-reading the tail and re-calling
+	// agent.ContentIdleFingerprint — the two passes always compute this over
+	// the identical (session, tail, cols, rows) this tick (Fix 1).
+	newSustainedTicks := make(map[string]int, len(activeRunningIDs))
+	sustainedActiveIDs := make([]string, 0, len(activeRunningIDs))
+	for _, id := range activeRunningIDs {
+		working, hasTail := workingOf[id]
+		if !hasTail {
 			continue
 		}
-		cols, rows := needsInputScreenSize(id)
-		_, working := agent.ContentIdleFingerprint(a.needsInputScreen, tail, cols, rows)
 		ticks, sustained := agent.SustainedActivityTick(a.sustainedActiveTicks[id], working)
 		if ticks != 0 {
 			newSustainedTicks[id] = ticks
@@ -2452,16 +2641,33 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	// without this pass it would stay flagged until an unrelated keystroke.
 	// Only reads the tail (and re-runs the idle-gated detector) for IDLE
 	// sessions — a busy session never qualifies regardless of its tail.
-	newSettle := make(map[string]int, len(runningIDs))
+	//
+	// idleNow is ALWAYS read fresh from idleSet (a cheap caller-supplied set,
+	// no disk access) — it can legitimately change tick-to-tick even when the
+	// log itself hasn't (a session crosses the idle-silence threshold without
+	// writing anything new). Only the read+re-emulation of awaitingNow, when
+	// idleNow is true, is subject to the Fix 2 dirty check — and only when
+	// last tick ALSO had idleNow true (pr.awaitingComputed), since the
+	// original code never computes awaitingNow at all while not idle, so
+	// there is nothing valid to replay the first tick idleNow turns true.
+	newSettle := make(map[string]int, len(activeRunningIDs))
 	settled := make(map[string]bool)
-	for _, id := range runningIDs {
+	for _, id := range activeRunningIDs {
 		idleNow := idleSet[id]
 		var awaitingNow bool
 		if idleNow {
-			tail := readSessionLogTailBytes(id, detectNeedsInputTailBytes)
-			cols, rows := needsInputScreenSize(id)
-			awaitingNow = agent.DetectNeedsInputScreen(a.needsInputScreen, tail, cols, rows)
+			pr := prevRaw[id]
+			if logUnchanged(id) && pr.awaitingComputed {
+				awaitingNow = pr.awaitingNow
+			} else {
+				tail := getTail(id)
+				cols, rows := needsInputScreenSize(id)
+				awaitingNow = agent.DetectNeedsInputScreen(a.needsInputScreen, tail, cols, rows)
+			}
 		}
+		nr := newRaw[id]
+		nr.awaitingComputed, nr.awaitingNow = idleNow, awaitingNow
+		newRaw[id] = nr
 		ticks, isSettled := agent.SettleTick(a.needsInputSettle[id], idleNow, awaitingNow)
 		if ticks != 0 {
 			newSettle[id] = ticks
@@ -2472,6 +2678,9 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	}
 	a.needsInputSettle = newSettle
 	settledOf := func(id string) bool { return settled[id] }
+
+	a.needsInputLogStat = newLogStat
+	a.needsInputRawSignals = newRaw
 
 	// BUG-067: merge this tick's and the PREVIOUS tick's content fingerprints
 	// (current wins) into a single lookup for NeedsInputClear's stale-marker
@@ -2496,14 +2705,18 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	// daemon-client mode it captures input sent through this TUI's agent pane —
 	// cross-surface input clears via the natural log-content change instead).
 	// archivedOf reads the cached task list (a.tasks is set by the caller
-	// before this runs). runningIDs lets the BUG-063 cleared-marker survive a
-	// candidacy gap for a task that is still running. settledOf (BUG-072) lets
-	// a quick self-resolution that never sustains resumedOf's streak still
-	// clear once genuinely idle with no current signal. fingerprintOf lets
-	// BUG-067 distinguish a stale re-detection of the same content from a
-	// genuinely distinct, still-unanswered later prompt at the same timestamp.
+	// before this runs; computed once above and reused here — Fix 3).
+	// runningIDs (the FULL, unfiltered set) lets the BUG-063 cleared-marker
+	// survive a candidacy gap for a task that is still running, archived or
+	// not — NeedsInputClear applies its own archivedOf check independently of
+	// which ids activeRunningIDs admitted into the passes above. settledOf
+	// (BUG-072) lets a quick self-resolution that never sustains resumedOf's
+	// streak still clear once genuinely idle with no current signal.
+	// fingerprintOf lets BUG-067 distinguish a stale re-detection of the same
+	// content from a genuinely distinct, still-unanswered later prompt at the
+	// same timestamp.
 	var out []string
-	out, a.needsInputSince, a.needsInputCleared = agent.NeedsInputClear(fresh, runningIDs, a.needsInputSince, a.needsInputCleared, a.lastSessionInput, a.archivedTaskSet(), resumedOf, settledOf, fingerprintOf)
+	out, a.needsInputSince, a.needsInputCleared = agent.NeedsInputClear(fresh, runningIDs, a.needsInputSince, a.needsInputCleared, a.lastSessionInput, archivedOf, resumedOf, settledOf, fingerprintOf)
 	return out
 }
 

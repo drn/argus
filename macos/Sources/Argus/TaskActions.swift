@@ -48,26 +48,17 @@ struct TaskActionMenuItems: View {
             Divider()
 
             renameButton
+            forkButton
+            openRepoButton
+            openPRButton
 
-            Button("Fork") {
-                _Concurrency.Task { await app.fork(task) }
-            }
+            archiveButton
 
-            if task.archived {
-                Button("Unarchive") {
-                    _Concurrency.Task { await app.unarchive(task) }
-                }
-            } else {
-                Button("Archive") {
-                    _Concurrency.Task { await app.archive(task) }
-                }
-            }
+            pinButton
 
             Divider()
 
-            Button("Delete", role: .destructive) {
-                app.pendingConfirmation = .delete(task)
-            }
+            deleteButton
         }
     }
 
@@ -76,6 +67,110 @@ struct TaskActionMenuItems: View {
         let button = Button("Rename") { app.renamingTask = task }
         if showShortcuts {
             button.keyboardShortcut("r", modifiers: .command)
+        } else {
+            button
+        }
+    }
+
+    @ViewBuilder
+    private var forkButton: some View {
+        let button = Button("Fork") {
+            _Concurrency.Task { await app.fork(task) }
+        }
+        if showShortcuts {
+            button.keyboardShortcut("b", modifiers: [.command, .shift])
+        } else {
+            button
+        }
+    }
+
+    /// Archive/Unarchive, now reachable via Cmd+Shift+A (design.md acceptance
+    /// criteria "Archive via shortcut") in addition to the existing
+    /// mouse-driven button. The chord is fixed by the wider
+    /// add-mac-keybinding-parity change (Stage 5's terminal-safe-chord
+    /// collision test relies on this exact value) — not a free pick here.
+    @ViewBuilder
+    private var archiveButton: some View {
+        let label = task.archived ? "Unarchive" : "Archive"
+        let button = Button(label) {
+            _Concurrency.Task {
+                if task.archived {
+                    await app.unarchive(task)
+                } else {
+                    await app.archive(task)
+                }
+            }
+        }
+        if showShortcuts {
+            button.keyboardShortcut("a", modifiers: [.command, .shift])
+        } else {
+            button
+        }
+    }
+
+    /// Opens the task's worktree root in Finder. Chord: Shift+Cmd+E — the
+    /// O-family (Cmd+O, Cmd+Shift+O) is reserved/near-reserved macOS
+    /// "Open…" territory, so this picks a free letter instead.
+    @ViewBuilder
+    private var openRepoButton: some View {
+        let button = Button("Open Repo") { app.openRepo(task) }
+        if showShortcuts {
+            button.keyboardShortcut("e", modifiers: [.command, .shift])
+        } else {
+            button
+        }
+    }
+
+    /// Opens the task's PR in the browser. Chord: Shift+Cmd+U — deliberately
+    /// has no natural terminal-editing meaning (unlike Cmd+C/V/X/A/Z or an
+    /// arrow-adjacent chord) since this must also fire while the Terminal
+    /// tab's SwiftTerm view has focus (spec.md "Open PR via shortcut from
+    /// either context").
+    @ViewBuilder
+    private var openPRButton: some View {
+        let button = Button("Open PR") {
+            _Concurrency.Task { await app.openPR(for: task) }
+        }
+        if showShortcuts {
+            button.keyboardShortcut("u", modifiers: [.command, .shift])
+        } else {
+            button
+        }
+    }
+
+    /// Pin/Unpin — net-new UI (design.md acceptance criteria "Pin via
+    /// shortcut"; no pin affordance existed anywhere in the mac app before
+    /// this change). Mirrors ``archiveButton``'s structure exactly. Cmd+Shift+P
+    /// mirrors the TUI's own `P` (Shift+p) mnemonic for pin, augmented with
+    /// Cmd the same way Archive's `a` became Cmd+Shift+A — Cmd+P alone is
+    /// the system-reserved Print shortcut.
+    ///
+    /// The label (and which direction the shortcut toggles) reads
+    /// ``AppState/isPinned(_:)``, a client-side-only cache — see that
+    /// property's doc comment for why `/api/tasks`'s lossy wire shape can't
+    /// answer this directly.
+    @ViewBuilder
+    private var pinButton: some View {
+        let pinned = app.isPinned(task)
+        let button = Button(pinned ? "Unpin" : "Pin") {
+            _Concurrency.Task { await app.setPinned(task, pinned: !pinned) }
+        }
+        if showShortcuts {
+            button.keyboardShortcut("p", modifiers: [.command, .shift])
+        } else {
+            button
+        }
+    }
+
+    /// Chord: Cmd+Delete — mirrors macOS's own "move to Trash"/destructive-
+    /// delete idiom (Finder, Mail) for a destructive action.
+    @ViewBuilder
+    private var deleteButton: some View {
+        let button = Button("Delete", role: .destructive) {
+            app.pendingConfirmation = .delete(task)
+        }
+        if showShortcuts {
+            button.keyboardShortcut(.delete, modifiers: .command)
         } else {
             button
         }
@@ -121,6 +216,7 @@ private struct TaskConfirmationDialogModifier: ViewModifier {
         switch app.pendingConfirmation {
         case .stop(let task): return "Stop \u{201C}\(task.name)\u{201D}?"
         case .delete(let task): return "Delete \u{201C}\(task.name)\u{201D}?"
+        case .pruneCompleted: return "Prune completed tasks?"
         case nil: return ""
         }
     }
@@ -132,6 +228,9 @@ private struct TaskConfirmationDialogModifier: ViewModifier {
         case .delete:
             return "This permanently removes the task, its worktree, and its git branch " +
                 "(including the remote branch, if any). This cannot be undone."
+        case .pruneCompleted:
+            return "This permanently removes every completed task along with its worktree and " +
+                "git branch, and sweeps orphaned worktree directories. This cannot be undone."
         case nil:
             return ""
         }
@@ -148,6 +247,11 @@ private struct TaskConfirmationDialogModifier: ViewModifier {
         case .delete(let task):
             Button("Delete", role: .destructive) {
                 _Concurrency.Task { await app.delete(task) }
+            }
+            Button("Cancel", role: .cancel) {}
+        case .pruneCompleted:
+            Button("Prune", role: .destructive) {
+                _Concurrency.Task { await app.pruneCompleted() }
             }
             Button("Cancel", role: .cancel) {}
         case nil:
