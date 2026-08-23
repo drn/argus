@@ -7,6 +7,8 @@ import (
 	"log"
 	"log/slog"
 	"net"
+	"net/http"
+	_ "net/http/pprof" //nolint:gosec // localhost-only debug listener, see runTUI's startPprofDebugListener
 	"net/rpc/jsonrpc"
 	"os"
 	"path/filepath"
@@ -137,6 +139,34 @@ func parseRemoteFlags(args []string) (remoteURL, token string) {
 	return remoteURL, token
 }
 
+// pprofDebugAddr is the fixed localhost-only address for the diagnostic
+// net/http/pprof listener (add-tui-pprof-debug-listener). Temporary
+// instrumentation for chasing the TUI's unexplained multi-GB RSS growth
+// (context/knowledge/gotchas — see the RSS-leak investigation entry); safe to
+// leave in place afterward as a standing debug aid, same precedent as
+// internal/api's own 127.0.0.1-only binding.
+const pprofDebugAddr = "127.0.0.1:6061"
+
+// startPprofDebugListener starts a localhost-only net/http/pprof listener in
+// the background for live heap/goroutine profiling of a running TUI process
+// (go tool pprof http://127.0.0.1:6061/debug/pprof/heap). Never fatal: a
+// bind failure (e.g. a second concurrent TUI instance) is logged via uxlog
+// and the TUI continues without it — this is diagnostic tooling, not a
+// required capability.
+func startPprofDebugListener() {
+	ln, err := net.Listen("tcp", pprofDebugAddr)
+	if err != nil {
+		uxlog.Log("[tui] pprof debug listener failed to start on %s: %v", pprofDebugAddr, err)
+		return
+	}
+	uxlog.Log("[tui] pprof debug listener on %s (go tool pprof http://%s/debug/pprof/heap)", pprofDebugAddr, pprofDebugAddr)
+	go func() {
+		if err := http.Serve(ln, nil); err != nil { //nolint:gosec // localhost-only, diagnostic use
+			uxlog.Log("[tui] pprof debug listener stopped: %v", err)
+		}
+	}()
+}
+
 func runTUI() {
 	// Initialize UX debug log.
 	if err := uxlog.Init(uxlog.Path(db.DataDir())); err != nil {
@@ -144,6 +174,8 @@ func runTUI() {
 	}
 	defer uxlog.Close()
 	uxlog.Log("=== argus TUI starting ===")
+
+	startPprofDebugListener()
 
 	// Redirect EVERY default logger that could write to the user's terminal
 	// at the program level, NOT by editing the 30+ slog/log call sites that
