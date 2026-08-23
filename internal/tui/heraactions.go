@@ -52,7 +52,17 @@ func heraGoSafe(label string, fn func()) {
 // PRAGMA data_version read — SQLite's documented same-connection blind spot,
 // see design.md Decision 5) is never silently missed here or on the tick
 // immediately following.
+//
+// invalidateTasksChangeGate does the SAME for the separate plain-task-list
+// gate (add-tasks-fetch-dirty-check): several hera mutations that funnel
+// through this single choke point (heraNukeRole/heraDoCascadeNuke/
+// heraNukeArchivedRole's a.db.SetStatus/SetArchived, heraStatusStep's
+// RollHeraWorkerToReview/ClearHeraReadyToClose) write the plain `tasks` table
+// through the SAME a.db handle refreshTasksWithIDs's gate reads DataVersion
+// from — without this, the next periodic tick could wrongly believe nothing
+// changed and keep showing the task's pre-mutation status/archived state.
 func (a *App) heraRefresh() {
+	a.invalidateTasksChangeGate()
 	a.heraPage.Refresh()
 	a.forceRedraw("hera mutation")
 }

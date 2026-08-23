@@ -380,6 +380,18 @@ type App struct {
 	// role's spinner stops. Tick-callback only (tview main goroutine), no lock.
 	contentIdle *agent.ContentIdleState
 
+	// tasksFPKnown / tasksLastFP back the add-tasks-fetch-dirty-check gate on
+	// refreshTasksWithIDs's outer a.db.Tasks() fetch — mirrors
+	// hera.HeraPage.shouldRebuild/markRebuilt/InvalidateChangeGate's PRAGMA
+	// data_version fingerprint (see gotchas/hera-view.md and events.md).
+	// Consulted ONLY by the onTick-driven call (allowCachedTasks=true); every
+	// other refreshTasksWithIDs caller passes false and always fetches, so
+	// these fields are never relied upon to reflect a write made by the very
+	// call site that would also be deciding whether to trust them — see
+	// shouldRefetchTasks's own doc comment for why that split is required.
+	tasksFPKnown bool
+	tasksLastFP  int64
+
 	// Daemon health
 	daemonFailures    int
 	daemonRestarting  bool
@@ -1460,7 +1472,10 @@ func (a *App) onTick() {
 			uxlog.Log("[tui] tick: startGen changed (%d → %d), skipping reconciliation with stale runningIDs", startGen, a.startGen.Load())
 			runningIDs = nil
 		}
-		a.refreshTasksWithIDs(runningIDs, idleIDs)
+		// allowCachedTasks=true: this is the periodic per-tick path
+		// (add-tasks-fetch-dirty-check) — see shouldRefetchTasks's doc comment
+		// for why every other refreshTasksWithIDs caller must pass false.
+		a.refreshTasksWithIDs(runningIDs, idleIDs, true)
 		taskID := ""
 		if a.mode == modeAgent {
 			taskID = a.agentState.TaskID
@@ -2023,6 +2038,11 @@ func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool)
 				if t, gerr := a.db.Get(snap.ID); gerr == nil && t != nil {
 					t.SessionID = sid
 					a.db.Update(t) //nolint:errcheck
+					// add-tasks-fetch-dirty-check: this write lands well after
+					// handleSessionExitUI's own refreshTasksAsync already ran
+					// (the capture goroutine above is async and can take a
+					// while), so it must invalidate the gate itself.
+					a.invalidateTasksChangeGate()
 				}
 			})
 		}(*captureTask)
@@ -2292,9 +2312,13 @@ type needsInputLogStat struct {
 //   - parked: agent.ParkedSelectionSignal's reading (escalation pass). Only
 //     meaningful when hasTail is true (mirrors the original: escalation runs
 //     only past the empty-tail `continue`).
-//   - working: agent.ContentIdleFingerprint's `working` return (resumed- and
-//     sustained-activity passes — Fix 1 computes this ONCE per session per
-//     tick and reuses it for both). Only meaningful when hasTail is true.
+//   - working / contentFP: agent.ContentIdleFingerprint's `working` and `fp`
+//     returns (resumed- and sustained-activity passes — Fix 1 computes this
+//     ONCE per session per tick and reuses it for both; contentFP was
+//     discarded here until dedupe-redundant-contentidle-reads started
+//     threading it to refreshTasksWithIDs's agent.ContentIdle call, the SAME
+//     ContentIdleFingerprint call the resumed-activity pass already makes for
+//     the identical tail). Only meaningful when hasTail is true.
 //   - awaitingComputed / awaitingNow: agent.DetectNeedsInputScreen's reading
 //     (settlement pass), which the ORIGINAL code only ever computes when the
 //     session is idle (`if idleNow { ... }`). awaitingComputed records
@@ -2307,6 +2331,7 @@ type needsInputRawSignals struct {
 	hasTail          bool
 	parked           bool
 	working          bool
+	contentFP        uint64
 	awaitingComputed bool
 	awaitingNow      bool
 }
@@ -2558,20 +2583,23 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	workingOf := make(map[string]bool, len(activeRunningIDs))
 	for _, id := range activeRunningIDs {
 		var hasTail, working bool
+		var contentFP uint64
 		if logUnchanged(id) {
 			pr := prevRaw[id]
 			hasTail = pr.hasTail
 			working = pr.working
+			contentFP = pr.contentFP
 		} else {
 			tail := getTail(id)
 			hasTail = len(tail) != 0
 			if hasTail {
 				cols, rows := needsInputScreenSize(id)
-				_, working = agent.ContentIdleFingerprint(a.needsInputScreen, tail, cols, rows)
+				contentFP, working = agent.ContentIdleFingerprint(a.needsInputScreen, tail, cols, rows)
 			}
 		}
 		nr := newRaw[id]
 		nr.working = working
+		nr.contentFP = contentFP
 		newRaw[id] = nr
 		if !hasTail {
 			continue
@@ -2718,6 +2746,29 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	var out []string
 	out, a.needsInputSince, a.needsInputCleared = agent.NeedsInputClear(fresh, runningIDs, a.needsInputSince, a.needsInputCleared, a.lastSessionInput, archivedOf, resumedOf, settledOf, fingerprintOf)
 	return out
+}
+
+// contentIdleSignalOf implements agent.ContentIdle's cachedSignal parameter,
+// reusing detectNeedsInputSticky's THIS-TICK a.needsInputRawSignals — already
+// populated (by refreshTasksWithIDs calling detectNeedsInputSticky before
+// this is ever consulted) via the identical agent.ContentIdleFingerprint /
+// agent.ParkedSelectionSignal calls against the identical session tail
+// (dedupe-redundant-contentidle-reads) — instead of letting ContentIdle pay
+// for a second, independent tail read + VT re-emulation pass.
+//
+// ok=false for any id absent from the map or recorded with hasTail==false —
+// ContentIdle then falls back to its own independent computation for that id,
+// exactly as it did before this cache existed. The one case that routes
+// through the fallback in practice: an archived-but-still-running task, which
+// detectNeedsInputSticky's own archive pre-filter (activeRunningIDs) excludes
+// from a.needsInputRawSignals entirely, but which agent.ContentIdle (fed the
+// FULL, unfiltered runningIDs) still classifies.
+func (a *App) contentIdleSignalOf(id string) (agent.ContentIdleSignal, bool) {
+	sig, ok := a.needsInputRawSignals[id]
+	if !ok || !sig.hasTail {
+		return agent.ContentIdleSignal{}, false
+	}
+	return agent.ContentIdleSignal{FP: sig.contentFP, Working: sig.working, Parked: sig.parked}, true
 }
 
 // lastSessionInput returns a session's most-recent-USER-input wall-clock time
@@ -2894,7 +2945,7 @@ func (a *App) refreshTasks() {
 	runningIDs, idleIDs := a.runner.RunningAndIdle()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.refreshTasksWithIDs(runningIDs, idleIDs)
+	a.refreshTasksWithIDs(runningIDs, idleIDs, false)
 }
 
 // refreshTasksAsync fetches running/idle IDs in a background goroutine, then
@@ -2921,7 +2972,7 @@ func (a *App) refreshTasksAsync() {
 				uxlog.Log("[tui] refreshTasksAsync: startGen changed, skipping reconciliation with stale runningIDs")
 				runningIDs = nil
 			}
-			a.refreshTasksWithIDs(runningIDs, idleIDs)
+			a.refreshTasksWithIDs(runningIDs, idleIDs, false)
 		})
 	}()
 }
@@ -2933,16 +2984,98 @@ func (a *App) refreshTasksAsync() {
 func (a *App) refreshTasksLocal() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.refreshTasksWithIDs(a.runningIDs, a.idleIDs)
+	a.refreshTasksWithIDs(a.runningIDs, a.idleIDs, false)
+}
+
+// tasksDataVersioner mirrors hera.dataVersioner (internal/tui/hera/page.go) —
+// implemented by *db.DB, checked via a type assertion rather than added to
+// the store.Store interface, so remote mode's *apistore.Store (no such
+// method) always falls through to shouldRefetchTasks's "changed" default
+// instead of ever being silently gated.
+type tasksDataVersioner interface {
+	DataVersion() (int64, error)
+}
+
+// tasksDBFingerprint returns the underlying store's cheap change-fingerprint,
+// or (0, false) when the store doesn't support one (remote mode, or a test
+// store fake) — shouldRefetchTasks always treats that as "changed" so the
+// gate never suppresses a fetch it cannot prove is safe to skip. Mirrors
+// hera.HeraPage.dbFingerprint.
+func (a *App) tasksDBFingerprint() (int64, bool) {
+	dv, ok := a.db.(tasksDataVersioner)
+	if !ok {
+		return 0, false
+	}
+	v, err := dv.DataVersion()
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+// shouldRefetchTasks reports whether refreshTasksWithIDs's full a.db.Tasks()
+// fetch is worth paying for: true on the very first call (no prior snapshot),
+// whenever the store's cheap DB fingerprint is unsupported, or whenever it
+// has moved since the last fetch. Mirrors hera.HeraPage.shouldRebuild
+// (add-tasks-fetch-dirty-check; see gotchas/events.md).
+//
+// Deliberately consulted ONLY by the onTick-driven refreshTasksWithIDs call
+// (allowCachedTasks=true) — every other caller here is reacting to a specific
+// write it (or the code that invoked it) just made through this SAME a.db
+// handle, and PRAGMA data_version's documented same-connection blind spot
+// means such a write is invisible to this exact connection's own next
+// DataVersion() read (confirmed deterministic, not merely rare, by
+// db.TestDB_DataVersion). Those callers pass allowCachedTasks=false and
+// always fetch, exactly matching this function's behavior before this gate
+// existed, so they can never be tripped up by their own write.
+func (a *App) shouldRefetchTasks() bool {
+	if !a.tasksFPKnown {
+		return true
+	}
+	fp, ok := a.tasksDBFingerprint()
+	return !ok || fp != a.tasksLastFP
+}
+
+// markTasksFetched snapshots the DB fingerprint a just-completed a.db.Tasks()
+// fetch observed, for the next shouldRefetchTasks call to compare against.
+// Mirrors hera.HeraPage.markRebuilt.
+func (a *App) markTasksFetched() {
+	a.tasksFPKnown = true
+	if fp, ok := a.tasksDBFingerprint(); ok {
+		a.tasksLastFP = fp
+	}
+}
+
+// invalidateTasksChangeGate forces the NEXT gated (onTick) refreshTasksWithIDs
+// call to refetch regardless of what DataVersion reports. Mirrors
+// hera.HeraPage.InvalidateChangeGate's identical same-connection blind-spot
+// rationale — called right after the one write refreshTasksWithIDs itself
+// makes (the stale-task reconciliation SetStatus below) so that write is
+// never silently missed by its own gate on a later gated tick.
+func (a *App) invalidateTasksChangeGate() {
+	a.tasksFPKnown = false
 }
 
 // refreshTasksWithIDs updates the task list with pre-fetched running/idle IDs.
 // Used by onTick to avoid calling Running() (RPC) while holding a.mu.
-func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
-	tasks, err := a.db.Tasks()
-	if err != nil {
-		uxlog.Log("[tui] refreshTasksWithIDs: failed to load tasks: %v", err)
-		return
+//
+// allowCachedTasks permits skipping the full a.db.Tasks() fetch below and
+// reusing the previous call's a.tasks snapshot when shouldRefetchTasks
+// reports nothing has changed (add-tasks-fetch-dirty-check) — pass true ONLY
+// from the periodic onTick path (see shouldRefetchTasks's own doc comment for
+// why every other caller must pass false instead).
+func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string, allowCachedTasks bool) {
+	var tasks []*model.Task
+	if allowCachedTasks && !a.shouldRefetchTasks() {
+		tasks = a.tasks
+	} else {
+		var err error
+		tasks, err = a.db.Tasks()
+		if err != nil {
+			uxlog.Log("[tui] refreshTasksWithIDs: failed to load tasks: %v", err)
+			return
+		}
+		a.markTasksFetched()
 	}
 	a.tasks = tasks
 	// Feed the Hera rail's own model rebuild from the snapshot just fetched
@@ -2995,6 +3128,15 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 				// before this write. SetStatus touches only status/timestamps, so it
 				// can't clobber that name — same reasoning as OnPin/OnStatusChange.
 				a.db.SetStatus(t.ID, model.StatusInReview) //nolint:errcheck
+				// This write goes through the SAME a.db handle shouldRefetchTasks
+				// reads DataVersion from — invalidate so a LATER gated tick never
+				// mistakes its own (same-connection-invisible) write for "nothing
+				// changed" (add-tasks-fetch-dirty-check). Not itself load-bearing
+				// for THIS tick's in-memory view (t.SetStatus above already mutated
+				// the *model.Task this call's a.tasks retains a pointer to), but
+				// required so the gate's own bookkeeping isn't left believing a
+				// stale fingerprint is still current.
+				a.invalidateTasksChangeGate()
 				uxlog.Log("[tui] reconciled stale task %s (%s) → in_review (no running session; inferred, not observed)", t.ID, t.Name)
 				delete(a.recentStarts, t.ID) // consumed; no need to check again
 			}
@@ -3071,9 +3213,17 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	for _, id := range idleIDs {
 		rawIdleSet[id] = true
 	}
+	// dedupe-redundant-contentidle-reads: a.needsInputRawSignals was just
+	// rebuilt (above, by the detectNeedsInputSticky call this same tick) from
+	// the IDENTICAL agent.ContentIdleFingerprint/ParkedSelectionSignal calls
+	// agent.ContentIdle needs below, over the IDENTICAL session tails — hand
+	// them straight to ContentIdle instead of paying for a second tail read +
+	// VT re-emulation pass per running-and-not-idle session. See
+	// a.contentIdleSignalOf's own doc comment for the (narrow, archived-task)
+	// fallback case.
 	contentIdleIDs, nextContentIdle := agent.ContentIdle(runningIDs, rawIdleSet,
 		func(id string) []byte { return readSessionLogTailBytes(id, detectNeedsInputTailBytes) },
-		needsInputScreenSize, a.needsInputScreen, a.contentIdle, time.Now())
+		needsInputScreenSize, a.needsInputScreen, a.contentIdle, time.Now(), a.contentIdleSignalOf)
 	a.contentIdle = nextContentIdle
 	sessionIdle := make([]string, 0, len(idleIDs)+len(contentIdleIDs))
 	sessionIdle = append(sessionIdle, idleIDs...)
@@ -5193,6 +5343,12 @@ func (a *App) refreshResumeSessionID(task *model.Task, resume bool) {
 	}
 }
 
+// startSession writes task status/SessionID/AgentPID through a.db at several
+// points below (session-ID generation, start failure, start success) — every
+// one of them is invalidateTasksChangeGate'd (add-tasks-fetch-dirty-check),
+// since startSession is called from several sites (Enter-to-restart, the
+// auto-start path, hera's Enter-reattach, switchSession's dead-session
+// branch) that don't ALL separately force a refetch of their own afterward.
 func (a *App) startSession(task *model.Task) {
 	cfg := a.db.Config()
 	rows, cols := a.computePTYSize()
@@ -5213,6 +5369,7 @@ func (a *App) startSession(task *model.Task) {
 			task.SessionID = model.GenerateSessionID()
 			generatedSessionID = true
 			a.db.Update(task) //nolint:errcheck
+			a.invalidateTasksChangeGate()
 			uxlog.Log("[tui] generated session ID %s for task %s", task.SessionID, task.ID)
 		}
 	}
@@ -5253,6 +5410,7 @@ func (a *App) startSession(task *model.Task) {
 		}
 		task.StartedAt = time.Time{}
 		a.db.Update(task) //nolint:errcheck
+		a.invalidateTasksChangeGate()
 		return
 	}
 
@@ -5260,6 +5418,7 @@ func (a *App) startSession(task *model.Task) {
 	task.AgentPID = sess.PID()
 	a.recentStarts[task.ID] = time.Now() // grace period: protect from false reconciliation
 	a.db.Update(task)                    //nolint:errcheck
+	a.invalidateTasksChangeGate()
 
 	// Attach to the terminal pane and start the redraw loop only if the
 	// agent view is active for this task. When startSession is called from
@@ -5797,6 +5956,11 @@ func (a *App) switchSession(newID, title string) {
 
 	task.SessionID = newID
 	a.db.Update(task) //nolint:errcheck
+	// add-tasks-fetch-dirty-check: the live-session branch below has no
+	// refresh call of its own — it stops the session and lets
+	// handleSessionExitUI's restart branch pick it up (which does refresh) —
+	// so this write must invalidate the gate itself in the meantime.
+	a.invalidateTasksChangeGate()
 	uxlog.Log("[tui] session switch: task %s → session %s (%q)", taskID, newID, title)
 
 	sess := a.agentPane.Session()
@@ -6907,7 +7071,7 @@ func (a *App) pruneCompletedTasks() {
 				uxlog.Log("[tui] prune: startGen changed, skipping reconciliation with stale runningIDs")
 				runningIDs = nil
 			}
-			a.refreshTasksWithIDs(runningIDs, idleIDs)
+			a.refreshTasksWithIDs(runningIDs, idleIDs, false)
 			a.mu.Unlock()
 		})
 	}()

@@ -29,7 +29,7 @@ func TestIdlePush_ContentIdleFiresExactlyOnce(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		now := fixedNow.Add(time.Duration(i) * idlePushTickStep)
 		// Never raw-idle (fullscreen repaints forever) → empty rawIdle set.
-		ci, next := agent.ContentIdle(running, map[string]bool{}, tailOf, size, screen, state.contentIdle, now)
+		ci, next := agent.ContentIdle(running, map[string]bool{}, tailOf, size, screen, state.contentIdle, now, nil)
 		state.contentIdle = next
 		idleSet := map[string]bool{}
 		for _, id := range ci {
@@ -56,7 +56,7 @@ func TestIdlePush_WorkingFullscreenNeverFires(t *testing.T) {
 	fires := 0
 	for i := 0; i < 6; i++ {
 		now := fixedNow.Add(time.Duration(i) * idlePushTickStep)
-		ci, next := agent.ContentIdle(running, map[string]bool{}, tailOf, size, screen, state.contentIdle, now)
+		ci, next := agent.ContentIdle(running, map[string]bool{}, tailOf, size, screen, state.contentIdle, now, nil)
 		state.contentIdle = next
 		idleSet := map[string]bool{}
 		for _, id := range ci {

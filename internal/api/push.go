@@ -558,7 +558,7 @@ func (s *Server) idleWatcherTick(state *idleWatcherState) {
 	// is still guaranteed by shouldFireIdlePush's per-work-cycle gate (no re-push
 	// until new input), so a re-asserted content-idle signal cannot storm; and a
 	// non-fullscreen agent is already in idleSet (raw-idle), so it is unaffected.
-	contentIdle, nextCI := agent.ContentIdle(running, idleSet, tailOf, sessionScreenSize, state.screen, state.contentIdle, now)
+	contentIdle, nextCI := agent.ContentIdle(running, idleSet, tailOf, sessionScreenSize, state.screen, state.contentIdle, now, nil)
 	state.contentIdle = nextCI
 	for _, id := range contentIdle {
 		idleSet[id] = true
