@@ -245,6 +245,51 @@ func TestTerminalPane_SetSession_LoadsReplayAfterRebindFromLiveSession(t *testin
 	}
 }
 
+// TestTerminalPane_Draw_DeadReplayFreezesOnLastAltScreenFrame is the fix for
+// msg #5423's pushback: the read-only replay of a FINISHED session was
+// showing Claude's own post-exit "Resume this session with: claude --resume
+// <uuid>" hint instead of the actual conversation. A real terminal emulator
+// faithfully reconstructs the byte stream's TRUE final state, and that state
+// legitimately IS just the hint — Claude Code renders its entire interactive
+// UI in the alternate screen buffer, and the hint prints to the restored
+// main buffer only after CSI ?1049l tears the alt screen down. Ground truth:
+// a real closed-out hera worker's on-disk session log ends with exactly
+// this byte sequence (verified directly against ~/.argus/sessions/*.log).
+// The fix freezes the replay on the last alt-screen frame instead of
+// following the stream past its own exit.
+func TestTerminalPane_Draw_DeadReplayFreezesOnLastAltScreenFrame(t *testing.T) {
+	content := "\x1b[?1049h" + "the actual conversation\r\n" +
+		"\x1b[?1049l" + "\x1b[2mResume this session with:\x1b[22m\r\nclaude --resume deadbeef-0000\r\n"
+	setupTaskLog(t, "alt-exit-dead", content)
+	tp := NewTerminalPane()
+	tp.SetTaskID("alt-exit-dead")
+	tp.ResetVT()
+	tp.SetSession(nil)
+
+	got := waitForReplayText(t, tp, 60, 14, "the actual conversation")
+	if strings.Contains(got, "Resume this session with") {
+		t.Errorf("dead-session replay should freeze on the last alt-screen frame, not follow the stream past its own exit, got:\n%s", got)
+	}
+}
+
+// TestTerminalPane_Draw_LiveScrollbackNotTruncatedAtAltScreenExit guards the
+// finalFrame=!alive gating added alongside the fix above: a user scrolling
+// through a STILL-LIVE session's real history must see a genuine mid-session
+// alt-screen transition (e.g. a `git diff` pager) in full — truncation is
+// only correct for a dead session's settled final frame, never for a live
+// session that's still producing output.
+func TestTerminalPane_Draw_LiveScrollbackNotTruncatedAtAltScreenExit(t *testing.T) {
+	content := "\x1b[?1049h" + "pager content\r\n" +
+		"\x1b[?1049l" + "back in the main shell\r\n"
+	setupTaskLog(t, "alt-exit-live", content)
+	tp := NewTerminalPane()
+	tp.SetTaskID("alt-exit-live")
+	tp.SetSession(&mockAdapter{alive: true})
+	tp.ScrollUp(1) // enters the replay/scroll path while the session is still alive
+
+	waitForReplayText(t, tp, 60, 14, "back in the main shell")
+}
+
 // waitForReplayText polls Draw() until the async replay rebuild completes
 // and the expected text appears (asyncReplayRebuild runs on a background
 // goroutine — see terminalpane.go), mirroring the deadline-poll pattern

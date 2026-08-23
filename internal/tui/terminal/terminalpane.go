@@ -655,7 +655,7 @@ func (tp *TerminalPane) EagerReplayBuild() {
 	onDone := tp.OnNeedRedraw
 	tp.mu.Unlock()
 
-	go tp.asyncReplayRebuild(taskID, 0, rows, cols, rows, nil, nil, 0, false, onDone)
+	go tp.asyncReplayRebuild(taskID, 0, rows, cols, rows, nil, nil, 0, false, true, onDone)
 }
 
 // ResetVT clears all terminal state (on resize or task switch).
@@ -1068,6 +1068,32 @@ func AlignToEscBoundary(raw []byte) []byte {
 		return raw[i:]
 	}
 	return raw
+}
+
+// altScreenExitSeq is CSI ?1049l — DEC private mode 1049 reset, which exits
+// the alternate screen buffer and restores the cursor. See
+// truncateAtFinalAltScreenExit.
+var altScreenExitSeq = []byte("\x1b[?1049l")
+
+// truncateAtFinalAltScreenExit trims raw to end just before the LAST
+// alt-screen-exit sequence, when one is present. Claude Code (and most
+// fullscreen TUIs) render their entire interactive UI in the alternate
+// screen buffer and emit exactly this sequence once on clean exit, right
+// before printing a short plain-text hint (e.g. "Resume this session with:
+// claude --resume <uuid>") to the now-restored main buffer. A real terminal
+// emulator correctly reconstructs that hint as the byte stream's true final
+// state, but for a FINISHED session's frozen "last known output" replay that
+// hint is strictly less useful than the actual conversation it just erased
+// — so the replay freezes on the last alt-screen frame instead of following
+// the stream past its own teardown. Returns raw unchanged if the sequence
+// isn't present, or if trimming would discard everything (an unhelpfully
+// short read window is better shown as-is than as a blank replay).
+func truncateAtFinalAltScreenExit(raw []byte) []byte {
+	idx := bytes.LastIndex(raw, altScreenExitSeq)
+	if idx <= 0 {
+		return raw
+	}
+	return raw[:idx]
 }
 
 // liveRebuildHistorySize bounds the on-disk session log read when the
@@ -1649,7 +1675,11 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 				uxlog.Log("[terminalpane] scroll replay %s at authored %dx%d (pane %dx%d) — emulate wide, clip to pane",
 					taskID, replayCols, replayRows, ptyCols, ptyRows)
 			}
-			go tp.asyncReplayRebuild(taskID, scrollOffset, height, replayCols, replayRows, ringBuf, replayDataCopy, prevFirstByte, extend, onDone)
+			// finalFrame=!alive: a dead session's replay is the settled "last
+			// known output" (see truncateAtFinalAltScreenExit); a live
+			// session's scrollback is real-time history the user is actively
+			// scrolling through and must never be trimmed.
+			go tp.asyncReplayRebuild(taskID, scrollOffset, height, replayCols, replayRows, ringBuf, replayDataCopy, prevFirstByte, extend, !alive, onDone)
 
 			tp.mu.Lock()
 		}
@@ -1728,7 +1758,11 @@ const replayRebuildMaxBytes = 64 * 1024 * 1024
 // the currently-loaded window (BUG-E): the read window then grows a further
 // scrollExtendChunk beyond prevFirstByte so scrollback reaches strictly older
 // history even when the line heuristic under-reads escape-dense output.
-func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewportHeight, ptyCols, ptyRows int, ringBuf, replayDataCopy []byte, prevFirstByte int64, extend bool, onDone func()) {
+//
+// `finalFrame` is set when this rebuild is reconstructing a DEAD session's
+// settled "last known output" (as opposed to a user scrolling back through a
+// still-LIVE session's real-time history) — see truncateAtFinalAltScreenExit.
+func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewportHeight, ptyCols, ptyRows int, ringBuf, replayDataCopy []byte, prevFirstByte int64, extend, finalFrame bool, onDone func()) {
 	defer func() {
 		if r := recover(); r != nil {
 			uxlog.Log("[terminalpane] PANIC in asyncReplayRebuild: %v\n%s", r, debug.Stack())
@@ -1768,6 +1802,10 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 		tp.replayNoDataUntil = time.Now().Add(replayNoDataCooldown)
 		tp.mu.Unlock()
 		return
+	}
+
+	if finalFrame {
+		raw = truncateAtFinalAltScreenExit(raw)
 	}
 
 	// Build the replay emulator (the expensive part — VT emulation of up to 8MB).
