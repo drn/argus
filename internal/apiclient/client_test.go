@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/testutil"
 )
 
@@ -144,16 +145,38 @@ func TestClient_CreateTask_RoundTrip(t *testing.T) {
 func TestClient_WriteInput(t *testing.T) {
 	f := newFixture(t)
 	var got []byte
+	var gotOriginHeader string
 	f.mux.HandleFunc("/api/tasks/t1/input", requireAuth(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		got = body
+		gotOriginHeader = r.Header.Get("X-Input-Origin")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok","bytes":"3"}`))
 	}))
 
-	err := f.c.WriteInput(context.Background(), "t1", []byte("hey"))
+	err := f.c.WriteInput(context.Background(), "t1", []byte("hey"), agentview.OriginUser)
 	testutil.NoError(t, err)
 	testutil.Equal(t, string(got), "hey")
+	// OriginUser is the zero value / pre-existing wire shape: no header sent.
+	testutil.Equal(t, gotOriginHeader, "")
+}
+
+// TestClient_WriteInput_OriginSystemSetsHeader pins the wire contract that
+// closes the origin-loss gap: an OriginSystem write must set X-Input-Origin
+// so the server-side handler (internal/api handleWriteInput) applies the
+// same origin to the real session, not the OriginUser default.
+func TestClient_WriteInput_OriginSystemSetsHeader(t *testing.T) {
+	f := newFixture(t)
+	var gotOriginHeader string
+	f.mux.HandleFunc("/api/tasks/t1/input", requireAuth(t, func(w http.ResponseWriter, r *http.Request) {
+		gotOriginHeader = r.Header.Get("X-Input-Origin")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","bytes":"3"}`))
+	}))
+
+	err := f.c.WriteInput(context.Background(), "t1", []byte("hey"), agentview.OriginSystem)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotOriginHeader, "system")
 }
 
 func TestClient_GetOutput_ParsesHeaders(t *testing.T) {

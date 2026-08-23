@@ -5,6 +5,8 @@ package notify
 
 import (
 	"time"
+
+	"github.com/drn/argus/internal/app/agentview"
 )
 
 // defaultDeadlineMS is the default delivery deadline (5 minutes).
@@ -43,12 +45,12 @@ type delivery struct {
 // makes test fakes much simpler.
 type SessionHandleIface interface {
 	IsIdle() bool
-	// WriteInputSystem injects the delivery as SYSTEM input: it advances the
+	// WriteInput injects the delivery as SYSTEM-origin input: it advances the
 	// agent's work cycle but NOT the user-input timestamp, so a delivered
 	// hera/task message never masquerades as the user answering a prompt and
-	// never clears the needs-input "(?)" flag (BUG-034). Notify never uses the
-	// user-facing WriteInput.
-	WriteInputSystem(p []byte) (int, error)
+	// never clears the needs-input "(?)" flag (BUG-034). Notify always calls
+	// this with agentview.OriginSystem — never agentview.OriginUser.
+	WriteInput(p []byte, origin agentview.InputOrigin) (int, error)
 }
 
 // RunnerIface is the subset of agent.SessionProvider needed by the notifier.

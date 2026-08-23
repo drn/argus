@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/db"
@@ -782,9 +783,9 @@ func TestC_CallNoRPC(t *testing.T) {
 		// Daemon.WriteInput on a client with no rpc. Pre-fix this SIGSEGV'd the
 		// process from the dispatch goroutine; post-fix the call soft-fails.
 		c := &Client{closed: make(chan struct{}), sessions: map[string]*RemoteSession{}}
-		rs := newRemoteSession("norpc", c)   // starts inputLoop
-		t.Cleanup(func() { rs.close() })     // stop the inputLoop goroutine (no leak)
-		n, err := rs.WriteInput([]byte("x")) // enqueues; inputLoop dispatches the RPC
+		rs := newRemoteSession("norpc", c)                         // starts inputLoop
+		t.Cleanup(func() { rs.close() })                           // stop the inputLoop goroutine (no leak)
+		n, err := rs.WriteInput([]byte("x"), agentview.OriginUser) // enqueues; inputLoop dispatches the RPC
 		testutil.NoError(t, err)
 		testutil.Equal(t, n, 1)
 		time.Sleep(50 * time.Millisecond) // give inputLoop time to run the doomed dispatch

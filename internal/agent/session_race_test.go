@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 )
@@ -56,7 +57,7 @@ func TestSession_StopConcurrentWithPanePoll(t *testing.T) {
 			}
 			sess.RecentOutput()
 			sess.RecentOutputTail(64)
-			sess.WriteInput([]byte("x")) //nolint:errcheck
+			sess.WriteInput([]byte("x"), agentview.OriginUser) //nolint:errcheck
 		}
 	}()
 

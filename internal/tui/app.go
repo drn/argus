@@ -314,7 +314,7 @@ type App struct {
 	// agent.ResumeActivityTick): consecutive ticks a flagged session has shown
 	// Claude's "working" affordance, independent of whether any input was ever
 	// recorded as user-typed. Lets agent.NeedsInputClear resolve a flag a hera
-	// coordinator's relayed answer (WriteInputSystem) could otherwise never
+	// coordinator's relayed answer (WriteInput with agentview.OriginSystem) could otherwise never
 	// clear. Mirrors the daemon's idleWatcherState.needsInputResume.
 	needsInputResume map[string]int
 	// needsInputSettle carries the settlement counter (see agent.SettleTick,
@@ -2543,7 +2543,7 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	// Resumed-activity pass: independent of candidacy (every running session is
 	// tracked, mirroring the content-stability pass above), advance each
 	// session's consecutive "working" streak (agent.ResumeActivityTick). A hera
-	// coordinator's relayed answer is delivered via WriteInputSystem, which
+	// coordinator's relayed answer is delivered via WriteInput with agentview.OriginSystem, which
 	// never advances LastUserInput (see lastSessionInput) — this is the only
 	// signal that can resolve a flag raised on a worker who was genuinely
 	// un-stuck by that relayed answer rather than direct user input.
@@ -2724,7 +2724,7 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 // for the BUG-034 clear-on-input filter, or the zero time when the runner or
 // session is unavailable (nothing then ever advances past a baseline, so the
 // flag persists). It reads LastUserInput, not LastInput, so system-injected
-// reliable-notify delivery (which uses WriteInputSystem and advances only
+// reliable-notify delivery (which calls WriteInput with agentview.OriginSystem and advances only
 // LastInput) never clears the "(?)" — only a genuine user keystroke does.
 func (a *App) lastSessionInput(taskID string) time.Time {
 	if a.runner == nil {
@@ -3499,7 +3499,7 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		if a.mode == modeAgent {
 			// Forward ctrl+c to the PTY if session is alive; otherwise ignore
 			if sess := a.agentPane.Session(); sess != nil && sess.Alive() {
-				if _, err := sess.WriteInput([]byte{0x03}); err != nil {
+				if _, err := sess.WriteInput([]byte{0x03}, agentview.OriginUser); err != nil {
 					uxlog.Log("[tui] write ctrl+c to PTY failed: %v", err)
 				}
 			}
@@ -3767,7 +3767,7 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 		// When focused on terminal, forward escape to PTY if alive, otherwise consume it
 		if sess := a.agentPane.Session(); sess != nil && sess.Alive() {
-			if _, err := sess.WriteInput([]byte{0x1b}); err != nil {
+			if _, err := sess.WriteInput([]byte{0x1b}, agentview.OriginUser); err != nil {
 				uxlog.Log("[tui] write escape to PTY failed: %v", err)
 			}
 			a.agentPane.ResetScroll()
@@ -3917,7 +3917,7 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 	if sess != nil && sess.Alive() {
 		b := tcellKeyToBytes(event)
 		if len(b) > 0 {
-			if _, err := sess.WriteInput(b); err != nil {
+			if _, err := sess.WriteInput(b, agentview.OriginUser); err != nil {
 				uxlog.Log("[tui] write to PTY failed: %v", err)
 			}
 			// Schedule a fast follow-up redraw to paint the PTY echo.

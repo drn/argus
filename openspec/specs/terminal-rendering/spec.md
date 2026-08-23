@@ -401,6 +401,17 @@ blocked by a slow or stalled forward. A response that cannot be handed off
 without blocking (the forwarding path is still busy with an earlier
 response) SHALL be dropped rather than blocking the drain loop.
 
+The forwarded response SHALL be delivered as SYSTEM-classified input (the
+same delivery classification reliable-notify pane delivery uses), never as
+user-classified input. A capability-query response is generated
+automatically by the emulator and never represents the human answering a
+prompt; delivering it as user input would let the idle-detection
+capability's clear-on-input logic (which counts only genuine user-delivered
+input) mistake it for the user resolving a pending needs-input flag, clearing
+`(?)` on a session nobody actually answered — and, since the query/response
+cycle can recur while the pane stays focused, re-flagging and re-clearing on
+every detection tick as long as focus is held.
+
 Each live emulator's forwarded responses SHALL only be delivered to the
 session that was the pane's current session when that emulator was created.
 If the pane's current session has since changed (a new session attached,
@@ -428,6 +439,15 @@ may not be running or isn't the same live process.
 - **THEN** the emulator's generated response is written to the agent
   process's stdin via the terminal adapter, reporting the assumed foreground
   color
+
+#### Scenario: Forwarded response is delivered as system input, not user input
+
+- **WHEN** the live emulator's generated query response is forwarded to the
+  agent process
+- **THEN** it is delivered via the session's system-input path (advancing
+  only the work-cycle timestamp) rather than the user-input path, so it is
+  NEVER treated by the idle-detection capability's clear-on-input logic as
+  the user answering a pending needs-input prompt
 
 #### Scenario: No live session attached drops the response silently
 

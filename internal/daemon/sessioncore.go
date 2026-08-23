@@ -238,14 +238,16 @@ func (c *sessionCore) HasPendingRestart(req *TaskIDReq, resp *PendingRestartResp
 	return nil
 }
 
-// WriteInput sends data to a session's PTY stdin.
+// WriteInput sends data to a session's PTY stdin. req.Origin (zero value
+// agentview.OriginUser) carries through to the underlying session unchanged
+// — see WriteReq's doc comment for the wire-compatibility rationale.
 func (c *sessionCore) WriteInput(req *WriteReq, resp *StatusResp) error {
 	sess := c.runner.Get(req.TaskID)
 	if sess == nil {
 		resp.Error = "session not found"
 		return nil
 	}
-	if _, err := sess.WriteInput(req.Data); err != nil {
+	if _, err := sess.WriteInput(req.Data, req.Origin); err != nil {
 		resp.Error = err.Error()
 		return nil
 	}

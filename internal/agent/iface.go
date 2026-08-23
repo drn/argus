@@ -92,13 +92,16 @@ type SessionRunner interface {
 // refreshTasksAsync uses. See context/knowledge/gotchas/daemon-rpc.md.
 type SessionHandle interface {
 	PID() int
-	WriteInput(p []byte) (int, error)
-	// WriteInputSystem writes SYSTEM-injected input (reliable-notify pane
-	// delivery of hera/task messages). It advances the work-cycle timestamp
-	// (LastInput) like WriteInput but NOT the user-input timestamp
-	// (LastUserInput), so a delivered message never counts as the user
-	// answering a prompt and never clears the needs-input "(?)" flag (BUG-034).
-	WriteInputSystem(p []byte) (int, error)
+	// WriteInput writes p to the PTY. origin states whether this is a
+	// genuine human keystroke (agentview.OriginUser) or input argus itself
+	// injected — e.g. reliable-notify pane delivery of hera/task messages
+	// (agentview.OriginSystem). OriginUser advances both the work-cycle
+	// timestamp (LastInput) and the user-input timestamp (LastUserInput);
+	// OriginSystem advances only LastInput, so a delivered message never
+	// counts as the user answering a prompt and never clears the
+	// needs-input "(?)" flag (BUG-034). There is no default — every caller
+	// must state an origin.
+	WriteInput(p []byte, origin agentview.InputOrigin) (int, error)
 	Resize(rows, cols uint16) error
 	RecentOutput() []byte
 	RecentOutputTail(n int) []byte
@@ -122,10 +125,11 @@ type SessionHandle interface {
 	// timestamp so the interface contract holds, but no watcher ever reads
 	// that value — it exists only to satisfy SessionHandle.
 	LastInput() time.Time
-	// LastUserInput is the wall-clock time of the most recent USER keystroke
-	// (WriteInput), or zero if the user has never typed. SYSTEM delivery
-	// (WriteInputSystem) does not advance it. The needs-input clear-on-input
-	// filter reads this so only a genuine user response clears "(?)" (BUG-034).
+	// LastUserInput is the wall-clock time of the most recent WriteInput call
+	// made with agentview.OriginUser, or zero if the user has never typed.
+	// A WriteInput call made with agentview.OriginSystem does not advance it.
+	// The needs-input clear-on-input filter reads this so only a genuine
+	// user response clears "(?)" (BUG-034).
 	// Like LastInput, RemoteSession tracks a local value purely to satisfy the
 	// interface; the daemon watcher reads the in-process *agent.Session.
 	LastUserInput() time.Time

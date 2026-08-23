@@ -450,7 +450,7 @@ func safeEmuWrite(emu *xvt.SafeEmulator, data []byte) {
 //	    so it stops lighting "(?)" and stops rolling up to ancestor coordinators.
 //	(c) Clear on demonstrated resumed activity (resumedOf, see
 //	    ResumeActivityTick). A hera coordinator relays the human's answer via
-//	    reliable-notify delivery (WriteInputSystem), which deliberately does
+//	    reliable-notify delivery (WriteInput with agentview.OriginSystem), which deliberately does
 //	    NOT advance lastUserInput (that is the whole point of the BUG-034 fix
 //	    below) — so (a) can never fire for a relayed answer, and the task would
 //	    stay flagged forever even after the worker provably resumes real work.
@@ -804,7 +804,7 @@ func EscalateParkedSelection(prevTicks int, qualifies bool) (newTicks int, escal
 // sticky needs-input flag is treated as resolved by demonstrated resumed
 // activity — see NeedsInputClear's resumedOf parameter.
 //
-// A coordinator's reliable-notify delivery (WriteInputSystem) deliberately
+// A coordinator's reliable-notify delivery (WriteInput with agentview.OriginSystem) deliberately
 // does not advance lastUserInput (BUG-034), so a relayed human answer can
 // never clear the flag through the existing clear-on-input path even after
 // the worker provably resumes real work — this is the gap this counter
@@ -969,7 +969,7 @@ func SettleTick(prevTicks int, idleNow, awaitingNow bool) (newTicks int, settled
 //  2. resumed is true — the session has shown ResumeActivityTick's sustained
 //     "working" streak since being flagged blocked. This is the ONLY signal
 //     available when the block was resolved via a coordinator-relayed answer
-//     (WriteInputSystem, which never advances LastUserInput — see
+//     (WriteInput with agentview.OriginSystem, which never advances LastUserInput — see
 //     NeedsInputClear) rather than a direct keystroke.
 //
 // Unlike NeedsInputClear, this needs no BUG-063 stale-recandidacy guard:

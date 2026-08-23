@@ -130,7 +130,9 @@ type errorEnvelope struct {
 //
 // The url path is joined to baseURL. Query encoding is the caller's job —
 // pass a fully formed path string like "/api/tasks?status=in_progress".
-func (c *Client) do(ctx context.Context, method, path string, body io.Reader, contentType string) (*http.Response, error) {
+// extraHeaders may be nil; any entries are set on the request after auth and
+// content-type.
+func (c *Client) do(ctx context.Context, method, path string, body io.Reader, contentType string, extraHeaders map[string]string) (*http.Response, error) {
 	fullURL := c.baseURL + path
 	req, err := http.NewRequestWithContext(ctx, method, fullURL, body)
 	if err != nil {
@@ -141,6 +143,9 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader, co
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
+	}
+	for k, v := range extraHeaders {
+		req.Header.Set(k, v)
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
@@ -168,7 +173,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, in, out any) e
 		body = bytes.NewReader(buf)
 		contentType = "application/json"
 	}
-	resp, err := c.do(ctx, method, path, body, contentType)
+	resp, err := c.do(ctx, method, path, body, contentType, nil)
 	if err != nil {
 		return err
 	}

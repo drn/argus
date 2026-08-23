@@ -40,7 +40,7 @@ type fakeSession struct {
 	output []byte    // bytes the pane reads as PTY output (drives the emulator)
 }
 
-func (f *fakeSession) WriteInput(p []byte) (int, error) {
+func (f *fakeSession) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
 	f.wrote = append(f.wrote, p...)
 	return len(p), nil
 }

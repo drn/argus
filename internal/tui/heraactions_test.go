@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
@@ -150,15 +151,17 @@ func TestHeraActions_ForceRecycleBranches(t *testing.T) {
 // --- `B` bounce (add-worker-bounce) -----------------------------------------
 //
 // recordingWriteSession is a fakeKickSession (app_test.go) that records every
-// WriteInputSystem call, for asserting the bounce action's system-input
+// WriteInput call, for asserting the bounce action's system-origin
 // instruction without a real PTY.
 type recordingWriteSession struct {
 	*fakeKickSession
-	writes [][]byte
+	writes  [][]byte
+	origins []agentview.InputOrigin
 }
 
-func (f *recordingWriteSession) WriteInputSystem(p []byte) (int, error) {
+func (f *recordingWriteSession) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
 	f.writes = append(f.writes, append([]byte(nil), p...))
+	f.origins = append(f.origins, origin)
 	return len(p), nil
 }
 
@@ -233,6 +236,8 @@ func TestHeraActions_BounceSendsSelfServiceInstruction(t *testing.T) {
 	testutil.Equal(t, len(sess.writes), 1)
 	testutil.Contains(t, string(sess.writes[0]), "hera_status")
 	testutil.Contains(t, string(sess.writes[0]), "request_recycle")
+	testutil.Equal(t, len(sess.origins), 1)
+	testutil.Equal(t, sess.origins[0], agentview.OriginSystem)
 }
 
 // TestHeraActions_BounceNoOpWhenSessionNotLive pins the no-live-session guard:

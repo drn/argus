@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
@@ -90,12 +91,11 @@ type fakeSession struct {
 	tail []byte // returned by RecentOutputTail; nil unless a test sets it
 }
 
-func (s *fakeSession) PID() int                             { return s.pid }
-func (s *fakeSession) WriteInput([]byte) (int, error)       { return 0, nil }
-func (s *fakeSession) WriteInputSystem([]byte) (int, error) { return 0, nil }
-func (s *fakeSession) Resize(uint16, uint16) error          { return nil }
-func (s *fakeSession) RecentOutput() []byte                 { return nil }
-func (s *fakeSession) RecentOutputTail(int) []byte          { return s.tail }
+func (s *fakeSession) PID() int                                              { return s.pid }
+func (s *fakeSession) WriteInput([]byte, agentview.InputOrigin) (int, error) { return 0, nil }
+func (s *fakeSession) Resize(uint16, uint16) error                           { return nil }
+func (s *fakeSession) RecentOutput() []byte                                  { return nil }
+func (s *fakeSession) RecentOutputTail(int) []byte                           { return s.tail }
 func (s *fakeSession) RecentOutputTailWithTotal(int) ([]byte, uint64) {
 	return nil, 0
 }

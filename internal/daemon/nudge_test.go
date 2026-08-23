@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/notify"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -41,7 +42,7 @@ type fakeNudgeSession struct {
 }
 
 func (s *fakeNudgeSession) IsIdle() bool { return s.idle }
-func (s *fakeNudgeSession) WriteInputSystem(p []byte) (int, error) {
+func (s *fakeNudgeSession) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
 	cp := make([]byte, len(p))
 	copy(cp, p)
 	s.writes = append(s.writes, cp)

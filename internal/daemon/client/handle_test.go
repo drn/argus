@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
@@ -99,7 +100,7 @@ func TestH_WriteIn(t *testing.T) {
 	zero := rs.LastInput()
 	testutil.True(t, zero.IsZero())
 
-	n, err := rs.WriteInput([]byte("hello"))
+	n, err := rs.WriteInput([]byte("hello"), agentview.OriginUser)
 	testutil.NoError(t, err)
 	testutil.Equal(t, n, 5)
 
@@ -115,64 +116,96 @@ func TestDrainInput(t *testing.T) {
 	const pasteStart = "\x1b[200~"
 	const pasteEnd = "\x1b[201~"
 
+	userItem := func(s string) inputItem { return inputItem{data: []byte(s), origin: agentview.OriginUser} }
+
 	t.Run("empty channel returns initial unchanged", func(t *testing.T) {
-		ch := make(chan []byte)
-		got := drainInput([]byte("hello"), ch)
-		testutil.Equal(t, string(got), "hello")
+		ch := make(chan inputItem)
+		batch, carry := drainInput(userItem("hello"), ch)
+		testutil.Equal(t, string(batch.data), "hello")
+		testutil.Nil(t, carry)
 	})
 
 	t.Run("plain typing coalesces all buffered messages", func(t *testing.T) {
-		ch := make(chan []byte, 8)
-		ch <- []byte("b")
-		ch <- []byte("c")
-		ch <- []byte("d")
-		got := drainInput([]byte("a"), ch)
-		testutil.Equal(t, string(got), "abcd")
+		ch := make(chan inputItem, 8)
+		ch <- userItem("b")
+		ch <- userItem("c")
+		ch <- userItem("d")
+		batch, carry := drainInput(userItem("a"), ch)
+		testutil.Equal(t, string(batch.data), "abcd")
+		testutil.Nil(t, carry)
 		testutil.Equal(t, len(ch), 0)
 	})
 
 	t.Run("initial ending in paste-end never reads channel", func(t *testing.T) {
-		ch := make(chan []byte, 4)
-		ch <- []byte("extra")
-		got := drainInput([]byte(pasteStart+"PATH"+pasteEnd), ch)
-		testutil.Equal(t, string(got), pasteStart+"PATH"+pasteEnd)
+		ch := make(chan inputItem, 4)
+		ch <- userItem("extra")
+		batch, carry := drainInput(userItem(pasteStart+"PATH"+pasteEnd), ch)
+		testutil.Equal(t, string(batch.data), pasteStart+"PATH"+pasteEnd)
+		testutil.Nil(t, carry)
 		// The buffered message must still be in the channel — drainInput
 		// flushed at the paste boundary instead of merging across it.
 		testutil.Equal(t, len(ch), 1)
 		leftover := <-ch
-		testutil.Equal(t, string(leftover), "extra")
+		testutil.Equal(t, string(leftover.data), "extra")
 	})
 
 	t.Run("flushes between two back-to-back pastes", func(t *testing.T) {
-		ch := make(chan []byte, 4)
-		ch <- []byte(pasteStart + "B" + pasteEnd)
-		ch <- []byte("trailing")
+		ch := make(chan inputItem, 4)
+		ch <- userItem(pasteStart + "B" + pasteEnd)
+		ch <- userItem("trailing")
 		// First call drains only the first paste.
-		got1 := drainInput([]byte(pasteStart+"A"+pasteEnd), ch)
-		testutil.Equal(t, string(got1), pasteStart+"A"+pasteEnd)
+		got1, carry1 := drainInput(userItem(pasteStart+"A"+pasteEnd), ch)
+		testutil.Equal(t, string(got1.data), pasteStart+"A"+pasteEnd)
+		testutil.Nil(t, carry1)
 		// Second call drains the next paste, again stopping at its boundary.
-		got2 := drainInput(<-ch, ch)
-		testutil.Equal(t, string(got2), pasteStart+"B"+pasteEnd)
+		got2, carry2 := drainInput(<-ch, ch)
+		testutil.Equal(t, string(got2.data), pasteStart+"B"+pasteEnd)
+		testutil.Nil(t, carry2)
 		// Third call drains the trailing typing with nothing else pending.
-		got3 := drainInput(<-ch, ch)
-		testutil.Equal(t, string(got3), "trailing")
+		got3, carry3 := drainInput(<-ch, ch)
+		testutil.Equal(t, string(got3.data), "trailing")
+		testutil.Nil(t, carry3)
 	})
 
 	t.Run("coalesces up to first paste-end then stops", func(t *testing.T) {
-		ch := make(chan []byte, 4)
-		ch <- []byte("more-typing")
-		ch <- []byte(pasteStart + "X" + pasteEnd)
-		ch <- []byte("after-paste")
+		ch := make(chan inputItem, 4)
+		ch <- userItem("more-typing")
+		ch <- userItem(pasteStart + "X" + pasteEnd)
+		ch <- userItem("after-paste")
 		// Plain typing ahead of a paste is intentionally bundled WITH the
 		// paste cycle — the receiving parser handles leading non-paste
 		// bytes correctly, and merging them saves an RPC. What must NOT
 		// happen is coalescing across the trailing `\x1b[201~`: drain
 		// stops there so "after-paste" remains for the next call.
-		got := drainInput([]byte("typing"), ch)
-		testutil.Equal(t, string(got), "typing"+"more-typing"+pasteStart+"X"+pasteEnd)
+		batch, carry := drainInput(userItem("typing"), ch)
+		testutil.Equal(t, string(batch.data), "typing"+"more-typing"+pasteStart+"X"+pasteEnd)
+		testutil.Nil(t, carry)
 		testutil.Equal(t, len(ch), 1)
 		leftover := <-ch
-		testutil.Equal(t, string(leftover), "after-paste")
+		testutil.Equal(t, string(leftover.data), "after-paste")
+	})
+
+	// TestDrainInput/origin-boundary pins the origin-preservation fix: a
+	// System-origin item queued after a User-origin one must NOT be merged
+	// into the same batch (that would misattribute one write's origin to the
+	// other's bytes once it reaches WriteReq.Origin) — it must come back as
+	// carry for the next RPC instead of being silently absorbed or dropped.
+	t.Run("origin boundary stops coalescing and returns the item as carry", func(t *testing.T) {
+		ch := make(chan inputItem, 4)
+		ch <- inputItem{data: []byte("system msg"), origin: agentview.OriginSystem}
+		ch <- userItem("more typing")
+		batch, carry := drainInput(userItem("typing"), ch)
+		testutil.Equal(t, string(batch.data), "typing")
+		testutil.Equal(t, batch.origin, agentview.OriginUser)
+		if carry == nil {
+			t.Fatal("expected a carry item at the origin boundary, got nil")
+		}
+		testutil.Equal(t, string(carry.data), "system msg")
+		testutil.Equal(t, carry.origin, agentview.OriginSystem)
+		// The trailing User-origin item is still queued for the next drain.
+		testutil.Equal(t, len(ch), 1)
+		leftover := <-ch
+		testutil.Equal(t, string(leftover.data), "more typing")
 	})
 }
 
@@ -190,7 +223,7 @@ func TestH_WriteAfterClose(t *testing.T) {
 	// inputCh, but inputLoop already returned, so we close again to force
 	// the done-path.
 	for i := 0; i < 65; i++ {
-		_, _ = rs.WriteInput([]byte("x"))
+		_, _ = rs.WriteInput([]byte("x"), agentview.OriginUser)
 	}
 	// Eventually one of the calls hits the done path and returns an error.
 	// Acceptance is implicit (no panic, no deadlock).

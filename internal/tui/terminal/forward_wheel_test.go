@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -16,7 +17,7 @@ type recAdapter struct {
 	wrote  []byte
 }
 
-func (a *recAdapter) WriteInput(p []byte) (int, error) {
+func (a *recAdapter) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
 	a.wrote = append(a.wrote, p...)
 	return len(p), nil
 }

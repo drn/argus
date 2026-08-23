@@ -1,5 +1,38 @@
 package agentview
 
+// InputOrigin identifies who is responsible for a WriteInput call — a
+// genuine human keystroke, or a write argus itself injected (reliable-notify
+// delivery, a hera bounce instruction, a live emulator's auto-answered
+// terminal capability query). idle-detection's clear-on-input logic depends
+// on telling these apart: only OriginUser input can ever clear a pending
+// needs-input "(?)" flag (BUG-034).
+//
+// There is no default value: WriteInput's origin parameter is mandatory, so
+// every call site must state one explicitly. The zero value is OriginUser
+// only for wire-compatibility reasons (an older peer's request that omits
+// the field decodes as OriginUser, matching that peer's only prior
+// behavior) — Go call sites never rely on the zero value implicitly.
+type InputOrigin int
+
+const (
+	// OriginUser marks input as a genuine human keystroke. Advances both the
+	// work-cycle timestamp (LastInput) and the user-input timestamp
+	// (LastUserInput).
+	OriginUser InputOrigin = iota
+	// OriginSystem marks input as argus-injected. Advances only the
+	// work-cycle timestamp — it must never be mistaken for the user
+	// answering a prompt, so it never clears a pending needs-input flag.
+	OriginSystem
+)
+
+// String renders the origin for logging.
+func (o InputOrigin) String() string {
+	if o == OriginSystem {
+		return "system"
+	}
+	return "user"
+}
+
 // TerminalAdapter is the narrow interface that a terminal rendering pane
 // needs to display a running agent session. It is a subset of
 // agent.SessionHandle focused on display and input — it omits lifecycle
@@ -8,8 +41,10 @@ package agentview
 // The tcell/tview renderer satisfies its terminal rendering needs
 // through this interface.
 type TerminalAdapter interface {
-	// WriteInput sends raw bytes to the agent process stdin.
-	WriteInput(p []byte) (int, error)
+	// WriteInput sends raw bytes to the agent process stdin. origin states
+	// whether this is a genuine human keystroke (OriginUser) or input argus
+	// itself injected (OriginSystem) — see InputOrigin.
+	WriteInput(p []byte, origin InputOrigin) (int, error)
 
 	// Resize informs the PTY of a new terminal size.
 	Resize(rows, cols uint16) error
