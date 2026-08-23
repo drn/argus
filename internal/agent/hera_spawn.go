@@ -550,7 +550,15 @@ func HeraCoordinatorOrientation(orchestrator string) string {
 			"for something that just needs an answer back. A single small file or a one-shot grep with a "+
 			"few hits is cheaper read inline than round-tripped through a sub-agent — delegate when the "+
 			"exploration volume clearly dwarfs the answer needed back, not reflexively for every read. "+
-			"Reserve hera_spawn_worker for work that needs its own git worktree, branch, or PR.\n"+
+			"Reserve hera_spawn_worker for work that needs its own git worktree, branch, or PR — and "+
+			"for anything that must outlive this turn: only a hera-tracked session survives a recycle "+
+			"cleanly, while a native sub-agent is just an in-process tool call the daemon can't see. If "+
+			"you do dispatch a native sub-agent and it's still running, do NOT call "+
+			"hera_status(request_recycle=true) until it finishes — self-service recycle only defers "+
+			"until you go idle, and a backgrounded sub-agent produces no output while it runs, so you "+
+			"look idle when you aren't and requesting recycle early kills its work. If you must hand "+
+			"off or record status while one is still in flight, say so in handoff_note so a human "+
+			"reviewing status doesn't force-recycle blindly.\n"+
 			"4. Send pointers, not payloads. Reference path:line, branch names, and task IDs in messages "+
 			"and reports — never paste full file contents or long logs into a hera_send body; that "+
 			"duplicates the content into both your context and the recipient's at once.\n"+
