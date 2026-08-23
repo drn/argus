@@ -76,27 +76,47 @@ struct ModelDecodeTests {
     func heraRoster() throws {
         let json = """
         {"orchestrators":[
-          {"id":1,"name":"build","pinned":true,"archived":false,"roles":[
+          {"id":1,"name":"build","pinned":true,"archived":false,"kanban_status":"active",
+           "bridge_parent_orch_id":null,"bridge_parent_role_id":null,"subtree_needs_input":true,
+           "roles":[
             {"role_id":10,"orch_id":1,"name":"coord","kind":"coordinator",
              "status":"working","task_id":"t1","task_name":"Coordinate","task_status":"in_progress",
-             "live":true,"ready_to_close":false,"archived":false}
+             "live":true,"ready_to_close":false,"archived":false,"needs_input":true}
           ]}
         ],
         "freelance":[
           {"role_id":20,"orch_id":2,"name":"free","kind":"freelance","status":"",
            "task_id":"","task_name":"","task_status":"","live":false,
-           "ready_to_close":false,"archived":false}
+           "ready_to_close":false,"archived":false,"needs_input":false}
         ]}
         """
         let r = try decode(HeraRoster.self, json)
         #expect(r.orchestrators.count == 1)
         #expect(r.orchestrators[0].pinned == true)
+        #expect(r.orchestrators[0].kanbanStatus == "active")
+        #expect(r.orchestrators[0].bridgeParentOrchID == nil)
+        #expect(r.orchestrators[0].bridgeParentRoleID == nil)
+        #expect(r.orchestrators[0].subtreeNeedsInput == true)
         let role = r.orchestrators[0].roles[0]
         #expect(role.roleID == 10)
         #expect(role.kind == "coordinator")
         #expect(role.live == true)
+        #expect(role.needsInput == true)
         #expect(r.freelance.count == 1)
         #expect(r.freelance[0].kind == "freelance")
+    }
+
+    // Shape: internal/api/hera.go heraOrchJSON — non-null bridge-parent ids
+    // when this orchestrator is nested beneath another's bridging role.
+    @Test("HeraOrchestrator decodes non-null bridge-parent ids when nested")
+    func heraOrchestratorBridgeParent() throws {
+        let json = """
+        {"id":2,"name":"child","pinned":false,"archived":false,"kanban_status":"active",
+         "bridge_parent_orch_id":1,"bridge_parent_role_id":10,"subtree_needs_input":false,"roles":[]}
+        """
+        let o = try decode(HeraOrchestrator.self, json)
+        #expect(o.bridgeParentOrchID == 1)
+        #expect(o.bridgeParentRoleID == 10)
     }
 
     // Shape: internal/api/schedules.go scheduleJSON.

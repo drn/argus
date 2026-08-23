@@ -35,7 +35,7 @@ type AdoptStore interface {
 	HeraOrchestrator(id int64) (*db.HeraOrchestrator, error)
 	ListHeraOrchestrators(includeArchived bool) ([]*db.HeraOrchestrator, error)
 	ListHeraRoles(orchID int64, includeArchived bool) ([]*db.HeraRole, error)
-	SubtreeOrchIDs(rootOrchID int64) ([]int64, error)
+	SubtreeOrchIDs(rootorchID int64) ([]int64, error)
 	HeraLiveBindingByTaskAndOrchestrator(taskID string, orchID int64) (*db.HeraBinding, error)
 	ListHeraBindingsByRole(roleID int64) ([]*db.HeraBinding, error)
 	ListHeraLiveBindingsByTask(taskID string) ([]*db.HeraBinding, error)

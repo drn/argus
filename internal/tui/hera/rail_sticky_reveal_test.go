@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/db"
+	heramodel "github.com/drn/argus/internal/hera/model"
 	"github.com/drn/argus/internal/testutil"
 )
 
@@ -33,25 +34,25 @@ func railSelectRoleByName(t *testing.T, r *Rail, name string) {
 // with.
 func TestRail_SelectedNeedsInputRoleStaysRevealedAfterItsFlagClears(t *testing.T) {
 	p := coordOf(1, "P", 100, "tp",
-		RoleView{RoleID: 101, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tw1", NeedsInput: true, SubtreeNeedsInput: true},
-		RoleView{RoleID: 102, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "tw2"},
+		heramodel.RoleView{RoleID: 101, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tw1", NeedsInput: true, SubtreeNeedsInput: true},
+		heramodel.RoleView{RoleID: 102, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "tw2"},
 	)
 	p.SubtreeNeedsInput = true
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{p}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p}})
 
 	collapseByName(t, r, "P")
 	railSelectRoleByName(t, r, "w1")
 	testutil.Equal(t, r.Selected().Name, "w1")
 
-	// Fresh model (as a real BuildModel rebuild would hand over): w1's own
+	// Fresh model (as a real heramodel.BuildModel rebuild would hand over): w1's own
 	// needs-input signal has cleared, and nothing else in the model needs
 	// input either.
 	p2 := coordOf(1, "P", 100, "tp",
-		RoleView{RoleID: 101, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tw1"},
-		RoleView{RoleID: 102, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "tw2"},
+		heramodel.RoleView{RoleID: 101, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tw1"},
+		heramodel.RoleView{RoleID: 102, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "tw2"},
 	)
-	r.SetModel(Model{Active: []OrchView{p2}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p2}})
 
 	testutil.Equal(t, r.depthOf("w1") >= 0, true)
 	sel := r.Selected()
@@ -72,18 +73,18 @@ func TestRail_SelectedNeedsInputRoleStaysRevealedAfterItsFlagClears(t *testing.T
 // revealed path — P's header, B's bridging row, and C's own row — must
 // survive since C was the selected row.
 func TestRail_StickyRevealForcesIntermediateBridgingRowToo(t *testing.T) {
-	buildModel := func(needsInput bool) Model {
+	buildModel := func(needsInput bool) heramodel.Model {
 		p := coordOf(1, "P", 100, "tp",
-			RoleView{RoleID: 101, Name: "B", Kind: db.HeraKindWorker, Live: true, TaskID: "tb", BridgeTaskID: "tb", SubtreeNeedsInput: needsInput},
-			RoleView{RoleID: 102, Name: "sib", Kind: db.HeraKindWorker, Live: true, TaskID: "tsib"},
+			heramodel.RoleView{RoleID: 101, Name: "B", Kind: db.HeraKindWorker, Live: true, TaskID: "tb", BridgeTaskID: "tb", SubtreeNeedsInput: needsInput},
+			heramodel.RoleView{RoleID: 102, Name: "sib", Kind: db.HeraKindWorker, Live: true, TaskID: "tsib"},
 		)
 		p.SubtreeNeedsInput = needsInput
 		b := coordOf(2, "B", 200, "tb",
-			RoleView{RoleID: 201, Name: "C", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", NeedsInput: needsInput, SubtreeNeedsInput: needsInput},
-			RoleView{RoleID: 202, Name: "bsib", Kind: db.HeraKindWorker, Live: true, TaskID: "tbsib"},
+			heramodel.RoleView{RoleID: 201, Name: "C", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", NeedsInput: needsInput, SubtreeNeedsInput: needsInput},
+			heramodel.RoleView{RoleID: 202, Name: "bsib", Kind: db.HeraKindWorker, Live: true, TaskID: "tbsib"},
 		)
 		b.SubtreeNeedsInput = needsInput
-		return Model{Active: []OrchView{p, b}}
+		return heramodel.Model{Active: []heramodel.OrchView{p, b}}
 	}
 
 	r := NewRail()
@@ -120,12 +121,12 @@ func TestRail_StickyRevealForcesIntermediateBridgingRowToo(t *testing.T) {
 // tracks the CURRENT selection, not "anything ever revealed this session."
 func TestRail_RevealedRoleRefoldsAfterSelectionMovesAway(t *testing.T) {
 	p := coordOf(1, "P", 100, "tp",
-		RoleView{RoleID: 101, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tw1", NeedsInput: true, SubtreeNeedsInput: true},
-		RoleView{RoleID: 102, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "tw2"},
+		heramodel.RoleView{RoleID: 101, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tw1", NeedsInput: true, SubtreeNeedsInput: true},
+		heramodel.RoleView{RoleID: 102, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "tw2"},
 	)
 	p.SubtreeNeedsInput = true
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{p}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p}})
 
 	collapseByName(t, r, "P")
 	railSelectRoleByName(t, r, "w1")
@@ -139,10 +140,10 @@ func TestRail_RevealedRoleRefoldsAfterSelectionMovesAway(t *testing.T) {
 	}
 
 	p2 := coordOf(1, "P", 100, "tp",
-		RoleView{RoleID: 101, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tw1"},
-		RoleView{RoleID: 102, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "tw2"},
+		heramodel.RoleView{RoleID: 101, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tw1"},
+		heramodel.RoleView{RoleID: 102, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "tw2"},
 	)
-	r.SetModel(Model{Active: []OrchView{p2}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p2}})
 
 	testutil.Equal(t, r.depthOf("w1"), -1)
 	orch = r.SelectedOrch()
@@ -159,14 +160,14 @@ func TestRail_RevealedRoleRefoldsAfterSelectionMovesAway(t *testing.T) {
 // is the previously-selected row and must survive the same way when the
 // subtree stops needing input.
 func TestRail_OrchestratorHeaderSelectionIsStickyToo(t *testing.T) {
-	buildModel := func(needsInput bool) Model {
+	buildModel := func(needsInput bool) heramodel.Model {
 		p := coordOf(1, "P", 100, "T")
 		q := coordOf(2, "Q", 200, "T",
-			RoleView{RoleID: 201, Name: "leaf", Kind: db.HeraKindWorker, Live: true, TaskID: "tleaf", NeedsInput: needsInput, SubtreeNeedsInput: needsInput},
+			heramodel.RoleView{RoleID: 201, Name: "leaf", Kind: db.HeraKindWorker, Live: true, TaskID: "tleaf", NeedsInput: needsInput, SubtreeNeedsInput: needsInput},
 		)
 		q.SubtreeNeedsInput = needsInput
 		p.SubtreeNeedsInput = needsInput
-		return Model{Active: []OrchView{p, q}}
+		return heramodel.Model{Active: []heramodel.OrchView{p, q}}
 	}
 
 	r := NewRail()
@@ -198,18 +199,18 @@ func TestRail_OrchestratorHeaderSelectionIsStickyToo(t *testing.T) {
 // leave the rebuild to proceed exactly as it would without the fix.
 func TestRail_StickyRevealNoOpOnStaleRoleRef(t *testing.T) {
 	p := coordOf(1, "P", 100, "tp",
-		RoleView{RoleID: 101, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tw1", NeedsInput: true, SubtreeNeedsInput: true},
+		heramodel.RoleView{RoleID: 101, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tw1", NeedsInput: true, SubtreeNeedsInput: true},
 	)
 	p.SubtreeNeedsInput = true
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{p}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p}})
 
 	collapseByName(t, r, "P")
 	railSelectRoleByName(t, r, "w1")
 
 	// w1's role is gone entirely from the next model (not merely cleared).
 	p2 := coordOf(1, "P", 100, "tp")
-	r.SetModel(Model{Active: []OrchView{p2}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p2}})
 
 	testutil.Equal(t, r.depthOf("w1"), -1)
 }
@@ -220,12 +221,12 @@ func TestRail_StickyRevealNoOpOnStaleRoleRef(t *testing.T) {
 func TestRail_StickyRevealNoOpOnStaleOrchRef(t *testing.T) {
 	p := coordOf(1, "P", 100, "T")
 	q := coordOf(2, "Q", 200, "T",
-		RoleView{RoleID: 201, Name: "leaf", Kind: db.HeraKindWorker, Live: true, TaskID: "tleaf", NeedsInput: true, SubtreeNeedsInput: true},
+		heramodel.RoleView{RoleID: 201, Name: "leaf", Kind: db.HeraKindWorker, Live: true, TaskID: "tleaf", NeedsInput: true, SubtreeNeedsInput: true},
 	)
 	q.SubtreeNeedsInput = true
 	p.SubtreeNeedsInput = true
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{p, q}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p, q}})
 
 	collapseByName(t, r, "P")
 	for r.rows[r.cursor].orch == nil || r.rows[r.cursor].orch.Name != "Q" {
@@ -234,7 +235,7 @@ func TestRail_StickyRevealNoOpOnStaleOrchRef(t *testing.T) {
 	testutil.Equal(t, r.SelectedOrch().Name, "Q")
 
 	// Q is gone entirely from the next model.
-	r.SetModel(Model{Active: []OrchView{p}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p}})
 
 	testutil.Equal(t, r.hasOrchHeader("Q"), false)
 }

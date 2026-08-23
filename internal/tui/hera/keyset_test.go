@@ -3,6 +3,8 @@ package hera
 import (
 	"testing"
 
+	heramodel "github.com/drn/argus/internal/hera/model"
+
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/gdamore/tcell/v2"
@@ -29,9 +31,9 @@ func railPageWithCursorOnWorker(t *testing.T) (*HeraPage, *db.DB) {
 func TestKeyset_FiresCallbacksOnSelectedRole(t *testing.T) {
 	p, _ := railPageWithCursorOnWorker(t)
 	var got string
-	var gotSel Selection
-	record := func(name string) func(Selection) {
-		return func(s Selection) { got = name; gotSel = s }
+	var gotSel heramodel.Selection
+	record := func(name string) func(heramodel.Selection) {
+		return func(s heramodel.Selection) { got = name; gotSel = s }
 	}
 	p.OnSpawnWorker = record("spawn")
 	p.OnRename = record("rename")
@@ -59,7 +61,7 @@ func TestKeyset_FiresCallbacksOnSelectedRole(t *testing.T) {
 		{tcell.NewEventKey(tcell.KeyRune, 'J', tcell.ModNone), "adopt"},
 		// m/M dispatch at the PAGE layer for any non-empty selection, same as
 		// every other rail mutation key — the TOP-LEVEL-coordinator-only gate
-		// lives one layer up, in Selection.KanbanTarget()/Ops.KanbanStep (see
+		// lives one layer up, in heramodel.Selection.KanbanTarget()/Ops.KanbanStep (see
 		// TestOps_KanbanStep_NoopOnNonTopLevel), not in handleRailMutation.
 		{tcell.NewEventKey(tcell.KeyRune, 'm', tcell.ModNone), "kanban-adv"},
 		{tcell.NewEventKey(tcell.KeyRune, 'M', tcell.ModNone), "kanban-rev"},
@@ -99,8 +101,8 @@ func railPageWithCursorOnCoordinator(t *testing.T) (*HeraPage, *db.DB) {
 func TestKeyset_ForceRecycleKeyFiresOnCoordinatorSelection(t *testing.T) {
 	p, _ := railPageWithCursorOnCoordinator(t)
 	var got string
-	var gotSel Selection
-	p.OnForceRecycle = func(s Selection) { got = "force-recycle"; gotSel = s }
+	var gotSel heramodel.Selection
+	p.OnForceRecycle = func(s heramodel.Selection) { got = "force-recycle"; gotSel = s }
 
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyRune, 'B', tcell.ModNone), noFocus)
@@ -112,7 +114,7 @@ func TestKeyset_ForceRecycleKeyFiresOnCoordinatorSelection(t *testing.T) {
 func TestKeyset_ForceRecycleKeyNoOpOnWorkerSelection(t *testing.T) {
 	p, _ := railPageWithCursorOnWorker(t)
 	fired := false
-	p.OnForceRecycle = func(Selection) { fired = true }
+	p.OnForceRecycle = func(heramodel.Selection) { fired = true }
 
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyRune, 'B', tcell.ModNone), noFocus)
@@ -151,8 +153,8 @@ func railPageWithCursorOnFreelance(t *testing.T) (*HeraPage, *db.DB) {
 func TestKeyset_BounceKeyFiresOnWorkerSelection(t *testing.T) {
 	p, _ := railPageWithCursorOnWorker(t)
 	var got string
-	var gotSel Selection
-	p.OnBounceWorker = func(s Selection) { got = "bounce"; gotSel = s }
+	var gotSel heramodel.Selection
+	p.OnBounceWorker = func(s heramodel.Selection) { got = "bounce"; gotSel = s }
 
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyRune, 'B', tcell.ModNone), noFocus)
@@ -167,8 +169,8 @@ func TestKeyset_BounceKeyFiresOnWorkerSelection(t *testing.T) {
 func TestKeyset_BounceKeyFiresOnFreelanceSelection(t *testing.T) {
 	p, _ := railPageWithCursorOnFreelance(t)
 	var got string
-	var gotSel Selection
-	p.OnBounceWorker = func(s Selection) { got = "bounce"; gotSel = s }
+	var gotSel heramodel.Selection
+	p.OnBounceWorker = func(s heramodel.Selection) { got = "bounce"; gotSel = s }
 
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyRune, 'B', tcell.ModNone), noFocus)
@@ -184,8 +186,8 @@ func TestKeyset_BounceKeyFiresOnFreelanceSelection(t *testing.T) {
 func TestKeyset_ForceRecycleKeyDoesNotFireBounceOnCoordinatorSelection(t *testing.T) {
 	p, _ := railPageWithCursorOnCoordinator(t)
 	var forceFired, bounceFired bool
-	p.OnForceRecycle = func(Selection) { forceFired = true }
-	p.OnBounceWorker = func(Selection) { bounceFired = true }
+	p.OnForceRecycle = func(heramodel.Selection) { forceFired = true }
+	p.OnBounceWorker = func(heramodel.Selection) { bounceFired = true }
 
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyRune, 'B', tcell.ModNone), noFocus)
@@ -201,8 +203,8 @@ func TestKeyset_BounceKeyNoOpOnEmptySelection(t *testing.T) {
 	p := NewHeraPage(d) // empty rail, no orchestrators
 	p.Refresh()
 	var forceFired, bounceFired bool
-	p.OnForceRecycle = func(Selection) { forceFired = true }
-	p.OnBounceWorker = func(Selection) { bounceFired = true }
+	p.OnForceRecycle = func(heramodel.Selection) { forceFired = true }
+	p.OnBounceWorker = func(heramodel.Selection) { bounceFired = true }
 
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyRune, 'B', tcell.ModNone), noFocus)
@@ -214,8 +216,8 @@ func TestKeyset_BounceKeyNoOpOnEmptySelection(t *testing.T) {
 func TestKeyset_EOLKeysFire(t *testing.T) {
 	p, _ := railPageWithCursorOnWorker(t)
 	var got string
-	p.OnClearArchive = func(Selection) { got = "clear-archive" }
-	p.OnNewCoordinator = func(Selection) { got = "new-coord" }
+	p.OnClearArchive = func(heramodel.Selection) { got = "clear-archive" }
+	p.OnNewCoordinator = func(heramodel.Selection) { got = "new-coord" }
 
 	h := p.InputHandler()
 	cases := []struct {
@@ -239,10 +241,10 @@ func TestKeyset_RetireAndRailPruneUnbound(t *testing.T) {
 	p, _ := railPageWithCursorOnWorker(t)
 	fired := false
 	// Wire every selection callback so a stray dispatch would be caught.
-	p.OnClearArchive = func(Selection) { fired = true }
-	p.OnArchiveToggle = func(Selection) { fired = true }
-	p.OnDelete = func(Selection) { fired = true }
-	p.OnNewCoordinator = func(Selection) { fired = true }
+	p.OnClearArchive = func(heramodel.Selection) { fired = true }
+	p.OnArchiveToggle = func(heramodel.Selection) { fired = true }
+	p.OnDelete = func(heramodel.Selection) { fired = true }
+	p.OnNewCoordinator = func(heramodel.Selection) { fired = true }
 
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyRune, 'R', tcell.ModNone), noFocus)
@@ -258,9 +260,9 @@ func TestKeyset_NewCoordFiresOnEmptySelection(t *testing.T) {
 	p := NewHeraPage(d) // empty rail, no orchestrators
 	p.Refresh()
 	var fired []string
-	p.OnNewCoordinator = func(Selection) { fired = append(fired, "new-coord") }
-	// Selection-gated keys should NOT fire on the empty rail.
-	p.OnClearArchive = func(Selection) { fired = append(fired, "clear-archive") }
+	p.OnNewCoordinator = func(heramodel.Selection) { fired = append(fired, "new-coord") }
+	// heramodel.Selection-gated keys should NOT fire on the empty rail.
+	p.OnClearArchive = func(heramodel.Selection) { fired = append(fired, "clear-archive") }
 
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyRune, 'n', tcell.ModNone), noFocus)
@@ -275,8 +277,8 @@ func TestKeyset_NewCoordFiresOnEmptySelection(t *testing.T) {
 func TestKeyset_EOLKeysSuppressedWhileFiltering(t *testing.T) {
 	p, _ := railPageWithCursorOnWorker(t)
 	fired := false
-	p.OnNewCoordinator = func(Selection) { fired = true }
-	p.OnClearArchive = func(Selection) { fired = true }
+	p.OnNewCoordinator = func(heramodel.Selection) { fired = true }
+	p.OnClearArchive = func(heramodel.Selection) { fired = true }
 
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), noFocus) // enter filter input
@@ -301,7 +303,7 @@ func TestKeyset_NilCallbacksAreNoOps(t *testing.T) {
 
 func TestKeyset_NavStillWorksAlongsideMutations(t *testing.T) {
 	p, _ := railPageWithCursorOnWorker(t)
-	p.OnArchiveToggle = func(Selection) {}
+	p.OnArchiveToggle = func(heramodel.Selection) {}
 	h := p.InputHandler()
 	// j/k still navigate (not swallowed by the mutation handler). Cursor starts
 	// on the worker (row 3); k → header (2); j → worker (3).
@@ -314,9 +316,9 @@ func TestKeyset_NavStillWorksAlongsideMutations(t *testing.T) {
 func TestKeyset_EnterReattachOnDeadSessionThenFocus(t *testing.T) {
 	p, _ := railPageWithCursorOnWorker(t)
 	// No resolver wired → p.resolve == nil → every task is treated as dead.
-	var reattached Selection
+	var reattached heramodel.Selection
 	called := false
-	p.OnReattach = func(s Selection) { reattached = s; called = true }
+	p.OnReattach = func(s heramodel.Selection) { reattached = s; called = true }
 
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
@@ -333,9 +335,9 @@ func TestKeyset_EnterLiveWorkerFiresReattach(t *testing.T) {
 	// for a live worker — a SIGTSTP'd worker is "alive" but suspended, so the
 	// App-side handler is what decides whether to actually revive it.
 	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"tw": {id: "tw", alive: true}}))
-	var got Selection
+	var got heramodel.Selection
 	called := false
-	p.OnReattach = func(s Selection) { got = s; called = true }
+	p.OnReattach = func(s heramodel.Selection) { got = s; called = true }
 
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
@@ -354,7 +356,7 @@ func TestKeyset_EnterLiveCoordinatorDoesNotReattach(t *testing.T) {
 	// Coordinator has a live session → Enter must NOT reattach (navigate-only).
 	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"tc": {id: "tc", alive: true}}))
 	called := false
-	p.OnReattach = func(Selection) { called = true }
+	p.OnReattach = func(heramodel.Selection) { called = true }
 
 	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
 
@@ -367,9 +369,9 @@ func TestKeyset_EnterDeadCoordinatorReattaches(t *testing.T) {
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone), noFocus) // → coord header
 	// No resolver wired → coordinator treated as dead → Enter reattaches it.
-	var got Selection
+	var got heramodel.Selection
 	called := false
-	p.OnReattach = func(s Selection) { got = s; called = true }
+	p.OnReattach = func(s heramodel.Selection) { got = s; called = true }
 
 	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
 
@@ -396,9 +398,9 @@ func TestKeyset_EnterDisconnectedCoordinatorReattaches(t *testing.T) {
 	h(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone), noFocus) // → coord header
 	// Resolver returns a non-nil but NOT-alive handle — the disconnected case.
 	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"tc": {id: "tc", alive: false}}))
-	var got Selection
+	var got heramodel.Selection
 	called := false
-	p.OnReattach = func(s Selection) { got = s; called = true }
+	p.OnReattach = func(s heramodel.Selection) { got = s; called = true }
 
 	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
 
@@ -425,7 +427,7 @@ func TestKeyset_EnterCoordinatorFocusesCoordPane(t *testing.T) {
 func TestKeyset_RemoteModeMutationKeysInert(t *testing.T) {
 	p := NewHeraPage(nil) // remote mode
 	fired := false
-	p.OnArchiveToggle = func(Selection) { fired = true }
+	p.OnArchiveToggle = func(heramodel.Selection) { fired = true }
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModNone), noFocus)
 	testutil.Equal(t, fired, false)

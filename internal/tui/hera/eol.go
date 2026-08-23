@@ -1,6 +1,9 @@
 package hera
 
-import "github.com/drn/argus/internal/db"
+import (
+	"github.com/drn/argus/internal/db"
+	heramodel "github.com/drn/argus/internal/hera/model"
+)
 
 // eol.go holds the PURE, testable selection helper behind the rail's `C`
 // (clear-this-coordinator's-archive) key: a read over the rail's already-built
@@ -15,8 +18,8 @@ import "github.com/drn/argus/internal/db"
 // coordinator's hidden WORKERS only. Empty when orchID is unknown or has no
 // hidden descendant workers. (Nuked roles never appear in the Model, so this only
 // ever returns Tier-1 hidden roles.)
-func (m Model) SubtreeArchivedWorkers(orchID int64) []RoleView {
-	var out []RoleView
+func SubtreeArchivedWorkers(m heramodel.Model, orchID int64) []heramodel.RoleView {
+	var out []heramodel.RoleView
 	for _, o := range m.BridgeSubtree(orchID) {
 		for i := range o.Roles {
 			r := o.Roles[i]

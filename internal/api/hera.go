@@ -4,8 +4,7 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/drn/argus/internal/db"
-	"github.com/drn/argus/internal/model"
+	heramodel "github.com/drn/argus/internal/hera/model"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -25,6 +24,11 @@ type heraRoleJSON struct {
 	Live         bool   `json:"live"`           // has a live binding
 	ReadyToClose bool   `json:"ready_to_close"` // bound task carries meta:hera.ready_to_close=true
 	Archived     bool   `json:"archived"`       // role archived_at set
+	// NeedsInput (add-mac-hera-rail-toggle) mirrors the same daemon-authoritative
+	// idle-detection signal that drives GET /api/tasks and the SSE events
+	// stream — sourced from heramodel.RoleView.NeedsInput, itself fed by
+	// Server.sessionStateMaps' needsInputSet in handleHera below.
+	NeedsInput bool `json:"needs_input"`
 	// TokensInput..TokensOutput and CostUSD (add-coordinator-cost-estimate)
 	// are sourced directly from persisted, already-priced values
 	// (hera_bindings) — this handler never computes or reprices cost. Zero
@@ -56,13 +60,27 @@ type heraOrchJSON struct {
 	// OWN roles' cost (all kinds, including nuked ones) — NOT a recursive
 	// walk into nested sub-coordinators reached via the worker→coordinator
 	// bridge. The TUI's LOCAL-mode rollup (Model.SubtreeCostUSD) IS the full
-	// recursive subtree total; reproducing that walk here would require
-	// importing internal/tui/hera, which this handler deliberately avoids
-	// (see handleHera's doc comment — "free of TUI deps"). A true
-	// cross-orchestrator recursive total for remote-mode/REST consumers is a
-	// named follow-up, not shipped in this change. Zero (omitted) means
-	// never measured.
+	// recursive subtree total; reproducing that walk here would require a
+	// different (recursive) query shape than this endpoint's per-orchestrator
+	// scope. A true cross-orchestrator recursive total for remote-mode/REST
+	// consumers is a named follow-up, not shipped in this change. Zero
+	// (omitted) means never measured.
 	SubtreeCostUSD float64 `json:"subtree_cost_usd,omitempty"`
+	// BridgeParentOrchID / BridgeParentRoleID (add-mac-hera-rail-toggle) are
+	// both null when this orchestrator is top-level, and identify the parent
+	// orchestrator/role when it is nested beneath another orchestrator's
+	// worker→coordinator bridge (or a coordinator-spawned sub-team sharing one
+	// coordinator agent). Computed via heramodel.Model.BridgeParentOf — the
+	// same bridging logic the TUI rail nests by — never a REST-local
+	// reimplementation.
+	BridgeParentOrchID *int64 `json:"bridge_parent_orch_id"`
+	BridgeParentRoleID *int64 `json:"bridge_parent_role_id"`
+	// SubtreeNeedsInput (add-mac-hera-rail-toggle) is true when any role in
+	// this orchestrator's subtree — including nested sub-orchestrators reached
+	// via bridges — currently needs input. Sourced directly from
+	// heramodel.OrchView.SubtreeNeedsInput (BuildModel's own rollup pass), not
+	// recomputed here.
+	SubtreeNeedsInput bool `json:"subtree_needs_input"`
 }
 
 // heraJSON is the full read-only snapshot the webapp Hera tab renders. The SPA
@@ -73,101 +91,83 @@ type heraJSON struct {
 }
 
 // handleHera returns the Hera orchestration roster (orchestrators → roles, plus
-// freelance roles). It mirrors hera.BuildModel's read logic but emits JSON
-// directly from the db methods so the API package stays free of TUI deps.
+// freelance roles). Nesting/bridging (BridgeParentOrchID/RoleID,
+// SubtreeNeedsInput) and every role's structural/status/task fields are
+// computed by heramodel.BuildModel — the SAME shared, tview-free package the
+// native TUI rail calls — so this handler never reimplements that walk; only
+// the persisted cost/token figures (which BuildModel doesn't carry raw token
+// breakdowns for) are read directly from the store here.
 //
 // Read-only and soft-fail: a missing role-status row leaves Status "" (normal,
 // no status yet); ready_to_close and bound-task lookups are best-effort and
 // degrade to unset fields rather than failing the request.
 func (s *Server) handleHera(w http.ResponseWriter, r *http.Request) {
-	orchs, err := s.db.ListHeraOrchestrators(true) // include archived
+	runningSet, idleSet, needsInputSet := s.sessionStateMaps()
+	// sustainedActive has no daemon-authoritative equivalent outside the TUI's
+	// own per-tick agent.ResumeActivityTick debounce (App-level, in-memory) —
+	// passing nil is the documented, accepted cosmetic gap (design.md D2): it
+	// only affects a rail-dimming nuance in the TUI, never correctness.
+	m, err := heramodel.BuildModel(s.db, needsInputSet, idleSet, runningSet, nil)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "failed to load orchestrators", err)
+		writeErr(w, http.StatusInternalServerError, "failed to build hera model", err)
 		return
-	}
-
-	bindings, err := s.db.ListHeraLiveBindings()
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "failed to load bindings", err)
-		return
-	}
-	roleToTask := make(map[int64]string, len(bindings))
-	for _, b := range bindings {
-		roleToTask[b.RoleID] = b.ArgusTaskID
-	}
-
-	// meta:hera.ready_to_close lives in the task-addressed task_meta sidecar;
-	// one batch read covers every flagged task. Non-fatal — the flag just
-	// won't render on a read error.
-	heraMeta, _ := s.db.ListMetaByNamespace(db.HeraMetaNamespace)
-
-	// Task snapshot keyed by ID so each bound role can carry its task's name +
-	// status. Non-fatal — bound rows just render without those fields.
-	taskByID := make(map[string]*model.Task)
-	if tasks, terr := s.db.Tasks(); terr == nil {
-		for _, t := range tasks {
-			taskByID[t.ID] = t
-		}
 	}
 
 	out := heraJSON{Orchestrators: []heraOrchJSON{}, Freelance: []heraRoleJSON{}}
-	for _, o := range orchs {
-		oj := heraOrchJSON{
-			ID:           o.ID,
-			Name:         o.Name,
-			Pinned:       o.PinnedAt != nil,
-			Archived:     o.ArchivedAt != nil,
-			KanbanStatus: string(o.KanbanStatus),
-			Roles:        []heraRoleJSON{},
-		}
-		roles, rerr := s.db.ListHeraRoles(o.ID, true) // include archived roles
-		if rerr != nil {
-			writeErr(w, http.StatusInternalServerError, "failed to load roles", rerr)
-			return
-		}
-		// Token-cost accrual (add-coordinator-cost-estimate): one bulk read per
-		// orchestrator, mirroring hera.BuildModel's own convention for this same
-		// data. Non-fatal on error — roles just render costless.
-		costByRole, cerr := s.db.SumHeraRoleCostAccruedByOrchestrator(o.ID)
-		if cerr != nil {
-			uxlog.Log("[api] sum role cost accrued failed for orch %d, rendering costless: %v", o.ID, cerr)
-		}
-		tokensByRole, tokErr := s.db.SumHeraRoleRawTokensByOrchestrator(o.ID)
-		if tokErr != nil {
-			uxlog.Log("[api] sum role raw tokens failed for orch %d, rendering tokenless: %v", o.ID, tokErr)
-		}
-		nukedCost, nerr := s.db.SumNukedHeraRolesCostByOrchestrator(o.ID)
-		if nerr == nil {
-			oj.SubtreeCostUSD = nukedCost
-		} else {
-			uxlog.Log("[api] sum nuked role cost failed for orch %d: %v", o.ID, nerr)
-		}
-		for _, role := range roles {
-			rj := s.buildHeraRoleJSON(role, roleToTask, heraMeta, taskByID)
-			if cerr == nil {
-				if cost := costByRole[role.ID]; cost != 0 {
-					rj.CostUSD = cost
-					oj.SubtreeCostUSD += cost
-				}
+
+	// Group hoisted freelance roles by their owning orchestrator so each
+	// orchestrator's per-orchestrator cost/token fetch below can also price
+	// its own freelance roles (freelance cost still counts toward its
+	// orchestrator's subtree_cost_usd, even though the role itself renders in
+	// the top-level Freelance list — preserves this endpoint's pre-existing
+	// behavior).
+	freelanceByOrch := make(map[int64][]heramodel.RoleView)
+	for _, rv := range m.Freelance {
+		freelanceByOrch[rv.OrchID] = append(freelanceByOrch[rv.OrchID], rv)
+	}
+
+	for _, sec := range [][]heramodel.OrchView{m.Pinned, m.Active, m.Archived} {
+		for _, o := range sec {
+			oj := buildHeraOrchJSON(&m, o)
+
+			// Token-breakdown fields aren't part of heramodel.RoleView (BuildModel
+			// only carries the already-priced CostUSDAccrued); one bulk read per
+			// orchestrator, mirroring the cost query's own convention. Non-fatal
+			// on error — roles just render tokenless.
+			tokensByRole, tokErr := s.db.SumHeraRoleRawTokensByOrchestrator(o.ID)
+			if tokErr != nil {
+				uxlog.Log("[api] sum role raw tokens failed for orch %d, rendering tokenless: %v", o.ID, tokErr)
 			}
-			if tokErr == nil {
-				if t, ok := tokensByRole[role.ID]; ok {
-					rj.TokensInput = t.TokensInput
-					rj.TokensCacheWrite1h = t.TokensCacheWrite1h
-					rj.TokensCacheWrite5m = t.TokensCacheWrite5m
-					rj.TokensCacheRead = t.TokensCacheRead
-					rj.TokensOutput = t.TokensOutput
+
+			for _, rv := range o.Roles {
+				rj := heraRoleJSONFrom(rv)
+				if tokErr == nil {
+					if t, ok := tokensByRole[rv.RoleID]; ok {
+						rj.TokensInput = t.TokensInput
+						rj.TokensCacheWrite1h = t.TokensCacheWrite1h
+						rj.TokensCacheWrite5m = t.TokensCacheWrite5m
+						rj.TokensCacheRead = t.TokensCacheRead
+						rj.TokensOutput = t.TokensOutput
+					}
 				}
+				oj.Roles = append(oj.Roles, rj)
 			}
-			// Active freelance roles live in their own top-level section,
-			// mirroring the TUI Model partition.
-			if role.Kind == db.HeraKindFreelance && role.ArchivedAt == nil && o.ArchivedAt == nil {
+			for _, rv := range freelanceByOrch[o.ID] {
+				rj := heraRoleJSONFrom(rv)
+				if tokErr == nil {
+					if t, ok := tokensByRole[rv.RoleID]; ok {
+						rj.TokensInput = t.TokensInput
+						rj.TokensCacheWrite1h = t.TokensCacheWrite1h
+						rj.TokensCacheWrite5m = t.TokensCacheWrite5m
+						rj.TokensCacheRead = t.TokensCacheRead
+						rj.TokensOutput = t.TokensOutput
+					}
+				}
 				out.Freelance = append(out.Freelance, rj)
-				continue
 			}
-			oj.Roles = append(oj.Roles, rj)
+
+			out.Orchestrators = append(out.Orchestrators, oj)
 		}
-		out.Orchestrators = append(out.Orchestrators, oj)
 	}
 
 	sort.SliceStable(out.Freelance, func(i, j int) bool {
@@ -177,29 +177,57 @@ func (s *Server) handleHera(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// buildHeraRoleJSON projects one db.HeraRole into a heraRoleJSON, resolving its
-// live binding's task, status row, and ready_to_close flag.
-func (s *Server) buildHeraRoleJSON(role *db.HeraRole, roleToTask map[int64]string, heraMeta map[string]map[string]string, taskByID map[string]*model.Task) heraRoleJSON {
+// buildHeraOrchJSON projects one heramodel.OrchView into a heraOrchJSON,
+// including its already-priced subtree_cost_usd (own roles + nuked siblings,
+// no recursion — see the field's doc comment) and its bridge-parent/
+// needs-input rollup resolved against the whole model m.
+func buildHeraOrchJSON(m *heramodel.Model, o heramodel.OrchView) heraOrchJSON {
+	oj := heraOrchJSON{
+		ID:                o.ID,
+		Name:              o.Name,
+		Pinned:            o.Pinned,
+		Archived:          o.Archived,
+		KanbanStatus:      string(o.KanbanStatus),
+		Roles:             []heraRoleJSON{},
+		SubtreeCostUSD:    o.NukedRolesCostUSD,
+		SubtreeNeedsInput: o.SubtreeNeedsInput,
+	}
+	for _, rv := range o.Roles {
+		oj.SubtreeCostUSD += rv.CostUSDAccrued
+	}
+	for _, rv := range m.Freelance {
+		if rv.OrchID == o.ID {
+			oj.SubtreeCostUSD += rv.CostUSDAccrued
+		}
+	}
+	if parentOrchID, parentRoleID, ok := m.BridgeParentOf(o.ID); ok {
+		oj.BridgeParentOrchID = &parentOrchID
+		oj.BridgeParentRoleID = &parentRoleID
+	}
+	return oj
+}
+
+// heraRoleJSONFrom projects one heramodel.RoleView (already resolved by
+// BuildModel — status, bound task, ready_to_close, needs_input) into a
+// heraRoleJSON. Token fields are populated by the caller, which has the
+// per-orchestrator token map this function doesn't have access to.
+func heraRoleJSONFrom(rv heramodel.RoleView) heraRoleJSON {
 	rj := heraRoleJSON{
-		RoleID:   role.ID,
-		OrchID:   role.OrchestratorID,
-		Name:     role.Name,
-		Kind:     string(role.Kind),
-		Archived: role.ArchivedAt != nil,
+		RoleID:       rv.RoleID,
+		OrchID:       rv.OrchID,
+		Name:         rv.Name,
+		Kind:         string(rv.Kind),
+		Status:       string(rv.Status),
+		TaskID:       rv.TaskID,
+		TaskName:     rv.TaskName,
+		TaskStatus:   rv.TaskStatus,
+		Live:         rv.Live,
+		ReadyToClose: rv.ReadyToClose,
+		Archived:     rv.Archived,
+		NeedsInput:   rv.NeedsInput,
 	}
-	if st, serr := s.db.HeraRoleStatusFor(role.ID); serr == nil && st != nil {
-		rj.Status = string(st.Status)
-	}
-	if taskID, ok := roleToTask[role.ID]; ok {
-		rj.TaskID = taskID
-		rj.Live = true
-		if kv := heraMeta[taskID]; kv != nil && kv[db.HeraMetaKeyReadyToClose] == "true" {
-			rj.ReadyToClose = true
-		}
-		if t := taskByID[taskID]; t != nil {
-			rj.TaskName = t.Name
-			rj.TaskStatus = t.Status.String()
-		}
+	if rv.CostUSDAccrued != 0 {
+		rj.CostUSD = rv.CostUSDAccrued
 	}
 	return rj
 }

@@ -3,20 +3,22 @@ package hera
 import (
 	"testing"
 
+	heramodel "github.com/drn/argus/internal/hera/model"
+
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/testutil"
 )
 
-func sampleModel() Model {
-	return Model{
-		Active: []OrchView{
-			{ID: 1, Name: "a", Roles: []RoleView{
+func sampleModel() heramodel.Model {
+	return heramodel.Model{
+		Active: []heramodel.OrchView{
+			{ID: 1, Name: "a", Roles: []heramodel.RoleView{
 				{RoleID: 10, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c1"},
 				{RoleID: 11, OrchID: 1, Name: "wkr", Kind: db.HeraKindWorker, Live: true, TaskID: "t-w1"},
 			}},
 		},
-		Pinned: []OrchView{
-			{ID: 2, Name: "b", Roles: []RoleView{
+		Pinned: []heramodel.OrchView{
+			{ID: 2, Name: "b", Roles: []heramodel.RoleView{
 				{RoleID: 20, OrchID: 2, Name: "coord", Kind: db.HeraKindCoordinator, Live: false, TaskID: ""},
 			}},
 		},
@@ -42,17 +44,17 @@ func TestSelection_Accessors(t *testing.T) {
 	wkr := &m.Active[0].Roles[1]
 	orch := &m.Active[0]
 
-	cs := Selection{Role: coord, Orch: orch}
+	cs := heramodel.Selection{Role: coord, Orch: orch}
 	testutil.Equal(t, cs.IsCoordinator(), true)
 	testutil.Equal(t, cs.TaskID(), "t-c1")
 	testutil.Equal(t, cs.CoordTaskID(), "t-c1")
 
-	ws := Selection{Role: wkr, Orch: orch}
+	ws := heramodel.Selection{Role: wkr, Orch: orch}
 	testutil.Equal(t, ws.IsCoordinator(), false)
 	testutil.Equal(t, ws.TaskID(), "t-w1")
 	testutil.Equal(t, ws.CoordTaskID(), "t-c1") // worker selection still resolves the coordinator
 
-	empty := Selection{}
+	empty := heramodel.Selection{}
 	testutil.Equal(t, empty.TaskID(), "")
 	testutil.Equal(t, empty.IsCoordinator(), false)
 	testutil.Equal(t, empty.CoordTaskID(), "")
@@ -67,18 +69,18 @@ func TestSelection_StatusRole(t *testing.T) {
 	orch := &m.Active[0]
 
 	// Explicit role selection → that role.
-	testutil.Equal(t, Selection{Role: wkr, Orch: orch}.StatusRole().RoleID, int64(11))
+	testutil.Equal(t, heramodel.Selection{Role: wkr, Orch: orch}.StatusRole().RoleID, int64(11))
 
 	// Header selection (Role nil) → the orchestrator's folded coordinator.
-	testutil.Equal(t, Selection{Orch: orch}.StatusRole().RoleID, int64(10))
+	testutil.Equal(t, heramodel.Selection{Orch: orch}.StatusRole().RoleID, int64(10))
 	_ = coord
 
 	// Header over a coordinator-less orchestrator → nil.
-	noCoord := &OrchView{ID: 9, Name: "x", Roles: []RoleView{{RoleID: 90, Kind: db.HeraKindWorker}}}
-	testutil.Nil(t, Selection{Orch: noCoord}.StatusRole())
+	noCoord := &heramodel.OrchView{ID: 9, Name: "x", Roles: []heramodel.RoleView{{RoleID: 90, Kind: db.HeraKindWorker}}}
+	testutil.Nil(t, heramodel.Selection{Orch: noCoord}.StatusRole())
 
 	// Empty selection → nil.
-	testutil.Nil(t, Selection{}.StatusRole())
+	testutil.Nil(t, heramodel.Selection{}.StatusRole())
 }
 
 // TestSelection_KanbanTarget pins the m/M gating (add-hera-kanban-status):
@@ -91,19 +93,19 @@ func TestSelection_KanbanTarget(t *testing.T) {
 	orch := &m.Active[0]
 
 	// Header selection (Role nil) on a top-level orchestrator → that orchestrator.
-	got := Selection{Orch: orch, TopLevelOrch: true}.KanbanTarget()
+	got := heramodel.Selection{Orch: orch, TopLevelOrch: true}.KanbanTarget()
 	testutil.Equal(t, got != nil, true)
 	testutil.Equal(t, got.ID, orch.ID)
 
 	// A role selected (even the coordinator's own role) is never a kanban target —
 	// mutations only fire from the folded HEADER row, not a role row.
-	testutil.Nil(t, Selection{Role: coord, Orch: orch, TopLevelOrch: true}.KanbanTarget())
+	testutil.Nil(t, heramodel.Selection{Role: coord, Orch: orch, TopLevelOrch: true}.KanbanTarget())
 
 	// Header selection on a NESTED (non-root) orchestrator → nil.
-	testutil.Nil(t, Selection{Orch: orch, TopLevelOrch: false}.KanbanTarget())
+	testutil.Nil(t, heramodel.Selection{Orch: orch, TopLevelOrch: false}.KanbanTarget())
 
 	// Empty selection → nil.
-	testutil.Nil(t, Selection{}.KanbanTarget())
+	testutil.Nil(t, heramodel.Selection{}.KanbanTarget())
 }
 
 func TestRail_SelectionResolvesOrch(t *testing.T) {
@@ -113,7 +115,7 @@ func TestRail_SelectionResolvesOrch(t *testing.T) {
 	sel := r.Selection()
 	testutil.Equal(t, sel.Orch != nil, true)
 
-	// Step to the worker role (under active orchestrator "a"); Selection
+	// Step to the worker role (under active orchestrator "a"); heramodel.Selection
 	// resolves its containing orchestrator from OrchID even though the cursor is
 	// on a role row, not a header.
 	testutil.Equal(t, selectRailRole(r, "wkr"), true)

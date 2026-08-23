@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/db"
+	heramodel "github.com/drn/argus/internal/hera/model"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/theme"
@@ -13,7 +14,7 @@ import (
 // a hera worker blocked on a permission prompt (in_progress + in the needs-input
 // set) renders the needs-input "(?)" glyph in the rail. This path was already
 // correct (shipped with BUG-023's rollup, #772); the test guards against
-// regression. Mirrors the production render: BuildModel stamps RoleView.NeedsInput
+// regression. Mirrors the production render: heramodel.BuildModel stamps heramodel.RoleView.NeedsInput
 // → statusIcon → role.ShowsNeedsInput().
 func TestBUG028_PermissionBlockedWorkerRowShowsNeedsInput(t *testing.T) {
 	d := memDB(t)
@@ -23,7 +24,7 @@ func TestBUG028_PermissionBlockedWorkerRowShowsNeedsInput(t *testing.T) {
 	// at a permission prompt (PTY idle, task not yet finished).
 	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
 
-	m, err := BuildModel(d, map[string]bool{"t-wkr": true}, nil, nil, nil)
+	m, err := heramodel.BuildModel(d, map[string]bool{"t-wkr": true}, nil, nil, nil)
 	testutil.NoError(t, err)
 
 	wkr := roleByName(t, &m, orch, "wkr")
@@ -35,10 +36,10 @@ func TestBUG028_PermissionBlockedWorkerRowShowsNeedsInput(t *testing.T) {
 }
 
 // TestBUG028_CoordinatorlessOrchSurfacesSubtreeNeedsInput is the BUG-028
-// headline: the rollup is stamped on the OrchView so a COLLAPSED orchestrator
+// headline: the rollup is stamped on the heramodel.OrchView so a COLLAPSED orchestrator
 // header surfaces a descendant's needs-input even when no coordinator role
 // exists to carry the glyph (the coordinator was nuked, etc.). Without the
-// OrchView stamp the header would render no needs-input cue at all — invisible in
+// heramodel.OrchView stamp the header would render no needs-input cue at all — invisible in
 // the default "tidy summary" collapsed view, unlike the always-flat task list.
 func TestBUG028_CoordinatorlessOrchSurfacesSubtreeNeedsInput(t *testing.T) {
 	d := memDB(t)
@@ -46,7 +47,7 @@ func TestBUG028_CoordinatorlessOrchSurfacesSubtreeNeedsInput(t *testing.T) {
 	// Worker only — no coordinator role (e.g. it was nuked).
 	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
 
-	m, err := BuildModel(d, map[string]bool{"t-wkr": true}, nil, nil, nil)
+	m, err := heramodel.BuildModel(d, map[string]bool{"t-wkr": true}, nil, nil, nil)
 	testutil.NoError(t, err)
 
 	ov := m.OrchByID(orch)
@@ -58,7 +59,7 @@ func TestBUG028_CoordinatorlessOrchSurfacesSubtreeNeedsInput(t *testing.T) {
 	// can genuinely ask a fresh question in that state, so "(?)" must persist.
 	flagged := map[string]bool{"t-wkr": true}
 	testutil.NoError(t, d.SetStatus("t-wkr", model.StatusInReview))
-	m2, err := BuildModel(d, flagged, nil, nil, nil)
+	m2, err := heramodel.BuildModel(d, flagged, nil, nil, nil)
 	testutil.NoError(t, err)
 	testutil.Equal(t, m2.OrchByID(orch).SubtreeNeedsInput, true)
 
@@ -66,7 +67,7 @@ func TestBUG028_CoordinatorlessOrchSurfacesSubtreeNeedsInput(t *testing.T) {
 	// header rollup clears even though the App still names the task in its set.
 	_, err = d.EndHeraBindingsForTask("t-wkr", "exit")
 	testutil.NoError(t, err)
-	m3, err := BuildModel(d, flagged, nil, nil, nil)
+	m3, err := heramodel.BuildModel(d, flagged, nil, nil, nil)
 	testutil.NoError(t, err)
 	testutil.Equal(t, m3.OrchByID(orch).SubtreeNeedsInput, false)
 }
@@ -86,7 +87,7 @@ func TestBUG028_BlockedCoordinatorSurfacesEvenWhenTaskComplete(t *testing.T) {
 	// Coordinator task rolled to complete while its session stays alive + blocked.
 	testutil.NoError(t, d.SetStatus("t-coord", model.StatusComplete))
 
-	m, err := BuildModel(d, map[string]bool{"t-coord": true}, nil, nil, nil)
+	m, err := heramodel.BuildModel(d, map[string]bool{"t-coord": true}, nil, nil, nil)
 	testutil.NoError(t, err)
 	cr := m.OrchByID(orch).CoordRole()
 	testutil.Equal(t, cr.TaskStatus, "complete")
@@ -112,7 +113,7 @@ func TestBUG028_ExitedWorkerStaysCleared(t *testing.T) {
 	_, err := d.EndHeraBindingsForTask("t-wkr", "exit")             // session exited → binding ends
 	testutil.NoError(t, err)
 
-	m, err := BuildModel(d, map[string]bool{"t-wkr": true}, nil, nil, nil) // sticky marker lingers
+	m, err := heramodel.BuildModel(d, map[string]bool{"t-wkr": true}, nil, nil, nil) // sticky marker lingers
 	testutil.NoError(t, err)
 	testutil.Equal(t, roleByName(t, &m, orch, "wkr").NeedsInput, false)
 	testutil.Equal(t, m.OrchByID(orch).CoordRole().SubtreeNeedsInput, false)

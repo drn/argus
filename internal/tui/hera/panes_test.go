@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	heramodel "github.com/drn/argus/internal/hera/model"
+
 	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
@@ -686,7 +688,7 @@ func TestPanes_SubCoordSelectionShowsDetails(t *testing.T) {
 	// for the child, whose worker roles project as plan nodes (the child's own
 	// worker is in; coordinators — including the parent's — are never plan nodes).
 	m := p.Rail().Model()
-	nodes, _ := heraPlanNodesWithBridge(m.OrchByID(child), m.bridgeIndex())
+	nodes, _ := heraPlanNodesWithBridge(m.OrchByID(child), m.BridgeIndex())
 	ids := planTaskIDs(nodes)
 	testutil.Equal(t, ids["t-cwkr"], true)    // child's worker is a plan node
 	testutil.Equal(t, ids["t-pcoord"], false) // the PARENT coordinator is not
@@ -953,8 +955,8 @@ func TestPanes_ForwardKeyEnterRevivesDeadPane(t *testing.T) {
 		"t-coord": {id: "t-coord", alive: true},
 		"t-wkr":   dead,
 	}))
-	var got []Selection
-	p.OnReattach = func(sel Selection) { got = append(got, sel) }
+	var got []heramodel.Selection
+	p.OnReattach = func(sel heramodel.Selection) { got = append(got, sel) }
 	p.Refresh()
 	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
 
@@ -987,7 +989,7 @@ func TestSmoke_HeraPaneEnterRevivesDeadSession(t *testing.T) {
 		"t-wkr":   deadWkr,
 	}))
 	var revived []string
-	p.OnReattach = func(sel Selection) { revived = append(revived, sel.FocusTaskID()) }
+	p.OnReattach = func(sel heramodel.Selection) { revived = append(revived, sel.FocusTaskID()) }
 	p.Refresh()
 	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
 

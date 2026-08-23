@@ -22,7 +22,7 @@ func TestHeraPage_LocalRefreshPopulatesRail(t *testing.T) {
 }
 
 // TestHeraPage_SetNeedsInputThreadsToModel proves the authoritative needs-input
-// set the App pushes each tick reaches BuildModel via doRefresh: a worker in the
+// set the App pushes each tick reaches heramodel.BuildModel via doRefresh: a worker in the
 // set carries its own flag and the rollup reaches its coordinator; clearing the
 // set clears the flags on the next refresh (BUG-018).
 func TestHeraPage_SetNeedsInputThreadsToModel(t *testing.T) {
@@ -90,7 +90,7 @@ func TestHeraPage_ScheduleRefreshCoalesces(t *testing.T) {
 
 func TestHeraPage_RefreshSurvivesReaderError(t *testing.T) {
 	p := NewHeraPage(errReader{})
-	p.Refresh() // BuildModel errors → logged, rail left empty, no panic
+	p.Refresh() // heramodel.BuildModel errors → logged, rail left empty, no panic
 	testutil.Equal(t, p.Rail().Model().IsEmpty(), true)
 }
 

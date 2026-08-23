@@ -1,4 +1,12 @@
-package hera
+// Package model is the tview-free hera orchestration data model: the
+// RoleView/OrchView/Model read-only projection and BuildModel, the pure
+// database-to-projection read shared by the native TUI Hera view
+// (internal/tui/hera) and the daemon's REST API (internal/api), so nesting
+// and needs-input rollup are computed once, not reimplemented per consumer.
+// It imports only errors/fmt/sort/strconv/time, internal/db, internal/model,
+// and internal/uxlog — deliberately no tview/tcell — so importing it never
+// pulls terminal-UI dependencies into the daemon's REST API binary.
+package model
 
 import (
 	"errors"
@@ -270,7 +278,7 @@ type OrchView struct {
 	Blocks []db.HeraBlock
 	// SubtreeNeedsInput is the orchestrator-level needs-input rollup (any role in
 	// this orchestrator's subtree, transitively across bridges, is blocked on a
-	// user prompt). Stamped by rollupNeedsInput. It no longer drives the header's
+	// user prompt). Stamped by RollupNeedsInput. It no longer drives the header's
 	// display (remove-needs-input-rollup-glyph retired the BUG-028 coordinator-
 	// less-header fallback that once read this field directly) — its sole
 	// remaining purpose is gating the rail's partial-fold-reveal mechanism, which
@@ -310,13 +318,13 @@ type Model struct {
 	Freelance []RoleView // freelance-kind roles across active orchestrators
 }
 
-// annotateRoles applies fn to every RoleView in the model in place — across the
+// AnnotateRoles applies fn to every RoleView in the model in place — across the
 // Pinned/Active/Archived orchestrator sections and the Freelance section. Used by
 // HeraPage.doRefresh to stamp the diligence-tiering readout (AppliedModel/Effort +
 // ProfileWarning) before the model reaches the rail (add-diligence-profiles
 // D-VIEW). Indexed loops (not range-by-value) so the stamp mutates the slice
 // element, not a copy.
-func (m *Model) annotateRoles(fn func(*RoleView)) {
+func (m *Model) AnnotateRoles(fn func(*RoleView)) {
 	if fn == nil {
 		return
 	}
@@ -413,13 +421,13 @@ func (m Model) NeedsInputTotalCount() int {
 	return n
 }
 
-// needsInputRoleIDs returns the SAME whole-model needs-input membership
+// NeedsInputRoleIDs returns the SAME whole-model needs-input membership
 // NeedsInputTotalCount sums, keyed by role id rather than counted. The rail's
 // ctrl+g/ctrl+b excursion state machine (rail.go) needs identity, not a bare
 // count: a count alone cannot distinguish "the same still-outstanding problem
 // reappearing across rebuilds" from "a genuinely new, distinct interruption"
 // (see noteExcursionTransition). nil when nothing needs input.
-func (m Model) needsInputRoleIDs() map[int64]bool {
+func (m Model) NeedsInputRoleIDs() map[int64]bool {
 	var ids map[int64]bool
 	collect := func(roles []RoleView) {
 		for i := range roles {
@@ -490,7 +498,7 @@ func (o *OrchView) CoordBridgeTaskID() string {
 func (o *OrchView) coordBridge() (taskID string, roleID int64) {
 	for i := range o.Roles {
 		if o.Roles[i].Kind == db.HeraKindCoordinator {
-			if k := bridgeTaskID(&o.Roles[i]); k != "" {
+			if k := BridgeTaskID(&o.Roles[i]); k != "" {
 				return k, o.Roles[i].RoleID
 			}
 		}
@@ -498,13 +506,13 @@ func (o *OrchView) coordBridge() (taskID string, roleID int64) {
 	return "", 0
 }
 
-// bridgeIndex maps each orchestrator's coordinator bridge task to the
+// BridgeIndex maps each orchestrator's coordinator bridge task to the
 // orchestrator it coordinates (first wins — a coord task is unique to one
 // orchestrator in practice). A worker whose bridge task matches a key IS that
 // orchestrator's coordinator, so the keyed orchestrator nests under the worker.
 // Pointers index into the receiver's backing arrays (shared with the caller's
 // model), so the result is stable for synchronous use on the UI thread.
-func (m Model) bridgeIndex() map[string]*OrchView {
+func (m Model) BridgeIndex() map[string]*OrchView {
 	idx := make(map[string]*OrchView)
 	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
 		for i := range sec {
@@ -518,7 +526,7 @@ func (m Model) bridgeIndex() map[string]*OrchView {
 	return idx
 }
 
-// consumedSet marks every orchestrator that is bridged as a child by some OTHER
+// ConsumedSet marks every orchestrator that is bridged as a child by some OTHER
 // orchestrator, so the rail's top-level passes skip it (it renders nested
 // instead). Two bridge shapes consume a child:
 //   - worker bridge: a parent WORKER role whose (non-teardown) latest binding
@@ -532,21 +540,21 @@ func (m Model) bridgeIndex() map[string]*OrchView {
 // matches ANY non-teardown parent-side binding (coordinator OR worker), but the
 // in-memory bridge previously only honoured worker rows, so coordinator-spawned
 // sub-teams rendered flat as extra top-level roots.
-func (m Model) consumedSet(bridge map[string]*OrchView) map[int64]bool {
+func (m Model) ConsumedSet(bridge map[string]*OrchView) map[int64]bool {
 	consumed := make(map[int64]bool)
 	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
 		for i := range sec {
 			p := &sec[i]
 			for j := range p.Roles {
 				w := &p.Roles[j]
-				if w.Kind == db.HeraKindCoordinator || !roleBridges(w) {
+				if w.Kind == db.HeraKindCoordinator || !RoleBridges(w) {
 					continue
 				}
-				if c := bridge[bridgeTaskID(w)]; c != nil && c.ID != p.ID {
+				if c := bridge[BridgeTaskID(w)]; c != nil && c.ID != p.ID {
 					consumed[c.ID] = true
 				}
 			}
-			for _, c := range m.coordBridgeChildren(p) {
+			for _, c := range m.CoordBridgeChildren(p) {
 				consumed[c.ID] = true
 			}
 		}
@@ -562,7 +570,7 @@ func (m Model) consumedSet(bridge map[string]*OrchView) map[int64]bool {
 // sub-team). This breaks the A↔B symmetry of the shared-task bridge — db.SubtreeOrchIDs
 // would include each from the other, so the rail picks the earliest coordinator
 // role id as the single root. A non-teardown latest binding is implied by
-// CoordBridgeTaskID using bridgeTaskID; a torn-down coordinator yields an empty
+// CoordBridgeTaskID using BridgeTaskID; a torn-down coordinator yields an empty
 // bridge task and so cannot match.
 func coordBridgeParentOf(parent, child *OrchView) bool {
 	pt, pid := parent.coordBridge()
@@ -573,13 +581,13 @@ func coordBridgeParentOf(parent, child *OrchView) bool {
 	return pid < cid
 }
 
-// coordBridgeChildren returns the orchestrators that nest directly under o
+// CoordBridgeChildren returns the orchestrators that nest directly under o
 // because o is the earliest-coordinator-role-id member of a set sharing o's
 // coordinator bridge task. Archived children are excluded (mirroring
 // db.SubtreeOrchIDs' `child_orch.archived_at IS NULL` prune — they surface in
 // the bottom Archive section instead, distinct from worker-bridged archived
 // children which nest dimmed in place for backward compatibility).
-func (m Model) coordBridgeChildren(o *OrchView) []*OrchView {
+func (m Model) CoordBridgeChildren(o *OrchView) []*OrchView {
 	var out []*OrchView
 	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
 		for i := range sec {
@@ -595,16 +603,16 @@ func (m Model) coordBridgeChildren(o *OrchView) []*OrchView {
 	return out
 }
 
-// canonParent identifies a child orchestrator's SINGLE canonical parent for rail
+// CanonParent identifies a child orchestrator's SINGLE canonical parent for rail
 // nesting: the orchestrator id that renders it, plus whether the relationship is
 // the coordinator-spawn shape (child nests as its own header via
-// coordBridgeChildren) or the worker-bridge shape (child nests under a worker row).
-type canonParent struct {
-	orchID     int64
-	coordSpawn bool
+// CoordBridgeChildren) or the worker-bridge shape (child nests under a worker row).
+type CanonParent struct {
+	OrchID     int64
+	CoordSpawn bool
 }
 
-// canonicalParents assigns every child orchestrator ONE deterministic parent,
+// CanonicalParents assigns every child orchestrator ONE deterministic parent,
 // independent of rail collapse state and sibling render order. A child reachable
 // from more than one bridge-parent (the multi-binding case where a coordinator
 // session is BOTH a worker under one orchestrator and the coordinator-spawn of
@@ -621,7 +629,7 @@ type canonParent struct {
 // render can never put a child under two parents or migrate it between them.
 //
 // This is purely a RENDER-placement decision: it does not change which
-// orchestrators are reachable in a subtree (consumedSet / BridgeSubtree still walk
+// orchestrators are reachable in a subtree (ConsumedSet / BridgeSubtree still walk
 // every bridge for root selection and the Ctrl+D cascade), only which single
 // parent row hosts a multi-parent child.
 // OrchIDsForTask returns the ids of every orchestrator that hosts a non-freelance
@@ -650,14 +658,14 @@ func (m Model) OrchIDsForTask(taskID string) []int64 {
 	return out
 }
 
-// roleOrchID returns the OrchID of the role with the given RoleID, searching
+// RoleOrchID returns the OrchID of the role with the given RoleID, searching
 // every non-freelance section (Pinned, Active, Archived) — Freelance roles
 // have no owning orchestrator and sit outside the kanban partition entirely,
 // so they are deliberately not searched here. ok is false when no such role
 // exists (a stale ref, or a freelance role id) — used by
 // Rail.focusGroupFromRef to resolve which kanban group a role-identified
 // selection ref belongs to (add-kanban-focus-fold).
-func (m Model) roleOrchID(roleID int64) (int64, bool) {
+func (m Model) RoleOrchID(roleID int64) (int64, bool) {
 	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
 		for i := range sec {
 			for j := range sec[i].Roles {
@@ -670,14 +678,14 @@ func (m Model) roleOrchID(roleID int64) (int64, bool) {
 	return 0, false
 }
 
-// roleByID returns a pointer to the RoleView with the given id, searching
+// RoleByID returns a pointer to the RoleView with the given id, searching
 // every non-freelance section (Pinned, Active, Archived) — Freelance roles
 // have no owning orchestrator and can't be walked to a root via
-// canonicalParents, so they are deliberately excluded, mirroring roleOrchID's
+// CanonicalParents, so they are deliberately excluded, mirroring RoleOrchID's
 // scoping. The pointer indexes into the model's own backing array (like
 // OrchByID), so a caller may mutate the returned RoleView in place. nil when
 // no such role exists.
-func (m *Model) roleByID(id int64) *RoleView {
+func (m *Model) RoleByID(id int64) *RoleView {
 	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
 		for i := range sec {
 			for j := range sec[i].Roles {
@@ -690,14 +698,14 @@ func (m *Model) roleByID(id int64) *RoleView {
 	return nil
 }
 
-func (m Model) canonicalParents() map[int64]canonParent {
+func (m Model) CanonicalParents() map[int64]CanonParent {
 	var all []*OrchView
 	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
 		for i := range sec {
 			all = append(all, &sec[i])
 		}
 	}
-	out := make(map[int64]canonParent)
+	out := make(map[int64]CanonParent)
 	for _, c := range all {
 		// 1. Coordinator-spawn parent (preferred): the earliest-coordinator-role-id
 		// orchestrator sharing c's coordinator bridge task.
@@ -712,7 +720,7 @@ func (m Model) canonicalParents() map[int64]canonParent {
 			}
 		}
 		if coordParent != nil {
-			out[c.ID] = canonParent{orchID: coordParent.ID, coordSpawn: true}
+			out[c.ID] = CanonParent{OrchID: coordParent.ID, CoordSpawn: true}
 			continue
 		}
 		// 2. Worker-bridge parent: the lowest-orchestrator-id orchestrator with a
@@ -731,25 +739,61 @@ func (m Model) canonicalParents() map[int64]canonParent {
 			}
 		}
 		if workerParent != nil {
-			out[c.ID] = canonParent{orchID: workerParent.ID, coordSpawn: false}
+			out[c.ID] = CanonParent{OrchID: workerParent.ID, CoordSpawn: false}
 		}
 	}
 	return out
 }
 
-// bridgingRoleFor returns the non-coordinator role in o.Roles whose
+// BridgeParentOf reports childOrchID's canonical bridge parent orchestrator
+// and the specific parent-side ROLE that supplies the bridge, or ok=false when
+// childOrchID is top-level (absent from CanonicalParents) or its parent can't
+// be resolved. Wraps CanonicalParents — the single source of nesting truth the
+// rail also renders from — with the role id a REST consumer needs to identify
+// the bridge: the parent's own coordinator role for a coordinator-spawned
+// sub-team (one coordinator agent runs both orchestrators, so the parent's
+// coordinator role IS the bridge), or the parent's specific bridging WORKER
+// role for a worker-bridge nesting. Added for the daemon's REST API
+// (bridge_parent_orch_id/bridge_parent_role_id) — CanonicalParents itself
+// carries no role id, only the TUI rail's fold-independent parent orchestrator.
+func (m Model) BridgeParentOf(childOrchID int64) (parentOrchID int64, parentRoleID int64, ok bool) {
+	cp, found := m.CanonicalParents()[childOrchID]
+	if !found {
+		return 0, 0, false
+	}
+	parent := m.OrchByID(cp.OrchID)
+	if parent == nil {
+		return 0, 0, false
+	}
+	if cp.CoordSpawn {
+		if coord := parent.CoordRole(); coord != nil {
+			return parent.ID, coord.RoleID, true
+		}
+		return 0, 0, false
+	}
+	child := m.OrchByID(childOrchID)
+	if child == nil {
+		return 0, 0, false
+	}
+	if role := parent.BridgingRoleFor(child.CoordBridgeTaskID()); role != nil {
+		return parent.ID, role.RoleID, true
+	}
+	return 0, 0, false
+}
+
+// BridgingRoleFor returns the non-coordinator role in o.Roles whose
 // structurally-intact bridge task equals ck (the worker-bridge nesting key),
 // or nil. The pointer indexes into o's own backing array (mutable in place),
 // so a caller can force this specific role's SubtreeNeedsInput the same way
 // Rail.applyStickyReveal does. Mirrors hasWorkerBridging's predicate but
 // returns the role itself rather than a bool.
-func (o *OrchView) bridgingRoleFor(ck string) *RoleView {
+func (o *OrchView) BridgingRoleFor(ck string) *RoleView {
 	for i := range o.Roles {
 		w := &o.Roles[i]
-		if w.Kind == db.HeraKindCoordinator || !roleBridges(w) {
+		if w.Kind == db.HeraKindCoordinator || !RoleBridges(w) {
 			continue
 		}
-		if bridgeTaskID(w) == ck {
+		if BridgeTaskID(w) == ck {
 			return w
 		}
 	}
@@ -761,10 +805,10 @@ func (o *OrchView) bridgingRoleFor(ck string) *RoleView {
 func (o *OrchView) hasWorkerBridging(ck string) bool {
 	for i := range o.Roles {
 		w := &o.Roles[i]
-		if w.Kind == db.HeraKindCoordinator || !roleBridges(w) {
+		if w.Kind == db.HeraKindCoordinator || !RoleBridges(w) {
 			continue
 		}
-		if bridgeTaskID(w) == ck {
+		if BridgeTaskID(w) == ck {
 			return true
 		}
 	}
@@ -780,7 +824,7 @@ func (m Model) BridgeSubtree(rootID int64) []*OrchView {
 	if start == nil {
 		return nil
 	}
-	bridge := m.bridgeIndex()
+	bridge := m.BridgeIndex()
 	var out []*OrchView
 	visited := make(map[int64]bool)
 	var walk func(o *OrchView)
@@ -792,14 +836,14 @@ func (m Model) BridgeSubtree(rootID int64) []*OrchView {
 		out = append(out, o)
 		for i := range o.Roles {
 			w := &o.Roles[i]
-			if w.Kind == db.HeraKindCoordinator || !roleBridges(w) {
+			if w.Kind == db.HeraKindCoordinator || !RoleBridges(w) {
 				continue
 			}
-			if c := bridge[bridgeTaskID(w)]; c != nil && c.ID != o.ID {
+			if c := bridge[BridgeTaskID(w)]; c != nil && c.ID != o.ID {
 				walk(c)
 			}
 		}
-		for _, c := range m.coordBridgeChildren(o) {
+		for _, c := range m.CoordBridgeChildren(o) {
 			walk(c)
 		}
 	}
@@ -809,7 +853,7 @@ func (m Model) BridgeSubtree(rootID int64) []*OrchView {
 
 // SubtreeAgentCount returns the total number of non-coordinator roles — every
 // worker row plus every bridged sub-coordinator row — across the WHOLE
-// orchestration subtree rooted at orchID: itself plus every orchestrator
+// orchestration subtree rooted at OrchID: itself plus every orchestrator
 // nested beneath it through the worker→coordinator bridge, at any depth. It
 // counts archived (Tier-1 hidden, greyed-into-the-per-coordinator-Archive-
 // bucket) roles too: this is the "expand every fold and count the rows
@@ -871,35 +915,35 @@ func (m Model) SubtreeCostUSD(orchID int64) (total float64, anyMeasured bool) {
 	return total, total != 0
 }
 
-// formatCostUSD renders a blended dollar figure for display (Decision 7:
+// FormatCostUSD renders a blended dollar figure for display (Decision 7:
 // blended total only, never the raw per-rate-class breakdown). A genuinely
 // nonzero amount under a cent would round to "$0.00" under %.2f, which is
 // indistinguishable from Decision 6's "unmeasured" zero — rendered as
 // "<$0.01" instead so a real, tiny accrued cost never looks like free.
-func formatCostUSD(v float64) string {
+func FormatCostUSD(v float64) string {
 	if v > 0 && v < 0.01 {
 		return "<$0.01"
 	}
 	return fmt.Sprintf("$%.2f", v)
 }
 
-// bridgeTaskID returns a role's structural bridge key: its latest-binding task
+// BridgeTaskID returns a role's structural bridge key: its latest-binding task
 // (BridgeTaskID), falling back to the live TaskID when the model did not
 // populate the bridge field (older callers / hand-built test fixtures). In
 // production BuildModel always sets BridgeTaskID, so the fallback only matters
 // for fixtures that set TaskID alone.
-func bridgeTaskID(r *RoleView) string {
+func BridgeTaskID(r *RoleView) string {
 	if r.BridgeTaskID != "" {
 		return r.BridgeTaskID
 	}
 	return r.TaskID
 }
 
-// roleBridges reports whether a role's parent link is structurally intact for
+// RoleBridges reports whether a role's parent link is structurally intact for
 // nesting: it bridges when live, or when its latest binding ended for a
 // non-teardown reason. An operator-teardown link (reparented / user_deleted) is
 // stale and must not nest its child.
-func roleBridges(r *RoleView) bool {
+func RoleBridges(r *RoleView) bool {
 	return r.Live || !db.HeraEndReasonIsTeardown(r.LinkEndReason)
 }
 
@@ -929,7 +973,7 @@ type Selection struct {
 	// cascade-tear-down the whole nested sub-team rooted at this child.
 	BridgeChildOrchID int64
 	// TopLevelOrch (add-hera-kanban-status) is true when Orch is a TRUE ROOT —
-	// absent from Model.canonicalParents() — stamped by Rail.Selection() from
+	// absent from Model.CanonicalParents() — stamped by Rail.Selection() from
 	// the same canonical map buildRows computes. Only meaningful alongside a
 	// header selection (Role nil); see KanbanTarget, which the m/M rail keys use.
 	TopLevelOrch bool
@@ -1176,11 +1220,11 @@ func BuildModel(r HeraReader, needsInput map[string]bool, sessionIdle map[string
 	// each role's SubtreeNeedsInput so the rail's partial-fold-reveal mechanism
 	// can peek a blocked descendant's own row through a closed ancestor fold (it
 	// no longer drives any ancestor's own icon — see ShowsNeedsInput).
-	m.rollupNeedsInput()
+	m.RollupNeedsInput()
 	return m, nil
 }
 
-// rollupNeedsInput populates every role's SubtreeNeedsInput from the per-role
+// RollupNeedsInput populates every role's SubtreeNeedsInput from the per-role
 // own needs-input signals already stamped on the assembled model. It runs as a
 // post-pass (after all orchestrators/roles are built) because the rollup crosses
 // BRIDGED sub-orchestrators, which only exist once the whole model is assembled.
@@ -1189,7 +1233,7 @@ func BuildModel(r HeraReader, needsInput map[string]bool, sessionIdle map[string
 // (needsInputOwn) to compute a per-orchestrator subtree rollup; phase 2 writes
 // only SubtreeNeedsInput. The traversal reuses BridgeSubtree (cycle-safe) so it
 // matches rail nesting and the Ctrl+D cascade exactly. See BUG-018.
-func (m *Model) rollupNeedsInput() {
+func (m *Model) RollupNeedsInput() {
 	// Phase 1: per-orchestrator subtree rollup (transitive across bridges). Also
 	// stamp the OrchView so the rail's partial-fold-reveal mechanism can gate on
 	// it regardless of whether a coordinator role exists to carry an icon at all
@@ -1208,7 +1252,7 @@ func (m *Model) rollupNeedsInput() {
 	// bridging worker row (a nested sub-coordinator) carries its bridged child's
 	// subtree OR'd with its own signal. Every other role (leaf worker) carries
 	// only its own signal.
-	bridge := m.bridgeIndex()
+	bridge := m.BridgeIndex()
 	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
 		for i := range sec {
 			o := &sec[i]
@@ -1217,8 +1261,8 @@ func (m *Model) rollupNeedsInput() {
 				switch {
 				case rv.Kind == db.HeraKindCoordinator:
 					rv.SubtreeNeedsInput = subtree[o.ID]
-				case roleBridges(rv):
-					if c := bridge[bridgeTaskID(rv)]; c != nil && c.ID != o.ID {
+				case RoleBridges(rv):
+					if c := bridge[BridgeTaskID(rv)]; c != nil && c.ID != o.ID {
 						rv.SubtreeNeedsInput = rv.needsInputOwn() || subtree[c.ID]
 						continue
 					}
@@ -1237,7 +1281,7 @@ func (m *Model) rollupNeedsInput() {
 // orchSubtreeNeedsInput reports whether any role in the orchestration subtree
 // rooted at orchID (inclusive, transitively across bridged sub-orchestrators)
 // has an OWN needs-input signal. It mirrors BridgeSubtree's shape (same visited
-// cycle guard, same worker-bridge + coordBridgeChildren descent) but prunes
+// cycle guard, same worker-bridge + CoordBridgeChildren descent) but prunes
 // archived nodes: an archived role's own signal is skipped, an archived bridging
 // row does not descend into its hidden child, and a worker-bridged child
 // orchestrator that is itself archived (ArchiveHeraOrchestrator stamps only the
@@ -1250,7 +1294,7 @@ func (m *Model) orchSubtreeNeedsInput(orchID int64) bool {
 	if start == nil {
 		return false
 	}
-	bridge := m.bridgeIndex()
+	bridge := m.BridgeIndex()
 	visited := make(map[int64]bool)
 	var walk func(o *OrchView) bool
 	walk = func(o *OrchView) bool {
@@ -1266,13 +1310,13 @@ func (m *Model) orchSubtreeNeedsInput(orchID int64) bool {
 			if w.needsInputOwn() {
 				return true
 			}
-			if w.Kind != db.HeraKindCoordinator && roleBridges(w) {
-				if c := bridge[bridgeTaskID(w)]; c != nil && !c.Archived && c.ID != o.ID && walk(c) {
+			if w.Kind != db.HeraKindCoordinator && RoleBridges(w) {
+				if c := bridge[BridgeTaskID(w)]; c != nil && !c.Archived && c.ID != o.ID && walk(c) {
 					return true
 				}
 			}
 		}
-		for _, c := range m.coordBridgeChildren(o) { // already excludes archived children
+		for _, c := range m.CoordBridgeChildren(o) { // already excludes archived children
 			if walk(c) {
 				return true
 			}

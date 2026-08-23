@@ -3,6 +3,8 @@ package hera
 import (
 	"testing"
 
+	heramodel "github.com/drn/argus/internal/hera/model"
+
 	"github.com/drn/argus/internal/testutil"
 	"github.com/gdamore/tcell/v2"
 )
@@ -21,9 +23,9 @@ func TestDetailsMode_RailMutationKeysRouted(t *testing.T) {
 	testutil.Equal(t, p.Machine().State(), FocusAgent)
 
 	var got string
-	var gotSel Selection
-	record := func(name string) func(Selection) {
-		return func(s Selection) { got = name; gotSel = s }
+	var gotSel heramodel.Selection
+	record := func(name string) func(heramodel.Selection) {
+		return func(s heramodel.Selection) { got = name; gotSel = s }
 	}
 	p.OnSpawnWorker = record("spawn")
 	p.OnRename = record("rename")
@@ -73,7 +75,7 @@ func TestDetailsMode_PinFiresWithRecordingHook(t *testing.T) {
 	toAgentFocus(p)
 
 	pins := 0
-	p.OnPinToggle = func(Selection) { pins++ }
+	p.OnPinToggle = func(heramodel.Selection) { pins++ }
 
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyRune, 'P', tcell.ModNone), noFocus)
@@ -91,18 +93,18 @@ func TestDetailsMode_PlanNavKeysNotHijacked(t *testing.T) {
 
 	mutated := false
 	// Wire every mutation callback so any stray dispatch is caught.
-	p.OnSpawnWorker = func(Selection) { mutated = true }
-	p.OnRename = func(Selection) { mutated = true }
-	p.OnArchiveToggle = func(Selection) { mutated = true }
-	p.OnPinToggle = func(Selection) { mutated = true }
-	p.OnStatusAdvance = func(Selection) { mutated = true }
-	p.OnStatusRevert = func(Selection) { mutated = true }
-	p.OnDelete = func(Selection) { mutated = true }
-	p.OnAdopt = func(Selection) { mutated = true }
-	p.OnClearArchive = func(Selection) { mutated = true }
-	p.OnNewCoordinator = func(Selection) { mutated = true }
-	p.OnKanbanAdvance = func(Selection) { mutated = true }
-	p.OnKanbanRevert = func(Selection) { mutated = true }
+	p.OnSpawnWorker = func(heramodel.Selection) { mutated = true }
+	p.OnRename = func(heramodel.Selection) { mutated = true }
+	p.OnArchiveToggle = func(heramodel.Selection) { mutated = true }
+	p.OnPinToggle = func(heramodel.Selection) { mutated = true }
+	p.OnStatusAdvance = func(heramodel.Selection) { mutated = true }
+	p.OnStatusRevert = func(heramodel.Selection) { mutated = true }
+	p.OnDelete = func(heramodel.Selection) { mutated = true }
+	p.OnAdopt = func(heramodel.Selection) { mutated = true }
+	p.OnClearArchive = func(heramodel.Selection) { mutated = true }
+	p.OnNewCoordinator = func(heramodel.Selection) { mutated = true }
+	p.OnKanbanAdvance = func(heramodel.Selection) { mutated = true }
+	p.OnKanbanRevert = func(heramodel.Selection) { mutated = true }
 
 	testutil.Equal(t, p.Plan().CursorPos().Stage, 0)
 	h := p.InputHandler()
@@ -128,7 +130,7 @@ func TestDetailsMode_EnterNotHijackedByRailMutation(t *testing.T) {
 	testutil.Equal(t, p.isRailMutationKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone)), false)
 
 	reattached := false
-	p.OnReattach = func(Selection) { reattached = true }
+	p.OnReattach = func(heramodel.Selection) { reattached = true }
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
 	// Enter went to the plan widget, not the rail's reattach handler.

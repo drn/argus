@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/db"
+	heramodel "github.com/drn/argus/internal/hera/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/gdamore/tcell/v2"
 )
@@ -13,8 +14,8 @@ import (
 
 // pinnedLeafModel: one active root orchestrator with a coordinator and a single
 // pinned leaf worker.
-func pinnedLeafModel() Model {
-	return Model{Active: []OrchView{{ID: 1, Name: "root", Roles: []RoleView{
+func pinnedLeafModel() heramodel.Model {
+	return heramodel.Model{Active: []heramodel.OrchView{{ID: 1, Name: "root", Roles: []heramodel.RoleView{
 		{RoleID: 10, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc", BridgeTaskID: "tc"},
 		{RoleID: 11, OrchID: 1, Name: "leaf", Kind: db.HeraKindWorker, Live: true, TaskID: "t11", BridgeTaskID: "t11", Pinned: true},
 	}}}}
@@ -23,13 +24,13 @@ func pinnedLeafModel() Model {
 // nestedSubCoordModel: root → (worker "w" bridges) sub-coordinator orch "sub" →
 // leaf worker. pinSub pins the bridging worker "w" (sub-coord pin); pinLeaf pins
 // the deep leaf under "sub" (lineage test).
-func nestedSubCoordModel(pinSub, pinLeaf bool) Model {
-	return Model{Active: []OrchView{
-		{ID: 1, Name: "root", Roles: []RoleView{
+func nestedSubCoordModel(pinSub, pinLeaf bool) heramodel.Model {
+	return heramodel.Model{Active: []heramodel.OrchView{
+		{ID: 1, Name: "root", Roles: []heramodel.RoleView{
 			{RoleID: 10, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "troot", BridgeTaskID: "troot"},
 			{RoleID: 11, OrchID: 1, Name: "w", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", BridgeTaskID: "tc", Pinned: pinSub},
 		}},
-		{ID: 2, Name: "sub", Roles: []RoleView{
+		{ID: 2, Name: "sub", Roles: []heramodel.RoleView{
 			{RoleID: 20, OrchID: 2, Name: "subcoord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc", BridgeTaskID: "tc"},
 			{RoleID: 21, OrchID: 2, Name: "leaf", Kind: db.HeraKindWorker, Live: true, TaskID: "t21", BridgeTaskID: "t21", Pinned: pinLeaf},
 		}},
@@ -95,7 +96,7 @@ func TestRail_PinnedLeafFloatsAsBreadcrumb(t *testing.T) {
 	testutil.Equal(t, bc, "root › ")
 }
 
-// 1.3: lineage spans the full canonicalParents chain for a deeply-nested role.
+// 1.3: lineage spans the full CanonicalParents chain for a deeply-nested role.
 func TestRail_PinnedBreadcrumbLineageIsCanonicalChain(t *testing.T) {
 	r := NewRail()
 	r.SetModel(nestedSubCoordModel(false, true)) // pin the deep leaf under "sub"
@@ -108,7 +109,7 @@ func TestRail_PinnedBreadcrumbLineageIsCanonicalChain(t *testing.T) {
 
 // 1.5: a pinned role whose orchestrator is itself pinned stays nested (no float).
 func TestRail_PinnedRoleUnderPinnedOrchStaysNested(t *testing.T) {
-	m := Model{Pinned: []OrchView{{ID: 1, Name: "root", Pinned: true, Roles: []RoleView{
+	m := heramodel.Model{Pinned: []heramodel.OrchView{{ID: 1, Name: "root", Pinned: true, Roles: []heramodel.RoleView{
 		{RoleID: 10, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc", BridgeTaskID: "tc"},
 		{RoleID: 11, OrchID: 1, Name: "leaf", Kind: db.HeraKindWorker, Live: true, TaskID: "t11", BridgeTaskID: "t11", Pinned: true},
 	}}}}
@@ -203,9 +204,9 @@ func TestRail_PinnedRoleFilterStates(t *testing.T) {
 // 1.10: a pinned role with an unresolvable orchestrator is skipped (not rendered
 // without lineage).
 func TestRail_PinnedRoleUnresolvableParentNotFloated(t *testing.T) {
-	m := Model{Active: []OrchView{{ID: 1, Name: "root", Roles: []RoleView{
+	m := heramodel.Model{Active: []heramodel.OrchView{{ID: 1, Name: "root", Roles: []heramodel.RoleView{
 		{RoleID: 10, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc", BridgeTaskID: "tc"},
-		// OrchID 99 has no OrchView → breadcrumb unresolvable.
+		// OrchID 99 has no heramodel.OrchView → breadcrumb unresolvable.
 		{RoleID: 11, OrchID: 99, Name: "orphan", Kind: db.HeraKindWorker, Live: true, TaskID: "t11", BridgeTaskID: "t11", Pinned: true},
 	}}}}
 	r := NewRail()
@@ -238,7 +239,7 @@ func TestRail_PinnedBreadcrumbDrawsAndLeftTruncates(t *testing.T) {
 	testutil.Equal(t, truncRunesLeft("anything", 0), "")
 }
 
-// 1.1: BuildModel projects hera_roles.pinned_at into RoleView.Pinned.
+// 1.1: heramodel.BuildModel projects hera_roles.pinned_at into heramodel.RoleView.Pinned.
 func TestBuildModel_RoleViewPinned(t *testing.T) {
 	d := memDB(t)
 	orchID := seedOrch(t, d, "root")
@@ -246,10 +247,10 @@ func TestBuildModel_RoleViewPinned(t *testing.T) {
 	worker := seedBoundRole(t, d, orchID, "leaf", db.HeraKindWorker, "t11")
 	testutil.NoError(t, d.PinHeraRole(worker.ID))
 
-	m, err := BuildModel(d, nil, nil, nil, nil)
+	m, err := heramodel.BuildModel(d, nil, nil, nil, nil)
 	testutil.NoError(t, err)
 
-	var got *RoleView
+	var got *heramodel.RoleView
 	for i := range m.Active {
 		for j := range m.Active[i].Roles {
 			if m.Active[i].Roles[j].RoleID == worker.ID {
@@ -261,7 +262,7 @@ func TestBuildModel_RoleViewPinned(t *testing.T) {
 	testutil.Equal(t, got.Pinned, true)
 
 	testutil.NoError(t, d.UnpinHeraRole(worker.ID))
-	m2, err := BuildModel(d, nil, nil, nil, nil)
+	m2, err := heramodel.BuildModel(d, nil, nil, nil, nil)
 	testutil.NoError(t, err)
 	for i := range m2.Active {
 		for j := range m2.Active[i].Roles {
