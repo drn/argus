@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/db"
+	heramodel "github.com/drn/argus/internal/hera/model"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/theme"
@@ -35,10 +36,10 @@ func drawnText(t *testing.T, draw func(tcell.Screen), x, y, w int) string {
 }
 
 func TestDetails_RostersWorkers(t *testing.T) {
-	orch := &OrchView{
+	orch := &heramodel.OrchView{
 		ID:   1,
 		Name: "my-orch",
-		Roles: []RoleView{
+		Roles: []heramodel.RoleView{
 			{RoleID: 1, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c"},
 			{RoleID: 2, OrchID: 1, Name: "alpha", Kind: db.HeraKindWorker, Live: true, TaskID: "t-a", ReadyToClose: true},
 			{RoleID: 3, OrchID: 1, Name: "beta", Kind: db.HeraKindWorker, Live: true, TaskID: "t-b"},
@@ -72,7 +73,7 @@ func TestDetails_NilOrchAndMarks(t *testing.T) {
 	// an actionable review state shows PR; a merged/closed state retains the url
 	// in the cache but must not.
 	d.prMeta = map[string]map[string]string{"t": {"url": "u", "state": "awaiting-review"}}
-	rc := &RoleView{TaskID: "t", ReadyToClose: true}
+	rc := &heramodel.RoleView{TaskID: "t", ReadyToClose: true}
 	testutil.Equal(t, d.hasPR(rc), true)
 	testutil.Equal(t, rosterStatusText(rc, d.hasPR(rc)), "ready PR")
 
@@ -80,7 +81,7 @@ func TestDetails_NilOrchAndMarks(t *testing.T) {
 	testutil.Equal(t, d.hasPR(rc), false)
 	testutil.Equal(t, rosterStatusText(rc, d.hasPR(rc)), "ready")
 
-	noMark := &RoleView{TaskID: "none"}
+	noMark := &heramodel.RoleView{TaskID: "none"}
 	testutil.Equal(t, d.hasPR(noMark), false)
 	testutil.Equal(t, rosterStatusText(noMark, d.hasPR(noMark)), "—")
 }
@@ -107,14 +108,14 @@ func TestDetails_HasPR_PRStateTable(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			d.prMeta = map[string]map[string]string{"t": {"url": "u", "state": tc.state}}
-			testutil.Equal(t, d.hasPR(&RoleView{TaskID: "t"}), tc.want)
+			testutil.Equal(t, d.hasPR(&heramodel.RoleView{TaskID: "t"}), tc.want)
 		})
 	}
 }
 
 func TestDetails_TinyRectNoPanic(t *testing.T) {
 	d := NewDetailsView()
-	d.SetOrch(&OrchView{ID: 1, Name: "o"}, nil)
+	d.SetOrch(&heramodel.OrchView{ID: 1, Name: "o"}, nil)
 	sim := tcell.NewSimulationScreen("UTF-8")
 	testutil.NoError(t, sim.Init())
 	defer sim.Fini()
@@ -144,13 +145,13 @@ func rosterContains(t *testing.T, d *DetailsView, h int, sub string) bool {
 }
 
 func TestDetails_ContentHeight(t *testing.T) {
-	coord := RoleView{RoleID: 1, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator}
-	wkr := func(id int64, name string) RoleView {
-		return RoleView{RoleID: id, OrchID: 1, Name: name, Kind: db.HeraKindWorker}
+	coord := heramodel.RoleView{RoleID: 1, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator}
+	wkr := func(id int64, name string) heramodel.RoleView {
+		return heramodel.RoleView{RoleID: id, OrchID: 1, Name: name, Kind: db.HeraKindWorker}
 	}
 	tests := []struct {
 		name string
-		orch *OrchView
+		orch *heramodel.OrchView
 		want int
 	}{
 		// Row budget: border(2) + always(11) + coord(0/1) + agent(0) + worktree(0)
@@ -158,9 +159,9 @@ func TestDetails_ContentHeight(t *testing.T) {
 		// + n data rows). The test roles carry no ArgusProject and the coord is
 		// unbound, so agent/worktree are omitted and repos is the "(none)" line.
 		{"nil orch", nil, 3}, // border + placeholder line
-		{"coord, no workers", &OrchView{ID: 1, Roles: []RoleView{coord}}, 16},                           // 2 + 11 + 1 + 1(repos none) + 1(workers none)
-		{"coord + 2 workers", &OrchView{ID: 1, Roles: []RoleView{coord, wkr(2, "a"), wkr(3, "b")}}, 18}, // 2 + 11 + 1 + 1 + (1 header + 2)
-		{"no coord role, 2 workers", &OrchView{ID: 1, Roles: []RoleView{wkr(2, "a"), wkr(3, "b")}}, 17}, // 2 + 11 + 0 + 1 + (1 header + 2)
+		{"coord, no workers", &heramodel.OrchView{ID: 1, Roles: []heramodel.RoleView{coord}}, 16},                           // 2 + 11 + 1 + 1(repos none) + 1(workers none)
+		{"coord + 2 workers", &heramodel.OrchView{ID: 1, Roles: []heramodel.RoleView{coord, wkr(2, "a"), wkr(3, "b")}}, 18}, // 2 + 11 + 1 + 1 + (1 header + 2)
+		{"no coord role, 2 workers", &heramodel.OrchView{ID: 1, Roles: []heramodel.RoleView{wkr(2, "a"), wkr(3, "b")}}, 17}, // 2 + 11 + 0 + 1 + (1 header + 2)
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -180,14 +181,14 @@ func TestDetails_ContentHeight(t *testing.T) {
 func TestDetails_ContentHeightMatchesDraw(t *testing.T) {
 	tests := []struct {
 		name  string
-		roles []RoleView
+		roles []heramodel.RoleView
 	}{
-		{"with coord role", []RoleView{
+		{"with coord role", []heramodel.RoleView{
 			{RoleID: 1, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator},
 			{RoleID: 2, OrchID: 1, Name: "alpha", Kind: db.HeraKindWorker},
 			{RoleID: 3, OrchID: 1, Name: "zlast", Kind: db.HeraKindWorker},
 		}},
-		{"no coord role", []RoleView{
+		{"no coord role", []heramodel.RoleView{
 			{RoleID: 2, OrchID: 1, Name: "alpha", Kind: db.HeraKindWorker},
 			{RoleID: 3, OrchID: 1, Name: "zlast", Kind: db.HeraKindWorker},
 		}},
@@ -195,7 +196,7 @@ func TestDetails_ContentHeightMatchesDraw(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			d := NewDetailsView()
-			d.SetOrch(&OrchView{ID: 1, Name: "o", Roles: tc.roles}, nil)
+			d.SetOrch(&heramodel.OrchView{ID: 1, Name: "o", Roles: tc.roles}, nil)
 			ch := d.ContentHeight()
 			// The Summary placeholder is the final rendered line; the last worker
 			// row sits above it and must always be visible at full height.
@@ -208,10 +209,10 @@ func TestDetails_ContentHeightMatchesDraw(t *testing.T) {
 
 func TestDeriveCoordMeta_LastActivityMax(t *testing.T) {
 	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	orch := &OrchView{
+	orch := &heramodel.OrchView{
 		ID:        1,
 		CreatedAt: base,
-		Roles: []RoleView{
+		Roles: []heramodel.RoleView{
 			// Coordinator: created later than the orch, with a still-later status
 			// update — the status update is the global max.
 			{
@@ -237,19 +238,19 @@ func TestDeriveCoordMeta_LastActivityMax(t *testing.T) {
 func TestDeriveCoordMeta_LastActivityFallsBackToCreated(t *testing.T) {
 	base := time.Date(2026, 6, 2, 8, 30, 0, 0, time.UTC)
 	// All role timestamps zero (unbound, no status) → last activity == orch created.
-	orch := &OrchView{
+	orch := &heramodel.OrchView{
 		ID:        1,
 		CreatedAt: base,
-		Roles:     []RoleView{{RoleID: 1, Kind: db.HeraKindCoordinator}},
+		Roles:     []heramodel.RoleView{{RoleID: 1, Kind: db.HeraKindCoordinator}},
 	}
 	m := deriveCoordMeta(orch)
 	testutil.Equal(t, m.LastActivity.Equal(base), true)
 }
 
 func TestDeriveCoordMeta_ReposDistinctSorted(t *testing.T) {
-	orch := &OrchView{
+	orch := &heramodel.OrchView{
 		ID: 1,
-		Roles: []RoleView{
+		Roles: []heramodel.RoleView{
 			{RoleID: 1, Kind: db.HeraKindCoordinator, ArgusProject: "b"},
 			{RoleID: 2, Kind: db.HeraKindWorker, ArgusProject: "a"},
 			{RoleID: 3, Kind: db.HeraKindWorker, ArgusProject: "a"}, // dup
@@ -261,9 +262,9 @@ func TestDeriveCoordMeta_ReposDistinctSorted(t *testing.T) {
 }
 
 func TestDeriveCoordMeta_AgentAndWorktreeFromCoord(t *testing.T) {
-	orch := &OrchView{
+	orch := &heramodel.OrchView{
 		ID: 1,
-		Roles: []RoleView{
+		Roles: []heramodel.RoleView{
 			{
 				RoleID: 1, Kind: db.HeraKindCoordinator,
 				TaskName:     "the-hera-detail",
@@ -283,9 +284,9 @@ func TestDeriveCoordMeta_AgentAndWorktreeFromCoord(t *testing.T) {
 // figure (deriveCoordMeta has no access to the whole Model for a true
 // bridge-subtree walk; see Model.SubtreeCostUSD for that).
 func TestDeriveCoordMeta_CostSumsAllOwnRoles(t *testing.T) {
-	orch := &OrchView{
+	orch := &heramodel.OrchView{
 		ID: 1,
-		Roles: []RoleView{
+		Roles: []heramodel.RoleView{
 			{RoleID: 1, Kind: db.HeraKindCoordinator, CostUSDAccrued: 1.5},
 			{RoleID: 2, Kind: db.HeraKindWorker, CostUSDAccrued: 2.25},
 		},
@@ -295,7 +296,7 @@ func TestDeriveCoordMeta_CostSumsAllOwnRoles(t *testing.T) {
 }
 
 func TestDeriveCoordMeta_CostZeroWhenUnmeasured(t *testing.T) {
-	orch := &OrchView{ID: 1, Roles: []RoleView{{RoleID: 1, Kind: db.HeraKindCoordinator}}}
+	orch := &heramodel.OrchView{ID: 1, Roles: []heramodel.RoleView{{RoleID: 1, Kind: db.HeraKindCoordinator}}}
 	m := deriveCoordMeta(orch)
 	testutil.Equal(t, m.Cost, 0.0)
 }
@@ -305,11 +306,11 @@ func TestDeriveCoordMeta_CostZeroWhenUnmeasured(t *testing.T) {
 // scope, and the Summary placeholder), alongside the existing roster.
 func TestDetails_RendersMetadataBlock(t *testing.T) {
 	base := time.Date(2026, 6, 10, 9, 0, 0, 0, time.UTC)
-	orch := &OrchView{
+	orch := &heramodel.OrchView{
 		ID:        1,
 		Name:      "my-orch",
 		CreatedAt: base,
-		Roles: []RoleView{
+		Roles: []heramodel.RoleView{
 			{
 				RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true,
 				TaskID: "t-c", TaskName: "coord-task", ArgusProject: "repo-z",
@@ -348,9 +349,9 @@ func TestDetails_RendersMetadataBlock(t *testing.T) {
 // the "Cost" field renders with the blended figure when the orchestrator's
 // roles have accrued anything.
 func TestDetails_RendersCostFieldWhenMeasured(t *testing.T) {
-	orch := &OrchView{
+	orch := &heramodel.OrchView{
 		ID: 1, Name: "my-orch",
-		Roles: []RoleView{
+		Roles: []heramodel.RoleView{
 			{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c", CostUSDAccrued: 1.5},
 		},
 	}
@@ -368,9 +369,9 @@ func TestDetails_RendersCostFieldWhenMeasured(t *testing.T) {
 // TestDetails_OmitsCostFieldWhenUnmeasured pins Decision 6's "n/a, not
 // $0.00" contract at the Details-pane layer.
 func TestDetails_OmitsCostFieldWhenUnmeasured(t *testing.T) {
-	orch := &OrchView{
+	orch := &heramodel.OrchView{
 		ID: 1, Name: "my-orch",
-		Roles: []RoleView{{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c"}},
+		Roles: []heramodel.RoleView{{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c"}},
 	}
 	d := NewDetailsView()
 	d.SetOrch(orch, nil)
@@ -390,8 +391,8 @@ func TestDetails_OmitsCostFieldWhenUnmeasured(t *testing.T) {
 // conditional Cost row must bump ContentHeight by exactly one line, or the
 // stacked Details region would truncate/overflow.
 func TestDetailsView_ContentHeight_AccountsForCostField(t *testing.T) {
-	withoutCost := &OrchView{ID: 1, Roles: []RoleView{{RoleID: 1, Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c"}}}
-	withCost := &OrchView{ID: 1, Roles: []RoleView{{RoleID: 1, Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c", CostUSDAccrued: 1.5}}}
+	withoutCost := &heramodel.OrchView{ID: 1, Roles: []heramodel.RoleView{{RoleID: 1, Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c"}}}
+	withCost := &heramodel.OrchView{ID: 1, Roles: []heramodel.RoleView{{RoleID: 1, Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c", CostUSDAccrued: 1.5}}}
 
 	d := NewDetailsView()
 	d.SetOrch(withoutCost, nil)
@@ -404,10 +405,10 @@ func TestDetailsView_ContentHeight_AccountsForCostField(t *testing.T) {
 // TestDetails_UnboundCoordOmitsAgentWorktree pins that Agent/Worktree are
 // dropped when the coordinator has no live binding, while the rest renders.
 func TestDetails_UnboundCoordOmitsAgentWorktree(t *testing.T) {
-	orch := &OrchView{
+	orch := &heramodel.OrchView{
 		ID:   1,
 		Name: "o",
-		Roles: []RoleView{
+		Roles: []heramodel.RoleView{
 			{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator}, // unbound: no TaskName/WorktreePath
 		},
 	}
@@ -438,25 +439,25 @@ func TestWorktreeDisplay(t *testing.T) {
 func TestCoordRoleStatusLabel(t *testing.T) {
 	// A genuinely active coordinator (live + running session + in_progress) reads
 	// "working".
-	testutil.Equal(t, coordRoleStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: true, TaskStatus: "in_progress"}), "working")
+	testutil.Equal(t, coordRoleStatusLabel(&heramodel.RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: true, TaskStatus: "in_progress"}), "working")
 	// BUG-003: a STALE "working" role-status that isn't backed by real activity
 	// must not claim "working". A dead/stopped binding (not Live) reads "stopped".
-	testutil.Equal(t, coordRoleStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking}), "stopped")
+	testutil.Equal(t, coordRoleStatusLabel(&heramodel.RoleView{HasStatus: true, Status: db.HeraStatusWorking}), "stopped")
 	// BUG-C: a DEAD coordinator whose binding lingers (Live but session not in the
 	// running set) reads "live", NOT "working" — IsActive is false because the
 	// session is not running.
-	testutil.Equal(t, coordRoleStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: false, TaskStatus: "in_review"}), "live")
+	testutil.Equal(t, coordRoleStatusLabel(&heramodel.RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: false, TaskStatus: "in_review"}), "live")
 	// BUG-036: a live+running-but-session-idle binding (parked, not producing)
 	// reads "live" regardless of task status — IsActive false because SessionIdle.
-	testutil.Equal(t, coordRoleStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: true, TaskStatus: "in_review", SessionIdle: true}), "live")
+	testutil.Equal(t, coordRoleStatusLabel(&heramodel.RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: true, TaskStatus: "in_review", SessionIdle: true}), "live")
 	// BUG-C: a live, running, content-active coordinator in in_review (session
 	// still producing during #707 close-out) is genuinely "working" — no longer
 	// masked by the bound-task status.
-	testutil.Equal(t, coordRoleStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: true, TaskStatus: "in_review"}), "working")
+	testutil.Equal(t, coordRoleStatusLabel(&heramodel.RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: true, TaskStatus: "in_review"}), "working")
 	// Non-working role-status assertions pass through unchanged.
-	testutil.Equal(t, coordRoleStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusIdle}), "idle")
-	testutil.Equal(t, coordRoleStatusLabel(&RoleView{Live: true}), "live")
-	testutil.Equal(t, coordRoleStatusLabel(&RoleView{}), "—")
+	testutil.Equal(t, coordRoleStatusLabel(&heramodel.RoleView{HasStatus: true, Status: db.HeraStatusIdle}), "idle")
+	testutil.Equal(t, coordRoleStatusLabel(&heramodel.RoleView{Live: true}), "live")
+	testutil.Equal(t, coordRoleStatusLabel(&heramodel.RoleView{}), "—")
 }
 
 // BUG-015: the Details coordinator status line is task-aware — it appends a
@@ -464,35 +465,35 @@ func TestCoordRoleStatusLabel(t *testing.T) {
 // label, while ongoing/unbound tasks add no suffix.
 func TestCoordTaskStatusLabel(t *testing.T) {
 	// Terminal task states surface.
-	testutil.Equal(t, coordTaskStatusLabel(&RoleView{TaskStatus: "complete"}), "complete")
-	testutil.Equal(t, coordTaskStatusLabel(&RoleView{TaskStatus: "in_review"}), "in_review")
+	testutil.Equal(t, coordTaskStatusLabel(&heramodel.RoleView{TaskStatus: "complete"}), "complete")
+	testutil.Equal(t, coordTaskStatusLabel(&heramodel.RoleView{TaskStatus: "in_review"}), "in_review")
 	// failed (from the opaque result blob) wins over the workflow status.
-	testutil.Equal(t, coordTaskStatusLabel(&RoleView{TaskStatus: "complete", TaskResult: `{"failed":true}`}), "failed")
-	testutil.Equal(t, coordTaskStatusLabel(&RoleView{TaskStatus: "in_review", TaskResult: `{"failed":true}`}), "failed")
+	testutil.Equal(t, coordTaskStatusLabel(&heramodel.RoleView{TaskStatus: "complete", TaskResult: `{"failed":true}`}), "failed")
+	testutil.Equal(t, coordTaskStatusLabel(&heramodel.RoleView{TaskStatus: "in_review", TaskResult: `{"failed":true}`}), "failed")
 	// Ongoing / unbound add no signal.
-	testutil.Equal(t, coordTaskStatusLabel(&RoleView{TaskStatus: "in_progress"}), "")
-	testutil.Equal(t, coordTaskStatusLabel(&RoleView{TaskStatus: "pending"}), "")
-	testutil.Equal(t, coordTaskStatusLabel(&RoleView{}), "")
+	testutil.Equal(t, coordTaskStatusLabel(&heramodel.RoleView{TaskStatus: "in_progress"}), "")
+	testutil.Equal(t, coordTaskStatusLabel(&heramodel.RoleView{TaskStatus: "pending"}), "")
+	testutil.Equal(t, coordTaskStatusLabel(&heramodel.RoleView{}), "")
 	// A non-failed or malformed result blob is tolerated (no failed suffix).
-	testutil.Equal(t, coordTaskStatusLabel(&RoleView{TaskStatus: "complete", TaskResult: `{"failed":false}`}), "complete")
-	testutil.Equal(t, coordTaskStatusLabel(&RoleView{TaskStatus: "complete", TaskResult: `{not json`}), "complete")
+	testutil.Equal(t, coordTaskStatusLabel(&heramodel.RoleView{TaskStatus: "complete", TaskResult: `{"failed":false}`}), "complete")
+	testutil.Equal(t, coordTaskStatusLabel(&heramodel.RoleView{TaskStatus: "complete", TaskResult: `{not json`}), "complete")
 }
 
 func TestCoordStatusLabel_Combined(t *testing.T) {
 	// Active coordinator (live + running session), ongoing task → role status only.
-	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: true, TaskStatus: "in_progress"}), "working")
+	testutil.Equal(t, coordStatusLabel(&heramodel.RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: true, TaskStatus: "in_progress"}), "working")
 	// Role + terminal task signal combine.
-	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusDone, Live: true, TaskStatus: "complete"}), "done · task complete")
+	testutil.Equal(t, coordStatusLabel(&heramodel.RoleView{HasStatus: true, Status: db.HeraStatusDone, Live: true, TaskStatus: "complete"}), "done · task complete")
 	// Stale-working honesty preserved when session-idle (BUG-036) AND the terminal
 	// task state appended.
-	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: true, TaskStatus: "in_review", SessionIdle: true}), "live · task in_review")
+	testutil.Equal(t, coordStatusLabel(&heramodel.RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: true, TaskStatus: "in_review", SessionIdle: true}), "live · task in_review")
 	// BUG-C: a live, running, content-active coordinator in in_review reads
 	// "working" and still appends the terminal task state.
-	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: true, TaskStatus: "in_review"}), "working · task in_review")
+	testutil.Equal(t, coordStatusLabel(&heramodel.RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, SessionRunning: true, TaskStatus: "in_review"}), "working · task in_review")
 	// failed result blob.
-	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusIdle, Live: true, TaskStatus: "complete", TaskResult: `{"failed":true}`}), "idle · task failed")
+	testutil.Equal(t, coordStatusLabel(&heramodel.RoleView{HasStatus: true, Status: db.HeraStatusIdle, Live: true, TaskStatus: "complete", TaskResult: `{"failed":true}`}), "idle · task failed")
 	// Unbound coordinator → no suffix.
-	testutil.Equal(t, coordStatusLabel(&RoleView{}), "—")
+	testutil.Equal(t, coordStatusLabel(&heramodel.RoleView{}), "—")
 }
 
 // findRune scans the full w×h rect drawn by draw and reports whether r appears
@@ -527,23 +528,23 @@ func findRune(t *testing.T, draw func(tcell.Screen), w, h int, r rune) bool {
 // coordinator-status tests (TestCoordStatusLabel_Combined etc.) only assert
 // the TEXT label, never the glyph.
 func TestDetails_CoordinatorStatusLine_NeedsInputOwnSignalOnly(t *testing.T) {
-	draw := func(coord RoleView) func(tcell.Screen) {
-		orch := &OrchView{ID: 1, Name: "orch", Roles: []RoleView{coord}}
+	draw := func(coord heramodel.RoleView) func(tcell.Screen) {
+		orch := &heramodel.OrchView{ID: 1, Name: "orch", Roles: []heramodel.RoleView{coord}}
 		d := NewDetailsView()
 		d.SetOrch(orch, nil)
 		return func(s tcell.Screen) { d.Draw(s, 0, 0, 60, 20, false) }
 	}
 
 	t.Run("own signal shows the glyph", func(t *testing.T) {
-		coord := RoleView{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c", NeedsInput: true}
+		coord := heramodel.RoleView{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c", NeedsInput: true}
 		testutil.Equal(t, findRune(t, draw(coord), 60, 20, theme.IconNeedsInput), true)
 	})
 
 	t.Run("descendant-only rollup does not show the glyph", func(t *testing.T) {
-		// Simulates what BuildModel's rollupNeedsInput would stamp on a coordinator
+		// Simulates what heramodel.BuildModel's RollupNeedsInput would stamp on a coordinator
 		// whose descendant (not itself) is blocked: SubtreeNeedsInput true, own
 		// signal false.
-		coord := RoleView{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c", HasStatus: true, Status: db.HeraStatusWorking, SubtreeNeedsInput: true}
+		coord := heramodel.RoleView{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c", HasStatus: true, Status: db.HeraStatusWorking, SubtreeNeedsInput: true}
 		testutil.Equal(t, findRune(t, draw(coord), 60, 20, theme.IconNeedsInput), false)
 	})
 }
@@ -556,10 +557,10 @@ func TestDetails_CoordinatorStatusLine_NeedsInputOwnSignalOnly(t *testing.T) {
 // text label (rosterStatusText). A row with its own signal set still must.
 func TestDetails_RosterRow_NeedsInputOwnSignalOnly(t *testing.T) {
 	t.Run("own signal: glyph and text both show needs-input", func(t *testing.T) {
-		row := &RoleView{RoleID: 2, Name: "sub-coord", Kind: db.HeraKindWorker, Live: true, TaskID: "t-w", BridgeTaskID: "t-w", NeedsInput: true}
+		row := &heramodel.RoleView{RoleID: 2, Name: "sub-coord", Kind: db.HeraKindWorker, Live: true, TaskID: "t-w", BridgeTaskID: "t-w", NeedsInput: true}
 		testutil.Equal(t, rosterStatusText(row, false), "needs-input")
 
-		orch := &OrchView{ID: 1, Name: "orch", Roles: []RoleView{
+		orch := &heramodel.OrchView{ID: 1, Name: "orch", Roles: []heramodel.RoleView{
 			{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c"},
 			*row,
 		}}
@@ -575,13 +576,13 @@ func TestDetails_RosterRow_NeedsInputOwnSignalOnly(t *testing.T) {
 		// (SubtreeNeedsInput true, own signal false) — exactly the shape
 		// TestPlanNodeIcon_BridgingSubCoordUnaffectedByDescendantRollup exercises
 		// for the plan view.
-		row := &RoleView{RoleID: 2, Name: "sub-coord", Kind: db.HeraKindWorker, Live: true, TaskID: "t-w", BridgeTaskID: "t-w", SessionRunning: true, SubtreeNeedsInput: true}
+		row := &heramodel.RoleView{RoleID: 2, Name: "sub-coord", Kind: db.HeraKindWorker, Live: true, TaskID: "t-w", BridgeTaskID: "t-w", SessionRunning: true, SubtreeNeedsInput: true}
 		text := rosterStatusText(row, false)
 		if text == "needs-input" {
 			t.Fatalf("expected a non-needs-input status text, got %q", text)
 		}
 
-		orch := &OrchView{ID: 1, Name: "orch", Roles: []RoleView{
+		orch := &heramodel.OrchView{ID: 1, Name: "orch", Roles: []heramodel.RoleView{
 			{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c"},
 			*row,
 		}}
@@ -629,39 +630,39 @@ func TestArchetypeDisplay_ModelDisplay(t *testing.T) {
 // precedence widget.RoleStatusIcon uses (via roleStatusInputs), so the icon
 // and the label never disagree (BUG-A: needs-input outranks ready_to_close).
 func TestRosterStatusText_Precedence(t *testing.T) {
-	testutil.Equal(t, rosterStatusText(&RoleView{}, false), "—")
-	testutil.Equal(t, rosterStatusText(&RoleView{Live: true}, false), "live")
-	testutil.Equal(t, rosterStatusText(&RoleView{HasStatus: true, Status: db.HeraStatusIdle}, false), "idle")
-	testutil.Equal(t, rosterStatusText(&RoleView{HasStatus: true, Status: db.HeraStatusDone}, false), "done")
-	testutil.Equal(t, rosterStatusText(&RoleView{HasStatus: true, Status: db.HeraStatusFailed}, false), "failed")
-	testutil.Equal(t, rosterStatusText(&RoleView{ReadyToClose: true}, false), "ready")
-	testutil.Equal(t, rosterStatusText(&RoleView{ReadyToClose: true}, true), "ready PR")
-	testutil.Equal(t, rosterStatusText(&RoleView{Live: true, SessionRunning: true}, false), "working") // IsActive
+	testutil.Equal(t, rosterStatusText(&heramodel.RoleView{}, false), "—")
+	testutil.Equal(t, rosterStatusText(&heramodel.RoleView{Live: true}, false), "live")
+	testutil.Equal(t, rosterStatusText(&heramodel.RoleView{HasStatus: true, Status: db.HeraStatusIdle}, false), "idle")
+	testutil.Equal(t, rosterStatusText(&heramodel.RoleView{HasStatus: true, Status: db.HeraStatusDone}, false), "done")
+	testutil.Equal(t, rosterStatusText(&heramodel.RoleView{HasStatus: true, Status: db.HeraStatusFailed}, false), "failed")
+	testutil.Equal(t, rosterStatusText(&heramodel.RoleView{ReadyToClose: true}, false), "ready")
+	testutil.Equal(t, rosterStatusText(&heramodel.RoleView{ReadyToClose: true}, true), "ready PR")
+	testutil.Equal(t, rosterStatusText(&heramodel.RoleView{Live: true, SessionRunning: true}, false), "working") // IsActive
 	// NeedsInput outranks ReadyToClose (BUG-A) and Active.
-	needsInput := &RoleView{Live: true, SessionRunning: true, NeedsInput: true, ReadyToClose: true}
+	needsInput := &heramodel.RoleView{Live: true, SessionRunning: true, NeedsInput: true, ReadyToClose: true}
 	testutil.Equal(t, rosterStatusText(needsInput, false), "needs-input")
 	// PR suffix composes with any underlying status, not just "ready".
-	testutil.Equal(t, rosterStatusText(&RoleView{HasStatus: true, Status: db.HeraStatusIdle}, true), "idle PR")
+	testutil.Equal(t, rosterStatusText(&heramodel.RoleView{HasStatus: true, Status: db.HeraStatusIdle}, true), "idle PR")
 
 	// add-hera-accept-lifecycle: a coordinator-accepted (task.Status=complete)
 	// worker reads "accepted", distinctly from a merely self-reported
 	// ready_to_close worker's "ready" — Accepted outranks ReadyToClose.
-	testutil.Equal(t, rosterStatusText(&RoleView{ReadyToClose: true, TaskStatus: model.StatusComplete.String()}, false), "accepted")
+	testutil.Equal(t, rosterStatusText(&heramodel.RoleView{ReadyToClose: true, TaskStatus: model.StatusComplete.String()}, false), "accepted")
 	// NeedsInput and Active still outrank Accepted.
-	acceptedNeedsInput := &RoleView{TaskStatus: model.StatusComplete.String(), NeedsInput: true}
+	acceptedNeedsInput := &heramodel.RoleView{TaskStatus: model.StatusComplete.String(), NeedsInput: true}
 	testutil.Equal(t, rosterStatusText(acceptedNeedsInput, false), "needs-input")
-	acceptedActive := &RoleView{TaskStatus: model.StatusComplete.String(), Live: true, SessionRunning: true}
+	acceptedActive := &heramodel.RoleView{TaskStatus: model.StatusComplete.String(), Live: true, SessionRunning: true}
 	testutil.Equal(t, rosterStatusText(acceptedActive, false), "working")
 
 	// A coordinator's own task reaching StatusComplete carries no accept
 	// semantics (hera_accept/gater auto-accept only ever act on a worker's
 	// bound task) — the roster cell must not read "accepted" for it.
-	coordAccepted := &RoleView{Kind: db.HeraKindCoordinator, TaskStatus: model.StatusComplete.String()}
+	coordAccepted := &heramodel.RoleView{Kind: db.HeraKindCoordinator, TaskStatus: model.StatusComplete.String()}
 	testutil.Equal(t, rosterStatusText(coordAccepted, false), "—")
 }
 
 func TestComputeRosterColumns(t *testing.T) {
-	workers := []RoleView{
+	workers := []heramodel.RoleView{
 		{Name: "alpha", Archetype: "code_slice", AppliedModel: "claude-sonnet-5"},
 		{Name: "a-very-long-agent-name-indeed-and-then-some", Archetype: "big_build", AppliedModel: "claude-opus-4-8"},
 		{Name: "b", Archetype: "", AppliedModel: ""},
@@ -679,7 +680,7 @@ func TestComputeRosterColumns(t *testing.T) {
 	testutil.Equal(t, cols.model, 15)
 
 	// An oversized archetype/model value clamps to the max constants too.
-	capped := computeRosterColumns([]RoleView{{
+	capped := computeRosterColumns([]heramodel.RoleView{{
 		Name:         "x",
 		Archetype:    "an-absurdly-long-archetype-name",
 		AppliedModel: "an-absurdly-long-fully-qualified-model-identifier",
@@ -709,10 +710,10 @@ func TestComputeRosterColumns(t *testing.T) {
 // rendered brightly (theme.StyleNormal), with an unresolved worker rendering
 // a dimmed "—" placeholder rather than a blank cell.
 func TestDetails_RosterTableColumns(t *testing.T) {
-	orch := &OrchView{
+	orch := &heramodel.OrchView{
 		ID:   1,
 		Name: "my-orch",
-		Roles: []RoleView{
+		Roles: []heramodel.RoleView{
 			{RoleID: 1, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t-c"},
 			{
 				RoleID: 2, OrchID: 1, Name: "alpha", Kind: db.HeraKindWorker, Live: true, TaskID: "t-a",
@@ -779,10 +780,10 @@ func TestDetails_RosterTableColumns(t *testing.T) {
 // narrow to fit the ideal column widths still renders (shrunk/truncated
 // columns) without panicking or hanging.
 func TestDetails_RosterTableNarrowPaneNoPanic(t *testing.T) {
-	orch := &OrchView{
+	orch := &heramodel.OrchView{
 		ID:   1,
 		Name: "my-orch",
-		Roles: []RoleView{
+		Roles: []heramodel.RoleView{
 			{RoleID: 1, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator},
 			{
 				RoleID: 2, OrchID: 1, Name: "a-very-long-worker-name", Kind: db.HeraKindWorker,
@@ -803,14 +804,14 @@ func TestDetails_RosterTableNarrowPaneNoPanic(t *testing.T) {
 
 // bigRoster builds a coordinator with n workers, far more than a modest pane
 // can show at once — the fixture the roster-scroll tests need.
-func bigRoster(n int) *OrchView {
-	roles := []RoleView{{RoleID: 1, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator}}
+func bigRoster(n int) *heramodel.OrchView {
+	roles := []heramodel.RoleView{{RoleID: 1, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator}}
 	for i := 1; i <= n; i++ {
-		roles = append(roles, RoleView{
+		roles = append(roles, heramodel.RoleView{
 			RoleID: int64(i + 1), OrchID: 1, Name: fmt.Sprintf("agent-%02d", i), Kind: db.HeraKindWorker,
 		})
 	}
-	return &OrchView{ID: 1, Name: "big-orch", Roles: roles}
+	return &heramodel.OrchView{ID: 1, Name: "big-orch", Roles: roles}
 }
 
 // TestDetails_RosterScrolls is the render smoke test the scroll requirement
@@ -885,7 +886,7 @@ func TestDetails_SetOrchScrollReset(t *testing.T) {
 	testutil.Equal(t, d.rosterScroll > 0, true)
 
 	// A genuinely different orchestrator resets to the top.
-	orchB := &OrchView{ID: 2, Name: "other", Roles: []RoleView{
+	orchB := &heramodel.OrchView{ID: 2, Name: "other", Roles: []heramodel.RoleView{
 		{RoleID: 1, OrchID: 2, Name: "coord", Kind: db.HeraKindCoordinator},
 	}}
 	d.SetOrch(orchB, nil)

@@ -3,6 +3,8 @@ package hera
 import (
 	"testing"
 
+	heramodel "github.com/drn/argus/internal/hera/model"
+
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/gdamore/tcell/v2"
@@ -16,24 +18,24 @@ import (
 //	    C.worker "gamma" (nested under C, which is consumed by bridge)
 //	free-zeta           freelance
 //	old-orch (archived) with worker "delta"
-func filterModel() Model {
-	return Model{
-		Active: []OrchView{
-			{ID: 1, Name: "R", Roles: []RoleView{
+func filterModel() heramodel.Model {
+	return heramodel.Model{
+		Active: []heramodel.OrchView{
+			{ID: 1, Name: "R", Roles: []heramodel.RoleView{
 				{RoleID: 11, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tr", BridgeTaskID: "tr"},
 				{RoleID: 12, OrchID: 1, Name: "alpha", Kind: db.HeraKindWorker, Live: true, TaskID: "t-alpha", BridgeTaskID: "t-alpha"},
 				{RoleID: 13, OrchID: 1, Name: "bridge", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", BridgeTaskID: "tc"},
 			}},
-			{ID: 2, Name: "C", Roles: []RoleView{
+			{ID: 2, Name: "C", Roles: []heramodel.RoleView{
 				{RoleID: 21, OrchID: 2, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc", BridgeTaskID: "tc"},
 				{RoleID: 22, OrchID: 2, Name: "gamma", Kind: db.HeraKindWorker, Live: true, TaskID: "t-gamma", BridgeTaskID: "t-gamma"},
 			}},
 		},
-		Freelance: []RoleView{
+		Freelance: []heramodel.RoleView{
 			{RoleID: 91, Name: "free-zeta", Kind: db.HeraKindFreelance},
 		},
-		Archived: []OrchView{
-			{ID: 9, Name: "old-orch", Archived: true, Roles: []RoleView{
+		Archived: []heramodel.OrchView{
+			{ID: 9, Name: "old-orch", Archived: true, Roles: []heramodel.RoleView{
 				{RoleID: 99, OrchID: 9, Name: "delta", Kind: db.HeraKindWorker, Archived: true},
 			}},
 		},
@@ -196,7 +198,7 @@ func TestRail_FilterEscClears(t *testing.T) {
 // reattach half itself, but it MUST still fully clear the filter — query reset
 // AND input mode off — in a SINGLE Enter, exactly like Esc, while re-pinning the
 // cursor by identity onto the row that was selected under the filter so a
-// HeraPage-level caller (which resolves Selection() BEFORE clearing) sees the
+// HeraPage-level caller (which resolves heramodel.Selection() BEFORE clearing) sees the
 // right target.
 func TestRail_FilterEnterSelectsAndClears(t *testing.T) {
 	r := NewRail()
@@ -427,14 +429,14 @@ func TestPage_MutationKeysAreFilterInputWhileTyping(t *testing.T) {
 	p.Refresh()
 
 	spawned, renamed, archived, pinned, deleted, stepped, kanbanAdv, kanbanRev := 0, 0, 0, 0, 0, 0, 0, 0
-	p.OnSpawnWorker = func(Selection) { spawned++ }
-	p.OnRename = func(Selection) { renamed++ }
-	p.OnArchiveToggle = func(Selection) { archived++ }
-	p.OnPinToggle = func(Selection) { pinned++ }
-	p.OnDelete = func(Selection) { deleted++ }
-	p.OnStatusAdvance = func(Selection) { stepped++ }
-	p.OnKanbanAdvance = func(Selection) { kanbanAdv++ }
-	p.OnKanbanRevert = func(Selection) { kanbanRev++ }
+	p.OnSpawnWorker = func(heramodel.Selection) { spawned++ }
+	p.OnRename = func(heramodel.Selection) { renamed++ }
+	p.OnArchiveToggle = func(heramodel.Selection) { archived++ }
+	p.OnPinToggle = func(heramodel.Selection) { pinned++ }
+	p.OnDelete = func(heramodel.Selection) { deleted++ }
+	p.OnStatusAdvance = func(heramodel.Selection) { stepped++ }
+	p.OnKanbanAdvance = func(heramodel.Selection) { kanbanAdv++ }
+	p.OnKanbanRevert = func(heramodel.Selection) { kanbanRev++ }
 
 	h := p.InputHandler()
 	// `/` enters input mode (consumed by the rail, not a mutation).
@@ -449,7 +451,7 @@ func TestPage_MutationKeysAreFilterInputWhileTyping(t *testing.T) {
 	testutil.Equal(t, p.Rail().filterQuery, "warPsmM")
 
 	// Ctrl+D (the destructive delete/cascade) must ALSO be suppressed while
-	// typing — its handleRailMutation branch bails before Selection().
+	// typing — its handleRailMutation branch bails before heramodel.Selection().
 	h(tcell.NewEventKey(tcell.KeyCtrlD, 0, tcell.ModCtrl), noFocus)
 
 	testutil.Equal(t, spawned, 0)
@@ -480,9 +482,9 @@ func TestPage_FilterArrowNavigateThenEnterSelects(t *testing.T) {
 	p := NewHeraPage(d)
 	p.Refresh()
 
-	var reattached Selection
+	var reattached heramodel.Selection
 	gotReattach := 0
-	p.OnReattach = func(s Selection) { reattached = s; gotReattach++ }
+	p.OnReattach = func(s heramodel.Selection) { reattached = s; gotReattach++ }
 
 	h := p.InputHandler()
 	// Enter filter mode; "wk" narrows to the two workers — the "team" header
@@ -527,9 +529,9 @@ func TestPage_FilterEnterJumpsIntoSoleOrchestratorMatch(t *testing.T) {
 	p := NewHeraPage(d)
 	p.Refresh()
 
-	var reattached Selection
+	var reattached heramodel.Selection
 	gotReattach := 0
-	p.OnReattach = func(s Selection) { reattached = s; gotReattach++ }
+	p.OnReattach = func(s heramodel.Selection) { reattached = s; gotReattach++ }
 
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), noFocus)
@@ -584,7 +586,7 @@ func TestRail_FilterCycleSafe(t *testing.T) {
 	a := orchView(1, "A", "ta", wk("wa", "tb"))
 	b := orchView(2, "B", "tb", wk("wb", "ta"))
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{a, b}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{a, b}})
 
 	r.filterQuery = "wa"
 	r.buildRows() // must not hang

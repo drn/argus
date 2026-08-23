@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	heramodel "github.com/drn/argus/internal/hera/model"
+
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/theme"
@@ -57,8 +59,8 @@ const (
 type railRow struct {
 	kind  railRowKind
 	label string
-	orch  *OrchView
-	role  *RoleView
+	orch  *heramodel.OrchView
+	role  *heramodel.RoleView
 	depth int
 	dim   bool // archived placement → dimmed style
 
@@ -139,7 +141,7 @@ const heraIconCoord = rune(0x0F0E7B) // 󰹻
 type Rail struct {
 	*tview.Box
 
-	model  Model
+	model  heramodel.Model
 	rows   []railRow
 	cursor int
 	offset int
@@ -176,11 +178,11 @@ type Rail struct {
 	pinnedFloat map[int64]bool
 
 	// canonical is the per-build canonical-parent map (add-hera-kanban-status),
-	// recomputed each buildRows and reused by Selection() to stamp
-	// Selection.TopLevelOrch — an orchestrator absent from this map is a true
+	// recomputed each buildRows and reused by heramodel.Selection() to stamp
+	// heramodel.Selection.TopLevelOrch — an orchestrator absent from this map is a true
 	// root. nil after the empty-model early return (no orchestrators to have
 	// parents at all).
-	canonical map[int64]canonParent
+	canonical map[int64]heramodel.CanonParent
 
 	// focusedKanban (add-kanban-focus-fold) is the ONE kanban sub-group
 	// (Active/Backlog/Blocked/Done) currently expanded in buildRows; the other
@@ -226,7 +228,7 @@ type Rail struct {
 	// RestoreExcursion for the ctrl+g (count==0)/ctrl+b (any time) discharge path.
 	excursion *railSnapshot
 	// armedNeedsInputIDs is the whole-rail needs-input role-ID SET (Model.
-	// needsInputRoleIDs) as of the last SetModel call — the baseline the next
+	// NeedsInputRoleIDs) as of the last SetModel call — the baseline the next
 	// rebuild's set is compared against to detect (a) the fully-at-rest ->
 	// interrupted transition (nil/empty -> non-empty) and (b) a genuinely NEW,
 	// distinct entrant while no excursion is held. Updated on EVERY rebuild,
@@ -287,7 +289,7 @@ func (r *Rail) SetPRMeta(m map[string]map[string]string) { r.prMeta = m }
 // review state (mirrors theme.PRGlyph / model.PRState.IsActionable) — a
 // merged, closed, draft, or unknown-state PR leaves a url in the cache but
 // must not flag the rail row.
-func (r *Rail) rolePR(role *RoleView) bool {
+func (r *Rail) rolePR(role *heramodel.RoleView) bool {
 	if role == nil || role.TaskID == "" || r.prMeta == nil {
 		return false
 	}
@@ -301,7 +303,7 @@ func (r *Rail) rolePR(role *RoleView) bool {
 
 // SetModel replaces the snapshot and rebuilds rows, preserving the cursor's
 // selectable target where possible.
-func (r *Rail) SetModel(m Model) {
+func (r *Rail) SetModel(m heramodel.Model) {
 	r.noteExcursionTransition(m)
 	prev := r.currentRef()
 	r.model = m
@@ -341,7 +343,7 @@ func (r *Rail) SetModel(m Model) {
 //
 // It reuses the reveal mechanism verbatim rather than adding parallel gates:
 // force SubtreeNeedsInput true on ref's own role (for a role ref) and on
-// every ancestor orchestrator up to the root via canonicalParents — plus, for
+// every ancestor orchestrator up to the root via CanonicalParents — plus, for
 // each worker-bridge (non-coordinator-spawn) hop, the PARENT's bridging role,
 // since appendOrchWorkers' per-role reveal gate reads the bridging role's own
 // SubtreeNeedsInput, not merely the child orchestrator's. ref follows
@@ -367,14 +369,14 @@ func (r *Rail) applyStickyReveal(ref int64) {
 			return
 		}
 	} else {
-		role := r.model.roleByID(ref)
+		role := r.model.RoleByID(ref)
 		if role == nil {
 			return
 		}
 		role.SubtreeNeedsInput = true
 		orchID = role.OrchID
 	}
-	canonical := r.model.canonicalParents()
+	canonical := r.model.CanonicalParents()
 	seen := make(map[int64]bool)
 	for id := orchID; ; {
 		if seen[id] {
@@ -390,19 +392,19 @@ func (r *Rail) applyStickyReveal(ref int64) {
 		if !ok {
 			return // reached a top-level root
 		}
-		if !cp.coordSpawn {
-			if parent := r.model.OrchByID(cp.orchID); parent != nil {
-				if br := parent.bridgingRoleFor(o.CoordBridgeTaskID()); br != nil {
+		if !cp.CoordSpawn {
+			if parent := r.model.OrchByID(cp.OrchID); parent != nil {
+				if br := parent.BridgingRoleFor(o.CoordBridgeTaskID()); br != nil {
 					br.SubtreeNeedsInput = true
 				}
 			}
 		}
-		id = cp.orchID
+		id = cp.OrchID
 	}
 }
 
 // Model returns the current snapshot (read-only; for tests/inspection).
-func (r *Rail) Model() Model { return r.model }
+func (r *Rail) Model() heramodel.Model { return r.model }
 
 // --- persistence (BUG-002) ---
 
@@ -554,8 +556,8 @@ func (r *Rail) HasExcursionSnapshot() bool { return r.excursion != nil }
 //
 // No wall-clock or idle-time heuristics — purely a function of the set and
 // whether a snapshot is currently held.
-func (r *Rail) noteExcursionTransition(m Model) {
-	current := m.needsInputRoleIDs()
+func (r *Rail) noteExcursionTransition(m heramodel.Model) {
+	current := m.NeedsInputRoleIDs()
 	if r.rows == nil {
 		// BUG-070: first-ever call, rows don't exist yet — seed only, never
 		// capture (see doc above).
@@ -671,7 +673,7 @@ func (r *Rail) filterMatches(name string) bool {
 // the header — see appendOrch), so a query matching the coordinator's name must
 // count as the header's own match, not ancestry (BUG-028-RAIL): otherwise searching
 // for a coordinator by name would never let Enter jump straight to it.
-func (r *Rail) orchMatchesOwnQuery(o *OrchView) bool {
+func (r *Rail) orchMatchesOwnQuery(o *heramodel.OrchView) bool {
 	if r.filterMatches(o.Name) {
 		return true
 	}
@@ -687,11 +689,11 @@ func (r *Rail) orchMatchesOwnQuery(o *OrchView) bool {
 // ancestry-preserving so a matching nested agent always keeps its parents.
 // Cycle-safe via an in-progress set (a cycle edge contributes nothing rather
 // than recursing forever), mirroring BridgeSubtree's visited guard.
-func (r *Rail) computeVisible(bridge map[string]*OrchView) map[int64]bool {
+func (r *Rail) computeVisible(bridge map[string]*heramodel.OrchView) map[int64]bool {
 	vis := make(map[int64]bool)
 	inProgress := make(map[int64]bool)
-	var visit func(o *OrchView) bool
-	visit = func(o *OrchView) bool {
+	var visit func(o *heramodel.OrchView) bool
+	visit = func(o *heramodel.OrchView) bool {
 		if v, ok := vis[o.ID]; ok {
 			return v
 		}
@@ -707,10 +709,10 @@ func (r *Rail) computeVisible(bridge map[string]*OrchView) map[int64]bool {
 		}
 		for i := range o.Roles {
 			w := &o.Roles[i]
-			if w.Kind == db.HeraKindCoordinator || !roleBridges(w) {
+			if w.Kind == db.HeraKindCoordinator || !heramodel.RoleBridges(w) {
 				continue
 			}
-			if c := bridge[bridgeTaskID(w)]; c != nil && c.ID != o.ID {
+			if c := bridge[heramodel.BridgeTaskID(w)]; c != nil && c.ID != o.ID {
 				if visit(c) {
 					v = true
 				}
@@ -720,7 +722,7 @@ func (r *Rail) computeVisible(bridge map[string]*OrchView) map[int64]bool {
 		vis[o.ID] = v
 		return v
 	}
-	for _, sec := range [][]OrchView{r.model.Pinned, r.model.Active, r.model.Archived} {
+	for _, sec := range [][]heramodel.OrchView{r.model.Pinned, r.model.Active, r.model.Archived} {
 		for i := range sec {
 			visit(&sec[i])
 		}
@@ -755,7 +757,7 @@ func (r *Rail) orchVisible(id int64) bool {
 // anyOrchVisible reports whether any orchestrator in the section is visible
 // under the active filter (used to prune an empty section header). True for any
 // non-empty section when no filter is active.
-func (r *Rail) anyOrchVisible(secs []OrchView) bool {
+func (r *Rail) anyOrchVisible(secs []heramodel.OrchView) bool {
 	if !r.filterActive() {
 		return len(secs) > 0
 	}
@@ -787,7 +789,7 @@ func (r *Rail) anyFreelanceVisible() bool {
 // bridge parent is kept for a nested match). Always true when no filter active.
 // The bridge child is resolved through the canonical parent (the same primitive
 // placement uses) so visibility and nesting agree.
-func (r *Rail) workerRowVisible(ownerID int64, w *RoleView, canonical map[int64]canonParent, placed map[int64]bool) bool {
+func (r *Rail) workerRowVisible(ownerID int64, w *heramodel.RoleView, canonical map[int64]heramodel.CanonParent, placed map[int64]bool) bool {
 	if !r.filterActive() {
 		return true
 	}
@@ -831,7 +833,7 @@ func (r *Rail) currentRef() int64 {
 }
 
 // focusGroupOf resolves orchID's top-level (root) orchestrator by walking
-// canonicalParents() and returns that root's kanban status. Computed fresh
+// CanonicalParents() and returns that root's kanban status. Computed fresh
 // from r.model each call — never from r.canonical, which is a buildRows
 // side-effect that does not exist yet at the point this needs to run (this
 // must be callable BEFORE buildRows, to decide which group buildRows should
@@ -839,7 +841,7 @@ func (r *Rail) currentRef() int64 {
 // when orchID does not resolve to a live orchestrator in the model (a stale
 // id, or a canonical-parent cycle).
 func (r *Rail) focusGroupOf(orchID int64) (db.HeraKanbanStatus, bool) {
-	canonical := r.model.canonicalParents()
+	canonical := r.model.CanonicalParents()
 	seen := make(map[int64]bool)
 	id := orchID
 	for {
@@ -851,7 +853,7 @@ func (r *Rail) focusGroupOf(orchID int64) (db.HeraKanbanStatus, bool) {
 		if !ok {
 			break // id is now the top-level root
 		}
-		id = cp.orchID
+		id = cp.OrchID
 	}
 	o := r.model.OrchByID(id)
 	if o == nil {
@@ -875,7 +877,7 @@ func (r *Rail) focusGroupFromRef(ref int64) {
 	if ref < 0 {
 		orchID = -ref
 	} else {
-		id, ok := r.model.roleOrchID(ref)
+		id, ok := r.model.RoleOrchID(ref)
 		if !ok {
 			return
 		}
@@ -918,7 +920,7 @@ func (r *Rail) buildRows() {
 	// On first run (no saved state) collapse ALL orchestrators so the rail
 	// opens in a tidy summary view. One-shot: cleared after the seed.
 	if r.firstRunCollapse {
-		for _, sec := range [][]OrchView{r.model.Pinned, r.model.Active, r.model.Archived} {
+		for _, sec := range [][]heramodel.OrchView{r.model.Pinned, r.model.Active, r.model.Archived} {
 			for _, o := range sec {
 				r.collapsed[o.ID] = true
 			}
@@ -934,7 +936,7 @@ func (r *Rail) buildRows() {
 	// canonical parent, so it nests rather than rendering as a top-level root;
 	// `placed` guards single-placement + cycles across the whole build (an
 	// orchestrator is rendered at most once, breaking any bridge cycle).
-	canonical := r.model.canonicalParents()
+	canonical := r.model.CanonicalParents()
 	r.canonical = canonical
 	consumed := make(map[int64]bool, len(canonical))
 	for id := range canonical {
@@ -954,7 +956,7 @@ func (r *Rail) buildRows() {
 	// raw bridge index (every bridge, not just canonical parents) drives the memo
 	// so a match anywhere in a multi-bridge subtree keeps its ancestors visible.
 	if r.filterActive() {
-		r.filterVis = r.computeVisible(r.model.bridgeIndex())
+		r.filterVis = r.computeVisible(r.model.BridgeIndex())
 	} else {
 		r.filterVis = nil
 	}
@@ -1076,7 +1078,7 @@ func (r *Rail) buildRows() {
 	// already nested under a live parent (placed). A consumed-but-unplaced
 	// archived orphan (pure cycle) still surfaces here. Under an active filter
 	// only visible archived roots are listed, and the section auto-expands.
-	var archivedRoots []*OrchView
+	var archivedRoots []*heramodel.OrchView
 	for i := range r.model.Archived {
 		if placed[r.model.Archived[i].ID] {
 			continue
@@ -1105,12 +1107,12 @@ func (r *Rail) buildRows() {
 // a true root (an orchestrator with no canonical parent) under FULL expansion —
 // collapse/archive fold IGNORED. Because canonical placement is exactly what the
 // render nests (both the worker-bridge and coordinator-spawn shapes flow through
-// canonicalParents), this can never drift from what is actually drawn. The render
+// CanonicalParents), this can never drift from what is actually drawn. The render
 // passes respect fold; structuralReach deliberately does not, so a child merely
 // hidden behind a collapsed or archived ancestor is still "reachable" here and is
 // therefore NOT re-leaked to the top by the safety sweep — only a true
 // cycle-orphan (a chain that loops without ever reaching a root) is.
-func (r *Rail) structuralReach(canonical map[int64]canonParent) map[int64]bool {
+func (r *Rail) structuralReach(canonical map[int64]heramodel.CanonParent) map[int64]bool {
 	var resolves func(id int64, seen map[int64]bool) bool
 	resolves = func(id int64, seen map[int64]bool) bool {
 		cp, ok := canonical[id]
@@ -1121,10 +1123,10 @@ func (r *Rail) structuralReach(canonical map[int64]canonParent) map[int64]bool {
 			return false // chain cycles without reaching a root
 		}
 		seen[id] = true
-		return resolves(cp.orchID, seen)
+		return resolves(cp.OrchID, seen)
 	}
 	reach := make(map[int64]bool)
-	for _, sec := range [][]OrchView{r.model.Pinned, r.model.Active, r.model.Archived} {
+	for _, sec := range [][]heramodel.OrchView{r.model.Pinned, r.model.Active, r.model.Archived} {
 		for i := range sec {
 			if resolves(sec[i].ID, map[int64]bool{}) {
 				reach[sec[i].ID] = true
@@ -1138,7 +1140,7 @@ func (r *Rail) structuralReach(canonical map[int64]canonParent) map[int64]bool {
 // expanded, its non-coordinator roles nested via appendOrchWorkers. The header
 // is rendered once per build (placed guard). dim propagates an archived
 // placement down the whole subtree.
-func (r *Rail) appendOrch(o *OrchView, depth int, dim bool, canonical map[int64]canonParent, placed map[int64]bool) {
+func (r *Rail) appendOrch(o *heramodel.OrchView, depth int, dim bool, canonical map[int64]heramodel.CanonParent, placed map[int64]bool) {
 	if placed[o.ID] {
 		return
 	}
@@ -1192,8 +1194,8 @@ func (r *Rail) appendOrch(o *OrchView, depth int, dim bool, canonical map[int64]
 // Pinned section — so the reveal leaves them alone rather than layering a
 // third), and the per-coordinator Archive expando itself is never rendered
 // in reveal mode.
-func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, canonical map[int64]canonParent, placed map[int64]bool, revealOnly bool) {
-	var archived []*RoleView
+func (r *Rail) appendOrchWorkers(o *heramodel.OrchView, depth int, dim bool, canonical map[int64]heramodel.CanonParent, placed map[int64]bool, revealOnly bool) {
+	var archived []*heramodel.RoleView
 	for i := range o.Roles {
 		w := &o.Roles[i]
 		if w.Kind == db.HeraKindCoordinator {
@@ -1244,11 +1246,11 @@ func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, canonical map
 	// the worker depth, ONLY when o is its canonical coordinator-spawn parent. The
 	// canonical guard (plus the placed guard) breaks the shared-task symmetry so a
 	// multi-parent child renders under exactly one parent regardless of fold.
-	for _, child := range r.model.coordBridgeChildren(o) {
+	for _, child := range r.model.CoordBridgeChildren(o) {
 		if placed[child.ID] {
 			continue
 		}
-		if cp, ok := canonical[child.ID]; !ok || !cp.coordSpawn || cp.orchID != o.ID {
+		if cp, ok := canonical[child.ID]; !ok || !cp.CoordSpawn || cp.OrchID != o.ID {
 			continue
 		}
 		if revealOnly {
@@ -1306,7 +1308,7 @@ func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, canonical map
 // into — so the child's own fold state is not meaningful here (there is
 // nothing visible for the operator to have toggled), unlike appendOrch's
 // normal collapsed-vs-expanded gate at the top level.
-func (r *Rail) appendOrchRevealPath(o *OrchView, depth int, dim bool, canonical map[int64]canonParent, placed map[int64]bool) {
+func (r *Rail) appendOrchRevealPath(o *heramodel.OrchView, depth int, dim bool, canonical map[int64]heramodel.CanonParent, placed map[int64]bool) {
 	if placed[o.ID] {
 		return
 	}
@@ -1331,19 +1333,19 @@ func (r *Rail) appendOrchRevealPath(o *OrchView, depth int, dim bool, canonical 
 // first, but only the canonical assignment is honoured here. Coordinator-kind,
 // torn-down, and already-placed links do not bridge. Shared by appendOrchWorkers
 // (hoist-vs-nest decision) and appendWorkerRow (the nest itself) so both agree.
-func (r *Rail) workerBridgeChild(ownerID int64, w *RoleView, canonical map[int64]canonParent, placed map[int64]bool) *OrchView {
-	if w.Kind == db.HeraKindCoordinator || !roleBridges(w) {
+func (r *Rail) workerBridgeChild(ownerID int64, w *heramodel.RoleView, canonical map[int64]heramodel.CanonParent, placed map[int64]bool) *heramodel.OrchView {
+	if w.Kind == db.HeraKindCoordinator || !heramodel.RoleBridges(w) {
 		return nil
 	}
-	ck := bridgeTaskID(w)
+	ck := heramodel.BridgeTaskID(w)
 	if ck == "" {
 		return nil
 	}
-	for _, sec := range [][]OrchView{r.model.Pinned, r.model.Active, r.model.Archived} {
+	for _, sec := range [][]heramodel.OrchView{r.model.Pinned, r.model.Active, r.model.Archived} {
 		for i := range sec {
 			c := &sec[i]
 			cp, ok := canonical[c.ID]
-			if !ok || cp.coordSpawn || cp.orchID != ownerID || placed[c.ID] {
+			if !ok || cp.CoordSpawn || cp.OrchID != ownerID || placed[c.ID] {
 				continue
 			}
 			if c.CoordBridgeTaskID() == ck {
@@ -1367,7 +1369,7 @@ func (r *Rail) workerBridgeChild(ownerID int64, w *RoleView, canonical map[int64
 // child's own collapse flag, mirroring appendOrchRevealPath's rationale (the
 // caller already gated this row on w.SubtreeNeedsInput being true before
 // calling appendWorkerRow, so the child is known to need the reveal).
-func (r *Rail) appendWorkerRow(ownerID int64, w *RoleView, depth int, dim bool, canonical map[int64]canonParent, placed map[int64]bool, revealOnly bool) {
+func (r *Rail) appendWorkerRow(ownerID int64, w *heramodel.RoleView, depth int, dim bool, canonical map[int64]heramodel.CanonParent, placed map[int64]bool, revealOnly bool) {
 	rowDim := dim || w.Archived
 	child := r.workerBridgeChild(ownerID, w, canonical, placed)
 	// Under an active filter, only bridge a VISIBLE child: a non-matching subtree
@@ -1411,7 +1413,7 @@ func (r *Rail) appendWorkerRow(ownerID int64, w *RoleView, depth int, dim bool, 
 
 // pinnedRoleEntry pairs a floated pinned role with its computed lineage trail.
 type pinnedRoleEntry struct {
-	role       *RoleView
+	role       *heramodel.RoleView
 	breadcrumb string
 }
 
@@ -1425,10 +1427,10 @@ type pinnedRoleEntry struct {
 // role is kept only when its own name matches OR it bridges a filter-visible
 // child. A role whose orchestrator cannot be resolved for the breadcrumb is
 // skipped (logged) rather than rendered without lineage.
-func (r *Rail) collectPinnedRoles(canonical map[int64]canonParent) []pinnedRoleEntry {
+func (r *Rail) collectPinnedRoles(canonical map[int64]heramodel.CanonParent) []pinnedRoleEntry {
 	var out []pinnedRoleEntry
 	floatSet := make(map[int64]bool)
-	for _, sec := range [][]OrchView{r.model.Active, r.model.Archived} {
+	for _, sec := range [][]heramodel.OrchView{r.model.Active, r.model.Archived} {
 		for i := range sec {
 			o := &sec[i]
 			for j := range o.Roles {
@@ -1461,10 +1463,10 @@ func (r *Rail) collectPinnedRoles(canonical map[int64]canonParent) []pinnedRoleE
 // pinnedBreadcrumb builds a floated role's lineage trail: the orchestrator-name
 // chain from the root down to and including the role's own orchestrator
 // (role.OrchID), joined with " › " and trailing " › " (e.g. "root › sub › ").
-// The chain is walked via canonicalParents — the SAME deterministic, fold-
+// The chain is walked via CanonicalParents — the SAME deterministic, fold-
 // independent parentage the rail nests by — so the trail matches the rendered
 // tree. Returns "" when any orchestrator on the chain cannot be resolved.
-func (r *Rail) pinnedBreadcrumb(rv *RoleView, canonical map[int64]canonParent) string {
+func (r *Rail) pinnedBreadcrumb(rv *heramodel.RoleView, canonical map[int64]heramodel.CanonParent) string {
 	var names []string
 	seen := make(map[int64]bool)
 	for id := rv.OrchID; id != 0; {
@@ -1481,7 +1483,7 @@ func (r *Rail) pinnedBreadcrumb(rv *RoleView, canonical map[int64]canonParent) s
 		if !ok {
 			break // reached a top-level root
 		}
-		id = cp.orchID
+		id = cp.OrchID
 	}
 	var b strings.Builder
 	for i := len(names) - 1; i >= 0; i-- {
@@ -1498,7 +1500,7 @@ func (r *Rail) pinnedBreadcrumb(rv *RoleView, canonical map[int64]canonParent) s
 // Space folds it and Ctrl+D cascades), and the child's subtree is hoisted
 // beneath the entry and marked placed so the active passes render it exactly
 // once (full parity with the plugin's BUG-021).
-func (r *Rail) appendPinnedRole(pe pinnedRoleEntry, canonical map[int64]canonParent, placed map[int64]bool) {
+func (r *Rail) appendPinnedRole(pe pinnedRoleEntry, canonical map[int64]heramodel.CanonParent, placed map[int64]bool) {
 	rv := pe.role
 	child := r.workerBridgeChild(rv.OrchID, rv, canonical, placed)
 	if child != nil && r.filterActive() && !r.filterVis[child.ID] {
@@ -1729,7 +1731,7 @@ func (r *Rail) SelectByTaskID(taskID string) bool {
 
 // EnsureAncestorsExpanded uncollapses orchID and every ancestor on its canonical
 // parent chain up to the root, so a row nested under folded coordinator(s) becomes
-// visible. It walks canonicalParents() — the SAME fold-independent parentage the
+// visible. It walks CanonicalParents() — the SAME fold-independent parentage the
 // rail nests by — with a visited guard against cycles, handling deeply nested
 // sub-coordinators (the WHOLE chain, not just the immediate parent). When any fold
 // actually flips it rebuilds the rows and persists the change, so the expand
@@ -1740,7 +1742,7 @@ func (r *Rail) EnsureAncestorsExpanded(orchID int64) {
 	if orchID == 0 {
 		return
 	}
-	canonical := r.model.canonicalParents()
+	canonical := r.model.CanonicalParents()
 	seen := make(map[int64]bool)
 	changed := false
 	for id := orchID; id != 0; {
@@ -1756,7 +1758,7 @@ func (r *Rail) EnsureAncestorsExpanded(orchID int64) {
 		if !ok {
 			break // reached a top-level root
 		}
-		id = cp.orchID
+		id = cp.OrchID
 	}
 	// Re-focus orchID's kanban group too (add-kanban-focus-fold): even when no
 	// per-orchestrator fold changed above, the target row still won't exist in
@@ -1805,13 +1807,13 @@ func (row railRow) needsInputTaskID() (string, bool) {
 		return "", false
 	}
 	if row.role != nil {
-		if row.role.needsInputOwn() && row.role.TaskID != "" {
+		if row.role.ShowsNeedsInput() && row.role.TaskID != "" {
 			return row.role.TaskID, true
 		}
 		return "", false
 	}
 	if row.kind == rrOrch && row.orch != nil {
-		if coord := row.orch.CoordRole(); coord != nil && coord.needsInputOwn() && coord.TaskID != "" {
+		if coord := row.orch.CoordRole(); coord != nil && coord.ShowsNeedsInput() && coord.TaskID != "" {
 			return coord.TaskID, true
 		}
 	}
@@ -1849,17 +1851,17 @@ func (r *Rail) NextNeedsInputTaskID() (string, bool) {
 	return "", false
 }
 
-// Selected returns the RoleView under the cursor, or nil when the cursor is on
+// Selected returns the heramodel.RoleView under the cursor, or nil when the cursor is on
 // a header/orchestrator. 6b uses this to bind the panes.
-func (r *Rail) Selected() *RoleView {
+func (r *Rail) Selected() *heramodel.RoleView {
 	if r.cursor < 0 || r.cursor >= len(r.rows) {
 		return nil
 	}
 	return r.rows[r.cursor].role
 }
 
-// SelectedOrch returns the OrchView under the cursor, or nil.
-func (r *Rail) SelectedOrch() *OrchView {
+// SelectedOrch returns the heramodel.OrchView under the cursor, or nil.
+func (r *Rail) SelectedOrch() *heramodel.OrchView {
 	if r.cursor < 0 || r.cursor >= len(r.rows) {
 		return nil
 	}
@@ -1872,13 +1874,13 @@ func (r *Rail) SelectedOrch() *OrchView {
 // (each via a distinct role with a distinct OrchID) — or taken directly when
 // the cursor rests on an orchestrator header. 6b binds the panes off this; 6c
 // reads it for mutations via the orchestrator disambiguator.
-func (r *Rail) Selection() Selection {
+func (r *Rail) Selection() heramodel.Selection {
 	role := r.Selected()
 	orch := r.SelectedOrch()
 	if orch == nil && role != nil {
 		orch = r.model.OrchByID(role.OrchID)
 	}
-	sel := Selection{Role: role, Orch: orch}
+	sel := heramodel.Selection{Role: role, Orch: orch}
 	if orch != nil {
 		_, hasParent := r.canonical[orch.ID]
 		sel.TopLevelOrch = !hasParent
@@ -1981,7 +1983,7 @@ func (r *Rail) drawRow(screen tcell.Screen, x, y, w int, row railRow, selected b
 	const marker = '›'
 	indent := row.depth * 2
 
-	// Selection marker gutter. The continuation (line 2) of a two-line pinned
+	// heramodel.Selection marker gutter. The continuation (line 2) of a two-line pinned
 	// entry never draws the '›' marker — the cursor anchors on line 1 — but its
 	// text still renders selected-style when line 1 is selected.
 	gutterStyle := theme.StyleDimmed
@@ -2065,7 +2067,7 @@ func (r *Rail) drawOrchRow(screen tcell.Screen, x, y, w int, row railRow, select
 	}
 	// A coordinator-less orchestrator (e.g. its coordinator role was nuked) has
 	// no "own" signal and renders no needs-input glyph on its header at all —
-	// the BUG-028 fallback that once surfaced OrchView.SubtreeNeedsInput directly
+	// the BUG-028 fallback that once surfaced heramodel.OrchView.SubtreeNeedsInput directly
 	// here was retired by remove-needs-input-rollup-glyph. A blocked descendant
 	// stays visible via its own row, peeked through the closed fold by the
 	// partial-fold-reveal mechanism below.
@@ -2091,7 +2093,7 @@ func (r *Rail) drawOrchRow(screen tcell.Screen, x, y, w int, row railRow, select
 	// entirely when nothing in the subtree has ever accrued anything — never
 	// a misleading "$0.00" (Decision 6).
 	if cost, any := r.model.SubtreeCostUSD(o.ID); any {
-		count += " · " + formatCostUSD(cost)
+		count += " · " + heramodel.FormatCostUSD(cost)
 	}
 	if len(label)+len(count) > remaining {
 		widget.DrawText(screen, col, y, remaining, label, nameStyle)
@@ -2193,7 +2195,7 @@ func (r *Rail) drawRoleRow(screen tcell.Screen, x, y, w int, row railRow, select
 // right now. reserve is independent of the current percentage so a name
 // never reflows the instant a row crosses the 40% threshold; glyph is 0
 // (draw nothing) when the role is not live, is archived, or is under 40%.
-func contextIndicator(role *RoleView) (reserve bool, glyph rune, style tcell.Style) {
+func contextIndicator(role *heramodel.RoleView) (reserve bool, glyph rune, style tcell.Style) {
 	if role == nil || role.Kind == db.HeraKindCoordinator {
 		return false, 0, tcell.StyleDefault
 	}
@@ -2238,7 +2240,7 @@ func (r *Rail) drawPinnedBreadcrumbRow(screen tcell.Screen, x, y, w int, row rai
 // preceding breadcrumb line (the cursor anchor) is selected, dimmed when the
 // role is archived OR the entry is an ancestry-only filter heading (BUG-028-RAIL),
 // normal otherwise (add-hera-pin-nonroot).
-func (r *Rail) drawBreadcrumbNameRow(screen tcell.Screen, x, y, w int, role *RoleView, ancestryOnly bool, selected bool) {
+func (r *Rail) drawBreadcrumbNameRow(screen tcell.Screen, x, y, w int, role *heramodel.RoleView, ancestryOnly bool, selected bool) {
 	if role == nil {
 		return
 	}
@@ -2291,12 +2293,12 @@ func chevron(collapsed bool) string {
 }
 
 // kanbanStatusOf returns o's kanban status, defaulting an unset/empty value to
-// active (add-hera-kanban-status). BuildModel always populates KanbanStatus
+// active (add-hera-kanban-status). heramodel.BuildModel always populates KanbanStatus
 // from the DB's NOT NULL DEFAULT 'active' column, so this default only matters
-// for hand-built test fixtures (and any other OrchView constructed outside
-// BuildModel) that never set the field — treating them as active preserves
+// for hand-built test fixtures (and any other heramodel.OrchView constructed outside
+// heramodel.BuildModel) that never set the field — treating them as active preserves
 // their historical headerless-active-group placement.
-func kanbanStatusOf(o *OrchView) db.HeraKanbanStatus {
+func kanbanStatusOf(o *heramodel.OrchView) db.HeraKanbanStatus {
 	if o.KanbanStatus == "" {
 		return db.HeraKanbanActive
 	}
@@ -2325,10 +2327,10 @@ func kanbanStatusOf(o *OrchView) db.HeraKanbanStatus {
 // Status "working" field — that field is a manual/MCP-set ladder value that goes
 // stale (it stays "working" after a session idles, stops, or dies), so binding
 // the spinner to it made idle/stopped/dead roles animate. See BUG-003.
-func statusIcon(role *RoleView, dim bool, frame int) (rune, tcell.Style) {
+func statusIcon(role *heramodel.RoleView, dim bool, frame int) (rune, tcell.Style) {
 	// Single source of truth shared with the plan-view node projection
 	// (widget.RoleStatusIcon) so the two surfaces render 1:1 (BUG-007). The
-	// precedence + vocabulary live in widget; this only maps RoleView → inputs.
+	// precedence + vocabulary live in widget; this only maps heramodel.RoleView → inputs.
 	// ShowsNeedsInput is the role's OWN needs-input signal only
 	// (remove-needs-input-rollup-glyph); IsActive is the honest
 	// live-running-and-not-idle "working" signal (Live && SessionRunning &&
@@ -2336,10 +2338,10 @@ func statusIcon(role *RoleView, dim bool, frame int) (rune, tcell.Style) {
 	return widget.RoleStatusIcon(roleStatusInputs(role), dim, frame)
 }
 
-// roleStatusInputs maps a RoleView to the primitive signals the shared
+// roleStatusInputs maps a heramodel.RoleView to the primitive signals the shared
 // classifier switches on. Kept next to statusIcon so the rail's contract is
-// visible; the plan-view projection builds the same inputs from its own RoleView.
-func roleStatusInputs(role *RoleView) widget.RoleStatusInputs {
+// visible; the plan-view projection builds the same inputs from its own heramodel.RoleView.
+func roleStatusInputs(role *heramodel.RoleView) widget.RoleStatusInputs {
 	return widget.RoleStatusInputs{
 		// Accepted is a worker/freelance-only signal (add-hera-accept-lifecycle):
 		// hera_accept and the gater's auto-accept both act on a WORKER's bound
@@ -2463,7 +2465,7 @@ func (r *Rail) enterFilter() {
 // handleFilterKey routes a keystroke while in search INPUT mode. Esc and Enter
 // both fully clear the filter via ClearFilter — Enter, at the bare-Rail level,
 // can't itself perform the "jump into the agent" half (that needs a HeraPage
-// wrapper's Selection/OnReattach wiring — see page.go's handleRailMutation,
+// wrapper's heramodel.Selection/OnReattach wiring — see page.go's handleRailMutation,
 // which intercepts Enter FIRST and resolves the jump before calling
 // ClearFilter). Up/Down move the cursor WITHIN the filtered rows without
 // leaving input mode (so the operator can select a row while still

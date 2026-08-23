@@ -1,99 +1,10 @@
 import ArgusKit
 import SwiftUI
 
-/// The read-only Hera orchestration roster (`GET /api/hera`,
-/// `internal/api/hera.go`): one section per orchestrator (coordinator +
-/// worker roles) plus a separate Freelance section, mirroring the web SPA's
-/// Hera tab (`internal/api/static/index.html`, `loadHera()`). Hera is
-/// read-only over REST by design — there is no mutation UI here.
-///
-/// Toggled from the main window's toolbar in place of ``DetailView`` (see
-/// ``AppState/showingHera``). Auto-refreshes every ~5s while on screen; the
-/// poll loop lives in a `.task` modifier, which SwiftUI cancels automatically
-/// when the view leaves the hierarchy, so there is nothing bespoke to tear
-/// down on hide.
-struct HeraTab: View {
-    @Environment(AppState.self) private var app
-
-    @State private var roster: HeraRoster?
-    @State private var isLoading = true
-    @State private var errorMessage: String?
-
-    private static let pollInterval: Duration = .seconds(5)
-
-    var body: some View {
-        content
-            .navigationTitle("Projects")
-            .task {
-                await load()
-                while !_Concurrency.Task.isCancelled {
-                    try? await _Concurrency.Task.sleep(for: Self.pollInterval)
-                    if _Concurrency.Task.isCancelled { break }
-                    await load(silent: true)
-                }
-            }
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        if let errorMessage, roster == nil {
-            ContentUnavailableView {
-                Label("Couldn't load Hera roster", systemImage: "exclamationmark.triangle")
-            } description: {
-                Text(errorMessage)
-            } actions: {
-                Button("Retry") { _Concurrency.Task { await load() } }
-            }
-        } else if isLoading && roster == nil {
-            ProgressView("Loading roster…")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let roster, roster.orchestrators.isEmpty && roster.freelance.isEmpty {
-            ContentUnavailableView {
-                Label("No active orchestrations", systemImage: "point.3.filled.connected.trianglepath.dotted")
-            }
-        } else if let roster {
-            List {
-                ForEach(roster.orchestrators) { orch in
-                    Section {
-                        ForEach(orch.roles) { role in
-                            HeraRoleRow(role: role)
-                        }
-                    } header: {
-                        HeraOrchestratorHeader(orch: orch)
-                    }
-                }
-                if !roster.freelance.isEmpty {
-                    Section("Freelance") {
-                        ForEach(roster.freelance) { role in
-                            HeraRoleRow(role: role)
-                        }
-                    }
-                }
-            }
-            .listStyle(.inset)
-        }
-    }
-
-    private func load(silent: Bool = false) async {
-        if !silent { isLoading = true }
-        do {
-            roster = try await app.heraRoster()
-            errorMessage = nil
-        } catch is CancellationError {
-            return
-        } catch {
-            // Never blank out an already-loaded roster on a transient poll
-            // failure — only the initial load's error state gates the
-            // full-screen error view (see `roster == nil` above).
-            errorMessage = AppState.describe(error)
-        }
-        isLoading = false
-    }
-}
-
 /// An orchestrator section header: the coordinator's name/bound task, pinned
-/// marker, and role count.
-private struct HeraOrchestratorHeader: View {
+/// marker, and role count. Shared by ``HeraDetailView``'s coordinator
+/// roster-list details region (`add-mac-hera-rail-toggle`, Stage 5).
+struct HeraOrchestratorHeader: View {
     let orch: HeraOrchestrator
 
     var body: some View {
@@ -119,9 +30,13 @@ private struct HeraOrchestratorHeader: View {
 }
 
 /// One role row: kind badge, role name, bound task (if any) with a status
-/// icon, and needs-input / ready-to-close markers. Clicking a row whose role
-/// has a live binding selects that task in the main task list.
-private struct HeraRoleRow: View {
+/// icon, and needs-input / ready-to-close markers. Shared by
+/// ``HeraDetailView``'s coordinator roster-list details region
+/// (`add-mac-hera-rail-toggle`, Stage 5). Clicking a row selects that role in
+/// the Hera-tree sidebar mode via ``AppState/selectHeraRole(_:)`` — including
+/// an unbound role, which ``HeraDetailPaneResolver`` renders as "Unbound"
+/// rather than requiring a live binding to be selectable.
+struct HeraRoleRow: View {
     let role: HeraRole
 
     @Environment(AppState.self) private var app
@@ -133,8 +48,7 @@ private struct HeraRoleRow: View {
 
     var body: some View {
         Button {
-            guard role.live, !role.taskID.isEmpty else { return }
-            app.selectHeraTask(role.taskID)
+            app.selectHeraRole(role.roleID)
         } label: {
             HStack(spacing: 8) {
                 KindBadge(kind: role.kind)
@@ -174,12 +88,12 @@ private struct HeraRoleRow: View {
             }
         }
         .buttonStyle(.plain)
-        .disabled(!role.live || role.taskID.isEmpty)
     }
 }
 
-/// Small kind badge (coordinator / worker / freelance).
-private struct KindBadge: View {
+/// Small kind badge (coordinator / worker / freelance). Shared by
+/// ``HeraRoleRow`` and the Hera-tree sidebar's own role rows.
+struct KindBadge: View {
     let kind: String
 
     var body: some View {

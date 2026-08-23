@@ -3,32 +3,34 @@ package hera
 import (
 	"testing"
 
+	heramodel "github.com/drn/argus/internal/hera/model"
+
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
 
-// selFor builds a Selection over a freshly-read RoleView for the given role id,
+// selFor builds a heramodel.Selection over a freshly-read heramodel.RoleView for the given role id,
 // resolving its orchestrator. Mirrors what the rail hands the mutation layer.
-func roleSel(t *testing.T, d *db.DB, role *db.HeraRole, taskID string) Selection {
+func roleSel(t *testing.T, d *db.DB, role *db.HeraRole, taskID string) heramodel.Selection {
 	t.Helper()
-	rv := &RoleView{RoleID: role.ID, OrchID: role.OrchestratorID, Name: role.Name, Kind: role.Kind, TaskID: taskID, Live: taskID != ""}
+	rv := &heramodel.RoleView{RoleID: role.ID, OrchID: role.OrchestratorID, Name: role.Name, Kind: role.Kind, TaskID: taskID, Live: taskID != ""}
 	if st, err := d.HeraRoleStatusFor(role.ID); err == nil {
 		rv.Status = st.Status
 		rv.HasStatus = true
 	}
-	return Selection{Role: rv}
+	return heramodel.Selection{Role: rv}
 }
 
-func orchSel(orchID int64, name string) Selection {
-	return Selection{Orch: &OrchView{ID: orchID, Name: name}}
+func orchSel(orchID int64, name string) heramodel.Selection {
+	return heramodel.Selection{Orch: &heramodel.OrchView{ID: orchID, Name: name}}
 }
 
 // topLevelOrchSel builds a HEADER selection for a TOP-LEVEL orchestrator —
 // what the rail hands KanbanStep when the cursor rests on a root orchestrator
 // header. kanban is the orchestrator's current kanban status.
-func topLevelOrchSel(orchID int64, name string, kanban db.HeraKanbanStatus) Selection {
-	return Selection{Orch: &OrchView{ID: orchID, Name: name, KanbanStatus: kanban}, TopLevelOrch: true}
+func topLevelOrchSel(orchID int64, name string, kanban db.HeraKanbanStatus) heramodel.Selection {
+	return heramodel.Selection{Orch: &heramodel.OrchView{ID: orchID, Name: name, KanbanStatus: kanban}, TopLevelOrch: true}
 }
 
 func TestOps_ArchiveToggle_Role(t *testing.T) {
@@ -112,7 +114,7 @@ func TestOps_Rename_ConflictSurfaces(t *testing.T) {
 	role := seedBoundRole(t, d, o, "w", db.HeraKindWorker, "")
 	ops := NewOps(d)
 
-	err := ops.Rename(Selection{Role: &RoleView{RoleID: role.ID, OrchID: o, Name: "w", Kind: db.HeraKindWorker}}, "taken")
+	err := ops.Rename(heramodel.Selection{Role: &heramodel.RoleView{RoleID: role.ID, OrchID: o, Name: "w", Kind: db.HeraKindWorker}}, "taken")
 	testutil.ErrorIs(t, err, db.ErrHeraNameConflict)
 }
 
@@ -166,14 +168,14 @@ func TestOps_StepStatus_CoordinatorLessHeaderNoop(t *testing.T) {
 // coordHeaderSel builds a HEADER selection (Role nil) whose orchestrator's
 // folded coordinator role is role — what the rail hands the mutation layer when
 // the cursor lands on an orchestrator header.
-func coordHeaderSel(t *testing.T, d *db.DB, orchID int64, role *db.HeraRole, taskID string) Selection {
+func coordHeaderSel(t *testing.T, d *db.DB, orchID int64, role *db.HeraRole, taskID string) heramodel.Selection {
 	t.Helper()
-	rv := RoleView{RoleID: role.ID, OrchID: orchID, Name: role.Name, Kind: role.Kind, TaskID: taskID, Live: taskID != ""}
+	rv := heramodel.RoleView{RoleID: role.ID, OrchID: orchID, Name: role.Name, Kind: role.Kind, TaskID: taskID, Live: taskID != ""}
 	if st, err := d.HeraRoleStatusFor(role.ID); err == nil {
 		rv.Status = st.Status
 		rv.HasStatus = true
 	}
-	return Selection{Orch: &OrchView{ID: orchID, Name: "o", Roles: []RoleView{rv}}}
+	return heramodel.Selection{Orch: &heramodel.OrchView{ID: orchID, Name: "o", Roles: []heramodel.RoleView{rv}}}
 }
 
 // BUG-014: s/S cycle the coordinator's hera status from a header selection, and
@@ -210,7 +212,7 @@ func TestOps_NukeRole(t *testing.T) {
 	role := seedBoundRole(t, d, o, "w", db.HeraKindWorker, "t1")
 	ops := NewOps(d)
 
-	rv := &RoleView{RoleID: role.ID, OrchID: o, Name: role.Name, Kind: db.HeraKindWorker, TaskID: "t1", Live: true}
+	rv := &heramodel.RoleView{RoleID: role.ID, OrchID: o, Name: role.Name, Kind: db.HeraKindWorker, TaskID: "t1", Live: true}
 	testutil.NoError(t, ops.NukeRole(rv))
 
 	// Binding ended (no live binding for the role).
@@ -267,7 +269,7 @@ func TestOps_MultiBindingIsolation(t *testing.T) {
 	testutil.NoError(t, err)
 
 	ops := NewOps(d)
-	rvA := &RoleView{RoleID: roleA.ID, OrchID: a, Name: roleA.Name, Kind: db.HeraKindWorker, TaskID: "shared", Live: true}
+	rvA := &heramodel.RoleView{RoleID: roleA.ID, OrchID: a, Name: roleA.Name, Kind: db.HeraKindWorker, TaskID: "shared", Live: true}
 	testutil.NoError(t, ops.NukeRole(rvA))
 
 	// Role in A nuked (invisible to A's list); role in B (same task) untouched + live.
@@ -326,10 +328,10 @@ func TestOps_KanbanStep_NoopOnNonTopLevel(t *testing.T) {
 	testutil.ErrorIs(t, ops.KanbanStep(roleSelection, +1), errNoTarget)
 
 	// A header selection whose orchestrator is NOT top-level (nested).
-	testutil.ErrorIs(t, ops.KanbanStep(Selection{Orch: &OrchView{ID: o, Name: "kb"}, TopLevelOrch: false}, +1), errNoTarget)
+	testutil.ErrorIs(t, ops.KanbanStep(heramodel.Selection{Orch: &heramodel.OrchView{ID: o, Name: "kb"}, TopLevelOrch: false}, +1), errNoTarget)
 
 	// Empty selection.
-	testutil.ErrorIs(t, ops.KanbanStep(Selection{}, +1), errNoTarget)
+	testutil.ErrorIs(t, ops.KanbanStep(heramodel.Selection{}, +1), errNoTarget)
 
 	// Confirm none of the no-ops actually wrote anything.
 	got, err := d.HeraOrchestrator(o)
@@ -340,10 +342,10 @@ func TestOps_KanbanStep_NoopOnNonTopLevel(t *testing.T) {
 func TestOps_EmptySelectionNoTarget(t *testing.T) {
 	d := memDB(t)
 	ops := NewOps(d)
-	_, archiveErr := ops.ArchiveToggle(Selection{})
+	_, archiveErr := ops.ArchiveToggle(heramodel.Selection{})
 	testutil.ErrorIs(t, archiveErr, errNoTarget)
-	testutil.ErrorIs(t, ops.PinToggle(Selection{}), errNoTarget)
-	testutil.ErrorIs(t, ops.Rename(Selection{}, "x"), errNoTarget)
+	testutil.ErrorIs(t, ops.PinToggle(heramodel.Selection{}), errNoTarget)
+	testutil.ErrorIs(t, ops.Rename(heramodel.Selection{}, "x"), errNoTarget)
 	testutil.ErrorIs(t, ops.NukeRole(nil), errNoTarget)
-	testutil.ErrorIs(t, ops.KanbanStep(Selection{}, +1), errNoTarget)
+	testutil.ErrorIs(t, ops.KanbanStep(heramodel.Selection{}, +1), errNoTarget)
 }

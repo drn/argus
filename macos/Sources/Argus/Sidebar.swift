@@ -1,9 +1,14 @@
 import SwiftUI
 import ArgusKit
 
-/// The task list, grouped into project folders (mirroring the TUI's task
-/// list — see `internal/tui/taskview/tasklist.go`'s `groupByProject`/`buildRows`):
-/// one `Section` per project, holding tasks of every non-archived status.
+/// The sidebar: a mode picker (``AppState/sidebarMode``,
+/// `add-mac-hera-rail-toggle`) switching between the flat task list and
+/// ``HeraTreeSidebar``'s nested Hera tree.
+///
+/// The flat task list (``taskList``) groups tasks into project folders
+/// (mirroring the TUI's task list — see
+/// `internal/tui/taskview/tasklist.go`'s `groupByProject`/`buildRows`): one
+/// `Section` per project, holding tasks of every non-archived status.
 /// Archived tasks live in their own collapsed section at the bottom, outside
 /// the folders, matching the TUI's separate Archive section.
 ///
@@ -17,7 +22,9 @@ struct Sidebar: View {
 
     /// The sidebar's filter bar (see ``filterBar``): free-text substring
     /// filter over task name, view-local like ``archivedExpanded`` since
-    /// neither needs to survive past this view's lifetime.
+    /// neither needs to survive past this view's lifetime. Only shown in the
+    /// flat task-list mode — filtering by task name has no meaning in the
+    /// Hera tree.
     @State private var filterText = ""
     /// Whether hera-managed tasks (live Hera worker/coordinator bindings,
     /// ``AppState/heraManagedTaskIDs``) are shown. Defaults to `true` — every
@@ -31,6 +38,35 @@ struct Sidebar: View {
     var body: some View {
         @Bindable var app = app
         VStack(spacing: 0) {
+            Picker("Sidebar Mode", selection: $app.sidebarMode) {
+                Text("Tasks").tag(AppState.SidebarMode.tasks)
+                Text("Projects").tag(AppState.SidebarMode.hera)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+
+            switch app.sidebarMode {
+            case .tasks:
+                taskList
+            case .hera:
+                HeraTreeSidebar()
+            }
+        }
+        .navigationTitle("Argus")
+        // Focus-scoped: only fires while the list itself has keyboard focus,
+        // so a plain Delete/Backspace typed into the terminal pane (which is
+        // most of what Delete is for, in a shell) never reaches this.
+        .onDeleteCommand {
+            guard let task = app.selectedTask else { return }
+            app.pendingConfirmation = .delete(task)
+        }
+    }
+
+    private var taskList: some View {
+        @Bindable var app = app
+        return VStack(spacing: 0) {
             filterBar
             List(selection: $app.selectedTaskID) {
                 ForEach(filteredFolders(app.tasksByFolder)) { folder in
@@ -57,14 +93,6 @@ struct Sidebar: View {
                 }
             }
             .listStyle(.sidebar)
-        }
-        .navigationTitle("Argus")
-        // Focus-scoped: only fires while the list itself has keyboard focus,
-        // so a plain Delete/Backspace typed into the terminal pane (which is
-        // most of what Delete is for, in a shell) never reaches this.
-        .onDeleteCommand {
-            guard let task = app.selectedTask else { return }
-            app.pendingConfirmation = .delete(task)
         }
     }
 

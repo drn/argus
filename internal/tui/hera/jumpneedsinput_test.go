@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/db"
+	heramodel "github.com/drn/argus/internal/hera/model"
 	"github.com/drn/argus/internal/testutil"
 )
 
@@ -133,12 +134,12 @@ func TestHeraPage_JumpToNextNeedsInput_TopLevelCoordinatorOwnNeed(t *testing.T) 
 // below exercises directly.
 func TestHeraPage_JumpToNextNeedsInput_CoordSpawnedNestedSubteamOwnNeed(t *testing.T) {
 	p := coordOf(1, "P", 100, "tc",
-		RoleView{RoleID: 101, Name: "pw", Kind: db.HeraKindWorker, Live: true, TaskID: "tpw", BridgeTaskID: "tpw"})
+		heramodel.RoleView{RoleID: 101, Name: "pw", Kind: db.HeraKindWorker, Live: true, TaskID: "tpw", BridgeTaskID: "tpw"})
 	q := coordOf(2, "Q", 200, "tc",
-		RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
-	m := Model{Active: []OrchView{p, q}}
+		heramodel.RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
+	m := heramodel.Model{Active: []heramodel.OrchView{p, q}}
 	roleByName(t, &m, 2, "coord").NeedsInput = true // only Q's own coordinator need
-	m.rollupNeedsInput()                            // propagates SubtreeNeedsInput for the fold-reveal
+	m.RollupNeedsInput()                            // propagates SubtreeNeedsInput for the fold-reveal
 
 	page := NewHeraPage(memDB(t))
 	page.Rail().SetModel(m)
@@ -169,10 +170,10 @@ func TestHeraPage_JumpToNextNeedsInput_CoordSpawnedNestedSubteamOwnNeed(t *testi
 // starts — never alternate between P and Q, never crash, never spin.
 func TestRail_SelectByTaskID_SharedTaskMultiHeaderConsistentlyResolvesFirstMatch(t *testing.T) {
 	p := coordOf(1, "P", 100, "tc",
-		RoleView{RoleID: 101, Name: "pw", Kind: db.HeraKindWorker, Live: true, TaskID: "tpw", BridgeTaskID: "tpw"})
+		heramodel.RoleView{RoleID: 101, Name: "pw", Kind: db.HeraKindWorker, Live: true, TaskID: "tpw", BridgeTaskID: "tpw"})
 	q := coordOf(2, "Q", 200, "tc",
-		RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
-	m := Model{Active: []OrchView{p, q}}
+		heramodel.RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
+	m := heramodel.Model{Active: []heramodel.OrchView{p, q}}
 	roleByName(t, &m, 1, "coord").NeedsInput = true
 	roleByName(t, &m, 2, "coord").NeedsInput = true
 
@@ -192,7 +193,7 @@ func TestRail_SelectByTaskID_SharedTaskMultiHeaderConsistentlyResolvesFirstMatch
 		if sel.Orch != nil {
 			testutil.Equal(t, sel.Orch.Name, "P") // always the first match, never Q
 		} else {
-			t.Errorf("start=%d: Selection().Orch is nil", start)
+			t.Errorf("start=%d: heramodel.Selection().Orch is nil", start)
 		}
 	}
 }

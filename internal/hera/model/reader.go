@@ -1,4 +1,4 @@
-package hera
+package model
 
 import (
 	"github.com/drn/argus/internal/db"

@@ -1,3 +1,4 @@
+import ArgusKit
 import SwiftUI
 
 /// The root window: a sidebar of tasks + a detail pane, with a connection
@@ -14,8 +15,8 @@ struct ContentView: View {
             Sidebar()
                 .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 420)
         } detail: {
-            if app.showingHera {
-                HeraTab()
+            if app.sidebarMode == .hera {
+                HeraDetailView()
             } else {
                 DetailView()
             }
@@ -29,14 +30,6 @@ struct ContentView: View {
                 }
                 .keyboardShortcut("n", modifiers: .command)
                 .help("New Task (\u{2318}N)")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    app.showingHera.toggle()
-                } label: {
-                    Label("Projects", systemImage: "point.3.filled.connected.trianglepath.dotted")
-                }
-                .help("Toggle the Projects roster")
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {

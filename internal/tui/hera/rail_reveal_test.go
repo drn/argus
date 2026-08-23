@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/db"
+	heramodel "github.com/drn/argus/internal/hera/model"
 	"github.com/drn/argus/internal/testutil"
 )
 
@@ -29,12 +30,12 @@ func collapseByName(t *testing.T, r *Rail, name string) {
 // sibling stays fully hidden.
 func TestRail_RevealSingleNeedsInputLeafThroughClosedFold(t *testing.T) {
 	p := coordOf(1, "P", 100, "tp",
-		RoleView{RoleID: 101, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tw1", NeedsInput: true, SubtreeNeedsInput: true},
-		RoleView{RoleID: 102, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "tw2"},
+		heramodel.RoleView{RoleID: 101, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tw1", NeedsInput: true, SubtreeNeedsInput: true},
+		heramodel.RoleView{RoleID: 102, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "tw2"},
 	)
 	p.SubtreeNeedsInput = true
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{p}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p}})
 
 	// Expanded baseline: both workers visible.
 	testutil.Equal(t, r.depthOf("w1") >= 0, true)
@@ -58,17 +59,17 @@ func TestRail_RevealSingleNeedsInputLeafThroughClosedFold(t *testing.T) {
 // every sibling at every level hidden.
 func TestRail_RevealNestedClosedCoordinatorsFullChain(t *testing.T) {
 	p := coordOf(1, "P", 100, "tp",
-		RoleView{RoleID: 101, Name: "B", Kind: db.HeraKindWorker, Live: true, TaskID: "tb", BridgeTaskID: "tb", SubtreeNeedsInput: true},
-		RoleView{RoleID: 102, Name: "sib", Kind: db.HeraKindWorker, Live: true, TaskID: "tsib"},
+		heramodel.RoleView{RoleID: 101, Name: "B", Kind: db.HeraKindWorker, Live: true, TaskID: "tb", BridgeTaskID: "tb", SubtreeNeedsInput: true},
+		heramodel.RoleView{RoleID: 102, Name: "sib", Kind: db.HeraKindWorker, Live: true, TaskID: "tsib"},
 	)
 	p.SubtreeNeedsInput = true
 	b := coordOf(2, "B", 200, "tb",
-		RoleView{RoleID: 201, Name: "C", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", NeedsInput: true, SubtreeNeedsInput: true},
-		RoleView{RoleID: 202, Name: "bsib", Kind: db.HeraKindWorker, Live: true, TaskID: "tbsib"},
+		heramodel.RoleView{RoleID: 201, Name: "C", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", NeedsInput: true, SubtreeNeedsInput: true},
+		heramodel.RoleView{RoleID: 202, Name: "bsib", Kind: db.HeraKindWorker, Live: true, TaskID: "tbsib"},
 	)
 	b.SubtreeNeedsInput = true
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{p, b}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p, b}})
 
 	// Collapse the OUTER coordinator P first.
 	collapseByName(t, r, "P")
@@ -101,17 +102,17 @@ func TestRail_RevealNestedClosedCoordinatorsFullChain(t *testing.T) {
 // still collapsed, not in revealOnly mode" and rendered nothing beneath B.
 func TestRail_RevealSurvivesReexpandingParent(t *testing.T) {
 	p := coordOf(1, "P", 100, "tp",
-		RoleView{RoleID: 101, Name: "B", Kind: db.HeraKindWorker, Live: true, TaskID: "tb", BridgeTaskID: "tb", SubtreeNeedsInput: true},
-		RoleView{RoleID: 102, Name: "sib", Kind: db.HeraKindWorker, Live: true, TaskID: "tsib"},
+		heramodel.RoleView{RoleID: 101, Name: "B", Kind: db.HeraKindWorker, Live: true, TaskID: "tb", BridgeTaskID: "tb", SubtreeNeedsInput: true},
+		heramodel.RoleView{RoleID: 102, Name: "sib", Kind: db.HeraKindWorker, Live: true, TaskID: "tsib"},
 	)
 	p.SubtreeNeedsInput = true
 	b := coordOf(2, "B", 200, "tb",
-		RoleView{RoleID: 201, Name: "C", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", NeedsInput: true, SubtreeNeedsInput: true},
-		RoleView{RoleID: 202, Name: "bsib", Kind: db.HeraKindWorker, Live: true, TaskID: "tbsib"},
+		heramodel.RoleView{RoleID: 201, Name: "C", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", NeedsInput: true, SubtreeNeedsInput: true},
+		heramodel.RoleView{RoleID: 202, Name: "bsib", Kind: db.HeraKindWorker, Live: true, TaskID: "tbsib"},
 	)
 	b.SubtreeNeedsInput = true
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{p, b}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p, b}})
 
 	// Collapse P, then collapse B (nested), same setup as
 	// TestRail_RevealNestedClosedCoordinatorsFullChain.
@@ -143,13 +144,13 @@ func TestRail_RevealSurvivesReexpandingParent(t *testing.T) {
 // gets its own revealed path.
 func TestRail_RevealMultipleNeedsInputLeaves(t *testing.T) {
 	p := coordOf(1, "P", 100, "tp",
-		RoleView{RoleID: 101, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tw1", NeedsInput: true, SubtreeNeedsInput: true},
-		RoleView{RoleID: 102, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "tw2", NeedsInput: true, SubtreeNeedsInput: true},
-		RoleView{RoleID: 103, Name: "w3", Kind: db.HeraKindWorker, Live: true, TaskID: "tw3"},
+		heramodel.RoleView{RoleID: 101, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tw1", NeedsInput: true, SubtreeNeedsInput: true},
+		heramodel.RoleView{RoleID: 102, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "tw2", NeedsInput: true, SubtreeNeedsInput: true},
+		heramodel.RoleView{RoleID: 103, Name: "w3", Kind: db.HeraKindWorker, Live: true, TaskID: "tw3"},
 	)
 	p.SubtreeNeedsInput = true
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{p}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p}})
 
 	collapseByName(t, r, "P")
 
@@ -163,11 +164,11 @@ func TestRail_RevealMultipleNeedsInputLeaves(t *testing.T) {
 // this feature — header only, nothing beneath it.
 func TestRail_NoRevealWhenNoDescendantNeedsInput(t *testing.T) {
 	p := coordOf(1, "P", 100, "tp",
-		RoleView{RoleID: 101, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tw1"},
-		RoleView{RoleID: 102, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "tw2"},
+		heramodel.RoleView{RoleID: 101, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tw1"},
+		heramodel.RoleView{RoleID: 102, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "tw2"},
 	)
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{p}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p}})
 
 	collapseByName(t, r, "P")
 
@@ -184,12 +185,12 @@ func TestRail_NoRevealWhenNoDescendantNeedsInput(t *testing.T) {
 // nothing).
 func TestRail_RevealDoesNotChangeSpaceToggleBehavior(t *testing.T) {
 	p := coordOf(1, "P", 100, "tp",
-		RoleView{RoleID: 101, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tw1", NeedsInput: true, SubtreeNeedsInput: true},
-		RoleView{RoleID: 102, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "tw2"},
+		heramodel.RoleView{RoleID: 101, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tw1", NeedsInput: true, SubtreeNeedsInput: true},
+		heramodel.RoleView{RoleID: 102, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "tw2"},
 	)
 	p.SubtreeNeedsInput = true
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{p}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p}})
 
 	collapseByName(t, r, "P")
 	testutil.Equal(t, r.depthOf("w2"), -1) // revealed view: w2 hidden

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/db"
+	heramodel "github.com/drn/argus/internal/hera/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
@@ -13,14 +14,14 @@ import (
 	"github.com/rivo/tview"
 )
 
-func twoOrchModel() Model {
-	return Model{
-		Active: []OrchView{
-			{ID: 1, Name: "orch-1", Roles: []RoleView{
+func twoOrchModel() heramodel.Model {
+	return heramodel.Model{
+		Active: []heramodel.OrchView{
+			{ID: 1, Name: "orch-1", Roles: []heramodel.RoleView{
 				{RoleID: 11, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t11"},
 				{RoleID: 12, OrchID: 1, Name: "wkr", Kind: db.HeraKindWorker, Live: true, TaskID: "t12"},
 			}},
-			{ID: 2, Name: "orch-2", Roles: []RoleView{
+			{ID: 2, Name: "orch-2", Roles: []heramodel.RoleView{
 				{RoleID: 21, OrchID: 2, Name: "coord2", Kind: db.HeraKindCoordinator, Live: true, TaskID: "t21"},
 			}},
 		},
@@ -107,7 +108,7 @@ func TestRail_OrchHeaderCarriesCoordinatorGlyph(t *testing.T) {
 
 	r := NewRail()
 	r.SetFocused(true)
-	r.SetModel(Model{Active: []OrchView{{ID: 1, Name: "orch", Roles: []RoleView{
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{{ID: 1, Name: "orch", Roles: []heramodel.RoleView{
 		{RoleID: 11, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, HasStatus: true, Status: db.HeraStatusBlocked, TaskID: "tc"},
 	}}}})
 	r.SetRect(0, 0, 40, 10)
@@ -117,7 +118,7 @@ func TestRail_OrchHeaderCarriesCoordinatorGlyph(t *testing.T) {
 	// The coordinator's blocked glyph must appear somewhere on the header row.
 	// Row 3 = the orch header (row 1 = the leading rule, row 2 = the "Active
 	// (1)" group header — add-kanban-focus-fold).
-	wantGlyph, _ := statusIcon(&RoleView{HasStatus: true, Status: db.HeraStatusBlocked, Live: true}, false, 0)
+	wantGlyph, _ := statusIcon(&heramodel.RoleView{HasStatus: true, Status: db.HeraStatusBlocked, Live: true}, false, 0)
 	found := false
 	for x := 0; x < 40; x++ {
 		s, _, _ := sim.Get(x, 3)
@@ -157,7 +158,7 @@ func TestRail_NestsSubOrchestratorUnderBridgingWorker(t *testing.T) {
 	root := orchView(1, "R", "tr", wk("w", "tc"))
 	child := orchView(2, "C", "tc", wk("wc", "twc"))
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{root, child}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{root, child}})
 
 	// rule(0), "Active (1)" header(1), R(2), w(3, bridges C), wc(4). C never
 	// renders as a top-level header.
@@ -181,7 +182,7 @@ func TestRail_NestingCollapseFoldsChildSubtree(t *testing.T) {
 	root := orchView(1, "R", "tr", wk("w", "tc"))
 	child := orchView(2, "C", "tc", wk("wc", "twc"))
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{root, child}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{root, child}})
 	testutil.Equal(t, r.Rows(), 5)
 
 	// Cursor on the bridging worker row → Space folds the child subtree (wc hides).
@@ -198,7 +199,7 @@ func TestRail_NestingCycleTerminatesAndPlacesOnce(t *testing.T) {
 	a := orchView(1, "A", "ta", wk("wa", "tb"))
 	b := orchView(2, "B", "tb", wk("wb", "ta"))
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{a, b}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{a, b}})
 
 	// A as root, wa bridges B (nested), wb nested under B; B's wb bridges A but A
 	// is already placed → no further nesting. 1 header + 2 worker rows, + rule +
@@ -220,11 +221,11 @@ func TestRail_NestsCoordinatorSpawnedSubteam(t *testing.T) {
 	// own sub-orchestrator header directly under P. This is the real under-nesting
 	// bug: before the fix Q renders as a second top-level root.
 	p := coordOf(1, "P", 100, "T",
-		RoleView{RoleID: 101, Name: "pw", Kind: db.HeraKindWorker, Live: true, TaskID: "tpw", BridgeTaskID: "tpw"})
+		heramodel.RoleView{RoleID: 101, Name: "pw", Kind: db.HeraKindWorker, Live: true, TaskID: "tpw", BridgeTaskID: "tpw"})
 	q := coordOf(2, "Q", 200, "T",
-		RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
+		heramodel.RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{p, q}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p, q}})
 
 	// rule(0), "Active (1)" header(1), P header(2), pw worker(3), Q nested
 	// header(4), qw worker(5).
@@ -246,16 +247,16 @@ func TestRail_NestsCoordinatorSpawnedSubteam(t *testing.T) {
 }
 
 // TestRail_SelectionTopLevelOrch pins add-hera-kanban-status's m/M gating:
-// Selection.TopLevelOrch is true ONLY for a root orchestrator header (no
+// heramodel.Selection.TopLevelOrch is true ONLY for a root orchestrator header (no
 // canonical parent), false for a nested sub-orchestrator header reached only
 // through one, and false for a plain role row.
 func TestRail_SelectionTopLevelOrch(t *testing.T) {
 	p := coordOf(1, "P", 100, "T",
-		RoleView{RoleID: 101, Name: "pw", Kind: db.HeraKindWorker, Live: true, TaskID: "tpw", BridgeTaskID: "tpw"})
+		heramodel.RoleView{RoleID: 101, Name: "pw", Kind: db.HeraKindWorker, Live: true, TaskID: "tpw", BridgeTaskID: "tpw"})
 	q := coordOf(2, "Q", 200, "T",
-		RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
+		heramodel.RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{p, q}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p, q}})
 
 	// rule(0), "Active (1)" header(1), P header(2): root, no canonical parent.
 	r.cursor = 2
@@ -286,9 +287,9 @@ func TestRail_SelectionTopLevelOrch(t *testing.T) {
 func TestRail_CoordSpawnedSubteamCollapses(t *testing.T) {
 	p := coordOf(1, "P", 100, "T")
 	q := coordOf(2, "Q", 200, "T",
-		RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
+		heramodel.RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{p, q}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p, q}})
 	// rule(0), "Active (1)" header(1), P header(2), Q nested header(3), qw(4).
 	testutil.Equal(t, r.Rows(), 5)
 
@@ -321,9 +322,9 @@ func rootHeaderCount(r *Rail) int {
 func TestRail_CollapsedParentDoesNotLeakCoordChildToTop(t *testing.T) {
 	p := coordOf(1, "P", 100, "T")
 	q := coordOf(2, "Q", 200, "T",
-		RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
+		heramodel.RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{p, q}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p, q}})
 
 	// Expanded: Q nests under P (depth 1); exactly one depth-0 root.
 	testutil.Equal(t, r.depthOf("Q"), 1)
@@ -347,7 +348,7 @@ func TestRail_CollapsedParentDoesNotLeakWorkerBridgedChild(t *testing.T) {
 	root := orchView(1, "R", "tr", wk("w", "tc"))
 	child := orchView(2, "C", "tc", wk("wc", "twc"))
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{root, child}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{root, child}})
 	testutil.Equal(t, r.hasOrchHeader("C"), false) // nested under w when expanded
 
 	// Collapse the parent root R.
@@ -369,11 +370,11 @@ func TestRail_CollapsedParentDoesNotLeakWorkerBridgedChild(t *testing.T) {
 func TestRail_CollapsedGrandparentFoldsWholeSubtree(t *testing.T) {
 	p := coordOf(1, "P", 100, "T")
 	q := coordOf(2, "Q", 200, "T",
-		RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tr"})
+		heramodel.RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tr"})
 	rr := coordOf(3, "R", 300, "tr",
-		RoleView{RoleID: 301, Name: "rw", Kind: db.HeraKindWorker, Live: true, TaskID: "trw", BridgeTaskID: "trw"})
+		heramodel.RoleView{RoleID: 301, Name: "rw", Kind: db.HeraKindWorker, Live: true, TaskID: "trw", BridgeTaskID: "trw"})
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{p, q, rr}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p, q, rr}})
 
 	// Expanded: P(0) → Q(1, coord-spawned) → qw(2, bridges R) → rw(3). One root.
 	testutil.Equal(t, r.depthOf("Q"), 1)
@@ -403,11 +404,11 @@ func TestRail_CollapsedGrandparentFoldsWholeSubtree(t *testing.T) {
 func TestRail_EnsureAncestorsExpandedRevealsNestedLeaf(t *testing.T) {
 	p := coordOf(1, "P", 100, "T")
 	q := coordOf(2, "Q", 200, "T",
-		RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tr"})
+		heramodel.RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tr"})
 	rr := coordOf(3, "R", 300, "tr",
-		RoleView{RoleID: 301, Name: "rw", Kind: db.HeraKindWorker, Live: true, TaskID: "trw", BridgeTaskID: "trw"})
+		heramodel.RoleView{RoleID: 301, Name: "rw", Kind: db.HeraKindWorker, Live: true, TaskID: "trw", BridgeTaskID: "trw"})
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{p, q, rr}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p, q, rr}})
 
 	// Collapse the top grandparent P → the whole subtree (Q, qw, R, rw) folds.
 	r.seekCursor(t, func(row railRow) bool { return row.orch != nil && row.orch.Name == "P" })
@@ -453,9 +454,9 @@ func TestRail_EnsureAncestorsExpandedNoOpWhenVisible(t *testing.T) {
 // the leaf-Enter join uses, including the multi-binding fan-out (same task under
 // two orchestrators returns both ids) and the empty-input guard.
 func TestModel_OrchIDsForTask(t *testing.T) {
-	m := Model{Active: []OrchView{
-		coordOf(1, "A", 10, "ta", RoleView{RoleID: 11, Name: "w", Kind: db.HeraKindWorker, Live: true, TaskID: "shared"}),
-		coordOf(2, "B", 20, "tb", RoleView{RoleID: 21, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "shared"}),
+	m := heramodel.Model{Active: []heramodel.OrchView{
+		coordOf(1, "A", 10, "ta", heramodel.RoleView{RoleID: 11, Name: "w", Kind: db.HeraKindWorker, Live: true, TaskID: "shared"}),
+		coordOf(2, "B", 20, "tb", heramodel.RoleView{RoleID: 21, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "shared"}),
 	}}
 	testutil.DeepEqual(t, m.OrchIDsForTask("shared"), []int64{1, 2})
 	testutil.DeepEqual(t, m.OrchIDsForTask("ta"), []int64{1})
@@ -498,15 +499,15 @@ func (r *Rail) collOrchIDForRole(name string) int64 {
 // hera-rail → rail-debug → update-argus → native-hera-parity, fold-independent.
 func TestRail_MultiParentChildNestsDeterministically(t *testing.T) {
 	heraRail := coordOf(1, "hera-rail", 10, "t-hr",
-		RoleView{RoleID: 11, Name: "rail-debug", Kind: db.HeraKindWorker, Live: true, TaskID: "T", BridgeTaskID: "T"})
+		heramodel.RoleView{RoleID: 11, Name: "rail-debug", Kind: db.HeraKindWorker, Live: true, TaskID: "T", BridgeTaskID: "T"})
 	updateArgus := coordOf(2, "update-argus", 20, "T",
-		RoleView{RoleID: 21, Name: "ua-wkr", Kind: db.HeraKindWorker, Live: true, TaskID: "t-ua", BridgeTaskID: "t-ua"})
+		heramodel.RoleView{RoleID: 21, Name: "ua-wkr", Kind: db.HeraKindWorker, Live: true, TaskID: "t-ua", BridgeTaskID: "t-ua"})
 	nativeParity := coordOf(3, "native-hera-parity", 30, "T",
-		RoleView{RoleID: 31, Name: "np-wkr", Kind: db.HeraKindWorker, Live: true, TaskID: "t-np", BridgeTaskID: "t-np"})
+		heramodel.RoleView{RoleID: 31, Name: "np-wkr", Kind: db.HeraKindWorker, Live: true, TaskID: "t-np", BridgeTaskID: "t-np"})
 	// native-hera-parity precedes update-argus in the slice so the OLD first-wins
 	// bridge index would point the rail-debug worker straight at native-hera-parity
 	// (the migration trigger); the canonical rule must ignore slice order.
-	m := Model{Active: []OrchView{heraRail, nativeParity, updateArgus}}
+	m := heramodel.Model{Active: []heramodel.OrchView{heraRail, nativeParity, updateArgus}}
 
 	r := NewRail()
 	r.SetModel(m)
@@ -553,14 +554,14 @@ func TestRail_MultiParentChildNestsDeterministically(t *testing.T) {
 func TestRail_MultiWorkerBridgeParentsPickLowestOrchID(t *testing.T) {
 	c := orchView(2, "C", "tc", wk("cw", "tcw"))
 	pw1 := coordOf(5, "Pw1", 50, "t-pw1",
-		RoleView{RoleID: 51, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", BridgeTaskID: "tc"})
+		heramodel.RoleView{RoleID: 51, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", BridgeTaskID: "tc"})
 	pw2 := coordOf(3, "Pw2", 30, "t-pw2",
-		RoleView{RoleID: 31, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", BridgeTaskID: "tc"})
+		heramodel.RoleView{RoleID: 31, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", BridgeTaskID: "tc"})
 	// Pw1 (id 5) precedes Pw2 (id 3): the OLD first-reached-wins logic nested C
 	// under Pw1; the canonical rule must pick Pw2 (lowest orchestrator id).
 	build := func() *Rail {
 		r := NewRail()
-		r.SetModel(Model{Active: []OrchView{pw1, pw2, c}})
+		r.SetModel(heramodel.Model{Active: []heramodel.OrchView{pw1, pw2, c}})
 		return r
 	}
 
@@ -594,12 +595,12 @@ func TestRail_MultiWorkerBridgeParentsPickLowestOrchID(t *testing.T) {
 // 0e-team-under-collapsed-sherlock-mvp shape).
 func TestRail_CollapsedParentDoesNotLeakArchivedBridgedChild(t *testing.T) {
 	p := coordOf(1, "P", 100, "tp",
-		RoleView{RoleID: 101, Name: "aw", Kind: db.HeraKindWorker, Archived: true, Live: false,
+		heramodel.RoleView{RoleID: 101, Name: "aw", Kind: db.HeraKindWorker, Archived: true, Live: false,
 			BridgeTaskID: "tc", LinkEndReason: ""}) // ended, non-teardown → still bridges
 	c := coordOf(2, "C", 200, "tc",
-		RoleView{RoleID: 201, Name: "cw", Kind: db.HeraKindWorker, Live: true, TaskID: "tcw", BridgeTaskID: "tcw"})
+		heramodel.RoleView{RoleID: 201, Name: "cw", Kind: db.HeraKindWorker, Live: true, TaskID: "tcw", BridgeTaskID: "tcw"})
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{p, c}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p, c}})
 
 	// BUG-022 Q3: the HIDDEN (archived) bridging worker folds into P's Archive
 	// expando (collapsed by default), dragging C's subtree in with it — so by
@@ -632,12 +633,12 @@ func TestRail_HiddenSubCoordCollapsesSubtreeIntoExpando(t *testing.T) {
 	// hidden sub-coordinator). The child orch's coordinator task is B's bridge task,
 	// and the child holds agent C.
 	p := coordOf(1, "P", 100, "tp",
-		RoleView{RoleID: 101, Name: "B", Kind: db.HeraKindWorker, Archived: true, Live: true,
+		heramodel.RoleView{RoleID: 101, Name: "B", Kind: db.HeraKindWorker, Archived: true, Live: true,
 			TaskID: "tb", BridgeTaskID: "tb"})
 	child := coordOf(2, "B", 200, "tb",
-		RoleView{RoleID: 201, Name: "C", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", BridgeTaskID: "tc"})
+		heramodel.RoleView{RoleID: 201, Name: "C", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", BridgeTaskID: "tc"})
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{p, child}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{p, child}})
 
 	// Collapsed-by-default expando: B and C are both hidden; C is NOT a top-level root.
 	testutil.Equal(t, r.depthOf("B"), -1)
@@ -671,7 +672,7 @@ func TestRail_LargeShapeSixRootsManyNested(t *testing.T) {
 	// Mirror the real rail shape: 6 roots, each with 3 worker-bridged children
 	// and 1 coordinator-spawned sub-team = 24 nested orchestrators. The bug made
 	// all 30 render as top-level roots; after the fix exactly 6 are roots.
-	var active []OrchView
+	var active []heramodel.OrchView
 	var roleID int64 = 1000
 	nextRole := func() int64 { roleID++; return roleID }
 	var orchID int64
@@ -680,29 +681,29 @@ func TestRail_LargeShapeSixRootsManyNested(t *testing.T) {
 	for k := 0; k < 6; k++ {
 		rootCoordTask := fmt.Sprintf("rootcoord-%d", k)
 		rootCoordID := nextRole()
-		root := OrchView{ID: nextOrch(), Name: fmt.Sprintf("root-%d", k), Roles: []RoleView{
+		root := heramodel.OrchView{ID: nextOrch(), Name: fmt.Sprintf("root-%d", k), Roles: []heramodel.RoleView{
 			{RoleID: rootCoordID, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: rootCoordTask, BridgeTaskID: rootCoordTask},
 		}}
 		for c := 0; c < 3; c++ {
 			childTask := fmt.Sprintf("wkrchild-%d-%d", k, c)
-			root.Roles = append(root.Roles, RoleView{
+			root.Roles = append(root.Roles, heramodel.RoleView{
 				RoleID: nextRole(), Name: fmt.Sprintf("w-%d-%d", k, c), Kind: db.HeraKindWorker,
 				Live: true, TaskID: childTask, BridgeTaskID: childTask,
 			})
-			active = append(active, OrchView{ID: nextOrch(), Name: childTask, Roles: []RoleView{
+			active = append(active, heramodel.OrchView{ID: nextOrch(), Name: childTask, Roles: []heramodel.RoleView{
 				{RoleID: nextRole(), Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: childTask, BridgeTaskID: childTask},
 			}})
 		}
 		// Coordinator-spawned sub-team: the SAME root coordinator task, later id.
-		active = append(active, OrchView{ID: nextOrch(), Name: fmt.Sprintf("coordchild-%d", k), Roles: []RoleView{
+		active = append(active, heramodel.OrchView{ID: nextOrch(), Name: fmt.Sprintf("coordchild-%d", k), Roles: []heramodel.RoleView{
 			{RoleID: nextRole(), Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: rootCoordTask, BridgeTaskID: rootCoordTask},
 		}})
 		active = append(active, root)
 	}
-	m := Model{Active: active}
+	m := heramodel.Model{Active: active}
 
 	// 6 roots, 24 nested.
-	consumed := m.consumedSet(m.bridgeIndex())
+	consumed := m.ConsumedSet(m.BridgeIndex())
 	testutil.Equal(t, len(consumed), 24)
 
 	r := NewRail()
@@ -722,13 +723,13 @@ func TestRail_ArchivedBridgingWorkerHoistsSubtreeToExpando(t *testing.T) {
 	// subtree in with it; C is NEVER safety-swept to a top-level root. When the
 	// expando is opened, w nests under it and C's worker nests one level deeper,
 	// both dimmed (the whole hidden subtree is de-emphasized inside the expando).
-	root := OrchView{ID: 1, Name: "R", Roles: []RoleView{
+	root := heramodel.OrchView{ID: 1, Name: "R", Roles: []heramodel.RoleView{
 		{RoleID: 10, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tr", BridgeTaskID: "tr"},
 		{RoleID: 11, Name: "w", Kind: db.HeraKindWorker, Live: true, Archived: true, TaskID: "tc", BridgeTaskID: "tc"},
 	}}
 	child := orchView(2, "C", "tc", wk("wc", "twc"))
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{root, child}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{root, child}})
 
 	// Collapsed by default: w + wc hidden; C not a top-level root; an expando exists.
 	testutil.Equal(t, r.depthOf("w"), -1)
@@ -764,12 +765,12 @@ func TestRail_ArchivedLeafWorkerStillHoistsToExpando(t *testing.T) {
 	// An archived worker that bridges NOTHING is a finished leaf and still folds
 	// into the per-coordinator Archive expando (the in-place rule is only for
 	// archived workers that bridge a live child).
-	o := OrchView{ID: 1, Name: "o", Roles: []RoleView{
+	o := heramodel.OrchView{ID: 1, Name: "o", Roles: []heramodel.RoleView{
 		{RoleID: 11, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc"},
 		{RoleID: 13, Name: "old-leaf", Kind: db.HeraKindWorker, Archived: true, Live: true, TaskID: "t13", BridgeTaskID: "t13"},
 	}}
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{o}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{o}})
 	testutil.Equal(t, r.depthOf("old-leaf"), -1) // hidden under collapsed expando
 	found := false
 	for i := range r.rows {
@@ -787,7 +788,7 @@ func TestRail_ArchivedBridgeNestsDimmedInPlace(t *testing.T) {
 	child := orchView(2, "C", "tc", wk("wc", "twc"))
 	child.Archived = true
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{root}, Archived: []OrchView{child}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{root}, Archived: []heramodel.OrchView{child}})
 
 	// wc nests under w (depth 2) and is dimmed; no bottom Archive expando (C is
 	// placed via the bridge, so it is not an archived root).
@@ -801,13 +802,13 @@ func TestRail_ArchivedBridgeNestsDimmedInPlace(t *testing.T) {
 }
 
 func TestRail_PerCoordinatorArchiveExpando(t *testing.T) {
-	o := OrchView{ID: 1, Name: "o", Roles: []RoleView{
+	o := heramodel.OrchView{ID: 1, Name: "o", Roles: []heramodel.RoleView{
 		{RoleID: 11, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc"},
 		{RoleID: 12, Name: "active-wkr", Kind: db.HeraKindWorker, Live: true, TaskID: "t12"},
 		{RoleID: 13, Name: "old-wkr", Kind: db.HeraKindWorker, Archived: true, TaskID: "t13"},
 	}}
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{o}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{o}})
 
 	// rule(0) + "Active (1)" header(1) + o header(2) + active-wkr(3) +
 	// per-coord "Archive (1)" expando(4); the archived role is hidden under
@@ -843,9 +844,9 @@ func TestModel_BridgeSubtree(t *testing.T) {
 	c := orchView(2, "C", "tc", wk("wc", "tg"))
 	g := orchView(3, "G", "tg", wk("wg", "twg"))
 	other := orchView(9, "Other", "to", wk("wo", "two"))
-	m := Model{Active: []OrchView{r, c, g, other}}
+	m := heramodel.Model{Active: []heramodel.OrchView{r, c, g, other}}
 
-	names := func(os []*OrchView) []string {
+	names := func(os []*heramodel.OrchView) []string {
 		out := make([]string, len(os))
 		for i, o := range os {
 			out[i] = o.Name
@@ -861,11 +862,11 @@ func TestModel_BridgeSubtreeIncludesCoordSpawnedChild(t *testing.T) {
 	// P coordinates a worker-bridged child C and a coordinator-spawned sub-team S
 	// (shared coord task T, later coord id). The Ctrl+D cascade must reach both.
 	p := coordOf(1, "P", 100, "T",
-		RoleView{RoleID: 101, Name: "w", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", BridgeTaskID: "tc"})
+		heramodel.RoleView{RoleID: 101, Name: "w", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", BridgeTaskID: "tc"})
 	c := orchView(2, "C", "tc", wk("wc", "twc"))
 	s := coordOf(3, "S", 300, "T")
-	m := Model{Active: []OrchView{p, c, s}}
-	names := func(os []*OrchView) []string {
+	m := heramodel.Model{Active: []heramodel.OrchView{p, c, s}}
+	names := func(os []*heramodel.OrchView) []string {
 		out := make([]string, len(os))
 		for i, o := range os {
 			out[i] = o.Name
@@ -879,9 +880,9 @@ func TestRail_SelectionCarriesBridgeChild(t *testing.T) {
 	root := orchView(1, "R", "tr", wk("w", "tc"))
 	child := orchView(2, "C", "tc", wk("wc", "twc"))
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{root, child}})
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{root, child}})
 
-	// Cursor on the bridging worker row → Selection carries the child orch id so
+	// Cursor on the bridging worker row → heramodel.Selection carries the child orch id so
 	// Ctrl+D can cascade; a non-bridging row carries 0. Rows: rule(0), "Active
 	// (1)" header(1), R(2), w(3), wc(4).
 	r.cursor = 3 // the "w" bridging row
@@ -892,7 +893,7 @@ func TestRail_SelectionCarriesBridgeChild(t *testing.T) {
 
 func TestRail_PRIndicatorOnManagedRow(t *testing.T) {
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{{ID: 1, Name: "o", Roles: []RoleView{
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{{ID: 1, Name: "o", Roles: []heramodel.RoleView{
 		{RoleID: 11, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc"},
 		{RoleID: 12, Name: "wkr", Kind: db.HeraKindWorker, Live: true, TaskID: "twk"},
 	}}}})
@@ -904,7 +905,7 @@ func TestRail_PRIndicatorOnManagedRow(t *testing.T) {
 	// one does not.
 	r.SetPRMeta(map[string]map[string]string{"twk": {"url": "https://example/pr/1", "state": "awaiting-review"}})
 	testutil.Equal(t, r.rolePR(&r.model.Active[0].Roles[1]), true)
-	testutil.Equal(t, r.rolePR(&RoleView{TaskID: "other"}), false)
+	testutil.Equal(t, r.rolePR(&heramodel.RoleView{TaskID: "other"}), false)
 
 	// Render must draw the "PR" tag somewhere on the worker row without panicking.
 	sim := tcell.NewSimulationScreen("UTF-8")
@@ -930,7 +931,7 @@ func TestRail_PRIndicatorOnManagedRow(t *testing.T) {
 
 func TestRail_RolePR_PRStateTable(t *testing.T) {
 	r := NewRail()
-	role := &RoleView{TaskID: "twk"}
+	role := &heramodel.RoleView{TaskID: "twk"}
 	cases := []struct {
 		name  string
 		state string
@@ -954,9 +955,9 @@ func TestRail_RolePR_PRStateTable(t *testing.T) {
 
 func TestRail_FreelanceSectionCollapses(t *testing.T) {
 	r := NewRail()
-	r.SetModel(Model{
-		Active:    []OrchView{{ID: 1, Name: "o"}},
-		Freelance: []RoleView{{RoleID: 91, Name: "free-a", Kind: db.HeraKindFreelance}},
+	r.SetModel(heramodel.Model{
+		Active:    []heramodel.OrchView{{ID: 1, Name: "o"}},
+		Freelance: []heramodel.RoleView{{RoleID: 91, Name: "free-a", Kind: db.HeraKindFreelance}},
 	})
 	// rule + "Active (1)" header + orch header + rule + freelance header + 1
 	// freelance role = 6.
@@ -971,9 +972,9 @@ func TestRail_FreelanceSectionCollapses(t *testing.T) {
 
 func TestRail_ArchiveExpandoDefaultCollapsed(t *testing.T) {
 	r := NewRail()
-	r.SetModel(Model{
-		Active:   []OrchView{{ID: 1, Name: "o"}},
-		Archived: []OrchView{{ID: 9, Name: "old", Archived: true, Roles: []RoleView{{RoleID: 99, Name: "r"}}}},
+	r.SetModel(heramodel.Model{
+		Active:   []heramodel.OrchView{{ID: 1, Name: "o"}},
+		Archived: []heramodel.OrchView{{ID: 9, Name: "old", Archived: true, Roles: []heramodel.RoleView{{RoleID: 99, Name: "r"}}}},
 	})
 	// rule + "Active (1)" header + orch + rule + archive expando = 5 (archived
 	// orch hidden by default).
@@ -989,12 +990,12 @@ func TestRail_ArchiveExpandoDefaultCollapsed(t *testing.T) {
 // pinnedPlusActiveModel: one pinned coordinator-only orchestrator and one active
 // coordinator-only orchestrator. Each renders as a single header row, so the only
 // thing that can sit between them is the BUG-027 Pinned→Active divider.
-func pinnedPlusActiveModel() Model {
-	return Model{
-		Pinned: []OrchView{{ID: 1, Name: "pinned-orch", Pinned: true, Roles: []RoleView{
+func pinnedPlusActiveModel() heramodel.Model {
+	return heramodel.Model{
+		Pinned: []heramodel.OrchView{{ID: 1, Name: "pinned-orch", Pinned: true, Roles: []heramodel.RoleView{
 			{RoleID: 11, OrchID: 1, Name: "pcoord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tp"},
 		}}},
-		Active: []OrchView{{ID: 2, Name: "active-orch", Roles: []RoleView{
+		Active: []heramodel.OrchView{{ID: 2, Name: "active-orch", Roles: []heramodel.RoleView{
 			{RoleID: 21, OrchID: 2, Name: "acoord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "ta"},
 		}}},
 	}
@@ -1058,7 +1059,7 @@ func TestRail_NoPinnedDividerWithoutPins(t *testing.T) {
 // below it renders no trailing divider.
 func TestRail_NoPinnedDividerWithoutActive(t *testing.T) {
 	r := NewRail()
-	r.SetModel(Model{Pinned: []OrchView{{ID: 1, Name: "pinned-orch", Pinned: true, Roles: []RoleView{
+	r.SetModel(heramodel.Model{Pinned: []heramodel.OrchView{{ID: 1, Name: "pinned-orch", Pinned: true, Roles: []heramodel.RoleView{
 		{RoleID: 11, OrchID: 1, Name: "pcoord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tp"},
 	}}}})
 	// Rows: Pinned header + pinned-orch = 2, no divider.
@@ -1090,7 +1091,7 @@ func TestRail_KanbanGrouping(t *testing.T) {
 
 	t.Run("non-empty backlog/blocked/done render labeled headers with dividers, in rail order; only the focused group (active, by default) shows its member", func(t *testing.T) {
 		r := NewRail()
-		r.SetModel(Model{Active: []OrchView{
+		r.SetModel(heramodel.Model{Active: []heramodel.OrchView{
 			{ID: 1, Name: "act", KanbanStatus: db.HeraKanbanActive},
 			{ID: 2, Name: "bl", KanbanStatus: db.HeraKanbanBacklog},
 			{ID: 3, Name: "blk", KanbanStatus: db.HeraKanbanBlocked},
@@ -1125,7 +1126,7 @@ func TestRail_KanbanGrouping(t *testing.T) {
 
 	t.Run("an empty intermediate group renders neither header nor divider", func(t *testing.T) {
 		r := NewRail()
-		r.SetModel(Model{Active: []OrchView{
+		r.SetModel(heramodel.Model{Active: []heramodel.OrchView{
 			{ID: 1, Name: "act", KanbanStatus: db.HeraKanbanActive},
 			{ID: 2, Name: "dn", KanbanStatus: db.HeraKanbanDone},
 		}})
@@ -1140,9 +1141,9 @@ func TestRail_KanbanGrouping(t *testing.T) {
 
 	t.Run("Active's own divider follows the Pinned section like every other group", func(t *testing.T) {
 		r := NewRail()
-		r.SetModel(Model{
-			Pinned: []OrchView{{ID: 9, Name: "pin"}},
-			Active: []OrchView{{ID: 1, Name: "act", KanbanStatus: db.HeraKanbanActive}},
+		r.SetModel(heramodel.Model{
+			Pinned: []heramodel.OrchView{{ID: 9, Name: "pin"}},
+			Active: []heramodel.OrchView{{ID: 1, Name: "act", KanbanStatus: db.HeraKanbanActive}},
 		})
 		// Pinned-header(0) pin(1) | rule(2) "Active (1)"(3) act(4)
 		testutil.Equal(t, len(r.ruleIndexes()), 1)
@@ -1153,9 +1154,9 @@ func TestRail_KanbanGrouping(t *testing.T) {
 
 	t.Run("no stray divider when the active group is empty but Backlog is not (Backlog isn't focused by default)", func(t *testing.T) {
 		r := NewRail()
-		r.SetModel(Model{
-			Pinned: []OrchView{{ID: 9, Name: "pin"}},
-			Active: []OrchView{{ID: 2, Name: "bl", KanbanStatus: db.HeraKanbanBacklog}},
+		r.SetModel(heramodel.Model{
+			Pinned: []heramodel.OrchView{{ID: 9, Name: "pin"}},
+			Active: []heramodel.OrchView{{ID: 2, Name: "bl", KanbanStatus: db.HeraKanbanBacklog}},
 		})
 		// Pinned-header(0) pin(1) | rule(2) "Backlog (1)" header(3) — Active
 		// contributes nothing (zero active-status orchestrators); Backlog's own
@@ -1172,7 +1173,7 @@ func TestRail_KanbanGrouping(t *testing.T) {
 		child := orchView(2, "C", "tc", wk("wc", "twc"))
 		child.KanbanStatus = db.HeraKanbanDone // nested — must be ignored for grouping
 		r := NewRail()
-		r.SetModel(Model{Active: []OrchView{root, child}})
+		r.SetModel(heramodel.Model{Active: []heramodel.OrchView{root, child}})
 
 		// C never surfaces as a top-level "Done" group; it still nests under R
 		// exactly as the pre-kanban behavior (R header, bridging w, nested wc) —
@@ -1189,7 +1190,7 @@ func TestRail_KanbanGrouping(t *testing.T) {
 
 func TestRail_EmptyModel(t *testing.T) {
 	r := NewRail()
-	r.SetModel(Model{})
+	r.SetModel(heramodel.Model{})
 	testutil.Equal(t, r.Rows(), 1)
 	testutil.Equal(t, r.rows[0].kind, rrEmpty)
 	// Nav + collapse on the empty placeholder are safe no-ops.
@@ -1258,7 +1259,7 @@ func TestRail_MouseHandler_OutOfRectIgnored(t *testing.T) {
 func TestStatusIcon_ReadyToCloseWins(t *testing.T) {
 	// ready_to_close overrides the role status with the distinct review mark
 	// (session NOT running here → not active, so ready_to_close wins).
-	icon, _ := statusIcon(&RoleView{ReadyToClose: true, HasStatus: true, Status: db.HeraStatusWorking}, false, 0)
+	icon, _ := statusIcon(&heramodel.RoleView{ReadyToClose: true, HasStatus: true, Status: db.HeraStatusWorking}, false, 0)
 	testutil.Equal(t, icon, theme.IconReview)
 }
 
@@ -1274,7 +1275,7 @@ func TestStatusIcon_ActiveOutranksReadyToClose(t *testing.T) {
 
 	// Reactivated ready_to_close worker: live binding, running session, producing
 	// output (not idle), task rolled to in_review, ready_to_close stamped.
-	reactivated := &RoleView{Live: true, SessionRunning: true, TaskStatus: "in_review", ReadyToClose: true}
+	reactivated := &heramodel.RoleView{Live: true, SessionRunning: true, TaskStatus: "in_review", ReadyToClose: true}
 	g0, _ := statusIcon(reactivated, false, 0)
 	g1, _ := statusIcon(reactivated, false, 1)
 	testutil.Equal(t, g0, widget.SpinnerFrame(0))
@@ -1282,7 +1283,7 @@ func TestStatusIcon_ActiveOutranksReadyToClose(t *testing.T) {
 
 	// Resting case preserved: once the session idles (BUG-036 content-idle), IsActive
 	// drops false and the ready_to_close review glyph returns.
-	resting := &RoleView{Live: true, SessionRunning: true, TaskStatus: "in_review", SessionIdle: true, ReadyToClose: true}
+	resting := &heramodel.RoleView{Live: true, SessionRunning: true, TaskStatus: "in_review", SessionIdle: true, ReadyToClose: true}
 	r0, _ := statusIcon(resting, false, 0)
 	testutil.Equal(t, r0, theme.IconReview)
 }
@@ -1297,39 +1298,39 @@ func TestStatusIcon_ActiveOutranksReadyToClose(t *testing.T) {
 // ready_to_close/failed/done/idle/live (an accept is authoritative over the
 // self-reported ladder).
 func TestStatusIcon_AcceptedDistinctAndPrecedence(t *testing.T) {
-	accepted := &RoleView{TaskStatus: "complete"}
+	accepted := &heramodel.RoleView{TaskStatus: "complete"}
 	g, s := statusIcon(accepted, false, 0)
 	testutil.Equal(t, g, '✓')
 	testutil.Equal(t, s, theme.StyleComplete.Bold(true))
 
-	done := &RoleView{HasStatus: true, Status: db.HeraStatusDone}
+	done := &heramodel.RoleView{HasStatus: true, Status: db.HeraStatusDone}
 	dg, ds := statusIcon(done, false, 0)
 	testutil.Equal(t, dg, rune('✓')) // same glyph as accepted...
 	if ds == s {
 		t.Error("accepted style must be distinct from plain Done's style")
 	}
 
-	readyToClose := &RoleView{ReadyToClose: true}
+	readyToClose := &heramodel.RoleView{ReadyToClose: true}
 	rg, rs := statusIcon(readyToClose, false, 0)
 	if rg == g && rs == s {
 		t.Error("accepted must render distinctly from ready_to_close")
 	}
 
 	// Dominates the self-reported ladder.
-	testutil.Equal(t, mustAcceptedWins(t, &RoleView{TaskStatus: "complete", ReadyToClose: true}), true)
-	testutil.Equal(t, mustAcceptedWins(t, &RoleView{TaskStatus: "complete", HasStatus: true, Status: db.HeraStatusFailed}), true)
-	testutil.Equal(t, mustAcceptedWins(t, &RoleView{TaskStatus: "complete", HasStatus: true, Status: db.HeraStatusDone}), true)
-	testutil.Equal(t, mustAcceptedWins(t, &RoleView{TaskStatus: "complete", HasStatus: true, Status: db.HeraStatusIdle}), true)
-	testutil.Equal(t, mustAcceptedWins(t, &RoleView{TaskStatus: "complete", Live: true}), true)
+	testutil.Equal(t, mustAcceptedWins(t, &heramodel.RoleView{TaskStatus: "complete", ReadyToClose: true}), true)
+	testutil.Equal(t, mustAcceptedWins(t, &heramodel.RoleView{TaskStatus: "complete", HasStatus: true, Status: db.HeraStatusFailed}), true)
+	testutil.Equal(t, mustAcceptedWins(t, &heramodel.RoleView{TaskStatus: "complete", HasStatus: true, Status: db.HeraStatusDone}), true)
+	testutil.Equal(t, mustAcceptedWins(t, &heramodel.RoleView{TaskStatus: "complete", HasStatus: true, Status: db.HeraStatusIdle}), true)
+	testutil.Equal(t, mustAcceptedWins(t, &heramodel.RoleView{TaskStatus: "complete", Live: true}), true)
 
 	// Dominated by needs-input and active.
 	widget.SetActiveSpinner("progress")
 	defer widget.SetActiveSpinner("progress")
-	needsInput := &RoleView{TaskStatus: "complete", NeedsInput: true}
+	needsInput := &heramodel.RoleView{TaskStatus: "complete", NeedsInput: true}
 	ng, _ := statusIcon(needsInput, false, 0)
 	testutil.Equal(t, ng, theme.IconNeedsInput)
 
-	active := &RoleView{TaskStatus: "complete", Live: true, SessionRunning: true}
+	active := &heramodel.RoleView{TaskStatus: "complete", Live: true, SessionRunning: true}
 	ag, _ := statusIcon(active, false, 0)
 	testutil.Equal(t, ag, widget.SpinnerFrame(0))
 }
@@ -1337,10 +1338,10 @@ func TestStatusIcon_AcceptedDistinctAndPrecedence(t *testing.T) {
 // mustAcceptedWins reports whether role — which always carries
 // TaskStatus:"complete" alongside a lower-precedence signal — renders the
 // Accepted glyph/style rather than the lower-precedence one.
-func mustAcceptedWins(t *testing.T, role *RoleView) bool {
+func mustAcceptedWins(t *testing.T, role *heramodel.RoleView) bool {
 	t.Helper()
 	g, s := statusIcon(role, false, 0)
-	wantG, wantS := statusIcon(&RoleView{TaskStatus: "complete"}, false, 0)
+	wantG, wantS := statusIcon(&heramodel.RoleView{TaskStatus: "complete"}, false, 0)
 	return g == wantG && s == wantS
 }
 
@@ -1350,9 +1351,9 @@ func mustAcceptedWins(t *testing.T, role *RoleView) bool {
 // independently reaches StatusComplete (e.g. via task_complete on itself, no
 // accept semantics involved) must NOT render the worker-ladder's Accepted
 // glyph on its rail header row (drawOrchRow feeds the coordinator's own
-// RoleView through the same statusIcon/roleStatusInputs path as a worker row).
+// heramodel.RoleView through the same statusIcon/roleStatusInputs path as a worker row).
 func TestStatusIcon_AcceptedExcludesCoordinator(t *testing.T) {
-	coordAccepted := &RoleView{Kind: db.HeraKindCoordinator, TaskStatus: "complete"}
+	coordAccepted := &heramodel.RoleView{Kind: db.HeraKindCoordinator, TaskStatus: "complete"}
 	g, s := statusIcon(coordAccepted, false, 0)
 	if g == '✓' && s == theme.StyleComplete.Bold(true) {
 		t.Error("coordinator row must not render the Accepted glyph")
@@ -1363,12 +1364,12 @@ func TestStatusIcon_AcceptedExcludesCoordinator(t *testing.T) {
 	testutil.Equal(t, s, theme.StyleDimmed)
 
 	// A worker/freelance role in the identical state is unaffected by the fix.
-	workerAccepted := &RoleView{Kind: db.HeraKindWorker, TaskStatus: "complete"}
+	workerAccepted := &heramodel.RoleView{Kind: db.HeraKindWorker, TaskStatus: "complete"}
 	wg, ws := statusIcon(workerAccepted, false, 0)
 	testutil.Equal(t, wg, '✓')
 	testutil.Equal(t, ws, theme.StyleComplete.Bold(true))
 
-	freelanceAccepted := &RoleView{Kind: db.HeraKindFreelance, TaskStatus: "complete"}
+	freelanceAccepted := &heramodel.RoleView{Kind: db.HeraKindFreelance, TaskStatus: "complete"}
 	fg, fs := statusIcon(freelanceAccepted, false, 0)
 	testutil.Equal(t, fg, '✓')
 	testutil.Equal(t, fs, theme.StyleComplete.Bold(true))
@@ -1386,18 +1387,18 @@ func TestStatusIcon_StatusMapping(t *testing.T) {
 	}
 	for _, c := range cases {
 		// Each known status yields a non-zero glyph without panicking.
-		icon, _ := statusIcon(&RoleView{HasStatus: true, Status: c.status}, false, 0)
+		icon, _ := statusIcon(&heramodel.RoleView{HasStatus: true, Status: c.status}, false, 0)
 		if icon == 0 {
 			t.Errorf("status %q produced zero glyph", c.status)
 		}
 	}
 	// No status, no binding → falls back to a dimmed moon.
-	icon, _ := statusIcon(&RoleView{}, false, 0)
+	icon, _ := statusIcon(&heramodel.RoleView{}, false, 0)
 	if icon == 0 {
 		t.Error("fallback produced zero glyph")
 	}
 	// Bound but statusless → distinct glyph.
-	icon2, _ := statusIcon(&RoleView{Live: true}, false, 0)
+	icon2, _ := statusIcon(&heramodel.RoleView{Live: true}, false, 0)
 	if icon2 == 0 {
 		t.Error("live-statusless produced zero glyph")
 	}
@@ -1415,7 +1416,7 @@ func TestStatusIcon_ActiveAnimatesSpinner(t *testing.T) {
 
 	// A genuinely active role (live binding + bound task in_progress) renders the
 	// active spinner's frame and advances with the frame counter.
-	active := &RoleView{Live: true, SessionRunning: true, TaskStatus: "in_progress", HasStatus: true, Status: db.HeraStatusWorking}
+	active := &heramodel.RoleView{Live: true, SessionRunning: true, TaskStatus: "in_progress", HasStatus: true, Status: db.HeraStatusWorking}
 	f0, _ := statusIcon(active, false, 0)
 	f1, _ := statusIcon(active, false, 1)
 	testutil.Equal(t, f0, widget.SpinnerFrame(0))
@@ -1426,13 +1427,13 @@ func TestStatusIcon_ActiveAnimatesSpinner(t *testing.T) {
 
 	// Real activity drives the spinner even when the stale role-status disagrees
 	// (here it claims idle): the bound task is genuinely in_progress.
-	activeStaleStatus := &RoleView{Live: true, SessionRunning: true, TaskStatus: "in_progress", HasStatus: true, Status: db.HeraStatusIdle}
+	activeStaleStatus := &heramodel.RoleView{Live: true, SessionRunning: true, TaskStatus: "in_progress", HasStatus: true, Status: db.HeraStatusIdle}
 	a0, _ := statusIcon(activeStaleStatus, false, 0)
 	testutil.Equal(t, a0, widget.SpinnerFrame(0))
 
 	// STALE working role-status with NO live binding (a stopped/dead session
 	// showing "claude --resume …") must NOT animate — this is the bug.
-	staleStopped := &RoleView{HasStatus: true, Status: db.HeraStatusWorking}
+	staleStopped := &heramodel.RoleView{HasStatus: true, Status: db.HeraStatusWorking}
 	s0, _ := statusIcon(staleStopped, false, 0)
 	s1, _ := statusIcon(staleStopped, false, 7)
 	testutil.Equal(t, s0, s1)
@@ -1444,7 +1445,7 @@ func TestStatusIcon_ActiveAnimatesSpinner(t *testing.T) {
 	// session exit) stays Live with a stale working status but is NOT in the
 	// running set → must NOT animate. This is the case Live && !SessionIdle alone
 	// got wrong (a dead session is neither running nor in the idle set).
-	deadLingering := &RoleView{Live: true, SessionRunning: false, TaskStatus: "in_review", HasStatus: true, Status: db.HeraStatusWorking}
+	deadLingering := &heramodel.RoleView{Live: true, SessionRunning: false, TaskStatus: "in_review", HasStatus: true, Status: db.HeraStatusWorking}
 	x0, _ := statusIcon(deadLingering, false, 0)
 	x1, _ := statusIcon(deadLingering, false, 4)
 	testutil.Equal(t, x0, x1)
@@ -1456,7 +1457,7 @@ func TestStatusIcon_ActiveAnimatesSpinner(t *testing.T) {
 	// session is STILL RUNNING and producing output DOES animate — the spinner is
 	// gated on liveness + running + content-idle, not bound-task status.
 	// Previously this fell through to the static review glyph and looked parked.
-	activeInReview := &RoleView{Live: true, SessionRunning: true, TaskStatus: "in_review", HasStatus: true, Status: db.HeraStatusWorking}
+	activeInReview := &heramodel.RoleView{Live: true, SessionRunning: true, TaskStatus: "in_review", HasStatus: true, Status: db.HeraStatusWorking}
 	r0, _ := statusIcon(activeInReview, false, 0)
 	r1, _ := statusIcon(activeInReview, false, 1)
 	testutil.Equal(t, r0, widget.SpinnerFrame(0))
@@ -1465,7 +1466,7 @@ func TestStatusIcon_ActiveAnimatesSpinner(t *testing.T) {
 	// BUG-036: a live role whose SESSION is idle (parked fullscreen agent, content
 	// stable) is NOT producing → static, even with stale Status==working and any
 	// task status.
-	staleLiveIdle := &RoleView{Live: true, SessionRunning: true, TaskStatus: "in_review", SessionIdle: true, HasStatus: true, Status: db.HeraStatusWorking}
+	staleLiveIdle := &heramodel.RoleView{Live: true, SessionRunning: true, TaskStatus: "in_review", SessionIdle: true, HasStatus: true, Status: db.HeraStatusWorking}
 	d0, _ := statusIcon(staleLiveIdle, false, 0)
 	d1, _ := statusIcon(staleLiveIdle, false, 3)
 	testutil.Equal(t, d0, d1)
@@ -1474,7 +1475,7 @@ func TestStatusIcon_ActiveAnimatesSpinner(t *testing.T) {
 	}
 
 	// A non-active (idle) role is static across frames.
-	idle := &RoleView{HasStatus: true, Status: db.HeraStatusIdle}
+	idle := &heramodel.RoleView{HasStatus: true, Status: db.HeraStatusIdle}
 	i0, _ := statusIcon(idle, false, 0)
 	i1, _ := statusIcon(idle, false, 5)
 	testutil.Equal(t, i0, i1)
@@ -1488,25 +1489,25 @@ func TestStatusIcon_ActiveAnimatesSpinner(t *testing.T) {
 func TestRoleView_IsActive(t *testing.T) {
 	cases := []struct {
 		name string
-		role RoleView
+		role heramodel.RoleView
 		want bool
 	}{
-		{"live running in_progress active", RoleView{Live: true, SessionRunning: true, TaskStatus: "in_progress"}, true},
-		{"live running in_progress but session-idle (BUG-036)", RoleView{Live: true, SessionRunning: true, TaskStatus: "in_progress", SessionIdle: true}, false},
+		{"live running in_progress active", heramodel.RoleView{Live: true, SessionRunning: true, TaskStatus: "in_progress"}, true},
+		{"live running in_progress but session-idle (BUG-036)", heramodel.RoleView{Live: true, SessionRunning: true, TaskStatus: "in_progress", SessionIdle: true}, false},
 		// BUG-C: a live worker rolled to in_review (#707 close-out window) whose
 		// session is STILL RUNNING and producing output must spin, not fall through
 		// to the review glyph.
-		{"live running in_review active (BUG-C)", RoleView{Live: true, SessionRunning: true, TaskStatus: "in_review"}, true},
-		{"live running in_review but session-idle (parked/done)", RoleView{Live: true, SessionRunning: true, TaskStatus: "in_review", SessionIdle: true}, false},
-		{"live running complete but active", RoleView{Live: true, SessionRunning: true, TaskStatus: "complete"}, true},
-		{"live running no task snapshot, active", RoleView{Live: true, SessionRunning: true, TaskStatus: ""}, true},
+		{"live running in_review active (BUG-C)", heramodel.RoleView{Live: true, SessionRunning: true, TaskStatus: "in_review"}, true},
+		{"live running in_review but session-idle (parked/done)", heramodel.RoleView{Live: true, SessionRunning: true, TaskStatus: "in_review", SessionIdle: true}, false},
+		{"live running complete but active", heramodel.RoleView{Live: true, SessionRunning: true, TaskStatus: "complete"}, true},
+		{"live running no task snapshot, active", heramodel.RoleView{Live: true, SessionRunning: true, TaskStatus: ""}, true},
 		// BUG-C regression: bindings do NOT end on session exit, so a DEAD worker
 		// stays Live but drops from the running set — it must NOT spin. This is the
 		// case Live && !SessionIdle alone got wrong.
-		{"live but NOT running — dead worker, binding lingers (BUG-003)", RoleView{Live: true, SessionRunning: false, TaskStatus: "in_review"}, false},
-		{"live but NOT running, in_progress task (BUG-003)", RoleView{Live: true, SessionRunning: false, TaskStatus: "in_progress"}, false},
-		{"not live but in_progress task (BUG-003)", RoleView{Live: false, SessionRunning: true, TaskStatus: "in_progress"}, false},
-		{"stale working status only", RoleView{HasStatus: true, Status: db.HeraStatusWorking}, false},
+		{"live but NOT running — dead worker, binding lingers (BUG-003)", heramodel.RoleView{Live: true, SessionRunning: false, TaskStatus: "in_review"}, false},
+		{"live but NOT running, in_progress task (BUG-003)", heramodel.RoleView{Live: true, SessionRunning: false, TaskStatus: "in_progress"}, false},
+		{"not live but in_progress task (BUG-003)", heramodel.RoleView{Live: false, SessionRunning: true, TaskStatus: "in_progress"}, false},
+		{"stale working status only", heramodel.RoleView{HasStatus: true, Status: db.HeraStatusWorking}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1520,7 +1521,7 @@ func TestRoleView_IsActive(t *testing.T) {
 // technically still in_progress (alive, waiting) — blocked is a deliberate
 // signal that must not be masked by the activity spinner.
 func TestStatusIcon_BlockedOutranksActivity(t *testing.T) {
-	blocked := &RoleView{Live: true, TaskStatus: "in_progress", HasStatus: true, Status: db.HeraStatusBlocked}
+	blocked := &heramodel.RoleView{Live: true, TaskStatus: "in_progress", HasStatus: true, Status: db.HeraStatusBlocked}
 	icon, _ := statusIcon(blocked, false, 0)
 	testutil.Equal(t, icon, theme.IconNeedsInput)
 }
@@ -1531,7 +1532,7 @@ func TestStatusIcon_BlockedOutranksActivity(t *testing.T) {
 // (loses to rollup).
 func TestStatusIcon_NeedsInputSources(t *testing.T) {
 	t.Run("own needs-input flag shows (?)", func(t *testing.T) {
-		icon, style := statusIcon(&RoleView{Live: true, TaskStatus: "in_progress", NeedsInput: true}, false, 0)
+		icon, style := statusIcon(&heramodel.RoleView{Live: true, TaskStatus: "in_progress", NeedsInput: true}, false, 0)
 		testutil.Equal(t, icon, theme.IconNeedsInput)
 		testutil.Equal(t, style, theme.StyleNeedsInput)
 	})
@@ -1539,28 +1540,28 @@ func TestStatusIcon_NeedsInputSources(t *testing.T) {
 		// A coordinator with no own signal (idle/working) but a needs-input
 		// descendant: the rollup no longer drives the coordinator's own glyph
 		// (remove-needs-input-rollup-glyph) — its own status glyph shows instead.
-		icon, _ := statusIcon(&RoleView{Live: true, HasStatus: true, Status: db.HeraStatusWorking, SubtreeNeedsInput: true}, false, 0)
+		icon, _ := statusIcon(&heramodel.RoleView{Live: true, HasStatus: true, Status: db.HeraStatusWorking, SubtreeNeedsInput: true}, false, 0)
 		if icon == theme.IconNeedsInput {
 			t.Fatalf("expected the coordinator's own status glyph, got needs-input %q", icon)
 		}
 	})
 	t.Run("a done coordinator's own glyph is unaffected by a descendant's rollup", func(t *testing.T) {
-		icon, _ := statusIcon(&RoleView{Live: true, HasStatus: true, Status: db.HeraStatusDone, SubtreeNeedsInput: true}, false, 0)
+		icon, _ := statusIcon(&heramodel.RoleView{Live: true, HasStatus: true, Status: db.HeraStatusDone, SubtreeNeedsInput: true}, false, 0)
 		testutil.Equal(t, icon, '✓')
 	})
 	t.Run("needs-input wins over ready_to_close (BUG-A)", func(t *testing.T) {
 		// A worker stamped ready_to_close (done-roll) that is ALSO genuinely
 		// blocked (its OWN signal) must surface "(?)", not the review glyph — the
 		// actionable block outranks the now-contradicted "ready to close out" stamp.
-		icon, _ := statusIcon(&RoleView{Live: true, ReadyToClose: true, NeedsInput: true}, false, 0)
+		icon, _ := statusIcon(&heramodel.RoleView{Live: true, ReadyToClose: true, NeedsInput: true}, false, 0)
 		testutil.Equal(t, icon, theme.IconNeedsInput)
 	})
 	t.Run("ready_to_close shows review glyph when not blocked", func(t *testing.T) {
-		icon, _ := statusIcon(&RoleView{Live: true, ReadyToClose: true}, false, 0)
+		icon, _ := statusIcon(&heramodel.RoleView{Live: true, ReadyToClose: true}, false, 0)
 		testutil.Equal(t, icon, theme.IconReview)
 	})
 	t.Run("no needs-input → not (?)", func(t *testing.T) {
-		icon, _ := statusIcon(&RoleView{Live: true, TaskStatus: "in_progress"}, false, 0)
+		icon, _ := statusIcon(&heramodel.RoleView{Live: true, TaskStatus: "in_progress"}, false, 0)
 		if icon == theme.IconNeedsInput {
 			t.Fatalf("expected a non-needs-input glyph, got %q", icon)
 		}
@@ -1572,14 +1573,14 @@ func TestStatusIcon_NeedsInputSources(t *testing.T) {
 // placed below NeedsInput and above Done in precedence.
 func TestStatusIcon_Failed(t *testing.T) {
 	t.Run("failed renders ✕", func(t *testing.T) {
-		icon, style := statusIcon(&RoleView{HasStatus: true, Status: db.HeraStatusFailed}, false, 0)
+		icon, style := statusIcon(&heramodel.RoleView{HasStatus: true, Status: db.HeraStatusFailed}, false, 0)
 		testutil.Equal(t, icon, '✕')
 		testutil.Equal(t, style, theme.StyleError)
 	})
 
 	t.Run("failed is distinct from done ✓", func(t *testing.T) {
-		failedIcon, _ := statusIcon(&RoleView{HasStatus: true, Status: db.HeraStatusFailed}, false, 0)
-		doneIcon, _ := statusIcon(&RoleView{HasStatus: true, Status: db.HeraStatusDone}, false, 0)
+		failedIcon, _ := statusIcon(&heramodel.RoleView{HasStatus: true, Status: db.HeraStatusFailed}, false, 0)
+		doneIcon, _ := statusIcon(&heramodel.RoleView{HasStatus: true, Status: db.HeraStatusDone}, false, 0)
 		if failedIcon == doneIcon {
 			t.Fatalf("failed glyph %q must differ from done glyph %q", failedIcon, doneIcon)
 		}
@@ -1587,14 +1588,14 @@ func TestStatusIcon_Failed(t *testing.T) {
 
 	t.Run("needs-input beats failed", func(t *testing.T) {
 		// ShowsNeedsInput is the role's own needs-input signal only.
-		icon, _ := statusIcon(&RoleView{
+		icon, _ := statusIcon(&heramodel.RoleView{
 			HasStatus: true, Status: db.HeraStatusFailed, NeedsInput: true,
 		}, false, 0)
 		testutil.Equal(t, icon, theme.IconNeedsInput)
 	})
 
 	t.Run("ready_to_close beats failed", func(t *testing.T) {
-		icon, _ := statusIcon(&RoleView{
+		icon, _ := statusIcon(&heramodel.RoleView{
 			HasStatus: true, Status: db.HeraStatusFailed, ReadyToClose: true,
 		}, false, 0)
 		testutil.Equal(t, icon, theme.IconReview)
@@ -1606,7 +1607,7 @@ func TestStatusIcon_Failed(t *testing.T) {
 			db.HeraStatusIdle, db.HeraStatusWorking, db.HeraStatusBlocked,
 			db.HeraStatusDone, db.HeraStatusFailed,
 		} {
-			icon, _ := statusIcon(&RoleView{HasStatus: true, Status: sv}, false, 0)
+			icon, _ := statusIcon(&heramodel.RoleView{HasStatus: true, Status: sv}, false, 0)
 			if icon == 0 {
 				t.Errorf("status %q produced zero glyph", sv)
 			}
@@ -1636,7 +1637,7 @@ func TestContextIndicator_Tiers(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			role := &RoleView{Kind: db.HeraKindWorker, Live: true, ContextPercent: c.pct}
+			role := &heramodel.RoleView{Kind: db.HeraKindWorker, Live: true, ContextPercent: c.pct}
 			reserve, glyph, style := contextIndicator(role)
 			testutil.Equal(t, reserve, true)
 			testutil.Equal(t, glyph, c.wantGlyph)
@@ -1649,7 +1650,7 @@ func TestContextIndicator_Tiers(t *testing.T) {
 // never reserves or renders the slot at all, regardless of context
 // percentage — it keeps its live-count badge in that position instead.
 func TestContextIndicator_CoordinatorNeverReserves(t *testing.T) {
-	role := &RoleView{Kind: db.HeraKindCoordinator, Live: true, ContextPercent: 95}
+	role := &heramodel.RoleView{Kind: db.HeraKindCoordinator, Live: true, ContextPercent: 95}
 	reserve, glyph, _ := contextIndicator(role)
 	testutil.Equal(t, reserve, false)
 	testutil.Equal(t, glyph, rune(0))
@@ -1659,7 +1660,7 @@ func TestContextIndicator_CoordinatorNeverReserves(t *testing.T) {
 // the same terms as worker — the exclusion is specifically "coordinator",
 // not "anything that isn't worker".
 func TestContextIndicator_FreelanceEligible(t *testing.T) {
-	role := &RoleView{Kind: db.HeraKindFreelance, Live: true, ContextPercent: 92}
+	role := &heramodel.RoleView{Kind: db.HeraKindFreelance, Live: true, ContextPercent: 92}
 	reserve, glyph, style := contextIndicator(role)
 	testutil.Equal(t, reserve, true)
 	testutil.Equal(t, glyph, '!')
@@ -1672,13 +1673,13 @@ func TestContextIndicator_FreelanceEligible(t *testing.T) {
 // ContextPercent from a previous session must not paint a bang on a dead row.
 func TestContextIndicator_DeadOrArchivedRendersNoGlyph(t *testing.T) {
 	t.Run("not live", func(t *testing.T) {
-		role := &RoleView{Kind: db.HeraKindWorker, Live: false, ContextPercent: 95}
+		role := &heramodel.RoleView{Kind: db.HeraKindWorker, Live: false, ContextPercent: 95}
 		reserve, glyph, _ := contextIndicator(role)
 		testutil.Equal(t, reserve, true)
 		testutil.Equal(t, glyph, rune(0))
 	})
 	t.Run("archived", func(t *testing.T) {
-		role := &RoleView{Kind: db.HeraKindWorker, Live: true, Archived: true, ContextPercent: 95}
+		role := &heramodel.RoleView{Kind: db.HeraKindWorker, Live: true, Archived: true, ContextPercent: 95}
 		reserve, glyph, _ := contextIndicator(role)
 		testutil.Equal(t, reserve, true)
 		testutil.Equal(t, glyph, rune(0))
@@ -1694,7 +1695,7 @@ func TestDrawOrchRow_BareCount(t *testing.T) {
 	sim.SetSize(40, 10)
 
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{{ID: 1, Name: "orch", Roles: []RoleView{
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{{ID: 1, Name: "orch", Roles: []heramodel.RoleView{
 		{RoleID: 11, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc"},
 		{RoleID: 12, Name: "wkr1", Kind: db.HeraKindWorker, Live: true, TaskID: "t1"},
 		{RoleID: 13, Name: "wkr2", Kind: db.HeraKindWorker, Live: true, TaskID: "t2"},
@@ -1727,7 +1728,7 @@ func TestRail_OrchHeaderRendersSubtreeCost(t *testing.T) {
 	sim.SetSize(40, 10)
 
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{{ID: 1, Name: "orch", Roles: []RoleView{
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{{ID: 1, Name: "orch", Roles: []heramodel.RoleView{
 		{RoleID: 11, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc", CostUSDAccrued: 1.5},
 		{RoleID: 12, Name: "wkr", Kind: db.HeraKindWorker, Live: true, TaskID: "twk", CostUSDAccrued: 3.25},
 	}}}})
@@ -1754,7 +1755,7 @@ func TestRail_OrchHeaderOmitsCostWhenUnmeasured(t *testing.T) {
 	sim.SetSize(40, 10)
 
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{{ID: 1, Name: "orch", Roles: []RoleView{
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{{ID: 1, Name: "orch", Roles: []heramodel.RoleView{
 		{RoleID: 11, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc"},
 	}}}})
 	r.SetRect(0, 0, 40, 10)
@@ -1782,7 +1783,7 @@ func TestRail_ContextIndicatorRendersOnWorkerRow(t *testing.T) {
 	sim.SetSize(40, 10)
 
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{{ID: 1, Name: "orch", Roles: []RoleView{
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{{ID: 1, Name: "orch", Roles: []heramodel.RoleView{
 		{RoleID: 11, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc", ContextPercent: 95},
 		{RoleID: 12, Name: "wkr", Kind: db.HeraKindWorker, Live: true, TaskID: "twk", ContextPercent: 95},
 	}}}})
@@ -1819,7 +1820,7 @@ func TestRail_ContextIndicatorComposesWithPRTag(t *testing.T) {
 	sim.SetSize(40, 10)
 
 	r := NewRail()
-	r.SetModel(Model{Active: []OrchView{{ID: 1, Name: "orch", Roles: []RoleView{
+	r.SetModel(heramodel.Model{Active: []heramodel.OrchView{{ID: 1, Name: "orch", Roles: []heramodel.RoleView{
 		{RoleID: 11, Name: "wkr", Kind: db.HeraKindWorker, Live: true, TaskID: "twk", ContextPercent: 95},
 	}}}})
 	r.SetPRMeta(map[string]map[string]string{"twk": {"url": "https://example/pr/1", "state": "awaiting-review"}})
@@ -1850,16 +1851,16 @@ func TestRail_DrawDoesNotPanic(t *testing.T) {
 
 	r := NewRail()
 	r.SetFocused(true)
-	r.SetModel(Model{
-		Pinned: []OrchView{{ID: 5, Name: "pinned", Pinned: true, Roles: []RoleView{
+	r.SetModel(heramodel.Model{
+		Pinned: []heramodel.OrchView{{ID: 5, Name: "pinned", Pinned: true, Roles: []heramodel.RoleView{
 			{RoleID: 50, Name: "p-role", Live: true, ReadyToClose: true},
 		}}},
-		Active: []OrchView{{ID: 1, Name: "orch-1", Roles: []RoleView{
+		Active: []heramodel.OrchView{{ID: 1, Name: "orch-1", Roles: []heramodel.RoleView{
 			{RoleID: 11, Name: "working", HasStatus: true, Status: db.HeraStatusWorking, Live: true},
 			{RoleID: 12, Name: "blocked", HasStatus: true, Status: db.HeraStatusBlocked},
 		}}},
-		Freelance: []RoleView{{RoleID: 91, Name: "free", Kind: db.HeraKindFreelance}},
-		Archived:  []OrchView{{ID: 9, Name: "old", Archived: true, Roles: []RoleView{{RoleID: 99, Name: "r"}}}},
+		Freelance: []heramodel.RoleView{{RoleID: 91, Name: "free", Kind: db.HeraKindFreelance}},
+		Archived:  []heramodel.OrchView{{ID: 9, Name: "old", Archived: true, Roles: []heramodel.RoleView{{RoleID: 99, Name: "r"}}}},
 	})
 	r.SetRect(0, 0, 40, 24)
 	r.Draw(sim) // must not panic
@@ -1911,8 +1912,8 @@ func TestRail_CursorToParent(t *testing.T) {
 
 	t.Run("freelance role no-op", func(t *testing.T) {
 		r := NewRail()
-		r.SetModel(Model{
-			Freelance: []RoleView{
+		r.SetModel(heramodel.Model{
+			Freelance: []heramodel.RoleView{
 				{RoleID: 1, Name: "free", Kind: db.HeraKindFreelance},
 			},
 		})
@@ -1934,9 +1935,9 @@ func TestRail_CursorToParent(t *testing.T) {
 		// Direct row manipulation: force a three-depth structure
 		// root header(depth 0) | child header(depth 1) | grandchild role(depth 2)
 		r.rows = []railRow{
-			{kind: rrOrch, orch: &OrchView{ID: 1, Name: "root"}, depth: 0, collOrchID: 1},
-			{kind: rrOrch, orch: &OrchView{ID: 2, Name: "child"}, depth: 1, collOrchID: 2},
-			{kind: rrRole, role: &RoleView{RoleID: 10, Name: "worker"}, depth: 2},
+			{kind: rrOrch, orch: &heramodel.OrchView{ID: 1, Name: "root"}, depth: 0, collOrchID: 1},
+			{kind: rrOrch, orch: &heramodel.OrchView{ID: 2, Name: "child"}, depth: 1, collOrchID: 2},
+			{kind: rrRole, role: &heramodel.RoleView{RoleID: 10, Name: "worker"}, depth: 2},
 		}
 		// cursor on grandchild role → CursorToParent → child header
 		r.cursor = 2
@@ -1957,9 +1958,9 @@ func TestRail_CursorToParent(t *testing.T) {
 		// coordinator for the worker rows nested under it.
 		r := NewRail()
 		r.rows = []railRow{
-			{kind: rrOrch, orch: &OrchView{ID: 1, Name: "root"}, depth: 0, collOrchID: 1},
-			{kind: rrRole, role: &RoleView{RoleID: 5, Name: "bridge"}, depth: 1, collOrchID: 99},
-			{kind: rrRole, role: &RoleView{RoleID: 6, Name: "nested-worker"}, depth: 2},
+			{kind: rrOrch, orch: &heramodel.OrchView{ID: 1, Name: "root"}, depth: 0, collOrchID: 1},
+			{kind: rrRole, role: &heramodel.RoleView{RoleID: 5, Name: "bridge"}, depth: 1, collOrchID: 99},
+			{kind: rrRole, role: &heramodel.RoleView{RoleID: 6, Name: "nested-worker"}, depth: 2},
 		}
 		r.cursor = 2 // nested-worker
 		r.CursorToParent()
