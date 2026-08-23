@@ -6,7 +6,19 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+
+	"github.com/drn/argus/internal/app/agentview"
 )
+
+// inputOriginHeader carries the WriteInput origin over REST. Only sent for
+// agentview.OriginSystem; agentview.OriginUser is the zero value and the
+// header is omitted for it, so an older server (which does not look at this
+// header at all) and a newer server presented with no header both apply the
+// same OriginUser default — see handleWriteInput's read side.
+const inputOriginHeader = "X-Input-Origin"
+
+// inputOriginSystemValue is the header value signaling agentview.OriginSystem.
+const inputOriginSystemValue = "system"
 
 // OutputResult is the response from GetOutput: the byte tail plus the cursor
 // the client should pass as ?since=N on a subsequent StreamOutput call to
@@ -35,7 +47,7 @@ func (c *Client) GetOutput(ctx context.Context, id string, tailBytes int, clean 
 			q += "clean=1"
 		}
 	}
-	resp, err := c.do(ctx, "GET", "/api/tasks/"+id+"/output"+q, nil, "")
+	resp, err := c.do(ctx, "GET", "/api/tasks/"+id+"/output"+q, nil, "", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -54,8 +66,14 @@ func (c *Client) GetOutput(ctx context.Context, id string, tailBytes int, clean 
 }
 
 // WriteInput sends bytes to the agent's PTY. Capped at 64 KiB by the server.
-func (c *Client) WriteInput(ctx context.Context, id string, data []byte) error {
-	resp, err := c.do(ctx, "POST", "/api/tasks/"+id+"/input", bytesReader(data), "application/octet-stream")
+// origin threads through as the X-Input-Origin header (see inputOriginHeader);
+// OriginUser sends no header at all (the safe, pre-existing wire shape).
+func (c *Client) WriteInput(ctx context.Context, id string, data []byte, origin agentview.InputOrigin) error {
+	var headers map[string]string
+	if origin == agentview.OriginSystem {
+		headers = map[string]string{inputOriginHeader: inputOriginSystemValue}
+	}
+	resp, err := c.do(ctx, "POST", "/api/tasks/"+id+"/input", bytesReader(data), "application/octet-stream", headers)
 	if err != nil {
 		return err
 	}

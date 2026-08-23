@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/events"
@@ -1073,7 +1074,19 @@ func (s *Server) handleWriteInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := sess.WriteInput(data); err != nil {
+	// X-Input-Origin distinguishes a real keystroke from argus-injected
+	// input (see apiclient.Client.WriteInput / agentview.InputOrigin). Any
+	// value other than the recognized "system" — including the header's
+	// total absence, which is every pre-unify-writeinput-origin client and
+	// every plugin token that never learns about this header — resolves to
+	// agentview.OriginUser, the zero value and the only behavior this
+	// endpoint ever had.
+	writeOrigin := agentview.OriginUser
+	if r.Header.Get("X-Input-Origin") == "system" {
+		writeOrigin = agentview.OriginSystem
+	}
+
+	if _, err := sess.WriteInput(data, writeOrigin); err != nil {
 		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
@@ -1081,8 +1094,9 @@ func (s *Server) handleWriteInput(w http.ResponseWriter, r *http.Request) {
 	// Audit tag for /input as a stable plugin-callable surface (PR 5 of the
 	// plugin substrate). `origin` mirrors the auth middleware's tagging —
 	// `master`, `device`, or `scope:<plugin>` — so writes from a plugin token
-	// are attributable post-hoc.
-	uxlog.Log("[api] input task=%s origin=%s bytes=%d", id, authOrigin(r), len(data))
+	// are attributable post-hoc. Distinct from writeOrigin above (who typed
+	// it vs. which credential sent it).
+	uxlog.Log("[api] input task=%s origin=%s write_origin=%s bytes=%d", id, authOrigin(r), writeOrigin, len(data))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "bytes": strconv.Itoa(len(data))})
 }
 

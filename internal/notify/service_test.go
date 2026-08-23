@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/testutil"
 )
 
@@ -39,10 +40,11 @@ func (r *fakeRunner) addSession(taskID string, idle bool) *fakeSession {
 
 // fakeSession implements SessionHandleIface for tests.
 type fakeSession struct {
-	mu     sync.Mutex
-	idle   bool
-	writes [][]byte
-	// writeErr is returned from WriteInputSystem when set.
+	mu      sync.Mutex
+	idle    bool
+	writes  [][]byte
+	origins []agentview.InputOrigin
+	// writeErr is returned from WriteInput when set.
 	writeErr error
 }
 
@@ -52,7 +54,7 @@ func (s *fakeSession) IsIdle() bool {
 	return s.idle
 }
 
-func (s *fakeSession) WriteInputSystem(p []byte) (int, error) {
+func (s *fakeSession) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.writeErr != nil {
@@ -61,7 +63,18 @@ func (s *fakeSession) WriteInputSystem(p []byte) (int, error) {
 	cp := make([]byte, len(p))
 	copy(cp, p)
 	s.writes = append(s.writes, cp)
+	s.origins = append(s.origins, origin)
 	return len(p), nil
+}
+
+// allOrigins returns a copy of every origin recorded by WriteInput calls, in
+// order.
+func (s *fakeSession) allOrigins() []agentview.InputOrigin {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]agentview.InputOrigin, len(s.origins))
+	copy(out, s.origins)
+	return out
 }
 
 func (s *fakeSession) allWrites() [][]byte {
@@ -108,6 +121,28 @@ func TestNotifier_ImmediateSubmit(t *testing.T) {
 	testutil.Equal(t, string(writes[0]), "\x15")
 	testutil.Equal(t, string(writes[1]), "hello")
 	testutil.Equal(t, string(writes[2]), "\r")
+}
+
+// TestNotifier_DeliveryUsesOriginSystem pins the origin-preservation
+// contract: reliable-notify delivery must always write with
+// agentview.OriginSystem, never agentview.OriginUser, so a delivered
+// hera/task message can never masquerade as the user answering a prompt
+// (BUG-034).
+func TestNotifier_DeliveryUsesOriginSystem(t *testing.T) {
+	r := newFakeRunner()
+	sess := r.addSession("t1", true) // idle = true
+	n := newTestNotifier(r, fakeNoFocus{})
+
+	cancel := n.ReliableNotify("t1", "hello", "d1", NotifyOpts{})
+	defer cancel()
+
+	n.Reconcile(time.Now())
+
+	origins := sess.allOrigins()
+	testutil.Equal(t, len(origins), 3)
+	for _, o := range origins {
+		testutil.Equal(t, o, agentview.OriginSystem)
+	}
 }
 
 func TestNotifier_DeferredWhenBusy(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
@@ -233,7 +234,7 @@ func TestSession_WriteInput(t *testing.T) {
 	}
 	defer sess.Stop()
 
-	n, err := sess.WriteInput([]byte("test input\n"))
+	n, err := sess.WriteInput([]byte("test input\n"), agentview.OriginUser)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,14 +250,15 @@ func TestSession_WriteInput(t *testing.T) {
 	}
 }
 
-// TestSession_WriteInputSystem_DoesNotAdvanceUserInput pins the BUG-034
-// regression fix at the source: a SYSTEM write (reliable-notify delivery)
+// TestSession_WriteInput_OriginSystem_DoesNotAdvanceUserInput pins the
+// BUG-034 regression fix at the source: an OriginSystem write
+// (reliable-notify delivery, hera bounce, live-emulator query response)
 // advances the work-cycle timestamp (LastInput) so the idle-push gate still
 // sees new work, but does NOT advance the user-input timestamp (LastUserInput)
 // that the needs-input clear-on-input filter reads — so a delivered message
-// never masquerades as the user answering a prompt. A genuine user WriteInput
-// advances both.
-func TestSession_WriteInputSystem_DoesNotAdvanceUserInput(t *testing.T) {
+// never masquerades as the user answering a prompt. A genuine OriginUser
+// WriteInput advances both.
+func TestSession_WriteInput_OriginSystem_DoesNotAdvanceUserInput(t *testing.T) {
 	cmd := exec.Command("cat")
 	sess, err := StartSession("wis-1", cmd, 24, 80)
 	if err != nil {
@@ -273,27 +275,27 @@ func TestSession_WriteInputSystem_DoesNotAdvanceUserInput(t *testing.T) {
 	}
 
 	// System delivery: advances LastInput, NOT LastUserInput.
-	if _, err := sess.WriteInputSystem([]byte("coordinator msg\r")); err != nil {
+	if _, err := sess.WriteInput([]byte("coordinator msg\r"), agentview.OriginSystem); err != nil {
 		t.Fatal(err)
 	}
 	if sess.LastInput().IsZero() {
-		t.Error("WriteInputSystem did not advance LastInput (work cycle)")
+		t.Error("OriginSystem write did not advance LastInput (work cycle)")
 	}
 	if !sess.LastUserInput().IsZero() {
-		t.Error("WriteInputSystem wrongly advanced LastUserInput (would clear the (?) flag)")
+		t.Error("OriginSystem write wrongly advanced LastUserInput (would clear the (?) flag)")
 	}
 
 	sysLastInput := sess.LastInput()
 
 	// User keystroke: advances BOTH.
-	if _, err := sess.WriteInput([]byte("y\r")); err != nil {
+	if _, err := sess.WriteInput([]byte("y\r"), agentview.OriginUser); err != nil {
 		t.Fatal(err)
 	}
 	if !sess.LastInput().After(sysLastInput) {
-		t.Error("WriteInput did not advance LastInput past the system write")
+		t.Error("OriginUser write did not advance LastInput past the system write")
 	}
 	if sess.LastUserInput().IsZero() {
-		t.Error("WriteInput did not advance LastUserInput")
+		t.Error("OriginUser write did not advance LastUserInput")
 	}
 }
 
@@ -665,7 +667,7 @@ func TestSession_RemoveWriter(t *testing.T) {
 
 	// Write some input so cat echoes it — this produces output
 	// that the writer receives.
-	sess.WriteInput([]byte("before\n"))
+	_, _ = sess.WriteInput([]byte("before\n"), agentview.OriginUser)
 	time.Sleep(100 * time.Millisecond)
 
 	if buf.Len() == 0 {
@@ -676,7 +678,7 @@ func TestSession_RemoveWriter(t *testing.T) {
 	sess.RemoveWriter(&buf)
 	initialLen := buf.Len()
 
-	sess.WriteInput([]byte("after-removal\n"))
+	_, _ = sess.WriteInput([]byte("after-removal\n"), agentview.OriginUser)
 	time.Sleep(100 * time.Millisecond)
 
 	if buf.Len() > initialLen {
@@ -1433,7 +1435,7 @@ func TestSession_LastInput(t *testing.T) {
 		t.Errorf("LastInput before WriteInput: got %v, want zero", sess.LastInput())
 	}
 
-	if _, err := sess.WriteInput([]byte("hi\n")); err != nil {
+	if _, err := sess.WriteInput([]byte("hi\n"), agentview.OriginUser); err != nil {
 		t.Fatal(err)
 	}
 

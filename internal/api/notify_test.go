@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/notify"
 	"github.com/drn/argus/internal/testutil"
@@ -155,7 +156,7 @@ func (notifyIdleRunner) Get(string) notify.SessionHandleIface { return &notifyId
 type notifyIdleSession struct{ writes [][]byte }
 
 func (s *notifyIdleSession) IsIdle() bool { return true }
-func (s *notifyIdleSession) WriteInputSystem(p []byte) (int, error) {
+func (s *notifyIdleSession) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
 	s.writes = append(s.writes, append([]byte(nil), p...))
 	return len(p), nil
 }

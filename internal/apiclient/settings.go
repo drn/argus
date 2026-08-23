@@ -183,7 +183,7 @@ func (c *Client) GetLog(ctx context.Context, name string, bytes int) ([]byte, er
 	if bytes > 0 {
 		q = "?bytes=" + strconv.Itoa(bytes)
 	}
-	resp, err := c.do(ctx, "GET", "/api/logs/"+name+q, nil, "")
+	resp, err := c.do(ctx, "GET", "/api/logs/"+name+q, nil, "", nil)
 	if err != nil {
 		return nil, err
 	}

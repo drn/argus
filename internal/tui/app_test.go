@@ -16,6 +16,7 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/apiclient"
 	"github.com/drn/argus/internal/apistore"
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/db"
@@ -536,28 +537,27 @@ type fakeKickSession struct {
 	stopCalled atomic.Bool
 }
 
-func (f *fakeKickSession) PID() int                                       { return 0 }
-func (f *fakeKickSession) WriteInput([]byte) (int, error)                 { return 0, nil }
-func (f *fakeKickSession) WriteInputSystem([]byte) (int, error)           { return 0, nil }
-func (f *fakeKickSession) Resize(uint16, uint16) error                    { return nil }
-func (f *fakeKickSession) RecentOutput() []byte                           { return nil }
-func (f *fakeKickSession) RecentOutputTail(int) []byte                    { return nil }
-func (f *fakeKickSession) RecentOutputTailWithTotal(int) ([]byte, uint64) { return nil, 0 }
-func (f *fakeKickSession) TotalWritten() uint64                           { return 0 }
-func (f *fakeKickSession) IsIdle() bool                                   { return f.idle }
-func (f *fakeKickSession) LastInput() time.Time                           { return time.Time{} }
-func (f *fakeKickSession) LastUserInput() time.Time                       { return time.Time{} }
-func (f *fakeKickSession) Alive() bool                                    { return f.alive }
-func (f *fakeKickSession) PTYSize() (int, int)                            { return 0, 0 }
-func (f *fakeKickSession) InitialPTYSize() (int, int)                     { return f.initCols, 24 }
-func (f *fakeKickSession) Done() <-chan struct{}                          { return make(chan struct{}) }
-func (f *fakeKickSession) Err() error                                     { return nil }
-func (f *fakeKickSession) WorkDir() string                                { return "" }
-func (f *fakeKickSession) Stop() error                                    { f.stopCalled.Store(true); return nil }
-func (f *fakeKickSession) AddWriter(io.Writer)                            {}
-func (f *fakeKickSession) AddWriterFrom(io.Writer, uint64)                {}
-func (f *fakeKickSession) AddWriterFromTolerant(io.Writer, uint64)        {}
-func (f *fakeKickSession) RemoveWriter(io.Writer)                         {}
+func (f *fakeKickSession) PID() int                                              { return 0 }
+func (f *fakeKickSession) WriteInput([]byte, agentview.InputOrigin) (int, error) { return 0, nil }
+func (f *fakeKickSession) Resize(uint16, uint16) error                           { return nil }
+func (f *fakeKickSession) RecentOutput() []byte                                  { return nil }
+func (f *fakeKickSession) RecentOutputTail(int) []byte                           { return nil }
+func (f *fakeKickSession) RecentOutputTailWithTotal(int) ([]byte, uint64)        { return nil, 0 }
+func (f *fakeKickSession) TotalWritten() uint64                                  { return 0 }
+func (f *fakeKickSession) IsIdle() bool                                          { return f.idle }
+func (f *fakeKickSession) LastInput() time.Time                                  { return time.Time{} }
+func (f *fakeKickSession) LastUserInput() time.Time                              { return time.Time{} }
+func (f *fakeKickSession) Alive() bool                                           { return f.alive }
+func (f *fakeKickSession) PTYSize() (int, int)                                   { return 0, 0 }
+func (f *fakeKickSession) InitialPTYSize() (int, int)                            { return f.initCols, 24 }
+func (f *fakeKickSession) Done() <-chan struct{}                                 { return make(chan struct{}) }
+func (f *fakeKickSession) Err() error                                            { return nil }
+func (f *fakeKickSession) WorkDir() string                                       { return "" }
+func (f *fakeKickSession) Stop() error                                           { f.stopCalled.Store(true); return nil }
+func (f *fakeKickSession) AddWriter(io.Writer)                                   {}
+func (f *fakeKickSession) AddWriterFrom(io.Writer, uint64)                       {}
+func (f *fakeKickSession) AddWriterFromTolerant(io.Writer, uint64)               {}
+func (f *fakeKickSession) RemoveWriter(io.Writer)                                {}
 
 func TestMaybeKickRerender_TUIDefersWhenBlockedOnPrompt(t *testing.T) {
 	// End-to-end for the TUI's RerenderDeferPrompt switch branch: a genuine

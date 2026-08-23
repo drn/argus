@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
@@ -218,7 +219,7 @@ func TestSession_WriteInput_UpdatesLastInput(t *testing.T) {
 	defer s.close()
 
 	before := time.Now()
-	_, err := s.WriteInput([]byte("hello"))
+	_, err := s.WriteInput([]byte("hello"), agentview.OriginUser)
 	testutil.NoError(t, err)
 	got := s.LastInput()
 	if got.Before(before) {
