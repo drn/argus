@@ -235,6 +235,16 @@ or using in-session sub-agents.
      - Units are **independent** (no ordering)? → just `hera_spawn_worker` them in parallel; no DAG.
   3. **Ask the human only** when it's genuinely ambiguous whether the work warrants multi-session
      orchestration at all — never for the routine dependency call above.
+  4. **Prefer a hera worker over a native sub-agent for anything that must survive a coordinator
+     recycle.** Only a hera-tracked session comes back cleanly after a recycle (self-service, or the
+     coord-hook's automatic forced recycle past 1.5x token budget, which has no idle gate at all) — a
+     native sub-agent is just an in-process tool call invisible to the daemon, and gets killed along
+     with the rest of your session with no trace. Don't call `hera_status(request_recycle=true)` while
+     a native sub-agent you dispatched is still running: self-service recycle only defers until you go
+     idle, and a backgrounded sub-agent produces zero output while it works, so you look idle when you
+     aren't — requesting recycle early kills its work mid-flight. If you must hand off or record status
+     while one is still in flight, say so in `handoff_note` so a human reviewing status doesn't
+     force-recycle blindly.
 - **This task holds 2+ bindings?** Pass `orchestrator=` on EVERY tool call.
 - **Got a doorbell?** Call `hera_inbox(cwd=$PWD)` immediately — the content is in the inbox, not the
   doorbell line.
