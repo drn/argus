@@ -4045,13 +4045,23 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
-	// Enter restarts/resumes the session when dead.
+	// Enter restarts/resumes the session when dead — UNLESS the task is a
+	// hera worker/freelance role awaiting coordinator close-out, in which
+	// case it refuses via the same toggle the Hera tab uses (Frontend
+	// Parity, add-enter-closeout-guard-parity): this bare taskID has no
+	// hera.Selection to scope on, so heraKickRestartClosedOut resolves the
+	// same worker/freelance-only scoping heraReattach gets from
+	// sel.IsWorkerOrFreelance().
 	if event.Key() == tcell.KeyEnter && (sess == nil || !sess.Alive()) {
 		a.mu.Lock()
 		taskID := a.agentState.TaskID
 		a.mu.Unlock()
 		if t, err := a.db.Get(taskID); err == nil && t != nil {
-			a.startSession(t)
+			if closedOut, cerr := a.heraKickRestartClosedOut(t.ID); cerr == nil && closedOut {
+				a.reattachClosedOut(a.agentPane, t)
+			} else {
+				a.startSession(t)
+			}
 		} else {
 			uxlog.Log("[tui] enter-to-restart: db.Get(%s) failed: %v", taskID, err)
 		}
@@ -4735,13 +4745,22 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 	// archived tasks — those are view-only until the user explicitly presses
 	// Enter to restart.
 	// After the sess.Alive() early-return above, any session here is dead.
+	// Skip auto-start for a hera worker/freelance task awaiting coordinator
+	// close-out (Frontend Parity, add-enter-closeout-guard-parity): the Hera
+	// tab never auto-restarts such a task on mere navigation either — it
+	// shows the ordinary dead-session view (replay or placeholder) until the
+	// user explicitly presses Enter, which is handleAgentKey's job to gate.
 	if autoStart && task.Status != model.StatusComplete && !task.Archived {
-		sid := task.SessionID
-		if sid == "" {
-			sid = "(none)"
+		if closedOut, err := a.heraKickRestartClosedOut(task.ID); err == nil && closedOut {
+			uxlog.Log("[tui] auto-start skipped for closed-out task %s (%s) — press Enter to view read-only or restart via hera_revive", task.ID, task.Name)
+		} else {
+			sid := task.SessionID
+			if sid == "" {
+				sid = "(none)"
+			}
+			uxlog.Log("[tui] auto-starting session for task %s (sessionID=%s)", task.ID, sid)
+			a.startSession(task)
 		}
-		uxlog.Log("[tui] auto-starting session for task %s (sessionID=%s)", task.ID, sid)
-		a.startSession(task)
 	}
 }
 
@@ -5341,6 +5360,29 @@ func (a *App) refreshResumeSessionID(task *model.Task, resume bool) {
 	if d, ok := a.db.(*db.DB); ok {
 		agent.RefreshResumeSessionID(d, task)
 	}
+}
+
+// reattachClosedOut is the shared Enter-to-restart refusal for a hera
+// worker/freelance task awaiting coordinator close-out (add-enter-closeout-
+// guard) — reused by BOTH the Hera tab (heraReattachClosedOut, on
+// a.heraPage.AgentPane()) and the plain Tasks tab (handleAgentKey's
+// Enter-to-restart block, on a.agentPane): the SAME underlying task reached
+// through either surface must refuse the same way (Frontend Parity — see
+// CLAUDE.md). Toggles pane's closed-out banner: the first call arms it
+// (refusing to start, replacing the placeholder); a second, immediately-
+// following call dismisses it, letting Draw() fall through to the pane's
+// ordinary dead-session rendering (read-only replay, or the "Session not
+// running" placeholder if nothing was recorded).
+func (a *App) reattachClosedOut(pane *terminal.TerminalPane, t *model.Task) {
+	if pane.ClosedOutBannerShown() {
+		pane.DismissClosedOutBanner()
+		uxlog.Log("[tui] reattach: dismissing closed-out banner for task %s (%s) — viewing read-only", t.ID, t.Name)
+		a.statusbar.SetInfo("Viewing last known output (read-only)")
+		return
+	}
+	pane.ShowClosedOutBanner()
+	uxlog.Log("[tui] reattach: refusing dead-session restart for closed-out task %s (%s)", t.ID, t.Name)
+	a.statusbar.SetError("Task is closed out — press Enter again to view read-only, or hera_revive to reopen")
 }
 
 // startSession writes task status/SessionID/AgentPID through a.db at several
