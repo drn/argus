@@ -151,3 +151,87 @@ func TestReviveHeraWorkerToInProgress(t *testing.T) {
 		testutil.Equal(t, restored, false)
 	})
 }
+
+// TestClearHeraCloseout pins add-force-revive-third-enter: unlike
+// ReviveHeraWorkerToInProgress (which REFUSES to act on a closed-out
+// worker), ClearHeraCloseout is the explicit operator-override path — it
+// must clear BOTH of HeraWorkerAwaitingCloseout's signals so the guard
+// doesn't immediately re-trip on the freshly-revived session's own next
+// natural exit.
+func TestClearHeraCloseout(t *testing.T) {
+	setup := func(t *testing.T) (*DB, string, int64) {
+		t.Helper()
+		d := heraTestDB(t)
+		task := &model.Task{Name: "t", Status: model.StatusInReview, Project: "p"}
+		testutil.NoError(t, d.Add(task))
+		o := mkOrch(t, d, "o")
+		r := mkRole(t, d, o.ID, "r", HeraKindWorker)
+		mkBinding(t, d, r.ID, task.ID, "/wt/t")
+		return d, task.ID, r.ID
+	}
+
+	t.Run("clears ready_to_close meta", func(t *testing.T) {
+		d, id, _ := setup(t)
+		testutil.NoError(t, d.SetMeta(id, HeraMetaNamespace, HeraMetaKeyReadyToClose, "true"))
+		testutil.NoError(t, d.ClearHeraCloseout(id))
+		awaiting, err := d.HeraWorkerAwaitingCloseout(id)
+		testutil.NoError(t, err)
+		testutil.Equal(t, awaiting, false)
+	})
+
+	t.Run("resets terminal role-status done to working", func(t *testing.T) {
+		d, id, roleID := setup(t)
+		testutil.NoError(t, d.UpsertHeraRoleStatus(roleID, HeraStatusDone))
+		testutil.NoError(t, d.ClearHeraCloseout(id))
+		awaiting, err := d.HeraWorkerAwaitingCloseout(id)
+		testutil.NoError(t, err)
+		testutil.Equal(t, awaiting, false)
+		rs, err := d.HeraRoleStatusFor(roleID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, rs.Status, HeraStatusWorking)
+	})
+
+	t.Run("resets terminal role-status failed to working", func(t *testing.T) {
+		d, id, roleID := setup(t)
+		testutil.NoError(t, d.UpsertHeraRoleStatus(roleID, HeraStatusFailed))
+		testutil.NoError(t, d.ClearHeraCloseout(id))
+		rs, err := d.HeraRoleStatusFor(roleID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, rs.Status, HeraStatusWorking)
+	})
+
+	t.Run("clears BOTH signals when both present", func(t *testing.T) {
+		d, id, roleID := setup(t)
+		testutil.NoError(t, d.SetMeta(id, HeraMetaNamespace, HeraMetaKeyReadyToClose, "true"))
+		testutil.NoError(t, d.UpsertHeraRoleStatus(roleID, HeraStatusDone))
+		testutil.NoError(t, d.ClearHeraCloseout(id))
+		awaiting, err := d.HeraWorkerAwaitingCloseout(id)
+		testutil.NoError(t, err)
+		testutil.Equal(t, awaiting, false)
+		rs, err := d.HeraRoleStatusFor(roleID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, rs.Status, HeraStatusWorking)
+	})
+
+	t.Run("non-terminal role-status left alone", func(t *testing.T) {
+		d, id, roleID := setup(t)
+		testutil.NoError(t, d.UpsertHeraRoleStatus(roleID, HeraStatusBlocked))
+		testutil.NoError(t, d.ClearHeraCloseout(id))
+		rs, err := d.HeraRoleStatusFor(roleID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, rs.Status, HeraStatusBlocked)
+	})
+
+	t.Run("no role-status row at all -> no-op, no error", func(t *testing.T) {
+		d, id, _ := setup(t)
+		testutil.NoError(t, d.ClearHeraCloseout(id))
+	})
+
+	t.Run("never closed out -> no-op, no error", func(t *testing.T) {
+		d, id, _ := setup(t)
+		testutil.NoError(t, d.ClearHeraCloseout(id))
+		awaiting, err := d.HeraWorkerAwaitingCloseout(id)
+		testutil.NoError(t, err)
+		testutil.Equal(t, awaiting, false)
+	})
+}

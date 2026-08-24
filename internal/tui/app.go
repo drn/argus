@@ -5362,27 +5362,62 @@ func (a *App) refreshResumeSessionID(task *model.Task, resume bool) {
 	}
 }
 
-// reattachClosedOut is the shared Enter-to-restart refusal for a hera
+// reattachClosedOut is the shared Enter-to-restart sequence for a hera
 // worker/freelance task awaiting coordinator close-out (add-enter-closeout-
 // guard) — reused by BOTH the Hera tab (heraReattachClosedOut, on
 // a.heraPage.AgentPane()) and the plain Tasks tab (handleAgentKey's
 // Enter-to-restart block, on a.agentPane): the SAME underlying task reached
-// through either surface must refuse the same way (Frontend Parity — see
-// CLAUDE.md). Toggles pane's closed-out banner: the first call arms it
-// (refusing to start, replacing the placeholder); a second, immediately-
-// following call dismisses it, letting Draw() fall through to the pane's
-// ordinary dead-session rendering (read-only replay, or the "Session not
-// running" placeholder if nothing was recorded).
+// through either surface must behave the same way (Frontend Parity — see
+// CLAUDE.md). Three steps per visit, tracked on the pane and reset by
+// ResetVT so a fresh visit always restarts the sequence:
+//
+//  1. First Enter arms the banner, refusing to start.
+//  2. Second, immediately-following Enter dismisses it, letting Draw() fall
+//     through to the pane's ordinary dead-session rendering (read-only
+//     replay, or the "Session not running" placeholder if nothing was
+//     recorded).
+//  3. Third Enter actually revives the task (add-force-revive-third-enter,
+//     msg #5528) — superseding the original design's "no separate third
+//     state, further presses just keep toggling" (design.md Decision 4):
+//     three deliberate presses in a row is unambiguous operator intent to
+//     reopen the task, not an accidental double-tap.
 func (a *App) reattachClosedOut(pane *terminal.TerminalPane, t *model.Task) {
 	if pane.ClosedOutBannerShown() {
 		pane.DismissClosedOutBanner()
 		uxlog.Log("[tui] reattach: dismissing closed-out banner for task %s (%s) — viewing read-only", t.ID, t.Name)
-		a.statusbar.SetInfo("Viewing last known output (read-only)")
+		a.statusbar.SetInfo("Viewing last known output (read-only) — press Enter again to reopen")
+		return
+	}
+	if pane.ClosedOutReadyToRevive() {
+		a.forceReviveClosedOut(pane, t)
 		return
 	}
 	pane.ShowClosedOutBanner()
 	uxlog.Log("[tui] reattach: refusing dead-session restart for closed-out task %s (%s)", t.ID, t.Name)
-	a.statusbar.SetError("Task is closed out — press Enter again to view read-only, or hera_revive to reopen")
+	a.statusbar.SetError("Task is closed out — press Enter again to view read-only, then again to reopen")
+}
+
+// forceReviveClosedOut is reattachClosedOut's third step: the operator has
+// pressed Enter three times in a row, an unambiguous deliberate override of
+// the close-out guard. Clears BOTH of HeraWorkerAwaitingCloseout's signals
+// via db.ClearHeraCloseout (meta:hera.ready_to_close AND any terminal
+// done/failed role status) BEFORE starting the session — clearing after
+// would race a fast-exiting session's own post-exit reconciliation
+// re-deriving the identical closed-out state from the still-stale markers.
+// Local-mode only, matching heraTaskClosedOut/heraKickRestartClosedOut: in
+// --remote mode a.db is *apistore.Store (no ClearHeraCloseout equivalent),
+// so the clear silently no-ops there — startSession still runs, and the
+// daemon on the far end owns its own closed-out state.
+func (a *App) forceReviveClosedOut(pane *terminal.TerminalPane, t *model.Task) {
+	if dbv, ok := a.db.(*db.DB); ok {
+		if err := dbv.ClearHeraCloseout(t.ID); err != nil {
+			uxlog.Log("[tui] reattach: force-revive clear closeout failed task=%s: %v", t.ID, err)
+		}
+	}
+	pane.ClearClosedOutState()
+	uxlog.Log("[tui] reattach: force-reviving closed-out task %s (%s) — operator override (3rd Enter)", t.ID, t.Name)
+	a.statusbar.SetInfo("Reopening task…")
+	a.startSession(t)
 }
 
 // startSession writes task status/SessionID/AgentPID through a.db at several

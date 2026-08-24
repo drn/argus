@@ -1225,12 +1225,23 @@ func TestSmoke_HeraReattachClosedOutTogglesBannerThenReadOnly(t *testing.T) {
 	testutil.Equal(t, got.SessionID, "")
 	testutil.Equal(t, got.Status, model.StatusComplete)
 
-	// A third Enter re-arms the banner — the toggle has no separate third
-	// state (design.md Decision 4).
+	// A third Enter actually revives the task — an unambiguous deliberate
+	// override, not a re-arm (add-force-revive-third-enter, msg #5528,
+	// superseding design.md Decision 4's original "no separate third state").
 	sim.InjectKey(tcell.KeyEnter, 0, 0)
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() { armed = app.heraPage.AgentPane().ClosedOutBannerShown() })
-	testutil.Equal(t, armed, true)
+	testutil.Equal(t, armed, false) // did NOT re-arm
+
+	// The close-out signals were cleared before the (failed — no worktree in
+	// this test) start attempt was made, proving the revive path ran.
+	stillClosedOut, err := d.HeraWorkerAwaitingCloseout("tw")
+	testutil.NoError(t, err)
+	testutil.Equal(t, stillClosedOut, false)
+
+	got, err = d.Get("tw")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Status, model.StatusPending) // startSession attempted and failed (no worktree), reverted to Pending
 }
 
 // TestSmoke_HeraReattachClosedOutSecondEnterShowsRealReplayContent is the

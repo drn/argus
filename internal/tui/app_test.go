@@ -1316,6 +1316,46 @@ func TestHandleAgentKey_EnterOnClosedOutHeraWorkerTogglesBanner(t *testing.T) {
 	testutil.Equal(t, got.Status, model.StatusComplete)
 }
 
+// TestHandleAgentKey_ThirdEnterRevivesClosedOutTask is the plain-Tasks-tab
+// sibling of the Hera tab's third-Enter-revive fix (add-force-revive-third-
+// enter, msg #5528) — the SAME shared App.reattachClosedOut must actually
+// revive the task on the third Enter regardless of which tab it's reached
+// from, not just re-arm the banner (design.md Decision 4's original "no
+// separate third state" was superseded by this explicit requirement).
+func TestHandleAgentKey_ThirdEnterRevivesClosedOutTask(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	orch := seedHeraOrch(t, d, "orch")
+	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+	seedHeraBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
+	testutil.NoError(t, d.SetStatus("tw", model.StatusComplete))
+	testutil.NoError(t, d.SetMeta("tw", db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"))
+
+	app.mode = modeAgent
+	app.agentState.Reset("tw", "wkr")
+	app.agentPane.SetTaskID("tw")
+
+	ev := tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone)
+	app.handleAgentKey(ev) // 1st: arms the banner
+	app.handleAgentKey(ev) // 2nd: dismisses to read-only replay
+	app.handleAgentKey(ev) // 3rd: actually revives
+
+	testutil.Equal(t, app.agentPane.ClosedOutBannerShown(), false) // did NOT re-arm
+	testutil.Contains(t, app.statusbar.Info(), "Reopening")
+
+	// The close-out signals were cleared before the (failed — no worktree in
+	// this test) start attempt was made, proving the revive path ran rather
+	// than a silent re-arm.
+	stillClosedOut, err := d.HeraWorkerAwaitingCloseout("tw")
+	testutil.NoError(t, err)
+	testutil.Equal(t, stillClosedOut, false)
+
+	got, err := d.Get("tw")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Status, model.StatusPending) // startSession attempted and failed (no worktree), reverted to Pending
+}
+
 func TestExitAgentView(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)

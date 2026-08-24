@@ -314,6 +314,17 @@ type TerminalPane struct {
 	// Enter, exactly like a fresh visit.
 	closedOutBannerShown bool
 
+	// closedOutDismissedOnce is true once DismissClosedOutBanner has fired at
+	// least once for this pane's CURRENT binding — i.e. the operator has
+	// already pressed Enter twice (arm, then dismiss-to-replay). A THIRD
+	// Enter in that state is App.reattachClosedOut's cue to actually revive
+	// the task instead of re-arming the banner (add-force-revive-third-enter,
+	// msg #5528 — Decision 4's "no separate third state" was superseded by
+	// this explicit requirement). Reset by ResetVT alongside
+	// closedOutBannerShown, so a fresh visit always restarts the sequence at
+	// step 1 rather than remembering an earlier visit's progress.
+	closedOutDismissedOnce bool
+
 	// borderTitle overrides the bordered-panel title. Empty → " Agent " (the
 	// main agent view's default). The native Hera view sets " Coordinator " on
 	// its middle pane so the same widget reads correctly in both surfaces.
@@ -548,11 +559,14 @@ func (tp *TerminalPane) ShowClosedOutBanner() {
 // DismissClosedOutBanner clears the closed-out banner overlay — the second,
 // immediately-following Enter press — letting Draw() fall through to its
 // ordinary dead-session rendering (replay content, or the "Session not
-// running" placeholder if none was recorded).
+// running" placeholder if none was recorded). Also arms
+// closedOutDismissedOnce, so a THIRD Enter is read as "actually revive"
+// rather than re-arming the banner (see ClosedOutReadyToRevive).
 func (tp *TerminalPane) DismissClosedOutBanner() {
 	tp.mu.Lock()
 	changed := tp.closedOutBannerShown
 	tp.closedOutBannerShown = false
+	tp.closedOutDismissedOnce = true
 	tp.mu.Unlock()
 	if changed {
 		tp.notifyBranchChange()
@@ -565,6 +579,28 @@ func (tp *TerminalPane) ClosedOutBannerShown() bool {
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
 	return tp.closedOutBannerShown
+}
+
+// ClosedOutReadyToRevive reports whether the operator has already run
+// through steps 1 and 2 of the closed-out sequence (arm, then dismiss) for
+// this pane's CURRENT binding, so the next Enter should actually revive the
+// task rather than re-arm the banner (add-force-revive-third-enter).
+func (tp *TerminalPane) ClosedOutReadyToRevive() bool {
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	return !tp.closedOutBannerShown && tp.closedOutDismissedOnce
+}
+
+// ClearClosedOutState resets both closed-out sequence flags — called once
+// App.forceReviveClosedOut actually starts the session, so no stale flag
+// from the just-reopened task's prior closed-out visit lingers (harmless in
+// practice, since a live session's Enter never reaches this code path, but
+// kept clean rather than relying on that).
+func (tp *TerminalPane) ClearClosedOutState() {
+	tp.mu.Lock()
+	tp.closedOutBannerShown = false
+	tp.closedOutDismissedOnce = false
+	tp.mu.Unlock()
 }
 
 // ForceResyncPTY schedules a one-shot unconditional resize on the next Draw().
@@ -676,6 +712,7 @@ func (tp *TerminalPane) ResetVT() {
 	tp.replayData = nil
 	tp.paintCacheValid = false
 	tp.closedOutBannerShown = false
+	tp.closedOutDismissedOnce = false
 	tp.mu.Unlock()
 	tp.ExitDiffMode()
 }

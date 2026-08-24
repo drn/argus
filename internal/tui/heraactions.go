@@ -1013,11 +1013,12 @@ func (a *App) heraReattach(sel hera.Selection) {
 
 // heraReattachClosedOut handles Enter on a closed-out worker/freelance task's
 // dead session, viewed from the Hera tab (add-hera-closeout-banner). The
-// shared toggle mechanics (arm on first Enter, dismiss-to-replay on the
-// second, no separate third state — see design.md Decision 4) live in
-// reattachClosedOut, reused identically by the plain Tasks tab's
+// shared three-step sequence (arm on first Enter, dismiss-to-replay on the
+// second, actually revive on the third — add-force-revive-third-enter,
+// superseding design.md Decision 4's original "no separate third state")
+// lives in reattachClosedOut, reused identically by the plain Tasks tab's
 // handleAgentKey Enter-to-restart block (add-enter-closeout-guard-parity) so
-// the SAME task refuses the same way regardless of which tab it's viewed
+// the SAME task behaves the same way regardless of which tab it's viewed
 // from.
 //
 // heraReattach only calls this when sel.IsWorkerOrFreelance() is true, which

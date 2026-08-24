@@ -72,7 +72,10 @@ func TestTerminalPane_ClosedOutBanner_ShowDismissShown(t *testing.T) {
 	testutil.Equal(t, tp.ClosedOutBannerShown(), false)
 	testutil.Equal(t, branchChanges, 2)
 
-	// Toggling back re-arms it (heraReattach's third-Enter behavior).
+	// The raw primitive itself still re-arms on a bare ShowClosedOutBanner
+	// call — App.reattachClosedOut just no longer MAKES this call on a third
+	// Enter (see TestTerminalPane_ClosedOutReadyToRevive_TracksThirdStep
+	// below for the state that redirects it to a revive instead).
 	tp.ShowClosedOutBanner()
 	testutil.Equal(t, tp.ClosedOutBannerShown(), true)
 	testutil.Equal(t, branchChanges, 3)
@@ -89,6 +92,35 @@ func TestTerminalPane_ResetVT_ClearsClosedOutBanner(t *testing.T) {
 
 	tp.ResetVT()
 	testutil.Equal(t, tp.ClosedOutBannerShown(), false)
+}
+
+// TestTerminalPane_ClosedOutReadyToRevive_TracksThirdStep pins the state
+// App.reattachClosedOut reads to decide whether an Enter should re-arm the
+// banner or actually revive (add-force-revive-third-enter): ready-to-revive
+// becomes true only after a dismiss, ResetVT resets it (a fresh visit always
+// restarts the sequence), and ClearClosedOutState (called once the revive
+// actually fires) resets it too so it can't linger stale.
+func TestTerminalPane_ClosedOutReadyToRevive_TracksThirdStep(t *testing.T) {
+	tp := NewTerminalPane()
+	testutil.Equal(t, tp.ClosedOutReadyToRevive(), false) // never armed yet
+
+	tp.ShowClosedOutBanner()                              // 1st Enter
+	testutil.Equal(t, tp.ClosedOutReadyToRevive(), false) // armed, not dismissed yet
+
+	tp.DismissClosedOutBanner()                          // 2nd Enter
+	testutil.Equal(t, tp.ClosedOutReadyToRevive(), true) // 3rd Enter should revive
+
+	tp.ClearClosedOutState() // App.forceReviveClosedOut consumes it
+	testutil.Equal(t, tp.ClosedOutReadyToRevive(), false)
+	testutil.Equal(t, tp.ClosedOutBannerShown(), false)
+
+	// A fresh visit (ResetVT) always restarts the sequence at step 1, even
+	// after a dismiss made it ready-to-revive.
+	tp.ShowClosedOutBanner()
+	tp.DismissClosedOutBanner()
+	testutil.Equal(t, tp.ClosedOutReadyToRevive(), true)
+	tp.ResetVT()
+	testutil.Equal(t, tp.ClosedOutReadyToRevive(), false)
 }
 
 // TestTerminalPane_Draw_ClosedOutBanner_OverridesPlaceholder proves the
