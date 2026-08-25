@@ -1440,7 +1440,7 @@ var closedOutBannerLines = [...]string{
 	"",
 	"This worker's session will not be restarted.",
 	"Press Enter again to view its last output (read-only).",
-	"Use hera_revive to reopen it for real work.",
+	"Press Enter twice more to reopen it for real work.",
 }
 
 // closedOutBannerStyle returns the style for closedOutBannerLines[i]: the

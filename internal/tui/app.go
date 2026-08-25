@@ -5381,11 +5381,19 @@ func (a *App) refreshResumeSessionID(task *model.Task, resume bool) {
 //     state, further presses just keep toggling" (design.md Decision 4):
 //     three deliberate presses in a row is unambiguous operator intent to
 //     reopen the task, not an accidental double-tap.
+//
+// The step-by-step guidance ("press again to view read-only, then again to
+// reopen") lives ONLY in the persistent banner (closedOutBannerLines) — the
+// ephemeral footer messages below are deliberately terse, not a second copy
+// of the same instructions. Two places explaining the sequence, one of them
+// easy to miss updating, is exactly what let the banner's own wording drift
+// stale after add-force-revive-third-enter shipped (msg #5579): the footer
+// text was updated, the banner's last line still said "Use hera_revive".
 func (a *App) reattachClosedOut(pane *terminal.TerminalPane, t *model.Task) {
 	if pane.ClosedOutBannerShown() {
 		pane.DismissClosedOutBanner()
 		uxlog.Log("[tui] reattach: dismissing closed-out banner for task %s (%s) — viewing read-only", t.ID, t.Name)
-		a.statusbar.SetInfo("Viewing last known output (read-only) — press Enter again to reopen")
+		a.statusbar.SetInfo("Read-only")
 		return
 	}
 	if pane.ClosedOutReadyToRevive() {
@@ -5394,7 +5402,7 @@ func (a *App) reattachClosedOut(pane *terminal.TerminalPane, t *model.Task) {
 	}
 	pane.ShowClosedOutBanner()
 	uxlog.Log("[tui] reattach: refusing dead-session restart for closed-out task %s (%s)", t.ID, t.Name)
-	a.statusbar.SetError("Task is closed out — press Enter again to view read-only, then again to reopen")
+	a.statusbar.SetError("Task closed out")
 }
 
 // forceReviveClosedOut is reattachClosedOut's third step: the operator has
@@ -5416,7 +5424,7 @@ func (a *App) forceReviveClosedOut(pane *terminal.TerminalPane, t *model.Task) {
 	}
 	pane.ClearClosedOutState()
 	uxlog.Log("[tui] reattach: force-reviving closed-out task %s (%s) — operator override (3rd Enter)", t.ID, t.Name)
-	a.statusbar.SetInfo("Reopening task…")
+	a.statusbar.SetInfo("Reopening…")
 	a.startSession(t)
 }
 

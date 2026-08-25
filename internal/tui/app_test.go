@@ -1299,7 +1299,7 @@ func TestHandleAgentKey_EnterOnClosedOutHeraWorkerTogglesBanner(t *testing.T) {
 	app.handleAgentKey(ev) // first Enter → should arm the banner, not start
 
 	testutil.Equal(t, app.agentPane.ClosedOutBannerShown(), true)
-	testutil.Contains(t, app.statusbar.Error(), "closed out")
+	testutil.Equal(t, app.statusbar.Error(), "Task closed out")
 	if app.runner.Get("tw") != nil {
 		t.Error("no session should have been started for a closed-out task")
 	}
@@ -1307,7 +1307,7 @@ func TestHandleAgentKey_EnterOnClosedOutHeraWorkerTogglesBanner(t *testing.T) {
 	app.handleAgentKey(ev) // second, immediately-following Enter → dismisses
 
 	testutil.Equal(t, app.agentPane.ClosedOutBannerShown(), false)
-	testutil.Contains(t, app.statusbar.Info(), "read-only")
+	testutil.Equal(t, app.statusbar.Info(), "Read-only")
 
 	// Neither press touched the task: no session started, status untouched.
 	got, err := d.Get("tw")
@@ -1342,7 +1342,7 @@ func TestHandleAgentKey_ThirdEnterRevivesClosedOutTask(t *testing.T) {
 	app.handleAgentKey(ev) // 3rd: actually revives
 
 	testutil.Equal(t, app.agentPane.ClosedOutBannerShown(), false) // did NOT re-arm
-	testutil.Contains(t, app.statusbar.Info(), "Reopening")
+	testutil.Equal(t, app.statusbar.Info(), "Reopening…")
 
 	// The close-out signals were cleared before the (failed — no worktree in
 	// this test) start attempt was made, proving the revive path ran rather

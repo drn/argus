@@ -138,7 +138,13 @@ func TestTerminalPane_Draw_ClosedOutBanner_OverridesPlaceholder(t *testing.T) {
 
 	got := drawOnSim(t, tp, 60, 14)
 	testutil.Contains(t, got, "Task closed out")
-	testutil.Contains(t, got, "hera_revive")
+	// The banner is the ONE place the full sequence is explained (see
+	// reattachClosedOut's doc comment, msg #5579) — it must describe the
+	// actual keyboard action, never an MCP tool name.
+	testutil.Contains(t, got, "Press Enter twice more")
+	if strings.Contains(got, "hera_revive") {
+		t.Errorf("banner should describe the keyboard action, not an MCP tool name, got:\n%s", got)
+	}
 	if strings.Contains(got, "Session not running") {
 		t.Errorf("banner should replace the placeholder, got:\n%s", got)
 	}

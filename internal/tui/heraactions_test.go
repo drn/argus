@@ -1125,7 +1125,7 @@ func TestSmoke_HeraReattachRefusesClosedOutDeadWorker(t *testing.T) {
 			testutil.Equal(t, got.SessionID, "")     // no session started
 			var statusErr string
 			readUI(t, app.tapp, func() { statusErr = app.statusbar.Error() })
-			testutil.Contains(t, statusErr, "closed out")
+			testutil.Equal(t, statusErr, "Task closed out")
 		})
 	}
 }
@@ -1205,7 +1205,7 @@ func TestSmoke_HeraReattachClosedOutTogglesBannerThenReadOnly(t *testing.T) {
 		statusErr = app.statusbar.Error()
 	})
 	testutil.Equal(t, armed, true)
-	testutil.Contains(t, statusErr, "closed out")
+	testutil.Equal(t, statusErr, "Task closed out")
 
 	sim.InjectKey(tcell.KeyEnter, 0, 0) // second, immediately-following Enter → dismisses
 	syncUI(t, app.tapp)
@@ -1217,7 +1217,7 @@ func TestSmoke_HeraReattachClosedOutTogglesBannerThenReadOnly(t *testing.T) {
 		statusInfo = app.statusbar.Info()
 	})
 	testutil.Equal(t, stillArmed, false)
-	testutil.Contains(t, statusInfo, "read-only")
+	testutil.Equal(t, statusInfo, "Read-only")
 
 	// Neither press touched the task: no session started, status untouched.
 	got, err := d.Get("tw")
