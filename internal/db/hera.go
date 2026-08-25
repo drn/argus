@@ -1246,6 +1246,45 @@ func (d *DB) ClearHeraReadyToClose(taskID string) error {
 	return d.SetMeta(taskID, HeraMetaNamespace, HeraMetaKeyReadyToClose, "false")
 }
 
+// ClearHeraCloseout fully reverses BOTH of HeraWorkerAwaitingCloseout's
+// signals for taskID: the meta:hera.ready_to_close mark (via
+// ClearHeraReadyToClose) AND any live worker binding's terminal (done or
+// failed) role status, reset to working. Unlike ReviveHeraWorkerToInProgress
+// — which deliberately REFUSES to act on a closed-out worker (the #707 /
+// BUG-050 invariant) — this is the explicit operator-override path: the
+// TUI's third Enter against a closed-out task (add-force-revive-third-enter)
+// is an unambiguous deliberate decision to reopen it, so both signals must
+// be cleared before the session starts, or the guard would immediately
+// re-trip identically on the new session's own eventual exit. Best-effort
+// per binding: a role with no status row is left alone (nothing terminal to
+// clear), and any single UpsertHeraRoleStatus failure stops the loop and
+// returns the error rather than silently leaving a mix of cleared/uncleared
+// bindings.
+func (d *DB) ClearHeraCloseout(taskID string) error {
+	if err := d.ClearHeraReadyToClose(taskID); err != nil {
+		return err
+	}
+	bindings, err := d.ListHeraLiveBindingsByTask(taskID)
+	if err != nil {
+		return err
+	}
+	for _, b := range bindings {
+		rs, err := d.HeraRoleStatusFor(b.RoleID)
+		if err != nil {
+			if errors.Is(err, ErrHeraNotFound) {
+				continue
+			}
+			return err
+		}
+		if rs.Status == HeraStatusDone || rs.Status == HeraStatusFailed {
+			if err := d.UpsertHeraRoleStatus(b.RoleID, HeraStatusWorking); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // UniqueHeraRoleName returns base unchanged when no ACTIVE role under orchID
 // already uses it, else base-2, base-3, … until a free slot is found. Mirrors
 // Hera's ops.uniqueWorkerName. Archived roles do NOT block (they don't occupy

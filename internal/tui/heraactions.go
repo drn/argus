@@ -994,8 +994,7 @@ func (a *App) heraReattach(sel hera.Selection) {
 				return
 			}
 			if closedOut {
-				uxlog.Log("[hera-view] reattach: refusing dead-session restart for closed-out task %s (%s)", t.ID, t.Name)
-				a.statusbar.SetError("Task is closed out — use hera_revive to reopen")
+				a.heraReattachClosedOut(t)
 				return
 			}
 		}
@@ -1010,6 +1009,24 @@ func (a *App) heraReattach(sel hera.Selection) {
 		return
 	}
 	a.reviveHeraWorker(t, sess)
+}
+
+// heraReattachClosedOut handles Enter on a closed-out worker/freelance task's
+// dead session, viewed from the Hera tab (add-hera-closeout-banner). The
+// shared three-step sequence (arm on first Enter, dismiss-to-replay on the
+// second, actually revive on the third — add-force-revive-third-enter,
+// superseding design.md Decision 4's original "no separate third state")
+// lives in reattachClosedOut, reused identically by the plain Tasks tab's
+// handleAgentKey Enter-to-restart block (add-enter-closeout-guard-parity) so
+// the SAME task behaves the same way regardless of which tab it's viewed
+// from.
+//
+// heraReattach only calls this when sel.IsWorkerOrFreelance() is true, which
+// — per applySelection's routing (internal/tui/hera/panes.go) — always means
+// the agent pane (never the coordinator pane) is the one bound to t.ID, so
+// AgentPane() needs no taskID-matching accessor.
+func (a *App) heraReattachClosedOut(t *model.Task) {
+	a.reattachClosedOut(a.heraPage.AgentPane(), t)
 }
 
 // heraTaskClosedOut reports whether taskID's worker/freelance binding is
@@ -1036,18 +1053,22 @@ func (a *App) heraTaskClosedOut(taskID string) (bool, error) {
 	return dbv.HeraWorkerAwaitingCloseout(taskID)
 }
 
-// heraKickRestartClosedOut is the SIBLING guard to heraTaskClosedOut, applied
-// at handleSessionExitUI's pendingRerenderRestart branch (the size-drift
-// kill+resume "kick", BUG-074/BUG-076) instead of heraReattach's Enter-key
-// path — a second, keypress-less entry point into the exact same unconditional
-// startSession-on-a-closed-out-task gap (add-fix-resize-kick-closeout). That
-// branch has no hera.Selection to call IsWorkerOrFreelance() on (it only has a
-// bare taskID), so this resolves the equivalent scoping itself via
+// heraKickRestartClosedOut is the SIBLING guard to heraTaskClosedOut for
+// every caller that only has a bare taskID and no hera.Selection to call
+// IsWorkerOrFreelance() on — it resolves the equivalent scoping itself via
 // TaskHoldsLiveHeraWorkerOrFreelanceBinding before delegating to the SAME
 // heraTaskClosedOut predicate, reused rather than reimplemented — keeping a
-// coordinator's own task unaffected (always eligible for the kick-restart,
-// exactly as heraReattach leaves it) even though a coordinator's role status
-// CAN independently reach `done` via BUG-014's header s/S cycling.
+// coordinator's own task unaffected (always eligible to restart, exactly as
+// heraReattach leaves it) even though a coordinator's role status CAN
+// independently reach `done` via BUG-014's header s/S cycling.
+//
+// Originally added for handleSessionExitUI's pendingRerenderRestart branch
+// (the size-drift kill+resume "kick", BUG-074/BUG-076), a keypress-less
+// entry point into the exact same unconditional startSession-on-a-closed-
+// out-task gap (add-fix-resize-kick-closeout). Reused again by the plain
+// Tasks tab's handleAgentKey Enter-to-restart block and onTaskSelect's
+// auto-start branch (add-enter-closeout-guard-parity) — those also only have
+// a bare *model.Task, not a hera.Selection, and need the identical scoping.
 //
 // Local-mode only, matching heraTaskClosedOut: the false/nil fallback lets a
 // future remote-reachable caller fail open (restart proceeds) rather than

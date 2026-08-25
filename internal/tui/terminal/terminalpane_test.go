@@ -1244,7 +1244,7 @@ func TestTerminalPane_AnchorLockResetsOnScrollToBottom(t *testing.T) {
 // QueueUpdateDraw callback. After calling, the replay emulator is populated
 // and tp fields are updated under tp.mu.
 func buildReplaySync(tp *TerminalPane, raw []byte, cols, rows int) {
-	tp.asyncReplayRebuild("", 0, rows, cols, rows, raw, nil, 0, false, nil)
+	tp.asyncReplayRebuild("", 0, rows, cols, rows, raw, nil, 0, false, false, nil)
 	// Consume the pending flag the same way Draw() does, via the shared
 	// helper so test and production stay in lockstep.
 	tp.mu.Lock()
@@ -2862,6 +2862,50 @@ func TestAlignToEscBoundary(t *testing.T) {
 	}
 }
 
+// TestTruncateAtFinalAltScreenExit covers the pure helper's edge cases
+// directly, without going through the async rebuild plumbing — see
+// TestTerminalPane_Draw_DeadReplayFreezesOnLastAltScreenFrame for the
+// end-to-end regression this backs.
+func TestTruncateAtFinalAltScreenExit(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			"no exit sequence returns input unchanged",
+			"plain\x1b[31mred\x1b[0mtext",
+			"plain\x1b[31mred\x1b[0mtext",
+		},
+		{
+			"trims everything from the exit sequence onward",
+			"\x1b[?1049hconversation\x1b[?1049lResume this session with: claude --resume x",
+			"\x1b[?1049hconversation",
+		},
+		{
+			"truncates at the LAST occurrence, not the first",
+			"\x1b[?1049hfirst\x1b[?1049l\x1b[?1049hsecond\x1b[?1049lhint",
+			"\x1b[?1049hfirst\x1b[?1049l\x1b[?1049hsecond",
+		},
+		{
+			"empty input",
+			"",
+			"",
+		},
+		{
+			"exit sequence at position 0 returns input unchanged (nothing to freeze on)",
+			"\x1b[?1049lhint only, no prior frame",
+			"\x1b[?1049lhint only, no prior frame",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(truncateAtFinalAltScreenExit([]byte(tc.in)))
+			testutil.Equal(t, got, tc.want)
+		})
+	}
+}
+
 // TestReadLiveRebuildHistory_LogTailOnly verifies defect 3: when the log
 // already covers the ring's TotalWritten, only the log is returned (no
 // duplication from concatenating ring tail).
@@ -3099,7 +3143,7 @@ func TestEagerReplayBuild_RunsWithDimensions(t *testing.T) {
 func TestAsyncReplayRebuild_CooldownOnEmpty(t *testing.T) {
 	tp := NewTerminalPane()
 	// All inputs empty: no taskID, no ringBuf, no replayDataCopy.
-	tp.asyncReplayRebuild("", 0, 24, 80, 24, nil, nil, 0, false, nil)
+	tp.asyncReplayRebuild("", 0, 24, 80, 24, nil, nil, 0, false, false, nil)
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
 	if tp.replayBuilding {
@@ -3268,7 +3312,7 @@ func TestTerminalPane_ScrollExtendReachesOlderHistory(t *testing.T) {
 	tp := NewTerminalPane()
 
 	// First scroll-up build (fresh entry, prevFirstByte=0 → 8MB tail read).
-	tp.asyncReplayRebuild("dense", 0, rows, cols, rows, nil, nil, 0, false, nil)
+	tp.asyncReplayRebuild("dense", 0, rows, cols, rows, nil, nil, 0, false, false, nil)
 	tp.mu.Lock()
 	tp.consumeReplayRebuildPendingLocked()
 	firstByte := tp.replayEmuFirstByte
@@ -3280,7 +3324,7 @@ func TestTerminalPane_ScrollExtendReachesOlderHistory(t *testing.T) {
 
 	// Reproduce the stall: a ceiling-hit rebuild WITHOUT extend re-reads the
 	// same window, leaving firstByte unchanged — older history unreachable.
-	tp.asyncReplayRebuild("dense", maxScroll+12, rows, cols, rows, nil, nil, firstByte, false, nil)
+	tp.asyncReplayRebuild("dense", maxScroll+12, rows, cols, rows, nil, nil, firstByte, false, false, nil)
 	tp.mu.Lock()
 	tp.consumeReplayRebuildPendingLocked()
 	stalledFirstByte := tp.replayEmuFirstByte
@@ -3295,7 +3339,7 @@ func TestTerminalPane_ScrollExtendReachesOlderHistory(t *testing.T) {
 		scroll := tp.replayEmuMaxScroll + 12
 		fb := tp.replayEmuFirstByte
 		tp.mu.Unlock()
-		tp.asyncReplayRebuild("dense", scroll, rows, cols, rows, nil, nil, fb, true, nil)
+		tp.asyncReplayRebuild("dense", scroll, rows, cols, rows, nil, nil, fb, true, false, nil)
 		tp.mu.Lock()
 		tp.consumeReplayRebuildPendingLocked()
 		cur := tp.replayEmuFirstByte
@@ -4032,7 +4076,7 @@ func TestAsyncReplayRebuild_FiresBranchChangeOnSuccess(t *testing.T) {
 		default:
 		}
 	}
-	tp.asyncReplayRebuild("branch-change", 0, 24, 80, 24, nil, nil, 0, false, nil)
+	tp.asyncReplayRebuild("branch-change", 0, 24, 80, 24, nil, nil, 0, false, false, nil)
 	select {
 	case <-fired:
 		// Good.

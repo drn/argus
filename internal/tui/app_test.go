@@ -1239,6 +1239,123 @@ func TestOnTaskSelectAutoStart(t *testing.T) {
 	})
 }
 
+// TestOnTaskSelectAutoStart_SkipsClosedOutHeraWorker is the plain-Tasks-tab
+// half of the Frontend Parity fix (add-enter-closeout-guard-parity): viewing
+// a hera worker/freelance task awaiting coordinator close-out must NOT
+// auto-revive its dead session, exactly like the Hera tab (which never
+// auto-restarts on mere navigation either — only an explicit Enter attempts
+// reattach, see heraReattach). Before this fix, onTaskSelect's autoStart
+// path had no closed-out awareness at all and would silently flip the task
+// straight to InProgress.
+func TestOnTaskSelectAutoStart_SkipsClosedOutHeraWorker(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	orch := seedHeraOrch(t, d, "orch")
+	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+	seedHeraBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
+	testutil.NoError(t, d.SetStatus("tw", model.StatusInReview))
+	testutil.NoError(t, d.SetMeta("tw", db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"))
+
+	task, err := d.Get("tw")
+	testutil.NoError(t, err)
+
+	app.onTaskSelect(task, true)
+
+	// No start attempt at all — status is untouched (not flipped to
+	// InProgress, and not reverted to Pending by a failed-start path either).
+	got, err := d.Get("tw")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Status, model.StatusInReview)
+	if app.runner.Get("tw") != nil {
+		t.Error("no session should have been started for a closed-out task")
+	}
+	// Mirrors the Hera tab: mere navigation does not arm the banner either —
+	// only an explicit Enter (handleAgentKey) does.
+	testutil.Equal(t, app.agentPane.ClosedOutBannerShown(), false)
+}
+
+// TestHandleAgentKey_EnterOnClosedOutHeraWorkerTogglesBanner is the plain-
+// Tasks-tab sibling of TestSmoke_HeraReattachClosedOutTogglesBannerThenReadOnly
+// (heraactions_test.go) — the SAME task reached through the flat Tasks tab
+// must refuse an Enter-to-restart the same way the Hera tab does, on the
+// SAME a.agentPane the flat tab actually renders (not a.heraPage.AgentPane(),
+// which this tab never binds).
+func TestHandleAgentKey_EnterOnClosedOutHeraWorkerTogglesBanner(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	orch := seedHeraOrch(t, d, "orch")
+	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+	seedHeraBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
+	testutil.NoError(t, d.SetStatus("tw", model.StatusComplete))
+	testutil.NoError(t, d.SetMeta("tw", db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"))
+
+	app.mode = modeAgent
+	app.agentState.Reset("tw", "wkr")
+	app.agentPane.SetTaskID("tw")
+
+	ev := tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone)
+	app.handleAgentKey(ev) // first Enter → should arm the banner, not start
+
+	testutil.Equal(t, app.agentPane.ClosedOutBannerShown(), true)
+	testutil.Equal(t, app.statusbar.Error(), "Task closed out")
+	if app.runner.Get("tw") != nil {
+		t.Error("no session should have been started for a closed-out task")
+	}
+
+	app.handleAgentKey(ev) // second, immediately-following Enter → dismisses
+
+	testutil.Equal(t, app.agentPane.ClosedOutBannerShown(), false)
+	testutil.Equal(t, app.statusbar.Info(), "Read-only")
+
+	// Neither press touched the task: no session started, status untouched.
+	got, err := d.Get("tw")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.SessionID, "")
+	testutil.Equal(t, got.Status, model.StatusComplete)
+}
+
+// TestHandleAgentKey_ThirdEnterRevivesClosedOutTask is the plain-Tasks-tab
+// sibling of the Hera tab's third-Enter-revive fix (add-force-revive-third-
+// enter, msg #5528) — the SAME shared App.reattachClosedOut must actually
+// revive the task on the third Enter regardless of which tab it's reached
+// from, not just re-arm the banner (design.md Decision 4's original "no
+// separate third state" was superseded by this explicit requirement).
+func TestHandleAgentKey_ThirdEnterRevivesClosedOutTask(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	orch := seedHeraOrch(t, d, "orch")
+	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+	seedHeraBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
+	testutil.NoError(t, d.SetStatus("tw", model.StatusComplete))
+	testutil.NoError(t, d.SetMeta("tw", db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"))
+
+	app.mode = modeAgent
+	app.agentState.Reset("tw", "wkr")
+	app.agentPane.SetTaskID("tw")
+
+	ev := tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone)
+	app.handleAgentKey(ev) // 1st: arms the banner
+	app.handleAgentKey(ev) // 2nd: dismisses to read-only replay
+	app.handleAgentKey(ev) // 3rd: actually revives
+
+	testutil.Equal(t, app.agentPane.ClosedOutBannerShown(), false) // did NOT re-arm
+	testutil.Equal(t, app.statusbar.Info(), "Reopening…")
+
+	// The close-out signals were cleared before the (failed — no worktree in
+	// this test) start attempt was made, proving the revive path ran rather
+	// than a silent re-arm.
+	stillClosedOut, err := d.HeraWorkerAwaitingCloseout("tw")
+	testutil.NoError(t, err)
+	testutil.Equal(t, stillClosedOut, false)
+
+	got, err := d.Get("tw")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Status, model.StatusPending) // startSession attempted and failed (no worktree), reverted to Pending
+}
+
 func TestExitAgentView(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)

@@ -300,6 +300,31 @@ type TerminalPane struct {
 	// "No active session".
 	pending bool
 
+	// closedOutBannerShown is true while the closed-out-task banner overlay
+	// is showing INSTEAD of the pane's ordinary dead-session rendering
+	// (replay content or the "Session not running" placeholder). Hera's
+	// heraReattach (add-hera-closeout-banner) arms it on the first Enter
+	// against a closed-out worker/freelance task and dismisses it on the
+	// immediately-following second press, which lets Draw() fall through to
+	// its ordinary dead-session rendering — the SAME read-only replay path an
+	// ordinary finished task's pane already uses, so no new PTY/process/
+	// emulator is spawned for this override. Reset by ResetVT (fired on
+	// every hera pane rebind via panes.go's bindPane), so leaving and
+	// returning to the same closed-out task re-arms the banner on the next
+	// Enter, exactly like a fresh visit.
+	closedOutBannerShown bool
+
+	// closedOutDismissedOnce is true once DismissClosedOutBanner has fired at
+	// least once for this pane's CURRENT binding — i.e. the operator has
+	// already pressed Enter twice (arm, then dismiss-to-replay). A THIRD
+	// Enter in that state is App.reattachClosedOut's cue to actually revive
+	// the task instead of re-arming the banner (add-force-revive-third-enter,
+	// msg #5528 — Decision 4's "no separate third state" was superseded by
+	// this explicit requirement). Reset by ResetVT alongside
+	// closedOutBannerShown, so a fresh visit always restarts the sequence at
+	// step 1 rather than remembering an earlier visit's progress.
+	closedOutDismissedOnce bool
+
 	// borderTitle overrides the bordered-panel title. Empty → " Agent " (the
 	// main agent view's default). The native Hera view sets " Coordinator " on
 	// its middle pane so the same widget reads correctly in both surfaces.
@@ -385,8 +410,26 @@ func (tp *TerminalPane) notifyBranchChange() {
 func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 	tp.mu.Lock()
 	if tp.session == sess {
+		// Same session — skip the reset below (the tick calls this every
+		// second with the same live session, and resetting would destroy
+		// incremental rendering state). A dead/nil session still needs its
+		// replay content loaded exactly once, though: EVERY caller (bindPane,
+		// reconcileOne, the main agent view's onTaskSelect) runs
+		// SetTaskID -> ResetVT -> SetSession in that order, and ResetVT ALWAYS
+		// wipes whatever SetTaskID's own eager load just produced — SetTaskID
+		// runs FIRST, before the caller has resolved whether the session will
+		// come back nil, so its load is systematically undone by the very
+		// next call. SetSession is the last step with the definitive answer,
+		// so it's the only place this can reliably happen (fix-closeout-
+		// replay-load-order; see gotchas/hera-view.md).
+		taskID := tp.taskID
+		needsReplayLoad := sess == nil && taskID != "" && len(tp.replayData) == 0
 		tp.mu.Unlock()
-		return // same session, skip reset
+		if needsReplayLoad {
+			tp.loadSessionLog(taskID)
+			tp.notifyBranchChange()
+		}
+		return
 	}
 	if sess != nil {
 		uxlog.Log("[terminalpane] SetSession: sess=%p totalWritten=%d", sess, sess.TotalWritten())
@@ -399,6 +442,10 @@ func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
 	tp.paintCacheValid = false
+	// See the "same session" branch above for why this has to happen here,
+	// not in SetTaskID.
+	taskID := tp.taskID
+	needsReplayLoad := sess == nil && taskID != "" && len(tp.replayData) == 0
 	// Seed PTY size from the visible inner rect — Draw() will refine on first
 	// render. GetInnerRect returns the pane's OUTER rect because TerminalPane
 	// is a bare tview.Box with no native border; DrawBorderedPanel paints a
@@ -429,6 +476,9 @@ func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 		}
 	}
 	tp.mu.Unlock()
+	if needsReplayLoad {
+		tp.loadSessionLog(taskID)
+	}
 	// Branch change: nil↔live↔replay paint different cells in the same rect.
 	// Fire AFTER releasing the lock — the app-side handler may take other locks.
 	tp.notifyBranchChange()
@@ -490,6 +540,67 @@ func (tp *TerminalPane) SetPending(v bool) {
 		// Branch change: pending banner ↔ "No active session" message.
 		tp.notifyBranchChange()
 	}
+}
+
+// ShowClosedOutBanner arms the closed-out banner overlay — the first Enter
+// press against a closed-out worker/freelance task (see heraReattach in
+// internal/tui/heraactions.go). No-op if already shown.
+func (tp *TerminalPane) ShowClosedOutBanner() {
+	tp.mu.Lock()
+	changed := !tp.closedOutBannerShown
+	tp.closedOutBannerShown = true
+	tp.mu.Unlock()
+	if changed {
+		// Branch change: banner ↔ replay/placeholder.
+		tp.notifyBranchChange()
+	}
+}
+
+// DismissClosedOutBanner clears the closed-out banner overlay — the second,
+// immediately-following Enter press — letting Draw() fall through to its
+// ordinary dead-session rendering (replay content, or the "Session not
+// running" placeholder if none was recorded). Also arms
+// closedOutDismissedOnce, so a THIRD Enter is read as "actually revive"
+// rather than re-arming the banner (see ClosedOutReadyToRevive).
+func (tp *TerminalPane) DismissClosedOutBanner() {
+	tp.mu.Lock()
+	changed := tp.closedOutBannerShown
+	tp.closedOutBannerShown = false
+	tp.closedOutDismissedOnce = true
+	tp.mu.Unlock()
+	if changed {
+		tp.notifyBranchChange()
+	}
+}
+
+// ClosedOutBannerShown reports whether the closed-out banner overlay is
+// currently armed for this pane's bound task.
+func (tp *TerminalPane) ClosedOutBannerShown() bool {
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	return tp.closedOutBannerShown
+}
+
+// ClosedOutReadyToRevive reports whether the operator has already run
+// through steps 1 and 2 of the closed-out sequence (arm, then dismiss) for
+// this pane's CURRENT binding, so the next Enter should actually revive the
+// task rather than re-arm the banner (add-force-revive-third-enter).
+func (tp *TerminalPane) ClosedOutReadyToRevive() bool {
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	return !tp.closedOutBannerShown && tp.closedOutDismissedOnce
+}
+
+// ClearClosedOutState resets both closed-out sequence flags — called once
+// App.forceReviveClosedOut actually starts the session, so no stale flag
+// from the just-reopened task's prior closed-out visit lingers (harmless in
+// practice, since a live session's Enter never reaches this code path, but
+// kept clean rather than relying on that).
+func (tp *TerminalPane) ClearClosedOutState() {
+	tp.mu.Lock()
+	tp.closedOutBannerShown = false
+	tp.closedOutDismissedOnce = false
+	tp.mu.Unlock()
 }
 
 // ForceResyncPTY schedules a one-shot unconditional resize on the next Draw().
@@ -580,7 +691,7 @@ func (tp *TerminalPane) EagerReplayBuild() {
 	onDone := tp.OnNeedRedraw
 	tp.mu.Unlock()
 
-	go tp.asyncReplayRebuild(taskID, 0, rows, cols, rows, nil, nil, 0, false, onDone)
+	go tp.asyncReplayRebuild(taskID, 0, rows, cols, rows, nil, nil, 0, false, true, onDone)
 }
 
 // ResetVT clears all terminal state (on resize or task switch).
@@ -600,6 +711,8 @@ func (tp *TerminalPane) ResetVT() {
 	tp.replayNoDataUntil = time.Time{}
 	tp.replayData = nil
 	tp.paintCacheValid = false
+	tp.closedOutBannerShown = false
+	tp.closedOutDismissedOnce = false
 	tp.mu.Unlock()
 	tp.ExitDiffMode()
 }
@@ -994,6 +1107,32 @@ func AlignToEscBoundary(raw []byte) []byte {
 	return raw
 }
 
+// altScreenExitSeq is CSI ?1049l — DEC private mode 1049 reset, which exits
+// the alternate screen buffer and restores the cursor. See
+// truncateAtFinalAltScreenExit.
+var altScreenExitSeq = []byte("\x1b[?1049l")
+
+// truncateAtFinalAltScreenExit trims raw to end just before the LAST
+// alt-screen-exit sequence, when one is present. Claude Code (and most
+// fullscreen TUIs) render their entire interactive UI in the alternate
+// screen buffer and emit exactly this sequence once on clean exit, right
+// before printing a short plain-text hint (e.g. "Resume this session with:
+// claude --resume <uuid>") to the now-restored main buffer. A real terminal
+// emulator correctly reconstructs that hint as the byte stream's true final
+// state, but for a FINISHED session's frozen "last known output" replay that
+// hint is strictly less useful than the actual conversation it just erased
+// — so the replay freezes on the last alt-screen frame instead of following
+// the stream past its own teardown. Returns raw unchanged if the sequence
+// isn't present, or if trimming would discard everything (an unhelpfully
+// short read window is better shown as-is than as a blank replay).
+func truncateAtFinalAltScreenExit(raw []byte) []byte {
+	idx := bytes.LastIndex(raw, altScreenExitSeq)
+	if idx <= 0 {
+		return raw
+	}
+	return raw[:idx]
+}
+
 // liveRebuildHistorySize bounds the on-disk session log read when the
 // live emulator is rebuilt (dimension change). 8MB is wide enough to
 // populate the emulator's 10K-line default scrollback for any realistic
@@ -1291,6 +1430,45 @@ func (tp *TerminalPane) DiffScrollDown(n int) {
 	tp.diffScroll += n
 }
 
+// closedOutBannerLines is the persistent in-pane message shown while
+// closedOutBannerShown is armed (see ShowClosedOutBanner). It replaces the
+// footer-only "Task is closed out" notice (15s TTL, easy to miss) with a
+// message that stays on screen for as long as the pane stays bound to this
+// task. styleIdx indexes closedOutBannerStyles below.
+var closedOutBannerLines = [...]string{
+	"Task closed out",
+	"",
+	"This worker's session will not be restarted.",
+	"Press Enter again to view its last output (read-only).",
+	"Press Enter twice more to reopen it for real work.",
+}
+
+// closedOutBannerStyle returns the style for closedOutBannerLines[i]: the
+// title stands out, the two action-relevant lines get a highlight, and the
+// rest stay dimmed like the ordinary placeholder text.
+func closedOutBannerStyle(i int) tcell.Style {
+	switch i {
+	case 0:
+		return theme.StyleComplete
+	case 3, 4:
+		return theme.StyleClipboardHint
+	default:
+		return theme.StyleDimmed
+	}
+}
+
+// drawClosedOutBanner renders the closed-out banner centered in the given
+// rect. Mirrors the "No active session" placeholder's fill-then-draw
+// pattern so a partially-repainted pane never leaks a prior frame's cells.
+func drawClosedOutBanner(screen tcell.Screen, x, y, width, height int) {
+	widget.FillArea(screen, x, y, width, height, ' ', tcell.StyleDefault)
+	startY := y + max((height-len(closedOutBannerLines))/2, 0)
+	for i, line := range closedOutBannerLines {
+		midX := x + max((width-len(line))/2, 0)
+		widget.DrawText(screen, midX, startY+i, width, line, closedOutBannerStyle(i))
+	}
+}
+
 // --- Draw ---
 
 func (tp *TerminalPane) Draw(screen tcell.Screen) {
@@ -1342,6 +1520,7 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	tp.mu.Lock()
 	sess := tp.session
 	pending := tp.pending
+	closedOutBanner := tp.closedOutBannerShown
 	// Compute PTY size from panel dimensions (main goroutine — safe to call GetInnerRect).
 	wantCols := max(width, 20)
 	wantRows := max(height, 5)
@@ -1378,6 +1557,20 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	}
 	tp.mu.Unlock()
 
+	alive := sess != nil && sess.Alive()
+
+	if closedOutBanner && !alive {
+		// The closed-out banner takes priority over BOTH the placeholder
+		// below and the replay/live paths further down — it stays up until
+		// the immediately-following second Enter dismisses it (heraReattach,
+		// add-hera-closeout-banner). Guarded on !alive so an armed banner
+		// can never paint over a session that somehow came back alive
+		// before the next Draw (heraReattach only arms it from the
+		// dead-session branch, so this is defensive, not expected).
+		drawClosedOutBanner(screen, x, y, width, height)
+		return
+	}
+
 	if sess == nil && !tp.HasContent() {
 		if pending {
 			// Show launch banner while worktree is being created.
@@ -1406,11 +1599,6 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		widget.FillArea(screen, x, y, width, height, ' ', tcell.StyleDefault)
 		widget.DrawText(screen, midX, midY, width, msg, theme.StyleDimmed)
 		return
-	}
-
-	alive := false
-	if sess != nil {
-		alive = sess.Alive()
 	}
 
 	if ptyCols < 20 {
@@ -1524,7 +1712,11 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 				uxlog.Log("[terminalpane] scroll replay %s at authored %dx%d (pane %dx%d) — emulate wide, clip to pane",
 					taskID, replayCols, replayRows, ptyCols, ptyRows)
 			}
-			go tp.asyncReplayRebuild(taskID, scrollOffset, height, replayCols, replayRows, ringBuf, replayDataCopy, prevFirstByte, extend, onDone)
+			// finalFrame=!alive: a dead session's replay is the settled "last
+			// known output" (see truncateAtFinalAltScreenExit); a live
+			// session's scrollback is real-time history the user is actively
+			// scrolling through and must never be trimmed.
+			go tp.asyncReplayRebuild(taskID, scrollOffset, height, replayCols, replayRows, ringBuf, replayDataCopy, prevFirstByte, extend, !alive, onDone)
 
 			tp.mu.Lock()
 		}
@@ -1603,7 +1795,11 @@ const replayRebuildMaxBytes = 64 * 1024 * 1024
 // the currently-loaded window (BUG-E): the read window then grows a further
 // scrollExtendChunk beyond prevFirstByte so scrollback reaches strictly older
 // history even when the line heuristic under-reads escape-dense output.
-func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewportHeight, ptyCols, ptyRows int, ringBuf, replayDataCopy []byte, prevFirstByte int64, extend bool, onDone func()) {
+//
+// `finalFrame` is set when this rebuild is reconstructing a DEAD session's
+// settled "last known output" (as opposed to a user scrolling back through a
+// still-LIVE session's real-time history) — see truncateAtFinalAltScreenExit.
+func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewportHeight, ptyCols, ptyRows int, ringBuf, replayDataCopy []byte, prevFirstByte int64, extend, finalFrame bool, onDone func()) {
 	defer func() {
 		if r := recover(); r != nil {
 			uxlog.Log("[terminalpane] PANIC in asyncReplayRebuild: %v\n%s", r, debug.Stack())
@@ -1643,6 +1839,10 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 		tp.replayNoDataUntil = time.Now().Add(replayNoDataCooldown)
 		tp.mu.Unlock()
 		return
+	}
+
+	if finalFrame {
+		raw = truncateAtFinalAltScreenExit(raw)
 	}
 
 	// Build the replay emulator (the expensive part — VT emulation of up to 8MB).
