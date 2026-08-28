@@ -102,6 +102,53 @@ func (m *RestartDaemonModal) choose(c skewChoice) {
 	}
 }
 
+// removeButton drops the button for choice c (if present) and re-arms the
+// modal for another round of input: selection resets to the first remaining
+// button and done/chose clear so InputHandler starts fresh.
+func (m *RestartDaemonModal) removeButton(c skewChoice) {
+	kept := m.buttons[:0]
+	for _, b := range m.buttons {
+		if b.choice != c {
+			kept = append(kept, b)
+		}
+	}
+	m.buttons = kept
+	m.selected = 0
+	m.done = false
+}
+
+// hasRestartAction reports whether any non-Skip button remains.
+func (m *RestartDaemonModal) hasRestartAction() bool {
+	for _, b := range m.buttons {
+		if b.choice != choiceSkip {
+			return true
+		}
+	}
+	return false
+}
+
+// ResolveRestartDaemon marks "Restart daemon" as handled and removes its
+// button. Reports whether a restart action (the supervisor's) still remains,
+// so the caller can leave the modal open instead of dismissing it.
+func (m *RestartDaemonModal) ResolveRestartDaemon() bool {
+	m.removeButton(choiceRestartDaemon)
+	m.daemonStale = false
+	return m.hasRestartAction()
+}
+
+// ResolveRestartSupervisor marks "Restart supervisor" as handled. Restarting
+// the supervisor also bounces the daemon (see App.handleRestartSupervisorKey),
+// so this resolves the daemon's pending restart too and removes both buttons.
+// Reports whether a restart action still remains (always false today, kept
+// for symmetry with ResolveRestartDaemon).
+func (m *RestartDaemonModal) ResolveRestartSupervisor() bool {
+	m.removeButton(choiceRestartDaemon)
+	m.removeButton(choiceRestartSupervisor)
+	m.daemonStale = false
+	m.supervisorStale = false
+	return m.hasRestartAction()
+}
+
 // InputHandler handles key events for the skew modal.
 func (m *RestartDaemonModal) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 	return m.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {

@@ -642,6 +642,65 @@ func TestSmoke_SkewPrompt_DeclineLeavesSupervisorRunning(t *testing.T) {
 	}
 }
 
+// TestSmoke_SkewPrompt_BothStale_DaemonRestartLeavesModalOpen verifies that
+// when both the daemon and supervisor are stale, choosing "Restart daemon"
+// does NOT dismiss the modal — the supervisor is still stale and unaddressed,
+// so the modal stays up (now offering only "Restart supervisor" / "Skip")
+// until the user also handles it or explicitly skips.
+func TestSmoke_SkewPrompt_BothStale_DaemonRestartLeavesModalOpen(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), true)
+	app.SetSkew(true, true, "dae-1 @ /a", "sup-2 @ /b")
+	app.agentCountFn = func() int { return 1 }
+	var daemonCalls, supervisorCalls atomic.Int32
+	app.restartDaemonFn = func() { daemonCalls.Add(1) }
+	app.restartSupervisorFn = func() { supervisorCalls.Add(1) }
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	readUI(t, app.tapp, func() { app.openSkewPrompt() })
+
+	// Default selection is "Restart daemon"; Enter chooses it.
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+
+	waitForCond(t, app.tapp, "restartDaemonFn to fire", func() bool { return daemonCalls.Load() == 1 })
+
+	var mode viewMode
+	var modalOpen bool
+	readUI(t, app.tapp, func() {
+		mode = app.mode
+		modalOpen = app.restartDaemonModal != nil
+	})
+	if mode != modeRestartDaemonPrompt || !modalOpen {
+		t.Fatalf("skew modal should stay open after restarting only the daemon: mode=%v modalOpen=%v", mode, modalOpen)
+	}
+
+	// The remaining button set is [Restart supervisor, Skip]; Enter now
+	// chooses "Restart supervisor" and opens the double-confirm.
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+
+	waitForCond(t, app.tapp, "supervisor double-confirm to open", func() bool {
+		return app.restartSupervisorModal != nil
+	})
+	readUI(t, app.tapp, func() { modalOpen = app.restartDaemonModal != nil })
+	if modalOpen {
+		t.Error("skew modal should be dismissed once the double-confirm opens")
+	}
+
+	// Confirm the supervisor restart.
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+	waitForCond(t, app.tapp, "restartSupervisorFn to fire", func() bool { return supervisorCalls.Load() == 1 })
+
+	readUI(t, app.tapp, func() { mode = app.mode })
+	testutil.Equal(t, mode, modeTaskList)
+}
+
 func TestSetDaemonStale_StoresFlag(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)

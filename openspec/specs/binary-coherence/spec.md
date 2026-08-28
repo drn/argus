@@ -77,7 +77,7 @@ The CLI SHALL provide an `argus doctor` command that runs read-only, enumerates 
 
 ### Requirement: Startup binary-skew detection and prompt
 
-At startup the TUI SHALL detect binary skew against the daemon and the supervisor and present a blocking modal when skew is found. Daemon-staleness detection SHALL be performed only when the TUI connected to a pre-existing daemon (a daemon the TUI itself just auto-started cannot be stale). Supervisor-staleness detection SHALL be performed whenever a supervisor is present, regardless of how the daemon was started. The modal SHALL display the rich identity of whichever process is stale and offer the relevant restart action. Restarting the supervisor SHALL require a second explicit confirmation that names the number of running agents the restart will interrupt; declining the second confirmation SHALL leave the supervisor running.
+At startup the TUI SHALL detect binary skew against the daemon and the supervisor and present a blocking modal when skew is found. Daemon-staleness detection SHALL be performed only when the TUI connected to a pre-existing daemon (a daemon the TUI itself just auto-started cannot be stale). Supervisor-staleness detection SHALL be performed whenever a supervisor is present, regardless of how the daemon was started. The modal SHALL display the rich identity of whichever process is stale and offer the relevant restart action(s). Restarting the supervisor SHALL require a second explicit confirmation that names the number of running agents the restart will interrupt; declining the second confirmation SHALL leave the supervisor running. The modal SHALL auto-dismiss only when a single restart action (or none) was offered; when both the daemon and the supervisor are stale, resolving one restart action SHALL leave the modal open with the remaining action(s) until the user addresses or skips it.
 
 #### Scenario: Supervisor checked on the auto-start path
 
@@ -103,6 +103,21 @@ At startup the TUI SHALL detect binary skew against the daemon and the superviso
 
 - **WHEN** the user declines the second supervisor-restart confirmation
 - **THEN** the supervisor SHALL be left running and no agents interrupted
+
+#### Scenario: Restarting the daemon while the supervisor is also stale leaves the modal open
+
+- **WHEN** both the daemon and the supervisor are stale and the user chooses "Restart daemon"
+- **THEN** the daemon restart SHALL fire and the skew modal SHALL remain open, now offering only "Restart supervisor" and "Skip"
+
+#### Scenario: Restarting the supervisor resolves a pending daemon restart too
+
+- **WHEN** both the daemon and the supervisor are stale and the user chooses "Restart supervisor"
+- **THEN** the skew modal SHALL dismiss in one step (the supervisor restart also bounces the daemon), proceeding straight to the supervisor's double-confirm
+
+#### Scenario: Single restart action still auto-dismisses
+
+- **WHEN** only the daemon or only the supervisor is stale and the user chooses the offered restart action
+- **THEN** the skew modal SHALL dismiss immediately, unchanged from prior behavior
 
 ### Requirement: Stop-hook registration diagnostic
 
@@ -240,3 +255,4 @@ The check SHALL report exactly one of three states:
 
 - **WHEN** `argus doctor` reports one or more orphaned dev-stack processes
 - **THEN** none of those processes are terminated, signaled, or otherwise modified by the check itself
+

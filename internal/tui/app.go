@@ -1139,12 +1139,22 @@ func (a *App) handleRestartDaemonKey(event *tcell.EventKey) {
 		// The supervisor restart is destructive (it SIGHUPs every agent). We do
 		// NOT restart here — closing this modal opens a SECOND confirm that names
 		// the agent count; the actual restart fires only on that explicit yes.
+		// Restarting the supervisor also bounces the daemon, so it resolves any
+		// pending daemon restart too — always dismiss.
+		a.restartDaemonModal.ResolveRestartSupervisor()
 		a.closeRestartDaemonPrompt()
 		uxlog.Log("[tui] user chose to restart out-of-date supervisor — opening double-confirm")
 		a.promptSupervisorRestartFromSkew()
 	case a.restartDaemonModal.ChoseRestartDaemon():
-		a.closeRestartDaemonPrompt()
-		uxlog.Log("[tui] user chose to restart out-of-date daemon")
+		// If the supervisor is ALSO stale, leave the modal up (now offering only
+		// "Restart supervisor" / "Skip") instead of dismissing it — restarting the
+		// daemon does not address a stale supervisor.
+		if a.restartDaemonModal.ResolveRestartDaemon() {
+			uxlog.Log("[tui] user chose to restart out-of-date daemon — skew modal stays up for the remaining supervisor restart")
+		} else {
+			a.closeRestartDaemonPrompt()
+			uxlog.Log("[tui] user chose to restart out-of-date daemon")
+		}
 		a.mu.Lock()
 		a.daemonRestarting = true
 		a.lastDaemonRestart = time.Now()
