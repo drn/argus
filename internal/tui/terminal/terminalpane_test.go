@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -371,14 +372,108 @@ func TestTerminalPane_ResetVT(t *testing.T) {
 
 	tp.ResetVT()
 
-	if tp.emu != nil {
-		t.Error("emu should be nil after reset")
+	// The emulator is RIS-reset in place, not discarded — recreating it here
+	// would abandon its background response-drain goroutines with no safe
+	// way to stop them, the root cause of the TUI's multi-GB RSS leak (see
+	// resetLiveEmulatorInPlace).
+	if tp.emu == nil {
+		t.Error("emu should be kept (RIS-reset in place) after reset, not discarded")
+	}
+	if got := tp.emuGen.Load(); got != 1 {
+		t.Errorf("emuGen = %d, want 1 — ResetVT must bump the generation so any in-flight stale response gets dropped", got)
 	}
 	if tp.emuFedTotal != 0 {
 		t.Errorf("emuFedTotal = %d, want 0", tp.emuFedTotal)
 	}
 	if tp.scrollOffset != 0 {
 		t.Errorf("scrollOffset = %d, want 0", tp.scrollOffset)
+	}
+}
+
+// TestTerminalPane_ResetVT_ReusesLiveEmulator is the regression test for the
+// TUI's multi-GB RSS leak: recreating tp.emu on every ResetVT/SetSession
+// abandoned each old emulator's two background response-drain goroutines,
+// which block in Read forever with no safe way to stop them early (see
+// resetLiveEmulatorInPlace — SafeEmulator exposes no mutex-guarded Close,
+// and Close races the drain goroutine's Read, confirmed via a targeted
+// -race probe). Hera's frequent pane rebinds call ResetVT dozens of times a
+// minute, so this leak was proportional to session uptime, not fleet size —
+// exactly what was observed in production (heap-profiled: 100+ GB resident
+// in abandoned x/vt Emulator/Scrollback/ansi.Parser buffers). This pins the
+// fix at the level a unit test can actually observe without a live PTY:
+// the SAME emulator instance (not merely an equal one) survives many
+// resets, and its generation is bumped each time so any response that was
+// still in flight from before the reset is dropped rather than misdelivered
+// (see TestTerminalPane_ForwardEmulatorResponse_DropsStaleGeneration).
+func TestTerminalPane_ResetVT_ReusesLiveEmulator(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.emu = tp.newTrackedEmulator(80, 24)
+	firstEmu := tp.emu
+
+	const iterations = 50
+	for i := 0; i < iterations; i++ {
+		tp.ResetVT()
+		if tp.emu != firstEmu {
+			t.Fatalf("iteration %d: ResetVT recreated the emulator instead of reusing it (pointer changed)", i)
+		}
+	}
+	if got := tp.emuGen.Load(); got != iterations {
+		t.Fatalf("emuGen = %d, want %d — one bump per ResetVT call", got, iterations)
+	}
+}
+
+// TestTerminalPane_ResetVT_DoesNotLeakEmulatorGoroutines is the end-to-end
+// counterpart of TestTerminalPane_ResetVT_ReusesLiveEmulator: it exercises a
+// REAL NewLiveEmulator (with its two live drain goroutines, not a bare
+// xvt.SafeEmulator) across many resets and asserts the goroutine count
+// stays flat. Before the fix this grew by ~2 goroutines per iteration,
+// forever — the leaked drain goroutines are exactly what kept each
+// abandoned emulator's parser/scrollback/render buffers reachable and
+// un-GC'able.
+func TestTerminalPane_ResetVT_DoesNotLeakEmulatorGoroutines(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.emu = tp.newTrackedEmulator(80, 24)
+
+	runtime.GC()
+	before := runtime.NumGoroutine()
+
+	const iterations = 200
+	for i := 0; i < iterations; i++ {
+		tp.ResetVT()
+	}
+
+	runtime.GC()
+	after := runtime.NumGoroutine()
+
+	// A handful of goroutines can come and go for unrelated reasons (GC
+	// workers, timers); the leak this guards against would add ~2 *
+	// iterations (400+) live goroutines that never exit.
+	if after > before+10 {
+		t.Fatalf("goroutine count grew from %d to %d across %d ResetVT calls — the emulator's drain goroutines are leaking again", before, after, iterations)
+	}
+}
+
+// TestTerminalPane_SetSession_DoesNotLeakEmulatorGoroutines mirrors
+// TestTerminalPane_ResetVT_DoesNotLeakEmulatorGoroutines for SetSession's
+// own session-change branch — the other everyday call site that used to
+// recreate (and thereby leak) the live emulator.
+func TestTerminalPane_SetSession_DoesNotLeakEmulatorGoroutines(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.emu = tp.newTrackedEmulator(80, 24)
+
+	runtime.GC()
+	before := runtime.NumGoroutine()
+
+	const iterations = 200
+	for i := 0; i < iterations; i++ {
+		tp.SetSession(&mockAdapter{alive: true}) // a distinct session pointer each time
+	}
+
+	runtime.GC()
+	after := runtime.NumGoroutine()
+
+	if after > before+10 {
+		t.Fatalf("goroutine count grew from %d to %d across %d SetSession calls — the emulator's drain goroutines are leaking again", before, after, iterations)
 	}
 }
 
@@ -705,7 +800,7 @@ func TestNewTrackedEmulator_DefaultCursorHidden(t *testing.T) {
 
 func TestNewLiveEmulator_AnswersBackgroundColorQuery(t *testing.T) {
 	got := make(chan []byte, 1)
-	emu := NewLiveEmulator(80, 24, func(p []byte) {
+	emu := NewLiveEmulator(80, 24, nil, func(gen uint64, p []byte) {
 		got <- append([]byte(nil), p...)
 	})
 	if _, err := emu.Write([]byte(ansi.RequestBackgroundColor)); err != nil {
@@ -725,7 +820,7 @@ func TestNewLiveEmulator_AnswersBackgroundColorQuery(t *testing.T) {
 
 func TestNewLiveEmulator_AnswersForegroundColorQuery(t *testing.T) {
 	got := make(chan []byte, 1)
-	emu := NewLiveEmulator(80, 24, func(p []byte) {
+	emu := NewLiveEmulator(80, 24, nil, func(gen uint64, p []byte) {
 		got <- append([]byte(nil), p...)
 	})
 	if _, err := emu.Write([]byte(ansi.RequestForegroundColor)); err != nil {
@@ -752,7 +847,7 @@ func TestNewLiveEmulator_SlowForwardDoesNotBlockDrainLoop(t *testing.T) {
 	// goroutine in production) would hang right along with it.
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
-	emu := NewLiveEmulator(80, 24, func(p []byte) {
+	emu := NewLiveEmulator(80, 24, nil, func(gen uint64, p []byte) {
 		select {
 		case started <- struct{}{}:
 		default:
@@ -789,7 +884,7 @@ func TestNewLiveEmulator_SlowForwardDoesNotBlockDrainLoop(t *testing.T) {
 }
 
 func TestNewLiveEmulator_NilForwardDoesNotPanic(t *testing.T) {
-	emu := NewLiveEmulator(80, 24, nil)
+	emu := NewLiveEmulator(80, 24, nil, nil)
 	if _, err := emu.Write([]byte(ansi.RequestBackgroundColor)); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -801,7 +896,7 @@ func TestNewLiveEmulator_NilForwardDoesNotPanic(t *testing.T) {
 func TestTerminalPane_ForwardEmulatorResponse_NoSession(t *testing.T) {
 	tp := NewTerminalPane()
 	// No session attached — must no-op rather than panic.
-	tp.forwardEmulatorResponse(nil, []byte("anything"))
+	tp.forwardEmulatorResponse(tp.emuGen.Load(), []byte("anything"))
 }
 
 func TestTerminalPane_ForwardEmulatorResponse_ForwardsToSession(t *testing.T) {
@@ -809,7 +904,7 @@ func TestTerminalPane_ForwardEmulatorResponse_ForwardsToSession(t *testing.T) {
 	sess := &mockAdapter{alive: true}
 	tp.SetSession(sess)
 
-	tp.forwardEmulatorResponse(sess, []byte("hello"))
+	tp.forwardEmulatorResponse(tp.emuGen.Load(), []byte("hello"))
 
 	if got := string(sess.WrittenSystem()); got != "hello" {
 		t.Fatalf("session received via WriteInputSystem %q, want %q", got, "hello")
@@ -824,19 +919,25 @@ func TestTerminalPane_ForwardEmulatorResponse_ForwardsToSession(t *testing.T) {
 	}
 }
 
-func TestTerminalPane_ForwardEmulatorResponse_DropsStaleOwner(t *testing.T) {
-	// Simulates an orphaned emulator's drain goroutine delivering a response
-	// after the pane has moved on to a different session: owner (the OLD
-	// session) no longer matches tp.session (the NEW one), so the response
-	// must be dropped rather than misdelivered into the new session.
+func TestTerminalPane_ForwardEmulatorResponse_DropsStaleGeneration(t *testing.T) {
+	// Simulates the pane's long-lived emulator delivering a response that was
+	// read off its response pipe BEFORE the pane moved on to a different
+	// session: the response's generation no longer matches tp.emuGen (bumped
+	// by the intervening resetLiveEmulatorInPlace), so it must be dropped
+	// rather than misdelivered into the new session.
 	tp := NewTerminalPane()
 	oldSess := &mockAdapter{alive: true}
 	tp.SetSession(oldSess)
+	// SetSession only bumps emuGen if tp.emu already exists (a fresh pane's
+	// very first SetSession has none yet) — simulate the emulator that
+	// renderLive would have lazily created for oldSess.
+	tp.emu = tp.newTrackedEmulator(80, 24)
+	staleGen := tp.emuGen.Load()
 
 	newSess := &mockAdapter{alive: true}
-	tp.SetSession(newSess)
+	tp.SetSession(newSess) // bumps emuGen — staleGen is now superseded
 
-	tp.forwardEmulatorResponse(oldSess, []byte("stale response"))
+	tp.forwardEmulatorResponse(staleGen, []byte("stale response"))
 
 	if got := oldSess.WrittenSystem(); len(got) != 0 {
 		t.Fatalf("stale response delivered to the old (no longer current) session: %q", got)
@@ -869,7 +970,7 @@ func TestTerminalPane_ForwardEmulatorResponse_DoesNotAdvanceLastUserInput(t *tes
 	tp := NewTerminalPane()
 	tp.SetSession(sess)
 
-	tp.forwardEmulatorResponse(sess, []byte("\x1b]11;rgb:0000/0000/0000\x1b\\"))
+	tp.forwardEmulatorResponse(tp.emuGen.Load(), []byte("\x1b]11;rgb:0000/0000/0000\x1b\\"))
 
 	if sess.LastInput().IsZero() {
 		t.Error("forwardEmulatorResponse did not advance LastInput (work cycle)")
