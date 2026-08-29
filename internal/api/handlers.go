@@ -289,6 +289,19 @@ func (s *Server) validateBackend(name string) error {
 	return nil
 }
 
+// validateSandboxOverride returns nil for the three accepted tri-state values
+// ("" inherit, "enabled", "disabled" — add-task-sandbox-override) and an error
+// for anything else, so a malformed value is rejected at the API boundary
+// instead of silently resolving as "inherit".
+func validateSandboxOverride(v string) error {
+	switch v {
+	case "", "enabled", "disabled":
+		return nil
+	default:
+		return fmt.Errorf("sandbox_override %q is not one of \"\", \"enabled\", \"disabled\"", v)
+	}
+}
+
 type createTaskReq struct {
 	Name    string `json:"name"`
 	Prompt  string `json:"prompt"`
@@ -301,6 +314,11 @@ type createTaskReq struct {
 	// the backend's configured default (or the CLI's own default). Free text —
 	// not validated, since the meaningful set differs per backend CLI.
 	Model string `json:"model"`
+	// SandboxOverride is a tri-state per-task override of the resolved sandbox
+	// setting: "" (inherit the project/global setting), "enabled" (force
+	// sandboxed), "disabled" (force unsandboxed). Validated against the three
+	// accepted values before the task is created (add-task-sandbox-override).
+	SandboxOverride string `json:"sandbox_override"`
 }
 
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
@@ -331,6 +349,10 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "", err)
 		return
 	}
+	if err := validateSandboxOverride(req.SandboxOverride); err != nil {
+		writeErr(w, http.StatusBadRequest, "", err)
+		return
+	}
 	autoName := req.Name == ""
 	name := req.Name
 	if name == "" {
@@ -338,7 +360,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		name = sanitizeName(req.Prompt)
 	}
 
-	task, err := s.createTask(name, req.Prompt, req.Project, req.Backend, req.Model, autoName)
+	task, err := s.createTask(name, req.Prompt, req.Project, req.Backend, req.Model, req.SandboxOverride, autoName)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "", err)
 		return
@@ -367,7 +389,7 @@ func (s *Server) handleCreateTaskMultipart(w http.ResponseWriter, r *http.Reques
 	// 50MB total cap + headroom for the multipart envelope and text fields.
 	r.Body = http.MaxBytesReader(w, r.Body, maxAttachmentTotalBytes+1<<20)
 
-	name, prompt, project, backend, taskModel, atts, err := parseMultipartTaskForm(r)
+	name, prompt, project, backend, taskModel, sandboxOverride, atts, err := parseMultipartTaskForm(r)
 	if err != nil {
 		writeErr(w, statusForUploadErr(err), "", err)
 		return
@@ -384,6 +406,10 @@ func (s *Server) handleCreateTaskMultipart(w http.ResponseWriter, r *http.Reques
 		writeErr(w, http.StatusBadRequest, "", err)
 		return
 	}
+	if err := validateSandboxOverride(sandboxOverride); err != nil {
+		writeErr(w, http.StatusBadRequest, "", err)
+		return
+	}
 	// autoName fires only when name was synthesized from prompt — not from
 	// an attachment filename (which is already meaningful) and not when the
 	// user typed a name explicitly.
@@ -397,13 +423,14 @@ func (s *Server) handleCreateTaskMultipart(w http.ResponseWriter, r *http.Reques
 	}
 
 	task, _, err := agent.CreateAndStart(s.db, s.runner, agent.CreateInput{
-		Name:        name,
-		Prompt:      prompt,
-		Project:     project,
-		Backend:     backend,
-		Model:       taskModel,
-		Attachments: atts,
-		AutoName:    autoName,
+		Name:            name,
+		Prompt:          prompt,
+		Project:         project,
+		Backend:         backend,
+		Model:           taskModel,
+		SandboxOverride: sandboxOverride,
+		Attachments:     atts,
+		AutoName:        autoName,
 	})
 	if err != nil {
 		uxlog.Log("[uploads] create task failed name=%q project=%q files=%d err=%v", name, project, len(atts), err)
@@ -860,10 +887,10 @@ func (s *Server) handleForkTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Fork name is structured ("<src>-fork" or user-typed); never auto-rename.
-	// Forks inherit the source task's backend and model so the new task starts
-	// with the same agent rather than silently defaulting back to the global
-	// setting.
-	task, err := s.createTask(name, prompt, project, src.Backend, src.Model, false)
+	// Forks inherit the source task's backend, model, and sandbox override so
+	// the new task starts with the same agent and confinement rather than
+	// silently defaulting back to the global setting.
+	task, err := s.createTask(name, prompt, project, src.Backend, src.Model, src.SandboxOverride, false)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "", err)
 		return

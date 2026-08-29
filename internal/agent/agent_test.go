@@ -728,6 +728,63 @@ func TestResolveSandboxConfig_ProjectDisablesGlobalEnabled(t *testing.T) {
 	}
 }
 
+// TestResolveSandboxConfig_TaskOverrideWinsOverProject covers
+// add-task-sandbox-override: a "enabled" task override forces sandboxing on
+// even when the task's project disables it.
+func TestResolveSandboxConfig_TaskOverrideWinsOverProject(t *testing.T) {
+	cfg := testConfig()
+	cfg.Sandbox = config.SandboxConfig{Enabled: true}
+
+	projEnabled := false
+	cfg.Projects["myapp"] = config.Project{
+		Path:    "/home/user/myapp",
+		Sandbox: config.ProjectSandboxConfig{Enabled: &projEnabled},
+	}
+	task := &model.Task{Project: "myapp", SandboxOverride: "enabled"}
+
+	result := ResolveSandboxConfig(task, cfg)
+
+	if !result.Enabled {
+		t.Error("expected sandbox enabled (task override wins over project disable)")
+	}
+}
+
+// TestResolveSandboxConfig_TaskOverrideWinsOverGlobal covers
+// add-task-sandbox-override: a "disabled" task override forces sandboxing off
+// even when the global setting (and no project override) enables it.
+func TestResolveSandboxConfig_TaskOverrideWinsOverGlobal(t *testing.T) {
+	cfg := testConfig()
+	cfg.Sandbox = config.SandboxConfig{Enabled: true}
+	task := &model.Task{Project: "other", SandboxOverride: "disabled"}
+
+	result := ResolveSandboxConfig(task, cfg)
+
+	if result.Enabled {
+		t.Error("expected sandbox disabled (task override wins over global)")
+	}
+}
+
+// TestResolveSandboxConfig_EmptyTaskOverrideUnchanged covers
+// add-task-sandbox-override: an empty override leaves the existing
+// project/global resolution exactly as before this requirement existed.
+func TestResolveSandboxConfig_EmptyTaskOverrideUnchanged(t *testing.T) {
+	cfg := testConfig()
+	cfg.Sandbox = config.SandboxConfig{Enabled: true}
+
+	projEnabled := false
+	cfg.Projects["myapp"] = config.Project{
+		Path:    "/home/user/myapp",
+		Sandbox: config.ProjectSandboxConfig{Enabled: &projEnabled},
+	}
+	task := &model.Task{Project: "myapp"} // SandboxOverride left empty
+
+	result := ResolveSandboxConfig(task, cfg)
+
+	if result.Enabled {
+		t.Error("expected sandbox disabled (project resolution unaffected by empty task override)")
+	}
+}
+
 func TestResolveSandboxConfig_ProjectAppendsPaths(t *testing.T) {
 	cfg := testConfig()
 	cfg.Sandbox = config.SandboxConfig{

@@ -239,8 +239,9 @@ func TestParseMultipartTaskForm_RoundTrips(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/tasks", body)
 	req.Header.Set("Content-Type", ct)
 
-	name, prompt, project, backend, taskModel, atts, err := parseMultipartTaskForm(req)
+	name, prompt, project, backend, taskModel, sandboxOverride, atts, err := parseMultipartTaskForm(req)
 	testutil.Equal(t, taskModel, "")
+	testutil.Equal(t, sandboxOverride, "")
 	testutil.NoError(t, err)
 	testutil.Equal(t, name, "task-name")
 	testutil.Equal(t, prompt, "do the thing")
@@ -267,9 +268,30 @@ func TestParseMultipartTaskForm_ReadsBackend(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/tasks", body)
 	req.Header.Set("Content-Type", ct)
 
-	_, _, _, backend, _, _, err := parseMultipartTaskForm(req)
+	_, _, _, backend, _, _, _, err := parseMultipartTaskForm(req)
 	testutil.NoError(t, err)
 	testutil.Equal(t, backend, "codex")
+}
+
+// TestParseMultipartTaskForm_ReadsSandboxOverride verifies the optional
+// `sandbox_override` text field round-trips through the parser
+// (add-task-sandbox-override), so the New Task form's sandbox select reaches
+// CreateInput.SandboxOverride even on uploads.
+func TestParseMultipartTaskForm_ReadsSandboxOverride(t *testing.T) {
+	ct, body := buildMultipart(t,
+		[][3]string{
+			{"prompt", "go", ""},
+			{"project", "p1", ""},
+			{"sandbox_override", "disabled", ""},
+		},
+		nil,
+	)
+	req := httptest.NewRequest("POST", "/api/tasks", body)
+	req.Header.Set("Content-Type", ct)
+
+	_, _, _, _, _, sandboxOverride, _, err := parseMultipartTaskForm(req)
+	testutil.NoError(t, err)
+	testutil.Equal(t, sandboxOverride, "disabled")
 }
 
 // TestParseMultipartTaskForm_EnforcesPerFileCap verifies the 10MB per-file
@@ -283,7 +305,7 @@ func TestParseMultipartTaskForm_EnforcesPerFileCap(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/tasks", body)
 	req.Header.Set("Content-Type", ct)
 
-	_, _, _, _, _, _, err := parseMultipartTaskForm(req)
+	_, _, _, _, _, _, _, err := parseMultipartTaskForm(req)
 	if !errors.Is(err, errAttachmentTooLarge) {
 		t.Fatalf("got %v, want errAttachmentTooLarge", err)
 	}
@@ -391,7 +413,7 @@ func TestParseMultipartTaskForm_ReadsModel(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/tasks", body)
 	req.Header.Set("Content-Type", ct)
 
-	_, _, _, _, taskModel, _, err := parseMultipartTaskForm(req)
+	_, _, _, _, taskModel, _, _, err := parseMultipartTaskForm(req)
 	testutil.NoError(t, err)
 	testutil.Equal(t, taskModel, "opus")
 }

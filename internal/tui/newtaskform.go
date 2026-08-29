@@ -25,9 +25,10 @@ const (
 	ntFieldModel     = 3
 	ntFieldProfile   = 4
 	ntFieldArchetype = 5
-	ntFieldPrompt    = 6
-	ntFieldName      = 7
-	ntFieldCount     = 8
+	ntFieldSandbox   = 6
+	ntFieldPrompt    = 7
+	ntFieldName      = 8
+	ntFieldCount     = 9
 )
 
 // ntArchetypeNone is the archetype selector's first entry — no archetype, so no
@@ -51,7 +52,7 @@ type NewTaskForm struct {
 	cursorPos    int    // cursor position in prompt runes
 	scrollOffset int    // first visible wrapped line (for scrolling)
 	promptWidth  int    // cached inner width from last Draw, used by cursor movement
-	focused      int    // 0=project, 1=branch, 2=backend, 3=model, 4=profile, 5=archetype, 6=prompt, 7=name
+	focused      int    // 0=project, 1=branch, 2=backend, 3=model, 4=profile, 5=archetype, 6=sandbox, 7=prompt, 8=name
 
 	// optional task-name field: a single-line input rendered after the prompt.
 	// Empty (or whitespace-only) ⇒ the task name is derived from the prompt as
@@ -87,6 +88,13 @@ type NewTaskForm struct {
 	profileIdx        int
 	archetypeIdx      int
 	hideArchetype     bool
+
+	// sandboxIdx indexes sandboxOptions (internal/tui/projectform.go's
+	// sandboxInherit/sandboxEnabled/sandboxDisabled, same package) — the
+	// per-task sandbox override cycler (add-task-sandbox-override). Defaults to
+	// sandboxInherit (the zero value): the produced task carries no override
+	// and resolution falls back to the project/global setting.
+	sandboxIdx int
 
 	projects map[string]config.Project
 	backends map[string]config.Backend
@@ -228,15 +236,16 @@ func (f *NewTaskForm) Task() *model.Task {
 		name = model.GenerateNameFromPrompt(prompt)
 	}
 	return &model.Task{
-		Name:      name,
-		Status:    model.StatusPending,
-		Project:   proj,
-		Branch:    branch,
-		Prompt:    prompt,
-		Backend:   backend,
-		Model:     f.modelValue(),
-		Archetype: f.Archetype(),
-		Profile:   f.ProfileOverride(),
+		Name:            name,
+		Status:          model.StatusPending,
+		Project:         proj,
+		Branch:          branch,
+		Prompt:          prompt,
+		Backend:         backend,
+		Model:           f.modelValue(),
+		Archetype:       f.Archetype(),
+		Profile:         f.ProfileOverride(),
+		SandboxOverride: f.SandboxOverride(),
 	}
 }
 
@@ -396,6 +405,29 @@ func (f *NewTaskForm) Archetype() string {
 		return ""
 	}
 	return profiles.CanonicalArchetypes[f.archetypeIdx-1]
+}
+
+// sandboxDisplayLabel is the sandbox cycler's current display value.
+func (f *NewTaskForm) sandboxDisplayLabel() string {
+	if f.sandboxIdx < 0 || f.sandboxIdx >= len(sandboxOptions) {
+		return sandboxOptions[sandboxInherit]
+	}
+	return sandboxOptions[f.sandboxIdx]
+}
+
+// SandboxOverride returns the per-task sandbox override that rides the
+// submitted task (Task().SandboxOverride): "" on Inherit (no override — the
+// project/global setting resolves as before), "enabled" or "disabled" when
+// cycled to those positions (add-task-sandbox-override).
+func (f *NewTaskForm) SandboxOverride() string {
+	switch f.sandboxIdx {
+	case sandboxEnabled:
+		return "enabled"
+	case sandboxDisabled:
+		return "disabled"
+	default:
+		return ""
+	}
 }
 
 // resolvedBranch returns the branch to use: the typed text if non-empty,
@@ -788,8 +820,8 @@ func (f *NewTaskForm) PasteHandler() func(pastedText string, setFocus func(p tvi
 			newInput = append(newInput, f.nameInput[f.nameCursorPos:]...)
 			f.nameInput = newInput
 			f.nameCursorPos += len(runes)
-			// ntFieldBackend / ntFieldProfile / ntFieldArchetype: selector fields
-			// have no case and ignore pasted text (no free-text entry).
+			// ntFieldBackend / ntFieldProfile / ntFieldArchetype / ntFieldSandbox:
+			// selector fields have no case and ignore pasted text (no free-text entry).
 		}
 	})
 }
@@ -871,6 +903,8 @@ func (f *NewTaskForm) InputHandler() func(event *tcell.EventKey, setFocus func(p
 			f.handleProfileKey(event)
 		case ntFieldArchetype:
 			f.handleArchetypeKey(event)
+		case ntFieldSandbox:
+			f.handleSandboxKey(event)
 		case ntFieldPrompt:
 			f.handlePromptKey(event)
 		case ntFieldName:
@@ -1248,13 +1282,30 @@ func (f *NewTaskForm) handleArchetypeKey(event *tcell.EventKey) {
 	count := len(profiles.CanonicalArchetypes) + 1 // "(none)" + canonical
 	switch event.Key() {
 	case tcell.KeyEnter, tcell.KeyDown:
-		f.focused = ntFieldPrompt
+		f.focused = ntFieldSandbox
 	case tcell.KeyUp:
 		f.focused = ntFieldProfile
 	case tcell.KeyLeft:
 		f.archetypeIdx = (f.archetypeIdx - 1 + count) % count
 	case tcell.KeyRight:
 		f.archetypeIdx = (f.archetypeIdx + 1) % count
+	}
+}
+
+// handleSandboxKey handles the sandbox override cycling selector: left/right
+// cycle Inherit/Enabled/Disabled; up/down move field focus
+// (add-task-sandbox-override).
+func (f *NewTaskForm) handleSandboxKey(event *tcell.EventKey) {
+	count := len(sandboxOptions)
+	switch event.Key() {
+	case tcell.KeyEnter, tcell.KeyDown:
+		f.focused = ntFieldPrompt
+	case tcell.KeyUp:
+		f.focused = ntFieldArchetype
+	case tcell.KeyLeft:
+		f.sandboxIdx = (f.sandboxIdx - 1 + count) % count
+	case tcell.KeyRight:
+		f.sandboxIdx = (f.sandboxIdx + 1) % count
 	}
 }
 
@@ -1435,7 +1486,7 @@ func (f *NewTaskForm) handlePromptKey(event *tcell.EventKey) {
 			return
 		}
 		// Move cursor up one wrapped line if possible, otherwise leave prompt field
-		// (to the archetype selector, or profile when archetype is hidden).
+		// (to the sandbox selector — always visible, unlike archetype).
 		if !f.moveCursorUp() {
 			f.focused = f.visibleField(ntFieldPrompt, -1)
 		}
@@ -1675,13 +1726,13 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 	}
 
 	// Extra selector rows beyond backend/model: profile (always) + archetype
-	// (unless hidden for the new-coordinator prompt).
-	selectorRows := 1
+	// (unless hidden for the new-coordinator prompt) + sandbox (always).
+	selectorRows := 2
 	if !f.hideArchetype {
 		selectorRows++
 	}
 
-	// Modal height: border(1) + padding(1) + project(1) + projAC(P) + branch(1) + branchAC(B) + backend(1) + model(1) + profile/archetype(selectorRows) + label(1) + prompt(N) + ac(M) + name(1) + gap(1) + help(1) + padding(1) + border(1)
+	// Modal height: border(1) + padding(1) + project(1) + projAC(P) + branch(1) + branchAC(B) + backend(1) + model(1) + profile/archetype/sandbox(selectorRows) + label(1) + prompt(N) + ac(M) + name(1) + gap(1) + help(1) + padding(1) + border(1)
 	modalH := 12 + selectorRows + visiblePromptLines + acRows + projACRows + branchACRows
 	if f.errMsg != "" {
 		modalH += 2
@@ -1753,6 +1804,10 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 		f.drawSelector(screen, innerX, row, innerW, "Archetype", ntArchetypeOptions(), f.archetypeIdx, f.focused == ntFieldArchetype)
 		row++
 	}
+
+	// Sandbox override selector (add-task-sandbox-override).
+	f.drawSelector(screen, innerX, row, innerW, "Sandbox", sandboxOptions, f.sandboxIdx, f.focused == ntFieldSandbox)
+	row++
 
 	// Prompt field
 	labelStyle := theme.StyleDimmed
