@@ -103,6 +103,14 @@ const sandboxProfileBase = `(version 1)
 (allow file-write* (subpath (string-append (param "HOME") "/.config/gh")))
 ; Build tool caches
 (allow file-write* (subpath (string-append (param "HOME") "/Library/Caches")))
+; GOCACHE and PLAYWRIGHT_BROWSERS_PATH are forced to ~/.argus/cache/{go-build,
+; ms-playwright} (see BuildCmd) to redirect them OUT of ~/Library/Caches for
+; the TCC-prompt fix above. Without this rule that redirect backfires under
+; sandbox: go build/test and Playwright's browser install both get EPERM on
+; the very cache dir they were pointed at. Scoped to .argus/cache (not all of
+; ~/.argus, which also holds the sqlite DB and daemon socket) — narrower than
+; allowing the whole data dir.
+(allow file-write* (subpath (string-append (param "HOME") "/.argus/cache")))
 (allow file-write* (subpath (string-append (param "HOME") "/go")))
 (allow file-write* (subpath (string-append (param "HOME") "/.npm")))
 (allow file-write* (subpath (string-append (param "HOME") "/.yarn")))

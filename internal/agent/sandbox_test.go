@@ -76,6 +76,13 @@ func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
 		t.Errorf("profile missing allow file-write* for /var/folders:\n%s", profile)
 	}
 
+	// Profile must allow writes to ~/.argus/cache — GOCACHE and
+	// PLAYWRIGHT_BROWSERS_PATH are forced there by BuildCmd, and without this
+	// rule that redirect gets EPERM'd under sandbox.
+	if !strings.Contains(profile, "/.argus/cache") {
+		t.Errorf("profile missing allow file-write* for ~/.argus/cache:\n%s", profile)
+	}
+
 	// Profile must allow PTY device access for pseudo-terminal allocation
 	if !strings.Contains(profile, "/dev/ptmx") {
 		t.Errorf("profile missing allow file-write* for /dev/ptmx:\n%s", profile)
@@ -949,6 +956,31 @@ func TestSandbox_KeychainWritable(t *testing.T) {
 	out, err := sandboxRun(t, wtDir, cfg, "touch "+shellQuote(target))
 	if err != nil {
 		t.Fatalf("write to ~/Library/Keychains should succeed for API key storage: %v\n%s", err, out)
+	}
+}
+
+// TestSandbox_ArgusCacheWritable verifies a spawned agent can actually write
+// under ~/.argus/cache — the directory BuildCmd forces GOCACHE and
+// PLAYWRIGHT_BROWSERS_PATH into (see the "Build tool caches" comment in
+// sandboxProfileBase). Without the matching allow rule, go build/test and
+// Playwright's browser install both get EPERM on their own configured cache
+// dir the moment it needs creating.
+func TestSandbox_ArgusCacheWritable(t *testing.T) {
+	if !sandboxExecFunctional(t) {
+		t.Skip("sandbox-exec not functional (missing or nested sandbox)")
+	}
+
+	// A fake HOME (never the real ~/.argus) — GenerateSandboxConfig's HOME
+	// param comes from os.UserHomeDir(), which honors $HOME on unix.
+	t.Setenv("HOME", t.TempDir())
+	wtDir := t.TempDir()
+	homeDir, _ := os.UserHomeDir()
+	target := homeDir + "/.argus/cache/go-build/.argus-sandbox-test"
+
+	cfg := config.SandboxConfig{}
+	out, err := sandboxRun(t, wtDir, cfg, "mkdir -p "+shellQuote(homeDir+"/.argus/cache/go-build")+" && touch "+shellQuote(target))
+	if err != nil {
+		t.Fatalf("write to ~/.argus/cache should succeed for GOCACHE/PLAYWRIGHT_BROWSERS_PATH redirect: %v\n%s", err, out)
 	}
 }
 
