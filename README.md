@@ -548,6 +548,12 @@ Per-project overrides are set in the **project form** (`e` on a project in Setti
 **Always allowed write:** the task's worktree directory, `/tmp`, `/var/folders`, `~/.claude.json`, `~/.claude/`, `~/Library/Application Support/Google/Chrome` (Chrome's crashpad writes there regardless of `--user-data-dir`), the main repo's `.git` dir.
 **Always allowed (IOKit):** user-client opens (`iokit-open` / `iokit-open-user-client`) — required for headful Chrome (Playwright/Puppeteer), which calls `IOServiceOpen` on `IOPMrootDomain` at startup and SIGSEGVs on the denied open otherwise. The crashpad write rule above is necessary but not sufficient on its own.
 
+### Sandbox residency detection (for any skill, not just argus's own)
+
+Every agent argus spawns — sandboxed or not — gets `ARGUS_TASK_ID` set to its task ID, and always runs inside a git worktree at the deterministic `~/.argus/worktrees/<project>/<task>` path. Together these are the canonical, stable signal that a session is running **unattended inside an Argus sandbox**, not on a human's own interactive machine. Argus's own bundled skills already self-gate on exactly this (`ARGUS_TASK_ID`/`$PWD` sandbox residency); any third-party project skill can and should check the same signal (`ARGUS_TASK_ID != ""`, or the worktree path prefix as a fallback) and fail fast with a clear message instead of hanging on a step that has no one present to answer.
+
+Argus does not — and structurally cannot — reliably distinguish "a human happens to be watching this pane right now" from "this is running fully unattended." A step that needs a synchronous human response (typing a token at an interactive git credential prompt, tapping "Trust This Computer?" on a phone, accepting a USB-debugging dialog) should treat every Argus sandbox as unattended by default and surface that limitation rather than being worked around — a fresh `git worktree` also never inherits gitignored machine state from the project's main checkout (`.env` files, installed dependencies, platform SDKs), so a build step that assumes it's already provisioned needs its own guard too. See `context/knowledge/gotchas/worktree.md` for the fuller investigation this contract came out of.
+
 ### Running inside tmux
 
 argus renders via [tcell](https://github.com/gdamore/tcell) v2.13+ which automatically wraps every frame in DECSET 2026 (Synchronized Output / BSU+ESU) when the terminal claims to be `XTermLike` — tmux's terminfo does. This means the inner application emits an atomic-frame sequence that, when honored, eliminates rendering tearing during fast updates (typing, PTY streaming, cursor nav).
@@ -914,6 +920,8 @@ Registered repos, keyed by name. The DB projects table is the primary source; en
 | `extrawrite` | []string | `[]` | Extra writable paths appended to the global list. |
 | `allowappleevents` | []string | `[]` | Extra AppleEvent destination bundle IDs allowed for this project. |
 
+`[projects.<name>.cache_dirs]` — per-project overrides/additions to `[cache_dirs]` below. A key here wins over the same key at the global level; any other key is merged in alongside it.
+
 #### `[ui]`
 
 | Key | Type | Default | Description |
@@ -969,6 +977,26 @@ macOS `sandbox-exec` (SBPL) controls for agent processes.
 | `deny_read` | []string | `[]` | Paths denied read access, on top of the always-denied `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.config/gcloud`. |
 | `extra_write` | []string | `[]` | Additional writable paths. |
 | `allow_apple_events` | []string | `[]` | CFBundleIdentifiers allowed as AppleEvent destinations (e.g. `com.apple.iChat`) — required to script Messages/Finder from a sandboxed agent. |
+
+#### `[cache_dirs]`
+
+Shared build/tool cache directories exported to every spawned agent — the opt-in, project-configurable generalization of the `GOCACHE`/`PLAYWRIGHT_BROWSERS_PATH` redirect argus always forces (see [Sandbox](#sandbox) note above, and `agent.BuildCmd`). Each key is a TARGET environment-variable name; each value is a subdirectory created under `~/.argus/cache/` and shared across every worktree of every task — instead of a multi-GB toolchain (an Android SDK install, a CocoaPods Specs repo clone, a Yarn/npm cache, ...) getting re-provisioned from scratch in every disposable worktree. Holds directory **paths** only — never a secret; see `[[backends]].env_vars` / `[secrets]` for credential injection instead.
+
+```toml
+[cache_dirs]
+ANDROID_SDK_ROOT = "android-sdk"
+GRADLE_USER_HOME = "gradle"
+```
+
+`[projects.<name>.cache_dirs]` merges on top per-project — a shared key here wins, and any new key is added:
+
+```toml
+[projects.myapp.cache_dirs]
+ANDROID_SDK_ROOT = "myapp-android-sdk"   # overrides the shared key above
+COCOAPODS_REPOS_DIR = "myapp-pods"       # project-only
+```
+
+An entry whose target is empty or contains `=`, or whose subdirectory is absolute or escapes the cache root via `..`, is skipped (logged, not fatal) rather than exported.
 
 #### `[kb]`
 

@@ -815,6 +815,146 @@ func TestResolveSandboxConfig_DoesNotMutateGlobal(t *testing.T) {
 	}
 }
 
+func TestResolveCacheDirs_GlobalOnly(t *testing.T) {
+	cfg := testConfig()
+	cfg.CacheDirs = map[string]string{"ANDROID_SDK_ROOT": "android-sdk"}
+	task := &model.Task{Project: "other"}
+
+	result := ResolveCacheDirs(task, cfg)
+
+	testutil.Equal(t, len(result), 1)
+	testutil.Equal(t, result["ANDROID_SDK_ROOT"], "android-sdk")
+}
+
+func TestResolveCacheDirs_ProjectOverridesAndAdds(t *testing.T) {
+	cfg := testConfig()
+	cfg.CacheDirs = map[string]string{
+		"ANDROID_SDK_ROOT":  "android-sdk",
+		"YARN_CACHE_FOLDER": "yarn",
+	}
+	cfg.Projects["myapp"] = config.Project{
+		Path: "/home/user/myapp",
+		CacheDirs: map[string]string{
+			"ANDROID_SDK_ROOT":    "myapp-android-sdk", // overrides shared key
+			"COCOAPODS_REPOS_DIR": "myapp-pods",        // adds a project-only key
+		},
+	}
+	task := &model.Task{Project: "myapp"}
+
+	result := ResolveCacheDirs(task, cfg)
+
+	testutil.Equal(t, len(result), 3)
+	testutil.Equal(t, result["ANDROID_SDK_ROOT"], "myapp-android-sdk")
+	testutil.Equal(t, result["YARN_CACHE_FOLDER"], "yarn")
+	testutil.Equal(t, result["COCOAPODS_REPOS_DIR"], "myapp-pods")
+}
+
+func TestResolveCacheDirs_NoProjectUsesGlobal(t *testing.T) {
+	cfg := testConfig()
+	cfg.CacheDirs = map[string]string{"ANDROID_SDK_ROOT": "android-sdk"}
+	task := &model.Task{} // no project
+
+	result := ResolveCacheDirs(task, cfg)
+
+	testutil.Equal(t, result["ANDROID_SDK_ROOT"], "android-sdk")
+}
+
+func TestResolveCacheDirs_DoesNotMutateGlobal(t *testing.T) {
+	cfg := testConfig()
+	cfg.CacheDirs = map[string]string{"ANDROID_SDK_ROOT": "android-sdk"}
+	cfg.Projects["myapp"] = config.Project{
+		CacheDirs: map[string]string{"ANDROID_SDK_ROOT": "myapp-android-sdk"},
+	}
+	task := &model.Task{Project: "myapp"}
+
+	_ = ResolveCacheDirs(task, cfg)
+
+	testutil.Equal(t, cfg.CacheDirs["ANDROID_SDK_ROOT"], "android-sdk")
+}
+
+func TestIsValidCacheSubdir(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"empty", "", false},
+		{"simple", "android-sdk", true},
+		{"nested", "android/sdk", true},
+		{"absolute", "/etc/passwd", false},
+		{"dot-dot alone", "..", false},
+		{"dot-dot prefix", "../escape", false},
+		{"dot-dot in middle", "a/../../escape", false},
+		{"dot", ".", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testutil.Equal(t, isValidCacheSubdir(tt.input), tt.want)
+		})
+	}
+}
+
+// TestBuildCmd_ExportsCacheDirs confirms a configured cache_dirs entry is
+// exported on the spawned agent's env and its directory is created under
+// db.DataDir()/cache — the opt-in generalization of the always-on
+// GOCACHE/PLAYWRIGHT_BROWSERS_PATH redirect to any other project toolchain
+// (Android SDK, CocoaPods repo cache, ...) that shouldn't be re-provisioned
+// from scratch in every disposable worktree.
+func TestBuildCmd_ExportsCacheDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg := testConfig()
+	cfg.CacheDirs = map[string]string{"ANDROID_SDK_ROOT": "android-sdk"}
+	task := &model.Task{ID: "task-id-cache", Name: "x", Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantDir := filepath.Join(db.DataDir(), "cache", "android-sdk")
+	found := false
+	for _, kv := range cmd.Env {
+		if kv == "ANDROID_SDK_ROOT="+wantDir {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected ANDROID_SDK_ROOT=%s in env, got %v", wantDir, cmd.Env)
+	}
+	if info, statErr := os.Stat(wantDir); statErr != nil || !info.IsDir() {
+		t.Fatalf("expected cache dir %s to be created, stat err: %v", wantDir, statErr)
+	}
+}
+
+// TestBuildCmd_SkipsInvalidCacheDirsEntry confirms a malformed cache_dirs
+// entry (here, a subdir attempting to escape db.DataDir()/cache via "..") is
+// skipped rather than exported or used to create a directory outside the
+// cache root.
+func TestBuildCmd_SkipsInvalidCacheDirsEntry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg := testConfig()
+	cfg.CacheDirs = map[string]string{"EVIL": "../../escaped"}
+	task := &model.Task{ID: "task-id-cache-invalid", Name: "x", Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, kv := range cmd.Env {
+		if strings.HasPrefix(kv, "EVIL=") {
+			t.Fatalf("did not expect EVIL to be exported, got %v", cmd.Env)
+		}
+	}
+	if _, statErr := os.Stat(filepath.Join(home, "escaped")); statErr == nil {
+		t.Fatal("expected no directory to be created outside the cache root")
+	}
+}
+
 func TestBuildCmd_CodexResumeWithSessionID(t *testing.T) {
 	cfg := testConfig()
 	task := &model.Task{

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/drn/argus/internal/claudesession"
@@ -63,6 +64,50 @@ func ResolveSandboxConfig(task *model.Task, cfg config.Config) config.SandboxCon
 		}
 	}
 	return result
+}
+
+// ResolveCacheDirs returns the effective shared-cache-directory mapping for a
+// task: global cfg.CacheDirs overlaid with the task's project CacheDirs (a
+// project entry wins on a key the global config also defines, and adds any
+// key the global config doesn't). The returned map is a fresh copy — neither
+// input map is mutated. See the CacheDirs field doc in internal/config for
+// why this exists: BuildCmd creates each resolved subdir under
+// db.DataDir()/cache and exports TARGET=<dir> on the spawned process, so a
+// disposable worktree can share a multi-GB toolchain cache (Android SDK,
+// CocoaPods repo, ...) instead of re-provisioning it from scratch.
+func ResolveCacheDirs(task *model.Task, cfg config.Config) map[string]string {
+	result := make(map[string]string, len(cfg.CacheDirs))
+	for k, v := range cfg.CacheDirs {
+		result[k] = v
+	}
+	if task.Project != "" {
+		if proj, ok := cfg.Projects[task.Project]; ok {
+			for k, v := range proj.CacheDirs {
+				result[k] = v
+			}
+		}
+	}
+	return result
+}
+
+// isValidCacheSubdir rejects a cache_dirs subdir value that is empty,
+// absolute, or escapes db.DataDir()/cache via a ".." path segment — a
+// config.toml entry the user typo'd or (in principle) crafted maliciously
+// should never redirect a cache dir outside the argus cache root.
+func isValidCacheSubdir(subdir string) bool {
+	if subdir == "" || filepath.IsAbs(subdir) {
+		return false
+	}
+	clean := filepath.Clean(subdir)
+	if clean == "." || clean == ".." {
+		return false
+	}
+	for _, part := range strings.Split(clean, string(filepath.Separator)) {
+		if part == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // IsTaskSandboxed returns whether a task would run sandboxed given the
@@ -859,6 +904,39 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 			"ARGUS_ARCHETYPE="+resolvedProfile.Archetype,
 			"ARGUS_MODEL="+resolvedProfile.Model,
 		)
+	}
+
+	// Project-configurable shared cache directories (cache-dir-config): opt-in
+	// generalization of the GOCACHE/PLAYWRIGHT_BROWSERS_PATH redirect above to
+	// any OTHER toolchain a project's builds depend on (Android SDK, CocoaPods
+	// repo cache, Yarn/npm cache, ...) that is expensive to re-provision from
+	// scratch in every disposable worktree. Each cfg.CacheDirs / project
+	// CacheDirs entry maps a target env var to a subdir under
+	// db.DataDir()/cache, shared across every worktree of every task for that
+	// var — never per-worktree. Unlike backend.EnvVars this never carries a
+	// secret value, only a shared directory PATH, so it's safe to log and to
+	// persist in config.toml in the clear. An invalid entry (empty/"="-bearing
+	// target, or a subdir that's absolute or escapes via "..") is skipped with
+	// a log line rather than failing the spawn; sorted for deterministic env
+	// ordering across repeated spawns.
+	cacheDirs := ResolveCacheDirs(task, cfg)
+	cacheTargets := make([]string, 0, len(cacheDirs))
+	for target := range cacheDirs {
+		cacheTargets = append(cacheTargets, target)
+	}
+	sort.Strings(cacheTargets)
+	for _, target := range cacheTargets {
+		subdir := cacheDirs[target]
+		if target == "" || strings.Contains(target, "=") || !isValidCacheSubdir(subdir) {
+			uxlog.Log("[cache] skipping invalid cache_dirs entry %q=%q", target, subdir)
+			continue
+		}
+		dir := filepath.Join(db.DataDir(), "cache", subdir)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			uxlog.Log("[cache] failed to create shared cache dir %s for %s (continuing without it): %v", dir, target, err)
+			continue
+		}
+		cmd.Env = append(cmd.Env, target+"="+dir)
 	}
 
 	// Per-backend credential env mapping. backend.EnvVars maps a TARGET env var
