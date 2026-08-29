@@ -109,10 +109,7 @@ func TestSkewModal_ResolveRestartSupervisor_ResolvesDaemonToo(t *testing.T) {
 	// Restarting the supervisor also bounces the daemon, so resolving the
 	// supervisor action clears any pending daemon restart too.
 	m := NewSkewModal(true, true, "dae-1 @ /a", "sup-2 @ /b")
-	remaining := m.ResolveRestartSupervisor()
-	if remaining {
-		t.Error("ResolveRestartSupervisor should report no restart action remains (it also resolves the daemon)")
-	}
+	m.ResolveRestartSupervisor()
 	if len(m.buttons) != 1 || m.buttons[0].choice != choiceSkip {
 		t.Fatalf("buttons = %+v, want [Skip] only", m.buttons)
 	}

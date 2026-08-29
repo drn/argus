@@ -35,6 +35,12 @@ type skewButton struct {
 // The supervisor restart is the destructive one (it SIGHUPs every agent), so it
 // carries NO letter shortcut and, in the app, opens a second confirmation that
 // names the agent count; this modal only records the CHOICE.
+//
+// State is normally mutated only from InputHandler, but when both processes
+// are stale the app can partially resolve one action via ResolveRestartDaemon/
+// ResolveRestartSupervisor — this removes the handled button and re-arms the
+// modal (done/chose clear) so it stays open for the remaining action instead
+// of the app tearing it down.
 type RestartDaemonModal struct {
 	*tview.Box
 	daemonStale        bool
@@ -115,6 +121,7 @@ func (m *RestartDaemonModal) removeButton(c skewChoice) {
 	m.buttons = kept
 	m.selected = 0
 	m.done = false
+	m.chose = choiceSkip // clear alongside done so a stale choice can't be read before the next input
 }
 
 // hasRestartAction reports whether any non-Skip button remains.
@@ -138,15 +145,14 @@ func (m *RestartDaemonModal) ResolveRestartDaemon() bool {
 
 // ResolveRestartSupervisor marks "Restart supervisor" as handled. Restarting
 // the supervisor also bounces the daemon (see App.handleRestartSupervisorKey),
-// so this resolves the daemon's pending restart too and removes both buttons.
-// Reports whether a restart action still remains (always false today, kept
-// for symmetry with ResolveRestartDaemon).
-func (m *RestartDaemonModal) ResolveRestartSupervisor() bool {
+// so this resolves the daemon's pending restart too and removes both buttons
+// — unlike ResolveRestartDaemon, no restart action can ever remain, so unlike
+// that method this reports nothing.
+func (m *RestartDaemonModal) ResolveRestartSupervisor() {
 	m.removeButton(choiceRestartDaemon)
 	m.removeButton(choiceRestartSupervisor)
 	m.daemonStale = false
 	m.supervisorStale = false
-	return m.hasRestartAction()
 }
 
 // InputHandler handles key events for the skew modal.
