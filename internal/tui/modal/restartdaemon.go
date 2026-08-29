@@ -35,6 +35,12 @@ type skewButton struct {
 // The supervisor restart is the destructive one (it SIGHUPs every agent), so it
 // carries NO letter shortcut and, in the app, opens a second confirmation that
 // names the agent count; this modal only records the CHOICE.
+//
+// State is normally mutated only from InputHandler, but when both processes
+// are stale the app can partially resolve one action via ResolveRestartDaemon/
+// ResolveRestartSupervisor — this removes the handled button and re-arms the
+// modal (done/chose clear) so it stays open for the remaining action instead
+// of the app tearing it down.
 type RestartDaemonModal struct {
 	*tview.Box
 	daemonStale        bool
@@ -100,6 +106,53 @@ func (m *RestartDaemonModal) choose(c skewChoice) {
 			return
 		}
 	}
+}
+
+// removeButton drops the button for choice c (if present) and re-arms the
+// modal for another round of input: selection resets to the first remaining
+// button and done/chose clear so InputHandler starts fresh.
+func (m *RestartDaemonModal) removeButton(c skewChoice) {
+	kept := m.buttons[:0]
+	for _, b := range m.buttons {
+		if b.choice != c {
+			kept = append(kept, b)
+		}
+	}
+	m.buttons = kept
+	m.selected = 0
+	m.done = false
+	m.chose = choiceSkip // clear alongside done so a stale choice can't be read before the next input
+}
+
+// hasRestartAction reports whether any non-Skip button remains.
+func (m *RestartDaemonModal) hasRestartAction() bool {
+	for _, b := range m.buttons {
+		if b.choice != choiceSkip {
+			return true
+		}
+	}
+	return false
+}
+
+// ResolveRestartDaemon marks "Restart daemon" as handled and removes its
+// button. Reports whether a restart action (the supervisor's) still remains,
+// so the caller can leave the modal open instead of dismissing it.
+func (m *RestartDaemonModal) ResolveRestartDaemon() bool {
+	m.removeButton(choiceRestartDaemon)
+	m.daemonStale = false
+	return m.hasRestartAction()
+}
+
+// ResolveRestartSupervisor marks "Restart supervisor" as handled. Restarting
+// the supervisor also bounces the daemon (see App.handleRestartSupervisorKey),
+// so this resolves the daemon's pending restart too and removes both buttons
+// — unlike ResolveRestartDaemon, no restart action can ever remain, so unlike
+// that method this reports nothing.
+func (m *RestartDaemonModal) ResolveRestartSupervisor() {
+	m.removeButton(choiceRestartDaemon)
+	m.removeButton(choiceRestartSupervisor)
+	m.daemonStale = false
+	m.supervisorStale = false
 }
 
 // InputHandler handles key events for the skew modal.

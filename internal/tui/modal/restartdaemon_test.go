@@ -62,6 +62,62 @@ func TestSkewModal_BothStaleThreeButtons(t *testing.T) {
 	}
 }
 
+func TestSkewModal_ResolveRestartDaemon_LeavesSupervisorButton(t *testing.T) {
+	m := NewSkewModal(true, true, "dae-1 @ /a", "sup-2 @ /b")
+	remaining := m.ResolveRestartDaemon()
+	if !remaining {
+		t.Fatal("ResolveRestartDaemon should report a restart action (supervisor) remains")
+	}
+	if len(m.buttons) != 2 {
+		t.Fatalf("buttons = %d, want 2 (Restart supervisor, Skip)", len(m.buttons))
+	}
+	if m.buttons[0].choice != choiceRestartSupervisor || m.buttons[1].choice != choiceSkip {
+		t.Errorf("buttons = %+v, want [Restart supervisor, Skip]", m.buttons)
+	}
+	if m.Done() {
+		t.Error("modal should be re-armed (not done) after resolving one action")
+	}
+	if m.Selected() != 0 {
+		t.Errorf("selection should reset to 0, got %d", m.Selected())
+	}
+	if m.daemonStale {
+		t.Error("daemonStale should clear once resolved")
+	}
+	if !m.supervisorStale {
+		t.Error("supervisorStale should remain set")
+	}
+
+	// The re-armed modal accepts a fresh choice for the remaining action.
+	m.InputHandler()(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), nil)
+	if !m.ChoseRestartSupervisor() {
+		t.Error("Enter after resolving daemon should choose the remaining supervisor button")
+	}
+}
+
+func TestSkewModal_ResolveRestartDaemon_DaemonOnlyHasNoRemainingAction(t *testing.T) {
+	m := NewSkewModal(true, false, "dae-1 @ /a", "")
+	remaining := m.ResolveRestartDaemon()
+	if remaining {
+		t.Error("ResolveRestartDaemon should report no restart action remains when supervisor was never stale")
+	}
+	if len(m.buttons) != 1 || m.buttons[0].choice != choiceSkip {
+		t.Fatalf("buttons = %+v, want [Skip] only", m.buttons)
+	}
+}
+
+func TestSkewModal_ResolveRestartSupervisor_ResolvesDaemonToo(t *testing.T) {
+	// Restarting the supervisor also bounces the daemon, so resolving the
+	// supervisor action clears any pending daemon restart too.
+	m := NewSkewModal(true, true, "dae-1 @ /a", "sup-2 @ /b")
+	m.ResolveRestartSupervisor()
+	if len(m.buttons) != 1 || m.buttons[0].choice != choiceSkip {
+		t.Fatalf("buttons = %+v, want [Skip] only", m.buttons)
+	}
+	if m.daemonStale || m.supervisorStale {
+		t.Error("both staleness flags should clear")
+	}
+}
+
 func TestSkewModal_DrawShowsRichIdentity(t *testing.T) {
 	sim := drawAt(t, 80, 24)
 	m := NewSkewModal(true, true, "a1b2c3 (dirty) @ /usr/bin/argus", "d4e5f6 @ /gopath/bin/argus")

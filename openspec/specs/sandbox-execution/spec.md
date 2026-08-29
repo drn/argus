@@ -3,9 +3,7 @@
 ## Purpose
 
 Argus runs agent processes inside a macOS `sandbox-exec` confinement so an autonomous agent can do real work (edit its worktree, push over SSH, store auth tokens, drive a browser) without being able to write outside its task's worktree or read sensitive credential stores. This capability generates a deny-by-default SBPL profile per task, grants the minimal set of write and read paths the supported agent backends actually need, and wraps the agent command in the `sandbox-exec` invocation.
-
 ## Requirements
-
 ### Requirement: Sandbox availability detection
 
 The system SHALL report whether `sandbox-exec` is available on the host, preferring the canonical macOS path and falling back to `PATH` lookup. The result SHALL be cached after the first probe and SHALL be safe to query concurrently.
@@ -112,7 +110,7 @@ The generated profile SHALL allow writes to `~/.ssh/known_hosts` (prefix-scoped 
 
 ### Requirement: Scoped tool, cache, and browser write access
 
-The generated profile SHALL grant scoped write access to the GitHub CLI config (`~/.config/gh`), build-tool caches, the macOS Keychains directory, and the Google Chrome support directory, without broadening to their parent directories. In particular the gh allow rule SHALL NOT undo the gcloud deny-read, and the Chrome allow rule SHALL NOT broaden to all of Application Support.
+The generated profile SHALL grant scoped write access to the GitHub CLI config (`~/.config/gh`), build-tool caches (including `~/.argus/cache`, where `GOCACHE` and `PLAYWRIGHT_BROWSERS_PATH` are redirected), the macOS Keychains directory, and the Google Chrome support directory, without broadening to their parent directories. In particular the gh allow rule SHALL NOT undo the gcloud deny-read, the Chrome allow rule SHALL NOT broaden to all of Application Support, and the `~/.argus/cache` allow rule SHALL NOT broaden to all of `~/.argus` (which also holds the sqlite database and daemon socket).
 
 #### Scenario: gh config is writable but gcloud read stays denied
 
@@ -133,6 +131,11 @@ The generated profile SHALL grant scoped write access to the GitHub CLI config (
 
 - **WHEN** a sandboxed command writes a file under `~/Library/Keychains`
 - **THEN** the write succeeds so the agent can store API keys via the macOS Keychain
+
+#### Scenario: ~/.argus/cache is writable for the GOCACHE/PLAYWRIGHT_BROWSERS_PATH redirect
+
+- **WHEN** a sandboxed command creates and writes under `~/.argus/cache/go-build` (or `~/.argus/cache/ms-playwright`)
+- **THEN** the write succeeds, so `go build`/`go test`/Playwright's browser install work inside a sandboxed agent
 
 ### Requirement: Worktree git-dir write access
 
@@ -194,3 +197,4 @@ The system SHALL write the generated profile to a temporary file and return a cl
 
 - **WHEN** an agent command is built with the sandbox disabled
 - **THEN** the resulting command is not wrapped in `sandbox-exec` and no cleanup function is returned
+
