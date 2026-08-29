@@ -39,14 +39,15 @@ func testServer(t *testing.T) (*Server, *db.DB) {
 	t.Cleanup(func() { d.Close() })
 
 	runner := agent.NewRunner(nil)
-	creator := func(name, prompt, project, backend, taskModel string, _ bool) (*model.Task, error) {
+	creator := func(name, prompt, project, backend, taskModel, sandboxOverride string, _ bool) (*model.Task, error) {
 		task := &model.Task{
-			Name:    name,
-			Prompt:  prompt,
-			Project: project,
-			Backend: backend,
-			Model:   taskModel,
-			Status:  model.StatusInProgress,
+			Name:            name,
+			Prompt:          prompt,
+			Project:         project,
+			Backend:         backend,
+			Model:           taskModel,
+			SandboxOverride: sandboxOverride,
+			Status:          model.StatusInProgress,
 		}
 		d.Add(task)
 		return task, nil
@@ -290,6 +291,31 @@ func TestHandleCreateTask(t *testing.T) {
 		testutil.NoError(t, err)
 		testutil.Equal(t, got.Model, "opus")
 	})
+
+	// Same end-to-end pin for the per-task sandbox override
+	// (add-task-sandbox-override).
+	t.Run("persists sandbox override", func(t *testing.T) {
+		srv, d := testServer(t)
+		mux := srv.routes()
+		body := `{"name":"with-sandbox","prompt":"do it","project":"proj","sandbox_override":"enabled"}`
+		req := authedReq("POST", "/api/tasks", body)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusCreated)
+		var resp map[string]any
+		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		got, err := d.Get(resp["id"].(string))
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.SandboxOverride, "enabled")
+	})
+
+	t.Run("rejects invalid sandbox override", func(t *testing.T) {
+		body := `{"name":"t","prompt":"go","project":"proj","sandbox_override":"maybe"}`
+		req := authedReq("POST", "/api/tasks", body)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusBadRequest)
+	})
 }
 
 // Forks inherit the source task's model alongside its backend so the new
@@ -311,6 +337,27 @@ func TestHandleForkTask_InheritsModel(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, got.Backend, "claude")
 	testutil.Equal(t, got.Model, "opus")
+}
+
+// Forks inherit the source task's sandbox override alongside its backend and
+// model so the new session starts with the same confinement
+// (add-task-sandbox-override).
+func TestHandleForkTask_InheritsSandboxOverride(t *testing.T) {
+	srv, d := testServer(t)
+	mux := srv.routes()
+
+	src := &model.Task{Name: "src-sb", Status: model.StatusComplete, Project: "proj1", Backend: "claude", SandboxOverride: "disabled", Prompt: "p"}
+	testutil.NoError(t, d.Add(src))
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("POST", "/api/tasks/"+src.ID+"/fork", `{}`))
+	testutil.Equal(t, w.Code, http.StatusCreated)
+
+	var resp map[string]any
+	testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	got, err := d.Get(resp["id"].(string))
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.SandboxOverride, "disabled")
 }
 
 // TestHandleResumeTask covers the resume endpoint paths: 404 on missing task,
@@ -3429,6 +3476,24 @@ func TestHandleCreateTaskMultipart_BadBackend(t *testing.T) {
 	testutil.Equal(t, w.Code, http.StatusBadRequest)
 }
 
+// TestHandleCreateTaskMultipart_BadSandboxOverride covers
+// add-task-sandbox-override: an invalid sandbox_override value is rejected
+// before any worktree is created, mirroring the bad-backend case above.
+func TestHandleCreateTaskMultipart_BadSandboxOverride(t *testing.T) {
+	srv, _ := testServer(t)
+	mux := srv.routes()
+
+	ct, body := buildMultipartBody(t,
+		map[string]string{"project": "proj", "name": "x", "sandbox_override": "maybe"}, nil)
+	req := httptest.NewRequest("POST", "/api/tasks", body)
+	req.Header.Set("Content-Type", ct)
+	req.Header.Set("Authorization", "Bearer "+srv.token)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusBadRequest)
+}
+
 // TestHandleCreateTaskMultipart_PromptOnlyAutoNames exercises the
 // `name == "" && prompt != ""` fallback (autoName=true).
 func TestHandleCreateTaskMultipart_PromptOnlyAutoNames(t *testing.T) {
@@ -3947,7 +4012,7 @@ func TestHandleCreateTask_CreatorError(t *testing.T) {
 	testutil.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
 	runner := agent.NewRunner(nil)
-	creator := func(name, prompt, project, backend, taskModel string, _ bool) (*model.Task, error) {
+	creator := func(name, prompt, project, backend, taskModel, sandboxOverride string, _ bool) (*model.Task, error) {
 		return nil, fmt.Errorf("forced fail")
 	}
 	srv := New(d, runner, "test-token", creator, nil)

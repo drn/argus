@@ -409,10 +409,11 @@ func TestNewTaskForm_UpArrowLeavesPrompt(t *testing.T) {
 	f.cursorPos = 3
 	handler := f.InputHandler()
 	handler(tcell.NewEventKey(tcell.KeyUp, 0, 0), func(p tview.Primitive) {})
-	// Up out of the prompt lands on the field just above it — the archetype
-	// selector (add-diligence-profiles inserted Profile + Archetype before Prompt).
-	if f.focused != ntFieldArchetype {
-		t.Errorf("up on first line should move to archetype, got focused=%d", f.focused)
+	// Up out of the prompt lands on the field just above it — the sandbox
+	// override selector (add-task-sandbox-override inserted between Archetype
+	// and Prompt).
+	if f.focused != ntFieldSandbox {
+		t.Errorf("up on first line should move to sandbox, got focused=%d", f.focused)
 	}
 }
 
@@ -935,10 +936,17 @@ func TestNewTaskForm_EnterOnSelector(t *testing.T) {
 		t.Errorf("enter on profile: focused = %d, want archetype", f.focused)
 	}
 
-	// Enter on archetype → prompt
+	// Enter on archetype → sandbox (add-task-sandbox-override inserted between
+	// archetype and prompt)
+	handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
+	if f.focused != ntFieldSandbox {
+		t.Errorf("enter on archetype: focused = %d, want sandbox", f.focused)
+	}
+
+	// Enter on sandbox → prompt
 	handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
 	if f.focused != ntFieldPrompt {
-		t.Errorf("enter on archetype: focused = %d, want prompt", f.focused)
+		t.Errorf("enter on sandbox: focused = %d, want prompt", f.focused)
 	}
 }
 
@@ -2143,8 +2151,74 @@ func TestNewTaskForm_ProfileOverrideReturned(t *testing.T) {
 	testutil.Equal(t, f.ProfileOverride(), "customer_grade")
 }
 
+// TestNewTaskForm_SandboxOverride_DefaultsToInherit covers "Selector present
+// and defaults to Inherit": the form opens with the sandbox cycler on Inherit
+// and submits no override (add-task-sandbox-override).
+func TestNewTaskForm_SandboxOverride_DefaultsToInherit(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"b": {Command: "claude"}}, "b",
+	)
+	testutil.Equal(t, f.sandboxDisplayLabel(), "Inherit")
+	testutil.Equal(t, f.SandboxOverride(), "")
+
+	f.prompt = []rune("do the thing")
+	testutil.Equal(t, f.Task().SandboxOverride, "")
+}
+
+// TestNewTaskForm_SandboxOverride_CyclesEnabledAndDisabled covers "Cycling to
+// Enabled/Disabled submits that override".
+func TestNewTaskForm_SandboxOverride_CyclesEnabledAndDisabled(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"b": {Command: "claude"}}, "b",
+	)
+	handler := f.InputHandler()
+	f.focused = ntFieldSandbox
+
+	handler(tcell.NewEventKey(tcell.KeyRight, 0, 0), nil) // Inherit → Enabled
+	testutil.Equal(t, f.sandboxDisplayLabel(), "Enabled")
+	testutil.Equal(t, f.SandboxOverride(), "enabled")
+
+	handler(tcell.NewEventKey(tcell.KeyRight, 0, 0), nil) // Enabled → Disabled
+	testutil.Equal(t, f.sandboxDisplayLabel(), "Disabled")
+	testutil.Equal(t, f.SandboxOverride(), "disabled")
+
+	f.prompt = []rune("do the thing")
+	testutil.Equal(t, f.Task().SandboxOverride, "disabled")
+
+	handler(tcell.NewEventKey(tcell.KeyRight, 0, 0), nil) // Disabled wraps → Inherit
+	testutil.Equal(t, f.sandboxDisplayLabel(), "Inherit")
+	testutil.Equal(t, f.SandboxOverride(), "")
+
+	handler(tcell.NewEventKey(tcell.KeyLeft, 0, 0), nil) // Inherit wraps back → Disabled
+	testutil.Equal(t, f.sandboxDisplayLabel(), "Disabled")
+	testutil.Equal(t, f.SandboxOverride(), "disabled")
+}
+
+// TestNewTaskForm_SandboxOverride_FocusNav covers Enter/Down/Up navigation
+// into and out of the sandbox field, positioned between Archetype and Prompt.
+func TestNewTaskForm_SandboxOverride_FocusNav(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"b": {Command: "claude"}}, "b",
+	)
+	handler := f.InputHandler()
+
+	f.focused = ntFieldArchetype
+	handler(tcell.NewEventKey(tcell.KeyDown, 0, 0), nil)
+	testutil.Equal(t, f.focused, ntFieldSandbox)
+
+	handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), nil)
+	testutil.Equal(t, f.focused, ntFieldPrompt)
+
+	f.focused = ntFieldSandbox
+	handler(tcell.NewEventKey(tcell.KeyUp, 0, 0), nil)
+	testutil.Equal(t, f.focused, ntFieldArchetype)
+}
+
 // TestNewTaskForm_HiddenArchetypeNavSkips ensures Tab/Up navigation skips the
-// hidden archetype field on the coordinator prompt (model → profile → prompt).
+// hidden archetype field on the coordinator prompt (model → profile → sandbox).
 func TestNewTaskForm_HiddenArchetypeNavSkips(t *testing.T) {
 	f := NewNewTaskForm(
 		map[string]config.Project{"p": {}}, "p",
@@ -2154,10 +2228,10 @@ func TestNewTaskForm_HiddenArchetypeNavSkips(t *testing.T) {
 	handler := f.InputHandler()
 
 	f.focused = ntFieldProfile
-	handler(tcell.NewEventKey(tcell.KeyTab, 0, 0), nil) // profile → prompt (skip archetype)
-	testutil.Equal(t, f.focused, ntFieldPrompt)
+	handler(tcell.NewEventKey(tcell.KeyTab, 0, 0), nil) // profile → sandbox (skip archetype)
+	testutil.Equal(t, f.focused, ntFieldSandbox)
 
-	// Backtab from prompt → profile (skip archetype).
+	// Backtab from sandbox → profile (skip archetype).
 	handler(tcell.NewEventKey(tcell.KeyBacktab, 0, 0), nil)
 	testutil.Equal(t, f.focused, ntFieldProfile)
 }

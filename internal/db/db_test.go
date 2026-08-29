@@ -83,6 +83,43 @@ func TestDB_AddPreservesExistingID(t *testing.T) {
 	}
 }
 
+// TestDB_SandboxOverrideRoundTrips covers add-task-sandbox-override: a task's
+// SandboxOverride round-trips through Add → Get → Update → Get, and a task
+// added without one reads back empty (the default, unchanged behavior).
+func TestDB_SandboxOverrideRoundTrips(t *testing.T) {
+	d := testDB(t)
+
+	task := &model.Task{Name: "override task", SandboxOverride: "enabled"}
+	if err := d.Add(task); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.Get(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testutil.Equal(t, got.SandboxOverride, "enabled")
+
+	got.SandboxOverride = "disabled"
+	if err := d.Update(got); err != nil {
+		t.Fatal(err)
+	}
+	got2, err := d.Get(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testutil.Equal(t, got2.SandboxOverride, "disabled")
+
+	defaultTask := &model.Task{Name: "default task"}
+	if err := d.Add(defaultTask); err != nil {
+		t.Fatal(err)
+	}
+	gotDefault, err := d.Get(defaultTask.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testutil.Equal(t, gotDefault.SandboxOverride, "")
+}
+
 func TestDB_Update(t *testing.T) {
 	d := testDB(t)
 

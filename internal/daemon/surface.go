@@ -66,7 +66,11 @@ const (
 	//     sweep there is now gated on a positive per-directory ownership
 	//     marker instead of mere absence-from-known-set, so it no longer
 	//     deletes Codex's own .system/ content or user-installed skills.
-	SupervisorSpawnSurface = 3
+	//   - v4: ResolveSandboxConfig gained a per-task SandboxOverride
+	//     ("enabled"/"disabled") as a fourth precedence tier, read at spawn
+	//     time and taking precedence over both the project and global sandbox
+	//     settings (add-task-sandbox-override).
+	SupervisorSpawnSurface = 4
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -273,7 +277,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "66f80dc16af061f043b6a788b9ad20f391b615a26b6caf7287f3b17bb91be8cd"
+	SpawnSurfaceDigest  = "c74a33b2ab33eefa873a60c617d6fc104dc53ec45896f5aff40ae94f946b3e20"
 	StreamSurfaceDigest = "57078648a38b01bad81b795bf6ca431199e4e394460f3a19ca9bf0ee407a785e"
 )
 

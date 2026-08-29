@@ -448,3 +448,35 @@ The new-task form SHALL render an OPTIONAL single-line name input positioned imm
 - **WHEN** the user submits with a name field containing only whitespace
 - **THEN** the form behaves as if no name was supplied (the name is derived from the prompt)
 
+### Requirement: Sandbox override selector on the new-agent prompts
+
+The new-task, new-worker, and new-coordinator prompts (which share one form) SHALL present a
+**Sandbox** cycling selector alongside the existing Backend/Model/Profile/Archetype selectors,
+offering exactly three positions: `Inherit`, `Enabled`, `Disabled`, defaulting to `Inherit`. Unlike
+the Archetype selector, the Sandbox selector is NOT hidden on the new-coordinator prompt —
+sandboxing applies to the coordinator's own agent process the same as any worker's. The submitted
+task SHALL carry no sandbox override when the selector is left on `Inherit`, a force-enabled
+override when cycled to `Enabled`, and a force-disabled override when cycled to `Disabled`. The
+selector SHALL participate in the form's Tab/Backtab and Up/Down focus order alongside the other
+selector fields.
+
+#### Scenario: Selector present and defaults to Inherit
+
+- **WHEN** any new-agent prompt (new task, new worker, or new coordinator) is opened
+- **THEN** it shows a Sandbox selector positioned on `Inherit`
+
+#### Scenario: Leaving the selector on Inherit submits no override
+
+- **WHEN** the user submits the form without touching the Sandbox selector
+- **THEN** the produced task carries no sandbox override, so resolution falls back to the project/global setting
+
+#### Scenario: Cycling to Enabled submits a force-enabled override
+
+- **WHEN** the user cycles the Sandbox selector to `Enabled` and submits
+- **THEN** the produced task carries a force-enabled sandbox override
+
+#### Scenario: Cycling to Disabled submits a force-disabled override
+
+- **WHEN** the user cycles the Sandbox selector to `Disabled` and submits
+- **THEN** the produced task carries a force-disabled sandbox override
+
