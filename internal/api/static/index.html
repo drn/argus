@@ -2077,12 +2077,18 @@ function __argusRefreshTimer() { return refreshTimer; }
 
 // --- API (with 10s timeout) ---
 async function api(path, opts = {}) {
+  const { timeoutMs: timeoutOverride, ...fetchOpts } = opts;
   const controller = new AbortController();
   // FormData uploads (file attachments) can take much longer than the
-  // typical 10s API budget. Give them 60s. Detect by body type, not path,
-  // so any future multipart endpoint inherits the longer budget.
-  const isUpload = opts.body instanceof FormData;
-  const timeoutMs = isUpload ? 60000 : 10000;
+  // typical 10s API budget. Give them 280s — just under the server's own
+  // 300s http.Server.ReadTimeout (server.go) — so a slow mobile upload
+  // times out server-side (with a real error) rather than client-side
+  // (with the task having actually been created behind our back).
+  // Callers doing other known-slow synchronous work (e.g. task creation,
+  // which runs git-worktree + hook + agent-start before responding) can
+  // override via opts.timeoutMs.
+  const isUpload = fetchOpts.body instanceof FormData;
+  const timeoutMs = timeoutOverride ?? (isUpload ? 280000 : 10000);
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     // For FormData, the browser sets Content-Type with the multipart
@@ -2090,9 +2096,9 @@ async function api(path, opts = {}) {
     const baseHeaders = { 'Authorization': 'Bearer ' + TOKEN };
     if (!isUpload) baseHeaders['Content-Type'] = 'application/json';
     const r = await fetch(API + path, {
-      ...opts,
+      ...fetchOpts,
       signal: controller.signal,
-      headers: { ...baseHeaders, ...(opts.headers || {}) }
+      headers: { ...baseHeaders, ...(fetchOpts.headers || {}) }
     });
     if (r.status === 401) { logout(); throw new Error('unauthorized'); }
     return r;
@@ -5047,9 +5053,13 @@ async function createTask() {
       for (const f of createFiles) fd.append('files', f, f.name);
       r = await api('/api/tasks', { method: 'POST', body: fd });
     } else {
+      // No files, but task creation still runs git-worktree setup + hooks +
+      // agent start synchronously server-side before responding — that can
+      // exceed the default 10s JSON budget, so give it more room.
       r = await api('/api/tasks', {
         method: 'POST',
-        body: JSON.stringify({ name, prompt, project, backend, model: taskModel })
+        body: JSON.stringify({ name, prompt, project, backend, model: taskModel }),
+        timeoutMs: 120000
       });
     }
     const data = await r.json();
@@ -5066,7 +5076,17 @@ async function createTask() {
       showToast(data.error || 'Failed to create task');
     }
   } catch(e) {
-    showToast('Error: ' + e.message);
+    if (e.name === 'AbortError') {
+      // Task creation runs synchronously server-side and can outlast our
+      // client-side timeout on a slow connection — the task may well have
+      // been created anyway. Refresh so it shows up immediately instead of
+      // leaving the user thinking it failed.
+      switchTab('tasks');
+      await refresh();
+      showToast('Task creation is taking a while — check the task list, it may have started anyway');
+    } else {
+      showToast('Error: ' + e.message);
+    }
   } finally {
     btn.disabled = false;
     btn.textContent = 'Create & Start';
