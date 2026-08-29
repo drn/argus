@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"image/color"
@@ -124,16 +125,41 @@ const pendingResponseQueueSize = 8
 // isn't the same live process) — forwarding responses into them would be
 // meaningless at best and cross-wired at worst, so they keep using
 // NewDrainedEmulator.
-func NewLiveEmulator(cols, rows int, forward func([]byte)) *xvt.SafeEmulator {
+//
+// The emulator returned here is meant to be kept for the pane's entire
+// lifetime and RIS-reset in place (see resetLiveEmulatorInPlace) rather than
+// discarded and recreated: these two background goroutines block in Read
+// forever with no safe way to stop them early (SafeEmulator exposes no
+// mutex-guarded Close, and calling Close concurrently with a blocked Read
+// races on the vendor's internal `closed` field — confirmed via a targeted
+// -race probe, not theoretical). Recreating a new emulator on every
+// ResetVT/SetSession — which Hera's frequent pane rebinds do dozens of
+// times per minute — permanently orphaned the old one's goroutines (and
+// with them its parser buffers, scrollback, and render buffer), the actual
+// cause of the TUI's multi-GB RSS growth. See gotchas/pty-terminal.md.
+//
+// Because the SAME emulator now survives across many session
+// attach/detach cycles, a response generated under a since-superseded
+// attachment must not be delivered to whatever session happens to be
+// current when it's finally drained — currentGen (read at the moment the
+// bytes come off the emulator's response pipe) and the matching generation
+// forward receives let the caller drop anything that arrived under a
+// stale generation instead of misdelivering it (see
+// resetLiveEmulatorInPlace and forwardEmulatorResponse).
+func NewLiveEmulator(cols, rows int, currentGen func() uint64, forward func(gen uint64, p []byte)) *xvt.SafeEmulator {
 	emu := xvt.NewSafeEmulator(cols, rows)
 	emu.Emulator.SetBackgroundColor(assumedTerminalBG)
 	emu.Emulator.SetForegroundColor(assumedTerminalFG)
 
-	pending := make(chan []byte, pendingResponseQueueSize)
+	type pendingResponse struct {
+		gen  uint64
+		data []byte
+	}
+	pending := make(chan pendingResponse, pendingResponseQueueSize)
 	go func() {
 		for p := range pending {
 			if forward != nil {
-				forward(p)
+				forward(p.gen, p.data)
 			}
 		}
 	}()
@@ -143,8 +169,12 @@ func NewLiveEmulator(cols, rows int, forward func([]byte)) *xvt.SafeEmulator {
 		for {
 			n, err := emu.Read(buf)
 			if n > 0 {
+				gen := uint64(0)
+				if currentGen != nil {
+					gen = currentGen()
+				}
 				select {
-				case pending <- append([]byte(nil), buf[:n]...):
+				case pending <- pendingResponse{gen: gen, data: append([]byte(nil), buf[:n]...)}:
 				default:
 					// Forwarding goroutine is stuck on a prior response
 					// (agent stalled); drop rather than block this loop.
@@ -205,8 +235,12 @@ type TerminalPane struct {
 	taskID  string
 	focused bool
 
-	// Persistent x/vt emulator for live incremental rendering.
+	// Persistent x/vt emulator for live incremental rendering. Created once
+	// per pane (lazily, on first use) and kept alive for the pane's whole
+	// lifetime — see resetLiveEmulatorInPlace for why it is RIS-reset in
+	// place rather than discarded and recreated on every ResetVT/SetSession.
 	emu           *xvt.SafeEmulator
+	emuGen        atomic.Uint64 // bumped on every resetLiveEmulatorInPlace; see forwardEmulatorResponse
 	emuFedTotal   uint64
 	emuCols       int
 	emuRows       int
@@ -438,7 +472,7 @@ func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 	}
 	tp.session = sess
 	tp.pending = false
-	tp.emu = nil
+	tp.resetLiveEmulatorInPlace()
 	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
 	tp.paintCacheValid = false
@@ -697,7 +731,7 @@ func (tp *TerminalPane) EagerReplayBuild() {
 // ResetVT clears all terminal state (on resize or task switch).
 func (tp *TerminalPane) ResetVT() {
 	tp.mu.Lock()
-	tp.emu = nil
+	tp.resetLiveEmulatorInPlace()
 	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
 	tp.anchorTotalLines = 0
@@ -2038,7 +2072,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 		}
 		if fullReplay {
 			if !emuMissing {
-				tp.emu = tp.newTrackedEmulator(ptyCols, ptyRows)
+				tp.resetLiveEmulatorInPlace()
 				tp.oscStrip.reset()
 				tp.paintCacheValid = false
 			}
@@ -2282,12 +2316,7 @@ func (tp *TerminalPane) newTrackedEmulator(cols, rows int) *xvt.SafeEmulator {
 }
 
 func (tp *TerminalPane) newTrackedEmulatorWithCallback(cols, rows int, onCursorVisible func(bool)) *xvt.SafeEmulator {
-	tp.mu.Lock()
-	owner := tp.session
-	tp.mu.Unlock()
-	emu := NewLiveEmulator(cols, rows, func(p []byte) {
-		tp.forwardEmulatorResponse(owner, p)
-	})
+	emu := NewLiveEmulator(cols, rows, tp.emuGen.Load, tp.forwardEmulatorResponse)
 	emu.Emulator.SetScrollbackSize(liveScrollbackSize)
 	if onCursorVisible != nil {
 		emu.Emulator.SetCallbacks(xvt.Callbacks{
@@ -2306,16 +2335,15 @@ func (tp *TerminalPane) newTrackedEmulatorWithCallback(cols, rows int, onCursorV
 }
 
 // forwardEmulatorResponse writes a live emulator's generated query-response
-// bytes (OSC 10/11 answers, etc.) into owner — the session that was current
-// when the emulator that produced p was created — but only if owner is
-// STILL the pane's current session. SetSession always replaces tp.emu when
-// the session pointer actually changes (see SetSession), so for the pane's
-// live, non-orphaned emulator owner and tp.session never diverge; the check
-// exists for the narrow race where THIS emulator has already been replaced
-// (a new session attached, a new emulator created) but its old drain
-// goroutine still had a response in flight — without the owner check, that
-// stale response would be misdelivered into the new, unrelated session
-// instead of correctly dropped.
+// bytes (OSC 10/11 answers, etc.) into the pane's current session — but only
+// if gen (the emuGen value in effect when the bytes were read off the
+// emulator's response pipe) still matches the pane's CURRENT generation.
+// The pane's emulator is now reused indefinitely (see
+// resetLiveEmulatorInPlace) rather than recreated per session, so a
+// response can arrive after the pane has already moved on to a different
+// session; without the generation check, that stale response would be
+// misdelivered into the new, unrelated session instead of correctly
+// dropped.
 //
 // Delivered with agentview.OriginSystem, NOT OriginUser: this response is
 // auto-generated by the emulator, never the user answering a prompt. Using
@@ -2326,13 +2354,34 @@ func (tp *TerminalPane) newTrackedEmulatorWithCallback(cols, rows int, onCursorV
 // only happens while this pane is focused (only the focused pane has a
 // live, non-discard emulator). This previously produced a focus-gated
 // bounce between "(?)" and the idle icon. See gotchas/pty-terminal.md.
-func (tp *TerminalPane) forwardEmulatorResponse(owner agentview.TerminalAdapter, p []byte) {
+func (tp *TerminalPane) forwardEmulatorResponse(gen uint64, p []byte) {
 	tp.mu.Lock()
 	sess := tp.session
 	tp.mu.Unlock()
-	if sess != nil && sess == owner {
+	if sess != nil && gen == tp.emuGen.Load() {
 		_, _ = sess.WriteInput(p, agentview.OriginSystem)
 	}
+}
+
+// resetLiveEmulatorInPlace RIS-resets tp.emu (if it exists) instead of
+// discarding it. Recreating a live pane's emulator on every ResetVT /
+// SetSession would abandon its two background response-drain goroutines,
+// which block in Read forever with no safe way to stop them early (see
+// NewLiveEmulator) — the actual cause of the TUI's multi-GB RSS growth,
+// since Hera's frequent pane rebinds call ResetVT dozens of times a minute.
+// RIS (`ESC c`) plus ClearScrollback reproduces the same blank-slate state a
+// fresh emulator would have, matching the pattern PreviewVT already uses on
+// its own hot path (see previewvt.go's rebuild). Bumping emuGen makes any
+// response already in flight from before this reset get dropped by
+// forwardEmulatorResponse instead of misdelivered to whatever session is
+// current by the time it's drained.
+func (tp *TerminalPane) resetLiveEmulatorInPlace() {
+	if tp.emu == nil {
+		return
+	}
+	tp.emuGen.Add(1)
+	_, _ = SafeEmuWrite(tp.emu, []byte("\x1bc"))
+	tp.emu.ClearScrollback()
 }
 
 // newTrackedReplayEmulatorWithCallback creates a replay emulator with a large

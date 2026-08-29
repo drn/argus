@@ -102,10 +102,15 @@ func (p *PreviewVT) Feed(taskID string, cols, rows int, tail []byte, totalWritte
 		// inconsistent, so drop it — the next Feed creates a fresh one. We do
 		// NOT Close it: SafeEmulator exposes no mutex-guarded Close, and
 		// calling Emulator.Close races the drain goroutine's Read on e.closed
-		// (the -race detector flags it). The orphaned drain goroutine is
-		// bounded to one per emulator panic — rare (upstream x/vt out-of-bounds
-		// bugs) — matching the live pane's leak posture. Steady-state rebuilds
-		// reuse the emulator (see rebuild) so they never leak.
+		// (the -race detector flags it — confirmed via a targeted probe, not
+		// theoretical). The orphaned drain goroutine is bounded to one per
+		// emulator panic — rare (upstream x/vt out-of-bounds bugs). The live
+		// pane's emulator used to leak on this exact pattern far more often
+		// (recreated on every ResetVT/SetSession, not just on a panic) — now
+		// fixed the same way this rebuild already worked: reuse instead of
+		// recreate (see terminalpane.go's resetLiveEmulatorInPlace). Steady-
+		// state rebuilds here reuse the emulator too (see rebuild) so they
+		// never leak.
 		p.emu = nil
 		p.fedTotal = 0
 		return nil, err
