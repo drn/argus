@@ -1569,6 +1569,14 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       <input type="text" id="create-model-custom" placeholder="Model identifier" autocapitalize="none" autocorrect="off" style="display:none;margin-top:6px">
     </div>
     <div class="form-group">
+      <label>Sandbox</label>
+      <select id="create-sandbox">
+        <option value="">Inherit</option>
+        <option value="enabled">Enabled</option>
+        <option value="disabled">Disabled</option>
+      </select>
+    </div>
+    <div class="form-group">
       <label>Name (optional)</label>
       <input type="text" id="create-name" placeholder="Auto-generated from prompt">
     </div>
@@ -5025,6 +5033,8 @@ async function createTask() {
   const backend = document.getElementById('create-backend').value;
   // Empty model = use the backend's configured default model.
   const taskModel = createModelValue();
+  // Empty sandbox override ("") = inherit the project/global setting.
+  const sandboxOverride = document.getElementById('create-sandbox').value;
   if (!project) { showToast('Select a project'); return; }
   if (!prompt && !name && createFiles.length === 0) {
     showToast('Enter a name, prompt, or attach a file');
@@ -5044,18 +5054,20 @@ async function createTask() {
       fd.append('project', project);
       if (backend) fd.append('backend', backend);
       if (taskModel) fd.append('model', taskModel);
+      if (sandboxOverride) fd.append('sandbox_override', sandboxOverride);
       for (const f of createFiles) fd.append('files', f, f.name);
       r = await api('/api/tasks', { method: 'POST', body: fd });
     } else {
       r = await api('/api/tasks', {
         method: 'POST',
-        body: JSON.stringify({ name, prompt, project, backend, model: taskModel })
+        body: JSON.stringify({ name, prompt, project, backend, model: taskModel, sandbox_override: sandboxOverride })
       });
     }
     const data = await r.json();
     if (r.ok) {
       document.getElementById('create-name').value = '';
       document.getElementById('create-prompt').value = '';
+      document.getElementById('create-sandbox').value = '';
       rebuildCreateModelOptions();
       createFiles = [];
       renderCreateFilesList();

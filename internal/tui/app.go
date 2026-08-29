@@ -5112,14 +5112,15 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 		uxlog.Log("[tui] starting create-and-start for task %q in project %q", task.Name, proj)
 		rows, cols := a.computePTYSize()
 		input := agent.CreateInput{
-			Name:       task.Name,
-			Prompt:     task.Prompt,
-			Project:    proj,
-			Backend:    task.Backend,
-			Model:      task.Model,
-			Archetype:  task.Archetype,
-			Profile:    task.Profile,
-			BaseBranch: task.Branch,
+			Name:            task.Name,
+			Prompt:          task.Prompt,
+			Project:         proj,
+			Backend:         task.Backend,
+			Model:           task.Model,
+			Archetype:       task.Archetype,
+			Profile:         task.Profile,
+			BaseBranch:      task.Branch,
+			SandboxOverride: task.SandboxOverride,
 			// Background LLM auto-rename runs ONLY when the user left the name
 			// field blank. A user-supplied name is authoritative and must never
 			// be replaced by an LLM suggestion (auto-naming capability).
@@ -5176,7 +5177,7 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 // host), so fresh-task creation routes through POST /api/tasks instead. Kept
 // as a structural interface so the tui package doesn't import apistore.
 type remoteTaskCreator interface {
-	CreateTask(ctx context.Context, name, prompt, project, backend, taskModel string) (*model.Task, error)
+	CreateTask(ctx context.Context, name, prompt, project, backend, taskModel, sandboxOverride string) (*model.Task, error)
 }
 
 // createTaskTransactional creates a fresh task and returns the resulting row.
@@ -5202,7 +5203,7 @@ func (a *App) createTaskTransactional(input agent.CreateInput) (*model.Task, err
 	// window before the SSE stream attaches server-side.
 	a.startGen.Add(1)
 	defer a.startGen.Add(1)
-	return rc.CreateTask(context.Background(), input.Name, input.Prompt, input.Project, input.Backend, input.Model)
+	return rc.CreateTask(context.Background(), input.Name, input.Prompt, input.Project, input.Backend, input.Model, input.SandboxOverride)
 }
 
 // computePTYSize returns the best available PTY dimensions for the agent

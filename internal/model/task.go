@@ -33,18 +33,26 @@ type Task struct {
 	// Profile is the per-spawn diligence-profile override (add-diligence-profiles).
 	// When non-empty it takes precedence over the project's bound profile during
 	// model resolution. Empty means "use the project's binding".
-	Profile    string    `json:"profile,omitempty"`
-	Worktree   string    `json:"worktree,omitempty"`
-	AgentPID   int       `json:"agent_pid,omitempty"`
-	SessionID  string    `json:"session_id,omitempty"`
-	Sandboxed  bool      `json:"sandboxed,omitempty"`
-	Archived   bool      `json:"archived,omitempty"`
-	Pinned     bool      `json:"pinned,omitempty"`
-	BaseBranch string    `json:"base_branch,omitempty"`
-	Result     string    `json:"result,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	StartedAt  time.Time `json:"started_at,omitempty"`
-	EndedAt    time.Time `json:"ended_at,omitempty"`
+	Profile   string `json:"profile,omitempty"`
+	Worktree  string `json:"worktree,omitempty"`
+	AgentPID  int    `json:"agent_pid,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	// SandboxOverride is an optional per-task tri-state override of the
+	// resolved sandbox setting (add-task-sandbox-override): "" (inherit the
+	// project/global setting, unchanged behavior), "enabled" (force sandboxed
+	// regardless of project/global config), "disabled" (force unsandboxed).
+	// Set once at agent.CreateAndStart spawn time; consulted by
+	// agent.ResolveSandboxConfig, which persists the resolved result on
+	// Sandboxed below — the override itself is never re-derived.
+	SandboxOverride string    `json:"sandbox_override,omitempty"`
+	Sandboxed       bool      `json:"sandboxed,omitempty"`
+	Archived        bool      `json:"archived,omitempty"`
+	Pinned          bool      `json:"pinned,omitempty"`
+	BaseBranch      string    `json:"base_branch,omitempty"`
+	Result          string    `json:"result,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	StartedAt       time.Time `json:"started_at,omitempty"`
+	EndedAt         time.Time `json:"ended_at,omitempty"`
 }
 
 // Elapsed returns the duration since the task was started.

@@ -1277,14 +1277,15 @@ func (d *Daemon) Serve(sockPath string) error {
 		if err != nil {
 			slog.Error("api token error", "err", err)
 		} else {
-			apiSrv := api.New(d.db, d.runner, token, func(name, prompt, project, backend, taskModel string, autoName bool) (*model.Task, error) {
+			apiSrv := api.New(d.db, d.runner, token, func(name, prompt, project, backend, taskModel, sandboxOverride string, autoName bool) (*model.Task, error) {
 				return HeadlessCreateTask(d.db, d.runner, HeadlessInput{
-					Name:     name,
-					Prompt:   prompt,
-					Project:  project,
-					Backend:  backend,
-					Model:    taskModel,
-					AutoName: autoName,
+					Name:            name,
+					Prompt:          prompt,
+					Project:         project,
+					Backend:         backend,
+					Model:           taskModel,
+					AutoName:        autoName,
+					SandboxOverride: sandboxOverride,
 				})
 			}, pushMgr)
 			apiSrv.SetScheduler(sch)

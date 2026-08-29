@@ -45,11 +45,16 @@ var piSessionFileRe = regexp.MustCompile(`_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-
 var opencodeSessionIDRe = regexp.MustCompile(`^ses_[0-9A-Za-z]+$`)
 
 // ResolveSandboxConfig returns the effective sandbox config for a task.
-// Per-project settings are merged on top of the global config:
+// Resolution is three-tiered — global, then project, then task
+// (add-task-sandbox-override) — each tier overriding only the Enabled flag of
+// the one before it:
 //   - project Enabled (non-nil) overrides the global Enabled flag
 //   - project DenyRead paths are appended to the global list
 //   - project ExtraWrite paths are appended to the global list
 //   - project AllowAppleEvents bundle IDs are appended to the global list
+//   - task.SandboxOverride ("enabled"/"disabled"), when set, overrides the
+//     Enabled flag one more time, taking precedence over both project and
+//     global — an empty override leaves the project/global resolution as-is
 func ResolveSandboxConfig(task *model.Task, cfg config.Config) config.SandboxConfig {
 	result := cfg.Sandbox
 	if task.Project != "" {
@@ -61,6 +66,12 @@ func ResolveSandboxConfig(task *model.Task, cfg config.Config) config.SandboxCon
 			result.ExtraWrite = append(append([]string{}, result.ExtraWrite...), proj.Sandbox.ExtraWrite...)
 			result.AllowAppleEvents = append(append([]string{}, result.AllowAppleEvents...), proj.Sandbox.AllowAppleEvents...)
 		}
+	}
+	switch task.SandboxOverride {
+	case "enabled":
+		result.Enabled = true
+	case "disabled":
+		result.Enabled = false
 	}
 	return result
 }

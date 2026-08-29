@@ -34,6 +34,12 @@ type CreateInput struct {
 	Profile    string // optional; per-spawn profile override — overrides the project's bound profile for this one spawn; empty = use project binding
 	BaseBranch string // optional; overrides projCfg.Branch for this task
 
+	// SandboxOverride is an optional per-task tri-state override of the resolved
+	// sandbox setting (add-task-sandbox-override): "" (inherit the project/global
+	// setting), "enabled" (force sandboxed), "disabled" (force unsandboxed).
+	// Consulted by ResolveSandboxConfig ahead of task.Sandboxed resolution below.
+	SandboxOverride string
+
 	// AutoName, when true, fires a fire-and-forget Haiku rename in a
 	// background goroutine after the task is fully created. The DB write
 	// is race-guarded: it only overwrites Name if the row's current Name
@@ -192,17 +198,18 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		backend = cfg.Defaults.Backend
 	}
 	task := &model.Task{
-		Name:       finalName,
-		Status:     model.StatusPending,
-		Project:    input.Project,
-		Prompt:     prompt,
-		Backend:    backend,
-		Model:      strings.TrimSpace(input.Model),
-		Archetype:  strings.TrimSpace(input.Archetype),
-		Profile:    strings.TrimSpace(input.Profile),
-		Worktree:   wtPath,
-		Branch:     branchName,
-		BaseBranch: baseBranch,
+		Name:            finalName,
+		Status:          model.StatusPending,
+		Project:         input.Project,
+		Prompt:          prompt,
+		Backend:         backend,
+		Model:           strings.TrimSpace(input.Model),
+		Archetype:       strings.TrimSpace(input.Archetype),
+		Profile:         strings.TrimSpace(input.Profile),
+		Worktree:        wtPath,
+		Branch:          branchName,
+		BaseBranch:      baseBranch,
+		SandboxOverride: strings.TrimSpace(input.SandboxOverride),
 	}
 	// Persist sandbox state at creation time so the display reflects the
 	// setting active when the task was launched, not the current setting.
