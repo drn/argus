@@ -626,6 +626,24 @@ func TestUvCellToTcellStyle_UnderlineColor(t *testing.T) {
 	}
 }
 
+func TestUvCellToTcellStyle_Hyperlink(t *testing.T) {
+	cell := &uv.Cell{
+		Content: "L",
+		Width:   1,
+		Style:   uv.Style{},
+		Link:    uv.Link{URL: "https://example.com"},
+	}
+	st := uvCellToTcellStyle(cell)
+	want := tcell.StyleDefault.Url("https://example.com")
+	testutil.Equal(t, st, want)
+}
+
+func TestUvCellToTcellStyle_NoLinkLeavesUrlUnset(t *testing.T) {
+	cell := &uv.Cell{Content: "x", Width: 1}
+	st := uvCellToTcellStyle(cell)
+	testutil.Equal(t, st, tcell.StyleDefault)
+}
+
 func TestUvColorToTcell_Cases(t *testing.T) {
 	cases := []struct {
 		name string
