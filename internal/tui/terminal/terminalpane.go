@@ -990,43 +990,147 @@ func readLogTailForTask(taskID string, size int64) ([]byte, int64) {
 // bounded by the same constant, so this introduces no new worst case.
 const logRangeCatchUpMaxBytes = liveRebuildHistorySize
 
-// readLogRangeForTask reads the EXACT byte range [offset, offset+length) from
-// a session log file. Because readLoop writes the ring buffer and the log
-// file from the same `data` slice in the same iteration (see Session.readLoop
-// in internal/agent/session.go), a TerminalPane's emuFedTotal — a count of
-// bytes already fed from the ring — is in the identical coordinate space as
-// the log file's byte offsets. That makes an exact, lossless incremental
-// catch-up possible whenever the ring buffer has evicted bytes before the
-// pane could consume them (the pane's Draw wasn't called for a while — e.g.
-// the user was viewing a different task — while the agent produced more than
-// the ring's 256KB capacity of output).
+// minLogAnchorBytes is the shortest ring tail that may be used as a content
+// anchor against a session log. The anchor search always takes the LAST
+// occurrence within a window that ends at the log's own end, and the true
+// anchor sits at (or within a few in-flight bytes of) that end, so an earlier
+// repeat of the same content can never win. The minimum only rules out the
+// degenerate case of a tail so short that it could coincide with the handful
+// of bytes the log may hold beyond the ring's head.
+const minLogAnchorBytes = 64
+
+// anchorRingInLog locates a session handle's ring tail inside a tail of that
+// session's on-disk log, WITHOUT relying on the handle's byte counter lining
+// up with the log's byte offsets.
 //
-// Returns ok=false (nil bytes) when the exact range isn't available on disk
-// — missing log, a length beyond logRangeCatchUpMaxBytes, or a file shorter
-// than the requested range (external truncation, a prune race, or a log
-// predating this code path) — so the caller can fall back to the existing
+// That alignment holds only for an in-process agent.Session, whose readLoop
+// writes the ring buffer and the log file from the same slice in the same
+// iteration. It does NOT hold for daemon/client.RemoteSession — the handle the
+// TUI actually uses in normal daemon-connected operation. A client's stream
+// attach sends Since: 0 and Session.AddWriterFromTolerant replays at most the
+// daemon's own 256KB ring, never the session from byte 0, so the client's
+// total starts near zero while the log holds the full history. Measured on a
+// live TUI the skew between the two counters ran from -1.8MB to +3.4MB across
+// concurrently-bound tasks. Anchoring on CONTENT is coordinate-space-agnostic:
+// it is exact in both modes and degrades to "not found" instead of silently
+// addressing the wrong region.
+//
+// Returns `end`, the index one past the log byte corresponding to the ring
+// tail's LAST byte (i.e. where the ring's head sits in the log), and
+// `covered`, how many of the ring tail's leading bytes the log already holds.
+// Two shapes are recognised:
+//
+//   - the log holds the ring tail in FULL — the normal case, and always the
+//     case for a daemon-backed handle since the log is written upstream of the
+//     client's stream: covered == len(ringTail).
+//   - the log holds only a LEADING part of it, because readLoop's log write
+//     momentarily lags its ring write: end == len(logTail) and covered < len.
+//
+// ok is false when no overlap can be established at all; callers must then
+// fall back rather than splice two unrelated byte ranges together.
+func anchorRingInLog(logTail, ringTail []byte) (end, covered int, ok bool) {
+	if len(logTail) == 0 || len(ringTail) == 0 {
+		return 0, 0, false
+	}
+	// 1. The log ends exactly at the ring's head. End-anchored, so there is no
+	//    search to get wrong, and it is the overwhelmingly common shape for an
+	//    in-process agent.Session (readLoop writes both from one slice).
+	if bytes.HasSuffix(logTail, ringTail) {
+		return len(logTail), len(ringTail), true
+	}
+	if len(ringTail) < minLogAnchorBytes {
+		// Nothing below is trustworthy for a tail this short. A containment
+		// search would false-match, and a partial overlap of a byte or two is
+		// as likely to be coincidence (a shared trailing newline) as a real
+		// seam — acting on a bogus 1-byte overlap would duplicate nearly the
+		// whole ring tail. Fail closed; the caller falls back.
+		return 0, 0, false
+	}
+	// 2. The log runs AHEAD of the ring head. Routine for a daemon-backed
+	//    handle, whose log is written upstream of the client's stream, so the
+	//    log routinely holds bytes the client has not received yet. Search a
+	//    bounded suffix window (2x the ring tail always contains a full match
+	//    plus slack) for the whole ring tail — a 64KB+ needle of real PTY
+	//    output cannot plausibly false-match, and the LAST occurrence wins.
+	base := 0
+	if w := 2 * len(ringTail); len(logTail) > w {
+		base = len(logTail) - w
+	}
+	if i := bytes.LastIndex(logTail[base:], ringTail); i >= 0 {
+		return base + i + len(ringTail), len(ringTail), true
+	}
+	// 3. The log ends PART-WAY through the ring tail, because readLoop's log
+	//    write momentarily lagged its ring write. Walk candidate overlaps from
+	//    the LONGEST down — longest-first matters for repetitive output
+	//    (spinner frames, repeated status bars), where a shorter, wrongly
+	//    phased overlap also verifies but would duplicate bytes. Bounded by
+	//    maxPartialOverlapScan so a 256KB ring tail cannot make this
+	//    quadratic; a longer genuine lag falls through to the caller's
+	//    ring-only path, which covers those bytes anyway.
+	maxK := min(len(logTail), len(ringTail)-1)
+	if maxK > maxPartialOverlapScan {
+		maxK = maxPartialOverlapScan
+	}
+	for k := maxK; k >= minLogAnchorBytes; k-- {
+		if bytes.HasSuffix(logTail, ringTail[:k]) {
+			return len(logTail), k, true
+		}
+	}
+	return 0, 0, false
+}
+
+// maxPartialOverlapScan bounds the longest-first overlap walk in
+// anchorRingInLog's step 3. The walk is O(k^2) in the worst case, so it must
+// not be handed a 256KB ring tail on the Draw path. Anything beyond this is a
+// log lagging its ring by kilobytes, which is already the pathological case
+// (BUG-076) — and there the ring alone is the complete, contiguous source, so
+// falling through costs nothing but deep scrollback for one frame.
+const maxPartialOverlapScan = 1024
+
+// readLogGapEndingAt reads the `length` bytes of taskID's session log that end
+// exactly where `ringTail`'s content ends — that is, the caller's missed delta
+// [emuFedTotal, totalWritten) expressed in the LOG's byte offsets rather than
+// the session handle's.
+//
+// This is the ring-wrap catch-up read (BUG-073): whenever the ring buffer has
+// evicted bytes before the pane could consume them (the pane's Draw wasn't
+// called for a while — a Hera pane hidden by the fullscreen toggle, or the
+// user on another tab — while the agent produced more than the ring's 256KB
+// capacity), the exact missing range is recovered from the append-only log and
+// fed into the EXISTING emulator, instead of discarding it and rebuilding from
+// an approximate 8MB window (BUG-068's failure mode).
+//
+// It anchors on the ring tail's content rather than trusting emuFedTotal as a
+// file offset — see anchorRingInLog for why those are different coordinate
+// spaces for a daemon-backed handle, and what feeding the wrong region looks
+// like on screen.
+//
+// Returns ok=false (nil bytes) when the range can't be established — no log,
+// a window beyond logRangeCatchUpMaxBytes, a ring tail too short to anchor, a
+// log that doesn't hold the ring tail in full (a lagging log write), or a log
+// shorter than the requested range — so the caller falls back to the existing
 // approximate tail rebuild.
-func readLogRangeForTask(taskID string, offset, length int64) ([]byte, bool) {
-	if length <= 0 || offset < 0 || length > logRangeCatchUpMaxBytes {
+func readLogGapEndingAt(taskID string, ringTail []byte, length int64) ([]byte, bool) {
+	if length <= 0 || len(ringTail) < minLogAnchorBytes || int64(len(ringTail)) >= length {
 		return nil, false
 	}
-	logPath := agent.SessionLogPath(taskID)
-	f, err := os.Open(logPath)
-	if err != nil {
+	// The needed range ends at the ring head and spans `length` bytes back;
+	// reading one extra ring-tail's worth guarantees the anchor itself is
+	// inside the window even when the log runs slightly ahead of the ring.
+	window := length + int64(len(ringTail))
+	if window > logRangeCatchUpMaxBytes {
 		return nil, false
 	}
-	defer f.Close()
-
-	fi, err := f.Stat()
-	if err != nil || fi.Size() < offset+length {
+	buf, _ := readLogTailForTask(taskID, window)
+	end, covered, ok := anchorRingInLog(buf, ringTail)
+	if !ok || covered != len(ringTail) {
 		return nil, false
 	}
-
-	buf := make([]byte, length)
-	if _, err := f.ReadAt(buf, offset); err != nil {
+	start := end - int(length)
+	if start < 0 {
 		return nil, false
 	}
-	return buf, true
+	return buf[start:end], true
 }
 
 // scrollExtendChunk is how much further back a ceiling-hit rebuild reads
@@ -1197,84 +1301,88 @@ func readLiveRebuildHistory(sess agentview.TerminalAdapter, taskID string) (raw 
 		return nil, 0
 	}
 	var logRaw []byte
-	var logSize int64
 	if taskID != "" {
-		logRaw, logSize = readLogTailForTask(taskID, liveRebuildHistorySize)
+		logRaw, _ = readLogTailForTask(taskID, liveRebuildHistorySize)
 	}
 	if len(logRaw) == 0 {
-		// No log — fall back to ring buffer only. RecentOutputTailWithTotal
+		// No log — fall back to the ring buffer only. StartSession discards
+		// its os.OpenFile error, so a transient disk/permissions hiccup at
+		// session start disables logging for that session's whole lifetime
+		// with no operator-visible signal. RecentOutputTailWithTotal
 		// snapshots (bytes, total) atomically; using RecentOutput() + a
 		// separate TotalWritten() call leaves a window where readLoop
 		// advances total past the bytes we sampled.
-		ring, ringTotal := sess.RecentOutputTailWithTotal(256 * 1024)
-		if ringTotal > uint64(len(ring)) && bytes.IndexByte(ring, 0x1B) < 0 {
-			// The ring has evicted everything before its own capacity, so
-			// this tail is an ARBITRARY cut — unlike a from-the-start read,
-			// nothing guarantees it begins at a clean escape boundary.
-			// AlignToEscBoundary's caller-side realignment only fixes a
-			// buffer whose start is mid-sequence IF some LATER byte in the
-			// same buffer is a fresh ESC to skip forward to; when the whole
-			// tail happens to be short and contains no ESC at all (e.g. it
-			// is entirely the orphaned parameter tail of one truecolor SGR
-			// sequence whose leading ESC fell just before this window's
-			// start — "38;2;230;149;117mCoalescing…" with no ESC anywhere),
-			// AlignToEscBoundary's "no ESC found -> likely plain text, safe
-			// to feed" fallback is wrong: x/vt parses the orphaned params
-			// and trailing text as literal ground characters instead of a
-			// color change (the escape-leak bug — see gotchas/pty-terminal.md).
-			// Treat this the same as "no history yet": the caller's existing
-			// len(history)==0 handling shows the placeholder (first attach)
-			// or leaves prior content on screen without advancing
-			// emuFedTotal, and the very next Draw retries via the ordinary
-			// ring-wrap/incremental catch-up once more of the stream is
-			// available to realign against. A log-backed read never reaches
-			// this branch: any TUI agent's realistic escape density makes a
-			// multi-KB-or-larger window with zero ESC bytes anywhere
-			// implausible, so this stays scoped to the truly ambiguous case.
-			return nil, 0
-		}
-		return ring, ringTotal
+		return ringOnlyRebuildHistory(sess.RecentOutputTailWithTotal(256 * 1024))
 	}
 	ringTail, ringTotal := sess.RecentOutputTailWithTotal(256 * 1024)
-	// ringTotal is monotonic and bounded by realistic session sizes (an
-	// agent producing 8EiB of output before we attach is not a real case);
-	// gosec G115 flags the conversion but the cast is safe and we want
-	// signed arithmetic for the overflow subtraction below.
-	overflow := int64(ringTotal) - logSize //nolint:gosec // see comment
-	if overflow <= 0 {
-		// Log already covers up to ringTotal (or further — readLoop wrote
-		// to the log between our two reads). Either way, the log slice
-		// alone gives the emulator a consistent view of bytes [start,
-		// ringTotal]; record emuFedTotal = ringTotal so the next
-		// incremental feed picks up new bytes only.
+	if len(ringTail) < minLogAnchorBytes {
+		// Too little ring content to anchor against, which in practice means
+		// a brand-new session whose log is equally short. The log is the
+		// richer source and nothing is appended to it, so there is nothing to
+		// mis-splice; record the handle's own total.
 		return logRaw, ringTotal
 	}
-	overflowInt := int(overflow)
-	if overflowInt > len(ringTail) {
-		// Log lags ring by more than the ring's capacity — should not
-		// happen under normal operation (readLoop flushes log writes
-		// chunk-by-chunk), but a heavy output burst can outpace a
-		// momentarily-slow disk write (BUG-076). The bytes
-		// [logSize, ringTotal-len(ringTail)) are genuinely unrecoverable
-		// from either source right now — clamping overflowInt and
-		// concatenating logRaw directly with ringTail's overflow tail
-		// anyway (the old behavior) would splice two NON-contiguous byte
-		// ranges together with no realignment, corrupting whatever
-		// content or escape sequence straddles the gap (unexplained
-		// missing characters/words, garbled symbols at the seam). Return
-		// just the log-covered prefix and ITS total (logSize, not
-		// ringTotal): the caller records this as emuFedTotal, so
-		// understating it defers the unrecoverable range to the next
-		// Draw's ring-wrap check, which naturally retries the exact
-		// catch-up (readLogRangeForTask) once the log has had a chance to
-		// catch up — never silently losing or mis-splicing content.
-		return logRaw, uint64(logSize) //nolint:gosec // logSize is a file size, always non-negative
+	// Reconcile the two sources by CONTENT, never by comparing ringTotal to
+	// logSize: those counters share a coordinate space only for an in-process
+	// agent.Session. For the daemon-backed handle the TUI normally uses they
+	// are offset by megabytes in either direction, and the subtraction this
+	// replaced would then splice a ring suffix onto the log tail as if the two
+	// were adjacent, or record a FILE SIZE as a ring-space emuFedTotal. See
+	// anchorRingInLog.
+	end, covered, ok := anchorRingInLog(logRaw, ringTail)
+	switch {
+	case !ok:
+		// The log and the ring cannot be reconciled at all (e.g. a restart
+		// truncated the log while a cached client handle kept counting, so
+		// the ring still holds the previous incarnation's bytes). The ring is
+		// internally contiguous and IS in the caller's coordinate space, so
+		// it is the safe source — 256KB of history instead of 8MB, but never
+		// a splice of two unrelated ranges. Self-heals: once the session has
+		// produced a ring's worth of fresh output the anchor matches again.
+		return ringOnlyRebuildHistory(ringTail, ringTotal)
+	case covered == len(ringTail):
+		// The log covers the ring tail in full. Trim to the ring's head so
+		// the caller's emuFedTotal = ringTotal is EXACT: a log that ran a few
+		// bytes ahead would otherwise be fed here and then re-fed by the next
+		// incremental delta.
+		return logRaw[:end], ringTotal
+	default:
+		// The log holds only a leading part of the ring tail because
+		// readLoop's log write lagged its ring write (rare; a heavy output
+		// burst outpacing a momentarily-slow disk). Appending the uncovered
+		// remainder is safe here precisely because anchorRingInLog verified
+		// the overlap byte-for-byte — this is the contiguity BUG-076's
+		// arithmetic could not check.
+		out := make([]byte, 0, len(logRaw)+len(ringTail)-covered)
+		out = append(out, logRaw...)
+		out = append(out, ringTail[covered:]...)
+		return out, ringTotal
 	}
-	extra := ringTail[len(ringTail)-overflowInt:]
-	out := make([]byte, 0, len(logRaw)+len(extra))
-	out = append(out, logRaw...)
-	out = append(out, extra...)
-	return out, ringTotal
+}
+
+// ringOnlyRebuildHistory is the rebuild source when the on-disk log is absent
+// or cannot be reconciled with the ring. It guards the one case where a ring
+// tail is NOT safe to feed into a fresh emulator (BUG-079): once ringTotal
+// exceeds the ring's own capacity the tail is an ARBITRARY cut, so nothing
+// guarantees it begins at a clean escape boundary. AlignToEscBoundary's
+// caller-side realignment only helps if some LATER byte in the same buffer is
+// a fresh ESC to skip forward to; when the whole tail contains no ESC at all
+// (e.g. it is entirely the orphaned parameter tail of one truecolor SGR
+// sequence whose leading ESC fell just before this window's start —
+// "38;2;230;149;117mCoalescing…" with no ESC anywhere), its "no ESC found ->
+// likely plain text, safe to feed" fallback is wrong and x/vt renders the
+// orphaned params as literal ground characters.
+//
+// Returning (nil, 0) there routes the caller into its existing
+// len(history)==0 handling: show the placeholder on a first attach, or leave
+// prior content alone without advancing emuFedTotal, and the very next Draw
+// retries via the ordinary ring-wrap/incremental catch-up once more of the
+// stream is available to realign against.
+func ringOnlyRebuildHistory(ring []byte, ringTotal uint64) ([]byte, uint64) {
+	if ringTotal > uint64(len(ring)) && bytes.IndexByte(ring, 0x1B) < 0 {
+		return nil, 0
+	}
+	return ring, ringTotal
 }
 
 // InputHandler intercepts Enter when no live session is attached so a focused
@@ -2058,12 +2166,15 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 			// contiguous with what the emulator already parsed, so — like
 			// the ordinary incremental feed below — it needs no ESC
 			// realignment and no oscStrip reset.
-			// emuFedTotal/newBytes are monotonic and bounded by realistic
-			// session sizes (an agent producing 8EiB of output is not a real
-			// case); gosec G115 flags the uint64->int64 conversion but the
-			// casts are safe, matching readLiveRebuildHistory's overflow calc
-			// above.
-			if gap, ok := readLogRangeForTask(tp.taskID, int64(tp.emuFedTotal), int64(newBytes)); ok { //nolint:gosec // see comment
+			// The range is located by ANCHORING on `raw` (the ring tail we
+			// already hold) rather than by treating emuFedTotal as a log
+			// offset — those are the same number only for an in-process
+			// agent.Session, never for the daemon-backed handle the TUI
+			// normally runs against. See readLogGapEndingAt/anchorRingInLog.
+			// newBytes is monotonic and bounded by realistic session sizes (an
+			// agent producing 8EiB of output is not a real case); gosec G115
+			// flags the uint64->int64 conversion but the cast is safe.
+			if gap, ok := readLogGapEndingAt(tp.taskID, raw, int64(newBytes)); ok { //nolint:gosec // see comment
 				_, _ = SafeEmuWrite(tp.emu, tp.oscStrip.filter(gap))
 				tp.emuFedTotal = totalWritten
 				fullReplay = false
