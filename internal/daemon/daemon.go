@@ -37,6 +37,7 @@ import (
 	"github.com/drn/argus/internal/notify"
 	"github.com/drn/argus/internal/push"
 	"github.com/drn/argus/internal/scheduler"
+	"github.com/drn/argus/internal/skills"
 
 	// Blank-imported for its init() side effect: registers the "things3"
 	// factory with internal/todo so cfg.Todo.Backend = "things3" resolves.
@@ -1255,7 +1256,13 @@ func (d *Daemon) Serve(sockPath string) error {
 				} else {
 					slog.Info("inject codex", "port", actualPort)
 				}
-				if err := injectopencode.InjectGlobal(actualPort); err != nil {
+				var opencodeSkillsDir string
+				if root, err := skills.EnsureBuiltinSkills(); err != nil {
+					slog.Error("materialize builtin skills for opencode", "err", err)
+				} else if root != "" {
+					opencodeSkillsDir = skills.BuiltinSkillsDir(root)
+				}
+				if err := injectopencode.InjectGlobal(actualPort, opencodeSkillsDir); err != nil {
 					slog.Error("inject opencode", "err", err)
 				} else {
 					slog.Info("inject opencode", "port", actualPort)
