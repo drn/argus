@@ -1,29 +1,39 @@
 ## ADDED Requirements
 
-### Requirement: Plain-text skill catalog for prompt embedding
+### Requirement: Codex vendor-scoped builtin skill materialization
 
-The system SHALL provide a function that renders a skill catalog as plain text suitable for direct embedding in a prompt: one entry per skill, each carrying the skill's name and its one-line frontmatter description, reusing the existing `SkillItem` data rather than introducing a second metadata format or a second frontmatter parse path. When the input skill set is empty, the function SHALL produce output that its caller can omit cleanly (e.g. an empty string), not a "no skills found" placeholder line.
+The system SHALL materialize the same embedded builtin skill bodies used for the Claude-targeted `~/.argus/skills/.claude/skills/` workspace to Codex's own first-party installed-skills directory, `$CODEX_HOME/skills/<name>/SKILL.md` (respecting the `CODEX_HOME` environment variable when set, defaulting to `~/.codex/skills/`), so that Codex's native `SKILL.md` discovery finds argus's builtin skills without any per-backend integration code in Codex itself. This target SHALL be distinct from Codex's own bundled `$CODEX_HOME/skills/.system/` content and from the generic cross-tool `.agents/skills` convention, to bound the exposure of argus's builtin skills to Codex sessions specifically rather than any tool implementing the broader convention. Materialization SHALL be idempotent (rewrite a file only when its content differs from what is already on disk) and SHALL remove materialized skill directories under this target that no longer correspond to an embedded skill, mirroring the existing Claude-targeted materialization's behavior. This materialization SHALL be inert (no filesystem writes, no error) when running inside a Go test binary, mirroring the existing Claude-targeted materialization.
 
-#### Scenario: Catalog renders name and description per skill
+#### Scenario: Embedded skills materialized to the Codex-scoped path
 
-- **WHEN** the catalog is rendered from a non-empty set of `SkillItem` values
-- **THEN** the output contains one entry per skill showing that skill's name and one-line description, and does not include any skill's full `SKILL.md` body
+- **WHEN** the Codex-scoped materialization runs
+- **THEN** every embedded builtin skill's `SKILL.md` (and any accompanying files) appears under `$CODEX_HOME/skills/<name>/` (outside `.system/`), matching the embedded source content
 
-#### Scenario: Empty skill set produces omittable output
+#### Scenario: Stale skill directories removed
 
-- **WHEN** the catalog is rendered from an empty set of `SkillItem` values
-- **THEN** the output allows the caller to omit the skill catalog section entirely, rather than emitting a placeholder entry
+- **WHEN** the Codex-scoped materialization runs and a directory exists under `$CODEX_HOME/skills/` (outside `.system/`) whose name does not correspond to any currently-embedded skill
+- **THEN** that directory is removed
 
-### Requirement: Full skill body lookup by name
+#### Scenario: Materialization is inert during automated tests
 
-The system SHALL provide a function that resolves a single skill's full `SKILL.md` body content given the exact name it was exposed under in the catalog, searching the same sources the catalog was built from (builtin skills at minimum). Resolving a name that does not match any known skill SHALL return a distinct not-found outcome rather than an empty body.
+- **WHEN** the Codex-scoped materialization runs inside a Go test binary
+- **THEN** it performs no filesystem writes under `$CODEX_HOME/skills/` and returns no error
 
-#### Scenario: Known skill name resolves to its full body
+### Requirement: opencode skills-path config injection
 
-- **WHEN** the lookup is called with a name matching a catalog entry
-- **THEN** the result is that skill's full `SKILL.md` body content
+The system SHALL ensure opencode's own configuration names Argus's managed skills workspace as an additional skill-discovery location, via opencode's documented `skills` config array, so that opencode's native skill discovery finds argus's builtin skills without relying on the generic cross-tool `.agents/skills` convention. This SHALL be implemented as an idempotent addition to the same configuration file the existing `mcp.argus` entry is injected into (`~/.config/opencode/opencode.json`): the entry SHALL be added only when not already present, and all unrelated keys — including other `skills` array entries a user or another tool has added — SHALL be preserved.
 
-#### Scenario: Unknown skill name is reported distinctly
+#### Scenario: Skills path entry added when absent
 
-- **WHEN** the lookup is called with a name that does not match any catalog entry
-- **THEN** the result is a distinct not-found outcome, not an empty body and not a generic error indistinguishable from other failures
+- **WHEN** injection runs against an opencode config whose `skills` array does not already name Argus's managed skills workspace
+- **THEN** the workspace path is appended to the `skills` array without removing any existing entries
+
+#### Scenario: Idempotent on repeat
+
+- **WHEN** injection runs twice
+- **THEN** the second run does not duplicate the entry or otherwise rewrite the file
+
+#### Scenario: Unrelated config preserved
+
+- **WHEN** the opencode config already contains other `skills` entries, an `mcp.argus` entry, and unrelated top-level keys
+- **THEN** all of them are preserved after the new `skills` entry is added
