@@ -2918,6 +2918,40 @@ func TestUvCellToTcellStyle_Hyperlink(t *testing.T) {
 	_ = UvCellToTcellStyle(cell)
 }
 
+// TestOSC8HyperlinkWithIDParam_RealWireFormat drives x/vt's own parser with
+// the raw OSC-8 byte sequence Claude Code actually emits for a PR reference
+// (an "id=" param ahead of the URL), rather than hand-building a uv.Cell.
+// x/vt < charmbracelet/x/vt#868 swapped the split: Link.URL received the
+// "id=..." params segment and Link.Params received the real URL, so the
+// text rendered styled but the tcell hyperlink target was garbage. Feeding
+// real bytes through the emulator is the only way to catch that class of
+// bug — a hand-built uv.Cell{Link: uv.Link{URL: ...}} can't exercise the
+// parser at all.
+func TestOSC8HyperlinkWithIDParam_RealWireFormat(t *testing.T) {
+	emu := xvt.NewSafeEmulator(80, 5)
+	const url = "https://github.com/drn/argus/pull/960"
+	seq := "\x1b]8;id=1vaggxp;" + url + "\x07#960\x1b]8;;\x07"
+	if _, err := SafeEmuWrite(emu, []byte(seq)); err != nil {
+		t.Fatalf("SafeEmuWrite: %v", err)
+	}
+
+	cell := emu.CellAt(0, 0)
+	if cell == nil {
+		t.Fatal("cell at (0,0) is nil")
+	}
+	if cell.Link.URL != url {
+		t.Errorf("Link.URL = %q, want %q (real URL) — id= param leaked into URL field", cell.Link.URL, url)
+	}
+	if cell.Link.Params != "id=1vaggxp" {
+		t.Errorf("Link.Params = %q, want %q", cell.Link.Params, "id=1vaggxp")
+	}
+
+	style := UvCellToTcellStyle(cell)
+	if style == tcell.StyleDefault {
+		t.Error("expected a non-default style carrying the hyperlink for a linked cell")
+	}
+}
+
 // ---------- Scrollback pipeline defects ----------
 
 // TestAlignToEscBoundary verifies defect 4: ring/log tail bytes that begin
