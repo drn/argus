@@ -93,7 +93,10 @@ func ResolveCacheDirs(task *model.Task, cfg config.Config) map[string]string {
 // isValidCacheSubdir rejects a cache_dirs subdir value that is empty,
 // absolute, or escapes db.DataDir()/cache via a ".." path segment — a
 // config.toml entry the user typo'd or (in principle) crafted maliciously
-// should never redirect a cache dir outside the argus cache root.
+// should never redirect a cache dir outside the argus cache root. Splits on
+// filepath.Separator ("/" on the only two OSes argus targets, per
+// sandbox.go's macOS-specific SBPL code), so this is a Unix-path guarantee,
+// not a cross-platform one.
 func isValidCacheSubdir(subdir string) bool {
 	if subdir == "" || filepath.IsAbs(subdir) {
 		return false

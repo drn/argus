@@ -955,6 +955,56 @@ func TestBuildCmd_SkipsInvalidCacheDirsEntry(t *testing.T) {
 	}
 }
 
+// TestBuildCmd_SkipsCacheDirsEntryWithEmptyTarget confirms an empty target
+// name (reachable via a quoted empty TOML key, `"" = "dir"`) is skipped
+// rather than emitting a malformed `=<dir>` entry into cmd.Env.
+func TestBuildCmd_SkipsCacheDirsEntryWithEmptyTarget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg := testConfig()
+	cfg.CacheDirs = map[string]string{"": "some-dir"}
+	task := &model.Task{ID: "task-id-cache-empty-target", Name: "x", Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, kv := range cmd.Env {
+		if strings.HasPrefix(kv, "=") {
+			t.Fatalf("did not expect a malformed empty-target entry, got %v", cmd.Env)
+		}
+	}
+}
+
+// TestBuildCmd_SkipsCacheDirsEntryWithEqualsInTarget confirms a target
+// containing "=" (reachable via a quoted TOML key, `"FOO=BAR" = "dir"`) is
+// skipped rather than emitting a cmd.Env entry with an embedded "=" that
+// would corrupt env-var parsing (e.g. `FOO=BAR=<dir>`).
+func TestBuildCmd_SkipsCacheDirsEntryWithEqualsInTarget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg := testConfig()
+	cfg.CacheDirs = map[string]string{"FOO=BAR": "some-dir"}
+	task := &model.Task{ID: "task-id-cache-equals-target", Name: "x", Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, kv := range cmd.Env {
+		if strings.HasPrefix(kv, "FOO=BAR") {
+			t.Fatalf("did not expect a malformed FOO=BAR-prefixed entry, got %v", cmd.Env)
+		}
+	}
+	if _, statErr := os.Stat(filepath.Join(db.DataDir(), "cache", "some-dir")); statErr == nil {
+		t.Fatal("expected no directory to be created for a skipped invalid-target entry")
+	}
+}
+
 func TestBuildCmd_CodexResumeWithSessionID(t *testing.T) {
 	cfg := testConfig()
 	task := &model.Task{
