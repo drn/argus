@@ -722,6 +722,20 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		}
 	}
 
+	// Make argus's own builtin skills available to Codex by materializing them
+	// to Codex's own first-party installed-skills directory ($CODEX_HOME/skills)
+	// — Codex's native skill discovery finds them from there with no flag
+	// needed, unlike Claude's --add-dir. opencode's equivalent is a config-file
+	// entry injected once at daemon startup (internal/inject/opencode), not
+	// per-spawn, so nothing happens here for opencode. Materialization failure
+	// is logged and skipped rather than blocking launch. See
+	// openspec/changes/add-nonclaude-context-parity/design.md Decision 2.
+	if isCodex {
+		if _, err := skills.EnsureCodexSkills(); err != nil {
+			uxlog.Log("[skills] codex builtin skills materialize failed (continuing without them): %v", err)
+		}
+	}
+
 	if resume {
 		// Codex resumes by replacing the base command unconditionally — that's
 		// codex's contract and TestBuildCmd_Resume pins it. Claude and pi only
@@ -751,19 +765,24 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 			cmdStr += " --session-id " + shellQuote(task.SessionID)
 		}
 		if task.Prompt != "" {
+			// Prepend CLAUDE.md/routing context for non-Claude backends that
+			// have no native equivalent of Claude's --add-dir/
+			// --append-system-prompt-file. See
+			// openspec/changes/add-nonclaude-context-parity/design.md.
+			prompt := nonClaudeContextPrefix(isCodex, isOpencode, task.Worktree) + task.Prompt
 			switch {
 			case backend.PromptFlag != "":
-				cmdStr += " " + backend.PromptFlag + " " + shellQuote(task.Prompt)
+				cmdStr += " " + backend.PromptFlag + " " + shellQuote(prompt)
 			case isPi:
 				// Pi's argv parser does not honor "--" as end-of-flags; pass the
 				// prompt as a positional argument. Prompts beginning with "-" or
 				// "@" trigger pi's flag/file-include parsing (the @ behavior is
 				// pi's documented file-inclusion feature, not a bug).
-				cmdStr += " " + shellQuote(task.Prompt)
+				cmdStr += " " + shellQuote(prompt)
 			default:
 				// Use -- to separate options from the prompt argument.
 				// Without this, prompts starting with "-" are parsed as CLI flags.
-				cmdStr += " -- " + shellQuote(task.Prompt)
+				cmdStr += " -- " + shellQuote(prompt)
 			}
 		}
 	}

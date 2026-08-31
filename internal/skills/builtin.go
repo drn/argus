@@ -64,9 +64,60 @@ func EnsureBuiltinSkills() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("no home dir: %w", err)
 	}
-	dataDir := filepath.Join(home, ".argus")
-	workspaceRoot := filepath.Join(dataDir, managedSkillsWorkspace)
-	skillsDir := filepath.Join(workspaceRoot, ".claude", "skills")
+	workspaceRoot := filepath.Join(home, ".argus", managedSkillsWorkspace)
+	if _, err := materializeBuiltinSkillsInto(BuiltinSkillsDir(workspaceRoot)); err != nil {
+		return "", err
+	}
+	return workspaceRoot, nil
+}
+
+// BuiltinSkillsDir returns the directory containing materialized skill bodies
+// (<name>/SKILL.md) given the workspace root EnsureBuiltinSkills returns.
+// Distinct from the workspace root itself: Claude's --add-dir points at the
+// root (so Claude Code's own .claude/skills/ auto-discovery kicks in), while
+// a caller that scans a directory of <name>/SKILL.md subdirectories directly
+// (opencode's `skills` config array) needs this deeper path.
+func BuiltinSkillsDir(workspaceRoot string) string {
+	return filepath.Join(workspaceRoot, ".claude", "skills")
+}
+
+// EnsureCodexSkills materializes the same embedded builtin skill bodies to
+// Codex's own first-party installed-skills directory ($CODEX_HOME/skills,
+// defaulting to ~/.codex/skills when CODEX_HOME is unset), outside the
+// .system/ subtree Codex reserves for its own bundled skills. This is
+// deliberately narrower than the generic cross-tool `.agents/skills`
+// convention (visible to any tool implementing that convention, not just
+// Codex) — see openspec/changes/add-nonclaude-context-parity/design.md
+// Decision 2. Idempotent and inert (no filesystem writes, no error) when
+// running inside a Go test binary, mirroring EnsureBuiltinSkills.
+func EnsureCodexSkills() (string, error) {
+	if isTestBinary() {
+		return "", nil
+	}
+	return ensureCodexSkills()
+}
+
+// ensureCodexSkills is the untested-for-isTestBinary core of EnsureCodexSkills,
+// split out so tests can exercise the real materialization logic directly
+// (EnsureCodexSkills always short-circuits under `go test`).
+func ensureCodexSkills() (string, error) {
+	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
+	if codexHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("no home dir: %w", err)
+		}
+		codexHome = filepath.Join(home, ".codex")
+	}
+	return materializeBuiltinSkillsInto(filepath.Join(codexHome, "skills"))
+}
+
+// materializeBuiltinSkillsInto writes every embedded builtin skill's files
+// into skillsDir/<name>/, idempotently (rewriting a file only when its
+// content differs from what's already on disk), and removes any directory
+// under skillsDir that no longer corresponds to an embedded skill. Returns
+// skillsDir on success.
+func materializeBuiltinSkillsInto(skillsDir string) (string, error) {
 	if err := os.MkdirAll(skillsDir, 0755); err != nil {
 		return "", fmt.Errorf("create skills dir: %w", err)
 	}
@@ -106,7 +157,7 @@ func EnsureBuiltinSkills() (string, error) {
 			_ = os.RemoveAll(filepath.Join(skillsDir, d.Name()))
 		}
 	}
-	return workspaceRoot, nil
+	return skillsDir, nil
 }
 
 // atomicWriteIfDifferent writes data to path only if the current file content
