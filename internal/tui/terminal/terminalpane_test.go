@@ -477,6 +477,75 @@ func TestTerminalPane_SetSession_DoesNotLeakEmulatorGoroutines(t *testing.T) {
 	}
 }
 
+// TestTerminalPane_RetireReplayEmulator_ReusesSpare pins the spare-slot
+// mechanism directly: retiring a published replay emulator moves it into
+// replayEmuSpare (not nil, not a fresh object), and the next
+// acquireReplayEmulatorForRebuild returns that EXACT instance rather than
+// allocating a new one.
+func TestTerminalPane_RetireReplayEmulator_ReusesSpare(t *testing.T) {
+	tp := NewTerminalPane()
+	first := tp.acquireReplayEmulatorForRebuild(80, 24, nil)
+	tp.mu.Lock()
+	tp.replayEmu = first
+	tp.replayEmuCols = 80
+	tp.replayEmuRows = 24
+	tp.retireReplayEmulator()
+	tp.mu.Unlock()
+
+	if tp.replayEmuSpare != first {
+		t.Fatal("retireReplayEmulator did not move the published emulator into the spare slot")
+	}
+	if tp.replayEmu != nil {
+		t.Fatal("retireReplayEmulator must clear the published pointer")
+	}
+
+	second := tp.acquireReplayEmulatorForRebuild(80, 24, nil)
+	if second != first {
+		t.Fatal("acquireReplayEmulatorForRebuild allocated a new emulator instead of reusing the retired spare")
+	}
+	if tp.replayEmuSpare != nil {
+		t.Fatal("acquireReplayEmulatorForRebuild must drain the spare slot it consumes")
+	}
+}
+
+// TestTerminalPane_ReplayEmulatorRebuild_DoesNotLeakGoroutines is the
+// regression test for the replay emulator's own copy of the ResetVT leak
+// (see TestTerminalPane_ResetVT_DoesNotLeakEmulatorGoroutines): every
+// asyncReplayRebuild used to build into a brand-new emulator and simply
+// overwrite tp.replayEmu, abandoning the old one's drain goroutine with no
+// way to stop it. Hera's frequent pane rebinds don't reach this path
+// directly, but ordinary scrollback browsing (any PgUp/wheel-scroll that
+// invalidates the cache) does — a live post-fix heap profile is what
+// surfaced this as a second, slower-growing sibling leak of the same
+// class, still dominated by the same x/vt.NewEmulator/ansi.Parser.
+// SetDataSize/ultraviolet.NewBuffer allocation sites. This exercises the
+// exact acquire → retire-old → publish-new sequence asyncReplayRebuild
+// performs and asserts the goroutine count stays flat.
+func TestTerminalPane_ReplayEmulatorRebuild_DoesNotLeakGoroutines(t *testing.T) {
+	tp := NewTerminalPane()
+
+	runtime.GC()
+	before := runtime.NumGoroutine()
+
+	const iterations = 200
+	for i := 0; i < iterations; i++ {
+		emu := tp.acquireReplayEmulatorForRebuild(80, 24, nil)
+		tp.mu.Lock()
+		tp.retireReplayEmulator()
+		tp.replayEmu = emu
+		tp.replayEmuCols = 80
+		tp.replayEmuRows = 24
+		tp.mu.Unlock()
+	}
+
+	runtime.GC()
+	after := runtime.NumGoroutine()
+
+	if after > before+10 {
+		t.Fatalf("goroutine count grew from %d to %d across %d replay rebuilds — the replay emulator's drain goroutines are leaking again", before, after, iterations)
+	}
+}
+
 func TestTerminalPane_HasContent(t *testing.T) {
 	tp := NewTerminalPane()
 	if tp.HasContent() {
@@ -1015,7 +1084,7 @@ func TestNewTrackedReplayEmulator_DoesNotForwardResponses(t *testing.T) {
 	// The replay/preview emulator constructor must stay discard-only: it
 	// takes no forward callback and must never write into the attached
 	// session even though one is present.
-	emu := tp.newTrackedReplayEmulatorWithCallback(80, 24, func(bool) {})
+	emu := tp.acquireReplayEmulatorForRebuild(80, 24, func(bool) {})
 	if _, err := emu.Write([]byte(ansi.RequestBackgroundColor)); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -1363,7 +1432,6 @@ func TestTerminalPane_ReplayCaching(t *testing.T) {
 	if tp.replayEmu == nil {
 		t.Fatal("replayEmu should be set after first build")
 	}
-	firstEmu := tp.replayEmu
 
 	// Same data, same dimensions → asyncReplayRebuild always rebuilds
 	// (caching is checked in Draw's fast path, not in the build itself).
@@ -1373,11 +1441,18 @@ func TestTerminalPane_ReplayCaching(t *testing.T) {
 		t.Fatal("replayEmu should be set after second build")
 	}
 
-	// Different data → new emulator.
+	// Different data → rebuilt content. Pointer identity is no longer a
+	// valid "did it rebuild" signal (see acquireReplayEmulatorForRebuild):
+	// the pane alternates between at most two retained emulator instances
+	// instead of allocating fresh ones, so the first build's emulator can
+	// legitimately recur here once RIS-reset and re-fed with the new data —
+	// that reuse is the fix for the emulator-recreation leak, not a caching
+	// bug. replayEmuBytes tracking the new data's length is what actually
+	// proves a rebuild happened.
 	raw2 := []byte("hello world\nline two\nline three\nline four\n")
 	buildReplaySync(tp, raw2, 40, 10)
-	if tp.replayEmu == firstEmu {
-		t.Error("replayEmu should be rebuilt when data changes")
+	if tp.replayEmu == nil {
+		t.Fatal("replayEmu should be set after third build")
 	}
 	testutil.Equal(t, tp.replayEmuBytes, uint64(len(raw2)))
 }
@@ -1958,7 +2033,7 @@ func TestTerminalPane_ReplayEmulatorHasLargeScrollback(t *testing.T) {
 	// 10K lines. Feed 12K lines — if SetScrollbackSize(50K) were removed,
 	// the default 10K buffer would cap scrollback below 10K.
 	tp := NewTerminalPane()
-	emu := tp.newTrackedReplayEmulatorWithCallback(80, 24, nil)
+	emu := tp.acquireReplayEmulatorForRebuild(80, 24, nil)
 
 	// Feed 12K lines (exceeds default 10K scrollback).
 	for i := 0; i < 12_000; i++ {
