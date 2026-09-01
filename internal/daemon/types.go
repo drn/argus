@@ -33,6 +33,16 @@ type BootInfoResp struct {
 	SupervisorPath    string      // resolved path of the supervisor executable
 	SupervisorHash    string      // SHA-256 of the supervisor binary (empty ⇒ unknown / pre-hash protocol)
 	SupervisorVCS     buildid.VCS // supervisor's commit SHA + dirty flag; display-only
+
+	// The supervisor's declared EXECUTED SURFACE, relayed from the same Hello
+	// (reduce-supervisor-skew-blast-radius, Layer 1). This — not SupervisorHash —
+	// is what the staleness verdict keys off: ~9 in 10 builds change nothing the
+	// supervisor runs, yet every one of them changes the whole-binary hash. Both
+	// zero ⇒ a pre-v6 supervisor that reports no surface at all, which is
+	// "unknown", never stale (the same feature-detect an empty SupervisorHash
+	// gets). Compare via CompareSupervisorSurface.
+	SupervisorSpawnSurface  int // supervisor's spawn-surface component (0 ⇒ not reported)
+	SupervisorStreamSurface int // supervisor's stream-surface component (0 ⇒ not reported)
 }
 
 // ProtocolVersion is the version of the session-server R/S protocol that the
@@ -80,7 +90,16 @@ type BootInfoResp struct {
 //     required to adopt this version; only a same-side rebuild that wants a
 //     System-origin write to actually apply on the OTHER side of the RPC hop
 //     needs both peers rebuilt.
-const ProtocolVersion = 5
+//   - v6 (reduce-supervisor-skew-blast-radius): + HelloResp.SpawnSurface and
+//     HelloResp.StreamSurface, the supervisor's declared executed-surface
+//     version (see surface.go). Additive and zero-value-safe: a v5 supervisor
+//     omits both, they decode as 0, SurfaceVersion.Known() reports false, and
+//     the verdict is "unknown" — never a false stale, exactly as v3's empty
+//     BinaryHash is handled. Precedent: v3 bumped for adding HelloResp.BinaryHash
+//     the same way, and this constant's own contract is to bump on ANY new
+//     optional field. (The proposal guessed no bump would be needed here; the
+//     wire contract says otherwise, and the bump is free.)
+const ProtocolVersion = 6
 
 // SupervisorProtocolMatch reports whether a supervisor's handshake version
 // equals the daemon's. A mismatch is NOT fatal and NEVER triggers an auto-
@@ -113,6 +132,20 @@ type HelloResp struct {
 	BinaryHash      string      // SHA-256 of the binary at boot (empty ⇒ hashing failed OR pre-v3 supervisor)
 	VCS             buildid.VCS // supervisor's commit SHA + dirty flag; display-only, blank outside a git tree
 	BootedAt        time.Time   // wall-clock time the supervisor started
+
+	// The supervisor's declared executed surface (v6). This is the STALENESS
+	// SIGNAL; BinaryHash is demoted to display. Both zero ⇒ a pre-v6 supervisor,
+	// reported as unknown rather than stale. See surface.go for the two-component
+	// split and why the hash could not carry this.
+	SpawnSurface  int // spawn-surface component (0 ⇒ pre-v6 supervisor)
+	StreamSurface int // stream-surface component (0 ⇒ pre-v6 supervisor)
+}
+
+// SupervisorSurface reads a supervisor's reported surface version out of its
+// handshake reply. A pre-v6 supervisor yields the zero value, whose Known()
+// reports false.
+func (h HelloResp) SupervisorSurface() SurfaceVersion {
+	return SurfaceVersion{Spawn: h.SpawnSurface, Stream: h.StreamSurface}
 }
 
 // PortsResp returns the live HTTP ports the daemon is bound to. Both servers

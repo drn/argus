@@ -148,12 +148,57 @@ pid/lock trio for free.
   unnecessary fleet-killing restart avoided only by diffing two build SHAs by hand, and a signal
   the operator is actively learning to distrust.
 
-## Open Questions for Approval
+## Open Questions — RESOLVED
 
-1. **Ship Layer 1 alone and re-measure, or commit to 1+2 up front?** Recommendation: Layer 1
-   alone. It is small, reversible, and its own telemetry (how often the surface version actually
-   bumps) is the evidence that decides whether Layer 2 is worth a `ProtocolVersion` bump.
-2. **Is the `doctor` exit-code change (D5) acceptable?** It is the point of the change, but if
-   anything scripts `argus doctor`, it wants a heads-up.
-3. **Layer 2's secret-resolution split** — descriptors-over-the-wire with resolution left in the
-   supervisor, as the risk section proposes, or accept resolved values in `StartReq`?
+1. **Ship Layer 1 alone and re-measure, or commit to 1+2 up front?** **ANSWERED: Layer 1 alone,
+   then re-measure.** Layer 1's own telemetry — how often each surface component actually bumps —
+   is the evidence for whether Layer 2 earns its own `ProtocolVersion` bump. Layers 2 and 3 stay
+   documented follow-ons in `proposal.md`, not this change.
+2. **Is the `doctor` exit-code change (D5) acceptable?** **ANSWERED: yes, that's the point.**
+   A supervisor with a differing binary hash but a matching surface version now exits 0 where it
+   used to exit 1. Both hashes and both surface versions stay in the printed table, so the raw
+   facts are never hidden — only the pass/fail line moved.
+3. **Layer 2's secret-resolution split.** **MOOT** while Layer 2 is out of scope. Secret
+   resolution is untouched by this change: it stays at point-of-use inside whichever process owns
+   `BuildCmd` (`add-secrets-resolver-registry`), and no resolved value goes near a `StartReq`.
+
+## What Shifted During Implementation
+
+Recorded here rather than silently, since each departs from what the proposal assumed.
+
+- **`ProtocolVersion` DID need a bump (5→6), contrary to the proposal's guess** that Layer 1
+  could ride the existing handshake untouched. The constant's own contract in `types.go` is to
+  bump on *any* new optional request/response field, and v3 set the precedent by adding
+  `HelloResp.BinaryHash` in exactly this shape. The bump is free — additive and zero-value-safe
+  in both directions — and skipping it would have left the constant lying about the wire shape.
+  `TestProtocolVersionCoversSurfaceFields` pins the floor so a later edit cannot revert it while
+  keeping the fields.
+
+- **A pre-v6 supervisor needed a THIRD outcome, not just "unknown".** The delta spec says the
+  hash remains the fallback signal for a supervisor that reports no surface version, *and* that
+  such a supervisor is never stale "on that basis alone". Both are satisfiable at once, and the
+  distinction matters during the one-release transition window: the missing field is not evidence
+  of staleness, but a differing hash still is. So `SurfaceLegacyStale` sits alongside
+  `SurfaceUnknown` — tier unknowable, therefore treated as the stricter one. Collapsing it into
+  "unknown" would have silently dropped every genuine skew until the last old supervisor died.
+
+- **D6 is the operative reading of the startup surface, and it narrows the spec's wording.** The
+  spec says the blocking startup modal "remains the surface for skew present at launch"; D6
+  reserves it for a *stream*-surface mismatch. Implemented per D6: at launch, a stale daemon or a
+  stream mismatch blocks, while a spawn-only mismatch takes the status-bar notice — because the
+  proposal's own framing is that spawn skew is "never a mid-incident emergency", and blocking on
+  it would be the same false alarm in a new coat. A modal opened for *another* reason (a stale
+  daemon) still lists the supervisor, now annotated with the tier's consequence, so its
+  agent-killing "Restart supervisor" button is never offered without saying what it buys.
+
+- **The CI guard is a source-content digest, and its limits are narrower than "fails CI unless
+  the component is also changed".** D3's requirement is that omission be caught *mechanically*,
+  and `TestSupervisorSurfaceDigest` does exactly that: touching a declared path fails the build
+  until the author records a new digest, at which point they must decide whether to bump. It
+  cannot force the bump itself — any in-tree recorded value is editable, so a deliberate "this
+  isn't observable" call can still be wrong. That residual risk is why the constants' doc comment
+  says to bump STREAM when in doubt, and why `doctor` keeps both binary hashes visible.
+
+- **The pure skew core moved to `internal/skew`.** Continuous re-evaluation is a TUI concern and
+  the decision logic lived in `package main`, which `internal/tui` cannot import. Extracting it
+  also moved the logic from a coverage-excluded file into a covered package.

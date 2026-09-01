@@ -10,6 +10,7 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/skew"
 	"github.com/drn/argus/internal/testutil"
 )
 
@@ -340,7 +341,7 @@ func TestApp_HandleRestartDaemonKey_RestartChosen(t *testing.T) {
 		}
 	}
 
-	app.SetSkew(true, false, "", "")
+	app.SetSkew(skew.Result{DaemonStale: true})
 	app.openSkewPrompt()
 	// Press 'y' to confirm restart. The modal interprets Enter as the default
 	// (Restart), so press Enter.

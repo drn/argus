@@ -506,9 +506,13 @@ argus doctor   # read-only: enumerate every argus binary + running process, prin
 
 `doctor` resolves the `argus` on your `PATH`, the `~/.argus/argusd` symlink target, the `go install` target, and the identity each live process (daemon, supervisor, this binary) is running, then prints a table and one of three verdicts with the exact fix:
 
-- **HEALTHY** — all resolve to the same file with matching hashes (exit 0).
+- **HEALTHY** — every resolvable actor agrees (exit 0).
 - **RESTART NEEDED** — same file, older bytes in a running process (a rebuild landed); the fix is `argus daemon restart`.
 - **PATH DIVERGENCE** — the daemon symlink target and your `PATH` `argus` resolve to **different files** (the real footgun — a plain restart just relaunches the divergent binary and loops); the fix re-points/reinstalls so both point at one build.
+
+**The supervisor is judged on its executed surface, not its binary hash.** Restarting the supervisor SIGHUPs every running agent, and roughly 9 in 10 builds change nothing it actually executes while still changing the whole-binary hash — so a hash-based verdict pointed at a fleet-killing remedy on a signal that was right about one time in ten. Instead, each build declares a two-part **surface version** naming the observable behavior of supervisor-resident code: a **spawn** component (`BuildCmd`, sandbox profile, skills/routing injection, secrets, cache dirs — read only when a session *starts*) and a **stream** component (PTY read loop, ring buffer, session log, R/S handlers, exit-info caching — serving *live* sessions). A supervisor whose surface matches is **HEALTHY even when its binary hash differs**; a mismatch is reported with what it costs — spawn-only says already-running agents are unaffected and only new sessions use the old spawn config, stream says live sessions are affected and a restart is warranted. Both hashes and both surface versions stay in the printed table. A supervisor too old to report a surface version falls back to the hash, exactly as before. The constants are hand-bumped like `ProtocolVersion`, and a test fails CI if a declared supervisor-resident source file changes without the author explicitly deciding whether the behavior did.
+
+The TUI **re-evaluates skew about once a minute** while running, and on reconnecting to the daemon — not only at launch. A skew found after startup surfaces as a transient status-bar notice, never a modal; at launch, the blocking prompt is reserved for a stale daemon or a stream-surface mismatch, since a spawn-only mismatch cannot affect anything already running.
 
 It is strictly **read-only** (never touches a symlink, binary, `PATH`, or process) and best-effort — an unresolvable row degrades to "unknown" rather than aborting. Exits non-zero on any non-healthy verdict.
 

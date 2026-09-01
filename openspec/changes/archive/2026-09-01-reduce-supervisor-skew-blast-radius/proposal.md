@@ -1,8 +1,8 @@
 # Make supervisor/daemon/TUI binary skew mostly harmless instead of mostly alarming
 
-> **Status: PROPOSAL ONLY — not approved, not implemented.** No `tasks.md` and no
-> implementation branch exist yet, per this repo's spec-first process. Approve or
-> redirect before any code is written.
+> **Status: APPROVED — Layer 1 implemented.** Layer 1 shipped with this change; Layers 2
+> and 3 remain documented follow-ons, deliberately not implemented. See `design.md`'s
+> "Open Questions — RESOLVED" and "What Shifted During Implementation".
 
 ## Why
 
