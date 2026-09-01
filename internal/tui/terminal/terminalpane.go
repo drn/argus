@@ -282,6 +282,19 @@ type TerminalPane struct {
 	// past the bytes the previous build had cached (defect 5).
 	replayEmuFirstByte int64
 
+	// replayEmuSpare holds a retired replay emulator instead of discarding
+	// it, so the next asyncReplayRebuild reuses it (RIS-reset in place) via
+	// acquireReplayEmulatorForRebuild instead of allocating a fresh one.
+	// Discarding would abandon its background drain goroutine forever, with
+	// no safe way to stop it early — the same leak class fixed for the live
+	// emulator by resetLiveEmulatorInPlace, just reached via scrollback
+	// rebuilds instead of ResetVT/SetSession. At most one instance is ever
+	// held here: whichever caller retires a replay emulator always finds
+	// this slot already drained by the most recent acquire.
+	replayEmuSpare     *xvt.SafeEmulator
+	replayEmuSpareCols int
+	replayEmuSpareRows int
+
 	// Paint cache: stores the last paintEmu output so keystroke-triggered
 	// redraws (no new bytes) can replay SetContent calls without touching
 	// the emulator (no mutex, no allocations, no style conversion).
@@ -735,7 +748,7 @@ func (tp *TerminalPane) ResetVT() {
 	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
 	tp.anchorTotalLines = 0
-	tp.replayEmu = nil
+	tp.retireReplayEmulator()
 	tp.replayEmuBytes = 0
 	tp.replayEmuLogSize = 0
 	tp.replayEmuMaxScroll = 0
@@ -844,7 +857,7 @@ func (tp *TerminalPane) AccelScrollUp() int {
 // renderLive would cause anchor-lock to misfire.
 func (tp *TerminalPane) invalidateReplayCache() {
 	tp.mu.Lock()
-	tp.replayEmu = nil
+	tp.retireReplayEmulator()
 	tp.replayEmuBytes = 0
 	tp.replayEmuLogSize = 0
 	tp.replayEmuMaxScroll = 0
@@ -1989,7 +2002,7 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 
 	// Build the replay emulator (the expensive part — VT emulation of up to 8MB).
 	cursorVisible := true
-	emu := tp.newTrackedReplayEmulatorWithCallback(ptyCols, ptyRows, func(visible bool) {
+	emu := tp.acquireReplayEmulatorForRebuild(ptyCols, ptyRows, func(visible bool) {
 		cursorVisible = visible
 	})
 	// Tail slices begin at arbitrary byte positions — see AlignToEscBoundary
@@ -2026,6 +2039,7 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 	// (written by paintEmu without lock), so we use replayRebuildPending
 	// to signal that the main goroutine should reset them.
 	tp.mu.Lock()
+	tp.retireReplayEmulator() // stash the outgoing published emu as the next rebuild's target instead of leaking it
 	tp.replayEmu = emu
 	tp.replayEmuCols = ptyCols
 	tp.replayEmuRows = ptyRows
@@ -2495,10 +2509,51 @@ func (tp *TerminalPane) resetLiveEmulatorInPlace() {
 	tp.emu.ClearScrollback()
 }
 
-// newTrackedReplayEmulatorWithCallback creates a replay emulator with a large
-// scrollback buffer (50K lines) for scrollback browsing in long sessions.
-func (tp *TerminalPane) newTrackedReplayEmulatorWithCallback(cols, rows int, onCursorVisible func(bool)) *xvt.SafeEmulator {
-	emu := newDrainedReplayEmulator(cols, rows)
+// retireReplayEmulator moves the currently-published replay emulator (if
+// any) into the spare slot instead of discarding it, so the next rebuild
+// reuses it via acquireReplayEmulatorForRebuild rather than allocating (and
+// leaking) a new one. Callers must hold tp.mu. The slot is always empty by
+// the time a caller needs it — acquireReplayEmulatorForRebuild drains it at
+// the START of every rebuild, and a rebuild is the only other path that
+// populates it (right here, at publish time) — so retiring never needs to
+// choose between two occupants.
+func (tp *TerminalPane) retireReplayEmulator() {
+	if tp.replayEmu == nil {
+		return
+	}
+	if tp.replayEmuSpare == nil {
+		tp.replayEmuSpare = tp.replayEmu
+		tp.replayEmuSpareCols = tp.replayEmuCols
+		tp.replayEmuSpareRows = tp.replayEmuRows
+	}
+	tp.replayEmu = nil
+}
+
+// acquireReplayEmulatorForRebuild returns the emulator an in-flight
+// asyncReplayRebuild should build into: the retired spare (RIS-reset +
+// resized in place), or — only on a pane's very first rebuild ever — a
+// freshly allocated one. This runs on the rebuild's own background
+// goroutine and mutates an object tp.replayEmu does NOT currently point at
+// (the spare was already detached from tp.replayEmu when it was retired),
+// so Draw()'s "paint the stale replayEmu while rebuild is in flight" path
+// (see the slow-path comment above) keeps rendering the OLD, untouched,
+// still-published emulator throughout — this never tears mid-rebuild.
+func (tp *TerminalPane) acquireReplayEmulatorForRebuild(cols, rows int, onCursorVisible func(bool)) *xvt.SafeEmulator {
+	tp.mu.Lock()
+	emu := tp.replayEmuSpare
+	spareCols, spareRows := tp.replayEmuSpareCols, tp.replayEmuSpareRows
+	tp.replayEmuSpare = nil
+	tp.mu.Unlock()
+
+	if emu == nil {
+		emu = newDrainedReplayEmulator(cols, rows)
+	} else {
+		if spareCols != cols || spareRows != rows {
+			emu.Resize(cols, rows)
+		}
+		_, _ = SafeEmuWrite(emu, []byte("\x1bc"))
+		emu.ClearScrollback()
+	}
 	if onCursorVisible != nil {
 		emu.Emulator.SetCallbacks(xvt.Callbacks{
 			CursorVisibility: onCursorVisible,
