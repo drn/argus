@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"bytes"
 	"image/color"
 	"os"
 	"os/exec"
@@ -3098,19 +3099,54 @@ func TestReadLiveRebuildHistory_LogTailOnly(t *testing.T) {
 // when the ring has bytes the log doesn't yet hold (readLoop flushed to
 // ring before log), the overflow tail is appended to the log content
 // without duplicating the bytes already in the log.
+//
+// The overlap is sized past minLogAnchorBytes because the merge is now
+// decided by matching the ring tail's CONTENT against the log's, not by
+// subtracting the handle's total from the log's file size — and an overlap of
+// a byte or two is indistinguishable from a coincidence (see
+// anchorRingInLog). A real ring tail is 256KB, so a sub-anchor overlap is not
+// a reachable state; the old fixture's 2-byte overlap only worked because it
+// encoded the very same-coordinate-space assumption this change removes.
 func TestReadLiveRebuildHistory_OverflowMerge(t *testing.T) {
-	setupTaskLog(t, "rebuild-2", "AAAA") // log = 4 bytes "AAAA"
-	// Ring contains 6 bytes ("AAAABB"); total=6, log size=4.
-	// Overflow = total - logSize = 2, so the last 2 bytes of ring ("BB")
-	// should be appended to log.
+	covered := strings.Repeat("A", 200)
+	extra := "BB"
+	setupTaskLog(t, "rebuild-2", covered)
+	// Ring holds everything the log holds, plus 2 bytes readLoop wrote to the
+	// ring before its log write landed.
 	sess := &mockAdapter{
 		alive:        true,
-		totalWritten: 6,
-		output:       []byte("AAAABB"),
+		totalWritten: uint64(len(covered) + len(extra)),
+		output:       []byte(covered + extra),
 	}
 	raw, total := readLiveRebuildHistory(sess, "rebuild-2")
-	testutil.Equal(t, string(raw), "AAAABB")
-	testutil.Equal(t, total, uint64(6))
+	testutil.Equal(t, string(raw), covered+extra)
+	testutil.Equal(t, total, uint64(len(covered)+len(extra)))
+}
+
+// TestReadLiveRebuildHistory_LogAheadOfRingTrimsToRingHead covers the shape a
+// DAEMON-BACKED handle produces on essentially every rebuild: the session log
+// is written upstream of the client's stream, so it holds bytes the client has
+// not received yet. The assembled history must stop at the ring's head, since
+// the caller records the handle's own ring total as emuFedTotal — feeding past
+// it would re-feed those bytes on the next incremental delta.
+func TestReadLiveRebuildHistory_LogAheadOfRingTrimsToRingHead(t *testing.T) {
+	ring := strings.Repeat("R", 300)
+	setupTaskLog(t, "rebuild-ahead", "OLDER-HISTORY"+ring+"NOT-YET-STREAMED")
+	// Client space: the handle counts only what it received, which for a
+	// long-running session is far below the log's size.
+	sess := &mockAdapter{alive: true, totalWritten: 4242, output: []byte(ring)}
+
+	raw, total := readLiveRebuildHistory(sess, "rebuild-ahead")
+	testutil.Equal(t, total, uint64(4242))
+	if bytes.Contains(raw, []byte("NOT-YET-STREAMED")) {
+		t.Error("history ran past the ring head; those bytes would be fed twice")
+	}
+	if !bytes.HasSuffix(raw, []byte(ring)) {
+		t.Error("history does not end at the ring head")
+	}
+	if !bytes.Contains(raw, []byte("OLDER-HISTORY")) {
+		t.Error("deep log history was dropped")
+	}
 }
 
 // TestReadLiveRebuildHistory_UnrecoverableGapDoesNotSpliceNonContiguousBytes
@@ -3129,25 +3165,39 @@ func TestReadLiveRebuildHistory_OverflowMerge(t *testing.T) {
 // feed with no log involved at all) but easy to confuse with it since both
 // show up on an actively-streaming pane with no bind event.
 func TestReadLiveRebuildHistory_UnrecoverableGapDoesNotSpliceNonContiguousBytes(t *testing.T) {
-	setupTaskLog(t, "rebuild-gap", "AAAA") // log covers bytes [0,4)
-	// Ring has wrapped past the gap: it currently holds only the LAST 2
-	// bytes ("YY", representing bytes [8,10)) — bytes [4,8) were evicted
-	// from the ring before the log could catch up, and are unrecoverable
-	// from either source right now.
-	sess := &mockAdapter{alive: true, totalWritten: 10, output: []byte("YY")}
+	// Log covers an early prefix; the ring has since wrapped past the bytes in
+	// between, so the two sources share no overlap at all. Splicing them would
+	// feed x/vt content whose escape sequences and cursor state were never
+	// adjacent.
+	logPrefix := "\x1b[H" + strings.Repeat("A", 200)
+	ring := "\x1b[H" + strings.Repeat("Y", 200)
+	setupTaskLog(t, "rebuild-gap", logPrefix)
+	sess := &mockAdapter{alive: true, totalWritten: 900000, output: []byte(ring)}
+
 	raw, total := readLiveRebuildHistory(sess, "rebuild-gap")
 
-	// The caller records `total` as emuFedTotal, so raw and total must
-	// always describe the SAME prefix of the stream — never claim more (or
-	// less) was fed than `raw` actually contains.
-	if uint64(len(raw)) != total {
-		t.Fatalf("raw/total mismatch: len(raw)=%d, total=%d — caller would believe a different amount was fed than actually was", len(raw), total)
+	if bytes.Contains(raw, []byte("A")) && bytes.Contains(raw, []byte("Y")) {
+		t.Errorf("spliced the log prefix and the ring's non-contiguous tail together: %q", raw)
 	}
-	if string(raw) != "AAAA" {
-		t.Errorf("raw = %q, want \"AAAA\" — must return only the log-covered prefix, never splice the ring's non-contiguous overflow tail onto it", raw)
-	}
-	if total != 4 {
-		t.Errorf("total = %d, want 4 (logSize) — NOT ringTotal (10), which would overstate progress past an unrecoverable gap and permanently strand it", total)
+	// The ring is internally contiguous AND is in the handle's own coordinate
+	// space, so it is the safe source once the two cannot be reconciled — the
+	// log's file size is NOT a valid value for a handle-space fed-total.
+	testutil.Equal(t, string(raw), ring)
+	testutil.Equal(t, total, sess.totalWritten)
+}
+
+// TestReadLiveRebuildHistory_UnreconcilableRingWithNoEscapeDefers pairs with
+// the test above: when the ring is the only usable source AND its tail is an
+// arbitrary post-eviction cut with no ESC to realign against, feeding it would
+// leak orphaned escape parameters as literal text (BUG-079). Defer instead —
+// the caller repaints without advancing and the next Draw retries.
+func TestReadLiveRebuildHistory_UnreconcilableRingWithNoEscapeDefers(t *testing.T) {
+	setupTaskLog(t, "rebuild-gap-noesc", strings.Repeat("A", 200))
+	sess := &mockAdapter{alive: true, totalWritten: 900000, output: []byte(strings.Repeat("Y", 200))}
+
+	raw, total := readLiveRebuildHistory(sess, "rebuild-gap-noesc")
+	if raw != nil || total != 0 {
+		t.Errorf("got (%q, %d), want (nil, 0) — an ESC-less arbitrary ring cut must be deferred", raw, total)
 	}
 }
 
@@ -3940,57 +3990,135 @@ func TestTerminalPane_ResizePreservesEmulatorState(t *testing.T) {
 	}
 }
 
-// TestReadLogRangeForTask_ExactRange verifies the exact-offset read used by
-// the ring-wrap catch-up: given a log file and a byte range fully contained
-// within it, the returned bytes match exactly and ok is true.
-func TestReadLogRangeForTask_ExactRange(t *testing.T) {
-	setupTaskLog(t, "range-1", "0123456789ABCDEF")
-	got, ok := readLogRangeForTask("range-1", 4, 6)
+// anchorPad returns a byte slice long enough to serve as a content anchor
+// (>= minLogAnchorBytes) whose content is unique to `tag`, so a test can tell
+// which region of a log a read actually landed in.
+func anchorPad(tag string) string {
+	return strings.Repeat(tag+"-", (minLogAnchorBytes/len(tag))+8)
+}
+
+// TestAnchorRingInLog_FullCoverage covers the normal case: the log holds the
+// ring tail in full (always true for a daemon-backed handle, whose log is
+// written upstream of the client's stream) and may run a few bytes past it.
+func TestAnchorRingInLog_FullCoverage(t *testing.T) {
+	ring := []byte(anchorPad("RING"))
+	log := append([]byte("EARLIER-HISTORY"), ring...)
+	log = append(log, []byte("AHEAD")...)
+
+	end, covered, ok := anchorRingInLog(log, ring)
 	if !ok {
 		t.Fatal("ok = false, want true")
 	}
-	testutil.Equal(t, string(got), "456789")
+	testutil.Equal(t, covered, len(ring))
+	testutil.Equal(t, end, len(log)-len("AHEAD"))
 }
 
-// TestReadLogRangeForTask_BeyondEOF verifies that a range extending past the
-// end of the on-disk log (external truncation, a prune race, or a stale
-// emuFedTotal from before a session resume re-truncated the log) reports
-// ok=false rather than returning a short/garbage read.
-func TestReadLogRangeForTask_BeyondEOF(t *testing.T) {
-	setupTaskLog(t, "range-2", "short")
-	if _, ok := readLogRangeForTask("range-2", 0, 100); ok {
-		t.Error("ok = true for a range beyond EOF, want false")
+// TestAnchorRingInLog_PartialCoverage covers the log-lags-ring case: readLoop
+// wrote the ring but its log write hasn't caught up, so the log ends part-way
+// through the ring tail.
+func TestAnchorRingInLog_PartialCoverage(t *testing.T) {
+	ring := []byte(anchorPad("RING") + "TRAILING-RING-ONLY-BYTES")
+	log := append([]byte("EARLIER-HISTORY"), ring[:len(ring)-24]...)
+
+	end, covered, ok := anchorRingInLog(log, ring)
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	testutil.Equal(t, end, len(log))
+	testutil.Equal(t, covered, len(ring)-24)
+}
+
+// TestAnchorRingInLog_NoOverlap verifies the fail-closed contract: a log whose
+// content is unrelated to the ring (e.g. a restart truncated the log while a
+// cached client handle kept its previous incarnation's bytes) reports no
+// anchor rather than inviting a splice.
+func TestAnchorRingInLog_NoOverlap(t *testing.T) {
+	if _, _, ok := anchorRingInLog([]byte(anchorPad("LOG")), []byte(anchorPad("RING"))); ok {
+		t.Error("ok = true for unrelated content, want false")
 	}
 }
 
-// TestReadLogRangeForTask_MissingLog verifies a nonexistent task log reports
-// ok=false instead of erroring.
-func TestReadLogRangeForTask_MissingLog(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	if _, ok := readLogRangeForTask("no-such-task", 0, 10); ok {
-		t.Error("ok = true for a missing log, want false")
+// TestAnchorRingInLog_RejectsShortAnchor verifies that a ring tail below
+// minLogAnchorBytes is only honoured by the search-free exact-suffix path.
+// Anything requiring a search or a partial overlap fails closed: a one- or
+// two-byte "overlap" is as likely to be a shared trailing newline as a real
+// seam, and acting on it would duplicate nearly the whole ring tail.
+func TestAnchorRingInLog_RejectsShortAnchor(t *testing.T) {
+	short := []byte("tiny")
+	// Exact suffix is still honoured — no search involved.
+	if end, covered, ok := anchorRingInLog(append([]byte("prefix-"), short...), short); !ok || covered != len(short) || end != len("prefix-")+len(short) {
+		t.Errorf("exact suffix with a short tail: end=%d covered=%d ok=%v, want %d/%d/true", end, covered, ok, len("prefix-")+len(short), len(short))
+	}
+	// Log runs ahead: would need a containment search, which a short tail
+	// cannot be trusted for.
+	if _, _, ok := anchorRingInLog([]byte("prefix-tiny-AHEAD"), short); ok {
+		t.Error("ok = true for a sub-minimum tail needing a search, want false")
+	}
+	if _, _, ok := anchorRingInLog(nil, []byte(anchorPad("RING"))); ok {
+		t.Error("ok = true for an empty log tail, want false")
 	}
 }
 
-// TestReadLogRangeForTask_InvalidArgs verifies the defensive bounds: a
-// negative offset, non-positive length, or a length beyond
-// logRangeCatchUpMaxBytes are all rejected without touching disk.
-func TestReadLogRangeForTask_InvalidArgs(t *testing.T) {
-	setupTaskLog(t, "range-3", "content")
+// TestAnchorRingInLog_PartialPrefersLongestOverlap guards the repetitive-output
+// hazard directly. Agent output repeats constantly (spinner frames, redrawn
+// status bars), so several overlap lengths can all verify byte-for-byte. Only
+// the LONGEST is the real seam — a shorter, wrongly phased one would make the
+// caller re-append bytes the log already holds.
+func TestAnchorRingInLog_PartialPrefersLongestOverlap(t *testing.T) {
+	// Deliberately periodic: every 5-byte-aligned overlap verifies.
+	periodic := strings.Repeat("ABCDE", 40) // 200 bytes
+	ring := []byte(periodic + "TAIL-ONLY-IN-RING")
+	log := append([]byte("EARLIER-HISTORY"), periodic...)
+
+	end, covered, ok := anchorRingInLog(log, ring)
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	testutil.Equal(t, end, len(log))
+	testutil.Equal(t, covered, len(periodic))
+}
+
+// TestReadLogGapEndingAt_ExactRange verifies the catch-up read returns exactly
+// the requested number of bytes ending where the ring tail's content ends —
+// NOT the bytes at the handle's raw byte-counter offset.
+func TestReadLogGapEndingAt_ExactRange(t *testing.T) {
+	ancient := strings.Repeat("Z", 500)
+	gap := "GAP-BYTES-"
+	ring := anchorPad("RING")
+	setupTaskLog(t, "gap-1", ancient+gap+ring)
+
+	got, ok := readLogGapEndingAt("gap-1", []byte(ring), int64(len(gap)+len(ring)))
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	testutil.Equal(t, string(got), gap+ring)
+}
+
+// TestReadLogGapEndingAt_Rejects covers every fail-closed path, each of which
+// routes the caller to the existing approximate rebuild instead of feeding an
+// unanchored range.
+func TestReadLogGapEndingAt_Rejects(t *testing.T) {
+	ring := anchorPad("RING")
+	setupTaskLog(t, "gap-2", "history"+ring)
+
 	cases := []struct {
 		name   string
-		offset int64
+		taskID string
+		ring   string
 		length int64
 	}{
-		{"negative offset", -1, 4},
-		{"zero length", 0, 0},
-		{"negative length", 0, -1},
-		{"length over cap", 0, logRangeCatchUpMaxBytes + 1},
+		{"non-positive length", "gap-2", ring, 0},
+		{"anchor below minimum", "gap-2", "tiny", 4096},
+		{"length not longer than the anchor", "gap-2", ring, int64(len(ring))},
+		{"window over cap", "gap-2", ring, logRangeCatchUpMaxBytes},
+		{"missing log", "no-such-task", ring, int64(len(ring)) + 8},
+		{"anchor absent from log", "gap-2", anchorPad("OTHER"), int64(len(ring)) + 8},
+		{"log shorter than the requested range", "gap-2", ring, int64(len(ring)) + 100000},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, ok := readLogRangeForTask("range-3", tc.offset, tc.length); ok {
-				t.Errorf("ok = true, want false")
+			if _, ok := readLogGapEndingAt(tc.taskID, []byte(tc.ring), tc.length); ok {
+				t.Error("ok = true, want false")
 			}
 		})
 	}
@@ -4017,7 +4145,12 @@ func TestReadLogRangeForTask_InvalidArgs(t *testing.T) {
 // content survive.
 func TestRenderLive_RingWrapRecoversExactBytesWithoutDiscardingEmulator(t *testing.T) {
 	prefix := "\x1b[?1049h\x1b[2J\x1b[HMARKER-A"
-	gap := "\x1b[3;1HMARKER-B"
+	// The gap is padded well past minLogAnchorBytes so the ring tail left
+	// behind is long enough to anchor against the log. A real ring holds
+	// 256KB, so a sub-anchor tail alongside a ring-wrap gap is not a
+	// reachable state — the previous 2-byte fixture only worked because the
+	// catch-up used to address the log by the handle's raw byte counter.
+	gap := "\x1b[3;1HMARKER-B" + strings.Repeat("-", 400)
 	// The log starts with only `prefix` — matching totalWritten below — not
 	// the eventual prefix+gap. A real session log never runs ahead of
 	// TotalWritten (readLoop writes both from the same bytes in the same
@@ -4047,14 +4180,15 @@ func TestRenderLive_RingWrapRecoversExactBytesWithoutDiscardingEmulator(t *testi
 		t.Fatalf("content before ring-wrap: got %q at (0,0), want \"M\"", s)
 	}
 	emuBefore := tp.emu
+	genBefore := tp.emuGen.Load()
 
 	// The agent produced `gap` while this pane wasn't being drawn: the log
 	// now holds prefix+gap (readLoop flushed it, in lockstep with the ring),
-	// but RecentOutput() only covers the gap's last 2 bytes — far short of
+	// but RecentOutput() only covers the gap's last 128 bytes — far short of
 	// the full gap — simulating the ring buffer having evicted the rest.
 	setupTaskLog(t, "ringwrap-1", prefix+gap)
 	sess.totalWritten = uint64(len(prefix) + len(gap))
-	sess.output = []byte(gap)[len(gap)-2:]
+	sess.output = []byte(gap)[len(gap)-128:]
 
 	screen2 := tcell.NewSimulationScreen("UTF-8")
 	if err := screen2.Init(); err != nil {
@@ -4064,8 +4198,11 @@ func TestRenderLive_RingWrapRecoversExactBytesWithoutDiscardingEmulator(t *testi
 	screen2.SetSize(80, 24)
 	tp.renderLive(screen2, 0, 0, 80, 10, 80, 10)
 
-	if tp.emu != emuBefore {
-		t.Error("emulator was discarded and rebuilt; ring-wrap catch-up must feed the EXISTING emulator")
+	if tp.emu != emuBefore || tp.emuGen.Load() != genBefore {
+		// Pointer identity alone stopped proving this once the emulator began
+		// being RIS-reset in place instead of replaced (the RSS-leak fix) — a
+		// rebuild now keeps the pointer and bumps emuGen, so check both.
+		t.Error("emulator was reset and rebuilt; ring-wrap catch-up must feed the EXISTING emulator state")
 	}
 	if tp.emuFedTotal != sess.totalWritten {
 		t.Errorf("emuFedTotal = %d, want %d (fully caught up)", tp.emuFedTotal, sess.totalWritten)
@@ -4311,4 +4448,171 @@ func TestTerminalPane_InputHandlerEnterRevives(t *testing.T) {
 		tp.SetTaskID("task-1")
 		tp.InputHandler()(enterEv, noFocus) // must not panic
 	})
+}
+
+// --- daemon-client coordinate-space regression tests -------------------------
+//
+// Every other mockAdapter in this file is built so `totalWritten` equals the
+// session log's length — the in-process agent.Session invariant. offsetAdapter
+// models the OTHER session handle the TUI actually runs against in normal
+// daemon-connected operation: daemon/client.RemoteSession, whose ring total
+// counts only the bytes THIS CLIENT received. The daemon replays at most its
+// own 256KB ring on stream attach (Session.AddWriterFromTolerant with
+// Since: 0), so for any session with more history than that, the handle's byte
+// counter is offset from the log's byte offsets by a large, arbitrary amount.
+//
+// The tests below are the only ones in this package that model that skew.
+
+// screenRowText reads one row of a SimulationScreen back as a string.
+func screenRowText(screen tcell.Screen, row, width int) string {
+	var sb strings.Builder
+	for c := 0; c < width; c++ {
+		s, _, _ := screen.Get(c, row)
+		if s == "" {
+			s = " "
+		}
+		sb.WriteString(s)
+	}
+	return strings.TrimRight(sb.String(), " ")
+}
+
+func TestRenderLive_RingWrapAnchorsOnRingContentNotHandleOffset(t *testing.T) {
+	// Log layout (log-file space):
+	//   [0, len(ancient))                       -> ZOMBIE (old history)
+	//   [len(ancient), +len(prefix))            -> MARKER-A (what the pane has)
+	//   [.., +len(gap))                         -> MARKER-B (the missed delta)
+	//
+	// The client attached late, so its byte counter starts at 0 at `prefix`.
+	// The buggy read (log offset == handle counter) lands inside `ancient`.
+	ancient := "\x1b[?1049h\x1b[2J\x1b[H" + strings.Repeat("ZOMBIE-ANCIENT-HISTORY ", 400)
+	prefix := "\x1b[?1049h\x1b[2J\x1b[HMARKER-A"
+	gap := "\x1b[3;1HMARKER-B" + strings.Repeat("-", 600)
+
+	setupTaskLog(t, "space-skew-1", ancient+prefix)
+
+	tp := NewTerminalPane()
+	tp.taskID = "space-skew-1"
+	// Handle space: only `prefix` has been received by this client.
+	sess := &mockAdapter{alive: true, totalWritten: uint64(len(prefix)), output: []byte(prefix)}
+	tp.SetSession(sess)
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen.Init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 24)
+	tp.renderLive(screen, 0, 0, 80, 10, 80, 10)
+	emuBefore := tp.emu
+	genBefore := tp.emuGen.Load()
+
+	// The agent produced `gap` while this pane was not being drawn (the Hera
+	// split/fullscreen toggle hides one pane entirely). The log grew by `gap`;
+	// the client's ring only retains its last 128 bytes, so the incremental
+	// tail can no longer cover the delta -> ring-wrap catch-up.
+	setupTaskLog(t, "space-skew-1", ancient+prefix+gap)
+	sess.totalWritten = uint64(len(prefix) + len(gap))
+	sess.output = []byte(gap)[len(gap)-128:]
+
+	screen2 := tcell.NewSimulationScreen("UTF-8")
+	if err := screen2.Init(); err != nil {
+		t.Fatalf("screen2.Init: %v", err)
+	}
+	defer screen2.Fini()
+	screen2.SetSize(80, 24)
+	tp.renderLive(screen2, 0, 0, 80, 10, 80, 10)
+
+	if tp.emu != emuBefore || tp.emuGen.Load() != genBefore {
+		// The pointer alone no longer proves this: since the RSS-leak fix the
+		// emulator is RIS-reset in place rather than replaced, so a rebuild
+		// keeps the same pointer and only bumps emuGen. Assert BOTH.
+		t.Error("emulator was reset and rebuilt; the anchored catch-up must feed the EXISTING emulator state")
+	}
+	if got := screenRowText(screen2, 0, 80); strings.Contains(got, "ZOMBIE") {
+		t.Errorf("ancient history injected into the live screen: row 0 = %q", got)
+	}
+	if got := screenRowText(screen2, 2, 80); !strings.HasPrefix(got, "MARKER-B") {
+		t.Errorf("missed delta not recovered: row 2 = %q, want MARKER-B", got)
+	}
+	if tp.emuFedTotal != sess.totalWritten {
+		t.Errorf("emuFedTotal = %d, want %d (handle byte space)", tp.emuFedTotal, sess.totalWritten)
+	}
+}
+
+// TestRenderLive_HeraBindAfterResetVTAnchorsOnRingContent covers what became
+// the DOMINANT trigger once the emulator stopped being discarded on reset (the
+// RSS-leak fix): HeraPage.bindPane calls ResetVT on every rail navigation,
+// which now RIS-resets tp.emu IN PLACE and zeroes emuFedTotal without nilling
+// the pointer. So emuMissing is false while emuFedTotal is 0, and the very
+// next render takes the ring-wrap catch-up branch with offset 0 for any
+// session whose received stream exceeds the ring's tail — i.e. on essentially
+// every bind, not only after a genuine ring wrap.
+//
+// Reading the log at offset 0 for a daemon-backed handle lands at the very
+// START of the session's history, so the pane would paint the session's oldest
+// content over its newest. Anchoring on the ring tail resolves to the client's
+// actual received stream instead.
+func TestRenderLive_HeraBindAfterResetVTAnchorsOnRingContent(t *testing.T) {
+	ancient := "\x1b[?1049h\x1b[2J\x1b[H" + strings.Repeat("ZOMBIE-ANCIENT-HISTORY ", 400)
+	current := "\x1b[?1049h\x1b[2J\x1b[HMARKER-CURRENT" + strings.Repeat(".", 600)
+	setupTaskLog(t, "hera-bind-1", ancient+current)
+
+	tp := NewTerminalPane()
+	tp.taskID = "hera-bind-1"
+	// Client space: this handle only ever received `current`; the log holds
+	// the whole session, so log offset 0 is NOT handle offset 0.
+	sess := &mockAdapter{alive: true, totalWritten: uint64(len(current)), output: []byte(current)[len(current)-256:]}
+	tp.SetSession(sess)
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen.Init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 24)
+	tp.renderLive(screen, 0, 0, 80, 10, 80, 10)
+
+	// Now the bindPane sequence: ResetVT (emulator reset in place, NOT nilled)
+	// followed by another render at the same size.
+	tp.ResetVT()
+	if tp.emu == nil {
+		t.Fatal("ResetVT nilled the emulator; this test models the reset-in-place behavior")
+	}
+	testutil.Equal(t, tp.emuFedTotal, uint64(0))
+
+	screen2 := tcell.NewSimulationScreen("UTF-8")
+	if err := screen2.Init(); err != nil {
+		t.Fatalf("screen2.Init: %v", err)
+	}
+	defer screen2.Fini()
+	screen2.SetSize(80, 24)
+	tp.renderLive(screen2, 0, 0, 80, 10, 80, 10)
+
+	if got := screenRowText(screen2, 0, 80); strings.Contains(got, "ZOMBIE") {
+		t.Errorf("session's oldest history painted after a rail rebind: row 0 = %q", got)
+	}
+	if got := screenRowText(screen2, 0, 80); !strings.HasPrefix(got, "MARKER-CURRENT") {
+		t.Errorf("current content not restored after rebind: row 0 = %q", got)
+	}
+}
+
+func TestReadLiveRebuildHistory_DoesNotSpliceWhenHandleTotalExceedsLogSize(t *testing.T) {
+	// A restarted session truncates its log (StartSession opens O_TRUNC) while
+	// the cached RemoteSession keeps counting, so the handle's total runs AHEAD
+	// of the log's size with no coordinate relationship at all. The old
+	// arithmetic (overflow := ringTotal - logSize) would append a ring suffix
+	// onto the log tail as if the two were adjacent.
+	logBody := "\x1b[HFRESH-LOG-CONTENT" + strings.Repeat(".", 2000)
+	setupTaskLog(t, "space-skew-2", logBody)
+
+	ring := "\x1b[HPREVIOUS-INCARNATION" + strings.Repeat("~", 200000)
+	sess := &mockAdapter{alive: true, totalWritten: 900000, output: []byte(ring)}
+
+	got, total := readLiveRebuildHistory(sess, "space-skew-2")
+	if bytes.Contains(got, []byte("FRESH-LOG-CONTENT")) && bytes.Contains(got, []byte("PREVIOUS-INCARNATION")) {
+		t.Error("spliced two non-contiguous byte ranges (log tail + unrelated ring tail) together")
+	}
+	if total != sess.totalWritten && total != 0 {
+		t.Errorf("recorded total = %d, want the handle's own ring total %d (or 0 to defer), never a file size", total, sess.totalWritten)
+	}
 }

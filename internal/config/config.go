@@ -19,6 +19,23 @@ type Config struct {
 	Supervisor  SupervisorConfig   `toml:"supervisor"`
 	Argus       ArgusConfig        `toml:"argus"`
 	Secrets     SecretsConfig      `toml:"secrets"`
+	// CacheDirs maps a TARGET environment-variable name to a subdirectory name
+	// under `~/.argus/cache/`, shared across every worktree of every task —
+	// the opt-in, project-configurable generalization of the GOCACHE /
+	// PLAYWRIGHT_BROWSERS_PATH redirect agent.BuildCmd already forces
+	// unconditionally for those two tools. Use this for any OTHER toolchain a
+	// project's build depends on that is expensive to re-provision from
+	// scratch in a fresh, disposable git-worktree sandbox — an Android SDK
+	// install, a CocoaPods Specs repo clone, a Yarn/npm cache, and so on.
+	// Example: {"ANDROID_SDK_ROOT": "android-sdk"} exports
+	// ANDROID_SDK_ROOT=~/.argus/cache/android-sdk to every spawned agent;
+	// agent.BuildCmd creates the directory if it doesn't exist. Holds a
+	// directory PATH only — never a secret value (see Backend.EnvVars /
+	// SecretsConfig for credentials) — so it is safe to persist and log in
+	// the clear. Per-project entries (Project.CacheDirs) are merged on top,
+	// overriding a shared key or adding a project-specific one — see
+	// agent.ResolveCacheDirs.
+	CacheDirs map[string]string `toml:"cache_dirs"`
 }
 
 // SecretsConfig configures the internal/agent secrets-resolution registry
@@ -256,6 +273,10 @@ type Project struct {
 	// config.toml zeroes this (BurntSushi decodes into a fresh struct) — define
 	// projects wholesale in the file. See ResolveProfileName.
 	Profile string `toml:"profile"`
+	// CacheDirs holds this project's overrides/additions to the top-level
+	// Config.CacheDirs map — see its doc comment. A key here wins over the
+	// same key at the global level; any other key is merged in alongside it.
+	CacheDirs map[string]string `toml:"cache_dirs"`
 }
 
 // ResolveProfileName returns the project's bound profile name, resolving an
