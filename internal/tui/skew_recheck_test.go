@@ -242,3 +242,49 @@ func TestReevaluateSkew_CoherentSupervisorStaysSilent(t *testing.T) {
 	testutil.Equal(t, provider.calls, 1)
 	testutil.Equal(t, app.statusbar.Info(), "")
 }
+
+// TestSetDaemonStale_ArmsTheStartupPrompt is the regression guard for a trap the
+// tiering introduced: Run() decides whether to block on the skew.Result, not on
+// the bare daemonStale boolean, so a SetDaemonStale that only poked the flag
+// would leave the startup prompt silently un-armed.
+func TestSetDaemonStale_ArmsTheStartupPrompt(t *testing.T) {
+	app := New(testDB(t), agent.NewRunner(nil), true)
+	app.SetDaemonStale(true)
+
+	testutil.Equal(t, app.daemonStale, true)
+	testutil.Equal(t, app.startupSkew.NeedsBlockingPrompt(), true)
+
+	_, cleanup := wireApp(t, app)
+	defer cleanup()
+	readUI(t, app.tapp, func() { app.applyStartupSkew() })
+
+	if app.restartDaemonModal == nil {
+		t.Fatal("SetDaemonStale(true) must still arm the startup skew modal")
+	}
+}
+
+// TestSetSkew_SeedsRecheckState pins that the startup verdict is not re-announced
+// in the status bar a second after launch, on top of the modal the operator is
+// already reading — while an ESCALATION is still announced, because the seed is
+// what noticeForSkew compares against.
+func TestSetSkew_SeedsRecheckState(t *testing.T) {
+	app := New(testDB(t), agent.NewRunner(nil), true)
+	startup := skew.Result{Supervisor: daemon.SurfaceSpawnStale}
+	app.SetSkew(startup)
+
+	// The periodic check does not fire on the very first tick.
+	app.skewProvider = &fakeSkewClient{}
+	if _, ok := app.claimSkewCheck(); ok {
+		t.Error("the re-check fired immediately after startup instead of one interval out")
+	}
+
+	// The same standing verdict is not re-announced.
+	if n := app.noticeForSkew(startup); n != "" {
+		t.Errorf("startup verdict re-announced post-startup: %q", n)
+	}
+
+	// An escalation still is.
+	testutil.Contains(t,
+		app.noticeForSkew(skew.Result{Supervisor: daemon.SurfaceStreamStale}),
+		"live sessions are affected")
+}

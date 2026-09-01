@@ -1049,8 +1049,12 @@ func (a *App) afterDraw(screen tcell.Screen) {
 // SetDaemonStale records that the connected daemon's binary differs from the
 // TUI's. Must be called before Run() — the flag is consumed there. Retained for
 // callers/tests that only track daemon staleness; SetSkew is the fuller form.
+//
+// It routes THROUGH SetSkew rather than poking a.daemonStale directly. Run() now
+// decides whether to block on a skew.Result, not on the bare boolean, so setting
+// the flag alone would leave the startup prompt silently un-armed.
 func (a *App) SetDaemonStale(stale bool) {
-	a.daemonStale = stale
+	a.SetSkew(skew.Result{DaemonStale: stale, DaemonIdentity: a.daemonIdentity})
 }
 
 // SetSkew records the startup binary-skew evaluation: whether the daemon and/or
@@ -1063,6 +1067,15 @@ func (a *App) SetSkew(res skew.Result) {
 	a.supervisorStale = res.SupervisorStale()
 	a.daemonIdentity = res.DaemonIdentity
 	a.supervisorIdentity = res.SupervisorIdentity
+
+	// Seed the continuous re-evaluation from this verdict, so the periodic check
+	// starts one interval out rather than firing on the very first tick and
+	// re-announcing — in the status bar, a second after launch — the exact skew
+	// the operator is already reading in the startup modal. An ESCALATING
+	// verdict still speaks up, because noticeForSkew compares against this seed
+	// rather than against nothing.
+	a.lastSkewCheck = time.Now()
+	a.lastSkewNotice = res.Notice()
 }
 
 // liveAgentCount returns the number of live agent sessions (running + idle)
