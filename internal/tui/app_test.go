@@ -5155,3 +5155,78 @@ func TestAutoClearBlockedHeraRoles_RemoteModeNoOp(t *testing.T) {
 	a := &App{}
 	a.autoClearBlockedHeraRoles([]string{"c1"}) // must not panic
 }
+
+// TestMaybeKickRerenderAtWidth_DeferredNarrowBindKeepsTheWideAnchor is the
+// fix-deferred-anchor-clobber regression, reproducing the live ux.log trace
+// for task 1788286700878673000 verbatim:
+//
+//	11:53:06 rerender deferred: busy (init=80 committed=142 panel=90)
+//	11:55:24 rerender: skipping kick — panel cols unchanged since last attach (90)
+//	11:55:37 rerender: skipping kick — panel cols unchanged since last attach (90)
+//	11:56:36 rerender: skipping kick — panel cols unchanged since last attach (90)
+//	11:58:49 rerender: skipping kick — panel cols unchanged since last attach (90)
+//
+// BUG-078's sibling and inverse. There, a deferred bind at a width nothing
+// tracked left the drift invisible; the fix recorded panelCols in
+// committedCols so a LATER bind at a DIFFERENT width would see it. But the
+// recording OVERWRITES an existing anchor that is itself still unreconciled:
+// the moment the 90 bind defers, the 142 the scrollback is actually committed
+// at is forgotten and replaced with 90. Every later evaluation at 90 then
+// reads "committed 90 vs panel 90 — no drift", and initCols (80 vs 90 = delta
+// 10 < RerenderMargin) doesn't rescue it, so the still-owed kick is dropped
+// forever and the pane renders 142-column content in a 90-column emulator
+// (mid-word splits, stray fragments piled at the right margin) until the pane
+// happens to change width again.
+func TestMaybeKickRerenderAtWidth_DeferredNarrowBindKeepsTheWideAnchor(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const taskID = "tui-drift-clobber"
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	task := &model.Task{ID: taskID, Name: "clobber", Status: model.StatusInProgress, SessionID: "sid-resume", Worktree: t.TempDir()}
+	sess := &fakeKickSession{idle: false, alive: true, initCols: 80} // busy throughout both binds
+
+	waitDeferred := func(cols uint16) {
+		t.Helper()
+		var deferred atomic.Bool
+		readUI(t, app.tapp, func() {
+			app.maybeKickRerenderAtWidth(task, sess, cols, func() { deferred.Store(true) })
+		})
+		deadline := time.Now().Add(uiTimeout)
+		for time.Now().Before(deadline) && !deferred.Load() {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if !deferred.Load() {
+			t.Fatalf("bind at %d while busy never deferred — test setup is broken", cols)
+		}
+	}
+
+	// The content commits at 142 while the agent is busy (the kick defers).
+	waitDeferred(142)
+	// The pane then binds NARROW (90) while the agent is STILL busy. This is
+	// the live 11:53:06 line: the predicate correctly reads committed=142 and
+	// defers again — but must not forget that 142.
+	waitDeferred(90)
+
+	readUI(t, app.tapp, func() {
+		if got := app.committedCols[taskID]; got != 142 {
+			t.Errorf("committedCols after a deferred narrow bind = %d, want 142 (the still-unreconciled width the scrollback is committed at)", got)
+		}
+	})
+
+	// The agent finally goes idle and the pane rebinds at the SAME 90. Both
+	// gates must recognize the outstanding 142 drift and kick.
+	sess.idle = true
+	readUI(t, app.tapp, func() { app.maybeKickRerenderAtWidth(task, sess, 90, nil) })
+
+	deadline := time.Now().Add(uiTimeout)
+	for time.Now().Before(deadline) && !sess.stopCalled.Load() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !sess.stopCalled.Load() {
+		t.Fatal("a same-width rebind at 90 never kicked: the deferred 90 bind clobbered the 142 anchor, so the still-owed re-render is dropped forever and the pane stays garbled")
+	}
+}

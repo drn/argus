@@ -4889,7 +4889,7 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 				// never landed — a LATER bind near initCols (or matching some
 				// unrelated viewer's cached width) must still see this drift
 				// (fix-committed-width-drift / BUG-078).
-				a.committedCols[taskID] = panelCols
+				a.recordUnreconciledCommittedCols(taskID, panelCols)
 				uxlog.Log("[tui] rerender deferred: task=%s busy (init=%d committed=%d panel=%d)", taskID, initCols, committed, panelCols)
 				if onDeferred != nil {
 					onDeferred()
@@ -4900,7 +4900,7 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 				// the question. Invalidate so a later resize re-evaluates
 				// once the user has answered and the agent moves on.
 				a.invalidateAttachCache(taskID)
-				a.committedCols[taskID] = panelCols
+				a.recordUnreconciledCommittedCols(taskID, panelCols)
 				uxlog.Log("[tui] rerender deferred: task=%s blocked on user prompt — preserving question (init=%d committed=%d panel=%d)", taskID, initCols, committed, panelCols)
 				if onDeferred != nil {
 					onDeferred()
@@ -4916,7 +4916,7 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 					// Stop attempt failed — invalidate so the next
 					// same-cols reopen retries (mirrors DeferBusy).
 					a.invalidateAttachCache(taskID)
-					a.committedCols[taskID] = panelCols
+					a.recordUnreconciledCommittedCols(taskID, panelCols)
 					a.statusbar.ClearInfo()
 					if onDeferred != nil {
 						onDeferred()
@@ -4932,6 +4932,37 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 			}
 		})
 	}()
+}
+
+// recordUnreconciledCommittedCols records panelCols as the width taskID's
+// live content is drifting toward after a kick was owed but not taken
+// (deferred while busy or blocked on a prompt, or a failed Stop). It is the
+// ONLY writer of committedCols besides the clears.
+//
+// It refuses to overwrite an existing anchor that is ITSELF still
+// unreconciled — one that already differs from panelCols by more than the
+// rerender margin. That anchor names a width this session's scrollback is
+// genuinely still committed at, and no kick has re-emitted it; replacing it
+// with panelCols throws that away, and because the replacement then equals
+// panelCols by construction, every later evaluation at this same width reads
+// "committed == panel, no drift" and drops the still-owed kick for good
+// (fix-deferred-anchor-clobber). Live trace that motivated this: initCols=80,
+// content committed at 142, a Hera pane binds at 90 while the agent is busy
+// -> deferred, anchor clobbered 142 -> 90; the four following evaluations at
+// 90 all skipped (initCols delta 10 < RerenderMargin, committed delta 0)
+// while the pane rendered 142-column content in a 90-column emulator.
+//
+// When the existing anchor is within the margin of panelCols it describes
+// effectively the same width, so the fresher value wins — that keeps
+// BUG-078's original behavior for the case it was written for (nothing
+// tracked yet, or an anchor the current panel already matches) and only
+// widens which candidates stay kickable, never narrows it.
+func (a *App) recordUnreconciledCommittedCols(taskID string, panelCols uint16) {
+	if cur, ok := a.committedCols[taskID]; ok &&
+		agent.MarginExceedsRerenderThreshold(int(cur), int(panelCols)) {
+		return
+	}
+	a.committedCols[taskID] = panelCols
 }
 
 // isRedundantAttach returns true when the panel cols match the
