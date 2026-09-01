@@ -2076,19 +2076,29 @@ function startRefreshTimer() {
 function __argusRefreshTimer() { return refreshTimer; }
 
 // --- API (with 10s timeout) ---
+const DEFAULT_TIMEOUT_MS = 10000;
+// Just under the server's own 300s http.Server.ReadTimeout (server.go),
+// which genuinely bounds how long the server spends reading a multipart
+// body — so a slow mobile upload times out server-side (with a real
+// error) rather than client-side (with the task having actually been
+// created behind our back).
+const UPLOAD_TIMEOUT_MS = 280000;
+// Task creation with no attachments still runs git-worktree setup + hooks
+// + agent start synchronously server-side before responding. Unlike
+// UPLOAD_TIMEOUT_MS, this is NOT bounded by ReadTimeout (which only
+// covers request *reading*, not handler execution — server.go leaves
+// WriteTimeout unset on purpose) — it's a heuristic estimate of typical
+// worktree/hook/agent-start latency, not an enforced server-side budget.
+const TASK_CREATE_TIMEOUT_MS = 120000;
+
 async function api(path, opts = {}) {
   const { timeoutMs: timeoutOverride, ...fetchOpts } = opts;
   const controller = new AbortController();
-  // FormData uploads (file attachments) can take much longer than the
-  // typical 10s API budget. Give them 280s — just under the server's own
-  // 300s http.Server.ReadTimeout (server.go) — so a slow mobile upload
-  // times out server-side (with a real error) rather than client-side
-  // (with the task having actually been created behind our back).
-  // Callers doing other known-slow synchronous work (e.g. task creation,
-  // which runs git-worktree + hook + agent-start before responding) can
-  // override via opts.timeoutMs.
+  // opts.timeoutMs overrides the default for ANY call, upload or not —
+  // detection by body type below only picks the fallback when no override
+  // is given.
   const isUpload = fetchOpts.body instanceof FormData;
-  const timeoutMs = timeoutOverride ?? (isUpload ? 280000 : 10000);
+  const timeoutMs = timeoutOverride ?? (isUpload ? UPLOAD_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     // For FormData, the browser sets Content-Type with the multipart
@@ -2852,7 +2862,16 @@ async function onUploadFilesPicked(e) {
       showToast(`Saved ${paths.length} file${paths.length === 1 ? '' : 's'} (resume task to use)`);
     }
   } catch (err) {
-    showToast('Upload error: ' + err.message);
+    if (err.name === 'AbortError') {
+      // Attachments are written server-side before the response is sent, so
+      // this may have completed despite the client giving up waiting — we
+      // don't have the resulting paths to paste into stdin (that only
+      // happens on the success path above), so just point the user at
+      // Files instead of reporting a hard failure.
+      showToast('Upload is taking a while — check Files, it may have completed anyway');
+    } else {
+      showToast('Upload error: ' + err.message);
+    }
   }
 }
 
@@ -5053,13 +5072,10 @@ async function createTask() {
       for (const f of createFiles) fd.append('files', f, f.name);
       r = await api('/api/tasks', { method: 'POST', body: fd });
     } else {
-      // No files, but task creation still runs git-worktree setup + hooks +
-      // agent start synchronously server-side before responding — that can
-      // exceed the default 10s JSON budget, so give it more room.
       r = await api('/api/tasks', {
         method: 'POST',
         body: JSON.stringify({ name, prompt, project, backend, model: taskModel }),
-        timeoutMs: 120000
+        timeoutMs: TASK_CREATE_TIMEOUT_MS
       });
     }
     const data = await r.json();
