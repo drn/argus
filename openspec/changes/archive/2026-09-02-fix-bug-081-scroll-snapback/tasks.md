@@ -9,7 +9,7 @@
 - [x] 2.1 `internal/tui/terminal/bug081_test.go`: synthetic alternate-screen recording (enter alt screen, repaint in place, no line feeds) + a line-oriented control recording; a `replayPane` helper that puts a pane in the no-live-emulator state and settles the async rebuild.
 - [x] 2.2 Snap-back repro: three `ScrollUp(mouseScrollStep)` notches, each followed by the redraw that clamps — the offset must never leave the tail.
 - [x] 2.3 Control case: a main-screen replay pane must still enter scroll mode and stay there.
-- [x] 2.4 `internal/tui/hera/bug081_test.go`: end-to-end over a dead-handle (`!Alive()`) Hera pane — mouse wheel through `HeraPage.MouseHandler`, and PgUp through `forwardKey`. Readiness is judged by the recording appearing on screen, deliberately not by the predicate under test.
+- [x] 2.4 `internal/tui/hera/bug081_test.go`: end-to-end over BOTH replay-path exposures — a dead-handle (`!Alive()`) pane and a no-handle pane — via the mouse wheel through `HeraPage.MouseHandler`, plus PgUp through `forwardKey`. Readiness is judged by the recording appearing on screen, deliberately not by the predicate under test.
 
 ## 3. Fix
 
@@ -22,12 +22,12 @@
 ## 4. Verify
 
 - [x] 4.1 Re-run the red tests against the pre-fix predicate to confirm they fail on the behavior (offset entering scroll mode), not on setup.
-- [x] 4.2 `make pre-pr` green.
+- [x] 4.2 `make pre-pr` green (re-run after rebasing onto master's garbling-family PRs #959/#963/#964/#965 and `fix-alt-screen-exit-truncation`).
 
 ## 5. Docs
 
 - [x] 5.1 Gotcha bullet in `context/knowledge/gotchas/pty-terminal.md` (the guard is live-emulator-only and the replay path has no live emulator).
-- [x] 5.2 Gotcha bullet in `context/knowledge/gotchas/hera-view.md` (why the Hera split view is the exposure and the classic agent view is not).
+- [x] 5.2 Gotcha bullet in `context/knowledge/gotchas/hera-view.md` (why the Hera split view is the exposure and the classic agent view is not, plus the no-handle second exposure and its dependency on `fix-closeout-replay-load-order`).
 - [x] 5.3 Update `context/knowledge/index.md` coverage cells.
 
 ## 6. Archive
