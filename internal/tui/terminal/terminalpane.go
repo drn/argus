@@ -274,6 +274,7 @@ type TerminalPane struct {
 	replayEmuLogSize       int64 // log file size when replayEmu was built (for log-backed scroll)
 	replayEmuMaxScroll     int   // max scrollOffset the replay emulator was built for
 	replayEmuCursorVisible bool  // cached cursor visibility from replay emulator
+	replayEmuAltScreen     bool  // alternate-screen state of the replay emulator
 	// replayEmuFirstByte is the file offset of the first byte fed into
 	// the current replayEmu (0 means "from the start of the file"). Rebuilds
 	// triggered by scroll-past-maxScroll on an alive session must read from
@@ -752,6 +753,7 @@ func (tp *TerminalPane) ResetVT() {
 	tp.replayEmuBytes = 0
 	tp.replayEmuLogSize = 0
 	tp.replayEmuMaxScroll = 0
+	tp.replayEmuAltScreen = false
 	tp.replayEmuFirstByte = 0
 	tp.replayBuilding = false
 	tp.replayRebuildPending = false
@@ -785,16 +787,64 @@ const scrollAccelWindow = 120 * time.Millisecond
 // scrollAccelMax caps the acceleration multiplier.
 const scrollAccelMax = 12
 
-// InAltScreen reports whether the pane's emulator is in alternate-screen mode
-// (DECSET 1049). A full-screen agent (Claude Code / Codex / vim) redraws in place
-// (cursor-home, no line-scroll) and pushes ~zero lines into linear scrollback, so
-// replaying its raw session log through a fresh emulator reads the stacked in-place
-// frames as interleaved garbage. argus must therefore NOT enter its own scroll mode
-// for such a pane (BUG-031). The emulator leaves alt-screen on ESC[?1049l (agent
-// quit/exit), at which point normal scrollback resumes — the guard never latches.
-// Main-goroutine only: tp.emu is main-goroutine-owned; IsAltScreen is mutex-safe.
+// InAltScreen reports whether the CONTENT the pane is rendering is on the
+// alternate screen (DECSET 1049). A full-screen agent (Claude Code / Codex /
+// vim) redraws in place (cursor-home, no line-scroll) and pushes ~zero lines
+// into linear scrollback, so replaying its raw session log through a fresh
+// emulator reads the stacked in-place frames as interleaved garbage. argus must
+// therefore NOT enter its own scroll mode for such a pane (BUG-031). The
+// emulator leaves alt-screen on ESC[?1049l (agent quit/exit), at which point
+// normal scrollback resumes — the guard never latches.
+//
+// The live emulator is the authority whenever it exists. It does NOT always
+// exist: Draw only runs renderLive (the sole creator of tp.emu) for a pane at
+// the live tail with an ALIVE session, so a pane rendering through the replay
+// path — no live session at all (a finished / in-review Hera worker, or a
+// BUG-013 dead handle), or one already scrolled — keeps tp.emu nil for its
+// whole lifetime. Reading tp.emu alone therefore answered "main screen" for
+// exactly the panes whose reconstructed content is most likely to be a
+// full-screen agent's zero-scrollback recording, so scroll mode was entered
+// against content with a maxScroll of 0 and the next paint clamped the offset
+// straight back to 0 — the BUG-081 snap-back. Fall back to the alternate-screen
+// state recorded from the replay emulator's own build so the guard sees the
+// content it is actually painting.
+//
+// Main-goroutine only for tp.emu (main-goroutine-owned; IsAltScreen is
+// mutex-safe); the replay flag is shared with asyncReplayRebuild, so it is read
+// under tp.mu. No caller holds tp.mu.
 func (tp *TerminalPane) InAltScreen() bool {
-	return tp.emu != nil && tp.emu.IsAltScreen()
+	if tp.emu != nil {
+		return tp.emu.IsAltScreen()
+	}
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	return tp.replayEmuAltScreen
+}
+
+// NoScrollbackHint returns the transient affordance to surface when the user
+// asks a pane with no linear scrollback to scroll up, or "" when the pane is
+// scrollable and the scroll should just happen. It is the single source of
+// wording for both keyboard scroll-up call sites (the agent view's scroll keys
+// and a focused Hera pane's PgUp), which otherwise have no way to tell the two
+// no-scrollback cases apart.
+//
+// A LIVE full-screen agent can scroll its own view — the mouse wheel is
+// forwarded to it (BUG-026) and the keyboard hint points the user there. A pane
+// REPLAYING a full-screen agent's recording has no such agent to defer to: the
+// session is gone (or its handle is dead), and the recording genuinely contains
+// no scrollback to browse, so saying "scroll within the agent" would send the
+// user after something that is not running.
+func (tp *TerminalPane) NoScrollbackHint() string {
+	if !tp.InAltScreen() {
+		return ""
+	}
+	tp.mu.Lock()
+	sess := tp.session
+	tp.mu.Unlock()
+	if sess != nil && sess.Alive() {
+		return "Fullscreen agent — scroll within the agent"
+	}
+	return "Fullscreen agent output — no scrollback recorded"
 }
 
 func (tp *TerminalPane) ScrollUp(n int) {
@@ -861,6 +911,7 @@ func (tp *TerminalPane) invalidateReplayCache() {
 	tp.replayEmuBytes = 0
 	tp.replayEmuLogSize = 0
 	tp.replayEmuMaxScroll = 0
+	tp.replayEmuAltScreen = false
 	tp.replayEmuFirstByte = 0
 	tp.anchorTotalLines = 0
 	tp.replayBuilding = false // allow new async rebuild after invalidation
@@ -2046,6 +2097,10 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 	tp.replayEmuLogSize = logSize
 	tp.replayEmuBytes = uint64(len(raw))
 	tp.replayEmuCursorVisible = cursorVisible
+	// Record the built emulator's alternate-screen state: for a pane with no
+	// live emulator this is the ONLY signal that the content it paints has no
+	// linear scrollback (BUG-081 — see InAltScreen).
+	tp.replayEmuAltScreen = emu.IsAltScreen()
 	tp.replayEmuMaxScroll = maxScroll
 	// firstByteOffset = logSize - bytes-fed. When we fed from the log,
 	// that's the position of the first byte in `raw`; when we fell back
