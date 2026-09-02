@@ -4023,12 +4023,16 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 	if act, ok := a.activeKeymap().Resolve(keymap.CtxAgent, event); ok {
 		// BUG-031: a full-screen agent (alt-screen) has no linear scrollback;
 		// argus's own scroll mode would replay its in-place frames as garbage.
-		// Suppress scroll-up entry and tell the user to scroll within the agent
-		// (the mouse wheel is forwarded to it — BUG-026). Keyed on the resolved
-		// action so it honors custom scroll keybindings, not just shift+arrows.
-		if a.agentPane.InAltScreen() && (act == keymap.ActAgentScrollUp || act == keymap.ActAgentScrollPgUp) {
-			a.statusbar.SetInfo("Fullscreen agent — scroll within the agent")
-			return nil
+		// Suppress scroll-up entry and surface the pane's own affordance — a
+		// LIVE agent can be scrolled within (the mouse wheel is forwarded to it
+		// — BUG-026), whereas a pane REPLAYING such an agent's recording has no
+		// running agent to defer to (BUG-082). Keyed on the resolved action so
+		// it honors custom scroll keybindings, not just shift+arrows.
+		if act == keymap.ActAgentScrollUp || act == keymap.ActAgentScrollPgUp {
+			if hint := a.agentPane.NoScrollbackHint(); hint != "" {
+				a.statusbar.SetInfo(hint)
+				return nil
+			}
 		}
 		switch act {
 		case keymap.ActAgentScrollUp:
