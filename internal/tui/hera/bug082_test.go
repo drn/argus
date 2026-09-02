@@ -16,7 +16,7 @@ import (
 	"github.com/drn/argus/internal/tui/terminal"
 )
 
-// BUG-081 end to end through the Hera split view.
+// BUG-082 end to end through the Hera split view.
 //
 // A pane whose session handle is dead while the agent process is still running
 // (BUG-013: the daemon tore the stream down on a StreamLost relay or a bounce)
@@ -111,7 +111,7 @@ func replayPathPage(t *testing.T, taskID string, deadHandle bool) (*HeraPage, *t
 	return nil, nil, nil
 }
 
-func TestPanes_BUG081_ReplayPaneWheelDoesNotSnapBack(t *testing.T) {
+func TestPanes_BUG082_ReplayPaneWheelDoesNotSnapBack(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		deadHandle bool
@@ -142,7 +142,7 @@ func assertNoWheelSnapBack(t *testing.T, deadHandle bool) {
 	}
 }
 
-func TestPanes_BUG081_ReplayPanePgUpSurfacesAccurateHint(t *testing.T) {
+func TestPanes_BUG082_ReplayPanePgUpSurfacesAccurateHint(t *testing.T) {
 	p, pane, _ := replayPathPage(t, "t-replay", true)
 	var info string
 	p.OnInfo = func(msg string) { info = msg }

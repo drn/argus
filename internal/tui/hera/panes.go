@@ -492,7 +492,7 @@ func (p *HeraPage) forwardKey(tp *terminal.TerminalPane, ev *tcell.EventKey) {
 		// garbage. Suppress + surface the pane's own affordance (a LIVE agent
 		// can be scrolled within — the mouse wheel is forwarded to it, BUG-026;
 		// a pane REPLAYING such an agent's recording has nothing to defer to,
-		// BUG-081). ScrollUp also self-guards.
+		// BUG-082). ScrollUp also self-guards.
 		if hint := tp.NoScrollbackHint(); hint != "" {
 			if p.OnInfo != nil {
 				p.OnInfo(hint)

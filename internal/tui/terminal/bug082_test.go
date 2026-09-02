@@ -11,7 +11,7 @@ import (
 	"github.com/drn/argus/internal/testutil"
 )
 
-// BUG-081 — "scrolls up a line then jumps straight back to the bottom,
+// BUG-082 — "scrolls up a line then jumps straight back to the bottom,
 // repeatedly; I cannot scroll up unless I restart the TUI".
 //
 // A pane rendering through the REPLAY path (no live session — a finished /
@@ -95,8 +95,8 @@ func waitReplayBuild(t *testing.T, tp *TerminalPane) {
 	t.Fatal("replay rebuild never finished")
 }
 
-func TestTerminalPane_BUG081_AltScreenReplayPaneReportsAltScreen(t *testing.T) {
-	tp, _ := replayPane(t, "bug081-alt", altScreenRecording(30, 24))
+func TestTerminalPane_BUG082_AltScreenReplayPaneReportsAltScreen(t *testing.T) {
+	tp, _ := replayPane(t, "bug082-alt", altScreenRecording(30, 24))
 
 	// Precondition: this is genuinely the blind state — no live emulator, and a
 	// replay emulator that offers nothing to scroll into.
@@ -111,8 +111,8 @@ func TestTerminalPane_BUG081_AltScreenReplayPaneReportsAltScreen(t *testing.T) {
 	}
 }
 
-func TestTerminalPane_BUG081_ScrollUpDoesNotSnapBackOnAltScreenReplay(t *testing.T) {
-	tp, screen := replayPane(t, "bug081-snap", altScreenRecording(30, 24))
+func TestTerminalPane_BUG082_ScrollUpDoesNotSnapBackOnAltScreenReplay(t *testing.T) {
+	tp, screen := replayPane(t, "bug082-snap", altScreenRecording(30, 24))
 
 	// Three wheel notches, each followed by the redraw that used to clamp the
 	// offset back to 0. The offset must never leave the live tail: entering
@@ -129,8 +129,8 @@ func TestTerminalPane_BUG081_ScrollUpDoesNotSnapBackOnAltScreenReplay(t *testing
 	}
 }
 
-func TestTerminalPane_BUG081_AccelScrollUpSuppressedOnAltScreenReplay(t *testing.T) {
-	tp, _ := replayPane(t, "bug081-accel", altScreenRecording(30, 24))
+func TestTerminalPane_BUG082_AccelScrollUpSuppressedOnAltScreenReplay(t *testing.T) {
+	tp, _ := replayPane(t, "bug082-accel", altScreenRecording(30, 24))
 
 	testutil.Equal(t, tp.AccelScrollUp(), 0)
 	testutil.Equal(t, tp.ScrollOffset(), 0)
@@ -139,8 +139,8 @@ func TestTerminalPane_BUG081_AccelScrollUpSuppressedOnAltScreenReplay(t *testing
 // The control case: a replay pane whose recording IS line-oriented must keep
 // browsing its history exactly as before. This is what stops the fix from
 // degenerating into "replay panes can't scroll".
-func TestTerminalPane_BUG081_MainScreenReplayPaneStillScrolls(t *testing.T) {
-	tp, screen := replayPane(t, "bug081-main", mainScreenRecording(400))
+func TestTerminalPane_BUG082_MainScreenReplayPaneStillScrolls(t *testing.T) {
+	tp, screen := replayPane(t, "bug082-main", mainScreenRecording(400))
 
 	if tp.InAltScreen() {
 		t.Fatal("line-oriented recording must not report alternate screen")
@@ -160,7 +160,7 @@ func TestTerminalPane_BUG081_MainScreenReplayPaneStillScrolls(t *testing.T) {
 
 // A live emulator, when present, stays the authority — the flag recorded from a
 // stale replay build must never override the agent leaving the alternate screen.
-func TestTerminalPane_BUG081_LiveEmulatorOutranksRecordedReplayFlag(t *testing.T) {
+func TestTerminalPane_BUG082_LiveEmulatorOutranksRecordedReplayFlag(t *testing.T) {
 	tp := NewTerminalPane()
 	tp.mu.Lock()
 	tp.replayEmuAltScreen = true
@@ -174,15 +174,15 @@ func TestTerminalPane_BUG081_LiveEmulatorOutranksRecordedReplayFlag(t *testing.T
 	testutil.Equal(t, tp.InAltScreen(), false)
 }
 
-func TestTerminalPane_BUG081_ResetVTClearsRecordedReplayFlag(t *testing.T) {
-	tp, _ := replayPane(t, "bug081-reset", altScreenRecording(30, 24))
+func TestTerminalPane_BUG082_ResetVTClearsRecordedReplayFlag(t *testing.T) {
+	tp, _ := replayPane(t, "bug082-reset", altScreenRecording(30, 24))
 	testutil.Equal(t, tp.InAltScreen(), true)
 
 	tp.ResetVT()
 	testutil.Equal(t, tp.InAltScreen(), false)
 }
 
-func TestTerminalPane_BUG081_NoScrollbackHint(t *testing.T) {
+func TestTerminalPane_BUG082_NoScrollbackHint(t *testing.T) {
 	t.Run("live alt-screen agent points at the agent", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		tp := NewTerminalPane()
@@ -193,7 +193,7 @@ func TestTerminalPane_BUG081_NoScrollbackHint(t *testing.T) {
 	})
 
 	t.Run("replayed alt-screen recording says there is no scrollback", func(t *testing.T) {
-		tp, _ := replayPane(t, "bug081-hint", altScreenRecording(30, 24))
+		tp, _ := replayPane(t, "bug082-hint", altScreenRecording(30, 24))
 		hint := tp.NoScrollbackHint()
 		if hint == "" {
 			t.Fatal("replayed alternate-screen content should surface a hint")
@@ -204,7 +204,7 @@ func TestTerminalPane_BUG081_NoScrollbackHint(t *testing.T) {
 	})
 
 	t.Run("scrollable pane has no hint", func(t *testing.T) {
-		tp, _ := replayPane(t, "bug081-nohint", mainScreenRecording(400))
+		tp, _ := replayPane(t, "bug082-nohint", mainScreenRecording(400))
 		testutil.Equal(t, tp.NoScrollbackHint(), "")
 	})
 }

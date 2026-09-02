@@ -6,10 +6,10 @@
 
 ## 2. Red tests
 
-- [x] 2.1 `internal/tui/terminal/bug081_test.go`: synthetic alternate-screen recording (enter alt screen, repaint in place, no line feeds) + a line-oriented control recording; a `replayPane` helper that puts a pane in the no-live-emulator state and settles the async rebuild.
+- [x] 2.1 `internal/tui/terminal/bug082_test.go`: synthetic alternate-screen recording (enter alt screen, repaint in place, no line feeds) + a line-oriented control recording; a `replayPane` helper that puts a pane in the no-live-emulator state and settles the async rebuild.
 - [x] 2.2 Snap-back repro: three `ScrollUp(mouseScrollStep)` notches, each followed by the redraw that clamps — the offset must never leave the tail.
 - [x] 2.3 Control case: a main-screen replay pane must still enter scroll mode and stay there.
-- [x] 2.4 `internal/tui/hera/bug081_test.go`: end-to-end over BOTH replay-path exposures — a dead-handle (`!Alive()`) pane and a no-handle pane — via the mouse wheel through `HeraPage.MouseHandler`, plus PgUp through `forwardKey`. Readiness is judged by the recording appearing on screen, deliberately not by the predicate under test.
+- [x] 2.4 `internal/tui/hera/bug082_test.go`: end-to-end over BOTH replay-path exposures — a dead-handle (`!Alive()`) pane and a no-handle pane — via the mouse wheel through `HeraPage.MouseHandler`, plus PgUp through `forwardKey`. Readiness is judged by the recording appearing on screen, deliberately not by the predicate under test.
 
 ## 3. Fix
 
@@ -32,4 +32,4 @@
 
 ## 6. Archive
 
-- [x] 6.1 Merge the delta into `openspec/specs/terminal-rendering/spec.md` and move the change folder to `openspec/changes/archive/<date>-fix-bug-081-scroll-snapback/`, committed on the change branch before merge.
+- [x] 6.1 Merge the delta into `openspec/specs/terminal-rendering/spec.md` and move the change folder to `openspec/changes/archive/<date>-fix-bug-082-scroll-snapback/`, committed on the change branch before merge.

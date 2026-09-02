@@ -805,7 +805,7 @@ const scrollAccelMax = 12
 // exactly the panes whose reconstructed content is most likely to be a
 // full-screen agent's zero-scrollback recording, so scroll mode was entered
 // against content with a maxScroll of 0 and the next paint clamped the offset
-// straight back to 0 — the BUG-081 snap-back. Fall back to the alternate-screen
+// straight back to 0 — the BUG-082 snap-back. Fall back to the alternate-screen
 // state recorded from the replay emulator's own build so the guard sees the
 // content it is actually painting.
 //
@@ -2099,7 +2099,7 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 	tp.replayEmuCursorVisible = cursorVisible
 	// Record the built emulator's alternate-screen state: for a pane with no
 	// live emulator this is the ONLY signal that the content it paints has no
-	// linear scrollback (BUG-081 — see InAltScreen).
+	// linear scrollback (BUG-082 — see InAltScreen).
 	tp.replayEmuAltScreen = emu.IsAltScreen()
 	tp.replayEmuMaxScroll = maxScroll
 	// firstByteOffset = logSize - bytes-fed. When we fed from the log,

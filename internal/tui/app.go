@@ -4026,7 +4026,7 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 		// Suppress scroll-up entry and surface the pane's own affordance — a
 		// LIVE agent can be scrolled within (the mouse wheel is forwarded to it
 		// — BUG-026), whereas a pane REPLAYING such an agent's recording has no
-		// running agent to defer to (BUG-081). Keyed on the resolved action so
+		// running agent to defer to (BUG-082). Keyed on the resolved action so
 		// it honors custom scroll keybindings, not just shift+arrows.
 		if act == keymap.ActAgentScrollUp || act == keymap.ActAgentScrollPgUp {
 			if hint := a.agentPane.NoScrollbackHint(); hint != "" {
