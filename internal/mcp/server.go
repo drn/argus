@@ -14,10 +14,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/todo"
 )
 
 // KBQuerier is the interface the MCP server needs from the database.
@@ -198,6 +200,29 @@ type Server struct {
 	// registry holds runtime-registered plugin tools (PR 4). Nil when no
 	// registry is wired — the server then behaves exactly as today.
 	registry *Registry
+
+	// todoConfigStore resolves the active to-do backend config. Optional;
+	// set via SetTodoManager.
+	todoConfigStore TodoConfigStore
+}
+
+// TodoConfigStore resolves the currently active to-do-backend config.
+// *db.DB satisfies this via its existing Config() method, which re-reads the
+// DB config table (and re-applies the config.toml overlay) on every call —
+// the same live, uncached read every other config-gated setting already
+// uses. That is what lets a backend selected in Settings appear in
+// tools/list on the very next call, with no daemon restart.
+type TodoConfigStore interface {
+	Config() config.Config
+}
+
+// SetTodoManager wires the to-do backend config resolver. When set, the
+// server exposes todo_create, todo_list, todo_update, todo_complete, and
+// todo_delete whenever store.Config().Todo.Backend names a registered
+// internal/todo backend — resolved fresh on every tools/list/tools/call, not
+// cached from a single startup-time check like the other Set* wiring points.
+func (s *Server) SetTodoManager(store TodoConfigStore) {
+	s.todoConfigStore = store
 }
 
 // New creates a new MCP server.
@@ -691,6 +716,100 @@ Failure convention: write ` + "`{\"failed\": true, \"reason\": \"...\"}`" + ` so
 	},
 }
 
+// todoToolDefs are exposed only while todoToolsActive() is true — i.e. a
+// backend is both wired (SetTodoManager) and currently selected in config.
+var todoToolDefs = []Tool{
+	{
+		Name:        "todo_create",
+		Description: `Create a new item in the configured to-do-list backend. Returns the created item including its id, which subsequent todo_update/todo_complete/todo_delete calls need.`,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"title": map[string]interface{}{"type": "string", "description": "Item title. Required."},
+				"notes": map[string]interface{}{"type": "string", "description": "Optional free-text notes."},
+			},
+			"required": []string{"title"},
+		},
+	},
+	{
+		Name:        "todo_list",
+		Description: `List open (not completed/canceled) items from the configured to-do-list backend. Always queries the backend live — Argus does not cache or mirror item content.`,
+		InputSchema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+	},
+	{
+		Name:        "todo_update",
+		Description: `Update an existing item's title and/or notes in the configured to-do-list backend. Only fields you pass are changed.`,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id":    map[string]interface{}{"type": "string", "description": "Item id, from a prior todo_create or todo_list call."},
+				"title": map[string]interface{}{"type": "string", "description": "New title. Omit to leave unchanged."},
+				"notes": map[string]interface{}{"type": "string", "description": "New notes. Omit to leave unchanged; pass an empty string to clear."},
+			},
+			"required": []string{"id"},
+		},
+	},
+	{
+		Name:        "todo_complete",
+		Description: `Mark an item resolved/completed in the configured to-do-list backend.`,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id": map[string]interface{}{"type": "string", "description": "Item id, from a prior todo_create or todo_list call."},
+			},
+			"required": []string{"id"},
+		},
+	},
+	{
+		Name:        "todo_delete",
+		Description: `Delete an item from the configured to-do-list backend.`,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id": map[string]interface{}{"type": "string", "description": "Item id, from a prior todo_create or todo_list call."},
+			},
+			"required": []string{"id"},
+		},
+	},
+}
+
+// resolveTodoBackend returns the currently active backend, or (nil, nil)
+// when no backend is configured. Re-resolves the live config on every call.
+func (s *Server) resolveTodoBackend() (todo.Backend, error) {
+	if s.todoConfigStore == nil {
+		return nil, fmt.Errorf("todo management not configured")
+	}
+	cfg := s.todoConfigStore.Config()
+	if cfg.Todo.Backend == "" {
+		return nil, nil
+	}
+	return todo.Get(cfg.Todo.Backend, cfg.Todo)
+}
+
+// todoToolsActive reports whether the todo_* tools should currently be
+// exposed: a resolver is wired AND it resolves to a live backend. An unknown
+// or misconfigured backend name resolves to an error, which counts as
+// inactive here — per spec, an invalid backend name is treated the same as
+// no backend configured, not surfaced as a distinct tool-call error.
+func (s *Server) todoToolsActive() bool {
+	b, err := s.resolveTodoBackend()
+	return err == nil && b != nil
+}
+
+func formatTodoItem(it todo.Item) string {
+	status := "open"
+	if it.Done {
+		status = "done"
+	}
+	if it.Notes != "" {
+		return fmt.Sprintf("[%s] %s (%s) — %s", it.ID, it.Title, status, it.Notes)
+	}
+	return fmt.Sprintf("[%s] %s (%s)", it.ID, it.Title, status)
+}
+
 // maxTaskResultBytes caps the serialized result payload. 64 KiB is plenty
 // for a structured stacked-PR record (PR URL, SHA, milestone, optional
 // failure reason) while keeping a misbehaving agent from filling the
@@ -832,6 +951,9 @@ func (s *Server) handleToolsList(req *Request) *Response {
 	if s.profileResolveEnabled() {
 		tools = append(tools, profileToolDefs...)
 	}
+	if s.todoToolsActive() {
+		tools = append(tools, todoToolDefs...)
+	}
 	if s.registry != nil {
 		// Failures here are logged and swallowed: surfacing a registry error
 		// here would break the entire tools/list response for built-in tools
@@ -957,6 +1079,31 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolHeraAccept(req.ID, params.Arguments)
 	case "profile_resolve":
 		return s.toolProfileResolve(req.ID, params.Arguments)
+	case "todo_create":
+		if !s.todoToolsActive() {
+			return errorResp(req.ID, -32601, "unknown tool: "+params.Name)
+		}
+		return s.toolTodoCreate(req.ID, params.Arguments)
+	case "todo_list":
+		if !s.todoToolsActive() {
+			return errorResp(req.ID, -32601, "unknown tool: "+params.Name)
+		}
+		return s.toolTodoList(req.ID, params.Arguments)
+	case "todo_update":
+		if !s.todoToolsActive() {
+			return errorResp(req.ID, -32601, "unknown tool: "+params.Name)
+		}
+		return s.toolTodoUpdate(req.ID, params.Arguments)
+	case "todo_complete":
+		if !s.todoToolsActive() {
+			return errorResp(req.ID, -32601, "unknown tool: "+params.Name)
+		}
+		return s.toolTodoComplete(req.ID, params.Arguments)
+	case "todo_delete":
+		if !s.todoToolsActive() {
+			return errorResp(req.ID, -32601, "unknown tool: "+params.Name)
+		}
+		return s.toolTodoDelete(req.ID, params.Arguments)
 	default:
 		// Plugin-registered tool? PR 4 — dispatch into the registry which
 		// HTTP-POSTs to the plugin's callback_url and returns the response
@@ -1622,6 +1769,142 @@ func (s *Server) toolClipboardSet(id interface{}, args json.RawMessage) *Respons
 
 	log.Printf("[mcp] clipboard_set ok: id=%s bytes=%d", task.ID, len(p.Text))
 	return toolResult(id, fmt.Sprintf("Staged %d bytes for task %s (%s). The user will see a Copy button (PWA) or ctrl+y hint (TUI).", len(p.Text), task.ID, task.Name))
+}
+
+// --- todo tools ---
+//
+// Dispatch already gated these behind todoToolsActive() (see
+// handleToolsCall), so a nil backend here would only mean an extremely
+// narrow TOCTOU race against a concurrent Settings change — handled below as
+// an ordinary tool error rather than re-treated as unknown-tool, since by
+// this point the call has already been accepted as a real tool invocation.
+
+func (s *Server) toolTodoCreate(id interface{}, args json.RawMessage) *Response {
+	var p struct {
+		Title string `json:"title"`
+		Notes string `json:"notes"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if strings.TrimSpace(p.Title) == "" {
+		return toolError(id, "title is required")
+	}
+
+	b, err := s.resolveTodoBackend()
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+	if b == nil {
+		return toolError(id, "no to-do backend configured")
+	}
+
+	item, err := b.Create(context.Background(), todo.CreateInput{Title: p.Title, Notes: p.Notes})
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+	return toolResult(id, formatTodoItem(item))
+}
+
+func (s *Server) toolTodoList(id interface{}, _ json.RawMessage) *Response {
+	b, err := s.resolveTodoBackend()
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+	if b == nil {
+		return toolError(id, "no to-do backend configured")
+	}
+
+	items, err := b.List(context.Background())
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+	if len(items) == 0 {
+		return toolResult(id, "No open items.")
+	}
+
+	var sb strings.Builder
+	for _, it := range items {
+		sb.WriteString("- ")
+		sb.WriteString(formatTodoItem(it))
+		sb.WriteString("\n")
+	}
+	return toolResult(id, sb.String())
+}
+
+func (s *Server) toolTodoUpdate(id interface{}, args json.RawMessage) *Response {
+	var p struct {
+		ID    string  `json:"id"`
+		Title *string `json:"title"`
+		Notes *string `json:"notes"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if strings.TrimSpace(p.ID) == "" {
+		return toolError(id, "id is required")
+	}
+
+	b, err := s.resolveTodoBackend()
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+	if b == nil {
+		return toolError(id, "no to-do backend configured")
+	}
+
+	item, err := b.Update(context.Background(), p.ID, todo.UpdateInput{Title: p.Title, Notes: p.Notes})
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+	return toolResult(id, formatTodoItem(item))
+}
+
+func (s *Server) toolTodoComplete(id interface{}, args json.RawMessage) *Response {
+	var p struct {
+		ID string `json:"id"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if strings.TrimSpace(p.ID) == "" {
+		return toolError(id, "id is required")
+	}
+
+	b, err := s.resolveTodoBackend()
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+	if b == nil {
+		return toolError(id, "no to-do backend configured")
+	}
+
+	item, err := b.Complete(context.Background(), p.ID)
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+	return toolResult(id, formatTodoItem(item))
+}
+
+func (s *Server) toolTodoDelete(id interface{}, args json.RawMessage) *Response {
+	var p struct {
+		ID string `json:"id"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if strings.TrimSpace(p.ID) == "" {
+		return toolError(id, "id is required")
+	}
+
+	b, err := s.resolveTodoBackend()
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+	if b == nil {
+		return toolError(id, "no to-do backend configured")
+	}
+
+	if err := b.Delete(context.Background(), p.ID); err != nil {
+		return toolError(id, err.Error())
+	}
+	return toolResult(id, fmt.Sprintf("Deleted %s", p.ID))
 }
 
 // resolveTask finds a task by explicit ID, or by matching cwd against

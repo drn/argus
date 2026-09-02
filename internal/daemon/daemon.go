@@ -37,6 +37,10 @@ import (
 	"github.com/drn/argus/internal/notify"
 	"github.com/drn/argus/internal/push"
 	"github.com/drn/argus/internal/scheduler"
+
+	// Blank-imported for its init() side effect: registers the "things3"
+	// factory with internal/todo so cfg.Todo.Backend = "things3" resolves.
+	_ "github.com/drn/argus/internal/todo/things3"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -1224,6 +1228,10 @@ func (d *Daemon) Serve(sockPath string) error {
 		}
 		mcpSrv.SetArtifactManager(d.db)
 		mcpSrv.SetProfileResolver(d.db)
+		// d.db.Config() is read live on every tools/list/tools/call (see
+		// TodoConfigStore) — a backend selected in Settings takes effect
+		// immediately, with no daemon restart or re-wiring here.
+		mcpSrv.SetTodoManager(d.db)
 		mcpSrv.SetPluginRegistry(pluginRegistry)
 		d.mcpServer = mcpSrv
 		actualPort, err := mcpSrv.ListenAndServe()

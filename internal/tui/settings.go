@@ -16,6 +16,7 @@ import (
 	"github.com/drn/argus/internal/launchagent"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/spinner"
+	"github.com/drn/argus/internal/todo"
 	"github.com/drn/argus/internal/tui/keymap"
 	pluginsettings "github.com/drn/argus/internal/tui/settings"
 	"github.com/drn/argus/internal/tui/store"
@@ -57,6 +58,9 @@ const (
 	srPermissionMode
 	srInstallProfiles
 	srSecretsBootstrap
+	srTodo
+	srTodoProject
+	srTodoTag
 )
 
 // settingsCategory groups related settings rows into a left-rail entry.
@@ -78,6 +82,7 @@ const (
 	catKnowledgeBase
 	catRemoteAPI
 	catHera
+	catTodo
 	catAppearance
 	catLogs
 	// catPlugin is a sentinel: the rail can hold any number of plugin
@@ -108,6 +113,8 @@ func (c settingsCategory) Label() string {
 		return "Remote API"
 	case catHera:
 		return "Hera"
+	case catTodo:
+		return "To-Do List"
 	case catAppearance:
 		return "Appearance"
 	case catLogs:
@@ -124,7 +131,7 @@ func (c settingsCategory) Label() string {
 // present, render after a "Plugins" header below this list.
 var builtinCategories = []settingsCategory{
 	catSystem, catSandbox, catProjects, catBackends, catDefaults, catSchedules,
-	catKnowledgeBase, catRemoteAPI, catHera, catAppearance, catLogs,
+	catKnowledgeBase, catRemoteAPI, catHera, catTodo, catAppearance, catLogs,
 }
 
 // settingsFocus is which sub-panel currently owns input within the settings view.
@@ -213,6 +220,17 @@ type SettingsView struct {
 	metisVaultPath    string
 	metisVaultAtBoot  string // value when daemon started; used to show "restart required"
 	vaultBootRecorded bool   // true after first Refresh captures boot value
+
+	// Todo backend. Unlike KB/API, this takes effect on the daemon's very
+	// next MCP tools/list call (see mcp.TodoConfigStore) — no restart, so
+	// there is deliberately no "AtBoot"/"restart required" tracking here.
+	todoBackend        string
+	todoProject        string
+	todoTag            string
+	editingTodoProject bool
+	editTodoProjectBuf string
+	editingTodoTag     bool
+	editTodoTagBuf     string
 
 	// API.
 	apiEnabled       bool
@@ -484,6 +502,16 @@ func (sv *SettingsView) Refresh() {
 	if !sv.vaultBootRecorded {
 		sv.metisVaultAtBoot = cfg.KB.MetisVaultPath
 		sv.vaultBootRecorded = true
+	}
+
+	// Todo backend. Skipped while a field is being inline-edited so an
+	// in-flight keystroke buffer isn't clobbered by a concurrent Refresh.
+	sv.todoBackend = cfg.Todo.Backend
+	if !sv.editingTodoProject {
+		sv.todoProject = cfg.Todo.Things3.Project
+	}
+	if !sv.editingTodoTag {
+		sv.todoTag = cfg.Todo.Things3.Tag
 	}
 	// Discover vaults once — filesystem scan is blocking I/O, avoid on every Refresh.
 	if sv.discoveredVaults == nil {
@@ -1037,6 +1065,33 @@ func (sv *SettingsView) rebuildRows() {
 		pmLabel := fmt.Sprintf("Permission mode: %s", config.PermissionModeLabel(sv.permissionMode))
 		sv.rows = append(sv.rows, settingsRow{kind: srPermissionMode, label: pmLabel, key: "_permission_mode"})
 
+	case catTodo:
+		todoLabel := "Backend: none"
+		if sv.todoBackend != "" {
+			todoLabel = "Backend: " + sv.todoBackend
+		}
+		sv.rows = append(sv.rows, settingsRow{kind: srTodo, label: todoLabel, key: "_todo_backend"})
+
+		// The backend-specific fields below only make sense once a backend is
+		// active — todo.Things3Config is meaningless with no backend selected.
+		if sv.todoBackend != "" {
+			projLabel := "Project: " + sv.todoProject
+			if sv.editingTodoProject {
+				projLabel = "Project: " + sv.editTodoProjectBuf + "▎"
+			} else if sv.todoProject == "" {
+				projLabel = "Project: (Inbox)"
+			}
+			sv.rows = append(sv.rows, settingsRow{kind: srTodoProject, label: projLabel, key: "_todo_project"})
+
+			tagLabel := "Tag: " + sv.todoTag
+			if sv.editingTodoTag {
+				tagLabel = "Tag: " + sv.editTodoTagBuf + "▎"
+			} else if sv.todoTag == "" {
+				tagLabel = "Tag: (none)"
+			}
+			sv.rows = append(sv.rows, settingsRow{kind: srTodoTag, label: tagLabel, key: "_todo_tag"})
+		}
+
 	case catAppearance:
 		spinLabel := fmt.Sprintf("Spinner: %s", spinner.Get(spinner.Style(sv.spinnerStyle)).Label)
 		sv.rows = append(sv.rows, settingsRow{kind: srSpinner, label: spinLabel, key: "_spinner"})
@@ -1113,13 +1168,20 @@ func (sv *SettingsView) PasteHandler() func(pastedText string, setFocus func(p t
 		} else if sv.activeEditKey != "" {
 			sv.editPluginBuf += pastedText
 			sv.rebuildRows()
+		} else if sv.editingTodoProject {
+			sv.editTodoProjectBuf += pastedText
+			sv.rebuildRows()
+		} else if sv.editingTodoTag {
+			sv.editTodoTagBuf += pastedText
+			sv.rebuildRows()
 		}
 	})
 }
 
 // IsEditing returns true when the user is inline-editing any field.
 func (sv *SettingsView) IsEditing() bool {
-	return sv.editingVault != "" || sv.editingSource || sv.editingBackendModel != "" || sv.activeEditKey != ""
+	return sv.editingVault != "" || sv.editingSource || sv.editingBackendModel != "" || sv.activeEditKey != "" ||
+		sv.editingTodoProject || sv.editingTodoTag
 }
 
 // SelectedProject returns the project at the cursor, or nil.
@@ -1161,6 +1223,12 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 	}
 	if sv.editingBackendModel != "" {
 		return sv.handleEditModelKey(ev)
+	}
+	if sv.editingTodoProject {
+		return sv.handleEditTodoProjectKey(ev)
+	}
+	if sv.editingTodoTag {
+		return sv.handleEditTodoTagKey(ev)
 	}
 	if sv.activeEditKey != "" {
 		return sv.handlePluginFieldEditKey(ev)
@@ -1580,6 +1648,19 @@ func (sv *SettingsView) handleEnter() bool {
 	case srPermissionMode:
 		sv.cyclePermissionMode(1)
 		return true
+	case srTodo:
+		sv.cycleTodoBackend()
+		return true
+	case srTodoProject:
+		sv.editingTodoProject = true
+		sv.editTodoProjectBuf = sv.todoProject
+		sv.rebuildRows()
+		return true
+	case srTodoTag:
+		sv.editingTodoTag = true
+		sv.editTodoTagBuf = sv.todoTag
+		sv.rebuildRows()
+		return true
 	case srVaultPath:
 		// Start inline editing for the selected vault path.
 		sv.editingVault = row.key
@@ -1826,6 +1907,70 @@ func (sv *SettingsView) handleEditSourceKey(ev *tcell.EventKey) bool {
 	return false
 }
 
+func (sv *SettingsView) handleEditTodoProjectKey(ev *tcell.EventKey) bool {
+	switch ev.Key() {
+	case tcell.KeyEnter:
+		sv.todoProject = sv.editTodoProjectBuf
+		sv.editingTodoProject = false
+		if err := sv.database.SetConfigValue("todo.things3.project", sv.todoProject); err != nil {
+			uxlog.Log("[settings] failed to persist todo project: %v", err)
+		}
+		uxlog.Log("[settings] todo project set to %q", sv.todoProject)
+		sv.rebuildRows()
+		return true
+	case tcell.KeyEscape:
+		sv.editingTodoProject = false
+		sv.rebuildRows()
+		return true
+	case tcell.KeyDown, tcell.KeyUp, tcell.KeyLeft, tcell.KeyRight:
+		return true
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if len(sv.editTodoProjectBuf) > 0 {
+			_, size := utf8.DecodeLastRuneInString(sv.editTodoProjectBuf)
+			sv.editTodoProjectBuf = sv.editTodoProjectBuf[:len(sv.editTodoProjectBuf)-size]
+			sv.rebuildRows()
+		}
+		return true
+	case tcell.KeyRune:
+		sv.editTodoProjectBuf += string(ev.Rune())
+		sv.rebuildRows()
+		return true
+	}
+	return false
+}
+
+func (sv *SettingsView) handleEditTodoTagKey(ev *tcell.EventKey) bool {
+	switch ev.Key() {
+	case tcell.KeyEnter:
+		sv.todoTag = sv.editTodoTagBuf
+		sv.editingTodoTag = false
+		if err := sv.database.SetConfigValue("todo.things3.tag", sv.todoTag); err != nil {
+			uxlog.Log("[settings] failed to persist todo tag: %v", err)
+		}
+		uxlog.Log("[settings] todo tag set to %q", sv.todoTag)
+		sv.rebuildRows()
+		return true
+	case tcell.KeyEscape:
+		sv.editingTodoTag = false
+		sv.rebuildRows()
+		return true
+	case tcell.KeyDown, tcell.KeyUp, tcell.KeyLeft, tcell.KeyRight:
+		return true
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if len(sv.editTodoTagBuf) > 0 {
+			_, size := utf8.DecodeLastRuneInString(sv.editTodoTagBuf)
+			sv.editTodoTagBuf = sv.editTodoTagBuf[:len(sv.editTodoTagBuf)-size]
+			sv.rebuildRows()
+		}
+		return true
+	case tcell.KeyRune:
+		sv.editTodoTagBuf += string(ev.Rune())
+		sv.rebuildRows()
+		return true
+	}
+	return false
+}
+
 // handleEditModel begins inline-editing the selected backend's default model.
 // Returns false (key unhandled) when the cursor is not on a backend row.
 func (sv *SettingsView) handleEditModel() bool {
@@ -2015,6 +2160,30 @@ func (sv *SettingsView) cyclePermissionMode(dir int) {
 		uxlog.Log("[settings] failed to persist permission mode: %v", err)
 	}
 	uxlog.Log("[settings] permission mode set to %q", sv.permissionMode)
+	sv.rebuildRows()
+}
+
+// cycleTodoBackend steps through "" (no backend) and every backend
+// internal/todo has registered, persisting immediately. Unlike KB/API's
+// enabled toggle, a backend selected here takes effect on the daemon's very
+// next MCP tools/list call (see mcp.TodoConfigStore) — no restart required,
+// so there is deliberately no "(restart required)" hint anywhere in this
+// category's rows.
+func (sv *SettingsView) cycleTodoBackend() {
+	options := append([]string{""}, todo.Registered()...)
+	idx := 0
+	for i, name := range options {
+		if name == sv.todoBackend {
+			idx = i
+			break
+		}
+	}
+	next := options[(idx+1)%len(options)]
+	sv.todoBackend = next
+	if err := sv.database.SetConfigValue("todo.backend", next); err != nil {
+		uxlog.Log("[settings] failed to persist todo backend: %v", err)
+	}
+	uxlog.Log("[settings] todo backend set to %q", next)
 	sv.rebuildRows()
 }
 
@@ -2297,6 +2466,12 @@ func (sv *SettingsView) renderRowDetail(screen tcell.Screen, x, y, w, h int, row
 		sv.renderSupervisorDetail(screen, x, y, w, h)
 	case srSourcePath:
 		sv.renderSourcePathDetail(screen, x, y, w, h)
+	case srTodo:
+		sv.renderTodoDetail(screen, x, y, w, h)
+	case srTodoProject:
+		sv.renderTodoProjectDetail(screen, x, y, w, h)
+	case srTodoTag:
+		sv.renderTodoTagDetail(screen, x, y, w, h)
 	case srUpdateArgus:
 		sv.renderUpdateArgusDetail(screen, x, y, w, h)
 	case srInstallProfiles:
@@ -2480,6 +2655,92 @@ func (sv *SettingsView) renderSourcePathDetail(screen tcell.Screen, x, y, w, h i
 	widget.DrawText(screen, x, y+r, w, "Local clone of github.com/drn/argus used by", theme.StyleDimmed)
 	r++
 	widget.DrawText(screen, x, y+r, w, "the \"Update Argus\" action to run go install.", theme.StyleDimmed)
+	if h > 1 {
+		widget.DrawText(screen, x, y+h-1, w, "[enter] edit  [◀] rail", theme.StyleDimmed)
+	}
+}
+
+func (sv *SettingsView) renderTodoDetail(screen tcell.Screen, x, y, w, h int) {
+	widget.DrawText(screen, x, y, w, "To-Do List Backend", theme.StyleTitle)
+	r := 2
+
+	label := "none"
+	style := theme.StyleDimmed
+	if sv.todoBackend != "" {
+		label = sv.todoBackend
+		style = tcell.StyleDefault.Foreground(theme.ColorComplete)
+	}
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "Backend: "+label, style)
+	}
+	r += 2
+
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "Exposes todo_create/list/update/complete/delete", theme.StyleDimmed)
+	}
+	r++
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "over MCP as soon as a backend is selected — no", theme.StyleDimmed)
+	}
+	r++
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "restart needed. Argus never stores items locally;", theme.StyleDimmed)
+	}
+	r++
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "the backend is always the source of truth.", theme.StyleDimmed)
+	}
+
+	if h > 1 {
+		widget.DrawText(screen, x, y+h-1, w, "[enter/▶] cycle  [◀] rail", theme.StyleDimmed)
+	}
+}
+
+func (sv *SettingsView) renderTodoProjectDetail(screen tcell.Screen, x, y, w, h int) {
+	widget.DrawText(screen, x, y, w, "Things 3 Project", theme.StyleTitle)
+	r := 2
+	val := sv.todoProject
+	if sv.editingTodoProject {
+		val = sv.editTodoProjectBuf + "▎"
+	} else if val == "" {
+		val = "(Inbox)"
+	}
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "Project: "+val, theme.StyleDimmed)
+	}
+	r += 2
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "New items are filed under this Things 3 project.", theme.StyleDimmed)
+	}
+	r++
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "Empty uses the Inbox instead.", theme.StyleDimmed)
+	}
+	if h > 1 {
+		widget.DrawText(screen, x, y+h-1, w, "[enter] edit  [◀] rail", theme.StyleDimmed)
+	}
+}
+
+func (sv *SettingsView) renderTodoTagDetail(screen tcell.Screen, x, y, w, h int) {
+	widget.DrawText(screen, x, y, w, "Things 3 Tag", theme.StyleTitle)
+	r := 2
+	val := sv.todoTag
+	if sv.editingTodoTag {
+		val = sv.editTodoTagBuf + "▎"
+	} else if val == "" {
+		val = "(none)"
+	}
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "Tag: "+val, theme.StyleDimmed)
+	}
+	r += 2
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "Applied to every item Argus creates in Things 3.", theme.StyleDimmed)
+	}
+	r++
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "Empty applies no tag.", theme.StyleDimmed)
+	}
 	if h > 1 {
 		widget.DrawText(screen, x, y+h-1, w, "[enter] edit  [◀] rail", theme.StyleDimmed)
 	}

@@ -144,6 +144,19 @@ func (d *DB) Config() config.Config {
 		cfg.Argus.SourcePath = v
 	}
 
+	// Todo backend config. Read live on every Config() call (no caching
+	// beyond this per-call query) so a backend selected in Settings takes
+	// effect on the MCP server's very next tools/list without a restart.
+	if v, ok := kv["todo.backend"]; ok {
+		cfg.Todo.Backend = v
+	}
+	if v, ok := kv["todo.things3.project"]; ok {
+		cfg.Todo.Things3.Project = v
+	}
+	if v, ok := kv["todo.things3.tag"]; ok {
+		cfg.Todo.Things3.Tag = v
+	}
+
 	// Overlay the optional ~/.argus/config.toml on top of defaults + DB. Fields
 	// present in the file win; absent fields keep the value resolved above.
 	// Nil loader (in-memory/test DB) is a no-op.

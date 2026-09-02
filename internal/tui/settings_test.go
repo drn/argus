@@ -2147,3 +2147,148 @@ func TestSettingsView_SecretsBootstrapRow_NotConfigured(t *testing.T) {
 	}
 	testutil.Contains(t, row.label, "NOT CONFIGURED")
 }
+
+// --- Todo backend settings ---
+
+func TestSettingsView_TodoBackendCycle(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.setFocus(focusPane)
+
+	// Unconfigured by default.
+	testutil.Equal(t, sv.todoBackend, "")
+	testutil.Equal(t, sv.currentRowKind(), srTodo)
+	if len(sv.rows) != 1 {
+		t.Fatalf("expected exactly one row (no backend selected), got %+v", sv.rows)
+	}
+
+	// Enter cycles to the first (and, today, only) registered backend.
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.todoBackend, "things3")
+	testutil.Equal(t, sv.database.Config().Todo.Backend, "things3")
+
+	// Selecting a backend reveals the Things 3 field rows.
+	kinds := make([]settingsRowKind, len(sv.rows))
+	for i, row := range sv.rows {
+		kinds[i] = row.kind
+	}
+	testutil.DeepEqual(t, kinds, []settingsRowKind{srTodo, srTodoProject, srTodoTag})
+
+	// Cycling again wraps back to disabled.
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	testutil.Equal(t, sv.todoBackend, "")
+	testutil.Equal(t, sv.database.Config().Todo.Backend, "")
+	if len(sv.rows) != 1 {
+		t.Fatalf("expected the project/tag rows to disappear once no backend is selected, got %+v", sv.rows)
+	}
+}
+
+func TestSettingsView_TodoProjectEdit(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.cycleTodoBackend() // select things3 so the project row exists
+
+	for i, row := range sv.rows {
+		if row.kind == srTodoProject {
+			sv.cursor = i
+			break
+		}
+	}
+	sv.handleEnter()
+	if !sv.editingTodoProject {
+		t.Fatal("expected editingTodoProject to be true after enter")
+	}
+	for _, r := range "Argus" {
+		sv.handleEditTodoProjectKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+	sv.handleEditTodoProjectKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if sv.editingTodoProject {
+		t.Error("editingTodoProject should be false after enter")
+	}
+	testutil.Equal(t, sv.todoProject, "Argus")
+	testutil.Equal(t, sv.database.Config().Todo.Things3.Project, "Argus")
+}
+
+func TestSettingsView_TodoProjectEdit_Escape(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.cycleTodoBackend()
+	sv.todoProject = "Original"
+
+	for i, row := range sv.rows {
+		if row.kind == srTodoProject {
+			sv.cursor = i
+			break
+		}
+	}
+	sv.handleEnter()
+	sv.handleEditTodoProjectKey(tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone))
+	sv.handleEditTodoProjectKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	if sv.editingTodoProject {
+		t.Error("editingTodoProject should be false after escape")
+	}
+	testutil.Equal(t, sv.todoProject, "Original") // unchanged — escape discards the edit
+}
+
+func TestSettingsView_TodoTagEdit(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.cycleTodoBackend()
+
+	for i, row := range sv.rows {
+		if row.kind == srTodoTag {
+			sv.cursor = i
+			break
+		}
+	}
+	sv.handleEnter()
+	if !sv.editingTodoTag {
+		t.Fatal("expected editingTodoTag to be true after enter")
+	}
+	for _, r := range "argus" {
+		sv.handleEditTodoTagKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+	sv.handleEditTodoTagKey(tcell.NewEventKey(tcell.KeyBackspace, 0, tcell.ModNone))
+	sv.handleEditTodoTagKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	testutil.Equal(t, sv.todoTag, "argu")
+	testutil.Equal(t, sv.database.Config().Todo.Things3.Tag, "argu")
+}
+
+// TestSettingsView_TodoNoRestartHint pins the deliberate absence of a
+// "(restart required)" suffix — unlike KB/API, a todo backend change takes
+// effect on the daemon's very next MCP tools/list call.
+func TestSettingsView_TodoNoRestartHint(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.cycleTodoBackend()
+	for _, row := range sv.rows {
+		if strings.Contains(row.label, "restart") {
+			t.Errorf("todo row %q should never mention a restart", row.label)
+		}
+	}
+}
+
+func TestSettingsView_TodoRefreshSkipsWhileEditing(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.cycleTodoBackend()
+	sv.editingTodoProject = true
+	sv.editTodoProjectBuf = "in-flight"
+
+	testutil.NoError(t, sv.database.SetConfigValue("todo.things3.project", "from-elsewhere"))
+	sv.Refresh()
+
+	testutil.Equal(t, sv.editTodoProjectBuf, "in-flight")
+}
+
+func TestSettingsView_TodoProjectPaste(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.cycleTodoBackend()
+	sv.editingTodoProject = true
+
+	paste := sv.PasteHandler()
+	paste("Pasted", nil)
+	testutil.Equal(t, sv.editTodoProjectBuf, "Pasted")
+}

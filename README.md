@@ -663,6 +663,18 @@ If the recipient has a live agent session the daemon also writes a single notifi
 | `schedule_delete`  | Remove a schedule by `id`. Tasks already created by previous fires are unaffected.                                                                                                                        |
 | `schedule_run_now` | Fire a schedule immediately, out of cycle. Bookkeeping is updated so the next regular tick will not double-fire. One-shot rows auto-disable. Does NOT send a push notification — only cron-tick fires do. |
 
+**To-Do List** (served only while a backend is configured — see [Settings](#reference) → To-Do List; today's only backend is Things 3, macOS-only):
+
+| Tool            | Description                                                                                                                        |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `todo_create`   | Create an item. Params: `title` (required), `notes`. Returns the created item's id, needed by every other `todo_*` call.            |
+| `todo_list`     | List open (not completed/canceled) items. Always queries the backend live — Argus never caches or mirrors item content.             |
+| `todo_update`   | Update `title` and/or `notes` on an item. Params: `id` (required), `title`, `notes` — only fields you pass are changed.              |
+| `todo_complete` | Mark an item resolved/completed. Params: `id`.                                                                                       |
+| `todo_delete`   | Delete an item. Params: `id`. On Things 3 this moves the item to Trash — the same as deleting it in the app.                          |
+
+Configuring a backend in Settings makes these tools appear on the very next `tools/list` call — no daemon restart. Clearing the backend selection makes them disappear the same way.
+
 **Agent-Staged Clipboard:**
 
 | Tool                  | Description                                                                                                                                                                     |
@@ -1027,6 +1039,23 @@ Full enable/verify walkthrough: **[docs/knowledge-base.md](docs/knowledge-base.m
 | `coordinator_context_budget` | int | `300000` | Context-size threshold (see [Context-budget Stop hook](#context-budget-stop-hook)) past which `argus coord-hook` blocks a coordinator's `Stop` event with a reach-a-seam recycle nudge. |
 | `coordinator_nudge_increment` | int | `50000` | Context-size growth past the last-fired size (see [Context-budget Stop hook](#context-budget-stop-hook)) before `argus coord-hook`'s over-budget nudge is allowed to re-fire. |
 | `worker_context_window` | int | `1000000` | Reference context window a worker/freelance role's `context_size` is divided by for the [Projects Tab](#projects-tab) rail's context-pressure indicator percentage. Deliberately separate from `coordinator_context_budget`, which is a coordinator recycle-nudge policy threshold, not a context window size. |
+
+#### `[todo]`
+
+Selects the single active [to-do-list backend](#reference) (`todo_*` MCP tools). Also configurable live from Settings → To-Do List — no restart needed either way.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `backend` | string | `""` | Active backend name. Empty disables the `todo_*` tools entirely. Only one backend is ever active — setting this replaces, never adds. Today's only registered backend: `things3`. |
+
+##### `[todo.things3]`
+
+Configures the `things3` backend (macOS-only — drives the Things 3 app via AppleScript). No-op when `todo.backend` isn't `"things3"`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `project` | string | `""` | Things 3 project new items are filed under, and `todo_list` reads from. Empty uses the Inbox. |
+| `tag` | string | `""` | Tag applied to every item Argus creates. Empty applies no tag. |
 
 #### `[supervisor]`
 
