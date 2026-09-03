@@ -81,10 +81,12 @@ func (p *PreviewVT) Feed(taskID string, cols, rows int, tail []byte, totalWritte
 		}
 		// AlignToEscBoundary skips any partial CSI/OSC prefix the tail may
 		// begin mid-sequence at (x/vt would render those orphan bytes as a
-		// smudge of digits at the top of the emulator). oscStrip was reset
-		// in rebuild, so it continues from a known state into the incremental
-		// feeds that follow.
-		feed = p.oscStrip.filter(AlignToEscBoundary(tail))
+		// smudge of digits at the top of the emulator). ClampScrollRegion
+		// neutralizes a stale DECSTBM/DECSLRM authored while the PTY was
+		// larger than this preview's emulator (see marginfilter.go).
+		// oscStrip was reset in rebuild, so it continues from a known state
+		// into the incremental feeds that follow.
+		feed = p.oscStrip.filter(ClampScrollRegion(AlignToEscBoundary(tail), cols, rows))
 	case newBytes > 0:
 		// Incremental: the delta is contiguous with what the emulator already
 		// parsed, so no ESC realignment is needed. oscStrip carries state
