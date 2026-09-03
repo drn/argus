@@ -47,6 +47,13 @@ type RestartDaemonModal struct {
 	supervisorStale    bool
 	daemonIdentity     string // rich identity of the daemon binary (display-only)
 	supervisorIdentity string // rich identity of the supervisor binary (display-only)
+	// supervisorConsequence is a short clause naming what the supervisor's skew
+	// actually COSTS — "live sessions are affected" vs "spawn config only —
+	// running agents are unaffected". Without it a modal opened because the
+	// DAEMON is stale would offer a supervisor restart, which SIGHUPs every
+	// agent, with nothing telling the operator the supervisor's own mismatch may
+	// only affect sessions started from now on. Empty renders nothing.
+	supervisorConsequence string
 
 	buttons  []skewButton
 	selected int        // index into buttons
@@ -208,8 +215,17 @@ func (m *RestartDaemonModal) bodyLines() []string {
 			id = "(identity unknown)"
 		}
 		lines = append(lines, "supervisor: "+id)
+		if m.supervisorConsequence != "" {
+			lines = append(lines, "  ("+m.supervisorConsequence+")")
+		}
 	}
 	return lines
+}
+
+// SetSupervisorConsequence records the short clause describing what the
+// supervisor's skew costs. Call before the modal is first drawn.
+func (m *RestartDaemonModal) SetSupervisorConsequence(s string) {
+	m.supervisorConsequence = s
 }
 
 // titleText picks the modal title from which process(es) are stale.

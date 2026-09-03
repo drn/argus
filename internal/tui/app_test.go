@@ -23,6 +23,7 @@ import (
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/macapps"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/skew"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/modal"
 	"github.com/drn/argus/internal/tui/store"
@@ -4213,7 +4214,7 @@ func TestApp_HandleRestartDaemonKey_Skip(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
-	app.SetSkew(true, false, "", "")
+	app.SetSkew(skew.Result{DaemonStale: true})
 	app.openSkewPrompt()
 	app.handleRestartDaemonKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
 	testutil.Equal(t, app.mode, modeTaskList)

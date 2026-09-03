@@ -67,8 +67,14 @@ func (s *RPCService) BootInfo(_ *Empty, resp *BootInfoResp) error {
 			resp.SupervisorPath = hello.BinaryPath
 			resp.SupervisorHash = hello.BinaryHash
 			resp.SupervisorVCS = hello.VCS
-			uxlog.Log("[skew] BootInfo relayed supervisor identity: path=%s hash=%s proto=%d",
-				hello.BinaryPath, shortHashRPC(hello.BinaryHash), hello.ProtocolVersion)
+			// Relay the executed-surface version too (v6). A pre-v6 supervisor
+			// leaves both at zero, which the TUI reads as unknown — never stale.
+			surface := hello.SupervisorSurface()
+			resp.SupervisorSpawnSurface = surface.Spawn
+			resp.SupervisorStreamSurface = surface.Stream
+			uxlog.Log("[skew] BootInfo relayed supervisor identity: path=%s hash=%s proto=%d surface=%s (%s)",
+				hello.BinaryPath, shortHashRPC(hello.BinaryHash), hello.ProtocolVersion,
+				surface, CompareSupervisorSurface(surface))
 		}
 	}
 	return nil

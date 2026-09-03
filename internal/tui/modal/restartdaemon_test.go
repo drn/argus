@@ -1,6 +1,7 @@
 package modal
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
@@ -224,4 +225,37 @@ func TestRestartDaemonModal_KeyHandling(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSkewModal_SupervisorConsequence pins that the modal names what a supervisor
+// restart would actually buy. The dangerous case is a modal opened because the
+// DAEMON is stale: it still offers "Restart supervisor", which SIGHUPs every
+// running agent, so the operator must be able to see whether the supervisor's own
+// mismatch is worth that.
+func TestSkewModal_SupervisorConsequence(t *testing.T) {
+	t.Run("rendered when set", func(t *testing.T) {
+		m := NewSkewModal(true, true, "dae @ /a", "sup @ /b")
+		m.SetSupervisorConsequence("spawn config only — running agents are unaffected")
+		joined := strings.Join(m.bodyLines(), "\n")
+		testutil.Contains(t, joined, "supervisor: sup @ /b")
+		testutil.Contains(t, joined, "running agents are unaffected")
+	})
+
+	t.Run("omitted when unset", func(t *testing.T) {
+		m := NewSkewModal(false, true, "", "sup @ /b")
+		for _, line := range m.bodyLines() {
+			if strings.HasPrefix(line, "  (") {
+				t.Errorf("unset consequence still rendered a line: %q", line)
+			}
+		}
+	})
+
+	t.Run("never rendered for a daemon-only skew", func(t *testing.T) {
+		m := NewSkewModal(true, false, "dae @ /a", "")
+		m.SetSupervisorConsequence("live sessions are affected")
+		joined := strings.Join(m.bodyLines(), "\n")
+		if strings.Contains(joined, "live sessions are affected") {
+			t.Error("a daemon-only skew must not render a supervisor consequence")
+		}
+	})
 }
