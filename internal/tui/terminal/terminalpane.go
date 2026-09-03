@@ -2059,9 +2059,11 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 	// Tail slices begin at arbitrary byte positions — see AlignToEscBoundary
 	// (defect 4). Without this, partial CSI prefixes show up as orphan
 	// digits/punctuation at the top of the scrollback emulator.
-	// FilterOSC strips OSC sequences first (see oscfilter.go) so a UTF-8
-	// window title can't leak onto the scrollback view.
-	_, _ = SafeEmuWrite(emu, FilterOSC(AlignToEscBoundary(raw)))
+	// ClampScrollRegion neutralizes a stale DECSTBM/DECSLRM authored while
+	// the PTY was larger than this replay emulator (see marginfilter.go);
+	// FilterOSC strips OSC sequences (see oscfilter.go) so a UTF-8 window
+	// title can't leak onto the scrollback view.
+	_, _ = SafeEmuWrite(emu, FilterOSC(ClampScrollRegion(AlignToEscBoundary(raw), ptyCols, ptyRows)))
 
 	// Compute max scroll from emulator's scrollback capacity.
 	sbLen := emu.ScrollbackLen()
@@ -2275,11 +2277,14 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 				// the log/ring tail may have started mid-sequence at,
 				// which x/vt would otherwise render as a smudge of
 				// orphan parameter bytes at the top of the screen
-				// (defect 4). The aligned tail starts at a clean escape
-				// boundary, and oscStrip was reset alongside the fresh
-				// emulator, so the OSC filter continues from a known state
-				// into the incremental feeds below.
-				_, _ = SafeEmuWrite(tp.emu, tp.oscStrip.filter(AlignToEscBoundary(history)))
+				// (defect 4). ClampScrollRegion neutralizes a stale
+				// DECSTBM/DECSLRM authored while the PTY was larger than
+				// this rebuild's emulator (see marginfilter.go). The
+				// aligned+clamped tail starts at a clean escape boundary,
+				// and oscStrip was reset alongside the fresh emulator, so
+				// the OSC filter continues from a known state into the
+				// incremental feeds below.
+				_, _ = SafeEmuWrite(tp.emu, tp.oscStrip.filter(ClampScrollRegion(AlignToEscBoundary(history), ptyCols, ptyRows)))
 				tp.emuFedTotal = finalTotal
 			}
 		} else if ringWrapCaughtUp {
