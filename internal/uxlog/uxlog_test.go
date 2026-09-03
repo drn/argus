@@ -2,6 +2,7 @@ package uxlog
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"log"
 	"log/slog"
@@ -245,6 +246,230 @@ func TestSlogWithUxlogWriter_DoesNotReachStderr(t *testing.T) {
 			t.Errorf("expected %q in uxlog, got: %s", want, content)
 		}
 	}
+}
+
+// TestRotate_TruncatesPreexistingOversizedFileOnInit is the RED case for
+// unbounded growth: a file that is ALREADY oversized before Init is ever
+// called (the real-world shape — ux.log accumulates across many separate
+// process launches over months, since Init opens with O_APPEND, not
+// O_TRUNC) must be capped as soon as any process opens it, not only once a
+// long-running process happens to write enough new lines itself.
+func TestRotate_TruncatesPreexistingOversizedFileOnInit(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test-ux.log")
+
+	orig := maxSize
+	maxSize = 1000
+	t.Cleanup(func() { maxSize = orig })
+
+	// Pre-populate a file well past the threshold with numbered lines, so we
+	// can assert on which survive.
+	var buf bytes.Buffer
+	for i := 0; i < 500; i++ {
+		fmt.Fprintf(&buf, "2026/01/01 00:00:00.000 preexisting-line-%04d\n", i)
+	}
+	if err := os.WriteFile(logPath, buf.Bytes(), 0644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	preSize := int64(buf.Len())
+	if preSize <= maxSize {
+		t.Fatalf("test setup: seeded file (%d bytes) must exceed maxSize (%d)", preSize, maxSize)
+	}
+
+	if err := Init(logPath); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer Close()
+	Close() // flush/close so we can read a stable size immediately
+
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Size() > maxSize {
+		t.Errorf("file not capped on Init: size=%d maxSize=%d", info.Size(), maxSize)
+	}
+	if info.Size() >= preSize {
+		t.Errorf("file did not shrink: pre=%d post=%d", preSize, info.Size())
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if strings.Contains(string(data), "preexisting-line-0000") {
+		t.Errorf("oldest content should have been dropped, found preexisting-line-0000 in: %s", data)
+	}
+	if !strings.Contains(string(data), "preexisting-line-0499") {
+		t.Errorf("most recent content should have survived, missing preexisting-line-0499 in: %s", data)
+	}
+}
+
+// TestRotate_CapsGrowthAcrossManyWrites is the RED case for the "long
+// session" shape: many Log() calls within a single process must never let
+// the file grow past a bounded ceiling, and the newest content must always
+// survive rotation while the oldest is dropped.
+func TestRotate_CapsGrowthAcrossManyWrites(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test-ux.log")
+
+	orig := maxSize
+	maxSize = 2000
+	t.Cleanup(func() { maxSize = orig })
+
+	if err := Init(logPath); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer Close()
+
+	const numLines = 2000
+	for i := 0; i < numLines; i++ {
+		Log("growth-line-%04d", i)
+	}
+	Close()
+
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	// Allow a small overshoot margin (one line's worth) above maxSize, since
+	// rotation happens after a write crosses the threshold, not before.
+	const lineMargin = 200
+	if info.Size() > maxSize+lineMargin {
+		t.Errorf("file grew unbounded: size=%d maxSize=%d", info.Size(), maxSize)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if strings.Contains(string(data), "growth-line-0000 ") || strings.Contains(string(data), "growth-line-0000\n") {
+		t.Errorf("oldest line should have been rotated away, found growth-line-0000 in: %s", data)
+	}
+	last := fmt.Sprintf("growth-line-%04d", numLines-1)
+	if !strings.Contains(string(data), last) {
+		t.Errorf("newest line should have survived, missing %s", last)
+	}
+}
+
+// TestRotate_SafeAcrossIndependentAppendHandle pins the core assumption
+// behind rotating via in-place truncation rather than rename-and-reopen: the
+// daemon and the TUI each hold their OWN independent os.File handle, opened
+// O_APPEND, to the same ux.log path (see gotchas/misc.md) — there is no
+// shared in-process state to coordinate rotation between them. This test
+// simulates that by opening a second, independent O_APPEND handle to the
+// same path (standing in for "the other process"), forcing a rotation via
+// the package's own handle, and then writing through the second handle —
+// which must land cleanly at the new end of file, not get lost or corrupt
+// the file, proving truncation is safe even with a foreign handle open.
+func TestRotate_SafeAcrossIndependentAppendHandle(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test-ux.log")
+
+	orig := maxSize
+	maxSize = 500
+	t.Cleanup(func() { maxSize = orig })
+
+	if err := Init(logPath); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer Close()
+
+	// Simulate a second, independent process holding its own O_APPEND
+	// handle to the same path.
+	other, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatalf("open second handle: %v", err)
+	}
+	defer other.Close()
+
+	// Drive the file well past maxSize through the package's own handle so
+	// a rotation fires.
+	for i := 0; i < 200; i++ {
+		Log("first-handle-line-%04d", i)
+	}
+
+	// Now write through the OTHER (foreign) handle. If truncation broke
+	// O_APPEND's end-of-file tracking for this handle, this write would
+	// either error, land at a stale offset, or leave a gap of NUL bytes.
+	sentinel := "second-handle-sentinel-line\n"
+	if _, err := other.WriteString(sentinel); err != nil {
+		t.Fatalf("write via second handle: %v", err)
+	}
+
+	Close()
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(data), sentinel) {
+		t.Errorf("second handle's write did not land in the file: %q", data)
+	}
+	if bytes.Contains(data, []byte{0}) {
+		t.Errorf("file contains NUL bytes, indicating a gap left by a stale append offset: %q", data)
+	}
+	// The sentinel must be the LAST content in the file (appended after the
+	// rotation), not swallowed by it.
+	if !strings.HasSuffix(string(data), sentinel) {
+		t.Errorf("second handle's write should be the tail of the file, got: %q", data)
+	}
+}
+
+// TestRotate_NoNewlineInTailKeptWhole covers the edge case where the rotated
+// tail window contains no line boundary at all (a single line far longer
+// than the keep window) — rotateIfOversizedLocked must keep the raw bytes
+// rather than dropping everything for lack of a '\n' to align on.
+func TestRotate_NoNewlineInTailKeptWhole(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test-ux.log")
+
+	orig := maxSize
+	maxSize = 100
+	t.Cleanup(func() { maxSize = orig })
+
+	huge := strings.Repeat("x", 500)
+	if err := os.WriteFile(logPath, []byte(huge), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := Init(logPath); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer Close()
+	Close()
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(data) == 0 {
+		t.Errorf("expected some tail content to survive rotation, got an empty file")
+	}
+	if strings.ContainsRune(string(data), 0) {
+		t.Errorf("tail content should be raw bytes from the source line, got: %q", data)
+	}
+}
+
+// TestRotate_StatErrorIsNoop covers the defensive best-effort path: a
+// failure to Stat the log handle (simulated here via an already-closed fd)
+// must never panic uxlog — it should just skip rotation for that call.
+func TestRotate_StatErrorIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test-ux.log")
+
+	f, err := os.Create(logPath)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	f.Close() // closed fd: file.Stat() now errors
+
+	mu.Lock()
+	old := file
+	file = f
+	rotateIfOversizedLocked() // must not panic on a closed handle
+	file = old
+	mu.Unlock()
 }
 
 // TestFd2RedirectViaDup2_CatchesRawSyscallWrites is the regression guard for
