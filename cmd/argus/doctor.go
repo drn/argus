@@ -77,6 +77,12 @@ func gatherTUI() doctor.Actor {
 	}
 	a.Hash = h
 	a.VCS = buildid.Current()
+	// This binary IS the current build, so it reports the surface version it was
+	// compiled with. doctor compares the live supervisor's reported surface
+	// against this row.
+	cur := daemon.CurrentSupervisorSurface()
+	a.SpawnSurface = cur.Spawn
+	a.StreamSurface = cur.Stream
 	a.Resolved = true
 	return a
 }
@@ -111,6 +117,10 @@ func gatherDisk(role doctor.Role, path string) doctor.Actor {
 // pulls the daemon's and the relayed supervisor's identity out of BootInfo. A
 // missing daemon leaves both rows unknown without failing. A pre-v3 supervisor
 // (empty hash) is reported present-but-unknown, never stale.
+//
+// The supervisor row also carries its declared executed-surface version, which is
+// what its staleness verdict now keys off; a pre-v6 supervisor reports none, and
+// doctor falls back to the hash for that row.
 func gatherProcesses() (daemonA, supA doctor.Actor) {
 	daemonA = doctor.Actor{Role: doctor.RoleDaemon, Note: "no daemon"}
 	supA = doctor.Actor{Role: doctor.RoleSupervisor, Note: "no daemon"}
@@ -146,7 +156,18 @@ func gatherProcesses() (daemonA, supA doctor.Actor) {
 	case info.SupervisorHash == "":
 		supA = doctor.Actor{Role: doctor.RoleSupervisor, ResolvedPath: resolvePath(info.SupervisorPath), Resolved: false, Note: "old protocol (hash unknown)"}
 	default:
-		supA = doctor.Actor{Role: doctor.RoleSupervisor, ResolvedPath: resolvePath(info.SupervisorPath), Hash: info.SupervisorHash, VCS: info.SupervisorVCS, Resolved: true}
+		supA = doctor.Actor{
+			Role:         doctor.RoleSupervisor,
+			ResolvedPath: resolvePath(info.SupervisorPath),
+			Hash:         info.SupervisorHash,
+			VCS:          info.SupervisorVCS,
+			Resolved:     true,
+			// The executed-surface version the live supervisor reports (v6+).
+			// Zero on an older supervisor, which leaves doctor falling back to
+			// the hash for that row — never a false stale.
+			SpawnSurface:  info.SupervisorSpawnSurface,
+			StreamSurface: info.SupervisorStreamSurface,
+		}
 	}
 	return daemonA, supA
 }

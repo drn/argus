@@ -179,6 +179,12 @@ func (s *supervisorRPC) Hello(_ *Empty, resp *HelloResp) error {
 	resp.BinaryHash = s.sup.binaryHash
 	resp.VCS = s.sup.vcs
 	resp.BootedAt = s.sup.bootedAt
+	// The executed-surface version (v6) — the staleness signal the TUI actually
+	// judges on. Compiled in, not measured: this supervisor IS the build whose
+	// constants it reports.
+	cur := CurrentSupervisorSurface()
+	resp.SpawnSurface = cur.Spawn
+	resp.StreamSurface = cur.Stream
 	return nil
 }
 
