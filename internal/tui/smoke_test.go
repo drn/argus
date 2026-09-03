@@ -13,8 +13,10 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/skew"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/hera"
 	"github.com/drn/argus/internal/tui/widget"
@@ -479,7 +481,7 @@ func TestSmoke_RestartDaemonPrompt_OpensAndSkips(t *testing.T) {
 
 	// Open the modal on the tview goroutine (mimics what Run() does when
 	// SetSkew flagged the daemon before the event loop started).
-	app.SetSkew(true, false, "", "")
+	app.SetSkew(skew.Result{DaemonStale: true})
 	readUI(t, app.tapp, func() { app.openSkewPrompt() })
 
 	var mode viewMode
@@ -512,7 +514,7 @@ func TestSetSkew_StoresFields(t *testing.T) {
 	d := testDB(t)
 	app := New(d, agent.NewRunner(nil), true)
 
-	app.SetSkew(true, true, "dae @ /a", "sup @ /b")
+	app.SetSkew(skew.Result{DaemonStale: true, Supervisor: daemon.SurfaceStreamStale, DaemonIdentity: "dae @ /a", SupervisorIdentity: "sup @ /b"})
 	if !app.daemonStale || !app.supervisorStale {
 		t.Error("SetSkew should set both stale flags")
 	}
@@ -553,7 +555,7 @@ func waitForCond(t *testing.T, app *tview.Application, what string, fn func() bo
 func TestSmoke_SkewPrompt_SupervisorDoubleConfirm(t *testing.T) {
 	d := testDB(t)
 	app := New(d, agent.NewRunner(nil), true)
-	app.SetSkew(false, true, "", "sup-abc @ /gopath/bin/argus")
+	app.SetSkew(skew.Result{Supervisor: daemon.SurfaceStreamStale, SupervisorIdentity: "sup-abc @ /gopath/bin/argus"})
 	app.agentCountFn = func() int { return 3 }
 	var restarted atomic.Bool
 	app.restartSupervisorFn = func() { restarted.Store(true) }
@@ -608,7 +610,7 @@ func TestSmoke_SkewPrompt_SupervisorDoubleConfirm(t *testing.T) {
 func TestSmoke_SkewPrompt_DeclineLeavesSupervisorRunning(t *testing.T) {
 	d := testDB(t)
 	app := New(d, agent.NewRunner(nil), true)
-	app.SetSkew(false, true, "", "sup-abc @ /gopath/bin/argus")
+	app.SetSkew(skew.Result{Supervisor: daemon.SurfaceStreamStale, SupervisorIdentity: "sup-abc @ /gopath/bin/argus"})
 	app.agentCountFn = func() int { return 2 }
 	var restarted atomic.Bool
 	app.restartSupervisorFn = func() { restarted.Store(true) }
@@ -652,7 +654,7 @@ func TestSmoke_SkewPrompt_BothStale_DaemonRestartLeavesModalOpen(t *testing.T) {
 
 	d := testDB(t)
 	app := New(d, agent.NewRunner(nil), true)
-	app.SetSkew(true, true, "dae-1 @ /a", "sup-2 @ /b")
+	app.SetSkew(skew.Result{DaemonStale: true, Supervisor: daemon.SurfaceStreamStale, DaemonIdentity: "dae-1 @ /a", SupervisorIdentity: "sup-2 @ /b"})
 	app.agentCountFn = func() int { return 1 }
 	var daemonCalls, supervisorCalls atomic.Int32
 	app.restartDaemonFn = func() { daemonCalls.Add(1) }
@@ -731,7 +733,7 @@ func TestSmoke_OpenSkewPromptBeforeRunDoesNotBlock(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, true)
-	app.SetSkew(true, false, "", "")
+	app.SetSkew(skew.Result{DaemonStale: true})
 
 	tApp, _, ls := simApp(t)
 	app.tapp = tApp

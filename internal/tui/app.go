@@ -34,6 +34,7 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/profiles"
 	"github.com/drn/argus/internal/scheduler"
+	"github.com/drn/argus/internal/skew"
 	"github.com/drn/argus/internal/tui/gitpanel"
 	"github.com/drn/argus/internal/tui/hera"
 	"github.com/drn/argus/internal/tui/keyenc"
@@ -210,6 +211,26 @@ type App struct {
 	supervisorStale    bool
 	daemonIdentity     string // rich identity of the stale daemon (display-only)
 	supervisorIdentity string // rich identity of the stale supervisor (display-only)
+
+	// startupSkew is the full evaluation main handed us, kept so Run() can ask
+	// whether this skew actually warrants BLOCKING the operator. A spawn-surface
+	// supervisor mismatch cannot affect a single running agent, so it takes the
+	// status-bar notice instead of the modal (design D6).
+	startupSkew skew.Result
+
+	// Continuous re-evaluation state (reduce-supervisor-skew-blast-radius).
+	// evaluateSkew used to run exactly once, in main() — a TUI left running for
+	// days across several `go install`s never re-checked, so skew was discovered
+	// whenever the operator happened to relaunch, which is why it kept surfacing
+	// mid-incident. These are read/written on the tick goroutine under a.mu.
+	lastSkewCheck  time.Time // when the periodic re-evaluation last ran
+	lastSkewNotice string    // last notice raised; suppresses repeats of one verdict
+
+	// skewProvider is the BootInfo source the re-evaluation asks. It tracks
+	// daemonClient (nil in --remote mode and in the in-process-runner fallback,
+	// where there is no BootInfo to ask for), and exists as its own field so a
+	// test can drive the full re-evaluation path without a live daemon.
+	skewProvider skew.BootInfoProvider
 
 	// Session-supervisor restart caution gate. Reused by two callers: the
 	// Settings → System row and the startup skew modal's "Restart supervisor"
@@ -645,6 +666,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 	}
 	if dc, ok := runner.(*dclient.Client); ok {
 		app.daemonClient = dc
+		app.skewProvider = dc
 	}
 	app.restartDaemonFn = app.restartDaemon
 	app.restartSupervisorFn = app.restartSupervisor
@@ -1027,18 +1049,33 @@ func (a *App) afterDraw(screen tcell.Screen) {
 // SetDaemonStale records that the connected daemon's binary differs from the
 // TUI's. Must be called before Run() — the flag is consumed there. Retained for
 // callers/tests that only track daemon staleness; SetSkew is the fuller form.
+//
+// It routes THROUGH SetSkew rather than poking a.daemonStale directly. Run() now
+// decides whether to block on a skew.Result, not on the bare boolean, so setting
+// the flag alone would leave the startup prompt silently un-armed.
 func (a *App) SetDaemonStale(stale bool) {
-	a.daemonStale = stale
+	a.SetSkew(skew.Result{DaemonStale: stale, DaemonIdentity: a.daemonIdentity})
 }
 
 // SetSkew records the startup binary-skew evaluation: whether the daemon and/or
-// the session-supervisor run a stale binary, plus each stale process's rich
-// display identity for the modal. Must be called before Run() — consumed there.
-func (a *App) SetSkew(daemonStale, supervisorStale bool, daemonIdentity, supervisorIdentity string) {
-	a.daemonStale = daemonStale
-	a.supervisorStale = supervisorStale
-	a.daemonIdentity = daemonIdentity
-	a.supervisorIdentity = supervisorIdentity
+// the session-supervisor run a stale binary, the TIERED supervisor verdict, and
+// each stale process's rich display identity for the modal. Must be called
+// before Run() — consumed there.
+func (a *App) SetSkew(res skew.Result) {
+	a.startupSkew = res
+	a.daemonStale = res.DaemonStale
+	a.supervisorStale = res.SupervisorStale()
+	a.daemonIdentity = res.DaemonIdentity
+	a.supervisorIdentity = res.SupervisorIdentity
+
+	// Seed the continuous re-evaluation from this verdict, so the periodic check
+	// starts one interval out rather than firing on the very first tick and
+	// re-announcing — in the status bar, a second after launch — the exact skew
+	// the operator is already reading in the startup modal. An ESCALATING
+	// verdict still speaks up, because noticeForSkew compares against this seed
+	// rather than against nothing.
+	a.lastSkewCheck = time.Now()
+	a.lastSkewNotice = res.Notice()
 }
 
 // liveAgentCount returns the number of live agent sessions (running + idle)
@@ -1098,6 +1135,28 @@ func (a *App) submitPluginSection(scope, title string, values map[string]any) er
 	return nil
 }
 
+// applyStartupSkew presents main()'s startup evaluation.
+//
+// Only a skew that actually costs something blocks: a stale daemon (a cheap
+// restart that never touches agents), or a supervisor mismatch that reaches LIVE
+// sessions. A spawn-only supervisor mismatch cannot affect a single running agent
+// — "new agents will spawn with the previous build's config, restart when
+// convenient" — so it takes the transient status-bar notice instead of a modal
+// (design D6). That is the nine-times-in-ten false alarm the surface version
+// exists to remove; before this, every rebuild opened this modal.
+//
+// Safe to call before the event loop starts (no QueueUpdate — see Run()).
+func (a *App) applyStartupSkew() {
+	if a.startupSkew.NeedsBlockingPrompt() {
+		a.openSkewPrompt()
+		return
+	}
+	if notice := a.startupSkew.Notice(); notice != "" {
+		a.statusbar.SetInfo(notice)
+		uxlog.Log("[skew] startup notice (non-blocking): %s", notice)
+	}
+}
+
 // openSkewPrompt shows the startup binary-skew modal, rendering the rich
 // identity of whichever of {daemon, supervisor} is stale and offering the
 // relevant restart action(s). Reuses the restartDaemonModal field/page/mode so
@@ -1108,6 +1167,13 @@ func (a *App) openSkewPrompt() {
 		return
 	}
 	a.restartDaemonModal = modal.NewSkewModal(a.daemonStale, a.supervisorStale, a.daemonIdentity, a.supervisorIdentity)
+	if a.supervisorStale {
+		// Name the tier: a modal opened because the DAEMON is stale still offers
+		// a supervisor restart, and that restart SIGHUPs every agent. The
+		// operator has to be able to see whether the supervisor's own mismatch
+		// is worth it.
+		a.restartDaemonModal.SetSupervisorConsequence(a.startupSkew.Supervisor.Headline())
+	}
 	a.mode = modeRestartDaemonPrompt
 	a.pages.AddPage("restartdaemon", a.restartDaemonModal, true, true)
 	a.pages.SwitchToPage("restartdaemon")
@@ -1361,9 +1427,14 @@ func (a *App) Run() error {
 	// from the absence of a concurrent reader, not internal synchronization.
 	// Note: pages.SetChangedFunc fires forceRedraw which is now log-only
 	// (no Sync, no channel send, no blocking). Safe to call pre-Run().
-	if a.daemonStale || a.supervisorStale {
-		a.openSkewPrompt()
-	}
+	//
+	// Only a skew that actually costs something blocks: a stale daemon, or a
+	// STREAM-surface supervisor mismatch (live sessions affected). A spawn-only
+	// supervisor mismatch cannot touch a running agent — "new agents will spawn
+	// with the previous build's config, restart when convenient" — so it takes
+	// the transient status-bar notice instead of a modal (design D6). This is the
+	// nine-times-in-ten false alarm the surface version exists to remove.
+	a.applyStartupSkew()
 
 	uxlog.Log("[tui] starting tcell/tview application")
 	return a.tapp.Run()
@@ -1573,11 +1644,97 @@ healthCheck:
 				}
 			} else {
 				a.mu.Lock()
+				recovered := a.daemonFailures > 0
 				a.daemonFailures = 0
+				if recovered {
+					// Reconnected after a failure streak (the daemon may well be
+					// a NEW process on new bytes) — re-evaluate skew immediately
+					// rather than waiting out the interval.
+					a.lastSkewCheck = time.Time{}
+				}
 				a.mu.Unlock()
+				a.reevaluateSkew()
 			}
 		}
 	}
+}
+
+// skewRecheckInterval is how often a running TUI re-evaluates binary skew.
+//
+// Deliberately far slower than the 1s tick: each evaluation costs a BootInfo RPC
+// plus a SHA-256 of the TUI's own binary, and the thing it watches for (someone
+// running `go install` in another terminal) happens on human timescales. A minute
+// is fast enough that the operator learns about a new build long before they next
+// wonder why something looks wrong, and slow enough to be free.
+const skewRecheckInterval = time.Minute
+
+// reevaluateSkew re-runs the binary-skew evaluation against the live daemon and
+// surfaces a newly-discovered skew through the transient status-bar notice.
+//
+// Why this exists: skew used to be evaluated exactly once, in main()'s startup
+// path. A TUI left running for days across several `go install`s never
+// re-checked, so skew was only ever discovered when the operator happened to
+// relaunch — which is precisely why it kept surfacing mid-incident rather than at
+// a moment of their choosing.
+//
+// Runs on the TICK goroutine (BootInfo is an RPC that can block), and touches the
+// status bar only inside QueueUpdateDraw. NEVER opens a modal: firing one
+// mid-session because a build landed in another terminal would interrupt exactly
+// the work this change exists to protect (design D6). The notice is raised once
+// per distinct verdict, so a standing skew does not re-nag every minute.
+func (a *App) reevaluateSkew() {
+	provider, ok := a.claimSkewCheck()
+	if !ok {
+		return
+	}
+
+	// checkDaemon=true, unlike the startup call: the auto-start gate only makes
+	// sense at launch, when the TUI may have just forked the daemon from its own
+	// binary. Once the TUI has been running, a daemon whose hash differs from the
+	// binary now on disk is genuinely on different bytes.
+	res := skew.Evaluate(provider, true)
+	notice := a.noticeForSkew(res)
+	if notice == "" {
+		return
+	}
+
+	uxlog.Log("[skew] re-evaluation: daemonStale=%v supervisor=%s — %s",
+		res.DaemonStale, res.Supervisor, notice)
+	a.tapp.QueueUpdateDraw(func() {
+		a.statusbar.SetInfo(notice)
+	})
+}
+
+// claimSkewCheck reports whether a re-evaluation should run now, returning the
+// provider to ask. It stamps lastSkewCheck on the way out, so a slow BootInfo
+// cannot pile up overlapping evaluations behind it.
+func (a *App) claimSkewCheck() (skew.BootInfoProvider, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.skewProvider == nil || time.Since(a.lastSkewCheck) < skewRecheckInterval {
+		return nil, false
+	}
+	a.lastSkewCheck = time.Now()
+	return a.skewProvider, true
+}
+
+// noticeForSkew records a verdict and returns the notice to raise, or "" when
+// there is nothing NEW to say.
+//
+// The dedupe is on the notice text, i.e. on the verdict: a standing skew must not
+// re-nag every minute (that is how the old signal trained the operator to ignore
+// it), but a verdict that CHANGES — say a spawn-only mismatch that becomes a
+// stream one after a second install — speaks up again. A verdict that clears
+// resets the memory, so a later recurrence is announced afresh.
+func (a *App) noticeForSkew(res skew.Result) string {
+	notice := res.Notice()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if notice == a.lastSkewNotice {
+		return ""
+	}
+	a.lastSkewNotice = notice
+	return notice
 }
 
 // updateArgus runs `go install ./...` on the daemon side and, on success,
@@ -1721,6 +1878,7 @@ func (a *App) restartDaemon() {
 		a.daemonRestarting = false
 		a.daemonFailures = 0
 		a.daemonClient = newClient
+		a.skewProvider = newClient
 		a.runner = newClient
 		a.restartedClient = newClient
 		// Clear stale running/idle IDs from old daemon — the new daemon has
