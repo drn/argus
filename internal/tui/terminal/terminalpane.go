@@ -2150,11 +2150,27 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 	emuMissing := tp.emu == nil
 	sizeChanged := !emuMissing && (tp.emuCols != ptyCols || tp.emuRows != ptyRows)
 	if emuMissing {
-		tp.emu = tp.newTrackedEmulator(ptyCols, ptyRows)
+		// A fresh bind's full replay below may feed PRE-EXISTING on-disk
+		// history authored at a WIDER PTY than this pane — e.g. a Hera pane
+		// binding a task that was last shown at the full-width fullscreen
+		// agent view. Building the fresh emulator straight at the pane's own
+		// (narrower) dims misinterprets that history's cursor-addressed
+		// escape sequences as it's replayed, landing multiple historical
+		// redraw frames on top of each other — visible as an overlapping/
+		// duplicated paragraph with the live status footer pushed out of
+		// view. replayEmuDims already solves exactly this for the dead-
+		// session replay path; reuse it here, then resize down to the pane
+		// immediately below (x/vt's Resize reflows a CORRECTLY-parsed screen
+		// instead of re-parsing history at the wrong width — the same
+		// guarantee the sizeChanged branch relies on) so painting this same
+		// frame already reads the pane-sized emulator. See
+		// gotchas/pty-terminal.md.
+		buildCols, buildRows := replayEmuDims(sess, tp.taskID, ptyCols, ptyRows)
+		tp.emu = tp.newTrackedEmulator(buildCols, buildRows)
 		tp.oscStrip.reset()
 		tp.emuFedTotal = 0
-		tp.emuCols = ptyCols
-		tp.emuRows = ptyRows
+		tp.emuCols = buildCols
+		tp.emuRows = buildRows
 		// Branch change: dropping the old emulator means tcell's per-cell
 		// diff cannot vouch for cells the new emu hasn't drawn over yet.
 		// Invalidate the paint cache so the next paintEmu rebuilds from
@@ -2283,8 +2299,13 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 				// aligned+clamped tail starts at a clean escape boundary,
 				// and oscStrip was reset alongside the fresh emulator, so
 				// the OSC filter continues from a known state into the
-				// incremental feeds below.
-				_, _ = SafeEmuWrite(tp.emu, tp.oscStrip.filter(ClampScrollRegion(AlignToEscBoundary(history), ptyCols, ptyRows)))
+				// incremental feeds below. Clamp against the emulator's OWN
+				// dims (tp.emuCols/tp.emuRows) — the authored/build size on a
+				// fresh bind, not the pane — since that is the emulator this
+				// history is actually being fed into; clamping to the
+				// (possibly narrower) pane here would neutralize scroll
+				// margins that are perfectly valid at the wider build size.
+				_, _ = SafeEmuWrite(tp.emu, tp.oscStrip.filter(ClampScrollRegion(AlignToEscBoundary(history), tp.emuCols, tp.emuRows)))
 				tp.emuFedTotal = finalTotal
 			}
 		} else if ringWrapCaughtUp {
@@ -2321,6 +2342,20 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 		return
 	}
 	// Cache miss or stale — fall through to full paintEmu.
+
+	// A fresh bind may have just built+fed the emulator at a WIDER authored
+	// size than this pane (see the emuMissing branch above). Shrink it down
+	// to the pane now, before painting, so this very first frame already
+	// reads a pane-sized emulator instead of one frame of stale wide-vs-
+	// narrow mismatch. A no-op once the emulator already matches the pane
+	// (the overwhelmingly common case, and true again on every subsequent
+	// Draw after this one-time shrink).
+	if tp.emuCols != ptyCols || tp.emuRows != ptyRows {
+		tp.emu.Resize(ptyCols, ptyRows)
+		tp.emuCols = ptyCols
+		tp.emuRows = ptyRows
+		tp.paintCacheValid = false
+	}
 
 	tp.paintEmu(screen, x, y, w, h, tp.emu, ptyCols, ptyRows, true, tp.cursorVisible, !tp.focused)
 }
