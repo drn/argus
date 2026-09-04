@@ -14,6 +14,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/todo"
 )
 
 func testSettingsView(t *testing.T) *SettingsView {
@@ -2182,6 +2183,70 @@ func TestSettingsView_TodoBackendCycle(t *testing.T) {
 	if len(sv.rows) != 1 {
 		t.Fatalf("expected the project/tag rows to disappear once no backend is selected, got %+v", sv.rows)
 	}
+}
+
+// TestSettingsView_TodoBackendCycle_ValidationFailure covers the local-mode
+// probe added after the first rereview-loop round: a backend that fails to
+// construct (e.g. things3 on a non-macOS host — simulated here via
+// todoProbe, since this test host is itself macOS) must not be persisted,
+// and the failure must be surfaced rather than silently swallowed.
+func TestSettingsView_TodoBackendCycle_ValidationFailure(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.todoProbe = func(name string, _ config.TodoConfig) (todo.Backend, error) {
+		return nil, fmt.Errorf("things3: only supported on macOS (host is linux)")
+	}
+
+	sv.cycleTodoBackend()
+
+	testutil.Equal(t, sv.todoBackend, "") // not persisted
+	testutil.Equal(t, sv.database.Config().Todo.Backend, "")
+	testutil.Contains(t, sv.todoBackendErr, "only supported on macOS")
+
+	label := ""
+	for _, row := range sv.rows {
+		if row.kind == srTodo {
+			label = row.label
+		}
+	}
+	testutil.Contains(t, label, "none") // selection stayed on "none"
+}
+
+// TestSettingsView_TodoBackendCycle_SkipsValidationWhenRemote covers the
+// other half of the same fix: in --remote mode the TUI's own OS isn't
+// necessarily the daemon's, so the local probe must not run at all — the
+// selection persists even though todoProbe would report failure.
+func TestSettingsView_TodoBackendCycle_SkipsValidationWhenRemote(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.SetRemote(true)
+	probeCalled := false
+	sv.todoProbe = func(name string, _ config.TodoConfig) (todo.Backend, error) {
+		probeCalled = true
+		return nil, fmt.Errorf("things3: only supported on macOS (host is linux)")
+	}
+
+	sv.cycleTodoBackend()
+
+	if probeCalled {
+		t.Fatal("todoProbe should not be called in --remote mode")
+	}
+	testutil.Equal(t, sv.todoBackend, "things3")
+	testutil.Equal(t, sv.database.Config().Todo.Backend, "things3")
+	testutil.Equal(t, sv.todoBackendErr, "")
+}
+
+// TestSettingsView_TodoBackendCycle_ClearsPriorError covers a successful
+// selection clearing a previously-recorded validation failure.
+func TestSettingsView_TodoBackendCycle_ClearsPriorError(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.todoBackendErr = "things3: only supported on macOS (host is linux)"
+
+	sv.cycleTodoBackend() // real todoProbe (todo.Get) — succeeds on this darwin test host
+
+	testutil.Equal(t, sv.todoBackend, "things3")
+	testutil.Equal(t, sv.todoBackendErr, "")
 }
 
 func TestSettingsView_TodoProjectEdit(t *testing.T) {

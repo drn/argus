@@ -224,7 +224,14 @@ type SettingsView struct {
 	// Todo backend. Unlike KB/API, this takes effect on the daemon's very
 	// next MCP tools/list call (see mcp.TodoConfigStore) — no restart, so
 	// there is deliberately no "AtBoot"/"restart required" tracking here.
-	todoBackend        string
+	todoBackend    string
+	todoBackendErr string // set when cycleTodoBackend's local-mode probe fails; cleared on success
+	// todoProbe defaults to todo.Get; overridable in tests so the
+	// validation-failure branch of cycleTodoBackend is testable without
+	// touching todo's global registry (a real failure only happens on a
+	// non-macOS host, which can't be simulated in-process on this test
+	// machine — same seam pattern as things3.Backend.run).
+	todoProbe          func(name string, cfg config.TodoConfig) (todo.Backend, error)
 	todoProject        string
 	todoTag            string
 	editingTodoProject bool
@@ -442,6 +449,7 @@ func NewSettingsView(database store.Store) *SettingsView {
 		pluginValues:       make(map[pluginKey]map[string]any),
 		pluginSubmitStatus: make(map[pluginKey]string),
 		streamMounts:       make(map[pluginKey]*streamSectionMount),
+		todoProbe:          todo.Get,
 	}
 }
 
@@ -2179,6 +2187,30 @@ func (sv *SettingsView) cycleTodoBackend() {
 		}
 	}
 	next := options[(idx+1)%len(options)]
+
+	// Validate before persisting — but only in local mode. In --remote mode
+	// this TUI process's own runtime.GOOS is not necessarily the daemon's
+	// host OS, so a client-side todo.Get() probe here would be checking the
+	// wrong machine's capability; skip it there and rely on the daemon's own
+	// graceful degradation (todoToolsActive() hides the tools rather than
+	// erroring) if the backend can't actually construct. In local mode the
+	// probe is cheap and side-effect-free (things3.New just checks
+	// runtime.GOOS — no AppleEvents, no subprocess), so there's no excuse
+	// not to catch an obviously-broken selection (e.g. "things3" on Linux)
+	// before persisting it.
+	if !sv.remote && next != "" {
+		if _, err := sv.todoProbe(next, config.TodoConfig{
+			Backend: next,
+			Things3: config.Things3Config{Project: sv.todoProject, Tag: sv.todoTag},
+		}); err != nil {
+			sv.todoBackendErr = err.Error()
+			uxlog.Log("[settings] todo backend %q failed validation, not persisting: %v", next, err)
+			sv.rebuildRows()
+			return
+		}
+	}
+
+	sv.todoBackendErr = ""
 	sv.todoBackend = next
 	if err := sv.database.SetConfigValue("todo.backend", next); err != nil {
 		uxlog.Log("[settings] failed to persist todo backend: %v", err)
@@ -2675,20 +2707,26 @@ func (sv *SettingsView) renderTodoDetail(screen tcell.Screen, x, y, w, h int) {
 	}
 	r += 2
 
-	if r < h {
-		widget.DrawText(screen, x, y+r, w, "Exposes todo_create/list/update/complete/delete", theme.StyleDimmed)
-	}
-	r++
-	if r < h {
-		widget.DrawText(screen, x, y+r, w, "over MCP as soon as a backend is selected — no", theme.StyleDimmed)
-	}
-	r++
-	if r < h {
-		widget.DrawText(screen, x, y+r, w, "restart needed. Argus never stores items locally;", theme.StyleDimmed)
-	}
-	r++
-	if r < h {
-		widget.DrawText(screen, x, y+r, w, "the backend is always the source of truth.", theme.StyleDimmed)
+	if sv.todoBackendErr != "" {
+		if r < h {
+			widget.DrawText(screen, x, y+r, w, "Unavailable: "+sv.todoBackendErr, theme.StyleError)
+		}
+	} else {
+		if r < h {
+			widget.DrawText(screen, x, y+r, w, "Exposes todo_create/list/update/complete/delete", theme.StyleDimmed)
+		}
+		r++
+		if r < h {
+			widget.DrawText(screen, x, y+r, w, "over MCP as soon as a backend is selected — no", theme.StyleDimmed)
+		}
+		r++
+		if r < h {
+			widget.DrawText(screen, x, y+r, w, "restart needed. Argus never stores items locally;", theme.StyleDimmed)
+		}
+		r++
+		if r < h {
+			widget.DrawText(screen, x, y+r, w, "the backend is always the source of truth.", theme.StyleDimmed)
+		}
 	}
 
 	if h > 1 {

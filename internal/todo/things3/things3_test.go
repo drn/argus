@@ -3,6 +3,8 @@ package things3
 import (
 	"context"
 	"errors"
+	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -337,15 +339,30 @@ func TestRunOsascript_SuccessTrimsTrailingNewline(t *testing.T) {
 	// return. This is the actual production entry point every Backend method
 	// wires in via New() — every other test in this file uses the fake
 	// capturedRun.run instead.
+	//
+	// This repo's CI runs on ubuntu-latest with no osascript binary and no
+	// build tag scoping this package to darwin, so this test — unlike
+	// TestRunOsascript_UsesStderrOnFailure above, which passes either way
+	// because an exec-not-found error is still a non-nil "osascript: ..."
+	// error — MUST skip rather than assert success on a host without it.
+	if _, err := exec.LookPath("osascript"); err != nil {
+		t.Skip("osascript not available on this host")
+	}
 	out, err := runOsascript(context.Background(), `return "hello"`)
 	testutil.NoError(t, err)
 	testutil.Equal(t, out, "hello")
 }
 
 func TestNew_RegistersRealRunner(t *testing.T) {
-	// newForOS is covered directly elsewhere; this covers New() itself — the
-	// actual function todo.Register("things3", New) wires into the registry,
-	// which every other test in this file bypasses via newTestBackend.
+	// newForOS is covered directly (both branches) elsewhere; this covers
+	// New() itself — the actual function todo.Register("things3", New) wires
+	// into the registry, which every other test in this file bypasses via
+	// newTestBackend. New() always errors on a non-darwin host (see
+	// newForOS), so this needs the same skip every other things3-on-a-real-
+	// host test in this file needs.
+	if runtime.GOOS != "darwin" {
+		t.Skip("things3 backend only constructs successfully on macOS")
+	}
 	b, err := New(config.TodoConfig{Things3: config.Things3Config{Project: "Argus"}})
 	testutil.NoError(t, err)
 	backend, ok := b.(*Backend)
