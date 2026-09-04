@@ -514,7 +514,14 @@ func (sv *SettingsView) Refresh() {
 
 	// Todo backend. Skipped while a field is being inline-edited so an
 	// in-flight keystroke buffer isn't clobbered by a concurrent Refresh.
+	// todoBackendErr is cleared unconditionally: it records the outcome of a
+	// specific past cycleTodoBackend attempt, and a fresh Refresh's
+	// cfg.Todo.Backend is the authoritative current state regardless of that
+	// attempt's outcome — an error about a rejected past selection must not
+	// linger next to a row now reflecting a different (e.g. externally
+	// changed) backend value.
 	sv.todoBackend = cfg.Todo.Backend
+	sv.todoBackendErr = ""
 	if !sv.editingTodoProject {
 		sv.todoProject = cfg.Todo.Things3.Project
 	}

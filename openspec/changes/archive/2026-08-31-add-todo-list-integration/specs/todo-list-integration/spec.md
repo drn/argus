@@ -102,7 +102,7 @@ The system SHALL provide a `things3` backend that implements to-do CRUD by drivi
 
 ### Requirement: Todo backend configuration in Settings
 
-The Argus TUI Settings view SHALL let the user select the active to-do backend (including "none") from the set of registered backends and edit that backend's config fields, persisting the selection through the same config-value mechanism used by other Settings toggles (e.g. `kb.enabled`).
+The Argus TUI Settings view SHALL let the user select the active to-do backend (including "none") from the set of registered backends and edit that backend's config fields, persisting the selection through the same config-value mechanism used by other Settings toggles (e.g. `kb.enabled`). When running against a local daemon (not `--remote`), Settings SHALL validate that a candidate backend can actually construct before persisting the selection, surfacing a failure instead of silently persisting a selection that cannot activate. In `--remote` mode this local validation SHALL be skipped, since the Settings process's own host is not necessarily the remote daemon's host; an unreachable backend selected remotely still degrades gracefully per the "Unknown backend name is rejected" requirement above (tools simply do not appear).
 
 #### Scenario: Selecting a backend in Settings activates it
 
@@ -113,3 +113,13 @@ The Argus TUI Settings view SHALL let the user select the active to-do backend (
 
 - **WHEN** the user selects "none" in Settings
 - **THEN** no backend is active and `todo_*` tools no longer appear
+
+#### Scenario: A backend that cannot construct locally is not persisted
+
+- **WHEN** running against a local daemon and the user selects a backend that fails to construct on this host (e.g. a macOS-only backend selected on a non-macOS host)
+- **THEN** the selection is not persisted, the previous selection remains active, and the failure is surfaced to the user
+
+#### Scenario: Remote mode skips local validation
+
+- **WHEN** running against a remote daemon (`--remote`) and the user selects a backend
+- **THEN** Settings persists the selection without a local construction check, since this process's host is not necessarily the daemon's host

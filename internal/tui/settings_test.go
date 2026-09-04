@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"runtime"
@@ -17,6 +18,28 @@ import (
 	"github.com/drn/argus/internal/todo"
 )
 
+// fakeAlwaysOKTodoBackend is a no-op todo.Backend used as testSettingsView's
+// default todoProbe stub. cycleTodoBackend's local-mode validation calls the
+// real todo.Get (things3.New) by default, which only succeeds on macOS — a
+// bare testSettingsView(t) cycling to "things3" would otherwise fail on any
+// non-macOS CI runner, the exact regression class the things3_test.go OS
+// guards were added to close, recurring here in a sibling file. Tests that
+// specifically want to exercise probe failure/success semantics override
+// sv.todoProbe themselves after construction.
+type fakeAlwaysOKTodoBackend struct{}
+
+func (fakeAlwaysOKTodoBackend) Create(context.Context, todo.CreateInput) (todo.Item, error) {
+	return todo.Item{}, nil
+}
+func (fakeAlwaysOKTodoBackend) List(context.Context) ([]todo.Item, error) { return nil, nil }
+func (fakeAlwaysOKTodoBackend) Update(context.Context, string, todo.UpdateInput) (todo.Item, error) {
+	return todo.Item{}, nil
+}
+func (fakeAlwaysOKTodoBackend) Complete(context.Context, string) (todo.Item, error) {
+	return todo.Item{}, nil
+}
+func (fakeAlwaysOKTodoBackend) Delete(context.Context, string) error { return nil }
+
 func testSettingsView(t *testing.T) *SettingsView {
 	t.Helper()
 	database, err := db.OpenInMemory()
@@ -24,6 +47,9 @@ func testSettingsView(t *testing.T) *SettingsView {
 		t.Fatal(err)
 	}
 	sv := NewSettingsView(database)
+	sv.todoProbe = func(string, config.TodoConfig) (todo.Backend, error) {
+		return fakeAlwaysOKTodoBackend{}, nil
+	}
 	sv.Refresh()
 	return sv
 }
@@ -2243,9 +2269,45 @@ func TestSettingsView_TodoBackendCycle_ClearsPriorError(t *testing.T) {
 	sv.setCategory(catTodo)
 	sv.todoBackendErr = "things3: only supported on macOS (host is linux)"
 
-	sv.cycleTodoBackend() // real todoProbe (todo.Get) — succeeds on this darwin test host
+	sv.cycleTodoBackend() // testSettingsView's default todoProbe stub succeeds unconditionally
 
 	testutil.Equal(t, sv.todoBackend, "things3")
+	testutil.Equal(t, sv.todoBackendErr, "")
+}
+
+// TestSettingsView_TodoBackendCycle_RealProbeOnDarwin is the one test in this
+// file that deliberately bypasses testSettingsView's default todoProbe stub
+// to exercise the real wiring (NewSettingsView's todoProbe: todo.Get default
+// -> things3.New) end to end — every other test here fakes it out for
+// CI portability, so without this one the real integration would go
+// completely untested. Skips on non-macOS, matching things3's own
+// darwin-only tests, rather than needing a fake anywhere.
+func TestSettingsView_TodoBackendCycle_RealProbeOnDarwin(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("things3 backend only constructs successfully on macOS")
+	}
+	database, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	sv := NewSettingsView(database)
+	sv.Refresh()
+	sv.setCategory(catTodo)
+
+	sv.cycleTodoBackend()
+
+	testutil.Equal(t, sv.todoBackend, "things3")
+	testutil.Equal(t, sv.todoBackendErr, "")
+}
+
+// TestSettingsView_TodoRefreshClearsStaleBackendErr covers a Refresh landing
+// after a rejected local-mode probe attempt: the stale error must not linger
+// next to a row that now reflects fresh (possibly externally-changed)
+// config state.
+func TestSettingsView_TodoRefreshClearsStaleBackendErr(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.todoBackendErr = "things3: only supported on macOS (host is linux)"
+
+	sv.Refresh()
+
 	testutil.Equal(t, sv.todoBackendErr, "")
 }
 
