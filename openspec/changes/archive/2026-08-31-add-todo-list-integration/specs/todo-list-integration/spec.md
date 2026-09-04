@@ -78,7 +78,7 @@ The system SHALL treat the configured backend as the sole source of truth for to
 
 ### Requirement: Things 3 backend
 
-The system SHALL provide a `things3` backend that implements to-do CRUD by driving the Things 3 macOS app via AppleScript (`osascript`). Created items SHALL be added to a configured destination list (defaulting to Things 3's Inbox when none is configured) and MAY be tagged with a configured tag name. `todo_complete` SHALL set the to-do's status to completed. `todo_delete` SHALL remove the to-do from Things 3. The backend SHALL be unavailable (reported as a configuration error, not a daemon crash) when the host OS is not macOS or when Things 3 is not installed/reachable.
+The system SHALL provide a `things3` backend that implements to-do CRUD by driving the Things 3 macOS app via AppleScript (`osascript`). Created items SHALL be added to a configured destination list (defaulting to Things 3's Inbox when none is configured) and MAY be tagged with a configured tag name. `todo_complete` SHALL set the to-do's status to completed. `todo_delete` SHALL remove the to-do from Things 3. The backend SHALL be unavailable (reported as a configuration error, not a daemon crash) when the host OS is not macOS. Construction succeeding on macOS is a host-OS check only — it does NOT confirm Things 3 is actually installed or running; if it is not, that surfaces as an ordinary per-call tool error on the first `todo_*` call rather than as a configuration-time "unavailable" state.
 
 #### Scenario: Create adds to the configured list
 
@@ -99,6 +99,11 @@ The system SHALL provide a `things3` backend that implements to-do CRUD by drivi
 
 - **WHEN** `backend` is set to `things3` on a non-macOS daemon host
 - **THEN** the backend reports a configuration error and does not activate rather than crashing the daemon
+
+#### Scenario: Things 3 not installed surfaces at call time, not configuration time
+
+- **WHEN** `backend` is set to `things3` on a macOS host where Things 3 is not installed or not reachable
+- **THEN** the backend still activates (construction only checks the host OS) and the first `todo_*` call fails with an ordinary tool error rather than the backend having been reported unavailable at configuration time
 
 ### Requirement: Todo backend configuration in Settings
 
