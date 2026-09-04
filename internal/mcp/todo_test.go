@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/config"
@@ -205,6 +206,62 @@ func TestToolsList_TodoAppearsLiveNoRestart(t *testing.T) {
 	}
 }
 
+// TestToolsList_TodoDisappearsLiveNoRestart is the mirror-image spec
+// scenario: clearing the backend selection must hide todo_* tools on the
+// very next tools/list call, with no restart — the empty→active direction is
+// covered above, this covers active→empty.
+func TestToolsList_TodoDisappearsLiveNoRestart(t *testing.T) {
+	sharedFakeTodo.reset()
+	s := testServer()
+	store := &fakeTodoConfigStore{cfg: config.Config{Todo: config.TodoConfig{Backend: "mcptest"}}}
+	s.SetTodoManager(store)
+
+	resp := doRequest(t, s, "tools/list", nil)
+	result, _ := json.Marshal(resp.Result)
+	var before ToolsListResult
+	json.Unmarshal(result, &before) //nolint:errcheck
+	found := false
+	for _, tool := range before.Tools {
+		if tool.Name == "todo_create" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("todo_create should be listed while a backend is active")
+	}
+
+	// Simulate a Settings clear: the config the store resolves changes back
+	// to empty, with no call back into the MCP server at all.
+	store.cfg.Todo.Backend = ""
+
+	resp2 := doRequest(t, s, "tools/list", nil)
+	result2, _ := json.Marshal(resp2.Result)
+	var after ToolsListResult
+	json.Unmarshal(result2, &after) //nolint:errcheck
+	for _, tool := range after.Tools {
+		if tool.Name == "todo_create" {
+			t.Fatal("todo_create should no longer be listed immediately after the config store reports no backend, with no restart")
+		}
+	}
+}
+
+// TestTodoToolsActive_LogDedup exercises the lastTodoErr dedup state
+// directly (rather than capturing the global log package's output): an
+// unknown backend name records the error, and clearing the backend resets
+// it — the underlying data the dedup log line in todoToolsActive reads from.
+func TestTodoToolsActive_LogDedup(t *testing.T) {
+	store := &fakeTodoConfigStore{cfg: config.Config{Todo: config.TodoConfig{Backend: "unknown-backend"}}}
+	s := testServer()
+	s.SetTodoManager(store)
+
+	testutil.Equal(t, s.todoToolsActive(), false)
+	testutil.Contains(t, s.lastTodoErr, "unknown-backend")
+
+	store.cfg.Todo.Backend = ""
+	testutil.Equal(t, s.todoToolsActive(), false)
+	testutil.Equal(t, s.lastTodoErr, "")
+}
+
 func TestToolsCall_TodoUnknownWhenInactive(t *testing.T) {
 	s := testServer() // no todo manager wired at all
 	resp := doRequest(t, s, "tools/call", ToolCallParams{
@@ -254,6 +311,26 @@ func TestTodoCreate(t *testing.T) {
 		testutil.Equal(t, cr.IsError, true)
 		testutil.Contains(t, cr.Content[0].Text, "not installed")
 	})
+
+	t.Run("title over the size cap is rejected", func(t *testing.T) {
+		s, fake := testServerWithTodo(t)
+		args, _ := json.Marshal(map[string]string{"title": strings.Repeat("x", maxTodoTitleRunes+1)})
+		resp := doRequest(t, s, "tools/call", ToolCallParams{Name: "todo_create", Arguments: args})
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "title exceeds")
+		testutil.Equal(t, len(fake.items), 0)
+	})
+
+	t.Run("notes over the size cap is rejected", func(t *testing.T) {
+		s, fake := testServerWithTodo(t)
+		args, _ := json.Marshal(map[string]string{"title": "x", "notes": strings.Repeat("x", maxTodoNotesBytes+1)})
+		resp := doRequest(t, s, "tools/call", ToolCallParams{Name: "todo_create", Arguments: args})
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "notes exceeds")
+		testutil.Equal(t, len(fake.items), 0)
+	})
 }
 
 func TestTodoList(t *testing.T) {
@@ -302,6 +379,27 @@ func TestTodoUpdate(t *testing.T) {
 		resp := doRequest(t, s, "tools/call", ToolCallParams{Name: "todo_update", Arguments: json.RawMessage(`{"id":"missing","title":"x"}`)})
 		cr := callResult(t, resp)
 		testutil.Equal(t, cr.IsError, true)
+	})
+
+	t.Run("title over the size cap is rejected", func(t *testing.T) {
+		s, fake := testServerWithTodo(t)
+		fake.items = []todo.Item{{ID: "1", Title: "Old"}}
+		args, _ := json.Marshal(map[string]string{"id": "1", "title": strings.Repeat("x", maxTodoTitleRunes+1)})
+		resp := doRequest(t, s, "tools/call", ToolCallParams{Name: "todo_update", Arguments: args})
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "title exceeds")
+		testutil.Equal(t, fake.items[0].Title, "Old")
+	})
+
+	t.Run("notes over the size cap is rejected", func(t *testing.T) {
+		s, fake := testServerWithTodo(t)
+		fake.items = []todo.Item{{ID: "1", Title: "Old"}}
+		args, _ := json.Marshal(map[string]string{"id": "1", "notes": strings.Repeat("x", maxTodoNotesBytes+1)})
+		resp := doRequest(t, s, "tools/call", ToolCallParams{Name: "todo_update", Arguments: args})
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "notes exceeds")
 	})
 }
 

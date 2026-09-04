@@ -3,7 +3,6 @@ package things3
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -165,6 +164,16 @@ func TestList(t *testing.T) {
 		_, err := b.List(context.Background())
 		testutil.Contains(t, err.Error(), "no such application")
 	})
+
+	t.Run("a malformed row mid-list is an error", func(t *testing.T) {
+		out := strings.Join([]string{row("a", "First", "", "open"), "only-one-field"}, recordSep)
+		c := &capturedRun{output: out}
+		b := newTestBackend("", "", c)
+		_, err := b.List(context.Background())
+		if err == nil {
+			t.Fatal("expected an error for a malformed row in the middle of a list response")
+		}
+	})
 }
 
 func TestUpdate(t *testing.T) {
@@ -202,6 +211,34 @@ func TestUpdate(t *testing.T) {
 		}
 		testutil.Contains(t, err.Error(), "not found")
 	})
+
+	t.Run("empty title is rejected without shelling out", func(t *testing.T) {
+		c := &capturedRun{}
+		b := newTestBackend("", "", c)
+		title := "   "
+		_, err := b.Update(context.Background(), "a", todo.UpdateInput{Title: &title})
+		if err == nil {
+			t.Fatal("expected an error for a blank title")
+		}
+		testutil.Equal(t, len(c.scripts), 0)
+	})
+
+	t.Run("notes can be cleared to empty", func(t *testing.T) {
+		c := &capturedRun{output: row("a", "Task", "", "open")}
+		b := newTestBackend("", "", c)
+		notes := ""
+		_, err := b.Update(context.Background(), "a", todo.UpdateInput{Notes: &notes})
+		testutil.NoError(t, err)
+		testutil.Contains(t, c.scripts[0], `set notes of t to ""`)
+	})
+
+	t.Run("osascript error propagates", func(t *testing.T) {
+		c := &capturedRun{err: errors.New("boom")}
+		b := newTestBackend("", "", c)
+		title := "X"
+		_, err := b.Update(context.Background(), "a", todo.UpdateInput{Title: &title})
+		testutil.Contains(t, err.Error(), "boom")
+	})
 }
 
 func TestComplete(t *testing.T) {
@@ -219,6 +256,13 @@ func TestComplete(t *testing.T) {
 		b := newTestBackend("", "", c)
 		_, err := b.Complete(context.Background(), "missing")
 		testutil.Contains(t, err.Error(), "not found")
+	})
+
+	t.Run("osascript error propagates", func(t *testing.T) {
+		c := &capturedRun{err: errors.New("boom")}
+		b := newTestBackend("", "", c)
+		_, err := b.Complete(context.Background(), "a")
+		testutil.Contains(t, err.Error(), "boom")
 	})
 }
 
@@ -287,4 +331,29 @@ func TestRunOsascript_UsesStderrOnFailure(t *testing.T) {
 	testutil.Contains(t, err.Error(), "osascript:")
 }
 
-var _ = fmt.Sprintf // keep fmt imported if row()/tests above are trimmed later
+func TestRunOsascript_SuccessTrimsTrailingNewline(t *testing.T) {
+	// The one real-osascript path not otherwise covered: the success branch,
+	// which trims the trailing newline osascript appends to a plain string
+	// return. This is the actual production entry point every Backend method
+	// wires in via New() — every other test in this file uses the fake
+	// capturedRun.run instead.
+	out, err := runOsascript(context.Background(), `return "hello"`)
+	testutil.NoError(t, err)
+	testutil.Equal(t, out, "hello")
+}
+
+func TestNew_RegistersRealRunner(t *testing.T) {
+	// newForOS is covered directly elsewhere; this covers New() itself — the
+	// actual function todo.Register("things3", New) wires into the registry,
+	// which every other test in this file bypasses via newTestBackend.
+	b, err := New(config.TodoConfig{Things3: config.Things3Config{Project: "Argus"}})
+	testutil.NoError(t, err)
+	backend, ok := b.(*Backend)
+	if !ok {
+		t.Fatalf("expected *Backend, got %T", b)
+	}
+	testutil.Equal(t, backend.project, "Argus")
+	if backend.run == nil {
+		t.Fatal("expected New to wire the real osascript runner")
+	}
+}

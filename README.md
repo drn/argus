@@ -663,7 +663,7 @@ If the recipient has a live agent session the daemon also writes a single notifi
 | `schedule_delete`  | Remove a schedule by `id`. Tasks already created by previous fires are unaffected.                                                                                                                        |
 | `schedule_run_now` | Fire a schedule immediately, out of cycle. Bookkeeping is updated so the next regular tick will not double-fire. One-shot rows auto-disable. Does NOT send a push notification — only cron-tick fires do. |
 
-**To-Do List** (served only while a backend is configured — see [Settings](#reference) → To-Do List; today's only backend is Things 3, macOS-only):
+**To-Do List** (served only while a backend is configured — see [Settings](#reference) → To-Do List; today's only backend is Things 3, macOS-only; requires `kb.enabled` like every other MCP tool family below, since that flag gates the MCP server's existence, not just the KB tools specifically):
 
 | Tool            | Description                                                                                                                        |
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -1042,7 +1042,7 @@ Full enable/verify walkthrough: **[docs/knowledge-base.md](docs/knowledge-base.m
 
 #### `[todo]`
 
-Selects the single active [to-do-list backend](#reference) (`todo_*` MCP tools). Also configurable live from Settings → To-Do List — no restart needed either way.
+Selects the single active [to-do-list backend](#reference) (`todo_*` MCP tools). Also configurable live from Settings → To-Do List — no restart needed either way. **Requires `[kb] enabled = true`** — the MCP server itself only starts when KB is enabled (see `[kb]` above), so a `todo.backend` selection with KB off persists but produces no visible `todo_*` tools until KB is turned on too.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|

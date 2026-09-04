@@ -225,11 +225,17 @@ end tell`, existsGuard(id), body, rowExpr)
 	return parseItem(out)
 }
 
-// Update implements todo.Backend.
+// Update implements todo.Backend. A non-nil Title must not be blank — Things 3
+// to-dos always have a name, so this mirrors Create's same requirement rather
+// than silently clearing the item's title to empty.
 func (b *Backend) Update(ctx context.Context, id string, in todo.UpdateInput) (todo.Item, error) {
 	var sets []string
 	if in.Title != nil {
-		sets = append(sets, fmt.Sprintf(`set name of t to "%s"`, escapeAS(*in.Title)))
+		title := strings.TrimSpace(*in.Title)
+		if title == "" {
+			return todo.Item{}, errors.New("things3: title cannot be empty")
+		}
+		sets = append(sets, fmt.Sprintf(`set name of t to "%s"`, escapeAS(title)))
 	}
 	if in.Notes != nil {
 		sets = append(sets, fmt.Sprintf(`set notes of t to "%s"`, escapeAS(*in.Notes)))

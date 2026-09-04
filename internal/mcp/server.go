@@ -204,6 +204,13 @@ type Server struct {
 	// todoConfigStore resolves the active to-do backend config. Optional;
 	// set via SetTodoManager.
 	todoConfigStore TodoConfigStore
+
+	// todoErrMu/lastTodoErr dedupe the inactive-backend log line in
+	// todoToolsActive: that method runs on every tools/list poll, so logging
+	// unconditionally on a lingering misconfiguration would spam the log
+	// once per poll interval forever. Only a NEW/changed error re-logs.
+	todoErrMu   sync.Mutex
+	lastTodoErr string
 }
 
 // TodoConfigStore resolves the currently active to-do-backend config.
@@ -716,6 +723,16 @@ Failure convention: write ` + "`{\"failed\": true, \"reason\": \"...\"}`" + ` so
 	},
 }
 
+// maxTodoTitleRunes and maxTodoNotesBytes cap todo_create/todo_update input,
+// mirroring the size-cap pattern every other MCP tool in this file already
+// uses (maxTaskNameRunes, maxTaskResultBytes) — without a cap, an arbitrarily
+// large string would be embedded whole into an AppleScript source string and
+// handed to the backend's subprocess.
+const (
+	maxTodoTitleRunes = 500
+	maxTodoNotesBytes = 16 * 1024
+)
+
 // todoToolDefs are exposed only while todoToolsActive() is true — i.e. a
 // backend is both wired (SetTodoManager) and currently selected in config.
 var todoToolDefs = []Tool{
@@ -796,6 +813,23 @@ func (s *Server) resolveTodoBackend() (todo.Backend, error) {
 // no backend configured, not surfaced as a distinct tool-call error.
 func (s *Server) todoToolsActive() bool {
 	b, err := s.resolveTodoBackend()
+	// Logged (deduped — see lastTodoErr), not surfaced over MCP: per spec, an
+	// invalid/misconfigured backend name is treated identically to "no
+	// backend configured" on the wire (tools hidden, -32601 on call) — but a
+	// daemon operator debugging "why did my todo tools disappear" needs the
+	// reason somewhere, without this polling on every tools/list flooding
+	// the log for as long as the misconfiguration lasts.
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	s.todoErrMu.Lock()
+	changed := msg != s.lastTodoErr
+	s.lastTodoErr = msg
+	s.todoErrMu.Unlock()
+	if changed && err != nil {
+		log.Printf("[mcp] todo backend inactive: %v", err)
+	}
 	return err == nil && b != nil
 }
 
@@ -1789,6 +1823,12 @@ func (s *Server) toolTodoCreate(id interface{}, args json.RawMessage) *Response 
 	if strings.TrimSpace(p.Title) == "" {
 		return toolError(id, "title is required")
 	}
+	if len([]rune(p.Title)) > maxTodoTitleRunes {
+		return toolError(id, fmt.Sprintf("title exceeds %d runes", maxTodoTitleRunes))
+	}
+	if len(p.Notes) > maxTodoNotesBytes {
+		return toolError(id, fmt.Sprintf("notes exceeds %d bytes", maxTodoNotesBytes))
+	}
 
 	b, err := s.resolveTodoBackend()
 	if err != nil {
@@ -1841,6 +1881,12 @@ func (s *Server) toolTodoUpdate(id interface{}, args json.RawMessage) *Response 
 
 	if strings.TrimSpace(p.ID) == "" {
 		return toolError(id, "id is required")
+	}
+	if p.Title != nil && len([]rune(*p.Title)) > maxTodoTitleRunes {
+		return toolError(id, fmt.Sprintf("title exceeds %d runes", maxTodoTitleRunes))
+	}
+	if p.Notes != nil && len(*p.Notes) > maxTodoNotesBytes {
+		return toolError(id, fmt.Sprintf("notes exceeds %d bytes", maxTodoNotesBytes))
 	}
 
 	b, err := s.resolveTodoBackend()

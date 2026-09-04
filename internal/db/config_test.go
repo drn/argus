@@ -91,6 +91,9 @@ func TestDB_Config_AllOverrides(t *testing.T) {
 		"hera.enabled":             "false",
 		"supervisor.enabled":       "true",
 		"argus.source_path":        "/path/to/argus",
+		"todo.backend":             "things3",
+		"todo.things3.project":     "Argus",
+		"todo.things3.tag":         "argus",
 	}
 	for k, v := range overrides {
 		testutil.NoError(t, d.SetConfigValue(k, v))
@@ -120,6 +123,9 @@ func TestDB_Config_AllOverrides(t *testing.T) {
 	testutil.Equal(t, cfg.Hera.Enabled, false)
 	testutil.Equal(t, cfg.Supervisor.Enabled, true)
 	testutil.Equal(t, cfg.Argus.SourcePath, "/path/to/argus")
+	testutil.Equal(t, cfg.Todo.Backend, "things3")
+	testutil.Equal(t, cfg.Todo.Things3.Project, "Argus")
+	testutil.Equal(t, cfg.Todo.Things3.Tag, "argus")
 }
 
 // TestDB_Config_SupervisorEnabledDefaultTrue verifies that an absent
