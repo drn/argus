@@ -36,6 +36,27 @@ type Config struct {
 	// overriding a shared key or adding a project-specific one — see
 	// agent.ResolveCacheDirs.
 	CacheDirs map[string]string `toml:"cache_dirs"`
+	Todo      TodoConfig        `toml:"todo"`
+}
+
+// TodoConfig selects and configures the single active to-do-list backend
+// (internal/todo, MCP todo_* tools). Backend names a registered backend;
+// empty means no backend is active. Only one backend is ever active — there
+// is deliberately no map/list of backends here, only a scalar selector plus
+// one sub-table per known backend, mirroring Defaults.Backend for agent CLIs.
+type TodoConfig struct {
+	Backend string        `toml:"backend"`
+	Things3 Things3Config `toml:"things3"`
+}
+
+// Things3Config configures the "things3" backend (internal/todo/things3),
+// which drives the Things 3 macOS app via AppleScript.
+type Things3Config struct {
+	// Project names the Things 3 project new items are filed under and that
+	// todo_list reads from. Empty means the Things 3 Inbox.
+	Project string `toml:"project"`
+	// Tag, if set, is applied to every item Argus creates in Things 3.
+	Tag string `toml:"tag"`
 }
 
 // SecretsConfig configures the internal/agent secrets-resolution registry

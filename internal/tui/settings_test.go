@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"runtime"
@@ -14,7 +15,30 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/todo"
 )
+
+// fakeAlwaysOKTodoBackend is a no-op todo.Backend used as testSettingsView's
+// default todoProbe stub. cycleTodoBackend's local-mode validation calls the
+// real todo.Get (things3.New) by default, which only succeeds on macOS — a
+// bare testSettingsView(t) cycling to "things3" would otherwise fail on any
+// non-macOS CI runner, the exact regression class the things3_test.go OS
+// guards were added to close, recurring here in a sibling file. Tests that
+// specifically want to exercise probe failure/success semantics override
+// sv.todoProbe themselves after construction.
+type fakeAlwaysOKTodoBackend struct{}
+
+func (fakeAlwaysOKTodoBackend) Create(context.Context, todo.CreateInput) (todo.Item, error) {
+	return todo.Item{}, nil
+}
+func (fakeAlwaysOKTodoBackend) List(context.Context) ([]todo.Item, error) { return nil, nil }
+func (fakeAlwaysOKTodoBackend) Update(context.Context, string, todo.UpdateInput) (todo.Item, error) {
+	return todo.Item{}, nil
+}
+func (fakeAlwaysOKTodoBackend) Complete(context.Context, string) (todo.Item, error) {
+	return todo.Item{}, nil
+}
+func (fakeAlwaysOKTodoBackend) Delete(context.Context, string) error { return nil }
 
 func testSettingsView(t *testing.T) *SettingsView {
 	t.Helper()
@@ -23,6 +47,9 @@ func testSettingsView(t *testing.T) *SettingsView {
 		t.Fatal(err)
 	}
 	sv := NewSettingsView(database)
+	sv.todoProbe = func(string, config.TodoConfig) (todo.Backend, error) {
+		return fakeAlwaysOKTodoBackend{}, nil
+	}
 	sv.Refresh()
 	return sv
 }
@@ -2146,4 +2173,249 @@ func TestSettingsView_SecretsBootstrapRow_NotConfigured(t *testing.T) {
 		t.Fatal("expected a secrets bootstrap status row in the System category")
 	}
 	testutil.Contains(t, row.label, "NOT CONFIGURED")
+}
+
+// --- Todo backend settings ---
+
+func TestSettingsView_TodoBackendCycle(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.setFocus(focusPane)
+
+	// Unconfigured by default.
+	testutil.Equal(t, sv.todoBackend, "")
+	testutil.Equal(t, sv.currentRowKind(), srTodo)
+	if len(sv.rows) != 1 {
+		t.Fatalf("expected exactly one row (no backend selected), got %+v", sv.rows)
+	}
+
+	// Enter cycles to the first (and, today, only) registered backend.
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.todoBackend, "things3")
+	testutil.Equal(t, sv.database.Config().Todo.Backend, "things3")
+
+	// Selecting a backend reveals the Things 3 field rows.
+	kinds := make([]settingsRowKind, len(sv.rows))
+	for i, row := range sv.rows {
+		kinds[i] = row.kind
+	}
+	testutil.DeepEqual(t, kinds, []settingsRowKind{srTodo, srTodoProject, srTodoTag})
+
+	// Cycling again wraps back to disabled.
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	testutil.Equal(t, sv.todoBackend, "")
+	testutil.Equal(t, sv.database.Config().Todo.Backend, "")
+	if len(sv.rows) != 1 {
+		t.Fatalf("expected the project/tag rows to disappear once no backend is selected, got %+v", sv.rows)
+	}
+}
+
+// TestSettingsView_TodoBackendCycle_ValidationFailure covers the local-mode
+// probe added after the first rereview-loop round: a backend that fails to
+// construct (e.g. things3 on a non-macOS host — simulated here via
+// todoProbe, since this test host is itself macOS) must not be persisted,
+// and the failure must be surfaced rather than silently swallowed.
+func TestSettingsView_TodoBackendCycle_ValidationFailure(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.todoProbe = func(name string, _ config.TodoConfig) (todo.Backend, error) {
+		return nil, fmt.Errorf("things3: only supported on macOS (host is linux)")
+	}
+
+	sv.cycleTodoBackend()
+
+	testutil.Equal(t, sv.todoBackend, "") // not persisted
+	testutil.Equal(t, sv.database.Config().Todo.Backend, "")
+	testutil.Contains(t, sv.todoBackendErr, "only supported on macOS")
+
+	label := ""
+	for _, row := range sv.rows {
+		if row.kind == srTodo {
+			label = row.label
+		}
+	}
+	testutil.Contains(t, label, "none") // selection stayed on "none"
+}
+
+// TestSettingsView_TodoBackendCycle_SkipsValidationWhenRemote covers the
+// other half of the same fix: in --remote mode the TUI's own OS isn't
+// necessarily the daemon's, so the local probe must not run at all — the
+// selection persists even though todoProbe would report failure.
+func TestSettingsView_TodoBackendCycle_SkipsValidationWhenRemote(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.SetRemote(true)
+	probeCalled := false
+	sv.todoProbe = func(name string, _ config.TodoConfig) (todo.Backend, error) {
+		probeCalled = true
+		return nil, fmt.Errorf("things3: only supported on macOS (host is linux)")
+	}
+
+	sv.cycleTodoBackend()
+
+	if probeCalled {
+		t.Fatal("todoProbe should not be called in --remote mode")
+	}
+	testutil.Equal(t, sv.todoBackend, "things3")
+	testutil.Equal(t, sv.database.Config().Todo.Backend, "things3")
+	testutil.Equal(t, sv.todoBackendErr, "")
+}
+
+// TestSettingsView_TodoBackendCycle_ClearsPriorError covers a successful
+// selection clearing a previously-recorded validation failure.
+func TestSettingsView_TodoBackendCycle_ClearsPriorError(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.todoBackendErr = "things3: only supported on macOS (host is linux)"
+
+	sv.cycleTodoBackend() // testSettingsView's default todoProbe stub succeeds unconditionally
+
+	testutil.Equal(t, sv.todoBackend, "things3")
+	testutil.Equal(t, sv.todoBackendErr, "")
+}
+
+// TestSettingsView_TodoBackendCycle_RealProbeOnDarwin is the one test in this
+// file that deliberately bypasses testSettingsView's default todoProbe stub
+// to exercise the real wiring (NewSettingsView's todoProbe: todo.Get default
+// -> things3.New) end to end — every other test here fakes it out for
+// CI portability, so without this one the real integration would go
+// completely untested. Skips on non-macOS, matching things3's own
+// darwin-only tests, rather than needing a fake anywhere.
+func TestSettingsView_TodoBackendCycle_RealProbeOnDarwin(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("things3 backend only constructs successfully on macOS")
+	}
+	database, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	sv := NewSettingsView(database)
+	sv.Refresh()
+	sv.setCategory(catTodo)
+
+	sv.cycleTodoBackend()
+
+	testutil.Equal(t, sv.todoBackend, "things3")
+	testutil.Equal(t, sv.todoBackendErr, "")
+}
+
+// TestSettingsView_TodoRefreshClearsStaleBackendErr covers a Refresh landing
+// after a rejected local-mode probe attempt: the stale error must not linger
+// next to a row that now reflects fresh (possibly externally-changed)
+// config state.
+func TestSettingsView_TodoRefreshClearsStaleBackendErr(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.todoBackendErr = "things3: only supported on macOS (host is linux)"
+
+	sv.Refresh()
+
+	testutil.Equal(t, sv.todoBackendErr, "")
+}
+
+func TestSettingsView_TodoProjectEdit(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.cycleTodoBackend() // select things3 so the project row exists
+
+	for i, row := range sv.rows {
+		if row.kind == srTodoProject {
+			sv.cursor = i
+			break
+		}
+	}
+	sv.handleEnter()
+	if !sv.editingTodoProject {
+		t.Fatal("expected editingTodoProject to be true after enter")
+	}
+	for _, r := range "Argus" {
+		sv.handleEditTodoProjectKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+	sv.handleEditTodoProjectKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if sv.editingTodoProject {
+		t.Error("editingTodoProject should be false after enter")
+	}
+	testutil.Equal(t, sv.todoProject, "Argus")
+	testutil.Equal(t, sv.database.Config().Todo.Things3.Project, "Argus")
+}
+
+func TestSettingsView_TodoProjectEdit_Escape(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.cycleTodoBackend()
+	sv.todoProject = "Original"
+
+	for i, row := range sv.rows {
+		if row.kind == srTodoProject {
+			sv.cursor = i
+			break
+		}
+	}
+	sv.handleEnter()
+	sv.handleEditTodoProjectKey(tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone))
+	sv.handleEditTodoProjectKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	if sv.editingTodoProject {
+		t.Error("editingTodoProject should be false after escape")
+	}
+	testutil.Equal(t, sv.todoProject, "Original") // unchanged — escape discards the edit
+}
+
+func TestSettingsView_TodoTagEdit(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.cycleTodoBackend()
+
+	for i, row := range sv.rows {
+		if row.kind == srTodoTag {
+			sv.cursor = i
+			break
+		}
+	}
+	sv.handleEnter()
+	if !sv.editingTodoTag {
+		t.Fatal("expected editingTodoTag to be true after enter")
+	}
+	for _, r := range "argus" {
+		sv.handleEditTodoTagKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+	sv.handleEditTodoTagKey(tcell.NewEventKey(tcell.KeyBackspace, 0, tcell.ModNone))
+	sv.handleEditTodoTagKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	testutil.Equal(t, sv.todoTag, "argu")
+	testutil.Equal(t, sv.database.Config().Todo.Things3.Tag, "argu")
+}
+
+// TestSettingsView_TodoNoRestartHint pins the deliberate absence of a
+// "(restart required)" suffix — unlike KB/API, a todo backend change takes
+// effect on the daemon's very next MCP tools/list call.
+func TestSettingsView_TodoNoRestartHint(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.cycleTodoBackend()
+	for _, row := range sv.rows {
+		if strings.Contains(row.label, "restart") {
+			t.Errorf("todo row %q should never mention a restart", row.label)
+		}
+	}
+}
+
+func TestSettingsView_TodoRefreshSkipsWhileEditing(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.cycleTodoBackend()
+	sv.editingTodoProject = true
+	sv.editTodoProjectBuf = "in-flight"
+
+	testutil.NoError(t, sv.database.SetConfigValue("todo.things3.project", "from-elsewhere"))
+	sv.Refresh()
+
+	testutil.Equal(t, sv.editTodoProjectBuf, "in-flight")
+}
+
+func TestSettingsView_TodoProjectPaste(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catTodo)
+	sv.cycleTodoBackend()
+	sv.editingTodoProject = true
+
+	paste := sv.PasteHandler()
+	paste("Pasted", nil)
+	testutil.Equal(t, sv.editTodoProjectBuf, "Pasted")
 }
