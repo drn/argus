@@ -3742,6 +3742,76 @@ func TestTerminalPane_Draw_ScrollWideContentNoCorruption(t *testing.T) {
 	}
 }
 
+// TestTerminalPane_Draw_LiveFreshBindWideContentNoCorruption is the LIVE-path
+// sibling of TestTerminalPane_Draw_ScrollWideContentNoCorruption above,
+// reproducing the live "duplicate/garbled paragraph on Hera pane select"
+// bug: a LIVE session's on-disk history was authored at a WIDE PTY (e.g.
+// previously shown at the full-width fullscreen agent view) and is
+// fresh-bound into a NARROWER pane (e.g. a Hera split pane) while the
+// emulator is still nil (emuMissing) — as opposed to the sibling test's dead
+// session viewed through the scroll/replay path.
+//
+// Every log line positions a marker 'Z' at column 90 via CHA (ESC[90G). At
+// the authored width (100) the marker sits at col 89 — beyond the 40-wide
+// pane, so it is CLIPPED, not shown. Before the fix, renderLive's emuMissing
+// branch built the fresh emulator straight at the pane's (narrow) width and
+// replayed this wide-authored history into it: CHA-to-90 would CLAMP to the
+// pane's rightmost column instead, producing the reported stranded
+// single-char column / garbled overlay. The fix (reusing replayEmuDims,
+// already used by the dead-session replay path) builds+feeds the fresh
+// emulator at the session's AUTHORED size, then resizes it down to the pane.
+func TestTerminalPane_Draw_LiveFreshBindWideContentNoCorruption(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 40; i++ {
+		b.WriteString("left text row")
+		b.WriteString("\x1b[90GZ\r\n") // jump to col 90 (1-based), write marker Z
+	}
+	content := b.String()
+	setupTaskLog(t, "livewide", content)
+
+	sess := &mockAdapter{
+		alive:   true,
+		ptyCols: 100,
+		ptyRows: 48,
+		// content's length is a small, fixed test fixture size; gosec G115
+		// flags the int->uint64 conversion but it's safe.
+		totalWritten: uint64(len(content)), //nolint:gosec
+		output:       []byte(content),
+	}
+
+	tp := NewTerminalPane()
+	tp.SetTaskID("livewide")
+	tp.ResetVT()
+	tp.SetSession(sess)
+	tp.ForceResyncPTY()
+
+	// A narrow pane — inner rect 40 cols, well under the 100-col authored
+	// width — mirrors a Hera split pane bound to a task last shown full-width.
+	sim := newSim(t, 42, 22)
+	tp.SetRect(0, 0, 42, 22)
+	tp.Draw(sim) // renderLive's full replay is synchronous — one Draw settles it.
+
+	// Fix signal: the emulator is fed at the authored width (100), not the
+	// pane width (40), before being resized down to the pane for display.
+	testutil.Equal(t, tp.emuCols, 40)
+
+	// No stranded right-edge column: the pane's rightmost inner column
+	// (screen x=40) must not be a run of the clamped marker 'Z'. Before the
+	// fix, CHA to col 90 clamped to the pane edge, filling this column with
+	// 'Z' on every row instead of being correctly clipped off-screen.
+	lines := strings.Split(readScreen(sim), "\n")
+	strandedZ := 0
+	for row := 1; row <= 20; row++ {
+		cells := []rune(lines[row])
+		if len(cells) > 40 && cells[40] == 'Z' {
+			strandedZ++
+		}
+	}
+	if strandedZ > 0 {
+		t.Fatalf("stranded right-edge column: %d 'Z' markers at the pane's right edge (width-mismatch corruption)", strandedZ)
+	}
+}
+
 // TestRenderLive_FullReplayPullsLogTail verifies defect 3 end-to-end:
 // when renderLive triggers a full replay (rebuild), it reads from the
 // session log file (up to 8MB) instead of the 256KB ring, so older
