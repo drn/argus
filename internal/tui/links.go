@@ -59,10 +59,11 @@ const prLinkGutter = 2
 // LinkPickerModal presents a list of links for the user to choose from.
 type LinkPickerModal struct {
 	*tview.Box
-	links    []Link
-	cursor   int
-	selected bool
-	canceled bool
+	links         []Link
+	cursor        int
+	selected      bool
+	canceled      bool
+	copyRequested bool
 }
 
 // NewLinkPickerModal creates a link picker dialog.
@@ -87,6 +88,17 @@ func (m *LinkPickerModal) SelectedLink() Link {
 	return Link{}
 }
 
+// TakeCopyRequested reports whether the last processed key requested a copy
+// of the highlighted link, clearing the flag so it fires only once per
+// keypress. Copying does not close the modal (SelectedLink() reads the
+// current cursor either way), unlike Selected/Canceled which the caller
+// always closes on.
+func (m *LinkPickerModal) TakeCopyRequested() bool {
+	v := m.copyRequested
+	m.copyRequested = false
+	return v
+}
+
 // PasteHandler is a no-op — the link picker has no text input, but all
 // focused widgets must implement PasteHandler per project convention.
 func (m *LinkPickerModal) PasteHandler() func(string, func(tview.Primitive)) {
@@ -101,6 +113,10 @@ func (m *LinkPickerModal) InputHandler() func(event *tcell.EventKey, setFocus fu
 			m.canceled = true
 		case tcell.KeyEnter:
 			m.selected = true
+		case tcell.KeyCtrlY:
+			if len(m.links) > 0 {
+				m.copyRequested = true
+			}
 		case tcell.KeyUp:
 			if m.cursor > 0 {
 				m.cursor--
@@ -219,6 +235,6 @@ func (m *LinkPickerModal) Draw(screen tcell.Screen) {
 
 	// Help text
 	helpRow := my + modalH - 2
-	help := "↑/↓ select  Enter open  Esc cancel"
+	help := "↑/↓ select  Enter open  ctrl+y copy  Esc cancel"
 	widget.DrawText(screen, innerX, helpRow, innerW, help, theme.StyleDimmed)
 }

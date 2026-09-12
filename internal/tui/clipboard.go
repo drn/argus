@@ -136,6 +136,20 @@ func (a *App) refreshHeraClipboardHint() {
 	a.heraPage.SetClipboardHint(present && text != "")
 }
 
+// copyLinkToClipboard copies a link picker's highlighted URL to the OS
+// clipboard, leaving the picker modal open (mirrors copyStagedClipboard: the
+// copy action never dismisses anything). A zero-value Link (an empty picker
+// list) flashes "Nothing to copy" instead of copying an empty string.
+func (a *App) copyLinkToClipboard(link Link) {
+	if link.URL == "" {
+		a.flashNotice("Nothing to copy")
+		return
+	}
+	a.copyToClipboard(link.URL, "Link copied", func() {
+		uxlog.Log("[links] copied link to clipboard: %s", link.URL)
+	})
+}
+
 // copyStagedClipboard is the ctrl+y handler. Copies the cached pending
 // payload via `a.clipboardWriter` (the configured OS-clipboard writer) and
 // flashes "Copied". Returns true if a payload was copied, false if nothing
