@@ -104,6 +104,32 @@ func TestLinkPickerModal_Navigation(t *testing.T) {
 		testutil.Equal(t, m.Canceled(), true)
 		testutil.Equal(t, m.Selected(), false)
 	})
+
+	t.Run("ctrl+y requests copy of the highlighted link without selecting", func(t *testing.T) {
+		m := NewLinkPickerModal(links)
+		handler := m.InputHandler()
+		handler(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), func(p tview.Primitive) {})
+		handler(tcell.NewEventKey(tcell.KeyCtrlY, 0, tcell.ModNone), func(p tview.Primitive) {})
+		testutil.Equal(t, m.TakeCopyRequested(), true)
+		testutil.Equal(t, m.Selected(), false)
+		testutil.Equal(t, m.Canceled(), false)
+		testutil.Equal(t, m.SelectedLink().URL, "https://second.com")
+	})
+
+	t.Run("TakeCopyRequested clears the flag after reading", func(t *testing.T) {
+		m := NewLinkPickerModal(links)
+		handler := m.InputHandler()
+		handler(tcell.NewEventKey(tcell.KeyCtrlY, 0, tcell.ModNone), func(p tview.Primitive) {})
+		testutil.Equal(t, m.TakeCopyRequested(), true)
+		testutil.Equal(t, m.TakeCopyRequested(), false)
+	})
+
+	t.Run("ctrl+y on an empty list does not request a copy", func(t *testing.T) {
+		m := NewLinkPickerModal(nil)
+		handler := m.InputHandler()
+		handler(tcell.NewEventKey(tcell.KeyCtrlY, 0, tcell.ModNone), func(p tview.Primitive) {})
+		testutil.Equal(t, m.TakeCopyRequested(), false)
+	})
 }
 
 func TestOpenURL_RejectsNonHTTP(t *testing.T) {
