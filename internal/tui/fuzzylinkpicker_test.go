@@ -150,6 +150,41 @@ func TestFuzzyLinkPickerModal_TypeAndSelect(t *testing.T) {
 	testutil.Equal(t, m.SelectedLink().URL, "https://google.com")
 }
 
+func TestFuzzyLinkPickerModal_CtrlYRequestsCopyWithoutSelecting(t *testing.T) {
+	links := []Link{
+		{Label: "A", URL: "https://a.com"},
+		{Label: "B", URL: "https://b.com"},
+	}
+	m := NewFuzzyLinkPickerModal(links)
+	handler := m.InputHandler()
+
+	handler(tcell.NewEventKey(tcell.KeyDown, 0, 0), func(tview.Primitive) {})
+	handler(tcell.NewEventKey(tcell.KeyCtrlY, 0, 0), func(tview.Primitive) {})
+
+	testutil.Equal(t, m.TakeCopyRequested(), true)
+	testutil.Equal(t, m.Selected(), false)
+	testutil.Equal(t, m.SelectedLink().URL, "https://b.com")
+	// Query stays empty — ctrl+y must not fall through to the rune-typing path.
+	testutil.Equal(t, string(m.query), "")
+}
+
+func TestFuzzyLinkPickerModal_TakeCopyRequestedClearsFlag(t *testing.T) {
+	m := NewFuzzyLinkPickerModal([]Link{{Label: "A", URL: "https://a.com"}})
+	handler := m.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyCtrlY, 0, 0), func(tview.Primitive) {})
+	testutil.Equal(t, m.TakeCopyRequested(), true)
+	testutil.Equal(t, m.TakeCopyRequested(), false)
+}
+
+func TestFuzzyLinkPickerModal_CtrlYWithNoMatchesDoesNotRequestCopy(t *testing.T) {
+	m := NewFuzzyLinkPickerModal([]Link{{Label: "A", URL: "https://a.com"}})
+	m.query = []rune("zzz")
+	m.refilter()
+	handler := m.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyCtrlY, 0, 0), func(tview.Primitive) {})
+	testutil.Equal(t, m.TakeCopyRequested(), false)
+}
+
 func TestFuzzyLinkPickerModal_BackspaceAndWordDelete(t *testing.T) {
 	links := []Link{
 		{Label: "A", URL: "https://a.com"},

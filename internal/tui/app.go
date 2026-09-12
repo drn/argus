@@ -5809,6 +5809,10 @@ func (a *App) handleLinkPickerKey(event *tcell.EventKey) {
 		a.closeLinkPickerModal()
 		return
 	}
+	if a.linkPickerModal.TakeCopyRequested() {
+		a.copyLinkToClipboard(a.linkPickerModal.SelectedLink())
+		return
+	}
 	if a.linkPickerModal.Selected() {
 		link := a.linkPickerModal.SelectedLink()
 		a.closeLinkPickerModal()
@@ -5877,6 +5881,10 @@ func (a *App) handleFuzzyLinkPickerKey(event *tcell.EventKey) {
 
 	if a.fuzzyLinkPickerModal.Canceled() {
 		a.closeFuzzyLinkPickerModal()
+		return
+	}
+	if a.fuzzyLinkPickerModal.TakeCopyRequested() {
+		a.copyLinkToClipboard(a.fuzzyLinkPickerModal.SelectedLink())
 		return
 	}
 	if a.fuzzyLinkPickerModal.Selected() {

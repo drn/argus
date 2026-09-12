@@ -4178,6 +4178,48 @@ func TestApp_HandleLinkPickerKey_Selects(t *testing.T) {
 	testutil.Equal(t, app.mode, modeTaskList)
 }
 
+func TestApp_HandleLinkPickerKey_CopyLeavesModalOpen(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.clipboardWriter = func(string) error { return nil }
+
+	_, stop := wireApp(t, app)
+	t.Cleanup(stop)
+
+	app.openLinkPickerModal([]Link{{Label: "X", URL: "https://x.com"}})
+
+	done := make(chan struct{}, 1)
+	orig := app.clipboardWriter
+	app.clipboardWriter = func(text string) error {
+		err := orig(text)
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+		return err
+	}
+
+	app.handleLinkPickerKey(tcell.NewEventKey(tcell.KeyCtrlY, 0, 0))
+
+	select {
+	case <-done:
+	case <-time.After(uiTimeout):
+		t.Fatal("copy did not reach clipboardWriter")
+	}
+	testutil.Equal(t, app.mode, modeLinkPicker)
+}
+
+func TestApp_HandleLinkPickerKey_CopyEmptyListFlashesNotice(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.openLinkPickerModal(nil)
+
+	app.handleLinkPickerKey(tcell.NewEventKey(tcell.KeyCtrlY, 0, 0))
+	testutil.Equal(t, app.mode, modeLinkPicker)
+}
+
 func TestApp_HandleFuzzyLinkPickerKey_Cancel(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
@@ -4195,6 +4237,36 @@ func TestApp_HandleFuzzyLinkPickerKey_Selects(t *testing.T) {
 	app.mode = modeAgent
 	app.openFuzzyLinkPickerModal([]Link{{Label: "X", URL: "https://x.com"}})
 	app.handleFuzzyLinkPickerKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+}
+
+func TestApp_HandleFuzzyLinkPickerKey_CopyLeavesModalOpen(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.mode = modeAgent
+
+	_, stop := wireApp(t, app)
+	t.Cleanup(stop)
+
+	app.openFuzzyLinkPickerModal([]Link{{Label: "X", URL: "https://x.com"}})
+
+	done := make(chan struct{}, 1)
+	app.clipboardWriter = func(string) error {
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+
+	app.handleFuzzyLinkPickerKey(tcell.NewEventKey(tcell.KeyCtrlY, 0, 0))
+
+	select {
+	case <-done:
+	case <-time.After(uiTimeout):
+		t.Fatal("copy did not reach clipboardWriter")
+	}
+	testutil.Equal(t, app.mode, modeFuzzyLinkPicker)
 }
 
 func TestApp_HandleForkTaskKey_Confirmed(t *testing.T) {
