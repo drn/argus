@@ -58,7 +58,9 @@ const (
 	//
 	// History:
 	//   - v1: initial declaration (reduce-supervisor-skew-blast-radius, Layer 1).
-	SupervisorSpawnSurface = 1
+	//   - v2: BuildCmd force-exports the resolved [secrets.op] bootstrap
+	//     credential into every spawned session's env (fix-agent-secret-bootstrap).
+	SupervisorSpawnSurface = 2
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -265,7 +267,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "6022c1fe2721112c06fb1b789de9eb7e2fad431c96af97310c60969d9639129e"
+	SpawnSurfaceDigest  = "bfab48cb308840a067cb7d9835ebf24db99df97081c8e105f795fbaa54d1b2cc"
 	StreamSurfaceDigest = "57078648a38b01bad81b795bf6ca431199e4e394460f3a19ca9bf0ee407a785e"
 )
 

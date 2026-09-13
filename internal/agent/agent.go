@@ -887,6 +887,29 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		"GOCACHE="+filepath.Join(db.DataDir(), "cache", "go-build"),
 		"PLAYWRIGHT_BROWSERS_PATH="+filepath.Join(db.DataDir(), "cache", "ms-playwright"),
 	)
+
+	// Force-export the resolved [secrets.op] bootstrap credential into every
+	// spawned session's env, mirroring the TERM/COLORTERM/GOCACHE force
+	// injection above. Root cause this fixes: the non-interactive `sh -c`
+	// spawn below never sources ~/.zshrc, so no argus-spawned session has ever
+	// carried OP_SERVICE_ACCOUNT_TOKEN (or whichever var BootstrapTarget
+	// names) — an `op read` invoked from inside the session fell back to
+	// 1Password's interactive desktop-integration auth, which expires on
+	// 1Password lock (always true after reboot) and after 10 min idle,
+	// producing a recurring "Allow argusd to get CLI access" prompt. Resolved
+	// through the SAME Resolve() the op:// scheme's own self-referential
+	// bootstrap already uses (secretregistry.go's opSchemeResolve) — no
+	// separate credential path, no hardcoded vault/item names. No-ops when
+	// [secrets.op] is unconfigured (BootstrapSource == ""). The resolved
+	// value is a live, broad-vault-access credential: it MUST NOT be logged,
+	// printed, or persisted anywhere — only appended to cmd.Env, exactly like
+	// the backend.EnvVars resolves below.
+	if cfg.Secrets.Op.BootstrapSource != "" {
+		if value, ok := Resolve(cfg.Secrets, cfg.Secrets.Op.BootstrapSource); ok {
+			cmd.Env = append(cmd.Env, cfg.Secrets.Op.BootstrapTarget+"="+value)
+		}
+	}
+
 	// Surface the task ID to the agent process so MCP sub-tasks (task_complete,
 	// task_set_result, argus_clipboard_set, …) can target it explicitly
 	// instead of resolving by cwd. Empty task.ID can only happen pre-Add (which
