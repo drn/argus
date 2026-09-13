@@ -342,9 +342,8 @@ func eventBytes(ev *tcell.EventKey) []byte {
 }
 
 // uvCellToTcellStyle converts an ultraviolet cell's style to a tcell.Style.
-// Covers fg/bg, the common SGR attributes, and underline styles. Mirrors
-// internal/tui/terminal/UvCellToTcellStyle without the OSC-8 hyperlink path
-// (plugin views are not link-clickable today).
+// Covers fg/bg, the common SGR attributes, underline styles, and OSC-8
+// hyperlinks — mirrors internal/tui/terminal/UvCellToTcellStyle.
 func uvCellToTcellStyle(cell *uv.Cell) tcell.Style {
 	if cell == nil {
 		return tcell.StyleDefault
@@ -393,6 +392,10 @@ func uvCellToTcellStyle(cell *uv.Cell) tcell.Style {
 		} else {
 			st = st.Underline(ulStyle)
 		}
+	}
+	// Hyperlinks (OSC 8).
+	if cell.Link.URL != "" {
+		st = st.Url(cell.Link.URL)
 	}
 	return st
 }
