@@ -419,3 +419,78 @@ func TestBuildCmd_EnvVarMapping_ExplicitEnvSchemeStillDispatchesThroughPluggable
 	}
 	testutil.Equal(t, got2, "second-value")
 }
+
+// TestBuildCmd_OpBootstrap_ForceExportedWhenConfigured pins the
+// fix-1password-spawn-secret fix: a configured [secrets.op] bootstrap source
+// is force-exported into every spawned session's env under BootstrapTarget —
+// independent of any backend.EnvVars mapping — mirroring the existing
+// TERM/COLORTERM/GOCACHE force injection. This is what lets an `op read`
+// invoked from inside a spawned session authenticate without falling back to
+// 1Password's interactive desktop-integration prompt.
+func TestBuildCmd_OpBootstrap_ForceExportedWhenConfigured(t *testing.T) {
+	ResetSecretMemoCache()
+	installSubprocessRunner(t, func(_ context.Context, name string, _ []string, _ []string, _ time.Duration) (string, bool) {
+		if name == "security" {
+			return "bootstrap-token-value", true
+		}
+		return "", false
+	})
+
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "codex"},
+		Backends: map[string]config.Backend{
+			"codex": {Command: "codex --dangerously-bypass-approvals-and-sandbox"},
+		},
+		Secrets: config.SecretsConfig{Op: config.OpConfig{
+			BootstrapSource: "keychain://op-service-account-claude-buildcmd-test",
+			BootstrapTarget: "ARGUS_TEST_OP_BOOTSTRAP_TOKEN",
+		}},
+	}
+	task := &model.Task{Name: "review", Backend: "codex", Worktree: t.TempDir()}
+
+	cmd, cleanup, err := BuildCmd(task, cfg, false)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	testutil.NoError(t, err)
+
+	got, ok := envValue(cmd.Env, "ARGUS_TEST_OP_BOOTSTRAP_TOKEN")
+	if !ok {
+		t.Fatalf("expected ARGUS_TEST_OP_BOOTSTRAP_TOKEN force-exported into child env; got %v", cmd.Env)
+	}
+	testutil.Equal(t, got, "bootstrap-token-value")
+}
+
+// TestBuildCmd_OpBootstrap_AbsentWhenUnconfigured pins the no-op contract: an
+// unconfigured [secrets.op] block (BootstrapSource == "") never appends the
+// bootstrap target to the child env and never invokes the resolver
+// subprocess at all — zero behavior change for operators who haven't
+// configured it.
+func TestBuildCmd_OpBootstrap_AbsentWhenUnconfigured(t *testing.T) {
+	ResetSecretMemoCache()
+	installSubprocessRunner(t, func(_ context.Context, name string, _ []string, _ []string, _ time.Duration) (string, bool) {
+		t.Fatalf("unexpected subprocess call for %q; [secrets.op] bootstrap is unconfigured", name)
+		return "", false
+	})
+
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "codex"},
+		Backends: map[string]config.Backend{
+			"codex": {Command: "codex --dangerously-bypass-approvals-and-sandbox"},
+		},
+		Secrets: config.SecretsConfig{Op: config.OpConfig{
+			BootstrapTarget: "ARGUS_TEST_OP_BOOTSTRAP_TOKEN",
+		}},
+	}
+	task := &model.Task{Name: "review", Backend: "codex", Worktree: t.TempDir()}
+
+	cmd, cleanup, err := BuildCmd(task, cfg, false)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	testutil.NoError(t, err)
+
+	if _, ok := envValue(cmd.Env, "ARGUS_TEST_OP_BOOTSTRAP_TOKEN"); ok {
+		t.Fatalf("expected no ARGUS_TEST_OP_BOOTSTRAP_TOKEN in child env when [secrets.op] bootstrap_source is unconfigured; got %v", cmd.Env)
+	}
+}
