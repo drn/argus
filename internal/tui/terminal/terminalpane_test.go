@@ -3812,6 +3812,77 @@ func TestTerminalPane_Draw_LiveFreshBindWideContentNoCorruption(t *testing.T) {
 	}
 }
 
+// TestTerminalPane_Draw_RebindWideContentNoCorruption is the REBIND sibling
+// of TestTerminalPane_Draw_LiveFreshBindWideContentNoCorruption: the pane's
+// very first live session was something else entirely, and the width-mismatch
+// corruption is reproduced on a SECOND bind (ResetVT+SetSession to a new
+// session pointer) — a Hera rail navigation to a different orchestrator's
+// coordinator, or a revive/reattach handing the pane a freshly-spawned
+// session. This is the common real-world trigger, not the first-bind edge
+// case: ResetVT and SetSession's session-pointer-change branch both RIS-reset
+// tp.emu IN PLACE (resetLiveEmulatorInPlace) rather than nil-ing it, so
+// tp.emu == nil is true only once, ever, for a given pane — checking ONLY
+// that (as the original BUG-084 fix did) misses every subsequent rebind for
+// the pane's entire lifetime. freshBind additionally keys off
+// tp.emuFedTotal == 0, which IS reset on every rebind, to catch this case too.
+func TestTerminalPane_Draw_RebindWideContentNoCorruption(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	var b strings.Builder
+	for i := 0; i < 40; i++ {
+		b.WriteString("left text row")
+		b.WriteString("\x1b[90GZ\r\n") // jump to col 90 (1-based), write marker Z
+	}
+	wideContent := b.String()
+	setupTaskLog(t, "rebind-first", "an earlier, unrelated task\r\n")
+	setupTaskLog(t, "rebind-wide", wideContent)
+
+	firstSess := &mockAdapter{alive: true, ptyCols: 40, ptyRows: 22, totalWritten: 28, output: []byte("an earlier, unrelated task\r\n")}
+	wideSess := &mockAdapter{
+		alive:        true,
+		ptyCols:      100,
+		ptyRows:      48,
+		totalWritten: uint64(len(wideContent)), //nolint:gosec // fixed small test size
+		output:       []byte(wideContent),
+	}
+
+	tp := NewTerminalPane()
+	sim := newSim(t, 42, 22)
+	tp.SetRect(0, 0, 42, 22)
+
+	// First bind: establishes tp.emu (no longer nil) via a completely
+	// unrelated, narrow-authored session.
+	tp.SetTaskID("rebind-first")
+	tp.ResetVT()
+	tp.SetSession(firstSess)
+	tp.Draw(sim)
+
+	// Rebind: a DIFFERENT session, authored wide, on the SAME already-used
+	// pane — mirrors a Hera rail navigation or a revive/reattach.
+	tp.SetTaskID("rebind-wide")
+	tp.ResetVT()
+	tp.SetSession(wideSess)
+	tp.Draw(sim)
+
+	testutil.Equal(t, tp.emuCols, 40)
+
+	lines := strings.Split(readScreen(sim), "\n")
+	strandedZ := 0
+	for row := 1; row <= 20; row++ {
+		cells := []rune(lines[row])
+		if len(cells) > 40 && cells[40] == 'Z' {
+			strandedZ++
+		}
+	}
+	if strandedZ > 0 {
+		t.Fatalf("stranded right-edge column on REBIND: %d 'Z' markers at the pane's right edge (width-mismatch corruption)", strandedZ)
+	}
+	if strings.Contains(readScreen(sim), "unrelated task") {
+		t.Errorf("stale content from the FIRST bound session leaked into the rebind render")
+	}
+}
+
 // TestRenderLive_FullReplayPullsLogTail verifies defect 3 end-to-end:
 // when renderLive triggers a full replay (rebuild), it reads from the
 // session log file (up to 8MB) instead of the 256KB ring, so older

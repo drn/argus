@@ -2147,9 +2147,23 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 		totalWritten = sess.TotalWritten()
 	}
 
-	emuMissing := tp.emu == nil
-	sizeChanged := !emuMissing && (tp.emuCols != ptyCols || tp.emuRows != ptyRows)
-	if emuMissing {
+	// freshBind is true both for this pane's very FIRST EVER live session
+	// (tp.emu == nil) and for a REBIND to a different/new session on an
+	// ALREADY-USED pane (tp.emuFedTotal == 0) — a Hera rail navigation to a
+	// different orchestrator's coordinator, or a revive/reattach handing the
+	// pane a brand-new session handle. ResetVT and SetSession's session-
+	// pointer-change branch both call resetLiveEmulatorInPlace, which RIS-
+	// resets tp.emu IN PLACE (never nils it — see fix-terminalpane-emulator-
+	// leak) and zero tp.emuFedTotal, so tp.emu == nil is true ONLY on a
+	// pane's literal first bind; every subsequent rebind for the pane's
+	// entire lifetime leaves tp.emu non-nil and must be recognized as fresh
+	// via emuFedTotal instead, or this whole branch — and the width-mismatch
+	// fix below — silently never fires again after the first bind (BUG-084's
+	// own fix, scoped to tp.emu == nil alone, missed exactly this: verified
+	// live on a real Hera pane rebind — see gotchas/pty-terminal.md).
+	freshBind := tp.emu == nil || tp.emuFedTotal == 0
+	sizeChanged := !freshBind && (tp.emuCols != ptyCols || tp.emuRows != ptyRows)
+	if freshBind {
 		// A fresh bind's full replay below may feed PRE-EXISTING on-disk
 		// history authored at a WIDER PTY than this pane — e.g. a Hera pane
 		// binding a task that was last shown at the full-width fullscreen
@@ -2166,15 +2180,26 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 		// frame already reads the pane-sized emulator. See
 		// gotchas/pty-terminal.md.
 		buildCols, buildRows := replayEmuDims(sess, tp.taskID, ptyCols, ptyRows)
-		tp.emu = tp.newTrackedEmulator(buildCols, buildRows)
+		if tp.emu == nil {
+			tp.emu = tp.newTrackedEmulator(buildCols, buildRows)
+		} else {
+			// A rebind: tp.emu already exists (RIS-reset — blank, no content
+			// to reflow) but may still carry the PREVIOUS session's pane-
+			// matched dimensions. Resize it to the new build size instead of
+			// discarding it, preserving resetLiveEmulatorInPlace's whole
+			// point (the two response-drain goroutines a fresh emulator
+			// would leak — see fix-terminalpane-emulator-leak).
+			tp.emu.Resize(buildCols, buildRows)
+		}
 		tp.oscStrip.reset()
 		tp.emuFedTotal = 0
 		tp.emuCols = buildCols
 		tp.emuRows = buildRows
-		// Branch change: dropping the old emulator means tcell's per-cell
-		// diff cannot vouch for cells the new emu hasn't drawn over yet.
-		// Invalidate the paint cache so the next paintEmu rebuilds from
-		// scratch instead of replaying stale SetContent calls.
+		// Branch change: a rebind or a dropped-and-rebuilt emulator means
+		// tcell's per-cell diff cannot vouch for cells the (new or resized)
+		// emu hasn't drawn over yet. Invalidate the paint cache so the next
+		// paintEmu rebuilds from scratch instead of replaying stale
+		// SetContent calls.
 		tp.paintCacheValid = false
 	} else if sizeChanged {
 		// Resize the EXISTING emulator in place instead of discarding it
@@ -2198,9 +2223,9 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 
 	newBytes := totalWritten - tp.emuFedTotal
 
-	if newBytes > 0 || emuMissing {
+	if newBytes > 0 || freshBind {
 		var raw []byte
-		if sess != nil && !emuMissing {
+		if sess != nil && !freshBind {
 			// Atomic (raw, total) snapshot — NOT the totalWritten sampled
 			// above paired with a separate RecentOutput() call. readLoop is
 			// a live, independent goroutine: for an actively streaming
@@ -2220,7 +2245,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 			// deriving totalWritten from this SAME atomic read (discarding
 			// the racy one above) keeps raw and newBytes always consistent.
 			//
-			// Skipped when emuMissing: fullReplay is unconditionally true
+			// Skipped when freshBind: fullReplay is unconditionally true
 			// in that case (short-circuited below), and the fullReplay
 			// branch calls readLiveRebuildHistory, which does its own
 			// independent ring read — fetching raw/totalWritten here too
@@ -2238,9 +2263,9 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 		// by the agent, producing stacked-status-bar artifacts at the
 		// bottom of the pane (defect 3). A pure dimension change no longer
 		// takes this path at all — see the Resize call above.
-		fullReplay := emuMissing || newBytes > uint64(len(raw))
+		fullReplay := freshBind || newBytes > uint64(len(raw))
 		ringWrapCaughtUp := false
-		if fullReplay && !emuMissing {
+		if fullReplay && !freshBind {
 			// Ring-wrap with an emulator we can still feed incrementally:
 			// recover the EXACT missing bytes from the on-disk log at the
 			// precise offset (see readLogRangeForTask) instead of discarding
@@ -2269,7 +2294,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 			}
 		}
 		if fullReplay {
-			if !emuMissing {
+			if !freshBind {
 				tp.resetLiveEmulatorInPlace()
 				tp.oscStrip.reset()
 				tp.paintCacheValid = false
@@ -2279,7 +2304,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 				if tp.emuFedTotal == 0 {
 					msg := "Waiting for output..."
 					// Fill first: this fires right after a fresh session
-					// attaches (emuMissing) with no history yet — e.g. the
+					// attaches (freshBind) with no history yet — e.g. the
 					// recycled/resumed session's first frame — so the pane
 					// must never rely on a caller having already blanked it.
 					widget.FillArea(screen, x, y, w, h, ' ', tcell.StyleDefault)
@@ -2344,7 +2369,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 	// Cache miss or stale — fall through to full paintEmu.
 
 	// A fresh bind may have just built+fed the emulator at a WIDER authored
-	// size than this pane (see the emuMissing branch above). Shrink it down
+	// size than this pane (see the freshBind branch above). Shrink it down
 	// to the pane now, before painting, so this very first frame already
 	// reads a pane-sized emulator instead of one frame of stale wide-vs-
 	// narrow mismatch. A no-op once the emulator already matches the pane
