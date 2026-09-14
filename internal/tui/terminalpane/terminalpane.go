@@ -284,22 +284,32 @@ func (tp *TerminalPane) InputHandler() func(event *tcell.EventKey, setFocus func
 	})
 }
 
-// MouseHandler forwards mouse-wheel events to the plugin as SGR mouse
-// sequences (ESC [ < Cb ; Cx ; Cy M — Cb 64 = wheel-up, 65 = wheel-down) so
-// plugins can scroll their own surfaces. Coordinates are 1-based relative to
-// the pane's inner rect (the same rect Draw paints: outer minus the 1-cell
-// border), clamped so a tick on the border still lands in range. Every other
-// action is left unconsumed — focus is already surrendered to the plugin
-// page. Without an input-back channel, wheel events are consumed but dropped
-// (same read-only posture as InputHandler).
+// MouseHandler forwards mouse-wheel and left-click events to the plugin as
+// SGR mouse sequences (ESC [ < Cb ; Cx ; Cy M for press/wheel, lowercase
+// trailing "m" for a click release — Cb 0 = left button, 64 = wheel-up, 65 =
+// wheel-down) so plugins can scroll their own surfaces or receive click-driven
+// input. Coordinates are 1-based relative to the pane's inner rect (the same
+// rect Draw paints: outer minus the 1-cell border), clamped so a tick on the
+// border still lands in range. Every other action is left unconsumed — focus
+// is already surrendered to the plugin page, so (unlike the default terminal
+// pane's MouseHandler) there is no focus-vs-forward decision to make: a left
+// click always forwards, unconditionally, exactly like the wheel. Without an
+// input-back channel, events are consumed but dropped (same read-only posture
+// as InputHandler).
 func (tp *TerminalPane) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
 	return tp.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, _ func(p tview.Primitive)) (bool, tview.Primitive) {
 		var cb int
+		var suffix byte = 'M'
 		switch action {
 		case tview.MouseScrollUp:
 			cb = 64
 		case tview.MouseScrollDown:
 			cb = 65
+		case tview.MouseLeftDown:
+			cb = 0
+		case tview.MouseLeftUp:
+			cb = 0
+			suffix = 'm'
 		default:
 			return false, nil
 		}
@@ -309,7 +319,7 @@ func (tp *TerminalPane) MouseHandler() func(action tview.MouseAction, event *tce
 		ex, ey := event.Position()
 		cx := min(max(ex-x, 1), max(w-2, 1))
 		cy := min(max(ey-y, 1), max(h-2, 1))
-		tp.send([]byte(fmt.Sprintf("\x1b[<%d;%d;%dM", cb, cx, cy)))
+		tp.send([]byte(fmt.Sprintf("\x1b[<%d;%d;%d%c", cb, cx, cy, suffix)))
 		return true, nil
 	})
 }
