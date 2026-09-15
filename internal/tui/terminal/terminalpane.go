@@ -235,6 +235,15 @@ type TerminalPane struct {
 	taskID  string
 	focused bool
 
+	// forwardingClick is true between a MouseLeftDown that decided to forward
+	// a click to the live agent and the matching MouseLeftUp. tview fires
+	// MouseLeftDown, MouseLeftUp, and MouseLeftClick (in that order) for a
+	// single plain click; MouseLeftDown is the sole decision point (focus vs.
+	// forward), and this flag lets MouseLeftUp deliver the matching SGR
+	// release without re-deciding (MouseLeftClick is ignored for click
+	// handling — see MouseHandler).
+	forwardingClick bool
+
 	// Persistent x/vt emulator for live incremental rendering. Created once
 	// per pane (lazily, on first use) and kept alive for the pane's whole
 	// lifetime — see resetLiveEmulatorInPlace for why it is RIS-reset in
@@ -1473,15 +1482,34 @@ func (tp *TerminalPane) InputHandler() func(event *tcell.EventKey, setFocus func
 	})
 }
 
-// MouseHandler handles mouse clicks (focus switching) and scroll wheel.
+// MouseHandler handles mouse clicks (focus switching, or passthrough to a
+// live agent) and scroll wheel.
+//
+// A plain click fires three tview mouse actions in order: MouseLeftDown,
+// MouseLeftUp, MouseLeftClick. MouseLeftDown is the sole decision point —
+// focus-switch vs. forward-to-agent — and MouseLeftUp delivers the matching
+// half of a forwarded click. MouseLeftClick is deliberately ignored here: if
+// it also branched on the same decision, a real click would run the
+// focus-switch (or forward) body twice. See forwardClickPress for the
+// forwarding contract.
 func (tp *TerminalPane) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
 	return tp.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
 		switch action {
-		case tview.MouseLeftDown, tview.MouseLeftClick:
+		case tview.MouseLeftDown:
+			if tp.focused && tp.forwardClickPress(event) {
+				return true, nil
+			}
 			setFocus(tp)
 			if tp.OnClick != nil {
 				tp.OnClick()
 			}
+			return true, nil
+		case tview.MouseLeftUp:
+			if tp.forwardClickRelease(event) {
+				return true, nil
+			}
+			return false, nil
+		case tview.MouseLeftClick:
 			return true, nil
 		case tview.MouseScrollUp:
 			switch {
@@ -1548,6 +1576,60 @@ func (tp *TerminalPane) forwardWheel(cb int, event *tcell.EventMouse) {
 	if _, err := sess.WriteInput([]byte(fmt.Sprintf("\x1b[<%d;%d;%dM", cb, cx, cy)), agentview.OriginUser); err != nil {
 		uxlog.Log("[terminalpane] wheel-forward write failed: %v", err)
 	}
+}
+
+// forwardClickPress writes an SGR left-button mouse press (ESC [ < 0 ; Cx ; Cy
+// M) to a live agent session and arms forwardingClick so the matching
+// MouseLeftUp delivers the release (see MouseHandler). Returns false — and
+// writes nothing — when there is no live session, letting the caller fall
+// back to its normal focus-switch/OnClick handling. Coordinates mirror
+// forwardWheel: 1-based relative to the pane's inner rect, clamped to it.
+//
+// Unlike forwardWheel (gated on agentOwnsWheel/alt-screen — BUG-026), click
+// forwarding is gated purely on focus + liveness by the caller: Claude Code's
+// own click-driven affordances (e.g. "Jump to bottom (click)") are plain text
+// with no alt-screen requirement, so gating on alt-screen would miss them.
+func (tp *TerminalPane) forwardClickPress(event *tcell.EventMouse) bool {
+	tp.mu.Lock()
+	sess := tp.session
+	tp.mu.Unlock()
+	if sess == nil || !sess.Alive() {
+		return false
+	}
+	x, y, w, h := tp.GetRect()
+	ex, ey := event.Position()
+	cx := min(max(ex-x, 1), max(w-2, 1))
+	cy := min(max(ey-y, 1), max(h-2, 1))
+	if _, err := sess.WriteInput([]byte(fmt.Sprintf("\x1b[<0;%d;%dM", cx, cy)), agentview.OriginUser); err != nil {
+		uxlog.Log("[terminalpane] click-forward press write failed: %v", err)
+	}
+	tp.forwardingClick = true
+	return true
+}
+
+// forwardClickRelease writes the matching SGR left-button release (lowercase
+// trailing "m", not "M") for a click forwardClickPress armed. Returns false —
+// and writes nothing — if the preceding MouseLeftDown did not forward (no
+// flag armed) or the session went away in between.
+func (tp *TerminalPane) forwardClickRelease(event *tcell.EventMouse) bool {
+	if !tp.forwardingClick {
+		return false
+	}
+	tp.forwardingClick = false
+	tp.mu.Lock()
+	sess := tp.session
+	tp.mu.Unlock()
+	if sess == nil {
+		return false
+	}
+	x, y, w, h := tp.GetRect()
+	ex, ey := event.Position()
+	cx := min(max(ex-x, 1), max(w-2, 1))
+	cy := min(max(ey-y, 1), max(h-2, 1))
+	if _, err := sess.WriteInput([]byte(fmt.Sprintf("\x1b[<0;%d;%dm", cx, cy)), agentview.OriginUser); err != nil {
+		uxlog.Log("[terminalpane] click-forward release write failed: %v", err)
+	}
+	return true
 }
 
 // PasteHandler handles bracketed paste events, writing the entire pasted text

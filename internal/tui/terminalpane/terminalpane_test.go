@@ -425,7 +425,11 @@ func TestTerminalPane_MouseHandlerIgnoresNonWheelActions(t *testing.T) {
 		name   string
 		action tview.MouseAction
 	}{
-		{"left down", tview.MouseLeftDown},
+		// left down/up now forward as clicks — see
+		// TestTerminalPane_MouseHandlerForwardsClick — so they're excluded
+		// here. MouseLeftClick is the synthetic event tview fires after Up
+		// and is deliberately left unhandled (would duplicate the Down/Up
+		// forward), mirroring the default terminal pane's MouseHandler.
 		{"left click", tview.MouseLeftClick},
 		{"move", tview.MouseMove},
 	}
@@ -441,14 +445,75 @@ func TestTerminalPane_MouseHandlerIgnoresNonWheelActions(t *testing.T) {
 			ev := tcell.NewEventMouse(5, 5, tcell.ButtonNone, tcell.ModNone)
 			consumed, _ := tp.MouseHandler()(tc.action, ev, func(_ tview.Primitive) {})
 			if consumed {
-				t.Fatal("expected non-wheel action to be unconsumed")
+				t.Fatal("expected unhandled action to be unconsumed")
 			}
 			select {
 			case got := <-back:
-				t.Fatalf("expected no bytes for non-wheel action, got %q", got)
+				t.Fatalf("expected no bytes for unhandled action, got %q", got)
 			case <-time.After(20 * time.Millisecond):
 			}
 		})
+	}
+}
+
+// TestTerminalPane_MouseHandlerForwardsClick mirrors
+// TestTerminalPane_MouseHandlerForwardsWheel's table shape: the plugin-view
+// surface is always the focused widget while its page is shown (see
+// openspec/changes/add-click-passthrough), so a left click forwards
+// unconditionally — press on MouseLeftDown, matching release on
+// MouseLeftUp — with no focus-vs-forward branch to make.
+func TestTerminalPane_MouseHandlerForwardsClick(t *testing.T) {
+	cases := []struct {
+		name   string
+		action tview.MouseAction
+		ex, ey int
+		want   string
+	}{
+		{"press at inner origin", tview.MouseLeftDown, 1, 1, "\x1b[<0;1;1M"},
+		{"release at inner origin", tview.MouseLeftUp, 1, 1, "\x1b[<0;1;1m"},
+		{"press mid-pane", tview.MouseLeftDown, 20, 6, "\x1b[<0;20;6M"},
+		{"release mid-pane", tview.MouseLeftUp, 20, 6, "\x1b[<0;20;6m"},
+		{"press clamps top-left border", tview.MouseLeftDown, 0, 0, "\x1b[<0;1;1M"},
+		{"release clamps bottom-right border", tview.MouseLeftUp, 41, 11, "\x1b[<0;40;10m"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := make(chan []byte)
+			tp := New(src)
+			defer tp.Close()
+			back := make(chan []byte, 4)
+			tp.SetInputBack(back)
+			// Outer rect 0,0,42,12 — inner is 1,1,40,10 after the border.
+			tp.SetRect(0, 0, 42, 12)
+
+			ev := tcell.NewEventMouse(tc.ex, tc.ey, tcell.ButtonNone, tcell.ModNone)
+			consumed, _ := tp.MouseHandler()(tc.action, ev, func(_ tview.Primitive) {})
+			if !consumed {
+				t.Fatal("expected click event to be consumed")
+			}
+			select {
+			case got := <-back:
+				testutil.Equal(t, string(got), tc.want)
+			case <-time.After(200 * time.Millisecond):
+				t.Fatal("InputBack did not receive click bytes")
+			}
+		})
+	}
+}
+
+// TestTerminalPane_MouseHandlerClickWithoutInputBack mirrors
+// TestTerminalPane_MouseHandlerWheelWithoutInputBack: without an input-back
+// channel, a click is consumed (read-only posture) but dropped.
+func TestTerminalPane_MouseHandlerClickWithoutInputBack(t *testing.T) {
+	src := make(chan []byte)
+	tp := New(src)
+	defer tp.Close()
+	tp.SetRect(0, 0, 42, 12)
+
+	ev := tcell.NewEventMouse(5, 5, tcell.ButtonNone, tcell.ModNone)
+	consumed, _ := tp.MouseHandler()(tview.MouseLeftDown, ev, func(_ tview.Primitive) {})
+	if !consumed {
+		t.Fatal("expected click event to be consumed without InputBack")
 	}
 }
 
