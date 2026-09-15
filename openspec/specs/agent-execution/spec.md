@@ -486,6 +486,8 @@ For non-Claude backends, the system SHALL prepend a context block to the task's 
 
 This SHALL NOT apply to Claude-style backends, whose existing native `CLAUDE.md` discovery and `--add-dir`/`--append-system-prompt-file` injection are unaffected by this requirement, and SHALL NOT apply to the `pi` backend (out of scope). A source that is unavailable to a backend that would otherwise include it (no global or repo `CLAUDE.md` file, for Codex) SHALL be omitted from the block cleanly rather than rendered as an empty or placeholder section.
 
+Each `CLAUDE.md` source (global and repo) SHALL be bounded by a maximum read size. A file exceeding that bound SHALL be treated the same as an absent file — omitted from the block cleanly, not truncated — since a partial `CLAUDE.md` could silently change its meaning; the omission SHALL be logged.
+
 #### Scenario: Codex backend receives the full context prefix
 
 - **WHEN** a command is built for a Codex backend with a non-empty prompt
@@ -510,4 +512,9 @@ This SHALL NOT apply to Claude-style backends, whose existing native `CLAUDE.md`
 
 - **WHEN** a command is built for a Codex backend and neither a global `~/.claude/CLAUDE.md` nor a repo-local `CLAUDE.md` exists
 - **THEN** the context block omits both CLAUDE.md sections cleanly rather than emitting an empty or placeholder section for either, while still including routing orientation
+
+#### Scenario: Oversized CLAUDE.md omitted rather than truncated
+
+- **WHEN** a command is built for a Codex backend and a global or repo `CLAUDE.md` exceeds the maximum read size
+- **THEN** that source's section is omitted from the context block cleanly, the same as if the file were absent, and the omission is logged
 

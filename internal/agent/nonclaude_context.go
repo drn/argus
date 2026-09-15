@@ -2,14 +2,45 @@ package agent
 
 import (
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/drn/argus/internal/routing"
+	"github.com/drn/argus/internal/skills"
 	"github.com/drn/argus/internal/uxlog"
 )
+
+// ensureCodexSkillsFn materializes argus's builtin skills into Codex's own
+// installed-skills directory ($CODEX_HOME/skills). A package var (rather
+// than a direct skills.EnsureCodexSkills call) so tests can stub it —
+// mirrors ensureBuiltinRoutingFn (routing_prompt.go) and
+// readGlobalClaudeMDFn/nonClaudeRoutingContentFn above.
+//
+// The real implementation is isTestBinary()-gated (see skills/builtin.go),
+// so it always returns ("", nil) under `go test`, meaning BuildCmd's
+// isCodex-gated materialization call can't be observed by calling the real
+// function from a test. SetEnsureCodexSkillsForTest is the seam.
+var ensureCodexSkillsFn = skills.EnsureCodexSkills
+
+// SetEnsureCodexSkillsForTest overrides the codex-skills materialization
+// function BuildCmd calls. Returns a restore func.
+func SetEnsureCodexSkillsForTest(fn func() (string, error)) func() {
+	old := ensureCodexSkillsFn
+	ensureCodexSkillsFn = fn
+	return func() { ensureCodexSkillsFn = old }
+}
+
+// maxClaudeMDBytes bounds how much of a CLAUDE.md file (global or repo) is
+// read into a non-Claude backend's prompt prefix. Without a cap, an
+// arbitrarily large repo CLAUDE.md — plausible for an untrusted or
+// third-party repo a task's worktree happens to hold — would be read in full
+// and prepended to every Codex-backend prompt on every spawn, amplifying
+// both memory use and per-call token cost with no bound. 256 KiB comfortably
+// exceeds any reasonable hand-written CLAUDE.md.
+const maxClaudeMDBytes = 256 * 1024
 
 // readGlobalClaudeMDFn reads the user's global ~/.claude/CLAUDE.md content,
 // for prepending into a Codex backend's prompt (see
@@ -58,14 +89,29 @@ func readRepoClaudeMD(worktree string) (string, error) {
 	return readClaudeMDFile(filepath.Join(worktree, "CLAUDE.md"))
 }
 
-// readClaudeMDFile reads path, returning ("", nil) if it does not exist.
+// readClaudeMDFile reads path, returning ("", nil) if it does not exist. A
+// file larger than maxClaudeMDBytes is skipped entirely — returned as ("",
+// nil), same as "absent" — rather than truncated: a partial CLAUDE.md could
+// silently change its meaning (e.g. cut off mid-instruction) in a way that's
+// worse than omitting it outright. A skip is logged so it's not silently
+// invisible.
 func readClaudeMDFile(path string) (string, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return "", nil
 		}
 		return "", err
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(io.LimitReader(f, maxClaudeMDBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > maxClaudeMDBytes {
+		uxlog.Log("[context-prefix] %s exceeds %d byte cap, skipping", path, maxClaudeMDBytes)
+		return "", nil
 	}
 	return string(data), nil
 }
@@ -132,11 +178,15 @@ func nonClaudeContextPrefix(isCodex, isOpencode bool, worktree string) string {
 			uxlog.Log("[context-prefix] read global CLAUDE.md failed (continuing without it): %v", err)
 		} else if content != "" {
 			sections = append(sections, "# Global CLAUDE.md (~/.claude/CLAUDE.md)\n\n"+content)
+		} else {
+			uxlog.Log("[context-prefix] no global CLAUDE.md found, section omitted")
 		}
 		if content, err := readRepoClaudeMD(worktree); err != nil {
 			uxlog.Log("[context-prefix] read repo CLAUDE.md failed (continuing without it): %v", err)
 		} else if content != "" {
 			sections = append(sections, "# Repository CLAUDE.md\n\n"+content)
+		} else {
+			uxlog.Log("[context-prefix] no repo CLAUDE.md found at %s, section omitted", filepath.Join(worktree, "CLAUDE.md"))
 		}
 	}
 
@@ -149,5 +199,7 @@ func nonClaudeContextPrefix(isCodex, isOpencode bool, worktree string) string {
 	if len(sections) == 0 {
 		return ""
 	}
-	return strings.Join(sections, "\n\n---\n\n") + "\n\n---\n\n"
+	prefix := strings.Join(sections, "\n\n---\n\n") + "\n\n---\n\n"
+	uxlog.Log("[context-prefix] assembled %d section(s), %d bytes", len(sections), len(prefix))
+	return prefix
 }

@@ -39,6 +39,21 @@ func readSkills(t *testing.T, path string) []any {
 	return skills
 }
 
+// readRawSkillsValue parses opencode.json and returns the raw, untyped
+// "skills" value — unlike readSkills, this does not assume it's an array.
+func readRawSkillsValue(t *testing.T, path string) any {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var data map[string]any
+	if err := json.Unmarshal(raw, &data); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	return data["skills"]
+}
+
 func TestInjectGlobal_UsesHome(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "") // force the ~/.config path
 	home := t.TempDir()
@@ -291,5 +306,30 @@ func TestInjectOpencodeJSON_EmptySkillsDirSkipsEntry(t *testing.T) {
 	}
 	if _, ok := data["skills"]; ok {
 		t.Errorf("expected no skills key when skillsDir is empty, got %v", data["skills"])
+	}
+}
+
+func TestInjectOpencodeJSON_NonArraySkillsValueLeftUntouched(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode.json")
+	seed := map[string]any{
+		"skills": "not-an-array",
+	}
+	raw, _ := json.MarshalIndent(seed, "", "  ")
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := injectOpencodeJSON(path, 7742, "/x/.argus/skills/.claude/skills"); err != nil {
+		t.Fatalf("inject: %v", err)
+	}
+
+	got := readRawSkillsValue(t, path)
+	if got != "not-an-array" {
+		t.Errorf("expected non-array skills value to survive untouched, got %#v", got)
+	}
+	// The unrelated mcp injection must still happen.
+	argus := readMCP(t, path)
+	if argus == nil {
+		t.Fatal("expected mcp.argus entry to still be injected")
 	}
 }

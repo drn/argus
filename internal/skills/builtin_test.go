@@ -56,7 +56,7 @@ func TestMaterializeBuiltinSkillsInto_WritesEmbeddedSet(t *testing.T) {
 	dir := t.TempDir()
 	skillsDir := filepath.Join(dir, "skills")
 
-	got, err := materializeBuiltinSkillsInto(skillsDir)
+	got, err := materializeBuiltinSkillsInto(skillsDir, true)
 	testutil.NoError(t, err)
 	testutil.Equal(t, got, skillsDir)
 
@@ -83,7 +83,20 @@ func TestMaterializeBuiltinSkillsInto_WritesEmbeddedSet(t *testing.T) {
 	}
 }
 
-func TestMaterializeBuiltinSkillsInto_RemovesStaleDirectories(t *testing.T) {
+func TestMaterializeBuiltinSkillsInto_WritesOwnershipMarker(t *testing.T) {
+	dir := t.TempDir()
+	skillsDir := filepath.Join(dir, "skills")
+
+	if _, err := materializeBuiltinSkillsInto(skillsDir, true); err != nil {
+		t.Fatalf("materializeBuiltinSkillsInto: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(skillsDir, "hera", ownerMarkerFile)); err != nil {
+		t.Fatalf("expected ownership marker under hera/, got: %v", err)
+	}
+}
+
+func TestMaterializeBuiltinSkillsInto_ExclusiveOwner_RemovesStaleDirectories(t *testing.T) {
 	dir := t.TempDir()
 	skillsDir := filepath.Join(dir, "skills")
 
@@ -92,7 +105,7 @@ func TestMaterializeBuiltinSkillsInto_RemovesStaleDirectories(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	if _, err := materializeBuiltinSkillsInto(skillsDir); err != nil {
+	if _, err := materializeBuiltinSkillsInto(skillsDir, true); err != nil {
 		t.Fatalf("materializeBuiltinSkillsInto: %v", err)
 	}
 
@@ -105,20 +118,90 @@ func TestMaterializeBuiltinSkillsInto_IdempotentNoRewrite(t *testing.T) {
 	dir := t.TempDir()
 	skillsDir := filepath.Join(dir, "skills")
 
-	if _, err := materializeBuiltinSkillsInto(skillsDir); err != nil {
+	if _, err := materializeBuiltinSkillsInto(skillsDir, true); err != nil {
 		t.Fatalf("first materialize: %v", err)
 	}
 	manifest := filepath.Join(skillsDir, "hera", skillManifestFile)
 	before, err := os.Stat(manifest)
 	testutil.NoError(t, err)
 
-	if _, err := materializeBuiltinSkillsInto(skillsDir); err != nil {
+	if _, err := materializeBuiltinSkillsInto(skillsDir, true); err != nil {
 		t.Fatalf("second materialize: %v", err)
 	}
 	after, err := os.Stat(manifest)
 	testutil.NoError(t, err)
 
 	testutil.Equal(t, after.ModTime(), before.ModTime())
+}
+
+// --- Shared (non-exclusive) directory: the $CODEX_HOME/skills case ---
+
+func TestMaterializeBuiltinSkillsInto_SharedDir_PreservesReservedSystemDir(t *testing.T) {
+	dir := t.TempDir()
+	skillsDir := filepath.Join(dir, "skills")
+
+	systemDir := filepath.Join(skillsDir, reservedCodexSystemDir)
+	if err := os.MkdirAll(systemDir, 0755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	marker := filepath.Join(systemDir, "codex-bundled-skill-marker.txt")
+	if err := os.WriteFile(marker, []byte("codex's own content"), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if _, err := materializeBuiltinSkillsInto(skillsDir, false); err != nil {
+		t.Fatalf("materializeBuiltinSkillsInto: %v", err)
+	}
+
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("expected .system/ content to survive materialization, got: %v", err)
+	}
+}
+
+func TestMaterializeBuiltinSkillsInto_SharedDir_PreservesForeignUserSkill(t *testing.T) {
+	dir := t.TempDir()
+	skillsDir := filepath.Join(dir, "skills")
+
+	foreignDir := filepath.Join(skillsDir, "my-own-custom-skill")
+	if err := os.MkdirAll(foreignDir, 0755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	marker := filepath.Join(foreignDir, "SKILL.md")
+	if err := os.WriteFile(marker, []byte("a user's own skill, not argus's"), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if _, err := materializeBuiltinSkillsInto(skillsDir, false); err != nil {
+		t.Fatalf("materializeBuiltinSkillsInto: %v", err)
+	}
+
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("expected unrelated pre-existing user skill to survive materialization untouched, got: %v", err)
+	}
+}
+
+func TestMaterializeBuiltinSkillsInto_SharedDir_RemovesOwnStaleSkill(t *testing.T) {
+	dir := t.TempDir()
+	skillsDir := filepath.Join(dir, "skills")
+
+	// Simulate a directory argus itself materialized on a previous run for a
+	// skill that is no longer part of the embedded set: it carries the
+	// ownership marker but its name isn't among today's builtins.
+	orphan := filepath.Join(skillsDir, "orphaned-argus-skill")
+	if err := os.MkdirAll(orphan, 0755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(orphan, ownerMarkerFile), []byte(ownerMarkerContent), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if _, err := materializeBuiltinSkillsInto(skillsDir, false); err != nil {
+		t.Fatalf("materializeBuiltinSkillsInto: %v", err)
+	}
+
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("expected argus-owned orphaned skill dir to be removed, stat err: %v", err)
+	}
 }
 
 func TestEnsureCodexSkills_InertUnderTest(t *testing.T) {
@@ -145,6 +228,38 @@ func TestEnsureCodexSkills_RespectsCodexHomeEnvVar(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(codexHome, "skills", "hera", skillManifestFile)); err != nil {
 		t.Fatalf("expected hera/SKILL.md under CODEX_HOME/skills: %v", err)
+	}
+}
+
+func TestEnsureCodexSkills_PreservesSystemAndForeignDirs(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+
+	systemMarker := filepath.Join(codexHome, "skills", reservedCodexSystemDir, "bundled.txt")
+	if err := os.MkdirAll(filepath.Dir(systemMarker), 0755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(systemMarker, []byte("codex bundled"), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	foreignMarker := filepath.Join(codexHome, "skills", "someones-custom-skill", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(foreignMarker), 0755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(foreignMarker, []byte("not argus's"), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if _, err := ensureCodexSkills(); err != nil {
+		t.Fatalf("ensureCodexSkills: %v", err)
+	}
+
+	if _, err := os.Stat(systemMarker); err != nil {
+		t.Fatalf("expected .system/ to survive: %v", err)
+	}
+	if _, err := os.Stat(foreignMarker); err != nil {
+		t.Fatalf("expected foreign user skill to survive: %v", err)
 	}
 }
 

@@ -731,7 +731,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// is logged and skipped rather than blocking launch. See
 	// openspec/changes/add-nonclaude-context-parity/design.md Decision 2.
 	if isCodex {
-		if _, err := skills.EnsureCodexSkills(); err != nil {
+		if _, err := ensureCodexSkillsFn(); err != nil {
 			uxlog.Log("[skills] codex builtin skills materialize failed (continuing without them): %v", err)
 		}
 	}

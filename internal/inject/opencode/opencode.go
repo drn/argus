@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // mcpServerName is the key used for Argus in opencode's `mcp` object.
@@ -94,13 +96,28 @@ func injectOpencodeJSON(path string, port int, skillsDir string) error {
 }
 
 // ensureSkillsEntry returns the skills array that should be written (nil if
-// there's nothing to change) and whether the existing array already contains
-// skillsDir (or skillsDir is empty, meaning nothing to ensure). existing is
-// the raw `skills` value decoded from JSON (an []any of strings, or nil/absent).
+// there's nothing to change) and whether the existing `skills` value already
+// satisfies skillsDir's requirement (true = the caller should not touch the
+// "skills" key at all). existing is the raw `skills` value decoded from JSON
+// — normally an []any of strings, or nil/absent.
+//
+// If existing is present but not an array, it is left completely untouched
+// (returned as alreadyCorrect=true so the caller never writes a replacement)
+// rather than silently discarded and overwritten — a malformed or
+// differently-typed `skills` value is the user's own config, not ours to
+// clobber. A warning is logged so the mismatch is at least visible.
 func ensureSkillsEntry(existing any, skillsDir string) (result []any, alreadyCorrect bool) {
-	arr, _ := existing.([]any)
 	if skillsDir == "" {
-		return arr, true
+		return nil, true
+	}
+	var arr []any
+	if existing != nil {
+		var ok bool
+		arr, ok = existing.([]any)
+		if !ok {
+			uxlog.Log("[opencode-inject] existing \"skills\" config is %T, not an array — leaving it untouched", existing)
+			return nil, true
+		}
 	}
 	for _, s := range arr {
 		if s == skillsDir {
