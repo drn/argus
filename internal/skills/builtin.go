@@ -158,7 +158,12 @@ func ensureCodexSkills() (string, error) {
 // unrecognized. This is what protects Codex's own bundled skills and any
 // user-installed ones from being swept away. reservedCodexSystemDir is also
 // unconditionally skipped, exclusiveOwner or not, as a second layer of
-// protection for that one specific, unusually costly-to-lose directory.
+// protection for that one specific, unusually costly-to-lose directory. The
+// same ownership check also gates the WRITE side, not just removal: if a
+// builtin skill's name collides with a pre-existing, unmarked directory
+// (e.g. a user's own Codex skill happens to be named "hera"), that directory
+// is left untouched rather than claimed and overwritten — see
+// isForeignPreexistingDir.
 //
 // Returns skillsDir on success.
 func materializeBuiltinSkillsInto(skillsDir string, exclusiveOwner bool) (string, error) {
@@ -178,6 +183,10 @@ func materializeBuiltinSkillsInto(skillsDir string, exclusiveOwner bool) (string
 			continue
 		}
 		targetDir := filepath.Join(skillsDir, item.Name)
+		if !exclusiveOwner && isForeignPreexistingDir(targetDir) {
+			uxlog.Log("[skills] %q under %q already exists and is not argus-owned (name collision) — leaving it untouched, not claiming it", item.Name, skillsDir)
+			continue
+		}
 		if err := os.MkdirAll(targetDir, 0755); err != nil {
 			uxlog.Log("[skills] create dir for skill %q under %q failed, skipping: %v", item.Name, skillsDir, err)
 			continue
@@ -234,6 +243,26 @@ func materializeBuiltinSkillsInto(skillsDir string, exclusiveOwner bool) (string
 	}
 	uxlog.Log("[skills] materialized %d/%d builtin skills into %q (removed %d stale)", written, len(builtins), skillsDir, removed)
 	return skillsDir, nil
+}
+
+// isForeignPreexistingDir reports whether targetDir already exists on disk
+// but was not created by a prior run of this package's materialization
+// (i.e. it exists and lacks ownerMarkerFile). Only meaningful for the shared
+// (non-exclusiveOwner) case: a directory name argus wants to materialize can
+// collide with a pre-existing, unrelated directory of the same name — e.g. a
+// user's own Codex skill happening to be named "hera" — and without this
+// check the write path below would silently overwrite its content and then
+// stamp it with argus's ownership marker, making it eligible for deletion on
+// a later run once that name drops out of the embedded set. A name that
+// doesn't exist yet, or that already carries the marker from a prior argus
+// run, is free to claim (returns false).
+func isForeignPreexistingDir(targetDir string) bool {
+	info, err := os.Stat(targetDir)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(targetDir, ownerMarkerFile))
+	return err != nil
 }
 
 // atomicWriteIfDifferent writes data to path only if the current file content

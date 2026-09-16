@@ -180,6 +180,41 @@ func TestMaterializeBuiltinSkillsInto_SharedDir_PreservesForeignUserSkill(t *tes
 	}
 }
 
+// TestMaterializeBuiltinSkillsInto_SharedDir_NameCollisionLeavesForeignContentUntouched
+// covers the narrower variant of the same bug class the two tests above
+// don't reach: a directory that happens to share a NAME with one of argus's
+// own builtin skills (e.g. a user's own Codex skill named "hera"), rather
+// than an unrelated name. Without the write-side ownership check, argus
+// would silently overwrite the user's content and stamp its own marker onto
+// it — making it eligible for deletion on a later run once "hera" dropped
+// out of the embedded set.
+func TestMaterializeBuiltinSkillsInto_SharedDir_NameCollisionLeavesForeignContentUntouched(t *testing.T) {
+	dir := t.TempDir()
+	skillsDir := filepath.Join(dir, "skills")
+
+	collidingDir := filepath.Join(skillsDir, "hera") // "hera" is a real embedded builtin skill name
+	if err := os.MkdirAll(collidingDir, 0755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	userFile := filepath.Join(collidingDir, skillManifestFile)
+	userContent := []byte("this is a user's own unrelated skill, not argus's hera skill")
+	if err := os.WriteFile(userFile, userContent, 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if _, err := materializeBuiltinSkillsInto(skillsDir, false); err != nil {
+		t.Fatalf("materializeBuiltinSkillsInto: %v", err)
+	}
+
+	got, err := os.ReadFile(userFile)
+	testutil.NoError(t, err)
+	testutil.Equal(t, string(got), string(userContent))
+
+	if _, err := os.Stat(filepath.Join(collidingDir, ownerMarkerFile)); !os.IsNotExist(err) {
+		t.Fatalf("expected no ownership marker to be written onto foreign colliding directory, stat err: %v", err)
+	}
+}
+
 func TestMaterializeBuiltinSkillsInto_SharedDir_RemovesOwnStaleSkill(t *testing.T) {
 	dir := t.TempDir()
 	skillsDir := filepath.Join(dir, "skills")
@@ -251,6 +286,18 @@ func TestEnsureCodexSkills_PreservesSystemAndForeignDirs(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
+	// "hera" is a real embedded builtin skill name — this pre-existing,
+	// unmarked directory must be left untouched, not claimed/overwritten,
+	// even though its name collides with one argus wants to materialize.
+	collidingFile := filepath.Join(codexHome, "skills", "hera", skillManifestFile)
+	if err := os.MkdirAll(filepath.Dir(collidingFile), 0755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	collidingContent := []byte("a user's own skill that happens to be named hera")
+	if err := os.WriteFile(collidingFile, collidingContent, 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
 	if _, err := ensureCodexSkills(); err != nil {
 		t.Fatalf("ensureCodexSkills: %v", err)
 	}
@@ -261,6 +308,9 @@ func TestEnsureCodexSkills_PreservesSystemAndForeignDirs(t *testing.T) {
 	if _, err := os.Stat(foreignMarker); err != nil {
 		t.Fatalf("expected foreign user skill to survive: %v", err)
 	}
+	got, err := os.ReadFile(collidingFile)
+	testutil.NoError(t, err)
+	testutil.Equal(t, string(got), string(collidingContent))
 }
 
 func TestEnsureCodexSkills_DefaultsToDotCodexUnderHome(t *testing.T) {
