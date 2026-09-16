@@ -71,6 +71,20 @@ would produce) according to this contract:
 
 ## Authoring verbs
 
+Before authoring nodes, **call `mcp__argus__profile_resolve(cwd=$PWD)` once** to discover the project's
+configured archetypes and their assigned models. Then **assign `archetype` to every node** — omitting it
+is silent (the node still runs, just without the per-archetype model/effort tuning the profile
+configured). Use this heuristic to map stage purpose to archetype:
+
+| Stage Shape | Archetype | Notes |
+| --- | --- | --- |
+| Ordinary implementation / feature build | `code_slice` | Default for most worker nodes |
+| Review / audit / PR review pass | `review` | Code review, spec audit, safety check |
+| CI-fix loop / debugging pipeline | `ci_loop` | Fixing failing tests or deployments |
+| Specification coverage / requirements audit | `spec_audit` | Spec-first validation, coverage analysis |
+| Documentation-only stage | `docs` | Writing docs, updating guides |
+| Security-sensitive work | `security_review` | Security audit, compliance verification |
+
 - **`hera_plan_node(cwd, name, prompt, [orchestrator], [project], [kind], [goal], [archetype])`** — create ONE
   planned node. **Name nodes by a `<stage><member>` short-id — number = serial stage, letter =
   parallel member (`1a`, `2a`, `2b`, `3a`)** — optionally with a *terse* suffix (`1a-seed`,
@@ -193,11 +207,12 @@ The work has a seed, a parallel fan-out, and a fan-in:
    existing orchestrator already carries its own base – see the root-node branch resolution above.)
    Author your own stages directly as plain worker nodes; reach for `kind=subcoord` only to hand a
    genuinely distinct sub-goal to a separate sub-team.
-2. Submit the whole graph transactionally — short-id names, full spec baked into each prompt:
+2. Submit the whole graph transactionally — short-id names, full spec baked into each prompt,
+   and `archetype` assigned per the heuristic above:
    ```
    hera_plan(cwd=$PWD,
      nodes=[
-       {name:"1a-seed",  prompt:"<complete spec…>"},
+       {name:"1a-seed",  prompt:"<complete spec…>", archetype:"code_slice"},
        {name:"2a-alpha", prompt:"<complete spec…>"},
        {name:"2b-beta",  prompt:"<complete spec…>"},
        {name:"3a-final", prompt:"<complete spec…>"}],
