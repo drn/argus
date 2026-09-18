@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
@@ -21,6 +22,7 @@ type gaterFixture struct {
 	mu             sync.Mutex
 	mat            []*db.HeraRole // roles passed to materialize, in order
 	matBranch      map[int64]string
+	matBackend     map[int64]string
 	matFail        bool // when true, materialize returns an error (HOLD-by-failure)
 	pingFail       bool // when true, ping returns an error (delivery failure)
 	pings          []ping
@@ -47,7 +49,7 @@ func newGaterFixture(t *testing.T) *gaterFixture {
 	d, err := db.OpenInMemory()
 	testutil.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
-	f := &gaterFixture{d: d, matBranch: map[int64]string{}}
+	f := &gaterFixture{d: d, matBranch: map[int64]string{}, matBackend: map[int64]string{}}
 	f.w = New(d,
 		func(role *db.HeraRole, taskPrompt, project, branch, backend, model string) error {
 			f.mu.Lock()
@@ -57,6 +59,7 @@ func newGaterFixture(t *testing.T) *gaterFixture {
 			}
 			f.mat = append(f.mat, role)
 			f.matBranch[role.ID] = branch
+			f.matBackend[role.ID] = backend
 			// Simulate materialization: insert a binding so the node leaves the
 			// planned set (matching the real CreateAndStart behaviour).
 			tk := newRunningTask(role.Name)
@@ -98,6 +101,12 @@ func (f *gaterFixture) materialized() []*db.HeraRole {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]*db.HeraRole(nil), f.mat...)
+}
+
+func (f *gaterFixture) materializedBackend(roleID int64) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.matBackend[roleID]
 }
 
 func (f *gaterFixture) pingCount() int {
@@ -985,6 +994,34 @@ func TestGater_RootMaterializeNoFanInPing(t *testing.T) {
 
 	testutil.Equal(t, len(f.materialized()), 1)
 	testutil.Equal(t, f.pingCount(), 0)
+}
+
+func TestGater_ManualBudgetFallbackBackend(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	node := f.planned(t, orch, "1a")
+	cfg := config.DefaultConfig()
+	cfg.Hera.WorkerBudget.Enabled = true
+	f.w.SetConfigResolver(func() config.Config { return cfg })
+
+	f.w.Tick()
+
+	testutil.Equal(t, len(f.materialized()), 1)
+	testutil.Equal(t, f.materializedBackend(node.ID), config.DefaultWorkerBudgetFallbackBackend)
+}
+
+func TestGater_ThresholdUnknownFallsThrough(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	node := f.planned(t, orch, "1a")
+	cfg := config.DefaultConfig()
+	cfg.Hera.WorkerBudget.ThresholdPct = 90
+	f.w.SetConfigResolver(func() config.Config { return cfg })
+
+	f.w.Tick()
+
+	testutil.Equal(t, len(f.materialized()), 1)
+	testutil.Equal(t, f.materializedBackend(node.ID), "")
 }
 
 // TestGater_FanInPingFailureDoesNotAffectMaterializeOrRetry covers the one-shot,
