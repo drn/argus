@@ -90,6 +90,13 @@ func TestHeraConfig_WorkerContextWindow_Default(t *testing.T) {
 	}
 }
 
+func TestHeraConfig_WorkerBudget_Default(t *testing.T) {
+	cfg := DefaultConfig()
+	testutil.Equal(t, cfg.Hera.WorkerBudget.Enabled, false)
+	testutil.Equal(t, cfg.Hera.WorkerBudget.ThresholdPct, 0)
+	testutil.Equal(t, cfg.Hera.WorkerBudget.FallbackBackend, DefaultWorkerBudgetFallbackBackend)
+}
+
 // TestSupervisorConfig_DefaultEnabled pins the P4 flip: an absent key ⇒
 // supervisor mode ON, mirroring hera.enabled. The in-process runner is reached
 // only via an explicit "false" (the retained rollback).

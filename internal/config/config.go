@@ -128,6 +128,22 @@ type HeraConfig struct {
 	// 40/65/90 percent tiers land at 400k/650k/900k tokens for a worker, not
 	// 80k/130k/180k.
 	WorkerContextWindow int `toml:"worker_context_window"`
+
+	// WorkerBudget controls usage-budget-aware backend fallback for Hera
+	// worker/freelance spawns. An absent [hera.worker_budget] table is inactive:
+	// Enabled=false and ThresholdPct=0.
+	WorkerBudget WorkerBudgetConfig `toml:"worker_budget"`
+}
+
+const DefaultWorkerBudgetFallbackBackend = "codex"
+
+// WorkerBudgetConfig controls the global budget fallback for Hera worker and
+// freelance spawns. ThresholdPct=0 disables threshold mode; FallbackBackend
+// defaults to "codex" when [hera.worker_budget] is present without a value.
+type WorkerBudgetConfig struct {
+	Enabled         bool   `toml:"enabled"`
+	ThresholdPct    int    `toml:"threshold_pct"`
+	FallbackBackend string `toml:"fallback_backend"`
 }
 
 // ArgusConfig holds settings for self-updating the Argus binary.
@@ -417,6 +433,9 @@ func DefaultConfig() Config {
 			CoordinatorContextBudget:  300000,
 			CoordinatorNudgeIncrement: 50000,
 			WorkerContextWindow:       1000000,
+			WorkerBudget: WorkerBudgetConfig{
+				FallbackBackend: DefaultWorkerBudgetFallbackBackend,
+			},
 		},
 		Supervisor: SupervisorConfig{
 			// Default ON as of P4: agents run under the out-of-process

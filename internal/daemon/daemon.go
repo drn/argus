@@ -37,6 +37,7 @@ import (
 	"github.com/drn/argus/internal/notify"
 	"github.com/drn/argus/internal/push"
 	"github.com/drn/argus/internal/scheduler"
+	"github.com/drn/argus/internal/usagebudget"
 
 	// Blank-imported for its init() side effect: registers the "things3"
 	// factory with internal/todo so cfg.Todo.Backend = "things3" resolves.
@@ -59,6 +60,8 @@ const prDefaultAliasCap = 100
 // instant, no-restart kill-switch for the GitHub API budget. Drop the file to
 // pause, remove it to resume; toggling never requires a daemon bounce.
 const prPollDisableFlag = "pr-poller.disabled"
+
+const usageBudgetProbeInterval = 30 * time.Minute
 
 // DefaultSocketPath returns the default Unix socket path.
 func DefaultSocketPath() string {
@@ -196,6 +199,10 @@ type Daemon struct {
 	// agents survive the daemon bounce. nil ⇒ in-process mode (byte-identical to
 	// pre-P2). Set once before Serve via UseSupervisorRunner.
 	supClient SupervisorClient
+
+	// usageBudgetProbe is the external /usage probe seam. Defaults to
+	// usagebudget.Probe; tests swap it so daemon startup never shells out.
+	usageBudgetProbe func(context.Context) error
 }
 
 // SupervisorClient is the daemon's view of a live session-supervisor connection:
@@ -244,6 +251,7 @@ func New(database *db.DB) *Daemon {
 		prResolveRepo:     gitutil.ResolveDefaultRepo,
 		prAliasCap:        prDefaultAliasCap,
 		prDisableFlagPath: filepath.Join(db.DataDir(), prPollDisableFlag),
+		usageBudgetProbe:  usagebudget.Probe,
 	}
 
 	// Capture the binary path, hash, and mtime at startup. The on-disk binary
@@ -981,6 +989,37 @@ func (d *Daemon) runPRPoller() {
 	}
 }
 
+// runUsageBudgetPoller is the Claude weekly-usage probe goroutine body. It
+// refreshes internal/usagebudget's in-memory cache on a fixed cadence and exits
+// promptly on daemon shutdown. Spawns read only that cache, never this live
+// subprocess path.
+func (d *Daemon) runUsageBudgetPoller() {
+	ticker := time.NewTicker(usageBudgetProbeInterval)
+	defer ticker.Stop()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	for {
+		select {
+		case <-d.done:
+			cancel()
+			return
+		case <-ticker.C:
+			d.probeUsageBudgetOnce(ctx)
+		}
+	}
+}
+
+func (d *Daemon) probeUsageBudgetOnce(ctx context.Context) {
+	if d.usageBudgetProbe == nil {
+		return
+	}
+	if err := d.usageBudgetProbe(ctx); err != nil {
+		uxlog.Log("[usagebudget] probe returned error: %v", err)
+	}
+}
+
 // Clipboard returns the agent-staged clipboard store. Used by the API
 // server (HTTP + SSE subscribe) and the MCP server (agent stages text).
 func (d *Daemon) Clipboard() *clipboard.Store {
@@ -1147,6 +1186,12 @@ func (d *Daemon) Serve(sockPath string) error {
 	// directly instead of racing the ticker.
 	go d.runPRPoller()
 
+	// Usage-budget probe (add-usage-budget-routing). Refreshes the cached
+	// account-wide Claude weekly usage for budget-aware Hera worker routing.
+	// Probe failures are fail-open inside internal/usagebudget; this loop only
+	// owns cadence and shutdown cancellation.
+	go d.runUsageBudgetPoller()
+
 	// Host-suspend watchdog (detect-host-suspend). Detects a laptop sleep /
 	// hibernate / VM pause from a large wall-clock gap between its own ticks and
 	// broadcasts an advisory ARGUS_HOST_SUSPENDED note to every running task, so a
@@ -1178,6 +1223,7 @@ func (d *Daemon) Serve(sockPath string) error {
 		// path (add-hera-subcoord-nodes); without this the gater would fall back to
 		// the worker path and never spawn a sub-coordinator agent.
 		d.heraGater.SetSubCoordMaterializer(d.heraGaterMaterializeSubCoord)
+		d.heraGater.SetConfigResolver(d.db.Config)
 		// Auto-accept a materialized node's blockers (add-hera-accept-lifecycle):
 		// the same shared hera.AcceptRole primitive the hera_accept MCP tool
 		// calls, reusing gaterSvc as the AcceptSender exactly as the ping
