@@ -1223,6 +1223,7 @@ func (d *Daemon) Serve(sockPath string) error {
 		// path (add-hera-subcoord-nodes); without this the gater would fall back to
 		// the worker path and never spawn a sub-coordinator agent.
 		d.heraGater.SetSubCoordMaterializer(d.heraGaterMaterializeSubCoord)
+		d.heraGater.SetConfigResolver(d.db.Config)
 		// Auto-accept a materialized node's blockers (add-hera-accept-lifecycle):
 		// the same shared hera.AcceptRole primitive the hera_accept MCP tool
 		// calls, reusing gaterSvc as the AcceptSender exactly as the ping

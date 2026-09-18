@@ -21,17 +21,17 @@
 ## 4. Budget-aware backend resolution
 
 - [x] 4.1 Implement `usagebudget.ResolveWorkerBackend(explicit string, cfg config.Config) string`: returns `explicit` unchanged if non-empty; otherwise returns the configured fallback backend when the manual switch is enabled OR the cached percentage is at/above `threshold_pct` (and not stale/unknown); otherwise returns `""`.
-- [ ] 4.2 Wire into `internal/mcp/hera.go: toolHeraSpawnWorker` — replace `Backend: p.Backend` with the resolver's result.
-- [ ] 4.3 Wire into `internal/heragater/heragater.go: materializeNode`'s worker-kind path (the branch that currently hardcodes `""` for backend in the `w.materialize(...)` call) — leave `materializeSubCoord` untouched.
-- [ ] 4.4 Unit tests: explicit backend bypasses the resolver entirely (assert the cache is never read); manual switch on with no explicit backend returns fallback; threshold crossed returns fallback; threshold not crossed (or cache unknown) returns empty; coordinator/subcoord spawn paths never call the resolver (assert via the existing materializeSubCoord test seam).
+- [x] 4.2 Wire into `internal/mcp/hera.go: toolHeraSpawnWorker` — replace `Backend: p.Backend` with the resolver's result.
+- [x] 4.3 Wire into `internal/heragater/heragater.go: materializeNode`'s worker-kind path (the branch that currently hardcodes `""` for backend in the `w.materialize(...)` call) — leave `materializeSubCoord` untouched.
+- [x] 4.4 Unit tests: explicit backend bypasses the resolver entirely (assert the cache is never read); manual switch on with no explicit backend returns fallback; threshold crossed returns fallback; threshold not crossed (or cache unknown) returns empty; coordinator/subcoord spawn paths never call the resolver (assert via the existing materializeSubCoord test seam).
 
 ## 5. Docs
 
-- [ ] 5.1 Add a `context/knowledge/gotchas/` entry (misc.md or a new file) covering: the `/usage`-is-reachable-headlessly discovery, the fail-open probe contract, and the config-only (no UI) v1 scope.
-- [ ] 5.2 Archive this change within the same PR per repo convention: merge the delta specs into `openspec/specs/usage-budget-routing/` (new) and `openspec/specs/hera-coordination/` (modified), move the change folder to `openspec/changes/archive/<date>-add-usage-budget-routing/`.
+- [x] 5.1 Add a `context/knowledge/gotchas/` entry (misc.md or a new file) covering: the `/usage`-is-reachable-headlessly discovery, the fail-open probe contract, and the config-only (no UI) v1 scope.
+- [x] 5.2 Archive this change within the same PR per repo convention: merge the delta specs into `openspec/specs/usage-budget-routing/` (new) and `openspec/specs/hera-coordination/` (modified), move the change folder to `openspec/changes/archive/<date>-add-usage-budget-routing/`.
 
 ## 6. Verification
 
-- [ ] 6.1 `make pre-pr` clean (build/vet/fmt-check/lint-pr/vuln/test-cover-gate).
-- [ ] 6.2 `openspec validate --all --strict` clean.
-- [ ] 6.3 Manual/live check: with the manual switch enabled in a local `~/.argus/config.toml`, spawn a worker via `hera_spawn_worker` with no explicit `backend` and confirm it lands on the configured fallback backend.
+- [x] 6.1 `make pre-pr` clean (build/vet/fmt-check/lint-pr/vuln/test-cover-gate).
+- [x] 6.2 `openspec validate --all --strict` clean.
+- [x] 6.3 Manual/live check: with the manual switch enabled in a local `~/.argus/config.toml`, spawn a worker via `hera_spawn_worker` with no explicit `backend` and confirm it lands on the configured fallback backend.

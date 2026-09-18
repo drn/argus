@@ -18,6 +18,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
@@ -52,6 +53,7 @@ func newExtendedGaterFixture(t *testing.T) *extendedGaterFixture {
 			f.workerMatCalls++
 			f.mat = append(f.mat, role)
 			f.matBranch[role.ID] = branch
+			f.matBackend[role.ID] = backend
 			// Simulate: insert a binding so the node leaves the planned set.
 			tk := newRunningTask(role.Name)
 			_ = d.Add(tk)
@@ -117,6 +119,11 @@ func TestSubCoord_GaterRoutesSubCoordToCoordinatorPath(t *testing.T) {
 	f := newExtendedGaterFixture(t)
 	orch := f.seedCoord(t, "orch")
 	subCoordNode := f.seedSubCoordNode(t, orch, "3a-auth")
+	configCalled := false
+	f.w.SetConfigResolver(func() config.Config {
+		configCalled = true
+		return config.DefaultConfig()
+	})
 
 	f.w.Tick()
 
@@ -127,6 +134,7 @@ func TestSubCoord_GaterRoutesSubCoordToCoordinatorPath(t *testing.T) {
 
 	// The WORKER materializer was NOT called for the subcoord node.
 	testutil.Equal(t, f.workerMatCalls, 0)
+	testutil.Equal(t, configCalled, false)
 }
 
 // TestSubCoord_GaterRoutesWorkerNodeToWorkerPath covers:

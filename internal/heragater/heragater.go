@@ -32,8 +32,10 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/usagebudget"
 )
 
 // defaultInterval matches the retired depswatcher / cron tick — the workflow is
@@ -77,6 +79,11 @@ type CoordinatorPinger func(fromRoleID, coordRoleID int64, body, tldr string) er
 // block or fail the materialization that already succeeded.
 type Accepter func(coordRoleID, blockerRoleID int64) error
 
+// ConfigResolver returns the current daemon config. It is consulted at
+// materialization time so config.toml reloads affect future worker nodes without
+// rebuilding the watcher.
+type ConfigResolver func() config.Config
+
 // Watcher polls the DB for ready planned nodes and materializes them. Embed-
 // friendly: configuration via Set* methods, no exported state.
 type Watcher struct {
@@ -85,6 +92,7 @@ type Watcher struct {
 	subCoordMaterial Materializer
 	ping             CoordinatorPinger
 	accept           Accepter
+	config           ConfigResolver
 	interval         time.Duration
 
 	stopCh chan struct{}
@@ -182,6 +190,15 @@ func (w *Watcher) SetAccepter(fn Accepter) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.accept = fn
+}
+
+// SetConfigResolver registers the live config accessor used by worker-kind
+// plan-node materialization for usage-budget-aware backend routing. Unset means
+// fail open to the existing empty-backend behavior.
+func (w *Watcher) SetConfigResolver(fn ConfigResolver) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.config = fn
 }
 
 // SetOnMaterialize registers a callback fired after a node is materialized.
@@ -528,8 +545,9 @@ func (w *Watcher) materializeNode(node *db.HeraRole) {
 	}
 
 	taskPrompt := agent.HeraCheckInOrientation(orch.Name, coordName) + "\n\n---\n\n" + node.Prompt
+	backend := w.resolveWorkerBackend("")
 
-	if err := w.materialize(node, taskPrompt, project, branch, "", ""); err != nil {
+	if err := w.materialize(node, taskPrompt, project, branch, backend, ""); err != nil {
 		w.logf("[heragater] materialize %d (%s) FAILED (stays planned, retry next tick): %v", node.ID, node.Name, err)
 		w.recordMaterializeFailure(node, err)
 		return
@@ -543,6 +561,19 @@ func (w *Watcher) materializeNode(node *db.HeraRole) {
 	if cb := w.materializeCallback(); cb != nil {
 		cb(node)
 	}
+}
+
+func (w *Watcher) resolveWorkerBackend(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	w.mu.Lock()
+	cfgFn := w.config
+	w.mu.Unlock()
+	if cfgFn == nil {
+		return explicit
+	}
+	return usagebudget.ResolveWorkerBackend(explicit, cfgFn())
 }
 
 // acceptBlockers fires the accept-equivalent hera_accept provides
