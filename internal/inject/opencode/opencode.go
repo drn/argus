@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // mcpServerName is the key used for Argus in opencode's `mcp` object.
@@ -20,7 +22,14 @@ const mcpServerName = "argus"
 // XDG_CONFIG_HOME is set, else ~/.config/opencode/opencode.json — mirroring
 // opencode's own xdg-basedir resolution (and the XDG_DATA_HOME awareness on the
 // capture side).
-func InjectGlobal(port int) error {
+//
+// When skillsDir is non-empty, InjectGlobal additionally ensures it is present
+// in opencode's own `skills` config array, so opencode's native skill discovery
+// finds argus's builtin skills without relying on the generic cross-tool
+// `.agents/skills` convention (see
+// openspec/changes/add-nonclaude-context-parity/design.md Decision 2). Pass ""
+// to skip this — e.g. when skill materialization itself failed.
+func InjectGlobal(port int, skillsDir string) error {
 	configHome := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
 	if configHome == "" {
 		home, err := os.UserHomeDir()
@@ -33,13 +42,15 @@ func InjectGlobal(port int) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	return injectOpencodeJSON(path, port)
+	return injectOpencodeJSON(path, port, skillsDir)
 }
 
-// injectOpencodeJSON mutates only the mcp.argus key in the given JSON file. All
-// other keys are preserved. When the file exists but is not valid JSON it is
-// left untouched and an error is returned.
-func injectOpencodeJSON(path string, port int) error {
+// injectOpencodeJSON mutates the mcp.argus key and, when skillsDir is
+// non-empty, ensures skillsDir is present in the `skills` array, in the given
+// JSON file. All other keys — including other `skills` entries — are
+// preserved. When the file exists but is not valid JSON it is left untouched
+// and an error is returned.
+func injectOpencodeJSON(path string, port int, skillsDir string) error {
 	var data map[string]any
 
 	raw, err := os.ReadFile(path)
@@ -60,11 +71,15 @@ func injectOpencodeJSON(path string, port int) error {
 
 	url := fmt.Sprintf("http://localhost:%d/mcp", port)
 
-	// Already correct?
+	mcpCorrect := false
 	if existing, ok := mcp[mcpServerName].(map[string]any); ok {
-		if existing["url"] == url && existing["type"] == "remote" && existing["enabled"] == true {
-			return nil
-		}
+		mcpCorrect = existing["url"] == url && existing["type"] == "remote" && existing["enabled"] == true
+	}
+
+	skills, skillsCorrect := ensureSkillsEntry(data["skills"], skillsDir)
+
+	if mcpCorrect && skillsCorrect {
+		return nil
 	}
 
 	mcp[mcpServerName] = map[string]any{
@@ -73,8 +88,43 @@ func injectOpencodeJSON(path string, port int) error {
 		"enabled": true,
 	}
 	data["mcp"] = mcp
+	if skills != nil {
+		data["skills"] = skills
+	}
 
 	return writeJSON(path, data)
+}
+
+// ensureSkillsEntry returns the skills array that should be written (nil if
+// there's nothing to change) and whether the existing `skills` value already
+// satisfies skillsDir's requirement (true = the caller should not touch the
+// "skills" key at all). existing is the raw `skills` value decoded from JSON
+// — normally an []any of strings, or nil/absent.
+//
+// If existing is present but not an array, it is left completely untouched
+// (returned as alreadyCorrect=true so the caller never writes a replacement)
+// rather than silently discarded and overwritten — a malformed or
+// differently-typed `skills` value is the user's own config, not ours to
+// clobber. A warning is logged so the mismatch is at least visible.
+func ensureSkillsEntry(existing any, skillsDir string) (result []any, alreadyCorrect bool) {
+	if skillsDir == "" {
+		return nil, true
+	}
+	var arr []any
+	if existing != nil {
+		var ok bool
+		arr, ok = existing.([]any)
+		if !ok {
+			uxlog.Log("[opencode-inject] existing \"skills\" config is %T, not an array — leaving it untouched", existing)
+			return nil, true
+		}
+	}
+	for _, s := range arr {
+		if s == skillsDir {
+			return arr, true
+		}
+	}
+	return append(arr, skillsDir), false
 }
 
 // writeJSON marshals data as indented JSON and writes it to path atomically.

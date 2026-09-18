@@ -60,7 +60,13 @@ const (
 	//   - v1: initial declaration (reduce-supervisor-skew-blast-radius, Layer 1).
 	//   - v2: BuildCmd force-exports the resolved [secrets.op] bootstrap
 	//     credential into every spawned session's env (fix-agent-secret-bootstrap).
-	SupervisorSpawnSurface = 2
+	//   - v3: Codex-backend spawn gained CLAUDE.md/routing prompt-prefix and
+	//     builtin-skill materialization into $CODEX_HOME/skills
+	//     (add-nonclaude-context-parity); EnsureCodexSkills's stale-removal
+	//     sweep there is now gated on a positive per-directory ownership
+	//     marker instead of mere absence-from-known-set, so it no longer
+	//     deletes Codex's own .system/ content or user-installed skills.
+	SupervisorSpawnSurface = 3
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -267,7 +273,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "bfab48cb308840a067cb7d9835ebf24db99df97081c8e105f795fbaa54d1b2cc"
+	SpawnSurfaceDigest  = "66f80dc16af061f043b6a788b9ad20f391b615a26b6caf7287f3b17bb91be8cd"
 	StreamSurfaceDigest = "57078648a38b01bad81b795bf6ca431199e4e394460f3a19ca9bf0ee407a785e"
 )
 
