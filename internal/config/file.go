@@ -98,13 +98,15 @@ func (l *FileLoader) Apply(base Config) Config {
 	// unknown/misspelled keys are silently ignored so the file stays
 	// forward-compatible. Don't "fix" this into a strict decode — a typo
 	// blocking the whole overlay would be worse than a silent no-op.
-	if _, derr := toml.Decode(string(data), &merged); derr != nil {
+	meta, derr := toml.Decode(string(data), &merged)
+	if derr != nil {
 		l.err = fmt.Errorf("parsing %s: %w", l.path, derr)
 		if prevErr == nil {
 			slog.Warn("argus config: ignoring config.toml (parse error)", "path", l.path, "err", derr)
 		}
 		return base
 	}
+	applyFileDefaults(&merged, meta)
 	if changed {
 		slog.Info("argus config: applied config.toml overrides", "path", l.path)
 	}
@@ -169,4 +171,10 @@ func cloneProjects(m map[string]Project) map[string]Project {
 	out := make(map[string]Project, len(m))
 	maps.Copy(out, m)
 	return out
+}
+
+func applyFileDefaults(cfg *Config, meta toml.MetaData) {
+	if meta.IsDefined("hera", "worker_budget") && cfg.Hera.WorkerBudget.FallbackBackend == "" {
+		cfg.Hera.WorkerBudget.FallbackBackend = DefaultWorkerBudgetFallbackBackend
+	}
 }

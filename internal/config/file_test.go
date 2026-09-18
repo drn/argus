@@ -168,6 +168,59 @@ worker_context_window = 500000
 	testutil.Equal(t, base.Hera.WorkerContextWindow, 1000000)
 }
 
+func TestFileLoader_HeraWorkerBudgetOverlay(t *testing.T) {
+	path := writeFile(t, `
+[hera.worker_budget]
+enabled = true
+threshold_pct = 90
+fallback_backend = "pi"
+`)
+	l := NewFileLoader(path)
+	base := DefaultConfig()
+
+	got := l.Apply(base)
+	testutil.NoError(t, l.Err())
+
+	testutil.Equal(t, got.Hera.WorkerBudget.Enabled, true)
+	testutil.Equal(t, got.Hera.WorkerBudget.ThresholdPct, 90)
+	testutil.Equal(t, got.Hera.WorkerBudget.FallbackBackend, "pi")
+	testutil.Equal(t, base.Hera.WorkerBudget.Enabled, false)
+	testutil.Equal(t, base.Hera.WorkerBudget.ThresholdPct, 0)
+	testutil.Equal(t, base.Hera.WorkerBudget.FallbackBackend, DefaultWorkerBudgetFallbackBackend)
+}
+
+func TestFileLoader_HeraWorkerBudgetDefaultFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		contents string
+	}{
+		{
+			name: "omitted fallback",
+			contents: `
+[hera.worker_budget]
+enabled = true
+`,
+		},
+		{
+			name: "explicit empty fallback",
+			contents: `
+[hera.worker_budget]
+enabled = true
+fallback_backend = ""
+`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := NewFileLoader(writeFile(t, tc.contents))
+			got := l.Apply(DefaultConfig())
+
+			testutil.NoError(t, l.Err())
+			testutil.Equal(t, got.Hera.WorkerBudget.Enabled, true)
+			testutil.Equal(t, got.Hera.WorkerBudget.FallbackBackend, DefaultWorkerBudgetFallbackBackend)
+		})
+	}
+}
+
 func TestFileLoader_BackendModelsOverlay(t *testing.T) {
 	path := writeFile(t, `
 [backends.claude]
