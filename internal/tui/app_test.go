@@ -1374,6 +1374,151 @@ func TestExitAgentView(t *testing.T) {
 	testutil.Equal(t, app.statusbar.Info(), "")
 }
 
+// --- persist-tasks-view-ui-state: last-active-tab persistence (Stage 1 RED) ---
+//
+// switchTab/exitAgentView don't yet persist the active tab (Stage 4.1/4.2),
+// and restoreLastTab is an unwired stub (Stage 4.3, see app.go). These tests
+// pin the target behavior from openspec/changes/persist-tasks-view-ui-state/
+// specs/tui-shell/spec.md and are expected to fail on assertions (not to fail
+// to build) until Stage 4 lands.
+
+// TestSwitchTab_PersistsLastTabLocal: switchTab must persist the new tab
+// through the local-only *db.DB type-assert. RED until Stage 4.1.
+func TestSwitchTab_PersistsLastTabLocal(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	app.switchTab(widget.TabHera)
+
+	got, err := d.LoadLastTab()
+	testutil.NoError(t, err)
+	testutil.Equal(t, got, "hera")
+}
+
+// TestExitAgentView_PersistsTasksTabLocal: exitAgentView is one of the ~7
+// call sites that bypass switchTab() and must persist "tasks" itself. RED
+// until Stage 4.2.
+func TestExitAgentView_PersistsTasksTabLocal(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	// Seed a non-default persisted value so the assertion can distinguish
+	// "exitAgentView wrote tasks" from "nothing was ever written".
+	testutil.NoError(t, d.SaveLastTab("hera"))
+
+	app.mode = modeAgent
+	app.exitAgentView()
+
+	got, err := d.LoadLastTab()
+	testutil.NoError(t, err)
+	testutil.Equal(t, got, "tasks")
+}
+
+// TestSwitchTab_RemoteModeDoesNotPersist: in --remote mode a.db is
+// *apistore.Store (no SaveLastTab method), so switchTab must be a persistence
+// no-op — no panic, tab switching itself keeps working. This should already
+// pass today (nothing touches persistence yet) and must keep passing once
+// Stage 4.1 lands its local-only type-assert guard.
+func TestSwitchTab_RemoteModeDoesNotPersist(t *testing.T) {
+	c := apiclient.New("http://127.0.0.1:0", "tok")
+	app := New(apistore.New(c), agent.NewRunner(nil), false)
+
+	app.switchTab(widget.TabHera) // must not panic
+
+	testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+}
+
+// TestRestoreLastTab_RestoresPersistedHeraTab: a pre-populated ui.last_tab
+// value must land the shell on that tab on startup, the same outcome
+// pressing `2` would produce. RED until Stage 4.3 replaces the
+// restoreLastTab stub.
+func TestRestoreLastTab_RestoresPersistedHeraTab(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.SaveLastTab("hera"))
+	app := New(d, agent.NewRunner(nil), false)
+
+	app.restoreLastTab()
+
+	testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+	name, _ := app.pages.GetFrontPage()
+	testutil.Equal(t, name, "hera")
+}
+
+// TestRestoreLastTab_NoPersistedValueStaysOnTasks: first run (no persisted
+// value) must leave the shell on the Tasks default. Already true of today's
+// no-op stub; pinned as a regression guard for Stage 4.3's real
+// implementation.
+func TestRestoreLastTab_NoPersistedValueStaysOnTasks(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	app.restoreLastTab()
+
+	testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
+}
+
+// TestRestoreLastTab_RemoteModeNoOp: --remote mode has no persistence seam,
+// so restoreLastTab must no-op (never panic) and the shell must always start
+// on Tasks. Already true of today's no-op stub; pinned as a regression guard.
+func TestRestoreLastTab_RemoteModeNoOp(t *testing.T) {
+	c := apiclient.New("http://127.0.0.1:0", "tok")
+	app := New(apistore.New(c), agent.NewRunner(nil), false)
+
+	app.restoreLastTab() // must not panic; a.db is not *db.DB
+
+	testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
+}
+
+// --- persist-tasks-view-ui-state: hide-hera-managed restore-at-startup gap ---
+//
+// tasks.md's 1.1-1.4 test list covers the DB round-trip (1.1) and the
+// taskview-level non-firing setter (1.2) for the hide-hera-managed toggle,
+// but task-list-view/spec.md's "Toggle state persists across a restart"
+// scenario also requires App to LOAD the persisted value into the tasklist
+// at construction (Stage 3.2) — a gap noted per 1.5, filled here.
+
+// TestNew_RestoresPersistedHideHeraManaged: a pre-populated
+// ui.hide_hera_managed value must be applied to the tasklist at App
+// construction. RED until Stage 3.2 wires the local-only load at
+// a.tasklist construction.
+func TestNew_RestoresPersistedHideHeraManaged(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.SaveHideHeraManaged(true))
+
+	app := New(d, agent.NewRunner(nil), false)
+
+	testutil.Equal(t, app.tasklist.HideHeraManaged(), true)
+}
+
+// TestHeraManagedToggle_PersistsLocal: a real user-driven `H` press (routed
+// through TaskListView.ToggleHeraManaged, which fires OnHeraManagedToggle)
+// must persist the new value via *db.DB.SaveHideHeraManaged, per the
+// design's "extend the existing OnHeraManagedToggle callback" decision
+// (Stage 3.3). Local mode only.
+func TestHeraManagedToggle_PersistsLocal(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	app.tasklist.ToggleHeraManaged() // default false → true
+
+	got, err := d.LoadHideHeraManaged()
+	testutil.NoError(t, err)
+	testutil.Equal(t, got, true)
+}
+
+// TestHeraManagedToggle_RemoteModeDoesNotPersist: in --remote mode a.db is
+// *apistore.Store (no SaveHideHeraManaged method), so the OnHeraManagedToggle
+// callback's persistence step must be a no-op — no panic, the toggle itself
+// keeps working.
+func TestHeraManagedToggle_RemoteModeDoesNotPersist(t *testing.T) {
+	c := apiclient.New("http://127.0.0.1:0", "tok")
+	app := New(apistore.New(c), agent.NewRunner(nil), false)
+
+	app.tasklist.ToggleHeraManaged() // must not panic
+
+	testutil.Equal(t, app.tasklist.HideHeraManaged(), true)
+}
+
 func TestTcellKeyToBytes(t *testing.T) {
 	tests := []struct {
 		name string
