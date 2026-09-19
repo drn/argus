@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,8 +14,8 @@ import (
 )
 
 // Notifier is the reliable pane-delivery service. It accepts text deliveries
-// keyed by (taskID, deliveryID), deduplicates, gates on idle+unfocused, and
-// submits exactly once via Ctrl+U + text + CR.
+// keyed by (taskID, deliveryID), deduplicates, protects actively changing
+// composer input, and submits exactly once via text + acknowledged CR.
 //
 // One Notifier is created per daemon. The TUI may also create one for
 // in-process mode. Reconcile must be called periodically (the idleWatcher
@@ -30,6 +31,8 @@ type Notifier struct {
 	runner   RunnerIface
 	focus    FocusReader
 	idle     agent.ContentIdleTracker
+	screenMu sync.Mutex
+	screen   agent.ScreenRenderer
 
 	// Output wait seams keep timing-dependent delivery behavior deterministic
 	// in tests. Production uses the polling helpers below.
@@ -220,15 +223,8 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 		return
 	}
 
-	// Check idle.
-	if !n.idle.IsIdle(taskID, sess, now) {
-		logDelivery(slog.LevelDebug, "delivery skip: session busy", taskID, d.deliveryID)
-		return
-	}
-
-	// Check focus.
-	if n.focus.IsFocused(taskID) {
-		logDelivery(slog.LevelDebug, "delivery skip: human focused", taskID, d.deliveryID)
+	clearDraft, payload, safe := n.deliveryInput(taskID, d, sess, now)
+	if !safe {
 		return
 	}
 
@@ -241,16 +237,18 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 	// consume the text. Observe composer output settling before Enter, then
 	// require fresh output after Enter. A swallowed Enter is retried without
 	// rewriting the text; unacknowledged delivery stays pending.
-	//   1. Ctrl+U – kill any stale partial input
-	//   2. text   – prime the input buffer (no trailing CR)
+	//   1. optional Ctrl+U – clear an empty or notice-only composer
+	//   2. text – notice, or annotation + notice after abandoned input
 	//   3. wait for recipient output to settle
-	//   4. \r     – submit; retry standalone CR until acknowledged
-	if _, err := sess.WriteInput([]byte("\x15"), agentview.OriginSystem); err != nil {
-		logDelivery(slog.LevelWarn, "delivery write failed", taskID, d.deliveryID, "phase", "ctrl+u", "error", err)
-		return
+	//   4. \r – submit; retry standalone CR until acknowledged
+	if clearDraft {
+		if _, err := sess.WriteInput([]byte("\x15"), agentview.OriginSystem); err != nil {
+			logDelivery(slog.LevelWarn, "delivery write failed", taskID, d.deliveryID, "phase", "ctrl+u", "error", err)
+			return
+		}
 	}
 	textBaseline := sess.TotalWritten()
-	if _, err := sess.WriteInput([]byte(d.text), agentview.OriginSystem); err != nil {
+	if _, err := sess.WriteInput([]byte(payload), agentview.OriginSystem); err != nil {
 		logDelivery(slog.LevelWarn, "delivery write failed", taskID, d.deliveryID, "phase", "text", "error", err)
 		return
 	}
@@ -282,6 +280,63 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 
 	logDelivery(slog.LevelWarn, "delivery remains pending after submit retries", taskID, d.deliveryID,
 		"attempts", len(submitAckTimeouts))
+}
+
+// deliveryInput decides whether this reconcile cycle may write and constructs
+// the exact text to inject. Recognizable composer content is authoritative;
+// idle/focus are retained only when the terminal layout is unknown.
+func (n *Notifier) deliveryInput(taskID string, d *delivery, sess SessionHandleIface, now time.Time) (clear bool, payload string, safe bool) {
+	cols, rows := sess.PTYSize()
+	tail := agent.SubstantiveTail(sess.RecentOutputTail, 64*1024, agent.NeedsInputMaxExpandBytes)
+	n.screenMu.Lock()
+	draft, known := n.screen.InputDraft(tail, cols, rows)
+	n.screenMu.Unlock()
+	if !known {
+		logDelivery(slog.LevelDebug, "delivery composer unknown: using idle/focus fallback", taskID, d.deliveryID)
+		if !n.idle.IsIdle(taskID, sess, now) {
+			logDelivery(slog.LevelDebug, "delivery skip: session busy", taskID, d.deliveryID)
+			return false, "", false
+		}
+		if n.focus.IsFocused(taskID) {
+			logDelivery(slog.LevelDebug, "delivery skip: human focused", taskID, d.deliveryID)
+			return false, "", false
+		}
+		return true, d.text, true
+	}
+
+	draft = strings.TrimSpace(draft)
+	if draft == "" {
+		d.observedDraft = ""
+		d.draftObservedAt = time.Time{}
+		logDelivery(slog.LevelDebug, "delivery composer empty", taskID, d.deliveryID)
+		return true, d.text, true
+	}
+	if injectedNoticeDraft(draft) {
+		d.observedDraft = ""
+		d.draftObservedAt = time.Time{}
+		logDelivery(slog.LevelInfo, "delivery composer contains stale notice", taskID, d.deliveryID)
+		return true, d.text, true
+	}
+
+	if draft != d.observedDraft {
+		d.observedDraft = draft
+		d.draftObservedAt = now
+		logDelivery(slog.LevelDebug, "delivery composer non-notice content changed", taskID, d.deliveryID)
+		return false, "", false
+	}
+	if now.Sub(d.draftObservedAt) < draftStabilityWindow {
+		logDelivery(slog.LevelDebug, "delivery composer non-notice content awaiting stability", taskID, d.deliveryID)
+		return false, "", false
+	}
+
+	logDelivery(slog.LevelInfo, "delivery composer content stable: preserving with annotation", taskID, d.deliveryID)
+	payload = "\n\n" + abandonedDraftAnnotation + "\n" + d.text
+	return false, payload, true
+}
+
+func injectedNoticeDraft(draft string) bool {
+	draft = strings.TrimSpace(draft)
+	return strings.HasPrefix(draft, "[hera from ") || strings.HasPrefix(draft, "[argus]")
 }
 
 // deliveryStopped observes cancellation and the wall-clock deadline during a

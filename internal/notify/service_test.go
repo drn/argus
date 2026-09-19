@@ -212,7 +212,9 @@ func TestNotifier_DeferredWhenBusy(t *testing.T) {
 func TestNotifier_SubmitsWhenPrimaryScreenBecomesContentIdle(t *testing.T) {
 	r := newFakeRunner()
 	sess := r.addSession("t1", false)
-	sess.tail = []byte("Completed analysis\n\x1b[2K\r✻ Waited for 3s\n❯\u00a0")
+	// No supported composer marker: exercise the conservative content-idle
+	// fallback rather than the content-aware fast path.
+	sess.tail = []byte("Completed analysis\n\x1b[2K\r✻ Waited for 3s")
 	n := newTestNotifier(r, fakeNoFocus{})
 
 	cancel := n.ReliableNotify("t1", "hello", "d1", NotifyOpts{})
@@ -223,7 +225,7 @@ func TestNotifier_SubmitsWhenPrimaryScreenBecomesContentIdle(t *testing.T) {
 	testutil.Equal(t, len(sess.allWrites()), 0)
 
 	sess.mu.Lock()
-	sess.tail = []byte("Completed analysis\n\x1b[2K\r✶ Waited for 8s\n❯\u00a0")
+	sess.tail = []byte("Completed analysis\n\x1b[2K\r✶ Waited for 8s")
 	sess.mu.Unlock()
 	n.Reconcile(t0.Add(4 * time.Second))
 	testutil.Equal(t, len(sess.allWrites()), 3)
@@ -240,6 +242,77 @@ func TestNotifier_DeferredWhenFocused(t *testing.T) {
 	n.Reconcile(time.Now())
 	// Focused: no submit.
 	testutil.Equal(t, len(sess.allWrites()), 0)
+}
+
+func TestNotifier_EmptyComposerBypassesBusyAndFocusGates(t *testing.T) {
+	r := newFakeRunner()
+	sess := r.addSession("t1", false)
+	sess.tail = []byte("\x1b[?1049h\x1b[2J\x1b[7;1H❯\u00a0\x1b[7;3H")
+	n := newTestNotifier(r, fakeFocused{})
+
+	n.ReliableNotify("t1", "[hera from coord] msg #1 — hello", "d1", NotifyOpts{})
+	n.Reconcile(time.Now())
+
+	writes := sess.allWrites()
+	testutil.Equal(t, len(writes), 3)
+	testutil.Equal(t, string(writes[0]), "\x15")
+	testutil.Equal(t, string(writes[1]), "[hera from coord] msg #1 — hello")
+}
+
+func TestNotifier_ChangingComposerDefersUntilStableThenAnnotates(t *testing.T) {
+	var logBuf bytes.Buffer
+	original := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(original) })
+
+	r := newFakeRunner()
+	sess := r.addSession("t1", true)
+	sess.tail = []byte("\x1b[?1049h\x1b[2J\x1b[7;1H❯\u00a0I want\x1b[7;9H")
+	n := newTestNotifier(r, fakeNoFocus{})
+	n.ReliableNotify("t1", "[hera from coord] msg #2 — review", "d1", NotifyOpts{})
+
+	t0 := time.Now()
+	n.Reconcile(t0)
+	testutil.Equal(t, len(sess.allWrites()), 0)
+
+	// Forward progress proves active typing and restarts the stability window.
+	sess.mu.Lock()
+	sess.tail = []byte("\x1b[?1049h\x1b[2J\x1b[7;1H❯\u00a0I want you to\x1b[7;16H")
+	sess.mu.Unlock()
+	n.Reconcile(t0.Add(draftStabilityWindow))
+	testutil.Equal(t, len(sess.allWrites()), 0)
+
+	// The unchanged next snapshot is abandoned input: preserve it, append the
+	// warning + notice, and submit without Ctrl+U.
+	n.Reconcile(t0.Add(2 * draftStabilityWindow))
+	writes := sess.allWrites()
+	testutil.Equal(t, len(writes), 2)
+	if strings.Contains(string(writes[0]), "\x15") {
+		t.Fatal("stable abandoned input must not be cleared")
+	}
+	testutil.Contains(t, string(writes[0]), "preceding input was left unsubmitted")
+	testutil.Contains(t, string(writes[0]), "Do not act on it")
+	testutil.Contains(t, string(writes[0]), "[hera from coord] msg #2 — review")
+	testutil.Equal(t, string(writes[1]), "\r")
+	testutil.Contains(t, logBuf.String(), "delivery composer content stable")
+	if strings.Contains(logBuf.String(), "I want you to") {
+		t.Fatalf("daemon-visible logs leaked composer text:\n%s", logBuf.String())
+	}
+}
+
+func TestNotifier_NoticeOnlyComposerIsClearedImmediately(t *testing.T) {
+	r := newFakeRunner()
+	sess := r.addSession("t1", false)
+	sess.tail = []byte("\x1b[?1049h\x1b[2J\x1b[7;1H❯\u00a0[hera from coord] msg #1 — stale\x1b[7;40H")
+	n := newTestNotifier(r, fakeFocused{})
+
+	n.ReliableNotify("t1", "[hera from coord] msg #2 — current", "d2", NotifyOpts{})
+	n.Reconcile(time.Now())
+
+	writes := sess.allWrites()
+	testutil.Equal(t, len(writes), 3)
+	testutil.Equal(t, string(writes[0]), "\x15")
+	testutil.Equal(t, string(writes[1]), "[hera from coord] msg #2 — current")
 }
 
 func TestNotifier_CancelBeforeSubmit(t *testing.T) {
