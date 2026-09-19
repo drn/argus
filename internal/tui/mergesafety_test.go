@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,12 +10,126 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/mergesafety"
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/hera"
 	"github.com/gdamore/tcell/v2"
 )
+
+// --- Stage 5 (fix-hera-nuke-cleanup): cascade-nuke Tier D discovery --------
+
+// seedStackedBranchStack seeds a 3-task base_branch stack (task1 <- task2 <-
+// task3), each on project "p" (Path = t.TempDir(), Branch = "master" so
+// gitutil.ResolveDefaultBranch short-circuits without a real git repo — see
+// its own doc comment: a non-empty `configured` branch skips every git
+// shellout). task1 is the earliest link (no BaseBranch of its own — branched
+// off "master" conceptually), task2 branched off task1's branch, task3
+// (the stack's tip) branched off task2's branch.
+func seedStackedBranchStack(t *testing.T, d *db.DB) {
+	t.Helper()
+	testutil.NoError(t, d.SetProject("p", config.Project{Path: t.TempDir(), Branch: "master"}))
+	now := time.Now()
+	tasks := []*model.Task{
+		{ID: "task1", Name: "task1", Project: "p", Branch: "b1", Status: model.StatusInProgress, CreatedAt: now},
+		{ID: "task2", Name: "task2", Project: "p", Branch: "b2", BaseBranch: "b1", Status: model.StatusInProgress, CreatedAt: now},
+		{ID: "task3", Name: "task3", Project: "p", Branch: "b3", BaseBranch: "b2", Status: model.StatusInProgress, CreatedAt: now},
+	}
+	for _, task := range tasks {
+		testutil.NoError(t, d.Add(task))
+	}
+}
+
+// TestClassifyStackedBranchesForCascade_RescuesEarlierChainLink covers the
+// core Tier D discovery scenario (fix-hera-nuke-cleanup Stage 5): task1 is
+// the not-safe candidate the CURRENT cascade already reclaims unconditionally
+// (inCascade=true — its own branch is deleted regardless of this pass, and
+// its task_meta is wiped the instant it's archived, so it can never be a
+// meaningfully-excludable "extra" candidate). task2, one link further up the
+// SAME base_branch stack, is NOT part of this cascade and is genuinely
+// rescued: its stack's tip (task3, stubbed via classifyStackInferredFn to
+// avoid a real git repo/network call) confirms safe, so task2 surfaces as an
+// extra candidate. The tip itself (task3) is never included.
+func TestClassifyStackedBranchesForCascade_RescuesEarlierChainLink(t *testing.T) {
+	d := testDB(t)
+	seedStackedBranchStack(t, d)
+	app := New(d, agent.NewRunner(nil), false)
+	app.classifyStackInferredFn = func(ctx context.Context, p mergesafety.StackParams, tipVerdicts map[string]mergesafety.Verdict) (mergesafety.Verdict, error) {
+		return mergesafety.Verdict{Safe: true, Tier: mergesafety.TierStackInferred, Reason: "stubbed"}, nil
+	}
+
+	extra := app.classifyStackedBranchesForCascade(context.Background(), []string{"task1"}, map[string]bool{"task1": true}, make(map[string]mergesafety.Verdict))
+
+	got := map[string]string{}
+	for _, c := range extra {
+		got[c.TaskID] = c.Branch
+	}
+	testutil.Equal(t, len(extra), 1)
+	testutil.Equal(t, got["task2"], "b2")
+	if _, x := got["task1"]; x {
+		t.Fatal("a task already reclaimed unconditionally by this cascade must never be offered as an extra, excludable candidate")
+	}
+	if _, tipIncluded := got["task3"]; tipIncluded {
+		t.Fatal("the stack's own tip must never be reported as an extra branch")
+	}
+}
+
+// TestClassifyStackedBranchesForCascade_ExcludedBranchNeverReoffered covers
+// the spec scenario "An excluded stacked branch is never re-offered": once
+// the operator's decision is persisted via db.ExcludeCleanupBranch, a later
+// call over the SAME candidate set must never surface that branch again.
+// Uses a 4-task stack (root <- task1 <- task2 <- task3) so BOTH task1 and
+// task2 are genuinely rescuable extra candidates (neither is in this
+// cascade) — excluding task1 must not affect task2.
+func TestClassifyStackedBranchesForCascade_ExcludedBranchNeverReoffered(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.SetProject("p", config.Project{Path: t.TempDir(), Branch: "master"}))
+	now := time.Now()
+	tasks := []*model.Task{
+		{ID: "root", Name: "root", Project: "p", Branch: "b0", Status: model.StatusInProgress, CreatedAt: now},
+		{ID: "task1", Name: "task1", Project: "p", Branch: "b1", BaseBranch: "b0", Status: model.StatusInProgress, CreatedAt: now},
+		{ID: "task2", Name: "task2", Project: "p", Branch: "b2", BaseBranch: "b1", Status: model.StatusInProgress, CreatedAt: now},
+		{ID: "task3", Name: "task3", Project: "p", Branch: "b3", BaseBranch: "b2", Status: model.StatusInProgress, CreatedAt: now},
+	}
+	for _, task := range tasks {
+		testutil.NoError(t, d.Add(task))
+	}
+	app := New(d, agent.NewRunner(nil), false)
+	app.classifyStackInferredFn = func(ctx context.Context, p mergesafety.StackParams, tipVerdicts map[string]mergesafety.Verdict) (mergesafety.Verdict, error) {
+		return mergesafety.Verdict{Safe: true, Tier: mergesafety.TierStackInferred, Reason: "stubbed"}, nil
+	}
+
+	testutil.NoError(t, d.ExcludeCleanupBranch("task1", "b1"))
+
+	extra := app.classifyStackedBranchesForCascade(context.Background(), []string{"root"}, map[string]bool{"root": true}, make(map[string]mergesafety.Verdict))
+
+	got := map[string]bool{}
+	for _, c := range extra {
+		got[c.TaskID] = true
+	}
+	testutil.Equal(t, got["task1"], false) // excluded — never re-offered
+	testutil.Equal(t, got["task2"], true)  // unaffected
+}
+
+// TestClassifyStackedBranchesForCascade_NoDescendantIsNoop covers the common
+// case (every existing cascade-nuke test hits this): a not-safe candidate
+// with no base_branch descendant at all does zero extra work and returns no
+// candidates — classifyStackInferredFn must never even be called.
+func TestClassifyStackedBranchesForCascade_NoDescendantIsNoop(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.SetProject("p", config.Project{Path: t.TempDir(), Branch: "master"}))
+	testutil.NoError(t, d.Add(&model.Task{ID: "solo", Name: "solo", Project: "p", Branch: "b-solo", Status: model.StatusInProgress, CreatedAt: time.Now()}))
+	app := New(d, agent.NewRunner(nil), false)
+	app.classifyStackInferredFn = func(ctx context.Context, p mergesafety.StackParams, tipVerdicts map[string]mergesafety.Verdict) (mergesafety.Verdict, error) {
+		t.Fatal("should not be called when the candidate has no base_branch descendant")
+		return mergesafety.Verdict{}, nil
+	}
+
+	extra := app.classifyStackedBranchesForCascade(context.Background(), []string{"solo"}, nil, make(map[string]mergesafety.Verdict))
+	testutil.Equal(t, len(extra), 0)
+}
 
 // TestClassifyTasksConcurrently_CountsSafe covers the bounded-concurrency
 // classification helper cascade nuke / clear-archive use for their "X of Y

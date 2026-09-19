@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/mergesafety"
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/hera"
 	"github.com/drn/argus/internal/uxlog"
 	"github.com/gdamore/tcell/v2"
@@ -104,6 +106,180 @@ func (a *App) classifyTasksConcurrently(ids []string) (confirmed int) {
 	}
 	wg.Wait()
 	return confirmed
+}
+
+// classifyTasksConcurrentlyVerdicts is classifyTasksConcurrently's sibling
+// for a caller that needs each task's OWN Tier-A verdict, not just the
+// aggregate safe count — Stage 5's Tier D discovery pass
+// (classifyStackedBranchesForCascade) only attempts to rescue a candidate
+// that classified NOT-SAFE on its own Tier A check, so heraCascadeNukeFrom
+// needs to know exactly which IDs those are. Same bounded-concurrency shape
+// as classifyTasksConcurrently; MUST be called off the UI thread for the
+// same reason.
+func (a *App) classifyTasksConcurrentlyVerdicts(ids []string) map[string]mergesafety.Verdict {
+	sem := make(chan struct{}, maxClassifyWorkers)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	out := make(map[string]mergesafety.Verdict, len(ids))
+	for _, id := range ids {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(taskID string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			v := a.classifyNukeCandidateFn(taskID)
+			mu.Lock()
+			out[taskID] = v
+			mu.Unlock()
+		}(id)
+	}
+	wg.Wait()
+	return out
+}
+
+// --- Stage 5 (fix-hera-nuke-cleanup): cascade-nuke Tier D discovery --------
+
+// stackedBranchCandidate is one extra origin branch Stage 5's Tier D
+// discovery pass found confirmed-safe to delete alongside a cascade nuke's
+// own per-task Tier A pass — a task in the same base_branch stack as a
+// not-safe candidate that never opened a standalone PR of its own, rescued
+// because the stack's tip did.
+type stackedBranchCandidate struct {
+	TaskID string
+	Branch string
+	Tier   string
+}
+
+// walkBranchStackForward mirrors internal/hera/reclaim_sweep.go's
+// walkStackForward exactly (same cycle guard via a per-walk seen-branch set,
+// same "no descendant found" terminal condition, chain INCLUDES x and
+// EXCLUDES the resolved tip). Kept as a small local copy rather than an
+// import because that helper is unexported in its own package — Stage 5's
+// interactive discovery must derive the identical chain the daemon-side
+// reconciliation sweep (Stage 3) would independently re-derive later, so any
+// change to one needs a matching change to the other.
+func walkBranchStackForward(x *model.Task, byBaseBranch map[string]*model.Task) (chain []*model.Task, tip *model.Task, ok bool) {
+	seen := make(map[string]bool)
+	cur := x
+	for {
+		if cur.Branch != "" {
+			if seen[cur.Branch] {
+				return nil, nil, false
+			}
+			seen[cur.Branch] = true
+		}
+		next, exists := byBaseBranch[cur.Branch]
+		if !exists || next == nil {
+			return chain, cur, true
+		}
+		chain = append(chain, cur)
+		cur = next
+	}
+}
+
+// classifyStackedBranchesForCascade runs Stage 5's Tier D discovery pass
+// (fix-hera-nuke-cleanup) after a cascade nuke's own per-task Tier A pass:
+// for every task ID in notSafeIDs, it walks that task's base_branch stack
+// forward (walkBranchStackForward, scoped across every task in the DB, since
+// a rescuing stack tip need not belong to the subtree being nuked) and, when
+// the stack has a descendant at all, attempts to rescue every OTHER link in
+// the chain via mergesafety.ClassifyStackInferred (through
+// a.classifyStackInferredFn, the test seam).
+//
+// inCascade holds every task ID this SAME cascade already reclaims
+// unconditionally (the full reclaimIDs set, not just notSafeIDs) — a chain
+// link in that set is skipped here, for two reasons, not just one: its own
+// branch is deleted by the ordinary per-task reclaim regardless of any Tier
+// D verdict, AND heraReclaimAndArchiveTask's db.SetArchived call WIPES that
+// task's entire task_meta row (see internal/db/tasks.go's SetArchived —
+// pre-existing, unrelated to this change) the instant it archives, which
+// would silently erase any exclusion recorded for it moments later. Offering
+// it as an "extra, excludable" candidate would therefore be a lie: excluding
+// it could never actually stick. Only a task OUTSIDE this cascade — one that
+// survives with its task_meta intact — benefits from (and correctly
+// respects) the exclusion this pass and heraReviewStackedBranches offer.
+//
+// A branch the operator has already excluded (db.ExcludedCleanupBranches) is
+// skipped and never re-offered. tipVerdicts is shared across every
+// notSafeIDs candidate processed in this single (sequential, not concurrent)
+// call, so a stack tip common to several candidates is classified — and, for
+// Tier B, network-queried — exactly once (mergesafety.ClassifyStackInferred's
+// own contract); since this function never fans candidates out across
+// goroutines, tipVerdicts needs no synchronization of its own here.
+//
+// MUST be called off the UI thread — Tier A/B classification shells out to
+// git and, for Tier B, the network. Local-mode only (needs a real *db.DB);
+// returns nil in remote mode, matching every other *db.DB-specific helper in
+// this file.
+func (a *App) classifyStackedBranchesForCascade(ctx context.Context, notSafeIDs []string, inCascade map[string]bool, tipVerdicts map[string]mergesafety.Verdict) []stackedBranchCandidate {
+	d, ok := a.db.(*db.DB)
+	if !ok {
+		return nil
+	}
+	allTasks, err := d.Tasks()
+	if err != nil {
+		return nil
+	}
+	byBaseBranch := make(map[string]*model.Task, len(allTasks))
+	byID := make(map[string]*model.Task, len(allTasks))
+	for _, t := range allTasks {
+		byID[t.ID] = t
+		if t.BaseBranch != "" {
+			byBaseBranch[t.BaseBranch] = t
+		}
+	}
+
+	cfg := d.Config()
+	var out []stackedBranchCandidate
+	seenBranch := make(map[string]bool)
+	for _, id := range notSafeIDs {
+		x := byID[id]
+		if x == nil {
+			continue
+		}
+		chain, _, ok := walkBranchStackForward(x, byBaseBranch)
+		if !ok || len(chain) == 0 {
+			continue // no descendant in this scope, or a cycle — nothing to rescue
+		}
+
+		repoDir := agent.ResolveDir(x, cfg)
+		if repoDir == "" {
+			continue
+		}
+		repoSlug := ""
+		if slug, slugOK := gitutil.ResolveDefaultRepo(ctx, repoDir); slugOK {
+			repoSlug = slug
+		}
+		proj := cfg.Projects[x.Project]
+		defaultShort, defaultRef, dErr := gitutil.ResolveDefaultBranch(repoDir, proj.Branch)
+		if dErr != nil {
+			continue
+		}
+
+		for _, y := range chain {
+			if inCascade[y.ID] || seenBranch[y.Branch] {
+				continue
+			}
+			excluded, eErr := d.ExcludedCleanupBranches(y.ID)
+			if eErr != nil || slices.Contains(excluded, y.Branch) {
+				continue
+			}
+			v, vErr := a.classifyStackInferredFn(ctx, mergesafety.StackParams{
+				Task:         y,
+				ByBaseBranch: byBaseBranch,
+				RepoDir:      repoDir,
+				RepoSlug:     repoSlug,
+				DefaultRef:   defaultRef,
+				DefaultShort: defaultShort,
+			}, tipVerdicts)
+			if vErr != nil || !v.Safe {
+				continue
+			}
+			seenBranch[y.Branch] = true
+			out = append(out, stackedBranchCandidate{TaskID: y.ID, Branch: y.Branch, Tier: v.Tier})
+		}
+	}
+	return out
 }
 
 // --- single-role nuke: async classify-then-open-popup ----------------------

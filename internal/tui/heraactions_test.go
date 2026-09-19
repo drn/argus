@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/mergesafety"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/hera"
@@ -1833,4 +1835,107 @@ func TestHeraActions_OrchHeaderDeleteCascadesNestedSubtree(t *testing.T) {
 	to, err := d.Get("tO")
 	testutil.NoError(t, err)
 	testutil.Equal(t, to.Archived, false)
+}
+
+// --- Stage 5 (fix-hera-nuke-cleanup): cascade-nuke stacked-branch review ----
+
+// TestHeraCascadeNukeFrom_StackedBranchSequentialReview drives the full
+// interactive flow end to end. The cascade's sole reclaimed task (task1)
+// classifies NOT-SAFE via Tier A and heads a 4-task base_branch chain:
+// task1 (IN this cascade, reclaimed unconditionally regardless — never
+// itself offered as an extra candidate) <- midA <- midB <- tip (confirmed
+// safe, stubbed via classifyStackInferredFn). midA and midB are genuinely
+// external to the cascade, so BOTH surface as reviewable extra candidates:
+// the operator declines midA (records a persisted exclusion, never
+// re-offered) and accepts midB (kept for the final aggregate confirm, whose
+// message reflects only what was kept).
+func TestHeraCascadeNukeFrom_StackedBranchSequentialReview(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.SetProject("p", config.Project{Path: t.TempDir(), Branch: "master"}))
+	now := time.Now()
+	chainTasks := []*model.Task{
+		{ID: "midA", Name: "midA", Project: "p", Branch: "bA", BaseBranch: "b1", Status: model.StatusInProgress, CreatedAt: now},
+		{ID: "midB", Name: "midB", Project: "p", Branch: "bB", BaseBranch: "bA", Status: model.StatusInProgress, CreatedAt: now},
+		{ID: "tip", Name: "tip", Project: "p", Branch: "bT", BaseBranch: "bB", Status: model.StatusInProgress, CreatedAt: now},
+	}
+	for _, task := range chainTasks {
+		testutil.NoError(t, d.Add(task))
+	}
+	t.Setenv("HOME", t.TempDir())
+	app := New(d, agent.NewRunner(nil), false)
+	app.heraOps = hera.NewOps(d)
+	app.classifyNukeCandidateFn = func(taskID string) mergesafety.Verdict {
+		if taskID == "task1" {
+			return mergesafety.Verdict{Safe: false, Reason: "no matching merged pull request found"}
+		}
+		return mergesafety.Verdict{Safe: true}
+	}
+	app.classifyStackInferredFn = func(ctx context.Context, p mergesafety.StackParams, tipVerdicts map[string]mergesafety.Verdict) (mergesafety.Verdict, error) {
+		return mergesafety.Verdict{Safe: true, Tier: mergesafety.TierStackInferred, Reason: "stubbed"}, nil
+	}
+
+	orch := seedHeraOrch(t, d, "o")
+	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+	// task1 (Branch="b1", the not-safe cascade candidate) — added via
+	// seedHeraRoleOnTask so it can carry its own Branch field (seedHeraBoundRole
+	// would Add a bare task with no branch).
+	testutil.NoError(t, d.Add(&model.Task{ID: "task1", Name: "task1", Project: "p", Branch: "b1", Status: model.StatusInProgress, CreatedAt: now}))
+	seedHeraRoleOnTask(t, d, orch, "w1", db.HeraKindWorker, "task1", "/wt/task1")
+	app.heraPage.Refresh()
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	readUI(t, app.tapp, func() { app.heraCascadeNukeFrom(orch) })
+	waitForMode(t, app, modeHeraConfirm)
+
+	// First per-branch review: midA's branch — task1's OWN branch is filtered
+	// out entirely (it's reclaimed unconditionally by this same cascade), so
+	// midA (the next external link) is the first thing offered.
+	var title string
+	readUI(t, app.tapp, func() { title = app.heraConfirmModal.Title() })
+	testutil.Contains(t, title, `"bA"`)
+
+	// Decline it. Mode stays modeHeraConfirm throughout this whole review
+	// sequence (each decision opens the NEXT confirm dialog immediately), so
+	// waitForMode can't detect the transition — sync the event loop directly
+	// instead.
+	sim.InjectKey(tcell.KeyRune, 'n', 0)
+	syncUI(t, app.tapp)
+
+	excluded, err := d.ExcludedCleanupBranches("midA")
+	testutil.NoError(t, err)
+	testutil.Equal(t, idsContain(excluded, "bA"), true)
+
+	// Second per-branch review: midB's branch.
+	readUI(t, app.tapp, func() { title = app.heraConfirmModal.Title() })
+	testutil.Contains(t, title, `"bB"`)
+
+	// Accept it — keeps it, advances to the final aggregate confirm.
+	sim.InjectKey(tcell.KeyRune, 'y', 0)
+	syncUI(t, app.tapp)
+
+	var msg string
+	readUI(t, app.tapp, func() { msg = app.heraConfirmModal.Message() })
+	testutil.Contains(t, msg, "removes")
+	testutil.Contains(t, msg, "reclaims")
+	testutil.Contains(t, msg, "1 additional stacked branch(es) confirmed safe to delete")
+
+	// Accept the final aggregate confirm — runs the cascade.
+	readUI(t, app.tapp, func() { app.heraConfirmDo() })
+
+	task1, err := d.Get("task1")
+	testutil.NoError(t, err)
+	testutil.Equal(t, task1.Archived, true)
+
+	// Re-running discovery over the SAME candidate proves the exclusion
+	// persisted and is never re-offered, while the kept branch (midB, never
+	// excluded) still surfaces normally.
+	extra := app.classifyStackedBranchesForCascade(context.Background(), []string{"task1"}, map[string]bool{"task1": true}, make(map[string]mergesafety.Verdict))
+	got := map[string]bool{}
+	for _, c := range extra {
+		got[c.TaskID] = true
+	}
+	testutil.Equal(t, got["midA"], false)
+	testutil.Equal(t, got["midB"], true)
 }
