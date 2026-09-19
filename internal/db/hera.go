@@ -1466,6 +1466,44 @@ func (d *DB) ListHeraLiveBindings() ([]*HeraBinding, error) {
 		 FROM hera_bindings WHERE ended_at IS NULL ORDER BY started_at ASC, id ASC`)
 }
 
+// HeraNukeReclaimCandidates returns every task holding at least one
+// hera_bindings row ended for the cascade-nuke path's own reason
+// (HeraEndReasonUserDeleted) that currently holds NO live binding
+// (hera_bindings.ended_at IS NULL) — the candidate set for
+// hera.ReconcileHeraReclaims (fix-hera-nuke-cleanup Stage 3), a durable sweep
+// that finishes a nuke's worktree/branch reclaim and row prune when the
+// daemon dies mid-cleanup (heraReclaimAndArchiveTask's worktree removal runs
+// in a background goroutine that dies with the process; heraPruneReclaimedTask
+// may never run at all). Reaches through ended, archived, and nuked rows
+// alike, like StuckTaskCandidates. A task nuked more than once (across
+// different orchestrators over time) still returns exactly one row
+// (DISTINCT); a task that has since gained a fresh live binding (e.g.
+// re-adopted) is excluded, exactly like PruneTasks' own live-binding guard.
+// Oldest created first.
+func (d *DB) HeraNukeReclaimCandidates() ([]*model.Task, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	rows, err := d.conn.Query(`SELECT DISTINCT `+qualifyColumns("t", taskColumns)+`
+		FROM tasks t
+		JOIN hera_bindings hb ON hb.argus_task_id = t.id
+		WHERE hb.end_reason = ?
+		AND NOT EXISTS (SELECT 1 FROM hera_bindings hb2 WHERE hb2.argus_task_id = t.id AND hb2.ended_at IS NULL)
+		ORDER BY t.created_at ASC`, HeraEndReasonUserDeleted)
+	if err != nil {
+		return nil, fmt.Errorf("query hera nuke reclaim candidates: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*model.Task
+	for rows.Next() {
+		if t, err := scanTask(rows); err == nil {
+			out = append(out, t)
+		}
+	}
+	return out, rows.Err()
+}
+
 // ListHeraLatestBindings returns the single most-recent binding per role across
 // all roles, regardless of liveness — one row per role, the one with the highest
 // id (autoincrement, monotonic with creation order, so "highest id" == "latest

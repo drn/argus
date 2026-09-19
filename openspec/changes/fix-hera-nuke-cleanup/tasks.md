@@ -13,14 +13,14 @@
 
 ## 3. Reconciliation sweep
 
-- [ ] 3.1 New file `internal/hera/reclaim_sweep.go`: add the DB query for the candidate set (tasks with a `hera_bindings` row where `end_reason='user_deleted'` and no live binding) — either a new `DB` method or inline SQL following the existing `StuckTaskCandidates` style.
-- [ ] 3.2 Implement `ReconcileHeraReclaims(db *db.DB, runner SessionChecker) (Summary, error)`: for each candidate, retry worktree removal if the directory still exists, retry any non-excluded confirmed-safe stacked branch's remote deletion if it still exists on origin, then prune once both are settled and no live session remains for the task; otherwise leave it for the next run.
-- [ ] 3.3 `internal/hera`: table tests (`t.TempDir()` + `t.Setenv("HOME", ...)`) — leaked worktree removed+pruned; already-reclaimed-just-prunes; excluded branch stays; live-binding skip; live-session skip (retries worktree only, does not prune).
+- [x] 3.1 New file `internal/hera/reclaim_sweep.go`: add the DB query for the candidate set (tasks with a `hera_bindings` row where `end_reason='user_deleted'` and no live binding) — either a new `DB` method or inline SQL following the existing `StuckTaskCandidates` style. Implemented as `db.HeraNukeReclaimCandidates()` in `internal/db/hera.go`.
+- [x] 3.2 Implement `ReconcileHeraReclaims(db *db.DB, runner SessionChecker) (Summary, error)`: for each candidate, retry worktree removal if the directory still exists, retry any non-excluded confirmed-safe stacked branch's remote deletion if it still exists on origin, then prune once both are settled and no live session remains for the task; otherwise leave it for the next run.
+- [x] 3.3 `internal/hera`: table tests (`t.TempDir()` + `t.Setenv("HOME", ...)`) — leaked worktree removed+pruned; already-reclaimed-just-prunes; excluded branch stays; live-binding skip; live-session skip (retries worktree only, does not prune).
 
 ## 4. Excluded-branch bookkeeping
 
 - [x] 4.1 Define the `task_meta` namespace/key for an operator-excluded stacked branch (e.g. `cleanup.excluded_branches`, following the existing `task_meta` sidecar pattern used for `hera.ready_to_close`/`hera.role`). Implemented as `db.ExcludeCleanupBranch(taskID, branchName)` / `db.ExcludedCleanupBranches(taskID)` in `internal/db/cleanup_meta.go`.
-- [ ] 4.2 Wire the cascade confirm's per-branch exclude action (see task 5) to write this entry; wire the reconciliation sweep (3.2) to read and skip any branch recorded there.
+- [ ] 4.2 Wire the cascade confirm's per-branch exclude action (see task 5) to write this entry; wire the reconciliation sweep (3.2) to read and skip any branch recorded there. Read-side done (Stage 3's `reconcileStackedBranches` consults `ExcludedCleanupBranches` per candidate); write-side (cascade confirm UI) still pending Stage 5.
 
 ## 5. Cascade-nuke confirm: stacked-branch discovery + deletion
 
