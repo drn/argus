@@ -76,6 +76,7 @@ func (d *DB) seedDefaults() error {
 			"ui.show_elapsed":       fmt.Sprintf("%t", cfg.UI.ShowElapsed),
 			"ui.show_icons":         fmt.Sprintf("%t", cfg.UI.ShowIcons),
 			"ui.default_agent_zoom": fmt.Sprintf("%t", cfg.UI.DefaultAgentZoom),
+			"ui.cross_tab_arrows":   fmt.Sprintf("%t", cfg.UI.CrossTabArrows),
 			"kb.http_port":          fmt.Sprintf("%d", cfg.KB.HTTPPort),
 			"kb.metis_vault_path":   config.DefaultMetisVaultPath(),
 			"api.http_port":         fmt.Sprintf("%d", cfg.API.HTTPPort),

@@ -354,6 +354,9 @@ type UIConfig struct {
 	// default) opens single-pane/zoomed with the side panels collapsed; false
 	// opens the 1:3:1 three-pane layout. Ctrl+Z still toggles at runtime.
 	DefaultAgentZoom bool `toml:"default_agent_zoom"`
+	// CrossTabArrows lets modified Left/Right cross the Tasks–Hera boundary.
+	// It defaults off so existing key routing is unchanged until opted into.
+	CrossTabArrows bool `toml:"cross_tab_arrows"`
 }
 
 // SandboxConfig controls OS-level sandboxing of agent processes.

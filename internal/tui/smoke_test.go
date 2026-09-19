@@ -2157,6 +2157,30 @@ func TestSmoke_NumericTabKeysRouteCorrectly(t *testing.T) {
 	})
 }
 
+func TestSmoke_CrossTabArrows(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "true"))
+	app := New(d, agent.NewRunner(nil), false)
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	sim.InjectKey(tcell.KeyRight, 0, tcell.ModCtrl|tcell.ModAlt)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+		testutil.Equal(t, app.heraPage.Machine().State(), hera.FocusRail)
+		testutil.Equal(t, app.tapp.GetFocus(), tview.Primitive(app.heraPage))
+	})
+
+	sim.InjectKey(tcell.KeyLeft, 0, tcell.ModCtrl|tcell.ModAlt)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
+		testutil.Equal(t, app.tapp.GetFocus(), tview.Primitive(app.tasklist))
+	})
+}
+
 // TestSmoke_HeraRailFilterSuppressesGlobalShortcuts guards the global rune
 // guard for the `/` rail filter: while the Hera rail is in search input mode,
 // `1`/`2`/`q` must be filter input, NOT global tab-switch/quit shortcuts. Without

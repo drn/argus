@@ -48,6 +48,7 @@ const (
 	srSupervisor
 	srSpinner
 	srAgentZoom
+	srCrossTabArrows
 	srVaultPath
 	srUpdateArgus
 	srSourcePath
@@ -264,6 +265,9 @@ type SettingsView struct {
 	// Default agent-view layout: zoomed (single-pane) vs. split (1:3:1).
 	defaultAgentZoom bool
 
+	// Cross-tab modified-arrow navigation between the Tasks list and Hera rail.
+	crossTabArrows bool
+
 	// Default permission mode injected into Claude-style backend commands
 	// (one of config.PermissionModes). Empty falls back to the bypass-active
 	// default via config.DefaultConfig.
@@ -393,6 +397,10 @@ type SettingsView struct {
 	// is the new enabled state. The app wires this to live-re-route the second
 	// tab and relabel it when the toggle fires while on the Hera tab.
 	OnHeraToggle func(enabled bool)
+
+	// OnCrossTabArrowsToggle fires after persisting the Appearance preference
+	// so the App's key dispatcher can apply the new value immediately.
+	OnCrossTabArrowsToggle func(enabled bool)
 
 	// OnBranchChange fires whenever the active category changes or focus
 	// moves between the left rail and the right pane — i.e. whenever the
@@ -567,6 +575,7 @@ func (sv *SettingsView) Refresh() {
 
 	// Default agent-view layout.
 	sv.defaultAgentZoom = cfg.UI.DefaultAgentZoom
+	sv.crossTabArrows = cfg.UI.CrossTabArrows
 
 	// Default permission mode. Fall back to the config default when unset so
 	// the row always reflects what BuildCmd will actually inject.
@@ -1117,6 +1126,12 @@ func (sv *SettingsView) rebuildRows() {
 		}
 		sv.rows = append(sv.rows, settingsRow{kind: srAgentZoom, label: zoomLabel, key: "_agent_zoom"})
 
+		arrowLabel := "Cmd+arrows between Tasks/Projects: Off"
+		if sv.crossTabArrows {
+			arrowLabel = "Cmd+arrows between Tasks/Projects: On"
+		}
+		sv.rows = append(sv.rows, settingsRow{kind: srCrossTabArrows, label: arrowLabel, key: "_cross_tab_arrows"})
+
 	case catLogs:
 		sv.rows = append(sv.rows, settingsRow{kind: srLogs, label: "UX Log", key: "ux"})
 		sv.rows = append(sv.rows, settingsRow{kind: srLogs, label: "Daemon Log", key: "daemon"})
@@ -1284,6 +1299,9 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 			return true
 		case srAgentZoom:
 			sv.toggleDefaultAgentZoom()
+			return true
+		case srCrossTabArrows:
+			sv.toggleCrossTabArrows()
 			return true
 		case srPermissionMode:
 			sv.cyclePermissionMode(1)
@@ -1659,6 +1677,9 @@ func (sv *SettingsView) handleEnter() bool {
 		return true
 	case srAgentZoom:
 		sv.toggleDefaultAgentZoom()
+		return true
+	case srCrossTabArrows:
+		sv.toggleCrossTabArrows()
 		return true
 	case srPermissionMode:
 		sv.cyclePermissionMode(1)
@@ -2156,6 +2177,24 @@ func (sv *SettingsView) toggleDefaultAgentZoom() {
 	sv.rebuildRows()
 }
 
+// toggleCrossTabArrows flips the opt-in modified-arrow transition between the
+// Tasks list and Hera rail and persists it immediately.
+func (sv *SettingsView) toggleCrossTabArrows() {
+	sv.crossTabArrows = !sv.crossTabArrows
+	val := "false"
+	if sv.crossTabArrows {
+		val = "true"
+	}
+	if err := sv.database.SetConfigValue("ui.cross_tab_arrows", val); err != nil {
+		uxlog.Log("[settings] failed to persist cross-tab arrows: %v", err)
+	}
+	uxlog.Log("[settings] cross-tab arrows toggled to %s", val)
+	sv.rebuildRows()
+	if sv.OnCrossTabArrowsToggle != nil {
+		sv.OnCrossTabArrowsToggle(sv.crossTabArrows)
+	}
+}
+
 // cyclePermissionMode cycles the default permission mode forward or backward
 // through config.PermissionModes and persists it. Takes effect on the next
 // Claude-style session launch (agent.BuildCmd injects the mapped flags).
@@ -2495,6 +2534,8 @@ func (sv *SettingsView) renderRowDetail(screen tcell.Screen, x, y, w, h int, row
 		sv.renderSpinnerDetail(screen, x, y, w, h)
 	case srAgentZoom:
 		sv.renderAgentZoomDetail(screen, x, y, w, h)
+	case srCrossTabArrows:
+		sv.renderCrossTabArrowsDetail(screen, x, y, w, h)
 	case srPermissionMode:
 		sv.renderPermissionModeDetail(screen, x, y, w, h)
 	case srLogs:
@@ -3281,6 +3322,32 @@ func (sv *SettingsView) renderAgentZoomDetail(screen tcell.Screen, x, y, w, h in
 	r++
 	if r < h {
 		widget.DrawText(screen, x, y+r, w, "toggles zoom per-session at runtime.", theme.StyleDimmed)
+	}
+
+	if r+1 < h {
+		widget.DrawText(screen, x, y+h-1, w, "[enter/▶] toggle  [◀] rail", theme.StyleDimmed)
+	}
+}
+
+func (sv *SettingsView) renderCrossTabArrowsDetail(screen tcell.Screen, x, y, w, h int) {
+	widget.DrawText(screen, x, y, w, "Cross-tab arrow navigation", theme.StyleTitle)
+	r := 2
+
+	current := "Disabled"
+	if sv.crossTabArrows {
+		current = "Enabled"
+	}
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, current, tcell.StyleDefault.Foreground(theme.ColorComplete))
+	}
+	r += 2
+
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "Cmd+Right: Tasks → Projects rail", theme.StyleDimmed)
+	}
+	r++
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "Cmd+Left: Projects rail → Tasks", theme.StyleDimmed)
 	}
 
 	if r+1 < h {

@@ -79,6 +79,7 @@ func TestDB_Config_AllOverrides(t *testing.T) {
 		"ui.show_elapsed":          "false",
 		"ui.show_icons":            "false",
 		"ui.default_agent_zoom":    "false",
+		"ui.cross_tab_arrows":      "true",
 		"ui.cleanup_worktrees":     "false",
 		"sandbox.enabled":          "true",
 		"sandbox.deny_read":        "/x,/y",
@@ -109,6 +110,7 @@ func TestDB_Config_AllOverrides(t *testing.T) {
 	testutil.Equal(t, cfg.UI.ShowElapsed, false)
 	testutil.Equal(t, cfg.UI.ShowIcons, false)
 	testutil.Equal(t, cfg.UI.DefaultAgentZoom, false)
+	testutil.Equal(t, cfg.UI.CrossTabArrows, true)
 	if cfg.UI.CleanupWorktrees == nil || *cfg.UI.CleanupWorktrees {
 		t.Error("CleanupWorktrees should be set false")
 	}
@@ -210,6 +212,11 @@ func TestDB_Config_DefaultAgentZoomDefaultsTrue(t *testing.T) {
 	d := testDB(t)
 	// No ui.default_agent_zoom override → falls back to DefaultConfig (true).
 	testutil.Equal(t, d.Config().UI.DefaultAgentZoom, true)
+}
+
+func TestDB_Config_CrossTabArrowsDefaultsFalse(t *testing.T) {
+	d := testDB(t)
+	testutil.Equal(t, d.Config().UI.CrossTabArrows, false)
 }
 
 // TestDB_Config_BadIntegerPorts covers the strconv.Atoi error path for ports.

@@ -140,6 +140,10 @@ func TestHelpModal_Draw(t *testing.T) {
 	// discoverable so the no-Tab-ladder semantics aren't silently reverted.
 	testutil.Contains(t, body, "agent autocomplete")
 	testutil.Contains(t, body, "move between panes")
+	// add-cross-tab-arrow-navigation: both boundary directions are documented
+	// as conditional structural keys, not misleadingly shown as always active.
+	testutil.Contains(t, body, "enter Projects rail (when enabled in Appearance)")
+	testutil.Contains(t, body, "return to Tasks (rail only; Appearance option)")
 	// The `/` filter must advertise that ↑/↓ navigate the filtered set while
 	// typing — fail the build if that discoverability is dropped (the fix that
 	// made the filtered list selectable).

@@ -56,6 +56,7 @@ type helpGroup struct {
 var helpLayout = []helpGroup{
 	{title: "Task List", ctx: keymap.CtxTaskList, extra: []HelpBinding{
 		{"Enter", "open agent view"},
+		{"Cmd+→", "enter Projects rail (when enabled in Appearance)"},
 	}},
 	{title: "Global", ctx: keymap.CtxGlobal},
 	{title: "Agent View", ctx: keymap.CtxAgent, extra: []HelpBinding{
@@ -79,6 +80,7 @@ var helpLayout = []helpGroup{
 		{"Enter", "enter pane (revive dead/suspended session)"},
 		{"Tab", "enter pane (then Tab → agent autocomplete)"},
 		{"ctrl+alt+← / →", "move between panes; ctrl+q back to rail"},
+		{"Cmd+←", "return to Tasks (rail only; Appearance option)"},
 		{"ctrl+z", "fullscreen pane"},
 		{"ctrl+y", "copy staged text (focused pane)"},
 		{"B", "force recycle coordinator (kill + restart, confirm)"},
