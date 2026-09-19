@@ -295,6 +295,15 @@ func (tl *TaskListView) IsHeraCoordinator(taskID string) bool {
 // coordinators) are currently hidden from the Tasks tab (test seam).
 func (tl *TaskListView) HideHeraManaged() bool { return tl.hideHeraManaged }
 
+// SetHideHeraManaged is a not-yet-wired stub (persist-tasks-view-ui-state
+// Stage 3.1 TODO): it will set hideHeraManaged directly, without firing
+// OnHeraManagedToggle, so the App can restore a persisted toggle value at
+// startup without that being mistaken for a user-driven `H` press.
+func (tl *TaskListView) SetHideHeraManaged(hidden bool) {
+	// TODO(persist-tasks-view-ui-state Stage 3.1): set tl.hideHeraManaged,
+	// rebuild rows, and clamp the cursor — but never call OnHeraManagedToggle.
+}
+
 // ToggleHeraManaged flips whether hera-managed tasks are hidden, rebuilds
 // rows, and fires OnHeraManagedToggle. Bound to the `H` key. When on (the
 // default), every hera-spawned worker and live coordinator/worker-bound task

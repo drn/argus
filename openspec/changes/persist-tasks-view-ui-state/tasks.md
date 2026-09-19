@@ -2,18 +2,18 @@
 
 ## 1. Tests
 
-- [ ] 1.1 `internal/db`: failing table tests for `LoadHideHeraManaged`/`SaveHideHeraManaged` and `LoadLastTab`/`SaveLastTab` — round-trip, and absent-key defaults (`false` / `""`), mirroring the existing `hera_rail_state_test.go` style.
-- [ ] 1.2 `internal/tui/taskview`: failing test asserting `SetHideHeraManaged(true)` sets `HideHeraManaged()` to `true` without invoking `OnHeraManagedToggle`.
-- [ ] 1.3 `internal/tui`: failing test(s) asserting `switchTab()` and `exitAgentView()` call through to a stub `*db.DB`'s `SaveLastTab` with the correct value in local mode, and are no-ops in remote (`apistore.Store`) mode.
-- [ ] 1.4 `internal/tui`: failing test asserting a pre-populated `ui.last_tab` value causes the shell to be on the Hera (or Settings) page/tab after setup, in place of the Tasks default — exercised through whatever seam `app_test.go` already uses to assert `a.header.ActiveTab()` / `a.pages` state without a live terminal.
-- [ ] 1.5 Confirm every scenario in `specs/task-list-view/spec.md` and `specs/tui-shell/spec.md` (this change) has a corresponding failing test from 1.1–1.4.
+- [x] 1.1 `internal/db`: failing table tests for `LoadHideHeraManaged`/`SaveHideHeraManaged` and `LoadLastTab`/`SaveLastTab` — round-trip, and absent-key defaults (`false` / `""`), mirroring the existing `hera_rail_state_test.go` style.
+- [x] 1.2 `internal/tui/taskview`: failing test asserting `SetHideHeraManaged(true)` sets `HideHeraManaged()` to `true` without invoking `OnHeraManagedToggle`.
+- [x] 1.3 `internal/tui`: failing test(s) asserting `switchTab()` and `exitAgentView()` call through to a stub `*db.DB`'s `SaveLastTab` with the correct value in local mode, and are no-ops in remote (`apistore.Store`) mode.
+- [x] 1.4 `internal/tui`: failing test asserting a pre-populated `ui.last_tab` value causes the shell to be on the Hera (or Settings) page/tab after setup, in place of the Tasks default — exercised through whatever seam `app_test.go` already uses to assert `a.header.ActiveTab()` / `a.pages` state without a live terminal.
+- [x] 1.5 Confirm every scenario in `specs/task-list-view/spec.md` and `specs/tui-shell/spec.md` (this change) has a corresponding failing test from 1.1–1.4.
 
 ## 2. DB-layer persistence primitives
 
 **Depends on:** Stage 1
 
-- [ ] 2.1 Add `internal/db/ui_view_state.go`: `hideHeraManagedConfigKey = "ui.hide_hera_managed"` and `lastTabConfigKey = "ui.last_tab"`, with `LoadHideHeraManaged() (bool, error)`, `SaveHideHeraManaged(bool) error`, `LoadLastTab() (string, error)`, `SaveLastTab(string) error` — thin wrappers over `GetConfigValue`/`SetConfigValue`, mirroring `internal/db/hera_rail_state.go`.
-- [ ] 2.2 `make test-pkg PKG=./internal/db/` green.
+- [x] 2.1 Add `internal/db/ui_view_state.go`: `hideHeraManagedConfigKey = "ui.hide_hera_managed"` and `lastTabConfigKey = "ui.last_tab"`, with `LoadHideHeraManaged() (bool, error)`, `SaveHideHeraManaged(bool) error`, `LoadLastTab() (string, error)`, `SaveLastTab(string) error` — thin wrappers over `GetConfigValue`/`SetConfigValue`, mirroring `internal/db/hera_rail_state.go`.
+- [x] 2.2 `make test-pkg PKG=./internal/db/` green.
 
 ## 3. Persist the hide-hera-managed toggle (Tasks view)
 

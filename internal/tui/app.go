@@ -4560,6 +4560,19 @@ func tcellKeyToBytes(ev *tcell.EventKey) []byte {
 	return keyenc.Encode(ev)
 }
 
+// restoreLastTab is a not-yet-wired stub (persist-tasks-view-ui-state Stage
+// 4.3 TODO): it will local-only load the persisted `ui.last_tab` value and,
+// if it resolves to TabHera or TabSettings, call switchTab to land there —
+// reusing switchToHeraTab2()'s refresh/focus/label logic unchanged. An
+// absent/unrecognized value (or --remote mode, where a.db is not *db.DB) is a
+// no-op that leaves the shell on the Tasks default. Not yet called from Run()
+// — that wiring is Stage 4.4.
+func (a *App) restoreLastTab() {
+	// TODO(persist-tasks-view-ui-state Stage 4.3): local-only load via
+	// a.db.(*db.DB).LoadLastTab(), map "hera"/"settings" to widget.Tab, and
+	// call a.switchTab(...) when it differs from the Tasks default.
+}
+
 // switchTab changes the active top-level tab.
 func (a *App) switchTab(t widget.Tab) {
 	a.header.SetTab(t)
