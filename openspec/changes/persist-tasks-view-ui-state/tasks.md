@@ -19,10 +19,10 @@
 
 **Depends on:** Stage 2
 
-- [ ] 3.1 Add `TaskListView.SetHideHeraManaged(hidden bool)` in `internal/tui/taskview/tasklist.go` — sets `hideHeraManaged` directly, does NOT call `OnHeraManagedToggle` (restore, not a user action).
-- [ ] 3.2 In `internal/tui/app.go`, at `a.tasklist` construction: if `d, ok := a.db.(*db.DB); ok`, load the persisted value and call `a.tasklist.SetHideHeraManaged(...)`, logging (never failing) on a load error.
-- [ ] 3.3 Extend the existing `OnHeraManagedToggle` callback to also persist the new value through the same local-only type-assert, logging (never failing) on a save error.
-- [ ] 3.4 `make test-pkg PKG=./internal/tui/taskview/` green.
+- [x] 3.1 Add `TaskListView.SetHideHeraManaged(hidden bool)` in `internal/tui/taskview/tasklist.go` — sets `hideHeraManaged` directly, does NOT call `OnHeraManagedToggle` (restore, not a user action).
+- [x] 3.2 In `internal/tui/app.go`, at `a.tasklist` construction: if `d, ok := a.db.(*db.DB); ok`, load the persisted value and call `a.tasklist.SetHideHeraManaged(...)`, logging (never failing) on a load error.
+- [x] 3.3 Extend the existing `OnHeraManagedToggle` callback to also persist the new value through the same local-only type-assert, logging (never failing) on a save error.
+- [x] 3.4 `make test-pkg PKG=./internal/tui/taskview/` green.
 
 ## 4. Persist and restore the last active tab (shell)
 

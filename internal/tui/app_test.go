@@ -1490,6 +1490,35 @@ func TestNew_RestoresPersistedHideHeraManaged(t *testing.T) {
 	testutil.Equal(t, app.tasklist.HideHeraManaged(), true)
 }
 
+// TestHeraManagedToggle_PersistsLocal: a real user-driven `H` press (routed
+// through TaskListView.ToggleHeraManaged, which fires OnHeraManagedToggle)
+// must persist the new value via *db.DB.SaveHideHeraManaged, per the
+// design's "extend the existing OnHeraManagedToggle callback" decision
+// (Stage 3.3). Local mode only.
+func TestHeraManagedToggle_PersistsLocal(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	app.tasklist.ToggleHeraManaged() // default false → true
+
+	got, err := d.LoadHideHeraManaged()
+	testutil.NoError(t, err)
+	testutil.Equal(t, got, true)
+}
+
+// TestHeraManagedToggle_RemoteModeDoesNotPersist: in --remote mode a.db is
+// *apistore.Store (no SaveHideHeraManaged method), so the OnHeraManagedToggle
+// callback's persistence step must be a no-op — no panic, the toggle itself
+// keeps working.
+func TestHeraManagedToggle_RemoteModeDoesNotPersist(t *testing.T) {
+	c := apiclient.New("http://127.0.0.1:0", "tok")
+	app := New(apistore.New(c), agent.NewRunner(nil), false)
+
+	app.tasklist.ToggleHeraManaged() // must not panic
+
+	testutil.Equal(t, app.tasklist.HideHeraManaged(), true)
+}
+
 func TestTcellKeyToBytes(t *testing.T) {
 	tests := []struct {
 		name string

@@ -733,6 +733,17 @@ func (a *App) buildUI() {
 	a.statusbar = widget.NewStatusBar()
 
 	a.tasklist = taskview.NewTaskListView()
+	if d, ok := a.db.(*db.DB); ok {
+		// Restore the persisted hide-hera-managed toggle (persist-tasks-view-ui-state).
+		// Local-only: remote mode (apistore) has no config table seam, so the
+		// toggle always starts from the OFF default there.
+		hidden, err := d.LoadHideHeraManaged()
+		if err != nil {
+			uxlog.Log("[hera-view] failed to load persisted hide-hera-managed state: %v", err)
+		} else {
+			a.tasklist.SetHideHeraManaged(hidden)
+		}
+	}
 	a.tasklist.Keys = a.activeKeymap
 	a.tasklist.OnSelect = func(task *model.Task) { a.onTaskSelect(task, true) }
 	a.tasklist.OnNew = a.onNewTask
@@ -741,6 +752,11 @@ func (a *App) buildUI() {
 	a.tasklist.OnFilterToggle = func() { a.forceRedraw("tasklist filter toggled") }
 	a.tasklist.OnHeraManagedToggle = func(hidden bool) {
 		uxlog.Log("[hera-view] tasklist hide-hera-managed toggled: hidden=%v", hidden)
+		if d, ok := a.db.(*db.DB); ok {
+			if err := d.SaveHideHeraManaged(hidden); err != nil {
+				uxlog.Log("[hera-view] failed to persist hide-hera-managed state: %v", err)
+			}
+		}
 		a.forceRedraw("tasklist hera-managed toggled")
 	}
 	a.tasklist.OnStatusChange = func(t *model.Task) {
