@@ -955,10 +955,13 @@ func TestSession_ReadLoop_ManyWriters(t *testing.T) {
 	t.Cleanup(func() { sess.Stop() }) //nolint:errcheck
 
 	// Add 6 writers (>4 → heap fallback in readLoop).
+	// Use the atomic replay+attach path: the short-lived printf process can
+	// otherwise write between AddWriter's snapshot and live registration,
+	// which is an explicitly tolerated gap in that production API.
 	bufs := make([]*syncBuffer, 6)
 	for i := range bufs {
 		bufs[i] = &syncBuffer{}
-		sess.AddWriter(bufs[i])
+		sess.AddWriterFrom(bufs[i], 0)
 	}
 
 	select {
