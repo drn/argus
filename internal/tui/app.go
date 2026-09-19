@@ -292,6 +292,7 @@ type App struct {
 	mode               viewMode
 	agentFocus         agentFocus
 	agentZen           bool // single-pane (zoom) mode: side panels collapsed to 0 width
+	crossTabArrows     bool // opt-in Cmd+Left/Right transition between Tasks and Hera rail
 	agentState         agentview.State
 	daemonConnected    bool
 	tasks              []*model.Task
@@ -712,6 +713,10 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 		// watcher) on the next daemon start.
 		uxlog.Log("[hera-view] hera.enabled toggled to %v", enabled)
 	}
+	app.settings.OnCrossTabArrowsToggle = func(enabled bool) {
+		app.crossTabArrows = enabled
+		uxlog.Log("[tui] cross-tab arrows enabled=%v", enabled)
+	}
 	app.settings.OnStreamFocus = app.openStreamSection
 	app.settings.OnStreamBlur = app.closeStreamSection
 	app.settings.SetPluginSubmit(app.submitPluginSection)
@@ -719,6 +724,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 
 	cfg := database.Config()
 	widget.SetActiveSpinner(cfg.UI.SpinnerStyle)
+	app.crossTabArrows = cfg.UI.CrossTabArrows
 	app.activeKeymap() // prime the keymap (logs any config warnings at startup)
 
 	app.buildUI()
@@ -3866,6 +3872,13 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 	}
 
+	// Optional boundary navigation makes Tasks and the Hera rail behave like
+	// adjacent horizontal regions without reclaiming modified arrows from Hera's
+	// coordinator/agent panes or either view's filter input.
+	if a.handleCrossTabArrow(event) {
+		return nil
+	}
+
 	// Rune-input guards: while a text field / live Hera pane holds focus, every
 	// rune is input — don't run any global rune shortcut. ctrl-keyed actions
 	// (refresh/destroy/fork/…) are unaffected, matching the historical dispatch.
@@ -4008,6 +4021,35 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	}
 
 	return event
+}
+
+// handleCrossTabArrow consumes an enabled modified-arrow transition at the
+// Tasks–Hera boundary. The loose modifier check matches Hera's existing focus
+// ladder because terminals disagree on whether Cmd arrives as Ctrl, Alt, or
+// both. All non-boundary events fall through unchanged to the active view.
+func (a *App) handleCrossTabArrow(event *tcell.EventKey) bool {
+	if !a.crossTabArrows || a.mode != modeTaskList ||
+		event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) == 0 {
+		return false
+	}
+
+	switch a.header.ActiveTab() {
+	case widget.TabTasks:
+		if event.Key() == tcell.KeyRight && !a.tasklist.Filtering() {
+			uxlog.Log("[tui] cross-tab arrow: tasks -> hera")
+			a.switchTab(widget.TabHera)
+			return true
+		}
+	case widget.TabHera:
+		if event.Key() == tcell.KeyLeft &&
+			a.heraPage.Machine().State() == hera.FocusRail &&
+			!a.heraPage.RailFiltering() {
+			uxlog.Log("[tui] cross-tab arrow: hera -> tasks")
+			a.switchTab(widget.TabTasks)
+			return true
+		}
+	}
+	return false
 }
 
 // updateFocusIndicators syncs border styles with the current focus state.
@@ -4667,6 +4709,7 @@ func (a *App) switchToHeraTab2() {
 	// Tab entry always starts with the rail focused; reset the statusbar hint
 	// set so the operator sees rail hints immediately (the rail is the default
 	// region — no focus-machine state persists across tab switches).
+	a.heraPage.Machine().ToRail()
 	a.statusbar.SetHeraFocus(0)
 	a.heraPage.Refresh()
 	a.pages.SwitchToPage("hera")

@@ -190,6 +190,7 @@ below. The `?` overlay always shows your active bindings.
 | `ctrl+o`  | Open the project's GitHub repo in browser (via `gh repo view --web`) |
 | `ctrl+r`  | Prune completed tasks                                           |
 | `j` / `k` | Navigate up/down                                                |
+| `Cmd+→`   | Enter the Projects rail when Settings → Appearance → cross-tab arrow navigation is enabled |
 | `1` / `2` / `3` | Switch tabs (Tasks / Projects / Settings) |
 | `ctrl+l`  | Refresh screen (wipe ghost cells; works in every non-agent tab) |
 | `ctrl+j`  | Open the unified **task/role switcher** (see the Agent View table below — same global action, also reachable from the plain Task List) |
@@ -248,6 +249,7 @@ The Projects tab (`2`) has three regions: a left **rail**, a middle **coordinato
 | `C`             | **Cleanup**: open the merge-safety review popup over the full stuck-task backlog across every project (Tier A + Tier B classification, daemon-side) and immediately clean the chosen scope (row/worktree/branch). Selection-independent — works regardless of the rail cursor |
 | `ctrl+d`        | **Nuke** the selected role; on a coordinator / orchestrator header (or a nested sub-coordinator row), cascade the whole subtree — every nested sub-coordinator + their agents (Tier 2). Nuke **removes the rows from the rail entirely** (a `nuked_at` mark — no DB deletes; role / orchestrator / inbox / task rows all retained and recoverable via the DB) and reclaims the worktree + branch + session. On a single (sole-bound) role this opens the merge-safety review popup (Tier A, local-only) instead of a plain confirm — NOT-SAFE/SAFE sections, `Clean safe`/`Clean all`/`Cancel`, never a hard block; a cascade keeps its existing count-bearing confirm, augmented with a confirmed-merged count. A task bound live in another orchestrator is preserved. (vs `a`, which hides but keeps the worktree/session) |
 | `←`             | Move to parent coordinator (rail focused only — passes through to the PTY when a pane is focused) |
+| `Cmd+←`         | Return to Tasks from the focused rail when Settings → Appearance → cross-tab arrow navigation is enabled |
 | `Cmd+↑` / `Cmd+↓` | Move the rail cursor up / down without changing the focused pane (the mod-7 escape sequence is consumed — the pane's PTY never sees it) |
 | `ctrl+q`        | Return focus to the rail                                                                |
 
@@ -948,6 +950,7 @@ Registered repos, keyed by name. The DB projects table is the primary source; en
 |-----|------|---------|-------------|
 | `spinner_style` | string | `"progress"` | Spinner animation: `progress`, `dots`, `braille`, or `classic`. |
 | `default_agent_zoom` | bool | `true` | Resting agent-view layout: `true` opens single-pane/zoomed (side panels collapsed); `false` opens the 1:3:1 three-pane layout. `Ctrl+Z` toggles at runtime. |
+| `cross_tab_arrows` | bool | `false` | Enables `Cmd+Right` from Tasks to the Projects rail and `Cmd+Left` from that rail back to Tasks. |
 | `theme` | string | `"default"` | ⚠️ Color theme name. Only `default` exists today and nothing reads this yet — reserved for a future theming layer. |
 | `show_elapsed` | bool | `true` | ⚠️ Reserved — show elapsed time on task rows. Not yet consumed. |
 | `show_icons` | bool | `true` | ⚠️ Reserved — show status icons. Not yet consumed. |
@@ -1083,6 +1086,7 @@ permission_mode = "bypass-active"
 [ui]
 spinner_style = "braille"
 default_agent_zoom = true
+cross_tab_arrows = false
 
 # Maps merge by key; an existing key is replaced wholesale, so list every
 # field you want to keep.

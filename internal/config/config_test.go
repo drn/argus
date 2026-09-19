@@ -27,6 +27,9 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.UI.DefaultAgentZoom {
 		t.Error("DefaultAgentZoom should default to true")
 	}
+	if cfg.UI.CrossTabArrows {
+		t.Error("CrossTabArrows should default to false")
+	}
 	if !cfg.Hera.Enabled {
 		t.Error("Hera.Enabled should default to true (absent key ⇒ enabled)")
 	}

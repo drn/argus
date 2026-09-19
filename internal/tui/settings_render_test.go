@@ -607,6 +607,35 @@ func TestSettings_AgentZoomToggle(t *testing.T) {
 	testutil.Equal(t, sv.defaultAgentZoom, true) // unchanged by Left
 }
 
+func TestSettings_CrossTabArrowsToggle(t *testing.T) {
+	sv := makeSettings(t)
+	selectRowInCategory(t, sv, catAppearance, srCrossTabArrows, "")
+	var callbackValues []bool
+	sv.OnCrossTabArrowsToggle = func(enabled bool) {
+		callbackValues = append(callbackValues, enabled)
+	}
+
+	testutil.Equal(t, sv.crossTabArrows, false)
+
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.crossTabArrows, true)
+	testutil.Equal(t, sv.database.Config().UI.CrossTabArrows, true)
+
+	selectRowInCategory(t, sv, catAppearance, srCrossTabArrows, "")
+	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.crossTabArrows, false)
+	testutil.Equal(t, sv.database.Config().UI.CrossTabArrows, false)
+	testutil.DeepEqual(t, callbackValues, []bool{true, false})
+
+	selectRowInCategory(t, sv, catAppearance, srCrossTabArrows, "")
+	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.focus, focusRail)
+	testutil.Equal(t, sv.crossTabArrows, false)
+}
+
 // TestSettings_LeftEscapesAppearancePane pins the fix for Aaron's "can't escape
 // the box" report: in the Appearance category (whose only rows both cycle on
 // Right/Enter), Left must always move focus back to the rail.
@@ -617,6 +646,7 @@ func TestSettings_LeftEscapesAppearancePane(t *testing.T) {
 	}{
 		{"spinner", srSpinner},
 		{"agent_zoom", srAgentZoom},
+		{"cross_tab_arrows", srCrossTabArrows},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -642,6 +672,19 @@ func TestSettings_RenderAgentZoomDetail(t *testing.T) {
 
 	// And a very short pane height to exercise the bounds guards (description
 	// lines + footer suppressed) without writing out of the detail rect.
+	sv.SetRect(0, 0, 100, 3)
+	sv.Draw(drawSim(t))
+}
+
+func TestSettings_RenderCrossTabArrowsDetail(t *testing.T) {
+	sv := makeSettings(t)
+	selectRowInCategory(t, sv, catAppearance, srCrossTabArrows, "")
+	sv.SetRect(0, 0, 100, 30)
+	sv.Draw(drawSim(t))
+
+	sv.crossTabArrows = true
+	sv.Draw(drawSim(t))
+
 	sv.SetRect(0, 0, 100, 3)
 	sv.Draw(drawSim(t))
 }

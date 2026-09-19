@@ -25,6 +25,7 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/skew"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/hera"
 	"github.com/drn/argus/internal/tui/modal"
 	"github.com/drn/argus/internal/tui/store"
 	"github.com/drn/argus/internal/tui/widget"
@@ -1647,6 +1648,66 @@ func TestArrowKeysDoNotSwitchTabs(t *testing.T) {
 	if app.header.ActiveTab() != widget.TabSettings {
 		t.Errorf("tab = %v, want widget.TabSettings (settings consumes right)", app.header.ActiveTab())
 	}
+}
+
+func TestCrossTabArrows(t *testing.T) {
+	// Terminals disagree about whether the Cmd chord arrives as Ctrl or Alt;
+	// exercise each half of the intentionally loose modifier check.
+	modifiedRight := tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModAlt)
+	modifiedLeft := tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModCtrl)
+
+	t.Run("enabled crosses between Tasks and Hera rail", func(t *testing.T) {
+		d := testDB(t)
+		testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "true"))
+		app := New(d, agent.NewRunner(nil), false)
+
+		testutil.Nil(t, app.handleGlobalKey(modifiedRight))
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+		testutil.Equal(t, app.heraPage.Machine().State(), hera.FocusRail)
+
+		testutil.Nil(t, app.handleGlobalKey(modifiedLeft))
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
+	})
+
+	t.Run("disabled preserves existing routing", func(t *testing.T) {
+		app := New(testDB(t), agent.NewRunner(nil), false)
+
+		testutil.Equal(t, app.handleGlobalKey(modifiedRight), modifiedRight)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
+
+		app.switchTab(widget.TabHera)
+		testutil.Equal(t, app.handleGlobalKey(modifiedLeft), modifiedLeft)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+	})
+
+	t.Run("filters suppress boundary transition", func(t *testing.T) {
+		d := testDB(t)
+		testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "true"))
+		app := New(d, agent.NewRunner(nil), false)
+
+		app.tasklist.InputHandler()(tcell.NewEventKey(tcell.KeyRune, '/', 0), nil)
+		testutil.Equal(t, app.tasklist.Filtering(), true)
+		testutil.Equal(t, app.handleGlobalKey(modifiedRight), modifiedRight)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
+
+		app.tasklist.ClearFilter()
+		app.switchTab(widget.TabHera)
+		app.heraPage.InputHandler()(tcell.NewEventKey(tcell.KeyRune, '/', 0), nil)
+		testutil.Equal(t, app.heraPage.RailFiltering(), true)
+		testutil.Equal(t, app.handleGlobalKey(modifiedLeft), modifiedLeft)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+	})
+
+	t.Run("Hera pane keeps focus ladder", func(t *testing.T) {
+		d := testDB(t)
+		testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "true"))
+		app := New(d, agent.NewRunner(nil), false)
+		app.switchTab(widget.TabHera)
+		app.heraPage.Machine().SetRegion(hera.FocusCoord)
+
+		testutil.Equal(t, app.handleGlobalKey(modifiedLeft), modifiedLeft)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+	})
 }
 
 func TestCtrlCForwardsToAgentPTY(t *testing.T) {
