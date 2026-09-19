@@ -235,6 +235,8 @@ A task SHALL be classified as a **freelancer** (and therefore SHALL remain visib
 
 The toggle SHALL compose with the substring filter (`/`) — each is an independent exclusion applied in the same row-build pass. In remote (`--remote`) mode, where no binding-query REST endpoint exists, the live-binding signal MAY fall back to a best-effort union of the `task_meta` `hera.role` worker and coordinator entries; this MAY report a finished worker or coordinator as still managed until the next tick refresh, and is a known degradation documented in the design.
 
+The toggle's ON/OFF state SHALL persist locally across an argus restart, so relaunching argus restores the same visibility the user last set instead of always defaulting to OFF. In `--remote` mode, where there is no local persistence seam, the toggle SHALL NOT persist and SHALL always start from the OFF default.
+
 #### Scenario: Hera worker visible by default, hidden by H
 
 - **WHEN** a task is a hera-spawned worker and the toggle is OFF (the default)
@@ -259,6 +261,16 @@ The toggle SHALL compose with the substring filter (`/`) — each is an independ
 
 - **WHEN** the toggle is ON and a substring filter is active
 - **THEN** a task is visible only if it is not hera-managed AND matches every substring term
+
+#### Scenario: Toggle state persists across a restart
+
+- **WHEN** the user presses `H` to turn the toggle ON and then restarts argus
+- **THEN** the Tasks tab shows the toggle ON again (hera-managed tasks hidden) without the user pressing `H`
+
+#### Scenario: No persisted value defaults to OFF
+
+- **WHEN** no toggle state has ever been persisted (first run) or argus is running in `--remote` mode
+- **THEN** the toggle defaults to OFF and hera-managed tasks are visible
 
 ### Requirement: Per-task hera-role indicator
 
