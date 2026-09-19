@@ -1,9 +1,9 @@
 ## 1. Merge-safety Tier D (stack-inferred safety)
 
-- [ ] 1.1 Add `TierStackInferred = "stack-inferred"` constant to `internal/mergesafety/classify.go`, alongside the existing `TierLocalAncestor`/`TierMergedPR`/`TierCoordinatorInferred`.
-- [ ] 1.2 Add a `ResolveStackTip` (or similarly named) helper that, given a task and a lookup of `Branch -> *model.Task` for the relevant scope, walks forward via `BaseBranch` (`Y.BaseBranch == X.Branch`) to the chain's terminal task, guarding against a cycle.
-- [ ] 1.3 Add a `ClassifyStackInferred` function: resolves the tip via 1.2, classifies it via the existing `Classify` (allowing Tier B), then verifies each earlier link's local git ancestry against the tip's own branch (`git merge-base --is-ancestor`, reuse `gitutil`). Fails closed on any unresolved/broken link.
-- [ ] 1.4 Table tests in `internal/mergesafety`: clean linear stack (rescued), squash-merged tip (rescued via Tier B), broken ancestry mid-stack (not rescued), unconfirmed tip (not rescued), cycle guard.
+- [x] 1.1 Add `TierStackInferred = "stack-inferred"` constant to `internal/mergesafety/classify.go`, alongside the existing `TierLocalAncestor`/`TierMergedPR`/`TierCoordinatorInferred`.
+- [x] 1.2 Add a `ResolveStackTip` (or similarly named) helper that, given a task and a lookup of `Branch -> *model.Task` for the relevant scope, walks forward via `BaseBranch` (`Y.BaseBranch == X.Branch`) to the chain's terminal task, guarding against a cycle.
+- [x] 1.3 Add a `ClassifyStackInferred` function: resolves the tip via 1.2, classifies it via the existing `Classify` (allowing Tier B), then verifies each earlier link's local git ancestry against the tip's own branch (`git merge-base --is-ancestor`, reuse `gitutil`). Fails closed on any unresolved/broken link.
+- [x] 1.4 Table tests in `internal/mergesafety`: clean linear stack (rescued), squash-merged tip (rescued via Tier B), broken ancestry mid-stack (not rescued), unconfirmed tip (not rescued), cycle guard.
 
 ## 2. Task-row auto-prune on nuke
 
