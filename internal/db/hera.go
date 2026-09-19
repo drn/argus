@@ -1484,6 +1484,7 @@ func (d *DB) HeraNukeReclaimCandidates() ([]*model.Task, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	//nolint:gosec // G202: qualifyColumns(taskColumns) is a fixed compile-time column list; end_reason is a bound parameter.
 	rows, err := d.conn.Query(`SELECT DISTINCT `+qualifyColumns("t", taskColumns)+`
 		FROM tasks t
 		JOIN hera_bindings hb ON hb.argus_task_id = t.id
