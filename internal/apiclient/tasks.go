@@ -65,6 +65,9 @@ type CreateTaskReq struct {
 	Project string `json:"project"`
 	Backend string `json:"backend,omitempty"`
 	Model   string `json:"model,omitempty"`
+	// SandboxOverride is a tri-state per-task override of the resolved sandbox
+	// setting: "" (inherit), "enabled", or "disabled" (add-task-sandbox-override).
+	SandboxOverride string `json:"sandbox_override,omitempty"`
 }
 
 // CreateTaskResp is the create-task response envelope.

@@ -606,3 +606,59 @@ func TestCreateAndStart_EmptyProfileLeavesEmpty(t *testing.T) {
 
 	RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo)
 }
+
+// TestCreateAndStart_PersistsSandboxOverride verifies that a per-task sandbox
+// override passed via CreateInput.SandboxOverride is trimmed, stored on the
+// task row, survives a DB round-trip, and is consulted by ResolveSandboxConfig
+// ahead of the project/global setting (add-task-sandbox-override).
+func TestCreateAndStart_PersistsSandboxOverride(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{sessionPID: 1}
+
+	task, _, err := CreateAndStart(d, fr, CreateInput{
+		Name:            "sandbox-task",
+		Prompt:          "go",
+		Project:         "proj",
+		SandboxOverride: "  enabled  ",
+	})
+	testutil.NoError(t, err)
+	testutil.Equal(t, task.SandboxOverride, "enabled")
+
+	got, err := d.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.SandboxOverride, "enabled")
+
+	// The global/project setting is disabled by default in createTestDB; the
+	// override must still resolve to enabled regardless of platform sandbox
+	// availability (ResolveSandboxConfig, not IsTaskSandboxed, is the seam that
+	// doesn't depend on sandbox-exec actually being installed).
+	if !ResolveSandboxConfig(got, d.Config()).Enabled {
+		t.Error("expected resolved sandbox config to be enabled via task override")
+	}
+
+	RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo)
+}
+
+// TestCreateAndStart_EmptySandboxOverrideLeavesEmpty verifies that an empty
+// SandboxOverride input persists as empty (no override = inherit the
+// project/global setting, unchanged behavior).
+func TestCreateAndStart_EmptySandboxOverrideLeavesEmpty(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{sessionPID: 1}
+
+	task, _, err := CreateAndStart(d, fr, CreateInput{
+		Name:    "no-sandbox-override-task",
+		Prompt:  "go",
+		Project: "proj",
+	})
+	testutil.NoError(t, err)
+	testutil.Equal(t, task.SandboxOverride, "")
+
+	got, err := d.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.SandboxOverride, "")
+
+	RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo)
+}

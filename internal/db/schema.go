@@ -26,6 +26,7 @@ func (d *DB) createTables() error {
 			result      TEXT NOT NULL DEFAULT '',
 			archetype   TEXT NOT NULL DEFAULT '',
 			profile     TEXT NOT NULL DEFAULT '',
+			sandbox_override TEXT NOT NULL DEFAULT '',
 			created_at  TEXT NOT NULL,
 			started_at  TEXT NOT NULL DEFAULT '',
 			ended_at    TEXT NOT NULL DEFAULT ''
@@ -103,6 +104,12 @@ func (d *DB) createTables() error {
 	// means the operator selected a specific profile for this one spawn, overriding
 	// the project's bound profile during model resolution. Empty = use project binding.
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN profile TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+
+	// sandbox_override (add-task-sandbox-override): per-task tri-state override
+	// of the resolved sandbox setting — '' (inherit), 'enabled', or 'disabled'.
+	// Consulted by agent.ResolveSandboxConfig ahead of the project/global
+	// setting; existing rows read '' (no override, unchanged behavior).
+	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN sandbox_override TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 
 	// Index for FindByNameProject (task_create idempotency check inside
 	// createMu). The query filters by all three columns; SQLite uses a

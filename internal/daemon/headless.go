@@ -18,6 +18,10 @@ type HeadlessInput struct {
 	Model      string // optional per-task model override (empty = backend default)
 	AutoName   bool
 	BaseBranch string
+	// SandboxOverride is an optional per-task tri-state override of the
+	// resolved sandbox setting: "" (inherit), "enabled", or "disabled"
+	// (add-task-sandbox-override).
+	SandboxOverride string
 }
 
 // HeadlessCreateTask creates a task, its worktree, and starts an agent session
@@ -39,13 +43,14 @@ type HeadlessInput struct {
 // startGen tick-reconciliation counter, which has no analogue in headless mode.
 func HeadlessCreateTask(database *db.DB, runner agent.SessionProvider, in HeadlessInput) (*model.Task, error) {
 	task, _, err := agent.CreateAndStart(database, runner, agent.CreateInput{
-		Name:       in.Name,
-		Prompt:     in.Prompt,
-		Project:    in.Project,
-		Backend:    in.Backend,
-		Model:      in.Model,
-		AutoName:   in.AutoName,
-		BaseBranch: in.BaseBranch,
+		Name:            in.Name,
+		Prompt:          in.Prompt,
+		Project:         in.Project,
+		Backend:         in.Backend,
+		Model:           in.Model,
+		AutoName:        in.AutoName,
+		BaseBranch:      in.BaseBranch,
+		SandboxOverride: in.SandboxOverride,
 	})
 	return task, err
 }

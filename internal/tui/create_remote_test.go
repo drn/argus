@@ -69,13 +69,13 @@ func (stubStore) PluginSections() ([]settings.Section, error) {
 // store.Store and remoteTaskCreator — the remote-mode shape.
 type creatorStore struct {
 	stubStore
-	gotName, gotPrompt, gotProject, gotBackend, gotModel string
-	ret                                                  *model.Task
-	err                                                  error
+	gotName, gotPrompt, gotProject, gotBackend, gotModel, gotSandboxOverride string
+	ret                                                                      *model.Task
+	err                                                                      error
 }
 
-func (c *creatorStore) CreateTask(_ context.Context, name, prompt, project, backend, taskModel string) (*model.Task, error) {
-	c.gotName, c.gotPrompt, c.gotProject, c.gotBackend, c.gotModel = name, prompt, project, backend, taskModel
+func (c *creatorStore) CreateTask(_ context.Context, name, prompt, project, backend, taskModel, sandboxOverride string) (*model.Task, error) {
+	c.gotName, c.gotPrompt, c.gotProject, c.gotBackend, c.gotModel, c.gotSandboxOverride = name, prompt, project, backend, taskModel, sandboxOverride
 	return c.ret, c.err
 }
 
@@ -85,12 +85,13 @@ func TestCreateTaskTransactional_RemoteRoutesThroughCreateTask(t *testing.T) {
 
 	before := a.startGen.Load()
 	got, err := a.createTaskTransactional(agent.CreateInput{
-		Name:       "n",
-		Prompt:     "build it",
-		Project:    "proj",
-		Backend:    "claude",
-		Model:      "opus",
-		BaseBranch: "develop", // ignored over REST — must not error
+		Name:            "n",
+		Prompt:          "build it",
+		Project:         "proj",
+		Backend:         "claude",
+		Model:           "opus",
+		BaseBranch:      "develop", // ignored over REST — must not error
+		SandboxOverride: "enabled",
 	})
 	testutil.NoError(t, err)
 	testutil.Equal(t, got.ID, "t1")
@@ -98,6 +99,7 @@ func TestCreateTaskTransactional_RemoteRoutesThroughCreateTask(t *testing.T) {
 	testutil.Equal(t, cs.gotProject, "proj")
 	testutil.Equal(t, cs.gotBackend, "claude")
 	testutil.Equal(t, cs.gotModel, "opus")
+	testutil.Equal(t, cs.gotSandboxOverride, "enabled")
 	// startGen is double-bumped (before + after) so a concurrent tick skips
 	// reconciliation while the SSE stream attaches.
 	testutil.Equal(t, a.startGen.Load(), before+2)
