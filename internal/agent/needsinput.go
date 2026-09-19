@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -1002,6 +1003,72 @@ type ContentIdleSignal struct {
 	FP      uint64
 	Working bool
 	Parked  bool
+}
+
+// ContentIdleSession is the live-session surface ContentIdleTracker needs.
+// Both the in-process Session and the supervisor client's RemoteSession
+// satisfy it. Keeping the interface here lets low-frequency daemon consumers
+// reuse content-aware idle without depending on the full SessionHandle API.
+type ContentIdleSession interface {
+	IsIdle() bool
+	RecentOutputTail(n int) []byte
+	PTYSize() (cols, rows int)
+}
+
+// ContentIdleTracker adapts the batch-oriented ContentIdle function into a
+// goroutine-safe per-session predicate for daemon consumers such as reliable
+// pane delivery and self-service recycle. Each consumer owns a tracker because
+// their candidate sets and reconcile cadence are independent.
+//
+// The zero value is ready for use.
+type ContentIdleTracker struct {
+	mu     sync.Mutex
+	screen *ScreenRenderer
+	state  map[string]*ContentIdleState
+}
+
+// Forget drops taskID's accumulated content-idle history. Consumers call this
+// when a candidate leaves their pending set so a later work cycle starts from
+// a fresh baseline and dead task IDs do not accumulate indefinitely.
+func (t *ContentIdleTracker) Forget(taskID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.state, taskID)
+}
+
+// IsIdle reports raw idleness immediately, otherwise advances taskID's
+// content-idle state using a bounded substantive ring-buffer tail and the
+// session's current PTY dimensions. Raw idleness resets prior content state so
+// a later busy cycle must converge from a fresh baseline.
+func (t *ContentIdleTracker) IsIdle(taskID string, sess ContentIdleSession, now time.Time) bool {
+	if sess == nil {
+		return false
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.state == nil {
+		t.state = make(map[string]*ContentIdleState)
+	}
+	if t.screen == nil {
+		t.screen = &ScreenRenderer{}
+	}
+	if sess.IsIdle() {
+		delete(t.state, taskID)
+		return true
+	}
+
+	tailOf := func(string) []byte {
+		return SubstantiveTail(sess.RecentOutputTail, needsInputTailWindow, NeedsInputMaxExpandBytes)
+	}
+	sizeOf := func(string) (int, int) { return sess.PTYSize() }
+	idle, next := ContentIdle([]string{taskID}, nil, tailOf, sizeOf, t.screen, t.state[taskID], now, nil)
+	if len(next.fp) == 0 && len(next.since) == 0 && len(next.esc) == 0 {
+		delete(t.state, taskID)
+	} else {
+		t.state[taskID] = next
+	}
+	return len(idle) != 0
 }
 
 // ContentIdle returns the subset of running task IDs that are CONTENT-IDLE — a

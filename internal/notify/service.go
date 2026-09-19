@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -24,6 +25,7 @@ type Notifier struct {
 	subSet  map[string]map[string]bool   // taskID → submitted deliveryID set
 	runner  RunnerIface
 	focus   FocusReader
+	idle    agent.ContentIdleTracker
 }
 
 // New creates a Notifier. runner and focus must be non-nil.
@@ -117,6 +119,8 @@ func (n *Notifier) Cancel(taskID, deliveryID string) {
 			if len(n.queue[taskID]) == 0 {
 				delete(n.queue, taskID)
 			}
+		} else {
+			n.idle.Forget(taskID)
 		}
 		return
 	}
@@ -186,7 +190,7 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 	}
 
 	// Check idle.
-	if !sess.IsIdle() {
+	if !n.idle.IsIdle(taskID, sess, now) {
 		uxlog.Log("[notify] delivery skip: session busy task=%s id=%s", taskID, d.deliveryID)
 		return
 	}
@@ -254,6 +258,8 @@ func (n *Notifier) removeAndAdvance(taskID, deliveryID string, submitted bool) {
 		if len(n.queue[taskID]) == 0 {
 			delete(n.queue, taskID)
 		}
+	} else {
+		n.idle.Forget(taskID)
 	}
 }
 

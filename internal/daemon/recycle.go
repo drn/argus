@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
@@ -21,6 +22,8 @@ type HeraRecycleRunner struct {
 	database *db.DB
 	runner   agent.SessionRunner
 	cfgFn    func() config.Config
+	idle     agent.ContentIdleTracker
+	now      func() time.Time
 }
 
 // NewHeraRecycleRunner builds the production hera.RecycleRunner. Exported so
@@ -28,7 +31,7 @@ type HeraRecycleRunner struct {
 // rail keybinding share the identical kill/restart implementation rather than
 // each hand-rolling their own.
 func NewHeraRecycleRunner(database *db.DB, runner agent.SessionRunner, cfgFn func() config.Config) *HeraRecycleRunner {
-	return &HeraRecycleRunner{database: database, runner: runner, cfgFn: cfgFn}
+	return &HeraRecycleRunner{database: database, runner: runner, cfgFn: cfgFn, now: time.Now}
 }
 
 var _ hera.RecycleRunner = (*HeraRecycleRunner)(nil)
@@ -39,8 +42,17 @@ var _ hera.RecycleRunner = (*HeraRecycleRunner)(nil)
 // than wait forever for a session that no longer exists.
 func (r *HeraRecycleRunner) IsIdle(taskID string) bool {
 	sess := r.runner.Get(taskID)
-	return sess == nil || sess.IsIdle()
+	if sess == nil {
+		r.idle.Forget(taskID)
+		return true
+	}
+	return r.idle.IsIdle(taskID, sess, r.now())
 }
+
+// ResetIdle drops content-idle history when RecycleWatcher finishes or
+// abandons a pending request, so a later request starts a fresh stability
+// interval.
+func (r *HeraRecycleRunner) ResetIdle(taskID string) { r.idle.Forget(taskID) }
 
 // StopStrayJobs cleans up any Claude Code background job tied to sessionID
 // before the caller restarts taskID (design.md Risks: task_stop does not kill

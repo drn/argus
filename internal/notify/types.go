@@ -45,6 +45,8 @@ type delivery struct {
 // makes test fakes much simpler.
 type SessionHandleIface interface {
 	IsIdle() bool
+	RecentOutputTail(n int) []byte
+	PTYSize() (cols, rows int)
 	// WriteInput injects the delivery as SYSTEM-origin input: it advances the
 	// agent's work cycle but NOT the user-input timestamp, so a delivered
 	// hera/task message never masquerades as the user answering a prompt and
