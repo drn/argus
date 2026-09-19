@@ -39,15 +39,20 @@ func (r *fakeNudgeRunner) addSession(taskID string, idle bool) *fakeNudgeSession
 type fakeNudgeSession struct {
 	idle   bool
 	writes [][]byte
+	total  uint64
 }
 
 func (s *fakeNudgeSession) IsIdle() bool                { return s.idle }
 func (s *fakeNudgeSession) RecentOutputTail(int) []byte { return nil }
+func (s *fakeNudgeSession) TotalWritten() uint64        { return s.total }
 func (s *fakeNudgeSession) PTYSize() (int, int)         { return 80, 24 }
 func (s *fakeNudgeSession) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
 	cp := make([]byte, len(p))
 	copy(cp, p)
 	s.writes = append(s.writes, cp)
+	if string(p) != "\x15" {
+		s.total++
+	}
 	return len(p), nil
 }
 

@@ -17,11 +17,28 @@ const defaultDeadlineMS = 5 * 60 * 1000
 // evicted ID would re-inject; in practice a task never accumulates this many.
 const maxSubmittedPerTask = 1000
 
-// submitCRDelay is the pause between writing the delivery text and sending the
-// final CR. The gap ensures CR is processed as a distinct keypress rather than
-// as part of a single paste sequence, which is necessary for reliable submission
-// in some shell/agent configurations.
-const submitCRDelay = 50 * time.Millisecond
+const (
+	// outputPollInterval bounds how quickly reliable-notify polls the lock-free
+	// session output counter while waiting for recipient-side evidence.
+	outputPollInterval = 10 * time.Millisecond
+
+	// textSettleTimeout is the longest one delivery waits for the recipient to
+	// consume and redraw injected text before attempting Enter anyway.
+	textSettleTimeout = 5 * time.Second
+
+	// textQuietWindow separates the final composer redraw from the standalone
+	// Enter write. Unlike the old blind delay, it starts after observed output.
+	textQuietWindow = 100 * time.Millisecond
+)
+
+// submitAckTimeouts are increasing acknowledgment windows for standalone CR
+// attempts. Advancing PTY output is the available evidence that the recipient
+// processed Enter as a keypress rather than swallowing it into a paste batch.
+var submitAckTimeouts = [...]time.Duration{
+	500 * time.Millisecond,
+	1500 * time.Millisecond,
+	3 * time.Second,
+}
 
 // NotifyOpts controls optional parameters for ReliableNotify.
 type NotifyOpts struct {
@@ -46,6 +63,9 @@ type delivery struct {
 type SessionHandleIface interface {
 	IsIdle() bool
 	RecentOutputTail(n int) []byte
+	// TotalWritten is the monotonic count of PTY output bytes observed for the
+	// session. Reliable-notify uses it as submit acknowledgment evidence.
+	TotalWritten() uint64
 	PTYSize() (cols, rows int)
 	// WriteInput injects the delivery as SYSTEM-origin input: it advances the
 	// agent's work cycle but NOT the user-input timestamp, so a delivered

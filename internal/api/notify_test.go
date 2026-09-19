@@ -153,13 +153,20 @@ type notifyIdleRunner struct{}
 
 func (notifyIdleRunner) Get(string) notify.SessionHandleIface { return &notifyIdleSession{} }
 
-type notifyIdleSession struct{ writes [][]byte }
+type notifyIdleSession struct {
+	writes [][]byte
+	total  uint64
+}
 
 func (s *notifyIdleSession) IsIdle() bool                { return true }
 func (s *notifyIdleSession) RecentOutputTail(int) []byte { return nil }
+func (s *notifyIdleSession) TotalWritten() uint64        { return s.total }
 func (s *notifyIdleSession) PTYSize() (int, int)         { return 80, 24 }
 func (s *notifyIdleSession) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
 	s.writes = append(s.writes, append([]byte(nil), p...))
+	if string(p) != "\x15" {
+		s.total++
+	}
 	return len(p), nil
 }
 

@@ -1,7 +1,10 @@
 package notify
 
 import (
+	"bytes"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -31,7 +34,7 @@ func (r *fakeRunner) Get(taskID string) SessionHandleIface {
 }
 
 func (r *fakeRunner) addSession(taskID string, idle bool) *fakeSession {
-	s := &fakeSession{idle: idle, writes: [][]byte{}}
+	s := &fakeSession{idle: idle, writes: [][]byte{}, ackCRAt: 1}
 	r.mu.Lock()
 	r.sessions[taskID] = s
 	r.mu.Unlock()
@@ -45,6 +48,11 @@ type fakeSession struct {
 	tail    []byte
 	writes  [][]byte
 	origins []agentview.InputOrigin
+	total   uint64
+	crCount int
+	// ackCRAt is the 1-based CR write that produces PTY output. Zero means
+	// every CR is swallowed, simulating the live paste-batch failure.
+	ackCRAt int
 	// writeErr is returned from WriteInput when set.
 	writeErr error
 }
@@ -64,6 +72,12 @@ func (s *fakeSession) RecentOutputTail(n int) []byte {
 	return append([]byte(nil), s.tail[len(s.tail)-n:]...)
 }
 
+func (s *fakeSession) TotalWritten() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.total
+}
+
 func (s *fakeSession) PTYSize() (cols, rows int) { return 80, 24 }
 
 func (s *fakeSession) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
@@ -76,6 +90,15 @@ func (s *fakeSession) WriteInput(p []byte, origin agentview.InputOrigin) (int, e
 	copy(cp, p)
 	s.writes = append(s.writes, cp)
 	s.origins = append(s.origins, origin)
+	if string(p) == "\r" {
+		s.crCount++
+		if s.ackCRAt > 0 && s.crCount >= s.ackCRAt {
+			s.total++
+		}
+	} else if string(p) != "\x15" {
+		// Claude Code redraws its composer after consuming injected text.
+		s.total++
+	}
 	return len(p), nil
 }
 
@@ -113,7 +136,17 @@ func (fakeFocused) IsFocused(string) bool { return true }
 // --- helpers ---
 
 func newTestNotifier(runner RunnerIface, focus FocusReader) *Notifier {
-	return New(runner, focus)
+	n := New(runner, focus)
+	// Unit tests model recipient output synchronously. Keep the production
+	// polling functions covered separately without adding seconds to every
+	// delivery assertion.
+	n.waitForSettled = func(sess SessionHandleIface, baseline uint64, _, _ time.Duration) bool {
+		return sess.TotalWritten() > baseline
+	}
+	n.waitForAdvance = func(sess SessionHandleIface, baseline uint64, _ time.Duration) bool {
+		return sess.TotalWritten() > baseline
+	}
+	return n
 }
 
 // --- tests ---
@@ -408,6 +441,164 @@ func TestNotifier_SubmitThreeOrderedWrites(t *testing.T) {
 	testutil.Equal(t, string(writes[1]), "the message")
 	// Write 3: standalone CR — not appended to write 2.
 	testutil.Equal(t, string(writes[2]), "\r")
+}
+
+func TestNotifier_RetriesCRWhenRecipientSwallowsFirstSubmit(t *testing.T) {
+	r := newFakeRunner()
+	sess := r.addSession("t1", true)
+	sess.ackCRAt = 2
+	n := newTestNotifier(r, fakeNoFocus{})
+
+	n.ReliableNotify("t1", "slow recipient", "d1", NotifyOpts{})
+	n.Reconcile(time.Now())
+
+	writes := sess.allWrites()
+	testutil.Equal(t, len(writes), 4)
+	testutil.Equal(t, string(writes[0]), "\x15")
+	testutil.Equal(t, string(writes[1]), "slow recipient")
+	testutil.Equal(t, string(writes[2]), "\r")
+	testutil.Equal(t, string(writes[3]), "\r")
+	testutil.Equal(t, n.DeliveryState("t1", "d1"), StateSubmitted)
+}
+
+func TestNotifier_UnacknowledgedCRRemainsPending(t *testing.T) {
+	r := newFakeRunner()
+	sess := r.addSession("t1", true)
+	sess.ackCRAt = 0
+	n := newTestNotifier(r, fakeNoFocus{})
+
+	n.ReliableNotify("t1", "never consumed", "d1", NotifyOpts{})
+	n.Reconcile(time.Now())
+
+	writes := sess.allWrites()
+	testutil.Equal(t, len(writes), 5)
+	testutil.Equal(t, string(writes[0]), "\x15")
+	testutil.Equal(t, string(writes[1]), "never consumed")
+	for _, write := range writes[2:] {
+		testutil.Equal(t, string(write), "\r")
+	}
+	testutil.Equal(t, n.DeliveryState("t1", "d1"), StatePending)
+}
+
+func TestNotifier_LogsSubmitRetriesAndSuccessToStructuredLogger(t *testing.T) {
+	var buf bytes.Buffer
+	original := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(original) })
+
+	r := newFakeRunner()
+	sess := r.addSession("task-log", true)
+	sess.ackCRAt = 2
+	n := newTestNotifier(r, fakeNoFocus{})
+
+	n.ReliableNotify("task-log", "hello", "delivery-log", NotifyOpts{})
+	n.Reconcile(time.Now())
+
+	output := buf.String()
+	for _, want := range []string{
+		"[notify] delivery enter unacknowledged",
+		"[notify] delivery submitted",
+		"task=task-log",
+		"delivery=delivery-log",
+		"attempt=2",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("structured log missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestNotifier_LogsWriteFailureToStructuredLogger(t *testing.T) {
+	var buf bytes.Buffer
+	original := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(original) })
+
+	r := newFakeRunner()
+	sess := r.addSession("task-fail", true)
+	sess.writeErr = fmt.Errorf("pty closed")
+	n := newTestNotifier(r, fakeNoFocus{})
+
+	n.ReliableNotify("task-fail", "hello", "delivery-fail", NotifyOpts{})
+	n.Reconcile(time.Now())
+
+	output := buf.String()
+	for _, want := range []string{
+		"[notify] delivery write failed",
+		"task=task-fail",
+		"delivery=delivery-fail",
+		"phase=ctrl+u",
+		`error="pty closed"`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("structured log missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestWaitForOutputSettled_WaitsForLateRecipientActivity(t *testing.T) {
+	sess := &fakeSession{}
+	baseline := sess.TotalWritten()
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		sess.mu.Lock()
+		sess.total++
+		sess.mu.Unlock()
+	}()
+
+	started := time.Now()
+	settled := waitForOutputSettled(sess, baseline, 200*time.Millisecond, 15*time.Millisecond)
+	testutil.Equal(t, settled, true)
+	if elapsed := time.Since(started); elapsed < 30*time.Millisecond {
+		t.Fatalf("settled before late recipient activity became quiet: %s", elapsed)
+	}
+}
+
+func TestWaitForOutputAdvance_DetectsLateSubmitAcknowledgment(t *testing.T) {
+	sess := &fakeSession{}
+	baseline := sess.TotalWritten()
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		sess.mu.Lock()
+		sess.total++
+		sess.mu.Unlock()
+	}()
+
+	testutil.Equal(t, waitForOutputAdvance(sess, baseline, 200*time.Millisecond), true)
+}
+
+func TestNotifier_ConcurrentReconcileDoesNotDuplicateInFlightDelivery(t *testing.T) {
+	r := newFakeRunner()
+	sess := r.addSession("t1", true)
+	n := newTestNotifier(r, fakeNoFocus{})
+
+	settling := make(chan struct{})
+	release := make(chan struct{})
+	n.waitForSettled = func(SessionHandleIface, uint64, time.Duration, time.Duration) bool {
+		close(settling)
+		<-release
+		return true
+	}
+
+	n.ReliableNotify("t1", "one delivery", "d1", NotifyOpts{})
+	done := make(chan struct{})
+	go func() {
+		n.Reconcile(time.Now())
+		close(done)
+	}()
+	<-settling
+
+	// A daemon tick racing an inline REST reconcile must see the submit claim
+	// and return without a second Ctrl+U/text sequence.
+	n.Reconcile(time.Now())
+	testutil.Equal(t, len(sess.allWrites()), 2)
+
+	close(release)
+	<-done
+	testutil.Equal(t, len(sess.allWrites()), 3)
+	testutil.Equal(t, n.DeliveryState("t1", "d1"), StateSubmitted)
 }
 
 func TestNotifier_FocusLifts_PendingDeliverySubmits(t *testing.T) {

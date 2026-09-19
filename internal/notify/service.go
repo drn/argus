@@ -1,6 +1,9 @@
 package notify
 
 import (
+	"context"
+	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -17,27 +20,36 @@ import (
 // in-process mode. Reconcile must be called periodically (the idleWatcher
 // 5-second tick is the intended driver).
 type Notifier struct {
-	mu      sync.Mutex
-	pending map[string]*delivery         // taskID → active delivery (one per task)
-	queue   map[string][]*delivery       // taskID → queued deliveries (second and beyond)
-	cancels map[string]map[string]func() // taskID → deliveryID → cancel func (live deliveries only)
-	subKeys map[string][]string          // taskID → ordered submitted deliveryID list (FIFO eviction)
-	subSet  map[string]map[string]bool   // taskID → submitted deliveryID set
-	runner  RunnerIface
-	focus   FocusReader
-	idle    agent.ContentIdleTracker
+	mu       sync.Mutex
+	pending  map[string]*delivery         // taskID → active delivery (one per task)
+	queue    map[string][]*delivery       // taskID → queued deliveries (second and beyond)
+	cancels  map[string]map[string]func() // taskID → deliveryID → cancel func (live deliveries only)
+	inFlight map[string]string            // taskID → deliveryID currently processing
+	subKeys  map[string][]string          // taskID → ordered submitted deliveryID list (FIFO eviction)
+	subSet   map[string]map[string]bool   // taskID → submitted deliveryID set
+	runner   RunnerIface
+	focus    FocusReader
+	idle     agent.ContentIdleTracker
+
+	// Output wait seams keep timing-dependent delivery behavior deterministic
+	// in tests. Production uses the polling helpers below.
+	waitForSettled func(SessionHandleIface, uint64, time.Duration, time.Duration) bool
+	waitForAdvance func(SessionHandleIface, uint64, time.Duration) bool
 }
 
 // New creates a Notifier. runner and focus must be non-nil.
 func New(runner RunnerIface, focus FocusReader) *Notifier {
 	return &Notifier{
-		pending: make(map[string]*delivery),
-		queue:   make(map[string][]*delivery),
-		cancels: make(map[string]map[string]func()),
-		subKeys: make(map[string][]string),
-		subSet:  make(map[string]map[string]bool),
-		runner:  runner,
-		focus:   focus,
+		pending:        make(map[string]*delivery),
+		queue:          make(map[string][]*delivery),
+		cancels:        make(map[string]map[string]func()),
+		inFlight:       make(map[string]string),
+		subKeys:        make(map[string][]string),
+		subSet:         make(map[string]map[string]bool),
+		runner:         runner,
+		focus:          focus,
+		waitForSettled: waitForOutputSettled,
+		waitForAdvance: waitForOutputAdvance,
 	}
 }
 
@@ -154,12 +166,31 @@ func (n *Notifier) Reconcile(now time.Time) {
 	}
 	var items []work
 	for taskID, d := range n.pending {
+		if n.inFlight[taskID] != "" {
+			continue
+		}
+		n.inFlight[taskID] = d.deliveryID
 		items = append(items, work{taskID, d})
 	}
 	n.mu.Unlock()
 
 	for _, w := range items {
-		n.processOne(w.taskID, w.d, now)
+		func() {
+			defer n.finishProcessing(w.taskID, w.d.deliveryID)
+			n.processOne(w.taskID, w.d, now)
+		}()
+	}
+}
+
+// finishProcessing releases the per-task submit claim. Reconcile can be
+// invoked both by the daemon tick and inline REST requests, so this guard is
+// what keeps their longer acknowledgment waits from submitting one delivery
+// concurrently.
+func (n *Notifier) finishProcessing(taskID, deliveryID string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.inFlight[taskID] == deliveryID {
+		delete(n.inFlight, taskID)
 	}
 }
 
@@ -170,7 +201,7 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 	select {
 	case <-d.cancelCh:
 		n.removeAndAdvance(taskID, d.deliveryID, false)
-		uxlog.Log("[notify] delivery cancelled task=%s id=%s", taskID, d.deliveryID)
+		logDelivery(slog.LevelInfo, "delivery cancelled", taskID, d.deliveryID)
 		return
 	default:
 	}
@@ -178,59 +209,173 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 	// Check deadline.
 	if now.After(d.deadline) {
 		n.removeAndAdvance(taskID, d.deliveryID, false)
-		uxlog.Log("[notify] delivery deadline exceeded task=%s id=%s", taskID, d.deliveryID)
+		logDelivery(slog.LevelWarn, "delivery deadline exceeded", taskID, d.deliveryID)
 		return
 	}
 
 	// Check session. The runner returns nil when no live session exists.
 	sess := n.runner.Get(taskID)
 	if sess == nil {
-		uxlog.Log("[notify] delivery skip: no session task=%s id=%s", taskID, d.deliveryID)
+		logDelivery(slog.LevelDebug, "delivery skip: no session", taskID, d.deliveryID)
 		return
 	}
 
 	// Check idle.
 	if !n.idle.IsIdle(taskID, sess, now) {
-		uxlog.Log("[notify] delivery skip: session busy task=%s id=%s", taskID, d.deliveryID)
+		logDelivery(slog.LevelDebug, "delivery skip: session busy", taskID, d.deliveryID)
 		return
 	}
 
 	// Check focus.
 	if n.focus.IsFocused(taskID) {
-		uxlog.Log("[notify] delivery skip: human focused task=%s id=%s", taskID, d.deliveryID)
+		logDelivery(slog.LevelDebug, "delivery skip: human focused", taskID, d.deliveryID)
 		return
 	}
 
-	// All gates passed: submit.
-	// Three separate OriginSystem WriteInput calls, with a brief pause before
-	// the third (system origin: advances the work cycle but not the
-	// user-input timestamp, so the delivery never clears a needs-input "(?)"
-	// flag — BUG-034):
+	// All gates passed: submit. Every write uses system origin: it advances the
+	// work cycle but not the user-input timestamp, so delivery never clears a
+	// needs-input "(?)" flag (BUG-034).
+	//
+	// The text and CR must remain separate, but separation alone is not enough:
+	// a loaded recipient may take longer than the former fixed 50ms delay to
+	// consume the text. Observe composer output settling before Enter, then
+	// require fresh output after Enter. A swallowed Enter is retried without
+	// rewriting the text; unacknowledged delivery stays pending.
 	//   1. Ctrl+U – kill any stale partial input
 	//   2. text   – prime the input buffer (no trailing CR)
-	//      (submitCRDelay pause here — ensures CR arrives as a distinct keypress)
-	//   3. \r     – submit; must be its own call, never appended to text
-	// The glued ctrl+u+text+CR sequence leaves the line un-submitted in some
-	// shell/agent configurations; the separated form is empirically reliable.
+	//   3. wait for recipient output to settle
+	//   4. \r     – submit; retry standalone CR until acknowledged
 	if _, err := sess.WriteInput([]byte("\x15"), agentview.OriginSystem); err != nil {
-		uxlog.Log("[notify] delivery ctrl+u failed task=%s id=%s err=%v", taskID, d.deliveryID, err)
+		logDelivery(slog.LevelWarn, "delivery write failed", taskID, d.deliveryID, "phase", "ctrl+u", "error", err)
 		return
 	}
+	textBaseline := sess.TotalWritten()
 	if _, err := sess.WriteInput([]byte(d.text), agentview.OriginSystem); err != nil {
-		uxlog.Log("[notify] delivery text write failed task=%s id=%s err=%v", taskID, d.deliveryID, err)
+		logDelivery(slog.LevelWarn, "delivery write failed", taskID, d.deliveryID, "phase", "text", "error", err)
 		return
 	}
-	// processOne runs without n.mu held; this sleep is safe.
-	time.Sleep(submitCRDelay)
-	if _, err := sess.WriteInput([]byte("\r"), agentview.OriginSystem); err != nil {
-		uxlog.Log("[notify] delivery enter write failed task=%s id=%s err=%v", taskID, d.deliveryID, err)
-		// Text is now in the buffer without a CR. The next Reconcile will
-		// ctrl+U (clearing the stale text) then retry the full sequence.
-		return
+	if !n.waitForSettled(sess, textBaseline, textSettleTimeout, textQuietWindow) {
+		logDelivery(slog.LevelWarn, "delivery text settle unconfirmed", taskID, d.deliveryID)
 	}
 
-	uxlog.Log("[notify] delivery submitted task=%s id=%s", taskID, d.deliveryID)
-	n.removeAndAdvance(taskID, d.deliveryID, true)
+	for i, timeout := range submitAckTimeouts {
+		if n.deliveryStopped(taskID, d) {
+			return
+		}
+
+		attempt := i + 1
+		baseline := sess.TotalWritten()
+		if _, err := sess.WriteInput([]byte("\r"), agentview.OriginSystem); err != nil {
+			logDelivery(slog.LevelWarn, "delivery write failed", taskID, d.deliveryID,
+				"phase", "enter", "attempt", attempt, "error", err)
+			return
+		}
+		if n.waitForAdvance(sess, baseline, timeout) {
+			logDelivery(slog.LevelInfo, "delivery submitted", taskID, d.deliveryID, "attempt", attempt)
+			n.removeAndAdvance(taskID, d.deliveryID, true)
+			return
+		}
+
+		logDelivery(slog.LevelWarn, "delivery enter unacknowledged", taskID, d.deliveryID,
+			"attempt", attempt, "wait", timeout)
+	}
+
+	logDelivery(slog.LevelWarn, "delivery remains pending after submit retries", taskID, d.deliveryID,
+		"attempts", len(submitAckTimeouts))
+}
+
+// deliveryStopped observes cancellation and the wall-clock deadline during a
+// multi-attempt submit. It mirrors processOne's entry checks so a long wait
+// cannot submit after the caller has abandoned the delivery.
+func (n *Notifier) deliveryStopped(taskID string, d *delivery) bool {
+	select {
+	case <-d.cancelCh:
+		n.removeAndAdvance(taskID, d.deliveryID, false)
+		logDelivery(slog.LevelInfo, "delivery cancelled", taskID, d.deliveryID)
+		return true
+	default:
+	}
+	if time.Now().After(d.deadline) {
+		n.removeAndAdvance(taskID, d.deliveryID, false)
+		logDelivery(slog.LevelWarn, "delivery deadline exceeded", taskID, d.deliveryID)
+		return true
+	}
+	return false
+}
+
+// waitForOutputAdvance waits for the session's monotonic PTY output counter to
+// move beyond baseline. It performs only lock-free counter reads.
+func waitForOutputAdvance(sess SessionHandleIface, baseline uint64, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if sess.TotalWritten() > baseline {
+			return true
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false
+		}
+		if remaining < outputPollInterval {
+			time.Sleep(remaining)
+		} else {
+			time.Sleep(outputPollInterval)
+		}
+	}
+}
+
+// waitForOutputSettled waits until output first advances beyond baseline and
+// then remains unchanged for quietWindow. This makes the text→CR gap adaptive
+// to recipient redraw latency rather than starting a blind timer at WriteInput.
+func waitForOutputSettled(sess SessionHandleIface, baseline uint64, timeout, quietWindow time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	last := sess.TotalWritten()
+	sawActivity := last > baseline
+	quietSince := time.Now()
+
+	for {
+		now := time.Now()
+		current := sess.TotalWritten()
+		if current != last {
+			last = current
+			sawActivity = current > baseline
+			quietSince = now
+		}
+		if sawActivity && now.Sub(quietSince) >= quietWindow {
+			return true
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false
+		}
+		if remaining < outputPollInterval {
+			time.Sleep(remaining)
+		} else {
+			time.Sleep(outputPollInterval)
+		}
+	}
+}
+
+// logDelivery keeps the existing TUI ux.log trail and also emits through the
+// process default slog handler. runDaemon wires slog to daemon.log, so notify
+// failures are diagnosable even when no TUI process initialized uxlog.
+func logDelivery(level slog.Level, message, taskID, deliveryID string, attrs ...any) {
+	uxlog.Log("[notify] %s task=%s id=%s%s", message, taskID, deliveryID, formatLogAttrs(attrs))
+	base := []any{"task", taskID, "delivery", deliveryID}
+	slog.Log(context.Background(), level, "[notify] "+message, append(base, attrs...)...)
+}
+
+func formatLogAttrs(attrs []any) string {
+	if len(attrs) == 0 {
+		return ""
+	}
+	formatted := ""
+	for i := 0; i+1 < len(attrs); i += 2 {
+		formatted += fmt.Sprintf(" %v=%v", attrs[i], attrs[i+1])
+	}
+	if len(attrs)%2 != 0 {
+		formatted += fmt.Sprintf(" %v", attrs[len(attrs)-1])
+	}
+	return formatted
 }
 
 // removeAndAdvance removes the named delivery from pending (marking it
