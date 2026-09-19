@@ -19,7 +19,7 @@
 
 ## 4. Excluded-branch bookkeeping
 
-- [ ] 4.1 Define the `task_meta` namespace/key for an operator-excluded stacked branch (e.g. `cleanup.excluded_branches`, following the existing `task_meta` sidecar pattern used for `hera.ready_to_close`/`hera.role`).
+- [x] 4.1 Define the `task_meta` namespace/key for an operator-excluded stacked branch (e.g. `cleanup.excluded_branches`, following the existing `task_meta` sidecar pattern used for `hera.ready_to_close`/`hera.role`). Implemented as `db.ExcludeCleanupBranch(taskID, branchName)` / `db.ExcludedCleanupBranches(taskID)` in `internal/db/cleanup_meta.go`.
 - [ ] 4.2 Wire the cascade confirm's per-branch exclude action (see task 5) to write this entry; wire the reconciliation sweep (3.2) to read and skip any branch recorded there.
 
 ## 5. Cascade-nuke confirm: stacked-branch discovery + deletion
