@@ -54,6 +54,24 @@ func TestHideHeraManaged_ToggleFiresCallback(t *testing.T) {
 	testutil.DeepEqual(t, got, []bool{true, false})
 }
 
+// TestSetHideHeraManaged_RestoresWithoutFiringCallback pins the
+// persist-tasks-view-ui-state restore contract: SetHideHeraManaged (used to
+// apply a persisted value at startup) must set the field directly and must
+// NOT invoke OnHeraManagedToggle — that callback is reserved for a real
+// user-driven `H` press, and firing it on restore would be a "toggle" that
+// never happened. Currently RED: SetHideHeraManaged is an unwired stub
+// (Stage 3.1 TODO) that doesn't set the field yet.
+func TestSetHideHeraManaged_RestoresWithoutFiringCallback(t *testing.T) {
+	tl := NewTaskListView()
+	fired := false
+	tl.OnHeraManagedToggle = func(hidden bool) { fired = true }
+
+	tl.SetHideHeraManaged(true)
+
+	testutil.Equal(t, tl.HideHeraManaged(), true)
+	testutil.Equal(t, fired, false)
+}
+
 // TestHideHeraManaged_TruthTable pins the collapsed single-`H` semantics
 // (BUG-025): one toggle hides every hera-managed role that lives in the Hera
 // tab — spawned workers (task_meta hera.role=worker) AND live coordinators (a
