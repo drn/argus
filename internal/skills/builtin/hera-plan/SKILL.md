@@ -119,7 +119,9 @@ superseded node. A worker re-engaging on rework after `done`/`failed` reports `w
   (`3a` blocked by both `2a` and `2b`), `3a` starts from whichever of `2a`/`2b` materialized later
   and is **missing the other's work** unless those two were themselves stacked. For true fan-in,
   either keep the stages a linear chain, or have the fan-in node merge the branches itself via a
-  self-rebase step (see below).
+  self-rebase step (see below). The gater automatically adds a `Your blockers' branches` section to
+  the fan-in worker's initial prompt, listing every blocker branch and marking the selected base, so
+  the worker can integrate its siblings without asking the coordinator to relay branch names.
 - **`done` gates materialization, but `done` ≠ merged/integrated.** A worker reaching `done` rolls
   its task to `in_review` (*not* merged) — so the gater materializes the dependent the instant the
   blocker *reports* done, **before** you've reviewed or merged anything. The dependent stacks on the
@@ -141,8 +143,9 @@ superseded node. A worker re-engaging on rework after `done`/`failed` reports `w
 Because a node materializes the instant its blockers *report* `done` — ahead of your review/merge —
 any node that depends on upstream output should carry two prompt-side guards:
 
-- **Self-rebase** — the node's first step is `git merge --no-edit origin/<integration-branch>` (or
-  the sibling branch in a fan-in) to pull in whatever is integrated so far.
+- **Self-rebase** — the node's first step is `git merge --no-edit origin/<integration-branch>`; for
+  fan-in, use the sibling branch names supplied automatically in the worker's `Your blockers'
+  branches` prompt section to pull in every required half.
 - **Self-guard** — the node greps for the API routes / files / symbols it depends on and, if absent,
   `hera_send`s you to wait instead of building against a phantom contract.
 
@@ -202,8 +205,9 @@ The work has a seed, a parallel fan-out, and a fan-in:
    `1a-seed` materializes first (rooted on your branch); `2a`/`2b` materialize in parallel once it's
    `done` (each stacked on `1a-seed`'s branch); `3a-final` waits for **both** and stacks on the latest.
    **Fan-in caveat:** `3a-final` bases off whichever of `2a`/`2b` finished later — it does NOT
-   auto-merge the other half. Give `3a-final`'s prompt a self-rebase first step (`git merge --no-edit`
-   the sibling / integration branch) so it actually has both halves before it builds.
+   auto-merge the other half. Its initial prompt automatically lists both blocker branches and marks
+   the selected base; instruct it to self-rebase the other listed branch so it actually has both
+   halves before it builds.
 3. Watch it fill in the second-tab plan-DAG (planned `○` → live). Respond to each node's check-in:
    `hera_inbox(cwd=$PWD)` on the doorbell → reply `hera_send(cwd=$PWD, to="<node>", body="go", tldr="go")`.
 4. If a node is HELD behind a genuinely failed blocker, the gater pings you — `hera_unblock`,
@@ -219,7 +223,8 @@ The work has a seed, a parallel fan-out, and a fan-in:
   fires the instant a blocker *reports* done, which is before your review/merge — see the
   branch-stacking and self-defending-prompts sections.
 - **Fan-in does not merge — it picks one branch.** A multi-blocker node bases off only the
-  latest-`done` blocker's branch. Self-rebase the others in, or keep the stages linear.
+  latest-`done` blocker's branch. Its initial prompt lists all blocker branches and marks that base;
+  self-rebase the others in, or keep the stages linear.
 - **Mutation verbs only work pre-materialization.** `hera_plan_node_update` / `hera_plan_node_cancel`
   are rejected once a node has a binding — at that point manage the running worker via the task
   lifecycle, not the plan.

@@ -22,6 +22,7 @@ type gaterFixture struct {
 	mu             sync.Mutex
 	mat            []*db.HeraRole // roles passed to materialize, in order
 	matBranch      map[int64]string
+	matPrompt      map[int64]string
 	matBackend     map[int64]string
 	matFail        bool // when true, materialize returns an error (HOLD-by-failure)
 	pingFail       bool // when true, ping returns an error (delivery failure)
@@ -49,7 +50,12 @@ func newGaterFixture(t *testing.T) *gaterFixture {
 	d, err := db.OpenInMemory()
 	testutil.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
-	f := &gaterFixture{d: d, matBranch: map[int64]string{}, matBackend: map[int64]string{}}
+	f := &gaterFixture{
+		d:          d,
+		matBranch:  map[int64]string{},
+		matPrompt:  map[int64]string{},
+		matBackend: map[int64]string{},
+	}
 	f.w = New(d,
 		func(role *db.HeraRole, taskPrompt, project, branch, backend, model string) error {
 			f.mu.Lock()
@@ -59,6 +65,7 @@ func newGaterFixture(t *testing.T) *gaterFixture {
 			}
 			f.mat = append(f.mat, role)
 			f.matBranch[role.ID] = branch
+			f.matPrompt[role.ID] = taskPrompt
 			f.matBackend[role.ID] = backend
 			// Simulate materialization: insert a binding so the node leaves the
 			// planned set (matching the real CreateAndStart behaviour).
@@ -107,6 +114,12 @@ func (f *gaterFixture) materializedBackend(roleID int64) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.matBackend[roleID]
+}
+
+func (f *gaterFixture) materializedPrompt(roleID int64) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.matPrompt[roleID]
 }
 
 func (f *gaterFixture) pingCount() int {
@@ -965,6 +978,72 @@ func TestGater_FanInMaterializePingsCoordinator(t *testing.T) {
 	testutil.Equal(t, strings.Contains(p.body, "argus/1b"), true) // chosen base_branch
 	testutil.Equal(t, strings.Contains(p.body, "1a"), true)       // un-merged sibling name
 	testutil.Equal(t, strings.Contains(p.body, "argus/1a"), true) // un-merged sibling branch
+}
+
+func TestGater_FanInPromptIncludesEveryBlockerBranch(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	a := f.boundWorker(t, orch, "1a", model.StatusInReview, db.HeraStatusDone)
+	b := f.boundWorker(t, orch, "1b", model.StatusInReview, db.HeraStatusDone)
+	node := f.planned(t, orch, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, a.ID))
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, b.ID))
+
+	f.w.Tick()
+
+	prompt := f.materializedPrompt(node.ID)
+	testutil.Contains(t, prompt, "## Your blockers' branches")
+	testutil.Contains(t, prompt, "`1a`: `argus/1a`")
+	testutil.Contains(t, prompt, "`1b`: `argus/1b` (selected base_branch)")
+	testutil.Contains(t, prompt, "Other blocker branches are not merged automatically")
+	testutil.Contains(t, prompt, "do 2a")
+}
+
+func TestGater_FanInPromptMarksUnresolvedBlockerBranch(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	a := f.boundWorker(t, orch, "1a", model.StatusInReview, db.HeraStatusDone)
+	b := f.boundWorker(t, orch, "1b", model.StatusInReview, db.HeraStatusDone)
+	binding, err := f.d.HeraLiveBindingByRole(a.ID)
+	testutil.NoError(t, err)
+	task, err := f.d.Get(binding.ArgusTaskID)
+	testutil.NoError(t, err)
+	task.Branch = ""
+	testutil.NoError(t, f.d.Update(task))
+	node := f.planned(t, orch, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, a.ID))
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, b.ID))
+
+	f.w.Tick()
+
+	prompt := f.materializedPrompt(node.ID)
+	testutil.Contains(t, prompt, "`1a`: branch unavailable")
+	testutil.Contains(t, prompt, "`1b`: `argus/1b` (selected base_branch)")
+}
+
+func TestGater_NonFanInPromptOmitsBlockerBranchSection(t *testing.T) {
+	tests := []struct {
+		name       string
+		addBlocker bool
+	}{
+		{name: "root"},
+		{name: "single blocker", addBlocker: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newGaterFixture(t)
+			orch := f.seedCoord(t, "orch")
+			node := f.planned(t, orch, "2a")
+			if tt.addBlocker {
+				blocker := f.boundWorker(t, orch, "1a", model.StatusInReview, db.HeraStatusDone)
+				testutil.NoError(t, f.d.AddHeraBlock(node.ID, blocker.ID))
+			}
+
+			f.w.Tick()
+
+			testutil.Equal(t, strings.Contains(f.materializedPrompt(node.ID), "## Your blockers' branches"), false)
+		})
+	}
 }
 
 // TestGater_SingleBlockerMaterializeNoFanInPing is a regression guard: a node
