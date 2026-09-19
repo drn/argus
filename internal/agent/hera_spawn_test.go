@@ -442,15 +442,16 @@ func TestSpawnHeraWorker_RoleBindingFailureUnwinds(t *testing.T) {
 	testutil.Equal(t, len(live), 0)
 }
 
-func TestHeraCheckInOrientation_NamesAndInstructsPoll(t *testing.T) {
+func TestHeraCheckInOrientation_NamesAndInstructsBlockingWait(t *testing.T) {
 	got := HeraCheckInOrientation("orch", "coord")
 	testutil.Equal(t, strings.Contains(got, `"orch"`), true)
 	testutil.Equal(t, strings.Contains(got, `"coord"`), true)
-	// The standing order: check in via hera_send, then POLL hera_inbox (pulled,
-	// not pushed) for go/wait before real work.
+	// The standing order: check in via hera_send, then block in hera_inbox
+	// (pulled, not pushed) for go/wait before real work.
 	testutil.Equal(t, strings.Contains(got, "hera_send"), true)
 	testutil.Equal(t, strings.Contains(got, "hera_inbox"), true)
-	testutil.Equal(t, strings.Contains(strings.ToLower(got), "poll"), true)
+	testutil.Equal(t, strings.Contains(got, "timeout_seconds=120"), true)
+	testutil.Equal(t, strings.Contains(strings.ToLower(got), "background timer"), true)
 	testutil.Equal(t, strings.Contains(strings.ToLower(got), "go"), true)
 	testutil.Equal(t, strings.Contains(strings.ToLower(got), "wait"), true)
 }

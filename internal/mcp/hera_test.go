@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
@@ -1118,6 +1119,128 @@ func TestHera_Inbox_MarksRead(t *testing.T) {
 	cr2 := callResult(t, resp2)
 	testutil.Equal(t, cr2.IsError, false)
 	testutil.Contains(t, cr2.Content[0].Text, "Inbox empty")
+}
+
+func TestHera_Inbox_BlockingWait(t *testing.T) {
+	t.Run("rejects timeout outside bounds", func(t *testing.T) {
+		for _, timeout := range []int{-1, 121} {
+			t.Run(fmt.Sprintf("timeout_%d", timeout), func(t *testing.T) {
+				s, d := testHeraServer(t)
+				coordWt, _ := setupOrchWithWorker(t, s, d)
+				resp := doRequest(t, s, "tools/call", ToolCallParams{
+					Name:      "hera_inbox",
+					Arguments: json.RawMessage(fmt.Sprintf(`{"cwd":%q,"timeout_seconds":%d}`, coordWt, timeout)),
+				})
+				testutil.NoError(t, respErr(resp))
+				cr := callResult(t, resp)
+				testutil.Equal(t, cr.IsError, true)
+				testutil.Contains(t, cr.Content[0].Text, "timeout_seconds")
+			})
+		}
+	})
+
+	t.Run("existing unread message uses fast path and is consumed", func(t *testing.T) {
+		s, d := testHeraServer(t)
+		coordWt, workerWt := setupOrchWithWorker(t, s, d)
+		doRequest(t, s, "tools/call", ToolCallParams{
+			Name: "hera_send",
+			Arguments: json.RawMessage(fmt.Sprintf(`{
+				"cwd":%q,"body":"already here","tldr":"ready","status":"working"
+			}`, workerWt)),
+		})
+
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "hera_inbox",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"cwd":%q,"timeout_seconds":1}`, coordWt)),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, false)
+		testutil.Contains(t, cr.Content[0].Text, "already here")
+
+		resp2 := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "hera_inbox",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"cwd":%q}`, coordWt)),
+		})
+		testutil.NoError(t, respErr(resp2))
+		testutil.Contains(t, callResult(t, resp2).Content[0].Text, "Inbox empty")
+	})
+
+	t.Run("waits for a newly arrived message", func(t *testing.T) {
+		s, d := testHeraServer(t)
+		coordWt, _ := setupOrchWithWorker(t, s, d)
+		orch, err := d.HeraOrchestratorByName("test-orch")
+		testutil.NoError(t, err)
+		coord, err := d.HeraRoleByName(orch.ID, "coord")
+		testutil.NoError(t, err)
+		worker, err := d.HeraRoleByName(orch.ID, "w1")
+		testutil.NoError(t, err)
+		sendErr := make(chan error, 1)
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			_, err := d.SendHeraMessage(worker.ID, coord.ID, "new reply", "reply", nil)
+			sendErr <- err
+		}()
+
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "hera_inbox",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"cwd":%q,"timeout_seconds":2}`, coordWt)),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, false)
+		testutil.Contains(t, cr.Content[0].Text, "new reply")
+		testutil.NoError(t, <-sendErr)
+	})
+
+	t.Run("timeout returns empty inbox", func(t *testing.T) {
+		s, d := testHeraServer(t)
+		coordWt, _ := setupOrchWithWorker(t, s, d)
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "hera_inbox",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"cwd":%q,"timeout_seconds":1}`, coordWt)),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, false)
+		testutil.Contains(t, cr.Content[0].Text, "No messages arrived within 1s")
+	})
+
+	t.Run("daemon shutdown cancels wait", func(t *testing.T) {
+		s, d := testHeraServer(t)
+		coordWt, _ := setupOrchWithWorker(t, s, d)
+		result := make(chan *Response, 1)
+		go func() {
+			result <- s.toolHeraInbox(1, json.RawMessage(fmt.Sprintf(`{"cwd":%q,"timeout_seconds":120}`, coordWt)))
+		}()
+		time.Sleep(50 * time.Millisecond)
+		s.shutdownCancel()
+
+		select {
+		case resp := <-result:
+			testutil.Equal(t, callResult(t, resp).IsError, false)
+		case <-time.After(time.Second):
+			t.Fatal("blocking hera_inbox did not stop after daemon shutdown")
+		}
+	})
+}
+
+func TestHeraInboxToolSchemaIncludesTimeout(t *testing.T) {
+	for _, tool := range heraToolDefs {
+		if tool.Name != "hera_inbox" {
+			continue
+		}
+		schema, ok := tool.InputSchema.(map[string]interface{})
+		testutil.Equal(t, ok, true)
+		props, ok := schema["properties"].(map[string]interface{})
+		testutil.Equal(t, ok, true)
+		timeout, ok := props["timeout_seconds"].(map[string]interface{})
+		testutil.Equal(t, ok, true)
+		testutil.Equal(t, timeout["type"], "integer")
+		testutil.Contains(t, tool.Description, "120")
+		return
+	}
+	t.Fatal("hera_inbox tool not found")
 }
 
 // --- hera_mark_read ---

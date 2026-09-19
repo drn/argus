@@ -347,7 +347,7 @@ func MaterializeHeraSubCoordinator(database *db.DB, runner SessionProvider, in H
 // core expectation: the sub-coordinator OWNS the decomposition — it runs its own
 // brainstorm against the goal and authors its own sub-plan. The full materialized
 // prompt is this orientation + HeraCheckInOrientation (check in with the parent,
-// poll hera_inbox for go/wait) + the node's goal.
+// block on hera_inbox for go/wait) + the node's goal.
 func HeraSubCoordinatorOrientation(childOrchName, parentOrchName, coordRoleName string) string {
 	return fmt.Sprintf(
 		"You are the coordinator (role %q) of hera sub-orchestrator %q, materialized as a "+
@@ -363,7 +363,7 @@ func HeraSubCoordinatorOrientation(childOrchName, parentOrchName, coordRoleName 
 
 // HeraCheckInOrientation is the standing-order prefix prepended to a
 // gater-materialized worker's prompt. It instructs the worker to FIRST message
-// its coordinator that it has started, then POLL hera_inbox in a loop for a
+// its coordinator that it has started, then use blocking hera_inbox calls for a
 // go/wait decision before doing real work. Worker-PULLED, never a passive push:
 // mid-flight pushed doorbells to a busy/fresh worker are unreliable (a known
 // hera gotcha), so the worker reads its durable inbox rather than waiting to be
@@ -374,11 +374,12 @@ func HeraCheckInOrientation(orchestrator, coordinator string) string {
 		"You are a worker in hera orchestrator %q under coordinator %q. You were "+
 			"materialized automatically because your upstream dependencies finished. "+
 			"BEFORE doing any real work: (1) send a brief check-in to your coordinator "+
-			"with hera_send (say you have started and are awaiting go/wait); (2) then POLL "+
-			"hera_inbox in a loop (re-call it every minute or so) until you READ a 'go' or "+
-			"'wait' reply — do NOT sit idle waiting to be messaged, the reply arrives via "+
-			"your inbox, not a push. On 'go', proceed; on 'wait', keep polling hera_inbox "+
-			"until 'go'. When opening pull requests, use mcp__argus__iris_gh_pr_create.",
+			"with hera_send (say you have started and are awaiting go/wait); (2) then call "+
+			"hera_inbox(timeout_seconds=120) until you READ a 'go' or 'wait' reply. This is "+
+			"a server-side blocking wait — do NOT hand-roll a background timer or sleep loop. "+
+			"The reply arrives via your durable inbox, not a push. On 'go', proceed; on 'wait', "+
+			"keep using blocking hera_inbox calls until 'go'. When opening pull requests, use "+
+			"mcp__argus__iris_gh_pr_create.",
 		orchestrator, coordinator)
 }
 

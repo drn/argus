@@ -6,6 +6,7 @@
 package hera
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 type Store interface {
 	SendHeraMessage(fromRoleID, toRoleID int64, body, tldr string, inReplyTo *int64) (*db.HeraMessage, error)
 	HeraInbox(roleID int64) ([]*db.HeraMessage, error)
+	WaitForHeraInbox(ctx context.Context, roleID int64) ([]*db.HeraMessage, error)
 	MarkHeraMessagesRead(roleID int64, ids []int64) (int, error)
 	HeraMessagesByIDs(ids []int64) ([]*db.HeraMessage, error)
 	MarkHeraMessageDelivered(id int64, mode string) error
@@ -124,6 +126,17 @@ func (s *Service) Send(fromRoleID, toRoleID int64, body, tldr string, inReplyTo 
 // ID to cancel against), it is silently skipped.
 func (s *Service) Inbox(roleID int64) ([]*db.HeraMessage, error) {
 	msgs, err := s.store.HeraInbox(roleID)
+	return s.finishInbox(roleID, msgs, err)
+}
+
+// WaitInbox blocks until unread messages exist or ctx is cancelled, then
+// applies the same delivery-cancellation semantics as an immediate Inbox read.
+func (s *Service) WaitInbox(ctx context.Context, roleID int64) ([]*db.HeraMessage, error) {
+	msgs, err := s.store.WaitForHeraInbox(ctx, roleID)
+	return s.finishInbox(roleID, msgs, err)
+}
+
+func (s *Service) finishInbox(roleID int64, msgs []*db.HeraMessage, err error) ([]*db.HeraMessage, error) {
 	if err != nil {
 		return nil, err
 	}

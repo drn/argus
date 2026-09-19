@@ -1,6 +1,7 @@
 package hera
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -75,6 +76,10 @@ func (f *fakeStore) HeraInbox(roleID int64) ([]*db.HeraMessage, error) {
 		}
 	}
 	return out, nil
+}
+
+func (f *fakeStore) WaitForHeraInbox(_ context.Context, roleID int64) ([]*db.HeraMessage, error) {
+	return f.HeraInbox(roleID)
 }
 
 func (f *fakeStore) MarkHeraMessagesRead(roleID int64, ids []int64) (int, error) {

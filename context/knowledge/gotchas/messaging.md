@@ -142,6 +142,9 @@ true)` and `db.Delete(id)`; entrypoints that go through `db.Update`
 
 ## Hera message bus (M2)
 
+- **Wait for Hera mail through `hera_inbox(timeout_seconds=1..120)`, never a background timer loop.**
+  The DB wait fast-paths `HeraInbox` before polling every 500ms, inherits daemon-shutdown cancellation,
+  and returns `(nil, nil)` on timeout/cancellation; the MCP layer alone enforces the 120-second cap.
 - **`hera_messages.read_at` is real NULL, never `''`.** The partial inbox index
   (`WHERE read_at IS NULL`) only covers rows where the column is actually NULL;
   an empty string would exclude those rows silently. All hera scanners use
