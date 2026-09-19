@@ -71,6 +71,22 @@ table and the four MCP tools that ride on top of it.
 - **CR, not LF.** The notifier appends `\r` (carriage return, 0x0d) to
   submit the line. The original nudge used `\n` (linefeed, 0x0a) which
   never auto-submits in a normal interactive shell — that was the root bug.
+- **Text→CR timing is output-observed, never a fixed sleep.** Snapshot the
+  session's monotonic `TotalWritten` counter before injecting text, wait for
+  recipient PTY activity to arrive and settle, and only then write standalone
+  CR. A fixed delay can still land CR inside Claude Code's paste batch when a
+  loaded recipient is slow to redraw, leaving the message drafted forever.
+- **A CR write is not submission success; post-CR PTY activity is the
+  acknowledgment.** If `TotalWritten` does not advance, retry CR alone with
+  bounded increasing windows — never rewrite the message text. If every CR is
+  unacknowledged, leave the delivery pending and out of the submitted-ID set so
+  a later reconcile can try again until the deadline.
+- **Notify diagnostics must use daemon-visible `slog` as well as `uxlog`.**
+  The daemon initializes `slog` to `~/.argus/daemon.log` but never initializes
+  TUI-only `uxlog`; success, write failure, missing acknowledgment, retries,
+  cancellation, and deadline abandonment are otherwise invisible in the
+  process that actually performs delivery. Routine idle/focus/session gates
+  stay Debug-level to avoid five-second log spam.
 - **deliveryID namespace:** message DB IDs are 10-digit numerics; hera uses
   its own IDs. No cross-namespace collision unless both generate the same
   string (cosmetically wrong but not harmful — one cancel becomes a no-op).
@@ -78,7 +94,9 @@ table and the four MCP tools that ride on top of it.
   if the session never becomes safe. Durable message row is unaffected.
 - **Single-writer invariant:** only one auto-submit CR per task is in flight
   at any moment. The `Notifier` serializes concurrent deliveries into a
-  queue; the second delivery is promoted after the first submits.
+  queue and claims each active `(taskID, deliveryID)` while processing so a
+  daemon tick racing an inline REST reconcile cannot submit it twice. The
+  second delivery is promoted after the first submits.
 
 ## Archive and delete cleanup
 
