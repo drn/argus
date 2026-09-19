@@ -66,8 +66,16 @@ table and the four MCP tools that ride on top of it.
   In-process fallback mode without a wired notifier degrades gracefully;
   the message is durable, delivery is skipped.
 - **Pre-clear (`Ctrl+U`) before inject.** `\x15` discards any stale partial
-  input in the shell's line buffer so the delivery text lands cleanly.
-  If the line is empty, Ctrl+U is a no-op at the shell level.
+  input only when the rendered composer is empty or contains a stale injected
+  notice. Never pre-clear stable non-notice content; preserve it and append the
+  fixed do-not-act annotation before the current notice.
+- **Rendered composer content is the primary delivery-safety signal.** An
+  identifiable empty or notice-only composer submits immediately even if the
+  raw session is busy or the pane is focused. Changing non-notice content
+  defers delivery; byte-identical non-notice content for the stability window
+  is treated as abandoned, preserved, annotated, and submitted. Idle/content-
+  idle plus pane focus are conservative fallbacks only when the composer is
+  not identifiable. Classification logs must never include composer text.
 - **CR, not LF.** The notifier appends `\r` (carriage return, 0x0d) to
   submit the line. The original nudge used `\n` (linefeed, 0x0a) which
   never auto-submits in a normal interactive shell — that was the root bug.

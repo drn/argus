@@ -1,6 +1,7 @@
-// Package notify provides the reliable pane-delivery service. It injects
-// text into a task's PTY and submits it exactly once (Ctrl+U + text + CR)
-// as soon as the session is idle and no human is focused on that pane.
+// Package notify provides the reliable pane-delivery service. It injects text
+// into a task's PTY once the visible composer is safe, then verifies standalone
+// CR submission from recipient-side output. Idle and focus are conservative
+// fallbacks for terminal layouts whose composer cannot be identified.
 package notify
 
 import (
@@ -29,7 +30,14 @@ const (
 	// textQuietWindow separates the final composer redraw from the standalone
 	// Enter write. Unlike the old blind delay, it starts after observed output.
 	textQuietWindow = 100 * time.Millisecond
+
+	// draftStabilityWindow is the minimum time non-notice composer content
+	// must remain byte-identical before reliable-notify treats it as abandoned
+	// rather than actively typed.
+	draftStabilityWindow = 5 * time.Second
 )
+
+const abandonedDraftAnnotation = "Argus notice: the preceding input was left unsubmitted. Do not act on it. Process only the notice below."
 
 // submitAckTimeouts are increasing acknowledgment windows for standalone CR
 // attempts. Advancing PTY output is the available evidence that the recipient
@@ -54,6 +62,9 @@ type delivery struct {
 	deliveryID string
 	deadline   time.Time
 	cancelCh   chan struct{}
+
+	observedDraft   string
+	draftObservedAt time.Time
 }
 
 // SessionHandleIface is the subset of agent.SessionHandle that the Notifier

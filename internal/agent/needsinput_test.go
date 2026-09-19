@@ -1606,6 +1606,57 @@ func TestContentIdleTracker(t *testing.T) {
 	})
 }
 
+func TestScreenRenderer_InputDraft(t *testing.T) {
+	tests := []struct {
+		name  string
+		tail  string
+		cols  int
+		rows  int
+		want  string
+		found bool
+	}{
+		{
+			name:  "empty fullscreen composer",
+			tail:  "\x1b[?1049h\x1b[2J\x1b[7;1H❯\u00a0\x1b[7;3H",
+			cols:  80,
+			rows:  24,
+			found: true,
+		},
+		{
+			name:  "typed fullscreen composer",
+			tail:  "\x1b[?1049h\x1b[2J\x1b[7;1H❯\u00a0I want you to\x1b[7;16H",
+			cols:  80,
+			rows:  24,
+			want:  "I want you to",
+			found: true,
+		},
+		{
+			name:  "wrapped composer through cursor row",
+			tail:  "\x1b[?1049h\x1b[2J\x1b[7;1H❯\u00a0first part\x1b[8;1Hsecond\x1b[8;7H",
+			cols:  80,
+			rows:  24,
+			want:  "first part\nsecond",
+			found: true,
+		},
+		{
+			name:  "unknown shell prompt",
+			tail:  "shell$ draft",
+			cols:  80,
+			rows:  24,
+			found: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			renderer := &ScreenRenderer{}
+			got, found := renderer.InputDraft([]byte(tt.tail), tt.cols, tt.rows)
+			testutil.Equal(t, got, tt.want)
+			testutil.Equal(t, found, tt.found)
+		})
+	}
+}
+
 // TestContentIdle_CachedSignal covers dedupe-redundant-contentidle-reads: the
 // TUI's refreshTasksWithIDs calls agent.ContentIdle right after
 // detectNeedsInputSticky has already computed the IDENTICAL

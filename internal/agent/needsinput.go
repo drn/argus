@@ -418,6 +418,58 @@ func (r *ScreenRenderer) render(tail []byte, cols, rows int) string {
 	return r.emu.String()
 }
 
+// InputDraft reconstructs the visible Claude Code composer and returns its
+// current text. found=false means the rendered terminal did not contain the
+// Claude composer marker, so callers must use a conservative fallback rather
+// than assuming the input line is empty. Wrapped composer rows are collected
+// through the emulator's cursor row.
+func (r *ScreenRenderer) InputDraft(tail []byte, cols, rows int) (draft string, found bool) {
+	visible := r.render(tail, cols, rows)
+	lines := strings.Split(visible, "\n")
+	if len(lines) == 0 {
+		return "", false
+	}
+
+	cursorRow := r.emu.CursorPosition().Y
+	if cursorRow >= len(lines) {
+		cursorRow = len(lines) - 1
+	}
+	if cursorRow < 0 {
+		cursorRow = 0
+	}
+
+	promptRow := -1
+	promptCol := -1
+	for row := cursorRow; row >= 0; row-- {
+		if col := strings.LastIndex(lines[row], promptNBSP); col >= 0 {
+			promptRow = row
+			promptCol = col
+			break
+		}
+	}
+	// A hidden cursor can be parked above the composer. Search the rest of the
+	// visible screen before declaring the layout unknown.
+	if promptRow < 0 {
+		for row := len(lines) - 1; row > cursorRow; row-- {
+			if col := strings.LastIndex(lines[row], promptNBSP); col >= 0 {
+				promptRow = row
+				promptCol = col
+				cursorRow = row
+				break
+			}
+		}
+	}
+	if promptRow < 0 {
+		return "", false
+	}
+
+	parts := []string{strings.TrimRightFunc(lines[promptRow][promptCol+len(promptNBSP):], unicode.IsSpace)}
+	for row := promptRow + 1; row <= cursorRow && row < len(lines); row++ {
+		parts = append(parts, strings.TrimRightFunc(lines[row], unicode.IsSpace))
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n")), true
+}
+
 // safeEmuWrite writes to the emulator, recovering from panics in upstream vt
 // code (e.g. cursor positions from a larger terminal). Mirrors
 // terminal.SafeEmuWrite; duplicated here to keep internal/agent free of an
