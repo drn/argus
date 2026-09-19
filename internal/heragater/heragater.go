@@ -527,11 +527,12 @@ func (w *Watcher) materializeNode(node *db.HeraRole) {
 		coordRoleID = coords[0].ID
 	}
 	project := node.ArgusProject
-	// blockerIDs is re-fetched here (classify and resolveBaseBranch each already
-	// query it independently this tick) purely to size the fan-in notice below;
-	// best-effort — a lookup error just suppresses the notice, never the spawn.
+	// blockerIDs is re-fetched after classify so materialization uses the current
+	// graph. Resolve each blocker's binding/task branch once; the resulting
+	// snapshot drives base selection, worker context, and the coordinator notice.
 	blockerIDs, _ := w.db.HeraBlockersOf(node.ID)
-	branch, winningBlockerID := w.resolveBaseBranch(node)
+	blockerBranches := w.resolveBlockerBranches(blockerIDs)
+	branch, winningBlockerID := w.resolveBaseBranch(node, blockerBranches)
 
 	// Route on node kind (add-hera-subcoord-nodes). A subcoord node materializes
 	// via the sub-coord seam (a distinct coordinator agent owning a child
@@ -544,7 +545,11 @@ func (w *Watcher) materializeNode(node *db.HeraRole) {
 		return
 	}
 
-	taskPrompt := agent.HeraCheckInOrientation(orch.Name, coordName) + "\n\n---\n\n" + node.Prompt
+	taskPrompt := agent.HeraCheckInOrientation(orch.Name, coordName)
+	if len(blockerBranches) > 1 {
+		taskPrompt += "\n\n---\n\n" + fanInBranchContext(blockerBranches, winningBlockerID, branch)
+	}
+	taskPrompt += "\n\n---\n\n" + node.Prompt
 	backend := w.resolveWorkerBackend("")
 
 	if err := w.materialize(node, taskPrompt, project, branch, backend, ""); err != nil {
@@ -556,7 +561,7 @@ func (w *Watcher) materializeNode(node *db.HeraRole) {
 	w.logf("[heragater] materialized node %d (%s) in orch %q (base_branch=%q)", node.ID, node.Name, orch.Name, branch)
 	w.acceptBlockers(node, blockerIDs, coordRoleID)
 	if len(blockerIDs) > 1 && winningBlockerID != 0 {
-		w.pingFanIn(node, blockerIDs, winningBlockerID, branch)
+		w.pingFanIn(node, blockerBranches, winningBlockerID, branch)
 	}
 	if cb := w.materializeCallback(); cb != nil {
 		cb(node)
@@ -643,6 +648,39 @@ func (w *Watcher) materializeSubCoord(node *db.HeraRole, parentOrchName, coordNa
 	}
 }
 
+type blockerBranch struct {
+	roleID    int64
+	bindingID int64
+	name      string
+	branch    string
+}
+
+// resolveBlockerBranches takes one materialization-time snapshot of every
+// blocker's display name, latest binding id, and task branch. A missing binding,
+// task, or branch is retained as an entry with an empty branch so fan-in workers
+// can see that the blocker exists but its branch is unavailable.
+func (w *Watcher) resolveBlockerBranches(blockerIDs []int64) []blockerBranch {
+	out := make([]blockerBranch, 0, len(blockerIDs))
+	for _, roleID := range blockerIDs {
+		resolved := blockerBranch{roleID: roleID, name: w.roleName(roleID)}
+		binding, err := w.db.HeraLiveBindingByRole(roleID)
+		if err != nil {
+			bindings, listErr := w.db.ListHeraBindingsByRole(roleID)
+			if listErr != nil || len(bindings) == 0 {
+				out = append(out, resolved)
+				continue
+			}
+			binding = bindings[0] // most recent first
+		}
+		resolved.bindingID = binding.ID
+		if task, taskErr := w.db.Get(binding.ArgusTaskID); taskErr == nil && task != nil {
+			resolved.branch = task.Branch
+		}
+		out = append(out, resolved)
+	}
+	return out
+}
+
 // resolveBaseBranch returns the branch the new worktree should stack on, and
 // (add-hera-fanin-notify) the id of the blocker role that branch came from — 0
 // when no blocker branch resolved (the root fallback path ran instead). The
@@ -662,30 +700,16 @@ func (w *Watcher) materializeSubCoord(node *db.HeraRole, parentOrchName, coordNa
 // then applies the project default, as before this change). Every step degrades to
 // "" on a miss — never a panic — so an orchestrator with no coordinator, or a
 // coordinator with no branch, falls through to the historical behavior.
-func (w *Watcher) resolveBaseBranch(node *db.HeraRole) (branch string, winningBlockerID int64) {
-	blockerIDs, err := w.db.HeraBlockersOf(node.ID)
-	if err != nil {
-		return "", 0
-	}
+func (w *Watcher) resolveBaseBranch(node *db.HeraRole, blockers []blockerBranch) (branch string, winningBlockerID int64) {
 	var bestBindingID int64
-	for _, bid := range blockerIDs {
-		binding, bErr := w.db.HeraLiveBindingByRole(bid)
-		if bErr != nil {
-			// Fall back to the latest binding (the blocker may have gone idle/ended).
-			bindings, lErr := w.db.ListHeraBindingsByRole(bid)
-			if lErr != nil || len(bindings) == 0 {
-				continue
-			}
-			binding = bindings[0] // most recent first
-		}
-		t, tErr := w.db.Get(binding.ArgusTaskID)
-		if tErr != nil || t == nil || t.Branch == "" {
+	for _, blocker := range blockers {
+		if blocker.branch == "" {
 			continue
 		}
-		if binding.ID > bestBindingID {
-			bestBindingID = binding.ID
-			branch = t.Branch
-			winningBlockerID = bid
+		if blocker.bindingID > bestBindingID {
+			bestBindingID = blocker.bindingID
+			branch = blocker.branch
+			winningBlockerID = blocker.roleID
 		}
 	}
 	if branch != "" {
@@ -694,6 +718,29 @@ func (w *Watcher) resolveBaseBranch(node *db.HeraRole) (branch string, winningBl
 	}
 	// Root node: no blocker branch. Resolve the configurable root base.
 	return w.resolveRootBaseBranch(node), 0
+}
+
+func fanInBranchContext(blockers []blockerBranch, winningBlockerID int64, branch string) string {
+	var b strings.Builder
+	b.WriteString("## Your blockers' branches\n\n")
+	if winningBlockerID != 0 {
+		fmt.Fprintf(&b, "This worktree is based on `%s`. Other blocker branches are not merged automatically.\n\n", branch)
+	} else {
+		b.WriteString("No blocker branch resolved as this worktree's base. Blocker branches are not merged automatically.\n\n")
+	}
+	for _, blocker := range blockers {
+		fmt.Fprintf(&b, "- `%s`: ", blocker.name)
+		if blocker.branch == "" {
+			b.WriteString("branch unavailable")
+		} else {
+			fmt.Fprintf(&b, "`%s`", blocker.branch)
+		}
+		if blocker.roleID == winningBlockerID {
+			b.WriteString(" (selected base_branch)")
+		}
+		b.WriteByte('\n')
+	}
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 // resolveRootBaseBranch resolves a ROOT node's base branch
@@ -784,30 +831,30 @@ func (w *Watcher) holdAndPing(node, failedBlocker *db.HeraRole) {
 // one-shot notice tied to a single event that has ALREADY happened —
 // materialization already succeeded by the time this is called — so a delivery
 // failure is logged and dropped, never retried.
-func (w *Watcher) pingFanIn(node *db.HeraRole, blockerIDs []int64, winningBlockerID int64, branch string) {
+func (w *Watcher) pingFanIn(node *db.HeraRole, blockers []blockerBranch, winningBlockerID int64, branch string) {
 	coords, err := w.db.ListHeraRolesByKind(node.OrchestratorID, db.HeraKindCoordinator)
 	if err != nil || len(coords) == 0 {
 		w.logf("[heragater] fan-in %d: no coordinator to notify: %v", node.ID, err)
 		return
 	}
-	winnerName := w.roleName(winningBlockerID)
+	winnerName := fmt.Sprintf("role#%d", winningBlockerID)
 	var siblingNames, siblingDescs []string
-	for _, bid := range blockerIDs {
-		if bid == winningBlockerID {
+	for _, blocker := range blockers {
+		if blocker.roleID == winningBlockerID {
+			winnerName = blocker.name
 			continue
 		}
-		name := w.roleName(bid)
-		siblingNames = append(siblingNames, name)
-		if sb := w.roleBranch(bid); sb != "" {
-			siblingDescs = append(siblingDescs, fmt.Sprintf("%s (%s)", name, sb))
+		siblingNames = append(siblingNames, blocker.name)
+		if blocker.branch != "" {
+			siblingDescs = append(siblingDescs, fmt.Sprintf("%s (%s)", blocker.name, blocker.branch))
 		} else {
-			siblingDescs = append(siblingDescs, name)
+			siblingDescs = append(siblingDescs, blocker.name)
 		}
 	}
 	body := fmt.Sprintf(
 		"Planned node %s materialized with %d blockers. base_branch resolved to %s (blocker %s). "+
 			"NOT automatically merged: %s — merge manually if this node needs their content too.",
-		node.Name, len(blockerIDs), branch, winnerName, strings.Join(siblingDescs, ", "))
+		node.Name, len(blockers), branch, winnerName, strings.Join(siblingDescs, ", "))
 	tldr := fmt.Sprintf("fan-in: %s stacked on %s, %d sibling(s) not merged", node.Name, winnerName, len(siblingNames))
 	if w.ping != nil {
 		if pErr := w.ping(node.ID, coords[0].ID, body, tldr); pErr != nil {
@@ -881,23 +928,4 @@ func (w *Watcher) roleName(roleID int64) string {
 		return r.Name
 	}
 	return fmt.Sprintf("role#%d", roleID)
-}
-
-// roleBranch resolves a role's bound task branch via the same live-then-latest
-// binding fallback resolveBaseBranch/coordinatorBranch use, so the fan-in notice
-// can describe an un-merged sibling's branch. Empty on any miss.
-func (w *Watcher) roleBranch(roleID int64) string {
-	binding, err := w.db.HeraLiveBindingByRole(roleID)
-	if err != nil {
-		bindings, lErr := w.db.ListHeraBindingsByRole(roleID)
-		if lErr != nil || len(bindings) == 0 {
-			return ""
-		}
-		binding = bindings[0] // most recent first
-	}
-	t, tErr := w.db.Get(binding.ArgusTaskID)
-	if tErr != nil || t == nil {
-		return ""
-	}
-	return t.Branch
 }
