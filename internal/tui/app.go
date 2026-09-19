@@ -1451,6 +1451,7 @@ func (a *App) Run() error {
 	// the transient status-bar notice instead of a modal (design D6). This is the
 	// nine-times-in-ten false alarm the surface version exists to remove.
 	a.applyStartupSkew()
+	a.restoreLastTab()
 
 	uxlog.Log("[tui] starting tcell/tview application")
 	return a.tapp.Run()
@@ -4576,23 +4577,64 @@ func tcellKeyToBytes(ev *tcell.EventKey) []byte {
 	return keyenc.Encode(ev)
 }
 
-// restoreLastTab is a not-yet-wired stub (persist-tasks-view-ui-state Stage
-// 4.3 TODO): it will local-only load the persisted `ui.last_tab` value and,
-// if it resolves to TabHera or TabSettings, call switchTab to land there —
+// restoreLastTab local-only loads the persisted `ui.last_tab` value and, if
+// it resolves to TabHera or TabSettings, calls switchTab to land there —
 // reusing switchToHeraTab2()'s refresh/focus/label logic unchanged. An
 // absent/unrecognized value (or --remote mode, where a.db is not *db.DB) is a
-// no-op that leaves the shell on the Tasks default. Not yet called from Run()
-// — that wiring is Stage 4.4.
+// no-op that leaves the shell on the Tasks default. Called from Run() before
+// a.tapp.Run(), alongside applyStartupSkew() (persist-tasks-view-ui-state
+// Stage 4.4) — that injection point is documented safe to mutate
+// a.pages/a.mode/a.tapp.SetFocus before the draw goroutine exists.
 func (a *App) restoreLastTab() {
-	// TODO(persist-tasks-view-ui-state Stage 4.3): local-only load via
-	// a.db.(*db.DB).LoadLastTab(), map "hera"/"settings" to widget.Tab, and
-	// call a.switchTab(...) when it differs from the Tasks default.
+	d, ok := a.db.(*db.DB)
+	if !ok {
+		return
+	}
+	v, err := d.LoadLastTab()
+	if err != nil {
+		uxlog.Log("[tui] last-tab load failed: %v", err)
+		return
+	}
+	switch v {
+	case "hera":
+		a.switchTab(widget.TabHera)
+	case "settings":
+		a.switchTab(widget.TabSettings)
+	}
+}
+
+// lastTabString maps a widget.Tab to the string persisted in the config
+// table. internal/db doesn't import internal/tui/widget, so the mapping
+// lives here (persist-tasks-view-ui-state design.md).
+func lastTabString(t widget.Tab) string {
+	switch t {
+	case widget.TabHera:
+		return "hera"
+	case widget.TabSettings:
+		return "settings"
+	default:
+		return "tasks"
+	}
+}
+
+// persistLastTab saves t as the shell's last active tab through the
+// local-only *db.DB type-assert, mirroring the hera rail state and
+// hide-hera-managed persistence sites. No-op in --remote mode.
+func (a *App) persistLastTab(t widget.Tab) {
+	d, ok := a.db.(*db.DB)
+	if !ok {
+		return
+	}
+	if err := d.SaveLastTab(lastTabString(t)); err != nil {
+		uxlog.Log("[tui] last-tab save failed: %v", err)
+	}
 }
 
 // switchTab changes the active top-level tab.
 func (a *App) switchTab(t widget.Tab) {
 	a.header.SetTab(t)
 	a.statusbar.SetTab(t)
+	a.persistLastTab(t)
 
 	switch t {
 	case widget.TabTasks:
@@ -7480,6 +7522,7 @@ func (a *App) exitAgentView() {
 	a.root.ResizeItem(a.header, 1, 0)
 	a.header.SetTab(widget.TabTasks)
 	a.statusbar.SetTab(widget.TabTasks)
+	a.persistLastTab(widget.TabTasks)
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
 	a.statusbar.ClearError()
