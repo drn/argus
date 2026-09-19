@@ -31,9 +31,9 @@
 
 ## 6. Daemon wiring
 
-- [ ] 6.1 Call `hera.ReconcileHeraReclaims` from `Daemon.ReconcileOnStartup` (`internal/daemon/bounce.go`), right alongside the existing `heraadopt.ReconcileBindings(d.db)` call — same idempotent, log-count-on-success style.
-- [ ] 6.2 Add a periodic `d.runHeraReclaimSweeper()` ticker in `internal/daemon/daemon.go`, started next to `go d.runPRPoller()` / `go d.runUsageBudgetPoller()` (~line 1188-1244); pick an interval matching the existing pollers' order of magnitude.
-- [ ] 6.3 Daemon-level test: seed a synthetic leaked worktree (task archived, `user_deleted` binding, worktree dir present in a `t.TempDir()` root) and confirm `ReconcileOnStartup` cleans it up end-to-end.
+- [x] 6.1 Call `hera.ReconcileHeraReclaims` from `Daemon.ReconcileOnStartup` (`internal/daemon/bounce.go`), right alongside the existing `heraadopt.ReconcileBindings(d.db)` call — same idempotent, log-count-on-success style.
+- [x] 6.2 Add a periodic `d.runHeraReclaimSweeper()` ticker in `internal/daemon/daemon.go`, started next to `go d.runPRPoller()` / `go d.runUsageBudgetPoller()` (~line 1188-1244); pick an interval matching the existing pollers' order of magnitude. Chose 30 minutes, matching `usageBudgetProbeInterval` exactly.
+- [x] 6.3 Daemon-level test: seed a synthetic leaked worktree (task archived, `user_deleted` binding, worktree dir present in a `t.TempDir()` root) and confirm `ReconcileOnStartup` cleans it up end-to-end.
 
 ## 7. Spec archiving and verification
 

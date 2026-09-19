@@ -64,6 +64,15 @@ const prPollDisableFlag = "pr-poller.disabled"
 
 const usageBudgetProbeInterval = 30 * time.Minute
 
+// heraReclaimSweepInterval is the cadence of the periodic hera-reclaim sweep
+// (runHeraReclaimSweeper) — the sibling of the once-per-boot sweep already run
+// inside ReconcileOnStartup. This is background cleanup finishing interrupted
+// cascade-nuke teardown (worktree/branch removal, row pruning), not a
+// user-facing responsiveness path, so it errs toward the long end of the
+// existing pollers' order of magnitude (prPollInterval's 60s tick vs.
+// usageBudgetProbeInterval's 30m) rather than the short end.
+const heraReclaimSweepInterval = 30 * time.Minute
+
 // DefaultSocketPath returns the default Unix socket path.
 func DefaultSocketPath() string {
 	return filepath.Join(db.DataDir(), "daemon.sock")
@@ -1021,6 +1030,36 @@ func (d *Daemon) probeUsageBudgetOnce(ctx context.Context) {
 	}
 }
 
+// runHeraReclaimSweeper is the periodic hera-reclaim-sweep goroutine body. It
+// re-runs hera.ReconcileHeraReclaims on heraReclaimSweepInterval so cascade-nuke
+// cleanup interrupted mid-session (a reclaim goroutine lost to something other
+// than a daemon restart) still gets durably finished without requiring one —
+// ReconcileOnStartup already covers the once-per-boot case; this is its
+// periodic sibling. Mirrors runPRPoller/runUsageBudgetPoller's d.done-gated
+// shutdown shape.
+func (d *Daemon) runHeraReclaimSweeper() {
+	ticker := time.NewTicker(heraReclaimSweepInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-d.done:
+			return
+		case <-ticker.C:
+			if sum, err := hera.ReconcileHeraReclaims(d.db, d.runner); err != nil {
+				slog.Warn("hera reclaim sweep failed", "err", err)
+			} else if sum.Candidates > 0 {
+				slog.Info("hera reclaim sweep",
+					"candidates", sum.Candidates,
+					"worktrees_retried", sum.WorktreesRetried,
+					"stacked_branches_deleted", sum.StackedBranchesDeleted,
+					"pruned", sum.Pruned,
+					"skipped_live_session", sum.SkippedLiveSession)
+			}
+		}
+	}
+}
+
 // Clipboard returns the agent-staged clipboard store. Used by the API
 // server (HTTP + SSE subscribe) and the MCP server (agent stages text).
 func (d *Daemon) Clipboard() *clipboard.Store {
@@ -1192,6 +1231,12 @@ func (d *Daemon) Serve(sockPath string) error {
 	// Probe failures are fail-open inside internal/usagebudget; this loop only
 	// owns cadence and shutdown cancellation.
 	go d.runUsageBudgetPoller()
+
+	// Periodic hera-reclaim sweep (fix-hera-nuke-cleanup Stage 6). Sibling of
+	// the once-per-boot sweep already run inside ReconcileOnStartup above —
+	// this catches a reclaim goroutine lost mid-session without requiring a
+	// daemon restart. Idempotent; a no-op tick when there are no candidates.
+	go d.runHeraReclaimSweeper()
 
 	// Host-suspend watchdog (detect-host-suspend). Detects a laptop sleep /
 	// hibernate / VM pause from a large wall-clock gap between its own ticks and

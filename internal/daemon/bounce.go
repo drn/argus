@@ -10,6 +10,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/heraadopt"
 	"github.com/drn/argus/internal/model"
 )
@@ -132,6 +133,23 @@ func (d *Daemon) ReconcileOnStartup() {
 		slog.Warn("reconcile hera bindings failed", "err", err)
 	} else if n > 0 {
 		slog.Info("reconciled hera bindings", "ended", n)
+	}
+
+	// Durably finish cascade-nuke cleanup (worktree + branch removal, then row
+	// pruning) left unfinished by a daemon crash or restart mid-teardown. Same
+	// idempotent, safe-to-rerun, run-on-every-boot contract as
+	// heraadopt.ReconcileBindings above; also re-run periodically by
+	// runHeraReclaimSweeper so a reclaim lost mid-session doesn't wait for the
+	// next restart.
+	if sum, err := hera.ReconcileHeraReclaims(d.db, d.runner); err != nil {
+		slog.Warn("reconcile hera reclaims failed", "err", err)
+	} else if sum.Candidates > 0 {
+		slog.Info("reconciled hera reclaims",
+			"candidates", sum.Candidates,
+			"worktrees_retried", sum.WorktreesRetried,
+			"stacked_branches_deleted", sum.StackedBranchesDeleted,
+			"pruned", sum.Pruned,
+			"skipped_live_session", sum.SkippedLiveSession)
 	}
 
 	// In-process mode: emit ARGUS_BOUNCED for every task that had a live session
