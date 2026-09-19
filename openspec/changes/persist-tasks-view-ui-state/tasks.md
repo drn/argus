@@ -38,7 +38,7 @@
 
 **Depends on:** Stages 3, 4
 
-- [ ] 5.1 Add a gotcha bullet to `context/knowledge/gotchas/tasklist-ui.md` (hide-hera persistence) and one to `context/knowledge/gotchas/misc.md` or a shell-relevant file (last-tab persistence + restore-on-launch injection point), noting the new `config` table keys and the local-only guard, per this repo's CLAUDE.md documentation requirements.
-- [ ] 5.2 Update `context/knowledge/index.md`'s topic-file bullet cells to reference the new behavior where relevant.
-- [ ] 5.3 `openspec validate persist-tasks-view-ui-state --strict` passes.
-- [ ] 5.4 `make pre-pr` passes clean.
+- [x] 5.1 Add a gotcha bullet to `context/knowledge/gotchas/tasklist-ui.md` (hide-hera persistence) and one to `context/knowledge/gotchas/misc.md` or a shell-relevant file (last-tab persistence + restore-on-launch injection point), noting the new `config` table keys and the local-only guard, per this repo's CLAUDE.md documentation requirements.
+- [x] 5.2 Update `context/knowledge/index.md`'s topic-file bullet cells to reference the new behavior where relevant.
+- [x] 5.3 `openspec validate persist-tasks-view-ui-state --strict` passes.
+- [x] 5.4 `make pre-pr` passes clean.
