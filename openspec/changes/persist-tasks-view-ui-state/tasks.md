@@ -28,11 +28,11 @@
 
 **Depends on:** Stage 2
 
-- [ ] 4.1 In `switchTab()`, persist the new tab (as `"tasks"`/`"hera"`/`"settings"`) through the local-only type-assert, logging (never failing) on a save error.
-- [ ] 4.2 In `exitAgentView()`, persist `"tasks"` the same way (covers the direct call sites that bypass `switchTab()`).
-- [ ] 4.3 Add `restoreLastTab()`: local-only load of the persisted tab; if it resolves to `TabHera` or `TabSettings`, call `a.switchTab(...)` to land there (reusing `switchToHeraTab2()`'s refresh/focus/label logic unchanged); an absent/unrecognized value is a no-op (stays on the Tasks default).
-- [ ] 4.4 Call `a.restoreLastTab()` from `Run()` alongside the existing `a.applyStartupSkew()` call, before `a.tapp.Run()`.
-- [ ] 4.5 `make test-pkg PKG=./internal/tui/` green.
+- [x] 4.1 In `switchTab()`, persist the new tab (as `"tasks"`/`"hera"`/`"settings"`) through the local-only type-assert, logging (never failing) on a save error.
+- [x] 4.2 In `exitAgentView()`, persist `"tasks"` the same way (covers the direct call sites that bypass `switchTab()`).
+- [x] 4.3 Add `restoreLastTab()`: local-only load of the persisted tab; if it resolves to `TabHera` or `TabSettings`, call `a.switchTab(...)` to land there (reusing `switchToHeraTab2()`'s refresh/focus/label logic unchanged); an absent/unrecognized value is a no-op (stays on the Tasks default).
+- [x] 4.4 Call `a.restoreLastTab()` from `Run()` alongside the existing `a.applyStartupSkew()` call, before `a.tapp.Run()`.
+- [x] 4.5 `make test-pkg PKG=./internal/tui/` green for this stage's tests (`TestSwitchTab_PersistsLastTabLocal`, `TestExitAgentView_PersistsTasksTabLocal`, `TestRestoreLastTab_RestoresPersistedHeraTab`, plus the pre-existing `TestSwitchTab_RemoteModeDoesNotPersist`/`TestRestoreLastTab_NoPersistedValueStaysOnTasks`/`TestRestoreLastTab_RemoteModeNoOp` stay green). The lone remaining package failure, `TestNew_RestoresPersistedHideHeraManaged`, belongs to the concurrently-implemented Stage 3 (hide-hera-managed toggle) in a separate worktree — out of scope here.
 
 ## 5. Documentation and verification
 
