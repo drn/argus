@@ -509,7 +509,10 @@ func (a *App) heraReclaimAndArchiveTask(taskID string) (reclaimed bool) {
 	wt, br := t.Worktree, t.Branch
 	if wt != "" {
 		reclaimed = true
-		heraGoSafe("nuke: remove worktree "+taskID, func() { agent.RemoveWorktreeAndBranch(wt, br, repoDir) })
+		heraGoSafe("nuke: remove worktree "+taskID, func() {
+			agent.RemoveWorktreeAndBranch(wt, br, repoDir)
+			a.heraPruneReclaimedTask(taskID)
+		})
 	} else if br != "" && repoDir != "" {
 		heraGoSafe("nuke: delete branch "+taskID, func() {
 			agent.DeleteBranch(repoDir, br)
@@ -527,6 +530,49 @@ func (a *App) heraReclaimAndArchiveTask(taskID string) (reclaimed bool) {
 		uxlog.Log("[hera-view] nuke: reclaimed worktree + archived task %s", t.ID)
 	}
 	return reclaimed
+}
+
+// heraPruneReclaimedTask hard-deletes taskID's row once its worktree+branch
+// reclaim has completed (add-hera-nuke-cleanup Stage 2), turning the
+// nuke-then-archive pair into a genuine row deletion instead of a
+// permanently-archived husk. Called from inside heraReclaimAndArchiveTask's
+// backgrounded RemoveWorktreeAndBranch goroutine, after it returns.
+//
+// Gated on !a.runner.HasSession(taskID): a task still in_progress at nuke
+// time has its OWN session stop backgrounded (see the goroutine above this
+// one) and is not yet settled — handleSessionExitUI's fix-nuke-completion-race
+// handling (markHeraReclaimPending/consumeHeraReclaimPending) must still see
+// the row to land it at complete once that exit is observed (design.md
+// Decision D3). Pruning here first would make that handler silently no-op,
+// orphaning the in-memory marker. Such a task is left entirely to the
+// periodic/startup reconciliation sweep, which by construction only ever
+// runs after the session has actually exited.
+//
+// No live-binding check is needed here: PruneTasks itself re-verifies
+// no-live-hera-binding at delete time, so a binding not yet ended by the
+// caller's own (near-simultaneous, main-goroutine) heraOps.NukeRole call
+// safely no-ops as skippedHeraBound rather than racing it — the row is
+// picked up by the next sweep instead.
+func (a *App) heraPruneReclaimedTask(taskID string) {
+	if a.runner.HasSession(taskID) {
+		uxlog.Log("[hera-view] nuke: prune skipped task=%s (session still live)", taskID)
+		return
+	}
+	d, ok := a.db.(*db.DB)
+	if !ok {
+		return
+	}
+	pruned, skipped, err := d.PruneTasks([]string{taskID})
+	if err != nil {
+		uxlog.Log("[hera-view] nuke: prune task failed task=%s: %v", taskID, err)
+		return
+	}
+	switch {
+	case len(pruned) > 0:
+		uxlog.Log("[hera-view] nuke: pruned task row %s (worktree reclaim confirmed)", taskID)
+	case skipped > 0:
+		uxlog.Log("[hera-view] nuke: prune skipped task=%s (still hera-bound)", taskID)
+	}
 }
 
 // heraCascadeNukeFrom confirms then NUKES the entire subtree rooted at rootID —

@@ -7,9 +7,9 @@
 
 ## 2. Task-row auto-prune on nuke
 
-- [ ] 2.1 In `internal/tui/heraactions.go`'s `heraReclaimAndArchiveTask`, after the backgrounded `agent.RemoveWorktreeAndBranch` call returns, add: if no live hera binding for the task (already guaranteed by this point) AND `!a.runner.HasSession(taskID)`, call `a.db.(*db.DB).PruneTasks([]string{taskID})` and log the outcome.
-- [ ] 2.2 Confirm (via a targeted test, not just reasoning) that a task armed via `markHeraReclaimPending` at nuke time is NEVER pruned by 2.1 — only once `handleSessionExitUI` has consumed the marker and the session is no longer live.
-- [ ] 2.3 `internal/tui/heraactions_test.go`: nuking a sole-bound, non-live role results in the task row being deleted (`db.Get` returns `ErrTaskNotFound`), not merely archived. Nuking an `in_progress` role archives but leaves the row present.
+- [x] 2.1 In `internal/tui/heraactions.go`'s `heraReclaimAndArchiveTask`, after the backgrounded `agent.RemoveWorktreeAndBranch` call returns, add: if no live hera binding for the task (already guaranteed by this point) AND `!a.runner.HasSession(taskID)`, call `a.db.(*db.DB).PruneTasks([]string{taskID})` and log the outcome.
+- [x] 2.2 Confirm (via a targeted test, not just reasoning) that a task armed via `markHeraReclaimPending` at nuke time is NEVER pruned by 2.1 — only once `handleSessionExitUI` has consumed the marker and the session is no longer live.
+- [x] 2.3 `internal/tui/heraactions_test.go`: nuking a sole-bound, non-live role results in the task row being deleted (`db.Get` returns `ErrTaskNotFound`), not merely archived. Nuking an `in_progress` role archives but leaves the row present.
 
 ## 3. Reconciliation sweep
 

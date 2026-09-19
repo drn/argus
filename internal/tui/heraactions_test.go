@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/hera"
 	"github.com/drn/argus/internal/tui/widget"
+	"github.com/drn/argus/internal/uxlog"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -413,6 +416,122 @@ func TestHeraActions_NukeArchivedRoleMultiBoundPreservesTask(t *testing.T) {
 	gotB, err := d.HeraRole(roleB.ID)
 	testutil.NoError(t, err)
 	testutil.Equal(t, gotB.OrchestratorID, b) // other orchestrator's role intact
+}
+
+// TestHeraActions_NukeRolePrunesSoleBoundTaskOnceSessionSettled pins
+// add-hera-nuke-cleanup Stage 2 (2.3): nuking a sole-bound, non-live role
+// hard-deletes the task row (via db.PruneTasks) once the backgrounded
+// worktree reclaim completes and the runner reports no live session for it —
+// not merely archiving it.
+func TestHeraActions_NukeRolePrunesSoleBoundTaskOnceSessionSettled(t *testing.T) {
+	d := testDB(t)
+	t.Setenv("HOME", t.TempDir())
+	app := New(d, agent.NewRunner(nil), false) // no session ever started for "tw"
+	app.heraOps = hera.NewOps(d)
+
+	orch := seedHeraOrch(t, d, "o")
+	testutil.NoError(t, d.Add(&model.Task{ID: "tw", Name: "tw", Status: model.StatusInReview, Project: "p", Worktree: "/wt/tw", CreatedAt: time.Now()}))
+	role, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: orch, Name: "w", Kind: db.HeraKindWorker, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: role.ID, ArgusTaskID: "tw", WorktreePath: "/wt/tw"})
+	testutil.NoError(t, err)
+
+	rv := &hera.RoleView{RoleID: role.ID, OrchID: orch, Kind: db.HeraKindWorker, TaskID: "tw", Live: true}
+	app.heraNukeRole(rv)
+
+	// The worktree reclaim + prune gate run in a backgrounded goroutine
+	// (heraGoSafe) — poll for the row to disappear rather than assert
+	// synchronously.
+	deadline := time.Now().Add(2 * time.Second)
+	var gotErr error
+	for time.Now().Before(deadline) {
+		_, gotErr = d.Get("tw")
+		if errors.Is(gotErr, db.ErrTaskNotFound) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	testutil.ErrorIs(t, gotErr, db.ErrTaskNotFound) // hard-deleted, not left archived
+
+	gotRole, rErr := d.HeraRole(role.ID) // role row still retained (no hard delete there)
+	testutil.NoError(t, rErr)
+	testutil.Equal(t, gotRole.NukedAt != nil, true)
+}
+
+// TestHeraActions_NukeRoleLiveSessionNeverPrunedInline pins add-hera-nuke-
+// cleanup Stage 2 (2.2 + the "in_progress" half of 2.3): a task armed via
+// markHeraReclaimPending at nuke time (still in_progress, with a session the
+// runner reports as live) is archived but its row is NEVER deleted inline —
+// only handleSessionExitUI consuming the marker once the session actually
+// exits (a later stage's reconciliation sweep) is allowed to prune it.
+// Reuses fakeReclaimRunner (heraactions_reclaim_race_test.go) to simulate the
+// live session without spawning a real process.
+//
+// Asserting only that the row's end state (present + archived) held over a
+// settling window is not enough to pin the mechanism — that would pass
+// identically if the heraPruneReclaimedTask wiring call were dropped
+// entirely (nothing would ever try to delete the row, for the wrong reason).
+// So this also asserts on heraPruneReclaimedTask's own
+// HasSession-guard-fired log line, proving the guard was actually evaluated
+// and chose to skip, not merely that deletion never happened to occur.
+func TestHeraActions_NukeRoleLiveSessionNeverPrunedInline(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	testutil.NoError(t, uxlog.Init(logPath))
+	defer uxlog.Close()
+
+	d := testDB(t)
+	t.Setenv("HOME", t.TempDir())
+	runner := newFakeReclaimRunner("tw")
+	app := New(d, runner, false)
+	app.heraOps = hera.NewOps(d)
+
+	orch := seedHeraOrch(t, d, "o")
+	testutil.NoError(t, d.Add(&model.Task{ID: "tw", Name: "tw", Status: model.StatusInProgress, Project: "p", Worktree: "/wt/tw", CreatedAt: time.Now()}))
+	role, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: orch, Name: "w", Kind: db.HeraKindWorker, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: role.ID, ArgusTaskID: "tw", WorktreePath: "/wt/tw"})
+	testutil.NoError(t, err)
+
+	rv := &hera.RoleView{RoleID: role.ID, OrchID: orch, Kind: db.HeraKindWorker, TaskID: "tw", Live: true}
+	app.heraNukeRole(rv)
+
+	// The reclaim marker was armed (wasLive at nuke time) — confirms this test
+	// actually exercises the fix-nuke-completion-race path, not merely a task
+	// that happens to be in_progress by coincidence.
+	app.mu.Lock()
+	armed := app.pendingHeraReclaim["tw"]
+	app.mu.Unlock()
+	testutil.Equal(t, armed, true)
+
+	// The HasSession guard inside heraPruneReclaimedTask must actually fire
+	// and log its skip — mechanism proof, not just an end-state observation
+	// that a dropped wiring call would reproduce identically.
+	const wantLog = "prune skipped task=tw (session still live)"
+	readLog := func() string {
+		b, rErr := os.ReadFile(logPath)
+		testutil.NoError(t, rErr)
+		return string(b)
+	}
+	logDeadline := time.Now().Add(2 * time.Second)
+	var sawGuardFire bool
+	for time.Now().Before(logDeadline) {
+		if strings.Contains(readLog(), wantLog) {
+			sawGuardFire = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	testutil.Equal(t, sawGuardFire, true)
+
+	// Poll a settling window: the row must be archived and PRESENT the whole
+	// time — a premature prune would show up as ErrTaskNotFound mid-loop.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		got, gErr := d.Get("tw")
+		testutil.NoError(t, gErr) // never pruned while the runner reports a live session
+		testutil.Equal(t, got.Archived, true)
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func TestHeraActions_EOLKeysRemoteInert(t *testing.T) {
