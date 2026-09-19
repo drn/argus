@@ -41,7 +41,9 @@ type fakeNudgeSession struct {
 	writes [][]byte
 }
 
-func (s *fakeNudgeSession) IsIdle() bool { return s.idle }
+func (s *fakeNudgeSession) IsIdle() bool                { return s.idle }
+func (s *fakeNudgeSession) RecentOutputTail(int) []byte { return nil }
+func (s *fakeNudgeSession) PTYSize() (int, int)         { return 80, 24 }
 func (s *fakeNudgeSession) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
 	cp := make([]byte, len(p))
 	copy(cp, p)

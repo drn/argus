@@ -70,6 +70,56 @@ func TestHeraRecycleRunner_IsIdle_NoSessionIsIdle(t *testing.T) {
 	testutil.Equal(t, r.IsIdle("no-such-task"), true)
 }
 
+func TestHeraRecycleRunner_IsIdle_UsesContentStability(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	database, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+
+	worktree := t.TempDir()
+	task := &model.Task{
+		ID:       "content-idle-coord",
+		Name:     "content-idle-coord",
+		Status:   model.StatusInProgress,
+		Project:  "test-project",
+		Worktree: worktree,
+		Backend:  "test",
+	}
+	cfg := recycleTestConfig()
+	cfg.Backends["test"] = config.Backend{
+		Command:    "while :; do printf '\\r\\033[2K✻ Waited'; sleep 0.05; done",
+		PromptFlag: "",
+	}
+
+	runner := agent.NewRunner(nil)
+	_, err = runner.Start(task, cfg, 24, 80, false)
+	testutil.NoError(t, err)
+	t.Cleanup(runner.StopAll)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(runner.Get(task.ID).RecentOutputTail(256)) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(runner.Get(task.ID).RecentOutputTail(256)) == 0 {
+		t.Fatal("session produced no test output")
+	}
+
+	r := NewHeraRecycleRunner(database, runner, func() config.Config { return cfg })
+	t0 := time.Unix(4000, 0)
+	now := t0
+	r.now = func() time.Time { return now }
+	testutil.Equal(t, r.IsIdle(task.ID), false)
+
+	written := runner.Get(task.ID).TotalWritten()
+	time.Sleep(120 * time.Millisecond)
+	if runner.Get(task.ID).TotalWritten() <= written {
+		t.Fatal("session did not continue emitting cosmetic output")
+	}
+
+	now = t0.Add(4 * time.Second)
+	testutil.Equal(t, r.IsIdle(task.ID), true)
+}
+
 func TestHeraRecycleRunner_StopStrayJobs_NoopForNonClaudeBackend(t *testing.T) {
 	database, err := db.OpenInMemory()
 	testutil.NoError(t, err)

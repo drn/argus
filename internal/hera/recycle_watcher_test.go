@@ -1,6 +1,9 @@
 package hera
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -47,6 +50,48 @@ func TestRecycleWatcher_Tick_LeavesBusyCoordinatorPending(t *testing.T) {
 	if !metaHasValue(t, d, task.ID, db.HeraMetaKeyPendingRecycle, "true") {
 		t.Fatalf("pending_recycle was cleared even though the coordinator never went idle")
 	}
+}
+
+func TestRecycleWatcher_Tick_LogsProlongedBusyWaitOnceAndResets(t *testing.T) {
+	d, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	task, _, _ := seedRecycleCoordinator(t, d, "myorch", "/wt/coord", "argus/coord-branch", "mission")
+	testutil.NoError(t, d.SetMeta(task.ID, db.HeraMetaNamespace, db.HeraMetaKeyPendingRecycle, "true"))
+
+	runner := &fakeRecycleRunner{idle: false}
+	w := NewRecycleWatcher(d, runner)
+	t0 := time.Unix(3000, 0)
+	now := t0
+	w.now = func() time.Time { return now }
+	w.waitLogAfter = 2 * time.Minute
+
+	var logs bytes.Buffer
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	w.Tick()
+	now = t0.Add(2 * time.Minute)
+	w.Tick()
+	now = t0.Add(3 * time.Minute)
+	w.Tick()
+	testutil.Equal(t, strings.Count(logs.String(), "recycle watcher: still waiting for idle"), 1)
+	testutil.Contains(t, logs.String(), task.ID)
+
+	// Let the request proceed; this must clear the in-memory wait interval.
+	runner.idle = true
+	w.Tick()
+
+	// A later request starts a fresh interval and can produce a fresh log.
+	testutil.NoError(t, d.SetMeta(task.ID, db.HeraMetaNamespace, db.HeraMetaKeyPendingRecycle, "true"))
+	runner.idle = false
+	now = t0.Add(4 * time.Minute)
+	w.Tick()
+	now = t0.Add(6 * time.Minute)
+	w.Tick()
+	testutil.Equal(t, strings.Count(logs.String(), "recycle watcher: still waiting for idle"), 2)
 }
 
 // TestRecycleWatcher_Tick_RestartsIdlePendingWorker pins design.md's "Self-

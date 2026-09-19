@@ -42,6 +42,7 @@ func (r *fakeRunner) addSession(taskID string, idle bool) *fakeSession {
 type fakeSession struct {
 	mu      sync.Mutex
 	idle    bool
+	tail    []byte
 	writes  [][]byte
 	origins []agentview.InputOrigin
 	// writeErr is returned from WriteInput when set.
@@ -53,6 +54,17 @@ func (s *fakeSession) IsIdle() bool {
 	defer s.mu.Unlock()
 	return s.idle
 }
+
+func (s *fakeSession) RecentOutputTail(n int) []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if n >= len(s.tail) {
+		return append([]byte(nil), s.tail...)
+	}
+	return append([]byte(nil), s.tail[len(s.tail)-n:]...)
+}
+
+func (s *fakeSession) PTYSize() (cols, rows int) { return 80, 24 }
 
 func (s *fakeSession) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
 	s.mu.Lock()
@@ -161,6 +173,26 @@ func TestNotifier_DeferredWhenBusy(t *testing.T) {
 	sess.idle = true
 	sess.mu.Unlock()
 	n.Reconcile(time.Now())
+	testutil.Equal(t, len(sess.allWrites()), 3)
+}
+
+func TestNotifier_SubmitsWhenPrimaryScreenBecomesContentIdle(t *testing.T) {
+	r := newFakeRunner()
+	sess := r.addSession("t1", false)
+	sess.tail = []byte("Completed analysis\n\x1b[2K\r✻ Waited for 3s\n❯\u00a0")
+	n := newTestNotifier(r, fakeNoFocus{})
+
+	cancel := n.ReliableNotify("t1", "hello", "d1", NotifyOpts{})
+	defer cancel()
+
+	t0 := time.Now()
+	n.Reconcile(t0)
+	testutil.Equal(t, len(sess.allWrites()), 0)
+
+	sess.mu.Lock()
+	sess.tail = []byte("Completed analysis\n\x1b[2K\r✶ Waited for 8s\n❯\u00a0")
+	sess.mu.Unlock()
+	n.Reconcile(t0.Add(4 * time.Second))
 	testutil.Equal(t, len(sess.allWrites()), 3)
 }
 

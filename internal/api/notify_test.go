@@ -155,7 +155,9 @@ func (notifyIdleRunner) Get(string) notify.SessionHandleIface { return &notifyId
 
 type notifyIdleSession struct{ writes [][]byte }
 
-func (s *notifyIdleSession) IsIdle() bool { return true }
+func (s *notifyIdleSession) IsIdle() bool                { return true }
+func (s *notifyIdleSession) RecentOutputTail(int) []byte { return nil }
+func (s *notifyIdleSession) PTYSize() (int, int)         { return 80, 24 }
 func (s *notifyIdleSession) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
 	s.writes = append(s.writes, append([]byte(nil), p...))
 	return len(p), nil

@@ -17,6 +17,17 @@ import (
 // override via SetInterval.
 const recycleWatcherInterval = 5 * time.Second
 
+const recycleWaitLogAfter = 2 * time.Minute
+
+type recycleWait struct {
+	since  time.Time
+	logged bool
+}
+
+type recycleIdleResetter interface {
+	ResetIdle(taskID string)
+}
+
 // RecycleWatcherStore is the DB surface RecycleWatcher needs beyond
 // RecycleStore: a way to find every pending self-service recycle request and
 // resolve which role owns it. Satisfied by the real *db.DB.
@@ -50,16 +61,23 @@ type RecycleWatcher struct {
 	interval time.Duration
 	stopCh   chan struct{}
 	mu       sync.Mutex
+
+	now          func() time.Time
+	waitLogAfter time.Duration
+	waits        map[string]recycleWait
 }
 
 // NewRecycleWatcher builds a RecycleWatcher. It does not tick until Start is
 // called.
 func NewRecycleWatcher(store RecycleWatcherStore, runner RecycleRunner) *RecycleWatcher {
 	return &RecycleWatcher{
-		store:    store,
-		runner:   runner,
-		interval: recycleWatcherInterval,
-		stopCh:   make(chan struct{}),
+		store:        store,
+		runner:       runner,
+		interval:     recycleWatcherInterval,
+		stopCh:       make(chan struct{}),
+		now:          time.Now,
+		waitLogAfter: recycleWaitLogAfter,
+		waits:        make(map[string]recycleWait),
 	}
 }
 
@@ -109,14 +127,53 @@ func (w *RecycleWatcher) Tick() {
 		return
 	}
 
+	pending := make(map[string]bool)
 	for taskID, entries := range byTask {
 		if entries[db.HeraMetaKeyPendingRecycle] != "true" {
 			continue
 		}
-		if err := w.tickTask(taskID); err != nil {
+		pending[taskID] = true
+		outcome, err := w.tickTask(taskID)
+		if err != nil {
+			delete(w.waits, taskID)
+			w.resetIdle(taskID)
 			slog.Warn("[hera] recycle watcher: tick failed", "task", taskID, "err", err)
+			continue
+		}
+		if outcome == recycleDeferred {
+			w.trackWait(taskID)
+		} else {
+			delete(w.waits, taskID)
+			w.resetIdle(taskID)
 		}
 	}
+	for taskID := range w.waits {
+		if !pending[taskID] {
+			delete(w.waits, taskID)
+			w.resetIdle(taskID)
+		}
+	}
+}
+
+func (w *RecycleWatcher) resetIdle(taskID string) {
+	if resetter, ok := w.runner.(recycleIdleResetter); ok {
+		resetter.ResetIdle(taskID)
+	}
+}
+
+func (w *RecycleWatcher) trackWait(taskID string) {
+	now := w.now()
+	wait, ok := w.waits[taskID]
+	if !ok {
+		w.waits[taskID] = recycleWait{since: now}
+		return
+	}
+	if wait.logged || now.Sub(wait.since) < w.waitLogAfter {
+		return
+	}
+	slog.Info("[hera] recycle watcher: still waiting for idle", "task", taskID, "waited", now.Sub(wait.since))
+	wait.logged = true
+	w.waits[taskID] = wait
 }
 
 // tickTask resolves the role bound to taskID whose pending-recycle request
@@ -132,19 +189,19 @@ func (w *RecycleWatcher) Tick() {
 // single-coordinator-per-task assumption the rest of this primitive already
 // makes); otherwise the first binding found is used, since a task with no
 // coordinator binding has at most one live binding to recycle anyway.
-func (w *RecycleWatcher) tickTask(taskID string) error {
+func (w *RecycleWatcher) tickTask(taskID string) (recycleOutcome, error) {
 	bindings, err := w.store.ListHeraLiveBindingsByTask(taskID)
 	if err != nil {
-		return fmt.Errorf("list bindings: %w", err)
+		return recycleNoop, fmt.Errorf("list bindings: %w", err)
 	}
 	if len(bindings) == 0 {
-		return nil
+		return recycleNoop, nil
 	}
 	roleID := bindings[0].RoleID
 	for _, b := range bindings {
 		role, err := w.store.HeraRole(b.RoleID)
 		if err != nil {
-			return fmt.Errorf("resolve role %d: %w", b.RoleID, err)
+			return recycleNoop, fmt.Errorf("resolve role %d: %w", b.RoleID, err)
 		}
 		if role.Kind == db.HeraKindCoordinator {
 			roleID = role.ID
@@ -153,7 +210,7 @@ func (w *RecycleWatcher) tickTask(taskID string) error {
 	}
 	task, err := w.store.Get(taskID)
 	if err != nil {
-		return fmt.Errorf("resolve session id: %w", err)
+		return recycleNoop, fmt.Errorf("resolve session id: %w", err)
 	}
-	return RecycleCoord(w.store, w.runner, roleID, task.SessionID, RecycleSelfService)
+	return recycleCoord(w.store, w.runner, roleID, task.SessionID, RecycleSelfService)
 }

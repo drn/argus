@@ -71,6 +71,14 @@ type RecycleRunner interface {
 	Restart(taskID string, roleID int64) error
 }
 
+type recycleOutcome int
+
+const (
+	recycleNoop recycleOutcome = iota
+	recycleDeferred
+	recycleRestarted
+)
+
 // RecycleCoord kills and restarts a hera role's session (coordinator, worker,
 // or freelance — add-worker-bounce widened this beyond coordinator-only) on
 // its existing argus task, per design.md D5. It never rebinds or mints a new
@@ -91,22 +99,30 @@ type RecycleRunner interface {
 // SessionID) since RecycleStore has no notion of "current session" beyond
 // the hera binding.
 func RecycleCoord(store RecycleStore, runner RecycleRunner, roleID int64, sessionID string, trigger RecycleTrigger) error {
+	_, err := recycleCoord(store, runner, roleID, sessionID, trigger)
+	return err
+}
+
+// recycleCoord is the result-bearing form used by RecycleWatcher so it can
+// distinguish a genuinely busy deferral from a successful restart without a
+// second IsIdle call (which would advance content-idle state twice per tick).
+func recycleCoord(store RecycleStore, runner RecycleRunner, roleID int64, sessionID string, trigger RecycleTrigger) (recycleOutcome, error) {
 	binding, err := store.HeraLiveBindingByRole(roleID)
 	if err != nil {
-		return fmt.Errorf("recycle_coord: resolve binding for role %d: %w", roleID, err)
+		return recycleNoop, fmt.Errorf("recycle_coord: resolve binding for role %d: %w", roleID, err)
 	}
 	taskID := binding.ArgusTaskID
 
 	if trigger == RecycleSelfService && !runner.IsIdle(taskID) {
-		return nil // deferred — the next watcher tick re-checks
+		return recycleDeferred, nil // the next watcher tick re-checks
 	}
 
 	if err := runner.StopStrayJobs(taskID, sessionID); err != nil {
-		return fmt.Errorf("recycle_coord: stop stray jobs for task %s: %w", taskID, err)
+		return recycleNoop, fmt.Errorf("recycle_coord: stop stray jobs for task %s: %w", taskID, err)
 	}
 
 	if err := runner.Restart(taskID, roleID); err != nil {
-		return fmt.Errorf("recycle_coord: restart task %s: %w", taskID, err)
+		return recycleNoop, fmt.Errorf("recycle_coord: restart task %s: %w", taskID, err)
 	}
 
 	// Clear the self-service intent so a background watcher doesn't re-fire
@@ -116,7 +132,7 @@ func RecycleCoord(store RecycleStore, runner RecycleRunner, roleID int64, sessio
 	// own store implementation, not escalated into this call's result.
 	_ = store.SetMeta(taskID, db.HeraMetaNamespace, db.HeraMetaKeyPendingRecycle, "false")
 
-	return nil
+	return recycleRestarted, nil
 }
 
 // BuildRecycleSeedPrompt composes the opening prompt for the fresh session

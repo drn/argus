@@ -1527,6 +1527,85 @@ func TestContentIdle(t *testing.T) {
 	})
 }
 
+type contentIdleTrackerSession struct {
+	rawIdle bool
+	tail    []byte
+	cols    int
+	rows    int
+}
+
+func (s *contentIdleTrackerSession) IsIdle() bool                { return s.rawIdle }
+func (s *contentIdleTrackerSession) RecentOutputTail(int) []byte { return s.tail }
+func (s *contentIdleTrackerSession) PTYSize() (cols, rows int)   { return s.cols, s.rows }
+
+func TestContentIdleTracker(t *testing.T) {
+	t0 := time.Unix(2000, 0)
+
+	t.Run("primary-screen cosmetic redraw becomes idle", func(t *testing.T) {
+		tracker := &ContentIdleTracker{}
+		sess := &contentIdleTrackerSession{
+			tail: []byte("Completed analysis\n\x1b[2K\r✻ Waited for 3s\n❯\u00a0"),
+			cols: 80,
+			rows: 24,
+		}
+		testutil.Equal(t, tracker.IsIdle("task-1", sess, t0), false)
+
+		// This is ordinary primary-screen scrollback, not an alt-screen frame.
+		// Only the cosmetic elapsed timer changed between samples.
+		sess.tail = []byte("Completed analysis\n\x1b[2K\r✶ Waited for 8s\n❯\u00a0")
+		testutil.Equal(t, tracker.IsIdle("task-1", sess, t0.Add(idleThreshold)), true)
+	})
+
+	t.Run("working affordance prevents content idle", func(t *testing.T) {
+		tracker := &ContentIdleTracker{}
+		sess := &contentIdleTrackerSession{
+			tail: []byte("Considering options?\n✻ Cogitating (3s · esc to interrupt)"),
+			cols: 80,
+			rows: 24,
+		}
+		testutil.Equal(t, tracker.IsIdle("task-1", sess, t0), false)
+		testutil.Equal(t, tracker.IsIdle("task-1", sess, t0.Add(idleThreshold)), false)
+	})
+
+	t.Run("empty raw-busy session is not content idle", func(t *testing.T) {
+		tracker := &ContentIdleTracker{}
+		sess := &contentIdleTrackerSession{cols: 80, rows: 24}
+		testutil.Equal(t, tracker.IsIdle("task-1", sess, t0), false)
+		testutil.Equal(t, tracker.IsIdle("task-1", sess, t0.Add(idleThreshold)), false)
+	})
+
+	t.Run("raw idle is immediate and resets prior content state", func(t *testing.T) {
+		tracker := &ContentIdleTracker{}
+		sess := &contentIdleTrackerSession{
+			tail: []byte("Completed analysis\n❯\u00a0"),
+			cols: 80,
+			rows: 24,
+		}
+		testutil.Equal(t, tracker.IsIdle("task-1", sess, t0), false)
+		sess.rawIdle = true
+		testutil.Equal(t, tracker.IsIdle("task-1", sess, t0.Add(time.Second)), true)
+		sess.rawIdle = false
+		testutil.Equal(t, tracker.IsIdle("task-1", sess, t0.Add(idleThreshold)), false)
+	})
+
+	t.Run("one task check does not prune another task's state", func(t *testing.T) {
+		tracker := &ContentIdleTracker{}
+		first := &contentIdleTrackerSession{
+			tail: []byte("First task complete\n❯\u00a0"),
+			cols: 80,
+			rows: 24,
+		}
+		second := &contentIdleTrackerSession{
+			tail: []byte("Second task complete\n❯\u00a0"),
+			cols: 80,
+			rows: 24,
+		}
+		testutil.Equal(t, tracker.IsIdle("task-1", first, t0), false)
+		testutil.Equal(t, tracker.IsIdle("task-2", second, t0.Add(time.Second)), false)
+		testutil.Equal(t, tracker.IsIdle("task-1", first, t0.Add(idleThreshold)), true)
+	})
+}
+
 // TestContentIdle_CachedSignal covers dedupe-redundant-contentidle-reads: the
 // TUI's refreshTasksWithIDs calls agent.ContentIdle right after
 // detectNeedsInputSticky has already computed the IDENTICAL
