@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -203,6 +204,35 @@ func (d *DB) HeraInbox(roleID int64) ([]*HeraMessage, error) {
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// WaitForHeraInbox polls HeraInbox until at least one unread message exists or
+// ctx is cancelled. The immediate fast path avoids imposing the polling
+// interval when mail arrived before the wait began. HeraInbox intentionally
+// uses read_at IS NULL (not the task_messages empty-string convention).
+func (d *DB) WaitForHeraInbox(ctx context.Context, roleID int64) ([]*HeraMessage, error) {
+	if msgs, err := d.HeraInbox(roleID); err != nil {
+		return nil, err
+	} else if len(msgs) > 0 {
+		return msgs, nil
+	}
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, nil
+		case <-ticker.C:
+			msgs, err := d.HeraInbox(roleID)
+			if err != nil {
+				return nil, err
+			}
+			if len(msgs) > 0 {
+				return msgs, nil
+			}
+		}
+	}
 }
 
 // MarkHeraMessagesRead stamps read_at=now on the given message IDs, but only

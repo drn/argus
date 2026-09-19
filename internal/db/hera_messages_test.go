@@ -1,9 +1,11 @@
 package db
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
@@ -220,6 +222,57 @@ func TestHeraInbox(t *testing.T) {
 		msgs, err := d.HeraInbox(r2.ID)
 		testutil.NoError(t, err)
 		testutil.Equal(t, len(msgs), 0)
+	})
+}
+
+func TestWaitForHeraInbox(t *testing.T) {
+	t.Run("returns existing unread messages immediately", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "orch")
+		sender := mkRole(t, d, o.ID, "coord", HeraKindCoordinator)
+		recipient := mkRole(t, d, o.ID, "worker", HeraKindWorker)
+		want := mkMsg(t, d, sender.ID, recipient.ID, "ready", "ready", nil)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		got, err := d.WaitForHeraInbox(ctx, recipient.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 1)
+		testutil.Equal(t, got[0].ID, want.ID)
+	})
+
+	t.Run("returns messages that arrive while waiting", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "orch")
+		sender := mkRole(t, d, o.ID, "coord", HeraKindCoordinator)
+		recipient := mkRole(t, d, o.ID, "worker", HeraKindWorker)
+
+		sendErr := make(chan error, 1)
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			_, err := d.SendHeraMessage(sender.ID, recipient.ID, "arrived", "arrived", nil)
+			sendErr <- err
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		got, err := d.WaitForHeraInbox(ctx, recipient.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 1)
+		testutil.Equal(t, got[0].Body, "arrived")
+		testutil.NoError(t, <-sendErr)
+	})
+
+	t.Run("context cancellation returns empty without error", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "orch")
+		recipient := mkRole(t, d, o.ID, "worker", HeraKindWorker)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		got, err := d.WaitForHeraInbox(ctx, recipient.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 0)
 	})
 }
 

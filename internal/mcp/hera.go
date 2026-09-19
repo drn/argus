@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/usagebudget"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // HeraStore is the subset of *db.DB used by the native hera_* MCP tools.
@@ -67,6 +69,7 @@ type HeraStore interface {
 	UpsertHeraRoleStatus(roleID int64, status db.HeraRoleStatusValue) error
 	// Inbox count for hera_join claim response (does NOT cancel deliveries).
 	HeraInbox(roleID int64) ([]*db.HeraMessage, error)
+	WaitForHeraInbox(ctx context.Context, roleID int64) ([]*db.HeraMessage, error)
 	// Subtree roll-up + per-role tree cursor (M5).
 	SubtreeOrchIDs(rootOrchID int64) ([]int64, error)
 	HeraTreeUpdatesSince(rootOrchID, since int64) ([]db.HeraMessageTLDR, int64, error)
@@ -89,6 +92,11 @@ type HeraStore interface {
 	Get(taskID string) (*model.Task, error)
 	SetStatus(taskID string, status model.Status) error
 }
+
+// maxHeraInboxTimeoutSeconds caps the server-side hera_inbox wait. It matches
+// task_ask's two-minute envelope so a stuck client cannot hold an MCP request
+// open indefinitely.
+const maxHeraInboxTimeoutSeconds = 120
 
 // heraToolDefs contains the 19 hera_* tool schemas. The first 9 are ported
 // verbatim from Hera's daemon.toolDefinitions() — same param names,
@@ -185,12 +193,13 @@ var heraToolDefs = []Tool{
 	},
 	{
 		Name:        "hera_inbox",
-		Description: "Read unread messages addressed to the caller's hera role. Marks messages as read (cancels pending doorbell deliveries). Returns oldest first.",
+		Description: "Read unread messages addressed to the caller's hera role. Marks messages as read (cancels pending doorbell deliveries). Returns oldest first. Set timeout_seconds from 1 to 120 to block server-side until a message arrives or the timeout elapses; omitted or zero returns immediately.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"cwd":          map[string]interface{}{"type": "string", "description": "Caller's worktree path (use $PWD)"},
-				"orchestrator": map[string]interface{}{"type": "string", "description": "(required when the caller's argus task holds 2+ live bindings; optional when it holds exactly one) The orchestrator whose binding identifies the calling role."},
+				"cwd":             map[string]interface{}{"type": "string", "description": "Caller's worktree path (use $PWD)"},
+				"orchestrator":    map[string]interface{}{"type": "string", "description": "(required when the caller's argus task holds 2+ live bindings; optional when it holds exactly one) The orchestrator whose binding identifies the calling role."},
+				"timeout_seconds": map[string]interface{}{"type": "integer", "description": "Block server-side up to this many seconds for unread mail. Default 0 (return immediately). Max 120."},
 			},
 			"required": []string{"cwd"},
 		},
@@ -1361,13 +1370,20 @@ func (s *Server) toolHeraInbox(id interface{}, args json.RawMessage) *Response {
 		return toolError(id, "hera not configured")
 	}
 	var p struct {
-		Cwd          string `json:"cwd"`
-		Orchestrator string `json:"orchestrator"`
+		Cwd            string `json:"cwd"`
+		Orchestrator   string `json:"orchestrator"`
+		TimeoutSeconds int    `json:"timeout_seconds"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
 
 	if p.Cwd == "" {
 		return toolError(id, "cwd is required")
+	}
+	if p.TimeoutSeconds < 0 {
+		return toolError(id, "timeout_seconds must be >= 0")
+	}
+	if p.TimeoutSeconds > maxHeraInboxTimeoutSeconds {
+		return toolError(id, fmt.Sprintf("timeout_seconds exceeds %d-second cap", maxHeraInboxTimeoutSeconds))
 	}
 
 	caller, err := s.resolveCallerRole(p.Cwd, p.Orchestrator)
@@ -1375,9 +1391,19 @@ func (s *Server) toolHeraInbox(id interface{}, args json.RawMessage) *Response {
 		return toolError(id, err.Error())
 	}
 
-	// Service.Inbox fetches unread messages and cancels pending doorbell deliveries.
-	msgs, err := s.heraSvc.Inbox(caller.role.ID)
+	// Both paths fetch unread messages and cancel pending doorbell deliveries.
+	// The blocking path is parented on shutdownCtx so daemon shutdown promptly
+	// releases the MCP handler instead of waiting for the caller's deadline.
+	var msgs []*db.HeraMessage
+	if p.TimeoutSeconds == 0 {
+		msgs, err = s.heraSvc.Inbox(caller.role.ID)
+	} else {
+		ctx, cancel := context.WithTimeout(s.shutdownCtx, time.Duration(p.TimeoutSeconds)*time.Second)
+		defer cancel()
+		msgs, err = s.heraSvc.WaitInbox(ctx, caller.role.ID)
+	}
 	if err != nil {
+		uxlog.Log("[hera] inbox wait failed: role=%s timeout=%ds err=%v", caller.role.Name, p.TimeoutSeconds, err)
 		return toolError(id, fmt.Sprintf("inbox query failed: %v", err))
 	}
 
@@ -1394,7 +1420,14 @@ func (s *Server) toolHeraInbox(id interface{}, args json.RawMessage) *Response {
 	}
 
 	if len(msgs) == 0 {
+		if p.TimeoutSeconds > 0 {
+			uxlog.Log("[hera] inbox wait timed out: role=%s timeout=%ds", caller.role.Name, p.TimeoutSeconds)
+			return toolResult(id, fmt.Sprintf("No messages arrived within %ds for role %q.", p.TimeoutSeconds, caller.role.Name))
+		}
 		return toolResult(id, fmt.Sprintf("Inbox empty for role %q.", caller.role.Name))
+	}
+	if p.TimeoutSeconds > 0 {
+		uxlog.Log("[hera] inbox wait received: role=%s count=%d", caller.role.Name, len(msgs))
 	}
 
 	var b strings.Builder

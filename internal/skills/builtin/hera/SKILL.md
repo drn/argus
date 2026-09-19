@@ -111,10 +111,12 @@ the end of this section).
   recipient, and delivery mode. Caps: 64 KiB body, 500 unread per recipient, 50 sends/min/sender.
   Cross-orchestrator messaging is not possible — `to` always resolves within your own orchestrator.
 
-- **`hera_inbox(cwd, [orchestrator])`** — fetch all unread messages addressed to your role, oldest
-  first. **Reading IS acknowledgment**: this both cancels pending pane deliveries AND marks the
-  messages read — no separate `hera_mark_read` needed for normal consumption. Call it whenever you get a
-  doorbell.
+- **`hera_inbox(cwd, [orchestrator], [timeout_seconds])`** — fetch all unread messages addressed to
+  your role, oldest first. **Reading IS acknowledgment**: this both cancels pending pane deliveries
+  AND marks the messages read — no separate `hera_mark_read` needed for normal consumption. Omit
+  `timeout_seconds` (or pass `0`) for an immediate check. Pass `1`–`120` to block server-side until
+  unread mail arrives or the timeout elapses. **When waiting for another role's reply, this blocking
+  call is the recommended default; never hand-roll a background timer or sleep-based polling loop.**
 
 - **`hera_mark_read(cwd, message_ids, [orchestrator])`** — explicitly mark specific message ids read and
   cancel their pending deliveries. Use when you read via `hera_get_messages` instead of `hera_inbox`.
@@ -204,6 +206,9 @@ or using in-session sub-agents.
 - **This task holds 2+ bindings?** Pass `orchestrator=` on EVERY tool call.
 - **Got a doorbell?** Call `hera_inbox(cwd=$PWD)` immediately — the content is in the inbox, not the
   doorbell line.
+- **Waiting for a reply?** Call `hera_inbox(cwd=$PWD, timeout_seconds=120)`. It returns immediately if
+  mail is already unread and otherwise blocks in the server. On timeout, call it again if the reply is
+  still needed; do not create a background timer or shell sleep loop.
 - **Want whole-team state?** `hera_tree_updates(cwd=$PWD)`, then `hera_get_messages(ids=[…])` for the
   ones worth reading.
 - **How completion flows back:** a worker finishing sends a closing `hera_send(status="done", …)` — the
@@ -284,9 +289,10 @@ You opened in a born-bound worker terminal:
 2. `hera_status(cwd=$PWD, status="working")`.
 3. Do the work in your worktree. If you hit a fork that needs the coordinator's call:
    `hera_send(cwd=$PWD, status="working", body="<question + context>", tldr="Need decision: X vs Y for the cart schema")`
-   (no `to` needed — default-routes to the coordinator), then check `hera_inbox(cwd=$PWD)` on the
-   doorbell for the answer. **Always supply `status` on every `hera_send` — it is required for
-   worker/freelance senders.**
+   (no `to` needed — default-routes to the coordinator), then call
+   `hera_inbox(cwd=$PWD, timeout_seconds=120)` for the answer. Repeat the blocking call after a timeout
+   if needed; never hand-roll a background timer. **Always supply `status` on every `hera_send` — it
+   is required for worker/freelance senders.**
 4. Land your work (open a PR via iris, or leave commits for the coordinator to pull).
 5. `hera_send(cwd=$PWD, status="done", body="<summary + PR link>", tldr="cart-api done, PR #47, tests green")`
    — the synchronous status apply rolls your task to in_review + ready_to_close so the coordinator
