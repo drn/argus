@@ -354,6 +354,10 @@ M6a scaffolds the native Hera view: a `HeraPage` (rail | coordinator pane | agen
 - **The popup's tree grouping is a sub-structure WITHIN each existing PENDING/NOT-SAFE/SAFE section, never a replacement for it** — `appendSectionRows` renders every ungrouped candidate (`Coordinator == ""`) flat first, then one group header per distinct coordinator (first-appearance order within that section), each followed by ALL of that coordinator's candidates in the section (even if they weren't contiguous in the input — a tree groups every child under its one header, not one header per contiguous run). An ungrouped-only candidate set (every existing pre-5a-cleanup-tree-view test fixture) produces byte-identical rows to before — no group header is ever fabricated for an empty `Coordinator`.
 - **The single-role nuke popup's sole candidate has no `Coordinator` set and so always renders flat** — grouping only visibly matters for the global Cleanup action's cross-project backlog; the widget itself makes no distinction between the two call sites beyond the data it's given.
 
+### prevent-cross-orchestrator-binding-leaks: hierarchy is explicit
+
+- **A shared `argus_task_id` proves only membership, never parentage.** The same task may be independently active in multiple orchestrators; rail nesting and `hera_tree_updates` must use `hera_orch_links`' recorded parent-side bridge role. `J` detach must remove only that owned link/role, never every binding with the coordinator's task ID.
+
 ### add-hera-accept-lifecycle: `a` HIDE now also stops the session, hide direction only
 
 - **`Ops.ArchiveToggle`'s signature changed from `error` to `(archived bool, err error)`** – `archived` is true only when THIS call moved the row from active to archived (the HIDE direction), false on the un-hide direction or on any error. `heraHide` reads this instead of re-deriving the direction with a second `HeraRole`/`HeraOrchestrator` read, so the two can never disagree about which branch just ran. Every pre-existing call site (tests, `heraactions.go`) needed updating for the new two-value return – a mechanical but easy-to-miss `go vet ./...` catch across the tree.

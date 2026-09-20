@@ -164,6 +164,7 @@ func TestReparentCoordinator(t *testing.T) {
 		testutil.NoError(t, err)
 		_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: nest.ID, ArgusTaskID: "child-coord", WorktreePath: "/wt"})
 		testutil.NoError(t, err)
+		testutil.NoError(t, d.CreateHeraOrchLink(gp, child, nest.ID))
 
 		_, err = NewAdoptOps(d).ReparentCoordinator(ReparentInput{
 			ChildOrchestratorID: gp, ParentOrchestratorID: child,
@@ -226,6 +227,7 @@ func TestReparentCoordinator_BUG026(t *testing.T) {
 	testutil.NoError(t, err)
 	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: liveLink.ID, ArgusTaskID: "ct", WorktreePath: "/wt/ct"})
 	testutil.NoError(t, err)
+	testutil.NoError(t, d.CreateHeraOrchLink(p, child, liveLink.ID))
 
 	_ = endedLink
 	_ = liveLink
@@ -237,12 +239,11 @@ func TestReparentCoordinator_BUG026(t *testing.T) {
 	})
 	testutil.NoError(t, err)
 
-	// Every prior parent-link role under P is torn down (live + ended). Identity
-	// checks would be fragile (SQLite reuses freed rowids), so assert the END
-	// STATE: P holds no roles at all.
+	// Only the explicitly-owned live parent-link role is torn down. Historical
+	// task-sharing rows are independent memberships and survive.
 	pRoles, err := d.ListHeraRoles(p, true)
 	testutil.NoError(t, err)
-	testutil.Equal(t, len(pRoles), 0)
+	testutil.Equal(t, len(pRoles), 1)
 
 	// The child's own coordinator role + its live binding survive untouched.
 	gotCoord, err := d.HeraRole(coord.ID)
@@ -286,6 +287,24 @@ func liveBindingCount(t *testing.T, d *db.DB, taskID string) int {
 }
 
 func TestDetachCoordinator(t *testing.T) {
+	t.Run("preserves an unrelated shared-task membership", func(t *testing.T) {
+		d := memDB(t)
+		child := seedOrch(t, d, "child")
+		seedBoundRole(t, d, child, "coord", db.HeraKindCoordinator, "shared")
+		other := seedOrch(t, d, "other")
+		otherRole, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: other, Name: "worker", Kind: db.HeraKindWorker})
+		testutil.NoError(t, err)
+		_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: otherRole.ID, ArgusTaskID: "shared", WorktreePath: "/wt/shared-other"})
+		testutil.NoError(t, err)
+
+		res, err := NewAdoptOps(d).DetachCoordinator(child)
+		testutil.NoError(t, err)
+		testutil.Equal(t, res.LinksRemoved, 0)
+		got, err := d.HeraRole(otherRole.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.ID, otherRole.ID)
+	})
+
 	t.Run("un-nests a nested coordinator back to top-level", func(t *testing.T) {
 		d := memDB(t)
 		// Child C nested under parent P: a worker link role in P bound to C's

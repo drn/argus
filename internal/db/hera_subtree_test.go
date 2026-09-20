@@ -32,6 +32,7 @@ func nestOrch(t *testing.T, d *DB, parentOrchID int64, childName, bridgeTask str
 	bind(t, d, childCoord.ID, bridgeTask)
 	parentWorker := mkRole(t, d, parentOrchID, "w-"+childName, HeraKindWorker)
 	bind(t, d, parentWorker.ID, bridgeTask)
+	testutil.NoError(t, d.CreateHeraOrchLink(parentOrchID, child.ID, parentWorker.ID))
 	return child, childCoord
 }
 
@@ -43,6 +44,20 @@ func TestSubtreeOrchIDs_RootOnly(t *testing.T) {
 	ids, err := d.SubtreeOrchIDs(root.ID)
 	testutil.NoError(t, err)
 	testutil.DeepEqual(t, ids, []int64{root.ID})
+}
+
+func TestSubtreeOrchIDs_SharedTaskWithoutLinkIsIndependent(t *testing.T) {
+	d := heraTestDB(t)
+	parent := mkOrch(t, d, "parent")
+	child := mkOrch(t, d, "child")
+	parentWorker := mkRole(t, d, parent.ID, "worker", HeraKindWorker)
+	childCoord := mkRole(t, d, child.ID, "coord", HeraKindCoordinator)
+	bind(t, d, parentWorker.ID, "same-task")
+	bind(t, d, childCoord.ID, "same-task")
+
+	ids, err := d.SubtreeOrchIDs(parent.ID)
+	testutil.NoError(t, err)
+	testutil.DeepEqual(t, ids, []int64{parent.ID})
 }
 
 func TestSubtreeOrchIDs_NestedThreeLevels(t *testing.T) {
@@ -106,9 +121,11 @@ func TestSubtreeOrchIDs_CycleGuard(t *testing.T) {
 	// tB is also a worker in A → B is a child of A.
 	aWorker := mkRole(t, d, a.ID, "w", HeraKindWorker)
 	bind(t, d, aWorker.ID, "tB")
+	testutil.NoError(t, d.CreateHeraOrchLink(a.ID, b.ID, aWorker.ID))
 	// tA is also a worker in B → A is a child of B (forms the cycle).
 	bWorker := mkRole(t, d, b.ID, "w", HeraKindWorker)
 	bind(t, d, bWorker.ID, "tA")
+	testutil.NoError(t, d.CreateHeraOrchLink(b.ID, a.ID, bWorker.ID))
 
 	ids, err := d.SubtreeOrchIDs(a.ID)
 	testutil.NoError(t, err)
@@ -172,6 +189,7 @@ func TestSubtreeOrchIDs_BridgesOverEndedNonTeardown(t *testing.T) {
 	testutil.NoError(t, d.EndHeraBinding(subBnd.ID, "argus_deleted")) // non-teardown
 	parentWorker := mkRole(t, d, root.ID, "w-sub", HeraKindWorker)
 	bind(t, d, parentWorker.ID, "t-sub")
+	testutil.NoError(t, d.CreateHeraOrchLink(root.ID, sub.ID, parentWorker.ID))
 
 	ids, err := d.SubtreeOrchIDs(root.ID)
 	testutil.NoError(t, err)
