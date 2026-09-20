@@ -2238,6 +2238,9 @@ func TestBuildCmd_ModelInjection_PiResume(t *testing.T) {
 // Model values are shell-quoted — a hostile model string cannot break out.
 func TestBuildCmd_ModelInjection_ShellQuoted(t *testing.T) {
 	cfg := modelConfig()
+	b := cfg.Backends["claude"]
+	b.Models = []string{"x'; rm -rf /"}
+	cfg.Backends["claude"] = b
 	task := &model.Task{Name: "t", Prompt: "go", Model: "x'; rm -rf /", Worktree: t.TempDir()}
 	cmd, _, err := BuildCmd(task, cfg, false)
 	testutil.NoError(t, err)

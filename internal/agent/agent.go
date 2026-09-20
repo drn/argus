@@ -270,7 +270,15 @@ func resolvedBackendName(task *model.Task, cfg config.Config) string {
 // list have no allow-list, so a profile model can never be validated for them
 // and resolution falls open (no --model).
 func backendAllowsModel(m string, backend config.Backend) bool {
-	for _, cand := range BackendModels(backend) {
+	models := BackendModels(backend)
+	// Backends without a curated or configured selector (Pi, opencode, and
+	// custom commands) accept operator-provided model identifiers. There is no
+	// authoritative allow-list to validate against; this preserves their
+	// custom-model escape hatch while curated backends remain strict.
+	if len(models) == 0 {
+		return true
+	}
+	for _, cand := range models {
 		if cand == m {
 			return true
 		}
