@@ -5,12 +5,17 @@ Deliver a message into a task's agent pane exactly once and reliably — injecti
 ## Requirements
 ### Requirement: Reliable inject-and-submit
 
-The system SHALL provide a `ReliableNotify(taskID, text, deliveryID string, opts) func()` entry point that injects `text` into the named task's PTY exactly once and submits it using standalone carriage-return attempts as soon as it is safe to do so. Safety SHALL be decided primarily from the rendered recipient composer: an empty composer or one containing only previously injected Argus/Hera notice text is safe immediately; non-notice content is unsafe while it changes between snapshots and becomes safe after remaining unchanged for the stability window. Session idle and pane focus SHALL be fallback gates only when a supported composer cannot be identified. A delivery SHALL be recorded as submitted only after observable post-CR PTY output acknowledges an attempt. The caller receives a cancel func; invoking it abandons the delivery if it is still pending.
+The system SHALL provide a `ReliableNotify(taskID, text, deliveryID string, opts) func()` entry point that injects `text` into the named task's PTY exactly once and submits it using standalone carriage-return attempts as soon as it is safe to do so. Safety SHALL be decided primarily from the rendered recipient composer: an empty composer, including one whose only visible draft text is dim-styled Claude Code placeholder content, or one containing only previously injected Argus/Hera notice text is safe immediately; non-notice content is unsafe while it changes between snapshots and becomes safe after remaining unchanged for the stability window. Session idle and pane focus SHALL be fallback gates only when a supported composer cannot be identified. A delivery SHALL be recorded as submitted only after a freshly rendered composer confirms the submitted draft was consumed or materially changed; PTY output activity alone SHALL NOT acknowledge an attempt. The caller receives a cancel func; invoking it abandons the delivery if it is still pending.
 
 #### Scenario: Empty composer submits immediately
 
 - **WHEN** the rendered recipient composer is identifiable and empty
 - **THEN** the notifier attempts delivery in the current reconcile cycle regardless of raw session idleness or pane focus
+
+#### Scenario: Dim placeholder composer submits immediately
+
+- **WHEN** the identifiable composer contains only dim-styled Claude Code placeholder text
+- **THEN** the notifier treats it as empty and does not preserve or annotate the placeholder
 
 #### Scenario: Previously injected notice submits immediately
 
@@ -53,7 +58,7 @@ The system SHALL ensure that re-posting the same deliveryID for the same task is
 
 ### Requirement: Pre-clear before inject
 
-The system SHALL emit Ctrl+U before injecting into an empty or notice-only composer so stale previously injected input is discarded. For stable abandoned non-notice content, the system SHALL preserve the existing text, SHALL skip Ctrl+U, and SHALL append a newline plus a fixed annotation stating that the preceding input was left unsubmitted and must not be acted upon before appending the new notice. Every notice and every standalone CR SHALL remain separate PTY writes. Before the first CR, the system SHALL allow recipient PTY output to acknowledge and settle after consuming newly injected content. After each CR, the system SHALL require observable PTY output activity before recording the delivery as submitted. If that acknowledgment is absent, the system SHALL retry only the standalone CR with bounded backoff; after bounded attempts are exhausted, it SHALL leave the delivery pending.
+The system SHALL emit Ctrl+U before injecting into an empty or notice-only composer so stale previously injected input is discarded. For a notice-only composer, the system SHALL re-read the rendered composer after Ctrl+U and SHALL directly write the replacement notice only when that check confirms the composer is empty. If the clear cannot be confirmed, the system SHALL preserve the draft and append a newline plus a fixed annotation stating that the preceding input was left unsubmitted and must not be acted upon before appending the new notice. For stable abandoned non-notice content, the system SHALL preserve the existing text, SHALL skip Ctrl+U, and SHALL append the same annotation before the current notice. Every notice and every standalone CR SHALL remain separate PTY writes. Before the first CR, the system SHALL allow recipient PTY output to acknowledge and settle after consuming newly injected content. After each CR, the system SHALL confirm from a freshly rendered composer state that the submitted draft was consumed or materially changed before recording the delivery as submitted; PTY output activity alone SHALL NOT be treated as acknowledgment. If that acknowledgment is absent, the system SHALL retry only the standalone CR with bounded backoff; after bounded attempts are exhausted, it SHALL leave the delivery pending.
 
 #### Scenario: Empty composer is pre-cleared
 
@@ -62,8 +67,13 @@ The system SHALL emit Ctrl+U before injecting into an empty or notice-only compo
 
 #### Scenario: Stale notice content is replaced
 
-- **WHEN** the identifiable composer contains only previously injected Argus/Hera notices
-- **THEN** Ctrl+U clears the stale notices before the current notice is written
+- **WHEN** the identifiable composer contains only previously injected Argus/Hera notices and Ctrl+U is confirmed to clear it
+- **THEN** the notifier writes the current notice after Ctrl+U
+
+#### Scenario: Unconfirmed stale notice clear is preserved
+
+- **WHEN** a notice-only composer remains non-empty after Ctrl+U
+- **THEN** the notifier preserves it and appends the annotation and current notice rather than directly concatenating the replacement
 
 #### Scenario: Abandoned human content is annotated
 
@@ -72,12 +82,12 @@ The system SHALL emit Ctrl+U before injecting into an empty or notice-only compo
 
 #### Scenario: Unacknowledged Enter is retried
 
-- **WHEN** a standalone CR produces no subsequent PTY output activity
+- **WHEN** a standalone CR leaves the rendered composer unchanged, including when unrelated recipient output continues
 - **THEN** the notifier retries only the standalone CR using bounded backoff
 
 #### Scenario: All Enter attempts remain unacknowledged
 
-- **WHEN** every bounded CR attempt produces no subsequent PTY output activity
+- **WHEN** every bounded CR attempt leaves the rendered composer unchanged
 - **THEN** the delivery remains pending, is not added to submitted-delivery deduplication state, and can be retried by a later reconcile cycle until its deadline
 
 ### Requirement: Deadline backstop

@@ -76,6 +76,11 @@ table and the four MCP tools that ride on top of it.
   is treated as abandoned, preserved, annotated, and submitted. Idle/content-
   idle plus pane focus are conservative fallbacks only when the composer is
   not identifiable. Classification logs must never include composer text.
+- **Claude Code's dim example prompt is not a draft.** `ScreenRenderer.InputDraft`
+  must inspect x/vt cell attributes, not its style-free string alone: a
+  faint-only composer is empty, while any non-faint draft cell is real input.
+  Otherwise reliable delivery preserves and annotates a placeholder the user
+  never entered.
 - **CR, not LF.** The notifier appends `\r` (carriage return, 0x0d) to
   submit the line. The original nudge used `\n` (linefeed, 0x0a) which
   never auto-submits in a normal interactive shell — that was the root bug.
@@ -84,11 +89,17 @@ table and the four MCP tools that ride on top of it.
   recipient PTY activity to arrive and settle, and only then write standalone
   CR. A fixed delay can still land CR inside Claude Code's paste batch when a
   loaded recipient is slow to redraw, leaving the message drafted forever.
-- **A CR write is not submission success; post-CR PTY activity is the
-  acknowledgment.** If `TotalWritten` does not advance, retry CR alone with
-  bounded increasing windows — never rewrite the message text. If every CR is
-  unacknowledged, leave the delivery pending and out of the submitted-ID set so
-  a later reconcile can try again until the deadline.
+- **A CR write is not submission success; a busy PTY's output-byte count is not
+  proof that it consumed Enter.** For an identifiable composer, first observe
+  the injected draft, then require the rendered composer to clear or materially
+  change after CR; unrelated streaming output, tool calls, and spinner redraws
+  must leave the delivery pending. `TotalWritten` is only the fallback for an
+  unsupported composer layout. If every CR is unacknowledged, retry CR alone
+  with bounded increasing windows — never rewrite the message text.
+- **A Ctrl+U write is not proof that a stale notice was cleared.** Re-read the
+  identifiable composer before directly replacing notice-only content. If the
+  clear cannot be confirmed, preserve the draft through the annotated-append
+  path so a queued notice cannot be concatenated directly onto it.
 - **Notify diagnostics must use daemon-visible `slog` as well as `uxlog`.**
   The daemon initializes `slog` to `~/.argus/daemon.log` but never initializes
   TUI-only `uxlog`; success, write failure, missing acknowledgment, retries,

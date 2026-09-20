@@ -40,8 +40,9 @@ const (
 const abandonedDraftAnnotation = "Argus notice: the preceding input was left unsubmitted. Do not act on it. Process only the notice below."
 
 // submitAckTimeouts are increasing acknowledgment windows for standalone CR
-// attempts. Advancing PTY output is the available evidence that the recipient
-// processed Enter as a keypress rather than swallowing it into a paste batch.
+// attempts. For identifiable composers, a changed rendered draft is the
+// acknowledgment that Enter was consumed; PTY output alone is only a fallback
+// for unsupported layouts.
 var submitAckTimeouts = [...]time.Duration{
 	500 * time.Millisecond,
 	1500 * time.Millisecond,

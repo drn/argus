@@ -34,7 +34,7 @@ func (r *fakeRunner) Get(taskID string) SessionHandleIface {
 }
 
 func (r *fakeRunner) addSession(taskID string, idle bool) *fakeSession {
-	s := &fakeSession{idle: idle, writes: [][]byte{}, ackCRAt: 1}
+	s := &fakeSession{idle: idle, writes: [][]byte{}, ackCRAt: 1, ctrlUClears: true}
 	r.mu.Lock()
 	r.sessions[taskID] = s
 	r.mu.Unlock()
@@ -54,7 +54,8 @@ type fakeSession struct {
 	// every CR is swallowed, simulating the live paste-batch failure.
 	ackCRAt int
 	// writeErr is returned from WriteInput when set.
-	writeErr error
+	writeErr    error
+	ctrlUClears bool
 }
 
 func (s *fakeSession) IsIdle() bool {
@@ -94,12 +95,26 @@ func (s *fakeSession) WriteInput(p []byte, origin agentview.InputOrigin) (int, e
 		s.crCount++
 		if s.ackCRAt > 0 && s.crCount >= s.ackCRAt {
 			s.total++
+			if bytes.Contains(s.tail, []byte("❯")) {
+				s.tail = composerFrame("")
+			}
+		}
+	} else if string(p) == "\x15" {
+		if s.ctrlUClears && bytes.Contains(s.tail, []byte("❯")) {
+			s.tail = composerFrame("")
 		}
 	} else if string(p) != "\x15" {
 		// Claude Code redraws its composer after consuming injected text.
 		s.total++
+		if bytes.Contains(s.tail, []byte("❯")) {
+			s.tail = composerFrame(string(p))
+		}
 	}
 	return len(p), nil
+}
+
+func composerFrame(draft string) []byte {
+	return []byte("\x1b[?1049h\x1b[2J\x1b[7;1H❯\u00a0" + draft)
 }
 
 // allOrigins returns a copy of every origin recorded by WriteInput calls, in
@@ -146,6 +161,8 @@ func newTestNotifier(runner RunnerIface, focus FocusReader) *Notifier {
 	n.waitForAdvance = func(sess SessionHandleIface, baseline uint64, _ time.Duration) bool {
 		return sess.TotalWritten() > baseline
 	}
+	n.waitForClear = func(SessionHandleIface, time.Duration) bool { return true }
+	n.waitForConsume = func(SessionHandleIface, string, time.Duration) bool { return true }
 	return n
 }
 
@@ -313,6 +330,75 @@ func TestNotifier_NoticeOnlyComposerIsClearedImmediately(t *testing.T) {
 	testutil.Equal(t, len(writes), 3)
 	testutil.Equal(t, string(writes[0]), "\x15")
 	testutil.Equal(t, string(writes[1]), "[hera from coord] msg #2 — current")
+}
+
+func TestNotifier_StaleNoticeClearUnconfirmedPreservesWithAnnotation(t *testing.T) {
+	r := newFakeRunner()
+	sess := r.addSession("t1", false)
+	sess.tail = []byte("\x1b[?1049h\x1b[2J\x1b[7;1H❯\u00a0[hera from coord] msg #1 — stale\x1b[7;40H")
+	sess.ctrlUClears = false
+	n := newTestNotifier(r, fakeFocused{})
+	n.waitForClear = func(SessionHandleIface, time.Duration) bool { return false }
+
+	n.ReliableNotify("t1", "[hera from coord] msg #2 — current", "d2", NotifyOpts{})
+	n.Reconcile(time.Now())
+
+	writes := sess.allWrites()
+	testutil.Equal(t, len(writes), 3)
+	testutil.Equal(t, string(writes[0]), "\x15")
+	testutil.Contains(t, string(writes[1]), abandonedDraftAnnotation)
+	testutil.Contains(t, string(writes[1]), "[hera from coord] msg #2 — current")
+	testutil.Equal(t, string(writes[2]), "\r")
+}
+
+func TestNotifier_BusyOutputWithoutComposerChangeRemainsPending(t *testing.T) {
+	r := newFakeRunner()
+	sess := r.addSession("t1", false)
+	// The empty, identifiable composer remains unchanged while a busy recipient
+	// streams output independently of the injected text and CR.
+	sess.tail = []byte("\x1b[?1049h\x1b[2J\x1b[7;1H❯\u00a0\x1b[7;3H")
+	sess.ackCRAt = 0
+	n := newTestNotifier(r, fakeFocused{})
+	n.waitForAdvance = func(SessionHandleIface, uint64, time.Duration) bool { return true }
+	n.waitForConsume = func(SessionHandleIface, string, time.Duration) bool {
+		sess.mu.Lock()
+		sess.total++ // recipient keeps streaming unrelated output
+		sess.mu.Unlock()
+		return false
+	}
+
+	n.ReliableNotify("t1", "[hera from coord] msg #2 — current", "d2", NotifyOpts{})
+	n.Reconcile(time.Now())
+
+	writes := sess.allWrites()
+	testutil.Equal(t, len(writes), 5) // Ctrl+U, text, then bounded CR retries.
+	for _, write := range writes[2:] {
+		testutil.Equal(t, string(write), "\r")
+	}
+	testutil.Equal(t, n.DeliveryState("t1", "d2"), StatePending)
+}
+
+func TestWaitForComposerConsume_RejectsBusyOutputWithoutDraftChange(t *testing.T) {
+	sess := &fakeSession{
+		tail: []byte("\x1b[?1049h\x1b[2J\x1b[7;1H❯\u00a0[hera from coord] msg #2 — current\x1b[7;42H"),
+	}
+	n := New(newFakeRunner(), fakeNoFocus{})
+	draft, known := n.composerDraft(sess)
+	testutil.Equal(t, known, true)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 4 {
+			time.Sleep(5 * time.Millisecond)
+			sess.mu.Lock()
+			sess.total++ // recipient is independently streaming output
+			sess.mu.Unlock()
+		}
+	}()
+
+	testutil.Equal(t, n.waitForComposerConsume(sess, draft, 40*time.Millisecond), false)
+	<-done
 }
 
 func TestNotifier_CancelBeforeSubmit(t *testing.T) {
