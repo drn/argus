@@ -1526,6 +1526,16 @@ func setupNestedOrch(t *testing.T, s *Server, d *db.DB) (coordWt, workerWt, subW
 		t.Fatalf("sub-orch bootstrap failed: %s", cr.Content[0].Text)
 	}
 
+	// A shared task binding alone does not imply hierarchy. The coordinator
+	// explicitly adopts the new orchestrator beneath w1.
+	parent, err := d.HeraOrchestratorByName("test-orch")
+	testutil.NoError(t, err)
+	child, err := d.HeraOrchestratorByName("sub-orch")
+	testutil.NoError(t, err)
+	parentWorker, err := d.HeraRoleByName(parent.ID, "w1")
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.CreateHeraOrchLink(parent.ID, child.ID, parentWorker.ID))
+
 	subWorkerTask := addHeraTestTask(t, d, "/wt/subworker-"+t.Name())
 	subWorkerWt = subWorkerTask.Worktree
 	resp = doRequest(t, s, "tools/call", ToolCallParams{
