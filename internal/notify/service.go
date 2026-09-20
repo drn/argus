@@ -34,15 +34,17 @@ type Notifier struct {
 	screenMu sync.Mutex
 	screen   agent.ScreenRenderer
 
-	// Output wait seams keep timing-dependent delivery behavior deterministic
-	// in tests. Production uses the polling helpers below.
+	// Output and composer wait seams keep timing-dependent delivery behavior
+	// deterministic in tests. Production uses the polling helpers below.
 	waitForSettled func(SessionHandleIface, uint64, time.Duration, time.Duration) bool
 	waitForAdvance func(SessionHandleIface, uint64, time.Duration) bool
+	waitForClear   func(SessionHandleIface, time.Duration) bool
+	waitForConsume func(SessionHandleIface, string, time.Duration) bool
 }
 
 // New creates a Notifier. runner and focus must be non-nil.
 func New(runner RunnerIface, focus FocusReader) *Notifier {
-	return &Notifier{
+	n := &Notifier{
 		pending:        make(map[string]*delivery),
 		queue:          make(map[string][]*delivery),
 		cancels:        make(map[string]map[string]func()),
@@ -54,6 +56,9 @@ func New(runner RunnerIface, focus FocusReader) *Notifier {
 		waitForSettled: waitForOutputSettled,
 		waitForAdvance: waitForOutputAdvance,
 	}
+	n.waitForClear = n.waitForComposerClear
+	n.waitForConsume = n.waitForComposerConsume
+	return n
 }
 
 // ReliableNotify registers a delivery of text to taskID. Returns a cancel func
@@ -223,7 +228,7 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 		return
 	}
 
-	clearDraft, payload, safe := n.deliveryInput(taskID, d, sess, now)
+	clearDraft, verifyClear, composerKnown, payload, safe := n.deliveryInput(taskID, d, sess, now)
 	if !safe {
 		return
 	}
@@ -246,6 +251,12 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 			logDelivery(slog.LevelWarn, "delivery write failed", taskID, d.deliveryID, "phase", "ctrl+u", "error", err)
 			return
 		}
+		if verifyClear && !n.waitForClear(sess, submitAckTimeouts[0]) {
+			// A successful PTY write says nothing about editor semantics. Preserve
+			// an uncleared notice rather than gluing the replacement onto it.
+			logDelivery(slog.LevelWarn, "delivery stale notice clear unconfirmed: preserving", taskID, d.deliveryID)
+			payload = "\n\n" + abandonedDraftAnnotation + "\n" + d.text
+		}
 	}
 	textBaseline := sess.TotalWritten()
 	if _, err := sess.WriteInput([]byte(payload), agentview.OriginSystem); err != nil {
@@ -254,6 +265,20 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 	}
 	if !n.waitForSettled(sess, textBaseline, textSettleTimeout, textQuietWindow) {
 		logDelivery(slog.LevelWarn, "delivery text settle unconfirmed", taskID, d.deliveryID)
+	}
+
+	// An identifiable composer needs a visible snapshot of the injected text
+	// before its disappearance can acknowledge CR. In particular, a stale empty
+	// frame plus unrelated streaming output cannot prove the input was consumed.
+	submittedDraft := ""
+	composerAckable := !composerKnown
+	if composerKnown {
+		if draft, known := n.composerDraft(sess); known && strings.Contains(draft, d.text) {
+			submittedDraft = draft
+			composerAckable = true
+		} else {
+			logDelivery(slog.LevelWarn, "delivery injected composer unobserved", taskID, d.deliveryID)
+		}
 	}
 
 	for i, timeout := range submitAckTimeouts {
@@ -268,7 +293,17 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 				"phase", "enter", "attempt", attempt, "error", err)
 			return
 		}
-		if n.waitForAdvance(sess, baseline, timeout) {
+		acknowledged := false
+		if composerKnown {
+			if composerAckable {
+				acknowledged = n.waitForConsume(sess, submittedDraft, timeout)
+			}
+		} else {
+			// The raw output counter is a conservative fallback only when a
+			// supported composer cannot be identified at all.
+			acknowledged = n.waitForAdvance(sess, baseline, timeout)
+		}
+		if acknowledged {
 			logDelivery(slog.LevelInfo, "delivery submitted", taskID, d.deliveryID, "attempt", attempt)
 			n.removeAndAdvance(taskID, d.deliveryID, true)
 			return
@@ -285,23 +320,19 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 // deliveryInput decides whether this reconcile cycle may write and constructs
 // the exact text to inject. Recognizable composer content is authoritative;
 // idle/focus are retained only when the terminal layout is unknown.
-func (n *Notifier) deliveryInput(taskID string, d *delivery, sess SessionHandleIface, now time.Time) (clear bool, payload string, safe bool) {
-	cols, rows := sess.PTYSize()
-	tail := agent.SubstantiveTail(sess.RecentOutputTail, 64*1024, agent.NeedsInputMaxExpandBytes)
-	n.screenMu.Lock()
-	draft, known := n.screen.InputDraft(tail, cols, rows)
-	n.screenMu.Unlock()
+func (n *Notifier) deliveryInput(taskID string, d *delivery, sess SessionHandleIface, now time.Time) (clear bool, verifyClear bool, composerKnown bool, payload string, safe bool) {
+	draft, known := n.composerDraft(sess)
 	if !known {
 		logDelivery(slog.LevelDebug, "delivery composer unknown: using idle/focus fallback", taskID, d.deliveryID)
 		if !n.idle.IsIdle(taskID, sess, now) {
 			logDelivery(slog.LevelDebug, "delivery skip: session busy", taskID, d.deliveryID)
-			return false, "", false
+			return false, false, false, "", false
 		}
 		if n.focus.IsFocused(taskID) {
 			logDelivery(slog.LevelDebug, "delivery skip: human focused", taskID, d.deliveryID)
-			return false, "", false
+			return false, false, false, "", false
 		}
-		return true, d.text, true
+		return true, false, false, d.text, true
 	}
 
 	draft = strings.TrimSpace(draft)
@@ -309,29 +340,71 @@ func (n *Notifier) deliveryInput(taskID string, d *delivery, sess SessionHandleI
 		d.observedDraft = ""
 		d.draftObservedAt = time.Time{}
 		logDelivery(slog.LevelDebug, "delivery composer empty", taskID, d.deliveryID)
-		return true, d.text, true
+		return true, false, true, d.text, true
 	}
 	if injectedNoticeDraft(draft) {
 		d.observedDraft = ""
 		d.draftObservedAt = time.Time{}
 		logDelivery(slog.LevelInfo, "delivery composer contains stale notice", taskID, d.deliveryID)
-		return true, d.text, true
+		return true, true, true, d.text, true
 	}
 
 	if draft != d.observedDraft {
 		d.observedDraft = draft
 		d.draftObservedAt = now
 		logDelivery(slog.LevelDebug, "delivery composer non-notice content changed", taskID, d.deliveryID)
-		return false, "", false
+		return false, false, true, "", false
 	}
 	if now.Sub(d.draftObservedAt) < draftStabilityWindow {
 		logDelivery(slog.LevelDebug, "delivery composer non-notice content awaiting stability", taskID, d.deliveryID)
-		return false, "", false
+		return false, false, true, "", false
 	}
 
 	logDelivery(slog.LevelInfo, "delivery composer content stable: preserving with annotation", taskID, d.deliveryID)
 	payload = "\n\n" + abandonedDraftAnnotation + "\n" + d.text
-	return false, payload, true
+	return false, false, true, payload, true
+}
+
+func (n *Notifier) composerDraft(sess SessionHandleIface) (string, bool) {
+	cols, rows := sess.PTYSize()
+	tail := agent.SubstantiveTail(sess.RecentOutputTail, 64*1024, agent.NeedsInputMaxExpandBytes)
+	n.screenMu.Lock()
+	draft, known := n.screen.InputDraft(tail, cols, rows)
+	n.screenMu.Unlock()
+	return strings.TrimSpace(draft), known
+}
+
+// waitForComposerClear waits for the rendered composer to confirm that Ctrl+U
+// discarded the prior notice. A write syscall alone cannot establish that.
+func (n *Notifier) waitForComposerClear(sess SessionHandleIface, timeout time.Duration) bool {
+	return waitForComposer(sess, timeout, n.composerDraft, func(draft string) bool { return draft == "" })
+}
+
+// waitForComposerConsume waits until a previously observed injected composer
+// draft disappears or materially changes after CR. Unrelated PTY output is
+// deliberately not an acknowledgment.
+func (n *Notifier) waitForComposerConsume(sess SessionHandleIface, submittedDraft string, timeout time.Duration) bool {
+	return waitForComposer(sess, timeout, n.composerDraft, func(draft string) bool {
+		return draft == "" || draft != submittedDraft
+	})
+}
+
+func waitForComposer(sess SessionHandleIface, timeout time.Duration, draftOf func(SessionHandleIface) (string, bool), accepted func(string) bool) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if draft, known := draftOf(sess); known && accepted(draft) {
+			return true
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false
+		}
+		if remaining < outputPollInterval {
+			time.Sleep(remaining)
+		} else {
+			time.Sleep(outputPollInterval)
+		}
+	}
 }
 
 func injectedNoticeDraft(draft string) bool {
