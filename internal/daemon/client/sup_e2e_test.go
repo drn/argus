@@ -366,7 +366,7 @@ func TestSupArchModel(t *testing.T) {
 	testutil.NoError(t, database.SetProject("app", config.Project{Path: t.TempDir(), Profile: "lean"}))
 	profDir := filepath.Join(db.DataDir(), "profiles")
 	testutil.NoError(t, os.MkdirAll(profDir, 0o750))
-	testutil.NoError(t, os.WriteFile(filepath.Join(profDir, "lean.toml"), []byte("[archetype.docs]\nmodel = \"haiku\"\n"), 0o600))
+	testutil.NoError(t, os.WriteFile(filepath.Join(profDir, "lean.toml"), []byte("[archetype.docs]\nmodels = { claude = \"haiku\" }\n"), 0o600))
 
 	// A fake "claude" binary on PATH records its argv so the assertion below
 	// observes the command line the supervisor ACTUALLY executed, not just

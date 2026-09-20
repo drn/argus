@@ -89,8 +89,13 @@ func (a *App) resolveHeraTier(rv *hera.RoleView) {
 	t := a.heraTierTask(rv)
 	backend, err := agent.ResolveBackend(t, cfg)
 	if err != nil {
-		// Can't resolve a backend → show the profile's declared model as the intent.
-		rv.AppliedModel = strings.TrimSpace(prof.Archetype[rv.Archetype].Model)
+		// Can't resolve a backend → show the profile's declared choice for the
+		// task's requested/default backend as intent.
+		backendName := t.Backend
+		if backendName == "" {
+			backendName = cfg.Defaults.Backend
+		}
+		rv.AppliedModel = strings.TrimSpace(prof.Archetype[rv.Archetype].Models[backendName])
 		return
 	}
 	applied, _ := agent.ResolveModel(t, backend, cfg)

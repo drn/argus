@@ -33,7 +33,7 @@ authar's counterpart to this dispatch-side resolver).
 
 ## 2. Resolve once per pipeline
 
-Call `mcp__argus__profile_resolve(cwd=$PWD)` **exactly once** per pipeline or session, not once per
+Call `mcp__argus__profile_resolve(cwd=$PWD, backend="claude")` **exactly once** per pipeline or session, not once per
 stage — the response already carries every archetype's entry. Build a local map from it:
 
 ```
@@ -44,7 +44,7 @@ The response shape (per `internal/mcp/profiles.go`):
 
 ```json
 {"resolved": true|false, "name": "...", "source": "...",
- "archetype": {"code_slice": {"model": "sonnet", "effort": ""}, "review": {"model": "opus", "effort": ""}, ...},
+ "archetype": {"code_slice": {"models": {"claude": "sonnet", "codex": "gpt-5"}, "effort": ""}, ...},
  "rigor": {...}, "panel": {...}, "errors": [...]}
 ```
 
@@ -57,14 +57,13 @@ Never treat a miss as an error — always fall back to the dispatch mechanism's 
 
 - **`resolved: false`** (no profile, invalid profile, malformed `[panel]`) — every stage in the
   pipeline dispatches with no model override.
-- **A specific archetype absent from `archetype`, or present with an empty `model`** — only that
+- **A specific archetype absent from `archetype`, or present with no `models.claude` value** — only that
   stage falls back; other stages whose archetypes ARE present still get their resolved model. A
   profile author may legitimately leave some archetypes unset.
 
 ## 4. The in-session model gate (mandatory before dispatch)
 
-A profile's archetype `model` is validated against the union of **every configured backend's**
-models — it may legitimately name a codex model, not just a Claude one. Claude's native sub-agent
+A profile's archetype `models.claude` value is validated specifically for the Claude backend. Claude's native sub-agent
 dispatch only runs **in-session Claude models**. Before threading a resolved model into a dispatch
 call, check it against the same four values `hera-spawn-review` already checks finders against
 (mirrors `internal/review.knownInSessionModels`):
@@ -114,7 +113,7 @@ honored by a mechanism that has no way to honor it.
 ## 6. Worked example
 
 ```
-resolved = profile_resolve(cwd=$PWD)
+resolved = profile_resolve(cwd=$PWD, backend="claude")
 models = resolved.archetype if resolved.resolved else {}
 knownInSession = {"opus", "sonnet", "haiku", "fable"}
 foreignFlagshipHints = ["gpt-5", "opus", "large", "pro"]      # rough, name-based, best-effort
@@ -122,7 +121,7 @@ foreignCheapHints     = ["mini", "haiku", "small", "flash"]
 
 def modelFor(archetype):
     entry = models.get(archetype, {})
-    m = entry.get("model", "")
+    m = entry.get("models", {}).get("claude", "")
     if not m:
         return None                        # unset — use the caller's/tool's own default
     if m in knownInSession:

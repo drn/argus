@@ -2213,6 +2213,20 @@ func TestBuildCmd_ModelInjection_CodexResume(t *testing.T) {
 	testutil.Equal(t, cmd.Args[2], "codex resume --dangerously-bypass-approvals-and-sandbox --model 'gpt-5' 'abc-123'")
 }
 
+func TestBuildCmd_ModelInjection_CodexRejectsClaudeOverride(t *testing.T) {
+	cfg := modelConfig()
+	b := cfg.Backends["codex"]
+	b.Model = "gpt-5"
+	cfg.Backends["codex"] = b
+	task := &model.Task{Name: "t", Backend: "codex", Model: "opus", Worktree: t.TempDir(), Prompt: "go"}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Contains(t, cmd.Args[2], "--model 'gpt-5'")
+	if strings.Contains(cmd.Args[2], "--model 'opus'") {
+		t.Fatalf("invalid Claude override reached Codex command: %s", cmd.Args[2])
+	}
+}
+
 func TestBuildCmd_ModelInjection_PiResume(t *testing.T) {
 	cfg := modelConfig()
 	task := &model.Task{Name: "t", Backend: "pi", Model: "glm", SessionID: "abc-123", Worktree: t.TempDir()}
@@ -2224,6 +2238,9 @@ func TestBuildCmd_ModelInjection_PiResume(t *testing.T) {
 // Model values are shell-quoted — a hostile model string cannot break out.
 func TestBuildCmd_ModelInjection_ShellQuoted(t *testing.T) {
 	cfg := modelConfig()
+	b := cfg.Backends["claude"]
+	b.Models = []string{"x'; rm -rf /"}
+	cfg.Backends["claude"] = b
 	task := &model.Task{Name: "t", Prompt: "go", Model: "x'; rm -rf /", Worktree: t.TempDir()}
 	cmd, _, err := BuildCmd(task, cfg, false)
 	testutil.NoError(t, err)

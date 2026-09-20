@@ -312,3 +312,12 @@ Plugin-registered tools SHALL be name-scoped (a tool name MUST start with its sc
 - **WHEN** the plugin callback returns a non-2xx status or an undecodable body
 - **THEN** the response is a tool error describing the plugin failure
 
+### Requirement: Profile resolution tool
+
+The MCP `profile_resolve` tool SHALL expose backend-keyed archetype model choices. When a caller supplies a backend, the tool SHALL identify the model selected for that backend while retaining the full backend-keyed choices for consumers that need to dispatch across backends. A missing, invalid, or unsupported selection SHALL use the existing fail-open response contract.
+
+#### Scenario: Codex profile resolution
+
+- **WHEN** a caller resolves a valid profile for backend `codex`
+- **THEN** the result identifies each archetype's Codex model choice rather than a Claude model alias
+

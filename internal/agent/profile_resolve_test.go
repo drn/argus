@@ -42,7 +42,7 @@ func envMap(kv []string) map[string]string {
 // TestResolveModel_ProfileChain exercises the full diligence-profile resolution
 // precedence (add-diligence-profiles "Profile-aware model resolution").
 func TestResolveModel_ProfileChain(t *testing.T) {
-	const codeSlice = "[archetype.code_slice]\nmodel = \"sonnet\"\n"
+	const codeSlice = "[archetype.code_slice]\nmodels = { claude = \"sonnet\", codex = \"gpt-5-codex\" }\n"
 
 	cases := []struct {
 		name           string
@@ -72,13 +72,13 @@ func TestResolveModel_ProfileChain(t *testing.T) {
 			wantProfile: true,
 		},
 		{
-			name:           "invalid-for-backend model falls through to default",
+			name:           "backend-specific model is selected",
 			archetype:      "code_slice",
-			backend:        "codex", // sonnet is valid model but not a codex model
+			backend:        "codex",
 			backendDefault: "gpt-5",
 			profile:        codeSlice,
-			wantModel:      "gpt-5",
-			wantProfile:    false,
+			wantModel:      "gpt-5-codex",
+			wantProfile:    true,
 		},
 		{
 			name:        "missing profile falls open to no model",
@@ -92,7 +92,7 @@ func TestResolveModel_ProfileChain(t *testing.T) {
 			name:        "invalid profile falls open to no model",
 			archetype:   "code_slice",
 			backend:     "claude",
-			profile:     "[archetype.code_slice]\nmodel = \"bogus-model\"\n", // fails validation
+			profile:     "[archetype.code_slice]\nmodels = { claude = \"bogus-model\" }\n", // fails validation
 			wantModel:   "",
 			wantProfile: false,
 		},
@@ -139,6 +139,17 @@ func TestResolveModel_ProfileChain(t *testing.T) {
 	}
 }
 
+func TestResolveModel_InvalidExplicitOverrideFallsThroughToBackendDefault(t *testing.T) {
+	cfg := modelConfig()
+	b := cfg.Backends["codex"]
+	b.Model = "gpt-5"
+	cfg.Backends["codex"] = b
+
+	got, profile := ResolveModel(&model.Task{ID: "override", Backend: "codex", Model: "opus"}, b, cfg)
+	testutil.Equal(t, got, "gpt-5")
+	testutil.Nil(t, profile)
+}
+
 // TestResolveModel_ProfileBoundByProject confirms resolution honors the
 // project's bound profile name (config.Project.Profile / ResolveProfileName),
 // not just the implicit "default".
@@ -148,7 +159,7 @@ func TestResolveModel_ProfileBoundByProject(t *testing.T) {
 	cfg.Projects = map[string]config.Project{
 		"app": {Path: "/x", Profile: "lean"},
 	}
-	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmodel = \"haiku\"\n")
+	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmodels = { claude = \"haiku\" }\n")
 
 	task := &model.Task{Project: "app", Archetype: "code_slice", Backend: "claude"}
 	gotModel, gotProf := ResolveModel(task, cfg.Backends["claude"], cfg)
@@ -160,13 +171,26 @@ func TestResolveModel_ProfileBoundByProject(t *testing.T) {
 	testutil.Equal(t, gotProf.Name, "lean")
 }
 
+func TestResolveModel_ProfileUsesBackendFamilyForCustomBackendName(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := modelConfig()
+	cfg.Backends["my-claude"] = config.Backend{Command: "claude"}
+	writeLibraryProfile(t, "default", "[archetype.code_slice]\nmodels = { claude = \"haiku\" }\n")
+
+	task := &model.Task{Archetype: "code_slice", Backend: "my-claude"}
+	gotModel, gotProf := ResolveModel(task, cfg.Backends["my-claude"], cfg)
+
+	testutil.Equal(t, gotModel, "haiku")
+	testutil.NotNil(t, gotProf)
+}
+
 // TestBuildCmd_ProfileEnv_PresentOnResolution verifies the env export and the
 // --model injection when a bound profile resolves a backend-valid model
 // (add-diligence-profiles "Profile environment injection").
 func TestBuildCmd_ProfileEnv_PresentOnResolution(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	cfg := modelConfig()
-	writeLibraryProfile(t, "default", "[archetype.code_slice]\nmodel = \"sonnet\"\n")
+	writeLibraryProfile(t, "default", "[archetype.code_slice]\nmodels = { claude = \"sonnet\" }\n")
 
 	task := &model.Task{
 		ID: "t1", Name: "t", Prompt: "go", Backend: "claude",
@@ -188,7 +212,7 @@ func TestBuildCmd_ProfileEnv_PresentOnResolution(t *testing.T) {
 func TestBuildCmd_ProfileEnv_AbsentWithoutProfile(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	cfg := modelConfig()
-	writeLibraryProfile(t, "default", "[archetype.code_slice]\nmodel = \"sonnet\"\n")
+	writeLibraryProfile(t, "default", "[archetype.code_slice]\nmodels = { claude = \"sonnet\" }\n")
 
 	// No archetype → resolution short-circuits → no profile env.
 	task := &model.Task{ID: "t2", Name: "t", Prompt: "go", Backend: "claude", Worktree: t.TempDir()}
@@ -213,7 +237,7 @@ func TestBuildCmd_ProfileEnv_AbsentOnFallThrough(t *testing.T) {
 	b.Model = "gpt-5"
 	cfg.Backends["codex"] = b
 	// sonnet is a valid model name but not valid for the codex backend.
-	writeLibraryProfile(t, "default", "[archetype.code_slice]\nmodel = \"sonnet\"\n")
+	writeLibraryProfile(t, "default", "[archetype.code_slice]\nmodels = { claude = \"sonnet\" }\n")
 
 	task := &model.Task{
 		ID: "t3", Name: "t", Prompt: "go", Backend: "codex",
@@ -241,8 +265,8 @@ func TestResolveModel_TaskProfileOverrideHonored(t *testing.T) {
 		"app": {Path: "/x", Profile: "lean"},
 	}
 	// lean profile (project binding) uses haiku; override uses sonnet.
-	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmodel = \"haiku\"\n")
-	writeLibraryProfile(t, "custom", "[archetype.code_slice]\nmodel = \"sonnet\"\n")
+	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmodels = { claude = \"haiku\" }\n")
+	writeLibraryProfile(t, "custom", "[archetype.code_slice]\nmodels = { claude = \"sonnet\" }\n")
 
 	task := &model.Task{
 		Project:   "app",
@@ -267,7 +291,7 @@ func TestResolveModel_EmptyTaskProfileFallsToProjectBinding(t *testing.T) {
 	cfg.Projects = map[string]config.Project{
 		"app": {Path: "/x", Profile: "lean"},
 	}
-	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmodel = \"haiku\"\n")
+	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmodels = { claude = \"haiku\" }\n")
 
 	task := &model.Task{
 		Project:   "app",
@@ -294,7 +318,7 @@ func TestResolveModel_InvalidTaskProfileOverrideFallsOpen(t *testing.T) {
 		"app": {Path: "/x", Profile: "lean"},
 	}
 	// lean profile exists on disk; the override points at a non-existent file.
-	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmodel = \"haiku\"\n")
+	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmodels = { claude = \"haiku\" }\n")
 
 	task := &model.Task{
 		Project:   "app",
@@ -316,8 +340,8 @@ func TestBuildCmd_ProfileEnv_OverrideProfile(t *testing.T) {
 	cfg.Projects = map[string]config.Project{
 		"app": {Path: "/x", Profile: "lean"},
 	}
-	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmodel = \"haiku\"\n")
-	writeLibraryProfile(t, "custom", "[archetype.code_slice]\nmodel = \"sonnet\"\n")
+	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmodels = { claude = \"haiku\" }\n")
+	writeLibraryProfile(t, "custom", "[archetype.code_slice]\nmodels = { claude = \"sonnet\" }\n")
 
 	task := &model.Task{
 		ID: "t4", Name: "t", Prompt: "go",

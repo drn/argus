@@ -36,8 +36,8 @@ func TestSeeds_DefaultCoversAllArchetypes(t *testing.T) {
 			t.Errorf("default seed missing archetype %q", name)
 			continue
 		}
-		if a.Model == "" {
-			t.Errorf("default seed archetype %q has no model", name)
+		if a.Models["claude"] == "" || a.Models["codex"] == "" {
+			t.Errorf("default seed archetype %q lacks a Claude or Codex model", name)
 		}
 	}
 	testutil.Equal(t, len(p.Archetype), len(CanonicalArchetypes))
@@ -49,15 +49,15 @@ func TestSeeds_LeanAndCustomerGradeExtendDefault(t *testing.T) {
 	lean, err := l.Load("lean")
 	testutil.NoError(t, err)
 	// lean inherits default's model allocation...
-	testutil.Equal(t, lean.Archetype["code_slice"].Model, "sonnet")
-	testutil.Equal(t, lean.Archetype["brainstorm"].Model, "opus")
+	testutil.Equal(t, lean.Archetype["code_slice"].Models["claude"], "sonnet")
+	testutil.Equal(t, lean.Archetype["brainstorm"].Models["claude"], "opus")
 	// ...and expresses its own rigor.
 	testutil.Equal(t, lean.Rigor.ReviewPasses, 1)
 	testutil.False(t, lean.Rigor.Gating)
 
 	cg, err := l.Load("customer_grade")
 	testutil.NoError(t, err)
-	testutil.Equal(t, cg.Archetype["code_slice"].Model, "sonnet") // inherited
+	testutil.Equal(t, cg.Archetype["code_slice"].Models["claude"], "sonnet") // inherited
 	testutil.Equal(t, cg.Rigor.ReviewPasses, 2)
 	testutil.True(t, cg.Rigor.Gating)
 	testutil.True(t, cg.Rigor.SecuritySpotCheck)
@@ -84,7 +84,7 @@ func TestSeeds_DefaultArchetypeDefaultsMatchFramework(t *testing.T) {
 		"docs":            "haiku",
 	}
 	for name, model := range want {
-		testutil.Equal(t, p.Archetype[name].Model, model)
+		testutil.Equal(t, p.Archetype[name].Models["claude"], model)
 	}
 	// brainstorm carries the high-effort hint from §2.
 	testutil.Equal(t, p.Archetype["brainstorm"].Effort, "high")

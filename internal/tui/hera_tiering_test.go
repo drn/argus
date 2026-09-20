@@ -39,7 +39,7 @@ func TestResolveHeraTier_AppliesProfileModel(t *testing.T) {
 	app := tierTestApp(t)
 	d := app.db.(*db.DB)
 	testutil.NoError(t, d.SetProject("p", config.Project{Path: t.TempDir(), Profile: "lean"}))
-	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmodel = \"sonnet\"\neffort = \"high\"\n")
+	writeLibraryProfile(t, "lean", "[archetype.code_slice]\nmodels = { claude = \"sonnet\" }\neffort = \"high\"\n")
 
 	rv := &hera.RoleView{ArgusProject: "p", Archetype: "code_slice"}
 	app.resolveHeraTier(rv)

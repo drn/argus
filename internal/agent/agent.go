@@ -174,7 +174,7 @@ type ResolvedProfile struct {
 // ResolveModel returns the effective model for a task and, when a diligence
 // profile actively drove the choice, the resolution metadata for env export.
 //
-// Precedence: task.Model override → profile[task.Archetype].model → project /
+// Precedence: valid task.Model override → profile[task.Archetype].models[backend] → project /
 // backend default → "" (no --model). The profile is consulted ONLY when
 // task.Model is unset AND the task carries an archetype; the per-archetype model
 // is used only when the project's bound profile loads, validates, and the model
@@ -187,7 +187,10 @@ type ResolvedProfile struct {
 // MUST run daemon-side (outside the sandbox, where global ~/.argus reads EPERM).
 func ResolveModel(task *model.Task, backend config.Backend, cfg config.Config) (string, *ResolvedProfile) {
 	if m := strings.TrimSpace(task.Model); m != "" {
-		return m, nil
+		if backendAllowsModel(m, backend) {
+			return m, nil
+		}
+		uxlog.Log("[profiles] task %q: explicit model %q not valid for resolved backend; falling through to default", task.ID, m)
 	}
 	if rp := resolveProfile(task, backend, cfg); rp != nil {
 		return rp.Model, rp
@@ -236,7 +239,8 @@ func resolveProfile(task *model.Task, backend config.Backend, cfg config.Config)
 		return nil
 	}
 
-	m := strings.TrimSpace(p.Archetype[arch].Model)
+	backendName := profileBackendName(resolvedBackendName(task, cfg), backend)
+	m := strings.TrimSpace(p.Archetype[arch].Models[backendName])
 	if m == "" {
 		return nil
 	}
@@ -247,13 +251,55 @@ func resolveProfile(task *model.Task, backend config.Backend, cfg config.Config)
 	return &ResolvedProfile{Name: p.Name, Archetype: arch, Model: m}
 }
 
+// profileBackendName converts a configured backend instance into the stable
+// schema key used by diligence profiles. A user may name a Claude or Codex
+// backend anything (for example, "be-archrpc"); profile model maps describe
+// backend families, so those instances must resolve through "claude" or
+// "codex" rather than their arbitrary config key. Unknown commands retain
+// their configured name, which permits explicitly configured custom backends.
+func profileBackendName(name string, backend config.Backend) string {
+	switch {
+	case IsClaudeBackend(backend.Command):
+		return "claude"
+	case IsCodexBackend(backend.Command):
+		return "codex"
+	case IsPiBackend(backend.Command):
+		return "pi"
+	case IsOpencodeBackend(backend.Command):
+		return "opencode"
+	default:
+		return name
+	}
+}
+
+func resolvedBackendName(task *model.Task, cfg config.Config) string {
+	name := cfg.Defaults.Backend
+	if task.Project != "" {
+		if project, ok := cfg.Projects[task.Project]; ok && project.Backend != "" {
+			name = project.Backend
+		}
+	}
+	if task.Backend != "" {
+		name = task.Backend
+	}
+	return name
+}
+
 // backendAllowsModel reports whether m is selectable for the resolved backend —
 // a member of the backend's configured Models override or, absent that, the
 // built-in KnownModels for its command. Unknown/custom backends with no Models
 // list have no allow-list, so a profile model can never be validated for them
 // and resolution falls open (no --model).
 func backendAllowsModel(m string, backend config.Backend) bool {
-	for _, cand := range BackendModels(backend) {
+	models := BackendModels(backend)
+	// Backends without a curated or configured selector (Pi, opencode, and
+	// custom commands) accept operator-provided model identifiers. There is no
+	// authoritative allow-list to validate against; this preserves their
+	// custom-model escape hatch while curated backends remain strict.
+	if len(models) == 0 {
+		return true
+	}
+	for _, cand := range models {
 		if cand == m {
 			return true
 		}

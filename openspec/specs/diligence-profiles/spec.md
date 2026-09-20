@@ -30,21 +30,19 @@ bodies SHALL NOT be persisted in the database.
 
 ### Requirement: Profile structure and archetypes
 
-A profile SHALL describe, per archetype, an optional `model`, `effort`, and `window`, plus a `[rigor]`
-table (`review_passes`, `gating`, `security_spot_check`) and an opaque `[panel]` table. The system SHALL
-recognize exactly thirteen canonical archetypes: `brainstorm`, `orchestrator`, `big_build`,
-`code_slice`, `bug_fix`, `review`, `security_review`, `synthesis`, `spec_audit`, `ci_loop`, `verify`,
-`recovery`, `docs`.
+A profile SHALL describe, per archetype, optional backend-keyed model choices, `effort`, and `window`, plus a `[rigor]` table and an opaque `[panel]` table. A model choice SHALL be declared under the archetype's `models` table, keyed by backend name. The system SHALL recognize exactly thirteen canonical archetypes.
 
-#### Scenario: Per-archetype fields parse
+The `[rigor]` table SHALL retain `review_passes`, `gating`, and `security_spot_check`.
 
-- **WHEN** a profile declares `[archetype.code_slice]` with `model = "sonnet"`
-- **THEN** the loaded profile exposes `sonnet` as the `code_slice` archetype's model
+#### Scenario: Backend-keyed archetype models parse
+
+- **WHEN** a profile declares `[archetype.code_slice.models]` with `claude = "sonnet"` and `codex = "gpt-5-codex"`
+- **THEN** the loaded profile exposes both backend-specific choices for `code_slice`
 
 #### Scenario: Rigor flags parse
 
-- **WHEN** a profile declares a `[rigor]` table with `review_passes`, `gating`, and `security_spot_check`
-- **THEN** the loaded profile exposes those rigor flags
+- **WHEN** a profile declares `[rigor]` with its supported flags
+- **THEN** the loaded profile exposes those flags
 
 ### Requirement: Profile inheritance
 
@@ -65,42 +63,24 @@ fields onto the fully-resolved parent, recursively, so a child overrides only th
 
 ### Requirement: Profile validation
 
-The system SHALL validate that a profile conforms: every archetype table names a canonical archetype; each `effort` is one of `low`/`medium`/`high`; each `window` is one of `200k`/`1m`; every `model` is a member of the union of built-in backend aliases and every configured backend's `models` list; the `extends` chain terminates without a cycle; and the `[panel]` table passes the injected reviewer-panel-grammar validator when one is supplied, falling back to structural well-formedness when it is not. Validation SHALL report all conformance errors found, not just the first.
+The system SHALL validate every backend-keyed archetype model against the selectable models for that named backend. A configured backend's `models` list SHALL take precedence; otherwise, its known CLI aliases SHALL be used. The system SHALL report an unknown backend key or a model unsupported by its named backend as a conformance error, alongside all other profile conformance errors.
 
-#### Scenario: Unknown archetype rejected
+It SHALL also reject unknown archetypes, invalid effort/window values, inheritance cycles, and malformed panels when a panel validator is injected, reporting all conformance errors rather than only the first.
 
-- **WHEN** a profile declares `[archetype.planner]` (not a canonical archetype)
-- **THEN** validation reports an unknown-archetype error
+#### Scenario: Model rejected for its named backend
 
-#### Scenario: Out-of-enum effort or window rejected
+- **WHEN** a profile declares `codex = "opus"` for an archetype
+- **THEN** validation reports that `opus` is unsupported for the `codex` backend
 
-- **WHEN** a profile sets `effort = "max"` or `window = "2m"`
-- **THEN** validation reports the offending field and its allowed values
+#### Scenario: Model accepted for its named backend
 
-#### Scenario: Unknown model rejected
+- **WHEN** a profile declares `codex = "gpt-5-codex"` for an archetype
+- **THEN** validation accepts that entry when Codex exposes that model
 
-- **WHEN** a profile names a model present in neither the built-in aliases nor any configured backend's `models` list
-- **THEN** validation reports the unknown model
+#### Scenario: Other validation failures remain reported
 
-#### Scenario: Backend-contributed model accepted
-
-- **WHEN** a configured backend declares `models = ["gemini-2.5-pro"]` and a profile names `gemini-2.5-pro`
-- **THEN** validation accepts the model
-
-#### Scenario: Extends cycle rejected
-
-- **WHEN** profile `a` extends `b` and `b` extends `a`
-- **THEN** validation reports an inheritance cycle
-
-#### Scenario: Panel validated by the injected grammar validator
-
-- **WHEN** a panel-grammar validator is injected and a profile carries a malformed `[panel]` table
-- **THEN** validation reports the panel-grammar error
-
-#### Scenario: Panel structural fallback without a validator
-
-- **WHEN** no panel-grammar validator is injected and a profile carries a structurally well-formed `[panel]` table
-- **THEN** validation accepts it on structural shape alone
+- **WHEN** a profile has an unknown archetype, invalid effort/window, an inheritance cycle, or an invalid panel
+- **THEN** validation reports the relevant conformance error
 
 ### Requirement: Reviewer-panel forward-reference seam
 
@@ -118,48 +98,27 @@ The `[panel]` table SHALL be retained verbatim by the loader as a block whose co
 
 ### Requirement: Profile-aware model resolution
 
-The system SHALL resolve a task's effective model with the precedence: the per-task model override when
-set; otherwise, when the task carries an archetype and a valid profile is present, the profile's model for
-that archetype; otherwise the project/backend default. The profile consulted is, in order: the task's
-per-spawn `profile` override (when non-empty), else the project's bound profile, else `default`. When the
-consulted profile is missing or invalid, or the resolved profile model is not valid for the task's
-resolved backend, the system SHALL resolve to **no model** (no `--model` injected) rather than failing the
-spawn. A task that carries no archetype SHALL NOT consult any profile.
+The system SHALL resolve a task's effective model with the precedence: a valid per-task model override; otherwise, the resolved profile's model for the task's selected backend and archetype; otherwise the selected backend's configured default; otherwise no injected model flag. An invalid explicit override or missing/invalid backend-specific profile entry SHALL fall through to the selected backend's configured default rather than reaching the backend CLI.
 
-#### Scenario: Task model override wins
+The profile consulted SHALL be the task's per-spawn override when present, otherwise its project binding, otherwise `default`; a task without an archetype SHALL not consult a profile.
 
-- **WHEN** a task sets `Model = "opus"` and also has an archetype with a bound profile
-- **THEN** the effective model is `opus` and the profile is not consulted
+#### Scenario: Backend-specific profile model applied
 
-#### Scenario: Per-spawn profile override honored
+- **WHEN** a Codex task has no valid override, carries `code_slice`, and its valid profile declares `codex = "gpt-5-codex"`
+- **THEN** the effective model is `gpt-5-codex`
 
-- **WHEN** a task's `profile` field is non-empty (set at spawn as a per-spawn override)
-- **THEN** resolution consults that profile instead of the project's bound profile
+#### Scenario: Unsupported explicit override falls through
 
-#### Scenario: Empty per-spawn override uses project binding
+- **WHEN** a Codex task sets `Model = "opus"`
+- **THEN** the system does not inject `opus` and instead uses the Codex backend default or no model flag
 
-- **WHEN** a task's `profile` field is empty
-- **THEN** resolution falls through to the project's bound profile (or `default` if unbound)
+#### Scenario: Profile selection and no-archetype behavior remain unchanged
 
-#### Scenario: Profile model applied by archetype
-
-- **WHEN** a task has no model override, carries archetype `code_slice`, and the resolved profile is valid
-- **THEN** the effective model is the profile's `code_slice` model
-
-#### Scenario: Invalid-for-backend model falls through
-
-- **WHEN** the profile's archetype model is not valid for the task's resolved backend
-- **THEN** resolution falls through to the project/backend default rather than injecting an invalid model
-
-#### Scenario: Missing or invalid profile falls open
-
-- **WHEN** the consulted profile is missing or fails validation
-- **THEN** resolution injects no `--model` and the spawn proceeds with the CLI's own default
-
-#### Scenario: No archetype skips the profile
+- **WHEN** a task has a per-spawn profile override
+- **THEN** it takes precedence over the project binding
 
 - **WHEN** a task carries no archetype
-- **THEN** resolution does not consult any profile and uses the existing task/project/backend default
+- **THEN** it does not consult a profile
 
 ### Requirement: Profile environment injection
 
@@ -282,4 +241,3 @@ The system SHALL expose an `mcp__argus__profile_resolve` MCP tool that resolves 
 
 - **WHEN** `profile_resolve` returns a resolved profile whose `code_slice` archetype sets `model = "sonnet"` and whose `[rigor]` sets `review_passes = 2`
 - **THEN** the raw JSON response contains the keys `"model"` and `"review_passes"` (not `"Model"` or `"ReviewPasses"`)
-

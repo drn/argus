@@ -163,6 +163,7 @@ func overlay(parent *Profile, child rawProfile) *Profile {
 	// Deep-copy the archetype map so the parent's map is never mutated.
 	out.Archetype = make(map[string]Archetype, len(parent.Archetype))
 	for k, v := range parent.Archetype {
+		v.Models = cloneModels(v.Models)
 		out.Archetype[k] = v
 	}
 
@@ -172,8 +173,13 @@ func overlay(parent *Profile, child rawProfile) *Profile {
 	// Per-archetype, per-field overlay.
 	for name, ca := range cp.Archetype {
 		base := out.Archetype[name] // zero Archetype if the parent lacked it
-		if md.IsDefined("archetype", name, "model") {
-			base.Model = ca.Model
+		if md.IsDefined("archetype", name, "models") {
+			if base.Models == nil {
+				base.Models = map[string]string{}
+			}
+			for backend, model := range ca.Models {
+				base.Models[backend] = model
+			}
 		}
 		if md.IsDefined("archetype", name, "effort") {
 			base.Effort = ca.Effort
@@ -206,4 +212,15 @@ func overlay(parent *Profile, child rawProfile) *Profile {
 	out.Source = cp.Source
 	out.Extends = cp.Extends
 	return &out
+}
+
+func cloneModels(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for backend, model := range in {
+		out[backend] = model
+	}
+	return out
 }

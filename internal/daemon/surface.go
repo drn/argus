@@ -70,7 +70,10 @@ const (
 	//     ("enabled"/"disabled") as a fourth precedence tier, read at spawn
 	//     time and taking precedence over both the project and global sandbox
 	//     settings (add-task-sandbox-override).
-	SupervisorSpawnSurface = 4
+	//   - v5: diligence-profile model selection became backend-family-aware,
+	//     so sessions spawned through arbitrarily named Claude/Codex/Pi/OpenCode
+	//     backend instances use that family's configured archetype model.
+	SupervisorSpawnSurface = 5
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -277,7 +280,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "c74a33b2ab33eefa873a60c617d6fc104dc53ec45896f5aff40ae94f946b3e20"
+	SpawnSurfaceDigest  = "d69cb63c61c24198befa8fc0644f9020887485523d4878ad6ae4ff1f0fa95275"
 	StreamSurfaceDigest = "57078648a38b01bad81b795bf6ca431199e4e394460f3a19ca9bf0ee407a785e"
 )
 
