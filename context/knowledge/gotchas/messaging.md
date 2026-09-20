@@ -76,6 +76,11 @@ table and the four MCP tools that ride on top of it.
   is treated as abandoned, preserved, annotated, and submitted. Idle/content-
   idle plus pane focus are conservative fallbacks only when the composer is
   not identifiable. Classification logs must never include composer text.
+- **Claude Code's dim example prompt is not a draft.** `ScreenRenderer.InputDraft`
+  must inspect x/vt cell attributes, not its style-free string alone: a
+  faint-only composer is empty, while any non-faint draft cell is real input.
+  Otherwise reliable delivery preserves and annotates a placeholder the user
+  never entered.
 - **CR, not LF.** The notifier appends `\r` (carriage return, 0x0d) to
   submit the line. The original nudge used `\n` (linefeed, 0x0a) which
   never auto-submits in a normal interactive shell — that was the root bug.

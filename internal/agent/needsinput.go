@@ -11,6 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	uv "github.com/charmbracelet/ultraviolet"
 	xvt "github.com/charmbracelet/x/vt"
 
 	"github.com/drn/argus/internal/sanitize"
@@ -462,12 +463,41 @@ func (r *ScreenRenderer) InputDraft(tail []byte, cols, rows int) (draft string, 
 	if promptRow < 0 {
 		return "", false
 	}
+	if r.draftIsFaintOnly(promptRow, promptCol, cursorRow, lines) {
+		return "", true
+	}
 
 	parts := []string{strings.TrimRightFunc(lines[promptRow][promptCol+len(promptNBSP):], unicode.IsSpace)}
 	for row := promptRow + 1; row <= cursorRow && row < len(lines); row++ {
 		parts = append(parts, strings.TrimRightFunc(lines[row], unicode.IsSpace))
 	}
 	return strings.TrimSpace(strings.Join(parts, "\n")), true
+}
+
+// draftIsFaintOnly recognizes Claude Code's empty-composer example prompt.
+// ScreenRenderer.String discards SGR attributes, but x/vt retains them per
+// cell; treating dim placeholder text as typed input causes reliable-notify to
+// preserve and annotate text the user never entered.
+func (r *ScreenRenderer) draftIsFaintOnly(promptRow, promptCol, cursorRow int, lines []string) bool {
+	startCol := utf8.RuneCountInString(lines[promptRow][:promptCol+len(promptNBSP)])
+	sawText := false
+	for row := promptRow; row <= cursorRow && row < len(lines); row++ {
+		firstCol := 0
+		if row == promptRow {
+			firstCol = startCol
+		}
+		for col := firstCol; col < r.cols; col++ {
+			cell := r.emu.CellAt(col, row)
+			if cell == nil || strings.TrimSpace(cell.Content) == "" {
+				continue
+			}
+			sawText = true
+			if cell.Style.Attrs&uv.AttrFaint == 0 {
+				return false
+			}
+		}
+	}
+	return sawText
 }
 
 // safeEmuWrite writes to the emulator, recovering from panics in upstream vt

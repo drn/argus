@@ -1623,6 +1623,13 @@ func TestScreenRenderer_InputDraft(t *testing.T) {
 			found: true,
 		},
 		{
+			name:  "dim placeholder is empty composer",
+			tail:  "\x1b[?1049h\x1b[2J\x1b[7;1H❯\u00a0\x1b[2mTry \"review this change\"\x1b[0m\x1b[7;27H",
+			cols:  80,
+			rows:  24,
+			found: true,
+		},
+		{
 			name:  "typed fullscreen composer",
 			tail:  "\x1b[?1049h\x1b[2J\x1b[7;1H❯\u00a0I want you to\x1b[7;16H",
 			cols:  80,
