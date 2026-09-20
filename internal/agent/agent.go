@@ -239,7 +239,7 @@ func resolveProfile(task *model.Task, backend config.Backend, cfg config.Config)
 		return nil
 	}
 
-	backendName := resolvedBackendName(task, cfg)
+	backendName := profileBackendName(resolvedBackendName(task, cfg), backend)
 	m := strings.TrimSpace(p.Archetype[arch].Models[backendName])
 	if m == "" {
 		return nil
@@ -249,6 +249,27 @@ func resolveProfile(task *model.Task, backend config.Backend, cfg config.Config)
 		return nil
 	}
 	return &ResolvedProfile{Name: p.Name, Archetype: arch, Model: m}
+}
+
+// profileBackendName converts a configured backend instance into the stable
+// schema key used by diligence profiles. A user may name a Claude or Codex
+// backend anything (for example, "be-archrpc"); profile model maps describe
+// backend families, so those instances must resolve through "claude" or
+// "codex" rather than their arbitrary config key. Unknown commands retain
+// their configured name, which permits explicitly configured custom backends.
+func profileBackendName(name string, backend config.Backend) string {
+	switch {
+	case IsClaudeBackend(backend.Command):
+		return "claude"
+	case IsCodexBackend(backend.Command):
+		return "codex"
+	case IsPiBackend(backend.Command):
+		return "pi"
+	case IsOpencodeBackend(backend.Command):
+		return "opencode"
+	default:
+		return name
+	}
 }
 
 func resolvedBackendName(task *model.Task, cfg config.Config) string {

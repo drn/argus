@@ -171,6 +171,19 @@ func TestResolveModel_ProfileBoundByProject(t *testing.T) {
 	testutil.Equal(t, gotProf.Name, "lean")
 }
 
+func TestResolveModel_ProfileUsesBackendFamilyForCustomBackendName(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := modelConfig()
+	cfg.Backends["my-claude"] = config.Backend{Command: "claude"}
+	writeLibraryProfile(t, "default", "[archetype.code_slice]\nmodels = { claude = \"haiku\" }\n")
+
+	task := &model.Task{Archetype: "code_slice", Backend: "my-claude"}
+	gotModel, gotProf := ResolveModel(task, cfg.Backends["my-claude"], cfg)
+
+	testutil.Equal(t, gotModel, "haiku")
+	testutil.NotNil(t, gotProf)
+}
+
 // TestBuildCmd_ProfileEnv_PresentOnResolution verifies the env export and the
 // --model injection when a bound profile resolves a backend-valid model
 // (add-diligence-profiles "Profile environment injection").

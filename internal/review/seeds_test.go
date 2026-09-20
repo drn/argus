@@ -16,9 +16,13 @@ func testKnownModels(command string) []string {
 	switch command {
 	case "claude":
 		return []string{"opus", "sonnet", "haiku", "fable"}
-	case "codex":
-		return []string{"gpt-5-codex", "gpt-5"}
 	default:
+		// Config's built-in Codex command carries its required flags. Mirror
+		// agent.KnownModels' backend recognition rather than assuming a bare
+		// executable name.
+		if strings.HasPrefix(command, "codex ") {
+			return []string{"gpt-5-codex", "gpt-5"}
+		}
 		return nil
 	}
 }
