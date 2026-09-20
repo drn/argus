@@ -540,7 +540,7 @@ func TestHandleHera_RoleNeedsInputMirrorsRunnerSignal(t *testing.T) {
 
 // TestHandleHera_SubtreeNeedsInputRollsUpAcrossBridge pins the orchestrator
 // rollup: a leaf worker needing input in a NESTED sub-orchestrator (reached
-// via a worker→coordinator bridge) makes both the child's own
+// via an explicit parent-worker link) makes both the child's own
 // subtree_needs_input AND the parent's roll up to true.
 func TestHandleHera_SubtreeNeedsInputRollsUpAcrossBridge(t *testing.T) {
 	srv, d := testServer(t)
@@ -573,6 +573,7 @@ func TestHandleHera_SubtreeNeedsInputRollsUpAcrossBridge(t *testing.T) {
 	testutil.NoError(t, err)
 	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: childWorker.ID, ArgusTaskID: leafTask, WorktreePath: "/wt/c"})
 	testutil.NoError(t, err)
+	testutil.NoError(t, d.CreateHeraOrchLink(parent.ID, child.ID, bridgeWorker.ID))
 
 	srv.runner.SetNeedsInputIDs([]string{leafTask})
 

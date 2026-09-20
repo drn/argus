@@ -920,6 +920,70 @@ func (d *DB) EndHeraBinding(bindingID int64, reason string) error {
 	return nil
 }
 
+// CreateHeraOrchLink records an intentional parent/child hierarchy. A binding
+// is membership only; the named parent role is the sole owner of this link.
+func (d *DB) CreateHeraOrchLink(parentOrchID, childOrchID, parentRoleID int64) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.conn.Exec(`INSERT INTO hera_orch_links (child_orchestrator_id, parent_orchestrator_id, parent_role_id, created_at) VALUES (?, ?, ?, ?)
+		ON CONFLICT(child_orchestrator_id) DO UPDATE SET parent_orchestrator_id=excluded.parent_orchestrator_id, parent_role_id=excluded.parent_role_id, created_at=excluded.created_at`, childOrchID, parentOrchID, parentRoleID, formatTime(time.Now()))
+	if err != nil {
+		return fmt.Errorf("create hera orchestrator link: %w", err)
+	}
+	return nil
+}
+
+// HeraOrchLink returns the parent and owning bridge role for childOrchID.
+func (d *DB) HeraOrchLink(childOrchID int64) (parentOrchID, parentRoleID int64, err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	err = d.conn.QueryRow(`SELECT parent_orchestrator_id, parent_role_id FROM hera_orch_links WHERE child_orchestrator_id=?`, childOrchID).Scan(&parentOrchID, &parentRoleID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, ErrHeraNotFound
+	}
+	if err != nil {
+		return 0, 0, fmt.Errorf("get hera orchestrator link: %w", err)
+	}
+	return parentOrchID, parentRoleID, nil
+}
+
+// DeleteHeraOrchLink removes an explicit parent relation without touching any
+// unrelated binding that happens to point at the same Argus task.
+func (d *DB) DeleteHeraOrchLink(childOrchID int64) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	res, err := d.conn.Exec(`DELETE FROM hera_orch_links WHERE child_orchestrator_id=?`, childOrchID)
+	if err != nil {
+		return fmt.Errorf("delete hera orchestrator link: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrHeraNotFound
+	}
+	return nil
+}
+
+// HeraOrchLink is one explicit parent relation.
+type HeraOrchLink struct{ ChildOrchestratorID, ParentOrchestratorID, ParentRoleID int64 }
+
+func (d *DB) ListHeraOrchLinks() ([]HeraOrchLink, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	rows, err := d.conn.Query(`SELECT child_orchestrator_id, parent_orchestrator_id, parent_role_id FROM hera_orch_links`)
+	if err != nil {
+		return nil, fmt.Errorf("list hera orchestrator links: %w", err)
+	}
+	defer rows.Close()
+	var out []HeraOrchLink
+	for rows.Next() {
+		var l HeraOrchLink
+		if err := rows.Scan(&l.ChildOrchestratorID, &l.ParentOrchestratorID, &l.ParentRoleID); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
 // EndHeraBindingsForTask ends every live binding for an argus task id, stamping
 // the given reason. Returns the number of bindings ended. This is the public
 // form of the task-delete cascade (tasks.go Delete inlines the same UPDATE

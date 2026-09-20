@@ -564,6 +564,16 @@ func (d *DB) createHeraTables() error {
 		CREATE INDEX IF NOT EXISTS idx_hera_roles_nuked     ON hera_roles(nuked_at);
 		CREATE INDEX IF NOT EXISTS idx_hera_roles_cancelled ON hera_roles(cancelled_at);
 
+		-- Membership bindings do not imply hierarchy. This table records the
+		-- intentional parent relation and its exact parent-side bridge role.
+		CREATE TABLE IF NOT EXISTS hera_orch_links (
+			child_orchestrator_id INTEGER PRIMARY KEY REFERENCES hera_orchestrators(id) ON DELETE CASCADE,
+			parent_orchestrator_id INTEGER NOT NULL REFERENCES hera_orchestrators(id) ON DELETE CASCADE,
+			parent_role_id INTEGER NOT NULL REFERENCES hera_roles(id) ON DELETE CASCADE,
+			created_at TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_hera_orch_links_parent ON hera_orch_links(parent_orchestrator_id);
+
 		CREATE TABLE IF NOT EXISTS hera_bindings (
 			id              INTEGER PRIMARY KEY,
 			role_id         INTEGER NOT NULL REFERENCES hera_roles(id) ON DELETE CASCADE,

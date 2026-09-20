@@ -312,10 +312,13 @@ type OrchView struct {
 // is needed — the per-orchestrator role walk produces the fan-out the locked
 // design (Q2/Q3) and the smoke test require.
 type Model struct {
-	Pinned    []OrchView // pinned orchestrators (pinned_at set)
-	Active    []OrchView // active, non-pinned orchestrators
-	Archived  []OrchView // archived orchestrators (archived_at set)
-	Freelance []RoleView // freelance-kind roles across active orchestrators
+	// ExplicitLinks is non-nil for production projections. A nil map retains
+	// legacy fixture behavior only; hierarchy is never inferred in production.
+	ExplicitLinks map[int64]db.HeraOrchLink
+	Pinned        []OrchView // pinned orchestrators (pinned_at set)
+	Active        []OrchView // active, non-pinned orchestrators
+	Archived      []OrchView // archived orchestrators (archived_at set)
+	Freelance     []RoleView // freelance-kind roles across active orchestrators
 }
 
 // AnnotateRoles applies fn to every RoleView in the model in place — across the
@@ -514,6 +517,20 @@ func (o *OrchView) coordBridge() (taskID string, roleID int64) {
 // model), so the result is stable for synchronous use on the UI thread.
 func (m Model) BridgeIndex() map[string]*OrchView {
 	idx := make(map[string]*OrchView)
+	if m.ExplicitLinks != nil {
+		for childID, link := range m.ExplicitLinks {
+			child, parent := m.OrchByID(childID), m.OrchByID(link.ParentOrchestratorID)
+			if child == nil || parent == nil {
+				continue
+			}
+			if role := m.RoleByID(link.ParentRoleID); role != nil {
+				if key := BridgeTaskID(role); key != "" {
+					idx[key] = child
+				}
+			}
+		}
+		return idx
+	}
 	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
 		for i := range sec {
 			if k := sec[i].CoordBridgeTaskID(); k != "" {
@@ -588,6 +605,9 @@ func coordBridgeParentOf(parent, child *OrchView) bool {
 // the bottom Archive section instead, distinct from worker-bridged archived
 // children which nest dimmed in place for backward compatibility).
 func (m Model) CoordBridgeChildren(o *OrchView) []*OrchView {
+	if m.ExplicitLinks != nil {
+		return nil
+	}
 	var out []*OrchView
 	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
 		for i := range sec {
@@ -1098,6 +1118,18 @@ func BuildModel(r HeraReader, needsInput map[string]bool, sessionIdle map[string
 	var m Model
 	if r == nil {
 		return m, nil
+	}
+	if lr, ok := r.(interface {
+		ListHeraOrchLinks() ([]db.HeraOrchLink, error)
+	}); ok {
+		links, err := lr.ListHeraOrchLinks()
+		if err != nil {
+			return Model{}, err
+		}
+		m.ExplicitLinks = make(map[int64]db.HeraOrchLink, len(links))
+		for _, link := range links {
+			m.ExplicitLinks[link.ChildOrchestratorID] = link
+		}
 	}
 
 	orchs, err := r.ListHeraOrchestrators(true) // include archived

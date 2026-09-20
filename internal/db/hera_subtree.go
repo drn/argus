@@ -76,25 +76,13 @@ func (d *DB) heraSubtreeOrchIDs(rootOrchID int64) ([]int64, error) {
 		}
 		//nolint:gosec // G201: placeholders are a fixed list of `?` literals; ids are bound params.
 		query := fmt.Sprintf(`
-WITH latest AS (
-    SELECT b.id, b.role_id, b.orchestrator_id, b.argus_task_id, b.ended_at, b.end_reason
-    FROM hera_bindings b
-    JOIN (SELECT role_id, MAX(id) AS max_id FROM hera_bindings GROUP BY role_id) m
-        ON m.role_id = b.role_id AND m.max_id = b.id
-)
 SELECT DISTINCT child_orch.id
-FROM hera_orchestrators child_orch
-JOIN hera_roles child_coord
-    ON child_coord.orchestrator_id = child_orch.id
-    AND child_coord.kind = 'coordinator'
-    AND child_coord.archived_at IS NULL
-JOIN latest child_coord_bnd
-    ON child_coord_bnd.role_id = child_coord.id
-JOIN latest parent_bnd
-    ON parent_bnd.argus_task_id = child_coord_bnd.argus_task_id
-    AND parent_bnd.orchestrator_id IN (%s)
-    AND (parent_bnd.ended_at IS NULL OR COALESCE(parent_bnd.end_reason, '') NOT IN ('reparented', 'user_deleted'))
-WHERE child_orch.archived_at IS NULL`, strings.Join(placeholders, ","))
+FROM hera_orch_links link
+JOIN hera_orchestrators child_orch ON child_orch.id = link.child_orchestrator_id
+JOIN hera_roles parent_role ON parent_role.id = link.parent_role_id
+WHERE link.parent_orchestrator_id IN (%s)
+  AND child_orch.archived_at IS NULL
+  AND parent_role.archived_at IS NULL`, strings.Join(placeholders, ","))
 
 		rows, err := d.conn.Query(query, args...)
 		if err != nil {
