@@ -25,7 +25,7 @@ func TestRunValidate_Valid(t *testing.T) {
 	lib := t.TempDir()
 	writeProfileFile(t, lib, "good", `
 [archetype.code_slice]
-model = "sonnet"
+models = { claude = "sonnet" }
 `)
 	var b strings.Builder
 	code := runValidate(&b, &profiles.Loader{LibraryDir: lib}, config.Config{}, "good")
@@ -38,10 +38,10 @@ func TestRunValidate_InvalidReportsAllAndExitsNonZero(t *testing.T) {
 	lib := t.TempDir()
 	writeProfileFile(t, lib, "bad", `
 [archetype.planner]
-model = "opus"
+models = { claude = "opus" }
 
 [archetype.code_slice]
-model  = "no-such-model"
+models = { claude = "no-such-model" }
 effort = "max"
 `)
 	var b strings.Builder
@@ -74,7 +74,7 @@ func TestRunValidate_MalformedPanelReported(t *testing.T) {
 	lib := t.TempDir()
 	writeProfileFile(t, lib, "bad-panel", `
 [archetype.code_slice]
-model = "sonnet"
+models = { claude = "sonnet" }
 
 [panel]
 finders = ["nonexistent-model"]
@@ -90,7 +90,7 @@ func TestRunValidate_InRepoSourceReported(t *testing.T) {
 	repo := t.TempDir()
 	writeProfileFile(t, repo, "p", `
 [archetype.docs]
-model = "haiku"
+models = { claude = "haiku" }
 `)
 	var b strings.Builder
 	code := runValidate(&b, &profiles.Loader{RepoDir: repo, LibraryDir: t.TempDir()}, config.Config{}, "p")

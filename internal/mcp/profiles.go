@@ -27,7 +27,7 @@ type ConfigStore interface {
 var profileToolDefs = []Tool{
 	{
 		Name: "profile_resolve",
-		Description: `Resolve the diligence profile in effect and return its full body (archetype entries, [rigor], [panel]) as structured JSON.
+		Description: `Resolve the diligence profile in effect and return its full body (including backend-keyed archetype models, [rigor], [panel]) as structured JSON.
 
 Resolution precedence: an explicit ` + "`profile`" + ` argument bypasses cwd resolution entirely; otherwise the calling task's per-spawn profile override wins, then the project bound to ` + "`cwd`" + `'s task, then "default".
 
@@ -37,6 +37,7 @@ Fails open: a missing or invalid profile (including a malformed [panel]) returns
 			"properties": map[string]interface{}{
 				"cwd":     map[string]interface{}{"type": "string", "description": "Caller's worktree path (use $PWD). Used to resolve the bound task/project when profile is omitted."},
 				"profile": map[string]interface{}{"type": "string", "description": "Explicit profile name. When set, resolves this profile directly and skips cwd→project resolution (useful for testing a profile in isolation)."},
+				"backend": map[string]interface{}{"type": "string", "description": "Optional backend name whose model entry the caller intends to use. Archetype results always retain all backend-keyed model choices."},
 			},
 		},
 	},
@@ -68,6 +69,7 @@ func (s *Server) toolProfileResolve(id interface{}, args json.RawMessage) *Respo
 	var p struct {
 		Cwd     string `json:"cwd"`
 		Profile string `json:"profile"`
+		Backend string `json:"backend"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
 
@@ -106,7 +108,7 @@ func (s *Server) toolProfileResolve(id interface{}, args json.RawMessage) *Respo
 	// override) and thus prompt-injection-reachable, so reject path
 	// traversal / separators here rather than trust the shared loader.
 	if strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
-		return toolResult(id, marshalProfileResolveResult(name, nil, []error{fmt.Errorf("invalid profile name %q: must not contain path separators or \"..\"", name)}))
+		return toolResult(id, marshalProfileResolveResult(name, strings.TrimSpace(p.Backend), nil, []error{fmt.Errorf("invalid profile name %q: must not contain path separators or \"..\"", name)}))
 	}
 
 	loader := &profiles.Loader{LibraryDir: filepath.Join(db.DataDir(), "profiles")}
@@ -115,25 +117,26 @@ func (s *Server) toolProfileResolve(id interface{}, args json.RawMessage) *Respo
 	}
 
 	prof, errs := loader.ValidateName(name, cfg, agent.KnownModels, review.NewValidator(cfg))
-	return toolResult(id, marshalProfileResolveResult(name, prof, errs))
+	return toolResult(id, marshalProfileResolveResult(name, strings.TrimSpace(p.Backend), prof, errs))
 }
 
 // marshalProfileResolveResult renders the fail-open JSON body: resolved profiles
 // carry their full body (archetype entries passed through verbatim, never
 // collapsed to scalars — D6 forward-compat), unresolved ones carry the name
 // attempted and the errors found.
-func marshalProfileResolveResult(name string, p *profiles.Profile, errs []error) string {
+func marshalProfileResolveResult(name, backend string, p *profiles.Profile, errs []error) string {
 	type result struct {
 		Resolved  bool                          `json:"resolved"`
 		Name      string                        `json:"name,omitempty"`
 		Source    string                        `json:"source,omitempty"`
+		Backend   string                        `json:"backend,omitempty"`
 		Archetype map[string]profiles.Archetype `json:"archetype,omitempty"`
 		Rigor     *profiles.Rigor               `json:"rigor,omitempty"`
 		Panel     map[string]any                `json:"panel,omitempty"`
 		Errors    []string                      `json:"errors,omitempty"`
 	}
 
-	r := result{Name: name}
+	r := result{Name: name, Backend: backend}
 	if p == nil || len(errs) > 0 {
 		for _, e := range errs {
 			r.Errors = append(r.Errors, e.Error())

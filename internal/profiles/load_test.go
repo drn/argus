@@ -24,7 +24,7 @@ func writeProfile(t *testing.T, dir, name, content string) string {
 func TestLoad_FromLibrary(t *testing.T) {
 	lib := writeProfile(t, t.TempDir(), "lean", `
 [archetype.code_slice]
-model = "sonnet"
+models = { claude = "sonnet" }
 `)
 	l := &Loader{LibraryDir: lib}
 
@@ -32,24 +32,24 @@ model = "sonnet"
 	testutil.NoError(t, err)
 	testutil.Equal(t, p.Name, "lean")
 	testutil.Equal(t, p.Source, SourceLibrary)
-	testutil.Equal(t, p.Archetype["code_slice"].Model, "sonnet")
+	testutil.Equal(t, p.Archetype["code_slice"].Models["claude"], "sonnet")
 }
 
 func TestLoad_InRepoPrecedence(t *testing.T) {
 	repo := writeProfile(t, t.TempDir(), "lean", `
 [archetype.code_slice]
-model = "opus"
+models = { claude = "opus" }
 `)
 	lib := writeProfile(t, t.TempDir(), "lean", `
 [archetype.code_slice]
-model = "sonnet"
+models = { claude = "sonnet" }
 `)
 	l := &Loader{RepoDir: repo, LibraryDir: lib}
 
 	p, err := l.Load("lean")
 	testutil.NoError(t, err)
 	// in-repo file wins...
-	testutil.Equal(t, p.Archetype["code_slice"].Model, "opus")
+	testutil.Equal(t, p.Archetype["code_slice"].Models["claude"], "opus")
 	// ...and the source is reported as in-repo.
 	testutil.Equal(t, p.Source, SourceInRepo)
 }
@@ -57,7 +57,7 @@ model = "sonnet"
 func TestLoad_SourceReportedLibrary(t *testing.T) {
 	lib := writeProfile(t, t.TempDir(), "default", `
 [archetype.docs]
-model = "haiku"
+models = { claude = "haiku" }
 `)
 	l := &Loader{RepoDir: t.TempDir(), LibraryDir: lib} // empty repo dir
 	p, err := l.Load("default")
@@ -75,7 +75,7 @@ func TestLoad_NotFound(t *testing.T) {
 func TestLoad_PerArchetypeFieldsParse(t *testing.T) {
 	lib := writeProfile(t, t.TempDir(), "p", `
 [archetype.brainstorm]
-model  = "opus"
+models = { claude = "opus", codex = "gpt-5-codex" }
 effort = "high"
 window = "1m"
 `)
@@ -83,7 +83,7 @@ window = "1m"
 	p, err := l.Load("p")
 	testutil.NoError(t, err)
 	a := p.Archetype["brainstorm"]
-	testutil.Equal(t, a.Model, "opus")
+	testutil.Equal(t, a.Models["claude"], "opus")
 	testutil.Equal(t, a.Effort, "high")
 	testutil.Equal(t, a.Window, "1m")
 }
@@ -107,10 +107,10 @@ func TestLoad_ExtendsOverlay_ChildOverridesOnlySetFields(t *testing.T) {
 	lib := t.TempDir()
 	writeProfile(t, lib, "default", `
 [archetype.code_slice]
-model = "sonnet"
+models = { claude = "sonnet", codex = "gpt-5" }
 
 [archetype.ci_loop]
-model = "haiku"
+models = { claude = "haiku", codex = "gpt-5" }
 
 [rigor]
 review_passes = 1
@@ -120,15 +120,15 @@ gating        = false
 extends = "default"
 
 [archetype.code_slice]
-model = "opus"
+models = { claude = "opus" }
 `)
 	l := &Loader{LibraryDir: lib}
 	p, err := l.Load("lean")
 	testutil.NoError(t, err)
 	// override applied
-	testutil.Equal(t, p.Archetype["code_slice"].Model, "opus")
+	testutil.Equal(t, p.Archetype["code_slice"].Models["claude"], "opus")
 	// inherited unchanged
-	testutil.Equal(t, p.Archetype["ci_loop"].Model, "haiku")
+	testutil.Equal(t, p.Archetype["ci_loop"].Models["claude"], "haiku")
 	testutil.Equal(t, p.Rigor.ReviewPasses, 1)
 	// leaf name + source preserved through resolution
 	testutil.Equal(t, p.Name, "lean")
@@ -138,29 +138,29 @@ func TestLoad_ExtendsOverlay_Recursive(t *testing.T) {
 	lib := t.TempDir()
 	writeProfile(t, lib, "base", `
 [archetype.code_slice]
-model = "sonnet"
+models = { claude = "sonnet" }
 
 [archetype.ci_loop]
-model = "haiku"
+models = { claude = "haiku" }
 `)
 	writeProfile(t, lib, "mid", `
 extends = "base"
 
 [archetype.code_slice]
-model = "opus"
+models = { claude = "opus" }
 `)
 	writeProfile(t, lib, "leaf", `
 extends = "mid"
 
 [archetype.bug_fix]
-model = "haiku"
+models = { claude = "haiku" }
 `)
 	l := &Loader{LibraryDir: lib}
 	p, err := l.Load("leaf")
 	testutil.NoError(t, err)
-	testutil.Equal(t, p.Archetype["code_slice"].Model, "opus") // from mid
-	testutil.Equal(t, p.Archetype["ci_loop"].Model, "haiku")   // from base
-	testutil.Equal(t, p.Archetype["bug_fix"].Model, "haiku")   // from leaf
+	testutil.Equal(t, p.Archetype["code_slice"].Models["claude"], "opus") // from mid
+	testutil.Equal(t, p.Archetype["ci_loop"].Models["claude"], "haiku")   // from base
+	testutil.Equal(t, p.Archetype["bug_fix"].Models["claude"], "haiku")   // from leaf
 }
 
 func TestLoad_PartialArchetypeOverlay(t *testing.T) {
@@ -169,7 +169,7 @@ func TestLoad_PartialArchetypeOverlay(t *testing.T) {
 	lib := t.TempDir()
 	writeProfile(t, lib, "default", `
 [archetype.brainstorm]
-model  = "opus"
+models = { claude = "opus" }
 effort = "high"
 window = "1m"
 `)
@@ -183,9 +183,9 @@ effort = "low"
 	p, err := l.Load("child")
 	testutil.NoError(t, err)
 	a := p.Archetype["brainstorm"]
-	testutil.Equal(t, a.Model, "opus") // inherited
-	testutil.Equal(t, a.Effort, "low") // overridden
-	testutil.Equal(t, a.Window, "1m")  // inherited
+	testutil.Equal(t, a.Models["claude"], "opus") // inherited
+	testutil.Equal(t, a.Effort, "low")            // overridden
+	testutil.Equal(t, a.Window, "1m")             // inherited
 }
 
 func TestLoad_ExtendsCycle(t *testing.T) {
@@ -224,7 +224,7 @@ reviewers = ["opus", "gpt-5"]
 func TestLoad_PanelAbsent(t *testing.T) {
 	lib := writeProfile(t, t.TempDir(), "p", `
 [archetype.docs]
-model = "haiku"
+models = { claude = "haiku" }
 `)
 	l := &Loader{LibraryDir: lib}
 	p, err := l.Load("p")
@@ -235,7 +235,7 @@ model = "haiku"
 func TestResolveProject_EmptyTargetsDefault(t *testing.T) {
 	lib := writeProfile(t, t.TempDir(), "default", `
 [archetype.docs]
-model = "haiku"
+models = { claude = "haiku" }
 `)
 	l := &Loader{LibraryDir: lib}
 	p, err := l.ResolveProject("")
@@ -246,13 +246,13 @@ model = "haiku"
 func TestResolveProject_NamedBinding(t *testing.T) {
 	lib := t.TempDir()
 	writeProfile(t, lib, "default", `[archetype.docs]
-model = "haiku"`)
+models = { claude = "haiku" }`)
 	writeProfile(t, lib, "lean", `extends = "default"`)
 	l := &Loader{LibraryDir: lib}
 	p, err := l.ResolveProject("lean")
 	testutil.NoError(t, err)
 	testutil.Equal(t, p.Name, "lean")
-	testutil.Equal(t, p.Archetype["docs"].Model, "haiku")
+	testutil.Equal(t, p.Archetype["docs"].Models["claude"], "haiku")
 }
 
 // TestDiscover_UnionDedupAndSort covers Loader.Discover: it returns the sorted,

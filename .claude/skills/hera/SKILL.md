@@ -409,7 +409,7 @@ that is exactly why resolution runs daemon-side and arrives by env. If you spawn
 archetype; you do not set your own.
 
 Let the archetype resolve the model: omit `model` on `hera_spawn_worker` whenever you pass `archetype=`,
-so the profile's per-archetype tier actually takes effect (precedence is `task.Model → profile[archetype].model
+so the profile's per-archetype tier actually takes effect (precedence is `task.Model → profile[archetype].models[backend]
 → backend default` — an explicit `model` always wins over the profile). Only pass an explicit `model`
 alongside `archetype=` when you deliberately want to override that tier for this one spawn — otherwise you
 silently defeat the archetype's whole purpose (e.g. a `ci_loop` worker spawned with `model="opus"` throws away

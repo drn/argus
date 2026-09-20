@@ -13,9 +13,7 @@ import (
 //   - every archetype table names a canonical archetype;
 //   - each non-empty effort is one of ValidEfforts;
 //   - each non-empty window is one of ValidWindows;
-//   - each non-empty model is a member of the union of the built-in backend
-//     aliases (knownModels("claude") ∪ knownModels("codex")) and every
-//     configured backend's models list;
+//   - each backend-keyed model is selectable for its named backend;
 //   - the [panel] block, when present, passes panelValidator if one is
 //     injected; when panelValidator is nil, [panel] is accepted on structural
 //     shape alone (it is, by construction, a decoded TOML table — nothing
@@ -31,7 +29,6 @@ import (
 func Validate(p *Profile, cfg config.Config, knownModels func(command string) []string, panelValidator func(panel map[string]any) []error) []error {
 	var errs []error
 
-	allowed := modelAllowList(cfg, knownModels)
 	canon := archetypeSet()
 
 	// Iterate in a stable order so the reported error list is deterministic.
@@ -52,8 +49,10 @@ func Validate(p *Profile, cfg config.Config, knownModels func(command string) []
 		if a.Window != "" && !inSet(a.Window, ValidWindows) {
 			errs = append(errs, fmt.Errorf("archetype %q: invalid window %q (allowed: 200k, 1m)", name, a.Window))
 		}
-		if a.Model != "" && !allowed[a.Model] {
-			errs = append(errs, fmt.Errorf("archetype %q: unknown model %q (not in built-in aliases or any configured backend's models)", name, a.Model))
+		for backend, model := range a.Models {
+			if !backendAllowsModel(backend, model, cfg, knownModels) {
+				errs = append(errs, fmt.Errorf("archetype %q: model %q is not selectable for backend %q", name, model, backend))
+			}
 		}
 	}
 
@@ -78,25 +77,17 @@ func (l *Loader) ValidateName(name string, cfg config.Config, knownModels func(c
 	return p, Validate(p, cfg, knownModels, panelValidator)
 }
 
-// modelAllowList builds the union of built-in backend aliases (for the "claude"
-// and "codex" commands) and every configured backend's models list.
-func modelAllowList(cfg config.Config, knownModels func(command string) []string) map[string]bool {
-	set := map[string]bool{}
-	if knownModels != nil {
-		for _, cmd := range []string{"claude", "codex"} {
-			for _, m := range knownModels(cmd) {
-				if m != "" {
-					set[m] = true
-				}
-			}
+func backendAllowsModel(name, model string, cfg config.Config, knownModels func(command string) []string) bool {
+	backend, configured := cfg.Backends[name]
+	command := name
+	if configured {
+		command = backend.Command
+		if len(backend.Models) > 0 {
+			return inSet(model, backend.Models)
 		}
 	}
-	for _, b := range cfg.Backends {
-		for _, m := range b.Models {
-			if m != "" {
-				set[m] = true
-			}
-		}
+	if knownModels == nil {
+		return false
 	}
-	return set
+	return inSet(model, knownModels(command))
 }

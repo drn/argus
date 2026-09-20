@@ -94,7 +94,7 @@ func TestProfileResolve_ByCwd(t *testing.T) {
 	addProfileTestTask(t, d, "myproj", worktree, "")
 	writeLibraryProfile(t, "customer_grade", `
 [archetype.review]
-model  = "opus"
+models = { claude = "opus", codex = "gpt-5-codex" }
 effort = "high"
 
 [panel]
@@ -119,10 +119,10 @@ func TestProfileResolve_PerSpawnOverridePrecedence(t *testing.T) {
 	testutil.NoError(t, d.SetProject("myproj", config.Project{Path: worktree, Profile: "customer_grade"}))
 	addProfileTestTask(t, d, "myproj", worktree, "lean")
 	writeLibraryProfile(t, "customer_grade", `[archetype.review]
-model = "opus"
+models = { claude = "opus" }
 `)
 	writeLibraryProfile(t, "lean", `[archetype.review]
-model = "sonnet"
+models = { claude = "sonnet" }
 `)
 
 	out, cr := callProfileResolve(t, s, fmt.Sprintf(`{"cwd": %q}`, worktree))
@@ -134,7 +134,7 @@ model = "sonnet"
 func TestProfileResolve_ExplicitProfileNameBypassesCwd(t *testing.T) {
 	s, _ := testProfileServer(t)
 	writeLibraryProfile(t, "lean", `[archetype.review]
-model = "sonnet"
+models = { claude = "sonnet" }
 `)
 
 	out, cr := callProfileResolve(t, s, `{"profile": "lean"}`)
@@ -149,10 +149,10 @@ func TestProfileResolve_ExplicitProfileOverridesCwdBoundProject(t *testing.T) {
 	testutil.NoError(t, d.SetProject("myproj", config.Project{Path: worktree, Profile: "customer_grade"}))
 	addProfileTestTask(t, d, "myproj", worktree, "")
 	writeLibraryProfile(t, "customer_grade", `[archetype.review]
-model = "opus"
+models = { claude = "opus" }
 `)
 	writeLibraryProfile(t, "lean", `[archetype.review]
-model = "sonnet"
+models = { claude = "sonnet" }
 `)
 
 	out, cr := callProfileResolve(t, s, fmt.Sprintf(`{"cwd": %q, "profile": "lean"}`, worktree))
@@ -186,12 +186,12 @@ func TestProfileResolve_ArchetypePassthroughVerbatim(t *testing.T) {
 	s, _ := testProfileServer(t)
 	writeLibraryProfile(t, "full", `
 [archetype.review]
-model  = "opus"
+models = { claude = "opus", codex = "gpt-5-codex" }
 effort = "high"
 window = "1m"
 
 [archetype.docs]
-model = "haiku"
+models = { claude = "haiku", codex = "gpt-5" }
 
 [rigor]
 review_passes = 2
@@ -204,12 +204,13 @@ security_spot_check = true
 	testutil.Equal(t, out.Resolved, true)
 	testutil.Equal(t, len(out.Archetype), 2)
 	var review struct {
-		Model  string `json:"model"`
-		Effort string `json:"effort"`
-		Window string `json:"window"`
+		Models map[string]string `json:"models"`
+		Effort string            `json:"effort"`
+		Window string            `json:"window"`
 	}
 	testutil.NoError(t, json.Unmarshal(out.Archetype["review"], &review))
-	testutil.Equal(t, review.Model, "opus")
+	testutil.Equal(t, review.Models["claude"], "opus")
+	testutil.Equal(t, review.Models["codex"], "gpt-5-codex")
 	testutil.Equal(t, review.Effort, "high")
 	testutil.Equal(t, review.Window, "1m")
 
@@ -220,17 +221,32 @@ security_spot_check = true
 	// the raw JSON needs the exact case, not just something Go's
 	// case-insensitive json.Unmarshal happens to tolerate.
 	raw := cr.Content[0].Text
-	testutil.Contains(t, raw, `"model":"opus"`)
+	testutil.Contains(t, raw, `"models":{"claude":"opus","codex":"gpt-5-codex"}`)
 	testutil.Contains(t, raw, `"effort":"high"`)
 	testutil.Contains(t, raw, `"window":"1m"`)
 	testutil.Contains(t, raw, `"review_passes":2`)
 	testutil.Contains(t, raw, `"gating":true`)
 	testutil.Contains(t, raw, `"security_spot_check":true`)
-	for _, badKey := range []string{`"Model"`, `"Effort"`, `"Window"`, `"ReviewPasses"`, `"Gating"`, `"SecuritySpotCheck"`} {
+	for _, badKey := range []string{`"Models"`, `"Effort"`, `"Window"`, `"ReviewPasses"`, `"Gating"`, `"SecuritySpotCheck"`} {
 		if strings.Contains(raw, badKey) {
 			t.Fatalf("raw JSON contains PascalCase key %s (wire format must be lowercase/snake_case): %s", badKey, raw)
 		}
 	}
+}
+
+func TestProfileResolve_AcceptsBackendContext(t *testing.T) {
+	s, _ := testProfileServer(t)
+	writeLibraryProfile(t, "codex", `
+[archetype.code_slice]
+models = { claude = "sonnet", codex = "gpt-5-codex" }
+`)
+
+	out, cr := callProfileResolve(t, s, `{"profile":"codex","backend":"codex"}`)
+	testutil.Equal(t, cr.IsError, false)
+	testutil.Equal(t, out.Resolved, true)
+	raw := cr.Content[0].Text
+	testutil.Contains(t, raw, `"backend":"codex"`)
+	testutil.Contains(t, raw, `"codex":"gpt-5-codex"`)
 }
 
 func TestProfileResolve_RejectsPathTraversalInExplicitProfile(t *testing.T) {
@@ -250,7 +266,7 @@ func TestProfileResolve_RejectsPathTraversalInPerSpawnOverride(t *testing.T) {
 	testutil.NoError(t, d.SetProject("myproj", config.Project{Path: worktree, Profile: "customer_grade"}))
 	addProfileTestTask(t, d, "myproj", worktree, "../../../etc/passwd")
 	writeLibraryProfile(t, "customer_grade", `[archetype.review]
-model = "opus"
+models = { claude = "opus" }
 `)
 
 	out, cr := callProfileResolve(t, s, fmt.Sprintf(`{"cwd": %q}`, worktree))

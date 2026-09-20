@@ -174,7 +174,7 @@ type ResolvedProfile struct {
 // ResolveModel returns the effective model for a task and, when a diligence
 // profile actively drove the choice, the resolution metadata for env export.
 //
-// Precedence: task.Model override → profile[task.Archetype].model → project /
+// Precedence: valid task.Model override → profile[task.Archetype].models[backend] → project /
 // backend default → "" (no --model). The profile is consulted ONLY when
 // task.Model is unset AND the task carries an archetype; the per-archetype model
 // is used only when the project's bound profile loads, validates, and the model
@@ -187,7 +187,10 @@ type ResolvedProfile struct {
 // MUST run daemon-side (outside the sandbox, where global ~/.argus reads EPERM).
 func ResolveModel(task *model.Task, backend config.Backend, cfg config.Config) (string, *ResolvedProfile) {
 	if m := strings.TrimSpace(task.Model); m != "" {
-		return m, nil
+		if backendAllowsModel(m, backend) {
+			return m, nil
+		}
+		uxlog.Log("[profiles] task %q: explicit model %q not valid for resolved backend; falling through to default", task.ID, m)
 	}
 	if rp := resolveProfile(task, backend, cfg); rp != nil {
 		return rp.Model, rp
@@ -236,7 +239,8 @@ func resolveProfile(task *model.Task, backend config.Backend, cfg config.Config)
 		return nil
 	}
 
-	m := strings.TrimSpace(p.Archetype[arch].Model)
+	backendName := resolvedBackendName(task, cfg)
+	m := strings.TrimSpace(p.Archetype[arch].Models[backendName])
 	if m == "" {
 		return nil
 	}
@@ -245,6 +249,19 @@ func resolveProfile(task *model.Task, backend config.Backend, cfg config.Config)
 		return nil
 	}
 	return &ResolvedProfile{Name: p.Name, Archetype: arch, Model: m}
+}
+
+func resolvedBackendName(task *model.Task, cfg config.Config) string {
+	name := cfg.Defaults.Backend
+	if task.Project != "" {
+		if project, ok := cfg.Projects[task.Project]; ok && project.Backend != "" {
+			name = project.Backend
+		}
+	}
+	if task.Backend != "" {
+		name = task.Backend
+	}
+	return name
 }
 
 // backendAllowsModel reports whether m is selectable for the resolved backend —

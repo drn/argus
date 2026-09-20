@@ -49,13 +49,13 @@ var ValidEfforts = []string{"low", "medium", "high"}
 // ValidWindows is the allowed enum for an archetype's context-window field.
 var ValidWindows = []string{"200k", "1m"}
 
-// Archetype is the per-archetype model/effort/window triple. All fields are
+// Archetype is the per-archetype backend-keyed models/effort/window triple. All fields are
 // optional; an empty field means "unset" (and is skipped during validation and
 // inherited from a parent during extends overlay).
 type Archetype struct {
-	Model  string `toml:"model" json:"model,omitempty"`
-	Effort string `toml:"effort" json:"effort,omitempty"`
-	Window string `toml:"window" json:"window,omitempty"`
+	Models map[string]string `toml:"models" json:"models,omitempty"`
+	Effort string            `toml:"effort" json:"effort,omitempty"`
+	Window string            `toml:"window" json:"window,omitempty"`
 }
 
 // Rigor holds the per-profile process/diligence flags.

@@ -43,7 +43,7 @@ func errorsText(errs []error) string {
 func TestValidate_ValidProfile(t *testing.T) {
 	p := loadOne(t, `
 [archetype.code_slice]
-model  = "sonnet"
+models = { claude = "sonnet" }
 effort = "high"
 window = "1m"
 
@@ -57,7 +57,7 @@ reviewers = ["opus"]
 func TestValidate_UnknownArchetype(t *testing.T) {
 	p := loadOne(t, `
 [archetype.planner]
-model = "opus"
+models = { claude = "opus" }
 `)
 	errs := Validate(p, config.Config{}, testKnownModels, nil)
 	testutil.Equal(t, len(errs), 1)
@@ -67,7 +67,7 @@ model = "opus"
 func TestValidate_OutOfEnumEffort(t *testing.T) {
 	p := loadOne(t, `
 [archetype.code_slice]
-model  = "sonnet"
+models = { claude = "sonnet" }
 effort = "max"
 `)
 	errs := Validate(p, config.Config{}, testKnownModels, nil)
@@ -78,7 +78,7 @@ effort = "max"
 func TestValidate_OutOfEnumWindow(t *testing.T) {
 	p := loadOne(t, `
 [archetype.code_slice]
-model  = "sonnet"
+models = { claude = "sonnet" }
 window = "2m"
 `)
 	errs := Validate(p, config.Config{}, testKnownModels, nil)
@@ -89,7 +89,7 @@ window = "2m"
 func TestValidate_UnknownModel(t *testing.T) {
 	p := loadOne(t, `
 [archetype.code_slice]
-model = "gemini-2.5-pro"
+models = { gem = "gemini-2.5-pro" }
 `)
 	errs := Validate(p, config.Config{}, testKnownModels, nil)
 	testutil.Equal(t, len(errs), 1)
@@ -99,7 +99,7 @@ model = "gemini-2.5-pro"
 func TestValidate_BackendContributedModelAccepted(t *testing.T) {
 	p := loadOne(t, `
 [archetype.code_slice]
-model = "gemini-2.5-pro"
+models = { gem = "gemini-2.5-pro" }
 `)
 	cfg := config.Config{
 		Backends: map[string]config.Backend{
@@ -113,10 +113,21 @@ model = "gemini-2.5-pro"
 func TestValidate_CodexBuiltinAccepted(t *testing.T) {
 	p := loadOne(t, `
 [archetype.code_slice]
-model = "gpt-5-codex"
+models = { codex = "gpt-5-codex" }
 `)
 	errs := Validate(p, config.Config{}, testKnownModels, nil)
 	testutil.Equal(t, len(errs), 0)
+}
+
+func TestValidate_ModelRejectedForNamedBackend(t *testing.T) {
+	p := loadOne(t, `
+[archetype.code_slice]
+models = { codex = "opus" }
+`)
+	errs := Validate(p, config.Config{}, testKnownModels, nil)
+	testutil.Equal(t, len(errs), 1)
+	testutil.Contains(t, errorsText(errs), "codex")
+	testutil.Contains(t, errorsText(errs), "opus")
 }
 
 func TestValidate_PanelStructuralAccepted(t *testing.T) {
@@ -124,7 +135,7 @@ func TestValidate_PanelStructuralAccepted(t *testing.T) {
 	// when no panel-grammar validator is injected (nil).
 	p := loadOne(t, `
 [archetype.docs]
-model = "haiku"
+models = { claude = "haiku" }
 
 [panel]
 reviewers   = ["opus", "gpt-5"]
@@ -171,7 +182,7 @@ func TestValidate_PanelInjectedValidatorSkippedWhenPanelAbsent(t *testing.T) {
 	// validator — a missing panel is not itself a grammar violation.
 	p := loadOne(t, `
 [archetype.docs]
-model = "haiku"
+models = { claude = "haiku" }
 `)
 	errs := Validate(p, config.Config{}, testKnownModels, alwaysRejectPanel)
 	testutil.Equal(t, len(errs), 0)
@@ -181,10 +192,10 @@ func TestValidate_ReportsAllErrors(t *testing.T) {
 	// Three independent violations: unknown archetype, bad effort, unknown model.
 	p := loadOne(t, `
 [archetype.planner]
-model = "opus"
+models = { claude = "opus" }
 
 [archetype.code_slice]
-model  = "nope-model"
+models = { claude = "nope-model" }
 effort = "max"
 `)
 	errs := Validate(p, config.Config{}, testKnownModels, nil)
@@ -205,7 +216,7 @@ func TestValidateName_CycleReported(t *testing.T) {
 func TestValidateName_Valid(t *testing.T) {
 	lib := writeProfile(t, t.TempDir(), "ok", `
 [archetype.code_slice]
-model = "sonnet"
+models = { claude = "sonnet" }
 `)
 	l := &Loader{LibraryDir: lib}
 	p, errs := l.ValidateName("ok", config.Config{}, testKnownModels, nil)

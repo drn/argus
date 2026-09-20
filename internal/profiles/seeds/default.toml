@@ -19,44 +19,44 @@
 # argus validate default
 
 [archetype.brainstorm]
-model  = "opus"
+models = { claude = "opus", codex = "gpt-5-codex" }
 effort = "high"
 
 [archetype.orchestrator]
-model = "sonnet"
+models = { claude = "sonnet", codex = "gpt-5" }
 
 [archetype.big_build]
-model = "sonnet"
+models = { claude = "sonnet", codex = "gpt-5" }
 
 [archetype.code_slice]
-model = "sonnet"
+models = { claude = "sonnet", codex = "gpt-5" }
 
 [archetype.bug_fix]
-model = "sonnet"
+models = { claude = "sonnet", codex = "gpt-5" }
 
 [archetype.review]
-model = "opus"
+models = { claude = "opus", codex = "gpt-5-codex" }
 
 [archetype.security_review]
-model = "opus"
+models = { claude = "opus", codex = "gpt-5-codex" }
 
 [archetype.synthesis]
-model = "sonnet"
+models = { claude = "sonnet", codex = "gpt-5" }
 
 [archetype.spec_audit]
-model = "sonnet"
+models = { claude = "sonnet", codex = "gpt-5" }
 
 [archetype.ci_loop]
-model = "haiku"
+models = { claude = "haiku", codex = "gpt-5" }
 
 [archetype.verify]
-model = "haiku"
+models = { claude = "haiku", codex = "gpt-5" }
 
 [archetype.recovery]
-model = "sonnet"
+models = { claude = "sonnet", codex = "gpt-5" }
 
 [archetype.docs]
-model = "haiku"
+models = { claude = "haiku", codex = "gpt-5" }
 
 [rigor]
 review_passes       = 1
