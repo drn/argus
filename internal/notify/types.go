@@ -19,6 +19,12 @@ const defaultDeadlineMS = 5 * 60 * 1000
 const maxSubmittedPerTask = 1000
 
 const (
+	// maxTotalSubmitAttempts bounds CR writes over the entire lifetime of one
+	// delivery, not merely one Reconcile pass. Three full acknowledgment windows
+	// allow a slow terminal to recover while preventing a detection failure from
+	// generating unbounded real agent turns.
+	maxTotalSubmitAttempts = 9
+
 	// outputPollInterval bounds how quickly reliable-notify polls the lock-free
 	// session output counter while waiting for recipient-side evidence.
 	outputPollInterval = 10 * time.Millisecond
@@ -66,6 +72,7 @@ type delivery struct {
 
 	observedDraft   string
 	draftObservedAt time.Time
+	submitAttempts  int
 }
 
 // SessionHandleIface is the subset of agent.SessionHandle that the Notifier
