@@ -273,7 +273,7 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 	submittedDraft := ""
 	composerAckable := !composerKnown
 	if composerKnown {
-		if draft, known := n.composerDraft(sess); known && strings.Contains(draft, d.text) {
+		if draft, known := n.composerDraft(sess); known && composerContainsText(draft, d.text) {
 			submittedDraft = draft
 			composerAckable = true
 		} else {
@@ -287,20 +287,26 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 		}
 
 		attempt := i + 1
+		d.submitAttempts++
+		totalAttempts := d.submitAttempts
 		baseline := sess.TotalWritten()
 		if _, err := sess.WriteInput([]byte("\r"), agentview.OriginSystem); err != nil {
 			logDelivery(slog.LevelWarn, "delivery write failed", taskID, d.deliveryID,
-				"phase", "enter", "attempt", attempt, "error", err)
+				"phase", "enter", "attempt", attempt, "total_attempts", totalAttempts, "error", err)
+			if totalAttempts >= maxTotalSubmitAttempts {
+				n.removeAndAdvance(taskID, d.deliveryID, false)
+				logDelivery(slog.LevelError, "delivery abandoned: total enter attempts exceeded", taskID, d.deliveryID,
+					"total_attempts", totalAttempts, "max_total_attempts", maxTotalSubmitAttempts)
+			}
 			return
 		}
 		acknowledged := false
-		if composerKnown {
-			if composerAckable {
-				acknowledged = n.waitForConsume(sess, submittedDraft, timeout)
-			}
+		if composerKnown && composerAckable {
+			acknowledged = n.waitForConsume(sess, submittedDraft, timeout)
 		} else {
-			// The raw output counter is a conservative fallback only when a
-			// supported composer cannot be identified at all.
+			// A rendered composer is authoritative only after it reflected the
+			// injected draft. Unknown and known-but-unobservable composers both
+			// need the conservative raw-output fallback.
 			acknowledged = n.waitForAdvance(sess, baseline, timeout)
 		}
 		if acknowledged {
@@ -310,7 +316,13 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 		}
 
 		logDelivery(slog.LevelWarn, "delivery enter unacknowledged", taskID, d.deliveryID,
-			"attempt", attempt, "wait", timeout)
+			"attempt", attempt, "total_attempts", totalAttempts, "wait", timeout)
+		if totalAttempts >= maxTotalSubmitAttempts {
+			n.removeAndAdvance(taskID, d.deliveryID, false)
+			logDelivery(slog.LevelError, "delivery abandoned: total enter attempts exceeded", taskID, d.deliveryID,
+				"total_attempts", totalAttempts, "max_total_attempts", maxTotalSubmitAttempts)
+			return
+		}
 	}
 
 	logDelivery(slog.LevelWarn, "delivery remains pending after submit retries", taskID, d.deliveryID,
@@ -409,7 +421,33 @@ func waitForComposer(sess SessionHandleIface, timeout time.Duration, draftOf fun
 
 func injectedNoticeDraft(draft string) bool {
 	draft = strings.TrimSpace(draft)
-	return strings.HasPrefix(draft, "[hera from ") || strings.HasPrefix(draft, "[argus]")
+	if strings.HasPrefix(draft, "[hera from ") || strings.HasPrefix(draft, "[argus]") {
+		return true
+	}
+
+	// A failed submission can leave the preserved abandoned draft plus this
+	// notifier's annotation and notice in the composer. Treat that whole payload
+	// as stale on the next pass so a retry clears it instead of appending another
+	// annotation indefinitely. Normalize soft-wrap whitespace first.
+	normalized := compactWhitespace(draft)
+	annotation := compactWhitespace(abandonedDraftAnnotation)
+	annotationAt := strings.Index(normalized, annotation)
+	if annotationAt < 0 {
+		return false
+	}
+	afterAnnotation := normalized[annotationAt+len(annotation):]
+	return strings.Contains(afterAnnotation, "[herafrom") || strings.Contains(afterAnnotation, "[argus]")
+}
+
+// composerContainsText compares logical composer content rather than terminal
+// rows. InputDraft inserts newlines at visual soft-wrap boundaries while a
+// notifier payload is a single logical line.
+func composerContainsText(draft, text string) bool {
+	return strings.Contains(compactWhitespace(draft), compactWhitespace(text))
+}
+
+func compactWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), "")
 }
 
 // deliveryStopped observes cancellation and the wall-clock deadline during a

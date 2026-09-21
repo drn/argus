@@ -179,6 +179,10 @@ true)` and `db.Delete(id)`; entrypoints that go through `db.Update`
 
 ## Hera message bus (M2)
 
+- **Reliable-notify must compare injected composer text after removing whitespace, and must fall back whenever no injected composer snapshot exists.** `InputDraft` inserts `\n` at visual soft-wrap boundaries, whereas Hera doorbells are injected as single-line strings; a literal substring check makes ordinary 80/120-column wraps look unobserved. Once an injected draft is observed, only its rendered disappearance/change acknowledges Enter; when it is unknown or known-but-unobserved, output advancement is the conservative fallback.
+
+- **Reliable-notify has two independent failure bounds: the five-minute wall-clock deadline and nine total Enter writes across all reconcile ticks.** The attempt ceiling is an ERROR-level abandonment, not a retry warning, because a composer-detection regression otherwise can repeatedly trigger real agent turns. A retried annotated-preservation payload is stale notifier content: recognize its annotation plus Argus/Hera notice and clear/replace it rather than recursively appending another annotation.
+
 - **Wait for Hera mail through `hera_inbox(timeout_seconds=1..120)`, never a background timer loop.**
   The DB wait fast-paths `HeraInbox` before polling every 500ms, inherits daemon-shutdown cancellation,
   and returns `(nil, nil)` on timeout/cancellation; the MCP layer alone enforces the 120-second cap.

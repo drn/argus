@@ -54,8 +54,11 @@ type fakeSession struct {
 	// every CR is swallowed, simulating the live paste-batch failure.
 	ackCRAt int
 	// writeErr is returned from WriteInput when set.
-	writeErr    error
-	ctrlUClears bool
+	writeErr      error
+	ctrlUClears   bool
+	cols          int
+	rows          int
+	tailAfterText func(string) []byte
 }
 
 func (s *fakeSession) IsIdle() bool {
@@ -79,7 +82,14 @@ func (s *fakeSession) TotalWritten() uint64 {
 	return s.total
 }
 
-func (s *fakeSession) PTYSize() (cols, rows int) { return 80, 24 }
+func (s *fakeSession) PTYSize() (cols, rows int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cols == 0 {
+		return 80, 24
+	}
+	return s.cols, s.rows
+}
 
 func (s *fakeSession) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
 	s.mu.Lock()
@@ -107,7 +117,11 @@ func (s *fakeSession) WriteInput(p []byte, origin agentview.InputOrigin) (int, e
 		// Claude Code redraws its composer after consuming injected text.
 		s.total++
 		if bytes.Contains(s.tail, []byte("❯")) {
-			s.tail = composerFrame(string(p))
+			if s.tailAfterText != nil {
+				s.tail = s.tailAfterText(string(p))
+			} else {
+				s.tail = composerFrame(string(p))
+			}
 		}
 	}
 	return len(p), nil
@@ -115,6 +129,32 @@ func (s *fakeSession) WriteInput(p []byte, origin agentview.InputOrigin) (int, e
 
 func composerFrame(draft string) []byte {
 	return []byte("\x1b[?1049h\x1b[2J\x1b[7;1H❯\u00a0" + draft)
+}
+
+func wrappedComposerFrame(draft string, cols int) []byte {
+	// Emit terminal rows explicitly because the fake session records a rendered
+	// snapshot, not the terminal's original byte-by-byte input stream.
+	firstWidth := cols - 2 // prompt glyph + non-breaking-space marker
+	row := 7
+	remaining := draft
+	frame := "\x1b[?1049h\x1b[2J\x1b[7;1H❯\u00a0"
+	width := firstWidth
+	for len(remaining) > 0 {
+		width = cols
+		if row == 7 {
+			width = firstWidth
+		}
+		if len(remaining) < width {
+			width = len(remaining)
+		}
+		frame += remaining[:width]
+		remaining = remaining[width:]
+		if len(remaining) > 0 {
+			row++
+			frame += fmt.Sprintf("\x1b[%d;1H", row)
+		}
+	}
+	return []byte(frame + fmt.Sprintf("\x1b[%d;%dH", row, width+1))
 }
 
 // allOrigins returns a copy of every origin recorded by WriteInput calls, in
@@ -376,6 +416,126 @@ func TestNotifier_BusyOutputWithoutComposerChangeRemainsPending(t *testing.T) {
 		testutil.Equal(t, string(write), "\r")
 	}
 	testutil.Equal(t, n.DeliveryState("t1", "d2"), StatePending)
+}
+
+func TestNotifier_WrappedComposerAcknowledgment(t *testing.T) {
+	for _, cols := range []int{80, 120} {
+		t.Run(fmt.Sprintf("%d columns", cols), func(t *testing.T) {
+			r := newFakeRunner()
+			sess := r.addSession("t1", true)
+			sess.cols = cols
+			sess.rows = 24
+			sess.tail = composerFrame("")
+			sess.tailAfterText = func(draft string) []byte { return wrappedComposerFrame(draft, cols) }
+			n := newTestNotifier(r, fakeNoFocus{})
+			consumed := false
+			n.waitForConsume = func(_ SessionHandleIface, submitted string, _ time.Duration) bool {
+				consumed = true
+				if !strings.Contains(submitted, "\n") {
+					t.Fatalf("wrapped composer draft did not contain a visual-wrap newline: %q", submitted)
+				}
+				return true
+			}
+			n.waitForAdvance = func(SessionHandleIface, uint64, time.Duration) bool {
+				t.Fatal("wrapped observable composer must not use output fallback")
+				return false
+			}
+
+			text := "[hera from coordinator] msg #123456 - " + strings.Repeat("x", cols*2)
+			n.ReliableNotify("t1", text, "d1", NotifyOpts{})
+			n.Reconcile(time.Now())
+
+			testutil.Equal(t, consumed, true)
+			testutil.Equal(t, n.DeliveryState("t1", "d1"), StateSubmitted)
+		})
+	}
+}
+
+func TestNotifier_KnownUnobservableComposerUsesOutputFallback(t *testing.T) {
+	r := newFakeRunner()
+	sess := r.addSession("t1", true)
+	sess.tail = composerFrame("")
+	// The composer was known when delivery began, but the post-injection redraw
+	// loses its marker before the notifier can take an acknowledgment snapshot.
+	sess.tailAfterText = func(string) []byte { return []byte("recipient redraw without composer marker") }
+	n := newTestNotifier(r, fakeNoFocus{})
+	fallbackCalls := 0
+	n.waitForAdvance = func(SessionHandleIface, uint64, time.Duration) bool {
+		fallbackCalls++
+		return true
+	}
+	n.waitForConsume = func(SessionHandleIface, string, time.Duration) bool {
+		t.Fatal("unobservable composer must use output fallback")
+		return false
+	}
+
+	n.ReliableNotify("t1", "[hera from coord] msg #7 — fallback", "d1", NotifyOpts{})
+	n.Reconcile(time.Now())
+
+	testutil.Equal(t, fallbackCalls, 1)
+	testutil.Equal(t, n.DeliveryState("t1", "d1"), StateSubmitted)
+}
+
+func TestNotifier_AbandonsAfterTotalUnacknowledgedEnterAttempts(t *testing.T) {
+	var logBuf bytes.Buffer
+	original := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(original) })
+
+	r := newFakeRunner()
+	sess := r.addSession("t1", true)
+	sess.tail = composerFrame("")
+	sess.ackCRAt = 0
+	n := newTestNotifier(r, fakeNoFocus{})
+	n.waitForConsume = func(SessionHandleIface, string, time.Duration) bool { return false }
+	n.waitForAdvance = func(SessionHandleIface, uint64, time.Duration) bool {
+		t.Fatal("observable composer must not use output fallback")
+		return false
+	}
+
+	n.ReliableNotify("t1", "[hera from coord] msg #8 — never acked", "d1", NotifyOpts{})
+	for i := 0; i < maxTotalSubmitAttempts/len(submitAckTimeouts); i++ {
+		n.Reconcile(time.Now())
+	}
+
+	testutil.Equal(t, n.DeliveryState("t1", "d1"), DeliveryState(""))
+	crs := 0
+	for _, write := range sess.allWrites() {
+		if string(write) == "\r" {
+			crs++
+		}
+	}
+	testutil.Equal(t, crs, maxTotalSubmitAttempts)
+	for _, want := range []string{
+		"level=ERROR",
+		"delivery abandoned: total enter attempts exceeded",
+		"total_attempts=9",
+	} {
+		if !strings.Contains(logBuf.String(), want) {
+			t.Fatalf("structured log missing %q:\n%s", want, logBuf.String())
+		}
+	}
+}
+
+func TestNotifier_AnnotatedStaleNoticeDoesNotGrowOnRetry(t *testing.T) {
+	abandoned := "human draft\n\n" + abandonedDraftAnnotation + "\n[hera from coord] msg #9 — retry"
+	testutil.Equal(t, injectedNoticeDraft(abandoned), true)
+
+	r := newFakeRunner()
+	sess := r.addSession("t1", true)
+	sess.tail = composerFrame(abandoned)
+	n := newTestNotifier(r, fakeNoFocus{})
+	d := &delivery{taskID: "t1", text: "[hera from coord] msg #9 — retry", deliveryID: "d1"}
+
+	clear, verifyClear, composerKnown, payload, safe := n.deliveryInput("t1", d, sess, time.Now())
+	testutil.Equal(t, safe, true)
+	testutil.Equal(t, clear, true)
+	testutil.Equal(t, verifyClear, true)
+	testutil.Equal(t, composerKnown, true)
+	testutil.Equal(t, payload, d.text)
+	if strings.Contains(payload, abandonedDraftAnnotation) {
+		t.Fatalf("stale annotated retry appended another annotation: %q", payload)
+	}
 }
 
 func TestWaitForComposerConsume_RejectsBusyOutputWithoutDraftChange(t *testing.T) {
