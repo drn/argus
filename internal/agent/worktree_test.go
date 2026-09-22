@@ -70,7 +70,7 @@ func TestCreateWorktree(t *testing.T) {
 	os.Setenv("HOME", tmpHome)
 	defer os.Setenv("HOME", origHome)
 
-	wtPath, finalName, branchName, err := CreateWorktree(repoDir, "testproject", "fix-bug", "")
+	wtPath, finalName, branchName, err := CreateWorktree(repoDir, "testproject", "fix-bug", "", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree failed: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestCreateWorktree(t *testing.T) {
 	}
 
 	// Creating again with same name should get -1 suffix.
-	wtPath2, finalName2, branchName2, err := CreateWorktree(repoDir, "testproject", "fix-bug", "")
+	wtPath2, finalName2, branchName2, err := CreateWorktree(repoDir, "testproject", "fix-bug", "", "")
 	if err != nil {
 		t.Fatalf("second CreateWorktree failed: %v", err)
 	}
@@ -118,6 +118,158 @@ func TestCreateWorktree(t *testing.T) {
 	expected2 := filepath.Join(tmpHome, ".argus", "worktrees", "testproject", "fix-bug-1")
 	if wtPath2 != expected2 {
 		t.Errorf("expected path %q, got %q", expected2, wtPath2)
+	}
+}
+
+// TestCreateWorktree_BranchNamespace verifies a non-empty branchNamespace
+// produces argus/<namespace>/<name> instead of the flat argus/<name>
+// (add-branch-namespacing).
+func TestCreateWorktree_BranchNamespace(t *testing.T) {
+	repoDir := t.TempDir()
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+	readme := filepath.Join(repoDir, "README.md")
+	if err := os.WriteFile(readme, []byte("test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "."}, {"commit", "-m", "initial"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	wtPath, finalName, branchName, err := CreateWorktree(repoDir, "testproject", "cart-api", "", "checkout-revamp")
+	testutil.NoError(t, err)
+	testutil.Equal(t, finalName, "cart-api")
+	testutil.Equal(t, branchName, "argus/checkout-revamp/cart-api")
+	if _, err := os.Stat(filepath.Join(wtPath, ".git")); err != nil {
+		t.Errorf("expected worktree at %q", wtPath)
+	}
+
+	// The namespaced branch actually exists in the repo.
+	cmd := exec.Command("git", "branch", "--list", "argus/checkout-revamp/cart-api")
+	cmd.Dir = repoDir
+	out, err := cmd.CombinedOutput()
+	testutil.NoError(t, err)
+	if !strings.Contains(string(out), "argus/checkout-revamp/cart-api") {
+		t.Errorf("expected branch 'argus/checkout-revamp/cart-api' to exist, got: %s", out)
+	}
+}
+
+// TestCreateWorktree_BranchNamespace_SanitizedIndependently verifies the
+// namespace segment is sanitized on its own (independently of the task-name
+// segment) before being joined, so a namespace containing a "/" cannot be
+// mistaken for the deliberate separator between the two segments.
+func TestCreateWorktree_BranchNamespace_SanitizedIndependently(t *testing.T) {
+	repoDir := t.TempDir()
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+	readme := filepath.Join(repoDir, "README.md")
+	if err := os.WriteFile(readme, []byte("test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "."}, {"commit", "-m", "initial"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	// "team/a" would (if joined before sanitizing) introduce an extra path
+	// segment indistinguishable from deliberate nesting. Sanitized on its
+	// own, the "/" becomes a hyphen: "team-a".
+	_, _, branchName, err := CreateWorktree(repoDir, "testproject", "c", "", "team/a")
+	testutil.NoError(t, err)
+	testutil.Equal(t, branchName, "argus/team-a/c")
+}
+
+// TestCreateWorktree_BranchNamespaceCollision proves that a git ref-namespace
+// collision (an existing LEAF branch blocking a new branch that needs the
+// same name as a DIRECTORY prefix) fails cleanly — an ordinary error, no
+// partially-created worktree or branch left behind — rather than corrupting
+// state (design.md's accepted, undetected failure mode).
+func TestCreateWorktree_BranchNamespaceCollision(t *testing.T) {
+	repoDir := t.TempDir()
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+	readme := filepath.Join(repoDir, "README.md")
+	if err := os.WriteFile(readme, []byte("test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "."}, {"commit", "-m", "initial"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	// First: an ordinary flat branch "argus/foo" (e.g. a plain solo task, or
+	// a pre-namespacing hera worker).
+	_, _, branchName1, err := CreateWorktree(repoDir, "testproject", "foo", "", "")
+	testutil.NoError(t, err)
+	testutil.Equal(t, branchName1, "argus/foo")
+
+	// Second: a namespaced worktree that would require "argus/foo" to also
+	// act as a directory prefix ("argus/foo/bar") — impossible, since it is
+	// already a leaf ref.
+	wtPath2, _, _, err := CreateWorktree(repoDir, "testproject", "bar", "", "foo")
+	if err == nil {
+		t.Fatal("expected a ref-namespace collision to fail")
+	}
+	if wtPath2 != "" {
+		t.Errorf("expected empty worktree path on failure, got %q", wtPath2)
+	}
+
+	// No dangling worktree was registered for the failed attempt.
+	listCmd := exec.Command("git", "worktree", "list", "--porcelain")
+	listCmd.Dir = repoDir
+	out, lErr := listCmd.CombinedOutput()
+	testutil.NoError(t, lErr)
+	if strings.Contains(string(out), filepath.Join("testproject", "bar")) {
+		t.Errorf("expected no worktree registered for the failed attempt, got: %s", out)
+	}
+
+	// The collision-target branch was never created.
+	branchCmd := exec.Command("git", "branch", "--list", "argus/foo/bar")
+	branchCmd.Dir = repoDir
+	bOut, bErr := branchCmd.CombinedOutput()
+	testutil.NoError(t, bErr)
+	if strings.TrimSpace(string(bOut)) != "" {
+		t.Errorf("expected argus/foo/bar to not exist, got: %s", bOut)
 	}
 }
 
@@ -147,7 +299,7 @@ func TestCreateWorktree_EmptyRepo(t *testing.T) {
 
 	t.Setenv("HOME", t.TempDir())
 
-	wtPath, finalName, branchName, err := CreateWorktree(repoDir, "emptyproj", "first-task", "")
+	wtPath, finalName, branchName, err := CreateWorktree(repoDir, "emptyproj", "first-task", "", "")
 	testutil.NoError(t, err)
 	testutil.Equal(t, finalName, "first-task")
 	testutil.Equal(t, branchName, "argus/first-task")
@@ -163,7 +315,7 @@ func TestCreateWorktree_EmptyRepo(t *testing.T) {
 	}
 
 	// A second task in the same empty repo should also succeed.
-	wtPath2, finalName2, _, err := CreateWorktree(repoDir, "emptyproj", "second-task", "")
+	wtPath2, finalName2, _, err := CreateWorktree(repoDir, "emptyproj", "second-task", "", "")
 	testutil.NoError(t, err)
 	testutil.Equal(t, finalName2, "second-task")
 	if _, err := os.Stat(filepath.Join(wtPath2, ".git")); err != nil {
@@ -195,7 +347,7 @@ func TestCreateWorktree_StackedOnUnbornProjectHEAD(t *testing.T) {
 
 	// First task: created via the orphan path (project HEAD is unborn),
 	// then commits something so its branch has real history.
-	wtPath1, _, branchName1, err := CreateWorktree(repoDir, "stackproj", "base-task", "")
+	wtPath1, _, branchName1, err := CreateWorktree(repoDir, "stackproj", "base-task", "", "")
 	testutil.NoError(t, err)
 	if err := os.WriteFile(filepath.Join(wtPath1, "file.txt"), []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
@@ -215,7 +367,7 @@ func TestCreateWorktree_StackedOnUnbornProjectHEAD(t *testing.T) {
 	}
 
 	// Second task explicitly stacks on the first task's branch.
-	wtPath2, finalName2, _, err := CreateWorktree(repoDir, "stackproj", "stacked-task", branchName1)
+	wtPath2, finalName2, _, err := CreateWorktree(repoDir, "stackproj", "stacked-task", branchName1, "")
 	testutil.NoError(t, err)
 	testutil.Equal(t, finalName2, "stacked-task")
 
@@ -293,7 +445,7 @@ func TestCreateWorktree_RemoteBranch(t *testing.T) {
 	defer os.Setenv("HOME", origHome)
 
 	// baseBranch=defaultBranch should resolve to origin/<defaultBranch>.
-	wtPath, finalName, _, err := CreateWorktree(repoDir, "testproj", "remote-test", defaultBranch)
+	wtPath, finalName, _, err := CreateWorktree(repoDir, "testproj", "remote-test", defaultBranch, "")
 	if err != nil {
 		t.Fatalf("CreateWorktree with remote branch failed: %v", err)
 	}
@@ -394,7 +546,7 @@ func TestCreateWorktree_SpecialChars(t *testing.T) {
 	defer os.Setenv("HOME", origHome)
 
 	// "fails?" contains ?, which is invalid in git branch names.
-	wtPath, finalName, _, err := CreateWorktree(repoDir, "testproject", "fails?", "")
+	wtPath, finalName, _, err := CreateWorktree(repoDir, "testproject", "fails?", "", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree with special chars failed: %v", err)
 	}
@@ -443,7 +595,7 @@ func TestCreateWorktree_StaleRef(t *testing.T) {
 	defer os.Setenv("HOME", origHome)
 
 	// Create a worktree normally.
-	wtPath, _, _, err := CreateWorktree(repoDir, "testproj", "stale", "")
+	wtPath, _, _, err := CreateWorktree(repoDir, "testproj", "stale", "", "")
 	if err != nil {
 		t.Fatalf("first CreateWorktree failed: %v", err)
 	}
@@ -456,7 +608,7 @@ func TestCreateWorktree_StaleRef(t *testing.T) {
 
 	// Without pruning, the branch argus/stale is still locked to the stale
 	// worktree entry. CreateWorktree should prune and succeed.
-	wtPath2, finalName, _, err := CreateWorktree(repoDir, "testproj", "stale", "")
+	wtPath2, finalName, _, err := CreateWorktree(repoDir, "testproj", "stale", "", "")
 	if err != nil {
 		t.Fatalf("second CreateWorktree with stale ref failed: %v", err)
 	}
@@ -600,7 +752,7 @@ func TestCreateWorktree_FetchesRemote(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	// CreateWorktree should fetch and resolve origin/feature-new.
-	wtPath, finalName, _, err := CreateWorktree(repoDir, "testproj", "fetch-test", "feature-new")
+	wtPath, finalName, _, err := CreateWorktree(repoDir, "testproj", "fetch-test", "feature-new", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree with unfetched remote branch failed: %v", err)
 	}
@@ -666,7 +818,7 @@ func TestCreateWorktree_ExistingBranch(t *testing.T) {
 	os.Setenv("HOME", tmpHome)
 	defer os.Setenv("HOME", origHome)
 
-	wtPath, _, _, err := CreateWorktree(repoDir, "testproject", "my-task", "")
+	wtPath, _, _, err := CreateWorktree(repoDir, "testproject", "my-task", "", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree with existing branch failed: %v", err)
 	}
@@ -706,7 +858,7 @@ func TestCreateWorktree_PostCheckoutHookFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wtPath, finalName, branchName, err := CreateWorktree(repo, "proj", "hookfail-test", "HEAD")
+	wtPath, finalName, branchName, err := CreateWorktree(repo, "proj", "hookfail-test", "HEAD", "")
 	testutil.NoError(t, err)
 	testutil.Equal(t, finalName, "hookfail-test")
 	testutil.Equal(t, branchName, "argus/hookfail-test")

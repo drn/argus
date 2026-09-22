@@ -343,6 +343,44 @@ func TestSubCoord_MaterializeStartFailureUnwindsBothBindingsLeavesPlannedRole(t 
 	testutil.Equal(t, got.NodeKind, db.HeraNodeKindSubCoord)
 }
 
+// TestSubCoord_MaterializeBranchNamespacedUnderParentOrchestrator asserts a
+// materialized subcoord node's branch is namespaced under the PARENT
+// orchestrator's name, not the newly minted child orchestrator's name
+// (add-branch-namespacing D2) — the child doesn't exist yet at
+// CreateWorktree time, and the node occupies a worker slot in the parent's
+// plan-DAG.
+func TestSubCoord_MaterializeBranchNamespacedUnderParentOrchestrator(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{sessionPID: 5555}
+
+	parentOrch, err := d.CreateHeraOrchestrator("parent-orch", "")
+	testutil.NoError(t, err)
+
+	planned, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
+		OrchestratorID: parentOrch.ID,
+		Name:           "3a-auth",
+		ArgusProject:   "proj",
+		Prompt:         "build auth",
+		NodeKind:       db.HeraNodeKindSubCoord,
+	})
+	testutil.NoError(t, err)
+
+	res, err := MaterializeHeraSubCoordinator(d, fr, HeraMaterializeInput{
+		Role: planned, TaskPrompt: "prompt", Project: "proj",
+	})
+	testutil.NoError(t, err)
+
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Branch, "argus/parent-orch/3a-auth")
+	// Not namespaced under the freshly minted child orchestrator.
+	if res.ChildOrch.Name == "parent-orch" {
+		t.Fatal("expected a distinct child orchestrator name")
+	}
+}
+
 // TestSubCoord_MaterializeNilRole guards the nil-role input (same as
 // MaterializeHeraWorker).
 func TestSubCoord_MaterializeNilRole(t *testing.T) {

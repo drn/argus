@@ -125,7 +125,19 @@ func WorktreeDir(projectName, taskName string) string {
 // different task, appends -1, -2, etc. until a free slot is found. Returns
 // the worktree path, the final task name (which may have a suffix), and the
 // branch name (e.g. "argus/fix-bug").
-func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPath, finalName, branchName string, err error) {
+//
+// branchNamespace, when non-empty, namespaces the branch as
+// "argus/<namespace>/<candidate>" instead of "argus/<candidate>"
+// (add-branch-namespacing; used for hera-managed worker branches). It is
+// sanitized independently from the task name via sanitizeBranchName, so a
+// namespace containing a "/" or other invalid character can't be mistaken
+// for the deliberate separator between the two segments. A leaf branch
+// (e.g. "argus/foo") and a namespaced branch requiring the same prefix as a
+// directory (e.g. "argus/foo/bar") cannot coexist as git refs; that
+// collision is not detected ahead of time and simply surfaces as an
+// ordinary git error from the `git worktree add` calls below (see
+// design.md).
+func CreateWorktree(projectPath, projectName, taskName, baseBranch, branchNamespace string) (wtPath, finalName, branchName string, err error) {
 	if baseBranch == "" {
 		baseBranch = "HEAD"
 	}
@@ -200,6 +212,9 @@ func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPa
 		}
 
 		branch := "argus/" + candidate
+		if branchNamespace != "" {
+			branch = "argus/" + sanitizeBranchName(branchNamespace) + "/" + candidate
+		}
 		var cmd *exec.Cmd
 		if emptyRepo {
 			// No start point exists yet (unborn HEAD) — create the branch as
