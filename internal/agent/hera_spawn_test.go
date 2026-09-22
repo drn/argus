@@ -253,6 +253,30 @@ func TestSpawnHeraWorker_HappyPath(t *testing.T) {
 	testutil.Equal(t, found, true)
 }
 
+// TestSpawnHeraWorker_BranchNamespacedUnderOrchestrator asserts a born-bound
+// worker's branch is namespaced under its spawning orchestrator's name
+// (add-branch-namespacing): argus/<orchestrator>/<role> instead of the flat
+// argus/<role>.
+func TestSpawnHeraWorker_BranchNamespacedUnderOrchestrator(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{}
+	orch, err := d.CreateHeraOrchestrator("checkout-revamp", "")
+	testutil.NoError(t, err)
+
+	res, err := SpawnHeraWorker(d, fr, HeraWorkerSpawnInput{
+		OrchestratorID: orch.ID,
+		BaseName:       "cart-api",
+		TaskPrompt:     "body",
+		Project:        "proj",
+	})
+	testutil.NoError(t, err)
+
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Branch, "argus/checkout-revamp/cart-api")
+}
+
 // TestSpawnHeraWorker_ModelPropagates asserts a per-worker Model override flows
 // into CreateInput and is persisted on the spawned task row (the per-task model
 // that ResolveModel/BuildCmd later inject as --model at session start).
@@ -367,6 +391,51 @@ func TestSpawnHeraCoordinator_ArchetypeDefaultsOrchestrator(t *testing.T) {
 	got, err := d.Get(res.Task.ID)
 	testutil.NoError(t, err)
 	testutil.Equal(t, got.Archetype, "orchestrator")
+}
+
+// TestResolveOrchestratorBranchNamespace_FailsOpenOnUnresolvableID asserts an
+// invalid/unresolvable orchestrator id yields "" rather than an error, so
+// callers can use the result unconditionally as a CreateInput.BranchNamespace
+// value (add-branch-namespacing D3).
+func TestResolveOrchestratorBranchNamespace_FailsOpenOnUnresolvableID(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	testutil.Equal(t, resolveOrchestratorBranchNamespace(d, 999999), "")
+}
+
+// TestResolveOrchestratorBranchNamespace_ResolvesName asserts a valid
+// orchestrator id resolves to its name.
+func TestResolveOrchestratorBranchNamespace_ResolvesName(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	orch, err := d.CreateHeraOrchestrator("my-orch", "")
+	testutil.NoError(t, err)
+	testutil.Equal(t, resolveOrchestratorBranchNamespace(d, orch.ID), "my-orch")
+}
+
+// TestMaterializeHeraWorker_BranchNamespacedUnderOrchestrator asserts a
+// materialized plan-DAG worker's branch is namespaced under its
+// orchestrator's name (add-branch-namespacing).
+func TestMaterializeHeraWorker_BranchNamespacedUnderOrchestrator(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{}
+	orch, err := d.CreateHeraOrchestrator("my-orch", "")
+	testutil.NoError(t, err)
+
+	planned, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID, Name: "2b-impl", ArgusProject: "proj", Prompt: "v",
+	})
+	testutil.NoError(t, err)
+
+	res, err := MaterializeHeraWorker(d, fr, HeraMaterializeInput{
+		Role: planned, TaskPrompt: "body", Project: "proj",
+	})
+	testutil.NoError(t, err)
+
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Branch, "argus/my-orch/2b-impl")
 }
 
 // TestMaterializeHeraWorker_ArchetypePropagates asserts a planned role's authored

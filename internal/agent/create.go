@@ -34,6 +34,13 @@ type CreateInput struct {
 	Profile    string // optional; per-spawn profile override — overrides the project's bound profile for this one spawn; empty = use project binding
 	BaseBranch string // optional; overrides projCfg.Branch for this task
 
+	// BranchNamespace optionally namespaces the created branch as
+	// "argus/<namespace>/<name>" instead of "argus/<name>"
+	// (add-branch-namespacing). Used for hera-managed worker spawns, where it
+	// is the spawning orchestrator's name; empty for plain task creation and
+	// root hera-coordinator spawns, which keep the flat form.
+	BranchNamespace string
+
 	// SandboxOverride is an optional per-task tri-state override of the resolved
 	// sandbox setting (add-task-sandbox-override): "" (inherit the project/global
 	// setting), "enabled" (force sandboxed), "disabled" (force unsandboxed).
@@ -157,7 +164,7 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 	if baseBranch == "" {
 		baseBranch = projCfg.Branch
 	}
-	wtPath, finalName, branchName, err := CreateWorktree(projCfg.Path, input.Project, input.Name, baseBranch)
+	wtPath, finalName, branchName, err := CreateWorktree(projCfg.Path, input.Project, input.Name, baseBranch, input.BranchNamespace)
 	if err != nil {
 		return nil, nil, fmt.Errorf("worktree: %w", err)
 	}
