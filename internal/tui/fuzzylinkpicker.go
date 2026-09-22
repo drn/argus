@@ -13,13 +13,14 @@ import (
 // FuzzyLinkPickerModal presents a filterable list of links with fuzzy matching.
 type FuzzyLinkPickerModal struct {
 	*tview.Box
-	allLinks []Link // full set
-	filtered []Link // matches current query
-	query    []rune
-	qCursor  int
-	cursor   int // position within filtered
-	selected bool
-	canceled bool
+	allLinks      []Link // full set
+	filtered      []Link // matches current query
+	query         []rune
+	qCursor       int
+	cursor        int // position within filtered
+	selected      bool
+	canceled      bool
+	copyRequested bool
 }
 
 // NewFuzzyLinkPickerModal creates a fuzzy link picker dialog.
@@ -44,6 +45,17 @@ func (m *FuzzyLinkPickerModal) SelectedLink() Link {
 		return m.filtered[m.cursor]
 	}
 	return Link{}
+}
+
+// TakeCopyRequested reports whether the last processed key requested a copy
+// of the highlighted link, clearing the flag so it fires only once per
+// keypress. Copying does not close the modal, unlike Selected/Canceled which
+// the caller always closes on. Bound to ctrl+y rather than a plain rune since
+// every unmodified rune here is live query-filter input.
+func (m *FuzzyLinkPickerModal) TakeCopyRequested() bool {
+	v := m.copyRequested
+	m.copyRequested = false
+	return v
 }
 
 // PasteHandler handles bracketed paste events.
@@ -72,6 +84,10 @@ func (m *FuzzyLinkPickerModal) InputHandler() func(event *tcell.EventKey, setFoc
 		case tcell.KeyEnter:
 			if len(m.filtered) > 0 {
 				m.selected = true
+			}
+		case tcell.KeyCtrlY:
+			if len(m.filtered) > 0 {
+				m.copyRequested = true
 			}
 		case tcell.KeyUp:
 			if m.cursor > 0 {
@@ -312,6 +328,6 @@ func (m *FuzzyLinkPickerModal) Draw(screen tcell.Screen) {
 
 	// Help text
 	helpRow := my + modalH - 2
-	help := "↑/↓ select  Enter open  Esc cancel"
+	help := "↑/↓ select  Enter open  ctrl+y copy  Esc cancel"
 	widget.DrawText(screen, innerX, helpRow, innerW, help, theme.StyleDimmed)
 }
