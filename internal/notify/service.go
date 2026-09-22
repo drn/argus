@@ -28,11 +28,20 @@ type Notifier struct {
 	inFlight map[string]string            // taskID → deliveryID currently processing
 	subKeys  map[string][]string          // taskID → ordered submitted deliveryID list (FIFO eviction)
 	subSet   map[string]map[string]bool   // taskID → submitted deliveryID set
-	runner   RunnerIface
-	focus    FocusReader
-	idle     agent.ContentIdleTracker
-	screenMu sync.Mutex
-	screen   agent.ScreenRenderer
+	// lastRestoredDraft holds, per task, the exact content this notifier most
+	// recently wrote back via restoreCapturedDraft. It must outlive the
+	// delivery that produced it: a LATER delivery (different deliveryID, fresh
+	// *delivery struct) is what re-observes the restored composer as if it
+	// were a new draft, so the marker lives on the Notifier keyed by taskID,
+	// not on the delivery. deliveryInput consumes it one-shot on the next
+	// stable-draft observation for that task — see the self-restored-draft
+	// circuit breaker there.
+	lastRestoredDraft map[string]string
+	runner            RunnerIface
+	focus             FocusReader
+	idle              agent.ContentIdleTracker
+	screenMu          sync.Mutex
+	screen            agent.ScreenRenderer
 
 	// Output and composer wait seams keep timing-dependent delivery behavior
 	// deterministic in tests. Production uses the polling helpers below.
@@ -45,16 +54,17 @@ type Notifier struct {
 // New creates a Notifier. runner and focus must be non-nil.
 func New(runner RunnerIface, focus FocusReader) *Notifier {
 	n := &Notifier{
-		pending:        make(map[string]*delivery),
-		queue:          make(map[string][]*delivery),
-		cancels:        make(map[string]map[string]func()),
-		inFlight:       make(map[string]string),
-		subKeys:        make(map[string][]string),
-		subSet:         make(map[string]map[string]bool),
-		runner:         runner,
-		focus:          focus,
-		waitForSettled: waitForOutputSettled,
-		waitForAdvance: waitForOutputAdvance,
+		pending:           make(map[string]*delivery),
+		queue:             make(map[string][]*delivery),
+		cancels:           make(map[string]map[string]func()),
+		inFlight:          make(map[string]string),
+		subKeys:           make(map[string][]string),
+		subSet:            make(map[string]map[string]bool),
+		lastRestoredDraft: make(map[string]string),
+		runner:            runner,
+		focus:             focus,
+		waitForSettled:    waitForOutputSettled,
+		waitForAdvance:    waitForOutputAdvance,
 	}
 	n.waitForClear = n.waitForComposerClear
 	n.waitForConsume = n.waitForComposerConsume
@@ -402,6 +412,25 @@ func (n *Notifier) deliveryInput(taskID string, d *delivery, sess SessionHandleI
 		return false, false, true, "", "", false
 	}
 
+	// A restore write re-populates the composer with exactly the content this
+	// notifier just captured, which the NEXT delivery to this task then
+	// observes going stable all over again -- without a breaker here that
+	// self-perpetuates: capture, clear, restore, re-observe, forever. Check
+	// this stable draft against the last content actually restored to this
+	// task before trusting it as a genuine, newly abandoned human draft.
+	if last, hadRestore := n.consumeLastRestoredDraft(taskID); hadRestore && draftsMatch(last, draft) {
+		// Same content this notifier itself wrote back via a prior
+		// restoreCapturedDraft. Treat it like a stale notice: clear it and
+		// submit cleanly, but do not restore anything -- restoring would just
+		// re-seed the loop for whichever delivery comes after this one. The
+		// marker was consumed above regardless of match, so a human who later
+		// retypes the identical words is captured and restored normally.
+		d.observedDraft = ""
+		d.draftObservedAt = time.Time{}
+		logDelivery(slog.LevelInfo, "delivery composer content matches last self-restored draft: clearing without recapture", taskID, d.deliveryID)
+		return true, true, true, d.text, "", true
+	}
+
 	// Keep this exact logical composer snapshot on the delivery, rather than a
 	// local processOne variable, so CR-only retries retain it until a later
 	// acknowledgment. InputDraft has already excluded faint-only placeholders.
@@ -427,7 +456,32 @@ func (n *Notifier) restoreCapturedDraft(taskID string, d *delivery, sess Session
 		logDelivery(slog.LevelWarn, "delivery write failed", taskID, d.deliveryID, "phase", "restore", "error", err)
 		return
 	}
+	n.recordRestoredDraft(taskID, draft)
 	logDelivery(slog.LevelInfo, "delivery draft restored", taskID, d.deliveryID)
+}
+
+// recordRestoredDraft remembers the exact content restoreCapturedDraft just
+// wrote back to taskID's composer. This is the only source of self-restored
+// content, so it is the only place that needs to start tracking it.
+func (n *Notifier) recordRestoredDraft(taskID, draft string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.lastRestoredDraft[taskID] = draft
+}
+
+// consumeLastRestoredDraft returns and clears the content most recently
+// restored to taskID's composer, if any. One-shot: the marker is consumed on
+// the very next call regardless of whether the caller's draft matches it, so
+// a human who later retypes the identical words is never permanently
+// blocked from having that draft captured and restored.
+func (n *Notifier) consumeLastRestoredDraft(taskID string) (string, bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	last, ok := n.lastRestoredDraft[taskID]
+	if ok {
+		delete(n.lastRestoredDraft, taskID)
+	}
+	return last, ok
 }
 
 func (n *Notifier) composerDraft(sess SessionHandleIface) (string, bool) {
@@ -501,6 +555,13 @@ func composerContainsText(draft, text string) bool {
 
 func compactWhitespace(s string) string {
 	return strings.Join(strings.Fields(s), "")
+}
+
+// draftsMatch compares logical composer content the same way
+// composerContainsText does, so soft-wrap whitespace differences never
+// defeat the self-restored-draft circuit breaker in deliveryInput.
+func draftsMatch(a, b string) bool {
+	return compactWhitespace(a) == compactWhitespace(b)
 }
 
 // deliveryStopped observes cancellation and the wall-clock deadline during a

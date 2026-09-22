@@ -436,7 +436,19 @@ func TestNotifier_StableDraftClearTaintsLaterEmptyComposer(t *testing.T) {
 	testutil.Equal(t, n.DeliveryState("t1", "d1"), StateSubmitted)
 }
 
-func TestNotifier_RestoredDraftDoesNotGrowAcrossDeliveries(t *testing.T) {
+// TestNotifier_SelfRestoredDraftNotRecapturedByLaterDelivery reproduces the
+// round-7 self-perpetuating restore loop: restoreCapturedDraft's own write
+// re-seeds deliveryInput's stability check, so a later delivery to the same
+// task re-observes the exact content this notifier just restored and, without
+// the circuit breaker, would capture/clear/restore it all over again forever.
+// The second delivery here must clear and submit cleanly but must NOT treat
+// the self-restored content as a fresh human draft.
+func TestNotifier_SelfRestoredDraftNotRecapturedByLaterDelivery(t *testing.T) {
+	var logBuf bytes.Buffer
+	original := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(original) })
+
 	r := newFakeRunner()
 	sess := r.addSession("t1", true)
 	sess.tail = composerFrame("unfinished task")
@@ -447,18 +459,66 @@ func TestNotifier_RestoredDraftDoesNotGrowAcrossDeliveries(t *testing.T) {
 	n.Reconcile(t0)
 	n.Reconcile(t0.Add(draftStabilityWindow))
 
+	writes := sess.allWrites()
+	testutil.Equal(t, len(writes), 4)
+	testutil.Equal(t, string(writes[3]), "unfinished task")
+
+	// The restore write above put "unfinished task" straight back into the
+	// fake composer. A second, later delivery to the SAME task now observes
+	// it again, exactly as if the restored content were a freshly typed draft.
+	n.ReliableNotify("t1", "[hera from coord] msg #5 — second", "d2", NotifyOpts{})
+	n.Reconcile(t0.Add(2 * draftStabilityWindow))
+	n.Reconcile(t0.Add(3 * draftStabilityWindow))
+
+	writes = sess.allWrites()
+	testutil.Equal(t, len(writes), 7) // no second restore write appended
+	testutil.Equal(t, string(writes[4]), "\x15")
+	testutil.Equal(t, string(writes[5]), "[hera from coord] msg #5 — second")
+	testutil.Equal(t, string(writes[6]), "\r")
+	if strings.Contains(string(writes[5]), abandonedDraftAnnotation) {
+		t.Fatalf("self-restored draft was glued onto the clean second notice: %q", writes[5])
+	}
+	testutil.Equal(t, n.DeliveryState("t1", "d1"), StateSubmitted)
+	testutil.Equal(t, n.DeliveryState("t1", "d2"), StateSubmitted)
+
+	restoredCount := strings.Count(logBuf.String(), "delivery draft restored")
+	testutil.Equal(t, restoredCount, 1) // only d1's restore, never a second one
+	testutil.Contains(t, logBuf.String(), "delivery composer content matches last self-restored draft")
+}
+
+// TestNotifier_NewDraftAfterRestoreIsStillCapturedAndRestored asserts the
+// circuit breaker above is one-shot and content-specific: a genuinely
+// different draft that a human types after a restore must still go through
+// the normal capture/clear/restore path, not be suppressed just because some
+// earlier delivery to the same task restored something else.
+func TestNotifier_NewDraftAfterRestoreIsStillCapturedAndRestored(t *testing.T) {
+	r := newFakeRunner()
+	sess := r.addSession("t1", true)
+	sess.tail = composerFrame("unfinished task")
+	n := newTestNotifier(r, fakeNoFocus{})
+	t0 := time.Now()
+
+	n.ReliableNotify("t1", "[hera from coord] msg #4 — first", "d1", NotifyOpts{})
+	n.Reconcile(t0)
+	n.Reconcile(t0.Add(draftStabilityWindow))
+	testutil.Equal(t, string(sess.allWrites()[3]), "unfinished task")
+
+	// A real, different draft appears after the restore -- not the notifier's
+	// own restored content.
+	sess.mu.Lock()
+	sess.tail = composerFrame("totally different draft")
+	sess.mu.Unlock()
+
 	n.ReliableNotify("t1", "[hera from coord] msg #5 — second", "d2", NotifyOpts{})
 	n.Reconcile(t0.Add(2 * draftStabilityWindow))
 	n.Reconcile(t0.Add(3 * draftStabilityWindow))
 
 	writes := sess.allWrites()
 	testutil.Equal(t, len(writes), 8)
-	for _, index := range []int{3, 7} {
-		testutil.Equal(t, string(writes[index]), "unfinished task")
-		if strings.Contains(string(writes[index]), "[hera from") {
-			t.Fatalf("restored draft compounded a notice: %q", writes[index])
-		}
-	}
+	testutil.Equal(t, string(writes[4]), "\x15")
+	testutil.Equal(t, string(writes[5]), "[hera from coord] msg #5 — second")
+	testutil.Equal(t, string(writes[6]), "\r")
+	testutil.Equal(t, string(writes[7]), "totally different draft")
 }
 
 func TestNotifier_RestoreSkipsWhenComposerChangesAfterSubmit(t *testing.T) {

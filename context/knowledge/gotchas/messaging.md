@@ -78,6 +78,26 @@ table and the four MCP tools that ride on top of it.
   discards the captured snapshot, never restoring possible scrollback into a
   live composer. A faint-only Claude Code placeholder is empty, never
   captured, and follows the ordinary empty-composer path.
+- **Restore can self-perpetuate without a breaker.** `restoreCapturedDraft`'s
+  write puts the captured content straight back into the composer, which is
+  exactly what the NEXT delivery to that task then observes going stable —
+  capture, clear, restore, re-observe, forever, with every individual cycle
+  looking completely clean (a genuinely empty composer right after Ctrl+U).
+  This does not depend on any unconfirmed clear, so the bounded-retry/taint
+  guards above cannot catch it. `Notifier.lastRestoredDraft` (keyed by
+  taskID, not deliveryID, because it must survive across DIFFERENT
+  deliveries to the same task) remembers the exact content just restored;
+  `deliveryInput`'s stable-draft branch compares the next observed draft
+  against it (via the same whitespace-compacted comparison
+  `composerContainsText` uses) and, on a match, clears + submits without
+  restoring instead of recapturing. The marker is a **one-shot check, not a
+  permanent block**: it is consumed on the very next stable-draft
+  observation for that task regardless of whether it matched, so a human who
+  later retypes the identical words is still captured and restored normally.
+  Checked live ground truth, not theory: six restore events on one idle task
+  within 47 minutes, the last one confirmed clear on the very first attempt
+  with zero unconfirmed retries — proof the loop is independent of clear
+  confirmation.
 - **Rendered composer content is the primary delivery-safety signal.** An
   identifiable empty or notice-only composer submits immediately even if the
   raw session is busy or the pane is focused. Changing non-notice content
