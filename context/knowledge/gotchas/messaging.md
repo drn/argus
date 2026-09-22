@@ -73,8 +73,11 @@ table and the four MCP tools that ride on top of it.
   drop the stale draft and WARN instead. If the same captured draft cannot be
   confirmed clear after the bounded retry limit, preserve it through the
   annotated-append fallback and submit the notice instead of retrying until
-  the deadline. A faint-only Claude Code placeholder is empty, never captured,
-  and follows the ordinary empty-composer path.
+  the deadline. The first unconfirmed clear permanently taints that delivery:
+  a later apparent empty or clear-confirmed frame also uses annotation and
+  discards the captured snapshot, never restoring possible scrollback into a
+  live composer. A faint-only Claude Code placeholder is empty, never
+  captured, and follows the ordinary empty-composer path.
 - **Rendered composer content is the primary delivery-safety signal.** An
   identifiable empty or notice-only composer submits immediately even if the
   raw session is busy or the pane is focused. Changing non-notice content
