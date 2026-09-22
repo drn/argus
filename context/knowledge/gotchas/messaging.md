@@ -70,8 +70,11 @@ table and the four MCP tools that ride on top of it.
   the non-placeholder composer text, confirms Ctrl+U cleared it, submits only
   the notice, then writes the saved text back without CR only if the composer
   is still recognizably empty. Never restore over changed or unknown state:
-  drop the stale draft and WARN instead. A faint-only Claude Code placeholder
-  is empty, never captured, and follows the ordinary empty-composer path.
+  drop the stale draft and WARN instead. If the same captured draft cannot be
+  confirmed clear after the bounded retry limit, preserve it through the
+  annotated-append fallback and submit the notice instead of retrying until
+  the deadline. A faint-only Claude Code placeholder is empty, never captured,
+  and follows the ordinary empty-composer path.
 - **Rendered composer content is the primary delivery-safety signal.** An
   identifiable empty or notice-only composer submits immediately even if the
   raw session is busy or the pane is focused. Changing non-notice content

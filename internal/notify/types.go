@@ -25,6 +25,11 @@ const (
 	// generating unbounded real agent turns.
 	maxTotalSubmitAttempts = 9
 
+	// maxUnconfirmedStableClearAttempts bounds Ctrl+U clear checks for a
+	// captured stable draft. A persistent false-positive composer frame must
+	// fall back to annotated preservation rather than consume the deadline.
+	maxUnconfirmedStableClearAttempts = 3
+
 	// outputPollInterval bounds how quickly reliable-notify polls the lock-free
 	// session output counter while waiting for recipient-side evidence.
 	outputPollInterval = 10 * time.Millisecond
@@ -73,6 +78,10 @@ type delivery struct {
 	observedDraft   string
 	draftObservedAt time.Time
 	submitAttempts  int
+	// unconfirmedStableClearAttempts counts consecutive reconcile passes where
+	// Ctrl+U could not visibly clear the captured stable draft. The bounded
+	// fallback preserves delivery when a non-editable frame is misclassified.
+	unconfirmedStableClearAttempts int
 	// restoreDraft is a real stable composer draft captured before it was
 	// cleared for a clean notice submission. It survives CR-only retries so an
 	// eventually acknowledged retry restores the original draft exactly once.

@@ -253,15 +253,33 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 		}
 		if verifyClear && !n.waitForClear(sess, submitAckTimeouts[0]) {
 			if restoreDraft != "" {
-				// A stable human draft must never be rejoined with a notice. Keep
-				// this delivery pending until a later Ctrl+U is visibly consumed.
-				logDelivery(slog.LevelWarn, "delivery stable draft clear unconfirmed", taskID, d.deliveryID)
-				return
+				d.unconfirmedStableClearAttempts++
+				if d.unconfirmedStableClearAttempts < maxUnconfirmedStableClearAttempts {
+					// Preserve the clean capture/clear/restore path while a real
+					// composer still has a chance to reflect Ctrl+U.
+					logDelivery(slog.LevelWarn, "delivery stable draft clear unconfirmed", taskID, d.deliveryID,
+						"attempt", d.unconfirmedStableClearAttempts,
+						"max_attempts", maxUnconfirmedStableClearAttempts)
+					return
+				}
+				// A static non-editable frame can look like a stable draft forever.
+				// Its existing text remains in the composer because Ctrl+U did not
+				// clear it, so append the established annotation fallback rather
+				// than wait until the deadline drops the notice.
+				logDelivery(slog.LevelWarn, "delivery stable draft clear unconfirmed: preserving", taskID, d.deliveryID,
+					"attempt", d.unconfirmedStableClearAttempts,
+					"max_attempts", maxUnconfirmedStableClearAttempts)
+				payload = "\n\n" + abandonedDraftAnnotation + "\n" + d.text
+				// The captured draft is now submitted as annotated context, not an
+				// unsent draft to restore after the notice acknowledgement.
+				d.restoreDraft = ""
+				restoreDraft = ""
+			} else {
+				// A successful PTY write says nothing about editor semantics. Preserve
+				// an uncleared stale notice rather than gluing the replacement onto it.
+				logDelivery(slog.LevelWarn, "delivery stale notice clear unconfirmed: preserving", taskID, d.deliveryID)
+				payload = "\n\n" + abandonedDraftAnnotation + "\n" + d.text
 			}
-			// A successful PTY write says nothing about editor semantics. Preserve
-			// an uncleared stale notice rather than gluing the replacement onto it.
-			logDelivery(slog.LevelWarn, "delivery stale notice clear unconfirmed: preserving", taskID, d.deliveryID)
-			payload = "\n\n" + abandonedDraftAnnotation + "\n" + d.text
 		}
 	}
 	textBaseline := sess.TotalWritten()
