@@ -316,7 +316,7 @@ func TestNotifier_EmptyComposerBypassesBusyAndFocusGates(t *testing.T) {
 	testutil.Equal(t, string(writes[1]), "[hera from coord] msg #1 — hello")
 }
 
-func TestNotifier_ChangingComposerDefersUntilStableThenAnnotates(t *testing.T) {
+func TestNotifier_StableComposerIsClearedAndRestoredWithoutAnnotation(t *testing.T) {
 	var logBuf bytes.Buffer
 	original := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
@@ -339,21 +339,117 @@ func TestNotifier_ChangingComposerDefersUntilStableThenAnnotates(t *testing.T) {
 	n.Reconcile(t0.Add(draftStabilityWindow))
 	testutil.Equal(t, len(sess.allWrites()), 0)
 
-	// The unchanged next snapshot is abandoned input: preserve it, append the
-	// warning + notice, and submit without Ctrl+U.
+	// The unchanged next snapshot is abandoned input: capture it, clear it,
+	// submit only the notice, and restore it as an unsent draft.
 	n.Reconcile(t0.Add(2 * draftStabilityWindow))
 	writes := sess.allWrites()
-	testutil.Equal(t, len(writes), 2)
-	if strings.Contains(string(writes[0]), "\x15") {
-		t.Fatal("stable abandoned input must not be cleared")
+	testutil.Equal(t, len(writes), 4)
+	testutil.Equal(t, string(writes[0]), "\x15")
+	testutil.Equal(t, string(writes[1]), "[hera from coord] msg #2 — review")
+	testutil.Equal(t, string(writes[2]), "\r")
+	testutil.Equal(t, string(writes[3]), "I want you to")
+	if strings.Contains(string(writes[1]), abandonedDraftAnnotation) {
+		t.Fatalf("clean notice included abandoned-draft annotation: %q", writes[1])
 	}
-	testutil.Contains(t, string(writes[0]), "preceding input was left unsubmitted")
-	testutil.Contains(t, string(writes[0]), "Do not act on it")
-	testutil.Contains(t, string(writes[0]), "[hera from coord] msg #2 — review")
-	testutil.Equal(t, string(writes[1]), "\r")
+	if strings.Contains(string(writes[3]), "\r") {
+		t.Fatalf("restored draft must not contain a trailing CR: %q", writes[3])
+	}
 	testutil.Contains(t, logBuf.String(), "delivery composer content stable")
 	if strings.Contains(logBuf.String(), "I want you to") {
 		t.Fatalf("daemon-visible logs leaked composer text:\n%s", logBuf.String())
+	}
+}
+
+func TestNotifier_FaintPlaceholderDoesNotCaptureOrRestore(t *testing.T) {
+	r := newFakeRunner()
+	sess := r.addSession("t1", false)
+	// InputDraft's existing faint-cell classifier must turn this visible text
+	// into an empty composer before notifier sequencing sees it.
+	sess.tail = []byte("\x1b[?1049h\x1b[2J\x1b[7;1H❯\u00a0\x1b[2mTry \"fix this bug\"\x1b[22m\x1b[7;22H")
+	n := newTestNotifier(r, fakeFocused{})
+
+	n.ReliableNotify("t1", "[hera from coord] msg #3 — clean", "d1", NotifyOpts{})
+	n.Reconcile(time.Now())
+
+	writes := sess.allWrites()
+	testutil.Equal(t, len(writes), 3)
+	testutil.Equal(t, string(writes[0]), "\x15")
+	testutil.Equal(t, string(writes[1]), "[hera from coord] msg #3 — clean")
+	testutil.Equal(t, string(writes[2]), "\r")
+}
+
+func TestNotifier_StableDraftClearMustBeConfirmedBeforeCleanSubmit(t *testing.T) {
+	r := newFakeRunner()
+	sess := r.addSession("t1", true)
+	sess.tail = composerFrame("draft that must not be glued")
+	sess.ctrlUClears = false
+	n := newTestNotifier(r, fakeNoFocus{})
+	n.waitForClear = func(SessionHandleIface, time.Duration) bool { return false }
+	t0 := time.Now()
+
+	n.ReliableNotify("t1", "[hera from coord] msg #7 — clean", "d1", NotifyOpts{})
+	n.Reconcile(t0)
+	n.Reconcile(t0.Add(draftStabilityWindow))
+
+	writes := sess.allWrites()
+	testutil.Equal(t, len(writes), 1)
+	testutil.Equal(t, string(writes[0]), "\x15")
+	testutil.Equal(t, n.DeliveryState("t1", "d1"), StatePending)
+}
+
+func TestNotifier_RestoredDraftDoesNotGrowAcrossDeliveries(t *testing.T) {
+	r := newFakeRunner()
+	sess := r.addSession("t1", true)
+	sess.tail = composerFrame("unfinished task")
+	n := newTestNotifier(r, fakeNoFocus{})
+	t0 := time.Now()
+
+	n.ReliableNotify("t1", "[hera from coord] msg #4 — first", "d1", NotifyOpts{})
+	n.Reconcile(t0)
+	n.Reconcile(t0.Add(draftStabilityWindow))
+
+	n.ReliableNotify("t1", "[hera from coord] msg #5 — second", "d2", NotifyOpts{})
+	n.Reconcile(t0.Add(2 * draftStabilityWindow))
+	n.Reconcile(t0.Add(3 * draftStabilityWindow))
+
+	writes := sess.allWrites()
+	testutil.Equal(t, len(writes), 8)
+	for _, index := range []int{3, 7} {
+		testutil.Equal(t, string(writes[index]), "unfinished task")
+		if strings.Contains(string(writes[index]), "[hera from") {
+			t.Fatalf("restored draft compounded a notice: %q", writes[index])
+		}
+	}
+}
+
+func TestNotifier_RestoreSkipsWhenComposerChangesAfterSubmit(t *testing.T) {
+	var logBuf bytes.Buffer
+	original := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(original) })
+
+	r := newFakeRunner()
+	sess := r.addSession("t1", true)
+	sess.tail = composerFrame("old draft")
+	n := newTestNotifier(r, fakeNoFocus{})
+	n.waitForConsume = func(SessionHandleIface, string, time.Duration) bool {
+		sess.mu.Lock()
+		sess.tail = composerFrame("new active input")
+		sess.mu.Unlock()
+		return true
+	}
+	t0 := time.Now()
+
+	n.ReliableNotify("t1", "[hera from coord] msg #6 — clean", "d1", NotifyOpts{})
+	n.Reconcile(t0)
+	n.Reconcile(t0.Add(draftStabilityWindow))
+
+	writes := sess.allWrites()
+	testutil.Equal(t, len(writes), 3)
+	testutil.Equal(t, string(writes[1]), "[hera from coord] msg #6 — clean")
+	testutil.Contains(t, logBuf.String(), "delivery restore skipped: composer state changed")
+	if strings.Contains(logBuf.String(), "new active input") {
+		t.Fatalf("restore-skip log leaked composer text:\n%s", logBuf.String())
 	}
 }
 
@@ -476,7 +572,7 @@ func TestNotifier_KnownUnobservableComposerUsesOutputFallback(t *testing.T) {
 	testutil.Equal(t, n.DeliveryState("t1", "d1"), StateSubmitted)
 }
 
-func TestNotifier_AbandonsAfterTotalUnacknowledgedEnterAttempts(t *testing.T) {
+func TestNotifier_StableDraftStillHonorsTotalEnterAttemptCap(t *testing.T) {
 	var logBuf bytes.Buffer
 	original := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
@@ -484,7 +580,7 @@ func TestNotifier_AbandonsAfterTotalUnacknowledgedEnterAttempts(t *testing.T) {
 
 	r := newFakeRunner()
 	sess := r.addSession("t1", true)
-	sess.tail = composerFrame("")
+	sess.tail = composerFrame("captured draft")
 	sess.ackCRAt = 0
 	n := newTestNotifier(r, fakeNoFocus{})
 	n.waitForConsume = func(SessionHandleIface, string, time.Duration) bool { return false }
@@ -494,8 +590,10 @@ func TestNotifier_AbandonsAfterTotalUnacknowledgedEnterAttempts(t *testing.T) {
 	}
 
 	n.ReliableNotify("t1", "[hera from coord] msg #8 — never acked", "d1", NotifyOpts{})
+	t0 := time.Now()
+	n.Reconcile(t0) // Establish the unchanged-draft snapshot without writing.
 	for i := 0; i < maxTotalSubmitAttempts/len(submitAckTimeouts); i++ {
-		n.Reconcile(time.Now())
+		n.Reconcile(t0.Add(time.Duration(i+1) * draftStabilityWindow))
 	}
 
 	testutil.Equal(t, n.DeliveryState("t1", "d1"), DeliveryState(""))
@@ -527,12 +625,13 @@ func TestNotifier_AnnotatedStaleNoticeDoesNotGrowOnRetry(t *testing.T) {
 	n := newTestNotifier(r, fakeNoFocus{})
 	d := &delivery{taskID: "t1", text: "[hera from coord] msg #9 — retry", deliveryID: "d1"}
 
-	clear, verifyClear, composerKnown, payload, safe := n.deliveryInput("t1", d, sess, time.Now())
+	clear, verifyClear, composerKnown, payload, restoreDraft, safe := n.deliveryInput("t1", d, sess, time.Now())
 	testutil.Equal(t, safe, true)
 	testutil.Equal(t, clear, true)
 	testutil.Equal(t, verifyClear, true)
 	testutil.Equal(t, composerKnown, true)
 	testutil.Equal(t, payload, d.text)
+	testutil.Equal(t, restoreDraft, "")
 	if strings.Contains(payload, abandonedDraftAnnotation) {
 		t.Fatalf("stale annotated retry appended another annotation: %q", payload)
 	}

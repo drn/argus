@@ -228,7 +228,7 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 		return
 	}
 
-	clearDraft, verifyClear, composerKnown, payload, safe := n.deliveryInput(taskID, d, sess, now)
+	clearDraft, verifyClear, composerKnown, payload, restoreDraft, safe := n.deliveryInput(taskID, d, sess, now)
 	if !safe {
 		return
 	}
@@ -242,8 +242,8 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 	// consume the text. Observe composer output settling before Enter, then
 	// require fresh output after Enter. A swallowed Enter is retried without
 	// rewriting the text; unacknowledged delivery stays pending.
-	//   1. optional Ctrl+U – clear an empty or notice-only composer
-	//   2. text – notice, or annotation + notice after abandoned input
+	//   1. optional Ctrl+U – clear an empty, notice-only, or stable draft composer
+	//   2. text – notice, with stable drafts restored only after acknowledgment
 	//   3. wait for recipient output to settle
 	//   4. \r – submit; retry standalone CR until acknowledged
 	if clearDraft {
@@ -252,8 +252,14 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 			return
 		}
 		if verifyClear && !n.waitForClear(sess, submitAckTimeouts[0]) {
+			if restoreDraft != "" {
+				// A stable human draft must never be rejoined with a notice. Keep
+				// this delivery pending until a later Ctrl+U is visibly consumed.
+				logDelivery(slog.LevelWarn, "delivery stable draft clear unconfirmed", taskID, d.deliveryID)
+				return
+			}
 			// A successful PTY write says nothing about editor semantics. Preserve
-			// an uncleared notice rather than gluing the replacement onto it.
+			// an uncleared stale notice rather than gluing the replacement onto it.
 			logDelivery(slog.LevelWarn, "delivery stale notice clear unconfirmed: preserving", taskID, d.deliveryID)
 			payload = "\n\n" + abandonedDraftAnnotation + "\n" + d.text
 		}
@@ -311,6 +317,7 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 		}
 		if acknowledged {
 			logDelivery(slog.LevelInfo, "delivery submitted", taskID, d.deliveryID, "attempt", attempt)
+			n.restoreCapturedDraft(taskID, d, sess, restoreDraft)
 			n.removeAndAdvance(taskID, d.deliveryID, true)
 			return
 		}
@@ -332,19 +339,19 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 // deliveryInput decides whether this reconcile cycle may write and constructs
 // the exact text to inject. Recognizable composer content is authoritative;
 // idle/focus are retained only when the terminal layout is unknown.
-func (n *Notifier) deliveryInput(taskID string, d *delivery, sess SessionHandleIface, now time.Time) (clear bool, verifyClear bool, composerKnown bool, payload string, safe bool) {
+func (n *Notifier) deliveryInput(taskID string, d *delivery, sess SessionHandleIface, now time.Time) (clear bool, verifyClear bool, composerKnown bool, payload string, restoreDraft string, safe bool) {
 	draft, known := n.composerDraft(sess)
 	if !known {
 		logDelivery(slog.LevelDebug, "delivery composer unknown: using idle/focus fallback", taskID, d.deliveryID)
 		if !n.idle.IsIdle(taskID, sess, now) {
 			logDelivery(slog.LevelDebug, "delivery skip: session busy", taskID, d.deliveryID)
-			return false, false, false, "", false
+			return false, false, false, "", "", false
 		}
 		if n.focus.IsFocused(taskID) {
 			logDelivery(slog.LevelDebug, "delivery skip: human focused", taskID, d.deliveryID)
-			return false, false, false, "", false
+			return false, false, false, "", "", false
 		}
-		return true, false, false, d.text, true
+		return true, false, false, d.text, "", true
 	}
 
 	draft = strings.TrimSpace(draft)
@@ -352,29 +359,52 @@ func (n *Notifier) deliveryInput(taskID string, d *delivery, sess SessionHandleI
 		d.observedDraft = ""
 		d.draftObservedAt = time.Time{}
 		logDelivery(slog.LevelDebug, "delivery composer empty", taskID, d.deliveryID)
-		return true, false, true, d.text, true
+		return true, false, true, d.text, d.restoreDraft, true
 	}
 	if injectedNoticeDraft(draft) {
 		d.observedDraft = ""
 		d.draftObservedAt = time.Time{}
 		logDelivery(slog.LevelInfo, "delivery composer contains stale notice", taskID, d.deliveryID)
-		return true, true, true, d.text, true
+		return true, true, true, d.text, d.restoreDraft, true
 	}
 
 	if draft != d.observedDraft {
 		d.observedDraft = draft
 		d.draftObservedAt = now
 		logDelivery(slog.LevelDebug, "delivery composer non-notice content changed", taskID, d.deliveryID)
-		return false, false, true, "", false
+		return false, false, true, "", "", false
 	}
 	if now.Sub(d.draftObservedAt) < draftStabilityWindow {
 		logDelivery(slog.LevelDebug, "delivery composer non-notice content awaiting stability", taskID, d.deliveryID)
-		return false, false, true, "", false
+		return false, false, true, "", "", false
 	}
 
-	logDelivery(slog.LevelInfo, "delivery composer content stable: preserving with annotation", taskID, d.deliveryID)
-	payload = "\n\n" + abandonedDraftAnnotation + "\n" + d.text
-	return false, false, true, payload, true
+	// Keep this exact logical composer snapshot on the delivery, rather than a
+	// local processOne variable, so CR-only retries retain it until a later
+	// acknowledgment. InputDraft has already excluded faint-only placeholders.
+	d.restoreDraft = draft
+	logDelivery(slog.LevelInfo, "delivery composer content stable: capture, clear, and restore", taskID, d.deliveryID)
+	return true, true, true, d.text, d.restoreDraft, true
+}
+
+// restoreCapturedDraft puts a stable human draft back only after the notice's
+// CR was acknowledged and the composer is still visibly empty. The snapshot is
+// deliberately re-read immediately before the text-only write: new input wins
+// over preservation, because overwriting it would corrupt an active composer.
+func (n *Notifier) restoreCapturedDraft(taskID string, d *delivery, sess SessionHandleIface, draft string) {
+	if draft == "" {
+		return
+	}
+	current, known := n.composerDraft(sess)
+	if !known || current != "" {
+		logDelivery(slog.LevelWarn, "delivery restore skipped: composer state changed", taskID, d.deliveryID)
+		return
+	}
+	if _, err := sess.WriteInput([]byte(draft), agentview.OriginSystem); err != nil {
+		logDelivery(slog.LevelWarn, "delivery write failed", taskID, d.deliveryID, "phase", "restore", "error", err)
+		return
+	}
+	logDelivery(slog.LevelInfo, "delivery draft restored", taskID, d.deliveryID)
 }
 
 func (n *Notifier) composerDraft(sess SessionHandleIface) (string, bool) {

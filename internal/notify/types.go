@@ -73,6 +73,10 @@ type delivery struct {
 	observedDraft   string
 	draftObservedAt time.Time
 	submitAttempts  int
+	// restoreDraft is a real stable composer draft captured before it was
+	// cleared for a clean notice submission. It survives CR-only retries so an
+	// eventually acknowledged retry restores the original draft exactly once.
+	restoreDraft string
 }
 
 // SessionHandleIface is the subset of agent.SessionHandle that the Notifier

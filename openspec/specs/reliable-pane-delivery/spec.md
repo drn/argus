@@ -58,7 +58,7 @@ The system SHALL ensure that re-posting the same deliveryID for the same task is
 
 ### Requirement: Pre-clear before inject
 
-The system SHALL emit Ctrl+U before injecting into an empty or notice-only composer so stale previously injected input is discarded. For a notice-only composer, the system SHALL re-read the rendered composer after Ctrl+U and SHALL directly write the replacement notice only when that check confirms the composer is empty. If the clear cannot be confirmed, the system SHALL preserve the draft and append a newline plus a fixed annotation stating that the preceding input was left unsubmitted and must not be acted upon before appending the new notice. A draft containing that annotation and a subsequent Argus/Hera notice SHALL be treated as notifier-generated stale content on a later reconcile, so retries do not append repeated annotations. For stable abandoned non-notice content, the system SHALL preserve the existing text, SHALL skip Ctrl+U, and SHALL append the same annotation before the current notice. Every notice and every standalone CR SHALL remain separate PTY writes. Before the first CR, the system SHALL allow recipient PTY output to acknowledge and settle after consuming newly injected content. A composer snapshot SHALL be considered to contain injected notice text when both strings match after Unicode whitespace is removed, so terminal soft wraps do not prevent verification. After each CR, the system SHALL confirm from a freshly rendered composer state that the submitted draft was consumed or materially changed before recording the delivery as submitted. When no submitted composer snapshot is available, including a recognized composer that cannot reflect the injected text, the system SHALL use output advancement as the conservative fallback acknowledgment. If acknowledgment is absent, the system SHALL retry only the standalone CR with bounded backoff; after bounded attempts are exhausted, it SHALL leave the delivery pending unless its total Enter-attempt ceiling has been reached.
+The system SHALL emit Ctrl+U before injecting into an empty or notice-only composer so stale previously injected input is discarded. For a notice-only composer, the system SHALL re-read the rendered composer after Ctrl+U and SHALL directly write the replacement notice only when that check confirms the composer is empty. If the clear cannot be confirmed, the system SHALL preserve the draft and append a newline plus a fixed annotation stating that the preceding input was left unsubmitted and must not be acted upon before appending the new notice. A draft containing that annotation and a subsequent Argus/Hera notice SHALL be treated as notifier-generated stale content on a later reconcile, so retries do not append repeated annotations. For stable abandoned non-notice content, the system SHALL capture the existing non-placeholder text, SHALL clear it with Ctrl+U and confirm the composer is empty, SHALL submit only the current notice, and SHALL restore the captured text as an unsent draft after the notice is acknowledged. The restore SHALL be a text-only write with no carriage return and SHALL occur only after a fresh recognizable composer snapshot confirms it is empty; otherwise the system SHALL skip restoration and emit a warning diagnostic without logging composer text. Faint-only placeholder content SHALL be treated identically to an empty composer and SHALL never be captured or restored. Every notice and every standalone CR SHALL remain separate PTY writes. Before the first CR, the system SHALL allow recipient PTY output to acknowledge and settle after consuming newly injected content. A composer snapshot SHALL be considered to contain injected notice text when both strings match after Unicode whitespace is removed, so terminal soft wraps do not prevent verification. After each CR, the system SHALL confirm from a freshly rendered composer state that the submitted draft was consumed or materially changed before recording the delivery as submitted. When no submitted composer snapshot is available, including a recognized composer that cannot reflect the injected text, the system SHALL use output advancement as the conservative fallback acknowledgment. If acknowledgment is absent, the system SHALL retry only the standalone CR with bounded backoff; after bounded attempts are exhausted, it SHALL leave the delivery pending unless its total Enter-attempt ceiling has been reached.
 
 #### Scenario: Empty composer is pre-cleared
 
@@ -75,10 +75,20 @@ The system SHALL emit Ctrl+U before injecting into an empty or notice-only compo
 - **WHEN** a notice-only composer remains non-empty after Ctrl+U
 - **THEN** the notifier preserves it and appends the annotation and current notice rather than directly concatenating the replacement
 
-#### Scenario: Abandoned human content is annotated
+#### Scenario: Stable abandoned human content is restored cleanly
 
-- **WHEN** stable non-notice composer content is classified as abandoned
-- **THEN** Ctrl+U is not written, the existing content is preserved, and the appended input warns the agent not to act on the preceding text before presenting the current notice
+- **WHEN** stable non-notice composer content is classified as abandoned and Ctrl+U is confirmed
+- **THEN** the notifier submits only the current notice and writes the captured draft back without a carriage return after acknowledgment
+
+#### Scenario: Faint placeholder is not restored
+
+- **WHEN** the identifiable composer contains only faint-styled placeholder content
+- **THEN** the notifier follows the empty-composer path and never enters the capture, clear, and restore cycle
+
+#### Scenario: Changed composer skips restoration
+
+- **WHEN** a stable draft was captured but the recognizable composer is non-empty or unrecognizable after notice acknowledgment
+- **THEN** the notifier does not write the captured draft and emits a warning diagnostic that restoration was skipped
 
 #### Scenario: Wrapped injected composer is verified
 
