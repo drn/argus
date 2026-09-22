@@ -24,6 +24,7 @@ func TestBuiltinItems_IncludesAllExpectedSkills(t *testing.T) {
 		"hera-review-test-adversary",
 		"hera-spawn-review",
 		"resolve-archetype-model",
+		"task-recycle",
 	})
 }
 
@@ -76,6 +77,7 @@ func TestMaterializeBuiltinSkillsInto_WritesEmbeddedSet(t *testing.T) {
 		"hera-review-test-adversary",
 		"hera-spawn-review",
 		"resolve-archetype-model",
+		"task-recycle",
 	})
 
 	if _, err := os.Stat(filepath.Join(skillsDir, "hera", skillManifestFile)); err != nil {

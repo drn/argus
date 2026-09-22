@@ -8,6 +8,7 @@ import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/hera"
+	"github.com/drn/argus/internal/model"
 )
 
 // HeraRecycleRunner implements hera.RecycleRunner against the daemon's real
@@ -89,10 +90,20 @@ func (r *HeraRecycleRunner) Restart(taskID string, roleID int64) error {
 		return fmt.Errorf("recycle restart: build seed prompt for role %d: %w", binding.RoleID, err)
 	}
 
+	return restartSessionWithSeedPrompt(r.database, r.runner, r.cfgFn, task, seedPrompt)
+}
+
+// restartSessionWithSeedPrompt clears task.SessionID and sets task.Prompt to
+// seedPrompt, then hands off to the runner's kill/restart-with-empty-context
+// primitive (Recycle) — or starts a fresh session directly when no live
+// session exists to kill. Shared by HeraRecycleRunner.Restart (hera
+// role/binding already resolved into seedPrompt above) and
+// taskRecycleRunner.restart (plain task, no hera role — see task_recycle.go).
+func restartSessionWithSeedPrompt(database *db.DB, runner agent.SessionRunner, cfgFn func() config.Config, task *model.Task, seedPrompt string) error {
 	// Capture the outgoing session's PTY size before Recycle stops it, so the
 	// fresh session opens at the same dimensions rather than falling back to
 	// Start's 80x24 default.
-	sess := r.runner.Get(taskID)
+	sess := runner.Get(task.ID)
 	var rows, cols uint16
 	if sess != nil {
 		c, rw := sess.PTYSize()
@@ -104,20 +115,20 @@ func (r *HeraRecycleRunner) Restart(taskID string, roleID int64) error {
 	// (already-used) UUID would collide rather than mint a fresh session.
 	task.SessionID = ""
 	task.Prompt = seedPrompt
-	if err := r.database.Update(task); err != nil {
-		return fmt.Errorf("recycle restart: persist cleared session id for task %s: %w", taskID, err)
+	if err := database.Update(task); err != nil {
+		return fmt.Errorf("restart session: persist cleared session id for task %s: %w", task.ID, err)
 	}
 
 	if sess == nil {
 		// No live session to stop (already exited between the recycle request
 		// and this restart). IsIdle already treats this as "proceed" — but
 		// Runner.Recycle requires an existing session to stop and would return
-		// ErrSessionNotFound here, which would leave the pending-recycle intent
-		// stuck retrying forever on every watcher tick. Start a fresh session
-		// directly instead; 80x24 mirrors Start's own new-session default.
-		_, startErr := r.runner.Start(task, r.cfgFn(), 24, 80, false)
+		// ErrSessionNotFound here, which would leave a pending recycle intent
+		// stuck retrying forever. Start a fresh session directly instead;
+		// 80x24 mirrors Start's own new-session default.
+		_, startErr := runner.Start(task, cfgFn(), 24, 80, false)
 		return startErr
 	}
 
-	return r.runner.Recycle(task, r.cfgFn(), rows, cols)
+	return runner.Recycle(task, cfgFn(), rows, cols)
 }

@@ -105,6 +105,26 @@ type HeraReviver func(in HeraReviveInput) (string, error)
 // avoid an import cycle on the mcp package).
 type TaskCreator func(input TaskCreateInput) (*model.Task, error)
 
+// TaskRecycleInput carries a resolved task_recycle request into the daemon's
+// real kill/restart primitive. Unlike HeraReviveInput/HeraRecycleRunner this
+// has no role or binding to resolve — task_recycle works on any argus task,
+// hera-bound or not.
+type TaskRecycleInput struct {
+	TaskID      string
+	HandoffNote string
+}
+
+// TaskRecycler kills a task's live session (if any) and starts a fresh one
+// on the identical task/worktree/branch, seeded from HandoffNote plus the
+// task's existing prompt as background, with empty context (resume=false).
+// The actual kill/restart is deferred until the session goes idle — this is
+// normally called BY the session it will kill, from inside its own tool-call
+// turn, so a synchronous restart would tear down the socket still writing
+// this call's response. A nil error means the recycle was scheduled, not
+// that it has happened yet. Injected via SetTaskRecycler; nil when task
+// management is disabled or the daemon did not wire it.
+type TaskRecycler func(in TaskRecycleInput) error
+
 // TaskStore provides read and write access to tasks.
 type TaskStore interface {
 	Tasks() ([]*model.Task, error)
@@ -174,6 +194,7 @@ type Server struct {
 	createTask  TaskCreator
 	taskDB      TaskStore
 	taskStopper TaskStopper
+	taskRecycle TaskRecycler    // optional; set via SetTaskRecycler
 	clipboard   ClipboardSetter // optional; set via SetClipboard
 	schedDB     ScheduleStore   // optional; set via SetScheduleManager
 	schedRunner ScheduleRunner  // optional; set via SetScheduleManager
@@ -255,6 +276,14 @@ func (s *Server) SetTaskManager(creator TaskCreator, taskDB TaskStore, stopper T
 	s.createTask = creator
 	s.taskDB = taskDB
 	s.taskStopper = stopper
+}
+
+// SetTaskRecycler wires the task_recycle MCP tool to the daemon's real
+// kill/restart primitive. task_recycle resolves its target via the same
+// taskDB/cwd machinery task_stop uses, so this is only effective once
+// SetTaskManager has also been called.
+func (s *Server) SetTaskRecycler(recycler TaskRecycler) {
+	s.taskRecycle = recycler
 }
 
 // SetClipboard wires the agent-staged clipboard. When set (and SetTaskManager
@@ -723,6 +752,35 @@ Failure convention: write ` + "`{\"failed\": true, \"reason\": \"...\"}`" + ` so
 	},
 }
 
+// maxHandoffNoteBytes caps task_recycle's handoff_note, mirroring the
+// size-cap pattern every other free-text MCP field in this file uses
+// (maxTaskResultBytes, maxTodoNotesBytes). 16 KiB is generous for a
+// progress/decisions/next-steps handoff while keeping a misbehaving agent
+// from pasting its entire transcript into the fresh session's seed prompt.
+const maxHandoffNoteBytes = 16 * 1024
+
+// taskRecycleToolDefs is exposed only when SetTaskRecycler has been called
+// (in addition to SetTaskManager, for cwd resolution) — see taskRecycleEnabled.
+var taskRecycleToolDefs = []Tool{
+	{
+		Name: "task_recycle",
+		Description: `Reset this task's context window while continuing the same work: kills the current agent session and starts a brand-new one on the identical task/worktree/branch, with empty context (no prior conversation carried over), seeded by handoff_note plus the task's original prompt as background.
+
+Use this when the conversation has grown large enough that a fresh context window would help, while the underlying task (worktree, branch, in-progress changes) should continue unchanged — the manually-triggered equivalent of a built-in /compact that also hands off to a genuinely new session. The restart is deferred until this session goes idle, so this call returns immediately and this conversation continues normally until then; write handoff_note as if briefing a new engineer picking up mid-task: what's done, what's in progress, key decisions and why, and the concrete next step.
+
+The agent process does not know its own task ID, so identify yourself by passing either ` + "`id`" + ` (from the ` + "`ARGUS_TASK_ID`" + ` env var) or ` + "`cwd`" + ` (Argus resolves to the task whose worktree the cwd lives under).`,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id":           map[string]interface{}{"type": "string", "description": "Task ID. If omitted, cwd is used to resolve the task."},
+				"cwd":          map[string]interface{}{"type": "string", "description": "Working directory inside the task's worktree. Used when id is omitted."},
+				"handoff_note": map[string]interface{}{"type": "string", "description": "Free-text handoff for the fresh session: progress, key decisions and why, and the concrete next step. Required."},
+			},
+			"required": []string{"handoff_note"},
+		},
+	},
+}
+
 // maxTodoTitleRunes and maxTodoNotesBytes cap todo_create/todo_update input,
 // mirroring the size-cap pattern every other MCP tool in this file already
 // uses (maxTaskNameRunes, maxTaskResultBytes) — without a cap, an arbitrarily
@@ -884,6 +942,12 @@ func (s *Server) clipboardEnabled() bool {
 	return s.clipboard != nil && s.taskMgmtEnabled()
 }
 
+// taskRecycleEnabled returns true when both the recycler and task management
+// are wired (cwd resolution requires task management).
+func (s *Server) taskRecycleEnabled() bool {
+	return s.taskRecycle != nil && s.taskMgmtEnabled()
+}
+
 // scheduleMgmtEnabled returns true when both schedule store and runner are wired.
 func (s *Server) scheduleMgmtEnabled() bool {
 	return s.schedDB != nil && s.schedRunner != nil
@@ -970,6 +1034,9 @@ func (s *Server) handleToolsList(req *Request) *Response {
 	if s.clipboardEnabled() {
 		tools = append(tools, clipboardToolDefs...)
 	}
+	if s.taskRecycleEnabled() {
+		tools = append(tools, taskRecycleToolDefs...)
+	}
 	if s.scheduleMgmtEnabled() {
 		tools = append(tools, scheduleToolDefs...)
 	}
@@ -1051,6 +1118,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolTaskComplete(req.ID, params.Arguments)
 	case "task_set_result":
 		return s.toolTaskSetResult(req.ID, params.Arguments)
+	case "task_recycle":
+		return s.toolTaskRecycle(req.ID, params.Arguments)
 	case "argus_clipboard_set":
 		return s.toolClipboardSet(req.ID, params.Arguments)
 	case "schedule_list":
@@ -1771,6 +1840,45 @@ func (s *Server) toolTaskSetResult(id interface{}, args json.RawMessage) *Respon
 
 	log.Printf("[mcp] task_set_result ok: id=%s bytes=%d", task.ID, len(canonical))
 	return toolResult(id, fmt.Sprintf("Result stored for task %s (%s). %d bytes.", task.ID, task.Name, len(canonical)))
+}
+
+// toolTaskRecycle implements the task_recycle MCP tool: schedules the
+// daemon's kill/restart-with-seed-prompt primitive (see SetTaskRecycler) for
+// the resolved task. The actual restart is deferred by the daemon until the
+// calling session goes idle, so this call returns as soon as the recycle is
+// scheduled — it does not wait for the restart to happen.
+func (s *Server) toolTaskRecycle(id interface{}, args json.RawMessage) *Response {
+	if !s.taskRecycleEnabled() {
+		return toolError(id, "task recycle not configured")
+	}
+
+	var p struct {
+		ID          string `json:"id"`
+		Cwd         string `json:"cwd"`
+		HandoffNote string `json:"handoff_note"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	note := strings.TrimSpace(p.HandoffNote)
+	if note == "" {
+		return toolError(id, "handoff_note is required")
+	}
+	if len(note) > maxHandoffNoteBytes {
+		return toolError(id, fmt.Sprintf("handoff_note exceeds %d bytes (got %d)", maxHandoffNoteBytes, len(note)))
+	}
+
+	task, err := s.resolveTask(p.ID, p.Cwd)
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+
+	if err := s.taskRecycle(TaskRecycleInput{TaskID: task.ID, HandoffNote: note}); err != nil {
+		log.Printf("[mcp] task_recycle failed: id=%s err=%v", task.ID, err)
+		return toolError(id, fmt.Sprintf("Failed to schedule recycle: %v", err))
+	}
+
+	log.Printf("[mcp] task_recycle scheduled: id=%s handoff_bytes=%d", task.ID, len(note))
+	return toolResult(id, fmt.Sprintf("Handoff recorded for task %s (%s). A fresh session will start on this same task/worktree/branch once this session goes idle — this conversation ends shortly.", task.ID, task.Name))
 }
 
 // toolClipboardSet stages text for the user to copy. Resolves the task via

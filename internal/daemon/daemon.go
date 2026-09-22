@@ -1308,6 +1308,9 @@ func (d *Daemon) Serve(sockPath string) error {
 			d.db,
 			d.runner,
 		)
+		mcpSrv.SetTaskRecycler(func(in mcp.TaskRecycleInput) error {
+			return newTaskRecycleRunner(d.db, d.runner, d.cfgFn).Recycle(in.TaskID, in.HandoffNote)
+		})
 		mcpSrv.SetClipboard(d.clipboard)
 		mcpSrv.SetScheduleManager(d.db, sch)
 		mcpSrv.SetMessageManager(d.db, runnerNudger{notifier: d.notifier})

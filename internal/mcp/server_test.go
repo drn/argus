@@ -3098,3 +3098,163 @@ func TestTaskCreate_LookupErrorPropagates(t *testing.T) {
 	testutil.Contains(t, cr.Content[0].Text, "lookup existing task")
 	testutil.Contains(t, cr.Content[0].Text, "disk on fire")
 }
+
+// --- task_recycle tool tests ---
+
+func TestToolsList_WithTaskRecycler(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+	s.SetTaskRecycler(func(TaskRecycleInput) error { return nil })
+
+	resp := doRequest(t, s, "tools/list", nil)
+	testutil.NoError(t, respErr(resp))
+
+	result, _ := json.Marshal(resp.Result)
+	var list ToolsListResult
+	json.Unmarshal(result, &list) //nolint:errcheck
+
+	// 5 KB tools + 8 task tools + 1 task_recycle tool = 14.
+	testutil.Equal(t, len(list.Tools), 14)
+
+	found := false
+	for _, tool := range list.Tools {
+		if tool.Name == "task_recycle" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("missing tool: task_recycle")
+	}
+}
+
+// TestToolsList_WithTasks_NoRecycler pins that task_recycle is gated
+// separately from the rest of the task tools: SetTaskManager alone (no
+// SetTaskRecycler) must not expose it. TestToolsList_WithTasks already
+// asserts the exact tool count (13) that this would break, but an explicit
+// negative check documents the intent directly.
+func TestToolsList_WithTasks_NoRecycler(t *testing.T) {
+	s, _, _ := testServerWithTasks() // SetTaskManager only
+
+	resp := doRequest(t, s, "tools/list", nil)
+	testutil.NoError(t, respErr(resp))
+
+	result, _ := json.Marshal(resp.Result)
+	var list ToolsListResult
+	json.Unmarshal(result, &list) //nolint:errcheck
+
+	for _, tool := range list.Tools {
+		if tool.Name == "task_recycle" {
+			t.Fatal("task_recycle must not be listed without SetTaskRecycler")
+		}
+	}
+}
+
+func TestTaskRecycle_Success(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+	var got TaskRecycleInput
+	s.SetTaskRecycler(func(in TaskRecycleInput) error {
+		got = in
+		return nil
+	})
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_recycle",
+		Arguments: json.RawMessage(`{"id":"abc123","handoff_note":"did X, next do Y"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+	testutil.Contains(t, cr.Content[0].Text, "abc123")
+	testutil.Contains(t, cr.Content[0].Text, "fresh session")
+
+	testutil.Equal(t, got.TaskID, "abc123")
+	testutil.Equal(t, got.HandoffNote, "did X, next do Y")
+}
+
+func TestTaskRecycle_ResolvesViaCwd(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+	var got TaskRecycleInput
+	s.SetTaskRecycler(func(in TaskRecycleInput) error {
+		got = in
+		return nil
+	})
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_recycle",
+		Arguments: json.RawMessage(`{"cwd":"/tmp/worktrees/myapp/fix-login","handoff_note":"handoff"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+	testutil.Equal(t, got.TaskID, "abc123")
+}
+
+func TestTaskRecycle_MissingHandoffNote(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+	s.SetTaskRecycler(func(TaskRecycleInput) error {
+		t.Fatal("recycler must not be invoked without a handoff_note")
+		return nil
+	})
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_recycle",
+		Arguments: json.RawMessage(`{"id":"abc123","handoff_note":"   "}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "handoff_note is required")
+}
+
+func TestTaskRecycle_HandoffNoteTooLarge(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+	s.SetTaskRecycler(func(TaskRecycleInput) error {
+		t.Fatal("recycler must not be invoked for an oversized handoff_note")
+		return nil
+	})
+
+	oversized, _ := json.Marshal(strings.Repeat("x", maxHandoffNoteBytes+1))
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_recycle",
+		Arguments: json.RawMessage(`{"id":"abc123","handoff_note":` + string(oversized) + `}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "exceeds")
+}
+
+func TestTaskRecycle_RecyclerError(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+	s.SetTaskRecycler(func(TaskRecycleInput) error { return errors.New("boom") })
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_recycle",
+		Arguments: json.RawMessage(`{"id":"abc123","handoff_note":"handoff"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "Failed to schedule recycle")
+}
+
+func TestTaskRecycle_NotConfigured(t *testing.T) {
+	s, _, _ := testServerWithTasks() // SetTaskManager only, no SetTaskRecycler
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_recycle",
+		Arguments: json.RawMessage(`{"id":"abc123","handoff_note":"handoff"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "task recycle not configured")
+}
+
+func TestTaskRecycle_UnknownTaskErrors(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+	s.SetTaskRecycler(func(TaskRecycleInput) error {
+		t.Fatal("recycler must not be invoked for an unresolvable task")
+		return nil
+	})
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_recycle",
+		Arguments: json.RawMessage(`{"id":"no-such-task","handoff_note":"handoff"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+}
