@@ -251,17 +251,40 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 			logDelivery(slog.LevelWarn, "delivery write failed", taskID, d.deliveryID, "phase", "ctrl+u", "error", err)
 			return
 		}
-		if verifyClear && !n.waitForClear(sess, submitAckTimeouts[0]) {
-			if restoreDraft != "" {
-				// A stable human draft must never be rejoined with a notice. Keep
-				// this delivery pending until a later Ctrl+U is visibly consumed.
-				logDelivery(slog.LevelWarn, "delivery stable draft clear unconfirmed", taskID, d.deliveryID)
-				return
+		stableDraftSuspect := restoreDraft != "" && d.unconfirmedStableClearAttempts > 0
+		if verifyClear {
+			clearConfirmed := n.waitForClear(sess, submitAckTimeouts[0])
+			if !clearConfirmed {
+				if restoreDraft != "" {
+					d.unconfirmedStableClearAttempts++
+					if d.unconfirmedStableClearAttempts < maxUnconfirmedStableClearAttempts {
+						// Preserve the clean capture/clear/restore path while a real
+						// composer still has a chance to reflect Ctrl+U.
+						logDelivery(slog.LevelWarn, "delivery stable draft clear unconfirmed", taskID, d.deliveryID,
+							"attempt", d.unconfirmedStableClearAttempts,
+							"max_attempts", maxUnconfirmedStableClearAttempts)
+						return
+					}
+					stableDraftSuspect = true
+				} else {
+					// A successful PTY write says nothing about editor semantics. Preserve
+					// an uncleared stale notice rather than gluing the replacement onto it.
+					logDelivery(slog.LevelWarn, "delivery stale notice clear unconfirmed: preserving", taskID, d.deliveryID)
+					payload = "\n\n" + abandonedDraftAnnotation + "\n" + d.text
+				}
 			}
-			// A successful PTY write says nothing about editor semantics. Preserve
-			// an uncleared stale notice rather than gluing the replacement onto it.
-			logDelivery(slog.LevelWarn, "delivery stale notice clear unconfirmed: preserving", taskID, d.deliveryID)
+		}
+		if stableDraftSuspect {
+			// A static non-editable frame can look like a stable draft forever, and
+			// a later apparent clear cannot make a previously failed clear safe.
+			// Preserve with the established annotation rather than restoring an
+			// untrustworthy snapshot into the recipient's live composer.
+			logDelivery(slog.LevelWarn, "delivery stable draft clear suspect: preserving", taskID, d.deliveryID,
+				"unconfirmed_attempts", d.unconfirmedStableClearAttempts,
+				"max_attempts", maxUnconfirmedStableClearAttempts)
 			payload = "\n\n" + abandonedDraftAnnotation + "\n" + d.text
+			d.restoreDraft = ""
+			restoreDraft = ""
 		}
 	}
 	textBaseline := sess.TotalWritten()

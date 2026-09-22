@@ -378,7 +378,7 @@ func TestNotifier_FaintPlaceholderDoesNotCaptureOrRestore(t *testing.T) {
 	testutil.Equal(t, string(writes[2]), "\r")
 }
 
-func TestNotifier_StableDraftClearMustBeConfirmedBeforeCleanSubmit(t *testing.T) {
+func TestNotifier_StableDraftClearFallsBackAfterBoundedAttempts(t *testing.T) {
 	r := newFakeRunner()
 	sess := r.addSession("t1", true)
 	sess.tail = composerFrame("draft that must not be glued")
@@ -389,12 +389,51 @@ func TestNotifier_StableDraftClearMustBeConfirmedBeforeCleanSubmit(t *testing.T)
 
 	n.ReliableNotify("t1", "[hera from coord] msg #7 — clean", "d1", NotifyOpts{})
 	n.Reconcile(t0)
-	n.Reconcile(t0.Add(draftStabilityWindow))
+	for i := 1; i <= maxUnconfirmedStableClearAttempts; i++ {
+		n.Reconcile(t0.Add(time.Duration(i) * draftStabilityWindow))
+	}
 
 	writes := sess.allWrites()
-	testutil.Equal(t, len(writes), 1)
+	testutil.Equal(t, len(writes), maxUnconfirmedStableClearAttempts+2)
+	for _, write := range writes[:maxUnconfirmedStableClearAttempts] {
+		testutil.Equal(t, string(write), "\x15")
+	}
+	testutil.Contains(t, string(writes[maxUnconfirmedStableClearAttempts]), abandonedDraftAnnotation)
+	testutil.Contains(t, string(writes[maxUnconfirmedStableClearAttempts]), "[hera from coord] msg #7 — clean")
+	testutil.Equal(t, string(writes[maxUnconfirmedStableClearAttempts+1]), "\r")
+	testutil.Equal(t, n.DeliveryState("t1", "d1"), StateSubmitted)
+}
+
+func TestNotifier_StableDraftClearTaintsLaterEmptyComposer(t *testing.T) {
+	r := newFakeRunner()
+	sess := r.addSession("t1", true)
+	sess.tail = composerFrame("misclassified scrollback")
+	sess.ctrlUClears = false
+	n := newTestNotifier(r, fakeNoFocus{})
+	n.waitForClear = func(SessionHandleIface, time.Duration) bool { return false }
+	t0 := time.Now()
+
+	n.ReliableNotify("t1", "[hera from coord] msg #8 — safe", "d1", NotifyOpts{})
+	n.Reconcile(t0)
+	n.Reconcile(t0.Add(draftStabilityWindow))
+	n.Reconcile(t0.Add(2 * draftStabilityWindow))
+
+	// A transient empty frame after two unconfirmed clears must not restore the
+	// captured content as though it were a real unsent human draft.
+	sess.mu.Lock()
+	sess.tail = composerFrame("")
+	sess.mu.Unlock()
+	n.Reconcile(t0.Add(3 * draftStabilityWindow))
+
+	writes := sess.allWrites()
+	testutil.Equal(t, len(writes), 5)
 	testutil.Equal(t, string(writes[0]), "\x15")
-	testutil.Equal(t, n.DeliveryState("t1", "d1"), StatePending)
+	testutil.Equal(t, string(writes[1]), "\x15")
+	testutil.Equal(t, string(writes[2]), "\x15")
+	testutil.Contains(t, string(writes[3]), abandonedDraftAnnotation)
+	testutil.Contains(t, string(writes[3]), "[hera from coord] msg #8 — safe")
+	testutil.Equal(t, string(writes[4]), "\r")
+	testutil.Equal(t, n.DeliveryState("t1", "d1"), StateSubmitted)
 }
 
 func TestNotifier_RestoredDraftDoesNotGrowAcrossDeliveries(t *testing.T) {
