@@ -1077,7 +1077,7 @@ func TestSandbox_GenerateSandboxConfig_TempFileError(t *testing.T) {
 // path that never resolves to a writable dir.
 func TestCreateWorktree_ParentMkdirFails(t *testing.T) {
 	t.Setenv("HOME", "/dev/null/cant-create")
-	_, _, _, err := CreateWorktree(t.TempDir(), "proj", "task", "HEAD")
+	_, _, _, err := CreateWorktree(t.TempDir(), "proj", "task", "HEAD", "")
 	if err == nil {
 		t.Skip("MkdirAll unexpectedly succeeded; cannot test the error branch")
 	}
@@ -1106,7 +1106,7 @@ func TestCreateWorktree_BothCmdsFail(t *testing.T) {
 	run("add", ".")
 	run("commit", "-q", "-m", "init")
 
-	_, _, _, err := CreateWorktree(repo, "proj", "foo-bbb-fail", "totally-bogus-ref-xyz")
+	_, _, _, err := CreateWorktree(repo, "proj", "foo-bbb-fail", "totally-bogus-ref-xyz", "")
 	if err == nil {
 		t.Fatal("expected error when both cmd1 and cmd2 fail")
 	}

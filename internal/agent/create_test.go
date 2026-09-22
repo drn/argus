@@ -182,6 +182,43 @@ func TestCreateAndStart_Success(t *testing.T) {
 	RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo)
 }
 
+// TestCreateAndStart_BranchNamespace asserts CreateInput.BranchNamespace flows
+// through to CreateWorktree, producing a namespaced branch
+// (add-branch-namespacing).
+func TestCreateAndStart_BranchNamespace(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{}
+
+	task, _, err := CreateAndStart(d, fr, CreateInput{
+		Name:            "my-task",
+		Project:         "proj",
+		BranchNamespace: "my-orch",
+	})
+	testutil.NoError(t, err)
+	testutil.Equal(t, task.Branch, "argus/my-orch/my-task")
+
+	RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo)
+}
+
+// TestCreateAndStart_EmptyBranchNamespaceStaysFlat asserts the default
+// (unset) BranchNamespace preserves today's flat argus/<name> branch — the
+// behavior plain, non-hera task creation must keep.
+func TestCreateAndStart_EmptyBranchNamespaceStaysFlat(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{}
+
+	task, _, err := CreateAndStart(d, fr, CreateInput{
+		Name:    "plain-task",
+		Project: "proj",
+	})
+	testutil.NoError(t, err)
+	testutil.Equal(t, task.Branch, "argus/plain-task")
+
+	RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo)
+}
+
 func TestCreateAndStart_UnwindsOnStartFailure(t *testing.T) {
 	repo := initGitRepo(t)
 	d := createTestDB(t, repo)

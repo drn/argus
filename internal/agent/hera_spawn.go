@@ -38,6 +38,22 @@ const (
 	defaultCoordinatorArchetype = "orchestrator"
 )
 
+// resolveOrchestratorBranchNamespace looks up an orchestrator's name for use
+// as a hera worker's branch namespace (add-branch-namespacing:
+// argus/<orchestrator>/<role> instead of argus/<role>). Resolution fails
+// open: a lookup miss (bad/stale orchestrator id, or any other error) yields
+// "" — the flat branch form — rather than aborting the spawn. The genuine
+// failure mode for an invalid orchestrator id is the role/binding FK
+// violation that already runs later in AfterPersist; this lookup must not
+// introduce a second, earlier failure path for the same underlying problem.
+func resolveOrchestratorBranchNamespace(database *db.DB, orchestratorID int64) string {
+	orch, err := database.HeraOrchestrator(orchestratorID)
+	if err != nil || orch == nil {
+		return ""
+	}
+	return orch.Name
+}
+
 // HeraWorkerSpawnResult is the success payload from SpawnHeraWorker.
 type HeraWorkerSpawnResult struct {
 	Task    *model.Task
@@ -77,15 +93,16 @@ func SpawnHeraWorker(database *db.DB, runner SessionProvider, in HeraWorkerSpawn
 	var role *db.HeraRole
 	var binding *db.HeraBinding
 	task, _, err := CreateAndStart(database, runner, CreateInput{
-		Name:       uniqueName,
-		Prompt:     in.TaskPrompt,
-		Project:    in.Project,
-		Backend:    in.Backend,
-		Model:      in.Model,
-		Archetype:  archetype,
-		Profile:    in.Profile,
-		BaseBranch: in.Branch,
-		AutoName:   false, // name is the meaningful role slug — no Haiku rename
+		Name:            uniqueName,
+		Prompt:          in.TaskPrompt,
+		Project:         in.Project,
+		Backend:         in.Backend,
+		Model:           in.Model,
+		Archetype:       archetype,
+		Profile:         in.Profile,
+		BaseBranch:      in.Branch,
+		BranchNamespace: resolveOrchestratorBranchNamespace(database, in.OrchestratorID),
+		AutoName:        false, // name is the meaningful role slug — no Haiku rename
 		AfterPersist: func(t *model.Task) (func(), error) {
 			// Stamp meta:hera.role=worker BEFORE the session starts. Best-effort:
 			// a meta failure must not abort an otherwise-valid spawn.
@@ -163,9 +180,10 @@ func MaterializeHeraWorker(database *db.DB, runner SessionProvider, in HeraMater
 		Model:   in.Model,
 		// The planned role's authored archetype (add-diligence-profiles) propagates
 		// onto the materialized task; empty stays empty (resolution falls open).
-		Archetype:  in.Role.Archetype,
-		BaseBranch: in.Branch,
-		AutoName:   false, // name is the planner-assigned short-id slug — never rename
+		Archetype:       in.Role.Archetype,
+		BaseBranch:      in.Branch,
+		BranchNamespace: resolveOrchestratorBranchNamespace(database, in.Role.OrchestratorID),
+		AutoName:        false, // name is the planner-assigned short-id slug — never rename
 		AfterPersist: func(t *model.Task) (func(), error) {
 			if mErr := database.SetMeta(t.ID, db.HeraMetaNamespace, db.HeraMetaKeyRole, string(db.HeraKindWorker)); mErr != nil {
 				slog.Warn("[hera] materialize: meta role stamp failed (continuing)", "task", t.ID, "err", mErr)
@@ -261,7 +279,13 @@ func MaterializeHeraSubCoordinator(database *db.DB, runner SessionProvider, in H
 		// materialized task (add-diligence-profiles); empty stays empty.
 		Archetype:  in.Role.Archetype,
 		BaseBranch: in.Branch,
-		AutoName:   false, // name is the planner-assigned short-id slug — never rename
+		// Namespaced under the PARENT orchestrator (in.Role.OrchestratorID) —
+		// this node occupies a worker slot in the PARENT's plan-DAG. The child
+		// orchestrator this call mints below doesn't exist yet at CreateWorktree
+		// time, so it couldn't be used even if it were the intended namespace
+		// (add-branch-namespacing D2).
+		BranchNamespace: resolveOrchestratorBranchNamespace(database, in.Role.OrchestratorID),
+		AutoName:        false, // name is the planner-assigned short-id slug — never rename
 		AfterPersist: func(t *model.Task) (func(), error) {
 			// The new task is a coordinator (of its own child orchestrator); rail
 			// rendering keys on meta:hera.role. Best-effort — a meta failure must not

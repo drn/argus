@@ -1205,13 +1205,13 @@ func TestCreateWorktree_SuffixOnConflict(t *testing.T) {
 	repo := initGitRepo(t)
 
 	// First creation: gets the base name.
-	wt1, name1, branch1, err := CreateWorktree(repo, "proj", "conflict-task", "HEAD")
+	wt1, name1, branch1, err := CreateWorktree(repo, "proj", "conflict-task", "HEAD", "")
 	testutil.NoError(t, err)
 	testutil.Equal(t, name1, "conflict-task")
 	t.Cleanup(func() { RemoveWorktreeAndBranch(wt1, branch1, repo) })
 
 	// Second: same name → should suffix to conflict-task-1.
-	wt2, name2, branch2, err := CreateWorktree(repo, "proj", "conflict-task", "HEAD")
+	wt2, name2, branch2, err := CreateWorktree(repo, "proj", "conflict-task", "HEAD", "")
 	testutil.NoError(t, err)
 	testutil.Equal(t, name2, "conflict-task-1")
 	testutil.Equal(t, branch2, "argus/conflict-task-1")
