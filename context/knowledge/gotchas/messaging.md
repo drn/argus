@@ -65,21 +65,24 @@ table and the four MCP tools that ride on top of it.
 - **`runnerNudger.Nudge` with a nil notifier returns `ErrNudgeNoSession`.**
   In-process fallback mode without a wired notifier degrades gracefully;
   the message is durable, delivery is skipped.
-- **Pre-clear (`Ctrl+U`) before inject.** `\x15` discards any stale partial
-  input only when the rendered composer is empty or contains a stale injected
-  notice. Never pre-clear stable non-notice content; preserve it and append the
-  fixed do-not-act annotation before the current notice.
+- **Stable real drafts use capture → verified clear → clean notice → guarded
+  restore.** After the unchanged-draft stability window, reliable-notify saves
+  the non-placeholder composer text, confirms Ctrl+U cleared it, submits only
+  the notice, then writes the saved text back without CR only if the composer
+  is still recognizably empty. Never restore over changed or unknown state:
+  drop the stale draft and WARN instead. A faint-only Claude Code placeholder
+  is empty, never captured, and follows the ordinary empty-composer path.
 - **Rendered composer content is the primary delivery-safety signal.** An
   identifiable empty or notice-only composer submits immediately even if the
   raw session is busy or the pane is focused. Changing non-notice content
   defers delivery; byte-identical non-notice content for the stability window
-  is treated as abandoned, preserved, annotated, and submitted. Idle/content-
-  idle plus pane focus are conservative fallbacks only when the composer is
+  is captured, cleanly delivered around, then restored as an unsent draft.
+  Idle/content-idle plus pane focus are conservative fallbacks only when the composer is
   not identifiable. Classification logs must never include composer text.
 - **Claude Code's dim example prompt is not a draft.** `ScreenRenderer.InputDraft`
   must inspect x/vt cell attributes, not its style-free string alone: a
   faint-only composer is empty, while any non-faint draft cell is real input.
-  Otherwise reliable delivery preserves and annotates a placeholder the user
+  Otherwise reliable delivery would capture and restore a placeholder the user
   never entered.
 - **CR, not LF.** The notifier appends `\r` (carriage return, 0x0d) to
   submit the line. The original nudge used `\n` (linefeed, 0x0a) which
