@@ -187,6 +187,22 @@ func TestTaskRecycleRunner_AwaitIdleAndRestart_NeverIdleGivesUp(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, updated.SessionID, "stale-sid-1")
 	testutil.Equal(t, updated.Prompt, "original mission")
+
+	// The seed prompt must be persisted to task_meta instead of silently
+	// discarded — the MCP call already told the caller a fresh session
+	// would start "shortly."
+	meta, err := database.ListMeta(task.ID, taskRecycleMetaNamespace)
+	testutil.NoError(t, err)
+	found := false
+	for _, e := range meta {
+		if e.Key == taskRecycleMetaKeyTimedOutPrompt {
+			testutil.Equal(t, e.Value, "the seed prompt")
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected the timed-out seed prompt to be persisted to task_meta")
+	}
 }
 
 func TestTaskRecycleRunner_Recycle_SchedulesRestart(t *testing.T) {
@@ -224,4 +240,58 @@ func TestTaskRecycleRunner_Recycle_UnknownTaskErrors(t *testing.T) {
 	if err := r.Recycle("no-such-task", "note"); err == nil {
 		t.Fatal("expected an error for an unknown task")
 	}
+}
+
+// TestTaskRecycleRunner_Recycle_UnknownTaskReleasesInFlight pins that a
+// failed Recycle (task lookup error) releases its inFlight reservation —
+// otherwise an unknown-task typo would permanently wedge that task ID
+// against ever recycling again, even once a task with that ID exists.
+func TestTaskRecycleRunner_Recycle_UnknownTaskReleasesInFlight(t *testing.T) {
+	database, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+
+	runner := agent.NewRunner(nil)
+	cfg := recycleTestConfig()
+	r := newTaskRecycleRunner(database, runner, func() config.Config { return cfg })
+
+	if err := r.Recycle("no-such-task", "note"); err == nil {
+		t.Fatal("expected an error for an unknown task")
+	}
+	if _, stillHeld := r.inFlight.Load("no-such-task"); stillHeld {
+		t.Fatal("a failed Recycle must release its inFlight reservation")
+	}
+}
+
+// TestTaskRecycleRunner_Recycle_RejectsConcurrentCallsForSameTask pins the
+// dedup guard: a second Recycle call for a task that already has one
+// in-flight is rejected outright, rather than racing a second
+// awaitIdleAndRestart poller against the first (see inFlight's doc comment
+// for the stale-seed-prompt race this prevents).
+func TestTaskRecycleRunner_Recycle_RejectsConcurrentCallsForSameTask(t *testing.T) {
+	database, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+
+	task := seedRecyclePlainTask(t, database, t.TempDir(), "original mission")
+
+	runner := agent.NewRunner(nil)
+	cfg := recycleTestConfig()
+	r := newTaskRecycleRunner(database, runner, func() config.Config { return cfg })
+	// Never actually run the poll loop, so the first call's reservation
+	// stays held for the second call to collide with.
+	r.spawn = func(func()) {}
+
+	testutil.NoError(t, r.Recycle(task.ID, "first handoff"))
+
+	err = r.Recycle(task.ID, "second handoff")
+	if err == nil {
+		t.Fatal("expected the second concurrent Recycle call to be rejected")
+	}
+	testutil.Contains(t, err.Error(), "already in progress")
+
+	// The task row must be untouched by the rejected second call.
+	unchanged, err := database.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, unchanged.Prompt, "original mission")
 }

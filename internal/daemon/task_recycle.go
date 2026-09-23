@@ -4,11 +4,25 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
+)
+
+// taskRecycleMetaNamespace/taskRecycleMetaKeyTimedOutPrompt persist a
+// forensic record when awaitIdleAndRestart's idle-wait times out (see its
+// doc comment): without this, a timeout was previously silent — the MCP
+// call had already told the caller "a fresh session will start... this
+// conversation ends shortly," so a session that stays busy past the timeout
+// would have its handoff note discarded with no trace anywhere. This is a
+// separate namespace from db.HeraMetaNamespace since task_recycle applies to
+// any task, not just hera-bound ones.
+const (
+	taskRecycleMetaNamespace         = "task_recycle"
+	taskRecycleMetaKeyTimedOutPrompt = "timed_out_seed_prompt"
 )
 
 // taskRecycleIdlePoll / taskRecycleIdleTimeout bound the one-shot wait for a
@@ -33,12 +47,26 @@ const (
 // as background (buildTaskRecycleSeedPrompt), rather than
 // hera.BuildRecycleSeedPrompt's plan-DAG/role-state assembly.
 //
+// The daemon constructs exactly ONE taskRecycleRunner for its whole
+// lifetime (see daemon.go's SetTaskRecycler wiring) rather than one per
+// call — inFlight's dedup only works across calls if the map itself
+// persists between them.
+//
 // now/sleep/idlePoll/idleTimeout are overridable so tests can drive
 // awaitIdleAndRestart's poll loop deterministically, with no real sleeping.
 type taskRecycleRunner struct {
 	database *db.DB
 	runner   agent.SessionRunner
 	cfgFn    func() config.Config
+
+	// inFlight tracks task IDs with an awaitIdleAndRestart goroutine
+	// currently running, so a second task_recycle call for the same task
+	// (an agent retry, or two independent callers) is rejected outright
+	// instead of racing a second poller against the first — without this, a
+	// racing second poller can observe the brief nil-session gap inside
+	// SessionRunner.Recycle's own kill-then-restart and fire its own
+	// restart() with a stale seed prompt built before the first restart.
+	inFlight sync.Map // taskID (string) -> struct{}
 
 	now         func() time.Time
 	sleep       func(time.Duration)
@@ -63,15 +91,24 @@ func newTaskRecycleRunner(database *db.DB, runner agent.SessionRunner, cfgFn fun
 
 // Recycle composes the fresh session's seed prompt and schedules the
 // kill/restart in the background (see awaitIdleAndRestart) — it returns as
-// soon as the recycle is scheduled, not once it has happened.
+// soon as the recycle is scheduled, not once it has happened. Rejects a
+// second call for a task that already has one in flight (see inFlight).
 func (r *taskRecycleRunner) Recycle(taskID, handoffNote string) error {
+	if _, alreadyInFlight := r.inFlight.LoadOrStore(taskID, struct{}{}); alreadyInFlight {
+		return fmt.Errorf("task_recycle: a recycle is already in progress for task %s", taskID)
+	}
+
 	task, err := r.database.Get(taskID)
 	if err != nil {
+		r.inFlight.Delete(taskID)
 		return fmt.Errorf("task_recycle: load task %s: %w", taskID, err)
 	}
 
 	seedPrompt := buildTaskRecycleSeedPrompt(task.Prompt, handoffNote)
-	r.spawn(func() { r.awaitIdleAndRestart(taskID, seedPrompt) })
+	r.spawn(func() {
+		defer r.inFlight.Delete(taskID)
+		r.awaitIdleAndRestart(taskID, seedPrompt)
+	})
 	return nil
 }
 
@@ -80,6 +117,11 @@ func (r *taskRecycleRunner) Recycle(taskID, handoffNote string) error {
 // fresh, empty-context session seeded with seedPrompt. A missing session
 // (already exited) counts as idle immediately, mirroring
 // HeraRecycleRunner.IsIdle.
+//
+// On timeout, the seed prompt is persisted to task_meta rather than simply
+// discarded: the MCP tool call already told the caller a fresh session
+// would start "shortly," so a timeout that left no trace anywhere would be
+// silently indistinguishable from a recycle that just never happened.
 func (r *taskRecycleRunner) awaitIdleAndRestart(taskID, seedPrompt string) {
 	var idle agent.ContentIdleTracker
 	deadline := r.now().Add(r.idleTimeout)
@@ -94,6 +136,9 @@ func (r *taskRecycleRunner) awaitIdleAndRestart(taskID, seedPrompt string) {
 		}
 		if r.now().After(deadline) {
 			slog.Warn("[task_recycle] gave up waiting for session to go idle", "task", taskID)
+			if err := r.database.SetMeta(taskID, taskRecycleMetaNamespace, taskRecycleMetaKeyTimedOutPrompt, seedPrompt); err != nil {
+				slog.Error("[task_recycle] failed to persist timed-out seed prompt", "task", taskID, "err", err)
+			}
 			return
 		}
 		r.sleep(r.idlePoll)

@@ -10,6 +10,8 @@ Reset this session's context window without losing the task's place. Unlike a bu
 
 This is a manually-triggered action. Only run it when the user asks for it, or when you yourself judge the context window has grown large enough to warrant a reset and you say so before proceeding.
 
+**If you are a Hera-bound role** (coordinator, worker, or freelance — you'd know from your spawn orientation or a live `hera_status`/`hera_send` exchange), prefer `hera_status`'s `handoff_note` + `request_recycle: true` instead of this tool. That path builds a richer seed prompt (your role's plan-DAG/sibling state, not just your handoff note) and is self-service like this one. Reach for `task_recycle` only when you're not Hera-bound, or when Hera's recycle isn't available.
+
 ## Context
 
 - Current directory: !`pwd`
