@@ -515,6 +515,30 @@ func TestSettingsView_BackendTiers_CycleBackendName(t *testing.T) {
 	}
 }
 
+func TestSettingsView_BackendTiers_CycleBackendNameReverse(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catBackendTiers)
+	sv.setFocus(focusPane)
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', 0))
+	testutil.Equal(t, sv.backendTiers[0].Backend, "claude")
+
+	names := make([]string, len(sv.backends))
+	pos := 0
+	for i, b := range sv.backends {
+		names[i] = b.Name
+		if b.Name == "claude" {
+			pos = i
+		}
+	}
+
+	// No keybinding drives dir=-1 today (cycleBackendTierBackend is only ever
+	// invoked with dir=1) — call it directly to cover the reverse-wrap branch.
+	got := sv.cycleBackendTierBackend(-1)
+	testutil.Equal(t, got, true)
+	want := names[(pos-1+len(names))%len(names)]
+	testutil.Equal(t, sv.backendTiers[0].Backend, want)
+}
+
 func TestSettingsView_BackendTiers_ThresholdEditSaveAndCancel(t *testing.T) {
 	sv := testSettingsView(t)
 	d, ok := sv.database.(*db.DB)
