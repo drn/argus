@@ -237,6 +237,156 @@ models = ["opus", "sonnet"]
 	testutil.Nil(t, base.Backends["claude"].Models)
 }
 
+// TestFileLoader_BackendRoutingTableAbsentIsNoOp pins the config-management
+// delta's "Table absent leaves behavior unchanged" scenario: no
+// [backend_routing] table decodes to a nil/empty tier list, identical to the
+// base.
+func TestFileLoader_BackendRoutingTableAbsentIsNoOp(t *testing.T) {
+	path := writeFile(t, `[ui]
+theme = "dark"`)
+	l := NewFileLoader(path)
+	base := DefaultConfig()
+
+	got := l.Apply(base)
+	testutil.NoError(t, l.Err())
+
+	testutil.Nil(t, got.BackendRouting.Tiers)
+	testutil.DeepEqual(t, got.BackendRouting, base.BackendRouting)
+}
+
+// TestFileLoader_BackendRoutingTierOverlay covers the basic
+// [[backend_routing.tier]] decode shape: fields land on BackendTier in order.
+func TestFileLoader_BackendRoutingTierOverlay(t *testing.T) {
+	path := writeFile(t, `
+[[backend_routing.tier]]
+backend = "claude"
+probe = "claude_usage"
+threshold_pct = 80
+
+[[backend_routing.tier]]
+backend = "codex"
+probe = "codex_usage"
+threshold_pct = 90
+
+[[backend_routing.tier]]
+backend = "pi"
+probe = "none"
+`)
+	l := NewFileLoader(path)
+	base := DefaultConfig()
+
+	got := l.Apply(base)
+	testutil.NoError(t, l.Err())
+
+	testutil.DeepEqual(t, got.BackendRouting.Tiers, []BackendTier{
+		{Backend: "claude", Probe: ProbeClaudeUsage, ThresholdPct: 80},
+		{Backend: "codex", Probe: ProbeCodexUsage, ThresholdPct: 90},
+		{Backend: "pi", Probe: ProbeNone, ThresholdPct: 0},
+	})
+	// The base is untouched.
+	testutil.Nil(t, base.BackendRouting.Tiers)
+}
+
+// TestFileLoader_BackendRoutingUnknownBackendLoadsWithoutError pins the
+// config-management delta's "Tier entry validated against the backend
+// roster" scenario: a tier naming a backend absent from [backends] is not a
+// config-load error — validity is a resolution-time concern
+// (specs/backend-tier-routing/spec.md's "misconfigured tier is skipped,
+// never fatal" requirement), not a config-load concern.
+func TestFileLoader_BackendRoutingUnknownBackendLoadsWithoutError(t *testing.T) {
+	path := writeFile(t, `
+[[backend_routing.tier]]
+backend = "does-not-exist"
+probe = "claude_usage"
+threshold_pct = 50
+`)
+	l := NewFileLoader(path)
+	base := DefaultConfig()
+
+	got := l.Apply(base)
+
+	testutil.NoError(t, l.Err())
+	testutil.DeepEqual(t, got.BackendRouting.Tiers, []BackendTier{
+		{Backend: "does-not-exist", Probe: ProbeClaudeUsage, ThresholdPct: 50},
+	})
+	if _, ok := got.Backends["does-not-exist"]; ok {
+		t.Fatal("unknown backend should not have been synthesized into the roster")
+	}
+}
+
+// TestFileLoader_BackendRoutingUnknownProbeKindLoadsWithoutError mirrors the
+// unknown-backend case for the Probe field: an unrecognized probe kind string
+// is a resolution-time skip, not a config-load error.
+func TestFileLoader_BackendRoutingUnknownProbeKindLoadsWithoutError(t *testing.T) {
+	path := writeFile(t, `
+[[backend_routing.tier]]
+backend = "claude"
+probe = "not-a-real-probe-kind"
+threshold_pct = 50
+`)
+	l := NewFileLoader(path)
+	base := DefaultConfig()
+
+	got := l.Apply(base)
+
+	testutil.NoError(t, l.Err())
+	testutil.DeepEqual(t, got.BackendRouting.Tiers, []BackendTier{
+		{Backend: "claude", Probe: "not-a-real-probe-kind", ThresholdPct: 50},
+	})
+}
+
+// TestFileLoader_DefinesBackendRoutingTiers pins the Settings backend-tier
+// category's read-only signal (add-tiered-backend-routing): true only when
+// config.toml itself defines a non-empty [[backend_routing.tier]] list.
+func TestFileLoader_DefinesBackendRoutingTiers(t *testing.T) {
+	t.Run("nil loader", func(t *testing.T) {
+		var l *FileLoader
+		testutil.Equal(t, l.DefinesBackendRoutingTiers(), false)
+	})
+
+	t.Run("table absent", func(t *testing.T) {
+		path := writeFile(t, `[ui]
+theme = "dark"`)
+		l := NewFileLoader(path)
+		l.Apply(DefaultConfig())
+		testutil.Equal(t, l.DefinesBackendRoutingTiers(), false)
+	})
+
+	t.Run("no file at all", func(t *testing.T) {
+		l := NewFileLoader(t.TempDir() + "/missing-config.toml")
+		l.Apply(DefaultConfig())
+		testutil.Equal(t, l.DefinesBackendRoutingTiers(), false)
+	})
+
+	t.Run("tiers defined", func(t *testing.T) {
+		path := writeFile(t, `
+[[backend_routing.tier]]
+backend = "claude"
+probe = "claude_usage"
+threshold_pct = 80
+`)
+		l := NewFileLoader(path)
+		l.Apply(DefaultConfig())
+		testutil.Equal(t, l.DefinesBackendRoutingTiers(), true)
+	})
+
+	t.Run("parse error clears the flag", func(t *testing.T) {
+		path := writeFile(t, `
+[[backend_routing.tier]]
+backend = "claude"
+probe = "claude_usage"
+threshold_pct = 80
+`)
+		l := NewFileLoader(path)
+		l.Apply(DefaultConfig())
+		testutil.Equal(t, l.DefinesBackendRoutingTiers(), true)
+
+		testutil.NoError(t, os.WriteFile(path, []byte("not valid toml [[["), 0o644))
+		l.Apply(DefaultConfig())
+		testutil.Equal(t, l.DefinesBackendRoutingTiers(), false)
+	})
+}
+
 func TestFileLoader_AllocatesNilMaps(t *testing.T) {
 	path := writeFile(t, `
 [backends.foo]

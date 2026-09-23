@@ -2,6 +2,8 @@ module github.com/drn/argus
 
 go 1.26.0
 
+toolchain go1.26.8
+
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/SherClockHolmes/webpush-go v1.4.0

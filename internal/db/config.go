@@ -24,6 +24,17 @@ func (d *DB) Config() config.Config {
 		slog.Error("db.Config: failed to load projects", "err", err)
 	}
 
+	// Load the Settings-UI-edited backend-tier-routing list (use defaults, i.e.
+	// no tiers, on error). cfgLoader.Apply below fully replaces cfg.BackendRouting
+	// when config.toml defines its own [[backend_routing.tier]] entries, giving
+	// the config.toml-wins-wholesale precedence for free via the same TOML-decode
+	// mechanism the Backends/Projects maps already rely on.
+	if tiers, err := d.BackendTiers(); err == nil {
+		cfg.BackendRouting.Tiers = tiers
+	} else {
+		slog.Error("db.Config: failed to load backend tiers", "err", err)
+	}
+
 	// Load scalar config values — hold mutex through iteration
 	// to prevent concurrent writes while the rows cursor is open.
 	d.mu.Lock()

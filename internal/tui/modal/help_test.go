@@ -148,6 +148,11 @@ func TestHelpModal_Draw(t *testing.T) {
 	// typing — fail the build if that discoverability is dropped (the fix that
 	// made the filtered list selectable).
 	testutil.Contains(t, body, "↑/↓ navigate")
+	// add-tiered-backend-routing: the backend-tier category's new reorder/
+	// cycle keys must be discoverable — fail the build if silently dropped.
+	testutil.Contains(t, body, "cycle probe kind (backend tier)")
+	testutil.Contains(t, body, "move tier up")
+	testutil.Contains(t, body, "move tier down")
 }
 
 func TestHelpModal_DrawZeroSizeNoOp(t *testing.T) {

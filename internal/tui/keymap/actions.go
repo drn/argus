@@ -102,6 +102,12 @@ const (
 	ActSettingsToggle   Action = "settings.toggle_schedule"
 	ActSettingsRun      Action = "settings.run_schedule"
 	ActSettingsModel    Action = "settings.edit_model"
+	// ActSettingsCycleProbe/MoveUp/MoveDown back the backend-tier-routing
+	// category's reorderable-list editor (add-tiered-backend-routing) — the
+	// only category with per-row fields beyond a single toggle/cycle.
+	ActSettingsCycleProbe Action = "settings.cycle_probe"
+	ActSettingsMoveUp     Action = "settings.move_up"
+	ActSettingsMoveDown   Action = "settings.move_down"
 
 	// Hera rail mutations (Enter + nav are structural)
 	ActHeraDelete  Action = "hera_rail.delete"
@@ -167,7 +173,8 @@ var defaultSpecs = map[Context]map[Action]string{
 		ActSettingsDown: "j", ActSettingsUp: "k", ActSettingsDelete: "d",
 		ActSettingsNew: "n", ActSettingsEdit: "e", ActSettingsQuickAdd: "i",
 		ActSettingsApple: "a", ActSettingsToggle: "t", ActSettingsRun: "r",
-		ActSettingsModel: "m",
+		ActSettingsModel:      "m",
+		ActSettingsCycleProbe: "p", ActSettingsMoveUp: "K", ActSettingsMoveDown: "J",
 	},
 	CtxHeraRail: {
 		ActHeraDelete: "ctrl+d", ActHeraSpawn: "w", ActHeraRename: "r",
@@ -208,7 +215,8 @@ var actionLabels = map[Action]string{
 	ActSettingsDown: "navigate down", ActSettingsUp: "navigate up", ActSettingsDelete: "delete / set default",
 	ActSettingsNew: "new", ActSettingsEdit: "edit", ActSettingsQuickAdd: "quick add projects",
 	ActSettingsApple: "AppleEvents", ActSettingsToggle: "toggle schedule", ActSettingsRun: "run schedule now",
-	ActSettingsModel: "edit model",
+	ActSettingsModel:      "edit model",
+	ActSettingsCycleProbe: "cycle probe kind (backend tier)", ActSettingsMoveUp: "move tier up", ActSettingsMoveDown: "move tier down",
 
 	ActHeraDelete: "nuke role/orchestrator (whole sub-team if nested)", ActHeraSpawn: "spawn worker under coordinator (new-task modal)",
 	ActHeraRename: "rename role/orchestrator", ActHeraArchive: "hide worker in coord's archive (reversible)",
@@ -281,7 +289,8 @@ var contextOrder = map[Context][]Action{
 	CtxDiff: {ActDiffSplit, ActDiffScrollDown, ActDiffScrollUp,
 		ActDiffFinder, ActDiffOpen, ActDiffEditor, ActDiffTerminal},
 	CtxSettings: {ActSettingsDown, ActSettingsUp, ActSettingsNew, ActSettingsEdit, ActSettingsDelete,
-		ActSettingsQuickAdd, ActSettingsApple, ActSettingsToggle, ActSettingsRun, ActSettingsModel},
+		ActSettingsQuickAdd, ActSettingsApple, ActSettingsToggle, ActSettingsRun, ActSettingsModel,
+		ActSettingsCycleProbe, ActSettingsMoveUp, ActSettingsMoveDown},
 	CtxHeraRail: {ActHeraSpawn, ActHeraNewCoord, ActHeraRename, ActHeraArchive, ActHeraPin,
 		ActHeraStatAdv, ActHeraStatRev, ActHeraKanbanAdv, ActHeraKanbanRev, ActHeraAdopt, ActHeraClear,
 		ActHeraCleanup, ActHeraDelete},

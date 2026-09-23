@@ -37,6 +37,45 @@ type Config struct {
 	// agent.ResolveCacheDirs.
 	CacheDirs map[string]string `toml:"cache_dirs"`
 	Todo      TodoConfig        `toml:"todo"`
+	// BackendRouting is the ordered tier list consulted by general
+	// (non-hera) default task-backend resolution (add-tiered-backend-routing).
+	// An absent [backend_routing] table (or an empty Tiers slice) leaves
+	// existing single-default-backend behavior fully unchanged. Deliberately
+	// separate from Hera.WorkerBudget, which routes hera worker/freelance
+	// spawns only and is untouched by this field.
+	BackendRouting BackendRoutingConfig `toml:"backend_routing"`
+}
+
+// Probe kinds a BackendTier.Probe may name. Dispatch on these is a
+// resolution-time concern (internal/backendtier); an unrecognized value here
+// is not a config-load error — it surfaces as a skipped tier at resolution
+// time (see specs/backend-tier-routing/spec.md).
+const (
+	ProbeClaudeUsage = "claude_usage"
+	ProbeCodexUsage  = "codex_usage"
+	ProbeNone        = "none"
+)
+
+// BackendRoutingConfig holds the ordered backend-selection tier list parsed
+// from `[backend_routing]` / `[[backend_routing.tier]]` in config.toml. It
+// coexists with a DB-persisted tier list edited via the Settings UI: a
+// non-empty Tiers here is authoritative in full (config.toml wins wholesale
+// over the DB, matching this repo's existing precedent for other structured
+// settings) — see specs/config-management/spec.md.
+type BackendRoutingConfig struct {
+	Tiers []BackendTier `toml:"tier"`
+}
+
+// BackendTier names one entry in the ordered backend-routing tier list.
+// Backend should reference a key in Config.Backends and Probe should be one
+// of the registered probe kinds (ProbeClaudeUsage, ProbeCodexUsage,
+// ProbeNone) — but neither is validated at config-load time. A Backend absent
+// from the roster, or an unrecognized Probe, is a resolution-time concern:
+// the tier is skipped, never a load error.
+type BackendTier struct {
+	Backend      string `toml:"backend"`
+	Probe        string `toml:"probe"`
+	ThresholdPct int    `toml:"threshold_pct"`
 }
 
 // TodoConfig selects and configures the single active to-do-list backend
