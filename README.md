@@ -290,11 +290,13 @@ End-of-life has **two resting states**, and **no DB row is ever hard-deleted** �
 | Key                   | Action                                                   |
 | --------------------- | -------------------------------------------------------- |
 | `j` / `k`             | Navigate rows                                            |
-| `n`                   | New project / backend / schedule                         |
-| `e`                   | Edit project / backend / schedule                        |
-| `d`                   | Delete project / set default backend / delete schedule   |
+| `n`                   | New project / backend / schedule / backend tier          |
+| `e`                   | Edit project / backend / schedule / backend tier threshold |
+| `d`                   | Delete project / set default backend / delete schedule / remove backend tier |
 | `a`                   | Edit project's AppleEvents allowlist (on a project row)  |
 | `m`                   | Edit backend's default model (on a backend row)          |
+| `p`                   | Cycle probe kind (on a Backend Tiers row)                |
+| `K` / `J`             | Move backend tier up / down (on a Backend Tiers row)     |
 | `t`                   | Toggle schedule enabled (on the Scheduled Tasks section) |
 | `r`                   | Run schedule now (on the Scheduled Tasks section)        |
 | `i`                   | Quick add projects                                       |
@@ -921,6 +923,34 @@ Command templates, keyed by name. Seeded with `claude`, `codex`, `pi`, and `open
 | `prompt_flag` | string | `""` | Flag used to pass the initial prompt to the backend (empty = positional/piped). |
 | `model` | string | `""` | Default model for this backend, injected as `--model <value>` for known CLIs (claude, codex, pi, opencode — opencode takes a `provider/model` value). Empty = the CLI's own default. A per-task model overrides it. |
 | `models` | array | `[]` | Option list for the new-task model selector for this backend. Empty = built-in list (claude → `opus`/`sonnet`/`haiku`/`fable`, codex → `gpt-5-codex`/`gpt-5`, others including opencode → none, so `custom…` only). A `custom…` entry always lets you type a model not in the list. |
+
+#### `[backend_routing]`
+
+An ordered list of backend "tiers" for **default task-backend selection** — generalizes `[hera.worker_budget]`'s hera-only, single-fallback usage steering into an arbitrary-length chain consulted by ordinary (non-hera) task creation. The resolver walks `tier` in order and picks the first tier that's uncapped, under its threshold, or unprobeable (fail-open); it's consulted only when a task has no explicit backend and its project has none configured either — it never overrides those. Also editable from Settings → **Backend Tiers** (`n` add, `d` remove, `K`/`J` reorder, `p` cycle probe kind, `e` edit threshold) when this table is absent from config.toml; **a non-empty table here is authoritative and renders that Settings category read-only**, same precedent as `[backends.<name>]`'s "(command is hardcoded)" case. No table (or an empty `tier` list) leaves backend resolution exactly as it was before this feature — a single `defaults.backend`.
+
+`[[backend_routing.tier]]` (repeatable, in resolution order):
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `backend` | string | — | Must name a key under `[backends]`; a tier naming an unknown backend is skipped, never a load error. |
+| `probe` | string | — | One of `claude_usage`, `codex_usage`, or `none` (uncapped — e.g. a local `pi`/ollama backend). An unrecognized value is skipped, not an error. |
+| `threshold_pct` | int | `0` | Usage percentage at/above which this tier is treated as capped-out and resolution falls through to the next tier. Ignored for `none`. |
+
+```toml
+[[backend_routing.tier]]
+backend = "claude"
+probe = "claude_usage"
+threshold_pct = 90
+
+[[backend_routing.tier]]
+backend = "codex"
+probe = "codex_usage"
+threshold_pct = 90
+
+[[backend_routing.tier]]
+backend = "pi"
+probe = "none"
+```
 
 #### `[projects.<name>]`
 

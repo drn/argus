@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -345,6 +346,320 @@ func TestSettingsView_SelectedBackend(t *testing.T) {
 			return
 		}
 	}
+}
+
+// --- Backend-tier routing (add-tiered-backend-routing) ---
+
+// testSettingsViewWithConfigToml opens a real file-backed *db.DB (rather than
+// OpenInMemory, which never wires a config.toml loader) so config.toml-
+// sourced read-only rendering can be exercised, mirroring
+// internal/db/config_test.go's own real-file convention. tomlContents is
+// written to config.toml next to the DB before the first Refresh.
+func testSettingsViewWithConfigToml(t *testing.T, tomlContents string) *SettingsView {
+	t.Helper()
+	dir := t.TempDir()
+	database, err := db.Open(filepath.Join(dir, "data.sql"))
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	if tomlContents != "" {
+		testutil.NoError(t, os.WriteFile(filepath.Join(dir, config.FileName), []byte(tomlContents), 0o644))
+	}
+	sv := NewSettingsView(database)
+	sv.todoProbe = func(string, config.TodoConfig) (todo.Backend, error) {
+		return fakeAlwaysOKTodoBackend{}, nil
+	}
+	sv.Refresh()
+	return sv
+}
+
+func TestSettingsView_BackendTiers_EmptyShowsPlaceholder(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catBackendTiers)
+	testutil.Equal(t, len(sv.rows), 1)
+	testutil.Equal(t, sv.rows[0].kind, srBackendTier)
+	testutil.Contains(t, sv.rows[0].label, "press n to add")
+}
+
+func TestSettingsView_BackendTiers_CategoryReachableViaRail(t *testing.T) {
+	sv := testSettingsView(t)
+	found := false
+	for _, c := range builtinCategories {
+		if c == catBackendTiers {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("catBackendTiers not found in builtinCategories")
+	}
+	sv.setCategory(catBackendTiers)
+	testutil.Equal(t, sv.category, catBackendTiers)
+	testutil.Equal(t, sv.category.Label(), "Backend Tiers")
+}
+
+func TestSettingsView_BackendTiers_AddAppendsAndPersists(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catBackendTiers)
+	sv.setFocus(focusPane)
+
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, len(sv.backendTiers), 1)
+	testutil.Equal(t, sv.backendTiers[0].Backend, "claude") // first sorted backend
+	testutil.Equal(t, sv.backendTiers[0].Probe, config.ProbeNone)
+	testutil.Equal(t, sv.cursor, 0)
+
+	// Persisted, not just held in memory.
+	d, ok := sv.database.(*db.DB)
+	testutil.Equal(t, ok, true)
+	persisted, err := d.BackendTiers()
+	testutil.NoError(t, err)
+	testutil.DeepEqual(t, persisted, sv.backendTiers)
+}
+
+func TestSettingsView_BackendTiers_RemovePersistsShortenedList(t *testing.T) {
+	sv := testSettingsView(t)
+	d, ok := sv.database.(*db.DB)
+	testutil.Equal(t, ok, true)
+	testutil.NoError(t, d.SetBackendTiers([]config.BackendTier{
+		{Backend: "claude", Probe: config.ProbeClaudeUsage, ThresholdPct: 80},
+		{Backend: "codex", Probe: config.ProbeCodexUsage, ThresholdPct: 90},
+	}))
+	sv.Refresh()
+	sv.setCategory(catBackendTiers)
+	sv.setFocus(focusPane)
+	sv.cursor = 0
+
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'd', 0))
+	testutil.Equal(t, got, true)
+	testutil.DeepEqual(t, sv.backendTiers, []config.BackendTier{
+		{Backend: "codex", Probe: config.ProbeCodexUsage, ThresholdPct: 90},
+	})
+
+	persisted, err := d.BackendTiers()
+	testutil.NoError(t, err)
+	testutil.DeepEqual(t, persisted, sv.backendTiers)
+}
+
+func TestSettingsView_BackendTiers_ReorderMoveUpDown(t *testing.T) {
+	sv := testSettingsView(t)
+	d, ok := sv.database.(*db.DB)
+	testutil.Equal(t, ok, true)
+	testutil.NoError(t, d.SetBackendTiers([]config.BackendTier{
+		{Backend: "claude", Probe: config.ProbeClaudeUsage, ThresholdPct: 80},
+		{Backend: "codex", Probe: config.ProbeCodexUsage, ThresholdPct: 90},
+	}))
+	sv.Refresh()
+	sv.setCategory(catBackendTiers)
+	sv.setFocus(focusPane)
+	sv.cursor = 1 // codex
+
+	// Move up: codex, claude → claude, codex is reversed to codex, claude.
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'K', 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.cursor, 0)
+	testutil.Equal(t, sv.backendTiers[0].Backend, "codex")
+	testutil.Equal(t, sv.backendTiers[1].Backend, "claude")
+
+	// Move back down.
+	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'J', 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.cursor, 1)
+	testutil.Equal(t, sv.backendTiers[0].Backend, "claude")
+	testutil.Equal(t, sv.backendTiers[1].Backend, "codex")
+
+	// Moving the last tier further down is a no-op (key unhandled).
+	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'J', 0))
+	testutil.Equal(t, got, false)
+}
+
+func TestSettingsView_BackendTiers_CycleProbeKind(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catBackendTiers)
+	sv.setFocus(focusPane)
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', 0)) // adds a "none" tier
+	testutil.Equal(t, sv.backendTiers[0].Probe, config.ProbeNone)
+
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'p', 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.backendTiers[0].Probe, config.ProbeClaudeUsage)
+
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'p', 0))
+	testutil.Equal(t, sv.backendTiers[0].Probe, config.ProbeCodexUsage)
+
+	// Wraps back to none, which also zeroes any threshold.
+	sv.backendTiers[0].ThresholdPct = 50 // simulate a previously-set threshold
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'p', 0))
+	testutil.Equal(t, sv.backendTiers[0].Probe, config.ProbeNone)
+	testutil.Equal(t, sv.backendTiers[0].ThresholdPct, 0)
+}
+
+func TestSettingsView_BackendTiers_CycleBackendName(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catBackendTiers)
+	sv.setFocus(focusPane)
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', 0))
+	testutil.Equal(t, sv.backendTiers[0].Backend, "claude")
+
+	// Cycle through the full sorted roster and confirm it wraps back to the
+	// start — deliberately not hardcoding the full backend list (only claude,
+	// codex, and pi are guaranteed defaults; the roster may grow), so this
+	// derives the expected sequence from sv.backends itself.
+	names := make([]string, len(sv.backends))
+	for i, b := range sv.backends {
+		names[i] = b.Name
+	}
+	for i := 1; i <= len(names); i++ {
+		got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
+		testutil.Equal(t, got, true)
+		testutil.Equal(t, sv.backendTiers[0].Backend, names[i%len(names)])
+	}
+}
+
+func TestSettingsView_BackendTiers_CycleBackendNameReverse(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catBackendTiers)
+	sv.setFocus(focusPane)
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', 0))
+	testutil.Equal(t, sv.backendTiers[0].Backend, "claude")
+
+	names := make([]string, len(sv.backends))
+	pos := 0
+	for i, b := range sv.backends {
+		names[i] = b.Name
+		if b.Name == "claude" {
+			pos = i
+		}
+	}
+
+	// No keybinding drives dir=-1 today (cycleBackendTierBackend is only ever
+	// invoked with dir=1) — call it directly to cover the reverse-wrap branch.
+	got := sv.cycleBackendTierBackend(-1)
+	testutil.Equal(t, got, true)
+	want := names[(pos-1+len(names))%len(names)]
+	testutil.Equal(t, sv.backendTiers[0].Backend, want)
+}
+
+func TestSettingsView_BackendTiers_ThresholdEditSaveAndCancel(t *testing.T) {
+	sv := testSettingsView(t)
+	d, ok := sv.database.(*db.DB)
+	testutil.Equal(t, ok, true)
+	testutil.NoError(t, d.SetBackendTiers([]config.BackendTier{
+		{Backend: "claude", Probe: config.ProbeClaudeUsage, ThresholdPct: 50},
+	}))
+	sv.Refresh()
+	sv.setCategory(catBackendTiers)
+	sv.setFocus(focusPane)
+	sv.cursor = 0
+
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'e', 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.editingTierIdx, 0)
+	testutil.Equal(t, sv.IsEditing(), true)
+
+	// Escape cancels without persisting.
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
+	testutil.Equal(t, sv.editingTierIdx, -1)
+	testutil.Equal(t, sv.backendTiers[0].ThresholdPct, 50)
+
+	// Re-enter, clear, type a new value, and save.
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'e', 0))
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyBackspace2, 0, 0))
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyBackspace2, 0, 0))
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, '9', 0))
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, '5', 0))
+	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.editingTierIdx, -1)
+	testutil.Equal(t, sv.backendTiers[0].ThresholdPct, 95)
+
+	persisted, err := d.BackendTiers()
+	testutil.NoError(t, err)
+	testutil.Equal(t, persisted[0].ThresholdPct, 95)
+}
+
+func TestSettingsView_BackendTiers_ThresholdInertWhenProbeNone(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catBackendTiers)
+	sv.setFocus(focusPane)
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', 0)) // "none" probe
+
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'e', 0))
+	testutil.Equal(t, got, false)
+	testutil.Equal(t, sv.editingTierIdx, -1)
+}
+
+// TestSettingsView_BackendTiers_ConfigTomlReadOnly pins the settings-view
+// spec's "config.toml-sourced list renders read-only" scenario: none of the
+// mutating keys change the list when config.toml defines it.
+func TestSettingsView_BackendTiers_ConfigTomlReadOnly(t *testing.T) {
+	sv := testSettingsViewWithConfigToml(t, `
+[[backend_routing.tier]]
+backend = "claude"
+probe = "claude_usage"
+threshold_pct = 80
+`)
+	testutil.Equal(t, sv.backendTiersFromToml, true)
+	testutil.Equal(t, sv.backendTierEditable(), false)
+
+	sv.setCategory(catBackendTiers)
+	sv.setFocus(focusPane)
+	sv.cursor = 0
+	want := sv.backendTiers[0]
+
+	for _, ev := range []*tcell.EventKey{
+		tcell.NewEventKey(tcell.KeyRune, 'n', 0),
+		tcell.NewEventKey(tcell.KeyRune, 'd', 0),
+		tcell.NewEventKey(tcell.KeyRune, 'p', 0),
+		tcell.NewEventKey(tcell.KeyRune, 'K', 0),
+		tcell.NewEventKey(tcell.KeyRune, 'J', 0),
+		tcell.NewEventKey(tcell.KeyRight, 0, 0),
+		tcell.NewEventKey(tcell.KeyRune, 'e', 0),
+	} {
+		sv.HandleKey(ev)
+	}
+
+	testutil.Equal(t, len(sv.backendTiers), 1)
+	testutil.DeepEqual(t, sv.backendTiers[0], want)
+	testutil.Equal(t, sv.editingTierIdx, -1)
+}
+
+// TestSettingsView_BackendTiers_RemoteReadOnly covers the other read-only
+// path: --remote mode has no REST surface for tier mutation (design.md's
+// stated non-goal), so editing is unavailable there too even though the DB
+// itself is a real *db.DB in this test harness (SetRemote is the UI-facing
+// signal production code actually gates on; see backendTierEditable).
+func TestSettingsView_BackendTiers_RemoteReadOnly(t *testing.T) {
+	sv := testSettingsView(t)
+	d, ok := sv.database.(*db.DB)
+	testutil.Equal(t, ok, true)
+	testutil.NoError(t, d.SetBackendTiers([]config.BackendTier{
+		{Backend: "claude", Probe: config.ProbeClaudeUsage, ThresholdPct: 80},
+	}))
+	sv.Refresh()
+	sv.SetRemote(true)
+	testutil.Equal(t, sv.backendTierEditable(), false)
+
+	sv.setCategory(catBackendTiers)
+	sv.setFocus(focusPane)
+	sv.cursor = 0
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'd', 0))
+	testutil.Equal(t, got, false)
+	testutil.Equal(t, len(sv.backendTiers), 1)
+}
+
+func TestSettingsView_BackendTiers_RowLabelFormatting(t *testing.T) {
+	sv := testSettingsView(t)
+	d, ok := sv.database.(*db.DB)
+	testutil.Equal(t, ok, true)
+	testutil.NoError(t, d.SetBackendTiers([]config.BackendTier{
+		{Backend: "claude", Probe: config.ProbeClaudeUsage, ThresholdPct: 80},
+		{Backend: "pi", Probe: config.ProbeNone},
+	}))
+	sv.Refresh()
+	sv.setCategory(catBackendTiers)
+
+	testutil.Equal(t, sv.rows[0].label, "1. claude — claude_usage @ 80%")
+	testutil.Equal(t, sv.rows[1].label, "2. pi — none")
 }
 
 func TestSettingsView_SandboxToggle(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -62,6 +63,7 @@ const (
 	srTodo
 	srTodoProject
 	srTodoTag
+	srBackendTier
 )
 
 // settingsCategory groups related settings rows into a left-rail entry.
@@ -78,6 +80,12 @@ const (
 	catSandbox
 	catProjects
 	catBackends
+	// catBackendTiers is the backend-routing tier list (add-tiered-backend-
+	// routing) — a separate category from catBackends since it edits an
+	// ordered list rather than a name-keyed roster, and needs its own
+	// reorder/cycle affordances (see rebuildRows and the srBackendTier
+	// handlers below).
+	catBackendTiers
 	catDefaults
 	catSchedules
 	catKnowledgeBase
@@ -104,6 +112,8 @@ func (c settingsCategory) Label() string {
 		return "Projects"
 	case catBackends:
 		return "Backends"
+	case catBackendTiers:
+		return "Backend Tiers"
 	case catDefaults:
 		return "Defaults"
 	case catSchedules:
@@ -131,7 +141,7 @@ func (c settingsCategory) Label() string {
 // builtinCategories is the fixed top portion of the rail. Plugins, when
 // present, render after a "Plugins" header below this list.
 var builtinCategories = []settingsCategory{
-	catSystem, catSandbox, catProjects, catBackends, catDefaults, catSchedules,
+	catSystem, catSandbox, catProjects, catBackends, catBackendTiers, catDefaults, catSchedules,
 	catKnowledgeBase, catRemoteAPI, catHera, catTodo, catAppearance, catLogs,
 }
 
@@ -208,6 +218,25 @@ type SettingsView struct {
 	schedules      []*model.ScheduledTask
 	defaultBackend string
 	taskCounts     map[string]statusCounts
+
+	// Backend-tier routing (add-tiered-backend-routing). backendTiers is the
+	// resolved list (config.toml wins wholesale over the DB-persisted list,
+	// per db.Config's precedence) — read via the Store interface so remote
+	// mode can display it too. backendTiersFromToml is the LOCAL-only signal
+	// for whether config.toml is the active source (a *db.DB type-assert,
+	// mirroring the established local-only-ops pattern documented in
+	// gotchas/remote-tui.md), which the category needs to render read-only
+	// exactly per specs/settings-view/spec.md. It is always false in remote
+	// mode; see backendTierEditable, which additionally gates on that mode.
+	backendTiers         []config.BackendTier
+	backendTiersFromToml bool
+
+	// Threshold inline edit for the selected tier. editingTierIdx is the
+	// index into backendTiers being edited, -1 when not editing — an index
+	// rather than a name/key because tiers have no stable per-row identity
+	// (unlike backends/projects; see db.SetBackendTiers's own doc comment).
+	editingTierIdx       int
+	editTierThresholdBuf string
 
 	// Sandbox.
 	sandboxEnabled          bool
@@ -458,6 +487,7 @@ func NewSettingsView(database store.Store) *SettingsView {
 		pluginSubmitStatus: make(map[pluginKey]string),
 		streamMounts:       make(map[pluginKey]*streamSectionMount),
 		todoProbe:          todo.Get,
+		editingTierIdx:     -1,
 	}
 }
 
@@ -494,6 +524,22 @@ func (sv *SettingsView) Refresh() {
 	sort.Strings(names)
 	for _, name := range names {
 		sv.backends = append(sv.backends, backendEntry{Name: name, Backend: cfg.Backends[name]})
+	}
+
+	// Backend-tier routing. cfg.BackendRouting.Tiers already reflects
+	// config.toml-wins-wholesale-over-DB precedence (db.Config's job);
+	// BackendTiersFromConfigToml is the additional, LOCAL-only signal for
+	// WHICH source that was, read via a *db.DB type-assert (nil/false in
+	// --remote mode, where mutation has no REST surface — see
+	// backendTierEditable). Must run right after Config() above, which is
+	// what actually re-applies config.toml and refreshes the finding.
+	sv.backendTiers = cfg.BackendRouting.Tiers
+	sv.backendTiersFromToml = false
+	if d, ok := sv.database.(*db.DB); ok {
+		sv.backendTiersFromToml = d.BackendTiersFromConfigToml()
+	}
+	if sv.editingTierIdx >= len(sv.backendTiers) {
+		sv.editingTierIdx = -1 // defensive: cancel a stale edit if the list shrank underneath it
 	}
 
 	// Projects.
@@ -1025,6 +1071,19 @@ func (sv *SettingsView) rebuildRows() {
 			}
 		}
 
+	case catBackendTiers:
+		if len(sv.backendTiers) == 0 {
+			hint := "(no tiers — press n to add)"
+			if sv.backendTiersFromToml {
+				hint = "(no tiers configured)"
+			}
+			sv.rows = append(sv.rows, settingsRow{kind: srBackendTier, label: hint})
+		} else {
+			for i, t := range sv.backendTiers {
+				sv.rows = append(sv.rows, settingsRow{kind: srBackendTier, label: sv.backendTierRowLabel(i, t), key: t.Backend})
+			}
+		}
+
 	case catSchedules:
 		if len(sv.schedules) == 0 {
 			sv.rows = append(sv.rows, settingsRow{kind: srSchedule, label: "(no schedules — press n to add)"})
@@ -1204,6 +1263,15 @@ func (sv *SettingsView) PasteHandler() func(pastedText string, setFocus func(p t
 		} else if sv.editingTodoTag {
 			sv.editTodoTagBuf += pastedText
 			sv.rebuildRows()
+		} else if sv.editingTierIdx != -1 {
+			// Digits only, same constraint as the rune handler — a pasted
+			// threshold is still a percentage, not free text.
+			for _, r := range pastedText {
+				if r >= '0' && r <= '9' && len(sv.editTierThresholdBuf) < 3 {
+					sv.editTierThresholdBuf += string(r)
+				}
+			}
+			sv.rebuildRows()
 		}
 	})
 }
@@ -1211,7 +1279,7 @@ func (sv *SettingsView) PasteHandler() func(pastedText string, setFocus func(p t
 // IsEditing returns true when the user is inline-editing any field.
 func (sv *SettingsView) IsEditing() bool {
 	return sv.editingVault != "" || sv.editingSource || sv.editingBackendModel != "" || sv.activeEditKey != "" ||
-		sv.editingTodoProject || sv.editingTodoTag
+		sv.editingTodoProject || sv.editingTodoTag || sv.editingTierIdx != -1
 }
 
 // SelectedProject returns the project at the cursor, or nil.
@@ -1242,6 +1310,266 @@ func (sv *SettingsView) SelectedBackend() *backendEntry {
 	return nil
 }
 
+// --- Backend-tier routing (add-tiered-backend-routing) ---
+
+// backendTierProbeKinds is the cycle order for the `p` key, none first since
+// that's handleNewBackendTier's default for a freshly added tier.
+var backendTierProbeKinds = []string{config.ProbeNone, config.ProbeClaudeUsage, config.ProbeCodexUsage}
+
+// probeLabel renders a tier's probe kind for display, flagging an
+// unrecognized value rather than hiding it — an operator hand-editing
+// config.toml should see exactly why a tier reads as skipped.
+func probeLabel(probe string) string {
+	switch probe {
+	case config.ProbeClaudeUsage, config.ProbeCodexUsage, config.ProbeNone:
+		return probe
+	default:
+		return probe + " (unrecognized)"
+	}
+}
+
+// backendTierRowLabel renders one tier's row-list label, inlining the
+// in-progress threshold edit buffer exactly like the todo project/tag rows do.
+func (sv *SettingsView) backendTierRowLabel(i int, t config.BackendTier) string {
+	label := fmt.Sprintf("%d. %s — %s", i+1, t.Backend, probeLabel(t.Probe))
+	if t.Probe == config.ProbeNone {
+		return label
+	}
+	if sv.editingTierIdx == i {
+		return label + " @ " + sv.editTierThresholdBuf + "▎%"
+	}
+	return fmt.Sprintf("%s @ %d%%", label, t.ThresholdPct)
+}
+
+// backendTierEditable reports whether the active tier list can be added to,
+// removed from, reordered, or edited from the TUI: false when config.toml
+// sources it (specs/settings-view/spec.md's config.toml-authoritative
+// rendering) or when running in --remote mode, where tier mutation has no
+// REST surface (design.md's stated non-goal — TUI + config.toml only, no
+// web/macOS/REST surface for v1; mirrors the Hera mutations-are-TUI-only
+// precedent).
+func (sv *SettingsView) backendTierEditable() bool {
+	if sv.backendTiersFromToml || sv.remote {
+		return false
+	}
+	_, ok := sv.database.(*db.DB)
+	return ok
+}
+
+// selectedTierIndex returns the backendTiers index the cursor is on, or -1
+// when the selection isn't a real tier row (empty-list placeholder, or the
+// cursor is on a different category).
+func (sv *SettingsView) selectedTierIndex() int {
+	if sv.currentRowKind() != srBackendTier || len(sv.backendTiers) == 0 {
+		return -1
+	}
+	if sv.cursor < 0 || sv.cursor >= len(sv.backendTiers) {
+		return -1
+	}
+	return sv.cursor
+}
+
+// mutateBackendTiers applies f to a copy of the current tier list, persists
+// the result via the local *db.DB (a no-op, returning false, when the list
+// isn't editable — see backendTierEditable), and refreshes the display state
+// on success. A persistence error is logged but still reports the key as
+// handled (true), matching handleEditModelKey's convention elsewhere in this
+// file: the keystroke was acted on even though the write failed.
+func (sv *SettingsView) mutateBackendTiers(f func([]config.BackendTier) []config.BackendTier) bool {
+	if !sv.backendTierEditable() {
+		return false
+	}
+	d, ok := sv.database.(*db.DB)
+	if !ok {
+		return false
+	}
+	updated := f(append([]config.BackendTier(nil), sv.backendTiers...))
+	if err := d.SetBackendTiers(updated); err != nil {
+		uxlog.Log("[settings] failed to persist backend tiers: %v", err)
+		return true
+	}
+	uxlog.Log("[settings] backend tiers updated (%d tiers)", len(updated))
+	sv.backendTiers = updated
+	sv.rebuildRows()
+	return true
+}
+
+// firstBackendName returns the first (sorted) configured backend name, or ""
+// if none exist — the default a freshly added tier names.
+func (sv *SettingsView) firstBackendName() string {
+	if len(sv.backends) == 0 {
+		return ""
+	}
+	return sv.backends[0].Name
+}
+
+// handleNewBackendTier appends a new tier (first configured backend,
+// uncapped) and moves the cursor onto it, ready for the user to cycle its
+// backend/probe and edit its threshold in place.
+func (sv *SettingsView) handleNewBackendTier() bool {
+	name := sv.firstBackendName()
+	if name == "" {
+		return false
+	}
+	if !sv.mutateBackendTiers(func(tiers []config.BackendTier) []config.BackendTier {
+		return append(tiers, config.BackendTier{Backend: name, Probe: config.ProbeNone})
+	}) {
+		return false
+	}
+	sv.cursor = len(sv.rows) - 1
+	return true
+}
+
+// handleDeleteBackendTier removes the selected tier; later tiers keep their
+// relative order (specs/backend-tier-routing/spec.md's removal scenario).
+func (sv *SettingsView) handleDeleteBackendTier() bool {
+	idx := sv.selectedTierIndex()
+	if idx < 0 {
+		return false
+	}
+	if !sv.mutateBackendTiers(func(tiers []config.BackendTier) []config.BackendTier {
+		return append(tiers[:idx], tiers[idx+1:]...)
+	}) {
+		return false
+	}
+	if sv.cursor >= len(sv.rows) {
+		sv.cursor = max(0, len(sv.rows)-1)
+	}
+	return true
+}
+
+// handleMoveBackendTier swaps the selected tier with its neighbor in dir's
+// direction (-1 up, +1 down), following the selection to the new position.
+func (sv *SettingsView) handleMoveBackendTier(dir int) bool {
+	idx := sv.selectedTierIndex()
+	if idx < 0 {
+		return false
+	}
+	j := idx + dir
+	if j < 0 || j >= len(sv.backendTiers) {
+		return false
+	}
+	if !sv.mutateBackendTiers(func(tiers []config.BackendTier) []config.BackendTier {
+		tiers[idx], tiers[j] = tiers[j], tiers[idx]
+		return tiers
+	}) {
+		return false
+	}
+	sv.cursor = j
+	return true
+}
+
+// cycleBackendTierProbe advances the selected tier's probe kind through
+// backendTierProbeKinds, wrapping. Switching to "none" zeroes the threshold
+// so it never displays a stale capped value once it becomes inert.
+func (sv *SettingsView) cycleBackendTierProbe() bool {
+	idx := sv.selectedTierIndex()
+	if idx < 0 {
+		return false
+	}
+	cur := sv.backendTiers[idx].Probe
+	next := backendTierProbeKinds[0]
+	for i, k := range backendTierProbeKinds {
+		if k == cur {
+			next = backendTierProbeKinds[(i+1)%len(backendTierProbeKinds)]
+			break
+		}
+	}
+	return sv.mutateBackendTiers(func(tiers []config.BackendTier) []config.BackendTier {
+		tiers[idx].Probe = next
+		if next == config.ProbeNone {
+			tiers[idx].ThresholdPct = 0
+		}
+		return tiers
+	})
+}
+
+// cycleBackendTierBackend advances the selected tier's backend name through
+// the configured roster (sorted, same order as the Backends category),
+// wrapping in dir's direction.
+func (sv *SettingsView) cycleBackendTierBackend(dir int) bool {
+	idx := sv.selectedTierIndex()
+	if idx < 0 || len(sv.backends) == 0 {
+		return false
+	}
+	pos := 0
+	for i, b := range sv.backends {
+		if b.Name == sv.backendTiers[idx].Backend {
+			pos = i
+			break
+		}
+	}
+	next := sv.backends[(pos+dir+len(sv.backends))%len(sv.backends)].Name
+	return sv.mutateBackendTiers(func(tiers []config.BackendTier) []config.BackendTier {
+		tiers[idx].Backend = next
+		return tiers
+	})
+}
+
+// handleEditBackendTierThreshold begins inline-editing the selected tier's
+// threshold. Inert for an uncapped ("none") tier — no threshold value applies
+// (specs/settings-view/spec.md's "threshold hidden for an uncapped tier").
+func (sv *SettingsView) handleEditBackendTierThreshold() bool {
+	idx := sv.selectedTierIndex()
+	if idx < 0 || !sv.backendTierEditable() {
+		return false
+	}
+	t := sv.backendTiers[idx]
+	if t.Probe == config.ProbeNone {
+		return false
+	}
+	sv.editingTierIdx = idx
+	sv.editTierThresholdBuf = strconv.Itoa(t.ThresholdPct)
+	return true
+}
+
+// handleEditTierThresholdKey handles keystrokes while inline-editing a tier's
+// threshold. Digits only (0-100, clamped); Enter persists via
+// mutateBackendTiers, Escape cancels.
+func (sv *SettingsView) handleEditTierThresholdKey(ev *tcell.EventKey) bool {
+	switch ev.Key() {
+	case tcell.KeyEnter:
+		idx := sv.editingTierIdx
+		sv.editingTierIdx = -1
+		pct, err := strconv.Atoi(strings.TrimSpace(sv.editTierThresholdBuf))
+		if err != nil || pct < 0 {
+			pct = 0
+		}
+		if pct > 100 {
+			pct = 100
+		}
+		if idx < 0 || idx >= len(sv.backendTiers) {
+			sv.rebuildRows()
+			return true
+		}
+		sv.mutateBackendTiers(func(tiers []config.BackendTier) []config.BackendTier {
+			tiers[idx].ThresholdPct = pct
+			return tiers
+		})
+		return true
+	case tcell.KeyEscape:
+		sv.editingTierIdx = -1
+		uxlog.Log("[settings] backend tier threshold edit canceled")
+		sv.rebuildRows()
+		return true
+	case tcell.KeyDown, tcell.KeyUp, tcell.KeyLeft, tcell.KeyRight:
+		return true // consume to avoid cursor movement while editing
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if len(sv.editTierThresholdBuf) > 0 {
+			sv.editTierThresholdBuf = sv.editTierThresholdBuf[:len(sv.editTierThresholdBuf)-1]
+			sv.rebuildRows()
+		}
+		return true
+	case tcell.KeyRune:
+		if ev.Rune() >= '0' && ev.Rune() <= '9' && len(sv.editTierThresholdBuf) < 3 {
+			sv.editTierThresholdBuf += string(ev.Rune())
+			sv.rebuildRows()
+		}
+		return true
+	}
+	return false
+}
+
 // --- Key handling ---
 
 func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
@@ -1259,6 +1587,9 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 	}
 	if sv.editingTodoTag {
 		return sv.handleEditTodoTagKey(ev)
+	}
+	if sv.editingTierIdx != -1 {
+		return sv.handleEditTierThresholdKey(ev)
 	}
 	if sv.activeEditKey != "" {
 		return sv.handlePluginFieldEditKey(ev)
@@ -1311,6 +1642,10 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 			return true
 		case srPluginField:
 			if sv.handlePluginCycle(1) {
+				return true
+			}
+		case srBackendTier:
+			if sv.cycleBackendTierBackend(1) {
 				return true
 			}
 		}
@@ -1394,6 +1729,21 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 				return false
 			}
 			return sv.handleEditModel()
+		case keymap.ActSettingsCycleProbe:
+			if sv.focus == focusRail {
+				return false
+			}
+			return sv.cycleBackendTierProbe()
+		case keymap.ActSettingsMoveUp:
+			if sv.focus == focusRail {
+				return false
+			}
+			return sv.handleMoveBackendTier(-1)
+		case keymap.ActSettingsMoveDown:
+			if sv.focus == focusRail {
+				return false
+			}
+			return sv.handleMoveBackendTier(1)
 		}
 	}
 	return false
@@ -1789,6 +2139,8 @@ func (sv *SettingsView) handleDeleteOrDefault() bool {
 		return sv.handleSetDefault()
 	case srSchedule:
 		return sv.handleDeleteSchedule()
+	case srBackendTier:
+		return sv.handleDeleteBackendTier()
 	}
 	return false
 }
@@ -1852,12 +2204,16 @@ func (sv *SettingsView) handleNew() bool {
 			sv.OnNewSchedule()
 			return true
 		}
+	case catBackendTiers:
+		return sv.handleNewBackendTier()
 	}
 	return false
 }
 
 func (sv *SettingsView) handleEdit() bool {
 	switch sv.currentRowKind() {
+	case srBackendTier:
+		return sv.handleEditBackendTierThreshold()
 	case srProject:
 		if pe := sv.SelectedProject(); pe != nil && sv.OnEditProject != nil {
 			sv.OnEditProject(pe.Name, pe.Project)
@@ -2524,6 +2880,8 @@ func (sv *SettingsView) renderRowDetail(screen tcell.Screen, x, y, w, h int, row
 		sv.renderProjectDetail(screen, x, y, w, h, row)
 	case srBackend:
 		sv.renderBackendDetail(screen, x, y, w, h, row)
+	case srBackendTier:
+		sv.renderBackendTierDetail(screen, x, y, w, h)
 	case srKB:
 		sv.renderKBDetail(screen, x, y, w, h)
 	case srAPI:
@@ -3174,6 +3532,56 @@ func (sv *SettingsView) renderBackendDetail(screen tcell.Screen, x, y, w, h int,
 	// Bottom-anchored like renderProjectDetail so the key bindings stay
 	// visible at any pane height the layout can produce.
 	if h > 2 {
+		widget.DrawText(screen, x, y+h-1, w, hints, theme.StyleDimmed)
+	}
+}
+
+// renderBackendTierDetail draws the selected backend-routing tier's detail
+// block: backend, probe kind, threshold (when capped), and the read-only
+// reason when applicable — mirroring renderBackendDetail's bottom-anchored
+// hints row so the key bindings stay visible at any pane height.
+func (sv *SettingsView) renderBackendTierDetail(screen tcell.Screen, x, y, w, h int) {
+	idx := sv.selectedTierIndex()
+	if idx < 0 {
+		widget.DrawText(screen, x, y, w, "(no tiers)", theme.StyleDimmed)
+		if sv.backendTiersFromToml {
+			widget.DrawText(screen, x, y+1, w, "Sourced from config.toml — read-only.", theme.StyleDimmed)
+		}
+		return
+	}
+	t := sv.backendTiers[idx]
+	editable := sv.backendTierEditable()
+
+	widget.DrawText(screen, x, y, w, fmt.Sprintf("Tier %d", idx+1), theme.StyleTitle)
+	r := 1
+	if sv.backendTiersFromToml {
+		widget.DrawText(screen, x, y+r, w, "(config.toml-defined — read-only)", theme.StyleDimmed)
+		r++
+	} else if !editable {
+		widget.DrawText(screen, x, y+r, w, "(read-only in --remote mode)", theme.StyleDimmed)
+		r++
+	}
+	r++
+
+	widget.DrawText(screen, x, y+r, w, "  Backend: "+t.Backend, theme.StyleDimmed)
+	r++
+	widget.DrawText(screen, x, y+r, w, "  Probe: "+probeLabel(t.Probe), theme.StyleDimmed)
+	r++
+	if t.Probe != config.ProbeNone && r < h-1 {
+		if sv.editingTierIdx == idx {
+			widget.DrawText(screen, x, y+r, w, "  Threshold: "+sv.editTierThresholdBuf+"▎%", tcell.StyleDefault.Foreground(theme.ColorComplete))
+		} else {
+			widget.DrawText(screen, x, y+r, w, fmt.Sprintf("  Threshold: %d%%", t.ThresholdPct), theme.StyleDimmed)
+		}
+	}
+
+	hints := "[n] add  [d] remove  [K/J] move  [→] cycle backend  [p] cycle probe  [e] edit threshold"
+	if sv.editingTierIdx == idx {
+		hints = "[enter] save threshold  [esc] cancel"
+	} else if !editable {
+		hints = ""
+	}
+	if h > 2 && hints != "" {
 		widget.DrawText(screen, x, y+h-1, w, hints, theme.StyleDimmed)
 	}
 }

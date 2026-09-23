@@ -1,0 +1,31 @@
+## Why
+
+Argus already steers **hera worker/freelance spawns** away from Claude at a usage threshold (`[hera.worker_budget]`, `internal/usagebudget`) — but that resolver is a one-way, two-backend, hera-only tool: it only watches Claude's usage, only falls back to a single hardcoded-by-config backend (Codex), and is never consulted by plain task creation (`agent.ResolveBackend`), which is how the overwhelming majority of tasks pick a backend. The user wants the general case: an ordered, fully user-configurable list of backend "tiers" for **default task-backend selection**, where each tier is either usage-capped (Claude, Codex — and, later, anything else with a quota) or uncapped (a local/open-source model), with automatic fail-over down the list as caps are hit, and a real Settings UI to configure it instead of hand-editing `config.toml`.
+
+## What Changes
+
+- Add a new **backend-tier-routing** capability: an ordered list of tiers, each naming a backend (must exist in `cfg.Backends`) and a **probe kind** (`claude_usage`, `codex_usage`, or `none`) with a threshold percentage for capped kinds. The resolver walks the list in order and returns the first tier whose usage is unknown-safe-or-below-threshold (an uncapped `none` tier always qualifies), keeping the existing single-backend `cfg.Defaults.Backend` as the fallback when no tier list is configured (fully additive — zero effect on an unconfigured install).
+- Extend the existing Claude `/usage` PTY probe pattern with a **Codex-side probe**: primarily reads the `rate_limits.used_percent` field Codex already writes into its own local `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` files as a side effect of ordinary use (free, no extra session), falling back to a headless `codex` PTY probe (send one throwaway message, read `/status`) only when no rollout file is fresh enough. Both probes share the same fail-open cache contract as the existing Claude probe.
+- Wire the tiered resolver into **general (non-hera) task-backend resolution**: `agent.ResolveBackend` gains a new precedence tier — task-explicit backend and project-explicit backend still always win unchanged; when neither is set, the tiered resolver runs before falling back to the single `cfg.Defaults.Backend`.
+- Add a **TUI Settings panel** (new `catBackendTiers` category, or an extension of the existing `catBackends` category — exact placement decided during implementation) to add/remove/reorder tiers and edit each tier's probe kind + threshold, backed by a new structured DB table (mirroring the existing `SetBackend`/backends-table pattern, not the scalar `SetConfigValue` pattern). `config.toml` can also define the tier list directly (`[[backend_routing.tier]]`), and — matching this repo's existing config.toml-wins-over-DB precedent — a config.toml-defined list is authoritative and rendered read-only in the TUI, exactly like the existing "(command is hardcoded)" `catBackends` behavior.
+- The existing hera worker-budget feature (`[hera.worker_budget]`, `usagebudget.ResolveWorkerBackend`) is **left untouched** by default — it is live and depended on today (confirmed via Aaron's own description of it working in Slack). This change does not touch its config schema, its two call sites (`hera_spawn_worker`, `heragater.materializeNode`), or coordinator/sub-coordinator spawn paths, which remain permanently excluded from any budget-aware routing per the original design intent.
+
+## Capabilities
+
+### New Capabilities
+- `backend-tier-routing`: the ordered tier list, the probe-kind registry (`claude_usage`, `codex_usage`, `none`), the Codex usage probe (rollout-file read + PTY-probe fallback), and the resolution function consulted by general task-backend selection.
+
+### Modified Capabilities
+- `agent-execution`: `ResolveBackend` gains a new precedence tier (tiered routing) between "explicit task/project backend" and "single configured default," consulted only when neither explicit backend is set and a tier list is configured.
+- `config-management`: new `[backend_routing]` config schema (`tier` array of `{backend, probe, threshold_pct}`), config.toml-wins-over-DB precedence for it, and a new DB-backed structured store for the tier list when defined via the Settings UI instead of config.toml.
+- `settings-view`: new TUI category/rows for viewing and editing the tier list (add/remove/reorder tiers, edit probe kind + threshold), including the config.toml-authoritative read-only rendering case.
+
+## Impact
+
+- New package `internal/backendtier` (or similar): probe-kind registry, Codex probe (rollout-file reader + PTY fallback), tier-list resolution function. Reuses `internal/usagebudget`'s existing Claude probe code rather than duplicating it (refactor the Claude probe into a shared, kind-keyed probe interface if that's cleaner than two probes; decide during implementation).
+- `internal/config`: new `BackendRoutingConfig` / `Tier` types; `internal/config/file.go` overlay semantics (config.toml wins wholesale over DB when the table is present, matching existing convention).
+- `internal/db`: new table + `SetBackendTiers`/`BackendTiers` accessors, mirroring `internal/db/backends.go`'s pattern.
+- `internal/agent/agent.go` (`ResolveBackend`): new precedence tier.
+- `internal/tui/settings.go`: new category, new reorderable-list UI pattern (does not exist anywhere in the TUI today — this is new UI, not a reuse of an existing widget).
+- `internal/daemon/daemon.go`: extend (or add a sibling to) the existing probe goroutine to also tick the Codex probe.
+- **Non-goals** (named, not silent, per Frontend Parity rule): no web SPA or macOS Settings surface for the tier list in this change (config.toml + TUI only, mirroring the `[hera.worker_budget]` v1 precedent exactly) — a REST/web/macOS follow-up is a reasonable future change, not implied by this one. No new backend definitions are added (no `gemini` backend/command-template — the architecture is built so a future tier can name any backend already in `cfg.Backends`, including one added later, but adding Gemini itself is out of scope, matching the existing `llm-backends` spec's explicit "No `gemini` backend SHALL be added" precedent). No change to hera worker/freelance spawn's existing resolver or config, and no per-project tier lists (usage is an account-wide resource, same rationale as the existing hera feature).

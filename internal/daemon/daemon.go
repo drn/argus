@@ -21,6 +21,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/api"
+	"github.com/drn/argus/internal/backendtier"
 	"github.com/drn/argus/internal/buildid"
 	"github.com/drn/argus/internal/clipboard"
 	"github.com/drn/argus/internal/db"
@@ -204,6 +205,11 @@ type Daemon struct {
 	// usageBudgetProbe is the external /usage probe seam. Defaults to
 	// usagebudget.Probe; tests swap it so daemon startup never shells out.
 	usageBudgetProbe func(context.Context) error
+
+	// codexProbe is the external Codex rollout/PTY probe seam (add-tiered
+	// -backend-routing). Defaults to backendtier.Probe; tests swap it so
+	// daemon startup never shells out or reads ~/.codex.
+	codexProbe func(context.Context) error
 }
 
 // SupervisorClient is the daemon's view of a live session-supervisor connection:
@@ -253,6 +259,7 @@ func New(database *db.DB) *Daemon {
 		prAliasCap:        prDefaultAliasCap,
 		prDisableFlagPath: filepath.Join(db.DataDir(), prPollDisableFlag),
 		usageBudgetProbe:  usagebudget.Probe,
+		codexProbe:        backendtier.Probe,
 	}
 
 	// Capture the binary path, hash, and mtime at startup. The on-disk binary
@@ -1021,6 +1028,39 @@ func (d *Daemon) probeUsageBudgetOnce(ctx context.Context) {
 	}
 }
 
+// runCodexProbePoller is the Codex usage probe goroutine body
+// (add-tiered-backend-routing). It is a sibling of runUsageBudgetPoller, not an
+// extension of it: same cadence (usageBudgetProbeInterval), own ticker and own
+// d.done-gated exit, so the existing Claude probe's goroutine and cadence stay
+// untouched. Refreshes internal/backendtier's in-memory Codex cache for the
+// tiered backend resolver.
+func (d *Daemon) runCodexProbePoller() {
+	ticker := time.NewTicker(usageBudgetProbeInterval)
+	defer ticker.Stop()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	for {
+		select {
+		case <-d.done:
+			cancel()
+			return
+		case <-ticker.C:
+			d.probeCodexOnce(ctx)
+		}
+	}
+}
+
+func (d *Daemon) probeCodexOnce(ctx context.Context) {
+	if d.codexProbe == nil {
+		return
+	}
+	if err := d.codexProbe(ctx); err != nil {
+		uxlog.Log("[backendtier] codex probe returned error: %v", err)
+	}
+}
+
 // Clipboard returns the agent-staged clipboard store. Used by the API
 // server (HTTP + SSE subscribe) and the MCP server (agent stages text).
 func (d *Daemon) Clipboard() *clipboard.Store {
@@ -1192,6 +1232,13 @@ func (d *Daemon) Serve(sockPath string) error {
 	// Probe failures are fail-open inside internal/usagebudget; this loop only
 	// owns cadence and shutdown cancellation.
 	go d.runUsageBudgetPoller()
+
+	// Codex usage probe (add-tiered-backend-routing). Sibling of the
+	// usage-budget probe above, same cadence, refreshing internal/backendtier's
+	// cached Codex usage for the general tiered backend resolver. Inactive by
+	// default: with no [backend_routing] tiers configured, the resolver never
+	// reads this cache, and the probe itself is fail-open on any error.
+	go d.runCodexProbePoller()
 
 	// Host-suspend watchdog (detect-host-suspend). Detects a laptop sleep /
 	// hibernate / VM pause from a large wall-clock gap between its own ticks and

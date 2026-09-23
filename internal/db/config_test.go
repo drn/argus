@@ -231,6 +231,99 @@ func TestDB_Config_BadIntegerPorts(t *testing.T) {
 	testutil.Equal(t, cfg.API.HTTPPort, 7743)
 }
 
+// TestDB_Config_BackendRoutingTOMLWinsWholesaleOverDB verifies that a non-empty
+// [backend_routing] tier list in config.toml is authoritative in full over any
+// tier list persisted via the Settings UI (DB) — no merging of the two sources.
+func TestDB_Config_BackendRoutingTOMLWinsWholesaleOverDB(t *testing.T) {
+	dir := t.TempDir()
+	d, err := Open(filepath.Join(dir, "data.sql"))
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	testutil.NoError(t, d.SetBackendTiers([]config.BackendTier{
+		{Backend: "codex", Probe: config.ProbeCodexUsage, ThresholdPct: 50},
+	}))
+
+	toml := `
+[[backend_routing.tier]]
+backend = "claude"
+probe = "claude_usage"
+threshold_pct = 80
+
+[[backend_routing.tier]]
+backend = "pi"
+probe = "none"
+`
+	testutil.NoError(t, os.WriteFile(filepath.Join(dir, config.FileName), []byte(toml), 0o644))
+
+	cfg := d.Config()
+	testutil.Equal(t, len(cfg.BackendRouting.Tiers), 2)
+	testutil.Equal(t, cfg.BackendRouting.Tiers[0].Backend, "claude")
+	testutil.Equal(t, cfg.BackendRouting.Tiers[1].Backend, "pi")
+}
+
+// TestDB_Config_BackendRoutingDBUsedWhenTOMLDefinesNone verifies the DB-persisted
+// tier list is used when config.toml defines no [backend_routing] table at all.
+func TestDB_Config_BackendRoutingDBUsedWhenTOMLDefinesNone(t *testing.T) {
+	dir := t.TempDir()
+	d, err := Open(filepath.Join(dir, "data.sql"))
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	testutil.NoError(t, d.SetBackendTiers([]config.BackendTier{
+		{Backend: "codex", Probe: config.ProbeCodexUsage, ThresholdPct: 50},
+	}))
+
+	cfg := d.Config()
+	testutil.Equal(t, len(cfg.BackendRouting.Tiers), 1)
+	testutil.Equal(t, cfg.BackendRouting.Tiers[0].Backend, "codex")
+}
+
+// TestDB_BackendTiersFromConfigToml_TrueWhenTOMLDefinesTiers pins the Settings
+// backend-tier category's read-only signal: Config() must run first (it's
+// what re-applies config.toml and refreshes the FileLoader's cached finding).
+func TestDB_BackendTiersFromConfigToml_TrueWhenTOMLDefinesTiers(t *testing.T) {
+	dir := t.TempDir()
+	d, err := Open(filepath.Join(dir, "data.sql"))
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	toml := `
+[[backend_routing.tier]]
+backend = "claude"
+probe = "claude_usage"
+threshold_pct = 80
+`
+	testutil.NoError(t, os.WriteFile(filepath.Join(dir, config.FileName), []byte(toml), 0o644))
+
+	d.Config()
+	testutil.Equal(t, d.BackendTiersFromConfigToml(), true)
+}
+
+// TestDB_BackendTiersFromConfigToml_FalseWhenTOMLDefinesNone covers the DB-
+// sourced (editable) case: no [backend_routing] table in config.toml at all.
+func TestDB_BackendTiersFromConfigToml_FalseWhenTOMLDefinesNone(t *testing.T) {
+	dir := t.TempDir()
+	d, err := Open(filepath.Join(dir, "data.sql"))
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	testutil.NoError(t, d.SetBackendTiers([]config.BackendTier{
+		{Backend: "codex", Probe: config.ProbeCodexUsage, ThresholdPct: 50},
+	}))
+
+	d.Config()
+	testutil.Equal(t, d.BackendTiersFromConfigToml(), false)
+}
+
+// TestDB_BackendTiersFromConfigToml_FalseForInMemoryDB confirms an in-memory
+// test DB (nil cfgLoader) never reports config.toml as authoritative.
+func TestDB_BackendTiersFromConfigToml_FalseForInMemoryDB(t *testing.T) {
+	d := testDB(t)
+	d.Config()
+	testutil.Equal(t, d.BackendTiersFromConfigToml(), false)
+}
+
 // TestDB_Config_NegativeOrZeroPorts ensures negative/zero ports do not override defaults.
 func TestDB_Config_NegativeOrZeroPorts(t *testing.T) {
 	d := testDB(t)

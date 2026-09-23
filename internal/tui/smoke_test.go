@@ -2057,6 +2057,167 @@ func TestSmoke_SettingsPagePasteRouting(t *testing.T) {
 	}
 }
 
+// TestSmoke_SettingsBackendTiersCategoryNavigation exercises reaching the new
+// Backend Tiers category through the real rail-navigation key path (down
+// through the rail from System, matching how a user would actually get
+// there) rather than a direct setCategory call.
+func TestSmoke_SettingsBackendTiersCategoryNavigation(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	app.tapp.QueueUpdateDraw(func() {
+		app.switchTab(widget.TabSettings)
+		app.settings.setFocus(focusRail)
+		app.settings.setCategory(catSystem)
+	})
+	syncUI(t, app.tapp)
+
+	// System, Sandbox, Projects, Backends, Backend Tiers.
+	for i := 0; i < 4; i++ {
+		sim.InjectKey(tcell.KeyDown, 0, 0)
+		syncUI(t, app.tapp)
+	}
+
+	var cat settingsCategory
+	readUI(t, app.tapp, func() { cat = app.settings.category })
+	testutil.Equal(t, cat, catBackendTiers)
+}
+
+// TestSmoke_SettingsBackendTiersAddRemoveReorder drives add/cycle/reorder/
+// remove through the real tview event loop end to end (tasks.md 7.5).
+func TestSmoke_SettingsBackendTiersAddRemoveReorder(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	app.tapp.QueueUpdateDraw(func() {
+		app.switchTab(widget.TabSettings)
+		app.settings.setCategory(catBackendTiers)
+	})
+	syncUI(t, app.tapp)
+
+	var tiers []config.BackendTier
+	readTiers := func() {
+		readUI(t, app.tapp, func() { tiers = app.settings.backendTiers })
+	}
+
+	// `n` twice appends two tiers, both defaulting to the first (sorted)
+	// backend, and leaves the cursor on the newest one.
+	sim.InjectKey(tcell.KeyRune, 'n', 0)
+	syncUI(t, app.tapp)
+	sim.InjectKey(tcell.KeyRune, 'n', 0)
+	syncUI(t, app.tapp)
+	readTiers()
+	testutil.Equal(t, len(tiers), 2)
+	testutil.Equal(t, tiers[0].Backend, "claude")
+	testutil.Equal(t, tiers[1].Backend, "claude")
+
+	// Cycle the selected (second) tier's backend so reordering is observable,
+	// then move it above the first.
+	sim.InjectKey(tcell.KeyRight, 0, 0)
+	syncUI(t, app.tapp)
+	sim.InjectKey(tcell.KeyRune, 'K', 0)
+	syncUI(t, app.tapp)
+	readTiers()
+	testutil.Equal(t, tiers[0].Backend, "codex")
+	testutil.Equal(t, tiers[1].Backend, "claude")
+
+	// Remove the selected (now first) tier — the shortened list persists in
+	// order.
+	sim.InjectKey(tcell.KeyRune, 'd', 0)
+	syncUI(t, app.tapp)
+	readTiers()
+	testutil.Equal(t, len(tiers), 1)
+	testutil.Equal(t, tiers[0].Backend, "claude")
+
+	// The removal was persisted to the DB, not just held in memory.
+	persisted, err := d.BackendTiers()
+	testutil.NoError(t, err)
+	testutil.DeepEqual(t, persisted, tiers)
+}
+
+// TestSmoke_SettingsBackendTiersProbeCycling drives the `p` probe-kind cycle
+// key through the real event loop (tasks.md 7.5).
+func TestSmoke_SettingsBackendTiersProbeCycling(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	app.tapp.QueueUpdateDraw(func() {
+		app.switchTab(widget.TabSettings)
+		app.settings.setCategory(catBackendTiers)
+	})
+	syncUI(t, app.tapp)
+
+	sim.InjectKey(tcell.KeyRune, 'n', 0)
+	syncUI(t, app.tapp)
+
+	var probe string
+	readProbe := func() {
+		readUI(t, app.tapp, func() { probe = app.settings.backendTiers[0].Probe })
+	}
+	readProbe()
+	testutil.Equal(t, probe, config.ProbeNone)
+
+	sim.InjectKey(tcell.KeyRune, 'p', 0)
+	syncUI(t, app.tapp)
+	readProbe()
+	testutil.Equal(t, probe, config.ProbeClaudeUsage)
+
+	sim.InjectKey(tcell.KeyRune, 'p', 0)
+	syncUI(t, app.tapp)
+	readProbe()
+	testutil.Equal(t, probe, config.ProbeCodexUsage)
+}
+
+// TestSmoke_SettingsBackendTiersConfigTomlReadOnly verifies the
+// config.toml-sourced tier list survives every mutating key untouched when
+// driven through the real event loop (tasks.md 7.5's read-only-rendering
+// case), using the production db.Config → FileLoader.Apply path via
+// testDBWithConfig.
+func TestSmoke_SettingsBackendTiersConfigTomlReadOnly(t *testing.T) {
+	d := testDBWithConfig(t, `
+[[backend_routing.tier]]
+backend = "claude"
+probe = "claude_usage"
+threshold_pct = 80
+`)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	app.tapp.QueueUpdateDraw(func() {
+		app.switchTab(widget.TabSettings)
+		app.settings.setCategory(catBackendTiers)
+		app.settings.cursor = 0
+	})
+	syncUI(t, app.tapp)
+
+	var fromToml bool
+	readUI(t, app.tapp, func() { fromToml = app.settings.backendTiersFromToml })
+	testutil.Equal(t, fromToml, true)
+
+	for _, r := range []rune{'n', 'd', 'p', 'K', 'J', 'e'} {
+		sim.InjectKey(tcell.KeyRune, r, 0)
+		syncUI(t, app.tapp)
+	}
+	sim.InjectKey(tcell.KeyRight, 0, 0)
+	syncUI(t, app.tapp)
+
+	var tiers []config.BackendTier
+	readUI(t, app.tapp, func() { tiers = app.settings.backendTiers })
+	testutil.Equal(t, len(tiers), 1)
+	testutil.Equal(t, tiers[0], config.BackendTier{Backend: "claude", Probe: config.ProbeClaudeUsage, ThresholdPct: 80})
+}
+
 // TestSmoke_HeraTabRoutesAndRenders exercises the tab swap end-to-end: the
 // second tab routes to the native Hera view ("hera" page), focus lands on the
 // HeraPage, and the page-change forceRedraw fires.
