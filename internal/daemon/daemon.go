@@ -1308,6 +1308,13 @@ func (d *Daemon) Serve(sockPath string) error {
 			d.db,
 			d.runner,
 		)
+		// Constructed once, not per call: taskRecycleRunner's inFlight dedup
+		// (see task_recycle.go) only works across calls if the map itself
+		// persists between them.
+		taskRecycler := newTaskRecycleRunner(d.db, d.runner, d.cfgFn)
+		mcpSrv.SetTaskRecycler(func(in mcp.TaskRecycleInput) error {
+			return taskRecycler.Recycle(in.TaskID, in.HandoffNote)
+		})
 		mcpSrv.SetClipboard(d.clipboard)
 		mcpSrv.SetScheduleManager(d.db, sch)
 		mcpSrv.SetMessageManager(d.db, runnerNudger{notifier: d.notifier})
