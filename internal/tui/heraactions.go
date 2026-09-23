@@ -183,11 +183,14 @@ func (a *App) heraNewCoordinator(sel hera.Selection) {
 }
 
 // heraDoNewCoordinator runs the transactional root-coordinator spawn off the
-// main thread, then refreshes. When name is non-blank it names BOTH the new
-// orchestrator (the rail label) and the coordinator task (TaskName is left ""
-// so SpawnHeraCoordinator defaults it to the de-collided orchestrator name,
-// keeping the two consistent); blank derives the name from the prompt and
-// de-collides as before. The coordinator role is always named "coord".
+// main thread, then refreshes. When name is non-blank it names the new
+// orchestrator (the rail label); TaskName is left "" so SpawnHeraCoordinator
+// derives the task/branch name from it (coordName + "-" + the de-collided
+// orchestrator name — never the bare orchestrator name alone, which would
+// collide with a later worker's namespaced branch under the same
+// orchestrator; fix-coordinator-branch-namespace-collision). Blank derives
+// the orchestrator base name from the prompt and de-collides as before. The
+// coordinator role is always named "coord".
 func (a *App) heraDoNewCoordinator(name string, task *model.Task) {
 	d, ok := a.db.(*db.DB)
 	if !ok {
