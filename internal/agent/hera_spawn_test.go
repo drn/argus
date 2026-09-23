@@ -134,12 +134,17 @@ func TestSpawnHeraCoordinator_HappyPath(t *testing.T) {
 	testutil.Equal(t, res.Binding.ArgusTaskID, res.Task.ID)
 	testutil.Equal(t, fr.startCalls, 1)
 
-	// Task persisted with the oriented prompt body + model override.
+	// Task persisted with the oriented prompt body + model override. Name
+	// defaults to coordName + "-" + orchName (fix-coordinator-branch-namespace-
+	// collision) — distinct from the bare orchestrator name.
 	got, err := d.Get(res.Task.ID)
 	testutil.NoError(t, err)
 	testutil.Equal(t, got.Prompt, "oriented body")
 	testutil.Equal(t, got.Model, "opus")
-	testutil.Equal(t, got.Name, "ship-feature")
+	testutil.Equal(t, got.Name, "coord-ship-feature")
+	// Branch is namespaced under the orchestrator, with a leaf distinct from
+	// the orchestrator name itself — never the bare argus/ship-feature form.
+	testutil.Equal(t, got.Branch, "argus/ship-feature/coord-ship-feature")
 
 	// Live coordinator binding under the new orchestrator.
 	bnd, err := d.HeraLiveBindingByTaskAndOrchestrator(res.Task.ID, res.Orchestrator.ID)
@@ -205,6 +210,48 @@ func TestSpawnHeraCoordinator_StartFailureUnwinds(t *testing.T) {
 	live, err := d.ListHeraLiveBindings()
 	testutil.NoError(t, err)
 	testutil.Equal(t, len(live), 0)
+}
+
+// TestSpawnHeraCoordinator_FirstWorkerDoesNotCollideWithCoordinatorBranch is
+// the regression test for fix-coordinator-branch-namespace-collision: before
+// this fix, SpawnHeraCoordinator left its own branch flat (argus/<orch>),
+// which is EXACTLY the directory prefix a worker's namespaced branch
+// (argus/<orch>/<role>) needs — a git ref cannot be both a leaf and a
+// directory prefix, so the first worker EVER spawned under any hera
+// coordinator failed 100% of the time (confirmed live: hera_spawn_worker
+// under orchestrator "argus-folders" failed with "cannot lock ref
+// 'refs/heads/argus/argus-folders/<role>': 'refs/heads/argus/argus-folders'
+// exists"). Asserts the coordinator spawn, followed immediately by a worker
+// spawn under the same orchestrator, both succeed with distinct branches.
+func TestSpawnHeraCoordinator_FirstWorkerDoesNotCollideWithCoordinatorBranch(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+
+	coordRes, err := SpawnHeraCoordinator(d, &fakeRunner{}, HeraCoordinatorSpawnInput{
+		OrchestratorBaseName: "argus-folders",
+		TaskPrompt:           "b",
+		Project:              "proj",
+	})
+	testutil.NoError(t, err)
+
+	workerRes, err := SpawnHeraWorker(d, &fakeRunner{}, HeraWorkerSpawnInput{
+		OrchestratorID: coordRes.Orchestrator.ID,
+		BaseName:       "do-thing",
+		TaskPrompt:     "b",
+		Project:        "proj",
+	})
+	testutil.NoError(t, err)
+
+	coordTask, err := d.Get(coordRes.Task.ID)
+	testutil.NoError(t, err)
+	workerTask, err := d.Get(workerRes.Task.ID)
+	testutil.NoError(t, err)
+
+	testutil.Equal(t, coordTask.Branch, "argus/argus-folders/coord-argus-folders")
+	testutil.Equal(t, workerTask.Branch, "argus/argus-folders/do-thing")
+	if coordTask.Branch == workerTask.Branch {
+		t.Fatal("expected distinct coordinator and worker branches")
+	}
 }
 
 // TestSpawnHeraWorker_HappyPath drives the shared transactional spawner: it

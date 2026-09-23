@@ -463,9 +463,18 @@ func SpawnHeraCoordinator(database *db.DB, runner SessionProvider, in HeraCoordi
 	if coordName == "" {
 		coordName = "coord"
 	}
+	// Default taskName to a leaf DISTINCT from orchName itself
+	// (fix-coordinator-branch-namespace-collision): BranchNamespace below is
+	// orchName, and a leaf equal to its own namespace directory would
+	// guarantee a git ref collision the instant any worker is later spawned
+	// under this same orchestrator — refs/heads/argus/<orch> (this
+	// coordinator's branch, as a bare leaf) and refs/heads/argus/<orch>/<role>
+	// (any worker's branch, needing <orch> as a directory prefix) cannot
+	// coexist. Joining coordName keeps the branch identifiable with its
+	// orchestrator while guaranteeing the leaf never equals the namespace.
 	taskName := in.TaskName
 	if taskName == "" {
-		taskName = orchName
+		taskName = coordName + "-" + orchName
 	}
 
 	// Default an omitted archetype to orchestrator (add-diligence-profiles): a
@@ -478,14 +487,15 @@ func SpawnHeraCoordinator(database *db.DB, runner SessionProvider, in HeraCoordi
 	var role *db.HeraRole
 	var binding *db.HeraBinding
 	task, _, err := CreateAndStart(database, runner, CreateInput{
-		Name:       taskName,
-		Prompt:     in.TaskPrompt,
-		Project:    in.Project,
-		Backend:    in.Backend,
-		Model:      in.Model,
-		Archetype:  archetype,
-		BaseBranch: in.Branch,
-		AutoName:   false, // name is the orchestrator slug — no Haiku rename
+		Name:            taskName,
+		Prompt:          in.TaskPrompt,
+		Project:         in.Project,
+		Backend:         in.Backend,
+		Model:           in.Model,
+		Archetype:       archetype,
+		BaseBranch:      in.Branch,
+		BranchNamespace: orchName,
+		AutoName:        false, // name is the orchestrator slug — no Haiku rename
 		AfterPersist: func(t *model.Task) (func(), error) {
 			if mErr := database.SetMeta(t.ID, db.HeraMetaNamespace, db.HeraMetaKeyRole, string(db.HeraKindCoordinator)); mErr != nil {
 				slog.Warn("[hera] coordinator spawn: meta role stamp failed (continuing)", "task", t.ID, "err", mErr)
