@@ -17,7 +17,7 @@
 # A model with no [models.<alias>] entry here (and none in an in-repo or
 # installed override copy) accrues no cost — never a guess, never zero.
 #
-# Codex aliases ("gpt-5-codex", "gpt-5") are deliberately NOT seeded: the
+# Codex aliases (e.g. "gpt-6-sol", "gpt-6-astra") are deliberately NOT seeded: the
 # accrual mechanism runs entirely off `argus coord-hook`, which is registered
 # purely as a Claude Code Stop hook (internal/doctor/stophook.go) and never
 # fires for a Codex-backend session at all — a rate entry for those aliases

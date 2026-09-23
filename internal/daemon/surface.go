@@ -78,7 +78,12 @@ const (
 	//     backend and the single configured default — a configured tier list can
 	//     now change which backend a session with no explicit backend spawns
 	//     with, from one probe tick to the next.
-	SupervisorSpawnSurface = 6
+	//   - v7: KnownModels' curated Codex model list was refreshed from the
+	//     retired gpt-5-codex/gpt-5 identifiers to the current Codex CLI
+	//     lineup (using-default-codex-model) — a session spawned with an
+	//     explicit or profile-resolved Codex model now validates against, and
+	//     injects, different --model values than the previous build.
+	SupervisorSpawnSurface = 7
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -285,7 +290,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "ecc92dc0ec5a1a7b6879a3c1fce52d8153b73e65c60ec4d62fcb11ed1b68974a"
+	SpawnSurfaceDigest  = "74b9cddcde47bc4760bcb647bffca639022ab2f0aa4b29cf53002e42d6d3496b"
 	StreamSurfaceDigest = "57078648a38b01bad81b795bf6ca431199e4e394460f3a19ca9bf0ee407a785e"
 )
 

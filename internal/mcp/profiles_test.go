@@ -94,7 +94,7 @@ func TestProfileResolve_ByCwd(t *testing.T) {
 	addProfileTestTask(t, d, "myproj", worktree, "")
 	writeLibraryProfile(t, "customer_grade", `
 [archetype.review]
-models = { claude = "opus", codex = "gpt-5-codex" }
+models = { claude = "opus", codex = "gpt-6-astra" }
 effort = "high"
 
 [panel]
@@ -186,12 +186,12 @@ func TestProfileResolve_ArchetypePassthroughVerbatim(t *testing.T) {
 	s, _ := testProfileServer(t)
 	writeLibraryProfile(t, "full", `
 [archetype.review]
-models = { claude = "opus", codex = "gpt-5-codex" }
+models = { claude = "opus", codex = "gpt-6-astra" }
 effort = "high"
 window = "1m"
 
 [archetype.docs]
-models = { claude = "haiku", codex = "gpt-5" }
+models = { claude = "haiku", codex = "gpt-6-sol" }
 
 [rigor]
 review_passes = 2
@@ -210,7 +210,7 @@ security_spot_check = true
 	}
 	testutil.NoError(t, json.Unmarshal(out.Archetype["review"], &review))
 	testutil.Equal(t, review.Models["claude"], "opus")
-	testutil.Equal(t, review.Models["codex"], "gpt-5-codex")
+	testutil.Equal(t, review.Models["codex"], "gpt-6-astra")
 	testutil.Equal(t, review.Effort, "high")
 	testutil.Equal(t, review.Window, "1m")
 
@@ -221,7 +221,7 @@ security_spot_check = true
 	// the raw JSON needs the exact case, not just something Go's
 	// case-insensitive json.Unmarshal happens to tolerate.
 	raw := cr.Content[0].Text
-	testutil.Contains(t, raw, `"models":{"claude":"opus","codex":"gpt-5-codex"}`)
+	testutil.Contains(t, raw, `"models":{"claude":"opus","codex":"gpt-6-astra"}`)
 	testutil.Contains(t, raw, `"effort":"high"`)
 	testutil.Contains(t, raw, `"window":"1m"`)
 	testutil.Contains(t, raw, `"review_passes":2`)
@@ -238,7 +238,7 @@ func TestProfileResolve_AcceptsBackendContext(t *testing.T) {
 	s, _ := testProfileServer(t)
 	writeLibraryProfile(t, "codex", `
 [archetype.code_slice]
-models = { claude = "sonnet", codex = "gpt-5-codex" }
+models = { claude = "sonnet", codex = "gpt-6-astra" }
 `)
 
 	out, cr := callProfileResolve(t, s, `{"profile":"codex","backend":"codex"}`)
@@ -246,7 +246,7 @@ models = { claude = "sonnet", codex = "gpt-5-codex" }
 	testutil.Equal(t, out.Resolved, true)
 	raw := cr.Content[0].Text
 	testutil.Contains(t, raw, `"backend":"codex"`)
-	testutil.Contains(t, raw, `"codex":"gpt-5-codex"`)
+	testutil.Contains(t, raw, `"codex":"gpt-6-astra"`)
 }
 
 func TestProfileResolve_RejectsPathTraversalInExplicitProfile(t *testing.T) {

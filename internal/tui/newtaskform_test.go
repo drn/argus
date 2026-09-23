@@ -1756,7 +1756,7 @@ func TestNewTaskForm_BackendChangeRebuildsAndResetsModel(t *testing.T) {
 	handler(tcell.NewEventKey(tcell.KeyRight, 0, 0), nil)
 
 	// Model options rebuilt for codex, selection reset to default.
-	testutil.DeepEqual(t, f.modelOptions, []string{"gpt-5-codex", "gpt-5"})
+	testutil.DeepEqual(t, f.modelOptions, []string{"gpt-6-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"})
 	testutil.Equal(t, f.modelIdx, 0)
 	testutil.Equal(t, f.Task().Model, "")
 }

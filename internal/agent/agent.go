@@ -323,7 +323,12 @@ func backendAllowsModel(m string, backend config.Backend) bool {
 // backend command, used to populate the new-task model selector. The Claude
 // entries are the stable `claude` CLI aliases (opus / sonnet / haiku / fable)
 // that always map to the current models, so the list does not churn per model
-// release; the Codex entries are the current Codex CLI model names. Unknown,
+// release; the Codex entries are the current Codex CLI model names, which
+// churn per Codex release (OpenAI renames/retires them outright, unlike
+// Claude's stable aliases) — keep this list synced with the CLI's own
+// "Select Model and Effort" picker (`/model` in a codex session) when it
+// drifts, in both this list and the seed diligence profiles'
+// archetype.*.models.codex entries (internal/profiles/seeds/*.toml). Unknown,
 // Pi, and custom backends return nil — the model selector then offers only its
 // "default" and "custom…" options, so any model is still reachable by typing.
 // A fresh slice is returned each call (callers may mutate / append).
@@ -332,7 +337,7 @@ func KnownModels(command string) []string {
 	case IsClaudeBackend(command):
 		return []string{"opus", "sonnet", "haiku", "fable"}
 	case IsCodexBackend(command):
-		return []string{"gpt-5-codex", "gpt-5"}
+		return []string{"gpt-6-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"}
 	default:
 		// opencode is intentionally custom-only: its --model takes a
 		// provider/model identifier whose valid set depends on which providers

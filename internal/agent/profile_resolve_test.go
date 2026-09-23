@@ -42,7 +42,7 @@ func envMap(kv []string) map[string]string {
 // TestResolveModel_ProfileChain exercises the full diligence-profile resolution
 // precedence (add-diligence-profiles "Profile-aware model resolution").
 func TestResolveModel_ProfileChain(t *testing.T) {
-	const codeSlice = "[archetype.code_slice]\nmodels = { claude = \"sonnet\", codex = \"gpt-5-codex\" }\n"
+	const codeSlice = "[archetype.code_slice]\nmodels = { claude = \"sonnet\", codex = \"gpt-6-astra\" }\n"
 
 	cases := []struct {
 		name           string
@@ -75,9 +75,9 @@ func TestResolveModel_ProfileChain(t *testing.T) {
 			name:           "backend-specific model is selected",
 			archetype:      "code_slice",
 			backend:        "codex",
-			backendDefault: "gpt-5",
+			backendDefault: "gpt-6-sol",
 			profile:        codeSlice,
-			wantModel:      "gpt-5-codex",
+			wantModel:      "gpt-6-astra",
 			wantProfile:    true,
 		},
 		{
@@ -142,11 +142,11 @@ func TestResolveModel_ProfileChain(t *testing.T) {
 func TestResolveModel_InvalidExplicitOverrideFallsThroughToBackendDefault(t *testing.T) {
 	cfg := modelConfig()
 	b := cfg.Backends["codex"]
-	b.Model = "gpt-5"
+	b.Model = "gpt-6-sol"
 	cfg.Backends["codex"] = b
 
 	got, profile := ResolveModel(&model.Task{ID: "override", Backend: "codex", Model: "opus"}, b, cfg)
-	testutil.Equal(t, got, "gpt-5")
+	testutil.Equal(t, got, "gpt-6-sol")
 	testutil.Nil(t, profile)
 }
 
@@ -234,7 +234,7 @@ func TestBuildCmd_ProfileEnv_AbsentOnFallThrough(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	cfg := modelConfig()
 	b := cfg.Backends["codex"]
-	b.Model = "gpt-5"
+	b.Model = "gpt-6-sol"
 	cfg.Backends["codex"] = b
 	// sonnet is a valid model name but not valid for the codex backend.
 	writeLibraryProfile(t, "default", "[archetype.code_slice]\nmodels = { claude = \"sonnet\" }\n")
@@ -253,7 +253,7 @@ func TestBuildCmd_ProfileEnv_AbsentOnFallThrough(t *testing.T) {
 		}
 	}
 	// --model still reflects the backend default.
-	testutil.Contains(t, cmd.Args[2], "--model 'gpt-5'")
+	testutil.Contains(t, cmd.Args[2], "--model 'gpt-6-sol'")
 }
 
 // TestResolveModel_TaskProfileOverrideHonored verifies that a non-empty
