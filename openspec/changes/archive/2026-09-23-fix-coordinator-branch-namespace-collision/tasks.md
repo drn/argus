@@ -18,5 +18,5 @@
 
 - [x] 4.1 Run `make pre-pr` clean.
 - [x] 4.2 Archive this change (`openspec archive fix-coordinator-branch-namespace-collision`) in the same PR, before merge.
-- [ ] 4.3 Open the PR via `mcp__argus__iris_gh_pr_create`.
-- [ ] 4.4 Report status to coordinator task `1790135658207847000` via `task_message_send`/`task_ask`.
+- [x] 4.3 Open the PR via `mcp__argus__iris_gh_pr_create`.
+- [x] 4.4 Report status to coordinator task `1790135658207847000` via `task_message_send`/`task_ask`.
