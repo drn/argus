@@ -22,8 +22,8 @@ import (
 var builtinFS embed.FS
 
 // builtinRoot is the embedded root directory name, stripped when walking so
-// callers see skill directories at the top level (e.g. "archive", not
-// "builtin/archive").
+// callers see skill directories at the top level (e.g. "hera", not
+// "builtin/hera").
 const builtinRoot = "builtin"
 
 // managedSkillsWorkspace is the name of the directory materialized skills live

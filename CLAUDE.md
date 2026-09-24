@@ -109,7 +109,7 @@ Gotcha files hold: invariants that caused bugs when violated, ordering requireme
 - **README.md is marketing, not a changelog.** The top half (hero / Why Argus / pillars / Also In The Box) is positioning — touch it only when a pillar-class capability or a new surface lands, or existing prose is now wrong. The Reference appendix (below `---`) is the dense docs surface — update its tables in place for any factual change (keybindings, MCP tools, REST endpoints, sandbox defaults, spinner styles). Default to silence; a single key/flag/endpoint tweak does not warrant a top-half edit.
 - **Screenshots** (`screenshots/`) are curated for marketing: add one only for a pillar-class, visually-distinct capability; replace stale ones in place; no empty/sparse screens.
 - **Bump `SW_VERSION` in `internal/api/static/sw.js`** whenever any other shell asset under `internal/api/static/` changes — the service worker serves the shell cache-first, so without a bump installed PWAs never see the change.
-- **New builtin skills (`internal/skills/builtin/<name>/SKILL.md`) must be named `argus-<name>` or `hera-<name>`** — the prefix signals "this drives argus/hera machinery," not a generic task. Applies to new additions only; a few pre-existing skills (`archive`, `resolve-archetype-model`) predate this rule and aren't retroactively renamed.
+- **New builtin skills (`internal/skills/builtin/<name>/SKILL.md`) must be named `argus-<name>` or `hera-<name>`** — the prefix signals "this drives argus/hera machinery," not a generic task. Applies to new additions only; `resolve-archetype-model` predates this rule and isn't retroactively renamed.
 
 ### Logging Requirements
 

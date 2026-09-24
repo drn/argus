@@ -11,7 +11,7 @@ The system SHALL embed argus-coupled skill bodies — skills that drive `mcp__ar
 #### Scenario: Embedded set includes the review-panel and archetype-model-resolution skills
 
 - **WHEN** the embedded builtin skill set is enumerated
-- **THEN** it includes `hera-spawn-review` and `resolve-archetype-model` alongside the pre-existing `archive`, `argus-complete`, `argus-schedule`, `hera`, `hera-plan`, `hera-review`, and `hera-review-test-adversary` entries
+- **THEN** it includes `hera-spawn-review` and `resolve-archetype-model` alongside the pre-existing `argus-archive`, `argus-complete`, `argus-schedule`, `hera`, `hera-plan`, `hera-review`, and `hera-review-test-adversary` entries
 
 ### Requirement: Idempotent materialization for --add-dir delivery
 
