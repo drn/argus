@@ -443,11 +443,11 @@ func TestHeraActions_NukeRolePrunesSoleBoundTaskOnceSessionSettled(t *testing.T)
 
 	// The worktree reclaim + prune gate run in a backgrounded goroutine
 	// (heraGoSafe) — poll for the row to disappear rather than assert
-	// synchronously. Wider than uiTimeout: this goroutine only needs to run
-	// at all (no UI event to wait on), but under a loaded full-suite -race
-	// run this package's own goroutine-heavy parallel tests can starve it
-	// past 2s with no actual bug — see gotchas/ci-gates.md.
-	deadline := time.Now().Add(8 * time.Second)
+	// synchronously. This is just scheduling slack (heraNukeRole now ends the
+	// binding before starting the reclaim goroutine, closing the prune-vs-
+	// end-binding race documented there) — 3s is generous headroom, not a
+	// workaround for a real gate.
+	deadline := time.Now().Add(3 * time.Second)
 	var gotErr error
 	for time.Now().Before(deadline) {
 		_, gotErr = d.Get("tw")
