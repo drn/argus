@@ -1,5 +1,5 @@
 ---
-name: archive
+name: argus-archive
 description: Archive the current Argus task so it moves to the Archive section of the task list. Use at the end of a session when the work is done.
 allowed-tools: mcp__argus__task_archive
 ---

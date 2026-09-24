@@ -1,5 +1,5 @@
 ---
-name: task-recycle
+name: argus-recycle
 description: Reset this task's context window while continuing the same work — write a handoff, then have Argus kill this session and start a brand-new one on the identical task/worktree/branch, seeded with the handoff. Use when the conversation has grown large and a fresh context window would help, but the underlying task should continue unchanged (the manual, hand-off-aware alternative to a built-in /compact).
 allowed-tools: mcp__argus__task_recycle
 ---

@@ -15,16 +15,16 @@ func TestBuiltinItems_IncludesAllExpectedSkills(t *testing.T) {
 		names[i] = it.Name
 	}
 	testutil.DeepEqual(t, names, []string{
-		"archive",
+		"argus-archive",
 		"argus-complete",
+		"argus-recycle",
+		"argus-resolve-model",
 		"argus-schedule",
 		"hera",
 		"hera-plan",
 		"hera-review",
 		"hera-review-test-adversary",
 		"hera-spawn-review",
-		"resolve-archetype-model",
-		"task-recycle",
 	})
 }
 
@@ -47,9 +47,9 @@ func TestBuiltinItems_ReviewSkillsHaveDescriptions(t *testing.T) {
 	if !ok || spawnReviewDesc == "" {
 		t.Fatalf("expected non-empty description for hera-spawn-review, got %q (present: %v)", spawnReviewDesc, ok)
 	}
-	resolveModelDesc, ok := byName["resolve-archetype-model"]
+	resolveModelDesc, ok := byName["argus-resolve-model"]
 	if !ok || resolveModelDesc == "" {
-		t.Fatalf("expected non-empty description for resolve-archetype-model, got %q (present: %v)", resolveModelDesc, ok)
+		t.Fatalf("expected non-empty description for argus-resolve-model, got %q (present: %v)", resolveModelDesc, ok)
 	}
 }
 
@@ -68,16 +68,16 @@ func TestMaterializeBuiltinSkillsInto_WritesEmbeddedSet(t *testing.T) {
 		names[i] = e.Name()
 	}
 	testutil.DeepEqual(t, names, []string{
-		"archive",
+		"argus-archive",
 		"argus-complete",
+		"argus-recycle",
+		"argus-resolve-model",
 		"argus-schedule",
 		"hera",
 		"hera-plan",
 		"hera-review",
 		"hera-review-test-adversary",
 		"hera-spawn-review",
-		"resolve-archetype-model",
-		"task-recycle",
 	})
 
 	if _, err := os.Stat(filepath.Join(skillsDir, "hera", skillManifestFile)); err != nil {
