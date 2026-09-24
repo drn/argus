@@ -130,8 +130,9 @@ this is the most common failure mode of this change, so treat it as a checklist,
      (the `model` field's per-backend example) — these two directories are a known,
      accepted-as-unfixed embed-drift pair kept in sync by hand; touch both when either needs this
      fix, but do not attempt to reconcile any *other* pre-existing drift between them while here.
-   - **Both copies** of `.claude/skills/resolve-archetype-model/SKILL.md` and
-     `internal/skills/builtin/resolve-archetype-model/SKILL.md` — the worked example's
+   - **Both copies** of `.claude/skills/argus-resolve-model/SKILL.md` and
+     `internal/skills/builtin/argus-resolve-model/SKILL.md` (renamed from `resolve-archetype-model`)
+     — the worked example's
      `foreignFlagshipHints` substring list (used to decide whether a foreign backend's model name
      should substitute to `opus` for in-session dispatch) hard-codes a Codex fragment. Pick a new
      fragment that actually appears in the new frontier-tier id's description/positioning (not by
