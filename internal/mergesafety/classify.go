@@ -35,6 +35,14 @@ const (
 	// itself — it is a label only, defined here so every caller shares one
 	// constant instead of a duplicated string literal.
 	TierCoordinatorInferred = "coordinator-inferred"
+	// TierStackInferred labels a verdict produced by ClassifyStackInferred
+	// (Tier D, fix-hera-nuke-cleanup): the fallback for an earlier link in a
+	// base_branch stack — a chain of tasks each branched off the previous,
+	// where only the chain's last task ever opens a standalone PR — whose
+	// own ancestry against the project's default branch is severed once the
+	// chain's tip is squash-merged. See ClassifyStackInferred's doc comment
+	// for the full mechanism.
+	TierStackInferred = "stack-inferred"
 )
 
 // skewSlack is the clock-skew allowance applied when checking that a

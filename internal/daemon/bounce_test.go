@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/drn/argus/internal/agent"
@@ -194,6 +195,51 @@ func TestReplayBounceSignals_MultipleTasksSomeSkipped(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Error("expected file to be removed")
 	}
+}
+
+// TestReconcileOnStartup_ReconcilesLeakedHeraReclaim is the daemon-level,
+// end-to-end pin for Stage 6 wiring (fix-hera-nuke-cleanup): a task left over
+// from a cascade-nuke that was interrupted before this mechanism existed —
+// archived, its hera binding ended user_deleted, no live binding, its worktree
+// directory still present on disk — is durably cleaned up (worktree removed,
+// row pruned) by ReconcileOnStartup alone, with no separate manual migration
+// step. Uses the daemon's own default in-process runner (no supervisor
+// mounted): HasSession reports false for every task since nothing was ever
+// started, so the leaked candidate is eligible for pruning.
+func TestReconcileOnStartup_ReconcilesLeakedHeraReclaim(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	d, _ := testDaemon(t)
+	testutil.Equal(t, d.supClient == nil, true) // in-process mode
+
+	wt := filepath.Join(t.TempDir(), ".argus", "worktrees", "leaked")
+	testutil.NoError(t, os.MkdirAll(wt, 0o755))
+
+	task := &model.Task{
+		Name:     "leaked",
+		Status:   model.StatusInReview,
+		Archived: true,
+		Worktree: wt,
+		Branch:   "argus/leaked",
+	}
+	testutil.NoError(t, d.db.Add(task))
+	orch, err := d.db.CreateHeraOrchestrator(task.Name+"-orch", "master")
+	testutil.NoError(t, err)
+	_, binding, err := d.db.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID,
+		Name:           "worker",
+		Kind:           db.HeraKindWorker,
+		ArgusProject:   task.Project,
+	}, task.ID, task.Worktree)
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.db.EndHeraBinding(binding.ID, db.HeraEndReasonUserDeleted))
+
+	d.ReconcileOnStartup()
+
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Error("expected leaked worktree directory to be removed")
+	}
+	_, err = d.db.Get(task.ID)
+	testutil.ErrorIs(t, err, db.ErrTaskNotFound)
 }
 
 // TestReplayBounceSignals_IdempotentSecondRun: a second call with no file is a no-op.

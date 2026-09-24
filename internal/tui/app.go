@@ -135,6 +135,12 @@ type App struct {
 	heraConfirmModal *modal.ConfirmModal
 	heraInputSubmit  func(string) // called with the field value on input-modal submit
 	heraConfirmDo    func()       // called on confirm-modal accept
+	// heraConfirmOnCancel is openHeraConfirmChoice's sibling to heraConfirmDo
+	// (Stage 5's per-branch stacked-branch review, heraReviewStackedBranchesStep):
+	// called on confirm-modal decline/cancel instead of the plain no-op every
+	// openHeraConfirm caller relies on. nil for every ordinary openHeraConfirm
+	// dialog, so their Canceled() behavior is unchanged.
+	heraConfirmOnCancel func()
 
 	// `J` adopt/reparent layer + its orchestrator picker. heraAdoptOps is nil in
 	// remote mode (no local *db.DB) so the `J` key is inert. heraOrchPicker is
@@ -170,6 +176,15 @@ type App struct {
 	// control classification timing deterministically (e.g. to exercise the
 	// single-role popup's staleness guard) without shelling out to real git.
 	classifyNukeCandidateFn func(taskID string) mergesafety.Verdict
+
+	// classifyStackInferredFn is Stage 5's Tier D (stack-inferred) check
+	// (fix-hera-nuke-cleanup) — the cascade-nuke discovery pass
+	// (classifyStackedBranchesForCascade) uses it to rescue a not-safe
+	// candidate's earlier base_branch-stack links once their stack's tip
+	// confirms merged. Defaults to mergesafety.ClassifyStackInferred; tests
+	// override it to avoid a real git repo / network call, mirroring
+	// classifyNukeCandidateFn's own test-seam pattern above.
+	classifyStackInferredFn func(ctx context.Context, p mergesafety.StackParams, tipVerdicts map[string]mergesafety.Verdict) (mergesafety.Verdict, error)
 
 	// New task form (created on demand)
 	newTaskForm *NewTaskForm
@@ -674,6 +689,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 	app.agentCountFn = app.liveAgentCount
 	app.maintenanceClientFactory = app.newLocalMaintenanceClient
 	app.classifyNukeCandidateFn = app.classifyNukeCandidate
+	app.classifyStackInferredFn = mergesafety.ClassifyStackInferred
 
 	app.settings = NewSettingsView(database)
 	app.settings.Keys = app.activeKeymap

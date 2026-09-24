@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime/debug"
@@ -11,6 +12,7 @@ import (
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/db"
 	herasvc "github.com/drn/argus/internal/hera"
+	"github.com/drn/argus/internal/mergesafety"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/hera"
 	"github.com/drn/argus/internal/tui/modal"
@@ -425,12 +427,22 @@ func (a *App) heraTaskSolelyBoundTo(r *hera.RoleView) bool {
 // it is PRESERVED (left fully alone, worktree kept) — only this role's row is
 // nuked + its binding ended; the other orchestrator's binding to the SAME task is
 // untouched. Zero hard deletes: the role row, its inbox, and the task all survive.
+//
+// The solely-bound DECISION is made first (it needs the binding still live to
+// count correctly), but NukeRole's binding-end runs BEFORE heraReclaimAndArchiveTask
+// is actually invoked — not after, as the reclaim's own async prune step
+// (heraPruneReclaimedTask) re-verifies no-live-hera-binding at delete time, and
+// starting that goroutine while this role's binding is still live races it: on a
+// sufficiently loaded scheduler the prune's read can win, observe the
+// not-yet-ended binding, and skip the delete for good (nothing in a bare TUI/test
+// process retries it — only the daemon's periodic reconciliation sweep would).
 func (a *App) heraNukeRole(r *hera.RoleView) {
-	if r.Live && r.TaskID != "" && a.heraTaskSolelyBoundTo(r) {
-		a.heraReclaimAndArchiveTask(r.TaskID)
-	}
+	reclaim := r.Live && r.TaskID != "" && a.heraTaskSolelyBoundTo(r)
 	if err := a.heraOps.NukeRole(r); err != nil {
 		a.statusbar.SetError("Nuke role failed: " + err.Error())
+	}
+	if reclaim {
+		a.heraReclaimAndArchiveTask(r.TaskID)
 	}
 	a.heraRefresh()
 }
@@ -512,7 +524,10 @@ func (a *App) heraReclaimAndArchiveTask(taskID string) (reclaimed bool) {
 	wt, br := t.Worktree, t.Branch
 	if wt != "" {
 		reclaimed = true
-		heraGoSafe("nuke: remove worktree "+taskID, func() { agent.RemoveWorktreeAndBranch(wt, br, repoDir) })
+		heraGoSafe("nuke: remove worktree "+taskID, func() {
+			agent.RemoveWorktreeAndBranch(wt, br, repoDir)
+			a.heraPruneReclaimedTask(taskID)
+		})
 	} else if br != "" && repoDir != "" {
 		heraGoSafe("nuke: delete branch "+taskID, func() {
 			agent.DeleteBranch(repoDir, br)
@@ -532,6 +547,49 @@ func (a *App) heraReclaimAndArchiveTask(taskID string) (reclaimed bool) {
 	return reclaimed
 }
 
+// heraPruneReclaimedTask hard-deletes taskID's row once its worktree+branch
+// reclaim has completed (add-hera-nuke-cleanup Stage 2), turning the
+// nuke-then-archive pair into a genuine row deletion instead of a
+// permanently-archived husk. Called from inside heraReclaimAndArchiveTask's
+// backgrounded RemoveWorktreeAndBranch goroutine, after it returns.
+//
+// Gated on !a.runner.HasSession(taskID): a task still in_progress at nuke
+// time has its OWN session stop backgrounded (see the goroutine above this
+// one) and is not yet settled — handleSessionExitUI's fix-nuke-completion-race
+// handling (markHeraReclaimPending/consumeHeraReclaimPending) must still see
+// the row to land it at complete once that exit is observed (design.md
+// Decision D3). Pruning here first would make that handler silently no-op,
+// orphaning the in-memory marker. Such a task is left entirely to the
+// periodic/startup reconciliation sweep, which by construction only ever
+// runs after the session has actually exited.
+//
+// No live-binding check is needed here: PruneTasks itself re-verifies
+// no-live-hera-binding at delete time, so a binding not yet ended by the
+// caller's own (near-simultaneous, main-goroutine) heraOps.NukeRole call
+// safely no-ops as skippedHeraBound rather than racing it — the row is
+// picked up by the next sweep instead.
+func (a *App) heraPruneReclaimedTask(taskID string) {
+	if a.runner.HasSession(taskID) {
+		uxlog.Log("[hera-view] nuke: prune skipped task=%s (session still live)", taskID)
+		return
+	}
+	d, ok := a.db.(*db.DB)
+	if !ok {
+		return
+	}
+	pruned, skipped, err := d.PruneTasks([]string{taskID})
+	if err != nil {
+		uxlog.Log("[hera-view] nuke: prune task failed task=%s: %v", taskID, err)
+		return
+	}
+	switch {
+	case len(pruned) > 0:
+		uxlog.Log("[hera-view] nuke: pruned task row %s (worktree reclaim confirmed)", taskID)
+	case skipped > 0:
+		uxlog.Log("[hera-view] nuke: prune skipped task=%s (still hera-bound)", taskID)
+	}
+}
+
 // heraCascadeNukeFrom confirms then NUKES the entire subtree rooted at rootID —
 // the orchestrator itself plus every orchestrator nested beneath it through the
 // worker→coordinator bridge — and reclaims their worktrees. rootID may be a
@@ -544,6 +602,13 @@ func (a *App) heraReclaimAndArchiveTask(taskID string) (reclaimed bool) {
 // orchestrators and agents are removed and how many worktrees+branches are
 // reclaimed. Tasks bound in another (non-subtree) orchestrator are preserved —
 // multi-binding safety (left fully alone).
+//
+// fix-hera-nuke-cleanup Stage 5 additionally runs a Tier D discovery pass
+// (classifyStackedBranchesForCascade) over whatever reclaimed task classifies
+// NOT-SAFE via Tier A: it rescues any OTHER task stacked on top of it via
+// base_branch that would otherwise never get cleaned up, walks the operator
+// through each one individually (heraReviewStackedBranches), and deletes
+// whatever they keep alongside the subtree's own worktrees.
 func (a *App) heraCascadeNukeFrom(rootID int64) {
 	if a.heraOps == nil {
 		return
@@ -592,29 +657,125 @@ func (a *App) heraCascadeNukeFrom(rootID int64) {
 		}
 	}
 	title := "Nuke " + subtree[0].Name + " and its whole team?"
-	openConfirm := func(confirmed int) {
+	openConfirm := func(confirmed int, extra []stackedBranchCandidate) {
 		msg := fmt.Sprintf(
 			"This removes %d orchestrator(s) and %d agent(s) from the rail and reclaims %d worktree(s) + branch(es), stopping their sessions. Rows are retained (recoverable via the DB). %d task(s) bound in another orchestrator are preserved. %d of %d reclaimed tasks confirmed merged.",
 			len(subtree), agents, worktrees, preserved, confirmed, len(reclaimIDs))
-		a.openHeraConfirm(title, msg, func() { a.heraDoCascadeNuke(subtree, subtreeIDs) })
+		if len(extra) > 0 {
+			msg += fmt.Sprintf(" %d additional stacked branch(es) confirmed safe to delete.", len(extra))
+		}
+		a.openHeraConfirm(title, msg, func() { a.heraDoCascadeNuke(subtree, subtreeIDs, extra) })
+	}
+	// reviewThenConfirm walks the operator through any Tier D-discovered extra
+	// branches (heraReviewStackedBranches — one at a time, each individually
+	// excludable) BEFORE opening the final count-bearing cascade confirm, so
+	// the aggregate message above only ever reports what the operator actually
+	// kept.
+	reviewThenConfirm := func(confirmed int, extra []stackedBranchCandidate) {
+		if len(extra) == 0 {
+			openConfirm(confirmed, nil)
+			return
+		}
+		a.heraReviewStackedBranches(extra, func(kept []stackedBranchCandidate) {
+			openConfirm(confirmed, kept)
+		})
 	}
 	if len(reclaimIDs) == 0 {
 		// Nothing to classify (e.g. every managed task is preserved) — open
 		// immediately rather than paying a goroutine + QueueUpdateDraw round
 		// trip for zero work.
-		openConfirm(0)
+		reviewThenConfirm(0, nil)
 		return
 	}
-	// Merge-safety classification (Tier A only, bounded concurrency) runs off
-	// the UI thread BEFORE the confirm opens — same compute-first idiom as the
-	// single-role popup, just folded into an augmented count rather than a
-	// full popup (cascade nuke keeps its existing all-or-nothing confirm;
-	// add-merge-safety-review's design explicitly scopes the review popup to
-	// the single-role and global-Cleanup entry points only).
+	// Merge-safety classification runs off the UI thread BEFORE any confirm
+	// opens — same compute-first idiom as the single-role popup, just folded
+	// into an augmented count rather than a full popup (cascade nuke keeps its
+	// existing all-or-nothing confirm; add-merge-safety-review's design
+	// explicitly scopes the review popup to the single-role and
+	// global-Cleanup entry points only). Tier A (bounded concurrency,
+	// unchanged) runs first; Tier D's stacked-branch discovery
+	// (fix-hera-nuke-cleanup) then runs over whatever classified NOT-SAFE —
+	// both passes complete before the confirm modal opens at all, per spec.
 	go func() {
-		confirmed := a.classifyTasksConcurrently(reclaimIDs)
-		a.tapp.QueueUpdateDraw(func() { openConfirm(confirmed) })
+		verdicts := a.classifyTasksConcurrentlyVerdicts(reclaimIDs)
+		confirmed := 0
+		var notSafeIDs []string
+		for _, id := range reclaimIDs {
+			if verdicts[id].Safe {
+				confirmed++
+			} else {
+				notSafeIDs = append(notSafeIDs, id)
+			}
+		}
+		var extra []stackedBranchCandidate
+		if len(notSafeIDs) > 0 {
+			inCascade := make(map[string]bool, len(reclaimIDs))
+			for _, id := range reclaimIDs {
+				inCascade[id] = true
+			}
+			extra = a.classifyStackedBranchesForCascade(context.Background(), notSafeIDs, inCascade, make(map[string]mergesafety.Verdict))
+		}
+		a.tapp.QueueUpdateDraw(func() { reviewThenConfirm(confirmed, extra) })
 	}()
+}
+
+// heraReviewStackedBranches walks the operator through each Tier
+// D-discovered extra branch (classifyStackedBranchesForCascade) one at a
+// time via the existing y/n confirm modal (openHeraConfirmChoice), rather
+// than a new checklist widget: internal/tui/modal/ has no multi-select
+// primitive today, and adding one (plus a new `mode` + app.go dispatch case
+// to drive it) would be a much larger, riskier change than reusing the
+// confirm dialog already wired into every other Hera mutation. Every branch
+// is reviewed independently — declining one excludes only that one
+// (heraExcludeStackedBranch) and moves on to the next, so the operator can
+// keep some and exclude others in the same pass. done is called exactly
+// once, with the subset of extra the operator chose to keep (nil if extra is
+// empty or every branch was excluded).
+func (a *App) heraReviewStackedBranches(extra []stackedBranchCandidate, done func([]stackedBranchCandidate)) {
+	a.heraReviewStackedBranchesStep(extra, nil, 0, done)
+}
+
+// heraReviewStackedBranchesStep reviews extra[i], then recurses for i+1 —
+// via BOTH openHeraConfirmChoice outcomes, so the sequence advances whether
+// the operator keeps (onYes) or excludes (onNo) the current branch. Reaching
+// the end of extra (i >= len(extra)) calls done with whatever was kept so
+// far.
+func (a *App) heraReviewStackedBranchesStep(extra []stackedBranchCandidate, kept []stackedBranchCandidate, i int, done func([]stackedBranchCandidate)) {
+	if i >= len(extra) {
+		done(kept)
+		return
+	}
+	c := extra[i]
+	title := fmt.Sprintf("Also delete stacked branch %q?", c.Branch)
+	msg := fmt.Sprintf(
+		"Confirmed safe to delete (%s) — it belongs to a task in the same base_branch stack that never opened its own PR. Declining excludes it from this and every future cleanup pass.",
+		c.Tier)
+	a.openHeraConfirmChoice(title, msg,
+		func() { a.heraReviewStackedBranchesStep(extra, append(kept, c), i+1, done) },
+		func() {
+			if err := a.heraExcludeStackedBranch(c); err != nil {
+				uxlog.Log("[hera-view] cascade: exclude stacked branch %q failed: %v", c.Branch, err)
+			}
+			a.heraReviewStackedBranchesStep(extra, kept, i+1, done)
+		},
+	)
+}
+
+// heraExcludeStackedBranch persists the operator's decision to skip deleting
+// a Tier D-discovered extra branch (db.ExcludeCleanupBranch), scoped to that
+// branch's own task — the SAME record both classifyStackedBranchesForCascade
+// (this cascade's own re-check, next time it runs) and the daemon-side
+// reconciliation sweep (internal/hera/reclaim_sweep.go's
+// reconcileStackedBranches) read before ever re-offering or auto-deleting a
+// branch again. Local-mode only, matching every other *db.DB-specific
+// helper in this file; a nil error in remote mode is a silent no-op (the
+// Hera mutation keyset is already inert there — see heraOps's own nil guard).
+func (a *App) heraExcludeStackedBranch(c stackedBranchCandidate) error {
+	d, ok := a.db.(*db.DB)
+	if !ok {
+		return nil
+	}
+	return d.ExcludeCleanupBranch(c.TaskID, c.Branch)
 }
 
 // heraTaskBoundOutside reports whether taskID holds at least one LIVE binding to
@@ -656,26 +817,74 @@ func (a *App) heraTaskBoundOutside(taskID string, subtreeIDs map[int64]bool) boo
 // double-archiving a task reached via two roles. Net: zero hard deletes — every
 // role/orchestrator/inbox/task row is retained (recoverable via the DB), only the
 // worktree dir + git branch are reclaimed.
-func (a *App) heraDoCascadeNuke(subtree []*hera.OrchView, subtreeIDs map[int64]bool) {
+//
+// heraReclaimAndArchiveTask itself is invoked AFTER Ops.NukeRole ends this role's
+// binding, not before — its async prune step (heraPruneReclaimedTask) re-verifies
+// no-live-hera-binding at delete time, and starting that goroutine while the
+// binding is still live races the (synchronous, main-goroutine) end-binding call:
+// on a loaded scheduler the prune read can win and skip the delete for good, with
+// nothing in-process to retry it.
+//
+// extra is Stage 5's Tier D-discovered, operator-reviewed set of additional
+// origin branches (fix-hera-nuke-cleanup, classifyStackedBranchesForCascade +
+// heraReviewStackedBranches) — deleted alongside the subtree's own worktrees
+// via heraDeleteStackedBranches, backgrounded like every other git op in this
+// function. May be nil/empty (the common case: no not-safe candidate had a
+// rescuable base_branch stack).
+func (a *App) heraDoCascadeNuke(subtree []*hera.OrchView, subtreeIDs map[int64]bool, extra []stackedBranchCandidate) {
 	reclaimed := make(map[string]bool)
 	for _, o := range subtree {
 		for i := range o.Roles {
 			r := &o.Roles[i]
+			reclaimTask := ""
 			if r.Live && r.TaskID != "" && !reclaimed[r.TaskID] && !a.heraTaskBoundOutside(r.TaskID, subtreeIDs) {
 				reclaimed[r.TaskID] = true
-				a.heraReclaimAndArchiveTask(r.TaskID)
+				reclaimTask = r.TaskID
 			}
 			if r.Live {
 				if err := a.heraOps.NukeRole(r); err != nil {
 					uxlog.Log("[hera-view] cascade: nuke role %d failed: %v", r.RoleID, err)
 				}
 			}
+			if reclaimTask != "" {
+				a.heraReclaimAndArchiveTask(reclaimTask)
+			}
 		}
 		if err := a.heraOps.NukeOrchestrator(o.ID); err != nil {
 			a.statusbar.SetError("Nuke sub-team failed: " + err.Error())
 		}
 	}
+	if len(extra) > 0 {
+		heraGoSafe("cascade: delete stacked branches", func() {
+			a.heraDeleteStackedBranches(extra)
+		})
+	}
 	a.heraRefresh()
+}
+
+// heraDeleteStackedBranches deletes each Tier D-confirmed extra branch's
+// local + remote git ref (agent.DeleteBranch/agent.DeleteRemoteBranch) —
+// this repo's daemon runs unsandboxed with direct host git access, so no
+// iris routing applies here (that routing decision is for a sandboxed CLI
+// session, not the TUI/daemon). MUST be called off the UI thread (git
+// shellouts) — callers background it via heraGoSafe, mirroring every other
+// git op in this file.
+func (a *App) heraDeleteStackedBranches(extra []stackedBranchCandidate) {
+	cfg := a.db.Config()
+	for _, c := range extra {
+		t, err := a.db.Get(c.TaskID)
+		if err != nil || t == nil {
+			uxlog.Log("[hera-view] cascade: stacked branch delete skipped, task %s not found: %v", c.TaskID, err)
+			continue
+		}
+		repoDir := agent.ResolveDir(t, cfg)
+		if repoDir == "" {
+			continue
+		}
+		agent.DeleteBranch(repoDir, c.Branch)
+		agent.DeleteRemoteBranch(repoDir, c.Branch)
+		uxlog.Log("[hera-view] cascade: deleted stacked branch %q (task=%s)", c.Branch, c.TaskID)
+	}
 }
 
 // --- `C` clear-this-coordinator's-archive (BUG-022) -------------------------
@@ -734,13 +943,21 @@ func (a *App) heraCountReclaimable(roles []hera.RoleView) (reclaim, preserved in
 // bound live elsewhere keeps its task/worktree (only this role row is nuked —
 // multi-binding isolation). NO hard delete. Returns whether a worktree reclaim
 // was kicked off (for the count/log).
+//
+// An "archived" (hidden) role is not the same as an ENDED binding — ArchiveHeraRole
+// only stamps hera_roles.archived_at, so this role's binding can still be live at
+// nuke time. Ops.NukeRole (which ends it) therefore runs BEFORE
+// heraReclaimAndArchiveTask is invoked, same reasoning as heraNukeRole: starting
+// the reclaim's async prune step while the binding is still live races its own
+// no-live-hera-binding re-check at delete time.
 func (a *App) heraNukeArchivedRole(r *hera.RoleView) (reclaimed bool) {
 	taskID := roleReclaimTask(r)
-	if taskID != "" && a.heraTaskReclaimable(taskID, r.RoleID) {
-		reclaimed = a.heraReclaimAndArchiveTask(taskID)
-	}
+	doReclaim := taskID != "" && a.heraTaskReclaimable(taskID, r.RoleID)
 	if err := a.heraOps.NukeRole(r); err != nil {
 		uxlog.Log("[hera-view] clear archive: nuke role %d failed: %v", r.RoleID, err)
+	}
+	if doReclaim {
+		reclaimed = a.heraReclaimAndArchiveTask(taskID)
 	}
 	return reclaimed
 }
@@ -1414,8 +1631,19 @@ func (a *App) closeHeraInput() {
 
 // openHeraConfirm shows a y/N confirm; do runs on accept.
 func (a *App) openHeraConfirm(title, message string, do func()) {
+	a.openHeraConfirmChoice(title, message, do, nil)
+}
+
+// openHeraConfirmChoice is openHeraConfirm's sibling for a y/n DECISION with a
+// meaningful action on BOTH outcomes — Stage 5's per-branch stacked-branch
+// review (heraReviewStackedBranchesStep) runs a distinct step on decline
+// (record the exclusion, then advance to the next branch) instead of the
+// plain no-op every openHeraConfirm caller relies on. onNo may be nil (that
+// is exactly openHeraConfirm's own behavior).
+func (a *App) openHeraConfirmChoice(title, message string, onYes, onNo func()) {
 	a.heraConfirmModal = modal.NewConfirmModal(title, message)
-	a.heraConfirmDo = do
+	a.heraConfirmDo = onYes
+	a.heraConfirmOnCancel = onNo
 	a.mode = modeHeraConfirm
 	a.pages.AddPage("heraconfirm", a.heraConfirmModal, true, true)
 	a.pages.SwitchToPage("heraconfirm")
@@ -1433,8 +1661,12 @@ func (a *App) handleHeraConfirmKey(event *tcell.EventKey) {
 		return
 	}
 	if a.heraConfirmModal.Canceled() {
+		onCancel := a.heraConfirmOnCancel
 		uxlog.Log("[hera-view] confirm canceled")
 		a.closeHeraConfirm()
+		if onCancel != nil {
+			onCancel()
+		}
 	}
 }
 
@@ -1442,6 +1674,7 @@ func (a *App) closeHeraConfirm() {
 	a.mode = modeTaskList
 	a.heraConfirmModal = nil
 	a.heraConfirmDo = nil
+	a.heraConfirmOnCancel = nil
 	a.pages.RemovePage("heraconfirm")
 	a.pages.SwitchToPage("hera")
 	a.tapp.SetFocus(a.heraPage)

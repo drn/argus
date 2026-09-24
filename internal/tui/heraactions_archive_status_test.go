@@ -135,7 +135,7 @@ func TestHeraDoCascadeNuke_StatusAdvanceIsUniformAcrossRoleKinds(t *testing.T) {
 
 	subtree := app.heraPage.Rail().Model().BridgeSubtree(orch)
 	subtreeIDs := map[int64]bool{orch: true}
-	app.heraDoCascadeNuke(subtree, subtreeIDs)
+	app.heraDoCascadeNuke(subtree, subtreeIDs, nil)
 
 	tc, err := d.Get("tc")
 	testutil.NoError(t, err)
