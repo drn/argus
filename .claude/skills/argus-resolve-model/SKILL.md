@@ -1,5 +1,5 @@
 ---
-name: resolve-archetype-model
+name: argus-resolve-model
 description: >-
   Resolve a diligence profile's per-archetype model (and, where the dispatch mechanism accepts it,
   effort) for Claude's NATIVE sub-agent dispatch (the Agent/Task tool, or Workflow's agent()) — as
@@ -13,7 +13,7 @@ description: >-
   with no worktree/branch/PR of its own.
 ---
 
-# resolve-archetype-model — archetype→model resolution for native sub-agent dispatch
+# argus-resolve-model — archetype→model resolution for native sub-agent dispatch
 
 ## 1. What this is, and is not
 
@@ -84,7 +84,7 @@ knownInSession = {"opus", "sonnet", "haiku", "fable"}
   - Anything ambiguous, or a foreign model whose tier isn't obvious from its name → `sonnet` (the
     safe middle default).
   - Always emit a loud, visible note when this substitution happens — e.g.
-    `[resolve-archetype-model] archetype "code_slice" resolved to a non-in-session model
+    `[argus-resolve-model] archetype "code_slice" resolved to a non-in-session model
     ("gpt-5-codex") — substituting "opus" (closest in-session equivalent) for native dispatch.`
     Never silently substitute; the caller (or a report reader) needs to know the profile's actual
     choice wasn't honored. **This tiering is a best-effort heuristic, not a principled
@@ -133,7 +133,7 @@ def modelFor(archetype):
         substitute = "opus"
     elif any(h in m for h in foreignCheapHints):
         substitute = "haiku"
-    note(f'[resolve-archetype-model] archetype "{archetype}" resolved to a non-in-session '
+    note(f'[argus-resolve-model] archetype "{archetype}" resolved to a non-in-session '
          f'model ("{m}") — substituting "{substitute}" (closest in-session equivalent) for '
          f'native dispatch.')
     return substitute

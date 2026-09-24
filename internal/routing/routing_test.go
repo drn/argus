@@ -38,7 +38,7 @@ func TestBuiltinContent_ContainsArchetypeModelSection(t *testing.T) {
 	testutil.NoError(t, err)
 	s := string(content)
 	testutil.Contains(t, s, "## Archetype→model resolution for native sub-agent dispatch (argus sandboxes)")
-	testutil.Contains(t, s, "resolve-archetype-model")
+	testutil.Contains(t, s, "argus-resolve-model")
 }
 
 func TestBuiltinContent_DeterministicOrder(t *testing.T) {
