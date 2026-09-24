@@ -113,6 +113,71 @@ func TestResolveBackend_NoDefault(t *testing.T) {
 	}
 }
 
+// TestResolveBackend_TieredRouting covers the add-tiered-backend-routing
+// precedence tier (specs/agent-execution/spec.md): the tiered resolver sits
+// between explicit task/project backend and the single global default, and
+// is bypassed entirely when either explicit backend is set.
+func TestResolveBackend_TieredRouting(t *testing.T) {
+	tieredCfg := func() config.Config {
+		cfg := testConfig()
+		cfg.BackendRouting = config.BackendRoutingConfig{Tiers: []config.BackendTier{
+			{Backend: "pi", Probe: config.ProbeNone},
+		}}
+		return cfg
+	}
+
+	t.Run("explicit task backend bypasses tiered resolver", func(t *testing.T) {
+		cfg := tieredCfg()
+		task := &model.Task{Backend: "claude"}
+
+		b, err := ResolveBackend(task, cfg)
+		testutil.NoError(t, err)
+		testutil.Equal(t, b.Command, "claude --dangerously-skip-permissions --permission-mode plan")
+	})
+
+	t.Run("explicit project backend bypasses tiered resolver", func(t *testing.T) {
+		cfg := tieredCfg()
+		task := &model.Task{Project: "myapp"}
+
+		b, err := ResolveBackend(task, cfg)
+		testutil.NoError(t, err)
+		testutil.Equal(t, b.Command, "codex --dangerously-bypass-approvals-and-sandbox")
+	})
+
+	t.Run("no tier list configured falls through to existing default", func(t *testing.T) {
+		cfg := testConfig()
+		task := &model.Task{}
+
+		b, err := ResolveBackend(task, cfg)
+		testutil.NoError(t, err)
+		testutil.Equal(t, b.Command, "claude --dangerously-skip-permissions --permission-mode plan")
+	})
+
+	t.Run("tier list configured resolves to its first available tier", func(t *testing.T) {
+		cfg := tieredCfg()
+		task := &model.Task{}
+
+		b, err := ResolveBackend(task, cfg)
+		testutil.NoError(t, err)
+		testutil.Equal(t, b.Command, "pi")
+	})
+
+	t.Run("tier list exhausted falls through to the global default", func(t *testing.T) {
+		// A tier naming a backend absent from cfg.Backends is skipped
+		// (specs/backend-tier-routing/spec.md), deterministically exhausting
+		// the list without depending on any live usage-probe cache state.
+		cfg := testConfig()
+		cfg.BackendRouting = config.BackendRoutingConfig{Tiers: []config.BackendTier{
+			{Backend: "nonexistent", Probe: config.ProbeNone},
+		}}
+		task := &model.Task{}
+
+		b, err := ResolveBackend(task, cfg)
+		testutil.NoError(t, err)
+		testutil.Equal(t, b.Command, "claude --dangerously-skip-permissions --permission-mode plan")
+	})
+}
+
 func TestResolveDir(t *testing.T) {
 	cfg := testConfig()
 

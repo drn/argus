@@ -290,11 +290,13 @@ End-of-life has **two resting states**, and **no DB row is ever hard-deleted** �
 | Key                   | Action                                                   |
 | --------------------- | -------------------------------------------------------- |
 | `j` / `k`             | Navigate rows                                            |
-| `n`                   | New project / backend / schedule                         |
-| `e`                   | Edit project / backend / schedule                        |
-| `d`                   | Delete project / set default backend / delete schedule   |
+| `n`                   | New project / backend / schedule / backend tier          |
+| `e`                   | Edit project / backend / schedule / backend tier threshold |
+| `d`                   | Delete project / set default backend / delete schedule / remove backend tier |
 | `a`                   | Edit project's AppleEvents allowlist (on a project row)  |
 | `m`                   | Edit backend's default model (on a backend row)          |
+| `p`                   | Cycle probe kind (on a Backend Tiers row)                |
+| `K` / `J`             | Move backend tier up / down (on a Backend Tiers row)     |
 | `t`                   | Toggle schedule enabled (on the Scheduled Tasks section) |
 | `r`                   | Run schedule now (on the Scheduled Tasks section)        |
 | `i`                   | Quick add projects                                       |
@@ -614,8 +616,9 @@ Argus runs an MCP server on port 7742 and auto-injects it into every agent workt
 | `task_rename`          | Rename a task. Updates only the display name (branch and worktree paths stay locked to the original slug). Pass `cwd` or `id` plus `name`.                         |
 | `task_complete`        | Mark a task as complete (sets status, stamps `EndedAt`). Pass `cwd` or `id`. Does NOT stop a running agent — call `task_stop` first if needed.                     |
 | `task_set_result`      | Persist an opaque JSON result blob the orchestrator can read (PR URL, milestone, failure reason). Pass `cwd` or `id` plus `result`. Up to 64 KiB.                  |
+| `task_recycle`         | Reset the task's context window while continuing the same work: kills the current session and starts a fresh, empty-context one on the identical task/worktree/branch, seeded with `handoff_note` (required, ≤16 KiB) plus the original prompt as background. Deferred until the calling session goes idle. Pass `cwd` or `id`.                     |
 
-The bundled skills (`internal/skills/builtin/{archive,argus-complete,argus-schedule,hera,hera-plan}`, auto-available in every spawned session — see [Agent-facing skills](#agent-facing-skills)) let an agent finalize, schedule, and coordinate its own work via `cwd` resolution. Completing and archiving are independent axes.
+The bundled skills (`internal/skills/builtin/{archive,argus-complete,argus-schedule,hera,hera-plan,task-recycle}`, auto-available in every spawned session — see [Agent-facing skills](#agent-facing-skills)) let an agent finalize, schedule, coordinate, and reset its own work via `cwd` resolution. Completing and archiving are independent axes.
 
 **Inter-Task Messaging** (peer-to-peer between live or paused tasks):
 
@@ -695,7 +698,7 @@ Configuring a backend in Settings makes these tools appear on the very next `too
 
 A Claude session inside an argus worktree sees the `mcp__argus__*` tool names but not when to reach for them or how they compose. Argus ships that orientation automatically — no install step, nothing to symlink or append:
 
-- **Skill bodies** (`internal/skills/builtin/{archive,argus-complete,argus-schedule,hera,hera-plan}/SKILL.md`, embedded via `go:embed`) are materialized into `~/.argus/skills/.claude/skills/<name>` and reach every spawned Claude backend session via an appended `--add-dir` flag — a documented exception where Claude Code loads `.claude/skills/` from an `--add-dir` root instead of just granting file access.
+- **Skill bodies** (`internal/skills/builtin/{archive,argus-complete,argus-schedule,hera,hera-plan,task-recycle}/SKILL.md`, embedded via `go:embed`) are materialized into `~/.argus/skills/.claude/skills/<name>` and reach every spawned Claude backend session via an appended `--add-dir` flag — a documented exception where Claude Code loads `.claude/skills/` from an `--add-dir` root instead of just granting file access.
 - **Routing content** (`internal/routing/builtin/{hera,argus-tasks}.md`, embedded the same way) — orientation text that points the agent at the skills above — is materialized and injected into every spawned Claude backend session via an appended `--append-system-prompt-file` flag.
 
 Both are unconditional across every session kind (coordinator, worker, freelance, plain solo task) and self-gating at read time — each section checks `ARGUS_TASK_ID`/`$PWD` sandbox residency, so injecting them into a non-argus spawn is inert. Materialization failure is logged and the launch continues without them rather than blocking. See `internal/skills/builtin.go` and `internal/routing/routing.go`.
@@ -921,6 +924,34 @@ Command templates, keyed by name. Seeded with `claude`, `codex`, `pi`, and `open
 | `prompt_flag` | string | `""` | Flag used to pass the initial prompt to the backend (empty = positional/piped). |
 | `model` | string | `""` | Default model for this backend, injected as `--model <value>` for known CLIs (claude, codex, pi, opencode — opencode takes a `provider/model` value). Empty = the CLI's own default. A per-task model overrides it. |
 | `models` | array | `[]` | Option list for the new-task model selector for this backend. Empty = built-in list (claude → `opus`/`sonnet`/`haiku`/`fable`, codex → `gpt-5-codex`/`gpt-5`, others including opencode → none, so `custom…` only). A `custom…` entry always lets you type a model not in the list. |
+
+#### `[backend_routing]`
+
+An ordered list of backend "tiers" for **default task-backend selection** — generalizes `[hera.worker_budget]`'s hera-only, single-fallback usage steering into an arbitrary-length chain consulted by ordinary (non-hera) task creation. The resolver walks `tier` in order and picks the first tier that's uncapped, under its threshold, or unprobeable (fail-open); it's consulted only when a task has no explicit backend and its project has none configured either — it never overrides those. Also editable from Settings → **Backend Tiers** (`n` add, `d` remove, `K`/`J` reorder, `p` cycle probe kind, `e` edit threshold) when this table is absent from config.toml; **a non-empty table here is authoritative and renders that Settings category read-only**, same precedent as `[backends.<name>]`'s "(command is hardcoded)" case. No table (or an empty `tier` list) leaves backend resolution exactly as it was before this feature — a single `defaults.backend`.
+
+`[[backend_routing.tier]]` (repeatable, in resolution order):
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `backend` | string | — | Must name a key under `[backends]`; a tier naming an unknown backend is skipped, never a load error. |
+| `probe` | string | — | One of `claude_usage`, `codex_usage`, or `none` (uncapped — e.g. a local `pi`/ollama backend). An unrecognized value is skipped, not an error. |
+| `threshold_pct` | int | `0` | Usage percentage at/above which this tier is treated as capped-out and resolution falls through to the next tier. Ignored for `none`. |
+
+```toml
+[[backend_routing.tier]]
+backend = "claude"
+probe = "claude_usage"
+threshold_pct = 90
+
+[[backend_routing.tier]]
+backend = "codex"
+probe = "codex_usage"
+threshold_pct = 90
+
+[[backend_routing.tier]]
+backend = "pi"
+probe = "none"
+```
 
 #### `[projects.<name>]`
 

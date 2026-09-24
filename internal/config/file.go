@@ -45,6 +45,15 @@ type FileLoader struct {
 	size    int64     // size of the cached bytes
 	primed  bool      // true once a stat/read has populated the cache fields
 	err     error     // last stat/read/parse error (nil when file is simply absent)
+
+	// backendRoutingTierDefined mirrors the most recent Apply call's finding on
+	// whether config.toml itself defines a non-empty [[backend_routing.tier]]
+	// list — the one piece of Apply's toml.MetaData that a caller needs kept
+	// (everything else about which keys decoded is otherwise discarded, see the
+	// unknown-key comment in Apply). The Settings backend-tier category
+	// (add-tiered-backend-routing) needs the SOURCE of the merged tier list,
+	// not just its resolved value, to know whether to render read-only.
+	backendRoutingTierDefined bool
 }
 
 // NewFileLoader returns a loader for the given path. An empty path makes Apply a
@@ -84,6 +93,7 @@ func (l *FileLoader) Apply(base Config) Config {
 
 	data, changed, ok := l.readLocked()
 	if !ok {
+		l.backendRoutingTierDefined = false
 		if l.err != nil && prevErr == nil {
 			slog.Warn("argus config: cannot read config.toml, keeping current config", "path", l.path, "err", l.err)
 		}
@@ -101,17 +111,35 @@ func (l *FileLoader) Apply(base Config) Config {
 	meta, derr := toml.Decode(string(data), &merged)
 	if derr != nil {
 		l.err = fmt.Errorf("parsing %s: %w", l.path, derr)
+		l.backendRoutingTierDefined = false
 		if prevErr == nil {
 			slog.Warn("argus config: ignoring config.toml (parse error)", "path", l.path, "err", derr)
 		}
 		return base
 	}
 	applyFileDefaults(&merged, meta)
+	l.backendRoutingTierDefined = meta.IsDefined("backend_routing", "tier") && len(merged.BackendRouting.Tiers) > 0
 	if changed {
 		slog.Info("argus config: applied config.toml overrides", "path", l.path)
 	}
 	l.err = nil
 	return merged
+}
+
+// DefinesBackendRoutingTiers reports whether the most recent Apply call found
+// config.toml defining a non-empty [[backend_routing.tier]] list — i.e.
+// whether config.toml, not the DB, is the active tier list's authoritative
+// source (specs/config-management/spec.md's storage-precedence requirement).
+// nil-safe (a nil loader defines nothing). Reflects only the last Apply call;
+// a caller needing a fresh answer must call Apply (e.g. via db.DB.Config())
+// first in the same cycle.
+func (l *FileLoader) DefinesBackendRoutingTiers() bool {
+	if l == nil {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.backendRoutingTierDefined
 }
 
 // Err returns the last error encountered by Apply (a stat/read/parse failure),

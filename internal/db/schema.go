@@ -58,6 +58,17 @@ func (d *DB) createTables() error {
 			key   TEXT PRIMARY KEY,
 			value TEXT NOT NULL
 		);
+		-- Settings-UI-edited backend-tier-routing list (add-tiered-backend-routing).
+		-- position is the tier's 0-based rank in the ordered list; consulted only
+		-- when config.toml defines no [[backend_routing.tier]] entries (that source
+		-- is authoritative in full and this table is not merged with it — see
+		-- specs/config-management/spec.md).
+		CREATE TABLE IF NOT EXISTS backend_tiers (
+			position      INTEGER PRIMARY KEY,
+			backend       TEXT NOT NULL,
+			probe         TEXT NOT NULL DEFAULT '',
+			threshold_pct INTEGER NOT NULL DEFAULT 0
+		);
 	`
 	if _, err := d.conn.Exec(ddl); err != nil {
 		return err

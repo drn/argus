@@ -73,7 +73,12 @@ const (
 	//   - v5: diligence-profile model selection became backend-family-aware,
 	//     so sessions spawned through arbitrarily named Claude/Codex/Pi/OpenCode
 	//     backend instances use that family's configured archetype model.
-	SupervisorSpawnSurface = 5
+	//   - v6: ResolveBackend gained a tiered backend-routing precedence tier
+	//     (add-tiered-backend-routing), consulted between explicit task/project
+	//     backend and the single configured default — a configured tier list can
+	//     now change which backend a session with no explicit backend spawns
+	//     with, from one probe tick to the next.
+	SupervisorSpawnSurface = 6
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -280,7 +285,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "d69cb63c61c24198befa8fc0644f9020887485523d4878ad6ae4ff1f0fa95275"
+	SpawnSurfaceDigest  = "34b8a54d31cb540b009700b9b16ce6b6f26b1a2e0e2c573351524bcd2d58e117"
 	StreamSurfaceDigest = "57078648a38b01bad81b795bf6ca431199e4e394460f3a19ca9bf0ee407a785e"
 )
 

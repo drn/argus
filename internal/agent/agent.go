@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/drn/argus/internal/backendtier"
 	"github.com/drn/argus/internal/claudesession"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
@@ -134,9 +135,12 @@ func IsTaskSandboxed(task *model.Task, cfg config.Config) bool {
 }
 
 // ResolveBackend returns the backend config for a task.
-// Priority: task.Backend > project.Backend > cfg.Defaults.Backend.
+// Priority: task.Backend > project.Backend > tiered backend-routing resolver
+// (when a tier list is configured) > cfg.Defaults.Backend. An explicit task or
+// project backend is never overridden by usage-based routing — the tiered
+// resolver is consulted only once neither is set.
 func ResolveBackend(task *model.Task, cfg config.Config) (config.Backend, error) {
-	name := cfg.Defaults.Backend
+	name := ""
 
 	if task.Project != "" {
 		if proj, ok := cfg.Projects[task.Project]; ok && proj.Backend != "" {
@@ -146,6 +150,14 @@ func ResolveBackend(task *model.Task, cfg config.Config) (config.Backend, error)
 
 	if task.Backend != "" {
 		name = task.Backend
+	}
+
+	if name == "" {
+		name = backendtier.ResolveBackend(cfg)
+	}
+
+	if name == "" {
+		name = cfg.Defaults.Backend
 	}
 
 	if name == "" {

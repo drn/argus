@@ -116,6 +116,19 @@ func ResolveWorkerBackend(explicit string, cfg config.Config) string {
 	return ""
 }
 
+// CachedClaudePct returns the most recently probed Claude weekly usage
+// percentage and whether that reading is present and not stale. It never
+// triggers a live probe, so it is safe to call synchronously from
+// internal/backendtier's tier-list resolver. Does not affect
+// ResolveWorkerBackend's own behavior.
+func CachedClaudePct() (float64, bool) {
+	reading, ok := snapshot()
+	if !ok {
+		return 0, false
+	}
+	return reading.Percentage, true
+}
+
 func storeReading(reading Reading) {
 	usageCache.mu.Lock()
 	defer usageCache.mu.Unlock()

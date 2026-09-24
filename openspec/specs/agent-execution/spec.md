@@ -6,23 +6,27 @@ Agent Execution governs how Argus turns a task into a running LLM coding agent: 
 ## Requirements
 ### Requirement: Backend resolution precedence
 
-The system SHALL resolve the backend for a task using the precedence task backend, then project backend, then the configured default backend. When no backend can be resolved, or the resolved name is absent from the configured backends, the system SHALL return an error rather than launching.
+The system SHALL resolve a task's backend using the following precedence, evaluated in order, stopping at the first non-empty result: (1) the task's own explicit backend, (2) the owning project's configured backend, (3) the tiered backend-routing resolver's result when a tier list is configured, (4) the single global default backend. Steps 1 and 2 SHALL NOT consult the tiered resolver at all — an explicit task or project backend is never overridden by usage-based routing.
 
-#### Scenario: Task backend wins over project and default
-- **WHEN** a task names a backend that exists in config, even though its project also names one
-- **THEN** the task's backend is selected
+#### Scenario: Explicit task backend always wins
 
-#### Scenario: Project backend used when task has none
-- **WHEN** a task names no backend but belongs to a project that names one
-- **THEN** the project's backend is selected
+- **WHEN** a task carries its own explicit backend
+- **THEN** that backend is used and neither the project backend, the tiered resolver, nor the global default are consulted
 
-#### Scenario: Default used when neither task nor project specifies one
-- **WHEN** a task names no backend and its project (if any) names none
-- **THEN** the configured default backend is selected
+#### Scenario: Explicit project backend wins over tiered routing
 
-#### Scenario: Unknown or unset backend errors
-- **WHEN** the resolved backend name is empty, or names a backend not present in config
-- **THEN** an error is returned and no command is produced
+- **WHEN** a task has no explicit backend but its project has a configured backend
+- **THEN** the project's backend is used and the tiered resolver is not consulted
+
+#### Scenario: Tiered routing fills in when neither explicit backend is set
+
+- **WHEN** neither the task nor its project has an explicit backend, and a tier list is configured
+- **THEN** the tiered resolver's result is used
+
+#### Scenario: Global default is used when no tier list is configured
+
+- **WHEN** neither the task nor its project has an explicit backend, and no tier list is configured (or the tiered resolver returns empty)
+- **THEN** the single global default backend is used, unchanged from prior behavior
 
 ### Requirement: Command construction with prompt and worktree isolation
 
