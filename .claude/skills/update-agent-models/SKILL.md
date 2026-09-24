@@ -118,7 +118,27 @@ this is the most common failure mode of this change, so treat it as a checklist,
 5. **`internal/pricing/rates.toml`** — if its comments name example codex aliases, refresh them.
    Do not add actual pricing rows for codex unless the user asks — codex is deliberately unseeded
    there for reasons unrelated to this skill.
-6. **`internal/daemon/surface.go`** — the step most likely to be skipped, and the one that will
+6. **Prose and skill docs that quote a model id as an example rather than reading it from
+   `KnownModels`.** Search repo-wide for the old ids (not just `*.go`/`*.toml`) — the manual refresh
+   that prompted this skill's creation missed every one of these on its first pass:
+   - `README.md` — the backends-config reference table's `models` row and the diligence-profile
+     "Model-naming convention" section both restate the current list; prefer rephrasing to point at
+     `agent.KnownModels` over re-quoting the literal ids where the prose allows it, since a pointer
+     cannot go stale the way a restated list can.
+   - `context/knowledge/gotchas/tasklist-ui.md`'s model-selector bullet.
+   - **Both copies** of `.claude/skills/hera/SKILL.md` and `internal/skills/builtin/hera/SKILL.md`
+     (the `model` field's per-backend example) — these two directories are a known,
+     accepted-as-unfixed embed-drift pair kept in sync by hand; touch both when either needs this
+     fix, but do not attempt to reconcile any *other* pre-existing drift between them while here.
+   - **Both copies** of `.claude/skills/resolve-archetype-model/SKILL.md` and
+     `internal/skills/builtin/resolve-archetype-model/SKILL.md` — the worked example's
+     `foreignFlagshipHints` substring list (used to decide whether a foreign backend's model name
+     should substitute to `opus` for in-session dispatch) hard-codes a Codex fragment. Pick a new
+     fragment that actually appears in the new frontier-tier id's description/positioning (not by
+     list position), same judgment call as Step 3's tier remapping — there is no guarantee any
+     future Codex naming scheme shares a lexical "flagship" marker at all, so re-derive this by
+     reading the new lineup's descriptions each time rather than assuming a pattern holds.
+7. **`internal/daemon/surface.go`** — the step most likely to be skipped, and the one that will
    fail CI if it is. `internal/agent/agent.go` is declared in `SupervisorSpawnPaths`, so editing it
    changes the SHA-256 recorded in `SpawnSurfaceDigest`. Changing `KnownModels`'s codex list is a
    spawn-observable behavior change (it changes what `--model` value a newly spawned session
@@ -129,7 +149,7 @@ this is the most common failure mode of this change, so treat it as a checklist,
       fail — its failure message prints the newly computed digest.
    c. Paste that computed digest into `SpawnSurfaceDigest`. Never hand-compute or guess it.
    d. Re-run the same test and confirm it now passes.
-7. **`context/knowledge/gotchas/misc.md`** — add or refresh a bullet under the
+8. **`context/knowledge/gotchas/misc.md`** — add or refresh a bullet under the
    "## Model Selection (--model injection)" heading noting the old ids, the new ids, and that this
    skill is the fix procedure. Match the file's existing bullet style: a bolded one-line rule
    followed by one to three sentences of context, cross-referencing the touched file paths.

@@ -92,7 +92,7 @@ the end of this section).
     base-branch gotcha in §6.**
   - `backend` — defaults to project default.
   - `model` — per-worker model override, scoped to the worker's resolved backend (claude: opus/sonnet/
-    haiku; codex: e.g. gpt-5; pi: its ids). Empty = backend default. Match it to task complexity.
+    haiku; codex: e.g. gpt-6-sol; pi: its ids). Empty = backend default. Match it to task complexity.
   - `role_name` — derived from a prompt slug if omitted; uniquified within the orchestrator.
   - `orchestrator` — disambiguates when the calling task holds multiple live coordinator bindings.
 

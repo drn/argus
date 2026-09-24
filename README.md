@@ -442,7 +442,7 @@ A task's **archetype** names *what kind of job* it is. It is an optional task pr
 
 #### Model-naming convention
 
-A profile's `model` field uses the backend's **stable CLI aliases**, which always map to the current model, so a profile does not churn per model release. Claude: `opus`, `sonnet`, `haiku`. Codex: `gpt-5-codex`, `gpt-5`. Validation accepts any model in the **union** of these built-in aliases and every configured backend's `models` list – so adding a foreign reviewer model under `[backends.<name>] models` makes it a valid profile model with no Argus code change. A profile model is applied only when it is valid for the worker's *resolved* backend; otherwise resolution falls through (e.g. `opus` named for a codex worker falls open to that backend's default).
+A profile's `model` field uses each backend's built-in model list. Claude's are **stable CLI aliases** that always map to the current model, so a profile does not churn per model release: `opus`, `sonnet`, `haiku`, `fable`. Codex has no such alias layer — its model IDs are versioned and OpenAI renames/retires them per release, so this list drifts and needs refreshing from time to time (current as of this writing: `gpt-6-sol`, `gpt-6-astra`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`). Validation accepts any model in the **union** of these built-in aliases and every configured backend's `models` list – so adding a foreign reviewer model under `[backends.<name>] models` makes it a valid profile model with no Argus code change. A profile model is applied only when it is valid for the worker's *resolved* backend; otherwise resolution falls through (e.g. `opus` named for a codex worker falls open to that backend's default).
 
 #### Profiles
 
@@ -923,7 +923,7 @@ Command templates, keyed by name. Seeded with `claude`, `codex`, `pi`, and `open
 | `command` | string | — | Executable plus base flags for the agent CLI (e.g. `claude`, `codex --dangerously-bypass-approvals-and-sandbox`). Permission flags come from `defaults.permission_mode` and are **not** baked in here. |
 | `prompt_flag` | string | `""` | Flag used to pass the initial prompt to the backend (empty = positional/piped). |
 | `model` | string | `""` | Default model for this backend, injected as `--model <value>` for known CLIs (claude, codex, pi, opencode — opencode takes a `provider/model` value). Empty = the CLI's own default. A per-task model overrides it. |
-| `models` | array | `[]` | Option list for the new-task model selector for this backend. Empty = built-in list (claude → `opus`/`sonnet`/`haiku`/`fable`, codex → `gpt-5-codex`/`gpt-5`, others including opencode → none, so `custom…` only). A `custom…` entry always lets you type a model not in the list. |
+| `models` | array | `[]` | Option list for the new-task model selector for this backend. Empty = built-in list (claude → `opus`/`sonnet`/`haiku`/`fable`, codex → its current model lineup — churns per Codex release, see `agent.KnownModels`, others including opencode → none, so `custom…` only). A `custom…` entry always lets you type a model not in the list. |
 
 #### `[backend_routing]`
 
