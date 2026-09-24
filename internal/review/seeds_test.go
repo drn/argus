@@ -21,7 +21,7 @@ func testKnownModels(command string) []string {
 		// agent.KnownModels' backend recognition rather than assuming a bare
 		// executable name.
 		if strings.HasPrefix(command, "codex ") {
-			return []string{"gpt-5-codex", "gpt-5"}
+			return []string{"gpt-6-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"}
 		}
 		return nil
 	}

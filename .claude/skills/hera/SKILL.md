@@ -108,7 +108,7 @@ revive, and completion; the plan-DAG authoring/mutation tools live in the compan
     base-branch gotcha in §6.**
   - `backend` — defaults to project default.
   - `model` — per-worker model override, scoped to the worker's resolved backend (claude: opus/sonnet/
-    haiku; codex: e.g. gpt-5; pi: its ids). Empty = backend default. Match it to task complexity. Leave it unset when you pass `archetype=` so the archetype picks the tier — see §9.
+    haiku; codex: e.g. gpt-6-sol; pi: its ids). Empty = backend default. Match it to task complexity. Leave it unset when you pass `archetype=` so the archetype picks the tier — see §9.
   - `archetype` — the worker's **diligence archetype** (e.g. `code_slice`, `bug_fix`, `review`, `ci_loop`;
     defaults to `code_slice`). Selects the per-archetype model from the project's bound profile and is
     exported to the worker as `ARGUS_ARCHETYPE`. An explicit `model` still wins over the profile. See §9.

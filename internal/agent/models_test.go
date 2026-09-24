@@ -15,7 +15,7 @@ func TestKnownModels(t *testing.T) {
 	}{
 		{"claude bare", "claude", []string{"opus", "sonnet", "haiku", "fable"}},
 		{"claude abs path", "/usr/local/bin/claude", []string{"opus", "sonnet", "haiku", "fable"}},
-		{"codex with flags", "codex --dangerously-bypass-approvals-and-sandbox", []string{"gpt-5-codex", "gpt-5"}},
+		{"codex with flags", "codex --dangerously-bypass-approvals-and-sandbox", []string{"gpt-6-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"}},
 		{"pi is empty", "pi", nil},
 		{"opencode is empty (custom-only)", "opencode", nil},
 		{"custom is empty", "bash", nil},
@@ -44,7 +44,7 @@ func TestBackendModels(t *testing.T) {
 		testutil.DeepEqual(t, got, []string{"x", "y"})
 	})
 	t.Run("empty override falls back", func(t *testing.T) {
-		testutil.DeepEqual(t, BackendModels(config.Backend{Command: "codex", Models: []string{}}), []string{"gpt-5-codex", "gpt-5"})
+		testutil.DeepEqual(t, BackendModels(config.Backend{Command: "codex", Models: []string{}}), []string{"gpt-6-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"})
 	})
 	t.Run("override slice is copied", func(t *testing.T) {
 		src := []string{"a", "b"}

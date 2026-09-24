@@ -19,44 +19,44 @@
 # argus validate default
 
 [archetype.brainstorm]
-models = { claude = "opus", codex = "gpt-5-codex" }
+models = { claude = "opus", codex = "gpt-6-astra" }
 effort = "high"
 
 [archetype.orchestrator]
-models = { claude = "sonnet", codex = "gpt-5" }
+models = { claude = "sonnet", codex = "gpt-6-sol" }
 
 [archetype.big_build]
-models = { claude = "sonnet", codex = "gpt-5" }
+models = { claude = "sonnet", codex = "gpt-6-sol" }
 
 [archetype.code_slice]
-models = { claude = "sonnet", codex = "gpt-5" }
+models = { claude = "sonnet", codex = "gpt-6-sol" }
 
 [archetype.bug_fix]
-models = { claude = "sonnet", codex = "gpt-5" }
+models = { claude = "sonnet", codex = "gpt-6-sol" }
 
 [archetype.review]
-models = { claude = "opus", codex = "gpt-5-codex" }
+models = { claude = "opus", codex = "gpt-6-astra" }
 
 [archetype.security_review]
-models = { claude = "opus", codex = "gpt-5-codex" }
+models = { claude = "opus", codex = "gpt-6-astra" }
 
 [archetype.synthesis]
-models = { claude = "sonnet", codex = "gpt-5" }
+models = { claude = "sonnet", codex = "gpt-6-sol" }
 
 [archetype.spec_audit]
-models = { claude = "sonnet", codex = "gpt-5" }
+models = { claude = "sonnet", codex = "gpt-6-sol" }
 
 [archetype.ci_loop]
-models = { claude = "haiku", codex = "gpt-5" }
+models = { claude = "haiku", codex = "gpt-6-sol" }
 
 [archetype.verify]
-models = { claude = "haiku", codex = "gpt-5" }
+models = { claude = "haiku", codex = "gpt-6-sol" }
 
 [archetype.recovery]
-models = { claude = "sonnet", codex = "gpt-5" }
+models = { claude = "sonnet", codex = "gpt-6-sol" }
 
 [archetype.docs]
-models = { claude = "haiku", codex = "gpt-5" }
+models = { claude = "haiku", codex = "gpt-6-sol" }
 
 [rigor]
 review_passes       = 1

@@ -16,7 +16,7 @@ func testKnownModels(command string) []string {
 	case "claude":
 		return []string{"opus", "sonnet", "haiku", "fable"}
 	case "codex":
-		return []string{"gpt-5-codex", "gpt-5"}
+		return []string{"gpt-6-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"}
 	default:
 		return nil
 	}
@@ -113,7 +113,7 @@ models = { gem = "gemini-2.5-pro" }
 func TestValidate_CodexBuiltinAccepted(t *testing.T) {
 	p := loadOne(t, `
 [archetype.code_slice]
-models = { codex = "gpt-5-codex" }
+models = { codex = "gpt-6-sol" }
 `)
 	errs := Validate(p, config.Config{}, testKnownModels, nil)
 	testutil.Equal(t, len(errs), 0)
@@ -138,7 +138,7 @@ func TestValidate_PanelStructuralAccepted(t *testing.T) {
 models = { claude = "haiku" }
 
 [panel]
-reviewers   = ["opus", "gpt-5"]
+reviewers   = ["opus", "gpt-6-sol"]
 synthesizer = "opus"
 weird_field = 42
 `)

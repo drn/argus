@@ -114,7 +114,9 @@ honored by a mechanism that has no way to honor it.
 resolved = profile_resolve(cwd=$PWD, backend="claude")
 models = resolved.archetype if resolved.resolved else {}
 knownInSession = {"opus", "sonnet", "haiku", "fable"}
-foreignFlagshipHints = ["gpt-5", "opus", "large", "pro"]      # rough, name-based, best-effort
+# rough, name-based, best-effort — the Codex entry churns with its lineup; refresh alongside
+# agent.KnownModels (see the update-agent-models skill) whenever it renames again
+foreignFlagshipHints = ["astra", "opus", "large", "pro"]
 foreignCheapHints     = ["mini", "haiku", "small", "flash"]
 
 def modelFor(archetype):

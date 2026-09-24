@@ -14,20 +14,20 @@
 extends = "default"
 
 [archetype.brainstorm]
-models = { claude = "fable", codex = "gpt-5-codex" }
+models = { claude = "fable", codex = "gpt-6-astra" }
 effort = "high"
 
 [archetype.orchestrator]
-models = { claude = "opus", codex = "gpt-5-codex" }
+models = { claude = "opus", codex = "gpt-6-astra" }
 
 [archetype.big_build]
-models = { claude = "opus", codex = "gpt-5-codex" }
+models = { claude = "opus", codex = "gpt-6-astra" }
 
 [archetype.spec_audit]
-models = { claude = "opus", codex = "gpt-5-codex" }
+models = { claude = "opus", codex = "gpt-6-astra" }
 
 [archetype.review]
-models = { claude = "fable", codex = "gpt-5-codex" }
+models = { claude = "fable", codex = "gpt-6-astra" }
 
 [rigor]
 review_passes       = 2

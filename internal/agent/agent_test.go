@@ -2199,7 +2199,7 @@ func TestBuildCmd_ModelInjection(t *testing.T) {
 	}{
 		{"claude task model", "claude", "sonnet", "claude --model 'sonnet' -- 'go'"},
 		{"claude no model", "claude", "", "claude -- 'go'"},
-		{"codex task model", "codex", "gpt-5", "codex --dangerously-bypass-approvals-and-sandbox --model 'gpt-5' -- 'go'"},
+		{"codex task model", "codex", "gpt-6-sol", "codex --dangerously-bypass-approvals-and-sandbox --model 'gpt-6-sol' -- 'go'"},
 		{"pi task model", "pi", "glm", "pi --model 'glm' 'go'"},
 		{"unknown backend skipped", "bare", "sonnet", "my-agent -- 'go'"},
 	}
@@ -2272,21 +2272,21 @@ func TestBuildCmd_ModelInjection_ClaudeResume(t *testing.T) {
 // re-appended — and must precede the positional session-id argument.
 func TestBuildCmd_ModelInjection_CodexResume(t *testing.T) {
 	cfg := modelConfig()
-	task := &model.Task{Name: "t", Backend: "codex", Model: "gpt-5", SessionID: "abc-123", Worktree: t.TempDir()}
+	task := &model.Task{Name: "t", Backend: "codex", Model: "gpt-6-sol", SessionID: "abc-123", Worktree: t.TempDir()}
 	cmd, _, err := BuildCmd(task, cfg, true)
 	testutil.NoError(t, err)
-	testutil.Equal(t, cmd.Args[2], "codex resume --dangerously-bypass-approvals-and-sandbox --model 'gpt-5' 'abc-123'")
+	testutil.Equal(t, cmd.Args[2], "codex resume --dangerously-bypass-approvals-and-sandbox --model 'gpt-6-sol' 'abc-123'")
 }
 
 func TestBuildCmd_ModelInjection_CodexRejectsClaudeOverride(t *testing.T) {
 	cfg := modelConfig()
 	b := cfg.Backends["codex"]
-	b.Model = "gpt-5"
+	b.Model = "gpt-6-sol"
 	cfg.Backends["codex"] = b
 	task := &model.Task{Name: "t", Backend: "codex", Model: "opus", Worktree: t.TempDir(), Prompt: "go"}
 	cmd, _, err := BuildCmd(task, cfg, false)
 	testutil.NoError(t, err)
-	testutil.Contains(t, cmd.Args[2], "--model 'gpt-5'")
+	testutil.Contains(t, cmd.Args[2], "--model 'gpt-6-sol'")
 	if strings.Contains(cmd.Args[2], "--model 'opus'") {
 		t.Fatalf("invalid Claude override reached Codex command: %s", cmd.Args[2])
 	}
@@ -2320,7 +2320,7 @@ func TestBuildCmd_ModelInjection_CodexResumeCommandWins(t *testing.T) {
 	cfg := modelConfig()
 	cfg.Backends["codex"] = config.Backend{Command: "codex --dangerously-bypass-approvals-and-sandbox --model gpt-4"}
 
-	task := &model.Task{Name: "t", Backend: "codex", Model: "gpt-5", SessionID: "abc-123", Worktree: t.TempDir()}
+	task := &model.Task{Name: "t", Backend: "codex", Model: "gpt-6-sol", SessionID: "abc-123", Worktree: t.TempDir()}
 	cmd, _, err := BuildCmd(task, cfg, true)
 	testutil.NoError(t, err)
 	testutil.Equal(t, cmd.Args[2], "codex resume --dangerously-bypass-approvals-and-sandbox 'abc-123'")
