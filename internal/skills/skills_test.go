@@ -364,3 +364,31 @@ func TestReadFrontmatterField_BlockScalarCappedAtMaxLines(t *testing.T) {
 	testutil.True(t, len(got) > 0)
 	testutil.Equal(t, strings.Count(got, "line"), blockScalarMaxLines)
 }
+
+// TestReadFrontmatterField_BlockScalarCappedAtMaxBytes confirms the total
+// byte-size cap trips independently of the line-count cap: a handful of very
+// long lines (well under blockScalarMaxLines) whose combined size exceeds
+// blockScalarMaxBytes must still stop consumption, not be waved through just
+// because there are few of them.
+func TestReadFrontmatterField_BlockScalarCappedAtMaxBytes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "SKILL.md")
+
+	// Each line stays safely under frontmatterMaxLine (the per-line scanner
+	// buffer cap) so the outer scan itself never truncates; the total across
+	// all lines is what should trip blockScalarMaxBytes.
+	longLine := strings.Repeat("x", 100*1024) // 100 KB
+	const lineCount = 20                      // 20 * 100 KB = ~2 MB > blockScalarMaxBytes (1 MB)
+
+	var b strings.Builder
+	b.WriteString("---\ndescription: >-\n")
+	for i := 0; i < lineCount; i++ {
+		b.WriteString("  " + longLine + "\n")
+	}
+	b.WriteString("---\n")
+	testutil.NoError(t, os.WriteFile(path, []byte(b.String()), 0o644))
+
+	got := readFrontmatterField(path, "description")
+	testutil.True(t, len(got) > 0)
+	testutil.True(t, len(got) < lineCount*len(longLine))
+}

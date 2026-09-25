@@ -351,3 +351,79 @@ func TestBuiltinSkillsDir(t *testing.T) {
 	got := BuiltinSkillsDir("/x/.argus/skills")
 	testutil.Equal(t, got, filepath.Join("/x/.argus/skills", ".claude", "skills"))
 }
+
+// The following pin parseFrontmatterLines's slice-index adapter to
+// readBlockScalar against the same edge cases skills_test.go covers for
+// readFrontmatterField's scanner-based adapter — the two call sites share one
+// parsing core (readBlockScalar), but the adapters wrapping it are separate,
+// hand-written closures and are worth verifying independently.
+
+func TestParseFrontmatterLines_FoldedBlockScalar(t *testing.T) {
+	got := parseFrontmatterLines([]string{
+		"---",
+		"name: example",
+		"description: >-",
+		"  This is a long description that wraps across",
+		"  several lines but should read as one sentence.",
+		"allowed-tools: mcp__example",
+		"---",
+	}, "description")
+	testutil.Equal(t, got, "This is a long description that wraps across several lines but should read as one sentence.")
+}
+
+func TestParseFrontmatterLines_LiteralBlockScalar(t *testing.T) {
+	got := parseFrontmatterLines([]string{
+		"---",
+		"description: |",
+		"  line one",
+		"  line two",
+		"---",
+	}, "description")
+	testutil.Equal(t, got, "line one\nline two")
+}
+
+func TestParseFrontmatterLines_BlockScalarStopsAtDedent(t *testing.T) {
+	lines := []string{
+		"---",
+		"description: >-",
+		"  folded text here",
+		"allowed-tools: mcp__example",
+		"---",
+	}
+	testutil.Equal(t, parseFrontmatterLines(lines, "description"), "folded text here")
+	testutil.Equal(t, parseFrontmatterLines(lines, "allowed-tools"), "mcp__example")
+}
+
+func TestParseFrontmatterLines_BlockScalarLeadingBlankLineStopsAtDedent(t *testing.T) {
+	lines := []string{
+		"---",
+		"description: >-",
+		"",
+		"allowed-tools: mcp__example",
+		"---",
+	}
+	got := parseFrontmatterLines(lines, "description")
+	testutil.NotEqual(t, got, "allowed-tools: mcp__example")
+	testutil.Equal(t, got, "")
+	testutil.Equal(t, parseFrontmatterLines(lines, "allowed-tools"), "mcp__example")
+}
+
+func TestParseFrontmatterLines_NonBlockScalarArrowNotMisdetected(t *testing.T) {
+	got := parseFrontmatterLines([]string{
+		"---",
+		"description: \">50% faster\"",
+		"---",
+	}, "description")
+	testutil.Equal(t, got, ">50% faster")
+}
+
+func TestParseFrontmatterLines_BlockScalarCappedAtMaxLines(t *testing.T) {
+	lines := []string{"---", "description: >-"}
+	for i := 0; i < blockScalarMaxLines+500; i++ {
+		lines = append(lines, "  line")
+	}
+	// Deliberately no closing "---".
+	got := parseFrontmatterLines(lines, "description")
+	testutil.True(t, len(got) > 0)
+	testutil.Equal(t, strings.Count(got, "line"), blockScalarMaxLines)
+}
