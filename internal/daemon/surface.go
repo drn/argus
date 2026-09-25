@@ -87,7 +87,9 @@ const (
 	//     preserving normal Codex configuration and state via links.
 	//   - v9: Pi and OpenCode sessions receive Argus skills through per-process
 	//     discovery hooks; OpenCode no longer needs a global skills entry.
-	SupervisorSpawnSurface = 9
+	//   - v10: BuildCmd adds --auto when launching OpenCode, including stored
+	//     commands and resumed sessions.
+	SupervisorSpawnSurface = 10
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -298,7 +300,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "4047cac6b404d95ff56e76dc6365a3125aa4921da6d36019ded17bc4d2628d28"
+	SpawnSurfaceDigest  = "cda056dc2aab3208e2a4165a66a2aa38b0ce0e645176c9c5f77eaa422250b11f"
 	StreamSurfaceDigest = "1939566dd6c7db1f3cfb45ff2856303b79e8c255b5618783729aa5baa4c8a493"
 )
 

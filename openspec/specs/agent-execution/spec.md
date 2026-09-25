@@ -68,6 +68,35 @@ The system SHALL allow a `StartSession` request to remain pending through the bo
 - **THEN** the error SHALL reach the task creator
 - **AND** the creator SHALL unwind the task only after the start call has completed
 
+### Requirement: OpenCode auto approval at launch
+
+The system SHALL include OpenCode's `--auto` flag in every newly built command for a backend whose executable is recognized as OpenCode. This SHALL apply to fresh and resumed sessions, regardless of whether the backend command came from the seed configuration or an existing stored or custom backend entry. The system SHALL include the flag only once if the configured command already contains it, and SHALL leave commands for other backends unchanged. OpenCode's explicit `deny` permission rules SHALL continue to apply.
+
+#### Scenario: Fresh OpenCode session
+
+- **WHEN** a fresh session is built from an OpenCode backend command without `--auto`
+- **THEN** the command includes `--auto` before its prompt arguments
+
+#### Scenario: Resumed OpenCode session
+
+- **WHEN** a resumed session is built from an OpenCode backend command without `--auto`
+- **THEN** the command includes `--auto` along with `--session <id>`
+
+#### Scenario: Existing auto flag
+
+- **WHEN** the OpenCode backend command already contains `--auto`
+- **THEN** the built command contains exactly one `--auto` flag
+
+#### Scenario: Positional auto text
+
+- **WHEN** the OpenCode backend command contains `--auto` only after an end-of-options `--` separator
+- **THEN** the built command includes an injected `--auto` before that separator
+
+#### Scenario: Other backend
+
+- **WHEN** a command is built for a backend not recognized as OpenCode
+- **THEN** no OpenCode `--auto` flag is injected
+
 ### Requirement: Forced terminal capability environment
 
 The system SHALL force terminal-capability environment variables on every spawned agent so color rendering is independent of what the parent process inherited, since the agent's controlling terminal is Argus's truecolor emulator rather than the launching shell.

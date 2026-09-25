@@ -313,8 +313,8 @@ func TestBuildCmd_PermissionMode_SkippedForNonClaude(t *testing.T) {
 		task := &model.Task{Name: "t", Backend: "opencode", Prompt: "go", Worktree: t.TempDir()}
 		cmd, _, err := BuildCmd(task, cfg, false)
 		testutil.NoError(t, err)
-		// opencode is not Claude → no permission flags injected; prompt rides --prompt.
-		testutil.Equal(t, cmd.Args[2], "opencode --prompt 'go'")
+		// OpenCode gets its own auto-approval flag; the prompt rides --prompt.
+		testutil.Equal(t, cmd.Args[2], "opencode --auto --prompt 'go'")
 	})
 
 	t.Run("bare custom command", func(t *testing.T) {
@@ -328,6 +328,50 @@ func TestBuildCmd_PermissionMode_SkippedForNonClaude(t *testing.T) {
 		testutil.NoError(t, err)
 		testutil.Equal(t, cmd.Args[2], "bash -c 'sleep 0.1' -- 'go'")
 	})
+}
+
+func TestBuildCmd_OpencodeAutoApproval(t *testing.T) {
+	cases := []struct {
+		name      string
+		command   string
+		resume    bool
+		sessionID string
+		want      string
+	}{
+		{"fresh seeded command", "opencode", false, "", "opencode --auto --prompt 'go'"},
+		{"resumed stored command", "opencode", true, "ses_existing", "opencode --auto --session 'ses_existing'"},
+		{"custom absolute path", "/usr/local/bin/opencode --standalone", false, "", "/usr/local/bin/opencode --auto --standalone --prompt 'go'"},
+		{"already auto", "opencode --auto", false, "", "opencode --auto --prompt 'go'"},
+		{"similar flag", "opencode --auto-extra", false, "", "opencode --auto --auto-extra --prompt 'go'"},
+		{"other backend", "custom-agent", false, "", "custom-agent --prompt 'go'"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Config{
+				Defaults: config.Defaults{Backend: "custom"},
+				Backends: map[string]config.Backend{
+					"custom": {Command: tc.command, PromptFlag: "--prompt"},
+				},
+			}
+			task := &model.Task{Prompt: "go", SessionID: tc.sessionID, Worktree: t.TempDir()}
+			cmd, _, err := BuildCmd(task, cfg, tc.resume)
+			testutil.NoError(t, err)
+			testutil.Equal(t, cmd.Args[2], tc.want)
+		})
+	}
+}
+
+func TestBuildCmd_OpencodeAutoApproval_BeforeOptionsSeparator(t *testing.T) {
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "opencode"},
+		Backends: map[string]config.Backend{
+			"opencode": {Command: "opencode -- --auto"},
+		},
+	}
+	task := &model.Task{Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], "opencode --auto -- --auto")
 }
 
 // TestBuildCmd_PermissionMode_CommandWins confirms a backend command that
@@ -405,7 +449,7 @@ func TestBuildCmd_RoutingPromptFlag_SkippedForNonClaude(t *testing.T) {
 		task := &model.Task{Name: "t", Backend: "opencode", Prompt: "go", Worktree: t.TempDir()}
 		cmd, _, err := BuildCmd(task, cfg, false)
 		testutil.NoError(t, err)
-		testutil.Equal(t, cmd.Args[2], "opencode --prompt 'go'")
+		testutil.Equal(t, cmd.Args[2], "opencode --auto --prompt 'go'")
 	})
 
 	t.Run("bare custom command", func(t *testing.T) {

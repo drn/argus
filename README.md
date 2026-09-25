@@ -920,7 +920,8 @@ Every option below is overridable. A ⚠️ marks options that are **read but no
 
 #### `[backends.<name>]`
 
-Command templates, keyed by name. Seeded with `claude`, `codex`, `pi`, and `opencode`. The OpenCode default is `opencode mini` with `--prompt`, so the initial prompt is submitted while the session stays interactive.
+Command templates, keyed by name. Seeded with `claude`, `codex`, `pi`, and `opencode`. The OpenCode default uses its full interactive UI with `--prompt`; Argus adds `--auto` at launch so permission requests that would ask are approved.
+Argus adds `--auto` when launching OpenCode, including resumed sessions and stored custom OpenCode commands. Explicit OpenCode permission denials still apply.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|

@@ -41,14 +41,14 @@ func TestBuildCmd_OpencodeNewSession(t *testing.T) {
 	cmd, _, err := BuildCmd(task, cfg, false)
 	testutil.NoError(t, err)
 	// Prompt rides the configured --prompt flag; no --session-id (captured post-exit).
-	testutil.Equal(t, cmd.Args[2], "opencode --prompt 'fix the bug'")
+	testutil.Equal(t, cmd.Args[2], "opencode --auto --prompt 'fix the bug'")
 }
 
 func TestBuildCmd_DefaultOpencodeSubmitsPrompt(t *testing.T) {
 	task := &model.Task{Backend: "opencode", Prompt: "fix the bug", Worktree: t.TempDir()}
 	cmd, _, err := BuildCmd(task, config.DefaultConfig(), false)
 	testutil.NoError(t, err)
-	testutil.Equal(t, cmd.Args[2], "opencode mini --prompt 'fix the bug'")
+	testutil.Equal(t, cmd.Args[2], "opencode --auto --prompt 'fix the bug'")
 }
 
 func TestBuildCmd_OpencodeNewSession_IgnoresSessionID(t *testing.T) {
@@ -61,7 +61,7 @@ func TestBuildCmd_OpencodeNewSession_IgnoresSessionID(t *testing.T) {
 	if got := cmd.Args[2]; got == "opencode --session-id 'ses_abc123' --prompt 'fix the bug'" {
 		t.Fatalf("opencode new-session must not emit --session-id, got %q", got)
 	}
-	testutil.Equal(t, cmd.Args[2], "opencode --prompt 'fix the bug'")
+	testutil.Equal(t, cmd.Args[2], "opencode --auto --prompt 'fix the bug'")
 }
 
 func TestBuildCmd_OpencodeResume(t *testing.T) {
@@ -71,7 +71,7 @@ func TestBuildCmd_OpencodeResume(t *testing.T) {
 	cmd, _, err := BuildCmd(task, cfg, true)
 	testutil.NoError(t, err)
 	// Resume: --session <id>, prompt dropped (conversation is reloaded).
-	testutil.Equal(t, cmd.Args[2], "opencode --session 'ses_abc123'")
+	testutil.Equal(t, cmd.Args[2], "opencode --auto --session 'ses_abc123'")
 }
 
 func TestBuildCmd_OpencodeResumeNoSessionID(t *testing.T) {
@@ -80,8 +80,8 @@ func TestBuildCmd_OpencodeResumeNoSessionID(t *testing.T) {
 
 	cmd, _, err := BuildCmd(task, cfg, true)
 	testutil.NoError(t, err)
-	// Resume with no known ID starts fresh — plain base command, no --session.
-	testutil.Equal(t, cmd.Args[2], "opencode")
+	// Resume with no known ID starts fresh — auto approval, no --session.
+	testutil.Equal(t, cmd.Args[2], "opencode --auto")
 }
 
 func TestBuildCmd_OpencodeModelInjection(t *testing.T) {
@@ -90,7 +90,7 @@ func TestBuildCmd_OpencodeModelInjection(t *testing.T) {
 
 	cmd, _, err := BuildCmd(task, cfg, false)
 	testutil.NoError(t, err)
-	testutil.Equal(t, cmd.Args[2], "opencode --model 'anthropic/claude-sonnet-4-5' --prompt 'fix the bug'")
+	testutil.Equal(t, cmd.Args[2], "opencode --auto --model 'anthropic/claude-sonnet-4-5' --prompt 'fix the bug'")
 }
 
 func TestBuildCmd_OpencodeModelInjection_Resume(t *testing.T) {
@@ -100,7 +100,7 @@ func TestBuildCmd_OpencodeModelInjection_Resume(t *testing.T) {
 	cmd, _, err := BuildCmd(task, cfg, true)
 	testutil.NoError(t, err)
 	// Model flag precedes the resume --session; prompt is dropped.
-	testutil.Equal(t, cmd.Args[2], "opencode --model 'anthropic/claude-opus-4-1' --session 'ses_abc123'")
+	testutil.Equal(t, cmd.Args[2], "opencode --auto --model 'anthropic/claude-opus-4-1' --session 'ses_abc123'")
 }
 
 // seedOpencodeSQLite creates an opencode.db with a `session` table under the

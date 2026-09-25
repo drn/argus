@@ -147,10 +147,9 @@ func (d *DB) fixupBackends() error {
 
 		needsUpdate := false
 
-		// The old built-in OpenCode command only pre-fills --prompt in v2's
-		// full TUI. Upgrade that exact shipped default, preserving any custom
-		// command or prompt flag the user configured.
-		if name == "opencode" && command == "opencode" && promptFlag == "--prompt" {
+		// The prior built-in mini command does not honor --auto. Restore the
+		// full TUI for that exact default while preserving custom commands.
+		if name == "opencode" && command == "opencode mini" && promptFlag == "--prompt" {
 			needsUpdate = true
 		}
 

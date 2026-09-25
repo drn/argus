@@ -1564,7 +1564,7 @@ func TestFixupBackends_UpgradesOldOpencodeDefault(t *testing.T) {
 		in   config.Backend
 		want config.Backend
 	}{
-		{"old default", config.Backend{Command: "opencode", PromptFlag: "--prompt"}, config.Backend{Command: "opencode mini", PromptFlag: "--prompt"}},
+		{"old mini default", config.Backend{Command: "opencode mini", PromptFlag: "--prompt"}, config.Backend{Command: "opencode", PromptFlag: "--prompt"}},
 		{"custom command", config.Backend{Command: "opencode --standalone", PromptFlag: "--prompt"}, config.Backend{Command: "opencode --standalone", PromptFlag: "--prompt"}},
 		{"custom prompt flag", config.Backend{Command: "opencode", PromptFlag: "--custom"}, config.Backend{Command: "opencode", PromptFlag: "--custom"}},
 	} {

@@ -2536,10 +2536,9 @@ func TestSwitchSession_LiveSessionInvalidatesTasksChangeGate(t *testing.T) {
 
 // TestHandleSessionExitUI_RecaptureInvalidatesTasksChangeGate pins the fourth
 // write site the same review found: the async session-ID recapture goroutine
-// dispatched at the end of handleSessionExitUI writes a.db.Update well AFTER
-// that function's own unconditional refreshTasksAsync call already ran (the
-// goroutine does a disk scan first), so that earlier refresh cannot have
-// covered it.
+// dispatched by handleSessionExitUI may write a.db.Update after that
+// function's own unconditional refreshTasksAsync fetch. If so, the
+// recapture callback must invalidate the gate so the next tick refetches.
 func TestHandleSessionExitUI_RecaptureInvalidatesTasksChangeGate(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -2558,16 +2557,14 @@ func TestHandleSessionExitUI_RecaptureInvalidatesTasksChangeGate(t *testing.T) {
 	}
 	testutil.NoError(t, d.Add(task))
 	app.refreshTasksWithIDs(nil, nil, false) // prime
-	baseline := wrapped.tasksCalls
 
 	_, stop := wireApp(t, app)
 	defer stop()
 
 	app.handleSessionExitUI(task.ID, true /* cleanExit */, false)
-	syncUI(t, app.tapp) // let the function's OWN refreshTasksAsync land first
+	syncUI(t, app.tapp) // drain updates already queued by both async paths
 
-	// Poll for the async capture goroutine's QueueUpdateDraw to land — it does
-	// a disk scan before writing, so it lands strictly after the above.
+	// Poll for the async capture goroutine's QueueUpdateDraw to land.
 	deadline := time.Now().Add(uiTimeout)
 	for time.Now().Before(deadline) {
 		got, err := d.Get(task.ID)
@@ -2580,14 +2577,17 @@ func TestHandleSessionExitUI_RecaptureInvalidatesTasksChangeGate(t *testing.T) {
 	got, err := d.Get(task.ID)
 	testutil.NoError(t, err)
 	testutil.Equal(t, got.SessionID, newID)
+	syncUI(t, app.tapp) // wait for the recapture callback to invalidate the gate
 
-	// A gated tick right after must see the recaptured SessionID. Two fetches
-	// happened by this point: handleSessionExitUI's own (unconditional)
-	// refreshTasksAsync, and this call itself — gated, but forced to refetch
-	// by the recapture goroutine's invalidateTasksChangeGate despite the
-	// write having gone through the same connection.
+	// If the unconditional refresh ran before recapture, the cached task is
+	// stale and the gated tick must fetch. If it ran after recapture, the
+	// cache is already current and a second fetch is optional.
+	stale := app.tasks[0].SessionID != newID
+	before := wrapped.tasksCalls
 	app.refreshTasksWithIDs(nil, nil, true)
-	testutil.Equal(t, wrapped.tasksCalls, baseline+2)
+	if stale {
+		testutil.Equal(t, wrapped.tasksCalls, before+1)
+	}
 	testutil.Equal(t, app.tasks[0].SessionID, newID)
 }
 
