@@ -60,7 +60,10 @@ type Session struct {
 	lastUserInput time.Time
 	ptmxClosed    bool // true after waitLoop closes ptmx; guards Resize/WriteInput
 
-	logFile *os.File // PTY output log for post-session scrollback; nil if unavailable
+	logFile       *os.File // PTY output log for post-session scrollback; nil if unavailable
+	colorQueries  terminalColorQueries
+	colorReplies  chan []byte
+	colorAnswered [2]bool // OSC 10/11; guarded by mu
 }
 
 // SessionsDir returns the directory where session logs are stored.
@@ -112,19 +115,21 @@ func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, er
 	SaveSessionSize(taskID, int(cols), int(rows))
 
 	s := &Session{
-		TaskID:      taskID,
-		Cmd:         cmd,
-		ptmx:        ptmx,
-		buf:         NewRingBuffer(defaultBufSize),
-		done:        make(chan struct{}),
-		readDone:    make(chan struct{}),
-		detachCh:    make(chan struct{}),
-		ptyCols:     cols,
-		ptyRows:     rows,
-		initialCols: cols,
-		initialRows: rows,
-		logFile:     logFile,
+		TaskID:       taskID,
+		Cmd:          cmd,
+		ptmx:         ptmx,
+		buf:          NewRingBuffer(defaultBufSize),
+		done:         make(chan struct{}),
+		readDone:     make(chan struct{}),
+		detachCh:     make(chan struct{}),
+		ptyCols:      cols,
+		ptyRows:      rows,
+		initialCols:  cols,
+		initialRows:  rows,
+		logFile:      logFile,
+		colorReplies: make(chan []byte, 8),
 	}
+	go s.forwardColorReplies()
 
 	// Single reader: PTY → ring buffer (+ attached writer when set)
 	go s.readLoop()
@@ -143,6 +148,7 @@ func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, er
 // readers see a half-drained session.
 func (s *Session) readLoop() {
 	defer close(s.readDone)
+	defer close(s.colorReplies)
 	if s.logFile != nil {
 		defer s.logFile.Close()
 	}
@@ -155,6 +161,18 @@ func (s *Session) readLoop() {
 			// fully consume data synchronously before returning. The next
 			// ptmx.Read(tmp) doesn't execute until this iteration completes.
 			data := tmp[:n]
+			// Codex asks for the terminal's colors at startup, before any UI
+			// pane can attach. Answer from the PTY owner so its composer chooses
+			// the highlighted background on its first render.
+			s.colorQueries.scan(data, func(reply []byte) {
+				s.mu.Lock()
+				select {
+				case s.colorReplies <- reply:
+					s.colorAnswered[colorReplyIndex(reply)] = true
+				default: // Never stall the PTY reader on repeated queries.
+				}
+				s.mu.Unlock()
+			})
 			s.mu.Lock()
 			s.buf.Write(data)
 			s.lastOutput = time.Now()
@@ -608,6 +626,17 @@ func (s *Session) InitialPTYSize() (cols, rows int) {
 // (e.g. ptmx already closed by waitLoop) must not advance the timestamp, or a
 // subsequent blip-idle would falsely re-arm the gate.
 func (s *Session) WriteInput(p []byte, origin agentview.InputOrigin) (int, error) {
+	// Attached terminal emulators may replay the startup query and generate
+	// their own answer. The PTY owner has already answered it; a second OSC
+	// reply could otherwise land in Codex's prompt as literal input.
+	if kind := colorReplyIndex(p); kind >= 0 {
+		s.mu.Lock()
+		answered := s.colorAnswered[kind]
+		s.mu.Unlock()
+		if answered {
+			return len(p), nil
+		}
+	}
 	n, err := s.ptmx.Write(p)
 	if err == nil {
 		now := time.Now()
