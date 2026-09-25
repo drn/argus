@@ -20,7 +20,7 @@ The client SHALL connect to the daemon by dialing its Unix socket and selecting 
 
 ### Requirement: RPC calls are bounded by a timeout
 
-Every RPC the client issues SHALL complete within a bounded time so the TUI never hangs if the daemon becomes unresponsive. When a call exceeds its deadline, the client SHALL return a timeout error. Long-running operations that legitimately exceed the default deadline SHALL be allowed a larger deadline.
+Every RPC the client issues SHALL complete within a bounded time so the TUI never hangs if the daemon becomes unresponsive. When a call exceeds its deadline, the client SHALL return a timeout error. Long-running operations that legitimately exceed the default deadline SHALL be allowed a larger deadline, including per-backend start deadlines for a task whose resolved backend has known slow prelaunch work.
 
 #### Scenario: Daemon never responds
 
@@ -31,6 +31,11 @@ Every RPC the client issues SHALL complete within a bounded time so the TUI neve
 
 - **WHEN** the client issues the self-update RPC (which shells out to a build)
 - **THEN** it SHALL use an extended deadline rather than the short default
+
+#### Scenario: Starting a pi-backend session
+
+- **WHEN** the client starts a session for a task whose resolved backend is pi
+- **THEN** it SHALL use an extended deadline covering pi's ollama-readiness prelaunch work rather than the short default, so the call is not misreported as failed while the daemon is still legitimately starting the session
 
 ### Requirement: Starting a session
 

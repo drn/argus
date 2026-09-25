@@ -690,6 +690,36 @@ func TestC_HasSessErr(t *testing.T) {
 	})
 }
 
+// TestStartTimeoutFor pins the per-backend RPC timeout selection Client.Start
+// relies on: a pi backend gets piStartTimeout, everything else (including an
+// unresolvable backend) falls back to the default rpcTimeout.
+func TestStartTimeoutFor(t *testing.T) {
+	cfg := config.Config{
+		Backends: map[string]config.Backend{
+			"pi-test":     {Command: "pi"},
+			"claude-test": {Command: "claude"},
+		},
+	}
+
+	tests := []struct {
+		name string
+		task *model.Task
+		cfg  config.Config
+		want time.Duration
+	}{
+		{"pi backend", &model.Task{Backend: "pi-test"}, cfg, piStartTimeout},
+		{"non-pi backend", &model.Task{Backend: "claude-test"}, cfg, rpcTimeout},
+		{"unresolvable backend", &model.Task{Backend: "no-such"}, cfg, rpcTimeout},
+		{"empty config", &model.Task{Backend: "pi-test"}, config.Config{}, rpcTimeout},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := startTimeoutFor(tt.task, tt.cfg)
+			testutil.Equal(t, tt.want, got)
+		})
+	}
+}
+
 // TestC_StartErr covers Start's daemon-error branch (resp.Error != "").
 func TestC_StartErr(t *testing.T) {
 	_, sockPath, _ := testSetup(t)
