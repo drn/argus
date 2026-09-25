@@ -51,11 +51,13 @@ const (
 	ActTaskFilter    Action = "tasklist.filter"
 	ActTaskHera      Action = "tasklist.toggle_hera"
 	ActTaskInbox     Action = "tasklist.inbox"
+	ActTaskArtifacts Action = "tasklist.artifacts"
 	ActTaskDown      Action = "tasklist.nav_down"
 	ActTaskUp        Action = "tasklist.nav_up"
 
 	// Agent view (all bindings must carry a modifier)
 	ActAgentLinks      Action = "agent.links"
+	ActAgentArtifacts  Action = "agent.artifacts"
 	ActAgentSession    Action = "agent.session"
 	ActAgentSwitcher   Action = "agent.switcher"
 	ActAgentOpenPR     Action = "agent.open_pr"
@@ -153,11 +155,13 @@ var defaultSpecs = map[Context]map[Action]string{
 		ActTaskNew: "n", ActTaskStatusAdv: "s", ActTaskStatusRev: "S",
 		ActTaskArchive: "a", ActTaskPin: "P", ActTaskRename: "r", ActTaskCopy: "c",
 		ActTaskFilter: "/", ActTaskHera: "H", ActTaskDown: "j", ActTaskUp: "k",
-		ActTaskInbox: "i",
+		ActTaskInbox:     "i",
+		ActTaskArtifacts: "v",
 	},
 	CtxAgent: {
 		ActAgentLinks: "ctrl+l", ActAgentSession: "ctrl+r", ActAgentSwitcher: "ctrl+j",
-		ActAgentOpenPR: "ctrl+p", ActAgentZoom: "ctrl+z", ActAgentCopy: "ctrl+y",
+		ActAgentArtifacts: "ctrl+t",
+		ActAgentOpenPR:    "ctrl+p", ActAgentZoom: "ctrl+z", ActAgentCopy: "ctrl+y",
 		ActAgentPaneLeft: "cmd+left", ActAgentPaneRight: "cmd+right",
 		ActAgentTaskPrev: "cmd+up", ActAgentTaskNext: "cmd+down",
 		ActAgentScrollUp: "shift+up", ActAgentScrollDown: "shift+down",
@@ -201,9 +205,11 @@ var actionLabels = map[Action]string{
 	ActTaskArchive: "toggle archive", ActTaskPin: "toggle pin", ActTaskRename: "rename",
 	ActTaskCopy: "copy name / prompt", ActTaskFilter: "filter", ActTaskHera: "show/hide hera-managed (workers+coords)",
 	ActTaskDown: "navigate down", ActTaskUp: "navigate up", ActTaskInbox: "view message inbox (read-only)",
+	ActTaskArtifacts: "view task artifacts",
 
 	ActAgentLinks: "link picker", ActAgentSession: "switch Claude session", ActAgentSwitcher: "task/role switcher",
-	ActAgentOpenPR: "open PR", ActAgentZoom: "toggle single-pane (zoom)", ActAgentCopy: "copy staged text",
+	ActAgentArtifacts: "view task artifacts",
+	ActAgentOpenPR:    "open PR", ActAgentZoom: "toggle single-pane (zoom)", ActAgentCopy: "copy staged text",
 	ActAgentPaneLeft: "focus pane left", ActAgentPaneRight: "focus pane right",
 	ActAgentTaskPrev: "previous task", ActAgentTaskNext: "next task",
 	ActAgentScrollUp: "scroll up", ActAgentScrollDown: "scroll down",
@@ -285,8 +291,8 @@ var contextOrder = map[Context][]Action{
 		ActGlobalRefresh, ActGlobalDestroy, ActGlobalFork, ActGlobalOpenRepo, ActGlobalOpenPR, ActGlobalPrune,
 		ActGlobalPalette, ActGlobalJumpNeedsInput, ActGlobalRestoreRail},
 	CtxTaskList: {ActTaskNew, ActTaskDown, ActTaskUp, ActTaskStatusAdv, ActTaskStatusRev, ActTaskArchive,
-		ActTaskPin, ActTaskRename, ActTaskCopy, ActTaskFilter, ActTaskHera, ActTaskInbox},
-	CtxAgent: {ActAgentLinks, ActAgentSession, ActAgentSwitcher, ActAgentOpenPR, ActAgentZoom, ActAgentCopy,
+		ActTaskPin, ActTaskRename, ActTaskCopy, ActTaskFilter, ActTaskHera, ActTaskInbox, ActTaskArtifacts},
+	CtxAgent: {ActAgentLinks, ActAgentArtifacts, ActAgentSession, ActAgentSwitcher, ActAgentOpenPR, ActAgentZoom, ActAgentCopy,
 		ActAgentPaneLeft, ActAgentPaneRight, ActAgentTaskPrev, ActAgentTaskNext,
 		ActAgentScrollUp, ActAgentScrollDown, ActAgentScrollPgUp, ActAgentScrollPgDn, ActAgentScrollEnd},
 	CtxFilePnl: {ActFileDown, ActFileUp, ActFileFinder, ActFileOpen, ActFileEditor, ActFileTerminal},

@@ -117,6 +117,8 @@ type TaskListView struct {
 	OnCopy func(task *model.Task)
 	// OnInbox fires on `i` to open the selected task's read-only inbox viewer.
 	OnInbox func(task *model.Task)
+	// OnArtifacts opens the selected task's registered-artifact browser.
+	OnArtifacts func(task *model.Task)
 	// Callback fired after buildRows when the row composition changes.
 	// Used by App to force a tcell Sync — rows shifting under tview's
 	// diff-based emit is a known source of bleed-through in tmux.
@@ -1030,6 +1032,10 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 			case keymap.ActTaskInbox:
 				if t := tl.SelectedTask(); t != nil && tl.OnInbox != nil {
 					tl.OnInbox(t)
+				}
+			case keymap.ActTaskArtifacts:
+				if t := tl.SelectedTask(); t != nil && tl.OnArtifacts != nil {
+					tl.OnArtifacts(t)
 				}
 			}
 		}

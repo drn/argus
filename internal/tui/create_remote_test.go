@@ -26,6 +26,8 @@ var _ remoteTaskCreator = (*apistore.Store)(nil)
 // "neither local nor remote-capable" fallback branch.
 type stubStore struct{}
 
+func (stubStore) Artifacts(string) ([]*model.Artifact, error) { return nil, nil }
+
 var _ store.Store = stubStore{}
 
 func (stubStore) Tasks() ([]*model.Task, error)   { return nil, nil }

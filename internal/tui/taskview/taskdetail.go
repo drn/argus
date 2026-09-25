@@ -19,8 +19,9 @@ import (
 // TaskDetailPanel displays metadata for the selected task in the right panel.
 type TaskDetailPanel struct {
 	*tview.Box
-	task    *model.Task
-	running bool
+	task          *model.Task
+	running       bool
+	artifactCount string
 
 	// OnBranchChange fires when Draw() will paint a different rendering
 	// branch than the previous frame: the task==nil "No task selected"
@@ -56,6 +57,9 @@ func NewTaskDetailPanel() *TaskDetailPanel {
 // shape changes (different task ID, different field-presence flags, running
 // flip, status flip, or prompt text change).
 func (td *TaskDetailPanel) SetTask(t *model.Task, running bool) {
+	if t == nil || td.task == nil || td.task.ID != t.ID {
+		td.artifactCount = "…"
+	}
 	td.task = t
 	td.running = running
 	shape := td.taskShape()
@@ -67,6 +71,9 @@ func (td *TaskDetailPanel) SetTask(t *model.Task, running bool) {
 		td.OnBranchChange()
 	}
 }
+
+// SetArtifactCount updates the selected task's asynchronously fetched count.
+func (td *TaskDetailPanel) SetArtifactCount(count string) { td.artifactCount = count }
 
 // taskShape returns a 64-bit FNV-1a hash of the inputs that determine which
 // rows Draw paints and at what widths. Fields that DON'T affect the cell SET
@@ -155,6 +162,7 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 	}
 	statusStyle := td.statusStyle(t.Status)
 	row = td.drawField(screen, inner.X, row, inner.W, "Status", statusLabel, statusStyle)
+	row = td.drawField(screen, inner.X, row, inner.W, "Artifacts", td.artifactCount, theme.StyleNormal)
 
 	// Project
 	if t.Project != "" {

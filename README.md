@@ -187,6 +187,7 @@ below. The `?` overlay always shows your active bindings.
 | `r`       | Rename task (display name only; branch/worktree stay locked)    |
 | `H`       | Toggle visibility of Hera-managed tasks (workers + coordinators; visible inline by default, each with a hera-role indicator — press `H` to hide) |
 | `i`       | View the task's message inbox (read-only): task messages + hera messages to any role it is/was bound to, read and unread, with delivery state. `r` reloads, `Esc`/`q` closes; never marks anything read. Local mode only |
+| `v`       | Browse the selected task's registered artifacts (`r` refresh, `Enter` preview/open, `o` open externally) |
 | `ctrl+d`  | Destroy task (kill agent + remove worktree + delete branch)     |
 | `ctrl+o`  | Open the project's GitHub repo in browser (via `gh repo view --web`) |
 | `ctrl+r`  | Prune completed tasks                                           |
@@ -214,6 +215,7 @@ below. The `?` overlay always shows your active bindings.
 | `ctrl+b`              | Restore the rail's pre-interruption fold/selection snapshot at any time (see the Task List table above — same global action) |
 | `ctrl+z`              | Toggle the git + file side panes (default layout set by Settings → Appearance → "Default agent view") |
 | `ctrl+l`              | Open link picker (fuzzy search all session URLs)                          |
+| `ctrl+t`              | Browse the current task's registered artifacts (intercepted before PTY input) |
 | `ctrl+r`              | Switch Claude session (searchable picker of this task's conversations; resumes the chosen one). Claude backends only |
 | `ctrl+p`              | Open PR for the worktree branch in browser (via `gh pr view --web`)       |
 | `ctrl+y`              | Copy agent-staged text; flashes "Nothing to copy" if no payload is pending (always intercepted — never sent to the PTY) |
