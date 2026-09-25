@@ -400,6 +400,12 @@ type App struct {
 	// instead of re-reading+re-emulating. See needsInputRawSignals's own doc
 	// comment for the field-by-field validity contract.
 	needsInputRawSignals map[string]needsInputRawSignals
+	// needsInputScanCursor carries the fleet-batching rotation cursor
+	// (add-needs-input-fleet-batching) across ticks: which batch of running
+	// sessions is due for a fresh tail-read+re-emulation THIS tick, once the
+	// fleet exceeds needsInputScanBatchSize. See needsInputScanBatch's doc
+	// comment for the full contract.
+	needsInputScanCursor int
 	// heraBlockedResume carries the resumed-activity counter (see
 	// agent.ResumeActivityTick) for the SEPARATE self-reported hera_status
 	// "blocked" auto-clear pass (autoClearBlockedHeraRoles) — keyed by task ID
@@ -2725,6 +2731,37 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	prevRaw := a.needsInputRawSignals
 	newRaw := make(map[string]needsInputRawSignals, len(activeRunningIDs))
 
+	// Fleet-batching gate (add-needs-input-fleet-batching): due reports
+	// whether id's batch is in rotation THIS tick once the fleet exceeds
+	// needsInputScanBatchSize — see needsInputScanBatch's doc comment.
+	//
+	// reuseCached checks batching BEFORE logUnchanged, and — critically —
+	// skips calling logUnchanged (hence its Stat()-and-record side effect)
+	// entirely for a not-due id: logUnchanged's dirty check compares against
+	// the PREVIOUS tick's recorded stat, so recording a fresh stat snapshot on
+	// a tick where the content was never actually re-read would make the very
+	// next tick's comparison see "unchanged since last observation" against a
+	// snapshot that was never matched with a real read — permanently masking
+	// a genuine change that happened while the id was out of rotation. Leaving
+	// no newLogStat entry on a skipped tick instead makes the id's next DUE
+	// tick compare fresh-vs-last-actually-read, exactly as intended: still
+	// skips the read if truly nothing changed across the whole gap, but
+	// always catches a real change once the id's batch comes due.
+	//
+	// An id with no prior raw signal (its very first tick) is always treated
+	// as due, so a freshly-spawned session's first reading is never delayed
+	// by rotation.
+	due := a.needsInputScanBatch(activeRunningIDs)
+	reuseCached := func(id string) bool {
+		if _, seen := prevRaw[id]; !seen {
+			return false
+		}
+		if !due(id) {
+			return true
+		}
+		return logUnchanged(id)
+	}
+
 	// Content-stability pass: fingerprint only sessions showing an
 	// awaiting-input signal (agent.AwaitingInputFingerprint: the UNAMBIGUOUS
 	// selection widget, OR a free-text trailing question with the "working"
@@ -2737,7 +2774,7 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	for _, id := range activeRunningIDs {
 		var hasTail, ok, parked bool
 		var fp uint64
-		if logUnchanged(id) {
+		if reuseCached(id) {
 			pr := prevRaw[id]
 			hasTail = pr.hasTail
 			if hasTail {
@@ -2823,7 +2860,7 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	for _, id := range activeRunningIDs {
 		var hasTail, working bool
 		var contentFP uint64
-		if logUnchanged(id) {
+		if reuseCached(id) {
 			pr := prevRaw[id]
 			hasTail = pr.hasTail
 			working = pr.working
@@ -2924,7 +2961,7 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 		var awaitingNow bool
 		if idleNow {
 			pr := prevRaw[id]
-			if logUnchanged(id) && pr.awaitingComputed {
+			if reuseCached(id) && pr.awaitingComputed {
 				awaitingNow = pr.awaitingNow
 			} else {
 				tail := getTail(id)
@@ -3106,6 +3143,53 @@ func (a *App) autoClearBlockedHeraRoles(runningIDs []string) {
 // Keep in sync with agent.needsInputTailWindow (the ring-buffer equivalent used
 // by agent.BlockedOnPrompt) so the TUI and API detect over the same-sized tail.
 const detectNeedsInputTailBytes = 16 * 1024
+
+// needsInputScanBatchSize bounds the worst-case per-tick cost of the needs-
+// input / content-idle fleet scan (add-needs-input-fleet-batching): a fleet
+// at or below this many running sessions is fully scanned (tail read +
+// re-emulation) every tick, identical to pre-batching behavior. Above it,
+// needsInputScanBatch rotates a fixed-size batch of sessions into scope per
+// tick instead of scanning the whole fleet, so the per-tick cost stays
+// roughly constant no matter how large the fleet grows, at the cost of up to
+// one rotation's worth of ticks of staleness for a session outside the due
+// batch — bounded and self-healing, never a permanent miss (see
+// needsInputScanBatch's doc comment).
+const needsInputScanBatchSize = 24
+
+// needsInputScanBatch partitions ids into fixed-size rotation batches and
+// returns a predicate reporting whether an id is due for a fresh tail-read +
+// re-emulation THIS tick, gating detectNeedsInputSticky's reuseCached helper.
+//
+// len(ids) <= needsInputScanBatchSize: every id is always due — a strict
+// no-op matching pre-batching behavior exactly, so a typical/small fleet
+// never sees any staleness or behavior change from this mechanism.
+//
+// Above the threshold: ids are sorted for a stable bucket assignment (the
+// caller's slice order isn't guaranteed stable tick to tick — it comes from
+// an RPC round-trip), split into ceil(len/needsInputScanBatchSize) batches,
+// and exactly one batch is due per tick via a's rotation cursor. This bounds
+// the worst-case per-tick scan cost at needsInputScanBatchSize regardless of
+// fleet size, trading up to (batch count) ticks of staleness for an
+// out-of-batch session — the same trade-off class already accepted by the
+// Stat()-based dirty check (dedupe-redundant-needsinput-reads): every
+// session's tick-counters still advance every tick via the replayed raw
+// signal, only the expensive read+re-emulation is gated.
+func (a *App) needsInputScanBatch(ids []string) func(id string) bool {
+	if len(ids) <= needsInputScanBatchSize {
+		return func(string) bool { return true }
+	}
+	sorted := make([]string, len(ids))
+	copy(sorted, ids)
+	sort.Strings(sorted)
+	numBatches := (len(sorted) + needsInputScanBatchSize - 1) / needsInputScanBatchSize
+	batchOf := make(map[string]int, len(sorted))
+	for i, id := range sorted {
+		batchOf[id] = i % numBatches
+	}
+	due := a.needsInputScanCursor % numBatches
+	a.needsInputScanCursor++
+	return func(id string) bool { return batchOf[id] == due }
+}
 
 // readSessionLogTailBytes returns the last n raw bytes of a task's session
 // log — or, if that flat window turns out to be dominated by a trailing

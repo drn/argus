@@ -340,6 +340,111 @@ func TestDetectNeedsInputSticky_DirtyCheck(t *testing.T) {
 	})
 }
 
+// TestDetectNeedsInputSticky_FleetScanBatching covers add-needs-input-fleet-
+// batching: a fleet at or below needsInputScanBatchSize is scanned in full
+// every tick (byte-identical to pre-batching behavior — the common case must
+// never regress), but a LARGE fleet caps the per-tick fresh-read+re-emulation
+// cost at needsInputScanBatchSize by rotating a batch of ids into scope per
+// tick, while every id's tick-counter (here, escalation) still advances every
+// single tick via the replayed raw signal for ids outside this tick's batch —
+// mirroring the existing Stat()-based dirty check's replay contract
+// (TestDetectNeedsInputSticky_DirtyCheck). A session's very first-ever
+// observation is never subject to batching (no prior raw signal to replay),
+// so a freshly-spawned session's first reading is never delayed.
+func TestDetectNeedsInputSticky_FleetScanBatching(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeLogAt := func(taskID, content string, mtime time.Time) {
+		logPath := agent.SessionLogPath(taskID)
+		testutil.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0o755))
+		testutil.NoError(t, os.WriteFile(logPath, []byte(content), 0o644))
+		testutil.NoError(t, os.Chtimes(logPath, mtime, mtime))
+	}
+
+	t.Run("a fleet at the batch size threshold scans every session every tick", func(t *testing.T) {
+		a := &App{}
+		const parked = "❯ 1. Yes\n  2. No\n"
+		base := time.Date(2026, 1, 4, 0, 0, 0, 0, time.UTC)
+		ids := make([]string, needsInputScanBatchSize)
+		for i := range ids {
+			ids[i] = fmt.Sprintf("small-%02d", i)
+			writeLogAt(ids[i], parked, base)
+		}
+		a.detectNeedsInputSticky(nil, ids, nil)
+		for _, id := range ids {
+			testutil.Equal(t, a.needsInputEscalation[id], 1)
+		}
+	})
+
+	t.Run("a fleet above the batch size still advances every session's counter every tick with static content", func(t *testing.T) {
+		a := &App{}
+		const parked = "❯ 1. Yes\n  2. No\n"
+		base := time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC)
+		n := needsInputScanBatchSize*2 + 3 // forces 3 rotation batches
+		ids := make([]string, n)
+		for i := range ids {
+			ids[i] = fmt.Sprintf("big-%03d", i)
+			writeLogAt(ids[i], parked, base)
+		}
+		// Tick 1: every id is seen for the first time — always due regardless
+		// of batching, so every counter starts at 1.
+		got := a.detectNeedsInputSticky(nil, ids, nil)
+		for _, id := range ids {
+			testutil.Equal(t, a.needsInputEscalation[id], 1)
+		}
+		// Ticks 2-3: content never changes, so a batch's replayed signal for
+		// an id outside this tick's due set is indistinguishable from a fresh
+		// read — every counter must keep advancing every tick regardless.
+		for tick := 2; tick <= 3; tick++ {
+			got = a.detectNeedsInputSticky(nil, ids, got)
+			for _, id := range ids {
+				testutil.Equal(t, a.needsInputEscalation[id], tick)
+			}
+		}
+	})
+
+	t.Run("a change to an out-of-batch session is caught within one full rotation, never lost", func(t *testing.T) {
+		a := &App{}
+		const parked = "❯ 1. Yes\n  2. No\n"
+		const busy = "Reading foo.go\nDone.\n"
+		base := time.Date(2026, 1, 6, 0, 0, 0, 0, time.UTC)
+		n := needsInputScanBatchSize*2 + 3 // 3 rotation batches
+		ids := make([]string, n)
+		for i := range ids {
+			ids[i] = fmt.Sprintf("rot-%03d", i)
+			writeLogAt(ids[i], parked, base)
+		}
+		got := a.detectNeedsInputSticky(nil, ids, nil)
+
+		target := ids[0]
+		writeLogAt(target, busy, base.Add(time.Hour))
+
+		// Drive enough ticks to cover every rotation batch at least twice
+		// (one tick to observe the change once its batch comes due, one more
+		// to confirm the break per the existing two-consecutive-miss clear
+		// semantics — see TestDetectNeedsInputSticky_DirtyCheck).
+		cleared := false
+		for i := 0; i < 8; i++ {
+			got = a.detectNeedsInputSticky(nil, ids, got)
+			if _, ok := a.needsInputEscalation[target]; !ok {
+				cleared = true
+				break
+			}
+		}
+		if !cleared {
+			t.Fatalf("expected the changed out-of-batch session's escalation counter to clear within one full rotation, still present: %v", a.needsInputEscalation[target])
+		}
+
+		// Every OTHER session's content never changed — their counters must
+		// have kept advancing every tick throughout, unaffected by target's
+		// batch-local change.
+		for _, id := range ids[1:] {
+			if a.needsInputEscalation[id] == 0 {
+				t.Fatalf("session %s: expected escalation counter to be advancing, got 0 (absent)", id)
+			}
+		}
+	})
+}
+
 // TestDetectNeedsInputSticky_ArchivePrefilter covers the archive pre-filter
 // (dedupe-redundant-needsinput-reads, Fix 3): archiving a task does NOT stop
 // its live session (db.SetArchived / the REST and MCP archive endpoints are
