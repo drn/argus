@@ -1,6 +1,6 @@
 ## 1. Data
 
-- [x] 1.1 `db.HeraMessagesToRoles(roleIDs, limit)` — all read states, oldest first; tests (empty ids, read+unread, other-role exclusion, limit).
+- [x] 1.1 `db.HeraMessagesForTask(taskID, limit)` — all read states, oldest first; tests (no bindings, read+unread incl. ended binding, other-task exclusion, limit).
 
 ## 2. Keymap
 

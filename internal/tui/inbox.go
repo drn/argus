@@ -86,19 +86,7 @@ func loadInboxEntries(d *db.DB, taskID string) ([]modal.InboxEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	bindings, err := d.ListHeraBindingsByTask(taskID)
-	if err != nil {
-		return nil, err
-	}
-	seen := map[int64]bool{}
-	var roleIDs []int64
-	for _, b := range bindings {
-		if !seen[b.RoleID] {
-			seen[b.RoleID] = true
-			roleIDs = append(roleIDs, b.RoleID)
-		}
-	}
-	heraMsgs, err := d.HeraMessagesToRoles(roleIDs, db.HeraMaxUnreadPerRole)
+	heraMsgs, err := d.HeraMessagesForTask(taskID, db.HeraMaxUnreadPerRole)
 	if err != nil {
 		return nil, err
 	}

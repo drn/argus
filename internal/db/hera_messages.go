@@ -207,13 +207,11 @@ func (d *DB) HeraInbox(roleID int64) ([]*HeraMessage, error) {
 	return out, rows.Err()
 }
 
-// HeraMessagesToRoles returns messages addressed to any of roleIDs in every
-// read state, oldest first. When more than limit match, the newest limit are
-// kept. Read-only: never stamps read_at (unlike an agent draining HeraInbox).
-func (d *DB) HeraMessagesToRoles(roleIDs []int64, limit int) ([]*HeraMessage, error) {
-	if len(roleIDs) == 0 {
-		return nil, nil
-	}
+// HeraMessagesForTask returns messages addressed to any role taskID is or was
+// bound to (ended bindings included), in every read state, oldest first. When
+// more than limit match, the newest limit are kept. Read-only: never stamps
+// read_at (unlike an agent draining HeraInbox).
+func (d *DB) HeraMessagesForTask(taskID string, limit int) ([]*HeraMessage, error) {
 	if limit <= 0 {
 		limit = HeraMaxUnreadPerRole
 	}
@@ -221,21 +219,15 @@ func (d *DB) HeraMessagesToRoles(roleIDs []int64, limit int) ([]*HeraMessage, er
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	placeholders := make([]string, len(roleIDs))
-	args := make([]any, 0, len(roleIDs)+1)
-	for i, id := range roleIDs {
-		placeholders[i] = "?"
-		args = append(args, id)
-	}
-	args = append(args, limit)
-
-	//nolint:gosec // G202: placeholders are a fixed list of `?` literals; IDs are bound parameters.
-	q := `SELECT id, from_role_id, to_role_id, body, tldr, in_reply_to, sent_at, read_at, delivery_mode, delivered_at
-	      FROM hera_messages WHERE to_role_id IN (` + strings.Join(placeholders, ",") + `)
-	      ORDER BY sent_at DESC, id DESC LIMIT ?`
-	rows, err := d.conn.Query(q, args...)
+	rows, err := d.conn.Query(
+		`SELECT id, from_role_id, to_role_id, body, tldr, in_reply_to, sent_at, read_at, delivery_mode, delivered_at
+		 FROM hera_messages
+		 WHERE to_role_id IN (SELECT role_id FROM hera_bindings WHERE argus_task_id=?)
+		 ORDER BY sent_at DESC, id DESC LIMIT ?`,
+		taskID, limit,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("hera messages to roles: %w", err)
+		return nil, fmt.Errorf("hera messages for task: %w", err)
 	}
 	defer rows.Close()
 

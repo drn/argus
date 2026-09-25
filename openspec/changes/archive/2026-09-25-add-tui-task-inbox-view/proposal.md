@@ -17,7 +17,7 @@ without disturbing it.
 - **The modal shows both message stores for that task, merged oldest-first:**
   - `task_messages` addressed to the task (read AND unread, up to 500), and
   - `hera_messages` addressed to ANY hera role the task is or was bound to
-    (read AND unread), resolved via `ListHeraBindingsByTask`.
+    (read AND unread), resolved via a `hera_bindings` subquery.
 - **Each entry shows:** timestamp, source (`task` / `hera`), sender (task name,
   or role name for hera; the daemon system sender renders as `system`), kind
   (task) or tldr (hera), read state (`unread` / `read <time>`), for hera the
@@ -30,7 +30,7 @@ without disturbing it.
 - **Loads off the UI thread** (DB reads in a goroutine, delivered via
   `QueueUpdateDraw`), with a "Loading…" state and an error line on failure.
   uxlog `[inbox]` logs open/load count/error.
-- New DB read method `HeraMessagesToRoles(roleIDs []int64, limit int)` — all
+- New DB read method `HeraMessagesForTask(taskID string, limit int)` — all
   read states, oldest first. `task_messages` uses the existing `Inbox` with
   `UnreadOnly=false, Limit=MaxInboxLimit`.
 
@@ -65,7 +65,7 @@ _None._
 - `internal/tui/app.go` (+ new `inbox.go`) — open/close/load flow, `modeInbox`,
   key routing; tasklist `OnInbox` callback; hera page `OnInbox` callback.
 - `internal/tui/taskview/tasklist.go`, `internal/tui/hera/` — dispatch.
-- `internal/db/hera_messages.go` — `HeraMessagesToRoles`.
+- `internal/db/hera_messages.go` — `HeraMessagesForTask`.
 - `internal/tui/commandpalette_actions.go` — palette entries (the palette is
   generated from keymap context order; hera rail entry wired to the callback).
 - README Reference keybinding table; `help_test.go` assertion;
