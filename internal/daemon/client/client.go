@@ -232,6 +232,17 @@ func (c *Client) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 	var resp daemon.StartResp
 	if err := c.callWithTimeout("Daemon.StartSession", req, &resp, startTimeoutFor(task, cfg)); err != nil {
 		uxlog.Log("client.Start: RPC FAILED task=%s err=%v", task.ID, err)
+		// A timeout specifically means we stopped waiting, not that the
+		// daemon-side start failed — callWithTimeout's dispatch goroutine
+		// keeps it running to completion regardless. Any other error here
+		// (a dead connection, a closed client) means the RPC genuinely can't
+		// complete. Only the timeout case is ambiguous enough that a caller
+		// like agent.CreateAndStart must not treat it as grounds to unwind
+		// (delete) a freshly created worktree/task the daemon might still
+		// finish starting.
+		if errors.Is(err, ErrRPCTimeout) {
+			return nil, fmt.Errorf("%w: %w", agent.ErrStartAmbiguous, err)
+		}
 		return nil, err
 	}
 	if resp.Error != "" {

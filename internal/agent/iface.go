@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"io"
 	"time"
 
@@ -8,6 +9,17 @@ import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 )
+
+// ErrStartAmbiguous wraps a SessionProvider.Start error that means "the
+// caller's wait for a response was abandoned, not that the daemon-side start
+// definitively failed" — e.g. a client-side RPC deadline. The daemon may
+// still be starting the session in the background regardless. A caller that
+// would otherwise treat any Start error as grounds for destructive cleanup
+// (deleting a freshly created worktree, the task row, …) should check
+// errors.Is(err, ErrStartAmbiguous) and skip that cleanup, since undoing a
+// task the daemon might successfully finish starting moments later would
+// delete state out from under it.
+var ErrStartAmbiguous = errors.New("session start RPC did not confirm daemon-side outcome")
 
 // SessionProvider abstracts the management of agent sessions.
 // Implemented by Runner (in-process) and daemon client (remote).
