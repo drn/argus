@@ -31,7 +31,6 @@ type PluginHint struct {
 type StatusBar struct {
 	*tview.Box
 	tasks     []*model.Task
-	running   map[string]bool
 	errMsg    string
 	infoMsg   string
 	activeTab Tab
@@ -73,9 +72,8 @@ const (
 // NewStatusBar creates a status bar.
 func NewStatusBar() *StatusBar {
 	sb := &StatusBar{
-		Box:     tview.NewBox(),
-		running: make(map[string]bool),
-		now:     time.Now,
+		Box: tview.NewBox(),
+		now: time.Now,
 	}
 	return sb
 }
@@ -83,14 +81,6 @@ func NewStatusBar() *StatusBar {
 // SetTasks updates the task list for stat counting.
 func (sb *StatusBar) SetTasks(tasks []*model.Task) {
 	sb.tasks = tasks
-}
-
-// SetRunning updates the set of running task IDs.
-func (sb *StatusBar) SetRunning(ids []string) {
-	sb.running = make(map[string]bool, len(ids))
-	for _, id := range ids {
-		sb.running[id] = true
-	}
 }
 
 // SetTab updates which tab is active (changes hint display).
@@ -230,20 +220,20 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 	} else if sb.infoMsg != "" {
 		left = " " + sb.infoMsg
 	} else {
-		active, pending, complete := 0, 0, 0
+		active, pending, review, complete := 0, 0, 0, 0
 		for _, t := range sb.tasks {
 			switch t.Status {
 			case model.StatusInProgress:
-				if sb.running[t.ID] {
-					active++
-				}
+				active++
 			case model.StatusPending:
 				pending++
+			case model.StatusInReview:
+				review++
 			case model.StatusComplete:
 				complete++
 			}
 		}
-		left = fmt.Sprintf(" %d active  %d pending  %d done", active, pending, complete)
+		left = fmt.Sprintf(" %d active  %d pending  %d review  %d done", active, pending, review, complete)
 	}
 
 	// Draw left text
@@ -299,6 +289,34 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 			{"^p", "PR"}, {"^f", "fork"}, {"^d", "del"}, {"^r", "prune"}, {"H", "hera-workers"}, {"2", "projects"}, {"3", "settings"},
 			{"?", "help"}, {"q", "quit"},
 		}
+	}
+	// Keep the full count summary and the final help/quit hint visible when
+	// the longer four-status summary leaves less room for key hints. Drop
+	// whole intermediate hints instead of clipping a label mid-word.
+	hintWidth := func(h hint) int { return len([]rune(h.key)) + 1 + len([]rune(h.label)) }
+	available := width - len([]rune(left))
+	allWidth := 1 // trailing space
+	for i, h := range hints {
+		allWidth += hintWidth(h)
+		if i > 0 {
+			allWidth += 2
+		}
+	}
+	if allWidth > available {
+		last := hints[len(hints)-1]
+		selected := make([]hint, 0, len(hints))
+		used := 1 + hintWidth(last)
+		if used <= available {
+			for _, h := range hints[:len(hints)-1] {
+				if used+2+hintWidth(h) > available {
+					break
+				}
+				selected = append(selected, h)
+				used += 2 + hintWidth(h)
+			}
+			selected = append(selected, last)
+		}
+		hints = selected
 	}
 
 	// Build right text and measure width

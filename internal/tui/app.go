@@ -3501,7 +3501,6 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string, allowCachedTasks
 	}
 	a.updateAttentionBar()
 	a.statusbar.SetTasks(a.tasks)
-	a.statusbar.SetRunning(a.runningIDs)
 
 	// Keep side panels in sync with cursor
 	if a.mode == modeTaskList {

@@ -9,6 +9,23 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
+func TestStatusBar_CountsEveryTaskStatus(t *testing.T) {
+	sb := NewStatusBar()
+	sb.SetTasks([]*model.Task{
+		{ID: "a", Status: model.StatusInProgress},
+		{ID: "b", Status: model.StatusPending},
+		{ID: "c", Status: model.StatusInReview},
+		{ID: "d", Status: model.StatusComplete, Archived: true},
+	})
+
+	// The in-progress task has no running session; archived tasks still count.
+	sim := newSim(t, 100, 1)
+	sb.SetRect(0, 0, 100, 1)
+	sb.Draw(sim)
+	row := readAllScreenText(sim, 100, 1)
+	testutil.Contains(t, row, "1 active  1 pending  1 review  1 done")
+}
+
 func TestStatusBar_InfoMessage(t *testing.T) {
 	sb := NewStatusBar()
 	sb.SetRect(0, 0, 80, 1)

@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/gitutil"
-	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
@@ -240,28 +239,6 @@ func TestSpinnerTickInterval(t *testing.T) {
 	if classic <= 0 {
 		t.Errorf("expected positive tick interval for classic, got %v", classic)
 	}
-}
-
-func TestStatusBar_SetRunning(t *testing.T) {
-	sb := NewStatusBar()
-	sb.SetTasks([]*model.Task{
-		{ID: "a", Status: model.StatusInProgress},
-		{ID: "b", Status: model.StatusInProgress},
-		{ID: "c", Status: model.StatusInProgress},
-	})
-
-	// No running ids — none counted active.
-	sim := newSim(t, 100, 1)
-	sb.SetRect(0, 0, 100, 1)
-	sb.Draw(sim)
-	row := readAllScreenText(sim, 100, 1)
-	testutil.Contains(t, row, "0 active")
-
-	// Mark two as running.
-	sb.SetRunning([]string{"a", "b"})
-	sb.Draw(sim)
-	row = readAllScreenText(sim, 100, 1)
-	testutil.Contains(t, row, "2 active")
 }
 
 // ---------- Hit tiny edge-case branches ----------
