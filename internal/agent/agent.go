@@ -951,11 +951,11 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 			cmdStr += " --session-id " + shellQuote(task.SessionID)
 		}
 		if task.Prompt != "" {
-			// Prepend CLAUDE.md/routing context for non-Claude backends that
-			// have no native equivalent of Claude's --add-dir/
+			// Prepend routing context for non-Claude backends that have no
+			// native equivalent of Claude's --add-dir/
 			// --append-system-prompt-file. See
-			// openspec/changes/add-nonclaude-context-parity/design.md.
-			prompt := nonClaudeContextPrefix(isCodex, isOpencode, task.Worktree) + task.Prompt
+			// openspec/changes/remove-codex-claude-md-injection.
+			prompt := nonClaudeContextPrefix(isCodex, isOpencode) + task.Prompt
 			switch {
 			case backend.PromptFlag != "":
 				cmdStr += " " + backend.PromptFlag + " " + shellQuote(prompt)

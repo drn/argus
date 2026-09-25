@@ -638,19 +638,16 @@ When building a Codex backend command, the system SHALL prepare the isolated Cod
 
 ### Requirement: Non-Claude backend context prefix
 
-For non-Claude backends, the system SHALL prepend a context block to the task's initial spawn prompt — the prompt actually delivered to the spawned process — whose contents differ by backend:
+For non-Claude backends, the system SHALL prepend a context block to the task's initial spawn prompt — the prompt actually delivered to the spawned process — containing only the builtin hera/routing orientation content Claude backends receive via `--append-system-prompt-file`.
 
-- For a **Codex** backend, the block SHALL contain, when available: the global `~/.claude/CLAUDE.md` content, the repo-local `CLAUDE.md` content at the worktree root, and the same builtin hera/routing orientation content Claude backends receive via `--append-system-prompt-file`.
-- For an **opencode** backend, the block SHALL contain only the builtin hera/routing orientation content. It SHALL NOT contain CLAUDE.md content: opencode's own instruction-file discovery already reads repo-local `CLAUDE.md` whenever no repo-local `AGENTS.md` is present, and the user's global `~/.claude/CLAUDE.md` whenever no global `~/.config/opencode/AGENTS.md` is present — a precedence opencode resolves itself, not an unconditional read this requirement needs to duplicate or account for.
+Neither a **Codex** nor an **opencode** backend SHALL receive `CLAUDE.md` content (global or repo-local) in this block: both CLIs already have their own native instruction-file discovery — Codex reads a global `~/.codex/AGENTS.md` unconditionally plus repo-local `AGENTS.md` walking from cwd to the worktree root; opencode reads repo-local `CLAUDE.md` as an `AGENTS.md` fallback and the user's global `~/.claude/CLAUDE.md` as a documented compatibility fallback. Duplicating either source into the prompt prefix would be pure token cost with no discovery benefit neither CLI doesn't already provide itself.
 
-This SHALL NOT apply to Claude-style backends, whose existing native `CLAUDE.md` discovery and `--add-dir`/`--append-system-prompt-file` injection are unaffected by this requirement, and SHALL NOT apply to the `pi` backend (out of scope). A source that is unavailable to a backend that would otherwise include it (no global or repo `CLAUDE.md` file, for Codex) SHALL be omitted from the block cleanly rather than rendered as an empty or placeholder section.
+This SHALL NOT apply to Claude-style backends, whose existing native `CLAUDE.md` discovery and `--add-dir`/`--append-system-prompt-file` injection are unaffected by this requirement, and SHALL NOT apply to the `pi` backend (out of scope).
 
-Each `CLAUDE.md` source (global and repo) SHALL be bounded by a maximum read size. A file exceeding that bound SHALL be treated the same as an absent file — omitted from the block cleanly, not truncated — since a partial `CLAUDE.md` could silently change its meaning; the omission SHALL be logged.
-
-#### Scenario: Codex backend receives the full context prefix
+#### Scenario: Codex backend receives routing orientation only
 
 - **WHEN** a command is built for a Codex backend with a non-empty prompt
-- **THEN** the prompt delivered to the spawned process is prefixed with a block containing global CLAUDE.md content, repo CLAUDE.md content, and routing orientation, ahead of the original prompt text
+- **THEN** the prompt delivered to the spawned process is prefixed with the routing orientation content ahead of the original prompt text, and the prefix does not contain CLAUDE.md content
 
 #### Scenario: opencode backend receives routing orientation only
 
@@ -666,16 +663,6 @@ Each `CLAUDE.md` source (global and repo) SHALL be bounded by a maximum read siz
 
 - **WHEN** a command is built for the `pi` backend
 - **THEN** the prompt is not prefixed with this context block
-
-#### Scenario: Missing CLAUDE.md files omitted cleanly for Codex
-
-- **WHEN** a command is built for a Codex backend and neither a global `~/.claude/CLAUDE.md` nor a repo-local `CLAUDE.md` exists
-- **THEN** the context block omits both CLAUDE.md sections cleanly rather than emitting an empty or placeholder section for either, while still including routing orientation
-
-#### Scenario: Oversized CLAUDE.md omitted rather than truncated
-
-- **WHEN** a command is built for a Codex backend and a global or repo `CLAUDE.md` exceeds the maximum read size
-- **THEN** that source's section is omitted from the context block cleanly, the same as if the file were absent, and the omission is logged
 
 ### Requirement: Pi and OpenCode discover Argus skills only in child sessions
 
