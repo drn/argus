@@ -305,8 +305,8 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "cda056dc2aab3208e2a4165a66a2aa38b0ce0e645176c9c5f77eaa422250b11f"
-	StreamSurfaceDigest = "1939566dd6c7db1f3cfb45ff2856303b79e8c255b5618783729aa5baa4c8a493"
+	SpawnSurfaceDigest  = "0a1e5bae5e0023cda526463d426b9ce46838a43d6d103eb8e51398b2a3b1ad4f"
+	StreamSurfaceDigest = "7fe60da137f3b77d0b839e12c19225c983db8abc816be12cff0b332aa55506b5"
 )
 
 // SurfaceDigest computes the SHA-256 over the declared manifest's file contents,
