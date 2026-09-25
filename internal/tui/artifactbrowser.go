@@ -142,6 +142,9 @@ func (b *ArtifactBrowser) InputHandler() func(*tcell.EventKey, func(tview.Primit
 					b.cursor = max(0, b.cursor-1)
 				}
 			case 'r':
+				b.preview = nil
+				b.previewName = ""
+				b.scroll = 0
 				if b.OnRefresh != nil {
 					b.OnRefresh()
 				}

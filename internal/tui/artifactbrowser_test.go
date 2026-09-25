@@ -27,6 +27,20 @@ func TestArtifactBrowserNavigationAndPreview(t *testing.T) {
 	testutil.True(t, opened)
 }
 
+func TestArtifactBrowserRefreshLeavesPreview(t *testing.T) {
+	b := NewArtifactBrowser("Task")
+	b.SetEntries([]*model.Artifact{{Name: "one", Type: model.ArtifactText}})
+	b.SetPreview("one", []byte("old contents"), false)
+	b.scroll = 3
+	refreshed := false
+	b.OnRefresh = func() { refreshed = true }
+	b.InputHandler()(tcell.NewEventKey(tcell.KeyRune, 'r', 0), nil)
+	testutil.True(t, refreshed)
+	testutil.Nil(t, b.preview)
+	testutil.Equal(t, b.previewName, "")
+	testutil.Equal(t, b.scroll, 0)
+}
+
 func TestArtifactBrowserDraw(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	testutil.NoError(t, screen.Init())
