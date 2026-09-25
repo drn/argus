@@ -107,7 +107,7 @@ extends them.
   `internal/tui/widget/rolestatusicon.go` (failed glyph, cancelled rendering).
 - **Specs:** deltas for `hera-messaging`, `hera-coordination`, `hera-view`,
   `mcp-server`, `data-persistence`.
-- **Docs:** `.claude/skills/hera/SKILL.md`, the four gotcha files, README
+- **Docs:** `internal/skills/builtin/hera/SKILL.md`, the four gotcha files, README
   Reference appendix (new MCP verbs + the `hera_send` status param), help modal
   only if a TUI key changes (none planned).
 - **No web/API surface change** beyond what already exists; TUI + MCP + daemon.

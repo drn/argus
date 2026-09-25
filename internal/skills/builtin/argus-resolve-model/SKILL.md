@@ -27,7 +27,9 @@ that kind of work should run at.
 This skill is the convention that closes that gap. It is **not** a new MCP tool — `profile_resolve`
 already returns everything needed in one call. It is not specific to review panels —
 `hera-spawn-review` already does exactly this pattern for the `review` archetype's `[panel]` block;
-this skill generalizes it to any archetype a pipeline's stages map to.
+this skill generalizes it to any archetype a pipeline's stages map to. For guidance on **choosing
+and assigning `archetype` values when authoring a plan-DAG**, see the `hera-plan` skill (the plan
+author's counterpart to this dispatch-side resolver).
 
 ## 2. Resolve once per pipeline
 

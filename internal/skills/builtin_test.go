@@ -29,6 +29,58 @@ func TestBuiltinItems_IncludesAllExpectedSkills(t *testing.T) {
 	})
 }
 
+// TestBuiltinItems_HaveNoProjectLocalMirror pins internal/skills/builtin as
+// the sole in-repo source for builtins. Project-specific skills may coexist in
+// .agents/skills, but a same-named directory would shadow the body materialized
+// into Argus-launched sessions and recreate the drift this layout avoids.
+// Lstat catches dangling symlinks as well as directories, and both native
+// project roots are checked in case the .claude/skills compatibility link is
+// replaced independently.
+func TestBuiltinItems_HaveNoProjectLocalMirror(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	testutil.NoError(t, err)
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		t.Fatalf("repo root %s has no go.mod: %v", root, err)
+	}
+	projectRoots := []string{
+		filepath.Join(root, ".agents", "skills"),
+		filepath.Join(root, ".claude", "skills"),
+	}
+	for _, item := range BuiltinItems() {
+		for _, projectRoot := range projectRoots {
+			mirror := filepath.Join(projectRoot, item.Name)
+			_, err := os.Lstat(mirror)
+			switch {
+			case err == nil:
+				t.Errorf("builtin %q has a project-local mirror at %s", item.Name, mirror)
+			case !os.IsNotExist(err):
+				t.Errorf("lstat project-local mirror for builtin %q: %v", item.Name, err)
+			}
+		}
+	}
+}
+
+// TestHeraSpawnReview_ResolvesInstructionsFromSessionCatalog guards the skill
+// contract that lets the panel run without repository-local mirrors. The
+// durable regression signal is the absence of project manifest paths plus the
+// section ordering. The small positive phrase set is intentionally pinned:
+// rewording either phrase forces a conscious review of this source contract.
+func TestHeraSpawnReview_ResolvesInstructionsFromSessionCatalog(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("builtin", "hera-spawn-review", skillManifestFile))
+	testutil.NoError(t, err)
+	text := string(body)
+	testutil.Contains(t, text, "native skill catalog")
+	testutil.Contains(t, text, "exact ID")
+	testutil.Contains(t, text, "step-11 report")
+	testutil.False(t, strings.Contains(text, ".claude/skills/"))
+	testutil.False(t, strings.Contains(text, ".agents/skills/"))
+
+	loadSection := strings.Index(text, "## 4. Load the review instruction(s) from the session catalog")
+	spawnSection := strings.Index(text, "## 5. Spawn broad finders")
+	testutil.True(t, loadSection >= 0)
+	testutil.True(t, spawnSection > loadSection)
+}
+
 // TestBuiltinItems_ReviewSkillsHaveDescriptions asserts real description
 // *content*, not just non-emptiness — the literal YAML block-scalar header
 // text (">-") is itself a non-empty string, so a bare `!= ""` check here
