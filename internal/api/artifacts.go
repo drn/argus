@@ -3,10 +3,8 @@ package api
 import (
 	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
 
-	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/artifacts"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -111,34 +109,5 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 // re-validates so a future change to the write path can't silently open a
 // traversal hole.
 func resolveArtifactPath(taskID, filename string) (string, bool) {
-	dir := agent.ArtifactsDir(taskID)
-	full := filepath.Join(dir, filename)
-
-	// Cheap lexical check first: the cleaned join must live directly under dir.
-	cleanDir := filepath.Clean(dir)
-	if full != filepath.Join(cleanDir, filepath.Base(filename)) {
-		return "", false
-	}
-	if !strings.HasPrefix(full, cleanDir+string(filepath.Separator)) {
-		return "", false
-	}
-
-	// Symlink check: resolve the real path and confirm it is still inside the
-	// real artifact dir. EvalSymlinks errors if the file doesn't exist yet —
-	// that's fine, the caller's os.Open will 404 (the lexical check above is
-	// sufficient when there's no on-disk target to follow).
-	realPath, err := filepath.EvalSymlinks(full)
-	if err != nil {
-		return full, true
-	}
-	realDir, derr := filepath.EvalSymlinks(cleanDir)
-	if derr != nil {
-		return "", false
-	}
-	if realPath != realDir && !strings.HasPrefix(realPath, realDir+string(filepath.Separator)) {
-		return "", false
-	}
-	// Open the verified real path, not `full`, so a symlink swapped in after
-	// this check can't redirect the open elsewhere.
-	return realPath, true
+	return artifacts.ResolvePath(taskID, filename)
 }

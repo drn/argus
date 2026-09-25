@@ -133,6 +133,10 @@ type errorEnvelope struct {
 // extraHeaders may be nil; any entries are set on the request after auth and
 // content-type.
 func (c *Client) do(ctx context.Context, method, path string, body io.Reader, contentType string, extraHeaders map[string]string) (*http.Response, error) {
+	return c.doWithClient(c.hc, ctx, method, path, body, contentType, extraHeaders)
+}
+
+func (c *Client) doWithClient(hc *http.Client, ctx context.Context, method, path string, body io.Reader, contentType string, extraHeaders map[string]string) (*http.Response, error) {
 	fullURL := c.baseURL + path
 	req, err := http.NewRequestWithContext(ctx, method, fullURL, body)
 	if err != nil {
@@ -147,7 +151,7 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader, co
 	for k, v := range extraHeaders {
 		req.Header.Set(k, v)
 	}
-	resp, err := c.hc.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("apiclient: do %s %s: %w", method, path, err)
 	}

@@ -196,6 +196,48 @@ func TestSmoke_RunAppStopIsIdempotent(t *testing.T) {
 	stop() // second explicit call is a no-op; the t.Cleanup call is a third.
 }
 
+func TestSmoke_ArtifactBrowserOpensFromTasksAndAgent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	d := testDB(t)
+	task := &model.Task{ID: "artifact-smoke", Name: "Artifact task", Status: model.StatusPending, CreatedAt: time.Now()}
+	testutil.NoError(t, d.Add(task))
+	_, err := d.UpsertArtifact(&model.Artifact{TaskID: task.ID, Name: "Report", Filename: "report.txt", Type: model.ArtifactText})
+	testutil.NoError(t, err)
+	app := New(d, agent.NewRunner(nil), false)
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	sim.InjectKey(tcell.KeyRune, 'v', 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		if app.mode != modeArtifacts || app.artifactBrowser == nil {
+			t.Fatalf("task-list v did not open artifact browser")
+		}
+	})
+	sim.InjectKey(tcell.KeyEscape, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		if app.mode != modeTaskList || app.tapp.GetFocus() != app.tasklist {
+			t.Fatalf("artifact browser did not restore task-list focus")
+		}
+		app.onTaskSelect(task, false)
+	})
+	sim.InjectKey(tcell.KeyCtrlT, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		if app.mode != modeArtifacts || app.artifactTaskID != task.ID {
+			t.Fatalf("agent ctrl+t did not open task artifacts")
+		}
+	})
+	sim.InjectKey(tcell.KeyCtrlQ, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		if app.mode != modeAgent || app.tapp.GetFocus() != app.agentPane {
+			t.Fatalf("artifact browser did not restore agent focus")
+		}
+	})
+}
+
 // TestSmoke_RunAppCleanupTearsDownLoop verifies runApp's t.Cleanup stops the
 // tview event loop even when the caller never invokes the returned stop(). A
 // leaked, still-running app.Run() loop is the busy-spin vector behind the

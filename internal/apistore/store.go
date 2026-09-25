@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"sync"
 
 	"github.com/drn/argus/internal/apiclient"
@@ -30,6 +31,21 @@ import (
 
 // Compile-time assertion: Store implements tui/store.Store.
 var _ store.Store = (*Store)(nil)
+
+// Artifacts reads the registered manifest from the daemon in remote mode.
+func (s *Store) Artifacts(taskID string) ([]*model.Artifact, error) {
+	return s.c.Artifacts(context.Background(), taskID)
+}
+
+// ReadArtifact copies a bounded preview from the authenticated artifact route.
+func (s *Store) ReadArtifact(ctx context.Context, taskID, filename string, dst io.Writer, limit int64) (int64, error) {
+	return s.c.ReadArtifact(ctx, taskID, filename, dst, limit)
+}
+
+// DownloadArtifact streams full bytes for an explicit external-open request.
+func (s *Store) DownloadArtifact(ctx context.Context, taskID, filename string, dst io.Writer, limit int64) (int64, error) {
+	return s.c.DownloadArtifact(ctx, taskID, filename, dst, limit)
+}
 
 // Store is the HTTP-backed implementation of tui/store.Store. It holds an
 // apiclient.Client and caches the most recent config snapshot — Config() is
