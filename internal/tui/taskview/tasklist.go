@@ -396,7 +396,8 @@ func (tl *TaskListView) matchesFilter(t *model.Task) bool {
 		pid = strconv.Itoa(t.AgentPID)
 	}
 	for _, term := range terms {
-		if !strings.Contains(name, term) && !strings.Contains(proj, term) && !(pid != "" && strings.Contains(pid, term)) {
+		matched := strings.Contains(name, term) || strings.Contains(proj, term) || (pid != "" && strings.Contains(pid, term))
+		if !matched {
 			return false
 		}
 	}

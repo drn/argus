@@ -137,8 +137,8 @@ func TestTaskDetailPanel_PIDIndicator(t *testing.T) {
 		w, h := screen.Size()
 		for row := 0; row < h; row++ {
 			for col := 0; col < w; col++ {
-				ch, _, _, _ := screen.GetContent(col, row)
-				buf.WriteRune(ch)
+				str, _, _ := screen.Get(col, row)
+				buf.WriteString(str)
 			}
 			buf.WriteRune('\n')
 		}
