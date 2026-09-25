@@ -5,8 +5,10 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/mattn/go-runewidth"
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/tui/theme"
@@ -33,7 +35,6 @@ type inboxLine struct {
 }
 
 // InboxModal is a read-only, scrollable viewer of a task's received messages.
-// Keep title ASCII: DrawBorderedPanel lays titles out byte-wise.
 // It never mutates message state; the App owns loading and passes entries in.
 type InboxModal struct {
 	*tview.Box
@@ -52,7 +53,7 @@ type InboxModal struct {
 
 // NewInboxModal creates an inbox viewer in the loading state.
 func NewInboxModal(title string) *InboxModal {
-	return &InboxModal{Box: tview.NewBox(), title: title, loading: true}
+	return &InboxModal{Box: tview.NewBox(), title: singleLine(title), loading: true}
 }
 
 // SetEntries replaces the rendered messages and scrolls to the newest.
@@ -161,11 +162,11 @@ func (m *InboxModal) MouseHandler() func(action tview.MouseAction, event *tcell.
 func (m *InboxModal) lines(width int) []inboxLine {
 	switch {
 	case m.unavailable != "":
-		return []inboxLine{{m.unavailable, theme.StyleDimmed}}
+		return []inboxLine{{singleLine(m.unavailable), theme.StyleDimmed}}
 	case m.loading:
 		return []inboxLine{{"Loading…", theme.StyleDimmed}}
 	case m.errMsg != "":
-		return []inboxLine{{"Error: " + m.errMsg, theme.StyleError}}
+		return []inboxLine{{"Error: " + singleLine(m.errMsg), theme.StyleError}}
 	case len(m.entries) == 0:
 		return []inboxLine{{"No messages.", theme.StyleDimmed}}
 	}
@@ -180,7 +181,7 @@ func (m *InboxModal) lines(width int) []inboxLine {
 			state, style = "unread", theme.StyleNeedsInput
 		}
 		if e.Delivery != "" {
-			state += "  ·  delivery: " + e.Delivery
+			state += "  ·  delivery: " + singleLine(e.Delivery)
 		}
 		out = append(out, inboxLine{"  " + state, style})
 		if e.Summary != "" {
@@ -196,64 +197,101 @@ func (m *InboxModal) lines(width int) []inboxLine {
 }
 
 func inboxHeader(e InboxEntry) string {
-	h := fmt.Sprintf("%s  [%s]  %s", e.At.Local().Format("2006-01-02 15:04:05"), e.Source, e.From)
+	h := fmt.Sprintf("%s  [%s]  %s", e.At.Local().Format("2006-01-02 15:04:05"), singleLine(e.Source), singleLine(e.From))
 	if e.To != "" {
-		h += " → " + e.To
+		h += " → " + singleLine(e.To)
 	}
 	return h
 }
 
-// wrapPreservingLines word-wraps each line of text to width columns (rune
-// counted), keeping blank lines and hard-breaking overlong tokens. Control
-// characters are replaced so raw escape sequences in a body can't reach the
-// terminal.
-func wrapPreservingLines(text string, width int) []string {
-	if width <= 0 {
-		return nil
-	}
-	text = strings.Map(func(r rune) rune {
+// stripControls drops control characters (ESC and friends) so message
+// content, sender names, and task names can never emit terminal escape
+// sequences. Tabs become spaces; newlines are kept only when keepNewlines.
+func stripControls(s string, keepNewlines bool) string {
+	return strings.Map(func(r rune) rune {
 		switch {
-		case r == '\n':
+		case r == '\n' && keepNewlines:
 			return r
-		case r == '\t':
+		case r == '\t', r == '\n':
 			return ' '
 		case unicode.IsControl(r):
 			return -1
 		}
 		return r
-	}, text)
+	}, s)
+}
+
+func singleLine(s string) string { return stripControls(s, false) }
+
+// wrapPreservingLines word-wraps each line of text to width display columns,
+// keeping blank lines and hard-breaking overlong tokens. Control characters
+// are stripped first.
+func wrapPreservingLines(text string, width int) []string {
+	if width <= 0 {
+		return nil
+	}
+	text = stripControls(text, true)
 	var out []string
 	for _, para := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
 		if strings.TrimSpace(para) == "" {
 			out = append(out, "")
 			continue
 		}
-		var cur []rune
+		var cur strings.Builder
+		curW := 0
+		flush := func() {
+			if curW > 0 {
+				out = append(out, cur.String())
+				cur.Reset()
+				curW = 0
+			}
+		}
 		for _, word := range strings.Fields(para) {
-			w := []rune(word)
-			for len(w) > width {
-				if len(cur) > 0 {
-					out = append(out, string(cur))
-					cur = nil
+			for runewidth.StringWidth(word) > width {
+				flush()
+				head := runewidth.Truncate(word, width, "")
+				if head == "" {
+					// A single rune wider than the whole line; emit it alone.
+					_, size := utf8.DecodeRuneInString(word)
+					head = word[:size]
 				}
-				out = append(out, string(w[:width]))
-				w = w[width:]
+				out = append(out, head)
+				word = word[len(head):]
 			}
-			switch {
-			case len(cur) == 0:
-				cur = w
-			case len(cur)+1+len(w) > width:
-				out = append(out, string(cur))
-				cur = w
-			default:
-				cur = append(append(cur, ' '), w...)
+			ww := runewidth.StringWidth(word)
+			if ww == 0 {
+				continue
 			}
+			if curW > 0 && curW+1+ww > width {
+				flush()
+			}
+			if curW > 0 {
+				cur.WriteByte(' ')
+				curW++
+			}
+			cur.WriteString(word)
+			curW += ww
 		}
-		if len(cur) > 0 {
-			out = append(out, string(cur))
-		}
+		flush()
 	}
 	return out
+}
+
+// drawCells paints text at (x, y), advancing by each rune's display width and
+// clipping at maxWidth columns so a wide rune never straddles the border.
+func drawCells(screen tcell.Screen, x, y, maxWidth int, text string, style tcell.Style) {
+	col := 0
+	for _, r := range text {
+		w := runewidth.RuneWidth(r)
+		if w == 0 {
+			continue
+		}
+		if col+w > maxWidth {
+			return
+		}
+		screen.SetContent(x+col, y, r, nil, style)
+		col += w
+	}
 }
 
 // Draw renders the inbox as a large centered bordered panel.
@@ -291,7 +329,7 @@ func (m *InboxModal) Draw(screen tcell.Screen) {
 
 	for i := 0; i < visible && m.scroll+i < len(lines); i++ {
 		l := lines[m.scroll+i]
-		widget.DrawText(screen, inner.X, inner.Y+i, inner.W, l.text, l.style)
+		drawCells(screen, inner.X, inner.Y+i, inner.W, l.text, l.style)
 	}
 
 	hint := "[esc/q] close  [r] reload  read-only"

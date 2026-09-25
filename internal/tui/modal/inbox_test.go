@@ -151,6 +151,10 @@ func TestWrapPreservingLines(t *testing.T) {
 		{"hard break flushes current line", "hi abcdefgh", 4, []string{"hi", "abcd", "efgh"}},
 		{"strips control chars and tabs", "a\x1b[31mb\tc", 20, []string{"a[31mb c"}},
 		{"rune counted", "ééé ééé", 3, []string{"ééé", "ééé"}},
+		{"wide runes count two columns", "漢字漢字", 4, []string{"漢字", "漢字"}},
+		{"wide word wraps by width", "ab 漢字", 4, []string{"ab", "漢字"}},
+		{"rune wider than line emitted alone", "漢", 1, []string{"漢"}},
+		{"zero-width only word skipped", "a \u200b b", 10, []string{"a b"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			testutil.DeepEqual(t, wrapPreservingLines(tc.in, tc.width), tc.want)
@@ -196,4 +200,45 @@ func TestInboxModal_Accessors(t *testing.T) {
 	testutil.Equal(t, m.Unavailable(), "remote")
 	_, loaded = m.Entries()
 	testutil.False(t, loaded)
+}
+
+func TestInboxModal_StripsControlsFromHeaderAndTitle(t *testing.T) {
+	m := NewInboxModal("Inbox - evil\x1b[2Jname")
+	testutil.Equal(t, m.title, "Inbox - evil[2Jname")
+	m.SetEntries([]InboxEntry{{Source: "task", From: "bad\x1b]0;pwn\x07", To: "r\nole", Delivery: "idle\x1b", Body: "ok"}})
+	lines := m.lines(80)
+	for _, l := range lines {
+		for _, r := range l.text {
+			if r < 0x20 {
+				t.Fatalf("control rune %q leaked into line %q", r, l.text)
+			}
+		}
+	}
+	testutil.Contains(t, inboxHeader(m.entries[0]), "bad]0;pwn → r ole")
+
+	m.SetError("line1\nline2\x1b")
+	testutil.Equal(t, m.lines(80)[0].text, "Error: line1 line2")
+	m.SetUnavailable("no\x1b")
+	testutil.Equal(t, m.lines(80)[0].text, "no")
+}
+
+func TestDrawCells_WideRunesAndClipping(t *testing.T) {
+	sim := drawAt(t, 10, 2)
+	drawCells(sim, 0, 0, 5, "a漢b字c", tcell.StyleDefault)
+	sim.Sync()
+	for _, tc := range []struct {
+		x    int
+		want rune
+	}{{0, 'a'}, {1, '漢'}, {3, 'b'}} {
+		r, _, _, _ := sim.GetContent(tc.x, 0)
+		testutil.Equal(t, r, tc.want)
+	}
+	// 字 would need columns 4-5 but only 5 columns are allowed: clipped.
+	r, _, _, _ := sim.GetContent(4, 0)
+	testutil.Equal(t, r, ' ')
+
+	drawCells(sim, 0, 1, 5, "x\u200by", tcell.StyleDefault)
+	sim.Sync()
+	r, _, _, _ = sim.GetContent(1, 1)
+	testutil.Equal(t, r, 'y')
 }
