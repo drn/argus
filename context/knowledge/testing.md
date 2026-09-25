@@ -89,6 +89,10 @@ Mark every helper with `t.Helper()`. Helpers that need to work for benchmarks to
 
 Prefer `t.Cleanup` over `defer` inside helpers — runs LIFO at end of test, survives `t.FailNow` from another goroutine. `t.TempDir()` and `t.Setenv()` register their own cleanup automatically.
 
+**A `SetXForTest`-style restore that swaps a package-level function var must not fire while a background goroutine seeded by the OLD value is still running it.** If a test deliberately lets a client-side timeout return before the real backing work finishes (e.g. proving a caller's own timeout doesn't kill server-side work), don't `t.Cleanup(restore)` immediately after asserting — poll for the real side effect to land first (a session appearing, a file write, a status flip), then call the restore function explicitly. Caught by `-race` as a plain data race on the var, not a deadlock or hang, so it's easy to miss until CI runs with `-race`. See `internal/agent/prelaunch.go`'s `SetPrelaunchForTest` and `internal/daemon/client/sup_e2e_test.go`'s `TestSupInnerAmbiguous`.
+
+**A test asserting an env var is absent from a spawned command can pass or fail depending on what's ambient in the DEVELOPER's own shell**, not just what the test code does. `BuildCmd` seeds `cmd.Env` from `os.Environ()`, and an unresolved `backend.EnvVars` source only skips ADDING the target — it never strips a same-named var already ambient in the parent process (e.g. a real `OPENAI_API_KEY` exported for other tooling). `t.Setenv` can't remove a var (only set it, even to `""`), so isolate with `os.LookupEnv` + `os.Unsetenv` + an explicit `t.Cleanup` restore — see `TestBuildCmd_EnvVarMapping_UnresolvedSourceUnsetAndWarns`.
+
 ### Parallelism
 
 Pure-logic tests should call `t.Parallel()`. Tests that use `t.Setenv`, modify global state, or share files **must not** parallelize — `t.Setenv` panics under parallel. UI smoke tests are sequential.
