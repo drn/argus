@@ -97,6 +97,12 @@ func TestProtocolVersionCoversSurfaceFields(t *testing.T) {
 	}
 }
 
+func TestProtocolVersionCoversTaskMCPPort(t *testing.T) {
+	if ProtocolVersion < 7 {
+		t.Fatalf("task launch requests carry MCPPort, which landed in v7; ProtocolVersion is %d", ProtocolVersion)
+	}
+}
+
 var errUnreachableSupervisor = errors.New("dial: connection refused")
 
 // TestSup_HelloReportsSurface drives the real supervisor over its real socket and

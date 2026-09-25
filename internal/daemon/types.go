@@ -99,7 +99,12 @@ type BootInfoResp struct {
 //     the same way, and this constant's own contract is to bump on ANY new
 //     optional field. (The proposal guessed no bump would be needed here; the
 //     wire contract says otherwise, and the bump is free.)
-const ProtocolVersion = 6
+//   - v7 (scope-argus-mcp-to-tasks): + MCPPort on StartReq, KickReq, and
+//     RecycleReq. The daemon sends the actual MCP listener port to the
+//     supervisor so each Claude/Codex task gets a process-scoped MCP URL.
+//     A pre-v7 supervisor ignores the optional field and launches without
+//     Argus MCP until it is restarted; protocol skew remains non-fatal.
+const ProtocolVersion = 7
 
 // SupervisorProtocolMatch reports whether a supervisor's handshake version
 // equals the daemon's. A mismatch is NOT fatal and NEVER triggers an auto-
