@@ -93,3 +93,7 @@
 ## Hide-hera-managed persistence (persist-tasks-view-ui-state)
 
 - **The `H` toggle persists via a new `ui.hide_hera_managed` config-table key, local-only.** `App` type-asserts `a.db.(*db.DB)` (the same repeated-guard idiom used elsewhere, no-op in `--remote` mode) to load it once at `tasklist` construction and to save it inside `OnHeraManagedToggle`. Restore calls `TaskListView.SetHideHeraManaged(hidden)`, which sets `hideHeraManaged` directly WITHOUT invoking `OnHeraManagedToggle` — that callback is reserved for a real `H` keypress (it persists + redraws); firing it on restore would misrepresent a load as a user toggle.
+
+## Status bar task counts
+
+- **The bottom status bar counts the full `Tasks()` snapshot by stored status, including archived tasks; session liveness does not gate `in_progress`/active.** `in_review` needs its own count, or the four displayed counts no longer add up to the task rows that exist. When the count summary leaves little room, keep whole keybinding hints and reserve the final help/quit hint rather than clipping it mid-word.
