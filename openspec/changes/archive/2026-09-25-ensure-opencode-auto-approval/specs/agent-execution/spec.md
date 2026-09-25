@@ -19,6 +19,11 @@ The system SHALL include OpenCode's `--auto` flag in every newly built command f
 - **WHEN** the OpenCode backend command already contains `--auto`
 - **THEN** the built command contains exactly one `--auto` flag
 
+#### Scenario: Positional auto text
+
+- **WHEN** the OpenCode backend command contains `--auto` only after an end-of-options `--` separator
+- **THEN** the built command includes an injected `--auto` before that separator
+
 #### Scenario: Other backend
 
 - **WHEN** a command is built for a backend not recognized as OpenCode

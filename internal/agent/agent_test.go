@@ -340,9 +340,9 @@ func TestBuildCmd_OpencodeAutoApproval(t *testing.T) {
 	}{
 		{"fresh seeded command", "opencode", false, "", "opencode --auto --prompt 'go'"},
 		{"resumed stored command", "opencode", true, "ses_existing", "opencode --auto --session 'ses_existing'"},
-		{"custom absolute path", "/usr/local/bin/opencode --standalone", false, "", "/usr/local/bin/opencode --standalone --auto --prompt 'go'"},
+		{"custom absolute path", "/usr/local/bin/opencode --standalone", false, "", "/usr/local/bin/opencode --auto --standalone --prompt 'go'"},
 		{"already auto", "opencode --auto", false, "", "opencode --auto --prompt 'go'"},
-		{"similar flag", "opencode --auto-extra", false, "", "opencode --auto-extra --auto --prompt 'go'"},
+		{"similar flag", "opencode --auto-extra", false, "", "opencode --auto --auto-extra --prompt 'go'"},
 		{"other backend", "custom-agent", false, "", "custom-agent --prompt 'go'"},
 	}
 	for _, tc := range cases {
@@ -359,6 +359,19 @@ func TestBuildCmd_OpencodeAutoApproval(t *testing.T) {
 			testutil.Equal(t, cmd.Args[2], tc.want)
 		})
 	}
+}
+
+func TestBuildCmd_OpencodeAutoApproval_BeforeOptionsSeparator(t *testing.T) {
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "opencode"},
+		Backends: map[string]config.Backend{
+			"opencode": {Command: "opencode -- --auto"},
+		},
+	}
+	task := &model.Task{Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], "opencode --auto -- --auto")
 }
 
 // TestBuildCmd_PermissionMode_CommandWins confirms a backend command that
