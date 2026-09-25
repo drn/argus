@@ -918,7 +918,7 @@ Every option below is overridable. A ⚠️ marks options that are **read but no
 
 #### `[backends.<name>]`
 
-Command templates, keyed by name. Seeded with `claude`, `codex`, `pi`, and `opencode`.
+Command templates, keyed by name. Seeded with `claude`, `codex`, `pi`, and `opencode`. The OpenCode default is `opencode mini` with `--prompt`, so the initial prompt is submitted while the session stays interactive.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|

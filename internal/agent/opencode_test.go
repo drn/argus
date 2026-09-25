@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -41,6 +42,13 @@ func TestBuildCmd_OpencodeNewSession(t *testing.T) {
 	testutil.NoError(t, err)
 	// Prompt rides the configured --prompt flag; no --session-id (captured post-exit).
 	testutil.Equal(t, cmd.Args[2], "opencode --prompt 'fix the bug'")
+}
+
+func TestBuildCmd_DefaultOpencodeSubmitsPrompt(t *testing.T) {
+	task := &model.Task{Backend: "opencode", Prompt: "fix the bug", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, config.DefaultConfig(), false)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], "opencode mini --prompt 'fix the bug'")
 }
 
 func TestBuildCmd_OpencodeNewSession_IgnoresSessionID(t *testing.T) {
@@ -128,6 +136,28 @@ func TestCaptureOpencodeSessionID_SQLite(t *testing.T) {
 	got, err := CaptureOpencodeSessionID(wt)
 	testutil.NoError(t, err)
 	testutil.Equal(t, got, "ses_new11111111111111111111")
+}
+
+func TestCaptureOpencodeSessionID_SQLiteV2(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dataRoot := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataRoot)
+	wt := t.TempDir()
+	dataDir := filepath.Join(dataRoot, "opencode")
+	testutil.NoError(t, os.MkdirAll(dataDir, 0o755))
+	conn, err := sql.Open("sqlite", filepath.Join(dataDir, "opencode.db"))
+	testutil.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+	_, err = conn.Exec(`CREATE TABLE session_v2 (id TEXT, directory TEXT, time_updated INTEGER)`)
+	testutil.NoError(t, err)
+	_, err = conn.Exec(`INSERT INTO session_v2 VALUES (?, ?, ?)`, "ses_v2old", wt, 100)
+	testutil.NoError(t, err)
+	_, err = conn.Exec(`INSERT INTO session_v2 VALUES (?, ?, ?)`, "ses_v2new", wt, 200)
+	testutil.NoError(t, err)
+
+	got, err := CaptureOpencodeSessionID(wt)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got, "ses_v2new")
 }
 
 func TestCaptureOpencodeSessionID_JSONFallback(t *testing.T) {

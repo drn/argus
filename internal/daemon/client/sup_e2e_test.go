@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -49,6 +50,42 @@ func supE2E(t *testing.T) (*daemon.Daemon, *Client, *db.DB) {
 	d := daemon.New(database)
 	d.UseSupervisorRunner(sc) // d.runner = sc; sc.OnSessionExit → d.handleSessionExit
 	return d, sc, database
+}
+
+// StartSession has a longer deadline at both RPC hops because Pi's bounded
+// prelaunch can take minutes. This test crosses TUI→daemon→supervisor and waits
+// beyond the ordinary two-second deadline before allowing the launch.
+func TestSupSlowStart(t *testing.T) {
+	d, _, database := supE2E(t)
+	cmdPath := filepath.Join(t.TempDir(), "pi")
+	testutil.NoError(t, os.WriteFile(cmdPath, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755))
+	testutil.NoError(t, database.SetBackend("slow-pi", config.Backend{Command: cmdPath}))
+	restore := agent.SetPrelaunchForTest(func(ctx context.Context, _ *model.Task, _ config.Config) error {
+		timer := time.NewTimer(rpcTimeout + 100*time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	t.Cleanup(restore)
+
+	sockPath := filepath.Join(t.TempDir(), "d.sock")
+	go d.Serve(sockPath) //nolint:errcheck
+	t.Cleanup(func() { d.Shutdown() })
+	waitFile(t, sockPath)
+	c, err := Connect(sockPath)
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	task := &model.Task{ID: "slow-start", Backend: "slow-pi", Worktree: t.TempDir()}
+	start := time.Now()
+	sess, err := c.Start(task, config.Config{}, 24, 80, false)
+	testutil.NoError(t, err)
+	testutil.True(t, time.Since(start) > rpcTimeout)
+	testutil.True(t, sess.PID() > 0)
+	testutil.NoError(t, c.Stop(task.ID))
 }
 
 func waitFile(t *testing.T, path string) {

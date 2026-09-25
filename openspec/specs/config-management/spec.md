@@ -17,7 +17,13 @@ The system SHALL provide a baseline configuration with sensible defaults so that
 
 - **WHEN** a default configuration is produced
 - **THEN** it SHALL include backend entries for `claude`, `codex`, `pi`, and `opencode`, each with a command template
-- **AND** the `opencode` entry SHALL use the bare `opencode` command with `--prompt` as its prompt flag, leaving the user's opencode permission posture unmodified
+- **AND** the `opencode` entry SHALL use the interactive `opencode mini` command with `--prompt` as its prompt flag, submitting the initial prompt without user input and leaving the user's opencode permission posture unmodified
+
+#### Scenario: Existing OpenCode default is upgraded
+
+- **WHEN** an existing backend row has the exact previous built-in command `opencode` and prompt flag `--prompt`
+- **THEN** Argus SHALL update its command to `opencode mini` on database open
+- **AND** a row with a customized command or prompt flag SHALL remain unchanged
 
 #### Scenario: Projects map initialized
 
@@ -241,4 +247,3 @@ The system SHALL treat a `config.toml`-defined tier list as authoritative over a
 
 - **WHEN** `config.toml` defines a non-empty tier list
 - **THEN** the DB-persisted tier list, if any, is not consulted by the resolver
-
