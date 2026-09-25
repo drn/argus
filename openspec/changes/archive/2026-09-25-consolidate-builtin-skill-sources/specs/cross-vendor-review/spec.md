@@ -2,7 +2,7 @@
 
 ### Requirement: User-owned review instruction with a shipped default
 
-The review instruction each broad finder runs SHALL be user-owned and selected from the profile's `[panel]` (`review_skill` names a skill, or `review_instruction` supplies prose). When neither is specified, the system SHALL inject the shipped default `hera-review` instruction. Named review and corrective-lens skills SHALL be resolved by their exact, case-sensitive IDs from the current child session's native skill catalog, using the selected catalog entry's advertised `SKILL.md` path when direct loading is unavailable. Resolution SHALL use the current backend's native source precedence; a project-scoped same-ID definition is an intentional user override when that catalog selects it, and the orchestration SHALL NOT manually prefer a managed builtin or assume the current repository contains a project-skill mirror. A configured ID absent from the current catalog, an unresolved visible collision, or an unreadable selected manifest SHALL fail loudly before any finder or lens is spawned rather than silently falling back. The orchestration glue SHALL NOT hard-code the review methodology; swapping the review instruction SHALL require no change to the glue or the synthesizer.
+The review instruction each broad finder runs SHALL be user-owned and selected from the profile's `[panel]` (`review_skill` names a skill, or `review_instruction` supplies prose). When neither is specified, the system SHALL inject the shipped default `hera-review` instruction. Named review and corrective-lens skills SHALL be resolved by their exact, case-sensitive IDs from the current child session's native skill catalog, using the selected catalog entry's advertised `SKILL.md` path when direct loading is unavailable. Resolution SHALL use the current backend's native source precedence; a project-scoped same-ID definition is an intentional user override when that catalog selects it, and the orchestration SHALL NOT manually prefer a managed builtin or assume the current repository contains a project-skill mirror. The `hera-spawn-review` skill instruction is the enforcement point for lookup because the panel grammar validates names but not skill existence: it SHALL require orchestration to stop before any finder or lens spawns when a configured ID is absent, visibly collides, or names an unreadable selected manifest, rather than silently falling back. The step-11 report SHALL record each resolved instruction's role kind, exact ID, and advertised manifest path or catalog origin. The orchestration glue SHALL NOT hard-code the review methodology; swapping the review instruction SHALL require no change to the glue or the synthesizer.
 
 #### Scenario: Configured review skill injected
 
@@ -28,6 +28,11 @@ The review instruction each broad finder runs SHALL be user-owned and selected f
 
 - **WHEN** a profile names a skill ID that the current session's native catalog resolves to a project-scoped definition rather than the Argus-managed builtin
 - **THEN** the finder or lens receives the project-scoped instruction selected by that catalog
+
+#### Scenario: Report records resolved instruction provenance
+
+- **WHEN** a panel run resolves its broad review instruction and corrective-lens instructions
+- **THEN** the step-11 report names each instruction's role kind, exact catalog ID, and advertised manifest path or catalog origin
 
 #### Scenario: Missing or unresolved named instruction fails before spawning
 

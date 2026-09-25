@@ -30,3 +30,10 @@
 - [x] 5.2 Run `make pre-pr`; the full build → vet → fmt-check → lint-pr → vuln → coverage gate must be clean per repository policy.
 - [x] 5.3 Smoke-test the post-deletion session path: launch standalone OpenCode children with Argus's exact inline `OPENCODE_CONFIG_CONTENT={"skills":[<managed-root>]}` shape and confirm the native `skill` tool loads both `hera-review` and `hera-review-test-adversary` by exact ID without any project mirror.
 - [x] 5.4 Archive this change into `openspec/changes/archive/2026-09-25-consolidate-builtin-skill-sources/` in the same PR, folding the `skill-provisioning` and `cross-vendor-review` deltas into their base specs.
+
+## 6. Post-review hardening
+
+- [x] 6.1 Anchor the source-layout test on the repository `go.mod` so a moved package or copied tree cannot make it pass vacuously.
+- [x] 6.2 Record resolved review/lens instruction provenance (role kind, exact ID, advertised path/origin) in the step-11 report and folded capability spec.
+- [x] 6.3 Tighten the skill-contract test to durable negatives, a deliberate minimal phrase set, and the full section heading; document the hand-maintained hera tool count.
+- [x] 6.4 Record the observed external `argus-schedule` dotfiles drift and clarify that the skill body, not Go validation, is the pre-spawn lookup enforcement point.

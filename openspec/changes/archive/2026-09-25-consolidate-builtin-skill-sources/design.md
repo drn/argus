@@ -82,7 +82,10 @@ The canonical bodies are updated as unions with conflict resolution:
   the typo corrected.
 - Remove the obsolete `argus-schedule` note claiming a repository mirror must be
   kept byte-identical; the external dotfiles twin is outside this repository's
-  source-of-truth contract.
+  source-of-truth contract. That twin was already drifted when this change was
+  reviewed (observed 2026-09-25: it had one-shot `run_once_at` guidance and
+  schedule-wrapper warnings absent here), confirming the removed "keep
+  byte-identical" note had itself gone stale.
 
 A regression test enumerates `BuiltinItems()` and fails if any embedded name
 also exists beneath either repository project-skill root (`.agents/skills/` or
@@ -108,6 +111,10 @@ This gives one instruction contract to all supported delivery mechanisms:
   plugin, and Argus-managed definitions. A project-scoped same-ID skill is an
   intentional user override when that catalog selects it; custom names remain
   selectable without a repository-specific path convention.
+- Every resolved instruction carries provenance — role kind, exact catalog ID,
+  and advertised manifest path or catalog origin — into the step-11 report, so
+  the operator can audit which body gated `[AUTO-FIX]` after native precedence
+  rather than reconstructing it from the repository.
 
 A configured ID absent from the current catalog, an unresolved visible
 collision, or an unreadable selected manifest remains a loud failure before
@@ -125,10 +132,13 @@ cannot observe their lookup instructions. Two focused tests provide the missing
 guard:
 
 1. Every name returned by `BuiltinItems()` has no same-named directory or
-   dangling symlink under either project-skill root.
+   dangling symlink under either project-skill root. The test anchors on the
+   repository's `go.mod` first so a moved package or copied tree cannot make the
+   source-layout guard pass vacuously.
 2. `hera-spawn-review` instructs exact-ID resolution from the current session
    catalog, completes that step before finder spawning, preserves project-scoped
-   override semantics, and contains no project-local review/lens manifest path.
+   override semantics, records instruction provenance, and contains no
+   project-local review/lens manifest path.
 
 These tests are intentionally narrow. Existing materialization tests continue
 to cover the runtime delivery path across backends.

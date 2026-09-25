@@ -107,6 +107,12 @@ selected catalog entry. Do not construct a path from the target repository or as
 mirror exists. This ID-based lookup deliberately keeps user-owned custom review and lens
 instructions selectable.
 
+For every resolved broad-review or lens instruction, retain **instruction provenance** alongside
+its body: the role kind (`review_skill` or lens), exact catalog ID, and the selected entry's
+advertised manifest path (or catalog origin when no path is advertised). Carry that tuple into the
+step-11 report so the operator can audit exactly which instruction body gated `[AUTO-FIX]`, even
+when native precedence selected a project, user, plugin, or Argus-managed definition.
+
 If a configured broad or lens skill ID is absent, the catalog exposes an unresolved collision, or
 its selected `SKILL.md` cannot be loaded, **stop and fail loudly before spawning any finder or
 lens** (for example, `review_skill %q not found` or `lens skill %q not found`). Do not silently
@@ -229,6 +235,7 @@ For every synthesized `[AUTO-FIX]` finding:
 
 Always produce a report, even on a clean first pass ("no auto-fixable issues found" is itself a
 result worth stating, not a reason to exit silently). Include per round: which finders/lenses ran,
+the instruction provenance captured in step 4 (role kind + exact ID + advertised path/origin),
 any foreign ids skipped (with the loud note from step 5), findings by tag, fixes applied with
 their confidence signal, the fix-verification result, and the accumulated `[QUESTION]` /
 `[SPEC-DRIFT]` lists still open at the end.

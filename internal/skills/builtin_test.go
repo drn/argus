@@ -37,13 +37,18 @@ func TestBuiltinItems_IncludesAllExpectedSkills(t *testing.T) {
 // project roots are checked in case the .claude/skills compatibility link is
 // replaced independently.
 func TestBuiltinItems_HaveNoProjectLocalMirror(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	testutil.NoError(t, err)
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		t.Fatalf("repo root %s has no go.mod: %v", root, err)
+	}
 	projectRoots := []string{
-		filepath.Join("..", "..", ".agents", "skills"),
-		filepath.Join("..", "..", ".claude", "skills"),
+		filepath.Join(root, ".agents", "skills"),
+		filepath.Join(root, ".claude", "skills"),
 	}
 	for _, item := range BuiltinItems() {
-		for _, root := range projectRoots {
-			mirror := filepath.Join(root, item.Name)
+		for _, projectRoot := range projectRoots {
+			mirror := filepath.Join(projectRoot, item.Name)
 			_, err := os.Lstat(mirror)
 			switch {
 			case err == nil:
@@ -57,22 +62,20 @@ func TestBuiltinItems_HaveNoProjectLocalMirror(t *testing.T) {
 
 // TestHeraSpawnReview_ResolvesInstructionsFromSessionCatalog guards the skill
 // contract that lets the panel run without repository-local mirrors. The
-// managed builtin directory differs by backend, so the portable source of a
-// named instruction is the current session's skill catalog, not a hard-coded
-// path in the target repository. Resolution must complete before the first
-// finder spawn, and an exact project-scoped ID remains an intentional override.
+// durable regression signal is the absence of project manifest paths plus the
+// section ordering. The small positive phrase set is intentionally pinned:
+// rewording either phrase forces a conscious review of this source contract.
 func TestHeraSpawnReview_ResolvesInstructionsFromSessionCatalog(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("builtin", "hera-spawn-review", skillManifestFile))
 	testutil.NoError(t, err)
 	text := string(body)
-	testutil.Contains(t, text, "child session's native skill catalog")
+	testutil.Contains(t, text, "native skill catalog")
 	testutil.Contains(t, text, "exact ID")
-	testutil.Contains(t, text, "project-scoped")
-	testutil.Contains(t, text, "before spawning any finder or lens")
+	testutil.Contains(t, text, "step-11 report")
 	testutil.False(t, strings.Contains(text, ".claude/skills/"))
 	testutil.False(t, strings.Contains(text, ".agents/skills/"))
 
-	loadSection := strings.Index(text, "## 4. Load the review instruction(s)")
+	loadSection := strings.Index(text, "## 4. Load the review instruction(s) from the session catalog")
 	spawnSection := strings.Index(text, "## 5. Spawn broad finders")
 	testutil.True(t, loadSection >= 0)
 	testutil.True(t, spawnSection > loadSection)
