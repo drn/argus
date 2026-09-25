@@ -2730,9 +2730,8 @@ function setupTerm() {
 // the text write failed. taskId is explicit (not currentTask.id) so an
 // in-flight sequenced send keeps targeting the task it started on even if
 // the user navigates away mid-chain. Input history still works under the
-// split: recordInputBytes(text) accumulates without flushing (no terminal
-// \r/\n), then recordInputBytes('\r') flushes the entry — same net result
-// as the old single text+CR call.
+// split: recordInputBytes strips bracketed-paste markers, accumulates the
+// message body, then recordInputBytes('\r') flushes the entry.
 function postInputBytes(taskId, data) {
   recordInputBytes(taskId, data);
   return fetch(API + `/api/tasks/${taskId}/input`, {
@@ -6590,6 +6589,8 @@ function setKeyBarVisible(v) {
 // so a giant paste fails fast with a toast instead of POSTing megabytes that
 // the daemon silently truncates and the user sees no error from.
 const COMPOSE_MAX_BYTES = 64 * 1024;
+const COMPOSE_PASTE_START = '\x1b[200~';
+const COMPOSE_PASTE_END = '\x1b[201~';
 
 // Pause between the text write and the CR write in sendCompose's split
 // submit. Mirrors submitCRDelay in internal/notify/service.go — wide enough
@@ -6617,9 +6618,16 @@ function sendCompose() {
   // Enter — prompt drafted with a trailing newline, NOT submitted.
   const v = ci.value.replace(/[\r\n]+$/, '');
   if (!v) return;
+  // An embedded paste delimiter would let the remainder of the message be
+  // interpreted as terminal keystrokes rather than pasted text.
+  if (v.includes(COMPOSE_PASTE_START) || v.includes(COMPOSE_PASTE_END)) {
+    showToast('Input contains a terminal paste control sequence');
+    return;
+  }
   // TextEncoder gives the actual UTF-8 byte length — `.length` would
   // undercount multi-byte chars and let an over-cap value through.
-  const byteLen = new TextEncoder().encode(v).length;
+  const byteLen = new TextEncoder().encode(v).length +
+    COMPOSE_PASTE_START.length + COMPOSE_PASTE_END.length;
   if (byteLen > COMPOSE_MAX_BYTES) {
     showToast(`Input too long (${byteLen} > ${COMPOSE_MAX_BYTES} bytes)`);
     return;
@@ -6636,7 +6644,11 @@ function sendCompose() {
   // like Claude Code — \n would be interpreted as an embedded newline
   // (Shift+Enter), leaving the prompt drafted-but-unsubmitted.
   //
-  // CRITICAL: the CR must be a SEPARATE write, not glued onto the text.
+  // Bracketed paste makes the agent process the complete message as one paste
+  // event. Without it, Codex may open its `$` skill picker while parsing the
+  // bulk write, then treat the following Enter as "accept selected skill"
+  // (often the first match) instead of submitting the message.
+  // CRITICAL: the CR must be a SEPARATE write, not glued onto the paste.
   // handleWriteInput forwards the POST body to the PTY in a single
   // WriteInput, and Claude Code's stdin reader treats a multi-byte chunk
   // containing text+CR as a paste batch — the CR becomes a newline
@@ -6652,7 +6664,7 @@ function sendCompose() {
   const taskId = currentTask.id;
   composeSendChain = composeSendChain.then(async () => {
     try {
-      const r = await postInputBytes(taskId, v);
+      const r = await postInputBytes(taskId, COMPOSE_PASTE_START + v + COMPOSE_PASTE_END);
       if (!r.ok) return;
       await new Promise(res => setTimeout(res, COMPOSE_CR_DELAY_MS));
       await postInputBytes(taskId, '\r');
