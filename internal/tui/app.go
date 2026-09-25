@@ -322,21 +322,30 @@ type App struct {
 	pages     *tview.Pages
 
 	// State
-	mode               viewMode
-	agentFocus         agentFocus
-	agentZen           bool // single-pane (zoom) mode: side panels collapsed to 0 width
-	crossTabArrows     bool // opt-in Cmd+Left/Right transition between Tasks and Hera rail
-	agentState         agentview.State
-	daemonConnected    bool
-	tasks              []*model.Task
-	runningIDs         []string
-	idleIDs            []string
-	worktreeDir        string // resolved worktree dir for current agent view task
-	lastGitRefresh     time.Time
-	lastTaskGitRefresh time.Time
-	lastPreviewTW      uint64 // TotalWritten when preview was last refreshed
-	lastPreviewTaskID  string // task ID for the cached TotalWritten
-	lastPreviewLogSize int64  // log file size when dead-session preview was last refreshed
+	mode            viewMode
+	agentFocus      agentFocus
+	agentZen        bool // single-pane (zoom) mode: side panels collapsed to 0 width
+	crossTabArrows  bool // opt-in Cmd+Left/Right transition between Tasks and Hera rail
+	agentState      agentview.State
+	daemonConnected bool
+	tasks           []*model.Task
+	runningIDs      []string
+	idleIDs         []string
+	// visibleActiveSpinner caches computeVisibleActiveSpinner's result
+	// (add-spinner-visible-scope), recomputed once per refreshTasksWithIDs
+	// call (tview main goroutine, a.mu held) so spinnerLoop's background
+	// goroutine can consult it under a.mu without ever touching a.tasklist/
+	// a.header directly — those are tview widgets, unsafe to read outside
+	// the tview main goroutine. Up to one tick (~1s) stale after a tab
+	// switch; bounded and self-healing, the same trade-off class as the
+	// needs-input fleet-batching staleness window.
+	visibleActiveSpinner bool
+	worktreeDir          string // resolved worktree dir for current agent view task
+	lastGitRefresh       time.Time
+	lastTaskGitRefresh   time.Time
+	lastPreviewTW        uint64 // TotalWritten when preview was last refreshed
+	lastPreviewTaskID    string // task ID for the cached TotalWritten
+	lastPreviewLogSize   int64  // log file size when dead-session preview was last refreshed
 	// Idle-unvisited tracking (for visual InReview promotion)
 	idleUnvisited    map[string]bool   // task IDs idle since user last opened their agent view
 	viewedWhileAgent map[string]bool   // tasks viewed in agent view; suppresses idleUnvisited re-add
@@ -400,6 +409,12 @@ type App struct {
 	// instead of re-reading+re-emulating. See needsInputRawSignals's own doc
 	// comment for the field-by-field validity contract.
 	needsInputRawSignals map[string]needsInputRawSignals
+	// needsInputScanCursor carries the fleet-batching rotation cursor
+	// (add-needs-input-fleet-batching) across ticks: which batch of running
+	// sessions is due for a fresh tail-read+re-emulation THIS tick, once the
+	// fleet exceeds needsInputScanBatchSize. See needsInputScanBatch's doc
+	// comment for the full contract.
+	needsInputScanCursor int
 	// heraBlockedResume carries the resumed-activity counter (see
 	// agent.ResumeActivityTick) for the SEPARATE self-reported hera_status
 	// "blocked" auto-clear pass (autoClearBlockedHeraRoles) — keyed by task ID
@@ -1521,10 +1536,13 @@ func (a *App) tickLoop() {
 // spinnerLoop triggers redraws for smooth spinner animation.
 // Polls at 100ms (the fastest non-Progress spinner's TickInterval). The actual
 // frame selection is time-based in updateSpinnerFrame, so this just ensures
-// redraws happen often enough. Only fires when tasks are actively running
-// (not idle) — idle tasks show a static moon icon, not the spinner. Skipping
-// redraws when all tasks are idle prevents unnecessary full-screen repaints
-// that interfere with tmux hyperlink hover and waste CPU.
+// redraws happen often enough. Only fires when a spinner actually rendered on
+// screen right now would animate — idle tasks show a static moon icon, not
+// the spinner, and (add-spinner-visible-scope) a running-but-off-screen task
+// doesn't count either. Skipping redraws when nothing visible is animating
+// prevents unnecessary full-screen repaints that interfere with tmux
+// hyperlink hover and waste CPU — see computeVisibleActiveSpinner's doc
+// comment for the visibility scoping and its accepted staleness window.
 func (a *App) spinnerLoop() {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -1535,19 +1553,7 @@ func (a *App) spinnerLoop() {
 			return
 		case <-ticker.C:
 			a.mu.Lock()
-			hasActiveRunning := false
-			if len(a.runningIDs) > 0 {
-				idleSet := make(map[string]bool, len(a.idleIDs))
-				for _, id := range a.idleIDs {
-					idleSet[id] = true
-				}
-				for _, id := range a.runningIDs {
-					if !idleSet[id] {
-						hasActiveRunning = true
-						break
-					}
-				}
-			}
+			hasActiveRunning := a.visibleActiveSpinner
 			a.mu.Unlock()
 			// Reconcile hera pane PTY sizes at the spinner cadence (~100ms) so a
 			// freshly-bound session doesn't paint at a stale width for up to a
@@ -2725,6 +2731,37 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	prevRaw := a.needsInputRawSignals
 	newRaw := make(map[string]needsInputRawSignals, len(activeRunningIDs))
 
+	// Fleet-batching gate (add-needs-input-fleet-batching): due reports
+	// whether id's batch is in rotation THIS tick once the fleet exceeds
+	// needsInputScanBatchSize — see needsInputScanBatch's doc comment.
+	//
+	// reuseCached checks batching BEFORE logUnchanged, and — critically —
+	// skips calling logUnchanged (hence its Stat()-and-record side effect)
+	// entirely for a not-due id: logUnchanged's dirty check compares against
+	// the PREVIOUS tick's recorded stat, so recording a fresh stat snapshot on
+	// a tick where the content was never actually re-read would make the very
+	// next tick's comparison see "unchanged since last observation" against a
+	// snapshot that was never matched with a real read — permanently masking
+	// a genuine change that happened while the id was out of rotation. Leaving
+	// no newLogStat entry on a skipped tick instead makes the id's next DUE
+	// tick compare fresh-vs-last-actually-read, exactly as intended: still
+	// skips the read if truly nothing changed across the whole gap, but
+	// always catches a real change once the id's batch comes due.
+	//
+	// An id with no prior raw signal (its very first tick) is always treated
+	// as due, so a freshly-spawned session's first reading is never delayed
+	// by rotation.
+	due := a.needsInputScanBatch(activeRunningIDs)
+	reuseCached := func(id string) bool {
+		if _, seen := prevRaw[id]; !seen {
+			return false
+		}
+		if !due(id) {
+			return true
+		}
+		return logUnchanged(id)
+	}
+
 	// Content-stability pass: fingerprint only sessions showing an
 	// awaiting-input signal (agent.AwaitingInputFingerprint: the UNAMBIGUOUS
 	// selection widget, OR a free-text trailing question with the "working"
@@ -2737,7 +2774,7 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	for _, id := range activeRunningIDs {
 		var hasTail, ok, parked bool
 		var fp uint64
-		if logUnchanged(id) {
+		if reuseCached(id) {
 			pr := prevRaw[id]
 			hasTail = pr.hasTail
 			if hasTail {
@@ -2823,7 +2860,7 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 	for _, id := range activeRunningIDs {
 		var hasTail, working bool
 		var contentFP uint64
-		if logUnchanged(id) {
+		if reuseCached(id) {
 			pr := prevRaw[id]
 			hasTail = pr.hasTail
 			working = pr.working
@@ -2924,7 +2961,7 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 		var awaitingNow bool
 		if idleNow {
 			pr := prevRaw[id]
-			if logUnchanged(id) && pr.awaitingComputed {
+			if reuseCached(id) && pr.awaitingComputed {
 				awaitingNow = pr.awaitingNow
 			} else {
 				tail := getTail(id)
@@ -3106,6 +3143,53 @@ func (a *App) autoClearBlockedHeraRoles(runningIDs []string) {
 // Keep in sync with agent.needsInputTailWindow (the ring-buffer equivalent used
 // by agent.BlockedOnPrompt) so the TUI and API detect over the same-sized tail.
 const detectNeedsInputTailBytes = 16 * 1024
+
+// needsInputScanBatchSize bounds the worst-case per-tick cost of the needs-
+// input / content-idle fleet scan (add-needs-input-fleet-batching): a fleet
+// at or below this many running sessions is fully scanned (tail read +
+// re-emulation) every tick, identical to pre-batching behavior. Above it,
+// needsInputScanBatch rotates a fixed-size batch of sessions into scope per
+// tick instead of scanning the whole fleet, so the per-tick cost stays
+// roughly constant no matter how large the fleet grows, at the cost of up to
+// one rotation's worth of ticks of staleness for a session outside the due
+// batch — bounded and self-healing, never a permanent miss (see
+// needsInputScanBatch's doc comment).
+const needsInputScanBatchSize = 24
+
+// needsInputScanBatch partitions ids into fixed-size rotation batches and
+// returns a predicate reporting whether an id is due for a fresh tail-read +
+// re-emulation THIS tick, gating detectNeedsInputSticky's reuseCached helper.
+//
+// len(ids) <= needsInputScanBatchSize: every id is always due — a strict
+// no-op matching pre-batching behavior exactly, so a typical/small fleet
+// never sees any staleness or behavior change from this mechanism.
+//
+// Above the threshold: ids are sorted for a stable bucket assignment (the
+// caller's slice order isn't guaranteed stable tick to tick — it comes from
+// an RPC round-trip), split into ceil(len/needsInputScanBatchSize) batches,
+// and exactly one batch is due per tick via a's rotation cursor. This bounds
+// the worst-case per-tick scan cost at needsInputScanBatchSize regardless of
+// fleet size, trading up to (batch count) ticks of staleness for an
+// out-of-batch session — the same trade-off class already accepted by the
+// Stat()-based dirty check (dedupe-redundant-needsinput-reads): every
+// session's tick-counters still advance every tick via the replayed raw
+// signal, only the expensive read+re-emulation is gated.
+func (a *App) needsInputScanBatch(ids []string) func(id string) bool {
+	if len(ids) <= needsInputScanBatchSize {
+		return func(string) bool { return true }
+	}
+	sorted := make([]string, len(ids))
+	copy(sorted, ids)
+	sort.Strings(sorted)
+	numBatches := (len(sorted) + needsInputScanBatchSize - 1) / needsInputScanBatchSize
+	batchOf := make(map[string]int, len(sorted))
+	for i, id := range sorted {
+		batchOf[id] = i % numBatches
+	}
+	due := a.needsInputScanCursor % numBatches
+	a.needsInputScanCursor++
+	return func(id string) bool { return batchOf[id] == due }
+}
 
 // readSessionLogTailBytes returns the last n raw bytes of a task's session
 // log — or, if that flat window turns out to be dominated by a trailing
@@ -3513,6 +3597,56 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string, allowCachedTasks
 			a.taskDetail.SetTask(nil, false)
 		}
 	}
+
+	// add-spinner-visible-scope: recompute once per tick, here (tview main
+	// goroutine, a.mu already held by every caller of refreshTasksWithIDs),
+	// so spinnerLoop's background goroutine never has to touch a.tasklist/
+	// a.header itself.
+	a.visibleActiveSpinner = a.computeVisibleActiveSpinner(a.runningIDs, a.idleIDs)
+}
+
+// computeVisibleActiveSpinner reports whether at least one spinner glyph
+// currently rendered on screen would actually animate right now — the input
+// to spinnerLoop's redraw gate (cached into a.visibleActiveSpinner). MUST be
+// called on the tview main goroutine (it reads a.mode/a.header/a.tasklist,
+// none of which are safe to touch from spinnerLoop's background goroutine —
+// see that field's doc comment).
+//
+// Scoped ONLY for the base Tasks-tab view (modeTaskList + widget.TabTasks),
+// where TaskListView.VisibleTaskIDs() cheaply exposes the filtered row set
+// actually on screen: a running-but-idle or running-but-filtered-out task no
+// longer keeps the periodic redraw alive. Every other mode — the Hera tab,
+// the fullscreen agent view, any modal/picker — falls back to the original
+// fleet-wide check unchanged: deliberately NOT scoped in this pass, to avoid
+// touching the Hera rail's or agent view's own, more complex and
+// historically bug-prone rendering paths (see gotchas/hera-view.md's long
+// spinner-precedence bug history). Named follow-up, not silently dropped.
+func (a *App) computeVisibleActiveSpinner(runningIDs, idleIDs []string) bool {
+	if len(runningIDs) == 0 {
+		return false
+	}
+	idleSet := make(map[string]bool, len(idleIDs))
+	for _, id := range idleIDs {
+		idleSet[id] = true
+	}
+	if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
+		runningSet := make(map[string]bool, len(runningIDs))
+		for _, id := range runningIDs {
+			runningSet[id] = true
+		}
+		for _, id := range a.tasklist.VisibleTaskIDs() {
+			if runningSet[id] && !idleSet[id] {
+				return true
+			}
+		}
+		return false
+	}
+	for _, id := range runningIDs {
+		if !idleSet[id] {
+			return true
+		}
+	}
+	return false
 }
 
 // readPRStates reads the daemon-populated PR review state cache from task_meta
