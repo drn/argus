@@ -99,7 +99,12 @@ type BootInfoResp struct {
 //     the same way, and this constant's own contract is to bump on ANY new
 //     optional field. (The proposal guessed no bump would be needed here; the
 //     wire contract says otherwise, and the bump is free.)
-const ProtocolVersion = 6
+//   - v7 (scope-argus-mcp-to-tasks): + MCPPort on StartReq, KickReq, and
+//     RecycleReq. The daemon sends the actual MCP listener port to the
+//     supervisor so each Claude/Codex task gets a process-scoped MCP URL.
+//     A pre-v7 supervisor ignores the optional field and launches without
+//     Argus MCP until it is restarted; protocol skew remains non-fatal.
+const ProtocolVersion = 7
 
 // SupervisorProtocolMatch reports whether a supervisor's handshake version
 // equals the daemon's. A mismatch is NOT fatal and NEVER triggers an auto-
@@ -168,6 +173,7 @@ type PortsResp struct {
 // the caller's original task both carry the right values. Keep every field
 // consumed by agent.ResolveModel/resolveProfile represented here.
 type StartReq struct {
+	MCPPort   int
 	TaskID    string
 	SessionID string
 	Prompt    string
@@ -241,6 +247,7 @@ type ResizeReq struct {
 // kick-rerender rebuilds the command via agent.ResolveModel too, and must not
 // silently drop back to the backend default on a resumed session.
 type KickReq struct {
+	MCPPort   int
 	TaskID    string
 	SessionID string
 	Prompt    string
@@ -267,6 +274,7 @@ type KickReq struct {
 // recycle rebuilds the command via agent.ResolveModel too, and must not
 // silently drop back to the backend default on the fresh-context restart.
 type RecycleReq struct {
+	MCPPort   int
 	TaskID    string
 	Prompt    string
 	Project   string

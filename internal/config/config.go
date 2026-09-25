@@ -7,6 +7,9 @@ import (
 
 // Config is the top-level configuration.
 type Config struct {
+	// MCPPort is the daemon's actual listener port for task launch. It is runtime
+	// only; the configured KB.HTTPPort may differ when the listener retries.
+	MCPPort     int                `toml:"-"`
 	Defaults    Defaults           `toml:"defaults"`
 	Backends    map[string]Backend `toml:"backends"`
 	Projects    map[string]Project `toml:"projects"`

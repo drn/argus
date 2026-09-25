@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/drn/argus/internal/backendtier"
@@ -32,7 +33,8 @@ import (
 const codexStateDB = "state_5.sqlite"
 
 // codexResumeCmd is the base resume command for codex backends.
-const codexResumeCmd = "codex resume --dangerously-bypass-approvals-and-sandbox"
+const codexResumeFlags = " resume --dangerously-bypass-approvals-and-sandbox"
+const codexResumeCmd = "codex" + codexResumeFlags
 
 // codexSessionIDRe validates that a captured session ID looks like a UUID v7.
 var codexSessionIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -802,6 +804,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	cmdStr := backend.Command
 
 	isCodex := IsCodexBackend(backend.Command)
+	isClaude := IsClaudeBackend(backend.Command)
 	isPi := IsPiBackend(backend.Command)
 	isOpencode := IsOpencodeBackend(backend.Command)
 	injectOpencodeAuto := false
@@ -820,13 +823,27 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 			cmdStr = strings.Replace(backend.Command, fields[0], fields[0]+" --auto", 1)
 		}
 	}
+	mcpFlag := ""
+	if cfg.MCPPort > 0 {
+		mcpURL := fmt.Sprintf("http://localhost:%d/mcp", cfg.MCPPort)
+		switch {
+		case isClaude:
+			mcpConfig, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{
+				"argus": map[string]string{"type": "http", "url": mcpURL},
+			}})
+			mcpFlag = " --mcp-config " + shellQuote(string(mcpConfig))
+		case isCodex:
+			mcpFlag = " -c " + shellQuote("mcp_servers.argus.url="+strconv.Quote(mcpURL))
+		}
+	}
+	cmdStr += mcpFlag
 
 	// Inject the configured permission mode for claude backends only. Scoped to
 	// IsClaudeBackend (not "not codex/pi") so custom/bare commands never receive
 	// Claude-only flags. Skipped when the command already names a permission
 	// flag (command wins) so we never double-inject. Injected before
 	// resume/session-id/prompt suffixes so the flags precede the "--" separator.
-	if IsClaudeBackend(backend.Command) && !hasPermissionFlags(backend.Command) {
+	if isClaude && !hasPermissionFlags(backend.Command) {
 		if flags := config.PermissionModeFlags(cfg.Defaults.PermissionMode); flags != "" {
 			cmdStr += " " + flags
 		}
@@ -843,7 +860,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	resolvedModel, resolvedProfile := ResolveModel(task, backend, cfg)
 	modelFlag := ""
 	if resolvedModel != "" &&
-		(IsClaudeBackend(backend.Command) || isCodex || isPi || isOpencode) &&
+		(isClaude || isCodex || isPi || isOpencode) &&
 		!hasModelFlag(backend.Command) {
 		modelFlag = " --model " + shellQuote(resolvedModel)
 	}
@@ -915,7 +932,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		switch {
 		case isCodex:
 			// Flags must precede the positional session-id argument.
-			cmdStr = codexResumeCmd + modelFlag + " " + shellQuote(task.SessionID)
+			cmdStr = "codex" + mcpFlag + codexResumeFlags + modelFlag + " " + shellQuote(task.SessionID)
 		case (isPi || isOpencode) && task.SessionID != "":
 			// Pi / opencode style: append --session <ID> (pi accepts partial
 			// UUIDs; opencode takes its ses_… ID). Checked before the
@@ -1137,7 +1154,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// on an actual scheme-prefixed resolve). The mapping carries NO secret
 	// value — only the descriptor. A resolved value is appended to the child
 	// env (later entries win per exec.Cmd.Env semantics); an unresolved source
-	// sets nothing and logs a non-sensitive warning naming ONLY the variable,
+	// removes any inherited target and logs a non-sensitive warning naming ONLY the variable,
 	// never the value. We never log the resolved value.
 	if len(backend.EnvVars) > 0 {
 		registryResolve := ResolverFor(cfg.Secrets)
@@ -1145,6 +1162,14 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 			if target == "" || source == "" {
 				continue
 			}
+			// A failed mapping must not leak a credential inherited from argusd.
+			filtered := cmd.Env[:0]
+			for _, entry := range cmd.Env {
+				if name, _, found := strings.Cut(entry, "="); !found || name != target {
+					filtered = append(filtered, entry)
+				}
+			}
+			cmd.Env = filtered
 			scheme, rest := splitSecretScheme(source)
 			resolve, resolveInput := secretResolver, rest
 			if scheme != "env" {

@@ -89,7 +89,10 @@ const (
 	//     discovery hooks; OpenCode no longer needs a global skills entry.
 	//   - v10: BuildCmd adds --auto when launching OpenCode, including stored
 	//     commands and resumed sessions.
-	SupervisorSpawnSurface = 10
+	//   - v11: task launches pass the actual Argus MCP listener to Claude and
+	//     Codex as process-scoped CLI config, including supervisor starts; an
+	//     unresolved credential mapping clears any inherited target variable.
+	SupervisorSpawnSurface = 11
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -98,7 +101,9 @@ const (
 	//   - v1: initial declaration (reduce-supervisor-skew-blast-radius, Layer 1).
 	//   - v2: the PTY session answers startup OSC 10/11 color queries before a
 	//     renderer attaches, so Codex can highlight its composer immediately.
-	SupervisorStreamSurface = 2
+	//   - v3: rerender and coordinator recycle carry the live MCP port through
+	//     the supervisor RPC so their replacement sessions keep Argus tools.
+	SupervisorStreamSurface = 3
 )
 
 // SurfaceVersion is a supervisor's declared executed-surface identity: the pair
@@ -300,8 +305,8 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "cda056dc2aab3208e2a4165a66a2aa38b0ce0e645176c9c5f77eaa422250b11f"
-	StreamSurfaceDigest = "1939566dd6c7db1f3cfb45ff2856303b79e8c255b5618783729aa5baa4c8a493"
+	SpawnSurfaceDigest  = "0a1e5bae5e0023cda526463d426b9ce46838a43d6d103eb8e51398b2a3b1ad4f"
+	StreamSurfaceDigest = "7fe60da137f3b77d0b839e12c19225c983db8abc816be12cff0b332aa55506b5"
 )
 
 // SurfaceDigest computes the SHA-256 over the declared manifest's file contents,

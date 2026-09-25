@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 )
 
 // mcpSection is the TOML header for the Argus MCP entry in Codex config.
@@ -30,6 +32,91 @@ func InjectGlobal(port int) error {
 		return err
 	}
 	return injectCodexTOML(path, port)
+}
+
+// RemoveGlobal removes Argus-owned sections left by older versions.
+func RemoveGlobal() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("remove codex global: user home dir: %w", err)
+	}
+	path := filepath.Join(home, ".codex", "config.toml")
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	content := string(raw)
+	if !hasArgusSection(content) {
+		return nil
+	}
+	var parsed map[string]any
+	if _, err := toml.Decode(content, &parsed); err != nil {
+		return fmt.Errorf("remove codex global: cannot parse %s: %w", path, err)
+	}
+	updated := removeArgusSections(content)
+	if updated == content {
+		return nil
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".argus-codex-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) //nolint:errcheck
+	if _, err := tmp.WriteString(updated); err != nil {
+		tmp.Close() //nolint:errcheck
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
+
+// hasArgusSection recognizes only actual table headers, never comments or values.
+func hasArgusSection(content string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		if isArgusTableHeader(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func isArgusTableHeader(line string) bool {
+	header := strings.TrimSpace(line)
+	for _, name := range []string{"argus", "argus-kb"} {
+		prefix := "[mcp_servers." + name
+		if strings.HasPrefix(header, prefix) {
+			rest := strings.TrimPrefix(header, prefix)
+			if strings.HasPrefix(rest, "]") || strings.HasPrefix(rest, ".") {
+				end := strings.IndexByte(rest, ']')
+				if end >= 0 {
+					trailing := strings.TrimSpace(rest[end+1:])
+					return trailing == "" || strings.HasPrefix(trailing, "#")
+				}
+			}
+		}
+	}
+	return false
+}
+
+func removeArgusSections(content string) string {
+	lines := strings.SplitAfter(content, "\n")
+	var out strings.Builder
+	skipping := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") {
+			skipping = isArgusTableHeader(line)
+		}
+		if !skipping {
+			out.WriteString(line)
+		}
+	}
+	return out.String()
 }
 
 // injectCodexTOML inserts or updates the [mcp_servers.argus] section and
