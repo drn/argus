@@ -2171,7 +2171,9 @@ func (sv *SettingsView) handleSetDefault() bool {
 	if be == nil || be.Name == sv.defaultBackend {
 		return false
 	}
-	sv.database.SetConfigValue("default_backend", be.Name)
+	if err := sv.database.SetConfigValue(db.ConfigKeyDefaultBackend, be.Name); err != nil {
+		uxlog.Log("[settings] failed to persist default backend %s: %v", be.Name, err)
+	}
 	sv.defaultBackend = be.Name
 	uxlog.Log("[settings] default backend set to %s", be.Name)
 	sv.rebuildRows()
