@@ -21,6 +21,30 @@ const skillManifestFile = "SKILL.md"
 // well-defined "" return path instead.
 const frontmatterMaxLine = 1 << 20 // 1 MB
 
+// blockScalarMaxLines bounds how many continuation lines a YAML block scalar
+// value may consume, shared by readFrontmatterField (OS file) and
+// readEmbeddedFrontmatterField (embedded FS, in builtin.go). A malformed
+// frontmatter block with no closing "---" and no dedent would otherwise scan
+// unbounded; this caps the worst case at a generous multiple of any
+// legitimate multi-paragraph description.
+const blockScalarMaxLines = 10000
+
+// blockScalarStyle reports whether val is a bare YAML block-scalar header
+// (">", ">-", ">+", "|", "|-", "|+") introducing a multi-line value on the
+// following indented lines, as opposed to an inline value. folded is true
+// for ">" (folded) headers and false for "|" (literal) headers; ok is false
+// when val is not a block-scalar header at all.
+func blockScalarStyle(val string) (folded, ok bool) {
+	switch val {
+	case ">", ">-", ">+":
+		return true, true
+	case "|", "|-", "|+":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
 // SkillItem represents a discovered Claude Code skill or slash command.
 // Plugin-provided items use a "<plugin>:<name>" form (e.g. "cortex:review")
 // to match how Claude Code exposes them as slash commands.
@@ -232,11 +256,60 @@ func readFrontmatterField(path, field string) string {
 		}
 		if inFrontmatter && strings.HasPrefix(line, prefix) {
 			val := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			if folded, ok := blockScalarStyle(val); ok {
+				return readBlockScalarFromScanner(scanner, folded)
+			}
 			val = strings.Trim(val, `"'`)
 			return val
 		}
 	}
 	return ""
+}
+
+// readBlockScalarFromScanner consumes a YAML block scalar's indented
+// continuation lines directly from scanner — the OS-file streaming
+// counterpart to foldBlockScalar's slice-based logic (builtin.go), used for
+// the embedded-FS path. Folded style (folded=true) joins non-blank lines
+// with a single space (a blank line marks a paragraph break in real YAML
+// folding; collapsing through strings.Fields treats it as an ordinary space
+// instead, which reads naturally for a single-paragraph description field).
+// Literal style preserves line breaks. Chomping indicators (-, +, or none)
+// are not distinguished — trailing whitespace is always trimmed, since this
+// value feeds a display string, not something requiring exact YAML
+// round-tripping. Consumption stops at the closing "---", a line dedented to
+// column 0 (frontmatter keys always start at column 0, so such a line can
+// never be part of a valid continuation — checked even before indent is
+// established, e.g. when the block opens with a blank line), or
+// blockScalarMaxLines lines, whichever comes first.
+func readBlockScalarFromScanner(scanner *bufio.Scanner, folded bool) string {
+	var lines []string
+	indent := -1
+	for len(lines) < blockScalarMaxLines && scanner.Scan() {
+		line := scanner.Text()
+		if line == "---" {
+			break
+		}
+		trimmed := strings.TrimLeft(line, " \t")
+		if trimmed == "" {
+			lines = append(lines, "")
+			continue
+		}
+		lineIndent := len(line) - len(trimmed)
+		if lineIndent == 0 {
+			break
+		}
+		if indent == -1 {
+			indent = lineIndent
+		}
+		if lineIndent < indent {
+			break
+		}
+		lines = append(lines, trimmed)
+	}
+	if folded {
+		return strings.Join(strings.Fields(strings.Join(lines, " ")), " ")
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 // FilterSkills returns skills whose names contain the given filter as a

@@ -3,6 +3,7 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/testutil"
@@ -28,6 +29,13 @@ func TestBuiltinItems_IncludesAllExpectedSkills(t *testing.T) {
 	})
 }
 
+// TestBuiltinItems_ReviewSkillsHaveDescriptions asserts real description
+// *content*, not just non-emptiness — the literal YAML block-scalar header
+// text (">-") is itself a non-empty string, so a bare `!= ""` check here
+// would pass even when the frontmatter parser mishandles a
+// "description: >-" folded block scalar (as it did for every skill in this
+// test before that parsing was fixed: hera-review, hera-review-test-adversary,
+// hera-spawn-review, and argus-resolve-model all use this format).
 func TestBuiltinItems_ReviewSkillsHaveDescriptions(t *testing.T) {
 	items := BuiltinItems()
 	byName := make(map[string]string, len(items))
@@ -35,21 +43,35 @@ func TestBuiltinItems_ReviewSkillsHaveDescriptions(t *testing.T) {
 		byName[it.Name] = it.Description
 	}
 
-	reviewDesc, ok := byName["hera-review"]
-	if !ok || reviewDesc == "" {
-		t.Fatalf("expected non-empty description for hera-review, got %q (present: %v)", reviewDesc, ok)
+	for _, name := range []string{"hera-review", "hera-review-test-adversary", "hera-spawn-review", "argus-resolve-model"} {
+		desc, ok := byName[name]
+		if !ok || desc == "" {
+			t.Fatalf("expected non-empty description for %s, got %q (present: %v)", name, desc, ok)
+		}
+		if strings.HasPrefix(desc, ">") || strings.HasPrefix(desc, "|") {
+			t.Fatalf("description for %s looks like an unparsed YAML block-scalar header, not real content: %q", name, desc)
+		}
 	}
-	adversaryDesc, ok := byName["hera-review-test-adversary"]
-	if !ok || adversaryDesc == "" {
-		t.Fatalf("expected non-empty description for hera-review-test-adversary, got %q (present: %v)", adversaryDesc, ok)
-	}
-	spawnReviewDesc, ok := byName["hera-spawn-review"]
-	if !ok || spawnReviewDesc == "" {
-		t.Fatalf("expected non-empty description for hera-spawn-review, got %q (present: %v)", spawnReviewDesc, ok)
-	}
-	resolveModelDesc, ok := byName["argus-resolve-model"]
-	if !ok || resolveModelDesc == "" {
-		t.Fatalf("expected non-empty description for argus-resolve-model, got %q (present: %v)", resolveModelDesc, ok)
+
+	testutil.Contains(t, byName["hera-review"], "review CONTRACT")
+	testutil.Contains(t, byName["hera-review-test-adversary"], "false confidence")
+	testutil.Contains(t, byName["hera-spawn-review"], "review panel")
+	testutil.Contains(t, byName["argus-resolve-model"], "per-archetype model")
+}
+
+// TestBuiltinItems_NoUnparsedBlockScalarHeaders is a general invariant over
+// every current (and future) builtin skill: none of their descriptions may
+// be a bare YAML block-scalar header. This is what actually would have
+// caught the original bug — hera and hera-plan use "description: >-" too but
+// aren't covered by name in TestBuiltinItems_ReviewSkillsHaveDescriptions
+// above, and a skill added later with the same format shouldn't need its own
+// enumerated test case to be protected.
+func TestBuiltinItems_NoUnparsedBlockScalarHeaders(t *testing.T) {
+	for _, it := range BuiltinItems() {
+		if it.Description == ">" || it.Description == ">-" || it.Description == ">+" ||
+			it.Description == "|" || it.Description == "|-" || it.Description == "|+" {
+			t.Errorf("skill %q has an unparsed YAML block-scalar header as its description: %q", it.Name, it.Description)
+		}
 	}
 }
 

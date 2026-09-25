@@ -297,11 +297,54 @@ func readEmbeddedFrontmatterField(path, field string) string {
 		prefix := field + ":"
 		if strings.HasPrefix(line, prefix) {
 			val := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			if folded, ok := blockScalarStyle(val); ok {
+				return foldBlockScalar(lines, i+1, folded)
+			}
 			val = strings.Trim(val, "\"'")
 			return val
 		}
 	}
 	return ""
+}
+
+// foldBlockScalar joins a YAML block scalar's continuation lines starting at
+// lines[start] (immediately after the block-scalar header), stopping at the
+// closing "---", a line dedented to column 0 (frontmatter keys always start
+// at column 0, so such a line can never be part of a valid continuation —
+// checked even before indent is established, e.g. when the block opens with
+// a blank line), or blockScalarMaxLines lines. Folded style joins non-blank
+// lines with a single space; literal style preserves line breaks. See
+// readBlockScalarFromScanner (skills.go) for the OS-file streaming
+// counterpart of this same logic.
+func foldBlockScalar(lines []string, start int, folded bool) string {
+	var content []string
+	indent := -1
+	for i := start; i < len(lines) && i-start < blockScalarMaxLines; i++ {
+		line := lines[i]
+		if line == "---" {
+			break
+		}
+		trimmed := strings.TrimLeft(line, " \t")
+		if trimmed == "" {
+			content = append(content, "")
+			continue
+		}
+		lineIndent := len(line) - len(trimmed)
+		if lineIndent == 0 {
+			break
+		}
+		if indent == -1 {
+			indent = lineIndent
+		}
+		if lineIndent < indent {
+			break
+		}
+		content = append(content, trimmed)
+	}
+	if folded {
+		return strings.Join(strings.Fields(strings.Join(content, " ")), " ")
+	}
+	return strings.TrimSpace(strings.Join(content, "\n"))
 }
 
 // isTestBinary returns true if the current process is a test executable.
