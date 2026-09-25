@@ -14,13 +14,13 @@ Argus launches OpenCode without `--auto`, so permission rules that resolve to `a
 ### Modified Capabilities
 
 - `agent-execution`: OpenCode launch commands use auto approval.
-- `config-management`: the seeded OpenCode command stays bare while launch-time auto approval is documented separately.
+- `config-management`: the seeded OpenCode command uses the full UI so `--auto` is honored; migrate the prior `mini` default.
 
 ## Impact
 
-Changes `agent.BuildCmd`, its command-building tests, and the OpenCode integration note. All three frontends reach the same daemon launch path; no REST field or client change is needed.
+Changes `agent.BuildCmd`, the OpenCode default and its database fixup, tests, and the OpenCode integration note. All three frontends reach the same daemon launch path; no REST field or client change is needed.
 
 ## Non-Goals
 
-- Changing the stored backend command, OpenCode's config file, or Argus's sandbox policy.
+- Changing customized backend commands, OpenCode's config file, or Argus's sandbox policy.
 - Overriding explicit OpenCode permission denials.

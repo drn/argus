@@ -48,7 +48,7 @@ func TestBuildCmd_DefaultOpencodeSubmitsPrompt(t *testing.T) {
 	task := &model.Task{Backend: "opencode", Prompt: "fix the bug", Worktree: t.TempDir()}
 	cmd, _, err := BuildCmd(task, config.DefaultConfig(), false)
 	testutil.NoError(t, err)
-	testutil.Equal(t, cmd.Args[2], "opencode mini --prompt 'fix the bug'")
+	testutil.Equal(t, cmd.Args[2], "opencode --auto --prompt 'fix the bug'")
 }
 
 func TestBuildCmd_OpencodeNewSession_IgnoresSessionID(t *testing.T) {
