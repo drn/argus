@@ -307,7 +307,7 @@ func (d *DB) WaitForReply(ctx context.Context, questionID, fromID string) (*mode
 
 // InsertSystemMessage inserts a daemon-originated message without rate-limiting.
 // Use this for system signals (e.g. ARGUS_BOUNCED) where the sender is the
-// daemon itself (SystemTaskID) rather than a real task. The inbox-full cap
+// daemon itself (model.SystemTaskID) rather than a real task. The inbox-full cap
 // still applies; the self-send check and per-sender rate limit are bypassed
 // because:
 //   - self-send: the system sender is never a real task ID (digit-only strings)

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -204,6 +205,45 @@ func (d *DB) HeraInbox(roleID int64) ([]*HeraMessage, error) {
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// HeraMessagesForTask returns messages addressed to any role taskID is or was
+// bound to (ended bindings included), in every read state, oldest first. When
+// more than limit match, the newest limit are kept. Read-only: never stamps
+// read_at (unlike an agent draining HeraInbox).
+func (d *DB) HeraMessagesForTask(taskID string, limit int) ([]*HeraMessage, error) {
+	if limit <= 0 {
+		limit = HeraMaxUnreadPerRole
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	rows, err := d.conn.Query(
+		`SELECT id, from_role_id, to_role_id, body, tldr, in_reply_to, sent_at, read_at, delivery_mode, delivered_at
+		 FROM hera_messages
+		 WHERE to_role_id IN (SELECT role_id FROM hera_bindings WHERE argus_task_id=?)
+		 ORDER BY sent_at DESC, id DESC LIMIT ?`,
+		taskID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("hera messages for task: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*HeraMessage
+	for rows.Next() {
+		m, err := scanHeraMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	slices.Reverse(out)
+	return out, nil
 }
 
 // WaitForHeraInbox polls HeraInbox until at least one unread message exists or

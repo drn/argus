@@ -225,6 +225,83 @@ func TestHeraInbox(t *testing.T) {
 	})
 }
 
+func TestHeraMessagesForTask(t *testing.T) {
+	bind := func(t *testing.T, d *DB, roleID int64, taskID string) *HeraBinding {
+		t.Helper()
+		b, err := d.CreateHeraBinding(CreateHeraBindingInput{RoleID: roleID, ArgusTaskID: taskID, WorktreePath: "/wt/" + taskID})
+		testutil.NoError(t, err)
+		return b
+	}
+
+	t.Run("task with no bindings returns nil", func(t *testing.T) {
+		d := heraTestDB(t)
+		msgs, err := d.HeraMessagesForTask("nobody", 10)
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(msgs), 0)
+	})
+
+	t.Run("includes read and unread across the task's roles oldest first", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "orch")
+		coord := mkRole(t, d, o.ID, "coord", HeraKindCoordinator)
+		w1 := mkRole(t, d, o.ID, "w1", HeraKindWorker)
+		w2 := mkRole(t, d, o.ID, "w2", HeraKindWorker)
+		other := mkRole(t, d, o.ID, "other", HeraKindWorker)
+		b1 := bind(t, d, w1.ID, "t1")
+		testutil.NoError(t, d.EndHeraBinding(b1.ID, "moved"))
+		bind(t, d, w2.ID, "t1")
+		bind(t, d, other.ID, "t2")
+
+		m1 := mkMsg(t, d, coord.ID, w1.ID, "one", "one", nil)
+		m2 := mkMsg(t, d, coord.ID, w2.ID, "two", "two", nil)
+		mkMsg(t, d, coord.ID, other.ID, "not mine", "x", nil)
+		_, err := d.MarkHeraMessagesRead(w1.ID, []int64{m1.ID})
+		testutil.NoError(t, err)
+
+		msgs, err := d.HeraMessagesForTask("t1", 0)
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(msgs), 2)
+		testutil.Equal(t, msgs[0].ID, m1.ID)
+		testutil.Equal(t, msgs[1].ID, m2.ID)
+		if msgs[0].ReadAt == nil {
+			t.Fatal("expected read message to carry ReadAt")
+		}
+		testutil.Nil(t, msgs[1].ReadAt)
+	})
+
+	t.Run("limit keeps newest", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "orch")
+		coord := mkRole(t, d, o.ID, "coord", HeraKindCoordinator)
+		w := mkRole(t, d, o.ID, "w", HeraKindWorker)
+		bind(t, d, w.ID, "t1")
+		mkMsg(t, d, coord.ID, w.ID, "a", "a", nil)
+		b := mkMsg(t, d, coord.ID, w.ID, "b", "b", nil)
+		c := mkMsg(t, d, coord.ID, w.ID, "c", "c", nil)
+
+		msgs, err := d.HeraMessagesForTask("t1", 2)
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(msgs), 2)
+		testutil.Equal(t, msgs[0].ID, b.ID)
+		testutil.Equal(t, msgs[1].ID, c.ID)
+	})
+
+	t.Run("does not mark read", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "orch")
+		coord := mkRole(t, d, o.ID, "coord", HeraKindCoordinator)
+		w := mkRole(t, d, o.ID, "w", HeraKindWorker)
+		bind(t, d, w.ID, "t1")
+		mkMsg(t, d, coord.ID, w.ID, "a", "a", nil)
+
+		_, err := d.HeraMessagesForTask("t1", 0)
+		testutil.NoError(t, err)
+		unread, err := d.HeraInbox(w.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(unread), 1)
+	})
+}
+
 func TestWaitForHeraInbox(t *testing.T) {
 	t.Run("returns existing unread messages immediately", func(t *testing.T) {
 		d := heraTestDB(t)

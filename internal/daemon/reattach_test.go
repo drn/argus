@@ -16,7 +16,7 @@ func hasBounceSignal(t *testing.T, d *Daemon, taskID string) bool {
 	msgs, err := d.db.Inbox(taskID, db.InboxFilter{})
 	testutil.NoError(t, err)
 	for _, m := range msgs {
-		if m.From == SystemTaskID && m.Body == `{"type":"ARGUS_BOUNCED"}` {
+		if m.From == model.SystemTaskID && m.Body == `{"type":"ARGUS_BOUNCED"}` {
 			return true
 		}
 	}
@@ -229,7 +229,7 @@ func TestReconcileOnStartup_Supervised_FirstStartAfterOffRun(t *testing.T) {
 	testutil.NoError(t, err)
 	bounces := 0
 	for _, m := range msgs {
-		if m.From == SystemTaskID && m.Body == `{"type":"ARGUS_BOUNCED"}` {
+		if m.From == model.SystemTaskID && m.Body == `{"type":"ARGUS_BOUNCED"}` {
 			bounces++
 		}
 	}

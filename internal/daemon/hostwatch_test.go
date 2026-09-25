@@ -66,7 +66,7 @@ func TestSendHostSuspendSignals(t *testing.T) {
 		msgs, err := d.Inbox(task.ID, db.InboxFilter{})
 		testutil.NoError(t, err)
 		testutil.Equal(t, len(msgs), 1)
-		testutil.Equal(t, msgs[0].From, SystemTaskID)
+		testutil.Equal(t, msgs[0].From, model.SystemTaskID)
 		testutil.Equal(t, msgs[0].Kind, model.KindNote)
 		var p hostSuspendPayload
 		testutil.NoError(t, json.Unmarshal([]byte(msgs[0].Body), &p))

@@ -114,6 +114,8 @@ type TaskListView struct {
 	// Callback when user presses 'c' to copy a field of the task (name or
 	// prompt). The caller presents the choice; this fires for any selected task.
 	OnCopy func(task *model.Task)
+	// OnInbox fires on `i` to open the selected task's read-only inbox viewer.
+	OnInbox func(task *model.Task)
 	// Callback fired after buildRows when the row composition changes.
 	// Used by App to force a tcell Sync — rows shifting under tview's
 	// diff-based emit is a known source of bleed-through in tmux.
@@ -1016,6 +1018,10 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 				}
 			case keymap.ActTaskHera:
 				tl.ToggleHeraManaged()
+			case keymap.ActTaskInbox:
+				if t := tl.SelectedTask(); t != nil && tl.OnInbox != nil {
+					tl.OnInbox(t)
+				}
 			}
 		}
 	})

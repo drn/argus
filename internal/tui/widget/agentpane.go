@@ -7,6 +7,7 @@ import (
 	"regexp"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/mattn/go-runewidth"
 )
 
 // AnsiRe matches ANSI escape sequences (CSI, OSC, simple escapes).
@@ -103,10 +104,13 @@ func DrawBorderedPanel(screen tcell.Screen, x, y, w, h int, title string, style 
 	FillArea(screen, x+1, y+1, w-2, h-2, ' ', tcell.StyleDefault)
 	DrawBorder(screen, x, y, w, h, style)
 	if title != "" {
-		for i, r := range title {
-			if x+1+i < x+w-1 {
-				screen.SetContent(x+1+i, y, r, nil, style.Bold(true))
+		col := x + 1
+		for _, r := range title {
+			if col >= x+w-1 {
+				break
 			}
+			screen.SetContent(col, y, r, nil, style.Bold(true))
+			col += max(runewidth.RuneWidth(r), 1)
 		}
 	}
 	return InnerRect{X: x + 1, Y: y + 1, W: w - 2, H: h - 2}

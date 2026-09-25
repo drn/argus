@@ -88,7 +88,7 @@ func hostSuspendBody(gap time.Duration) string {
 // sendHostSuspendSignals posts an ARGUS_HOST_SUSPENDED note (carrying the
 // approximate suspend duration) into each given task's inbox, skipping tasks that
 // no longer exist or are archived. Returns the count actually sent. A direct
-// sibling of sendBounceSignals — same SystemTaskID sender, KindNote, and
+// sibling of sendBounceSignals — same model.SystemTaskID sender, KindNote, and
 // InsertSystemMessage path — so both daemon-originated agent signals share one
 // durable, inbox-poll-visible delivery shape (no notifier / PTY push). Per-task
 // failures are logged and skipped so one bad row never blocks the rest.
@@ -105,7 +105,7 @@ func sendHostSuspendSignals(database *db.DB, ids []string, gap time.Duration) in
 			continue
 		}
 		msg := &model.TaskMessage{
-			From: SystemTaskID,
+			From: model.SystemTaskID,
 			To:   id,
 			Kind: model.KindNote,
 			Body: body,

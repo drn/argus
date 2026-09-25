@@ -132,3 +132,27 @@ func TestDrawBorderedPanel_TinyPanelReturnsZeroInnerRect(t *testing.T) {
 		t.Errorf("tiny panel should not paint; got %q, want X", r)
 	}
 }
+
+func TestDrawBorderedPanel_TitleColumnsFollowRunesNotBytes(t *testing.T) {
+	s := newSimScreen(t, 20, 5)
+	DrawBorderedPanel(s, 0, 0, 20, 4, "a—b漢c", tcell.StyleDefault)
+	for _, tc := range []struct {
+		x    int
+		want string
+	}{{1, "a"}, {2, "—"}, {3, "b"}, {4, "漢"}, {6, "c"}, {7, "─"}} {
+		if got, _, _ := s.Get(tc.x, 0); got != tc.want {
+			t.Errorf("title cell %d = %q, want %q", tc.x, got, tc.want)
+		}
+	}
+}
+
+func TestDrawBorderedPanel_TitleClippedToBorder(t *testing.T) {
+	s := newSimScreen(t, 10, 4)
+	DrawBorderedPanel(s, 0, 0, 5, 3, "abcdefgh", tcell.StyleDefault)
+	if got, _, _ := s.Get(4, 0); got != "╮" {
+		t.Errorf("top-right corner overwritten by title: %q", got)
+	}
+	if got, _, _ := s.Get(3, 0); got != "c" {
+		t.Errorf("last title cell = %q, want c", got)
+	}
+}

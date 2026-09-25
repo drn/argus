@@ -229,6 +229,10 @@ type HeraPage struct {
 	// dispatched directly rather than through the selection-gated `fire`.
 	OnCleanup func(heramodel.Selection)
 
+	// OnInbox fires on `i` with the selection's focus task (a worker row's
+	// task, or a header's coordinator task); skipped when there is none.
+	OnInbox func(taskID string)
+
 	// OnCopyClipboard fires on `ctrl+y` whenever a TERMINAL pane (coordinator or
 	// worker) is focused, passing the focused pane's bound task ID — regardless
 	// of whether that task has an agent-staged clipboard payload. The App
@@ -1341,6 +1345,14 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 			// same "fires even on an empty rail" shape as ActHeraNewCoord above.
 			if p.OnCleanup != nil {
 				p.OnCleanup(sel)
+			}
+			return true
+		case keymap.ActHeraInbox:
+			if p.OnInbox == nil {
+				return false
+			}
+			if taskID := sel.FocusTaskID(); taskID != "" {
+				p.OnInbox(taskID)
 			}
 			return true
 		}
