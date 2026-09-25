@@ -1858,7 +1858,9 @@ const STATIC_OUTPUT_MAX_BYTES = 512 * 1024;
 // what every popular library does and is robust to the iOS scroll-throttle.
 let termTouching = false;
 let isTermScrolling = false;
+let termTouchSequence = 0;
 let scrollendFallbackTimer = null;
+let composeScrollRecoveryTimer = null;
 let termViewportEl = null;
 let termTouchEl = null;
 // Tracks whether a chunk is currently in xterm's parser (term.write
@@ -1908,6 +1910,7 @@ const TAP_MOVE_THRESHOLD_PX = 10;
 
 function onTermTouchStart(e) {
   termTouching = true;
+  termTouchSequence++;
   const t = e && e.touches && e.touches[0];
   if (t) { touchStartX = t.clientX; touchStartY = t.clientY; }
 }
@@ -2475,6 +2478,7 @@ async function openDetail(id) {
 
   document.getElementById('tasks-view').style.display = 'none';
   document.getElementById('detail-view').classList.add('open');
+  syncVisualViewport();
   document.getElementById('detail-title').textContent = currentTask.name;
   document.getElementById('detail-subtitle').textContent =
     `${currentTask.project} \u00b7 ${statusLabel(effectiveStatus(currentTask))}${currentTask.elapsed ? ' \u00b7 ' + currentTask.elapsed : ''}`;
@@ -2941,6 +2945,8 @@ function destroyTerm() {
   inflightWrite = false;
   clearTimeout(scrollendFallbackTimer);
   scrollendFallbackTimer = null;
+  clearTimeout(composeScrollRecoveryTimer);
+  composeScrollRecoveryTimer = null;
   const btn = document.getElementById('jump-bottom');
   if (btn) { btn.classList.remove('shown'); btn.classList.remove('has-pending'); }
 }
@@ -4802,6 +4808,19 @@ if (window.visualViewport) {
   window.visualViewport.addEventListener('scroll', syncVisualViewport);
   syncVisualViewport();
 }
+// A backgrounded iOS PWA can resume without replaying the viewport event that
+// moved the keyboard. The background transition also ends any terminal
+// gesture, even if WebKit omitted its touchcancel/scrollend pair.
+function syncViewportOnForeground() {
+  if (document.hidden) return;
+  termTouching = false;
+  isTermScrolling = false;
+  pendingViewportSync = false;
+  syncVisualViewport();
+  drainIfSettled();
+}
+window.addEventListener('pageshow', syncViewportOnForeground);
+document.addEventListener('visibilitychange', syncViewportOnForeground);
 
 // --- Create Task ---
 // Set on the first completed loadProjects()/loadBackends() — regardless of
@@ -6628,9 +6647,22 @@ function sendCompose() {
   // back to the bottom and drain any pending chunks so the agent's reply is
   // visible immediately.
   if (term) {
+    const touchSequenceAtSend = termTouchSequence;
     term.scrollToBottom();
     flushPending();
     updateJumpButton();
+    // scrollToBottom is programmatic, but its DOM scroll event can arm the
+    // terminal's momentum guard without a matching scrollend on iOS. A
+    // keyboard-closing visualViewport resize then stays pending forever.
+    // A new finger gesture wins and its own scrollend drains the update.
+    clearTimeout(composeScrollRecoveryTimer);
+    composeScrollRecoveryTimer = setTimeout(() => {
+      composeScrollRecoveryTimer = null;
+      if (!isDetailViewOpen() || termTouching || termTouchSequence !== touchSequenceAtSend) return;
+      isTermScrolling = false;
+      drainIfSettled();
+      syncVisualViewport();
+    }, 150);
   }
 }
 

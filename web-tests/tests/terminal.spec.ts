@@ -113,6 +113,58 @@ test.describe('terminal', () => {
     expect(layout.docScrollWidth).toBeLessThanOrEqual(layout.docClientWidth + 1);
   });
 
+  test('opening detail resets stale viewport geometry', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'phone viewport regression only');
+    await login(page);
+    const listScrollY = await page.evaluate(() => {
+      document.documentElement.style.setProperty('--app-height', '123px');
+      document.getElementById('detail-view')!.style.transform = 'translateY(280px)';
+      document.body.style.minHeight = '200vh';
+      window.scrollTo(0, 300);
+      const scrollY = window.scrollY;
+      // Dispatch the same click handler without Playwright auto-scrolling the
+      // row back into view; the stale list scroll must still be present.
+      document.querySelector('.task-item')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      return scrollY;
+    });
+    expect(listScrollY).toBeGreaterThan(0);
+    await expect.poll(() => page.evaluate(() => ({
+      height: document.documentElement.style.getPropertyValue('--app-height'),
+      top: document.getElementById('detail-view')!.getBoundingClientRect().top,
+    }))).toEqual({ height: await page.evaluate(() => `${window.visualViewport!.height}px`), top: 0 });
+  });
+
+  test('foreground return resyncs detail without a viewport event', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'phone viewport regression only');
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await page.evaluate(() => {
+      const vv = window.visualViewport!;
+      const state = { height: window.innerHeight - 300, top: 250 };
+      (window as any).fakeViewport = state;
+      Object.defineProperty(vv, 'height', { configurable: true, get: () => state.height });
+      Object.defineProperty(vv, 'offsetTop', { configurable: true, get: () => state.top });
+      vv.dispatchEvent(new Event('resize'));
+    });
+    await expect(page.locator('#detail-view')).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, 250)');
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(await page.evaluate(() => document.getElementById('detail-view')!.style.transform)).toBe('translateY(250px)');
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+      const state = (window as any).fakeViewport;
+      state.height = window.innerHeight;
+      state.top = 0;
+      window.dispatchEvent(new Event('pageshow'));
+    });
+    await expect.poll(() => page.evaluate(() => ({
+      height: document.documentElement.style.getPropertyValue('--app-height'),
+      transform: document.getElementById('detail-view')!.style.transform,
+    }))).toEqual({ height: await page.evaluate(() => `${window.innerHeight}px`), transform: '' });
+  });
+
   test('buffers SSE writes while scrolled into history', async ({ page }) => {
     await login(page);
     await page.locator('.task-item').first().click();

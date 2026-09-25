@@ -72,6 +72,92 @@ test.describe('compose bar', () => {
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
+  test('Send recovers detail geometry when keyboard closes without terminal scrollend', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    // Model the keyboard-open visual viewport, including its positive offset.
+    // The real browser does not expose a software keyboard to Playwright.
+    await page.evaluate(() => {
+      const vv = window.visualViewport!;
+      const state = { height: window.innerHeight - 320, top: 280 };
+      (window as any).fakeViewport = state;
+      Object.defineProperty(vv, 'height', { configurable: true, get: () => state.height });
+      Object.defineProperty(vv, 'offsetTop', { configurable: true, get: () => state.top });
+      vv.dispatchEvent(new Event('resize'));
+    });
+    await expect(page.locator('#detail-view')).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, 280)');
+
+    await page.locator('#compose-input').fill('hello');
+    await page.locator('#compose-send').click();
+    // Programmatic xterm scrolling may emit `scroll` without a matching
+    // `scrollend` on iOS. Reproduce that gate, then dismiss the keyboard.
+    await page.evaluate(() => {
+      (window as any).onTermScroll();
+      const state = (window as any).fakeViewport;
+      state.height = window.innerHeight;
+      state.top = 0;
+      window.visualViewport!.dispatchEvent(new Event('resize'));
+    });
+
+    await expect.poll(() => page.evaluate(() => ({
+      height: document.documentElement.style.getPropertyValue('--app-height'),
+      transform: document.getElementById('detail-view')!.style.transform,
+      pending: (window as any).argusTouchState().pendingViewportSync,
+    }))).toEqual({ height: await page.evaluate(() => `${window.innerHeight}px`), transform: '', pending: false });
+  });
+
+  test('Send recovery leaves a new terminal touch undisturbed', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+    await page.evaluate(() => {
+      const vv = window.visualViewport!;
+      const state = { height: window.innerHeight - 320, top: 280 };
+      (window as any).fakeViewport = state;
+      Object.defineProperty(vv, 'height', { configurable: true, get: () => state.height });
+      Object.defineProperty(vv, 'offsetTop', { configurable: true, get: () => state.top });
+      vv.dispatchEvent(new Event('resize'));
+    });
+    await page.locator('#compose-input').fill('hello');
+    await page.locator('#compose-send').click();
+    await page.evaluate(() => {
+      document.getElementById('term')!.dispatchEvent(new Event('touchstart'));
+      const state = (window as any).fakeViewport;
+      state.height = window.innerHeight;
+      state.top = 0;
+      window.visualViewport!.dispatchEvent(new Event('resize'));
+    });
+    await page.waitForTimeout(250);
+    expect(await page.evaluate(() => document.getElementById('detail-view')!.style.transform)).toBe('translateY(280px)');
+    await page.evaluate(() => document.getElementById('term')!.dispatchEvent(new Event('touchcancel')));
+    await expect.poll(() => page.evaluate(() => document.getElementById('detail-view')!.style.transform)).toBe('');
+  });
+
+  test('Send resyncs a keyboard dismissal with no visualViewport event', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+    await page.evaluate(() => {
+      const vv = window.visualViewport!;
+      const state = { height: window.innerHeight - 320, top: 280 };
+      (window as any).fakeViewport = state;
+      Object.defineProperty(vv, 'height', { configurable: true, get: () => state.height });
+      Object.defineProperty(vv, 'offsetTop', { configurable: true, get: () => state.top });
+      vv.dispatchEvent(new Event('resize'));
+    });
+    await page.locator('#compose-input').fill('hello');
+    await page.locator('#compose-send').click();
+    await page.evaluate(() => {
+      const state = (window as any).fakeViewport;
+      state.height = window.innerHeight;
+      state.top = 0;
+      // Deliberately omit visualViewport.resize/scroll.
+    });
+    await expect.poll(() => page.evaluate(() => ({
+      height: document.documentElement.style.getPropertyValue('--app-height'),
+      transform: document.getElementById('detail-view')!.style.transform,
+    }))).toEqual({ height: await page.evaluate(() => `${window.innerHeight}px`), transform: '' });
+  });
+
   test('Enter sends, Shift+Enter inserts a newline', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
     await login(page);
