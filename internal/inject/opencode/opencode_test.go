@@ -113,6 +113,41 @@ func TestInjectGlobal_AddsSkillsEntry(t *testing.T) {
 	}
 }
 
+func TestRemoveManagedSkillsGlobal_OnlyRemovesArgusPath(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", t.TempDir())
+	managed := filepath.Join(os.Getenv("HOME"), ".argus", "skills", ".claude", "skills")
+	if err := InjectGlobal(7742, managed); err != nil {
+		t.Fatal(err)
+	}
+	path, err := globalConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data map[string]any
+	if err := json.Unmarshal(raw, &data); err != nil {
+		t.Fatal(err)
+	}
+	data["skills"] = []string{"/my/skill", managed}
+	if err := writeJSON(path, data); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveManagedSkillsGlobal(managed); err != nil {
+		t.Fatal(err)
+	}
+	skills := readSkills(t, path)
+	if len(skills) != 1 || skills[0] != "/my/skill" {
+		t.Fatalf("skills after cleanup = %v", skills)
+	}
+	if got := readMCP(t, path)["url"]; got != "http://localhost:7742/mcp" {
+		t.Fatalf("MCP config changed during cleanup: %v", got)
+	}
+}
+
 func TestInjectOpencodeJSON_CreatesEntry(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "opencode.json")
 

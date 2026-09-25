@@ -77,7 +77,7 @@ The generated profile SHALL deny read access to known credential directories (`~
 
 ### Requirement: Backend auth and session persistence writes
 
-The generated profile SHALL grant the narrow write paths each supported agent backend needs to persist auth tokens and session state, without broadening to all of `$HOME`. This covers `~/.claude.json` (including atomic-write sibling files), `~/.claude/`, `~/.codex/`, and `~/.pi/`. Unrelated `$HOME`-rooted paths SHALL remain denied.
+The generated profile SHALL grant the narrow write paths each supported agent backend needs to persist auth tokens and session state, without broadening to all of `$HOME`. This covers `~/.claude.json` (including atomic-write sibling files), `~/.claude/`, `~/.codex/`, `~/.local/share/argus/codex-home/`, and `~/.pi/`. Unrelated `$HOME`-rooted paths SHALL remain denied.
 
 #### Scenario: Claude auth file and atomic-write siblings are writable
 
@@ -88,6 +88,11 @@ The generated profile SHALL grant the narrow write paths each supported agent ba
 
 - **WHEN** a sandboxed command writes Codex state under `~/.codex/` (auth, session DB, sessions) or Pi session files under `~/.pi/`
 - **THEN** the writes succeed so the backends can persist auth and resume sessions
+
+#### Scenario: Argus-only Codex home is writable
+
+- **WHEN** an Argus-launched Codex command writes under `~/.local/share/argus/codex-home/`
+- **THEN** the write succeeds without granting access to all of `~/.local/share/`
 
 #### Scenario: unrelated HOME path stays denied
 

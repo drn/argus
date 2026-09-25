@@ -695,6 +695,8 @@ func TestSandbox_CodexBackendWritable(t *testing.T) {
 		".codex/history.jsonl",
 		".codex/models_cache.json",
 		".codex/sessions/2026/05/10/sess.jsonl",
+		".local/share/argus/codex-home/state_5.sqlite",
+		".local/share/argus/codex-home/skills/hera/SKILL.md",
 	}
 	for _, name := range paths {
 		t.Run(name, func(t *testing.T) {

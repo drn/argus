@@ -2,6 +2,7 @@ package skills
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
 	"fmt"
 	"io/fs"
@@ -104,31 +105,31 @@ func BuiltinSkillsDir(workspaceRoot string) string {
 	return filepath.Join(workspaceRoot, ".claude", "skills")
 }
 
-// EnsureCodexSkills materializes the same embedded builtin skill bodies to
-// Codex's own first-party installed-skills directory ($CODEX_HOME/skills,
-// defaulting to ~/.codex/skills when CODEX_HOME is unset), outside the
-// .system/ subtree Codex reserves for its own bundled skills. This is
-// deliberately narrower than the generic cross-tool `.agents/skills`
-// convention (visible to any tool implementing that convention, not just
-// Codex) — see openspec/changes/add-nonclaude-context-parity/design.md
-// Decision 2. Because $CODEX_HOME/skills is shared with Codex's own content
-// and any skills the user installed themselves, stale-directory removal
-// there is gated on a positive per-directory ownership marker (never on mere
-// absence-of-recognition) and .system/ is skipped unconditionally regardless
-// — see materializeBuiltinSkillsInto. Idempotent and inert (no filesystem
-// writes, no error) when running inside a Go test binary, mirroring
-// EnsureBuiltinSkills.
-func EnsureCodexSkills() (string, error) {
-	if isTestBinary() {
-		return "", nil
+// ArgusCodexHome is the Codex state root used only by Argus-launched sessions.
+// The caller sets CODEX_HOME to this path for the child process. Ordinary Codex
+// sessions keep their own home and never discover Argus's embedded skills.
+func ArgusCodexHome() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("no home dir: %w", err)
 	}
-	return ensureCodexSkills()
+	codexHome, err := UserCodexHome()
+	if err != nil {
+		return "", err
+	}
+	root := filepath.Join(home, ".local", "share", "argus", "codex-home")
+	if codexHome != filepath.Join(home, ".codex") {
+		// A distinct source home needs a distinct overlay: existing links must
+		// never make a later custom CODEX_HOME see another home's content.
+		digest := sha256.Sum256([]byte(codexHome))
+		return filepath.Join(root, fmt.Sprintf("custom-%x", digest[:8])), nil
+	}
+	return root, nil
 }
 
-// ensureCodexSkills is the untested-for-isTestBinary core of EnsureCodexSkills,
-// split out so tests can exercise the real materialization logic directly
-// (EnsureCodexSkills always short-circuits under `go test`).
-func ensureCodexSkills() (string, error) {
+// UserCodexHome resolves the normal Codex state root before Argus overrides
+// CODEX_HOME for a child session.
+func UserCodexHome() (string, error) {
 	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
 	if codexHome == "" {
 		home, err := os.UserHomeDir()
@@ -137,10 +138,174 @@ func ensureCodexSkills() (string, error) {
 		}
 		codexHome = filepath.Join(home, ".codex")
 	}
-	// exclusiveOwner=false: $CODEX_HOME/skills is shared with Codex's own
-	// bundled .system/ content and any skills the user installed themselves —
-	// unlike ~/.argus/skills/.claude/skills, nothing else ever writes there.
-	return materializeBuiltinSkillsInto(filepath.Join(codexHome, "skills"), false)
+	root, err := filepath.Abs(codexHome)
+	if err != nil {
+		return "", fmt.Errorf("resolve Codex home: %w", err)
+	}
+	return root, nil
+}
+
+// EnsureCodexSkills builds a Codex home under ~/.local/share/argus for Argus sessions.
+// Existing Codex state and user skills are linked in from the normal Codex
+// home, while Argus's embedded skills exist only in this Argus-owned home.
+// It is inert under go test; tests call ensureCodexSkills directly.
+func EnsureCodexSkills() (string, error) {
+	if isTestBinary() {
+		return "", nil
+	}
+	return ensureCodexSkills()
+}
+
+// ensureCodexSkills is the testable core of EnsureCodexSkills.
+func ensureCodexSkills() (string, error) {
+	codexHome, err := UserCodexHome()
+	if err != nil {
+		return "", err
+	}
+	argusHome, err := ArgusCodexHome()
+	if err != nil {
+		return "", err
+	}
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("no home dir: %w", err)
+	}
+	managedRoot := filepath.Join(userHome, ".local", "share", "argus", "codex-home")
+	if codexHome == managedRoot || strings.HasPrefix(codexHome, managedRoot+string(filepath.Separator)) {
+		return "", fmt.Errorf("CODEX_HOME already points at Argus's managed Codex home")
+	}
+	if err := os.MkdirAll(argusHome, 0700); err != nil {
+		return "", fmt.Errorf("create Argus Codex home: %w", err)
+	}
+	// #nosec G302 -- this is a directory, so the owner needs execute access.
+	if err := os.Chmod(argusHome, 0700); err != nil {
+		return "", fmt.Errorf("protect Argus Codex home: %w", err)
+	}
+	// Link existing state and configuration so authentication, preferences,
+	// plugins, and session history carry over. The skills subtree is handled
+	// separately so Argus skills never enter the user's normal Codex catalog.
+	if err := linkCodexEntries(codexHome, argusHome, "skills"); err != nil {
+		return "", err
+	}
+	skillsDir := filepath.Join(argusHome, "skills")
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+		return "", fmt.Errorf("create Argus Codex skills dir: %w", err)
+	}
+	if err := linkCodexSkills(filepath.Join(codexHome, "skills"), skillsDir); err != nil {
+		return "", err
+	}
+	if _, err := materializeBuiltinSkillsInto(skillsDir, false); err != nil {
+		return "", err
+	}
+	return argusHome, nil
+}
+
+// linkCodexEntries mirrors existing root entries without writing to the
+// user's Codex home. The source wins if Codex replaced an overlay symlink;
+// the overlay copy is preserved before restoring the link.
+func linkCodexEntries(sourceDir, targetDir, skip string) error {
+	entries, err := os.ReadDir(sourceDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read Codex home: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == skip {
+			continue
+		}
+		source := filepath.Join(sourceDir, entry.Name())
+		target := filepath.Join(targetDir, entry.Name())
+		if err := linkCodexSource(source, target, targetDir); err != nil {
+			return fmt.Errorf("link Codex state %s: %w", entry.Name(), err)
+		}
+	}
+	return nil
+}
+
+func linkCodexSkills(sourceDir, targetDir string) error {
+	if err := removeDanglingCodexSkillLinks(sourceDir, targetDir); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(sourceDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read Codex skills: %w", err)
+	}
+	for _, entry := range entries {
+		source := filepath.Join(sourceDir, entry.Name())
+		// Previously installed Argus skills in the user's global Codex home
+		// must not be linked back into the isolated home as foreign skills.
+		if _, err := os.Stat(filepath.Join(source, ownerMarkerFile)); err == nil {
+			continue
+		}
+		target := filepath.Join(targetDir, entry.Name())
+		if entry.Name() == reservedCodexSystemDir {
+			if _, err := os.Lstat(target); err == nil {
+				continue
+			} else if !os.IsNotExist(err) {
+				return fmt.Errorf("inspect Codex system skills: %w", err)
+			}
+		}
+		if err := linkCodexSource(source, target, filepath.Dir(targetDir)); err != nil {
+			return fmt.Errorf("link Codex skill %s: %w", entry.Name(), err)
+		}
+	}
+	return nil
+}
+
+func linkCodexSource(source, target, overlayHome string) error {
+	if info, err := os.Lstat(target); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			if linked, err := os.Readlink(target); err == nil && linked == source {
+				return nil
+			}
+		}
+		// Keep Argus-session writes recoverable while making the user's normal
+		// Codex home authoritative on the next launch.
+		backupDir, err := os.MkdirTemp(overlayHome, ".argus-preserved-")
+		if err != nil {
+			return fmt.Errorf("preserve overlay entry: %w", err)
+		}
+		if err := os.Rename(target, filepath.Join(backupDir, filepath.Base(target))); err != nil {
+			return fmt.Errorf("preserve overlay entry: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect overlay entry: %w", err)
+	}
+	return os.Symlink(source, target)
+}
+
+func removeDanglingCodexSkillLinks(sourceDir, targetDir string) error {
+	entries, err := os.ReadDir(targetDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read overlay skills: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == reservedCodexSystemDir {
+			continue
+		}
+		if entry.Type()&os.ModeSymlink == 0 {
+			continue
+		}
+		path := filepath.Join(targetDir, entry.Name())
+		linked, err := os.Readlink(path)
+		if err != nil || linked != filepath.Join(sourceDir, entry.Name()) {
+			continue
+		}
+		if _, err := os.Stat(linked); os.IsNotExist(err) {
+			if err := os.Remove(path); err != nil {
+				return fmt.Errorf("remove missing Codex skill link %s: %w", entry.Name(), err)
+			}
+		}
+	}
+	return nil
 }
 
 // materializeBuiltinSkillsInto writes every embedded builtin skill's files

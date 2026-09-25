@@ -30,19 +30,68 @@ const mcpServerName = "argus"
 // openspec/changes/add-nonclaude-context-parity/design.md Decision 2). Pass ""
 // to skip this — e.g. when skill materialization itself failed.
 func InjectGlobal(port int, skillsDir string) error {
-	configHome := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
-	if configHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("inject opencode global: user home dir: %w", err)
-		}
-		configHome = filepath.Join(home, ".config")
+	path, err := globalConfigPath()
+	if err != nil {
+		return err
 	}
-	path := filepath.Join(configHome, "opencode", "opencode.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
 	return injectOpencodeJSON(path, port, skillsDir)
+}
+
+func globalConfigPath() (string, error) {
+	configHome := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
+	if configHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("inject opencode global: user home dir: %w", err)
+		}
+		configHome = filepath.Join(home, ".config")
+	}
+	return filepath.Join(configHome, "opencode", "opencode.json"), nil
+}
+
+// RemoveManagedSkillsGlobal removes only the skill path previously inserted by
+// Argus's global injector. New launches use a child-only config override.
+func RemoveManagedSkillsGlobal(skillsDir string) error {
+	if skillsDir == "" {
+		return nil
+	}
+	path, err := globalConfigPath()
+	if err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var data map[string]any
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return fmt.Errorf("remove opencode global skill path: %w", err)
+	}
+	arr, ok := data["skills"].([]any)
+	if !ok {
+		return nil
+	}
+	kept := make([]any, 0, len(arr))
+	for _, item := range arr {
+		if item != skillsDir {
+			kept = append(kept, item)
+		}
+	}
+	if len(kept) == len(arr) {
+		return nil
+	}
+	if len(kept) == 0 {
+		delete(data, "skills")
+	} else {
+		data["skills"] = kept
+	}
+	return writeJSON(path, data)
 }
 
 // injectOpencodeJSON mutates the mcp.argus key and, when skillsDir is
