@@ -36,7 +36,7 @@ func seedInbox(t *testing.T) inboxFixture {
 	testutil.NoError(t, err)
 	_, err = d.InsertMessage(&model.TaskMessage{From: sender.ID, To: recv.ID, Kind: model.KindQuestion, Body: "still unread"})
 	testutil.NoError(t, err)
-	_, err = d.InsertSystemMessage(&model.TaskMessage{From: systemSenderID, To: recv.ID, Kind: model.KindNote, Body: "ARGUS_BOUNCED"})
+	_, err = d.InsertSystemMessage(&model.TaskMessage{From: model.SystemTaskID, To: recv.ID, Kind: model.KindNote, Body: "ARGUS_BOUNCED"})
 	testutil.NoError(t, err)
 
 	orch, err := d.CreateHeraOrchestrator("o", "")
@@ -159,7 +159,7 @@ func TestSmoke_InboxModal(t *testing.T) {
 	testutil.Equal(t, len(waitInboxLoaded(t, app)), 4)
 
 	// A new message shows up after `r`, and still nothing gets acked.
-	_, err := f.d.InsertSystemMessage(&model.TaskMessage{From: systemSenderID, To: f.recv.ID, Kind: model.KindNote, Body: "late"})
+	_, err := f.d.InsertSystemMessage(&model.TaskMessage{From: model.SystemTaskID, To: f.recv.ID, Kind: model.KindNote, Body: "late"})
 	testutil.NoError(t, err)
 	sim.InjectKey(tcell.KeyRune, 'r', tcell.ModNone)
 	syncUI(t, app.tapp)

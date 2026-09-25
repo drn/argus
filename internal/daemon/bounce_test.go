@@ -102,7 +102,7 @@ func TestReplayBounceSignals_PostsAndCleansUp(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 inbox message, got %d", len(msgs))
 	}
-	testutil.Equal(t, msgs[0].From, SystemTaskID)
+	testutil.Equal(t, msgs[0].From, model.SystemTaskID)
 	testutil.Equal(t, msgs[0].Body, `{"type":"ARGUS_BOUNCED"}`)
 	testutil.Equal(t, msgs[0].Kind, model.KindNote)
 

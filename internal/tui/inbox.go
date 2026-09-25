@@ -12,10 +12,6 @@ import (
 	"github.com/drn/argus/internal/uxlog"
 )
 
-// systemSenderID mirrors daemon.SystemTaskID (not imported: the tui package
-// must not depend on the daemon package).
-const systemSenderID = "argus:system"
-
 // openInbox shows the read-only inbox viewer for taskID, restoring the
 // previous page on close. Local mode only; remote mode shows a notice.
 func (a *App) openInbox(taskID, taskName string) {
@@ -93,7 +89,7 @@ func loadInboxEntries(d *db.DB, taskID string) ([]modal.InboxEntry, error) {
 
 	taskNames := map[string]string{}
 	taskName := func(id string) string {
-		if id == systemSenderID {
+		if id == model.SystemTaskID {
 			return "system"
 		}
 		if n, ok := taskNames[id]; ok {
