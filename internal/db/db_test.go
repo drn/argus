@@ -1558,6 +1558,34 @@ func TestFixupBackends_InsertsOpencode(t *testing.T) {
 	testutil.Equal(t, oc.PromptFlag, "--prompt")
 }
 
+func TestFixupBackends_UpgradesOldOpencodeDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   config.Backend
+		want config.Backend
+	}{
+		{"old default", config.Backend{Command: "opencode", PromptFlag: "--prompt"}, config.Backend{Command: "opencode mini", PromptFlag: "--prompt"}},
+		{"custom command", config.Backend{Command: "opencode --standalone", PromptFlag: "--prompt"}, config.Backend{Command: "opencode --standalone", PromptFlag: "--prompt"}},
+		{"custom prompt flag", config.Backend{Command: "opencode", PromptFlag: "--custom"}, config.Backend{Command: "opencode", PromptFlag: "--custom"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "data.sql")
+			d, err := Open(path)
+			testutil.NoError(t, err)
+			testutil.NoError(t, d.SetBackend("opencode", tc.in))
+			testutil.NoError(t, d.Close())
+
+			d, err = Open(path)
+			testutil.NoError(t, err)
+			defer func() { _ = d.Close() }()
+			backends, err := d.Backends()
+			testutil.NoError(t, err)
+			testutil.Equal(t, backends["opencode"].Command, tc.want.Command)
+			testutil.Equal(t, backends["opencode"].PromptFlag, tc.want.PromptFlag)
+		})
+	}
+}
+
 // --- Config edge case tests ---
 
 func TestDB_Config_CleanupWorktrees(t *testing.T) {

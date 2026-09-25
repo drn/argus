@@ -581,8 +581,8 @@ func canonPath(p string) string {
 // that ran in the given worktree. opencode keys sessions by git root-commit
 // (shared across every worktree of a repo), so the worktree is identified by
 // the per-session "directory" field, not by the storage bucket. Current
-// opencode (v1.14+) keeps sessions in SQLite (~/.local/share/opencode/opencode.db,
-// table "session"); older opencode used JSON files under
+// opencode keeps sessions in SQLite (~/.local/share/opencode/opencode.db,
+// table "session_v2" in v2 or "session" in v1.14+); older versions used JSON files under
 // storage/session/<projectID>/<ses_id>.json. We read SQLite first and fall back
 // to the JSON walk, returning the validated ses_… ID. Returns an error when no
 // matching session is found — callers treat that as "nothing to capture", and
@@ -598,7 +598,7 @@ func CaptureOpencodeSessionID(worktreePath string) (string, error) {
 	}
 	want := canonPath(worktreePath)
 
-	// SQLite first (current opencode).
+	// SQLite first (current and previous opencode releases).
 	dbPath := filepath.Join(dataDir, "opencode.db")
 	if _, statErr := os.Stat(dbPath); statErr == nil {
 		if id, qerr := captureOpencodeFromSQLite(dbPath, want); qerr == nil && id != "" {
@@ -615,7 +615,7 @@ func CaptureOpencodeSessionID(worktreePath string) (string, error) {
 	return "", fmt.Errorf("CaptureOpencodeSessionID: no session for worktree %s", worktreePath)
 }
 
-// captureOpencodeFromSQLite queries opencode's session table for the
+// captureOpencodeFromSQLite queries opencode's session_v2 or session table for the
 // most-recently-updated session whose directory matches the worktree. Opened
 // read-only (mode=ro) so we never mutate opencode's DB and still read the WAL —
 // immutable=1 would skip the -wal file and miss an uncheckpointed newest row.
@@ -636,19 +636,34 @@ func captureOpencodeFromSQLite(dbPath, want string) (string, error) {
 	}
 	defer func() { _ = db.Close() }()
 
+	// v2 changed the table name but kept the columns needed for capture.
+	// Prefer the new table when both exist; old data remains a fallback.
+	for _, table := range []string{"session_v2", "session"} {
+		if id, err := captureOpencodeFromTable(db, table, want); err == nil && id != "" {
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("captureOpencodeFromSQLite: no session for worktree %s", want)
+}
+
+// table is one of the two fixed names above, never user input.
+func captureOpencodeFromTable(db *sql.DB, table, want string) (string, error) {
+	fastQuery := `SELECT id FROM session WHERE directory = ? ORDER BY time_updated DESC LIMIT 1`
+	scanQuery := `SELECT id, directory FROM session ORDER BY time_updated DESC`
+	if table == "session_v2" {
+		fastQuery = `SELECT id FROM session_v2 WHERE directory = ? ORDER BY time_updated DESC LIMIT 1`
+		scanQuery = `SELECT id, directory FROM session_v2 ORDER BY time_updated DESC`
+	}
 	// Fast path: indexed exact-match on the resolved-absolute directory.
 	var id string
-	err = db.QueryRow(
-		`SELECT id FROM session WHERE directory = ? ORDER BY time_updated DESC LIMIT 1`,
-		want,
-	).Scan(&id)
+	err := db.QueryRow(fastQuery, want).Scan(&id)
 	if err == nil && opencodeSessionIDRe.MatchString(id) {
 		return id, nil
 	}
 
 	// Fallback: scan newest-first, symlink-resolving each stored directory,
 	// skipping malformed ids.
-	rows, err := db.Query(`SELECT id, directory FROM session ORDER BY time_updated DESC`)
+	rows, err := db.Query(scanQuery)
 	if err != nil {
 		return "", fmt.Errorf("captureOpencodeFromSQLite: query: %w", err)
 	}

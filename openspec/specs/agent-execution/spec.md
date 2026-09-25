@@ -52,6 +52,22 @@ The system SHALL build the agent command as a shell invocation whose working dir
 - **WHEN** a command is built for a task with an ID
 - **THEN** the command's working directory is the worktree and the environment exports the task ID for sub-agent tooling
 
+### Requirement: Slow prelaunch does not time out task startup
+
+The system SHALL allow a `StartSession` request to remain pending through the bounded backend prelaunch budget at both the TUI-to-daemon and daemon-to-supervisor RPC hops. Other routine daemon RPCs SHALL retain their short timeout. A completed prelaunch failure SHALL be returned to the task creator before transactional cleanup, so the worktree is not removed while prelaunch is still running.
+
+#### Scenario: Pi prelaunch takes longer than the ordinary RPC timeout
+
+- **WHEN** Pi prelaunch takes more than two seconds and succeeds within its configured budget
+- **THEN** the daemon and supervisor SHALL complete `StartSession` without an RPC timeout
+- **AND** the task SHALL remain attached to its worktree
+
+#### Scenario: Pi prelaunch fails
+
+- **WHEN** Pi prelaunch returns an error within its configured budget
+- **THEN** the error SHALL reach the task creator
+- **AND** the creator SHALL unwind the task only after the start call has completed
+
 ### Requirement: Forced terminal capability environment
 
 The system SHALL force terminal-capability environment variables on every spawned agent so color rendering is independent of what the parent process inherited, since the agent's controlling terminal is Argus's truecolor emulator rather than the launching shell.
@@ -88,7 +104,7 @@ The system SHALL pin a new session's ID for backends that accept a start-time se
 
 The system SHALL recover a session identifier after exit for backends that mint their ID externally (codex, pi, opencode) by reading the backend's own state for the task's worktree, returning the most recently updated matching session. For backends that pin their ID at start (Claude-style) or are unrecognized, the system SHALL report no captured ID without error. A captured codex ID SHALL be validated as a UUID before being returned, and a captured opencode ID SHALL be validated against the `ses_` identifier format before being returned.
 
-For opencode the system SHALL resolve the data directory from `XDG_DATA_HOME` (falling back to `~/.local/share`) under `opencode`, and SHALL locate the session whose recorded working directory equals the task's worktree, choosing the most recently updated one. It SHALL read the current SQLite store (`opencode.db`, table `session`) first and fall back to the legacy JSON session files when the SQLite store is absent or yields no match. When no matching session is found in either store, the system SHALL report no captured ID (fail open) so the conversation simply starts fresh rather than failing the launch.
+For opencode the system SHALL resolve the data directory from `XDG_DATA_HOME` (falling back to `~/.local/share`) under `opencode`, and SHALL locate the session whose recorded working directory equals the task's worktree, choosing the most recently updated one. It SHALL read the current SQLite store (`opencode.db`, table `session_v2` in v2, falling back to `session` in v1.14+) first and fall back to the legacy JSON session files when the SQLite store is absent or yields no match. When no matching session is found in either store, the system SHALL report no captured ID (fail open) so the conversation simply starts fresh rather than failing the launch.
 
 #### Scenario: Codex ID recovered from its state for the worktree
 - **WHEN** capture runs for a codex-backed task whose worktree has a recorded session
@@ -101,6 +117,11 @@ For opencode the system SHALL resolve the data directory from `XDG_DATA_HOME` (f
 #### Scenario: opencode ID recovered from the SQLite store for the worktree
 - **WHEN** capture runs for an opencode-backed task whose worktree has a row in the opencode SQLite session store
 - **THEN** the id of the most-recently-updated session whose directory equals the worktree is returned
+
+#### Scenario: opencode v2 ID recovered from session_v2
+
+- **WHEN** capture runs for an opencode-backed task with a matching row in `session_v2`
+- **THEN** the validated ID of the most-recently-updated matching session is returned
 
 #### Scenario: opencode ID recovered from legacy JSON when no SQLite store
 - **WHEN** capture runs for an opencode-backed task and only the legacy JSON session files exist

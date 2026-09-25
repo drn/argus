@@ -23,6 +23,11 @@ import (
 // 2s is generous for a local Unix socket; anything slower indicates real trouble.
 const rpcTimeout = 2 * time.Second
 
+// StartSession can wait for Pi's bounded six-minute Ollama prelaunch. Both
+// TUI→daemon and daemon→supervisor hops use this deadline; the ordinary RPC
+// timeout would make task creation unwind while prelaunch is still running.
+const startSessionTimeout = 7 * time.Minute
+
 // ErrRPCTimeout is returned when an RPC call exceeds rpcTimeout.
 var ErrRPCTimeout = errors.New("daemon RPC call timed out")
 
@@ -175,7 +180,7 @@ func (c *Client) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 	}
 
 	var resp daemon.StartResp
-	if err := c.call("Daemon.StartSession", req, &resp); err != nil {
+	if err := c.callWithTimeout("Daemon.StartSession", req, &resp, startSessionTimeout); err != nil {
 		uxlog.Log("client.Start: RPC FAILED task=%s err=%v", task.ID, err)
 		return nil, err
 	}

@@ -147,6 +147,13 @@ func (d *DB) fixupBackends() error {
 
 		needsUpdate := false
 
+		// The old built-in OpenCode command only pre-fills --prompt in v2's
+		// full TUI. Upgrade that exact shipped default, preserving any custom
+		// command or prompt flag the user configured.
+		if name == "opencode" && command == "opencode" && promptFlag == "--prompt" {
+			needsUpdate = true
+		}
+
 		// Migrate: permission flags used to be baked into the claude command
 		// (e.g. "claude --dangerously-skip-permissions --permission-mode plan").
 		// They are now injected by agent.BuildCmd from defaults.permission_mode,
