@@ -322,21 +322,30 @@ type App struct {
 	pages     *tview.Pages
 
 	// State
-	mode               viewMode
-	agentFocus         agentFocus
-	agentZen           bool // single-pane (zoom) mode: side panels collapsed to 0 width
-	crossTabArrows     bool // opt-in Cmd+Left/Right transition between Tasks and Hera rail
-	agentState         agentview.State
-	daemonConnected    bool
-	tasks              []*model.Task
-	runningIDs         []string
-	idleIDs            []string
-	worktreeDir        string // resolved worktree dir for current agent view task
-	lastGitRefresh     time.Time
-	lastTaskGitRefresh time.Time
-	lastPreviewTW      uint64 // TotalWritten when preview was last refreshed
-	lastPreviewTaskID  string // task ID for the cached TotalWritten
-	lastPreviewLogSize int64  // log file size when dead-session preview was last refreshed
+	mode            viewMode
+	agentFocus      agentFocus
+	agentZen        bool // single-pane (zoom) mode: side panels collapsed to 0 width
+	crossTabArrows  bool // opt-in Cmd+Left/Right transition between Tasks and Hera rail
+	agentState      agentview.State
+	daemonConnected bool
+	tasks           []*model.Task
+	runningIDs      []string
+	idleIDs         []string
+	// visibleActiveSpinner caches computeVisibleActiveSpinner's result
+	// (add-spinner-visible-scope), recomputed once per refreshTasksWithIDs
+	// call (tview main goroutine, a.mu held) so spinnerLoop's background
+	// goroutine can consult it under a.mu without ever touching a.tasklist/
+	// a.header directly — those are tview widgets, unsafe to read outside
+	// the tview main goroutine. Up to one tick (~1s) stale after a tab
+	// switch; bounded and self-healing, the same trade-off class as the
+	// needs-input fleet-batching staleness window.
+	visibleActiveSpinner bool
+	worktreeDir          string // resolved worktree dir for current agent view task
+	lastGitRefresh       time.Time
+	lastTaskGitRefresh   time.Time
+	lastPreviewTW        uint64 // TotalWritten when preview was last refreshed
+	lastPreviewTaskID    string // task ID for the cached TotalWritten
+	lastPreviewLogSize   int64  // log file size when dead-session preview was last refreshed
 	// Idle-unvisited tracking (for visual InReview promotion)
 	idleUnvisited    map[string]bool   // task IDs idle since user last opened their agent view
 	viewedWhileAgent map[string]bool   // tasks viewed in agent view; suppresses idleUnvisited re-add
@@ -1527,10 +1536,13 @@ func (a *App) tickLoop() {
 // spinnerLoop triggers redraws for smooth spinner animation.
 // Polls at 100ms (the fastest non-Progress spinner's TickInterval). The actual
 // frame selection is time-based in updateSpinnerFrame, so this just ensures
-// redraws happen often enough. Only fires when tasks are actively running
-// (not idle) — idle tasks show a static moon icon, not the spinner. Skipping
-// redraws when all tasks are idle prevents unnecessary full-screen repaints
-// that interfere with tmux hyperlink hover and waste CPU.
+// redraws happen often enough. Only fires when a spinner actually rendered on
+// screen right now would animate — idle tasks show a static moon icon, not
+// the spinner, and (add-spinner-visible-scope) a running-but-off-screen task
+// doesn't count either. Skipping redraws when nothing visible is animating
+// prevents unnecessary full-screen repaints that interfere with tmux
+// hyperlink hover and waste CPU — see computeVisibleActiveSpinner's doc
+// comment for the visibility scoping and its accepted staleness window.
 func (a *App) spinnerLoop() {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -1541,19 +1553,7 @@ func (a *App) spinnerLoop() {
 			return
 		case <-ticker.C:
 			a.mu.Lock()
-			hasActiveRunning := false
-			if len(a.runningIDs) > 0 {
-				idleSet := make(map[string]bool, len(a.idleIDs))
-				for _, id := range a.idleIDs {
-					idleSet[id] = true
-				}
-				for _, id := range a.runningIDs {
-					if !idleSet[id] {
-						hasActiveRunning = true
-						break
-					}
-				}
-			}
+			hasActiveRunning := a.visibleActiveSpinner
 			a.mu.Unlock()
 			// Reconcile hera pane PTY sizes at the spinner cadence (~100ms) so a
 			// freshly-bound session doesn't paint at a stale width for up to a
@@ -3597,6 +3597,56 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string, allowCachedTasks
 			a.taskDetail.SetTask(nil, false)
 		}
 	}
+
+	// add-spinner-visible-scope: recompute once per tick, here (tview main
+	// goroutine, a.mu already held by every caller of refreshTasksWithIDs),
+	// so spinnerLoop's background goroutine never has to touch a.tasklist/
+	// a.header itself.
+	a.visibleActiveSpinner = a.computeVisibleActiveSpinner(a.runningIDs, a.idleIDs)
+}
+
+// computeVisibleActiveSpinner reports whether at least one spinner glyph
+// currently rendered on screen would actually animate right now — the input
+// to spinnerLoop's redraw gate (cached into a.visibleActiveSpinner). MUST be
+// called on the tview main goroutine (it reads a.mode/a.header/a.tasklist,
+// none of which are safe to touch from spinnerLoop's background goroutine —
+// see that field's doc comment).
+//
+// Scoped ONLY for the base Tasks-tab view (modeTaskList + widget.TabTasks),
+// where TaskListView.VisibleTaskIDs() cheaply exposes the filtered row set
+// actually on screen: a running-but-idle or running-but-filtered-out task no
+// longer keeps the periodic redraw alive. Every other mode — the Hera tab,
+// the fullscreen agent view, any modal/picker — falls back to the original
+// fleet-wide check unchanged: deliberately NOT scoped in this pass, to avoid
+// touching the Hera rail's or agent view's own, more complex and
+// historically bug-prone rendering paths (see gotchas/hera-view.md's long
+// spinner-precedence bug history). Named follow-up, not silently dropped.
+func (a *App) computeVisibleActiveSpinner(runningIDs, idleIDs []string) bool {
+	if len(runningIDs) == 0 {
+		return false
+	}
+	idleSet := make(map[string]bool, len(idleIDs))
+	for _, id := range idleIDs {
+		idleSet[id] = true
+	}
+	if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
+		runningSet := make(map[string]bool, len(runningIDs))
+		for _, id := range runningIDs {
+			runningSet[id] = true
+		}
+		for _, id := range a.tasklist.VisibleTaskIDs() {
+			if runningSet[id] && !idleSet[id] {
+				return true
+			}
+		}
+		return false
+	}
+	for _, id := range runningIDs {
+		if !idleSet[id] {
+			return true
+		}
+	}
+	return false
 }
 
 // readPRStates reads the daemon-populated PR review state cache from task_meta

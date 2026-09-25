@@ -102,6 +102,83 @@ func TestIsRedundantAttach(t *testing.T) {
 	}
 }
 
+// TestComputeVisibleActiveSpinner covers add-spinner-visible-scope:
+// spinnerLoop's periodic redraw gate now asks whether a spinner ACTUALLY
+// RENDERED ON SCREEN would animate, not merely whether anything anywhere in
+// the whole fleet is running-and-not-idle. Scoped only for the base
+// Tasks-tab view (modeTaskList + widget.TabTasks), where
+// TaskListView.VisibleTaskIDs() cheaply exposes the filtered row set really
+// on screen; every other mode (Hera tab, fullscreen agent view) must fall
+// back to the original fleet-wide check byte-identically, since this pass
+// deliberately does not touch those more complex rendering paths.
+func TestComputeVisibleActiveSpinner(t *testing.T) {
+	t.Run("no running sessions at all is never active, regardless of mode", func(t *testing.T) {
+		d := testDB(t)
+		app := New(d, agent.NewRunner(nil), false)
+		testutil.Equal(t, app.computeVisibleActiveSpinner(nil, nil), false)
+	})
+
+	t.Run("Tasks tab: a visible running-not-idle task is active", func(t *testing.T) {
+		d := testDB(t)
+		testutil.NoError(t, d.Add(&model.Task{ID: "t1", Name: "t1", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}))
+		app := New(d, agent.NewRunner(nil), false)
+		app.refreshTasks()
+		testutil.Equal(t, app.mode, modeTaskList)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
+		testutil.Equal(t, app.computeVisibleActiveSpinner([]string{"t1"}, nil), true)
+	})
+
+	t.Run("Tasks tab: a running task that is IDLE is not active", func(t *testing.T) {
+		d := testDB(t)
+		testutil.NoError(t, d.Add(&model.Task{ID: "t1", Name: "t1", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}))
+		app := New(d, agent.NewRunner(nil), false)
+		app.refreshTasks()
+		testutil.Equal(t, app.computeVisibleActiveSpinner([]string{"t1"}, []string{"t1"}), false)
+	})
+
+	t.Run("Tasks tab: a running task hidden from the visible row set is NOT active even though the fleet-wide set has it", func(t *testing.T) {
+		d := testDB(t)
+		testutil.NoError(t, d.Add(&model.Task{ID: "normal", Name: "normal", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}))
+		testutil.NoError(t, d.Add(&model.Task{ID: "worker", Name: "worker", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}))
+		testutil.NoError(t, d.SetMeta("worker", db.HeraMetaNamespace, db.HeraMetaKeyRole, string(db.HeraKindWorker)))
+		app := New(d, agent.NewRunner(nil), false)
+		app.refreshTasks()
+		app.tasklist.SetHideHeraManaged(true)
+		testutil.Equal(t, idsContain(app.tasklist.VisibleTaskIDs(), "worker"), false)
+
+		// The hidden worker alone: no visible spinner, even though it's
+		// genuinely running — this is the core scoping behavior change.
+		testutil.Equal(t, app.computeVisibleActiveSpinner([]string{"worker"}, nil), false)
+		// The visible "normal" task running alongside it: active.
+		testutil.Equal(t, app.computeVisibleActiveSpinner([]string{"normal", "worker"}, nil), true)
+	})
+
+	t.Run("Hera tab active falls back to the original fleet-wide check unchanged", func(t *testing.T) {
+		d := testDB(t)
+		app := New(d, agent.NewRunner(nil), false)
+		app.header.SetTab(widget.TabHera)
+		testutil.Equal(t, app.computeVisibleActiveSpinner([]string{"not-in-any-tasklist-row"}, nil), true)
+	})
+
+	t.Run("fullscreen agent view falls back to the original fleet-wide check unchanged", func(t *testing.T) {
+		d := testDB(t)
+		app := New(d, agent.NewRunner(nil), false)
+		app.mode = modeAgent
+		testutil.Equal(t, app.computeVisibleActiveSpinner([]string{"not-in-any-tasklist-row"}, nil), true)
+	})
+
+	t.Run("refreshTasksWithIDs wires the cache spinnerLoop actually reads", func(t *testing.T) {
+		d := testDB(t)
+		testutil.NoError(t, d.Add(&model.Task{ID: "t1", Name: "t1", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}))
+		app := New(d, agent.NewRunner(nil), false)
+		app.refreshTasksWithIDs([]string{"t1"}, nil, false)
+		testutil.Equal(t, app.visibleActiveSpinner, true)
+
+		app.refreshTasksWithIDs([]string{"t1"}, []string{"t1"}, false)
+		testutil.Equal(t, app.visibleActiveSpinner, false)
+	})
+}
+
 func TestSessionBlockedOnPrompt(t *testing.T) {
 	// The TUI's needsInput computation for maybeKickRerender: idle AND a
 	// selection-UI / trailing-question marker in the on-disk session log.
