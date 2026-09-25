@@ -7,6 +7,13 @@ import (
 	"github.com/drn/argus/internal/config"
 )
 
+// ConfigKeyDefaultBackend is the config kv key holding the user-selected
+// default backend name, read below into cfg.Defaults.Backend. Writers (the
+// Settings view's set-default action, migration seeding) must use this exact
+// constant rather than a literal — a mismatched key silently discards the
+// write, since Config() only ever reads this spelling.
+const ConfigKeyDefaultBackend = "defaults.backend"
+
 func (d *DB) Config() config.Config {
 	cfg := config.DefaultConfig()
 
@@ -59,7 +66,7 @@ func (d *DB) Config() config.Config {
 		key  string
 		dest *string
 	}{
-		{"defaults.backend", &cfg.Defaults.Backend},
+		{ConfigKeyDefaultBackend, &cfg.Defaults.Backend},
 		{"defaults.share_project", &cfg.Defaults.ShareProject},
 		{"defaults.permission_mode", &cfg.Defaults.PermissionMode},
 		// Keybindings are NOT DB-backed: they live in keymap defaults +

@@ -412,7 +412,7 @@ func (s *Store) SetConfigValue(key, value string) error {
 	case "api.enabled":
 		b := value == "true"
 		upd.API = &apiclient.APIUpdate{Enabled: &b}
-	case "default_backend", "defaults.backend":
+	case "default_backend", db.ConfigKeyDefaultBackend:
 		upd.Defaults = &apiclient.DefaultsUpdate{Backend: &value}
 	case "defaults.share_project":
 		upd.Defaults = &apiclient.DefaultsUpdate{ShareProject: &value}
