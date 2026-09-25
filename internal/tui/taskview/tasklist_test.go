@@ -1486,6 +1486,46 @@ func TestTaskListView_FilterByProject(t *testing.T) {
 	}
 }
 
+func TestTaskListView_FilterByPID(t *testing.T) {
+	tl := NewTaskListView()
+	tasks := makeTasks()
+	tasks[0].AgentPID = 17557 // task-a
+	tl.SetTasks(tasks)
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+	for _, ch := range "7557" {
+		handler(tcell.NewEventKey(tcell.KeyRune, ch, tcell.ModNone), func(tview.Primitive) {})
+	}
+
+	taskCount := 0
+	for _, r := range tl.rows {
+		if r.kind == rowTask {
+			taskCount++
+		}
+	}
+	if taskCount != 1 {
+		t.Errorf("expected 1 visible task matching PID substring, got %d", taskCount)
+	}
+	sel := tl.SelectedTask()
+	if sel == nil || sel.Name != "task-a" {
+		t.Errorf("selected task = %v, want task-a", sel)
+	}
+}
+
+func TestTaskListView_FilterZeroPIDNoMatch(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks(makeTasks()) // none of makeTasks() sets AgentPID — all zero
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+	handler(tcell.NewEventKey(tcell.KeyRune, '0', tcell.ModNone), func(tview.Primitive) {})
+
+	if len(tl.rows) != 0 {
+		t.Errorf("expected 0 rows for a '0' filter against tasks with no recorded PID, got %d", len(tl.rows))
+	}
+}
+
 func TestTaskListView_FilterCaseInsensitive(t *testing.T) {
 	tl := NewTaskListView()
 	tl.expanded = "alpha"
