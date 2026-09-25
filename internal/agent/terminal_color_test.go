@@ -26,10 +26,30 @@ func TestIsColorQueryReply(t *testing.T) {
 			t.Fatalf("did not recognize %q", reply)
 		}
 	}
-	for _, input := range [][]byte{[]byte("hello"), []byte("\x1b]11;?\x1b\\"), []byte("\x1b]11;rgb:bad")} {
+	for _, input := range [][]byte{nil, []byte("hello"), []byte("\x1b]11;?\x1b\\"), []byte("\x1b]11;rgb:bad"), append(bytes.Clone(backgroundReply), 'x')} {
 		if isColorQueryReply(input) {
 			t.Fatalf("misidentified ordinary input %q", input)
 		}
+	}
+}
+
+func TestFilterAnsweredColorRepliesInRemoteBatch(t *testing.T) {
+	da := []byte("\x1b[?1;2c")
+	batch := append(bytes.Clone(foregroundReply), backgroundReply...)
+	batch = append(batch, da...)
+	batch = append(batch, 'x')
+
+	if got := filterAnsweredColorReplies(batch, [2]bool{true, false}); !bytes.Equal(got, append(append(bytes.Clone(backgroundReply), da...), 'x')) {
+		t.Fatalf("one answered color: got %q", got)
+	}
+	if got := filterAnsweredColorReplies(batch, [2]bool{true, true}); !bytes.Equal(got, append(bytes.Clone(da), 'x')) {
+		t.Fatalf("both answered colors: got %q", got)
+	}
+	if got := filterAnsweredColorReplies(append(bytes.Clone(da), backgroundReply...), [2]bool{false, true}); !bytes.Equal(got, da) {
+		t.Fatalf("device attributes before color: got %q", got)
+	}
+	if got := filterAnsweredColorReplies(batch, [2]bool{}); !bytes.Equal(got, batch) {
+		t.Fatalf("unanswered colors changed: got %q", got)
 	}
 }
 

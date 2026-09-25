@@ -265,12 +265,13 @@ var SupervisorSpawnPaths = []string{
 // to it is far more likely to reach a running agent than not. Classifying an
 // ambiguous file as STREAM is the safe direction.
 var SupervisorStreamPaths = []string{
-	"internal/agent/ringbuffer.go",   // the ring the sole readLoop tees into
-	"internal/agent/runner.go",       // live session map, pendingRestart, Stop/StopAll, KickRerender
-	"internal/agent/session.go",      // the single readLoop: PTY read → ring + writers, session log
-	"internal/agent/sessionsize.go",  // the PTY-size sidecar session.go writes on resize
-	"internal/daemon/sessioncore.go", // the R/S handlers both daemon and supervisor mount
-	"internal/daemon/supervisor.go",  // the supervisor process itself: Hello, exit caching, serve loop
+	"internal/agent/ringbuffer.go",     // the ring the sole readLoop tees into
+	"internal/agent/runner.go",         // live session map, pendingRestart, Stop/StopAll, KickRerender
+	"internal/agent/session.go",        // the single readLoop: PTY read → ring + writers, session log
+	"internal/agent/terminal_color.go", // PTY startup OSC color-query replies and duplicate filtering
+	"internal/agent/sessionsize.go",    // the PTY-size sidecar session.go writes on resize
+	"internal/daemon/sessioncore.go",   // the R/S handlers both daemon and supervisor mount
+	"internal/daemon/supervisor.go",    // the supervisor process itself: Hello, exit caching, serve loop
 }
 
 // SpawnSurfaceDigest and StreamSurfaceDigest are the recorded SHA-256 of each
@@ -293,7 +294,7 @@ var SupervisorStreamPaths = []string{
 // message prints the computed digest to paste back here.
 const (
 	SpawnSurfaceDigest  = "74b9cddcde47bc4760bcb647bffca639022ab2f0aa4b29cf53002e42d6d3496b"
-	StreamSurfaceDigest = "d2bb268dee014ddc854bd3920a2b3c018f0dd7537178c08149d7dafad58370c8"
+	StreamSurfaceDigest = "355613c670383e0fd1321b6a20e6da0270705bdee5267e9ef4417891f0fd1ef4"
 )
 
 // SurfaceDigest computes the SHA-256 over the declared manifest's file contents,
