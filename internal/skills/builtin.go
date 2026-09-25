@@ -285,7 +285,17 @@ func readEmbeddedFrontmatterField(path, field string) string {
 	if err != nil {
 		return ""
 	}
-	lines := strings.Split(string(data), "\n")
+	return parseFrontmatterLines(strings.Split(string(data), "\n"), field)
+}
+
+// parseFrontmatterLines is readEmbeddedFrontmatterField's line-parsing core,
+// split out so it's directly testable against synthetic input — the
+// embedded-FS path has no swappable backing store to inject test fixtures
+// into (builtinFS is a fixed //go:embed of the real skill sources), so this
+// is what lets the slice-index adapter passed to readBlockScalar be exercised
+// by the same edge-case tests as readFrontmatterField's scanner-based path,
+// without touching builtinFS at all.
+func parseFrontmatterLines(lines []string, field string) string {
 	if len(lines) < 2 || !strings.HasPrefix(lines[0], "---") {
 		return ""
 	}
@@ -297,6 +307,17 @@ func readEmbeddedFrontmatterField(path, field string) string {
 		prefix := field + ":"
 		if strings.HasPrefix(line, prefix) {
 			val := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			if folded, ok := blockScalarStyle(val); ok {
+				idx := i + 1
+				return readBlockScalar(func() (string, bool) {
+					if idx < len(lines) {
+						line := lines[idx]
+						idx++
+						return line, true
+					}
+					return "", false
+				}, folded)
+			}
 			val = strings.Trim(val, "\"'")
 			return val
 		}
