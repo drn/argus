@@ -50,6 +50,7 @@ const (
 	ActTaskCopy      Action = "tasklist.copy"
 	ActTaskFilter    Action = "tasklist.filter"
 	ActTaskHera      Action = "tasklist.toggle_hera"
+	ActTaskInbox     Action = "tasklist.inbox"
 	ActTaskDown      Action = "tasklist.nav_down"
 	ActTaskUp        Action = "tasklist.nav_up"
 
@@ -134,6 +135,7 @@ const (
 	// fires even on an empty rail, since its candidate set is never scoped to
 	// a coordinator.
 	ActHeraCleanup Action = "hera_rail.cleanup"
+	ActHeraInbox   Action = "hera_rail.inbox"
 )
 
 // defaultSpecs is THE source of truth for argus's built-in bindings, mirroring
@@ -151,6 +153,7 @@ var defaultSpecs = map[Context]map[Action]string{
 		ActTaskNew: "n", ActTaskStatusAdv: "s", ActTaskStatusRev: "S",
 		ActTaskArchive: "a", ActTaskPin: "P", ActTaskRename: "r", ActTaskCopy: "c",
 		ActTaskFilter: "/", ActTaskHera: "H", ActTaskDown: "j", ActTaskUp: "k",
+		ActTaskInbox: "i",
 	},
 	CtxAgent: {
 		ActAgentLinks: "ctrl+l", ActAgentSession: "ctrl+r", ActAgentSwitcher: "ctrl+j",
@@ -181,7 +184,7 @@ var defaultSpecs = map[Context]map[Action]string{
 		ActHeraArchive: "a", ActHeraPin: "P", ActHeraStatAdv: "s", ActHeraStatRev: "S",
 		ActHeraKanbanAdv: "m", ActHeraKanbanRev: "M",
 		ActHeraAdopt: "J", ActHeraNewCoord: "n", ActHeraClear: "c",
-		ActHeraCleanup: "C",
+		ActHeraCleanup: "C", ActHeraInbox: "i",
 	},
 }
 
@@ -197,7 +200,7 @@ var actionLabels = map[Action]string{
 	ActTaskNew: "new task", ActTaskStatusAdv: "advance status", ActTaskStatusRev: "revert status",
 	ActTaskArchive: "toggle archive", ActTaskPin: "toggle pin", ActTaskRename: "rename",
 	ActTaskCopy: "copy name / prompt", ActTaskFilter: "filter", ActTaskHera: "show/hide hera-managed (workers+coords)",
-	ActTaskDown: "navigate down", ActTaskUp: "navigate up",
+	ActTaskDown: "navigate down", ActTaskUp: "navigate up", ActTaskInbox: "view message inbox (read-only)",
 
 	ActAgentLinks: "link picker", ActAgentSession: "switch Claude session", ActAgentSwitcher: "task/role switcher",
 	ActAgentOpenPR: "open PR", ActAgentZoom: "toggle single-pane (zoom)", ActAgentCopy: "copy staged text",
@@ -225,6 +228,7 @@ var actionLabels = map[Action]string{
 	ActHeraAdopt: "adopt freelancer / reparent coordinator", ActHeraNewCoord: "new coordinator (new-task modal)",
 	ActHeraClear:   "clear coord's archive (nuke hidden agents)",
 	ActHeraCleanup: "cleanup stuck-task backlog (all projects)",
+	ActHeraInbox:   "view role's message inbox (read-only)",
 }
 
 // HelpRow is one rendered help line: the key chord and its action label.
@@ -281,7 +285,7 @@ var contextOrder = map[Context][]Action{
 		ActGlobalRefresh, ActGlobalDestroy, ActGlobalFork, ActGlobalOpenRepo, ActGlobalOpenPR, ActGlobalPrune,
 		ActGlobalPalette, ActGlobalJumpNeedsInput, ActGlobalRestoreRail},
 	CtxTaskList: {ActTaskNew, ActTaskDown, ActTaskUp, ActTaskStatusAdv, ActTaskStatusRev, ActTaskArchive,
-		ActTaskPin, ActTaskRename, ActTaskCopy, ActTaskFilter, ActTaskHera},
+		ActTaskPin, ActTaskRename, ActTaskCopy, ActTaskFilter, ActTaskHera, ActTaskInbox},
 	CtxAgent: {ActAgentLinks, ActAgentSession, ActAgentSwitcher, ActAgentOpenPR, ActAgentZoom, ActAgentCopy,
 		ActAgentPaneLeft, ActAgentPaneRight, ActAgentTaskPrev, ActAgentTaskNext,
 		ActAgentScrollUp, ActAgentScrollDown, ActAgentScrollPgUp, ActAgentScrollPgDn, ActAgentScrollEnd},
@@ -293,5 +297,5 @@ var contextOrder = map[Context][]Action{
 		ActSettingsCycleProbe, ActSettingsMoveUp, ActSettingsMoveDown},
 	CtxHeraRail: {ActHeraSpawn, ActHeraNewCoord, ActHeraRename, ActHeraArchive, ActHeraPin,
 		ActHeraStatAdv, ActHeraStatRev, ActHeraKanbanAdv, ActHeraKanbanRev, ActHeraAdopt, ActHeraClear,
-		ActHeraCleanup, ActHeraDelete},
+		ActHeraCleanup, ActHeraInbox, ActHeraDelete},
 }

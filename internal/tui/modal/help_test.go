@@ -89,6 +89,8 @@ func TestHelpModal_Draw(t *testing.T) {
 	testutil.Contains(t, body, "ctrl+b")
 	testutil.Contains(t, body, "jump back now, even with (?) still open")
 	testutil.Contains(t, body, "show/hide hera-managed (workers+coords)")
+	testutil.Contains(t, body, "view message inbox (read-only)")
+	testutil.Contains(t, body, "view role's message inbox (read-only)")
 	// Task-list `c` opens the copy menu (name / prompt) — fail the build if the
 	// binding text is silently reverted (keybinding-help contract).
 	testutil.Contains(t, body, "copy name / prompt")

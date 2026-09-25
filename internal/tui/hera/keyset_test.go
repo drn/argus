@@ -432,3 +432,37 @@ func TestKeyset_RemoteModeMutationKeysInert(t *testing.T) {
 	h(tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModNone), noFocus)
 	testutil.Equal(t, fired, false)
 }
+
+func TestKeyset_InboxFiresWithSelectionTask(t *testing.T) {
+	iKey := tcell.NewEventKey(tcell.KeyRune, 'i', tcell.ModNone)
+
+	t.Run("worker row passes worker task", func(t *testing.T) {
+		p, _ := railPageWithCursorOnWorker(t)
+		var got string
+		p.OnInbox = func(id string) { got = id }
+		p.InputHandler()(iKey, noFocus)
+		testutil.Equal(t, got, "tw")
+	})
+
+	t.Run("coordinator header passes coordinator task", func(t *testing.T) {
+		p, _ := railPageWithCursorOnCoordinator(t)
+		var got string
+		p.OnInbox = func(id string) { got = id }
+		p.InputHandler()(iKey, noFocus)
+		testutil.Equal(t, got, "tc")
+	})
+
+	t.Run("empty rail consumes without firing", func(t *testing.T) {
+		p := NewHeraPage(memDB(t))
+		p.Refresh()
+		fired := false
+		p.OnInbox = func(string) { fired = true }
+		testutil.True(t, p.handleRailMutation(iKey))
+		testutil.False(t, fired)
+	})
+
+	t.Run("unwired falls through", func(t *testing.T) {
+		p, _ := railPageWithCursorOnWorker(t)
+		testutil.False(t, p.handleRailMutation(iKey))
+	})
+}

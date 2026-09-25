@@ -83,6 +83,7 @@ const (
 	modeHeraOrchPicker   // Hera-view `J` adopt/reparent orchestrator picker
 	modeCommandPalette   // Global command palette (ctrl+k)
 	modeMergeSafetyPopup // Merge-safety review popup (single-role nuke / global Cleanup)
+	modeInbox            // Read-only task message inbox viewer (`i`)
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -213,6 +214,10 @@ type App struct {
 	// Help overlay (created on demand)
 	helpModal    *modal.HelpModal
 	helpPrevPage string
+
+	inboxModal    *modal.InboxModal
+	inboxTaskID   string
+	inboxPrevPage string
 
 	// Error modal (created on demand to surface failed actions prominently)
 	errorModal *modal.ErrorModal
@@ -822,6 +827,9 @@ func (a *App) buildUI() {
 	a.tasklist.OnCopy = func(t *model.Task) {
 		a.openCopyChoiceModal(t)
 	}
+	a.tasklist.OnInbox = func(t *model.Task) {
+		a.openInbox(t.ID, t.Name)
+	}
 
 	a.taskGitPanel = gitpanel.NewGitPanel()
 	a.taskGitPanel.OnBranchChange = func() { a.forceRedraw("task git panel branch changed") }
@@ -955,6 +963,7 @@ func (a *App) buildUI() {
 	// itself detects local vs. remote mode and surfaces a clear error rather
 	// than panicking or silently no-oping.
 	a.heraPage.OnCleanup = a.heraOpenGlobalCleanup
+	a.heraPage.OnInbox = a.openInboxForTaskID
 
 	// Wire the hera panes' redraw callbacks exactly like the main agent pane:
 	// OnBranchChange is log-only (forceRedraw never Syncs), OnNeedRedraw bounces
@@ -3722,6 +3731,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	// Inbox viewer — delegate everything to the modal.
+	if a.mode == modeInbox && a.inboxModal != nil {
+		a.handleInboxKey(event)
+		return nil
+	}
+
 	// Error modal — any key dismisses it.
 	if a.mode == modeErrorModal && a.errorModal != nil {
 		a.handleErrorModalKey(event)
@@ -6477,7 +6492,16 @@ func (a *App) closeHelp() {
 	a.pages.RemovePage("help")
 	prev := a.helpPrevPage
 	a.helpPrevPage = ""
-	if prev == "" || prev == "help" {
+	if prev == "help" {
+		prev = ""
+	}
+	a.restorePageFocus(prev)
+}
+
+// restorePageFocus switches back to prev (default "tasks") after an overlay
+// closes and refocuses whichever widget owns the visible tab.
+func (a *App) restorePageFocus(prev string) {
+	if prev == "" {
 		prev = "tasks"
 	}
 	a.pages.SwitchToPage(prev)
