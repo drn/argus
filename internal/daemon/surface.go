@@ -90,7 +90,8 @@ const (
 	//   - v10: BuildCmd adds --auto when launching OpenCode, including stored
 	//     commands and resumed sessions.
 	//   - v11: task launches pass the actual Argus MCP listener to Claude and
-	//     Codex as process-scoped CLI config, including supervisor starts.
+	//     Codex as process-scoped CLI config, including supervisor starts; an
+	//     unresolved credential mapping clears any inherited target variable.
 	SupervisorSpawnSurface = 11
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
