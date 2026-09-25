@@ -92,6 +92,7 @@ func TestBuildCmd_EnvVarMapping_ResolvedSourceInjected(t *testing.T) {
 // An unresolved source leaves the target unset and logs a warning that names
 // the variable but carries no value.
 func TestBuildCmd_EnvVarMapping_UnresolvedSourceUnsetAndWarns(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "inherited-marker")
 	readLog := captureUXLog(t)
 	installResolver(t, func(string) (string, bool) { return "", false })
 

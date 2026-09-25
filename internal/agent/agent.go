@@ -33,7 +33,8 @@ import (
 const codexStateDB = "state_5.sqlite"
 
 // codexResumeCmd is the base resume command for codex backends.
-const codexResumeCmd = "codex resume --dangerously-bypass-approvals-and-sandbox"
+const codexResumeFlags = " resume --dangerously-bypass-approvals-and-sandbox"
+const codexResumeCmd = "codex" + codexResumeFlags
 
 // codexSessionIDRe validates that a captured session ID looks like a UUID v7.
 var codexSessionIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -931,7 +932,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		switch {
 		case isCodex:
 			// Flags must precede the positional session-id argument.
-			cmdStr = strings.Replace(codexResumeCmd, "codex resume", "codex"+mcpFlag+" resume", 1) + modelFlag + " " + shellQuote(task.SessionID)
+			cmdStr = "codex" + mcpFlag + codexResumeFlags + modelFlag + " " + shellQuote(task.SessionID)
 		case (isPi || isOpencode) && task.SessionID != "":
 			// Pi / opencode style: append --session <ID> (pi accepts partial
 			// UUIDs; opencode takes its ses_… ID). Checked before the
@@ -1153,7 +1154,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// on an actual scheme-prefixed resolve). The mapping carries NO secret
 	// value — only the descriptor. A resolved value is appended to the child
 	// env (later entries win per exec.Cmd.Env semantics); an unresolved source
-	// sets nothing and logs a non-sensitive warning naming ONLY the variable,
+	// removes any inherited target and logs a non-sensitive warning naming ONLY the variable,
 	// never the value. We never log the resolved value.
 	if len(backend.EnvVars) > 0 {
 		registryResolve := ResolverFor(cfg.Secrets)
@@ -1161,6 +1162,14 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 			if target == "" || source == "" {
 				continue
 			}
+			// A failed mapping must not leak a credential inherited from argusd.
+			filtered := cmd.Env[:0]
+			for _, entry := range cmd.Env {
+				if name, _, found := strings.Cut(entry, "="); !found || name != target {
+					filtered = append(filtered, entry)
+				}
+			}
+			cmd.Env = filtered
 			scheme, rest := splitSecretScheme(source)
 			resolve, resolveInput := secretResolver, rest
 			if scheme != "env" {

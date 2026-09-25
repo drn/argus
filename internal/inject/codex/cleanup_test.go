@@ -46,3 +46,25 @@ func TestRemoveGlobal_CodexMissingAndMalformed(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, string(raw), bad)
 }
+
+func TestRemoveGlobal_CodexPreservesMentionAndRemovesSubtables(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".codex", "config.toml")
+	testutil.NoError(t, os.MkdirAll(filepath.Dir(path), 0700))
+	before := "# [mcp_servers.argus] is mentioned here\n" +
+		"note = '[mcp_servers.argus]'\n\n" +
+		"[mcp_servers.argus]\nurl = 'old'\n" +
+		"[mcp_servers.argus.env]\nTOKEN = 'old'\n" +
+		"[mcp_servers.argus-kb]\nurl = 'older'\n" +
+		"[mcp_servers.argus-kb.env]\nTOKEN = 'older'\n" +
+		"[mcp_servers.other]\nurl = 'keep'\n"
+	testutil.NoError(t, os.WriteFile(path, []byte(before), 0600))
+	testutil.NoError(t, RemoveGlobal())
+	raw, err := os.ReadFile(path)
+	testutil.NoError(t, err)
+	want := "# [mcp_servers.argus] is mentioned here\n" +
+		"note = '[mcp_servers.argus]'\n\n" +
+		"[mcp_servers.other]\nurl = 'keep'\n"
+	testutil.Equal(t, string(raw), want)
+}
