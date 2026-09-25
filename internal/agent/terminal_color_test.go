@@ -85,4 +85,10 @@ func TestSessionAnswersColorQueryBeforeRendererAttaches(t *testing.T) {
 	if got := sess.LastInput(); got != before {
 		t.Fatal("duplicate renderer reply reached the child process")
 	}
+	if _, err := sess.WriteInput(backgroundReply, agentview.OriginUser); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.LastInput(); !got.After(before) {
+		t.Fatal("literal user input was suppressed as a color reply")
+	}
 }

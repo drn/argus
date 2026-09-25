@@ -629,12 +629,15 @@ func (s *Session) WriteInput(p []byte, origin agentview.InputOrigin) (int, error
 	// Attached terminal emulators may replay the startup query and generate
 	// their own answer. The PTY owner has already answered it; a second OSC
 	// reply could otherwise land in Codex's prompt as literal input.
-	s.mu.Lock()
-	answered := s.colorAnswered
-	s.mu.Unlock()
-	filtered := filterAnsweredColorReplies(p, answered)
-	if len(filtered) == 0 {
-		return len(p), nil
+	filtered := p
+	if origin == agentview.OriginSystem {
+		s.mu.Lock()
+		answered := s.colorAnswered
+		s.mu.Unlock()
+		filtered = filterAnsweredColorReplies(p, answered)
+		if len(filtered) == 0 {
+			return len(p), nil
+		}
 	}
 	n, err := s.ptmx.Write(filtered)
 	if err == nil {
