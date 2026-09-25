@@ -11,15 +11,10 @@ async function login(page) {
   await expect(page.locator('.term-status.live')).toBeVisible({ timeout: 5000 });
 }
 
-// sendCompose splits a submit into two ordered POSTs — the prompt text, then
-// '\r' alone after a ~50ms pause — so the agent's stdin reader sees the Enter
-// as a distinct keypress instead of folding it into a paste batch. Glued
-// text+CR in one PTY write trips Claude Code's paste heuristic: the CR is
-// treated as a newline (Shift+Enter) and the whole prompt sits drafted but
-// unsubmitted — the PR #688 bug class, fixed for notify in
-// internal/notify/service.go and here for the compose bar. These helpers pin
-// that contract: collect every /input POST body, wait for the trailing CR,
-// then assert the exact two-write sequence.
+// sendCompose splits a submit into two ordered POSTs — a bracketed paste with
+// the prompt text, then '\r' alone after a ~50ms pause. Paste framing stops
+// Codex's skill picker from consuming the following Enter; the separate CR
+// lets Claude Code treat it as submission rather than pasted newline.
 // The page.on('request') listener is never removed — safe because every test
 // gets a fresh page object, but don't call this twice on the same page or the
 // earlier call's array keeps collecting.
@@ -37,6 +32,8 @@ function waitForCR(page) {
     { timeout: 5000 }
   );
 }
+
+function paste(text: string): string { return `\x1b[200~${text}\x1b[201~`; }
 
 // IS_TOUCH is computed at script load from `'ontouchstart' in window` and
 // `(pointer: coarse)`. On the iphone device profile both are true, on desktop
@@ -67,7 +64,7 @@ test.describe('compose bar', () => {
     // Two separate writes: text first, then '\r' (CR, not \n — raw-terminal
     // Enter key) alone. Gluing them into one POST trips the agent's paste
     // heuristic and the prompt sits drafted-but-unsubmitted.
-    expect(posts).toEqual(['hello world', '\r']);
+    expect(posts).toEqual([paste('hello world'), '\r']);
 
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
@@ -189,6 +186,42 @@ test.describe('compose bar', () => {
     }))).toEqual({ height: await page.evaluate(() => `${window.innerHeight}px`), transform: '' });
   });
 
+  test('$pr reaches the PTY as a complete paste before Enter', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    const posts = collectInputPosts(page);
+    await page.locator('#compose-input').fill('$pr');
+    const crReq = waitForCR(page);
+    await page.locator('#compose-send').click();
+    await crReq;
+    expect(posts).toEqual([paste('$pr'), '\r']);
+    const recorded = await page.evaluate(() => {
+      const key = Object.keys(localStorage).find(k => k.startsWith('argus.inputs.v1.'));
+      return key ? JSON.parse(localStorage.getItem(key) || '[]').at(-1)?.text : undefined;
+    });
+    expect(recorded).toBe('$pr');
+  });
+
+  test('failed paste write never submits a stale draft', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    // The service worker issues its own fetch and bypasses Playwright routing.
+    // Prevent registration before navigation so the 500 reaches sendCompose.
+    await page.addInitScript(() => {
+      navigator.serviceWorker.register = async () => { throw new Error('test: no service worker'); };
+    });
+    await login(page);
+    const posts = collectInputPosts(page);
+    await page.route('**/api/tasks/*/input', route => route.fulfill({ status: 500 }));
+
+    await page.locator('#compose-input').fill('$pr');
+    const pasteReq = page.waitForRequest(req => req.url().endsWith('/input'));
+    await page.locator('#compose-send').click();
+    await pasteReq;
+    await page.waitForTimeout(150); // longer than the 50ms submit delay
+    expect(posts).toEqual([paste('$pr')]);
+  });
+
   test('Enter sends, Shift+Enter inserts a newline', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
     await login(page);
@@ -209,7 +242,7 @@ test.describe('compose bar', () => {
     await page.keyboard.press('Enter');
     await crReq;
     // Embedded newline preserved in the text write; CR is its own write.
-    expect(posts).toEqual(['one\ntwo', '\r']);
+    expect(posts).toEqual([paste('one\ntwo'), '\r']);
 
     await expect(ci).toHaveValue('');
   });
@@ -238,7 +271,7 @@ test.describe('compose bar', () => {
       }));
     });
     await crReq;
-    expect(posts).toEqual(['hello world', '\r']);
+    expect(posts).toEqual([paste('hello world'), '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -277,7 +310,7 @@ test.describe('compose bar', () => {
       }));
     });
     await crReq;
-    expect(posts).toEqual(['hello world', '\r']);
+    expect(posts).toEqual([paste('hello world'), '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -305,7 +338,7 @@ test.describe('compose bar', () => {
       }));
     });
     await crReq;
-    expect(posts).toEqual(['hello world', '\r']);
+    expect(posts).toEqual([paste('hello world'), '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -330,7 +363,7 @@ test.describe('compose bar', () => {
       }));
     });
     await crReq;
-    expect(posts).toEqual(['hello world', '\r']);
+    expect(posts).toEqual([paste('hello world'), '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -403,7 +436,7 @@ test.describe('compose bar', () => {
     // sendCompose reads it, so the text write is 'hello world' — without
     // the prefix-preservation it would be 'hello ' and the user's last
     // word would silently vanish.
-    expect(posts).toEqual(['hello world', '\r']);
+    expect(posts).toEqual([paste('hello world'), '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -432,7 +465,7 @@ test.describe('compose bar', () => {
       }));
     });
     await crReq;
-    expect(posts).toEqual(['hello world', '\r']);
+    expect(posts).toEqual([paste('hello world'), '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -469,7 +502,7 @@ test.describe('compose bar', () => {
     // corrected word "world", yielding a "hello world" text write. If the
     // splice ignored the selection range and appended instead, the write
     // would be "hello wroldworld".
-    expect(posts).toEqual(['hello world', '\r']);
+    expect(posts).toEqual([paste('hello world'), '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -502,7 +535,7 @@ test.describe('compose bar', () => {
       }));
     });
     await crReq;
-    expect(posts).toEqual(['hello world', '\r']);
+    expect(posts).toEqual([paste('hello world'), '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -539,7 +572,7 @@ test.describe('compose bar', () => {
     });
     await crReq;
     // Trailing newlines stripped, no embedded `\n` smuggled into the text write.
-    expect(posts).toEqual(['hello world', '\r']);
+    expect(posts).toEqual([paste('hello world'), '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -579,7 +612,7 @@ test.describe('compose bar', () => {
     // Give a beat for any spurious extra POSTs to land — exactly one
     // text write + one CR write should exist, no double-fired sequence.
     await page.waitForTimeout(200);
-    expect(posts).toEqual(['hello world', '\r']);
+    expect(posts).toEqual([paste('hello world'), '\r']);
   });
 
   // Regression: the variant-N+1 case — `keydown(Enter, isComposing=true)`
@@ -628,7 +661,7 @@ test.describe('compose bar', () => {
       }));
     });
     await crReq;
-    expect(posts).toEqual(['hello worldfinal', '\r']);
+    expect(posts).toEqual([paste('hello worldfinal'), '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -792,7 +825,7 @@ test.describe('compose bar', () => {
     await crReq;
     // Trailing \n must be stripped before the split send. Otherwise the
     // text write is "text\n" and Claude Code drafts-without-submitting.
-    expect(posts).toEqual(['send this prompt to the agent', '\r']);
+    expect(posts).toEqual([paste('send this prompt to the agent'), '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -820,7 +853,7 @@ test.describe('compose bar', () => {
       }));
     });
     await crReq;
-    expect(posts).toEqual(['hello', '\r']);
+    expect(posts).toEqual([paste('hello'), '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -846,7 +879,7 @@ test.describe('compose bar', () => {
       }));
     });
     await crReq;
-    expect(posts).toEqual(['hello', '\r']);
+    expect(posts).toEqual([paste('hello'), '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -961,7 +994,7 @@ test.describe('compose bar', () => {
     const crReq = waitForCR(page);
     await page.locator('#compose-send').tap();
     await crReq;
-    expect(posts).toEqual(['pasted text', '\r']);
+    expect(posts).toEqual([paste('pasted text'), '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -1020,8 +1053,8 @@ test.describe('compose bar', () => {
     test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
     await login(page);
 
-    // 64KB + 1 byte — above COMPOSE_MAX_BYTES.
-    const tooLong = 'a'.repeat(64 * 1024 + 1);
+    // Body alone fits, but its 12 framing bytes exceed COMPOSE_MAX_BYTES.
+    const tooLong = 'a'.repeat(64 * 1024 - 11);
     await page.locator('#compose-input').fill(tooLong);
 
     let posted = false;
@@ -1033,6 +1066,21 @@ test.describe('compose bar', () => {
     await expect(page.locator('.toast')).toBeVisible();
     await expect(page.locator('.toast')).toContainText('Input too long');
     expect(posted).toBe(false);
+  });
+
+  test('embedded paste delimiters are rejected before POST', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+    const posts = collectInputPosts(page);
+
+    for (const marker of ['\x1b[200~', '\x1b[201~']) {
+      await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement, value) => {
+        el.value = value;
+      }, `hello${marker}world`);
+      await page.locator('#compose-send').click();
+      await expect(page.locator('.toast')).toContainText('terminal paste control sequence');
+      expect(posts).toEqual([]);
+    }
   });
 
   test('skill autocomplete: / opens dropdown, Enter inserts without sending', async ({ page }, testInfo) => {
@@ -1090,7 +1138,7 @@ test.describe('compose bar', () => {
     const crReq = waitForCR(page);
     await ci.press('Enter');
     await crReq;
-    expect(sendPosts).toEqual(['hello', '\r']);
+    expect(sendPosts).toEqual([paste('hello'), '\r']);
   });
 
   test('skill autocomplete: tapping a dropdown item inserts and closes', async ({ page }, testInfo) => {
