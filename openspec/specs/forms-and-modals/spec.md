@@ -297,7 +297,7 @@ When the backend selector changes, the model selector's option list SHALL be reb
 
 When the `custom…` option is selected, the form SHALL reveal a single-line text input for a model identifier the built-in/configured list does not contain, and the typed value SHALL be used verbatim as the task's model.
 
-The submitted task's model value SHALL be: an empty string when `default` is selected; the chosen model string when a listed model is selected; the trimmed typed text when `custom…` is selected. This preserves the existing semantics where an empty model defers to the backend default / CLI default and a non-empty model is injected as `--model`.
+The submitted task's model value SHALL be: an empty string when `default` is selected; the chosen model string when a listed model is selected; the trimmed typed text when `custom…` is selected. This preserves the existing semantics where an empty model defers to the backend default / CLI default and a non-empty model is delivered through the selected backend's supported model mechanism. OpenCode SHALL receive the value through child-only `OPENCODE_CONFIG_CONTENT` rather than a top-level `--model` flag, whose absence is required by its v2 full TUI.
 
 #### Scenario: Default selection yields no model override
 

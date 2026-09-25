@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -184,9 +185,39 @@ func TestResolveModel_ProfileUsesBackendFamilyForCustomBackendName(t *testing.T)
 	testutil.NotNil(t, gotProf)
 }
 
+func TestBuildCmd_OpencodeProfileModelUsesInlineConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
+	cfg := modelConfig()
+	cfg.Backends["opencode"] = config.Backend{
+		Command:    "opencode",
+		PromptFlag: "--prompt",
+		Models:     []string{"provider/profile"},
+	}
+	writeLibraryProfile(t, "default", "[archetype.code_slice]\nmodels = { opencode = \"provider/profile\" }\n")
+
+	task := &model.Task{
+		ID: "open-profile", Name: "t", Prompt: "go", Backend: "opencode",
+		Archetype: "code_slice", Worktree: t.TempDir(),
+	}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	if strings.Contains(cmd.Args[2], "--model") {
+		t.Fatalf("OpenCode must not receive a top-level model flag: %q", cmd.Args[2])
+	}
+
+	env := envMap(cmd.Env)
+	testutil.Equal(t, env["ARGUS_PROFILE"], "default")
+	testutil.Equal(t, env["ARGUS_ARCHETYPE"], "code_slice")
+	testutil.Equal(t, env["ARGUS_MODEL"], "provider/profile")
+	var inline map[string]any
+	testutil.NoError(t, json.Unmarshal([]byte(env["OPENCODE_CONFIG_CONTENT"]), &inline))
+	testutil.Equal(t, inline["model"], any("provider/profile"))
+}
+
 // TestBuildCmd_ProfileEnv_PresentOnResolution verifies the env export and the
-// --model injection when a bound profile resolves a backend-valid model
-// (add-diligence-profiles "Profile environment injection").
+// backend-appropriate model delivery when a bound profile resolves a
+// backend-valid model (add-diligence-profiles "Profile environment injection").
 func TestBuildCmd_ProfileEnv_PresentOnResolution(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	cfg := modelConfig()

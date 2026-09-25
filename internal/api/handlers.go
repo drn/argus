@@ -1605,8 +1605,8 @@ type backendJSON struct {
 	Name       string `json:"name"`
 	Command    string `json:"command"`
 	PromptFlag string `json:"prompt_flag,omitempty"`
-	// Model is the backend's default model, injected as --model at session
-	// start unless the task carries its own override.
+	// Model is the backend's default model, delivered through the backend's
+	// supported session-start mechanism unless the task carries its own override.
 	Model string `json:"model,omitempty"`
 	// Models is the per-backend option list for the web new-task model select,
 	// resolved via agent.BackendModels (the backend's configured Models, else

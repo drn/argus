@@ -109,7 +109,7 @@ Disabled by default — see **[Knowledge Base setup](docs/knowledge-base.md)** t
 ## Also In The Box
 
 - **Remote TUI** — `argus --remote https://your-mac.tail-xxxx.ts.net --token "$ARGUS_TOKEN"` launches the full TUI against a daemon running on another machine. Same keybindings, same panels, same agent stream — over Tailscale. No local SQLite, no daemon socket; every call rides the REST API the PWA already uses.
-- **Multi-backend** — Claude Code, Codex, or any LLM CLI as a templated command. Per-backend prompt flags, plan-mode defaults, and a default model, plus a per-task model override injected as `--model` at launch.
+- **Multi-backend** — Claude Code, Codex, or any LLM CLI as a templated command. Per-backend prompt flags, plan-mode defaults, and a default model, plus a per-task model override delivered through the backend's supported launch mechanism at start.
 - **Worktree isolation** — every task gets `~/.argus/worktrees/<project>/<task>` and an `argus/<task>` branch, all transactionally created and cleaned up.
 - **Session resume** — `--resume` on Claude Code, `codex resume <id>` on Codex, `--session <id>` on opencode. Your conversation survives a daemon restart.
 - **Consistent scrollback across viewers** — switch between the TUI and the PWA at very different widths and the agent re-emits the conversation at the new size. Idle-gated so it never fires mid-tool-call; the SPA reattaches transparently.
@@ -469,7 +469,7 @@ The DB stores **only** the project→profile *name* – never a profile body, an
 - **Native sub-agent dispatch** – hera worker spawn resolves an archetype's model automatically at spawn time; Claude's native sub-agent dispatch (the `Agent`/`Task` tool, or a `Workflow` script) has no such automatic path and must resolve it explicitly via `mcp__argus__profile_resolve` — see the [`argus-resolve-model`](#agent-facing-skills) skill for the documented convention (resolve once per pipeline, gate the resolved model against the four in-session values, thread effort only where the mechanism accepts it).
 - **Env vars** – when a bound profile actively contributes a backend-valid model, the spawn exports `ARGUS_PROFILE`, `ARGUS_ARCHETYPE`, and `ARGUS_MODEL` to the agent (mirroring `ARGUS_TASK_ID`); when no profile resolves, none of the three are exported.
 - **Plan/DAG view** – each node shows its archetype and the applied model/effort, and a node/project is flagged with a warning when its bound profile is missing or invalid.
-- **Fail-open** – a missing or invalid bound profile never hard-fails a spawn: Argus logs it and passes **no** `--model`, so the agent uses its own CLI default. Validation is the loud surface (the CLI, the Settings select-list, the DAG warning); resolution itself fails open.
+- **Fail-open** – a missing or invalid bound profile never hard-fails a spawn: Argus logs it and passes **no** model override (no `--model` flag, and no inline `model` key for OpenCode), so the agent uses its own CLI default. Validation is the loud surface (the CLI, the Settings select-list, the DAG warning); resolution itself fails open.
 
 Resolution reads `~/.argus/profiles/` and the worktree's `.argus/profiles/`, so it runs **daemon-side at spawn** – outside the sandbox, where global `~/.argus` reads would `EPERM`. The agent itself only ever reads the exported env vars (or its own in-repo `.argus/profiles/`).
 
@@ -929,7 +929,7 @@ Argus adds `--auto` when launching OpenCode, including resumed sessions and stor
 |-----|------|---------|-------------|
 | `command` | string | — | Executable plus base flags for the agent CLI (e.g. `claude`, `codex --dangerously-bypass-approvals-and-sandbox`). Permission flags come from `defaults.permission_mode` and are **not** baked in here. |
 | `prompt_flag` | string | `""` | Flag used to pass the initial prompt to the backend (empty = positional/piped). |
-| `model` | string | `""` | Default model for this backend, injected as `--model <value>` for known CLIs (claude, codex, pi, opencode — opencode takes a `provider/model` value). Empty = the CLI's own default. A per-task model overrides it. |
+| `model` | string | `""` | Default model for this backend. Claude, Codex, and Pi receive it as `--model <value>`; OpenCode receives it through the child-only `OPENCODE_CONFIG_CONTENT` `model` key because its v2 full TUI rejects the top-level flag. Empty = the CLI's own default. A per-task model overrides it. |
 | `models` | array | `[]` | Option list for the new-task model selector for this backend. Empty = built-in list (claude → `opus`/`sonnet`/`haiku`/`fable`, codex → its current model lineup — churns per Codex release, see `agent.KnownModels`, others including opencode → none, so `custom…` only). A `custom…` entry always lets you type a model not in the list. |
 
 #### `[backend_routing]`
