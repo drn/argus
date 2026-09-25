@@ -247,6 +247,15 @@ func (c *Client) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 	}
 	if resp.Error != "" {
 		uxlog.Log("client.Start: daemon error task=%s err=%s", task.ID, resp.Error)
+		// resp.Ambiguous means the daemon's OWN Start call was itself an
+		// ambiguous RPC timeout (e.g. its second hop to the supervisor in P4
+		// supervisor mode) rather than a definitive failure. Re-wrap here so
+		// a caller two hops away from the actual timeout still sees
+		// ErrStartAmbiguous, even in the (normally timing-improbable) case
+		// where this outer hop's own callWithTimeout didn't time out first.
+		if resp.Ambiguous {
+			return nil, fmt.Errorf("%w: daemon: %s", agent.ErrStartAmbiguous, resp.Error)
+		}
 		return nil, fmt.Errorf("daemon: %s", resp.Error)
 	}
 

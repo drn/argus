@@ -94,6 +94,85 @@ func TestSupSlowStart(t *testing.T) {
 	testutil.NoError(t, c.Stop(task.ID))
 }
 
+// TestSupInnerAmbiguous pins the fix for the daemon->supervisor hop losing
+// the ambiguous-timeout signal: sessionCore.StartSession used to flatten
+// ANY c.runner.Start error (including one already wrapping
+// agent.ErrStartAmbiguous from the daemon's own inner RPC hop to the
+// supervisor) into a plain resp.Error string, so the outer TUI->daemon
+// Client.Start would see resp.Error != "" and return a definitive-looking
+// error that CreateAndStart would unwind on — exactly the case this whole
+// fix exists to prevent, just one hop further out.
+//
+// Deterministic by construction rather than by racing two timers: the INNER
+// hop (daemon->supervisor) resolves the default short rpcTimeout for this
+// backend (registered in the shared DB under a non-pi command), while the
+// OUTER hop (this test's own c.Start call) is given a fabricated cfg — never
+// sent over the wire, only used to pick c's OWN local timeout — that
+// resolves the SAME backend name to a pi command, giving it piStartTimeout.
+// The mocked prelaunch sleeps longer than the inner default but well under
+// piStartTimeout, so the inner hop times out first and the daemon replies
+// to the outer hop with an ordinary (non-timeout) RPC response carrying
+// resp.Ambiguous — never racing the outer hop's own deadline at all.
+//
+// After asserting the ambiguous error, the test polls sc (the direct
+// supervisor client) until the session it left running in the background
+// actually appears — proving the point of the whole fix (the daemon-side
+// start really did keep going past the client's abandoned wait) AND
+// avoiding a real data race: agent.SetPrelaunchForTest's restore mutates a
+// package-level var, which must not happen while the supervisor's own
+// still-in-flight goroutine is still reading it.
+func TestSupInnerAmbiguous(t *testing.T) {
+	d, sc, database := supE2E(t)
+	cmdPath := filepath.Join(t.TempDir(), "notpi")
+	testutil.NoError(t, os.WriteFile(cmdPath, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755))
+	// The DB (and so the daemon's own cfgFn, used for the inner daemon->supervisor
+	// hop) resolves "mixed" to a non-pi command -> default rpcTimeout inside.
+	testutil.NoError(t, database.SetBackend("mixed", config.Backend{Command: cmdPath}))
+	restore := agent.SetPrelaunchForTest(func(ctx context.Context, _ *model.Task, _ config.Config) error {
+		timer := time.NewTimer(rpcTimeout + 500*time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+
+	sockPath := filepath.Join(t.TempDir(), "d.sock")
+	go d.Serve(sockPath) //nolint:errcheck
+	t.Cleanup(func() { d.Shutdown() })
+	waitFile(t, sockPath)
+	c, err := Connect(sockPath)
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	// The OUTER cfg is fabricated and never sent to the daemon — it only
+	// steers THIS client's own startTimeoutFor call to resolve "mixed" as pi,
+	// giving the outer hop piStartTimeout while the daemon internally
+	// resolves the same backend NAME to the real non-pi command above.
+	outerCfg := config.Config{Backends: map[string]config.Backend{
+		"mixed": {Command: "pi"},
+	}}
+	task := &model.Task{ID: "inner-ambiguous", Backend: "mixed", Worktree: t.TempDir()}
+	_, err = c.Start(task, outerCfg, 24, 80, false)
+	testutil.Error(t, err)
+	testutil.True(t, errors.Is(err, agent.ErrStartAmbiguous))
+	testutil.False(t, errors.Is(err, ErrRPCTimeout)) // this hop's OWN call never timed out
+
+	// Wait for the supervisor's background start (the one the ambiguous
+	// error above didn't wait for) to actually land before restoring the
+	// mocked prelaunch — restoring while that goroutine is still running it
+	// would race the package-level var.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !sc.HasSession(task.ID) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	testutil.True(t, sc.HasSession(task.ID))
+	restore()
+	testutil.NoError(t, sc.Stop(task.ID))
+}
+
 func waitFile(t *testing.T, path string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

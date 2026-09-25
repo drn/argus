@@ -287,12 +287,16 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		// exact task/worktree in the background (see SessionProvider.Start's
 		// contract). Unwinding here would delete the worktree and task row
 		// out from under it, which is worse than leaving a Pending task the
-		// user can retry or that later attaches on its own once the daemon
-		// responds. Skip the destructive cleanup; leave the row and worktree
-		// in place and surface a distinct, non-alarming error instead.
+		// user can retry. Skip the destructive cleanup; leave the row and
+		// worktree in place and surface a distinct, non-alarming error
+		// instead. KNOWN GAP: nothing here promotes the task back to
+		// InProgress on its own if the daemon-side start does succeed — the
+		// user has to notice (task still Pending, worktree intact) and
+		// retry; see the fix-ambiguous-start-timeout-unwind openspec change
+		// and its daemon-rpc.md gotcha for the disclosed follow-up.
 		if errors.Is(err, ErrStartAmbiguous) {
 			slog.Warn("CreateAndStart: start RPC ambiguous, preserving task/worktree", "id", taskID, "err", err)
-			return nil, nil, fmt.Errorf("start session: daemon has not confirmed yet (task and worktree preserved, will attach once it responds): %w", err)
+			return nil, nil, fmt.Errorf("start session: daemon has not confirmed yet — task and worktree preserved, retry manually once the daemon responds: %w", err)
 		}
 		unwind("runner.Start", err)
 		return nil, nil, fmt.Errorf("start session: %w", err)

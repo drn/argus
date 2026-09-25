@@ -19,6 +19,15 @@ import (
 // errors.Is(err, ErrStartAmbiguous) and skip that cleanup, since undoing a
 // task the daemon might successfully finish starting moments later would
 // delete state out from under it.
+//
+// Currently only *daemon/client.Client wraps it (its RPC to the daemon, and
+// the daemon's own possible second RPC hop to the supervisor, are the only
+// places a Start call can time out without knowing the outcome); the
+// in-process *Runner has no RPC boundary to be ambiguous about, and the
+// --remote *apiclient.Provider path doesn't reach agent.CreateAndStart at
+// all today (fresh-task creation there goes through POST /api/tasks
+// server-side). If either of those ever needs its own ambiguous-outcome
+// case, wrap this same sentinel rather than inventing a parallel one.
 var ErrStartAmbiguous = errors.New("session start RPC did not confirm daemon-side outcome")
 
 // SessionProvider abstracts the management of agent sessions.

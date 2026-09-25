@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"sync"
@@ -121,6 +122,14 @@ func (c *sessionCore) StartSession(req *StartReq, resp *StartResp) error {
 	if err != nil {
 		slog.Error("rpc.StartSession failed", "task", req.TaskID, "err", err)
 		resp.Error = err.Error()
+		// c.runner can itself be a *client.Client making a second RPC hop to
+		// the supervisor (P4 supervisor mode) — in that case err may already
+		// carry agent.ErrStartAmbiguous from THAT inner timeout. Preserve the
+		// distinction explicitly on the wire rather than relying on the outer
+		// hop's own timeout coincidentally firing first (it usually does,
+		// since the outer clock starts before the inner one, but that's an
+		// implicit timing property, not a contract).
+		resp.Ambiguous = errors.Is(err, agent.ErrStartAmbiguous)
 		return nil
 	}
 	resp.PID = sess.PID()

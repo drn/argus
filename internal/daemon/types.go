@@ -193,6 +193,16 @@ type StartReq struct {
 type StartResp struct {
 	PID   int
 	Error string
+	// Ambiguous is true when Error came from agent.ErrStartAmbiguous — the
+	// runner's own Start call (which may itself be a second RPC hop to the
+	// supervisor) timed out waiting for a response, not that the start
+	// definitively failed. Carried explicitly across the wire so a caller
+	// two hops away from the actual timeout (TUI -> daemon -> supervisor)
+	// doesn't have to infer ambiguity from timing symmetry between the two
+	// hops' independent deadlines. Zero-value-safe: an old client talking to
+	// a new daemon (or vice versa) just sees false/absent, the same as any
+	// other additive jsonrpc field (see unify-writeinput-origin).
+	Ambiguous bool
 }
 
 // TaskIDReq is an RPC request that identifies a single task.
