@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -803,6 +804,13 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	isCodex := IsCodexBackend(backend.Command)
 	isPi := IsPiBackend(backend.Command)
 	isOpencode := IsOpencodeBackend(backend.Command)
+	injectOpencodeAuto := isOpencode && !slices.Contains(strings.Fields(backend.Command), "--auto")
+	// OpenCode's --auto approves permission requests that would otherwise ask,
+	// while preserving explicit deny rules. Inject at launch so persisted backend
+	// commands get the same behavior as fresh defaults, including on resume.
+	if injectOpencodeAuto {
+		cmdStr += " --auto"
+	}
 
 	// Inject the configured permission mode for claude backends only. Scoped to
 	// IsClaudeBackend (not "not codex/pi") so custom/bare commands never receive
@@ -1142,6 +1150,9 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		}
 	}
 
+	if isOpencode {
+		uxlog.Log("[opencode] auto approval enabled for task %q (injected=%t)", task.ID, injectOpencodeAuto)
+	}
 	committed = true
 	return cmd, sandboxCleanup, nil
 }

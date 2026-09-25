@@ -449,7 +449,8 @@ func DefaultConfig() Config {
 				// opencode is a capture-style backend (no start-time
 				// --session-id; it mints its own ses_… ID). In v2 the full TUI
 				// only pre-fills --prompt; mini submits it and remains interactive.
-				// Permissions are left to the user's own opencode config.
+				// BuildCmd adds --auto at launch, including for stored commands;
+				// explicit permission denials still come from opencode config.
 				Command:    "opencode mini",
 				PromptFlag: "--prompt",
 			},

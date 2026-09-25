@@ -17,7 +17,7 @@ The system SHALL provide a baseline configuration with sensible defaults so that
 
 - **WHEN** a default configuration is produced
 - **THEN** it SHALL include backend entries for `claude`, `codex`, `pi`, and `opencode`, each with a command template
-- **AND** the `opencode` entry SHALL use the interactive `opencode mini` command with `--prompt` as its prompt flag, submitting the initial prompt without user input and leaving the user's opencode permission posture unmodified
+- **AND** the `opencode` entry SHALL use the interactive `opencode mini` command with `--prompt` as its prompt flag, submitting the initial prompt without user input; launch-time auto approval is governed by agent execution rather than stored in the template
 
 #### Scenario: Existing OpenCode default is upgraded
 
