@@ -133,6 +133,37 @@ test.describe('compose bar', () => {
     await expect.poll(() => page.evaluate(() => document.getElementById('detail-view')!.style.transform)).toBe('');
   });
 
+  test('Send recovery resumes after a terminal tap with no scrollend', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+    await page.evaluate(() => {
+      const vv = window.visualViewport!;
+      const state = { height: window.innerHeight - 320, top: 280 };
+      (window as any).fakeViewport = state;
+      Object.defineProperty(vv, 'height', { configurable: true, get: () => state.height });
+      Object.defineProperty(vv, 'offsetTop', { configurable: true, get: () => state.top });
+      vv.dispatchEvent(new Event('resize'));
+    });
+    await page.locator('#compose-input').fill('hello');
+    await page.locator('#compose-send').click();
+    await page.evaluate(() => {
+      (window as any).onTermScroll();
+      document.getElementById('term')!.dispatchEvent(new Event('touchstart'));
+      const state = (window as any).fakeViewport;
+      state.height = window.innerHeight;
+      state.top = 0;
+      window.visualViewport!.dispatchEvent(new Event('resize'));
+    });
+    // Let Send's first timer expire while the finger is still down.
+    await page.waitForTimeout(200);
+    expect(await page.evaluate(() => document.getElementById('detail-view')!.style.transform)).toBe('translateY(280px)');
+    await page.evaluate(() => document.getElementById('term')!.dispatchEvent(new Event('touchend')));
+    await expect.poll(() => page.evaluate(() => ({
+      transform: document.getElementById('detail-view')!.style.transform,
+      pending: (window as any).argusTouchState().pendingViewportSync,
+    }))).toEqual({ transform: '', pending: false });
+  });
+
   test('Send resyncs a keyboard dismissal with no visualViewport event', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
     await login(page);
