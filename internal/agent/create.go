@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -280,6 +281,23 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		input.AfterStart()
 	}
 	if err != nil {
+		// ErrStartAmbiguous means the caller's wait was abandoned without
+		// hearing back from the daemon — NOT that the daemon-side start
+		// definitively failed. The daemon may still finish starting this
+		// exact task/worktree in the background (see SessionProvider.Start's
+		// contract). Unwinding here would delete the worktree and task row
+		// out from under it, which is worse than leaving a Pending task the
+		// user can retry. Skip the destructive cleanup; leave the row and
+		// worktree in place and surface a distinct, non-alarming error
+		// instead. KNOWN GAP: nothing here promotes the task back to
+		// InProgress on its own if the daemon-side start does succeed — the
+		// user has to notice (task still Pending, worktree intact) and
+		// retry; see the fix-ambiguous-start-timeout-unwind openspec change
+		// and its daemon-rpc.md gotcha for the disclosed follow-up.
+		if errors.Is(err, ErrStartAmbiguous) {
+			slog.Warn("CreateAndStart: start RPC ambiguous, preserving task/worktree", "id", taskID, "err", err)
+			return nil, nil, fmt.Errorf("start session: daemon has not confirmed yet — task and worktree preserved, retry manually once the daemon responds: %w", err)
+		}
 		unwind("runner.Start", err)
 		return nil, nil, fmt.Errorf("start session: %w", err)
 	}

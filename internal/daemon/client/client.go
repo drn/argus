@@ -23,10 +23,45 @@ import (
 // 2s is generous for a local Unix socket; anything slower indicates real trouble.
 const rpcTimeout = 2 * time.Second
 
-// StartSession can wait for Pi's bounded six-minute Ollama prelaunch. Both
-// TUI→daemon and daemon→supervisor hops use this deadline; the ordinary RPC
-// timeout would make task creation unwind while prelaunch is still running.
-const startSessionTimeout = 7 * time.Minute
+// startTimeoutOverrides lets Client.Start use a longer RPC budget than the
+// default rpcTimeout for backends whose prelaunch work can legitimately take
+// longer than a normal round trip. The daemon-side call is unaffected either
+// way — callWithTimeout's dispatch goroutine keeps running to completion
+// regardless of which case fires below (see callWithTimeout); this only
+// controls how long the caller waits before giving up and reporting an
+// error. To add headroom for a future backend, append an entry here rather
+// than special-casing Start itself.
+var startTimeoutOverrides = []struct {
+	is      func(command string) bool
+	timeout time.Duration
+}{
+	{agent.IsPiBackend, piStartTimeout},
+}
+
+// piStartTimeout covers agent.EnsurePrelaunch's ollama readiness check
+// (observed ~11s for an already-installed-but-cold ollama daemon in
+// practice; see internal/agent/prelaunch.go). A genuinely cold model load
+// can still exceed this and will surface as an RPC timeout to the caller,
+// but the session keeps starting daemon-side regardless.
+const piStartTimeout = 20 * time.Second
+
+// startTimeoutFor resolves the RPC timeout Client.Start should use for a
+// task, based on its resolved backend. Falls back to rpcTimeout when the
+// backend can't be resolved from cfg — mirroring agent.EnsurePrelaunch's own
+// fail-open handling, since an unresolved backend isn't this function's
+// concern and will surface from BuildCmd daemon-side either way.
+func startTimeoutFor(task *model.Task, cfg config.Config) time.Duration {
+	backend, err := agent.ResolveBackend(task, cfg)
+	if err != nil {
+		return rpcTimeout
+	}
+	for _, o := range startTimeoutOverrides {
+		if o.is(backend.Command) {
+			return o.timeout
+		}
+	}
+	return rpcTimeout
+}
 
 // ErrRPCTimeout is returned when an RPC call exceeds rpcTimeout.
 var ErrRPCTimeout = errors.New("daemon RPC call timed out")
@@ -195,12 +230,32 @@ func (c *Client) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 	}
 
 	var resp daemon.StartResp
-	if err := c.callWithTimeout("Daemon.StartSession", req, &resp, startSessionTimeout); err != nil {
+	if err := c.callWithTimeout("Daemon.StartSession", req, &resp, startTimeoutFor(task, cfg)); err != nil {
 		uxlog.Log("client.Start: RPC FAILED task=%s err=%v", task.ID, err)
+		// A timeout specifically means we stopped waiting, not that the
+		// daemon-side start failed — callWithTimeout's dispatch goroutine
+		// keeps it running to completion regardless. Any other error here
+		// (a dead connection, a closed client) means the RPC genuinely can't
+		// complete. Only the timeout case is ambiguous enough that a caller
+		// like agent.CreateAndStart must not treat it as grounds to unwind
+		// (delete) a freshly created worktree/task the daemon might still
+		// finish starting.
+		if errors.Is(err, ErrRPCTimeout) {
+			return nil, fmt.Errorf("%w: %w", agent.ErrStartAmbiguous, err)
+		}
 		return nil, err
 	}
 	if resp.Error != "" {
 		uxlog.Log("client.Start: daemon error task=%s err=%s", task.ID, resp.Error)
+		// resp.Ambiguous means the daemon's OWN Start call was itself an
+		// ambiguous RPC timeout (e.g. its second hop to the supervisor in P4
+		// supervisor mode) rather than a definitive failure. Re-wrap here so
+		// a caller two hops away from the actual timeout still sees
+		// ErrStartAmbiguous, even in the (normally timing-improbable) case
+		// where this outer hop's own callWithTimeout didn't time out first.
+		if resp.Ambiguous {
+			return nil, fmt.Errorf("%w: daemon: %s", agent.ErrStartAmbiguous, resp.Error)
+		}
 		return nil, fmt.Errorf("daemon: %s", resp.Error)
 	}
 

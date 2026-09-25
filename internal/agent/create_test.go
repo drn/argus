@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -269,6 +270,55 @@ func TestCreateAndStart_UnwindsOnStartFailure(t *testing.T) {
 	// Runner was called exactly once.
 	if fr.startCalls != 1 {
 		t.Errorf("startCalls = %d, want 1", fr.startCalls)
+	}
+}
+
+// TestCreateAndStart_PreservesWorktreeOnAmbiguousStartTimeout pins the fix
+// for the destructive-unwind bug: an ErrStartAmbiguous error (a client-side
+// RPC timeout that doesn't mean the daemon-side start failed) must NOT
+// trigger the same unwind as a definitive Start failure — the worktree and
+// task row must survive so a session the daemon is still legitimately
+// starting isn't deleted out from under it.
+func TestCreateAndStart_PreservesWorktreeOnAmbiguousStartTimeout(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{startErr: fmt.Errorf("%w: %w", ErrStartAmbiguous, errors.New("daemon RPC call timed out"))}
+
+	task, sess, err := CreateAndStart(d, fr, CreateInput{
+		Name:    "ambiguous",
+		Prompt:  "still starting maybe",
+		Project: "proj",
+	})
+	if err == nil {
+		t.Fatal("expected error from CreateAndStart")
+	}
+	if !errors.Is(err, ErrStartAmbiguous) {
+		t.Errorf("expected error to wrap ErrStartAmbiguous, got %v", err)
+	}
+	if task != nil || sess != nil {
+		t.Errorf("expected nil task and session on failure, got task=%v sess=%v", task, sess)
+	}
+
+	// INVARIANT: unlike a definitive failure, the DB row survives.
+	after, _ := d.Tasks()
+	if len(after) != 1 {
+		t.Fatalf("expected task row preserved, got %d tasks: %+v", len(after), after)
+	}
+	if after[0].Status != model.StatusPending {
+		t.Errorf("expected preserved task to stay Pending, got %s", after[0].Status)
+	}
+
+	// INVARIANT: unlike a definitive failure, the worktree survives on disk.
+	expectedWT := WorktreeDir("proj", "ambiguous")
+	if !dirExists(expectedWT) {
+		t.Errorf("worktree should have been preserved: %s", expectedWT)
+	}
+
+	// INVARIANT: the argus/ambiguous branch is not deleted.
+	checkBranch := exec.Command("git", "rev-parse", "--verify", "argus/ambiguous")
+	checkBranch.Dir = repo
+	if err := checkBranch.Run(); err != nil {
+		t.Errorf("branch argus/ambiguous should have been preserved: %v", err)
 	}
 }
 

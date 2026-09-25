@@ -96,6 +96,18 @@ func TestBuildCmd_EnvVarMapping_UnresolvedSourceUnsetAndWarns(t *testing.T) {
 	readLog := captureUXLog(t)
 	installResolver(t, func(string) (string, bool) { return "", false })
 
+	// BuildCmd seeds cmd.Env from os.Environ() and an unresolved EnvVars
+	// source only skips ADDING the target — it never strips a same-named var
+	// already ambient in the parent environment. On a machine where
+	// OPENAI_API_KEY is genuinely exported (e.g. for other tooling), that
+	// makes this assertion machine-dependent unless isolated here.
+	// t.Setenv can't remove a var (only set it, even to ""), so unset
+	// directly with an explicit restore.
+	if prev, ok := os.LookupEnv("OPENAI_API_KEY"); ok {
+		testutil.NoError(t, os.Unsetenv("OPENAI_API_KEY"))
+		t.Cleanup(func() { os.Setenv("OPENAI_API_KEY", prev) }) //nolint:errcheck
+	}
+
 	cfg := envVarConfig(map[string]string{"OPENAI_API_KEY": "HERA_OPENAI"})
 	task := &model.Task{Name: "review", Backend: "codex", Worktree: t.TempDir()}
 

@@ -103,7 +103,15 @@ const (
 	//     renderer attaches, so Codex can highlight its composer immediately.
 	//   - v3: rerender and coordinator recycle carry the live MCP port through
 	//     the supervisor RPC so their replacement sessions keep Argus tools.
-	SupervisorStreamSurface = 3
+	//   - v4: sessionCore.StartSession now sets StartResp.Ambiguous when the
+	//     runner's own Start call (itself a second RPC hop to the supervisor
+	//     in P4 supervisor mode) failed with agent.ErrStartAmbiguous, so the
+	//     distinction survives across that hop instead of being flattened
+	//     into a plain error string (fix-ambiguous-start-timeout-unwind). A
+	//     stale supervisor built before this change never sets the field, so
+	//     a daemon on the new build talking to an old supervisor silently
+	//     loses the distinction again until the supervisor is bounced.
+	SupervisorStreamSurface = 4
 )
 
 // SurfaceVersion is a supervisor's declared executed-surface identity: the pair
@@ -306,7 +314,7 @@ var SupervisorStreamPaths = []string{
 // message prints the computed digest to paste back here.
 const (
 	SpawnSurfaceDigest  = "0a1e5bae5e0023cda526463d426b9ce46838a43d6d103eb8e51398b2a3b1ad4f"
-	StreamSurfaceDigest = "7fe60da137f3b77d0b839e12c19225c983db8abc816be12cff0b332aa55506b5"
+	StreamSurfaceDigest = "0af3825eb6d09b138fc10a4d2041a0bfb8cfebadb225f328603877956243d7c8"
 )
 
 // SurfaceDigest computes the SHA-256 over the declared manifest's file contents,
