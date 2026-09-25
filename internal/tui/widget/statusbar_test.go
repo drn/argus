@@ -26,6 +26,25 @@ func TestStatusBar_CountsEveryTaskStatus(t *testing.T) {
 	testutil.Contains(t, row, "1 active  1 pending  1 review  1 done")
 }
 
+func TestStatusBar_NarrowWidthKeepsCountsAndQuitHint(t *testing.T) {
+	const width = 70
+	sb := NewStatusBar()
+	sb.SetRect(0, 0, width, 1)
+	sb.SetTasks([]*model.Task{
+		{Status: model.StatusInProgress},
+		{Status: model.StatusPending},
+		{Status: model.StatusInReview},
+		{Status: model.StatusComplete},
+	})
+
+	sim := newSim(t, width, 1)
+	sb.Draw(sim)
+	row := readAllScreenText(sim, width, 1)
+	testutil.Contains(t, row, "1 active  1 pending  1 review  1 done")
+	testutil.Contains(t, row, "n new")
+	testutil.Contains(t, row, "q quit")
+}
+
 func TestStatusBar_InfoMessage(t *testing.T) {
 	sb := NewStatusBar()
 	sb.SetRect(0, 0, 80, 1)
