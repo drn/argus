@@ -1881,6 +1881,33 @@ func TestSettingsView_DKeyOnBackendSetsDefault(t *testing.T) {
 	}
 }
 
+// TestSettingsView_DKeyOnBackendPersistsAcrossConfigReload guards against the
+// default_backend/defaults.backend key-mismatch regression: handleSetDefault
+// must persist under the same DB config key db.Config() reads back into
+// cfg.Defaults.Backend, or the change is silently discarded on the very next
+// config read (including app restart and new-task creation).
+func TestSettingsView_DKeyOnBackendPersistsAcrossConfigReload(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catBackends)
+
+	for i, row := range sv.rows {
+		if row.kind == srBackend && row.key != sv.defaultBackend {
+			sv.cursor = i
+			break
+		}
+	}
+	be := sv.SelectedBackend()
+	if be == nil {
+		t.Fatal("test setup: expected at least one non-default backend")
+	}
+	wantDefault := be.Name
+
+	ev := tcell.NewEventKey(tcell.KeyRune, 'd', 0)
+	testutil.Equal(t, sv.HandleKey(ev), true)
+
+	testutil.Equal(t, sv.database.Config().Defaults.Backend, wantDefault)
+}
+
 func TestSettingsView_DKeyOnNonListCategory(t *testing.T) {
 	sv := testSettingsView(t)
 	sv.setCategory(catSandbox) // Sandbox row doesn't accept 'd'.
