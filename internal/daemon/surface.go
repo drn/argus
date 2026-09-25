@@ -90,7 +90,9 @@ const (
 	//
 	// History:
 	//   - v1: initial declaration (reduce-supervisor-skew-blast-radius, Layer 1).
-	SupervisorStreamSurface = 1
+	//   - v2: the PTY session answers startup OSC 10/11 color queries before a
+	//     renderer attaches, so Codex can highlight its composer immediately.
+	SupervisorStreamSurface = 2
 )
 
 // SurfaceVersion is a supervisor's declared executed-surface identity: the pair
@@ -291,7 +293,7 @@ var SupervisorStreamPaths = []string{
 // message prints the computed digest to paste back here.
 const (
 	SpawnSurfaceDigest  = "74b9cddcde47bc4760bcb647bffca639022ab2f0aa4b29cf53002e42d6d3496b"
-	StreamSurfaceDigest = "57078648a38b01bad81b795bf6ca431199e4e394460f3a19ca9bf0ee407a785e"
+	StreamSurfaceDigest = "d2bb268dee014ddc854bd3920a2b3c018f0dd7537178c08149d7dafad58370c8"
 )
 
 // SurfaceDigest computes the SHA-256 over the declared manifest's file contents,
