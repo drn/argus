@@ -192,7 +192,7 @@ the dependent's edge to a cancelled blocker is ignored. Rendering keeps the role
 
 ### D6 — The skill declares the DAG authoritative
 
-`.claude/skills/hera/SKILL.md` states firmly: with a live coordinator binding the
+`internal/skills/builtin/hera/SKILL.md` states firmly: with a live coordinator binding the
 plan-DAG is the single source of truth; author and reconcile all worker activity
 through `hera_plan*` (now including update/unblock/cancel); treat the harness
 `TaskCreate` reminder as not applicable to coordinated work. Plus: document the

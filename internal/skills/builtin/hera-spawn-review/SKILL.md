@@ -84,16 +84,34 @@ packet** — scope asymmetry between reviewers invalidates any comparison betwee
 treats as load-bearing, D5). Building the packet once here, rather than trusting each spawned
 sub-agent to independently re-gather it, is what guarantees that.
 
-## 4. Load the review instruction(s)
+## 4. Load the review instruction(s) from the session catalog
 
-- **Broad finders' instruction**: if `review_skill` is set, Read
-  `.claude/skills/<review_skill>/SKILL.md` from the repo root and use its body verbatim. If the
-  file doesn't exist, **stop and fail loudly** — "review_skill %q not found" — do not silently
-  fall back (per D7: "a missing skill fails loudly at spawn"). If `review_instruction` prose is
-  set instead, use that prose verbatim. If neither is set, Read
-  `.claude/skills/hera-review/SKILL.md` (the shipped default).
-- **Each lens's instruction**: for every `[[panel.lens]]` entry, Read
-  `.claude/skills/<lens.skill>/SKILL.md`. Same loud-failure rule on a missing file.
+Resolve all named instructions **before spawning any finder or lens**. The authority is the
+current child session's native skill catalog, not a repository-local skill directory:
+
+- If `review_instruction` prose is set, use that prose verbatim; it does not require a skill
+  lookup.
+- Otherwise, the broad finders use the configured `review_skill`, or the shipped default
+  `hera-review` when neither `review_skill` nor `review_instruction` is set.
+- For every lens with a `skill` name, resolve that name the same way.
+
+Resolve each name as an **exact ID** (case-sensitive) through the native loader/catalog, and let
+that catalog's normal source precedence decide the winner. A project-scoped definition with the
+same ID is an intentional user override when the catalog selects it; otherwise the selected entry
+may be a user/plugin skill or an Argus-managed builtin. Do not manually prefer the managed builtin
+over a project-scoped override, and do not search by fuzzy display name.
+
+When the catalog selects a skill, load it with the child session's native skill tool using that
+exact ID. If direct loading is unavailable, read the single `SKILL.md` path advertised by the
+selected catalog entry. Do not construct a path from the target repository or assume a project
+mirror exists. This ID-based lookup deliberately keeps user-owned custom review and lens
+instructions selectable.
+
+If a configured broad or lens skill ID is absent, the catalog exposes an unresolved collision, or
+its selected `SKILL.md` cannot be loaded, **stop and fail loudly before spawning any finder or
+lens** (for example, `review_skill %q not found` or `lens skill %q not found`). Do not silently
+fall back to `hera-review`, another skill, or a repository-local copy. `review_instruction` prose
+remains the only configured alternative to a named review skill.
 
 ## 5. Spawn broad finders
 

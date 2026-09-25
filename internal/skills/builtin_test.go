@@ -29,6 +29,55 @@ func TestBuiltinItems_IncludesAllExpectedSkills(t *testing.T) {
 	})
 }
 
+// TestBuiltinItems_HaveNoProjectLocalMirror pins internal/skills/builtin as
+// the sole in-repo source for builtins. Project-specific skills may coexist in
+// .agents/skills, but a same-named directory would shadow the body materialized
+// into Argus-launched sessions and recreate the drift this layout avoids.
+// Lstat catches dangling symlinks as well as directories, and both native
+// project roots are checked in case the .claude/skills compatibility link is
+// replaced independently.
+func TestBuiltinItems_HaveNoProjectLocalMirror(t *testing.T) {
+	projectRoots := []string{
+		filepath.Join("..", "..", ".agents", "skills"),
+		filepath.Join("..", "..", ".claude", "skills"),
+	}
+	for _, item := range BuiltinItems() {
+		for _, root := range projectRoots {
+			mirror := filepath.Join(root, item.Name)
+			_, err := os.Lstat(mirror)
+			switch {
+			case err == nil:
+				t.Errorf("builtin %q has a project-local mirror at %s", item.Name, mirror)
+			case !os.IsNotExist(err):
+				t.Errorf("lstat project-local mirror for builtin %q: %v", item.Name, err)
+			}
+		}
+	}
+}
+
+// TestHeraSpawnReview_ResolvesInstructionsFromSessionCatalog guards the skill
+// contract that lets the panel run without repository-local mirrors. The
+// managed builtin directory differs by backend, so the portable source of a
+// named instruction is the current session's skill catalog, not a hard-coded
+// path in the target repository. Resolution must complete before the first
+// finder spawn, and an exact project-scoped ID remains an intentional override.
+func TestHeraSpawnReview_ResolvesInstructionsFromSessionCatalog(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("builtin", "hera-spawn-review", skillManifestFile))
+	testutil.NoError(t, err)
+	text := string(body)
+	testutil.Contains(t, text, "child session's native skill catalog")
+	testutil.Contains(t, text, "exact ID")
+	testutil.Contains(t, text, "project-scoped")
+	testutil.Contains(t, text, "before spawning any finder or lens")
+	testutil.False(t, strings.Contains(text, ".claude/skills/"))
+	testutil.False(t, strings.Contains(text, ".agents/skills/"))
+
+	loadSection := strings.Index(text, "## 4. Load the review instruction(s)")
+	spawnSection := strings.Index(text, "## 5. Spawn broad finders")
+	testutil.True(t, loadSection >= 0)
+	testutil.True(t, spawnSection > loadSection)
+}
+
 // TestBuiltinItems_ReviewSkillsHaveDescriptions asserts real description
 // *content*, not just non-emptiness — the literal YAML block-scalar header
 // text (">-") is itself a non-empty string, so a bare `!= ""` check here

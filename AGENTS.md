@@ -2,7 +2,7 @@
 
 Guidance for coding agents working in this repo.
 
-Project skills live in `.agents/skills/`; `.claude/skills/` links to that directory for Claude Code.
+Project-only skills live in `.agents/skills/`; `.claude/skills/` links to that directory for Claude Code. Argus builtins live only at `internal/skills/builtin/<name>/SKILL.md` and are not mirrored as project skills.
 
 ## What This Is
 
@@ -113,7 +113,7 @@ Gotcha files hold: invariants that caused bugs when violated, ordering requireme
 - **README.md is marketing, not a changelog.** The top half (hero / Why Argus / pillars / Also In The Box) is positioning — touch it only when a pillar-class capability or a new surface lands, or existing prose is now wrong. The Reference appendix (below `---`) is the dense docs surface — update its tables in place for any factual change (keybindings, MCP tools, REST endpoints, sandbox defaults, spinner styles). Default to silence; a single key/flag/endpoint tweak does not warrant a top-half edit.
 - **Screenshots** (`screenshots/`) are curated for marketing: add one only for a pillar-class, visually-distinct capability; replace stale ones in place; no empty/sparse screens.
 - **Bump `SW_VERSION` in `internal/api/static/sw.js`** whenever any other shell asset under `internal/api/static/` changes — the service worker serves the shell cache-first, so without a bump installed PWAs never see the change.
-- **New builtin skills (`internal/skills/builtin/<name>/SKILL.md`) must be named `argus-<name>` or `hera-<name>`** — the prefix signals "this drives argus/hera machinery," not a generic task.
+- **New builtin skills (`internal/skills/builtin/<name>/SKILL.md`) must be named `argus-<name>` or `hera-<name>`** — the prefix signals "this drives argus/hera machinery," not a generic task. Add the body only in this canonical tree; never mirror it under `.agents/skills/`.
 
 ### Logging Requirements
 

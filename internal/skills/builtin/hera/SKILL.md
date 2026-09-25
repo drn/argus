@@ -22,13 +22,29 @@ plumbing; you call the tools.
 
 ## 1. When this applies (and when it does NOT)
 
-This skill applies **only inside an argus task sandbox**. You are in one if **either** holds:
+The `mcp__argus__hera_*` tools are only *registered* inside an argus task sandbox. You are in one if
+**either** holds:
 
 - `ARGUS_TASK_ID` is set, **or**
 - the current working directory is under `~/.argus/worktrees/`.
 
-**If neither holds, stop.** The `mcp__argus__hera_*` tools are not registered in this session — there
-is no CLI fallback and nothing below applies.
+**If neither holds, stop.** The tools are not registered in this session — there is no CLI fallback and
+nothing below applies.
+
+**Sandbox residency alone is NOT a reason to use hera.** Most argus sessions are plain solo tasks that
+should stay solo. The "coordinate via hera, never hand-roll it" imperative in this skill applies only
+once this session already has evidence of being hera-managed:
+
+- it was **spawned as a hera worker** — its prompt carries the orientation prefix naming the
+  coordinator + orchestrator (see `hera_spawn_worker`'s prompt contract in §3), or
+- it already **holds, or is actively creating** (e.g. via `hera_new_orchestrator`), a
+  coordinator/freelance binding for this session.
+
+**No such evidence?** This is a bare argus task the human is driving directly. Don't assume hera and
+don't self-promote into a coordinator just because the work could be split up — at most, mention hera as
+an available option for multi-session work ("this could be split into a hera team with its own
+worktrees/PRs per stage if you want — say so, or I'll keep it in this session") and only act on it if
+they opt in. Once you're spawned/promoted per the bullets above, everything below governs.
 
 **Every hera tool takes `cwd` — always pass `cwd=$PWD`.** That is how hera resolves which argus task
 (and therefore which role) this session is. There is no separate "auth" or session handle.
@@ -55,23 +71,24 @@ is no CLI fallback and nothing below applies.
 ## 3. The coordination tools
 
 All take `cwd`. `orchestrator` is optional with exactly one live binding and **required** with 2+.
-Arg names below are exact — do not invent others. These ten cover bootstrap, messaging, status, and
-completion; the plan-DAG authoring/mutation tools live in the companion `hera-plan` skill (pointer at
-the end of this section).
+Arg names below are exact — do not invent others. The core eleven below cover bootstrap, messaging,
+status, revive, and completion; the plan-DAG authoring/mutation tools live in the companion
+`hera-plan` skill (pointer at the end of this section).
 
 ### Bootstrap / join
 
-- **`hera_new_orchestrator(cwd, name, coordinator_role_name, [prompt])`** — "I am the coordinator."
-  Creates (or fetches, idempotent-by-name) the orchestrator, creates the named coordinator role, and
-  binds this task to it. Returns the orchestrator name, role name, `binding_id`, and argus task id.
-  Rejects if this task already holds a live binding under that orchestrator (use `hera_join` to
-  retrieve it). The canonical "become an orchestrator" entry point — don't `hera_join` first; there is
-  nothing to join yet.
+- **`hera_new_orchestrator(cwd, name, coordinator_role_name, [prompt], [base_branch])`** — "I am the
+  coordinator." Creates (or fetches, idempotent-by-name) the orchestrator, creates the named
+  coordinator role, and binds this task to it. Returns the orchestrator name, role name, `binding_id`,
+  and argus task id. Rejects if this task already holds a live binding under that orchestrator (use
+  `hera_join` to retrieve it). The canonical "become an orchestrator" entry point — don't
+  `hera_join` first; there is nothing to join yet. `base_branch` is the explicit base for this
+  orchestrator's root plan nodes; it has no effect on nodes with blockers.
 
 - **`hera_join(cwd, [orchestrator], [role_name], [kind], [prompt], [status])`** — two modes:
   - **Claim mode** (`role_name` omitted) — retrieves this task's existing live binding + role and its
-    unread message count. Use right after a born-bound worker terminal opens to read your assigned
-    role/mission. Pass `orchestrator=` if the task has 2+ bindings. Claim mode does **not** consume the
+    unread message count. Use right after a born-bound worker terminal opens to confirm your assigned
+    role. Pass `orchestrator=` if the task has 2+ bindings. Claim mode does **not** consume the
     inbox.
   - **Attach mode** (`role_name` + `kind` supplied) — creates a **new** role under an *existing*
     orchestrator (`orchestrator` required) and binds this task to it. `kind` must be `worker` or
@@ -79,20 +96,27 @@ the end of this section).
     the role) and `status` (`idle`/`working`/`blocked`/`done`). Use to join a team nobody spawned you
     into.
 
-- **`hera_spawn_worker(cwd, prompt, [orchestrator], [role_name], [project], [branch], [backend], [model])`**
-  — spawn a new **born-bound** worker task + session under the caller's orchestrator. **Caller must hold
-  a live coordinator binding.** Creates an argus task (worktree + session) and, transactionally, a worker
-  role + binding pre-bound to it; an orientation prefix naming the coordinator + orchestrator is prepended
-  to the prompt automatically. Args:
+- **`hera_spawn_worker(cwd, prompt, [orchestrator], [role_name], [project], [branch], [backend], [model], [archetype])`**
+  — spawn a new **born-bound** worker task + session under the caller's orchestrator. **Caller must
+  hold a live coordinator binding.** Creates an argus task (worktree + session) and,
+  transactionally, a worker role + binding pre-bound to it; an orientation prefix naming the
+  coordinator + orchestrator is prepended to the prompt automatically. Args:
   - `prompt` (**required**) — the worker's MISSION/task only. The verbatim prompt is also stored on the
     role row and shown as the node's description in the plan-DAG view. **Do NOT prepend the org/security
     policy** — see the mission-only gotcha in §6.
-  - `project` — defaults to the **coordinator's own task project** (authoritative, not `role.ArgusProject`).
+  - `project` — defaults to the **coordinator's own task project** (authoritative, not
+    `role.ArgusProject`).
   - `branch` — base branch passed to argus task creation. **Defaults to the project default — see the
     base-branch gotcha in §6.**
-  - `backend` — defaults to project default.
-  - `model` — per-worker model override, scoped to the worker's resolved backend (claude: opus/sonnet/
-    haiku; codex: e.g. gpt-6-sol; pi: its ids). Empty = backend default. Match it to task complexity.
+  - `backend` — normally defaults to the project default; usage-budget routing may supply its configured
+    worker fallback when enabled.
+  - `model` — optional valid per-worker model override, scoped to the worker's resolved backend (claude:
+    opus/sonnet/haiku/fable; codex: e.g. gpt-6-sol; pi/opencode: their configured ids). Leave it unset
+    with `archetype=` so the profile picks the tier; otherwise the backend default applies.
+  - `archetype` — the worker's **diligence archetype** (e.g. `code_slice`, `bug_fix`, `review`,
+    `ci_loop`; defaults to `code_slice`). Selects the per-archetype model from the project's bound
+    profile and is exported to the worker as `ARGUS_ARCHETYPE` when profile resolution succeeds. A valid
+    explicit `model` still wins over the profile. See §9.
   - `role_name` — derived from a prompt slug if omitted; uniquified within the orchestrator.
   - `orchestrator` — disambiguates when the calling task holds multiple live coordinator bindings.
 
@@ -108,7 +132,9 @@ the end of this section).
   worker/freelance sender is an error; coordinator senders may omit it. Worker/freelance senders may
   omit `to` — it default-routes to the orchestrator's coordinator. **Coordinators must supply an
   explicit `to`.** `in_reply_to` threads a reply to a prior message id. Returns the `message_id`,
-  recipient, and delivery mode. Caps: 64 KiB body, 500 unread per recipient, 50 sends/min/sender.
+  recipient, and delivery mode. A coordinator sending to a different, explicitly named role also makes
+  a soft-fail, idle-gated auto-revive attempt through the same primitive as `hera_revive`; the result
+  may include a `revive` outcome. Caps: 64 KiB body, 500 unread per recipient, 50 sends/min/sender.
   Cross-orchestrator messaging is not possible — `to` always resolves within your own orchestrator.
 
 - **`hera_inbox(cwd, [orchestrator], [timeout_seconds])`** — fetch all unread messages addressed to
@@ -123,21 +149,38 @@ the end of this section).
 
 ### Status / tree
 
-- **`hera_status(cwd, status, [orchestrator])`** — set your role status: `idle` | `working` | `blocked`
-  | `done` | `failed`. Mirrored (best-effort) to argus `task_meta` so the coordinator sees it without
-  asking. **A `worker`-kind role reporting `status=done` also rolls its bound argus task to `in_review`
-  and stamps `ready_to_close`** (visible in the rail) — see §4. **A worker reporting `status=failed`
-  rolls its task to `in_review` WITHOUT `ready_to_close`** (needs-attention, not ready to check off).
-  The gater treats a `failed` blocker as explicitly failed (no need to wait for session death).
-  Coordinators/freelancers just update status.
+- **`hera_status(cwd, status, [orchestrator], [handoff_note], [request_recycle])`** — set your role
+  status: `idle` | `working` | `blocked` | `done` | `failed`. Mirrored (best-effort) to argus
+  `task_meta` so the coordinator sees it without asking. **A `worker`-kind role reporting `status=done`
+  also rolls its bound argus task to `in_review` and stamps `ready_to_close`** (visible in the rail) —
+  see §4. **A worker reporting `status=failed` rolls its task to `in_review` WITHOUT
+  `ready_to_close`** (needs-attention, not ready to check off). The gater treats a `failed` blocker as
+  explicitly failed (no need to wait for session death). Coordinators/freelancers just update status.
+  Any hera-bound role may also record `handoff_note` and set `request_recycle=true`; the latter only
+  records intent, and the daemon recycles the same task in place once the session becomes idle.
+
+- **`hera_revive(cwd, role_name, [orchestrator])`** — coordinator-only PULL-revive of one role you
+  coordinate. Reach for this when a role you spawned looks stuck — `hera_tree_updates`/`hera_status`
+  show no progress, especially after something like a session-supervisor restart (which SIGHUPs every
+  PTY it owns, leaving a worker dead or suspended). It inspects the role's live session and takes
+  exactly one action: a dead session is restarted in place; a live-but-genuinely-stuck session (idle,
+  NOT parked at a prompt) is kicked (stopped and resumed in place); anything else — busy, blocked on a
+  question, a live coordinator, a missing resume id, or a kick already in flight — is left untouched
+  and reported as such (`skipped_busy` / `skipped_blocked_on_prompt` /
+  `skipped_coordinator_live` / `skipped_no_session_id` / `skipped_restart_pending`). The MCP tool
+  itself is pull-only; the explicit-coordinator-recipient auto-revive under `hera_send` shares its
+  underlying runner primitive. The TUI's Enter-key path follows the same idle+not-blocked safety
+  contract but invokes the daemon revive RPC rather than this MCP tool. It targets a DIFFERENT role
+  than your own (self-targeting errors).
 
 - **`hera_accept(cwd, role_name, [orchestrator], [message])`** — coordinator-only: mark a role's bound
   task complete and send it a check-in asking whether it's winding down, has more work to do, or is
   unsure. The reply is informational only — never auto-reopens the task; a premature accept is undone
   via `hera_revive` alone. Never stops the session (completion and detachment are separate). Acts from
   any non-complete status; a no-op if already complete. The plan-DAG gater fires this automatically
-  for blockers when dependent nodes materialize — use this tool for accepting work *outside* that flow
-  (ad hoc spawns, or roles with no plan-DAG dependents).
+  for ordinary worker blockers when worker dependents materialize; sub-coordinator nodes use their
+  own child-plan lifecycle. Use this tool for accepting work *outside* that ordinary-worker flow
+  (ad hoc spawns, sub-coordinators, or roles with no plan-DAG dependents).
 
 - **`hera_tree_updates(cwd, [orchestrator], [since])`** — scan the caller's orchestrator **subtree**
   (nested sub-orchestrators included) for messages since a cursor. Returns **TLDR-only subject lines —
@@ -173,12 +216,15 @@ or using in-session sub-agents.
 ## 4. Decision rules
 
 - **Starting a coordination effort?** `hera_new_orchestrator`. Don't `hera_join` first.
-- **A coordinator spawned you (fresh born-bound worker terminal)?** `hera_join(cwd)` to read your role
-  + mission, then `hera_status(working)`. You are already bound — no attach needed.
+- **A coordinator spawned you (fresh born-bound worker terminal)?** `hera_join(cwd)` to confirm your
+  role, then `hera_status(working)`. You are already bound — no attach needed.
 - **Joining a team that didn't spawn you?** `hera_join` attach mode with explicit `role_name` + `kind`.
 - **`new_orchestrator` vs `join`:** `new_orchestrator` makes you a coordinator of a *new* orchestrator;
   `join` claims/attaches a role under an *existing* one. A worker can do BOTH — stay a worker in the
-  parent and `hera_new_orchestrator` to become a coordinator of a nested team (multi-binding).
+  parent and `hera_new_orchestrator` to become a coordinator of a nested team (multi-binding). A task
+  already coordinating orchestrator A may NOT call `new_orchestrator` for a different B: use
+  `hera_spawn_worker(project=…)` for cross-repo work, or author a `kind=subcoord` node for a genuine
+  sub-team.
 - **`spawn_worker` vs adopt:** native hera has **no adopt step** — workers are born bound at spawn time.
   (The old `depends_on`-driven auto-adopt watcher was retired with the DAG.) To delegate, just
   `hera_spawn_worker`.
@@ -190,19 +236,32 @@ or using in-session sub-agents.
   the Hera TUI's `J` (adopt/reparent) key, human-only. If a human wants your whole team folded under
   another coordinator, tell them to press `J` on your orchestrator; don't try to self-relocate.
 - **The coordination decision — in-session sub-agents vs hera workers vs the plan-DAG (settle this
-  BEFORE delegating):**
+  BEFORE delegating). Delegate with prejudice, but don't be dumb about it:**
   1. **Ephemeral, in-session work** — research, review, fan-out reads, anything that returns results
      to you and needs no worktree/PR of its own? → use **Claude's native sub-agents** (Agent/Task
-     tool). NOT hera. Hera is overkill and slower for in-session parallelism.
+     tool). NOT hera. Hera is overkill and slower for in-session parallelism. But don't reflexively
+     round-trip a sub-agent for every read: a single small file or a one-shot grep with a few hits is
+     cheaper read inline than dispatched — delegate when the exploration volume clearly dwarfs the
+     answer needed back, not on principle.
   2. **Work whose unit must be its OWN argus session** — separate worktree / its own PR / long-running
      / its own sandbox? → **hera**. Then split by dependency:
-     - Units have **dependencies among them** (one needs another's output, or a required ordering)? →
-       **plan-DAG**: load the `hera-plan` skill, author planned nodes + blocking edges, let the gater
-       run them in dependency order. *Decide this yourself when the dependency is obvious — don't ask
-       the human.* **Internal dependencies are the clean signal to plan a DAG** rather than spawn ad hoc.
-     - Units are **independent** (no ordering)? → just `hera_spawn_worker` them in parallel; no DAG.
+      - Units have **dependencies among them** (one needs another's output, or a required ordering)? →
+        **plan-DAG**: load the `hera-plan` skill, author planned nodes + blocking edges, let the gater
+        run them in dependency order. *Decide this yourself when the dependency is obvious — don't ask
+        the human.* **Internal dependencies are the clean signal to plan a DAG** rather than spawn ad hoc.
+      - Units are **independent** (no ordering)? → just `hera_spawn_worker` them in parallel; no DAG.
   3. **Ask the human only** when it's genuinely ambiguous whether the work warrants multi-session
      orchestration at all — never for the routine dependency call above.
+  4. **Prefer a hera worker over a native sub-agent for anything that must survive a coordinator
+     recycle.** Only a hera-tracked session comes back cleanly after a recycle (self-service, or the
+     coord-hook's automatic forced recycle past 1.5x token budget, which has no idle gate at all) — a
+     native sub-agent is just an in-process tool call invisible to the daemon, and gets killed along
+     with the rest of your session with no trace. Don't call
+     `hera_status(status="idle", request_recycle=true)` while a native sub-agent you dispatched is
+     still running: self-service recycle only defers until you go idle, and a backgrounded sub-agent
+     produces zero output while it works, so you look idle when you aren't — requesting recycle early
+     kills its work mid-flight. If you must hand off or record status while one is still in flight,
+     say so in `handoff_note` so a human reviewing status doesn't force-recycle blindly.
 - **This task holds 2+ bindings?** Pass `orchestrator=` on EVERY tool call.
 - **Got a doorbell?** Call `hera_inbox(cwd=$PWD)` immediately — the content is in the inbox, not the
   doorbell line.
@@ -211,6 +270,9 @@ or using in-session sub-agents.
   still needed; do not create a background timer or shell sleep loop.
 - **Want whole-team state?** `hera_tree_updates(cwd=$PWD)`, then `hera_get_messages(ids=[…])` for the
   ones worth reading.
+- **A role looks stuck (no progress, especially after a session-supervisor restart)?** Don't spawn a
+  duplicate worker on a hunch — try `hera_revive(cwd=$PWD, role_name=<name>)` first. It's a safe,
+  idle+not-blocked-gated no-op if the role turns out to be fine, busy, or waiting on a question.
 - **How completion flows back:** a worker finishing sends a closing `hera_send(status="done", …)` — the
   synchronous status apply rolls its task to `in_review` + `ready_to_close`, visible in the rail.
   **This is the worker's self-report, NOT task closure.** Once you (the coordinator) have independently
@@ -271,9 +333,9 @@ in the doorbell, returned by `hera_tree_updates`, and stored permanently.
 You are a coordinator-to-be in your argus sandbox:
 
 1. `hera_new_orchestrator(cwd=$PWD, name="checkout-revamp", coordinator_role_name="coord", prompt="Coordinate the checkout revamp")`.
-2. Spawn workers, each with the FULL spec baked in and an explicit base branch:
-   - `hera_spawn_worker(cwd=$PWD, role_name="cart-api", branch="argus/<base>", prompt="<complete cart-API spec…>")`
-   - `hera_spawn_worker(cwd=$PWD, role_name="checkout-ui", branch="argus/<base>", prompt="<complete checkout-UI spec…>")`
+2. Spawn workers, each with the FULL spec baked in, an explicit base branch, and an archetype:
+   - `hera_spawn_worker(cwd=$PWD, role_name="cart-api", branch="argus/<base>", archetype="code_slice", prompt="<complete cart-API spec…>")`
+   - `hera_spawn_worker(cwd=$PWD, role_name="checkout-ui", branch="argus/<base>", archetype="code_slice", prompt="<complete checkout-UI spec…>")`
 3. Poll progress without flooding context: `hera_tree_updates(cwd=$PWD)` → scan TLDRs →
    `hera_get_messages(cwd=$PWD, ids=[…])` for the interesting ones.
 4. When a worker reports `done` (its task rolls to in_review + ready_to_close in the rail), review its
@@ -285,7 +347,8 @@ You are a coordinator-to-be in your argus sandbox:
 
 You opened in a born-bound worker terminal:
 
-1. `hera_join(cwd=$PWD)` → read your role name, mission (role prompt), and unread count.
+1. `hera_join(cwd=$PWD)` → confirm your role name and unread count; your mission is the task prompt you
+   were born with.
 2. `hera_status(cwd=$PWD, status="working")`.
 3. Do the work in your worktree. If you hit a fork that needs the coordinator's call:
    `hera_send(cwd=$PWD, status="working", body="<question + context>", tldr="Need decision: X vs Y for the cart schema")`
@@ -336,3 +399,47 @@ tools:
 
 These are orthogonal — hera does not wrap them and they do not wrap hera. Pick per op: iris when an action
 touches the host, plannotator when it's a review surface, hera when it's about roles or messaging.
+
+## 9. Diligence-profile awareness (`ARGUS_PROFILE` / `ARGUS_ARCHETYPE`)
+
+Argus can route model choice **per archetype** via *diligence profiles* — named, on-disk presets that
+map an archetype (what kind of job a task is) to backend-keyed model choices plus effort/window
+metadata. Resolution happens **daemon-side at spawn**, outside your sandbox; the result is handed to
+you as **environment variables**, not files. You do not load or parse any profile — you only read the
+env.
+
+**What you can read (when set):**
+
+- **`ARGUS_ARCHETYPE`** — your task's archetype: one of `brainstorm`, `orchestrator`, `big_build`,
+  `code_slice`, `bug_fix`, `review`, `security_review`, `synthesis`, `spec_audit`, `ci_loop`, `verify`,
+  `recovery`, `docs`. It tells you *what kind of job this is* — a `code_slice` worker should behave like a
+  focused implementer, a `review` worker like a reviewer, a `ci_loop` worker like a mechanical
+  green-the-build loop. Treat it as a hint about the diligence expected of you, not a hard contract.
+- **`ARGUS_PROFILE`** — the name of the resolved profile that drove the choice (the project binding or
+  the `default` fallback; e.g. `default`, `lean`, `customer_grade`).
+- **`ARGUS_MODEL`** — the model the profile selected for your archetype.
+
+**Critical: all three are exported together or not at all, and may be absent even when you have an
+archetype.** They are exported **only** when a resolved profile actively contributed a backend-valid
+model. Resolution fails open — leaving all three unset — when a valid explicit model override
+bypassed profile resolution, neither the project binding nor the `default` fallback yields a usable
+profile, your archetype is unmapped, or the profile's model is invalid for your backend. So read
+`ARGUS_ARCHETYPE` if present for a behavior hint, but never assume it exists and never block on it.
+
+**You do not consult profile files.** Reading `~/.argus/profiles/` from inside the sandbox can `EPERM`;
+that is exactly why resolution runs daemon-side and arrives by env. If you need the full current
+profile body, call `mcp__argus__profile_resolve(cwd=$PWD)`; if you spawn workers yourself, pass
+`archetype=` on `hera_spawn_worker` (and on plan-DAG nodes — see the `hera-plan` skill) to set *their*
+archetype; you do not set your own.
+
+Let the archetype resolve the model: omit `model` on `hera_spawn_worker` whenever you pass `archetype=`,
+so the profile's per-archetype tier actually takes effect (precedence is a valid `task.Model` override →
+`profile[archetype].models[backend]` → backend default). Only pass an explicit `model` alongside
+`archetype=` when you deliberately want to override that tier for this one spawn — otherwise you
+silently defeat the archetype's whole purpose (e.g. a `ci_loop` worker spawned with `model="opus"`
+throws away the cheap tier `ci_loop` exists to select and just runs at full price with no signal
+anything went wrong).
+
+**Reviewer panels are a separate path.** A profile may carry a `[panel]` block for in-session review
+finders; `archetype=` does not assemble that panel. Load the `hera-spawn-review` skill when the user
+actually asks for a configured reviewer panel.

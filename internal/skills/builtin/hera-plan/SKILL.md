@@ -19,6 +19,12 @@ coordinator binding and know the base hera model (roles, bindings, messaging, `h
 status/tree) from the `hera` skill — **load that first if you haven't.** Every tool here takes
 `cwd` (pass `cwd=$PWD`) and `orchestrator` is required when your task holds 2+ live bindings.
 
+Like the base `hera` skill, this only applies once you already hold that coordinator binding — merely
+running inside an argus sandbox is not a reason to author a plan-DAG. A bare argus task with no
+coordinator binding should stay solo (or, at most, offer hera as an option to the human) rather than
+reach for this skill. If you genuinely need to start from cold, create or claim the coordinator
+binding first; only then author under it.
+
 **Plan nodes land under your EXISTING orchestrator – the one you already coordinate.** Authoring a
 plan-DAG is *not* a bootstrap step: you do **not** call `hera_new_orchestrator` to hold your plan.
 The `hera_plan` / `hera_plan_node` verbs add nodes to the orchestrator you already coordinate, and
@@ -61,12 +67,37 @@ would produce) according to this contract:
 - A blocker whose session **ended without ever reaching `done`** (crash, or it gave up / reported
   `failed`) **HOLDS** the dependent (no materialize) and pings you. No worker is ever spawned-and-
   parked behind dead or unfinished work.
+- A never-started planned blocker is pending, not failed: it simply keeps the dependent planned
+  without a hold-ping. This distinction keeps transitive DAGs deeper than two levels working.
 - A node with **no blockers** is a root and materializes on the next tick.
 - A cancelled planned node is treated as satisfied (non-blocking) — its dependents proceed.
 
 ## Authoring verbs
 
-- **`hera_plan_node(cwd, name, prompt, [orchestrator], [project], [kind], [goal])`** — create ONE
+Before authoring nodes, **call `mcp__argus__profile_resolve(cwd=$PWD)` once** to inspect the
+project's resolved profile, configured archetype entries, and backend-keyed model choices. Then
+**assign `archetype` to every node** (including a subcoord node, typically as `orchestrator`). A plan
+node stores that value and copies it onto the task when the gater materializes it, so spawn-side model
+resolution can select the matching profile tier. An omitted plan-node archetype stays empty and
+silently falls open to the backend default; unlike `hera_spawn_worker`, plan-node authoring does not
+default it to `code_slice`.
+
+If `profile_resolve` returns `resolved: false`, do not stop the plan: use the stage-shape heuristic
+below and let each task's model resolution fail open. Common shapes are:
+
+| Stage Shape | Archetype | Notes |
+| --- | --- | --- |
+| Ordinary implementation / feature build | `code_slice` | Default for most worker nodes |
+| Broad or risky change spanning many units | `big_build` | High-coupling implementation |
+| Focused defect fix | `bug_fix` | Localized diagnosis and correction |
+| Review / audit / PR review pass | `review` | Code review and safety check |
+| CI-fix loop / debugging pipeline | `ci_loop` | Fixing failing tests or deployments |
+| Specification coverage / requirements audit | `spec_audit` | Spec-first validation, coverage analysis |
+| Documentation-only stage | `docs` | Writing docs, updating guides |
+| Security-sensitive work | `security_review` | Security audit, compliance verification |
+| Sub-coordinator stage | `orchestrator` | A `kind=subcoord` node that dispatches its own team |
+
+- **`hera_plan_node(cwd, name, prompt, [orchestrator], [project], [kind], [goal], [archetype])`** — create ONE
   planned node. **Name nodes by a `<stage><member>` short-id — number = serial stage, letter =
   parallel member (`1a`, `2a`, `2b`, `3a`)** — optionally with a *terse* suffix (`1a-seed`,
   `2a-alpha`). This is **not cosmetic**: the rail/DAG renders one box per node, and long descriptive
@@ -79,6 +110,10 @@ would produce) according to this contract:
     nodes" below.
   - `goal` — **required for `kind=subcoord`** (used instead of `prompt`): the objective handed to the
     sub-coordinator. You hand only the goal — not its child orchestrator name or its sub-plan.
+  - `archetype` — the node's **diligence archetype** (e.g. `code_slice`, `review`, `ci_loop`); persisted
+    on the planned node and copied onto the task when the gater materializes it. When profile model
+    resolution succeeds, the worker is born with the matching model and `ARGUS_ARCHETYPE` env. See §9
+    of the base `hera` skill.
 
 - **`hera_block(cwd, blocked, blocker, [orchestrator])`** — add a blocking edge: `blocked` waits on
   `blocker` reaching role-status `done` before it materializes. Both roles must be in your
@@ -86,7 +121,8 @@ would produce) according to this contract:
   (a coordinator never reaches `done`, so it would be permanently unsatisfiable).
 
 - **`hera_plan(cwd, nodes, [edges], [orchestrator])`** — submit a WHOLE graph in one
-  **transactional** call: `nodes` = `[{name, prompt, [project], [kind], [goal]}]`, `edges` =
+  **transactional** call: `nodes` =
+  `[{name, prompt, [project], [kind], [goal], [archetype]}]`, `edges` =
   `[{blocked, blocker}]` referencing nodes by name (or existing roles). **All-or-nothing** — any
   cycle / cross-orchestrator / coordinator-blocker / validation error rolls back the entire graph
   (no orphan nodes). The way to lay out a multi-stage plan at once. **Name every node by its
@@ -98,7 +134,9 @@ Update the graph as reality diverges from the plan; don't abandon it.
 
 - **`hera_plan_node_update(cwd, name, [prompt], [project], [orchestrator])`** — edit a **planned**
   node's prompt and/or project. Rejected once the node has materialized (the prompt was already
-  delivered). Use when you discover the spec needs revision before the node spawns.
+  delivered). Use when you discover the spec needs revision before the node spawns. This verb does
+  not change `archetype`; if that is wrong before materialization, cancel the planned node and create
+  a replacement with the correct value.
 - **`hera_unblock(cwd, blocked, blocker, [orchestrator])`** — drop one blocking edge. Idempotent. To
   re-point: `hera_unblock` (old blocker) then `hera_block` (new blocker).
 - **`hera_plan_node_cancel(cwd, name, [orchestrator])`** — cancel a planned node: it never
@@ -113,15 +151,20 @@ superseded node. A worker re-engaging on rework after `done`/`failed` reports `w
 ## Materialization + branch-stacking (the gater drives this, not you)
 
 - **Non-root nodes stack automatically**: a materializing node is branched off its most-recently-
-  `done` blocker's branch, so a *linear* chain produces cleanly stacked PRs.
-- **Fan-in stacks on ONE blocker, not a merge of all.** A node with multiple blockers bases off the
-  *single* most-recently-`done` blocker's branch — it does **not** merge the others in. In a diamond
-  (`3a` blocked by both `2a` and `2b`), `3a` starts from whichever of `2a`/`2b` materialized later
-  and is **missing the other's work** unless those two were themselves stacked. For true fan-in,
-  either keep the stages a linear chain, or have the fan-in node merge the branches itself via a
-  self-rebase step (see below). The gater automatically adds a `Your blockers' branches` section to
-  the fan-in worker's initial prompt, listing every blocker branch and marking the selected base, so
-  the worker can integrate its siblings without asking the coordinator to relay branch names.
+  bound `done` blocker's branch, so a *linear* chain produces cleanly stacked PRs.
+- **Fan-in stacks on ONE blocker, not a merge of all.** For an ordinary worker node with multiple
+  blockers, the node bases off the *single* most-recently-bound `done` blocker's branch — it does
+  **not** merge the others in. In a diamond (`3a` blocked by both `2a` and `2b`), `3a` starts from
+  whichever of `2a`/`2b` materialized later and is **missing the other's work** unless those two were
+  themselves stacked. For true fan-in, either keep the stages a linear chain, or have the fan-in
+  worker merge the branches itself via a self-rebase step (see below). The gater automatically adds a
+  `Your blockers' branches` section to an ordinary fan-in worker's initial prompt, listing every
+  blocker branch (or `branch unavailable`) and marking the selected base, so the worker can integrate
+  its siblings without asking the coordinator to relay branch names. When a base branch resolves, the
+  coordinator also receives a one-shot notice naming the selected base and the sibling branches that
+  were not merged. A `kind=subcoord` node still participates in blocker gating and base-branch
+  selection, but its materialization path intentionally skips these ordinary-worker fan-in context,
+  notice, and blocker auto-accept hooks; its child plan owns that lifecycle.
 - **`done` gates materialization, but `done` ≠ merged/integrated.** A worker reaching `done` rolls
   its task to `in_review` (*not* merged) — so the gater materializes the dependent the instant the
   blocker *reports* done, **before** you've reviewed or merged anything. The dependent stacks on the
@@ -132,11 +175,11 @@ superseded node. A worker re-engaging on rework after `done`/`failed` reports `w
 - **Root nodes** (no blockers) resolve their base branch as: explicit orchestrator `base_branch` →
   the coordinator role's bound-task branch → the project default. Root a plan on your feature branch
   by passing `base_branch` to `hera_new_orchestrator`.
-- **Respond to check-ins promptly.** Each node check-ins on materialization via `hera_send`; pull it
-  from `hera_inbox` and reply (e.g. `"go"`). A node HELD behind a genuinely failed blocker pings you
-  — `hera_unblock` the edge, `hera_plan_node_cancel` the held node, or `hera_spawn_worker` a
-  replacement. (Coordinator-as-blocker is rejected at authoring time, so the graph can't wedge on a
-  never-`done` coordinator.)
+- **Respond to check-ins promptly.** Each node checks in on materialization via `hera_send`; pull it
+  with blocking `hera_inbox(timeout_seconds=120)` and reply (e.g. `"go"`). A node HELD behind a
+  genuinely failed blocker pings you — `hera_unblock` the edge,
+  `hera_plan_node_cancel` the held node, or `hera_spawn_worker` a replacement. (Coordinator-as-blocker
+  is rejected at authoring time, so the graph can't wedge on a never-`done` coordinator.)
 
 ## Self-defending node prompts (the standard mitigation)
 
@@ -162,9 +205,11 @@ worker promotion (a worker calling `hera_new_orchestrator` on itself mid-task): 
 sub-team as a plan node up front, and the gater materializes it as a *distinct coordinator agent*
 when its blockers finish.
 
-- It occupies the parent DAG exactly like any node (a worker role in **your** orchestrator) — blocking
-  edges, gating, hold/ping, and branch-stacking all treat it identically; its worker-role `done` gates
-  the parent's dependents.
+- It occupies the parent DAG as a worker role in **your** orchestrator: blocking edges, readiness
+  gating, and base-branch selection apply normally, and its role-status `done` gates the parent's
+  dependents. The ordinary-worker fan-in context/notice and automatic blocker-accept hooks do not
+  apply to the subcoord materialization path; coordinate closure through its child plan and normal
+  role messaging.
 - At materialization it becomes **one new agent** (own task + worktree) that is simultaneously a
   worker in your orchestrator AND the coordinator of a freshly-created, auto-named child orchestrator
   — so it nests under you in the rail/tree via the multi-binding bridge, never sharing your task.
@@ -181,21 +226,22 @@ The work has a seed, a parallel fan-out, and a fan-in:
    your plan.** If you are already a coordinator (you bootstrapped or claimed an orchestrator earlier
    this session – the common case when you reach this skill), skip straight to step 2: the nodes
    become workers in your current orchestrator, materialized directly beneath you by the gater. Only
-   call `hera_new_orchestrator(cwd=$PWD, name="<feature>", coordinator_role_name="coord")` in the rare
-   cold-start case where you do **not** yet hold ANY coordinator binding; calling it when you already
-   coordinate one creates a redundant second coordinator that wrongly holds your DAG. (To root a
-   *fresh* orchestrator's plan on a feature branch, pass `base_branch="argus/<your-branch>"`; an
-   existing orchestrator already carries its own base – see the root-node branch resolution above.)
-   Author your own stages directly as plain worker nodes; reach for `kind=subcoord` only to hand a
-   genuinely distinct sub-goal to a separate sub-team.
-2. Submit the whole graph transactionally — short-id names, full spec baked into each prompt:
+   in the rare cold-start case where you do **not** yet hold ANY coordinator binding, first call
+   `hera_new_orchestrator(cwd=$PWD, name="<feature>", coordinator_role_name="coord")`, then return to
+   this workflow; calling it when you already coordinate one creates a redundant second coordinator
+   that wrongly holds your DAG. (To root a *fresh* orchestrator's plan on a feature branch, pass
+   `base_branch="argus/<your-branch>"`; an existing orchestrator already carries its own base – see the
+   root-node branch resolution above.) Author your own stages directly as plain worker nodes; reach for
+   `kind=subcoord` only to hand a genuinely distinct sub-goal to a separate sub-team.
+2. Submit the whole graph transactionally — short-id names, full spec baked into each prompt,
+   and `archetype` assigned per the heuristic above:
    ```
    hera_plan(cwd=$PWD,
      nodes=[
-       {name:"1a-seed",  prompt:"<complete spec…>"},
-       {name:"2a-alpha", prompt:"<complete spec…>"},
-       {name:"2b-beta",  prompt:"<complete spec…>"},
-       {name:"3a-final", prompt:"<complete spec…>"}],
+       {name:"1a-seed",  prompt:"<complete spec…>", archetype:"code_slice"},
+       {name:"2a-alpha", prompt:"<complete spec…>", archetype:"code_slice"},
+       {name:"2b-beta",  prompt:"<complete spec…>", archetype:"code_slice"},
+       {name:"3a-final", prompt:"<complete spec…>", archetype:"code_slice"}],
      edges=[
        {blocked:"2a-alpha", blocker:"1a-seed"},
        {blocked:"2b-beta",  blocker:"1a-seed"},
@@ -208,8 +254,9 @@ The work has a seed, a parallel fan-out, and a fan-in:
    auto-merge the other half. Its initial prompt automatically lists both blocker branches and marks
    the selected base; instruct it to self-rebase the other listed branch so it actually has both
    halves before it builds.
-3. Watch it fill in the second-tab plan-DAG (planned `○` → live). Respond to each node's check-in:
-   `hera_inbox(cwd=$PWD)` on the doorbell → reply `hera_send(cwd=$PWD, to="<node>", body="go", tldr="go")`.
+3. Watch it fill in the second-tab plan-DAG (planned `○` → live). Respond to each node's check-in
+   with `hera_inbox(cwd=$PWD, timeout_seconds=120)` → reply
+   `hera_send(cwd=$PWD, to="<node>", body="go", tldr="go")`.
 4. If a node is HELD behind a genuinely failed blocker, the gater pings you — `hera_unblock`,
    `hera_plan_node_cancel`, or `hera_spawn_worker` a replacement.
 5. **Reconcile as work unfolds** — `hera_plan_node_update` a changed scope before it materializes,
@@ -222,9 +269,14 @@ The work has a seed, a parallel fan-out, and a fan-in:
   planned; a session that ended without `done` HOLDS its dependents and pings you. Materialization
   fires the instant a blocker *reports* done, which is before your review/merge — see the
   branch-stacking and self-defending-prompts sections.
+- **A never-started blocker is pending, not failed.** Transitive planned nodes must not trigger a
+  false hold-ping merely because an upstream planned node has not materialized yet.
+- **Assign an archetype to every plan node.** Omission leaves the planned role's archetype empty and
+  skips profile model routing; `hera_plan_node_update` cannot repair it, so cancel/recreate before
+  materialization if the choice was wrong.
 - **Fan-in does not merge — it picks one branch.** A multi-blocker node bases off only the
-  latest-`done` blocker's branch. Its initial prompt lists all blocker branches and marks that base;
-  self-rebase the others in, or keep the stages linear.
+  most-recently-bound `done` blocker's branch. Its initial prompt lists all blocker branches and marks
+  that base; self-rebase the others in, or keep the stages linear.
 - **Mutation verbs only work pre-materialization.** `hera_plan_node_update` / `hera_plan_node_cancel`
   are rejected once a node has a binding — at that point manage the running worker via the task
   lifecycle, not the plan.

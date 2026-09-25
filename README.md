@@ -622,7 +622,7 @@ Argus runs an MCP server on port 7742 by default (or the next available port) an
 | `task_set_result`      | Persist an opaque JSON result blob the orchestrator can read (PR URL, milestone, failure reason). Pass `cwd` or `id` plus `result`. Up to 64 KiB.                  |
 | `task_recycle`         | Reset the task's context window while continuing the same work: kills the current session and starts a fresh, empty-context one on the identical task/worktree/branch, seeded with `handoff_note` (required, ≤16 KiB) plus the original prompt as background. Deferred until the calling session goes idle. Pass `cwd` or `id`.                     |
 
-The bundled skills (`internal/skills/builtin/{argus-archive,argus-complete,argus-schedule,hera,hera-plan,argus-recycle}`, auto-available in every spawned session — see [Agent-facing skills](#agent-facing-skills)) let an agent finalize, schedule, coordinate, and reset its own work via `cwd` resolution. Completing and archiving are independent axes.
+The ten bundled skills (`argus-archive`, `argus-complete`, `argus-recycle`, `argus-resolve-model`, `argus-schedule`, `hera`, `hera-plan`, `hera-review`, `hera-review-test-adversary`, `hera-spawn-review`) are auto-available in every spawned session — see [Agent-facing skills](#agent-facing-skills). They let an agent finalize, schedule, coordinate, review, dispatch, and reset its own work via `cwd` resolution. Completing and archiving are independent axes.
 
 **Inter-Task Messaging** (peer-to-peer between live or paused tasks):
 
@@ -702,8 +702,10 @@ Configuring a backend in Settings makes these tools appear on the very next `too
 
 A Claude session inside an argus worktree sees the `mcp__argus__*` tool names but not when to reach for them or how they compose. Argus ships that orientation automatically — no install step, nothing to symlink or append:
 
-- **Skill bodies** (`internal/skills/builtin/{argus-archive,argus-complete,argus-schedule,hera,hera-plan,argus-recycle}/SKILL.md`, embedded via `go:embed`) are materialized into `~/.argus/skills/.claude/skills/<name>` and reach every spawned Claude backend session via an appended `--add-dir` flag — a documented exception where Claude Code loads `.claude/skills/` from an `--add-dir` root instead of just granting file access.
+- **Skill bodies** — `argus-archive`, `argus-complete`, `argus-recycle`, `argus-resolve-model`, `argus-schedule`, `hera`, `hera-plan`, `hera-review`, `hera-review-test-adversary`, and `hera-spawn-review` are embedded from their sole in-repo sources at `internal/skills/builtin/<name>/SKILL.md` via `go:embed`. They are materialized into `~/.argus/skills/.claude/skills/<name>` and reach every spawned Claude backend session via an appended `--add-dir` flag — a documented exception where Claude Code loads `.claude/skills/` from an `--add-dir` root instead of just granting file access.
 - **Routing content** (`internal/routing/builtin/{hera,argus-tasks}.md`, embedded the same way) — orientation text that points the agent at the skills above — is materialized and injected into every spawned Claude backend session via an appended `--append-system-prompt-file` flag.
+
+`internal/skills/builtin/` is the sole in-repo source for Argus builtins; none is mirrored under `.agents/skills/`, which remains available for project-only skills such as `update-agent-models`. `hera-spawn-review` resolves configured review and lens instructions by exact ID from the child session's native skill catalog before spawning any finder; a project-scoped same-ID skill remains an intentional override when the backend's catalog selects it.
 
 Both are unconditional across every session kind (coordinator, worker, freelance, plain solo task) and self-gating at read time — each section checks `ARGUS_TASK_ID`/`$PWD` sandbox residency, so injecting them into a non-argus spawn is inert. Materialization failure is logged and the launch continues without them rather than blocking. See `internal/skills/builtin.go` and `internal/routing/routing.go`.
 

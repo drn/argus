@@ -161,7 +161,3 @@ After every create or update, refetch the row and report `next_run_at`. If `last
 - HTTP 5xx from the API → show the response body, stop. Do not loop.
 
 Do not retry destructive or fire-causing calls automatically. One attempt per user instruction.
-
-## Skill mirroring (author note)
-
-This skill has a twin at `~/.dots/agents/skills/argus-schedule/SKILL.md` per the user's skill-mirroring preference. The argus repo copy is canonical; the dotfiles copy makes the slash command reachable from any project. Keep the two files byte-identical.
