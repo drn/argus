@@ -77,7 +77,7 @@ The Archive section SHALL auto-expand when the cursor enters it and auto-collaps
 
 ### Requirement: Substring filter narrows visible tasks
 
-Pressing `/` SHALL activate a filter input mode. Typed text SHALL filter tasks by case-insensitive substring; whitespace splits the text into terms, and every term MUST match either the task name or its project name for the task to remain visible. While a filter is active, all matching projects and sections SHALL be shown expanded regardless of normal collapse state. Escape SHALL clear the filter; Enter SHALL confirm the filter (keeping the text but exiting input mode).
+Pressing `/` SHALL activate a filter input mode. Typed text SHALL filter tasks by case-insensitive substring; whitespace splits the text into terms, and every term MUST match the task's name, its project name, or (when the task has a nonzero recorded agent PID) the decimal string of that PID, for the task to remain visible. While a filter is active, all matching projects and sections SHALL be shown expanded regardless of normal collapse state. Escape SHALL clear the filter; Enter SHALL confirm the filter (keeping the text but exiting input mode).
 
 #### Scenario: Filter matches name or project per term
 
@@ -88,6 +88,16 @@ Pressing `/` SHALL activate a filter input mode. Typed text SHALL filter tasks b
 
 - **WHEN** the filter text differs only in letter case from a task name or project
 - **THEN** the task still matches
+
+#### Scenario: Filter matches a PID substring
+
+- **WHEN** the filter text is "7557" and a task has a recorded agent PID of 17557
+- **THEN** the task remains visible
+
+#### Scenario: A never-started task does not match on PID
+
+- **WHEN** the filter text is "0" and a task has no recorded agent PID (zero)
+- **THEN** that task does not match on the strength of the PID field alone
 
 #### Scenario: Escape clears an active filter
 
@@ -158,7 +168,7 @@ Each project header SHALL display a single aggregated status glyph computed from
 
 ### Requirement: Task detail panel
 
-The detail panel SHALL display metadata for the selected task: name, status (annotated "(running)" or "(idle)" for in-progress), and any present fields among project, branch, backend, sandbox flag, worktree (truncated to fit), created date, elapsed time, and prompt. When no task is selected, it SHALL display "No task selected" and SHALL not error.
+The detail panel SHALL display metadata for the selected task: name, status (annotated "(running)" or "(idle)" for in-progress), and any present fields among project, branch, backend, sandbox flag, PID, worktree (truncated to fit), created date, elapsed time, and prompt. The PID field SHALL be shown only when the task has a nonzero recorded agent PID, and its value is the last PID recorded for that task's most recent session — it is not itself a liveness indicator (the running/idle status annotation remains the source of truth for whether the process is alive). When no task is selected, it SHALL display "No task selected" and SHALL not error.
 
 #### Scenario: No task selected shows placeholder
 
@@ -174,6 +184,21 @@ The detail panel SHALL display metadata for the selected task: name, status (ann
 
 - **WHEN** the selected task has an empty branch, backend, or worktree
 - **THEN** that field's row is not rendered
+
+#### Scenario: PID row shown when known
+
+- **WHEN** the selected task has a nonzero agent PID
+- **THEN** the panel shows a "PID" row with that value
+
+#### Scenario: PID row omitted when never started
+
+- **WHEN** the selected task has never been started and has no recorded agent PID
+- **THEN** the panel does not render a PID row
+
+#### Scenario: A stale PID from an exited session is still shown
+
+- **WHEN** the selected task's session has exited but its last recorded agent PID is still nonzero
+- **THEN** the panel still shows that PID value, alongside the "(idle)" or non-in-progress status that indicates the process is not necessarily still running
 
 ### Requirement: Task output preview panel
 

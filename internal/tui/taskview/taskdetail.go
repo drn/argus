@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,8 +25,8 @@ type TaskDetailPanel struct {
 	// OnBranchChange fires when Draw() will paint a different rendering
 	// branch than the previous frame: the task==nil "No task selected"
 	// swap, swapping to a different task (different conditional rows
-	// render: Project/Branch/Backend/Worktree/Created/Elapsed/Prompt are
-	// each gated on field presence), status string width change (e.g.
+	// render: Project/Branch/Backend/PID/Worktree/Created/Elapsed/Prompt
+	// are each gated on field presence), status string width change (e.g.
 	// "In Progress (running)" → "In Progress (idle)"), running flag flip,
 	// and prompt text changes (different number of wrapped lines).
 	// App wires this to forceRedraw, which is now log-only (does NOT
@@ -103,6 +104,8 @@ func (td *TaskDetailPanel) taskShape() uint64 {
 	_, _ = h.Write([]byte{0})
 	_, _ = io.WriteString(h, td.task.Backend)
 	_, _ = h.Write([]byte{0})
+	_, _ = io.WriteString(h, strconv.Itoa(td.task.AgentPID))
+	_, _ = h.Write([]byte{0})
 	_, _ = io.WriteString(h, td.task.Worktree)
 	_, _ = h.Write([]byte{0})
 	// Hashing the full Prompt is correct (different prompt text = different
@@ -166,6 +169,12 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 	// Backend
 	if t.Backend != "" {
 		row = td.drawField(screen, inner.X, row, inner.W, "Backend", t.Backend, theme.StyleNormal)
+	}
+
+	// PID — last recorded agent PID, not itself a liveness check; the
+	// Status "(running)"/"(idle)" annotation above remains authoritative.
+	if t.AgentPID != 0 {
+		row = td.drawField(screen, inner.X, row, inner.W, "PID", strconv.Itoa(t.AgentPID), theme.StyleNormal)
 	}
 
 	// Sandbox

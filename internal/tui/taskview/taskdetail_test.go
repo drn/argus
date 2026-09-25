@@ -114,6 +114,94 @@ func TestTaskDetailPanel_SandboxIndicator(t *testing.T) {
 	})
 }
 
+func TestTaskDetailPanel_PIDIndicator(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(40, 20)
+
+	td := NewTaskDetailPanel()
+	td.SetRect(1, 1, 38, 18)
+
+	task := &model.Task{
+		ID:      "test-pid",
+		Name:    "pid-test",
+		Status:  model.StatusPending,
+		Project: "argus",
+		Backend: "claude",
+	}
+
+	readScreen := func() string {
+		var buf strings.Builder
+		w, h := screen.Size()
+		for row := 0; row < h; row++ {
+			for col := 0; col < w; col++ {
+				str, _, _ := screen.Get(col, row)
+				buf.WriteString(str)
+			}
+			buf.WriteRune('\n')
+		}
+		return buf.String()
+	}
+
+	t.Run("no PID recorded", func(t *testing.T) {
+		task.AgentPID = 0
+		td.SetTask(task, false)
+		td.Draw(screen)
+		content := readScreen()
+		if strings.Contains(content, "PID") {
+			t.Error("expected no PID row when AgentPID is 0")
+		}
+	})
+
+	t.Run("PID recorded", func(t *testing.T) {
+		task.AgentPID = 17557
+		td.SetTask(task, false)
+		td.Draw(screen)
+		content := readScreen()
+		testutil.Contains(t, content, "PID")
+		testutil.Contains(t, content, "17557")
+	})
+
+	t.Run("stale PID kept for a non-running task", func(t *testing.T) {
+		task.Status = model.StatusInReview
+		task.AgentPID = 17557
+		td.SetTask(task, false)
+		td.Draw(screen)
+		content := readScreen()
+		testutil.Contains(t, content, "PID")
+		testutil.Contains(t, content, "17557")
+	})
+}
+
+func TestTaskDetailPanel_TaskShapeFiresOnPIDChange(t *testing.T) {
+	td := NewTaskDetailPanel()
+
+	task := &model.Task{ID: "t1", Name: "n", Status: model.StatusInProgress, AgentPID: 100}
+
+	fired := 0
+	td.OnBranchChange = func() { fired++ }
+
+	td.SetTask(task, true) // first call always fires (sentinel lastShape)
+	if fired != 1 {
+		t.Fatalf("expected first SetTask to fire OnBranchChange, fired=%d", fired)
+	}
+
+	// Same PID, same everything else — no re-fire.
+	td.SetTask(task, true)
+	if fired != 1 {
+		t.Fatalf("expected no re-fire when nothing changed, fired=%d", fired)
+	}
+
+	// PID changes (e.g. task restarted under a new PID) — must fire.
+	task.AgentPID = 200
+	td.SetTask(task, true)
+	if fired != 2 {
+		t.Fatalf("expected OnBranchChange to fire when AgentPID changes, fired=%d", fired)
+	}
+}
+
 func TestTaskDetailPanel_WrapText(t *testing.T) {
 	td := NewTaskDetailPanel()
 	lines := td.wrapText("the quick brown fox jumps over the lazy dog", 15)
