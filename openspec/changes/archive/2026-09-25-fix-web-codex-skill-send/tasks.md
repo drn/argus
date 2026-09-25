@@ -23,5 +23,5 @@
 
 ## 3. Ship
 
-- [ ] 3.1 Run `make test-cover`, then `make pre-pr` before any PR push/update.
-- [ ] 3.2 Archive this change on the change branch before merge.
+- [x] 3.1 Run `make test-cover`, then `make pre-pr` before any PR push/update.
+- [x] 3.2 Archive this change on the change branch before merge.

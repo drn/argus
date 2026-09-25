@@ -61,9 +61,9 @@ test.describe('compose bar', () => {
     const crReq = waitForCR(page);
     await page.locator('#compose-send').click();
     await crReq;
-    // Two separate writes: text first, then '\r' (CR, not \n — raw-terminal
-    // Enter key) alone. Gluing them into one POST trips the agent's paste
-    // heuristic and the prompt sits drafted-but-unsubmitted.
+    // Two separate writes: a complete paste first, then '\r' (CR, not \n —
+    // raw-terminal Enter key) alone. Gluing them into one POST trips the
+    // agent's paste heuristic and leaves the prompt unsubmitted.
     expect(posts).toEqual([paste('hello world'), '\r']);
 
     await expect(page.locator('#compose-input')).toHaveValue('');
