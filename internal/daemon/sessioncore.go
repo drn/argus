@@ -116,6 +116,7 @@ func (c *sessionCore) StartSession(req *StartReq, resp *StartResp) error {
 	}
 
 	cfg := c.cfgFn()
+	cfg.MCPPort = req.MCPPort
 	sess, err := c.runner.Start(task, cfg, req.Rows, req.Cols, req.Resume)
 	if err != nil {
 		slog.Error("rpc.StartSession failed", "task", req.TaskID, "err", err)
@@ -292,7 +293,9 @@ func (c *sessionCore) KickRerender(req *KickReq, resp *StatusResp) error {
 		Worktree:  req.Worktree,
 		Branch:    req.Branch,
 	}
-	if err := c.runner.KickRerender(task, c.cfgFn(), req.Rows, req.Cols); err != nil {
+	cfg := c.cfgFn()
+	cfg.MCPPort = req.MCPPort
+	if err := c.runner.KickRerender(task, cfg, req.Rows, req.Cols); err != nil {
 		slog.Error("rpc.KickRerender failed", "task", req.TaskID, "err", err)
 		resp.Error = err.Error()
 		return nil
@@ -319,7 +322,9 @@ func (c *sessionCore) Recycle(req *RecycleReq, resp *StatusResp) error {
 		Worktree:  req.Worktree,
 		Branch:    req.Branch,
 	}
-	if err := c.runner.Recycle(task, c.cfgFn(), req.Rows, req.Cols); err != nil {
+	cfg := c.cfgFn()
+	cfg.MCPPort = req.MCPPort
+	if err := c.runner.Recycle(task, cfg, req.Rows, req.Cols); err != nil {
 		slog.Error("rpc.Recycle failed", "task", req.TaskID, "err", err)
 		resp.Error = err.Error()
 		return nil

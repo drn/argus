@@ -1336,6 +1336,19 @@ func (d *Daemon) Serve(sockPath string) error {
 		go d.heraRecycleWatcher.Start()
 	}
 
+	// Remove Argus-owned user-wide entries from older builds. Task launches now
+	// receive the MCP URL directly, including when the KB server is disabled.
+	// Unit tests start ephemeral daemons but must not edit the developer's real
+	// Claude/Codex files. Production daemon startup performs this migration.
+	if !strings.HasSuffix(os.Args[0], ".test") {
+		if err := inject.RemoveGlobal(); err != nil {
+			slog.Error("remove global claude mcp", "err", err)
+		}
+		if err := injectcodex.RemoveGlobal(); err != nil {
+			slog.Error("remove global codex mcp", "err", err)
+		}
+	}
+
 	// Start MCP HTTP server and KB indexer (only when KB is enabled in settings).
 	if cfg.KB.Enabled {
 		mcpSrv := mcp.New(d.db, cfg.KB.HTTPPort, cfg.KB.MetisVaultPath)
@@ -1387,20 +1400,13 @@ func (d *Daemon) Serve(sockPath string) error {
 			d.mu.Lock()
 			d.mcpPort = actualPort
 			d.mu.Unlock()
+			if portSetter, ok := d.runner.(interface{ SetMCPPort(int) }); ok {
+				portSetter.SetMCPPort(actualPort)
+			}
 			slog.Info("mcp server listening", "port", actualPort)
 
-			// Inject MCP config into Claude Code and Codex.
+			// OpenCode retains its existing global MCP configuration behavior.
 			go func() {
-				if err := inject.InjectGlobal(actualPort); err != nil {
-					slog.Error("inject claude", "err", err)
-				} else {
-					slog.Info("inject claude", "port", actualPort)
-				}
-				if err := injectcodex.InjectGlobal(actualPort); err != nil {
-					slog.Error("inject codex", "err", err)
-				} else {
-					slog.Info("inject codex", "port", actualPort)
-				}
 				if home, err := os.UserHomeDir(); err != nil {
 					slog.Error("resolve old global opencode skill path", "err", err)
 				} else if err := injectopencode.RemoveManagedSkillsGlobal(skills.BuiltinSkillsDir(filepath.Join(home, ".argus", "skills"))); err != nil {
@@ -1410,9 +1416,6 @@ func (d *Daemon) Serve(sockPath string) error {
 					slog.Error("inject opencode", "err", err)
 				} else {
 					slog.Info("inject opencode", "port", actualPort)
-				}
-				if err := inject.SetClaudeProjectMcpTrust(); err != nil {
-					slog.Error("inject claude trust", "err", err)
 				}
 			}()
 		}

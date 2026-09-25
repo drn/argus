@@ -28,6 +28,39 @@ func InjectGlobal(port int) error {
 	return injectClaudeJSON(path, port)
 }
 
+// RemoveGlobal removes Argus-owned MCP entries left by older versions.
+// Missing files are left missing; unrelated settings and servers are kept.
+func RemoveGlobal() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("remove claude global: user home dir: %w", err)
+	}
+	path := filepath.Join(home, ".claude.json")
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return fmt.Errorf("remove claude global: cannot parse %s: %w", path, err)
+	}
+	servers, ok := data["mcpServers"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	_, hasArgus := servers[mcpServerName]
+	_, hasLegacy := servers[legacyMcpServerName]
+	if !hasArgus && !hasLegacy {
+		return nil
+	}
+	delete(servers, mcpServerName)
+	delete(servers, legacyMcpServerName)
+	return writeJSON(path, data)
+}
+
 // injectClaudeJSON mutates only the mcpServers.argus key in the given JSON
 // file, and removes the legacy mcpServers.argus-kb key if present. All other
 // keys are preserved verbatim.

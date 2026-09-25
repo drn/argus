@@ -89,7 +89,9 @@ const (
 	//     discovery hooks; OpenCode no longer needs a global skills entry.
 	//   - v10: BuildCmd adds --auto when launching OpenCode, including stored
 	//     commands and resumed sessions.
-	SupervisorSpawnSurface = 10
+	//   - v11: task launches pass the actual Argus MCP listener to Claude and
+	//     Codex as process-scoped CLI config, including supervisor starts.
+	SupervisorSpawnSurface = 11
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -98,7 +100,9 @@ const (
 	//   - v1: initial declaration (reduce-supervisor-skew-blast-radius, Layer 1).
 	//   - v2: the PTY session answers startup OSC 10/11 color queries before a
 	//     renderer attaches, so Codex can highlight its composer immediately.
-	SupervisorStreamSurface = 2
+	//   - v3: rerender and coordinator recycle carry the live MCP port through
+	//     the supervisor RPC so their replacement sessions keep Argus tools.
+	SupervisorStreamSurface = 3
 )
 
 // SurfaceVersion is a supervisor's declared executed-surface identity: the pair

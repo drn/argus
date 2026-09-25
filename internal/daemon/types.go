@@ -168,6 +168,7 @@ type PortsResp struct {
 // the caller's original task both carry the right values. Keep every field
 // consumed by agent.ResolveModel/resolveProfile represented here.
 type StartReq struct {
+	MCPPort   int
 	TaskID    string
 	SessionID string
 	Prompt    string
@@ -241,6 +242,7 @@ type ResizeReq struct {
 // kick-rerender rebuilds the command via agent.ResolveModel too, and must not
 // silently drop back to the backend default on a resumed session.
 type KickReq struct {
+	MCPPort   int
 	TaskID    string
 	SessionID string
 	Prompt    string
@@ -267,6 +269,7 @@ type KickReq struct {
 // recycle rebuilds the command via agent.ResolveModel too, and must not
 // silently drop back to the backend default on the fresh-context restart.
 type RecycleReq struct {
+	MCPPort   int
 	TaskID    string
 	Prompt    string
 	Project   string

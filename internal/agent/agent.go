@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/drn/argus/internal/backendtier"
@@ -802,6 +803,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	cmdStr := backend.Command
 
 	isCodex := IsCodexBackend(backend.Command)
+	isClaude := IsClaudeBackend(backend.Command)
 	isPi := IsPiBackend(backend.Command)
 	isOpencode := IsOpencodeBackend(backend.Command)
 	injectOpencodeAuto := false
@@ -820,13 +822,27 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 			cmdStr = strings.Replace(backend.Command, fields[0], fields[0]+" --auto", 1)
 		}
 	}
+	mcpFlag := ""
+	if cfg.MCPPort > 0 {
+		mcpURL := fmt.Sprintf("http://localhost:%d/mcp", cfg.MCPPort)
+		switch {
+		case isClaude:
+			mcpConfig, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{
+				"argus": map[string]string{"type": "http", "url": mcpURL},
+			}})
+			mcpFlag = " --mcp-config " + shellQuote(string(mcpConfig))
+		case isCodex:
+			mcpFlag = " -c " + shellQuote("mcp_servers.argus.url="+strconv.Quote(mcpURL))
+		}
+	}
+	cmdStr += mcpFlag
 
 	// Inject the configured permission mode for claude backends only. Scoped to
 	// IsClaudeBackend (not "not codex/pi") so custom/bare commands never receive
 	// Claude-only flags. Skipped when the command already names a permission
 	// flag (command wins) so we never double-inject. Injected before
 	// resume/session-id/prompt suffixes so the flags precede the "--" separator.
-	if IsClaudeBackend(backend.Command) && !hasPermissionFlags(backend.Command) {
+	if isClaude && !hasPermissionFlags(backend.Command) {
 		if flags := config.PermissionModeFlags(cfg.Defaults.PermissionMode); flags != "" {
 			cmdStr += " " + flags
 		}
@@ -843,7 +859,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	resolvedModel, resolvedProfile := ResolveModel(task, backend, cfg)
 	modelFlag := ""
 	if resolvedModel != "" &&
-		(IsClaudeBackend(backend.Command) || isCodex || isPi || isOpencode) &&
+		(isClaude || isCodex || isPi || isOpencode) &&
 		!hasModelFlag(backend.Command) {
 		modelFlag = " --model " + shellQuote(resolvedModel)
 	}
@@ -915,7 +931,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		switch {
 		case isCodex:
 			// Flags must precede the positional session-id argument.
-			cmdStr = codexResumeCmd + modelFlag + " " + shellQuote(task.SessionID)
+			cmdStr = strings.Replace(codexResumeCmd, "codex resume", "codex"+mcpFlag+" resume", 1) + modelFlag + " " + shellQuote(task.SessionID)
 		case (isPi || isOpencode) && task.SessionID != "":
 			// Pi / opencode style: append --session <ID> (pi accepts partial
 			// UUIDs; opencode takes its ses_… ID). Checked before the

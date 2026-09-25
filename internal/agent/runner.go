@@ -36,6 +36,7 @@ type pendingRestart struct {
 // Runner manages multiple agent sessions keyed by task ID.
 type Runner struct {
 	mu             sync.Mutex
+	mcpPort        int
 	sessions       map[string]*Session
 	stopped        map[string]bool // tracks task IDs where Stop was explicitly called
 	pendingRestart map[string]*pendingRestart
@@ -53,6 +54,13 @@ type Runner struct {
 	// a graceful shutdown would wait out the full prelaunch budget.
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
+}
+
+// SetMCPPort updates the listener port used by future task launches.
+func (r *Runner) SetMCPPort(port int) {
+	r.mu.Lock()
+	r.mcpPort = port
+	r.mu.Unlock()
 }
 
 // NewRunner creates a Runner. The onFinish callback is called (in a goroutine)
@@ -86,6 +94,9 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 	}
 	// Place a nil sentinel so concurrent callers see the reservation.
 	r.sessions[task.ID] = nil
+	if r.mcpPort != 0 {
+		cfg.MCPPort = r.mcpPort
+	}
 	r.mu.Unlock()
 
 	// On failure, remove the reservation.

@@ -85,7 +85,7 @@ Argus exposes itself as a Model Context Protocol server, so any agent can drive 
 - **Stage clipboard text** with `argus_clipboard_set` — solves the iOS Safari rule that `clipboard.writeText` requires a synchronous user gesture. The agent stages, you tap **Copy** (PWA) or hit `ctrl+y` (TUI). One tap, no escape-character mangling.
 - **Rename, fork, stop, resume** — every TUI verb has an MCP equivalent.
 
-The same MCP server is auto-injected into every worktree Argus creates, so newly-spawned agents inherit the toolset without any per-project config.
+Argus passes its MCP server to each Claude Code and Codex task it launches, including resumed sessions. The connection is scoped to Argus tasks; ordinary Claude and Codex sessions keep their own MCP configuration.
 
 ### 🧠 Knowledge Base
 
@@ -596,7 +596,7 @@ Cycle through styles in the **Settings tab** using `Enter` or `◀`/`▶` on the
 
 ### MCP Tools
 
-Argus runs an MCP server on port 7742 and auto-injects it into every agent worktree.
+Argus runs an MCP server on port 7742 by default (or the next available port) and passes its live URL to Claude Code and Codex tasks at launch and resume.
 
 **Knowledge Base:**
 

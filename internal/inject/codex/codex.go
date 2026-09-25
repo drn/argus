@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 )
 
 // mcpSection is the TOML header for the Argus MCP entry in Codex config.
@@ -30,6 +32,47 @@ func InjectGlobal(port int) error {
 		return err
 	}
 	return injectCodexTOML(path, port)
+}
+
+// RemoveGlobal removes Argus-owned sections left by older versions.
+func RemoveGlobal() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("remove codex global: user home dir: %w", err)
+	}
+	path := filepath.Join(home, ".codex", "config.toml")
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	content := string(raw)
+	if !strings.Contains(content, mcpSection) && !strings.Contains(content, legacyMcpSection) {
+		return nil
+	}
+	var parsed map[string]any
+	if _, err := toml.Decode(content, &parsed); err != nil {
+		return fmt.Errorf("remove codex global: cannot parse %s: %w", path, err)
+	}
+	updated := removeSection(removeSection(content, mcpSection), legacyMcpSection)
+	if updated == content {
+		return nil
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".argus-codex-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) //nolint:errcheck
+	if _, err := tmp.WriteString(updated); err != nil {
+		tmp.Close() //nolint:errcheck
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // injectCodexTOML inserts or updates the [mcp_servers.argus] section and

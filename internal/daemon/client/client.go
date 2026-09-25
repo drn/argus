@@ -70,6 +70,7 @@ type Client struct {
 	sockPath  string
 	sessions  map[string]*RemoteSession
 	mu        sync.Mutex
+	mcpPort   int
 	closed    chan struct{} // closed by Close(); stops connectStream retries
 	closeOnce sync.Once     // makes Close idempotent + concurrency-safe
 	closeErr  error         // result of the single rpc.Close, read after closeOnce
@@ -89,6 +90,19 @@ type Client struct {
 	// a daemon-side notion the supervisor does not track, so it lives locally
 	// (no RPC). Guarded by c.mu.
 	needsInput []string
+}
+
+// SetMCPPort updates the listener port sent with future supervisor launches.
+func (c *Client) SetMCPPort(port int) {
+	c.mu.Lock()
+	c.mcpPort = port
+	c.mu.Unlock()
+}
+
+func (c *Client) currentMCPPort() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.mcpPort
 }
 
 // Connect dials the daemon socket and returns a Client.
@@ -164,6 +178,7 @@ func (c *Client) Close() error {
 func (c *Client) Start(task *model.Task, cfg config.Config, rows, cols uint16, resume bool) (agent.SessionHandle, error) {
 	uxlog.Log("client.Start: task=%s session=%s resume=%v", task.ID, task.SessionID, resume)
 	req := &daemon.StartReq{
+		MCPPort:   c.currentMCPPort(),
 		TaskID:    task.ID,
 		SessionID: task.SessionID,
 		Prompt:    task.Prompt,
@@ -395,6 +410,7 @@ func (c *Client) StartOrReattach(task *model.Task, cfg config.Config, rows, cols
 func (c *Client) KickRerender(task *model.Task, _ config.Config, rows, cols uint16) error {
 	var resp daemon.StatusResp
 	if err := c.call("Daemon.KickRerender", &daemon.KickReq{
+		MCPPort:   c.currentMCPPort(),
 		TaskID:    task.ID,
 		SessionID: task.SessionID,
 		Prompt:    task.Prompt,
@@ -428,6 +444,7 @@ func (c *Client) KickRerender(task *model.Task, _ config.Config, rows, cols uint
 func (c *Client) Recycle(task *model.Task, _ config.Config, rows, cols uint16) error {
 	var resp daemon.StatusResp
 	if err := c.call("Daemon.Recycle", &daemon.RecycleReq{
+		MCPPort:   c.currentMCPPort(),
 		TaskID:    task.ID,
 		Prompt:    task.Prompt,
 		Project:   task.Project,
