@@ -1401,13 +1401,12 @@ func (d *Daemon) Serve(sockPath string) error {
 				} else {
 					slog.Info("inject codex", "port", actualPort)
 				}
-				var opencodeSkillsDir string
-				if root, err := skills.EnsureBuiltinSkills(); err != nil {
-					slog.Error("materialize builtin skills for opencode", "err", err)
-				} else if root != "" {
-					opencodeSkillsDir = skills.BuiltinSkillsDir(root)
+				if home, err := os.UserHomeDir(); err != nil {
+					slog.Error("resolve old global opencode skill path", "err", err)
+				} else if err := injectopencode.RemoveManagedSkillsGlobal(skills.BuiltinSkillsDir(filepath.Join(home, ".argus", "skills"))); err != nil {
+					slog.Error("remove old global opencode skill path", "err", err)
 				}
-				if err := injectopencode.InjectGlobal(actualPort, opencodeSkillsDir); err != nil {
+				if err := injectopencode.InjectGlobal(actualPort, ""); err != nil {
 					slog.Error("inject opencode", "err", err)
 				} else {
 					slog.Info("inject opencode", "port", actualPort)

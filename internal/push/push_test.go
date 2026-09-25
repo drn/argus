@@ -184,10 +184,7 @@ func TestSendOne_DropsExpiredSubscription(t *testing.T) {
 	addSub(t, d, srv.URL+"/expired")
 
 	m.Notify("", "t", "b", "")
-	m.waitForSends(t, 1)
-	subs, err := d.PushSubscriptions()
-	testutil.NoError(t, err)
-	testutil.Equal(t, len(subs), 0)
+	waitForSubscriptionCount(t, d, 0)
 }
 
 func TestSendOne_NotFoundAlsoDrops(t *testing.T) {
@@ -197,10 +194,23 @@ func TestSendOne_NotFoundAlsoDrops(t *testing.T) {
 	addSub(t, d, srv.URL+"/p1")
 
 	m.Notify("", "t", "b", "")
-	m.waitForSends(t, 1)
+	waitForSubscriptionCount(t, d, 0)
+}
+
+func waitForSubscriptionCount(t *testing.T, d *db.DB, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		subs, err := d.PushSubscriptions()
+		testutil.NoError(t, err)
+		if len(subs) == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	subs, err := d.PushSubscriptions()
 	testutil.NoError(t, err)
-	testutil.Equal(t, len(subs), 0)
+	t.Fatalf("subscription count = %d, want %d", len(subs), want)
 }
 
 func TestSendOne_NonOKKeepsSubscription(t *testing.T) {

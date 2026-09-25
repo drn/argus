@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,14 +19,15 @@ import (
 // TaskDetailPanel displays metadata for the selected task in the right panel.
 type TaskDetailPanel struct {
 	*tview.Box
-	task    *model.Task
-	running bool
+	task          *model.Task
+	running       bool
+	artifactCount string
 
 	// OnBranchChange fires when Draw() will paint a different rendering
 	// branch than the previous frame: the task==nil "No task selected"
 	// swap, swapping to a different task (different conditional rows
-	// render: Project/Branch/Backend/Worktree/Created/Elapsed/Prompt are
-	// each gated on field presence), status string width change (e.g.
+	// render: Project/Branch/Backend/PID/Worktree/Created/Elapsed/Prompt
+	// are each gated on field presence), status string width change (e.g.
 	// "In Progress (running)" → "In Progress (idle)"), running flag flip,
 	// and prompt text changes (different number of wrapped lines).
 	// App wires this to forceRedraw, which is now log-only (does NOT
@@ -55,6 +57,9 @@ func NewTaskDetailPanel() *TaskDetailPanel {
 // shape changes (different task ID, different field-presence flags, running
 // flip, status flip, or prompt text change).
 func (td *TaskDetailPanel) SetTask(t *model.Task, running bool) {
+	if t == nil || td.task == nil || td.task.ID != t.ID {
+		td.artifactCount = "…"
+	}
 	td.task = t
 	td.running = running
 	shape := td.taskShape()
@@ -66,6 +71,9 @@ func (td *TaskDetailPanel) SetTask(t *model.Task, running bool) {
 		td.OnBranchChange()
 	}
 }
+
+// SetArtifactCount updates the selected task's asynchronously fetched count.
+func (td *TaskDetailPanel) SetArtifactCount(count string) { td.artifactCount = count }
 
 // taskShape returns a 64-bit FNV-1a hash of the inputs that determine which
 // rows Draw paints and at what widths. Fields that DON'T affect the cell SET
@@ -102,6 +110,8 @@ func (td *TaskDetailPanel) taskShape() uint64 {
 	_, _ = io.WriteString(h, td.task.Branch)
 	_, _ = h.Write([]byte{0})
 	_, _ = io.WriteString(h, td.task.Backend)
+	_, _ = h.Write([]byte{0})
+	_, _ = io.WriteString(h, strconv.Itoa(td.task.AgentPID))
 	_, _ = h.Write([]byte{0})
 	_, _ = io.WriteString(h, td.task.Worktree)
 	_, _ = h.Write([]byte{0})
@@ -152,6 +162,7 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 	}
 	statusStyle := td.statusStyle(t.Status)
 	row = td.drawField(screen, inner.X, row, inner.W, "Status", statusLabel, statusStyle)
+	row = td.drawField(screen, inner.X, row, inner.W, "Artifacts", td.artifactCount, theme.StyleNormal)
 
 	// Project
 	if t.Project != "" {
@@ -166,6 +177,12 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 	// Backend
 	if t.Backend != "" {
 		row = td.drawField(screen, inner.X, row, inner.W, "Backend", t.Backend, theme.StyleNormal)
+	}
+
+	// PID — last recorded agent PID, not itself a liveness check; the
+	// Status "(running)"/"(idle)" annotation above remains authoritative.
+	if t.AgentPID != 0 {
+		row = td.drawField(screen, inner.X, row, inner.W, "PID", strconv.Itoa(t.AgentPID), theme.StyleNormal)
 	}
 
 	// Sandbox

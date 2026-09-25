@@ -27,6 +27,8 @@ import (
 // can't be expressed in a single round trip lives outside this interface
 // (e.g., the scheduler tick loop runs in the daemon, not the TUI).
 type Store interface {
+	// Artifacts returns a task's registered artifact manifest, newest first.
+	Artifacts(taskID string) ([]*model.Artifact, error)
 	// Tasks returns every task row, both active and archived.
 	Tasks() ([]*model.Task, error)
 	// Get returns the task by ID. Returns (nil, db.ErrTaskNotFound) for

@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -116,6 +117,8 @@ type TaskListView struct {
 	OnCopy func(task *model.Task)
 	// OnInbox fires on `i` to open the selected task's read-only inbox viewer.
 	OnInbox func(task *model.Task)
+	// OnArtifacts opens the selected task's registered-artifact browser.
+	OnArtifacts func(task *model.Task)
 	// Callback fired after buildRows when the row composition changes.
 	// Used by App to force a tcell Sync — rows shifting under tview's
 	// diff-based emit is a known source of bleed-through in tmux.
@@ -377,9 +380,12 @@ func (tl *TaskListView) SelectedProject() string {
 
 // matchesFilter returns true if the task matches the current filter.
 // Filter terms are split by whitespace. All terms must match at least one
-// of the project name or task name (case-insensitive substring). This allows
-// queries like "forge download" to match a task "Download-this-video" in
-// the "forge" project.
+// of the project name, task name, or (when recorded) agent PID
+// (case-insensitive substring). This allows queries like "forge download" to
+// match a task "Download-this-video" in the "forge" project, or "17557" to
+// match a task whose last known agent PID was 17557. A task with no recorded
+// PID (AgentPID == 0) is not PID-matchable, so a term like "0" doesn't
+// spuriously match every never-started task.
 func (tl *TaskListView) matchesFilter(t *model.Task) bool {
 	if tl.filter == "" {
 		return true
@@ -387,8 +393,13 @@ func (tl *TaskListView) matchesFilter(t *model.Task) bool {
 	terms := strings.Fields(strings.ToLower(tl.filter))
 	name := strings.ToLower(t.Name)
 	proj := strings.ToLower(t.Project)
+	pid := ""
+	if t.AgentPID != 0 {
+		pid = strconv.Itoa(t.AgentPID)
+	}
 	for _, term := range terms {
-		if !strings.Contains(name, term) && !strings.Contains(proj, term) {
+		matched := strings.Contains(name, term) || strings.Contains(proj, term) || (pid != "" && strings.Contains(pid, term))
+		if !matched {
 			return false
 		}
 	}
@@ -1021,6 +1032,10 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 			case keymap.ActTaskInbox:
 				if t := tl.SelectedTask(); t != nil && tl.OnInbox != nil {
 					tl.OnInbox(t)
+				}
+			case keymap.ActTaskArtifacts:
+				if t := tl.SelectedTask(); t != nil && tl.OnArtifacts != nil {
+					tl.OnArtifacts(t)
 				}
 			}
 		}

@@ -130,11 +130,12 @@ func (a *App) globalActionRegistry() map[keymap.Action]func() {
 // CtxTaskList's/CtxSettings' pure cursor-nav actions are excluded below).
 func (a *App) agentActionRegistry() map[keymap.Action]func() {
 	return map[keymap.Action]func(){
-		keymap.ActAgentLinks:    func() { a.openAgentLinks() },
-		keymap.ActAgentSession:  func() { a.openSessionPicker() },
-		keymap.ActAgentSwitcher: func() { a.openTaskSwitcher() },
-		keymap.ActAgentOpenPR:   func() { a.openPR() },
-		keymap.ActAgentZoom:     func() { a.toggleAgentZen() },
+		keymap.ActAgentLinks:     func() { a.openAgentLinks() },
+		keymap.ActAgentArtifacts: func() { a.openAgentArtifacts() },
+		keymap.ActAgentSession:   func() { a.openSessionPicker() },
+		keymap.ActAgentSwitcher:  func() { a.openTaskSwitcher() },
+		keymap.ActAgentOpenPR:    func() { a.openPR() },
+		keymap.ActAgentZoom:      func() { a.toggleAgentZen() },
 		keymap.ActAgentCopy: func() {
 			if !a.copyStagedClipboard() {
 				a.flashNotice("Nothing to copy")

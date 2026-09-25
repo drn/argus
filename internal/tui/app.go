@@ -84,6 +84,7 @@ const (
 	modeCommandPalette   // Global command palette (ctrl+k)
 	modeMergeSafetyPopup // Merge-safety review popup (single-role nuke / global Cleanup)
 	modeInbox            // Read-only task message inbox viewer (`i`)
+	modeArtifacts
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -215,9 +216,21 @@ type App struct {
 	helpModal    *modal.HelpModal
 	helpPrevPage string
 
-	inboxModal    *modal.InboxModal
-	inboxTaskID   string
-	inboxPrevPage string
+	inboxModal          *modal.InboxModal
+	inboxTaskID         string
+	inboxPrevPage       string
+	artifactBrowser     *ArtifactBrowser
+	artifactTaskID      string
+	artifactPrevPage    string
+	artifactPrevMode    viewMode
+	artifactFetchGen    uint64
+	artifactOpenGen     uint64
+	artifactCountGen    uint64
+	artifactCountTaskID string
+	artifactTempDirs    []string
+	artifactTempMu      sync.Mutex
+	artifactTransfers   sync.WaitGroup
+	artifactCancel      context.CancelFunc
 
 	// Error modal (created on demand to surface failed actions prominently)
 	errorModal *modal.ErrorModal
@@ -830,6 +843,7 @@ func (a *App) buildUI() {
 	a.tasklist.OnInbox = func(t *model.Task) {
 		a.openInbox(t.ID, t.Name)
 	}
+	a.tasklist.OnArtifacts = a.openArtifacts
 
 	a.taskGitPanel = gitpanel.NewGitPanel()
 	a.taskGitPanel.OnBranchChange = func() { a.forceRedraw("task git panel branch changed") }
@@ -1415,6 +1429,7 @@ func probeTerminalDev(dev string) error {
 
 // Run starts the application event loop.
 func (a *App) Run() error {
+	defer a.cleanupArtifactTemps()
 	if err := probeTerminal(); err != nil {
 		return fmt.Errorf("no interactive terminal available: %w", err)
 	}
@@ -1605,6 +1620,14 @@ func (a *App) onTick() {
 		// (add-tasks-fetch-dirty-check) — see shouldRefetchTasks's doc comment
 		// for why every other refreshTasksWithIDs caller must pass false.
 		a.refreshTasksWithIDs(runningIDs, idleIDs, true)
+		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
+			if selected := a.tasklist.SelectedTask(); selected != nil && selected.ID != a.artifactCountTaskID {
+				a.artifactCountTaskID = selected.ID
+				a.artifactCountGen++
+				a.taskDetail.SetArtifactCount("…")
+				a.refreshArtifactCount(selected.ID, a.artifactCountGen)
+			}
+		}
 		taskID := ""
 		if a.mode == modeAgent {
 			taskID = a.agentState.TaskID
@@ -3736,6 +3759,10 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		a.handleInboxKey(event)
 		return nil
 	}
+	if a.mode == modeArtifacts && a.artifactBrowser != nil {
+		a.artifactBrowser.InputHandler()(event, func(tview.Primitive) {})
+		return nil
+	}
 
 	// Error modal — any key dismisses it.
 	if a.mode == modeErrorModal && a.errorModal != nil {
@@ -4193,6 +4220,9 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 		switch act {
 		case keymap.ActAgentLinks: // Overrides "clear screen" — intercepted before PTY
 			a.openAgentLinks()
+			return nil
+		case keymap.ActAgentArtifacts:
+			a.openAgentArtifacts()
 			return nil
 		case keymap.ActAgentSession: // Switch Claude session (shadows Claude's transcript toggle)
 			a.openSessionPicker()
@@ -4775,14 +4805,18 @@ func (a *App) forceRedraw(reason string) {
 
 // onTaskCursorChange updates the preview, git status, and detail panels when the task list cursor moves.
 func (a *App) onTaskCursorChange(task *model.Task) {
+	a.artifactCountGen++
 	if task == nil {
+		a.artifactCountTaskID = ""
 		a.taskPreview.SetTaskID("")
 		a.taskDetail.SetTask(nil, false)
 		a.taskGitPanel.Clear()
 		return
 	}
 	a.taskPreview.SetTaskID(task.ID)
+	a.artifactCountTaskID = task.ID
 	a.taskDetail.SetTask(task, a.isTaskRunning(task.ID))
+	a.refreshArtifactCount(task.ID, a.artifactCountGen)
 	// Kick off preview fetch immediately (don't wait for next tick).
 	go func() {
 		a.refreshPreview(task.ID)

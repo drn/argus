@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -13,8 +15,8 @@ import (
 	"github.com/drn/argus/internal/uxlog"
 )
 
-// ensureCodexSkillsFn materializes argus's builtin skills into Codex's own
-// installed-skills directory ($CODEX_HOME/skills). A package var (rather
+// ensureCodexSkillsFn prepares an Argus-only Codex home containing the
+// embedded skills and links to the user's Codex state. A package var (rather
 // than a direct skills.EnsureCodexSkills call) so tests can stub it —
 // mirrors ensureBuiltinRoutingFn (routing_prompt.go) and
 // readGlobalClaudeMDFn/nonClaudeRoutingContentFn above.
@@ -24,6 +26,43 @@ import (
 // isCodex-gated materialization call can't be observed by calling the real
 // function from a test. SetEnsureCodexSkillsForTest is the seam.
 var ensureCodexSkillsFn = skills.EnsureCodexSkills
+
+// ensureSessionSkillsFn supplies the Argus-owned skill directory to backends
+// with a per-process discovery hook (Claude --add-dir, Pi --skill, OpenCode
+// OPENCODE_CONFIG_CONTENT). It is replaceable in command-construction tests.
+var ensureSessionSkillsFn = skills.EnsureBuiltinSkills
+
+func opencodeSkillsConfigContent(skillsDir string) (string, error) {
+	raw := strings.TrimSpace(os.Getenv("OPENCODE_CONFIG_CONTENT"))
+	config := make(map[string]any)
+	if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &config); err != nil {
+			return "", fmt.Errorf("parse OPENCODE_CONFIG_CONTENT: %w", err)
+		}
+		if config == nil {
+			return "", fmt.Errorf("OPENCODE_CONFIG_CONTENT must be an object")
+		}
+	}
+	if existing, ok := config["skills"]; ok {
+		arr, ok := existing.([]any)
+		if !ok {
+			return "", fmt.Errorf("OPENCODE_CONFIG_CONTENT skills must be an array")
+		}
+		for _, item := range arr {
+			if item == skillsDir {
+				return raw, nil
+			}
+		}
+		config["skills"] = append(arr, skillsDir)
+	} else {
+		config["skills"] = []string{skillsDir}
+	}
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		return "", fmt.Errorf("encode OPENCODE_CONFIG_CONTENT: %w", err)
+	}
+	return string(encoded), nil
+}
 
 // SetEnsureCodexSkillsForTest overrides the codex-skills materialization
 // function BuildCmd calls. Returns a restore func.

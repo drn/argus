@@ -22,58 +22,55 @@ The system SHALL materialize the embedded skill bodies to `~/.argus/skills/.clau
 - **WHEN** the materializing function runs inside a Go test binary
 - **THEN** it returns an empty path and no error, performing no filesystem writes under `~/.argus/`
 
-### Requirement: Codex vendor-scoped builtin skill materialization
+### Requirement: Argus-only Codex builtin skill materialization
 
-The system SHALL materialize the same embedded builtin skill bodies used for the Claude-targeted `~/.argus/skills/.claude/skills/` workspace to Codex's own first-party installed-skills directory, `$CODEX_HOME/skills/<name>/SKILL.md` (respecting the `CODEX_HOME` environment variable when set, defaulting to `~/.codex/skills/`), so that Codex's native `SKILL.md` discovery finds argus's builtin skills without any per-backend integration code in Codex itself. This target SHALL be distinct from Codex's own bundled `$CODEX_HOME/skills/.system/` content and from the generic cross-tool `.agents/skills` convention, to bound the exposure of argus's builtin skills to Codex sessions specifically rather than any tool implementing the broader convention. Materialization SHALL be idempotent (rewrite a file only when its content differs from what is already on disk).
+The system SHALL materialize the same embedded builtin skill bodies used for the Claude-targeted `~/.argus/skills/.claude/skills/` workspace under `~/.local/share/argus/codex-home/skills/<name>/SKILL.md` for the default Codex home. A custom `CODEX_HOME` SHALL use a separate, stable `custom-<hash>` subdirectory under the Argus home so different source homes cannot share links. Argus SHALL set `CODEX_HOME` to this isolated home only for Codex sessions it launches. Ordinary Codex sessions SHALL not discover Argus's builtin skills through the user's normal `$CODEX_HOME/skills` directory. Materialization SHALL be idempotent (rewrite a file only when its content differs from what is already on disk).
 
-Because `$CODEX_HOME/skills/` is shared with Codex's own bundled content and with any skills the user installed themselves — unlike the Claude-targeted workspace, which argus alone ever writes to — both writing and removing under this target SHALL be gated on positive proof of argus ownership, not on mere absence from (or presence in) the current embedded set. The system SHALL write a per-directory ownership marker alongside each skill it materializes under this target. A directory SHALL be removed only when it both (a) no longer corresponds to any currently-embedded skill and (b) carries that ownership marker from a prior materialization. Symmetrically, a builtin skill SHALL NOT be written into this target under a name that already exists on disk but lacks that ownership marker — a name collision with a directory argus did not itself create (e.g. a user's own installed skill happening to share a name with one of argus's builtin skills) SHALL be left completely untouched rather than claimed and overwritten, since doing so would both destroy the pre-existing content and make it eligible for deletion by the removal rule above on a later run. `$CODEX_HOME/skills/.system/` SHALL never be written into or removed, unconditionally, regardless of the ownership-marker check. This materialization SHALL be inert (no filesystem writes, no error) when running inside a Go test binary, mirroring the existing Claude-targeted materialization.
+The isolated home SHALL link the user's existing Codex configuration, authentication, session files, bundled system skills, and user-installed skills from the normal Codex home without modifying that home. Its skill directory SHALL not link previously global Argus-managed skills back into the isolated home. `CODEX_SQLITE_HOME` SHALL continue to point to the normal Codex state directory so existing session capture and resume keep working. Writing Argus skill bodies and removing stale Argus skill directories SHALL require a per-directory Argus ownership marker; a colliding unmarked user skill SHALL be preserved. On later launches, newly installed normal-home entries SHALL take precedence over matching overlay entries, with displaced overlay content preserved in the Argus home. Dangling links to removed user skills SHALL be removed so an Argus builtin can return. `.system/` SHALL never be written into or removed. This materialization SHALL be inert inside a Go test binary.
 
 #### Scenario: Embedded skills materialized to the Codex-scoped path
 
 - **WHEN** the Codex-scoped materialization runs
-- **THEN** every embedded builtin skill's `SKILL.md` (and any accompanying files) appears under `$CODEX_HOME/skills/<name>/` (outside `.system/`), matching the embedded source content, and each materialized directory carries argus's ownership marker
+- **THEN** every embedded builtin skill's `SKILL.md` (and any accompanying files) appears under `~/.local/share/argus/codex-home/skills/<name>/`, matching the embedded source content, and each materialized directory carries Argus's ownership marker
+- **AND** the normal Codex home receives no Argus skill files
 
 #### Scenario: Stale argus-owned skill directories removed
 
-- **WHEN** the Codex-scoped materialization runs and a directory exists under `$CODEX_HOME/skills/` that carries argus's ownership marker from a prior run but whose name does not correspond to any currently-embedded skill
+- **WHEN** the Codex-scoped materialization runs and a directory exists under the isolated `skills/` directory that carries Argus's ownership marker from a prior run but whose name does not correspond to any currently-embedded skill
 - **THEN** that directory is removed
 
 #### Scenario: Foreign and reserved directories are never removed
 
-- **WHEN** the Codex-scoped materialization runs and a directory exists under `$CODEX_HOME/skills/` that either is named `.system/` or lacks argus's ownership marker — including a directory pre-dating this materialization or one a user installed themselves — and its name does not correspond to any currently-embedded skill
+- **WHEN** the Codex-scoped materialization runs and a directory exists under the isolated `skills/` directory that either is named `.system/` or lacks Argus's ownership marker — including a linked user-installed skill — and its name does not correspond to any currently-embedded skill
 - **THEN** that directory and its contents are left untouched
 
 #### Scenario: Name collision with a foreign directory is never claimed
 
-- **WHEN** the Codex-scoped materialization runs and a directory already exists under `$CODEX_HOME/skills/` whose name matches a currently-embedded skill, but that directory lacks argus's ownership marker (it was not created by a prior materialization)
+- **WHEN** the Codex-scoped materialization runs and a directory already exists under the isolated `skills/` directory whose name matches a currently-embedded skill, but that directory lacks Argus's ownership marker
 - **THEN** that directory's content is left completely untouched — not overwritten with the embedded skill's content, and not stamped with the ownership marker
 
 #### Scenario: Materialization is inert during automated tests
 
 - **WHEN** the Codex-scoped materialization runs inside a Go test binary
-- **THEN** it performs no filesystem writes under `$CODEX_HOME/skills/` and returns no error
+- **THEN** it performs no filesystem writes and returns no error
 
-### Requirement: opencode skills-path config injection
+### Requirement: Session-scoped Pi and OpenCode builtin skills
 
-The system SHALL ensure opencode's own configuration names Argus's managed skills workspace as an additional skill-discovery location, via opencode's documented `skills` config array, so that opencode's native skill discovery finds argus's builtin skills without relying on the generic cross-tool `.agents/skills` convention. This SHALL be implemented as an idempotent addition to the same configuration file the existing `mcp.argus` entry is injected into (`~/.config/opencode/opencode.json`): the entry SHALL be added only when not already present, and all unrelated keys — including other `skills` array entries a user or another tool has added — SHALL be preserved. If the existing `skills` value is present but is not an array, the system SHALL leave it completely untouched rather than replacing it, since a malformed or differently-shaped value is the user's own configuration, not the system's to overwrite.
+Argus SHALL make its embedded skills available to Pi sessions through a `--skill` path and to OpenCode sessions through `OPENCODE_CONFIG_CONTENT` with an added `skills` path. These overrides SHALL apply only to Argus-launched child processes and SHALL preserve the user's existing Pi skills and OpenCode configuration. Argus SHALL NOT inject its skills path into OpenCode's global config. On daemon startup, it SHALL remove only the previously injected Argus skills path from that global config, preserving all other values and the Argus MCP registration. A malformed inherited `OPENCODE_CONFIG_CONTENT` SHALL remain untouched; OpenCode launch SHALL continue without Argus skills.
 
-#### Scenario: Skills path entry added when absent
+#### Scenario: Pi launch
 
-- **WHEN** injection runs against an opencode config whose `skills` array does not already name Argus's managed skills workspace
-- **THEN** the workspace path is appended to the `skills` array without removing any existing entries
+- **WHEN** Argus launches a Pi session
+- **THEN** the command receives the Argus-owned skills directory through `--skill`, including on resume
+- **AND** ordinary Pi sessions and the user's `~/.pi` directory remain unchanged
 
-#### Scenario: Idempotent on repeat
+#### Scenario: OpenCode launch
 
-- **WHEN** injection runs twice
-- **THEN** the second run does not duplicate the entry or otherwise rewrite the file
+- **WHEN** Argus launches an OpenCode session with valid existing inline config
+- **THEN** only the child receives `OPENCODE_CONFIG_CONTENT` containing the Argus skills path and all existing inline settings and skill paths
+- **AND** ordinary OpenCode sessions do not receive that path through global config
 
-#### Scenario: Unrelated config preserved
+#### Scenario: Remove old global OpenCode path
 
-- **WHEN** the opencode config already contains other `skills` entries, an `mcp.argus` entry, and unrelated top-level keys
-- **THEN** all of them are preserved after the new `skills` entry is added
-
-#### Scenario: Non-array skills value left untouched
-
-- **WHEN** injection runs against an opencode config whose existing `skills` value is present but is not an array
-- **THEN** that value is written back unchanged, and the unrelated `mcp.argus` injection still proceeds
-
+- **WHEN** the daemon starts with a previously injected Argus skills path in OpenCode's global config
+- **THEN** it removes only that path and preserves other skills paths and the MCP server entry

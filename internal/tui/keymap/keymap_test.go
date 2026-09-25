@@ -74,6 +74,8 @@ func TestResolve_Defaults(t *testing.T) {
 		{CtxTaskList, ev(tcell.KeyRune, 'n', 0), ActTaskNew},
 		{CtxTaskList, ev(tcell.KeyRune, 'S', 0), ActTaskStatusRev},
 		{CtxAgent, ev(tcell.KeyCtrlL, 0, 0), ActAgentLinks},
+		{CtxAgent, ev(tcell.KeyCtrlT, 0, 0), ActAgentArtifacts},
+		{CtxTaskList, ev(tcell.KeyRune, 'v', 0), ActTaskArtifacts},
 		{CtxAgent, ev(tcell.KeyCtrlZ, 0, 0), ActAgentZoom},
 		{CtxAgent, ev(tcell.KeyUp, 0, tcell.ModCtrl|tcell.ModAlt), ActAgentTaskPrev},
 		{CtxAgent, ev(tcell.KeyLeft, 0, tcell.ModCtrl|tcell.ModAlt), ActAgentPaneLeft},

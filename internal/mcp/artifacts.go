@@ -124,7 +124,7 @@ func (s *Server) toolArtifactRegister(id interface{}, args json.RawMessage) *Res
 	}
 
 	log.Printf("[mcp] artifact_register ok: id=%s file=%s type=%s bytes=%d", task.ID, filename, stored.Type, size)
-	return toolResult(id, fmt.Sprintf("Registered artifact %q (%s, %d bytes) for task %s (%s). View it in Argus Web → task → Artifacts.", filename, stored.Type, size, task.ID, task.Name))
+	return toolResult(id, fmt.Sprintf("Registered artifact %q (%s, %d bytes) for task %s (%s). View it in Argus TUI → task Artifacts or Argus Web → task → Artifacts.", filename, stored.Type, size, task.ID, task.Name))
 }
 
 // copyArtifact copies the source file at srcPath into the task's durable

@@ -187,6 +187,7 @@ below. The `?` overlay always shows your active bindings.
 | `r`       | Rename task (display name only; branch/worktree stay locked)    |
 | `H`       | Toggle visibility of Hera-managed tasks (workers + coordinators; visible inline by default, each with a hera-role indicator — press `H` to hide) |
 | `i`       | View the task's message inbox (read-only): task messages + hera messages to any role it is/was bound to, read and unread, with delivery state. `r` reloads, `Esc`/`q` closes; never marks anything read. Local mode only |
+| `v`       | Browse the selected task's registered artifacts (`r` refresh, `Enter` preview/open, `o` open externally) |
 | `ctrl+d`  | Destroy task (kill agent + remove worktree + delete branch)     |
 | `ctrl+o`  | Open the project's GitHub repo in browser (via `gh repo view --web`) |
 | `ctrl+r`  | Prune completed tasks                                           |
@@ -214,6 +215,7 @@ below. The `?` overlay always shows your active bindings.
 | `ctrl+b`              | Restore the rail's pre-interruption fold/selection snapshot at any time (see the Task List table above — same global action) |
 | `ctrl+z`              | Toggle the git + file side panes (default layout set by Settings → Appearance → "Default agent view") |
 | `ctrl+l`              | Open link picker (fuzzy search all session URLs)                          |
+| `ctrl+t`              | Browse the current task's registered artifacts (intercepted before PTY input) |
 | `ctrl+r`              | Switch Claude session (searchable picker of this task's conversations; resumes the chosen one). Claude backends only |
 | `ctrl+p`              | Open PR for the worktree branch in browser (via `gh pr view --web`)       |
 | `ctrl+y`              | Copy agent-staged text; flashes "Nothing to copy" if no payload is pending (always intercepted — never sent to the PTY) |
@@ -705,7 +707,7 @@ A Claude session inside an argus worktree sees the `mcp__argus__*` tool names bu
 
 Both are unconditional across every session kind (coordinator, worker, freelance, plain solo task) and self-gating at read time — each section checks `ARGUS_TASK_ID`/`$PWD` sandbox residency, so injecting them into a non-argus spawn is inert. Materialization failure is logged and the launch continues without them rather than blocking. See `internal/skills/builtin.go` and `internal/routing/routing.go`.
 
-**Codex and opencode get the same orientation through mechanisms native to each CLI, not the flags above** (neither has a `--add-dir`/`--append-system-prompt-file` equivalent): skill bodies are materialized to a vendor-scoped directory each CLI already scans on its own — `$CODEX_HOME/skills/<name>` (defaulting to `~/.codex/skills/`) for Codex, and a `skills` config-array entry (injected once at daemon startup, additive to any entries already there) in opencode's own config for opencode. Routing orientation — and, for Codex only, global + repo `CLAUDE.md` content — is prepended directly into the spawned prompt instead, since neither CLI has an unconditional injection point the way Claude does; opencode already reads `CLAUDE.md` natively (as a documented `AGENTS.md` fallback), so that part is deliberately omitted for opencode to avoid double-injecting it. See `internal/agent/nonclaude_context.go`, `internal/skills.EnsureCodexSkills`, and `internal/inject/opencode.InjectGlobal`.
+**Codex and opencode get the same orientation through mechanisms native to each CLI, not the flags above** (neither has a `--add-dir`/`--append-system-prompt-file` equivalent). Argus-launched Codex sessions use a child-only `CODEX_HOME` at `~/.local/share/argus/codex-home` (or a `custom-<hash>` subdirectory for a custom `CODEX_HOME`), where Argus's skill bodies live alongside links to the user's existing Codex config, auth, system skills, and other installed skills; ordinary Codex sessions do not see the Argus skills. Files created only in the overlay remain there. If a later launch finds the same name in the normal Codex home, it preserves the overlay copy under `.argus-preserved-*` and links the normal entry; newly installed user skills also take precedence over colliding Argus skills. Pi gets the same Argus skill directory through a per-launch `--skill` flag. OpenCode gets it through child-only `OPENCODE_CONFIG_CONTENT`, preserving any existing inline config and skill paths; Argus removes its old global skill-path entry on daemon startup. Routing orientation — and, for Codex only, global + repo `CLAUDE.md` content — is prepended directly into the spawned prompt instead, since neither CLI has an unconditional injection point the way Claude does; opencode already reads `CLAUDE.md` natively (as a documented `AGENTS.md` fallback), so that part is deliberately omitted for opencode to avoid double-injecting it. See `internal/agent/nonclaude_context.go`, `internal/skills.EnsureCodexSkills`, and `internal/inject/opencode.InjectGlobal`.
 
 ### Remote Control: REST API
 

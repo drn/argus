@@ -574,6 +574,21 @@ This closes the gap where a spawned session's non-interactive shell never source
 - **WHEN** a session is spawned and `[secrets.op].bootstrap_source` is configured but fails to resolve
 - **THEN** the spawned session's environment is unaffected — no bootstrap-target variable is set
 
+### Requirement: Codex sessions use Argus-only skill discovery
+
+When building a Codex backend command, the system SHALL prepare the isolated Codex home at `~/.local/share/argus/codex-home` for the default source home, or a stable `custom-<hash>` subdirectory for a custom source home, and set `CODEX_HOME` to that path in the spawned process only. The child SHALL retain the user's normal SQLite state location through `CODEX_SQLITE_HOME`, so session-ID capture and resume continue to use the existing database. If isolated-home preparation fails, the launch SHALL continue with the normal Codex home and log the failure. Non-Codex backends SHALL not receive these overrides.
+
+#### Scenario: Codex launch discovers Argus skills only in its child environment
+
+- **WHEN** a Codex command is built and isolated-home preparation succeeds
+- **THEN** its child environment sets `CODEX_HOME` to Argus's isolated home and keeps SQLite state at the user's normal Codex state location
+- **AND** the daemon's environment and ordinary Codex sessions remain unchanged
+
+#### Scenario: Preparation failure does not block launch
+
+- **WHEN** isolated-home preparation fails for a Codex command
+- **THEN** the error is logged and the Codex command is still returned without the isolated `CODEX_HOME` override
+
 ### Requirement: Non-Claude backend context prefix
 
 For non-Claude backends, the system SHALL prepend a context block to the task's initial spawn prompt — the prompt actually delivered to the spawned process — whose contents differ by backend:
@@ -614,3 +629,13 @@ Each `CLAUDE.md` source (global and repo) SHALL be bounded by a maximum read siz
 
 - **WHEN** a command is built for a Codex backend and a global or repo `CLAUDE.md` exceeds the maximum read size
 - **THEN** that source's section is omitted from the context block cleanly, the same as if the file were absent, and the omission is logged
+
+### Requirement: Pi and OpenCode discover Argus skills only in child sessions
+
+When building a Pi command, Argus SHALL append a `--skill` argument naming its managed skills directory. When building an OpenCode command, Argus SHALL add that directory to the child's `OPENCODE_CONFIG_CONTENT` `skills` array while preserving valid existing inline configuration. Neither backend SHALL add Argus skills to a global skills directory or global skill-path setting. Skill preparation failure SHALL be logged and SHALL NOT block launch.
+
+#### Scenario: Session-scoped skill delivery
+
+- **WHEN** Argus builds a Pi or OpenCode command after materializing its embedded skills
+- **THEN** the resulting child receives the path through its native discovery mechanism
+- **AND** the parent's environment and ordinary sessions remain unchanged

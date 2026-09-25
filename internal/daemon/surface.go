@@ -83,7 +83,11 @@ const (
 	//     lineup (using-default-codex-model) — a session spawned with an
 	//     explicit or profile-resolved Codex model now validates against, and
 	//     injects, different --model values than the previous build.
-	SupervisorSpawnSurface = 7
+	//   - v8: Codex sessions use an Argus-only CODEX_HOME with builtin skills,
+	//     preserving normal Codex configuration and state via links.
+	//   - v9: Pi and OpenCode sessions receive Argus skills through per-process
+	//     discovery hooks; OpenCode no longer needs a global skills entry.
+	SupervisorSpawnSurface = 9
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -246,14 +250,15 @@ func CompareSupervisorSurface(reported SurfaceVersion) SurfaceSkew {
 // omission from this list is exactly the silent false-negative the surface
 // version is guarded against.
 var SupervisorSpawnPaths = []string{
-	"internal/agent/agent.go",          // BuildCmd: argv, env, dir, cache-dir redirection
-	"internal/agent/prelaunch.go",      // backend prelaunch (pi/ollama) run before the fork
-	"internal/agent/routing_prompt.go", // --append-system-prompt-file routing injection
-	"internal/agent/sandbox.go",        // the sandbox-exec wrapper the command is wrapped in
-	"internal/agent/secret.go",         // point-of-use secret resolution inside BuildCmd
-	"internal/agent/secretregistry.go", // the resolver registry BuildCmd resolves through
-	"internal/skills/builtin.go",       // builtin skills materialized at spawn time
-	"internal/skills/skills.go",        // --add-dir skill provisioning
+	"internal/agent/agent.go",             // BuildCmd: argv, env, dir, cache-dir redirection
+	"internal/agent/nonclaude_context.go", // OpenCode child-only skills config content
+	"internal/agent/prelaunch.go",         // backend prelaunch (pi/ollama) run before the fork
+	"internal/agent/routing_prompt.go",    // --append-system-prompt-file routing injection
+	"internal/agent/sandbox.go",           // the sandbox-exec wrapper the command is wrapped in
+	"internal/agent/secret.go",            // point-of-use secret resolution inside BuildCmd
+	"internal/agent/secretregistry.go",    // the resolver registry BuildCmd resolves through
+	"internal/skills/builtin.go",          // builtin skills materialized at spawn time
+	"internal/skills/skills.go",           // --add-dir skill provisioning
 }
 
 // SupervisorStreamPaths declares every source file whose content the supervisor
@@ -293,7 +298,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "c3a8d7fb4a15ee714f92107addd0ae5ba1a17d375c90aef1052b9c1359934ed5"
+	SpawnSurfaceDigest  = "4047cac6b404d95ff56e76dc6365a3125aa4921da6d36019ded17bc4d2628d28"
 	StreamSurfaceDigest = "1939566dd6c7db1f3cfb45ff2856303b79e8c255b5618783729aa5baa4c8a493"
 )
 
