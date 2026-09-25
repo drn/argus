@@ -177,6 +177,7 @@ func ensureCodexSkills() (string, error) {
 	if err := os.MkdirAll(argusHome, 0700); err != nil {
 		return "", fmt.Errorf("create Argus Codex home: %w", err)
 	}
+	// #nosec G302 -- this is a directory, so the owner needs execute access.
 	if err := os.Chmod(argusHome, 0700); err != nil {
 		return "", fmt.Errorf("protect Argus Codex home: %w", err)
 	}
@@ -200,7 +201,8 @@ func ensureCodexSkills() (string, error) {
 }
 
 // linkCodexEntries mirrors existing root entries without writing to the
-// user's Codex home. A target already created by an Argus session is retained.
+// user's Codex home. The source wins if Codex replaced an overlay symlink;
+// the overlay copy is preserved before restoring the link.
 func linkCodexEntries(sourceDir, targetDir, skip string) error {
 	entries, err := os.ReadDir(sourceDir)
 	if os.IsNotExist(err) {
@@ -215,12 +217,7 @@ func linkCodexEntries(sourceDir, targetDir, skip string) error {
 		}
 		source := filepath.Join(sourceDir, entry.Name())
 		target := filepath.Join(targetDir, entry.Name())
-		if _, err := os.Lstat(target); err == nil {
-			continue
-		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("inspect %s: %w", target, err)
-		}
-		if err := os.Symlink(source, target); err != nil {
+		if err := linkCodexSource(source, target, targetDir); err != nil {
 			return fmt.Errorf("link Codex state %s: %w", entry.Name(), err)
 		}
 	}
@@ -228,6 +225,9 @@ func linkCodexEntries(sourceDir, targetDir, skip string) error {
 }
 
 func linkCodexSkills(sourceDir, targetDir string) error {
+	if err := removeDanglingCodexSkillLinks(sourceDir, targetDir); err != nil {
+		return err
+	}
 	entries, err := os.ReadDir(sourceDir)
 	if os.IsNotExist(err) {
 		return nil
@@ -243,13 +243,66 @@ func linkCodexSkills(sourceDir, targetDir string) error {
 			continue
 		}
 		target := filepath.Join(targetDir, entry.Name())
-		if _, err := os.Lstat(target); err == nil {
-			continue
-		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("inspect %s: %w", target, err)
+		if entry.Name() == reservedCodexSystemDir {
+			if _, err := os.Lstat(target); err == nil {
+				continue
+			} else if !os.IsNotExist(err) {
+				return fmt.Errorf("inspect Codex system skills: %w", err)
+			}
 		}
-		if err := os.Symlink(source, target); err != nil {
+		if err := linkCodexSource(source, target, filepath.Dir(targetDir)); err != nil {
 			return fmt.Errorf("link Codex skill %s: %w", entry.Name(), err)
+		}
+	}
+	return nil
+}
+
+func linkCodexSource(source, target, overlayHome string) error {
+	if info, err := os.Lstat(target); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			if linked, err := os.Readlink(target); err == nil && linked == source {
+				return nil
+			}
+		}
+		// Keep Argus-session writes recoverable while making the user's normal
+		// Codex home authoritative on the next launch.
+		backupDir, err := os.MkdirTemp(overlayHome, ".argus-preserved-")
+		if err != nil {
+			return fmt.Errorf("preserve overlay entry: %w", err)
+		}
+		if err := os.Rename(target, filepath.Join(backupDir, filepath.Base(target))); err != nil {
+			return fmt.Errorf("preserve overlay entry: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect overlay entry: %w", err)
+	}
+	return os.Symlink(source, target)
+}
+
+func removeDanglingCodexSkillLinks(sourceDir, targetDir string) error {
+	entries, err := os.ReadDir(targetDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read overlay skills: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == reservedCodexSystemDir {
+			continue
+		}
+		if entry.Type()&os.ModeSymlink == 0 {
+			continue
+		}
+		path := filepath.Join(targetDir, entry.Name())
+		linked, err := os.Readlink(path)
+		if err != nil || linked != filepath.Join(sourceDir, entry.Name()) {
+			continue
+		}
+		if _, err := os.Stat(linked); os.IsNotExist(err) {
+			if err := os.Remove(path); err != nil {
+				return fmt.Errorf("remove missing Codex skill link %s: %w", entry.Name(), err)
+			}
 		}
 	}
 	return nil

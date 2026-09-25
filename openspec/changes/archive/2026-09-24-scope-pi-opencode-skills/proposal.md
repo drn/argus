@@ -1,6 +1,6 @@
 ## Why
 
-Pi currently receives Argus routing text but no built-in skill bodies. OpenCode receives the bodies through a global config entry, exposing Argus workflows outside Argus.
+Pi currently receives neither Argus routing text nor built-in skill bodies. OpenCode receives the bodies through a global config entry, exposing Argus workflows outside Argus.
 
 ## What Changes
 

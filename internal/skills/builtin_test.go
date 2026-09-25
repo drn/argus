@@ -382,6 +382,60 @@ func TestEnsureCodexSkills_SeparatesCustomHomes(t *testing.T) {
 	}
 }
 
+func TestEnsureCodexSkills_ReconcilesLaterUserStateAndSkill(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	base := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(base, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "config.toml"), []byte("original"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	overlay, err := ensureCodexSkills()
+	testutil.NoError(t, err)
+	// Codex may atomically replace a link, making an overlay-local copy.
+	if err := os.Remove(filepath.Join(overlay, "config.toml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(overlay, "config.toml"), []byte("overlay update"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// A user may install a colliding skill after the overlay was created.
+	userSkill := filepath.Join(base, "skills", "hera", skillManifestFile)
+	if err := os.MkdirAll(filepath.Dir(userSkill), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(userSkill, []byte("user hera"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = ensureCodexSkills()
+	testutil.NoError(t, err)
+	linked, err := os.Readlink(filepath.Join(overlay, "config.toml"))
+	testutil.NoError(t, err)
+	testutil.Equal(t, linked, filepath.Join(base, "config.toml"))
+	got, err := os.ReadFile(filepath.Join(overlay, "skills", "hera", skillManifestFile))
+	testutil.NoError(t, err)
+	testutil.Equal(t, string(got), "user hera")
+	backups, err := filepath.Glob(filepath.Join(overlay, ".argus-preserved-*", "config.toml"))
+	testutil.NoError(t, err)
+	if len(backups) != 1 {
+		t.Fatalf("expected preserved overlay config, got %v", backups)
+	}
+	backup, err := os.ReadFile(backups[0])
+	testutil.NoError(t, err)
+	testutil.Equal(t, string(backup), "overlay update")
+	if err := os.RemoveAll(filepath.Dir(userSkill)); err != nil {
+		t.Fatal(err)
+	}
+	_, err = ensureCodexSkills()
+	testutil.NoError(t, err)
+	if _, err := os.Stat(filepath.Join(overlay, "skills", "hera", skillManifestFile)); err != nil {
+		t.Fatalf("Argus skill should return after the user skill is removed: %v", err)
+	}
+}
+
 func TestEnsureCodexSkills_DefaultsToDotCodexUnderHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

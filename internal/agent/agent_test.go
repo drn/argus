@@ -1712,7 +1712,7 @@ func TestCaptureCodexSessionID_CustomSQLiteHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	t.Cleanup(func() { testutil.NoError(t, conn.Close()) })
 	if _, err := conn.Exec(`CREATE TABLE threads (id TEXT, cwd TEXT, updated_at INTEGER)`); err != nil {
 		t.Fatal(err)
 	}
