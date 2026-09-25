@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -20,6 +21,45 @@ func containsAny(s string, substrs ...string) bool {
 		}
 	}
 	return false
+}
+
+func TestBuildCmd_PiAndOpencodeSkillsAreSessionScoped(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "argus-skills")
+	previous := ensureSessionSkillsFn
+	ensureSessionSkillsFn = func() (string, error) { return root, nil }
+	defer func() { ensureSessionSkillsFn = previous }()
+	t.Setenv("OPENCODE_CONFIG_CONTENT", `{"theme":"custom","skills":["/my/skill"]}`)
+	cfg := nonClaudeContextConfig()
+	skillsDir := filepath.Join(root, ".claude", "skills")
+
+	piTask := &model.Task{Name: "pi", Backend: "pi", Prompt: "go", Worktree: t.TempDir()}
+	piCmd, _, err := BuildCmd(piTask, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Contains(t, piCmd.Args[2], "--skill '"+skillsDir+"'")
+	if containsAny(piCmd.Args[2], "--add-dir") {
+		t.Fatal("Pi must receive its own skill flag")
+	}
+
+	openTask := &model.Task{Name: "open", Backend: "opencode", Prompt: "go", Worktree: t.TempDir()}
+	openCmd, _, err := BuildCmd(openTask, cfg, false)
+	testutil.NoError(t, err)
+	var inline string
+	for _, entry := range openCmd.Env {
+		if strings.HasPrefix(entry, "OPENCODE_CONFIG_CONTENT=") {
+			inline = strings.TrimPrefix(entry, "OPENCODE_CONFIG_CONTENT=")
+		}
+	}
+	var config map[string]any
+	testutil.NoError(t, json.Unmarshal([]byte(inline), &config))
+	testutil.Equal(t, config["theme"], any("custom"))
+	testutil.DeepEqual(t, config["skills"], any([]any{"/my/skill", skillsDir}))
+}
+
+func TestOpencodeSkillsConfigContent_InvalidExistingContent(t *testing.T) {
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "not json")
+	if _, err := opencodeSkillsConfigContent("/skills"); err == nil {
+		t.Fatal("invalid existing inline config must not be replaced")
+	}
 }
 
 func TestReadClaudeMDFile_Present(t *testing.T) {
@@ -244,19 +284,53 @@ func TestNonClaudeContextPrefix_ExactStructureForOpencode(t *testing.T) {
 
 func TestBuildCmd_EnsureCodexSkills_CalledForCodex(t *testing.T) {
 	called := false
+	isolatedHome := filepath.Join(t.TempDir(), "codex-home")
 	restore := SetEnsureCodexSkillsForTest(func() (string, error) {
 		called = true
-		return "", nil
+		return isolatedHome, nil
 	})
 	defer restore()
 
 	cfg := nonClaudeContextConfig()
 	task := &model.Task{Name: "t", Backend: "codex", Prompt: "go", Worktree: t.TempDir()}
-	_, _, err := BuildCmd(task, cfg, false)
+	cmd, _, err := BuildCmd(task, cfg, false)
 	testutil.NoError(t, err)
 	if !called {
 		t.Error("expected ensureCodexSkillsFn to be called for a codex backend")
 	}
+	for _, entry := range []string{"CODEX_HOME=" + isolatedHome, "CODEX_SQLITE_HOME=" + filepath.Join(os.Getenv("HOME"), ".codex")} {
+		if !containsEnvEntry(cmd.Env, entry) {
+			t.Errorf("expected child env to contain %q", entry)
+		}
+	}
+}
+
+func TestBuildCmd_EnsureCodexSkills_FailureDoesNotBlockLaunch(t *testing.T) {
+	t.Setenv("CODEX_HOME", "")
+	restore := SetEnsureCodexSkillsForTest(func() (string, error) {
+		return "", errors.New("cannot create isolated home")
+	})
+	defer restore()
+
+	cfg := nonClaudeContextConfig()
+	task := &model.Task{Name: "t", Backend: "codex", Prompt: "go", Worktree: t.TempDir()}
+	cmd, cleanup, err := BuildCmd(task, cfg, false)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	testutil.NoError(t, err)
+	if containsEnvEntry(cmd.Env, "CODEX_HOME="+filepath.Join(os.Getenv("HOME"), ".local", "share", "argus", "codex-home")) {
+		t.Fatal("failed preparation must not override CODEX_HOME")
+	}
+}
+
+func containsEnvEntry(env []string, want string) bool {
+	for _, entry := range env {
+		if entry == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBuildCmd_EnsureCodexSkills_NotCalledForOtherBackends(t *testing.T) {

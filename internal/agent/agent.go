@@ -520,11 +520,15 @@ func CaptureCodexSessionID(worktreePath string) (string, error) {
 	if worktreePath == "" {
 		return "", fmt.Errorf("CaptureCodexSessionID: worktree path is empty")
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("CaptureCodexSessionID: home dir: %w", err)
+	sqliteHome := strings.TrimSpace(os.Getenv("CODEX_SQLITE_HOME"))
+	if sqliteHome == "" {
+		var err error
+		sqliteHome, err = skills.UserCodexHome()
+		if err != nil {
+			return "", fmt.Errorf("CaptureCodexSessionID: Codex home: %w", err)
+		}
 	}
-	dbPath := filepath.Join(home, ".codex", codexStateDB)
+	dbPath := filepath.Join(sqliteHome, codexStateDB)
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return "", fmt.Errorf("CaptureCodexSessionID: open db: %w", err)
@@ -819,11 +823,23 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// --add-dir otherwise granting file access only. Additive to any --add-dir
 	// already present in the backend command — repeatable flag, no conflict.
 	// Materialization failure is logged and skipped rather than blocking launch.
-	if IsClaudeBackend(backend.Command) {
-		if root, err := skills.EnsureBuiltinSkills(); err != nil {
+	var opencodeSkillsContent string
+	if IsClaudeBackend(backend.Command) || isPi || isOpencode {
+		if root, err := ensureSessionSkillsFn(); err != nil {
 			uxlog.Log("[skills] builtin skills materialize failed (continuing without them): %v", err)
 		} else if root != "" {
-			cmdStr += " --add-dir " + shellQuote(root)
+			switch {
+			case isPi:
+				cmdStr += " --skill " + shellQuote(skills.BuiltinSkillsDir(root))
+			case isOpencode:
+				var configErr error
+				opencodeSkillsContent, configErr = opencodeSkillsConfigContent(skills.BuiltinSkillsDir(root))
+				if configErr != nil {
+					uxlog.Log("[skills] opencode session config unavailable (continuing without builtin skills): %v", configErr)
+				}
+			default:
+				cmdStr += " --add-dir " + shellQuote(root)
+			}
 		}
 	}
 
@@ -844,17 +860,16 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		}
 	}
 
-	// Make argus's own builtin skills available to Codex by materializing them
-	// to Codex's own first-party installed-skills directory ($CODEX_HOME/skills)
-	// — Codex's native skill discovery finds them from there with no flag
-	// needed, unlike Claude's --add-dir. opencode's equivalent is a config-file
-	// entry injected once at daemon startup (internal/inject/opencode), not
-	// per-spawn, so nothing happens here for opencode. Materialization failure
-	// is logged and skipped rather than blocking launch. See
-	// openspec/changes/add-nonclaude-context-parity/design.md Decision 2.
+	// An Argus-only Codex home gives Codex native skill discovery without
+	// installing Argus skills into the user's global ~/.codex/skills. The path
+	// is exported to this child only, below. A setup failure leaves normal
+	// Codex launch behavior intact, minus Argus's optional builtin skills.
+	var argusCodexHome string
 	if isCodex {
-		if _, err := ensureCodexSkillsFn(); err != nil {
+		if root, err := ensureCodexSkillsFn(); err != nil {
 			uxlog.Log("[skills] codex builtin skills materialize failed (continuing without them): %v", err)
+		} else {
+			argusCodexHome = root
 		}
 	}
 
@@ -980,6 +995,19 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		"GOCACHE="+filepath.Join(db.DataDir(), "cache", "go-build"),
 		"PLAYWRIGHT_BROWSERS_PATH="+filepath.Join(db.DataDir(), "cache", "ms-playwright"),
 	)
+	if argusCodexHome != "" {
+		cmd.Env = append(cmd.Env, "CODEX_HOME="+argusCodexHome)
+		// Keep Codex's SQLite state in its usual location so Argus's session-ID
+		// capture and Codex resume continue to see the same session database.
+		if strings.TrimSpace(os.Getenv("CODEX_SQLITE_HOME")) == "" {
+			if baseCodexHome, err := skills.UserCodexHome(); err == nil {
+				cmd.Env = append(cmd.Env, "CODEX_SQLITE_HOME="+baseCodexHome)
+			}
+		}
+	}
+	if opencodeSkillsContent != "" {
+		cmd.Env = append(cmd.Env, "OPENCODE_CONFIG_CONTENT="+opencodeSkillsContent)
+	}
 
 	// Force-export the resolved [secrets.op] bootstrap credential into every
 	// spawned session's env, mirroring the TERM/COLORTERM/GOCACHE force

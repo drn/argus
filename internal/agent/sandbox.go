@@ -87,6 +87,9 @@ const sandboxProfileBase = `(version 1)
 ; ~/.claude.json — the agent's BuildCmd treats codex as a first-class backend
 ; and CaptureCodexSessionID reads state_5.sqlite, which codex must write first.
 (allow file-write* (subpath (string-append (param "HOME") "/.codex")))
+; Argus-launched Codex sessions use an isolated CODEX_HOME here so their
+; builtin skills do not appear in ordinary Codex sessions.
+(allow file-write* (subpath (string-append (param "HOME") "/.local/share/argus/codex-home")))
 ; Pi backend (pi.dev coding agent): session files at
 ; ~/.pi/agent/sessions/--<encoded-cwd>--/<ts>_<uuid>.jsonl plus auth/config.
 ; CapturePiSessionID reads these to recover the session UUID post-exit, so the

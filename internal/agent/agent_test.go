@@ -1672,6 +1672,8 @@ func TestCaptureCodexSessionID_DBPathMissing(t *testing.T) {
 func TestCaptureCodexSessionID_Success(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	t.Setenv("CODEX_SQLITE_HOME", "")
 	codexDir := filepath.Join(home, ".codex")
 	if err := os.MkdirAll(codexDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -1701,6 +1703,26 @@ func TestCaptureCodexSessionID_Success(t *testing.T) {
 	got, err := CaptureCodexSessionID(wt)
 	testutil.NoError(t, err)
 	testutil.Equal(t, got, validID)
+}
+
+func TestCaptureCodexSessionID_CustomSQLiteHome(t *testing.T) {
+	sqliteHome := t.TempDir()
+	t.Setenv("CODEX_SQLITE_HOME", sqliteHome)
+	conn, err := sql.Open("sqlite", filepath.Join(sqliteHome, codexStateDB))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Exec(`CREATE TABLE threads (id TEXT, cwd TEXT, updated_at INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	want := "019cff60-2cfb-7ed3-bca6-15ef06587c99"
+	if _, err := conn.Exec(`INSERT INTO threads (id, cwd, updated_at) VALUES (?, ?, ?)`, want, "/wt/custom-sqlite", 100); err != nil {
+		t.Fatal(err)
+	}
+	got, err := CaptureCodexSessionID("/wt/custom-sqlite")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got, want)
 }
 
 // TestCaptureCodexSessionID_BadFormat returns an error when the row's id
