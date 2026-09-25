@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
@@ -733,7 +734,10 @@ func TestC_StartErr(t *testing.T) {
 	testutil.Error(t, err)
 }
 
-// TestC_StartRPCErr covers Start's RPC-failure branch.
+// TestC_StartRPCErr covers Start's RPC-failure branch. A closed transport is
+// a definitive failure (not an ambiguous timeout) — the RPC can't possibly
+// still be running daemon-side, so this must NOT wrap agent.ErrStartAmbiguous;
+// CreateAndStart still needs to unwind on this kind of error.
 func TestC_StartRPCErr(t *testing.T) {
 	_, sockPath, _ := testSetup(t)
 	c, err := Connect(sockPath)
@@ -743,6 +747,46 @@ func TestC_StartRPCErr(t *testing.T) {
 	task := &model.Task{ID: "t-rpc-err", Backend: "test"}
 	_, err = c.Start(task, config.Config{}, 24, 80, false)
 	testutil.Error(t, err)
+	testutil.False(t, errors.Is(err, agent.ErrStartAmbiguous))
+}
+
+// TestC_StartAmbiguousOnTimeout pins the fix for the destructive-unwind bug:
+// a Start RPC that times out (the client gave up waiting, not proof the
+// daemon-side start failed) must be wrapped in agent.ErrStartAmbiguous so
+// CreateAndStart knows not to delete the freshly created worktree/task over
+// it. Uses the same net.Pipe pattern as TestC_CallTO to force a real timeout
+// without waiting out the real rpcTimeout... deliberately DOES wait out the
+// real default rpcTimeout (no config → no per-backend override) since
+// Start's timeout is chosen internally and isn't a parameter test code can
+// shrink; kept to the short 2s default rather than piStartTimeout's 20s.
+func TestC_StartAmbiguousOnTimeout(t *testing.T) {
+	a, b := net.Pipe()
+	t.Cleanup(func() { a.Close(); b.Close() })
+
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			if _, err := b.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	c := &Client{
+		rpc:      jsonrpc.NewClient(a),
+		sockPath: "",
+		sessions: make(map[string]*RemoteSession),
+		closed:   make(chan struct{}),
+	}
+	t.Cleanup(func() {
+		close(c.closed)
+		_ = c.rpc.Close()
+	})
+
+	task := &model.Task{ID: "t-ambiguous", Backend: "unresolved"}
+	_, err := c.Start(task, config.Config{}, 24, 80, false)
+	testutil.True(t, errors.Is(err, ErrRPCTimeout))
+	testutil.True(t, errors.Is(err, agent.ErrStartAmbiguous))
 }
 
 // TestC_ConnectFail exercises Connect's dial-error path.

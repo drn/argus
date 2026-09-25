@@ -52,9 +52,15 @@ func supE2E(t *testing.T) (*daemon.Daemon, *Client, *db.DB) {
 	return d, sc, database
 }
 
-// StartSession has a longer deadline at both RPC hops because Pi's bounded
-// prelaunch can take minutes. This test crosses TUI→daemon→supervisor and waits
-// beyond the ordinary two-second deadline before allowing the launch.
+// A pi-backend StartSession gets piStartTimeout at both RPC hops (the
+// per-backend override in startTimeoutFor, not a flat bump for every
+// backend). This test crosses TUI→daemon→supervisor and waits beyond the
+// ordinary short default deadline before the launch completes, proving the
+// override reaches the daemon→supervisor hop too — both hops go through the
+// same Client.Start. Passes the real database.Config() (not an empty
+// config.Config{}) so startTimeoutFor can actually resolve "slow-pi" to the
+// pi backend, matching how cfg is populated in production (a.db.Config() /
+// d.db.Config()), not a test shortcut.
 func TestSupSlowStart(t *testing.T) {
 	d, _, database := supE2E(t)
 	cmdPath := filepath.Join(t.TempDir(), "pi")
@@ -81,7 +87,7 @@ func TestSupSlowStart(t *testing.T) {
 	t.Cleanup(func() { _ = c.Close() })
 	task := &model.Task{ID: "slow-start", Backend: "slow-pi", Worktree: t.TempDir()}
 	start := time.Now()
-	sess, err := c.Start(task, config.Config{}, 24, 80, false)
+	sess, err := c.Start(task, database.Config(), 24, 80, false)
 	testutil.NoError(t, err)
 	testutil.True(t, time.Since(start) > rpcTimeout)
 	testutil.True(t, sess.PID() > 0)

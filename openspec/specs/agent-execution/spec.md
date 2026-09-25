@@ -54,19 +54,31 @@ The system SHALL build the agent command as a shell invocation whose working dir
 
 ### Requirement: Slow prelaunch does not time out task startup
 
-The system SHALL allow a `StartSession` request to remain pending through the bounded backend prelaunch budget at both the TUI-to-daemon and daemon-to-supervisor RPC hops. Other routine daemon RPCs SHALL retain their short timeout. A completed prelaunch failure SHALL be returned to the task creator before transactional cleanup, so the worktree is not removed while prelaunch is still running.
+The system SHALL NOT delete a task's worktree or task row in response to a `StartSession` request timing out from the caller's perspective. A caller-side timeout means only that the caller stopped waiting for a response — the daemon-side start continues running to completion regardless — so it SHALL NOT by itself be treated as proof the daemon-side start failed. Backends whose prelaunch work can legitimately exceed the default RPC deadline SHALL be given a longer deadline on a per-backend basis; other backends SHALL retain the short default so a genuinely unreachable daemon is still reported quickly.
 
-#### Scenario: Pi prelaunch takes longer than the ordinary RPC timeout
+#### Scenario: Pi prelaunch takes longer than the ordinary RPC timeout but completes within pi's extended deadline
 
-- **WHEN** Pi prelaunch takes more than two seconds and succeeds within its configured budget
-- **THEN** the daemon and supervisor SHALL complete `StartSession` without an RPC timeout
+- **WHEN** Pi prelaunch takes more than the default RPC timeout and succeeds within pi's extended per-backend deadline
+- **THEN** `StartSession` SHALL complete without an RPC timeout
 - **AND** the task SHALL remain attached to its worktree
+
+#### Scenario: Pi prelaunch exceeds even the extended per-backend deadline
+
+- **WHEN** Pi prelaunch takes longer than pi's extended per-backend deadline (e.g. a genuinely cold model load)
+- **THEN** the RPC call SHALL return an ambiguous-timeout error to the task creator
+- **AND** the creator SHALL NOT remove the task's worktree or delete its task row on that error
+- **AND** the task SHALL remain in place for the daemon to finish starting it, or for the user to retry
 
 #### Scenario: Pi prelaunch fails
 
-- **WHEN** Pi prelaunch returns an error within its configured budget
+- **WHEN** Pi prelaunch returns a definitive error within its configured budget
 - **THEN** the error SHALL reach the task creator
-- **AND** the creator SHALL unwind the task only after the start call has completed
+- **AND** the creator SHALL unwind the task, since this is not an ambiguous-timeout case
+
+#### Scenario: A backend with no known slow prelaunch fails fast on an unreachable daemon
+
+- **WHEN** a backend with no per-backend timeout override issues `StartSession` against a daemon that never responds
+- **THEN** the RPC SHALL time out at the short default deadline rather than waiting on a budget sized for slow-prelaunch backends
 
 ### Requirement: OpenCode auto approval at launch
 
@@ -668,3 +680,4 @@ When building a Pi command, Argus SHALL append a `--skill` argument naming its m
 - **WHEN** Argus builds a Pi or OpenCode command after materializing its embedded skills
 - **THEN** the resulting child receives the path through its native discovery mechanism
 - **AND** the parent's environment and ordinary sessions remain unchanged
+
