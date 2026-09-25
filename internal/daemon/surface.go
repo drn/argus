@@ -90,7 +90,9 @@ const (
 	//
 	// History:
 	//   - v1: initial declaration (reduce-supervisor-skew-blast-radius, Layer 1).
-	SupervisorStreamSurface = 1
+	//   - v2: the PTY session answers startup OSC 10/11 color queries before a
+	//     renderer attaches, so Codex can highlight its composer immediately.
+	SupervisorStreamSurface = 2
 )
 
 // SurfaceVersion is a supervisor's declared executed-surface identity: the pair
@@ -263,12 +265,13 @@ var SupervisorSpawnPaths = []string{
 // to it is far more likely to reach a running agent than not. Classifying an
 // ambiguous file as STREAM is the safe direction.
 var SupervisorStreamPaths = []string{
-	"internal/agent/ringbuffer.go",   // the ring the sole readLoop tees into
-	"internal/agent/runner.go",       // live session map, pendingRestart, Stop/StopAll, KickRerender
-	"internal/agent/session.go",      // the single readLoop: PTY read → ring + writers, session log
-	"internal/agent/sessionsize.go",  // the PTY-size sidecar session.go writes on resize
-	"internal/daemon/sessioncore.go", // the R/S handlers both daemon and supervisor mount
-	"internal/daemon/supervisor.go",  // the supervisor process itself: Hello, exit caching, serve loop
+	"internal/agent/ringbuffer.go",     // the ring the sole readLoop tees into
+	"internal/agent/runner.go",         // live session map, pendingRestart, Stop/StopAll, KickRerender
+	"internal/agent/session.go",        // the single readLoop: PTY read → ring + writers, session log
+	"internal/agent/terminal_color.go", // PTY startup OSC color-query replies and duplicate filtering
+	"internal/agent/sessionsize.go",    // the PTY-size sidecar session.go writes on resize
+	"internal/daemon/sessioncore.go",   // the R/S handlers both daemon and supervisor mount
+	"internal/daemon/supervisor.go",    // the supervisor process itself: Hello, exit caching, serve loop
 }
 
 // SpawnSurfaceDigest and StreamSurfaceDigest are the recorded SHA-256 of each
@@ -291,7 +294,7 @@ var SupervisorStreamPaths = []string{
 // message prints the computed digest to paste back here.
 const (
 	SpawnSurfaceDigest  = "74b9cddcde47bc4760bcb647bffca639022ab2f0aa4b29cf53002e42d6d3496b"
-	StreamSurfaceDigest = "57078648a38b01bad81b795bf6ca431199e4e394460f3a19ca9bf0ee407a785e"
+	StreamSurfaceDigest = "1939566dd6c7db1f3cfb45ff2856303b79e8c255b5618783729aa5baa4c8a493"
 )
 
 // SurfaceDigest computes the SHA-256 over the declared manifest's file contents,
