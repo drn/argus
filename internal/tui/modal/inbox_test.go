@@ -226,19 +226,17 @@ func TestDrawCells_WideRunesAndClipping(t *testing.T) {
 	sim := drawAt(t, 10, 2)
 	drawCells(sim, 0, 0, 5, "a漢b字c", tcell.StyleDefault)
 	sim.Sync()
-	for _, tc := range []struct {
-		x    int
-		want rune
-	}{{0, 'a'}, {1, '漢'}, {3, 'b'}} {
-		r, _, _, _ := sim.GetContent(tc.x, 0)
-		testutil.Equal(t, r, tc.want)
+	cell := func(x, y int) string {
+		str, _, _ := sim.Get(x, y)
+		return str
 	}
+	testutil.Equal(t, cell(0, 0), "a")
+	testutil.Equal(t, cell(1, 0), "漢")
+	testutil.Equal(t, cell(3, 0), "b")
 	// 字 would need columns 4-5 but only 5 columns are allowed: clipped.
-	r, _, _, _ := sim.GetContent(4, 0)
-	testutil.Equal(t, r, ' ')
+	testutil.Equal(t, cell(4, 0), " ")
 
 	drawCells(sim, 0, 1, 5, "x\u200by", tcell.StyleDefault)
 	sim.Sync()
-	r, _, _, _ = sim.GetContent(1, 1)
-	testutil.Equal(t, r, 'y')
+	testutil.Equal(t, cell(1, 1), "y")
 }

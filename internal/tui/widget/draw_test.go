@@ -138,11 +138,10 @@ func TestDrawBorderedPanel_TitleColumnsFollowRunesNotBytes(t *testing.T) {
 	DrawBorderedPanel(s, 0, 0, 20, 4, "a—b漢c", tcell.StyleDefault)
 	for _, tc := range []struct {
 		x    int
-		want rune
-	}{{1, 'a'}, {2, '—'}, {3, 'b'}, {4, '漢'}, {6, 'c'}, {7, '─'}} {
-		r, _, _, _ := s.GetContent(tc.x, 0)
-		if r != tc.want {
-			t.Errorf("title cell %d = %q, want %q", tc.x, r, tc.want)
+		want string
+	}{{1, "a"}, {2, "—"}, {3, "b"}, {4, "漢"}, {6, "c"}, {7, "─"}} {
+		if got, _, _ := s.Get(tc.x, 0); got != tc.want {
+			t.Errorf("title cell %d = %q, want %q", tc.x, got, tc.want)
 		}
 	}
 }
@@ -150,12 +149,10 @@ func TestDrawBorderedPanel_TitleColumnsFollowRunesNotBytes(t *testing.T) {
 func TestDrawBorderedPanel_TitleClippedToBorder(t *testing.T) {
 	s := newSimScreen(t, 10, 4)
 	DrawBorderedPanel(s, 0, 0, 5, 3, "abcdefgh", tcell.StyleDefault)
-	r, _, _, _ := s.GetContent(4, 0)
-	if r != '╮' {
-		t.Errorf("top-right corner overwritten by title: %q", r)
+	if got, _, _ := s.Get(4, 0); got != "╮" {
+		t.Errorf("top-right corner overwritten by title: %q", got)
 	}
-	r, _, _, _ = s.GetContent(3, 0)
-	if r != 'c' {
-		t.Errorf("last title cell = %q, want c", r)
+	if got, _, _ := s.Get(3, 0); got != "c" {
+		t.Errorf("last title cell = %q, want c", got)
 	}
 }
