@@ -2,9 +2,12 @@ package agent
 
 import (
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/config"
@@ -85,22 +88,180 @@ func TestBuildCmd_OpencodeResumeNoSessionID(t *testing.T) {
 }
 
 func TestBuildCmd_OpencodeModelInjection(t *testing.T) {
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
 	cfg := testConfig()
 	task := &model.Task{Backend: "opencode", Prompt: "fix the bug", Model: "anthropic/claude-sonnet-4-5", Worktree: t.TempDir()}
 
 	cmd, _, err := BuildCmd(task, cfg, false)
 	testutil.NoError(t, err)
-	testutil.Equal(t, cmd.Args[2], "opencode --auto --model 'anthropic/claude-sonnet-4-5' --prompt 'fix the bug'")
+	// OpenCode v2's full TUI rejects a top-level --model; the model travels
+	// through the child-only inline configuration instead.
+	testutil.Equal(t, cmd.Args[2], "opencode --auto --prompt 'fix the bug'")
+	inline, ok := envValue(cmd.Env, "OPENCODE_CONFIG_CONTENT")
+	testutil.Equal(t, ok, true)
+	var got map[string]any
+	testutil.NoError(t, json.Unmarshal([]byte(inline), &got))
+	testutil.Equal(t, got["model"], any("anthropic/claude-sonnet-4-5"))
 }
 
 func TestBuildCmd_OpencodeModelInjection_Resume(t *testing.T) {
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
 	cfg := testConfig()
 	task := &model.Task{Backend: "opencode", Model: "anthropic/claude-opus-4-1", SessionID: "ses_abc123", Worktree: t.TempDir()}
 
 	cmd, _, err := BuildCmd(task, cfg, true)
 	testutil.NoError(t, err)
-	// Model flag precedes the resume --session; prompt is dropped.
-	testutil.Equal(t, cmd.Args[2], "opencode --auto --model 'anthropic/claude-opus-4-1' --session 'ses_abc123'")
+	// Resume keeps the model in the same child-scoped config; the prompt is
+	// dropped and the command carries only the session flag.
+	testutil.Equal(t, cmd.Args[2], "opencode --auto --session 'ses_abc123'")
+	inline, ok := envValue(cmd.Env, "OPENCODE_CONFIG_CONTENT")
+	testutil.Equal(t, ok, true)
+	var got map[string]any
+	testutil.NoError(t, json.Unmarshal([]byte(inline), &got))
+	testutil.Equal(t, got["model"], any("anthropic/claude-opus-4-1"))
+}
+
+func TestBuildCmd_OpencodeBackendDefaultModelUsesInlineConfig(t *testing.T) {
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
+	cfg := testConfig()
+	cfg.Backends["opencode"] = config.Backend{Command: "opencode", PromptFlag: "--prompt", Model: "provider/default"}
+	task := &model.Task{Backend: "opencode", Prompt: "go", Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	inline, ok := envValue(cmd.Env, "OPENCODE_CONFIG_CONTENT")
+	testutil.Equal(t, ok, true)
+	var got map[string]any
+	testutil.NoError(t, json.Unmarshal([]byte(inline), &got))
+	testutil.Equal(t, got["model"], any("provider/default"))
+}
+
+func TestBuildCmd_OpencodeExplicitCommandModelWins(t *testing.T) {
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
+	cfg := testConfig()
+	cfg.Backends["opencode"] = config.Backend{Command: "opencode --model 'provider/command'", PromptFlag: "--prompt"}
+	task := &model.Task{Backend: "opencode", Prompt: "go", Model: "provider/task", Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Contains(t, cmd.Args[2], "--model 'provider/command'")
+	// The inline config may still carry the skills path; what must be absent is
+	// a second, conflicting model.
+	if inline, ok := envValue(cmd.Env, "OPENCODE_CONFIG_CONTENT"); ok && inline != "" {
+		var got map[string]any
+		testutil.NoError(t, json.Unmarshal([]byte(inline), &got))
+		if model, present := got["model"]; present {
+			t.Fatalf("an explicit command-level model must not receive a second inline override: %v", model)
+		}
+	}
+}
+
+func TestBuildCmd_OpencodeNonProviderModelLogsWarning(t *testing.T) {
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
+	logs := captureUXLog(t)
+	cfg := testConfig()
+	task := &model.Task{ID: "bad-model", Backend: "opencode", Prompt: "go", Model: "sonnet", Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	// The value is still delivered — the operator chose it — but the launch
+	// never fails quietly on a model OpenCode will discard.
+	inline, ok := envValue(cmd.Env, "OPENCODE_CONFIG_CONTENT")
+	testutil.Equal(t, ok, true)
+	var got map[string]any
+	testutil.NoError(t, json.Unmarshal([]byte(inline), &got))
+	testutil.Equal(t, got["model"], any("sonnet"))
+	testutil.Contains(t, logs(), "not a provider/model id")
+}
+
+func TestBuildCmd_OpencodeProviderModelLogsNoWarning(t *testing.T) {
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
+	logs := captureUXLog(t)
+	cfg := testConfig()
+	task := &model.Task{ID: "good-model", Backend: "opencode", Prompt: "go", Model: "provider/model", Worktree: t.TempDir()}
+
+	_, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	if strings.Contains(logs(), "not a provider/model id") {
+		t.Fatal("a well-formed provider/model id must not warn")
+	}
+}
+
+func TestBuildCmd_OpencodeMalformedInlineConfigFailsOpen(t *testing.T) {
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "not json")
+	cfg := testConfig()
+	task := &model.Task{Backend: "opencode", Prompt: "go", Model: "provider/task", Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], "opencode --auto --prompt 'go'")
+	inline, ok := envValue(cmd.Env, "OPENCODE_CONFIG_CONTENT")
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, inline, "not json")
+}
+
+func TestBuildCmd_OpencodeSkillsFailureDoesNotDropModel(t *testing.T) {
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
+	previous := ensureSessionSkillsFn
+	ensureSessionSkillsFn = func() (string, error) { return "", errors.New("skills unavailable") }
+	t.Cleanup(func() { ensureSessionSkillsFn = previous })
+
+	cfg := testConfig()
+	task := &model.Task{Backend: "opencode", Prompt: "go", Model: "provider/task", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+
+	inline, ok := envValue(cmd.Env, "OPENCODE_CONFIG_CONTENT")
+	testutil.Equal(t, ok, true)
+	var got map[string]any
+	testutil.NoError(t, json.Unmarshal([]byte(inline), &got))
+	testutil.Equal(t, got["model"], any("provider/task"))
+	if _, ok := got["skills"]; ok {
+		t.Fatal("failed skill materialization must not synthesize a skills key")
+	}
+}
+
+func TestBuildCmd_OpencodeEnvVarsConfigTargetWins(t *testing.T) {
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
+	t.Setenv("ARGUS_TEST_OPENCODE_CONFIG", "user-config")
+	cfg := testConfig()
+	cfg.Backends["opencode"] = config.Backend{
+		Command:    "opencode",
+		PromptFlag: "--prompt",
+		Model:      "provider/task",
+		EnvVars:    map[string]string{"OPENCODE_CONFIG_CONTENT": "ARGUS_TEST_OPENCODE_CONFIG"},
+	}
+	task := &model.Task{Backend: "opencode", Prompt: "go", Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	inline, ok := envValue(cmd.Env, "OPENCODE_CONFIG_CONTENT")
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, inline, "user-config")
+}
+
+func TestBuildCmd_OpencodeModelIsNotShellInterpolated(t *testing.T) {
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
+	const hostile = "provider/'; rm -rf /"
+	cfg := testConfig()
+	task := &model.Task{Backend: "opencode", Prompt: "go", Model: hostile, Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	// The model must never touch the shell: an argv regression is the exact
+	// failure this change fixes, so assert the flag is absent, not just that
+	// the hostile substring is missing (shellQuote would have hidden it).
+	if strings.Contains(cmd.Args[2], "--model") {
+		t.Fatalf("OpenCode must not receive a top-level --model flag: %q", cmd.Args[2])
+	}
+	if strings.Contains(cmd.Args[2], hostile) {
+		t.Fatalf("model value must not reach the shell command: %q", cmd.Args[2])
+	}
+	inline, ok := envValue(cmd.Env, "OPENCODE_CONFIG_CONTENT")
+	testutil.Equal(t, ok, true)
+	var got map[string]any
+	testutil.NoError(t, json.Unmarshal([]byte(inline), &got))
+	testutil.Equal(t, got["model"], any(hostile))
 }
 
 // seedOpencodeSQLite creates an opencode.db with a `session` table under the

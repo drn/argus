@@ -293,10 +293,11 @@ func PermissionModeLabel(mode string) string {
 type Backend struct {
 	Command    string `toml:"command"`
 	PromptFlag string `toml:"prompt_flag"`
-	// Model is the default model for this backend, injected by agent.BuildCmd
-	// as `--model <value>` for known backend CLIs (claude, codex, pi). Empty
-	// means the CLI's own default. A per-task model (model.Task.Model) takes
-	// precedence over this value.
+	// Model is the default model for this backend. agent.BuildCmd injects it
+	// as `--model <value>` for Claude, Codex, and Pi; OpenCode receives it
+	// through the child-only inline configuration channel because its v2 full
+	// TUI rejects the top-level flag. Empty means the CLI's own default. A
+	// per-task model (model.Task.Model) takes precedence over this value.
 	Model string `toml:"model"`
 	// Models is an optional list of selectable model identifiers offered for
 	// this backend in the new-task model selector. Empty falls back to the

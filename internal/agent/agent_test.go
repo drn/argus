@@ -2403,6 +2403,7 @@ func TestHasModelFlag(t *testing.T) {
 		{"trailing", "claude --model", true},
 		{"absent", "claude --permission-mode plan", false},
 		{"prefix flag does not match", "my-agent --model-format json", false},
+		{"after options separator is positional", "opencode -- --model sonnet", false},
 		{"empty", "", false},
 	}
 	for _, tc := range cases {

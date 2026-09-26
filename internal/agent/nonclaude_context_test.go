@@ -40,7 +40,7 @@ func TestBuildCmd_PiAndOpencodeSkillsAreSessionScoped(t *testing.T) {
 		t.Fatal("Pi must receive its own skill flag")
 	}
 
-	openTask := &model.Task{Name: "open", Backend: "opencode", Prompt: "go", Worktree: t.TempDir()}
+	openTask := &model.Task{Name: "open", Backend: "opencode", Prompt: "go", Model: "provider/model", Worktree: t.TempDir()}
 	openCmd, _, err := BuildCmd(openTask, cfg, false)
 	testutil.NoError(t, err)
 	var inline string
@@ -52,14 +52,141 @@ func TestBuildCmd_PiAndOpencodeSkillsAreSessionScoped(t *testing.T) {
 	var config map[string]any
 	testutil.NoError(t, json.Unmarshal([]byte(inline), &config))
 	testutil.Equal(t, config["theme"], any("custom"))
+	testutil.Equal(t, config["model"], any("provider/model"))
 	testutil.DeepEqual(t, config["skills"], any([]any{"/my/skill", skillsDir}))
 }
 
-func TestOpencodeSkillsConfigContent_InvalidExistingContent(t *testing.T) {
+func TestOpencodeSessionConfigContent_InvalidExistingContent(t *testing.T) {
 	t.Setenv("OPENCODE_CONFIG_CONTENT", "not json")
-	if _, err := opencodeSkillsConfigContent("/skills"); err == nil {
+	if _, err := opencodeSessionConfigContent("provider/model", "/skills"); err == nil {
 		t.Fatal("invalid existing inline config must not be replaced")
 	}
+}
+
+func TestOpencodeSessionConfigContent_MergesModelAndSkills(t *testing.T) {
+	t.Setenv("OPENCODE_CONFIG_CONTENT", `{"theme":"custom","skills":["/my/skill"],"model":"old/model"}`)
+
+	got, err := opencodeSessionConfigContent("provider/model", "/skills")
+	testutil.NoError(t, err)
+
+	var config map[string]any
+	testutil.NoError(t, json.Unmarshal([]byte(got), &config))
+	testutil.Equal(t, config["theme"], any("custom"))
+	testutil.Equal(t, config["model"], any("provider/model"))
+	testutil.DeepEqual(t, config["skills"], any([]any{"/my/skill", "/skills"}))
+}
+
+func TestOpencodeSessionConfigContent_ModelOnly(t *testing.T) {
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
+
+	got, err := opencodeSessionConfigContent("provider/model", "")
+	testutil.NoError(t, err)
+
+	var config map[string]any
+	testutil.NoError(t, json.Unmarshal([]byte(got), &config))
+	testutil.Equal(t, config["model"], any("provider/model"))
+	if _, ok := config["skills"]; ok {
+		t.Fatal("model-only override must not synthesize a skills key")
+	}
+}
+
+func TestOpencodeSessionConfigContent_ReplacesExpandedModel(t *testing.T) {
+	t.Setenv("OPENCODE_CONFIG_CONTENT", `{"model":{"providerID":"old","model":"old-model"}}`)
+
+	got, err := opencodeSessionConfigContent("provider/model", "")
+	testutil.NoError(t, err)
+
+	var config map[string]any
+	testutil.NoError(t, json.Unmarshal([]byte(got), &config))
+	testutil.Equal(t, config["model"], any("provider/model"))
+}
+
+func TestOpencodeSessionConfigContent_NullSkillsIsReplaced(t *testing.T) {
+	t.Setenv("OPENCODE_CONFIG_CONTENT", `{"skills":null}`)
+
+	got, err := opencodeSessionConfigContent("provider/model", "/skills")
+	testutil.NoError(t, err)
+
+	var config map[string]any
+	testutil.NoError(t, json.Unmarshal([]byte(got), &config))
+	testutil.Equal(t, config["model"], any("provider/model"))
+	testutil.DeepEqual(t, config["skills"], any([]any{"/skills"}))
+}
+
+func TestOpencodeSessionConfigContent_IncompatibleSkillsPreservesModel(t *testing.T) {
+	t.Setenv("OPENCODE_CONFIG_CONTENT", `{"skills":"user-owned"}`)
+
+	got, err := opencodeSessionConfigContent("provider/model", "/skills")
+	testutil.NoError(t, err)
+
+	var config map[string]any
+	testutil.NoError(t, json.Unmarshal([]byte(got), &config))
+	testutil.Equal(t, config["model"], any("provider/model"))
+	testutil.Equal(t, config["skills"], any("user-owned"))
+}
+
+func TestOpencodeSessionConfigContent_TrailingCommasAreAccepted(t *testing.T) {
+	// OpenCode parses OPENCODE_CONFIG_CONTENT as JSONC (trailing commas
+	// allowed), so a document it accepts must not read as malformed here.
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "{\n  \"theme\": \"custom\",\n  \"model\": \"old/model\",\n  \"skills\": [\"/my/skill\",],\n}")
+
+	got, err := opencodeSessionConfigContent("provider/model", "/skills")
+	testutil.NoError(t, err)
+
+	var config map[string]any
+	testutil.NoError(t, json.Unmarshal([]byte(got), &config))
+	testutil.Equal(t, config["theme"], any("custom"))
+	testutil.Equal(t, config["model"], any("provider/model"))
+	testutil.DeepEqual(t, config["skills"], any([]any{"/my/skill", "/skills"}))
+}
+
+func TestStripJSONCTrailingCommas(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"object trailing comma", `{"a":1,}`, `{"a":1}`},
+		{"array trailing comma", `{"a":[1,2,],}`, `{"a":[1,2]}`},
+		// Only the comma is dropped; the whitespace that followed it stays, and
+		// the result is still valid JSON.
+		{"whitespace before closer", "{\"a\":1,  \n}", "{\"a\":1  \n}"},
+		{"comma inside string kept", `{"a":"x,",}`, `{"a":"x,"}`},
+		// A } that lives inside a string must not be mistaken for a closer.
+		{"escaped quote inside string", `{"a":"q\"}",}`, `{"a":"q\"}"}`},
+		{"real comma kept", `{"a":1,"b":2}`, `{"a":1,"b":2}`},
+		{"string ending in comma-brace", `{"a":"},",}`, `{"a":"},"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			testutil.Equal(t, stripJSONCTrailingCommas(tc.in), tc.want)
+		})
+	}
+}
+
+func TestOpencodeSessionConfigContent_NonObjectInputs(t *testing.T) {
+	// `null` decodes into a nil map (a different path than an unmarshal error)
+	// and the rest are unmarshal errors; all must be rejected rather than
+	// silently producing a config that drops the user's document.
+	for _, raw := range []string{"null", "[1,2]", `"a string"`, "3", "true", "not json"} {
+		t.Run(raw, func(t *testing.T) {
+			t.Setenv("OPENCODE_CONFIG_CONTENT", raw)
+			if _, err := opencodeSessionConfigContent("provider/model", "/skills"); err == nil {
+				t.Fatalf("non-object inline config %q must be rejected", raw)
+			}
+		})
+	}
+}
+
+func TestOpencodeSessionConfigContent_AlreadyMergedIsByteIdentical(t *testing.T) {
+	// Nothing to change ⇒ no re-marshal, so an operator's formatting and key
+	// order survive and the child sees exactly the document it would have had.
+	const raw = `{"model":"provider/model","skills":["/skills"],"theme":"custom"}`
+	t.Setenv("OPENCODE_CONFIG_CONTENT", raw)
+
+	got, err := opencodeSessionConfigContent("provider/model", "/skills")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got, raw)
 }
 
 func TestNonClaudeRoutingContentReal_ReturnsEmbeddedContent(t *testing.T) {

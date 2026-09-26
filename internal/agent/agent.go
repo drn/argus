@@ -342,7 +342,7 @@ func KnownModels(command string) []string {
 	case IsCodexBackend(command):
 		return []string{"gpt-6-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"}
 	default:
-		// opencode is intentionally custom-only: its --model takes a
+		// opencode is intentionally custom-only: its model is a
 		// provider/model identifier whose valid set depends on which providers
 		// the user has authenticated, so a curated list would name models the
 		// user may not have. The selector offers default + custom… typing, and
@@ -413,6 +413,14 @@ func IsOpencodeBackend(command string) bool {
 	return len(fields) > 0 && filepath.Base(fields[0]) == "opencode"
 }
 
+// opencodeModelIDPattern mirrors OpenCode 2.x's own model normalizer: a model
+// id is `provider/model`, optionally with a `#variant` suffix, and anything
+// else is silently dropped by the CLI's config normalization. Argus only uses
+// this to WARN (see BuildCmd) — it never rewrites a value the operator chose —
+// but a task that would launch on the wrong model must say so in the log
+// instead of failing quietly.
+var opencodeModelIDPattern = regexp.MustCompile(`^[^/#]+/[^#]+$`)
+
 // hasPermissionFlags reports whether a backend command already specifies a
 // Claude permission flag. When true, BuildCmd does NOT inject the configured
 // PermissionMode flags — a hand-edited command always wins, and we never
@@ -425,9 +433,16 @@ func hasPermissionFlags(command string) bool {
 
 // hasModelFlag reports whether a backend command already names the --model
 // flag as a standalone token ("--model <x>", "--model=<x>", or a trailing
-// "--model"). A bare substring check would also match hypothetical flags
-// like --model-format and wrongly suppress injection.
+// "--model"). A bare substring check would also match hypothetical flags like
+// --model-format and wrongly suppress injection. Tokens after an end-of-options
+// "--" separator are positional prompt text, not flags, so they are ignored
+// here just as they are for OpenCode's --auto detection.
 func hasModelFlag(command string) bool {
+	fields := strings.Fields(command)
+	if separator := slices.Index(fields, "--"); separator >= 0 {
+		fields = fields[:separator]
+	}
+	command = strings.Join(fields, " ")
 	return strings.Contains(command, "--model ") ||
 		strings.Contains(command, "--model=") ||
 		strings.HasSuffix(command, "--model")
@@ -850,19 +865,34 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	}
 
 	// Inject the resolved model (task override > diligence profile > backend
-	// default) for known backend CLIs — claude, codex, and pi all accept
-	// --model. Scoped like permission-mode injection so custom/bare commands
-	// never receive the flag, and skipped when the command already names --model
-	// (a hand-edited command always wins). Computed once here because the codex
-	// resume branch below replaces cmdStr and must re-append the flag itself.
-	// resolvedProfile is non-nil only when a bound profile actively contributed
-	// the model; its fields drive the ARGUS_PROFILE/ARCHETYPE/MODEL env export.
+	// default) for known backend CLIs. Claude, Codex, and Pi accept --model;
+	// OpenCode's v2 full TUI rejects that flag, so its model is delivered later
+	// through the child-only OPENCODE_CONFIG_CONTENT channel. Scoped like
+	// permission-mode injection so custom/bare commands never receive the flag,
+	// and skipped when the command already names --model (a hand-edited command
+	// always wins). Computed once here because the codex resume branch below
+	// replaces cmdStr and must re-append the flag itself. resolvedProfile is
+	// non-nil only when a bound profile actively contributed the model; its
+	// fields drive the ARGUS_PROFILE/ARCHETYPE/MODEL env export.
 	resolvedModel, resolvedProfile := ResolveModel(task, backend, cfg)
 	modelFlag := ""
-	if resolvedModel != "" &&
-		(isClaude || isCodex || isPi || isOpencode) &&
-		!hasModelFlag(backend.Command) {
-		modelFlag = " --model " + shellQuote(resolvedModel)
+	opencodeModel := ""
+	if resolvedModel != "" && !hasModelFlag(backend.Command) {
+		switch {
+		case isOpencode:
+			// OpenCode drops a `model` that is not `provider/model` during its
+			// own config normalization, and the session then runs on the CLI
+			// default with nothing on screen saying why. The value is still
+			// delivered — the operator chose it, and a future OpenCode may
+			// accept a form we cannot predict — but a malformed one is never
+			// allowed to fail silently.
+			if !opencodeModelIDPattern.MatchString(resolvedModel) {
+				uxlog.Log("[opencode] task %q: model %q is not a provider/model id; OpenCode ignores it and the session runs on its CLI default", task.ID, resolvedModel)
+			}
+			opencodeModel = resolvedModel
+		case isClaude || isCodex || isPi:
+			modelFlag = " --model " + shellQuote(resolvedModel)
+		}
 	}
 	cmdStr += modelFlag
 
@@ -872,7 +902,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// --add-dir otherwise granting file access only. Additive to any --add-dir
 	// already present in the backend command — repeatable flag, no conflict.
 	// Materialization failure is logged and skipped rather than blocking launch.
-	var opencodeSkillsContent string
+	opencodeSkillsDir := ""
 	if IsClaudeBackend(backend.Command) || isPi || isOpencode {
 		if root, err := ensureSessionSkillsFn(); err != nil {
 			uxlog.Log("[skills] builtin skills materialize failed (continuing without them): %v", err)
@@ -881,14 +911,25 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 			case isPi:
 				cmdStr += " --skill " + shellQuote(skills.BuiltinSkillsDir(root))
 			case isOpencode:
-				var configErr error
-				opencodeSkillsContent, configErr = opencodeSkillsConfigContent(skills.BuiltinSkillsDir(root))
-				if configErr != nil {
-					uxlog.Log("[skills] opencode session config unavailable (continuing without builtin skills): %v", configErr)
-				}
+				opencodeSkillsDir = skills.BuiltinSkillsDir(root)
 			default:
 				cmdStr += " --add-dir " + shellQuote(root)
 			}
+		}
+	}
+
+	// OpenCode's inline configuration is the single child-scoped delivery
+	// channel for both its Argus skills path and its resolved model. Keep the
+	// merge independent of skill materialization: a skills failure must not
+	// silently discard a valid model override, and a model-only task must not
+	// need a skills workspace to launch.
+	opencodeConfigContent := ""
+	if isOpencode && (opencodeModel != "" || opencodeSkillsDir != "") {
+		var configErr error
+		opencodeConfigContent, configErr = opencodeSessionConfigContent(opencodeModel, opencodeSkillsDir)
+		if configErr != nil {
+			uxlog.Log("[opencode] inline config unavailable (continuing without model/skills overrides): %v", configErr)
+			opencodeConfigContent = ""
 		}
 	}
 
@@ -1054,8 +1095,8 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 			}
 		}
 	}
-	if opencodeSkillsContent != "" {
-		cmd.Env = append(cmd.Env, "OPENCODE_CONFIG_CONTENT="+opencodeSkillsContent)
+	if opencodeConfigContent != "" {
+		cmd.Env = append(cmd.Env, "OPENCODE_CONFIG_CONTENT="+opencodeConfigContent)
 	}
 
 	// Force-export the resolved [secrets.op] bootstrap credential into every
@@ -1162,6 +1203,9 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 			if target == "" || source == "" {
 				continue
 			}
+			if isOpencode && target == "OPENCODE_CONFIG_CONTENT" && opencodeConfigContent != "" {
+				uxlog.Log("[opencode] backend %q also maps OPENCODE_CONFIG_CONTENT via env_vars; Argus's inline model/skills value is replaced (or dropped if the mapping fails to resolve)", backend.Command)
+			}
 			// A failed mapping must not leak a credential inherited from argusd.
 			filtered := cmd.Env[:0]
 			for _, entry := range cmd.Env {
@@ -1186,6 +1230,9 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 
 	if isOpencode {
 		uxlog.Log("[opencode] auto approval enabled for task %q (injected=%t)", task.ID, injectOpencodeAuto)
+		if opencodeModel != "" {
+			uxlog.Log("[opencode] task %q: model %q delivered via inline config (skills=%t)", task.ID, opencodeModel, opencodeSkillsDir != "")
+		}
 	}
 	committed = true
 	return cmd, sandboxCleanup, nil

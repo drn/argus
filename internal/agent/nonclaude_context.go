@@ -28,30 +28,117 @@ var ensureCodexSkillsFn = skills.EnsureCodexSkills
 // OPENCODE_CONFIG_CONTENT). It is replaceable in command-construction tests.
 var ensureSessionSkillsFn = skills.EnsureBuiltinSkills
 
-func opencodeSkillsConfigContent(skillsDir string) (string, error) {
+// stripJSONCTrailingCommas removes commas that directly precede a closing
+// brace or bracket, which OpenCode's own config parser accepts (it parses the
+// inline config as JSONC with trailing commas allowed) but encoding/json
+// rejects. Without this, an operator's valid OpenCode config such as
+// `{"model":"p/m",}` would look malformed to Argus and be left unmerged.
+//
+// Only trailing commas are handled, and only outside string literals, so a
+// comma inside a quoted value is never touched. Anything Argus still cannot
+// parse (comments, a broken document) keeps the existing fail-open behavior.
+func stripJSONCTrailingCommas(raw string) string {
+	var b strings.Builder
+	b.Grow(len(raw))
+	inString, escaped := false, false
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if inString {
+			b.WriteByte(c)
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			continue
+		}
+		if c == '"' {
+			inString = true
+			b.WriteByte(c)
+			continue
+		}
+		if c == ',' {
+			// Look ahead past whitespace for a closing brace/bracket.
+			j := i + 1
+			for j < len(raw) && (raw[j] == ' ' || raw[j] == '\t' || raw[j] == '\n' || raw[j] == '\r') {
+				j++
+			}
+			if j < len(raw) && (raw[j] == '}' || raw[j] == ']') {
+				continue // drop the comma; the value it trailed is intact
+			}
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// opencodeSessionConfigContent merges Argus's per-child OpenCode overrides into
+// the inherited inline configuration. OpenCode v2's full TUI rejects the
+// top-level --model flag, so a resolved model is delivered through the same
+// child-only configuration channel as the skills path instead.
+//
+// A valid inherited object is preserved key-for-key, with only the requested
+// model and skills entries changed. An inherited --model flag in the backend
+// command is handled by BuildCmd before this helper is called. A malformed
+// inherited value is never replaced: the caller logs the error and continues
+// without Argus's override, matching the fail-open skills behavior.
+func opencodeSessionConfigContent(model, skillsDir string) (string, error) {
 	raw := strings.TrimSpace(os.Getenv("OPENCODE_CONFIG_CONTENT"))
 	config := make(map[string]any)
 	if raw != "" {
-		if err := json.Unmarshal([]byte(raw), &config); err != nil {
+		// OpenCode parses this document as JSONC (trailing commas allowed), so
+		// accept the same superset before handing it to encoding/json.
+		if err := json.Unmarshal([]byte(stripJSONCTrailingCommas(raw)), &config); err != nil {
 			return "", fmt.Errorf("parse OPENCODE_CONFIG_CONTENT: %w", err)
 		}
 		if config == nil {
 			return "", fmt.Errorf("OPENCODE_CONFIG_CONTENT must be an object")
 		}
 	}
-	if existing, ok := config["skills"]; ok {
-		arr, ok := existing.([]any)
-		if !ok {
-			return "", fmt.Errorf("OPENCODE_CONFIG_CONTENT skills must be an array")
+
+	changed := false
+	if model != "" {
+		existingModel, exists := config["model"]
+		modelString, isString := existingModel.(string)
+		if !exists || !isString || modelString != model {
+			config["model"] = model
+			changed = true
 		}
-		for _, item := range arr {
-			if item == skillsDir {
-				return raw, nil
+	}
+
+	if skillsDir != "" {
+		existing, ok := config["skills"]
+		if !ok || existing == nil {
+			config["skills"] = []string{skillsDir}
+			changed = true
+		} else {
+			arr, ok := existing.([]any)
+			if !ok {
+				// A user-owned config with an incompatible skills shape is not
+				// Argus's to replace. Preserve it and still deliver the model;
+				// the warning is the only signal that skills were skipped.
+				uxlog.Log("[opencode] OPENCODE_CONFIG_CONTENT skills is %T, not an array; preserving it and skipping Argus skills", existing)
+			} else {
+				found := false
+				for _, item := range arr {
+					if item == skillsDir {
+						found = true
+						break
+					}
+				}
+				if !found {
+					config["skills"] = append(arr, skillsDir)
+					changed = true
+				}
 			}
 		}
-		config["skills"] = append(arr, skillsDir)
-	} else {
-		config["skills"] = []string{skillsDir}
+	}
+
+	if !changed {
+		return raw, nil
 	}
 	encoded, err := json.Marshal(config)
 	if err != nil {
