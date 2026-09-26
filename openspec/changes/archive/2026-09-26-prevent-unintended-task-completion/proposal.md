@@ -18,5 +18,5 @@ Recent task completions came from two paths that do not reliably express the ope
 
 ## Impact
 
-- Agent-facing skill source and embedded copy, `task_complete` tool description, TUI status advance and confirmation flow, focused tests, keybinding help text and README Reference.
+- Bundled agent-facing skill, `task_complete` tool description, TUI status advance and confirmation flow, focused tests, keybinding help text and README Reference.
 - No REST wire change. Web and macOS already expose a deliberate status action rather than a repeated single-key advance; their status controls remain available.

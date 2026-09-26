@@ -98,5 +98,3 @@ The bundled `argus-complete` skill SHALL instruct an agent to change its Argus t
 
 - **WHEN** the user explicitly requested completion but `task_complete` is not exposed to the agent
 - **THEN** the skill instructs the agent to report that it cannot complete the status change without trying another transport
-
-
