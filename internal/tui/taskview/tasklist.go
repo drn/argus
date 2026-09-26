@@ -105,7 +105,8 @@ type TaskListView struct {
 	// Callback when cursor moves to a different task.
 	OnCursorChange func(task *model.Task)
 	// Callback when user changes task status via s/S keys.
-	OnStatusChange func(task *model.Task)
+	OnStatusChange    func(task *model.Task)
+	OnCompleteRequest func(task *model.Task)
 	// Callback when user toggles archive on a task via 'a' key.
 	OnArchive func(task *model.Task)
 	// Callback when user toggles pinned on a task via 'P' key.
@@ -993,6 +994,10 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 				tl.setFiltering(true)
 			case keymap.ActTaskStatusAdv:
 				if t := tl.SelectedTask(); t != nil {
+					if t.Status == model.StatusInReview && tl.OnCompleteRequest != nil {
+						tl.OnCompleteRequest(t)
+						return
+					}
 					t.SetStatus(t.Status.Next())
 					if tl.OnStatusChange != nil {
 						tl.OnStatusChange(t)

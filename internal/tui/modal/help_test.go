@@ -92,6 +92,7 @@ func TestHelpModal_Draw(t *testing.T) {
 	testutil.Contains(t, body, "view message inbox (read-only)")
 	testutil.Contains(t, body, "view task artifacts")
 	testutil.Contains(t, body, "ctrl+t")
+	testutil.Contains(t, body, "advance status (confirm Complete)")
 	testutil.Contains(t, body, "view role's message inbox (read-only)")
 	// Task-list `c` opens the copy menu (name / prompt) — fail the build if the
 	// binding text is silently reverted (keybinding-help contract).

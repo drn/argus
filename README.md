@@ -80,7 +80,7 @@ Requires macOS 15+ and the Swift 6.3 Command Line Tools — no Xcode. Build and 
 Argus exposes itself as a Model Context Protocol server, so any agent can drive Argus the same way you do.
 
 - **Spawn other agents.** An orchestrator agent can call `task_create` to fan work out across worktrees, then watch progress with `task_list` and `task_get`.
-- **Hand off cleanly.** When a session is done, the agent calls `task_complete` (status flip) or `task_archive` (out of sight) using its own `pwd` to identify itself — no IDs to track.
+- **Hand off cleanly.** When you explicitly ask, an agent can call `task_complete` (status flip) or `task_archive` (out of sight) using its own `pwd` to identify itself — no IDs to track.
 - **Schedule itself.** `schedule_create` accepts cron, `@every 30m`, or a one-shot `run_once_at` timestamp. An agent can plant a tomorrow-morning follow-up before signing off.
 - **Stage clipboard text** with `argus_clipboard_set` — solves the iOS Safari rule that `clipboard.writeText` requires a synchronous user gesture. The agent stages, you tap **Copy** (PWA) or hit `ctrl+y` (TUI). One tap, no escape-character mangling.
 - **Rename, fork, stop, resume** — every TUI verb has an MCP equivalent.
@@ -180,7 +180,7 @@ below. The `?` overlay always shows your active bindings.
 | `n`       | New task (with skill autocomplete in prompt field)              |
 | `Enter`   | Open agent view                                                 |
 | `ctrl+f`  | Fork task (duplicate with context)                              |
-| `s` / `S` | Advance / revert status                                         |
+| `s` / `S` | Advance / revert status (`s` asks for confirmation before Complete) |
 | `a`       | Toggle archive                                                  |
 | `P`       | Toggle pin (★ section pinned to the top of the task list)       |
 | `c`       | Open copy menu (copy task name or prompt to clipboard)          |
@@ -618,7 +618,7 @@ Argus runs an MCP server on port 7742 by default (or the next available port) an
 | `task_stop`            | Stop a running agent (moves task to "in review")                                                                                                                   |
 | `task_archive`         | Archive or unarchive a task. Pass `cwd` (from the agent's `pwd`) to resolve by worktree, or `id`. Omit `archived` to toggle.                                       |
 | `task_rename`          | Rename a task. Updates only the display name (branch and worktree paths stay locked to the original slug). Pass `cwd` or `id` plus `name`.                         |
-| `task_complete`        | Mark a task as complete (sets status, stamps `EndedAt`). Pass `cwd` or `id`. Does NOT stop a running agent — call `task_stop` first if needed.                     |
+| `task_complete`        | Mark a task as complete only on an explicit user request (sets status, stamps `EndedAt`). Pass `cwd` or `id`. Does NOT stop a running agent — call `task_stop` first if needed. |
 | `task_set_result`      | Persist an opaque JSON result blob the orchestrator can read (PR URL, milestone, failure reason). Pass `cwd` or `id` plus `result`. Up to 64 KiB.                  |
 | `task_recycle`         | Reset the task's context window while continuing the same work: kills the current session and starts a fresh, empty-context one on the identical task/worktree/branch, seeded with `handoff_note` (required, ≤16 KiB) plus the original prompt as background. Deferred until the calling session goes idle. Pass `cwd` or `id`.                     |
 

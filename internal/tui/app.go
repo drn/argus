@@ -72,6 +72,7 @@ const (
 	modeQuickAdd
 	modeConfirmDeleteProject
 	modeConfirmPrune // Ctrl+R "prune completed tasks" caution gate
+	modeConfirmComplete
 	modeRestartDaemonPrompt
 	modeConfirmRestartSupervisor // Settings → "Restart Session Supervisor" caution gate
 	modeAppleEventsPicker
@@ -210,7 +211,9 @@ type App struct {
 	// Confirm prune modal (created on demand when Ctrl+R is pressed with at
 	// least one completed task). Pruning deletes every completed task plus
 	// their worktrees and branches, so it is gated behind a y/N confirmation.
-	confirmPruneModal *modal.ConfirmModal
+	confirmPruneModal     *modal.ConfirmModal
+	confirmCompleteModal  *modal.ConfirmModal
+	confirmCompleteTaskID string
 
 	// Help overlay (created on demand)
 	helpModal    *modal.HelpModal
@@ -823,6 +826,7 @@ func (a *App) buildUI() {
 		a.db.SetStatus(t.ID, t.Status) //nolint:errcheck // best-effort; display is source of truth
 		a.refreshTasksAsync()
 	}
+	a.tasklist.OnCompleteRequest = a.openConfirmComplete
 	a.tasklist.OnArchive = func(t *model.Task) {
 		uxlog.Log("[tui] archive toggle: task %s (%s) archived=%v", t.ID, t.Name, t.Archived)
 		// Route through SetArchived (partial column update) so:
@@ -3912,6 +3916,10 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Confirm prune-completed modal (Ctrl+R caution gate).
 	if a.mode == modeConfirmPrune && a.confirmPruneModal != nil {
 		a.handleConfirmPruneKey(event)
+		return nil
+	}
+	if a.mode == modeConfirmComplete && a.confirmCompleteModal != nil {
+		a.handleConfirmCompleteKey(event)
 		return nil
 	}
 
@@ -7604,6 +7612,57 @@ func (a *App) closeConfirmPrune() {
 	a.mode = modeTaskList
 	a.confirmPruneModal = nil
 	a.pages.RemovePage("confirmprune")
+	a.pages.SwitchToPage("tasks")
+	a.tapp.SetFocus(a.tasklist)
+}
+
+func (a *App) openConfirmComplete(task *model.Task) {
+	a.confirmCompleteTaskID = task.ID
+	a.confirmCompleteModal = modal.NewConfirmModal("Complete task", fmt.Sprintf("Mark %q complete?", task.Name))
+	a.mode = modeConfirmComplete
+	a.pages.AddPage("confirmcomplete", a.confirmCompleteModal, true, true)
+	a.pages.SwitchToPage("confirmcomplete")
+	a.tapp.SetFocus(a.confirmCompleteModal)
+	uxlog.Log("[tui] complete: confirmation opened task=%s", task.ID)
+}
+
+func (a *App) handleConfirmCompleteKey(event *tcell.EventKey) {
+	a.confirmCompleteModal.InputHandler()(event, func(tview.Primitive) {})
+	if a.confirmCompleteModal.Canceled() {
+		uxlog.Log("[tui] complete: canceled task=%s", a.confirmCompleteTaskID)
+		a.closeConfirmComplete()
+		return
+	}
+	if !a.confirmCompleteModal.Confirmed() {
+		return
+	}
+	id := a.confirmCompleteTaskID
+	a.closeConfirmComplete()
+	task, err := a.db.Get(id)
+	if err != nil || task == nil {
+		uxlog.Log("[tui] complete: load failed task=%s err=%v", id, err)
+		a.statusbar.SetError("Could not load task for completion")
+		return
+	}
+	if task.Status != model.StatusInReview {
+		uxlog.Log("[tui] complete: skipped stale status task=%s status=%s", id, task.Status)
+		a.refreshTasksAsync()
+		return
+	}
+	if err := a.db.SetStatus(id, model.StatusComplete); err != nil {
+		uxlog.Log("[tui] complete: status update failed task=%s err=%v", id, err)
+		a.statusbar.SetError("Could not mark task complete")
+		return
+	}
+	uxlog.Log("[tui] complete: confirmed task=%s", id)
+	a.refreshTasksAsync()
+}
+
+func (a *App) closeConfirmComplete() {
+	a.mode = modeTaskList
+	a.confirmCompleteModal = nil
+	a.confirmCompleteTaskID = ""
+	a.pages.RemovePage("confirmcomplete")
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
 }
