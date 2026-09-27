@@ -180,7 +180,7 @@ below. The `?` overlay always shows your active bindings.
 | `n`       | New task (with skill autocomplete in prompt field)              |
 | `Enter`   | Open agent view                                                 |
 | `ctrl+f`  | Fork task (duplicate with context)                              |
-| `s` / `S` | Advance / revert status (`s` asks for confirmation before Complete) |
+| `s` / `S` | Advance / revert status                                         |
 | `a`       | Toggle archive                                                  |
 | `P`       | Toggle pin (★ section pinned to the top of the task list)       |
 | `c`       | Open copy menu (copy task name or prompt to clipboard)          |

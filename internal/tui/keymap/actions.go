@@ -201,7 +201,7 @@ var actionLabels = map[Action]string{
 	ActGlobalPalette: "command palette", ActGlobalJumpNeedsInput: "jump to next needs-input (?); jumps back once all clear",
 	ActGlobalRestoreRail: "jump back now, even with (?) still open",
 
-	ActTaskNew: "new task", ActTaskStatusAdv: "advance status (confirm Complete)", ActTaskStatusRev: "revert status",
+	ActTaskNew: "new task", ActTaskStatusAdv: "advance status", ActTaskStatusRev: "revert status",
 	ActTaskArchive: "toggle archive", ActTaskPin: "toggle pin", ActTaskRename: "rename",
 	ActTaskCopy: "copy name / prompt", ActTaskFilter: "filter", ActTaskHera: "show/hide hera-managed (workers+coords)",
 	ActTaskDown: "navigate down", ActTaskUp: "navigate up", ActTaskInbox: "view message inbox (read-only)",

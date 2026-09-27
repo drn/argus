@@ -864,27 +864,19 @@ func TestTaskListView_StatusCycleKeys(t *testing.T) {
 		t.Errorf("after second 's': status = %v, want InReview", changed.Status)
 	}
 
-	// Press 'S' to revert: InReview -> InProgress
+	// Press 's' again: InReview -> Complete
+	changed = nil
+	handler(tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone), func(tview.Primitive) {})
+	testutil.Equal(t, changed.Status, model.StatusComplete)
+
+	// Press 'S' to revert: Complete -> InReview
 	changed = nil
 	handler(tcell.NewEventKey(tcell.KeyRune, 'S', tcell.ModNone), func(tview.Primitive) {})
-	if changed == nil {
-		t.Fatal("OnStatusChange should have been called")
-	}
-	if changed.Status != model.StatusInProgress {
-		t.Errorf("after 'S': status = %v, want InProgress", changed.Status)
-	}
-}
+	testutil.Equal(t, changed.Status, model.StatusInReview)
 
-func TestTaskListView_CompleteRequestsConfirmation(t *testing.T) {
-	tl := NewTaskListView()
-	task := &model.Task{ID: "target", Name: "target", Project: "p", Status: model.StatusInReview}
-	tl.SetTasks([]*model.Task{task})
-	tl.SelectByID(task.ID)
-	requested := ""
-	tl.OnCompleteRequest = func(got *model.Task) { requested = got.ID }
-	tl.InputHandler()(tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone), func(tview.Primitive) {})
-	testutil.Equal(t, requested, task.ID)
-	testutil.Equal(t, task.Status, model.StatusInReview)
+	changed = nil
+	handler(tcell.NewEventKey(tcell.KeyRune, 'S', tcell.ModNone), func(tview.Primitive) {})
+	testutil.Equal(t, changed.Status, model.StatusInProgress)
 }
 
 func TestTaskListView_StatusPrevFromComplete(t *testing.T) {
