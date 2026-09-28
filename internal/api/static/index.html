@@ -498,7 +498,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 .artifact-vtoolbar .spacer { flex: 1 1 auto; }
 .artifact-frame { flex: 1 1 auto; width: 100%; border: 0; background: #fff; min-height: 0; }
 .artifact-img-wrap { flex: 1 1 auto; overflow: auto; -webkit-overflow-scrolling: touch; text-align: center; background: var(--bg); }
-.artifact-img { max-width: 100%; height: auto; }
+.artifact-img { max-width: 100%; height: auto; cursor: zoom-in; }
+.artifact-img.zoomed { max-width: none; cursor: zoom-out; }
 .artifact-pre { flex: 1 1 auto; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--text); background: var(--bg); }
 .artifact-media { flex: 1 1 auto; width: 100%; max-height: 100%; background: var(--bg); }
 /* Full-screen artifact overlay — edge-to-edge, no toolbar, just a small
@@ -4386,6 +4387,12 @@ function makeArtifactNode(art, payload) {
     img.className = 'artifact-img';
     img.src = payload.url;
     img.alt = art.name || art.filename;
+    img.title = 'Click to zoom';
+    img.addEventListener('click', () => {
+      const z = img.classList.toggle('zoomed');
+      img.title = z ? 'Click to fit' : 'Click to zoom';
+      wrap.style.textAlign = z ? 'left' : '';
+    });
     wrap.appendChild(img);
     return wrap;
   }
