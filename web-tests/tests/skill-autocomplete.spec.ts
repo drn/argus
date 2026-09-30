@@ -128,3 +128,94 @@ test.describe('New Task — slash-skill autocomplete', () => {
     await expect(prompt).toHaveValue('fix bug /commit ');
   });
 });
+
+test.describe('New Task — backend-conditional skill trigger', () => {
+  async function setup(page: any) {
+    await page.route('**/api/skills**', (route: any) => {
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ skills: [{ name: 'commit', description: 'Create a commit' }] }),
+      });
+    });
+    await page.route('**/api/backends', (route: any) => {
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          backends: [
+            { name: 'claude', command: 'claude' },
+            { name: 'codex', command: '/usr/local/bin/codex --foo' },
+          ],
+        }),
+      });
+    });
+    await page.addInitScript(() => localStorage.setItem('argus-token', 'test-token'));
+    await page.goto('/');
+    await page.evaluate(() => (window as any).switchTab('create'));
+    await page.evaluate(() => {
+      const sel = document.getElementById('create-project') as HTMLSelectElement;
+      sel.dispatchEvent(new Event('change'));
+    });
+    await page.waitForTimeout(300);
+  }
+
+  test('Codex backend opens on "$" and ignores "/"', async ({ page }) => {
+    await setup(page);
+    await page.selectOption('#create-backend', 'codex');
+    const prompt = page.locator('#create-prompt');
+    const drop = page.locator('#ac-dropdown');
+
+    await prompt.click();
+    await prompt.fill('/co');
+    await prompt.dispatchEvent('input');
+    await expect(drop).not.toHaveClass(/open/);
+
+    await prompt.fill('$co');
+    await prompt.dispatchEvent('input');
+    await expect(drop).toHaveClass(/open/);
+    await prompt.press('Enter');
+    await expect(prompt).toHaveValue('$commit ');
+  });
+
+  test('Claude backend ignores "$" and switching backend closes dropdown', async ({ page }) => {
+    await setup(page);
+    await page.selectOption('#create-backend', 'claude');
+    const prompt = page.locator('#create-prompt');
+    const drop = page.locator('#ac-dropdown');
+
+    await prompt.click();
+    await prompt.fill('$co');
+    await prompt.dispatchEvent('input');
+    await expect(drop).not.toHaveClass(/open/);
+
+    await prompt.fill('/co');
+    await prompt.dispatchEvent('input');
+    await expect(drop).toHaveClass(/open/);
+    await page.selectOption('#create-backend', 'codex');
+    await expect(drop).not.toHaveClass(/open/);
+  });
+});
+
+test.describe('skill trigger resolution', () => {
+  test('isCodexBackend / skillTriggerFor', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('argus-token', 'test-token'));
+    await page.goto('/');
+    await expect(page.locator('#main-app')).toBeVisible();
+    const r = await page.evaluate(() => {
+      const w = window as any;
+      const be = [
+        { name: 'cx', command: '/opt/bin/codex --x' },
+        { name: 'cl', command: 'claude' },
+        { name: 'cxx', command: 'codex-fake' },
+      ];
+      return [
+        w.isCodexBackend('codex'), w.isCodexBackend('/usr/bin/codex -m x'),
+        w.isCodexBackend('claude'), w.isCodexBackend(''), w.isCodexBackend(undefined),
+        w.skillTriggerFor('cx', be), w.skillTriggerFor('cl', be),
+        w.skillTriggerFor('cxx', be), w.skillTriggerFor('missing', be), w.skillTriggerFor(undefined, []),
+      ];
+    });
+    expect(r).toEqual([true, true, false, false, false, '$', '/', '/', '/', '/']);
+  });
+});

@@ -6331,7 +6331,17 @@ async function loadSkillsForProject(project) {
 // is a thunk so the project context can be dynamic — the compose bar follows
 // whichever task is currently open. Returns a small handle so callers can
 // imperatively close the dropdown (e.g. on detail-view teardown).
-function createSkillAutocomplete({ input, dropdown, getProject }) {
+function isCodexBackend(command) {
+  const first = String(command || '').trim().split(/\s+/)[0] || '';
+  return first.split('/').pop() === 'codex';
+}
+
+function skillTriggerFor(backendName, backends) {
+  const b = (backends || []).find(x => x.name === backendName);
+  return b && isCodexBackend(b.command) ? '$' : '/';
+}
+
+function createSkillAutocomplete({ input, dropdown, getProject, getTrigger = () => '/' }) {
   let idx = -1;
   let filtered = [];
   // Bounds of the prompt token currently being autocompleted, captured when
@@ -6356,7 +6366,8 @@ function createSkillAutocomplete({ input, dropdown, getProject }) {
 
   function update() {
     const { start, end, token } = tokenAtCursor();
-    if (!token.startsWith('/')) { close(); return; }
+    const trigger = getTrigger();
+    if (!token.startsWith(trigger)) { close(); return; }
     const filter = token.slice(1).toLowerCase();
     const project = getProject() || '';
     const allSkills = cachedSkills[project] || [];
@@ -6391,7 +6402,7 @@ function createSkillAutocomplete({ input, dropdown, getProject }) {
   function select(i) {
     if (i >= 0 && i < filtered.length) {
       const val = input.value;
-      const replacement = '/' + filtered[i].name + ' ';
+      const replacement = getTrigger() + filtered[i].name + ' ';
       input.value = val.slice(0, tokenStart) + replacement + val.slice(tokenEnd);
       const newCursor = tokenStart + replacement.length;
       input.setSelectionRange(newCursor, newCursor);
@@ -6448,16 +6459,19 @@ document.getElementById('create-project').addEventListener('change', function() 
   loadSkillsForProject(this.value);
 });
 
-createSkillAutocomplete({
+const createAC = createSkillAutocomplete({
   input: document.getElementById('create-prompt'),
   dropdown: document.getElementById('ac-dropdown'),
   getProject: () => document.getElementById('create-project').value,
+  getTrigger: () => skillTriggerFor(document.getElementById('create-backend').value, createBackendsCache),
 });
+document.getElementById('create-backend').addEventListener('change', () => createAC.close());
 
 const composeAC = createSkillAutocomplete({
   input: document.getElementById('compose-input'),
   dropdown: document.getElementById('compose-ac-dropdown'),
   getProject: () => (currentTask && currentTask.project) || '',
+  getTrigger: () => skillTriggerFor(currentTask && currentTask.backend, createBackendsCache),
 });
 
 // --- Compose bar ---
