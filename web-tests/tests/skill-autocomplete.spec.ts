@@ -214,8 +214,9 @@ test.describe('skill trigger resolution', () => {
         w.isCodexBackend('claude'), w.isCodexBackend(''), w.isCodexBackend(undefined),
         w.skillTriggerFor('cx', be), w.skillTriggerFor('cl', be),
         w.skillTriggerFor('cxx', be), w.skillTriggerFor('missing', be), w.skillTriggerFor(undefined, []),
+        (() => { createDefaultBackend = 'cx'; const t = w.skillTriggerFor('', be); createDefaultBackend = ''; return t; })(),
       ];
     });
-    expect(r).toEqual([true, true, false, false, false, '$', '/', '/', '/', '/']);
+    expect(r).toEqual([true, true, false, false, false, '$', '/', '/', '/', '/', '$']);
   });
 });

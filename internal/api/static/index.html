@@ -6327,20 +6327,22 @@ async function loadSkillsForProject(project) {
   } catch(e) {}
 }
 
-// Factory: wires `/skill` autocomplete to an input + dropdown pair. `getProject`
-// is a thunk so the project context can be dynamic — the compose bar follows
-// whichever task is currently open. Returns a small handle so callers can
-// imperatively close the dropdown (e.g. on detail-view teardown).
+// Codex backends use "$" for skills; everything else "/". An empty backend
+// name means the server resolves the configured default.
 function isCodexBackend(command) {
   const first = String(command || '').trim().split(/\s+/)[0] || '';
   return first.split('/').pop() === 'codex';
 }
 
 function skillTriggerFor(backendName, backends) {
-  const b = (backends || []).find(x => x.name === backendName);
+  const b = (backends || []).find(x => x.name === (backendName || createDefaultBackend));
   return b && isCodexBackend(b.command) ? '$' : '/';
 }
 
+// Factory: wires skill autocomplete to an input + dropdown pair. `getProject`
+// and `getTrigger` ("/" or "$") are thunks so context can be dynamic — the
+// compose bar follows whichever task is currently open. Returns a small handle so callers can
+// imperatively close the dropdown (e.g. on detail-view teardown).
 function createSkillAutocomplete({ input, dropdown, getProject, getTrigger = () => '/' }) {
   let idx = -1;
   let filtered = [];
@@ -6352,7 +6354,7 @@ function createSkillAutocomplete({ input, dropdown, getProject, getTrigger = () 
   let tokenEnd = 0;
 
   // tokenAtCursor returns the whitespace-delimited token containing the
-  // cursor, so the trigger ("/") works anywhere in the prompt — not only
+  // cursor, so the trigger works anywhere in the prompt — not only
   // when it's the first character. Matches the TUI's promptTokenBounds.
   function tokenAtCursor() {
     const val = input.value;
@@ -6368,7 +6370,7 @@ function createSkillAutocomplete({ input, dropdown, getProject, getTrigger = () 
     const { start, end, token } = tokenAtCursor();
     const trigger = getTrigger();
     if (!token.startsWith(trigger)) { close(); return; }
-    const filter = token.slice(1).toLowerCase();
+    const filter = token.slice(trigger.length).toLowerCase();
     const project = getProject() || '';
     const allSkills = cachedSkills[project] || [];
     // Case-insensitive substring match — mirrors Claude Code's slash-command
