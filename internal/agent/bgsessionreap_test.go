@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/claudeagents"
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -217,4 +218,85 @@ func TestRunner_Stop_TriggersReap(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("reap goroutine never ran")
 	}
+}
+
+func claudeResumeConfig(command string) config.Config {
+	return config.Config{
+		Defaults: config.Defaults{Backend: "b"},
+		Backends: map[string]config.Backend{"b": {Command: command}},
+		Projects: make(map[string]config.Project),
+	}
+}
+
+func TestReapBackgroundSessionForResume(t *testing.T) {
+	bg := func(id, sess string) claudeagents.Session {
+		return claudeagents.Session{Kind: "background", ID: id, PID: 9, SessionID: sess}
+	}
+	tests := []struct {
+		name     string
+		task     model.Task
+		command  string
+		sessions []claudeagents.Session
+		want     []string
+		listed   bool
+	}{
+		{"stops the session holding the conversation", model.Task{ID: "t", SessionID: "s1", Worktree: "/wt"}, "claude",
+			[]claudeagents.Session{bg("a", "s1"), bg("b", "other")}, []string{"a"}, true},
+		{"leaves unrelated background sessions alone", model.Task{ID: "t", SessionID: "s1", Worktree: "/wt"}, "claude",
+			[]claudeagents.Session{bg("b", "other")}, nil, true},
+		{"no session id is a no-op", model.Task{ID: "t", Worktree: "/wt"}, "claude",
+			[]claudeagents.Session{bg("a", "s1")}, nil, false},
+		{"no worktree is a no-op", model.Task{ID: "t", SessionID: "s1"}, "claude",
+			[]claudeagents.Session{bg("a", "s1")}, nil, false},
+		{"non-claude backend is a no-op", model.Task{ID: "t", SessionID: "s1", Worktree: "/wt"}, "codex",
+			[]claudeagents.Session{bg("a", "s1")}, nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var listed bool
+			var stopped []string
+			stubBackgroundSessions(t,
+				func(ctx context.Context, cwd string) ([]claudeagents.Session, error) {
+					listed = true
+					return tt.sessions, nil
+				},
+				func(ctx context.Context, id string) error {
+					stopped = append(stopped, id)
+					return nil
+				},
+			)
+			got := reapBackgroundSessionForResume(&tt.task, claudeResumeConfig(tt.command))
+			testutil.DeepEqual(t, got, tt.want)
+			testutil.DeepEqual(t, stopped, tt.want)
+			testutil.Equal(t, listed, tt.listed)
+		})
+	}
+}
+
+func TestRunner_StartResume_ReapsBeforeLaunch(t *testing.T) {
+	var stopped []string
+	stubBackgroundSessions(t,
+		func(ctx context.Context, cwd string) ([]claudeagents.Session, error) {
+			return []claudeagents.Session{{Kind: "background", ID: "bg1", PID: 4, SessionID: "s1"}}, nil
+		},
+		func(ctx context.Context, id string) error {
+			stopped = append(stopped, id)
+			return nil
+		},
+	)
+
+	// An empty PATH keeps the launch from ever spawning a real claude; the
+	// launch failing is expected — only the reap ahead of it is under test.
+	t.Setenv("PATH", t.TempDir())
+	r := NewRunner(nil)
+	task := &model.Task{ID: "t-resume", Name: "test", SessionID: "s1", Worktree: t.TempDir()}
+	_, err := r.Start(task, claudeResumeConfig("claude"), 24, 80, true)
+	testutil.Equal(t, err != nil, true)
+	testutil.DeepEqual(t, stopped, []string{"bg1"})
+
+	stopped = nil
+	task2 := &model.Task{ID: "t-fresh", Name: "test", SessionID: "s1", Worktree: t.TempDir()}
+	_, err = r.Start(task2, claudeResumeConfig("claude"), 24, 80, false)
+	testutil.Equal(t, err != nil, true)
+	testutil.Equal(t, len(stopped), 0)
 }

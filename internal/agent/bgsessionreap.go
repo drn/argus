@@ -5,6 +5,8 @@ import (
 	"errors"
 
 	"github.com/drn/argus/internal/claudeagents"
+	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -30,6 +32,31 @@ var (
 // the overwhelmingly common, harmless case. Returns the ids stopped, for
 // tests; production callers ignore the result.
 func reapOrphanedClaudeSessions(taskID, worktreeDir string) []string {
+	return reapBackgroundSessions(taskID, worktreeDir, "")
+}
+
+// reapBackgroundSessionForResume stops the Claude Code background session, if
+// any, that is holding the task's conversation — Claude Code refuses
+// `--resume <id>` with "That session is running in the background" while it
+// is alive. Runs synchronously before a Claude resume so the launch cannot
+// race the stop; scoped to the task's own session id so an unrelated
+// background session in the same worktree is left alone. Fails open: any
+// error is logged and the resume proceeds as it would have.
+func reapBackgroundSessionForResume(task *model.Task, cfg config.Config) []string {
+	if task.SessionID == "" || task.Worktree == "" {
+		return nil
+	}
+	backend, err := ResolveBackend(task, cfg)
+	if err != nil || !IsClaudeBackend(backend.Command) {
+		return nil
+	}
+	return reapBackgroundSessions(task.ID, task.Worktree, task.SessionID)
+}
+
+// reapBackgroundSessions is the shared list-filter-stop body. A non-empty
+// sessionID restricts the stop to the background session hosting that
+// conversation.
+func reapBackgroundSessions(taskID, worktreeDir, sessionID string) []string {
 	if worktreeDir == "" {
 		return nil
 	}
@@ -47,6 +74,9 @@ func reapOrphanedClaudeSessions(taskID, worktreeDir string) []string {
 	var stopped []string
 	for _, s := range sessions {
 		if !s.Backgrounded() || !s.Alive() {
+			continue
+		}
+		if sessionID != "" && s.SessionID != sessionID {
 			continue
 		}
 		if err := stopBackgroundSessionFn(ctx, s.ID); err != nil {

@@ -123,6 +123,10 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 		return nil, err
 	}
 
+	if resume {
+		reapBackgroundSessionForResume(task, cfg)
+	}
+
 	cmd, sandboxCleanup, err := BuildCmd(task, cfg, resume)
 	if err != nil {
 		slog.Error("runner.Start: BuildCmd failed", "task", task.ID, "err", err)
