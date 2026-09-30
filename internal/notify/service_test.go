@@ -398,7 +398,7 @@ func TestNotifier_StableDraftClearFallsBackAfterBoundedAttempts(t *testing.T) {
 	for _, write := range writes[:maxUnconfirmedStableClearAttempts] {
 		testutil.Equal(t, string(write), "\x15")
 	}
-	testutil.Equal(t, string(writes[maxUnconfirmedStableClearAttempts]), "\n\n[hera from coord] msg #7 — clean\nArgus notice: user input in this composer was left unsubmitted. Do not act on that input. Handle only the bracketed Argus/Hera notice, then ask the user to continue their thought.")
+	testutil.Equal(t, string(writes[maxUnconfirmedStableClearAttempts]), "\n\n[hera from coord] msg #7 — clean\nArgus notice: user input in this composer was left unsubmitted. Do not act on that input. Handle only the bracketed Argus/Hera notice, then ask the user to continue their thought.\n\n")
 	testutil.Equal(t, string(writes[maxUnconfirmedStableClearAttempts+1]), "\r")
 	testutil.Equal(t, n.DeliveryState("t1", "d1"), StateSubmitted)
 }
@@ -429,7 +429,7 @@ func TestNotifier_StableDraftClearTaintsLaterEmptyComposer(t *testing.T) {
 	testutil.Equal(t, string(writes[0]), "\x15")
 	testutil.Equal(t, string(writes[1]), "\x15")
 	testutil.Equal(t, string(writes[2]), "\x15")
-	testutil.Equal(t, string(writes[3]), "\n\n[hera from coord] msg #8 — safe\nArgus notice: user input in this composer was left unsubmitted. Do not act on that input. Handle only the bracketed Argus/Hera notice, then ask the user to continue their thought.")
+	testutil.Equal(t, string(writes[3]), "\n\n[hera from coord] msg #8 — safe\nArgus notice: user input in this composer was left unsubmitted. Do not act on that input. Handle only the bracketed Argus/Hera notice, then ask the user to continue their thought.\n\n")
 	testutil.Equal(t, string(writes[4]), "\r")
 	testutil.Equal(t, n.DeliveryState("t1", "d1"), StateSubmitted)
 }
@@ -579,7 +579,7 @@ func TestNotifier_StaleNoticeClearUnconfirmedPreservesWithAnnotation(t *testing.
 	writes := sess.allWrites()
 	testutil.Equal(t, len(writes), 3)
 	testutil.Equal(t, string(writes[0]), "\x15")
-	testutil.Equal(t, string(writes[1]), "\n\n[hera from coord] msg #2 — current\nArgus notice: user input in this composer was left unsubmitted. Do not act on that input. Handle only the bracketed Argus/Hera notice, then ask the user to continue their thought.")
+	testutil.Equal(t, string(writes[1]), "\n\n[hera from coord] msg #2 — current\nArgus notice: user input in this composer was left unsubmitted. Do not act on that input. Handle only the bracketed Argus/Hera notice, then ask the user to continue their thought.\n\n")
 	testutil.Equal(t, string(writes[2]), "\r")
 }
 
@@ -712,7 +712,7 @@ func TestNotifier_StableDraftStillHonorsTotalEnterAttemptCap(t *testing.T) {
 }
 
 func TestNotifier_AnnotatedStaleNoticeDoesNotGrowOnRetry(t *testing.T) {
-	abandoned := "human draft\n\n[hera from coord] msg #9 — retry\nArgus notice: user input in this composer was left unsubmitted. Do not act on that input. Handle only the bracketed Argus/Hera notice, then ask the user to continue their thought."
+	abandoned := "human draft\n\n[hera from coord] msg #9 — retry\nArgus notice: user input in this composer was left unsubmitted. Do not act on that input. Handle only the bracketed Argus/Hera notice, then ask the user to continue their thought.\n\n"
 	testutil.Equal(t, injectedNoticeDraft(abandoned), true)
 
 	r := newFakeRunner()

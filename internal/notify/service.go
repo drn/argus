@@ -280,7 +280,7 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 					// A successful PTY write says nothing about editor semantics. Preserve
 					// an uncleared stale notice rather than gluing the replacement onto it.
 					logDelivery(slog.LevelWarn, "delivery stale notice clear unconfirmed: preserving", taskID, d.deliveryID)
-					payload = "\n\n" + d.text + "\n" + abandonedDraftAnnotation
+					payload = "\n\n" + d.text + "\n" + abandonedDraftAnnotation + "\n\n"
 				}
 			}
 		}
@@ -292,7 +292,7 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 			logDelivery(slog.LevelWarn, "delivery stable draft clear suspect: preserving", taskID, d.deliveryID,
 				"unconfirmed_attempts", d.unconfirmedStableClearAttempts,
 				"max_attempts", maxUnconfirmedStableClearAttempts)
-			payload = "\n\n" + d.text + "\n" + abandonedDraftAnnotation
+			payload = "\n\n" + d.text + "\n" + abandonedDraftAnnotation + "\n\n"
 			d.restoreDraft = ""
 			restoreDraft = ""
 		}
