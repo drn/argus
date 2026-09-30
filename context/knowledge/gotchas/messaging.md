@@ -129,6 +129,13 @@ table and the four MCP tools that ride on top of it.
   identifiable composer before directly replacing notice-only content. If the
   clear cannot be confirmed, preserve the draft through the annotated-append
   path so a queued notice cannot be concatenated directly onto it.
+- **The annotated-preservation fallback is written at the live cursor, so its
+  wording must be directionless.** Emit the bracketed Argus/Hera notice before
+  the annotation, identify the unsubmitted user input by role rather than as
+  preceding or following text, and recognize the reordered notice-before-
+  annotation payload as stale on retry. In readline-style editors Ctrl+U kills
+  backward from the cursor to the line start, so a cursor at the start can
+  leave the draft unchanged; do not infer a successful clear from the write.
 - **Notify diagnostics must use daemon-visible `slog` as well as `uxlog`.**
   The daemon initializes `slog` to `~/.argus/daemon.log` but never initializes
   TUI-only `uxlog`; success, write failure, missing acknowledgment, retries,

@@ -280,7 +280,7 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 					// A successful PTY write says nothing about editor semantics. Preserve
 					// an uncleared stale notice rather than gluing the replacement onto it.
 					logDelivery(slog.LevelWarn, "delivery stale notice clear unconfirmed: preserving", taskID, d.deliveryID)
-					payload = "\n\n" + abandonedDraftAnnotation + "\n" + d.text
+					payload = "\n\n" + d.text + "\n" + abandonedDraftAnnotation
 				}
 			}
 		}
@@ -292,7 +292,7 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 			logDelivery(slog.LevelWarn, "delivery stable draft clear suspect: preserving", taskID, d.deliveryID,
 				"unconfirmed_attempts", d.unconfirmedStableClearAttempts,
 				"max_attempts", maxUnconfirmedStableClearAttempts)
-			payload = "\n\n" + abandonedDraftAnnotation + "\n" + d.text
+			payload = "\n\n" + d.text + "\n" + abandonedDraftAnnotation
 			d.restoreDraft = ""
 			restoreDraft = ""
 		}
@@ -533,7 +533,7 @@ func injectedNoticeDraft(draft string) bool {
 	}
 
 	// A failed submission can leave the preserved abandoned draft plus this
-	// notifier's annotation and notice in the composer. Treat that whole payload
+	// notifier's notice and annotation in the composer. Treat that whole payload
 	// as stale on the next pass so a retry clears it instead of appending another
 	// annotation indefinitely. Normalize soft-wrap whitespace first.
 	normalized := compactWhitespace(draft)
@@ -542,8 +542,8 @@ func injectedNoticeDraft(draft string) bool {
 	if annotationAt < 0 {
 		return false
 	}
-	afterAnnotation := normalized[annotationAt+len(annotation):]
-	return strings.Contains(afterAnnotation, "[herafrom") || strings.Contains(afterAnnotation, "[argus]")
+	beforeAnnotation := normalized[:annotationAt]
+	return strings.Contains(beforeAnnotation, "[herafrom") || strings.Contains(beforeAnnotation, "[argus]")
 }
 
 // composerContainsText compares logical composer content rather than terminal

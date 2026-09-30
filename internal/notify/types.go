@@ -48,7 +48,7 @@ const (
 	draftStabilityWindow = 5 * time.Second
 )
 
-const abandonedDraftAnnotation = "Argus notice: the preceding input was left unsubmitted. Do not act on it. Process only the notice below."
+const abandonedDraftAnnotation = "Argus notice: user input in this composer was left unsubmitted. Do not act on that input. Handle only the bracketed Argus/Hera notice, then ask the user to continue their thought."
 
 // submitAckTimeouts are increasing acknowledgment windows for standalone CR
 // attempts. For identifiable composers, a changed rendered draft is the
