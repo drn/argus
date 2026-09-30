@@ -2423,3 +2423,45 @@ func TestBuildCmd_ModelInjection_PrefixFlagDoesNotSuppress(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, cmd.Args[2], "claude --model-format json --model 'sonnet' -- 'go'")
 }
+
+func TestBuildCmd_PlaywrightMCPSandbox(t *testing.T) {
+	lastVal := func(cmd interface{ Environ() []string }, key string) (string, bool) {
+		v, ok := "", false
+		for _, kv := range cmd.Environ() {
+			if strings.HasPrefix(kv, key+"=") {
+				v, ok = strings.TrimPrefix(kv, key+"="), true
+			}
+		}
+		return v, ok
+	}
+
+	t.Run("sandboxed disables chrome nested sandbox", func(t *testing.T) {
+		if !IsSandboxAvailable() {
+			t.Skip("sandbox-exec unavailable")
+		}
+		t.Setenv("HOME", t.TempDir())
+		cfg := testConfig()
+		cfg.Sandbox.Enabled = true
+		task := &model.Task{ID: "task-pw-1", Name: "x", Worktree: t.TempDir()}
+		cmd, cleanup, err := BuildCmd(task, cfg, false)
+		testutil.NoError(t, err)
+		if cleanup != nil {
+			defer cleanup()
+		}
+		v, ok := lastVal(cmd, "PLAYWRIGHT_MCP_SANDBOX")
+		testutil.Equal(t, ok, true)
+		testutil.Equal(t, v, "false")
+	})
+
+	t.Run("unsandboxed leaves it unset", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("PLAYWRIGHT_MCP_SANDBOX", "")
+		cfg := testConfig()
+		cfg.Sandbox.Enabled = false
+		task := &model.Task{ID: "task-pw-2", Name: "x", Worktree: t.TempDir()}
+		cmd, _, err := BuildCmd(task, cfg, false)
+		testutil.NoError(t, err)
+		v, _ := lastVal(cmd, "PLAYWRIGHT_MCP_SANDBOX")
+		testutil.Equal(t, v, "")
+	})
+}

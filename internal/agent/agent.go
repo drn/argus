@@ -1085,6 +1085,14 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		"GOCACHE="+filepath.Join(db.DataDir(), "cache", "go-build"),
 		"PLAYWRIGHT_BROWSERS_PATH="+filepath.Join(db.DataDir(), "cache", "ms-playwright"),
 	)
+	if sandboxCleanup != nil {
+		// Chrome's own sandbox_init cannot nest inside our sandbox-exec profile
+		// ("sandbox initialization failed: Operation not permitted"), so the
+		// Playwright MCP's Chrome never launches. The SBPL profile already
+		// confines the process tree. The README's PLAYWRIGHT_MCP_NO_SANDBOX
+		// spelling is not honored; PLAYWRIGHT_MCP_SANDBOX=false is.
+		cmd.Env = append(cmd.Env, "PLAYWRIGHT_MCP_SANDBOX=false")
+	}
 	if argusCodexHome != "" {
 		cmd.Env = append(cmd.Env, "CODEX_HOME="+argusCodexHome)
 		// Keep Codex's SQLite state in its usual location so Argus's session-ID
