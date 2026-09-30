@@ -95,7 +95,9 @@ const (
 	//   - v12: OpenCode model delivery moved from the unsupported top-level
 	//     --model flag to child-only OPENCODE_CONFIG_CONTENT, merged with the
 	//     session-scoped skills path.
-	SupervisorSpawnSurface = 12
+	//   - v13: sandboxed sessions export PLAYWRIGHT_MCP_SANDBOX=false so the
+	//     Playwright MCP's Chrome can launch inside the sandbox-exec profile.
+	SupervisorSpawnSurface = 13
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -316,7 +318,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "d9efc6dcc25065756e41a2d63d4c4389c0d96b51e3709e3c12dd33c8a7a8a03e"
+	SpawnSurfaceDigest  = "e3b3ded4b96e4a92465b4ce48d18cbeab08b6364722a9e802b66eacd9cd57f45"
 	StreamSurfaceDigest = "0af3825eb6d09b138fc10a4d2041a0bfb8cfebadb225f328603877956243d7c8"
 )
 
