@@ -1,0 +1,5 @@
+- [x] 1. Share list/filter/stop body in `bgsessionreap.go` with an optional session-id filter; add `reapBackgroundSessionForResume`.
+- [x] 2. Call it from `Runner.Start` when `resume` is true, before `BuildCmd`.
+- [x] 3. Tests: table test for the resume reap; `Runner.Start` ordering test (resume reaps, fresh start does not).
+- [x] 4. Gotcha note in `gotchas/daemon-rpc.md`.
+- [x] 5. Archive within the PR.

@@ -127,7 +127,13 @@ const (
 	//     stale supervisor built before this change never sets the field, so
 	//     a daemon on the new build talking to an old supervisor silently
 	//     loses the distinction again until the supervisor is bounced.
-	SupervisorStreamSurface = 4
+	//   - v5: Runner.Start(resume) on a Claude backend stops the Claude Code
+	//     background session holding the task's own conversation before
+	//     launching, so a resume no longer dies on Claude's "session is
+	//     running in the background" guard (reap-background-session-on-resume).
+	//     A stale supervisor lacks the pre-launch reap, so the resume still
+	//     fails there until the supervisor is bounced.
+	SupervisorStreamSurface = 5
 )
 
 // SurfaceVersion is a supervisor's declared executed-surface identity: the pair
@@ -330,7 +336,7 @@ var SupervisorStreamPaths = []string{
 // message prints the computed digest to paste back here.
 const (
 	SpawnSurfaceDigest  = "c5cf242739546675f280142631f20d38459c3ef7d664a01b8874e0ca7b1e55f8"
-	StreamSurfaceDigest = "0af3825eb6d09b138fc10a4d2041a0bfb8cfebadb225f328603877956243d7c8"
+	StreamSurfaceDigest = "e75078949d93c9bf1a1e4be08ab0a894a3280391ebc10696c6c19ada97c681a0"
 )
 
 // SurfaceDigest computes the SHA-256 over the declared manifest's file contents,
