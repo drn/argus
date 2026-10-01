@@ -1,6 +1,7 @@
 package widget
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -24,6 +25,46 @@ func TestStatusBar_CountsEveryTaskStatus(t *testing.T) {
 	sb.Draw(sim)
 	row := readAllScreenText(sim, 100, 1)
 	testutil.Contains(t, row, "1 active  1 pending  1 review  1 done")
+}
+
+// TestStatusBar_UsageUnknownByDefault pins the fail-open default: before
+// SetUsage is ever called (no BootInfo source, e.g. --remote or the
+// in-process-runner fallback), both sides render as unknown rather than a
+// misleading 0%.
+func TestStatusBar_UsageUnknownByDefault(t *testing.T) {
+	sb := NewStatusBar()
+	sim := newSim(t, 100, 1)
+	sb.SetRect(0, 0, 100, 1)
+	sb.Draw(sim)
+	row := readAllScreenText(sim, 100, 1)
+	testutil.Contains(t, row, "cla — · cdx —")
+}
+
+// TestStatusBar_UsageKnownRendersPercentages asserts a fresh reading on both
+// sides renders its percentage.
+func TestStatusBar_UsageKnownRendersPercentages(t *testing.T) {
+	sb := NewStatusBar()
+	sb.SetUsage(42, true, 76, true)
+	sim := newSim(t, 100, 1)
+	sb.SetRect(0, 0, 100, 1)
+	sb.Draw(sim)
+	row := readAllScreenText(sim, 100, 1)
+	testutil.Contains(t, row, "cla 42% · cdx 76%")
+}
+
+// TestStatusBar_UsageStaleRendersUnknownNotPercentage is the hard requirement
+// from fix-backend-routing-semantics: a stale/unknown reading must be
+// visually distinct from a fresh one, never rendered as a percentage that
+// looks live but is hours old.
+func TestStatusBar_UsageStaleRendersUnknownNotPercentage(t *testing.T) {
+	sb := NewStatusBar()
+	sb.SetUsage(42, false, 76, true)
+	sim := newSim(t, 100, 1)
+	sb.SetRect(0, 0, 100, 1)
+	sb.Draw(sim)
+	row := readAllScreenText(sim, 100, 1)
+	testutil.Contains(t, row, "cla — · cdx 76%")
+	testutil.Equal(t, strings.Contains(row, "cla 42%"), false)
 }
 
 func TestStatusBar_NarrowWidthKeepsCountsAndQuitHint(t *testing.T) {

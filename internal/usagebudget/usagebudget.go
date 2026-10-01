@@ -16,7 +16,6 @@ import (
 
 	xvt "github.com/charmbracelet/x/vt"
 	"github.com/creack/pty"
-	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/sanitize"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -83,50 +82,25 @@ func Probe(ctx context.Context) error {
 	return nil
 }
 
-// ResolveWorkerBackend returns the budget-aware backend override for a Hera
-// worker/freelance spawn. An explicit backend wins immediately and does not read
-// the usage cache.
-func ResolveWorkerBackend(explicit string, cfg config.Config) string {
-	if explicit != "" {
-		return explicit
-	}
-
-	wb := cfg.Hera.WorkerBudget
-	fallback := strings.TrimSpace(wb.FallbackBackend)
-	if fallback == "" {
-		fallback = config.DefaultWorkerBudgetFallbackBackend
-	}
-	if _, ok := cfg.Backends[fallback]; !ok {
-		return ""
-	}
-	if wb.Enabled {
-		return fallback
-	}
-	if wb.ThresholdPct <= 0 {
-		return ""
-	}
-
-	reading, ok := snapshot()
-	if !ok {
-		return ""
-	}
-	if reading.Percentage >= float64(wb.ThresholdPct) {
-		return fallback
-	}
-	return ""
-}
-
 // CachedClaudePct returns the most recently probed Claude weekly usage
 // percentage and whether that reading is present and not stale. It never
 // triggers a live probe, so it is safe to call synchronously from
-// internal/backendtier's tier-list resolver. Does not affect
-// ResolveWorkerBackend's own behavior.
+// internal/backendtier's tier-list resolver.
 func CachedClaudePct() (float64, bool) {
 	reading, ok := snapshot()
 	if !ok {
 		return 0, false
 	}
 	return reading.Percentage, true
+}
+
+// CachedReading returns the full most-recently-probed Reading (percentage,
+// reset time, and when it was probed) and whether it is present and not
+// stale, for callers that need staleness information beyond the bare
+// percentage (e.g. the daemon's BootInfo relay, surfaced in the TUI status
+// bar). Never triggers a live probe.
+func CachedReading() (Reading, bool) {
+	return snapshot()
 }
 
 func storeReading(reading Reading) {

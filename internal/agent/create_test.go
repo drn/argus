@@ -430,6 +430,77 @@ func TestCreateAndStart_SessionIDPersistedForClaude(t *testing.T) {
 	RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo)
 }
 
+// TestCreateAndStart_ProjectBackendAppliesWhenNoExplicitBackend pins the
+// fix-backend-routing-semantics root-cause fix: a project-level Backend
+// override, previously always clobbered by the blind cfg.Defaults.Backend
+// stamp, now applies for a task created with no explicit backend.
+func TestCreateAndStart_ProjectBackendAppliesWhenNoExplicitBackend(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	_ = d.SetBackend("project-pin", config.Backend{Command: "echo hello", PromptFlag: ""})
+	_ = d.SetProject("proj", config.Project{Path: repo, Branch: "HEAD", Backend: "project-pin"})
+	fr := &fakeRunner{sessionPID: 1}
+
+	task, _, err := CreateAndStart(d, fr, CreateInput{Name: "t", Project: "proj"})
+	testutil.NoError(t, err)
+	testutil.Equal(t, task.Backend, "project-pin")
+
+	RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo)
+}
+
+// TestCreateAndStart_ExplicitBackendOverridesProjectBackend confirms an
+// explicit CreateInput.Backend still wins over a project-level pin.
+func TestCreateAndStart_ExplicitBackendOverridesProjectBackend(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	_ = d.SetBackend("project-pin", config.Backend{Command: "echo hello", PromptFlag: ""})
+	_ = d.SetProject("proj", config.Project{Path: repo, Branch: "HEAD", Backend: "project-pin"})
+	fr := &fakeRunner{sessionPID: 1}
+
+	task, _, err := CreateAndStart(d, fr, CreateInput{Name: "t", Project: "proj", Backend: "test"})
+	testutil.NoError(t, err)
+	testutil.Equal(t, task.Backend, "test")
+
+	RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo)
+}
+
+// TestCreateAndStart_TierListAppliesWhenNoExplicitOrProjectBackend is the
+// core defect-3 regression test: before fix-backend-routing-semantics, this
+// branch was dead code (create.go stamped cfg.Defaults.Backend before
+// ResolveBackend's tier branch was ever reached). An uncapped ("none" probe)
+// tier is used so the test needs no usage-probe cache seam.
+func TestCreateAndStart_TierListAppliesWhenNoExplicitOrProjectBackend(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	_ = d.SetBackend("tier-pick", config.Backend{Command: "echo hello", PromptFlag: ""})
+	testutil.NoError(t, d.SetBackendTiers([]config.BackendTier{
+		{Backend: "tier-pick", Probe: config.ProbeNone},
+	}))
+	fr := &fakeRunner{sessionPID: 1}
+
+	task, _, err := CreateAndStart(d, fr, CreateInput{Name: "t", Project: "proj"})
+	testutil.NoError(t, err)
+	testutil.Equal(t, task.Backend, "tier-pick")
+
+	RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo)
+}
+
+// TestCreateAndStart_DefaultBackendWhenNoProjectOrTier pins the unchanged
+// fallback floor: with no explicit backend, no project pin, and no tier
+// list, task.Backend still ends up as cfg.Defaults.Backend exactly as
+// before this change.
+func TestCreateAndStart_DefaultBackendWhenNoProjectOrTier(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{sessionPID: 1}
+
+	task, _, err := CreateAndStart(d, fr, CreateInput{Name: "t", Project: "proj"})
+	testutil.NoError(t, err)
+	testutil.Equal(t, task.Backend, "test")
+
+	RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo)
+}
+
 // TestCreateAndStart_AttachmentsWritten verifies that attachments are saved
 // into <worktree>/.context/ before the session starts and that the prompt
 // gets the attachment list appended.

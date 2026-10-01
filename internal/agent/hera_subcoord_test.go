@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -391,4 +392,39 @@ func TestSubCoord_MaterializeNilRole(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on nil role")
 	}
+}
+
+// TestSubCoord_MaterializeForcesClaudeWhenDefaultIsNotClaudeCapable is the
+// sub-coordinator sibling of TestSpawnHeraCoordinator_ForcesClaudeWhenDefaultIsNotClaudeCapable
+// (fix-backend-routing-semantics): a sub-coordinator is still a coordinator,
+// so it must never land on a non-Claude-capable backend even though
+// createTestDB's seeded defaults.backend ("test") is not Claude-capable.
+func TestSubCoord_MaterializeForcesClaudeWhenDefaultIsNotClaudeCapable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	testutil.NoError(t, d.SetBackend("claude", config.Backend{Command: "claude"}))
+	fr := &fakeRunner{sessionPID: 1}
+
+	parentOrch, err := d.CreateHeraOrchestrator("parent-orch", "")
+	testutil.NoError(t, err)
+	planned, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
+		OrchestratorID: parentOrch.ID,
+		Name:           "3a-auth",
+		ArgusProject:   "proj",
+		Prompt:         "build the authentication sub-system",
+		NodeKind:       db.HeraNodeKindSubCoord,
+	})
+	testutil.NoError(t, err)
+
+	res, err := MaterializeHeraSubCoordinator(d, fr, HeraMaterializeInput{
+		Role:       planned,
+		TaskPrompt: "orientation",
+		Project:    "proj",
+	})
+	testutil.NoError(t, err)
+
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Backend, "claude")
 }

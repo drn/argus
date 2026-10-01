@@ -265,6 +265,13 @@ type App struct {
 	// test can drive the full re-evaluation path without a live daemon.
 	skewProvider skew.BootInfoProvider
 
+	// lastUsageCheck gates the usage-probe status-bar poll (fix-backend-
+	// routing-semantics), reusing skewProvider as its BootInfo source on its
+	// own cadence (usageRecheckInterval) — a nil skewProvider (--remote mode,
+	// in-process-runner fallback) leaves the status bar permanently showing
+	// unknown, which is the correct degradation (no daemon-local cache to ask).
+	lastUsageCheck time.Time
+
 	// Session-supervisor restart caution gate. Reused by two callers: the
 	// Settings → System row and the startup skew modal's "Restart supervisor"
 	// action. The bounce SIGHUPs every agent, so it is ALWAYS confirmed before
@@ -1731,6 +1738,7 @@ healthCheck:
 				}
 				a.mu.Unlock()
 				a.reevaluateSkew()
+				a.reevaluateUsage()
 			}
 		}
 	}
@@ -1812,6 +1820,47 @@ func (a *App) noticeForSkew(res skew.Result) string {
 	}
 	a.lastSkewNotice = notice
 	return notice
+}
+
+// usageRecheckInterval is how often the running TUI re-polls the daemon's
+// cached Claude/Codex usage-probe readings for the status bar
+// (fix-backend-routing-semantics). The daemon's own probe tickers refresh
+// their caches only every 30 minutes, so this is already far more frequent
+// than the data can actually change — chosen to match skewRecheckInterval
+// rather than invent a second cadence, not because the readout needs
+// minute-level freshness.
+const usageRecheckInterval = time.Minute
+
+// reevaluateUsage re-polls the daemon's cached usage-probe readings via
+// BootInfo and feeds them to the status bar. Mirrors reevaluateSkew's shape
+// (same BootInfoProvider, same tick-goroutine/QueueUpdateDraw split) but
+// carries no notice-dedup — the status bar always shows the latest known
+// values, dropping silently back to "unknown" if the daemon becomes
+// unreachable rather than freezing on a stale number forever.
+func (a *App) reevaluateUsage() {
+	provider, ok := a.claimUsageCheck()
+	if !ok {
+		return
+	}
+	info, err := provider.BootInfo()
+	if err != nil {
+		return
+	}
+	a.tapp.QueueUpdateDraw(func() {
+		a.statusbar.SetUsage(info.ClaudeUsagePct, info.ClaudeUsageKnown, info.CodexUsagePct, info.CodexUsageKnown)
+	})
+}
+
+// claimUsageCheck reports whether a usage re-poll should run now, returning
+// the provider to ask. Mirrors claimSkewCheck's rate-limiting shape.
+func (a *App) claimUsageCheck() (skew.BootInfoProvider, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.skewProvider == nil || time.Since(a.lastUsageCheck) < usageRecheckInterval {
+		return nil, false
+	}
+	a.lastUsageCheck = time.Now()
+	return a.skewProvider, true
 }
 
 // updateArgus runs `go install ./...` on the daemon side and, on success,

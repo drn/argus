@@ -25,6 +25,24 @@ func TestBootInfoOwnVCS(t *testing.T) {
 	testutil.Equal(t, resp.VCS, buildid.VCS{Revision: "cafebabe", Modified: true})
 }
 
+// TestBootInfoUsageUnknownByDefault pins the usage-probe relay wiring
+// (fix-backend-routing-semantics): a freshly started daemon process has never
+// run either probe, so BootInfo must report both readings as unknown rather
+// than a stale zero-value percentage mistaken for a real 0%. Uses rpcFor
+// (no socket) rather than the full Serve harness — a full daemon+socket
+// round trip for two field reads is unnecessary weight, and this avoids a
+// class of flake the socket-based tests already exhibit under full-suite
+// resource contention.
+func TestBootInfoUsageUnknownByDefault(t *testing.T) {
+	d, _ := testDaemon(t)
+
+	var resp BootInfoResp
+	testutil.NoError(t, rpcFor(d).BootInfo(&Empty{}, &resp))
+
+	testutil.Equal(t, resp.ClaudeUsageKnown, false)
+	testutil.Equal(t, resp.CodexUsageKnown, false)
+}
+
 // TestShortHashRPC covers the log-rendering helper across its three branches:
 // empty ⇒ "unknown", long ⇒ truncated to 12, short ⇒ verbatim.
 func TestShortHashRPC(t *testing.T) {

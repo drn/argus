@@ -117,7 +117,6 @@ func (l *FileLoader) Apply(base Config) Config {
 		}
 		return base
 	}
-	applyFileDefaults(&merged, meta)
 	l.backendRoutingTierDefined = meta.IsDefined("backend_routing", "tier") && len(merged.BackendRouting.Tiers) > 0
 	if changed {
 		slog.Info("argus config: applied config.toml overrides", "path", l.path)
@@ -199,10 +198,4 @@ func cloneProjects(m map[string]Project) map[string]Project {
 	out := make(map[string]Project, len(m))
 	maps.Copy(out, m)
 	return out
-}
-
-func applyFileDefaults(cfg *Config, meta toml.MetaData) {
-	if meta.IsDefined("hera", "worker_budget") && cfg.Hera.WorkerBudget.FallbackBackend == "" {
-		cfg.Hera.WorkerBudget.FallbackBackend = DefaultWorkerBudgetFallbackBackend
-	}
 }

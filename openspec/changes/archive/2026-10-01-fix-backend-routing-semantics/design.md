@@ -1,0 +1,82 @@
+## Context
+
+Live investigation of the user's backend-budget setup (`~/.argus/config.toml`'s `[hera.worker_budget]` and `[backend_routing]`) found three interacting defects, not one:
+
+1. `[hera.worker_budget].enabled` reads as a feature toggle but actually means "force the fallback backend unconditionally, ignoring `threshold_pct`." With `enabled = true` set, every hera worker was forced onto codex regardless of actual Claude headroom — 26 live tasks stamped `backend=codex` while Claude usage sat at ~40%, nowhere near the configured 90% threshold.
+2. Fixing (1) by routing hera worker spawn through the newer `[backend_routing]` tier list (`internal/backendtier`, shipped as `add-tiered-backend-routing`) exposed that the tier list — and a project-level `Backend` override — was **already dead for every task, hera or not**: `agent.CreateAndStart` (`internal/agent/create.go:204-207`) stamps `cfg.Defaults.Backend` onto `task.Backend` whenever `CreateInput.Backend` is empty, and `agent.ResolveBackend`'s project/tier precedence only runs when `task.Backend` is still empty — which, after that stamp, it never is. Confirmed empirically: 114 live tasks in the user's DB, zero with a backend chosen by anything but an explicit value or the global default.
+3. Neither mechanism had ever needed a hera-coordinator carve-out, because nothing ever routed anywhere non-default. Once (2) is fixed and the tier list becomes genuinely reachable at creation time, a born-bound coordinator with no explicit backend (the normal case) could land on a non-Claude-capable backend the moment Claude crosses a configured threshold — breaking coord-hook's context-size stamping, token/cost accrual, and the recycle machinery, all Claude-Code-only.
+
+A fourth, independent finding surfaced during the same investigation: the Codex usage probe's free rollout-file read was silently dead on the investigated machine (its isolated `CODEX_HOME` overlay directory, `~/.local/share/argus/codex-home`, didn't exist), so `backendtier.Probe` fell through to the costed PTY `/status` fallback on every ~30-minute tick — real spend, with zero visibility, because the daemon process never calls `uxlog.Init` so every `[usagebudget]`/`[backendtier]` log line is a silently discarded no-op.
+
+## Goals / Non-Goals
+
+**Goals**
+- Make `[backend_routing]`'s tier list (and a project-level `Backend` override) actually reachable for every task creation path, hera or not, with the two resolution chains (`agent.ResolveBackend`, `agent.CreateAndStart`) unified so they cannot drift apart again.
+- Retire `[hera.worker_budget]` outright — hera worker/freelance spawn becomes an ordinary consumer of the same tier list, with no bespoke resolver of its own.
+- Guarantee, structurally, that a hera coordinator or sub-coordinator never resolves to a non-Claude-capable backend, regardless of tier/budget state or an inherited/default value — while still letting an explicit operator choice win (with a loud warning if it's non-Claude).
+- Make both cached usage-probe readings observable somewhere the user actually looks, since logs are confirmed structurally incapable of showing daemon-side probe state.
+- Stop the costed Codex PTY fallback from running unconditionally when the free path is broken.
+
+**Non-Goals**
+- Fixing the daemon process's own `uxlog.Log` silence (it never calls `Init`). This is a materially larger, orthogonal change (daemon-wide logging architecture) — this PR works around it by surfacing probe state through `BootInfo`/the status bar instead.
+- Root-causing WHY `ensureCodexSkills` never created the `CODEX_HOME` overlay on the investigated machine. Its own failure path routes through the same silently-discarded uxlog channel, so "always failing" vs. "never triggered" can't be distinguished without the above fix landing first.
+- `hera_new_orchestrator`'s worker-self-promotion path. It binds an EXISTING task as a coordinator and never calls `CreateAndStart`, so there is no backend-resolution step to intercept — a worker already running on a non-Claude backend that self-promotes keeps that backend. You cannot swap a live session's backend out from under it; this is a known, structural gap, not an oversight.
+- Web SPA and macOS app usage-readout parity (see the Frontend Parity decision below).
+- A Settings/TUI editor for `[backend_routing]` or the new Codex-PTY-fallback flag. Both stay config.toml-only, matching the `[hera.worker_budget]` v1 precedent this change retires.
+
+## Decisions
+
+### Decision: unify the two backend-precedence chains into one shared function, rather than teaching `CreateAndStart` about the tier list separately
+
+`agent.ResolveBackend` (session-start/resume/display time) and `agent.CreateAndStart` (task-creation time) each had their own, independently-written copy of "pick a backend name." They had already drifted: `ResolveBackend` knew about `project.Backend` and the tier list; `CreateAndStart`'s stamp knew about neither. The fix extracts the full precedence (`explicit > project.Backend > backendtier.ResolveBackend(cfg) > cfg.Defaults.Backend`) into one unexported `resolveDefaultBackendName(explicit, project string, cfg config.Config) string`, called from both places.
+
+**Alternative rejected: leave `CreateAndStart` alone, fix only hera worker spawn's own call sites** (the originally-proposed narrower scope). Rejected because it adds a THIRD special-cased resolution path instead of removing the duplication that caused the bug, and it does nothing for the equally-broken `project.Backend` override, which predates the tier list entirely and is arguably the more common configuration (admins pin a project to a specific backend far more often than they hand-roll a usage-tier list).
+
+**Why resolving at creation time, not lazily at every later session start:** `CreateAndStart` doesn't actually have a "create" step separate from a "start" step — it creates the worktree, persists the row, and starts the session synchronously in one call. For a FRESH task there is no meaningful difference between "resolve at creation" and "resolve at first start." The only real alternative — re-resolving on EVERY LATER restart/resume of an EXISTING task — is unsafe: `internal/agent/resume.go`'s `RefreshResumeSessionID` and `BuildCmd`'s resume flags are backend-CLI-specific and non-transferable (a Claude transcript UUID means nothing to `codex resume`; codex/pi/opencode capture session IDs differently). A dormant task crossing a tier threshold between runs would get resumed with the wrong CLI against a transcript it can't read. Freezing the choice at creation (current behavior, now with a correct value) is the only variant that doesn't reopen that hazard, and it matches the existing invariant every call site already leans on (`task.Backend` never empty post-creation).
+
+### Decision: the hera coordinator carve-out is enforced at the two coordinator-creation call sites, not inside `CreateAndStart`/`ResolveBackend` generically
+
+`internal/agent/hera_spawn.go` gains `resolveCoordinatorBackend(explicit, project string, cfg config.Config) string`, called by `SpawnHeraCoordinator` and `MaterializeHeraSubCoordinator` before the resolved value ever reaches `CreateInput.Backend`. This mirrors the pre-existing `usagebudget.ResolveWorkerBackend` call-site pattern (resolve at the hera spawn call site, pass the result in as an explicit `Backend`) rather than teaching the generic resolver about hera roles.
+
+Semantics: an explicit caller-supplied backend always wins (operator override, mirroring the old worker-budget precedent: "explicit backend always wins") — including the rail's New Coordinator form selection, which, on inspection, genuinely is a deliberate form value (pre-selected from `cfg.Defaults.Backend` but changeable), not incidental inheritance. But a non-Claude-capable explicit choice is never accepted SILENTLY: a `uxlog` warning names what breaks (coord-hook context-size stamping, token/cost accrual, recycle). With no explicit backend, ordinary resolution runs and its result is kept only if `agent.IsClaudeBackend` (exact command-basename match) says so; otherwise this fails open to the literal `"claude"` backend, also with a warning.
+
+**Alternative rejected: `IsClaudeBackend`'s exclude-list sibling shape** (the `!IsCodexBackend && !IsPiBackend && !IsOpencodeBackend` pattern `create.go`'s session-ID generation already uses). Rejected because that pattern answers a different question ("does this need a pre-minted session ID") where admitting an unrecognized command is the safe default; here the question is "is this PROVABLY Claude-capable," where an unrecognized command must NOT be trusted. Trade-off named explicitly: an operator running Claude via a differently-named wrapper script now gets forced onto bare `claude` rather than trusted — acceptable for the guarantee this exists to provide.
+
+**Alternative rejected: block the coordinator spawn outright when resolution would be non-Claude**, rather than failing open to `"claude"`. Rejected for consistency with this codebase's fail-open house style everywhere else in this routing path (an unprobeable tier is never blocking; a misconfigured tier is skipped, not fatal) — a coordinator spawn failing outright because of a tier-list/default misconfiguration would be a worse operator experience than silently landing on Claude with a logged warning.
+
+### Decision: TUI status bar for the usage readout, not Settings or `argus doctor`
+
+The human chose directly: permanent, passive visibility in the status bar over having to go look in Settings or run `doctor`. Implementation constraint this surfaced: the TUI, once a daemon is running, is a SEPARATE PROCESS from the daemon — the probe caches live only inside the daemon process, so the TUI has no local cache of its own to read. `daemon.BootInfoResp` (already the TUI's live binary-skew-check RPC) gains four additive fields (`ClaudeUsagePct`/`ClaudeUsageKnown`/`CodexUsagePct`/`CodexUsageKnown`); `App.reevaluateUsage` polls it on the same cadence (`usageRecheckInterval`, 1 minute) the existing binary-skew recheck already uses, reusing the same `skewProvider` so the polling path is nil (and the bar permanently shows `—`) in exactly the cases BootInfo is unreachable anyway — `--remote` mode and the in-process-runner fallback.
+
+**Alternative rejected: a new RPC verb instead of extending `BootInfo`.** `BootInfo`'s wire format is plain JSON-RPC (`net/rpc/jsonrpc`), which decodes missing/unknown fields as zero values in both directions — additive-safe with no `ProtocolVersion` bump needed (that version gates the SEPARATE daemon↔supervisor R/S protocol, not this one). Piggybacking costs nothing a new verb would save, and reuses an already-proven, already-polled-on-a-sane-cadence code path end to end.
+
+**Hard requirement, not polish: a stale or never-probed reading must be visually distinct from a fresh one.** This is the entire point of building the readout — a stale `cla 42%` rendering identically to a live one would recreate the exact silent-failure mode under investigation. `*Known` already folds in each package's own staleness check (`CacheMaxAge`, 1 hour), so the status bar needs no freshness math of its own: unknown-or-stale renders as a literal `—` (mirroring the Settings System panel's existing `*_avail` fallback idiom), never a percentage.
+
+### Decision: Frontend Parity — TUI only, web/macOS named as a non-goal, not silently skipped
+
+The status bar is TUI-only UI real estate; the web SPA and macOS app are both real daemon clients that get nothing from this change. REST exposure of the same two cached readings was considered but judged more scope than this change should carry (a new endpoint, new frontend polling code in two separate clients, for a feature whose placement the user explicitly settled as "the TUI status bar"). Per CLAUDE.md's Frontend Parity rule, this is recorded as an explicit, named non-goal rather than left silent — a future change can wire REST exposure once the BootInfo-relay plumbing this change adds proves the two fields are worth it elsewhere too.
+
+### Decision: the Codex PTY-fallback opt-in is a package-level var in `internal/backendtier`, flipped live from config every probe tick
+
+`backendtier.Probe`'s signature stays `func(context.Context) error` (its only production caller, `daemon.go`'s injected `codexProbe` field, and its test seam are both typed on that exact signature). Rather than widen the signature to thread config through, `SetCodexPTYFallbackEnabled(bool)` follows the SAME package-level-var-as-test-seam pattern this file already uses for `codexRolloutProbeRunner`/`codexPTYProbeRunner`/`codexNowFunc`/`codexHomeDirFunc`. `Daemon.probeCodexOnce` calls it once per tick from `d.db.Config().BackendRouting.CodexPTYFallbackEnabled`, so a config.toml edit takes effect without a daemon restart, with no new daemon-side state to manage.
+
+**Alternative rejected: thread a `config.Config` (or a bool) through `Probe`'s signature.** Rejected as unnecessary churn — the only production call site is a bare function-value assignment (`d.codexProbe = backendtier.Probe`), so changing the signature cascades into the daemon's `codexProbe` field type and every test that swaps it, for no benefit the package-level-var approach doesn't already provide just as safely (the var is read fresh on every `Probe()` call, same effective liveness).
+
+## Risks / Trade-offs
+
+- **[Risk] A task created while under a tier's threshold stays on that tier's backend forever, even after conditions change** → Mitigation: this is the PRE-EXISTING behavior for `cfg.Defaults.Backend` today (task.Backend has always been frozen at creation); this change only makes the FROZEN CHOICE smarter, it doesn't change the freezing semantics or reopen the resume-safety hazard a lazy-resolution alternative would.
+- **[Risk] `SupervisorSpawnSurface` bump (13→14) prompts every running supervisor to show a restart notice** → Mitigation: this is the existing, intentional, non-blocking mechanism for exactly this class of change (spawn-only mismatches never interrupt a running agent); the bump is factually warranted since the backend a freshly created task resolves to can now differ from before.
+- **[Risk] The user must hand-edit `~/.argus/config.toml` to remove `[hera.worker_budget]`** → Mitigation: no migration shim exists anywhere in this codebase (single-user, no back-compat, per CLAUDE.md's Breaking Changes Policy); the stale block is silently ignored by TOML decode (unknown keys are dropped, not an error) rather than breaking config load, so the worst case of forgetting is "the old block does nothing," not a crash.
+- **[Risk] `IsClaudeBackend`'s strict include-list forces an operator's custom-named Claude wrapper script onto bare `claude` for coordinators specifically** → Mitigation: named explicitly above; the alternative (an exclude-list) would wrongly admit ANY unrecognized command as "safe," defeating the guarantee this carve-out exists to provide.
+
+## Migration Plan
+
+- No data migration. `[hera.worker_budget]` config keys are simply no longer read; the user removes the stale block from `~/.argus/config.toml` at their convenience (not required for correctness — removed, it's just inert).
+- No DB schema change. `BackendRoutingConfig.CodexPTYFallbackEnabled` is config.toml-only, not DB-persisted.
+- Deploy is a normal `go install`-based daemon restart (per this repo's existing dogfood/deploy procedure); the `SupervisorSpawnSurface` bump surfaces the existing non-blocking restart-recommended notice to any running supervisor, same as any other spawn-surface change.
+- Rollback: revert the commit. No persisted state this change writes is incompatible with the prior binary (the deleted config keys were never written anywhere other than the user's own config.toml, which a rollback doesn't touch).
+
+## Open Questions
+
+- Should the TUI's new-task form backend selector (`internal/tui/newtaskform.go`) eventually offer an explicit "auto / budget-routed" option instead of always pre-selecting a single concrete default? Out of scope here — named in the proposal as a recorded, non-blocking UX question for a future change.
+- Should `[backend_routing]` eventually gain a DB/Settings-UI surface (mirroring the tier list's existing config.toml-vs-DB precedence) for the new `codex_pty_fallback_enabled` flag? Deferred — v1 scoping matches the retired `[hera.worker_budget]`'s own config.toml-only precedent.

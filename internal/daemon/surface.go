@@ -97,7 +97,18 @@ const (
 	//     session-scoped skills path.
 	//   - v13: sandboxed sessions export PLAYWRIGHT_MCP_SANDBOX=false so the
 	//     Playwright MCP's Chrome can launch inside the sandbox-exec profile.
-	SupervisorSpawnSurface = 13
+	//   - v14: CreateAndStart's task-creation-time backend stamp now resolves
+	//     through the SAME project/tier/default precedence chain
+	//     ResolveBackend uses, instead of blindly stamping cfg.Defaults.Backend
+	//     (fix-backend-routing-semantics) — a project-level Backend override
+	//     or a configured [backend_routing] tier list can now actually change
+	//     which backend a freshly created task spawns with, where previously
+	//     neither was ever reachable. Hera coordinator/sub-coordinator spawn is
+	//     the deliberate exception: it always forces a Claude-capable backend
+	//     regardless of this resolution (resolveCoordinatorBackend) and the old
+	//     [hera.worker_budget] one-way Claude→codex fallback for hera worker
+	//     spawn was retired in favor of the same shared tier list.
+	SupervisorSpawnSurface = 14
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -318,7 +329,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "e3b3ded4b96e4a92465b4ce48d18cbeab08b6364722a9e802b66eacd9cd57f45"
+	SpawnSurfaceDigest  = "c5cf242739546675f280142631f20d38459c3ef7d664a01b8874e0ca7b1e55f8"
 	StreamSurfaceDigest = "0af3825eb6d09b138fc10a4d2041a0bfb8cfebadb225f328603877956243d7c8"
 )
 

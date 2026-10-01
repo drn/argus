@@ -1095,6 +1095,9 @@ func (d *Daemon) probeCodexOnce(ctx context.Context) {
 	if d.codexProbe == nil {
 		return
 	}
+	// Reflect the current config live, every tick, so a config.toml edit
+	// takes effect without a daemon restart (fix-backend-routing-semantics).
+	backendtier.SetCodexPTYFallbackEnabled(d.db.Config().BackendRouting.CodexPTYFallbackEnabled)
 	if err := d.codexProbe(ctx); err != nil {
 		uxlog.Log("[backendtier] codex probe returned error: %v", err)
 	}
@@ -1316,7 +1319,6 @@ func (d *Daemon) Serve(sockPath string) error {
 		// path (add-hera-subcoord-nodes); without this the gater would fall back to
 		// the worker path and never spawn a sub-coordinator agent.
 		d.heraGater.SetSubCoordMaterializer(d.heraGaterMaterializeSubCoord)
-		d.heraGater.SetConfigResolver(d.db.Config)
 		// Auto-accept a materialized node's blockers (add-hera-accept-lifecycle):
 		// the same shared hera.AcceptRole primitive the hera_accept MCP tool
 		// calls, reusing gaterSvc as the AcceptSender exactly as the ping

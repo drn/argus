@@ -137,22 +137,28 @@ func IsTaskSandboxed(task *model.Task, cfg config.Config) bool {
 	return sb.Enabled && IsSandboxAvailable()
 }
 
-// ResolveBackend returns the backend config for a task.
-// Priority: task.Backend > project.Backend > tiered backend-routing resolver
-// (when a tier list is configured) > cfg.Defaults.Backend. An explicit task or
-// project backend is never overridden by usage-based routing — the tiered
-// resolver is consulted only once neither is set.
-func ResolveBackend(task *model.Task, cfg config.Config) (config.Backend, error) {
+// resolveDefaultBackendName is the SINGLE shared backend-name precedence
+// chain (fix-backend-routing-semantics): explicit > project.Backend >
+// backendtier.ResolveBackend(cfg)'s tiered routing (when a tier list is
+// configured) > cfg.Defaults.Backend. Both ResolveBackend (consulted at
+// session-start/resume/display time) and agent.CreateAndStart (consulted
+// once, at task-creation time) call this SAME function so the precedence can
+// never drift between the two call sites again — the prior drift (create.go
+// stamping cfg.Defaults.Backend directly, bypassing both project.Backend and
+// the tier list) was the root cause of the tier list being unreachable for
+// every freshly created task. Returns "" only when nothing in the whole
+// chain (including cfg.Defaults.Backend) resolves to a name.
+func resolveDefaultBackendName(explicit, project string, cfg config.Config) string {
 	name := ""
 
-	if task.Project != "" {
-		if proj, ok := cfg.Projects[task.Project]; ok && proj.Backend != "" {
+	if project != "" {
+		if proj, ok := cfg.Projects[project]; ok && proj.Backend != "" {
 			name = proj.Backend
 		}
 	}
 
-	if task.Backend != "" {
-		name = task.Backend
+	if explicit != "" {
+		name = explicit
 	}
 
 	if name == "" {
@@ -162,6 +168,17 @@ func ResolveBackend(task *model.Task, cfg config.Config) (config.Backend, error)
 	if name == "" {
 		name = cfg.Defaults.Backend
 	}
+
+	return name
+}
+
+// ResolveBackend returns the backend config for a task.
+// Priority: task.Backend > project.Backend > tiered backend-routing resolver
+// (when a tier list is configured) > cfg.Defaults.Backend. An explicit task or
+// project backend is never overridden by usage-based routing — the tiered
+// resolver is consulted only once neither is set.
+func ResolveBackend(task *model.Task, cfg config.Config) (config.Backend, error) {
+	name := resolveDefaultBackendName(task.Backend, task.Project, cfg)
 
 	if name == "" {
 		return config.Backend{}, fmt.Errorf("no backend configured")

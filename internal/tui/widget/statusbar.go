@@ -54,6 +54,19 @@ type StatusBar struct {
 	pluginActive bool
 	pluginTitle  string
 	pluginHints  []PluginHint
+
+	// Cached Claude/Codex usage-probe readings (fix-backend-routing-semantics),
+	// always-visible per the user's explicit choice of passive constant
+	// visibility over having to go look (Settings/doctor were considered and
+	// rejected). *Known mirrors daemon.BootInfoResp's own fold-in of
+	// staleness — false means "render as unknown", never "render 0%". Set via
+	// SetUsage; zero value (both false) renders as unknown, matching a
+	// not-yet-polled or --remote/in-process-runner session with no BootInfo
+	// source to ask.
+	claudePct   float64
+	claudeKnown bool
+	codexPct    float64
+	codexKnown  bool
 }
 
 // maxPluginBarHints caps how many plugin hints the bar will attempt to render
@@ -86,6 +99,18 @@ func (sb *StatusBar) SetTasks(tasks []*model.Task) {
 // SetTab updates which tab is active (changes hint display).
 func (sb *StatusBar) SetTab(t Tab) {
 	sb.activeTab = t
+}
+
+// SetUsage updates the cached Claude/Codex usage-probe percentages the status
+// bar renders permanently alongside the task counts (fix-backend-routing-
+// semantics). Pass claudeKnown/codexKnown false (pct ignored) when a reading
+// is absent or stale — Draw renders that side as "—" rather than a possibly
+// hours-old percentage indistinguishable from a fresh one.
+func (sb *StatusBar) SetUsage(claudePct float64, claudeKnown bool, codexPct float64, codexKnown bool) {
+	sb.claudePct = claudePct
+	sb.claudeKnown = claudeKnown
+	sb.codexPct = codexPct
+	sb.codexKnown = codexKnown
 }
 
 // SetHeraFocus updates which Hera region holds focus, switching the hint set
@@ -186,6 +211,31 @@ func (sb *StatusBar) Info() string {
 	return sb.infoMsg
 }
 
+// UsageSummary returns the current usageSummary() rendering. Exposed for
+// tests that assert wiring without scraping the rendered row, mirroring
+// Error()/Info()/HeraFocus().
+func (sb *StatusBar) UsageSummary() string {
+	return sb.usageSummary()
+}
+
+// usageSummary renders the always-visible Claude/Codex usage segment, e.g.
+// "cla 42% · cdx 76%". An unknown/stale side renders as "cla —" — mirroring
+// the Settings System panel's existing *_avail "—" fallback idiom — rather
+// than a percentage that could be hours old and indistinguishable from a
+// fresh one (fix-backend-routing-semantics: this distinction is the entire
+// point of surfacing the readout at all).
+func (sb *StatusBar) usageSummary() string {
+	claude := "—"
+	if sb.claudeKnown {
+		claude = fmt.Sprintf("%.0f%%", sb.claudePct)
+	}
+	codex := "—"
+	if sb.codexKnown {
+		codex = fmt.Sprintf("%.0f%%", sb.codexPct)
+	}
+	return fmt.Sprintf("cla %s · cdx %s", claude, codex)
+}
+
 // Draw renders the status bar.
 func (sb *StatusBar) Draw(screen tcell.Screen) {
 	// Drop any transient notice whose TTL has elapsed (BUG-030) before the
@@ -233,7 +283,7 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 				complete++
 			}
 		}
-		left = fmt.Sprintf(" %d active  %d pending  %d review  %d done", active, pending, review, complete)
+		left = fmt.Sprintf(" %d active  %d pending  %d review  %d done   %s", active, pending, review, complete, sb.usageSummary())
 	}
 
 	// Draw left text

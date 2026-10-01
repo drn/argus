@@ -67,14 +67,43 @@ var (
 	codexNowFunc            = time.Now
 	codexCacheSnapshotHook  func()
 	codexHomeDirFunc        = os.UserHomeDir
+
+	// codexPTYFallbackEnabled gates the costed PTY /status probe
+	// (fix-backend-routing-semantics). Defaults to false: a disabled fallback
+	// behind a dead rollout-file path means the cache simply stays
+	// stale/unknown (fail-open, same as any other probe miss) rather than
+	// spending real Codex quota on every tick. Set via
+	// SetCodexPTYFallbackEnabled, reflecting config.BackendRoutingConfig.
+	// CodexPTYFallbackEnabled live every probe tick.
+	codexPTYFallbackEnabled bool
+	codexPTYFallbackMu      sync.RWMutex
 )
+
+// SetCodexPTYFallbackEnabled sets whether Probe may fall back to the costed
+// headless `codex` PTY `/status` probe when the free rollout-file read finds
+// nothing fresh enough. Safe to call from any goroutine; the daemon calls
+// this once per probe tick with the current config.BackendRoutingConfig.
+// CodexPTYFallbackEnabled so a config.toml edit takes effect without a
+// restart.
+func SetCodexPTYFallbackEnabled(enabled bool) {
+	codexPTYFallbackMu.Lock()
+	defer codexPTYFallbackMu.Unlock()
+	codexPTYFallbackEnabled = enabled
+}
+
+func codexPTYFallbackAllowed() bool {
+	codexPTYFallbackMu.RLock()
+	defer codexPTYFallbackMu.RUnlock()
+	return codexPTYFallbackEnabled
+}
 
 // Probe runs one best-effort Codex usage probe and updates the cache when a
 // reading is available. It first tries the free rollout-file read
 // (rolloutReading), falling back to the costed PTY /status probe only when no
-// sufficiently fresh rollout reading exists. Failures are logged and leave
-// the existing cache untouched; callers do not need to treat the returned
-// error as fatal.
+// sufficiently fresh rollout reading exists AND the fallback is opted in via
+// SetCodexPTYFallbackEnabled (fix-backend-routing-semantics — off by
+// default). Failures are logged and leave the existing cache untouched;
+// callers do not need to treat the returned error as fatal.
 func Probe(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return nil
@@ -84,6 +113,10 @@ func Probe(ctx context.Context) error {
 
 	reading, ok := codexRolloutProbeRunner()
 	if !ok {
+		if !codexPTYFallbackAllowed() {
+			uxlog.Log("[backendtier] codex rollout read found nothing fresh and the costed PTY fallback is disabled (default); leaving cache stale/unknown")
+			return nil
+		}
 		probeCtx, cancel := context.WithTimeout(ctx, codexProbeTimeout)
 		defer cancel()
 
@@ -120,6 +153,15 @@ func CachedCodexPct() (float64, bool) {
 		return 0, false
 	}
 	return reading.Percentage, true
+}
+
+// CachedReading returns the full most-recently-probed Codex Reading
+// (percentage, reset time, and when it was probed) and whether it is present
+// and not stale, for callers that need staleness information beyond the bare
+// percentage (e.g. the daemon's BootInfo relay, surfaced in the TUI status
+// bar). Never triggers a live probe.
+func CachedReading() (Reading, bool) {
+	return codexSnapshot()
 }
 
 func storeCodexReading(reading Reading) {

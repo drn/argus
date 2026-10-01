@@ -1907,7 +1907,13 @@ func TestHera_SpawnWorker_ProjectOverride(t *testing.T) {
 	testutil.Contains(t, cr.Content[0].Text, "**project**: other-project")
 }
 
-func TestHera_SpawnWorker_ExplicitBackendBypassesBudgetConfig(t *testing.T) {
+// TestHera_SpawnWorker_ExplicitBackendPassesThrough asserts hera_spawn_worker's
+// MCP handler threads an explicit `backend` argument straight through unchanged
+// (and never consults the profile config store for it — budget-aware tier
+// routing is now purely agent.CreateAndStart's concern, exercised at that layer
+// in internal/agent's own tests; hera_spawn_worker has no backend-resolution
+// logic of its own left to test here).
+func TestHera_SpawnWorker_ExplicitBackendPassesThrough(t *testing.T) {
 	s, d := testHeraServer(t)
 	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord")
 	s.SetProfileResolver(&fakeConfigStore{panicOnCall: true})
@@ -1922,46 +1928,6 @@ func TestHera_SpawnWorker_ExplicitBackendBypassesBudgetConfig(t *testing.T) {
 
 	wt := workerTaskByName(t, d, "explicit-backend")
 	testutil.Equal(t, wt.Backend, "claude-special")
-}
-
-func TestHera_SpawnWorker_ManualBudgetFallbackBackend(t *testing.T) {
-	s, d := testHeraServer(t)
-	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord")
-	cfg := config.DefaultConfig()
-	cfg.Hera.WorkerBudget.Enabled = true
-	store := &fakeConfigStore{cfg: cfg}
-	s.SetProfileResolver(store)
-
-	resp := doRequest(t, s, "tools/call", ToolCallParams{
-		Name:      "hera_spawn_worker",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"cwd": %q, "prompt": "do a thing", "role_name": "budget-fallback"}`, coord.Worktree)),
-	})
-	testutil.NoError(t, respErr(resp))
-	cr := callResult(t, resp)
-	testutil.Equal(t, cr.IsError, false)
-
-	wt := workerTaskByName(t, d, "budget-fallback")
-	testutil.Equal(t, wt.Backend, config.DefaultWorkerBudgetFallbackBackend)
-	testutil.Equal(t, store.calls, 1)
-}
-
-func TestHera_SpawnWorker_ThresholdUnknownFallsThrough(t *testing.T) {
-	s, d := testHeraServer(t)
-	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord")
-	cfg := config.DefaultConfig()
-	cfg.Hera.WorkerBudget.ThresholdPct = 90
-	s.SetProfileResolver(&fakeConfigStore{cfg: cfg})
-
-	resp := doRequest(t, s, "tools/call", ToolCallParams{
-		Name:      "hera_spawn_worker",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"cwd": %q, "prompt": "do a thing", "role_name": "budget-open"}`, coord.Worktree)),
-	})
-	testutil.NoError(t, respErr(resp))
-	cr := callResult(t, resp)
-	testutil.Equal(t, cr.IsError, false)
-
-	wt := workerTaskByName(t, d, "budget-open")
-	testutil.Equal(t, wt.Backend, "")
 }
 
 // TestHera_SpawnWorker_ModelArg asserts the optional `model` argument is read

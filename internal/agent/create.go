@@ -200,11 +200,13 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		prompt = appendAttachmentList(prompt, attachPaths)
 	}
 
-	// Step 3: build task and persist.
-	backend := input.Backend
-	if backend == "" {
-		backend = cfg.Defaults.Backend
-	}
+	// Step 3: build task and persist. Resolves through the SAME precedence
+	// chain ResolveBackend uses (fix-backend-routing-semantics) — explicit >
+	// project.Backend > tiered backend-routing resolver > cfg.Defaults.Backend
+	// — rather than blindly stamping cfg.Defaults.Backend, which previously
+	// made both the project-level override and the tier list unreachable for
+	// any task created with no explicit backend.
+	backend := resolveDefaultBackendName(input.Backend, input.Project, cfg)
 	task := &model.Task{
 		Name:            finalName,
 		Status:          model.StatusPending,
