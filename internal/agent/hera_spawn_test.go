@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -704,6 +706,34 @@ func TestSpawnHeraWorker_StartFailureUnwindsRoleAndBinding(t *testing.T) {
 }
 
 // --- resolveCoordinatorBackend (fix-backend-routing-semantics) ---
+
+// TestResolveCoordinatorBackend_WarningsReachSlog pins the fix for a real
+// defect found in review: uxlog.Log is a silent no-op unless uxlog.Init has
+// been called, which only the TUI process does — but
+// MaterializeHeraSubCoordinator's gater-triggered path runs daemon-side,
+// where uxlog is never initialized. A non-Claude-capable coordinator
+// backend must therefore also be logged via slog.Warn, which reaches
+// daemon.log, so the warning is observable regardless of which process
+// resolves the backend.
+func TestResolveCoordinatorBackend_WarningsReachSlog(t *testing.T) {
+	var logBuf bytes.Buffer
+	original := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(original) })
+
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "codex"},
+		Backends: map[string]config.Backend{
+			"codex":  {Command: "codex"},
+			"claude": {Command: "claude"},
+		},
+	}
+
+	resolveCoordinatorBackend("", "", cfg)
+
+	testutil.Contains(t, logBuf.String(), "coordinator spawn")
+	testutil.Contains(t, logBuf.String(), "not Claude-capable")
+}
 
 func TestResolveCoordinatorBackend_ExplicitClaudeCapableWins(t *testing.T) {
 	cfg := config.Config{Backends: map[string]config.Backend{

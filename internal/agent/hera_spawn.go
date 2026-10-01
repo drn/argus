@@ -70,7 +70,7 @@ func resolveCoordinatorBackend(explicit, project string, cfg config.Config) stri
 		if b, ok := cfg.Backends[explicit]; ok && IsClaudeBackend(b.Command) {
 			return explicit
 		}
-		uxlog.Log("[agent] coordinator spawn: explicit backend %q is not Claude-capable — "+
+		warnCoordinatorBackend("explicit backend %q is not Claude-capable — "+
 			"coord-hook context-size stamping, token/cost accrual, and the recycle machinery "+
 			"will not work for this coordinator", explicit)
 		return explicit
@@ -82,14 +82,30 @@ func resolveCoordinatorBackend(explicit, project string, cfg config.Config) stri
 	}
 
 	if b, ok := cfg.Backends[claudeFallback]; ok && IsClaudeBackend(b.Command) {
-		uxlog.Log("[agent] coordinator spawn: resolved backend %q is not Claude-capable, "+
+		warnCoordinatorBackend("resolved backend %q is not Claude-capable, "+
 			"forcing %q (coord-hook context tracking, cost accrual, and recycle require Claude Code)",
 			name, claudeFallback)
 		return claudeFallback
 	}
-	uxlog.Log("[agent] coordinator spawn: resolved backend %q is not Claude-capable and no "+
+	warnCoordinatorBackend("resolved backend %q is not Claude-capable and no "+
 		"Claude-capable backend is configured; leaving as-is", name)
 	return name
+}
+
+// warnCoordinatorBackend emits a non-Claude-capable-coordinator warning on
+// BOTH logging channels this codebase uses, because which one is actually
+// observable depends on which process runs this code: uxlog.Log is a silent
+// no-op unless uxlog.Init has been called, which only the TUI process does
+// (runTUI/remote-TUI) — the daemon process, which is where
+// MaterializeHeraSubCoordinator's gater-triggered path runs, never
+// initializes it. slog.Warn always reaches somewhere real in both processes
+// (the daemon's own daemon.log; the TUI's redirected default-logger
+// destination). Emitting both, rather than picking one, means this warning
+// is never silently unobservable depending on which call site reached it —
+// the exact failure mode this whole change exists to fix.
+func warnCoordinatorBackend(format string, args ...any) {
+	uxlog.Log("[agent] coordinator spawn: "+format, args...)
+	slog.Warn(fmt.Sprintf("coordinator spawn: "+format, args...))
 }
 
 // resolveOrchestratorBranchNamespace looks up an orchestrator's name for use

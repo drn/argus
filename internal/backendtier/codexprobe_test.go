@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,6 +106,10 @@ func TestProbe_StaleOrMissingRolloutFallsBackToPTY(t *testing.T) {
 func TestProbe_PTYFallbackDisabledByDefaultLeavesCacheStale(t *testing.T) {
 	resetCodexState(t)
 	readLog := initTestUxlog(t)
+	var logBuf bytes.Buffer
+	originalSlog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(originalSlog) })
 	codexRolloutProbeRunner = func() (Reading, bool) { return Reading{}, false }
 	codexPTYProbeRunner = func(context.Context) ([]byte, error) {
 		t.Fatal("the costed PTY fallback must not run when disabled (the default)")
@@ -116,6 +121,10 @@ func TestProbe_PTYFallbackDisabledByDefaultLeavesCacheStale(t *testing.T) {
 	_, ok := CachedCodexPct()
 	testutil.Equal(t, ok, false)
 	testutil.Contains(t, readLog(), "costed PTY fallback is disabled")
+	// Probe runs exclusively in the daemon process, where uxlog.Log is a
+	// silent no-op (uxlog.Init is never called there) — slog.Warn is what
+	// actually reaches daemon.log, so this must be logged on both channels.
+	testutil.Contains(t, logBuf.String(), "costed PTY fallback is disabled")
 }
 
 // TestProbe_PTYFallbackExplicitlyEnabledStillRuns confirms the opt-in itself

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -114,7 +115,15 @@ func Probe(ctx context.Context) error {
 	reading, ok := codexRolloutProbeRunner()
 	if !ok {
 		if !codexPTYFallbackAllowed() {
-			uxlog.Log("[backendtier] codex rollout read found nothing fresh and the costed PTY fallback is disabled (default); leaving cache stale/unknown")
+			// uxlog.Log is a silent no-op here: Probe runs exclusively in the
+			// daemon process (the probe ticker), which never calls
+			// uxlog.Init. slog.Warn is what actually reaches daemon.log —
+			// emitting both keeps this consistent with warnCoordinatorBackend's
+			// reasoning and with the TUI-reachable call sites elsewhere in
+			// this package, in case this is ever invoked from one.
+			const msg = "[backendtier] codex rollout read found nothing fresh and the costed PTY fallback is disabled (default); leaving cache stale/unknown"
+			uxlog.Log(msg)
+			slog.Warn(msg)
 			return nil
 		}
 		probeCtx, cancel := context.WithTimeout(ctx, codexProbeTimeout)
