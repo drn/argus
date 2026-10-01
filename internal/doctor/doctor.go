@@ -225,13 +225,15 @@ const (
 	surfaceUnknown                           // supervisor reports none, or there is no supervisor
 	surfaceSpawnStale                        // spawn component differs; running agents unaffected
 	surfaceStreamStale                       // stream component differs; live sessions affected
+	surfaceBothStale                         // both differ; live sessions AND newly started sessions affected
 )
 
 // supervisorSurfaceSkew compares the live supervisor's reported surface against
 // this build's (carried on the TUI row, which is already this package's "current"
 // reference). Anything unreported on either side yields surfaceUnknown — never a
 // verdict, so the hash keeps serving as the fallback for an older supervisor.
-// Stream outranks spawn: when both differ the consequence is the larger one.
+// When both components differ the verdict is surfaceBothStale so neither
+// consequence is hidden behind the other.
 func supervisorSurfaceSkew(byRole map[Role]Actor) surfaceVerdict {
 	sup, ok := resolved(byRole, RoleSupervisor)
 	if !ok || !sup.surfaceKnown() {
@@ -241,10 +243,14 @@ func supervisorSurfaceSkew(byRole map[Role]Actor) surfaceVerdict {
 	if !ok || !tui.surfaceKnown() {
 		return surfaceUnknown
 	}
+	streamStale := sup.StreamSurface != tui.StreamSurface
+	spawnStale := sup.SpawnSurface != tui.SpawnSurface
 	switch {
-	case sup.StreamSurface != tui.StreamSurface:
+	case streamStale && spawnStale:
+		return surfaceBothStale
+	case streamStale:
 		return surfaceStreamStale
-	case sup.SpawnSurface != tui.SpawnSurface:
+	case spawnStale:
 		return surfaceSpawnStale
 	default:
 		return surfaceCoherent
@@ -258,27 +264,38 @@ func supervisorSurfaceSkew(byRole map[Role]Actor) surfaceVerdict {
 
 func supervisorSurfaceFix(sup Actor, v surfaceVerdict) string {
 	var b strings.Builder
-	if v == surfaceSpawnStale {
-		b.WriteString("The session-supervisor's SPAWN surface is behind this build")
-		if sup.ResolvedPath != "" {
-			fmt.Fprintf(&b, " (%s)", sup.ResolvedPath)
-		}
-		b.WriteString(".\n")
-		b.WriteString("Already-running agents are UNAFFECTED — the spawn stack is read only when a session starts.\n")
-		b.WriteString("Sessions started from now on will use the previous build's spawn configuration\n")
-		b.WriteString("(command, sandbox profile, skills injection, secrets, cache dirs).\n")
-		b.WriteString("Fix when convenient — the restart interrupts every running agent, so pick your moment:\n")
-		b.WriteString("    argus session-supervisor stop   # the daemon auto-restarts it on next need")
-		return b.String()
+	surfaces := "STREAM"
+	switch v {
+	case surfaceSpawnStale:
+		surfaces = "SPAWN"
+	case surfaceBothStale:
+		surfaces = "STREAM and SPAWN"
 	}
-	b.WriteString("The session-supervisor's STREAM surface is behind this build")
+	if v == surfaceBothStale {
+		fmt.Fprintf(&b, "The session-supervisor's %s surfaces are behind this build", surfaces)
+	} else {
+		fmt.Fprintf(&b, "The session-supervisor's %s surface is behind this build", surfaces)
+	}
 	if sup.ResolvedPath != "" {
 		fmt.Fprintf(&b, " (%s)", sup.ResolvedPath)
 	}
 	b.WriteString(".\n")
-	b.WriteString("LIVE sessions are affected — the PTY read loop, ring buffer, session log and\n")
-	b.WriteString("R/S handlers serving your running agents are the previous build's.\n")
-	b.WriteString("Restarting the supervisor INTERRUPTS every running agent — use the skew modal's guarded restart, or if no agents are running:\n")
+	if v != surfaceSpawnStale {
+		b.WriteString("LIVE sessions are affected — the PTY read loop, ring buffer, session log and\n")
+		b.WriteString("R/S handlers serving your running agents are the previous build's.\n")
+	}
+	if v != surfaceStreamStale {
+		if v == surfaceSpawnStale {
+			b.WriteString("Already-running agents are UNAFFECTED — the spawn stack is read only when a session starts.\n")
+		}
+		b.WriteString("Sessions started from now on will use the previous build's spawn configuration\n")
+		b.WriteString("(command, sandbox profile, skills injection, secrets, cache dirs, argus MCP wiring).\n")
+	}
+	if v == surfaceSpawnStale {
+		b.WriteString("Fix when convenient — the restart interrupts every running agent, so pick your moment:\n")
+	} else {
+		b.WriteString("Restarting the supervisor INTERRUPTS every running agent — use the skew modal's guarded restart, or if no agents are running:\n")
+	}
 	b.WriteString("    argus session-supervisor stop   # the daemon auto-restarts it on next need")
 	return b.String()
 }

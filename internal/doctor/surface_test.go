@@ -52,10 +52,22 @@ func TestDiagnose_SupervisorJudgedOnSurface(t *testing.T) {
 			remHas: "LIVE sessions are affected",
 		},
 		{
-			name:   "both behind ⇒ stream outranks spawn",
+			name:   "both behind ⇒ reports the stream consequences",
 			actors: surfaceActors("new", "old", [2]int{2, 2}, [2]int{1, 1}),
 			want:   RestartNeeded,
 			remHas: "LIVE sessions are affected",
+		},
+		{
+			name:   "both behind ⇒ ALSO reports the spawn consequences",
+			actors: surfaceActors("new", "old", [2]int{2, 2}, [2]int{1, 1}),
+			want:   RestartNeeded,
+			remHas: "argus MCP wiring",
+		},
+		{
+			name:   "spawn behind ⇒ enumerates argus MCP wiring",
+			actors: surfaceActors("new", "old", [2]int{2, 1}, [2]int{1, 1}),
+			want:   RestartNeeded,
+			remHas: "argus MCP wiring",
 		},
 		{
 			name: "surface mismatch is caught even with matching hashes and no other rows",
@@ -169,4 +181,47 @@ func TestActorSurfaceHelpers(t *testing.T) {
 			testutil.Equal(t, tt.a.surfaceString(), tt.str)
 		})
 	}
+}
+
+// TestSupervisorSurfaceSkew_Verdicts pins the classification itself, including
+// that BOTH stale surfaces yield their own verdict instead of stream shadowing
+// spawn (the 2026-10-01 incident: stream 1 vs 5 and spawn 6 vs 14 printed only
+// the stream message, hiding that new sessions lost argus MCP).
+func TestSupervisorSurfaceSkew_Verdicts(t *testing.T) {
+	byRole := func(tui, sup [2]int) map[Role]Actor {
+		m := map[Role]Actor{}
+		for _, a := range surfaceActors("a", "b", tui, sup) {
+			m[a.Role] = a
+		}
+		return m
+	}
+	tests := []struct {
+		name string
+		in   map[Role]Actor
+		want surfaceVerdict
+	}{
+		{"coherent", byRole([2]int{1, 1}, [2]int{1, 1}), surfaceCoherent},
+		{"spawn only", byRole([2]int{2, 1}, [2]int{1, 1}), surfaceSpawnStale},
+		{"stream only", byRole([2]int{1, 2}, [2]int{1, 1}), surfaceStreamStale},
+		{"both", byRole([2]int{14, 5}, [2]int{6, 1}), surfaceBothStale},
+		{"unknown supervisor", byRole([2]int{1, 1}, [2]int{0, 0}), surfaceUnknown},
+		{"no rows", map[Role]Actor{}, surfaceUnknown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testutil.Equal(t, supervisorSurfaceSkew(tt.in), tt.want)
+		})
+	}
+}
+
+// TestSupervisorSurfaceFix_BothStale pins the combined message: both
+// consequence blocks and exactly one remediation line.
+func TestSupervisorSurfaceFix_BothStale(t *testing.T) {
+	got := supervisorSurfaceFix(Actor{ResolvedPath: "/opt/bin/argus"}, surfaceBothStale)
+	testutil.Contains(t, got, "STREAM")
+	testutil.Contains(t, got, "SPAWN")
+	testutil.Contains(t, got, "LIVE sessions are affected")
+	testutil.Contains(t, got, "argus MCP wiring")
+	testutil.Contains(t, got, "/opt/bin/argus")
+	testutil.Equal(t, strings.Count(got, "argus session-supervisor stop"), 1)
 }
