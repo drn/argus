@@ -192,7 +192,7 @@ below. The `?` overlay always shows your active bindings.
 | `ctrl+o`  | Open the project's GitHub repo in browser (via `gh repo view --web`) |
 | `ctrl+r`  | Prune completed tasks                                           |
 | `j` / `k` | Navigate up/down                                                |
-| `Cmd+→`   | Enter the Projects rail when Settings → Appearance → cross-tab arrow navigation is enabled |
+| `Cmd+→`   | Enter the Projects rail (Settings → Appearance → cross-tab arrow navigation, on by default) |
 | `1` / `2` / `3` | Switch tabs (Tasks / Projects / Settings) |
 | `ctrl+l`  | Refresh screen (wipe ghost cells; works in every non-agent tab) |
 | `ctrl+j`  | Open the unified **task/role switcher** (see the Agent View table below — same global action, also reachable from the plain Task List) |
@@ -253,7 +253,8 @@ The Projects tab (`2`) has three regions: a left **rail**, a middle **coordinato
 | `i`             | View the selected role's task message inbox (read-only; same viewer as the Task List `i`). On an orchestrator header it opens the coordinator's inbox |
 | `ctrl+d`        | **Nuke** the selected role; on a coordinator / orchestrator header (or a nested sub-coordinator row), cascade the whole subtree — every nested sub-coordinator + their agents (Tier 2). Nuke **removes the rows from the rail entirely** (a `nuked_at` mark — no DB deletes; role / orchestrator / inbox / task rows all retained and recoverable via the DB) and reclaims the worktree + branch + session. On a single (sole-bound) role this opens the merge-safety review popup (Tier A, local-only) instead of a plain confirm — NOT-SAFE/SAFE sections, `Clean safe`/`Clean all`/`Cancel`, never a hard block; a cascade keeps its existing count-bearing confirm, augmented with a confirmed-merged count. A task bound live in another orchestrator is preserved. (vs `a`, which hides but keeps the worktree/session) |
 | `←`             | Move to parent coordinator (rail focused only — passes through to the PTY when a pane is focused) |
-| `Cmd+←`         | Return to Tasks from the focused rail when Settings → Appearance → cross-tab arrow navigation is enabled |
+| `Cmd+←`         | Return to Tasks from the focused rail (cross-tab arrow navigation) |
+| `Cmd+→`         | From the rightmost present pane (agent, else coordinator), continue to the Settings tab's left pane (cross-tab arrow navigation; not while a pane is fullscreen) |
 | `Cmd+↑` / `Cmd+↓` | Move the rail cursor up / down without changing the focused pane (the mod-7 escape sequence is consumed — the pane's PTY never sees it) |
 | `ctrl+q`        | Return focus to the rail                                                                |
 
@@ -305,6 +306,7 @@ End-of-life has **two resting states**, and **no DB row is ever hard-deleted** �
 | `r`                   | Run schedule now (on the Scheduled Tasks section)        |
 | `i`                   | Quick add projects                                       |
 | `Enter` / `◀` / `▶` | Toggle / cycle settings                                  |
+| `Cmd+←` / `Cmd+→`     | Move between the left (categories) and right (detail) panes; `Cmd+←` from the left pane returns to the Projects tab's rightmost pane (cross-tab arrow navigation) |
 
 ### Remote TUI
 
@@ -988,7 +990,7 @@ Registered repos, keyed by name. The DB projects table is the primary source; en
 |-----|------|---------|-------------|
 | `spinner_style` | string | `"progress"` | Spinner animation: `progress`, `dots`, `braille`, or `classic`. |
 | `default_agent_zoom` | bool | `true` | Resting agent-view layout: `true` opens single-pane/zoomed (side panels collapsed); `false` opens the 1:3:1 three-pane layout. `Ctrl+Z` toggles at runtime. |
-| `cross_tab_arrows` | bool | `false` | Enables `Cmd+Right` from Tasks to the Projects rail and `Cmd+Left` from that rail back to Tasks. |
+| `cross_tab_arrows` | bool | `true` | One continuous `Cmd+Left`/`Cmd+Right` chain: Tasks ⇄ Projects rail ⇄ coordinator pane ⇄ agent pane ⇄ Settings left pane ⇄ Settings right pane. Entering from the left lands on the leftmost pane, from the right on the rightmost. Never fires in the agent view, while a filter / inline edit has focus, or while a Projects pane is fullscreen. |
 | `theme` | string | `"default"` | ⚠️ Color theme name. Only `default` exists today and nothing reads this yet — reserved for a future theming layer. |
 | `show_elapsed` | bool | `true` | ⚠️ Reserved — show elapsed time on task rows. Not yet consumed. |
 | `show_icons` | bool | `true` | ⚠️ Reserved — show status icons. Not yet consumed. |
@@ -1124,7 +1126,7 @@ permission_mode = "bypass-active"
 [ui]
 spinner_style = "braille"
 default_agent_zoom = true
-cross_tab_arrows = false
+cross_tab_arrows = true
 
 # Maps merge by key; an existing key is replaced wholesale, so list every
 # field you want to keep.

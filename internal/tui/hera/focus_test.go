@@ -136,3 +136,42 @@ func TestFocusMachine_FullscreenClearsOnReturnToRail(t *testing.T) {
 		testutil.Equal(t, f.Fullscreen(), false)
 	})
 }
+
+func TestFocusMachine_AtRightmostAndToRightmost(t *testing.T) {
+	tests := []struct {
+		name         string
+		coord, agent bool
+		start        Focus
+		wantAt       bool
+		wantLand     Focus
+	}{
+		{"agent focused", true, true, FocusAgent, true, FocusAgent},
+		{"coord with agent present", true, true, FocusCoord, false, FocusAgent},
+		{"coord with agent absent", true, false, FocusCoord, true, FocusCoord},
+		{"rail with panes present", true, true, FocusRail, false, FocusAgent},
+		{"rail with only agent", false, true, FocusRail, false, FocusAgent},
+		{"rail with no panes", false, false, FocusRail, true, FocusRail},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := NewFocusMachine()
+			f.SetCoordPresent(tc.coord)
+			f.SetAgentPresent(tc.agent)
+			f.SetRegion(tc.start)
+			testutil.Equal(t, f.AtRightmost(), tc.wantAt)
+
+			f.ToRightmost()
+			testutil.Equal(t, f.State(), tc.wantLand)
+			testutil.Equal(t, f.AtRightmost(), true)
+		})
+	}
+
+	t.Run("ToRightmost clears fullscreen", func(t *testing.T) {
+		f := NewFocusMachine()
+		f.SetRegion(FocusCoord)
+		f.ToggleFullscreen()
+		testutil.Equal(t, f.Fullscreen(), true)
+		f.ToRightmost()
+		testutil.Equal(t, f.Fullscreen(), false)
+	})
+}

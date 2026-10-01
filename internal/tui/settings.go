@@ -1185,9 +1185,9 @@ func (sv *SettingsView) rebuildRows() {
 		}
 		sv.rows = append(sv.rows, settingsRow{kind: srAgentZoom, label: zoomLabel, key: "_agent_zoom"})
 
-		arrowLabel := "Cmd+arrows between Tasks/Projects: Off"
+		arrowLabel := "Cmd+arrows traverse all tabs/panes: Off"
 		if sv.crossTabArrows {
-			arrowLabel = "Cmd+arrows between Tasks/Projects: On"
+			arrowLabel = "Cmd+arrows traverse all tabs/panes: On"
 		}
 		sv.rows = append(sv.rows, settingsRow{kind: srCrossTabArrows, label: arrowLabel, key: "_cross_tab_arrows"})
 
@@ -1275,6 +1275,15 @@ func (sv *SettingsView) PasteHandler() func(pastedText string, setFocus func(p t
 		}
 	})
 }
+
+// InRightPane reports whether the detail (right) pane holds focus.
+func (sv *SettingsView) InRightPane() bool { return sv.focus == focusPane }
+
+// FocusLeftPane focuses the category (left) pane. Idempotent.
+func (sv *SettingsView) FocusLeftPane() { sv.setFocus(focusRail) }
+
+// FocusRightPane focuses the detail (right) pane. Idempotent.
+func (sv *SettingsView) FocusRightPane() { sv.setFocus(focusPane) }
 
 // IsEditing returns true when the user is inline-editing any field.
 func (sv *SettingsView) IsEditing() bool {
@@ -3753,11 +3762,11 @@ func (sv *SettingsView) renderCrossTabArrowsDetail(screen tcell.Screen, x, y, w,
 	r += 2
 
 	if r < h {
-		widget.DrawText(screen, x, y+r, w, "Cmd+Right: Tasks → Projects rail", theme.StyleDimmed)
+		widget.DrawText(screen, x, y+r, w, "Cmd+→ / Cmd+←: Tasks ⇄ Projects rail ⇄ coord pane ⇄ agent pane", theme.StyleDimmed)
 	}
 	r++
 	if r < h {
-		widget.DrawText(screen, x, y+r, w, "Cmd+Left: Projects rail → Tasks", theme.StyleDimmed)
+		widget.DrawText(screen, x, y+r, w, "⇄ Settings left pane ⇄ Settings right pane (one continuous chain)", theme.StyleDimmed)
 	}
 
 	if r+1 < h {

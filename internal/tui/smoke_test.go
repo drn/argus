@@ -2361,8 +2361,74 @@ func TestSmoke_NumericTabKeysRouteCorrectly(t *testing.T) {
 }
 
 func TestSmoke_CrossTabArrows(t *testing.T) {
+	// Default config: the flag is on without any DB row.
+	app := New(testDB(t), agent.NewRunner(nil), false)
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	press := func(k tcell.Key) {
+		sim.InjectKey(k, 0, tcell.ModCtrl|tcell.ModAlt)
+		syncUI(t, app.tapp)
+	}
+
+	// Tasks -> Hera rail.
+	press(tcell.KeyRight)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+		testutil.Equal(t, app.heraPage.Machine().State(), hera.FocusRail)
+		testutil.Equal(t, app.tapp.GetFocus(), tview.Primitive(app.heraPage))
+	})
+
+	// Hera rail -> coord -> agent (Hera's own ladder).
+	press(tcell.KeyRight)
+	press(tcell.KeyRight)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+		testutil.Equal(t, app.heraPage.Machine().State(), hera.FocusAgent)
+	})
+
+	// Hera agent -> Settings left pane.
+	press(tcell.KeyRight)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabSettings)
+		testutil.Equal(t, app.settings.InRightPane(), false)
+		testutil.Equal(t, app.tapp.GetFocus(), tview.Primitive(app.settingsPage))
+	})
+
+	// Settings left -> right, then end-of-chain no-op.
+	press(tcell.KeyRight)
+	press(tcell.KeyRight)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabSettings)
+		testutil.Equal(t, app.settings.InRightPane(), true)
+	})
+
+	// Back: right -> left, then left -> Hera rightmost pane.
+	press(tcell.KeyLeft)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.settings.InRightPane(), false)
+	})
+	press(tcell.KeyLeft)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+		testutil.Equal(t, app.heraPage.Machine().State(), hera.FocusAgent)
+		testutil.Equal(t, app.tapp.GetFocus(), tview.Primitive(app.heraPage))
+	})
+
+	// Hera agent -> coord -> rail (ladder), then rail -> Tasks.
+	press(tcell.KeyLeft)
+	press(tcell.KeyLeft)
+	press(tcell.KeyLeft)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
+		testutil.Equal(t, app.tapp.GetFocus(), tview.Primitive(app.tasklist))
+	})
+}
+
+func TestSmoke_CrossTabArrowsDisabled(t *testing.T) {
 	d := testDB(t)
-	testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "true"))
+	testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "false"))
 	app := New(d, agent.NewRunner(nil), false)
 
 	sim, stop := wireApp(t, app)
@@ -2371,16 +2437,7 @@ func TestSmoke_CrossTabArrows(t *testing.T) {
 	sim.InjectKey(tcell.KeyRight, 0, tcell.ModCtrl|tcell.ModAlt)
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() {
-		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
-		testutil.Equal(t, app.heraPage.Machine().State(), hera.FocusRail)
-		testutil.Equal(t, app.tapp.GetFocus(), tview.Primitive(app.heraPage))
-	})
-
-	sim.InjectKey(tcell.KeyLeft, 0, tcell.ModCtrl|tcell.ModAlt)
-	syncUI(t, app.tapp)
-	readUI(t, app.tapp, func() {
 		testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
-		testutil.Equal(t, app.tapp.GetFocus(), tview.Primitive(app.tasklist))
 	})
 }
 

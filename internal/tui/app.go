@@ -332,7 +332,7 @@ type App struct {
 	mode            viewMode
 	agentFocus      agentFocus
 	agentZen        bool // single-pane (zoom) mode: side panels collapsed to 0 width
-	crossTabArrows  bool // opt-in Cmd+Left/Right transition between Tasks and Hera rail
+	crossTabArrows  bool // Cmd+Left/Right traversal of the whole tab/pane chain (default on)
 	agentState      agentview.State
 	daemonConnected bool
 	tasks           []*model.Task
@@ -4263,31 +4263,75 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	return event
 }
 
-// handleCrossTabArrow consumes an enabled modified-arrow transition at the
-// Tasks–Hera boundary. The loose modifier check matches Hera's existing focus
-// ladder because terminals disagree on whether Cmd arrives as Ctrl, Alt, or
-// both. All non-boundary events fall through unchanged to the active view.
+// handleCrossTabArrow consumes an enabled modified-arrow hop along the
+// continuous spatial chain
+//
+//	Tasks ⇄ Hera rail ⇄ coord pane ⇄ agent pane ⇄ Settings left ⇄ Settings right
+//
+// The Hera-internal rail ⇄ coord ⇄ agent steps stay with HeraPage's own focus
+// ladder; this handler owns only the hops that leave a view (Tasks→Hera,
+// Hera→Tasks, Hera→Settings, Settings→Hera) plus the Settings left ⇄ right
+// step. Entering from the left lands on the leftmost pane, entering from the
+// right lands on the rightmost. The loose modifier check matches Hera's ladder
+// because terminals disagree on whether Cmd arrives as Ctrl, Alt, or both. All
+// non-hop events fall through unchanged to the active view. Never fires from
+// agent view / modals (mode gate), while a filter or inline edit holds the
+// keyboard, or while a Hera pane is fullscreen.
 func (a *App) handleCrossTabArrow(event *tcell.EventKey) bool {
 	if !a.crossTabArrows || a.mode != modeTaskList ||
 		event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) == 0 {
 		return false
 	}
+	key := event.Key()
+	if key != tcell.KeyLeft && key != tcell.KeyRight {
+		return false
+	}
 
 	switch a.header.ActiveTab() {
 	case widget.TabTasks:
-		if event.Key() == tcell.KeyRight && !a.tasklist.Filtering() {
+		if key == tcell.KeyRight && !a.tasklist.Filtering() {
 			uxlog.Log("[tui] cross-tab arrow: tasks -> hera")
 			a.switchTab(widget.TabHera)
 			return true
 		}
 	case widget.TabHera:
-		if event.Key() == tcell.KeyLeft &&
-			a.heraPage.Machine().State() == hera.FocusRail &&
-			!a.heraPage.RailFiltering() {
+		m := a.heraPage.Machine()
+		if a.heraPage.RailFiltering() || m.Fullscreen() {
+			return false
+		}
+		if key == tcell.KeyLeft && m.State() == hera.FocusRail {
 			uxlog.Log("[tui] cross-tab arrow: hera -> tasks")
 			a.switchTab(widget.TabTasks)
 			return true
 		}
+		if key == tcell.KeyRight && m.AtRightmost() {
+			uxlog.Log("[tui] cross-tab arrow: hera -> settings")
+			a.switchTab(widget.TabSettings)
+			a.settings.FocusLeftPane()
+			return true
+		}
+	case widget.TabSettings:
+		if a.settings.IsEditing() {
+			return false
+		}
+		switch {
+		case key == tcell.KeyRight && !a.settings.InRightPane():
+			uxlog.Log("[tui] cross-tab arrow: settings left -> settings right")
+			a.settings.FocusRightPane()
+		case key == tcell.KeyRight:
+			// End of chain: consume so the modified Right can't cycle the
+			// focused setting's value.
+			uxlog.Log("[tui] cross-tab arrow: settings right -> (end of chain)")
+		case a.settings.InRightPane():
+			uxlog.Log("[tui] cross-tab arrow: settings right -> settings left")
+			a.settings.FocusLeftPane()
+		default:
+			uxlog.Log("[tui] cross-tab arrow: settings -> hera")
+			a.switchTab(widget.TabHera)
+			a.heraPage.Machine().ToRightmost()
+			a.statusbar.SetHeraFocus(int(a.heraPage.Machine().State()))
+		}
+		return true
 	}
 	return false
 }

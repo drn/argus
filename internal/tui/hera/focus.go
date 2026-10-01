@@ -129,6 +129,34 @@ func (f *FocusMachine) Advance() {
 	}
 }
 
+// AtRightmost reports whether focus sits on the right-most PRESENT region, i.e.
+// Advance would be a no-op: FocusAgent, FocusCoord with no agent pane, or the
+// rail with neither content pane present.
+func (f *FocusMachine) AtRightmost() bool {
+	switch f.state {
+	case FocusAgent:
+		return true
+	case FocusCoord:
+		return !f.agentPresent
+	default:
+		return !f.coordPresent && !f.agentPresent
+	}
+}
+
+// ToRightmost focuses the right-most present region (agent, else coord, else
+// the rail). Clears fullscreen — landing is always a fresh, un-zoomed entry.
+func (f *FocusMachine) ToRightmost() {
+	switch {
+	case f.agentPresent:
+		f.state = FocusAgent
+	case f.coordPresent:
+		f.state = FocusCoord
+	default:
+		f.state = FocusRail
+	}
+	f.fullscreen = false
+}
+
 // Retreat moves focus one region to the left, skipping absent regions. No-op
 // from the rail.
 func (f *FocusMachine) Retreat() {

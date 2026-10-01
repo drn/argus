@@ -214,8 +214,11 @@ func TestDB_Config_DefaultAgentZoomDefaultsTrue(t *testing.T) {
 	testutil.Equal(t, d.Config().UI.DefaultAgentZoom, true)
 }
 
-func TestDB_Config_CrossTabArrowsDefaultsFalse(t *testing.T) {
+func TestDB_Config_CrossTabArrowsDefaultsTrue(t *testing.T) {
 	d := testDB(t)
+	// Absent row ⇒ enabled; an explicit "false" still opts out.
+	testutil.Equal(t, d.Config().UI.CrossTabArrows, true)
+	testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "false"))
 	testutil.Equal(t, d.Config().UI.CrossTabArrows, false)
 }
 

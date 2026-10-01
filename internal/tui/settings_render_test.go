@@ -615,25 +615,26 @@ func TestSettings_CrossTabArrowsToggle(t *testing.T) {
 		callbackValues = append(callbackValues, enabled)
 	}
 
-	testutil.Equal(t, sv.crossTabArrows, false)
+	// Default is ON; the first toggle turns it off, the second back on.
+	testutil.Equal(t, sv.crossTabArrows, true)
 
 	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
 	testutil.Equal(t, got, true)
-	testutil.Equal(t, sv.crossTabArrows, true)
-	testutil.Equal(t, sv.database.Config().UI.CrossTabArrows, true)
+	testutil.Equal(t, sv.crossTabArrows, false)
+	testutil.Equal(t, sv.database.Config().UI.CrossTabArrows, false)
 
 	selectRowInCategory(t, sv, catAppearance, srCrossTabArrows, "")
 	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
 	testutil.Equal(t, got, true)
-	testutil.Equal(t, sv.crossTabArrows, false)
-	testutil.Equal(t, sv.database.Config().UI.CrossTabArrows, false)
-	testutil.DeepEqual(t, callbackValues, []bool{true, false})
+	testutil.Equal(t, sv.crossTabArrows, true)
+	testutil.Equal(t, sv.database.Config().UI.CrossTabArrows, true)
+	testutil.DeepEqual(t, callbackValues, []bool{false, true})
 
 	selectRowInCategory(t, sv, catAppearance, srCrossTabArrows, "")
 	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
 	testutil.Equal(t, got, true)
 	testutil.Equal(t, sv.focus, focusRail)
-	testutil.Equal(t, sv.crossTabArrows, false)
+	testutil.Equal(t, sv.crossTabArrows, true)
 }
 
 // TestSettings_LeftEscapesAppearancePane pins the fix for Aaron's "can't escape
@@ -853,4 +854,17 @@ func TestApp_HandleNewTaskKey_PassesThrough(t *testing.T) {
 
 	app.onNewTask()
 	app.handleNewTaskKey(tcell.NewEventKey(tcell.KeyRune, 'a', 0))
+}
+
+func TestSettings_PaneFocusHelpers(t *testing.T) {
+	sv := makeSettings(t)
+	testutil.Equal(t, sv.InRightPane(), true) // default focus is the pane
+
+	sv.FocusLeftPane()
+	testutil.Equal(t, sv.InRightPane(), false)
+	sv.FocusLeftPane() // idempotent
+	testutil.Equal(t, sv.InRightPane(), false)
+
+	sv.FocusRightPane()
+	testutil.Equal(t, sv.InRightPane(), true)
 }

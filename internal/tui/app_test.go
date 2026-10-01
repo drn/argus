@@ -1838,10 +1838,22 @@ func TestCrossTabArrows(t *testing.T) {
 	modifiedRight := tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModAlt)
 	modifiedLeft := tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModCtrl)
 
-	t.Run("enabled crosses between Tasks and Hera rail", func(t *testing.T) {
+	newApp := func(t *testing.T, enabled bool) *App {
+		t.Helper()
 		d := testDB(t)
-		testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "true"))
-		app := New(d, agent.NewRunner(nil), false)
+		if !enabled {
+			testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "false"))
+		}
+		return New(d, agent.NewRunner(nil), false)
+	}
+
+	t.Run("defaults to enabled", func(t *testing.T) {
+		app := New(testDB(t), agent.NewRunner(nil), false)
+		testutil.Equal(t, app.crossTabArrows, true)
+	})
+
+	t.Run("Tasks and Hera rail hop both ways", func(t *testing.T) {
+		app := newApp(t, true)
 
 		testutil.Nil(t, app.handleGlobalKey(modifiedRight))
 		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
@@ -1851,8 +1863,105 @@ func TestCrossTabArrows(t *testing.T) {
 		testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
 	})
 
+	t.Run("Cmd+Left on Tasks is the start of the chain", func(t *testing.T) {
+		app := newApp(t, true)
+		testutil.Equal(t, app.handleGlobalKey(modifiedLeft), modifiedLeft)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
+	})
+
+	t.Run("Hera rightmost pane hops to Settings left pane", func(t *testing.T) {
+		for _, tc := range []struct {
+			name         string
+			region       hera.Focus
+			agentPresent bool
+		}{
+			{"agent pane", hera.FocusAgent, true},
+			{"coord pane when agent absent", hera.FocusCoord, false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				app := newApp(t, true)
+				app.switchTab(widget.TabHera)
+				app.heraPage.Machine().SetAgentPresent(tc.agentPresent)
+				app.heraPage.Machine().SetRegion(tc.region)
+				app.settings.FocusRightPane()
+
+				testutil.Nil(t, app.handleGlobalKey(modifiedRight))
+				testutil.Equal(t, app.header.ActiveTab(), widget.TabSettings)
+				testutil.Equal(t, app.settings.InRightPane(), false)
+			})
+		}
+	})
+
+	t.Run("Hera non-rightmost Right stays with the focus ladder", func(t *testing.T) {
+		for _, region := range []hera.Focus{hera.FocusRail, hera.FocusCoord} {
+			app := newApp(t, true)
+			app.switchTab(widget.TabHera)
+			app.heraPage.Machine().SetRegion(region)
+
+			testutil.Equal(t, app.handleGlobalKey(modifiedRight), modifiedRight)
+			testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+		}
+	})
+
+	t.Run("Hera pane Left keeps the focus ladder", func(t *testing.T) {
+		app := newApp(t, true)
+		app.switchTab(widget.TabHera)
+		app.heraPage.Machine().SetRegion(hera.FocusCoord)
+
+		testutil.Equal(t, app.handleGlobalKey(modifiedLeft), modifiedLeft)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+	})
+
+	t.Run("Settings left pane Left lands on Hera rightmost pane", func(t *testing.T) {
+		for _, tc := range []struct {
+			name         string
+			agentPresent bool
+			want         hera.Focus
+		}{
+			{"agent pane", true, hera.FocusAgent},
+			{"coord pane when agent absent", false, hera.FocusCoord},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				app := newApp(t, true)
+				app.switchTab(widget.TabHera)
+				app.heraPage.Machine().SetAgentPresent(tc.agentPresent)
+				app.switchTab(widget.TabSettings)
+				app.settings.FocusLeftPane()
+
+				testutil.Nil(t, app.handleGlobalKey(modifiedLeft))
+				testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+				testutil.Equal(t, app.heraPage.Machine().State(), tc.want)
+			})
+		}
+	})
+
+	t.Run("Settings steps left to right and back", func(t *testing.T) {
+		app := newApp(t, true)
+		app.switchTab(widget.TabSettings)
+		app.settings.FocusLeftPane()
+
+		testutil.Nil(t, app.handleGlobalKey(modifiedRight))
+		testutil.Equal(t, app.settings.InRightPane(), true)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabSettings)
+
+		testutil.Nil(t, app.handleGlobalKey(modifiedLeft))
+		testutil.Equal(t, app.settings.InRightPane(), false)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabSettings)
+	})
+
+	t.Run("Cmd+Right on Settings right pane is a consumed no-op", func(t *testing.T) {
+		app := newApp(t, true)
+		app.switchTab(widget.TabSettings)
+		app.settings.FocusRightPane()
+
+		testutil.Nil(t, app.handleGlobalKey(modifiedRight))
+		testutil.Equal(t, app.settings.InRightPane(), true)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabSettings)
+	})
+
 	t.Run("disabled preserves existing routing", func(t *testing.T) {
-		app := New(testDB(t), agent.NewRunner(nil), false)
+		app := newApp(t, false)
+		testutil.Equal(t, app.crossTabArrows, false)
 
 		testutil.Equal(t, app.handleGlobalKey(modifiedRight), modifiedRight)
 		testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
@@ -1860,12 +1969,19 @@ func TestCrossTabArrows(t *testing.T) {
 		app.switchTab(widget.TabHera)
 		testutil.Equal(t, app.handleGlobalKey(modifiedLeft), modifiedLeft)
 		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+
+		app.heraPage.Machine().SetRegion(hera.FocusAgent)
+		testutil.Equal(t, app.handleGlobalKey(modifiedRight), modifiedRight)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+
+		app.switchTab(widget.TabSettings)
+		app.settings.FocusLeftPane()
+		testutil.Equal(t, app.handleGlobalKey(modifiedLeft), modifiedLeft)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabSettings)
 	})
 
 	t.Run("filters suppress boundary transition", func(t *testing.T) {
-		d := testDB(t)
-		testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "true"))
-		app := New(d, agent.NewRunner(nil), false)
+		app := newApp(t, true)
 
 		app.tasklist.InputHandler()(tcell.NewEventKey(tcell.KeyRune, '/', 0), nil)
 		testutil.Equal(t, app.tasklist.Filtering(), true)
@@ -1880,15 +1996,47 @@ func TestCrossTabArrows(t *testing.T) {
 		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
 	})
 
-	t.Run("Hera pane keeps focus ladder", func(t *testing.T) {
-		d := testDB(t)
-		testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "true"))
-		app := New(d, agent.NewRunner(nil), false)
-		app.switchTab(widget.TabHera)
-		app.heraPage.Machine().SetRegion(hera.FocusCoord)
+	t.Run("Settings inline edit keeps its arrows", func(t *testing.T) {
+		app := newApp(t, true)
+		app.switchTab(widget.TabSettings)
+		app.settings.FocusLeftPane()
+		app.settings.activeEditKey = "field"
+		testutil.Equal(t, app.settings.IsEditing(), true)
 
-		testutil.Equal(t, app.handleGlobalKey(modifiedLeft), modifiedLeft)
+		// The chain handler must decline so the edit field receives the key
+		// (the field's own handler then consumes it in handleGlobalKey).
+		testutil.Equal(t, app.handleCrossTabArrow(modifiedRight), false)
+		testutil.Equal(t, app.handleCrossTabArrow(modifiedLeft), false)
+		testutil.Equal(t, app.settings.InRightPane(), false)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabSettings)
+	})
+
+	t.Run("Hera fullscreen keeps today's behavior", func(t *testing.T) {
+		app := newApp(t, true)
+		app.switchTab(widget.TabHera)
+		app.heraPage.Machine().SetRegion(hera.FocusAgent)
+		app.heraPage.Machine().ToggleFullscreen()
+		testutil.Equal(t, app.heraPage.Machine().Fullscreen(), true)
+
+		testutil.Equal(t, app.handleGlobalKey(modifiedRight), modifiedRight)
 		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+		testutil.Equal(t, app.heraPage.Machine().Fullscreen(), true)
+	})
+
+	t.Run("agent view is never intercepted", func(t *testing.T) {
+		app := newApp(t, true)
+		app.mode = modeAgent
+		testutil.Equal(t, app.handleCrossTabArrow(modifiedRight), false)
+		testutil.Equal(t, app.handleCrossTabArrow(modifiedLeft), false)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
+	})
+
+	t.Run("unmodified and non-horizontal keys fall through", func(t *testing.T) {
+		app := newApp(t, true)
+		plain := tcell.NewEventKey(tcell.KeyRight, 0, 0)
+		testutil.Equal(t, app.handleCrossTabArrow(plain), false)
+		up := tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModAlt)
+		testutil.Equal(t, app.handleCrossTabArrow(up), false)
 	})
 }
 
