@@ -7,8 +7,10 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // HeraWorkerSpawnInput is the resolved payload for a born-bound hera worker
@@ -37,6 +39,74 @@ const (
 	defaultWorkerArchetype      = "code_slice"
 	defaultCoordinatorArchetype = "orchestrator"
 )
+
+// resolveCoordinatorBackend is the hard carve-out that keeps a hera
+// coordinator or sub-coordinator off budget-tiered routing
+// (fix-backend-routing-semantics): coord-hook's context-size stamping,
+// token/cost accrual, and the recycle machinery are Claude-Code-only, so a
+// coordinator must always resolve to a Claude-capable backend regardless of
+// [backend_routing] tier state.
+//
+// An explicit caller-supplied backend (e.g. a deliberate selection in the
+// rail's New Coordinator form) still always wins — operator override,
+// mirroring the pre-existing worker-budget precedent ("explicit backend
+// always wins") — but it is never accepted SILENTLY when it isn't
+// Claude-capable: a uxlog warning names what breaks. When no explicit
+// backend is given, ordinary project/tier/default resolution runs
+// (resolveDefaultBackendName), and the result is used as-is only if it
+// happens to be Claude-capable; otherwise this fails open to the literal
+// "claude" backend (with a uxlog warning) rather than silently leaving the
+// coordinator on a backend that can't run coord-hook.
+//
+// IsClaudeBackend's exact-basename check is deliberately an include-list, not
+// create.go's CaptureSessionID-style exclude-list: the question here is
+// "provably Claude-capable," and an unrecognized/custom command is not. A
+// side effect: an operator running Claude via a differently-named wrapper
+// script is forced onto bare "claude" rather than trusted.
+func resolveCoordinatorBackend(explicit, project string, cfg config.Config) string {
+	const claudeFallback = "claude"
+
+	if explicit != "" {
+		if b, ok := cfg.Backends[explicit]; ok && IsClaudeBackend(b.Command) {
+			return explicit
+		}
+		warnCoordinatorBackend("explicit backend %q is not Claude-capable — "+
+			"coord-hook context-size stamping, token/cost accrual, and the recycle machinery "+
+			"will not work for this coordinator", explicit)
+		return explicit
+	}
+
+	name := resolveDefaultBackendName("", project, cfg)
+	if b, ok := cfg.Backends[name]; ok && IsClaudeBackend(b.Command) {
+		return name
+	}
+
+	if b, ok := cfg.Backends[claudeFallback]; ok && IsClaudeBackend(b.Command) {
+		warnCoordinatorBackend("resolved backend %q is not Claude-capable, "+
+			"forcing %q (coord-hook context tracking, cost accrual, and recycle require Claude Code)",
+			name, claudeFallback)
+		return claudeFallback
+	}
+	warnCoordinatorBackend("resolved backend %q is not Claude-capable and no "+
+		"Claude-capable backend is configured; leaving as-is", name)
+	return name
+}
+
+// warnCoordinatorBackend emits a non-Claude-capable-coordinator warning on
+// BOTH logging channels this codebase uses, because which one is actually
+// observable depends on which process runs this code: uxlog.Log is a silent
+// no-op unless uxlog.Init has been called, which only the TUI process does
+// (runTUI/remote-TUI) — the daemon process, which is where
+// MaterializeHeraSubCoordinator's gater-triggered path runs, never
+// initializes it. slog.Warn always reaches somewhere real in both processes
+// (the daemon's own daemon.log; the TUI's redirected default-logger
+// destination). Emitting both, rather than picking one, means this warning
+// is never silently unobservable depending on which call site reached it —
+// the exact failure mode this whole change exists to fix.
+func warnCoordinatorBackend(format string, args ...any) {
+	uxlog.Log("[agent] coordinator spawn: "+format, args...)
+	slog.Warn(fmt.Sprintf("coordinator spawn: "+format, args...))
+}
 
 // resolveOrchestratorBranchNamespace looks up an orchestrator's name for use
 // as a hera worker's branch namespace (add-branch-namespacing:
@@ -273,7 +343,9 @@ func MaterializeHeraSubCoordinator(database *db.DB, runner SessionProvider, in H
 		Name:    in.Role.Name,
 		Prompt:  in.TaskPrompt,
 		Project: in.Project,
-		Backend: in.Backend,
+		// A sub-coordinator is still a coordinator: never budget-tiered (see
+		// resolveCoordinatorBackend).
+		Backend: resolveCoordinatorBackend(in.Backend, in.Project, database.Config()),
 		Model:   in.Model,
 		// The planned subcoord role's authored archetype propagates onto the
 		// materialized task (add-diligence-profiles); empty stays empty.
@@ -487,10 +559,12 @@ func SpawnHeraCoordinator(database *db.DB, runner SessionProvider, in HeraCoordi
 	var role *db.HeraRole
 	var binding *db.HeraBinding
 	task, _, err := CreateAndStart(database, runner, CreateInput{
-		Name:            taskName,
-		Prompt:          in.TaskPrompt,
-		Project:         in.Project,
-		Backend:         in.Backend,
+		Name:    taskName,
+		Prompt:  in.TaskPrompt,
+		Project: in.Project,
+		// Never budget-tiered: a coordinator always resolves to a
+		// Claude-capable backend, regardless of tier state (resolveCoordinatorBackend).
+		Backend:         resolveCoordinatorBackend(in.Backend, in.Project, database.Config()),
 		Model:           in.Model,
 		Archetype:       archetype,
 		BaseBranch:      in.Branch,

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,6 +33,7 @@ func resetCodexState(t *testing.T) {
 	}
 	codexNowFunc = time.Now
 	codexCacheSnapshotHook = nil
+	SetCodexPTYFallbackEnabled(false)
 
 	t.Cleanup(func() {
 		codexCache.mu.Lock()
@@ -42,6 +44,7 @@ func resetCodexState(t *testing.T) {
 		codexPTYProbeRunner = runCodexPTYProbe
 		codexNowFunc = time.Now
 		codexCacheSnapshotHook = nil
+		SetCodexPTYFallbackEnabled(false)
 	})
 }
 
@@ -80,6 +83,7 @@ func TestProbe_FreshRolloutSkipsPTYFallback(t *testing.T) {
 
 func TestProbe_StaleOrMissingRolloutFallsBackToPTY(t *testing.T) {
 	resetCodexState(t)
+	SetCodexPTYFallbackEnabled(true)
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	codexNowFunc = func() time.Time { return now }
 	codexRolloutProbeRunner = func() (Reading, bool) { return Reading{}, false }
@@ -94,8 +98,56 @@ func TestProbe_StaleOrMissingRolloutFallsBackToPTY(t *testing.T) {
 	testutil.Equal(t, pct, 87.0)
 }
 
+// TestProbe_PTYFallbackDisabledByDefaultLeavesCacheStale is the core
+// regression test for fix-backend-routing-semantics: a dead rollout-file
+// path with the (default, opt-in-off) PTY fallback must NOT spend Codex
+// quota — the cache simply stays stale/unknown, exactly like any other
+// fail-open probe miss.
+func TestProbe_PTYFallbackDisabledByDefaultLeavesCacheStale(t *testing.T) {
+	resetCodexState(t)
+	readLog := initTestUxlog(t)
+	var logBuf bytes.Buffer
+	originalSlog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(originalSlog) })
+	codexRolloutProbeRunner = func() (Reading, bool) { return Reading{}, false }
+	codexPTYProbeRunner = func(context.Context) ([]byte, error) {
+		t.Fatal("the costed PTY fallback must not run when disabled (the default)")
+		return nil, nil
+	}
+
+	testutil.NoError(t, Probe(context.Background()))
+
+	_, ok := CachedCodexPct()
+	testutil.Equal(t, ok, false)
+	testutil.Contains(t, readLog(), "costed PTY fallback is disabled")
+	// Probe runs exclusively in the daemon process, where uxlog.Log is a
+	// silent no-op (uxlog.Init is never called there) — slog.Warn is what
+	// actually reaches daemon.log, so this must be logged on both channels.
+	testutil.Contains(t, logBuf.String(), "costed PTY fallback is disabled")
+}
+
+// TestProbe_PTYFallbackExplicitlyEnabledStillRuns confirms the opt-in itself
+// works: a caller that explicitly enables the fallback still gets the
+// pre-existing costed-fallback behavior.
+func TestProbe_PTYFallbackExplicitlyEnabledStillRuns(t *testing.T) {
+	resetCodexState(t)
+	SetCodexPTYFallbackEnabled(true)
+	codexRolloutProbeRunner = func() (Reading, bool) { return Reading{}, false }
+	codexPTYProbeRunner = func(context.Context) ([]byte, error) {
+		return []byte("Usage\n  33% used\n"), nil
+	}
+
+	testutil.NoError(t, Probe(context.Background()))
+
+	pct, ok := CachedCodexPct()
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, pct, 33.0)
+}
+
 func TestProbe_PTYFallbackFailureLeavesCacheUnchangedAndLogs(t *testing.T) {
 	resetCodexState(t)
+	SetCodexPTYFallbackEnabled(true)
 	readLog := initTestUxlog(t)
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	codexNowFunc = func() time.Time { return now }
@@ -116,6 +168,7 @@ func TestProbe_PTYFallbackFailureLeavesCacheUnchangedAndLogs(t *testing.T) {
 
 func TestProbe_PTYFallbackUnparseableOutputLeavesCacheUnchangedAndLogs(t *testing.T) {
 	resetCodexState(t)
+	SetCodexPTYFallbackEnabled(true)
 	readLog := initTestUxlog(t)
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	codexNowFunc = func() time.Time { return now }
@@ -136,6 +189,7 @@ func TestProbe_PTYFallbackUnparseableOutputLeavesCacheUnchangedAndLogs(t *testin
 
 func TestProbe_ContextCancellationIsNotLoggedAsFailure(t *testing.T) {
 	resetCodexState(t)
+	SetCodexPTYFallbackEnabled(true)
 	readLog := initTestUxlog(t)
 	codexRolloutProbeRunner = func() (Reading, bool) { return Reading{}, false }
 	codexPTYProbeRunner = func(ctx context.Context) ([]byte, error) {

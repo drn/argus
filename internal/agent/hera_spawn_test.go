@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -700,4 +703,155 @@ func TestSpawnHeraWorker_StartFailureUnwindsRoleAndBinding(t *testing.T) {
 	live, err := d.ListHeraLiveBindings()
 	testutil.NoError(t, err)
 	testutil.Equal(t, len(live), 0)
+}
+
+// --- resolveCoordinatorBackend (fix-backend-routing-semantics) ---
+
+// TestResolveCoordinatorBackend_WarningsReachSlog pins the fix for a real
+// defect found in review: uxlog.Log is a silent no-op unless uxlog.Init has
+// been called, which only the TUI process does — but
+// MaterializeHeraSubCoordinator's gater-triggered path runs daemon-side,
+// where uxlog is never initialized. A non-Claude-capable coordinator
+// backend must therefore also be logged via slog.Warn, which reaches
+// daemon.log, so the warning is observable regardless of which process
+// resolves the backend.
+func TestResolveCoordinatorBackend_WarningsReachSlog(t *testing.T) {
+	var logBuf bytes.Buffer
+	original := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(original) })
+
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "codex"},
+		Backends: map[string]config.Backend{
+			"codex":  {Command: "codex"},
+			"claude": {Command: "claude"},
+		},
+	}
+
+	resolveCoordinatorBackend("", "", cfg)
+
+	testutil.Contains(t, logBuf.String(), "coordinator spawn")
+	testutil.Contains(t, logBuf.String(), "not Claude-capable")
+}
+
+func TestResolveCoordinatorBackend_ExplicitClaudeCapableWins(t *testing.T) {
+	cfg := config.Config{Backends: map[string]config.Backend{
+		"claude-custom": {Command: "claude"},
+	}}
+	testutil.Equal(t, resolveCoordinatorBackend("claude-custom", "", cfg), "claude-custom")
+}
+
+// TestResolveCoordinatorBackend_ExplicitNonClaudeStillWins mirrors the
+// pre-existing worker-budget precedent: an explicit caller-supplied backend
+// always wins, even when it is not Claude-capable (operator override). The
+// accompanying uxlog warning is not asserted here — see
+// TestResolveCoordinatorBackend_ExplicitNonClaudeWarns.
+func TestResolveCoordinatorBackend_ExplicitNonClaudeStillWins(t *testing.T) {
+	cfg := config.Config{Backends: map[string]config.Backend{
+		"codex": {Command: "codex --dangerously-bypass-approvals-and-sandbox"},
+	}}
+	testutil.Equal(t, resolveCoordinatorBackend("codex", "", cfg), "codex")
+}
+
+func TestResolveCoordinatorBackend_NoExplicitForcesClaudeWhenDefaultIsNot(t *testing.T) {
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "codex"},
+		Backends: map[string]config.Backend{
+			"codex":  {Command: "codex"},
+			"claude": {Command: "claude"},
+		},
+	}
+	testutil.Equal(t, resolveCoordinatorBackend("", "", cfg), "claude")
+}
+
+func TestResolveCoordinatorBackend_NoExplicitKeepsClaudeCapableDefault(t *testing.T) {
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "claude"},
+		Backends: map[string]config.Backend{"claude": {Command: "claude"}},
+	}
+	testutil.Equal(t, resolveCoordinatorBackend("", "", cfg), "claude")
+}
+
+// TestResolveCoordinatorBackend_TierListNeverAppliesUnlessClaudeCapable is the
+// core regression test for "coordinators never get budget logic applied":
+// ordinary resolution (empty project/task backend) would pick the uncapped
+// "codex" tier first, but the carve-out must still force "claude".
+func TestResolveCoordinatorBackend_TierListNeverAppliesUnlessClaudeCapable(t *testing.T) {
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "claude"},
+		Backends: map[string]config.Backend{
+			"claude": {Command: "claude"},
+			"codex":  {Command: "codex"},
+		},
+		BackendRouting: config.BackendRoutingConfig{Tiers: []config.BackendTier{
+			{Backend: "codex", Probe: config.ProbeNone},
+		}},
+	}
+	testutil.Equal(t, resolveCoordinatorBackend("", "", cfg), "claude")
+}
+
+func TestResolveCoordinatorBackend_ProjectPinHonoredWhenClaudeCapable(t *testing.T) {
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "claude"},
+		Backends: map[string]config.Backend{"claude": {Command: "claude"}},
+		Projects: map[string]config.Project{"proj": {Backend: "claude"}},
+	}
+	testutil.Equal(t, resolveCoordinatorBackend("", "proj", cfg), "claude")
+}
+
+// TestResolveCoordinatorBackend_NoClaudeBackendConfiguredLeavesAsIs covers the
+// fail-open edge case: nothing in cfg.Backends is Claude-capable at all (not
+// even a literal "claude" key), so forcing is impossible and the ordinarily-
+// resolved name is returned unchanged rather than erroring the spawn.
+func TestResolveCoordinatorBackend_NoClaudeBackendConfiguredLeavesAsIs(t *testing.T) {
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "codex"},
+		Backends: map[string]config.Backend{"codex": {Command: "codex"}},
+	}
+	testutil.Equal(t, resolveCoordinatorBackend("", "", cfg), "codex")
+}
+
+// TestSpawnHeraCoordinator_ForcesClaudeWhenDefaultIsNotClaudeCapable is the
+// end-to-end wiring test: createTestDB's seeded defaults.backend ("test",
+// Command "echo hello") is not Claude-capable, so an un-backed coordinator
+// spawn must still land on "claude" once that backend exists in the roster.
+func TestSpawnHeraCoordinator_ForcesClaudeWhenDefaultIsNotClaudeCapable(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	testutil.NoError(t, d.SetBackend("claude", config.Backend{Command: "claude"}))
+	fr := &fakeRunner{sessionPID: 1}
+
+	res, err := SpawnHeraCoordinator(d, fr, HeraCoordinatorSpawnInput{
+		OrchestratorBaseName: "forced-claude",
+		TaskPrompt:           "body",
+		Project:              "proj",
+	})
+	testutil.NoError(t, err)
+
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Backend, "claude")
+}
+
+// TestSpawnHeraCoordinator_ExplicitBackendHonored confirms a deliberate
+// caller-supplied Backend (e.g. the rail's New Coordinator form selection)
+// is not clobbered when it IS Claude-capable.
+func TestSpawnHeraCoordinator_ExplicitBackendHonored(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	testutil.NoError(t, d.SetBackend("claude-fast", config.Backend{Command: "claude"}))
+	fr := &fakeRunner{sessionPID: 1}
+
+	res, err := SpawnHeraCoordinator(d, fr, HeraCoordinatorSpawnInput{
+		OrchestratorBaseName: "explicit-backend",
+		TaskPrompt:           "body",
+		Project:              "proj",
+		Backend:              "claude-fast",
+	})
+	testutil.NoError(t, err)
+
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Backend, "claude-fast")
 }

@@ -683,21 +683,60 @@ Derived from: `internal/hera/accept.go` (`AcceptRole`), `internal/mcp/hera.go` (
 - **WHEN** `hera_accept` flips a task's status to complete
 - **THEN** the target role's live session, if any, is left completely untouched – no stop, no restart, no detach
 
-### Requirement: Worker/freelance spawns consult budget-aware backend resolution before falling through to default precedence
+### Requirement: Worker/freelance spawn has no bespoke backend resolution of its own
 
-Both `hera_spawn_worker`'s MCP handler and the plan-DAG gater's leaf-worker materialization path (`materializeNode`, excluding the `subcoord` branch) SHALL consult the budget-aware backend resolver (see `usage-budget-routing`) before falling through to the existing `ResolveBackend` project/default precedence. This tier SHALL run only when the caller did not supply an explicit `backend`, and SHALL never apply to coordinator creation (`hera_new_orchestrator`) or sub-coordinator materialization.
+`hera_spawn_worker`'s MCP handler and the plan-DAG gater's leaf-worker materialization path (`materializeNode`, excluding the `subcoord` branch) SHALL pass the caller's explicit `backend` argument (or empty, when omitted) straight through to task creation (`agent.SpawnHeraWorker`/`agent.MaterializeHeraWorker` → `agent.CreateAndStart`) with no intermediate resolution step. An empty backend SHALL resolve exactly as any other task's would, via `agent-execution`'s shared precedence (project override, then the `[backend_routing]` tiered resolver, then the global default) — hera worker/freelance spawn is an ordinary consumer of that precedence, not a special case.
 
-#### Scenario: hera_spawn_worker with no explicit backend under budget pressure
+#### Scenario: Explicit backend passes through unchanged
 
-- **WHEN** hera_spawn_worker is called with no `backend` argument and the budget switch is active
-- **THEN** the spawned worker task's backend is the configured fallback backend rather than the project/default backend
+- **WHEN** `hera_spawn_worker` is called with an explicit `backend`
+- **THEN** the spawned worker's task uses that backend unchanged, and no budget-aware resolver of any kind is consulted
 
-#### Scenario: Plan-DAG leaf-worker materialization under budget pressure
+#### Scenario: Omitted backend resolves via the shared precedence
 
-- **WHEN** the gater materializes a leaf worker node (not a `subcoord` node) and the budget switch is active
-- **THEN** the materialized task's backend is the configured fallback backend rather than the project/default backend
+- **WHEN** `hera_spawn_worker` is called with no `backend` argument and a `[backend_routing]` tier list is configured
+- **THEN** the spawned worker's task resolves its backend via that tier list, exactly as a non-hera task created with no explicit backend would
 
-#### Scenario: Sub-coordinator materialization is unaffected
+#### Scenario: Plan-DAG leaf-worker materialization is likewise a plain passthrough
 
-- **WHEN** the gater materializes a `subcoord` node
-- **THEN** the budget-aware resolver is not consulted and the sub-coordinator's backend resolves exactly as it did before this change
+- **WHEN** the gater materializes a leaf worker node (not a `subcoord` node)
+- **THEN** it passes an empty backend through to `agent.MaterializeHeraWorker`, which resolves it via the same shared precedence as any other task
+
+### Requirement: Coordinator and sub-coordinator spawn always resolve to a Claude-capable backend
+
+coord-hook's context-size stamping, token/cost accrual, and the recycle machinery are Claude-Code-only. The system SHALL therefore guarantee, regardless of `[backend_routing]` tier state or any configured default, that a newly spawned hera coordinator (`SpawnHeraCoordinator`, the rail `n` key and any future caller) or sub-coordinator (`MaterializeHeraSubCoordinator`, a `kind=subcoord` plan node materializing) resolves to a Claude-capable backend (an exact command-basename match against `claude`).
+
+An explicit caller-supplied backend SHALL still win over this guarantee — a deliberate operator choice, mirroring the pre-existing "explicit backend always wins" precedent — but a non-Claude-capable explicit choice SHALL NOT be accepted silently: the system SHALL log a warning naming what breaks (coord-hook context-size stamping, token/cost accrual, recycle) before honoring it. When no explicit backend is given, the system SHALL run ordinary resolution (project override, then tier list, then default) and use its result only if it is Claude-capable; otherwise it SHALL fail open to the literal `"claude"` backend, also logging a warning, rather than refuse the spawn.
+
+This requirement does NOT cover `hera_new_orchestrator`, which binds an EXISTING task as a coordinator and never resolves or changes that task's backend — a worker already running on a non-Claude-capable backend that self-promotes to coordinator via `hera_new_orchestrator` keeps that backend. A live session's backend cannot be swapped out from under it; this is a named, structural gap, not an oversight.
+
+#### Scenario: No explicit backend and ordinary resolution is already Claude-capable
+
+- **WHEN** a coordinator is spawned with no explicit backend and ordinary resolution (project/tier/default) would pick a Claude-capable backend
+- **THEN** that backend is used, with no warning logged
+
+#### Scenario: No explicit backend and ordinary resolution would pick a non-Claude-capable backend
+
+- **WHEN** a coordinator is spawned with no explicit backend and a configured `[backend_routing]` tier list would otherwise resolve to a non-Claude-capable backend (e.g. codex, because Claude usage has crossed a configured threshold)
+- **THEN** the coordinator's task is stamped with the literal `"claude"` backend instead, and a warning is logged naming what would have broken
+
+#### Scenario: Explicit Claude-capable backend is honored silently
+
+- **WHEN** a coordinator is spawned with an explicit backend that is Claude-capable (e.g. a custom-named Claude wrapper backend)
+- **THEN** that backend is used unchanged, with no warning logged
+
+#### Scenario: Explicit non-Claude-capable backend is honored, not silently
+
+- **WHEN** a coordinator is spawned with an explicit backend that is NOT Claude-capable
+- **THEN** that backend is used (operator override), but a warning is logged naming what breaks
+
+#### Scenario: Sub-coordinator materialization gets the identical guarantee
+
+- **WHEN** the gater materializes a `kind=subcoord` plan node with no explicit backend under the same tier pressure
+- **THEN** the materialized sub-coordinator's task is likewise guaranteed Claude-capable, via the same resolution function a root coordinator spawn uses
+
+#### Scenario: hera_new_orchestrator self-promotion is not covered
+
+- **WHEN** a worker role already running on a non-Claude-capable backend calls `hera_new_orchestrator` to self-promote to coordinator
+- **THEN** the task's backend is left unchanged — `hera_new_orchestrator` binds the existing task without any backend resolution step, and this is a named non-goal, not a defect in this requirement
+

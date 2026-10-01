@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -151,95 +150,25 @@ func TestParseUsageOutput_DefensiveFormats(t *testing.T) {
 	}
 }
 
-func TestResolveWorkerBackend_ExplicitBypassesCache(t *testing.T) {
-	resetState(t)
-	cacheSnapshotHook = func() {
-		t.Fatal("explicit backend must not read the usage cache")
-	}
-
-	got := ResolveWorkerBackend("claude-special", config.Config{})
-
-	testutil.Equal(t, got, "claude-special")
-}
-
-func TestResolveWorkerBackend_ManualSwitch(t *testing.T) {
-	resetState(t)
-	cacheSnapshotHook = func() {
-		t.Fatal("manual switch must not read the usage cache")
-	}
-	cfg := config.DefaultConfig()
-	cfg.Hera.WorkerBudget.Enabled = true
-
-	got := ResolveWorkerBackend("", cfg)
-
-	testutil.Equal(t, got, config.DefaultWorkerBudgetFallbackBackend)
-}
-
-func TestResolveWorkerBackend_ThresholdCrossed(t *testing.T) {
+func TestCachedReading_ReturnsFullReadingWhenFresh(t *testing.T) {
 	resetState(t)
 	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 	nowFunc = func() time.Time { return now }
-	storeReading(Reading{Percentage: 91, ResetAt: now.Add(24 * time.Hour), LastProbedAt: now.Add(-time.Minute)})
-	cfg := config.DefaultConfig()
-	cfg.Hera.WorkerBudget.ThresholdPct = 90
+	want := Reading{Percentage: 42, ResetAt: now.Add(24 * time.Hour), LastProbedAt: now.Add(-time.Minute)}
+	storeReading(want)
 
-	got := ResolveWorkerBackend("", cfg)
+	got, ok := CachedReading()
 
-	testutil.Equal(t, got, config.DefaultWorkerBudgetFallbackBackend)
+	testutil.Equal(t, ok, true)
+	testutil.DeepEqual(t, got, want)
 }
 
-func TestResolveWorkerBackend_ThresholdNotCrossedUnknownOrStale(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		reading *Reading
-	}{
-		{name: "below threshold", reading: &Reading{Percentage: 89}},
-		{name: "unknown"},
-		{name: "stale", reading: &Reading{Percentage: 95, LastProbedAt: time.Date(2026, 9, 18, 10, 0, 0, 0, time.UTC)}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			resetState(t)
-			now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
-			nowFunc = func() time.Time { return now }
-			if tc.reading != nil {
-				reading := *tc.reading
-				if reading.LastProbedAt.IsZero() {
-					reading.LastProbedAt = now.Add(-time.Minute)
-				}
-				reading.ResetAt = now.Add(24 * time.Hour)
-				storeReading(reading)
-			}
-			cfg := config.DefaultConfig()
-			cfg.Hera.WorkerBudget.ThresholdPct = 90
-
-			got := ResolveWorkerBackend("", cfg)
-
-			testutil.Equal(t, got, "")
-		})
-	}
-}
-
-func TestResolveWorkerBackend_InvalidFallbackFailsOpen(t *testing.T) {
+func TestCachedReading_UnknownWhenStaleOrAbsent(t *testing.T) {
 	resetState(t)
-	cfg := config.DefaultConfig()
-	cfg.Hera.WorkerBudget.Enabled = true
-	cfg.Hera.WorkerBudget.FallbackBackend = "missing"
 
-	got := ResolveWorkerBackend("", cfg)
+	_, ok := CachedReading()
 
-	testutil.Equal(t, got, "")
-}
-
-func TestResolveWorkerBackend_AbsentConfigInactive(t *testing.T) {
-	resetState(t)
-	cfg := config.DefaultConfig()
-	if cfg.Hera.WorkerBudget.Enabled || cfg.Hera.WorkerBudget.ThresholdPct != 0 {
-		t.Fatal("default worker budget config should be inactive")
-	}
-
-	got := ResolveWorkerBackend("", cfg)
-
-	testutil.Equal(t, got, "")
+	testutil.Equal(t, ok, false)
 }
 
 func TestProbe_ContextCancellationIsNotLoggedAsFailure(t *testing.T) {

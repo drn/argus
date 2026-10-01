@@ -5,7 +5,29 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/drn/argus/internal/testutil"
 )
+
+// TestProbeCodexOnce_CallsThroughAndSurvivesConfigReflect pins the
+// fix-backend-routing-semantics wiring: probeCodexOnce reads the live
+// BackendRouting.CodexPTYFallbackEnabled flag and reflects it into
+// backendtier (SetCodexPTYFallbackEnabled) before invoking the injected
+// probe seam every tick, regardless of the flag's value — the opt-in
+// semantics themselves are internal/backendtier's own, thoroughly tested
+// concern; this only pins that probeCodexOnce still calls through.
+func TestProbeCodexOnce_CallsThroughAndSurvivesConfigReflect(t *testing.T) {
+	d, _ := testDaemon(t)
+	called := false
+	d.codexProbe = func(context.Context) error {
+		called = true
+		return nil
+	}
+
+	d.probeCodexOnce(context.Background())
+
+	testutil.Equal(t, called, true)
+}
 
 func TestCodexProbePoller_GoroutineStopsOnShutdown(t *testing.T) {
 	d, _ := testDaemon(t)

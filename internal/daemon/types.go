@@ -43,6 +43,21 @@ type BootInfoResp struct {
 	// gets). Compare via CompareSupervisorSurface.
 	SupervisorSpawnSurface  int // supervisor's spawn-surface component (0 ⇒ not reported)
 	SupervisorStreamSurface int // supervisor's stream-surface component (0 ⇒ not reported)
+
+	// Cached usage-probe readings (fix-backend-routing-semantics), relayed
+	// read-only from the daemon-process-local caches internal/usagebudget and
+	// internal/backendtier own — a TUI or doctor process has no cache of its
+	// own, since the probe tickers run only inside the daemon. *Known is false
+	// whenever the probe has never produced a trustworthy reading OR the last
+	// one is older than that package's own CacheMaxAge (1 hour) — the SAME
+	// bool the tier resolver's own fail-open check uses, so "known" here means
+	// exactly "fresh enough to route on", never a raw presence check. Surfaced
+	// in the TUI status bar; *Pct is meaningless when the paired *Known is
+	// false and callers MUST NOT render it in that case.
+	ClaudeUsagePct   float64
+	ClaudeUsageKnown bool
+	CodexUsagePct    float64
+	CodexUsageKnown  bool
 }
 
 // ProtocolVersion is the version of the session-server R/S protocol that the

@@ -18,7 +18,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
@@ -119,11 +118,6 @@ func TestSubCoord_GaterRoutesSubCoordToCoordinatorPath(t *testing.T) {
 	f := newExtendedGaterFixture(t)
 	orch := f.seedCoord(t, "orch")
 	subCoordNode := f.seedSubCoordNode(t, orch, "3a-auth")
-	configCalled := false
-	f.w.SetConfigResolver(func() config.Config {
-		configCalled = true
-		return config.DefaultConfig()
-	})
 
 	f.w.Tick()
 
@@ -134,7 +128,6 @@ func TestSubCoord_GaterRoutesSubCoordToCoordinatorPath(t *testing.T) {
 
 	// The WORKER materializer was NOT called for the subcoord node.
 	testutil.Equal(t, f.workerMatCalls, 0)
-	testutil.Equal(t, configCalled, false)
 }
 
 // TestSubCoord_GaterRoutesWorkerNodeToWorkerPath covers:

@@ -13,7 +13,6 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/model"
-	"github.com/drn/argus/internal/usagebudget"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -1825,7 +1824,7 @@ func (s *Server) toolHeraSpawnWorker(id interface{}, args json.RawMessage) *Resp
 		TaskPrompt:     taskPrompt,
 		RolePrompt:     prompt,
 		Branch:         p.Branch,
-		Backend:        s.resolveHeraWorkerBackend(p.Backend),
+		Backend:        strings.TrimSpace(p.Backend),
 		Model:          strings.TrimSpace(p.Model),
 		Archetype:      strings.TrimSpace(p.Archetype),
 		OrchestratorID: caller.orch.ID,
@@ -1846,16 +1845,6 @@ func (s *Server) toolHeraSpawnWorker(id interface{}, args json.RawMessage) *Resp
 	fmt.Fprintf(&b, "- **argus_task_id**: %s\n", res.Task.ID)
 	fmt.Fprintf(&b, "- **project**: %s\n", project)
 	return toolResult(id, b.String())
-}
-
-func (s *Server) resolveHeraWorkerBackend(explicit string) string {
-	if explicit != "" {
-		return explicit
-	}
-	if s.profileCfg == nil {
-		return explicit
-	}
-	return usagebudget.ResolveWorkerBackend(explicit, s.profileCfg.Config())
 }
 
 func (s *Server) toolHeraTreeUpdates(id interface{}, args json.RawMessage) *Response {

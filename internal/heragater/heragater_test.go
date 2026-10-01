@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
@@ -1075,27 +1074,16 @@ func TestGater_RootMaterializeNoFanInPing(t *testing.T) {
 	testutil.Equal(t, f.pingCount(), 0)
 }
 
-func TestGater_ManualBudgetFallbackBackend(t *testing.T) {
+// TestGater_LeafWorkerMaterializeAlwaysPassesEmptyBackend pins
+// fix-backend-routing-semantics: the gater no longer performs any
+// budget-aware backend resolution itself — agent.CreateAndStart resolves
+// project/tier/default precedence once the task is actually created, so
+// every leaf-worker materialize call always passes Backend="" through to
+// the materializer, regardless of config.
+func TestGater_LeafWorkerMaterializeAlwaysPassesEmptyBackend(t *testing.T) {
 	f := newGaterFixture(t)
 	orch := f.seedCoord(t, "orch")
 	node := f.planned(t, orch, "1a")
-	cfg := config.DefaultConfig()
-	cfg.Hera.WorkerBudget.Enabled = true
-	f.w.SetConfigResolver(func() config.Config { return cfg })
-
-	f.w.Tick()
-
-	testutil.Equal(t, len(f.materialized()), 1)
-	testutil.Equal(t, f.materializedBackend(node.ID), config.DefaultWorkerBudgetFallbackBackend)
-}
-
-func TestGater_ThresholdUnknownFallsThrough(t *testing.T) {
-	f := newGaterFixture(t)
-	orch := f.seedCoord(t, "orch")
-	node := f.planned(t, orch, "1a")
-	cfg := config.DefaultConfig()
-	cfg.Hera.WorkerBudget.ThresholdPct = 90
-	f.w.SetConfigResolver(func() config.Config { return cfg })
 
 	f.w.Tick()
 

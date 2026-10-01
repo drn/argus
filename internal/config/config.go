@@ -40,12 +40,19 @@ type Config struct {
 	// agent.ResolveCacheDirs.
 	CacheDirs map[string]string `toml:"cache_dirs"`
 	Todo      TodoConfig        `toml:"todo"`
-	// BackendRouting is the ordered tier list consulted by general
-	// (non-hera) default task-backend resolution (add-tiered-backend-routing).
-	// An absent [backend_routing] table (or an empty Tiers slice) leaves
-	// existing single-default-backend behavior fully unchanged. Deliberately
-	// separate from Hera.WorkerBudget, which routes hera worker/freelance
-	// spawns only and is untouched by this field.
+	// BackendRouting is the ordered tier list consulted by default
+	// task-backend resolution (agent.ResolveBackend / CreateAndStart) whenever
+	// neither an explicit task backend nor a project backend applies. An
+	// absent [backend_routing] table (or an empty Tiers slice) leaves
+	// single-default-backend behavior unchanged. Hera coordinator/sub-coordinator
+	// spawn deliberately bypasses this list entirely (see
+	// agent.resolveCoordinatorBackend) — coord-hook (context tracking, cost
+	// accrual, recycle) is Claude-Code-only, so a coordinator always resolves
+	// to a Claude-capable backend regardless of tier state. The former
+	// [hera.worker_budget] one-way Claude→single-fallback switch has been
+	// retired: hera worker/freelance spawn now resolves through this SAME tier
+	// list (via the unified creation-time precedence chain), not a bespoke
+	// resolver.
 	BackendRouting BackendRoutingConfig `toml:"backend_routing"`
 }
 
@@ -67,6 +74,17 @@ const (
 // settings) — see specs/config-management/spec.md.
 type BackendRoutingConfig struct {
 	Tiers []BackendTier `toml:"tier"`
+
+	// CodexPTYFallbackEnabled opts in to backendtier's costed headless `codex`
+	// PTY `/status` probe when the free rollout-file read finds nothing fresh
+	// enough (fix-backend-routing-semantics). Defaults to false: reading for
+	// free is the whole design intent of the rollout-file path, so silently
+	// paying real Codex quota every ~30 minutes when that path is broken (as
+	// found on one machine, where it had been for at least a week) is a
+	// defect, not the designed rare-exception fallback. config.toml-only —
+	// no DB/Settings surface, same v1 scoping the retired
+	// [hera.worker_budget] used.
+	CodexPTYFallbackEnabled bool `toml:"codex_pty_fallback_enabled"`
 }
 
 // BackendTier names one entry in the ordered backend-routing tier list.
@@ -170,22 +188,6 @@ type HeraConfig struct {
 	// 40/65/90 percent tiers land at 400k/650k/900k tokens for a worker, not
 	// 80k/130k/180k.
 	WorkerContextWindow int `toml:"worker_context_window"`
-
-	// WorkerBudget controls usage-budget-aware backend fallback for Hera
-	// worker/freelance spawns. An absent [hera.worker_budget] table is inactive:
-	// Enabled=false and ThresholdPct=0.
-	WorkerBudget WorkerBudgetConfig `toml:"worker_budget"`
-}
-
-const DefaultWorkerBudgetFallbackBackend = "codex"
-
-// WorkerBudgetConfig controls the global budget fallback for Hera worker and
-// freelance spawns. ThresholdPct=0 disables threshold mode; FallbackBackend
-// defaults to "codex" when [hera.worker_budget] is present without a value.
-type WorkerBudgetConfig struct {
-	Enabled         bool   `toml:"enabled"`
-	ThresholdPct    int    `toml:"threshold_pct"`
-	FallbackBackend string `toml:"fallback_backend"`
 }
 
 // ArgusConfig holds settings for self-updating the Argus binary.
@@ -479,9 +481,6 @@ func DefaultConfig() Config {
 			CoordinatorContextBudget:  300000,
 			CoordinatorNudgeIncrement: 50000,
 			WorkerContextWindow:       1000000,
-			WorkerBudget: WorkerBudgetConfig{
-				FallbackBackend: DefaultWorkerBudgetFallbackBackend,
-			},
 		},
 		Supervisor: SupervisorConfig{
 			// Default ON as of P4: agents run under the out-of-process

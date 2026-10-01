@@ -5,10 +5,12 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/drn/argus/internal/backendtier"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/selfupdate"
+	"github.com/drn/argus/internal/usagebudget"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -52,6 +54,14 @@ func (s *RPCService) BootInfo(_ *Empty, resp *BootInfoResp) error {
 	resp.BinaryHash = s.daemon.binaryHash
 	resp.VCS = s.daemon.vcs
 	resp.BootedAt = s.daemon.bootedAt
+
+	// Cached usage-probe readings (fix-backend-routing-semantics): read-only
+	// snapshots of this daemon process's own in-memory caches, never a live
+	// probe. ClaudeUsageKnown/CodexUsageKnown already fold in staleness (see
+	// each package's CacheMaxAge), so a TUI or doctor consumer needs no
+	// separate freshness check of its own.
+	resp.ClaudeUsagePct, resp.ClaudeUsageKnown = usagebudget.CachedClaudePct()
+	resp.CodexUsagePct, resp.CodexUsageKnown = backendtier.CachedCodexPct()
 
 	// Relay the connected supervisor's identity. supClient is nil in in-process
 	// mode (no supervisor); present otherwise. Re-query Hello every call.

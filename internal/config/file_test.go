@@ -168,59 +168,6 @@ worker_context_window = 500000
 	testutil.Equal(t, base.Hera.WorkerContextWindow, 1000000)
 }
 
-func TestFileLoader_HeraWorkerBudgetOverlay(t *testing.T) {
-	path := writeFile(t, `
-[hera.worker_budget]
-enabled = true
-threshold_pct = 90
-fallback_backend = "pi"
-`)
-	l := NewFileLoader(path)
-	base := DefaultConfig()
-
-	got := l.Apply(base)
-	testutil.NoError(t, l.Err())
-
-	testutil.Equal(t, got.Hera.WorkerBudget.Enabled, true)
-	testutil.Equal(t, got.Hera.WorkerBudget.ThresholdPct, 90)
-	testutil.Equal(t, got.Hera.WorkerBudget.FallbackBackend, "pi")
-	testutil.Equal(t, base.Hera.WorkerBudget.Enabled, false)
-	testutil.Equal(t, base.Hera.WorkerBudget.ThresholdPct, 0)
-	testutil.Equal(t, base.Hera.WorkerBudget.FallbackBackend, DefaultWorkerBudgetFallbackBackend)
-}
-
-func TestFileLoader_HeraWorkerBudgetDefaultFallback(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		contents string
-	}{
-		{
-			name: "omitted fallback",
-			contents: `
-[hera.worker_budget]
-enabled = true
-`,
-		},
-		{
-			name: "explicit empty fallback",
-			contents: `
-[hera.worker_budget]
-enabled = true
-fallback_backend = ""
-`,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			l := NewFileLoader(writeFile(t, tc.contents))
-			got := l.Apply(DefaultConfig())
-
-			testutil.NoError(t, l.Err())
-			testutil.Equal(t, got.Hera.WorkerBudget.Enabled, true)
-			testutil.Equal(t, got.Hera.WorkerBudget.FallbackBackend, DefaultWorkerBudgetFallbackBackend)
-		})
-	}
-}
-
 func TestFileLoader_BackendModelsOverlay(t *testing.T) {
 	path := writeFile(t, `
 [backends.claude]
@@ -285,6 +232,33 @@ probe = "none"
 	})
 	// The base is untouched.
 	testutil.Nil(t, base.BackendRouting.Tiers)
+}
+
+// TestFileLoader_BackendRoutingCodexPTYFallbackOverlay pins
+// fix-backend-routing-semantics: the opt-in flag decodes independently of
+// (and coexists with) the tier list, and defaults to false when absent.
+func TestFileLoader_BackendRoutingCodexPTYFallbackOverlay(t *testing.T) {
+	path := writeFile(t, `
+[backend_routing]
+codex_pty_fallback_enabled = true
+
+[[backend_routing.tier]]
+backend = "claude"
+probe = "claude_usage"
+threshold_pct = 80
+`)
+	l := NewFileLoader(path)
+	base := DefaultConfig()
+
+	got := l.Apply(base)
+	testutil.NoError(t, l.Err())
+
+	testutil.Equal(t, got.BackendRouting.CodexPTYFallbackEnabled, true)
+	testutil.DeepEqual(t, got.BackendRouting.Tiers, []BackendTier{
+		{Backend: "claude", Probe: ProbeClaudeUsage, ThresholdPct: 80},
+	})
+	// Absent in config.toml ⇒ false, the fail-closed-on-cost default.
+	testutil.Equal(t, base.BackendRouting.CodexPTYFallbackEnabled, false)
 }
 
 // TestFileLoader_BackendRoutingUnknownBackendLoadsWithoutError pins the
