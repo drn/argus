@@ -3762,7 +3762,7 @@ func (sv *SettingsView) renderCrossTabArrowsDetail(screen tcell.Screen, x, y, w,
 	r += 2
 
 	if r < h {
-		widget.DrawText(screen, x, y+r, w, "Cmd+→ / Cmd+←: Tasks ⇄ Projects rail ⇄ coord pane ⇄ agent pane", theme.StyleDimmed)
+		widget.DrawText(screen, x, y+r, w, "Cmd+→ / Cmd+←: Tasks/agent view ⇄ Projects rail ⇄ coord ⇄ agent pane", theme.StyleDimmed)
 	}
 	r++
 	if r < h {

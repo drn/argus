@@ -60,6 +60,7 @@ var helpLayout = []helpGroup{
 	}},
 	{title: "Global", ctx: keymap.CtxGlobal},
 	{title: "Agent View", ctx: keymap.CtxAgent, extra: []HelpBinding{
+		{"Cmd+→ (rightmost pane)", "hop to Projects rail; Cmd+← there returns (Appearance option)"},
 		{"ctrl+q / Esc", "back (diff → files → list)"},
 	}},
 	{title: "File Panel", ctx: keymap.CtxFilePnl, extra: []HelpBinding{

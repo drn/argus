@@ -401,7 +401,7 @@ type UIConfig struct {
 	DefaultAgentZoom bool `toml:"default_agent_zoom"`
 	// CrossTabArrows lets modified (Cmd) Left/Right traverse the whole TUI as one
 	// chain: Tasks ⇄ Hera rail ⇄ coord pane ⇄ agent pane ⇄ Settings left ⇄
-	// Settings right. Defaults on; an absent DB row means enabled.
+	// Settings right. Defaults off; opt in from Settings → Appearance.
 	CrossTabArrows bool `toml:"cross_tab_arrows"`
 }
 
@@ -470,7 +470,6 @@ func DefaultConfig() Config {
 			ShowIcons:        true,
 			SpinnerStyle:     "progress",
 			DefaultAgentZoom: true,
-			CrossTabArrows:   true,
 		},
 		KB: KBConfig{
 			HTTPPort: 7742,

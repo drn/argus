@@ -214,12 +214,12 @@ func TestDB_Config_DefaultAgentZoomDefaultsTrue(t *testing.T) {
 	testutil.Equal(t, d.Config().UI.DefaultAgentZoom, true)
 }
 
-func TestDB_Config_CrossTabArrowsDefaultsTrue(t *testing.T) {
+func TestDB_Config_CrossTabArrowsDefaultsFalse(t *testing.T) {
 	d := testDB(t)
-	// Absent row ⇒ enabled; an explicit "false" still opts out.
-	testutil.Equal(t, d.Config().UI.CrossTabArrows, true)
-	testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "false"))
+	// Absent row ⇒ disabled; an explicit "true" opts in.
 	testutil.Equal(t, d.Config().UI.CrossTabArrows, false)
+	testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "true"))
+	testutil.Equal(t, d.Config().UI.CrossTabArrows, true)
 }
 
 // TestDB_Config_BadIntegerPorts covers the strconv.Atoi error path for ports.

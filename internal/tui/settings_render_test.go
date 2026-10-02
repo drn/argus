@@ -615,26 +615,26 @@ func TestSettings_CrossTabArrowsToggle(t *testing.T) {
 		callbackValues = append(callbackValues, enabled)
 	}
 
-	// Default is ON; the first toggle turns it off, the second back on.
-	testutil.Equal(t, sv.crossTabArrows, true)
+	// Default is OFF; the first toggle turns it on, the second back off.
+	testutil.Equal(t, sv.crossTabArrows, false)
 
 	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
 	testutil.Equal(t, got, true)
-	testutil.Equal(t, sv.crossTabArrows, false)
-	testutil.Equal(t, sv.database.Config().UI.CrossTabArrows, false)
+	testutil.Equal(t, sv.crossTabArrows, true)
+	testutil.Equal(t, sv.database.Config().UI.CrossTabArrows, true)
 
 	selectRowInCategory(t, sv, catAppearance, srCrossTabArrows, "")
 	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
 	testutil.Equal(t, got, true)
-	testutil.Equal(t, sv.crossTabArrows, true)
-	testutil.Equal(t, sv.database.Config().UI.CrossTabArrows, true)
-	testutil.DeepEqual(t, callbackValues, []bool{false, true})
+	testutil.Equal(t, sv.crossTabArrows, false)
+	testutil.Equal(t, sv.database.Config().UI.CrossTabArrows, false)
+	testutil.DeepEqual(t, callbackValues, []bool{true, false})
 
 	selectRowInCategory(t, sv, catAppearance, srCrossTabArrows, "")
 	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
 	testutil.Equal(t, got, true)
 	testutil.Equal(t, sv.focus, focusRail)
-	testutil.Equal(t, sv.crossTabArrows, true)
+	testutil.Equal(t, sv.crossTabArrows, false)
 }
 
 // TestSettings_LeftEscapesAppearancePane pins the fix for Aaron's "can't escape

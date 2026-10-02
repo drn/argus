@@ -148,6 +148,7 @@ func TestHelpModal_Draw(t *testing.T) {
 	// as conditional structural keys, not misleadingly shown as always active.
 	testutil.Contains(t, body, "enter Projects rail (Appearance option)")
 	testutil.Contains(t, body, "return to Tasks (rail only; Appearance option)")
+	testutil.Contains(t, body, "hop to Projects rail; Cmd+← there returns")
 	// Full-chain hops: Hera rightmost pane ⇄ Settings left ⇄ Settings right.
 	testutil.Contains(t, body, "rightmost pane → Settings left pane")
 	testutil.Contains(t, body, "left ⇄ right pane; from left → Projects")

@@ -1841,15 +1841,15 @@ func TestCrossTabArrows(t *testing.T) {
 	newApp := func(t *testing.T, enabled bool) *App {
 		t.Helper()
 		d := testDB(t)
-		if !enabled {
-			testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "false"))
+		if enabled {
+			testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "true"))
 		}
 		return New(d, agent.NewRunner(nil), false)
 	}
 
-	t.Run("defaults to enabled", func(t *testing.T) {
+	t.Run("defaults to disabled", func(t *testing.T) {
 		app := New(testDB(t), agent.NewRunner(nil), false)
-		testutil.Equal(t, app.crossTabArrows, true)
+		testutil.Equal(t, app.crossTabArrows, false)
 	})
 
 	t.Run("Tasks and Hera rail hop both ways", func(t *testing.T) {
@@ -5838,4 +5838,124 @@ func TestMaybeKickRerenderAtWidth_DeferredNarrowBindKeepsTheWideAnchor(t *testin
 	if !sess.stopCalled.Load() {
 		t.Fatal("a same-width rebind at 90 never kicked: the deferred 90 bind clobbered the 142 anchor, so the still-owed re-render is dropped forever and the pane stays garbled")
 	}
+}
+
+func TestCrossTabArrows_AgentView(t *testing.T) {
+	cmdRight := tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModCtrl|tcell.ModAlt)
+	cmdLeft := tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModCtrl|tcell.ModAlt)
+
+	newApp := func(t *testing.T, enabled bool) (*App, *model.Task) {
+		t.Helper()
+		d := testDB(t)
+		if enabled {
+			testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "true"))
+		}
+		app := New(d, agent.NewRunner(nil), false)
+		task := &model.Task{ID: "av-1", Name: "av", Project: "p", Status: model.StatusPending, CreatedAt: time.Now()}
+		testutil.NoError(t, d.Add(task))
+		app.refreshTasks()
+		return app, task
+	}
+
+	t.Run("zoomed agent view hops to Hera rail", func(t *testing.T) {
+		app, task := newApp(t, true)
+		app.onTaskSelect(task, false)
+		app.setAgentZen()
+
+		testutil.Nil(t, app.handleAgentKey(cmdRight))
+		testutil.Equal(t, app.mode, modeTaskList)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+		testutil.Equal(t, app.heraPage.Machine().State(), hera.FocusRail)
+	})
+
+	t.Run("unzoomed steps to files then hops", func(t *testing.T) {
+		app, task := newApp(t, true)
+		app.onTaskSelect(task, false)
+		app.clearAgentZen()
+
+		testutil.Nil(t, app.handleAgentKey(cmdRight))
+		testutil.Equal(t, app.mode, modeAgent)
+		testutil.Equal(t, app.agentFocus, focusFiles)
+
+		testutil.Nil(t, app.handleAgentKey(cmdRight))
+		testutil.Equal(t, app.mode, modeTaskList)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+	})
+
+	t.Run("flag off is unchanged", func(t *testing.T) {
+		app, task := newApp(t, false)
+		app.onTaskSelect(task, false)
+		app.setAgentZen()
+		testutil.Nil(t, app.handleAgentKey(cmdRight))
+		testutil.Equal(t, app.mode, modeAgent)
+
+		app.clearAgentZen()
+		app.agentFocus = focusFiles
+		testutil.Nil(t, app.handleAgentKey(cmdRight))
+		testutil.Equal(t, app.mode, modeAgent)
+		testutil.Equal(t, app.agentFocus, focusFiles)
+	})
+
+	t.Run("return trip restores agent view", func(t *testing.T) {
+		for _, tc := range []struct {
+			name      string
+			zen       bool
+			wantFocus agentFocus
+		}{
+			{"zoomed lands on terminal", true, focusTerminal},
+			{"unzoomed lands on files", false, focusFiles},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				app, task := newApp(t, true)
+				app.onTaskSelect(task, false)
+				if tc.zen {
+					app.setAgentZen()
+				} else {
+					app.clearAgentZen()
+					app.agentFocus = focusFiles
+				}
+				app.handleAgentKey(cmdRight)
+				testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+
+				testutil.Nil(t, app.handleGlobalKey(cmdLeft))
+				testutil.Equal(t, app.mode, modeAgent)
+				testutil.Equal(t, app.agentState.TaskID, task.ID)
+				testutil.Equal(t, app.agentZen, tc.zen)
+				testutil.Equal(t, app.agentFocus, tc.wantFocus)
+				testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
+			})
+		}
+	})
+
+	t.Run("return trip from task list goes to the list", func(t *testing.T) {
+		app, _ := newApp(t, true)
+		app.handleGlobalKey(cmdRight) // list -> Hera
+		testutil.Nil(t, app.handleGlobalKey(cmdLeft))
+		testutil.Equal(t, app.mode, modeTaskList)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
+	})
+
+	t.Run("other navigation forgets the hop", func(t *testing.T) {
+		app, task := newApp(t, true)
+		app.onTaskSelect(task, false)
+		app.setAgentZen()
+		app.handleAgentKey(cmdRight)
+		app.switchTab(widget.TabSettings)
+		app.switchTab(widget.TabHera)
+
+		testutil.Nil(t, app.handleGlobalKey(cmdLeft))
+		testutil.Equal(t, app.mode, modeTaskList)
+	})
+
+	t.Run("deleted task falls back to the list", func(t *testing.T) {
+		app, task := newApp(t, true)
+		app.onTaskSelect(task, false)
+		app.setAgentZen()
+		app.handleAgentKey(cmdRight)
+		testutil.NoError(t, app.db.Delete(task.ID))
+
+		testutil.Nil(t, app.handleGlobalKey(cmdLeft))
+		testutil.Equal(t, app.mode, modeTaskList)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
+	})
 }

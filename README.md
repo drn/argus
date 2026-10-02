@@ -192,7 +192,7 @@ below. The `?` overlay always shows your active bindings.
 | `ctrl+o`  | Open the project's GitHub repo in browser (via `gh repo view --web`) |
 | `ctrl+r`  | Prune completed tasks                                           |
 | `j` / `k` | Navigate up/down                                                |
-| `Cmd+→`   | Enter the Projects rail (Settings → Appearance → cross-tab arrow navigation, on by default) |
+| `Cmd+→`   | Enter the Projects rail (Settings → Appearance → cross-tab arrow navigation) |
 | `1` / `2` / `3` | Switch tabs (Tasks / Projects / Settings) |
 | `ctrl+l`  | Refresh screen (wipe ghost cells; works in every non-agent tab) |
 | `ctrl+j`  | Open the unified **task/role switcher** (see the Agent View table below — same global action, also reachable from the plain Task List) |
@@ -207,7 +207,7 @@ below. The `?` overlay always shows your active bindings.
 | --------------------- | ------------------------------------------------------------------------- |
 | `ctrl+q`              | Back, 3-level (diff → files panel → task list)                            |
 | `Esc`                 | Refocus terminal from diff/files; on the terminal, forwarded to the agent (does NOT exit the agent view) |
-| `Cmd+←` / `Cmd+→`     | Switch panels (no-op when zoomed — side panels are hidden)                |
+| `Cmd+←` / `Cmd+→`     | Switch panels (no-op when zoomed — side panels are hidden). With cross-tab arrow navigation on, `Cmd+→` from the rightmost visible pane (files unzoomed, the terminal when zoomed) hops to the Projects rail; `Cmd+←` from the rail returns to this same agent view (same zoom, rightmost pane) |
 | `Cmd+↑` / `Cmd+↓`     | Navigate between tasks                                                    |
 | `ctrl+j`              | Open the unified **task/role switcher** (fuzzy-search all tasks AND Hera-managed roles by name; entries needing input are pinned to the top, so an empty-filter `Enter` jumps straight to the first one). Selecting a Hera-managed entry switches to the Projects tab and lands on it there (expanding any folded ancestor coordinator first) instead of opening the classic per-task view |
 | `ctrl+k`              | Open the command palette (see the Task List table above — same global action) |
@@ -990,7 +990,7 @@ Registered repos, keyed by name. The DB projects table is the primary source; en
 |-----|------|---------|-------------|
 | `spinner_style` | string | `"progress"` | Spinner animation: `progress`, `dots`, `braille`, or `classic`. |
 | `default_agent_zoom` | bool | `true` | Resting agent-view layout: `true` opens single-pane/zoomed (side panels collapsed); `false` opens the 1:3:1 three-pane layout. `Ctrl+Z` toggles at runtime. |
-| `cross_tab_arrows` | bool | `true` | One continuous `Cmd+Left`/`Cmd+Right` chain: Tasks ⇄ Projects rail ⇄ coordinator pane ⇄ agent pane ⇄ Settings left pane ⇄ Settings right pane. Entering from the left lands on the leftmost pane, from the right on the rightmost. Never fires in the agent view, while a filter / inline edit has focus, or while a Projects pane is fullscreen. |
+| `cross_tab_arrows` | bool | `false` | Opt-in. One continuous `Cmd+Left`/`Cmd+Right` chain: Tasks list / agent view (unzoomed or zoomed) ⇄ Projects rail ⇄ coordinator pane ⇄ agent pane ⇄ Settings left pane ⇄ Settings right pane. Entering from the left lands on the leftmost pane, from the right on the rightmost. Never fires while a modal, filter / inline edit has focus, or while a Projects pane is fullscreen. |
 | `theme` | string | `"default"` | ⚠️ Color theme name. Only `default` exists today and nothing reads this yet — reserved for a future theming layer. |
 | `show_elapsed` | bool | `true` | ⚠️ Reserved — show elapsed time on task rows. Not yet consumed. |
 | `show_icons` | bool | `true` | ⚠️ Reserved — show status icons. Not yet consumed. |
@@ -1126,7 +1126,7 @@ permission_mode = "bypass-active"
 [ui]
 spinner_style = "braille"
 default_agent_zoom = true
-cross_tab_arrows = true
+cross_tab_arrows = false
 
 # Maps merge by key; an existing key is replaced wholesale, so list every
 # field you want to keep.

@@ -2361,8 +2361,9 @@ func TestSmoke_NumericTabKeysRouteCorrectly(t *testing.T) {
 }
 
 func TestSmoke_CrossTabArrows(t *testing.T) {
-	// Default config: the flag is on without any DB row.
-	app := New(testDB(t), agent.NewRunner(nil), false)
+	d := testDB(t)
+	testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "true"))
+	app := New(d, agent.NewRunner(nil), false)
 
 	sim, stop := wireApp(t, app)
 	defer stop()
@@ -2426,10 +2427,57 @@ func TestSmoke_CrossTabArrows(t *testing.T) {
 	})
 }
 
-func TestSmoke_CrossTabArrowsDisabled(t *testing.T) {
+func TestSmoke_CrossTabArrowsAgentViewRoundTrip(t *testing.T) {
 	d := testDB(t)
-	testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "false"))
-	app := New(d, agent.NewRunner(nil), false)
+	testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "true"))
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	task := &model.Task{
+		ID: "rt-1", Name: "round trip", Status: model.StatusInProgress,
+		Worktree: t.TempDir(), Backend: "test", Project: "p", CreatedAt: time.Now(),
+	}
+	testutil.NoError(t, d.Add(task))
+	cfg := config.DefaultConfig()
+	cfg.Backends["test"] = config.Backend{Command: "sleep 30"}
+	_, err := runner.Start(task, cfg, 24, 80, false)
+	testutil.NoError(t, err)
+	defer func() { _ = runner.Stop(task.ID) }()
+	app.refreshTasks()
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	readUI(t, app.tapp, func() { app.onTaskSelect(task, false) })
+
+	// Zoomed agent view: Cmd+Right -> Hera rail.
+	sim.InjectKey(tcell.KeyRight, 0, tcell.ModCtrl|tcell.ModAlt)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.mode, modeTaskList)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+		testutil.Equal(t, app.tapp.GetFocus(), tview.Primitive(app.heraPage))
+	})
+
+	// The session must survive the hop untouched.
+	testutil.Equal(t, runner.Get(task.ID) != nil && runner.Get(task.ID).Alive(), true)
+
+	// Cmd+Left from the rail -> the same agent view, session re-attached.
+	sim.InjectKey(tcell.KeyLeft, 0, tcell.ModCtrl|tcell.ModAlt)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.mode, modeAgent)
+		testutil.Equal(t, app.agentState.TaskID, task.ID)
+		testutil.Equal(t, app.agentZen, true)
+		testutil.Equal(t, app.tapp.GetFocus(), tview.Primitive(app.agentPane))
+		sess := app.agentPane.Session()
+		testutil.Equal(t, sess != nil && sess.Alive(), true)
+	})
+}
+
+func TestSmoke_CrossTabArrowsDisabled(t *testing.T) {
+	// Default config: the flag is off without any DB row.
+	app := New(testDB(t), agent.NewRunner(nil), false)
 
 	sim, stop := wireApp(t, app)
 	defer stop()
