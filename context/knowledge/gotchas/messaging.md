@@ -136,6 +136,23 @@ table and the four MCP tools that ride on top of it.
   annotation payload as stale on retry. In readline-style editors Ctrl+U kills
   backward from the cursor to the line start, so a cursor at the start can
   leave the draft unchanged; do not infer a successful clear from the write.
+- **A Claude Code ghost suggestion ("push it") read as a typed draft because of
+  a window-title OSC, not because of a fake cursor.** Real session bytes show
+  the suggestion is `ESC[2m…ESC[22m` from its very first cell and the caret is
+  the terminal's own cursor (`?25h` + CUP), so there is no non-faint or
+  reverse-video first cell to special-case (x/vt reports the faint cells as
+  Faint|Blink). The non-faint cells came from `OSC 0 ; ✳ Argus … BEL`: `✳` is
+  `E2 9C B3` and x/ansi ends an OSC at the 0x9C byte, printing the rest of the
+  title at the cursor — on the composer row — where the faint-only repaint of
+  "push it" (shorter than the leak) left the remainder. `draftIsFaintOnly` then
+  saw non-faint text, the unconfirmable Ctrl+U fell to the annotated fallback,
+  and the recipient asked what the operator meant. **`ScreenRenderer.render`
+  must strip OSC before the emulator (`internal/oscfilter`, shared with the
+  terminal pane); do not "fix" this by treating reverse-video or the first cell
+  as a caret — that would drop real drafts.** The annotation is also worded
+  conditionally ("if the composer was empty, ignore this line") so any future
+  false positive degrades to a no-op. Reproduce by replaying the real session
+  log at the pane's PTY size and dumping `CellAt` attrs for the composer row.
 - **Notify diagnostics must use daemon-visible `slog` as well as `uxlog`.**
   The daemon initializes `slog` to `~/.argus/daemon.log` but never initializes
   TUI-only `uxlog`; success, write failure, missing acknowledgment, retries,

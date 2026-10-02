@@ -22,6 +22,7 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/gitutil"
+	"github.com/drn/argus/internal/oscfilter"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/drn/argus/internal/uxlog"
@@ -259,7 +260,7 @@ type TerminalPane struct {
 	// reaches emu, working around an x/ansi parser bug that leaks UTF-8 window
 	// titles onto the screen. Reset whenever emu is recreated and re-fed from a
 	// clean escape boundary. See oscfilter.go. Owned by the Draw goroutine.
-	oscStrip oscFilter
+	oscStrip oscfilter.Filter
 
 	// Cached PTY size — set from Draw() (main goroutine), read by sync goroutine.
 	ptyCols int
@@ -2273,7 +2274,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 			// would leak — see fix-terminalpane-emulator-leak).
 			tp.emu.Resize(buildCols, buildRows)
 		}
-		tp.oscStrip.reset()
+		tp.oscStrip.Reset()
 		tp.emuFedTotal = 0
 		tp.emuCols = buildCols
 		tp.emuRows = buildRows
@@ -2369,7 +2370,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 			// agent producing 8EiB of output is not a real case); gosec G115
 			// flags the uint64->int64 conversion but the cast is safe.
 			if gap, ok := readLogGapEndingAt(tp.taskID, raw, int64(newBytes)); ok { //nolint:gosec // see comment
-				_, _ = SafeEmuWrite(tp.emu, tp.oscStrip.filter(gap))
+				_, _ = SafeEmuWrite(tp.emu, tp.oscStrip.Filter(gap))
 				tp.emuFedTotal = totalWritten
 				fullReplay = false
 				ringWrapCaughtUp = true
@@ -2378,7 +2379,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 		if fullReplay {
 			if !freshBind {
 				tp.resetLiveEmulatorInPlace()
-				tp.oscStrip.reset()
+				tp.oscStrip.Reset()
 				tp.paintCacheValid = false
 			}
 			history, finalTotal := readLiveRebuildHistory(sess, tp.taskID)
@@ -2412,7 +2413,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 				// history is actually being fed into; clamping to the
 				// (possibly narrower) pane here would neutralize scroll
 				// margins that are perfectly valid at the wider build size.
-				_, _ = SafeEmuWrite(tp.emu, tp.oscStrip.filter(ClampScrollRegion(AlignToEscBoundary(history), tp.emuCols, tp.emuRows)))
+				_, _ = SafeEmuWrite(tp.emu, tp.oscStrip.Filter(ClampScrollRegion(AlignToEscBoundary(history), tp.emuCols, tp.emuRows)))
 				tp.emuFedTotal = finalTotal
 			}
 		} else if ringWrapCaughtUp {
@@ -2426,7 +2427,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 			// needed (parser state is already at the right boundary).
 			// oscStrip carries state across feeds so an OSC sequence split
 			// between two deltas is still stripped.
-			_, _ = SafeEmuWrite(tp.emu, tp.oscStrip.filter(raw[len(raw)-int(newBytes):]))
+			_, _ = SafeEmuWrite(tp.emu, tp.oscStrip.Filter(raw[len(raw)-int(newBytes):]))
 			tp.emuFedTotal = totalWritten
 		} else if tp.emuFedTotal == 0 {
 			msg := "Waiting for output..."

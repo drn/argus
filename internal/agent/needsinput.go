@@ -14,6 +14,7 @@ import (
 	uv "github.com/charmbracelet/ultraviolet"
 	xvt "github.com/charmbracelet/x/vt"
 
+	"github.com/drn/argus/internal/oscfilter"
 	"github.com/drn/argus/internal/sanitize"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -415,7 +416,12 @@ func (r *ScreenRenderer) render(tail []byte, cols, rows int) string {
 			r.cols, r.rows = cols, rows
 		}
 	}
-	safeEmuWrite(r.emu, tail)
+	// OSC sequences carry no screen content, and x/ansi ends one at the 0x9C
+	// byte inside a UTF-8 glyph (Claude's "✳ …" window title), printing the
+	// rest of the title as ground text at the cursor — onto the composer row,
+	// as non-faint cells that make an empty ghost-suggestion composer read as a
+	// typed draft. Strip them before the emulator sees them.
+	safeEmuWrite(r.emu, oscfilter.Strip(tail))
 	return r.emu.String()
 }
 

@@ -2,6 +2,8 @@ package terminal
 
 import (
 	xvt "github.com/charmbracelet/x/vt"
+
+	"github.com/drn/argus/internal/oscfilter"
 )
 
 // PreviewVT maintains a persistent x/vt emulator for the task-list Preview
@@ -30,7 +32,7 @@ type PreviewVT struct {
 	cols     int
 	rows     int
 	fedTotal uint64
-	oscStrip oscFilter
+	oscStrip oscfilter.Filter
 }
 
 // Feed advances the emulator to reflect the output stream [0, totalWritten)
@@ -86,7 +88,7 @@ func (p *PreviewVT) Feed(taskID string, cols, rows int, tail []byte, totalWritte
 		// larger than this preview's emulator (see marginfilter.go).
 		// oscStrip was reset in rebuild, so it continues from a known state
 		// into the incremental feeds that follow.
-		feed = p.oscStrip.filter(ClampScrollRegion(AlignToEscBoundary(tail), cols, rows))
+		feed = p.oscStrip.Filter(ClampScrollRegion(AlignToEscBoundary(tail), cols, rows))
 	case newBytes > 0:
 		// Incremental: the delta is contiguous with what the emulator already
 		// parsed, so no ESC realignment is needed. oscStrip carries state
@@ -94,7 +96,7 @@ func (p *PreviewVT) Feed(taskID string, cols, rows int, tail []byte, totalWritte
 		// newBytes <= len(tail) here — the fullReplay guard above caught the
 		// greater-than case — so the conversion is in range.
 		start := len(tail) - int(newBytes) //nolint:gosec // bounded by fullReplay guard
-		feed = p.oscStrip.filter(tail[start:])
+		feed = p.oscStrip.Filter(tail[start:])
 	default:
 		return p.emu, nil // nothing new
 	}
@@ -156,7 +158,7 @@ func (p *PreviewVT) rebuild(taskID string, cols, rows int) {
 	// render them via the grid's sbLen>0 branch (cross-task ghosting). Drop
 	// them explicitly on every rebuild.
 	p.emu.ClearScrollback()
-	p.oscStrip.reset()
+	p.oscStrip.Reset()
 	p.fedTotal = 0
 	p.taskID = taskID
 	p.cols = cols
@@ -171,5 +173,5 @@ func (p *PreviewVT) Reset() {
 	p.cols = 0
 	p.rows = 0
 	p.fedTotal = 0
-	p.oscStrip.reset()
+	p.oscStrip.Reset()
 }
