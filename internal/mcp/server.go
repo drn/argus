@@ -719,7 +719,7 @@ Pass ` + "`id`" + ` to target a task explicitly, or ` + "`cwd`" + ` to resolve t
 	},
 	{
 		Name: "task_complete",
-		Description: `Mark an Argus task as complete. Sets status to "complete" and stamps EndedAt.
+		Description: `Mark an Argus task as complete only when the user explicitly requested this Argus status change. Finishing work, merging a PR, or ending a response alone is not authorization. Sets status to "complete" and stamps EndedAt.
 
 The agent process does not know its own task ID, so the task is resolved from the working directory: pass ` + "`cwd`" + ` and Argus finds the task whose worktree matches. Does NOT stop a running agent session — call ` + "`task_stop`" + ` first if needed. No-op when the task is already complete.`,
 		InputSchema: map[string]interface{}{
