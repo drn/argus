@@ -147,14 +147,9 @@ func (a *App) agentActionRegistry() map[keymap.Action]func() {
 				a.updateFocusIndicators()
 			}
 		},
-		keymap.ActAgentPaneRight: func() {
-			if !a.agentZen && a.agentFocus < focusFiles {
-				a.agentFocus++
-				a.updateFocusIndicators()
-			}
-		},
-		keymap.ActAgentTaskPrev: func() { a.navigateAgentTask(-1) },
-		keymap.ActAgentTaskNext: func() { a.navigateAgentTask(1) },
+		keymap.ActAgentPaneRight: a.agentPaneRight,
+		keymap.ActAgentTaskPrev:  func() { a.navigateAgentTask(-1) },
+		keymap.ActAgentTaskNext:  func() { a.navigateAgentTask(1) },
 	}
 }
 

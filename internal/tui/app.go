@@ -329,15 +329,19 @@ type App struct {
 	pages     *tview.Pages
 
 	// State
-	mode            viewMode
-	agentFocus      agentFocus
-	agentZen        bool // single-pane (zoom) mode: side panels collapsed to 0 width
-	crossTabArrows  bool // opt-in Cmd+Left/Right transition between Tasks and Hera rail
-	agentState      agentview.State
-	daemonConnected bool
-	tasks           []*model.Task
-	runningIDs      []string
-	idleIDs         []string
+	mode           viewMode
+	agentFocus     agentFocus
+	agentZen       bool // single-pane (zoom) mode: side panels collapsed to 0 width
+	crossTabArrows bool // Cmd+Left/Right traversal of the whole tab/pane chain (default off)
+	// agentCrossReturn remembers the agent view a Cmd+Right hop left from, so
+	// Cmd+Left from the Hera rail can restore it. Main goroutine only; cleared
+	// by switchTab and by the return hop.
+	agentCrossReturn *agentCrossReturn
+	agentState       agentview.State
+	daemonConnected  bool
+	tasks            []*model.Task
+	runningIDs       []string
+	idleIDs          []string
 	// visibleActiveSpinner caches computeVisibleActiveSpinner's result
 	// (add-spinner-visible-scope), recomputed once per refreshTasksWithIDs
 	// call (tview main goroutine, a.mu held) so spinnerLoop's background
@@ -4263,31 +4267,81 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	return event
 }
 
-// handleCrossTabArrow consumes an enabled modified-arrow transition at the
-// Tasks–Hera boundary. The loose modifier check matches Hera's existing focus
-// ladder because terminals disagree on whether Cmd arrives as Ctrl, Alt, or
-// both. All non-boundary events fall through unchanged to the active view.
+// handleCrossTabArrow consumes an enabled modified-arrow hop along the
+// continuous spatial chain
+//
+//	Tasks ⇄ Hera rail ⇄ coord pane ⇄ agent pane ⇄ Settings left ⇄ Settings right
+//
+// The Hera-internal rail ⇄ coord ⇄ agent steps stay with HeraPage's own focus
+// ladder; this handler owns only the hops that leave a view (Tasks→Hera,
+// Hera→Tasks, Hera→Settings, Settings→Hera) plus the Settings left ⇄ right
+// step. Entering from the left lands on the leftmost pane, entering from the
+// right lands on the rightmost. The loose modifier check matches Hera's ladder
+// because terminals disagree on whether Cmd arrives as Ctrl, Alt, or both. All
+// non-hop events fall through unchanged to the active view. Never fires from
+// agent view / modals (mode gate), while a filter or inline edit holds the
+// keyboard, or while a Hera pane is fullscreen.
 func (a *App) handleCrossTabArrow(event *tcell.EventKey) bool {
 	if !a.crossTabArrows || a.mode != modeTaskList ||
 		event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) == 0 {
 		return false
 	}
+	key := event.Key()
+	if key != tcell.KeyLeft && key != tcell.KeyRight {
+		return false
+	}
 
 	switch a.header.ActiveTab() {
 	case widget.TabTasks:
-		if event.Key() == tcell.KeyRight && !a.tasklist.Filtering() {
+		if key == tcell.KeyRight && !a.tasklist.Filtering() {
 			uxlog.Log("[tui] cross-tab arrow: tasks -> hera")
 			a.switchTab(widget.TabHera)
 			return true
 		}
 	case widget.TabHera:
-		if event.Key() == tcell.KeyLeft &&
-			a.heraPage.Machine().State() == hera.FocusRail &&
-			!a.heraPage.RailFiltering() {
+		m := a.heraPage.Machine()
+		if a.heraPage.RailFiltering() || m.Fullscreen() {
+			return false
+		}
+		if key == tcell.KeyLeft && m.State() == hera.FocusRail {
+			if ret := a.agentCrossReturn; ret != nil {
+				a.agentCrossReturn = nil
+				if a.returnToAgentView(ret) {
+					return true
+				}
+			}
 			uxlog.Log("[tui] cross-tab arrow: hera -> tasks")
 			a.switchTab(widget.TabTasks)
 			return true
 		}
+		if key == tcell.KeyRight && m.AtRightmost() {
+			uxlog.Log("[tui] cross-tab arrow: hera -> settings")
+			a.switchTab(widget.TabSettings)
+			a.settings.FocusLeftPane()
+			return true
+		}
+	case widget.TabSettings:
+		if a.settings.IsEditing() {
+			return false
+		}
+		switch {
+		case key == tcell.KeyRight && !a.settings.InRightPane():
+			uxlog.Log("[tui] cross-tab arrow: settings left -> settings right")
+			a.settings.FocusRightPane()
+		case key == tcell.KeyRight:
+			// End of chain: consume so the modified Right can't cycle the
+			// focused setting's value.
+			uxlog.Log("[tui] cross-tab arrow: settings right -> (end of chain)")
+		case a.settings.InRightPane():
+			uxlog.Log("[tui] cross-tab arrow: settings right -> settings left")
+			a.settings.FocusLeftPane()
+		default:
+			uxlog.Log("[tui] cross-tab arrow: settings -> hera")
+			a.switchTab(widget.TabHera)
+			a.heraPage.Machine().ToRightmost()
+			a.statusbar.SetHeraFocus(int(a.heraPage.Machine().State()))
+		}
+		return true
 	}
 	return false
 }
@@ -4365,6 +4419,67 @@ func (a *App) toggleAgentZen() {
 	uxlog.Log("[tui] agent zen mode toggled: %v", a.agentZen)
 }
 
+// agentCrossReturn is where a Cmd+Right hop out of the agent view came from.
+type agentCrossReturn struct {
+	taskID string
+	zen    bool
+}
+
+// agentPaneRight is the agent view's "focus pane right" action. Unzoomed it
+// steps terminal → files; when cross-tab arrows are enabled, Right from the
+// rightmost visible pane (files unzoomed, the lone terminal when zoomed)
+// instead hops to the Hera tab. Not while the diff view owns the keyboard.
+func (a *App) agentPaneRight() {
+	if a.crossTabArrows && !a.agentPane.InDiffMode() &&
+		(a.agentZen || a.agentFocus == focusFiles) {
+		a.hopAgentViewToHera()
+		return
+	}
+	if !a.agentZen && a.agentFocus < focusFiles {
+		a.agentFocus++
+		a.updateFocusIndicators()
+	}
+}
+
+// hopAgentViewToHera leaves the agent view for the Hera rail without touching
+// the session (exitAgentView only detaches the pane; the PTY keeps running) and
+// remembers the task + zoom so the return hop can restore the same view.
+func (a *App) hopAgentViewToHera() {
+	taskID := a.agentState.TaskID
+	zen := a.agentZen
+	uxlog.Log("[tui] cross-tab arrow: agent view (task=%s zen=%v) -> hera", taskID, zen)
+	a.exitAgentView()
+	a.switchTab(widget.TabHera)
+	if taskID != "" {
+		a.agentCrossReturn = &agentCrossReturn{taskID: taskID, zen: zen}
+	}
+}
+
+// returnToAgentView restores the agent view a hop left from, landing on its
+// rightmost visible pane (files unzoomed, terminal zoomed). Returns false when
+// there is nothing valid to restore, so the caller falls back to the task list.
+func (a *App) returnToAgentView(ret *agentCrossReturn) bool {
+	if ret == nil {
+		return false
+	}
+	task, err := a.db.Get(ret.taskID)
+	if err != nil || task == nil {
+		uxlog.Log("[tui] cross-tab arrow: hera -> tasks (agent view task %s gone, using list)", ret.taskID)
+		return false
+	}
+	uxlog.Log("[tui] cross-tab arrow: hera -> agent view (task=%s zen=%v)", ret.taskID, ret.zen)
+	a.switchTab(widget.TabTasks)
+	a.onTaskSelect(task, false)
+	if ret.zen {
+		a.setAgentZen()
+	} else {
+		a.clearAgentZen()
+		a.agentFocus = focusFiles
+		a.updateFocusIndicators()
+	}
+	return true
+}
+
 // handleAgentKey handles keys when the agent view is active.
 func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 	// Escape is structural (focus state machine + forward-to-PTY) and is NOT
@@ -4440,10 +4555,7 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 			}
 			return nil
 		case keymap.ActAgentPaneRight:
-			if !a.agentZen && a.agentFocus < focusFiles {
-				a.agentFocus++
-				a.updateFocusIndicators()
-			}
+			a.agentPaneRight()
 			return nil
 		case keymap.ActAgentTaskPrev:
 			a.navigateAgentTask(-1)
@@ -4917,6 +5029,7 @@ func (a *App) persistLastTab(t widget.Tab) {
 
 // switchTab changes the active top-level tab.
 func (a *App) switchTab(t widget.Tab) {
+	a.agentCrossReturn = nil // any other navigation forgets the agent-view hop
 	a.header.SetTab(t)
 	a.statusbar.SetTab(t)
 	a.persistLastTab(t)

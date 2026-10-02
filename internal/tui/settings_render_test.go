@@ -615,6 +615,7 @@ func TestSettings_CrossTabArrowsToggle(t *testing.T) {
 		callbackValues = append(callbackValues, enabled)
 	}
 
+	// Default is OFF; the first toggle turns it on, the second back off.
 	testutil.Equal(t, sv.crossTabArrows, false)
 
 	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
@@ -853,4 +854,17 @@ func TestApp_HandleNewTaskKey_PassesThrough(t *testing.T) {
 
 	app.onNewTask()
 	app.handleNewTaskKey(tcell.NewEventKey(tcell.KeyRune, 'a', 0))
+}
+
+func TestSettings_PaneFocusHelpers(t *testing.T) {
+	sv := makeSettings(t)
+	testutil.Equal(t, sv.InRightPane(), true) // default focus is the pane
+
+	sv.FocusLeftPane()
+	testutil.Equal(t, sv.InRightPane(), false)
+	sv.FocusLeftPane() // idempotent
+	testutil.Equal(t, sv.InRightPane(), false)
+
+	sv.FocusRightPane()
+	testutil.Equal(t, sv.InRightPane(), true)
 }

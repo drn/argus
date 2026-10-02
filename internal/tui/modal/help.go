@@ -56,10 +56,11 @@ type helpGroup struct {
 var helpLayout = []helpGroup{
 	{title: "Task List", ctx: keymap.CtxTaskList, extra: []HelpBinding{
 		{"Enter", "open agent view"},
-		{"Cmd+→", "enter Projects rail (when enabled in Appearance)"},
+		{"Cmd+→", "enter Projects rail (Appearance option)"},
 	}},
 	{title: "Global", ctx: keymap.CtxGlobal},
 	{title: "Agent View", ctx: keymap.CtxAgent, extra: []HelpBinding{
+		{"Cmd+→ (rightmost pane)", "hop to Projects rail; Cmd+← there returns (Appearance option)"},
 		{"ctrl+q / Esc", "back (diff → files → list)"},
 	}},
 	{title: "File Panel", ctx: keymap.CtxFilePnl, extra: []HelpBinding{
@@ -73,6 +74,7 @@ var helpLayout = []helpGroup{
 	{title: "Settings", ctx: keymap.CtxSettings, extra: []HelpBinding{
 		{"h / l", "focus rail / pane"},
 		{"Enter / ◀ / ▶", "toggle / cycle settings"},
+		{"Cmd+← / Cmd+→", "left ⇄ right pane; from left → Projects"},
 	}},
 	{title: "Projects View (rail)", ctx: keymap.CtxHeraRail, extra: []HelpBinding{
 		{"j / k / space", "navigate / collapse / expand"},
@@ -81,6 +83,7 @@ var helpLayout = []helpGroup{
 		{"Tab", "enter pane (then Tab → agent autocomplete)"},
 		{"ctrl+alt+← / →", "move between panes; ctrl+q back to rail"},
 		{"Cmd+←", "return to Tasks (rail only; Appearance option)"},
+		{"Cmd+→", "rightmost pane → Settings left pane"},
 		{"ctrl+z", "fullscreen pane"},
 		{"ctrl+y", "copy staged text (focused pane)"},
 		{"B", "force recycle coordinator (kill + restart, confirm)"},

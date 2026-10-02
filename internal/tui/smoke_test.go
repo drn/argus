@@ -2368,19 +2368,124 @@ func TestSmoke_CrossTabArrows(t *testing.T) {
 	sim, stop := wireApp(t, app)
 	defer stop()
 
-	sim.InjectKey(tcell.KeyRight, 0, tcell.ModCtrl|tcell.ModAlt)
-	syncUI(t, app.tapp)
+	press := func(k tcell.Key) {
+		sim.InjectKey(k, 0, tcell.ModCtrl|tcell.ModAlt)
+		syncUI(t, app.tapp)
+	}
+
+	// Tasks -> Hera rail.
+	press(tcell.KeyRight)
 	readUI(t, app.tapp, func() {
 		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
 		testutil.Equal(t, app.heraPage.Machine().State(), hera.FocusRail)
 		testutil.Equal(t, app.tapp.GetFocus(), tview.Primitive(app.heraPage))
 	})
 
-	sim.InjectKey(tcell.KeyLeft, 0, tcell.ModCtrl|tcell.ModAlt)
-	syncUI(t, app.tapp)
+	// Hera rail -> coord -> agent (Hera's own ladder).
+	press(tcell.KeyRight)
+	press(tcell.KeyRight)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+		testutil.Equal(t, app.heraPage.Machine().State(), hera.FocusAgent)
+	})
+
+	// Hera agent -> Settings left pane.
+	press(tcell.KeyRight)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabSettings)
+		testutil.Equal(t, app.settings.InRightPane(), false)
+		testutil.Equal(t, app.tapp.GetFocus(), tview.Primitive(app.settingsPage))
+	})
+
+	// Settings left -> right, then end-of-chain no-op.
+	press(tcell.KeyRight)
+	press(tcell.KeyRight)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabSettings)
+		testutil.Equal(t, app.settings.InRightPane(), true)
+	})
+
+	// Back: right -> left, then left -> Hera rightmost pane.
+	press(tcell.KeyLeft)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.settings.InRightPane(), false)
+	})
+	press(tcell.KeyLeft)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+		testutil.Equal(t, app.heraPage.Machine().State(), hera.FocusAgent)
+		testutil.Equal(t, app.tapp.GetFocus(), tview.Primitive(app.heraPage))
+	})
+
+	// Hera agent -> coord -> rail (ladder), then rail -> Tasks.
+	press(tcell.KeyLeft)
+	press(tcell.KeyLeft)
+	press(tcell.KeyLeft)
 	readUI(t, app.tapp, func() {
 		testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
 		testutil.Equal(t, app.tapp.GetFocus(), tview.Primitive(app.tasklist))
+	})
+}
+
+func TestSmoke_CrossTabArrowsAgentViewRoundTrip(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "true"))
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	task := &model.Task{
+		ID: "rt-1", Name: "round trip", Status: model.StatusInProgress,
+		Worktree: t.TempDir(), Backend: "test", Project: "p", CreatedAt: time.Now(),
+	}
+	testutil.NoError(t, d.Add(task))
+	cfg := config.DefaultConfig()
+	cfg.Backends["test"] = config.Backend{Command: "sleep 30"}
+	_, err := runner.Start(task, cfg, 24, 80, false)
+	testutil.NoError(t, err)
+	defer func() { _ = runner.Stop(task.ID) }()
+	app.refreshTasks()
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	readUI(t, app.tapp, func() { app.onTaskSelect(task, false) })
+
+	// Zoomed agent view: Cmd+Right -> Hera rail.
+	sim.InjectKey(tcell.KeyRight, 0, tcell.ModCtrl|tcell.ModAlt)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.mode, modeTaskList)
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+		testutil.Equal(t, app.tapp.GetFocus(), tview.Primitive(app.heraPage))
+	})
+
+	// The session must survive the hop untouched.
+	testutil.Equal(t, runner.Get(task.ID) != nil && runner.Get(task.ID).Alive(), true)
+
+	// Cmd+Left from the rail -> the same agent view, session re-attached.
+	sim.InjectKey(tcell.KeyLeft, 0, tcell.ModCtrl|tcell.ModAlt)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.mode, modeAgent)
+		testutil.Equal(t, app.agentState.TaskID, task.ID)
+		testutil.Equal(t, app.agentZen, true)
+		testutil.Equal(t, app.tapp.GetFocus(), tview.Primitive(app.agentPane))
+		sess := app.agentPane.Session()
+		testutil.Equal(t, sess != nil && sess.Alive(), true)
+	})
+}
+
+func TestSmoke_CrossTabArrowsDisabled(t *testing.T) {
+	// Default config: the flag is off without any DB row.
+	app := New(testDB(t), agent.NewRunner(nil), false)
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	sim.InjectKey(tcell.KeyRight, 0, tcell.ModCtrl|tcell.ModAlt)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
 	})
 }
 
