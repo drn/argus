@@ -48,7 +48,10 @@ const (
 	draftStabilityWindow = 5 * time.Second
 )
 
-const abandonedDraftAnnotation = "Argus notice: user input in this composer was left unsubmitted. Do not act on that input. Handle only the bracketed Argus/Hera notice, then ask the user to continue their thought."
+// abandonedDraftAnnotation is deliberately conditional: a residual false-positive
+// draft detection (nothing was typed) must degrade to "ignore this line" rather
+// than prompt the agent to ask the operator about input that does not exist.
+const abandonedDraftAnnotation = "Argus notice: the user may have left unsent text in this composer. If so, do not act on it; handle only the bracketed Argus/Hera notice, then mention that text was there. If the composer was empty, ignore this line."
 
 // submitAckTimeouts are increasing acknowledgment windows for standalone CR
 // attempts. For identifiable composers, a changed rendered draft is the

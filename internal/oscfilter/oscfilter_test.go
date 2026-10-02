@@ -1,4 +1,4 @@
-package terminal
+package oscfilter
 
 import (
 	"io"
@@ -9,7 +9,7 @@ import (
 	"github.com/drn/argus/internal/testutil"
 )
 
-func TestFilterOSC(t *testing.T) {
+func TestStrip(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
@@ -40,7 +40,7 @@ func TestFilterOSC(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := string(FilterOSC([]byte(tt.in)))
+			got := string(Strip([]byte(tt.in)))
 			testutil.Equal(t, got, tt.want)
 		})
 	}
@@ -60,36 +60,36 @@ func TestOSCFilter_SplitAcrossChunks(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var f oscFilter
+			var f Filter
 			var got []byte
 			for _, c := range tt.chunks {
-				got = append(got, f.filter([]byte(c))...)
+				got = append(got, f.Filter([]byte(c))...)
 			}
-			got = append(got, f.flush()...)
+			got = append(got, f.Flush()...)
 			testutil.Equal(t, string(got), tt.want)
 		})
 	}
 }
 
 func TestOSCFilter_Reset(t *testing.T) {
-	var f oscFilter
+	var f Filter
 	// Leave the filter mid-OSC, then reset and feed plain text.
-	f.filter([]byte("\x1b]0;partial"))
-	f.reset()
-	got := string(f.filter([]byte("clean")))
+	f.Filter([]byte("\x1b]0;partial"))
+	f.Reset()
+	got := string(f.Filter([]byte("clean")))
 	testutil.Equal(t, got, "clean")
 }
 
 func TestOSCFilter_RunawayGuard(t *testing.T) {
 	// An OSC that never sends a recognized terminator must not drop unbounded:
 	// after maxOSCDropBytes the filter resumes passing bytes through.
-	var f oscFilter
+	var f Filter
 	in := make([]byte, 0, maxOSCDropBytes+100)
 	in = append(in, '\x1b', ']', '0', ';')
 	for i := 0; i < maxOSCDropBytes+50; i++ {
 		in = append(in, 'a')
 	}
-	got := f.filter(in)
+	got := f.Filter(in)
 	if len(got) == 0 {
 		t.Fatal("runaway guard never resumed output")
 	}
@@ -126,7 +126,7 @@ func TestOSCFilter_FixesEmulatorLeak(t *testing.T) {
 
 	// Filtered: the title is gone and the screen is blank.
 	filtered := xvt.NewSafeEmulator(40, 3)
-	go io.Copy(io.Discard, filtered)    //nolint:errcheck
-	filtered.Write(FilterOSC(leakySeq)) //nolint:errcheck
+	go io.Copy(io.Discard, filtered) //nolint:errcheck
+	filtered.Write(Strip(leakySeq))  //nolint:errcheck
 	testutil.Equal(t, row(filtered), "                                        ")
 }

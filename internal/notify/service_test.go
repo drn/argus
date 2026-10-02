@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -398,7 +399,7 @@ func TestNotifier_StableDraftClearFallsBackAfterBoundedAttempts(t *testing.T) {
 	for _, write := range writes[:maxUnconfirmedStableClearAttempts] {
 		testutil.Equal(t, string(write), "\x15")
 	}
-	testutil.Equal(t, string(writes[maxUnconfirmedStableClearAttempts]), "\n\n[hera from coord] msg #7 — clean\nArgus notice: user input in this composer was left unsubmitted. Do not act on that input. Handle only the bracketed Argus/Hera notice, then ask the user to continue their thought.\n\n")
+	testutil.Equal(t, string(writes[maxUnconfirmedStableClearAttempts]), "\n\n[hera from coord] msg #7 — clean\nArgus notice: the user may have left unsent text in this composer. If so, do not act on it; handle only the bracketed Argus/Hera notice, then mention that text was there. If the composer was empty, ignore this line.\n\n")
 	testutil.Equal(t, string(writes[maxUnconfirmedStableClearAttempts+1]), "\r")
 	testutil.Equal(t, n.DeliveryState("t1", "d1"), StateSubmitted)
 }
@@ -429,7 +430,7 @@ func TestNotifier_StableDraftClearTaintsLaterEmptyComposer(t *testing.T) {
 	testutil.Equal(t, string(writes[0]), "\x15")
 	testutil.Equal(t, string(writes[1]), "\x15")
 	testutil.Equal(t, string(writes[2]), "\x15")
-	testutil.Equal(t, string(writes[3]), "\n\n[hera from coord] msg #8 — safe\nArgus notice: user input in this composer was left unsubmitted. Do not act on that input. Handle only the bracketed Argus/Hera notice, then ask the user to continue their thought.\n\n")
+	testutil.Equal(t, string(writes[3]), "\n\n[hera from coord] msg #8 — safe\nArgus notice: the user may have left unsent text in this composer. If so, do not act on it; handle only the bracketed Argus/Hera notice, then mention that text was there. If the composer was empty, ignore this line.\n\n")
 	testutil.Equal(t, string(writes[4]), "\r")
 	testutil.Equal(t, n.DeliveryState("t1", "d1"), StateSubmitted)
 }
@@ -579,7 +580,7 @@ func TestNotifier_StaleNoticeClearUnconfirmedPreservesWithAnnotation(t *testing.
 	writes := sess.allWrites()
 	testutil.Equal(t, len(writes), 3)
 	testutil.Equal(t, string(writes[0]), "\x15")
-	testutil.Equal(t, string(writes[1]), "\n\n[hera from coord] msg #2 — current\nArgus notice: user input in this composer was left unsubmitted. Do not act on that input. Handle only the bracketed Argus/Hera notice, then ask the user to continue their thought.\n\n")
+	testutil.Equal(t, string(writes[1]), "\n\n[hera from coord] msg #2 — current\nArgus notice: the user may have left unsent text in this composer. If so, do not act on it; handle only the bracketed Argus/Hera notice, then mention that text was there. If the composer was empty, ignore this line.\n\n")
 	testutil.Equal(t, string(writes[2]), "\r")
 }
 
@@ -712,7 +713,7 @@ func TestNotifier_StableDraftStillHonorsTotalEnterAttemptCap(t *testing.T) {
 }
 
 func TestNotifier_AnnotatedStaleNoticeDoesNotGrowOnRetry(t *testing.T) {
-	abandoned := "human draft\n\n[hera from coord] msg #9 — retry\nArgus notice: user input in this composer was left unsubmitted. Do not act on that input. Handle only the bracketed Argus/Hera notice, then ask the user to continue their thought.\n\n"
+	abandoned := "human draft\n\n[hera from coord] msg #9 — retry\nArgus notice: the user may have left unsent text in this composer. If so, do not act on it; handle only the bracketed Argus/Hera notice, then mention that text was there. If the composer was empty, ignore this line.\n\n"
 	testutil.Equal(t, injectedNoticeDraft(abandoned), true)
 
 	r := newFakeRunner()
@@ -1183,4 +1184,51 @@ func TestNotifier_CancelQueuedDelivery(t *testing.T) {
 	n.Cancel("t1", "d2")
 	testutil.Equal(t, n.DeliveryState("t1", "d1"), StatePending)
 	testutil.Equal(t, n.DeliveryState("t1", "d2"), DeliveryState(""))
+}
+
+// TestNotifier_GhostSuggestionNeverAnnotated drives the live failure end to
+// end: Claude Code's ghost suggestion ("push it", faint, caret parked on its
+// first cell) plus a "✳" window-title update used to read as a stable typed
+// draft, the unconfirmable Ctrl+U then fell through to the annotated fallback,
+// and the recipient asked the operator what they had meant to say. The ghost
+// must deliver cleanly; a real draft in the same circumstances must still be
+// preserved and annotated.
+func TestNotifier_GhostSuggestionNeverAnnotated(t *testing.T) {
+	ghost, err := os.ReadFile("../agent/testdata/ghost_osc_title.bin")
+	testutil.NoError(t, err)
+
+	tests := []struct {
+		name          string
+		tail          []byte
+		cols, rows    int
+		wantAnnotated bool
+	}{
+		{"ghost suggestion with OSC title leak", ghost, 123, 65, false},
+		{"real draft after an OSC title", append([]byte("\x1b]0;✳ Argus t\a"), composerFrame("draft that must not be glued")...), 80, 24, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newFakeRunner()
+			sess := r.addSession("t1", true)
+			sess.tail = tt.tail
+			sess.cols, sess.rows = tt.cols, tt.rows
+			sess.ctrlUClears = false
+			n := newTestNotifier(r, fakeNoFocus{})
+			n.waitForClear = func(SessionHandleIface, time.Duration) bool { return false }
+			t0 := time.Now()
+
+			n.ReliableNotify("t1", "[hera from coord] msg #1 — hello", "d1", NotifyOpts{})
+			n.Reconcile(t0)
+			for i := 1; i <= maxUnconfirmedStableClearAttempts; i++ {
+				n.Reconcile(t0.Add(time.Duration(i) * draftStabilityWindow))
+			}
+
+			var all strings.Builder
+			for _, w := range sess.allWrites() {
+				all.Write(w)
+			}
+			testutil.Equal(t, strings.Contains(all.String(), abandonedDraftAnnotation), tt.wantAnnotated)
+			testutil.Equal(t, n.DeliveryState("t1", "d1"), StateSubmitted)
+		})
+	}
 }
