@@ -4024,6 +4024,16 @@ function setLinksBody(message) {
   body.appendChild(empty);
 }
 
+// prRefFromURL turns https://github.com/org/repo/pull/123[/files] into
+// "org/repo #123" so the PR number survives the row's end-ellipsis. Returns ''
+// for anything that doesn't parse; callers fall back to the raw URL.
+function prRefFromURL(raw) {
+  try {
+    const m = new URL(raw).pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)(?:\/|$)/);
+    return m ? m[1] + '/' + m[2] + ' #' + m[3] : '';
+  } catch (_) { return ''; }
+}
+
 function renderLinksList() {
   const body = document.getElementById('links-modal-body');
   const q = (document.getElementById('links-modal-filter').value || '').trim().toLowerCase();
@@ -4043,7 +4053,9 @@ function renderLinksList() {
     btn.type = 'button';
     btn.className = 'links-item';
     const url = l.url || '';
-    const label = l.label || url;
+    const prRef = l.isPR ? prRefFromURL(url) : '';
+    let label = l.label || url;
+    if (prRef && label === url) label = prRef;
     if (label === url) btn.classList.add('url-only');
     // PR indicator. l.isPR is server-classified by the shared links package
     // (single source of truth), so the client never re-derives it. Built via
@@ -4065,7 +4077,7 @@ function renderLinksList() {
     labelEl.textContent = label;
     const urlEl = document.createElement('span');
     urlEl.className = 'links-url';
-    urlEl.textContent = url;
+    urlEl.textContent = prRef && label !== prRef ? prRef + ' · ' + url : url;
     content.appendChild(labelEl);
     content.appendChild(urlEl);
     btn.appendChild(content);
