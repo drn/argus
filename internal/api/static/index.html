@@ -4078,7 +4078,6 @@ function renderLinksList() {
     const urlEl = document.createElement('span');
     urlEl.className = 'links-url';
     urlEl.textContent = prRef && label !== prRef ? prRef + ' · ' + url : url;
-    if (prRef && label === prRef) urlEl.textContent = url;
     content.appendChild(labelEl);
     content.appendChild(urlEl);
     btn.appendChild(content);
