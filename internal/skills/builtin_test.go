@@ -9,6 +9,14 @@ import (
 	"github.com/drn/argus/internal/testutil"
 )
 
+func TestBuiltinCompleteRequiresExplicitRequest(t *testing.T) {
+	builtin, err := os.ReadFile("builtin/argus-complete/SKILL.md")
+	testutil.NoError(t, err)
+	for _, phrase := range []string{"user explicitly asks", "do not use a CLI, HTTP endpoint"} {
+		testutil.Equal(t, strings.Contains(string(builtin), phrase), true)
+	}
+}
+
 func TestBuiltinItems_IncludesAllExpectedSkills(t *testing.T) {
 	items := BuiltinItems()
 	names := make([]string, len(items))

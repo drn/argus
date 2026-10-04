@@ -160,6 +160,9 @@ func TestToolsList(t *testing.T) {
 	names := make(map[string]bool)
 	for _, tool := range list.Tools {
 		names[tool.Name] = true
+		if tool.Name == "task_complete" {
+			testutil.Contains(t, tool.Description, "user explicitly requested")
+		}
 	}
 	for _, want := range []string{"kb_search", "kb_read", "kb_list", "kb_delete", "kb_ingest"} {
 		if !names[want] {
