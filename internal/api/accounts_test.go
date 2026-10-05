@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -110,6 +111,28 @@ func TestHandleCreateTask_Account(t *testing.T) {
 		got, _ := d.Get(resp["id"].(string))
 		testutil.Equal(t, got.Account, "")
 	})
+}
+
+// A creator failing with agent.ErrAccount (implicit-backend mismatch that only
+// CreateAndStart can see) must surface as 400, not 500.
+func TestHandleCreateTask_ErrAccountIs400(t *testing.T) {
+	dir := t.TempDir()
+	d, err := db.Open(filepath.Join(dir, "data.sql"))
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	creator := func(_, _, _, _, _, _, _ string, _ bool) (*model.Task, error) {
+		return nil, fmt.Errorf("%w: account %q does not support backend %q", agent.ErrAccount, "work", "x")
+	}
+	mux := New(d, agent.NewRunner(nil), "test-token", creator, nil).routes()
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("POST", "/api/tasks", `{"name":"a","prompt":"p","project":"proj"}`))
+	testutil.Equal(t, w.Code, http.StatusBadRequest)
+
+	other := func(_, _, _, _, _, _, _ string, _ bool) (*model.Task, error) { return nil, errors.New("boom") }
+	mux = New(d, agent.NewRunner(nil), "test-token", other, nil).routes()
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("POST", "/api/tasks", `{"name":"a","prompt":"p","project":"proj"}`))
+	testutil.Equal(t, w.Code, http.StatusInternalServerError)
 }
 
 func TestHandleForkTask_InheritsAccount(t *testing.T) {

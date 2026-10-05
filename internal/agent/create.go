@@ -51,9 +51,11 @@ type CreateInput struct {
 	SandboxOverride string
 
 	// Account optionally selects the account (config.Accounts name) for this
-	// task; empty resolves via project/global default. An unknown name, or one
-	// that does not support the resolved backend (config.AccountSupports), is
-	// rejected before any worktree is created.
+	// task; empty resolves via project/global default. An unknown name, or an
+	// explicit one that does not support the resolved backend
+	// (config.AccountSupports), is rejected before any worktree is created; a
+	// project/global-default-derived account that does not support it falls
+	// back to the default account with a log line.
 	Account string
 
 	// InheritedAccount marks Account as copied from a parent task (hera
@@ -124,6 +126,11 @@ type CreateInput struct {
 	AfterStart func()
 }
 
+// ErrAccount marks a task-creation failure caused by the requested account
+// (unknown, misconfigured, or unable to run the backend), so API callers can
+// answer 400 instead of 500.
+var ErrAccount = errors.New("account")
+
 // resolveTaskAccount resolves and validates the account for a new task on the
 // named backend. An explicit selection that cannot run the backend is an
 // error; an unsupported project/global default or inherited account falls
@@ -132,7 +139,7 @@ func resolveTaskAccount(cfg config.Config, input CreateInput, backend string) (s
 	explicit := strings.TrimSpace(input.Account)
 	account := cfg.ResolveAccount(explicit, input.Project)
 	if err := cfg.ValidateAccount(account); err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %w", ErrAccount, err)
 	}
 	command := cfg.Backends[backend].Command
 	if !cfg.AccountSupports(account, command) {
@@ -140,9 +147,9 @@ func resolveTaskAccount(cfg config.Config, input CreateInput, backend string) (s
 		// coordinator's worker on the default (work) login is the bug this guards.
 		if explicit != "" {
 			if input.InheritedAccount {
-				return "", fmt.Errorf("inherited account %q does not support backend %q (configure it for that tool or pin the backend)", account, backend)
+				return "", fmt.Errorf("%w: inherited account %q does not support backend %q (configure it for that tool or pin the backend)", ErrAccount, account, backend)
 			}
-			return "", fmt.Errorf("account %q does not support backend %q", account, backend)
+			return "", fmt.Errorf("%w: account %q does not support backend %q", ErrAccount, account, backend)
 		}
 		uxlog.Log("[account] create: default-derived account %q does not support backend %q, using default", account, backend)
 		return "", nil

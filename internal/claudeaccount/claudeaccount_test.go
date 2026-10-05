@@ -74,11 +74,21 @@ func TestCachedAuthStatus(t *testing.T) {
 	testutil.Equal(t, calls, 3)
 }
 
-func TestCachedAuthStatus_ErrorNotCached(t *testing.T) {
+func TestCachedAuthStatus_ErrorCachedBriefly(t *testing.T) {
 	calls := 0
 	stub(t, func(context.Context, string) ([]byte, error) { calls++; return nil, errors.New("x") })
+	now := time.Now()
+	oldNow := nowFunc
+	nowFunc = func() time.Time { return now }
+	t.Cleanup(func() { nowFunc = oldNow })
+
 	_, err := CachedAuthStatus(context.Background(), "/x")
 	testutil.Error(t, err)
+	_, err = CachedAuthStatus(context.Background(), "/x")
+	testutil.Error(t, err)
+	testutil.Equal(t, calls, 1)
+
+	now = now.Add(FailureTTL + time.Second)
 	_, _ = CachedAuthStatus(context.Background(), "/x")
 	testutil.Equal(t, calls, 2)
 }

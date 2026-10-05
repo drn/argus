@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -101,7 +102,7 @@ var codexLoginCmd = func(ctx context.Context, codexHome string) *exec.Cmd {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
-		if name == "CODEX_HOME" {
+		if name == "CODEX_HOME" || slices.Contains(codexAuthOverrideEnv, name) {
 			continue
 		}
 		env = append(env, kv)

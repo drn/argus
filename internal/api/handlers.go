@@ -387,7 +387,11 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 
 	task, err := s.createTask(name, req.Prompt, req.Project, req.Backend, req.Model, req.SandboxOverride, req.Account, autoName)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "", err)
+		status := http.StatusInternalServerError
+		if errors.Is(err, agent.ErrAccount) {
+			status = http.StatusBadRequest
+		}
+		writeErr(w, status, "", err)
 		return
 	}
 
@@ -464,7 +468,11 @@ func (s *Server) handleCreateTaskMultipart(w http.ResponseWriter, r *http.Reques
 	})
 	if err != nil {
 		uxlog.Log("[uploads] create task failed name=%q project=%q files=%d err=%v", name, project, len(atts), err)
-		writeErr(w, http.StatusInternalServerError, "", err)
+		status := http.StatusInternalServerError
+		if errors.Is(err, agent.ErrAccount) {
+			status = http.StatusBadRequest
+		}
+		writeErr(w, status, "", err)
 		return
 	}
 

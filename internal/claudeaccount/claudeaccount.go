@@ -100,6 +100,7 @@ func AuthStatus(ctx context.Context, dir string) (Status, error) {
 type cacheEntry struct {
 	status Status
 	at     time.Time
+	err    error
 }
 
 var (
@@ -107,24 +108,35 @@ var (
 	cache   = map[string]cacheEntry{}
 )
 
+// FailureTTL bounds how long CachedAuthStatus remembers a failed probe, so a
+// broken account does not re-spawn `claude auth status` on every request.
+const FailureTTL = 10 * time.Second
+
 // CachedAuthStatus is AuthStatus with a short in-memory TTL keyed by dir.
-// Failures are not cached.
+// Successes are cached for CacheTTL, failures for the shorter FailureTTL.
 func CachedAuthStatus(ctx context.Context, dir string) (Status, error) {
 	cacheMu.Lock()
-	if e, ok := cache[dir]; ok && nowFunc().Sub(e.at) < CacheTTL {
-		cacheMu.Unlock()
-		return e.status, nil
+	if e, ok := cache[dir]; ok {
+		age := nowFunc().Sub(e.at)
+		if e.err != nil && age < FailureTTL {
+			cacheMu.Unlock()
+			return Status{}, e.err
+		}
+		if e.err == nil && age < CacheTTL {
+			cacheMu.Unlock()
+			return e.status, nil
+		}
 	}
 	cacheMu.Unlock()
 
 	st, err := AuthStatus(ctx, dir)
+	cacheMu.Lock()
+	cache[dir] = cacheEntry{status: st, at: nowFunc(), err: err}
+	cacheMu.Unlock()
 	if err != nil {
 		uxlog.Log("[account] auth status failed for %s: %v", dir, err)
 		return Status{}, err
 	}
-	cacheMu.Lock()
-	cache[dir] = cacheEntry{status: st, at: nowFunc()}
-	cacheMu.Unlock()
 	return st, nil
 }
 

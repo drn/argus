@@ -57,8 +57,8 @@ type TaskCreateInput struct {
 	Account string
 
 	// InheritedAccount marks Account as copied from the calling task rather
-	// than chosen explicitly, so an account that cannot run the backend falls
-	// back to the default instead of failing (agent.CreateInput.InheritedAccount).
+	// than chosen explicitly; an account that cannot run the backend fails the
+	// call instead of falling back (agent.CreateInput.InheritedAccount).
 	InheritedAccount bool
 }
 

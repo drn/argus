@@ -116,7 +116,7 @@ const (
 	//     drops an inherited CLAUDE_CONFIG_DIR. A Codex task on an explicit
 	//     account builds its Argus CODEX_HOME overlay from the account's
 	//     codex_home (CODEX_SQLITE_HOME pointed there too), grants that home in
-	//     the sandbox, and strips inherited OPENAI_API_KEY / CODEX_API_KEY. An
+	//     the sandbox, and strips inherited OPENAI_API_KEY / CODEX_API_KEY. The settings.json seed also omits login-bound keys (forceLogin*, aws*, otel helper), inherit entry names match case-insensitively, and account dirs inside ~/.ssh, ~/.argus, ~/.aws, ~/.gnupg, ~/.kube or ~/Library are rejected. An
 	//     unknown stored account now refuses to spawn.
 	SupervisorSpawnSurface = 15
 
@@ -355,7 +355,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "b3df63db7cef50c643baed60aafd55bb98d7a4feb8676770653f2fff1861144c"
+	SpawnSurfaceDigest  = "50e38e1c0956bf468780fa275231cc32d22c43d50714ddb1629baf06cc21d07a"
 	StreamSurfaceDigest = "0ffc0d6ff25555cf5ebc65f3d702dfe7a7d24c965224db1773e1e71aabfe5c1b"
 )
 

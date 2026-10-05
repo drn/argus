@@ -590,7 +590,7 @@ An account needs at least one of `claude_config_dir` / `codex_home`. Paths must 
 | What | Per account |
 |------|-------------|
 | `CLAUDE.md`, `skills/`, `commands/`, `agents/` | **Shared.** Symlinked from `~/.claude` the first time the account is used (change the list with `inherit`). |
-| `settings.json` | **Copied once** from `~/.claude/settings.json`, then separate. `apiKeyHelper` and the whole `env` block are left out of the copy: `apiKeyHelper` and Anthropic auth vars would override the account's login, and `env` can hold other secrets that must not be duplicated. An existing file is never overwritten, so later changes to `~/.claude/settings.json` don't reach the account. |
+| `settings.json` | **Copied once** from `~/.claude/settings.json`, then separate. `apiKeyHelper`, `forceLoginMethod`, `forceLoginOrgUUID`, `awsAuthRefresh`, `awsCredentialExport`, `otelHeadersHelper` and the whole `env` block are left out of the copy: they are tied to the default login or run credential-fetching commands (and would override or break the account's own login), and `env` can hold other secrets that must not be duplicated. An existing file is never overwritten, so later changes to `~/.claude/settings.json` don't reach the account. |
 | Login, `.claude.json`, `projects/` (transcripts), `plugins/` | **Separate.** Never linked or copied. |
 | Codex home | **Separate.** Created empty (mode `0700`); nothing is copied from `~/.codex`. Argus's builtin skills reach it through a per-account overlay. |
 | Argus MCP server | Same for every account. It is passed as a launch flag; nothing is written into an account's config. |

@@ -194,7 +194,7 @@ func TestAccountNames(t *testing.T) {
 }
 
 func TestNeverInheritClaude(t *testing.T) {
-	for _, n := range []string{".claude.json", "projects", "plugins", ".credentials.json"} {
+	for _, n := range []string{".claude.json", "projects", "plugins", ".credentials.json", "Projects", "PLUGINS", ".Claude.json", ".CREDENTIALS.json"} {
 		testutil.True(t, NeverInheritClaude(n))
 	}
 	for _, n := range DefaultClaudeInherit() {
@@ -255,6 +255,9 @@ func TestValidateAccount_UnsafeDirs(t *testing.T) {
 		{"home itself", Account{ClaudeConfigDir: "~"}, "dedicated directory"},
 		{"filesystem root", Account{CodexHome: "/"}, "dedicated directory"},
 		{"ancestor of home", Account{ClaudeConfigDir: filepath.Dir(home)}, "dedicated directory"},
+		{"inside ssh", Account{ClaudeConfigDir: "~/.ssh/claude"}, "must not be inside"},
+		{"argus data dir", Account{CodexHome: "~/.argus"}, "must not be inside"},
+		{"library", Account{ClaudeConfigDir: "~/Library/Application Support/x"}, "must not be inside"},
 		{"dedicated dir ok", Account{ClaudeConfigDir: "~/.claude-personal", CodexHome: "~/.codex-personal"}, ""},
 	}
 	for _, tc := range cases {

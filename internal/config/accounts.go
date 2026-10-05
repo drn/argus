@@ -34,11 +34,13 @@ func DefaultClaudeInherit() []string {
 
 // NeverInheritClaude are entries that must never be symlinked between accounts.
 func NeverInheritClaude(name string) bool {
-	switch name {
+	// Lower-cased: default APFS is case-insensitive, so "Projects" is the real dir.
+	lower := strings.ToLower(name)
+	switch lower {
 	case ".claude.json", "projects", "plugins":
 		return true
 	}
-	return strings.HasPrefix(name, ".credentials")
+	return strings.HasPrefix(lower, ".credentials")
 }
 
 // ExpandHome expands a leading "~" or "~/" using the user's home directory.
@@ -125,6 +127,13 @@ func checkAccountDirSafe(name, key, raw, toolDefault string) error {
 	home = filepath.Clean(home)
 	if dir == home || dir == string(filepath.Separator) || strings.HasPrefix(home, dir+string(filepath.Separator)) {
 		return fmt.Errorf("account %q: %s must be a dedicated directory, not %s", name, key, dir)
+	}
+	// The dir is granted sandbox write access, so never a place holding other secrets or Argus state.
+	for _, sensitive := range []string{".ssh", ".argus", ".aws", ".gnupg", ".kube", "Library"} {
+		root := filepath.Join(home, sensitive)
+		if dir == root || strings.HasPrefix(dir, root+string(filepath.Separator)) {
+			return fmt.Errorf("account %q: %s must not be inside ~/%s", name, key, sensitive)
+		}
 	}
 	return nil
 }

@@ -411,6 +411,13 @@ func TestCodexLoginStatus(t *testing.T) {
 		_, err := codexLoginStatus(ctx, filepath.Join(t.TempDir(), "y"))
 		testutil.Error(t, err)
 	})
+	t.Run("real command strips inherited API keys", func(t *testing.T) {
+		t.Setenv("OPENAI_API_KEY", "k1")
+		t.Setenv("CODEX_API_KEY", "k2")
+		for _, kv := range codexLoginCmd(context.Background(), acct).Env {
+			testutil.False(t, strings.HasPrefix(kv, "OPENAI_API_KEY=") || strings.HasPrefix(kv, "CODEX_API_KEY="))
+		}
+	})
 	t.Run("real command sets CODEX_HOME and drops inherited one", func(t *testing.T) {
 		t.Setenv("CODEX_HOME", "/inherited")
 		cmd := codexLoginCmd(context.Background(), acct)

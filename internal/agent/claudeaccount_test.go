@@ -176,7 +176,7 @@ func TestBootstrapClaudeConfigDir_SeedsSettings(t *testing.T) {
 
 	t.Run("drops auth overrides and the whole env block", func(t *testing.T) {
 		src := seedDefaultClaude(t)
-		raw := `{"apiKeyHelper":"helper.sh","theme":"dark","env":{"ANTHROPIC_API_KEY":"x","CLAUDE_CODE_OAUTH_TOKEN":"y","FOO":"bar"}}`
+		raw := `{"apiKeyHelper":"helper.sh","forceLoginOrgUUID":"u","forceLoginMethod":"claudeai","awsAuthRefresh":"x","awsCredentialExport":"y","otelHeadersHelper":"z","theme":"dark","env":{"ANTHROPIC_API_KEY":"x","FOO":"bar"}}`
 		testutil.NoError(t, os.WriteFile(filepath.Join(src, "settings.json"), []byte(raw), 0o644))
 		dir := filepath.Join(t.TempDir(), "acct")
 		testutil.NoError(t, BootstrapClaudeConfigDir(dir, nil))

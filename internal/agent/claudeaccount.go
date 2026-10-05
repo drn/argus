@@ -23,6 +23,14 @@ const claudeSettingsFile = "settings.json"
 // the task's explicit account.
 var claudeAuthOverrideEnv = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}
 
+// claudeSettingsAccountKeys are settings.json keys bound to the default login or
+// able to run credential-fetching commands, so they are never copied into
+// another account's dir. env is dropped whole because it can carry any secret.
+var claudeSettingsAccountKeys = []string{
+	"apiKeyHelper", "env", "forceLoginMethod", "forceLoginOrgUUID",
+	"awsAuthRefresh", "awsCredentialExport", "otelHeadersHelper",
+}
+
 // BootstrapClaudeConfigDir creates dir (0700), symlinks each inherit entry
 // that exists in Claude's default config dir into it, and seeds a one-time
 // copy of the default settings.json. A nil inherit uses
@@ -64,8 +72,8 @@ func BootstrapClaudeConfigDir(dir string, inherit []string) error {
 // settings.json entry of any kind. A copy (not a symlink) keeps Claude's own
 // settings writes inside the account; O_EXCL refuses an existing path,
 // including a symlink, so nothing is ever overwritten or written through.
-// Auth overrides (apiKeyHelper, credential env entries) are dropped so the
-// copy cannot outrank the account's own /login.
+// Login-bound and credential-fetching keys (claudeSettingsAccountKeys) are
+// dropped so the copy cannot outrank or break the account's own /login.
 func seedClaudeSettings(src, dir string) error {
 	to := filepath.Join(dir, claudeSettingsFile)
 	if _, err := os.Lstat(to); err == nil {
@@ -112,15 +120,11 @@ func stripClaudeSettingsAuth(raw []byte) (out []byte, dropped []string, err erro
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, nil, err
 	}
-	if _, ok := doc["apiKeyHelper"]; ok {
-		delete(doc, "apiKeyHelper")
-		dropped = append(dropped, "apiKeyHelper")
-	}
-	// The env block can carry arbitrary secrets (not just Anthropic auth), so it
-	// is never copied into another account's dir.
-	if _, ok := doc["env"]; ok {
-		delete(doc, "env")
-		dropped = append(dropped, "env")
+	for _, k := range claudeSettingsAccountKeys {
+		if _, ok := doc[k]; ok {
+			delete(doc, k)
+			dropped = append(dropped, k)
+		}
 	}
 	if len(dropped) == 0 {
 		return raw, nil, nil

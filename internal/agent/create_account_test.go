@@ -133,8 +133,10 @@ func TestResolveOrchestratorAccount(t *testing.T) {
 	repo := initGitRepo(t)
 	d := createTestDB(t, repo)
 
-	t.Run("lookup miss", func(t *testing.T) {
-		testutil.Equal(t, resolveOrchestratorAccount(d, 999999), "")
+	t.Run("no coordinator to inherit from", func(t *testing.T) {
+		got, err := resolveOrchestratorAccount(d, 999999)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, "")
 	})
 
 	t.Run("coordinator account inherited", func(t *testing.T) {
@@ -147,7 +149,29 @@ func TestResolveOrchestratorAccount(t *testing.T) {
 			ArgusProject: "proj", Prompt: "x",
 		}, task.ID, "")
 		testutil.NoError(t, err)
-		testutil.Equal(t, resolveOrchestratorAccount(d, orch.ID), "work")
+		got, err := resolveOrchestratorAccount(d, orch.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, "work")
+
+		binding, err := d.HeraLiveBindingByTask(task.ID)
+		testutil.NoError(t, err)
+		testutil.NoError(t, d.EndHeraBinding(binding.ID, "test"))
+		got, err = resolveOrchestratorAccount(d, orch.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, "work")
+	})
+
+	t.Run("unreadable coordinator task fails instead of falling back", func(t *testing.T) {
+		orch, err := d.CreateHeraOrchestrator("ghost-orch", "")
+		testutil.NoError(t, err)
+		_, _, err = d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+			OrchestratorID: orch.ID, Name: "gcoord", Kind: db.HeraKindCoordinator,
+			ArgusProject: "proj", Prompt: "x",
+		}, "no-such-task", "")
+		testutil.NoError(t, err)
+		_, err = resolveOrchestratorAccount(d, orch.ID)
+		testutil.Error(t, err)
+		testutil.Contains(t, err.Error(), "no readable coordinator task")
 	})
 
 	t.Run("default-account coordinator pins default", func(t *testing.T) {
@@ -160,7 +184,9 @@ func TestResolveOrchestratorAccount(t *testing.T) {
 			ArgusProject: "proj", Prompt: "x",
 		}, task.ID, "")
 		testutil.NoError(t, err)
-		testutil.Equal(t, resolveOrchestratorAccount(d, orch.ID), "default")
+		got, err := resolveOrchestratorAccount(d, orch.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, "default")
 	})
 }
 
