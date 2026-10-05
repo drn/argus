@@ -27,6 +27,7 @@ func (d *DB) createTables() error {
 			archetype   TEXT NOT NULL DEFAULT '',
 			profile     TEXT NOT NULL DEFAULT '',
 			sandbox_override TEXT NOT NULL DEFAULT '',
+			account TEXT NOT NULL DEFAULT '',
 			created_at  TEXT NOT NULL,
 			started_at  TEXT NOT NULL DEFAULT '',
 			ended_at    TEXT NOT NULL DEFAULT ''
@@ -121,6 +122,10 @@ func (d *DB) createTables() error {
 	// Consulted by agent.ResolveSandboxConfig ahead of the project/global
 	// setting; existing rows read '' (no override, unchanged behavior).
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN sandbox_override TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+
+	// account (add-agent-accounts): the account the task runs under; '' =
+	// default (~/.claude, ~/.codex). Set at creation, never re-resolved.
+	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN account TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 
 	// Index for FindByNameProject (task_create idempotency check inside
 	// createMu). The query filters by all three columns; SQLite uses a

@@ -392,3 +392,45 @@ func TestReadFrontmatterField_BlockScalarCappedAtMaxBytes(t *testing.T) {
 	testutil.True(t, len(got) > 0)
 	testutil.True(t, len(got) < lineCount*len(longLine))
 }
+
+func TestLoadSkillsFrom_ReadsAccountDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mk := func(root, name string) {
+		d := filepath.Join(root, "skills", name)
+		testutil.NoError(t, os.MkdirAll(d, 0o755))
+		testutil.NoError(t, os.WriteFile(filepath.Join(d, "SKILL.md"), []byte("---\ndescription: x\n---\n"), 0o644))
+	}
+	acct := filepath.Join(home, "acct")
+	mk(filepath.Join(home, ".claude"), "default-skill")
+	mk(acct, "acct-skill")
+
+	items := LoadSkillsFrom(acct, nil)
+	testutil.Equal(t, len(items), 1)
+	testutil.Equal(t, items[0].Name, "acct-skill")
+
+	def := LoadSkillsFrom("", nil)
+	testutil.Equal(t, len(def), 1)
+	testutil.Equal(t, def[0].Name, "default-skill")
+}
+
+func TestLoadSkillsFrom_PluginManifestFromAccountDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	acct := filepath.Join(home, "acct")
+	plug := filepath.Join(home, "plug")
+	testutil.NoError(t, os.MkdirAll(filepath.Join(plug, "commands"), 0o755))
+	testutil.NoError(t, os.WriteFile(filepath.Join(plug, "commands", "hello.md"), []byte("---\ndescription: hi\n---\n"), 0o644))
+	testutil.NoError(t, os.MkdirAll(filepath.Join(acct, "plugins"), 0o755))
+	manifest := map[string]any{"plugins": map[string]any{"acme@mk": []map[string]string{{"installPath": plug}}}}
+	raw, err := json.Marshal(manifest)
+	testutil.NoError(t, err)
+	testutil.NoError(t, os.WriteFile(filepath.Join(acct, "plugins", "installed_plugins.json"), raw, 0o644))
+
+	var names []string
+	for _, it := range LoadSkillsFrom(acct, nil) {
+		names = append(names, it.Name)
+	}
+	testutil.DeepEqual(t, names, []string{"acme:hello"})
+	testutil.Equal(t, len(LoadSkillsFrom("", nil)), 0)
+}

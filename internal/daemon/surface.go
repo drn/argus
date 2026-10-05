@@ -108,7 +108,17 @@ const (
 	//     regardless of this resolution (resolveCoordinatorBackend) and the old
 	//     [hera.worker_budget] one-way Claude→codex fallback for hera worker
 	//     spawn was retired in favor of the same shared tier list.
-	SupervisorSpawnSurface = 14
+	//   - v15: per-task accounts (add-agent-accounts). A Claude task on an
+	//     explicit account spawns with CLAUDE_CONFIG_DIR=<account dir> (the dir
+	//     bootstrapped with inherited links and a one-time settings.json copy),
+	//     that dir granted in the sandbox, and inherited ANTHROPIC_API_KEY /
+	//     ANTHROPIC_AUTH_TOKEN / CLAUDE_CODE_OAUTH_TOKEN stripped; every spawn
+	//     drops an inherited CLAUDE_CONFIG_DIR. A Codex task on an explicit
+	//     account builds its Argus CODEX_HOME overlay from the account's
+	//     codex_home (CODEX_SQLITE_HOME pointed there too), grants that home in
+	//     the sandbox, and strips inherited OPENAI_API_KEY / CODEX_API_KEY. An
+	//     unknown stored account now refuses to spawn.
+	SupervisorSpawnSurface = 15
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -133,7 +143,12 @@ const (
 	//     running in the background" guard (reap-background-session-on-resume).
 	//     A stale supervisor lacks the pre-launch reap, so the resume still
 	//     fails there until the supervisor is bounced.
-	SupervisorStreamSurface = 5
+	//   - v6: the Claude background-session reap (Runner.Stop's orphan reap and
+	//     the pre-resume reap) runs `claude agents`/`claude stop` under the
+	//     session's own CLAUDE_CONFIG_DIR, since Claude scopes that registry per
+	//     config dir (add-agent-accounts). A stale supervisor reaps only the
+	//     default account's registry, missing explicit-account orphans.
+	SupervisorStreamSurface = 6
 )
 
 // SurfaceVersion is a supervisor's declared executed-surface identity: the pair
@@ -288,6 +303,9 @@ func CompareSupervisorSurface(reported SurfaceVersion) SurfaceSkew {
 // version is guarded against.
 var SupervisorSpawnPaths = []string{
 	"internal/agent/agent.go",             // BuildCmd: argv, env, dir, cache-dir redirection
+	"internal/agent/claudeaccount.go",     // per-task account dir bootstrap, env hygiene, sandbox grant
+	"internal/agent/codexaccount.go",      // per-task Codex home, env hygiene, sandbox grant
+	"internal/config/accounts.go",         // account → config dir resolution BuildCmd reads
 	"internal/agent/nonclaude_context.go", // OpenCode child-only skills config content
 	"internal/agent/prelaunch.go",         // backend prelaunch (pi/ollama) run before the fork
 	"internal/agent/routing_prompt.go",    // --append-system-prompt-file routing injection
@@ -307,13 +325,15 @@ var SupervisorSpawnPaths = []string{
 // to it is far more likely to reach a running agent than not. Classifying an
 // ambiguous file as STREAM is the safe direction.
 var SupervisorStreamPaths = []string{
-	"internal/agent/ringbuffer.go",     // the ring the sole readLoop tees into
-	"internal/agent/runner.go",         // live session map, pendingRestart, Stop/StopAll, KickRerender
-	"internal/agent/session.go",        // the single readLoop: PTY read → ring + writers, session log
-	"internal/agent/terminal_color.go", // PTY startup OSC color-query replies and duplicate filtering
-	"internal/agent/sessionsize.go",    // the PTY-size sidecar session.go writes on resize
-	"internal/daemon/sessioncore.go",   // the R/S handlers both daemon and supervisor mount
-	"internal/daemon/supervisor.go",    // the supervisor process itself: Hello, exit caching, serve loop
+	"internal/agent/bgsessionreap.go",       // Claude background-session reap on Stop and before resume
+	"internal/agent/ringbuffer.go",          // the ring the sole readLoop tees into
+	"internal/claudeagents/claudeagents.go", // `claude agents`/`claude stop` under the session's config dir
+	"internal/agent/runner.go",              // live session map, pendingRestart, Stop/StopAll, KickRerender
+	"internal/agent/session.go",             // the single readLoop: PTY read → ring + writers, session log
+	"internal/agent/terminal_color.go",      // PTY startup OSC color-query replies and duplicate filtering
+	"internal/agent/sessionsize.go",         // the PTY-size sidecar session.go writes on resize
+	"internal/daemon/sessioncore.go",        // the R/S handlers both daemon and supervisor mount
+	"internal/daemon/supervisor.go",         // the supervisor process itself: Hello, exit caching, serve loop
 }
 
 // SpawnSurfaceDigest and StreamSurfaceDigest are the recorded SHA-256 of each
@@ -335,8 +355,8 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "c5cf242739546675f280142631f20d38459c3ef7d664a01b8874e0ca7b1e55f8"
-	StreamSurfaceDigest = "e75078949d93c9bf1a1e4be08ab0a894a3280391ebc10696c6c19ada97c681a0"
+	SpawnSurfaceDigest  = "b3df63db7cef50c643baed60aafd55bb98d7a4feb8676770653f2fff1861144c"
+	StreamSurfaceDigest = "0ffc0d6ff25555cf5ebc65f3d702dfe7a7d24c965224db1773e1e71aabfe5c1b"
 )
 
 // SurfaceDigest computes the SHA-256 over the declared manifest's file contents,

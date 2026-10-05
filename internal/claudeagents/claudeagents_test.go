@@ -23,18 +23,18 @@ func TestSession_Backgrounded(t *testing.T) {
 
 func TestList_NoClaude(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	_, err := List(context.Background(), "/some/worktree")
+	_, err := List(context.Background(), "/some/worktree", "")
 	testutil.ErrorIs(t, err, ErrUnavailable)
 }
 
 func TestStop_NoClaude(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	err := Stop(context.Background(), "abc123")
+	err := Stop(context.Background(), "abc123", "")
 	testutil.ErrorIs(t, err, ErrUnavailable)
 }
 
 func TestStop_EmptyID(t *testing.T) {
-	err := Stop(context.Background(), "   ")
+	err := Stop(context.Background(), "   ", "")
 	if err == nil {
 		t.Fatal("want error for empty id, got nil")
 	}
@@ -66,7 +66,7 @@ func setupFakeClaude(t *testing.T, stdout, stderr string, exitCode int, captureA
 
 	prev := cmdFactory
 	t.Cleanup(func() { cmdFactory = prev })
-	cmdFactory = func(ctx context.Context, args ...string) *exec.Cmd {
+	cmdFactory = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
 		if captureArgs != nil {
 			*captureArgs = args
 		}
@@ -96,7 +96,7 @@ func itoa(n int) string {
 func TestList_ParsesInteractiveOnly(t *testing.T) {
 	setupFakeClaude(t, `[{"pid":6671,"cwd":"/x","kind":"interactive","startedAt":1,"sessionId":"abc","name":"n","status":"busy"}]`, "", 0, nil)
 
-	sessions, err := List(context.Background(), "/x")
+	sessions, err := List(context.Background(), "/x", "")
 	testutil.NoError(t, err)
 	testutil.Equal(t, len(sessions), 1)
 	testutil.Equal(t, sessions[0].Kind, "interactive")
@@ -111,7 +111,7 @@ func TestList_ParsesMixedInteractiveAndBackground(t *testing.T) {
 		{"cwd":"/x","kind":"background","startedAt":3,"id":"short2","state":"done"}
 	]`, "", 0, nil)
 
-	sessions, err := List(context.Background(), "/x")
+	sessions, err := List(context.Background(), "/x", "")
 	testutil.NoError(t, err)
 	testutil.Equal(t, len(sessions), 3)
 
@@ -128,7 +128,7 @@ func TestList_ParsesMixedInteractiveAndBackground(t *testing.T) {
 func TestList_MalformedJSON(t *testing.T) {
 	setupFakeClaude(t, `not json`, "", 0, nil)
 
-	_, err := List(context.Background(), "/x")
+	_, err := List(context.Background(), "/x", "")
 	if err == nil {
 		t.Fatal("want parse error, got nil")
 	}
@@ -137,7 +137,7 @@ func TestList_MalformedJSON(t *testing.T) {
 func TestList_NonZeroExit(t *testing.T) {
 	setupFakeClaude(t, "", "boom", 1, nil)
 
-	_, err := List(context.Background(), "/x")
+	_, err := List(context.Background(), "/x", "")
 	if err == nil {
 		t.Fatal("want error, got nil")
 	}
@@ -147,7 +147,7 @@ func TestList_PassesCwdFlag(t *testing.T) {
 	var args []string
 	setupFakeClaude(t, `[]`, "", 0, &args)
 
-	_, err := List(context.Background(), "/my/worktree")
+	_, err := List(context.Background(), "/my/worktree", "")
 	testutil.NoError(t, err)
 
 	testutil.DeepEqual(t, args, []string{"agents", "--json", "--cwd", "/my/worktree"})
@@ -157,7 +157,7 @@ func TestList_OmitsCwdFlagWhenEmpty(t *testing.T) {
 	var args []string
 	setupFakeClaude(t, `[]`, "", 0, &args)
 
-	_, err := List(context.Background(), "")
+	_, err := List(context.Background(), "", "")
 	testutil.NoError(t, err)
 
 	testutil.DeepEqual(t, args, []string{"agents", "--json"})
@@ -167,7 +167,7 @@ func TestStop_Success(t *testing.T) {
 	var args []string
 	setupFakeClaude(t, "stopped", "", 0, &args)
 
-	err := Stop(context.Background(), "short1")
+	err := Stop(context.Background(), "short1", "")
 	testutil.NoError(t, err)
 	testutil.DeepEqual(t, args, []string{"stop", "short1"})
 }
@@ -175,9 +175,44 @@ func TestStop_Success(t *testing.T) {
 func TestStop_NoJobMatching(t *testing.T) {
 	setupFakeClaude(t, "No job matching 'abc-uuid'", "", 1, nil)
 
-	err := Stop(context.Background(), "abc-uuid")
+	err := Stop(context.Background(), "abc-uuid", "")
 	if err == nil {
 		t.Fatal("want error, got nil")
 	}
 	testutil.Contains(t, err.Error(), "No job matching")
+}
+
+func TestEnv(t *testing.T) {
+	base := []string{"PATH=/bin", "CLAUDE_CONFIG_DIR=/inherited", "HOME=/h"}
+	t.Run("explicit dir replaces inherited", func(t *testing.T) {
+		testutil.DeepEqual(t, Env(base, "/acct"), []string{"PATH=/bin", "HOME=/h", "CLAUDE_CONFIG_DIR=/acct"})
+	})
+	t.Run("default strips inherited", func(t *testing.T) {
+		testutil.DeepEqual(t, Env(base, ""), []string{"PATH=/bin", "HOME=/h"})
+	})
+}
+
+// TestList_RunsUnderConfigDir drives the real cmdFactory against a fake claude
+// that reports its CLAUDE_CONFIG_DIR, proving the account dir reaches the CLI.
+func TestList_RunsUnderConfigDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script not portable on Windows")
+	}
+	tmp := t.TempDir()
+	script := "#!/bin/sh\nprintf '[{\"cwd\":\"%s\",\"kind\":\"background\"}]' \"$CLAUDE_CONFIG_DIR\"\n"
+	testutil.NoError(t, os.WriteFile(tmp+"/claude", []byte(script), 0o755)) //nolint:gosec // test fixture, needs +x
+	t.Setenv("PATH", tmp+":/bin:/usr/bin")
+	t.Setenv("CLAUDE_CONFIG_DIR", "/inherited")
+
+	for _, tc := range []struct{ name, dir, want string }{
+		{"account", "/acct/work", "/acct/work"},
+		{"default", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sessions, err := List(context.Background(), "", tc.dir)
+			testutil.NoError(t, err)
+			testutil.Equal(t, len(sessions), 1)
+			testutil.Equal(t, sessions[0].CWD, tc.want)
+		})
+	}
 }

@@ -9,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // Attachment is a user-uploaded file to be written into the worktree before
@@ -47,6 +49,16 @@ type CreateInput struct {
 	// setting), "enabled" (force sandboxed), "disabled" (force unsandboxed).
 	// Consulted by ResolveSandboxConfig ahead of task.Sandboxed resolution below.
 	SandboxOverride string
+
+	// Account optionally selects the account (config.Accounts name) for this
+	// task; empty resolves via project/global default. An unknown name, or one
+	// that does not support the resolved backend (config.AccountSupports), is
+	// rejected before any worktree is created.
+	Account string
+
+	// InheritedAccount marks Account as copied from a parent task (hera
+	// coordinator, MCP caller) so an unsupported backend error names it.
+	InheritedAccount bool
 
 	// AutoName, when true, fires a fire-and-forget Haiku rename in a
 	// background goroutine after the task is fully created. The DB write
@@ -112,6 +124,35 @@ type CreateInput struct {
 	AfterStart func()
 }
 
+// resolveTaskAccount resolves and validates the account for a new task on the
+// named backend. An explicit selection that cannot run the backend is an
+// error; an unsupported project/global default or inherited account falls
+// back to the default account. Returns "" for the default account.
+func resolveTaskAccount(cfg config.Config, input CreateInput, backend string) (string, error) {
+	explicit := strings.TrimSpace(input.Account)
+	account := cfg.ResolveAccount(explicit, input.Project)
+	if err := cfg.ValidateAccount(account); err != nil {
+		return "", err
+	}
+	command := cfg.Backends[backend].Command
+	if !cfg.AccountSupports(account, command) {
+		// Explicit and inherited picks fail loudly: silently running a personal
+		// coordinator's worker on the default (work) login is the bug this guards.
+		if explicit != "" {
+			if input.InheritedAccount {
+				return "", fmt.Errorf("inherited account %q does not support backend %q (configure it for that tool or pin the backend)", account, backend)
+			}
+			return "", fmt.Errorf("account %q does not support backend %q", account, backend)
+		}
+		uxlog.Log("[account] create: default-derived account %q does not support backend %q, using default", account, backend)
+		return "", nil
+	}
+	if account == config.DefaultAccountName {
+		return "", nil
+	}
+	return account, nil
+}
+
 // CreateAndStart is the single entry point for fully-transactional task
 // creation. It performs, in order: resolve project config, create worktree,
 // run OnWorktreeCreated hook, persist task row, generate session ID, and
@@ -134,6 +175,14 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 	}
 	if projCfg.Path == "" {
 		return nil, nil, fmt.Errorf("project %q has no path configured", input.Project)
+	}
+
+	// Resolve the backend and account before any side effect so a bad account
+	// never leaves a worktree behind. "default" is stored as "".
+	backend := resolveDefaultBackendName(input.Backend, input.Project, cfg)
+	account, err := resolveTaskAccount(cfg, input, backend)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	// Compensating-action stack: each successful side effect appends an undo
@@ -206,7 +255,6 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 	// — rather than blindly stamping cfg.Defaults.Backend, which previously
 	// made both the project-level override and the tier list unreachable for
 	// any task created with no explicit backend.
-	backend := resolveDefaultBackendName(input.Backend, input.Project, cfg)
 	task := &model.Task{
 		Name:            finalName,
 		Status:          model.StatusPending,
@@ -220,6 +268,7 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		Branch:          branchName,
 		BaseBranch:      baseBranch,
 		SandboxOverride: strings.TrimSpace(input.SandboxOverride),
+		Account:         account,
 	}
 	// Persist sandbox state at creation time so the display reflects the
 	// setting active when the task was launched, not the current setting.

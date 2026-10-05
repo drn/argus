@@ -87,6 +87,16 @@ func TestHandleUpdateTaskRaw(t *testing.T) {
 		testutil.Equal(t, got.Status, model.StatusInReview)
 	})
 
+	t.Run("account is immutable", func(t *testing.T) {
+		testutil.NoError(t, d.Add(&model.Task{ID: "t2", Name: "beta", Status: model.StatusInProgress, Project: "p", Account: "personal"}))
+		body := `{"id":"t2","name":"beta","status":"in_progress","project":"p","account":"work","branch":"","prompt":"","created_at":"2026-05-22T00:00:00Z"}`
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, masterReq("PUT", "/api/tasks/t2/raw", body))
+		testutil.Equal(t, w.Code, http.StatusOK)
+		got, _ := d.Get("t2")
+		testutil.Equal(t, got.Account, "personal")
+	})
+
 	t.Run("device token also applies the update", func(t *testing.T) {
 		body := `{"id":"t1","name":"viadevice","status":"in_review","project":"p","branch":"","prompt":"","created_at":"2026-05-22T00:00:00Z"}`
 		w := httptest.NewRecorder()

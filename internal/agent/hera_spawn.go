@@ -124,6 +124,43 @@ func resolveOrchestratorBranchNamespace(database *db.DB, orchestratorID int64) s
 	return orch.Name
 }
 
+// resolveOrchestratorAccount returns the account of the
+// orchestrator's coordinator task so spawned workers stay on the same account
+// (a personal-account coordinator must not fan out onto the work account).
+// A default-account coordinator yields "default", not "", so its workers are
+// pinned to it rather than falling through to a project/global default.
+// Fail-open: any lookup miss returns "" and normal resolution applies.
+func resolveOrchestratorAccount(database *db.DB, orchestratorID int64) string {
+	coords, err := database.ListHeraRolesByKind(orchestratorID, db.HeraKindCoordinator)
+	if err != nil {
+		return ""
+	}
+	// Ended bindings count too: the plan-DAG gater can materialize a node after
+	// the coordinator's binding ended, and that must not drift to the project default.
+	for _, r := range coords {
+		bindings, err := database.ListHeraBindingsByRole(r.ID)
+		if err != nil {
+			continue
+		}
+		for _, b := range bindings {
+			if t, err := database.Get(b.ArgusTaskID); err == nil && t != nil {
+				return PinnedAccount(t.Account)
+			}
+		}
+	}
+	return ""
+}
+
+// PinnedAccount converts a stored task account into an explicit selection for
+// a task that inherits it (hera worker, fork): the default account is stored
+// as "", which as an input would mean "resolve the project/global default".
+func PinnedAccount(stored string) string {
+	if stored == "" {
+		return config.DefaultAccountName
+	}
+	return stored
+}
+
 // HeraWorkerSpawnResult is the success payload from SpawnHeraWorker.
 type HeraWorkerSpawnResult struct {
 	Task    *model.Task
@@ -163,16 +200,18 @@ func SpawnHeraWorker(database *db.DB, runner SessionProvider, in HeraWorkerSpawn
 	var role *db.HeraRole
 	var binding *db.HeraBinding
 	task, _, err := CreateAndStart(database, runner, CreateInput{
-		Name:            uniqueName,
-		Prompt:          in.TaskPrompt,
-		Project:         in.Project,
-		Backend:         in.Backend,
-		Model:           in.Model,
-		Archetype:       archetype,
-		Profile:         in.Profile,
-		BaseBranch:      in.Branch,
-		BranchNamespace: resolveOrchestratorBranchNamespace(database, in.OrchestratorID),
-		AutoName:        false, // name is the meaningful role slug — no Haiku rename
+		Name:             uniqueName,
+		Prompt:           in.TaskPrompt,
+		Project:          in.Project,
+		Backend:          in.Backend,
+		Model:            in.Model,
+		Archetype:        archetype,
+		Profile:          in.Profile,
+		BaseBranch:       in.Branch,
+		BranchNamespace:  resolveOrchestratorBranchNamespace(database, in.OrchestratorID),
+		Account:          resolveOrchestratorAccount(database, in.OrchestratorID),
+		InheritedAccount: true,
+		AutoName:         false, // name is the meaningful role slug — no Haiku rename
 		AfterPersist: func(t *model.Task) (func(), error) {
 			// Stamp meta:hera.role=worker BEFORE the session starts. Best-effort:
 			// a meta failure must not abort an otherwise-valid spawn.
@@ -250,10 +289,12 @@ func MaterializeHeraWorker(database *db.DB, runner SessionProvider, in HeraMater
 		Model:   in.Model,
 		// The planned role's authored archetype (add-diligence-profiles) propagates
 		// onto the materialized task; empty stays empty (resolution falls open).
-		Archetype:       in.Role.Archetype,
-		BaseBranch:      in.Branch,
-		BranchNamespace: resolveOrchestratorBranchNamespace(database, in.Role.OrchestratorID),
-		AutoName:        false, // name is the planner-assigned short-id slug — never rename
+		Archetype:        in.Role.Archetype,
+		BaseBranch:       in.Branch,
+		BranchNamespace:  resolveOrchestratorBranchNamespace(database, in.Role.OrchestratorID),
+		Account:          resolveOrchestratorAccount(database, in.Role.OrchestratorID),
+		InheritedAccount: true,
+		AutoName:         false, // name is the planner-assigned short-id slug — never rename
 		AfterPersist: func(t *model.Task) (func(), error) {
 			if mErr := database.SetMeta(t.ID, db.HeraMetaNamespace, db.HeraMetaKeyRole, string(db.HeraKindWorker)); mErr != nil {
 				slog.Warn("[hera] materialize: meta role stamp failed (continuing)", "task", t.ID, "err", mErr)
@@ -356,8 +397,10 @@ func MaterializeHeraSubCoordinator(database *db.DB, runner SessionProvider, in H
 		// orchestrator this call mints below doesn't exist yet at CreateWorktree
 		// time, so it couldn't be used even if it were the intended namespace
 		// (add-branch-namespacing D2).
-		BranchNamespace: resolveOrchestratorBranchNamespace(database, in.Role.OrchestratorID),
-		AutoName:        false, // name is the planner-assigned short-id slug — never rename
+		BranchNamespace:  resolveOrchestratorBranchNamespace(database, in.Role.OrchestratorID),
+		Account:          resolveOrchestratorAccount(database, in.Role.OrchestratorID),
+		InheritedAccount: true,
+		AutoName:         false, // name is the planner-assigned short-id slug — never rename
 		AfterPersist: func(t *model.Task) (func(), error) {
 			// The new task is a coordinator (of its own child orchestrator); rail
 			// rendering keys on meta:hera.role. Best-effort — a meta failure must not

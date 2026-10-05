@@ -82,6 +82,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("PUT /api/projects/{name}", s.handleUpdateProject)
 	mux.HandleFunc("DELETE /api/projects/{name}", s.handleDeleteProject)
 	mux.HandleFunc("GET /api/backends", s.handleListBackends)
+	mux.HandleFunc("GET /api/accounts", s.handleListAccounts)
 	mux.HandleFunc("POST /api/backends", s.handleCreateBackend)
 	mux.HandleFunc("PUT /api/backends/{name}", s.handleUpdateBackend)
 	mux.HandleFunc("DELETE /api/backends/{name}", s.handleDeleteBackend)

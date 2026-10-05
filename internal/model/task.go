@@ -44,15 +44,19 @@ type Task struct {
 	// Set once at agent.CreateAndStart spawn time; consulted by
 	// agent.ResolveSandboxConfig, which persists the resolved result on
 	// Sandboxed below — the override itself is never re-derived.
-	SandboxOverride string    `json:"sandbox_override,omitempty"`
-	Sandboxed       bool      `json:"sandboxed,omitempty"`
-	Archived        bool      `json:"archived,omitempty"`
-	Pinned          bool      `json:"pinned,omitempty"`
-	BaseBranch      string    `json:"base_branch,omitempty"`
-	Result          string    `json:"result,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-	StartedAt       time.Time `json:"started_at,omitempty"`
-	EndedAt         time.Time `json:"ended_at,omitempty"`
+	SandboxOverride string `json:"sandbox_override,omitempty"`
+	// Account names the account (config.Accounts key, or "default"/"") the
+	// task runs under. Resolved once at creation and immutable: resume reads
+	// transcripts / session state from that account's tool dir.
+	Account    string    `json:"account,omitempty"`
+	Sandboxed  bool      `json:"sandboxed,omitempty"`
+	Archived   bool      `json:"archived,omitempty"`
+	Pinned     bool      `json:"pinned,omitempty"`
+	BaseBranch string    `json:"base_branch,omitempty"`
+	Result     string    `json:"result,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	StartedAt  time.Time `json:"started_at,omitempty"`
+	EndedAt    time.Time `json:"ended_at,omitempty"`
 }
 
 // Elapsed returns the duration since the task was started.

@@ -1564,6 +1564,10 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       <label>Agent</label>
       <select id="create-backend"></select>
     </div>
+    <div class="form-group" id="create-account-group" style="display:none">
+      <label>Account</label>
+      <select id="create-account"></select>
+    </div>
     <div class="form-group">
       <label>Model (optional)</label>
       <select id="create-model"></select>
@@ -1774,7 +1778,7 @@ async function applyShareProjectDefault() {
   // duplicate /api/skills fetch on cold boot when both helpers race.
   if (sel.value === want) return;
   sel.value = want;
-  loadSkillsForProject(want);
+  onCreateProjectChanged(want);
 }
 
 // Filter view keys for the task list.
@@ -4938,10 +4942,92 @@ async function loadBackends() {
     // Rebuild the per-backend model <select> whenever the backend changes.
     // onchange assignment is idempotent across loadBackends re-runs (unlike
     // addEventListener).
-    sel.onchange = rebuildCreateModelOptions;
+    sel.onchange = () => { rebuildCreateModelOptions(); updateCreateAccountVisibility(); };
     rebuildCreateModelOptions();
     backendsLoaded = true;
+    loadAccounts();
   } catch(e) {}
+}
+
+// Accounts: the Account select lists the default account plus every account
+// that supports the selected backend's tool, and is shown only when that is
+// more than the default. Options carry the account name ("default" included):
+// a visible select is always an explicit choice, while "" (field hidden) lets
+// the daemon resolve the project / global default.
+let createAccounts = [];
+// The name the user last picked; survives backend changes, reset on project change.
+let createAccountPicked = '';
+let createAccountsSeq = 0;
+
+async function loadAccounts() {
+  const projSel = document.getElementById('create-project');
+  const project = projSel ? projSel.value : '';
+  const seq = ++createAccountsSeq;
+  try {
+    const r = await api('/api/accounts' + (project ? '?project=' + encodeURIComponent(project) : ''));
+    if (!r.ok || seq !== createAccountsSeq) return;
+    const list = await r.json();
+    if (seq !== createAccountsSeq) return;
+    createAccounts = Array.isArray(list) ? list : [];
+    updateCreateAccountVisibility();
+  } catch(e) {}
+}
+
+// Mirrors config.AccountSupports' tool classification: the basename of the
+// backend command's first word.
+function backendTool(command) {
+  return (String(command || '').trim().split(/\s+/)[0] || '').split('/').pop();
+}
+
+function accountSupportsTool(a, tool) {
+  if (a.name === 'default') return true;
+  const s = a.supports || {};
+  if (tool === 'claude') return !!s.claude;
+  if (tool === 'codex') return !!s.codex;
+  return false;
+}
+
+// pickCreateAccount chooses the selected option: the user's last pick when it
+// is usable, else the account the daemon resolves for the project (is_default),
+// else the default account.
+function pickCreateAccount(usable, picked) {
+  if (picked && usable.some(a => a.name === picked)) return picked;
+  const d = usable.find(a => a.is_default);
+  return d ? d.name : 'default';
+}
+
+function updateCreateAccountVisibility() {
+  const grp = document.getElementById('create-account-group');
+  const sel = document.getElementById('create-account');
+  const backendSel = document.getElementById('create-backend');
+  if (!grp || !sel || !backendSel) return;
+  const b = createBackendsCache.find(x => x.name === (backendSel.value || createDefaultBackend));
+  const tool = b ? backendTool(b.command) : 'claude';
+  const usable = createAccounts.filter(a => accountSupportsTool(a, tool));
+  sel.replaceChildren();
+  for (const a of usable) {
+    const opt = document.createElement('option');
+    opt.value = a.name;
+    let who = a.label && a.label !== a.name ? a.label : '';
+    if (tool === 'claude') {
+      who = a.logged_in
+        ? (a.email ? a.email : 'signed in') + (a.plan ? ' (' + a.plan + ')' : '')
+        : 'not logged in';
+    }
+    opt.textContent = who ? a.name + ' - ' + who : a.name;
+    sel.appendChild(opt);
+  }
+  sel.value = pickCreateAccount(usable, createAccountPicked);
+  sel.onchange = () => { createAccountPicked = sel.value; loadCreateSkills(); };
+  grp.style.display = usable.length > 1 ? '' : 'none';
+  loadCreateSkills();
+}
+
+function createAccountValue() {
+  const grp = document.getElementById('create-account-group');
+  const sel = document.getElementById('create-account');
+  if (!grp || !sel || grp.style.display === 'none') return '';
+  return sel.value;
 }
 
 // CREATE_MODEL_CUSTOM is the sentinel <option> value for the "custom…" entry.
@@ -5123,6 +5209,7 @@ async function createTask() {
   const taskModel = createModelValue();
   // Empty sandbox override ("") = inherit the project/global setting.
   const sandboxOverride = document.getElementById('create-sandbox').value;
+  const account = createAccountValue();
   if (!project) { showToast('Select a project'); return; }
   if (!prompt && !name && createFiles.length === 0) {
     showToast('Enter a name, prompt, or attach a file');
@@ -5143,12 +5230,15 @@ async function createTask() {
       if (backend) fd.append('backend', backend);
       if (taskModel) fd.append('model', taskModel);
       if (sandboxOverride) fd.append('sandbox_override', sandboxOverride);
+      if (account) fd.append('account', account);
       for (const f of createFiles) fd.append('files', f, f.name);
       r = await api('/api/tasks', { method: 'POST', body: fd });
     } else {
+      const body = { name, prompt, project, backend, model: taskModel, sandbox_override: sandboxOverride };
+      if (account) body.account = account;
       r = await api('/api/tasks', {
         method: 'POST',
-        body: JSON.stringify({ name, prompt, project, backend, model: taskModel, sandbox_override: sandboxOverride }),
+        body: JSON.stringify(body),
         timeoutMs: TASK_CREATE_TIMEOUT_MS
       });
     }
@@ -5231,9 +5321,9 @@ function applyCreateDefaults() {
     const want = cur !== undefined ? cur : expandedProject[FILTER_ACTIVE];
     if (want && [...projSel.options].some(o => o.value === want) && projSel.value !== want) {
       projSel.value = want;
-      // Skills autocomplete keys off the selected project; keep it in sync
-      // when we change the value programmatically.
-      loadSkillsForProject(want);
+      // Skills autocomplete and the account default key off the selected
+      // project; keep them in sync when we change the value programmatically.
+      onCreateProjectChanged(want);
     }
   } else if (projSel && !projectsLoaded) {
     // No completed fetch yet — initial connect race, or the boot-time
@@ -6326,17 +6416,46 @@ function escAttr(s) {
 // global cache) but otherwise need independent state — open in one must not
 // close the other. Factored into createSkillAutocomplete so each input owns
 // its own filtered list / selection idx / token bounds.
-let cachedSkills = {};  // project -> [{name, description}]
+// Keyed by skillsKey(ctx): skills differ per account (each account has its own
+// Claude config dir), so the key carries the account / task, not just project.
+let cachedSkills = {};  // skillsKey -> [{name, description}]
 
-async function loadSkillsForProject(project) {
-  if (!project || cachedSkills[project]) return;
+function skillsKey(ctx) {
+  return [ctx.project || '', ctx.account || '', ctx.task || ''].join('|');
+}
+
+// loadSkills fetches /api/skills for ctx = {project, account?, task?}. An empty
+// account lets the daemon resolve the task's or project's default account.
+async function loadSkills(ctx) {
+  const key = skillsKey(ctx);
+  if ((!ctx.project && !ctx.task) || cachedSkills[key]) return;
+  const q = new URLSearchParams();
+  if (ctx.project) q.set('project', ctx.project);
+  if (ctx.account) q.set('account', ctx.account);
+  if (ctx.task) q.set('task', ctx.task);
   try {
-    const r = await api('/api/skills?project=' + encodeURIComponent(project));
+    const r = await api('/api/skills?' + q.toString());
     if (r.ok) {
       const data = await r.json();
-      cachedSkills[project] = data.skills || [];
+      cachedSkills[key] = data.skills || [];
     }
   } catch(e) {}
+}
+
+function createSkillsCtx() {
+  return { project: document.getElementById('create-project').value, account: createAccountValue() };
+}
+
+function loadCreateSkills() { loadSkills(createSkillsCtx()); }
+
+function composeSkillsCtx() {
+  return currentTask ? { project: currentTask.project || '', task: currentTask.id || '' } : {};
+}
+
+// loadSkillsForProject loads the New Task form's skills for project under the
+// currently selected account.
+function loadSkillsForProject(project) {
+  loadSkills({ project, account: createAccountValue() });
 }
 
 // Codex backends use "$" for skills; everything else "/". An empty backend
@@ -6351,11 +6470,11 @@ function skillTriggerFor(backendName, backends) {
   return b && isCodexBackend(b.command) ? '$' : '/';
 }
 
-// Factory: wires skill autocomplete to an input + dropdown pair. `getProject`
-// and `getTrigger` ("/" or "$") are thunks so context can be dynamic — the
+// Factory: wires skill autocomplete to an input + dropdown pair. `getContext`
+// ({project, account?, task?}) and `getTrigger` ("/" or "$") are thunks so context can be dynamic — the
 // compose bar follows whichever task is currently open. Returns a small handle so callers can
 // imperatively close the dropdown (e.g. on detail-view teardown).
-function createSkillAutocomplete({ input, dropdown, getProject, getTrigger = () => '/' }) {
+function createSkillAutocomplete({ input, dropdown, getContext, getTrigger = () => '/' }) {
   let idx = -1;
   let filtered = [];
   // Bounds of the prompt token currently being autocompleted, captured when
@@ -6383,8 +6502,7 @@ function createSkillAutocomplete({ input, dropdown, getProject, getTrigger = () 
     const trigger = getTrigger();
     if (!token.startsWith(trigger)) { close(); return; }
     const filter = token.slice(trigger.length).toLowerCase();
-    const project = getProject() || '';
-    const allSkills = cachedSkills[project] || [];
+    const allSkills = cachedSkills[skillsKey(getContext() || {})] || [];
     // Case-insensitive substring match — mirrors Claude Code's slash-command
     // filter so "/rev" matches "cortex:review" not just names starting with "rev".
     filtered = filter ? allSkills.filter(s => s.name.toLowerCase().includes(filter)) : allSkills;
@@ -6469,14 +6587,22 @@ function createSkillAutocomplete({ input, dropdown, getProject, getTrigger = () 
   return { update, close };
 }
 
+// onCreateProjectChanged re-resolves the project's default account (dropping
+// the previous pick) and reloads skills.
+function onCreateProjectChanged(project) {
+  createAccountPicked = '';
+  loadSkillsForProject(project);
+  loadAccounts();
+}
+
 document.getElementById('create-project').addEventListener('change', function() {
-  loadSkillsForProject(this.value);
+  onCreateProjectChanged(this.value);
 });
 
 const createAC = createSkillAutocomplete({
   input: document.getElementById('create-prompt'),
   dropdown: document.getElementById('ac-dropdown'),
-  getProject: () => document.getElementById('create-project').value,
+  getContext: createSkillsCtx,
   getTrigger: () => skillTriggerFor(document.getElementById('create-backend').value, createBackendsCache),
 });
 document.getElementById('create-backend').addEventListener('change', () => createAC.close());
@@ -6484,7 +6610,7 @@ document.getElementById('create-backend').addEventListener('change', () => creat
 const composeAC = createSkillAutocomplete({
   input: document.getElementById('compose-input'),
   dropdown: document.getElementById('compose-ac-dropdown'),
-  getProject: () => (currentTask && currentTask.project) || '',
+  getContext: composeSkillsCtx,
   getTrigger: () => skillTriggerFor(currentTask && currentTask.backend, createBackendsCache),
 });
 
@@ -6504,7 +6630,7 @@ function setComposeVisible(visible) {
   // dropdown has data ready by the time the user types. loadSkillsForProject
   // is a no-op on cache hit, so re-opening the same project is free.
   if (visible && IS_TOUCH && currentTask && currentTask.project) {
-    loadSkillsForProject(currentTask.project);
+    loadSkills(composeSkillsCtx());
   }
   // Key bar tracks compose-bar lifecycle: only meaningful while the agent is
   // running and the compose bar is mounted. Re-applies the persisted user

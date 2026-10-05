@@ -90,6 +90,9 @@ public struct Task: Sendable, Equatable, Identifiable, Decodable {
     /// Cached GitHub PR review state (e.g. `awaiting-review`); absent for
     /// "none"/empty.
     public let prState: String?
+    /// The account the task was pinned to at creation; nil/absent means
+    /// the default account.
+    public let account: String?
 
     /// Typed view of ``status``.
     public var taskStatus: TaskStatus { TaskStatus(rawValue: status) }
@@ -100,6 +103,7 @@ public struct Task: Sendable, Equatable, Identifiable, Decodable {
         case createdAt = "created_at"
         case worktreePath = "worktree_path"
         case prState = "pr_state"
+        case account
     }
 
     public init(from decoder: Decoder) throws {
@@ -118,6 +122,7 @@ public struct Task: Sendable, Equatable, Identifiable, Decodable {
         worktreePath = try c.decodeIfPresent(String.self, forKey: .worktreePath)
         prompt = try c.decodeIfPresent(String.self, forKey: .prompt)
         prState = try c.decodeIfPresent(String.self, forKey: .prState)
+        account = try c.decodeIfPresent(String.self, forKey: .account)
     }
 
     /// Memberwise initializer, used to build patched copies from incremental
@@ -128,7 +133,7 @@ public struct Task: Sendable, Equatable, Identifiable, Decodable {
     public init(id: String, name: String, status: String, idle: Bool, needsInput: Bool,
                 project: String, branch: String?, backend: String?, elapsed: String?,
                 createdAt: String, archived: Bool, worktreePath: String?, prompt: String?,
-                prState: String?) {
+                prState: String?, account: String? = nil) {
         self.id = id
         self.name = name
         self.status = status
@@ -143,6 +148,7 @@ public struct Task: Sendable, Equatable, Identifiable, Decodable {
         self.worktreePath = worktreePath
         self.prompt = prompt
         self.prState = prState
+        self.account = account
     }
 
     /// Returns a copy with the given fields replaced. Only the fields that an
@@ -164,7 +170,8 @@ public struct Task: Sendable, Equatable, Identifiable, Decodable {
              archived: archived ?? self.archived,
              worktreePath: worktreePath,
              prompt: prompt,
-             prState: prState)
+             prState: prState,
+             account: account)
     }
 }
 

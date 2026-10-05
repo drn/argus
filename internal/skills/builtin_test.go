@@ -320,7 +320,7 @@ func TestEnsureCodexSkills_InertUnderTest(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
 
-	root, err := EnsureCodexSkills()
+	root, err := EnsureCodexSkills("")
 	testutil.NoError(t, err)
 	testutil.Equal(t, root, "")
 
@@ -335,7 +335,7 @@ func TestEnsureCodexSkills_RespectsCodexHomeEnvVar(t *testing.T) {
 	codexHome := t.TempDir()
 	t.Setenv("CODEX_HOME", codexHome)
 
-	got, err := ensureCodexSkills()
+	got, err := ensureCodexSkills("")
 	testutil.NoError(t, err)
 	expected, err := ArgusCodexHome()
 	testutil.NoError(t, err)
@@ -386,7 +386,7 @@ func TestEnsureCodexSkills_PreservesSystemAndForeignDirs(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	argusHome, err := ensureCodexSkills()
+	argusHome, err := ensureCodexSkills("")
 	testutil.NoError(t, err)
 
 	if _, err := os.Stat(systemMarker); err != nil {
@@ -419,10 +419,10 @@ func TestEnsureCodexSkills_SeparatesCustomHomes(t *testing.T) {
 		}
 	}
 	t.Setenv("CODEX_HOME", firstHome)
-	firstOverlay, err := ensureCodexSkills()
+	firstOverlay, err := ensureCodexSkills("")
 	testutil.NoError(t, err)
 	t.Setenv("CODEX_HOME", secondHome)
-	secondOverlay, err := ensureCodexSkills()
+	secondOverlay, err := ensureCodexSkills("")
 	testutil.NoError(t, err)
 	if firstOverlay == secondOverlay {
 		t.Fatal("distinct CODEX_HOME values shared one overlay")
@@ -445,7 +445,7 @@ func TestEnsureCodexSkills_ReconcilesLaterUserStateAndSkill(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(base, "config.toml"), []byte("original"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	overlay, err := ensureCodexSkills()
+	overlay, err := ensureCodexSkills("")
 	testutil.NoError(t, err)
 	// Codex may atomically replace a link, making an overlay-local copy.
 	if err := os.Remove(filepath.Join(overlay, "config.toml")); err != nil {
@@ -462,7 +462,7 @@ func TestEnsureCodexSkills_ReconcilesLaterUserStateAndSkill(t *testing.T) {
 	if err := os.WriteFile(userSkill, []byte("user hera"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	_, err = ensureCodexSkills()
+	_, err = ensureCodexSkills("")
 	testutil.NoError(t, err)
 	linked, err := os.Readlink(filepath.Join(overlay, "config.toml"))
 	testutil.NoError(t, err)
@@ -481,7 +481,7 @@ func TestEnsureCodexSkills_ReconcilesLaterUserStateAndSkill(t *testing.T) {
 	if err := os.RemoveAll(filepath.Dir(userSkill)); err != nil {
 		t.Fatal(err)
 	}
-	_, err = ensureCodexSkills()
+	_, err = ensureCodexSkills("")
 	testutil.NoError(t, err)
 	if _, err := os.Stat(filepath.Join(overlay, "skills", "hera", skillManifestFile)); err != nil {
 		t.Fatalf("Argus skill should return after the user skill is removed: %v", err)
@@ -493,7 +493,7 @@ func TestEnsureCodexSkills_DefaultsToDotCodexUnderHome(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
 
-	got, err := ensureCodexSkills()
+	got, err := ensureCodexSkills("")
 	testutil.NoError(t, err)
 	testutil.Equal(t, got, filepath.Join(home, ".local", "share", "argus", "codex-home"))
 	if _, err := os.Stat(filepath.Join(home, ".codex")); !os.IsNotExist(err) {
@@ -515,7 +515,7 @@ func TestEnsureCodexSkills_LinksExistingConfigAndSkipsPreviouslyGlobalArgusSkill
 	if err := os.WriteFile(filepath.Join(codexHome, "skills", "hera", ownerMarkerFile), []byte(ownerMarkerContent), 0644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := ensureCodexSkills()
+	got, err := ensureCodexSkills("")
 	testutil.NoError(t, err)
 	if link, err := os.Readlink(filepath.Join(got, "config.toml")); err != nil || link != filepath.Join(codexHome, "config.toml") {
 		t.Fatalf("config not linked to normal Codex home: %q, %v", link, err)
@@ -604,4 +604,62 @@ func TestParseFrontmatterLines_BlockScalarCappedAtMaxLines(t *testing.T) {
 	got := parseFrontmatterLines(lines, "description")
 	testutil.True(t, len(got) > 0)
 	testutil.Equal(t, strings.Count(got, "line"), blockScalarMaxLines)
+}
+
+func TestEnsureCodexSkills_ExplicitSourceHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	defaultHome := filepath.Join(home, ".codex")
+	testutil.NoError(t, os.MkdirAll(defaultHome, 0o700))
+	testutil.NoError(t, os.WriteFile(filepath.Join(defaultHome, "config.toml"), []byte("default"), 0o600))
+	acct := filepath.Join(t.TempDir(), "work-codex")
+	testutil.NoError(t, os.MkdirAll(acct, 0o700))
+	testutil.NoError(t, os.WriteFile(filepath.Join(acct, "config.toml"), []byte("work"), 0o600))
+
+	defOverlay, err := ensureCodexSkills("")
+	testutil.NoError(t, err)
+	acctOverlay, err := ensureCodexSkills(acct)
+	testutil.NoError(t, err)
+
+	t.Run("default overlay unchanged", func(t *testing.T) {
+		testutil.Equal(t, defOverlay, filepath.Join(home, ".local", "share", "argus", "codex-home"))
+	})
+	t.Run("account overlay is distinct and digest-named", func(t *testing.T) {
+		want, err := ArgusCodexHomeFor(acct)
+		testutil.NoError(t, err)
+		testutil.Equal(t, acctOverlay, want)
+		if acctOverlay == defOverlay {
+			t.Fatal("account overlay must differ from the default overlay")
+		}
+	})
+	t.Run("account overlay links the account home only", func(t *testing.T) {
+		linked, err := os.Readlink(filepath.Join(acctOverlay, "config.toml"))
+		testutil.NoError(t, err)
+		testutil.Equal(t, linked, filepath.Join(acct, "config.toml"))
+		linked, err = os.Readlink(filepath.Join(defOverlay, "config.toml"))
+		testutil.NoError(t, err)
+		testutil.Equal(t, linked, filepath.Join(defaultHome, "config.toml"))
+	})
+	t.Run("account overlay carries builtin skills", func(t *testing.T) {
+		entries, err := os.ReadDir(filepath.Join(acctOverlay, "skills"))
+		testutil.NoError(t, err)
+		if len(entries) == 0 {
+			t.Fatal("expected builtin skills in the account overlay")
+		}
+	})
+}
+
+func TestArgusCodexHomeFor_EmptyMatchesDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	a, err := ArgusCodexHome()
+	testutil.NoError(t, err)
+	b, err := ArgusCodexHomeFor("")
+	testutil.NoError(t, err)
+	testutil.Equal(t, a, b)
+	c, err := ArgusCodexHomeFor(filepath.Join(home, ".codex"))
+	testutil.NoError(t, err)
+	testutil.Equal(t, c, a)
 }

@@ -100,13 +100,18 @@ func (s *Server) handleListClaudeSessions(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	sessions, err := claudesession.List(task.Worktree)
+	configDir, err := agent.ClaudeConfigDirForTask(task, cfg)
+	if err != nil {
+		writeErr(w, http.StatusConflict, err.Error(), err)
+		return
+	}
+	sessions, err := claudesession.ListIn(configDir, task.Worktree)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 
-	// claudesession.List already returns newest-activity-first.
+	// claudesession.ListIn already returns newest-activity-first.
 	out := make([]claudeSessionJSON, 0, len(sessions))
 	for _, sess := range sessions {
 		out = append(out, claudeSessionToJSON(sess))

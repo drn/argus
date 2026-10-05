@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -67,8 +68,27 @@ func (s Session) Backgrounded() bool {
 // cmdFactory is the exec seam; tests swap it to avoid shelling out to a real
 // claude binary. "claude" is a fixed literal at every call site (never a
 // variable), so this never passes untrusted input as the executable name.
-var cmdFactory = func(ctx context.Context, args ...string) *exec.Cmd {
-	return exec.CommandContext(ctx, "claude", args...)
+var cmdFactory = func(ctx context.Context, configDir string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd.Env = Env(os.Environ(), configDir)
+	return cmd
+}
+
+// Env returns environ with CLAUDE_CONFIG_DIR set to configDir, or removed
+// when configDir is empty (the default account). Claude Code scopes its
+// background-session registry per config dir, so `claude agents`/`claude stop`
+// must run under the same dir the session was spawned with.
+func Env(environ []string, configDir string) []string {
+	out := make([]string, 0, len(environ)+1)
+	for _, kv := range environ {
+		if !strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") {
+			out = append(out, kv)
+		}
+	}
+	if configDir != "" {
+		out = append(out, "CLAUDE_CONFIG_DIR="+configDir)
+	}
+	return out
 }
 
 // withTimeout returns ctx unchanged if it already carries a deadline,
@@ -83,12 +103,13 @@ func withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, DefaultTimeout)
 }
 
-// List returns every session `claude agents --json` reports, optionally
-// scoped to cwd (an empty cwd lists every session across all projects). The
+// List returns every session `claude agents --json` reports under the Claude
+// config dir configDir ("" = default), optionally scoped to cwd (an empty cwd
+// lists every session across all projects). The
 // result includes the caller's own interactive session alongside any
 // background ones — callers looking for orphan candidates should filter on
 // Backgrounded() && Alive().
-func List(ctx context.Context, cwd string) ([]Session, error) {
+func List(ctx context.Context, cwd, configDir string) ([]Session, error) {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return nil, ErrUnavailable
 	}
@@ -99,7 +120,7 @@ func List(ctx context.Context, cwd string) ([]Session, error) {
 	if cwd != "" {
 		args = append(args, "--cwd", cwd)
 	}
-	out, err := cmdFactory(ctx, args...).Output()
+	out, err := cmdFactory(ctx, configDir, args...).Output()
 	if err != nil {
 		return nil, fmt.Errorf("claude agents --json: %w", err)
 	}
@@ -112,8 +133,9 @@ func List(ctx context.Context, cwd string) ([]Session, error) {
 
 // Stop stops the background session identified by its short id (the `id`
 // field from List) — NOT a session UUID. `claude stop <uuid>` fails with
-// "No job matching '<uuid>'"; only the short id is accepted.
-func Stop(ctx context.Context, id string) error {
+// "No job matching '<uuid>'"; only the short id is accepted. configDir must
+// be the Claude config dir List found it under ("" = default).
+func Stop(ctx context.Context, id, configDir string) error {
 	if strings.TrimSpace(id) == "" {
 		return errors.New("claudeagents: empty session id")
 	}
@@ -123,7 +145,7 @@ func Stop(ctx context.Context, id string) error {
 	ctx, cancel := withTimeout(ctx)
 	defer cancel()
 
-	out, err := cmdFactory(ctx, "stop", id).CombinedOutput()
+	out, err := cmdFactory(ctx, configDir, "stop", id).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("claude stop %s: %w: %s", id, err, strings.TrimSpace(string(out)))
 	}

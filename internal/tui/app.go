@@ -21,7 +21,9 @@ import (
 	"golang.org/x/term"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/apiclient"
 	"github.com/drn/argus/internal/app/agentview"
+	"github.com/drn/argus/internal/claudeaccount"
 	"github.com/drn/argus/internal/claudesession"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
@@ -5667,6 +5669,7 @@ func (a *App) buildNewTaskForm(defaultProject string) *NewTaskForm {
 	// (add-diligence-profiles forms-and-modals), scoped to the default project's
 	// in-repo dir + the per-user library.
 	f.SetProfileOptions(a.validProfileNames(cfg.Projects[defaultProject].Path))
+	a.setupNewTaskAccounts(f, cfg)
 	f.OnBranchFocus = func(path string) {
 		go func() {
 			branches := gitutil.ListRemoteBranches(path)
@@ -5679,6 +5682,101 @@ func (a *App) buildNewTaskForm(defaultProject string) *NewTaskForm {
 		}()
 	}
 	return f
+}
+
+// remoteAccountLister is satisfied by *apistore.Store: in --remote mode the
+// account catalog and sign-in labels come from the daemon's GET /api/accounts,
+// never from local config.toml or the local claude binary.
+type remoteAccountLister interface {
+	Accounts(ctx context.Context) ([]apiclient.AccountJSON, error)
+}
+
+// setupNewTaskAccounts wires the form's Account selector and fetches each
+// account's signed-in identity off the UI thread.
+func (a *App) setupNewTaskAccounts(f *NewTaskForm, cfg config.Config) {
+	defaultFor := func(project string) string { return cfg.ResolveAccount("", project) }
+	if _, local := a.db.(*db.DB); !local {
+		if rl, ok := a.db.(remoteAccountLister); ok {
+			a.setupRemoteNewTaskAccounts(f, rl, defaultFor)
+			return
+		}
+	}
+	if len(cfg.Accounts) == 0 {
+		return
+	}
+	opts := AccountOptionsFromConfig(cfg)
+	f.SetAccounts(opts, defaultFor)
+	for _, o := range opts {
+		if !o.Claude {
+			continue
+		}
+		go func(name, dir string) {
+			st, err := claudeaccount.CachedAuthStatus(context.Background(), dir)
+			label := ""
+			switch {
+			case err != nil:
+				uxlog.Log("[account] newtask: auth status for %q failed: %v", name, err)
+			case !st.LoggedIn:
+				label = "signed out"
+			default:
+				label = st.Email
+			}
+			uxlog.Log("[account] newtask: account %q identity resolved (label=%t)", name, label != "")
+			if label == "" {
+				return
+			}
+			a.tapp.QueueUpdateDraw(func() {
+				if a.newTaskForm == f {
+					f.SetAccountLabel(name, label)
+				}
+			})
+		}(o.Name, o.ClaudeDir)
+	}
+}
+
+// setupRemoteNewTaskAccounts fetches the remote daemon's accounts off the UI
+// thread and applies them to f if it is still the open form.
+func (a *App) setupRemoteNewTaskAccounts(f *NewTaskForm, rl remoteAccountLister, defaultFor func(string) string) {
+	go func() {
+		list, err := rl.Accounts(context.Background())
+		if err != nil {
+			uxlog.Log("[account] newtask: remote account list failed: %v", err)
+			return
+		}
+		opts, labels := accountOptionsFromRemote(list)
+		uxlog.Log("[account] newtask: remote listed %d accounts", len(opts))
+		a.tapp.QueueUpdateDraw(func() {
+			if a.newTaskForm != f {
+				return
+			}
+			f.SetAccounts(opts, defaultFor)
+			for n, l := range labels {
+				f.SetAccountLabel(n, l)
+			}
+		})
+	}()
+}
+
+// accountOptionsFromRemote converts GET /api/accounts entries into the form
+// catalog plus Claude sign-in labels. ClaudeDir stays empty: the remote
+// daemon's paths do not exist on this host.
+func accountOptionsFromRemote(list []apiclient.AccountJSON) ([]AccountOption, map[string]string) {
+	var opts []AccountOption
+	labels := map[string]string{}
+	for _, ac := range list {
+		if ac.Name == "" || ac.Name == config.DefaultAccountName {
+			continue
+		}
+		opts = append(opts, AccountOption{Name: ac.Name, Label: ac.Label, Claude: ac.Supports.Claude, Codex: ac.Supports.Codex})
+		switch {
+		case !ac.Supports.Claude:
+		case !ac.LoggedIn:
+			labels[ac.Name] = "signed out"
+		case ac.Email != "":
+			labels[ac.Name] = ac.Email
+		}
+	}
+	return opts, labels
 }
 
 // onNewTask opens the new task form (Tasks tab, default create-and-start path).
@@ -5798,6 +5896,7 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 			Profile:         task.Profile,
 			BaseBranch:      task.Branch,
 			SandboxOverride: task.SandboxOverride,
+			Account:         task.Account,
 			// Background LLM auto-rename runs ONLY when the user left the name
 			// field blank. A user-supplied name is authoritative and must never
 			// be replaced by an LLM suggestion (auto-naming capability).
@@ -5854,7 +5953,7 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 // host), so fresh-task creation routes through POST /api/tasks instead. Kept
 // as a structural interface so the tui package doesn't import apistore.
 type remoteTaskCreator interface {
-	CreateTask(ctx context.Context, name, prompt, project, backend, taskModel, sandboxOverride string) (*model.Task, error)
+	CreateTask(ctx context.Context, name, prompt, project, backend, taskModel, sandboxOverride, account string) (*model.Task, error)
 }
 
 // createTaskTransactional creates a fresh task and returns the resulting row.
@@ -5880,7 +5979,7 @@ func (a *App) createTaskTransactional(input agent.CreateInput) (*model.Task, err
 	// window before the SSE stream attaches server-side.
 	a.startGen.Add(1)
 	defer a.startGen.Add(1)
-	return rc.CreateTask(context.Background(), input.Name, input.Prompt, input.Project, input.Backend, input.Model, input.SandboxOverride)
+	return rc.CreateTask(context.Background(), input.Name, input.Prompt, input.Project, input.Backend, input.Model, input.SandboxOverride, input.Account)
 }
 
 // computePTYSize returns the best available PTY dimensions for the agent
@@ -6413,8 +6512,14 @@ func (a *App) openSessionPicker() {
 
 	worktree := task.Worktree
 	currentID := task.SessionID
+	configDir, cerr := agent.ClaudeConfigDirForTask(task, cfg)
+	if cerr != nil {
+		uxlog.Log("[account] session picker: %v", cerr)
+		a.statusbar.SetInfo(cerr.Error())
+		return
+	}
 	go func() {
-		sessions, err := claudesession.List(worktree)
+		sessions, err := claudesession.ListIn(configDir, worktree)
 		if err != nil {
 			uxlog.Log("[tui] session picker: list failed for %s: %v", worktree, err)
 			return
@@ -7107,6 +7212,7 @@ func (a *App) executeFork(source *model.Task, targetProject string) {
 			Prompt:  buildForkPrompt(source, ctx, proj),
 			Project: proj,
 			Backend: source.Backend,
+			Account: agent.PinnedAccount(source.Account),
 			Rows:    rows,
 			Cols:    cols,
 			OnWorktreeCreated: func(wtPath string) error {

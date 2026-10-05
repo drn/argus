@@ -15,6 +15,10 @@ struct NewTaskSheet: View {
 
     @State private var project = ""
     @State private var backend = ""
+    @State private var account = ""
+    /// The name the user last picked; survives backend changes, reset on project change.
+    @State private var accountPicked = ""
+    @State private var projectAccounts: [Account]?
     @State private var name = ""
     @State private var prompt = ""
     @State private var isSubmitting = false
@@ -40,6 +44,14 @@ struct NewTaskSheet: View {
                     Picker("Backend", selection: $backend) {
                         Text(defaultBackendLabel).tag("")
                         ForEach(app.backendNames, id: \.self) { Text($0).tag($0) }
+                    }
+
+                    if showAccountPicker {
+                        Picker("Account", selection: Binding(
+                            get: { account },
+                            set: { account = $0; accountPicked = $0 })) {
+                            ForEach(usableAccounts) { Text($0.displayLabel).tag($0.name) }
+                        }
                     }
 
                     TextField("Name (optional — auto-generated if blank)", text: $name)
@@ -82,8 +94,29 @@ struct NewTaskSheet: View {
         .frame(width: 480, height: 460)
         .onAppear {
             if project.isEmpty { project = app.projectNames.first ?? "" }
+            reselectAccount()
         }
+        .task(id: project) {
+            accountPicked = ""
+            projectAccounts = await app.accounts(forProject: project)
+            reselectAccount()
+        }
+        .onChange(of: backend) { reselectAccount() }
     }
+
+    private var allAccounts: [Account] { projectAccounts ?? app.accounts }
+
+    private func reselectAccount() {
+        account = NewTaskAccount.preselect(allAccounts, backend: effectiveBackend, picked: accountPicked)
+    }
+
+    private var effectiveBackend: String { backend.isEmpty ? app.defaultBackendName : backend }
+
+    private var usableAccounts: [Account] {
+        NewTaskAccount.accounts(allAccounts, forBackend: effectiveBackend)
+    }
+
+    private var showAccountPicker: Bool { usableAccounts.count > 1 }
 
     private var defaultBackendLabel: String {
         app.defaultBackendName.isEmpty ? "Default" : "Default (\(app.defaultBackendName))"
@@ -101,7 +134,9 @@ struct NewTaskSheet: View {
             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
             prompt: prompt,
             project: project,
-            backend: backend.isEmpty ? nil : backend
+            backend: backend.isEmpty ? nil : backend,
+            account: NewTaskAccount.requestValue(
+                selected: account, accounts: allAccounts, backend: effectiveBackend)
         )
         _Concurrency.Task {
             do {

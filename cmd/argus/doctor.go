@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"debug/buildinfo"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/buildid"
+	"github.com/drn/argus/internal/claudeaccount"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
 	dclient "github.com/drn/argus/internal/daemon/client"
@@ -18,6 +20,7 @@ import (
 	"github.com/drn/argus/internal/doctor"
 	"github.com/drn/argus/internal/profiles"
 	"github.com/drn/argus/internal/review"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // runDoctor implements `argus doctor`: a strictly READ-ONLY diagnostic that
@@ -35,6 +38,7 @@ func runDoctor() {
 	actors := gatherActors()
 	fmt.Print(doctor.Render(actors))
 	fmt.Print(doctor.RenderStopHook(gatherStopHookStatus()))
+	fmt.Print(renderClaudeAccounts(gatherAccountsConfig(), claudeaccount.AuthStatus))
 	fmt.Print(doctor.RenderProfileLibrary(gatherProfileLibraryStatus()))
 	fmt.Print(doctor.RenderSecretsBootstrap(gatherSecretsBootstrapStatus()))
 	fmt.Print(doctor.RenderDevStackOrphans(gatherDevStackOrphans()))
@@ -371,4 +375,62 @@ func readStopHookCommands(path string) ([]string, error) {
 		}
 	}
 	return cmds, nil
+}
+
+// gatherAccountsConfig loads config.toml (the only source of
+// account definitions) the same way the other doctor gatherers do.
+func gatherAccountsConfig() config.Config {
+	cfg := config.DefaultConfig()
+	return config.NewFileLoader(filepath.Join(db.DataDir(), config.FileName)).Apply(cfg)
+}
+
+// renderClaudeAccounts prints one advisory block per account with an explicit
+// Claude config dir: Stop-hook registration against <dir>/settings.json and a
+// best-effort login line from authFn. Never affects the exit code, and prints
+// nothing when no accounts are configured.
+func renderClaudeAccounts(cfg config.Config, authFn func(ctx context.Context, dir string) (claudeaccount.Status, error)) string {
+	var b strings.Builder
+	for _, name := range cfg.AccountNames() {
+		dir, explicit, err := cfg.ClaudeConfigDir(name)
+		if err != nil || !explicit {
+			continue
+		}
+		if b.Len() == 0 {
+			b.WriteString("\nClaude accounts:\n")
+		}
+		fmt.Fprintf(&b, "  %s (%s)\n", name, dir)
+
+		cmds, rerr := readStopHookCommands(filepath.Join(dir, "settings.json"))
+		hook := "UNKNOWN (could not read/parse settings.json)"
+		switch doctor.DiagnoseStopHook(cmds, rerr) {
+		case doctor.StopHookRegistered:
+			hook = "REGISTERED"
+		case doctor.StopHookNotRegistered:
+			hook = "NOT REGISTERED"
+		}
+		fmt.Fprintf(&b, "    Stop hook (argus coord-hook): %s\n", hook)
+
+		st, aerr := authFn(context.Background(), dir)
+		switch {
+		case aerr != nil:
+			uxlog.Log("[account] doctor auth status failed account=%s: %v", name, aerr)
+			b.WriteString("    Login: UNKNOWN (claude auth status failed)\n")
+		case !st.LoggedIn:
+			b.WriteString("    Login: not logged in\n")
+		default:
+			fmt.Fprintf(&b, "    Login: %s\n", authSummary(st))
+		}
+	}
+	return b.String()
+}
+
+func authSummary(st claudeaccount.Status) string {
+	parts := []string{st.Email}
+	if st.Org != "" {
+		parts = append(parts, st.Org)
+	}
+	if st.Plan != "" {
+		parts = append(parts, st.Plan)
+	}
+	return strings.Join(parts, " / ")
 }

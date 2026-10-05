@@ -87,6 +87,9 @@ final class AppState {
     /// The daemon's configured default backend name (`Defaults.Backend`), used
     /// to label the New Task sheet's "use default" backend option.
     private(set) var defaultBackendName: String = ""
+    /// Accounts from `GET /api/accounts`; the New Task sheet shows its picker
+    /// only when more than one supports the selected backend.
+    private(set) var accounts: [Account] = []
 
     /// Which tab of the selected task's detail view is showing. Forced to
     /// ``DetailTab/terminal`` after creating or forking a task so the user
@@ -1176,6 +1179,14 @@ final class AppState {
         if let backend = cfg["Defaults"]?["Backend"]?.stringValue {
             defaultBackendName = backend
         }
+        accounts = (try? await client.accounts()) ?? []
+    }
+
+    /// Accounts with `isDefault` resolved for `project` (the New Task sheet's
+    /// preselection); falls back to the cached global list on failure.
+    func accounts(forProject project: String) async -> [Account] {
+        guard let client, !project.isEmpty else { return accounts }
+        return (try? await client.accounts(project: project)) ?? accounts
     }
 
     /// Human-readable, token-free rendering of an error for the UI.

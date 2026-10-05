@@ -39,7 +39,7 @@ func testServer(t *testing.T) (*Server, *db.DB) {
 	t.Cleanup(func() { d.Close() })
 
 	runner := agent.NewRunner(nil)
-	creator := func(name, prompt, project, backend, taskModel, sandboxOverride string, _ bool) (*model.Task, error) {
+	creator := func(name, prompt, project, backend, taskModel, sandboxOverride, account string, _ bool) (*model.Task, error) {
 		task := &model.Task{
 			Name:            name,
 			Prompt:          prompt,
@@ -47,6 +47,7 @@ func testServer(t *testing.T) (*Server, *db.DB) {
 			Backend:         backend,
 			Model:           taskModel,
 			SandboxOverride: sandboxOverride,
+			Account:         account,
 			Status:          model.StatusInProgress,
 		}
 		d.Add(task)
@@ -4012,7 +4013,7 @@ func TestHandleCreateTask_CreatorError(t *testing.T) {
 	testutil.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
 	runner := agent.NewRunner(nil)
-	creator := func(name, prompt, project, backend, taskModel, sandboxOverride string, _ bool) (*model.Task, error) {
+	creator := func(name, prompt, project, backend, taskModel, sandboxOverride, account string, _ bool) (*model.Task, error) {
 		return nil, fmt.Errorf("forced fail")
 	}
 	srv := New(d, runner, "test-token", creator, nil)

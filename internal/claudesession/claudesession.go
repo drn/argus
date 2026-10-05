@@ -53,25 +53,41 @@ func EncodeProjectDir(worktreePath string) string {
 }
 
 // ProjectDir returns the absolute ~/.claude/projects/<encoded> directory for a
-// worktree path. It returns an error only if the user's home dir can't be
-// resolved.
+// worktree path in Claude's default config directory. It returns an error only
+// if the user's home dir can't be resolved.
 func ProjectDir(worktreePath string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("claudesession: home dir: %w", err)
-	}
-	return filepath.Join(home, ".claude", "projects", EncodeProjectDir(worktreePath)), nil
+	return ProjectDirIn("", worktreePath)
 }
 
-// List returns every Claude session for the given worktree, newest activity
-// first. A missing project directory is not an error — it returns an empty
-// slice (a brand-new task simply has no sessions yet). Malformed JSONL lines
-// and unreadable files are skipped rather than aborting the whole listing.
+// ProjectDirIn is ProjectDir for an explicit Claude config directory; an
+// empty configDir means the default ~/.claude.
+func ProjectDirIn(configDir, worktreePath string) (string, error) {
+	if configDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("claudesession: home dir: %w", err)
+		}
+		configDir = filepath.Join(home, ".claude")
+	}
+	return filepath.Join(configDir, "projects", EncodeProjectDir(worktreePath)), nil
+}
+
+// List returns every Claude session for the given worktree in Claude's default
+// config directory, newest activity first. See ListIn.
 func List(worktreePath string) ([]Session, error) {
+	return ListIn("", worktreePath)
+}
+
+// ListIn returns every Claude session for the given worktree under configDir
+// (empty means ~/.claude), newest activity first. A missing project directory
+// is not an error — it returns an empty slice (a brand-new task simply has no
+// sessions yet). Malformed JSONL lines and unreadable files are skipped rather
+// than aborting the whole listing.
+func ListIn(configDir, worktreePath string) ([]Session, error) {
 	if worktreePath == "" {
 		return nil, fmt.Errorf("claudesession: worktree path is empty")
 	}
-	dir, err := ProjectDir(worktreePath)
+	dir, err := ProjectDirIn(configDir, worktreePath)
 	if err != nil {
 		return nil, err
 	}

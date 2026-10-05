@@ -26,9 +26,10 @@ const (
 	ntFieldProfile   = 4
 	ntFieldArchetype = 5
 	ntFieldSandbox   = 6
-	ntFieldPrompt    = 7
-	ntFieldName      = 8
-	ntFieldCount     = 9
+	ntFieldAccount   = 7
+	ntFieldPrompt    = 8
+	ntFieldName      = 9
+	ntFieldCount     = 10
 )
 
 // ntArchetypeNone is the archetype selector's first entry — no archetype, so no
@@ -95,6 +96,18 @@ type NewTaskForm struct {
 	// sandboxInherit (the zero value): the produced task carries no override
 	// and resolution falls back to the project/global setting.
 	sandboxIdx int
+
+	// Account selector. accountCatalog holds every configured account;
+	// accountNames is the catalog filtered to the selected backend's tool
+	// ("default" first). The field is shown only when more than the default
+	// applies. accountDefault resolves the preselected account for a project;
+	// accountLabels adds async-fetched signed-in identity to the display name.
+	accountCatalog []AccountOption
+	accountNames   []string
+	accountIdx     int
+	accountPicked  string // last name the user cycled to; survives backend changes
+	accountDefault func(project string) string
+	accountLabels  map[string]string
 
 	projects map[string]config.Project
 	backends map[string]config.Backend
@@ -246,6 +259,7 @@ func (f *NewTaskForm) Task() *model.Task {
 		Archetype:       f.Archetype(),
 		Profile:         f.ProfileOverride(),
 		SandboxOverride: f.SandboxOverride(),
+		Account:         f.Account(),
 	}
 }
 
@@ -366,6 +380,199 @@ func (f *NewTaskForm) rebuildProfileOptions() {
 func (f *NewTaskForm) SetProfileOptions(valid []string) {
 	f.profileValidNames = valid
 	f.rebuildProfileOptions()
+}
+
+// AccountOption is one configured account offered by the new-task form.
+// ClaudeDir is the local Claude config dir used for skill autocomplete; ""
+// means the default ~/.claude (always the case in remote mode).
+type AccountOption struct {
+	Name      string
+	Label     string
+	Claude    bool
+	Codex     bool
+	ClaudeDir string
+}
+
+// AccountOptionsFromConfig builds the form's account catalog from config.toml.
+func AccountOptionsFromConfig(cfg config.Config) []AccountOption {
+	var out []AccountOption
+	for _, n := range cfg.AccountNames() {
+		if n == config.DefaultAccountName {
+			continue
+		}
+		dir, _, claudeErr := cfg.ClaudeConfigDir(n)
+		_, _, codexErr := cfg.CodexHome(n)
+		out = append(out, AccountOption{Name: n, Label: cfg.Accounts[n].Label, Claude: claudeErr == nil, Codex: codexErr == nil, ClaudeDir: dir})
+	}
+	return out
+}
+
+// SetAccounts supplies the account catalog and a per-project default resolver
+// (cfg.ResolveAccount), then filters to the selected backend and preselects the
+// project's default. The field stays hidden while only the default applies.
+func (f *NewTaskForm) SetAccounts(opts []AccountOption, defaultFor func(project string) string) {
+	f.accountCatalog = opts
+	f.accountDefault = defaultFor
+	if f.accountLabels == nil {
+		f.accountLabels = map[string]string{}
+	}
+	f.rebuildAccountOptions(false)
+	f.loadSkills()
+}
+
+// SetAccountLabel records the signed-in identity label for an account name.
+func (f *NewTaskForm) SetAccountLabel(name, label string) {
+	if f.accountLabels == nil {
+		f.accountLabels = map[string]string{}
+	}
+	f.accountLabels[name] = label
+}
+
+func (f *NewTaskForm) hasAccountField() bool { return len(f.accountNames) > 1 }
+
+// accountTool classifies the selected backend the same way
+// config.AccountSupports does.
+func (f *NewTaskForm) accountTool() string {
+	b, ok := f.currentBackend()
+	switch {
+	case !ok:
+		return ""
+	case agent.IsClaudeBackend(b.Command):
+		return "claude"
+	case agent.IsCodexBackend(b.Command):
+		return "codex"
+	}
+	return ""
+}
+
+func (o AccountOption) supports(tool string) bool {
+	switch tool {
+	case "claude":
+		return o.Claude
+	case "codex":
+		return o.Codex
+	}
+	return false
+}
+
+// rebuildAccountOptions re-filters the catalog for the selected backend. With
+// keep, the user's last pick is reselected when it applies (backend change);
+// otherwise, or when it does not apply, the project's default is preselected.
+func (f *NewTaskForm) rebuildAccountOptions(keep bool) {
+	if !keep {
+		f.accountPicked = ""
+	}
+	tool := f.accountTool()
+	names := []string{config.DefaultAccountName}
+	for _, o := range f.accountCatalog {
+		if o.Name != config.DefaultAccountName && o.supports(tool) {
+			names = append(names, o.Name)
+		}
+	}
+	f.accountNames = names
+	f.accountIdx = 0
+	if idx := indexOf(names, f.accountPicked); f.accountPicked != "" && idx >= 0 {
+		f.accountIdx = idx
+		return
+	}
+	if f.accountDefault != nil {
+		if idx := indexOf(names, f.accountDefault(f.resolveProject())); idx >= 0 {
+			f.accountIdx = idx
+		}
+	}
+}
+
+func indexOf(names []string, want string) int {
+	for i, n := range names {
+		if n == want {
+			return i
+		}
+	}
+	return -1
+}
+
+// Account returns the account for the submitted task. A visible selector
+// always yields an explicit name, "default" included; "" means no choice was
+// offered, so the daemon resolves the project / global default.
+func (f *NewTaskForm) Account() string {
+	if !f.hasAccountField() || f.accountIdx < 0 || f.accountIdx >= len(f.accountNames) {
+		return ""
+	}
+	return f.accountNames[f.accountIdx]
+}
+
+// effectiveAccount is the account the task will run under: the selection when
+// the field is shown, else the project's resolved default when it supports the
+// backend, else the default account (mirroring the daemon's fallback).
+func (f *NewTaskForm) effectiveAccount() string {
+	if a := f.Account(); a != "" {
+		return a
+	}
+	if f.accountDefault != nil {
+		if d := f.accountDefault(f.resolveProject()); indexOf(f.accountNames, d) >= 0 {
+			return d
+		}
+	}
+	return config.DefaultAccountName
+}
+
+// accountClaudeDir is the Claude config dir skill autocomplete reads for the
+// effective account ("" = ~/.claude).
+func (f *NewTaskForm) accountClaudeDir() string {
+	name := f.effectiveAccount()
+	for _, o := range f.accountCatalog {
+		if o.Name == name && o.Claude {
+			return o.ClaudeDir
+		}
+	}
+	return ""
+}
+
+func (f *NewTaskForm) accountDisplayNames() []string {
+	out := make([]string, len(f.accountNames))
+	for i, n := range f.accountNames {
+		out[i] = n
+		l := f.accountLabels[n]
+		if l == "" {
+			l = f.catalogLabel(n)
+		}
+		if l != "" && l != n {
+			out[i] = n + " (" + l + ")"
+		}
+	}
+	return out
+}
+
+func (f *NewTaskForm) catalogLabel(name string) string {
+	for _, o := range f.accountCatalog {
+		if o.Name == name {
+			return o.Label
+		}
+	}
+	return ""
+}
+
+// handleAccountKey cycles the account selector; up/down move field focus.
+func (f *NewTaskForm) handleAccountKey(event *tcell.EventKey) {
+	count := len(f.accountNames)
+	switch event.Key() {
+	case tcell.KeyEnter, tcell.KeyDown:
+		f.focused = ntFieldPrompt
+	case tcell.KeyUp:
+		f.focused = ntFieldSandbox
+	case tcell.KeyLeft:
+		if count > 0 {
+			f.accountIdx = (f.accountIdx - 1 + count) % count
+			f.accountPicked = f.accountNames[f.accountIdx]
+			f.loadSkills()
+		}
+	case tcell.KeyRight:
+		if count > 0 {
+			f.accountIdx = (f.accountIdx + 1) % count
+			f.accountPicked = f.accountNames[f.accountIdx]
+			f.loadSkills()
+		}
+	}
 }
 
 // SetHideArchetype suppresses the archetype selector (the new-coordinator prompt
@@ -549,7 +756,6 @@ func (f *NewTaskForm) projACAccept() {
 // onProjectChanged resets the branch field to the new project's default
 // branch and triggers async branch loading.
 func (f *NewTaskForm) onProjectChanged() {
-	f.loadSkills()
 	proj := f.resolveProject()
 	defaultBranch := ""
 	if proj != "" {
@@ -565,17 +771,22 @@ func (f *NewTaskForm) onProjectChanged() {
 	f.branchPath = "" // clear so maybeLoadBranches reloads even for the same project
 	// Re-default the profile cycler to the new project's bound profile.
 	f.rebuildProfileOptions()
+	f.rebuildAccountOptions(false)
+	f.loadSkills()
 	f.maybeLoadBranches()
 }
 
 // visibleField returns the next/previous focusable field from start in direction
 // dir (+1 / -1), skipping the archetype field when it is hidden (new-coordinator
-// prompt). All other fields are always visible.
+// prompt) and the account field when no accounts are configured.
 func (f *NewTaskForm) visibleField(start, dir int) int {
 	n := start
 	for i := 0; i < ntFieldCount; i++ {
 		n = (n + dir + ntFieldCount) % ntFieldCount
 		if n == ntFieldArchetype && f.hideArchetype {
+			continue
+		}
+		if n == ntFieldAccount && !f.hasAccountField() {
 			continue
 		}
 		return n
@@ -659,13 +870,14 @@ func (f *NewTaskForm) branchACAccept() {
 	f.branchACOpen = false
 }
 
-// loadSkills scans skill directories for the currently selected project.
+// loadSkills scans skill directories for the currently selected project and
+// the effective account's Claude config dir.
 func (f *NewTaskForm) loadSkills() {
 	var extraDirs []string
 	if pp := f.selectedProjectPath(); pp != "" {
 		extraDirs = []string{filepath.Join(pp, ".claude", "skills")}
 	}
-	f.skills = skills.LoadSkills(extraDirs)
+	f.skills = skills.LoadSkillsFrom(f.accountClaudeDir(), extraDirs)
 }
 
 // promptTokenBounds returns the [start, end) rune indices of the
@@ -905,6 +1117,8 @@ func (f *NewTaskForm) InputHandler() func(event *tcell.EventKey, setFocus func(p
 			f.handleArchetypeKey(event)
 		case ntFieldSandbox:
 			f.handleSandboxKey(event)
+		case ntFieldAccount:
+			f.handleAccountKey(event)
 		case ntFieldPrompt:
 			f.handlePromptKey(event)
 		case ntFieldName:
@@ -1299,9 +1513,9 @@ func (f *NewTaskForm) handleSandboxKey(event *tcell.EventKey) {
 	count := len(sandboxOptions)
 	switch event.Key() {
 	case tcell.KeyEnter, tcell.KeyDown:
-		f.focused = ntFieldPrompt
+		f.focused = f.visibleField(ntFieldSandbox, +1)
 	case tcell.KeyUp:
-		f.focused = ntFieldArchetype
+		f.focused = f.visibleField(ntFieldSandbox, -1)
 	case tcell.KeyLeft:
 		f.sandboxIdx = (f.sandboxIdx - 1 + count) % count
 	case tcell.KeyRight:
@@ -1368,6 +1582,15 @@ func (f *NewTaskForm) handleModelCustomKey(event *tcell.EventKey) {
 	}
 }
 
+// onBackendChanged re-filters the account selector (keeping a selection that
+// still applies), reloads skills for the effective account, and resets models.
+func (f *NewTaskForm) onBackendChanged() {
+	f.rebuildAccountOptions(true)
+	f.loadSkills()
+	f.updateAutocomplete()
+	f.rebuildModelOptions()
+}
+
 func (f *NewTaskForm) handleSelectorKey(event *tcell.EventKey, idx *int, count int) {
 	if count == 0 {
 		return
@@ -1376,14 +1599,12 @@ func (f *NewTaskForm) handleSelectorKey(event *tcell.EventKey, idx *int, count i
 	case tcell.KeyLeft:
 		*idx = (*idx - 1 + count) % count
 		if idx == &f.backendIdx {
-			f.updateAutocomplete()
-			f.rebuildModelOptions()
+			f.onBackendChanged()
 		}
 	case tcell.KeyRight:
 		*idx = (*idx + 1) % count
 		if idx == &f.backendIdx {
-			f.updateAutocomplete()
-			f.rebuildModelOptions()
+			f.onBackendChanged()
 		}
 	case tcell.KeyDown, tcell.KeyEnter:
 		if f.focused < ntFieldPrompt {
@@ -1731,6 +1952,9 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 	if !f.hideArchetype {
 		selectorRows++
 	}
+	if f.hasAccountField() {
+		selectorRows++
+	}
 
 	// Modal height: border(1) + padding(1) + project(1) + projAC(P) + branch(1) + branchAC(B) + backend(1) + model(1) + profile/archetype/sandbox(selectorRows) + label(1) + prompt(N) + ac(M) + name(1) + gap(1) + help(1) + padding(1) + border(1)
 	modalH := 12 + selectorRows + visiblePromptLines + acRows + projACRows + branchACRows
@@ -1808,6 +2032,11 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 	// Sandbox override selector (add-task-sandbox-override).
 	f.drawSelector(screen, innerX, row, innerW, "Sandbox", sandboxOptions, f.sandboxIdx, f.focused == ntFieldSandbox)
 	row++
+
+	if f.hasAccountField() {
+		f.drawSelector(screen, innerX, row, innerW, "Account", f.accountDisplayNames(), f.accountIdx, f.focused == ntFieldAccount)
+		row++
+	}
 
 	// Prompt field
 	labelStyle := theme.StyleDimmed

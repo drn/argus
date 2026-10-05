@@ -105,6 +105,8 @@ func codexPTYFallbackAllowed() bool {
 // SetCodexPTYFallbackEnabled (fix-backend-routing-semantics — off by
 // default). Failures are logged and leave the existing cache untouched;
 // callers do not need to treat the returned error as fatal.
+// The probe measures the default account only (~/.codex); named accounts'
+// codex_home usage is not probed.
 func Probe(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return nil

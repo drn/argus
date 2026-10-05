@@ -239,7 +239,7 @@ func TestParseMultipartTaskForm_RoundTrips(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/tasks", body)
 	req.Header.Set("Content-Type", ct)
 
-	name, prompt, project, backend, taskModel, sandboxOverride, atts, err := parseMultipartTaskForm(req)
+	name, prompt, project, backend, taskModel, sandboxOverride, _, atts, err := parseMultipartTaskForm(req)
 	testutil.Equal(t, taskModel, "")
 	testutil.Equal(t, sandboxOverride, "")
 	testutil.NoError(t, err)
@@ -268,7 +268,7 @@ func TestParseMultipartTaskForm_ReadsBackend(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/tasks", body)
 	req.Header.Set("Content-Type", ct)
 
-	_, _, _, backend, _, _, _, err := parseMultipartTaskForm(req)
+	_, _, _, backend, _, _, _, _, err := parseMultipartTaskForm(req)
 	testutil.NoError(t, err)
 	testutil.Equal(t, backend, "codex")
 }
@@ -289,7 +289,7 @@ func TestParseMultipartTaskForm_ReadsSandboxOverride(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/tasks", body)
 	req.Header.Set("Content-Type", ct)
 
-	_, _, _, _, _, sandboxOverride, _, err := parseMultipartTaskForm(req)
+	_, _, _, _, _, sandboxOverride, _, _, err := parseMultipartTaskForm(req)
 	testutil.NoError(t, err)
 	testutil.Equal(t, sandboxOverride, "disabled")
 }
@@ -305,7 +305,7 @@ func TestParseMultipartTaskForm_EnforcesPerFileCap(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/tasks", body)
 	req.Header.Set("Content-Type", ct)
 
-	_, _, _, _, _, _, _, err := parseMultipartTaskForm(req)
+	_, _, _, _, _, _, _, _, err := parseMultipartTaskForm(req)
 	if !errors.Is(err, errAttachmentTooLarge) {
 		t.Fatalf("got %v, want errAttachmentTooLarge", err)
 	}
@@ -413,7 +413,7 @@ func TestParseMultipartTaskForm_ReadsModel(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/tasks", body)
 	req.Header.Set("Content-Type", ct)
 
-	_, _, _, _, taskModel, _, _, err := parseMultipartTaskForm(req)
+	_, _, _, _, taskModel, _, _, _, err := parseMultipartTaskForm(req)
 	testutil.NoError(t, err)
 	testutil.Equal(t, taskModel, "opus")
 }

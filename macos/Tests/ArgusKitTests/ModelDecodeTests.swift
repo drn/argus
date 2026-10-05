@@ -377,4 +377,74 @@ struct ModelDecodeTests {
         #expect(v["tags"]?.arrayValue?.count == 2)
         #expect(v["nothing"] == JSONValue.null)
     }
+
+    @Test("Task decodes account and defaults to nil")
+    func taskAccount() throws {
+        let base = #"{"id":"1","name":"n","status":"pending","project":"p","created_at":"2026-07-02T12:00:00Z""#
+        #expect(try decode(Task.self, base + "}").account == nil)
+        #expect(try decode(Task.self, base + #","account":"work"}"#).account == "work")
+        let t = try decode(Task.self, base + #","account":"work"}"#)
+        #expect(t.with(name: "x").account == "work")
+    }
+
+    @Test("Account decodes dirs and supports, optional fields absent")
+    func accountDecode() throws {
+        let a = try decode(Account.self,
+            #"{"name":"work","label":"","claude_config_dir":"/x","codex_home":"/y","supports":{"claude":true,"codex":true},"is_default":false,"logged_in":true,"email":"a@b.c"}"#)
+        #expect(a.displayLabel == "work")
+        #expect(a.claudeConfigDir == "/x")
+        #expect(a.codexHome == "/y")
+        #expect(a.supports == AccountSupports(claude: true, codex: true))
+        #expect(a.loggedIn)
+        #expect(a.email == "a@b.c")
+        #expect(a.org == nil)
+        let bare = try decode(Account.self, #"{"name":"b"}"#)
+        #expect(bare.supports == AccountSupports())
+        #expect(bare.codexHome == "")
+    }
+
+    @Test("NewTaskAccount.accounts filters by backend tool")
+    func newTaskAccountFilter() {
+        let d = Account(name: "default", isDefault: true)
+        let w = Account(name: "work", supports: AccountSupports(claude: true))
+        let c = Account(name: "cx", supports: AccountSupports(codex: true))
+        #expect(NewTaskAccount.accounts([d, w, c], forBackend: "claude").map(\.name) == ["default", "work"])
+        #expect(NewTaskAccount.accounts([d, w, c], forBackend: "").map(\.name) == ["default", "work"])
+        #expect(NewTaskAccount.accounts([d, w, c], forBackend: "codex").map(\.name) == ["default", "cx"])
+        #expect(NewTaskAccount.accounts([d, w, c], forBackend: "pi").map(\.name) == ["default"])
+    }
+
+    @Test("NewTaskAccount.requestValue sends the explicit pick, default included")
+    func newTaskAccountGating() {
+        let d = Account(name: "default")
+        let w = Account(name: "work", supports: AccountSupports(claude: true))
+        let c = Account(name: "cx", supports: AccountSupports(codex: true))
+        #expect(NewTaskAccount.requestValue(selected: "work", accounts: [d, w], backend: "claude") == "work")
+        #expect(NewTaskAccount.requestValue(selected: "default", accounts: [d, w], backend: "") == "default")
+        #expect(NewTaskAccount.requestValue(selected: "work", accounts: [d, w], backend: "codex") == nil)
+        #expect(NewTaskAccount.requestValue(selected: "cx", accounts: [d, w, c], backend: "codex") == "cx")
+        #expect(NewTaskAccount.requestValue(selected: "default", accounts: [d], backend: "claude") == nil)
+        #expect(NewTaskAccount.requestValue(selected: "", accounts: [d, w], backend: "claude") == nil)
+    }
+
+    @Test("NewTaskAccount.requestValue sends default even when another account resolves as default")
+    func newTaskAccountExplicitDefault() {
+        let d = Account(name: "default")
+        let w = Account(name: "work", supports: AccountSupports(claude: true), isDefault: true)
+        #expect(NewTaskAccount.requestValue(selected: "default", accounts: [d, w], backend: "claude") == "default")
+        #expect(NewTaskAccount.requestValue(selected: "work", accounts: [d, w], backend: "claude") == "work")
+    }
+
+    @Test("NewTaskAccount.preselect keeps a usable pick, else the resolved default")
+    func newTaskAccountPreselect() {
+        let d = Account(name: "default")
+        let w = Account(name: "work", supports: AccountSupports(claude: true), isDefault: true)
+        let c = Account(name: "cx", supports: AccountSupports(codex: true))
+        let all = [d, w, c]
+        #expect(NewTaskAccount.preselect(all, backend: "claude", picked: "") == "work")
+        #expect(NewTaskAccount.preselect(all, backend: "claude", picked: "default") == "default")
+        #expect(NewTaskAccount.preselect(all, backend: "codex", picked: "work") == "default")
+        #expect(NewTaskAccount.preselect(all, backend: "codex", picked: "cx") == "cx")
+        #expect(NewTaskAccount.preselect([d], backend: "pi", picked: "") == "default")
+    }
 }

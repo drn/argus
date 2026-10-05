@@ -119,7 +119,12 @@ type BootInfoResp struct {
 //     supervisor so each Claude/Codex task gets a process-scoped MCP URL.
 //     A pre-v7 supervisor ignores the optional field and launches without
 //     Argus MCP until it is restarted; protocol skew remains non-fatal.
-const ProtocolVersion = 7
+//   - v8 (add-agent-accounts): + Account and SandboxOverride on StartReq,
+//     KickReq, and RecycleReq. BuildCmd reads both off the rebuilt task (the
+//     per-task account's CLAUDE_CONFIG_DIR and the per-task sandbox tier). A
+//     pre-v8 supervisor silently drops them and spawns on the default account
+//     with the project/global sandbox setting until it is restarted.
+const ProtocolVersion = 8
 
 // SupervisorProtocolMatch reports whether a supervisor's handshake version
 // equals the daemon's. A mismatch is NOT fatal and NEVER triggers an auto-
@@ -186,22 +191,25 @@ type PortsResp struct {
 // reconstructed *model.Task resolves as archetype-less and agent.ResolveModel
 // silently falls through to the backend default, even though the DB row and
 // the caller's original task both carry the right values. Keep every field
-// consumed by agent.ResolveModel/resolveProfile represented here.
+// consumed by agent.ResolveModel/resolveProfile represented here, and every
+// other model.Task field BuildCmd reads (Account, SandboxOverride).
 type StartReq struct {
-	MCPPort   int
-	TaskID    string
-	SessionID string
-	Prompt    string
-	Project   string
-	Backend   string
-	Model     string
-	Archetype string
-	Profile   string
-	Worktree  string
-	Branch    string
-	Rows      uint16
-	Cols      uint16
-	Resume    bool
+	MCPPort         int
+	TaskID          string
+	SessionID       string
+	Prompt          string
+	Project         string
+	Backend         string
+	Model           string
+	Archetype       string
+	Profile         string
+	Account         string
+	SandboxOverride string
+	Worktree        string
+	Branch          string
+	Rows            uint16
+	Cols            uint16
+	Resume          bool
 }
 
 // StartResp is the RPC response from starting a session.
@@ -272,19 +280,21 @@ type ResizeReq struct {
 // kick-rerender rebuilds the command via agent.ResolveModel too, and must not
 // silently drop back to the backend default on a resumed session.
 type KickReq struct {
-	MCPPort   int
-	TaskID    string
-	SessionID string
-	Prompt    string
-	Project   string
-	Backend   string
-	Model     string
-	Archetype string
-	Profile   string
-	Worktree  string
-	Branch    string
-	Rows      uint16
-	Cols      uint16
+	MCPPort         int
+	TaskID          string
+	SessionID       string
+	Prompt          string
+	Project         string
+	Backend         string
+	Model           string
+	Archetype       string
+	Profile         string
+	Account         string
+	SandboxOverride string
+	Worktree        string
+	Branch          string
+	Rows            uint16
+	Cols            uint16
 }
 
 // RecycleReq is the RPC request to recycle a coordinator's session
@@ -299,18 +309,20 @@ type KickReq struct {
 // recycle rebuilds the command via agent.ResolveModel too, and must not
 // silently drop back to the backend default on the fresh-context restart.
 type RecycleReq struct {
-	MCPPort   int
-	TaskID    string
-	Prompt    string
-	Project   string
-	Backend   string
-	Model     string
-	Archetype string
-	Profile   string
-	Worktree  string
-	Branch    string
-	Rows      uint16
-	Cols      uint16
+	MCPPort         int
+	TaskID          string
+	Prompt          string
+	Project         string
+	Backend         string
+	Model           string
+	Archetype       string
+	Profile         string
+	Account         string
+	SandboxOverride string
+	Worktree        string
+	Branch          string
+	Rows            uint16
+	Cols            uint16
 }
 
 // StreamHeader is sent by the client on a stream connection to subscribe
