@@ -87,6 +87,51 @@ func Run(sourceDir string) (string, error) {
 func runCmd(dir, name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...) //nolint:gosec // name and args are package-internal literals
 	cmd.Dir = dir
+	cmd.Env = envWithToolPath(os.Environ(), os.Getenv("HOME"))
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// toolPathDirs lists where version managers and package managers put `go`.
+// A launchd-started daemon inherits a minimal PATH without these.
+func toolPathDirs(home string) []string {
+	dirs := []string{
+		filepath.Join(home, ".asdf", "shims"),
+		filepath.Join(home, ".local", "share", "mise", "shims"),
+		filepath.Join(home, "go", "bin"),
+		"/opt/homebrew/bin",
+		"/usr/local/go/bin",
+		"/usr/local/bin",
+	}
+	if home == "" {
+		return dirs[4:]
+	}
+	return dirs
+}
+
+// envWithToolPath returns env with toolPathDirs appended to PATH (entries
+// already present are skipped), so go resolves under a minimal daemon PATH.
+func envWithToolPath(env []string, home string) []string {
+	const prefix = "PATH="
+	var current string
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			current = kv[len(prefix):]
+			continue
+		}
+		out = append(out, kv)
+	}
+	have := map[string]bool{}
+	var parts []string
+	for _, d := range filepath.SplitList(current) {
+		have[d] = true
+		parts = append(parts, d)
+	}
+	for _, d := range toolPathDirs(home) {
+		if !have[d] {
+			parts = append(parts, d)
+		}
+	}
+	return append(out, prefix+strings.Join(parts, string(os.PathListSeparator)))
 }
