@@ -159,3 +159,26 @@ func TestRun_GoInstallSuccess(t *testing.T) {
 		t.Errorf("expected installed binary at %s/hello: %v", gobin, err)
 	}
 }
+
+func TestEnvWithToolPath(t *testing.T) {
+	env := envWithToolPath([]string{"FOO=1", "PATH=/usr/bin:/opt/homebrew/bin"}, "/home/u")
+	var path string
+	var n int
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") {
+			path = kv
+			n++
+		}
+	}
+	testutil.Equal(t, n, 1)
+	testutil.Contains(t, path, "/home/u/.asdf/shims")
+	testutil.Contains(t, path, "/usr/local/go/bin")
+	testutil.Equal(t, strings.Count(path, "/opt/homebrew/bin"), 1)
+	testutil.Contains(t, strings.Join(env, "\n"), "FOO=1")
+
+	noPath := envWithToolPath(nil, "")
+	testutil.Equal(t, len(noPath), 1)
+	if strings.Contains(noPath[0], ".asdf") {
+		t.Errorf("empty home should skip home dirs: %v", noPath)
+	}
+}
