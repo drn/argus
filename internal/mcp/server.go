@@ -51,6 +51,15 @@ type TaskCreateInput struct {
 	// for stacked-PR workflows where each sub-task branches off the previous
 	// task's branch.
 	BaseBranch string
+
+	// Account names the account the task runs under. Empty resolves the
+	// project / global default.
+	Account string
+
+	// InheritedAccount marks Account as copied from the calling task rather
+	// than chosen explicitly; an account that cannot run the backend fails the
+	// call instead of falling back (agent.CreateInput.InheritedAccount).
+	InheritedAccount bool
 }
 
 // HeraSpawnInput is the payload the MCP hera_spawn_worker arm hands to the
@@ -641,6 +650,8 @@ var taskToolDefs = []Tool{
 
 Orchestration: pass ` + "`base_branch`" + ` to branch off a non-default ref (stacked-PR workflows where each sub-task branches off the previous task's branch). The session starts immediately — task sequencing is the coordinator's job (spawn the next worker when the prior one is done), not a declarative dependency.
 
+Account: the new task inherits the calling task's account when the caller is identifiable (pass ` + "`caller_id`" + ` from ARGUS_TASK_ID, or ` + "`cwd`" + `). Pass ` + "`account`" + ` to choose one explicitly ("default" included); an inherited account that cannot run the backend fails the call.
+
 Idempotency: when ` + "`name`" + ` is supplied (not auto-generated from prompt) and a non-archived task with the same (name, project) already exists, the call errors unless ` + "`upsert: true`" + ` is set — in which case the existing task is returned unchanged. This keeps an orchestrator that restarts mid-loop from double-firing sub-tasks.`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
@@ -651,6 +662,9 @@ Idempotency: when ` + "`name`" + ` is supplied (not auto-generated from prompt) 
 				"base_branch": map[string]interface{}{"type": "string", "description": "Optional. Start point for the new worktree's branch (e.g. 'argus/parent-task'). Resolves to origin/<ref> / upstream/<ref> if no local match. Empty = project default (master/main)."},
 				"model":       map[string]interface{}{"type": "string", "description": "Optional. Model override for the agent session (e.g. 'sonnet', 'opus', 'gpt-6-sol', or a provider-qualified 'anthropic/claude-opus-4-5'). Delivered through the backend's supported mechanism: --model for claude/codex/pi, child-only OPENCODE_CONFIG_CONTENT for opencode (which takes provider/model ids). Empty = the backend's configured default."},
 				"upsert":      map[string]interface{}{"type": "boolean", "description": "Optional. If true and a non-archived task with the same (name, project) exists, return that task instead of erroring."},
+				"account":     map[string]interface{}{"type": "string", "description": "Optional. Configured account to run the task under ('default' or a name from config.toml [accounts]). Omit to inherit the calling task's account (when caller_id or cwd identifies it), else the project / global default."},
+				"caller_id":   map[string]interface{}{"type": "string", "description": "Optional. The calling task's ID (ARGUS_TASK_ID); the new task inherits its account unless account is passed."},
+				"cwd":         map[string]interface{}{"type": "string", "description": "Optional. Caller's worktree path (use $PWD); identifies the calling task when caller_id is omitted."},
 			},
 			"required": []string{"prompt", "project"},
 		},
@@ -1422,6 +1436,9 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 		BaseBranch string `json:"base_branch"`
 		Model      string `json:"model"`
 		Upsert     bool   `json:"upsert"`
+		Account    string `json:"account"`
+		CallerID   string `json:"caller_id"`
+		Cwd        string `json:"cwd"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
 
@@ -1430,6 +1447,10 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 	}
 	if p.Prompt == "" {
 		return toolError(id, "prompt is required")
+	}
+	account, inherited, err := s.taskCreateAccount(strings.TrimSpace(p.Account), p.CallerID, p.Cwd)
+	if err != nil {
+		return toolError(id, err.Error())
 	}
 
 	autoName := p.Name == ""
@@ -1493,12 +1514,14 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 
 	log.Printf("[mcp] task_create name=%q project=%q auto=%v base=%q", name, p.Project, autoName, p.BaseBranch)
 	task, err := s.createTask(TaskCreateInput{
-		Name:       name,
-		Prompt:     p.Prompt,
-		Project:    p.Project,
-		AutoName:   autoName,
-		Model:      strings.TrimSpace(p.Model),
-		BaseBranch: strings.TrimSpace(p.BaseBranch),
+		Name:             name,
+		Prompt:           p.Prompt,
+		Project:          p.Project,
+		AutoName:         autoName,
+		Model:            strings.TrimSpace(p.Model),
+		BaseBranch:       strings.TrimSpace(p.BaseBranch),
+		Account:          account,
+		InheritedAccount: inherited,
 	})
 	if err != nil {
 		log.Printf("[mcp] task_create failed: %v", err)
@@ -1507,6 +1530,48 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 
 	log.Printf("[mcp] task_create ok: id=%s name=%s status=%s", task.ID, task.Name, task.Status)
 	return toolResult(id, formatTaskCreatedSummary(task, "Task created"))
+}
+
+// accountConfigSource is the optional Config() seam account validation uses;
+// *db.DB satisfies it.
+type accountConfigSource interface {
+	Config() config.Config
+}
+
+// taskCreateAccount picks task_create's account: an explicit value (validated
+// against config when available), else the calling task's account when
+// caller_id / cwd identifies it, else "" (project / global default).
+func (s *Server) taskCreateAccount(explicit, callerID, cwd string) (account string, inherited bool, err error) {
+	if explicit != "" {
+		var src accountConfigSource
+		if c, ok := s.taskDB.(accountConfigSource); ok {
+			src = c
+		} else if c, ok := s.db.(accountConfigSource); ok {
+			src = c
+		}
+		if src != nil {
+			if err := src.Config().ValidateAccount(explicit); err != nil {
+				return "", false, err
+			}
+		}
+		return explicit, false, nil
+	}
+	if callerID == "" && cwd == "" {
+		return "", false, nil
+	}
+	caller, err := s.resolveTask(callerID, cwd)
+	if err != nil {
+		log.Printf("[mcp] task_create: caller not resolved, account not inherited: %v", err)
+		return "", false, nil
+	}
+	// A default-account caller is stored as ""; pin it so the child does not
+	// drift to the project/global default.
+	account = caller.Account
+	if account == "" {
+		account = config.DefaultAccountName
+	}
+	log.Printf("[mcp] task_create: inheriting account %q from caller %s", account, caller.ID)
+	return account, true, nil
 }
 
 // lookupExistingTaskLocked returns the first non-archived task with the

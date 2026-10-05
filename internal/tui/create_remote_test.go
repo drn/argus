@@ -76,7 +76,7 @@ type creatorStore struct {
 	err                                                                      error
 }
 
-func (c *creatorStore) CreateTask(_ context.Context, name, prompt, project, backend, taskModel, sandboxOverride string) (*model.Task, error) {
+func (c *creatorStore) CreateTask(_ context.Context, name, prompt, project, backend, taskModel, sandboxOverride, account string) (*model.Task, error) {
 	c.gotName, c.gotPrompt, c.gotProject, c.gotBackend, c.gotModel, c.gotSandboxOverride = name, prompt, project, backend, taskModel, sandboxOverride
 	return c.ret, c.err
 }

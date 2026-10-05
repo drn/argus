@@ -163,3 +163,46 @@ func TestRefreshResumeSessionID_NilAndNoWorktree(t *testing.T) {
 	RefreshResumeSessionID(d, task) // empty worktree → no-op
 	testutil.Equal(t, task.SessionID, "x")
 }
+
+// TestRefreshResumeSessionID_AccountConfigDir pins that the recapture reads the
+// task's own account config dir, not ~/.claude, and that an unknown stored
+// account leaves the ID untouched.
+func TestRefreshResumeSessionID_AccountConfigDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	wt := filepath.Join(home, "wt")
+	testutil.NoError(t, os.MkdirAll(wt, 0o755))
+	d := accountFileDB(t, t.TempDir())
+	acctDir, _, err := d.Config().ClaudeConfigDir("work")
+	testutil.NoError(t, err)
+
+	original := "11111111-1111-7111-9111-111111111111"
+	newest := "33333333-3333-7333-9333-333333333333"
+	dir := filepath.Join(acctDir, "projects", claudesession.EncodeProjectDir(wt))
+	testutil.NoError(t, os.MkdirAll(dir, 0o755))
+	testutil.NoError(t, os.WriteFile(filepath.Join(dir, newest+".jsonl"), []byte("{}\n"), 0o644))
+
+	t.Run("reads the account dir", func(t *testing.T) {
+		task := &model.Task{Name: "a", Project: "proj", Worktree: wt, Backend: "test", SessionID: original, Account: "work"}
+		testutil.NoError(t, d.Add(task))
+		RefreshResumeSessionID(d, task)
+		testutil.Equal(t, task.SessionID, newest)
+	})
+
+	t.Run("default account does not see the account transcript", func(t *testing.T) {
+		task := &model.Task{Name: "b", Project: "proj", Worktree: wt, Backend: "test", SessionID: original}
+		testutil.NoError(t, d.Add(task))
+		RefreshResumeSessionID(d, task)
+		testutil.Equal(t, task.SessionID, original)
+	})
+
+	t.Run("unknown account leaves the id untouched", func(t *testing.T) {
+		task := &model.Task{Name: "c", Project: "proj", Worktree: wt, Backend: "test", SessionID: original, Account: "gone"}
+		testutil.NoError(t, d.Add(task))
+		RefreshResumeSessionID(d, task)
+		testutil.Equal(t, task.SessionID, original)
+		got, err := d.Get(task.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.SessionID, original)
+	})
+}

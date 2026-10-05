@@ -30,9 +30,11 @@ var (
 // round-trip never adds latency to a stop request. Every failure is logged
 // and swallowed — a missing/older claude CLI, or nothing to reap, are both
 // the overwhelmingly common, harmless case. Returns the ids stopped, for
-// tests; production callers ignore the result.
-func reapOrphanedClaudeSessions(taskID, worktreeDir string) []string {
-	return reapBackgroundSessions(taskID, worktreeDir, "")
+// tests; production callers ignore the result. configDir is the Claude config
+// dir the session was spawned under ("" = default); Claude Code's background
+// registry is per config dir, so a wrong dir finds nothing.
+func reapOrphanedClaudeSessions(taskID, worktreeDir, configDir string) []string {
+	return reapBackgroundSessions(taskID, worktreeDir, "", configDir)
 }
 
 // reapBackgroundSessionForResume stops the Claude Code background session, if
@@ -50,20 +52,28 @@ func reapBackgroundSessionForResume(task *model.Task, cfg config.Config) []strin
 	if err != nil || !IsClaudeBackend(backend.Command) {
 		return nil
 	}
-	return reapBackgroundSessions(task.ID, task.Worktree, task.SessionID)
+	configDir, explicit, err := cfg.ClaudeConfigDir(task.Account)
+	if err != nil {
+		uxlog.Log("[bgreap] task=%s resume reap skipped: account: %v", task.ID, err)
+		return nil
+	}
+	if !explicit {
+		configDir = ""
+	}
+	return reapBackgroundSessions(task.ID, task.Worktree, task.SessionID, configDir)
 }
 
 // reapBackgroundSessions is the shared list-filter-stop body. A non-empty
 // sessionID restricts the stop to the background session hosting that
 // conversation.
-func reapBackgroundSessions(taskID, worktreeDir, sessionID string) []string {
+func reapBackgroundSessions(taskID, worktreeDir, sessionID, configDir string) []string {
 	if worktreeDir == "" {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), claudeagents.DefaultTimeout)
 	defer cancel()
 
-	sessions, err := listBackgroundSessionsFn(ctx, worktreeDir)
+	sessions, err := listBackgroundSessionsFn(ctx, worktreeDir, configDir)
 	if err != nil {
 		if !errors.Is(err, claudeagents.ErrUnavailable) {
 			uxlog.Log("[bgreap] task=%s list failed: %v", taskID, err)
@@ -79,7 +89,7 @@ func reapBackgroundSessions(taskID, worktreeDir, sessionID string) []string {
 		if sessionID != "" && s.SessionID != sessionID {
 			continue
 		}
-		if err := stopBackgroundSessionFn(ctx, s.ID); err != nil {
+		if err := stopBackgroundSessionFn(ctx, s.ID, configDir); err != nil {
 			uxlog.Log("[bgreap] task=%s claude stop %s failed: %v", taskID, s.ID, err)
 			continue
 		}
@@ -87,4 +97,13 @@ func reapBackgroundSessions(taskID, worktreeDir, sessionID string) []string {
 		stopped = append(stopped, s.ID)
 	}
 	return stopped
+}
+
+// claudeConfigDir returns the CLAUDE_CONFIG_DIR this session's process was
+// spawned with, or "" for the default account.
+func (s *Session) claudeConfigDir() string {
+	if s == nil || s.Cmd == nil {
+		return ""
+	}
+	return claudeConfigDirFromEnv(s.Cmd.Env)
 }

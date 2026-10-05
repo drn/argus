@@ -123,7 +123,7 @@ func main() {
 		log.Fatalf("seed hera: %v", err)
 	}
 
-	creator := func(name, prompt, project, backend, taskModel, sandboxOverride string, _ bool) (*model.Task, error) {
+	creator := func(name, prompt, project, backend, taskModel, sandboxOverride, account string, _ bool) (*model.Task, error) {
 		if backend == "" {
 			backend = "bash-test"
 		}
@@ -136,6 +136,7 @@ func main() {
 			Worktree:        projDir,
 			Status:          model.StatusInProgress,
 			SandboxOverride: sandboxOverride,
+			Account:         account,
 		}
 		if err := d.Add(t); err != nil {
 			return nil, err

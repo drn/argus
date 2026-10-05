@@ -149,7 +149,7 @@ func opencodeSessionConfigContent(model, skillsDir string) (string, error) {
 
 // SetEnsureCodexSkillsForTest overrides the codex-skills materialization
 // function BuildCmd calls. Returns a restore func.
-func SetEnsureCodexSkillsForTest(fn func() (string, error)) func() {
+func SetEnsureCodexSkillsForTest(fn func(source string) (string, error)) func() {
 	old := ensureCodexSkillsFn
 	ensureCodexSkillsFn = fn
 	return func() { ensureCodexSkillsFn = old }

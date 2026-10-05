@@ -124,6 +124,53 @@ func resolveOrchestratorBranchNamespace(database *db.DB, orchestratorID int64) s
 	return orch.Name
 }
 
+// resolveOrchestratorAccount returns the account of the
+// orchestrator's coordinator task so spawned workers stay on the same account
+// (a personal-account coordinator must not fan out onto the work account).
+// A default-account coordinator yields "default", not "", so its workers are
+// pinned to it rather than falling through to a project/global default.
+// An orchestrator with no coordinator binding at all yields "" (nothing to
+// inherit; normal resolution applies, logged). A coordinator that exists but
+// whose task cannot be read is an error, never a silent project-default
+// fallback: a personal coordinator must not fan out onto the work account.
+func resolveOrchestratorAccount(database *db.DB, orchestratorID int64) (string, error) {
+	coords, err := database.ListHeraRolesByKind(orchestratorID, db.HeraKindCoordinator)
+	if err != nil {
+		return "", fmt.Errorf("resolve orchestrator account: list coordinators: %w", err)
+	}
+	// Ended bindings count too: the plan-DAG gater can materialize a node after
+	// the coordinator's binding ended, and that must not drift to the project default.
+	for _, r := range coords {
+		bindings, err := database.ListHeraBindingsByRole(r.ID)
+		if err != nil {
+			return "", fmt.Errorf("resolve orchestrator account: list bindings: %w", err)
+		}
+		for _, b := range bindings {
+			t, err := database.Get(b.ArgusTaskID)
+			if err != nil || t == nil {
+				uxlog.Log("[account] orchestrator %d coordinator task %s unreadable: %v", orchestratorID, b.ArgusTaskID, err)
+				continue
+			}
+			return PinnedAccount(t.Account), nil
+		}
+		if len(bindings) > 0 {
+			return "", fmt.Errorf("resolve orchestrator account: no readable coordinator task for orchestrator %d", orchestratorID)
+		}
+	}
+	uxlog.Log("[account] orchestrator %d has no coordinator binding to inherit an account from", orchestratorID)
+	return "", nil
+}
+
+// PinnedAccount converts a stored task account into an explicit selection for
+// a task that inherits it (hera worker, fork): the default account is stored
+// as "", which as an input would mean "resolve the project/global default".
+func PinnedAccount(stored string) string {
+	if stored == "" {
+		return config.DefaultAccountName
+	}
+	return stored
+}
+
 // HeraWorkerSpawnResult is the success payload from SpawnHeraWorker.
 type HeraWorkerSpawnResult struct {
 	Task    *model.Task
@@ -162,17 +209,23 @@ func SpawnHeraWorker(database *db.DB, runner SessionProvider, in HeraWorkerSpawn
 
 	var role *db.HeraRole
 	var binding *db.HeraBinding
+	inheritedAccount, aerr := resolveOrchestratorAccount(database, in.OrchestratorID)
+	if aerr != nil {
+		return nil, aerr
+	}
 	task, _, err := CreateAndStart(database, runner, CreateInput{
-		Name:            uniqueName,
-		Prompt:          in.TaskPrompt,
-		Project:         in.Project,
-		Backend:         in.Backend,
-		Model:           in.Model,
-		Archetype:       archetype,
-		Profile:         in.Profile,
-		BaseBranch:      in.Branch,
-		BranchNamespace: resolveOrchestratorBranchNamespace(database, in.OrchestratorID),
-		AutoName:        false, // name is the meaningful role slug — no Haiku rename
+		Name:             uniqueName,
+		Prompt:           in.TaskPrompt,
+		Project:          in.Project,
+		Backend:          in.Backend,
+		Model:            in.Model,
+		Archetype:        archetype,
+		Profile:          in.Profile,
+		BaseBranch:       in.Branch,
+		BranchNamespace:  resolveOrchestratorBranchNamespace(database, in.OrchestratorID),
+		Account:          inheritedAccount,
+		InheritedAccount: true,
+		AutoName:         false, // name is the meaningful role slug — no Haiku rename
 		AfterPersist: func(t *model.Task) (func(), error) {
 			// Stamp meta:hera.role=worker BEFORE the session starts. Best-effort:
 			// a meta failure must not abort an otherwise-valid spawn.
@@ -242,6 +295,10 @@ func MaterializeHeraWorker(database *db.DB, runner SessionProvider, in HeraMater
 		return nil, fmt.Errorf("materialize: nil role")
 	}
 	var binding *db.HeraBinding
+	inheritedAccount, aerr := resolveOrchestratorAccount(database, in.Role.OrchestratorID)
+	if aerr != nil {
+		return nil, aerr
+	}
 	task, _, err := CreateAndStart(database, runner, CreateInput{
 		Name:    in.Role.Name,
 		Prompt:  in.TaskPrompt,
@@ -250,10 +307,12 @@ func MaterializeHeraWorker(database *db.DB, runner SessionProvider, in HeraMater
 		Model:   in.Model,
 		// The planned role's authored archetype (add-diligence-profiles) propagates
 		// onto the materialized task; empty stays empty (resolution falls open).
-		Archetype:       in.Role.Archetype,
-		BaseBranch:      in.Branch,
-		BranchNamespace: resolveOrchestratorBranchNamespace(database, in.Role.OrchestratorID),
-		AutoName:        false, // name is the planner-assigned short-id slug — never rename
+		Archetype:        in.Role.Archetype,
+		BaseBranch:       in.Branch,
+		BranchNamespace:  resolveOrchestratorBranchNamespace(database, in.Role.OrchestratorID),
+		Account:          inheritedAccount,
+		InheritedAccount: true,
+		AutoName:         false, // name is the planner-assigned short-id slug — never rename
 		AfterPersist: func(t *model.Task) (func(), error) {
 			if mErr := database.SetMeta(t.ID, db.HeraMetaNamespace, db.HeraMetaKeyRole, string(db.HeraKindWorker)); mErr != nil {
 				slog.Warn("[hera] materialize: meta role stamp failed (continuing)", "task", t.ID, "err", mErr)
@@ -339,6 +398,10 @@ func MaterializeHeraSubCoordinator(database *db.DB, runner SessionProvider, in H
 		coordRole     *db.HeraRole
 		coordBinding  *db.HeraBinding
 	)
+	inheritedAccount, aerr := resolveOrchestratorAccount(database, in.Role.OrchestratorID)
+	if aerr != nil {
+		return nil, aerr
+	}
 	task, _, err := CreateAndStart(database, runner, CreateInput{
 		Name:    in.Role.Name,
 		Prompt:  in.TaskPrompt,
@@ -356,8 +419,10 @@ func MaterializeHeraSubCoordinator(database *db.DB, runner SessionProvider, in H
 		// orchestrator this call mints below doesn't exist yet at CreateWorktree
 		// time, so it couldn't be used even if it were the intended namespace
 		// (add-branch-namespacing D2).
-		BranchNamespace: resolveOrchestratorBranchNamespace(database, in.Role.OrchestratorID),
-		AutoName:        false, // name is the planner-assigned short-id slug — never rename
+		BranchNamespace:  resolveOrchestratorBranchNamespace(database, in.Role.OrchestratorID),
+		Account:          inheritedAccount,
+		InheritedAccount: true,
+		AutoName:         false, // name is the planner-assigned short-id slug — never rename
 		AfterPersist: func(t *model.Task) (func(), error) {
 			// The new task is a coordinator (of its own child orchestrator); rail
 			// rendering keys on meta:hera.role. Best-effort — a meta failure must not

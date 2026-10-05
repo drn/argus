@@ -32,9 +32,11 @@ import (
 // overrides the backend's default model; pass "" to use the backend default.
 // sandboxOverride is a tri-state per-task override of the resolved sandbox
 // setting ("" inherit, "enabled", "disabled" — add-task-sandbox-override).
+// account names a configured account ("" = resolve the
+// project/global default).
 // autoName signals the underlying creator to fire async Haiku name-gen when
 // name was string-interpolated from prompt rather than user-typed.
-type TaskCreator func(name, prompt, project, backend, taskModel, sandboxOverride string, autoName bool) (*model.Task, error)
+type TaskCreator func(name, prompt, project, backend, taskModel, sandboxOverride, account string, autoName bool) (*model.Task, error)
 
 // Server is the HTTP REST API server.
 type Server struct {

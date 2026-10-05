@@ -30,3 +30,13 @@ extension ArgusClient {
         return (resp.status, resp.pid)
     }
 }
+
+extension ArgusClient {
+    /// `GET /api/accounts` — configured accounts (default first) with
+    /// best-effort Claude sign-in metadata. Never carries credentials. With a
+    /// project, `isDefault` marks that project's default account.
+    public func accounts(project: String? = nil) async throws -> [Account] {
+        let query = (project?.isEmpty ?? true) ? [] : [URLQueryItem(name: "project", value: project)]
+        return try await getDecoding("/api/accounts", query: query)
+    }
+}

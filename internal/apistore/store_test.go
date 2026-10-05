@@ -349,7 +349,7 @@ func TestStore_CreateTask(t *testing.T) {
 		})
 	})
 
-	got, err := f.store().CreateTask(context.Background(), "", "do a thing", "proj", "claude", "opus", "enabled")
+	got, err := f.store().CreateTask(context.Background(), "", "do a thing", "proj", "claude", "opus", "enabled", "work")
 	testutil.NoError(t, err)
 	testutil.Equal(t, got.ID, "t9")
 	testutil.Equal(t, got.Status, model.StatusInProgress)
@@ -360,6 +360,22 @@ func TestStore_CreateTask(t *testing.T) {
 	testutil.Contains(t, captured, `"backend":"claude"`)
 	testutil.Contains(t, captured, `"model":"opus"`)
 	testutil.Contains(t, captured, `"sandbox_override":"enabled"`)
+	testutil.Contains(t, captured, `"account":"work"`)
+}
+
+func TestStore_Accounts(t *testing.T) {
+	f := newFakeAPI(t)
+	f.mux.HandleFunc("/api/accounts", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"name":"default","label":"default","claude_config_dir":"/h/.claude","codex_home":"/h/.codex","supports":{"claude":true,"codex":true},"is_default":true,"logged_in":true,"email":"a@b.c"}]`))
+	})
+	got, err := f.store().Accounts(context.Background())
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(got), 1)
+	testutil.True(t, got[0].IsDefault)
+	testutil.Equal(t, got[0].Email, "a@b.c")
+	testutil.Equal(t, got[0].CodexHome, "/h/.codex")
+	testutil.True(t, got[0].Supports.Codex)
 }
 
 // When the post-create raw fetch fails, CreateTask still returns a minimal
@@ -374,7 +390,7 @@ func TestStore_CreateTask_RawFetchFallback(t *testing.T) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	})
 
-	got, err := f.store().CreateTask(context.Background(), "n", "p", "proj", "", "", "")
+	got, err := f.store().CreateTask(context.Background(), "n", "p", "proj", "", "", "", "")
 	testutil.NoError(t, err)
 	testutil.Equal(t, got.ID, "t9")
 	testutil.Equal(t, got.Name, "slug")
@@ -388,7 +404,7 @@ func TestStore_CreateTask_ErrorPropagates(t *testing.T) {
 	f.mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "project not found", http.StatusInternalServerError)
 	})
-	_, err := f.store().CreateTask(context.Background(), "n", "p", "proj", "", "", "")
+	_, err := f.store().CreateTask(context.Background(), "n", "p", "proj", "", "", "", "")
 	if err == nil {
 		t.Fatal("expected error from CreateTask")
 	}

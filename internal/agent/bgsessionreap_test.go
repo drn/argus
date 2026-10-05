@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -15,8 +17,8 @@ import (
 // stubBackgroundSessions swaps listBackgroundSessionsFn/stopBackgroundSessionFn
 // for the duration of t and restores them at cleanup time.
 func stubBackgroundSessions(t *testing.T,
-	list func(ctx context.Context, cwd string) ([]claudeagents.Session, error),
-	stop func(ctx context.Context, id string) error,
+	list func(ctx context.Context, cwd, configDir string) ([]claudeagents.Session, error),
+	stop func(ctx context.Context, id, configDir string) error,
 ) {
 	t.Helper()
 	prevList, prevStop := listBackgroundSessionsFn, stopBackgroundSessionFn
@@ -31,91 +33,91 @@ func stubBackgroundSessions(t *testing.T,
 func TestReapOrphanedClaudeSessions_EmptyWorktree(t *testing.T) {
 	called := false
 	stubBackgroundSessions(t,
-		func(ctx context.Context, cwd string) ([]claudeagents.Session, error) {
+		func(ctx context.Context, cwd, configDir string) ([]claudeagents.Session, error) {
 			called = true
 			return nil, nil
 		},
-		func(ctx context.Context, id string) error { return nil },
+		func(ctx context.Context, id, configDir string) error { return nil },
 	)
 
-	got := reapOrphanedClaudeSessions("t1", "")
+	got := reapOrphanedClaudeSessions("t1", "", "")
 	testutil.Nil(t, got)
 	testutil.Equal(t, called, false)
 }
 
 func TestReapOrphanedClaudeSessions_NoSessions(t *testing.T) {
 	stubBackgroundSessions(t,
-		func(ctx context.Context, cwd string) ([]claudeagents.Session, error) {
+		func(ctx context.Context, cwd, configDir string) ([]claudeagents.Session, error) {
 			return nil, nil
 		},
-		func(ctx context.Context, id string) error {
+		func(ctx context.Context, id, configDir string) error {
 			t.Fatal("Stop should not be called")
 			return nil
 		},
 	)
 
-	got := reapOrphanedClaudeSessions("t1", "/wt")
+	got := reapOrphanedClaudeSessions("t1", "/wt", "")
 	testutil.Nil(t, got)
 }
 
 func TestReapOrphanedClaudeSessions_StopsBackgroundAlive(t *testing.T) {
 	var stoppedIDs []string
 	stubBackgroundSessions(t,
-		func(ctx context.Context, cwd string) ([]claudeagents.Session, error) {
+		func(ctx context.Context, cwd, configDir string) ([]claudeagents.Session, error) {
 			testutil.Equal(t, cwd, "/wt")
 			return []claudeagents.Session{
 				{Kind: "background", ID: "bg1", PID: 111},
 			}, nil
 		},
-		func(ctx context.Context, id string) error {
+		func(ctx context.Context, id, configDir string) error {
 			stoppedIDs = append(stoppedIDs, id)
 			return nil
 		},
 	)
 
-	got := reapOrphanedClaudeSessions("t1", "/wt")
+	got := reapOrphanedClaudeSessions("t1", "/wt", "")
 	testutil.DeepEqual(t, got, []string{"bg1"})
 	testutil.DeepEqual(t, stoppedIDs, []string{"bg1"})
 }
 
 func TestReapOrphanedClaudeSessions_SkipsInteractive(t *testing.T) {
 	stubBackgroundSessions(t,
-		func(ctx context.Context, cwd string) ([]claudeagents.Session, error) {
+		func(ctx context.Context, cwd, configDir string) ([]claudeagents.Session, error) {
 			return []claudeagents.Session{
 				{Kind: "interactive", PID: 222, SessionID: "own-session"},
 			}, nil
 		},
-		func(ctx context.Context, id string) error {
+		func(ctx context.Context, id, configDir string) error {
 			t.Fatal("Stop should not be called for an interactive session")
 			return nil
 		},
 	)
 
-	got := reapOrphanedClaudeSessions("t1", "/wt")
+	got := reapOrphanedClaudeSessions("t1", "/wt", "")
 	testutil.Nil(t, got)
 }
 
 func TestReapOrphanedClaudeSessions_SkipsExitedBackground(t *testing.T) {
 	stubBackgroundSessions(t,
-		func(ctx context.Context, cwd string) ([]claudeagents.Session, error) {
+		func(ctx context.Context, cwd, configDir string) ([]claudeagents.Session, error) {
 			return []claudeagents.Session{
 				{Kind: "background", ID: "bg1", State: "done"}, // no PID: already exited
 			}, nil
 		},
-		func(ctx context.Context, id string) error {
+		func(ctx context.Context, id, configDir string) error {
 			t.Fatal("Stop should not be called for an already-exited session")
 			return nil
 		},
 	)
 
-	got := reapOrphanedClaudeSessions("t1", "/wt")
+	got := reapOrphanedClaudeSessions("t1", "/wt", "")
 	testutil.Nil(t, got)
 }
 
 func TestReapOrphanedClaudeSessions_MultipleEntries(t *testing.T) {
 	var stoppedIDs []string
 	stubBackgroundSessions(t,
-		func(ctx context.Context, cwd string) ([]claudeagents.Session, error) {
+		func(ctx context.Context, cwd, configDir string) ([]claudeagents.Session, error) {
 			return []claudeagents.Session{
 				{Kind: "interactive", PID: 1},
 				{Kind: "background", ID: "bg1", PID: 2},
@@ -123,56 +125,56 @@ func TestReapOrphanedClaudeSessions_MultipleEntries(t *testing.T) {
 				{Kind: "background", ID: "bg3", PID: 3},
 			}, nil
 		},
-		func(ctx context.Context, id string) error {
+		func(ctx context.Context, id, configDir string) error {
 			stoppedIDs = append(stoppedIDs, id)
 			return nil
 		},
 	)
 
-	got := reapOrphanedClaudeSessions("t1", "/wt")
+	got := reapOrphanedClaudeSessions("t1", "/wt", "")
 	testutil.DeepEqual(t, got, []string{"bg1", "bg3"})
 	testutil.DeepEqual(t, stoppedIDs, []string{"bg1", "bg3"})
 }
 
 func TestReapOrphanedClaudeSessions_ListErrorSwallowed(t *testing.T) {
 	stubBackgroundSessions(t,
-		func(ctx context.Context, cwd string) ([]claudeagents.Session, error) {
+		func(ctx context.Context, cwd, configDir string) ([]claudeagents.Session, error) {
 			return nil, errors.New("boom")
 		},
-		func(ctx context.Context, id string) error {
+		func(ctx context.Context, id, configDir string) error {
 			t.Fatal("Stop should not be called when List fails")
 			return nil
 		},
 	)
 
-	got := reapOrphanedClaudeSessions("t1", "/wt")
+	got := reapOrphanedClaudeSessions("t1", "/wt", "")
 	testutil.Nil(t, got)
 }
 
 func TestReapOrphanedClaudeSessions_ClaudeUnavailableSwallowed(t *testing.T) {
 	stubBackgroundSessions(t,
-		func(ctx context.Context, cwd string) ([]claudeagents.Session, error) {
+		func(ctx context.Context, cwd, configDir string) ([]claudeagents.Session, error) {
 			return nil, claudeagents.ErrUnavailable
 		},
-		func(ctx context.Context, id string) error {
+		func(ctx context.Context, id, configDir string) error {
 			t.Fatal("Stop should not be called when claude is unavailable")
 			return nil
 		},
 	)
 
-	got := reapOrphanedClaudeSessions("t1", "/wt")
+	got := reapOrphanedClaudeSessions("t1", "/wt", "")
 	testutil.Nil(t, got)
 }
 
 func TestReapOrphanedClaudeSessions_StopErrorSwallowed_ContinuesOthers(t *testing.T) {
 	stubBackgroundSessions(t,
-		func(ctx context.Context, cwd string) ([]claudeagents.Session, error) {
+		func(ctx context.Context, cwd, configDir string) ([]claudeagents.Session, error) {
 			return []claudeagents.Session{
 				{Kind: "background", ID: "bg-fails", PID: 1},
 				{Kind: "background", ID: "bg-ok", PID: 2},
 			}, nil
 		},
-		func(ctx context.Context, id string) error {
+		func(ctx context.Context, id, configDir string) error {
 			if id == "bg-fails" {
 				return errors.New("claude stop failed")
 			}
@@ -180,7 +182,7 @@ func TestReapOrphanedClaudeSessions_StopErrorSwallowed_ContinuesOthers(t *testin
 		},
 	)
 
-	got := reapOrphanedClaudeSessions("t1", "/wt")
+	got := reapOrphanedClaudeSessions("t1", "/wt", "")
 	testutil.DeepEqual(t, got, []string{"bg-ok"})
 }
 
@@ -191,12 +193,12 @@ func TestReapOrphanedClaudeSessions_StopErrorSwallowed_ContinuesOthers(t *testin
 func TestRunner_Stop_TriggersReap(t *testing.T) {
 	seen := make(chan string, 1)
 	stubBackgroundSessions(t,
-		func(ctx context.Context, cwd string) ([]claudeagents.Session, error) {
+		func(ctx context.Context, cwd, configDir string) ([]claudeagents.Session, error) {
 			time.Sleep(50 * time.Millisecond)
 			seen <- cwd
 			return nil, nil
 		},
-		func(ctx context.Context, id string) error { return nil },
+		func(ctx context.Context, id, configDir string) error { return nil },
 	)
 
 	r := NewRunner(nil)
@@ -256,11 +258,11 @@ func TestReapBackgroundSessionForResume(t *testing.T) {
 			var listed bool
 			var stopped []string
 			stubBackgroundSessions(t,
-				func(ctx context.Context, cwd string) ([]claudeagents.Session, error) {
+				func(ctx context.Context, cwd, configDir string) ([]claudeagents.Session, error) {
 					listed = true
 					return tt.sessions, nil
 				},
-				func(ctx context.Context, id string) error {
+				func(ctx context.Context, id, configDir string) error {
 					stopped = append(stopped, id)
 					return nil
 				},
@@ -276,10 +278,10 @@ func TestReapBackgroundSessionForResume(t *testing.T) {
 func TestRunner_StartResume_ReapsBeforeLaunch(t *testing.T) {
 	var stopped []string
 	stubBackgroundSessions(t,
-		func(ctx context.Context, cwd string) ([]claudeagents.Session, error) {
+		func(ctx context.Context, cwd, configDir string) ([]claudeagents.Session, error) {
 			return []claudeagents.Session{{Kind: "background", ID: "bg1", PID: 4, SessionID: "s1"}}, nil
 		},
-		func(ctx context.Context, id string) error {
+		func(ctx context.Context, id, configDir string) error {
 			stopped = append(stopped, id)
 			return nil
 		},
@@ -299,4 +301,85 @@ func TestRunner_StartResume_ReapsBeforeLaunch(t *testing.T) {
 	_, err = r.Start(task2, claudeResumeConfig("claude"), 24, 80, false)
 	testutil.Equal(t, err != nil, true)
 	testutil.Equal(t, len(stopped), 0)
+}
+
+// TestReapBackgroundSessionForResume_AccountConfigDir pins that the resume reap
+// queries Claude's background registry under the task's own account dir.
+func TestReapBackgroundSessionForResume_AccountConfigDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	acctDir := filepath.Join(t.TempDir(), "work")
+	cfg := claudeResumeConfig("claude")
+	cfg.Accounts = map[string]config.Account{"work": {ClaudeConfigDir: acctDir}}
+
+	cases := []struct{ name, account, want string }{
+		{"explicit account", "work", acctDir},
+		{"default account", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var listDir, stopDir string
+			stubBackgroundSessions(t,
+				func(ctx context.Context, cwd, configDir string) ([]claudeagents.Session, error) {
+					listDir = configDir
+					return []claudeagents.Session{{Kind: "background", ID: "a", PID: 9, SessionID: "s1"}}, nil
+				},
+				func(ctx context.Context, id, configDir string) error {
+					stopDir = configDir
+					return nil
+				},
+			)
+			task := &model.Task{ID: "t", SessionID: "s1", Worktree: "/wt", Account: tc.account}
+			testutil.DeepEqual(t, reapBackgroundSessionForResume(task, cfg), []string{"a"})
+			testutil.Equal(t, listDir, tc.want)
+			testutil.Equal(t, stopDir, tc.want)
+		})
+	}
+
+	t.Run("unknown account skips the reap", func(t *testing.T) {
+		listed := false
+		stubBackgroundSessions(t,
+			func(ctx context.Context, cwd, configDir string) ([]claudeagents.Session, error) {
+				listed = true
+				return nil, nil
+			},
+			func(ctx context.Context, id, configDir string) error { return nil },
+		)
+		task := &model.Task{ID: "t", SessionID: "s1", Worktree: "/wt", Account: "gone"}
+		testutil.Nil(t, reapBackgroundSessionForResume(task, cfg))
+		testutil.False(t, listed)
+	})
+}
+
+// TestRunner_Stop_ReapsUnderSessionAccount pins that Runner.Stop's orphan reap
+// runs under the CLAUDE_CONFIG_DIR the session was actually spawned with.
+func TestRunner_Stop_ReapsUnderSessionAccount(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	binDir := t.TempDir()
+	testutil.NoError(t, os.WriteFile(filepath.Join(binDir, "claude"), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755))
+	t.Setenv("PATH", binDir+":/bin:/usr/bin")
+
+	seen := make(chan string, 1)
+	stubBackgroundSessions(t,
+		func(ctx context.Context, cwd, configDir string) ([]claudeagents.Session, error) {
+			seen <- configDir
+			return nil, nil
+		},
+		func(ctx context.Context, id, configDir string) error { return nil },
+	)
+
+	acctDir := filepath.Join(t.TempDir(), "work")
+	cfg := claudeResumeConfig("claude")
+	cfg.Accounts = map[string]config.Account{"work": {ClaudeConfigDir: acctDir}}
+	r := NewRunner(nil)
+	task := &model.Task{ID: "t-acct-reap", Name: "test", Worktree: t.TempDir(), Account: "work"}
+	_, err := r.Start(task, cfg, 24, 80, false)
+	testutil.NoError(t, err)
+	testutil.NoError(t, r.Stop("t-acct-reap"))
+
+	select {
+	case dir := <-seen:
+		testutil.Equal(t, dir, acctDir)
+	case <-time.After(2 * time.Second):
+		t.Fatal("reap goroutine never ran")
+	}
 }

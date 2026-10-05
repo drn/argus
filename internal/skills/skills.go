@@ -129,9 +129,18 @@ type SkillItem struct {
 //     exposing both plugin commands (commands/*.md) and skills (skills/**/SKILL.md)
 //     as "<plugin>:<name>" entries.
 func LoadSkills(extraDirs []string) []SkillItem {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
+	return LoadSkillsFrom("", extraDirs)
+}
+
+// LoadSkillsFrom is LoadSkills reading user skills and installed plugins from
+// an explicit Claude config directory (empty means ~/.claude).
+func LoadSkillsFrom(configDir string, extraDirs []string) []SkillItem {
+	if configDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil
+		}
+		configDir = filepath.Join(home, ".claude")
 	}
 
 	seen := make(map[string]bool)
@@ -141,10 +150,10 @@ func LoadSkills(extraDirs []string) []SkillItem {
 	for _, dir := range extraDirs {
 		items = append(items, loadSkillDirs(dir, seen)...)
 	}
-	items = append(items, loadSkillDirs(filepath.Join(home, ".claude", "skills"), seen)...)
+	items = append(items, loadSkillDirs(filepath.Join(configDir, "skills"), seen)...)
 
 	// Plugin-provided commands and skills, namespaced as "<plugin>:<name>".
-	items = append(items, loadPluginItems(home, seen)...)
+	items = append(items, loadPluginItems(configDir, seen)...)
 
 	sort.Slice(items, func(i, j int) bool {
 		return items[i].Name < items[j].Name
@@ -175,11 +184,11 @@ func loadSkillDirs(dir string, seen map[string]bool) []SkillItem {
 	return items
 }
 
-// loadPluginItems reads ~/.claude/plugins/installed_plugins.json and, for each
+// loadPluginItems reads <configDir>/plugins/installed_plugins.json and, for each
 // installed plugin, exposes its commands (commands/*.md) and skills (any
 // SKILL.md under skills/, recursively) as "<plugin>:<name>" SkillItems.
-func loadPluginItems(home string, seen map[string]bool) []SkillItem {
-	manifestPath := filepath.Join(home, ".claude", "plugins", "installed_plugins.json")
+func loadPluginItems(configDir string, seen map[string]bool) []SkillItem {
+	manifestPath := filepath.Join(configDir, "plugins", "installed_plugins.json")
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return nil

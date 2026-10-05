@@ -537,7 +537,25 @@ func CapturePiSessionID(worktreePath string) (string, error) {
 // missing, or it holds no UUID-named transcript; callers treat the error as
 // "nothing to capture — leave the pinned SessionID intact".
 func CaptureClaudeSessionID(worktreePath string) (string, error) {
-	sessions, err := claudesession.List(worktreePath)
+	return CaptureClaudeSessionIDIn("", worktreePath)
+}
+
+// ClaudeConfigDirForTask resolves the Claude config directory a task's session
+// lives under, from the account stored on the task. It errors when the stored
+// account is no longer configured, so callers fail loud instead of silently
+// reading another account's transcripts.
+func ClaudeConfigDirForTask(task *model.Task, cfg config.Config) (string, error) {
+	if task == nil {
+		return "", fmt.Errorf("claude config dir: nil task")
+	}
+	dir, _, err := cfg.ClaudeConfigDir(task.Account)
+	return dir, err
+}
+
+// CaptureClaudeSessionIDIn is CaptureClaudeSessionID against an explicit
+// Claude config directory (empty means ~/.claude).
+func CaptureClaudeSessionIDIn(configDir, worktreePath string) (string, error) {
+	sessions, err := claudesession.ListIn(configDir, worktreePath)
 	if err != nil {
 		return "", fmt.Errorf("CaptureClaudeSessionID: %w", err)
 	}
@@ -552,10 +570,19 @@ func CaptureClaudeSessionID(worktreePath string) (string, error) {
 // Returns the session UUID or an error if none is found.
 // The returned ID is validated as a UUID before being returned.
 func CaptureCodexSessionID(worktreePath string) (string, error) {
+	return CaptureCodexSessionIDIn("", worktreePath)
+}
+
+// CaptureCodexSessionIDIn is CaptureCodexSessionID against an explicit Codex
+// SQLite home (an account's codex_home); "" means CODEX_SQLITE_HOME, else the
+// user's Codex home.
+func CaptureCodexSessionIDIn(sqliteHome, worktreePath string) (string, error) {
 	if worktreePath == "" {
 		return "", fmt.Errorf("CaptureCodexSessionID: worktree path is empty")
 	}
-	sqliteHome := strings.TrimSpace(os.Getenv("CODEX_SQLITE_HOME"))
+	if sqliteHome == "" {
+		sqliteHome = strings.TrimSpace(os.Getenv("CODEX_SQLITE_HOME"))
+	}
 	if sqliteHome == "" {
 		var err error
 		sqliteHome, err = skills.UserCodexHome()
@@ -788,13 +815,23 @@ func CaptureSessionID(task *model.Task, cfg config.Config) (string, error) {
 	}
 	switch {
 	case IsCodexBackend(backend.Command):
-		return CaptureCodexSessionID(task.Worktree)
+		home, herr := CodexHomeForTask(task, cfg)
+		if herr != nil {
+			uxlog.Log("[account] codex session capture skipped task=%s: %v", task.ID, herr)
+			return "", herr
+		}
+		return CaptureCodexSessionIDIn(home, task.Worktree)
 	case IsPiBackend(backend.Command):
 		return CapturePiSessionID(task.Worktree)
 	case IsOpencodeBackend(backend.Command):
 		return CaptureOpencodeSessionID(task.Worktree)
 	case IsClaudeBackend(backend.Command):
-		return CaptureClaudeSessionID(task.Worktree)
+		dir, derr := ClaudeConfigDirForTask(task, cfg)
+		if derr != nil {
+			uxlog.Log("[account] session capture skipped task=%s: %v", task.ID, derr)
+			return "", derr
+		}
+		return CaptureClaudeSessionIDIn(dir, task.Worktree)
 	default:
 		return "", nil
 	}
@@ -971,9 +1008,15 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// installing Argus skills into the user's global ~/.codex/skills. The path
 	// is exported to this child only, below. A setup failure leaves normal
 	// Codex launch behavior intact, minus Argus's optional builtin skills.
+	// Resolve the task's Codex account first: an unknown/removed account must
+	// refuse to spawn, never fall back to the default identity.
+	codexAccountHome, err := resolveSpawnCodexHome(task, cfg, isCodex)
+	if err != nil {
+		return nil, nil, err
+	}
 	var argusCodexHome string
 	if isCodex {
-		if root, err := ensureCodexSkillsFn(); err != nil {
+		if root, err := ensureCodexSkillsFn(codexAccountHome); err != nil {
 			uxlog.Log("[skills] codex builtin skills materialize failed (continuing without them): %v", err)
 		} else {
 			argusCodexHome = root
@@ -1031,9 +1074,16 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		}
 	}
 
+	// Resolve the task's Claude account before anything else can fail-open: an
+	// unknown/removed account must refuse to spawn, never fall back to default.
+	claudeConfigDir, err := resolveSpawnClaudeConfigDir(task, cfg, isClaude)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	// Wrap with sandbox if enabled (effective config merges global + per-project overrides).
 	var sandboxCleanup func()
-	effectiveSandbox := ResolveSandboxConfig(task, cfg)
+	effectiveSandbox := sandboxWithCodexHome(sandboxWithClaudeConfigDir(ResolveSandboxConfig(task, cfg), claudeConfigDir), codexAccountHome)
 	if effectiveSandbox.Enabled && IsSandboxAvailable() && task.Worktree != "" {
 		profilePath, params, cleanup, serr := GenerateSandboxConfig(task.Worktree, effectiveSandbox)
 		if serr == nil {
@@ -1096,7 +1146,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// activity across worktrees kept re-triggering the prompt regardless of
 	// how the argus binary itself was signed. Both tools fully honor the
 	// override.
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(spawnBaseEnv(os.Environ(), spawnAuthStrip(isClaude && claudeConfigDir != "", isCodex && codexAccountHome != ""), task.ID),
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",
 		"GOCACHE="+filepath.Join(db.DataDir(), "cache", "go-build"),
@@ -1110,7 +1160,17 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		// spelling is not honored; PLAYWRIGHT_MCP_SANDBOX=false is.
 		cmd.Env = append(cmd.Env, "PLAYWRIGHT_MCP_SANDBOX=false")
 	}
-	if argusCodexHome != "" {
+	switch {
+	case codexAccountHome != "":
+		// An explicit account always exports its own home, even when the
+		// overlay failed, and keeps SQLite state in the account's source home
+		// so capture and resume read that account's session database.
+		home := codexAccountHome
+		if argusCodexHome != "" {
+			home = argusCodexHome
+		}
+		cmd.Env = append(cmd.Env, "CODEX_HOME="+home, "CODEX_SQLITE_HOME="+codexAccountHome)
+	case argusCodexHome != "":
 		cmd.Env = append(cmd.Env, "CODEX_HOME="+argusCodexHome)
 		// Keep Codex's SQLite state in its usual location so Argus's session-ID
 		// capture and Codex resume continue to see the same session database.
@@ -1119,6 +1179,9 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 				cmd.Env = append(cmd.Env, "CODEX_SQLITE_HOME="+baseCodexHome)
 			}
 		}
+	}
+	if claudeConfigDir != "" {
+		cmd.Env = append(cmd.Env, "CLAUDE_CONFIG_DIR="+claudeConfigDir)
 	}
 	if opencodeConfigContent != "" {
 		cmd.Env = append(cmd.Env, "OPENCODE_CONFIG_CONTENT="+opencodeConfigContent)

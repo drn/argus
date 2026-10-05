@@ -152,7 +152,7 @@ func (s *Store) Add(t *model.Task) error {
 // On success the daemon may asynchronously rename an auto-named task via
 // Haiku; the returned Task carries the regex-slug name and the next list
 // refresh picks up the final name.
-func (s *Store) CreateTask(ctx context.Context, name, prompt, project, backend, taskModel, sandboxOverride string) (*model.Task, error) {
+func (s *Store) CreateTask(ctx context.Context, name, prompt, project, backend, taskModel, sandboxOverride, account string) (*model.Task, error) {
 	resp, err := s.c.CreateTask(ctx, apiclient.CreateTaskReq{
 		Name:            name,
 		Prompt:          prompt,
@@ -160,6 +160,7 @@ func (s *Store) CreateTask(ctx context.Context, name, prompt, project, backend, 
 		Backend:         backend,
 		Model:           taskModel,
 		SandboxOverride: sandboxOverride,
+		Account:         account,
 	})
 	if err != nil {
 		return nil, err
@@ -630,4 +631,10 @@ func (s *Store) PruneCompleted(ctx context.Context) (pruned, worktrees, orphans,
 		return 0, 0, 0, 0, err
 	}
 	return rep.Pruned, rep.Worktrees, rep.Orphans, rep.SkippedHeraBound, nil
+}
+
+// Accounts lists the daemon's accounts (remote-mode counterpart
+// of reading config.Accounts locally; sign-in info comes from the daemon).
+func (s *Store) Accounts(ctx context.Context) ([]apiclient.AccountJSON, error) {
+	return s.c.ListAccounts(ctx)
 }

@@ -127,8 +127,16 @@ func snapshot() (Reading, bool) {
 }
 
 func runClaudeUsageProbe(ctx context.Context) ([]byte, error) {
+	// Default-account only: tasks on other Claude accounts are not probed, so an
+	// inherited CLAUDE_CONFIG_DIR is dropped rather than probing some other dir.
 	cmd := exec.CommandContext(ctx, "claude", "--", "/usage")
-	cmd.Env = append(os.Environ(),
+	env := make([]string, 0, len(os.Environ())+2)
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") {
+			env = append(env, kv)
+		}
+	}
+	cmd.Env = append(env,
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",
 	)

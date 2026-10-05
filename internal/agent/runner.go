@@ -455,7 +455,7 @@ func (r *Runner) Stop(taskID string) error {
 	// context/knowledge/gotchas/daemon-rpc.md) — the SIGTERM above can never
 	// reach it. Fire-and-forget so a claude CLI round-trip never adds
 	// latency to this call.
-	go reapOrphanedClaudeSessions(taskID, sess.WorkDir())
+	go reapOrphanedClaudeSessions(taskID, sess.WorkDir(), sess.claudeConfigDir())
 	return err
 }
 

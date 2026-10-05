@@ -50,7 +50,12 @@ func RefreshResumeSessionID(database *db.DB, task *model.Task) {
 	if !IsClaudeBackend(backend.Command) {
 		return
 	}
-	sid, err := CaptureClaudeSessionID(task.Worktree)
+	configDir, err := ClaudeConfigDirForTask(task, cfg)
+	if err != nil {
+		uxlog.Log("[resume] session recapture skipped task=%s (keeping %s): account: %v", task.ID, task.SessionID, err)
+		return
+	}
+	sid, err := CaptureClaudeSessionIDIn(configDir, task.Worktree)
 	if err != nil {
 		// No transcript yet (or scan error): keep the existing ID, never blank it.
 		uxlog.Log("[resume] session recapture no-op task=%s (keeping %s): %v", task.ID, task.SessionID, err)

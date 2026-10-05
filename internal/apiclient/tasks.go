@@ -68,6 +68,8 @@ type CreateTaskReq struct {
 	// SandboxOverride is a tri-state per-task override of the resolved sandbox
 	// setting: "" (inherit), "enabled", or "disabled" (add-task-sandbox-override).
 	SandboxOverride string `json:"sandbox_override,omitempty"`
+	// Account names a configured account; empty = daemon default.
+	Account string `json:"account,omitempty"`
 }
 
 // CreateTaskResp is the create-task response envelope.

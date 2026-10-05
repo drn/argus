@@ -240,7 +240,7 @@ func TestNonClaudeContextPrefix_SourceErrorsSkippedNotFatal(t *testing.T) {
 func TestBuildCmd_EnsureCodexSkills_CalledForCodex(t *testing.T) {
 	called := false
 	isolatedHome := filepath.Join(t.TempDir(), "codex-home")
-	restore := SetEnsureCodexSkillsForTest(func() (string, error) {
+	restore := SetEnsureCodexSkillsForTest(func(string) (string, error) {
 		called = true
 		return isolatedHome, nil
 	})
@@ -262,7 +262,7 @@ func TestBuildCmd_EnsureCodexSkills_CalledForCodex(t *testing.T) {
 
 func TestBuildCmd_EnsureCodexSkills_FailureDoesNotBlockLaunch(t *testing.T) {
 	t.Setenv("CODEX_HOME", "")
-	restore := SetEnsureCodexSkillsForTest(func() (string, error) {
+	restore := SetEnsureCodexSkillsForTest(func(string) (string, error) {
 		return "", errors.New("cannot create isolated home")
 	})
 	defer restore()
@@ -294,7 +294,7 @@ func TestBuildCmd_EnsureCodexSkills_NotCalledForOtherBackends(t *testing.T) {
 	for _, backend := range []string{"claude", "opencode", "pi"} {
 		t.Run(backend, func(t *testing.T) {
 			called := false
-			restore := SetEnsureCodexSkillsForTest(func() (string, error) {
+			restore := SetEnsureCodexSkillsForTest(func(string) (string, error) {
 				called = true
 				return "", nil
 			})

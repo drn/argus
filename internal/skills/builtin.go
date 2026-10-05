@@ -109,11 +109,17 @@ func BuiltinSkillsDir(workspaceRoot string) string {
 // The caller sets CODEX_HOME to this path for the child process. Ordinary Codex
 // sessions keep their own home and never discover Argus's embedded skills.
 func ArgusCodexHome() (string, error) {
+	return ArgusCodexHomeFor("")
+}
+
+// ArgusCodexHomeFor is ArgusCodexHome for an explicit source Codex home (an
+// account's codex_home); "" means UserCodexHome.
+func ArgusCodexHomeFor(source string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("no home dir: %w", err)
 	}
-	codexHome, err := UserCodexHome()
+	codexHome, err := resolveCodexSource(source)
 	if err != nil {
 		return "", err
 	}
@@ -123,6 +129,19 @@ func ArgusCodexHome() (string, error) {
 		// never make a later custom CODEX_HOME see another home's content.
 		digest := sha256.Sum256([]byte(codexHome))
 		return filepath.Join(root, fmt.Sprintf("custom-%x", digest[:8])), nil
+	}
+	return root, nil
+}
+
+// resolveCodexSource returns the absolute source Codex home, defaulting to
+// UserCodexHome when source is empty.
+func resolveCodexSource(source string) (string, error) {
+	if strings.TrimSpace(source) == "" {
+		return UserCodexHome()
+	}
+	root, err := filepath.Abs(strings.TrimSpace(source))
+	if err != nil {
+		return "", fmt.Errorf("resolve Codex home: %w", err)
 	}
 	return root, nil
 }
@@ -145,24 +164,25 @@ func UserCodexHome() (string, error) {
 	return root, nil
 }
 
-// EnsureCodexSkills builds a Codex home under ~/.local/share/argus for Argus sessions.
-// Existing Codex state and user skills are linked in from the normal Codex
-// home, while Argus's embedded skills exist only in this Argus-owned home.
-// It is inert under go test; tests call ensureCodexSkills directly.
-func EnsureCodexSkills() (string, error) {
+// EnsureCodexSkills builds a Codex home under ~/.local/share/argus for Argus
+// sessions, overlaying the source Codex home (an account's codex_home, or ""
+// for the user's normal Codex home). Existing Codex state and user skills are
+// linked in from the source, while Argus's embedded skills exist only in this
+// Argus-owned home. It is inert under go test; tests call ensureCodexSkills.
+func EnsureCodexSkills(source string) (string, error) {
 	if isTestBinary() {
 		return "", nil
 	}
-	return ensureCodexSkills()
+	return ensureCodexSkills(source)
 }
 
 // ensureCodexSkills is the testable core of EnsureCodexSkills.
-func ensureCodexSkills() (string, error) {
-	codexHome, err := UserCodexHome()
+func ensureCodexSkills(source string) (string, error) {
+	codexHome, err := resolveCodexSource(source)
 	if err != nil {
 		return "", err
 	}
-	argusHome, err := ArgusCodexHome()
+	argusHome, err := ArgusCodexHomeFor(codexHome)
 	if err != nil {
 		return "", err
 	}

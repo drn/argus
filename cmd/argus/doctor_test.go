@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/claudeaccount"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/doctor"
 	"github.com/drn/argus/internal/testutil"
@@ -239,4 +241,41 @@ func TestDiagnoseDevStackOrphansFrom_ScanErrorIsUnknown(t *testing.T) {
 	status, orphans := diagnoseDevStackOrphansFrom(procs, errors.New("pgrep unavailable"), func(string) bool { return false })
 	testutil.Equal(t, status, doctor.DevStackOrphanUnknown)
 	testutil.Equal(t, len(orphans), 0)
+}
+
+func TestRenderClaudeAccounts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	work := filepath.Join(home, "acct-work")
+	pers := filepath.Join(home, "acct-personal")
+	testutil.NoError(t, os.MkdirAll(work, 0o755))
+	testutil.NoError(t, os.WriteFile(filepath.Join(work, "settings.json"),
+		[]byte(`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"argus coord-hook"}]}]}}`), 0o644))
+	cfg := config.Config{Accounts: map[string]config.Account{
+		"work":     {ClaudeConfigDir: work},
+		"personal": {ClaudeConfigDir: pers},
+	}}
+	auth := func(_ context.Context, dir string) (claudeaccount.Status, error) {
+		if dir == work {
+			return claudeaccount.Status{LoggedIn: true, Email: "a@b.c", Org: "Thanx", Plan: "team"}, nil
+		}
+		return claudeaccount.Status{}, nil
+	}
+	out := renderClaudeAccounts(cfg, auth)
+	testutil.Contains(t, out, "work ("+work+")")
+	testutil.Contains(t, out, "Stop hook (argus coord-hook): REGISTERED")
+	testutil.Contains(t, out, "Login: a@b.c / Thanx / team")
+	testutil.Contains(t, out, "personal ("+pers+")")
+	testutil.Contains(t, out, "UNKNOWN (could not read/parse settings.json)")
+	testutil.Contains(t, out, "Login: not logged in")
+
+	t.Run("auth failure degrades", func(t *testing.T) {
+		out := renderClaudeAccounts(cfg, func(context.Context, string) (claudeaccount.Status, error) {
+			return claudeaccount.Status{}, errors.New("no claude")
+		})
+		testutil.Contains(t, out, "Login: UNKNOWN")
+	})
+	t.Run("no accounts prints nothing", func(t *testing.T) {
+		testutil.Equal(t, renderClaudeAccounts(config.Config{}, auth), "")
+	})
 }

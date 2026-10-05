@@ -760,3 +760,28 @@ func TestLogRPCErr(t *testing.T) {
 
 // _ keeps agent referenced.
 var _ = agent.NewRunner
+
+// TestHeadlessCreateTask_PassesAccount pins that the account reaches
+// CreateAndStart (the MCP task_create path): an unknown inherited account is
+// rejected rather than silently dropped onto the default account.
+func TestHeadlessCreateTask_PassesAccount(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := t.TempDir()
+	mustGit(t, repo, "init", "-q")
+	mustGit(t, repo, "config", "user.email", "t@t")
+	mustGit(t, repo, "config", "user.name", "T")
+	testutil.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("hi"), 0o644))
+	mustGit(t, repo, "add", ".")
+	mustGit(t, repo, "commit", "-q", "-m", "init")
+
+	d, _ := testDaemon(t)
+	testutil.NoError(t, d.db.SetBackend("test", config.Backend{Command: "echo hello"}))
+	testutil.NoError(t, d.db.SetProject("proj", config.Project{Path: repo, Branch: "HEAD"}))
+
+	_, err := HeadlessCreateTask(d.db, d.runner, HeadlessInput{
+		Name: "acct", Prompt: "p", Project: "proj", Backend: "test",
+		Account: "ghost", InheritedAccount: true,
+	})
+	testutil.Error(t, err)
+	testutil.Contains(t, err.Error(), "unknown account")
+}
