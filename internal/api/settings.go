@@ -131,6 +131,14 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"master token required for sandbox settings"}`, http.StatusForbidden)
 		return
 	}
+	if req.Sandbox != nil && req.Sandbox.ExtraWrite != nil {
+		for _, p := range *req.Sandbox.ExtraWrite {
+			if reason := agent.ValidateWritePath(strings.TrimSpace(p)); reason != "" {
+				writeErr(w, http.StatusBadRequest, "invalid extra_write path "+p+": "+reason, nil)
+				return
+			}
+		}
+	}
 	updates := buildSettingsUpdates(req)
 	for k, v := range updates {
 		if err := s.db.SetConfigValue(k, v); err != nil {

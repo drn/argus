@@ -417,3 +417,20 @@ func TestSandboxConfig_IsValueType(t *testing.T) {
 	cfg := config.DefaultConfig()
 	testutil.Equal(t, cfg.Sandbox.Enabled, false)
 }
+
+func TestHandleSettings_ExtraWriteValidation(t *testing.T) {
+	srv, d := testServer(t)
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, authedReq("PUT", "/api/settings", `{"sandbox":{"extra_write":["~/Downloads","/tmp/build"]}}`))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	testutil.DeepEqual(t, d.Config().Sandbox.ExtraWrite, []string{"~/Downloads", "/tmp/build"})
+
+	for _, bad := range []string{`["/"]`, `["rel/path"]`, `["~"]`, `["/a,b"]`} {
+		w = httptest.NewRecorder()
+		handler.ServeHTTP(w, authedReq("PUT", "/api/settings", `{"sandbox":{"extra_write":`+bad+`}}`))
+		testutil.Equal(t, w.Code, http.StatusBadRequest)
+	}
+	testutil.DeepEqual(t, d.Config().Sandbox.ExtraWrite, []string{"~/Downloads", "/tmp/build"})
+}

@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
@@ -2384,27 +2383,6 @@ func (sv *SettingsView) handleDeleteSandboxPath() bool {
 	return true
 }
 
-// validateSandboxWritePath returns why path can't be a global write grant, or
-// "" if acceptable. Only absolute or ~/-relative paths are useful (a bare "~"
-// or relative path never matches), "/" would grant the whole filesystem, and
-// commas would corrupt the CSV storage.
-func validateSandboxWritePath(path string) string {
-	switch {
-	case path == "/":
-		return "would allow writes everywhere"
-	case !strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "~/"):
-		return "must start with / or ~/"
-	case strings.Contains(path, ","):
-		return "commas are not allowed"
-	}
-	for _, r := range path {
-		if unicode.IsControl(r) {
-			return "control characters are not allowed"
-		}
-	}
-	return ""
-}
-
 // handleEditSandboxPathKey handles keystrokes while inline-editing a global
 // extra-write path. Enter saves (blank add cancels, blank edit is a no-op,
 // commas rejected because the list is stored comma-separated); Escape cancels.
@@ -2419,7 +2397,7 @@ func (sv *SettingsView) handleEditSandboxPathKey(ev *tcell.EventKey) bool {
 			sv.rebuildRows()
 			return true
 		}
-		if reason := validateSandboxWritePath(path); reason != "" {
+		if reason := agent.ValidateWritePath(path); reason != "" {
 			sv.sandboxPathErr = "Rejected " + path + ": " + reason
 			uxlog.Log("[settings] sandbox extra_write path rejected: %s", sv.sandboxPathErr)
 			sv.rebuildRows()
