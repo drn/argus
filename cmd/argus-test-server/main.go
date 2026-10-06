@@ -30,6 +30,7 @@ import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/push"
 )
 
 func main() {
@@ -147,7 +148,11 @@ func main() {
 		return t, nil
 	}
 
-	srv := api.New(d, runner, *token, creator, nil)
+	pushMgr, err := push.New(d)
+	if err != nil {
+		log.Fatalf("push manager: %v", err)
+	}
+	srv := api.New(d, runner, *token, creator, pushMgr)
 	srv.SetClipboard(clipboard.New())
 	actualPort, err := srv.ListenAndServe(*port)
 	if err != nil {
