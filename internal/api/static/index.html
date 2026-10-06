@@ -100,6 +100,19 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .task-item:active { background: var(--surface); }
 
+/* Swipe actions: the row slides over a coloured action layer. touch-action
+   pan-y leaves vertical scroll to the browser and gives horizontal to us. */
+.swipe-row { position: relative; overflow: hidden; border-bottom: 1px solid var(--border); }
+.swipe-row .task-item { position: relative; background: var(--bg); border-bottom: none; touch-action: pan-y; will-change: transform; }
+.swipe-row.snap .task-item { transition: transform 0.18s ease-out; }
+.swipe-bg {
+  position: absolute; inset: 0; display: flex; align-items: center;
+  padding: 0 20px; font-weight: 600; font-size: 14px; color: #fff; visibility: hidden;
+}
+.swipe-bg.complete { background: var(--purple); justify-content: flex-end; }
+.swipe-bg.reopen { background: var(--yellow); justify-content: flex-start; }
+.project-tasks .swipe-row:last-child { border-bottom: none; }
+
 /* Project groups */
 .project-group { border-bottom: 1px solid var(--border); }
 .project-group:last-child { border-bottom: none; }
@@ -2338,6 +2351,8 @@ async function retryConnection() {
 // --- Task List ---
 function renderTaskList() {
   const el = document.getElementById('task-list');
+  // The 5s poll must not rebuild rows under an in-progress drag.
+  if (swipe) { swipeRenderPending = true; return; }
   if (!tasks.length) {
     el.innerHTML = '<div class="empty-state">No tasks yet.<br>Tap + New to create one.</div>';
     return;
@@ -2399,6 +2414,9 @@ function renderTaskList() {
     const tasksHtml = isOpen ? list.map(t => {
       const eff = effectiveStatus(t);
       return `
+      <div class="swipe-row" data-id="${escAttr(t.id)}" data-complete="${t.status === 'complete' ? '1' : ''}">
+        <div class="swipe-bg complete">Complete ✓</div>
+        <div class="swipe-bg reopen">✓ Reopen</div>
       <div class="task-item" onclick="openDetail('${escAttr(t.id)}')">
         <span class="task-badge badge-${esc(eff)}">${statusLabel(eff)}</span>${prBadge(t)}
         <div class="task-info">
@@ -2406,6 +2424,7 @@ function renderTaskList() {
           <div class="task-meta">${t.elapsed ? esc(t.elapsed) : ''}</div>
         </div>
         <div class="task-chevron">&rsaquo;</div>
+      </div>
       </div>
     `;
     }).join('') : '';
@@ -2421,6 +2440,83 @@ function renderTaskList() {
   }).join('');
   if (prevScrollY > 0) window.scrollTo(0, prevScrollY);
 }
+
+
+// --- Swipe actions on task rows ---
+// Left = mark complete; right on a complete row = reopen (in_review).
+const SWIPE_COMMIT_PX = 90;
+const SWIPE_LOCK_PX = 8;
+let swipe = null;
+let swipeRenderPending = false;
+let swipeSuppressClickUntil = 0;
+
+function swipeEnd() {
+  swipe = null;
+  if (swipeRenderPending) { swipeRenderPending = false; renderTaskList(); }
+}
+
+async function setTaskStatus(id, status) {
+  const prev = tasks.find(t => t.id === id);
+  try {
+    const r = await api(`/api/tasks/${id}/status`, { method: 'POST', body: JSON.stringify({ status }) });
+    if (!r.ok) throw new Error('status ' + r.status);
+    if (prev) prev.status = status;
+    await refresh();
+  } catch (e) {
+    showToast('Could not update task');
+    renderTaskList();
+  }
+}
+
+(function initSwipe() {
+  const list = document.getElementById('task-list');
+  list.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1) return;
+    const row = e.target.closest('.swipe-row');
+    if (!row) return;
+    const t = e.touches[0];
+    row.classList.remove('snap');
+    swipe = { row, item: row.querySelector('.task-item'), x0: t.clientX, y0: t.clientY, dx: 0, locked: null,
+              complete: row.dataset.complete === '1' };
+  }, { passive: true });
+  list.addEventListener('touchmove', e => {
+    if (!swipe) return;
+    const t = e.touches[0];
+    const dx = t.clientX - swipe.x0, dy = t.clientY - swipe.y0;
+    if (swipe.locked === null) {
+      if (Math.abs(dx) < SWIPE_LOCK_PX && Math.abs(dy) < SWIPE_LOCK_PX) return;
+      swipe.locked = Math.abs(dx) > Math.abs(dy) * 1.5 ? 'h' : 'v';
+    }
+    if (swipe.locked === 'v') return;
+    // Only the applicable direction moves the row; the other resists.
+    const ok = swipe.complete ? dx > 0 : dx < 0;
+    swipe.dx = ok ? dx : dx / 6;
+    swipe.item.style.transform = `translateX(${swipe.dx}px)`;
+    const bgs = swipe.row.querySelectorAll('.swipe-bg');
+    bgs[0].style.visibility = ok && !swipe.complete ? 'visible' : 'hidden';
+    bgs[1].style.visibility = ok && swipe.complete ? 'visible' : 'hidden';
+  }, { passive: true });
+  const finish = commit => {
+    const s = swipe;
+    if (!s) return;
+    if (s.locked !== 'h') { swipeEnd(); return; }
+    swipeSuppressClickUntil = Date.now() + 350;
+    const ok = s.complete ? s.dx >= SWIPE_COMMIT_PX : s.dx <= -SWIPE_COMMIT_PX;
+    s.row.classList.add('snap');
+    s.item.style.transform = '';
+    s.row.querySelectorAll('.swipe-bg').forEach(b => { b.style.visibility = 'hidden'; });
+    const id = s.row.dataset.id;
+    const target = s.complete ? 'in_review' : 'complete';
+    swipeEnd();
+    if (commit && ok) setTaskStatus(id, target);
+  };
+  list.addEventListener('touchend', () => finish(true));
+  list.addEventListener('touchcancel', () => finish(false));
+  // Capture phase: runs before the row's inline onclick, so a finished swipe never opens the task.
+  list.addEventListener('click', e => {
+    if (Date.now() < swipeSuppressClickUntil) { e.stopPropagation(); e.preventDefault(); }
+  }, true);
+})();
 
 function projectDotModifier(list) {
   // Mirrors TUI projectStatusIcon priority: running > review > idle > complete.
