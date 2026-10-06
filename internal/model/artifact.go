@@ -79,6 +79,16 @@ var videoMimeByExt = map[string]string{
 	".m4v":  "video/mp4",
 }
 
+// ArtifactThumbDir is the per-task dot-dir holding generated thumbnails; no
+// registered artifact path may use it as a segment.
+const ArtifactThumbDir = ".thumbs"
+
+// Limits for registering a whole directory as a folder artifact.
+const (
+	MaxFolderFiles = 500
+	MaxFolderBytes = 2 * 1024 * 1024 * 1024 // 2 GiB across all files in one folder
+)
+
 // Artifact is a file an agent/skill produced and registered for viewing in
 // Argus Web. The bytes live at ~/.argus/artifacts/<task-id>/<filename>; this
 // struct is the manifest row that scopes serving to the registered set — a
@@ -87,8 +97,9 @@ var videoMimeByExt = map[string]string{
 type Artifact struct {
 	ID        string       `json:"id"`
 	TaskID    string       `json:"task_id"`
-	Name      string       `json:"name"`     // display title
-	Filename  string       `json:"filename"` // sanitized on-disk basename
+	Name      string       `json:"name"`             // display title
+	Filename  string       `json:"filename"`         // sanitized on-disk path relative to the task artifact dir ("folder/sub/x.png" for folder members)
+	Folder    string       `json:"folder,omitempty"` // top-level folder this file was registered under; empty for a standalone file
 	Type      ArtifactType `json:"type"`
 	Size      int64        `json:"size"`
 	CreatedAt time.Time    `json:"created_at"`
@@ -166,4 +177,19 @@ func SanitizeArtifactFilename(path string) (string, error) {
 		return "", ErrInvalidArtifactName
 	}
 	return base, nil
+}
+
+// ValidateArtifactRelPath checks a slash-separated path relative to the task
+// artifact dir (a folder member such as "shots/01.png"). Every segment must be
+// non-empty, not "." / "..", not the reserved thumbnail cache dir, and free of backslashes and NUL. Returns the path unchanged.
+func ValidateArtifactRelPath(rel string) (string, error) {
+	if rel == "" || strings.HasPrefix(rel, "/") {
+		return "", ErrInvalidArtifactName
+	}
+	for _, seg := range strings.Split(rel, "/") {
+		if seg == "" || seg == "." || seg == ".." || seg == ArtifactThumbDir || strings.ContainsAny(seg, "\\\x00") {
+			return "", ErrInvalidArtifactName
+		}
+	}
+	return rel, nil
 }

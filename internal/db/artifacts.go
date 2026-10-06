@@ -39,11 +39,11 @@ func (d *DB) UpsertArtifact(a *model.Artifact) (*model.Artifact, error) {
 	}
 
 	_, err := d.conn.Exec(
-		`INSERT INTO artifacts (id, task_id, name, filename, type, size, created_at)
-		 VALUES (?,?,?,?,?,?,?)
+		`INSERT INTO artifacts (id, task_id, name, filename, type, size, created_at, folder)
+		 VALUES (?,?,?,?,?,?,?,?)
 		 ON CONFLICT(task_id, filename) DO UPDATE SET
-		   name=excluded.name, type=excluded.type, size=excluded.size, created_at=excluded.created_at`,
-		a.ID, a.TaskID, a.Name, a.Filename, string(a.Type), a.Size, formatTime(a.CreatedAt),
+		   name=excluded.name, type=excluded.type, size=excluded.size, created_at=excluded.created_at, folder=excluded.folder`,
+		a.ID, a.TaskID, a.Name, a.Filename, string(a.Type), a.Size, formatTime(a.CreatedAt), a.Folder,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("upsert artifact: %w", err)
@@ -65,7 +65,7 @@ func (d *DB) Artifacts(taskID string) ([]*model.Artifact, error) {
 	defer d.mu.Unlock()
 
 	rows, err := d.conn.Query(
-		`SELECT id, task_id, name, filename, type, size, created_at FROM artifacts WHERE task_id=? ORDER BY created_at DESC, id DESC`,
+		`SELECT id, task_id, name, filename, type, size, created_at, folder FROM artifacts WHERE task_id=? ORDER BY created_at DESC, id DESC`,
 		taskID,
 	)
 	if err != nil {
@@ -98,7 +98,7 @@ func (d *DB) GetArtifact(taskID, filename string) (*model.Artifact, error) {
 // UpsertArtifact. Caller MUST hold d.mu.
 func (d *DB) getArtifactLocked(taskID, filename string) (*model.Artifact, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, task_id, name, filename, type, size, created_at FROM artifacts WHERE task_id=? AND filename=?`,
+		`SELECT id, task_id, name, filename, type, size, created_at, folder FROM artifacts WHERE task_id=? AND filename=?`,
 		taskID, filename,
 	)
 	a, err := scanArtifact(row)
@@ -109,6 +109,42 @@ func (d *DB) getArtifactLocked(taskID, filename string) (*model.Artifact, error)
 		return nil, err
 	}
 	return a, nil
+}
+
+// PruneFolderArtifacts deletes the manifest rows of a folder whose filename is
+// not in keep, returning the removed filenames so the caller can delete their
+// bytes. Used when a folder is re-registered so files dropped from the source
+// directory do not linger.
+func (d *DB) PruneFolderArtifacts(taskID, folder string, keep []string) ([]string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	keepSet := make(map[string]bool, len(keep))
+	for _, k := range keep {
+		keepSet[k] = true
+	}
+	rows, err := d.conn.Query(`SELECT filename FROM artifacts WHERE task_id=? AND folder=?`, taskID, folder)
+	if err != nil {
+		return nil, fmt.Errorf("query folder artifacts: %w", err)
+	}
+	var stale []string
+	for rows.Next() {
+		var fn string
+		if err := rows.Scan(&fn); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if !keepSet[fn] {
+			stale = append(stale, fn)
+		}
+	}
+	rows.Close()
+	for _, fn := range stale {
+		if _, err := d.conn.Exec(`DELETE FROM artifacts WHERE task_id=? AND filename=?`, taskID, fn); err != nil {
+			return nil, fmt.Errorf("prune folder artifact: %w", err)
+		}
+	}
+	return stale, nil
 }
 
 // DeleteArtifactsForTask removes every manifest row for taskID. Called when a
@@ -131,7 +167,7 @@ func (d *DB) DeleteArtifactsForTask(taskID string) (int, error) {
 func scanArtifact(row scanner) (*model.Artifact, error) {
 	a := &model.Artifact{}
 	var typ, createdAt string
-	if err := row.Scan(&a.ID, &a.TaskID, &a.Name, &a.Filename, &typ, &a.Size, &createdAt); err != nil {
+	if err := row.Scan(&a.ID, &a.TaskID, &a.Name, &a.Filename, &typ, &a.Size, &createdAt, &a.Folder); err != nil {
 		return nil, err
 	}
 	a.Type = model.ArtifactType(typ)

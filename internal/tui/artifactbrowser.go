@@ -225,7 +225,7 @@ func (b *ArtifactBrowser) Draw(screen tcell.Screen) {
 	}
 	for i := 0; i < rows && b.scroll+i < len(b.entries); i++ {
 		a := b.entries[b.scroll+i]
-		line := fmt.Sprintf("%s  [%s]  %s  %s", safeArtifactText(a.Name), a.Type, formatArtifactSize(a.Size), a.CreatedAt.Local().Format("2006-01-02 15:04"))
+		line := fmt.Sprintf("%s  [%s]  %s  %s", safeArtifactText(artifactListName(a)), a.Type, formatArtifactSize(a.Size), a.CreatedAt.Local().Format("2006-01-02 15:04"))
 		style := theme.StyleNormal
 		if b.scroll+i == b.cursor {
 			style = theme.StyleTitle
@@ -242,4 +242,13 @@ func formatArtifactSize(n int64) string {
 		return fmt.Sprintf("%.1f KiB", float64(n)/1024)
 	}
 	return fmt.Sprintf("%d B", n)
+}
+
+// artifactListName prefixes a folder member's name with its folder so the flat
+// TUI list still shows which gallery a file belongs to.
+func artifactListName(a *model.Artifact) string {
+	if a.Folder != "" {
+		return a.Folder + "/" + a.Name
+	}
+	return a.Name
 }

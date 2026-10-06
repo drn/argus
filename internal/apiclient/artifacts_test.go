@@ -72,3 +72,8 @@ func TestDownloadArtifactUsesCancellationInsteadOfDefaultTimeout(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, out.String(), "media")
 }
+
+func TestArtifactPath_EscapesPerSegment(t *testing.T) {
+	testutil.Equal(t, artifactPath("task", "x.txt"), "/api/tasks/task/artifacts/x.txt")
+	testutil.Equal(t, artifactPath("task", "my shots/sub dir/a b.png"), "/api/tasks/task/artifacts/my%20shots/sub%20dir/a%20b.png")
+}

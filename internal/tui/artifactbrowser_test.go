@@ -74,3 +74,8 @@ func TestArtifactBrowserDraw(t *testing.T) {
 		t.Fatal("empty state missing")
 	}
 }
+
+func TestArtifactListName(t *testing.T) {
+	testutil.Equal(t, artifactListName(&model.Artifact{Name: "a.png"}), "a.png")
+	testutil.Equal(t, artifactListName(&model.Artifact{Name: "sub/a.png", Folder: "shots"}), "shots/sub/a.png")
+}

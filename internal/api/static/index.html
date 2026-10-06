@@ -502,6 +502,22 @@ button:disabled { opacity: 0.5; cursor: default; }
 .artifact-img.zoomed { max-width: none; cursor: zoom-out; }
 .artifact-pre { flex: 1 1 auto; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--text); background: var(--bg); }
 .artifact-media { flex: 1 1 auto; width: 100%; max-height: 100%; background: var(--bg); }
+/* Folder gallery */
+.artifact-grid-wrap { flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 10px; }
+.artifact-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+.artifact-tile { position: relative; aspect-ratio: 1 / 1; border-radius: 8px; overflow: hidden; background: var(--surface); border: 1px solid var(--border); cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.artifact-tile-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.artifact-tile-ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 28px; }
+.artifact-tile-badge { position: absolute; top: 6px; right: 6px; font-size: 11px; line-height: 1; color: #fff; background: rgba(0,0,0,0.6); border-radius: 10px; padding: 4px 6px; }
+.artifact-tile-cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 14px 6px 4px; font-size: 11px; color: #fff; background: linear-gradient(transparent, rgba(0,0,0,0.7)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artifact-fs-nav {
+  position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
+  width: 44px; height: 64px; border-radius: 10px; font-size: 32px; line-height: 1; color: #fff;
+  background: rgba(0,0,0,0.45); border: 1px solid rgba(255,255,255,0.2); cursor: pointer;
+}
+.artifact-fs-nav.prev { left: 8px; } .artifact-fs-nav.next { right: 8px; }
+.artifact-fs-nav:disabled { opacity: 0.25; cursor: default; }
+.artifact-fs-pos { position: absolute; top: calc(env(safe-area-inset-top, 0px) + 18px); right: 14px; z-index: 2; font-size: 12px; color: #fff; background: rgba(0,0,0,0.55); border-radius: 10px; padding: 4px 8px; }
 /* Full-screen artifact overlay — edge-to-edge, no toolbar, just a small
    floating Back button. z-index sits above #artifacts-view (60). */
 #artifact-fs { display: none; }
@@ -1146,6 +1162,9 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
        shared makeArtifactNode() builder. -->
   <div id="artifact-fs">
     <button type="button" id="artifact-fs-back" class="artifact-fs-back" onclick="closeArtifactFullscreen()" aria-label="Back">&larr;</button>
+    <button type="button" id="artifact-fs-prev" class="artifact-fs-nav prev" onclick="artifactFsStep(-1)" aria-label="Previous" style="display:none">&lsaquo;</button>
+    <button type="button" id="artifact-fs-next" class="artifact-fs-nav next" onclick="artifactFsStep(1)" aria-label="Next" style="display:none">&rsaquo;</button>
+    <div id="artifact-fs-pos" class="artifact-fs-pos" style="display:none"></div>
     <div class="artifact-fs-body" id="artifact-fs-body"></div>
   </div>
 
@@ -3619,6 +3638,12 @@ document.addEventListener('keydown', e => {
       return;
     }
   }
+  if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && artifactFsSet && !e.ctrlKey && !e.metaKey && !e.altKey &&
+      !/^(VIDEO|AUDIO|INPUT|TEXTAREA)$/.test(e.target?.tagName || '')) {
+    e.preventDefault();
+    artifactFsStep(e.key === 'ArrowLeft' ? -1 : 1);
+    return;
+  }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (isHotkeyTargetEditable(e.target)) return;
   if (isDetailViewOpen()) return;
@@ -4169,6 +4194,12 @@ let artifactsViewTask = null;
 let artifactsViewArt = null; // the artifact currently rendered in the viewer
 let artifactObjectURLs = [];
 
+// Artifact filenames may be nested ("folder/x.png"): encode per segment so the
+// slashes survive as path separators.
+function artifactURLPath(taskId, art) {
+  return `/api/tasks/${taskId}/artifacts/` + art.filename.split('/').map(encodeURIComponent).join('/');
+}
+
 function revokeArtifactURLs() {
   for (const u of artifactObjectURLs) { try { URL.revokeObjectURL(u); } catch (e) { /* already revoked */ } }
   artifactObjectURLs = [];
@@ -4235,16 +4266,34 @@ function fmtBytes(n) {
 function renderArtifactsList(arts, taskId) {
   const body = document.getElementById('artifacts-body');
   body.className = 'artifacts-body';
+  artifactGalleryGen++;
   if (!arts.length) {
     body.innerHTML = '<div class="files-empty">No artifacts registered for this task yet.</div>';
     return;
   }
-  body.innerHTML = arts.map((a, i) => `
+  // Group folder members into one row each (at the position of the folder's
+  // first member); standalone files render as before.
+  const rows = [];
+  const folders = new Map();
+  for (const a of arts) {
+    if (!a.folder) { rows.push({ art: a }); continue; }
+    let f = folders.get(a.folder);
+    if (!f) { f = { folder: a.folder, items: [] }; folders.set(a.folder, f); rows.push(f); }
+    f.items.push(a);
+  }
+  body.innerHTML = rows.map((r, i) => r.folder ? `
     <div class="artifact-item" data-idx="${i}">
-      <div class="artifact-icon">${artifactIcon(a.type)}</div>
+      <div class="artifact-icon">📁</div>
       <div class="artifact-meta">
-        <div class="artifact-name">${esc(a.name || a.filename)}</div>
-        <div class="artifact-sub">${esc(a.type)} · ${fmtBytes(a.size)}</div>
+        <div class="artifact-name">${esc(r.folder)}</div>
+        <div class="artifact-sub">folder · ${r.items.length} item${r.items.length === 1 ? '' : 's'} · ${fmtBytes(r.items.reduce((n, a) => n + (a.size || 0), 0))}</div>
+      </div>
+    </div>` : `
+    <div class="artifact-item" data-idx="${i}">
+      <div class="artifact-icon">${artifactIcon(r.art.type)}</div>
+      <div class="artifact-meta">
+        <div class="artifact-name">${esc(r.art.name || r.art.filename)}</div>
+        <div class="artifact-sub">${esc(r.art.type)} · ${fmtBytes(r.art.size)}</div>
       </div>
       <div class="artifact-actions">
         <button type="button" class="artifact-btn" data-act="open">Open</button>
@@ -4255,9 +4304,14 @@ function renderArtifactsList(arts, taskId) {
   // the viewer/downloader without round-tripping it through an attribute.
   // "Open" presents the artifact full-screen (edge-to-edge, floating Back only);
   // tapping the row body / name opens the smaller paneled viewer; "Download"
-  // triggers a file save.
+  // triggers a file save. A folder row opens its thumbnail gallery.
   body.querySelectorAll('.artifact-item').forEach(el => {
-    const a = arts[parseInt(el.dataset.idx, 10)];
+    const r = rows[parseInt(el.dataset.idx, 10)];
+    if (r.folder) {
+      el.onclick = () => renderArtifactFolder(taskId, r.folder, r.items);
+      return;
+    }
+    const a = r.art;
     el.onclick = () => openArtifactViewer(taskId, a);
     el.querySelector('[data-act="open"]').onclick = (e) => {
       e.stopPropagation();
@@ -4268,6 +4322,77 @@ function renderArtifactsList(arts, taskId) {
       downloadArtifact(taskId, a);
     };
   });
+}
+
+// Bumped on every list/gallery render so a thumbnail fetch that resolves after
+// the user navigated away drops its blob instead of leaking a URL.
+let artifactGalleryGen = 0;
+
+// Folder gallery: a grid of server-generated thumbnails (?thumb=1, small JPEGs
+// fetched through api() so the bearer token never goes in a URL). Tiles load
+// lazily as they scroll into view; a 404 (no thumbnail for this type/format, or
+// no ffmpeg for video) falls back to the type icon. Tapping a tile opens the
+// full-screen overlay with prev/next across the folder's items.
+function renderArtifactFolder(taskId, folder, items) {
+  revokeArtifactURLs();
+  const gen = ++artifactGalleryGen;
+  const sorted = items.slice().sort((a, b) =>
+    (a.name || a.filename).localeCompare(b.name || b.filename, undefined, { numeric: true }));
+  const body = document.getElementById('artifacts-body');
+  body.className = 'artifacts-body viewing';
+  const back = `<span class="link" onclick="loadArtifactsList('${escAttr(taskId)}')">&larr; All artifacts</span>`;
+  body.innerHTML = `<div class="artifact-vtoolbar">${back}<span class="spacer"></span><span class="artifact-sub">${esc(folder)} · ${sorted.length} item${sorted.length === 1 ? '' : 's'}</span></div>
+    <div class="artifact-grid-wrap"><div class="artifact-grid"></div></div>`;
+  const grid = body.querySelector('.artifact-grid');
+  const io = ('IntersectionObserver' in window) ? new IntersectionObserver(entries => {
+    for (const en of entries) {
+      if (!en.isIntersecting) continue;
+      io.unobserve(en.target);
+      loadArtifactThumb(taskId, en.target, gen);
+    }
+  }, { root: body.querySelector('.artifact-grid-wrap'), rootMargin: '200px' }) : null;
+  sorted.forEach((a, i) => {
+    const t = document.createElement('div');
+    t.className = 'artifact-tile';
+    t.title = a.name || a.filename;
+    const ph = document.createElement('div');
+    ph.className = 'artifact-tile-ph';
+    ph.textContent = artifactIcon(a.type);
+    t.appendChild(ph);
+    if (a.type === 'video') {
+      const badge = document.createElement('span');
+      badge.className = 'artifact-tile-badge';
+      badge.textContent = '▶';
+      t.appendChild(badge);
+    }
+    const cap = document.createElement('div');
+    cap.className = 'artifact-tile-cap';
+    cap.textContent = a.name || a.filename;
+    t.appendChild(cap);
+    t._art = a;
+    t.onclick = () => openArtifactFullscreen(taskId, a, sorted);
+    grid.appendChild(t);
+    if (a.type === 'image' || a.type === 'video') {
+      if (io) io.observe(t); else loadArtifactThumb(taskId, t, gen);
+    }
+  });
+}
+
+async function loadArtifactThumb(taskId, tile, gen) {
+  try {
+    const r = await api(artifactURLPath(taskId, tile._art) + '?thumb=1');
+    if (!r.ok) return; // keep the icon placeholder
+    const blob = await r.blob();
+    if (gen !== artifactGalleryGen) return;
+    const url = URL.createObjectURL(blob);
+    artifactObjectURLs.push(url);
+    const img = document.createElement('img');
+    img.className = 'artifact-tile-img';
+    img.alt = '';
+    img.src = url;
+    tile.querySelector('.artifact-tile-ph')?.remove();
+    tile.insertBefore(img, tile.firstChild);
+  } catch (e) { /* placeholder stays */ }
 }
 
 // Fetches the artifact bytes through the authed API (the raw endpoint needs a
@@ -4283,7 +4408,7 @@ async function downloadArtifact(taskId, art) {
     // handling (logout() + offline screen). The actual download then streams
     // straight from the direct URL rather than through a JS-buffered blob.
     try {
-      const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`, { method: 'HEAD' });
+      const r = await api(`${artifactURLPath(taskId, art)}`, { method: 'HEAD' });
       if (!r.ok) throw new Error('fetch ' + r.status);
     } catch (e) {
       showToast('Download failed: ' + e.message);
@@ -4291,20 +4416,20 @@ async function downloadArtifact(taskId, art) {
     }
     const a = document.createElement('a');
     a.href = artifactDirectURL(taskId, art);
-    a.download = art.filename;
+    a.download = art.filename.split('/').pop();
     document.body.appendChild(a);
     a.click();
     a.remove();
     return;
   }
   try {
-    const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`);
+    const r = await api(`${artifactURLPath(taskId, art)}`);
     if (!r.ok) throw new Error('fetch ' + r.status);
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = art.filename;
+    a.download = art.filename.split('/').pop();
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -4337,7 +4462,7 @@ async function openArtifactViewer(taskId, art) {
     // normal 401 → logout() path instead of a silently-broken media element;
     // playback itself then streams straight from the direct URL, not a blob.
     try {
-      const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`, { method: 'HEAD' });
+      const r = await api(`${artifactURLPath(taskId, art)}`, { method: 'HEAD' });
       if (!r.ok) throw new Error('fetch ' + r.status);
       if (artifactsViewTask?.id !== taskId) return;
       renderArtifactWithURL(taskId, art, artifactDirectURL(taskId, art));
@@ -4348,7 +4473,7 @@ async function openArtifactViewer(taskId, art) {
     return;
   }
   try {
-    const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`);
+    const r = await api(`${artifactURLPath(taskId, art)}`);
     if (!r.ok) throw new Error('fetch ' + r.status);
     if (artifactsViewTask?.id !== taskId) return;
     if (art.type === 'markdown' || art.type === 'text') {
@@ -4374,7 +4499,7 @@ async function openArtifactViewer(taskId, art) {
 // ?token= pattern openStream uses for EventSource, which also can't set
 // custom headers.
 function artifactDirectURL(taskId, art) {
-  return API + `/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}?token=` + encodeURIComponent(TOKEN);
+  return API + `${artifactURLPath(taskId, art)}?token=` + encodeURIComponent(TOKEN);
 }
 
 // Builds the DOM node that renders an artifact's content, shared by the paneled
@@ -4491,8 +4616,33 @@ function renderTextArtifact(taskId, art, txt) {
 let artifactFsURL = null;
 let artifactFsGen = 0;
 
-async function openArtifactFullscreen(taskId, art) {
+let artifactFsSet = null; // {taskId, arts} when opened from a folder gallery
+let artifactFsIdx = 0;
+
+function artifactFsStep(d) {
+  if (!artifactFsSet) return;
+  const n = artifactFsIdx + d;
+  if (n < 0 || n >= artifactFsSet.arts.length) return;
+  openArtifactFullscreen(artifactFsSet.taskId, artifactFsSet.arts[n], artifactFsSet.arts);
+}
+
+function updateArtifactFsNav() {
+  const multi = artifactFsSet && artifactFsSet.arts.length > 1;
+  const prev = document.getElementById('artifact-fs-prev');
+  const next = document.getElementById('artifact-fs-next');
+  const pos = document.getElementById('artifact-fs-pos');
+  prev.style.display = next.style.display = pos.style.display = multi ? '' : 'none';
+  if (!multi) return;
+  prev.disabled = artifactFsIdx <= 0;
+  next.disabled = artifactFsIdx >= artifactFsSet.arts.length - 1;
+  pos.textContent = `${artifactFsIdx + 1} / ${artifactFsSet.arts.length}`;
+}
+
+async function openArtifactFullscreen(taskId, art, set) {
   const gen = ++artifactFsGen;
+  artifactFsSet = set && set.length > 1 ? { taskId, arts: set } : null;
+  artifactFsIdx = artifactFsSet ? set.indexOf(art) : 0;
+  updateArtifactFsNav();
   const view = document.getElementById('artifact-fs');
   const body = document.getElementById('artifact-fs-body');
   revokeArtifactFsURL();
@@ -4502,7 +4652,7 @@ async function openArtifactFullscreen(taskId, art) {
     // HEAD through api() first — same 401-handling rationale as the paneled
     // viewer above; playback itself streams from the direct URL, not a blob.
     try {
-      const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`, { method: 'HEAD' });
+      const r = await api(`${artifactURLPath(taskId, art)}`, { method: 'HEAD' });
       if (!r.ok) throw new Error('fetch ' + r.status);
       if (gen !== artifactFsGen) return;
       const node = makeArtifactNode(art, { url: artifactDirectURL(taskId, art) });
@@ -4515,7 +4665,7 @@ async function openArtifactFullscreen(taskId, art) {
     return;
   }
   try {
-    const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`);
+    const r = await api(`${artifactURLPath(taskId, art)}`);
     if (!r.ok) throw new Error('fetch ' + r.status);
     if (gen !== artifactFsGen) return; // dismissed or superseded mid-load
     let node;
@@ -4546,6 +4696,7 @@ function revokeArtifactFsURL() {
 
 function closeArtifactFullscreen() {
   artifactFsGen++; // abort any in-flight load
+  artifactFsSet = null;
   document.getElementById('artifact-fs').classList.remove('open');
   document.getElementById('artifact-fs-body').innerHTML = '';
   revokeArtifactFsURL();

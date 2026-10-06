@@ -1,6 +1,7 @@
 package db
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/drn/argus/internal/model"
@@ -108,4 +109,54 @@ func TestDeleteArtifactsForTask(t *testing.T) {
 	other, err := d.Artifacts("other")
 	testutil.NoError(t, err)
 	testutil.Equal(t, len(other), 1)
+}
+
+func TestUpsertArtifact_FolderRoundTripAndOverwrite(t *testing.T) {
+	d := testDB(t)
+	a, err := d.UpsertArtifact(&model.Artifact{TaskID: "t", Name: "01.png", Filename: "g/01.png", Folder: "g", Type: model.ArtifactImage})
+	testutil.NoError(t, err)
+	testutil.Equal(t, a.Folder, "g")
+
+	// Re-registering the same path as a standalone file clears the folder.
+	b, err := d.UpsertArtifact(&model.Artifact{TaskID: "t", Name: "01.png", Filename: "g/01.png", Type: model.ArtifactImage})
+	testutil.NoError(t, err)
+	testutil.Equal(t, b.ID, a.ID)
+	testutil.Equal(t, b.Folder, "")
+
+	list, err := d.Artifacts("t")
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(list), 1)
+}
+
+func TestPruneFolderArtifacts(t *testing.T) {
+	d := testDB(t)
+	for _, fn := range []string{"g/a.png", "g/b.png", "g/sub/c.png"} {
+		_, err := d.UpsertArtifact(&model.Artifact{TaskID: "t", Filename: fn, Folder: "g", Type: model.ArtifactImage})
+		testutil.NoError(t, err)
+	}
+	// Same folder name on another task and an unrelated standalone must survive.
+	_, err := d.UpsertArtifact(&model.Artifact{TaskID: "other", Filename: "g/z.png", Folder: "g", Type: model.ArtifactImage})
+	testutil.NoError(t, err)
+	_, err = d.UpsertArtifact(&model.Artifact{TaskID: "t", Filename: "solo.png", Type: model.ArtifactImage})
+	testutil.NoError(t, err)
+
+	stale, err := d.PruneFolderArtifacts("t", "g", []string{"g/a.png"})
+	testutil.NoError(t, err)
+	testutil.DeepEqual(t, sortedStrings(stale), []string{"g/b.png", "g/sub/c.png"})
+
+	list, err := d.Artifacts("t")
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(list), 2) // g/a.png + solo.png
+	other, _ := d.Artifacts("other")
+	testutil.Equal(t, len(other), 1)
+
+	stale, err = d.PruneFolderArtifacts("t", "g", []string{"g/a.png"})
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(stale), 0)
+}
+
+func sortedStrings(in []string) []string {
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	return out
 }

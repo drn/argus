@@ -185,13 +185,13 @@ func (a *App) openArtifactExternal(art *model.Artifact) {
 		if d, ok := a.db.(*db.DB); ok {
 			_, path, err = localArtifactFile(d, taskID, art.Filename)
 		} else {
-			if clean, e := model.SanitizeArtifactFilename(art.Filename); e != nil || clean != art.Filename {
+			if _, e := model.ValidateArtifactRelPath(art.Filename); e != nil {
 				err = fmt.Errorf("invalid artifact filename")
 			}
 			if err == nil {
 				tempDir, err = os.MkdirTemp("", "argus-artifact-*")
 				if err == nil {
-					path = filepath.Join(tempDir, art.Filename)
+					path = filepath.Join(tempDir, filepath.Base(art.Filename))
 					var f *os.File
 					f, err = os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 					if err == nil {

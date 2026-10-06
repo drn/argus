@@ -1,6 +1,10 @@
 package api
 
 import (
+	"bytes"
+	"image"
+	"image/jpeg"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -216,8 +220,15 @@ func TestResolveArtifactPath_RejectsTraversalAndSymlinks(t *testing.T) {
 		testutil.True(t, !ok)
 	})
 
-	t.Run("nested path rejected", func(t *testing.T) {
-		_, ok := resolveArtifactPath("task1", "sub/evil")
+	t.Run("nested folder path resolves", func(t *testing.T) {
+		testutil.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o700))
+		testutil.NoError(t, os.WriteFile(filepath.Join(dir, "sub", "ok.png"), []byte("x"), 0o600))
+		_, ok := resolveArtifactPath("task1", "sub/ok.png")
+		testutil.True(t, ok)
+	})
+
+	t.Run("nested traversal rejected", func(t *testing.T) {
+		_, ok := resolveArtifactPath("task1", "sub/../../etc/passwd")
 		testutil.True(t, !ok)
 	})
 
@@ -261,4 +272,84 @@ func TestDeleteTask_RemovesArtifacts(t *testing.T) {
 	// On-disk dir gone.
 	_, statErr := os.Stat(dir)
 	testutil.True(t, os.IsNotExist(statErr))
+}
+
+func tinyPNG(t *testing.T, w, h int) string {
+	t.Helper()
+	var buf bytes.Buffer
+	testutil.NoError(t, png.Encode(&buf, image.NewNRGBA(image.Rect(0, 0, w, h))))
+	return buf.String()
+}
+
+func seedFolderArtifact(t *testing.T, d *db.DB, taskID, folder, rel string, atype model.ArtifactType, content string) {
+	t.Helper()
+	filename := folder + "/" + rel
+	full := filepath.Join(agent.ArtifactsDir(taskID), filepath.FromSlash(filename))
+	testutil.NoError(t, os.MkdirAll(filepath.Dir(full), 0o700))
+	testutil.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+	_, err := d.UpsertArtifact(&model.Artifact{TaskID: taskID, Name: rel, Filename: filename, Folder: folder, Type: atype, Size: int64(len(content))})
+	testutil.NoError(t, err)
+}
+
+func TestHandleArtifacts_FolderListAndNestedServe(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	srv, d := testServer(t)
+	mux := srv.routes()
+	task := &model.Task{Name: "t", Status: model.StatusInProgress}
+	testutil.NoError(t, d.Add(task))
+	seedFolderArtifact(t, d, task.ID, "shots", "sub/01.png", model.ArtifactImage, tinyPNG(t, 4, 4))
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("GET", "/api/tasks/"+task.ID+"/artifacts", ""))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	testutil.Contains(t, w.Body.String(), `"folder":"shots"`)
+	testutil.Contains(t, w.Body.String(), `"filename":"shots/sub/01.png"`)
+
+	for _, path := range []string{"shots/sub/01.png", "shots%2Fsub%2F01.png"} {
+		w = httptest.NewRecorder()
+		mux.ServeHTTP(w, authedReq("GET", "/api/tasks/"+task.ID+"/artifacts/"+path, ""))
+		testutil.Equal(t, w.Code, http.StatusOK)
+		testutil.Equal(t, w.Header().Get("Content-Type"), "image/png")
+	}
+
+	// Rows gate serving: an on-disk sibling with no manifest row is a 404.
+	testutil.NoError(t, os.WriteFile(filepath.Join(agent.ArtifactsDir(task.ID), "shots", "unregistered.png"), []byte("x"), 0o600))
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("GET", "/api/tasks/"+task.ID+"/artifacts/shots/unregistered.png", ""))
+	testutil.Equal(t, w.Code, http.StatusNotFound)
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("GET", "/api/tasks/"+task.ID+"/artifacts/shots/../../x", ""))
+	testutil.True(t, w.Code != http.StatusOK)
+}
+
+func TestHandleGetArtifact_Thumb(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	srv, d := testServer(t)
+	mux := srv.routes()
+	task := &model.Task{Name: "t", Status: model.StatusInProgress}
+	testutil.NoError(t, d.Add(task))
+	seedFolderArtifact(t, d, task.ID, "shots", "big.png", model.ArtifactImage, tinyPNG(t, 800, 600))
+	seedFolderArtifact(t, d, task.ID, "shots", "notes.txt", model.ArtifactText, "hi")
+	seedFolderArtifact(t, d, task.ID, "shots", "bad.png", model.ArtifactImage, "not-an-image")
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("GET", "/api/tasks/"+task.ID+"/artifacts/shots/big.png?thumb=1", ""))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	testutil.Equal(t, w.Header().Get("Content-Type"), "image/jpeg")
+	cfg, err := jpeg.DecodeConfig(bytes.NewReader(w.Body.Bytes()))
+	testutil.NoError(t, err)
+	testutil.Equal(t, cfg.Width, 320)
+	testutil.Equal(t, cfg.Height, 240)
+
+	for _, name := range []string{"notes.txt", "bad.png"} {
+		w = httptest.NewRecorder()
+		mux.ServeHTTP(w, authedReq("GET", "/api/tasks/"+task.ID+"/artifacts/shots/"+name+"?thumb=1", ""))
+		testutil.Equal(t, w.Code, http.StatusNotFound)
+	}
+
+	// The thumb cache dir is never servable as an artifact.
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("GET", "/api/tasks/"+task.ID+"/artifacts/.thumbs/x.jpg", ""))
+	testutil.Equal(t, w.Code, http.StatusNotFound)
 }
