@@ -2448,7 +2448,7 @@ const SWIPE_RESIST_DIVISOR = 6;
 const SWIPE_CLICK_GUARD_MS = 350;
 let swipe = null;
 let swipeRenderPending = false;
-let swipeSuppressRow = null;
+let swipeSuppressId = null;
 let swipeSuppressUntil = 0;
 
 function swipeEnd() {
@@ -2509,7 +2509,7 @@ async function setTaskStatus(id, status) {
     const s = swipe;
     if (!s || !touchOf(e, s.id)) return;
     if (s.locked !== 'h') { swipeEnd(); return; }
-    swipeSuppressRow = s.row;
+    swipeSuppressId = s.row.dataset.id;
     swipeSuppressUntil = Date.now() + SWIPE_CLICK_GUARD_MS;
     s.row.classList.add('snap');
     s.item.style.transform = '';
@@ -2524,9 +2524,10 @@ async function setTaskStatus(id, status) {
   };
   list.addEventListener('touchend', e => finish(e, true));
   list.addEventListener('touchcancel', e => finish(e, false));
-  // Capture phase: runs before the row's inline onclick, so a finished swipe never opens its task.
+  // Capture phase, keyed by task id (an optimistic re-render replaces the row node) so the post-swipe click never opens its task.
   list.addEventListener('click', e => {
-    if (Date.now() < swipeSuppressUntil && swipeSuppressRow && swipeSuppressRow.contains(e.target)) {
+    const row = e.target.closest && e.target.closest('.swipe-row');
+    if (Date.now() < swipeSuppressUntil && row && row.dataset.id === swipeSuppressId) {
       e.stopPropagation(); e.preventDefault();
     }
   }, true);

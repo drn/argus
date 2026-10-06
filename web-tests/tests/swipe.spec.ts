@@ -21,7 +21,8 @@ async function swipe(page: Page, dx: number) {
     mk('touchmove', x0 + dx / 2);
     mk('touchmove', x0 + dx);
     mk('touchend', x0 + dx);
-    item.click();
+    // A real browser clicks whatever is under the finger after touchend (possibly a re-rendered row).
+    (document.elementFromPoint(x0, y) as HTMLElement | null)?.click();
   }, dx);
 }
 
