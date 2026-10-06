@@ -438,3 +438,8 @@ The web task list SHALL let a touch user swipe a task row horizontally to change
 
 - **WHEN** a swipe gesture ends over the row
 - **THEN** the task detail view is not opened
+
+#### Scenario: Completing a running task stops its session
+
+- **WHEN** the user swipes a task whose status is `in_progress` to complete
+- **THEN** the client first posts `/api/tasks/{id}/stop` and then the `complete` status, so no agent keeps running under a completed task

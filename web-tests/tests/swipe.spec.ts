@@ -31,7 +31,10 @@ async function status(request: any) {
 }
 
 test.describe('task row swipe', () => {
+  let posts: string[];
   test.beforeEach(async ({ page }) => {
+    posts = [];
+    page.on('request', r => { if (r.method() === 'POST' && /\/api\/tasks\/[^/]+\/(status|stop)$/.test(r.url())) posts.push(r.url()); });
     await page.addInitScript(() => localStorage.setItem('argus-token', 'test-token'));
     await page.goto('/');
     await expect(page.locator('.task-item')).toHaveCount(1);
@@ -40,7 +43,9 @@ test.describe('task row swipe', () => {
   test('short swipe snaps back without a request or opening the task', async ({ page, request }) => {
     const before = await status(request);
     await swipe(page, -30);
-    await expect(page.locator('#detail-view, #agent-view').first()).not.toBeVisible();
+    await page.waitForTimeout(300);
+    await expect(page.locator('#detail-view')).not.toHaveClass(/open/);
+    expect(posts).toEqual([]);
     expect(await status(request)).toBe(before);
   });
 
@@ -55,6 +60,8 @@ test.describe('task row swipe', () => {
   test('swipe right on a non-complete task does nothing', async ({ page, request }) => {
     const before = await status(request);
     await swipe(page, 150);
+    await page.waitForTimeout(300);
+    expect(posts).toEqual([]);
     expect(await status(request)).toBe(before);
   });
 });
