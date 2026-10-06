@@ -47,16 +47,16 @@ models = { claude = "sonnet", codex = "gpt-6-sol" }
 models = { claude = "sonnet", codex = "gpt-6-sol" }
 
 [archetype.ci_loop]
-models = { claude = "haiku", codex = "gpt-6-sol" }
+models = { claude = "haiku", codex = "gpt-6-luna" }
 
 [archetype.verify]
-models = { claude = "haiku", codex = "gpt-6-sol" }
+models = { claude = "haiku", codex = "gpt-6-luna" }
 
 [archetype.recovery]
 models = { claude = "sonnet", codex = "gpt-6-sol" }
 
 [archetype.docs]
-models = { claude = "haiku", codex = "gpt-6-sol" }
+models = { claude = "haiku", codex = "gpt-6-luna" }
 
 [rigor]
 review_passes       = 1
