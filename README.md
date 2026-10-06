@@ -296,9 +296,9 @@ End-of-life has **two resting states**, and **no DB row is ever hard-deleted** �
 | Key                   | Action                                                   |
 | --------------------- | -------------------------------------------------------- |
 | `j` / `k`             | Navigate rows                                            |
-| `n`                   | New project / backend / schedule / backend tier          |
-| `e`                   | Edit project / backend / schedule / backend tier threshold |
-| `d`                   | Delete project / set default backend / delete schedule / remove backend tier |
+| `n`                   | New project / backend / schedule / backend tier / account |
+| `e`                   | Edit project / backend / schedule / backend tier threshold / account field |
+| `d`                   | Delete project / set default backend / delete schedule / remove backend tier / delete account (press twice) or reset the default / a project's account |
 | `a`                   | Edit project's AppleEvents allowlist (on a project row)  |
 | `m`                   | Edit backend's default model (on a backend row)          |
 | `p`                   | Cycle probe kind (on a Backend Tiers row)                |
@@ -552,6 +552,10 @@ Accounts let one Argus run tasks under different Claude Code and Codex subscript
 Each account is a separate config directory per tool. A Claude task runs with `CLAUDE_CONFIG_DIR` set to the account's dir, which gives it its own login (macOS Keychain entry), transcripts, and `.claude.json`. This is the multi-account method Claude Code's docs recommend. A Codex task runs with the account's `CODEX_HOME`, because that is where Codex keeps its login (`auth.json`) and all its state. Argus never reads, copies, logs, or writes credentials.
 
 #### Setup
+
+Easiest: open **Settings → Accounts** in the TUI. Press `n` to add an account (it starts with `~/.claude-<name>`), then `e` on its rows to set the Claude config dir, Codex home, or label. `▶`/`Enter` on the **Default account** row, or on a project row, cycles which account is the default. Edits take effect for the next task, with no restart. Anything defined in `config.toml` (below) overrides the same name from Settings and shows as `(config.toml)`, read-only. The web and macOS apps pick an account when you start a task but can't edit accounts yet; `--remote` mode shows them read-only.
+
+Or edit the file directly:
 
 ```toml
 # ~/.argus/config.toml
@@ -1030,7 +1034,7 @@ probe = "none"
 
 #### Accounts (`accounts`, `default_account`, `project_accounts`)
 
-Named work / personal accounts for Claude Code and Codex. How resolution, first login, and inheritance work: [Accounts](#accounts). Config.toml-only.
+Named work / personal accounts for Claude Code and Codex. How resolution, first login, and inheritance work: [Accounts](#accounts). Editable in **Settings → Accounts** (everything except `inherit`); `config.toml` entries override Settings per name.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|

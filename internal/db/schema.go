@@ -64,6 +64,16 @@ func (d *DB) createTables() error {
 		-- when config.toml defines no [[backend_routing.tier]] entries (that source
 		-- is authoritative in full and this table is not merged with it — see
 		-- specs/config-management/spec.md).
+		-- Settings-UI-edited accounts (add-accounts-settings-ui). config.toml
+		-- overrides a row per name; inherit stays config.toml-only. The default
+		-- account and per-project mapping live in the config kv table
+		-- (accounts.default / accounts.projects).
+		CREATE TABLE IF NOT EXISTS accounts (
+			name              TEXT PRIMARY KEY,
+			label             TEXT NOT NULL DEFAULT '',
+			claude_config_dir TEXT NOT NULL DEFAULT '',
+			codex_home        TEXT NOT NULL DEFAULT ''
+		);
 		CREATE TABLE IF NOT EXISTS backend_tiers (
 			position      INTEGER PRIMARY KEY,
 			backend       TEXT NOT NULL,

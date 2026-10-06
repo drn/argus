@@ -272,3 +272,37 @@ func TestValidateAccount_UnsafeDirs(t *testing.T) {
 		})
 	}
 }
+
+func TestFileLoader_AccountSources(t *testing.T) {
+	path := writeFile(t, `
+default_account = "work"
+
+[accounts.work]
+claude_config_dir = "/w"
+
+[accounts.personal]
+codex_home = "/p"
+
+[project_accounts]
+argus = "work"
+`)
+	l := NewFileLoader(path)
+	testutil.Equal(t, len(l.AccountSources().Accounts), 0) // nothing before the first Apply
+	l.Apply(DefaultConfig())
+	src := l.AccountSources()
+	testutil.True(t, src.Accounts["work"])
+	testutil.True(t, src.Accounts["personal"])
+	testutil.True(t, src.Default)
+	testutil.True(t, src.Projects["argus"])
+
+	var nilLoader *FileLoader
+	testutil.Equal(t, len(nilLoader.AccountSources().Accounts), 0)
+
+	t.Run("unparsable file clears the finding", func(t *testing.T) {
+		bad := writeFile(t, "[accounts.x\n")
+		lb := NewFileLoader(bad)
+		lb.Apply(DefaultConfig())
+		testutil.Equal(t, len(lb.AccountSources().Accounts), 0)
+		testutil.False(t, lb.AccountSources().Default)
+	})
+}

@@ -54,6 +54,10 @@ type FileLoader struct {
 	// (add-tiered-backend-routing) needs the SOURCE of the merged tier list,
 	// not just its resolved value, to know whether to render read-only.
 	backendRoutingTierDefined bool
+
+	// accountSources mirrors the most recent Apply call's finding on which
+	// account settings the file defines (see AccountSources).
+	accountSources AccountSources
 }
 
 // NewFileLoader returns a loader for the given path. An empty path makes Apply a
@@ -94,6 +98,7 @@ func (l *FileLoader) Apply(base Config) Config {
 	data, changed, ok := l.readLocked()
 	if !ok {
 		l.backendRoutingTierDefined = false
+		l.accountSources = AccountSources{}
 		if l.err != nil && prevErr == nil {
 			slog.Warn("argus config: cannot read config.toml, keeping current config", "path", l.path, "err", l.err)
 		}
@@ -114,17 +119,46 @@ func (l *FileLoader) Apply(base Config) Config {
 	if derr != nil {
 		l.err = fmt.Errorf("parsing %s: %w", l.path, derr)
 		l.backendRoutingTierDefined = false
+		l.accountSources = AccountSources{}
 		if prevErr == nil {
 			slog.Warn("argus config: ignoring config.toml (parse error)", "path", l.path, "err", derr)
 		}
 		return base
 	}
 	l.backendRoutingTierDefined = meta.IsDefined("backend_routing", "tier") && len(merged.BackendRouting.Tiers) > 0
+	l.accountSources = accountSourcesFrom(meta)
 	if changed {
 		slog.Info("argus config: applied config.toml overrides", "path", l.path)
 	}
 	l.err = nil
 	return merged
+}
+
+// accountSourcesFrom extracts the account-related keys a decoded file defined.
+func accountSourcesFrom(meta toml.MetaData) AccountSources {
+	src := AccountSources{Accounts: map[string]bool{}, Projects: map[string]bool{}}
+	for _, k := range meta.Keys() {
+		switch {
+		case len(k) >= 2 && k[0] == "accounts":
+			src.Accounts[k[1]] = true
+		case len(k) == 1 && k[0] == "default_account":
+			src.Default = true
+		case len(k) >= 2 && k[0] == "project_accounts":
+			src.Projects[k[1]] = true
+		}
+	}
+	return src
+}
+
+// AccountSources returns which account settings the most recent Apply call
+// found config.toml defining. nil-safe; reflects only the last Apply.
+func (l *FileLoader) AccountSources() AccountSources {
+	if l == nil {
+		return AccountSources{}
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.accountSources
 }
 
 // DefinesBackendRoutingTiers reports whether the most recent Apply call found

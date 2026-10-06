@@ -1,6 +1,7 @@
 package db
 
 import (
+	"encoding/json"
 	"log/slog"
 	"strconv"
 
@@ -40,6 +41,14 @@ func (d *DB) Config() config.Config {
 		cfg.BackendRouting.Tiers = tiers
 	} else {
 		slog.Error("db.Config: failed to load backend tiers", "err", err)
+	}
+
+	// Load Settings-UI-edited accounts. The config.toml overlay applied below
+	// overrides per account name, so DB-only names survive it.
+	if accounts, err := d.Accounts(); err == nil {
+		cfg.Accounts = accounts
+	} else {
+		slog.Error("db.Config: failed to load accounts", "err", err)
 	}
 
 	// Load scalar config values — hold mutex through iteration
@@ -136,6 +145,17 @@ func (d *DB) Config() config.Config {
 	if v, ok := kv["api.http_port"]; ok {
 		if port, err := strconv.Atoi(v); err == nil && port > 0 {
 			cfg.API.HTTPPort = port
+		}
+	}
+
+	// Account selection state edited in Settings; config.toml overrides below.
+	if v, ok := kv[ConfigKeyDefaultAccount]; ok {
+		cfg.DefaultAccount = v
+	}
+	if v, ok := kv[ConfigKeyProjectAccounts]; ok && v != "" {
+		var m map[string]string
+		if json.Unmarshal([]byte(v), &m) == nil && len(m) > 0 {
+			cfg.ProjectAccounts = m
 		}
 	}
 
