@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
@@ -236,19 +237,19 @@ type SettingsView struct {
 	// index into backendTiers being edited, -1 when not editing — an index
 	// rather than a name/key because tiers have no stable per-row identity
 	// (unlike backends/projects; see db.SetBackendTiers's own doc comment).
-	editingTierIdx int
-
-	// Global sandbox extra-write path inline edit. editingSandboxIdx is the
-	// index being edited, len(sandboxExtraWrite) while adding a new path, or -1.
-	editingSandboxIdx    int
-	editSandboxBuf       string
+	editingTierIdx       int
 	editTierThresholdBuf string
 
 	// Sandbox.
-	sandboxEnabled          bool
-	sandboxAvailable        bool
-	sandboxDenyRead         []string
-	sandboxExtraWrite       []string
+	sandboxEnabled    bool
+	sandboxAvailable  bool
+	sandboxDenyRead   []string
+	sandboxExtraWrite []string
+	// editingSandboxIdx is the extra-write index being inline-edited,
+	// len(sandboxExtraWrite) while adding a new path, or -1.
+	editingSandboxIdx       int
+	editSandboxBuf          string
+	sandboxPathErr          string // last rejected-path reason, cleared on next edit
 	sandboxAllowAppleEvents []string
 
 	// KB.
@@ -1283,7 +1284,7 @@ func (sv *SettingsView) PasteHandler() func(pastedText string, setFocus func(p t
 			sv.editTodoTagBuf += pastedText
 			sv.rebuildRows()
 		} else if sv.editingSandboxIdx != -1 {
-			sv.editSandboxBuf += strings.TrimSpace(pastedText)
+			sv.editSandboxBuf += strings.Join(strings.Fields(pastedText), " ")
 			sv.rebuildRows()
 		} else if sv.editingTierIdx != -1 {
 			// Digits only, same constraint as the rune handler — a pasted
@@ -1970,6 +1971,8 @@ func (sv *SettingsView) setCategory(c settingsCategory) {
 	}
 	beforeStream := sv.currentStreamKey()
 	sv.category = c
+	sv.editingSandboxIdx = -1
+	sv.editSandboxBuf = ""
 	sv.cursor = 0
 	sv.scrollOff = 0
 	sv.logScrollOff = 0
@@ -2289,6 +2292,7 @@ func (sv *SettingsView) persistSandboxExtraWrite(paths []string) {
 func (sv *SettingsView) handleNewSandboxPath() bool {
 	sv.editingSandboxIdx = len(sv.sandboxExtraWrite)
 	sv.editSandboxBuf = ""
+	sv.sandboxPathErr = ""
 	sv.rebuildRows()
 	sv.cursor = len(sv.rows) - 1
 	return true
@@ -2313,6 +2317,7 @@ func (sv *SettingsView) handleEditSandboxPath() bool {
 	}
 	sv.editingSandboxIdx = i
 	sv.editSandboxBuf = sv.sandboxExtraWrite[i]
+	sv.sandboxPathErr = ""
 	sv.rebuildRows()
 	return true
 }
@@ -2332,6 +2337,27 @@ func (sv *SettingsView) handleDeleteSandboxPath() bool {
 	return true
 }
 
+// validateSandboxWritePath returns why path can't be a global write grant, or
+// "" if acceptable. Only absolute or ~/-relative paths are useful (a bare "~"
+// or relative path never matches), "/" would grant the whole filesystem, and
+// commas would corrupt the CSV storage.
+func validateSandboxWritePath(path string) string {
+	switch {
+	case path == "/":
+		return "would allow writes everywhere"
+	case !strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "~/"):
+		return "must start with / or ~/"
+	case strings.Contains(path, ","):
+		return "commas are not allowed"
+	}
+	for _, r := range path {
+		if unicode.IsControl(r) {
+			return "control characters are not allowed"
+		}
+	}
+	return ""
+}
+
 // handleEditSandboxPathKey handles keystrokes while inline-editing a global
 // extra-write path. Enter saves (blank add cancels, blank edit is a no-op,
 // commas rejected because the list is stored comma-separated); Escape cancels.
@@ -2342,10 +2368,21 @@ func (sv *SettingsView) handleEditSandboxPathKey(ev *tcell.EventKey) bool {
 		path := strings.TrimSpace(sv.editSandboxBuf)
 		sv.editingSandboxIdx = -1
 		sv.editSandboxBuf = ""
-		if path == "" || strings.Contains(path, ",") {
-			uxlog.Log("[settings] sandbox extra_write path rejected (blank or contains comma)")
+		if path == "" {
 			sv.rebuildRows()
 			return true
+		}
+		if reason := validateSandboxWritePath(path); reason != "" {
+			sv.sandboxPathErr = "Rejected " + path + ": " + reason
+			uxlog.Log("[settings] sandbox extra_write path rejected: %s", sv.sandboxPathErr)
+			sv.rebuildRows()
+			return true
+		}
+		for _, existing := range sv.sandboxExtraWrite {
+			if existing == path {
+				sv.rebuildRows()
+				return true
+			}
 		}
 		next := append([]string(nil), sv.sandboxExtraWrite...)
 		if idx >= len(next) {
@@ -3522,6 +3559,9 @@ func (sv *SettingsView) renderSandboxDetail(screen tcell.Screen, x, y, w, h int)
 		}
 	}
 
+	if sv.sandboxPathErr != "" && row+1 < h {
+		widget.DrawText(screen, x, y+row+1, w, sv.sandboxPathErr, tcell.StyleDefault.Foreground(theme.ColorError))
+	}
 	if h > 1 {
 		hint := "[enter] toggle  [n] add write path  [e] edit  [d] delete  [◀] rail"
 		if sv.editingSandboxIdx != -1 {

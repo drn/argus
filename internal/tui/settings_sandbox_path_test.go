@@ -51,9 +51,15 @@ func TestSettingsView_SandboxExtraWrite_AddEditDelete(t *testing.T) {
 	sv.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
 	testutil.Equal(t, sandboxPathRows(sv), 1)
 
-	// Comma and blank are rejected.
+	// Invalid paths, duplicates and blanks are rejected.
+	for _, bad := range []string{"/a,/b", "/", "~", "rel/path"} {
+		sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', 0))
+		typeSandboxText(sv, bad)
+		sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+		testutil.Contains(t, sv.sandboxPathErr, "Rejected")
+	}
 	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', 0))
-	typeSandboxText(sv, "/a,/b")
+	typeSandboxText(sv, "~/Downloads/x")
 	sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
 	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', 0))
 	sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
@@ -75,4 +81,28 @@ func TestSettingsView_SandboxExtraWrite_PasteAndBackspace(t *testing.T) {
 	sv.HandleKey(tcell.NewEventKey(tcell.KeyBackspace2, 0, 0))
 	testutil.Equal(t, sv.editSandboxBuf, "/")
 	testutil.True(t, sv.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, 0)))
+}
+
+func TestSettingsView_SandboxExtraWrite_CategoryChangeCancelsEdit(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catSandbox)
+	sv.handleNewSandboxPath()
+	testutil.True(t, sv.IsEditing())
+	sv.setCategory(catSystem)
+	testutil.False(t, sv.IsEditing())
+}
+
+func TestValidateSandboxWritePath(t *testing.T) {
+	tests := []struct {
+		path string
+		ok   bool
+	}{
+		{"/tmp/x", true}, {"~/Downloads", true}, {"/", false}, {"~", false},
+		{"rel", false}, {"/a,b", false}, {"/a\nb", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			testutil.Equal(t, validateSandboxWritePath(tc.path) == "", tc.ok)
+		})
+	}
 }
