@@ -348,6 +348,11 @@ func TestHandleGetArtifact_Thumb(t *testing.T) {
 		testutil.Equal(t, w.Code, http.StatusNotFound)
 	}
 
+	// Only thumb=1 selects the thumbnail; anything else serves the raw bytes.
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("GET", "/api/tasks/"+task.ID+"/artifacts/shots/big.png?thumb=0", ""))
+	testutil.Equal(t, w.Header().Get("Content-Type"), "image/png")
+
 	// The thumb cache dir is never servable as an artifact.
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, authedReq("GET", "/api/tasks/"+task.ID+"/artifacts/.thumbs/x.jpg", ""))

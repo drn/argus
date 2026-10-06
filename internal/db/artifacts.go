@@ -139,6 +139,9 @@ func (d *DB) PruneFolderArtifacts(taskID, folder string, keep []string) ([]strin
 		}
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("query folder artifacts: %w", err)
+	}
 	for _, fn := range stale {
 		if _, err := d.conn.Exec(`DELETE FROM artifacts WHERE task_id=? AND filename=?`, taskID, fn); err != nil {
 			return nil, fmt.Errorf("prune folder artifact: %w", err)

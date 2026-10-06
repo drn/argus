@@ -71,7 +71,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.URL.Query().Get("thumb") != "" {
+	if r.URL.Query().Get("thumb") == "1" {
 		s.serveArtifactThumb(w, r, id, art, full)
 		return
 	}

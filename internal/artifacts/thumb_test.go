@@ -182,3 +182,24 @@ func TestThumbnail_CanceledContextWhileQueued(t *testing.T) {
 	_, err := Thumbnail(ctx, "task", &model.Artifact{Filename: "c.png", Type: model.ArtifactImage}, src)
 	testutil.ErrorIs(t, err, context.Canceled)
 }
+
+func TestThumbnail_FailureIsCachedNegatively(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// Valid header (so DecodeConfig passes) but truncated pixel data.
+	src := filepath.Join(agent.ArtifactsDir("task"), "trunc.png")
+	writePNG(t, src, 50, 50, color.NRGBA{A: 255})
+	full, err := os.ReadFile(src)
+	testutil.NoError(t, err)
+	testutil.NoError(t, os.WriteFile(src, full[:len(full)/2], 0o600))
+	art := &model.Artifact{Filename: "trunc.png", Type: model.ArtifactImage}
+
+	_, err = Thumbnail(context.Background(), "task", art, src)
+	testutil.True(t, errors.Is(err, ErrNoThumbnail))
+	markers, _ := filepath.Glob(filepath.Join(agent.ArtifactsDir("task"), model.ArtifactThumbDir, "*.none"))
+	testutil.Equal(t, len(markers), 1)
+
+	// Second request is answered from the marker without touching the source.
+	testutil.NoError(t, os.Remove(src))
+	_, err = Thumbnail(context.Background(), "task", art, src)
+	testutil.True(t, err != nil)
+}

@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/model"
@@ -46,7 +48,7 @@ Argus copies the file into durable per-task storage at registration time, so you
 
 The agent process does not know its own task ID, so identify yourself by passing either ` + "`id`" + ` (sub-tasks should use the ` + "`ARGUS_TASK_ID`" + ` env var exported into every worktree) or ` + "`cwd`" + ` (Argus resolves to the task whose worktree the cwd lives under, longest-prefix wins). At least one is required.
 
-Pass a DIRECTORY as path to register the whole folder: every regular file inside (recursively; hidden files and symlinks skipped) is copied and shown in Argus Web as one folder with a thumbnail gallery for images/videos. Limits: ` + "500" + ` files and 2 GiB per folder, plus the per-file caps below. Re-registering the same folder replaces its contents.
+Pass a DIRECTORY as path to register the whole folder: every regular file inside (recursively; hidden files and symlinks skipped) is copied and shown in Argus Web as one folder with a thumbnail gallery for images/videos. Limits: ` + fmt.Sprintf("%d files and %d GiB", model.MaxFolderFiles, model.MaxFolderBytes>>30) + ` per folder, plus the per-file caps below. The folder is identified by the directory's name, and re-registering a folder with that name replaces its previous contents.
 
 Guideline: artifacts render best when SELF-CONTAINED — inline all CSS/JS/images, no external CDN references — because the viewer loads them in a sandboxed frame with no network guarantees. Maximum size is 25 MiB for html/markdown/pdf/image/text, 1 GiB for audio/video (these are streamed and scrubbed via Range requests rather than loaded whole).`,
 		InputSchema: map[string]interface{}{
@@ -87,7 +89,7 @@ func (s *Server) toolArtifactRegister(id interface{}, args json.RawMessage) *Res
 	}
 
 	if info, statErr := os.Stat(p.Path); statErr == nil && info.IsDir() {
-		return s.registerArtifactFolder(id, task, p.Path, p.Type)
+		return s.registerArtifactFolder(id, task, p.Path)
 	}
 
 	// Sanitize the destination basename from the source path. This strips any
@@ -96,6 +98,10 @@ func (s *Server) toolArtifactRegister(id interface{}, args json.RawMessage) *Res
 	filename, err := model.SanitizeArtifactFilename(p.Path)
 	if err != nil {
 		return toolError(id, fmt.Sprintf("invalid artifact path %q: %v", p.Path, err))
+	}
+
+	if _, err := model.ValidateArtifactRelPath(filename); err != nil {
+		return toolError(id, fmt.Sprintf("invalid artifact path %q: reserved or unsafe name", p.Path))
 	}
 
 	// Resolve the artifact type: explicit (validated) or inferred from the ext.
@@ -150,7 +156,9 @@ func (s *Server) toolArtifactRegister(id interface{}, args json.RawMessage) *Res
 func (s *Server) copyArtifact(taskID, srcPath, filename string, atype model.ArtifactType) (int64, error) {
 	maxBytes := model.MaxBytesForType(atype)
 
-	src, err := os.Open(srcPath) //nolint:gosec // G304: srcPath is an agent-supplied path read by the unsandboxed daemon for a single-user local tool; bytes are copied, never executed.
+	// O_NONBLOCK so a FIFO swapped in after the walk can't hang the handler on open;
+	// the regular-file check below then rejects it (also rejecting a swapped-in dir).
+	src, err := os.OpenFile(srcPath, os.O_RDONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // G304: srcPath is an agent-supplied path read by the unsandboxed daemon for a single-user local tool; bytes are copied, never executed.
 	if err != nil {
 		return 0, fmt.Errorf("open source: %w", err)
 	}
@@ -162,6 +170,9 @@ func (s *Server) copyArtifact(taskID, srcPath, filename string, atype model.Arti
 	}
 	if info.IsDir() {
 		return 0, fmt.Errorf("source is a directory, not a file")
+	}
+	if !info.Mode().IsRegular() {
+		return 0, fmt.Errorf("source is not a regular file")
 	}
 	if info.Size() > maxBytes {
 		return 0, fmt.Errorf("artifact exceeds %d byte cap (got %d)", maxBytes, info.Size())
@@ -206,13 +217,24 @@ func (s *Server) copyArtifact(taskID, srcPath, filename string, atype model.Arti
 	return n, nil
 }
 
+// folderRegMu serializes folder registrations so a concurrent re-register can't
+// prune rows (and delete bytes) another call just upserted.
+var folderRegMu sync.Mutex
+
+// maxFolderWalkEntries bounds the directory walk itself: skipped entries
+// (hidden, symlinks, oversized) don't count toward MaxFolderFiles.
+const maxFolderWalkEntries = 20000
+
 // registerArtifactFolder copies every regular, non-hidden file under srcDir
 // into <artifacts>/<folder>/<rel path> and registers one manifest row per file
 // tagged with the folder name. Symlinks and dotfiles are skipped (a symlink
 // could point outside the tree the agent meant to share). Rows for files that
 // were in a previous registration of the same folder but are gone from srcDir
 // are pruned so a re-register replaces the folder's contents.
-func (s *Server) registerArtifactFolder(id interface{}, task *model.Task, srcDir, _ string) *Response {
+func (s *Server) registerArtifactFolder(id interface{}, task *model.Task, srcDir string) *Response {
+	folderRegMu.Lock()
+	defer folderRegMu.Unlock()
+
 	folder, err := model.SanitizeArtifactFilename(srcDir)
 	if err != nil || folder == model.ArtifactThumbDir || strings.HasPrefix(folder, ".") {
 		return toolError(id, fmt.Sprintf("invalid folder path %q", srcDir))
@@ -225,6 +247,7 @@ func (s *Server) registerArtifactFolder(id interface{}, task *model.Task, srcDir
 	var files []entry
 	var total int64
 	skipped := 0
+	visited := 0
 	walkRoot := srcDir
 	if real, err := filepath.EvalSymlinks(srcDir); err == nil {
 		walkRoot = real // WalkDir does not follow a symlinked root
@@ -235,6 +258,9 @@ func (s *Server) registerArtifactFolder(id interface{}, task *model.Task, srcDir
 		}
 		if path == walkRoot {
 			return nil
+		}
+		if visited++; visited > maxFolderWalkEntries {
+			return fmt.Errorf("folder has more than %d entries", maxFolderWalkEntries)
 		}
 		if strings.HasPrefix(d.Name(), ".") {
 			skipped++
@@ -310,14 +336,20 @@ func (s *Server) registerArtifactFolder(id interface{}, task *model.Task, srcDir
 		return toolError(id, fmt.Sprintf("Failed to register folder %q: all %d files failed", srcDir, len(files)))
 	}
 
+	pruned := 0
 	if stale, err := s.artifacts.PruneFolderArtifacts(task.ID, folder, keep); err != nil {
 		log.Printf("[mcp] artifact_register folder prune failed: id=%s folder=%s err=%v", task.ID, folder, err)
 	} else {
+		pruned = len(stale)
 		for _, fn := range stale {
 			os.Remove(filepath.Join(agent.ArtifactsDir(task.ID), filepath.FromSlash(fn))) //nolint:errcheck
 		}
 	}
 
-	log.Printf("[mcp] artifact_register folder ok: id=%s folder=%s files=%d failed=%d skipped=%d bytes=%d", task.ID, folder, len(keep), failed, skipped, bytesCopied)
-	return toolResult(id, fmt.Sprintf("Registered folder %q (%d files, %d bytes; %d skipped, %d failed) for task %s (%s). View it in Argus Web → task → Artifacts as a gallery.", folder, len(keep), bytesCopied, skipped, failed, task.ID, task.Name))
+	log.Printf("[mcp] artifact_register folder ok: id=%s folder=%s files=%d failed=%d skipped=%d pruned=%d bytes=%d", task.ID, folder, len(keep), failed, skipped, pruned, bytesCopied)
+	note := ""
+	if pruned > 0 {
+		note = fmt.Sprintf(" Replaced %d previously registered file(s) in folder %q that are no longer in the source directory.", pruned, folder)
+	}
+	return toolResult(id, fmt.Sprintf("Registered folder %q (%d files, %d bytes; %d skipped, %d failed) for task %s (%s). View it in Argus Web → task → Artifacts as a gallery.%s", folder, len(keep), bytesCopied, skipped, failed, task.ID, task.Name, note))
 }

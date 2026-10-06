@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/drn/argus/internal/agent"
@@ -348,3 +349,29 @@ func TestArtifactRegister_FolderErrors(t *testing.T) {
 }
 
 var errTest = errors.New("boom")
+
+func TestArtifactRegister_ReservedStandaloneName(t *testing.T) {
+	s, store := testServerWithArtifacts(t)
+	src := writeTempFile(t, ".thumbs", "x")
+	cr := callArtifactRegister(t, s, map[string]any{"path": src, "id": "abc123"})
+	testutil.True(t, cr.IsError)
+	testutil.Equal(t, len(store.saved), 0)
+}
+
+func TestCopyArtifact_RejectsNonRegular(t *testing.T) {
+	s, _ := testServerWithArtifacts(t)
+	fifo := filepath.Join(t.TempDir(), "pipe")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo unsupported: %v", err)
+	}
+	_, err := s.copyArtifact("abc123", fifo, "g/pipe.txt", model.ArtifactText)
+	testutil.True(t, err != nil)
+}
+
+func TestArtifactRegister_FolderReportsReplaced(t *testing.T) {
+	s, store := testServerWithArtifacts(t)
+	store.stale = []string{"gallery/old.png"}
+	cr := callArtifactRegister(t, s, map[string]any{"path": makeFolder(t, map[string]string{"new.png": "x"}), "id": "abc123"})
+	testutil.True(t, !cr.IsError)
+	testutil.Contains(t, cr.Content[0].Text, "Replaced 1 previously registered")
+}

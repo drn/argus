@@ -16,9 +16,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
-	"golang.org/x/image/bmp"
+	_ "golang.org/x/image/bmp"
 	xdraw "golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
 
@@ -31,7 +32,7 @@ const ThumbSize = 320
 
 // maxThumbPixels bounds the decoded size of a source image so a small file
 // declaring huge dimensions cannot exhaust daemon memory.
-const maxThumbPixels = 64 * 1000 * 1000
+const maxThumbPixels = 24 * 1000 * 1000
 
 // ErrNoThumbnail means the artifact has no server-side thumbnail (unsupported
 // format, or ffmpeg unavailable); the client falls back to a type icon.
@@ -71,6 +72,12 @@ func Thumbnail(ctx context.Context, taskID string, art *model.Artifact, srcPath 
 	if ti, err := os.Stat(out); err == nil && !ti.ModTime().Before(srcInfo.ModTime()) {
 		return out, nil
 	}
+	// A marker records a prior failure so a corrupt image or unthumbnailable
+	// video is not re-decoded (or re-run through ffmpeg) on every gallery open.
+	none := strings.TrimSuffix(out, ".jpg") + ".none"
+	if ni, err := os.Stat(none); err == nil && !ni.ModTime().Before(srcInfo.ModTime()) {
+		return "", ErrNoThumbnail
+	}
 
 	select {
 	case thumbSlots <- struct{}{}:
@@ -95,6 +102,9 @@ func Thumbnail(ctx context.Context, taskID string, art *model.Artifact, srcPath 
 		err = videoThumb(ctx, srcPath, tmpName)
 	}
 	if err != nil {
+		if errors.Is(err, ErrNoThumbnail) {
+			_ = os.WriteFile(none, nil, 0o600)
+		}
 		return "", err
 	}
 	if err := os.Rename(tmpName, out); err != nil {
@@ -109,7 +119,7 @@ func imageThumb(src, dst string) error {
 		return err
 	}
 	defer f.Close()
-	cfg, format, err := image.DecodeConfig(f)
+	cfg, _, err := image.DecodeConfig(f)
 	if err != nil {
 		if errors.Is(err, image.ErrFormat) {
 			return ErrNoThumbnail
@@ -122,14 +132,9 @@ func imageThumb(src, dst string) error {
 	if _, err := f.Seek(0, 0); err != nil {
 		return err
 	}
-	var img image.Image
-	if format == "bmp" {
-		img, err = bmp.Decode(f)
-	} else {
-		img, _, err = image.Decode(f)
-	}
+	img, _, err := image.Decode(f)
 	if err != nil {
-		return err
+		return ErrNoThumbnail // truncated/corrupt data is "no thumbnail", not a server error
 	}
 	return writeJPEGThumb(img, dst)
 }
@@ -170,11 +175,14 @@ func videoThumb(ctx context.Context, src, dst string) error {
 	if err != nil {
 		return err
 	}
+	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	for _, seek := range []string{"1", "0"} {
 		_ = os.Truncate(dst, 0)
-		cmd := exec.CommandContext(ctx, bin, "-v", "error", "-ss", seek, "-i", src,
+		// -protocol_whitelist file: the source is agent-controlled, so a playlist
+		// or reference movie must not make the daemon open network URLs.
+		cmd := exec.CommandContext(ctx, bin, "-v", "error", "-nostdin", "-protocol_whitelist", "file", "-ss", seek, "-i", src,
 			"-frames:v", "1", "-vf", fmt.Sprintf("scale='min(%d,iw)':-2", ThumbSize),
 			"-c:v", "mjpeg", "-f", "image2", "-y", dst)
 		if err := cmd.Run(); err == nil {
@@ -182,8 +190,8 @@ func videoThumb(ctx context.Context, src, dst string) error {
 				return nil
 			}
 		}
-		if ctx.Err() != nil {
-			return ctx.Err()
+		if parent.Err() != nil {
+			return parent.Err()
 		}
 	}
 	return ErrNoThumbnail
