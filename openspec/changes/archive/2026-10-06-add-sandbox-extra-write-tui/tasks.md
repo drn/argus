@@ -1,0 +1,3 @@
+- [x] Sandbox category rows + inline add/edit/delete in `internal/tui/settings.go`
+- [x] Tests in `settings_sandbox_path_test.go`
+- [x] Gotcha + README note

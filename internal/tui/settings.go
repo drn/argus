@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
@@ -64,6 +65,7 @@ const (
 	srTodoProject
 	srTodoTag
 	srBackendTier
+	srSandboxPath
 )
 
 // settingsCategory groups related settings rows into a left-rail entry.
@@ -239,10 +241,15 @@ type SettingsView struct {
 	editTierThresholdBuf string
 
 	// Sandbox.
-	sandboxEnabled          bool
-	sandboxAvailable        bool
-	sandboxDenyRead         []string
-	sandboxExtraWrite       []string
+	sandboxEnabled    bool
+	sandboxAvailable  bool
+	sandboxDenyRead   []string
+	sandboxExtraWrite []string
+	// editingSandboxIdx is the extra-write index being inline-edited,
+	// len(sandboxExtraWrite) while adding a new path, or -1.
+	editingSandboxIdx       int
+	editSandboxBuf          string
+	sandboxPathErr          string // last rejected-path reason, cleared on next edit
 	sandboxAllowAppleEvents []string
 
 	// KB.
@@ -488,6 +495,7 @@ func NewSettingsView(database store.Store) *SettingsView {
 		streamMounts:       make(map[pluginKey]*streamSectionMount),
 		todoProbe:          todo.Get,
 		editingTierIdx:     -1,
+		editingSandboxIdx:  -1,
 	}
 }
 
@@ -512,6 +520,9 @@ func (sv *SettingsView) Refresh() {
 	sv.sandboxAvailable = agent.IsSandboxAvailable()
 	sv.sandboxDenyRead = cfg.Sandbox.DenyRead
 	sv.sandboxExtraWrite = cfg.Sandbox.ExtraWrite
+	if sv.editingSandboxIdx > len(sv.sandboxExtraWrite) {
+		sv.editingSandboxIdx = -1
+	}
 	sv.sandboxAllowAppleEvents = cfg.Sandbox.AllowAppleEvents
 
 	// Backends.
@@ -1048,6 +1059,15 @@ func (sv *SettingsView) rebuildRows() {
 			label = "Enabled"
 		}
 		sv.rows = append(sv.rows, settingsRow{kind: srSandbox, label: label, key: "_sandbox"})
+		for i, p := range sv.sandboxExtraWrite {
+			if sv.editingSandboxIdx == i {
+				p = sv.editSandboxBuf + "▎"
+			}
+			sv.rows = append(sv.rows, settingsRow{kind: srSandboxPath, label: "Allow write: " + p, key: strconv.Itoa(i)})
+		}
+		if sv.editingSandboxIdx == len(sv.sandboxExtraWrite) {
+			sv.rows = append(sv.rows, settingsRow{kind: srSandboxPath, label: "Allow write: " + sv.editSandboxBuf + "▎", key: strconv.Itoa(sv.editingSandboxIdx)})
+		}
 
 	case catProjects:
 		if len(sv.projects) == 0 {
@@ -1263,6 +1283,9 @@ func (sv *SettingsView) PasteHandler() func(pastedText string, setFocus func(p t
 		} else if sv.editingTodoTag {
 			sv.editTodoTagBuf += pastedText
 			sv.rebuildRows()
+		} else if sv.editingSandboxIdx != -1 {
+			sv.editSandboxBuf += strings.Join(strings.Fields(pastedText), " ")
+			sv.rebuildRows()
 		} else if sv.editingTierIdx != -1 {
 			// Digits only, same constraint as the rune handler — a pasted
 			// threshold is still a percentage, not free text.
@@ -1288,7 +1311,7 @@ func (sv *SettingsView) FocusRightPane() { sv.setFocus(focusPane) }
 // IsEditing returns true when the user is inline-editing any field.
 func (sv *SettingsView) IsEditing() bool {
 	return sv.editingVault != "" || sv.editingSource || sv.editingBackendModel != "" || sv.activeEditKey != "" ||
-		sv.editingTodoProject || sv.editingTodoTag || sv.editingTierIdx != -1
+		sv.editingTodoProject || sv.editingTodoTag || sv.editingTierIdx != -1 || sv.editingSandboxIdx != -1
 }
 
 // SelectedProject returns the project at the cursor, or nil.
@@ -1596,6 +1619,9 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 	}
 	if sv.editingTodoTag {
 		return sv.handleEditTodoTagKey(ev)
+	}
+	if sv.editingSandboxIdx != -1 {
+		return sv.handleEditSandboxPathKey(ev)
 	}
 	if sv.editingTierIdx != -1 {
 		return sv.handleEditTierThresholdKey(ev)
@@ -1945,6 +1971,8 @@ func (sv *SettingsView) setCategory(c settingsCategory) {
 	}
 	beforeStream := sv.currentStreamKey()
 	sv.category = c
+	sv.editingSandboxIdx = -1
+	sv.editSandboxBuf = ""
 	sv.cursor = 0
 	sv.scrollOff = 0
 	sv.logScrollOff = 0
@@ -1992,6 +2020,8 @@ func (sv *SettingsView) handleEnter() bool {
 		uxlog.Log("[settings] sandbox toggled to %s", val)
 		sv.rebuildRows()
 		return true
+	case srSandboxPath:
+		return sv.handleEditSandboxPath()
 	case srKB:
 		// Toggle KB.
 		sv.kbEnabled = !sv.kbEnabled
@@ -2150,6 +2180,8 @@ func (sv *SettingsView) handleDeleteOrDefault() bool {
 		return sv.handleDeleteSchedule()
 	case srBackendTier:
 		return sv.handleDeleteBackendTier()
+	case srSandboxPath:
+		return sv.handleDeleteSandboxPath()
 	}
 	return false
 }
@@ -2217,12 +2249,16 @@ func (sv *SettingsView) handleNew() bool {
 		}
 	case catBackendTiers:
 		return sv.handleNewBackendTier()
+	case catSandbox:
+		return sv.handleNewSandboxPath()
 	}
 	return false
 }
 
 func (sv *SettingsView) handleEdit() bool {
 	switch sv.currentRowKind() {
+	case srSandboxPath:
+		return sv.handleEditSandboxPath()
 	case srBackendTier:
 		return sv.handleEditBackendTierThreshold()
 	case srProject:
@@ -2235,6 +2271,145 @@ func (sv *SettingsView) handleEdit() bool {
 			sv.OnEditSchedule(s)
 			return true
 		}
+	}
+	return false
+}
+
+// persistSandboxExtraWrite writes the global sandbox.extra_write list through
+// the Store (works for both local and --remote), then refreshes rows. Applies
+// to tasks launched afterward; running sessions keep the profile they started with.
+func (sv *SettingsView) persistSandboxExtraWrite(paths []string) {
+	if err := sv.database.SetConfigValue("sandbox.extra_write", strings.Join(paths, ",")); err != nil {
+		uxlog.Log("[settings] failed to persist sandbox extra_write: %v", err)
+		sv.rebuildRows()
+		return
+	}
+	sv.sandboxExtraWrite = paths
+	uxlog.Log("[settings] sandbox extra_write set to %d path(s)", len(paths))
+	sv.rebuildRows()
+}
+
+func (sv *SettingsView) handleNewSandboxPath() bool {
+	sv.editingSandboxIdx = len(sv.sandboxExtraWrite)
+	sv.editSandboxBuf = ""
+	sv.sandboxPathErr = ""
+	sv.rebuildRows()
+	sv.cursor = len(sv.rows) - 1
+	return true
+}
+
+func (sv *SettingsView) selectedSandboxPathIdx() int {
+	row := sv.SelectedRow()
+	if row == nil || row.kind != srSandboxPath {
+		return -1
+	}
+	i, err := strconv.Atoi(row.key)
+	if err != nil || i < 0 || i >= len(sv.sandboxExtraWrite) {
+		return -1
+	}
+	return i
+}
+
+func (sv *SettingsView) handleEditSandboxPath() bool {
+	i := sv.selectedSandboxPathIdx()
+	if i < 0 {
+		return false
+	}
+	sv.editingSandboxIdx = i
+	sv.editSandboxBuf = sv.sandboxExtraWrite[i]
+	sv.sandboxPathErr = ""
+	sv.rebuildRows()
+	return true
+}
+
+func (sv *SettingsView) handleDeleteSandboxPath() bool {
+	i := sv.selectedSandboxPathIdx()
+	if i < 0 {
+		return false
+	}
+	next := make([]string, 0, len(sv.sandboxExtraWrite)-1)
+	next = append(next, sv.sandboxExtraWrite[:i]...)
+	next = append(next, sv.sandboxExtraWrite[i+1:]...)
+	sv.persistSandboxExtraWrite(next)
+	if sv.cursor >= len(sv.rows) {
+		sv.cursor = len(sv.rows) - 1
+	}
+	return true
+}
+
+// validateSandboxWritePath returns why path can't be a global write grant, or
+// "" if acceptable. Only absolute or ~/-relative paths are useful (a bare "~"
+// or relative path never matches), "/" would grant the whole filesystem, and
+// commas would corrupt the CSV storage.
+func validateSandboxWritePath(path string) string {
+	switch {
+	case path == "/":
+		return "would allow writes everywhere"
+	case !strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "~/"):
+		return "must start with / or ~/"
+	case strings.Contains(path, ","):
+		return "commas are not allowed"
+	}
+	for _, r := range path {
+		if unicode.IsControl(r) {
+			return "control characters are not allowed"
+		}
+	}
+	return ""
+}
+
+// handleEditSandboxPathKey handles keystrokes while inline-editing a global
+// extra-write path. Enter saves (blank add cancels, blank edit is a no-op,
+// commas rejected because the list is stored comma-separated); Escape cancels.
+func (sv *SettingsView) handleEditSandboxPathKey(ev *tcell.EventKey) bool {
+	switch ev.Key() {
+	case tcell.KeyEnter:
+		idx := sv.editingSandboxIdx
+		path := strings.TrimSpace(sv.editSandboxBuf)
+		sv.editingSandboxIdx = -1
+		sv.editSandboxBuf = ""
+		if path == "" {
+			sv.rebuildRows()
+			return true
+		}
+		if reason := validateSandboxWritePath(path); reason != "" {
+			sv.sandboxPathErr = "Rejected " + path + ": " + reason
+			uxlog.Log("[settings] sandbox extra_write path rejected: %s", sv.sandboxPathErr)
+			sv.rebuildRows()
+			return true
+		}
+		for _, existing := range sv.sandboxExtraWrite {
+			if existing == path {
+				sv.rebuildRows()
+				return true
+			}
+		}
+		next := append([]string(nil), sv.sandboxExtraWrite...)
+		if idx >= len(next) {
+			next = append(next, path)
+		} else {
+			next[idx] = path
+		}
+		sv.persistSandboxExtraWrite(next)
+		return true
+	case tcell.KeyEscape:
+		sv.editingSandboxIdx = -1
+		sv.editSandboxBuf = ""
+		sv.rebuildRows()
+		return true
+	case tcell.KeyDown, tcell.KeyUp, tcell.KeyLeft, tcell.KeyRight:
+		return true
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if len(sv.editSandboxBuf) > 0 {
+			_, size := utf8.DecodeLastRuneInString(sv.editSandboxBuf)
+			sv.editSandboxBuf = sv.editSandboxBuf[:len(sv.editSandboxBuf)-size]
+			sv.rebuildRows()
+		}
+		return true
+	case tcell.KeyRune:
+		sv.editSandboxBuf += string(ev.Rune())
+		sv.rebuildRows()
+		return true
 	}
 	return false
 }
@@ -2885,7 +3060,7 @@ func (sv *SettingsView) renderRowDetail(screen tcell.Screen, x, y, w, h int, row
 		sv.renderWarningDetail(screen, x, y, w, h, row)
 	case srSecretsBootstrap:
 		sv.renderSecretsBootstrapDetail(screen, x, y, w, h)
-	case srSandbox:
+	case srSandbox, srSandboxPath:
 		sv.renderSandboxDetail(screen, x, y, w, h)
 	case srProject:
 		sv.renderProjectDetail(screen, x, y, w, h, row)
@@ -3384,8 +3559,15 @@ func (sv *SettingsView) renderSandboxDetail(screen tcell.Screen, x, y, w, h int)
 		}
 	}
 
-	if row+2 < h {
-		widget.DrawText(screen, x, y+h-1, w, "[enter] toggle  [◀] rail", theme.StyleDimmed)
+	if sv.sandboxPathErr != "" && row+1 < h {
+		widget.DrawText(screen, x, y+row+1, w, sv.sandboxPathErr, tcell.StyleDefault.Foreground(theme.ColorError))
+	}
+	if h > 1 {
+		hint := "[enter] toggle  [n] add write path  [e] edit  [d] delete  [◀] rail"
+		if sv.editingSandboxIdx != -1 {
+			hint = "[enter] save path  [esc] cancel"
+		}
+		widget.DrawText(screen, x, y+h-1, w, hint, theme.StyleDimmed)
 	}
 }
 
