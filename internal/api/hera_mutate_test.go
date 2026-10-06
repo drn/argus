@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/db"
@@ -202,4 +203,13 @@ func TestHeraKanban(t *testing.T) {
 	testutil.Equal(t, getHera(t, srv).Orchestrators[0].KanbanStatus, "backlog")
 	testutil.Equal(t, heraPost(srv, idp("orchestrators", orch.ID, "kanban"), `{"status":"nope"}`, "device").Code, http.StatusBadRequest)
 	testutil.Equal(t, heraPost(srv, idp("orchestrators", 999, "kanban"), `{"status":"done"}`, "device").Code, http.StatusNotFound)
+}
+
+func TestHeraRenameValidationAndHideWorkersOnly(t *testing.T) {
+	srv, d := testServer(t)
+	orch, roles, _ := seedOrch(t, d, "o1", db.HeraKindCoordinator, db.HeraKindWorker)
+	testutil.Equal(t, heraPost(srv, idp("orchestrators", orch.ID, "rename"), `{"name":"a\u0007b"}`, "device").Code, http.StatusBadRequest)
+	long := `{"name":"` + strings.Repeat("x", 101) + `"}`
+	testutil.Equal(t, heraPost(srv, idp("orchestrators", orch.ID, "rename"), long, "device").Code, http.StatusBadRequest)
+	testutil.Equal(t, heraPost(srv, idp("roles", roles[0].ID, "archive"), "", "device").Code, http.StatusBadRequest)
 }

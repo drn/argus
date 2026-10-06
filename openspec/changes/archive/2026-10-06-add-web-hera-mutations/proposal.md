@@ -40,6 +40,7 @@ showing preview counts); SW_VERSION bump.
   "macOS Hera mutations".
 - Spawn worker / new coordinator / move / join / detach, inbox viewer, and the
   merge-safety Cleanup popup remain TUI-only (follow-up "web Hera spawn + cleanup").
+- The TUI's per-role merge-safety review popup and the `in_progress`-at-nuke completion marker are not reproduced: a web nuke deletes the worktree and branches without a merge-safety gate (the confirm shows counts only), and a task nuked while `in_progress` lands at in_review (follow-up "web Hera nuke safety review").
 - The TUI's Tier-D stacked-branch review modal is not reproduced; the reclaim sweep's
   existing safe-only stacked-branch deletion applies.
 

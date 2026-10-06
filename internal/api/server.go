@@ -332,6 +332,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.metrics != nil {
 		s.metrics.Close()
 	}
+	done := make(chan struct{})
+	go func() { s.heraBG.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 	if s.httpSrv == nil {
 		return nil
 	}

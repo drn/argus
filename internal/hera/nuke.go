@@ -101,13 +101,8 @@ func archiveNukedTask(d *db.DB, taskID string) {
 	}
 }
 
-// NukeSubtree nukes every orchestrator in subtree: live roles are ended+nuked,
-// tasks bound only inside the subtree are archived and queued for session stop
-// + worktree reclaim, tasks bound outside are preserved, and each orchestrator
-// row is stamped NUKED. Session stops and the reclaim sweep run in the returned
-// background func so callers can keep request latency low; it is safe to ignore
-// when runner is nil. Mirrors the TUI's heraDoCascadeNuke ordering: roles are
-// nuked BEFORE their task is archived so the reclaim prune sees no live binding.
+// NukeSubtree nukes every orchestrator in subtree, archiving tasks bound only inside it and preserving the rest.
+// Roles are nuked before their task is archived so the reclaim prune sees no live binding.
 func NukeSubtree(d *db.DB, runner NukeRunner, subtree []*heramodel.OrchView) (reclaimed []string, background func()) {
 	ids := subtreeIDSet(subtree)
 	seen := make(map[string]bool)

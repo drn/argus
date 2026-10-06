@@ -5418,9 +5418,7 @@ async function loadHera() {
   body.innerHTML = html;
 }
 
-// --- Hera mutations (openspec add-web-hera-mutations) ---
-// Action sheet over the same verbs the TUI rail keys drive. Everything is a
-// POST under /api/hera; nuke needs the master token (403 otherwise).
+// --- Hera mutations: action sheet over /api/hera POSTs; nuke needs the master token ---
 let heraIndex = { orch: {}, role: {} };
 
 function closeHeraSheet() {

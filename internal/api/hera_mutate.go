@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/hera"
@@ -13,10 +15,7 @@ import (
 	"github.com/drn/argus/internal/uxlog"
 )
 
-// Hera mutation endpoints (openspec add-web-hera-mutations): thin adapters over
-// the same db verbs / internal/hera primitives the TUI rail drives. Every
-// handler acts on an explicit orchestrator or role id and NEVER hard-deletes a
-// hera row (nuke stamps nuked_at).
+// Hera mutation endpoints: thin adapters over the TUI rail's db verbs; none hard-deletes a hera row.
 
 func (s *Server) buildHeraModel() (*heramodel.Model, error) {
 	runningSet, idleSet, needsInputSet := s.sessionStateMaps()
@@ -25,6 +24,24 @@ func (s *Server) buildHeraModel() (*heramodel.Model, error) {
 		return nil, err
 	}
 	return &m, nil
+}
+
+const heraMaxBody = 4 << 10
+
+func heraDecode(w http.ResponseWriter, r *http.Request, v any) error {
+	return json.NewDecoder(http.MaxBytesReader(w, r.Body, heraMaxBody)).Decode(v)
+}
+
+func validHeraName(name string) bool {
+	if name == "" || utf8.RuneCountInString(name) > 100 {
+		return false
+	}
+	for _, c := range name {
+		if unicode.IsControl(c) {
+			return false
+		}
+	}
+	return true
 }
 
 func heraPathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
@@ -81,7 +98,11 @@ func (s *Server) handleHeraArchive(archive bool) func(http.ResponseWriter, *http
 				heraErr(w, "hide role", rErr)
 				return
 			}
-			if err = s.db.ArchiveHeraRole(t.id); err == nil && role.Kind == db.HeraKindWorker {
+			if role.Kind != db.HeraKindWorker {
+				writeErr(w, http.StatusBadRequest, "hide applies to workers only", nil)
+				return
+			}
+			if err = s.db.ArchiveHeraRole(t.id); err == nil {
 				if b, bErr := s.db.HeraLiveBindingByRole(t.id); bErr == nil && b != nil {
 					stopTask = b.ArgusTaskID
 				}
@@ -131,11 +152,14 @@ func (s *Server) handleHeraRename(w http.ResponseWriter, r *http.Request, t hera
 	var body struct {
 		Name string `json:"name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Name) == "" {
-		writeErr(w, http.StatusBadRequest, "name required", nil)
+	name := ""
+	if err := heraDecode(w, r, &body); err == nil {
+		name = strings.TrimSpace(body.Name)
+	}
+	if !validHeraName(name) {
+		writeErr(w, http.StatusBadRequest, "name required (max 100 chars, no control characters)", nil)
 		return
 	}
-	name := strings.TrimSpace(body.Name)
 	var err error
 	if t.orch {
 		err = s.db.RenameHeraOrchestrator(t.id, name)
@@ -158,7 +182,7 @@ func (s *Server) handleHeraRoleStatus(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Status string `json:"status"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = heraDecode(w, r, &body)
 	st := db.HeraRoleStatusValue(body.Status)
 	switch st {
 	case db.HeraStatusIdle, db.HeraStatusWorking, db.HeraStatusBlocked, db.HeraStatusDone:
@@ -198,7 +222,7 @@ func (s *Server) handleHeraKanban(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Status string `json:"status"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = heraDecode(w, r, &body)
 	ks := db.HeraKanbanStatus(body.Status)
 	switch ks {
 	case db.HeraKanbanActive, db.HeraKanbanBacklog, db.HeraKanbanBlocked, db.HeraKanbanDone:
