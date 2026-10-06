@@ -40,6 +40,16 @@ type Config struct {
 	// agent.ResolveCacheDirs.
 	CacheDirs map[string]string `toml:"cache_dirs"`
 	Todo      TodoConfig        `toml:"todo"`
+	// Accounts are named identities (work / personal) selectable per task, each
+	// carrying a Claude config dir and/or a Codex home; the reserved name
+	// "default" is each tool's own default dir and needs no entry.
+	// config.toml-only. See ResolveAccount.
+	Accounts map[string]Account `toml:"accounts"`
+	// DefaultAccount is the account new tasks use when neither an explicit
+	// selection nor a ProjectAccounts entry applies.
+	DefaultAccount string `toml:"default_account"`
+	// ProjectAccounts maps a project name to its default account.
+	ProjectAccounts map[string]string `toml:"project_accounts"`
 	// BackendRouting is the ordered tier list consulted by default
 	// task-backend resolution (agent.ResolveBackend / CreateAndStart) whenever
 	// neither an explicit task backend nor a project backend applies. An

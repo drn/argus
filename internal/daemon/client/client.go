@@ -125,6 +125,31 @@ type Client struct {
 	// a daemon-side notion the supervisor does not track, so it lives locally
 	// (no RPC). Guarded by c.mu.
 	needsInput []string
+
+	// peerProtocol is the supervisor's Hello ProtocolVersion (0 = never
+	// handshaken, e.g. the TUI's daemon client). Guarded by c.mu.
+	peerProtocol int
+}
+
+// accountProtocolVersion is the first supervisor protocol that carries
+// Task.Account on Start/Kick/Recycle.
+const accountProtocolVersion = 8
+
+// checkAccountSupported refuses to hand an explicit-account task to a
+// handshaken supervisor too old to carry the account: it would silently spawn
+// the session under the default login instead.
+func (c *Client) checkAccountSupported(task *model.Task) error {
+	if task.Account == "" || task.Account == config.DefaultAccountName {
+		return nil
+	}
+	c.mu.Lock()
+	peer := c.peerProtocol
+	c.mu.Unlock()
+	if peer == 0 || peer >= accountProtocolVersion {
+		return nil
+	}
+	uxlog.Log("[account] refusing task=%s account=%q: supervisor protocol v%d < v%d", task.ID, task.Account, peer, accountProtocolVersion)
+	return fmt.Errorf("session supervisor is running an older Argus (protocol v%d) that cannot honor account %q; restart the supervisor (argus doctor) and retry", peer, task.Account)
 }
 
 // SetMCPPort updates the listener port sent with future supervisor launches.
@@ -212,21 +237,26 @@ func (c *Client) Close() error {
 // Start requests the daemon to start a session and opens a stream for its output.
 func (c *Client) Start(task *model.Task, cfg config.Config, rows, cols uint16, resume bool) (agent.SessionHandle, error) {
 	uxlog.Log("client.Start: task=%s session=%s resume=%v", task.ID, task.SessionID, resume)
+	if err := c.checkAccountSupported(task); err != nil {
+		return nil, err
+	}
 	req := &daemon.StartReq{
-		MCPPort:   c.currentMCPPort(),
-		TaskID:    task.ID,
-		SessionID: task.SessionID,
-		Prompt:    task.Prompt,
-		Project:   task.Project,
-		Backend:   task.Backend,
-		Model:     task.Model,
-		Archetype: task.Archetype,
-		Profile:   task.Profile,
-		Worktree:  task.Worktree,
-		Branch:    task.Branch,
-		Rows:      rows,
-		Cols:      cols,
-		Resume:    resume,
+		MCPPort:         c.currentMCPPort(),
+		TaskID:          task.ID,
+		SessionID:       task.SessionID,
+		Prompt:          task.Prompt,
+		Project:         task.Project,
+		Backend:         task.Backend,
+		Model:           task.Model,
+		Archetype:       task.Archetype,
+		Profile:         task.Profile,
+		Worktree:        task.Worktree,
+		Account:         task.Account,
+		SandboxOverride: task.SandboxOverride,
+		Branch:          task.Branch,
+		Rows:            rows,
+		Cols:            cols,
+		Resume:          resume,
 	}
 
 	var resp daemon.StartResp
@@ -463,21 +493,26 @@ func (c *Client) StartOrReattach(task *model.Task, cfg config.Config, rows, cols
 // caller (api.maybeKickRerender) already treats a kick error as a non-fatal
 // no-op, so an older supervisor degrades to "no rerender" rather than breaking.
 func (c *Client) KickRerender(task *model.Task, _ config.Config, rows, cols uint16) error {
+	if err := c.checkAccountSupported(task); err != nil {
+		return err
+	}
 	var resp daemon.StatusResp
 	if err := c.call("Daemon.KickRerender", &daemon.KickReq{
-		MCPPort:   c.currentMCPPort(),
-		TaskID:    task.ID,
-		SessionID: task.SessionID,
-		Prompt:    task.Prompt,
-		Project:   task.Project,
-		Backend:   task.Backend,
-		Model:     task.Model,
-		Archetype: task.Archetype,
-		Profile:   task.Profile,
-		Worktree:  task.Worktree,
-		Branch:    task.Branch,
-		Rows:      rows,
-		Cols:      cols,
+		MCPPort:         c.currentMCPPort(),
+		TaskID:          task.ID,
+		SessionID:       task.SessionID,
+		Prompt:          task.Prompt,
+		Project:         task.Project,
+		Backend:         task.Backend,
+		Model:           task.Model,
+		Archetype:       task.Archetype,
+		Profile:         task.Profile,
+		Worktree:        task.Worktree,
+		Account:         task.Account,
+		SandboxOverride: task.SandboxOverride,
+		Branch:          task.Branch,
+		Rows:            rows,
+		Cols:            cols,
 	}, &resp); err != nil {
 		return err
 	}
@@ -497,20 +532,25 @@ func (c *Client) KickRerender(task *model.Task, _ config.Config, rows, cols uint
 // no-ops — unlike a kick-rerender, a failed recycle must not look like
 // success to the coordinator waiting on it.
 func (c *Client) Recycle(task *model.Task, _ config.Config, rows, cols uint16) error {
+	if err := c.checkAccountSupported(task); err != nil {
+		return err
+	}
 	var resp daemon.StatusResp
 	if err := c.call("Daemon.Recycle", &daemon.RecycleReq{
-		MCPPort:   c.currentMCPPort(),
-		TaskID:    task.ID,
-		Prompt:    task.Prompt,
-		Project:   task.Project,
-		Backend:   task.Backend,
-		Model:     task.Model,
-		Archetype: task.Archetype,
-		Profile:   task.Profile,
-		Worktree:  task.Worktree,
-		Branch:    task.Branch,
-		Rows:      rows,
-		Cols:      cols,
+		MCPPort:         c.currentMCPPort(),
+		TaskID:          task.ID,
+		Prompt:          task.Prompt,
+		Project:         task.Project,
+		Backend:         task.Backend,
+		Model:           task.Model,
+		Archetype:       task.Archetype,
+		Profile:         task.Profile,
+		Worktree:        task.Worktree,
+		Account:         task.Account,
+		SandboxOverride: task.SandboxOverride,
+		Branch:          task.Branch,
+		Rows:            rows,
+		Cols:            cols,
 	}, &resp); err != nil {
 		return err
 	}
@@ -556,6 +596,9 @@ func (c *Client) Hello() (daemon.HelloResp, error) {
 	if err := c.call("Daemon.Hello", &daemon.Empty{}, &resp); err != nil {
 		return daemon.HelloResp{}, err
 	}
+	c.mu.Lock()
+	c.peerProtocol = resp.ProtocolVersion
+	c.mu.Unlock()
 	return resp, nil
 }
 

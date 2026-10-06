@@ -1357,12 +1357,14 @@ func (d *Daemon) Serve(sockPath string) error {
 		mcpSrv.SetTaskManager(
 			func(input mcp.TaskCreateInput) (*model.Task, error) {
 				return HeadlessCreateTask(d.db, d.runner, HeadlessInput{
-					Name:       input.Name,
-					Prompt:     input.Prompt,
-					Project:    input.Project,
-					Model:      input.Model,
-					AutoName:   input.AutoName,
-					BaseBranch: input.BaseBranch,
+					Name:             input.Name,
+					Prompt:           input.Prompt,
+					Project:          input.Project,
+					Model:            input.Model,
+					AutoName:         input.AutoName,
+					BaseBranch:       input.BaseBranch,
+					Account:          input.Account,
+					InheritedAccount: input.InheritedAccount,
 				})
 			},
 			d.db,
@@ -1441,7 +1443,7 @@ func (d *Daemon) Serve(sockPath string) error {
 		if err != nil {
 			slog.Error("api token error", "err", err)
 		} else {
-			apiSrv := api.New(d.db, d.runner, token, func(name, prompt, project, backend, taskModel, sandboxOverride string, autoName bool) (*model.Task, error) {
+			apiSrv := api.New(d.db, d.runner, token, func(name, prompt, project, backend, taskModel, sandboxOverride, account string, autoName bool) (*model.Task, error) {
 				return HeadlessCreateTask(d.db, d.runner, HeadlessInput{
 					Name:            name,
 					Prompt:          prompt,
@@ -1450,6 +1452,7 @@ func (d *Daemon) Serve(sockPath string) error {
 					Model:           taskModel,
 					AutoName:        autoName,
 					SandboxOverride: sandboxOverride,
+					Account:         account,
 				})
 			}, pushMgr)
 			apiSrv.SetScheduler(sch)

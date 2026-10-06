@@ -94,3 +94,32 @@ func (c *Client) DeleteBackend(ctx context.Context, name string) error {
 // bytesReader avoids importing bytes in every file that just needs a Reader
 // from a []byte. Defined here because terminal.go is the only other caller.
 func bytesReader(p []byte) io.Reader { return bytes.NewReader(p) }
+
+// AccountSupportsJSON mirrors api.accountSupportsJSON.
+type AccountSupportsJSON struct {
+	Claude bool `json:"claude"`
+	Codex  bool `json:"codex"`
+}
+
+// AccountJSON mirrors api.accountJSON (identity labels only).
+type AccountJSON struct {
+	Name            string              `json:"name"`
+	Label           string              `json:"label"`
+	ClaudeConfigDir string              `json:"claude_config_dir"`
+	CodexHome       string              `json:"codex_home"`
+	Supports        AccountSupportsJSON `json:"supports"`
+	IsDefault       bool                `json:"is_default"`
+	LoggedIn        bool                `json:"logged_in"`
+	Email           string              `json:"email,omitempty"`
+	Org             string              `json:"org,omitempty"`
+	Plan            string              `json:"plan,omitempty"`
+}
+
+// ListAccounts returns the daemon's accounts, default first.
+func (c *Client) ListAccounts(ctx context.Context) ([]AccountJSON, error) {
+	var out []AccountJSON
+	if err := c.doJSON(ctx, "GET", "/api/accounts", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}

@@ -264,3 +264,26 @@ func TestHumanSize(t *testing.T) {
 		})
 	}
 }
+
+func TestListIn_CustomConfigDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	acct := filepath.Join(t.TempDir(), "acct")
+	wt := "/w/proj/task"
+	id := "5e7ca4b6-2b5a-43b4-8de2-1e339c46d686"
+
+	dir, err := ProjectDirIn(acct, wt)
+	testutil.NoError(t, err)
+	testutil.Equal(t, dir, filepath.Join(acct, "projects", EncodeProjectDir(wt)))
+	testutil.NoError(t, os.MkdirAll(dir, 0o755))
+	testutil.NoError(t, os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(`{"type":"ai-title","aiTitle":"Acct session"}`+"\n"), 0o644))
+
+	got, err := ListIn(acct, wt)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(got), 1)
+	testutil.Equal(t, got[0].Title, "Acct session")
+
+	def, err := List(wt)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(def), 0)
+}

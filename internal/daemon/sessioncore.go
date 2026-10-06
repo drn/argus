@@ -104,16 +104,18 @@ func (c *sessionCore) StartSession(req *StartReq, resp *StartResp) error {
 	slog.Info("rpc.StartSession", "task", req.TaskID, "session", req.SessionID, "project", req.Project, "resume", req.Resume, "cols", req.Cols, "rows", req.Rows, "worktree", req.Worktree)
 
 	task := &model.Task{
-		ID:        req.TaskID,
-		SessionID: req.SessionID,
-		Prompt:    req.Prompt,
-		Project:   req.Project,
-		Backend:   req.Backend,
-		Model:     req.Model,
-		Archetype: req.Archetype,
-		Profile:   req.Profile,
-		Worktree:  req.Worktree,
-		Branch:    req.Branch,
+		ID:              req.TaskID,
+		SessionID:       req.SessionID,
+		Prompt:          req.Prompt,
+		Project:         req.Project,
+		Backend:         req.Backend,
+		Model:           req.Model,
+		Archetype:       req.Archetype,
+		Profile:         req.Profile,
+		Worktree:        req.Worktree,
+		Branch:          req.Branch,
+		Account:         req.Account,
+		SandboxOverride: req.SandboxOverride,
 	}
 
 	cfg := c.cfgFn()
@@ -291,16 +293,18 @@ func (c *sessionCore) Resize(req *ResizeReq, resp *StatusResp) error {
 func (c *sessionCore) KickRerender(req *KickReq, resp *StatusResp) error {
 	slog.Info("rpc.KickRerender", "task", req.TaskID, "cols", req.Cols, "rows", req.Rows)
 	task := &model.Task{
-		ID:        req.TaskID,
-		SessionID: req.SessionID,
-		Prompt:    req.Prompt,
-		Project:   req.Project,
-		Backend:   req.Backend,
-		Model:     req.Model,
-		Archetype: req.Archetype,
-		Profile:   req.Profile,
-		Worktree:  req.Worktree,
-		Branch:    req.Branch,
+		ID:              req.TaskID,
+		SessionID:       req.SessionID,
+		Prompt:          req.Prompt,
+		Project:         req.Project,
+		Backend:         req.Backend,
+		Model:           req.Model,
+		Archetype:       req.Archetype,
+		Profile:         req.Profile,
+		Worktree:        req.Worktree,
+		Branch:          req.Branch,
+		Account:         req.Account,
+		SandboxOverride: req.SandboxOverride,
 	}
 	cfg := c.cfgFn()
 	cfg.MCPPort = req.MCPPort
@@ -321,15 +325,17 @@ func (c *sessionCore) KickRerender(req *KickReq, resp *StatusResp) error {
 func (c *sessionCore) Recycle(req *RecycleReq, resp *StatusResp) error {
 	slog.Info("rpc.Recycle", "task", req.TaskID)
 	task := &model.Task{
-		ID:        req.TaskID,
-		Prompt:    req.Prompt,
-		Project:   req.Project,
-		Backend:   req.Backend,
-		Model:     req.Model,
-		Archetype: req.Archetype,
-		Profile:   req.Profile,
-		Worktree:  req.Worktree,
-		Branch:    req.Branch,
+		ID:              req.TaskID,
+		Prompt:          req.Prompt,
+		Project:         req.Project,
+		Backend:         req.Backend,
+		Model:           req.Model,
+		Archetype:       req.Archetype,
+		Profile:         req.Profile,
+		Worktree:        req.Worktree,
+		Branch:          req.Branch,
+		Account:         req.Account,
+		SandboxOverride: req.SandboxOverride,
 	}
 	cfg := c.cfgFn()
 	cfg.MCPPort = req.MCPPort

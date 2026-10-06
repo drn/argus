@@ -110,6 +110,7 @@ Disabled by default — see **[Knowledge Base setup](docs/knowledge-base.md)** t
 
 - **Remote TUI** — `argus --remote https://your-mac.tail-xxxx.ts.net --token "$ARGUS_TOKEN"` launches the full TUI against a daemon running on another machine. Same keybindings, same panels, same agent stream — over Tailscale. No local SQLite, no daemon socket; every call rides the REST API the PWA already uses.
 - **Multi-backend** — Claude Code, Codex, or any LLM CLI as a templated command. Per-backend prompt flags, plan-mode defaults, and a default model, plus a per-task model override delivered through the backend's supported launch mechanism at start.
+- **Account switching** — keep work and personal Claude Code and Codex subscriptions side by side and pick one when you start a task. Each account has its own login and history, sessions on different accounts run in parallel, and you can pin company projects to the work account. See [Accounts](#accounts).
 - **Worktree isolation** — every task gets `~/.argus/worktrees/<project>/<task>` and an `argus/<task>` branch, all transactionally created and cleaned up.
 - **Session resume** — `--resume` on Claude Code, `codex resume <id>` on Codex, `--session <id>` on opencode. Your conversation survives a daemon restart.
 - **Consistent scrollback across viewers** — switch between the TUI and the PWA at very different widths and the agent re-emits the conversation at the new size. Idle-gated so it never fires mid-tool-call; the SPA reattaches transparently.
@@ -544,6 +545,67 @@ argus daemon status      # show plist path + installed/loaded state
 
 The plist is configured with `RunAtLoad` and `KeepAlive { SuccessfulExit = false }`, which means launchd starts the daemon at login and restarts it if it crashes (non-zero exit) — but a clean `argus daemon stop` is honored and won't trigger a respawn. Stdout/stderr are written to `~/.argus/launchd.log`. The plist points at `~/.argus/argusd`, a symlink to the resolved argus binary; reinstalling rewrites the symlink so launchd picks up the new binary on next start. macOS only — Linux/Windows show no toggle.
 
+### Accounts
+
+Accounts let one Argus run tasks under different Claude Code and Codex subscriptions, such as a work plan and a personal plan. You pick the account when you start a task, and sessions on different accounts run side by side.
+
+Each account is a separate config directory per tool. A Claude task runs with `CLAUDE_CONFIG_DIR` set to the account's dir, which gives it its own login (macOS Keychain entry), transcripts, and `.claude.json`. This is the multi-account method Claude Code's docs recommend. A Codex task runs with the account's `CODEX_HOME`, because that is where Codex keeps its login (`auth.json`) and all its state. Argus never reads, copies, logs, or writes credentials.
+
+#### Setup
+
+```toml
+# ~/.argus/config.toml
+default_account = "personal"               # optional global default; top-level keys go before any [table]
+
+[accounts.work]
+label = "Work"
+claude_config_dir = "~/.claude-work"
+codex_home = "~/.codex-work"
+
+[accounts.personal]
+label = "Personal"
+claude_config_dir = "~/.claude-personal"   # Claude only: Codex tasks can't pick it
+
+[project_accounts]                         # optional per-project defaults
+acme-api = "work"
+acme-web = "work"
+```
+
+An account needs at least one of `claude_config_dir` / `codex_home`. Paths must be absolute or start with `~`. The name `default` is reserved: it means each tool's usual dir (`~/.claude`, `~/.codex`). With nothing configured, every task runs on `default`, exactly as before, and the form shows no Account field. Accounts are set in `config.toml` only; there is no Settings editor yet. All keys are listed under [Config file → Accounts](#accounts-accounts-default_account-project_accounts).
+
+**Pin company projects to the work account.** List every work repo in `[project_accounts]`, so a task in that project uses the work account unless you pick another one. That keeps company code from running under a personal subscription by accident, and personal projects from being billed to work.
+
+**First login.** A new account dir starts signed out. For Claude Code, start a task on the account and run `/login` inside the session; the login is saved in that account's dir (and its own macOS Keychain entry), and later tasks reuse it. For Codex, sign in once from a terminal with `CODEX_HOME=<codex_home> codex login` (a login done inside an Argus Codex session lands in Argus's overlay home rather than the account's `codex_home`). `argus doctor` shows each Claude account's login and whether the coord-hook Stop hook is registered there.
+
+#### Which account a task uses
+
+- **Order:** the account you pick in the form, else the project's `project_accounts` entry, else `default_account`, else `default`. Picking `default` in the form really means `default`; it does not fall through to the project's default.
+- **Backend support:** a Claude backend needs an account with `claude_config_dir`, and a Codex backend needs one with `codex_home`. pi, opencode, and custom commands run only on `default`. The forms list only the accounts that can run the selected backend. If you explicitly pick an account that can't run the backend, task creation fails before anything is created. If the account came from a project or global default, the task falls back to `default` and the switch is logged to `ux.log` under `[account]`.
+- **Fixed for the task's lifetime:** the account is saved on the task when it is created and never changes. Resume and restart use the saved account even if you later change the defaults. The transcript lives in the account's dir, so a running task can't switch accounts. To work under another account, create a new task and pick it; a fork always keeps the source task's account.
+- **Removed account:** if a task's account is removed from config, starting or resuming the task fails with an error naming the account. It never silently falls back to `default`.
+- **Inheritance:** hera workers, sub-coordinators, and freelancers use their coordinator's account. A coordinator on `default` keeps its workers on `default`. If the coordinator's account can't run a worker's backend (for example tier routing picks Codex but the account has no `codex_home`), the spawn fails with an error rather than running on a different login; add the missing dir or pin the worker's backend. A forked task keeps the source task's account. MCP `task_create` uses the calling task's account when the caller passes `caller_id` (or `cwd`), and accepts an explicit `account`.
+
+#### Shared vs. separate
+
+| What | Per account |
+|------|-------------|
+| `CLAUDE.md`, `skills/`, `commands/`, `agents/` | **Shared.** Symlinked from `~/.claude` the first time the account is used (change the list with `inherit`). |
+| `settings.json` | **Copied once** from `~/.claude/settings.json`, then separate. `apiKeyHelper`, `forceLoginMethod`, `forceLoginOrgUUID`, `awsAuthRefresh`, `awsCredentialExport`, `otelHeadersHelper` and the whole `env` block are left out of the copy: they are tied to the default login or run credential-fetching commands (and would override or break the account's own login), and `env` can hold other secrets that must not be duplicated. An existing file is never overwritten, so later changes to `~/.claude/settings.json` don't reach the account. |
+| Login, `.claude.json`, `projects/` (transcripts), `plugins/` | **Separate.** Never linked or copied. |
+| Codex home | **Separate.** Created empty (mode `0700`); nothing is copied from `~/.codex`. Argus's builtin skills reach it through a per-account overlay. |
+| Argus MCP server | Same for every account. It is passed as a launch flag; nothing is written into an account's config. |
+
+#### Environment and sandbox
+
+- An inherited `CLAUDE_CONFIG_DIR` is always removed from the spawned agent's environment. On an explicit account, inherited `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `CLAUDE_CODE_OAUTH_TOKEN` (Claude) or `OPENAI_API_KEY` and `CODEX_API_KEY` (Codex) are removed too, because both tools rank them above the stored login. A backend's own `env_vars` mapping is applied afterwards and still wins. For example, the seeded `codex` mapping `OPENAI_API_KEY -> HERA_OPENAI` supplies a key whenever `HERA_OPENAI` resolves.
+- Sandboxed tasks get write access to their **own** account dir only (when it is outside `~/.claude` / `~/.codex`), never to another account's.
+
+#### Clients and API
+
+- TUI, web, and macOS new-task forms have an **Account** selector, preselected from the project or global default and labelled with the Claude sign-in (email / org) when known. It is hidden when only `default` applies. Skill autocomplete reads skills from the selected account.
+- REST: `POST /api/tasks` takes `account`, and task JSON includes it. `GET /api/accounts` lists accounts. See [Projects & backends](#projects--backends-full-crud).
+- Limits: the usage probes behind usage-budget and tier routing measure the `default` account only. Schedules use the project or global default. The TUI Hera spawn form ignores its Account field (spawns always use the coordinator's account). `hera_new_orchestrator` coordinators don't inherit the caller's account. A supervisor older than protocol v8 can't carry the account, so Argus refuses to start or restart a non-default-account task on it until the supervisor is restarted (`argus doctor` flags the skew).
+
 ### Sandbox
 
 Argus can run agent processes inside macOS `sandbox-exec` for filesystem and credential isolation. Each agent session gets an SBPL profile that restricts reads and writes.
@@ -561,7 +623,7 @@ Per-project overrides are set in the **project form** (`e` on a project in Setti
 A **per-task override** is set on the new-task prompt (TUI Sandbox selector, web Sandbox select) — **Inherit**, **Enabled**, or **Disabled** — and wins over both the project and global setting for that one task; left on Inherit, the task follows the existing project/global resolution exactly as before. The override is resolved once at creation time, like the task's `Sandboxed` state itself.
 
 **Always denied read:** `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.config/gcloud`
-**Always allowed write:** the task's worktree directory, `/tmp`, `/var/folders`, `~/.claude.json`, `~/.claude/`, `~/Library/Application Support/Google/Chrome` (Chrome's crashpad writes there regardless of `--user-data-dir`), the main repo's `.git` dir.
+**Always allowed write:** the task's worktree directory, `/tmp`, `/var/folders`, `~/.claude.json`, `~/.claude/`, `~/.codex/`, the task's own [account](#accounts) dir when outside `~/.claude` / `~/.codex`, `~/Library/Application Support/Google/Chrome` (Chrome's crashpad writes there regardless of `--user-data-dir`), the main repo's `.git` dir.
 **Always allowed (IOKit):** user-client opens (`iokit-open` / `iokit-open-user-client`) — required for headful Chrome (Playwright/Puppeteer), which calls `IOServiceOpen` on `IOPMrootDomain` at startup and SIGSEGVs on the denied open otherwise. The crashpad write rule above is necessary but not sufficient on its own.
 
 ### Sandbox residency detection (for any skill, not just argus's own)
@@ -614,7 +676,7 @@ Argus runs an MCP server on port 7742 by default (or the next available port) an
 
 | Tool                   | Description                                                                                                                                                        |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `task_create`          | Create a task with worktree and start an agent. Params: `name`, `prompt`, `project`, `model` (optional `--model` override), `base_branch` (stacked-PR start point), `upsert`. The session starts immediately. |
+| `task_create`          | Create a task with worktree and start an agent. Params: `name`, `prompt`, `project`, `model` (optional `--model` override), `base_branch` (stacked-PR start point), `upsert`, `account` (explicit [account](#accounts), `"default"` included), `caller_id` / `cwd` (identify the calling task so the new task inherits its account). The session starts immediately. |
 | `task_list`            | List tasks, filtered by `status` and/or `project`.                                                                                                                |
 | `task_get`             | Get task details by `id`                                                                                                                                           |
 | `task_stop`            | Stop a running agent (moves task to "in review")                                                                                                                   |
@@ -726,7 +788,7 @@ Every authenticated token has the same permissions **except** a small master-onl
 | `GET`    | `/api/status`               | Running/idle session counts, task counts by status                                                                                                                                                                                                                               |
 | `GET`    | `/api/system-metrics`       | Host-load snapshot: CPU %, 1/5/15-min load avg, memory + swap, disk usage of the `~/.argus` filesystem, Argus process RSS, host uptime, and live agent-session counts. Sampled on a background ticker; each metric carries an availability flag. Polled by the Settings tab.        |
 | `GET`    | `/api/tasks`                | List tasks. Filters: `?status=`, `?project=`, `?archived=1` (or `=all`). Each task carries `idle: true` when `in_progress` but the session is missing or waiting for input.                                                                                                      |
-| `POST`   | `/api/tasks`                | Create and start a task. JSON `{"name", "prompt", "project", "backend?", "model?", "sandbox_override?"}`, OR `multipart/form-data` with `name`/`prompt`/`project`/`backend`/`model`/`sandbox_override` plus `files` parts (uploaded into `<worktree>/.context/`, paths appended to the prompt). Per-file 10MB / total 50MB / 20 files cap. `sandbox_override` is `""` (inherit the project/global setting, default) \| `"enabled"` \| `"disabled"` — a per-task override of sandboxing, validated before any worktree is created. |
+| `POST`   | `/api/tasks`                | Create and start a task. JSON `{"name", "prompt", "project", "backend?", "model?", "sandbox_override?", "account?"}`, OR `multipart/form-data` with `name`/`prompt`/`project`/`backend`/`model`/`sandbox_override`/`account` plus `files` parts (uploaded into `<worktree>/.context/`, paths appended to the prompt). Per-file 10MB / total 50MB / 20 files cap. `sandbox_override` is `""` (inherit the project/global setting, default) \| `"enabled"` \| `"disabled"` — a per-task override of sandboxing, validated before any worktree is created. `account` names an [account](#accounts) (`"default"` included; empty = project/global default); an unknown account, or one that can't run an explicitly requested backend, is 400. |
 | `GET`    | `/api/tasks/{id}`           | Get single task detail (includes `archived`, `worktree_path`, `prompt`, `idle`)                                                                                                                                                                                                  |
 | `POST`   | `/api/tasks/{id}/stop`      | Stop a running agent (moves to `in_review`)                                                                                                                                                                                                                                      |
 | `POST`   | `/api/tasks/{id}/resume`    | Resume a stopped agent (un-pause an `in_review` task)                                                                                                                                                                                                                            |
@@ -787,10 +849,11 @@ Every authenticated token has the same permissions **except** a small master-onl
 | `PUT`    | `/api/projects/{name}` | Update                                                                                                                                                                              |
 | `DELETE` | `/api/projects/{name}` | Delete                                                                                                                                                                              |
 | `GET`    | `/api/backends`        | List with command + prompt_flag + model                                                                                                                                             |
+| `GET`    | `/api/accounts`        | List [accounts](#accounts): bare array of `{name, label, claude_config_dir, codex_home, supports: {claude, codex}, is_default, logged_in, email?, org?, plan?, codex_logged_in?}` (`default` first, then configured accounts by name). Optional `?project=` makes `is_default` mark that project's default. `logged_in`/`email`/`org`/`plan` are the Claude sign-in; `codex_logged_in` is omitted when unknown. Best-effort (3s); credentials are never returned. |
 | `POST`   | `/api/backends`        | Create. Body includes optional `model` (default `--model`). **Master token required** (command templates can run arbitrary code).                                                   |
 | `PUT`    | `/api/backends/{name}` | Update. **Master token required.**                                                                                                                                                  |
 | `DELETE` | `/api/backends/{name}` | Delete. **Master token required.**                                                                                                                                                  |
-| `GET`    | `/api/skills`          | Skill autocomplete. Filter: `?project=`, `?filter=` (case-insensitive substring)                                                                                                    |
+| `GET`    | `/api/skills`          | Skill autocomplete. Filter: `?project=`, `?filter=` (case-insensitive substring), `?account=` / `?task=` (read skills from that account's / task's Claude config dir; unknown → 400)                                                                                                    |
 
 #### Hera orchestration
 
@@ -961,6 +1024,19 @@ threshold_pct = 90
 backend = "pi"
 probe = "none"
 ```
+
+#### Accounts (`accounts`, `default_account`, `project_accounts`)
+
+Named work / personal accounts for Claude Code and Codex. How resolution, first login, and inheritance work: [Accounts](#accounts). Config.toml-only.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `[accounts.<name>] claude_config_dir` | string | — | Absolute or `~`-prefixed path of the account's Claude config dir (`CLAUDE_CONFIG_DIR`, created `0700`). Required to run Claude backends. At least one of `claude_config_dir` / `codex_home` is required. `default` is reserved. |
+| `[accounts.<name>] codex_home` | string | — | Absolute or `~`-prefixed path of the account's Codex home (`CODEX_HOME`, created `0700`). Required to run Codex backends. |
+| `[accounts.<name>] label` | string | `<name>` | Display label in the account selector. |
+| `[accounts.<name>] inherit` | array | `["CLAUDE.md","skills","commands","agents"]` | Entries symlinked from `~/.claude` into the Claude config dir. `settings.json` is copied once instead (add it here to symlink it). `.credentials*`, `.claude.json`, `projects`, `plugins` are never linked. An empty list links nothing. |
+| `default_account` | string | `""` | Account used when the task and its project name none. Empty = `default`. |
+| `project_accounts` | table | `{}` | Top-level map of project name to default account, e.g. `[project_accounts] acme-api = "work"`. Recommended for every work repo. |
 
 #### `[projects.<name>]`
 

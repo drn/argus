@@ -9,17 +9,23 @@ public struct CreateTaskRequest: Sendable, Encodable {
     public var project: String
     public var backend: String?
     public var model: String?
+    /// Account name; omitted for the default account.
+    public var account: String?
 
     public init(name: String = "", prompt: String = "", project: String,
-                backend: String? = nil, model: String? = nil) {
+                backend: String? = nil, model: String? = nil, account: String? = nil) {
         self.name = name
         self.prompt = prompt
         self.project = project
         self.backend = backend
         self.model = model
+        self.account = account
     }
 
-    enum CodingKeys: String, CodingKey { case name, prompt, project, backend, model }
+    enum CodingKeys: String, CodingKey {
+        case name, prompt, project, backend, model
+        case account
+    }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -28,6 +34,7 @@ public struct CreateTaskRequest: Sendable, Encodable {
         try c.encode(project, forKey: .project)
         try c.encodeIfPresent(backend, forKey: .backend)
         try c.encodeIfPresent(model, forKey: .model)
+        try c.encodeIfPresent(account, forKey: .account)
     }
 }
 

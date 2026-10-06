@@ -289,6 +289,24 @@ func (s *Server) validateBackend(name string) error {
 	return nil
 }
 
+// validateAccount rejects an unknown or misconfigured account name, or one
+// that cannot run an explicitly requested backend, so a bad selection fails
+// the request instead of creating a task that cannot spawn. An implicit
+// backend is checked later by agent.CreateAndStart.
+func (s *Server) validateAccount(name, backend string) error {
+	if name == "" {
+		return nil
+	}
+	cfg := s.db.Config()
+	if err := cfg.ValidateAccount(name); err != nil {
+		return err
+	}
+	if b, ok := cfg.Backends[backend]; ok && !cfg.AccountSupports(name, b.Command) {
+		return fmt.Errorf("account %q does not support backend %q", name, backend)
+	}
+	return nil
+}
+
 // validateSandboxOverride returns nil for the three accepted tri-state values
 // ("" inherit, "enabled", "disabled" — add-task-sandbox-override) and an error
 // for anything else, so a malformed value is rejected at the API boundary
@@ -319,6 +337,9 @@ type createTaskReq struct {
 	// sandboxed), "disabled" (force unsandboxed). Validated against the three
 	// accepted values before the task is created (add-task-sandbox-override).
 	SandboxOverride string `json:"sandbox_override"`
+	// Account selects a configured account for this task. Empty =
+	// resolve the project/global default. Validated before the task is created.
+	Account string `json:"account"`
 }
 
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
@@ -353,6 +374,10 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "", err)
 		return
 	}
+	if err := s.validateAccount(req.Account, req.Backend); err != nil {
+		writeErr(w, http.StatusBadRequest, "", err)
+		return
+	}
 	autoName := req.Name == ""
 	name := req.Name
 	if name == "" {
@@ -360,9 +385,13 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		name = sanitizeName(req.Prompt)
 	}
 
-	task, err := s.createTask(name, req.Prompt, req.Project, req.Backend, req.Model, req.SandboxOverride, autoName)
+	task, err := s.createTask(name, req.Prompt, req.Project, req.Backend, req.Model, req.SandboxOverride, req.Account, autoName)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "", err)
+		status := http.StatusInternalServerError
+		if errors.Is(err, agent.ErrAccount) {
+			status = http.StatusBadRequest
+		}
+		writeErr(w, status, "", err)
 		return
 	}
 
@@ -389,7 +418,7 @@ func (s *Server) handleCreateTaskMultipart(w http.ResponseWriter, r *http.Reques
 	// 50MB total cap + headroom for the multipart envelope and text fields.
 	r.Body = http.MaxBytesReader(w, r.Body, maxAttachmentTotalBytes+1<<20)
 
-	name, prompt, project, backend, taskModel, sandboxOverride, atts, err := parseMultipartTaskForm(r)
+	name, prompt, project, backend, taskModel, sandboxOverride, account, atts, err := parseMultipartTaskForm(r)
 	if err != nil {
 		writeErr(w, statusForUploadErr(err), "", err)
 		return
@@ -407,6 +436,10 @@ func (s *Server) handleCreateTaskMultipart(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := validateSandboxOverride(sandboxOverride); err != nil {
+		writeErr(w, http.StatusBadRequest, "", err)
+		return
+	}
+	if err := s.validateAccount(account, backend); err != nil {
 		writeErr(w, http.StatusBadRequest, "", err)
 		return
 	}
@@ -429,12 +462,17 @@ func (s *Server) handleCreateTaskMultipart(w http.ResponseWriter, r *http.Reques
 		Backend:         backend,
 		Model:           taskModel,
 		SandboxOverride: sandboxOverride,
+		Account:         account,
 		Attachments:     atts,
 		AutoName:        autoName,
 	})
 	if err != nil {
 		uxlog.Log("[uploads] create task failed name=%q project=%q files=%d err=%v", name, project, len(atts), err)
-		writeErr(w, http.StatusInternalServerError, "", err)
+		status := http.StatusInternalServerError
+		if errors.Is(err, agent.ErrAccount) {
+			status = http.StatusBadRequest
+		}
+		writeErr(w, status, "", err)
 		return
 	}
 
@@ -887,10 +925,10 @@ func (s *Server) handleForkTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Fork name is structured ("<src>-fork" or user-typed); never auto-rename.
-	// Forks inherit the source task's backend, model, and sandbox override so
+	// Forks inherit the source task's backend, model, sandbox override, and account so
 	// the new task starts with the same agent and confinement rather than
 	// silently defaulting back to the global setting.
-	task, err := s.createTask(name, prompt, project, src.Backend, src.Model, src.SandboxOverride, false)
+	task, err := s.createTask(name, prompt, project, src.Backend, src.Model, src.SandboxOverride, agent.PinnedAccount(src.Account), false)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "", err)
 		return
@@ -1799,7 +1837,12 @@ func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	items := skills.LoadSkills(extraDirs)
+	configDir, err := s.skillsConfigDir(r.URL.Query().Get("account"), r.URL.Query().Get("task"), project)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error(), nil)
+		return
+	}
+	items := skills.LoadSkillsFrom(configDir, extraDirs)
 	if filter != "" {
 		items = skills.FilterSkills(items, filter)
 	}
@@ -1810,6 +1853,39 @@ func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"skills": result})
+}
+
+// skillsConfigDir picks the Claude config dir whose user skills and plugins
+// autocomplete should list: an explicit account, else the task's account, else
+// the project / global default. "" means ~/.claude; an account without a
+// Claude config dir also falls back to it.
+func (s *Server) skillsConfigDir(account, taskID, project string) (string, error) {
+	cfg := s.db.Config()
+	if account == "" && taskID != "" {
+		t, err := s.db.Get(taskID)
+		if err != nil {
+			return "", fmt.Errorf("task %q not found", taskID)
+		}
+		account = t.Account
+		if project == "" {
+			project = t.Project
+		}
+	}
+	if account != "" {
+		if err := cfg.ValidateAccount(account); err != nil {
+			return "", err
+		}
+	}
+	name := cfg.ResolveAccount(account, project)
+	dir, explicit, err := cfg.ClaudeConfigDir(name)
+	if err != nil {
+		uxlog.Log("[account] skills: account %q has no Claude config dir, using default: %v", name, err)
+		return "", nil
+	}
+	if !explicit {
+		return "", nil
+	}
+	return dir, nil
 }
 
 // --- Helpers ---

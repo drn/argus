@@ -92,6 +92,54 @@ struct ClientRequestTests {
         #expect(obj?["model"] == nil)
     }
 
+    @Test("createTask encodes account when set")
+    func createTaskAccountBody() async throws {
+        MockURLProtocol.stubJSON(status: 201,
+                                 body: Data(#"{"id":"1","name":"n","status":"in_progress"}"#.utf8))
+        _ = try await makeClient().createTask(
+            CreateTaskRequest(prompt: "p", project: "argus", account: "work"))
+        let obj = try JSONSerialization.jsonObject(with: #require(MockURLProtocol.lastBody)) as? [String: Any]
+        #expect(obj?["account"] as? String == "work")
+        #expect(obj?["claude_account"] == nil)
+    }
+
+    @Test("accounts GETs the list")
+    func accountsList() async throws {
+        MockURLProtocol.stubJSON(body: Data(#"[{"name":"default","label":"default","is_default":true}]"#.utf8))
+        let accts = try await makeClient().accounts()
+        #expect(accts.count == 1)
+        #expect(MockURLProtocol.lastRequest?.url?.path == "/api/accounts")
+        #expect(MockURLProtocol.lastRequest?.httpMethod == "GET")
+    }
+
+    @Test("accounts passes the project for per-project default resolution")
+    func accountsForProject() async throws {
+        MockURLProtocol.stubJSON(body: Data(#"[{"name":"default"}]"#.utf8))
+        _ = try await makeClient().accounts(project: "argus")
+        #expect(MockURLProtocol.lastRequest?.url?.path == "/api/accounts")
+        #expect(MockURLProtocol.lastRequest?.url?.query == "project=argus")
+    }
+
+    @Test("createTask sends an explicit default account")
+    func createTaskExplicitDefault() async throws {
+        MockURLProtocol.stubJSON(status: 201,
+                                 body: Data(#"{"id":"1","name":"n","status":"in_progress"}"#.utf8))
+        _ = try await makeClient().createTask(
+            CreateTaskRequest(prompt: "p", project: "argus", account: "default"))
+        let obj = try JSONSerialization.jsonObject(with: #require(MockURLProtocol.lastBody)) as? [String: Any]
+        #expect(obj?["account"] as? String == "default")
+    }
+
+    @Test("forkTask sends no account so the daemon inherits the source's")
+    func forkTaskNoAccount() async throws {
+        MockURLProtocol.stubJSON(status: 201,
+                                 body: Data(#"{"id":"2","name":"n","status":"in_progress"}"#.utf8))
+        _ = try await makeClient().forkTask(id: "t1", ForkRequest(prompt: "p"))
+        #expect(MockURLProtocol.lastRequest?.url?.path == "/api/tasks/t1/fork")
+        let obj = try JSONSerialization.jsonObject(with: #require(MockURLProtocol.lastBody)) as? [String: Any]
+        #expect(obj?["account"] == nil)
+    }
+
     @Test("renameTask posts the name")
     func renameBody() async throws {
         MockURLProtocol.stubJSON(body: Data(#"{"name":"renamed"}"#.utf8))
