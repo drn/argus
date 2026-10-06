@@ -458,6 +458,26 @@ func (p *HeraPage) FocusedTerminalTaskID() string {
 	return ""
 }
 
+// PaneSizeForTask returns the PTY size of the terminal pane currently bound to
+// taskID (agent pane first, then coordinator), or ok=false when no pane shows
+// it or the pane has not been laid out yet.
+func (p *HeraPage) PaneSizeForTask(taskID string) (rows, cols uint16, ok bool) {
+	if taskID == "" {
+		return 0, 0, false
+	}
+	for _, c := range []struct {
+		bound string
+		pane  *terminal.TerminalPane
+	}{{p.agentBound, p.agentPane}, {p.coordBound, p.coordPane}} {
+		if c.bound == taskID && c.pane != nil {
+			if r, w := c.pane.PTYSize(); r > 0 && w > 0 {
+				return r, w, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
 // IsBoundToTask reports whether taskID currently feeds either terminal pane
 // (coordinator or agent/worker) — regardless of which pane has keyboard
 // focus, or whether the agent region is showing Details instead of a

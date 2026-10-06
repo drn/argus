@@ -661,6 +661,19 @@ func (tp *TerminalPane) ClearClosedOutState() {
 	tp.mu.Unlock()
 }
 
+// PTYSize returns the PTY dimensions this pane last resolved from its panel
+// rect (0,0 until the first Draw). A Hera-tab respawn uses it so the new
+// incarnation commits its scrollback at the width this pane displays rather
+// than the host terminal's (fix-hera-revive-spawn-width).
+func (tp *TerminalPane) PTYSize() (rows, cols uint16) {
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	if tp.ptyRows < 5 || tp.ptyCols < 20 {
+		return 0, 0
+	}
+	return uint16(tp.ptyRows), uint16(tp.ptyCols) //nolint:gosec // terminal cell counts, far below uint16 range
+}
+
 // ForceResyncPTY schedules a one-shot unconditional resize on the next Draw().
 // Call this on agent-view entry so a session whose PTY is stuck at a stale
 // width gets reconciled to the current panel dimensions even when the delta
