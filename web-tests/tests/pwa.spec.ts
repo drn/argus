@@ -116,10 +116,11 @@ test.describe('PWA', () => {
     // the Shortcut URL into the address bar at root) should not silently
     // overwrite the saved token from a Shortcut-issued path. Only /share is
     // a sanctioned entry point.
-    await page.addInitScript(() => localStorage.setItem('argus-token', 'existing-token'));
+    // Must be the server's real token: a rejected token is cleared by logout().
+    await page.addInitScript(() => localStorage.setItem('argus-token', 'test-token'));
     await page.goto('/?token=other-token');
     const saved = await page.evaluate(() => localStorage.getItem('argus-token'));
-    expect(saved).toBe('existing-token');
+    expect(saved).toBe('test-token');
   });
 
   test('rejects shared tokens longer than 256 chars', async ({ page }) => {
