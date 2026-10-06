@@ -12,7 +12,7 @@ means hand-editing a TOML file the user may not know about. This is the
   block per account (name header + editable `label`, `claude_config_dir`,
   `codex_home` rows), and one row per project to pick that project's default
   account. `n` adds an account (seeded with `~/.claude-<name>`), `d` deletes,
-  Enter/`e` edits a field inline, ←/→/Enter cycles the default / a project's account.
+  Enter/`e` edits a field inline, →/Enter cycles the default / a project's account.
 - Accounts edited here are stored in the DB (new `accounts` table; the default and
   per-project mapping live in the `config` kv table) and take effect for the very
   next task, since the daemon re-reads config per call.

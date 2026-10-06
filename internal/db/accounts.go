@@ -30,9 +30,12 @@ func (d *DB) Accounts() (map[string]config.Account, error) {
 		var name string
 		var a config.Account
 		if err := rows.Scan(&name, &a.Label, &a.ClaudeConfigDir, &a.CodexHome); err != nil {
-			continue
+			return nil, fmt.Errorf("scan accounts: %w", err)
 		}
 		out[name] = a
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate accounts: %w", err)
 	}
 	return out, nil
 }
@@ -63,25 +66,20 @@ func (d *DB) SetDefaultAccount(name string) error {
 	return d.SetConfigValue(ConfigKeyDefaultAccount, name)
 }
 
-// storedProjectAccounts reads the per-project default-account map.
-func (d *DB) storedProjectAccounts() map[string]string {
-	raw, err := d.GetConfigValue(ConfigKeyProjectAccounts)
-	if err != nil || raw == "" {
-		return nil
-	}
-	var m map[string]string
-	if json.Unmarshal([]byte(raw), &m) != nil {
-		return nil
-	}
-	return m
-}
-
 // SetProjectAccount stores one project's default account; an empty account
 // removes the entry so the project falls back to the global default.
 func (d *DB) SetProjectAccount(project, account string) error {
-	m := d.storedProjectAccounts()
-	if m == nil {
-		m = make(map[string]string)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// One lock across the read-modify-write so concurrent writers can't lose an update.
+	m := map[string]string{}
+	var raw string
+	if err := d.conn.QueryRow(`SELECT value FROM config WHERE key = ?`, ConfigKeyProjectAccounts).Scan(&raw); err == nil && raw != "" {
+		_ = json.Unmarshal([]byte(raw), &m)
+		if m == nil {
+			m = map[string]string{}
+		}
 	}
 	if account == "" {
 		delete(m, project)
@@ -92,7 +90,8 @@ func (d *DB) SetProjectAccount(project, account string) error {
 	if err != nil {
 		return err
 	}
-	return d.SetConfigValue(ConfigKeyProjectAccounts, string(b))
+	_, err = d.conn.Exec(`INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)`, ConfigKeyProjectAccounts, string(b))
+	return err
 }
 
 // AccountsFromConfigToml reports which account settings config.toml defines

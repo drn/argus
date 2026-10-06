@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"maps"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -51,9 +52,14 @@ func (sv *SettingsView) loadAccounts(cfg config.Config) {
 		sv.accountProjectNames = append(sv.accountProjectNames, name)
 	}
 	sort.Strings(sv.accountProjectNames)
+	if _, ok := sv.accounts[sv.pendingAccountDelete]; !ok {
+		sv.pendingAccountDelete = ""
+	}
 	if sv.acctEdit.active && sv.acctEdit.name != "" {
-		if _, ok := sv.accounts[sv.acctEdit.name]; !ok {
-			sv.acctEdit = accountEdit{} // the account vanished underneath the edit
+		// Cancel an edit whose account vanished, or that config.toml now defines
+		// (the file would silently shadow whatever the edit writes).
+		if _, ok := sv.accounts[sv.acctEdit.name]; !ok || sv.accountSources.Accounts[sv.acctEdit.name] {
+			sv.acctEdit = accountEdit{}
 		}
 	}
 }
@@ -61,11 +67,7 @@ func (sv *SettingsView) loadAccounts(cfg config.Config) {
 // accountsEditable reports whether accounts can be written from this view: a
 // local *db.DB only (--remote mode has no REST write surface for accounts).
 func (sv *SettingsView) accountsEditable() bool {
-	if sv.remote {
-		return false
-	}
-	_, ok := sv.database.(*db.DB)
-	return ok
+	return !sv.remote && sv.accountDB() != nil
 }
 
 func (sv *SettingsView) accountDB() *db.DB {
@@ -79,11 +81,34 @@ func (sv *SettingsView) accountNameOptions() []string {
 	return config.Config{Accounts: sv.accounts}.AccountNames()
 }
 
+func (sv *SettingsView) accountExists(name string) bool {
+	_, ok := sv.accounts[name]
+	return ok
+}
+
 func accountKey(name, field string) string { return name + "|" + field }
 
+// splitAccountKey splits an srAccountField key. It cuts at the LAST "|" so a
+// config.toml account name containing "|" stays intact (field names never do);
+// callers must not use it on srAccount rows, whose key is the bare name.
 func splitAccountKey(key string) (name, field string) {
-	name, field, _ = strings.Cut(key, "|")
-	return name, field
+	i := strings.LastIndex(key, "|")
+	if i < 0 {
+		return key, ""
+	}
+	return key[:i], key[i+1:]
+}
+
+// rowAccountName returns the account a row belongs to ("" for non-account rows).
+func rowAccountName(row *settingsRow) string {
+	switch row.kind {
+	case srAccount:
+		return row.key
+	case srAccountField:
+		name, _ := splitAccountKey(row.key)
+		return name
+	}
+	return ""
 }
 
 func accountFieldValue(a config.Account, field string) string {
@@ -150,6 +175,9 @@ func (sv *SettingsView) accountRows() []settingsRow {
 	if sv.accountSources.Default {
 		marker = " (config.toml)"
 	}
+	if sv.defaultAccount != "" && sv.defaultAccount != config.DefaultAccountName && !sv.accountExists(sv.defaultAccount) {
+		marker += " (missing)"
+	}
 	rows = append(rows, settingsRow{kind: srAccountDefault, key: "_default",
 		label: "Default account: " + displayAccountName(sv.defaultAccount) + marker})
 
@@ -191,6 +219,9 @@ func (sv *SettingsView) accountRows() []settingsRow {
 		if sv.accountSources.Projects[p] {
 			m = " (config.toml)"
 		}
+		if a := sv.projectAccounts[p]; a != "" && a != config.DefaultAccountName && !sv.accountExists(a) {
+			m += " (missing)"
+		}
 		rows = append(rows, settingsRow{kind: srProjectAccount, key: p, label: "Project " + p + " → " + val + m})
 	}
 	return rows
@@ -214,7 +245,35 @@ func (sv *SettingsView) validateAccountEdit(name string, a config.Account) error
 		accounts = map[string]config.Account{}
 	}
 	accounts[name] = a
-	return config.Config{Accounts: accounts}.ValidateAccount(name)
+	if err := (config.Config{Accounts: accounts}).ValidateAccount(name); err != nil {
+		return err
+	}
+	for other, o := range sv.accounts {
+		if other == name {
+			continue
+		}
+		if sameAccountDir(a.ClaudeConfigDir, o.ClaudeConfigDir) || sameAccountDir(a.CodexHome, o.CodexHome) {
+			return fmt.Errorf("directory already used by account %q (accounts must not share a login)", other)
+		}
+	}
+	return nil
+}
+
+func sameAccountDir(a, b string) bool {
+	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
+	return a != "" && b != "" && filepath.Clean(config.ExpandHome(a)) == filepath.Clean(config.ExpandHome(b))
+}
+
+// accountReferences counts how many projects (and whether the global default)
+// still point at account name.
+func (sv *SettingsView) accountReferences(name string) (projects []string, isDefault bool) {
+	for p, a := range sv.projectAccounts {
+		if a == name {
+			projects = append(projects, p)
+		}
+	}
+	sort.Strings(projects)
+	return projects, sv.defaultAccount == name
 }
 
 func (sv *SettingsView) rejectAccount(format string, args ...any) bool {
@@ -350,7 +409,7 @@ func (sv *SettingsView) handleDeleteAccountRow() bool {
 	case srProjectAccount:
 		return sv.setProjectAccount(row.key, "")
 	case srAccount, srAccountField:
-		name, _ := splitAccountKey(row.key)
+		name := rowAccountName(row)
 		if name == "" {
 			return false
 		}
@@ -374,6 +433,7 @@ func (sv *SettingsView) handleDeleteAccountRow() bool {
 		next := maps.Clone(sv.accounts)
 		delete(next, name)
 		sv.accounts = next
+		sv.clearAccountReferences(d, name)
 		sv.rebuildRows()
 		if sv.cursor >= len(sv.rows) {
 			sv.cursor = len(sv.rows) - 1
@@ -381,6 +441,33 @@ func (sv *SettingsView) handleDeleteAccountRow() bool {
 		return true
 	}
 	return false
+}
+
+// clearAccountReferences resets the default / project selections that pointed
+// at a just-deleted account, so tasks do not silently fall through to another
+// login. Entries defined in config.toml are left alone (they render "(missing)").
+func (sv *SettingsView) clearAccountReferences(d *db.DB, name string) {
+	projects, isDefault := sv.accountReferences(name)
+	if isDefault && !sv.accountSources.Default {
+		if err := d.SetDefaultAccount(""); err != nil {
+			uxlog.Log("[settings] accounts: failed to clear default account %q: %v", name, err)
+		} else {
+			sv.defaultAccount = ""
+		}
+	}
+	for _, p := range projects {
+		if sv.accountSources.Projects[p] {
+			continue
+		}
+		if err := d.SetProjectAccount(p, ""); err != nil {
+			uxlog.Log("[settings] accounts: failed to clear project %s account %q: %v", p, name, err)
+			continue
+		}
+		next := maps.Clone(sv.projectAccounts)
+		delete(next, p)
+		sv.projectAccounts = next
+	}
+	sv.rebuildRows()
 }
 
 // cycleAccountRow advances the default-account or a project's account through
@@ -511,7 +598,7 @@ func (sv *SettingsView) renderAccountsDetail(screen tcell.Screen, x, y, w, h int
 		r++
 	}
 
-	name, _ := splitAccountKey(row.key)
+	name := rowAccountName(row)
 	switch row.kind {
 	case srAccountDefault:
 		line("Default account", theme.StyleTitle)
@@ -550,9 +637,16 @@ func (sv *SettingsView) renderAccountsDetail(screen tcell.Screen, x, y, w, h int
 			line("First login (Codex): CODEX_HOME="+a.CodexHome+" codex login", theme.StyleDimmed)
 		}
 		if sv.pendingAccountDelete == name {
-			n := sv.accountTaskCount(name)
-			line(fmt.Sprintf("Delete %s? %d task(s) use it and will fail to resume. Press d again to confirm.", name, n),
-				tcell.StyleDefault.Foreground(theme.ColorError))
+			projects, isDefault := sv.accountReferences(name)
+			warn := tcell.StyleDefault.Foreground(theme.ColorError)
+			line("Delete "+name+"? Press d again to confirm.", warn)
+			line(fmt.Sprintf("  %d task(s) use it and will fail to resume", sv.accountTaskCount(name)), warn)
+			if isDefault {
+				line("  it is the default account (will reset)", warn)
+			}
+			if len(projects) > 0 {
+				line(fmt.Sprintf("  %d project default(s) will reset", len(projects)), warn)
+			}
 		}
 	}
 	if sv.accountErr != "" {

@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -394,4 +396,110 @@ func TestNextAccountOption(t *testing.T) {
 	testutil.Equal(t, nextAccountOption(opts, "", true), "default")
 	testutil.Equal(t, nextAccountOption(opts, "b", true), "")
 	testutil.Equal(t, nextAccountOption(opts, "gone", true), "")
+}
+
+func TestAccounts_DeleteResetsDanglingReferences(t *testing.T) {
+	sv, d := accountsSV(t)
+	testutil.NoError(t, d.SetProject("argus", config.Project{Path: t.TempDir()}))
+	testutil.NoError(t, d.SetProject("other", config.Project{Path: t.TempDir()}))
+	sv.Refresh()
+	addAccount(t, sv, "work")
+	addAccount(t, sv, "personal")
+	testutil.NoError(t, d.SetDefaultAccount("work"))
+	testutil.NoError(t, d.SetProjectAccount("argus", "work"))
+	testutil.NoError(t, d.SetProjectAccount("other", "personal"))
+	sv.Refresh()
+	selectRow(t, sv, srAccount, "work")
+
+	acctKey(sv, tcell.KeyRune, 'd')
+	prompt := readSettingsScreen(t, sv, 140, 40)
+	testutil.Contains(t, prompt, "it is the default account")
+	testutil.Contains(t, prompt, "1 project default(s) will reset")
+
+	acctKey(sv, tcell.KeyRune, 'd')
+	cfg := d.Config()
+	testutil.Equal(t, cfg.DefaultAccount, "")
+	_, argusMapped := cfg.ProjectAccounts["argus"]
+	testutil.False(t, argusMapped)
+	testutil.Equal(t, cfg.ProjectAccounts["other"], "personal") // unrelated mapping untouched
+	testutil.Contains(t, sv.rows[0].label, "Default account: default")
+}
+
+func TestAccounts_TomlReferencesToDeletedAccountShowMissing(t *testing.T) {
+	sv, d := tomlAccountsSV(t, `
+default_account = "ghost"
+
+[project_accounts]
+argus = "ghost"
+`)
+	testutil.NoError(t, d.SetProject("argus", config.Project{Path: t.TempDir()}))
+	sv.Refresh()
+	testutil.Contains(t, sv.rows[0].label, "(missing)")
+	selectRow(t, sv, srProjectAccount, "argus")
+	testutil.Contains(t, sv.SelectedRow().label, "(missing)")
+}
+
+func TestAccounts_RejectsSharedDirectories(t *testing.T) {
+	sv, d := accountsSV(t)
+	addAccount(t, sv, "work")
+	addAccount(t, sv, "personal")
+
+	selectRow(t, sv, srAccountField, accountKey("personal", acctFieldClaude))
+	acctKey(sv, tcell.KeyRune, 'e')
+	for sv.acctEdit.buf != "" {
+		acctKey(sv, tcell.KeyBackspace2, 0)
+	}
+	acctType(sv, "~/.claude-work/")
+	acctKey(sv, tcell.KeyEnter, 0)
+	testutil.Contains(t, sv.accountErr, `already used by account "work"`)
+	stored, _ := d.Accounts()
+	testutil.Equal(t, stored["personal"].ClaudeConfigDir, "~/.claude-personal")
+}
+
+func TestAccounts_PipeInTomlNameStaysIntact(t *testing.T) {
+	sv, _ := tomlAccountsSV(t, "[accounts.\"a|b\"]\nclaude_config_dir = \"/toml/ab\"\n")
+	selectRow(t, sv, srAccount, "a|b")
+	testutil.Equal(t, rowAccountName(sv.SelectedRow()), "a|b")
+	selectRow(t, sv, srAccountField, accountKey("a|b", acctFieldClaude))
+	testutil.Equal(t, rowAccountName(sv.SelectedRow()), "a|b")
+
+	acctKey(sv, tcell.KeyRune, 'e') // toml-defined, so refused; must not mint a DB account "a"
+	testutil.False(t, sv.IsEditing())
+	_, minted := sv.accounts["a"]
+	testutil.False(t, minted)
+	testutil.Equal(t, rowAccountName(&settingsRow{kind: srProjectAccount, key: "x"}), "")
+}
+
+func TestAccounts_StalePendingDeleteIsCancelledOnRefresh(t *testing.T) {
+	sv, d := accountsSV(t)
+	addAccount(t, sv, "personal")
+	selectRow(t, sv, srAccount, "personal")
+	acctKey(sv, tcell.KeyRune, 'd')
+	testutil.Equal(t, sv.pendingAccountDelete, "personal")
+	testutil.NoError(t, d.DeleteAccount("personal"))
+	sv.Refresh()
+	testutil.Equal(t, sv.pendingAccountDelete, "")
+}
+
+func TestAccounts_EditCancelledWhenConfigTomlStartsDefiningIt(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	d, err := db.Open(filepath.Join(dir, "data.sql"))
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	sv := NewSettingsView(d)
+	sv.Refresh()
+	sv.setCategory(catAccounts)
+	sv.setFocus(focusPane)
+
+	addAccount(t, sv, "work")
+	selectRow(t, sv, srAccountField, accountKey("work", acctFieldLabel))
+	acctKey(sv, tcell.KeyRune, 'e')
+	testutil.True(t, sv.IsEditing())
+
+	testutil.NoError(t, os.WriteFile(filepath.Join(dir, config.FileName),
+		[]byte("[accounts.work]\nclaude_config_dir = \"/toml/work\"\n"), 0o644))
+	sv.Refresh()
+	testutil.False(t, sv.IsEditing())
+	testutil.Equal(t, sv.accounts["work"].ClaudeConfigDir, "/toml/work")
 }

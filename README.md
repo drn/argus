@@ -553,7 +553,7 @@ Each account is a separate config directory per tool. A Claude task runs with `C
 
 #### Setup
 
-Easiest: open **Settings → Accounts** in the TUI. Press `n` to add an account (it starts with `~/.claude-<name>`), then `e` on its rows to set the Claude config dir, Codex home, or label. `▶`/`Enter` on the **Default account** row, or on a project row, cycles which account is the default. Edits take effect for the next task, with no restart. Anything defined in `config.toml` (below) overrides the same name from Settings and shows as `(config.toml)`, read-only. The web and macOS apps pick an account when you start a task but can't edit accounts yet; `--remote` mode shows them read-only.
+Easiest: open **Settings → Accounts** in the TUI. Press `n` to add an account (it starts with `~/.claude-<name>`), then `e` on its rows to set the Claude config dir, Codex home, or label. `▶`/`Enter` on the **Default account** row, or on a project row, cycles which account is the default. Deleting an account (press `d` twice) also resets any default or project selection that pointed at it, so tasks never silently fall through to another login. Settings also refuses two accounts that share a directory, since that would share a login. Edits take effect for the next task, with no restart. Anything defined in `config.toml` (below) overrides the same name from Settings and shows as `(config.toml)`, read-only. The web and macOS apps pick an account when you start a task but can't edit accounts yet; `--remote` mode shows them read-only.
 
 Or edit the file directly:
 

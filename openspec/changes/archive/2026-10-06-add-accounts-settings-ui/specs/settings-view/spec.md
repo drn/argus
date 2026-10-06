@@ -2,7 +2,7 @@
 
 ### Requirement: Accounts are viewable and editable in Settings
 
-The TUI Settings view SHALL provide an **Accounts** category listing a default-account row, every account (with its `label`, `claude_config_dir` and `codex_home`), and one row per project showing that project's default account. `n` SHALL add an account (inline name prompt; the new account is seeded with `claude_config_dir = ~/.claude-<name>`), `d` SHALL delete the selected account, Enter or `e` SHALL edit the selected field inline, and ←/→/Enter on the default-account and project rows SHALL cycle through the valid account names (including `default`). Every edit SHALL be validated with `Config.ValidateAccount` before it is stored; a rejected edit SHALL leave the stored value unchanged and show the reason in the pane. Edits SHALL take effect for the next task created without a restart.
+The TUI Settings view SHALL provide an **Accounts** category listing a default-account row, every account (with its `label`, `claude_config_dir` and `codex_home`), and one row per project showing that project's default account. `n` SHALL add an account (inline name prompt; the new account is seeded with `claude_config_dir = ~/.claude-<name>`), `d` SHALL delete the selected account, Enter or `e` SHALL edit the selected field inline, and →/Enter on the default-account and project rows SHALL cycle through the valid account names (including `default`). Every edit SHALL be validated with `Config.ValidateAccount` before it is stored; a rejected edit SHALL leave the stored value unchanged and show the reason in the pane. Edits SHALL take effect for the next task created without a restart.
 
 #### Scenario: Add an account
 - **WHEN** the user presses `n` in Accounts and enters `personal`
