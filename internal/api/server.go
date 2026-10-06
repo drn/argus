@@ -133,6 +133,9 @@ type Server struct {
 	// spinning up a real PTY-backed session for every case. See
 	// internal/api/claudesessions.go.
 	performClaudeSessionSwitchFn func(task *model.Task, cfg config.Config) (int, error)
+
+	// heraBG tracks in-flight Hera nuke tails (session stops + reclaim sweep).
+	heraBG sync.WaitGroup
 }
 
 // SetNotifier wires the reliable pane-delivery service into the API server.

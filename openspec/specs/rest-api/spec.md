@@ -340,7 +340,7 @@ The REST API SHALL expose `GET /api/hera`, a read-only endpoint returning the He
 
 **Scope note (unchanged from prior scope):** `subtree_cost_usd` at THIS endpoint SHALL still be the sum of the orchestrator's OWN roles' cost only (every kind, including nuked ones) — it SHALL NOT recurse into orchestrators nested beneath it, even though `bridge_parent_orch_id` now exposes the same underlying bridge relationship. Extending `subtree_cost_usd` itself to recurse remains a separate, still-deferred follow-up; this change does not alter that field's semantics, only adds the new nesting/needs-input fields alongside it.
 
-`kanban_status` continues to be emitted as-is for every orchestrator regardless of nesting (a nested orchestrator's own, rail-inert `kanban_status` value is still visible in its envelope) — but a client can now distinguish top-level from nested orchestrators itself via `bridge_parent_orch_id`, rather than needing to infer it. `subtree_cost_usd`, `bridge_parent_orch_id`/`bridge_parent_role_id`, `subtree_needs_input`, `needs_input`, and every per-role cost/token field are read-only: mutating any of them over REST is out of scope — this stays under the existing standing exception that Hera mutations are TUI-only (`GET /api/hera` stays read-only in every field).
+`kanban_status` continues to be emitted as-is for every orchestrator regardless of nesting (a nested orchestrator's own, rail-inert `kanban_status` value is still visible in its envelope) — but a client can now distinguish top-level from nested orchestrators itself via `bridge_parent_orch_id`, rather than needing to infer it. `subtree_cost_usd`, `bridge_parent_orch_id`/`bridge_parent_role_id`, `subtree_needs_input`, `needs_input`, and every per-role cost/token field are read-only: mutating any of them directly is out of scope — `GET /api/hera` stays read-only in every field; mutations go through the dedicated endpoints in "Hera mutation endpoints".
 
 These fields SHALL be populated regardless of which client renders them: the native TUI itself reads through this endpoint in `--remote` mode, and the web SPA renders no nesting/needs-input Hera UI yet (an explicit, separately-tracked follow-up, not a reason to omit the data here).
 
@@ -615,3 +615,23 @@ The system SHALL expose a `GET /api/tasks/{id}/claude-sessions` endpoint that li
 #### Scenario: Project-aware default
 - **WHEN** a client requests `GET /api/accounts?project=acme` and `project_accounts` maps `acme` to `work`
 - **THEN** only `work` has `is_default: true`
+
+### Requirement: Hera mutation endpoints
+
+The REST API SHALL expose authenticated POST endpoints under `/api/hera` for nuke (orchestrator cascade and role), archive/unarchive, pin/unpin, rename, role-status set, and orchestrator kanban-status set. Nuke endpoints SHALL require the master token. Every endpoint SHALL act on an explicit orchestrator or role id (never a bare task id), SHALL NEVER hard-delete a hera row (nuke stamps `nuked_at`), and SHALL return 404 for an unknown id, 409 on a name conflict, and 400 for an invalid status/kanban value or a kanban change on a nested orchestrator. A nuke SHALL end bindings as `user_deleted`, archive sole-bound tasks, preserve tasks bound outside the subtree, and delegate worktree reclaim to `ReconcileHeraReclaims`. `GET /api/hera/orchestrators/{id}/nuke-preview` SHALL return the counts the nuke would act on without mutating anything.
+
+#### Scenario: Nuke cascades the subtree
+- **WHEN** a master-token client POSTs `/api/hera/orchestrators/{id}/nuke` for an orchestrator with a nested sub-orchestrator
+- **THEN** both orchestrators and all their roles are stamped nuked and disappear from `GET /api/hera`
+
+#### Scenario: Non-master token rejected
+- **WHEN** a non-master token POSTs a nuke endpoint
+- **THEN** the response is 403 and nothing changes
+
+#### Scenario: Multi-bound task preserved
+- **WHEN** a nuked role's task is also live-bound under an orchestrator outside the subtree
+- **THEN** the task, its session and worktree are left untouched; only the role row is nuked
+
+#### Scenario: Hiding a worker stops its session
+- **WHEN** a client archives a worker role with a live session
+- **THEN** the role is archived and the session stopped; unarchive never touches a session

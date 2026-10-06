@@ -42,6 +42,24 @@ func (s *Server) routes() *http.ServeMux {
 	// Hera orchestration roster — orchestrators → roles (coordinator/worker)
 	// plus freelance roles. Read-only; feeds the webapp's Hera tab.
 	mux.HandleFunc("GET /api/hera", s.handleHera)
+	// Hera mutations (openspec add-web-hera-mutations). Nuke is master-gated
+	// inside its handlers; the rest are open to any authenticated token.
+	mux.HandleFunc("GET /api/hera/orchestrators/{id}/nuke-preview", s.handleHeraNukePreview)
+	mux.HandleFunc("POST /api/hera/orchestrators/{id}/nuke", s.handleHeraNukeOrch)
+	mux.HandleFunc("POST /api/hera/roles/{id}/nuke", s.handleHeraNukeRole)
+	mux.HandleFunc("POST /api/hera/roles/{id}/status", s.handleHeraRoleStatus)
+	mux.HandleFunc("POST /api/hera/orchestrators/{id}/kanban", s.handleHeraKanban)
+	for _, k := range []struct {
+		seg  string
+		orch bool
+	}{{"orchestrators", true}, {"roles", false}} {
+		base := "POST /api/hera/" + k.seg + "/{id}/"
+		mux.HandleFunc(base+"archive", s.heraKindHandler(k.orch, s.handleHeraArchive(true)))
+		mux.HandleFunc(base+"unarchive", s.heraKindHandler(k.orch, s.handleHeraArchive(false)))
+		mux.HandleFunc(base+"pin", s.heraKindHandler(k.orch, s.handleHeraPin(true)))
+		mux.HandleFunc(base+"unpin", s.heraKindHandler(k.orch, s.handleHeraPin(false)))
+		mux.HandleFunc(base+"rename", s.heraKindHandler(k.orch, s.handleHeraRename))
+	}
 	mux.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
 	mux.HandleFunc("POST /api/tasks/{id}/stop", s.handleStopTask)
 	mux.HandleFunc("POST /api/tasks/{id}/restart", s.handleRestartTask)
