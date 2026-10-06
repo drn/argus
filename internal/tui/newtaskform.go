@@ -877,7 +877,7 @@ func (f *NewTaskForm) loadSkills() {
 	if pp := f.selectedProjectPath(); pp != "" {
 		extraDirs = []string{filepath.Join(pp, ".claude", "skills")}
 	}
-	f.skills = skills.LoadSkillsFrom(f.accountClaudeDir(), extraDirs)
+	f.skills = skills.WithBuiltins(skills.LoadSkillsFrom(f.accountClaudeDir(), extraDirs))
 }
 
 // promptTokenBounds returns the [start, end) rune indices of the

@@ -1842,7 +1842,7 @@ func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error(), nil)
 		return
 	}
-	items := skills.LoadSkillsFrom(configDir, extraDirs)
+	items := skills.WithBuiltins(skills.LoadSkillsFrom(configDir, extraDirs))
 	if filter != "" {
 		items = skills.FilterSkills(items, filter)
 	}

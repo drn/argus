@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -163,6 +164,9 @@ func writeSkill(t *testing.T, dir, name string) {
 func skillNames(f *NewTaskForm) []string {
 	var out []string
 	for _, s := range f.skills {
+		if strings.HasPrefix(s.Name, "argus-") || strings.HasPrefix(s.Name, "hera") {
+			continue
+		}
 		out = append(out, s.Name)
 	}
 	return out
