@@ -6009,6 +6009,28 @@ func (a *App) computePTYSize() (rows, cols uint16) {
 	return 24, 80
 }
 
+// spawnPTYSize is the PTY size a (re)spawned session for taskID should start
+// at. On the Hera tab with the task shown in a pane, that is the PANE's size:
+// the resumed agent re-emits its whole conversation immediately at spawn size,
+// and those bytes stream straight into the pane's live emulator (the stream
+// stays connected across the restart, no ResetVT) — spawning at the host
+// terminal's width instead feeds N-column cursor-addressed history into a
+// narrower emulator, whose clamped CHA moves pile text on the right margin
+// (fix-hera-revive-spawn-width). Everywhere else it is computePTYSize.
+// Main-goroutine only.
+func (a *App) spawnPTYSize(taskID string) (rows, cols uint16) {
+	a.mu.Lock()
+	onHera := a.mode == modeTaskList && a.header.ActiveTab() == widget.TabHera
+	a.mu.Unlock()
+	if onHera && a.heraPage != nil {
+		if r, c, ok := a.heraPage.PaneSizeForTask(taskID); ok {
+			uxlog.Log("[tui] spawn size: task=%s using hera pane %dx%d", taskID, c, r)
+			return r, c
+		}
+	}
+	return a.computePTYSize()
+}
+
 // agentViewRowOverhead is the total fixed-row height consumed by chrome
 // outside the agent pane's inner content area, when the user is in agent view
 // (tab header hidden via ResizeItem(0,0)):
@@ -6213,7 +6235,7 @@ func (a *App) forceReviveClosedOut(pane *terminal.TerminalPane, t *model.Task) {
 // branch) that don't ALL separately force a refetch of their own afterward.
 func (a *App) startSession(task *model.Task) {
 	cfg := a.db.Config()
-	rows, cols := a.computePTYSize()
+	rows, cols := a.spawnPTYSize(task.ID)
 
 	resume := task.SessionID != ""
 

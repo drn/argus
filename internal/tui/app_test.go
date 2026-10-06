@@ -5959,3 +5959,18 @@ func TestCrossTabArrows_AgentView(t *testing.T) {
 		testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks)
 	})
 }
+
+// TestSpawnPTYSize_FallsBackToHostSize — off the Hera tab, or with no Hera
+// pane showing the task, a (re)spawn keeps the host-terminal size
+// (fix-hera-revive-spawn-width only redirects Hera-pane respawns).
+func TestSpawnPTYSize_FallsBackToHostSize(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	wantR, wantC := app.computePTYSize()
+	for _, tab := range []widget.Tab{widget.TabTasks, widget.TabHera} {
+		app.switchTab(tab)
+		r, c := app.spawnPTYSize("no-such-task")
+		testutil.Equal(t, r, wantR)
+		testutil.Equal(t, c, wantC)
+	}
+}

@@ -1218,3 +1218,44 @@ func (s *syncCountingScreen) Sync() {
 	s.syncCount++
 	s.SimulationScreen.Sync()
 }
+
+// TestPanes_PaneSizeForTask — a Hera-tab respawn must start at the bound
+// pane's own PTY size (fix-hera-revive-spawn-width), so PaneSizeForTask has
+// to report it once laid out and refuse unbound/unlaid-out tasks.
+func TestPanes_PaneSizeForTask(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{
+		"t-coord": {id: "t-coord", alive: true},
+		"t-wkr":   {id: "t-wkr", alive: true},
+	}))
+	p.Refresh()
+	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
+
+	_, _, ok := p.PaneSizeForTask("t-wkr")
+	testutil.Equal(t, ok, false) // bound but never drawn
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(120, 30)
+	p.SetRect(0, 0, 120, 30)
+	p.Draw(sim)
+
+	rows, cols, ok := p.PaneSizeForTask("t-wkr")
+	testutil.Equal(t, ok, true)
+	wantRows, wantCols := p.AgentPane().PTYSize()
+	testutil.Equal(t, rows, wantRows)
+	testutil.Equal(t, cols, wantCols)
+	if cols == 0 || cols >= 120 {
+		t.Errorf("agent pane cols = %d, want a pane-sized width below the 120-col screen", cols)
+	}
+
+	_, _, ok = p.PaneSizeForTask("unrelated")
+	testutil.Equal(t, ok, false)
+	_, _, ok = p.PaneSizeForTask("")
+	testutil.Equal(t, ok, false)
+}

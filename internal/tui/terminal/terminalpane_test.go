@@ -4757,3 +4757,24 @@ func TestReadLiveRebuildHistory_DoesNotSpliceWhenHandleTotalExceedsLogSize(t *te
 		t.Errorf("recorded total = %d, want the handle's own ring total %d (or 0 to defer), never a file size", total, sess.totalWritten)
 	}
 }
+
+func TestTerminalPane_PTYSize(t *testing.T) {
+	tp := NewTerminalPane()
+	r, c := tp.PTYSize()
+	testutil.Equal(t, r, uint16(0))
+	testutil.Equal(t, c, uint16(0))
+
+	tp.mu.Lock()
+	tp.ptyRows, tp.ptyCols = 40, 90
+	tp.mu.Unlock()
+	r, c = tp.PTYSize()
+	testutil.Equal(t, r, uint16(40))
+	testutil.Equal(t, c, uint16(90))
+
+	tp.mu.Lock()
+	tp.ptyRows, tp.ptyCols = 3, 10 // below the usable floor => unknown
+	tp.mu.Unlock()
+	r, c = tp.PTYSize()
+	testutil.Equal(t, r, uint16(0))
+	testutil.Equal(t, c, uint16(0))
+}

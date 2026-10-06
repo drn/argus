@@ -1,0 +1,3 @@
+- [x] Add `TerminalPane.PTYSize`, `HeraPage.PaneSizeForTask`, `App.spawnPTYSize`
+- [x] Use `spawnPTYSize` in `startSession` and `reviveHeraWorker`
+- [x] Tests + gotchas entry

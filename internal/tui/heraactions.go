@@ -1339,7 +1339,7 @@ func (a *App) reviveHeraWorker(task *model.Task, sess agent.SessionHandle) {
 	}
 	taskID := task.ID
 	cfg := a.db.Config()
-	rows, cols := a.computePTYSize()
+	rows, cols := a.spawnPTYSize(taskID)
 	go func() {
 		idle := sess.IsIdle()
 		blocked := sessionBlockedOnPrompt(taskID, idle)
