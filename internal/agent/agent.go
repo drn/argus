@@ -357,7 +357,7 @@ func KnownModels(command string) []string {
 	case IsClaudeBackend(command):
 		return []string{"opus", "sonnet", "haiku", "fable"}
 	case IsCodexBackend(command):
-		return []string{"gpt-6-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"}
+		return []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"}
 	default:
 		// opencode is intentionally custom-only: its model is a
 		// provider/model identifier whose valid set depends on which providers

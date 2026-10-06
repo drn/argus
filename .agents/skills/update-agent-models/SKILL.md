@@ -14,7 +14,7 @@ disable-model-invocation: true
 # Update Agent Models
 
 Codex retires and renames its model identifiers on every release (its lineup went from
-gpt-5-codex/gpt-5 to gpt-6-sol/gpt-6-astra/gpt-6-luna/gpt-5.6-sol/gpt-5.6-terra/gpt-5.6-luna/gpt-5.5
+gpt-5-codex/gpt-5 to gpt-6.1-sol/gpt-6-sol/gpt-6-astra/gpt-6-luna/gpt-5.6-sol/gpt-5.6-terra/gpt-5.6-luna/gpt-5.5
 in one jump). Claude's CLI aliases (opus/sonnet/haiku/fable) are deliberately alias-indirected and
 rarely change, but this skill checks both. `internal/agent.KnownModels(command)` is the single
 source of truth both the new-task model picker and `backendAllowsModel`'s strict validation read —
