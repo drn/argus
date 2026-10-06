@@ -66,6 +66,10 @@ const (
 	srTodoTag
 	srBackendTier
 	srSandboxPath
+	srAccountDefault
+	srAccount
+	srAccountField
+	srProjectAccount
 )
 
 // settingsCategory groups related settings rows into a left-rail entry.
@@ -88,6 +92,9 @@ const (
 	// reorder/cycle affordances (see rebuildRows and the srBackendTier
 	// handlers below).
 	catBackendTiers
+	// catAccounts edits work/personal accounts (add-accounts-settings-ui);
+	// see settings_accounts.go.
+	catAccounts
 	catDefaults
 	catSchedules
 	catKnowledgeBase
@@ -116,6 +123,8 @@ func (c settingsCategory) Label() string {
 		return "Backends"
 	case catBackendTiers:
 		return "Backend Tiers"
+	case catAccounts:
+		return "Accounts"
 	case catDefaults:
 		return "Defaults"
 	case catSchedules:
@@ -143,7 +152,7 @@ func (c settingsCategory) Label() string {
 // builtinCategories is the fixed top portion of the rail. Plugins, when
 // present, render after a "Plugins" header below this list.
 var builtinCategories = []settingsCategory{
-	catSystem, catSandbox, catProjects, catBackends, catBackendTiers, catDefaults, catSchedules,
+	catSystem, catSandbox, catProjects, catBackends, catBackendTiers, catAccounts, catDefaults, catSchedules,
 	catKnowledgeBase, catRemoteAPI, catHera, catTodo, catAppearance, catLogs,
 }
 
@@ -239,6 +248,18 @@ type SettingsView struct {
 	// (unlike backends/projects; see db.SetBackendTiers's own doc comment).
 	editingTierIdx       int
 	editTierThresholdBuf string
+
+	// Accounts (add-accounts-settings-ui). accounts is the merged view (DB rows
+	// overridden per name by config.toml); accountSources says which entries
+	// config.toml defines, which render read-only. See settings_accounts.go.
+	accounts             map[string]config.Account
+	accountSources       config.AccountSources
+	defaultAccount       string
+	projectAccounts      map[string]string
+	accountProjectNames  []string
+	accountErr           string
+	acctEdit             accountEdit
+	pendingAccountDelete string // account whose delete awaits a confirming second `d`
 
 	// Sandbox.
 	sandboxEnabled    bool
@@ -552,6 +573,8 @@ func (sv *SettingsView) Refresh() {
 	if sv.editingTierIdx >= len(sv.backendTiers) {
 		sv.editingTierIdx = -1 // defensive: cancel a stale edit if the list shrank underneath it
 	}
+
+	sv.loadAccounts(cfg)
 
 	// Projects.
 	// Show empty on error — settings view degrades gracefully to an empty list.
@@ -1104,6 +1127,9 @@ func (sv *SettingsView) rebuildRows() {
 			}
 		}
 
+	case catAccounts:
+		sv.rows = append(sv.rows, sv.accountRows()...)
+
 	case catSchedules:
 		if len(sv.schedules) == 0 {
 			sv.rows = append(sv.rows, settingsRow{kind: srSchedule, label: "(no schedules — press n to add)"})
@@ -1286,6 +1312,8 @@ func (sv *SettingsView) PasteHandler() func(pastedText string, setFocus func(p t
 		} else if sv.editingSandboxIdx != -1 {
 			sv.editSandboxBuf += strings.Join(strings.Fields(pastedText), " ")
 			sv.rebuildRows()
+		} else if sv.acctEdit.active {
+			sv.pasteAccountText(pastedText)
 		} else if sv.editingTierIdx != -1 {
 			// Digits only, same constraint as the rune handler — a pasted
 			// threshold is still a percentage, not free text.
@@ -1311,7 +1339,7 @@ func (sv *SettingsView) FocusRightPane() { sv.setFocus(focusPane) }
 // IsEditing returns true when the user is inline-editing any field.
 func (sv *SettingsView) IsEditing() bool {
 	return sv.editingVault != "" || sv.editingSource || sv.editingBackendModel != "" || sv.activeEditKey != "" ||
-		sv.editingTodoProject || sv.editingTodoTag || sv.editingTierIdx != -1 || sv.editingSandboxIdx != -1
+		sv.editingTodoProject || sv.editingTodoTag || sv.editingTierIdx != -1 || sv.editingSandboxIdx != -1 || sv.acctEdit.active
 }
 
 // SelectedProject returns the project at the cursor, or nil.
@@ -1623,6 +1651,9 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 	if sv.editingSandboxIdx != -1 {
 		return sv.handleEditSandboxPathKey(ev)
 	}
+	if sv.acctEdit.active {
+		return sv.handleAccountEditKey(ev)
+	}
 	if sv.editingTierIdx != -1 {
 		return sv.handleEditTierThresholdKey(ev)
 	}
@@ -1683,6 +1714,8 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 			if sv.cycleBackendTierBackend(1) {
 				return true
 			}
+		case srAccountDefault, srProjectAccount:
+			return sv.cycleAccountRow()
 		}
 		return false
 	case tcell.KeyEnter:
@@ -1918,6 +1951,7 @@ func (sv *SettingsView) moveCursor(dir int) {
 		sv.cursor = 0
 		return
 	}
+	sv.pendingAccountDelete = ""
 	sv.cursor += dir
 	if sv.cursor < 0 {
 		sv.cursor = 0
@@ -1973,6 +2007,9 @@ func (sv *SettingsView) setCategory(c settingsCategory) {
 	sv.category = c
 	sv.editingSandboxIdx = -1
 	sv.editSandboxBuf = ""
+	sv.acctEdit = accountEdit{}
+	sv.accountErr = ""
+	sv.pendingAccountDelete = ""
 	sv.cursor = 0
 	sv.scrollOff = 0
 	sv.logScrollOff = 0
@@ -2022,6 +2059,10 @@ func (sv *SettingsView) handleEnter() bool {
 		return true
 	case srSandboxPath:
 		return sv.handleEditSandboxPath()
+	case srAccountField:
+		return sv.handleEditAccountField()
+	case srAccountDefault, srProjectAccount:
+		return sv.cycleAccountRow()
 	case srKB:
 		// Toggle KB.
 		sv.kbEnabled = !sv.kbEnabled
@@ -2182,6 +2223,8 @@ func (sv *SettingsView) handleDeleteOrDefault() bool {
 		return sv.handleDeleteBackendTier()
 	case srSandboxPath:
 		return sv.handleDeleteSandboxPath()
+	case srAccountDefault, srAccount, srAccountField, srProjectAccount:
+		return sv.handleDeleteAccountRow()
 	}
 	return false
 }
@@ -2251,6 +2294,8 @@ func (sv *SettingsView) handleNew() bool {
 		return sv.handleNewBackendTier()
 	case catSandbox:
 		return sv.handleNewSandboxPath()
+	case catAccounts:
+		return sv.handleNewAccount()
 	}
 	return false
 }
@@ -2259,6 +2304,8 @@ func (sv *SettingsView) handleEdit() bool {
 	switch sv.currentRowKind() {
 	case srSandboxPath:
 		return sv.handleEditSandboxPath()
+	case srAccountField:
+		return sv.handleEditAccountField()
 	case srBackendTier:
 		return sv.handleEditBackendTierThreshold()
 	case srProject:
@@ -3068,6 +3115,8 @@ func (sv *SettingsView) renderRowDetail(screen tcell.Screen, x, y, w, h int, row
 		sv.renderBackendDetail(screen, x, y, w, h, row)
 	case srBackendTier:
 		sv.renderBackendTierDetail(screen, x, y, w, h)
+	case srAccountDefault, srAccount, srAccountField, srProjectAccount:
+		sv.renderAccountsDetail(screen, x, y, w, h, row)
 	case srKB:
 		sv.renderKBDetail(screen, x, y, w, h)
 	case srAPI:
