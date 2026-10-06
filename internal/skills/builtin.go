@@ -74,6 +74,22 @@ func BuiltinItems() []SkillItem {
 	return items
 }
 
+// WithBuiltins appends the embedded builtin skills to items, skipping names
+// already present so user, project, and plugin skills win on collision.
+func WithBuiltins(items []SkillItem) []SkillItem {
+	seen := make(map[string]bool, len(items))
+	for _, it := range items {
+		seen[it.Name] = true
+	}
+	for _, b := range BuiltinItems() {
+		if !seen[b.Name] {
+			items = append(items, b)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
+	return items
+}
+
 // EnsureBuiltinSkills materializes embedded builtin skills to the managed
 // workspace (~/.argus/skills) idempotently. Returns the workspace root path
 // on success (pointing to ~/.argus/skills where .claude/skills/ lives), or

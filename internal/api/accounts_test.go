@@ -265,6 +265,9 @@ wp = "work"
 		_ = json.Unmarshal(w.Body.Bytes(), &body)
 		var out []string
 		for _, s := range body.Skills {
+			if strings.HasPrefix(s.Name, "argus-") || strings.HasPrefix(s.Name, "hera") {
+				continue
+			}
 			out = append(out, s.Name)
 		}
 		return w.Code, out
