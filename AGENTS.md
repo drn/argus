@@ -83,7 +83,7 @@ The repo now ships THREE user-facing frontends: the TUI (`internal/tui`), the we
 
 **Any user-facing feature or behavior change must be evaluated against all three surfaces in the same PR.** Parity is defined at the REST-exposed surface — what the daemon serves is what every client can reach — so a change to that surface (new/changed endpoint, event, field, status semantics) is the trigger to check all three clients. Implementing in one client and not the others is allowed, but requires an explicit, NAMED follow-up (an openspec Non-Goals note or a tracked task) — never silence.
 
-The one standing intentional gap: **hera mutations are TUI-only; over REST hera is read-only** (`GET /api/hera` roster; the web and macOS Hera tabs are read-only by design), with the follow-up named in openspec. Don't "fix" it silently or treat it as an oversight.
+The standing intentional gaps: the **macOS Hera tab is read-only** (web + TUI have the rail mutations: nuke, hide, pin, rename, role status, kanban — `add-web-hera-mutations`; macOS parity is the named follow-up), and **spawn / new coordinator / move / join / detach / inbox / merge-safety Cleanup remain TUI-only** over REST. Don't "fix" these silently or treat them as oversights.
 
 ## Config & Persistence
 

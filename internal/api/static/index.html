@@ -704,6 +704,15 @@ button:disabled { opacity: 0.5; cursor: default; }
 .hera-task { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
 .hera-task.unbound { font-style: italic; }
 .hera-rtc { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 8px; background: #2d2000; color: var(--yellow); flex-shrink: 0; }
+.hera-menu-btn { background: transparent; border: none; color: var(--text-dim); font-size: 18px; line-height: 1; padding: 4px 8px; min-height: 32px; cursor: pointer; flex-shrink: 0; }
+.hera-card-header .hera-menu-btn { margin-left: auto; }
+#hera-sheet { position: fixed; inset: 0; z-index: 200; display: none; background: rgba(0,0,0,0.5); }
+#hera-sheet.open { display: flex; align-items: flex-end; }
+#hera-sheet .sheet { width: 100%; background: var(--surface); border-top: 1px solid var(--border); border-radius: 12px 12px 0 0; padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); }
+#hera-sheet .sheet-title { font-size: 12px; color: var(--text-dim); padding: 8px 12px; }
+#hera-sheet .sheet button { display: block; width: 100%; text-align: left; background: transparent; border: none; padding: 12px; font-size: 15px; min-height: 44px; color: var(--text); border-radius: 6px; }
+#hera-sheet .sheet button:active { background: var(--border); }
+#hera-sheet .sheet button.danger { color: var(--red); }
 .hera-empty { color: var(--text-dim); text-align: center; padding: 32px 12px; font-size: 13px; }
 
 /* Settings */
@@ -1149,6 +1158,7 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       <button type="button" class="primary" onclick="loadHera()">↻</button>
     </div>
     <div id="hera-body"></div>
+    <div id="hera-sheet" onclick="closeHeraSheet()"><div class="sheet" onclick="event.stopPropagation()"></div></div>
   </div>
 
   <!-- Settings View -->
@@ -5376,6 +5386,12 @@ async function loadHera() {
 
   const orchs = (data && data.orchestrators) || [];
   const freelance = (data && data.freelance) || [];
+  heraIndex = { orch: {}, role: {} };
+  for (const o of orchs) {
+    heraIndex.orch[o.id] = o;
+    for (const r of (o.roles || [])) heraIndex.role[r.role_id] = r;
+  }
+  for (const r of freelance) heraIndex.role[r.role_id] = r;
   if (orchs.length === 0 && freelance.length === 0) {
     statusEl.textContent = '';
     body.innerHTML = '<div class="hera-empty">No orchestrators yet. Hera roles appear here once a coordinator is running.</div>';
@@ -5402,6 +5418,120 @@ async function loadHera() {
   body.innerHTML = html;
 }
 
+// --- Hera mutations: action sheet over /api/hera POSTs; nuke needs the master token ---
+let heraIndex = { orch: {}, role: {} };
+
+function closeHeraSheet() {
+  document.getElementById('hera-sheet').classList.remove('open');
+}
+
+function heraStatusLine(msg, isErr) {
+  const el = document.getElementById('hera-status');
+  el.classList.toggle('error', !!isErr);
+  el.textContent = msg;
+}
+
+async function heraAction(path, body, opts = {}) {
+  closeHeraSheet();
+  try {
+    const r = await api(path, { method: opts.method || 'POST', body: body ? JSON.stringify(body) : undefined });
+    if (!r.ok) {
+      let msg = 'HTTP ' + r.status;
+      try { const j = await r.json(); if (j && j.error) msg = j.error; } catch (_) {}
+      if (r.status === 403) msg = 'Requires the master token';
+      throw new Error(msg);
+    }
+    await loadHera();
+    if (opts.done) showToast(opts.done);
+    return true;
+  } catch (e) {
+    heraStatusLine('Hera action failed: ' + e.message, true);
+    return false;
+  }
+}
+
+function openHeraMenu(kind, id) {
+  const isOrch = kind === 'orch';
+  const obj = (isOrch ? heraIndex.orch : heraIndex.role)[id];
+  if (!obj) return;
+  const seg = isOrch ? 'orchestrators' : 'roles';
+  const base = '/api/hera/' + seg + '/' + id;
+  const items = [];
+  const add = (label, fn, danger) => items.push({ label, fn, danger });
+  if (isOrch) {
+    add(obj.pinned ? 'Unpin' : 'Pin', () => heraAction(base + (obj.pinned ? '/unpin' : '/pin'), null, { done: obj.pinned ? 'Unpinned' : 'Pinned' }));
+  }
+  add('Rename…', () => {
+    const name = prompt('Rename ' + (isOrch ? 'project' : 'role'), obj.name);
+    if (name && name.trim() && name.trim() !== obj.name) heraAction(base + '/rename', { name: name.trim() }, { done: 'Renamed to ' + name.trim() });
+    else closeHeraSheet();
+  });
+  if (!isOrch) {
+    add('Set status…', () => {
+      const st = prompt('Role status (idle, working, blocked, done)', obj.status || 'idle');
+      if (st && st.trim()) heraAction(base + '/status', { status: st.trim().toLowerCase() }, { done: 'Status set to ' + st.trim().toLowerCase() });
+      else closeHeraSheet();
+    });
+  } else if (obj.bridge_parent_orch_id == null) {
+    add('Set kanban…', () => {
+      const st = prompt('Kanban (active, backlog, blocked, done)', obj.kanban_status || 'active');
+      if (st && st.trim()) heraAction(base + '/kanban', { status: st.trim().toLowerCase() }, { done: 'Kanban set to ' + st.trim().toLowerCase() });
+      else closeHeraSheet();
+    });
+  }
+  if (isOrch || obj.kind === 'worker') {
+    add(obj.archived ? 'Unhide' : (isOrch ? 'Archive' : 'Hide'), () => {
+      if (!obj.archived && !confirm((isOrch ? 'Archive "' : 'Hide "') + obj.name + '"?' +
+          (isOrch ? '' : ' Its live session will be stopped; the worktree is kept.'))) { closeHeraSheet(); return; }
+      heraAction(base + (obj.archived ? '/unarchive' : '/archive'), null,
+        { done: obj.archived ? 'Restored "' + obj.name + '"' : (isOrch ? 'Archived "' : 'Hidden "') + obj.name + '"' });
+    });
+  }
+  add(isOrch ? 'Nuke project…' : 'Nuke role…', () => heraNuke(kind, id), true);
+
+  const sheet = document.querySelector('#hera-sheet .sheet');
+  sheet.innerHTML = '';
+  const title = document.createElement('div');
+  title.className = 'sheet-title';
+  title.textContent = obj.name;
+  sheet.appendChild(title);
+  for (const it of items) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = it.label;
+    if (it.danger) b.className = 'danger';
+    b.addEventListener('click', it.fn);
+    sheet.appendChild(b);
+  }
+  document.getElementById('hera-sheet').classList.add('open');
+}
+
+async function heraNuke(kind, id) {
+  const isOrch = kind === 'orch';
+  const obj = (isOrch ? heraIndex.orch : heraIndex.role)[id];
+  if (!obj) return;
+  closeHeraSheet();
+  let msg;
+  if (isOrch) {
+    try {
+      const r = await api('/api/hera/orchestrators/' + id + '/nuke-preview');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const p = (await r.json()).preview || {};
+      msg = 'Nuke "' + obj.name + '" and its whole team?\n\nRemoves ' + p.orchestrators + ' orchestrator(s) and ' + p.agents +
+        ' agent(s), stops their sessions and reclaims ' + p.worktrees + ' worktree(s) + branch(es). ' +
+        p.preserved + ' task(s) bound in another project are preserved. Rows are retained in the DB.';
+    } catch (e) {
+      heraStatusLine('Hera action failed: ' + e.message, true);
+      return;
+    }
+  } else {
+    msg = 'Nuke role "' + obj.name + '"? Its session is stopped and its worktree reclaimed unless the task is bound elsewhere.';
+  }
+  if (!confirm(msg)) return;
+  await heraAction('/api/hera/' + (isOrch ? 'orchestrators' : 'roles') + '/' + id + '/nuke', null,
+    { done: 'Nuked "' + obj.name + '" — cleanup running in background' });
+}
+
 function renderHeraSection(title, cardsHtml) {
   if (!cardsHtml.length) return '';
   return '<div class="hera-section-title">' + esc(title) + '</div>' + cardsHtml.join('');
@@ -5419,7 +5549,9 @@ function renderHeraOrch(o) {
     : '<div class="hera-role"><span class="hera-task unbound">no roles</span></div>';
   return '<div class="hera-card' + (o.archived ? ' archived' : '') + '">' +
     '<div class="hera-card-header"><span class="hera-card-name">' + esc(o.name) + '</span>' +
-    tags.join('') + '</div>' + rolesHtml + '</div>';
+    tags.join('') +
+    '<button type="button" class="hera-menu-btn" aria-label="Orchestrator actions" onclick="openHeraMenu(\'orch\',' + Number(o.id) + ')">⋯</button>' +
+    '</div>' + rolesHtml + '</div>';
 }
 
 function renderHeraRole(role) {
@@ -5440,7 +5572,9 @@ function renderHeraRole(role) {
     '<span class="hera-role-dot ' + escAttr(dotCls) + '"></span>' +
     '<span class="hera-kind">' + esc(role.kind) + '</span>' +
     '<span class="hera-role-name">' + esc(role.name) + '</span>' +
-    task + '</div>';
+    task +
+    '<button type="button" class="hera-menu-btn" aria-label="Role actions" onclick="event.stopPropagation();openHeraMenu(\'role\',' + Number(role.role_id) + ')">⋯</button>' +
+    '</div>';
 }
 
 // --- Settings tab: tokens + push + sandbox + KB + projects/backends + logs ---
