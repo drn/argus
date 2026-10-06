@@ -311,12 +311,14 @@ func (d *DB) createTables() error {
 			type        TEXT NOT NULL DEFAULT 'text',
 			size        INTEGER NOT NULL DEFAULT 0,
 			created_at  TEXT NOT NULL,
+			folder      TEXT NOT NULL DEFAULT '',
 			UNIQUE(task_id, filename)
 		)
 	`); err != nil {
 		return fmt.Errorf("creating artifacts table: %w", err)
 	}
 	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_artifacts_task ON artifacts(task_id, created_at)`) //nolint:errcheck
+	d.conn.Exec(`ALTER TABLE artifacts ADD COLUMN folder TEXT NOT NULL DEFAULT ''`)                //nolint:errcheck
 
 	// Per-task sidecar metadata. Composite PK (task_id, namespace, key) keeps
 	// each plugin's keys isolated under its own namespace prefix; ON

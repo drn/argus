@@ -6,16 +6,20 @@ import (
 	"strings"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/model"
 )
 
-// ResolvePath returns the real path of a direct child of the task's artifact
-// directory. Callers must first look up the filename in the task manifest.
+// ResolvePath returns the real path of a file inside the task's artifact
+// directory; filename is a slash-separated relative path ("x.png" or
+// "folder/x.png"). Callers must first look up the filename in the task manifest.
 func ResolvePath(taskID, filename string) (string, bool) {
+	if _, err := model.ValidateArtifactRelPath(filename); err != nil {
+		return "", false
+	}
 	dir := agent.ArtifactsDir(taskID)
-	full := filepath.Join(dir, filename)
+	full := filepath.Join(dir, filepath.FromSlash(filename))
 	cleanDir := filepath.Clean(dir)
-	if full != filepath.Join(cleanDir, filepath.Base(filename)) ||
-		!strings.HasPrefix(full, cleanDir+string(filepath.Separator)) {
+	if !strings.HasPrefix(full, cleanDir+string(filepath.Separator)) {
 		return "", false
 	}
 	realPath, err := filepath.EvalSymlinks(full)

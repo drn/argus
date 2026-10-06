@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"os"
 
@@ -70,6 +71,11 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Query().Get("thumb") == "1" {
+		s.serveArtifactThumb(w, r, id, art, full)
+		return
+	}
+
 	f, err := os.Open(full) //nolint:gosec // G304: full is rooted at ArtifactsDir(id) and prefix-validated by resolveArtifactPath against a registered manifest row.
 	if err != nil {
 		// Row exists but bytes are gone (manual deletion / disk loss).
@@ -98,6 +104,37 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	// ServeContent gives range support (PDF/image viewers seek) and HEAD
 	// handling; it respects the Content-Type we set above rather than sniffing.
 	http.ServeContent(w, r, art.Filename, info.ModTime(), f)
+}
+
+// serveArtifactThumb serves a generated JPEG thumbnail for an image/video
+// artifact (gallery tiles). 404 means "no thumbnail" — the SPA falls back to a
+// type icon — so unsupported formats and a missing ffmpeg are not server errors.
+func (s *Server) serveArtifactThumb(w http.ResponseWriter, r *http.Request, id string, art *model.Artifact, full string) {
+	path, err := artifacts.Thumbnail(r.Context(), id, art, full)
+	if err != nil {
+		if errors.Is(err, artifacts.ErrNoThumbnail) {
+			writeErr(w, http.StatusNotFound, "no thumbnail", nil)
+			return
+		}
+		uxlog.Log("[api] artifact thumb failed: id=%s file=%q err=%v", id, art.Filename, err)
+		writeErr(w, http.StatusInternalServerError, "", err)
+		return
+	}
+	f, err := os.Open(path) //nolint:gosec // G304: path is a generated cache file under ArtifactsDir(id)/.thumbs.
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "no thumbnail", nil)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "", err)
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "no-store")
+	uxlog.Log("[api] artifact thumb serve: id=%s file=%q bytes=%d", id, art.Filename, info.Size())
+	http.ServeContent(w, r, "thumb.jpg", info.ModTime(), f)
 }
 
 // resolveArtifactPath joins the task's artifact dir with a stored filename and

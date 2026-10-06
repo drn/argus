@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"strings"
 
 	"github.com/drn/argus/internal/model"
 )
 
 func artifactPath(taskID, filename string) string {
-	return "/api/tasks/" + url.PathEscape(taskID) + "/artifacts/" + url.PathEscape(filename)
+	segs := strings.Split(filename, "/")
+	for i, seg := range segs {
+		segs[i] = url.PathEscape(seg)
+	}
+	return "/api/tasks/" + url.PathEscape(taskID) + "/artifacts/" + strings.Join(segs, "/")
 }
 
 // Artifacts returns the per-task registered manifest.

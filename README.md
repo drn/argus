@@ -760,7 +760,7 @@ Configuring a backend in Settings makes these tools appear on the very next `too
 
 | Tool                | Description                                                                                                                                                                                          |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `artifact_register` | Register a file the agent produced (HTML report, PDF, markdown, image, or text) so it renders in Argus Web. Params: `path` (required), `title`, `type`, `id` or `cwd`. Self-contained files render best; 25 MiB max. |
+| `artifact_register` | Register a file the agent produced (HTML report, PDF, markdown, image, or text) so it renders in Argus Web. Params: `path` (required — a file, or a **directory** to register a whole folder shown as a thumbnail gallery in Argus Web; ≤500 files / 2 GiB), `title`, `type`, `id` or `cwd`. Self-contained files render best; 25 MiB max per file. |
 
 ### Agent-facing skills
 
@@ -828,7 +828,7 @@ Every authenticated token has the same permissions **except** a small master-onl
 | Method | Endpoint                                  | Description                                                                                                            |
 | ------ | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `GET`  | `/api/tasks/{id}/artifacts`               | List artifacts the agent registered via `artifact_register` (name, title, type, size)                                |
-| `GET`  | `/api/tasks/{id}/artifacts/{filename}`    | Serve one artifact's raw bytes. Scoped to the registered manifest set (no path traversal); HTML served in a sandbox. |
+| `GET`  | `/api/tasks/{id}/artifacts/{filename...}` | Serve one artifact's raw bytes (`filename` may be a nested `folder/x.png`; `?thumb=1` returns a ≤320px JPEG thumbnail for images/video, 404 if none). Scoped to the registered manifest set (no path traversal); HTML served in a sandbox. |
 
 #### Maintenance
 
