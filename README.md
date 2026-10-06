@@ -616,7 +616,7 @@ Global sandbox settings are managed in the **Settings tab** (`3` key):
 | ----------- | -------------------------------------------------- |
 | Enabled     | Master toggle — applies to all projects by default |
 | Deny Read   | Extra paths to block reads from (comma-separated)  |
-| Extra Write | Extra paths to allow writes to (comma-separated)   |
+| Extra Write | Extra paths to allow writes to — one row per path; `n` add, `e` edit, `d` delete |
 
 Per-project overrides are set in the **project form** (`e` on a project in Settings) — **Inherit**, **Enabled**, or **Disabled**. Per-project deny-read and extra-write paths are appended to the global lists.
 
