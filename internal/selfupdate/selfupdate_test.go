@@ -182,3 +182,17 @@ func TestEnvWithToolPath(t *testing.T) {
 		t.Errorf("empty home should skip home dirs: %v", noPath)
 	}
 }
+
+func TestEnvWithGoDirs(t *testing.T) {
+	t.Run("fills unset", func(t *testing.T) {
+		got := envWithGoDirs([]string{"A=1"}, "/h", "/h/go/bin")
+		testutil.DeepEqual(t, got, []string{"A=1", "GOPATH=/h/go", "GOBIN=/h/go/bin"})
+	})
+	t.Run("keeps existing", func(t *testing.T) {
+		in := []string{"GOPATH=/x", "GOBIN=/y"}
+		testutil.DeepEqual(t, envWithGoDirs(in, "/h", "/h/go/bin"), in)
+	})
+	t.Run("no home or exe dir", func(t *testing.T) {
+		testutil.DeepEqual(t, envWithGoDirs([]string{"A=1"}, "", ""), []string{"A=1"})
+	})
+}
