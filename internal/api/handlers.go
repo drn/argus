@@ -1539,6 +1539,20 @@ func projectToJSON(name string, p config.Project) projectJSON {
 	return out
 }
 
+// invalidProjectWritePath returns an error message for the first project
+// sandbox.extra_write entry that fails agent.ValidateWritePath, or "".
+func invalidProjectWritePath(req projectJSON) string {
+	if req.Sandbox == nil {
+		return ""
+	}
+	for _, p := range req.Sandbox.ExtraWrite {
+		if reason := agent.ValidateWritePath(strings.TrimSpace(p)); reason != "" {
+			return "invalid extra_write path " + p + ": " + reason
+		}
+	}
+	return ""
+}
+
 func projectFromJSON(req projectJSON) config.Project {
 	out := config.Project{
 		Path:    req.Path,
@@ -1600,6 +1614,10 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name and path are required", nil)
 		return
 	}
+	if msg := invalidProjectWritePath(req); msg != "" {
+		writeErr(w, http.StatusBadRequest, msg, nil)
+		return
+	}
 	if err := s.db.SetProject(req.Name, projectFromJSON(req)); err != nil {
 		writeErr(w, http.StatusInternalServerError, "", err)
 		return
@@ -1618,6 +1636,10 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 	// Path is required on update too.
 	if strings.TrimSpace(req.Path) == "" {
 		writeErr(w, http.StatusBadRequest, "path is required", nil)
+		return
+	}
+	if msg := invalidProjectWritePath(req); msg != "" {
+		writeErr(w, http.StatusBadRequest, msg, nil)
 		return
 	}
 	if err := s.db.SetProject(name, projectFromJSON(req)); err != nil {

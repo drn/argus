@@ -1240,3 +1240,20 @@ func TestSandbox_IsAvailableConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestValidateWritePath(t *testing.T) {
+	tests := []struct {
+		path string
+		ok   bool
+	}{
+		{"/tmp/x", true}, {"~/Downloads", true}, {"/", false}, {"~", false},
+		{"rel", false}, {"/a,b", false}, {"/a\nb", false},
+		{"~/", false}, {"//", false}, {"/.", false}, {"/..", false}, {"~/..", false},
+		{"/tmp/../..", false}, {"/tmp/", true}, {"~/a/b", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			testutil.Equal(t, ValidateWritePath(tc.path) == "", tc.ok)
+		})
+	}
+}

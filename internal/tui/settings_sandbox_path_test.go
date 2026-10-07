@@ -91,18 +91,3 @@ func TestSettingsView_SandboxExtraWrite_CategoryChangeCancelsEdit(t *testing.T) 
 	sv.setCategory(catSystem)
 	testutil.False(t, sv.IsEditing())
 }
-
-func TestValidateSandboxWritePath(t *testing.T) {
-	tests := []struct {
-		path string
-		ok   bool
-	}{
-		{"/tmp/x", true}, {"~/Downloads", true}, {"/", false}, {"~", false},
-		{"rel", false}, {"/a,b", false}, {"/a\nb", false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.path, func(t *testing.T) {
-			testutil.Equal(t, validateSandboxWritePath(tc.path) == "", tc.ok)
-		})
-	}
-}

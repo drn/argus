@@ -1,0 +1,3 @@
+- [x] Shared `agent.ValidateWritePath`; TUI uses it
+- [x] API 400 on invalid entry + tests
+- [x] Web hint text, SW_VERSION bump, gotcha

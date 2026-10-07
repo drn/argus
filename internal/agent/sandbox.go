@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/drn/argus/internal/config"
 )
@@ -324,4 +325,27 @@ func resolveGitDir(worktreePath string) string {
 
 	// Resolve symlinks so SBPL rules match kernel-resolved paths.
 	return evalSymlinksOrKeep(dotGit)
+}
+
+// ValidateWritePath returns why path can't be a global extra-write grant, or ""
+// if acceptable. Only absolute or ~/-relative paths match anything, "/" would
+// grant the whole filesystem, and commas would corrupt the CSV storage. Shared
+// by the Settings TUI and the HTTP API.
+func ValidateWritePath(path string) string {
+	switch {
+	case path == "/" || path == "~/":
+		return "would allow writes to everything under it"
+	case !strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "~/"):
+		return "must start with / or ~/"
+	case strings.Contains(path, ","):
+		return "commas are not allowed"
+	case filepath.Clean(path) != strings.TrimRight(path, "/"):
+		return "must be a clean path (no ., .. or // segments)"
+	}
+	for _, r := range path {
+		if unicode.IsControl(r) {
+			return "control characters are not allowed"
+		}
+	}
+	return ""
 }
