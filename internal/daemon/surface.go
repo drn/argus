@@ -355,7 +355,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "7b08213aa4f60b7be8bbc4dfbb4144654958b9af328de23e4312d9dcccde78e7"
+	SpawnSurfaceDigest  = "a834240a8cea499fee10f94dbe3ce58a28c77b5aabb66ece792c5a045dea505a"
 	StreamSurfaceDigest = "0ffc0d6ff25555cf5ebc65f3d702dfe7a7d24c965224db1773e1e71aabfe5c1b"
 )
 
