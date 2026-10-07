@@ -6,8 +6,9 @@ The web Settings tab already edits the global `sandbox.extra_write` list, but `P
 
 - `agent.ValidateWritePath` is the single validator, used by the TUI editor and `PUT /api/settings`.
 - `PUT /api/settings` returns 400 for an invalid `sandbox.extra_write` entry; the web UI surfaces it as a toast.
+- `POST/PUT /api/projects` apply the same check to a project's `extra_write`.
 - Web hint text clarifies accepted forms. `SW_VERSION` bumped.
 
 ## Non-Goals
 
-- Per-project `extra_write` validation and macOS Settings editor (follow-up).
+- TUI project form and `config.toml` paths remain unvalidated; macOS Settings editor is a follow-up.

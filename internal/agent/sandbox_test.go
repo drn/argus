@@ -1248,6 +1248,8 @@ func TestValidateWritePath(t *testing.T) {
 	}{
 		{"/tmp/x", true}, {"~/Downloads", true}, {"/", false}, {"~", false},
 		{"rel", false}, {"/a,b", false}, {"/a\nb", false},
+		{"~/", false}, {"//", false}, {"/.", false}, {"/..", false}, {"~/..", false},
+		{"/tmp/../..", false}, {"/tmp/", true}, {"~/a/b", true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.path, func(t *testing.T) {
