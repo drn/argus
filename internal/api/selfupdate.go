@@ -68,6 +68,7 @@ func (s *Server) handleUpdateSelf(w http.ResponseWriter, r *http.Request) {
 	cfg := s.db.Config()
 	output, err := selfupdate.Run(cfg.Argus.SourcePath)
 	if err != nil {
+		slog.Error("[api] update: self-update failed", "err", err, "output", output)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"output":  output,
 			"error":   err.Error(),

@@ -87,7 +87,7 @@ func Run(sourceDir string) (string, error) {
 func runCmd(dir, name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...) //nolint:gosec // name and args are package-internal literals
 	cmd.Dir = dir
-	cmd.Env = envWithToolPath(os.Environ(), os.Getenv("HOME"))
+	cmd.Env = envWithGoDirs(envWithToolPath(os.Environ(), os.Getenv("HOME")), os.Getenv("HOME"), runningExecutableDir())
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -134,4 +134,40 @@ func envWithToolPath(env []string, home string) []string {
 		}
 	}
 	return append(out, prefix+strings.Join(parts, string(os.PathListSeparator)))
+}
+
+// runningExecutableDir returns the directory holding the resolved running
+// binary, or "" when it cannot be determined.
+func runningExecutableDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	return filepath.Dir(exe)
+}
+
+// envWithGoDirs fills in GOPATH and GOBIN when unset. A launchd daemon lacks
+// the shell-exported values, so asdf's go falls back to its own package dir:
+// the pinned toolchain and modules are re-downloaded there and the binary is
+// installed somewhere other than the one the daemon is running from.
+func envWithGoDirs(env []string, home, exeDir string) []string {
+	has := func(key string) bool {
+		for _, kv := range env {
+			if strings.HasPrefix(kv, key+"=") {
+				return true
+			}
+		}
+		return false
+	}
+	out := append([]string(nil), env...)
+	if !has("GOPATH") && home != "" {
+		out = append(out, "GOPATH="+filepath.Join(home, "go"))
+	}
+	if !has("GOBIN") && exeDir != "" && !strings.HasSuffix(exeDir, ".test") {
+		out = append(out, "GOBIN="+exeDir)
+	}
+	return out
 }
