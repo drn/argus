@@ -280,6 +280,11 @@ func (rs *RemoteSession) Stop() error {
 	return rs.client.Stop(rs.taskID)
 }
 
+// StopScoped stops the session with the given scope via RPC.
+func (rs *RemoteSession) StopScoped(scope agent.StopScope) error {
+	return rs.client.StopScoped(rs.taskID, scope)
+}
+
 // updateInfo stores cached session info.
 func (rs *RemoteSession) updateInfo(info daemon.SessionInfo) {
 	rs.mu.Lock()

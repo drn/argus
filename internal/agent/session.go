@@ -536,16 +536,52 @@ func stopSignalTarget(pid, pgid, selfPgid int) int {
 	return pid
 }
 
-// Stop sends SIGTERM to the session's process group, then SIGKILLs whatever
-// is left of the group after stopKillAfter — without this, the agent's MCP
-// children outlive it whenever they ignore or mishandle their parent's death.
-// Idempotent: if the process exited on its own between the liveness check and
-// the signal call, that's a successful stop, not an error.
-func (s *Session) Stop() error {
+// StopScope selects how much of a session's process tree a stop takes down.
+type StopScope int
+
+const (
+	// StopTree stops the agent and its whole process group (stdio MCP
+	// servers, background dev servers), escalating to SIGKILL. The zero value:
+	// every "this session is over" stop — finished task, explicit stop,
+	// delete, prune, hide/nuke.
+	StopTree StopScope = iota
+	// StopAgentOnly signals only the agent PID, leaving its descendants
+	// running. For bounces that immediately restart the same task — kick,
+	// recycle, the TUI's resize kick — so the agent's own background
+	// processes survive.
+	StopAgentOnly
+)
+
+func (sc StopScope) String() string {
+	switch sc {
+	case StopTree:
+		return "tree"
+	case StopAgentOnly:
+		return "agent-only"
+	}
+	return "unknown"
+}
+
+// Stop is StopScoped(StopTree).
+func (s *Session) Stop() error { return s.StopScoped(StopTree) }
+
+// StopScoped sends SIGTERM to the agent — or, for StopTree, to its whole
+// process group, SIGKILLing whatever is left of the group after
+// stopKillAfter (without this, the agent's MCP children outlive it whenever
+// they ignore or mishandle their parent's death). Idempotent: if the process
+// exited on its own between the liveness check and the signal call, that's a
+// successful stop, not an error.
+func (s *Session) StopScoped(scope StopScope) error {
 	if !s.Alive() || s.Cmd.Process == nil {
 		return nil
 	}
 	pid := s.Cmd.Process.Pid
+	if scope == StopAgentOnly {
+		if err := s.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return err
+		}
+		return nil
+	}
 	pgid, _ := syscall.Getpgid(pid)
 	target := stopSignalTarget(pid, pgid, syscall.Getpgrp())
 	if err := syscall.Kill(target, syscall.SIGTERM); err != nil {

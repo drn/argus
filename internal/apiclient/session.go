@@ -242,6 +242,9 @@ func (s *Session) WorkDir() string {
 // Stop ends the session via REST.
 func (s *Session) Stop() error { return s.p.c.StopTask(context.Background(), s.taskID) }
 
+// StopScoped ignores scope (REST has none); see Provider.StopScoped.
+func (s *Session) StopScoped(agent.StopScope) error { return s.Stop() }
+
 // AddWriter, AddWriterFrom, AddWriterFromTolerant, RemoveWriter are no-ops.
 // The server fans bytes to /stream; the TUI reads RecentOutput* off the
 // local ring buffer. Same contract as daemon-client RemoteSession.

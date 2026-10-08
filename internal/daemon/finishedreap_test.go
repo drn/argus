@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -187,4 +188,16 @@ func TestRunFinishedSessionReaper_TicksAndExitsOnDone(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("reaper loop did not exit on done")
 	}
+}
+
+// TestStopSession_ThreadsScope pins the wire: StopSession's Scope reaches the
+// runner, and a bare request (a pre-v9 peer) means a full tree stop.
+func TestStopSession_ThreadsScope(t *testing.T) {
+	f := &fakeSupClient{}
+	c := newSessionCore(f, config.DefaultConfig, make(chan struct{}))
+	var resp StatusResp
+	testutil.NoError(t, c.StopSession(&StopReq{TaskID: "a", Scope: agent.StopAgentOnly}, &resp))
+	testutil.NoError(t, c.StopSession(&StopReq{TaskID: "b"}, &resp))
+	testutil.DeepEqual(t, f.stopScopes, []agent.StopScope{agent.StopAgentOnly, agent.StopTree})
+	testutil.True(t, resp.OK)
 }

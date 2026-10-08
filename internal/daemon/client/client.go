@@ -320,10 +320,13 @@ func (c *Client) Get(taskID string) agent.SessionHandle {
 	return rs
 }
 
-// Stop stops a session via RPC.
-func (c *Client) Stop(taskID string) error {
+// Stop stops a session via RPC (full tree stop).
+func (c *Client) Stop(taskID string) error { return c.StopScoped(taskID, agent.StopTree) }
+
+// StopScoped stops a session via RPC with the given scope.
+func (c *Client) StopScoped(taskID string, scope agent.StopScope) error {
 	var resp daemon.StatusResp
-	if err := c.call("Daemon.StopSession", &daemon.TaskIDReq{TaskID: taskID}, &resp); err != nil {
+	if err := c.call("Daemon.StopSession", &daemon.StopReq{TaskID: taskID, Scope: scope}, &resp); err != nil {
 		return err
 	}
 	if resp.Error != "" {

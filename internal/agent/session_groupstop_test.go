@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
 
@@ -93,4 +95,90 @@ func TestStopSignalTarget(t *testing.T) {
 			testutil.Equal(t, stopSignalTarget(tt.pid, tt.pgid, tt.selfPgid), tt.want)
 		})
 	}
+}
+
+func TestSession_StopScoped_AgentOnlyLeavesGroup(t *testing.T) {
+	// A kick/recycle/resize bounce must not take down the agent's own
+	// background processes (dev servers) — only the agent itself.
+	sess, child := startGroupSession(t, `trap "" HUP; sleep 60 & echo CHILD=$!; wait`)
+	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
+	testutil.NoError(t, sess.StopScoped(StopAgentOnly))
+	<-sess.Done()
+	testutil.False(t, waitGone(child, 500*time.Millisecond))
+}
+
+func TestStopScope_String(t *testing.T) {
+	testutil.Equal(t, StopTree.String(), "tree")
+	testutil.Equal(t, StopAgentOnly.String(), "agent-only")
+	testutil.Equal(t, StopScope(9).String(), "unknown")
+}
+
+// runnerGroupConfig runs a backend that backgrounds a HUP-ignoring child in
+// the agent's process group and reports its pid.
+func runnerGroupConfig() config.Config {
+	cfg := runnerTestConfig()
+	cfg.Backends["test"] = config.Backend{Command: `trap "" HUP; sleep 60 & echo CHILD=$!; wait`}
+	return cfg
+}
+
+func startRunnerGroupSession(t *testing.T, r *Runner, id string) int {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	task := &model.Task{ID: id, Name: id, Worktree: t.TempDir()}
+	h, err := r.Start(task, runnerGroupConfig(), 24, 80, false)
+	testutil.NoError(t, err)
+	// A kick/recycle restarts the session asynchronously: wait out the
+	// restart, then tree-stop whatever replacement is running.
+	t.Cleanup(func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for r.HasPendingRestart(id) && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		r.StopAll()
+	})
+	sess := h.(*Session)
+	t.Cleanup(func() { _ = syscall.Kill(-sess.PID(), syscall.SIGKILL) })
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if m := childPIDRe.FindSubmatch(sess.RecentOutput()); m != nil {
+			pid, _ := strconv.Atoi(string(m[1]))
+			t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+			return pid
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("child pid never reported")
+	return 0
+}
+
+func TestRunner_KickKeepsGroupAlive_StopKillsIt(t *testing.T) {
+	t.Run("kick rerender", func(t *testing.T) {
+		r := NewRunner(nil)
+		child := startRunnerGroupSession(t, r, "kick")
+		task := &model.Task{ID: "kick", Name: "kick", Worktree: t.TempDir()}
+		testutil.NoError(t, r.KickRerender(task, runnerGroupConfig(), 24, 80))
+		testutil.False(t, waitGone(child, 500*time.Millisecond))
+	})
+	t.Run("recycle", func(t *testing.T) {
+		r := NewRunner(nil)
+		child := startRunnerGroupSession(t, r, "recycle")
+		task := &model.Task{ID: "recycle", Name: "recycle", Worktree: t.TempDir()}
+		testutil.NoError(t, r.Recycle(task, runnerGroupConfig(), 24, 80))
+		testutil.False(t, waitGone(child, 500*time.Millisecond))
+	})
+	t.Run("stop (finished / explicit)", func(t *testing.T) {
+		r := NewRunner(nil)
+		child := startRunnerGroupSession(t, r, "stop")
+		testutil.NoError(t, r.Stop("stop"))
+		testutil.True(t, waitGone(child, 3*time.Second))
+	})
+	t.Run("stop scoped agent-only", func(t *testing.T) {
+		r := NewRunner(nil)
+		child := startRunnerGroupSession(t, r, "scoped")
+		testutil.NoError(t, r.StopScoped("scoped", StopAgentOnly))
+		testutil.False(t, waitGone(child, 500*time.Millisecond))
+	})
+	t.Run("stop scoped unknown task", func(t *testing.T) {
+		testutil.ErrorIs(t, NewRunner(nil).StopScoped("nope", StopTree), ErrSessionNotFound)
+	})
 }

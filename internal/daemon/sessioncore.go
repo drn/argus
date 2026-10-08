@@ -140,9 +140,9 @@ func (c *sessionCore) StartSession(req *StartReq, resp *StartResp) error {
 }
 
 // StopSession stops a running session.
-func (c *sessionCore) StopSession(req *TaskIDReq, resp *StatusResp) error {
-	slog.Info("rpc.StopSession", "task", req.TaskID)
-	if err := c.runner.Stop(req.TaskID); err != nil {
+func (c *sessionCore) StopSession(req *StopReq, resp *StatusResp) error {
+	slog.Info("rpc.StopSession", "task", req.TaskID, "scope", req.Scope.String())
+	if err := c.runner.StopScoped(req.TaskID, req.Scope); err != nil {
 		slog.Error("rpc.StopSession failed", "task", req.TaskID, "err", err)
 		resp.Error = err.Error()
 		return nil

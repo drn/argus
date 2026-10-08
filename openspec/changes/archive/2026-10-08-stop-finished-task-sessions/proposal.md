@@ -12,7 +12,7 @@ The `claude` processes linger because nothing in argus ends a finished task's se
 
 ## What changes
 
-- **Process-group stop:** `Session.Stop` signals the session's whole process group: SIGTERM, then SIGKILL to the group after a short grace period. The agent is a session/group leader via the PTY's setsid, and its MCP servers share its group.
+- **Process-group stop:** `Session.Stop` signals the session's whole process group: SIGTERM, then SIGKILL to the group after a short grace period. The agent is a session/group leader via the PTY's setsid, and its MCP servers share its group. Kick, recycle and the resize kick keep the PID-only signal (`StopAgentOnly`), so a bounced agent's background processes survive.
 - **Finished-session reaper:** a new daemon sweeper stops the agent session of any task that is complete or archived, once that session has been idle on two consecutive ticks.
   - Waiting for idle defers an agent that completes itself (`task_complete` / argus-complete) until its turn has finished, rather than killing it mid-response.
   - It covers every path that marks a task finished, now and in future, without per-call-site hooks.

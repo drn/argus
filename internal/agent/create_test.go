@@ -78,6 +78,7 @@ func (f *fakeRunner) Start(task *model.Task, _ config.Config, _, _ uint16, _ boo
 }
 
 func (f *fakeRunner) Stop(string) error                    { return nil }
+func (f *fakeRunner) StopScoped(string, StopScope) error   { return nil }
 func (f *fakeRunner) StopAll()                             {}
 func (f *fakeRunner) Get(string) SessionHandle             { return nil }
 func (f *fakeRunner) Running() []string                    { return nil }
@@ -111,6 +112,7 @@ func (s *fakeSession) Done() <-chan struct{}                   { ch := make(chan
 func (s *fakeSession) Err() error                              { return nil }
 func (s *fakeSession) WorkDir() string                         { return "" }
 func (s *fakeSession) Stop() error                             { return nil }
+func (s *fakeSession) StopScoped(StopScope) error              { return nil }
 func (s *fakeSession) AddWriter(io.Writer)                     {}
 func (s *fakeSession) AddWriterFrom(io.Writer, uint64)         {}
 func (s *fakeSession) AddWriterFromTolerant(io.Writer, uint64) {}

@@ -24,7 +24,7 @@ The pty library starts the agent with setsid, so pgid == pid. MCP servers spawne
 - ESRCH (group already gone) is fine.
 - Guards: pgid must be > 1, and if it equals argus's own pgid only the PID is signalled.
 
-This applies to every Stop caller: kick, recycle, hide, nuke, delete, prune and the reaper. None of them want the agent's MCP children to outlive it.
+Scoped via `agent.StopScope`: `StopTree` (the zero value) for every "session is over" stop (reaper, explicit stop, delete, prune, hide, nuke), `StopAgentOnly` for bounces that restart the same task (KickRerender, Recycle, the TUI resize kick), so a live agent's own background dev servers survive. The scope travels on `StopReq.Scope` (ProtocolVersion 9, zero-value-safe). The REST stop endpoint has no scope, so a remote-TUI stop is always full (named gap).
 
 ## D5. Supervisor surface
 

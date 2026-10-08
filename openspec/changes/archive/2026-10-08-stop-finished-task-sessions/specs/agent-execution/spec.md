@@ -2,7 +2,7 @@
 
 ### Requirement: Stop semantics
 
-The runner SHALL stop a live session by signaling termination to the session's entire process group (the agent process and every descendant sharing its group, such as stdio MCP servers), escalating to a forced kill of that group after a short grace period, and SHALL mark the stop as explicit so the finish callback reports it. It SHALL never signal a process group that the runner's own process belongs to. Stopping a task with no live session SHALL return a not-found error. Stopping a session whose process has already exited SHALL be a no-op success. Stop-all SHALL terminate every live session and unblock any in-flight pre-launch work.
+The runner SHALL stop a live session by signaling termination and SHALL mark the stop as explicit so the finish callback reports it. A full stop — a finished task's session, an explicit stop, delete, prune, hide or nuke — SHALL signal the session's entire process group (the agent process and every descendant sharing its group, such as stdio MCP servers), escalating to a forced kill of that group after a short grace period. A bounce that immediately restarts the same task — kick/rerender, recycle, and the size-drift resize kick — SHALL signal only the agent process, so the agent's own background processes (e.g. dev servers) survive it. The stop scope SHALL be carried across every RPC hop to the process that owns the session, with an absent scope meaning a full stop. The runner SHALL never signal a process group that its own process belongs to. Stopping a task with no live session SHALL return a not-found error. Stopping a session whose process has already exited SHALL be a no-op success. Stop-all SHALL terminate every live session and unblock any in-flight pre-launch work.
 
 #### Scenario: Stop unknown task errors
 - **WHEN** stop is requested for a task with no live session
@@ -15,6 +15,10 @@ The runner SHALL stop a live session by signaling termination to the session's e
 #### Scenario: Stop reaches the agent's child processes
 - **WHEN** a session whose agent has spawned child processes in its process group (e.g. a Playwright MCP server) is stopped
 - **THEN** those children are terminated along with the agent, forcibly if they outlive the grace period
+
+#### Scenario: A bounce keeps the agent's background processes
+- **WHEN** a session whose agent has a background child in its process group is kicked, recycled, or resize-kicked
+- **THEN** only the agent is signaled and the child keeps running
 
 ## ADDED Requirements
 

@@ -323,7 +323,7 @@ func (r *Runner) KickRerender(task *model.Task, cfg config.Config, rows, cols ui
 	r.mu.Unlock()
 
 	slog.Info("runner.KickRerender", "task", task.ID, "cols", cols, "rows", rows)
-	if err := sess.Stop(); err != nil {
+	if err := sess.StopScoped(StopAgentOnly); err != nil {
 		// Stop failed — back out the pending entry so a future kick can run.
 		r.mu.Lock()
 		delete(r.pendingRestart, task.ID)
@@ -377,7 +377,7 @@ func (r *Runner) Recycle(task *model.Task, cfg config.Config, rows, cols uint16)
 	r.mu.Unlock()
 
 	slog.Info("runner.Recycle", "task", task.ID)
-	if err := sess.Stop(); err != nil {
+	if err := sess.StopScoped(StopAgentOnly); err != nil {
 		// Stop failed — back out the pending entry so a future recycle can run.
 		r.mu.Lock()
 		delete(r.pendingRestart, task.ID)
@@ -438,8 +438,11 @@ func (r *Runner) PendingRestartIDs() []string {
 	return out
 }
 
-// Stop sends SIGTERM to a running session.
-func (r *Runner) Stop(taskID string) error {
+// Stop is StopScoped(taskID, StopTree).
+func (r *Runner) Stop(taskID string) error { return r.StopScoped(taskID, StopTree) }
+
+// StopScoped stops a running session with the given scope (see StopScope).
+func (r *Runner) StopScoped(taskID string, scope StopScope) error {
 	r.mu.Lock()
 	sess := r.sessions[taskID]
 	if sess == nil {
@@ -448,8 +451,8 @@ func (r *Runner) Stop(taskID string) error {
 	}
 	r.stopped[taskID] = true
 	r.mu.Unlock()
-	slog.Info("runner.Stop", "task", taskID, "pid", sess.PID())
-	err := sess.Stop()
+	slog.Info("runner.Stop", "task", taskID, "pid", sess.PID(), "scope", scope.String())
+	err := sess.StopScoped(scope)
 	// Best-effort cleanup for a session that already detached itself to
 	// Claude Code's own background-session supervisor (see
 	// context/knowledge/gotchas/daemon-rpc.md) — the SIGTERM above can never
