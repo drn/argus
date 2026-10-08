@@ -1,0 +1,2 @@
+{"timestamp":"2026-10-07T18:00:00.000Z","type":"session_meta","payload":{"id":"00000000-0000-0000-0000-000000000000"}}
+{"timestamp":"2026-10-07T18:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"codex","primary":{"used_percent":79.0,"window_minutes":10080,"resets_at":1791761947},"secondary":null,"plan_type":"self_serve_business_prolite","rate_limit_reached_type":null}}}

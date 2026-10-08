@@ -1,0 +1,13 @@
+[2J[H[38;2;255;193;7m────────────────────────────────────────────────────────────────────────────────────────────────────[39m
+[2G[1mAllow external CLAUDE.md file imports?[22m
+
+[2GThis project's CLAUDE.md imports files outside the current working directory. Never allow
+[2Gthis for third-party repositories.
+
+[2GExternal imports:
+[4G/Users/someone/.claude/shared.md
+
+[2G[38;2;177;185;249m❯ 1. Yes, allow external imports[39m
+[4G2. No, disable external imports
+
+[2G[38;2;153;153;153mEnter to confirm · Esc to cancel[39m

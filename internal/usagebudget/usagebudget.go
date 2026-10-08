@@ -20,10 +20,12 @@ import (
 	"github.com/drn/argus/internal/uxlog"
 )
 
+// probeTimeout bounds one probe run. A var (not const) so tests can shorten it.
+var probeTimeout = 45 * time.Second
+
 const (
-	probeTimeout = 45 * time.Second
-	ptyRows      = 24
-	ptyCols      = 100
+	ptyRows = 24
+	ptyCols = 100
 
 	// CacheMaxAge bounds how long threshold routing trusts a reading. The probe
 	// cadence is currently 30 minutes, so one hour permits a missed tick without
@@ -45,6 +47,42 @@ type cacheState struct {
 }
 
 var usageCache cacheState
+
+// usageSession is one live `claude -- /usage` PTY session as driven by the
+// streaming probe loop: Read yields PTY output as it arrives, Write sends
+// keystrokes (used only to answer the probe directory's own folder-trust
+// dialog), and Terminate stops the process (SIGTERM, then kill) without
+// waiting for it to exit on its own — the interactive /usage session never
+// does.
+type usageSession interface {
+	io.Reader
+	io.Writer
+	Terminate() error
+}
+
+// startUsageSession launches the probe session with its working directory set
+// to dir. Test seam: tests substitute a scripted fake session.
+//
+// TODO(fix-backend-usage-routing stage 3): stub — Probe does not call it yet.
+// Stage 3 implements the real PTY launch (tall PTY, cmd.Dir = dir,
+// CLAUDE_CONFIG_DIR stripped), switches Probe to drive it through a streaming
+// read/render/parse loop, and deletes the wait-for-exit probeRunner seam.
+var startUsageSession = func(ctx context.Context, dir string) (usageSession, error) {
+	_, _ = ctx, dir
+	return nil, errors.New("usagebudget: streaming usage session not implemented")
+}
+
+// probeDirFunc returns the dedicated probe working directory, creating it if
+// needed. Test seam.
+var probeDirFunc = ensureProbeDir
+
+// ensureProbeDir creates (if missing) and returns the argus-owned, empty
+// probe directory <data dir>/usage-probe.
+//
+// TODO(fix-backend-usage-routing stage 3): stub — always errors.
+func ensureProbeDir() (string, error) {
+	return "", errors.New("usagebudget: probe dir not implemented")
+}
 
 var (
 	probeRunner       = runClaudeUsageProbe

@@ -2,11 +2,11 @@
 
 ## 1. Fixtures and failing tests
 
-- [ ] 1.1 Capture a real Claude `/usage` screen (raw PTY bytes) from a trusted, empty directory and commit it as `internal/usagebudget/testdata/usage_*.raw`; also capture the folder-trust dialog screen. Strip anything account-identifying (email/org) before committing.
-- [ ] 1.2 Add real Codex rollout fixtures under `internal/backendtier/testdata/`: weekly-in-`primary`, mixed 300/10080 windows, and depleted (`rate_limit_reached_type` set, both windows null)
-- [ ] 1.3 Write failing tests for every scenario in `specs/usage-budget-routing/spec.md` (incremental parse + early stop via a fake streaming runner, header-then-next-line parse against the real fixture, trust-dialog accept/reject/other-dialog abort, startup probe, slog lines reach a captured handler)
-- [ ] 1.4 Write failing tests for every scenario in `specs/backend-tier-routing/spec.md` (strategy parsing + default + unknown value, all headroom scenarios, Codex window-by-duration, depleted=100%, valid-until-resets_at, past-reset=unknown)
-- [ ] 1.5 Confirm each new test fails for the intended reason
+- [x] 1.1 Capture a real Claude `/usage` screen (raw PTY bytes) from a trusted, empty directory and commit it as `internal/usagebudget/testdata/usage_*.raw`; also capture the folder-trust dialog screen. Strip anything account-identifying (email/org) before committing.
+- [x] 1.2 Add real Codex rollout fixtures under `internal/backendtier/testdata/`: weekly-in-`primary`, mixed 300/10080 windows, and depleted (`rate_limit_reached_type` set, both windows null)
+- [x] 1.3 Write failing tests for every scenario in `specs/usage-budget-routing/spec.md` (incremental parse + early stop via a fake streaming runner, header-then-next-line parse against the real fixture, trust-dialog accept/reject/other-dialog abort, startup probe, slog lines reach a captured handler)
+- [x] 1.4 Write failing tests for every scenario in `specs/backend-tier-routing/spec.md` (strategy parsing + default + unknown value, all headroom scenarios, Codex window-by-duration, depleted=100%, valid-until-resets_at, past-reset=unknown)
+- [x] 1.5 Confirm each new test fails for the intended reason
 
 ## 2. Codex probe correctness
 

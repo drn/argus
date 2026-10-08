@@ -15,6 +15,7 @@ import (
 
 func resetState(t *testing.T) {
 	t.Helper()
+	origStart, origDir := startUsageSession, probeDirFunc
 	usageCache.mu.Lock()
 	usageCache.reading = Reading{}
 	usageCache.ok = false
@@ -23,6 +24,14 @@ func resetState(t *testing.T) {
 	probeRunner = func(context.Context) ([]byte, error) {
 		return nil, errors.New("probe runner not set")
 	}
+	// Never launch a real `claude` session from a test: default the streaming
+	// session seam to an error and the probe dir to a temp dir; tests that
+	// exercise the probe install a scripted fake via installFakeSession.
+	startUsageSession = func(context.Context, string) (usageSession, error) {
+		return nil, errors.New("usage session not set")
+	}
+	probeDir := t.TempDir()
+	probeDirFunc = func() (string, error) { return probeDir, nil }
 	nowFunc = time.Now
 	cacheSnapshotHook = nil
 
@@ -32,6 +41,8 @@ func resetState(t *testing.T) {
 		usageCache.ok = false
 		usageCache.mu.Unlock()
 		probeRunner = runClaudeUsageProbe
+		startUsageSession = origStart
+		probeDirFunc = origDir
 		nowFunc = time.Now
 		cacheSnapshotHook = nil
 	})
@@ -60,13 +71,14 @@ func sampleUsageFrame() []byte {
 func TestProbe_SuccessfulParseUpdatesCache(t *testing.T) {
 	resetState(t)
 	readLog := initTestUxlog(t)
+	readSlog := captureSlog(t)
 	loc, err := time.LoadLocation("America/Los_Angeles")
 	testutil.NoError(t, err)
 	probedAt := time.Date(2026, 9, 18, 12, 0, 0, 0, loc)
 	nowFunc = func() time.Time { return probedAt }
-	probeRunner = func(context.Context) ([]byte, error) {
-		return sampleUsageFrame(), nil
-	}
+	// Same-line layout ("Current week (all models) 94.5% used") stays
+	// accepted alongside the real header-then-next-line layout.
+	installFakeSession(t, newFakeSession(sampleUsageFrame()), t.TempDir())
 
 	testutil.NoError(t, Probe(context.Background()))
 
@@ -78,11 +90,13 @@ func TestProbe_SuccessfulParseUpdatesCache(t *testing.T) {
 	}
 	testutil.Equal(t, got.LastProbedAt, probedAt)
 	testutil.Contains(t, readLog(), "[usagebudget] probe updated")
+	testutil.Contains(t, readSlog(), "[usagebudget] probe updated")
 }
 
 func TestProbe_SubprocessFailureLeavesCacheUnchangedAndLogs(t *testing.T) {
 	resetState(t)
 	readLog := initTestUxlog(t)
+	readSlog := captureSlog(t)
 	loc, err := time.LoadLocation("America/Los_Angeles")
 	testutil.NoError(t, err)
 	previous := Reading{
@@ -92,7 +106,7 @@ func TestProbe_SubprocessFailureLeavesCacheUnchangedAndLogs(t *testing.T) {
 	}
 	storeReading(previous)
 	nowFunc = func() time.Time { return time.Date(2026, 9, 18, 12, 0, 0, 0, loc) }
-	probeRunner = func(context.Context) ([]byte, error) {
+	startUsageSession = func(context.Context, string) (usageSession, error) {
 		return nil, errors.New("boom")
 	}
 
@@ -102,11 +116,13 @@ func TestProbe_SubprocessFailureLeavesCacheUnchangedAndLogs(t *testing.T) {
 	testutil.Equal(t, ok, true)
 	testutil.DeepEqual(t, got, previous)
 	testutil.Contains(t, readLog(), "[usagebudget] probe failed")
+	testutil.Contains(t, readSlog(), "[usagebudget] probe failed")
 }
 
 func TestProbe_UnparseableOutputLeavesCacheUnchangedAndLogs(t *testing.T) {
 	resetState(t)
 	readLog := initTestUxlog(t)
+	readSlog := captureSlog(t)
 	loc, err := time.LoadLocation("America/Los_Angeles")
 	testutil.NoError(t, err)
 	previous := Reading{
@@ -116,9 +132,10 @@ func TestProbe_UnparseableOutputLeavesCacheUnchangedAndLogs(t *testing.T) {
 	}
 	storeReading(previous)
 	nowFunc = func() time.Time { return time.Date(2026, 9, 18, 12, 0, 0, 0, loc) }
-	probeRunner = func(context.Context) ([]byte, error) {
-		return []byte("not a usage screen"), nil
-	}
+	// The session prints something unrecognizable and then exits on its own.
+	f := newFakeSession([]byte("not a usage screen"))
+	f.exitWhenEmpty = true
+	installFakeSession(t, f, t.TempDir())
 
 	testutil.NoError(t, Probe(context.Background()))
 
@@ -126,6 +143,7 @@ func TestProbe_UnparseableOutputLeavesCacheUnchangedAndLogs(t *testing.T) {
 	testutil.Equal(t, ok, true)
 	testutil.DeepEqual(t, got, previous)
 	testutil.Contains(t, readLog(), "[usagebudget] parse failed")
+	testutil.Contains(t, readSlog(), "[usagebudget] parse failed")
 }
 
 func TestCacheReadBeforeProbeIsUnknown(t *testing.T) {

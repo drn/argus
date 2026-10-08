@@ -53,10 +53,9 @@ func TestCodexProbePoller_GoroutineStopsOnShutdown(t *testing.T) {
 // is the common, fully-inactive default state, and must never block startup.
 func TestD_BackendRoutingAbsentCfg(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	d.codexProbe = func(context.Context) error {
-		t.Fatal("codex probe should not run before the first interval")
-		return nil
-	}
+	// Probes now run once at startup (fix-backend-usage-routing); this test only
+	// pins that an absent [backend_routing] table never blocks Serve.
+	d.codexProbe = func(context.Context) error { return nil }
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -78,5 +77,35 @@ func TestD_BackendRoutingAbsentCfg(t *testing.T) {
 				return
 			}
 		}
+	}
+}
+
+// TestCodexProbePoller_ProbesOnceAtStartup pins fix-backend-usage-routing's
+// "Usage probes run at daemon startup" scenario for the Codex probe.
+func TestCodexProbePoller_ProbesOnceAtStartup(t *testing.T) {
+	d, _ := testDaemon(t)
+	called := make(chan struct{}, 1)
+	d.codexProbe = func(context.Context) error {
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		d.runCodexProbePoller()
+		close(stopped)
+	}()
+	t.Cleanup(func() {
+		close(d.done)
+		<-stopped
+	})
+
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("codex probe did not run at poller startup")
 	}
 }

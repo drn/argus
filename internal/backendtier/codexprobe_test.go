@@ -216,7 +216,9 @@ func TestCachedCodexPct_StaleReadingReturnsUnknown(t *testing.T) {
 	resetCodexState(t)
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	codexNowFunc = func() time.Time { return now }
-	storeCodexReading(Reading{Percentage: 90, LastProbedAt: now.Add(-2 * time.Hour)})
+	// No reset time (the depleted-account shape) is held 24h from the probe
+	// (fix-backend-usage-routing); past that it is stale/unknown.
+	storeCodexReading(Reading{Percentage: 90, LastProbedAt: now.Add(-25 * time.Hour)})
 
 	_, ok := CachedCodexPct()
 	testutil.Equal(t, ok, false)
@@ -324,7 +326,7 @@ func TestLatestRolloutFile(t *testing.T) {
 }
 
 func TestParseLatestRateLimits(t *testing.T) {
-	t.Run("valid record picks the worse of the two windows", func(t *testing.T) {
+	t.Run("valid record picks the weekly (10080-minute) window", func(t *testing.T) {
 		dir := t.TempDir()
 		path := writeRolloutFile(t, dir, "rollout.jsonl", time.Now(), []string{
 			rateLimitsLine(10, 60, 1000, 2000),
@@ -340,12 +342,14 @@ func TestParseLatestRateLimits(t *testing.T) {
 		dir := t.TempDir()
 		path := writeRolloutFile(t, dir, "rollout.jsonl", time.Now(), []string{
 			rateLimitsLine(5, 5, 100, 100),
-			rateLimitsLine(70, 20, 900, 900),
+			rateLimitsLine(70, 20, 800, 900),
 		})
 
+		// Weekly-only routing (fix-backend-usage-routing): the 300-minute
+		// window's 70% is ignored; the 10080-minute window's 20% is the reading.
 		got, ok := parseLatestRateLimits(path)
 		testutil.Equal(t, ok, true)
-		testutil.Equal(t, got.Percentage, 70.0)
+		testutil.Equal(t, got.Percentage, 20.0)
 		testutil.Equal(t, got.ResetAt, time.Unix(900, 0))
 	})
 
@@ -379,7 +383,11 @@ func TestParseLatestRateLimits(t *testing.T) {
 	})
 }
 
-func TestWorstCodexWindow(t *testing.T) {
+// TestWeeklyCodexWindow pins fix-backend-usage-routing's weekly-only Codex
+// reading: the window is selected by its 10080-minute duration, whichever slot
+// (primary/secondary) carries it; any other window is ignored. Replaces the
+// superseded worse-of-both-windows behavior.
+func TestWeeklyCodexWindow(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		rl         *codexRateLimits
@@ -388,25 +396,38 @@ func TestWorstCodexWindow(t *testing.T) {
 		wantOK     bool
 	}{
 		{name: "nil rate limits", rl: nil, wantOK: false},
-		{name: "primary only", rl: &codexRateLimits{Primary: &codexRateWindow{UsedPercent: 12, ResetsAt: 111}}, wantPct: 12, wantResets: 111, wantOK: true},
-		{name: "secondary only", rl: &codexRateLimits{Secondary: &codexRateWindow{UsedPercent: 34, ResetsAt: 222}}, wantPct: 34, wantResets: 222, wantOK: true},
 		{
-			name:       "secondary higher wins",
-			rl:         &codexRateLimits{Primary: &codexRateWindow{UsedPercent: 10, ResetsAt: 1}, Secondary: &codexRateWindow{UsedPercent: 90, ResetsAt: 2}},
-			wantPct:    90,
+			name:       "weekly in primary, secondary null",
+			rl:         &codexRateLimits{Primary: &codexRateWindow{UsedPercent: 79, WindowMinutes: 10080, ResetsAt: 1791761947}},
+			wantPct:    79,
+			wantResets: 1791761947,
+			wantOK:     true,
+		},
+		{
+			name:       "weekly in secondary",
+			rl:         &codexRateLimits{Secondary: &codexRateWindow{UsedPercent: 34, WindowMinutes: 10080, ResetsAt: 222}},
+			wantPct:    34,
+			wantResets: 222,
+			wantOK:     true,
+		},
+		{
+			name: "5h window at 95 ignored, weekly at 40 used",
+			rl: &codexRateLimits{
+				Primary:   &codexRateWindow{UsedPercent: 95, WindowMinutes: 300, ResetsAt: 1},
+				Secondary: &codexRateWindow{UsedPercent: 40, WindowMinutes: 10080, ResetsAt: 2},
+			},
+			wantPct:    40,
 			wantResets: 2,
 			wantOK:     true,
 		},
 		{
-			name:       "primary higher wins",
-			rl:         &codexRateLimits{Primary: &codexRateWindow{UsedPercent: 95, ResetsAt: 1}, Secondary: &codexRateWindow{UsedPercent: 3, ResetsAt: 2}},
-			wantPct:    95,
-			wantResets: 1,
-			wantOK:     true,
+			name:   "only a non-weekly window is no reading",
+			rl:     &codexRateLimits{Primary: &codexRateWindow{UsedPercent: 95, WindowMinutes: 300, ResetsAt: 1}},
+			wantOK: false,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pct, resetAt, ok := worstCodexWindow(tc.rl)
+			pct, resetAt, ok := weeklyCodexWindow(tc.rl)
 			testutil.Equal(t, ok, tc.wantOK)
 			if !tc.wantOK {
 				return
@@ -426,7 +447,7 @@ func TestRolloutReading(t *testing.T) {
 		now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 		codexNowFunc = func() time.Time { return now }
 		writeRolloutFile(t, filepath.Join(home, ".codex", "sessions", "2026", "09", "22"), "rollout-a.jsonl", now.Add(-5*time.Minute), []string{
-			rateLimitsLine(20, 20, 1, 1),
+			rateLimitsLine(20, 20, now.Add(5*time.Hour).Unix(), now.Add(72*time.Hour).Unix()),
 		})
 
 		got, ok := rolloutReading()
@@ -434,19 +455,23 @@ func TestRolloutReading(t *testing.T) {
 		testutil.Equal(t, got.Percentage, 20.0)
 	})
 
-	t.Run("stale file is rejected", func(t *testing.T) {
+	// Supersedes the old 1-hour mtime gate (fix-backend-usage-routing): every
+	// Codex use writes a new rollout, so the newest rollout stays the best
+	// reading until its own weekly reset.
+	t.Run("three-day-old file is used while its weekly reset is in the future", func(t *testing.T) {
 		resetCodexState(t)
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 		codexHomeDirFunc = os.UserHomeDir
 		now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 		codexNowFunc = func() time.Time { return now }
-		writeRolloutFile(t, filepath.Join(home, ".codex", "sessions", "2026", "09", "20"), "rollout-a.jsonl", now.Add(-2*time.Hour), []string{
-			rateLimitsLine(20, 20, 1, 1),
+		writeRolloutFile(t, filepath.Join(home, ".codex", "sessions", "2026", "09", "19"), "rollout-a.jsonl", now.Add(-72*time.Hour), []string{
+			rateLimitsLine(20, 30, now.Add(-70*time.Hour).Unix(), now.Add(24*time.Hour).Unix()),
 		})
 
-		_, ok := rolloutReading()
-		testutil.Equal(t, ok, false)
+		got, ok := rolloutReading()
+		testutil.Equal(t, ok, true)
+		testutil.Equal(t, got.Percentage, 30.0)
 	})
 
 	t.Run("missing sessions dir is rejected", func(t *testing.T) {
