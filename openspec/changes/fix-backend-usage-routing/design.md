@@ -38,9 +38,11 @@ Ground truth gathered 2026-10-07:
 
 Feed PTY bytes into the emulator as they arrive; after each chunk, attempt `parseUsageOutput` on the rendered screen. On success, store the reading and terminate the process (SIGTERM, then kill). Timeout keeps the 45s bound and is logged. *Alternative:* send `/exit` and wait — still depends on the session reaching the prompt; streaming is strictly more robust.
 
+Implementation notes (found while implementing Stage 3): the screen is evaluated only between frames, because Claude Code wraps every frame in a synchronized update (DEC mode 2026) and mid-frame screens mix old and new content. A screen that still shows "Refreshing…" is also skipped: `/usage` first paints Claude Code's locally cached figures (50% in the captured fixture) and then repaints with the fetched ones (51%).
+
 ### D2. Dedicated probe directory with targeted trust-dialog answer
 
-The probe runs with `cmd.Dir = ~/.argus/usage-probe` (created empty, owned by argus; no CLAUDE.md → no imports dialog). If the rendered screen shows the folder-trust dialog **and** names that exact directory path, the probe selects the "trust" option once. Claude persists trust per path, so this happens at most once per machine. Any other modal → logged as "probe blocked by dialog: <first line>" and the probe aborts (fail-open). *Alternatives:* writing `hasTrustDialogAccepted` into `~/.claude.json` (mutates the user's Claude config — rejected); blind keystrokes (could accept an unrelated dialog — rejected).
+The probe runs with `cmd.Dir = ~/.argus/usage-probe` (created empty, owned by argus; no CLAUDE.md → no imports dialog). If the rendered screen shows the folder-trust dialog **and** names that exact directory path, the probe selects the "trust" option once. Claude persists trust per path, so this happens at most once per machine. The answer (Down, short pause, Enter) is sent only after the dialog has sat with no new output for 1.5s. In a live test, a Down sent right after the first paint was undone by Claude Code's next repaint, so the Enter that followed picked "No, exit". Any other modal → logged as "probe blocked by dialog: <first line>" and the probe aborts (fail-open). *Alternatives:* writing `hasTrustDialogAccepted` into `~/.claude.json` (mutates the user's Claude config — rejected); blind keystrokes (could accept an unrelated dialog — rejected).
 
 ### D3. Probe logs via slog
 

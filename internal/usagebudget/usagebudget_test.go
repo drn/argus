@@ -15,15 +15,13 @@ import (
 
 func resetState(t *testing.T) {
 	t.Helper()
-	origStart, origDir := startUsageSession, probeDirFunc
+	origStart, origDir, origSettle := startUsageSession, probeDirFunc, trustSettle
+	trustSettle = 20 * time.Millisecond // keep trust-dialog tests fast
 	usageCache.mu.Lock()
 	usageCache.reading = Reading{}
 	usageCache.ok = false
 	usageCache.mu.Unlock()
 
-	probeRunner = func(context.Context) ([]byte, error) {
-		return nil, errors.New("probe runner not set")
-	}
 	// Never launch a real `claude` session from a test: default the streaming
 	// session seam to an error and the probe dir to a temp dir; tests that
 	// exercise the probe install a scripted fake via installFakeSession.
@@ -40,9 +38,9 @@ func resetState(t *testing.T) {
 		usageCache.reading = Reading{}
 		usageCache.ok = false
 		usageCache.mu.Unlock()
-		probeRunner = runClaudeUsageProbe
 		startUsageSession = origStart
 		probeDirFunc = origDir
+		trustSettle = origSettle
 		nowFunc = time.Now
 		cacheSnapshotHook = nil
 	})
