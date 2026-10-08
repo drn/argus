@@ -14,7 +14,7 @@
 
 - [ ] 2.1 Replace `worstCodexWindow` with weekly-window selection by `window_minutes == 10080`
 - [ ] 2.2 Parse `rate_limit_reached_type`; record 100% held 24h when no weekly window is present
-- [ ] 2.3 Drop the rollout-mtime freshness gate; validity = until weekly `resets_at` (depleted: 24h from probe)
+- [ ] 2.3 Drop the rollout-mtime freshness gate; validity = until weekly `resets_at` (depleted: 24h from the rollout file mtime; update TestProbe_DepletedReadingHeld24hFromProbe accordingly)
 - [ ] 2.4 Route all codexprobe logging through slog (+ existing uxlog)
 
 ## 3. Claude probe correctness
