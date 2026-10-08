@@ -3,6 +3,7 @@ package daemon
 import (
 	"time"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/buildid"
 )
@@ -124,7 +125,12 @@ type BootInfoResp struct {
 //     per-task account's CLAUDE_CONFIG_DIR and the per-task sandbox tier). A
 //     pre-v8 supervisor silently drops them and spawns on the default account
 //     with the project/global sandbox setting until it is restarted.
-const ProtocolVersion = 8
+//   - v9 (stop-finished-task-sessions): + StopReq.Scope on StopSession
+//     (agent.StopScope). Additive and zero-value-safe: the zero value is
+//     StopTree, a full stop. A pre-v9 supervisor ignores the field and stops
+//     the agent PID only (its own pre-change behavior), so the TUI's
+//     resize-kick StopAgentOnly is the old behavior there too.
+const ProtocolVersion = 9
 
 // SupervisorProtocolMatch reports whether a supervisor's handshake version
 // equals the daemon's. A mismatch is NOT fatal and NEVER triggers an auto-
@@ -231,6 +237,14 @@ type StartResp struct {
 // TaskIDReq is an RPC request that identifies a single task.
 type TaskIDReq struct {
 	TaskID string
+}
+
+// StopReq is Daemon.StopSession's request. Scope's zero value is
+// agent.StopTree, so a pre-v9 peer's bare {TaskID} request keeps meaning a
+// full stop (stop-finished-task-sessions).
+type StopReq struct {
+	TaskID string
+	Scope  agent.StopScope
 }
 
 // StatusResp is a generic success/error RPC response.

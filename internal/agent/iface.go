@@ -35,6 +35,8 @@ var ErrStartAmbiguous = errors.New("session start RPC did not confirm daemon-sid
 type SessionProvider interface {
 	Start(task *model.Task, cfg config.Config, rows, cols uint16, resume bool) (SessionHandle, error)
 	Stop(taskID string) error
+	// StopScoped stops with an explicit scope; Stop is StopScoped(StopTree).
+	StopScoped(taskID string, scope StopScope) error
 	StopAll()
 	Get(taskID string) SessionHandle // returns nil if not found
 	Running() []string
@@ -164,6 +166,8 @@ type SessionHandle interface {
 	Err() error
 	WorkDir() string
 	Stop() error
+	// StopScoped stops with an explicit scope; Stop is StopScoped(StopTree).
+	StopScoped(scope StopScope) error
 	AddWriter(w io.Writer)
 	// AddWriterFrom registers w to receive output starting at byte `offset`.
 	// Bytes [offset..currentTotal] are replayed from the ring buffer in a

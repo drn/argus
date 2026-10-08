@@ -805,6 +805,7 @@ type fakeKickSession struct {
 	alive      bool
 	initCols   int
 	stopCalled atomic.Bool
+	stopScope  atomic.Int64 // last StopScoped scope; -1 = plain Stop()
 }
 
 func (f *fakeKickSession) PID() int                                              { return 0 }
@@ -823,11 +824,20 @@ func (f *fakeKickSession) InitialPTYSize() (int, int)                           
 func (f *fakeKickSession) Done() <-chan struct{}                                 { return make(chan struct{}) }
 func (f *fakeKickSession) Err() error                                            { return nil }
 func (f *fakeKickSession) WorkDir() string                                       { return "" }
-func (f *fakeKickSession) Stop() error                                           { f.stopCalled.Store(true); return nil }
-func (f *fakeKickSession) AddWriter(io.Writer)                                   {}
-func (f *fakeKickSession) AddWriterFrom(io.Writer, uint64)                       {}
-func (f *fakeKickSession) AddWriterFromTolerant(io.Writer, uint64)               {}
-func (f *fakeKickSession) RemoveWriter(io.Writer)                                {}
+func (f *fakeKickSession) Stop() error {
+	f.stopCalled.Store(true)
+	f.stopScope.Store(-1)
+	return nil
+}
+func (f *fakeKickSession) StopScoped(scope agent.StopScope) error {
+	f.stopCalled.Store(true)
+	f.stopScope.Store(int64(scope))
+	return nil
+}
+func (f *fakeKickSession) AddWriter(io.Writer)                     {}
+func (f *fakeKickSession) AddWriterFrom(io.Writer, uint64)         {}
+func (f *fakeKickSession) AddWriterFromTolerant(io.Writer, uint64) {}
+func (f *fakeKickSession) RemoveWriter(io.Writer)                  {}
 
 func TestMaybeKickRerender_TUIDefersWhenBlockedOnPrompt(t *testing.T) {
 	// End-to-end for the TUI's RerenderDeferPrompt switch branch: a genuine
@@ -914,6 +924,9 @@ func TestMaybeKickRerenderAtWidth_KicksOnGenuineDrift(t *testing.T) {
 	if !stopped {
 		t.Fatal("RerenderKick never called sess.Stop()")
 	}
+	// A resize bounce restarts the same task: agent-only, so its background
+	// processes survive (stop-finished-task-sessions).
+	testutil.Equal(t, agent.StopScope(sess.stopScope.Load()), agent.StopAgentOnly)
 	readUI(t, app.tapp, func() {
 		if !app.pendingRerenderRestart[taskID] {
 			t.Error("pendingRerenderRestart not set after a successful kick")

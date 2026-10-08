@@ -121,6 +121,11 @@ func (p *Provider) Stop(taskID string) error {
 	return p.c.StopTask(context.Background(), taskID)
 }
 
+// StopScoped ignores scope: the REST stop endpoint has no scope parameter,
+// so a remote-TUI stop is always a full stop (named gap,
+// stop-finished-task-sessions).
+func (p *Provider) StopScoped(taskID string, _ agent.StopScope) error { return p.Stop(taskID) }
+
 // StopAll halts every running session. Open to any authenticated token under
 // the single-tier auth model (it is not on the master-only RCE/credential
 // denylist), so it succeeds with either a master token (local mode) or a

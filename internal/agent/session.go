@@ -7,11 +7,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/creack/pty"
 	"github.com/drn/argus/internal/app/agentview"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 const defaultBufSize = 256 * 1024 // 256KB ring buffer; session log file handles full scrollback
@@ -515,15 +517,88 @@ func (s *Session) Signal(sig os.Signal) error {
 	return s.Cmd.Process.Signal(sig)
 }
 
-// Stop sends SIGTERM. Idempotent: if the process exited on its own between
-// the liveness check and the signal call, that's a successful stop, not an error.
-func (s *Session) Stop() error {
-	if !s.Alive() {
+// stopKillAfter is how long Stop waits after SIGTERM before SIGKILLing the
+// session's process group. Atomic so tests can shorten it while escalation
+// goroutines from other sessions read it.
+var stopKillAfter atomic.Int64
+
+func init() { stopKillAfter.Store(int64(5 * time.Second)) }
+
+// stopSignalTarget picks what Stop signals: the agent's whole process group
+// (negative pid) when the agent leads its own group — which the PTY's setsid
+// guarantees, and which its stdio MCP servers (e.g. Playwright MCP) inherit —
+// otherwise just the pid. Never a group this process belongs to, and never
+// init's.
+func stopSignalTarget(pid, pgid, selfPgid int) int {
+	if pgid > 1 && pgid == pid && pgid != selfPgid {
+		return -pgid
+	}
+	return pid
+}
+
+// StopScope selects how much of a session's process tree a stop takes down.
+type StopScope int
+
+const (
+	// StopTree stops the agent and its whole process group (stdio MCP
+	// servers, background dev servers), escalating to SIGKILL. The zero value:
+	// every "this session is over" stop — finished task, explicit stop,
+	// delete, prune, hide/nuke.
+	StopTree StopScope = iota
+	// StopAgentOnly signals only the agent PID, leaving its descendants
+	// running. For bounces that immediately restart the same task — kick,
+	// recycle, the TUI's resize kick — so the agent's own background
+	// processes survive.
+	StopAgentOnly
+)
+
+func (sc StopScope) String() string {
+	switch sc {
+	case StopTree:
+		return "tree"
+	case StopAgentOnly:
+		return "agent-only"
+	}
+	return "unknown"
+}
+
+// Stop is StopScoped(StopTree).
+func (s *Session) Stop() error { return s.StopScoped(StopTree) }
+
+// StopScoped sends SIGTERM to the agent — or, for StopTree, to its whole
+// process group, SIGKILLing whatever is left of the group after
+// stopKillAfter (without this, the agent's MCP children outlive it whenever
+// they ignore or mishandle their parent's death). Idempotent: if the process
+// exited on its own between the liveness check and the signal call, that's a
+// successful stop, not an error.
+func (s *Session) StopScoped(scope StopScope) error {
+	if !s.Alive() || s.Cmd.Process == nil {
 		return nil
 	}
-	if err := s.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+	pid := s.Cmd.Process.Pid
+	if scope == StopAgentOnly {
+		if err := s.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return err
+		}
+		return nil
+	}
+	pgid, _ := syscall.Getpgid(pid)
+	target := stopSignalTarget(pid, pgid, syscall.Getpgrp())
+	if err := syscall.Kill(target, syscall.SIGTERM); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
 		return err
 	}
+	killAfter := time.Duration(stopKillAfter.Load())
+	go func() {
+		time.Sleep(killAfter)
+		// The group outlives its leader, so this runs even if the leader
+		// already exited; ESRCH just means everything is gone.
+		if err := syscall.Kill(target, syscall.SIGKILL); err == nil {
+			uxlog.Log("[session] stop: task=%s target=%d SIGKILLed after %s", s.TaskID, target, killAfter)
+		}
+	}()
 	return nil
 }
 

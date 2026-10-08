@@ -15,6 +15,7 @@ import (
 // the daemon bounce). All other methods are inert stubs to satisfy the interface.
 type fakeSupClient struct {
 	stopAllCalled bool
+	stopScopes    []agent.StopScope // StopScoped calls, in order
 	closeCalled   bool
 	exitFn        func(string, ExitInfo)
 
@@ -38,7 +39,11 @@ func (f *fakeSupClient) Start(*model.Task, config.Config, uint16, uint16, bool) 
 	return nil, nil
 }
 func (f *fakeSupClient) Stop(string) error { return nil }
-func (f *fakeSupClient) StopAll()          { f.stopAllCalled = true }
+func (f *fakeSupClient) StopScoped(id string, scope agent.StopScope) error {
+	f.stopScopes = append(f.stopScopes, scope)
+	return nil
+}
+func (f *fakeSupClient) StopAll() { f.stopAllCalled = true }
 func (f *fakeSupClient) Get(id string) agent.SessionHandle {
 	f.getCalls = append(f.getCalls, id)
 	return nil

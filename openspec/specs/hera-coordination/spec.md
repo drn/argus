@@ -678,10 +678,10 @@ Derived from: `internal/hera/accept.go` (`AcceptRole`), `internal/mcp/hera.go` (
 - **WHEN** a coordinator calls `hera_accept` naming its own role
 - **THEN** the tool errors that the target must be a different role the caller coordinates
 
-#### Scenario: hera_accept never stops or restarts the target's session
+#### Scenario: hera_accept does not itself stop the target's session
 
 - **WHEN** `hera_accept` flips a task's status to complete
-- **THEN** the target role's live session, if any, is left completely untouched – no stop, no restart, no detach
+- **THEN** the call itself does not stop, restart or detach the target role's live session; the session keeps running to receive and answer the check-in, and is stopped only once idle by the agent-execution capability's finished-session check
 
 ### Requirement: Worker/freelance spawn has no bespoke backend resolution of its own
 

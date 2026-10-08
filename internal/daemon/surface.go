@@ -148,7 +148,14 @@ const (
 	//     session's own CLAUDE_CONFIG_DIR, since Claude scopes that registry per
 	//     config dir (add-agent-accounts). A stale supervisor reaps only the
 	//     default account's registry, missing explicit-account orphans.
-	SupervisorStreamSurface = 6
+	//   - v7: a full stop (Runner.Stop / StopSession with the zero
+	//     agent.StopTree scope) signals the agent's whole process group
+	//     (SIGTERM, then SIGKILL after a grace period) instead of only its
+	//     PID, so the agent's stdio MCP servers die with it; kick, recycle and
+	//     StopSession with StopAgentOnly keep the PID-only signal so a bounced
+	//     agent's background processes survive (stop-finished-task-sessions).
+	//     A stale supervisor still stops the PID alone for every stop.
+	SupervisorStreamSurface = 7
 )
 
 // SurfaceVersion is a supervisor's declared executed-surface identity: the pair
@@ -356,7 +363,7 @@ var SupervisorStreamPaths = []string{
 // message prints the computed digest to paste back here.
 const (
 	SpawnSurfaceDigest  = "a834240a8cea499fee10f94dbe3ce58a28c77b5aabb66ece792c5a045dea505a"
-	StreamSurfaceDigest = "0ffc0d6ff25555cf5ebc65f3d702dfe7a7d24c965224db1773e1e71aabfe5c1b"
+	StreamSurfaceDigest = "9973137db7c31ce8082cc84c494f5f1722878314674e89d962ccafd96c098783"
 )
 
 // SurfaceDigest computes the SHA-256 over the declared manifest's file contents,

@@ -161,7 +161,7 @@ Derived from: `internal/mcp/server.go:1620` (`resolveTask`), `internal/mcp/serve
 
 ### Requirement: Task lifecycle transitions
 
-`task_stop` SHALL send a stop signal (reporting an eventual transition to in_review) and require an `id`. `task_complete` SHALL set status to complete (stamping the end time) and be a no-op when already complete; it does not stop a running session. `task_archive` SHALL set or toggle the archived flag, report a no-op when the requested state already holds, and on archive best-effort clear queued messages for the task. `task_rename` SHALL require a non-empty, length-capped name, update only the display name, and report a no-op when the name is unchanged.
+`task_stop` SHALL send a stop signal (reporting an eventual transition to in_review) and require an `id`. `task_complete` SHALL set status to complete (stamping the end time) and be a no-op when already complete; it does not itself stop a running session; the session is stopped once idle by the agent-execution capability's finished-session check. `task_archive` SHALL set or toggle the archived flag, report a no-op when the requested state already holds, and on archive best-effort clear queued messages for the task; an archived task's session is likewise stopped once idle by that check. `task_rename` SHALL require a non-empty, length-capped name, update only the display name, and report a no-op when the name is unchanged.
 
 #### Scenario: Stop requires id
 
@@ -351,3 +351,4 @@ The system SHALL expose a `task_recycle` tool, gated on both task management (`t
 #### Scenario: Unknown explicit account
 - **WHEN** `task_create` is called with `account: "nope"`
 - **THEN** the response is a tool error and no task is created
+
