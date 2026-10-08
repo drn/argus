@@ -1143,6 +1143,11 @@ func (d *Daemon) Serve(sockPath string) error {
 	}
 	d.lockFile = lockFile
 
+	// Reap processes left by sessions whose owning runner died (e.g. a
+	// pre-supervisor in-process daemon bounced with live agents). Owner-PID
+	// gated, so a live supervisor's sessions are never touched.
+	go agent.SweepOrphanedSessionProcs()
+
 	// Remove stale socket file.
 	os.Remove(sockPath)
 

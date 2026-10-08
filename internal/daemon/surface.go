@@ -148,7 +148,13 @@ const (
 	//     session's own CLAUDE_CONFIG_DIR, since Claude scopes that registry per
 	//     config dir (add-agent-accounts). A stale supervisor reaps only the
 	//     default account's registry, missing explicit-account orphans.
-	SupervisorStreamSurface = 6
+	//   - v7: every spawn carries a per-spawn ARGUS_SESSION_TAG in its env, and
+	//     on any session exit the runner reaps leftover processes still
+	//     carrying that tag (detached Playwright browsers, shells orphaned to
+	//     launchd); the supervisor sweeps dead-owner tags at startup
+	//     (fix-playwright-orphans). A stale supervisor neither tags nor reaps,
+	//     so those processes keep leaking until it is bounced.
+	SupervisorStreamSurface = 7
 )
 
 // SurfaceVersion is a supervisor's declared executed-surface identity: the pair
@@ -334,6 +340,10 @@ var SupervisorStreamPaths = []string{
 	"internal/agent/sessionsize.go",         // the PTY-size sidecar session.go writes on resize
 	"internal/daemon/sessioncore.go",        // the R/S handlers both daemon and supervisor mount
 	"internal/daemon/supervisor.go",         // the supervisor process itself: Hello, exit caching, serve loop
+	"internal/agent/sessionreap.go",         // session-tag descendant reaper on exit + startup sweep
+	"internal/agent/procenv.go",             // tagged-process env parsing + ancestor tag inheritance
+	"internal/agent/procenv_darwin.go",      // darwin tagged-process enumerator
+	"internal/sessiontag/sessiontag.go",     // the per-spawn tag StartSession stamps into the env
 }
 
 // SpawnSurfaceDigest and StreamSurfaceDigest are the recorded SHA-256 of each
@@ -356,7 +366,7 @@ var SupervisorStreamPaths = []string{
 // message prints the computed digest to paste back here.
 const (
 	SpawnSurfaceDigest  = "283ef66f1c834091d8591f312ee99083879c0c23d411d003af17ab6f96e774ee"
-	StreamSurfaceDigest = "0ffc0d6ff25555cf5ebc65f3d702dfe7a7d24c965224db1773e1e71aabfe5c1b"
+	StreamSurfaceDigest = "2373b2b803c7f87193027e3664d79206157aeabf6537ed0d630544a230bd54c6"
 )
 
 // SurfaceDigest computes the SHA-256 over the declared manifest's file contents,

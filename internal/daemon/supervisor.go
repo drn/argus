@@ -230,6 +230,11 @@ func (s *Supervisor) Serve(sockPath string) error {
 	}
 	s.lockFile = lockFile
 
+	// Reap processes the PREVIOUS supervisor's sessions left behind: it died
+	// (deploy restart, crash) before their per-session reapers could run, so
+	// detached Playwright browsers etc. are still alive under a dead owner.
+	go agent.SweepOrphanedSessionProcs()
+
 	// Remove stale socket file.
 	os.Remove(sockPath) //nolint:errcheck // best-effort; listen below surfaces a real bind failure
 

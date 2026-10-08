@@ -1,0 +1,10 @@
+- [x] Add `internal/agent/sessionreap.go`: tag minting, reaper body (grace → TERM → rescan → KILL), seams, uxlog `[sessionreap]`
+- [x] Add per-OS tagged-process enumerators (darwin sysctl, linux /proc, other no-op)
+- [x] `StartSession` stamps `ARGUS_SESSION_TAG` into cmd.Env and records it on `Session`
+- [x] `Runner.Start` exit goroutine launches the reaper
+- [x] Strip the tag in daemon/supervisor auto-start forks
+- [x] Bump `SupervisorStreamSurface` to 7 (runner/session/supervisor are stream-surface files) and re-record the digest
+- [x] Startup sweep (owner-PID-dead tags) in supervisor + daemon Serve
+- [x] Tests (reaper logic, kick-restart isolation, real enumerator live test, autostart strip)
+- [x] Gotcha entry in `context/knowledge/gotchas/daemon-rpc.md` + index cell
+- [x] Archive the change into `openspec/specs/agent-execution/spec.md`

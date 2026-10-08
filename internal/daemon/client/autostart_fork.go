@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/sessiontag"
 )
 
 // autoStartFork is the test-hostile body of AutoStart: it fork/execs the
@@ -34,6 +35,8 @@ func autoStartFork(sockPath string) (*Client, error) {
 	}
 
 	cmd := exec.Command(daemonExe, "daemon", "start") //nolint:gosec // daemonExe is os.Executable() / argusd symlink
+	// Never hand an agent's session tag to the daemon (see buildSupervisorStartCmd).
+	cmd.Env = sessiontag.StripEnv(os.Environ())
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	// Detach from parent process group so the daemon survives TUI exit.
@@ -73,6 +76,10 @@ func buildSupervisorStartCmd() (*exec.Cmd, error) {
 		return nil, fmt.Errorf("resolve executable: %w", err)
 	}
 	cmd := exec.Command(exe, "session-supervisor", "start") //nolint:gosec // exe is os.Executable()
+	// An agent session that auto-starts the supervisor must not hand it its
+	// session tag, or that session's exit reaper would kill the supervisor
+	// (and with it every agent).
+	cmd.Env = sessiontag.StripEnv(os.Environ())
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	// Detach into its own session so a daemon exit does not SIGHUP it — the

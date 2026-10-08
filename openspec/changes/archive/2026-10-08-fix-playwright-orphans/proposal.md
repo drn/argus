@@ -14,15 +14,17 @@ Signalling the process group or walking the parent-PID tree at stop time can't c
 
 ## What changes
 
-- Every spawned session gets a unique per-spawn tag in its environment (`ARGUS_SESSION_TAG=<random>`). The tag is inherited by every descendant, including processes that call `setsid`, are reparented to launchd, or are Playwright browsers. Playwright passes `process.env` to the browsers it launches by default.
+- Every spawned session gets a unique per-spawn tag in its environment (`ARGUS_SESSION_TAG=<ownerPID>-<random>`). The tag is inherited by every descendant, including processes that call `setsid`, are reparented to launchd, or are Playwright browsers. Playwright passes `process.env` to the browsers it launches by default.
 - When a session's process exits for any reason (stop, natural exit, kick/rerender, recycle), the runner starts a background reaper. After a short grace period that lets graceful shutdown finish, it finds every live process whose environment carries that exact tag, sends each SIGTERM, then sends SIGKILL to any still running.
 - Because the tag is per spawn, a kick-restart's replacement session (same task ID, new tag) is never touched by the old session's reaper.
 - The reaper never signals its own process, and the daemon/supervisor auto-start forks drop the tag. An agent that happens to auto-start the daemon or supervisor therefore can't get it reaped.
+- Supervisor and daemon startup sweep: they reap every tagged process whose owner PID is dead. This covers the leak left when a supervisor restarts (every deploy) before its per-session reapers can run.
+- A process whose own environment can't be read inherits the tag of its nearest tagged ancestor. macOS hides the environment of Apple platform binaries such as `/bin/sh`; Playwright's Chromium and node expose theirs (verified).
 - Process enumeration is per OS: darwin uses `kern.proc.all` + `kern.procargs2`, linux uses `/proc/<pid>/environ`, and other platforms do nothing. Every failure is logged and swallowed.
 - Argus's own harness: `web-tests` uses only the Playwright test runner's managed browsers, with no manual `launch()`. This was checked and needs no change. The reaper also covers a runner killed mid-run.
 
 ## Non-goals
 
-- No startup sweep for orphans left by a supervisor restart (the reaper lives in the process that dies). Named follow-up: a supervisor-startup sweep of tagged processes with no live owner.
+- A process orphaned mid-session (e.g. by a Bash-tool timeout) stays alive until its session ends. That gap is accepted.
 - Processes that scrub their own environment (e.g. `env -i`) are not tracked. Playwright does not do this.
 - No change to Claude Code's background-session reaping (`claude stop`), which stays as is.

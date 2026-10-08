@@ -12,6 +12,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/drn/argus/internal/app/agentview"
+	"github.com/drn/argus/internal/sessiontag"
 )
 
 const defaultBufSize = 256 * 1024 // 256KB ring buffer; session log file handles full scrollback
@@ -61,6 +62,7 @@ type Session struct {
 	ptmxClosed    bool // true after waitLoop closes ptmx; guards Resize/WriteInput
 
 	logFile       *os.File // PTY output log for post-session scrollback; nil if unavailable
+	reapTag       string   // sessiontag value stamped into this spawn's env; immutable
 	colorQueries  terminalColorQueries
 	colorReplies  chan []byte
 	colorAnswered [2]bool // OSC 10/11; guarded by mu
@@ -97,6 +99,12 @@ func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, er
 		cols = DefaultTermCols
 	}
 
+	// Stamp a per-spawn tag every descendant inherits, so the runner can
+	// reap leftover processes (detached Playwright browsers, shells orphaned
+	// to launchd) once this session exits — see reapSessionTag.
+	reapTag := sessiontag.New()
+	cmd.Env = sessiontag.WithTag(cmd.Env, reapTag)
+
 	ptmx, err := pty.StartWithSize(cmd, size)
 	if err != nil {
 		return nil, err
@@ -128,6 +136,7 @@ func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, er
 		initialRows:  rows,
 		logFile:      logFile,
 		colorReplies: make(chan []byte, 8),
+		reapTag:      reapTag,
 	}
 	go s.forwardColorReplies()
 

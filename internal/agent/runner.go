@@ -164,6 +164,10 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 	go func() {
 		<-sess.Done()
 		slog.Info("runner: process exited", "task", task.ID, "pid", sess.PID())
+		// Kill whatever the session left behind (detached Playwright
+		// browsers, shells orphaned to launchd). Per-spawn tag, so a
+		// kick-restart's replacement below is never matched.
+		go reapSessionTag(task.ID, sess.reapTag)
 		// Clean up sandbox config temp file
 		if sandboxCleanup != nil {
 			sandboxCleanup()

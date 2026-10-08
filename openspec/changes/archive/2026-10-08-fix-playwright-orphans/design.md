@@ -29,8 +29,16 @@ The reaper waits `sessionReapGrace` (2s) before scanning, so a Playwright MCP se
 
 ## D6. Test seams
 
-`listTaggedProcsFn(key, value) ([]int, error)` and `signalProcFn(pid, sig)` are package vars. The reaper body is pure logic over them. The real darwin/linux enumerators get a live test: spawn `sleep` with a unique tag and assert it is found, then reaped. This is guarded by `testing.Short()`.
+The enumerator, signaller, liveness check and sleep live in a `reapHooks` struct behind an `atomic.Pointer`. Session-exit goroutines from unrelated tests read it asynchronously, and the hooks are disabled under `go test` unless a test installs fakes. The reaper body is pure logic over them. The real darwin/linux enumerators get a live test: spawn `sleep` with a unique tag and assert it is found, then reaped. This is guarded by `testing.Short()`.
 
 ## D7. Supervisor surface
 
-Spawn env changes, so bump `SupervisorSpawnSurface` (v16). A stale supervisor simply doesn't tag or reap, which is the old behavior and fails open.
+The edited files (runner.go, session.go, supervisor.go) are on the stream surface, so bump `SupervisorStreamSurface` (v7) and add the new files to its path list. A stale supervisor simply doesn't tag or reap, which is the old behavior and fails open.
+
+## D8. Startup sweep keyed on owner PID
+
+The tag is `<ownerPID>-<random>`. A sweep at supervisor and daemon startup reaps tags whose owner PID is dead, which is exactly the leak left by a runner that died with live sessions. Tags owned by a live process are skipped: this process, a live supervisor seen from the daemon, the test server, or a TUI fallback runner. That makes the sweep safe to run from any startup, with no knowledge of which sessions are live. PID reuse can only cause a miss (a recycled owner looks alive), never a wrong kill.
+
+## D9. Ancestor tag inheritance
+
+macOS hides KERN_PROCARGS2 env for Apple platform binaries (`/bin/sh`, `/bin/sleep`), even to the same user. Node and Playwright's chrome-headless-shell expose it (verified live). The darwin enumerator therefore also records PPIDs, and gives an unreadable process the tag of its nearest tagged ancestor.

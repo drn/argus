@@ -1,11 +1,13 @@
 package client
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/sessiontag"
 	"github.com/drn/argus/internal/testutil"
 )
 
@@ -80,6 +82,8 @@ func TestCliKickErr(t *testing.T) {
 // `<exe> session-supervisor start` and the proc is Setsid-detached. (Per the
 // plan: assert the build, never spawn a real supervisor under test.)
 func TestSupCmd(t *testing.T) {
+	t.Setenv(sessiontag.EnvKey, "1-agent")
+	t.Setenv("SUPCMD_PROBE", "kept")
 	cmd, err := buildSupervisorStartCmd()
 	testutil.NoError(t, err)
 	args := cmd.Args
@@ -89,6 +93,10 @@ func TestSupCmd(t *testing.T) {
 	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setsid {
 		t.Fatalf("expected Setsid-detached SysProcAttr, got %+v", cmd.SysProcAttr)
 	}
+	// An agent's session tag must not reach the long-lived supervisor.
+	env := strings.Join(cmd.Env, "\n")
+	testutil.Contains(t, env, "SUPCMD_PROBE=kept")
+	testutil.False(t, strings.Contains(env, sessiontag.EnvKey+"="))
 }
 
 // TestSupAutoTestBinary pins the fork-bomb backstop: under `go test`,
