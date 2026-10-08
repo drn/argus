@@ -52,7 +52,7 @@ Both pollers run one probe immediately on start, then every 30 minutes.
 
 ### D5. Codex weekly window by duration; depleted = 100%; trust until reset
 
-Select the window whose `window_minutes == 10080` (either `primary` or `secondary`). If `rate_limit_reached_type` is non-null and no weekly window is present, record 100% with `resets_at` unknown — that reading is trusted for `CacheMaxAge`-style 24h, refreshed by later rollouts. Otherwise the reading is trusted until `resets_at` (no mtime window). After `resets_at` passes, the reading is unknown.
+Select the window whose `window_minutes == 10080` (either `primary` or `secondary`). If `rate_limit_reached_type` is non-null and no weekly window is present, record 100% with `resets_at` unknown — held 24h from the rollout file's mtime (not the probe time, so repeated probes of the same file cannot extend it); a newer rollout replaces it. Otherwise the reading is trusted until `resets_at` (no mtime window). After `resets_at` passes, the reading is unknown.
 
 ### D6. `strategy` setting and headroom resolution
 
