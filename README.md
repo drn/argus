@@ -1008,6 +1008,12 @@ Argus adds `--auto` when launching OpenCode, including resumed sessions and stor
 
 An ordered list of backend "tiers" for **default task-backend selection** — generalizes `[hera.worker_budget]`'s hera-only, single-fallback usage steering into an arbitrary-length chain consulted by ordinary (non-hera) task creation. The resolver walks `tier` in order and picks the first tier that's uncapped, under its threshold, or unprobeable (fail-open); it's consulted only when a task has no explicit backend and its project has none configured either — it never overrides those. Also editable from Settings → **Backend Tiers** (`n` add, `d` remove, `K`/`J` reorder, `p` cycle probe kind, `e` edit threshold) when this table is absent from config.toml; **a non-empty table here is authoritative and renders that Settings category read-only**, same precedent as `[backends.<name>]`'s "(command is hardcoded)" case. No table (or an empty `tier` list) leaves backend resolution exactly as it was before this feature — a single `defaults.backend`.
 
+`[backend_routing]` scalar keys (config.toml-only, no Settings surface; read even when the tier list comes from Settings):
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `strategy` | string | `"ordered"` | `ordered` picks the first available tier in list order. `headroom` picks, among capped tiers with a fresh reading under threshold, the one with the most room (`threshold_pct − used%`, ties → list order); only if none qualifies does it take the first tier with no reading (unknown/stale, or `none` probe) in list order. An unrecognized value is logged once and treated as `ordered`. |
+
 `[[backend_routing.tier]]` (repeatable, in resolution order):
 
 | Key | Type | Default | Description |

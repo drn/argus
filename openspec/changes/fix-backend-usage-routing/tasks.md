@@ -37,9 +37,9 @@
 
 **Depends on:** Stage 1
 
-- [ ] 5.1 Add `Strategy string \`toml:"strategy"\`` to `config.BackendRoutingConfig` with constants `ordered`/`headroom`; ensure config.toml-wins semantics carry it (strategy is read from config.toml even when tiers come from the DB)
-- [ ] 5.2 Split `backendtier.ResolveBackend` into ordered (existing) and headroom paths; headroom uses a reading accessor that distinguishes known vs unknown
-- [ ] 5.3 Log an unrecognized strategy once per distinct value
+- [x] 5.1 Add `Strategy string \`toml:"strategy"\`` to `config.BackendRoutingConfig` with constants `ordered`/`headroom`; ensure config.toml-wins semantics carry it (strategy is read from config.toml even when tiers come from the DB)
+- [x] 5.2 Split `backendtier.ResolveBackend` into ordered (existing) and headroom paths; headroom uses a reading accessor that distinguishes known vs unknown
+- [x] 5.3 Log an unrecognized strategy once per distinct value
 
 ## 6. Docs and wrap-up
 
