@@ -1281,6 +1281,13 @@ func (d *Daemon) Serve(sockPath string) error {
 	// daemon restart. Idempotent; a no-op tick when there are no candidates.
 	go d.runHeraReclaimSweeper()
 
+	// Finished-session reaper (stop-finished-task-sessions). Stops the agent
+	// session of any complete or archived task once it has idled for two
+	// consecutive ticks — otherwise every finished task's agent (and the MCP
+	// servers it holds, e.g. Playwright MCP) lives until a supervisor restart.
+	// The first tick after startup clears the backlog.
+	go d.runFinishedSessionReaper()
+
 	// Codex usage probe (add-tiered-backend-routing). Sibling of the
 	// usage-budget probe above, same cadence, refreshing internal/backendtier's
 	// cached Codex usage for the general tiered backend resolver. Inactive by

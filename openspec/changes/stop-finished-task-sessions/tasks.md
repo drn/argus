@@ -1,5 +1,0 @@
-- [ ] Session.Stop signals the process group with SIGKILL escalation (tests: a background child in the group dies)
-- [ ] Daemon finished-session reaper: pure per-tick decision + loop wiring + uxlog/slog (tests: arm/stop/disarm, self-complete deferral, exemption, startup backlog, pending restart, unfinished)
-- [ ] Bump SupervisorStreamSurface to 7 and re-record the digest
-- [ ] Update gotchas: hera-view.md orthogonality note, events.md plain-archive note, new daemon-rpc.md entry + index
-- [ ] Archive into base specs
