@@ -216,8 +216,10 @@ func TestCachedCodexPct_StaleReadingReturnsUnknown(t *testing.T) {
 	resetCodexState(t)
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	codexNowFunc = func() time.Time { return now }
-	// No reset time (the depleted-account shape) is held 24h from the probe
-	// (fix-backend-usage-routing); past that it is stale/unknown.
+	// A reading with neither a reset time nor an explicit ValidUntil (a PTY
+	// /status reading whose reset didn't parse) is held 24h from the probe
+	// (fix-backend-usage-routing); past that it is stale/unknown. Depleted
+	// rollout readings instead carry ValidUntil anchored to the rollout mtime.
 	storeCodexReading(Reading{Percentage: 90, LastProbedAt: now.Add(-25 * time.Hour)})
 
 	_, ok := CachedCodexPct()
