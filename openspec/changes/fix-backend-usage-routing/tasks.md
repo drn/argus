@@ -31,7 +31,7 @@
 
 **Depends on:** Stages 2, 3
 
-- [ ] 4.1 `runUsageBudgetPoller` and `runCodexProbePoller` probe once immediately, then on the ticker; tests use the existing probe seams
+- [x] 4.1 `runUsageBudgetPoller` and `runCodexProbePoller` probe once immediately, then on the ticker; tests use the existing probe seams
 
 ## 5. Headroom strategy
 
@@ -45,8 +45,8 @@
 
 **Depends on:** Stages 2–5
 
-- [ ] 6.1 Add gotchas to `context/knowledge/gotchas/usage-budget-routing.md` (interactive `/usage` never exits; trust/imports dialogs; uxlog is a no-op in the daemon; Codex weekly window lives in `primary`; depleted record has null windows) and update the index row
-- [ ] 6.2 Update README Reference config table with `strategy` and the probe-directory note
+- [x] 6.1 Add gotchas to `context/knowledge/gotchas/usage-budget-routing.md` (interactive `/usage` never exits; trust/imports dialogs; uxlog is a no-op in the daemon; Codex weekly window lives in `primary`; depleted record has null windows) and update the index row
+- [x] 6.2 Update README Reference config table with `strategy` and the probe-directory note
 - [ ] 6.3 `make pre-pr` green
 - [ ] 6.4 Live verification: deploy, confirm `[usagebudget] probe updated` and Codex reading lines in `daemon.log`, status bar shows real numbers, and a fresh worker with `strategy = "headroom"` resolves as expected
 - [ ] 6.5 Archive the change (`openspec archive fix-backend-usage-routing`) on the branch before merge

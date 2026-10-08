@@ -267,8 +267,8 @@ func New(database *db.DB) *Daemon {
 		prResolveRepo:     gitutil.ResolveDefaultRepo,
 		prAliasCap:        prDefaultAliasCap,
 		prDisableFlagPath: filepath.Join(db.DataDir(), prPollDisableFlag),
-		usageBudgetProbe:  usagebudget.Probe,
-		codexProbe:        backendtier.Probe,
+		usageBudgetProbe:  defaultProbe(usagebudget.Probe),
+		codexProbe:        defaultProbe(backendtier.Probe),
 	}
 
 	// Capture the binary path, hash, and mtime at startup. The on-disk binary
@@ -1011,19 +1011,42 @@ func (d *Daemon) runPRPoller() {
 // promptly on daemon shutdown. Spawns read only that cache, never this live
 // subprocess path.
 func (d *Daemon) runUsageBudgetPoller() {
-	ticker := time.NewTicker(usageBudgetProbeInterval)
-	defer ticker.Stop()
+	d.runProbePoller(d.probeUsageBudgetOnce)
+}
 
+// runProbePoller is the shared body of the usage-probe pollers
+// (fix-backend-usage-routing): probe once immediately so a fresh daemon has a
+// real reading instead of "unknown" for the first 30 minutes, then on every
+// usageBudgetProbeInterval tick. ctx is cancelled when d.done closes, so a
+// startup probe still in flight at shutdown is torn down rather than holding
+// the goroutine open. A shutdown that races the startup probe is honored
+// before it runs.
+func (d *Daemon) runProbePoller(probe func(context.Context)) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	for {
+	go func() {
 		select {
 		case <-d.done:
 			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	select {
+	case <-d.done:
+		return
+	default:
+	}
+	probe(ctx)
+
+	ticker := time.NewTicker(usageBudgetProbeInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-d.done:
 			return
 		case <-ticker.C:
-			d.probeUsageBudgetOnce(ctx)
+			probe(ctx)
 		}
 	}
 }
@@ -1074,21 +1097,7 @@ func (d *Daemon) runHeraReclaimSweeper() {
 // untouched. Refreshes internal/backendtier's in-memory Codex cache for the
 // tiered backend resolver.
 func (d *Daemon) runCodexProbePoller() {
-	ticker := time.NewTicker(usageBudgetProbeInterval)
-	defer ticker.Stop()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	for {
-		select {
-		case <-d.done:
-			cancel()
-			return
-		case <-ticker.C:
-			d.probeCodexOnce(ctx)
-		}
-	}
+	d.runProbePoller(d.probeCodexOnce)
 }
 
 func (d *Daemon) probeCodexOnce(ctx context.Context) {

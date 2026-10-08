@@ -1013,6 +1013,9 @@ An ordered list of backend "tiers" for **default task-backend selection** — ge
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `strategy` | string | `"ordered"` | `ordered` picks the first available tier in list order. `headroom` picks, among capped tiers with a fresh reading under threshold, the one with the most room (`threshold_pct − used%`, ties → list order); only if none qualifies does it take the first tier with no reading (unknown/stale, or `none` probe) in list order. An unrecognized value is logged once and treated as `ordered`. |
+| `codex_pty_fallback_enabled` | bool | `false` | When the free Codex rollout-file read has no usable reading, fall back to a headless `codex` PTY `/status` probe. Off by default because that probe spends Codex quota to measure Codex quota. Re-read every probe tick (no restart needed). |
+
+The daemon probes Claude and Codex usage at startup and every 30 minutes. The Claude probe runs `claude -- /usage` in a dedicated, argus-owned working directory, `~/.argus/usage-probe` (it answers only that directory's own folder-trust prompt).
 
 `[[backend_routing.tier]]` (repeatable, in resolution order):
 
