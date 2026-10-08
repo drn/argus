@@ -7,11 +7,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/creack/pty"
 	"github.com/drn/argus/internal/app/agentview"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 const defaultBufSize = 256 * 1024 // 256KB ring buffer; session log file handles full scrollback
@@ -515,15 +517,52 @@ func (s *Session) Signal(sig os.Signal) error {
 	return s.Cmd.Process.Signal(sig)
 }
 
-// Stop sends SIGTERM. Idempotent: if the process exited on its own between
-// the liveness check and the signal call, that's a successful stop, not an error.
+// stopKillAfter is how long Stop waits after SIGTERM before SIGKILLing the
+// session's process group. Atomic so tests can shorten it while escalation
+// goroutines from other sessions read it.
+var stopKillAfter atomic.Int64
+
+func init() { stopKillAfter.Store(int64(5 * time.Second)) }
+
+// stopSignalTarget picks what Stop signals: the agent's whole process group
+// (negative pid) when the agent leads its own group — which the PTY's setsid
+// guarantees, and which its stdio MCP servers (e.g. Playwright MCP) inherit —
+// otherwise just the pid. Never a group this process belongs to, and never
+// init's.
+func stopSignalTarget(pid, pgid, selfPgid int) int {
+	if pgid > 1 && pgid == pid && pgid != selfPgid {
+		return -pgid
+	}
+	return pid
+}
+
+// Stop sends SIGTERM to the session's process group, then SIGKILLs whatever
+// is left of the group after stopKillAfter — without this, the agent's MCP
+// children outlive it whenever they ignore or mishandle their parent's death.
+// Idempotent: if the process exited on its own between the liveness check and
+// the signal call, that's a successful stop, not an error.
 func (s *Session) Stop() error {
-	if !s.Alive() {
+	if !s.Alive() || s.Cmd.Process == nil {
 		return nil
 	}
-	if err := s.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+	pid := s.Cmd.Process.Pid
+	pgid, _ := syscall.Getpgid(pid)
+	target := stopSignalTarget(pid, pgid, syscall.Getpgrp())
+	if err := syscall.Kill(target, syscall.SIGTERM); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
 		return err
 	}
+	killAfter := time.Duration(stopKillAfter.Load())
+	go func() {
+		time.Sleep(killAfter)
+		// The group outlives its leader, so this runs even if the leader
+		// already exited; ESRCH just means everything is gone.
+		if err := syscall.Kill(target, syscall.SIGKILL); err == nil {
+			uxlog.Log("[session] stop: task=%s target=%d SIGKILLed after %s", s.TaskID, target, killAfter)
+		}
+	}()
 	return nil
 }
 
