@@ -102,8 +102,12 @@ func TestSession_StopScoped_AgentOnlyLeavesGroup(t *testing.T) {
 	// background processes (dev servers) — only the agent itself.
 	sess, child := startGroupSession(t, `trap "" HUP; sleep 60 & echo CHILD=$!; wait`)
 	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
+	leader := sess.PID()
 	testutil.NoError(t, sess.StopScoped(StopAgentOnly))
-	<-sess.Done()
+	// Wait on the leader itself, not sess.Done(): on Linux the surviving
+	// child keeps the PTY slave open, so Done (which waits for the PTY
+	// drain) doesn't fire until the child exits.
+	testutil.True(t, waitGone(leader, 3*time.Second))
 	testutil.False(t, waitGone(child, 500*time.Millisecond))
 }
 
