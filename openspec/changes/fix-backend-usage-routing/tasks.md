@@ -21,11 +21,11 @@
 
 **Depends on:** Stage 1
 
-- [ ] 3.1 Create/ensure `~/.argus/usage-probe` (via `db.DataDir()`), run the probe with `cmd.Dir` set to it
-- [ ] 3.2 Replace wait-for-exit with a streaming read loop: feed emulator per chunk, attempt parse, terminate process (SIGTERM → kill) on success; keep 45s timeout
-- [ ] 3.3 Detect the folder-trust dialog (dialog shape + the probe dir path on screen) and select the trust option once; abort + log on any other dialog
-- [ ] 3.4 Rewrite `parseUsageOutput` to accept the percentage on the header line or the following lines up to the next section header
-- [ ] 3.5 Log every outcome via slog (+ uxlog)
+- [x] 3.1 Create/ensure `~/.argus/usage-probe` (via `db.DataDir()`), run the probe with `cmd.Dir` set to it
+- [x] 3.2 Replace wait-for-exit with a streaming read loop: feed emulator per chunk, attempt parse, terminate process (SIGTERM → kill) on success; keep 45s timeout
+- [x] 3.3 Detect the folder-trust dialog (dialog shape + the probe dir path on screen) and select the trust option once; abort + log on any other dialog
+- [x] 3.4 Rewrite `parseUsageOutput` to accept the percentage on the header line or the following lines up to the next section header
+- [x] 3.5 Log every outcome via slog (+ uxlog)
 
 ## 4. Startup probes
 
