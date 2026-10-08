@@ -96,27 +96,44 @@ func TestParseLatestRateLimits_DepletedFixtureReadsFull(t *testing.T) {
 	testutil.Equal(t, got.ResetAt.IsZero(), true)
 }
 
-// A depleted reading is held 24h from the probe time.
-func TestProbe_DepletedReadingHeld24hFromProbe(t *testing.T) {
+// A depleted reading is held 24h from the rollout file's mtime, not from the
+// probe: re-probing the same unchanged file never extends the hold.
+func TestProbe_DepletedReadingHeld24hFromRolloutMtime(t *testing.T) {
 	resetCodexState(t)
-	probedAt := fixtureNow
-	now := probedAt
+	mtime := fixtureNow
+	now := mtime
 	codexNowFunc = func() time.Time { return now }
-	installFixtureRollout(t, "rollout_depleted.jsonl", probedAt.Add(-72*time.Hour))
+	installFixtureRollout(t, "rollout_depleted.jsonl", mtime)
+	codexRolloutProbeRunner = rolloutReading
+
+	for _, offset := range []time.Duration{time.Hour, 23 * time.Hour} {
+		now = mtime.Add(offset)
+		testutil.NoError(t, Probe(context.Background()))
+
+		pct, ok := CachedCodexPct()
+		testutil.Equal(t, ok, true)
+		testutil.Equal(t, pct, 100.0)
+	}
+
+	// The probe just ran against the same file, yet the hold has lapsed.
+	now = mtime.Add(25 * time.Hour)
+	testutil.NoError(t, Probe(context.Background()))
+
+	_, ok := CachedCodexPct()
+	testutil.Equal(t, ok, false)
+}
+
+// A depleted rollout whose mtime is already more than 24h old yields no
+// reading at all, even on the very first probe.
+func TestProbe_DepletedRolloutOlderThan24hIsUnknown(t *testing.T) {
+	resetCodexState(t)
+	codexNowFunc = func() time.Time { return fixtureNow }
+	installFixtureRollout(t, "rollout_depleted.jsonl", fixtureNow.Add(-72*time.Hour))
 	codexRolloutProbeRunner = rolloutReading
 
 	testutil.NoError(t, Probe(context.Background()))
 
-	pct, ok := CachedCodexPct()
-	testutil.Equal(t, ok, true)
-	testutil.Equal(t, pct, 100.0)
-
-	now = probedAt.Add(23 * time.Hour)
-	_, ok = CachedCodexPct()
-	testutil.Equal(t, ok, true)
-
-	now = probedAt.Add(25 * time.Hour)
-	_, ok = CachedCodexPct()
+	_, ok := CachedCodexPct()
 	testutil.Equal(t, ok, false)
 }
 
@@ -179,6 +196,30 @@ func TestProbe_RolloutPastResetLeavesUnknown(t *testing.T) {
 
 	_, ok := CachedCodexPct()
 	testutil.Equal(t, ok, false)
+}
+
+// A rollout reading already past its weekly reset is "no usable reading", so
+// an opted-in PTY fallback runs instead of caching the expired value.
+func TestProbe_RolloutPastResetFallsBackToPTYWhenEnabled(t *testing.T) {
+	resetCodexState(t)
+	SetCodexPTYFallbackEnabled(true)
+	codexNowFunc = func() time.Time { return fixtureNow }
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	codexHomeDirFunc = os.UserHomeDir
+	codexRolloutProbeRunner = rolloutReading
+	writeRolloutFile(t, filepath.Join(home, ".codex", "sessions", "2026", "10", "07"), "rollout-a.jsonl", fixtureNow.Add(-time.Minute), []string{
+		rateLimitsLine(10, 55, fixtureNow.Add(-2*time.Hour).Unix(), fixtureNow.Add(-time.Hour).Unix()),
+	})
+	codexPTYProbeRunner = func(context.Context) ([]byte, error) {
+		return []byte("Weekly limit: 12% used\n  resets in 6d\n"), nil
+	}
+
+	testutil.NoError(t, Probe(context.Background()))
+
+	pct, ok := CachedCodexPct()
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, pct, 12.0)
 }
 
 // Every codex probe outcome is logged through slog so it reaches daemon.log

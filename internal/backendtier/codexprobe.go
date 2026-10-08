@@ -33,10 +33,16 @@ const (
 	codexPtyRows      = 24
 	codexPtyCols      = 100
 
-	// CacheMaxAge mirrors internal/usagebudget's CacheMaxAge: both the
-	// in-memory cached reading and a rollout file's own mtime are trusted for
-	// at most this long before being treated as stale/unknown.
-	CacheMaxAge = time.Hour
+	// codexWeeklyWindowMinutes identifies Codex's weekly rate-limit window by
+	// duration. Which slot (primary/secondary) carries it varies by plan, so
+	// the slot name is never trusted (fix-backend-usage-routing).
+	codexWeeklyWindowMinutes = 10080
+
+	// codexHeldReadingTTL bounds a reading that has no weekly reset time to
+	// trust it until: a depleted rollout record (held from the rollout file's
+	// mtime, so re-reading the same unchanged file never extends it) or a PTY
+	// /status reading whose reset didn't parse (held from the probe time).
+	codexHeldReadingTTL = 24 * time.Hour
 
 	// codexStartupSettle/codexMessageSettle/codexStatusSettle bound the PTY
 	// fallback's fixed waits. codex's interactive TUI has no machine-readable
@@ -47,11 +53,35 @@ const (
 	codexStatusSettle  = 2 * time.Second
 )
 
-// Reading is the latest parsed Codex usage state.
+// Reading is the latest parsed Codex usage state. How long it stays valid is
+// resolved by ExpiresAt.
 type Reading struct {
 	Percentage   float64
 	ResetAt      time.Time
 	LastProbedAt time.Time
+	// ValidUntil, when set, overrides ResetAt as the end of the reading's
+	// validity. Set for depleted rollout records (rollout mtime + 24h), which
+	// carry no reset time of their own.
+	ValidUntil time.Time
+}
+
+// ExpiresAt returns the instant from which the reading is stale/unknown: an
+// explicit ValidUntil wins, else the weekly ResetAt, else LastProbedAt +
+// codexHeldReadingTTL (a reset-less PTY /status reading).
+func (r Reading) ExpiresAt() time.Time {
+	switch {
+	case !r.ValidUntil.IsZero():
+		return r.ValidUntil
+	case !r.ResetAt.IsZero():
+		return r.ResetAt
+	default:
+		return r.LastProbedAt.Add(codexHeldReadingTTL)
+	}
+}
+
+// expired reports whether the reading is no longer valid at now.
+func (r Reading) expired(now time.Time) bool {
+	return !now.Before(r.ExpiresAt())
 }
 
 type codexCacheState struct {
@@ -101,7 +131,7 @@ func codexPTYFallbackAllowed() bool {
 // Probe runs one best-effort Codex usage probe and updates the cache when a
 // reading is available. It first tries the free rollout-file read
 // (rolloutReading), falling back to the costed PTY /status probe only when no
-// sufficiently fresh rollout reading exists AND the fallback is opted in via
+// still-valid rollout reading exists AND the fallback is opted in via
 // SetCodexPTYFallbackEnabled (fix-backend-routing-semantics — off by
 // default). Failures are logged and leave the existing cache untouched;
 // callers do not need to treat the returned error as fatal.
@@ -117,15 +147,7 @@ func Probe(ctx context.Context) error {
 	reading, ok := codexRolloutProbeRunner()
 	if !ok {
 		if !codexPTYFallbackAllowed() {
-			// uxlog.Log is a silent no-op here: Probe runs exclusively in the
-			// daemon process (the probe ticker), which never calls
-			// uxlog.Init. slog.Warn is what actually reaches daemon.log —
-			// emitting both keeps this consistent with warnCoordinatorBackend's
-			// reasoning and with the TUI-reachable call sites elsewhere in
-			// this package, in case this is ever invoked from one.
-			const msg = "[backendtier] codex rollout read found nothing fresh and the costed PTY fallback is disabled (default); leaving cache stale/unknown"
-			uxlog.Log(msg)
-			slog.Warn(msg)
+			codexLog(slog.LevelWarn, "[backendtier] codex rollout read found nothing usable and the costed PTY fallback is disabled (default); leaving cache stale/unknown")
 			return nil
 		}
 		probeCtx, cancel := context.WithTimeout(ctx, codexProbeTimeout)
@@ -134,25 +156,41 @@ func Probe(ctx context.Context) error {
 		raw, err := codexPTYProbeRunner(probeCtx)
 		if err != nil {
 			if !errors.Is(probeCtx.Err(), context.Canceled) {
-				uxlog.Log("[backendtier] codex PTY probe failed: %v", err)
+				codexLog(slog.LevelWarn, "[backendtier] codex PTY probe failed: %v", err)
 			}
 			return nil
 		}
 		parsed, perr := parseCodexStatusOutput(renderCodexStatusOutput(raw))
 		if perr != nil {
-			uxlog.Log("[backendtier] codex PTY probe parse failed: %v", perr)
+			codexLog(slog.LevelWarn, "[backendtier] codex PTY probe parse failed: %v", perr)
 			return nil
 		}
-		reading, ok = parsed, true
-	}
-	if !ok {
-		return nil
+		reading = parsed
 	}
 
 	reading.LastProbedAt = probedAt
 	storeCodexReading(reading)
-	uxlog.Log("[backendtier] codex probe updated: percentage=%.2f reset_at=%s", reading.Percentage, reading.ResetAt.Format(time.RFC3339))
+	codexLog(slog.LevelInfo, "[backendtier] codex probe updated: percentage=%.2f reset_at=%s valid_until=%s",
+		reading.Percentage, formatCodexTime(reading.ResetAt), formatCodexTime(reading.ExpiresAt()))
 	return nil
+}
+
+// codexLog emits one codexprobe log line on both channels. Probe runs in the
+// daemon process (the probe ticker), which never calls uxlog.Init, so
+// uxlog.Log is a silent no-op there and slog is what actually reaches
+// daemon.log; uxlog is kept for TUI-process callers of the parse helpers.
+func codexLog(level slog.Level, format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	uxlog.Log("%s", msg)
+	slog.Log(context.Background(), level, msg)
+}
+
+// formatCodexTime renders t as RFC 3339, or "unknown" for the zero time.
+func formatCodexTime(t time.Time) string {
+	if t.IsZero() {
+		return "unknown"
+	}
+	return t.Format(time.RFC3339)
 }
 
 // CachedCodexPct returns the most recently probed Codex usage percentage and
@@ -192,24 +230,39 @@ func codexSnapshot() (Reading, bool) {
 		return Reading{}, false
 	}
 	reading := codexCache.reading
-	if codexNowFunc().Sub(reading.LastProbedAt) > CacheMaxAge {
+	if reading.expired(codexNowFunc()) {
 		return Reading{}, false
 	}
 	return reading, true
 }
 
 // rolloutReading returns the Codex rate-limits reading parsed from the most
-// recently modified rollout file, and whether one was found that is both
-// present and fresh enough (mtime within CacheMaxAge) to trust.
+// recently modified rollout file, and whether one was found that is still
+// valid. The file's age is irrelevant (fix-backend-usage-routing): every
+// Codex use writes a new rollout, so the newest one stays the best reading
+// until its own weekly reset. A depleted record (no reset time) is held
+// codexHeldReadingTTL from the file's mtime, so repeated probes of the same
+// unchanged file never extend the hold.
 func rolloutReading() (Reading, bool) {
 	path, modTime, err := latestRolloutFile()
 	if err != nil {
+		codexLog(slog.LevelInfo, "[backendtier] codex rollout lookup failed: %v", err)
 		return Reading{}, false
 	}
-	if codexNowFunc().Sub(modTime) > CacheMaxAge {
+	reading, ok := parseLatestRateLimits(path)
+	if !ok {
+		codexLog(slog.LevelInfo, "[backendtier] codex rollout %s has no usable rate_limits record", path)
 		return Reading{}, false
 	}
-	return parseLatestRateLimits(path)
+	if reading.ResetAt.IsZero() {
+		reading.ValidUntil = modTime.Add(codexHeldReadingTTL)
+	}
+	if now := codexNowFunc(); reading.expired(now) {
+		codexLog(slog.LevelInfo, "[backendtier] codex rollout reading expired: percentage=%.2f valid_until=%s",
+			reading.Percentage, formatCodexTime(reading.ExpiresAt()))
+		return Reading{}, false
+	}
+	return reading, true
 }
 
 var rolloutFileRe = regexp.MustCompile(`^rollout-.*\.jsonl$`)
@@ -287,13 +340,36 @@ type codexRateWindow struct {
 
 // weeklyCodexWindow returns the weekly (window_minutes == 10080) window's
 // usage and reset, whichever of primary/secondary carries it, ignoring any
-// other window.
-//
-// TODO(fix-backend-usage-routing stage 2): stub — always reports no window.
-// Stage 2 implements it, replaces worstCodexWindow with it, and adds the
-// depleted (rate_limit_reached_type set, no weekly window) = 100% reading.
+// other window: routing is weekly-only, so a hot 5h window never caps a tier
+// (fix-backend-usage-routing). A missing/zero resets_at yields a zero ResetAt.
 func weeklyCodexWindow(rl *codexRateLimits) (float64, time.Time, bool) {
-	_ = rl
+	if rl == nil {
+		return 0, time.Time{}, false
+	}
+	for _, w := range []*codexRateWindow{rl.Primary, rl.Secondary} {
+		if w == nil || w.WindowMinutes != codexWeeklyWindowMinutes {
+			continue
+		}
+		var resetAt time.Time
+		if w.ResetsAt > 0 {
+			resetAt = time.Unix(w.ResetsAt, 0)
+		}
+		return w.UsedPercent, resetAt, true
+	}
+	return 0, time.Time{}, false
+}
+
+// codexRecordReading returns one rate_limits record's reading: its weekly
+// window when present, else 100% with no reset when the record reports the
+// account exhausted (rate_limit_reached_type set — such records carry null
+// windows). Any other record carries no usable reading.
+func codexRecordReading(rl *codexRateLimits) (float64, time.Time, bool) {
+	if pct, resetAt, ok := weeklyCodexWindow(rl); ok {
+		return pct, resetAt, true
+	}
+	if rl != nil && rl.RateLimitReachedType != nil && *rl.RateLimitReachedType != "" {
+		return 100, time.Time{}, true
+	}
 	return 0, time.Time{}, false
 }
 
@@ -303,7 +379,7 @@ func weeklyCodexWindow(rl *codexRateLimits) (float64, time.Time, bool) {
 func parseLatestRateLimits(path string) (Reading, bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		uxlog.Log("[backendtier] codex rollout open failed: %v", err)
+		codexLog(slog.LevelWarn, "[backendtier] codex rollout open failed: %v", err)
 		return Reading{}, false
 	}
 	defer f.Close()
@@ -325,44 +401,19 @@ func parseLatestRateLimits(path string) (Reading, bool) {
 		if err := json.Unmarshal(line, &rec); err != nil {
 			continue
 		}
-		p, r, ok := worstCodexWindow(rec.Payload.RateLimits)
+		p, r, ok := codexRecordReading(rec.Payload.RateLimits)
 		if !ok {
 			continue
 		}
 		pct, resetAt, found = p, r, true
 	}
 	if err := scanner.Err(); err != nil {
-		uxlog.Log("[backendtier] codex rollout scan failed: %v", err)
+		codexLog(slog.LevelWarn, "[backendtier] codex rollout scan failed: %v", err)
 	}
 	if !found {
 		return Reading{}, false
 	}
 	return Reading{Percentage: pct, ResetAt: resetAt}, true
-}
-
-// worstCodexWindow picks the more exhausted of Codex's two independent
-// rate-limit windows (5h "primary", weekly "secondary"): a tier should be
-// treated as capped if either window is exhausted, not only the weekly one.
-func worstCodexWindow(rl *codexRateLimits) (float64, time.Time, bool) {
-	if rl == nil {
-		return 0, time.Time{}, false
-	}
-	var (
-		pct     float64
-		resetAt time.Time
-		found   bool
-	)
-	if rl.Primary != nil {
-		pct = rl.Primary.UsedPercent
-		resetAt = time.Unix(rl.Primary.ResetsAt, 0)
-		found = true
-	}
-	if rl.Secondary != nil && (!found || rl.Secondary.UsedPercent > pct) {
-		pct = rl.Secondary.UsedPercent
-		resetAt = time.Unix(rl.Secondary.ResetsAt, 0)
-		found = true
-	}
-	return pct, resetAt, found
 }
 
 // runCodexPTYProbe spawns a headless codex session, sends one minimal message
@@ -452,7 +503,7 @@ func renderCodexStatusOutput(raw []byte) string {
 func renderCodexPTY(raw []byte) (out string) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			uxlog.Log("[backendtier] recovered from emulator panic: %v", rec)
+			codexLog(slog.LevelWarn, "[backendtier] recovered from emulator panic: %v", rec)
 			out = ""
 		}
 	}()
@@ -467,7 +518,7 @@ func renderCodexPTY(raw []byte) (out string) {
 		go io.Copy(io.Discard, codexRenderState.emu) //nolint:errcheck
 	} else {
 		if _, err := codexRenderState.emu.Write([]byte("\x1bc")); err != nil {
-			uxlog.Log("[backendtier] emulator reset failed: %v", err)
+			codexLog(slog.LevelWarn, "[backendtier] emulator reset failed: %v", err)
 			return ""
 		}
 		if codexRenderState.cols != codexPtyCols || codexRenderState.rows != codexPtyRows {
@@ -478,7 +529,7 @@ func renderCodexPTY(raw []byte) (out string) {
 	}
 
 	if _, err := codexRenderState.emu.Write(raw); err != nil {
-		uxlog.Log("[backendtier] emulator write failed: %v", err)
+		codexLog(slog.LevelWarn, "[backendtier] emulator write failed: %v", err)
 		return ""
 	}
 	return normalizeCodexText(codexRenderState.emu.String())
