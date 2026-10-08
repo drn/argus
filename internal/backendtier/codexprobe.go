@@ -274,11 +274,27 @@ type codexRolloutRecord struct {
 type codexRateLimits struct {
 	Primary   *codexRateWindow `json:"primary"`
 	Secondary *codexRateWindow `json:"secondary"`
+	// RateLimitReachedType is non-null once the account is exhausted (e.g.
+	// "workspace_owner_credits_depleted"); such records carry null windows.
+	RateLimitReachedType *string `json:"rate_limit_reached_type"`
 }
 
 type codexRateWindow struct {
-	UsedPercent float64 `json:"used_percent"`
-	ResetsAt    int64   `json:"resets_at"`
+	UsedPercent   float64 `json:"used_percent"`
+	WindowMinutes int     `json:"window_minutes"`
+	ResetsAt      int64   `json:"resets_at"`
+}
+
+// weeklyCodexWindow returns the weekly (window_minutes == 10080) window's
+// usage and reset, whichever of primary/secondary carries it, ignoring any
+// other window.
+//
+// TODO(fix-backend-usage-routing stage 2): stub — always reports no window.
+// Stage 2 implements it, replaces worstCodexWindow with it, and adds the
+// depleted (rate_limit_reached_type set, no weekly window) = 100% reading.
+func weeklyCodexWindow(rl *codexRateLimits) (float64, time.Time, bool) {
+	_ = rl
+	return 0, time.Time{}, false
 }
 
 // parseLatestRateLimits tail-scans path for the last JSONL record carrying a

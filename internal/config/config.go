@@ -95,7 +95,23 @@ type BackendRoutingConfig struct {
 	// no DB/Settings surface, same v1 scoping the retired
 	// [hera.worker_budget] used.
 	CodexPTYFallbackEnabled bool `toml:"codex_pty_fallback_enabled"`
+
+	// Strategy selects how internal/backendtier picks among the tiers:
+	// StrategyOrdered (the default when empty) or StrategyHeadroom. An
+	// unrecognized value is treated as ordered. config.toml-only — no
+	// DB/Settings surface (fix-backend-usage-routing).
+	//
+	// TODO(fix-backend-usage-routing stage 5): the toml tag is deliberately
+	// disabled ("-") until stage 5 wires decoding; switch it to
+	// `toml:"strategy"`.
+	Strategy string `toml:"-"`
 }
+
+// Routing strategies a BackendRoutingConfig.Strategy may name.
+const (
+	StrategyOrdered  = "ordered"
+	StrategyHeadroom = "headroom"
+)
 
 // BackendTier names one entry in the ordered backend-routing tier list.
 // Backend should reference a key in Config.Backends and Probe should be one

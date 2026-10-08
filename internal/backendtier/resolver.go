@@ -25,6 +25,9 @@ var (
 // capped tier is at/over threshold with no uncapped tier in the list —
 // callers fall back to their own existing single-default-backend precedence.
 func ResolveBackend(cfg config.Config) string {
+	if cfg.BackendRouting.Strategy == config.StrategyHeadroom {
+		return resolveHeadroom(cfg)
+	}
 	for _, tier := range cfg.BackendRouting.Tiers {
 		if _, ok := cfg.Backends[tier.Backend]; !ok {
 			continue
@@ -59,4 +62,17 @@ func underThreshold(cached func() (float64, bool), thresholdPct int) bool {
 		return true
 	}
 	return pct < float64(thresholdPct)
+}
+
+// resolveHeadroom picks, among valid capped tiers with a fresh reading below
+// threshold, the one with the largest threshold−pct headroom (ties → list
+// order); failing that, the first tier with no usable reading (stale/unknown
+// capped tiers and none-probe tiers) in list order; failing that, "".
+//
+// TODO(fix-backend-usage-routing stage 5): stub — always returns "". Stage 5
+// also logs an unrecognized Strategy value once per distinct value (via slog,
+// so it reaches daemon.log) and treats it as ordered.
+func resolveHeadroom(cfg config.Config) string {
+	_ = cfg
+	return ""
 }

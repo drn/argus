@@ -603,3 +603,51 @@ func TestFileLoader_StatErrorSurfaced(t *testing.T) {
 	}
 	testutil.Contains(t, l.Err().Error(), "stat")
 }
+
+// TestFileLoader_BackendRoutingStrategyOverlay pins fix-backend-usage-routing:
+// [backend_routing].strategy decodes from config.toml, and is empty (⇒ ordered)
+// when absent.
+func TestFileLoader_BackendRoutingStrategyOverlay(t *testing.T) {
+	path := writeFile(t, `
+[backend_routing]
+strategy = "headroom"
+
+[[backend_routing.tier]]
+backend = "claude"
+probe = "claude_usage"
+threshold_pct = 70
+`)
+	l := NewFileLoader(path)
+	base := DefaultConfig()
+
+	got := l.Apply(base)
+	testutil.NoError(t, l.Err())
+
+	testutil.Equal(t, got.BackendRouting.Strategy, StrategyHeadroom)
+	testutil.Equal(t, base.BackendRouting.Strategy, "")
+}
+
+// TestFileLoader_BackendRoutingStrategyWithDBTiers pins that strategy is read
+// from config.toml even when the tier list itself comes from the DB (the base
+// Config db.Config() hands Apply already carries the DB tiers, and a
+// config.toml with no [[backend_routing.tier]] must leave them in place).
+func TestFileLoader_BackendRoutingStrategyWithDBTiers(t *testing.T) {
+	path := writeFile(t, `
+[backend_routing]
+strategy = "headroom"
+`)
+	l := NewFileLoader(path)
+	base := DefaultConfig()
+	dbTiers := []BackendTier{
+		{Backend: "claude", Probe: ProbeClaudeUsage, ThresholdPct: 70},
+		{Backend: "codex", Probe: ProbeCodexUsage, ThresholdPct: 80},
+	}
+	base.BackendRouting.Tiers = dbTiers
+
+	got := l.Apply(base)
+	testutil.NoError(t, l.Err())
+
+	testutil.Equal(t, got.BackendRouting.Strategy, StrategyHeadroom)
+	testutil.DeepEqual(t, got.BackendRouting.Tiers, dbTiers)
+	testutil.Equal(t, l.DefinesBackendRoutingTiers(), false)
+}

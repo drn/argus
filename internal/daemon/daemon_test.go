@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/rpc"
@@ -33,6 +34,12 @@ func testDaemon(t *testing.T) (*Daemon, string) {
 	// ~/.argus/pr-poller.disabled, which must never influence tests (and may exist
 	// on a dev machine that has paused the poller). Point it at an absent temp file.
 	d.prDisableFlagPath = filepath.Join(t.TempDir(), prPollDisableFlag)
+
+	// Never run the real usage probes from a test: they spawn `claude` /
+	// read ~/.codex, and (fix-backend-usage-routing) the pollers now probe
+	// immediately at startup, so any Serve() would otherwise launch them.
+	d.usageBudgetProbe = func(context.Context) error { return nil }
+	d.codexProbe = func(context.Context) error { return nil }
 
 	// Use a temp socket path.
 	sockPath := filepath.Join(t.TempDir(), "test.sock")
