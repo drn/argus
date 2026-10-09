@@ -323,7 +323,12 @@ func startOrphaningSession(t *testing.T, leaderTail string) (*ptyUsageSession, i
 	t.Helper()
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "child.pid")
-	script := `(trap '' TERM HUP; exec sleep 30) & echo $! > ` + pidFile + `; echo READY; ` + leaderTail
+	// The child writes its own pid only after installing the trap, and the
+	// leader waits for that file: otherwise a leader that exits immediately
+	// can SIGHUP the child before the trap exists, killing it for reasons
+	// unrelated to Terminate.
+	script := `sh -c 'trap "" TERM HUP; echo $$ > ` + pidFile + `; exec sleep 30' & ` +
+		`while [ ! -s ` + pidFile + ` ]; do sleep 0.01; done; echo READY; ` + leaderTail
 	s, err := startPTYSession(context.Background(), dir, "sh", "-c", script)
 	testutil.NoError(t, err)
 	readUntil(t, s, "READY", 5*time.Second)
