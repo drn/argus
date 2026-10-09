@@ -33,9 +33,17 @@ var probeTimeout = 45 * time.Second
 // shorten it.
 var trustKeyDelay = 150 * time.Millisecond
 
-// trustDownKey moves the trust dialog's cursor from "No, exit" to "Yes, I
-// trust this folder".
-var trustDownKey = []byte("\x1b[B")
+// trustDownKey / trustUpKey move the trust dialog's selection cursor one
+// option down / up.
+var (
+	trustDownKey = []byte("\x1b[B")
+	trustUpKey   = []byte("\x1b[A")
+)
+
+// trustOptionLabel is the folder-trust dialog option the probe selects. It is
+// located by this label, never by position, so a reordered dialog can't turn
+// the answer into "No, exit" (or anything else).
+const trustOptionLabel = "Yes, I trust this folder"
 
 // trustSettle is how long the probe directory's trust dialog must sit with no
 // new output before the probe answers it (see runProbeSession). A var so
@@ -182,6 +190,7 @@ func runProbeSession(parent, probeCtx context.Context, sess usageSession, dir st
 	// paint was undone by Claude Code's own follow-up repaint, so the
 	// subsequent Enter chose "No, exit".
 	trustAnswered := false
+	trustOffset := 0 // option rows from the cursor to the trust option
 	trustTimer := time.NewTimer(time.Hour)
 	trustTimer.Stop()
 	defer trustTimer.Stop()
@@ -199,7 +208,7 @@ func runProbeSession(parent, probeCtx context.Context, sess usageSession, dir st
 		case <-trustTimerC:
 			trustTimerC = nil
 			trustAnswered = true
-			if err := answerTrustDialog(probeCtx, sess); err != nil {
+			if err := answerTrustDialog(probeCtx, sess, trustOffset); err != nil {
 				_ = sess.Terminate()
 				if parent.Err() == nil {
 					logWarn("[usagebudget] probe failed: answer trust dialog: %v", err)
@@ -240,9 +249,15 @@ func runProbeSession(parent, probeCtx context.Context, sess usageSession, dir st
 					trustTimer.Stop()
 					trustTimerC = nil
 				}
+			case d.trust && trustPathMatches(d.workspace, dir) && !d.trustOptionFound:
+				_ = sess.Terminate()
+				logWarn("[usagebudget] probe blocked by dialog: %s (no %q option)", d.title, trustOptionLabel)
+				return
 			case d.trust && trustPathMatches(d.workspace, dir):
-				// Our own probe directory: answer it (once) after it settles.
-				// Once answered, the dialog lingers until Claude repaints.
+				// Our own probe directory: answer it (once) after it settles,
+				// from the latest frame's cursor position. Once answered, the
+				// dialog lingers until Claude repaints.
+				trustOffset = d.trustOffset
 				if !trustAnswered && trustTimerC == nil {
 					trustTimer.Reset(trustSettle)
 					trustTimerC = trustTimer.C
@@ -325,16 +340,23 @@ func storeIfParsed(screen string) bool {
 	return true
 }
 
-// answerTrustDialog selects "Yes, I trust this folder" (the second option;
-// the cursor starts on "No, exit"): Down-arrow, a short pause, then Enter.
-func answerTrustDialog(ctx context.Context, sess usageSession) error {
-	if _, err := sess.Write(trustDownKey); err != nil {
-		return err
+// answerTrustDialog moves the selection cursor offset option rows (down when
+// positive, up when negative) onto "Yes, I trust this folder", pausing after
+// each arrow so Claude Code sees distinct key events, then presses Enter.
+func answerTrustDialog(ctx context.Context, sess usageSession, offset int) error {
+	key := trustDownKey
+	if offset < 0 {
+		key, offset = trustUpKey, -offset
 	}
-	select {
-	case <-time.After(trustKeyDelay):
-	case <-ctx.Done():
-		return ctx.Err()
+	for range offset {
+		if _, err := sess.Write(key); err != nil {
+			return err
+		}
+		select {
+		case <-time.After(trustKeyDelay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	_, err := sess.Write([]byte("\r"))
 	return err
@@ -440,23 +462,41 @@ func (s *ptyUsageSession) Read(p []byte) (int, error)  { return s.ptmx.Read(p) }
 func (s *ptyUsageSession) Write(p []byte) (int, error) { return s.ptmx.Write(p) }
 
 // Terminate sends SIGTERM to the session's process group, escalates to
-// SIGKILL after terminateGrace, and closes the PTY. Idempotent.
+// SIGKILL after terminateGrace, and closes the PTY. Once the leader is gone
+// (or was killed) the whole group is SIGKILLed too, so children that ignore
+// SIGTERM (MCP servers, hooks) never outlive the probe. A session that had
+// already exited on its own is not group-signalled at all: with its leader
+// reaped, the pgid may since have been reused by an unrelated process group.
+// Idempotent.
 func (s *ptyUsageSession) Terminate() error {
 	s.termOnce.Do(func() {
+		defer s.ptmx.Close() //nolint:errcheck // best-effort
+		select {
+		case <-s.waitDone:
+			return // exited on its own before Terminate
+		default:
+		}
 		pid := s.cmd.Process.Pid
 		_ = syscall.Kill(-pid, syscall.SIGTERM)
 		select {
 		case <-s.waitDone:
 		case <-time.After(terminateGrace):
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			killGroup(pid)
 			select {
 			case <-s.waitDone:
 			case <-time.After(terminateGrace):
 			}
 		}
-		_ = s.ptmx.Close()
+		killGroup(pid)
 	})
 	return nil
+}
+
+// killGroup SIGKILLs process group pgid; ESRCH (already empty) is expected.
+func killGroup(pgid int) {
+	if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		uxlog.Log("[usagebudget] kill probe process group %d: %v", pgid, err)
+	}
 }
 
 // --- rendering -------------------------------------------------------------
@@ -555,6 +595,11 @@ type dialog struct {
 	title     string // first non-border line, for logging
 	trust     bool   // Claude Code's folder-trust dialog
 	workspace string // trust dialog only: the (wrap-joined) workspace path
+
+	// trust dialog only: whether the trustOptionLabel option row was found,
+	// and how many option rows it sits below (negative: above) the cursor.
+	trustOptionFound bool
+	trustOffset      int
 }
 
 const selectionCursor = "❯"
@@ -618,7 +663,42 @@ func detectDialog(screen string) *dialog {
 		}
 		break
 	}
+	if d.trust {
+		d.trustOffset, d.trustOptionFound = trustOptionOffset(lines, cursorRow, footerRow)
+	}
 	return d
+}
+
+// trustOptionOffset locates the trustOptionLabel row within the dialog's
+// option block — the rows from the cursor down to the footer, plus the
+// contiguous non-blank rows directly above the cursor — and returns how many
+// option rows it lies below (positive) or above (negative) the cursor row.
+// Blank rows are not options and are not counted.
+func trustOptionOffset(lines []string, cursorRow, footerRow int) (int, bool) {
+	isTrust := func(l string) bool {
+		return strings.Contains(strings.TrimPrefix(l, selectionCursor), trustOptionLabel)
+	}
+	if isTrust(lines[cursorRow]) {
+		return 0, true
+	}
+	n := 0
+	for _, l := range lines[cursorRow+1 : footerRow] {
+		if l == "" {
+			continue
+		}
+		n++
+		if isTrust(l) {
+			return n, true
+		}
+	}
+	n = 0
+	for i := cursorRow - 1; i >= 0 && lines[i] != ""; i-- {
+		n++
+		if isTrust(lines[i]) {
+			return -n, true
+		}
+	}
+	return 0, false
 }
 
 func isBorderLine(l string) bool {

@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +44,18 @@ const (
 	// mtime, so re-reading the same unchanged file never extends it) or a PTY
 	// /status reading whose reset didn't parse (held from the probe time).
 	codexHeldReadingTTL = 24 * time.Hour
+
+	// codexMaxReadingAge caps any reading's validity at its anchor (rollout
+	// mtime, or probe time for a PTY /status reading) + 8 days: a weekly
+	// window can never legitimately reset further out than that, so a garbage
+	// resets_at can't keep a reading valid indefinitely.
+	codexMaxReadingAge = 8 * 24 * time.Hour
+
+	// codexMaxRolloutFiles bounds how many of the newest rollouts a probe
+	// inspects looking for a usable reading. A short session that never
+	// recorded rate_limits shouldn't hide an older rollout's valid reading,
+	// but scanning the whole history every tick would be wasteful.
+	codexMaxRolloutFiles = 10
 
 	// codexStartupSettle/codexMessageSettle/codexStatusSettle bound the PTY
 	// fallback's fixed waits. codex's interactive TUI has no machine-readable
@@ -147,7 +160,8 @@ func Probe(ctx context.Context) error {
 	reading, ok := codexRolloutProbeRunner()
 	if !ok {
 		if !codexPTYFallbackAllowed() {
-			codexLog(slog.LevelWarn, "[backendtier] codex rollout read found nothing usable and the costed PTY fallback is disabled (default); leaving cache stale/unknown")
+			// The normal state when Codex is unused, so INFO, not WARN.
+			codexLog(slog.LevelInfo, "[backendtier] codex rollout read found nothing usable and the costed PTY fallback is disabled (default); leaving cache stale/unknown")
 			return nil
 		}
 		probeCtx, cancel := context.WithTimeout(ctx, codexProbeTimeout)
@@ -165,7 +179,7 @@ func Probe(ctx context.Context) error {
 			codexLog(slog.LevelWarn, "[backendtier] codex PTY probe parse failed: %v", perr)
 			return nil
 		}
-		reading = parsed
+		reading = capCodexExpiry(parsed, probedAt)
 	}
 
 	reading.LastProbedAt = probedAt
@@ -236,33 +250,49 @@ func codexSnapshot() (Reading, bool) {
 	return reading, true
 }
 
-// rolloutReading returns the Codex rate-limits reading parsed from the most
-// recently modified rollout file, and whether one was found that is still
-// valid. The file's age is irrelevant (fix-backend-usage-routing): every
-// Codex use writes a new rollout, so the newest one stays the best reading
-// until its own weekly reset. A depleted record (no reset time) is held
-// codexHeldReadingTTL from the file's mtime, so repeated probes of the same
-// unchanged file never extend the hold.
+// rolloutReading returns the Codex rate-limits reading from the newest
+// rollout file that yields a usable, unexpired one, walking at most
+// codexMaxRolloutFiles rollouts in mtime order (newest first), and whether one
+// was found. A file's age is irrelevant (fix-backend-usage-routing): every
+// Codex use writes a new rollout, so the newest usable one stays the best
+// reading until its own weekly reset. A short session that recorded no
+// rate_limits (or an expired one) doesn't hide an older valid reading. A
+// depleted record (no reset time) is held codexHeldReadingTTL from the file's
+// mtime, so repeated probes of the same unchanged file never extend the hold;
+// every reading is capped at mtime + codexMaxReadingAge.
 func rolloutReading() (Reading, bool) {
-	path, modTime, err := latestRolloutFile()
+	files, err := recentRolloutFiles(codexMaxRolloutFiles)
 	if err != nil {
 		codexLog(slog.LevelInfo, "[backendtier] codex rollout lookup failed: %v", err)
 		return Reading{}, false
 	}
-	reading, ok := parseLatestRateLimits(path)
-	if !ok {
-		codexLog(slog.LevelInfo, "[backendtier] codex rollout %s has no usable rate_limits record", path)
-		return Reading{}, false
+	now := codexNowFunc()
+	for _, f := range files {
+		reading, ok := parseLatestRateLimits(f.path)
+		if !ok {
+			continue
+		}
+		if reading.ResetAt.IsZero() {
+			reading.ValidUntil = f.modTime.Add(codexHeldReadingTTL)
+		}
+		reading = capCodexExpiry(reading, f.modTime)
+		if reading.expired(now) {
+			codexLog(slog.LevelInfo, "[backendtier] codex rollout %s reading expired: percentage=%.2f valid_until=%s",
+				f.path, reading.Percentage, formatCodexTime(reading.ExpiresAt()))
+			continue
+		}
+		return reading, true
 	}
-	if reading.ResetAt.IsZero() {
-		reading.ValidUntil = modTime.Add(codexHeldReadingTTL)
+	codexLog(slog.LevelInfo, "[backendtier] codex rollout: none of the %d newest rollouts has a usable, unexpired rate_limits record", len(files))
+	return Reading{}, false
+}
+
+// capCodexExpiry caps r's validity at anchor + codexMaxReadingAge.
+func capCodexExpiry(r Reading, anchor time.Time) Reading {
+	if limit := anchor.Add(codexMaxReadingAge); r.ExpiresAt().After(limit) {
+		r.ValidUntil = limit
 	}
-	if now := codexNowFunc(); reading.expired(now) {
-		codexLog(slog.LevelInfo, "[backendtier] codex rollout reading expired: percentage=%.2f valid_until=%s",
-			reading.Percentage, formatCodexTime(reading.ExpiresAt()))
-		return Reading{}, false
-	}
-	return reading, true
+	return r
 }
 
 var rolloutFileRe = regexp.MustCompile(`^rollout-.*\.jsonl$`)
@@ -275,21 +305,25 @@ func codexSessionsRoot() (string, error) {
 	return filepath.Join(home, ".codex", "sessions"), nil
 }
 
-// latestRolloutFile walks the Codex sessions tree (~/.codex/sessions/YYYY/MM/DD/)
-// and returns the most recently modified rollout-*.jsonl file.
-func latestRolloutFile() (string, time.Time, error) {
+// rolloutFile is one rollout-*.jsonl file and its last-modified time.
+type rolloutFile struct {
+	path    string
+	modTime time.Time
+}
+
+// recentRolloutFiles walks the Codex sessions tree
+// (~/.codex/sessions/YYYY/MM/DD/) and returns up to limit rollout-*.jsonl
+// files, most recently modified first. It errors when there are none.
+func recentRolloutFiles(limit int) ([]rolloutFile, error) {
 	root, err := codexSessionsRoot()
 	if err != nil {
-		return "", time.Time{}, err
+		return nil, err
 	}
 	if _, err := os.Stat(root); err != nil {
-		return "", time.Time{}, err
+		return nil, err
 	}
 
-	var (
-		latestPath string
-		latestMod  time.Time
-	)
+	var files []rolloutFile
 	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -301,19 +335,20 @@ func latestRolloutFile() (string, time.Time, error) {
 		if err != nil {
 			return nil
 		}
-		if info.ModTime().After(latestMod) {
-			latestMod = info.ModTime()
-			latestPath = path
-		}
+		files = append(files, rolloutFile{path: path, modTime: info.ModTime()})
 		return nil
 	})
 	if walkErr != nil {
-		return "", time.Time{}, walkErr
+		return nil, walkErr
 	}
-	if latestPath == "" {
-		return "", time.Time{}, fmt.Errorf("no codex rollout files found under %s", root)
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no codex rollout files found under %s", root)
 	}
-	return latestPath, latestMod, nil
+	sort.Slice(files, func(i, j int) bool { return files[i].modTime.After(files[j].modTime) })
+	if len(files) > limit {
+		files = files[:limit]
+	}
+	return files, nil
 }
 
 // codexRolloutRecord is the minimal shape of one Codex rollout JSONL line
@@ -552,38 +587,89 @@ var codexStatusPercentRe = regexp.MustCompile(`(?i)([0-9]+(?:\.[0-9]+)?)\s*%\s*u
 // "resets in 3h 20m" or "resets in 4d".
 var codexStatusResetRe = regexp.MustCompile(`(?i)resets?\s+in\s+((?:[0-9]+d\s*)?(?:[0-9]+h\s*)?(?:[0-9]+m\s*)?)`)
 
-// parseCodexStatusOutput extracts the worst-case usage percentage rendered by
-// codex's /status screen. The exact upstream format is not yet stable
+// codexStatusShortWindowRe marks a /status row as a short (non-weekly) window,
+// e.g. "5h limit".
+var codexStatusShortWindowRe = regexp.MustCompile(`(?i)\b[0-9]+\s*h\b|hour`)
+
+// codexStatusRow is one "NN% used" row of codex's /status screen.
+type codexStatusRow struct {
+	label    string // lower-cased text of the row's line before its percentage
+	pct      float64
+	reset    time.Duration
+	hasReset bool
+}
+
+// parseCodexStatusOutput extracts the weekly usage row rendered by codex's
+// /status screen; routing is weekly-only, so the 5h row is ignored
+// (fix-backend-usage-routing). Each row's reset is its own: a "resets in"
+// phrase on the row's line or on a following line before the next row. The
+// weekly row is the one labelled "week…" (e.g. "Weekly limit"). When no row
+// carries that label, rows labelled as hour windows are dropped and the row
+// whose reset is furthest in the future is taken: a 5h window can never reset
+// more than 5 hours out, so the furthest reset is the best evidence of the
+// weekly window. The exact upstream format is not yet stable
 // (openai/codex#15281 was open as of this writing), so this is deliberately
 // defensive: any unrecognized shape is a parse failure, never a panic, and
 // reset info is best-effort (a percentage with no parseable reset still
 // succeeds with a zero-value ResetAt).
 func parseCodexStatusOutput(output string) (Reading, error) {
-	var (
-		pct   float64
-		found bool
-	)
-	for _, match := range codexStatusPercentRe.FindAllStringSubmatch(output, -1) {
-		var v float64
-		if _, err := fmt.Sscanf(match[1], "%f", &v); err != nil {
+	var rows []codexStatusRow
+	for _, line := range strings.Split(output, "\n") {
+		rest := line
+		if loc := codexStatusPercentRe.FindStringSubmatchIndex(line); loc != nil {
+			var v float64
+			if _, err := fmt.Sscanf(line[loc[2]:loc[3]], "%f", &v); err != nil {
+				continue
+			}
+			rows = append(rows, codexStatusRow{label: strings.ToLower(line[:loc[0]]), pct: v})
+			rest = line[loc[1]:]
+		}
+		if len(rows) == 0 || rows[len(rows)-1].hasReset {
 			continue
 		}
-		if !found || v > pct {
-			pct = v
-			found = true
+		if match := codexStatusResetRe.FindStringSubmatch(rest); len(match) == 2 {
+			if d, err := parseCodexResetDuration(match[1]); err == nil {
+				rows[len(rows)-1].reset, rows[len(rows)-1].hasReset = d, true
+			}
 		}
 	}
-	if !found {
+	if len(rows) == 0 {
 		return Reading{}, errors.New("codex status: no usage percentage found")
 	}
 
-	reading := Reading{Percentage: pct}
-	if match := codexStatusResetRe.FindStringSubmatch(output); len(match) == 2 {
-		if d, err := parseCodexResetDuration(match[1]); err == nil {
-			reading.ResetAt = codexNowFunc().Add(d)
-		}
+	row, ok := weeklyStatusRow(rows)
+	if !ok {
+		return Reading{}, errors.New("codex status: no weekly usage row found")
+	}
+	reading := Reading{Percentage: row.pct}
+	if row.hasReset {
+		reading.ResetAt = codexNowFunc().Add(row.reset)
 	}
 	return reading, nil
+}
+
+// weeklyStatusRow picks the weekly row: the first labelled "week", else the
+// non-hour-window row with the furthest reset (ties, and rows without a
+// reset, resolve to the earliest row).
+func weeklyStatusRow(rows []codexStatusRow) (codexStatusRow, bool) {
+	for _, r := range rows {
+		if strings.Contains(r.label, "week") {
+			return r, true
+		}
+	}
+	var (
+		best  codexStatusRow
+		found bool
+	)
+	for _, r := range rows {
+		if codexStatusShortWindowRe.MatchString(r.label) {
+			continue
+		}
+		if !found || (r.hasReset && (!best.hasReset || r.reset > best.reset)) {
+			best, found = r, true
+		}
+	}
+	return best, found
 }
 
 var codexDurationPartRe = regexp.MustCompile(`(?i)([0-9]+)\s*(d|h|m)`)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -125,6 +126,33 @@ func TestProbe_PTYFallbackDisabledByDefaultLeavesCacheStale(t *testing.T) {
 	// silent no-op (uxlog.Init is never called there) — slog.Warn is what
 	// actually reaches daemon.log, so this must be logged on both channels.
 	testutil.Contains(t, logBuf.String(), "costed PTY fallback is disabled")
+	// The normal state when Codex is unused: INFO, not WARN.
+	testutil.Contains(t, logBuf.String(), "level=INFO")
+	if strings.Contains(logBuf.String(), "level=WARN") {
+		t.Fatalf("disabled-fallback skip logged at WARN: %s", logBuf.String())
+	}
+}
+
+// A PTY /status reading's expiry is capped at probe time + 8 days, so a
+// garbage reset can't keep it valid indefinitely.
+func TestProbe_PTYReadingExpiryIsCappedAtEightDays(t *testing.T) {
+	resetCodexState(t)
+	SetCodexPTYFallbackEnabled(true)
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	codexNowFunc = func() time.Time { return now }
+	codexRolloutProbeRunner = func() (Reading, bool) { return Reading{}, false }
+	codexPTYProbeRunner = func(context.Context) ([]byte, error) {
+		return []byte("Weekly limit: 40% used\nresets in 400d\n"), nil
+	}
+
+	testutil.NoError(t, Probe(context.Background()))
+
+	got, ok := CachedReading()
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, got.ExpiresAt(), now.Add(8*24*time.Hour))
+	codexNowFunc = func() time.Time { return now.Add(8*24*time.Hour + time.Minute) }
+	_, ok = CachedCodexPct()
+	testutil.Equal(t, ok, false)
 }
 
 // TestProbe_PTYFallbackExplicitlyEnabledStillRuns confirms the opt-in itself
@@ -290,10 +318,12 @@ func TestLatestRolloutFile(t *testing.T) {
 		writeRolloutFile(t, filepath.Join(home, ".codex", "sessions", "2026", "09", "20"), "rollout-a.jsonl", old, []string{"{}"})
 		wantPath := writeRolloutFile(t, filepath.Join(home, ".codex", "sessions", "2026", "09", "22"), "rollout-b.jsonl", newer, []string{"{}"})
 
-		gotPath, gotMod, err := latestRolloutFile()
+		files, err := recentRolloutFiles(codexMaxRolloutFiles)
 		testutil.NoError(t, err)
-		testutil.Equal(t, gotPath, wantPath)
-		testutil.Equal(t, gotMod.UTC(), newer)
+		testutil.Equal(t, len(files), 2)
+		testutil.Equal(t, files[0].path, wantPath)
+		testutil.Equal(t, files[0].modTime.UTC(), newer)
+		testutil.Equal(t, files[1].modTime.UTC(), old)
 	})
 
 	t.Run("missing sessions dir errors", func(t *testing.T) {
@@ -301,7 +331,7 @@ func TestLatestRolloutFile(t *testing.T) {
 		t.Setenv("HOME", home)
 		codexHomeDirFunc = os.UserHomeDir
 
-		_, _, err := latestRolloutFile()
+		_, err := recentRolloutFiles(codexMaxRolloutFiles)
 		if err == nil {
 			t.Fatal("expected error for missing sessions dir")
 		}
@@ -320,9 +350,28 @@ func TestLatestRolloutFile(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		_, _, err := latestRolloutFile()
+		_, err := recentRolloutFiles(codexMaxRolloutFiles)
 		if err == nil {
 			t.Fatal("expected error when no rollout files are present")
+		}
+	})
+
+	t.Run("returns at most limit files, newest first", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		codexHomeDirFunc = os.UserHomeDir
+
+		base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+		dir := filepath.Join(home, ".codex", "sessions", "2026", "09", "01")
+		for i := range 5 {
+			writeRolloutFile(t, dir, fmt.Sprintf("rollout-%d.jsonl", i), base.Add(time.Duration(i)*time.Hour), []string{"{}"})
+		}
+
+		files, err := recentRolloutFiles(3)
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(files), 3)
+		for i, want := range []int{4, 3, 2} {
+			testutil.Equal(t, filepath.Base(files[i].path), fmt.Sprintf("rollout-%d.jsonl", want))
 		}
 	})
 }
@@ -476,6 +525,73 @@ func TestRolloutReading(t *testing.T) {
 		testutil.Equal(t, got.Percentage, 30.0)
 	})
 
+	// A newest rollout without rate_limits (a short session) or with an
+	// expired reading must not hide an older rollout's still-valid reading.
+	t.Run("older valid rollout is used when newer ones are unusable", func(t *testing.T) {
+		resetCodexState(t)
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		codexHomeDirFunc = os.UserHomeDir
+		now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+		codexNowFunc = func() time.Time { return now }
+		dir := filepath.Join(home, ".codex", "sessions", "2026", "09", "22")
+		writeRolloutFile(t, dir, "rollout-valid.jsonl", now.Add(-3*time.Hour), []string{
+			rateLimitsLine(10, 45, now.Add(time.Hour).Unix(), now.Add(48*time.Hour).Unix()),
+		})
+		writeRolloutFile(t, dir, "rollout-expired.jsonl", now.Add(-2*time.Hour), []string{
+			rateLimitsLine(10, 99, now.Add(-time.Hour).Unix(), now.Add(-time.Minute).Unix()),
+		})
+		writeRolloutFile(t, dir, "rollout-short.jsonl", now.Add(-time.Hour), []string{
+			`{"payload":{"type":"session_meta"}}`,
+		})
+
+		got, ok := rolloutReading()
+		testutil.Equal(t, ok, true)
+		testutil.Equal(t, got.Percentage, 45.0)
+	})
+
+	t.Run("only the newest codexMaxRolloutFiles rollouts are considered", func(t *testing.T) {
+		resetCodexState(t)
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		codexHomeDirFunc = os.UserHomeDir
+		now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+		codexNowFunc = func() time.Time { return now }
+		dir := filepath.Join(home, ".codex", "sessions", "2026", "09", "22")
+		writeRolloutFile(t, dir, "rollout-oldest.jsonl", now.Add(-100*time.Hour), []string{
+			rateLimitsLine(10, 45, now.Add(time.Hour).Unix(), now.Add(48*time.Hour).Unix()),
+		})
+		for i := range codexMaxRolloutFiles {
+			writeRolloutFile(t, dir, fmt.Sprintf("rollout-short-%d.jsonl", i), now.Add(-time.Duration(i+1)*time.Minute), []string{"{}"})
+		}
+
+		_, ok := rolloutReading()
+		testutil.Equal(t, ok, false)
+	})
+
+	// A garbage resets_at far in the future can't keep a reading valid
+	// indefinitely: expiry is capped at the rollout's mtime + 8 days.
+	t.Run("expiry is capped at rollout mtime plus eight days", func(t *testing.T) {
+		resetCodexState(t)
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		codexHomeDirFunc = os.UserHomeDir
+		now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+		codexNowFunc = func() time.Time { return now }
+		mod := now.Add(-time.Hour)
+		writeRolloutFile(t, filepath.Join(home, ".codex", "sessions", "2026", "09", "22"), "rollout-a.jsonl", mod, []string{
+			rateLimitsLine(10, 30, now.Add(time.Hour).Unix(), now.Add(400*24*time.Hour).Unix()),
+		})
+
+		got, ok := rolloutReading()
+		testutil.Equal(t, ok, true)
+		testutil.Equal(t, got.ExpiresAt().UTC(), mod.Add(8*24*time.Hour))
+
+		codexNowFunc = func() time.Time { return mod.Add(8*24*time.Hour + time.Minute) }
+		_, ok = rolloutReading()
+		testutil.Equal(t, ok, false)
+	})
+
 	t.Run("missing sessions dir is rejected", func(t *testing.T) {
 		resetCodexState(t)
 		home := t.TempDir()
@@ -508,6 +624,67 @@ func TestParseCodexStatusOutput(t *testing.T) {
 		testutil.NoError(t, err)
 		testutil.Equal(t, got.Percentage, 40.0)
 		testutil.Equal(t, got.ResetAt.IsZero(), true)
+	})
+
+	// Weekly-only routing: a hot 5h row never stands in for the weekly one,
+	// and the reset is the weekly row's own.
+	t.Run("weekly row is used and the 5h row ignored", func(t *testing.T) {
+		resetCodexState(t)
+		codexNowFunc = func() time.Time { return now }
+
+		got, err := parseCodexStatusOutput("Usage\n  5h limit: 95% used\n  resets in 2h\n  Weekly limit: 40% used\n  resets in 3d 4h\n")
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.Percentage, 40.0)
+		testutil.Equal(t, got.ResetAt, now.Add(3*24*time.Hour+4*time.Hour))
+	})
+
+	t.Run("weekly row with its reset on the same line", func(t *testing.T) {
+		resetCodexState(t)
+		codexNowFunc = func() time.Time { return now }
+
+		got, err := parseCodexStatusOutput("5h limit: 95% used (resets in 1h)\nWeekly limit: 22% used (resets in 5d)\n")
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.Percentage, 22.0)
+		testutil.Equal(t, got.ResetAt, now.Add(5*24*time.Hour))
+	})
+
+	t.Run("weekly row without a reset does not borrow the 5h reset", func(t *testing.T) {
+		resetCodexState(t)
+		codexNowFunc = func() time.Time { return now }
+
+		got, err := parseCodexStatusOutput("5h limit: 95% used\nresets in 2h\nWeekly limit: 40% used\n")
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.Percentage, 40.0)
+		testutil.Equal(t, got.ResetAt.IsZero(), true)
+	})
+
+	t.Run("only a 5h row is no reading", func(t *testing.T) {
+		resetCodexState(t)
+		codexNowFunc = func() time.Time { return now }
+
+		if _, err := parseCodexStatusOutput("5h limit: 95% used\nresets in 2h\n"); err == nil {
+			t.Fatal("expected an error when only the 5h row is present")
+		}
+	})
+
+	// Unlabeled rows: the weekly window is the one resetting furthest out.
+	t.Run("unlabeled rows prefer the furthest reset", func(t *testing.T) {
+		resetCodexState(t)
+		codexNowFunc = func() time.Time { return now }
+
+		got, err := parseCodexStatusOutput("Usage\n  95% used\n  resets in 2h\n  40% used\n  resets in 4d\n")
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.Percentage, 40.0)
+		testutil.Equal(t, got.ResetAt, now.Add(4*24*time.Hour))
+	})
+
+	t.Run("unlabeled rows with same-line resets prefer the furthest reset", func(t *testing.T) {
+		resetCodexState(t)
+		codexNowFunc = func() time.Time { return now }
+
+		got, err := parseCodexStatusOutput("95% used (resets in 2h)\n40% used (resets in 4d)\n")
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.Percentage, 40.0)
 	})
 
 	t.Run("no percentage found is an error", func(t *testing.T) {

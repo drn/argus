@@ -61,7 +61,7 @@ The system SHALL determine Claude usage via the headless `/usage` PTY probe and 
 
 ### Requirement: Codex usage probe prefers a free local-file read, falls back to a costed live probe
 
-The system SHALL determine Codex usage primarily by reading the `rate_limits` object from the most recent Codex CLI rollout log file (`~/.codex/sessions/**/rollout-*.jsonl`), without spawning any subprocess. The system SHALL select the weekly window as whichever of `primary` or `secondary` reports `window_minutes` equal to 10080, and SHALL ignore any other window. When the latest `rate_limits` record has a non-null `rate_limit_reached_type` and no weekly window, the system SHALL record a 100% reading held for 24 hours from that rollout file's last-modified time (re-reading the same rollout SHALL NOT extend the hold). Otherwise the reading SHALL be treated as fresh until its weekly `resets_at`, regardless of the rollout file's age, and as unknown once `resets_at` has passed. When the latest rollout yields no usable reading, the system SHALL fall back to a headless `codex` PTY probe that sends a minimal message and reads the rendered `/status` output, on the same background cadence as the Claude probe, ONLY when that fallback has been explicitly opted into (see "Costed Codex PTY fallback is opt-in and disabled by default" below). When the fallback is not opted into, a missing reading SHALL leave the cached reading stale/unknown rather than spending Codex quota. Both paths SHALL fail open: any read, parse, or subprocess error leaves the previous cached value in place (or unknown, if none exists) and logs the outcome to the daemon log without erroring the caller.
+The system SHALL determine Codex usage primarily by reading the `rate_limits` object from the Codex CLI rollout log files (`~/.codex/sessions/**/rollout-*.jsonl`), without spawning any subprocess, walking at most the 10 most recently modified rollouts newest first and using the first that yields a usable, unexpired reading. The system SHALL select the weekly window as whichever of `primary` or `secondary` reports `window_minutes` equal to 10080, and SHALL ignore any other window. When the latest `rate_limits` record has a non-null `rate_limit_reached_type` and no weekly window, the system SHALL record a 100% reading held for 24 hours from that rollout file's last-modified time (re-reading the same rollout SHALL NOT extend the hold). Otherwise the reading SHALL be treated as fresh until its weekly `resets_at`, regardless of the rollout file's age, and as unknown once `resets_at` has passed. No reading SHALL stay valid longer than 8 days past its anchor (the rollout file's last-modified time, or the probe time for a PTY `/status` reading). When the latest rollout yields no usable reading, the system SHALL fall back to a headless `codex` PTY probe that sends a minimal message and reads the weekly row of the rendered `/status` output (ignoring the 5-hour row), on the same background cadence as the Claude probe, ONLY when that fallback has been explicitly opted into (see "Costed Codex PTY fallback is opt-in and disabled by default" below). When the fallback is not opted into, a missing reading SHALL leave the cached reading stale/unknown rather than spending Codex quota. Both paths SHALL fail open: any read, parse, or subprocess error leaves the previous cached value in place (or unknown, if none exists) and logs the outcome to the daemon log without erroring the caller.
 
 #### Scenario: Weekly window is found by duration, not slot
 
@@ -87,6 +87,21 @@ The system SHALL determine Codex usage primarily by reading the `rate_limits` ob
 
 - **WHEN** the latest rollout's weekly `resets_at` is in the past
 - **THEN** the cached reading is treated as unknown
+
+#### Scenario: Short newest rollout does not hide an older valid reading
+
+- **WHEN** the newest rollout has no `rate_limits` record and an older rollout among the 10 newest has an unexpired weekly reading
+- **THEN** the probe records the older rollout's reading
+
+#### Scenario: Far-future reset is capped
+
+- **WHEN** a rollout's weekly `resets_at` lies more than 8 days after the rollout file's last-modified time
+- **THEN** the reading becomes unknown 8 days after that last-modified time
+
+#### Scenario: PTY fallback reads only the weekly row
+
+- **WHEN** the opted-in `/status` output shows a 5-hour row at 95% and a weekly row at 40%
+- **THEN** the probe records 40% with the weekly row's own reset
 
 #### Scenario: No usable rollout falls back to the live PTY probe when opted in
 

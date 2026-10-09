@@ -5,8 +5,11 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -310,4 +313,76 @@ func TestProbe_TrustDialogThatDisappearsIsNotAnswered(t *testing.T) {
 	_, _, written := f.state()
 	testutil.Equal(t, written, "")
 	testutil.Contains(t, readSlog(), "[usagebudget] probe timed out")
+}
+
+// startOrphaningSession starts a stand-in session whose leader backgrounds a
+// child that ignores SIGTERM and SIGHUP (like a stubborn MCP server or hook),
+// writes the child's pid to a file, and then runs leaderTail. It returns the
+// session and the child's pid.
+func startOrphaningSession(t *testing.T, leaderTail string) (*ptyUsageSession, int) {
+	t.Helper()
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "child.pid")
+	script := `(trap '' TERM HUP; exec sleep 30) & echo $! > ` + pidFile + `; echo READY; ` + leaderTail
+	s, err := startPTYSession(context.Background(), dir, "sh", "-c", script)
+	testutil.NoError(t, err)
+	readUntil(t, s, "READY", 5*time.Second)
+	b, err := os.ReadFile(pidFile)
+	testutil.NoError(t, err)
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	return s, pid
+}
+
+// processGone polls until pid no longer exists (or is a zombie awaiting its
+// reaper), up to d.
+func processGone(pid int, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return true
+		}
+		out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+		if err != nil || strings.HasPrefix(strings.TrimSpace(string(out)), "Z") {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
+}
+
+// Terminate kills the whole process group after the leader exits, so a
+// child ignoring SIGTERM (an MCP server, a hook) never outlives the probe.
+func TestPTYSessionTerminate_KillsGroupChildIgnoringTerm(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a PTY subprocess")
+	}
+	s, child := startOrphaningSession(t, "wait")
+
+	testutil.NoError(t, s.Terminate())
+
+	if !processGone(child, 3*time.Second) {
+		t.Fatalf("child %d ignoring SIGTERM survived Terminate", child)
+	}
+}
+
+// A session that already exited on its own is not group-signalled: its pgid
+// may since have been reused, so Terminate only closes the PTY.
+func TestPTYSessionTerminate_SkipsGroupSignalsAfterSelfExit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a PTY subprocess")
+	}
+	s, child := startOrphaningSession(t, "exit 0")
+	select {
+	case <-s.waitDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("leader did not exit on its own")
+	}
+
+	testutil.NoError(t, s.Terminate())
+
+	if err := syscall.Kill(child, 0); err != nil {
+		t.Fatalf("child was signalled after the session had already exited: %v", err)
+	}
 }

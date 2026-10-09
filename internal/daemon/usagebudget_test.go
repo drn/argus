@@ -111,7 +111,7 @@ func TestNew_DefaultProbesAreInert(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	database, err := db.OpenInMemory()
 	testutil.NoError(t, err)
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 
 	d := New(database)
 	testutil.NoError(t, d.usageBudgetProbe(context.Background()))

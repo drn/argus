@@ -239,12 +239,91 @@ func TestProbe_TrustDialogForProbeDirIsAccepted(t *testing.T) {
 	testutil.NoError(t, Probe(context.Background()))
 
 	_, _, written := f.state()
-	if written == "" {
-		t.Fatal("probe wrote no keystrokes; expected it to select the trust option")
-	}
+	// The cursor starts on "No, exit", one row above "Yes, I trust this
+	// folder": exactly one Down arrow, then Enter.
+	testutil.Equal(t, written, "\x1b[B\r")
 	got, ok := snapshot()
 	testutil.Equal(t, ok, true)
 	testutil.Equal(t, got.Percentage, 51.0)
+}
+
+// syntheticTrustDir is the probe directory named by synthetic trust dialogs.
+const syntheticTrustDir = "/tmp/argus-usage-probe-test"
+
+// syntheticTrustDialog renders a folder-trust dialog for syntheticTrustDir
+// with the given option rows (one carrying the ❯ cursor).
+func syntheticTrustDialog(options ...string) []byte {
+	lines := append([]string{
+		"Accessing workspace:",
+		"",
+		syntheticTrustDir,
+		"",
+		"Quick safety check: Is this a project you created or one you trust?",
+		"",
+	}, options...)
+	lines = append(lines, "", "Enter to confirm · Esc to cancel")
+	return []byte("\x1b[2J\x1b[H" + strings.Join(lines, "\r\n"))
+}
+
+// The trust option is chosen by its label, not by its position: whatever
+// order the dialog lists its options in, the probe moves the cursor to "Yes,
+// I trust this folder" and confirms.
+func TestProbe_TrustDialogSelectsOptionByLabel(t *testing.T) {
+	tests := []struct {
+		name    string
+		options []string
+		want    string
+	}{
+		{"cursor already on trust option", []string{"❯ Yes, I trust this folder", "  No, exit"}, "\r"},
+		{"trust option two rows down", []string{"❯ No, exit", "  Maybe later", "  Yes, I trust this folder"}, "\x1b[B\x1b[B\r"},
+		{"trust option above the cursor", []string{"  Yes, I trust this folder", "❯ No, exit", "  Maybe later"}, "\x1b[A\r"},
+		{"numbered options", []string{"❯ 1. No, exit", "  2. Yes, I trust this folder"}, "\x1b[B\r"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetState(t)
+			base, _ := fixtureBase(t)
+			nowFunc = func() time.Time { return base }
+			usage := chunked(readFixture(t, "usage_100x80.raw"), 512)
+			f := newFakeSession(syntheticTrustDialog(tt.options...))
+			pushed := false
+			f.onWrite = func(f *fakeUsageSession, p []byte) {
+				if !pushed && strings.Contains(string(p), "\r") {
+					pushed = true
+					f.push([]byte("\x1b[2J\x1b[H"))
+					f.push(usage...)
+				}
+			}
+			installFakeSession(t, f, syntheticTrustDir)
+
+			testutil.NoError(t, Probe(context.Background()))
+
+			_, _, written := f.state()
+			testutil.Equal(t, written, tt.want)
+			got, ok := snapshot()
+			testutil.Equal(t, ok, true)
+			testutil.Equal(t, got.Percentage, 51.0)
+		})
+	}
+}
+
+// A trust dialog for the probe directory whose options don't include the
+// trust label is not answered blindly: the probe aborts as blocked.
+func TestProbe_TrustDialogWithoutTrustLabelAborts(t *testing.T) {
+	resetState(t)
+	readSlog := captureSlog(t)
+	f := newFakeSession(syntheticTrustDialog("❯ No, exit", "  Proceed anyway"))
+	installFakeSession(t, f, syntheticTrustDir)
+
+	testutil.NoError(t, Probe(context.Background()))
+
+	terminated, selfExited, written := f.state()
+	testutil.Equal(t, written, "")
+	testutil.Equal(t, terminated, true)
+	testutil.Equal(t, selfExited, false)
+	_, ok := snapshot()
+	testutil.Equal(t, ok, false)
+	testutil.Contains(t, readSlog(), "[usagebudget] probe blocked by dialog")
 }
 
 // Scenario: Trust dialog for another path is not accepted.
