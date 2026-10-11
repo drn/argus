@@ -919,11 +919,15 @@ The system SHALL deliver an antigravity task's prompt through the backend's conf
 
 ### Requirement: Antigravity session capture
 
-The system SHALL capture an antigravity task's conversation ID after every exit by reading `~/.gemini/antigravity-cli/conversation_summaries.db` read-only and selecting the `conversation_id` with the newest `last_modified_time` whose `workspace_uris` names the task's worktree (comparing canonical paths after stripping `file://` and URL-decoding). When nothing matches, the store is missing, or the read fails, capture SHALL report no ID and the stored ID SHALL be kept. Resume-time refresh SHALL apply to antigravity as it does to Claude.
+The system SHALL capture an antigravity task's conversation ID after every exit by reading `~/.gemini/antigravity-cli/conversation_summaries.db` read-only and selecting the top-level (empty `parent_conversation_id`) `conversation_id` with the newest `last_modified_time` whose `workspace_uris` names the task's worktree (comparing canonical paths after stripping `file://` and URL-decoding). When nothing matches, the store is missing, or the read fails, capture SHALL report no ID and the stored ID SHALL be kept. Resume-time refresh SHALL apply to antigravity as it does to Claude.
 
 #### Scenario: Newest matching conversation captured
 - **WHEN** two conversations reference the worktree
 - **THEN** the one with the newer `last_modified_time` is returned
+
+#### Scenario: Sub-agent conversations ignored
+- **WHEN** a newer conversation for the worktree has a non-empty `parent_conversation_id`
+- **THEN** the newest top-level conversation is returned instead
 
 #### Scenario: Other workspaces ignored
 - **WHEN** the only conversations reference other directories

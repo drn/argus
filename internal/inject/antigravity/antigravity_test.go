@@ -66,12 +66,21 @@ func TestInjectMCP(t *testing.T) {
 		after, _ := os.ReadFile(p)
 		testutil.Equal(t, string(after), string(before))
 	})
-	t.Run("disabled entry re-enabled", func(t *testing.T) {
+	t.Run("operator disable respected", func(t *testing.T) {
 		p := filepath.Join(t.TempDir(), "mcp_config.json")
 		testutil.NoError(t, os.WriteFile(p, []byte(`{"mcpServers":{"argus":{"serverUrl":"http://localhost:9/mcp","disabled":true}}}`), 0o644))
+		before, _ := os.ReadFile(p)
 		testutil.NoError(t, injectMCP(p, 9))
+		after, _ := os.ReadFile(p)
+		testutil.Equal(t, string(after), string(before))
+	})
+	t.Run("disabled kept across port change", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "mcp_config.json")
+		testutil.NoError(t, os.WriteFile(p, []byte(`{"mcpServers":{"argus":{"serverUrl":"http://localhost:9/mcp","disabled":true}}}`), 0o644))
+		testutil.NoError(t, injectMCP(p, 10))
 		argus := readObj(t, p)["mcpServers"].(map[string]any)["argus"].(map[string]any)
-		testutil.Equal(t, argus["disabled"], any(false))
+		testutil.Equal(t, argus["serverUrl"], any("http://localhost:10/mcp"))
+		testutil.Equal(t, argus["disabled"], any(true))
 	})
 	t.Run("port change rewrites and preserves others", func(t *testing.T) {
 		p := filepath.Join(t.TempDir(), "mcp_config.json")

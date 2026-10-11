@@ -2155,13 +2155,9 @@ func TestSmoke_SettingsBackendTiersAddRemoveReorder(t *testing.T) {
 	sim.InjectKey(tcell.KeyRune, 'n', 0)
 	syncUI(t, app.tapp)
 	readTiers()
-	var names []string
-	readUI(t, app.tapp, func() {
-		for _, b := range app.settings.backends {
-			names = append(names, b.Name)
-		}
-	})
-	first, second := names[0], names[1]
+	// The default backend ("claude") seeds new tiers; Right steps to the next
+	// sorted backend.
+	first, second := "claude", "codex"
 	testutil.Equal(t, len(tiers), 2)
 	testutil.Equal(t, tiers[0].Backend, first)
 	testutil.Equal(t, tiers[1].Backend, first)

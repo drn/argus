@@ -1676,7 +1676,8 @@ type backendJSON struct {
 	Models []string `json:"models,omitempty"`
 	// Kind, Label, SkillPrefix, and SessionSwitcher describe the backend's
 	// family (agent.FamilyOf) so clients never hardcode backend names. Kind
-	// is "" for a custom command.
+	// is "" for a custom command; Label is the family label only for the
+	// backend named after its family, else the backend's own name.
 	Kind            string `json:"kind"`
 	Label           string `json:"label"`
 	SkillPrefix     string `json:"skill_prefix"`
@@ -1686,9 +1687,12 @@ type backendJSON struct {
 // newBackendJSON builds the wire shape for one configured backend.
 func newBackendJSON(name string, b config.Backend) backendJSON {
 	fam := agent.FamilyOf(b.Command)
-	label := fam.Label
-	if label == "" {
-		label = name
+	// The family label names only the backend that IS the family (name
+	// "codex" → "Codex"); other instances keep their own name so two
+	// backends of one family (claude, claude-haiku) stay distinguishable.
+	label := name
+	if name == string(fam.Kind) && fam.Label != "" {
+		label = fam.Label
 	}
 	return backendJSON{
 		Name:            name,

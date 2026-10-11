@@ -1074,7 +1074,13 @@ func injectGlobalBackendConfig(port int) {
 	if strings.HasSuffix(os.Args[0], ".test") {
 		return
 	}
-	for _, fam := range agent.Families() {
+	runGlobalInjectors(agent.Families(), port)
+}
+
+// runGlobalInjectors calls each family's InjectGlobal, logging per family so
+// one failure never blocks the others.
+func runGlobalInjectors(fams []*agent.Family, port int) {
+	for _, fam := range fams {
 		if fam.InjectGlobal == nil {
 			continue
 		}

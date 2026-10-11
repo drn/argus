@@ -2,6 +2,7 @@ package tui
 
 import (
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -163,12 +164,14 @@ func NewNewTaskForm(projects map[string]config.Project, defaultProject string, b
 	}
 	sort.Strings(backNames)
 
+	// Preselect the default backend; when it isn't configured fall back to
+	// "claude" (the built-in default) before the first sorted name, so a
+	// backend that merely sorts first never becomes the implicit choice.
 	backIdx := 0
-	for i, n := range backNames {
-		if n == defaultBackend {
-			backIdx = i
-			break
-		}
+	if i := slices.Index(backNames, defaultBackend); i >= 0 {
+		backIdx = i
+	} else if i := slices.Index(backNames, "claude"); i >= 0 {
+		backIdx = i
 	}
 
 	// Pre-fill branch from the default project's config.

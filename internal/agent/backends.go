@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -218,10 +221,42 @@ func injectOpencodeGlobal(port int) error {
 	return injectopencode.InjectGlobal(port, "")
 }
 
-func injectAntigravityGlobal(port int) error {
-	dir, err := skills.ManagedSkillsDir()
+// antigravityInstalledFn reports whether agy is present: on PATH (either
+// binary name) or already initialized (~/.gemini exists). A package var so
+// tests can force either answer.
+var antigravityInstalledFn = func() bool {
+	for _, bin := range backendkind.SpecOf("agy").Binaries {
+		if _, err := exec.LookPath(bin); err == nil {
+			return true
+		}
+	}
+	home, err := os.UserHomeDir()
 	if err != nil {
-		dir = ""
+		return false
+	}
+	_, err = os.Stat(filepath.Join(home, ".gemini"))
+	return err == nil
+}
+
+// injectAntigravityGlobal registers Argus in agy's global config, but only
+// when agy is installed — the daemon must never create ~/.gemini for a user
+// who doesn't run agy. The skills dir is materialized first so the
+// registered path exists.
+func injectAntigravityGlobal(port int) error {
+	if !antigravityInstalledFn() {
+		slog.Info("inject antigravity skipped: agy not installed")
+		return nil
+	}
+	dir := ""
+	if root, err := ensureSessionSkillsFn(); err != nil {
+		slog.Error("materialize builtin skills for antigravity", "err", err)
+	} else if root != "" {
+		dir = skills.BuiltinSkillsDir(root)
+	}
+	if dir == "" {
+		if d, err := skills.ManagedSkillsDir(); err == nil {
+			dir = d
+		}
 	}
 	return injectantigravity.InjectGlobal(port, dir)
 }
@@ -363,12 +398,19 @@ func commandFlagFields(command string) []string {
 }
 
 // HasPermissionFlag reports whether the command already names one of the
-// family's permission flags (as `--flag`, `--flag=value`, or `--flag value`),
-// in which case the configured permission mode is not injected.
+// family's permission flags anywhere in it (as `--flag`, `--flag=value`,
+// `--flag value`, or quoted), in which case the configured permission mode
+// is not injected. A token only matches when followed by end, whitespace,
+// `=`, or a quote, so agy's `--mode` never matches `--model`.
 func (f *Family) HasPermissionFlag(command string) bool {
-	for _, field := range commandFlagFields(command) {
-		for _, tok := range f.PermissionFlagTokens {
-			if field == tok || strings.HasPrefix(field, tok+"=") {
+	for _, tok := range f.PermissionFlagTokens {
+		for rest := command; ; {
+			i := strings.Index(rest, tok)
+			if i < 0 {
+				break
+			}
+			rest = rest[i+len(tok):]
+			if rest == "" || strings.ContainsRune(" \t\n=\"'", rune(rest[0])) {
 				return true
 			}
 		}

@@ -1847,17 +1847,21 @@ func TestHandleListBackends(t *testing.T) {
 
 func TestNewBackendJSON_FamilyMetadata(t *testing.T) {
 	cases := []struct {
-		command, kind, label, prefix string
-		switcher                     bool
+		name, command, kind, label, prefix string
+		switcher                           bool
 	}{
-		{"agy", "antigravity", "Antigravity", "/", false},
-		{"codex --x", "codex", "Codex", "$", false},
-		{"claude", "claude", "Claude Code", "/", true},
-		{"opencode", "opencode", "OpenCode", "/", false},
+		{"antigravity", "agy", "antigravity", "Antigravity", "/", false},
+		{"codex", "codex --x", "codex", "Codex", "$", false},
+		{"claude", "claude", "claude", "Claude Code", "/", true},
+		{"opencode", "opencode", "opencode", "OpenCode", "/", false},
+		// A second instance of a family keeps its own name so pickers can
+		// tell it apart from the family-named backend.
+		{"claude-haiku", "claude --model haiku", "claude", "claude-haiku", "/", true},
+		{"my-agy", "agy --mode plan", "antigravity", "my-agy", "/", false},
 	}
 	for _, tc := range cases {
-		t.Run(tc.command, func(t *testing.T) {
-			got := newBackendJSON("n", config.Backend{Command: tc.command})
+		t.Run(tc.name, func(t *testing.T) {
+			got := newBackendJSON(tc.name, config.Backend{Command: tc.command})
 			testutil.Equal(t, got.Kind, tc.kind)
 			testutil.Equal(t, got.Label, tc.label)
 			testutil.Equal(t, got.SkillPrefix, tc.prefix)

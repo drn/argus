@@ -12,7 +12,7 @@ import (
 // antigravitySchema is conversation_summaries as created by agy 1.3.3.
 const antigravitySchema = "CREATE TABLE `conversation_summaries` (`conversation_id` text,`title` text NOT NULL DEFAULT \"\",`preview` text NOT NULL DEFAULT \"\",`step_count` integer NOT NULL DEFAULT 0,`last_modified_time` datetime NOT NULL,`workspace_uris` text NOT NULL,`status` text NOT NULL DEFAULT \"\",`source` text NOT NULL DEFAULT \"\",`project_id` text NOT NULL DEFAULT \"\",`agent_name` text NOT NULL DEFAULT \"\",`parent_conversation_id` text NOT NULL DEFAULT \"\",`nesting_depth` integer NOT NULL DEFAULT 0,`battle_id` text NOT NULL DEFAULT \"\",`winning_conversation_id` text NOT NULL DEFAULT \"\",`not_fully_idle` numeric NOT NULL DEFAULT false,`killed` numeric NOT NULL DEFAULT false,`last_user_input_time` datetime NOT NULL,`last_user_input_step_index` integer NOT NULL DEFAULT -1,`app_data_dir` text NOT NULL DEFAULT \"\",`raw_summary` blob,`group_id` text NOT NULL DEFAULT \"\",PRIMARY KEY (`conversation_id`))"
 
-type agyRow struct{ id, modified, uris string }
+type agyRow struct{ id, modified, uris, parent string }
 
 func seedAntigravityDB(t *testing.T, rows ...agyRow) {
 	t.Helper()
@@ -26,7 +26,7 @@ func seedAntigravityDB(t *testing.T, rows ...agyRow) {
 	_, err = db.Exec(antigravitySchema)
 	testutil.NoError(t, err)
 	for _, r := range rows {
-		_, err = db.Exec(`INSERT INTO conversation_summaries (conversation_id, last_modified_time, workspace_uris, last_user_input_time) VALUES (?, ?, ?, ?)`, r.id, r.modified, r.uris, r.modified)
+		_, err = db.Exec(`INSERT INTO conversation_summaries (conversation_id, last_modified_time, workspace_uris, last_user_input_time, parent_conversation_id) VALUES (?, ?, ?, ?, ?)`, r.id, r.modified, r.uris, r.modified, r.parent)
 		testutil.NoError(t, err)
 	}
 }
@@ -36,16 +36,25 @@ func TestCaptureAntigravitySessionID(t *testing.T) {
 	other := t.TempDir()
 	t.Run("newest matching conversation wins", func(t *testing.T) {
 		seedAntigravityDB(t,
-			agyRow{"old", "2026-10-01 10:00:00", `["file://` + wt + `"]`},
-			agyRow{"new", "2026-10-02 10:00:00", `["file://` + wt + `"]`},
-			agyRow{"newest-other", "2026-10-03 10:00:00", `["file://` + other + `"]`},
+			agyRow{"old", "2026-10-01 10:00:00", `["file://` + wt + `"]`, ""},
+			agyRow{"new", "2026-10-02 10:00:00", `["file://` + wt + `"]`, ""},
+			agyRow{"newest-other", "2026-10-03 10:00:00", `["file://` + other + `"]`, ""},
 		)
 		id, err := CaptureAntigravitySessionID(wt)
 		testutil.NoError(t, err)
 		testutil.Equal(t, id, "new")
 	})
+	t.Run("newer sub-agent conversation ignored", func(t *testing.T) {
+		seedAntigravityDB(t,
+			agyRow{id: "main", modified: "2026-10-02 10:00:00", uris: `["file://` + wt + `"]`},
+			agyRow{id: "sub", modified: "2026-10-03 10:00:00", uris: `["file://` + wt + `"]`, parent: "main"},
+		)
+		id, err := CaptureAntigravitySessionID(wt)
+		testutil.NoError(t, err)
+		testutil.Equal(t, id, "main")
+	})
 	t.Run("multi-workspace conversation matches", func(t *testing.T) {
-		seedAntigravityDB(t, agyRow{"multi", "2026-10-02 10:00:00", `["file://` + other + `","file://` + wt + `"]`})
+		seedAntigravityDB(t, agyRow{"multi", "2026-10-02 10:00:00", `["file://` + other + `","file://` + wt + `"]`, ""})
 		id, err := CaptureAntigravitySessionID(wt)
 		testutil.NoError(t, err)
 		testutil.Equal(t, id, "multi")
@@ -53,13 +62,13 @@ func TestCaptureAntigravitySessionID(t *testing.T) {
 	t.Run("symlinked worktree matches", func(t *testing.T) {
 		link := filepath.Join(t.TempDir(), "link")
 		testutil.NoError(t, os.Symlink(wt, link))
-		seedAntigravityDB(t, agyRow{"via-real", "2026-10-02 10:00:00", `["file://` + canonPath(wt) + `"]`})
+		seedAntigravityDB(t, agyRow{"via-real", "2026-10-02 10:00:00", `["file://` + canonPath(wt) + `"]`, ""})
 		id, err := CaptureAntigravitySessionID(link)
 		testutil.NoError(t, err)
 		testutil.Equal(t, id, "via-real")
 	})
 	t.Run("no match", func(t *testing.T) {
-		seedAntigravityDB(t, agyRow{"x", "2026-10-02 10:00:00", `["file://` + other + `"]`})
+		seedAntigravityDB(t, agyRow{"x", "2026-10-02 10:00:00", `["file://` + other + `"]`, ""})
 		_, err := CaptureAntigravitySessionID(wt)
 		testutil.Contains(t, err.Error(), "no conversation")
 	})

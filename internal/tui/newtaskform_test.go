@@ -2257,3 +2257,17 @@ func TestNewTaskForm_ACTriggerAndAccountToolFromFamily(t *testing.T) {
 		})
 	}
 }
+
+func TestNewTaskForm_UnknownDefaultFallsBackToClaude(t *testing.T) {
+	backends := map[string]config.Backend{
+		"antigravity": {Command: "agy"},
+		"claude":      {Command: "claude"},
+		"codex":       {Command: "codex"},
+	}
+	f := NewNewTaskForm(map[string]config.Project{}, "", backends, "")
+	testutil.Equal(t, f.backendNames[f.backendIdx], "claude")
+	f = NewNewTaskForm(map[string]config.Project{}, "", backends, "codex")
+	testutil.Equal(t, f.backendNames[f.backendIdx], "codex")
+	f = NewNewTaskForm(map[string]config.Project{}, "", map[string]config.Backend{"b": {}, "a": {}}, "")
+	testutil.Equal(t, f.backendNames[f.backendIdx], "a")
+}

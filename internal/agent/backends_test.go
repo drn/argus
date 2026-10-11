@@ -73,7 +73,9 @@ func TestFamily_HasPermissionFlag(t *testing.T) {
 		{"agy mode value", agy, "agy --mode plan", true},
 		{"agy mode equals", agy, "agy --mode=plan", true},
 		{"agy --model is not --mode", agy, "agy --model gemini", false},
-		{"agy flag after separator ignored", agy, "agy -- --mode", false},
+		{"agy --model then --mode", agy, "agy --model x --mode plan", true},
+		{"claude flag after separator still counts", claude, "claude -- --permission-mode", true},
+		{"claude quoted flag", claude, `claude "--permission-mode" plan`, true},
 		{"claude permission-mode", claude, "claude --permission-mode plan", true},
 		{"claude allow-dangerously", claude, "claude --allow-dangerously-skip-permissions", true},
 		{"claude bare", claude, "claude", false},
@@ -227,7 +229,7 @@ func TestBackendSandboxRules(t *testing.T) {
 
 func TestCaptureAndRecapture_Antigravity(t *testing.T) {
 	wt := t.TempDir()
-	seedAntigravityDB(t, agyRow{"conv-1", "2026-10-02 10:00:00", `["file://` + wt + `"]`})
+	seedAntigravityDB(t, agyRow{"conv-1", "2026-10-02 10:00:00", `["file://` + wt + `"]`, ""})
 	cfg := config.DefaultConfig()
 	task := &model.Task{ID: "t1", Backend: "antigravity", Worktree: wt, SessionID: "older"}
 
@@ -260,8 +262,8 @@ func TestRefreshResumeSessionID_AntigravityRefreshesToNewest(t *testing.T) {
 	d := newResumeTestDB(t)
 	wt := t.TempDir()
 	seedAntigravityDB(t,
-		agyRow{"first", "2026-10-01 10:00:00", `["file://` + wt + `"]`},
-		agyRow{"second", "2026-10-02 10:00:00", `["file://` + wt + `"]`},
+		agyRow{"first", "2026-10-01 10:00:00", `["file://` + wt + `"]`, ""},
+		agyRow{"second", "2026-10-02 10:00:00", `["file://` + wt + `"]`, ""},
 	)
 	task := &model.Task{Name: "t", Project: "p", Worktree: wt, Backend: "antigravity", SessionID: "first"}
 	testutil.NoError(t, d.Add(task))
@@ -308,6 +310,16 @@ func TestInjectGlobalHooks(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
+	old := antigravityInstalledFn
+	defer func() { antigravityInstalledFn = old }()
+
+	antigravityInstalledFn = func() bool { return false }
+	testutil.NoError(t, injectAntigravityGlobal(7742))
+	if _, err := os.Stat(filepath.Join(home, ".gemini")); !os.IsNotExist(err) {
+		t.Fatalf("agy not installed: ~/.gemini must not be created (stat err=%v)", err)
+	}
+
+	antigravityInstalledFn = func() bool { return true }
 	testutil.NoError(t, injectAntigravityGlobal(7742))
 	raw, err := os.ReadFile(filepath.Join(home, ".gemini", "config", "skills.json"))
 	testutil.NoError(t, err)
@@ -317,4 +329,33 @@ func TestInjectGlobalHooks(t *testing.T) {
 	raw, err = os.ReadFile(filepath.Join(home, ".config", "opencode", "opencode.json"))
 	testutil.NoError(t, err)
 	testutil.Contains(t, string(raw), "http://localhost:7742/mcp")
+}
+
+func TestInjectAntigravityGlobal_UsesMaterializedSkillsDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	oldInstalled, oldSkills := antigravityInstalledFn, ensureSessionSkillsFn
+	defer func() { antigravityInstalledFn, ensureSessionSkillsFn = oldInstalled, oldSkills }()
+	antigravityInstalledFn = func() bool { return true }
+	ensureSessionSkillsFn = func() (string, error) { return "/materialized", nil }
+
+	testutil.NoError(t, injectAntigravityGlobal(1))
+	raw, err := os.ReadFile(filepath.Join(home, ".gemini", "config", "skills.json"))
+	testutil.NoError(t, err)
+	testutil.Contains(t, string(raw), filepath.Join("/materialized", ".claude", "skills"))
+}
+
+func TestAntigravityInstalledFn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", t.TempDir())
+	testutil.Equal(t, antigravityInstalledFn(), false)
+	testutil.NoError(t, os.MkdirAll(filepath.Join(home, ".gemini"), 0o755))
+	testutil.Equal(t, antigravityInstalledFn(), true)
+
+	bin := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", bin)
+	testutil.NoError(t, os.WriteFile(filepath.Join(bin, "agy"), []byte("#!/bin/sh\n"), 0o755))
+	testutil.Equal(t, antigravityInstalledFn(), true)
 }

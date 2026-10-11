@@ -21,7 +21,8 @@ func antigravityConversationDB() (string, error) {
 }
 
 // CaptureAntigravitySessionID returns the conversation ID of the most
-// recently modified agy conversation whose workspace is the given worktree.
+// recently modified top-level agy conversation whose workspace is the given
+// worktree.
 // agy indexes conversations in SQLite (table conversation_summaries) with a
 // workspace_uris column listing file:// URIs; the database is opened
 // read-only (mode=ro, not immutable, so the WAL's newest rows are seen).
@@ -43,8 +44,11 @@ func CaptureAntigravitySessionID(worktreePath string) (string, error) {
 	}
 	defer func() { _ = db.Close() }()
 
+	// Sub-agent conversations carry their parent's ID and share the
+	// workspace; only a top-level conversation is resumable as the task.
 	rows, err := db.Query(`SELECT conversation_id, workspace_uris FROM conversation_summaries
-		WHERE conversation_id <> '' ORDER BY last_modified_time DESC`)
+		WHERE conversation_id <> '' AND parent_conversation_id = ''
+		ORDER BY last_modified_time DESC`)
 	if err != nil {
 		return "", fmt.Errorf("CaptureAntigravitySessionID: query: %w", err)
 	}

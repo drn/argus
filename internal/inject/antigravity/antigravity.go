@@ -53,7 +53,9 @@ func InjectGlobal(port int, skillsDir string) error {
 
 // injectMCP sets mcpServers.argus = {"serverUrl": url, "disabled": false}.
 // serverUrl is what agy's own `agy mcp add` writes; current agy also reads
-// "url", so an entry using either key is accepted as correct.
+// "url", so an entry using either key is accepted as correct. An operator's
+// `agy mcp disable argus` is respected: an existing entry's disabled flag is
+// carried over when the URL is refreshed, never reset.
 func injectMCP(path string, port int) error {
 	data, err := atomicfile.ReadJSONObject(path, label)
 	if err != nil {
@@ -64,13 +66,14 @@ func injectMCP(path string, port int) error {
 	if servers == nil {
 		servers = map[string]any{}
 	}
+	disabled := false
 	if existing, ok := servers[mcpServerName].(map[string]any); ok {
-		pointsHere := existing["serverUrl"] == url || existing["url"] == url
-		if pointsHere && existing["disabled"] != true {
+		if existing["serverUrl"] == url || existing["url"] == url {
 			return nil
 		}
+		disabled = existing["disabled"] == true
 	}
-	servers[mcpServerName] = map[string]any{"serverUrl": url, "disabled": false}
+	servers[mcpServerName] = map[string]any{"serverUrl": url, "disabled": disabled}
 	data["mcpServers"] = servers
 	return atomicfile.WriteJSON(path, data, label)
 }
