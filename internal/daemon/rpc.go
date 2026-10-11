@@ -58,7 +58,7 @@ func (s *RPCService) BootInfo(_ *Empty, resp *BootInfoResp) error {
 	// Cached usage-probe readings (fix-backend-routing-semantics): read-only
 	// snapshots of this daemon process's own in-memory caches, never a live
 	// probe. ClaudeUsageKnown/CodexUsageKnown already fold in staleness (see
-	// each package's CacheMaxAge), so a TUI or doctor consumer needs no
+	// each package's cache validity rules), so a TUI or doctor consumer needs no
 	// separate freshness check of its own.
 	resp.ClaudeUsagePct, resp.ClaudeUsageKnown = usagebudget.CachedClaudePct()
 	resp.CodexUsagePct, resp.CodexUsageKnown = backendtier.CachedCodexPct()

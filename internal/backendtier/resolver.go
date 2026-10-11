@@ -1,8 +1,13 @@
 package backendtier
 
 import (
+	"fmt"
+	"log/slog"
+	"sync"
+
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/usagebudget"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // claudeCachedPct / codexCachedPct are indirected through package-level vars
@@ -25,8 +30,12 @@ var (
 // capped tier is at/over threshold with no uncapped tier in the list —
 // callers fall back to their own existing single-default-backend precedence.
 func ResolveBackend(cfg config.Config) string {
-	if cfg.BackendRouting.Strategy == config.StrategyHeadroom {
+	switch cfg.BackendRouting.Strategy {
+	case config.StrategyHeadroom:
 		return resolveHeadroom(cfg)
+	case "", config.StrategyOrdered:
+	default:
+		warnUnknownStrategy(cfg.BackendRouting.Strategy)
 	}
 	for _, tier := range cfg.BackendRouting.Tiers {
 		if _, ok := cfg.Backends[tier.Backend]; !ok {
@@ -68,11 +77,60 @@ func underThreshold(cached func() (float64, bool), thresholdPct int) bool {
 // threshold, the one with the largest threshold−pct headroom (ties → list
 // order); failing that, the first tier with no usable reading (stale/unknown
 // capped tiers and none-probe tiers) in list order; failing that, "".
-//
-// TODO(fix-backend-usage-routing stage 5): stub — always returns "". Stage 5
-// also logs an unrecognized Strategy value once per distinct value (via slog,
-// so it reaches daemon.log) and treats it as ordered.
 func resolveHeadroom(cfg config.Config) string {
-	_ = cfg
-	return ""
+	var (
+		best        string
+		bestScore   float64
+		haveBest    bool
+		firstUnread string
+	)
+	for _, tier := range cfg.BackendRouting.Tiers {
+		if _, ok := cfg.Backends[tier.Backend]; !ok {
+			continue
+		}
+		var cached func() (float64, bool)
+		switch tier.Probe {
+		case config.ProbeNone:
+		case config.ProbeClaudeUsage:
+			cached = claudeCachedPct
+		case config.ProbeCodexUsage:
+			cached = codexCachedPct
+		default:
+			continue
+		}
+		pct, known := 0.0, false
+		if cached != nil {
+			pct, known = cached()
+		}
+		if !known {
+			if firstUnread == "" {
+				firstUnread = tier.Backend
+			}
+			continue
+		}
+		score := float64(tier.ThresholdPct) - pct
+		if score <= 0 {
+			continue
+		}
+		if !haveBest || score > bestScore {
+			best, bestScore, haveBest = tier.Backend, score, true
+		}
+	}
+	if haveBest {
+		return best
+	}
+	return firstUnread
+}
+
+var warnedStrategies sync.Map
+
+// warnUnknownStrategy logs an unrecognized strategy once per distinct value;
+// slog so it reaches daemon.log, where resolution usually runs.
+func warnUnknownStrategy(strategy string) {
+	if _, seen := warnedStrategies.LoadOrStore(strategy, struct{}{}); seen {
+		return
+	}
+	msg := fmt.Sprintf("[backendtier] unrecognized backend_routing strategy %q; treating as %q", strategy, config.StrategyOrdered)
+	uxlog.Log("%s", msg)
+	slog.Warn(msg)
 }

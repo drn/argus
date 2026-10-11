@@ -1008,6 +1008,13 @@ Argus adds `--auto` when launching OpenCode, including resumed sessions and stor
 
 An ordered list of backend "tiers" for **default task-backend selection** — generalizes `[hera.worker_budget]`'s hera-only, single-fallback usage steering into an arbitrary-length chain consulted by ordinary (non-hera) task creation. The resolver walks `tier` in order and picks the first tier that's uncapped, under its threshold, or unprobeable (fail-open); it's consulted only when a task has no explicit backend and its project has none configured either — it never overrides those. Also editable from Settings → **Backend Tiers** (`n` add, `d` remove, `K`/`J` reorder, `p` cycle probe kind, `e` edit threshold) when this table is absent from config.toml; **a non-empty table here is authoritative and renders that Settings category read-only**, same precedent as `[backends.<name>]`'s "(command is hardcoded)" case. No table (or an empty `tier` list) leaves backend resolution exactly as it was before this feature — a single `defaults.backend`.
 
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `strategy` | string | `"ordered"` | `ordered` picks the first available tier (above). `headroom` picks the tier with the most room under its threshold (`threshold_pct − usage`, ties → list order), preferring any tier with a known reading over tiers with no reading (unknown/stale probes and `none` tiers, taken in list order). An unrecognized value is logged and treated as `ordered`. config.toml-only, read even when the tiers come from Settings. |
+| `codex_pty_fallback_enabled` | bool | `false` | Allow the costed headless `codex` `/status` probe when no Codex rollout file has a usable reading. |
+
+Both usage probes run once at daemon startup and then every 30 minutes; the Claude probe runs in `~/.argus/usage-probe`. Codex readings use the weekly (10080-minute) window and stay valid until its reset.
+
 `[[backend_routing.tier]]` (repeatable, in resolution order):
 
 | Key | Type | Default | Description |

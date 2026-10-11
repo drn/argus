@@ -96,13 +96,14 @@ func TestParseLatestRateLimits_DepletedFixtureReadsFull(t *testing.T) {
 	testutil.Equal(t, got.ResetAt.IsZero(), true)
 }
 
-// A depleted reading is held 24h from the probe time.
-func TestProbe_DepletedReadingHeld24hFromProbe(t *testing.T) {
+// A depleted reading is held 24h from the rollout file's mtime, not the probe
+// time, so re-probing the same file can't extend the hold.
+func TestProbe_DepletedReadingHeld24hFromRolloutMtime(t *testing.T) {
 	resetCodexState(t)
-	probedAt := fixtureNow
-	now := probedAt
+	mtime := fixtureNow.Add(-time.Hour)
+	now := fixtureNow
 	codexNowFunc = func() time.Time { return now }
-	installFixtureRollout(t, "rollout_depleted.jsonl", probedAt.Add(-72*time.Hour))
+	installFixtureRollout(t, "rollout_depleted.jsonl", mtime)
 	codexRolloutProbeRunner = rolloutReading
 
 	testutil.NoError(t, Probe(context.Background()))
@@ -111,12 +112,23 @@ func TestProbe_DepletedReadingHeld24hFromProbe(t *testing.T) {
 	testutil.Equal(t, ok, true)
 	testutil.Equal(t, pct, 100.0)
 
-	now = probedAt.Add(23 * time.Hour)
+	now = mtime.Add(23 * time.Hour)
+	testutil.NoError(t, Probe(context.Background()))
 	_, ok = CachedCodexPct()
 	testutil.Equal(t, ok, true)
 
-	now = probedAt.Add(25 * time.Hour)
+	now = mtime.Add(25 * time.Hour)
 	_, ok = CachedCodexPct()
+	testutil.Equal(t, ok, false)
+}
+
+// A depleted rollout already older than the hold yields no reading.
+func TestRolloutReading_DepletedPastHoldIsUnknown(t *testing.T) {
+	resetCodexState(t)
+	codexNowFunc = func() time.Time { return fixtureNow }
+	installFixtureRollout(t, "rollout_depleted.jsonl", fixtureNow.Add(-72*time.Hour))
+
+	_, ok := rolloutReading()
 	testutil.Equal(t, ok, false)
 }
 

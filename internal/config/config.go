@@ -100,11 +100,7 @@ type BackendRoutingConfig struct {
 	// StrategyOrdered (the default when empty) or StrategyHeadroom. An
 	// unrecognized value is treated as ordered. config.toml-only — no
 	// DB/Settings surface (fix-backend-usage-routing).
-	//
-	// TODO(fix-backend-usage-routing stage 5): the toml tag is deliberately
-	// disabled ("-") until stage 5 wires decoding; switch it to
-	// `toml:"strategy"`.
-	Strategy string `toml:"-"`
+	Strategy string `toml:"strategy"`
 }
 
 // Routing strategies a BackendRoutingConfig.Strategy may name.
