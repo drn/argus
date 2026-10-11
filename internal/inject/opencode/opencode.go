@@ -122,9 +122,15 @@ func injectOpencodeJSON(path string, port int, skillsDir string) error {
 
 	url := fmt.Sprintf("http://localhost:%d/mcp", port)
 
+	// An operator who turned the entry off (enabled: false) keeps it off:
+	// the URL is refreshed but the choice is carried over, never reset.
 	mcpCorrect := false
+	enabled := true
 	if existing, ok := mcp[mcpServerName].(map[string]any); ok {
-		mcpCorrect = existing["url"] == url && existing["type"] == "remote" && existing["enabled"] == true
+		mcpCorrect = existing["url"] == url && existing["type"] == "remote" && existing["enabled"] != nil
+		if e, isBool := existing["enabled"].(bool); isBool {
+			enabled = e
+		}
 	}
 
 	skills, skillsCorrect := ensureSkillsEntry(data["skills"], skillsDir)
@@ -136,7 +142,7 @@ func injectOpencodeJSON(path string, port int, skillsDir string) error {
 	mcp[mcpServerName] = map[string]any{
 		"type":    "remote",
 		"url":     url,
-		"enabled": true,
+		"enabled": enabled,
 	}
 	data["mcp"] = mcp
 	if skills != nil {

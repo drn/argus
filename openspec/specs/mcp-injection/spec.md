@@ -10,7 +10,8 @@ Argus SHALL register itself as an MCP server in opencode's
 `~/.config/opencode/opencode.json` under the `mcp` object as an `argus` entry of
 the form `{"type": "remote", "url": "<localhost url on the configured port>",
 "enabled": true}`. Registration SHALL be idempotent: the file SHALL be rewritten
-only when the entry is absent or its url points at a different port. All
+only when the entry is absent or its url points at a different port, and an
+existing entry's `enabled: false` SHALL be carried over, never reset. All
 unrelated keys (including other `mcp` entries and top-level config) SHALL be
 preserved verbatim. The `~/.config/opencode` directory and the config file SHALL
 be created if missing. When the file exists but is not valid JSON, the system
@@ -77,7 +78,7 @@ At daemon startup, Argus SHALL remove only its `argus` and `argus-kb` MCP entrie
 
 ### Requirement: Idempotent antigravity MCP server registration
 
-Argus SHALL register itself in agy's `~/.gemini/config/mcp_config.json` as `mcpServers.argus = {"serverUrl": "<localhost url on the configured port>", "disabled": false}` at daemon startup and again before each antigravity launch (so an agy installed after the daemon started is still registered), only when agy is installed (`agy` or `antigravity` on PATH, or `~/.gemini/antigravity-cli` already present — bare `~/.gemini` also belongs to Gemini CLI and does not count). Registration SHALL be idempotent (rewrite only when the entry is absent or points elsewhere), SHALL carry over an existing entry's `disabled` flag so an operator's `agy mcp disable argus` is respected, SHALL preserve every unrelated key, SHALL create the directory and file if missing, and SHALL leave an unparseable file untouched and report an error.
+Argus SHALL register itself in agy's `~/.gemini/config/mcp_config.json` as `mcpServers.argus = {"serverUrl": "<localhost url on the configured port>", "disabled": false}` at daemon startup — only when agy is installed (`agy` on PATH, or `~/.gemini/antigravity-cli` already present; bare `~/.gemini` also belongs to Gemini CLI and does not count) — and again before each antigravity launch, unconditionally, since the launch itself proves agy is installed (a launchd daemon's PATH may not include it). Registration SHALL be idempotent (rewrite only when the entry is absent or points elsewhere), SHALL carry over an existing entry's `disabled` flag so an operator's `agy mcp disable argus` is respected, SHALL preserve every unrelated key, SHALL create the directory and file if missing, and SHALL leave an unparseable file untouched and report an error.
 
 #### Scenario: Entry created
 - **WHEN** injection runs against a config with no `argus` entry

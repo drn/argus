@@ -383,7 +383,7 @@ func IsClaudeBackend(command string) bool { return backendkind.Of(command) == ba
 func IsOpencodeBackend(command string) bool { return backendkind.Of(command) == backendkind.Opencode }
 
 // IsAntigravityBackend reports whether a backend command is the Antigravity
-// CLI (`agy`, or the cask's raw `antigravity` binary).
+// CLI (`agy`).
 func IsAntigravityBackend(command string) bool {
 	return backendkind.Of(command) == backendkind.Antigravity
 }
@@ -830,6 +830,10 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	if cfg.MCPPort > 0 && fam.InjectGlobal != nil {
 		injectGlobalAtSpawnFn(fam, cfg.MCPPort)
 	}
+	// A sandboxed process can't create a missing parent of its own grant
+	// (agy's ~/.gemini/... on a first run), so create the family's grant dirs
+	// here, unsandboxed.
+	ensureSandboxGrantDirs(fam, ResolveSandboxConfig(task, cfg))
 
 	// Inject the configured permission mode through the family's own flag
 	// vocabulary. Families without a mapping (and custom/bare commands) never

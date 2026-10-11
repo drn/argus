@@ -1743,11 +1743,12 @@ func (s *Server) handleCreateBackend(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name and command are required", nil)
 		return
 	}
-	if err := s.db.SetBackend(req.Name, config.Backend{Command: req.Command, PromptFlag: req.PromptFlag, Model: req.Model}); err != nil {
+	b := config.Backend{Command: req.Command, PromptFlag: req.PromptFlag, Model: req.Model}
+	if err := s.db.SetBackend(req.Name, b); err != nil {
 		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, req)
+	writeJSON(w, http.StatusCreated, newBackendJSON(req.Name, b))
 }
 
 // handleUpdateBackend overwrites the backend keyed by path-param name.
@@ -1767,12 +1768,12 @@ func (s *Server) handleUpdateBackend(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "command is required", nil)
 		return
 	}
-	if err := s.db.SetBackend(name, config.Backend{Command: req.Command, PromptFlag: req.PromptFlag, Model: req.Model}); err != nil {
+	b := config.Backend{Command: req.Command, PromptFlag: req.PromptFlag, Model: req.Model}
+	if err := s.db.SetBackend(name, b); err != nil {
 		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
-	req.Name = name
-	writeJSON(w, http.StatusOK, req)
+	writeJSON(w, http.StatusOK, newBackendJSON(name, b))
 }
 
 // handleDeleteBackend removes a backend from config. Master-only.

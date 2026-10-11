@@ -57,7 +57,7 @@ func TestFamilyOf(t *testing.T) {
 	testutil.Equal(t, FamilyOf("/opt/homebrew/bin/agy --x").Kind, backendkind.Antigravity)
 	testutil.Equal(t, FamilyOf("my-wrapper").IsCustom(), true)
 	testutil.Equal(t, FamilyForKind("nope").IsCustom(), true)
-	testutil.Equal(t, IsAntigravityBackend("antigravity"), true)
+	testutil.Equal(t, IsAntigravityBackend("antigravity"), false) // may be the IDE launcher
 	testutil.Equal(t, IsAntigravityBackend("agy-helper"), false)
 }
 
@@ -221,7 +221,8 @@ func TestBuildCmd_AntigravityMaterializesSkillsWithoutFlag(t *testing.T) {
 func TestBackendSandboxRules(t *testing.T) {
 	rules := backendSandboxRules()
 	for _, want := range []string{
-		`(allow file-write* (subpath (string-append (param "HOME") "/.gemini")))`,
+		`(allow file-write* (subpath (string-append (param "HOME") "/.gemini/antigravity-cli")))`,
+		`(allow file-write* (subpath (string-append (param "HOME") "/.gemini/config")))`,
 		`(allow file-write* (prefix (string-append (param "HOME") "/.claude.json")))`,
 		`(allow file-write* (subpath (string-append (param "HOME") "/.codex")))`,
 		`(allow file-write* (subpath (string-append (param "HOME") "/.pi")))`,
@@ -318,18 +319,24 @@ func TestInjectGlobalHooks(t *testing.T) {
 	defer func() { antigravityInstalledFn = old }()
 
 	antigravityInstalledFn = func() bool { return false }
-	testutil.NoError(t, injectAntigravityGlobal(7742))
+	testutil.NoError(t, injectAntigravityGlobal(7742, false))
 	if _, err := os.Stat(filepath.Join(home, ".gemini")); !os.IsNotExist(err) {
 		t.Fatalf("agy not installed: ~/.gemini must not be created (stat err=%v)", err)
 	}
 
+	// Launching agy proves it's installed even when the gate can't see it
+	// (launchd PATH without ~/.local/bin, fresh ~/.gemini).
+	testutil.NoError(t, injectAntigravityGlobal(7742, true))
+	_, err := os.Stat(filepath.Join(home, ".gemini", "config", "mcp_config.json"))
+	testutil.NoError(t, err)
+
 	antigravityInstalledFn = func() bool { return true }
-	testutil.NoError(t, injectAntigravityGlobal(7742))
+	testutil.NoError(t, injectAntigravityGlobal(7742, false))
 	raw, err := os.ReadFile(filepath.Join(home, ".gemini", "config", "skills.json"))
 	testutil.NoError(t, err)
 	testutil.Contains(t, string(raw), filepath.Join(home, ".argus", "skills", ".claude", "skills"))
 
-	testutil.NoError(t, injectOpencodeGlobal(7742))
+	testutil.NoError(t, injectOpencodeGlobal(7742, false))
 	raw, err = os.ReadFile(filepath.Join(home, ".config", "opencode", "opencode.json"))
 	testutil.NoError(t, err)
 	testutil.Contains(t, string(raw), "http://localhost:7742/mcp")
@@ -343,7 +350,7 @@ func TestInjectAntigravityGlobal_UsesMaterializedSkillsDir(t *testing.T) {
 	antigravityInstalledFn = func() bool { return true }
 	ensureSessionSkillsFn = func() (string, error) { return "/materialized", nil }
 
-	testutil.NoError(t, injectAntigravityGlobal(1))
+	testutil.NoError(t, injectAntigravityGlobal(1, false))
 	raw, err := os.ReadFile(filepath.Join(home, ".gemini", "config", "skills.json"))
 	testutil.NoError(t, err)
 	testutil.Contains(t, string(raw), filepath.Join("/materialized", ".claude", "skills"))
@@ -392,6 +399,42 @@ func TestBuildCmd_InjectsGlobalConfigAtSpawn(t *testing.T) {
 
 func TestInjectGlobalAtSpawnFn_InertUnderTest(t *testing.T) {
 	called := false
-	injectGlobalAtSpawnFn(&Family{InjectGlobal: func(int) error { called = true; return nil }}, 1)
+	injectGlobalAtSpawnFn(&Family{InjectGlobal: func(int, bool) error { called = true; return nil }}, 1)
 	testutil.Equal(t, called, false)
+}
+
+func TestBackendSandboxRules_NoBareGeminiGrant(t *testing.T) {
+	if strings.Contains(backendSandboxRules(), `"/.gemini")`) {
+		t.Fatal("all of ~/.gemini must not be writable: Gemini CLI keeps credentials at its root")
+	}
+}
+
+func TestEnsureSandboxGrantDirsIn(t *testing.T) {
+	agy := FamilyForKind(backendkind.Antigravity)
+	home := t.TempDir()
+	ensureSandboxGrantDirsIn(agy, config.SandboxConfig{Enabled: false}, home)
+	_, err := os.Stat(filepath.Join(home, ".gemini"))
+	testutil.Equal(t, os.IsNotExist(err), true)
+
+	if !IsSandboxAvailable() {
+		t.Skip("sandbox-exec unavailable")
+	}
+	ensureSandboxGrantDirsIn(agy, config.SandboxConfig{Enabled: true}, home)
+	for _, g := range agy.SandboxGrants {
+		info, err := os.Stat(filepath.Join(home, g.HomeRel))
+		testutil.NoError(t, err)
+		testutil.Equal(t, info.IsDir(), true)
+	}
+	// Prefix grants (files) are never created as directories.
+	claudeHome := t.TempDir()
+	ensureSandboxGrantDirsIn(FamilyForKind(backendkind.Claude), config.SandboxConfig{Enabled: true}, claudeHome)
+	_, err = os.Stat(filepath.Join(claudeHome, ".claude.json"))
+	testutil.Equal(t, os.IsNotExist(err), true)
+}
+
+func TestEnsureSandboxGrantDirsFn_InertUnderTest(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ensureSandboxGrantDirs(FamilyForKind(backendkind.Antigravity), config.SandboxConfig{Enabled: true})
+	_, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".gemini"))
+	testutil.Equal(t, os.IsNotExist(err), true)
 }

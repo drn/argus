@@ -11,9 +11,15 @@ import (
 func TestRunGlobalInjectors_CallsEachAndSurvivesFailures(t *testing.T) {
 	var calls []int
 	fams := []*agent.Family{
-		{InjectGlobal: func(port int) error { calls = append(calls, port); return errors.New("boom") }},
+		{InjectGlobal: func(port int, launching bool) error {
+			if launching {
+				t.Error("daemon startup must pass launching=false")
+			}
+			calls = append(calls, port)
+			return errors.New("boom")
+		}},
 		{},
-		{InjectGlobal: func(port int) error { calls = append(calls, port*10); return nil }},
+		{InjectGlobal: func(port int, _ bool) error { calls = append(calls, port*10); return nil }},
 	}
 	runGlobalInjectors(fams, 7)
 	testutil.DeepEqual(t, calls, []int{7, 70})

@@ -125,7 +125,10 @@ const (
 	//     profile's backend grants are generated from the registry, adding
 	//     ~/.gemini. Families without a per-launch MCP flag (opencode, agy)
 	//     re-run their idempotent global-config registration before each
-	//     launch. A stale supervisor spawns agy as a custom backend.
+	//     launch (ungated for agy: the launch proves it's installed), and
+	//     pre-create the launching family's sandbox grant dirs (agy gets
+	//     ~/.gemini/{antigravity-cli,config,jetski}, never all of ~/.gemini).
+	//     A stale supervisor spawns agy as a custom backend.
 	SupervisorSpawnSurface = 16
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
@@ -317,20 +320,23 @@ func CompareSupervisorSurface(reported SurfaceVersion) SurfaceSkew {
 // omission from this list is exactly the silent false-negative the surface
 // version is guarded against.
 var SupervisorSpawnPaths = []string{
-	"internal/agent/agent.go",             // BuildCmd: argv, env, dir, cache-dir redirection
-	"internal/agent/backends.go",          // backend family registry BuildCmd dispatches on
-	"internal/backendkind/backendkind.go", // command → family classification
-	"internal/agent/claudeaccount.go",     // per-task account dir bootstrap, env hygiene, sandbox grant
-	"internal/agent/codexaccount.go",      // per-task Codex home, env hygiene, sandbox grant
-	"internal/config/accounts.go",         // account → config dir resolution BuildCmd reads
-	"internal/agent/nonclaude_context.go", // OpenCode child-only skills config content
-	"internal/agent/prelaunch.go",         // backend prelaunch (pi/ollama) run before the fork
-	"internal/agent/routing_prompt.go",    // --append-system-prompt-file routing injection
-	"internal/agent/sandbox.go",           // the sandbox-exec wrapper the command is wrapped in
-	"internal/agent/secret.go",            // point-of-use secret resolution inside BuildCmd
-	"internal/agent/secretregistry.go",    // the resolver registry BuildCmd resolves through
-	"internal/skills/builtin.go",          // builtin skills materialized at spawn time
-	"internal/skills/skills.go",           // --add-dir skill provisioning
+	"internal/agent/agent.go",                    // BuildCmd: argv, env, dir, cache-dir redirection
+	"internal/agent/backends.go",                 // backend family registry BuildCmd dispatches on
+	"internal/backendkind/backendkind.go",        // command → family classification
+	"internal/inject/antigravity/antigravity.go", // agy global config BuildCmd refreshes before launch
+	"internal/inject/atomicfile/atomicfile.go",   // atomic writer the global-config injectors use
+	"internal/inject/opencode/opencode.go",       // opencode global config BuildCmd refreshes before launch
+	"internal/agent/claudeaccount.go",            // per-task account dir bootstrap, env hygiene, sandbox grant
+	"internal/agent/codexaccount.go",             // per-task Codex home, env hygiene, sandbox grant
+	"internal/config/accounts.go",                // account → config dir resolution BuildCmd reads
+	"internal/agent/nonclaude_context.go",        // OpenCode child-only skills config content
+	"internal/agent/prelaunch.go",                // backend prelaunch (pi/ollama) run before the fork
+	"internal/agent/routing_prompt.go",           // --append-system-prompt-file routing injection
+	"internal/agent/sandbox.go",                  // the sandbox-exec wrapper the command is wrapped in
+	"internal/agent/secret.go",                   // point-of-use secret resolution inside BuildCmd
+	"internal/agent/secretregistry.go",           // the resolver registry BuildCmd resolves through
+	"internal/skills/builtin.go",                 // builtin skills materialized at spawn time
+	"internal/skills/skills.go",                  // --add-dir skill provisioning
 }
 
 // SupervisorStreamPaths declares every source file whose content the supervisor
@@ -372,7 +378,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "a1bae8490f47b3c6dbf2d9f04fb8577548877a5e26ee4cf799a3c735aa7b5f96"
+	SpawnSurfaceDigest  = "0164f97472246e57e3bf076f5996442f65ba8872b25c40bcdb0cb962c837b8fe"
 	StreamSurfaceDigest = "9973137db7c31ce8082cc84c494f5f1722878314674e89d962ccafd96c098783"
 )
 

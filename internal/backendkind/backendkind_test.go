@@ -19,7 +19,7 @@ func TestOf(t *testing.T) {
 		{"opencode --auto", Opencode},
 		{"agy", Antigravity},
 		{"/opt/homebrew/bin/agy --model x", Antigravity},
-		{"antigravity", Antigravity},
+		{"antigravity", Custom},
 		{"claude-wrapper", Custom},
 		{"bash -c 'sleep 1'", Custom},
 		{"", Custom},

@@ -41,8 +41,9 @@ var specs = []Spec{
 	{Kind: Codex, Binaries: []string{"codex"}, Label: "Codex", SkillPrefix: "$"},
 	{Kind: Pi, Binaries: []string{"pi"}, Label: "Pi", SkillPrefix: "/"},
 	{Kind: Opencode, Binaries: []string{"opencode"}, Label: "OpenCode", SkillPrefix: "/"},
-	// The Homebrew cask installs the binary as `antigravity` and links it as `agy`.
-	{Kind: Antigravity, Binaries: []string{"agy", "antigravity"}, Label: "Antigravity", SkillPrefix: "/"},
+	// Only `agy`: the cask links the CLI onto PATH under that name, while a bare
+	// `antigravity` may be the IDE's launcher and must stay a custom command.
+	{Kind: Antigravity, Binaries: []string{"agy"}, Label: "Antigravity", SkillPrefix: "/"},
 }
 
 // customSpec describes any command no family claims.

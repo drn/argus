@@ -8,7 +8,7 @@ commands get `customFamily`. To add one, follow `.agents/skills/add-backend/SKIL
 
 | | claude | codex | pi | opencode | antigravity | custom |
 |---|---|---|---|---|---|---|
-| Binaries | `claude` | `codex` | `pi` | `opencode` | `agy`, `antigravity` | anything else |
+| Binaries | `claude` | `codex` | `pi` | `opencode` | `agy` | anything else |
 | Session ID | pinned `--session-id` | captured | captured | captured | captured | pinned |
 | Resume | `--resume <id>` | `codex resume <id>` (replaces cmd) | `--session <id>` | `--session <id>` | `--conversation <id>` | `--resume <id>` |
 | Capture source | `~/.claude/projects/<enc>/*.jsonl` | `state_5.sqlite` `threads.cwd` | `~/.pi/agent/sessions/--<enc>--/` | `opencode.db` `session[_v2].directory` | `~/.gemini/antigravity-cli/conversation_summaries.db` `workspace_uris` | — |
@@ -19,7 +19,7 @@ commands get `customFamily`. To add one, follow `.agents/skills/add-backend/SKIL
 | MCP | `--mcp-config` per launch | `-c mcp_servers.argus.url` per launch | — | global `opencode.json` | global `~/.gemini/config/mcp_config.json` | — |
 | Skills | `--add-dir ~/.argus/skills` | Argus-only `CODEX_HOME` overlay | `--skill <dir>` | `OPENCODE_CONFIG_CONTENT` | global `~/.gemini/config/skills.json` entry | — |
 | Routing | `--append-system-prompt-file` | prompt prefix | — | prompt prefix | prompt prefix | — |
-| Sandbox grant | `~/.claude.json*`, `~/.claude` | `~/.codex`, codex-home | `~/.pi` | (base `~/.local`) | `~/.gemini` | — |
+| Sandbox grant | `~/.claude.json*`, `~/.claude` | `~/.codex`, codex-home | `~/.pi` | (base `~/.local`) | `~/.gemini/{antigravity-cli,config,jetski}` (pre-created) | — |
 | Accounts | `claude_config_dir` | `codex_home` | — | — | — | — |
 | Session switcher | yes | — | — | — | — | yes |
 | Prelaunch | — | — | ollama warmup (20s Start RPC) | — | — | — |
@@ -41,3 +41,7 @@ commands get `customFamily`. To add one, follow `.agents/skills/add-backend/SKIL
 - **custom keeps Claude-style pinning** so test fixtures and wrapper scripts behave as before the
   registry; it never receives Claude-only flags.
 - **bypass-allow → `--mode plan` for agy**: agy has no "plan with bypass reachable" mode.
+- **antigravity's sandbox grant is three subdirs, not `~/.gemini`**: Gemini CLI keeps OAuth creds at
+  the root. A sandboxed agy can't `mkdir ~/.gemini` itself, so BuildCmd pre-creates the launching
+  family's grant dirs unsandboxed (`ensureSandboxGrantDirs`).
+- **Only `agy` classifies as antigravity** — a bare `antigravity` may be the IDE launcher.

@@ -134,11 +134,16 @@ type Family struct {
 	StartTimeout time.Duration
 
 	// InjectGlobal writes Argus's MCP server (and, for SkillsGlobal, the
-	// skills dir) into the CLI's global config at daemon startup. Must be
-	// idempotent and preserve unrelated keys.
-	InjectGlobal func(port int) error
+	// skills dir) into the CLI's global config — at daemon startup
+	// (launching=false) and before each launch of this family
+	// (launching=true, which itself proves the CLI is installed). Must be
+	// idempotent and preserve unrelated keys and the operator's own
+	// enable/disable choice.
+	InjectGlobal func(port int, launching bool) error
 
-	// SandboxGrants are the HOME-relative write grants the CLI needs.
+	// SandboxGrants are the HOME-relative write grants the CLI needs. Every
+	// non-Prefix grant dir is created (unsandboxed) before this family
+	// launches sandboxed.
 	SandboxGrants []SandboxGrant
 }
 
@@ -210,7 +215,7 @@ func antigravityPermissionFlags(mode string) string {
 	}
 }
 
-func injectOpencodeGlobal(port int) error {
+func injectOpencodeGlobal(port int, _ bool) error {
 	if dir, err := skills.ManagedSkillsDir(); err == nil {
 		// Older builds put the skills dir in the global config; launches now
 		// deliver it child-only via OPENCODE_CONFIG_CONTENT. A cleanup failure
@@ -248,17 +253,18 @@ var injectGlobalAtSpawnFn = func(f *Family, port int) {
 	if isTestBinary() {
 		return
 	}
-	if err := f.InjectGlobal(port); err != nil {
+	if err := f.InjectGlobal(port, true); err != nil {
 		uxlog.Log("[%s] global config inject at spawn failed (continuing): %v", f.Kind, err)
 	}
 }
 
-// injectAntigravityGlobal registers Argus in agy's global config, but only
-// when agy is installed — the daemon must never create ~/.gemini for a user
-// who doesn't run agy. The skills dir is materialized first so the
-// registered path exists.
-func injectAntigravityGlobal(port int) error {
-	if !antigravityInstalledFn() {
+// injectAntigravityGlobal registers Argus in agy's global config. At daemon
+// startup it runs only when agy is installed — the daemon must never write
+// ~/.gemini for a user who doesn't run agy; before an agy launch the launch
+// itself proves installation (and a launchd daemon's PATH may not show agy).
+// The skills dir is materialized first so the registered path exists.
+func injectAntigravityGlobal(port int, launching bool) error {
+	if !launching && !antigravityInstalledFn() {
 		slog.Info("inject antigravity skipped: agy not installed")
 		return nil
 	}
@@ -356,8 +362,12 @@ var families = []*Family{
 		// HasPermissionFlag) so the check never trips on --model.
 		PermissionFlagTokens: []string{"--dangerously-skip-permissions", "--mode ", "--mode="},
 		InjectGlobal:         injectAntigravityGlobal,
+		// Not all of ~/.gemini: Gemini CLI keeps its own credentials at its
+		// root. These are the dirs agy 1.3.3 writes.
 		SandboxGrants: []SandboxGrant{
-			{HomeRel: "/.gemini", Comment: "Antigravity CLI logs, conversation DB, sign-in state, and global config."},
+			{HomeRel: "/.gemini/antigravity-cli", Comment: "Antigravity CLI logs, conversation DB, settings, and sign-in state."},
+			{HomeRel: "/.gemini/config", Comment: "Antigravity global customizations (mcp_config.json, skills.json, projects)."},
+			{HomeRel: "/.gemini/jetski", Comment: "Antigravity agent brain/artifact store."},
 		},
 	},
 }
@@ -431,4 +441,39 @@ func (f *Family) HasPermissionFlag(command string) bool {
 		}
 	}
 	return false
+}
+
+// ensureSandboxGrantDirsFn is replaceable so command-construction tests never
+// create directories under the developer's HOME.
+var ensureSandboxGrantDirsFn = func(f *Family, sb config.SandboxConfig) {
+	if isTestBinary() {
+		return
+	}
+	ensureSandboxGrantDirsIn(f, sb, "")
+}
+
+func ensureSandboxGrantDirs(f *Family, sb config.SandboxConfig) { ensureSandboxGrantDirsFn(f, sb) }
+
+// ensureSandboxGrantDirsIn creates the family's non-Prefix grant dirs under
+// home ("" = the user's home) when the launch will be sandboxed.
+func ensureSandboxGrantDirsIn(f *Family, sb config.SandboxConfig, home string) {
+	if !sb.Enabled || !IsSandboxAvailable() || len(f.SandboxGrants) == 0 {
+		return
+	}
+	if home == "" {
+		h, err := os.UserHomeDir()
+		if err != nil {
+			return
+		}
+		home = h
+	}
+	for _, g := range f.SandboxGrants {
+		if g.Prefix {
+			continue
+		}
+		dir := filepath.Join(home, filepath.FromSlash(g.HomeRel))
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			uxlog.Log("[%s] create sandbox grant dir %s failed (continuing): %v", f.Kind, dir, err)
+		}
+	}
 }

@@ -4480,3 +4480,26 @@ func TestHandlePruneCompleted(t *testing.T) {
 		testutil.Equal(t, resp["pruned"].(float64), float64(0))
 	})
 }
+
+func TestCreateUpdateBackend_ResponseCarriesFamilyMetadata(t *testing.T) {
+	srv, _ := testServer(t)
+	mux := srv.routes()
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, masterReq("POST", "/api/backends", `{"name":"antigravity","command":"agy","prompt_flag":"--prompt-interactive"}`))
+	testutil.Equal(t, w.Code, http.StatusCreated)
+	var created backendJSON
+	testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+	testutil.Equal(t, created.Kind, "antigravity")
+	testutil.Equal(t, created.Label, "Antigravity")
+	testutil.Equal(t, created.SessionSwitcher, false)
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, masterReq("PUT", "/api/backends/antigravity", `{"command":"claude"}`))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	var updated backendJSON
+	testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &updated))
+	testutil.Equal(t, updated.Name, "antigravity")
+	testutil.Equal(t, updated.Kind, "claude")
+	testutil.Equal(t, updated.SessionSwitcher, true)
+}

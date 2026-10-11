@@ -887,10 +887,10 @@ A session first observed while its task was already finished SHALL NOT be stoppe
 
 ### Requirement: Backend family registry
 
-The system SHALL classify every backend command into a family by the basename of its first word: `claude`, `codex`, `pi`, `opencode`, `antigravity` (binaries `agy` or `antigravity`), or custom for anything else. Each family SHALL declare its per-backend behavior (session pinning, resume form, capture and recapture policy, model delivery, skill delivery, routing delivery, prompt delivery, per-launch MCP flag, permission-mode flags, prelaunch, start timeout, global configuration injection, and sandbox state directories) in one registry entry, and every component that varies by backend SHALL read the registry rather than test backend identity itself.
+The system SHALL classify every backend command into a family by the basename of its first word: `claude`, `codex`, `pi`, `opencode`, `antigravity` (binary `agy`; a bare `antigravity` may be the IDE launcher and stays custom), or custom for anything else. Each family SHALL declare its per-backend behavior (session pinning, resume form, capture and recapture policy, model delivery, skill delivery, routing delivery, prompt delivery, per-launch MCP flag, permission-mode flags, prelaunch, start timeout, global configuration injection, and sandbox state directories) in one registry entry, and every component that varies by backend SHALL read the registry rather than test backend identity itself.
 
 #### Scenario: Antigravity detected by binary name
-- **WHEN** a backend command's first word is `agy`, `/opt/homebrew/bin/agy`, or `antigravity`
+- **WHEN** a backend command's first word is `agy` or `/opt/homebrew/bin/agy`
 - **THEN** it is classified as the antigravity family
 
 #### Scenario: Unknown command is custom

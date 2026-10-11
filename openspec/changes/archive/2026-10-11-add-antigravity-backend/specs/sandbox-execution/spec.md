@@ -2,7 +2,7 @@
 
 ### Requirement: Backend auth and session persistence writes
 
-The generated profile SHALL grant the narrow write paths each supported agent backend needs to persist auth tokens and session state, without broadening to all of `$HOME`. This covers `~/.claude.json` (including atomic-write sibling files), `~/.claude/`, `~/.codex/`, `~/.local/share/argus/codex-home/`, `~/.pi/`, and `~/.gemini/`. The grants SHALL be declared on each backend family in the registry. Unrelated `$HOME`-rooted paths SHALL remain denied.
+The generated profile SHALL grant the narrow write paths each supported agent backend needs to persist auth tokens and session state, without broadening to all of `$HOME`. This covers `~/.claude.json` (including atomic-write sibling files), `~/.claude/`, `~/.codex/`, `~/.local/share/argus/codex-home/`, `~/.pi/`, and agy's `~/.gemini/antigravity-cli/`, `~/.gemini/config/`, and `~/.gemini/jetski/` (never all of `~/.gemini`, whose root holds Gemini CLI credentials). The grants SHALL be declared on each backend family in the registry, and a launching family's directory grants SHALL be created unsandboxed before a sandboxed launch, since a sandboxed process cannot create a missing parent of its own grant. Unrelated `$HOME`-rooted paths SHALL remain denied.
 
 #### Scenario: Claude auth file and atomic-write siblings are writable
 
@@ -16,8 +16,13 @@ The generated profile SHALL grant the narrow write paths each supported agent ba
 
 #### Scenario: Antigravity state is writable
 
-- **WHEN** a sandboxed command writes under `~/.gemini/` (agy logs, conversation database, sign-in state)
+- **WHEN** a sandboxed agy command writes under `~/.gemini/antigravity-cli/` or `~/.gemini/config/` on a machine where `~/.gemini` did not exist before the launch
 - **THEN** the write succeeds
+
+#### Scenario: Gemini CLI credentials stay protected
+
+- **WHEN** a sandboxed command writes a file directly under `~/.gemini/`
+- **THEN** the write is denied
 
 #### Scenario: Argus-only Codex home is writable
 

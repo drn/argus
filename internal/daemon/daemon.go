@@ -1084,7 +1084,7 @@ func runGlobalInjectors(fams []*agent.Family, port int) {
 		if fam.InjectGlobal == nil {
 			continue
 		}
-		if err := fam.InjectGlobal(port); err != nil {
+		if err := fam.InjectGlobal(port, false); err != nil {
 			slog.Error("inject backend global config", "backend", fam.Kind, "err", err)
 		} else {
 			slog.Info("inject backend global config", "backend", fam.Kind, "port", port)
