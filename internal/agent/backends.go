@@ -18,6 +18,7 @@ import (
 	injectopencode "github.com/drn/argus/internal/inject/opencode"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/skills"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // ModelDelivery is how a family receives the resolved model at launch.
@@ -222,8 +223,9 @@ func injectOpencodeGlobal(port int) error {
 }
 
 // antigravityInstalledFn reports whether agy is present: on PATH (either
-// binary name) or already initialized (~/.gemini exists). A package var so
-// tests can force either answer.
+// binary name) or already initialized (~/.gemini/antigravity-cli exists —
+// not bare ~/.gemini, which Gemini CLI also owns). A package var so tests can
+// force either answer.
 var antigravityInstalledFn = func() bool {
 	for _, bin := range backendkind.SpecOf("agy").Binaries {
 		if _, err := exec.LookPath(bin); err == nil {
@@ -234,8 +236,21 @@ var antigravityInstalledFn = func() bool {
 	if err != nil {
 		return false
 	}
-	_, err = os.Stat(filepath.Join(home, ".gemini"))
+	_, err = os.Stat(filepath.Join(home, ".gemini", "antigravity-cli"))
 	return err == nil
+}
+
+// injectGlobalAtSpawnFn re-runs a family's InjectGlobal from BuildCmd so a
+// CLI installed (or an MCP port changed) after daemon startup still gets
+// Argus's registration on its next launch. Inert under `go test` so command
+// construction tests never touch the developer's HOME; tests swap the var.
+var injectGlobalAtSpawnFn = func(f *Family, port int) {
+	if isTestBinary() {
+		return
+	}
+	if err := f.InjectGlobal(port); err != nil {
+		uxlog.Log("[%s] global config inject at spawn failed (continuing): %v", f.Kind, err)
+	}
 }
 
 // injectAntigravityGlobal registers Argus in agy's global config, but only
@@ -335,9 +350,11 @@ var families = []*Family{
 		RoutingDelivery:    RoutingPromptPrefix,
 		// agy reads prompts only from -p/--print, -i/--prompt-interactive, or
 		// stdin; a positional or `--` prompt is a hard error.
-		DefaultPromptFlag:    "--prompt-interactive",
-		PermissionFlags:      antigravityPermissionFlags,
-		PermissionFlagTokens: []string{"--dangerously-skip-permissions", "--mode"},
+		DefaultPromptFlag: "--prompt-interactive",
+		PermissionFlags:   antigravityPermissionFlags,
+		// "--mode " / "--mode=" (plus a trailing "--mode", see
+		// HasPermissionFlag) so the check never trips on --model.
+		PermissionFlagTokens: []string{"--dangerously-skip-permissions", "--mode ", "--mode="},
 		InjectGlobal:         injectAntigravityGlobal,
 		SandboxGrants: []SandboxGrant{
 			{HomeRel: "/.gemini", Comment: "Antigravity CLI logs, conversation DB, sign-in state, and global config."},
@@ -398,21 +415,19 @@ func commandFlagFields(command string) []string {
 }
 
 // HasPermissionFlag reports whether the command already names one of the
-// family's permission flags anywhere in it (as `--flag`, `--flag=value`,
-// `--flag value`, or quoted), in which case the configured permission mode
-// is not injected. A token only matches when followed by end, whitespace,
-// `=`, or a quote, so agy's `--mode` never matches `--model`.
+// family's permission flags, in which case the configured permission mode is
+// not injected. Matching is a plain substring search anywhere in the command
+// (the pre-registry Claude semantics, kept byte-for-byte); a token ending in
+// a space or "=" also matches as the command's final word, so a family whose
+// flag prefixes another flag (agy's --mode vs --model) declares the
+// delimited forms instead of the bare one.
 func (f *Family) HasPermissionFlag(command string) bool {
 	for _, tok := range f.PermissionFlagTokens {
-		for rest := command; ; {
-			i := strings.Index(rest, tok)
-			if i < 0 {
-				break
-			}
-			rest = rest[i+len(tok):]
-			if rest == "" || strings.ContainsRune(" \t\n=\"'", rune(rest[0])) {
-				return true
-			}
+		if strings.Contains(command, tok) {
+			return true
+		}
+		if bare := strings.TrimRight(tok, " ="); bare != tok && strings.HasSuffix(command, bare) {
+			return true
 		}
 	}
 	return false

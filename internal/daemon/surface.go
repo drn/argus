@@ -123,7 +123,9 @@ const (
 	//     the antigravity family (`agy`: --prompt-interactive, mapped
 	//     permission flags, --model, --conversation resume) and the sandbox
 	//     profile's backend grants are generated from the registry, adding
-	//     ~/.gemini. A stale supervisor spawns agy as a custom backend.
+	//     ~/.gemini. Families without a per-launch MCP flag (opencode, agy)
+	//     re-run their idempotent global-config registration before each
+	//     launch. A stale supervisor spawns agy as a custom backend.
 	SupervisorSpawnSurface = 16
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
@@ -370,7 +372,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "1a709b4d756f592ede9340788c5c3ec9763e31150a8387e90864fb15c33beb93"
+	SpawnSurfaceDigest  = "a1bae8490f47b3c6dbf2d9f04fb8577548877a5e26ee4cf799a3c735aa7b5f96"
 	StreamSurfaceDigest = "9973137db7c31ce8082cc84c494f5f1722878314674e89d962ccafd96c098783"
 )
 

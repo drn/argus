@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -74,8 +75,11 @@ func TestFamily_HasPermissionFlag(t *testing.T) {
 		{"agy mode equals", agy, "agy --mode=plan", true},
 		{"agy --model is not --mode", agy, "agy --model gemini", false},
 		{"agy --model then --mode", agy, "agy --model x --mode plan", true},
+		{"agy trailing --mode", agy, "agy --mode", true},
 		{"claude flag after separator still counts", claude, "claude -- --permission-mode", true},
 		{"claude quoted flag", claude, `claude "--permission-mode" plan`, true},
+		{"claude equals form", claude, "claude --permission-mode=plan", true},
+		{"claude legacy substring semantics", claude, "claude --permission-modeX", true},
 		{"claude permission-mode", claude, "claude --permission-mode plan", true},
 		{"claude allow-dangerously", claude, "claude --allow-dangerously-skip-permissions", true},
 		{"claude bare", claude, "claude", false},
@@ -350,7 +354,10 @@ func TestAntigravityInstalledFn(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("PATH", t.TempDir())
 	testutil.Equal(t, antigravityInstalledFn(), false)
+	// Bare ~/.gemini belongs to Gemini CLI too; only agy's own dir counts.
 	testutil.NoError(t, os.MkdirAll(filepath.Join(home, ".gemini"), 0o755))
+	testutil.Equal(t, antigravityInstalledFn(), false)
+	testutil.NoError(t, os.MkdirAll(filepath.Join(home, ".gemini", "antigravity-cli"), 0o755))
 	testutil.Equal(t, antigravityInstalledFn(), true)
 
 	bin := t.TempDir()
@@ -358,4 +365,33 @@ func TestAntigravityInstalledFn(t *testing.T) {
 	t.Setenv("PATH", bin)
 	testutil.NoError(t, os.WriteFile(filepath.Join(bin, "agy"), []byte("#!/bin/sh\n"), 0o755))
 	testutil.Equal(t, antigravityInstalledFn(), true)
+}
+
+func TestBuildCmd_InjectsGlobalConfigAtSpawn(t *testing.T) {
+	var got []string
+	old := injectGlobalAtSpawnFn
+	injectGlobalAtSpawnFn = func(f *Family, port int) { got = append(got, string(f.Kind)+":"+strconv.Itoa(port)) }
+	defer func() { injectGlobalAtSpawnFn = old }()
+
+	cfg := config.DefaultConfig()
+	for _, backend := range []string{"antigravity", "opencode", "claude", "codex"} {
+		task := &model.Task{Backend: backend, Prompt: "p", Worktree: t.TempDir()}
+		_, _, err := BuildCmd(task, cfg, false)
+		testutil.NoError(t, err)
+	}
+	testutil.Equal(t, len(got), 0) // no MCP port, nothing to register
+
+	cfg.MCPPort = 7742
+	for _, backend := range []string{"antigravity", "opencode", "claude", "codex"} {
+		task := &model.Task{Backend: backend, Prompt: "p", Worktree: t.TempDir()}
+		_, _, err := BuildCmd(task, cfg, false)
+		testutil.NoError(t, err)
+	}
+	testutil.DeepEqual(t, got, []string{"antigravity:7742", "opencode:7742"})
+}
+
+func TestInjectGlobalAtSpawnFn_InertUnderTest(t *testing.T) {
+	called := false
+	injectGlobalAtSpawnFn(&Family{InjectGlobal: func(int) error { called = true; return nil }}, 1)
+	testutil.Equal(t, called, false)
 }

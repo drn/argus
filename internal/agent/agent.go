@@ -825,6 +825,11 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		mcpFlag = fam.MCPFlag(fmt.Sprintf("http://localhost:%d/mcp", cfg.MCPPort))
 	}
 	cmdStr += mcpFlag
+	// Families without a per-launch MCP flag read Argus's registration from
+	// global config; refresh it idempotently before every launch.
+	if cfg.MCPPort > 0 && fam.InjectGlobal != nil {
+		injectGlobalAtSpawnFn(fam, cfg.MCPPort)
+	}
 
 	// Inject the configured permission mode through the family's own flag
 	// vocabulary. Families without a mapping (and custom/bare commands) never

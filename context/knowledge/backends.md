@@ -28,8 +28,8 @@ commands get `customFamily`. To add one, follow `.agents/skills/add-backend/SKIL
 
 - **antigravity is global-config only.** `agy` reads only `$HOME/.gemini/config` (no env
   override; `AGY_ACCOUNT` is undocumented), so MCP and skills are injected at daemon startup —
-  only when agy is installed (on PATH or `~/.gemini` exists), so the daemon never creates
-  `~/.gemini` for non-agy users. Its own `agy mcp add` writes `serverUrl`; Argus writes the same key,
+  only when agy is installed (on PATH or `~/.gemini/antigravity-cli` exists — Gemini CLI also owns
+  `~/.gemini`), and refreshed before every agy launch. Its own `agy mcp add` writes `serverUrl`; Argus writes the same key,
   accepts `url` too, and carries over an operator's `disabled: true`.
 - **antigravity capture ignores sub-agent rows** (non-empty `parent_conversation_id`): they share
   the worktree and are often newer, but only the top-level conversation is the task's.
