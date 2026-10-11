@@ -1837,6 +1837,33 @@ func TestHandleListBackends(t *testing.T) {
 	b, ok := have["beta"]
 	testutil.True(t, ok)
 	testutil.Equal(t, b.PromptFlag, "--p")
+	// Custom commands carry an empty kind, their name as label, and the
+	// switcher (custom backends are Claude-compatible).
+	testutil.Equal(t, a.Kind, "")
+	testutil.Equal(t, a.Label, "alpha")
+	testutil.Equal(t, a.SkillPrefix, "/")
+	testutil.True(t, a.SessionSwitcher)
+}
+
+func TestNewBackendJSON_FamilyMetadata(t *testing.T) {
+	cases := []struct {
+		command, kind, label, prefix string
+		switcher                     bool
+	}{
+		{"agy", "antigravity", "Antigravity", "/", false},
+		{"codex --x", "codex", "Codex", "$", false},
+		{"claude", "claude", "Claude Code", "/", true},
+		{"opencode", "opencode", "OpenCode", "/", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.command, func(t *testing.T) {
+			got := newBackendJSON("n", config.Backend{Command: tc.command})
+			testutil.Equal(t, got.Kind, tc.kind)
+			testutil.Equal(t, got.Label, tc.label)
+			testutil.Equal(t, got.SkillPrefix, tc.prefix)
+			testutil.Equal(t, got.SessionSwitcher, tc.switcher)
+		})
+	}
 }
 
 // --- handleGitStatus ---

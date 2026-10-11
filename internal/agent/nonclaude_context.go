@@ -195,24 +195,17 @@ func nonClaudeRoutingContentReal() (string, error) {
 	return string(content), nil
 }
 
-// nonClaudeContextPrefix builds the prompt-prefix block for a non-Claude
-// backend: routing orientation only, for isCodex or isOpencode. Neither
-// backend receives CLAUDE.md content — both have their own native
-// instruction-file discovery (Codex: global ~/.codex/AGENTS.md plus
-// repo-local AGENTS.md walking cwd-to-worktree-root; opencode: repo-local
-// CLAUDE.md as an AGENTS.md fallback, global ~/.claude/CLAUDE.md as a
-// documented compatibility fallback) — so prepending CLAUDE.md content here
-// would be pure duplication. See
-// openspec/changes/remove-codex-claude-md-injection.
-// Returns "" when there is nothing to prepend (neither backend applies, or no
-// source produced content). A source read failure is logged and that source
-// is skipped — never blocks command construction, mirroring the existing
-// Claude-side --add-dir/--append-system-prompt-file failure handling.
-func nonClaudeContextPrefix(isCodex, isOpencode bool) string {
-	if !isCodex && !isOpencode {
-		return ""
-	}
-
+// nonClaudeContextPrefix builds the prompt-prefix block for a
+// RoutingPromptPrefix family (Codex, opencode, antigravity): routing
+// orientation only. None of them receive CLAUDE.md content — each has native
+// instruction-file discovery (Codex: ~/.codex/AGENTS.md plus repo AGENTS.md;
+// opencode: repo CLAUDE.md as an AGENTS.md fallback; agy: AGENTS.md /
+// GEMINI.md walking up to the repo root) — so prepending CLAUDE.md here would
+// be duplication. See openspec/changes/remove-codex-claude-md-injection.
+// Returns "" when no source produced content. A source read failure is logged
+// and skipped — never blocks command construction, mirroring the Claude-side
+// --add-dir/--append-system-prompt-file failure handling.
+func nonClaudeContextPrefix() string {
 	var sections []string
 
 	if content, err := nonClaudeRoutingContentFn(); err != nil {

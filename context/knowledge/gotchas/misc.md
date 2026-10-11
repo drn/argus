@@ -339,3 +339,12 @@
 - **Per-project default account is a top-level `project_accounts` map, not a field on `[projects.<name>]`.** A per-project field would need a DB schema change, and `[projects.<name>]` entries are replaced wholesale by the config.toml overlay, so a partial entry would zero it. Account definitions live only in config.toml (never the DB).
 - **Sign-in lookups (`claude auth status` via `internal/claudeaccount`, `codex login status`) are advisory: off the UI thread, short timeout, cached, degrading to the bare account name.** The TUI form, `GET /api/accounts` (3s budget) and `argus doctor` must never block or fail on them; they surface identity only. `CodexLoginStatus` is inert under `go test` so no test can run the real binary.
 - **The usage probes (Claude `/usage`, `backendtier/codexprobe.go`) measure the default account only**; usage-budget / tier routing ignores per-task accounts.
+
+## Backend families (add-antigravity-backend)
+
+- **Never branch on backend identity outside `internal/agent/backends.go`.** Every per-backend behavior is a `Family` field read by BuildCmd, capture, resume refresh, task creation, TUI, REST, daemon client, prelaunch, sandbox, and daemon-startup injection; a new `IsFooBackend` check elsewhere silently skips the new family on the next addition. Add a field instead. Procedure: `.agents/skills/add-backend/SKILL.md`; matrix: `context/knowledge/backends.md`.
+- **Unrecognized commands resolve to `customFamily` (pinned `--session-id`, `--resume`, session switcher, no capture)** — encoding the pre-registry fallthrough. Test fixtures (`sh -c`, `sleep`) rely on it; don't give custom any Claude-only flags.
+- **Antigravity (`agy`) config is global-only.** No env/config-dir override exists, so the daemon writes `~/.gemini/config/{mcp_config,skills}.json` at MCP-server startup (`injectGlobalBackendConfig`, skipped under `go test`). The sandbox needs `~/.gemini` writable or agy dies at startup creating its log dir.
+- **`agy` rejects a positional or `--` prompt as a hard error**, so the family's `DefaultPromptFlag` (`--prompt-interactive`) applies whenever the stored backend row has no prompt flag.
+- **Adding a default backend reorders sorted backend lists and bumps default counts.** `antigravity` sorts before `claude`, which broke settings/smoke tests that assumed `claude` first and a db test counting defaults; derive expectations from the roster instead.
+

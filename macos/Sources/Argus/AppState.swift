@@ -90,6 +90,14 @@ final class AppState {
     /// Accounts from `GET /api/accounts`; the New Task sheet shows its picker
     /// only when more than one supports the selected backend.
     private(set) var accounts: [Account] = []
+    /// Backend name → `BackendInfo` (with its family metadata) from
+    /// `GET /api/backends`; empty against a daemon that predates it.
+    private(set) var backendInfos: [String: BackendInfo] = [:]
+
+    /// Backend name → family kind, for ``NewTaskAccount``.
+    var backendKinds: [String: String] {
+        backendInfos.compactMapValues(\.kind)
+    }
 
     /// Which tab of the selected task's detail view is showing. Forced to
     /// ``DetailTab/terminal`` after creating or forking a task so the user
@@ -834,19 +842,18 @@ final class AppState {
 
     // MARK: - Claude session switcher
 
-    /// Best-effort client-side mirror of the daemon's own
-    /// `!IsCodexBackend && !IsPiBackend && !IsOpencodeBackend` guard
-    /// (`internal/agent/agent.go`) that gates `/claude-sessions` /
-    /// `/claude-session` — an unset, `"claude"`, or custom backend name is
-    /// treated as Claude-eligible, and only the three known non-Claude
-    /// backend names are excluded. Lets the toolbar button hide itself for
-    /// an obviously-ineligible task without a doomed round trip; the
-    /// daemon's own 400 (handled in ``openClaudeSessionPicker(for:)``) stays
-    /// the authoritative check for anything this heuristic can't see (e.g. a
-    /// custom backend *name* that happens to run a non-Claude command).
-    static func isLikelyClaudeBacked(_ task: ArgusTask) -> Bool {
-        guard let backend = task.backend?.lowercased(), !backend.isEmpty else { return true }
-        return !["codex", "pi", "opencode"].contains(backend)
+    /// Client-side mirror of the daemon's `Family.SessionSwitcher` guard that
+    /// gates `/claude-sessions` / `/claude-session`. When `backends` (from
+    /// `GET /api/backends`) knows the task's backend, its `session_switcher`
+    /// is authoritative; otherwise an unset, `"claude"`, or custom backend
+    /// name is treated as eligible and only the known non-Claude names are
+    /// excluded. Lets the toolbar button hide itself without a doomed round
+    /// trip; the daemon's own 400 (handled in
+    /// ``openClaudeSessionPicker(for:)``) stays the final check.
+    static func isLikelyClaudeBacked(_ task: ArgusTask, backends: [String: BackendInfo] = [:]) -> Bool {
+        guard let name = task.backend, !name.isEmpty else { return true }
+        if let switcher = backends[name]?.sessionSwitcher { return switcher }
+        return !["codex", "pi", "opencode", "antigravity"].contains(name.lowercased())
     }
 
     /// Fetches the task's Claude sessions and opens the picker sheet on
@@ -1180,6 +1187,9 @@ final class AppState {
             defaultBackendName = backend
         }
         accounts = (try? await client.accounts()) ?? []
+        if let list = try? await client.backends() {
+            backendInfos = Dictionary(list.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
+        }
     }
 
     /// Accounts with `isDefault` resolved for `project` (the New Task sheet's

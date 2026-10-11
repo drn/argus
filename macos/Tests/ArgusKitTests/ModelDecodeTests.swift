@@ -412,6 +412,31 @@ struct ModelDecodeTests {
         #expect(NewTaskAccount.accounts([d, w, c], forBackend: "").map(\.name) == ["default", "work"])
         #expect(NewTaskAccount.accounts([d, w, c], forBackend: "codex").map(\.name) == ["default", "cx"])
         #expect(NewTaskAccount.accounts([d, w, c], forBackend: "pi").map(\.name) == ["default"])
+        #expect(NewTaskAccount.accounts([d, w, c], forBackend: "antigravity").map(\.name) == ["default"])
+    }
+
+    @Test("NewTaskAccount uses daemon-supplied backend kinds when known")
+    func newTaskAccountKinds() {
+        let d = Account(name: "default", isDefault: true)
+        let w = Account(name: "work", supports: AccountSupports(claude: true))
+        let c = Account(name: "cx", supports: AccountSupports(codex: true))
+        let kinds = ["my-codex": "codex", "agy": "antigravity", "custom": ""]
+        #expect(NewTaskAccount.accounts([d, w, c], forBackend: "my-codex", kinds: kinds).map(\.name) == ["default", "cx"])
+        #expect(NewTaskAccount.accounts([d, w, c], forBackend: "agy", kinds: kinds).map(\.name) == ["default"])
+        #expect(NewTaskAccount.accounts([d, w, c], forBackend: "custom", kinds: kinds).map(\.name) == ["default"])
+        #expect(NewTaskAccount.tool(forBackend: "unlisted", kinds: kinds) == .claude)
+    }
+
+    @Test("BackendInfo decodes family metadata and tolerates its absence")
+    func backendInfoDecode() throws {
+        let b = try decode(BackendInfo.self, #"{"name":"antigravity","command":"agy","prompt_flag":"--prompt-interactive","kind":"antigravity","label":"Antigravity","skill_prefix":"/","session_switcher":false}"#)
+        #expect(b.kind == "antigravity")
+        #expect(b.label == "Antigravity")
+        #expect(b.skillPrefix == "/")
+        #expect(b.sessionSwitcher == false)
+        let old = try decode(BackendInfo.self, #"{"name":"claude","command":"claude"}"#)
+        #expect(old.kind == nil)
+        #expect(old.sessionSwitcher == nil)
     }
 
     @Test("NewTaskAccount.requestValue sends the explicit pick, default included")

@@ -57,6 +57,19 @@ func TestHandleListClaudeSessions(t *testing.T) {
 		testutil.Equal(t, w.Code, http.StatusBadRequest)
 	})
 
+	t.Run("400 when backend is antigravity", func(t *testing.T) {
+		srv, d := testServer(t)
+		mux := srv.routes()
+		testutil.NoError(t, d.SetBackend("agy-backend", config.Backend{Command: "agy"}))
+		task := &model.Task{Name: "agy-task", Backend: "agy-backend", Worktree: t.TempDir()}
+		testutil.NoError(t, d.Add(task))
+
+		req := authedReq("GET", "/api/tasks/"+task.ID+"/claude-sessions", "")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusBadRequest)
+	})
+
 	t.Run("lists sessions newest first with current_session_id", func(t *testing.T) {
 		srv, d := testServer(t)
 		mux := srv.routes()

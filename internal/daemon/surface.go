@@ -118,7 +118,13 @@ const (
 	//     codex_home (CODEX_SQLITE_HOME pointed there too), grants that home in
 	//     the sandbox, and strips inherited OPENAI_API_KEY / CODEX_API_KEY. The settings.json seed also omits login-bound keys (forceLogin*, aws*, otel helper), inherit entry names match case-insensitively, and account dirs inside ~/.ssh, ~/.argus, ~/.aws, ~/.gnupg, ~/.kube or ~/Library are rejected. An
 	//     unknown stored account now refuses to spawn.
-	SupervisorSpawnSurface = 15
+	//   - v16: backend behavior is declared once per family in
+	//     internal/agent/backends.go (add-antigravity-backend). BuildCmd gains
+	//     the antigravity family (`agy`: --prompt-interactive, mapped
+	//     permission flags, --model, --conversation resume) and the sandbox
+	//     profile's backend grants are generated from the registry, adding
+	//     ~/.gemini. A stale supervisor spawns agy as a custom backend.
+	SupervisorSpawnSurface = 16
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -310,6 +316,8 @@ func CompareSupervisorSurface(reported SurfaceVersion) SurfaceSkew {
 // version is guarded against.
 var SupervisorSpawnPaths = []string{
 	"internal/agent/agent.go",             // BuildCmd: argv, env, dir, cache-dir redirection
+	"internal/agent/backends.go",          // backend family registry BuildCmd dispatches on
+	"internal/backendkind/backendkind.go", // command → family classification
 	"internal/agent/claudeaccount.go",     // per-task account dir bootstrap, env hygiene, sandbox grant
 	"internal/agent/codexaccount.go",      // per-task Codex home, env hygiene, sandbox grant
 	"internal/config/accounts.go",         // account → config dir resolution BuildCmd reads
@@ -362,7 +370,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "a834240a8cea499fee10f94dbe3ce58a28c77b5aabb66ece792c5a045dea505a"
+	SpawnSurfaceDigest  = "9cf30b8abe569886ba1b2ab83eb935556454f14d1cc67920abac156fc156df5e"
 	StreamSurfaceDigest = "9973137db7c31ce8082cc84c494f5f1722878314674e89d962ccafd96c098783"
 )
 

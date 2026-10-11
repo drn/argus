@@ -59,7 +59,7 @@ struct TaskDetailTabs: View {
             // AppState.isLikelyClaudeBacked; the daemon's 400 is the
             // authoritative check either way, surfaced via ActionErrorBanner
             // by openClaudeSessionPicker(for:) for anything this misses).
-            if app.activeDetailTab == .terminal && AppState.isLikelyClaudeBacked(task) {
+            if app.activeDetailTab == .terminal && AppState.isLikelyClaudeBacked(task, backends: app.backendInfos) {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         _Concurrency.Task { await app.openClaudeSessionPicker(for: task) }

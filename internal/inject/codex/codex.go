@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/drn/argus/internal/inject/atomicfile"
+
 	"github.com/BurntSushi/toml"
 )
 
@@ -60,19 +62,7 @@ func RemoveGlobal() error {
 	if updated == content {
 		return nil
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".argus-codex-*.tmp")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name()) //nolint:errcheck
-	if _, err := tmp.WriteString(updated); err != nil {
-		tmp.Close() //nolint:errcheck
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return atomicfile.Write(path, []byte(updated), "remove codex global")
 }
 
 // hasArgusSection recognizes only actual table headers, never comments or values.
@@ -178,21 +168,7 @@ func injectCodexTOML(path string, port int) error {
 		return nil // nothing changed
 	}
 
-	// Atomic write: write to temp file then rename to avoid partial reads.
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".argus-codex-*.tmp")
-	if err != nil {
-		return fmt.Errorf("inject codex: create temp: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) //nolint:errcheck // cleanup on failure
-	if _, err := tmp.WriteString(updated); err != nil {
-		tmp.Close()
-		return fmt.Errorf("inject codex: write temp: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("inject codex: close temp: %w", err)
-	}
-	return os.Rename(tmpName, path)
+	return atomicfile.Write(path, []byte(updated), "inject codex")
 }
 
 // ensureTopLevel ensures a key=value line exists at the TOML top level

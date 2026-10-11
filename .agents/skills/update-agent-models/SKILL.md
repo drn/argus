@@ -25,8 +25,8 @@ its lineup.
 
 ## Context
 
-- Current codex entries in KnownModels: !`grep -A1 'IsCodexBackend(command):' internal/agent/agent.go | tail -1`
-- Current claude entries in KnownModels: !`grep -A1 'IsClaudeBackend(command):' internal/agent/agent.go | tail -1`
+- Current codex entries in KnownModels: !`grep -A4 'mustSpec(backendkind.Codex)' internal/agent/backends.go | grep KnownModels`
+- Current claude entries in KnownModels: !`grep -A8 'mustSpec(backendkind.Claude)' internal/agent/backends.go | grep KnownModels`
 - Seed profiles with codex model entries: !`grep -l 'codex = ' internal/profiles/seeds/*.toml 2>/dev/null | head -10`
 - Local codex CLI configured default (if present): !`grep -m1 '^model = ' ~/.codex/config.toml 2>/dev/null | head -1`
 - Local codex CLI's known model-availability keys (if present): !`awk '/\[tui.model_availability_nux\]/{f=1;next}/^\[/{f=0}f' ~/.codex/config.toml 2>/dev/null | head -10`
@@ -85,8 +85,8 @@ match it to the tier it is replacing.
 Update every one of the following together. Missing one leaves the repo internally inconsistent —
 this is the most common failure mode of this change, so treat it as a checklist, not a suggestion:
 
-1. **`internal/agent/agent.go`** — `KnownModels(command)`'s return value for the codex case (and
-   the claude case, if Step 2 found a real change there). This is the source of truth everything
+1. **`internal/agent/backends.go`** — the `KnownModels` field of the codex family entry (and the
+   claude entry, if Step 2 found a real change there); `agent.KnownModels(command)` returns it. This is the source of truth everything
    else in this list either mirrors or validates against.
 2. **`internal/profiles/seeds/*.toml`** — every `archetype.*.models.codex = "..."` entry in every
    seed file that has one (as of this writing: `default.toml`, `customer_grade.toml`; `lean.toml`
@@ -137,7 +137,7 @@ this is the most common failure mode of this change, so treat it as a checklist,
      future Codex naming scheme shares a lexical "flagship" marker at all, so re-derive this by
      reading the new lineup's descriptions each time rather than assuming a pattern holds.
 7. **`internal/daemon/surface.go`** — the step most likely to be skipped, and the one that will
-   fail CI if it is. `internal/agent/agent.go` is declared in `SupervisorSpawnPaths`, so editing it
+   fail CI if it is. `internal/agent/backends.go` is declared in `SupervisorSpawnPaths`, so editing it
    changes the SHA-256 recorded in `SpawnSurfaceDigest`. Changing `KnownModels`'s codex list is a
    spawn-observable behavior change (it changes what `--model` value a newly spawned session
    receives), so:

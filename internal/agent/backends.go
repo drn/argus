@@ -1,0 +1,377 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/drn/argus/internal/backendkind"
+	"github.com/drn/argus/internal/config"
+	injectantigravity "github.com/drn/argus/internal/inject/antigravity"
+	injectopencode "github.com/drn/argus/internal/inject/opencode"
+	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/skills"
+)
+
+// ModelDelivery is how a family receives the resolved model at launch.
+type ModelDelivery int
+
+const (
+	// ModelNone injects nothing; the CLI uses its own default.
+	ModelNone ModelDelivery = iota
+	// ModelFlag appends `--model <id>`.
+	ModelFlag
+	// ModelInlineConfig merges the model into OPENCODE_CONFIG_CONTENT.
+	ModelInlineConfig
+)
+
+// SkillDelivery is how a family discovers Argus's builtin skills.
+type SkillDelivery int
+
+const (
+	SkillsNone SkillDelivery = iota
+	// SkillsAddDir appends `--add-dir <workspace root>` (Claude loads
+	// .claude/skills from an added dir).
+	SkillsAddDir
+	// SkillsFlag appends `--skill <skills dir>` (Pi).
+	SkillsFlag
+	// SkillsInlineConfig merges the skills dir into OPENCODE_CONFIG_CONTENT.
+	SkillsInlineConfig
+	// SkillsCodexHome points CODEX_HOME at an Argus-only overlay.
+	SkillsCodexHome
+	// SkillsGlobal materializes the skills dir per launch; the family's
+	// InjectGlobal registers it in the CLI's global config at daemon startup.
+	SkillsGlobal
+)
+
+// RoutingDelivery is how a family receives Argus's builtin routing content.
+type RoutingDelivery int
+
+const (
+	RoutingNone RoutingDelivery = iota
+	// RoutingSystemPromptFile appends `--append-system-prompt-file <path>`.
+	RoutingSystemPromptFile
+	// RoutingPromptPrefix prepends the content to the first prompt.
+	RoutingPromptPrefix
+)
+
+// SandboxGrant is a HOME-relative SBPL write grant a family needs to persist
+// its own auth and session state.
+type SandboxGrant struct {
+	// HomeRel is appended to $HOME, e.g. "/.gemini".
+	HomeRel string
+	// Prefix emits a (prefix ...) rule instead of (subpath ...), for files
+	// written via atomic-rename siblings.
+	Prefix bool
+	// Comment is emitted above the rule in the generated profile.
+	Comment string
+}
+
+// Family declares everything Argus does differently per backend CLI. Each
+// supported CLI has exactly one entry in families; unrecognized commands use
+// customFamily. See .agents/skills/add-backend/SKILL.md for what each field
+// means when adding a backend.
+type Family struct {
+	backendkind.Spec
+
+	// PinsSessionID: the CLI accepts a start-time `--session-id <id>`, so the
+	// task's ID is minted before launch. False means capture-style: the ID is
+	// recovered post-exit via Capture.
+	PinsSessionID bool
+	// ResumeFlag is appended as `<flag> <id>` on resume when the task has an
+	// ID. Ignored when ResumeCmd is set.
+	ResumeFlag string
+	// ResumeCmd, when set, replaces the whole command on resume (Codex's
+	// `codex resume <id>` subcommand shape).
+	ResumeCmd func(mcpFlag, modelFlag, sessionID string) string
+
+	// Capture recovers the session ID after exit; nil captures nothing.
+	Capture func(task *model.Task, cfg config.Config) (string, error)
+	// RecaptureEveryExit: the CLI can switch conversations in-session
+	// (Claude /clear, agy /new), so the ID is re-captured on every exit and
+	// refreshed at resume. False captures once, while SessionID is empty.
+	RecaptureEveryExit bool
+	// SessionSwitcher: the Claude session list/switch endpoints apply.
+	SessionSwitcher bool
+
+	// KnownModels is the curated model list for pickers; nil means
+	// custom-only (any typed id is accepted).
+	KnownModels []string
+	ModelDelivery
+	SkillDelivery
+	RoutingDelivery
+
+	// DefaultPromptFlag delivers the prompt when the backend config has no
+	// PromptFlag. Empty means `-- <prompt>` (or positional, see below).
+	DefaultPromptFlag string
+	// PromptPositional passes the prompt without a `--` separator.
+	PromptPositional bool
+
+	// LaunchFlag is inserted right after the binary unless already present
+	// before any `--` separator (OpenCode's --auto).
+	LaunchFlag string
+	// MCPFlag returns the per-launch flag wiring Argus's MCP server, or nil
+	// when the CLI only reads MCP servers from global config (see InjectGlobal).
+	MCPFlag func(url string) string
+	// PermissionFlags maps defaults.permission_mode to CLI flags; nil injects
+	// nothing. Skipped when the command already contains any
+	// PermissionFlagTokens.
+	PermissionFlags      func(mode string) string
+	PermissionFlagTokens []string
+
+	// Prelaunch runs before the fork (Pi's ollama warmup); nil skips.
+	Prelaunch func(ctx context.Context, task *model.Task, backend config.Backend) error
+	// StartTimeout overrides the daemon client's Start RPC budget when
+	// Prelaunch can legitimately take longer than a normal round trip.
+	StartTimeout time.Duration
+
+	// InjectGlobal writes Argus's MCP server (and, for SkillsGlobal, the
+	// skills dir) into the CLI's global config at daemon startup. Must be
+	// idempotent and preserve unrelated keys.
+	InjectGlobal func(port int) error
+
+	// SandboxGrants are the HOME-relative write grants the CLI needs.
+	SandboxGrants []SandboxGrant
+}
+
+func mustSpec(k backendkind.Kind) backendkind.Spec {
+	s, ok := backendkind.Lookup(k)
+	if !ok {
+		panic("backendkind: no spec for " + string(k))
+	}
+	return s
+}
+
+func claudeMCPFlag(url string) string {
+	mcpConfig, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{
+		"argus": map[string]string{"type": "http", "url": url},
+	}})
+	return " --mcp-config " + shellQuote(string(mcpConfig))
+}
+
+func codexMCPFlag(url string) string {
+	return " -c " + shellQuote("mcp_servers.argus.url="+strconv.Quote(url))
+}
+
+func codexResumeCommand(mcpFlag, modelFlag, sessionID string) string {
+	// Flags must precede the positional session-id argument.
+	return "codex" + mcpFlag + codexResumeFlags + modelFlag + " " + shellQuote(sessionID)
+}
+
+func captureClaude(task *model.Task, cfg config.Config) (string, error) {
+	dir, err := ClaudeConfigDirForTask(task, cfg)
+	if err != nil {
+		return "", err
+	}
+	return CaptureClaudeSessionIDIn(dir, task.Worktree)
+}
+
+func captureCodex(task *model.Task, cfg config.Config) (string, error) {
+	home, err := CodexHomeForTask(task, cfg)
+	if err != nil {
+		return "", err
+	}
+	return CaptureCodexSessionIDIn(home, task.Worktree)
+}
+
+func capturePi(task *model.Task, _ config.Config) (string, error) {
+	return CapturePiSessionID(task.Worktree)
+}
+
+func captureOpencode(task *model.Task, _ config.Config) (string, error) {
+	return CaptureOpencodeSessionID(task.Worktree)
+}
+
+func captureAntigravity(task *model.Task, _ config.Config) (string, error) {
+	return CaptureAntigravitySessionID(task.Worktree)
+}
+
+// antigravityPermissionFlags maps Argus's permission modes onto agy's
+// --mode / --dangerously-skip-permissions. agy has no "plan with bypass
+// reachable" mode, so bypass-allow degrades to plan.
+func antigravityPermissionFlags(mode string) string {
+	switch mode {
+	case config.PermissionModeAcceptEdits:
+		return "--mode accept-edits"
+	case config.PermissionModePlan, config.PermissionModeBypassAllow:
+		return "--mode plan"
+	case config.PermissionModeBypassActive:
+		return "--dangerously-skip-permissions"
+	default:
+		return ""
+	}
+}
+
+func injectOpencodeGlobal(port int) error {
+	if dir, err := skills.ManagedSkillsDir(); err == nil {
+		// Older builds put the skills dir in the global config; launches now
+		// deliver it child-only via OPENCODE_CONFIG_CONTENT. A cleanup failure
+		// must not block MCP registration.
+		if rerr := injectopencode.RemoveManagedSkillsGlobal(dir); rerr != nil {
+			slog.Error("remove old global opencode skill path", "err", rerr)
+		}
+	}
+	return injectopencode.InjectGlobal(port, "")
+}
+
+func injectAntigravityGlobal(port int) error {
+	dir, err := skills.ManagedSkillsDir()
+	if err != nil {
+		dir = ""
+	}
+	return injectantigravity.InjectGlobal(port, dir)
+}
+
+var families = []*Family{
+	{
+		Spec:               mustSpec(backendkind.Claude),
+		PinsSessionID:      true,
+		ResumeFlag:         "--resume",
+		Capture:            captureClaude,
+		RecaptureEveryExit: true,
+		SessionSwitcher:    true,
+		KnownModels:        []string{"opus", "sonnet", "haiku", "fable"},
+		ModelDelivery:      ModelFlag,
+		SkillDelivery:      SkillsAddDir,
+		RoutingDelivery:    RoutingSystemPromptFile,
+		MCPFlag:            claudeMCPFlag,
+		PermissionFlags:    config.PermissionModeFlags,
+		PermissionFlagTokens: []string{
+			"--permission-mode", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions",
+		},
+		SandboxGrants: []SandboxGrant{
+			{HomeRel: "/.claude.json", Prefix: true, Comment: "Claude auth file; prefix so write-file-atomic siblings (~/.claude.json.<rand>) persist OAuth tokens."},
+			{HomeRel: "/.claude", Comment: "Claude transcripts, settings, and session state."},
+		},
+	},
+	{
+		Spec:      mustSpec(backendkind.Codex),
+		Capture:   captureCodex,
+		ResumeCmd: codexResumeCommand,
+		// Keep this list synced with the Codex CLI's own `/model` picker and
+		// the seed diligence profiles' archetype.*.models.codex entries.
+		KnownModels:     []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"},
+		ModelDelivery:   ModelFlag,
+		SkillDelivery:   SkillsCodexHome,
+		RoutingDelivery: RoutingPromptPrefix,
+		MCPFlag:         codexMCPFlag,
+		SandboxGrants: []SandboxGrant{
+			{HomeRel: "/.codex", Comment: "Codex auth, session DB (state_5.sqlite), history, sessions."},
+			{HomeRel: "/.local/share/argus/codex-home", Comment: "Argus-only CODEX_HOME overlay carrying builtin skills."},
+		},
+	},
+	{
+		Spec:          mustSpec(backendkind.Pi),
+		ResumeFlag:    "--session",
+		Capture:       capturePi,
+		ModelDelivery: ModelFlag,
+		SkillDelivery: SkillsFlag,
+		// Pi's argv parser does not honor "--" as end-of-flags.
+		PromptPositional: true,
+		Prelaunch:        piPrelaunch,
+		StartTimeout:     PiStartTimeout,
+		SandboxGrants: []SandboxGrant{
+			{HomeRel: "/.pi", Comment: "Pi session files (~/.pi/agent/sessions) plus auth/config; capture reads them post-exit."},
+		},
+	},
+	{
+		Spec:            mustSpec(backendkind.Opencode),
+		ResumeFlag:      "--session",
+		Capture:         captureOpencode,
+		ModelDelivery:   ModelInlineConfig,
+		SkillDelivery:   SkillsInlineConfig,
+		RoutingDelivery: RoutingPromptPrefix,
+		LaunchFlag:      "--auto",
+		InjectGlobal:    injectOpencodeGlobal,
+		// State lives under ~/.local/share/opencode, already granted by the
+		// base profile's ~/.local rule.
+	},
+	{
+		Spec:               mustSpec(backendkind.Antigravity),
+		ResumeFlag:         "--conversation",
+		Capture:            captureAntigravity,
+		RecaptureEveryExit: true,
+		ModelDelivery:      ModelFlag,
+		SkillDelivery:      SkillsGlobal,
+		RoutingDelivery:    RoutingPromptPrefix,
+		// agy reads prompts only from -p/--print, -i/--prompt-interactive, or
+		// stdin; a positional or `--` prompt is a hard error.
+		DefaultPromptFlag:    "--prompt-interactive",
+		PermissionFlags:      antigravityPermissionFlags,
+		PermissionFlagTokens: []string{"--dangerously-skip-permissions", "--mode"},
+		InjectGlobal:         injectAntigravityGlobal,
+		SandboxGrants: []SandboxGrant{
+			{HomeRel: "/.gemini", Comment: "Antigravity CLI logs, conversation DB, sign-in state, and global config."},
+		},
+	},
+}
+
+// customFamily is any command no family claims: it keeps the historical
+// Claude-style session handling (pinned --session-id, --resume) without any
+// Claude-only flags, skills, routing, or capture.
+var customFamily = &Family{
+	Spec:            mustSpec(backendkind.Custom),
+	PinsSessionID:   true,
+	ResumeFlag:      "--resume",
+	SessionSwitcher: true,
+}
+
+// FamilyOf returns the family for a backend command; never nil.
+func FamilyOf(command string) *Family {
+	return FamilyForKind(backendkind.Of(command))
+}
+
+// FamilyForKind returns the family for a kind; unknown kinds are custom.
+func FamilyForKind(k backendkind.Kind) *Family {
+	for _, f := range families {
+		if f.Kind == k {
+			return f
+		}
+	}
+	return customFamily
+}
+
+// Families returns every known (non-custom) family in a stable order.
+func Families() []*Family {
+	return slices.Clone(families)
+}
+
+// IsCustom reports whether the family is the unrecognized-command fallback.
+func (f *Family) IsCustom() bool { return f.Kind == backendkind.Custom }
+
+// PromptFlagFor returns the flag that delivers the prompt for a backend:
+// its configured PromptFlag, else the family default.
+func (f *Family) PromptFlagFor(b config.Backend) string {
+	if b.PromptFlag != "" {
+		return b.PromptFlag
+	}
+	return f.DefaultPromptFlag
+}
+
+// commandFlagFields returns the command's fields before any `--` separator;
+// tokens after it are positional prompt text, not flags.
+func commandFlagFields(command string) []string {
+	fields := strings.Fields(command)
+	if separator := slices.Index(fields, "--"); separator >= 0 {
+		fields = fields[:separator]
+	}
+	return fields
+}
+
+// HasPermissionFlag reports whether the command already names one of the
+// family's permission flags (as `--flag`, `--flag=value`, or `--flag value`),
+// in which case the configured permission mode is not injected.
+func (f *Family) HasPermissionFlag(command string) bool {
+	for _, field := range commandFlagFields(command) {
+		for _, tok := range f.PermissionFlagTokens {
+			if field == tok || strings.HasPrefix(field, tok+"=") {
+				return true
+			}
+		}
+	}
+	return false
+}

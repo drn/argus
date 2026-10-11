@@ -21,15 +21,16 @@ import (
 // create-time UUID. Without a resume-time refresh, the next resume loads the
 // first/stale conversation and loses all context accrued since.
 //
-// Claude-only: this is the same gate captureSessionIDPostExit expresses via
-// NeedsSessionRecapture (Claude re-mints its UUID on every /clear / in-place
-// reboot, so its stored ID goes stale). codex, pi, and opencode resume with a
-// stable ID they captured post-exit (--session / capture-style) and MUST be
-// byte-identical to today — the transcript scan never runs for them.
+// Scoped to RecaptureEveryExit families — the same gate
+// captureSessionIDPostExit expresses via NeedsSessionRecapture (Claude
+// re-mints its UUID on every /clear / in-place reboot; agy starts a new
+// conversation on /new, so a stored ID goes stale). codex, pi, and opencode
+// resume with a stable ID they captured post-exit and MUST be byte-identical
+// to today — no capture runs for them.
 //
 // No-op — leaving the recorded SessionID intact and NEVER blanking it — when the
 // task is nil, has no worktree, has no prior SessionID (first start; never
-// fabricate one), the backend is not Claude, the worktree holds no transcript,
+// fabricate one), the backend does not recapture every exit, the worktree holds no conversation,
 // or the newest transcript already equals the recorded ID. On a genuine change
 // it mutates task.SessionID in place (so the caller's immediate resume uses it)
 // AND persists via a read-modify-write on the row (mirroring the exit hook), so
@@ -45,17 +46,14 @@ func RefreshResumeSessionID(database *db.DB, task *model.Task) {
 		uxlog.Log("[resume] session recapture skipped: backend resolve failed task=%s: %v", task.ID, err)
 		return
 	}
-	// Claude-only. codex/pi/opencode keep a stable captured ID across resumes; a
-	// Claude transcript scan would be wrong for them (see NeedsSessionRecapture).
-	if !IsClaudeBackend(backend.Command) {
+	// Only RecaptureEveryExit families (Claude, antigravity) can switch
+	// conversations in-session; codex/pi/opencode keep a stable captured ID
+	// across resumes (see NeedsSessionRecapture).
+	fam := FamilyOf(backend.Command)
+	if !fam.RecaptureEveryExit || fam.Capture == nil {
 		return
 	}
-	configDir, err := ClaudeConfigDirForTask(task, cfg)
-	if err != nil {
-		uxlog.Log("[resume] session recapture skipped task=%s (keeping %s): account: %v", task.ID, task.SessionID, err)
-		return
-	}
-	sid, err := CaptureClaudeSessionIDIn(configDir, task.Worktree)
+	sid, err := fam.Capture(task, cfg)
 	if err != nil {
 		// No transcript yet (or scan error): keep the existing ID, never blank it.
 		uxlog.Log("[resume] session recapture no-op task=%s (keeping %s): %v", task.ID, task.SessionID, err)

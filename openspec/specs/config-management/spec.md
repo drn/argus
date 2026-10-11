@@ -16,8 +16,9 @@ The system SHALL provide a baseline configuration with sensible defaults so that
 #### Scenario: Built-in backends present
 
 - **WHEN** a default configuration is produced
-- **THEN** it SHALL include backend entries for `claude`, `codex`, `pi`, and `opencode`, each with a command template
+- **THEN** it SHALL include backend entries for `claude`, `codex`, `pi`, `opencode`, and `antigravity`, each with a command template
 - **AND** the `opencode` entry SHALL use the full interactive `opencode` command with `--prompt` as its prompt flag, submitting the initial prompt when its model is ready; launch-time auto approval is governed by agent execution rather than stored in the template
+- **AND** the `antigravity` entry SHALL use the bare `agy` command with `--prompt-interactive` as its prompt flag; permission flags are governed by agent execution rather than stored in the template
 
 #### Scenario: Existing OpenCode default is upgraded
 

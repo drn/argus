@@ -27,23 +27,21 @@ import (
 // Kept in a dedicated file rather than folded into the already-1800-line
 // handlers.go / 4300-line handlers_test.go, per this task's discretion note.
 
-// errNonClaudeBackend marks a task whose resolved backend is Codex, Pi, or
-// Opencode. Both endpoints below are Claude-only, matching the TUI's own
-// guard.
+// errNonClaudeBackend marks a task whose resolved backend family has no
+// session switcher. Both endpoints below are Claude-only, matching the TUI's
+// own guard.
 var errNonClaudeBackend = errors.New("task backend is not Claude")
 
-// claudeOnlyGuard resolves task's backend and rejects anything recognized as
-// Codex, Pi, or Opencode — mirroring the TUI's guard exactly (see
-// internal/tui/app.go's openSessionPickerModal): same three functions, same
-// logic, deliberately a denylist rather than a Claude allowlist so a bare/
-// custom backend command (e.g. a test fixture) is treated as Claude-
-// compatible, same as the TUI.
+// claudeOnlyGuard resolves task's backend and rejects any family without
+// SessionSwitcher — the same Family field the TUI's guard reads (see
+// internal/tui/app.go's openSessionPicker). Custom backend commands (e.g. a
+// test fixture) keep SessionSwitcher, so they stay Claude-compatible.
 func claudeOnlyGuard(task *model.Task, cfg config.Config) error {
 	backend, err := agent.ResolveBackend(task, cfg)
 	if err != nil {
 		return err
 	}
-	if agent.IsCodexBackend(backend.Command) || agent.IsPiBackend(backend.Command) || agent.IsOpencodeBackend(backend.Command) {
+	if !agent.FamilyOf(backend.Command).SessionSwitcher {
 		return errNonClaudeBackend
 	}
 	return nil

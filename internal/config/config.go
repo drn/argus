@@ -483,6 +483,13 @@ func DefaultConfig() Config {
 				Command:    "opencode",
 				PromptFlag: "--prompt",
 			},
+			"antigravity": {
+				// Antigravity CLI (Homebrew cask antigravity-cli). agy rejects a
+				// positional prompt; --prompt-interactive submits it and keeps
+				// the TUI open. Permission flags come from Defaults.PermissionMode.
+				Command:    "agy",
+				PromptFlag: "--prompt-interactive",
+			},
 		},
 		Projects:    make(map[string]Project),
 		Keybindings: DefaultKeybindings(),

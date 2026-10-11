@@ -107,13 +107,14 @@ struct NewTaskSheet: View {
     private var allAccounts: [Account] { projectAccounts ?? app.accounts }
 
     private func reselectAccount() {
-        account = NewTaskAccount.preselect(allAccounts, backend: effectiveBackend, picked: accountPicked)
+        account = NewTaskAccount.preselect(allAccounts, backend: effectiveBackend, picked: accountPicked,
+                                           kinds: app.backendKinds)
     }
 
     private var effectiveBackend: String { backend.isEmpty ? app.defaultBackendName : backend }
 
     private var usableAccounts: [Account] {
-        NewTaskAccount.accounts(allAccounts, forBackend: effectiveBackend)
+        NewTaskAccount.accounts(allAccounts, forBackend: effectiveBackend, kinds: app.backendKinds)
     }
 
     private var showAccountPicker: Bool { usableAccounts.count > 1 }
@@ -136,7 +137,8 @@ struct NewTaskSheet: View {
             project: project,
             backend: backend.isEmpty ? nil : backend,
             account: NewTaskAccount.requestValue(
-                selected: account, accounts: allAccounts, backend: effectiveBackend)
+                selected: account, accounts: allAccounts, backend: effectiveBackend,
+                kinds: app.backendKinds)
         )
         _Concurrency.Task {
             do {

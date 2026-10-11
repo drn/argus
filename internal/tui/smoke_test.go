@@ -2155,9 +2155,16 @@ func TestSmoke_SettingsBackendTiersAddRemoveReorder(t *testing.T) {
 	sim.InjectKey(tcell.KeyRune, 'n', 0)
 	syncUI(t, app.tapp)
 	readTiers()
+	var names []string
+	readUI(t, app.tapp, func() {
+		for _, b := range app.settings.backends {
+			names = append(names, b.Name)
+		}
+	})
+	first, second := names[0], names[1]
 	testutil.Equal(t, len(tiers), 2)
-	testutil.Equal(t, tiers[0].Backend, "claude")
-	testutil.Equal(t, tiers[1].Backend, "claude")
+	testutil.Equal(t, tiers[0].Backend, first)
+	testutil.Equal(t, tiers[1].Backend, first)
 
 	// Cycle the selected (second) tier's backend so reordering is observable,
 	// then move it above the first.
@@ -2166,8 +2173,8 @@ func TestSmoke_SettingsBackendTiersAddRemoveReorder(t *testing.T) {
 	sim.InjectKey(tcell.KeyRune, 'K', 0)
 	syncUI(t, app.tapp)
 	readTiers()
-	testutil.Equal(t, tiers[0].Backend, "codex")
-	testutil.Equal(t, tiers[1].Backend, "claude")
+	testutil.Equal(t, tiers[0].Backend, second)
+	testutil.Equal(t, tiers[1].Backend, first)
 
 	// Remove the selected (now first) tier — the shortened list persists in
 	// order.
@@ -2175,7 +2182,7 @@ func TestSmoke_SettingsBackendTiersAddRemoveReorder(t *testing.T) {
 	syncUI(t, app.tapp)
 	readTiers()
 	testutil.Equal(t, len(tiers), 1)
-	testutil.Equal(t, tiers[0].Backend, "claude")
+	testutil.Equal(t, tiers[0].Backend, first)
 
 	// The removal was persisted to the DB, not just held in memory.
 	persisted, err := d.BackendTiers()

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/drn/argus/internal/inject/atomicfile"
+
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -178,30 +180,5 @@ func ensureSkillsEntry(existing any, skillsDir string) (result []any, alreadyCor
 
 // writeJSON marshals data as indented JSON and writes it to path atomically.
 func writeJSON(path string, data map[string]any) error {
-	out, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		return fmt.Errorf("inject opencode: marshal: %w", err)
-	}
-	out = append(out, '\n')
-
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".argus-opencode-*.tmp")
-	if err != nil {
-		return fmt.Errorf("inject opencode: create temp: %w", err)
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(out); err != nil {
-		tmp.Close()        //nolint:errcheck
-		os.Remove(tmpName) //nolint:errcheck
-		return fmt.Errorf("inject opencode: write temp: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName) //nolint:errcheck
-		return fmt.Errorf("inject opencode: close temp: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName) //nolint:errcheck
-		return fmt.Errorf("inject opencode: rename: %w", err)
-	}
-	return nil
+	return atomicfile.WriteJSON(path, data, "inject opencode")
 }

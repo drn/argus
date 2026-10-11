@@ -293,10 +293,9 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		}
 	})
 
-	// Step 4: generate session ID for Claude-style backends.
-	// Codex, pi, and opencode don't support --session-id; their IDs are
-	// captured post-exit.
-	if resolved, berr := ResolveBackend(task, cfg); berr == nil && !IsCodexBackend(resolved.Command) && !IsPiBackend(resolved.Command) && !IsOpencodeBackend(resolved.Command) {
+	// Step 4: generate session ID for families that pin it at start;
+	// capture-style families recover theirs post-exit.
+	if resolved, berr := ResolveBackend(task, cfg); berr == nil && FamilyOf(resolved.Command).PinsSessionID {
 		task.SessionID = model.GenerateSessionID()
 		if uErr := database.Update(task); uErr != nil {
 			slog.Warn("CreateAndStart: persist session ID failed (continuing)", "id", taskID, "err", uErr)

@@ -178,3 +178,12 @@ A Codex task on a named account SHALL run with that account's `codex_home` as it
 #### Scenario: Session capture reads the account database
 - **WHEN** a Codex task on account `work` exits
 - **THEN** its session ID is captured from `work`'s `state_5.sqlite`, not `~/.codex`'s
+
+### Requirement: Backend kind classification
+
+The system SHALL expose one classifier mapping a backend command to its family kind by first-word basename, shared by configuration (account support), the agent layer, and the REST API, so no component re-implements backend detection.
+
+#### Scenario: Account support uses the shared classifier
+- **WHEN** a named account with only `claude_config_dir` is checked against an antigravity backend
+- **THEN** it is reported unsupported
+

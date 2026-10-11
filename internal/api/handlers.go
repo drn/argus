@@ -1674,6 +1674,33 @@ type backendJSON struct {
 	// reach only the TUI, which reads merged config; the API serves the DB
 	// roster, so this reflects the built-in list for DB-defined backends.
 	Models []string `json:"models,omitempty"`
+	// Kind, Label, SkillPrefix, and SessionSwitcher describe the backend's
+	// family (agent.FamilyOf) so clients never hardcode backend names. Kind
+	// is "" for a custom command.
+	Kind            string `json:"kind"`
+	Label           string `json:"label"`
+	SkillPrefix     string `json:"skill_prefix"`
+	SessionSwitcher bool   `json:"session_switcher"`
+}
+
+// newBackendJSON builds the wire shape for one configured backend.
+func newBackendJSON(name string, b config.Backend) backendJSON {
+	fam := agent.FamilyOf(b.Command)
+	label := fam.Label
+	if label == "" {
+		label = name
+	}
+	return backendJSON{
+		Name:            name,
+		Command:         b.Command,
+		PromptFlag:      b.PromptFlag,
+		Model:           b.Model,
+		Models:          agent.BackendModels(b),
+		Kind:            string(fam.Kind),
+		Label:           label,
+		SkillPrefix:     fam.SkillPrefix,
+		SessionSwitcher: fam.SessionSwitcher,
+	}
 }
 
 func (s *Server) handleListBackends(w http.ResponseWriter, r *http.Request) {
@@ -1684,7 +1711,7 @@ func (s *Server) handleListBackends(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]backendJSON, 0, len(backends))
 	for name, b := range backends {
-		out = append(out, backendJSON{Name: name, Command: b.Command, PromptFlag: b.PromptFlag, Model: b.Model, Models: agent.BackendModels(b)})
+		out = append(out, newBackendJSON(name, b))
 	}
 	for i := 1; i < len(out); i++ {
 		for j := i; j > 0 && out[j].Name < out[j-1].Name; j-- {

@@ -197,16 +197,31 @@ func TestNonClaudeRoutingContentReal_ReturnsEmbeddedContent(t *testing.T) {
 	}
 }
 
-func TestNonClaudeContextPrefix_NeitherBackendReturnsEmpty(t *testing.T) {
-	got := nonClaudeContextPrefix(false, false)
-	testutil.Equal(t, got, "")
+func TestBuildCmd_ContextPrefixOnlyForPromptPrefixFamilies(t *testing.T) {
+	restoreRouting := SetNonClaudeRoutingContentForTest(func() (string, error) { return "ROUTING", nil })
+	defer restoreRouting()
+
+	cfg := nonClaudeContextConfig()
+	cfg.Backends["agy"] = config.Backend{Command: "agy"}
+	cfg.Backends["pi"] = config.Backend{Command: "pi"}
+	for _, tc := range []struct {
+		backend string
+		want    bool
+	}{{"claude", false}, {"pi", false}, {"codex", true}, {"opencode", true}, {"agy", true}} {
+		t.Run(tc.backend, func(t *testing.T) {
+			task := &model.Task{Name: "t", Backend: tc.backend, Prompt: "go", Worktree: t.TempDir()}
+			cmd, _, err := BuildCmd(task, cfg, false)
+			testutil.NoError(t, err)
+			testutil.Equal(t, strings.Contains(cmd.Args[2], "ROUTING"), tc.want)
+		})
+	}
 }
 
 func TestNonClaudeContextPrefix_CodexRoutingOnly(t *testing.T) {
 	restoreRouting := SetNonClaudeRoutingContentForTest(func() (string, error) { return "ROUTING", nil })
 	defer restoreRouting()
 
-	got := nonClaudeContextPrefix(true, false)
+	got := nonClaudeContextPrefix()
 	testutil.Equal(t, got, "ROUTING\n\n---\n\n")
 }
 
@@ -214,7 +229,7 @@ func TestNonClaudeContextPrefix_OpencodeRoutingOnly(t *testing.T) {
 	restoreRouting := SetNonClaudeRoutingContentForTest(func() (string, error) { return "ROUTING", nil })
 	defer restoreRouting()
 
-	got := nonClaudeContextPrefix(false, true)
+	got := nonClaudeContextPrefix()
 	testutil.Equal(t, got, "ROUTING\n\n---\n\n")
 }
 
@@ -222,7 +237,7 @@ func TestNonClaudeContextPrefix_EmptyRoutingReturnsEmpty(t *testing.T) {
 	restoreRouting := SetNonClaudeRoutingContentForTest(func() (string, error) { return "", nil })
 	defer restoreRouting()
 
-	got := nonClaudeContextPrefix(true, false)
+	got := nonClaudeContextPrefix()
 	testutil.Equal(t, got, "")
 }
 
@@ -230,7 +245,7 @@ func TestNonClaudeContextPrefix_SourceErrorsSkippedNotFatal(t *testing.T) {
 	restoreRouting := SetNonClaudeRoutingContentForTest(func() (string, error) { return "", errors.New("boom") })
 	defer restoreRouting()
 
-	got := nonClaudeContextPrefix(true, false)
+	got := nonClaudeContextPrefix()
 	testutil.Equal(t, got, "")
 }
 

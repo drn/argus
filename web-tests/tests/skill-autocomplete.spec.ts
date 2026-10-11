@@ -144,8 +144,8 @@ test.describe('New Task — backend-conditional skill trigger', () => {
         contentType: 'application/json',
         body: JSON.stringify({
           backends: [
-            { name: 'claude', command: 'claude' },
-            { name: 'codex', command: '/usr/local/bin/codex --foo' },
+            { name: 'claude', command: 'claude', kind: 'claude', label: 'Claude Code', skill_prefix: '/' },
+            { name: 'codex', command: '/usr/local/bin/codex --foo', kind: 'codex', label: 'Codex', skill_prefix: '$' },
           ],
         }),
       });
@@ -198,25 +198,24 @@ test.describe('New Task — backend-conditional skill trigger', () => {
 });
 
 test.describe('skill trigger resolution', () => {
-  test('isCodexBackend / skillTriggerFor', async ({ page }) => {
+  test('skillTriggerFor reads the daemon-supplied skill_prefix', async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem('argus-token', 'test-token'));
     await page.goto('/');
     await expect(page.locator('#main-app')).toBeVisible();
     const r = await page.evaluate(() => {
       const w = window as any;
       const be = [
-        { name: 'cx', command: '/opt/bin/codex --x' },
-        { name: 'cl', command: 'claude' },
-        { name: 'cxx', command: 'codex-fake' },
+        { name: 'cx', command: '/opt/bin/codex --x', skill_prefix: '$' },
+        { name: 'cl', command: 'claude', skill_prefix: '/' },
+        { name: 'ag', command: 'agy', skill_prefix: '/' },
+        { name: 'old', command: 'codex' },
       ];
       return [
-        w.isCodexBackend('codex'), w.isCodexBackend('/usr/bin/codex -m x'),
-        w.isCodexBackend('claude'), w.isCodexBackend(''), w.isCodexBackend(undefined),
-        w.skillTriggerFor('cx', be), w.skillTriggerFor('cl', be),
-        w.skillTriggerFor('cxx', be), w.skillTriggerFor('missing', be), w.skillTriggerFor(undefined, []),
+        w.skillTriggerFor('cx', be), w.skillTriggerFor('cl', be), w.skillTriggerFor('ag', be),
+        w.skillTriggerFor('old', be), w.skillTriggerFor('missing', be), w.skillTriggerFor(undefined, []),
         (() => { createDefaultBackend = 'cx'; const t = w.skillTriggerFor('', be); createDefaultBackend = ''; return t; })(),
       ];
     });
-    expect(r).toEqual([true, true, false, false, false, '$', '/', '/', '/', '/', '$']);
+    expect(r).toEqual(['$', '/', '/', '/', '/', '/', '$']);
   });
 });

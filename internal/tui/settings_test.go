@@ -404,7 +404,7 @@ func TestSettingsView_BackendTiers_AddAppendsAndPersists(t *testing.T) {
 	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', 0))
 	testutil.Equal(t, got, true)
 	testutil.Equal(t, len(sv.backendTiers), 1)
-	testutil.Equal(t, sv.backendTiers[0].Backend, "claude") // first sorted backend
+	testutil.Equal(t, sv.backendTiers[0].Backend, sv.backends[0].Name) // first sorted backend
 	testutil.Equal(t, sv.backendTiers[0].Probe, config.ProbeNone)
 	testutil.Equal(t, sv.cursor, 0)
 
@@ -498,7 +498,7 @@ func TestSettingsView_BackendTiers_CycleBackendName(t *testing.T) {
 	sv.setCategory(catBackendTiers)
 	sv.setFocus(focusPane)
 	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', 0))
-	testutil.Equal(t, sv.backendTiers[0].Backend, "claude")
+	testutil.Equal(t, sv.backendTiers[0].Backend, sv.backends[0].Name)
 
 	// Cycle through the full sorted roster and confirm it wraps back to the
 	// start — deliberately not hardcoding the full backend list (only claude,
@@ -520,16 +520,13 @@ func TestSettingsView_BackendTiers_CycleBackendNameReverse(t *testing.T) {
 	sv.setCategory(catBackendTiers)
 	sv.setFocus(focusPane)
 	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', 0))
-	testutil.Equal(t, sv.backendTiers[0].Backend, "claude")
+	testutil.Equal(t, sv.backendTiers[0].Backend, sv.backends[0].Name)
 
 	names := make([]string, len(sv.backends))
-	pos := 0
 	for i, b := range sv.backends {
 		names[i] = b.Name
-		if b.Name == "claude" {
-			pos = i
-		}
 	}
+	pos := 0
 
 	// No keybinding drives dir=-1 today (cycleBackendTierBackend is only ever
 	// invoked with dir=1) — call it directly to cover the reverse-wrap branch.

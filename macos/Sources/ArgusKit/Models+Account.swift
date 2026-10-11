@@ -81,20 +81,30 @@ public struct Account: Sendable, Equatable, Identifiable, Decodable {
 public enum NewTaskAccount {
     public enum Tool: Sendable, Equatable { case claude, codex, other }
 
-    /// Classifies a backend by name (the macOS client sees names, not commands).
-    /// An empty or unknown name is treated as Claude, the daemon's usual default;
-    /// the daemon's `config.AccountSupports` check stays the real authority.
-    public static func tool(forBackend backend: String) -> Tool {
+    /// Classifies a backend. `kinds` maps backend name → family kind from
+    /// `GET /api/backends` and is authoritative when it names the backend
+    /// (a custom command's "" kind supports only the default account, like
+    /// `config.AccountSupports`). Without it the name is the best guess: an
+    /// empty or unknown name is treated as Claude, the daemon's usual default.
+    public static func tool(forBackend backend: String, kinds: [String: String] = [:]) -> Tool {
+        if let kind = kinds[backend] {
+            switch kind {
+            case "claude": return .claude
+            case "codex": return .codex
+            default: return .other
+            }
+        }
         switch backend.lowercased() {
         case "codex": return .codex
-        case "pi", "opencode": return .other
+        case "pi", "opencode", "antigravity": return .other
         default: return .claude
         }
     }
 
     /// The reserved default account plus every account supporting the backend.
-    public static func accounts(_ accounts: [Account], forBackend backend: String) -> [Account] {
-        let t = tool(forBackend: backend)
+    public static func accounts(_ accounts: [Account], forBackend backend: String,
+                                kinds: [String: String] = [:]) -> [Account] {
+        let t = tool(forBackend: backend, kinds: kinds)
         return accounts.filter { a in
             if a.name == "default" { return true }
             switch t {
@@ -108,8 +118,9 @@ public enum NewTaskAccount {
     /// The account to preselect: the user's last pick when it is usable for the
     /// backend, else the account the daemon resolves for the project
     /// (`isDefault`), else the built-in default.
-    public static func preselect(_ all: [Account], backend: String, picked: String) -> String {
-        let usable = accounts(all, forBackend: backend)
+    public static func preselect(_ all: [Account], backend: String, picked: String,
+                                 kinds: [String: String] = [:]) -> String {
+        let usable = accounts(all, forBackend: backend, kinds: kinds)
         if !picked.isEmpty, usable.contains(where: { $0.name == picked }) { return picked }
         return usable.first(where: \.isDefault)?.name ?? "default"
     }
@@ -118,8 +129,9 @@ public enum NewTaskAccount {
     /// the selected name is sent ("default" included). nil means no choice was
     /// offered (one or zero usable accounts) or the selection is not usable for
     /// the backend; the daemon then resolves the project / global default.
-    public static func requestValue(selected: String, accounts all: [Account], backend: String) -> String? {
-        let usable = accounts(all, forBackend: backend)
+    public static func requestValue(selected: String, accounts all: [Account], backend: String,
+                                    kinds: [String: String] = [:]) -> String? {
+        let usable = accounts(all, forBackend: backend, kinds: kinds)
         guard usable.count > 1, usable.contains(where: { $0.name == selected }) else { return nil }
         return selected
     }

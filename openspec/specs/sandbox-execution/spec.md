@@ -77,7 +77,7 @@ The generated profile SHALL deny read access to known credential directories (`~
 
 ### Requirement: Backend auth and session persistence writes
 
-The generated profile SHALL grant the narrow write paths each supported agent backend needs to persist auth tokens and session state, without broadening to all of `$HOME`. This covers `~/.claude.json` (including atomic-write sibling files), `~/.claude/`, `~/.codex/`, `~/.local/share/argus/codex-home/`, and `~/.pi/`. Unrelated `$HOME`-rooted paths SHALL remain denied.
+The generated profile SHALL grant the narrow write paths each supported agent backend needs to persist auth tokens and session state, without broadening to all of `$HOME`. This covers `~/.claude.json` (including atomic-write sibling files), `~/.claude/`, `~/.codex/`, `~/.local/share/argus/codex-home/`, `~/.pi/`, and `~/.gemini/`. The grants SHALL be declared on each backend family in the registry. Unrelated `$HOME`-rooted paths SHALL remain denied.
 
 #### Scenario: Claude auth file and atomic-write siblings are writable
 
@@ -88,6 +88,11 @@ The generated profile SHALL grant the narrow write paths each supported agent ba
 
 - **WHEN** a sandboxed command writes Codex state under `~/.codex/` (auth, session DB, sessions) or Pi session files under `~/.pi/`
 - **THEN** the writes succeed so the backends can persist auth and resume sessions
+
+#### Scenario: Antigravity state is writable
+
+- **WHEN** a sandboxed command writes under `~/.gemini/` (agy logs, conversation database, sign-in state)
+- **THEN** the write succeeds
 
 #### Scenario: Argus-only Codex home is writable
 
@@ -244,3 +249,4 @@ The generated SBPL profile SHALL allow `file-write*` under the task's own accoun
 #### Scenario: Other accounts are not writable
 - **WHEN** a task runs on account `work` and account `personal` is also configured
 - **THEN** the profile has no write allow for `personal`'s directories
+
