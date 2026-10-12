@@ -6,7 +6,7 @@ Project-only skills live in `.agents/skills/`; `.claude/skills/` links to that d
 
 ## What This Is
 
-Argus — a terminal-native LLM code orchestrator (Go + tcell/tview). Manages multiple Claude Code / Codex sessions with task tracking, git worktree isolation, and a keyboard-driven workflow.
+Argus — a terminal-native agent orchestrator (Go + tcell/tview). Manages multiple Claude Code / Codex sessions with task tracking, git worktree isolation, and a keyboard-driven workflow.
 
 ## Spec-Driven Development (OpenSpec)
 

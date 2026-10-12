@@ -2,7 +2,7 @@
 
 ## Context
 
-Argus today is a great single-user terminal-native LLM code orchestrator: tasks, worktrees, dependency DAG, peer-to-peer messaging, scheduler, MCP server, web UI, sandbox. It covers ~90% of what any sustained-coordination tool needs.
+Argus today is a great single-user terminal-native agent orchestrator: tasks, worktrees, dependency DAG, peer-to-peer messaging, scheduler, MCP server, web UI, sandbox. It covers ~90% of what any sustained-coordination tool needs.
 
 But every extension lands as a code change to argus itself. The MCP tool surface is hardcoded in `internal/mcp/server.go`. The TUI layout is hardcoded in `internal/tui/taskpage.go`. The settings tab is hardcoded in `internal/tui/settings.go`. Anything that wants to add capability has to either fork argus or wait for an upstream PR.
 
