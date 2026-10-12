@@ -563,7 +563,7 @@ The system SHALL expose endpoints to trigger and read an on-demand, daemon-side 
 
 ### Requirement: Claude session listing and switching endpoints
 
-The system SHALL expose a `GET /api/tasks/{id}/claude-sessions` endpoint that lists the named task's available Claude sessions (via `internal/claudesession.List`, keyed on the task's worktree) and a `POST /api/tasks/{id}/claude-session` endpoint that switches the task to a different session, mirroring the TUI's `ctrl+r` session-switcher flow (`internal/tui/app.go`'s `openSessionPickerModal`/`switchSession`). Both endpoints SHALL be callable by any authenticated token (master, device, or plugin-scoped) and SHALL be restricted to Claude-backed tasks (matching the TUI's own `IsCodexBackend`/`IsPiBackend`/`IsOpencodeBackend` guard) — a non-Claude-backed task returns 400 rather than an empty or garbage session list.
+The system SHALL expose a `GET /api/tasks/{id}/claude-sessions` endpoint that lists the named task's available Claude sessions (via `internal/claudesession.List`, keyed on the task's worktree) and a `POST /api/tasks/{id}/claude-session` endpoint that switches the task to a different session, mirroring the TUI's `ctrl+r` session-switcher flow (`internal/tui/app.go`'s `openSessionPickerModal`/`switchSession`). Both endpoints SHALL be callable by any authenticated token (master, device, or plugin-scoped) and SHALL be restricted to Claude-backed tasks (matching the TUI's own backend-family session-switcher guard) — a non-Claude-backed task returns 400 rather than an empty or garbage session list.
 
 #### Scenario: List sessions for a Claude-backed task
 

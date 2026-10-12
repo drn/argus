@@ -57,8 +57,8 @@ func TestFamilyOf(t *testing.T) {
 	testutil.Equal(t, FamilyOf("/opt/homebrew/bin/agy --x").Kind, backendkind.Antigravity)
 	testutil.Equal(t, FamilyOf("my-wrapper").IsCustom(), true)
 	testutil.Equal(t, FamilyForKind("nope").IsCustom(), true)
-	testutil.Equal(t, IsAntigravityBackend("antigravity"), false) // may be the IDE launcher
-	testutil.Equal(t, IsAntigravityBackend("agy-helper"), false)
+	testutil.Equal(t, FamilyOf("antigravity").IsCustom(), true) // may be the IDE launcher
+	testutil.Equal(t, FamilyOf("agy-helper").IsCustom(), true)
 }
 
 func TestFamily_HasPermissionFlag(t *testing.T) {

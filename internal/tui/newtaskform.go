@@ -7,12 +7,11 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/drn/argus/internal/backendkind"
-
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/backendkind"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/profiles"
@@ -170,7 +169,7 @@ func NewNewTaskForm(projects map[string]config.Project, defaultProject string, b
 	backIdx := 0
 	if i := slices.Index(backNames, defaultBackend); i >= 0 {
 		backIdx = i
-	} else if i := slices.Index(backNames, "claude"); i >= 0 {
+	} else if i := slices.Index(backNames, string(backendkind.Claude)); i >= 0 {
 		backIdx = i
 	}
 

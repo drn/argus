@@ -67,6 +67,15 @@ func TestCaptureAntigravitySessionID(t *testing.T) {
 		testutil.NoError(t, err)
 		testutil.Equal(t, id, "top")
 	})
+	t.Run("malformed id skipped", func(t *testing.T) {
+		seedAntigravityDB(t,
+			agyRow{"good-1", "2026-10-02 10:00:00", `["file://` + wt + `"]`, ""},
+			agyRow{"--evil; rm", "2026-10-03 10:00:00", `["file://` + wt + `"]`, ""},
+		)
+		id, err := CaptureAntigravitySessionID(wt)
+		testutil.NoError(t, err)
+		testutil.Equal(t, id, "good-1")
+	})
 	t.Run("multi-workspace conversation matches", func(t *testing.T) {
 		seedAntigravityDB(t, agyRow{"multi", "2026-10-02 10:00:00", `["file://` + other + `","file://` + wt + `"]`, ""})
 		id, err := CaptureAntigravitySessionID(wt)

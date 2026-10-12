@@ -676,7 +676,7 @@ func TestSandbox_ClaudeJSONAtomicWriteSiblings(t *testing.T) {
 }
 
 // TestSandbox_CodexBackendWritable pins the ~/.codex write rule. Codex is a
-// first-class backend (see internal/agent/agent.go IsCodexBackend); it writes
+// first-class backend (see internal/agent/backends.go); it writes
 // auth.json (token), state_5.sqlite (session DB), history.jsonl, sessions/,
 // models_cache.json. Without write access the backend can't persist auth and
 // loops on /login — identical symptom to the ~/.claude.json bug.
@@ -729,7 +729,7 @@ func TestSandbox_CodexBackendWritable(t *testing.T) {
 }
 
 // TestSandbox_PiBackendWritable pins the ~/.pi write rule. Pi is a first-class
-// backend (see internal/agent/agent.go IsPiBackend); it writes session files
+// backend (see internal/agent/backends.go); it writes session files
 // to ~/.pi/agent/sessions/--<encoded-cwd>--/<ts>_<uuid>.jsonl, and Argus reads
 // those filenames post-exit via CapturePiSessionID to recover the session UUID
 // for resume. Without write access the session vanishes and resume silently

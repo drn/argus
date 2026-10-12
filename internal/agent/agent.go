@@ -366,27 +366,11 @@ func ResolveDir(task *model.Task, cfg config.Config) string {
 	return ""
 }
 
-// IsCodexBackend reports whether a backend command is codex-based. Detection
-// (shared by every IsXBackend) uses the basename of the first word, so both
-// bare names and absolute paths match; see backendkind.Of.
-func IsCodexBackend(command string) bool { return backendkind.Of(command) == backendkind.Codex }
-
-// IsPiBackend reports whether a backend command is pi-based (pi.dev coding agent).
-func IsPiBackend(command string) bool { return backendkind.Of(command) == backendkind.Pi }
-
-// IsClaudeBackend reports whether a backend command is Claude Code. Kept
-// strict (exact basename "claude") so custom/bare commands never receive
-// Claude-only flags.
+// IsClaudeBackend reports whether a backend command is Claude Code, for the
+// genuinely Claude-only paths outside the registry (Claude's own background
+// session supervisor). Kept strict (exact basename "claude", see
+// backendkind.Of) so custom/bare commands never match.
 func IsClaudeBackend(command string) bool { return backendkind.Of(command) == backendkind.Claude }
-
-// IsOpencodeBackend reports whether a backend command is opencode-based.
-func IsOpencodeBackend(command string) bool { return backendkind.Of(command) == backendkind.Opencode }
-
-// IsAntigravityBackend reports whether a backend command is the Antigravity
-// CLI (`agy`).
-func IsAntigravityBackend(command string) bool {
-	return backendkind.Of(command) == backendkind.Antigravity
-}
 
 // opencodeModelIDPattern mirrors OpenCode 2.x's own model normalizer: a model
 // id is `provider/model`, optionally with a `#variant` suffix, and anything

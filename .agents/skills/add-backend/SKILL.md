@@ -35,6 +35,8 @@ with `HOME=<scratch dir>` and inspect what the CLI creates. Record:
 | Resume form | `--resume`, `--session`, `--conversation`, subcommand | `ResumeFlag` / `ResumeCmd` |
 | Where sessions are stored | files under the scratch HOME; `sqlite3 <db> .schema` | `Capture` |
 | Can it switch conversations in-session (`/clear`, `/new`)? | slash-command docs | `RecaptureEveryExit` |
+| Does it store Claude-format transcripts the ctrl+r switcher can list? | almost always no | `SessionSwitcher` |
+| Flag it always needs at launch (e.g. opencode `--auto`) | `--help` | `LaunchFlag` |
 | Model flag | `--model`? config-only? | `ModelDelivery`, `KnownModels` |
 | Permission/approval flags | `--help` | `PermissionFlags`, `PermissionFlagTokens` |
 | Per-launch MCP config? | flag, env var, or only a global file | `MCPFlag` or `InjectGlobal` |

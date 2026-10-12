@@ -7,8 +7,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
+
+// antigravityConversationIDPattern bounds a captured ID: the DB is writable by
+// a sandboxed agy, so a malformed row is skipped rather than resumed.
+var antigravityConversationIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 // antigravityConversationDB returns agy's conversation index,
 // ~/.gemini/antigravity-cli/conversation_summaries.db.
@@ -57,7 +62,7 @@ func CaptureAntigravitySessionID(worktreePath string) (string, error) {
 	want := canonPath(worktreePath)
 	for rows.Next() {
 		var id, uris string
-		if rows.Scan(&id, &uris) != nil {
+		if rows.Scan(&id, &uris) != nil || !antigravityConversationIDPattern.MatchString(id) {
 			continue
 		}
 		for _, p := range antigravityWorkspacePaths(uris) {

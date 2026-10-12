@@ -240,8 +240,8 @@ func injectOpencodeGlobal(port int, launching bool) error {
 	return injectopencode.InjectGlobal(port, "")
 }
 
-// antigravityInstalledFn reports whether agy is present: on PATH (either
-// binary name) or already initialized (~/.gemini/antigravity-cli exists —
+// antigravityInstalledFn reports whether agy is present: any of the family's
+// binaries on PATH, or already initialized (~/.gemini/antigravity-cli exists —
 // not bare ~/.gemini, which Gemini CLI also owns). A package var so tests can
 // force either answer.
 var antigravityInstalledFn = func() bool {

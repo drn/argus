@@ -13,7 +13,8 @@ import (
 	"syscall"
 )
 
-// Write atomically replaces path with data. label prefixes every error
+// Write atomically replaces path with data, keeping an existing regular
+// file's permission bits (new files get 0600). label prefixes every error
 // (e.g. "inject codex") so callers keep their own error vocabulary. A
 // symlink at path is replaced, never followed: a sandboxed agent can write
 // these config dirs and must not be able to aim the daemon's write elsewhere.
@@ -23,6 +24,13 @@ func Write(path string, data []byte, label string) error {
 		return fmt.Errorf("%s: create temp: %w", label, err)
 	}
 	tmpName := tmp.Name()
+	if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() {
+		if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+			tmp.Close()        //nolint:errcheck
+			os.Remove(tmpName) //nolint:errcheck
+			return fmt.Errorf("%s: chmod temp: %w", label, err)
+		}
+	}
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()        //nolint:errcheck
 		os.Remove(tmpName) //nolint:errcheck
@@ -54,11 +62,11 @@ func WriteJSON(path string, v any, label string) error {
 const maxJSONSize = 16 << 20
 
 // ReadJSONObject reads path as a JSON object. A missing file yields an empty
-// map; an unparseable, oversized, or non-regular file (a FIFO planted by a
-// sandboxed agent would otherwise block the daemon forever) is an error so
-// callers leave the user's file untouched.
+// map; an unparseable, oversized, symlinked, or non-regular file (a FIFO
+// planted by a sandboxed agent would otherwise block the daemon forever) is an
+// error so callers leave the user's file untouched.
 func ReadJSONObject(path, label string) (map[string]any, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if os.IsNotExist(err) {
 		return map[string]any{}, nil
 	}

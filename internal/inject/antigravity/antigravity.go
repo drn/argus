@@ -29,8 +29,7 @@ func ConfigDir() (string, error) {
 // InjectGlobal registers Argus's MCP server on port (skipped when port <= 0,
 // i.e. MCP is off) and, when skillsDir is non-empty, Argus's builtin skills
 // dir. Both writes preserve every unrelated key and are skipped when already
-// correct. An unparseable file is
-// left untouched and reported.
+// correct. An unparseable file is left untouched and reported.
 func InjectGlobal(port int, skillsDir string) error {
 	dir, err := ConfigDir()
 	if err != nil {

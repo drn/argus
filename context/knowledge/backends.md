@@ -21,8 +21,17 @@ commands get `customFamily`. To add one, follow `.agents/skills/add-backend/SKIL
 | Routing | `--append-system-prompt-file` | prompt prefix | — | prompt prefix | prompt prefix | — |
 | Sandbox grant | `~/.claude.json*`, `~/.claude` | `~/.codex`, codex-home | `~/.pi` | (base `~/.local`) | `~/.gemini/{antigravity-cli,config,jetski}` (pre-created) | — |
 | Accounts | `claude_config_dir` | `codex_home` | — | — | — | — |
+| Launch flag | — | — | — | `--auto` | — | — |
 | Session switcher | yes | — | — | — | — | yes |
 | Prelaunch | — | — | ollama warmup (20s Start RPC) | — | — | — |
+
+Rows map to `Family` fields: Session ID → `PinsSessionID`, Resume → `ResumeFlag`/`ResumeCmd`,
+Capture → `Capture`, Recapture → `RecaptureEveryExit`, Prompt → `DefaultPromptFlag`/
+`PromptPositional`, Model → `ModelDelivery`/`KnownModels`, Permission →
+`PermissionFlags`/`PermissionFlagTokens`, Launch flag → `LaunchFlag`, MCP → `MCPFlag`/`InjectGlobal`,
+Skills → `SkillDelivery`, Routing → `RoutingDelivery`, Sandbox grant → `SandboxGrants`/
+`SandboxGrantsLaunchOnly`/`PrecreateSandboxGrants`, Session switcher → `SessionSwitcher`,
+Prelaunch → `Prelaunch`/`StartTimeout`.
 
 ## Why the non-obvious cells are what they are
 
