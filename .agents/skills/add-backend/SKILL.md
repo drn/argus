@@ -55,7 +55,9 @@ proposal.
 
 `openspec/changes/add-<name>-backend/` with proposal (verified facts + Non-Goals for anything the
 CLI can't support), delta specs (`agent-execution`, `config-management`, plus `mcp-injection`,
-`sandbox-execution`, `skill-provisioning` as applicable), and tasks. Get approval.
+`sandbox-execution`, `skill-provisioning` as applicable), and tasks. Get approval. A `MODIFIED`
+requirement must copy every existing scenario into the delta — archiving replaces the whole block
+and silently drops any you leave out.
 
 ## 3. Declare the family
 
