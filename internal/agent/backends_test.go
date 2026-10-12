@@ -203,7 +203,7 @@ func TestBuildCmd_Antigravity(t *testing.T) {
 	}
 }
 
-func TestBuildCmd_AntigravityMaterializesSkillsWithoutFlag(t *testing.T) {
+func TestBuildCmd_AntigravitySkillsOnlyViaInjectGlobal(t *testing.T) {
 	called := false
 	old := ensureSessionSkillsFn
 	ensureSessionSkillsFn = func() (string, error) { called = true; return "/argus/skills", nil }
@@ -212,7 +212,7 @@ func TestBuildCmd_AntigravityMaterializesSkillsWithoutFlag(t *testing.T) {
 	task := &model.Task{Backend: "antigravity", Prompt: "p", Worktree: t.TempDir()}
 	cmd, _, err := BuildCmd(task, config.DefaultConfig(), false)
 	testutil.NoError(t, err)
-	testutil.Equal(t, called, true)
+	testutil.Equal(t, called, false) // InjectGlobal materializes; BuildCmd must not repeat it
 	if strings.Contains(cmd.Args[2], "/argus/skills") {
 		t.Fatalf("SkillsGlobal must not add a per-launch flag: %q", cmd.Args[2])
 	}
@@ -430,6 +430,27 @@ func TestEnsureSandboxGrantDirsIn(t *testing.T) {
 	ensureSandboxGrantDirsIn(FamilyForKind(backendkind.Claude), config.SandboxConfig{Enabled: true}, claudeHome)
 	_, err = os.Stat(filepath.Join(claudeHome, ".claude.json"))
 	testutil.Equal(t, os.IsNotExist(err), true)
+}
+
+func TestBuildCmd_PrecreatesGrantDirsOnlyForOptedInFamilies(t *testing.T) {
+	var got []string
+	old := ensureSandboxGrantDirsFn
+	ensureSandboxGrantDirsFn = func(f *Family, sb config.SandboxConfig) {
+		got = append(got, string(f.Kind)+":"+strconv.FormatBool(sb.Enabled))
+	}
+	defer func() { ensureSandboxGrantDirsFn = old }()
+
+	cfg := config.DefaultConfig()
+	cfg.Sandbox.Enabled = true
+	for _, backend := range []string{"antigravity", "claude", "codex", "pi", "opencode"} {
+		task := &model.Task{Backend: backend, Prompt: "p", Worktree: t.TempDir()}
+		_, _, err := BuildCmd(task, cfg, false)
+		testutil.NoError(t, err)
+	}
+	testutil.DeepEqual(t, got, []string{"antigravity:true"})
+	for _, f := range Families() {
+		testutil.Equal(t, f.PrecreateSandboxGrants, f.Kind == backendkind.Antigravity)
+	}
 }
 
 func TestEnsureSandboxGrantDirsFn_InertUnderTest(t *testing.T) {

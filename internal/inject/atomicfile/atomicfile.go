@@ -13,12 +13,9 @@ import (
 
 // Write atomically replaces path with data. label prefixes every error
 // (e.g. "inject codex") so callers keep their own error vocabulary. A
-// symlinked path (a dotfiles-managed config) is written through to its
-// target so the link survives instead of being replaced by a regular file.
+// symlink at path is replaced, never followed: a sandboxed agent can write
+// these config dirs and must not be able to aim the daemon's write elsewhere.
 func Write(path string, data []byte, label string) error {
-	if target, err := filepath.EvalSymlinks(path); err == nil {
-		path = target
-	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".argus-*.tmp")
 	if err != nil {
 		return fmt.Errorf("%s: create temp: %w", label, err)

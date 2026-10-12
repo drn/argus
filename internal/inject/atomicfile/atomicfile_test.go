@@ -19,7 +19,7 @@ func TestWrite(t *testing.T) {
 		entries, _ := os.ReadDir(dir)
 		testutil.Equal(t, len(entries), 1)
 	})
-	t.Run("symlink written through to target", func(t *testing.T) {
+	t.Run("symlink replaced, target untouched", func(t *testing.T) {
 		dir := t.TempDir()
 		target := filepath.Join(dir, "real.json")
 		testutil.NoError(t, os.WriteFile(target, []byte("old"), 0o644))
@@ -28,9 +28,11 @@ func TestWrite(t *testing.T) {
 		testutil.NoError(t, Write(link, []byte("new"), "x"))
 		info, err := os.Lstat(link)
 		testutil.NoError(t, err)
-		testutil.Equal(t, info.Mode()&os.ModeSymlink != 0, true)
-		got, _ := os.ReadFile(target)
+		testutil.Equal(t, info.Mode().IsRegular(), true)
+		got, _ := os.ReadFile(link)
 		testutil.Equal(t, string(got), "new")
+		got, _ = os.ReadFile(target)
+		testutil.Equal(t, string(got), "old")
 	})
 	t.Run("missing dir", func(t *testing.T) {
 		err := Write(filepath.Join(t.TempDir(), "nope", "f"), nil, "lbl")

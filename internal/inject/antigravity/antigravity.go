@@ -62,9 +62,13 @@ func injectMCP(path string, port int) error {
 		return err
 	}
 	url := fmt.Sprintf("http://localhost:%d/mcp", port)
-	servers, _ := data["mcpServers"].(map[string]any)
-	if servers == nil {
-		servers = map[string]any{}
+	servers := map[string]any{}
+	if raw, present := data["mcpServers"]; present && raw != nil {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s: %s mcpServers is %T, not an object; leaving it untouched", label, path, raw)
+		}
+		servers = m
 	}
 	disabled := false
 	if existing, ok := servers[mcpServerName].(map[string]any); ok {

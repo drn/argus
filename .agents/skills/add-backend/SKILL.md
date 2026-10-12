@@ -41,7 +41,7 @@ with `HOME=<scratch dir>` and inspect what the CLI creates. Record:
 | Skill discovery | per-launch flag, env, config dir, global manifest | `SkillDelivery` |
 | Instruction files it reads natively | docs (AGENTS.md? CLAUDE.md?) | `RoutingDelivery` |
 | Env vars / config-dir override | `strings <binary> \| grep -E '^[A-Z_]+$'` | accounts, child-only config |
-| State dirs it writes under `$HOME` | scratch HOME after a run | `SandboxGrants` |
+| State dirs it writes under `$HOME` | scratch HOME after a run | `SandboxGrants` (+ `PrecreateSandboxGrants` when their parent isn't writable in the sandbox) |
 | Slow startup work before the TUI? | | `Prelaunch`, `StartTimeout` |
 | Skill invocation prefix in prompts | docs | `Spec.SkillPrefix` |
 

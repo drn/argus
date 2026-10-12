@@ -100,6 +100,21 @@ func TestInjectMCP(t *testing.T) {
 		raw, _ := os.ReadFile(p)
 		testutil.Equal(t, string(raw), "{bad")
 	})
+	t.Run("non-object mcpServers untouched", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "mcp_config.json")
+		testutil.NoError(t, os.WriteFile(p, []byte(`{"mcpServers":["x"]}`), 0o644))
+		err := injectMCP(p, 2)
+		testutil.Contains(t, err.Error(), "not an object")
+		raw, _ := os.ReadFile(p)
+		testutil.Equal(t, string(raw), `{"mcpServers":["x"]}`)
+	})
+	t.Run("null mcpServers replaced", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "mcp_config.json")
+		testutil.NoError(t, os.WriteFile(p, []byte(`{"mcpServers":null}`), 0o644))
+		testutil.NoError(t, injectMCP(p, 2))
+		servers := readObj(t, p)["mcpServers"].(map[string]any)
+		testutil.Equal(t, servers["argus"].(map[string]any)["serverUrl"], any("http://localhost:2/mcp"))
+	})
 }
 
 func TestInjectSkills(t *testing.T) {

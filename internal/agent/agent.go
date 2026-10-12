@@ -833,7 +833,9 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// A sandboxed process can't create a missing parent of its own grant
 	// (agy's ~/.gemini/... on a first run), so create the family's grant dirs
 	// here, unsandboxed.
-	ensureSandboxGrantDirs(fam, ResolveSandboxConfig(task, cfg))
+	if fam.PrecreateSandboxGrants {
+		ensureSandboxGrantDirs(fam, ResolveSandboxConfig(task, cfg))
+	}
 
 	// Inject the configured permission mode through the family's own flag
 	// vocabulary. Families without a mapping (and custom/bare commands) never
@@ -881,12 +883,13 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// the family's discovery hook: Claude loads .claude/skills/ from a
 	// --add-dir directory (a documented exception to --add-dir otherwise
 	// granting file access only), Pi takes --skill, OpenCode an inline config
-	// path, and SkillsGlobal families read the materialized dir from global
-	// config registered at daemon startup (InjectGlobal). Materialization
-	// failure is logged and skipped rather than blocking launch.
+	// path. SkillsGlobal families are absent here: their InjectGlobal
+	// materializes the dir and registers it in global config (above).
+	// Materialization failure is logged and skipped rather than blocking
+	// launch.
 	opencodeSkillsDir := ""
 	switch fam.SkillDelivery {
-	case SkillsAddDir, SkillsFlag, SkillsInlineConfig, SkillsGlobal:
+	case SkillsAddDir, SkillsFlag, SkillsInlineConfig:
 		if root, err := ensureSessionSkillsFn(); err != nil {
 			uxlog.Log("[skills] builtin skills materialize failed (continuing without them): %v", err)
 		} else if root != "" {

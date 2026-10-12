@@ -141,10 +141,12 @@ type Family struct {
 	// enable/disable choice.
 	InjectGlobal func(port int, launching bool) error
 
-	// SandboxGrants are the HOME-relative write grants the CLI needs. Every
-	// non-Prefix grant dir is created (unsandboxed) before this family
-	// launches sandboxed.
+	// SandboxGrants are the HOME-relative write grants the CLI needs.
 	SandboxGrants []SandboxGrant
+	// PrecreateSandboxGrants creates every non-Prefix grant dir (unsandboxed)
+	// before a sandboxed launch, for a CLI whose grant dirs sit under a parent
+	// the sandbox can't write (agy's ~/.gemini/...) and may not exist yet.
+	PrecreateSandboxGrants bool
 }
 
 func mustSpec(k backendkind.Kind) backendkind.Spec {
@@ -364,6 +366,7 @@ var families = []*Family{
 		InjectGlobal:         injectAntigravityGlobal,
 		// Not all of ~/.gemini: Gemini CLI keeps its own credentials at its
 		// root. These are the dirs agy 1.3.3 writes.
+		PrecreateSandboxGrants: true,
 		SandboxGrants: []SandboxGrant{
 			{HomeRel: "/.gemini/antigravity-cli", Comment: "Antigravity CLI logs, conversation DB, settings, and sign-in state."},
 			{HomeRel: "/.gemini/config", Comment: "Antigravity global customizations (mcp_config.json, skills.json, projects)."},
