@@ -12,10 +12,10 @@
 
 **Depends on:** Stage 1
 
-- [ ] 2.1 Replace `worstCodexWindow` with weekly-window selection by `window_minutes == 10080`
-- [ ] 2.2 Parse `rate_limit_reached_type`; record 100% held 24h when no weekly window is present
-- [ ] 2.3 Drop the rollout-mtime freshness gate; validity = until weekly `resets_at` (depleted: 24h from the rollout file mtime; update TestProbe_DepletedReadingHeld24hFromProbe accordingly)
-- [ ] 2.4 Route all codexprobe logging through slog (+ existing uxlog)
+- [x] 2.1 Replace `worstCodexWindow` with weekly-window selection by `window_minutes == 10080`
+- [x] 2.2 Parse `rate_limit_reached_type`; record 100% held 24h when no weekly window is present
+- [x] 2.3 Drop the rollout-mtime freshness gate; validity = until weekly `resets_at` (depleted: 24h from the rollout file mtime; TestProbe_DepletedReadingHeld24hFromProbe became TestProbe_DepletedReadingHeld24hFromRolloutMtime)
+- [x] 2.4 Route all codexprobe logging through slog (+ existing uxlog)
 
 ## 3. Claude probe correctness
 
@@ -31,22 +31,22 @@
 
 **Depends on:** Stages 2, 3
 
-- [ ] 4.1 `runUsageBudgetPoller` and `runCodexProbePoller` probe once immediately, then on the ticker; tests use the existing probe seams
+- [x] 4.1 `runUsageBudgetPoller` and `runCodexProbePoller` probe once immediately, then on the ticker; tests use the existing probe seams
 
 ## 5. Headroom strategy
 
 **Depends on:** Stage 1
 
-- [ ] 5.1 Add `Strategy string \`toml:"strategy"\`` to `config.BackendRoutingConfig` with constants `ordered`/`headroom`; ensure config.toml-wins semantics carry it (strategy is read from config.toml even when tiers come from the DB)
-- [ ] 5.2 Split `backendtier.ResolveBackend` into ordered (existing) and headroom paths; headroom uses a reading accessor that distinguishes known vs unknown
-- [ ] 5.3 Log an unrecognized strategy once per distinct value
+- [x] 5.1 Add `Strategy string \`toml:"strategy"\`` to `config.BackendRoutingConfig` with constants `ordered`/`headroom`; ensure config.toml-wins semantics carry it (strategy is read from config.toml even when tiers come from the DB)
+- [x] 5.2 Split `backendtier.ResolveBackend` into ordered (existing) and headroom paths; headroom uses a reading accessor that distinguishes known vs unknown
+- [x] 5.3 Log an unrecognized strategy once per distinct value
 
 ## 6. Docs and wrap-up
 
 **Depends on:** Stages 2–5
 
-- [ ] 6.1 Add gotchas to `context/knowledge/gotchas/usage-budget-routing.md` (interactive `/usage` never exits; trust/imports dialogs; uxlog is a no-op in the daemon; Codex weekly window lives in `primary`; depleted record has null windows) and update the index row
-- [ ] 6.2 Update README Reference config table with `strategy` and the probe-directory note
+- [x] 6.1 Add gotchas to `context/knowledge/gotchas/usage-budget-routing.md` (interactive `/usage` never exits; trust/imports dialogs; uxlog is a no-op in the daemon; Codex weekly window lives in `primary`; depleted record has null windows) and update the index row
+- [x] 6.2 Update README Reference config table with `strategy` and the probe-directory note
 - [ ] 6.3 `make pre-pr` green
 - [ ] 6.4 Live verification: deploy, confirm `[usagebudget] probe updated` and Codex reading lines in `daemon.log`, status bar shows real numbers, and a fresh worker with `strategy = "headroom"` resolves as expected
 - [ ] 6.5 Archive the change (`openspec archive fix-backend-usage-routing`) on the branch before merge

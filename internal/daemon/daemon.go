@@ -1017,6 +1017,7 @@ func (d *Daemon) runUsageBudgetPoller() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	d.probeUsageBudgetOnce(ctx)
 	for {
 		select {
 		case <-d.done:
@@ -1080,6 +1081,7 @@ func (d *Daemon) runCodexProbePoller() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	d.probeCodexOnce(ctx)
 	for {
 		select {
 		case <-d.done:

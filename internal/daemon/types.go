@@ -50,7 +50,8 @@ type BootInfoResp struct {
 	// internal/backendtier own — a TUI or doctor process has no cache of its
 	// own, since the probe tickers run only inside the daemon. *Known is false
 	// whenever the probe has never produced a trustworthy reading OR the last
-	// one is older than that package's own CacheMaxAge (1 hour) — the SAME
+	// one is no longer valid (Claude: older than usagebudget.CacheMaxAge;
+	// Codex: past its weekly reset, see backendtier.Reading) — the SAME
 	// bool the tier resolver's own fail-open check uses, so "known" here means
 	// exactly "fresh enough to route on", never a raw presence check. Surfaced
 	// in the TUI status bar; *Pct is meaningless when the paired *Known is
