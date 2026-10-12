@@ -219,7 +219,7 @@ func TestBuildCmd_AntigravitySkillsOnlyViaInjectGlobal(t *testing.T) {
 }
 
 func TestBackendSandboxRules(t *testing.T) {
-	rules := backendSandboxRules()
+	rules := backendSandboxRules(FamilyForKind(backendkind.Antigravity))
 	for _, want := range []string{
 		`(allow file-write* (subpath (string-append (param "HOME") "/.gemini/antigravity-cli")))`,
 		`(allow file-write* (subpath (string-append (param "HOME") "/.gemini/config")))`,
@@ -230,6 +230,28 @@ func TestBackendSandboxRules(t *testing.T) {
 	} {
 		testutil.Contains(t, rules, want)
 	}
+}
+
+func TestBackendSandboxRules_LaunchOnlyGrants(t *testing.T) {
+	for _, launching := range []*Family{nil, FamilyForKind(backendkind.Claude), customFamily} {
+		rules := backendSandboxRules(launching)
+		if strings.Contains(rules, "/.gemini") {
+			t.Fatalf("agy grants leaked into a non-agy profile: %v", launching)
+		}
+		testutil.Contains(t, rules, `"/.codex"`)
+	}
+	for _, f := range Families() {
+		testutil.Equal(t, f.SandboxGrantsLaunchOnly, f.Kind == backendkind.Antigravity)
+	}
+}
+
+func TestGenerateSandboxConfigFor_Antigravity(t *testing.T) {
+	path, _, cleanup, err := GenerateSandboxConfigFor(FamilyForKind(backendkind.Antigravity), t.TempDir(), config.SandboxConfig{})
+	testutil.NoError(t, err)
+	defer cleanup()
+	raw, err := os.ReadFile(path)
+	testutil.NoError(t, err)
+	testutil.Contains(t, string(raw), `"/.gemini/config"`)
 }
 
 func TestCaptureAndRecapture_Antigravity(t *testing.T) {
@@ -336,6 +358,10 @@ func TestInjectGlobalHooks(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Contains(t, string(raw), filepath.Join(home, ".argus", "skills", ".claude", "skills"))
 
+	testutil.NoError(t, injectOpencodeGlobal(7742, true))
+	_, err = os.Stat(filepath.Join(home, ".config", "opencode", "opencode.json"))
+	testutil.Equal(t, os.IsNotExist(err), true) // launch-time is a no-op for opencode
+
 	testutil.NoError(t, injectOpencodeGlobal(7742, false))
 	raw, err = os.ReadFile(filepath.Join(home, ".config", "opencode", "opencode.json"))
 	testutil.NoError(t, err)
@@ -386,7 +412,8 @@ func TestBuildCmd_InjectsGlobalConfigAtSpawn(t *testing.T) {
 		_, _, err := BuildCmd(task, cfg, false)
 		testutil.NoError(t, err)
 	}
-	testutil.Equal(t, len(got), 0) // no MCP port, nothing to register
+	testutil.DeepEqual(t, got, []string{"antigravity:0"}) // no MCP port: only SkillsGlobal still registers skills
+	got = nil
 
 	cfg.MCPPort = 7742
 	for _, backend := range []string{"antigravity", "opencode", "claude", "codex"} {
@@ -404,7 +431,7 @@ func TestInjectGlobalAtSpawnFn_InertUnderTest(t *testing.T) {
 }
 
 func TestBackendSandboxRules_NoBareGeminiGrant(t *testing.T) {
-	if strings.Contains(backendSandboxRules(), `"/.gemini")`) {
+	if strings.Contains(backendSandboxRules(FamilyForKind(backendkind.Antigravity)), `"/.gemini")`) {
 		t.Fatal("all of ~/.gemini must not be writable: Gemini CLI keeps credentials at its root")
 	}
 }

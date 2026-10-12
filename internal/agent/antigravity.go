@@ -46,8 +46,8 @@ func CaptureAntigravitySessionID(worktreePath string) (string, error) {
 
 	// Sub-agent conversations carry their parent's ID and share the
 	// workspace; only a top-level conversation is resumable as the task.
-	rows, err := db.Query(`SELECT conversation_id, workspace_uris FROM conversation_summaries
-		WHERE conversation_id <> '' AND parent_conversation_id = ''
+	rows, err := db.Query(`SELECT conversation_id, COALESCE(workspace_uris, '') FROM conversation_summaries
+		WHERE COALESCE(conversation_id, '') <> '' AND COALESCE(parent_conversation_id, '') = ''
 		ORDER BY last_modified_time DESC`)
 	if err != nil {
 		return "", fmt.Errorf("CaptureAntigravitySessionID: query: %w", err)

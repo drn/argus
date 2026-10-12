@@ -7,8 +7,10 @@ package atomicfile
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // Write atomically replaces path with data. label prefixes every error
@@ -47,16 +49,36 @@ func WriteJSON(path string, v any, label string) error {
 	return Write(path, append(out, '\n'), label)
 }
 
+// maxJSONSize bounds ReadJSONObject so a planted oversized file can't exhaust
+// daemon memory.
+const maxJSONSize = 16 << 20
+
 // ReadJSONObject reads path as a JSON object. A missing file yields an empty
-// map; an unparseable file is an error so callers leave the user's file
-// untouched.
+// map; an unparseable, oversized, or non-regular file (a FIFO planted by a
+// sandboxed agent would otherwise block the daemon forever) is an error so
+// callers leave the user's file untouched.
 func ReadJSONObject(path, label string) (map[string]any, error) {
-	raw, err := os.ReadFile(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if os.IsNotExist(err) {
 		return map[string]any{}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%s: read %s: %w", label, path, err)
+	}
+	defer f.Close() //nolint:errcheck
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("%s: read %s: %w", label, path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: read %s: not a regular file", label, path)
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, maxJSONSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("%s: read %s: %w", label, path, err)
+	}
+	if len(raw) > maxJSONSize {
+		return nil, fmt.Errorf("%s: read %s: larger than %d bytes", label, path, maxJSONSize)
 	}
 	var data map[string]any
 	if err := json.Unmarshal(raw, &data); err != nil {

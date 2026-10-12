@@ -3,6 +3,7 @@ package atomicfile
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/drn/argus/internal/testutil"
@@ -82,8 +83,29 @@ func TestReadJSONObject(t *testing.T) {
 		_, err := ReadJSONObject(p, "lbl")
 		testutil.Contains(t, err.Error(), "lbl: cannot parse")
 	})
-	t.Run("unreadable", func(t *testing.T) {
+	t.Run("directory rejected", func(t *testing.T) {
 		_, err := ReadJSONObject(dir, "lbl")
+		testutil.Contains(t, err.Error(), "lbl: read")
+	})
+	t.Run("fifo rejected without blocking", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "fifo.json")
+		testutil.NoError(t, syscall.Mkfifo(p, 0o600))
+		_, err := ReadJSONObject(p, "lbl")
+		testutil.Contains(t, err.Error(), "not a regular file")
+	})
+	t.Run("oversized rejected", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "big.json")
+		testutil.NoError(t, os.WriteFile(p, make([]byte, maxJSONSize+1), 0o644))
+		_, err := ReadJSONObject(p, "lbl")
+		testutil.Contains(t, err.Error(), "larger than")
+	})
+	t.Run("permission denied", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "locked.json")
+		testutil.NoError(t, os.WriteFile(p, []byte("{}"), 0o000))
+		if os.Geteuid() == 0 {
+			t.Skip("root ignores file modes")
+		}
+		_, err := ReadJSONObject(p, "lbl")
 		testutil.Contains(t, err.Error(), "lbl: read")
 	})
 	t.Run("object", func(t *testing.T) {

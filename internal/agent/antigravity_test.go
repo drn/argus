@@ -53,6 +53,20 @@ func TestCaptureAntigravitySessionID(t *testing.T) {
 		testutil.NoError(t, err)
 		testutil.Equal(t, id, "main")
 	})
+	t.Run("NULL parent and NULL uris tolerated", func(t *testing.T) {
+		// agy 1.3.3 declares these NOT NULL; a looser future schema must not break capture.
+		seedAntigravityDB(t)
+		db, err := sql.Open("sqlite", filepath.Join(os.Getenv("HOME"), ".gemini", "antigravity-cli", "conversation_summaries.db"))
+		testutil.NoError(t, err)
+		_, err = db.Exec(`DROP TABLE conversation_summaries; CREATE TABLE conversation_summaries (conversation_id text, last_modified_time datetime, workspace_uris text, parent_conversation_id text)`)
+		testutil.NoError(t, err)
+		_, err = db.Exec(`INSERT INTO conversation_summaries VALUES ('top', '2026-10-02 10:00:00', ?, NULL), ('nouris', '2026-10-03 10:00:00', NULL, NULL)`, `["file://`+wt+`"]`)
+		testutil.NoError(t, err)
+		_ = db.Close()
+		id, err := CaptureAntigravitySessionID(wt)
+		testutil.NoError(t, err)
+		testutil.Equal(t, id, "top")
+	})
 	t.Run("multi-workspace conversation matches", func(t *testing.T) {
 		seedAntigravityDB(t, agyRow{"multi", "2026-10-02 10:00:00", `["file://` + other + `","file://` + wt + `"]`, ""})
 		id, err := CaptureAntigravitySessionID(wt)

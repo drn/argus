@@ -127,8 +127,9 @@ func injectOpencodeJSON(path string, port int, skillsDir string) error {
 	mcpCorrect := false
 	enabled := true
 	if existing, ok := mcp[mcpServerName].(map[string]any); ok {
-		mcpCorrect = existing["url"] == url && existing["type"] == "remote" && existing["enabled"] != nil
-		if e, isBool := existing["enabled"].(bool); isBool {
+		e, isBool := existing["enabled"].(bool)
+		mcpCorrect = existing["url"] == url && existing["type"] == "remote" && isBool
+		if isBool {
 			enabled = e
 		}
 	}

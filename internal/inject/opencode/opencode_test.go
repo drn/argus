@@ -393,14 +393,21 @@ func TestInjectOpencodeJSON_OperatorDisableRespected(t *testing.T) {
 }
 
 func TestInjectOpencodeJSON_MissingEnabledIsRewritten(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "opencode.json")
-	if err := os.WriteFile(path, []byte(`{"mcp":{"argus":{"type":"remote","url":"http://localhost:7742/mcp"}}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := injectOpencodeJSON(path, 7742, ""); err != nil {
-		t.Fatal(err)
-	}
-	if argus := readMCP(t, path); argus["enabled"] != true {
-		t.Fatalf("enabled = %v, want true", argus["enabled"])
+	for name, entry := range map[string]string{
+		"missing":  `{"type":"remote","url":"http://localhost:7742/mcp"}`,
+		"non-bool": `{"type":"remote","url":"http://localhost:7742/mcp","enabled":"no"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "opencode.json")
+			if err := os.WriteFile(path, []byte(`{"mcp":{"argus":`+entry+`}}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := injectOpencodeJSON(path, 7742, ""); err != nil {
+				t.Fatal(err)
+			}
+			if argus := readMCP(t, path); argus["enabled"] != true {
+				t.Fatalf("enabled = %v, want true", argus["enabled"])
+			}
+		})
 	}
 }

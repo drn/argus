@@ -48,6 +48,14 @@ func TestInjectGlobal_NoSkillsDirSkipsManifest(t *testing.T) {
 	testutil.Equal(t, os.IsNotExist(err), true)
 }
 
+func TestInjectGlobal_NoPortSkipsMCP(t *testing.T) {
+	dir := setHome(t)
+	testutil.NoError(t, InjectGlobal(0, "/s/skills"))
+	_, err := os.Stat(filepath.Join(dir, "mcp_config.json"))
+	testutil.Equal(t, os.IsNotExist(err), true)
+	testutil.Equal(t, len(readObj(t, filepath.Join(dir, "skills.json"))["entries"].([]any)), 1)
+}
+
 func TestInjectMCP(t *testing.T) {
 	t.Run("idempotent", func(t *testing.T) {
 		p := filepath.Join(t.TempDir(), "mcp_config.json")

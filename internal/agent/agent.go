@@ -825,9 +825,10 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		mcpFlag = fam.MCPFlag(fmt.Sprintf("http://localhost:%d/mcp", cfg.MCPPort))
 	}
 	cmdStr += mcpFlag
-	// Families without a per-launch MCP flag read Argus's registration from
-	// global config; refresh it idempotently before every launch.
-	if cfg.MCPPort > 0 && fam.InjectGlobal != nil {
+	// Families without a per-launch MCP flag read Argus's registration (and,
+	// for SkillsGlobal, the skills dir — needed even with MCP off) from global
+	// config; refresh it idempotently before every launch.
+	if fam.InjectGlobal != nil && (cfg.MCPPort > 0 || fam.SkillDelivery == SkillsGlobal) {
 		injectGlobalAtSpawnFn(fam, cfg.MCPPort)
 	}
 	// A sandboxed process can't create a missing parent of its own grant
@@ -1012,7 +1013,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	var sandboxCleanup func()
 	effectiveSandbox := sandboxWithCodexHome(sandboxWithClaudeConfigDir(ResolveSandboxConfig(task, cfg), claudeConfigDir), codexAccountHome)
 	if effectiveSandbox.Enabled && IsSandboxAvailable() && task.Worktree != "" {
-		profilePath, params, cleanup, serr := GenerateSandboxConfig(task.Worktree, effectiveSandbox)
+		profilePath, params, cleanup, serr := GenerateSandboxConfigFor(fam, task.Worktree, effectiveSandbox)
 		if serr == nil {
 			cmdStr = WrapWithSandbox(cmdStr, profilePath, params)
 			sandboxCleanup = cleanup

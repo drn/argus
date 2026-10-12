@@ -143,6 +143,11 @@ type Family struct {
 
 	// SandboxGrants are the HOME-relative write grants the CLI needs.
 	SandboxGrants []SandboxGrant
+	// SandboxGrantsLaunchOnly emits SandboxGrants only into this family's own
+	// launches rather than every sandboxed task's profile, for grants that
+	// would let another backend's agent tamper with config an unsandboxed CLI
+	// later trusts (agy's ~/.gemini/config MCP registrations).
+	SandboxGrantsLaunchOnly bool
 	// PrecreateSandboxGrants creates every non-Prefix grant dir (unsandboxed)
 	// before a sandboxed launch, for a CLI whose grant dirs sit under a parent
 	// the sandbox can't write (agy's ~/.gemini/...) and may not exist yet.
@@ -217,7 +222,13 @@ func antigravityPermissionFlags(mode string) string {
 	}
 }
 
-func injectOpencodeGlobal(port int, _ bool) error {
+// injectOpencodeGlobal runs only at daemon startup, as before the registry:
+// a per-launch rewrite would add a lost-update race across parallel opencode
+// spawns for no gain, since opencode is registered whenever the daemon starts.
+func injectOpencodeGlobal(port int, launching bool) error {
+	if launching {
+		return nil
+	}
 	if dir, err := skills.ManagedSkillsDir(); err == nil {
 		// Older builds put the skills dir in the global config; launches now
 		// deliver it child-only via OPENCODE_CONFIG_CONTENT. A cleanup failure
@@ -366,7 +377,8 @@ var families = []*Family{
 		InjectGlobal:         injectAntigravityGlobal,
 		// Not all of ~/.gemini: Gemini CLI keeps its own credentials at its
 		// root. These are the dirs agy 1.3.3 writes.
-		PrecreateSandboxGrants: true,
+		PrecreateSandboxGrants:  true,
+		SandboxGrantsLaunchOnly: true,
 		SandboxGrants: []SandboxGrant{
 			{HomeRel: "/.gemini/antigravity-cli", Comment: "Antigravity CLI logs, conversation DB, settings, and sign-in state."},
 			{HomeRel: "/.gemini/config", Comment: "Antigravity global customizations (mcp_config.json, skills.json, projects)."},

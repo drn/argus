@@ -43,5 +43,6 @@ commands get `customFamily`. To add one, follow `.agents/skills/add-backend/SKIL
 - **bypass-allow → `--mode plan` for agy**: agy has no "plan with bypass reachable" mode.
 - **antigravity's sandbox grant is three subdirs, not `~/.gemini`**: Gemini CLI keeps OAuth creds at
   the root. A sandboxed agy can't `mkdir ~/.gemini` itself, so BuildCmd pre-creates the grant dirs
-  unsandboxed for families that set `PrecreateSandboxGrants` (only agy).
+  unsandboxed for families that set `PrecreateSandboxGrants` (only agy), and `SandboxGrantsLaunchOnly`
+  emits those grants only into agy's own launches.
 - **Only `agy` classifies as antigravity** — a bare `antigravity` may be the IDE launcher.

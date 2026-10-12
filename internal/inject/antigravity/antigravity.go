@@ -26,9 +26,10 @@ func ConfigDir() (string, error) {
 	return filepath.Join(home, ".gemini", "config"), nil
 }
 
-// InjectGlobal registers Argus's MCP server on port and, when skillsDir is
-// non-empty, Argus's builtin skills dir. Both writes preserve every
-// unrelated key and are skipped when already correct. An unparseable file is
+// InjectGlobal registers Argus's MCP server on port (skipped when port <= 0,
+// i.e. MCP is off) and, when skillsDir is non-empty, Argus's builtin skills
+// dir. Both writes preserve every unrelated key and are skipped when already
+// correct. An unparseable file is
 // left untouched and reported.
 func InjectGlobal(port int, skillsDir string) error {
 	dir, err := ConfigDir()
@@ -38,7 +39,10 @@ func InjectGlobal(port int, skillsDir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("%s: create %s: %w", label, dir, err)
 	}
-	mcpErr := injectMCP(filepath.Join(dir, "mcp_config.json"), port)
+	var mcpErr error
+	if port > 0 {
+		mcpErr = injectMCP(filepath.Join(dir, "mcp_config.json"), port)
+	}
 	if skillsDir == "" {
 		return mcpErr
 	}

@@ -119,14 +119,18 @@ const sandboxProfileBase = `(version 1)
 (allow file-write* (subpath (string-append (param "HOME") "/.dots")))
 `
 
-// backendSandboxRules renders every backend family's SandboxGrants: the
+// backendSandboxRules renders the backend families' SandboxGrants: the
 // narrow HOME-relative paths each CLI needs to persist auth and session state
 // (EPERM there loops agents on /login and silently breaks post-exit session
 // capture). Generated from the registry so a new backend declares its grant
-// once, in backends.go.
-func backendSandboxRules() string {
+// once, in backends.go. A SandboxGrantsLaunchOnly family's grants are emitted
+// only when it is the launching family (nil = none).
+func backendSandboxRules(launching *Family) string {
 	var b strings.Builder
 	for _, f := range families {
+		if f.SandboxGrantsLaunchOnly && f != launching {
+			continue
+		}
 		for _, g := range f.SandboxGrants {
 			filter := "subpath"
 			if g.Prefix {
@@ -170,6 +174,12 @@ func ResetSandboxCache() {
 // SBPL profile. The macOS kernel resolves symlinks before matching sandbox rules,
 // so unresolved paths silently fail to match (the "SBPL symlink trap").
 func GenerateSandboxConfig(worktreePath string, sandboxCfg config.SandboxConfig) (string, []string, func(), error) {
+	return GenerateSandboxConfigFor(nil, worktreePath, sandboxCfg)
+}
+
+// GenerateSandboxConfigFor is GenerateSandboxConfig for a launch of family
+// fam, which additionally receives fam's launch-only grants.
+func GenerateSandboxConfigFor(fam *Family, worktreePath string, sandboxCfg config.SandboxConfig) (string, []string, func(), error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("getting home dir: %w", err)
@@ -179,7 +189,7 @@ func GenerateSandboxConfig(worktreePath string, sandboxCfg config.SandboxConfig)
 
 	var profile strings.Builder
 	profile.WriteString(sandboxProfileBase)
-	profile.WriteString(backendSandboxRules())
+	profile.WriteString(backendSandboxRules(fam))
 
 	// Allow writes to main repo's .git dir for git operations in worktrees.
 	// Git worktrees store metadata (index.lock, objects, refs) in the main
