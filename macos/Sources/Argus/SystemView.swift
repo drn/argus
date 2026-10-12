@@ -30,6 +30,26 @@ struct SystemView: View {
                 }
             }
 
+            if let hs = metrics?.hostSleep, hs.isAtRisk {
+                Section {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Host may sleep", systemImage: "moon.zzz.fill")
+                            .foregroundStyle(.orange)
+                            .font(.headline)
+                        if let message = hs.message {
+                            Text(message).font(.callout).foregroundStyle(.secondary)
+                        }
+                        if let fix = hs.fix {
+                            Text(fix).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+                        }
+                        Text("Until the daemon restarts: caffeinate -is -w $(cat ~/.argus/daemon.pid)")
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+
             Section("Daemon") {
                 LabeledContent("Status", value: status?.ok == true ? "Running" : "—")
                 LabeledContent("Tasks", value: taskCountsLabel)

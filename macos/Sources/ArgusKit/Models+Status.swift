@@ -70,6 +70,10 @@ public struct SystemMetrics: Sendable, Equatable, Decodable {
 
     public let sessions: SessionCounts
 
+    /// Host sleep posture (`hostsleep.Report`). Optional so an older daemon
+    /// that predates the field still decodes.
+    public let hostSleep: HostSleep?
+
     enum CodingKeys: String, CodingKey {
         case cpuPercent = "cpu_percent"
         case cpuAvail = "cpu_avail"
@@ -96,7 +100,19 @@ public struct SystemMetrics: Sendable, Equatable, Decodable {
         case uptimeAvail = "uptime_avail"
         case sampledAt = "sampled_at"
         case sessions
+        case hostSleep = "host_sleep"
     }
+}
+
+/// `hostsleep.Report` from `GET /api/system-metrics`. `status` is one of
+/// `not_applicable`, `safe`, `held`, `at_risk`, `unknown`; only `at_risk`
+/// warrants a banner.
+public struct HostSleep: Sendable, Equatable, Decodable {
+    public let status: String
+    public let message: String?
+    public let fix: String?
+
+    public var isAtRisk: Bool { status == "at_risk" }
 }
 
 /// The runner's live session state from `GET /api/sessions/state`.

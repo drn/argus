@@ -2,7 +2,9 @@ package api
 
 import (
 	"net/http"
+	"os"
 
+	"github.com/drn/argus/internal/hostsleep"
 	"github.com/drn/argus/internal/sysmetrics"
 )
 
@@ -12,6 +14,9 @@ import (
 type systemMetricsResponse struct {
 	sysmetrics.Snapshot
 	Sessions sessionCounts `json:"sessions"`
+	// HostSleep is the host's sleep posture against this (necessarily enabled)
+	// API: at_risk means the web app drops out whenever the Mac idle-sleeps.
+	HostSleep hostsleep.Report `json:"host_sleep"`
 }
 
 // handleSystemMetrics serves the latest cached host-load snapshot. CPU/mem/swap/
@@ -24,7 +29,8 @@ func (s *Server) handleSystemMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	running, idle := s.runner.RunningAndIdle()
 	writeJSON(w, http.StatusOK, systemMetricsResponse{
-		Snapshot: snap,
-		Sessions: sessionCounts{Running: len(running), Idle: len(idle)},
+		Snapshot:  snap,
+		Sessions:  sessionCounts{Running: len(running), Idle: len(idle)},
+		HostSleep: s.hostSleep.Get(true, os.Getpid()),
 	})
 }

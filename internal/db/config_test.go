@@ -337,3 +337,28 @@ func TestDB_Config_NegativeOrZeroPorts(t *testing.T) {
 	testutil.Equal(t, cfg.KB.HTTPPort, 7742)
 	testutil.Equal(t, cfg.API.HTTPPort, 7743)
 }
+
+func TestReadConfigValueReadOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.sql")
+
+	v, found, err := ReadConfigValueReadOnly(path, "api.enabled")
+	testutil.NoError(t, err)
+	testutil.False(t, found)
+	testutil.Equal(t, v, "")
+	_, statErr := os.Stat(path)
+	testutil.True(t, os.IsNotExist(statErr)) // must not create the file
+
+	d, err := Open(path)
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.SetConfigValue("api.enabled", "true"))
+	testutil.NoError(t, d.Close())
+
+	v, found, err = ReadConfigValueReadOnly(path, "api.enabled")
+	testutil.NoError(t, err)
+	testutil.True(t, found)
+	testutil.Equal(t, v, "true")
+
+	_, found, err = ReadConfigValueReadOnly(path, "no.such.key")
+	testutil.NoError(t, err)
+	testutil.False(t, found)
+}

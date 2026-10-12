@@ -414,3 +414,32 @@ test.describe('detail-view actions', () => {
     await expect(page.locator('#inputs-modal.open')).toHaveCount(0);
   });
 });
+
+test.describe('host sleep warning', () => {
+  async function openSettingsWith(page, hostSleep) {
+    await page.route('**/api/system-metrics', async route => {
+      const resp = await route.fetch();
+      const body = await resp.json();
+      await route.fulfill({ response: resp, json: { ...body, host_sleep: hostSleep } });
+    });
+    await login(page);
+    await page.locator('.tab[data-tab="settings"]').click();
+  }
+
+  test('at_risk shows the warning with the permanent fix', async ({ page }) => {
+    await openSettingsWith(page, {
+      status: 'at_risk',
+      message: 'This Mac sleeps after 1 min idle on AC.',
+      fix: 'sudo pmset -c sleep 0 displaysleep 10',
+    });
+    await expect(page.locator('#host-sleep-warning')).toBeVisible();
+    await expect(page.locator('#host-sleep-msg')).toContainText('sleeps after 1 min');
+    await expect(page.locator('#host-sleep-fix')).toContainText('sudo pmset -c sleep 0');
+  });
+
+  test('safe stays hidden', async ({ page }) => {
+    await openSettingsWith(page, { status: 'safe' });
+    await expect(page.locator('#sys-uptime')).toBeVisible();
+    await expect(page.locator('#host-sleep-warning')).toBeHidden();
+  });
+});

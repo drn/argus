@@ -1193,6 +1193,12 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
 
   <!-- Settings View -->
   <div id="settings-view">
+    <div class="settings-section" id="host-sleep-warning" hidden style="border-color:var(--yellow)">
+      <h3 style="color:var(--yellow)">⚠ Host may sleep</h3>
+      <div class="settings-row"><div class="value" id="host-sleep-msg" style="font-size:13px;color:var(--text-dim)"></div></div>
+      <div class="settings-row"><div class="label">Permanent fix</div><div class="value" id="host-sleep-fix" style="font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--text-dim);word-break:break-all"></div></div>
+      <div class="settings-row"><div class="label">Until daemon restart</div><div class="value" style="font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--text-dim);word-break:break-all">caffeinate -is -w $(cat ~/.argus/daemon.pid)</div></div>
+    </div>
     <div class="settings-section">
       <h3>System <span id="sys-updated" class="meta" style="text-transform:none;letter-spacing:0;float:right"></span></h3>
       <div class="metric">
@@ -5907,6 +5913,11 @@ function renderSystemMetrics(m) {
   const s = m.sessions || {};
   setText('sys-sessions', (s.running || 0) + ' running, ' + (s.idle || 0) + ' idle');
   setText('sys-uptime', m.uptime_avail ? fmtUptime(m.uptime_sec) : '—');
+  const hs = m.host_sleep || {};
+  const warn = document.getElementById('host-sleep-warning');
+  if (warn) warn.hidden = hs.status !== 'at_risk';
+  setText('host-sleep-msg', hs.message || '');
+  setText('host-sleep-fix', hs.fix || '');
 }
 
 async function loadSystemMetrics() {
