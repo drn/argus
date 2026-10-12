@@ -405,7 +405,7 @@ func TestCreateAndStart_HookReceivesWorktreePath(t *testing.T) {
 
 // TestCreateAndStart_SessionIDPersistedForClaude verifies the Claude-backend
 // SessionID generation path. Codex backends skip this (captured post-exit),
-// which is exercised by CreateAndStart implicitly through IsCodexBackend.
+// which is exercised by CreateAndStart implicitly through Family.PinsSessionID.
 func TestCreateAndStart_SessionIDPersistedForClaude(t *testing.T) {
 	repo := initGitRepo(t)
 	d := createTestDB(t, repo)

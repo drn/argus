@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/backendkind"
 	"github.com/drn/argus/internal/claudesession"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
@@ -1209,7 +1210,7 @@ func TestBuildCmd_CodexNewSessionNoSessionIDFlag(t *testing.T) {
 	}
 }
 
-func TestIsCodexBackend(t *testing.T) {
+func TestFamilyOf_Codex(t *testing.T) {
 	tests := []struct {
 		command  string
 		expected bool
@@ -1224,10 +1225,7 @@ func TestIsCodexBackend(t *testing.T) {
 		{"", false},
 	}
 	for _, tt := range tests {
-		got := IsCodexBackend(tt.command)
-		if got != tt.expected {
-			t.Errorf("IsCodexBackend(%q) = %v, want %v", tt.command, got, tt.expected)
-		}
+		testutil.Equal(t, FamilyOf(tt.command).Kind == backendkind.Codex, tt.expected)
 	}
 }
 
@@ -1830,7 +1828,7 @@ func TestCaptureCodexSessionID_NoMatch(t *testing.T) {
 
 // --- Pi backend ---
 
-func TestIsPiBackend(t *testing.T) {
+func TestFamilyOf_Pi(t *testing.T) {
 	tests := []struct {
 		name string
 		cmd  string
@@ -1846,7 +1844,7 @@ func TestIsPiBackend(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			testutil.Equal(t, IsPiBackend(tc.cmd), tc.want)
+			testutil.Equal(t, FamilyOf(tc.cmd).Kind == backendkind.Pi, tc.want)
 		})
 	}
 }

@@ -1837,6 +1837,37 @@ func TestHandleListBackends(t *testing.T) {
 	b, ok := have["beta"]
 	testutil.True(t, ok)
 	testutil.Equal(t, b.PromptFlag, "--p")
+	// Custom commands carry an empty kind, their name as label, and the
+	// switcher (custom backends are Claude-compatible).
+	testutil.Equal(t, a.Kind, "")
+	testutil.Equal(t, a.Label, "alpha")
+	testutil.Equal(t, a.SkillPrefix, "/")
+	testutil.True(t, a.SessionSwitcher)
+}
+
+func TestNewBackendJSON_FamilyMetadata(t *testing.T) {
+	cases := []struct {
+		name, command, kind, label, prefix string
+		switcher                           bool
+	}{
+		{"antigravity", "agy", "antigravity", "Antigravity", "/", false},
+		{"codex", "codex --x", "codex", "Codex", "$", false},
+		{"claude", "claude", "claude", "Claude Code", "/", true},
+		{"opencode", "opencode", "opencode", "OpenCode", "/", false},
+		// A second instance of a family keeps its own name so pickers can
+		// tell it apart from the family-named backend.
+		{"claude-haiku", "claude --model haiku", "claude", "claude-haiku", "/", true},
+		{"my-agy", "agy --mode plan", "antigravity", "my-agy", "/", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := newBackendJSON(tc.name, config.Backend{Command: tc.command})
+			testutil.Equal(t, got.Kind, tc.kind)
+			testutil.Equal(t, got.Label, tc.label)
+			testutil.Equal(t, got.SkillPrefix, tc.prefix)
+			testutil.Equal(t, got.SessionSwitcher, tc.switcher)
+		})
+	}
 }
 
 // --- handleGitStatus ---
@@ -4448,4 +4479,27 @@ func TestHandlePruneCompleted(t *testing.T) {
 		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 		testutil.Equal(t, resp["pruned"].(float64), float64(0))
 	})
+}
+
+func TestCreateUpdateBackend_ResponseCarriesFamilyMetadata(t *testing.T) {
+	srv, _ := testServer(t)
+	mux := srv.routes()
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, masterReq("POST", "/api/backends", `{"name":"antigravity","command":"agy","prompt_flag":"--prompt-interactive"}`))
+	testutil.Equal(t, w.Code, http.StatusCreated)
+	var created backendJSON
+	testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+	testutil.Equal(t, created.Kind, "antigravity")
+	testutil.Equal(t, created.Label, "Antigravity")
+	testutil.Equal(t, created.SessionSwitcher, false)
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, masterReq("PUT", "/api/backends/antigravity", `{"command":"claude"}`))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	var updated backendJSON
+	testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &updated))
+	testutil.Equal(t, updated.Name, "antigravity")
+	testutil.Equal(t, updated.Kind, "claude")
+	testutil.Equal(t, updated.SessionSwitcher, true)
 }

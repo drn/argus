@@ -1674,6 +1674,37 @@ type backendJSON struct {
 	// reach only the TUI, which reads merged config; the API serves the DB
 	// roster, so this reflects the built-in list for DB-defined backends.
 	Models []string `json:"models,omitempty"`
+	// Kind, Label, SkillPrefix, and SessionSwitcher describe the backend's
+	// family (agent.FamilyOf) so clients never hardcode backend names. Kind
+	// is "" for a custom command; Label is the family label only for the
+	// backend named after its family, else the backend's own name.
+	Kind            string `json:"kind"`
+	Label           string `json:"label"`
+	SkillPrefix     string `json:"skill_prefix"`
+	SessionSwitcher bool   `json:"session_switcher"`
+}
+
+// newBackendJSON builds the wire shape for one configured backend.
+func newBackendJSON(name string, b config.Backend) backendJSON {
+	fam := agent.FamilyOf(b.Command)
+	// The family label names only the backend that IS the family (name
+	// "codex" → "Codex"); other instances keep their own name so two
+	// backends of one family (claude, claude-haiku) stay distinguishable.
+	label := name
+	if name == string(fam.Kind) && fam.Label != "" {
+		label = fam.Label
+	}
+	return backendJSON{
+		Name:            name,
+		Command:         b.Command,
+		PromptFlag:      b.PromptFlag,
+		Model:           b.Model,
+		Models:          agent.BackendModels(b),
+		Kind:            string(fam.Kind),
+		Label:           label,
+		SkillPrefix:     fam.SkillPrefix,
+		SessionSwitcher: fam.SessionSwitcher,
+	}
 }
 
 func (s *Server) handleListBackends(w http.ResponseWriter, r *http.Request) {
@@ -1684,7 +1715,7 @@ func (s *Server) handleListBackends(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]backendJSON, 0, len(backends))
 	for name, b := range backends {
-		out = append(out, backendJSON{Name: name, Command: b.Command, PromptFlag: b.PromptFlag, Model: b.Model, Models: agent.BackendModels(b)})
+		out = append(out, newBackendJSON(name, b))
 	}
 	for i := 1; i < len(out); i++ {
 		for j := i; j > 0 && out[j].Name < out[j-1].Name; j-- {
@@ -1712,11 +1743,12 @@ func (s *Server) handleCreateBackend(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name and command are required", nil)
 		return
 	}
-	if err := s.db.SetBackend(req.Name, config.Backend{Command: req.Command, PromptFlag: req.PromptFlag, Model: req.Model}); err != nil {
+	b := config.Backend{Command: req.Command, PromptFlag: req.PromptFlag, Model: req.Model}
+	if err := s.db.SetBackend(req.Name, b); err != nil {
 		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, req)
+	writeJSON(w, http.StatusCreated, newBackendJSON(req.Name, b))
 }
 
 // handleUpdateBackend overwrites the backend keyed by path-param name.
@@ -1736,12 +1768,12 @@ func (s *Server) handleUpdateBackend(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "command is required", nil)
 		return
 	}
-	if err := s.db.SetBackend(name, config.Backend{Command: req.Command, PromptFlag: req.PromptFlag, Model: req.Model}); err != nil {
+	b := config.Backend{Command: req.Command, PromptFlag: req.PromptFlag, Model: req.Model}
+	if err := s.db.SetBackend(name, b); err != nil {
 		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
-	req.Name = name
-	writeJSON(w, http.StatusOK, req)
+	writeJSON(w, http.StatusOK, newBackendJSON(name, b))
 }
 
 // handleDeleteBackend removes a backend from config. Master-only.

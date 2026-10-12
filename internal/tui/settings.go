@@ -1453,11 +1453,18 @@ func (sv *SettingsView) mutateBackendTiers(f func([]config.BackendTier) []config
 	return true
 }
 
-// firstBackendName returns the first (sorted) configured backend name, or ""
-// if none exist — the default a freshly added tier names.
+// firstBackendName returns the backend a freshly added tier names: the
+// configured default backend when it exists, else the first (sorted) one, or
+// "" if none exist. Anchoring on the default keeps a newly shipped backend
+// that happens to sort first from becoming the tier default.
 func (sv *SettingsView) firstBackendName() string {
 	if len(sv.backends) == 0 {
 		return ""
+	}
+	for _, b := range sv.backends {
+		if b.Name == sv.defaultBackend {
+			return b.Name
+		}
 	}
 	return sv.backends[0].Name
 }

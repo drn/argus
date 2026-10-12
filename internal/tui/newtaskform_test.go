@@ -2235,3 +2235,39 @@ func TestNewTaskForm_HiddenArchetypeNavSkips(t *testing.T) {
 	handler(tcell.NewEventKey(tcell.KeyBacktab, 0, 0), nil)
 	testutil.Equal(t, f.focused, ntFieldProfile)
 }
+
+func TestNewTaskForm_ACTriggerAndAccountToolFromFamily(t *testing.T) {
+	backends := map[string]config.Backend{
+		"agy":    {Command: "agy"},
+		"claude": {Command: "claude"},
+		"codex":  {Command: "/usr/local/bin/codex --x"},
+		"mine":   {Command: "my-agent"},
+	}
+	cases := []struct{ backend, trigger, tool string }{
+		{"agy", "/", ""},
+		{"claude", "/", "claude"},
+		{"codex", "$", "codex"},
+		{"mine", "/", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.backend, func(t *testing.T) {
+			f := NewNewTaskForm(map[string]config.Project{}, "", backends, tc.backend)
+			testutil.Equal(t, f.acTrigger(), tc.trigger)
+			testutil.Equal(t, f.accountTool(), tc.tool)
+		})
+	}
+}
+
+func TestNewTaskForm_UnknownDefaultFallsBackToClaude(t *testing.T) {
+	backends := map[string]config.Backend{
+		"antigravity": {Command: "agy"},
+		"claude":      {Command: "claude"},
+		"codex":       {Command: "codex"},
+	}
+	f := NewNewTaskForm(map[string]config.Project{}, "", backends, "")
+	testutil.Equal(t, f.backendNames[f.backendIdx], "claude")
+	f = NewNewTaskForm(map[string]config.Project{}, "", backends, "codex")
+	testutil.Equal(t, f.backendNames[f.backendIdx], "codex")
+	f = NewNewTaskForm(map[string]config.Project{}, "", map[string]config.Backend{"b": {}, "a": {}}, "")
+	testutil.Equal(t, f.backendNames[f.backendIdx], "a")
+}

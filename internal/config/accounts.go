@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/drn/argus/internal/backendkind"
 )
 
 // DefaultAccountName is the reserved account name meaning each tool's own
@@ -172,21 +174,11 @@ func (c Config) CodexHome(name string) (dir string, explicit bool, err error) {
 	return filepath.Clean(ExpandHome(raw)), true, nil
 }
 
-// backendTool classifies a backend command by the basename of its first word,
-// mirroring agent.IsClaudeBackend / agent.IsCodexBackend (config cannot import
-// agent).
-func backendTool(command string) string {
-	fields := strings.Fields(command)
-	if len(fields) == 0 {
-		return ""
-	}
-	return filepath.Base(fields[0])
-}
-
 // AccountSupports reports whether account name can run a task on the backend
 // with the given command. The default account supports every backend; a named
 // account supports Claude backends only with claude_config_dir and Codex
-// backends only with codex_home, and no other backend (pi, opencode, custom).
+// backends only with codex_home, and no other backend (pi, opencode,
+// antigravity, custom).
 func (c Config) AccountSupports(name, backendCommand string) bool {
 	if isDefaultAccount(name) {
 		return true
@@ -195,10 +187,10 @@ func (c Config) AccountSupports(name, backendCommand string) bool {
 		return false
 	}
 	acct := c.Accounts[name]
-	switch backendTool(backendCommand) {
-	case "claude":
+	switch backendkind.Of(backendCommand) {
+	case backendkind.Claude:
 		return strings.TrimSpace(acct.ClaudeConfigDir) != ""
-	case "codex":
+	case backendkind.Codex:
 		return strings.TrimSpace(acct.CodexHome) != ""
 	}
 	return false

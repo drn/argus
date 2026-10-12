@@ -404,7 +404,7 @@ func TestSettingsView_BackendTiers_AddAppendsAndPersists(t *testing.T) {
 	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', 0))
 	testutil.Equal(t, got, true)
 	testutil.Equal(t, len(sv.backendTiers), 1)
-	testutil.Equal(t, sv.backendTiers[0].Backend, "claude") // first sorted backend
+	testutil.Equal(t, sv.backendTiers[0].Backend, "claude") // the configured default backend, not the first sorted
 	testutil.Equal(t, sv.backendTiers[0].Probe, config.ProbeNone)
 	testutil.Equal(t, sv.cursor, 0)
 
@@ -500,18 +500,22 @@ func TestSettingsView_BackendTiers_CycleBackendName(t *testing.T) {
 	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', 0))
 	testutil.Equal(t, sv.backendTiers[0].Backend, "claude")
 
-	// Cycle through the full sorted roster and confirm it wraps back to the
-	// start — deliberately not hardcoding the full backend list (only claude,
-	// codex, and pi are guaranteed defaults; the roster may grow), so this
-	// derives the expected sequence from sv.backends itself.
+	// Cycle through the full sorted roster from the default's position and
+	// confirm it wraps back to it — deliberately not hardcoding the full
+	// backend list (the roster may grow), so this derives the expected
+	// sequence from sv.backends itself.
 	names := make([]string, len(sv.backends))
+	pos := 0
 	for i, b := range sv.backends {
 		names[i] = b.Name
+		if b.Name == "claude" {
+			pos = i
+		}
 	}
 	for i := 1; i <= len(names); i++ {
 		got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
 		testutil.Equal(t, got, true)
-		testutil.Equal(t, sv.backendTiers[0].Backend, names[i%len(names)])
+		testutil.Equal(t, sv.backendTiers[0].Backend, names[(pos+i)%len(names)])
 	}
 }
 
@@ -2760,4 +2764,15 @@ func TestSettingsView_TodoProjectPaste(t *testing.T) {
 	paste := sv.PasteHandler()
 	paste("Pasted", nil)
 	testutil.Equal(t, sv.editTodoProjectBuf, "Pasted")
+}
+
+func TestSettingsView_FirstBackendName_PrefersConfiguredDefault(t *testing.T) {
+	sv := testSettingsView(t)
+	testutil.Equal(t, sv.firstBackendName(), "claude")
+	sv.defaultBackend = "codex"
+	testutil.Equal(t, sv.firstBackendName(), "codex")
+	sv.defaultBackend = "gone"
+	testutil.Equal(t, sv.firstBackendName(), sv.backends[0].Name)
+	sv.backends = nil
+	testutil.Equal(t, sv.firstBackendName(), "")
 }

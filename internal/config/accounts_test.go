@@ -139,6 +139,8 @@ func TestAccountSupports(t *testing.T) {
 		{"codexonly", "claude", false},
 		{"personal", "pi", false},
 		{"personal", "opencode", false},
+		{"personal", "agy", false},
+		{"default", "agy", true},
 		{"personal", "echo hello", false},
 		{"personal", "", false},
 		{"rel", "claude", false},

@@ -10,12 +10,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/drn/argus/internal/backendkind"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
 
-func TestIsOpencodeBackend(t *testing.T) {
+func TestFamilyOf_Opencode(t *testing.T) {
 	tests := []struct {
 		name string
 		cmd  string
@@ -32,7 +33,7 @@ func TestIsOpencodeBackend(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			testutil.Equal(t, IsOpencodeBackend(tc.cmd), tc.want)
+			testutil.Equal(t, FamilyOf(tc.cmd).Kind == backendkind.Opencode, tc.want)
 		})
 	}
 }

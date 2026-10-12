@@ -5172,10 +5172,6 @@ async function loadProjects() {
   } catch(e) {}
 }
 
-// Friendly labels for the New Task agent dropdown. Falls back to the raw
-// backend name for any backend we don't have a curated label for, so custom
-// backends still appear in the menu.
-const BACKEND_LABELS = { claude: 'Claude Code', codex: 'Codex' };
 // Cached so default-resolution survives between tab switches without
 // re-fetching settings on every create-view open.
 let createBackendsCache = [];
@@ -5200,7 +5196,8 @@ async function loadBackends() {
     for (const b of createBackendsCache) {
       const opt = document.createElement('option');
       opt.value = b.name;
-      opt.textContent = BACKEND_LABELS[b.name] || b.name;
+      // The daemon supplies each family's label (custom backends get their name).
+      opt.textContent = b.label || b.name;
       sel.appendChild(opt);
     }
     // Default selection priority: configured global default → 'claude' if
@@ -5245,10 +5242,10 @@ async function loadAccounts() {
   } catch(e) {}
 }
 
-// Mirrors config.AccountSupports' tool classification: the basename of the
-// backend command's first word.
-function backendTool(command) {
-  return (String(command || '').trim().split(/\s+/)[0] || '').split('/').pop();
+// The account tool is the backend's family kind from /api/backends, the same
+// classifier config.AccountSupports uses.
+function backendTool(b) {
+  return b ? (b.kind || '') : 'claude';
 }
 
 function accountSupportsTool(a, tool) {
@@ -5274,7 +5271,7 @@ function updateCreateAccountVisibility() {
   const backendSel = document.getElementById('create-backend');
   if (!grp || !sel || !backendSel) return;
   const b = createBackendsCache.find(x => x.name === (backendSel.value || createDefaultBackend));
-  const tool = b ? backendTool(b.command) : 'claude';
+  const tool = backendTool(b);
   const usable = createAccounts.filter(a => accountSupportsTool(a, tool));
   sel.replaceChildren();
   for (const a of usable) {
@@ -6854,16 +6851,11 @@ function loadSkillsForProject(project) {
   loadSkills({ project, account: createAccountValue() });
 }
 
-// Codex backends use "$" for skills; everything else "/". An empty backend
-// name means the server resolves the configured default.
-function isCodexBackend(command) {
-  const first = String(command || '').trim().split(/\s+/)[0] || '';
-  return first.split('/').pop() === 'codex';
-}
-
+// Each backend's skill prefix comes from /api/backends ("$" for codex, "/"
+// otherwise). An empty backend name means the server resolves the default.
 function skillTriggerFor(backendName, backends) {
   const b = (backends || []).find(x => x.name === (backendName || createDefaultBackend));
-  return b && isCodexBackend(b.command) ? '$' : '/';
+  return (b && b.skill_prefix) || '/';
 }
 
 // Factory: wires skill autocomplete to an input + dropdown pair. `getContext`

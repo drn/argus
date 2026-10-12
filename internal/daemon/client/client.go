@@ -23,27 +23,9 @@ import (
 // 2s is generous for a local Unix socket; anything slower indicates real trouble.
 const rpcTimeout = 2 * time.Second
 
-// startTimeoutOverrides lets Client.Start use a longer RPC budget than the
-// default rpcTimeout for backends whose prelaunch work can legitimately take
-// longer than a normal round trip. The daemon-side call is unaffected either
-// way — callWithTimeout's dispatch goroutine keeps running to completion
-// regardless of which case fires below (see callWithTimeout); this only
-// controls how long the caller waits before giving up and reporting an
-// error. To add headroom for a future backend, append an entry here rather
-// than special-casing Start itself.
-var startTimeoutOverrides = []struct {
-	is      func(command string) bool
-	timeout time.Duration
-}{
-	{agent.IsPiBackend, piStartTimeout},
-}
-
-// piStartTimeout covers agent.EnsurePrelaunch's ollama readiness check
-// (observed ~11s for an already-installed-but-cold ollama daemon in
-// practice; see internal/agent/prelaunch.go). A genuinely cold model load
-// can still exceed this and will surface as an RPC timeout to the caller,
-// but the session keeps starting daemon-side regardless.
-const piStartTimeout = 20 * time.Second
+// piStartTimeout is the Pi family's Start budget; kept as a named alias for
+// the tests that pin it.
+const piStartTimeout = agent.PiStartTimeout
 
 // startTimeoutFor resolves the RPC timeout Client.Start should use for a
 // task, based on its resolved backend. Falls back to rpcTimeout when the
@@ -55,10 +37,8 @@ func startTimeoutFor(task *model.Task, cfg config.Config) time.Duration {
 	if err != nil {
 		return rpcTimeout
 	}
-	for _, o := range startTimeoutOverrides {
-		if o.is(backend.Command) {
-			return o.timeout
-		}
+	if d := agent.FamilyOf(backend.Command).StartTimeout; d > 0 {
+		return d
 	}
 	return rpcTimeout
 }

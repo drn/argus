@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/drn/argus/internal/inject/atomicfile"
+
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -120,9 +122,16 @@ func injectOpencodeJSON(path string, port int, skillsDir string) error {
 
 	url := fmt.Sprintf("http://localhost:%d/mcp", port)
 
+	// An operator who turned the entry off (enabled: false) keeps it off:
+	// the URL is refreshed but the choice is carried over, never reset.
 	mcpCorrect := false
+	enabled := true
 	if existing, ok := mcp[mcpServerName].(map[string]any); ok {
-		mcpCorrect = existing["url"] == url && existing["type"] == "remote" && existing["enabled"] == true
+		e, isBool := existing["enabled"].(bool)
+		mcpCorrect = existing["url"] == url && existing["type"] == "remote" && isBool
+		if isBool {
+			enabled = e
+		}
 	}
 
 	skills, skillsCorrect := ensureSkillsEntry(data["skills"], skillsDir)
@@ -134,7 +143,7 @@ func injectOpencodeJSON(path string, port int, skillsDir string) error {
 	mcp[mcpServerName] = map[string]any{
 		"type":    "remote",
 		"url":     url,
-		"enabled": true,
+		"enabled": enabled,
 	}
 	data["mcp"] = mcp
 	if skills != nil {
@@ -178,30 +187,5 @@ func ensureSkillsEntry(existing any, skillsDir string) (result []any, alreadyCor
 
 // writeJSON marshals data as indented JSON and writes it to path atomically.
 func writeJSON(path string, data map[string]any) error {
-	out, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		return fmt.Errorf("inject opencode: marshal: %w", err)
-	}
-	out = append(out, '\n')
-
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".argus-opencode-*.tmp")
-	if err != nil {
-		return fmt.Errorf("inject opencode: create temp: %w", err)
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(out); err != nil {
-		tmp.Close()        //nolint:errcheck
-		os.Remove(tmpName) //nolint:errcheck
-		return fmt.Errorf("inject opencode: write temp: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName) //nolint:errcheck
-		return fmt.Errorf("inject opencode: close temp: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName) //nolint:errcheck
-		return fmt.Errorf("inject opencode: rename: %w", err)
-	}
-	return nil
+	return atomicfile.WriteJSON(path, data, "inject opencode")
 }

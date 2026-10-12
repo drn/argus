@@ -2,6 +2,7 @@ package tui
 
 import (
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -10,6 +11,7 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/backendkind"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/profiles"
@@ -161,12 +163,14 @@ func NewNewTaskForm(projects map[string]config.Project, defaultProject string, b
 	}
 	sort.Strings(backNames)
 
+	// Preselect the default backend; when it isn't configured fall back to
+	// "claude" (the built-in default) before the first sorted name, so a
+	// backend that merely sorts first never becomes the implicit choice.
 	backIdx := 0
-	for i, n := range backNames {
-		if n == defaultBackend {
-			backIdx = i
-			break
-		}
+	if i := slices.Index(backNames, defaultBackend); i >= 0 {
+		backIdx = i
+	} else if i := slices.Index(backNames, string(backendkind.Claude)); i >= 0 {
+		backIdx = i
 	}
 
 	// Pre-fill branch from the default project's config.
@@ -434,13 +438,12 @@ func (f *NewTaskForm) hasAccountField() bool { return len(f.accountNames) > 1 }
 // config.AccountSupports does.
 func (f *NewTaskForm) accountTool() string {
 	b, ok := f.currentBackend()
-	switch {
-	case !ok:
+	if !ok {
 		return ""
-	case agent.IsClaudeBackend(b.Command):
-		return "claude"
-	case agent.IsCodexBackend(b.Command):
-		return "codex"
+	}
+	switch k := backendkind.Of(b.Command); k {
+	case backendkind.Claude, backendkind.Codex:
+		return string(k)
 	}
 	return ""
 }
@@ -677,18 +680,13 @@ func (f *NewTaskForm) selectedProjectPath() string {
 	return ""
 }
 
-// acTrigger returns the autocomplete trigger character for the selected backend:
-// "$" for codex (codex's native skill prefix), "/" for everything else.
-//
-// Pi is intentionally bucketed with claude under "/" because pi ships
-// slash-prefixed prompt templates (`/<name>` expansions, per pi.dev docs),
-// matching claude's slash-skill UX. Pi's `@<file>` include prefix is a
-// separate, runtime-only feature — pi reads files itself when it sees `@`,
-// so Argus does not need to autocomplete `@`-prefixed tokens here.
+// acTrigger returns the autocomplete trigger character for the selected
+// backend: its family's SkillPrefix ("$" for codex, "/" for everything else,
+// including Pi's slash-prefixed prompt templates).
 func (f *NewTaskForm) acTrigger() string {
 	if len(f.backendNames) > 0 && f.backendIdx < len(f.backendNames) {
-		if b, ok := f.backends[f.backendNames[f.backendIdx]]; ok && agent.IsCodexBackend(b.Command) {
-			return "$"
+		if b, ok := f.backends[f.backendNames[f.backendIdx]]; ok {
+			return backendkind.SpecOf(b.Command).SkillPrefix
 		}
 	}
 	return "/"

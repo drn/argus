@@ -47,10 +47,15 @@ func SetPrelaunchTimeoutForTest(d time.Duration) func() {
 	return func() { prelaunchTimeout = old }
 }
 
-// EnsurePrelaunch performs backend-specific prelaunch checks. For the pi
-// backend (which talks to a local ollama-hosted model), ensures the ollama
-// daemon is running and qwen3:32b is loaded before returning. For any other
-// backend, returns nil immediately.
+// PiStartTimeout is the daemon client's Start RPC budget for Pi tasks. It
+// covers EnsurePrelaunch's ollama readiness check (observed ~11s for an
+// already-installed-but-cold ollama daemon). A genuinely cold model load can
+// still exceed this and surfaces as an RPC timeout to the caller, but the
+// session keeps starting daemon-side regardless.
+const PiStartTimeout = 20 * time.Second
+
+// EnsurePrelaunch runs the resolved backend family's Prelaunch hook (Pi warms
+// its ollama model) and returns nil for families without one.
 //
 // Blocks up to prelaunchTimeout on a cold daemon. Callers should run on a
 // background goroutine if they cannot tolerate the wait.
@@ -60,18 +65,21 @@ func EnsurePrelaunch(ctx context.Context, task *model.Task, cfg config.Config) e
 		// Unresolved backend isn't our concern — BuildCmd will surface it.
 		return nil
 	}
-	if !IsPiBackend(backend.Command) {
+	fam := FamilyOf(backend.Command)
+	if fam.Prelaunch == nil {
 		return nil
 	}
+	ensureCtx, cancel := context.WithTimeout(ctx, prelaunchTimeout)
+	defer cancel()
+	return fam.Prelaunch(ensureCtx, task, backend)
+}
 
+// piPrelaunch ensures the ollama daemon is running and Pi's model is loaded.
+func piPrelaunch(ctx context.Context, task *model.Task, backend config.Backend) error {
 	model := ModelForBackend(backend)
 	slog.Info("agent.EnsurePrelaunch: pi backend detected, ensuring ollama",
 		"task", task.ID, "model", model)
-
-	ensureCtx, cancel := context.WithTimeout(ctx, prelaunchTimeout)
-	defer cancel()
-
-	if err := ollama.EnsureRunning(ensureCtx, model); err != nil {
+	if err := ollama.EnsureRunning(ctx, model); err != nil {
 		return fmt.Errorf("pi backend requires ollama: %w", err)
 	}
 	slog.Info("agent.EnsurePrelaunch: ollama ready", "task", task.ID)

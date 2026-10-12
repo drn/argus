@@ -563,7 +563,7 @@ The system SHALL expose endpoints to trigger and read an on-demand, daemon-side 
 
 ### Requirement: Claude session listing and switching endpoints
 
-The system SHALL expose a `GET /api/tasks/{id}/claude-sessions` endpoint that lists the named task's available Claude sessions (via `internal/claudesession.List`, keyed on the task's worktree) and a `POST /api/tasks/{id}/claude-session` endpoint that switches the task to a different session, mirroring the TUI's `ctrl+r` session-switcher flow (`internal/tui/app.go`'s `openSessionPickerModal`/`switchSession`). Both endpoints SHALL be callable by any authenticated token (master, device, or plugin-scoped) and SHALL be restricted to Claude-backed tasks (matching the TUI's own `IsCodexBackend`/`IsPiBackend`/`IsOpencodeBackend` guard) — a non-Claude-backed task returns 400 rather than an empty or garbage session list.
+The system SHALL expose a `GET /api/tasks/{id}/claude-sessions` endpoint that lists the named task's available Claude sessions (via `internal/claudesession.List`, keyed on the task's worktree) and a `POST /api/tasks/{id}/claude-session` endpoint that switches the task to a different session, mirroring the TUI's `ctrl+r` session-switcher flow (`internal/tui/app.go`'s `openSessionPickerModal`/`switchSession`). Both endpoints SHALL be callable by any authenticated token (master, device, or plugin-scoped) and SHALL be restricted to Claude-backed tasks (matching the TUI's own backend-family session-switcher guard) — a non-Claude-backed task returns 400 rather than an empty or garbage session list.
 
 #### Scenario: List sessions for a Claude-backed task
 
@@ -644,3 +644,16 @@ The REST API SHALL expose authenticated POST endpoints under `/api/hera` for nuk
 
 - **WHEN** a master-token client sends `{"sandbox":{"extra_write":["/"]}}`
 - **THEN** the response is 400 and the stored list is unchanged
+
+### Requirement: Backend listing carries family metadata
+
+`GET /api/backends` SHALL include, per backend, its family `kind` (`claude`, `codex`, `pi`, `opencode`, `antigravity`, or empty for custom), a `label` (the family's human label when the backend is named after its family, otherwise the backend's own name so two instances of one family stay distinguishable), the prompt `skill_prefix` (`$` for codex, `/` otherwise), and `session_switcher` (whether the Claude session endpoints accept it). The create and update responses SHALL carry the same fields for the stored backend. Clients SHALL use these fields instead of hardcoding backend names.
+
+#### Scenario: Second instance keeps its own label
+- **WHEN** a backend named `claude-haiku` runs the `claude` command
+- **THEN** its kind is `claude` and its label is `claude-haiku`
+
+#### Scenario: Antigravity listed with metadata
+- **WHEN** the backend roster contains `antigravity` with command `agy`
+- **THEN** its entry has kind `antigravity`, label `Antigravity`, skill_prefix `/`, and session_switcher false
+

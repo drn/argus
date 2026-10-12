@@ -118,7 +118,18 @@ const (
 	//     codex_home (CODEX_SQLITE_HOME pointed there too), grants that home in
 	//     the sandbox, and strips inherited OPENAI_API_KEY / CODEX_API_KEY. The settings.json seed also omits login-bound keys (forceLogin*, aws*, otel helper), inherit entry names match case-insensitively, and account dirs inside ~/.ssh, ~/.argus, ~/.aws, ~/.gnupg, ~/.kube or ~/Library are rejected. An
 	//     unknown stored account now refuses to spawn.
-	SupervisorSpawnSurface = 15
+	//   - v16: backend behavior is declared once per family in
+	//     internal/agent/backends.go (add-antigravity-backend). BuildCmd gains
+	//     the antigravity family (`agy`: --prompt-interactive, mapped
+	//     permission flags, --model, --conversation resume) and the sandbox
+	//     profile's backend grants are generated from the registry, adding
+	//     ~/.gemini. Families without a per-launch MCP flag (opencode, agy)
+	//     re-run their idempotent global-config registration before each
+	//     launch (ungated for agy: the launch proves it's installed), and
+	//     pre-create the launching family's sandbox grant dirs (agy gets
+	//     ~/.gemini/{antigravity-cli,config,jetski}, never all of ~/.gemini).
+	//     A stale supervisor spawns agy as a custom backend.
+	SupervisorSpawnSurface = 16
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -309,18 +320,23 @@ func CompareSupervisorSurface(reported SurfaceVersion) SurfaceSkew {
 // omission from this list is exactly the silent false-negative the surface
 // version is guarded against.
 var SupervisorSpawnPaths = []string{
-	"internal/agent/agent.go",             // BuildCmd: argv, env, dir, cache-dir redirection
-	"internal/agent/claudeaccount.go",     // per-task account dir bootstrap, env hygiene, sandbox grant
-	"internal/agent/codexaccount.go",      // per-task Codex home, env hygiene, sandbox grant
-	"internal/config/accounts.go",         // account → config dir resolution BuildCmd reads
-	"internal/agent/nonclaude_context.go", // OpenCode child-only skills config content
-	"internal/agent/prelaunch.go",         // backend prelaunch (pi/ollama) run before the fork
-	"internal/agent/routing_prompt.go",    // --append-system-prompt-file routing injection
-	"internal/agent/sandbox.go",           // the sandbox-exec wrapper the command is wrapped in
-	"internal/agent/secret.go",            // point-of-use secret resolution inside BuildCmd
-	"internal/agent/secretregistry.go",    // the resolver registry BuildCmd resolves through
-	"internal/skills/builtin.go",          // builtin skills materialized at spawn time
-	"internal/skills/skills.go",           // --add-dir skill provisioning
+	"internal/agent/agent.go",                    // BuildCmd: argv, env, dir, cache-dir redirection
+	"internal/agent/backends.go",                 // backend family registry BuildCmd dispatches on
+	"internal/backendkind/backendkind.go",        // command → family classification
+	"internal/inject/antigravity/antigravity.go", // agy global config BuildCmd refreshes before launch
+	"internal/inject/atomicfile/atomicfile.go",   // atomic writer the global-config injectors use
+	"internal/inject/opencode/opencode.go",       // opencode global config BuildCmd refreshes before launch
+	"internal/agent/claudeaccount.go",            // per-task account dir bootstrap, env hygiene, sandbox grant
+	"internal/agent/codexaccount.go",             // per-task Codex home, env hygiene, sandbox grant
+	"internal/config/accounts.go",                // account → config dir resolution BuildCmd reads
+	"internal/agent/nonclaude_context.go",        // OpenCode child-only skills config content
+	"internal/agent/prelaunch.go",                // backend prelaunch (pi/ollama) run before the fork
+	"internal/agent/routing_prompt.go",           // --append-system-prompt-file routing injection
+	"internal/agent/sandbox.go",                  // the sandbox-exec wrapper the command is wrapped in
+	"internal/agent/secret.go",                   // point-of-use secret resolution inside BuildCmd
+	"internal/agent/secretregistry.go",           // the resolver registry BuildCmd resolves through
+	"internal/skills/builtin.go",                 // builtin skills materialized at spawn time
+	"internal/skills/skills.go",                  // --add-dir skill provisioning
 }
 
 // SupervisorStreamPaths declares every source file whose content the supervisor
@@ -362,7 +378,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "a834240a8cea499fee10f94dbe3ce58a28c77b5aabb66ece792c5a045dea505a"
+	SpawnSurfaceDigest  = "4a955222dc7d79dc330e0f05c3d106ef2905fbbd8b544607a0a4512710ee3510"
 	StreamSurfaceDigest = "9973137db7c31ce8082cc84c494f5f1722878314674e89d962ccafd96c098783"
 )
 

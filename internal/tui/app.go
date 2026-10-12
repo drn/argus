@@ -2302,26 +2302,18 @@ func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool)
 	if captureTask != nil {
 		go func(snap model.Task) {
 			cfg := a.db.Config()
-			// Codex/Pi capture once; Claude refreshes every exit; unknown
-			// backends never recapture. Decided here (off the tview main
+			// Capture-once families capture while SessionID is empty;
+			// recapture-every-exit families (Claude, agy) refresh every exit;
+			// families without capture never recapture. Decided here (off the tview main
 			// goroutine) so the filesystem/SQLite work below never blocks it.
 			if !agent.NeedsSessionRecapture(&snap, cfg) {
 				return
 			}
-			// Resolve the backend name once so log lines tag which dialect
-			// (codex / pi / claude) the capture targeted — keeps the previous
-			// per-kind logging searchability after the dispatcher refactor.
+			// Tag log lines with the backend family the capture targeted.
 			kind := "agent"
 			if b, berr := agent.ResolveBackend(&snap, cfg); berr == nil {
-				switch {
-				case agent.IsCodexBackend(b.Command):
-					kind = "codex"
-				case agent.IsPiBackend(b.Command):
-					kind = "pi"
-				case agent.IsOpencodeBackend(b.Command):
-					kind = "opencode"
-				case agent.IsClaudeBackend(b.Command):
-					kind = "claude"
+				if fam := agent.FamilyOf(b.Command); !fam.IsCustom() {
+					kind = string(fam.Kind)
 				}
 			}
 			sid, err := agent.CaptureSessionID(&snap, cfg)
@@ -6241,9 +6233,9 @@ func (a *App) startSession(task *model.Task) {
 
 	resume := task.SessionID != ""
 
-	// For Claude-style backends, generate a session ID on first run so we can
-	// resume the conversation later. Codex and pi capture their IDs post-exit
-	// (in handleSessionExitUI → CaptureCodexSessionID / CapturePiSessionID).
+	// For families that pin a session ID at start, generate one on first run
+	// so we can resume the conversation later. Capture-style families recover
+	// theirs post-exit (handleSessionExitUI → agent.CaptureSessionID).
 	// generatedSessionID tracks whether THIS call minted the ID, so the error
 	// branch below only clears IDs it created — preserving any pre-existing
 	// ID across restart failures (daemon restart cascade, transient RPC error)
@@ -6251,7 +6243,7 @@ func (a *App) startSession(task *model.Task) {
 	generatedSessionID := false
 	if !resume {
 		backend, berr := agent.ResolveBackend(task, cfg)
-		if berr == nil && !agent.IsCodexBackend(backend.Command) && !agent.IsPiBackend(backend.Command) && !agent.IsOpencodeBackend(backend.Command) {
+		if berr == nil && agent.FamilyOf(backend.Command).PinsSessionID {
 			task.SessionID = model.GenerateSessionID()
 			generatedSessionID = true
 			a.db.Update(task) //nolint:errcheck
@@ -6506,9 +6498,9 @@ func (a *App) closeFuzzyLinkPickerModal() {
 // parse) runs in a background goroutine so the tview main goroutine never
 // blocks on disk I/O — a long-running conversation's JSONL can be many MB.
 //
-// The switcher is Claude-only: codex and pi store sessions in their own
-// formats and resume through different flags, so for those backends this is a
-// no-op with a brief status notice.
+// The switcher applies only to families with SessionSwitcher (Claude and
+// custom); the others store sessions in their own formats and resume through
+// different flags, so for those backends this is a no-op with a status notice.
 func (a *App) openSessionPicker() {
 	a.mu.Lock()
 	taskID := a.agentState.TaskID
@@ -6528,7 +6520,7 @@ func (a *App) openSessionPicker() {
 		uxlog.Log("[tui] session picker: resolve backend failed for task %s: %v", taskID, berr)
 		return
 	}
-	if agent.IsCodexBackend(backend.Command) || agent.IsPiBackend(backend.Command) || agent.IsOpencodeBackend(backend.Command) {
+	if !agent.FamilyOf(backend.Command).SessionSwitcher {
 		uxlog.Log("[tui] session picker: backend %q is not Claude — switcher unavailable", backend.Command)
 		a.statusbar.SetInfo("Session switcher is Claude-only")
 		return

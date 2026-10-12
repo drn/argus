@@ -77,26 +77,6 @@ const sandboxProfileBase = `(version 1)
 (allow file-write* (subpath "/private/var/folders"))
 (allow file-write* (subpath "/var/folders"))
 (allow file-write* (literal "/dev/null"))
-; Prefix (not literal) so atomic-write siblings work: npm packages like
-; write-file-atomic persist ~/.claude.json by creating ~/.claude.json.<rand>
-; and renaming. A literal rule blocks those temp writes, which silently breaks
-; OAuth token persistence and causes repeated /login prompts.
-(allow file-write* (prefix (string-append (param "HOME") "/.claude.json")))
-(allow file-write* (subpath (string-append (param "HOME") "/.claude")))
-; Codex backend: auth token (auth.json), session DB (state_5.sqlite), history,
-; sessions/, models_cache.json. Same EPERM-loops-on-/login class of bug as
-; ~/.claude.json — the agent's BuildCmd treats codex as a first-class backend
-; and CaptureCodexSessionID reads state_5.sqlite, which codex must write first.
-(allow file-write* (subpath (string-append (param "HOME") "/.codex")))
-; Argus-launched Codex sessions use an isolated CODEX_HOME here so their
-; builtin skills do not appear in ordinary Codex sessions.
-(allow file-write* (subpath (string-append (param "HOME") "/.local/share/argus/codex-home")))
-; Pi backend (pi.dev coding agent): session files at
-; ~/.pi/agent/sessions/--<encoded-cwd>--/<ts>_<uuid>.jsonl plus auth/config.
-; CapturePiSessionID reads these to recover the session UUID post-exit, so the
-; agent MUST be able to write them. Without this rule pi sessions vanish under
-; sandbox and resume is silently broken.
-(allow file-write* (subpath (string-append (param "HOME") "/.pi")))
 ; ~/.ssh/known_hosts append for new git remotes. Without this, ssh prompts
 ; interactively for host-key acceptance and the agent's PTY hangs silently.
 ; Prefix covers OpenSSH's mkstemp-then-rename atomic update (known_hosts.XXXXXX).
@@ -139,6 +119,29 @@ const sandboxProfileBase = `(version 1)
 (allow file-write* (subpath (string-append (param "HOME") "/.dots")))
 `
 
+// backendSandboxRules renders the backend families' SandboxGrants: the
+// narrow HOME-relative paths each CLI needs to persist auth and session state
+// (EPERM there loops agents on /login and silently breaks post-exit session
+// capture). Generated from the registry so a new backend declares its grant
+// once, in backends.go. A SandboxGrantsLaunchOnly family's grants are emitted
+// only when it is the launching family (nil = none).
+func backendSandboxRules(launching *Family) string {
+	var b strings.Builder
+	for _, f := range families {
+		if f.SandboxGrantsLaunchOnly && f != launching {
+			continue
+		}
+		for _, g := range f.SandboxGrants {
+			filter := "subpath"
+			if g.Prefix {
+				filter = "prefix"
+			}
+			fmt.Fprintf(&b, "; %s: %s\n(allow file-write* (%s (string-append (param \"HOME\") %s)))\n", f.Label, g.Comment, filter, sbplQuote(g.HomeRel))
+		}
+	}
+	return b.String()
+}
+
 // IsSandboxAvailable checks whether sandbox-exec is available on this system.
 // The result is cached after the first call.
 func IsSandboxAvailable() bool {
@@ -171,6 +174,12 @@ func ResetSandboxCache() {
 // SBPL profile. The macOS kernel resolves symlinks before matching sandbox rules,
 // so unresolved paths silently fail to match (the "SBPL symlink trap").
 func GenerateSandboxConfig(worktreePath string, sandboxCfg config.SandboxConfig) (string, []string, func(), error) {
+	return GenerateSandboxConfigFor(nil, worktreePath, sandboxCfg)
+}
+
+// GenerateSandboxConfigFor is GenerateSandboxConfig for a launch of family
+// fam, which additionally receives fam's launch-only grants.
+func GenerateSandboxConfigFor(fam *Family, worktreePath string, sandboxCfg config.SandboxConfig) (string, []string, func(), error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("getting home dir: %w", err)
@@ -180,6 +189,7 @@ func GenerateSandboxConfig(worktreePath string, sandboxCfg config.SandboxConfig)
 
 	var profile strings.Builder
 	profile.WriteString(sandboxProfileBase)
+	profile.WriteString(backendSandboxRules(fam))
 
 	// Allow writes to main repo's .git dir for git operations in worktrees.
 	// Git worktrees store metadata (index.lock, objects, refs) in the main

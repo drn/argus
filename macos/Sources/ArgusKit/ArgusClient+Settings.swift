@@ -13,6 +13,15 @@ extension ArgusClient {
         try await sendDecoding("PUT", "/api/settings", body: req)
     }
 
+    private struct BackendsEnvelope: Decodable { let backends: [BackendInfo] }
+
+    /// `GET /api/backends` — the configured backends with their family
+    /// metadata (kind, label, skill prefix, session-switcher support).
+    public func backends() async throws -> [BackendInfo] {
+        let env: BackendsEnvelope = try await getDecoding("/api/backends")
+        return env.backends
+    }
+
     private struct SkillsEnvelope: Decodable { let skills: [Skill] }
 
     /// `GET /api/skills` — optionally narrowed by project (adds that project's

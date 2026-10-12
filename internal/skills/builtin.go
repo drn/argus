@@ -111,6 +111,17 @@ func EnsureBuiltinSkills() (string, error) {
 	return workspaceRoot, nil
 }
 
+// ManagedSkillsDir returns the skill-body directory EnsureBuiltinSkills
+// materializes into (~/.argus/skills/.claude/skills) without materializing
+// it. Global-config injectors register this path.
+func ManagedSkillsDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("no home dir: %w", err)
+	}
+	return BuiltinSkillsDir(filepath.Join(home, ".argus", managedSkillsWorkspace)), nil
+}
+
 // BuiltinSkillsDir returns the directory containing materialized skill bodies
 // (<name>/SKILL.md) given the workspace root EnsureBuiltinSkills returns.
 // Distinct from the workspace root itself: Claude's --add-dir points at the

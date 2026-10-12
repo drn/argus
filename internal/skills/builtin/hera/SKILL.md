@@ -111,7 +111,7 @@ status, revive, and completion; the plan-DAG authoring/mutation tools live in th
   - `backend` — normally defaults to the project default; usage-budget routing may supply its configured
     worker fallback when enabled.
   - `model` — optional valid per-worker model override, scoped to the worker's resolved backend (claude:
-    opus/sonnet/haiku/fable; codex: e.g. gpt-6-sol; pi/opencode: their configured ids). Leave it unset
+    opus/sonnet/haiku/fable; codex: e.g. gpt-6-sol; pi/opencode/antigravity: their configured ids). Leave it unset
     with `archetype=` so the profile picks the tier; otherwise the backend default applies.
   - `archetype` — the worker's **diligence archetype** (e.g. `code_slice`, `bug_fix`, `review`,
     `ci_loop`; defaults to `code_slice`). Selects the per-archetype model from the project's bound

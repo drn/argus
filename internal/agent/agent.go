@@ -13,9 +13,9 @@ import (
 	"regexp"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 
+	"github.com/drn/argus/internal/backendkind"
 	"github.com/drn/argus/internal/backendtier"
 	"github.com/drn/argus/internal/claudesession"
 	"github.com/drn/argus/internal/config"
@@ -290,18 +290,10 @@ func resolveProfile(task *model.Task, backend config.Backend, cfg config.Config)
 // "codex" rather than their arbitrary config key. Unknown commands retain
 // their configured name, which permits explicitly configured custom backends.
 func profileBackendName(name string, backend config.Backend) string {
-	switch {
-	case IsClaudeBackend(backend.Command):
-		return "claude"
-	case IsCodexBackend(backend.Command):
-		return "codex"
-	case IsPiBackend(backend.Command):
-		return "pi"
-	case IsOpencodeBackend(backend.Command):
-		return "opencode"
-	default:
-		return name
+	if fam := FamilyOf(backend.Command); !fam.IsCustom() {
+		return string(fam.Kind)
 	}
+	return name
 }
 
 func resolvedBackendName(task *model.Task, cfg config.Config) string {
@@ -340,32 +332,14 @@ func backendAllowsModel(m string, backend config.Backend) bool {
 }
 
 // KnownModels returns the curated list of selectable model identifiers for a
-// backend command, used to populate the new-task model selector. The Claude
-// entries are the stable `claude` CLI aliases (opus / sonnet / haiku / fable)
-// that always map to the current models, so the list does not churn per model
-// release; the Codex entries are the current Codex CLI model names, which
-// churn per Codex release (OpenAI renames/retires them outright, unlike
-// Claude's stable aliases) — keep this list synced with the CLI's own
-// "Select Model and Effort" picker (`/model` in a codex session) when it
-// drifts, in both this list and the seed diligence profiles'
-// archetype.*.models.codex entries (internal/profiles/seeds/*.toml). Unknown,
-// Pi, and custom backends return nil — the model selector then offers only its
-// "default" and "custom…" options, so any model is still reachable by typing.
-// A fresh slice is returned each call (callers may mutate / append).
+// backend command (its family's KnownModels), used to populate the new-task
+// model selector. Claude's entries are stable CLI aliases; Codex's churn per
+// Codex release (see the codex family entry in backends.go). Families with no
+// curated list (Pi, opencode, antigravity, custom) return nil — the selector
+// then offers only "default" and "custom…", so any model is still reachable by
+// typing. A fresh slice is returned each call (callers may mutate / append).
 func KnownModels(command string) []string {
-	switch {
-	case IsClaudeBackend(command):
-		return []string{"opus", "sonnet", "haiku", "fable"}
-	case IsCodexBackend(command):
-		return []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"}
-	default:
-		// opencode is intentionally custom-only: its model is a
-		// provider/model identifier whose valid set depends on which providers
-		// the user has authenticated, so a curated list would name models the
-		// user may not have. The selector offers default + custom… typing, and
-		// power users can pin a list via the backend's `models` config field.
-		return nil
-	}
+	return slices.Clone(FamilyOf(command).KnownModels)
 }
 
 // BackendModels returns the model options for a backend's new-task selector:
@@ -392,43 +366,11 @@ func ResolveDir(task *model.Task, cfg config.Config) string {
 	return ""
 }
 
-// IsCodexBackend reports whether a backend command is codex-based.
-// Detection uses the basename of the first word to handle both bare names ("codex")
-// and absolute paths ("/usr/local/bin/codex"). Only the exact name "codex" matches.
-func IsCodexBackend(command string) bool {
-	fields := strings.Fields(command)
-	return len(fields) > 0 && filepath.Base(fields[0]) == "codex"
-}
-
-// IsPiBackend reports whether a backend command is pi-based (pi.dev coding agent).
-// Detection uses the basename of the first word to handle both bare names ("pi")
-// and absolute paths.
-func IsPiBackend(command string) bool {
-	fields := strings.Fields(command)
-	return len(fields) > 0 && filepath.Base(fields[0]) == "pi"
-}
-
-// IsClaudeBackend reports whether a backend command is Claude Code. Detection
-// uses the basename of the first word to handle both bare names ("claude") and
-// absolute paths ("/usr/local/bin/claude"). Only the exact name "claude"
-// matches — kept strict so unknown/custom backends stay capture no-ops and rely
-// on their pinned --session-id (see NeedsSessionRecapture / CaptureSessionID).
-// Permission-mode flag injection is also scoped to this check so custom/bare
-// commands (e.g. a bash- or sleep-backed test backend) never receive Claude-only flags.
-func IsClaudeBackend(command string) bool {
-	fields := strings.Fields(command)
-	return len(fields) > 0 && filepath.Base(fields[0]) == "claude"
-}
-
-// IsOpencodeBackend reports whether a backend command is opencode-based.
-// Detection uses the basename of the first word to handle both bare names
-// ("opencode") and absolute paths. opencode is a capture-style backend: like
-// codex and pi it mints its own session ID (no start-time --session-id) and
-// resumes via `--session <id>`.
-func IsOpencodeBackend(command string) bool {
-	fields := strings.Fields(command)
-	return len(fields) > 0 && filepath.Base(fields[0]) == "opencode"
-}
+// IsClaudeBackend reports whether a backend command is Claude Code, for the
+// genuinely Claude-only paths outside the registry (Claude's own background
+// session supervisor). Kept strict (exact basename "claude", see
+// backendkind.Of) so custom/bare commands never match.
+func IsClaudeBackend(command string) bool { return backendkind.Of(command) == backendkind.Claude }
 
 // opencodeModelIDPattern mirrors OpenCode 2.x's own model normalizer: a model
 // id is `provider/model`, optionally with a `#variant` suffix, and anything
@@ -438,16 +380,6 @@ func IsOpencodeBackend(command string) bool {
 // instead of failing quietly.
 var opencodeModelIDPattern = regexp.MustCompile(`^[^/#]+/[^#]+$`)
 
-// hasPermissionFlags reports whether a backend command already specifies a
-// Claude permission flag. When true, BuildCmd does NOT inject the configured
-// PermissionMode flags — a hand-edited command always wins, and we never
-// emit a conflicting/duplicate --permission-mode.
-func hasPermissionFlags(command string) bool {
-	return strings.Contains(command, "--permission-mode") ||
-		strings.Contains(command, "--dangerously-skip-permissions") ||
-		strings.Contains(command, "--allow-dangerously-skip-permissions")
-}
-
 // hasModelFlag reports whether a backend command already names the --model
 // flag as a standalone token ("--model <x>", "--model=<x>", or a trailing
 // "--model"). A bare substring check would also match hypothetical flags like
@@ -455,11 +387,7 @@ func hasPermissionFlags(command string) bool {
 // "--" separator are positional prompt text, not flags, so they are ignored
 // here just as they are for OpenCode's --auto detection.
 func hasModelFlag(command string) bool {
-	fields := strings.Fields(command)
-	if separator := slices.Index(fields, "--"); separator >= 0 {
-		fields = fields[:separator]
-	}
-	command = strings.Join(fields, " ")
+	command = strings.Join(commandFlagFields(command), " ")
 	return strings.Contains(command, "--model ") ||
 		strings.Contains(command, "--model=") ||
 		strings.HasSuffix(command, "--model")
@@ -801,61 +729,48 @@ func captureOpencodeFromJSON(sessionRoot, want string) string {
 	return bestID
 }
 
-// CaptureSessionID dispatches to the backend-specific post-exit capture
-// function based on the resolved backend command. Codex/Pi scan their own state
-// (SQLite / session files); Claude scans its transcript directory so a /clear
-// (which mints a fresh UUID) is honored on the next resume. Returns ("", nil)
-// for unknown backends, which pre-mint and pin their ID via --session-id with
-// nothing to scan for. Used by both the TUI (handleSessionExitUI) and the daemon
-// (onFinish) so headless / PWA-only users still get resume support.
+// CaptureSessionID runs the resolved backend family's post-exit capture
+// (Codex SQLite, Pi session files, opencode SQLite/JSON, agy conversation DB,
+// Claude transcripts — the latter so a /clear is honored on the next resume).
+// Returns ("", nil) for families without capture (custom backends pin and
+// keep their ID via --session-id). Used by both the TUI (handleSessionExitUI)
+// and the daemon (onFinish) so headless / PWA-only users still get resume.
 func CaptureSessionID(task *model.Task, cfg config.Config) (string, error) {
 	backend, err := ResolveBackend(task, cfg)
 	if err != nil {
 		return "", err
 	}
-	switch {
-	case IsCodexBackend(backend.Command):
-		home, herr := CodexHomeForTask(task, cfg)
-		if herr != nil {
-			uxlog.Log("[account] codex session capture skipped task=%s: %v", task.ID, herr)
-			return "", herr
-		}
-		return CaptureCodexSessionIDIn(home, task.Worktree)
-	case IsPiBackend(backend.Command):
-		return CapturePiSessionID(task.Worktree)
-	case IsOpencodeBackend(backend.Command):
-		return CaptureOpencodeSessionID(task.Worktree)
-	case IsClaudeBackend(backend.Command):
-		dir, derr := ClaudeConfigDirForTask(task, cfg)
-		if derr != nil {
-			uxlog.Log("[account] session capture skipped task=%s: %v", task.ID, derr)
-			return "", derr
-		}
-		return CaptureClaudeSessionIDIn(dir, task.Worktree)
-	default:
+	fam := FamilyOf(backend.Command)
+	if fam.Capture == nil {
 		return "", nil
 	}
+	id, err := fam.Capture(task, cfg)
+	if err != nil {
+		uxlog.Log("[%s] session capture skipped task=%s: %v", fam.Kind, task.ID, err)
+	}
+	return id, err
 }
 
 // NeedsSessionRecapture reports whether a finished task should re-run
-// CaptureSessionID. Codex/Pi mint their ID lazily and keep it stable across
-// resumes, so they capture once — only while SessionID is still empty. Claude
-// mints a fresh UUID on every /clear, so its stored ID goes stale and must be
-// refreshed on every exit. Unknown backends never recapture (they rely on the
-// pinned --session-id). Both exit sites (daemon captureSessionIDPostExit and TUI
-// handleSessionExitUI) gate on this so they stay in lockstep.
+// CaptureSessionID: always for families that can switch conversations
+// in-session (RecaptureEveryExit — Claude /clear, agy /new), otherwise only
+// while SessionID is still empty (Codex/Pi/opencode keep a stable ID).
+// Families without capture never recapture. Both exit sites (daemon
+// captureSessionIDPostExit and TUI handleSessionExitUI) gate on this so they
+// stay in lockstep.
 func NeedsSessionRecapture(task *model.Task, cfg config.Config) bool {
 	backend, err := ResolveBackend(task, cfg)
 	if err != nil {
 		return false
 	}
+	fam := FamilyOf(backend.Command)
 	switch {
-	case IsClaudeBackend(backend.Command):
-		return true
-	case IsCodexBackend(backend.Command), IsPiBackend(backend.Command), IsOpencodeBackend(backend.Command):
-		return task.SessionID == ""
-	default:
+	case fam.Capture == nil:
 		return false
+	case fam.RecaptureEveryExit:
+		return true
+	default:
+		return task.SessionID == ""
 	}
 }
 
@@ -872,68 +787,67 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 
 	cmdStr := backend.Command
 
-	isCodex := IsCodexBackend(backend.Command)
-	isClaude := IsClaudeBackend(backend.Command)
-	isPi := IsPiBackend(backend.Command)
-	isOpencode := IsOpencodeBackend(backend.Command)
-	injectOpencodeAuto := false
-	// OpenCode's --auto approves permission requests that would otherwise ask,
-	// while preserving explicit deny rules. Inject at launch so persisted backend
-	// commands get the same behavior as fresh defaults, including on resume.
-	if isOpencode {
-		fields := strings.Fields(backend.Command)
-		flagFields := fields
-		if separator := slices.Index(flagFields, "--"); separator >= 0 {
-			flagFields = flagFields[:separator]
-		}
-		injectOpencodeAuto = !slices.Contains(flagFields, "--auto")
-		if injectOpencodeAuto {
+	fam := FamilyOf(backend.Command)
+	isCodex := fam.Kind == backendkind.Codex
+	isClaude := fam.Kind == backendkind.Claude
+	isOpencode := fam.Kind == backendkind.Opencode
+	injectLaunchFlag := false
+	// A family LaunchFlag (OpenCode's --auto, which approves permission
+	// requests that would otherwise ask while preserving explicit deny rules)
+	// is injected at launch so persisted backend commands get the same
+	// behavior as fresh defaults, including on resume.
+	if fam.LaunchFlag != "" {
+		injectLaunchFlag = !slices.Contains(commandFlagFields(backend.Command), fam.LaunchFlag)
+		if injectLaunchFlag {
 			// Keep the flag before any positional arguments or -- separator.
-			cmdStr = strings.Replace(backend.Command, fields[0], fields[0]+" --auto", 1)
+			first := strings.Fields(backend.Command)[0]
+			cmdStr = strings.Replace(backend.Command, first, first+" "+fam.LaunchFlag, 1)
 		}
 	}
 	mcpFlag := ""
-	if cfg.MCPPort > 0 {
-		mcpURL := fmt.Sprintf("http://localhost:%d/mcp", cfg.MCPPort)
-		switch {
-		case isClaude:
-			mcpConfig, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{
-				"argus": map[string]string{"type": "http", "url": mcpURL},
-			}})
-			mcpFlag = " --mcp-config " + shellQuote(string(mcpConfig))
-		case isCodex:
-			mcpFlag = " -c " + shellQuote("mcp_servers.argus.url="+strconv.Quote(mcpURL))
-		}
+	if cfg.MCPPort > 0 && fam.MCPFlag != nil {
+		mcpFlag = fam.MCPFlag(fmt.Sprintf("http://localhost:%d/mcp", cfg.MCPPort))
 	}
 	cmdStr += mcpFlag
+	// Families without a per-launch MCP flag read Argus's registration (and,
+	// for SkillsGlobal, the skills dir — needed even with MCP off) from global
+	// config; refresh it idempotently before every launch.
+	if fam.InjectGlobal != nil && (cfg.MCPPort > 0 || fam.SkillDelivery == SkillsGlobal) {
+		injectGlobalAtSpawnFn(fam, cfg.MCPPort)
+	}
+	// A sandboxed process can't create a missing parent of its own grant
+	// (agy's ~/.gemini/... on a first run), so create the family's grant dirs
+	// here, unsandboxed.
+	if fam.PrecreateSandboxGrants {
+		ensureSandboxGrantDirs(fam, ResolveSandboxConfig(task, cfg))
+	}
 
-	// Inject the configured permission mode for claude backends only. Scoped to
-	// IsClaudeBackend (not "not codex/pi") so custom/bare commands never receive
-	// Claude-only flags. Skipped when the command already names a permission
-	// flag (command wins) so we never double-inject. Injected before
+	// Inject the configured permission mode through the family's own flag
+	// vocabulary. Families without a mapping (and custom/bare commands) never
+	// receive one. Skipped when the command already names a permission flag
+	// (command wins) so we never double-inject. Injected before
 	// resume/session-id/prompt suffixes so the flags precede the "--" separator.
-	if isClaude && !hasPermissionFlags(backend.Command) {
-		if flags := config.PermissionModeFlags(cfg.Defaults.PermissionMode); flags != "" {
+	if fam.PermissionFlags != nil && !fam.HasPermissionFlag(backend.Command) {
+		if flags := fam.PermissionFlags(cfg.Defaults.PermissionMode); flags != "" {
 			cmdStr += " " + flags
 		}
 	}
 
 	// Inject the resolved model (task override > diligence profile > backend
-	// default) for known backend CLIs. Claude, Codex, and Pi accept --model;
+	// default) through the family's delivery: --model for ModelFlag families;
 	// OpenCode's v2 full TUI rejects that flag, so its model is delivered later
-	// through the child-only OPENCODE_CONFIG_CONTENT channel. Scoped like
-	// permission-mode injection so custom/bare commands never receive the flag,
-	// and skipped when the command already names --model (a hand-edited command
-	// always wins). Computed once here because the codex resume branch below
-	// replaces cmdStr and must re-append the flag itself. resolvedProfile is
-	// non-nil only when a bound profile actively contributed the model; its
-	// fields drive the ARGUS_PROFILE/ARCHETYPE/MODEL env export.
+	// through the child-only OPENCODE_CONFIG_CONTENT channel. Custom/bare
+	// commands never receive it, and a command that already names --model
+	// wins. Computed once here because a ResumeCmd family (codex) replaces
+	// cmdStr and must re-append the flag itself. resolvedProfile is non-nil
+	// only when a bound profile actively contributed the model; its fields
+	// drive the ARGUS_PROFILE/ARCHETYPE/MODEL env export.
 	resolvedModel, resolvedProfile := ResolveModel(task, backend, cfg)
 	modelFlag := ""
 	opencodeModel := ""
 	if resolvedModel != "" && !hasModelFlag(backend.Command) {
-		switch {
-		case isOpencode:
+		switch fam.ModelDelivery {
+		case ModelInlineConfig:
 			// OpenCode drops a `model` that is not `provider/model` during its
 			// own config normalization, and the session then runs on the CLI
 			// default with nothing on screen saying why. The value is still
@@ -944,30 +858,33 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 				uxlog.Log("[opencode] task %q: model %q is not a provider/model id; OpenCode ignores it and the session runs on its CLI default", task.ID, resolvedModel)
 			}
 			opencodeModel = resolvedModel
-		case isClaude || isCodex || isPi:
+		case ModelFlag:
 			modelFlag = " --model " + shellQuote(resolvedModel)
 		}
 	}
 	cmdStr += modelFlag
 
-	// Make argus's own builtin skills (archive, hera, ...) available to Claude
-	// backends by materializing them and appending --add-dir. Claude Code loads
-	// .claude/skills/ from a --add-dir directory as a documented exception to
-	// --add-dir otherwise granting file access only. Additive to any --add-dir
-	// already present in the backend command — repeatable flag, no conflict.
-	// Materialization failure is logged and skipped rather than blocking launch.
+	// Make argus's own builtin skills (archive, hera, ...) available through
+	// the family's discovery hook: Claude loads .claude/skills/ from a
+	// --add-dir directory (a documented exception to --add-dir otherwise
+	// granting file access only), Pi takes --skill, OpenCode an inline config
+	// path. SkillsGlobal families are absent here: their InjectGlobal
+	// materializes the dir and registers it in global config (above).
+	// Materialization failure is logged and skipped rather than blocking
+	// launch.
 	opencodeSkillsDir := ""
-	if IsClaudeBackend(backend.Command) || isPi || isOpencode {
+	switch fam.SkillDelivery {
+	case SkillsAddDir, SkillsFlag, SkillsInlineConfig:
 		if root, err := ensureSessionSkillsFn(); err != nil {
 			uxlog.Log("[skills] builtin skills materialize failed (continuing without them): %v", err)
 		} else if root != "" {
-			switch {
-			case isPi:
-				cmdStr += " --skill " + shellQuote(skills.BuiltinSkillsDir(root))
-			case isOpencode:
-				opencodeSkillsDir = skills.BuiltinSkillsDir(root)
-			default:
+			switch fam.SkillDelivery {
+			case SkillsAddDir:
 				cmdStr += " --add-dir " + shellQuote(root)
+			case SkillsFlag:
+				cmdStr += " --skill " + shellQuote(skills.BuiltinSkillsDir(root))
+			case SkillsInlineConfig:
+				opencodeSkillsDir = skills.BuiltinSkillsDir(root)
 			}
 		}
 	}
@@ -988,15 +905,16 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	}
 
 	// Make argus's own builtin routing content (hera coordination, argus-task
-	// self-management) reach every Claude backend session by materializing it
-	// and appending --append-system-prompt-file — the injection-side
-	// counterpart to the --add-dir skills block above. Unconditional across
-	// every session kind (coordinator, worker, freelance) and NOT gated on
-	// cfg.Hera.Enabled: the content is self-gating at read time (each section
-	// checks ARGUS_TASK_ID/$PWD sandbox residency), so injecting it into a
-	// non-argus spawn is inert. Materialization failure is logged and skipped
-	// rather than blocking launch.
-	if IsClaudeBackend(backend.Command) {
+	// self-management) reach every session of a RoutingSystemPromptFile family
+	// by materializing it and appending --append-system-prompt-file — the
+	// injection-side counterpart to the skills block above
+	// (RoutingPromptPrefix families get it prepended to the prompt below).
+	// Unconditional across every session kind (coordinator, worker, freelance)
+	// and NOT gated on cfg.Hera.Enabled: the content is self-gating at read
+	// time (each section checks ARGUS_TASK_ID/$PWD sandbox residency), so
+	// injecting it into a non-argus spawn is inert. Materialization failure is
+	// logged and skipped rather than blocking launch.
+	if fam.RoutingDelivery == RoutingSystemPromptFile {
 		if path, err := ensureBuiltinRoutingFn(); err != nil {
 			uxlog.Log("[routing] builtin routing content materialize failed (continuing without it): %v", err)
 		} else if path != "" {
@@ -1015,7 +933,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		return nil, nil, err
 	}
 	var argusCodexHome string
-	if isCodex {
+	if fam.SkillDelivery == SkillsCodexHome {
 		if root, err := ensureCodexSkillsFn(codexAccountHome); err != nil {
 			uxlog.Log("[skills] codex builtin skills materialize failed (continuing without them): %v", err)
 		} else {
@@ -1024,43 +942,37 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	}
 
 	if resume {
-		// Codex resumes by replacing the base command unconditionally — that's
-		// codex's contract and TestBuildCmd_Resume pins it. Claude and pi only
-		// append their resume flag when SessionID is non-empty, mirroring the
-		// original behavior pinned by TestBuildCmd_ResumeNoSessionIDClaude:
-		// resume=true with an empty SessionID silently starts fresh rather
-		// than emitting an obviously-broken `--resume ''` flag.
+		// A ResumeCmd family (codex) replaces the base command
+		// unconditionally — that's codex's contract and TestBuildCmd_Resume
+		// pins it. Every other family only appends its ResumeFlag when
+		// SessionID is non-empty, mirroring the original behavior pinned by
+		// TestBuildCmd_ResumeNoSessionIDClaude: resume=true with an empty
+		// SessionID silently starts fresh rather than emitting an
+		// obviously-broken `--resume ''` flag.
 		switch {
-		case isCodex:
-			// Flags must precede the positional session-id argument.
-			cmdStr = "codex" + mcpFlag + codexResumeFlags + modelFlag + " " + shellQuote(task.SessionID)
-		case (isPi || isOpencode) && task.SessionID != "":
-			// Pi / opencode style: append --session <ID> (pi accepts partial
-			// UUIDs; opencode takes its ses_… ID). Checked before the
-			// Claude-style branch because opencode is not pi but must NOT take
-			// --resume.
-			cmdStr += " --session " + shellQuote(task.SessionID)
-		case !isPi && !isOpencode && task.SessionID != "":
-			// Claude-style: append --resume flag.
-			cmdStr += " --resume " + shellQuote(task.SessionID)
+		case fam.ResumeCmd != nil:
+			cmdStr = fam.ResumeCmd(mcpFlag, modelFlag, task.SessionID)
+		case fam.ResumeFlag != "" && task.SessionID != "":
+			cmdStr += " " + fam.ResumeFlag + " " + shellQuote(task.SessionID)
 		}
 	} else {
-		// New session — only pin session ID for Claude-style backends.
-		// Codex, pi, and opencode don't support --session-id; their IDs are
-		// captured post-exit.
-		if !isCodex && !isPi && !isOpencode && task.SessionID != "" {
+		// New session — only pin the ID for families that accept a start-time
+		// --session-id; capture-style families recover theirs post-exit.
+		if fam.PinsSessionID && task.SessionID != "" {
 			cmdStr += " --session-id " + shellQuote(task.SessionID)
 		}
 		if task.Prompt != "" {
-			// Prepend routing context for non-Claude backends that have no
-			// native equivalent of Claude's --add-dir/
-			// --append-system-prompt-file. See
+			// Prepend routing context for families with no native equivalent of
+			// Claude's --append-system-prompt-file. See
 			// openspec/changes/remove-codex-claude-md-injection.
-			prompt := nonClaudeContextPrefix(isCodex, isOpencode) + task.Prompt
+			prompt := task.Prompt
+			if fam.RoutingDelivery == RoutingPromptPrefix {
+				prompt = nonClaudeContextPrefix() + prompt
+			}
 			switch {
-			case backend.PromptFlag != "":
-				cmdStr += " " + backend.PromptFlag + " " + shellQuote(prompt)
-			case isPi:
+			case fam.PromptFlagFor(backend) != "":
+				cmdStr += " " + fam.PromptFlagFor(backend) + " " + shellQuote(prompt)
+			case fam.PromptPositional:
 				// Pi's argv parser does not honor "--" as end-of-flags; pass the
 				// prompt as a positional argument. Prompts beginning with "-" or
 				// "@" trigger pi's flag/file-include parsing (the @ behavior is
@@ -1085,7 +997,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	var sandboxCleanup func()
 	effectiveSandbox := sandboxWithCodexHome(sandboxWithClaudeConfigDir(ResolveSandboxConfig(task, cfg), claudeConfigDir), codexAccountHome)
 	if effectiveSandbox.Enabled && IsSandboxAvailable() && task.Worktree != "" {
-		profilePath, params, cleanup, serr := GenerateSandboxConfig(task.Worktree, effectiveSandbox)
+		profilePath, params, cleanup, serr := GenerateSandboxConfigFor(fam, task.Worktree, effectiveSandbox)
 		if serr == nil {
 			cmdStr = WrapWithSandbox(cmdStr, profilePath, params)
 			sandboxCleanup = cleanup
@@ -1317,7 +1229,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	}
 
 	if isOpencode {
-		uxlog.Log("[opencode] auto approval enabled for task %q (injected=%t)", task.ID, injectOpencodeAuto)
+		uxlog.Log("[opencode] auto approval enabled for task %q (injected=%t)", task.ID, injectLaunchFlag)
 		if opencodeModel != "" {
 			uxlog.Log("[opencode] task %q: model %q delivered via inline config (skills=%t)", task.ID, opencodeModel, opencodeSkillsDir != "")
 		}

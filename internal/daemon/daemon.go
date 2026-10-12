@@ -31,14 +31,12 @@ import (
 	"github.com/drn/argus/internal/heragater"
 	"github.com/drn/argus/internal/inject"
 	injectcodex "github.com/drn/argus/internal/inject/codex"
-	injectopencode "github.com/drn/argus/internal/inject/opencode"
 	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/mcp"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/notify"
 	"github.com/drn/argus/internal/push"
 	"github.com/drn/argus/internal/scheduler"
-	"github.com/drn/argus/internal/skills"
 	"github.com/drn/argus/internal/usagebudget"
 
 	// Blank-imported for its init() side effect: registers the "things3"
@@ -1068,6 +1066,32 @@ func (d *Daemon) runHeraReclaimSweeper() {
 	}
 }
 
+// injectGlobalBackendConfig runs every backend family's InjectGlobal hook
+// (OpenCode's MCP entry; Antigravity's MCP entry and skills manifest).
+// Skipped under `go test` so ephemeral test daemons never edit the
+// developer's real CLI config files.
+func injectGlobalBackendConfig(port int) {
+	if strings.HasSuffix(os.Args[0], ".test") {
+		return
+	}
+	runGlobalInjectors(agent.Families(), port)
+}
+
+// runGlobalInjectors calls each family's InjectGlobal, logging per family so
+// one failure never blocks the others.
+func runGlobalInjectors(fams []*agent.Family, port int) {
+	for _, fam := range fams {
+		if fam.InjectGlobal == nil {
+			continue
+		}
+		if err := fam.InjectGlobal(port, false); err != nil {
+			slog.Error("inject backend global config", "backend", fam.Kind, "err", err)
+		} else {
+			slog.Info("inject backend global config", "backend", fam.Kind, "port", port)
+		}
+	}
+}
+
 // runCodexProbePoller is the Codex usage probe goroutine body
 // (add-tiered-backend-routing). It is a sibling of runUsageBudgetPoller, not an
 // extension of it: same cadence (usageBudgetProbeInterval), own ticker and own
@@ -1418,19 +1442,9 @@ func (d *Daemon) Serve(sockPath string) error {
 			}
 			slog.Info("mcp server listening", "port", actualPort)
 
-			// OpenCode retains its existing global MCP configuration behavior.
-			go func() {
-				if home, err := os.UserHomeDir(); err != nil {
-					slog.Error("resolve old global opencode skill path", "err", err)
-				} else if err := injectopencode.RemoveManagedSkillsGlobal(skills.BuiltinSkillsDir(filepath.Join(home, ".argus", "skills"))); err != nil {
-					slog.Error("remove old global opencode skill path", "err", err)
-				}
-				if err := injectopencode.InjectGlobal(actualPort, ""); err != nil {
-					slog.Error("inject opencode", "err", err)
-				} else {
-					slog.Info("inject opencode", "port", actualPort)
-				}
-			}()
+			// Families that read MCP servers only from global config (no
+			// per-launch flag) get Argus registered there, idempotently.
+			go injectGlobalBackendConfig(actualPort)
 		}
 
 		// Start the KB indexer for the Metis vault.
