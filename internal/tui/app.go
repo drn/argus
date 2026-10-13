@@ -739,6 +739,9 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 
 	app.settings = NewSettingsView(database)
 	app.settings.Keys = app.activeKeymap
+	app.settings.OnHostSleepUpdate = func() {
+		app.tapp.QueueUpdateDraw(func() { app.settings.Refresh() })
+	}
 	app.settings.SetDaemonConnected(daemonConnected)
 	// Remote mode (a.db is not the local *db.DB) hides daemon-admin actions
 	// that manage the local OS install.

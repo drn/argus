@@ -1,8 +1,12 @@
 package db
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"net/url"
+	"os"
 	"strconv"
 
 	"github.com/drn/argus/internal/config"
@@ -217,4 +221,24 @@ func (d *DB) SetSandboxEnabled(enabled bool) error {
 		v = "true"
 	}
 	return d.SetConfigValue("sandbox.enabled", v)
+}
+
+// ReadConfigValueReadOnly reads one config value via a read-only open; found is false when the file or key is absent.
+func ReadConfigValueReadOnly(path, key string) (value string, found bool, err error) {
+	if _, statErr := os.Stat(path); statErr != nil {
+		return "", false, nil
+	}
+	conn, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: path}).String()+"?mode=ro&_pragma=busy_timeout(2000)")
+	if err != nil {
+		return "", false, err
+	}
+	defer func() { _ = conn.Close() }()
+	err = conn.QueryRow(`SELECT value FROM config WHERE key = ?`, key).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return value, true, nil
 }

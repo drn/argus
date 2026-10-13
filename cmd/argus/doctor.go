@@ -18,6 +18,7 @@ import (
 	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/doctor"
+	"github.com/drn/argus/internal/hostsleep"
 	"github.com/drn/argus/internal/profiles"
 	"github.com/drn/argus/internal/review"
 	"github.com/drn/argus/internal/uxlog"
@@ -42,6 +43,7 @@ func runDoctor() {
 	fmt.Print(doctor.RenderProfileLibrary(gatherProfileLibraryStatus()))
 	fmt.Print(doctor.RenderSecretsBootstrap(gatherSecretsBootstrapStatus()))
 	fmt.Print(doctor.RenderDevStackOrphans(gatherDevStackOrphans()))
+	fmt.Print(doctor.RenderHostSleep(gatherHostSleep()))
 	if doctor.Diagnose(actors).Verdict != doctor.Healthy {
 		os.Exit(1)
 	}
@@ -320,6 +322,20 @@ func secretsBootstrapStatusFor(cfg config.Config) doctor.SecretsBootstrapStatus 
 	default:
 		return doctor.DiagnoseSecretsBootstrap(false, false)
 	}
+}
+
+// gatherHostSleep checks sleep posture against the effective api.enabled (read-only DB, then config.toml).
+func gatherHostSleep() (bool, hostsleep.Report) {
+	cfg := config.DefaultConfig()
+	v, found, err := db.ReadConfigValueReadOnly(db.DefaultPath(), "api.enabled")
+	if err != nil {
+		return true, hostsleep.Report{Status: hostsleep.Unknown, Message: "Could not read api.enabled from the Argus database: " + err.Error()}
+	}
+	if found {
+		cfg.API.Enabled = v == "true"
+	}
+	cfg = config.NewFileLoader(filepath.Join(db.DataDir(), config.FileName)).Apply(cfg)
+	return cfg.API.Enabled, hostsleep.Check(cfg.API.Enabled, hostsleep.DaemonPID(filepath.Join(db.DataDir(), "daemon.pid")))
 }
 
 // gatherDevStackOrphans scans the process table for dev-stack processes

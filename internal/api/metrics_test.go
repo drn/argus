@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
+	"time"
 
+	"github.com/drn/argus/internal/hostsleep"
 	"github.com/drn/argus/internal/sysmetrics"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -54,4 +57,33 @@ func TestHandleSystemMetrics_RequiresAuth(t *testing.T) {
 	handler.ServeHTTP(w, req)
 
 	testutil.Equal(t, w.Code, http.StatusUnauthorized)
+}
+
+func TestHandleSystemMetrics_HostSleep(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.hostSleep = hostsleep.NewMonitorForTest(func(apiEnabled bool, pid int) hostsleep.Report {
+		testutil.True(t, apiEnabled)
+		testutil.Equal(t, pid, os.Getpid())
+		return hostsleep.Report{Status: hostsleep.AtRisk, Message: "sleeps", Fix: hostsleep.PermanentFix}
+	})
+	mux := srv.routes()
+
+	get := func() systemMetricsResponse {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, authedReq("GET", "/api/system-metrics", ""))
+		testutil.Equal(t, w.Code, http.StatusOK)
+		var resp systemMetricsResponse
+		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		return resp
+	}
+
+	// First request returns the placeholder; the async check lands shortly after.
+	get()
+	deadline := time.Now().Add(2 * time.Second)
+	for get().HostSleep.Status != hostsleep.AtRisk && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	got := get().HostSleep
+	testutil.Equal(t, got.Status, hostsleep.AtRisk)
+	testutil.Equal(t, got.Fix, hostsleep.PermanentFix)
 }

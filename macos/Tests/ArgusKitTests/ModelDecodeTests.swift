@@ -181,6 +181,27 @@ struct ModelDecodeTests {
         #expect(m.uptimeSec == 86400)
         #expect(m.sessions.running == 2)
         #expect(m.sessions.idle == 1)
+        #expect(m.hostSleep == nil) // older daemon: field absent
+    }
+
+    // Shape: internal/hostsleep.Report inside systemMetricsResponse.
+    @Test("SystemMetrics decodes host_sleep at_risk")
+    func systemMetricsHostSleep() throws {
+        let json = """
+        {"cpu_percent":0,"cpu_avail":false,"load1":0,"load5":0,"load15":0,"load_avail":false,
+         "mem_total":0,"mem_used":0,"mem_available":0,"mem_percent":0,"mem_avail":false,
+         "swap_total":0,"swap_used":0,"swap_percent":0,"swap_avail":false,
+         "disk_total":0,"disk_used":0,"disk_free":0,"disk_percent":0,"disk_path":"/","disk_avail":false,
+         "proc_rss":0,"proc_avail":false,"uptime_sec":0,"uptime_avail":false,
+         "sampled_at":"2026-07-02T12:00:00Z","sessions":{"running":0,"idle":0},
+         "host_sleep":{"status":"at_risk","message":"sleeps","fix":"sudo pmset -c sleep 0 displaysleep 10"}}
+        """
+        let m = try decode(SystemMetrics.self, json)
+        #expect(m.hostSleep?.isAtRisk == true)
+        #expect(m.hostSleep?.fix == "sudo pmset -c sleep 0 displaysleep 10")
+        let safe = try decode(HostSleep.self, #"{"status":"safe"}"#)
+        #expect(safe.isAtRisk == false)
+        #expect(safe.message == nil)
     }
 
     // Shape: internal/api/handlers.go handleStatus statusResponse.

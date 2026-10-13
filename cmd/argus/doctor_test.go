@@ -10,7 +10,9 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/claudeaccount"
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/doctor"
+	"github.com/drn/argus/internal/hostsleep"
 	"github.com/drn/argus/internal/testutil"
 )
 
@@ -278,4 +280,28 @@ func TestRenderClaudeAccounts(t *testing.T) {
 	t.Run("no accounts prints nothing", func(t *testing.T) {
 		testutil.Equal(t, renderClaudeAccounts(config.Config{}, auth), "")
 	})
+}
+
+func TestGatherHostSleep_APIDisabledByDefault(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	enabled, report := gatherHostSleep()
+	testutil.False(t, enabled)
+	testutil.Equal(t, report.Status, hostsleep.NotApplicable)
+}
+
+func TestGatherHostSleep_ReadsDBAndConfigOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	d, err := db.Open(db.DefaultPath())
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.SetConfigValue("api.enabled", "true"))
+	testutil.NoError(t, d.Close())
+
+	enabled, _ := gatherHostSleep()
+	testutil.True(t, enabled)
+
+	testutil.NoError(t, os.WriteFile(filepath.Join(db.DataDir(), config.FileName), []byte("[api]\nenabled = false\n"), 0o644))
+	enabled, report := gatherHostSleep()
+	testutil.False(t, enabled)
+	testutil.Equal(t, report.Status, hostsleep.NotApplicable)
 }

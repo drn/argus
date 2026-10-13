@@ -17,6 +17,7 @@ import (
 	"github.com/drn/argus/internal/clipboard"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/hostsleep"
 	"github.com/drn/argus/internal/mcp"
 	"github.com/drn/argus/internal/mergesafety"
 	"github.com/drn/argus/internal/model"
@@ -100,6 +101,10 @@ type Server struct {
 	// Started in New, stopped in Shutdown.
 	metrics *sysmetrics.Collector
 
+	// hostSleep caches the async pmset sleep-posture check served on
+	// /api/system-metrics. Never nil: a zero Monitor is built in New.
+	hostSleep *hostsleep.Monitor
+
 	// cleanup tracks whether a merge-safety review background classification
 	// pass (openspec add-merge-safety-review) is currently running, so a
 	// second POST .../compute while one is in flight is a no-op. Cached
@@ -166,6 +171,7 @@ func New(database *db.DB, runner agent.SessionRunner, token string, creator Task
 		lastResizeCols: make(map[string]uint16),
 		pluginSections: settings.NewRegistry(),
 		metrics:        sysmetrics.New(db.DataDir()),
+		hostSleep:      hostsleep.NewMonitor(),
 	}
 	srv.rehydratePluginSections()
 	// Start the idle watcher unconditionally. It fires session.idle events

@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/hostsleep"
 	"github.com/drn/argus/internal/launchagent"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/spinner"
@@ -301,6 +303,12 @@ type SettingsView struct {
 	apiEnabledAtBoot bool // value when daemon started; used to show "restart required"
 	apiBootRecorded  bool // true after first Refresh captures boot value
 	apiPort          int
+	// hostSleep is the latest async host-sleep diagnosis (local mode only; a
+	// --remote client would be checking the wrong machine).
+	hostSleep    hostsleep.Report
+	hostSleepMon *hostsleep.Monitor
+	// OnHostSleepUpdate runs off the UI thread when a background check lands.
+	OnHostSleepUpdate func()
 
 	// Hera.
 	heraEnabled bool
@@ -630,6 +638,22 @@ func (sv *SettingsView) Refresh() {
 	sv.apiPort = cfg.API.HTTPPort
 	if sv.apiPort == 0 {
 		sv.apiPort = 7743
+	}
+
+	if !sv.remote {
+		if sv.hostSleepMon == nil {
+			sv.hostSleepMon = hostsleep.NewMonitor()
+			sv.hostSleepMon.OnUpdate = func() {
+				if cb := sv.OnHostSleepUpdate; cb != nil {
+					cb()
+				}
+			}
+		}
+		pid := hostsleep.DaemonPID(filepath.Join(db.DataDir(), "daemon.pid"))
+		if pid == 0 {
+			pid = os.Getpid()
+		}
+		sv.hostSleep = sv.hostSleepMon.Get(cfg.API.Enabled, pid)
 	}
 
 	// Hera.
@@ -1167,6 +1191,9 @@ func (sv *SettingsView) rebuildRows() {
 		}
 		if sv.apiBootRecorded && sv.apiEnabled != sv.apiEnabledAtBoot {
 			apiLabel += " (restart required)"
+		}
+		if sv.apiEnabled && sv.hostSleep.Warn() {
+			apiLabel += " (host may sleep)"
 		}
 		sv.rows = append(sv.rows, settingsRow{kind: srAPI, label: apiLabel, key: "_api"})
 
@@ -3164,6 +3191,28 @@ func (sv *SettingsView) renderAPIDetail(screen tcell.Screen, x, y, w, h int) {
 		r += 2
 	}
 
+	if sv.apiEnabled && sv.hostSleep.Warn() {
+		warn := tcell.StyleDefault.Foreground(theme.ColorInProgress)
+		widget.DrawText(screen, x, y+r, w, "⚠ Host may sleep", warn)
+		r++
+		for _, line := range wrapSettingsText(sv.hostSleep.Message, w) {
+			if r >= h-2 {
+				break
+			}
+			widget.DrawText(screen, x, y+r, w, line, theme.StyleDimmed)
+			r++
+		}
+		if r < h-2 {
+			widget.DrawText(screen, x, y+r, w, "Run: "+sv.hostSleep.Fix, theme.StyleDimmed)
+			r++
+		}
+		if r < h-2 {
+			widget.DrawText(screen, x, y+r, w, "Or: "+hostsleep.TemporaryFix, theme.StyleDimmed)
+			r++
+		}
+		r++
+	}
+
 	if r < h {
 		widget.DrawText(screen, x, y+r, w, "Localhost + Tailscale-bound HTTP", theme.StyleDimmed)
 		r++
@@ -4209,4 +4258,29 @@ func truncRunes(s string, max int) string {
 		n++
 	}
 	return s
+}
+
+// wrapSettingsText greedily word-wraps text to width columns (never returns an
+// empty slice for non-empty text; an over-long word gets its own line).
+func wrapSettingsText(text string, width int) []string {
+	if width < 1 {
+		return nil
+	}
+	var lines []string
+	cur := ""
+	for _, word := range strings.Fields(text) {
+		switch {
+		case cur == "":
+			cur = word
+		case len(cur)+1+len(word) <= width:
+			cur += " " + word
+		default:
+			lines = append(lines, cur)
+			cur = word
+		}
+	}
+	if cur != "" {
+		lines = append(lines, cur)
+	}
+	return lines
 }
