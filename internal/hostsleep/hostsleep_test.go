@@ -175,3 +175,15 @@ func TestMonitor(t *testing.T) {
 	// A different pid discards the cached verdict instead of serving it.
 	testutil.Equal(t, m.Get(true, 2).Status, NotApplicable)
 }
+
+func TestMonitor_OnUpdateFiresAfterCheck(t *testing.T) {
+	m := NewMonitorForTest(func(bool, int) Report { return Report{Status: AtRisk} })
+	done := make(chan struct{})
+	m.OnUpdate = func() { close(done) }
+	m.Get(true, 1)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnUpdate not called")
+	}
+}

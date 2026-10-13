@@ -324,12 +324,14 @@ func secretsBootstrapStatusFor(cfg config.Config) doctor.SecretsBootstrapStatus 
 	}
 }
 
-// gatherHostSleep reads the effective api.enabled (DB, then config.toml
-// override) and checks the host's sleep posture against it. The DB is only
-// read-only, so doctor never creates or migrates it.
+// gatherHostSleep checks sleep posture against the effective api.enabled (read-only DB, then config.toml).
 func gatherHostSleep() (bool, hostsleep.Report) {
 	cfg := config.DefaultConfig()
-	if v, found, err := db.ReadConfigValueReadOnly(db.DefaultPath(), "api.enabled"); err == nil && found {
+	v, found, err := db.ReadConfigValueReadOnly(db.DefaultPath(), "api.enabled")
+	if err != nil {
+		return true, hostsleep.Report{Status: hostsleep.Unknown, Message: "Could not read api.enabled from the Argus database: " + err.Error()}
+	}
+	if found {
 		cfg.API.Enabled = v == "true"
 	}
 	cfg = config.NewFileLoader(filepath.Join(db.DataDir(), config.FileName)).Apply(cfg)

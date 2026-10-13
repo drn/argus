@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net/url"
 	"os"
 	"strconv"
 
@@ -222,15 +223,12 @@ func (d *DB) SetSandboxEnabled(enabled bool) error {
 	return d.SetConfigValue("sandbox.enabled", v)
 }
 
-// ReadConfigValueReadOnly returns one config-table value from the database at
-// path without creating, migrating, or writing to it (read-only open). found is
-// false when the file or key is absent. For diagnostics that must never mutate
-// the live database.
+// ReadConfigValueReadOnly reads one config value via a read-only open; found is false when the file or key is absent.
 func ReadConfigValueReadOnly(path, key string) (value string, found bool, err error) {
 	if _, statErr := os.Stat(path); statErr != nil {
 		return "", false, nil
 	}
-	conn, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(2000)")
+	conn, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: path}).String()+"?mode=ro&_pragma=busy_timeout(2000)")
 	if err != nil {
 		return "", false, err
 	}

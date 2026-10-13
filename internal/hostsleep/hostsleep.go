@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // Status classifies the host's sleep posture relative to the remote API.
@@ -144,8 +146,7 @@ var runPmset = func(ctx context.Context, args ...string) (string, error) {
 
 var goos = runtime.GOOS
 
-// Check gathers pmset facts and diagnoses. It shells out (tens of ms, bounded
-// by a 3s timeout), so UI callers should go through Monitor instead.
+// Check shells out to pmset (3s timeout); UI callers should use Monitor.
 func Check(apiEnabled bool, daemonPID int) Report {
 	if !apiEnabled || goos != "darwin" {
 		return Report{Status: NotApplicable}
@@ -170,12 +171,11 @@ func Check(apiEnabled bool, daemonPID int) Report {
 	return Diagnose(Inputs{APIEnabled: true, Supported: true, ACSleepMin: sleepMin, HeldByDaemon: held})
 }
 
-// Monitor serves a recent Report without ever blocking the caller: a stale or
-// missing value kicks off one background Check and the previous report is
-// returned meanwhile. A key change (API toggled, daemon PID changed) discards
-// the cached value so a stale verdict is never shown for different inputs.
+// Monitor serves a cached Report without blocking; stale values refresh in the background and a key change discards the cache.
 type Monitor struct {
 	TTL time.Duration
+	// OnUpdate, when set, runs (outside the lock) after a background check lands.
+	OnUpdate func()
 
 	mu       sync.Mutex
 	report   Report
@@ -212,11 +212,17 @@ func (m *Monitor) Get(apiEnabled bool, pid int) Report {
 		go func() {
 			r := check(apiEnabled, pid)
 			m.mu.Lock()
-			if m.key == key {
+			stored := m.key == key
+			if stored {
 				m.report, m.at = r, time.Now()
 			}
 			m.inFlight = false
+			onUpdate := m.OnUpdate
 			m.mu.Unlock()
+			uxlog.Log("[hostsleep] check status=%s stored=%t", r.Status, stored)
+			if onUpdate != nil {
+				onUpdate()
+			}
 		}()
 	}
 	return m.report

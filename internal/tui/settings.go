@@ -307,6 +307,8 @@ type SettingsView struct {
 	// --remote client would be checking the wrong machine).
 	hostSleep    hostsleep.Report
 	hostSleepMon *hostsleep.Monitor
+	// OnHostSleepUpdate runs off the UI thread when a background check lands.
+	OnHostSleepUpdate func()
 
 	// Hera.
 	heraEnabled bool
@@ -641,6 +643,11 @@ func (sv *SettingsView) Refresh() {
 	if !sv.remote {
 		if sv.hostSleepMon == nil {
 			sv.hostSleepMon = hostsleep.NewMonitor()
+			sv.hostSleepMon.OnUpdate = func() {
+				if cb := sv.OnHostSleepUpdate; cb != nil {
+					cb()
+				}
+			}
 		}
 		pid := hostsleep.DaemonPID(filepath.Join(db.DataDir(), "daemon.pid"))
 		if pid == 0 {
