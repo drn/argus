@@ -131,6 +131,13 @@ func (m *RestartDaemonModal) removeButton(c skewChoice) {
 	m.chose = choiceSkip // clear alongside done so a stale choice can't be read before the next input
 }
 
+// Rearm clears a recorded choice without touching the buttons, so the modal
+// stays open and interactive after a choice that is still awaiting confirmation.
+func (m *RestartDaemonModal) Rearm() {
+	m.done = false
+	m.chose = choiceSkip
+}
+
 // hasRestartAction reports whether any non-Skip button remains.
 func (m *RestartDaemonModal) hasRestartAction() bool {
 	for _, b := range m.buttons {

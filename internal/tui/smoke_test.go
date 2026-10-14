@@ -645,6 +645,11 @@ func TestSmoke_SkewPrompt_SupervisorDoubleConfirm(t *testing.T) {
 	if stillOpen {
 		t.Error("confirm modal should be dismissed after confirming")
 	}
+	var skewOpen bool
+	readUI(t, app.tapp, func() { skewOpen = app.restartDaemonModal != nil })
+	if skewOpen {
+		t.Error("skew modal should be dismissed once the supervisor restart is confirmed")
+	}
 }
 
 // TestSmoke_SkewPrompt_DeclineLeavesSupervisorRunning verifies declining the
@@ -677,9 +682,14 @@ func TestSmoke_SkewPrompt_DeclineLeavesSupervisorRunning(t *testing.T) {
 		mode = app.mode
 		modalOpen = app.restartSupervisorModal != nil
 	})
-	testutil.Equal(t, mode, modeTaskList)
+	var skewOpen bool
+	readUI(t, app.tapp, func() { skewOpen = app.restartDaemonModal != nil })
+	testutil.Equal(t, mode, modeRestartDaemonPrompt)
 	if modalOpen {
 		t.Error("confirm modal should be dismissed after declining")
+	}
+	if !skewOpen {
+		t.Error("skew modal must stay open after declining — the restart is still pending")
 	}
 	if restarted.Load() {
 		t.Error("declining the confirmation must NOT restart the supervisor")
@@ -732,8 +742,8 @@ func TestSmoke_SkewPrompt_BothStale_DaemonRestartLeavesModalOpen(t *testing.T) {
 		return app.restartSupervisorModal != nil
 	})
 	readUI(t, app.tapp, func() { modalOpen = app.restartDaemonModal != nil })
-	if modalOpen {
-		t.Error("skew modal should be dismissed once the double-confirm opens")
+	if !modalOpen {
+		t.Error("skew modal must stay open underneath the double-confirm")
 	}
 
 	// Confirm the supervisor restart.
@@ -741,8 +751,14 @@ func TestSmoke_SkewPrompt_BothStale_DaemonRestartLeavesModalOpen(t *testing.T) {
 	syncUI(t, app.tapp)
 	waitForCond(t, app.tapp, "restartSupervisorFn to fire", func() bool { return supervisorCalls.Load() == 1 })
 
-	readUI(t, app.tapp, func() { mode = app.mode })
+	readUI(t, app.tapp, func() {
+		mode = app.mode
+		modalOpen = app.restartDaemonModal != nil
+	})
 	testutil.Equal(t, mode, modeTaskList)
+	if modalOpen {
+		t.Error("skew modal should be dismissed once the supervisor restart is confirmed")
+	}
 }
 
 func TestSetDaemonStale_StoresFlag(t *testing.T) {
