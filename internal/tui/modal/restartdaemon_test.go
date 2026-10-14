@@ -259,3 +259,16 @@ func TestSkewModal_SupervisorConsequence(t *testing.T) {
 		}
 	})
 }
+
+func TestSkewModal_Rearm_KeepsButtonsAndClearsChoice(t *testing.T) {
+	m := NewSkewModal(true, true, "d", "s")
+	m.chose = choiceRestartSupervisor
+	m.done = true
+	m.Rearm()
+	if m.Done() || m.ChoseRestartSupervisor() {
+		t.Error("Rearm should clear the recorded choice")
+	}
+	if len(m.buttons) != 3 {
+		t.Errorf("Rearm must keep all buttons, got %d", len(m.buttons))
+	}
+}
