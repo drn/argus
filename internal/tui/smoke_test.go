@@ -2907,3 +2907,39 @@ func containsString(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// Skipping the skew modal while the agent-count fetch is in flight must not
+// resurrect a destructive confirm, and a second pick must not queue another.
+func TestSmoke_SkewPrompt_SkipDuringCountFetchOpensNoConfirm(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), true)
+	app.SetSkew(skew.Result{Supervisor: daemon.SurfaceStreamStale, SupervisorIdentity: "sup-abc @ /gopath/bin/argus"})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	app.agentCountFn = func() int { calls.Add(1); <-release; return 1 }
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	readUI(t, app.tapp, func() { app.openSkewPrompt() })
+	sim.InjectKey(tcell.KeyEnter, 0, 0) // choose Restart supervisor (fetch blocks)
+	syncUI(t, app.tapp)
+	sim.InjectKey(tcell.KeyEnter, 0, 0) // second pick while pending
+	syncUI(t, app.tapp)
+	sim.InjectKey(tcell.KeyEscape, 0, 0) // skip
+	syncUI(t, app.tapp)
+	close(release)
+	syncUI(t, app.tapp)
+
+	var confirmOpen bool
+	var mode viewMode
+	readUI(t, app.tapp, func() {
+		confirmOpen = app.restartSupervisorModal != nil
+		mode = app.mode
+	})
+	if confirmOpen {
+		t.Error("confirm must not open after the skew modal was skipped")
+	}
+	testutil.Equal(t, mode, modeTaskList)
+	testutil.Equal(t, int(calls.Load()), 1)
+}

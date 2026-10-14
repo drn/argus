@@ -157,7 +157,8 @@ func (m *RestartDaemonModal) ResolveRestartDaemon() bool {
 	return m.hasRestartAction()
 }
 
-// ResolveRestartSupervisor marks "Restart supervisor" as handled. Restarting
+// ResolveRestartSupervisor marks "Restart supervisor" as handled; call it only
+// once the restart is confirmed (use Rearm while the confirm is pending). Restarting
 // the supervisor also bounces the daemon (see App.handleRestartSupervisorKey),
 // so this resolves the daemon's pending restart too and removes both buttons
 // — unlike ResolveRestartDaemon, no restart action can ever remain, so unlike

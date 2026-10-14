@@ -281,6 +281,10 @@ type App struct {
 	// close ("settings" or "tasks").
 	restartSupervisorModal      *modal.ConfirmModal
 	restartSupervisorReturnPage string
+	// skewConfirmPending is true while the skew modal's agent-count fetch is in
+	// flight, so a second "Restart supervisor" pick cannot queue a second confirm.
+	// Touched only on the tview goroutine.
+	skewConfirmPending bool
 
 	// Link picker modals (created on demand)
 	linkPickerModal      *LinkPickerModal
@@ -1300,6 +1304,9 @@ func (a *App) handleRestartDaemonKey(event *tcell.EventKey) {
 		// (handleRestartSupervisorKey), and a cancel returns here with every
 		// pending restart still offered.
 		a.restartDaemonModal.Rearm()
+		if a.skewConfirmPending {
+			return
+		}
 		uxlog.Log("[tui] user chose to restart out-of-date supervisor — opening double-confirm")
 		a.promptSupervisorRestartFromSkew()
 	case a.restartDaemonModal.ChoseRestartDaemon():
@@ -1330,9 +1337,15 @@ func (a *App) handleRestartDaemonKey(event *tcell.EventKey) {
 // confirm — naming that count — is opened via QueueUpdateDraw. The restart still
 // fires only on the confirm's explicit yes (handleRestartSupervisorKey).
 func (a *App) promptSupervisorRestartFromSkew() {
+	a.skewConfirmPending = true
 	go func() {
 		n := a.agentCountFn()
 		a.tapp.QueueUpdateDraw(func() {
+			a.skewConfirmPending = false
+			if a.restartDaemonModal == nil {
+				uxlog.Log("[tui] skew modal dismissed during agent-count fetch — not opening supervisor confirm")
+				return
+			}
 			a.openRestartSupervisorConfirm(
 				"Restart Session Supervisor?",
 				fmt.Sprintf("Are you sure? This will restart %d agent processes", n),
@@ -1384,7 +1397,7 @@ func (a *App) closeRestartSupervisorPrompt() {
 		a.tapp.SetFocus(a.restartDaemonModal)
 		return
 	}
-	if page == "tasks" || page == "restartdaemon" {
+	if page == "tasks" || page == "restartdaemon" { // restartdaemon: skew modal already dismissed
 		a.pages.SwitchToPage("tasks")
 		a.tapp.SetFocus(a.tasklist)
 		return
@@ -1403,13 +1416,12 @@ func (a *App) handleRestartSupervisorKey(event *tcell.EventKey) {
 	}
 	a.restartSupervisorModal.InputHandler()(event, func(tview.Primitive) {})
 	if a.restartSupervisorModal.Confirmed() {
-		fromSkew := a.restartSupervisorReturnPage == "restartdaemon"
-		a.closeRestartSupervisorPrompt()
-		if fromSkew && a.restartDaemonModal != nil {
+		if a.restartSupervisorReturnPage == "restartdaemon" && a.restartDaemonModal != nil {
 			// The supervisor bounce restarts the daemon too, so nothing is left.
 			a.restartDaemonModal.ResolveRestartSupervisor()
 			a.closeRestartDaemonPrompt()
 		}
+		a.closeRestartSupervisorPrompt()
 		uxlog.Log("[tui] user confirmed session-supervisor restart")
 		// The bounce restarts the daemon too (restartSupervisor → restartDaemon).
 		// Mark daemonRestarting BEFORE launching the goroutine so the tick-loop
