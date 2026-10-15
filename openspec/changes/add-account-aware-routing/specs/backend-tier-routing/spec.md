@@ -71,3 +71,37 @@ Every tier resolution SHALL emit one structured log line to the daemon's own log
 
 - **WHEN** a worker is created with no explicit backend and the tier list is consulted
 - **THEN** `daemon.log` contains a line listing every candidate's reading and the chosen backend and account
+
+### Requirement: No agent is created on an account at or above the routing ceiling
+
+`[backend_routing]` SHALL accept `ceiling_pct`, defaulting to 98 when unset. No agent spawn — worker, freelancer, coordinator or sub-coordinator, whether routed by the tier list or resolved from a project backend — SHALL be placed on a backend and account whose cached weekly used percentage is at or above the ceiling; a held depleted reading always counts as at the ceiling. Under the `headroom` strategy, candidates at or above the ceiling SHALL be excluded before headroom is compared, so when every tier is over its own threshold the resolver picks the highest-headroom candidate that is still below the ceiling. Under the `ordered` strategy, a tier at or above the ceiling SHALL be skipped even when it would otherwise be the fail-open choice. An unknown or stale reading SHALL count as below the ceiling. When no candidate is below the ceiling, the spawn SHALL be refused before any worktree, branch or task row is created, with an error naming each candidate and its reading. A backend or account given explicitly on the spawn SHALL bypass the ceiling, as an operator override, and SHALL log a warning when the chosen reading is at or above it.
+
+#### Scenario: Worker skips an account at the ceiling
+
+- **WHEN** strategy is `headroom`, every tier is over its own threshold, `claude` on `default` is at 99%, and `claude` on `personal` is at 95% with threshold 90
+- **THEN** a routed worker runs on `personal`, never on `default`
+
+#### Scenario: Every candidate at the ceiling refuses a worker
+
+- **WHEN** every tier's reading is at or above 98% and a worker is spawned with no explicit backend or account
+- **THEN** the spawn fails with an error naming each candidate and its reading, and no worktree, branch or task row is created
+
+#### Scenario: Project backend at the ceiling refuses the spawn
+
+- **WHEN** a project's backend is `codex`, Codex is at 99%, and a worker is spawned in that project with no explicit backend
+- **THEN** the spawn is refused with the Codex reading named in the error
+
+#### Scenario: Unknown reading is below the ceiling
+
+- **WHEN** the only candidate tier has no usage reading yet
+- **THEN** the spawn proceeds on that tier
+
+#### Scenario: Explicit choice bypasses the ceiling with a warning
+
+- **WHEN** a worker is spawned with `account: "default"` and backend `claude` while `default` is at 99%
+- **THEN** the worker runs on `default` and a warning naming the reading and the ceiling is logged
+
+#### Scenario: Ceiling is configurable
+
+- **WHEN** `ceiling_pct = 100` and the only candidate is at 99%
+- **THEN** the spawn proceeds on that candidate

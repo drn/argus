@@ -2,10 +2,10 @@
 
 ## 1. Failing tests
 
-- [ ] 1.1 Write failing tests for every scenario in `specs/backend-tier-routing/spec.md`: account on tiers (omitted = default, unknown/unsupported skipped), headroom across two Claude accounts + Codex, identity collapse preferring `default`, not-signed-in skipped, lookup error fails open, re-signed folder changes routing, archetype model unaffected, decision log line via a captured slog handler. Stub identity lookup through a seam over `claudeaccount.CachedAuthStatus`.
+- [ ] 1.1 Write failing tests for every scenario in `specs/backend-tier-routing/spec.md`: account on tiers (omitted = default, unknown/unsupported skipped), headroom across two Claude accounts + Codex, identity collapse preferring `default`, not-signed-in skipped, lookup error fails open, re-signed folder changes routing, archetype model unaffected, routing ceiling (worker skips ≥98%, all-at-ceiling refuses with nothing created, project backend at ceiling refuses, unknown below ceiling, explicit bypass warns, configurable), decision log line via a captured slog handler. Stub identity lookup through a seam over `claudeaccount.CachedAuthStatus`.
 - [ ] 1.2 Write failing tests for `specs/usage-budget-routing/spec.md`: one probe per distinct identity with the right `CLAUDE_CONFIG_DIR` (unset for `default`), collapsed identities probed once, independent fail-open per identity, single-account config unchanged. Use the existing fake probe-session seam.
 - [ ] 1.3 Write failing tests for `specs/agent-execution/spec.md`: routed account replaces inheritance, routed Codex worker under a Claude-only coordinator succeeds, explicit account restricts routing to that account's tiers, project backend suppresses routing, explicit-backend inherited-account rejection (corrected scenario). All tests `t.Setenv("HOME", t.TempDir())`, `agent.NewRunner(nil)`.
-- [ ] 1.4 Write failing tests for `specs/hera-coordination/spec.md`: ordered coordinator walk, fallback past `coordinator_threshold_pct`, workers-stop-before-coordinators, all-over-limit stays on lowest-reading Claude account, unknown = available, hardened Claude guarantee (project codex / tier pressure stay Claude; every Claude account depleted → first non-depleted non-Claude tier with warning; unknown ≠ exhausted; Codex also depleted → stay Claude; sub-coordinator parity; `hera_new_orchestrator` untouched), same-login collapse, sub-coordinator materialization parity, explicit wins, unset list unchanged.
+- [ ] 1.4 Write failing tests for `specs/hera-coordination/spec.md`: ordered coordinator walk, fallback past `coordinator_threshold_pct`, workers-stop-before-coordinators, all-over-limit stays on lowest-reading Claude account, unknown = available, hardened Claude guarantee (project codex / tier pressure stay Claude; every Claude account at/above `ceiling_pct` → first non-Claude tier below the ceiling with warning; unknown ≠ exhausted; everything at ceiling → refused, sub-coordinator node stays planned; sub-coordinator parity; `hera_new_orchestrator` untouched), same-login collapse, sub-coordinator materialization parity, explicit wins, unset list unchanged.
 - [ ] 1.5 Write failing tests for `specs/tui-shell/spec.md`: multi-identity segments, collapsed single segment, stale `—` per segment, single-account form unchanged.
 - [ ] 1.6 Confirm each new test fails for the intended reason (Prove-It)
 
@@ -13,9 +13,11 @@
 
 **Depends on:** Stage 1
 
-- [ ] 2.1 Add `BackendTier.Account` (`toml:"account"`) and `BackendRoutingConfig.CoordinatorAccounts` / `CoordinatorThresholdPct` in `internal/config`; document them in the README Reference `[backend_routing]` table
+- [ ] 2.1 Add `BackendTier.Account` (`toml:"account"`) and `BackendRoutingConfig.CoordinatorAccounts` / `CoordinatorThresholdPct` / `CeilingPct` (default 98) in `internal/config`; document them in the README Reference `[backend_routing]` table
 - [ ] 2.2 Add an identity resolver in `internal/backendtier`: per Claude tier, map account → config folder → signed-in email via a `claudeaccount.CachedAuthStatus` seam; skip not-signed-in, fail open on error; collapse same-email tiers preferring `default`
 - [ ] 2.3 Change the resolver to return `Resolution{Backend, Account}` for both `ordered` and `headroom`, over identity-keyed candidates; skip unknown/unsupported accounts with a log line; accept an optional account restriction
+- [ ] 2.3a Apply `ceiling_pct` in the resolver: drop candidates at or above it before headroom/order, return a typed "all at ceiling" error naming each reading; apply the same check to a project-backend resolution; explicit backend/account bypasses with a warning
+- [ ] 2.3b Surface the ceiling refusal from `CreateAndStart` before any worktree/branch/row is created, and from gater materialization as an ordinary materialize failure
 - [ ] 2.4 Emit one `slog` decision line per resolution (candidates, readings, thresholds, headroom, winner, reason)
 
 ## 3. Per-identity Claude probe
@@ -39,7 +41,7 @@
 **Depends on:** Stage 2
 
 - [ ] 5.1 Add coordinator account selection beside `resolveCoordinatorBackend`: ordered walk of `coordinator_accounts` against `coordinator_threshold_pct`, identity-collapsed, skip unusable accounts, lowest reading when all over, explicit wins, unset = unchanged
-- [ ] 5.1a Extend `resolveCoordinatorBackend` with the exhausted-Claude fallback: when every candidate Claude account is depleted, return the first non-depleted non-Claude tier (warning via `warnCoordinatorBackend`); otherwise keep today's force-Claude behavior
+- [ ] 5.1a Extend `resolveCoordinatorBackend` with the exhausted-Claude fallback: when every candidate Claude account is at or above `ceiling_pct`, return the first non-Claude tier below the ceiling; refuse when none is (warning via `warnCoordinatorBackend`); otherwise keep today's force-Claude behavior
 - [ ] 5.2 Wire it into `SpawnHeraCoordinator` and `MaterializeHeraSubCoordinator` via the same function; log the decision via `slog`
 
 ## 6. Status bar per-identity readout

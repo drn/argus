@@ -38,6 +38,7 @@ The agent-accounts machinery (named accounts with their own `claude_config_dir`,
 strategy = "headroom"
 coordinator_accounts = ["default", "personal"]
 coordinator_threshold_pct = 95
+ceiling_pct = 98
 
 [[backend_routing.tier]]          # work: account omitted = "default" = ~/.claude
 backend = "claude"
@@ -89,15 +90,21 @@ This is what handles "work is burned out, so I switch my machine to personal": `
 
 ### D5. Coordinator account selection is a separate ordered walk
 
-Coordinators and sub-coordinators keep `resolveCoordinatorBackend` (always Claude-capable) and gain account selection: walk `coordinator_accounts` in order and take the first account whose reading is below `coordinator_threshold_pct`. An unknown reading counts as available. A not-signed-in account, or one that cannot run Claude, is skipped and logged. If every listed account is at or over the limit, take the one with the lowest reading — a coordinator always spawns, and it stays on Claude. An explicit account on the spawn wins. Collapsed identities (D4) apply: if `default` and `personal` are the same login, the walk lands on it once.
+Coordinators and sub-coordinators keep `resolveCoordinatorBackend` (always Claude-capable) and gain account selection: walk `coordinator_accounts` in order and take the first account whose reading is below `coordinator_threshold_pct`. An unknown reading counts as available. A not-signed-in account, or one that cannot run Claude, is skipped and logged. If every listed account is at or over the limit, take the one below the routing ceiling with the lowest reading — it stays on Claude. An explicit account on the spawn wins. Collapsed identities (D4) apply: if `default` and `personal` are the same login, the walk lands on it once.
 
 When `coordinator_accounts` is unset, coordinator account resolution is unchanged from today.
 
 ### D5a. Coordinators leave Claude only when Claude is exhausted
 
-Aaron's rule: coordinators (including sub-coordinators) are always Claude unless there is no Claude budget left. Worker tier thresholds, `coordinator_threshold_pct` and a project backend never move a coordinator off Claude. "No budget" means every Claude account the coordinator could run on (the usable `coordinator_accounts`, or the ordinarily resolved account when the list is unset) has a depleted reading — 100%, including the held depleted state. An unknown or stale reading counts as budget, so a probe gap never pushes a coordinator onto Codex. On exhaustion the coordinator takes the first configured non-Claude tier that is not depleted and logs a warning naming what breaks (coord-hook context stamping, cost accrual, recycle). If no such tier exists, it stays on Claude and spawns anyway. An explicit backend still wins. `hera_new_orchestrator` self-promotion is out of scope: it never resolves a backend.
+Aaron's rule: coordinators (including sub-coordinators) are always Claude unless there is no Claude budget left. Worker tier thresholds, `coordinator_threshold_pct` and a project backend never move a coordinator off Claude. "No budget" means every Claude account the coordinator could run on (the usable `coordinator_accounts`, or the ordinarily resolved account when the list is unset) is at or above `ceiling_pct` (default 98; a held depleted reading always counts). 98 rather than 100 leaves the coordinator a margin to finish its turn instead of stalling on the last percent. An unknown or stale reading counts as budget, so a probe gap never pushes a coordinator onto Codex. On exhaustion the coordinator takes the first configured non-Claude tier below the same ceiling and logs a warning naming what breaks (coord-hook context stamping, cost accrual, recycle). If no such tier exists, the spawn is refused (D5b). An explicit backend still wins. `hera_new_orchestrator` self-promotion is out of scope: it never resolves a backend.
 
-The exhausted-Claude fallback trades coordinator context management for keeping orchestration alive; at 100% a Claude coordinator could not take a turn anyway.
+### D5b. One routing ceiling for every agent
+
+Aaron: "stop creating agents at 98%". `[backend_routing].ceiling_pct` (default 98) is a hard cap on every spawn that is not given an explicit backend/account: tier-routed workers, project-backend workers, coordinators and sub-coordinators. Candidates at or above it are removed before headroom or list order is applied, which replaces the old "all over threshold → fail open to the best of a bad lot" behavior. If nothing is left below the ceiling, the spawn is refused before any worktree/branch/row exists (the transactional `CreateAndStart` already guarantees no orphans), with an error naming each candidate's reading. Gater materializations reuse the existing consecutive-failure escalation, so a plan node simply waits and its coordinator is pinged. Unknown readings stay fail-open. An explicit backend/account bypasses the cap with a warning — the operator asked for it.
+
+Trade-off: a fully burned week now blocks new agents instead of overspending into a stall; the existing agents keep running.
+
+The exhausted-Claude fallback trades coordinator context management for keeping orchestration alive; at the ceiling a Claude coordinator is about to stall anyway.
 
 ### D6. Observability
 
@@ -160,12 +167,20 @@ None.
 
 - It should put a new coordinator on the first listed account under the coordinator limit.
 - It should fall back to personal for a coordinator when work is at or over the coordinator limit.
-- It should stay on Claude (lowest-reading listed account) when all are over the coordinator limit but not depleted, and never fail the spawn.
+- It should stay on Claude (lowest-reading listed account) when all are over the coordinator limit but below the ceiling.
 - It should keep a coordinator on Claude when the project backend or a worker tier would pick Codex, unless Claude is exhausted.
-- It should move a coordinator or sub-coordinator to Codex only when every Claude account is depleted, with a warning.
+- It should move a coordinator or sub-coordinator to Codex only when every Claude account is at or above the coordinator ceiling (default 98%), with a warning.
 - It should treat an unknown Claude reading as budget.
-- It should stay on Claude when Codex is also depleted or unconfigured.
+- It should refuse a coordinator or sub-coordinator spawn when Claude and every non-Claude tier are at the ceiling.
 - It should leave `hera_new_orchestrator` self-promotion untouched.
+
+**Routing ceiling**
+
+- It should never place a new agent on a backend/account at or above `ceiling_pct` (default 98).
+- It should refuse the spawn, creating nothing, when every candidate is at or above the ceiling.
+- It should apply the ceiling to a project-backend spawn too.
+- It should treat an unknown reading as below the ceiling.
+- It should let an explicit backend/account bypass the ceiling, with a warning.
 
 **Visibility**
 
