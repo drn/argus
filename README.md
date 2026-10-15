@@ -26,7 +26,7 @@ Coding agents are cheap to start and expensive to babysit. Five `claude` tabs be
 - **An idle detector** quietly promotes any agent waiting for input to "in review" — so a glance at the list tells you who needs you.
 - **A built-in HTTP API + PWA** mirrors every keystroke from your phone, so the dashboard travels with you.
 - **A built-in MCP server** lets agents talk to Argus directly — search your notes, spawn other agents, or hand off work between models.
-- **Harness- and model-agnostic by design.** Argus orchestrates the workflow, not a single tool. Every backend is just a templated command, so the same worktree → branch → review → notify loop is identical whether the agent underneath is Claude Code, Codex, opencode, Antigravity, or a local model via ollama — pick the harness and model per task, keep one standardized workflow across all of them.
+- **Harness- and model-agnostic by design.** Argus orchestrates the workflow, not a single tool. Every backend is just a templated command, so the same worktree → branch → review → notify loop is identical whether the agent underneath is Claude Code, Codex, opencode, Antigravity, Cursor, or a local model via ollama — pick the harness and model per task, keep one standardized workflow across all of them.
 
 ## One daemon, three clients
 
@@ -112,7 +112,7 @@ Disabled by default — see **[Knowledge Base setup](docs/knowledge-base.md)** t
 - **Multi-backend** — Claude Code, Codex, or any LLM CLI as a templated command. Per-backend prompt flags, plan-mode defaults, and a default model, plus a per-task model override delivered through the backend's supported launch mechanism at start.
 - **Account switching** — keep work and personal Claude Code and Codex subscriptions side by side and pick one when you start a task. Each account has its own login and history, sessions on different accounts run in parallel, and you can pin company projects to the work account. See [Accounts](#accounts).
 - **Worktree isolation** — every task gets `~/.argus/worktrees/<project>/<task>` and an `argus/<task>` branch, all transactionally created and cleaned up.
-- **Session resume** — `--resume` on Claude Code, `codex resume <id>` on Codex, `--session <id>` on opencode, `--conversation <id>` on Antigravity. Your conversation survives a daemon restart.
+- **Session resume** — `--resume` on Claude Code, `codex resume <id>` on Codex, `--session <id>` on opencode, `--conversation <id>` on Antigravity, `--resume <id>` on Cursor. Your conversation survives a daemon restart.
 - **Consistent scrollback across viewers** — switch between the TUI and the PWA at very different widths and the agent re-emits the conversation at the new size. Idle-gated so it never fires mid-tool-call; the SPA reattaches transparently.
 - **Agent forking** — duplicate a running task with full context (source info, recent output, git diff) injected into the new worktree.
 - **Smart auto-naming** — a Claude Haiku call quietly turns a free-form prompt into a kebab-case task name. Falls open to a regex slug if `claude` is unavailable.
@@ -144,7 +144,7 @@ To open the PWA, enable **Remote API** in Settings, then point your phone at `ht
 
 - **Go 1.26+** — to `go install` the binary above.
 - **Git** — every project Argus drives must be a git repository.
-- **At least one agent CLI on your `PATH`.** Argus shells out to whatever backend you pick; it doesn't bundle a model. The default backend is **Claude Code** (`claude`), and `codex`, `pi`, `opencode`, and Antigravity (`agy`, `brew install --cask antigravity-cli`) come pre-configured too. Install the one you use and make sure it runs from a plain shell (`claude --version`).
+- **At least one agent CLI on your `PATH`.** Argus shells out to whatever backend you pick; it doesn't bundle a model. The default backend is **Claude Code** (`claude`), and `codex`, `pi`, `opencode`, Antigravity (`agy`, `brew install --cask antigravity-cli`), and Cursor (`cursor-agent`, `brew install --cask cursor-cli`) come pre-configured too. Install the one you use and make sure it runs from a plain shell (`claude --version`).
 - **Optional:** [`gh`](https://cli.github.com) (GitHub CLI) powers the open-repo / open-PR keys and the PR-status indicator — features degrade quietly if it's absent. [Tailscale](https://tailscale.com) is recommended for reaching the PWA from your phone.
 
 ### First run
@@ -153,7 +153,7 @@ To open the PWA, enable **Remote API** in Settings, then point your phone at `ht
 argus
 ```
 
-The first launch creates `~/.argus/data.sql`, seeds the `claude` / `codex` / `pi` / `opencode` / `antigravity` backends, and auto-starts the background daemon. You land on an empty task list — **no projects are seeded, so add one before creating a task.**
+The first launch creates `~/.argus/data.sql`, seeds the `claude` / `codex` / `pi` / `opencode` / `antigravity` / `cursor` backends, and auto-starts the background daemon. You land on an empty task list — **no projects are seeded, so add one before creating a task.**
 
 1. **Register a project.** Press `3` for the **Settings** tab, move to the **Projects** section, and either:
    - press `i` to **quick-add** — point it at a directory (e.g. `~/src`) and Argus scans for git repos; select the ones to import; or
@@ -584,7 +584,7 @@ An account needs at least one of `claude_config_dir` / `codex_home`. Paths must 
 #### Which account a task uses
 
 - **Order:** the account you pick in the form, else the project's `project_accounts` entry, else `default_account`, else `default`. Picking `default` in the form really means `default`; it does not fall through to the project's default.
-- **Backend support:** a Claude backend needs an account with `claude_config_dir`, and a Codex backend needs one with `codex_home`. pi, opencode, antigravity, and custom commands run only on `default`. The forms list only the accounts that can run the selected backend. If you explicitly pick an account that can't run the backend, task creation fails before anything is created. If the account came from a project or global default, the task falls back to `default` and the switch is logged to `ux.log` under `[account]`.
+- **Backend support:** a Claude backend needs an account with `claude_config_dir`, and a Codex backend needs one with `codex_home`. pi, opencode, antigravity, cursor, and custom commands run only on `default`. The forms list only the accounts that can run the selected backend. If you explicitly pick an account that can't run the backend, task creation fails before anything is created. If the account came from a project or global default, the task falls back to `default` and the switch is logged to `ux.log` under `[account]`.
 - **Fixed for the task's lifetime:** the account is saved on the task when it is created and never changes. Resume and restart use the saved account even if you later change the defaults. The transcript lives in the account's dir, so a running task can't switch accounts. To work under another account, create a new task and pick it; a fork always keeps the source task's account.
 - **Removed account:** if a task's account is removed from config, starting or resuming the task fails with an error naming the account. It never silently falls back to `default`.
 - **Inheritance:** hera workers, sub-coordinators, and freelancers use their coordinator's account. A coordinator on `default` keeps its workers on `default`. If the coordinator's account can't run a worker's backend (for example tier routing picks Codex but the account has no `codex_home`), the spawn fails with an error rather than running on a different login; add the missing dir or pin the worker's backend. A forked task keeps the source task's account. MCP `task_create` uses the calling task's account when the caller passes `caller_id` (or `cwd`), and accepts an explicit `account`.
@@ -815,7 +815,7 @@ Every authenticated token has the same permissions **except** a small master-onl
 | `GET`  | `/api/tasks/{id}/stream` | SSE stream of live output (base64-encoded chunks)                                                                                                                                                                                                                                                                           |
 | `GET`  | `/api/tasks/{id}/size`   | Current PTY dimensions: `{cols, rows}`                                                                                                                                                                                                                                                                                      |
 | `POST` | `/api/tasks/{id}/resize` | Resize PTY: `{"cols":N,"rows":M}`. Returns `{cols,rows,rerendered}` — `rerendered:true` means the resize crossed the rerender margin (≥15 col delta from session-start width) and the daemon queued a kill+resume so the agent re-emits scrollback at the new width. The SPA's exit-event handler reattaches automatically. |
-| `GET`  | `/api/tasks/{id}/claude-sessions` | List a Claude-backed task's available Claude Code sessions (`{"sessions":[{"id","title","branch","pr_ref","mod_time","size_bytes"}],"current_session_id"}`, newest first). `400` for a Codex/Pi/Opencode/Antigravity-backed task. REST mirror of the TUI's `ctrl+r` session switcher.                                    |
+| `GET`  | `/api/tasks/{id}/claude-sessions` | List a Claude-backed task's available Claude Code sessions (`{"sessions":[{"id","title","branch","pr_ref","mod_time","size_bytes"}],"current_session_id"}`, newest first). `400` for a Codex/Pi/Opencode/Antigravity/Cursor-backed task. REST mirror of the TUI's `ctrl+r` session switcher.                                    |
 | `POST` | `/api/tasks/{id}/claude-session`  | Switch a Claude-backed task to a different Claude session: `{"session_id":"..."}`. `{"status":"unchanged"}` if it's already the current session, otherwise stops/restarts (or starts fresh) resuming it and returns `{"status":"switched","pid":N}`.                                                        |
 | `POST` | `/api/sessions/stop-all` | Stop every running session                                                                                                                                                                                                                                                                                                  |
 
@@ -995,15 +995,15 @@ Every option below is overridable. A ⚠️ marks options that are **read but no
 
 #### `[backends.<name>]`
 
-Command templates, keyed by name. Seeded with `claude`, `codex`, `pi`, `opencode`, and `antigravity` (`agy --prompt-interactive`; Argus maps `defaults.permission_mode` to `--mode accept-edits` / `--mode plan` / `--dangerously-skip-permissions`). The OpenCode default uses its full interactive UI with `--prompt`; Argus adds `--auto` at launch so permission requests that would ask are approved.
+Command templates, keyed by name. Seeded with `claude`, `codex`, `pi`, `opencode`, `cursor` (`cursor-agent --approve-mcps`; Argus adds `--trust` and maps `defaults.permission_mode` to `--force` / `--plan`; MCP is registered in `~/.cursor/mcp.json`), and `antigravity` (`agy --prompt-interactive`; Argus maps `defaults.permission_mode` to `--mode accept-edits` / `--mode plan` / `--dangerously-skip-permissions`). The OpenCode default uses its full interactive UI with `--prompt`; Argus adds `--auto` at launch so permission requests that would ask are approved.
 Argus adds `--auto` when launching OpenCode, including resumed sessions and stored custom OpenCode commands. Explicit OpenCode permission denials still apply.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `command` | string | — | Executable plus base flags for the agent CLI (e.g. `claude`, `codex --dangerously-bypass-approvals-and-sandbox`). Permission flags come from `defaults.permission_mode` and are **not** baked in here. |
 | `prompt_flag` | string | `""` | Flag used to pass the initial prompt to the backend (empty = positional/piped). |
-| `model` | string | `""` | Default model for this backend. Claude, Codex, Pi, and Antigravity receive it as `--model <value>`; OpenCode receives it through the child-only `OPENCODE_CONFIG_CONTENT` `model` key because its v2 full TUI rejects the top-level flag. Empty = the CLI's own default. A per-task model overrides it. |
-| `models` | array | `[]` | Option list for the new-task model selector for this backend. Empty = built-in list (claude → `opus`/`sonnet`/`haiku`/`fable`, codex → its current model lineup — churns per Codex release, see `agent.KnownModels`, others including opencode and antigravity → none, so `custom…` only). A `custom…` entry always lets you type a model not in the list. |
+| `model` | string | `""` | Default model for this backend. Claude, Codex, Pi, Antigravity, and Cursor receive it as `--model <value>`; OpenCode receives it through the child-only `OPENCODE_CONFIG_CONTENT` `model` key because its v2 full TUI rejects the top-level flag. Empty = the CLI's own default. A per-task model overrides it. |
+| `models` | array | `[]` | Option list for the new-task model selector for this backend. Empty = built-in list (claude → `opus`/`sonnet`/`haiku`/`fable`, codex → its current model lineup — churns per Codex release, see `agent.KnownModels`, others including opencode, antigravity, and cursor → none, so `custom…` only). A `custom…` entry always lets you type a model not in the list. |
 
 #### `[backend_routing]`
 

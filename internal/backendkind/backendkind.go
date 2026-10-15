@@ -21,6 +21,7 @@ const (
 	Pi          Kind = "pi"
 	Opencode    Kind = "opencode"
 	Antigravity Kind = "antigravity"
+	Cursor      Kind = "cursor"
 )
 
 // Spec is the static, dependency-free description of a backend family.
@@ -44,6 +45,9 @@ var specs = []Spec{
 	// Only `agy`: the cask links the CLI onto PATH under that name, while a bare
 	// `antigravity` may be the IDE's launcher and must stay a custom command.
 	{Kind: Antigravity, Binaries: []string{"agy"}, Label: "Antigravity", SkillPrefix: "/"},
+	// Only `cursor-agent`: the installer also links a bare `agent`, which is too
+	// generic to claim and stays a custom command.
+	{Kind: Cursor, Binaries: []string{"cursor-agent"}, Label: "Cursor", SkillPrefix: "/"},
 }
 
 // customSpec describes any command no family claims.

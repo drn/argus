@@ -129,7 +129,13 @@ const (
 	//     pre-create the launching family's sandbox grant dirs (agy gets
 	//     ~/.gemini/{antigravity-cli,config,jetski}, never all of ~/.gemini).
 	//     A stale supervisor spawns agy as a custom backend.
-	SupervisorSpawnSurface = 16
+	//   - v17: BuildCmd gains the cursor family (`cursor-agent`: --trust launch
+	//     flag, `-- <prompt>`, --resume, --model, --force/--plan permission
+	//     mapping, routing prefix), re-registers Argus in ~/.cursor/mcp.json
+	//     before each launch, and grants/pre-creates ~/.cursor for cursor
+	//     launches only. A stale supervisor spawns cursor-agent as a custom
+	//     backend.
+	SupervisorSpawnSurface = 17
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -378,7 +384,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "4a955222dc7d79dc330e0f05c3d106ef2905fbbd8b544607a0a4512710ee3510"
+	SpawnSurfaceDigest  = "3459671361b30d517c51289a5c12d24ab8942d0aa332e8f9abfbd7374f8e8684"
 	StreamSurfaceDigest = "9973137db7c31ce8082cc84c494f5f1722878314674e89d962ccafd96c098783"
 )
 

@@ -20,6 +20,10 @@ func TestOf(t *testing.T) {
 		{"agy", Antigravity},
 		{"/opt/homebrew/bin/agy --model x", Antigravity},
 		{"antigravity", Custom},
+		{"cursor-agent", Cursor},
+		{"agent --force", Custom},
+		{"/Users/x/.local/bin/cursor-agent --trust", Cursor},
+		{"cursor-agent-wrapper", Custom},
 		{"claude-wrapper", Custom},
 		{"bash -c 'sleep 1'", Custom},
 		{"", Custom},
@@ -66,7 +70,7 @@ func TestLookup(t *testing.T) {
 
 func TestAll(t *testing.T) {
 	all := All()
-	testutil.Equal(t, len(all), 5)
+	testutil.Equal(t, len(all), 6)
 	all[0].Label = "mutated"
 	testutil.Equal(t, All()[0].Label, "Claude Code")
 	seen := map[string]bool{}

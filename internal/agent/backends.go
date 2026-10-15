@@ -15,6 +15,7 @@ import (
 	"github.com/drn/argus/internal/backendkind"
 	"github.com/drn/argus/internal/config"
 	injectantigravity "github.com/drn/argus/internal/inject/antigravity"
+	injectcursor "github.com/drn/argus/internal/inject/cursor"
 	injectopencode "github.com/drn/argus/internal/inject/opencode"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/skills"
@@ -206,6 +207,47 @@ func captureAntigravity(task *model.Task, _ config.Config) (string, error) {
 	return CaptureAntigravitySessionID(task.Worktree)
 }
 
+func captureCursor(task *model.Task, _ config.Config) (string, error) {
+	return CaptureCursorSessionID(task.Worktree)
+}
+
+// cursorPermissionFlags maps Argus's permission modes onto cursor-agent's
+// --force / --plan. Cursor has no accept-edits mode (it uses an allowlist).
+func cursorPermissionFlags(mode string) string {
+	switch mode {
+	case config.PermissionModePlan, config.PermissionModeBypassAllow:
+		return "--plan"
+	case config.PermissionModeBypassActive:
+		return "--force"
+	default:
+		return ""
+	}
+}
+
+// cursorInstalledFn reports whether Cursor's CLI is present, so the daemon
+// never writes ~/.cursor for a user who doesn't run it. A package var for tests.
+var cursorInstalledFn = func() bool {
+	for _, bin := range backendkind.SpecOf("cursor-agent").Binaries {
+		if _, err := exec.LookPath(bin); err == nil {
+			return true
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(home, ".local", "share", "cursor-agent"))
+	return err == nil
+}
+
+func injectCursorGlobal(port int, launching bool) error {
+	if !launching && !cursorInstalledFn() {
+		slog.Info("inject cursor skipped: cursor-agent not installed")
+		return nil
+	}
+	return injectcursor.InjectGlobal(port)
+}
+
 // antigravityPermissionFlags maps Argus's permission modes onto agy's
 // --mode / --dangerously-skip-permissions. agy has no "plan with bypass
 // reachable" mode, so bypass-allow degrades to plan.
@@ -383,6 +425,24 @@ var families = []*Family{
 			{HomeRel: "/.gemini/antigravity-cli", Comment: "Antigravity CLI logs, conversation DB, settings, and sign-in state."},
 			{HomeRel: "/.gemini/config", Comment: "Antigravity global customizations (mcp_config.json, skills.json, projects)."},
 			{HomeRel: "/.gemini/jetski", Comment: "Antigravity agent brain/artifact store."},
+		},
+	},
+	{
+		Spec:            mustSpec(backendkind.Cursor),
+		ResumeFlag:      "--resume",
+		Capture:         captureCursor,
+		RoutingDelivery: RoutingPromptPrefix,
+		ModelDelivery:   ModelFlag,
+		// Skips the workspace-trust prompt in a fresh worktree.
+		LaunchFlag:      "--trust",
+		PermissionFlags: cursorPermissionFlags,
+		// "--mode " / "--mode=" so the check never trips on --model.
+		PermissionFlagTokens:    []string{"--force", "--yolo", "--plan", "--mode ", "--mode="},
+		InjectGlobal:            injectCursorGlobal,
+		PrecreateSandboxGrants:  true,
+		SandboxGrantsLaunchOnly: true,
+		SandboxGrants: []SandboxGrant{
+			{HomeRel: "/.cursor", Comment: "Cursor CLI chats (~/.cursor/chats), mcp.json, config, and sign-in state."},
 		},
 	},
 }
