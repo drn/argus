@@ -2,18 +2,18 @@
 
 ## 1. Failing tests
 
-- [ ] 1.1 Write failing tests for every scenario in `specs/agent-execution/spec.md` against `spawnBaseEnv` / `BuildCmd` (markers stripped for Claude and Codex, settings variables kept, backend `env_vars` wins, name-only log, persistence flag on Claude only). Use `t.Setenv("HOME", t.TempDir())` and `agent.NewRunner(nil)`.
-- [ ] 1.2 Write a failing test for `specs/usage-budget-routing/spec.md` against `startPTYSession`'s environment, using a stand-in command
-- [ ] 1.3 Confirm each new test fails for the intended reason (Prove-It)
+- [x] 1.1 Write failing tests for every scenario in `specs/agent-execution/spec.md` against `spawnBaseEnv` / `BuildCmd` (markers stripped for Claude and Codex, settings variables kept, backend `env_vars` wins, name-only log, persistence flag on Claude only). Use `t.Setenv("HOME", t.TempDir())` and `agent.NewRunner(nil)`.
+- [x] 1.2 Write a failing test for `specs/usage-budget-routing/spec.md` against `startPTYSession`'s environment, using a stand-in command
+- [x] 1.3 Confirm each new test fails for the intended reason (Prove-It)
 
 ## 2. Scrub and persist at every spawn
 
 **Depends on:** Stage 1
 
-- [ ] 2.1 Add one exported denylist slice of parent-session marker names; strip it in `spawnBaseEnv` and include stripped names in the existing inherited-env log line
-- [ ] 2.2 Export `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1` for Claude-family spawns in `BuildCmd`, before backend `env_vars` are appended
-- [ ] 2.3 Apply the same denylist and flag in the usage probe's `startPTYSession`
-- [ ] 2.4 Re-record the supervisor spawn-surface digest (`gotchas/ci-gates.md` recipe)
+- [x] 2.1 Add one exported denylist slice of parent-session marker names; strip it in `spawnBaseEnv` and include stripped names in the existing inherited-env log line
+- [x] 2.2 Export `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1` for Claude-family spawns in `BuildCmd`, before backend `env_vars` are appended
+- [x] 2.3 Apply the same denylist and flag in the usage probe's `startPTYSession`
+- [x] 2.4 Re-record the supervisor spawn-surface digest (`gotchas/ci-gates.md` recipe)
 
 ## 3. Docs, verification, archive
 

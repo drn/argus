@@ -17,6 +17,7 @@ import (
 
 	"github.com/drn/argus/internal/backendkind"
 	"github.com/drn/argus/internal/backendtier"
+	"github.com/drn/argus/internal/claudeenv"
 	"github.com/drn/argus/internal/claudesession"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
@@ -1094,6 +1095,13 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	}
 	if claudeConfigDir != "" {
 		cmd.Env = append(cmd.Env, "CLAUDE_CONFIG_DIR="+claudeConfigDir)
+	}
+	if isClaude {
+		// Argus resume and session discovery depend on the transcript. The
+		// parent-session markers are already stripped above; this is defense
+		// in depth against a marker reaching the agent by a path the denylist
+		// does not cover. Before backend env_vars so an explicit mapping wins.
+		cmd.Env = append(cmd.Env, claudeenv.ForcePersistenceEnv)
 	}
 	if opencodeConfigContent != "" {
 		cmd.Env = append(cmd.Env, "OPENCODE_CONFIG_CONTENT="+opencodeConfigContent)

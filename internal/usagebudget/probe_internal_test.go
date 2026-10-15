@@ -311,3 +311,27 @@ func TestProbe_TrustDialogThatDisappearsIsNotAnswered(t *testing.T) {
 	testutil.Equal(t, written, "")
 	testutil.Contains(t, readSlog(), "[usagebudget] probe timed out")
 }
+
+// usage-budget-routing: "The Claude usage probe never runs as a child
+// session" — a daemon started from inside Claude Code must not hand its
+// parent-session markers to the probe, and the probe must force transcript
+// persistence. Asserted against the real probe process's environment.
+func TestStartPTYSession_StripsParentSessionMarkers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a PTY subprocess")
+	}
+	t.Setenv("CLAUDECODE", "1")
+	t.Setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+	t.Setenv("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE", "")
+	testutil.NoError(t, os.Unsetenv("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE"))
+
+	s, err := startPTYSession(context.Background(), t.TempDir(), "sh", "-c",
+		`printf 'cc=[%s] child=[%s] persist=[%s] END\n' "${CLAUDECODE-unset}" "${CLAUDE_CODE_CHILD_SESSION-unset}" "${CLAUDE_CODE_FORCE_SESSION_PERSISTENCE-unset}"; sleep 30`)
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = s.Terminate() })
+
+	out := readUntil(t, s, "END", 5*time.Second)
+	testutil.Contains(t, out, "cc=[unset]")
+	testutil.Contains(t, out, "child=[unset]")
+	testutil.Contains(t, out, "persist=[1]")
+}

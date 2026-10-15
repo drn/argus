@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/drn/argus/internal/claudeenv"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/uxlog"
@@ -174,11 +175,17 @@ func spawnAuthStrip(claudeExplicit, codexExplicit bool) []string {
 
 // spawnBaseEnv filters the inherited environment for a spawned session. An
 // inherited CLAUDE_CONFIG_DIR is always dropped (the task's own account
-// decides it), as is every name in authStrip (the auth overrides a backend
-// ranks above an explicit account's login). Backend env_vars and the op
-// bootstrap are appended after this, so explicit mappings still win.
+// decides it), as is every parent Claude Code session marker
+// (claudeenv.ParentSessionMarkers — present whenever the daemon/supervisor was
+// started from inside Claude Code, for every backend), and every name in
+// authStrip (the auth overrides a backend ranks above an explicit account's
+// login). Backend env_vars and the op bootstrap are appended after this, so
+// explicit mappings still win. Only stripped NAMES are logged, never values.
 func spawnBaseEnv(environ []string, authStrip []string, taskID string) []string {
 	strip := map[string]bool{"CLAUDE_CONFIG_DIR": true}
+	for _, k := range claudeenv.ParentSessionMarkers {
+		strip[k] = true
+	}
 	for _, k := range authStrip {
 		strip[k] = true
 	}
