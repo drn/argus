@@ -2,7 +2,7 @@
 
 ### Requirement: Coordinator and sub-coordinator spawn select a Claude account from an ordered list
 
-When `[backend_routing].coordinator_accounts` is configured, a newly spawned hera coordinator (`SpawnHeraCoordinator`) or sub-coordinator (`MaterializeHeraSubCoordinator`) with no explicit account SHALL walk that list in order and run on the first account whose cached weekly Claude reading is below `coordinator_threshold_pct`. An unknown or stale reading SHALL count as available. An account that is not configured, cannot run Claude, or whose folder is not signed in SHALL be skipped and logged. Accounts that resolve to the same signed-in identity SHALL be treated as one, with `default` preferred (see `backend-tier-routing`). If every listed account is at or above the limit, the first listed usable account SHALL be used, so a coordinator spawn never fails for lack of headroom. An explicit account SHALL always win. This selection SHALL NOT change the coordinator's backend, which remains governed by "Coordinator and sub-coordinator spawn always resolve to a Claude-capable backend". When `coordinator_accounts` is unset, coordinator account resolution SHALL be unchanged.
+When `[backend_routing].coordinator_accounts` is configured, a newly spawned hera coordinator (`SpawnHeraCoordinator`) or sub-coordinator (`MaterializeHeraSubCoordinator`) with no explicit account SHALL walk that list in order and run on the first account whose cached weekly Claude reading is below `coordinator_threshold_pct`. An unknown or stale reading SHALL count as available. An account that is not configured, cannot run Claude, or whose folder is not signed in SHALL be skipped and logged. Accounts that resolve to the same signed-in identity SHALL be treated as one, with `default` preferred (see `backend-tier-routing`). If every listed account is at or above the limit, the listed usable account with the most remaining budget SHALL be used, so a coordinator spawn never fails for lack of headroom; only when every listed account is depleted does the coordinator leave Claude (see "Coordinator and sub-coordinator spawn always resolve to a Claude-capable backend"). An explicit account SHALL always win. This selection SHALL NOT itself change the coordinator's backend, which is governed by "Coordinator and sub-coordinator spawn always resolve to a Claude-capable backend". When `coordinator_accounts` is unset, coordinator account resolution SHALL be unchanged.
 
 #### Scenario: Work under the coordinator limit is used
 
@@ -21,8 +21,8 @@ When `[backend_routing].coordinator_accounts` is configured, a newly spawned her
 
 #### Scenario: All listed accounts over the limit
 
-- **WHEN** every account in `coordinator_accounts` is at or above `coordinator_threshold_pct`
-- **THEN** the coordinator runs on the first listed usable account and the spawn succeeds
+- **WHEN** every account in `coordinator_accounts` is at or above `coordinator_threshold_pct` but at least one is not depleted
+- **THEN** the coordinator stays on Claude on the listed account with the lowest reading, and the spawn succeeds
 
 #### Scenario: Unknown reading counts as available
 
@@ -48,3 +48,70 @@ When `[backend_routing].coordinator_accounts` is configured, a newly spawned her
 
 - **WHEN** `coordinator_accounts` is not configured
 - **THEN** coordinator account resolution is exactly as before this change
+
+## MODIFIED Requirements
+
+### Requirement: Coordinator and sub-coordinator spawn always resolve to a Claude-capable backend
+
+coord-hook's context-size stamping, token/cost accrual, and the recycle machinery are Claude-Code-only. The system SHALL therefore guarantee that a newly spawned hera coordinator (`SpawnHeraCoordinator`, the rail `n` key and any future caller) or sub-coordinator (`MaterializeHeraSubCoordinator`, a `kind=subcoord` plan node materializing) resolves to a Claude-capable backend (an exact command-basename match against `claude`), regardless of `[backend_routing]` tier pressure, threshold crossings, a project backend, or any configured default. Crossing a worker tier threshold or `coordinator_threshold_pct` SHALL NOT move a coordinator off Claude.
+
+The single exception is a Claude budget that is fully exhausted: when every Claude account the coordinator could run on is depleted — the usable accounts in `coordinator_accounts` when that list is set, otherwise the account ordinary account resolution selects — the system SHALL fall back to the first configured non-Claude `[[backend_routing.tier]]` whose reading is not depleted, and SHALL log a warning naming what breaks (coord-hook context-size stamping, token/cost accrual, recycle). A reading is depleted when its cached weekly used percentage is at 100% (including a held depleted reading); an unknown or stale reading SHALL count as having budget, so the coordinator stays on Claude. If no non-Claude tier is configured, or every one is also depleted, the coordinator SHALL stay on Claude (the first usable listed account) and the spawn SHALL succeed.
+
+An explicit caller-supplied backend SHALL still win over this guarantee — a deliberate operator choice, mirroring the pre-existing "explicit backend always wins" precedent — but a non-Claude-capable explicit choice SHALL NOT be accepted silently: the system SHALL log a warning naming what breaks before honoring it. When no explicit backend is given and Claude is not exhausted, the system SHALL run ordinary resolution (project override, then tier list, then default) and use its result only if it is Claude-capable; otherwise it SHALL fail open to the literal `"claude"` backend, also logging a warning, rather than refuse the spawn.
+
+This requirement does NOT cover `hera_new_orchestrator`, which binds an EXISTING task as a coordinator and never resolves or changes that task's backend — a worker already running on a non-Claude-capable backend that self-promotes to coordinator via `hera_new_orchestrator` keeps that backend. A live session's backend cannot be swapped out from under it; this is a named, structural gap, not an oversight.
+
+#### Scenario: No explicit backend and ordinary resolution is already Claude-capable
+
+- **WHEN** a coordinator is spawned with no explicit backend and ordinary resolution (project/tier/default) would pick a Claude-capable backend
+- **THEN** that backend is used, with no warning logged
+
+#### Scenario: No explicit backend and ordinary resolution would pick a non-Claude-capable backend
+
+- **WHEN** a coordinator is spawned with no explicit backend and a configured `[backend_routing]` tier list would otherwise resolve to a non-Claude-capable backend (e.g. codex, because Claude usage has crossed a configured threshold) while at least one Claude account is not depleted
+- **THEN** the coordinator's task is stamped with the literal `"claude"` backend instead, and a warning is logged naming what would have broken
+
+#### Scenario: Claude over every threshold but not exhausted stays on Claude
+
+- **WHEN** `coordinator_accounts = ["default", "personal"]`, `default` is at 100% and `personal` is at 98% with `coordinator_threshold_pct = 95`, and a Codex tier is at 20%
+- **THEN** a new coordinator runs on Claude on `personal`, not on Codex
+
+#### Scenario: Every Claude account exhausted falls back to Codex
+
+- **WHEN** every usable account in `coordinator_accounts` has a depleted Claude reading and a configured Codex tier is at 20%
+- **THEN** a new coordinator runs on the Codex backend, and a warning is logged naming coord-hook context-size stamping, token/cost accrual and recycle
+
+#### Scenario: Unknown Claude reading is not exhaustion
+
+- **WHEN** `default` is depleted and `personal` has no usage reading yet
+- **THEN** a new coordinator runs on Claude on `personal`
+
+#### Scenario: Exhausted everywhere stays on Claude
+
+- **WHEN** every Claude account and every configured non-Claude tier is depleted, or no non-Claude tier is configured
+- **THEN** a new coordinator runs on Claude on the first usable listed account and the spawn succeeds
+
+#### Scenario: Project backend does not move a coordinator off Claude
+
+- **WHEN** the project's backend is `codex` and Claude is not exhausted
+- **THEN** a new coordinator for that project runs on Claude, and a warning is logged
+
+#### Scenario: Explicit Claude-capable backend is honored silently
+
+- **WHEN** a coordinator is spawned with an explicit backend that is Claude-capable (e.g. a custom-named Claude wrapper backend)
+- **THEN** that backend is used unchanged, with no warning logged
+
+#### Scenario: Explicit non-Claude-capable backend is honored, not silently
+
+- **WHEN** a coordinator is spawned with an explicit backend that is NOT Claude-capable
+- **THEN** that backend is used (operator override), but a warning is logged naming what breaks
+
+#### Scenario: Sub-coordinator materialization gets the identical guarantee
+
+- **WHEN** the gater materializes a `kind=subcoord` plan node with no explicit backend, under the same tier pressure or the same exhaustion
+- **THEN** the materialized sub-coordinator resolves exactly as a root coordinator would — Claude unless every Claude account is depleted — via the same resolution function a root coordinator spawn uses
+
+#### Scenario: hera_new_orchestrator self-promotion is not covered
+
+- **WHEN** a worker role already running on a non-Claude-capable backend calls `hera_new_orchestrator` to self-promote to coordinator
+- **THEN** the task's backend is left unchanged — `hera_new_orchestrator` binds the existing task without any backend resolution step, and this is a named non-goal, not a defect in this requirement

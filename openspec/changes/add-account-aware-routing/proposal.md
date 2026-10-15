@@ -9,6 +9,7 @@ Headroom routing balances only between backends (`claude`, `codex`), and the Cla
 - Usage readings are keyed by signed-in identity (email): tiers signed into the same login collapse into one candidate (preferring the `default` account); a Claude tier whose folder is not signed in is skipped; identity is re-resolved every probe tick.
 - The Claude `/usage` probe runs once per distinct identity, inside that account's own `CLAUDE_CONFIG_DIR`.
 - New `[backend_routing]` keys `coordinator_accounts` (ordered) and `coordinator_threshold_pct`: coordinators and sub-coordinators pick the first listed account under the limit, and always spawn.
+- Coordinators and sub-coordinators are hardened to Claude: worker thresholds, the coordinator limit and a project backend never move them off it. They fall back to a non-Claude tier only when every Claude account they could use is depleted (100%), with a warning. `hera_new_orchestrator` self-promotion is unchanged.
 - Each routing decision logs per-candidate readings to `daemon.log`; the status bar shows one segment per distinct identity, labelled by account name.
 
 ## Capabilities
@@ -22,7 +23,7 @@ _None._
 - `backend-tier-routing`: tiers may name an account; resolution returns backend + account; candidates are keyed by signed-in identity; decisions are logged.
 - `usage-budget-routing`: the Claude probe runs per distinct account identity inside that account's config folder.
 - `agent-execution`: account precedence at creation inserts the routed account above inheritance.
-- `hera-coordination`: coordinator / sub-coordinator spawn selects its Claude account from an ordered list against a coordinator limit.
+- `hera-coordination`: coordinator / sub-coordinator spawn selects its Claude account from an ordered list against a coordinator limit, and leaves Claude only when Claude is exhausted.
 - `tui-shell`: the status-bar usage readout renders one segment per distinct identity.
 
 ## Impact

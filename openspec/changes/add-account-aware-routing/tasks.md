@@ -5,7 +5,7 @@
 - [ ] 1.1 Write failing tests for every scenario in `specs/backend-tier-routing/spec.md`: account on tiers (omitted = default, unknown/unsupported skipped), headroom across two Claude accounts + Codex, identity collapse preferring `default`, not-signed-in skipped, lookup error fails open, re-signed folder changes routing, archetype model unaffected, decision log line via a captured slog handler. Stub identity lookup through a seam over `claudeaccount.CachedAuthStatus`.
 - [ ] 1.2 Write failing tests for `specs/usage-budget-routing/spec.md`: one probe per distinct identity with the right `CLAUDE_CONFIG_DIR` (unset for `default`), collapsed identities probed once, independent fail-open per identity, single-account config unchanged. Use the existing fake probe-session seam.
 - [ ] 1.3 Write failing tests for `specs/agent-execution/spec.md`: routed account replaces inheritance, routed Codex worker under a Claude-only coordinator succeeds, explicit account restricts routing to that account's tiers, project backend suppresses routing, explicit-backend inherited-account rejection (corrected scenario). All tests `t.Setenv("HOME", t.TempDir())`, `agent.NewRunner(nil)`.
-- [ ] 1.4 Write failing tests for `specs/hera-coordination/spec.md`: ordered coordinator walk, fallback past `coordinator_threshold_pct`, workers-stop-before-coordinators, all-over-limit uses first usable, unknown = available, same-login collapse, sub-coordinator materialization parity, explicit wins, unset list unchanged.
+- [ ] 1.4 Write failing tests for `specs/hera-coordination/spec.md`: ordered coordinator walk, fallback past `coordinator_threshold_pct`, workers-stop-before-coordinators, all-over-limit stays on lowest-reading Claude account, unknown = available, hardened Claude guarantee (project codex / tier pressure stay Claude; every Claude account depleted → first non-depleted non-Claude tier with warning; unknown ≠ exhausted; Codex also depleted → stay Claude; sub-coordinator parity; `hera_new_orchestrator` untouched), same-login collapse, sub-coordinator materialization parity, explicit wins, unset list unchanged.
 - [ ] 1.5 Write failing tests for `specs/tui-shell/spec.md`: multi-identity segments, collapsed single segment, stale `—` per segment, single-account form unchanged.
 - [ ] 1.6 Confirm each new test fails for the intended reason (Prove-It)
 
@@ -38,7 +38,8 @@
 
 **Depends on:** Stage 2
 
-- [ ] 5.1 Add coordinator account selection beside `resolveCoordinatorBackend`: ordered walk of `coordinator_accounts` against `coordinator_threshold_pct`, identity-collapsed, skip unusable accounts, first usable when all over, explicit wins, unset = unchanged
+- [ ] 5.1 Add coordinator account selection beside `resolveCoordinatorBackend`: ordered walk of `coordinator_accounts` against `coordinator_threshold_pct`, identity-collapsed, skip unusable accounts, lowest reading when all over, explicit wins, unset = unchanged
+- [ ] 5.1a Extend `resolveCoordinatorBackend` with the exhausted-Claude fallback: when every candidate Claude account is depleted, return the first non-depleted non-Claude tier (warning via `warnCoordinatorBackend`); otherwise keep today's force-Claude behavior
 - [ ] 5.2 Wire it into `SpawnHeraCoordinator` and `MaterializeHeraSubCoordinator` via the same function; log the decision via `slog`
 
 ## 6. Status bar per-identity readout
