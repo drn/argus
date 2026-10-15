@@ -71,7 +71,9 @@ An omitted `account` means `default`. A tier naming an unknown account, or an ac
 
 Account precedence at creation becomes: explicit account → routed account (when routing chose the backend) → inherited account (hera spawn / MCP caller) → project `project_accounts` → `default_account` → `default`.
 
-Routing only supplies an account when it actually chose the backend — i.e. no explicit backend and no project backend. If the caller pins a backend or the project does, routing is not consulted and today's inheritance applies unchanged. This keeps the "explicit wins" precedent and fixes the Codex-worker-under-Claude-only-coordinator rejection for routed spawns, since a routed Codex worker gets the Codex tier's own account rather than the coordinator's.
+Routing only supplies an account when it actually chose the backend — i.e. no explicit backend and no project backend. If the caller pins a backend or the project does, routing is not consulted and today's inheritance applies unchanged. When an explicit account is given without an explicit backend, routing considers only tiers on that account (so pinning `personal` can never land on a Codex tier the account cannot run); if none qualifies, the backend falls through to default-backend precedence.
+
+This keeps the "explicit wins" precedent and fixes the Codex-worker-under-Claude-only-coordinator rejection for routed spawns, since a routed Codex worker gets the Codex tier's own account rather than the coordinator's.
 
 ### D4. Usage readings are keyed by signed-in identity, not account name
 
@@ -105,6 +107,8 @@ Every resolution logs one `slog` line to `daemon.log` (not `uxlog`, which is a n
 
 - `~/.claude` is currently signed into personal (anutron@gmail.com); the live 36% reading is personal usage. No accounts are configured yet.
 - `resolveTaskAccount` rejects an inherited account that cannot run the backend — so today a coordinator on a Claude-only account cannot spawn a Codex worker. Routed spawns must supply the account themselves.
+- The base `agent-execution` account requirement contradicts itself: its text (and `resolveTaskAccount`) reject an inherited account that cannot run the backend, but its "Inherited account lacking the backend's tool" scenario says the worker is created on `default`. This change's MODIFIED copy corrects the scenario to match the text and code.
+- The status bar labels the `default` identity `cla` (unchanged from today) and other identities by account name.
 - `internal/claudeaccount.CachedAuthStatus(ctx, dir)` already returns `LoggedIn` and `Email` for a Claude config dir and is used by `GET /api/accounts`.
 - The `fix-backend-usage-routing` change is still open (verification + archive pending). This change only ADDS requirements to `backend-tier-routing` rather than modifying the headroom requirement, so it does not depend on that change's archive order.
 
