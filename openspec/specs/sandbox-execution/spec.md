@@ -255,3 +255,11 @@ The generated SBPL profile SHALL allow `file-write*` under the task's own accoun
 - **WHEN** a task runs on account `work` and account `personal` is also configured
 - **THEN** the profile has no write allow for `personal`'s directories
 
+### Requirement: Cursor sandbox grant
+
+Sandboxed cursor launches SHALL receive a write grant for `~/.cursor/chats`, `~/.cursor/projects` and `~/.cursor/statsig-cache.json` (never `mcp.json` or `cli-config.json`), emitted only into cursor launches' profiles.
+
+#### Scenario: Grant present for cursor only
+- **WHEN** a sandbox profile is generated for a cursor launch
+- **THEN** it allows writes under `$HOME/.cursor`, and profiles for other backends do not
+

@@ -490,6 +490,12 @@ func DefaultConfig() Config {
 				Command:    "agy",
 				PromptFlag: "--prompt-interactive",
 			},
+			"cursor": {
+				// Cursor CLI (Homebrew cask cursor-cli). Capture-style sessions;
+				// the prompt goes after `--`. --approve-mcps lets Argus's MCP
+				// server (registered in ~/.cursor/mcp.json) load unprompted.
+				Command: "cursor-agent --approve-mcps",
+			},
 		},
 		Projects:    make(map[string]Project),
 		Keybindings: DefaultKeybindings(),

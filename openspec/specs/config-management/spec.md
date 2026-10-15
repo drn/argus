@@ -292,3 +292,12 @@ Accounts edited in Settings SHALL be persisted in the DB (an `accounts` table, p
 #### Scenario: DB-only accounts survive a toml overlay
 - **WHEN** `config.toml` defines only `[accounts.work]` and the DB holds `personal`
 - **THEN** both accounts are present in `db.Config()`
+
+### Requirement: Built-in cursor backend
+
+The default configuration SHALL include a `cursor` backend with command `cursor-agent --approve-mcps` and no prompt flag; existing databases receive it on next start.
+
+#### Scenario: Default backend present
+- **WHEN** the default config is built
+- **THEN** it contains a backend named `cursor` classified as the cursor family
+

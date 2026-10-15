@@ -235,13 +235,13 @@ func TestBackendSandboxRules(t *testing.T) {
 func TestBackendSandboxRules_LaunchOnlyGrants(t *testing.T) {
 	for _, launching := range []*Family{nil, FamilyForKind(backendkind.Claude), customFamily} {
 		rules := backendSandboxRules(launching)
-		if strings.Contains(rules, "/.gemini") {
-			t.Fatalf("agy grants leaked into a non-agy profile: %v", launching)
+		if strings.Contains(rules, "/.gemini") || strings.Contains(rules, "/.cursor") {
+			t.Fatalf("launch-only grants leaked into another profile: %v", launching)
 		}
 		testutil.Contains(t, rules, `"/.codex"`)
 	}
 	for _, f := range Families() {
-		testutil.Equal(t, f.SandboxGrantsLaunchOnly, f.Kind == backendkind.Antigravity)
+		testutil.Equal(t, f.SandboxGrantsLaunchOnly, f.Kind == backendkind.Antigravity || f.Kind == backendkind.Cursor)
 	}
 }
 
@@ -469,14 +469,14 @@ func TestBuildCmd_PrecreatesGrantDirsOnlyForOptedInFamilies(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	cfg.Sandbox.Enabled = true
-	for _, backend := range []string{"antigravity", "claude", "codex", "pi", "opencode"} {
+	for _, backend := range []string{"antigravity", "cursor", "claude", "codex", "pi", "opencode"} {
 		task := &model.Task{Backend: backend, Prompt: "p", Worktree: t.TempDir()}
 		_, _, err := BuildCmd(task, cfg, false)
 		testutil.NoError(t, err)
 	}
-	testutil.DeepEqual(t, got, []string{"antigravity:true"})
+	testutil.DeepEqual(t, got, []string{"antigravity:true", "cursor:true"})
 	for _, f := range Families() {
-		testutil.Equal(t, f.PrecreateSandboxGrants, f.Kind == backendkind.Antigravity)
+		testutil.Equal(t, f.PrecreateSandboxGrants, f.Kind == backendkind.Antigravity || f.Kind == backendkind.Cursor)
 	}
 }
 
@@ -485,4 +485,126 @@ func TestEnsureSandboxGrantDirsFn_InertUnderTest(t *testing.T) {
 	ensureSandboxGrantDirs(FamilyForKind(backendkind.Antigravity), config.SandboxConfig{Enabled: true})
 	_, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".gemini"))
 	testutil.Equal(t, os.IsNotExist(err), true)
+}
+
+func TestCursorPermissionFlags(t *testing.T) {
+	for mode, want := range map[string]string{
+		config.PermissionModeBypassActive: "--force",
+		config.PermissionModePlan:         "--plan",
+		config.PermissionModeBypassAllow:  "--plan",
+		config.PermissionModeAcceptEdits:  "",
+		"":                                "",
+	} {
+		t.Run(mode, func(t *testing.T) { testutil.Equal(t, cursorPermissionFlags(mode), want) })
+	}
+}
+
+func TestInjectCursorGlobal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	old := cursorInstalledFn
+	t.Cleanup(func() { cursorInstalledFn = old })
+
+	cursorInstalledFn = func() bool { return false }
+	testutil.NoError(t, injectCursorGlobal(7742, false))
+	_, err := os.Stat(filepath.Join(home, ".cursor"))
+	testutil.Equal(t, os.IsNotExist(err), true)
+
+	testutil.NoError(t, injectCursorGlobal(7742, true)) // launching proves installed
+	_, err = os.Stat(filepath.Join(home, ".cursor", "mcp.json"))
+	testutil.NoError(t, err)
+}
+
+func TestCursorInstalledFn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", t.TempDir())
+	testutil.Equal(t, cursorInstalledFn(), false)
+	testutil.NoError(t, os.MkdirAll(filepath.Join(home, ".local", "share", "cursor-agent"), 0o755))
+	testutil.Equal(t, cursorInstalledFn(), true)
+}
+
+func TestBuildCmd_Cursor(t *testing.T) {
+	withCmd := func(command string) func() config.Config {
+		return func() config.Config {
+			cfg := config.DefaultConfig()
+			cfg.Backends["cursor"] = config.Backend{Command: command}
+			return cfg
+		}
+	}
+	cases := []struct {
+		name   string
+		cfg    func() config.Config
+		task   model.Task
+		resume bool
+		want   string
+	}{
+		{
+			name: "default config new session ignores pinned id",
+			cfg:  config.DefaultConfig,
+			task: model.Task{Backend: "cursor", Prompt: "fix it", SessionID: "ignored"},
+			want: "cursor-agent --trust --approve-mcps --force -- 'fix it'",
+		},
+		{
+			name:   "resume drops prompt",
+			cfg:    config.DefaultConfig,
+			task:   model.Task{Backend: "cursor", Prompt: "fix it", SessionID: "c0ffee"},
+			resume: true,
+			want:   "cursor-agent --trust --approve-mcps --force --resume 'c0ffee'",
+		},
+		{
+			name:   "resume without id starts fresh",
+			cfg:    config.DefaultConfig,
+			task:   model.Task{Backend: "cursor", Prompt: "fix it"},
+			resume: true,
+			want:   "cursor-agent --trust --approve-mcps --force",
+		},
+		{
+			name: "model flag",
+			cfg:  config.DefaultConfig,
+			task: model.Task{Backend: "cursor", Prompt: "p", Model: "gpt-5"},
+			want: "cursor-agent --trust --approve-mcps --force --model 'gpt-5' -- 'p'",
+		},
+		{
+			name: "hand-edited yolo wins",
+			cfg:  withCmd("cursor-agent --yolo"),
+			task: model.Task{Backend: "cursor", Prompt: "p"},
+			want: "cursor-agent --trust --yolo -- 'p'",
+		},
+		{
+			name: "explicit trust not duplicated",
+			cfg:  withCmd("cursor-agent --trust"),
+			task: model.Task{Backend: "cursor", Prompt: "p"},
+			want: "cursor-agent --trust --force -- 'p'",
+		},
+		{
+			name: "plan mode",
+			cfg: func() config.Config {
+				cfg := config.DefaultConfig()
+				cfg.Defaults.PermissionMode = config.PermissionModePlan
+				return cfg
+			},
+			task: model.Task{Backend: "cursor", Prompt: "p"},
+			want: "cursor-agent --trust --approve-mcps --plan -- 'p'",
+		},
+		{
+			name: "mcp port adds no per-launch flag",
+			cfg: func() config.Config {
+				cfg := config.DefaultConfig()
+				cfg.MCPPort = 7742
+				return cfg
+			},
+			task: model.Task{Backend: "cursor", Prompt: "p"},
+			want: "cursor-agent --trust --approve-mcps --force -- 'p'",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			task := tc.task
+			task.Worktree = t.TempDir()
+			cmd, _, err := BuildCmd(&task, tc.cfg(), tc.resume)
+			testutil.NoError(t, err)
+			testutil.Equal(t, cmd.Args[2], tc.want)
+		})
+	}
 }

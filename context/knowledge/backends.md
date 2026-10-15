@@ -6,24 +6,24 @@ commands get `customFamily`. To add one, follow `.agents/skills/add-backend/SKIL
 
 ## Capability matrix
 
-| | claude | codex | pi | opencode | antigravity | custom |
-|---|---|---|---|---|---|---|
-| Binaries | `claude` | `codex` | `pi` | `opencode` | `agy` | anything else |
-| Session ID | pinned `--session-id` | captured | captured | captured | captured | pinned |
-| Resume | `--resume <id>` | `codex resume <id>` (replaces cmd) | `--session <id>` | `--session <id>` | `--conversation <id>` | `--resume <id>` |
-| Capture source | `~/.claude/projects/<enc>/*.jsonl` | `state_5.sqlite` `threads.cwd` | `~/.pi/agent/sessions/--<enc>--/` | `opencode.db` `session[_v2].directory` | `~/.gemini/antigravity-cli/conversation_summaries.db` `workspace_uris` | — |
-| Recapture | every exit + resume refresh | once | once | once | every exit + resume refresh | never |
-| Prompt | `-- <p>` | `-- <p>` | positional | `--prompt` (config) | `--prompt-interactive` (family default) | `-- <p>` |
-| Model | `--model` (curated aliases) | `--model` (curated) | `--model` | `OPENCODE_CONFIG_CONTENT` | `--model` (custom only) | none |
-| Permission | `defaults.permission_mode` → `--permission-mode …` | baked into command | — | `--auto` launch flag | mode → `--mode …` / `--dangerously-skip-permissions` | — |
-| MCP | `--mcp-config` per launch | `-c mcp_servers.argus.url` per launch | — | global `opencode.json` | global `~/.gemini/config/mcp_config.json` | — |
-| Skills | `--add-dir ~/.argus/skills` | Argus-only `CODEX_HOME` overlay | `--skill <dir>` | `OPENCODE_CONFIG_CONTENT` | global `~/.gemini/config/skills.json` entry | — |
-| Routing | `--append-system-prompt-file` | prompt prefix | — | prompt prefix | prompt prefix | — |
-| Sandbox grant | `~/.claude.json*`, `~/.claude` | `~/.codex`, codex-home | `~/.pi` | (base `~/.local`) | `~/.gemini/{antigravity-cli,config,jetski}` (pre-created) | — |
-| Accounts | `claude_config_dir` | `codex_home` | — | — | — | — |
-| Launch flag | — | — | — | `--auto` | — | — |
-| Session switcher | yes | — | — | — | — | yes |
-| Prelaunch | — | — | ollama warmup (20s Start RPC) | — | — | — |
+| | claude | codex | pi | opencode | antigravity | cursor | custom |
+|---|---|---|---|---|---|---|---|
+| Binaries | `claude` | `codex` | `pi` | `opencode` | `agy` | `cursor-agent` | anything else |
+| Session ID | pinned `--session-id` | captured | captured | captured | captured | captured | pinned |
+| Resume | `--resume <id>` | `codex resume <id>` (replaces cmd) | `--session <id>` | `--session <id>` | `--conversation <id>` | `--resume <id>` | `--resume <id>` |
+| Capture source | `~/.claude/projects/<enc>/*.jsonl` | `state_5.sqlite` `threads.cwd` | `~/.pi/agent/sessions/--<enc>--/` | `opencode.db` `session[_v2].directory` | `~/.gemini/antigravity-cli/conversation_summaries.db` `workspace_uris` | `~/.cursor/chats/<md5(cwd)>/<uuid>/` newest mtime | — |
+| Recapture | every exit + resume refresh | once | once | once | every exit + resume refresh | once | never |
+| Prompt | `-- <p>` | `-- <p>` | positional | `--prompt` (config) | `--prompt-interactive` (family default) | `-- <p>` | `-- <p>` |
+| Model | `--model` (curated aliases) | `--model` (curated) | `--model` | `OPENCODE_CONFIG_CONTENT` | `--model` (custom only) | `--model` (custom only) | none |
+| Permission | `defaults.permission_mode` → `--permission-mode …` | baked into command | — | `--auto` launch flag | mode → `--mode …` / `--dangerously-skip-permissions` | mode → `--force` / `--plan` | — |
+| MCP | `--mcp-config` per launch | `-c mcp_servers.argus.url` per launch | — | global `opencode.json` | global `~/.gemini/config/mcp_config.json` | global `~/.cursor/mcp.json` (+`--approve-mcps` in command) | — |
+| Skills | `--add-dir ~/.argus/skills` | Argus-only `CODEX_HOME` overlay | `--skill <dir>` | `OPENCODE_CONFIG_CONTENT` | global `~/.gemini/config/skills.json` entry | — | — |
+| Routing | `--append-system-prompt-file` | prompt prefix | — | prompt prefix | prompt prefix | prompt prefix | — |
+| Sandbox grant | `~/.claude.json*`, `~/.claude` | `~/.codex`, codex-home | `~/.pi` | (base `~/.local`) | `~/.gemini/{antigravity-cli,config,jetski}` (pre-created) | `~/.cursor/{chats,projects,statsig-cache.json}` (launch-only, pre-created; mcp.json/cli-config.json read-only) | — |
+| Accounts | `claude_config_dir` | `codex_home` | — | — | — | — | — |
+| Launch flag | — | — | — | `--auto` | — | `--trust` | — |
+| Session switcher | yes | — | — | — | — | — | yes |
+| Prelaunch | — | — | ollama warmup (20s Start RPC) | — | — | — | — |
 
 Rows map to `Family` fields: Session ID → `PinsSessionID`, Resume → `ResumeFlag`/`ResumeCmd`,
 Capture → `Capture`, Recapture → `RecaptureEveryExit`, Prompt → `DefaultPromptFlag`/
@@ -54,4 +54,12 @@ Prelaunch → `Prelaunch`/`StartTimeout`.
   the root. A sandboxed agy can't `mkdir ~/.gemini` itself, so BuildCmd pre-creates the grant dirs
   unsandboxed for families that set `PrecreateSandboxGrants` (only agy), and `SandboxGrantsLaunchOnly`
   emits those grants only into agy's own launches.
+- **cursor is capture-style with no sqlite read.** `cursor-agent` has no start-time session-id flag;
+  chats live at `~/.cursor/chats/<md5(abs cwd)>/<uuid>/store.db`, so capture lists that dir (canonical
+  and as-given worktree path) and takes the newest uuid dir. Layout was read from the CLI bundle, not
+  observed live (unsigned-in at build time) — re-verify after `agent login`.
+- **Only `cursor-agent` classifies as cursor**: the installer also links a bare `agent`, too generic to claim.
+- **cursor MCP has no per-launch flag**: `~/.cursor/mcp.json` is edited at daemon start (only if installed)
+  and before each launch; `--approve-mcps` lives in the default command, not the family, so a user who
+  strips it still gets the prompt. `--trust` is the family LaunchFlag.
 - **Only `agy` classifies as antigravity** — a bare `antigravity` may be the IDE launcher.
