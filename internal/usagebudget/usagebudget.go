@@ -417,8 +417,8 @@ func startPTYSession(ctx context.Context, dir, name string, args ...string) (*pt
 	// session; force transcript persistence as defense in depth.
 	env := make([]string, 0, len(os.Environ())+3)
 	for _, kv := range os.Environ() {
-		name, _, _ := strings.Cut(kv, "=")
-		if name == "CLAUDE_CONFIG_DIR" || claudeenv.IsParentSessionMarker(name) {
+		key, _, _ := strings.Cut(kv, "=")
+		if key == "CLAUDE_CONFIG_DIR" || claudeenv.IsParentSessionMarker(key) {
 			continue
 		}
 		env = append(env, kv)
