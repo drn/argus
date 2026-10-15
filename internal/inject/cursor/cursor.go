@@ -35,7 +35,7 @@ func InjectGlobal(port int) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("%s: create %s: %w", label, filepath.Dir(path), err)
 	}
 	data, err := atomicfile.ReadJSONObject(path, label)

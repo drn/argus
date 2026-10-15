@@ -52,7 +52,12 @@ func CaptureCursorSessionID(worktreePath string) (string, error) {
 			if err != nil {
 				continue
 			}
-			if m := info.ModTime().UnixNano(); bestID == "" || m > bestMod {
+			// A dir's mtime only moves on entry create/remove, so also consult store.db.
+			mod := info.ModTime().UnixNano()
+			if db, err := os.Stat(filepath.Join(chats, cursorWorkspaceHash(p), e.Name(), "store.db")); err == nil {
+				mod = max(mod, db.ModTime().UnixNano())
+			}
+			if m := mod; bestID == "" || m > bestMod {
 				bestID, bestMod = e.Name(), m
 			}
 		}

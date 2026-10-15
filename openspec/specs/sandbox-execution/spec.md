@@ -257,7 +257,7 @@ The generated SBPL profile SHALL allow `file-write*` under the task's own accoun
 
 ### Requirement: Cursor sandbox grant
 
-Sandboxed cursor launches SHALL receive a write grant for `~/.cursor`, emitted only into cursor launches' profiles.
+Sandboxed cursor launches SHALL receive a write grant for `~/.cursor/chats`, `~/.cursor/projects` and `~/.cursor/statsig-cache.json` (never `mcp.json` or `cli-config.json`), emitted only into cursor launches' profiles.
 
 #### Scenario: Grant present for cursor only
 - **WHEN** a sandbox profile is generated for a cursor launch

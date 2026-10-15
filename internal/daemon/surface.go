@@ -132,7 +132,7 @@ const (
 	//   - v17: BuildCmd gains the cursor family (`cursor-agent`: --trust launch
 	//     flag, `-- <prompt>`, --resume, --model, --force/--plan permission
 	//     mapping, routing prefix), re-registers Argus in ~/.cursor/mcp.json
-	//     before each launch, and grants/pre-creates ~/.cursor for cursor
+	//     before each launch, and grants/pre-creates ~/.cursor/{chats,projects} for cursor
 	//     launches only. A stale supervisor spawns cursor-agent as a custom
 	//     backend.
 	SupervisorSpawnSurface = 17
@@ -384,7 +384,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "3459671361b30d517c51289a5c12d24ab8942d0aa332e8f9abfbd7374f8e8684"
+	SpawnSurfaceDigest  = "7ad5972a10e7b59d1042877e3b51d87fd55361738d7803ca5cb68d000b380696"
 	StreamSurfaceDigest = "9973137db7c31ce8082cc84c494f5f1722878314674e89d962ccafd96c098783"
 )
 

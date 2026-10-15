@@ -442,7 +442,12 @@ var families = []*Family{
 		PrecreateSandboxGrants:  true,
 		SandboxGrantsLaunchOnly: true,
 		SandboxGrants: []SandboxGrant{
-			{HomeRel: "/.cursor", Comment: "Cursor CLI chats (~/.cursor/chats), mcp.json, config, and sign-in state."},
+			// Not all of ~/.cursor: mcp.json and cli-config.json (the command
+			// allowlist) stay read-only so a sandboxed agent can't rewrite config an
+			// unsandboxed Cursor later trusts. Unverified live; widen if launches EPERM.
+			{HomeRel: "/.cursor/chats", Comment: "Cursor CLI chat store; capture reads it post-exit."},
+			{HomeRel: "/.cursor/projects", Comment: "Cursor CLI per-project state."},
+			{HomeRel: "/.cursor/statsig-cache.json", Prefix: true, Comment: "Cursor CLI feature-flag cache (written via atomic-rename siblings)."},
 		},
 	},
 }

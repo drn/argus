@@ -13,7 +13,7 @@ Verified against `cursor-agent` 2026.10.14 (installed locally; **not signed in**
 - **Permission modes** from `defaults.permission_mode`: bypass-active → `--force`, plan / bypass-allow → `--plan`, accept-edits / default → nothing (Cursor has no accept-edits mode; it uses an allowlist). Skipped when the command already names `--force`, `--yolo`, `--plan`, or `--mode`.
 - **MCP**: no per-launch MCP flag (only `.cursor/mcp.json` / `~/.cursor/mcp.json`). Argus idempotently registers `mcpServers.argus.url` in `~/.cursor/mcp.json` at daemon startup (only when Cursor is installed) and before each launch; the default command carries `--approve-mcps` so the server is not blocked on an approval prompt. Same accepted global-reach trade-off as Antigravity.
 - **Routing**: prompt prefix (Cursor reads `AGENTS.md` natively; no CLAUDE.md injection), as opencode.
-- **Sandbox**: write grant `~/.cursor` (chats, mcp.json, config, auth).
+- **Sandbox**: write grants `~/.cursor/{chats,projects,statsig-cache.json}`; `mcp.json` and `cli-config.json` stay read-only so a sandboxed agent cannot rewrite config an unsandboxed Cursor trusts.
 
 ## Non-Goals (named follow-ups)
 
