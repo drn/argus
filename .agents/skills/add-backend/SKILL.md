@@ -51,6 +51,12 @@ Prefer child-scoped delivery (flag or env on the spawned process) over editing t
 config. Only fall back to `InjectGlobal` when the CLI offers nothing else, and say so in the
 proposal.
 
+Two traps learned adding Cursor: (1) don't claim a generic binary name (`agent`) in
+`backendkind.Spec.Binaries` — existing tests and wrappers use it as a fake custom command; claim only the
+unambiguous one. (2) `LaunchFlag` is a single token; a second always-on flag (e.g. `--approve-mcps`)
+belongs in the default backend command. Also scope `SandboxGrants` to the specific state subdirs, never the
+CLI's whole config dir, when that dir holds MCP/permission config an unsandboxed CLI later trusts.
+
 ## 2. Write the OpenSpec change first
 
 `openspec/changes/add-<name>-backend/` with proposal (verified facts + Non-Goals for anything the
