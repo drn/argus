@@ -25,6 +25,6 @@
 **Depends on:** Stage 2
 
 - [x] 3.1 Add a gotcha to `context/knowledge/gotchas/daemon-rpc.md`: restarting the daemon/supervisor from inside Claude Code leaks the parent session's markers; the spawn boundary scrubs them; persistence is forced for Claude agents. Update the index row.
-- [ ] 3.2 `make pre-pr` green
+- [x] 3.2 `make pre-pr` green (vuln step advisory per CI; full race suite + coverage floor run without the local 120s timeout — 88.5%)
 - [ ] 3.3 Live verification: deploy, restart supervisor + daemon from a clean environment at a quiet point, spawn a Claude agent, and confirm via `ps eww` that it has no `CLAUDE_CODE_CHILD_SESSION` and has `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1`, and that the transcript-off warning no longer appears
 - [x] 3.4 Archive the change (`openspec archive fix-inherited-claude-session-marker`) on the branch before merge
