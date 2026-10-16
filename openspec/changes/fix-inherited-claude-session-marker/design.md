@@ -26,6 +26,10 @@ Claude-family spawns export `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1`. D1 remove
 
 `startPTYSession` builds its own environment; it applies the same denylist and flag so the probe is never a child session either.
 
+### D4. Session discovery skips SDK-launched transcripts
+
+With no interactive transcript on disk, post-exit capture fell through to the newest file in the project dir — a security-review hook's `claude -p` run (`entrypoint` `sdk-py`) sharing the worktree as cwd — and pinned that as the task's session ID (observed on ~15 tasks on 2026-10-15). `claudesession.ListIn` now drops any transcript whose first recorded `entrypoint` starts with `sdk-`. Argus only launches interactive sessions (`entrypoint` `cli`), so this never hides a task conversation; it also keeps one-shot hook runs out of the session switcher. Filtering by entrypoint rather than by "matches the pinned ID" keeps `/clear` recapture working. Transcripts with no entrypoint field (older Claude Code) are kept.
+
 ## Risks / Trade-offs
 
 - **New Claude Code marker names** would not be stripped. Mitigated by D2 for the transcript symptom; the denylist is a single slice to extend.
@@ -47,3 +51,4 @@ None.
 - It should keep user-configured Claude settings variables in the agent environment.
 - It should let a backend `env_vars` mapping set a listed name explicitly.
 - It should run the usage probe without the markers and with the persistence flag.
+- It should never list or capture a transcript whose `entrypoint` starts with `sdk-`.

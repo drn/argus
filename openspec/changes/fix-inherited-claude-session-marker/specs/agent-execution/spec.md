@@ -42,3 +42,22 @@ Every Claude-family agent spawn SHALL export `CLAUDE_CODE_FORCE_SESSION_PERSISTE
 
 - **WHEN** a Codex agent is spawned from an environment without that variable
 - **THEN** its environment does not contain `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE`
+
+### Requirement: Claude session discovery ignores SDK-launched transcripts
+
+Claude session listing — the source for post-exit session-ID capture, resume-time recapture and the session switcher — SHALL exclude any transcript whose recorded `entrypoint` starts with `sdk-` (`claude -p`, the Agent SDK). Argus only launches interactive Claude sessions, so such a transcript in a task's project directory belongs to another process sharing the worktree as its working directory, typically a hook's one-shot review run. Transcripts with no recorded `entrypoint` SHALL still be listed. When only SDK-launched transcripts exist, capture SHALL report no ID and the recorded session ID SHALL be kept.
+
+#### Scenario: Newer hook transcript is not captured
+
+- **WHEN** a task's project directory holds its interactive transcript (`entrypoint` `cli`) and a newer transcript with `entrypoint` `sdk-py`
+- **THEN** session-ID capture returns the interactive transcript's ID
+
+#### Scenario: Only SDK transcripts exist
+
+- **WHEN** a task's project directory holds only transcripts whose `entrypoint` starts with `sdk-`
+- **THEN** capture reports no ID and the recorded session ID is left unchanged
+
+#### Scenario: Transcripts without an entrypoint are kept
+
+- **WHEN** a transcript records no `entrypoint` at all
+- **THEN** it is still listed

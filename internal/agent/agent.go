@@ -460,7 +460,9 @@ func CapturePiSessionID(worktreePath string) (string, error) {
 // worktree, so its project directory is scoped to just that task's sessions, and
 // after a Claude /clear the freshly-minted UUID's transcript sorts first.
 // Sub-agent (Task tool) records interleave into the main transcript file rather
-// than spawning separate files, so no sidechain filtering is needed.
+// than spawning separate files, so no sidechain filtering is needed. SDK-launched
+// transcripts (a hook's `claude -p` run sharing the worktree as cwd) are
+// excluded by claudesession.ListIn, so they can never be captured.
 //
 // Returns an error when the worktree path is empty, the project directory is
 // missing, or it holds no UUID-named transcript; callers treat the error as

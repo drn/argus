@@ -15,6 +15,11 @@
 - [x] 2.3 Apply the same denylist and flag in the usage probe's `startPTYSession`
 - [x] 2.4 Re-record the supervisor spawn-surface digest (`gotchas/ci-gates.md` recipe)
 
+## 2b. Ignore SDK-launched transcripts in session discovery
+
+- [x] 2b.1 Failing tests: `claudesession` listing drops `sdk-*` entrypoints and keeps entrypoint-less transcripts; `CaptureClaudeSessionID` never returns a newer SDK transcript and reports no ID when only SDK transcripts exist
+- [x] 2b.2 Record `entrypoint` on `claudesession.Session` and skip `sdk-*` in `ListIn`
+
 ## 3. Docs, verification, archive
 
 **Depends on:** Stage 2

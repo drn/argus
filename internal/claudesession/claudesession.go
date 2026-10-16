@@ -42,6 +42,19 @@ type Session struct {
 	PRRef     string    // linked PR as "owner/repo#number", empty if none
 	ModTime   time.Time // most recent activity timestamp
 	SizeBytes int64     // JSONL file size on disk
+	// Entrypoint is how Claude Code was launched ("cli", "sdk-cli", "sdk-py",
+	// ...), from the first entry that records one; empty for transcripts that
+	// predate the field.
+	Entrypoint string
+}
+
+// isSDKEntrypoint reports whether a transcript came from a non-interactive
+// launch (`claude -p`, the Agent SDK). Argus only ever starts interactive
+// sessions, so an SDK transcript in a task's project dir belongs to something
+// else sharing the worktree as cwd — typically a hook's one-shot review run —
+// and must never be mistaken for the task's conversation.
+func isSDKEntrypoint(entrypoint string) bool {
+	return strings.HasPrefix(entrypoint, "sdk-")
 }
 
 // EncodeProjectDir converts an absolute worktree path into the folder name
@@ -82,7 +95,8 @@ func List(worktreePath string) ([]Session, error) {
 // (empty means ~/.claude), newest activity first. A missing project directory
 // is not an error — it returns an empty slice (a brand-new task simply has no
 // sessions yet). Malformed JSONL lines and unreadable files are skipped rather
-// than aborting the whole listing.
+// than aborting the whole listing. SDK-launched transcripts (see
+// isSDKEntrypoint) are excluded.
 func ListIn(configDir, worktreePath string) ([]Session, error) {
 	if worktreePath == "" {
 		return nil, fmt.Errorf("claudesession: worktree path is empty")
@@ -113,6 +127,9 @@ func ListIn(configDir, worktreePath string) ([]Session, error) {
 			continue
 		}
 		s := parseSession(filepath.Join(dir, e.Name()))
+		if isSDKEntrypoint(s.Entrypoint) {
+			continue
+		}
 		s.ID = id
 		s.SizeBytes = info.Size()
 		if s.ModTime.IsZero() {
@@ -140,6 +157,7 @@ type rawEntry struct {
 	Timestamp    string `json:"timestamp"`
 	PRNumber     int    `json:"prNumber"`
 	PRRepository string `json:"prRepository"`
+	Entrypoint   string `json:"entrypoint"`
 }
 
 // parseSession scans one JSONL file and extracts display metadata. It reads
@@ -185,6 +203,9 @@ func applyEntry(s *Session, e *rawEntry, firstSlug *string) {
 	}
 	if e.GitBranch != "" {
 		s.Branch = e.GitBranch
+	}
+	if s.Entrypoint == "" && e.Entrypoint != "" {
+		s.Entrypoint = e.Entrypoint
 	}
 	if e.Type == "pr-link" && e.PRRepository != "" && e.PRNumber > 0 {
 		s.PRRef = fmt.Sprintf("%s#%d", e.PRRepository, e.PRNumber)
