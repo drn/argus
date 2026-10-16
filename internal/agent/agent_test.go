@@ -2131,6 +2131,42 @@ func TestCaptureClaudeSessionID(t *testing.T) {
 		testutil.Equal(t, sid, "cccccccc-bbbb-4ccc-9ddd-222222222222")
 	})
 
+	// Regression: a hook's `claude -p` security review (entrypoint sdk-py)
+	// writing a newer transcript into the task's project dir was captured as
+	// the task's session ID, so resume targeted the hook's one-shot run.
+	t.Run("newer SDK transcript never captured", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		wt := filepath.Join(home, ".argus", "worktrees", "p", "hooked")
+		projDir := filepath.Join(home, ".claude", "projects", claudesession.EncodeProjectDir(wt))
+		testutil.NoError(t, os.MkdirAll(projDir, 0o755))
+		mainTx := filepath.Join(projDir, "aaaaaaaa-bbbb-4ccc-9ddd-333333333333.jsonl")
+		hook := filepath.Join(projDir, "cccccccc-bbbb-4ccc-9ddd-444444444444.jsonl")
+		testutil.NoError(t, os.WriteFile(mainTx, []byte(`{"type":"user","entrypoint":"cli"}`+"\n"), 0o644))
+		testutil.NoError(t, os.WriteFile(hook, []byte(`{"type":"user","entrypoint":"sdk-py"}`+"\n"), 0o644))
+		past := time.Now().Add(-1 * time.Hour)
+		testutil.NoError(t, os.Chtimes(mainTx, past, past))
+
+		sid, err := CaptureClaudeSessionID(wt)
+		testutil.NoError(t, err)
+		testutil.Equal(t, sid, "aaaaaaaa-bbbb-4ccc-9ddd-333333333333")
+	})
+
+	t.Run("only SDK transcripts is no capture", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		wt := filepath.Join(home, ".argus", "worktrees", "p", "hookonly")
+		projDir := filepath.Join(home, ".claude", "projects", claudesession.EncodeProjectDir(wt))
+		testutil.NoError(t, os.MkdirAll(projDir, 0o755))
+		hook := filepath.Join(projDir, "cccccccc-bbbb-4ccc-9ddd-555555555555.jsonl")
+		testutil.NoError(t, os.WriteFile(hook, []byte(`{"type":"user","entrypoint":"sdk-py"}`+"\n"), 0o644))
+
+		_, err := CaptureClaudeSessionID(wt)
+		if err == nil {
+			t.Fatal("expected no capture when only SDK transcripts exist")
+		}
+	})
+
 	t.Run("empty worktree", func(t *testing.T) {
 		_, err := CaptureClaudeSessionID("")
 		if err == nil {

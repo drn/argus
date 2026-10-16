@@ -19,6 +19,7 @@ import (
 
 	xvt "github.com/charmbracelet/x/vt"
 	"github.com/creack/pty"
+	"github.com/drn/argus/internal/claudeenv"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/sanitize"
 	"github.com/drn/argus/internal/uxlog"
@@ -410,15 +411,22 @@ func startClaudeUsageSession(ctx context.Context, dir string) (usageSession, err
 func startPTYSession(ctx context.Context, dir, name string, args ...string) (*ptyUsageSession, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
-	env := make([]string, 0, len(os.Environ())+2)
+	// Drop an inherited CLAUDE_CONFIG_DIR (the probe measures the default
+	// account) and every parent Claude Code session marker, so a daemon
+	// started from inside Claude Code never probes as a child of that
+	// session; force transcript persistence as defense in depth.
+	env := make([]string, 0, len(os.Environ())+3)
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") {
-			env = append(env, kv)
+		key, _, _ := strings.Cut(kv, "=")
+		if key == "CLAUDE_CONFIG_DIR" || claudeenv.IsParentSessionMarker(key) {
+			continue
 		}
+		env = append(env, kv)
 	}
 	cmd.Env = append(env,
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",
+		claudeenv.ForcePersistenceEnv,
 	)
 
 	// pty.Start puts the child in its own session (Setsid), so its pid is

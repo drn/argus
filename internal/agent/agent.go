@@ -17,6 +17,7 @@ import (
 
 	"github.com/drn/argus/internal/backendkind"
 	"github.com/drn/argus/internal/backendtier"
+	"github.com/drn/argus/internal/claudeenv"
 	"github.com/drn/argus/internal/claudesession"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
@@ -459,7 +460,9 @@ func CapturePiSessionID(worktreePath string) (string, error) {
 // worktree, so its project directory is scoped to just that task's sessions, and
 // after a Claude /clear the freshly-minted UUID's transcript sorts first.
 // Sub-agent (Task tool) records interleave into the main transcript file rather
-// than spawning separate files, so no sidechain filtering is needed.
+// than spawning separate files, so no sidechain filtering is needed. SDK-launched
+// transcripts (a hook's `claude -p` run sharing the worktree as cwd) are
+// excluded by claudesession.ListIn, so they can never be captured.
 //
 // Returns an error when the worktree path is empty, the project directory is
 // missing, or it holds no UUID-named transcript; callers treat the error as
@@ -1094,6 +1097,13 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	}
 	if claudeConfigDir != "" {
 		cmd.Env = append(cmd.Env, "CLAUDE_CONFIG_DIR="+claudeConfigDir)
+	}
+	if isClaude {
+		// Argus resume and session discovery depend on the transcript. The
+		// parent-session markers are already stripped above; this is defense
+		// in depth against a marker reaching the agent by a path the denylist
+		// does not cover. Before backend env_vars so an explicit mapping wins.
+		cmd.Env = append(cmd.Env, claudeenv.ForcePersistenceEnv)
 	}
 	if opencodeConfigContent != "" {
 		cmd.Env = append(cmd.Env, "OPENCODE_CONFIG_CONTENT="+opencodeConfigContent)

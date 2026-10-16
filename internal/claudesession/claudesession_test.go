@@ -1,6 +1,7 @@
 package claudesession
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -186,6 +187,39 @@ func TestList_SortsNewestFirst(t *testing.T) {
 	testutil.Equal(t, len(got), 2)
 	testutil.Equal(t, got[0].ID, newer)
 	testutil.Equal(t, got[1].ID, older)
+}
+
+// SDK-launched transcripts (a hook's `claude -p` / Agent SDK run sharing the
+// worktree as cwd) are never the task's conversation: they must not be listed,
+// even when they are newer than the real interactive session.
+func TestList_SkipsSDKEntrypointSessions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	wt := "/w/hooked"
+	interactive := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	legacy := "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+	writeSession(t, home, wt, interactive, []string{
+		`{"type":"user","timestamp":"2026-06-01T10:00:00.000Z","entrypoint":"cli","sessionId":"` + interactive + `"}`,
+	}, time.Time{})
+	// No entrypoint field at all (older Claude Code): kept.
+	writeSession(t, home, wt, legacy, []string{
+		`{"type":"user","timestamp":"2026-05-01T10:00:00.000Z","sessionId":"` + legacy + `"}`,
+	}, time.Time{})
+	for i, ep := range []string{"sdk-py", "sdk-cli", "sdk-ts"} {
+		id := fmt.Sprintf("eeeeeeee-eeee-4eee-8eee-00000000000%d", i)
+		writeSession(t, home, wt, id, []string{
+			`{"type":"queue-operation","timestamp":"2026-06-04T10:00:00.000Z","sessionId":"` + id + `"}`,
+			`{"type":"user","timestamp":"2026-06-04T10:00:01.000Z","entrypoint":"` + ep + `","sessionId":"` + id + `"}`,
+		}, time.Time{})
+	}
+
+	got, err := List(wt)
+	testutil.NoError(t, err)
+	ids := make([]string, 0, len(got))
+	for _, s := range got {
+		ids = append(ids, s.ID)
+	}
+	testutil.DeepEqual(t, ids, []string{interactive, legacy})
 }
 
 func TestProjectDir_NoHomeErrors(t *testing.T) {

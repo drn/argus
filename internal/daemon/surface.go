@@ -135,7 +135,15 @@ const (
 	//     before each launch, and grants/pre-creates ~/.cursor/{chats,projects} for cursor
 	//     launches only. A stale supervisor spawns cursor-agent as a custom
 	//     backend.
-	SupervisorSpawnSurface = 17
+	//   - v18: every spawn strips a parent Claude Code session's runtime
+	//     markers (internal/claudeenv.ParentSessionMarkers: CLAUDECODE,
+	//     CLAUDE_CODE_CHILD_SESSION, ...) from the inherited env for every
+	//     backend, and Claude-family spawns export
+	//     CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 before backend env_vars
+	//     (fix-inherited-claude-session-marker). A stale supervisor started
+	//     from inside Claude Code keeps spawning agents with transcript saving
+	//     off.
+	SupervisorSpawnSurface = 18
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -333,6 +341,7 @@ var SupervisorSpawnPaths = []string{
 	"internal/inject/atomicfile/atomicfile.go",   // atomic writer the global-config injectors use
 	"internal/inject/opencode/opencode.go",       // opencode global config BuildCmd refreshes before launch
 	"internal/agent/claudeaccount.go",            // per-task account dir bootstrap, env hygiene, sandbox grant
+	"internal/claudeenv/claudeenv.go",            // parent-session marker denylist + persistence flag BuildCmd applies
 	"internal/agent/codexaccount.go",             // per-task Codex home, env hygiene, sandbox grant
 	"internal/config/accounts.go",                // account → config dir resolution BuildCmd reads
 	"internal/agent/nonclaude_context.go",        // OpenCode child-only skills config content
@@ -384,7 +393,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "7ad5972a10e7b59d1042877e3b51d87fd55361738d7803ca5cb68d000b380696"
+	SpawnSurfaceDigest  = "0c97b19d08df4e11156c23d678e07b434723d6b73abbfc648386d337f098e9ea"
 	StreamSurfaceDigest = "9973137db7c31ce8082cc84c494f5f1722878314674e89d962ccafd96c098783"
 )
 
