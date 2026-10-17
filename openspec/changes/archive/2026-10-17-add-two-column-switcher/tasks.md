@@ -49,7 +49,7 @@ Read `context/knowledge/gotchas/keybindings.md`, `gotchas/hera-view.md`, `gotcha
 
 **Depends on:** Stage 5
 
-- [ ] 6.1 README Reference keybinding table: `ctrl+j` → jump switcher (global); remove the agent-context row
-- [ ] 6.2 Gotchas: update `gotchas/keybindings.md` (ctrl+j now unconditional `CtxGlobal`; popup consumes `ctrl+g`; plugin/modal exclusions; three old dispatch paths removed) and add popup invariants (private widget copies never persist; `exitAgentView` before `switchTab(TabHera)`); update `context/knowledge/index.md` bullet counts
-- [ ] 6.3 Run `make pre-pr` clean (coverage ≥ floor on touched packages)
-- [ ] 6.4 Archive: `openspec archive add-two-column-switcher` (or the manual merge-and-move fallback) on this branch before merge
+- [x] 6.1 README Reference keybinding table: `ctrl+j` → jump switcher (global); remove the agent-context row
+- [x] 6.2 Gotchas: update `gotchas/keybindings.md` (ctrl+j now unconditional `CtxGlobal`; popup consumes `ctrl+g`; plugin/modal exclusions; three old dispatch paths removed) and add popup invariants (private widget copies never persist; `exitAgentView` before `switchTab(TabHera)`); update `context/knowledge/index.md` bullet counts
+- [x] 6.3 Run `make pre-pr` clean (coverage ≥ floor on touched packages)
+- [x] 6.4 Archive: `openspec archive add-two-column-switcher` (or the manual merge-and-move fallback) on this branch before merge
