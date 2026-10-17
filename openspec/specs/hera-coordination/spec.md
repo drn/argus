@@ -704,11 +704,11 @@ Derived from: `internal/hera/accept.go` (`AcceptRole`), `internal/mcp/hera.go` (
 
 ### Requirement: Coordinator and sub-coordinator spawn always resolve to a Claude-capable backend
 
-coord-hook's context-size stamping, token/cost accrual, and the recycle machinery are Claude-Code-only. The system SHALL therefore guarantee, regardless of `[backend_routing]` tier state or any configured default, that a newly spawned hera coordinator (`SpawnHeraCoordinator`, the rail `n` key and any future caller) or sub-coordinator (`MaterializeHeraSubCoordinator`, a `kind=subcoord` plan node materializing) resolves to a Claude-capable backend (an exact command-basename match against `claude`).
+coord-hook's context-size stamping, token/cost accrual, and the recycle machinery are Claude-Code-only. The system SHALL therefore guarantee, regardless of `[backend_routing]` tier state or any configured default, that a newly spawned hera coordinator (`SpawnHeraCoordinator`, the rail `n` key and any future caller) or sub-coordinator (`MaterializeHeraSubCoordinator`, a `kind=subcoord` plan node materializing) resolves to a Claude-capable backend (an exact command-basename match against `claude`) whenever a Claude-capable backend is configured.
 
 An explicit caller-supplied backend SHALL still win over this guarantee — a deliberate operator choice, mirroring the pre-existing "explicit backend always wins" precedent — but a non-Claude-capable explicit choice SHALL NOT be accepted silently: the system SHALL log a warning naming what breaks (coord-hook context-size stamping, token/cost accrual, recycle) before honoring it. When no explicit backend is given, the system SHALL run ordinary resolution (project override, then tier list, then default) and use its result only if it is Claude-capable; otherwise it SHALL fail open to the literal `"claude"` backend, also logging a warning, rather than refuse the spawn.
 
-This requirement does NOT cover `hera_new_orchestrator`, which binds an EXISTING task as a coordinator and never resolves or changes that task's backend — a worker already running on a non-Claude-capable backend that self-promotes to coordinator via `hera_new_orchestrator` keeps that backend. A live session's backend cannot be swapped out from under it; this is a named, structural gap, not an oversight.
+`hera_new_orchestrator` binds an EXISTING task as a coordinator and never resolves or changes that task's backend, since a live session's backend cannot be swapped out from under it. It therefore REJECTS a caller whose backend is not provably Claude-capable (see "hera_new_orchestrator rejects non-Claude callers") instead of letting a non-Claude coordinator come into existence; a caller that already holds a live coordinator binding is exempt so its idempotent re-call keeps the existing "already the coordinator / use hera_join" guidance.
 
 #### Scenario: No explicit backend and ordinary resolution is already Claude-capable
 
@@ -751,7 +751,7 @@ The system SHALL advertise `kind` (enum `worker`|`subcoord`, default `worker`) a
 
 ### Requirement: hera_new_orchestrator rejects non-Claude callers
 
-The system SHALL reject `hera_new_orchestrator` when the calling task's resolved backend is positively identified as not Claude-capable, with an error directing the caller to `hera_plan_node(kind="subcoord", goal=...)` or `hera_spawn_worker(backend="claude")`. The system SHALL fail open when the backend cannot be determined, and SHALL provide no override in the MCP path.
+The system SHALL reject `hera_new_orchestrator` when the calling task's resolved backend is not provably Claude-capable (any resolved command other than an exact `claude` basename, including custom wrappers), with an error telling the caller to ask its coordinator (hera_send) for a `kind=subcoord` plan node or a respawn with `backend="claude"`, or, if unbound, to use the TUI New Coordinator form. The check SHALL be skipped for a caller that already holds a live coordinator binding, and SHALL fail open when the backend cannot be determined (unstamped, unresolvable, or no config). The system SHALL provide no override in the MCP path.
 
 #### Scenario: Codex worker self-promotes
 

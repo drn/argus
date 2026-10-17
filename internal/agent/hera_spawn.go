@@ -704,7 +704,7 @@ func HeraCoordinatorOrientation(orchestrator string) string {
 			"one who does the work. Reserve hera_new_orchestrator for when you need your OWN dedicated "+
 			"sub-team — multiple projects or phases, each with its own plan and workers (and even then "+
 			"those workers do the work, not you) — obtained via a genuinely new session. PREFER a kind=subcoord "+
-			"hera_plan_node (objective in goal=): it always materializes on a Claude-capable backend. "+
+			"hera_plan_node (objective in goal=): it resolves to a Claude-capable backend whenever one is configured. "+
 			"The worker-promotion alternative — a worker whose prompt tells IT to call "+
 			"hera_new_orchestrator — REQUIRES spawning that worker with backend=\"claude\", because "+
 			"hera_new_orchestrator is rejected on a non-Claude (e.g. Codex) backend. When opening pull "+
@@ -778,10 +778,12 @@ func DeriveHeraWorkerName(prompt string) string {
 func HeraWorkerOrientation(orchestrator, coordinator string) string {
 	return fmt.Sprintf(
 		"You are a worker agent born bound to hera orchestrator %q under coordinator %q. "+
-			"You may report progress via hera_send. If this task requires changes to another repo "+
-			"or you need to spawn sub-agents, call hera_new_orchestrator(cwd=$PWD, name=\"...\", "+
+			"You may report progress via hera_send. If you need your own sub-team, do NOT self-promote unless "+
+			"you are running on Claude: hera_new_orchestrator is rejected on a non-Claude backend. "+
+			"Otherwise hera_send your coordinator and ask it to author a kind=subcoord plan node for the "+
+			"work. On Claude you may instead call hera_new_orchestrator(cwd=$PWD, name=\"...\", "+
 			"coordinator_role_name=\"coord\", prompt=\"...\") to become a sub-coordinator, then use "+
-			"hera_spawn_worker(project=\"TARGET-PROJECT\", ...) to dispatch workers in that project. "+
+			"hera_spawn_worker(project=\"TARGET-PROJECT\", ...) to dispatch workers. "+
 			"When opening pull requests, use mcp__argus__iris_gh_pr_create (not gh pr create directly) "+
 			"so argus records the PR URL and the hera rail shows the PR indicator.",
 		orchestrator, coordinator)

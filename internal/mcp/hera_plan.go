@@ -44,6 +44,20 @@ type heraPlanNodeSpec struct {
 	Archetype string `json:"archetype"`
 }
 
+// heraPlanEdgeSpec is the per-edge shape hera_plan decodes.
+type heraPlanEdgeSpec struct {
+	Blocked string `json:"blocked"`
+	Blocker string `json:"blocker"`
+}
+
+// heraPlanParams is the hera_plan argument shape.
+type heraPlanParams struct {
+	Cwd          string             `json:"cwd"`
+	Nodes        []heraPlanNodeSpec `json:"nodes"`
+	Edges        []heraPlanEdgeSpec `json:"edges"`
+	Orchestrator string             `json:"orchestrator"`
+}
+
 // heraPlanNodeParams is the hera_plan_node argument shape (see heraPlanNodeSpec).
 type heraPlanNodeParams struct {
 	heraPlanNodeSpec
@@ -179,15 +193,7 @@ func (s *Server) toolHeraPlan(id interface{}, args json.RawMessage) *Response {
 	if !s.heraEnabled() {
 		return toolError(id, "hera not configured")
 	}
-	var p struct {
-		Cwd   string             `json:"cwd"`
-		Nodes []heraPlanNodeSpec `json:"nodes"`
-		Edges []struct {
-			Blocked string `json:"blocked"`
-			Blocker string `json:"blocker"`
-		} `json:"edges"`
-		Orchestrator string `json:"orchestrator"`
-	}
+	var p heraPlanParams
 	json.Unmarshal(args, &p) //nolint:errcheck
 
 	if p.Cwd == "" {

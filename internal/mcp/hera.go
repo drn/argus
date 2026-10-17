@@ -305,13 +305,13 @@ var heraToolDefs = []Tool{
 	},
 	{
 		Name:        "hera_plan_node",
-		Description: "Create a PLANNED node: a worker role with NO live agent, worktree, or inbox yet — a durable plan entry costing one row. Coordinator-only. The node materializes into a live worker automatically once all its blockers (declared via hera_block) reach role-status done. Bake a stable short-id prefix into the name (e.g. '2c-fact-checker': number = serial stage, letter = parallel member). The prompt is delivered to the worker on materialization (a check-in standing-order is prepended automatically). To stand up a SUB-COORDINATOR (its own team and child orchestrator), set kind=subcoord and pass the objective as goal instead of prompt — this is THE way to create a sub-coordinator: it always materializes on a Claude-capable backend (with no blockers it is ready immediately and starts on the gater's next tick; otherwise once all blockers reach role-status done). Do NOT spawn a worker and have it call hera_new_orchestrator — that inherits [backend_routing] and can land on Codex.",
+		Description: "Create a PLANNED node: a worker role with NO live agent, worktree, or inbox yet — a durable plan entry costing one row. Coordinator-only. The node materializes into a live worker automatically once all its blockers (declared via hera_block) reach role-status done. Bake a stable short-id prefix into the name (e.g. '2c-fact-checker': number = serial stage, letter = parallel member). The prompt is delivered to the worker on materialization (a check-in standing-order is prepended automatically). To stand up a SUB-COORDINATOR (its own team and child orchestrator), set kind=subcoord and pass the objective as goal instead of prompt — this is THE way to create a sub-coordinator: it resolves to a Claude-capable backend whenever one is configured (with no blockers it is ready immediately and starts on the gater's next tick; otherwise once all blockers reach role-status done). Do NOT spawn a worker and have it call hera_new_orchestrator — that inherits [backend_routing] and can land on Codex.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"cwd":          map[string]interface{}{"type": "string", "description": "Coordinator's worktree path (use $PWD)"},
 				"name":         map[string]interface{}{"type": "string", "description": "Short-id-prefixed node name (e.g. '2c-fact-checker'); made unique within the orchestrator automatically"},
-				"kind":         map[string]interface{}{"type": "string", "enum": []string{"worker", "subcoord"}, "default": "worker", "description": "Node kind. worker (default) = one unit of work, takes prompt. subcoord = a sub-coordinator with its own team, takes goal; always runs on a Claude-capable backend"},
+				"kind":         map[string]interface{}{"type": "string", "enum": []string{"worker", "subcoord"}, "default": "worker", "description": "Node kind. worker (default) = one unit of work, takes prompt. subcoord = a sub-coordinator with its own team, takes goal; resolves to a Claude backend when one is configured"},
 				"goal":         map[string]interface{}{"type": "string", "description": "REQUIRED when kind=subcoord (used instead of prompt): the objective delivered as the spawned coordinator's prompt. Bake in rich context — it runs its own planning and spawns its own workers"},
 				"prompt":       map[string]interface{}{"type": "string", "description": "Required for kind=worker (omit for subcoord). The worker's MISSION/task only, delivered when the node materializes and stored verbatim as the node's description in the plan-DAG view. Do NOT prepend organization or security policy: every spawned worker session receives its org instructions independently (harness-injected), so a prepended copy is redundant and pollutes the stored prompt and the plan-DAG view"},
 				"project":      map[string]interface{}{"type": "string", "description": "(optional) argus project for the worker. Defaults to the coordinator's own project"},
@@ -337,7 +337,7 @@ var heraToolDefs = []Tool{
 	},
 	{
 		Name:        "hera_plan",
-		Description: "Submit a whole plan graph in one transactional call: a set of planned nodes plus the blocking edges among them. Coordinator-only. Nodes are created first, then edges (cycle-checked, single-orchestrator) reference nodes by name. Either the whole graph is created or, on any cycle/cross-orchestrator/validation error, nothing is. Use this to author a multi-phase plan at once instead of many hera_plan_node + hera_block calls. A node with kind=subcoord (objective in goal) is THE way to stand up a sub-coordinator: it always materializes on a Claude-capable backend. Do NOT spawn a worker and have it call hera_new_orchestrator — that inherits [backend_routing] and can land on Codex.",
+		Description: "Submit a whole plan graph in one transactional call: a set of planned nodes plus the blocking edges among them. Coordinator-only. Nodes are created first, then edges (cycle-checked, single-orchestrator) reference nodes by name. Either the whole graph is created or, on any cycle/cross-orchestrator/validation error, nothing is. Use this to author a multi-phase plan at once instead of many hera_plan_node + hera_block calls. A node with kind=subcoord (objective in goal) is THE way to stand up a sub-coordinator: it resolves to a Claude-capable backend whenever one is configured. Do NOT spawn a worker and have it call hera_new_orchestrator — that inherits [backend_routing] and can land on Codex.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -349,7 +349,7 @@ var heraToolDefs = []Tool{
 						"type": "object",
 						"properties": map[string]interface{}{
 							"name":      map[string]interface{}{"type": "string"},
-							"kind":      map[string]interface{}{"type": "string", "enum": []string{"worker", "subcoord"}, "default": "worker", "description": "worker (default) takes prompt; subcoord takes goal and always runs on a Claude-capable backend"},
+							"kind":      map[string]interface{}{"type": "string", "enum": []string{"worker", "subcoord"}, "default": "worker", "description": "worker (default) takes prompt; subcoord takes goal and resolves to a Claude backend when one is configured"},
 							"goal":      map[string]interface{}{"type": "string", "description": "REQUIRED when kind=subcoord (used instead of prompt): the sub-coordinator's objective"},
 							"prompt":    map[string]interface{}{"type": "string", "description": "Required for kind=worker (omit for subcoord)"},
 							"project":   map[string]interface{}{"type": "string"},
@@ -604,21 +604,6 @@ func (s *Server) toolHeraNewOrchestrator(id interface{}, args json.RawMessage) *
 		return toolError(id, err.Error())
 	}
 
-	// Promotion guard (fix-codex-subcoordinators): a coordinator on a non-Claude
-	// backend has no coord-hook context-size stamping, cost accrual, or recycle.
-	// Worker-promotion on a [backend_routing]-picked Codex worker is how that
-	// happened by accident. No override here by design; humans use the TUI form.
-	if name, ok := s.nonClaudeTaskBackend(task); ok {
-		slog.Warn("[hera] new_orchestrator rejected: caller backend is not Claude-capable",
-			"caller_task", task.ID, "backend", name, "requested_orch", p.Name)
-		return toolError(id, fmt.Sprintf(
-			"this task runs on backend %q, which is not Claude-capable; a coordinator needs Claude Code "+
-				"(coord-hook context tracking, cost accrual, and recycle). To stand up a sub-coordinator use "+
-				"hera_plan_node(kind=\"subcoord\", goal=...) — it always materializes on Claude — or spawn the "+
-				"worker with hera_spawn_worker(backend=\"claude\") and have THAT worker call hera_new_orchestrator.",
-			name))
-	}
-
 	// Guard the self-promotion footgun: a task that already holds a live
 	// coordinator binding under a DIFFERENT orchestrator must not bind its own
 	// session as a SECOND coordinator of a new one. Following such a call, the
@@ -632,12 +617,15 @@ func (s *Server) toolHeraNewOrchestrator(id interface{}, args json.RawMessage) *
 	// only worker/freelance bindings (worker self-promotion) or no binding (fresh
 	// bootstrap) also fall through. Fail-open on a list error, matching the
 	// sibling same-orchestrator guard.
-	if liveBindings, lbErr := s.heraStore.ListHeraLiveBindingsByTask(task.ID); lbErr == nil {
+	liveBindings, lbErr := s.heraStore.ListHeraLiveBindingsByTask(task.ID)
+	holdsCoordinator := false
+	if lbErr == nil {
 		for _, b := range liveBindings {
 			r, rErr := s.heraStore.HeraRole(b.RoleID)
 			if rErr != nil || r.Kind != db.HeraKindCoordinator {
 				continue
 			}
+			holdsCoordinator = true
 			orchName := fmt.Sprintf("id:%d", b.OrchestratorID)
 			if o, oErr := s.heraStore.HeraOrchestrator(b.OrchestratorID); oErr == nil {
 				orchName = o.Name
@@ -652,10 +640,31 @@ func (s *Server) toolHeraNewOrchestrator(id interface{}, args json.RawMessage) *
 			return toolError(id, fmt.Sprintf(
 				"task is already the coordinator of orchestrator %q; a coordinator DISPATCHES work "+
 					"with hera_spawn_worker (project= targets any repo) and must not bind its own session "+
-					"as a second coordinator. For a dedicated sub-team, spawn a worker (which can promote "+
-					"itself via hera_new_orchestrator) or author a kind=subcoord hera_plan_node.",
+					"as a second coordinator. For a dedicated sub-team, author a kind=subcoord hera_plan_node, "+
+					"or spawn a worker with backend=\"claude\" (which can promote itself via hera_new_orchestrator).",
 				orchName))
 		}
+	}
+
+	// Promotion guard (fix-codex-subcoordinators): a coordinator on a backend that
+	// is not provably Claude-capable has no coord-hook context-size stamping, cost
+	// accrual, or recycle. Worker-promotion on a [backend_routing]-picked Codex
+	// worker is how that happened by accident. Runs AFTER the binding guard's scan
+	// and is skipped for a caller that already coordinates (e.g. a Codex-backed
+	// coordinator the operator created via the TUI form), so its idempotent
+	// re-call keeps the "already the coordinator / use hera_join" guidance. Still
+	// before orchestrator creation, so a rejection leaves no orphan. No override
+	// here by design; humans use the TUI New Coordinator form.
+	if name, ok := s.nonClaudeTaskBackend(task); ok && !holdsCoordinator {
+		slog.Warn("[hera] new_orchestrator rejected: caller backend is not Claude-capable",
+			"caller_task", task.ID, "backend", name, "requested_orch", p.Name)
+		return toolError(id, fmt.Sprintf(
+			"this task runs on backend %q, which is not provably Claude-capable; a coordinator needs Claude Code "+
+				"(coord-hook context tracking, cost accrual, and recycle). Ask your coordinator (hera_send) to author "+
+				"hera_plan_node(kind=\"subcoord\", goal=...) for this sub-team, or to respawn you with "+
+				"hera_spawn_worker(backend=\"claude\"). If this task is not bound to a coordinator, use the TUI New "+
+				"Coordinator form instead.",
+			name))
 	}
 
 	// Create (or fetch existing) orchestrator — CreateHeraOrchestrator is idempotent.
@@ -2094,8 +2103,11 @@ func heraRoleInSubtree(role *db.HeraRole, subtree map[int64]struct{}) bool {
 	return ok
 }
 
-// nonClaudeTaskBackend reports the task's backend name when it is positively
-// identified as not Claude-capable (backend registry via agent.IsClaudeBackend).
+// nonClaudeTaskBackend reports the task's backend name when its resolved command
+// is not provably Claude-capable (anything but an exact `claude` basename,
+// custom wrappers included — consistent with agent.resolveCoordinatorBackend).
+// Uses agent.IsClaudeBackend, the documented exception to the registry rule:
+// coord-hook/recycle are genuinely Claude-only paths, as in resolveCoordinatorBackend.
 // Fail-open: an unstamped backend, unavailable config, or an unresolvable
 // backend returns ok=false — a false reject would strand a legitimate
 // coordinator, while a false accept is merely the pre-guard status quo.
