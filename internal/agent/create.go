@@ -75,8 +75,9 @@ type CreateInput struct {
 	// to Prompt so the agent sees them on first turn.
 	Attachments []Attachment
 
-	Rows uint16 // initial PTY rows (0 → 24)
-	Cols uint16 // initial PTY cols (0 → 80)
+	Rows    uint16          // initial PTY rows (0 → recent pane, otherwise 24)
+	Cols    uint16          // initial PTY cols (0 → recent pane, otherwise 80)
+	PTYRole db.HeraRoleKind // omitted dimensions use this role's recent TUI pane
 
 	// OnWorktreeCreated runs after the worktree exists but before the task
 	// row is persisted. Use this for writing per-worktree context files
@@ -322,12 +323,28 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 
 	// Step 5: start session.
 	rows := input.Rows
-	if rows == 0 {
-		rows = 24
-	}
 	cols := input.Cols
+	if rows == 0 || cols == 0 {
+		size, sizeErr := database.InitialPTYSize(input.PTYRole, time.Now())
+		if sizeErr != nil {
+			slog.Warn("[spawn-size] report read failed; using defaults", "task", task.ID, "err", sizeErr)
+		} else if size.Valid() {
+			if rows == 0 {
+				rows = size.Rows
+			}
+			if cols == 0 {
+				cols = size.Cols
+			}
+			slog.Info("[spawn-size] using reported pane", "task", task.ID, "role", input.PTYRole, "rows", rows, "cols", cols)
+		} else {
+			slog.Info("[spawn-size] no recent pane report; using defaults", "task", task.ID)
+		}
+	}
+	if rows == 0 {
+		rows = DefaultTermRows
+	}
 	if cols == 0 {
-		cols = 80
+		cols = DefaultTermCols
 	}
 
 	if input.BeforeStart != nil {

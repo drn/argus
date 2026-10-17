@@ -624,3 +624,142 @@ full-screen mode, so gating on alt-screen would miss them.
 - **THEN** the pane's click callback SHALL be invoked if one is configured,
   and no SGR mouse bytes SHALL be written to any session
 
+### Requirement: Bounded rerender stop escalation
+
+Transcript-guarded width-repair stops SHALL give the agent three seconds after SIGTERM to flush before escalating a still-running agent to SIGKILL. A cooperative exit during that grace SHALL cancel escalation and leave descendants untouched. Once agent SIGKILL succeeds, cleanup SHALL target its captured descendant tree, including children that entered another session, with SIGTERM followed by a short grace and SIGKILL for survivors. Agent-started dev servers MAY be stopped on escalation. Process creation identity SHALL be checked before signalling captured descendants; unrelated processes SHALL NOT be targeted. Cleanup counts and inspection/signal failures SHALL be logged through the production logger. Ordinary agent-only stops, session switches and Hera revive SHALL retain non-escalating behavior; full task teardown SHALL retain process-group cleanup. Kick transcript guards SHALL remain in force.
+
+#### Scenario: Agent ignores SIGTERM
+
+- **WHEN** a width-repair stop leaves the agent running after its three-second grace
+- **THEN** the agent SHALL receive SIGKILL and its captured descendants SHALL be stopped with a short TERM-to-KILL grace
+
+#### Scenario: Cooperative agent exit
+
+- **WHEN** the agent exits before escalation
+- **THEN** descendant processes SHALL remain untouched
+
+#### Scenario: Detached helper holds the PTY
+
+- **WHEN** a descendant has entered a separate session and retains a PTY slave during escalation
+- **THEN** ancestry selection SHALL include it and stopping it SHALL allow PTY drain without waiting for the five-second drain fallback
+
+#### Scenario: Unrelated process or reused PID
+
+- **WHEN** a process is outside the captured tree or has a different creation identity
+- **THEN** cleanup SHALL NOT signal it
+
+#### Scenario: Stale daemon or supervisor
+
+- **WHEN** an RPC peer does not implement bounded width repair
+- **THEN** the client SHALL log the rejection and use the existing non-escalating agent-only stop without sending the new scope to the old stop verb
+
+### Requirement: In-pane width repair status
+
+The TUI SHALL display a small border indicator while a pane's repair is deferred, stopping, or restarting. Deferred repair SHALL say “Re-render pending”; active stop or restart SHALL say “Re-rendering…”. Terminal content, including deferred user prompts, SHALL remain readable. The indicator SHALL clear when repair resolves, restart fails, the session exits cleanly, or the pane rebinds, including inactive Hera panes.
+
+#### Scenario: Busy agent defers repair
+
+- **WHEN** width repair is deferred because the agent is busy
+- **THEN** its pane SHALL show the appropriate border status without covering terminal content
+
+#### Scenario: Repair completes
+
+- **WHEN** a restarted session is attached successfully or evaluation finds no repair necessary
+- **THEN** the indicator SHALL disappear
+
+### Requirement: Unresolved width anchors survive intermediate no-drift binds
+
+No-drift evaluation and successful stop SHALL preserve unresolved committed-width anchors in memory for the same live session PID. The anchor SHALL be keyed to SessionHandle.PID(), not the task row's potentially stale AgentPID. When a replacement PID binds, the TUI SHALL discard the old anchor and invalidate cached attach decisions before evaluating the new process's own spawn width. A successful new session start or task deletion SHALL clear anchor identity and width; a failed start SHALL preserve both. The TUI SHALL NOT persist or override spawn width with redundant per-task reconciled-width metadata. Async decisions superseded by another process binding SHALL NOT restore an old-process anchor or stop a replacement process.
+
+#### Scenario: Intermediate Skip before returning narrow
+
+- **WHEN** the same 80-column process defers at 100 columns, skips at 92 columns, and is then viewed at 80 columns
+- **THEN** its 100-column anchor SHALL survive and cause the final evaluation to request repair
+
+#### Scenario: External Hera revive or REST resume replaces the process
+
+- **WHEN** a task with an unresolved anchor restarts outside TUI startSession and later binds with a different live PID
+- **THEN** the old anchor SHALL be discarded even if the task row still contains its old PID
+- **AND** an unchanged new spawn width SHALL NOT trigger a repair from that old anchor
+
+#### Scenario: New process has genuine width drift
+
+- **WHEN** a replacement process binds at a cached pane width that differs meaningfully from its own spawn width
+- **THEN** invalidation of the previous process's attach cache SHALL allow the guarded repair predicate to run
+
+#### Scenario: Superseded async decision
+
+- **WHEN** an old-process probe completes after a different PID binds
+- **THEN** its callback SHALL NOT change the replacement's anchor or repair state
+
+### Requirement: Fresh spawns use recent TUI pane dimensions
+
+Every CreateAndStart caller SHALL fill omitted PTY dimensions from a valid recently reported local TUI size, including headless tasks, Hera spawn/materialization, REST creation and schedule run-now. Explicit dimensions SHALL take precedence individually. Hera roles SHALL use conservative split role dimensions derived from current screen geometry regardless of active tab or fullscreen state, and SHALL NOT inherit Active geometry when their role-specific size is absent or invalid. Other callers SHALL use Active geometry. Reports SHALL expire after two minutes and valid preferences SHALL have at least five rows and twenty columns. Missing, invalid or expired preferences SHALL preserve the existing 24-row, 80-column defaults.
+
+#### Scenario: Fresh coordinator is shown on Projects
+
+- **WHEN** the TUI reports a 98-column split coordinator pane and a fresh coordinator is created without explicit dimensions
+- **THEN** its session SHALL start at 98 columns
+
+#### Scenario: No recent TUI report
+
+- **WHEN** no valid report exists or the report is at least two minutes old
+- **THEN** omitted dimensions SHALL use the existing 24×80 defaults
+
+#### Scenario: Explicit dimensions
+
+- **WHEN** the caller supplies either PTY dimension explicitly
+- **THEN** the report SHALL fill only the omitted dimension
+
+#### Scenario: Report has no role-specific pane
+
+- **WHEN** a report contains only Active geometry and a Hera role is created
+- **THEN** its omitted dimensions SHALL use 24×80 defaults rather than Active
+
+#### Scenario: Tasks or agent view is active
+
+- **WHEN** a local TUI publishes a layout while Tasks or an agent view is active
+- **THEN** coordinator and worker preferences SHALL still describe the screen's Hera split panes
+
+#### Scenario: Hera fullscreen is active
+
+- **WHEN** a Hera pane is fullscreen
+- **THEN** fresh role preferences SHALL remain the narrower split geometry
+
+#### Scenario: REST create omits dimensions
+
+- **WHEN** web, macOS or remote TUI creates a task through REST without dimensions
+- **THEN** fresh creation SHALL use the daemon host's recent Active preference or the existing defaults when unavailable
+
+### Requirement: Pane-size publication does not block UI callbacks
+
+Pane-layout SQL writes SHALL run on an ordered background worker. Unchanged layouts SHALL be refreshed at a bounded heartbeat rather than written on every frame, and newer queued layout SHALL NOT be overwritten by an older write.
+
+#### Scenario: Repeated redraw with unchanged geometry
+
+- **WHEN** frames redraw within the publication heartbeat with no pane-size change
+- **THEN** the TUI SHALL NOT issue another SQL write
+
+### Requirement: Only width repairs opt into bounded kick stops
+
+Session switches and Hera revive SHALL retain ordinary non-escalating agent-only stops. Explicit width repairs SHALL use the bounded repair stop after their existing guards. Grace, cancellation, escalation, and old-peer fallback events SHALL be visible in daemon/supervisor logs.
+
+#### Scenario: Switch or revive uses kick machinery
+
+- **WHEN** a session switch or Hera revive queues a kick restart
+- **THEN** it SHALL NOT acquire width-repair SIGKILL escalation
+
+#### Scenario: Deferred main-view repair
+
+- **WHEN** the main view defers a repair without a scheduled retry
+- **THEN** its border SHALL show “Re-render pending” rather than claim re-rendering is active
+
+### Requirement: Redundant attach clears stale repair status
+
+A redundant attach decision SHALL clear existing repair status for that task across main and Hera panes without changing its unresolved width anchor.
+
+#### Scenario: Hidden main pane retains a deferred indicator
+
+- **WHEN** a Hera rebind resolves repair through the redundant-attach gate
+- **THEN** the hidden main pane's repair indicator SHALL clear
+

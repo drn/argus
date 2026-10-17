@@ -75,6 +75,8 @@ type SessionRunner interface {
 	// supplied dimensions so the agent re-flows its scrollback. The runner owns
 	// the pendingRestart bookkeeping that keeps the intervening exit from
 	// flipping task status — callers MUST NOT emulate it with Stop+Start.
+	// This ordinary restart preserves its non-escalating stop. Width repairs
+	// opt into bounded stop through agent.KickWidthRerender instead.
 	KickRerender(task *model.Task, cfg config.Config, rows, cols uint16) error
 
 	// Recycle stops a live session and queues a same-task restart with

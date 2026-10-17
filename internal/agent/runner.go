@@ -308,7 +308,7 @@ func (r *Runner) getSession(taskID string) *Session {
 // Returns ErrSessionNotFound if no live session, or an error if a kick is
 // already pending. Stop failures propagate as-is.
 func (r *Runner) KickRerender(task *model.Task, cfg config.Config, rows, cols uint16) error {
-	return r.kickRerender(task, cfg, rows, cols, false)
+	return r.kickRerender(task, cfg, rows, cols, false, StopAgentOnly)
 }
 
 // KickRevive is an explicit operator recovery, allowed to restart an unsaved
@@ -323,10 +323,16 @@ func KickRevive(r SessionRunner, task *model.Task, cfg config.Config, rows, cols
 }
 
 func (r *Runner) Revive(task *model.Task, cfg config.Config, rows, cols uint16) error {
-	return r.kickRerender(task, cfg, rows, cols, true)
+	return r.kickRerender(task, cfg, rows, cols, true, StopAgentOnly)
 }
 
-func (r *Runner) kickRerender(task *model.Task, cfg config.Config, rows, cols uint16, revive bool) error {
+// KickWidthRerender is only for guarded width repair; session switches and
+// revive keep KickRerender's non-escalating shutdown contract.
+func (r *Runner) KickWidthRerender(task *model.Task, cfg config.Config, rows, cols uint16) error {
+	return r.kickRerender(task, cfg, rows, cols, false, StopRerender)
+}
+
+func (r *Runner) kickRerender(task *model.Task, cfg config.Config, rows, cols uint16, revive bool, scope StopScope) error {
 	if task == nil {
 		return fmt.Errorf("nil task")
 	}
@@ -366,7 +372,7 @@ func (r *Runner) kickRerender(task *model.Task, cfg config.Config, rows, cols ui
 	r.mu.Unlock()
 
 	slog.Info("runner.KickRerender", "task", task.ID, "cols", cols, "rows", rows)
-	if err := sess.StopScoped(StopAgentOnly); err != nil {
+	if err := sess.StopScoped(scope); err != nil {
 		// Stop failed — back out the pending entry so a future kick can run.
 		r.mu.Lock()
 		delete(r.pendingRestart, task.ID)

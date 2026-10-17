@@ -371,6 +371,8 @@ type TerminalPane struct {
 	// returning to the same closed-out task re-arms the banner on the next
 	// Enter, exactly like a fresh visit.
 	closedOutBannerShown bool
+	rerendering          bool
+	rerenderPending      bool
 
 	// closedOutDismissedOnce is true once DismissClosedOutBanner has fired at
 	// least once for this pane's CURRENT binding — i.e. the operator has
@@ -560,6 +562,12 @@ func (tp *TerminalPane) Session() agentview.TerminalAdapter {
 // in isolation.
 func (tp *TerminalPane) SetTaskID(id string) {
 	prevID := tp.taskID
+	if prevID != id {
+		tp.mu.Lock()
+		tp.rerendering = false
+		tp.rerenderPending = false
+		tp.mu.Unlock()
+	}
 	hadReplay := len(tp.replayData) > 0
 	tp.taskID = id
 	tp.replayData = nil
@@ -768,6 +776,8 @@ func (tp *TerminalPane) EagerReplayBuild() {
 // ResetVT clears all terminal state (on resize or task switch).
 func (tp *TerminalPane) ResetVT() {
 	tp.mu.Lock()
+	tp.rerendering = false
+	tp.rerenderPending = false
 	tp.resetLiveEmulatorInPlace()
 	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
@@ -1812,6 +1822,13 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	x, y, width, height = inner.X, inner.Y, inner.W, inner.H
 	if width <= 0 || height <= 0 {
 		return
+	}
+	if tp.Rerendering() {
+		// Paint on the border after terminal content. Even a prompt on the
+		// first content row must remain fully readable during deferral.
+		indicator := " " + tp.RerenderStatus() + " "
+		indicatorWidth := min(width, tview.TaggedStringWidth(indicator))
+		defer widget.DrawText(screen, x+width-indicatorWidth, y-1, indicatorWidth, indicator, theme.StyleClipboardHint)
 	}
 
 	if tp.diffMode {

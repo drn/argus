@@ -15,6 +15,29 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
+func TestSplitLaunchPaneSizes(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		w, h                int
+		rows, coord, worker uint16
+	}{
+		{"odd split", 239, 38, 36, 100, 101},
+		{"even split", 240, 38, 36, 101, 101},
+		{"minimum floors", 40, 5, 5, 20, 20},
+		{"rail only", 34, 38, 0, 0, 0},
+		{"too short", 239, 1, 0, 0, 0},
+		{"width overflow", 65536, 38, 0, 0, 0},
+		{"height overflow", 239, 65536, 0, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, c, w := SplitLaunchPaneSizes(tc.w, tc.h)
+			testutil.Equal(t, r, tc.rows)
+			testutil.Equal(t, c, tc.coord)
+			testutil.Equal(t, w, tc.worker)
+		})
+	}
+}
+
 // simScreenText renders sim's full cell grid to a newline-joined string, for
 // substring assertions against whatever a pane's Draw painted.
 func simScreenText(sim tcell.SimulationScreen) string {

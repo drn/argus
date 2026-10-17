@@ -1,6 +1,7 @@
 package client
 
 import (
+	"errors"
 	"io"
 	"net"
 	"net/rpc"
@@ -26,6 +27,13 @@ type wireRecorder struct {
 	mu      sync.Mutex
 	kick    daemon.KickReq
 	recycle daemon.RecycleReq
+
+	boundedStops  int
+	ordinaryStops int
+	boundedKicks  int
+	ordinaryKicks int
+	stopError     string
+	kickError     string
 }
 
 func (w *wireRecorder) StartSession(_ *daemon.StartReq, resp *daemon.StartResp) error {
@@ -45,6 +53,7 @@ func TestStartAbsentSessionID(t *testing.T) {
 func (w *wireRecorder) KickRerender(req *daemon.KickReq, resp *daemon.StatusResp) error {
 	w.mu.Lock()
 	w.kick = *req
+	w.ordinaryKicks++
 	w.mu.Unlock()
 	resp.OK = true
 	if req.Revive {
@@ -61,6 +70,37 @@ func TestExplicitReviveWire(t *testing.T) {
 	defer rec.mu.Unlock()
 	testutil.True(t, rec.kick.Revive)
 	testutil.Equal(t, task.SessionID, "recovered")
+}
+
+func (w *wireRecorder) KickWidthRerender(req *daemon.KickReq, resp *daemon.StatusResp) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.kick = *req
+	w.boundedKicks++
+	if w.kickError != "" {
+		return errors.New(w.kickError)
+	}
+	resp.OK = true
+	return nil
+}
+
+func (w *wireRecorder) StopRerender(_ *daemon.TaskIDReq, resp *daemon.StatusResp) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.boundedStops++
+	if w.stopError != "" {
+		return errors.New(w.stopError)
+	}
+	resp.OK = true
+	return nil
+}
+
+func (w *wireRecorder) StopSession(_ *daemon.StopReq, resp *daemon.StatusResp) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.ordinaryStops++
+	resp.OK = true
+	return nil
 }
 
 func (w *wireRecorder) Recycle(req *daemon.RecycleReq, resp *daemon.StatusResp) error {
