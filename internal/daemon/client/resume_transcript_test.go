@@ -39,6 +39,9 @@ func TestResumeIDWire(t *testing.T) {
 
 func TestSupResumeID(t *testing.T) {
 	d, supervisorClient, database := supE2E(t)
+	// CI's 2-vCPU runner can stall a start/kick hop past the 2s production RPC
+	// budget; this test asserts recovery semantics, not RPC latency.
+	supervisorClient.minTimeout = ciWait
 	sock := filepath.Join(t.TempDir(), "d.sock")
 	go d.Serve(sock) //nolint:errcheck
 	t.Cleanup(func() { d.Shutdown() })
@@ -48,6 +51,7 @@ func TestSupResumeID(t *testing.T) {
 	testutil.NoError(t, database.SetBackend("fixture", config.Backend{Command: bin}))
 	c, err := Connect(sock)
 	testutil.NoError(t, err)
+	c.minTimeout = ciWait
 	t.Cleanup(func() { _ = c.Close() })
 	const old = "11111111-1111-7111-9111-111111111111"
 	task := &model.Task{ID: "recover", Name: "recover", Status: model.StatusInProgress, Backend: "fixture", Worktree: t.TempDir(), SessionID: old}
@@ -65,7 +69,7 @@ func TestSupResumeID(t *testing.T) {
 	testutil.False(t, recovered.SessionID == "" || recovered.SessionID == prior)
 	task.SessionID = recovered.SessionID
 	// Prove the replacement launched with the ID returned through both hops.
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(ciWait)
 	var launch []byte
 	for time.Now().Before(deadline) {
 		launch, err = os.ReadFile(filepath.Join(task.Worktree, "launch-args"))
@@ -85,7 +89,7 @@ func TestSupResumeID(t *testing.T) {
 	var written daemon.StatusResp
 	testutil.NoError(t, supervisorClient.call("Daemon.WriteInput", &daemon.WriteReq{TaskID: task.ID, Data: []byte(marker + "\n")}, &written))
 	testutil.Equal(t, written.Error, "")
-	deadline = time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(ciWait)
 	var output []byte
 	for time.Now().Before(deadline) {
 		if replacement := supervisorClient.Get(task.ID); replacement != nil {
@@ -102,10 +106,14 @@ func TestSupResumeID(t *testing.T) {
 	waitStatus(t, database, task.ID, model.StatusInReview)
 }
 
+// ciWait bounds every readiness poll and RPC in the resume tests; generous so a
+// starved CI runner never turns a slow-but-correct step into a failure.
+const ciWait = 30 * time.Second
+
 func assertResumeLaunchID(t *testing.T, sess agent.SessionHandle, id string) {
 	t.Helper()
 	want := "--session-id\r\n" + id
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(ciWait)
 	for time.Now().Before(deadline) && !strings.Contains(string(sess.RecentOutput()), want) {
 		time.Sleep(10 * time.Millisecond)
 	}

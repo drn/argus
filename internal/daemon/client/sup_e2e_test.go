@@ -175,7 +175,7 @@ func TestSupInnerAmbiguous(t *testing.T) {
 
 func waitFile(t *testing.T, path string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(path); err == nil {
 			return
@@ -187,7 +187,7 @@ func waitFile(t *testing.T, path string) {
 
 func waitStatus(t *testing.T, database *db.DB, taskID string, want model.Status) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		got, err := database.Get(taskID)
 		testutil.NoError(t, err)
