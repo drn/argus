@@ -40,6 +40,16 @@ func envMap(kv []string) map[string]string {
 	return m
 }
 
+// clearProfileEnv isolates profile injection assertions from a parent Argus
+// session. Setenv registers restoration; Unsetenv makes absence testable.
+func clearProfileEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{"ARGUS_PROFILE", "ARGUS_ARCHETYPE", "ARGUS_MODEL"} {
+		t.Setenv(key, "")
+		testutil.NoError(t, os.Unsetenv(key))
+	}
+}
+
 // TestResolveModel_ProfileChain exercises the full diligence-profile resolution
 // precedence (add-diligence-profiles "Profile-aware model resolution").
 func TestResolveModel_ProfileChain(t *testing.T) {
@@ -186,6 +196,7 @@ func TestResolveModel_ProfileUsesBackendFamilyForCustomBackendName(t *testing.T)
 }
 
 func TestBuildCmd_OpencodeProfileModelUsesInlineConfig(t *testing.T) {
+	clearProfileEnv(t)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
 	cfg := modelConfig()
@@ -219,6 +230,7 @@ func TestBuildCmd_OpencodeProfileModelUsesInlineConfig(t *testing.T) {
 // backend-appropriate model delivery when a bound profile resolves a
 // backend-valid model (add-diligence-profiles "Profile environment injection").
 func TestBuildCmd_ProfileEnv_PresentOnResolution(t *testing.T) {
+	clearProfileEnv(t)
 	t.Setenv("HOME", t.TempDir())
 	cfg := modelConfig()
 	writeLibraryProfile(t, "default", "[archetype.code_slice]\nmodels = { claude = \"sonnet\" }\n")
@@ -241,6 +253,7 @@ func TestBuildCmd_ProfileEnv_PresentOnResolution(t *testing.T) {
 // TestBuildCmd_ProfileEnv_AbsentWithoutProfile verifies none of the profile env
 // vars are exported when the task carries no archetype (so no profile resolves).
 func TestBuildCmd_ProfileEnv_AbsentWithoutProfile(t *testing.T) {
+	clearProfileEnv(t)
 	t.Setenv("HOME", t.TempDir())
 	cfg := modelConfig()
 	writeLibraryProfile(t, "default", "[archetype.code_slice]\nmodels = { claude = \"sonnet\" }\n")
@@ -253,7 +266,7 @@ func TestBuildCmd_ProfileEnv_AbsentWithoutProfile(t *testing.T) {
 	env := envMap(cmd.Env)
 	for _, k := range []string{"ARGUS_PROFILE", "ARGUS_ARCHETYPE", "ARGUS_MODEL"} {
 		if _, ok := env[k]; ok {
-			t.Errorf("expected %s to be absent; cmd.Env = %v", k, cmd.Env)
+			t.Errorf("expected key %s to be absent", k)
 		}
 	}
 }
@@ -262,6 +275,7 @@ func TestBuildCmd_ProfileEnv_AbsentWithoutProfile(t *testing.T) {
 // when the profile model is not valid for the backend (resolution falls through
 // to the backend default for --model, and exports no profile env).
 func TestBuildCmd_ProfileEnv_AbsentOnFallThrough(t *testing.T) {
+	clearProfileEnv(t)
 	t.Setenv("HOME", t.TempDir())
 	cfg := modelConfig()
 	b := cfg.Backends["codex"]
@@ -280,7 +294,7 @@ func TestBuildCmd_ProfileEnv_AbsentOnFallThrough(t *testing.T) {
 	env := envMap(cmd.Env)
 	for _, k := range []string{"ARGUS_PROFILE", "ARGUS_ARCHETYPE", "ARGUS_MODEL"} {
 		if _, ok := env[k]; ok {
-			t.Errorf("expected %s to be absent on fall-through; cmd.Env = %v", k, cmd.Env)
+			t.Errorf("expected key %s to be absent on fall-through", k)
 		}
 	}
 	// --model still reflects the backend default.
@@ -366,6 +380,7 @@ func TestResolveModel_InvalidTaskProfileOverrideFallsOpen(t *testing.T) {
 // TestBuildCmd_ProfileEnv_OverrideProfile verifies that ARGUS_PROFILE reflects
 // the per-spawn override profile name, not the project's bound profile.
 func TestBuildCmd_ProfileEnv_OverrideProfile(t *testing.T) {
+	clearProfileEnv(t)
 	t.Setenv("HOME", t.TempDir())
 	cfg := modelConfig()
 	cfg.Projects = map[string]config.Project{

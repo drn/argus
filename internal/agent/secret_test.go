@@ -84,7 +84,7 @@ func TestBuildCmd_EnvVarMapping_ResolvedSourceInjected(t *testing.T) {
 
 	got, ok := envValue(cmd.Env, "OPENAI_API_KEY")
 	if !ok {
-		t.Fatalf("expected OPENAI_API_KEY in child env; got %v", cmd.Env)
+		t.Fatal("expected OPENAI_API_KEY in child env")
 	}
 	testutil.Equal(t, got, resolvedValue)
 }
@@ -118,7 +118,7 @@ func TestBuildCmd_EnvVarMapping_UnresolvedSourceUnsetAndWarns(t *testing.T) {
 	testutil.NoError(t, err)
 
 	if _, ok := envValue(cmd.Env, "OPENAI_API_KEY"); ok {
-		t.Fatalf("expected OPENAI_API_KEY to be unset when source unresolved; got %v", cmd.Env)
+		t.Fatal("expected OPENAI_API_KEY to be unset when source unresolved")
 	}
 	log := readLog()
 	testutil.Contains(t, log, "OPENAI_API_KEY")
@@ -172,7 +172,7 @@ func TestBuildCmd_EnvVarMapping_DefaultResolverReadsProcessEnv(t *testing.T) {
 
 	got, ok := envValue(cmd.Env, "OPENAI_API_KEY")
 	if !ok {
-		t.Fatalf("expected OPENAI_API_KEY from process env; got %v", cmd.Env)
+		t.Fatal("expected OPENAI_API_KEY from process env")
 	}
 	testutil.Equal(t, got, secret)
 	if _, ok := envValue(cmd.Env, "UNSET_TARGET"); ok {
@@ -304,7 +304,7 @@ func TestBuildCmd_EnvVarMapping_KeychainSourceDispatchesThroughRegistry(t *testi
 
 	got, ok := envValue(cmd.Env, "OPENAI_API_KEY")
 	if !ok {
-		t.Fatalf("expected OPENAI_API_KEY resolved via the keychain scheme; got env %v", cmd.Env)
+		t.Fatal("expected OPENAI_API_KEY resolved via the keychain scheme")
 	}
 	testutil.Equal(t, got, "keychain-resolved-value")
 }
@@ -340,7 +340,7 @@ func TestBuildCmd_EnvVarMapping_OpSourceDispatchesThroughRegistry(t *testing.T) 
 
 	got, ok := envValue(cmd.Env, "OPENAI_API_KEY")
 	if !ok {
-		t.Fatalf("expected OPENAI_API_KEY resolved via the op scheme; got env %v", cmd.Env)
+		t.Fatal("expected OPENAI_API_KEY resolved via the op scheme")
 	}
 	testutil.Equal(t, got, "op-resolved-value")
 }
@@ -407,7 +407,7 @@ func TestBuildCmd_EnvVarMapping_ExplicitEnvSchemeStillDispatchesThroughPluggable
 	testutil.NoError(t, err)
 	got, ok := envValue(cmd.Env, "OPENAI_API_KEY")
 	if !ok {
-		t.Fatalf("expected OPENAI_API_KEY resolved via env:// through the pluggable resolver; got env %v", cmd.Env)
+		t.Fatal("expected OPENAI_API_KEY resolved via env:// through the pluggable resolver")
 	}
 	testutil.Equal(t, got, "first-value")
 
@@ -428,7 +428,7 @@ func TestBuildCmd_EnvVarMapping_ExplicitEnvSchemeStillDispatchesThroughPluggable
 	testutil.NoError(t, err)
 	got2, ok := envValue(cmd2.Env, "OPENAI_API_KEY")
 	if !ok {
-		t.Fatalf("expected OPENAI_API_KEY resolved via env:// on the second BuildCmd call; got env %v", cmd2.Env)
+		t.Fatal("expected OPENAI_API_KEY resolved via env:// on the second BuildCmd call")
 	}
 	testutil.Equal(t, got2, "second-value")
 }
@@ -469,7 +469,7 @@ func TestBuildCmd_OpBootstrap_ForceExportedWhenConfigured(t *testing.T) {
 
 	got, ok := envValue(cmd.Env, "ARGUS_TEST_OP_BOOTSTRAP_TOKEN")
 	if !ok {
-		t.Fatalf("expected ARGUS_TEST_OP_BOOTSTRAP_TOKEN force-exported into child env; got %v", cmd.Env)
+		t.Fatal("expected ARGUS_TEST_OP_BOOTSTRAP_TOKEN force-exported into child env")
 	}
 	testutil.Equal(t, got, "bootstrap-token-value")
 }
@@ -504,6 +504,6 @@ func TestBuildCmd_OpBootstrap_AbsentWhenUnconfigured(t *testing.T) {
 	testutil.NoError(t, err)
 
 	if _, ok := envValue(cmd.Env, "ARGUS_TEST_OP_BOOTSTRAP_TOKEN"); ok {
-		t.Fatalf("expected no ARGUS_TEST_OP_BOOTSTRAP_TOKEN in child env when [secrets.op] bootstrap_source is unconfigured; got %v", cmd.Env)
+		t.Fatal("expected no ARGUS_TEST_OP_BOOTSTRAP_TOKEN in child env when [secrets.op] bootstrap_source is unconfigured")
 	}
 }
