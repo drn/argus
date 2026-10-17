@@ -105,6 +105,7 @@ func TestHeraCoordinatorOrientation_NoSelfPromotion(t *testing.T) {
 		{"subteam-trigger-is-scope", "multiple projects or phases", true},
 		{"path-worker-promotion", "worker-promotion", true},
 		{"path-subcoord-node", "kind=subcoord hera_plan_node", true},
+		{"promotion-requires-claude", `REQUIRES spawning that worker with backend="claude"`, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

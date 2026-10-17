@@ -681,8 +681,8 @@ func SpawnHeraCoordinator(database *db.DB, runner SessionProvider, in HeraCoordi
 // session as a relabel (not a new session) and is not a way to "become the one
 // who does the work" — and reserves hera_new_orchestrator for a genuine OWN
 // sub-team (multi-project / multi-phase, whose workers — not the coordinator —
-// do the work), obtained via a new session (worker-promotion or a kind=subcoord
-// plan node). Also points at the coordination tools + the iris PR convention.
+// do the work), obtained via a new session (preferably a kind=subcoord plan node;
+// worker-promotion only with backend="claude"). Also points at the coordination tools + the iris PR convention.
 // Shared by the native Hera view's `n` key.
 //
 // It also carries the five context-discipline habits from
@@ -703,9 +703,11 @@ func HeraCoordinatorOrientation(orchestrator string) string {
 			"as a second coordinator (a relabel, not a new session) and is NOT a way to become the "+
 			"one who does the work. Reserve hera_new_orchestrator for when you need your OWN dedicated "+
 			"sub-team — multiple projects or phases, each with its own plan and workers (and even then "+
-			"those workers do the work, not you) — obtained via a genuinely new session: a worker "+
-			"whose prompt tells IT to call hera_new_orchestrator once started (the worker-promotion "+
-			"pattern), or a kind=subcoord hera_plan_node the gater materializes. When opening pull "+
+			"those workers do the work, not you) — obtained via a genuinely new session. PREFER a kind=subcoord "+
+			"hera_plan_node (objective in goal=): it always materializes on a Claude-capable backend. "+
+			"The worker-promotion alternative — a worker whose prompt tells IT to call "+
+			"hera_new_orchestrator — REQUIRES spawning that worker with backend=\"claude\", because "+
+			"hera_new_orchestrator is rejected on a non-Claude (e.g. Codex) backend. When opening pull "+
 			"requests, use mcp__argus__iris_gh_pr_create (not gh pr create directly) so argus records "+
 			"the PR URL and the hera rail shows the PR indicator.\n\n"+
 			"You are long-lived: unlike a worker spawned for one slice and then discarded, you "+

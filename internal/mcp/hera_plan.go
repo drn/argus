@@ -32,20 +32,30 @@ func (s *Server) heraPlanCoordinatorGuard(id interface{}, cwd, orchestrator stri
 	return caller, nil
 }
 
+// heraPlanNodeSpec is the per-node shape hera_plan decodes. Its json tags are
+// asserted against the advertised schema (hera_subcoord_schema_test.go) so a
+// decoded-but-unadvertised param — the drift that hid kind/goal — fails a test.
+type heraPlanNodeSpec struct {
+	Name      string `json:"name"`
+	Prompt    string `json:"prompt"`
+	Goal      string `json:"goal"`
+	Kind      string `json:"kind"`
+	Project   string `json:"project"`
+	Archetype string `json:"archetype"`
+}
+
+// heraPlanNodeParams is the hera_plan_node argument shape (see heraPlanNodeSpec).
+type heraPlanNodeParams struct {
+	heraPlanNodeSpec
+	Cwd          string `json:"cwd"`
+	Orchestrator string `json:"orchestrator"`
+}
+
 func (s *Server) toolHeraPlanNode(id interface{}, args json.RawMessage) *Response {
 	if !s.heraEnabled() {
 		return toolError(id, "hera not configured")
 	}
-	var p struct {
-		Cwd          string `json:"cwd"`
-		Name         string `json:"name"`
-		Prompt       string `json:"prompt"`
-		Goal         string `json:"goal"`
-		Kind         string `json:"kind"`
-		Project      string `json:"project"`
-		Archetype    string `json:"archetype"`
-		Orchestrator string `json:"orchestrator"`
-	}
+	var p heraPlanNodeParams
 	json.Unmarshal(args, &p) //nolint:errcheck
 
 	if p.Cwd == "" {
@@ -170,15 +180,8 @@ func (s *Server) toolHeraPlan(id interface{}, args json.RawMessage) *Response {
 		return toolError(id, "hera not configured")
 	}
 	var p struct {
-		Cwd   string `json:"cwd"`
-		Nodes []struct {
-			Name      string `json:"name"`
-			Prompt    string `json:"prompt"`
-			Goal      string `json:"goal"`
-			Kind      string `json:"kind"`
-			Project   string `json:"project"`
-			Archetype string `json:"archetype"`
-		} `json:"nodes"`
+		Cwd   string             `json:"cwd"`
+		Nodes []heraPlanNodeSpec `json:"nodes"`
 		Edges []struct {
 			Blocked string `json:"blocked"`
 			Blocker string `json:"blocker"`

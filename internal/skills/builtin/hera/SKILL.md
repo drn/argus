@@ -80,7 +80,8 @@ status, revive, and completion; the plan-DAG authoring/mutation tools live in th
 - **`hera_new_orchestrator(cwd, name, coordinator_role_name, [prompt], [base_branch])`** — "I am the
   coordinator." Creates (or fetches, idempotent-by-name) the orchestrator, creates the named
   coordinator role, and binds this task to it. Returns the orchestrator name, role name, `binding_id`,
-  and argus task id. Rejects if this task already holds a live binding under that orchestrator (use
+  and argus task id. Rejects if the calling task's backend is not Claude-capable (use a `kind=subcoord`
+  plan node instead), and rejects if this task already holds a live binding under that orchestrator (use
   `hera_join` to retrieve it). The canonical "become an orchestrator" entry point — don't
   `hera_join` first; there is nothing to join yet. `base_branch` is the explicit base for this
   orchestrator's root plan nodes; it has no effect on nodes with blockers.
@@ -369,10 +370,12 @@ a full worked seed→fan-out→fan-in example. The §4 decision triad tells you 
 
 ### Worker promotion: becoming a sub-coordinator
 
-> If you already know up front (at plan-authoring time) that a stage is a sub-team, prefer the
-> **declarative** form: a `kind=subcoord` plan node (see the `hera-plan` skill). The gater then
-> materializes the sub-coordinator for you when its blockers finish. The runtime promotion below is for
-> when a worker discovers the need *mid-task*.
+> **Prefer the declarative form: a `kind=subcoord` plan node** (`hera_plan_node(kind="subcoord",
+> goal=...)`, see the `hera-plan` skill). It always materializes on a Claude-capable backend — with no
+> blockers on the gater's next tick, otherwise when its blockers finish. The runtime promotion below is
+> for when a worker discovers the need *mid-task*, and it **requires the worker to run on Claude**: spawn
+> it with `hera_spawn_worker(backend="claude")` (a `[backend_routing]`-picked Codex worker is rejected by
+> `hera_new_orchestrator`, since a non-Claude coordinator has no context/cost/recycle tracking).
 
 If a worker realizes mid-task it needs its own team (cross-repo work, real parallelism, a long sub-task):
 
