@@ -307,7 +307,7 @@ func (c *sessionCore) KickWidthRerender(req *KickReq, resp *StatusResp) error {
 }
 
 func (c *sessionCore) kickRerender(req *KickReq, resp *StatusResp, widthRepair bool) error {
-	slog.Info("rpc.KickRerender", "task", req.TaskID, "cols", req.Cols, "rows", req.Rows)
+	slog.Info("rpc.KickRerender", "task", req.TaskID, "cols", req.Cols, "rows", req.Rows, "width_repair", widthRepair)
 	task := &model.Task{
 		ID:              req.TaskID,
 		SessionID:       req.SessionID,
@@ -335,7 +335,7 @@ func (c *sessionCore) kickRerender(req *KickReq, resp *StatusResp, widthRepair b
 		}
 	}
 	if err := kick(task, cfg, req.Rows, req.Cols); err != nil {
-		slog.Error("rpc.KickRerender failed", "task", req.TaskID, "err", err)
+		slog.Error("rpc.KickRerender failed", "task", req.TaskID, "err", err, "width_repair", widthRepair)
 		resp.Error = err.Error()
 		return nil
 	}

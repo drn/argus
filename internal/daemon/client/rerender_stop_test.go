@@ -63,7 +63,16 @@ func TestBoundedStopHops(t *testing.T) {
 }
 
 func TestSupRerender(t *testing.T) {
-	d, _, _ := supE2E(t)
+	d, sc, _ := supE2E(t)
+	// Bypass client fallback to prove both supervisor capabilities exist.
+	for _, method := range []string{"Daemon.StopRerender", "Daemon.KickWidthRerender"} {
+		t.Run(method, func(t *testing.T) {
+			var resp daemon.StatusResp
+			err := sc.call(method, &daemon.KickReq{TaskID: "missing"}, &resp)
+			testutil.NoError(t, err)
+			testutil.Contains(t, resp.Error, "session not found")
+		})
+	}
 	sock := filepath.Join(t.TempDir(), "d.sock")
 	go d.Serve(sock) //nolint:errcheck
 	t.Cleanup(func() { d.Shutdown() })
@@ -76,6 +85,29 @@ func TestSupRerender(t *testing.T) {
 	err = c.StopScoped("missing", agent.StopRerender)
 	testutil.Error(t, err)
 	testutil.Contains(t, err.Error(), "session not found")
+}
+
+func TestOldWidthKick(t *testing.T) {
+	fd := newFakeDaemon(t)
+	c := fakeClient(t, fd)
+	testutil.NoError(t, c.KickWidthRerender(&model.Task{ID: "a"}, config.DefaultConfig(), 30, 98))
+	fd.mu.Lock()
+	defer fd.mu.Unlock()
+	testutil.Equal(t, fd.ordinaryKicks, 1)
+}
+
+func TestWidthKickError(t *testing.T) {
+	c, rec := newWireRecorderClient(t)
+	rec.mu.Lock()
+	rec.kickError = "boom"
+	rec.mu.Unlock()
+	err := c.KickWidthRerender(&model.Task{ID: "a"}, config.DefaultConfig(), 30, 98)
+	testutil.Error(t, err)
+	testutil.Contains(t, err.Error(), "boom")
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	testutil.Equal(t, rec.ordinaryKicks, 0)
+	testutil.Equal(t, rec.boundedKicks, 1)
 }
 
 func TestOldRerenderStop(t *testing.T) {

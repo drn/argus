@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/tui/hera"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/drn/argus/internal/uxlog"
 	"github.com/gdamore/tcell/v2"
@@ -86,10 +87,12 @@ func (a *App) publishInitialPTYLayout(screen tcell.Screen) {
 		now = a.nowFn()
 	}
 	layout := db.InitialPTYLayout{ReportedAt: now, Active: db.PTYSize{Rows: rows, Cols: cols}}
-	if onHera && a.heraPage != nil {
-		r, coord, worker := a.heraPage.LaunchPaneSizes()
-		layout.Coordinator = db.PTYSize{Rows: r, Cols: coord}
-		layout.Worker = db.PTYSize{Rows: r, Cols: worker}
+	// Header and status bar each occupy one row. Hidden tview pages retain
+	// stale rectangles, so derive role geometry from the current screen.
+	r, coord, worker := hera.SplitLaunchPaneSizes(w, h-2)
+	layout.Coordinator = db.PTYSize{Rows: r, Cols: coord}
+	layout.Worker = db.PTYSize{Rows: r, Cols: worker}
+	if onHera {
 		layout.Active = layout.Worker
 	}
 	a.initialPTYPublisher.queue(layout, d.PublishInitialPTYLayout)

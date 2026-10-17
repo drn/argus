@@ -9,7 +9,9 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/hera"
 	"github.com/drn/argus/internal/tui/widget"
+	"github.com/gdamore/tcell/v2"
 )
 
 func waitPTYPublication(t *testing.T, p *initialPTYPublisher) {
@@ -75,35 +77,103 @@ func TestInitialPTYPublisher_OrderedAndNonblocking(t *testing.T) {
 }
 
 func TestInitialPTYLayout_ProjectsUsesDrawnPane(t *testing.T) {
+	for _, mode := range []string{"projects", "tasks", "agent", "fullscreen"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			d := testDB(t)
+			app := New(d, agent.NewRunner(nil), false)
+			screen, stop := wireApp(t, app)
+			defer stop()
+			readUI(t, app.tapp, func() {
+				screen.SetSize(239, 40)
+				app.switchTab(widget.TabHera)
+				switch mode {
+				case "tasks":
+					app.switchTab(widget.TabTasks)
+				case "agent":
+					app.mu.Lock()
+					app.mode = modeAgent
+					app.mu.Unlock()
+					app.pages.SwitchToPage("agent")
+				case "fullscreen":
+					app.heraPage.Machine().SetRegion(hera.FocusCoord)
+					app.heraPage.Machine().ToggleFullscreen()
+				}
+			})
+			app.tapp.QueueUpdateDraw(func() {})
+			var coord, worker db.PTYSize
+			waitRerender(t, func() bool {
+				var err error
+				coord, err = d.InitialPTYSize(db.HeraKindCoordinator, time.Now())
+				testutil.NoError(t, err)
+				worker, err = d.InitialPTYSize(db.HeraKindWorker, time.Now())
+				testutil.NoError(t, err)
+				return coord.Cols == 100 && worker.Cols == 101 && coord.Rows == 36
+			})
+			var wantRows, wantCols uint16
+			readUI(t, app.tapp, func() {
+				wantRows, wantCols = ptySizeFromHostTerm(239, 40, nil)
+				if mode == "agent" {
+					_, _, w, h := app.agentPane.GetInnerRect()
+					wantRows, wantCols = ptySizeFromPaneRect(w, h)
+				} else if mode != "tasks" {
+					wantRows, wantCols = 36, 101
+				}
+			})
+			testutil.Equal(t, worker, db.PTYSize{Rows: 36, Cols: 101})
+			active, err := d.InitialPTYSize("", time.Now())
+			testutil.NoError(t, err)
+			testutil.Equal(t, active, db.PTYSize{Rows: wantRows, Cols: wantCols})
+		})
+	}
+}
+
+func TestInitialPTYPublisher_Heartbeat(t *testing.T) {
+	var p initialPTYPublisher
+	layout := db.InitialPTYLayout{ReportedAt: time.Now(), Active: db.PTYSize{Rows: 30, Cols: 150}}
+	writes := 0
+	save := func(db.InitialPTYLayout) error { writes++; return nil }
+	p.queue(layout, save)
+	waitPTYPublication(t, &p)
+	testutil.Equal(t, writes, 1)
+	layout.ReportedAt = layout.ReportedAt.Add(time.Second)
+	p.queue(layout, save)
+	waitPTYPublication(t, &p)
+	testutil.Equal(t, writes, 1)
+	layout.ReportedAt = layout.ReportedAt.Add(initialPTYHeartbeat - time.Second)
+	p.queue(layout, save)
+	waitPTYPublication(t, &p)
+	testutil.Equal(t, writes, 2)
+}
+
+func TestInitialPTYLayout_SecondTasksViewer(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	d := testDB(t)
-	app := New(d, agent.NewRunner(nil), false)
-	screen, stop := wireApp(t, app)
-	defer stop()
-	readUI(t, app.tapp, func() { screen.SetSize(238, 40); app.switchTab(widget.TabHera) })
-	app.tapp.QueueUpdateDraw(func() {})
-	var coord, worker db.PTYSize
-	waitRerender(t, func() bool {
-		var err error
-		coord, err = d.InitialPTYSize(db.HeraKindCoordinator, time.Now())
-		testutil.NoError(t, err)
-		worker, err = d.InitialPTYSize(db.HeraKindWorker, time.Now())
-		testutil.NoError(t, err)
-		return coord.Valid() && worker.Valid() && coord.Cols > 80 && coord.Cols < 150 && coord.Rows > 21
-	})
-	var coordW, coordH, w, h int
-	readUI(t, app.tapp, func() {
-		_, _, coordW, coordH = app.heraPage.CoordPane().GetInnerRect()
-		_, _, w, h = app.heraPage.AgentPane().GetInnerRect()
-	})
-	testutil.Equal(t, int(coord.Rows), coordH-2)
-	testutil.Equal(t, int(coord.Cols), coordW-2)
-	// The worker region may show Details, so LaunchPaneSizes derives its
-	// geometry even if the terminal itself has never been drawn.
-	if w > 30 && h > 10 {
-		testutil.Equal(t, int(worker.Rows), h-2)
-		testutil.Equal(t, int(worker.Cols), w-2)
+	projects := New(d, agent.NewRunner(nil), false)
+	tasks := New(d, agent.NewRunner(nil), false)
+	screen := tcell.NewSimulationScreen("")
+	testutil.NoError(t, screen.Init())
+	defer screen.Fini()
+	screen.SetSize(239, 40)
+	now := time.Now().Add(-time.Minute)
+	projects.nowFn = func() time.Time { return now }
+	projects.header.SetTab(widget.TabHera)
+	projects.publishInitialPTYLayout(screen)
+	waitPTYPublication(t, &projects.initialPTYPublisher)
+	for _, tick := range []time.Duration{initialPTYHeartbeat, 2 * initialPTYHeartbeat} {
+		t.Run(tick.String(), func(t *testing.T) {
+			tasks.nowFn = func() time.Time { return now.Add(tick) }
+			tasks.publishInitialPTYLayout(screen)
+			waitPTYPublication(t, &tasks.initialPTYPublisher)
+			coord, err := d.InitialPTYSize(db.HeraKindCoordinator, now.Add(tick))
+			testutil.NoError(t, err)
+			worker, err := d.InitialPTYSize(db.HeraKindWorker, now.Add(tick))
+			testutil.NoError(t, err)
+			active, err := d.InitialPTYSize("", now.Add(tick))
+			testutil.NoError(t, err)
+			testutil.Equal(t, coord, db.PTYSize{Rows: 36, Cols: 100})
+			testutil.Equal(t, worker, db.PTYSize{Rows: 36, Cols: 101})
+			testutil.True(t, active.Cols > 200)
+		})
 	}
-	testutil.True(t, worker.Valid())
-	testutil.Equal(t, agent.ShouldKickRerender(true, int(coord.Cols), 0, coordW, true, false, false), agent.RerenderSkip)
 }

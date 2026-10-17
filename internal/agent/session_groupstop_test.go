@@ -2,6 +2,7 @@ package agent
 
 import (
 	"log/slog"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -162,7 +163,70 @@ func TestRerenderStop_DefaultGrace(t *testing.T) {
 	testutil.Equal(t, time.Duration(agentStopKillAfter.Load()), RerenderStopGrace)
 }
 
+func TestSession_ProcessExitPrecedesDrain(t *testing.T) {
+	if testing.Short() {
+		t.Skip("external process")
+	}
+	cmd := exec.Command("true")
+	testutil.NoError(t, cmd.Start())
+	master, err := os.CreateTemp(t.TempDir(), "master")
+	testutil.NoError(t, err)
+	s := &Session{Cmd: cmd, ptmx: master, processExited: make(chan struct{}), readDone: make(chan struct{}), done: make(chan struct{})}
+	go s.waitLoop()
+	t.Cleanup(func() { close(s.readDone); <-s.done })
+	select {
+	case <-s.processExited:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("processExited waited for PTY drain")
+	}
+	select {
+	case <-s.done:
+		t.Fatal("Done closed before readDone")
+	default:
+	}
+}
+
+func TestRunner_OrdinaryKicksDoNotEscalate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real PTY process")
+	}
+	for _, revive := range []bool{false, true} {
+		name := "switch"
+		if revive {
+			name = "revive"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			prev := agentStopKillAfter.Swap(int64(50 * time.Millisecond))
+			t.Cleanup(func() { agentStopKillAfter.Store(prev) })
+			cfg := runnerTestConfig()
+			cfg.Backends["test"] = config.Backend{Command: `trap "" TERM HUP; echo READY; sleep 60 </dev/null >/dev/null 2>&1 & wait`}
+			r := NewRunner(nil)
+			task := &model.Task{ID: name, Name: name, Worktree: t.TempDir()}
+			sess, err := r.Start(task, cfg, 24, 80, false)
+			testutil.NoError(t, err)
+			t.Cleanup(func() { r.StopAll(); _ = syscall.Kill(-sess.PID(), syscall.SIGKILL) })
+			deadline := time.Now().Add(2 * time.Second)
+			for !strings.Contains(string(sess.RecentOutput()), "READY") && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+			testutil.Contains(t, string(sess.RecentOutput()), "READY")
+			if revive {
+				err = r.Revive(task, cfg, 30, 98)
+			} else {
+				err = r.KickRerender(task, cfg, 30, 98)
+			}
+			testutil.NoError(t, err)
+			time.Sleep(300 * time.Millisecond)
+			testutil.NoError(t, syscall.Kill(sess.PID(), 0))
+		})
+	}
+}
+
 func TestSession_StopScoped_AgentOnlyDoesNotEscalate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real PTY process")
+	}
 	prev := agentStopKillAfter.Swap(int64(50 * time.Millisecond))
 	t.Cleanup(func() { agentStopKillAfter.Store(prev) })
 	sess, child := startGroupSession(t, `trap "" TERM HUP; sleep 60 & echo CHILD=$!; wait`)
@@ -173,6 +237,9 @@ func TestSession_StopScoped_AgentOnlyDoesNotEscalate(t *testing.T) {
 }
 
 func TestRunner_WidthKickEscalatesAndRestarts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real PTY process")
+	}
 	t.Setenv("HOME", t.TempDir())
 	prev := agentStopKillAfter.Swap(int64(50 * time.Millisecond))
 	t.Cleanup(func() { agentStopKillAfter.Store(prev) })

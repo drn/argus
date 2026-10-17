@@ -107,7 +107,10 @@ func TestStartSessionMissingTranscript(t *testing.T) {
 	task := &model.Task{Name: "unsaved", Backend: "fixture", Worktree: t.TempDir(), SessionID: old, Prompt: "original mission"}
 	testutil.NoError(t, d.Add(task))
 	app.committedCols[task.ID] = 100
+	app.agentPane.SetTaskID(task.ID)
+	app.setRerendering(task.ID, true)
 	app.startSession(task)
+	testutil.Equal(t, app.agentPane.RerenderStatus(), "")
 	sess := runner.Get(task.ID)
 	t.Cleanup(func() {
 		runner.StopAll()

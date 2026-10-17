@@ -5516,6 +5516,7 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 	// short-circuit — matches the web side's ordering and avoids spawning
 	// an RPC goroutine on every Codex agent-view reopen.
 	if a.isRedundantAttach(taskID, panelCols) {
+		a.setRerendering(taskID, false)
 		uxlog.Log("[tui] rerender: skipping kick task=%s — panel cols unchanged since last attach (%d)", taskID, panelCols)
 		return
 	}

@@ -55,6 +55,8 @@ func (transcriptKickSession) Alive() bool                 { return true }
 func (transcriptKickSession) IsIdle() bool                { return true }
 func (transcriptKickSession) InitialPTYSize() (int, int)  { return 80, 24 }
 func (transcriptKickSession) RecentOutputTail(int) []byte { return nil }
+func (transcriptKickSession) PID() int                    { return 123 }
+func (transcriptKickSession) PTYSize() (int, int)         { return 80, 24 }
 
 type transcriptKickRunner struct {
 	*agent.Runner
@@ -71,6 +73,21 @@ func (r *transcriptKickRunner) KickRerender(*model.Task, config.Config, uint16, 
 func (r *transcriptKickRunner) KickWidthRerender(*model.Task, config.Config, uint16, uint16) error {
 	r.kicks++
 	return nil
+}
+
+func TestSwitchDoesNotUseWidthRepair(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	srv, d := testServer(t)
+	r := &transcriptKickRunner{Runner: agent.NewRunner(nil)}
+	srv.runner = r
+	task := &model.Task{Name: "switch", Backend: "claude", Worktree: t.TempDir(), SessionID: "before"}
+	testutil.NoError(t, d.Add(task))
+	writeClaudeSessionFixture(t, os.Getenv("HOME"), task.Worktree, "after", []string{`{"type":"user","sessionId":"after"}`})
+	w := httptest.NewRecorder()
+	srv.routes().ServeHTTP(w, authedReq("POST", "/api/tasks/"+task.ID+"/claude-session", `{"session_id":"after"}`))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	testutil.Equal(t, r.ordinaryKicks, 1)
+	testutil.Equal(t, r.kicks, 0)
 }
 
 func TestResizeMissingTranscriptRetries(t *testing.T) {

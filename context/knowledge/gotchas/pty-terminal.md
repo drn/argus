@@ -2,7 +2,11 @@
 
 - **Fresh spawns must use recently reported pane geometry before their first output (`faster-pane-rerender`).** An omitted size previously became 80×24 even when the Hera pane was 98 columns, creating the measured deferred kill/resume delay; local layout reports expire after two minutes and explicit spawn dimensions win. Publish SQL off the UI thread, serialize writes, and refresh unchanged geometry only on the heartbeat.
 
+- **Hera launch preferences must always describe split panes, including on Tasks, agent view, and fullscreen.** Hidden pages retain stale rectangles, and full-width Active fallback authors history too wide for the next split bind; derive both role sizes from current screen geometry and reject absent/invalid role sizes instead of inheriting Active.
+
 - **A no-drift bind must not clear an unresolved committed-width anchor.** The 80→deferred 100→Skip 92→80 sequence still owes repair against 100; only a successful new session start clears it, and `recordUnreconciledCommittedCols` remains its sole writer. A persisted copy of the unchanged spawn width adds no decision value.
+
+- **An external restart that bypasses TUI `startSession` can retain an old in-memory anchor.** One extra guarded repair is accepted in the safe direction; do not clear the anchor before a new start succeeds just to eliminate that conservative retry.
 
 - **`pty.Setsize` (which calls `os.File.Fd()`) races with `os.File.Close()`.** `Fd()` reads the internal fd field without synchronization, while `Close()` modifies it. `Read()`/`Write()` are safe (they use internal `fdMutex`). Fix: `ptmxClosed` bool flag under Session mutex; `waitLoop` sets flag + closes under lock; `Resize` checks flag under lock before calling `Setsize`.
 - **`Session.Done()` blocks on `readDone`, not just process exit.** `waitLoop` waits for `readLoop` to drain the kernel PTY buffer before closing `done`. Without this, `Done()` fires while bytes are still in transit — `RecentOutput()` returns partial or empty data, and CI tests polling for output flake out (was the original `TestSession_RecentOutput` flake). The guarantee relies on `readLoop`'s `defer close(s.readDone)`.

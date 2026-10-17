@@ -59,11 +59,14 @@ func (d *DB) InitialPTYSize(role HeraRoleKind, now time.Time) (PTYSize, error) {
 		return PTYSize{}, nil
 	}
 	size := layout.Active
-	if role == HeraKindCoordinator && layout.Coordinator.Valid() {
+	switch role {
+	case HeraKindCoordinator:
 		size = layout.Coordinator
-	}
-	if (role == HeraKindWorker || role == HeraKindFreelance) && layout.Worker.Valid() {
+	case HeraKindWorker, HeraKindFreelance:
 		size = layout.Worker
+	}
+	if !size.Valid() {
+		return PTYSize{}, nil
 	}
 	return size, nil
 }

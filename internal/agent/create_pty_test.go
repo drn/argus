@@ -23,6 +23,7 @@ func TestCreateAndStart_ReportedPTYSize(t *testing.T) {
 		{"headless", "", 0, 0, 30, 99},
 		{"explicit", db.HeraKindWorker, 40, 120, 40, 120},
 		{"partial", db.HeraKindCoordinator, 40, 0, 40, 98},
+		{"rows omitted cols explicit", db.HeraKindWorker, 0, 120, 30, 120},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := &fakeRunner{sessionPID: 202}

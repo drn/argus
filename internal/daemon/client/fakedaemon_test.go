@@ -28,7 +28,16 @@ type fakeDaemon struct {
 	dropAfter int    // how many bytes to send before dropping the stream
 	streamMsg []byte // bytes to send on stream before drop
 
-	stopScopes []agent.StopScope
+	stopScopes    []agent.StopScope
+	ordinaryKicks int
+}
+
+func (s *FakeRPCService) KickRerender(_ *daemon.KickReq, resp *daemon.StatusResp) error {
+	s.fd.mu.Lock()
+	defer s.fd.mu.Unlock()
+	s.fd.ordinaryKicks++
+	resp.OK = true
+	return nil
 }
 
 func newFakeDaemon(t *testing.T) *fakeDaemon {

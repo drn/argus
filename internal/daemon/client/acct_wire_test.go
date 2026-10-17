@@ -33,6 +33,7 @@ type wireRecorder struct {
 	boundedKicks  int
 	ordinaryKicks int
 	stopError     string
+	kickError     string
 }
 
 func (w *wireRecorder) StartSession(_ *daemon.StartReq, resp *daemon.StartResp) error {
@@ -76,6 +77,9 @@ func (w *wireRecorder) KickWidthRerender(req *daemon.KickReq, resp *daemon.Statu
 	defer w.mu.Unlock()
 	w.kick = *req
 	w.boundedKicks++
+	if w.kickError != "" {
+		return errors.New(w.kickError)
+	}
 	resp.OK = true
 	return nil
 }

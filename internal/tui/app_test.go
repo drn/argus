@@ -807,6 +807,7 @@ type fakeKickSession struct {
 	initCols   int
 	stopCalled atomic.Bool
 	stopScope  atomic.Int64 // last StopScoped scope; -1 = plain Stop()
+	stopErr    error
 }
 
 func (f *fakeKickSession) PID() int                                              { return f.pid }
@@ -833,7 +834,7 @@ func (f *fakeKickSession) Stop() error {
 func (f *fakeKickSession) StopScoped(scope agent.StopScope) error {
 	f.stopCalled.Store(true)
 	f.stopScope.Store(int64(scope))
-	return nil
+	return f.stopErr
 }
 func (f *fakeKickSession) AddWriter(io.Writer)                     {}
 func (f *fakeKickSession) AddWriterFrom(io.Writer, uint64)         {}
