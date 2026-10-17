@@ -12,5 +12,5 @@
 
 ## 3. Delivery
 
-- [ ] 3.1 Run focused race suites, make pre-pr and strict spec validation; archive in PR.
-- [ ] 3.2 Push through Iris and report the SHA and review disposition to coord.
+- [x] 3.1 Run focused race suites, make pre-pr and strict spec validation; archive in PR.
+- [x] 3.2 Push through Iris and report the SHA and review disposition to coord.
