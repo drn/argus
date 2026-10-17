@@ -254,7 +254,13 @@ func TestRunner_WidthKickEscalatesAndRestarts(t *testing.T) {
 	task := &model.Task{ID: "width-kick", Name: "width", Worktree: t.TempDir()}
 	sess, err := r.Start(task, cfg, 24, 80, false)
 	testutil.NoError(t, err)
-	t.Cleanup(r.StopAll)
+	t.Cleanup(func() {
+		current := r.Get(task.ID)
+		r.StopAll()
+		if current != nil {
+			_ = syscall.Kill(-current.PID(), syscall.SIGKILL)
+		}
+	})
 	oldPID := sess.PID()
 	deadline := time.Now().Add(2 * time.Second)
 	var child int

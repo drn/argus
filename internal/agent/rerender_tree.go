@@ -151,7 +151,7 @@ func (s *Session) escalateRerender(grace time.Duration) {
 	nodes, err := rerenderProcessSnapshot(ctx)
 	if err != nil {
 		uxlog.Log("[rerender] descendant inspection failed task=%s err=%v", s.TaskID, err)
-		slog.Warn("[rerender] descendant inspection failed", "task", s.TaskID, "err", err)
+		slog.Warn("[rerender] descendant inspection failed", "task", s.TaskID, "err", err) //nolint:gosec // Structured slog attributes are escaped by the handler.
 	}
 	select {
 	case <-s.processExited:
@@ -161,11 +161,11 @@ func (s *Session) escalateRerender(grace time.Duration) {
 	// Commit descendant cleanup only if the original process was force-stopped.
 	if err := s.Signal(syscall.SIGKILL); err != nil {
 		uxlog.Log("[rerender] escalation skipped task=%s err=%v", s.TaskID, err)
-		slog.Info("[rerender] escalation skipped", "task", s.TaskID, "err", err)
+		slog.Info("[rerender] escalation skipped", "task", s.TaskID, "err", err) //nolint:gosec // Structured slog attributes are escaped by the handler.
 		return
 	}
 	uxlog.Log("[rerender] SIGKILL task=%s after=%s", s.TaskID, grace)
-	slog.Info("[rerender] SIGKILL after grace", "task", s.TaskID, "grace", grace)
+	slog.Info("[rerender] SIGKILL after grace", "task", s.TaskID, "grace", grace) //nolint:gosec // Structured slog attributes are escaped by the handler.
 	stats := reapRerenderDescendants(selectRerenderDescendants(nodes, s.PID()), signalRerenderDescendant, time.Sleep)
 	if err != nil {
 		stats.failed++
