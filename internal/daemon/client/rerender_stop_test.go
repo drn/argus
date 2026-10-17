@@ -1,7 +1,11 @@
 package client
 
 import (
+	"net"
+	"net/rpc"
+	"net/rpc/jsonrpc"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/drn/argus/internal/agent"
@@ -88,12 +92,30 @@ func TestSupRerender(t *testing.T) {
 }
 
 func TestOldWidthKick(t *testing.T) {
-	fd := newFakeDaemon(t)
-	c := fakeClient(t, fd)
+	server := rpc.NewServer()
+	peer := &oldWidthKickPeer{}
+	testutil.NoError(t, server.RegisterName("Daemon", peer))
+	serverConn, clientConn := net.Pipe()
+	go server.ServeCodec(jsonrpc.NewServerCodec(serverConn))
+	c := &Client{rpc: jsonrpc.NewClient(clientConn), closed: make(chan struct{})}
+	t.Cleanup(func() { _ = c.Close(); _ = serverConn.Close() })
 	testutil.NoError(t, c.KickWidthRerender(&model.Task{ID: "a"}, config.DefaultConfig(), 30, 98))
-	fd.mu.Lock()
-	defer fd.mu.Unlock()
-	testutil.Equal(t, fd.ordinaryKicks, 1)
+	peer.mu.Lock()
+	defer peer.mu.Unlock()
+	testutil.Equal(t, peer.calls, 1)
+}
+
+type oldWidthKickPeer struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (p *oldWidthKickPeer) KickRerender(_ *daemon.KickReq, resp *daemon.StatusResp) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	resp.OK = true
+	return nil
 }
 
 func TestWidthKickError(t *testing.T) {
