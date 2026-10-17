@@ -208,8 +208,8 @@ func TestRail_PanelTitleAndCursorDim(t *testing.T) {
 	rowText := func(s tcell.SimulationScreen, y int) string {
 		var out []rune
 		for x := 0; x < 40; x++ {
-			c, _, _, _ := s.GetContent(x, y)
-			out = append(out, c)
+			c, _, _ := s.Get(x, y)
+			out = append(out, []rune(c)...)
 		}
 		return string(out)
 	}
@@ -234,12 +234,12 @@ func TestRail_PanelTitleAndCursorDim(t *testing.T) {
 		r.SetCursorDimmed(true)
 		s := draw(r)
 		y := 1 + r.CursorIndex()
-		mainc, _, style, _ := s.GetContent(1, y)
-		testutil.Equal(t, mainc, '›')
+		mainc, style, _ := s.Get(1, y)
+		testutil.Equal(t, mainc, "›")
 		testutil.Equal(t, style, theme.StyleDimmed)
 		found := false
 		for x := 3; x < 39; x++ {
-			if _, _, st, _ := s.GetContent(x, y); st == theme.StyleSelected {
+			if _, st, _ := s.Get(x, y); st == theme.StyleSelected {
 				found = true
 			}
 		}
@@ -278,4 +278,13 @@ func TestHeraPage_SelectOrch(t *testing.T) {
 		p.remote = true
 		testutil.False(t, p.SelectOrch(orch))
 	})
+}
+
+func TestRail_SelectOrch_ArchivedRootOpensArchive(t *testing.T) {
+	r := NewRail()
+	r.SetModel(filterModel())
+	testutil.True(t, r.archiveCollapsed)
+	testutil.True(t, r.SelectOrch(9))
+	testutil.False(t, r.archiveCollapsed)
+	testutil.Equal(t, r.SelectedOrch().ID, int64(9))
 }
