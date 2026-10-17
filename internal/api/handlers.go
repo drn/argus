@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1323,6 +1324,8 @@ func (s *Server) maybeKickRerender(taskID string, rows, cols uint16) bool {
 	cfg := s.db.Config()
 	if available, err := agent.ResumableSessionAvailable(task, cfg); err != nil || !available {
 		uxlog.Log("[rerender] deferred task=%s session=%s: transcript unavailable err=%v", task.ID, task.SessionID, err)
+		//nolint:gosec // G706: slog encodes these as structured attributes, escaping control characters.
+		slog.Warn("[rerender] deferred: transcript unavailable", "task", task.ID, "session", task.SessionID, "error", err)
 		s.invalidateColsCache(taskID)
 		return false
 	}

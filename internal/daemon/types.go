@@ -256,8 +256,9 @@ type StopReq struct {
 
 // StatusResp is a generic success/error RPC response.
 type StatusResp struct {
-	OK    bool
-	Error string
+	OK        bool
+	Error     string
+	SessionID string `json:",omitempty"`
 }
 
 // SessionInfo describes the state of a running session.
@@ -301,6 +302,7 @@ type ResizeReq struct {
 // kick-rerender rebuilds the command via agent.ResolveModel too, and must not
 // silently drop back to the backend default on a resumed session.
 type KickReq struct {
+	Revive          bool
 	MCPPort         int
 	TaskID          string
 	SessionID       string

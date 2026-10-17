@@ -479,11 +479,20 @@ func (c *Client) StartOrReattach(task *model.Task, cfg config.Config, rows, cols
 // caller (api.maybeKickRerender) already treats a kick error as a non-fatal
 // no-op, so an older supervisor degrades to "no rerender" rather than breaking.
 func (c *Client) KickRerender(task *model.Task, _ config.Config, rows, cols uint16) error {
+	return c.kickRerender(task, rows, cols, false)
+}
+
+func (c *Client) Revive(task *model.Task, _ config.Config, rows, cols uint16) error {
+	return c.kickRerender(task, rows, cols, true)
+}
+
+func (c *Client) kickRerender(task *model.Task, rows, cols uint16, revive bool) error {
 	if err := c.checkAccountSupported(task); err != nil {
 		return err
 	}
 	var resp daemon.StatusResp
 	if err := c.call("Daemon.KickRerender", &daemon.KickReq{
+		Revive:          revive,
 		MCPPort:         c.currentMCPPort(),
 		TaskID:          task.ID,
 		SessionID:       task.SessionID,
@@ -504,6 +513,9 @@ func (c *Client) KickRerender(task *model.Task, _ config.Config, rows, cols uint
 	}
 	if resp.Error != "" {
 		return fmt.Errorf("%s", resp.Error)
+	}
+	if resp.SessionID != "" {
+		task.SessionID = resp.SessionID
 	}
 	return nil
 }

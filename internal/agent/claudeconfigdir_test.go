@@ -15,7 +15,8 @@ func TestClaudeConfigDirForTask(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	acct := filepath.Join(home, "acct-work")
-	cfg := config.Config{Accounts: map[string]config.Account{"work": {ClaudeConfigDir: acct}}}
+	cfg := config.DefaultConfig()
+	cfg.Accounts = map[string]config.Account{"work": {ClaudeConfigDir: acct}}
 
 	t.Run("default account", func(t *testing.T) {
 		dir, err := ClaudeConfigDirForTask(&model.Task{}, cfg)

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/claudesession"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
@@ -76,7 +77,58 @@ func TestResizeMissingTranscriptRetries(t *testing.T) {
 	testutil.NoError(t, d.Add(task))
 	testutil.False(t, srv.maybeKickRerender(task.ID, 24, 98))
 	testutil.Equal(t, r.kicks, 0)
+	task.Account = "removed"
+	testutil.NoError(t, d.Update(task))
+	testutil.False(t, srv.maybeKickRerender(task.ID, 24, 98))
+	testutil.Equal(t, r.kicks, 0)
+	testutil.False(t, r.HasPendingRestart(task.ID))
+	task.Account = ""
+	testutil.NoError(t, d.Update(task))
 	seedAPITranscript(t, home, task.Worktree, task.SessionID, time.Time{})
 	testutil.True(t, srv.maybeKickRerender(task.ID, 24, 98))
 	testutil.Equal(t, r.kicks, 1)
+}
+
+func TestExactTranscriptProbe(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	srv, d := testServer(t)
+	physical, err := filepath.EvalSymlinks(t.TempDir())
+	testutil.NoError(t, err)
+	link := filepath.Join(t.TempDir(), "link")
+	testutil.NoError(t, os.Symlink(physical, link))
+	task := &model.Task{Name: "probe", Backend: "claude", Worktree: link, SessionID: "different"}
+	testutil.NoError(t, d.Add(task))
+	seedAPITranscript(t, home, physical, "11111111-1111-7111-9111-111111111111", time.Time{})
+	for _, tc := range []struct {
+		id, want string
+		status   int
+	}{
+		{"11111111-1111-7111-9111-111111111111", `"available":true`, 200},
+		{"absent", `"available":false`, 200},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			srv.routes().ServeHTTP(w, authedReq("GET", "/api/tasks/"+task.ID+"/claude-sessions?check_session_id="+tc.id, ""))
+			testutil.Equal(t, w.Code, tc.status)
+			testutil.Contains(t, w.Body.String(), tc.want)
+		})
+	}
+	if os.Geteuid() != 0 {
+		project, err := claudesession.ProjectDirIn("", physical)
+		testutil.NoError(t, err)
+		testutil.NoError(t, os.Chmod(project, 0))
+		t.Cleanup(func() {
+			//nolint:gosec // G302: owner traversal is required for TempDir directory cleanup.
+			testutil.NoError(t, os.Chmod(project, 0o700))
+		})
+		w := httptest.NewRecorder()
+		srv.routes().ServeHTTP(w, authedReq("GET", "/api/tasks/"+task.ID+"/claude-sessions?check_session_id=saved", ""))
+		testutil.Equal(t, w.Code, http.StatusInternalServerError)
+	}
+	task.Account = "removed"
+	testutil.NoError(t, d.Update(task))
+	w := httptest.NewRecorder()
+	srv.routes().ServeHTTP(w, authedReq("GET", "/api/tasks/"+task.ID+"/claude-sessions?check_session_id=saved", ""))
+	testutil.Equal(t, w.Code, http.StatusConflict)
 }

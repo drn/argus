@@ -54,11 +54,102 @@ func TestResumableSessionAvailable(t *testing.T) {
 		t.Run(backend, func(t *testing.T) {
 			local := *task
 			local.Backend = backend
+			local.SessionID = "unseeded"
 			ok, err := ResumableSessionAvailable(&local, cfg)
 			testutil.NoError(t, err)
 			testutil.True(t, ok)
 		})
 	}
+}
+
+func TestTranscriptLookupLocations(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	wt := t.TempDir()
+	physical, err := filepath.EvalSymlinks(wt)
+	testutil.NoError(t, err)
+	link := filepath.Join(t.TempDir(), "linked")
+	testutil.NoError(t, os.Symlink(physical, link))
+	const sid = "11111111-1111-7111-9111-111111111111"
+	seedClaudeTranscript(t, os.Getenv("HOME"), physical, sid, time.Time{})
+	task := &model.Task{Backend: "claude", Worktree: link, SessionID: sid}
+	cfg := config.DefaultConfig()
+	t.Run("physical worktree", func(t *testing.T) {
+		ok, err := ResumableSessionAvailable(task, cfg)
+		testutil.NoError(t, err)
+		testutil.True(t, ok)
+	})
+	t.Run("backend environment override", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("TRANSCRIPT_TEST_DIR", dir)
+		backend := cfg.Backends["claude"]
+		backend.EnvVars = map[string]string{"CLAUDE_CONFIG_DIR": "env://TRANSCRIPT_TEST_DIR"}
+		cfg.Backends["claude"] = backend
+		cmd, cleanup, err := BuildCmd(task, cfg, true)
+		testutil.NoError(t, err)
+		if cleanup != nil {
+			defer cleanup()
+		}
+		testutil.Equal(t, claudeConfigDirFromEnv(cmd.Env), dir)
+		project, err := claudesession.ProjectDirIn(dir, link)
+		testutil.NoError(t, err)
+		testutil.NoError(t, os.MkdirAll(project, 0o700))
+		testutil.NoError(t, os.WriteFile(filepath.Join(project, sid+".jsonl"), nil, 0o600))
+		ok, err := ResumableSessionAvailable(task, cfg)
+		testutil.NoError(t, err)
+		testutil.True(t, ok)
+		testutil.NoError(t, os.Remove(filepath.Join(project, sid+".jsonl")))
+		ok, err = ResumableSessionAvailable(task, cfg)
+		testutil.NoError(t, err)
+		testutil.False(t, ok)
+		task.Account = "named"
+		defer func() { task.Account = "" }()
+		cfg.Accounts = map[string]config.Account{"named": {ClaudeConfigDir: t.TempDir()}}
+		got, err := ClaudeConfigDirForTask(task, cfg)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, dir)
+		t.Setenv("TRANSCRIPT_TEST_DIR", "")
+		got, err = ClaudeConfigDirForTask(task, cfg)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, "")
+	})
+}
+
+func TestTranscriptInspectionEdges(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	wt := t.TempDir()
+	task := &model.Task{Backend: "claude", Worktree: wt, SessionID: "saved"}
+	cfg := config.DefaultConfig()
+	project, err := claudesession.ProjectDirIn("", wt)
+	testutil.NoError(t, err)
+	testutil.NoError(t, os.MkdirAll(filepath.Join(project, "saved.jsonl"), 0o700))
+	t.Run("directory is not transcript", func(t *testing.T) {
+		ok, err := ResumableSessionAvailable(task, cfg)
+		testutil.NoError(t, err)
+		testutil.False(t, ok)
+	})
+	t.Run("path traversal", func(t *testing.T) {
+		local := *task
+		local.SessionID = "../x"
+		ok, err := ResumableSessionAvailable(&local, cfg)
+		testutil.NoError(t, err)
+		testutil.False(t, ok)
+	})
+	t.Run("permission error preserves identity", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root bypasses permissions")
+		}
+		testutil.NoError(t, os.Chmod(project, 0))
+		t.Cleanup(func() {
+			//nolint:gosec // G302: this is a directory; restore owner traversal for TempDir cleanup.
+			testutil.NoError(t, os.Chmod(project, 0o700))
+		})
+		_, err := ResumableSessionAvailable(task, cfg)
+		testutil.Error(t, err)
+		_, err = prepareResume(task, cfg, true)
+		testutil.NoError(t, err)
+		testutil.Equal(t, task.SessionID, "saved")
+	})
 }
 
 func TestRunner_ResumeTranscriptRecovery(t *testing.T) {
@@ -115,6 +206,11 @@ func TestRunner_KickWaitsForTranscript(t *testing.T) {
 	testutil.ErrorIs(t, r.KickRerender(task, cfg, 24, 98), ErrResumeUnavailable)
 	testutil.True(t, sess.Alive())
 	testutil.False(t, r.HasPendingRestart(task.ID))
+	task.Account = "removed"
+	testutil.ErrorIs(t, r.KickRerender(task, cfg, 24, 98), ErrResumeUnavailable)
+	testutil.True(t, sess.Alive())
+	testutil.False(t, r.HasPendingRestart(task.ID))
+	task.Account = ""
 	// A live-but-unsaved reattach must not regenerate the pinned identity.
 	id := task.SessionID
 	attached, healed, err := r.StartOrReattach(task, cfg, 24, 80, true)
@@ -141,8 +237,8 @@ func TestPrepareResumeInspectionFailurePreservesID(t *testing.T) {
 	cfg := config.DefaultConfig()
 	task := &model.Task{Backend: "claude", Account: "removed", SessionID: "saved", Worktree: t.TempDir()}
 	resume, err := prepareResume(task, cfg, true)
-	testutil.Error(t, err)
-	testutil.False(t, resume)
+	testutil.NoError(t, err)
+	testutil.True(t, resume)
 	testutil.Equal(t, task.SessionID, "saved")
 	r := NewRunner(nil)
 	t.Cleanup(r.StopAll)
@@ -155,6 +251,6 @@ func TestPrepareResumeInspectionFailurePreservesID(t *testing.T) {
 	task.Account = ""
 	task.Worktree = ""
 	_, err = prepareResume(task, cfg, true)
-	testutil.Error(t, err)
+	testutil.NoError(t, err)
 	testutil.Equal(t, task.SessionID, "saved")
 }

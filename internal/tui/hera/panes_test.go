@@ -458,6 +458,23 @@ func TestPanes_KickRetriesAfterDeferred(t *testing.T) {
 	advance(KickRetryInterval)
 	p.Draw(sim)
 	testutil.Equal(t, len(kicksFor(*kicks, "t-wkr")), 2)
+	// Further deferrals back off without giving up, capped at one minute.
+	for _, interval := range []time.Duration{20 * time.Second, 40 * time.Second, 60 * time.Second, 60 * time.Second} {
+		count := len(kicksFor(*kicks, "t-wkr"))
+		advance(interval - time.Millisecond)
+		p.Draw(sim)
+		testutil.Equal(t, len(kicksFor(*kicks, "t-wkr")), count)
+		advance(time.Millisecond)
+		p.Draw(sim)
+		testutil.Equal(t, len(kicksFor(*kicks, "t-wkr")), count+1)
+	}
+	p.bindPane(p.AgentPane(), &p.agentBound, &p.agentKickedFor, &p.agentKickPending, "", "agent")
+	p.bindPane(p.AgentPane(), &p.agentBound, &p.agentKickedFor, &p.agentKickPending, "t-wkr", "agent")
+	testutil.Equal(t, p.agentKickPending.retryDelay, time.Duration(0))
+	p.Draw(sim)
+	advance(KickDebounce)
+	p.Draw(sim)
+	testutil.Equal(t, p.agentKickPending.deadline.Sub(p.kickClockNow()), KickRetryInterval)
 }
 
 // TestPanes_KickDoesNotRetryWhenResolved proves the mirror image: a kick that

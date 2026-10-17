@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -36,18 +37,33 @@ func claudeResumeAvailable(task *model.Task, cfg config.Config) (bool, error) {
 	if task.SessionID == "" || filepath.Base(task.SessionID) != task.SessionID {
 		return false, nil
 	}
-	project, err := claudesession.ProjectDirIn(dir, task.Worktree)
-	if err != nil {
-		return false, err
+	paths := []string{task.Worktree}
+	physical, pathErr := filepath.EvalSymlinks(task.Worktree)
+	if pathErr == nil && physical != task.Worktree {
+		paths = append(paths, physical)
 	}
-	info, err := os.Stat(filepath.Join(project, task.SessionID+".jsonl"))
-	if os.IsNotExist(err) {
-		return false, nil
+	var inspectErr error
+	for _, path := range paths {
+		project, err := claudesession.ProjectDirIn(dir, path)
+		if err != nil {
+			inspectErr = err
+			continue
+		}
+		info, err := os.Stat(filepath.Join(project, task.SessionID+".jsonl"))
+		if err == nil && info.Mode().IsRegular() {
+			return true, nil
+		}
+		if err != nil && !os.IsNotExist(err) {
+			inspectErr = err
+		}
 	}
-	if err != nil {
-		return false, err
+	if inspectErr != nil {
+		return false, inspectErr
 	}
-	return info.Mode().IsRegular(), nil
+	if pathErr != nil && !os.IsNotExist(pathErr) {
+		return false, pathErr
+	}
+	return false, nil
 }
 
 // prepareResume is called only after reserving a genuinely new runner launch,
@@ -60,7 +76,10 @@ func prepareResume(task *model.Task, cfg config.Config, resume bool) (bool, erro
 	available, err := ResumableSessionAvailable(task, cfg)
 	if err != nil {
 		uxlog.Log("[resume] transcript inspection failed task=%s session=%s: %v", task.ID, task.SessionID, err)
-		return false, fmt.Errorf("inspect resume transcript: %w", err)
+		slog.Warn("[resume] transcript inspection failed", "task", task.ID, "session", task.SessionID, "error", err)
+		// Uncertainty is not proof of absence. Keep the conversation identity
+		// and let the backend attempt resume with its normal launch validation.
+		return true, nil
 	}
 	if available {
 		return true, nil
@@ -68,6 +87,7 @@ func prepareResume(task *model.Task, cfg config.Config, resume bool) (bool, erro
 	old := task.SessionID
 	task.SessionID = model.GenerateSessionID()
 	uxlog.Log("[resume] transcript missing task=%s session=%s; starting fresh session=%s with original prompt", task.ID, old, task.SessionID)
+	slog.Info("[resume] transcript missing; starting fresh", "task", task.ID, "old_session", old, "new_session", task.SessionID)
 	return false, nil
 }
 

@@ -845,8 +845,8 @@ func TestRunner_KickRerender_StartFailure_ReFiresOnFinish(t *testing.T) {
 
 	// Kick at new dimensions with a missing launch directory, so the exit
 	// goroutine's r.Start fails and triggers the re-fire path.
-	// Make the restart fail after the kick has passed backend validation.
-	// Invalid backend configuration now correctly defers before killing.
+	// This fixture uses a family without transcript gating: the missing
+	// launch directory fails only when the pending restart starts its process.
 	task.Worktree = filepath.Join(t.TempDir(), "missing")
 	badCfg := startCfg
 	if err := r.KickRerender(task, badCfg, 30, 180); err != nil {

@@ -5521,6 +5521,7 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 	}
 	cfg := a.db.Config()
 	kickTask := *task
+	committedSnapshot := int(a.committedCols[taskID])
 	checkResume := agent.ResumableSessionAvailable
 	if remote, ok := a.runner.(interface {
 		ResumableSessionAvailable(*model.Task, config.Config) (bool, error)
@@ -5533,7 +5534,14 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 		initCols, _ := sess.InitialPTYSize()
 		idle := sess.IsIdle()
 		needsInput := sessionBlockedOnPrompt(taskID, idle)
-		available, transcriptErr := checkResume(&kickTask, cfg)
+		// Transcript probes require filesystem or REST I/O. Only probe a
+		// candidate kick; a changed decision below defers safely for retry.
+		checked := agent.ShouldKickRerender(true, initCols, committedSnapshot, int(panelCols), idle, false, needsInput) == agent.RerenderKick
+		var available bool
+		var transcriptErr error
+		if checked {
+			available, transcriptErr = checkResume(&kickTask, cfg)
+		}
 		a.tapp.QueueUpdateDraw(func() {
 			// Re-check liveness and the pending flag — anything could have
 			// changed during the RPC round-trip.
@@ -5572,7 +5580,7 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 				}
 				return
 			case agent.RerenderKick:
-				if transcriptErr != nil || !available {
+				if !checked || transcriptErr != nil || !available {
 					a.invalidateAttachCache(taskID)
 					a.recordUnreconciledCommittedCols(taskID, panelCols)
 					uxlog.Log("[rerender] deferred task=%s session=%s: transcript unavailable err=%v", taskID, kickTask.SessionID, transcriptErr)

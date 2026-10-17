@@ -3,6 +3,7 @@ package apiclient
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sync"
 
 	"github.com/drn/argus/internal/agent"
@@ -60,7 +61,7 @@ func NewProvider(c *Client) *Provider {
 }
 
 // ResumableSessionAvailable checks remote transcripts through the existing
-// session-list endpoint; a remote TUI must never inspect its own HOME.
+// exact availability query; a remote TUI must never inspect its own HOME.
 func (p *Provider) ResumableSessionAvailable(task *model.Task, cfg config.Config) (bool, error) {
 	backend, err := agent.ResolveBackend(task, cfg)
 	if err != nil {
@@ -70,22 +71,14 @@ func (p *Provider) ResumableSessionAvailable(task *model.Task, cfg config.Config
 		return true, nil
 	}
 	var resp struct {
-		Sessions []struct {
-			ID string `json:"id"`
-		} `json:"sessions"`
+		Available bool `json:"available"`
 	}
-	if err := p.c.doJSON(context.Background(), "GET", "/api/tasks/"+task.ID+"/claude-sessions", nil, &resp); err != nil {
+	if err := p.c.doJSON(context.Background(), "GET", "/api/tasks/"+task.ID+"/claude-sessions?check_session_id="+url.QueryEscape(task.SessionID), nil, &resp); err != nil {
 		uxlog.Log("[rerender] remote transcript lookup failed task=%s: %v", task.ID, err)
 		return false, err
 	}
-	for _, session := range resp.Sessions {
-		if session.ID == task.SessionID {
-			uxlog.Log("[rerender] remote transcript lookup task=%s count=%d session=%s available=true", task.ID, len(resp.Sessions), task.SessionID)
-			return true, nil
-		}
-	}
-	uxlog.Log("[rerender] remote transcript lookup task=%s count=%d session=%s available=false", task.ID, len(resp.Sessions), task.SessionID)
-	return false, nil
+	uxlog.Log("[rerender] remote transcript lookup task=%s session=%s available=%t", task.ID, task.SessionID, resp.Available)
+	return resp.Available, nil
 }
 
 // OnSessionExit registers the callback. Safe to call before any sessions

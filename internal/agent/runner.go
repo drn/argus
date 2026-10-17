@@ -308,14 +308,38 @@ func (r *Runner) getSession(taskID string) *Session {
 // Returns ErrSessionNotFound if no live session, or an error if a kick is
 // already pending. Stop failures propagate as-is.
 func (r *Runner) KickRerender(task *model.Task, cfg config.Config, rows, cols uint16) error {
+	return r.kickRerender(task, cfg, rows, cols, false)
+}
+
+// KickRevive is an explicit operator recovery, allowed to restart an unsaved
+// live session fresh. Automatic width repair never selects this path.
+func KickRevive(r SessionRunner, task *model.Task, cfg config.Config, rows, cols uint16) error {
+	if revive, ok := r.(interface {
+		Revive(*model.Task, config.Config, uint16, uint16) error
+	}); ok {
+		return revive.Revive(task, cfg, rows, cols)
+	}
+	return r.KickRerender(task, cfg, rows, cols)
+}
+
+func (r *Runner) Revive(task *model.Task, cfg config.Config, rows, cols uint16) error {
+	return r.kickRerender(task, cfg, rows, cols, true)
+}
+
+func (r *Runner) kickRerender(task *model.Task, cfg config.Config, rows, cols uint16, revive bool) error {
 	if task == nil {
 		return fmt.Errorf("nil task")
 	}
 	if r.Get(task.ID) == nil {
 		return ErrSessionNotFound
 	}
-	if available, err := ResumableSessionAvailable(task, cfg); err != nil || !available {
+	restartTask := *task
+	resume := true
+	if revive {
+		resume, _ = prepareResume(&restartTask, cfg, true)
+	} else if available, err := ResumableSessionAvailable(task, cfg); err != nil || !available {
 		uxlog.Log("[rerender] deferred task=%s session=%s: transcript unavailable err=%v", task.ID, task.SessionID, err)
+		slog.Warn("[rerender] deferred: transcript unavailable", "task", task.ID, "session", task.SessionID, "error", err)
 		return fmt.Errorf("rerender deferred: %w", ErrResumeUnavailable)
 	}
 	r.mu.Lock()
@@ -328,12 +352,15 @@ func (r *Runner) KickRerender(task *model.Task, cfg config.Config, rows, cols ui
 		r.mu.Unlock()
 		return fmt.Errorf("kick already pending for task %s", task.ID)
 	}
+	oldID := task.SessionID
+	// Publish a recovered ID only after reserving the pending restart.
+	task.SessionID = restartTask.SessionID
 	r.pendingRestart[task.ID] = &pendingRestart{
 		task:   task,
 		cfg:    cfg,
 		rows:   rows,
 		cols:   cols,
-		resume: true,
+		resume: resume,
 	}
 	r.stopped[task.ID] = true
 	r.mu.Unlock()
@@ -344,6 +371,7 @@ func (r *Runner) KickRerender(task *model.Task, cfg config.Config, rows, cols ui
 		r.mu.Lock()
 		delete(r.pendingRestart, task.ID)
 		delete(r.stopped, task.ID)
+		task.SessionID = oldID
 		r.mu.Unlock()
 		return err
 	}

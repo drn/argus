@@ -1,6 +1,9 @@
 package daemon
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"testing"
@@ -11,6 +14,60 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
+
+func TestHeraReviveRunner_RestartDeadMissingTranscript(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	database, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	bin := filepath.Join(t.TempDir(), "claude")
+	testutil.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0o700))
+	cfg := config.DefaultConfig()
+	cfg.Backends["fixture"] = config.Backend{Command: bin}
+	testutil.NoError(t, database.SetBackend("fixture", cfg.Backends["fixture"]))
+	task := &model.Task{Name: "recover", Backend: "fixture", Worktree: t.TempDir(), SessionID: "missing", Prompt: "mission"}
+	testutil.NoError(t, database.Add(task))
+	runner := agent.NewRunner(nil)
+	t.Cleanup(runner.StopAll)
+	r := NewHeraReviveRunner(database, runner, func() config.Config { return cfg })
+	testutil.NoError(t, r.RestartDead(task.ID))
+	got, err := database.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.False(t, got.SessionID == "" || got.SessionID == "missing")
+	testutil.Equal(t, got.Status, model.StatusInProgress)
+}
+
+func TestHeraReviveRunner_LiveMissingTranscript(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	database, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	bin := filepath.Join(t.TempDir(), "claude")
+	testutil.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\nexec sleep 30\n"), 0o700))
+	cfg := config.DefaultConfig()
+	cfg.Backends["fixture"] = config.Backend{Command: bin}
+	task := &model.Task{Name: "live", Backend: "fixture", Worktree: t.TempDir(), SessionID: "unsaved", Prompt: "original mission"}
+	testutil.NoError(t, database.Add(task))
+	runner := agent.NewRunner(nil)
+	t.Cleanup(runner.StopAll)
+	first, err := runner.Start(task, cfg, 24, 80, false)
+	testutil.NoError(t, err)
+	r := NewHeraReviveRunner(database, runner, func() config.Config { return cfg })
+	testutil.NoError(t, r.KickRerender(task.ID))
+	got, err := database.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.False(t, got.SessionID == "" || got.SessionID == "unsaved")
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		next := runner.Get(task.ID)
+		if next != nil && next.PID() != first.PID() && strings.Contains(string(next.RecentOutput()), "original mission") {
+			testutil.Contains(t, string(next.RecentOutput()), "--session-id\r\n"+got.SessionID)
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("live revive did not recover fresh")
+}
 
 // seedHeraReviveWorker creates a task + orchestrator + bound worker role for
 // HeraReviveRunner tests, mirroring seedHeraRecycleCoordinator (recycle_test.go)
