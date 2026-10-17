@@ -6,5 +6,5 @@
 
 ## 2. Delivery
 
-- [ ] 2.1 Update gotchas, run focused race suites and make pre-pr, validate and archive specs.
-- [ ] 2.2 Push through Iris, verify remote and report to coord.
+- [x] 2.1 Update gotchas, run focused race suites and make pre-pr, validate and archive specs.
+- [x] 2.2 Push through Iris, verify remote and report to coord.

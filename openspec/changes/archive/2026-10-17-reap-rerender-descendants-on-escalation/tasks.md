@@ -6,5 +6,5 @@
 
 ## 2. Delivery
 
-- [ ] 2.1 Update supervisor stream identity and gotchas, run focused suites and make pre-pr, validate/archive specs.
-- [ ] 2.2 Push through Iris, verify remote and report to coord.
+- [x] 2.1 Update supervisor stream identity and gotchas, run focused suites and make pre-pr, validate/archive specs.
+- [x] 2.2 Push through Iris, verify remote and report to coord.

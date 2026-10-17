@@ -20,3 +20,9 @@ This supersedes acceptance of orphaned helpers during width repair. Ordinary swi
 - A descendant can exit or reparent during cleanup → retain captured creation-time identity independently of its later parent/group.
 - Process enumeration can fail → still bound the agent stop, log the failed cleanup, retain the existing drain safety fallback.
 - Dev servers started by an unresponsive agent may die → explicitly accepted for escalation only.
+
+## Validation
+
+- Red tests demonstrated surviving descendants before implementation. Final race regressions pass in 5.301s, including a real detached child holding the PTY, outsider survival, creation-time mismatch rejection, cooperative preservation and production cleanup counts. No production-length grace sleeps are used in tests.
+- Final full agent/API/daemon/client race packages pass in 85.297s/73.613s/33.320s/29.605s; the daemon run includes the stream-surface digest. Reviewer independently verified Q1/Q2 clean.
+- `make -k pre-pr` passes build, vet, formatting and lint; only explicitly waived pinned-Go advisories and DB/TUI package time budgets fail. Complete longer suites pass; filtered combined coverage is 88.5% (36172/40855). Strict OpenSpec validation passes 69 items. Gate details are recorded in the companion PID-anchor change.

@@ -19,3 +19,9 @@ Aaron chose PID-scoped anchors instead of accepting a conservative extra repair 
 
 - PID reuse is possible over long runtimes → this contract uses the supplied live session identity, and existing successful-start/deletion cleanup still applies.
 - An old RPC may complete after a new bind → compare the captured PID against current bind identity before modifying state.
+
+## Validation
+
+- Final code ca8af384 passes the complete standalone TUI race suite in 232.594s; matching/replacement width, stale probe and actual Hera revive-bind regressions pass. Reviewer independently verified Q1/Q2 clean.
+- Ambient Argus/backend session variables were scrubbed for `make -k pre-pr`: build, vet, formatting and lint pass. Only pinned-Go advisories and DB/TUI package time limits fail (120.774s/121.041s); complete longer DB/TUI race suites pass (124.148s/232.594s). Coordinator explicitly waived those load overruns. Terminal passes in the gate in 93.669s; no Makefile/toolchain/threshold changes.
+- Replacing only timed-out DB/TUI profiles with their complete passing profiles yields filtered coverage 88.5% (36172/40855), above the unchanged 88% floor. Strict OpenSpec validation passes all 69 items.
