@@ -86,6 +86,27 @@ func TestPaletteApplicableActions_ClassicAgentViewIsCtxAgentOnly(t *testing.T) {
 	testutil.Equal(t, containsLabel(rows, "quit"), false)
 	testutil.Equal(t, containsLabel(rows, "switch to Tasks tab"), false)
 	testutil.Equal(t, containsLabel(rows, "jump to next needs-input (?); jumps back once all clear"), false)
+
+	// Exactly one global-context row: the switcher. Labels shared with an
+	// agent-context action (e.g. a same-named agent action) are not global rows.
+	km := app.activeKeymap()
+	agentLabels := map[string]bool{}
+	for _, act := range keymap.ContextOrder(keymap.CtxAgent) {
+		agentLabels[km.ActionLabel(act)] = true
+	}
+	globalLabels := map[string]bool{}
+	for _, act := range keymap.ContextOrder(keymap.CtxGlobal) {
+		if l := km.ActionLabel(act); !agentLabels[l] {
+			globalLabels[l] = true
+		}
+	}
+	var globalRows []string
+	for _, r := range rows {
+		if globalLabels[r.Label] {
+			globalRows = append(globalRows, r.Label)
+		}
+	}
+	testutil.DeepEqual(t, globalRows, []string{"jump switcher (tasks + projects)"})
 }
 
 func TestPaletteApplicableActions_TaskListIsGlobalPlusTaskList(t *testing.T) {

@@ -48,6 +48,12 @@ type helpGroup struct {
 	title string
 	ctx   keymap.Context
 	extra []HelpBinding
+	// globalKeys marks `extra` rows (by Action label) that document a
+	// CtxGlobal action inside this section — e.g. the Projects rail's
+	// jump-switcher row. SectionsFromKeymap replaces such a row's literal Key
+	// with the action's CURRENT binding, so a config rebind is reflected
+	// instead of a stale default.
+	globalKeys map[string]keymap.Action
 }
 
 // helpLayout is the ordered set of keymap-backed help sections. The structural
@@ -85,12 +91,12 @@ var helpLayout = []helpGroup{
 		{"Cmd+←", "return to Tasks (rail only; Appearance option)"},
 		{"Cmd+→", "rightmost pane → Settings left pane"},
 		{"ctrl+z", "fullscreen pane"},
-		{"ctrl+j", "jump switcher"},
+		{"ctrl+j", "jump switcher"}, // Key derived from global.switcher (globalKeys)
 		{"ctrl+y", "copy staged text (focused pane)"},
 		{"B", "force recycle coordinator (kill + restart, confirm)"},
 		{"←", "move to parent coordinator (rail focused)"},
 		{"Cmd+↑ / Cmd+↓", "move rail selection (stay focused in pane)"},
-	}},
+	}, globalKeys: map[string]keymap.Action{"jump switcher": keymap.ActGlobalSwitcher}},
 }
 
 // staticHelpSections are fully structural — no keymap actions back them.
@@ -127,7 +133,14 @@ func SectionsFromKeymap(km *keymap.Keymap) []HelpSection {
 		for _, r := range km.HelpRows(g.ctx) {
 			sec.Bindings = append(sec.Bindings, HelpBinding{Key: r.Key, Action: r.Label})
 		}
-		sec.Bindings = append(sec.Bindings, g.extra...)
+		for _, row := range g.extra {
+			if act, ok := g.globalKeys[row.Action]; ok {
+				if b, ok := km.BindingFor(keymap.CtxGlobal, act); ok {
+					row.Key = b.String()
+				}
+			}
+			sec.Bindings = append(sec.Bindings, row)
+		}
 		out = append(out, sec)
 	}
 	out = append(out, staticHelpSections...)

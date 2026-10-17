@@ -359,9 +359,8 @@ func (p *HeraPage) jumpToLeaf(id string) {
 // Exported so callers outside this package can reuse the exact ancestor-
 // expansion + reattach + focus behavior that originally backed only the plan
 // widget's own leaf-Enter (jumpToLeaf, still the plan widget's OnEnter
-// handler and now a thin wrapper over this). The jump switcher (Ctrl+J) is
-// another caller: Enter on a Projects-column row from anywhere (including the
-// classic agent view) calls this after switching to the Hera tab.
+// handler and now a thin wrapper over this). The jump switcher (Ctrl+J) uses
+// it as the fallback when its exact-row landing (JumpToRow) finds no row.
 func (p *HeraPage) JumpToTask(id string) bool {
 	if p.remote || id == "" {
 		return false
@@ -373,33 +372,67 @@ func (p *HeraPage) JumpToTask(id string) bool {
 		uxlog.Log("[hera-view] jump to task: no rail row for task=%s (focus unchanged)", id)
 		return false
 	}
-	// Mirror the rail's Enter-reattach (BUG-009): a plan-leaf node whose agent
-	// session has EXITED must restart-and-join it, exactly as the rail's Enter
-	// does — not merely select it (which leaves the pane showing a dead session).
-	// Reuse the same OnReattach plumbing under the SAME liveness gate the rail
-	// Enter uses (page.go ~712): a dead session (any role) or a live
-	// non-coordinator role fires it; a live coordinator stays navigate-only. Only
-	// leaf nodes reach this path (plan drill-in and rail Space/fold are separate
-	// callers), so drill-in is unaffected.
+	p.landOnSelection()
+	uxlog.Log("[hera-view] jump to task: landed on task=%s within hera (detailsMode=%v)", id, p.detailsMode)
+	return true
+}
+
+// JumpToRow lands on the EXACT rail row the jump switcher's Projects column
+// chose: roleID's own row (Rail.SelectRole), or — for a row with no role of
+// its own (an orchestrator header, roleID 0) — orchID's row (Rail.SelectOrch).
+// Unlike JumpToTask's first-match task lookup, this disambiguates a task bound
+// to roles in several orchestrators (or a coordinator driving several). Both
+// selectors expand collapsed ancestors and focus the kanban group; the landing
+// is then the same as JumpToTask (reattach + pane focus) for a row with a
+// focus task, or the rail for a task-less header. Returns false — focus
+// unchanged — in remote mode or when the row no longer exists.
+func (p *HeraPage) JumpToRow(roleID, orchID int64) bool {
+	if p.remote {
+		return false
+	}
+	var ok bool
+	if roleID != 0 {
+		ok = p.rail.SelectRole(roleID)
+	} else {
+		ok = p.rail.SelectOrch(orchID)
+	}
+	if !ok {
+		uxlog.Log("[hera-view] jump to row: no rail row for role=%d orch=%d (focus unchanged)", roleID, orchID)
+		return false
+	}
+	p.landOnSelection()
+	uxlog.Log("[hera-view] jump to row: landed on role=%d orch=%d (detailsMode=%v)", roleID, orchID, p.detailsMode)
+	return true
+}
+
+// landOnSelection finishes a jump once the rail cursor is on the target row:
+// a row with no focus task (a coordinator-less orchestrator header) lands
+// focus on the rail; otherwise it mirrors the rail's Enter-reattach (BUG-009)
+// — a dead session (any role) or a live non-coordinator role fires
+// OnReattach under the SAME liveness gate the rail Enter uses (page.go ~712);
+// a live coordinator stays navigate-only — and moves focus onto the resolved
+// pane. applySelection already ran via onSelectionChanged: a plain worker
+// selection feeds the AGENT pane; a coordinator/sub-coord row is detailsMode,
+// so focus advances into the coord pane instead.
+func (p *HeraPage) landOnSelection() {
 	sel := p.rail.Selection()
-	if taskID := sel.FocusTaskID(); taskID != "" && p.OnReattach != nil {
+	taskID := sel.FocusTaskID()
+	if taskID == "" {
+		p.focus.SetRegion(FocusRail)
+		return
+	}
+	if p.OnReattach != nil {
 		live := p.sessionLive(taskID)
 		if !live || !sel.IsCoordinator() {
-			uxlog.Log("[hera-view] jump to task reattach task=%s (live=%v coordinator=%v)", taskID, live, sel.IsCoordinator())
+			uxlog.Log("[hera-view] jump reattach task=%s (live=%v coordinator=%v)", taskID, live, sel.IsCoordinator())
 			p.OnReattach(sel)
 		}
 	}
-	// applySelection ran via onSelectionChanged; a plain worker selection feeds the
-	// AGENT pane, so land focus there. (A leaf that resolved to a coordinator/sub-
-	// coord row is detailsMode — advance into the coord pane instead, mirroring the
-	// rail Enter behaviour.)
 	if !p.detailsMode {
 		p.focus.SetRegion(FocusAgent)
 	} else {
 		p.focus.SetRegion(FocusCoord)
 	}
-	uxlog.Log("[hera-view] jump to task: landed on task=%s within hera (detailsMode=%v)", id, p.detailsMode)
-	return true
 }
 
 // SelectOrch selects orchestrator orchID's own row in the rail (expanding its

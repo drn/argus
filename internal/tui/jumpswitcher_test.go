@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
@@ -142,29 +144,45 @@ func TestJumpSwitcher_OpensFromSettingsTab(t *testing.T) {
 
 // TestJumpSwitcher_OpensFromEveryProjectsFocus: rail, coordinator pane, agent
 // pane and fullscreen — the key is consumed by handleGlobalKey (returns nil),
-// so tview never hands it to the focused HeraPage/pane PTY.
+// so tview never hands it to the focused HeraPage/pane PTY. Live sessions are
+// bound to both panes and their user-input stamps stay zero; fullscreen
+// survives the round trip.
 func TestJumpSwitcher_OpensFromEveryProjectsFocus(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	d := testDB(t)
 	orch := seedHeraOrch(t, d, "orch")
 	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
 	seedHeraBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
-	app := New(d, agent.NewRunner(nil), false)
+	for _, id := range []string{"tc", "tw"} {
+		task, err := d.Get(id)
+		testutil.NoError(t, err)
+		task.Worktree = t.TempDir()
+		testutil.NoError(t, d.Update(task))
+	}
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	coordSess := startSleepSession(t, app, runner, "tc")
+	agentSess := startSleepSession(t, app, runner, "tw")
 	app.switchTab(widget.TabHera)
 	app.heraPage.Rail().EnsureAncestorsExpanded(orch)
 	testutil.True(t, app.heraPage.Rail().SelectByTaskID("tw"))
+	app.heraPage.Reconcile()
+	testutil.True(t, app.heraPage.CoordPane().Session() == agentview.TerminalAdapter(coordSess))
+	testutil.True(t, app.heraPage.AgentPane().Session() == agentview.TerminalAdapter(agentSess))
 
 	cases := []struct {
-		name  string
-		setup func()
-		want  hera.Focus
+		name       string
+		setup      func()
+		want       hera.Focus
+		fullscreen bool
 	}{
-		{"rail", func() {}, hera.FocusRail},
-		{"coordinator pane", func() { app.heraPage.Machine().SetRegion(hera.FocusCoord) }, hera.FocusCoord},
-		{"agent pane", func() { app.heraPage.Machine().SetRegion(hera.FocusAgent) }, hera.FocusAgent},
+		{"rail", func() {}, hera.FocusRail, false},
+		{"coordinator pane", func() { app.heraPage.Machine().SetRegion(hera.FocusCoord) }, hera.FocusCoord, false},
+		{"agent pane", func() { app.heraPage.Machine().SetRegion(hera.FocusAgent) }, hera.FocusAgent, false},
 		{"fullscreen agent pane", func() {
 			app.heraPage.Machine().SetRegion(hera.FocusAgent)
 			app.heraPage.Machine().ToggleFullscreen()
-		}, hera.FocusAgent},
+		}, hera.FocusAgent, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -172,6 +190,8 @@ func TestJumpSwitcher_OpensFromEveryProjectsFocus(t *testing.T) {
 			tc.setup()
 			testutil.Nil(t, app.handleGlobalKey(ctrlJ()))
 			testutil.Equal(t, app.mode, modeJumpSwitcher)
+			testutil.True(t, coordSess.LastUserInput().IsZero())
+			testutil.True(t, agentSess.LastUserInput().IsZero())
 			// The popup's start cursor is the rail's selected task (Projects).
 			testutil.Equal(t, app.jumpSwitcher.ActiveColumn(), SwitcherColumnProjects)
 			testutil.Equal(t, app.jumpSwitcher.rail.Selection().FocusTaskID(), "tw")
@@ -179,7 +199,10 @@ func TestJumpSwitcher_OpensFromEveryProjectsFocus(t *testing.T) {
 			testutil.Equal(t, app.mode, modeTaskList)
 			testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
 			testutil.Equal(t, app.heraPage.Machine().State(), tc.want)
+			testutil.Equal(t, app.heraPage.Machine().Fullscreen(), tc.fullscreen)
 			testutil.True(t, app.tapp.GetFocus() == tview.Primitive(app.heraPage))
+			testutil.True(t, coordSess.LastUserInput().IsZero())
+			testutil.True(t, agentSess.LastUserInput().IsZero())
 		})
 	}
 }
@@ -190,9 +213,36 @@ func TestJumpSwitcher_NotOpenedOverNewTaskForm(t *testing.T) {
 	app := New(d, agent.NewRunner(nil), false)
 	app.onNewTask()
 	testutil.Equal(t, app.mode, modeNewTask)
-	app.handleGlobalKey(ctrlJ())
+	// Every form keypress clears its error line, so a cleared error proves the
+	// form (not the switcher dispatch) received ctrl+j.
+	app.newTaskForm.SetError("sentinel")
+	testutil.Nil(t, app.handleGlobalKey(ctrlJ()))
 	testutil.Equal(t, app.mode, modeNewTask)
 	testutil.Nil(t, app.jumpSwitcher)
+	testutil.Equal(t, app.newTaskForm.errMsg, "")
+	testutil.False(t, app.newTaskForm.Canceled())
+}
+
+// TestJumpSwitcher_CtrlKInAgentViewOpensPalette: ctrl+k in the classic agent
+// view resolves to the command palette — never the switcher — and the key
+// never reaches the PTY.
+func TestJumpSwitcher_CtrlKInAgentViewOpensPalette(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	seedSwitcherTasks(t, app)
+	sess := startSleepSession(t, app, runner, "ts-cur")
+	cur, err := d.Get("ts-cur")
+	testutil.NoError(t, err)
+	enterAgentViewFor(app, cur, sess)
+
+	testutil.Nil(t, app.handleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlK, 0, tcell.ModNone)))
+	testutil.Equal(t, app.mode, modeCommandPalette)
+	testutil.True(t, app.commandPaletteModal != nil)
+	testutil.Nil(t, app.jumpSwitcher)
+	testutil.False(t, app.pages.HasPage(jumpSwitcherPage))
+	testutil.True(t, sess.LastUserInput().IsZero())
 }
 
 func TestJumpSwitcher_NotOpenedInPluginView(t *testing.T) {
@@ -536,7 +586,7 @@ func TestJumpSwitcher_RefeedsOnTick(t *testing.T) {
 	testutil.True(t, app.jumpSwitcher.taskIDs["ts-new"])
 	// Refeed is a no-op once closed.
 	switcherKey(app, tcell.KeyEscape, 0)
-	app.refeedJumpSwitcher()
+	app.refeedJumpSwitcher(switcherReads{})
 	testutil.Nil(t, app.jumpSwitcher)
 }
 
@@ -642,4 +692,194 @@ func TestJumpSwitcher_TransparentToAgentViewSession(t *testing.T) {
 		testutil.Nil(t, app.agentPane.Session())
 		testutil.Equal(t, app.redrawLoopGen["ts-zeta"], uint64(0))
 	})
+}
+
+// TestJumpSwitcher_StalePopupAfterModeChange: a path that changes a.mode while
+// the popup is open (a hera confirm opened by an async classification, or the
+// fork-completion callback's onTaskSelect) used to strand a.jumpSwitcher
+// non-nil — and openJumpSwitcher refused to open while it was non-nil, so
+// ctrl+j stayed dead until restart. The guard is keyed on the mode now: a
+// stale popup is discarded and a fresh one opens; the per-tick refeed also
+// cleans one up.
+func TestJumpSwitcher_StalePopupAfterModeChange(t *testing.T) {
+	t.Run("hera confirm open and close, then ctrl+j reopens", func(t *testing.T) {
+		d := testDB(t)
+		app := New(d, agent.NewRunner(nil), false)
+		seedSwitcherTasks(t, app)
+		app.switchTab(widget.TabHera)
+		testutil.Nil(t, app.handleGlobalKey(ctrlJ()))
+		stale := app.jumpSwitcher
+		testutil.True(t, stale != nil)
+
+		app.openHeraConfirm("t", "m", nil)
+		testutil.Equal(t, app.mode, modeHeraConfirm)
+		app.closeHeraConfirm()
+		testutil.Equal(t, app.mode, modeTaskList)
+
+		testutil.Nil(t, app.handleGlobalKey(ctrlJ()))
+		testutil.Equal(t, app.mode, modeJumpSwitcher)
+		testutil.True(t, app.jumpSwitcher != nil)
+		testutil.True(t, app.jumpSwitcher != stale)
+		testutil.True(t, app.tapp.GetFocus() == tview.Primitive(app.jumpSwitcher))
+		switcherKey(app, tcell.KeyEscape, 0)
+		testutil.Nil(t, app.jumpSwitcher)
+		testutil.False(t, app.pages.HasPage(jumpSwitcherPage))
+	})
+
+	t.Run("fork-completion onTaskSelect, then ctrl+j reopens", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		d := testDB(t)
+		app := New(d, agent.NewRunner(nil), false)
+		seedSwitcherTasks(t, app)
+		app.openJumpSwitcher()
+		stale := app.jumpSwitcher
+		created, err := d.Get("ts-zeta")
+		testutil.NoError(t, err)
+		app.tasklist.SelectByID(created.ID)
+		app.onTaskSelect(created, false) // what the fork callback does, minus the start
+		testutil.Equal(t, app.mode, modeAgent)
+
+		testutil.Nil(t, app.handleGlobalKey(ctrlJ()))
+		testutil.Equal(t, app.mode, modeJumpSwitcher)
+		testutil.True(t, app.jumpSwitcher != stale)
+		switcherKey(app, tcell.KeyEscape, 0)
+		testutil.Equal(t, app.mode, modeAgent)
+		testutil.Nil(t, app.jumpSwitcher)
+	})
+
+	t.Run("the per-tick refeed discards a stale popup", func(t *testing.T) {
+		d := testDB(t)
+		app := New(d, agent.NewRunner(nil), false)
+		seedSwitcherTasks(t, app)
+		app.openJumpSwitcher()
+		app.openHeraConfirm("t", "m", nil)
+		app.closeHeraConfirm()
+		app.refreshTasks()
+		testutil.Nil(t, app.jumpSwitcher)
+		testutil.False(t, app.pages.HasPage(jumpSwitcherPage))
+	})
+}
+
+// TestJumpSwitcher_ReboundKeysInsidePopup: with global.switcher rebound to a
+// rune-free chord, pressing it again while the popup is open is swallowed (a
+// no-op, never filter text or a close); the popup's next-(?) key follows the
+// active global.jump_needs_input binding rather than a hardcoded ctrl+g, and
+// the footer hint names the real key.
+func TestJumpSwitcher_ReboundKeysInsidePopup(t *testing.T) {
+	d := testDBWithConfig(t, "[keybindings.global]\nswitcher = \"ctrl+e\"\njump_needs_input = \"ctrl+n\"\n")
+	seedNeedsInputWorker(t, d, "orch", "tw")
+	app := New(d, agent.NewRunner(nil), false)
+	seedSwitcherTasks(t, app)
+	app.needsInputIDs = []string{"ts-zeta"}
+	app.tasklist.SetNeedsInput(app.needsInputIDs)
+	app.heraPage.SetNeedsInput([]string{"tw"})
+	ctrlE := tcell.NewEventKey(tcell.KeyCtrlE, 0, tcell.ModNone)
+
+	testutil.Nil(t, app.handleGlobalKey(ctrlE))
+	p := app.jumpSwitcher
+	testutil.True(t, p != nil)
+	testutil.Equal(t, p.tasks.SelectedTask().ID, "ts-zeta")
+
+	t.Run("the rebound switcher key is a no-op while open", func(t *testing.T) {
+		testutil.Nil(t, app.handleGlobalKey(ctrlE))
+		testutil.True(t, app.jumpSwitcher == p)
+		testutil.Equal(t, app.mode, modeJumpSwitcher)
+		testutil.False(t, p.Canceled() || p.Selected())
+		testutil.Equal(t, p.Query(), "")
+	})
+
+	t.Run("ctrl+g no longer cycles; the rebound key does", func(t *testing.T) {
+		app.handleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlG, 0, tcell.ModNone))
+		testutil.Equal(t, p.ActiveColumn(), SwitcherColumnTasks)
+		testutil.Equal(t, p.tasks.SelectedTask().ID, "ts-zeta")
+		app.handleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlN, 0, tcell.ModNone))
+		testutil.Equal(t, p.ActiveColumn(), SwitcherColumnProjects)
+		testutil.Equal(t, p.rail.Selection().FocusTaskID(), "tw")
+		testutil.Equal(t, app.mode, modeJumpSwitcher)
+	})
+
+	t.Run("footer names the real key", func(t *testing.T) {
+		text := screenText(drawPopup(t, p, 120, 30), 120, 30)
+		testutil.Contains(t, text, "ctrl+n next (?)")
+		testutil.False(t, strings.Contains(text, "ctrl+g"))
+	})
+}
+
+// TestJumpSwitcher_RuneBoundSwitcherIsNotFilterText: a rune-bound
+// global.switcher pressed while the popup is open is swallowed — not appended
+// to the shared filter query.
+func TestJumpSwitcher_RuneBoundSwitcherIsNotFilterText(t *testing.T) {
+	d := testDBWithConfig(t, "[keybindings.global]\nswitcher = \"J\"\n")
+	app := New(d, agent.NewRunner(nil), false)
+	seedSwitcherTasks(t, app)
+	app.openJumpSwitcher()
+	p := app.jumpSwitcher
+	testutil.Nil(t, app.handleGlobalKey(tcell.NewEventKey(tcell.KeyRune, 'J', tcell.ModNone)))
+	testutil.True(t, app.jumpSwitcher == p)
+	testutil.Equal(t, p.Query(), "")
+	// Other runes still filter.
+	testutil.Nil(t, app.handleGlobalKey(tcell.NewEventKey(tcell.KeyRune, 'z', tcell.ModNone)))
+	testutil.Equal(t, p.Query(), "z")
+}
+
+// TestJumpSwitcher_EnterLandsOnExactProjectsRow: a task bound to roles in two
+// orchestrators has two Projects rows. Choosing the SECOND one in the popup
+// must land the real rail on that exact row — not on whichever row
+// JumpToTask's first-match task lookup resolves first — while keeping the
+// ancestor-expand + pane-focus landing.
+func TestJumpSwitcher_EnterLandsOnExactProjectsRow(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	d := testDB(t)
+	orchA := seedHeraOrch(t, d, "orch-a")
+	seedHeraBoundRole(t, d, orchA, "coord-a", db.HeraKindCoordinator, "tca")
+	roleA := seedHeraBoundRole(t, d, orchA, "wkr-a", db.HeraKindWorker, "tx")
+	orchB := seedHeraOrch(t, d, "orch-b")
+	seedHeraBoundRole(t, d, orchB, "coord-b", db.HeraKindCoordinator, "tcb")
+	roleB, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: orchB, Name: "wkr-b", Kind: db.HeraKindWorker, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: roleB.ID, ArgusTaskID: "tx", WorktreePath: "/wt/tx-b"})
+	testutil.NoError(t, err)
+	app := New(d, agent.NewRunner(nil), false)
+
+	// Collapse orch-b on the real rail so the landing must expand it.
+	rail := app.heraPage.Rail()
+	app.heraPage.Refresh()
+	testutil.True(t, rail.SelectOrch(orchB))
+	if !rail.OrchCollapsed(orchB) {
+		rail.ToggleCollapse()
+	}
+	// JumpToTask's first-match lookup resolves tx to orch-a's row.
+	testutil.True(t, app.heraPage.JumpToTask("tx"))
+	testutil.True(t, rail.Selected() != nil)
+	testutil.Equal(t, rail.Selected().RoleID, roleA.ID)
+	app.heraPage.Machine().ToRail()
+	testutil.True(t, rail.SelectOrch(orchB))
+	if !rail.OrchCollapsed(orchB) {
+		rail.ToggleCollapse()
+	}
+	testutil.True(t, rail.OrchCollapsed(orchB))
+
+	app.openJumpSwitcher()
+	p := app.jumpSwitcher
+	switcherKey(app, tcell.KeyRight, 0)
+	p.rail.EnsureAncestorsExpanded(orchB)
+	found := false
+	for range p.rail.Rows() {
+		if r := p.rail.Selected(); r != nil && r.RoleID == roleB.ID {
+			found = true
+			break
+		}
+		switcherKey(app, tcell.KeyDown, 0)
+	}
+	testutil.True(t, found)
+	switcherKey(app, tcell.KeyEnter, 0)
+	testutil.Equal(t, app.jumpSwitcher, (*SwitcherPopup)(nil))
+
+	testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+	testutil.False(t, rail.OrchCollapsed(orchB))
+	sel := rail.Selection()
+	testutil.True(t, sel.Role != nil)
+	testutil.Equal(t, sel.Role.RoleID, roleB.ID)
+	testutil.Equal(t, sel.Orch.ID, orchB)
+	testutil.Equal(t, app.heraPage.Machine().State(), hera.FocusAgent)
 }

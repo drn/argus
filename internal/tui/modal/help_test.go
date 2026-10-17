@@ -7,6 +7,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/keymap"
 )
@@ -380,4 +381,27 @@ func TestHelpSections_NonEmpty(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSectionsFromKeymap_RailSwitcherRowFollowsRebind: the Projects rail
+// section's jump-switcher row is derived from the global.switcher binding, so
+// a config rebind shows the real key there too (not a stale literal ctrl+j).
+func TestSectionsFromKeymap_RailSwitcherRowFollowsRebind(t *testing.T) {
+	km, warns := keymap.Build(config.Keybindings{Global: map[string]string{"switcher": "ctrl+e"}})
+	testutil.Equal(t, len(warns), 0)
+	var rail []HelpBinding
+	for _, sec := range SectionsFromKeymap(km) {
+		if sec.Title == "Projects View (rail)" {
+			rail = sec.Bindings
+		}
+	}
+	found := false
+	for _, b := range rail {
+		if b.Action == "jump switcher" {
+			found = true
+			testutil.Equal(t, b.Key, "ctrl+e")
+		}
+		testutil.False(t, b.Key == "ctrl+j")
+	}
+	testutil.True(t, found)
 }

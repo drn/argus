@@ -43,7 +43,9 @@ The popup (`SwitcherPopup`, `internal/tui/switcherpopup.go`) owns one `*taskview
 Small exported seams are added to the widgets rather than reaching into internals:
 
 - `TaskListView.SetFilter(q string)` and `Rail.SetFilter(q string)` — set the query non-interactively and rebuild (each widget keeps its own existing match semantics).
-- `TaskListView.NextNeedsInputTaskID(afterID string) (string, bool)` — mirrors `Rail.NextNeedsInputTaskID`, scanning visible task rows (expanding the project that holds the hit).
+- `TaskListView.NeedsInputTaskIDs()` / `NeedsInputTaskIDsAfter(afterID)` — the needs-input candidates in full scan order (folded projects included); landing on one with `SelectByID` expands its project. `scanOrder` and `buildRows` share one `partitionTasks()` helper so the scan can never disagree with what the list shows.
+- `Rail.CursorToNextNeedsInput(fromStart)` — the popup copy's ctrl+g, scanning every kanban group as if expanded (the real rail's `NextNeedsInputTaskID` keeps its built-rows-only scan).
+- `heramodel.Model.Clone()` — the popup's rail gets a deep-enough copy (sections, each orchestrator's `Roles`, `Freelance`) so its sticky-reveal stamping never writes into the real rail's model.
 - A non-interactive focus-highlight setter on each (the Rail already has `SetFocused`).
 - `Rail.CopyFoldStateFrom(other *Rail)` and `TaskListView.SetExpanded` (exists) — seed the popup copies with the real tabs' current folds so the popup opens looking like the rails, then diverge privately.
 
@@ -53,14 +55,17 @@ Small exported seams are added to the widgets rather than reaching into internal
 
 - **Reach:** every context the unconditional section reaches today: classic agent view (zoomed or not), Tasks tab, Projects rail, Projects coordinator/agent pane (incl. fullscreen). The `ctrl+j` byte never reaches a PTY.
 - **Exclusions (unchanged precedence):** open forms/modals are handled earlier in `handleGlobalKey` and keep the key (e.g. typing in the new-task form), and plugin-view mode's full surrender keeps forwarding every key but the double-`ctrl+q` failsafe. Pressing `ctrl+j` while the popup itself is open is a no-op.
-- **Help:** `global.switcher` appears in the generated Global help section; the Hera rail help section keeps its static `Ctrl+J` row (now labelled "jump switcher") because the rail-keybindings requirement lists it there.
+- **Help:** `global.switcher` appears in the generated Global help section; the Hera rail help section keeps a structural "jump switcher" row because the rail-keybindings requirement lists it there, but its key is derived from the current `global.switcher` binding (`BindingFor`), so a rebind shows the real key in both sections.
+- **While open:** the popup's key handler resolves `CtxGlobal` first and swallows `global.switcher`, so pressing it again (even rune-bound) is a no-op, never filter text. The popup's next-`(?)` key is the active `global.jump_needs_input` binding, and the footer hint names it.
+- **Stale popup:** "open" is keyed on `a.mode == modeJumpSwitcher`, not on the popup pointer. Paths that change the mode while the popup is up (`closeHeraConfirm` forcing `modeTaskList` after an async-classified confirm, the fork-completion callback's `onTaskSelect`) leave a stale popup behind; opening discards it and builds a fresh one, and the per-tick refeed discards it too.
 - **Breaking:** a user config override of `agent.switcher` no longer applies; rebind via `global.switcher`. Acceptable under the one-user breaking-changes policy.
 
 ### D3: Layout — Tasks left, Projects right
 
 A centered overlay (~90% of the screen) with a shared filter line on top, then two equal-width columns with headers "Tasks" and "Projects", and a footer hint line (`↑↓ move · ←→ column · ctrl+g next (?) · enter go · esc clear/close`). The active column's header and cursor render focused; the inactive column's cursor renders unfocused.
 
-- The Tasks column is fed `a.tasks` (archived excluded), the running/idle/idle-unvisited/needs-input/PR-state maps the real list gets, and `SetManagedTasks(managed)` + `SetHideHeraManaged(true)` — hera-managed tasks (workers + coordinators) are always hidden regardless of the real list's `H` toggle.
+- The Tasks column is fed `a.tasks` (archived excluded), the running/idle/idle-unvisited/needs-input/PR-state maps the real list gets, and `SetManagedTasks(managed)` + `SetHideHeraManaged(true)` — hera-managed tasks are always hidden regardless of the real list's `H` toggle. "Hera-managed" is exactly the real list's rule with `H` on: `Managed` (a live coordinator/worker binding) ∪ `HeraWorkers` (hera-spawned worker meta). `HeraCoords` (coordinator task_meta) is display-only and never a hide signal — it is not cleared when a binding ends, so hiding on it would make an ex-coordinator unreachable in both columns.
+- The per-tick refeed reuses the managed set, hera role meta, and PR states `refreshTasksWithIDs` already read that tick (`switcherReads`); only the open path reads them itself.
 - The Projects column is fed a fresh model: `heraPage.Refresh()` then `heraPage.Rail().Model()`, plus the real rail's PR meta.
 - In remote mode (`heraPage.IsRemote()`) the Projects column shows a "Projects unavailable in remote mode" placeholder and is skipped by ←/→ and `ctrl+g`.
 
@@ -78,18 +83,23 @@ Every printable rune (except Space) appends to one shared query, applied via `Se
 
 The needs-input order is: Tasks column top-to-bottom, then Projects column top-to-bottom, wrapping. Inside the popup, `ctrl+g` moves the cursor (and active column) to the next `(?)` after the current position in that order; it never navigates or closes, and is a no-op when nothing needs input. Because the popup consumes all keys while open, this does not trigger the global `ctrl+g` jump.
 
-On open the cursor lands on the first `(?)` in that order. If nothing needs input it lands on the currently-viewed task (`agentState.TaskID`, or the Projects rail's selected task when opened from the Projects tab) in whichever column holds it; failing that, the top of the Tasks column.
+On open the cursor lands on the first `(?)` in that order. If nothing needs input it lands on the currently-viewed task in whichever column holds it; failing that, the top of the Tasks column. The "currently-viewed task" depends on where the popup opened from:
+
+- **Classic agent view:** `agentState.TaskID`.
+- **Projects tab:** the Projects rail's selected task (`Selection().FocusTaskID()`).
+- **Tasks or Settings tab:** the Tasks list's selected task.
 
 ### D7: Enter and Esc
 
 - **Enter on a Tasks row:** close the popup, `tasklist.SelectByID(id)`, then `onTaskSelect(task, false)` — identical to today's switcher (autoStart=false, a dead session is not resurrected; Enter in the agent view restarts it). Selecting the task you are already viewing simply closes the popup.
-- **Enter on a Projects row:** close the popup; if in `modeAgent`, `exitAgentView()` first (the teardown `switchTab(TabHera)` does not perform — the gotcha the old switcher already pins), then `switchTab(TabHera)` and `heraPage.JumpToTask(focusTaskID)`, which expands ancestors and reattaches exactly like rail Enter. A row with no focus task (coordinator-less orchestrator header, structural fold row) lands on the Projects tab with the same orchestrator row selected, via a new `HeraPage.SelectOrch(orchID)` seam.
+- **Enter on a Projects row:** close the popup; if in `modeAgent`, `exitAgentView()` first (the teardown `switchTab(TabHera)` does not perform — the gotcha the old switcher already pins), then `switchTab(TabHera)` and land on the EXACT chosen row. The selection carries the row's identity (`RoleID` for a role row, 0 for an orchestrator header, plus `OrchID`), and `HeraPage.JumpToRow(roleID, orchID)` selects it via `Rail.SelectRole` / `Rail.SelectOrch` (both expand collapsed ancestors and focus the kanban group), then finishes through the same `landOnSelection` helper `JumpToTask` uses (reattach + pane focus, or rail focus for a task-less header). `JumpToTask(taskID)` alone is wrong here: it lands on the first row bound to the task, which differs when a task is bound under several orchestrators. If the chosen row is gone (the model changed since the snapshot), routing falls back to `JumpToTask`, then `HeraPage.SelectOrch(orchID)`.
+- **Enter on a Projects fold-only row** (the Freelance fold header or an Archive expando — no task and no orchestrator): toggles that fold inside the popup and keeps it open.
 - **Esc:** with a non-empty query, clears the query (both columns restore their pre-filter cursor); with an empty query, closes the popup and restores the mode/focus it opened from (`taskSwitcherReturnMode` logic, including the three-way Tasks/Hera/agent fallback).
 - `ctrl+q` closes the popup immediately, query or not.
 
-### D8: Retire the grouped `TaskSwitcherModal`
+### D8: Delete `TaskSwitcherModal`
 
-`openTaskSwitcher`, `openTaskSwitcherModal`'s grouped path, and the modal's grouped mode (`SetGrouped`, grouped rows/cursor/draw code) are deleted. The flat mode stays — `herapicker.go` (Hera link/unlink parent picker) still uses it.
+`openTaskSwitcher`, `openTaskSwitcherModal`, and the whole `TaskSwitcherModal` type (`internal/tui/taskswitcher.go` and its tests) are deleted. The original plan kept its flat mode for the Hera parent picker, but that premise was wrong: `herapicker.go` renders its own `OrchPickerModal` and never used `TaskSwitcherModal`, so with the grouped mode gone the type had no production caller. `fuzzyMatch` (used by the fuzzy link picker and the session picker) already lives in `fuzzylinkpicker.go` and stays. The `forms-and-modals` "Task switcher status indicator" requirement is removed; the jump switcher's columns render the real widgets' glyphs through the shared `widget.TaskStatusIcon` / rail classifiers.
 
 ## Risks / Trade-offs
 
@@ -114,7 +124,7 @@ None beyond the keymap rename: `agent.switcher` → `global.switcher`. No schema
 - `Rail` and `TaskListView` are both standalone `tview.Box` widgets with exported cursor/selection APIs; only filter-setting and a task-list needs-input finder are missing.
 - `HeraPage.JumpToTask` already encapsulates ancestor expansion + reattach + focus — the Projects-column Enter can reuse it verbatim.
 - The old switcher's hera-managed jump path must call `exitAgentView()` before `switchTab(TabHera)`; that requirement carries over (`TestSwitcher_SelectingHeraManagedEntryJumpsIntoHeraTab` pins it today).
-- `herapicker.go` is the only other `TaskSwitcherModal` consumer and uses flat mode only.
+- `herapicker.go` was believed to use `TaskSwitcherModal`'s flat mode; it actually renders its own `OrchPickerModal`, so the switcher modal had no other consumer and was deleted (D8).
 
 ## Acceptance criteria
 
@@ -150,4 +160,6 @@ None beyond the keymap rename: `agent.switcher` → `global.switcher`. No schema
 
 - It should open the selected task's agent view when Enter is pressed on a Tasks row.
 - It should switch to the Projects tab and land on the selected role when Enter is pressed on a Projects row, including from the agent view.
+- It should land on the exact chosen row when the task is bound under several orchestrators.
+- It should still open after another modal took over the screen while the popup was open.
 - It should clear the filter on Esc when a filter is applied, and close the popup on Esc when none is.

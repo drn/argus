@@ -1,15 +1,7 @@
-## MODIFIED Requirements
+## REMOVED Requirements
 
 ### Requirement: Task switcher status indicator
 
-The task switcher modal (flat mode, used by the Hera parent picker) SHALL convey each task's status by rendering the task list's status glyph to the LEFT of the task name, using the same glyph and color the task list shows for that status and (for in-progress tasks) in-progress sub-state. The switcher MUST NOT spell out the status as text to the right of the name. The status glyph mapping MUST be the single shared classifier used by the task list, so the two surfaces cannot drift. The glyph SHALL retain its status color on the selected (highlighted) row; only the name adopts the selected style.
+**Reason**: The task switcher modal (`TaskSwitcherModal`) is deleted. Its only consumer was the old `ctrl+j` grouped switcher, which the two-column jump switcher replaces (the Hera parent picker never used it — it renders its own `OrchPickerModal`). The jump switcher's columns are private instances of the real Tasks list and Projects rail, so they render the exact glyphs those widgets draw through the same shared status classifier, and no separate switcher row renderer exists to drift.
 
-#### Scenario: In-review task shows the status icon, not its name
-
-- **WHEN** the switcher renders a task whose status is `in_review`
-- **THEN** the row shows the in-review (clipboard) glyph to the left of the name and the words "In Review" do not appear
-
-#### Scenario: Blocked task shows the needs-input icon
-
-- **WHEN** the switcher renders an in-progress task that is blocked on a user prompt
-- **THEN** the row shows the needs-input glyph to the left of the name
+**Migration**: Press `ctrl+j` to open the jump switcher; its Tasks column shows each task's status with the same glyph and color as the Tasks tab list.

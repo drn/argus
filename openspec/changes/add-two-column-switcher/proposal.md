@@ -8,7 +8,7 @@ Bouncing between argus tasks and Hera projects takes enough keystrokes that the 
 - Arrow keys move within (↑/↓) and between (←/→) columns; typing filters both columns immediately; `ctrl+g` moves the cursor to the next `(?)`; Enter goes there; Esc clears the filter, or closes the popup when no filter is applied.
 - The cursor opens on the first `(?)` (Tasks column first, then Projects), else on the currently-viewed task.
 - **BREAKING**: `ctrl+j` now opens the popup via a new unconditional global action `global.switcher`, replacing the `agent.switcher` agent-context action; config overrides of `agent.switcher` no longer apply.
-- Remove the old single-list grouped task/role switcher and its three separate dispatch paths (agent view, Tasks tab block, Hera page literal case). The flat `TaskSwitcherModal` mode stays for the Hera parent picker.
+- Remove the old single-list grouped task/role switcher and its three separate dispatch paths (agent view, Tasks tab block, Hera page literal case), and delete `TaskSwitcherModal` entirely — it has no other caller (the Hera parent picker uses its own `OrchPickerModal`).
 - TUI-only. Named follow-up: a cross-project jump popup for the web SPA and macOS app.
 
 ## Capabilities
@@ -21,7 +21,7 @@ Bouncing between argus tasks and Hera projects takes enough keystrokes that the 
 
 - `keybindings`: the `ctrl+j` switcher requirement changes from the agent-context `agent.switcher` (plus a Tasks-tab special case) to the unconditional global `global.switcher`.
 - `hera-view`: the old unified-switcher requirements (reachable from Hera, needs-input-first ordering, ancestor expansion on select) are replaced — Hera reach now comes from the global dispatch, ordering from the popup's needs-input cursor, and ancestor expansion from the Projects-column Enter.
-- `forms-and-modals`: the task switcher status-indicator requirement drops its grouped (Ctrl+J) scenario, since grouped mode is removed.
+- `forms-and-modals`: the task switcher status-indicator requirement is removed, since the task switcher modal is deleted.
 - `command-palette`: the classic agent view's palette keeps listing the switcher after it moves from the agent context to the global context.
 
 ## Impact
@@ -29,8 +29,10 @@ Bouncing between argus tasks and Hera projects takes enough keystrokes that the 
 - `internal/tui/keymap/actions.go` — `ActAgentSwitcher` removed, `ActGlobalSwitcher` added (defaults, labels, context order).
 - `internal/tui/app.go` — global dispatch case, removal of the Tasks-tab block and `handleAgentKey` case, popup open/close/key handling and Enter routing; `openTaskSwitcher` removed.
 - `internal/tui/switcherpopup.go` (new) — the popup widget.
-- `internal/tui/taskview/tasklist.go` — `SetFilter`, `NextNeedsInputTaskID` seams.
-- `internal/tui/hera/rail.go`, `internal/tui/hera/page.go` — `SetFilter`, `CopyFoldStateFrom`, `SelectOrch` seams; `OnSwitcher` and the `ctrl+j` literal case removed.
-- `internal/tui/taskswitcher.go` — grouped mode removed.
+- `internal/tui/taskview/tasklist.go` — `SetFilter`, `NeedsInputTaskIDs`/`NeedsInputTaskIDsAfter` seams; shared `partitionTasks` helper.
+- `internal/tui/hera/rail.go`, `internal/tui/hera/page.go` — `SetFilter`, `CopyFoldStateFrom`, `CursorToNextNeedsInput`, `SelectOrch`, `SelectRole`, `JumpToRow` seams; `OnSwitcher` and the `ctrl+j` literal case removed.
+- `internal/hera/model/model.go` — `Model.Clone()`.
+- `internal/tui/modal/help.go` — the Projects rail help row's key follows the `global.switcher` binding.
+- `internal/tui/taskswitcher.go` — deleted.
 - `internal/tui/commandpalette_actions.go`, help tests, README Reference keybinding table, `context/knowledge/gotchas/keybindings.md`.
 - No REST, daemon, schema, or macOS/web changes.

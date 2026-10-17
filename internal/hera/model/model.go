@@ -321,6 +321,34 @@ type Model struct {
 	Freelance     []RoleView // freelance-kind roles across active orchestrators
 }
 
+// Clone returns a copy whose orchestrator sections, each orchestrator's Roles
+// slice, and the Freelance slice are freshly allocated, so writes through the
+// copy's OrchView/RoleView elements (e.g. a rail's sticky-reveal stamping
+// SubtreeNeedsInput on the model it is handed) never reach m. Blocks and
+// ExplicitLinks are treated as read-only by every consumer and stay shared.
+// Nil slices stay nil. Used by the jump switcher's private Projects rail so it
+// can never write into the real rail's model.
+func (m Model) Clone() Model {
+	cloneOrchs := func(in []OrchView) []OrchView {
+		if in == nil {
+			return nil
+		}
+		out := make([]OrchView, len(in))
+		copy(out, in)
+		for i := range out {
+			out[i].Roles = append([]RoleView(nil), in[i].Roles...)
+		}
+		return out
+	}
+	return Model{
+		ExplicitLinks: m.ExplicitLinks,
+		Pinned:        cloneOrchs(m.Pinned),
+		Active:        cloneOrchs(m.Active),
+		Archived:      cloneOrchs(m.Archived),
+		Freelance:     append([]RoleView(nil), m.Freelance...),
+	}
+}
+
 // AnnotateRoles applies fn to every RoleView in the model in place — across the
 // Pinned/Active/Archived orchestrator sections and the Freelance section. Used by
 // HeraPage.doRefresh to stamp the diligence-tiering readout (AppliedModel/Effort +

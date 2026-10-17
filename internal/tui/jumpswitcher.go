@@ -2,6 +2,8 @@ package tui
 
 import (
 	heramodel "github.com/drn/argus/internal/hera/model"
+	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/tui/keymap"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/drn/argus/internal/uxlog"
 	"github.com/gdamore/tcell/v2"
@@ -19,15 +21,23 @@ const jumpSwitcherPage = "jumpswitcher"
 // the command palette. A no-op while the switcher is already open (its own
 // key routing owns every key then, so this only guards direct callers).
 //
+// "Open" is keyed on a.mode, NOT on a.jumpSwitcher != nil: a path that swaps
+// a.mode while the popup is up (closeHeraConfirm forcing modeTaskList after an
+// async-classified confirm, or the fork-completion callback's onTaskSelect)
+// leaves a stale non-nil popup behind that only closeJumpSwitcher would clear.
+// Guarding on the pointer stranded ctrl+j dead until restart; the stale popup
+// is discarded here and a fresh one opens instead.
+//
 // The Projects column is fed a FRESH Hera model (heraPage.Refresh first) so
 // it matches the real rail even when opened from the Tasks tab or agent view,
 // where the per-tick rail rebuild is gated off. MUST run on the tview
 // goroutine without a.mu held (it reads agentState under a.mu).
 func (a *App) openJumpSwitcher() {
-	if a.jumpSwitcher != nil {
+	if a.mode == modeJumpSwitcher && a.jumpSwitcher != nil {
 		uxlog.Log("[switcher] open ignored: already open")
 		return
 	}
+	a.discardStaleJumpSwitcher()
 	a.mu.Lock()
 	viewing := a.agentState.TaskID
 	a.mu.Unlock()
@@ -51,7 +61,10 @@ func (a *App) openJumpSwitcher() {
 	if a.heraPage != nil {
 		seed.Rail = a.heraPage.Rail()
 	}
-	a.jumpSwitcher = NewSwitcherPopup(a.jumpSwitcherFeed(), seed)
+	a.jumpSwitcher = NewSwitcherPopup(a.jumpSwitcherFeed(a.readSwitcherReads()), seed)
+	if b, ok := a.activeKeymap().BindingFor(keymap.CtxGlobal, keymap.ActGlobalJumpNeedsInput); ok {
+		a.jumpSwitcher.SetNextNeedsInputKey(b)
+	}
 	a.jumpSwitcherReturnMode = a.mode
 	a.mode = modeJumpSwitcher
 	// The popup is not a Tasks-tab view, so the spinner redraw gate falls back
@@ -65,21 +78,35 @@ func (a *App) openJumpSwitcher() {
 	uxlog.Log("[switcher] opened from mode=%d tab=%d current=%q", a.jumpSwitcherReturnMode, a.header.ActiveTab(), current)
 }
 
+// switcherReads are the per-task DB-backed sets the real Tasks list is fed
+// each tick (hera-managed set, hera role meta, PR states). The per-tick refeed
+// hands over the values refreshTasksWithIDs already read; only the open path
+// reads them itself (readSwitcherReads).
+type switcherReads struct {
+	managed, heraWorkers, heraCoords map[string]bool
+	prStates                         map[string]model.PRState
+}
+
+// readSwitcherReads reads switcherReads fresh from the DB (open-time only).
+func (a *App) readSwitcherReads() switcherReads {
+	workers, coords := a.readHeraRoles()
+	return switcherReads{managed: a.readManagedTasks(), heraWorkers: workers, heraCoords: coords, prStates: a.readPRStates()}
+}
+
 // jumpSwitcherFeed snapshots the data the real Tasks list and Projects rail
 // are fed (see refreshTasksWithIDs), for the popup's private copies. Never
 // takes a.mu: it runs both from openJumpSwitcher and from the per-tick refeed
 // inside refreshTasksWithIDs, whose callers already hold it.
-func (a *App) jumpSwitcherFeed() SwitcherFeed {
-	workers, coords := a.readHeraRoles()
+func (a *App) jumpSwitcherFeed(in switcherReads) SwitcherFeed {
 	idleUnvisited := make([]string, 0, len(a.idleUnvisited))
 	for id := range a.idleUnvisited {
 		idleUnvisited = append(idleUnvisited, id)
 	}
 	f := SwitcherFeed{
 		Tasks:         a.tasks,
-		Managed:       a.readManagedTasks(),
-		HeraWorkers:   workers,
-		HeraCoords:    coords,
+		Managed:       in.managed,
+		HeraWorkers:   in.heraWorkers,
+		HeraCoords:    in.heraCoords,
 		Running:       a.runningIDs,
 		Idle:          a.idleIDs,
 		IdleUnvisited: idleUnvisited,
@@ -87,7 +114,7 @@ func (a *App) jumpSwitcherFeed() SwitcherFeed {
 		// (?) comes from the Hera model, which heraPage.SetNeedsInput already
 		// fed with needsInputForHeraRail's admission of this set.
 		NeedsInput: a.needsInputIDs,
-		PRStates:   a.readPRStates(),
+		PRStates:   in.prStates,
 		Remote:     true,
 		HeraModel:  heramodel.Model{},
 	}
@@ -102,24 +129,48 @@ func (a *App) jumpSwitcherFeed() SwitcherFeed {
 // refeedJumpSwitcher re-snapshots both popup columns on an App tick while the
 // switcher is open (design Risks: the model would otherwise go stale). The
 // Hera rebuild goes through ScheduleRefresh — gated by the page's change
-// fingerprint, so an idle tick costs no BuildModel. Called from
-// refreshTasksWithIDs with a.mu held; must not take it.
-func (a *App) refeedJumpSwitcher() {
-	if a.mode != modeJumpSwitcher || a.jumpSwitcher == nil {
+// fingerprint, so an idle tick costs no BuildModel — and the task-side sets
+// are the ones the tick already read (in), so a refeed adds no DB reads.
+// Called from refreshTasksWithIDs with a.mu held; must not take it.
+func (a *App) refeedJumpSwitcher(in switcherReads) {
+	if a.jumpSwitcher == nil {
+		return
+	}
+	if a.mode != modeJumpSwitcher {
+		a.discardStaleJumpSwitcher()
 		return
 	}
 	if a.heraPage != nil && !a.heraPage.IsRemote() {
 		a.heraPage.ScheduleRefresh()
 	}
-	a.jumpSwitcher.Refeed(a.jumpSwitcherFeed())
+	a.jumpSwitcher.Refeed(a.jumpSwitcherFeed(in))
+}
+
+// discardStaleJumpSwitcher drops a popup left behind by a path that changed
+// a.mode while it was open (see openJumpSwitcher). The mode/focus that path
+// set is kept as-is — only the orphaned page and pointer go. A no-op when no
+// popup exists or it is still the live mode.
+func (a *App) discardStaleJumpSwitcher() {
+	if a.jumpSwitcher == nil || a.mode == modeJumpSwitcher {
+		return
+	}
+	a.jumpSwitcher = nil
+	a.pages.RemovePage(jumpSwitcherPage)
+	uxlog.Log("[switcher] discarded stale popup (mode=%d changed while open)", a.mode)
 }
 
 // handleJumpSwitcherKey routes every key to the popup while it is open
 // (handleGlobalKey sends modeJumpSwitcher here ahead of every global action,
-// so ctrl+g cycles the popup's own cursor instead of the global jump, and
-// ctrl+j is a no-op), then acts on its outcome.
+// so ctrl+g cycles the popup's own cursor instead of the global jump), then
+// acts on its outcome. The global.switcher key — whatever it is bound to — is
+// resolved first and swallowed, so pressing it again while open is a no-op
+// rather than filter text (a rune binding) or anything else.
 func (a *App) handleJumpSwitcherKey(event *tcell.EventKey) {
 	p := a.jumpSwitcher
+	if act, ok := a.activeKeymap().Resolve(keymap.CtxGlobal, event); ok && act == keymap.ActGlobalSwitcher {
+		uxlog.Log("[switcher] switcher key while open: ignored")
+		return
+	}
 	p.InputHandler()(event, func(tview.Primitive) {})
 	switch {
 	case p.Canceled():
@@ -188,10 +239,11 @@ func (a *App) resumeAgentViewAfterSwitcher() {
 //   - Projects row: leave the classic agent view FIRST (exitAgentView —
 //     switchTab(TabHera) is a plain mode/page swap that would leave the tab
 //     header hidden and the old session teed to an invisible pane), switch to
-//     the Projects tab, then land like rail Enter via JumpToTask (ancestor
-//     expansion + reattach + pane focus); a row with no task of its own lands
-//     on its orchestrator row via SelectOrch. Both failing leaves the operator
-//     on the Projects tab.
+//     the Projects tab, then land on the EXACT chosen row via JumpToRow
+//     (ancestor expansion + reattach + pane focus, or rail focus for a
+//     task-less orchestrator header). If that row is gone (the model changed
+//     since the popup's snapshot), fall back to JumpToTask, then SelectOrch;
+//     all failing leaves the operator on the Projects tab.
 func (a *App) routeJumpSwitcherSelection(sel SwitcherSelection) {
 	switch sel.Column {
 	case SwitcherColumnTasks:
@@ -222,6 +274,10 @@ func (a *App) routeJumpSwitcherSelection(sel SwitcherSelection) {
 			a.exitAgentView()
 		}
 		a.switchTab(widget.TabHera)
+		if a.heraPage.JumpToRow(sel.RoleID, sel.OrchID) {
+			uxlog.Log("[switcher] select projects role=%d orch=%d task=%q: landed", sel.RoleID, sel.OrchID, sel.TaskID)
+			return
+		}
 		if sel.TaskID != "" && a.heraPage.JumpToTask(sel.TaskID) {
 			uxlog.Log("[switcher] select projects task %s: landed", sel.TaskID)
 			return

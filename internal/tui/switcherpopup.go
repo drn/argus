@@ -8,6 +8,7 @@ import (
 	heramodel "github.com/drn/argus/internal/hera/model"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/hera"
+	"github.com/drn/argus/internal/tui/keymap"
 	"github.com/drn/argus/internal/tui/taskview"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
@@ -33,8 +34,11 @@ func (c SwitcherColumn) String() string {
 	return "tasks"
 }
 
-// switcherFooterHint is the popup's bottom key-hint line.
-const switcherFooterHint = "↑↓ move · ←→ column · ctrl+g next (?) · enter go · esc clear/close"
+// switcherFooterHint renders the popup's bottom key-hint line, naming the
+// key currently bound to the next-needs-input cycle (default ctrl+g).
+func switcherFooterHint(nextKey string) string {
+	return "↑↓ move · ←→ column · " + nextKey + " next (?) · enter go · esc clear/close"
+}
 
 // switcherRemotePlaceholder replaces the Projects column in remote mode.
 const switcherRemotePlaceholder = "Projects unavailable in remote mode"
@@ -44,7 +48,8 @@ const switcherRemotePlaceholder = "Projects unavailable in remote mode"
 // mirrors what the real Tasks tab list and Projects rail are fed.
 type SwitcherFeed struct {
 	// Tasks is the full task snapshot (a.tasks). Archived tasks and every
-	// hera-managed task (Managed ∪ HeraWorkers ∪ HeraCoords) are dropped from
+	// hera-managed task (Managed ∪ HeraWorkers — the real list's own
+	// isHeraSpawnedWorker || managed hide rule with `H` on) are dropped from
 	// the Tasks column regardless of the real list's `H` toggle.
 	Tasks []*model.Task
 	// Managed is the set of task IDs holding a live coordinator/worker binding
@@ -52,6 +57,9 @@ type SwitcherFeed struct {
 	Managed map[string]bool
 	// HeraWorkers / HeraCoords are the task_meta hera.role=worker/coordinator
 	// sets (the real list's SetHeraWorkers / SetHeraCoordinators inputs).
+	// HeraCoords is display-only and NEVER a hide signal: coordinator meta is
+	// not cleared when the binding ends, so hiding on it would make an
+	// ex-coordinator unreachable in both columns.
 	HeraWorkers map[string]bool
 	HeraCoords  map[string]bool
 
@@ -89,10 +97,14 @@ type SwitcherSeed struct {
 
 // SwitcherSelection is what Enter chose: the column, the task to open (a Tasks
 // row's ID, or a Projects row's Selection().FocusTaskID()), and — for a
-// Projects row — its orchestrator (the landing target when TaskID is empty).
+// Projects row — the row's identity: RoleID for a role row (0 for an
+// orchestrator header) and its orchestrator. The App lands the real rail on
+// that exact row (HeraPage.JumpToRow), since TaskID alone is ambiguous for a
+// task bound to roles in several orchestrators.
 type SwitcherSelection struct {
 	Column SwitcherColumn
 	TaskID string
+	RoleID int64
 	OrchID int64
 }
 
@@ -130,6 +142,10 @@ type SwitcherPopup struct {
 	selection SwitcherSelection
 
 	colRects [2]switcherRect
+
+	// nextKey is the key that cycles to the next needs-input row: the active
+	// global.jump_needs_input binding (SetNextNeedsInputKey), default ctrl+g.
+	nextKey keymap.Binding
 }
 
 // NewSwitcherPopup builds the popup from feed, seeds both columns' folds from
@@ -142,6 +158,7 @@ func NewSwitcherPopup(feed SwitcherFeed, seed SwitcherSeed) *SwitcherPopup {
 		tasks: taskview.NewTaskListView(),
 		rail:  hera.NewRail(),
 	}
+	p.nextKey, _ = keymap.DefaultKeymap().BindingFor(keymap.CtxGlobal, keymap.ActGlobalJumpNeedsInput)
 	p.rail.SetPanelTitle("Projects")
 	p.tasks.SetHideHeraManaged(true)
 	p.tasks.SetExpanded(seed.TasksExpanded)
@@ -168,8 +185,8 @@ func (p *SwitcherPopup) Refeed(feed SwitcherFeed) {
 
 func (p *SwitcherPopup) feed(f SwitcherFeed) {
 	p.remote = f.Remote
-	hidden := make(map[string]bool, len(f.Managed)+len(f.HeraWorkers)+len(f.HeraCoords))
-	for _, set := range []map[string]bool{f.Managed, f.HeraWorkers, f.HeraCoords} {
+	hidden := make(map[string]bool, len(f.Managed)+len(f.HeraWorkers))
+	for _, set := range []map[string]bool{f.Managed, f.HeraWorkers} {
 		for id, v := range set {
 			if v {
 				hidden[id] = true
@@ -196,34 +213,14 @@ func (p *SwitcherPopup) feed(f SwitcherFeed) {
 	p.tasks.SetTasks(tasks)
 	if !p.remote {
 		p.rail.SetPRMeta(f.PRMeta)
-		p.rail.SetModel(cloneHeraModel(f.HeraModel))
+		p.rail.SetModel(f.HeraModel.Clone())
 	}
 }
 
-// cloneHeraModel deep-copies the orchestrator and role slices the rail
-// mutates in place (its sticky-reveal stamps SubtreeNeedsInput on the model it
-// is handed), so the popup's private rail can never write into the real
-// rail's model. Blocks and ExplicitLinks are read-only and stay shared.
-func cloneHeraModel(m heramodel.Model) heramodel.Model {
-	cloneOrchs := func(in []heramodel.OrchView) []heramodel.OrchView {
-		if in == nil {
-			return nil
-		}
-		out := make([]heramodel.OrchView, len(in))
-		copy(out, in)
-		for i := range out {
-			out[i].Roles = append([]heramodel.RoleView(nil), in[i].Roles...)
-		}
-		return out
-	}
-	return heramodel.Model{
-		ExplicitLinks: m.ExplicitLinks,
-		Pinned:        cloneOrchs(m.Pinned),
-		Active:        cloneOrchs(m.Active),
-		Archived:      cloneOrchs(m.Archived),
-		Freelance:     append([]heramodel.RoleView(nil), m.Freelance...),
-	}
-}
+// SetNextNeedsInputKey sets the key that cycles the cursor to the next
+// needs-input row (and the footer hint naming it) — the App passes the active
+// global.jump_needs_input binding so a rebind applies inside the popup too.
+func (p *SwitcherPopup) SetNextNeedsInputKey(b keymap.Binding) { p.nextKey = b }
 
 // Canceled reports whether Esc (with no query) or ctrl+q closed the popup.
 func (p *SwitcherPopup) Canceled() bool { return p.canceled }
@@ -376,6 +373,14 @@ func (p *SwitcherPopup) setQuery(q []rune) {
 // InputHandler routes every key while the popup is open (D4–D7).
 func (p *SwitcherPopup) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 	return p.WrapInputHandler(func(event *tcell.EventKey, _ func(tview.Primitive)) {
+		if p.nextKey.Matches(event) {
+			if p.nextNeedsInput() {
+				uxlog.Log("[switcher] next (?) hit column=%s", p.active)
+			} else {
+				uxlog.Log("[switcher] next (?) miss (nothing needs input)")
+			}
+			return
+		}
 		switch event.Key() {
 		case tcell.KeyEscape:
 			if len(p.query) > 0 {
@@ -398,12 +403,6 @@ func (p *SwitcherPopup) InputHandler() func(event *tcell.EventKey, setFocus func
 			p.setActive(SwitcherColumnTasks, "left")
 		case tcell.KeyRight:
 			p.setActive(SwitcherColumnProjects, "right")
-		case tcell.KeyCtrlG:
-			if p.nextNeedsInput() {
-				uxlog.Log("[switcher] ctrl+g hit column=%s", p.active)
-			} else {
-				uxlog.Log("[switcher] ctrl+g miss (nothing needs input)")
-			}
 		case tcell.KeyBackspace, tcell.KeyBackspace2:
 			if len(p.query) == 0 {
 				return
@@ -477,6 +476,9 @@ func (p *SwitcherPopup) enter() {
 	}
 	sel := p.rail.Selection()
 	out := SwitcherSelection{Column: SwitcherColumnProjects, TaskID: sel.FocusTaskID()}
+	if sel.Role != nil {
+		out.RoleID = sel.Role.RoleID
+	}
 	if sel.Orch != nil {
 		out.OrchID = sel.Orch.ID
 	}
@@ -491,7 +493,7 @@ func (p *SwitcherPopup) enter() {
 func (p *SwitcherPopup) choose(sel SwitcherSelection) {
 	p.selection = sel
 	p.selected = true
-	uxlog.Log("[switcher] select column=%s task=%s orch=%d", sel.Column, sel.TaskID, sel.OrchID)
+	uxlog.Log("[switcher] select column=%s task=%s role=%d orch=%d", sel.Column, sel.TaskID, sel.RoleID, sel.OrchID)
 }
 
 // PasteHandler appends pasted text (line breaks and other control characters
@@ -569,7 +571,7 @@ func (p *SwitcherPopup) Draw(screen tcell.Screen) {
 		return
 	}
 	footerY := my + mh - 2
-	widget.DrawText(screen, innerX+1, footerY, innerW-1, switcherFooterHint, theme.StyleDimmed)
+	widget.DrawText(screen, innerX+1, footerY, innerW-1, switcherFooterHint(p.nextKey.String()), theme.StyleDimmed)
 
 	colY, colH := my+2, mh-4
 	if colH < 2 {

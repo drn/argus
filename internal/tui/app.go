@@ -3640,10 +3640,12 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string, allowCachedTasks
 	// genuinely sustained-active role's "(?)" glyph regardless of task status
 	// or a stale self-reported `blocked` hera status.
 	a.heraPage.SetSustainedActive(a.sustainedActiveIDs)
-	a.tasklist.SetPRStates(a.readPRStates())
+	prStates := a.readPRStates()
+	managed := a.readManagedTasks()
+	a.tasklist.SetPRStates(prStates)
 	a.tasklist.SetHeraWorkers(heraWorkers)
 	a.tasklist.SetHeraCoordinators(heraCoordinators)
-	a.tasklist.SetManagedTasks(a.readManagedTasks())
+	a.tasklist.SetManagedTasks(managed)
 	// Keep the Hera rail fresh while its tab is active (debounced inside the
 	// page so rapid ticks coalesce to one rebuild). DB reads are mutex-guarded
 	// and fast, so this is safe on the tview thread; we never run git here.
@@ -3662,8 +3664,9 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string, allowCachedTasks
 	}
 	a.updateAttentionBar()
 	a.statusbar.SetTasks(a.tasks)
-	// Keep an open jump switcher's private columns current (no-op when closed).
-	a.refeedJumpSwitcher()
+	// Keep an open jump switcher's private columns current (no-op when closed),
+	// reusing the DB reads this tick already made for the real list.
+	a.refeedJumpSwitcher(switcherReads{managed: managed, heraWorkers: heraWorkers, heraCoords: heraCoordinators, prStates: prStates})
 
 	// Keep side panels in sync with cursor
 	if a.mode == modeTaskList {

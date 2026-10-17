@@ -42,8 +42,8 @@ Read `context/knowledge/gotchas/keybindings.md`, `gotchas/hera-view.md`, `gotcha
 
 **Depends on:** Stage 4
 
-- [x] 5.1 Delete `openTaskSwitcher`, the grouped path of `openTaskSwitcherModal`/`handleTaskSwitcherKey`, and `TaskSwitcherModal`'s grouped mode (`SetGrouped`, grouped rows/cursor/draw); keep the flat mode `herapicker.go` uses (verified: `herapicker.go` actually renders its own `OrchPickerModal` and never used `TaskSwitcherModal`, so the kept flat mode has no remaining production consumer — see the follow-up note in the hand-off report)
-- [x] 5.2 Remove or port the obsolete grouped-switcher tests in `taskswitcher_test.go` / `taskswitcher_wiring_test.go`; keep flat-mode and status-glyph coverage
+- [x] 5.1 Delete `openTaskSwitcher`, the grouped path of `openTaskSwitcherModal`/`handleTaskSwitcherKey`, and `TaskSwitcherModal`'s grouped mode (`SetGrouped`, grouped rows/cursor/draw); keep the flat mode `herapicker.go` uses (verified: `herapicker.go` actually renders its own `OrchPickerModal` and never used `TaskSwitcherModal`, so the flat mode had no remaining production consumer; the whole `TaskSwitcherModal` was then deleted in the review follow-up — design D8)
+- [x] 5.2 Remove or port the obsolete grouped-switcher tests in `taskswitcher_test.go` / `taskswitcher_wiring_test.go` (both files are now deleted with the modal)
 
 ## 6. Docs and closeout
 

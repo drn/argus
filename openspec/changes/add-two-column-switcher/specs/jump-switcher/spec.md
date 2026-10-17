@@ -2,7 +2,7 @@
 
 ### Requirement: Jump switcher opens from any focus via ctrl+j
 
-The system SHALL open the jump switcher popup when the `global.switcher` action (default `ctrl+j`) is pressed in any of these contexts: the classic agent view (zoomed or not), the plain Tasks tab, the Projects rail, and a focused Projects coordinator or agent pane (including fullscreen). The key SHALL be consumed and MUST NOT reach any agent PTY. The popup SHALL NOT open while a form or modal already holds the keyboard, nor while a plugin view is active, and pressing the key while the popup is already open SHALL have no effect.
+The system SHALL open the jump switcher popup when the `global.switcher` action (default `ctrl+j`) is pressed in any of these contexts: the classic agent view (zoomed or not), the plain Tasks tab, the Projects rail, and a focused Projects coordinator or agent pane (including fullscreen). The key SHALL be consumed and MUST NOT reach any agent PTY. The popup SHALL NOT open while a form or modal already holds the keyboard, nor while a plugin view is active, and pressing the key while the popup is already open SHALL have no effect (it is not added to the filter). If a popup was left behind by something else taking over the screen while it was open, the key SHALL still open a fresh popup.
 
 #### Scenario: Opens from the classic agent view, zoomed and unzoomed
 
@@ -14,6 +14,11 @@ The system SHALL open the jump switcher popup when the `global.switcher` action 
 - **WHEN** the user presses `ctrl+j` with the Tasks tab list focused, the Projects rail focused, or a Projects coordinator or agent pane focused
 - **THEN** the jump switcher popup opens in every case and no pane PTY receives the key
 
+#### Scenario: Opens again after another modal took over
+
+- **WHEN** a confirmation modal opened over the popup and was then closed, and the user presses `ctrl+j`
+- **THEN** a fresh jump switcher popup opens
+
 #### Scenario: Does not open over a form or a plugin view
 
 - **WHEN** the user presses `ctrl+j` while the new-task form is open, or while a plugin view is active
@@ -21,7 +26,7 @@ The system SHALL open the jump switcher popup when the `global.switcher` action 
 
 ### Requirement: Jump switcher shows the Tasks list and the Projects rail side by side
 
-The popup SHALL show two columns: the Tasks list on the left and the Projects rail on the right. Each column SHALL be rendered by its own private instance of the corresponding real widget, so rows, folding, status glyphs, and `(?)` markers look the same as on the real tabs. The Tasks column SHALL never show hera-managed tasks (workers or coordinators), regardless of the Tasks tab's hide-hera-managed toggle, and SHALL NOT show archived tasks. The popup SHALL open with each column's folds seeded from the corresponding real tab. In remote mode the Projects column SHALL show an unavailable placeholder and SHALL be skipped by column switching and needs-input cycling.
+The popup SHALL show two columns: the Tasks list on the left and the Projects rail on the right. Each column SHALL be rendered by its own private instance of the corresponding real widget, so rows, folding, status glyphs, and `(?)` markers look the same as on the real tabs. The Tasks column SHALL never show hera-managed tasks — a hera-spawned worker, or any task holding a live coordinator or worker binding — regardless of the Tasks tab's hide-hera-managed toggle, and SHALL NOT show archived tasks. A task whose coordinator binding has ended (and so has no Projects row) SHALL stay visible in the Tasks column. The popup SHALL open with each column's folds seeded from the corresponding real tab. In remote mode the Projects column SHALL show an unavailable placeholder and SHALL be skipped by column switching and needs-input cycling.
 
 #### Scenario: Tasks on the left, Projects on the right
 
@@ -37,6 +42,11 @@ The popup SHALL show two columns: the Tasks list on the left and the Projects ra
 
 - **WHEN** an archived task exists and the popup opens
 - **THEN** that task does not appear in the Tasks column
+
+#### Scenario: A former coordinator stays reachable
+
+- **WHEN** a task was a coordinator but its binding has ended, and the popup opens
+- **THEN** that task appears in the Tasks column
 
 ### Requirement: Jump switcher navigation is private to the popup
 
@@ -68,7 +78,7 @@ Every printable character other than Space SHALL append to a single shared filte
 
 ### Requirement: ctrl+g cycles the cursor through needs-input rows
 
-Inside the popup, `ctrl+g` SHALL move the cursor to the next row that needs input, in the order Tasks column top-to-bottom then Projects column top-to-bottom, wrapping around, switching the active column as needed. It SHALL NOT close the popup or navigate away, and SHALL be a no-op when no row needs input.
+Inside the popup, the key bound to `global.jump_needs_input` (default `ctrl+g`) SHALL move the cursor to the next row that needs input, in the order Tasks column top-to-bottom then Projects column top-to-bottom, wrapping around, switching the active column as needed. It SHALL NOT close the popup or navigate away, and SHALL be a no-op when no row needs input.
 
 #### Scenario: ctrl+g walks Tasks then Projects and wraps
 
@@ -84,6 +94,11 @@ Inside the popup, `ctrl+g` SHALL move the cursor to the next row that needs inpu
 
 - **WHEN** no row in either column needs input and the user presses `ctrl+g`
 - **THEN** the cursor does not move and the popup stays open
+
+#### Scenario: A rebound needs-input key cycles inside the popup
+
+- **WHEN** a config override rebinds `global.jump_needs_input` to another key and the user presses that key in the popup
+- **THEN** the cursor moves to the next needs-input row, `ctrl+g` no longer does, and the popup's footer hint names the rebound key
 
 ### Requirement: Jump switcher opens on the first needs-input row, else the current task
 
@@ -101,7 +116,7 @@ When the popup opens, the cursor SHALL land on the first needs-input row in the 
 
 ### Requirement: Enter jumps to the selection and Esc clears or closes
 
-Enter on a Tasks row SHALL close the popup and open that task's agent view (keeping the Tasks tab cursor in sync) without restarting an exited session. Enter on a Projects row SHALL close the popup, leave the agent view if open, switch to the Projects tab, and land on that role exactly as Enter on the Projects rail does (expanding collapsed ancestors and reattaching as needed); a Projects row with no task of its own SHALL land on the Projects tab with that orchestrator row selected. Esc SHALL clear the query when one is applied, and close the popup (restoring the prior view and focus) when none is. `ctrl+q` SHALL close the popup immediately.
+Enter on a Tasks row SHALL close the popup and open that task's agent view (keeping the Tasks tab cursor in sync) without restarting an exited session. Enter on a Projects row SHALL close the popup, leave the agent view if open, switch to the Projects tab, and land on that exact row — the same role or orchestrator row, even when its task is also bound elsewhere in the rail — as Enter on the Projects rail does (expanding collapsed ancestors and reattaching as needed); a Projects row with no task of its own SHALL land on the Projects tab with that orchestrator row selected. Enter on a Projects fold-only row (the Freelance or Archive fold) SHALL toggle that fold inside the popup and keep the popup open. Esc SHALL clear the query when one is applied, and close the popup (restoring the prior view and focus) when none is. `ctrl+q` SHALL close the popup immediately.
 
 #### Scenario: Enter on a task opens it
 
@@ -112,6 +127,16 @@ Enter on a Tasks row SHALL close the popup and open that task's agent view (keep
 
 - **WHEN** the popup was opened from the classic agent view and the user presses Enter on a Projects role nested under a collapsed coordinator
 - **THEN** the agent view is exited, the Projects tab is shown, the coordinator is expanded, and the rail selection and focus land on that role
+
+#### Scenario: Enter lands on the exact row of a task bound twice
+
+- **WHEN** a task is bound to roles under two orchestrators and the user presses Enter on its row under the second orchestrator
+- **THEN** the real Projects rail selection lands on that second row, not the first row bound to the same task
+
+#### Scenario: Enter on a fold-only row toggles it
+
+- **WHEN** the cursor is on the Projects column's Freelance or Archive fold row and the user presses Enter
+- **THEN** the fold toggles inside the popup and the popup stays open
 
 #### Scenario: Esc clears the filter first
 

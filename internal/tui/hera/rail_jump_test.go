@@ -344,3 +344,95 @@ func TestRail_PRMeta(t *testing.T) {
 	r.SetPRMeta(m)
 	testutil.Equal(t, r.PRMeta()["t"]["state"], "open")
 }
+
+func TestRail_SelectRole(t *testing.T) {
+	t.Run("nested role expands every collapsed ancestor", func(t *testing.T) {
+		r := NewRail()
+		r.SetModel(filterModel())
+		r.collapsed[1] = true
+		r.collapsed[2] = true
+		r.buildRows()
+		testutil.True(t, r.SelectRole(22))
+		testutil.Equal(t, selectedName(r), "gamma")
+		testutil.False(t, r.OrchCollapsed(1))
+		testutil.False(t, r.OrchCollapsed(2))
+	})
+
+	t.Run("lands on the exact role when a task has several rows", func(t *testing.T) {
+		m := filterModel()
+		// t-alpha is also bound to a second role under orch 2.
+		m.Active[1].Roles = append(m.Active[1].Roles, heramodel.RoleView{RoleID: 23, OrchID: 2, Name: "alpha-2", Kind: db.HeraKindWorker, Live: true, TaskID: "t-alpha", BridgeTaskID: "t-alpha"})
+		r := NewRail()
+		r.SetModel(m)
+		testutil.True(t, r.SelectByTaskID("t-alpha"))
+		testutil.Equal(t, r.Selected().RoleID, int64(12)) // first match
+		testutil.True(t, r.SelectRole(23))
+		testutil.Equal(t, r.Selected().RoleID, int64(23))
+		testutil.Equal(t, r.Selection().Orch.ID, int64(2))
+	})
+
+	t.Run("freelance role opens the Freelance fold", func(t *testing.T) {
+		r := NewRail()
+		r.SetModel(filterModel())
+		r.freelanceCollap = true
+		r.buildRows()
+		testutil.True(t, r.SelectRole(91))
+		testutil.Equal(t, selectedName(r), "free-zeta")
+		testutil.False(t, r.freelanceCollap)
+	})
+
+	t.Run("no own row", func(t *testing.T) {
+		r := NewRail()
+		r.SetModel(filterModel())
+		testutil.False(t, r.SelectRole(0))
+		testutil.False(t, r.SelectRole(404))
+		testutil.False(t, r.SelectRole(11)) // a coordinator folds into its header
+	})
+}
+
+func TestHeraPage_JumpToRow(t *testing.T) {
+	t.Run("role row lands on the agent pane", func(t *testing.T) {
+		d := memDB(t)
+		orch := seedOrch(t, d, "o")
+		seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+		w := seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
+		p := NewHeraPage(d)
+		p.Refresh()
+		testutil.True(t, p.JumpToRow(w.ID, orch))
+		testutil.Equal(t, p.Rail().Selected().RoleID, w.ID)
+		testutil.Equal(t, p.Machine().State(), FocusAgent)
+	})
+
+	t.Run("header with a coordinator lands on the coordinator pane", func(t *testing.T) {
+		d := memDB(t)
+		orch := seedOrch(t, d, "o")
+		seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+		p := NewHeraPage(d)
+		p.Refresh()
+		testutil.True(t, p.JumpToRow(0, orch))
+		testutil.Equal(t, p.Rail().SelectedOrch().ID, orch)
+		testutil.Equal(t, p.Machine().State(), FocusCoord)
+	})
+
+	t.Run("coordinator-less header lands on the rail", func(t *testing.T) {
+		d := memDB(t)
+		orch := seedOrch(t, d, "lonely")
+		seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
+		p := NewHeraPage(d)
+		p.Refresh()
+		testutil.True(t, p.JumpToRow(0, orch))
+		testutil.Equal(t, p.Rail().SelectedOrch().ID, orch)
+		testutil.Equal(t, p.Machine().State(), FocusRail)
+	})
+
+	t.Run("missing row and remote mode are no-ops", func(t *testing.T) {
+		d := memDB(t)
+		orch := seedOrch(t, d, "o")
+		p := NewHeraPage(d)
+		p.Refresh()
+		testutil.False(t, p.JumpToRow(4040, orch))
+		testutil.False(t, p.JumpToRow(0, 77))
+		p.remote = true
+		testutil.False(t, p.JumpToRow(0, orch))
+	})
+}

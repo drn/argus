@@ -183,6 +183,21 @@ func TestSwitcherPopup_TasksColumnExclusions(t *testing.T) {
 	testutil.Contains(t, ids, "a1")
 }
 
+// TestSwitcherPopup_StaleCoordinatorMetaStaysVisible: hera.role=coordinator
+// task_meta is never cleared when a coordinator binding ends, so it is NOT a
+// hide signal — an ex-coordinator with no live binding has no Projects row and
+// must stay reachable in the Tasks column (the real list hides only
+// isHeraSpawnedWorker || managed with H on).
+func TestSwitcherPopup_StaleCoordinatorMetaStaysVisible(t *testing.T) {
+	f := switcherFeed()
+	f.HeraCoords = map[string]bool{"a2": true, "hc": true}
+	p := newPopup(t, f, SwitcherSeed{TasksExpanded: "alpha"})
+	ids := strings.Join(p.tasks.VisibleTaskIDs(), ",")
+	testutil.Contains(t, ids, "a2")
+	testutil.True(t, p.taskIDs["a2"])
+	testutil.False(t, p.taskIDs["hc"]) // still hidden: it holds a live binding (Managed)
+}
+
 func TestSwitcherPopup_Navigation(t *testing.T) {
 	p := newPopup(t, switcherFeed(), SwitcherSeed{})
 	testutil.Equal(t, p.ActiveColumn(), SwitcherColumnTasks)
@@ -225,10 +240,16 @@ func TestSwitcherPopup_SpaceFoldsProjects(t *testing.T) {
 func TestSwitcherPopup_Filtering(t *testing.T) {
 	t.Run("first keystroke filters both columns", func(t *testing.T) {
 		p := newPopup(t, switcherFeed(), SwitcherSeed{})
-		typeText(p, "an")
-		testutil.Equal(t, p.Query(), "an")
-		testutil.DeepEqual(t, p.tasks.VisibleTaskIDs(), []string{"b1"})
-		testutil.Equal(t, p.rail.Filter(), "an")
+		railRows := p.rail.Rows()
+		press(p, tcell.KeyRune, 't') // ONE rune
+		testutil.Equal(t, p.Query(), "t")
+		// Tasks: apple-two (name) and banana-one (project "beta"); apple-one gone.
+		testutil.DeepEqual(t, p.tasks.VisibleTaskIDs(), []string{"a2", "b1"})
+		// Projects: only wkr-date (and its ancestry) survives.
+		testutil.Equal(t, p.rail.Filter(), "t")
+		testutil.True(t, p.rail.Rows() < railRows)
+		press(p, tcell.KeyRight, 0)
+		testutil.Equal(t, selRailName(p), "wkr-date")
 	})
 
 	t.Run("empty active column hands off to the other", func(t *testing.T) {
@@ -395,16 +416,23 @@ func TestSwitcherPopup_StartCursor(t *testing.T) {
 }
 
 func TestSwitcherPopup_EscAndCtrlQ(t *testing.T) {
-	t.Run("Esc clears the filter first, restoring cursor and column", func(t *testing.T) {
+	t.Run("Esc clears the filter first, restoring rows, cursors and column", func(t *testing.T) {
 		p := newPopup(t, switcherFeed(), SwitcherSeed{})
 		press(p, tcell.KeyDown, 0)
+		preTasks := p.tasks.VisibleTaskIDs()
+		preRailRows, preRailCursor := p.rail.Rows(), p.rail.CursorIndex()
 		typeText(p, "cherry")
 		testutil.Equal(t, p.ActiveColumn(), SwitcherColumnProjects)
+		testutil.Equal(t, len(p.tasks.VisibleTaskIDs()), 0)
+		testutil.True(t, p.rail.Rows() < preRailRows)
 		press(p, tcell.KeyEscape, 0)
 		testutil.Equal(t, p.Query(), "")
 		testutil.False(t, p.Canceled())
 		testutil.Equal(t, p.ActiveColumn(), SwitcherColumnTasks)
 		testutil.Equal(t, selTask(p), "a2")
+		testutil.DeepEqual(t, p.tasks.VisibleTaskIDs(), preTasks)
+		testutil.Equal(t, p.rail.Rows(), preRailRows)
+		testutil.Equal(t, p.rail.CursorIndex(), preRailCursor)
 		testutil.Equal(t, p.rail.Filter(), "")
 		press(p, tcell.KeyEscape, 0)
 		testutil.True(t, p.Canceled())
@@ -439,7 +467,7 @@ func TestSwitcherPopup_Enter(t *testing.T) {
 	t.Run("Projects role row", func(t *testing.T) {
 		p := newPopup(t, switcherFeed(), SwitcherSeed{CurrentTaskID: "hw"})
 		press(p, tcell.KeyEnter, 0)
-		testutil.DeepEqual(t, p.Selection(), SwitcherSelection{Column: SwitcherColumnProjects, TaskID: "hw", OrchID: 1})
+		testutil.DeepEqual(t, p.Selection(), SwitcherSelection{Column: SwitcherColumnProjects, TaskID: "hw", RoleID: 12, OrchID: 1})
 	})
 
 	t.Run("Projects coordinator header resolves to the coordinator task", func(t *testing.T) {

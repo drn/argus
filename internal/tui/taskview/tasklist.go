@@ -417,15 +417,11 @@ func (tl *TaskListView) matchesFilter(t *model.Task) bool {
 	return true
 }
 
-// buildRows flattens tasks into display rows grouped by project.
-func (tl *TaskListView) buildRows() {
-	tl.rows = nil
-
-	// Separate pinned, active, and archived tasks, applying filter.
-	// Pinned takes precedence over all other section flags so a pinned-and-archived
-	// task surfaces at the top; the precedence order below archive > active is
-	// preserved for unpinned tasks.
-	var pinned, active, archived []*model.Task
+// partitionTasks splits the tasks buildRows would show into the Pinned,
+// Active and Archive sections (taskSection precedence: pinned wins over
+// archived), applying the filter and the hide-hera-managed rule. Shared by
+// buildRows and scanOrder so the two can never disagree on what is visible.
+func (tl *TaskListView) partitionTasks() (pinned, active, archived []*model.Task) {
 	for _, t := range tl.tasks {
 		if !tl.matchesFilter(t) {
 			continue
@@ -438,15 +434,23 @@ func (tl *TaskListView) buildRows() {
 		if tl.hideHeraManaged && (tl.isHeraSpawnedWorker(t) || tl.managed[t.ID]) {
 			continue
 		}
-		switch {
-		case t.Pinned:
+		switch taskSection(t) {
+		case sectionPinned:
 			pinned = append(pinned, t)
-		case t.Archived:
+		case sectionArchive:
 			archived = append(archived, t)
 		default:
 			active = append(active, t)
 		}
 	}
+	return pinned, active, archived
+}
+
+// buildRows flattens tasks into display rows grouped by project.
+func (tl *TaskListView) buildRows() {
+	tl.rows = nil
+
+	pinned, active, archived := tl.partitionTasks()
 
 	filterActive := tl.filter != ""
 
@@ -951,23 +955,7 @@ func (tl *TaskListView) SetFilter(q string) {
 // one-expanded-project fold is deliberately ignored so a needs-input scan can
 // reach tasks in folded projects.
 func (tl *TaskListView) scanOrder() []*model.Task {
-	var pinned, active, archived []*model.Task
-	for _, t := range tl.tasks {
-		if !tl.matchesFilter(t) {
-			continue
-		}
-		if tl.hideHeraManaged && (tl.isHeraSpawnedWorker(t) || tl.managed[t.ID]) {
-			continue
-		}
-		switch taskSection(t) {
-		case sectionPinned:
-			pinned = append(pinned, t)
-		case sectionArchive:
-			archived = append(archived, t)
-		default:
-			active = append(active, t)
-		}
-	}
+	pinned, active, archived := tl.partitionTasks()
 	var out []*model.Task
 	for _, sec := range [][]*model.Task{pinned, active, archived} {
 		order, groups := groupByProject(sec)
@@ -1009,21 +997,6 @@ func (tl *TaskListView) NeedsInputTaskIDsAfter(afterID string) []string {
 		}
 	}
 	return ids
-}
-
-// NextNeedsInputTaskID returns the next needs-input task after afterID in
-// scanOrder, wrapping around to the first candidate (so a lone candidate
-// returns itself). Mirrors hera.Rail.NextNeedsInputTaskID; it never moves the
-// cursor — callers land on the hit with SelectByID, which expands its project.
-// Returns ("", false) when no visible task needs input.
-func (tl *TaskListView) NextNeedsInputTaskID(afterID string) (string, bool) {
-	if ids := tl.NeedsInputTaskIDsAfter(afterID); len(ids) > 0 {
-		return ids[0], true
-	}
-	if ids := tl.NeedsInputTaskIDs(); len(ids) > 0 {
-		return ids[0], true
-	}
-	return "", false
 }
 
 // Expanded returns the currently expanded Active-section project.
@@ -1470,8 +1443,7 @@ func (tl *TaskListView) drawPinnedHeader(screen tcell.Screen, x, y, w int) {
 }
 
 func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *model.Task, cursor bool) {
-	// Status indicator — resolved by the shared helper so the task switcher
-	// renders a glyph-identical indicator column.
+	// Status indicator — resolved by the shared widget.TaskStatusIcon classifier.
 	statusChar, statusStyle := widget.TaskStatusIcon(task.Status, widget.TaskStatusInputs{
 		NeedsInput:    tl.needsInput[task.ID],
 		IdleUnvisited: tl.idleUnvisited[task.ID],

@@ -25,10 +25,8 @@ type paletteRow struct {
 // CommandPaletteModal is a searchable, filterable list of the keymap actions
 // applicable to whatever context/focus region was active when it opened
 // (ctrl+k) — type to filter by label substring, arrow keys move the cursor,
-// Enter invokes the selected row's action immediately. Structurally mirrors
-// TaskSwitcherModal's filter/cursor mechanics (flat mode); a new type because
-// the row shape (label + resolved-hotkey column) differs from a task/role
-// row, not because the interaction model differs.
+// Enter invokes the selected row's action immediately. Rows are a label plus
+// the action's resolved-hotkey column.
 type CommandPaletteModal struct {
 	*tview.Box
 	all      []paletteRow

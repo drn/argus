@@ -116,47 +116,18 @@ func TestTaskListView_NeedsInputScan(t *testing.T) {
 		testutil.DeepEqual(t, tl.NeedsInputTaskIDsAfter("missing"), []string{"p1", "a2", "b1"})
 	})
 
-	t.Run("NextNeedsInputTaskID wraps", func(t *testing.T) {
-		tl := newList()
-		for _, tc := range []struct{ after, want string }{
-			{"", "p1"},
-			{"p1", "a2"},
-			{"a1", "a2"},
-			{"a2", "b1"},
-			{"b1", "p1"}, // wrap
-			{"b2", "p1"}, // past the last candidate → wrap
-		} {
-			t.Run(tc.after+"->"+tc.want, func(t *testing.T) {
-				got, ok := tl.NextNeedsInputTaskID(tc.after)
-				testutil.True(t, ok)
-				testutil.Equal(t, got, tc.want)
-			})
-		}
-	})
-
-	t.Run("single candidate re-selects itself", func(t *testing.T) {
-		tl := NewTaskListView()
-		tl.SetTasks(jumpTasks())
-		tl.SetNeedsInput([]string{"b1"})
-		got, ok := tl.NextNeedsInputTaskID("b1")
-		testutil.True(t, ok)
-		testutil.Equal(t, got, "b1")
-	})
-
 	t.Run("no candidate", func(t *testing.T) {
 		tl := NewTaskListView()
 		tl.SetTasks(jumpTasks())
-		got, ok := tl.NextNeedsInputTaskID("")
-		testutil.False(t, ok)
-		testutil.Equal(t, got, "")
+		testutil.Equal(t, len(tl.NeedsInputTaskIDs()), 0)
 	})
 
 	t.Run("selecting the hit expands its folded project", func(t *testing.T) {
 		tl := newList()
 		tl.SelectByID("a1")
-		id, ok := tl.NextNeedsInputTaskID("a2")
-		testutil.True(t, ok)
-		testutil.Equal(t, id, "b1")
+		ids := tl.NeedsInputTaskIDsAfter("a2")
+		testutil.DeepEqual(t, ids, []string{"b1"})
+		id := ids[0]
 		tl.SelectByID(id)
 		testutil.Equal(t, tl.SelectedTask().ID, "b1")
 		testutil.Equal(t, tl.Expanded(), "beta")

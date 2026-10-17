@@ -22,11 +22,11 @@ The system SHALL bind the jump switcher action (`global.switcher`, in the global
 #### Scenario: ctrl+j remains rebindable and documented
 
 - **WHEN** a config override rebinds `global.switcher` to a different key
-- **THEN** the new key opens the switcher from every context and the help overlay reflects it
+- **THEN** the new key opens the switcher from every context, and the help overlay reflects it in both the Global section and the Projects rail section
 
 ### Requirement: Global jump-to-next-needs-input binds to ctrl+g
 
-The system SHALL provide a global `global.jump_needs_input` action, default `ctrl+g`, dispatched via the same unconditional-ahead-of-the-mode-gate mechanism `global.palette` (`ctrl+k`) already established — resolved once in `handleGlobalKey` and switched on before the `a.mode`/`suppressRune` gate, so it fires regardless of mode or focus region (the classic fullscreen agent view, the plain Tasks tab, or any Hera focus region) without a separate per-surface literal case. While the jump switcher popup is open, `ctrl+g` SHALL instead be handled by the popup (cycling its cursor) and SHALL NOT trigger this action.
+The system SHALL provide a global `global.jump_needs_input` action, default `ctrl+g`, dispatched via the same unconditional-ahead-of-the-mode-gate mechanism `global.palette` (`ctrl+k`) already established — resolved once in `handleGlobalKey` and switched on before the `a.mode`/`suppressRune` gate, so it fires regardless of mode or focus region (the classic fullscreen agent view, the plain Tasks tab, or any Hera focus region) without a separate per-surface literal case. While the jump switcher popup is open, this action's key SHALL instead be handled by the popup (cycling its cursor) and SHALL NOT trigger this action.
 
 #### Scenario: ctrl+g fires from every mode
 

@@ -751,10 +751,9 @@ func (r *Rail) CopyFoldStateFrom(other *Rail) {
 // Virtual rail sections for CursorToNextNeedsInput's ordering: the Pinned
 // section, the four kanban groups (in kanbanOrder), then the trailing
 // Freelance/Archive sections.
-const (
-	railSecPinned = 0
-	railSecPost   = 1 + 4
-)
+const railSecPinned = 0
+
+var railSecPost = 1 + len(kanbanOrder)
 
 // railRowPos is a row's position in the "every kanban group expanded" virtual
 // order: its section and its offset from that section's first row. Offsets are
@@ -881,6 +880,42 @@ func (r *Rail) SelectOrch(orchID int64) bool {
 	}
 	for i, row := range r.rows {
 		if row.role != nil && row.collOrchID == orchID && row.selectable() {
+			r.setCursor(i)
+			return true
+		}
+	}
+	return false
+}
+
+// SelectRole selects roleID's OWN row, expanding its orchestrator and every
+// collapsed ancestor and focusing its kanban group first (via
+// EnsureAncestorsExpanded); a freelance role opens a collapsed Freelance fold.
+// It is the exact-row counterpart of SelectByTaskID, which lands on whichever
+// row bound to a task it scans first — wrong when a task is bound to roles in
+// several orchestrators. A coordinator role has no row of its own (it folds
+// into its orchestrator header; use SelectOrch). Returns false when roleID is
+// 0 or has no selectable row.
+func (r *Rail) SelectRole(roleID int64) bool {
+	if roleID == 0 {
+		return false
+	}
+	if orchID, ok := r.model.RoleOrchID(roleID); ok {
+		r.EnsureAncestorsExpanded(orchID)
+	} else if r.freelanceCollap {
+		for i := range r.model.Freelance {
+			if r.model.Freelance[i].RoleID == roleID {
+				r.freelanceCollap = false
+				ref := r.currentRef()
+				r.buildRows()
+				r.restoreCursor(ref)
+				r.clampCursor()
+				r.persist()
+				break
+			}
+		}
+	}
+	for i, row := range r.rows {
+		if row.role != nil && row.role.RoleID == roleID && row.selectable() {
 			r.setCursor(i)
 			return true
 		}
@@ -2036,8 +2071,8 @@ func (r *Rail) EnsureAncestorsExpanded(orchID int64) {
 // signal points at, and whether the row qualifies as a jump target at all
 // (add-hera-jump-question, Ctrl+G; extended by fix-ctrlg-coordinator-own-need
 // to also reach a coordinator's own need). "Own" — needsInputOwn(), the same
-// unit the switcher's needs-input-first sort and the rail's leaf "(?)" glyph
-// both key on. For a genuine role-bearing row (rrRole/rrFreelanceRole/
+// unit the rail's leaf "(?)" glyph and the jump switcher's ctrl+g cycle
+// (CursorToNextNeedsInput) both key on. For a genuine role-bearing row (rrRole/rrFreelanceRole/
 // rrPinnedBreadcrumb), it qualifies via row.role.needsInputOwn(). A top-level
 // orchestrator's rrOrch HEADER row — and, identically, a coordinator-spawned
 // nested sub-team's own header row (one coordinator agent simultaneously
@@ -2179,8 +2214,10 @@ func (r *Rail) Draw(screen tcell.Screen) {
 	if r.focused {
 		borderStyle = theme.StyleFocusedBorder
 	}
-	// Reflect the query in the border title while typing (BUG-028-RAIL: Enter/Esc
-	// both fully clear the query, so it's never non-empty once input mode ends).
+	// Reflect the query in the border title: while typing in `/` input mode, or
+	// when a query was applied non-interactively via SetFilter (the jump
+	// switcher's private copy). The `/` path's Enter/Esc both fully clear it
+	// (BUG-028-RAIL), so on the real rail it only shows while typing.
 	name := r.panelTitle
 	if name == "" {
 		name = "Hera"
