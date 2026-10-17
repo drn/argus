@@ -131,6 +131,10 @@ type BootInfoResp struct {
 //     StopTree, a full stop. A pre-v9 supervisor ignores the field and stops
 //     the agent PID only (its own pre-change behavior), so the TUI's
 //     resize-kick StopAgentOnly is the old behavior there too.
+//
+// StartResp.SessionID is additive and zero-value-safe: newer clients preserve
+// their existing ID when an older server omits it. Supervisor surface v19
+// identifies the launch recovery behavior that makes this field necessary.
 const ProtocolVersion = 9
 
 // SupervisorProtocolMatch reports whether a supervisor's handshake version
@@ -223,6 +227,8 @@ type StartReq struct {
 type StartResp struct {
 	PID   int
 	Error string
+	// SessionID is the effective ID after missing-transcript recovery.
+	SessionID string
 	// Ambiguous is true when Error came from agent.ErrStartAmbiguous — the
 	// runner's own Start call (which may itself be a second RPC hop to the
 	// supervisor) timed out waiting for a response, not that the start

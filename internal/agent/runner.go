@@ -10,6 +10,7 @@ import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/events"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // pendingRestart holds the state needed to restart a session after
@@ -124,7 +125,14 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 	}
 
 	if resume {
+		// A missing transcript can still have detached workers. Reap using
+		// the original ID before recovery replaces it with a fresh one.
 		reapBackgroundSessionForResume(task, cfg)
+	}
+	resume, err := prepareResume(task, cfg, resume)
+	if err != nil {
+		cleanup()
+		return nil, err
 	}
 
 	cmd, sandboxCleanup, err := BuildCmd(task, cfg, resume)
@@ -295,12 +303,20 @@ func (r *Runner) getSession(taskID string) *Session {
 // ID, width delta exceeds margin) — KickRerender itself only enforces:
 //   - a live session exists for the task
 //   - no kick is already pending for this task
+//   - the backend's recorded conversation has a resumable transcript
 //
 // Returns ErrSessionNotFound if no live session, or an error if a kick is
 // already pending. Stop failures propagate as-is.
 func (r *Runner) KickRerender(task *model.Task, cfg config.Config, rows, cols uint16) error {
 	if task == nil {
 		return fmt.Errorf("nil task")
+	}
+	if r.Get(task.ID) == nil {
+		return ErrSessionNotFound
+	}
+	if available, err := ResumableSessionAvailable(task, cfg); err != nil || !available {
+		uxlog.Log("[rerender] deferred task=%s session=%s: transcript unavailable err=%v", task.ID, task.SessionID, err)
+		return fmt.Errorf("rerender deferred: %w", ErrResumeUnavailable)
 	}
 	r.mu.Lock()
 	sess := r.sessions[task.ID]

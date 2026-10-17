@@ -143,7 +143,9 @@ const (
 	//     (fix-inherited-claude-session-marker). A stale supervisor started
 	//     from inside Claude Code keeps spawning agents with transcript saving
 	//     off.
-	SupervisorSpawnSurface = 18
+	//   - v19: missing Claude transcripts recover with a fresh pinned ID and
+	//     original prompt; start RPC responses carry the effective session ID.
+	SupervisorSpawnSurface = 19
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -180,7 +182,8 @@ const (
 	//     StopSession with StopAgentOnly keep the PID-only signal so a bounced
 	//     agent's background processes survive (stop-finished-task-sessions).
 	//     A stale supervisor still stops the PID alone for every stop.
-	SupervisorStreamSurface = 7
+	//   - v8: rerender kicks defer until the recorded Claude transcript exists.
+	SupervisorStreamSurface = 8
 )
 
 // SurfaceVersion is a supervisor's declared executed-surface identity: the pair
@@ -363,6 +366,7 @@ var SupervisorSpawnPaths = []string{
 // to it is far more likely to reach a running agent than not. Classifying an
 // ambiguous file as STREAM is the safe direction.
 var SupervisorStreamPaths = []string{
+	"internal/agent/resume.go",              // transcript availability gate before kick/stop
 	"internal/agent/bgsessionreap.go",       // Claude background-session reap on Stop and before resume
 	"internal/agent/ringbuffer.go",          // the ring the sole readLoop tees into
 	"internal/claudeagents/claudeagents.go", // `claude agents`/`claude stop` under the session's config dir
@@ -393,8 +397,8 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "0c97b19d08df4e11156c23d678e07b434723d6b73abbfc648386d337f098e9ea"
-	StreamSurfaceDigest = "9973137db7c31ce8082cc84c494f5f1722878314674e89d962ccafd96c098783"
+	SpawnSurfaceDigest  = "62807e215048f7e168165e045d4e33c86df18e0829fd1f960bb7ecfccd8ed523"
+	StreamSurfaceDigest = "3b39b8dadff9073dea2aa0cd0e5244b6df0bded07fdd7d5abf4c06de0c439cc8"
 )
 
 // SurfaceDigest computes the SHA-256 over the declared manifest's file contents,

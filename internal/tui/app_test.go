@@ -908,6 +908,7 @@ func TestMaybeKickRerenderAtWidth_KicksOnGenuineDrift(t *testing.T) {
 	defer stop()
 
 	task := &model.Task{ID: taskID, Name: "kick-me", Status: model.StatusInProgress, SessionID: "sid-resume", Worktree: t.TempDir()}
+	seedTUITranscript(t, os.Getenv("HOME"), task.Worktree, task.SessionID, time.Time{})
 	sess := &fakeKickSession{idle: true, alive: true, initCols: 20}
 
 	readUI(t, app.tapp, func() { app.maybeKickRerenderAtWidth(task, sess, 120, nil) })
@@ -994,6 +995,7 @@ func TestMaybeKickRerenderAtWidth_LaterNarrowRebindStillKicksAfterDeferredWideBi
 	defer stop()
 
 	task := &model.Task{ID: taskID, Name: "drift", Status: model.StatusInProgress, SessionID: "sid-resume", Worktree: t.TempDir()}
+	seedTUITranscript(t, os.Getenv("HOME"), task.Worktree, task.SessionID, time.Time{})
 	sess := &fakeKickSession{idle: false, alive: true, initCols: 80} // busy: bind-142 defers
 
 	var deferred atomic.Bool
@@ -5809,6 +5811,7 @@ func TestMaybeKickRerenderAtWidth_DeferredNarrowBindKeepsTheWideAnchor(t *testin
 	defer stop()
 
 	task := &model.Task{ID: taskID, Name: "clobber", Status: model.StatusInProgress, SessionID: "sid-resume", Worktree: t.TempDir()}
+	seedTUITranscript(t, os.Getenv("HOME"), task.Worktree, task.SessionID, time.Time{})
 	sess := &fakeKickSession{idle: false, alive: true, initCols: 80} // busy throughout both binds
 
 	waitDeferred := func(cols uint16) {

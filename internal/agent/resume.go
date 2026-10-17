@@ -1,10 +1,75 @@
 package agent
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"github.com/drn/argus/internal/claudesession"
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/uxlog"
 )
+
+// ResumableSessionAvailable asks the backend family whether the exact stored
+// conversation can be resumed. Other families retain their existing behavior.
+func ResumableSessionAvailable(task *model.Task, cfg config.Config) (bool, error) {
+	backend, err := ResolveBackend(task, cfg)
+	if err != nil {
+		return false, err
+	}
+	if check := FamilyOf(backend.Command).ResumeAvailable; check != nil {
+		return check(task, cfg)
+	}
+	return true, nil
+}
+
+func claudeResumeAvailable(task *model.Task, cfg config.Config) (bool, error) {
+	dir, err := ClaudeConfigDirForTask(task, cfg)
+	if err != nil {
+		return false, err
+	}
+	if task.Worktree == "" {
+		return false, fmt.Errorf("cannot inspect transcript without a worktree")
+	}
+	if task.SessionID == "" || filepath.Base(task.SessionID) != task.SessionID {
+		return false, nil
+	}
+	project, err := claudesession.ProjectDirIn(dir, task.Worktree)
+	if err != nil {
+		return false, err
+	}
+	info, err := os.Stat(filepath.Join(project, task.SessionID+".jsonl"))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return info.Mode().IsRegular(), nil
+}
+
+// prepareResume is called only after reserving a genuinely new runner launch,
+// never when reattaching a live session. A missing conversation selects the
+// normal fresh-launch command path, including the task's original prompt.
+func prepareResume(task *model.Task, cfg config.Config, resume bool) (bool, error) {
+	if !resume {
+		return false, nil
+	}
+	available, err := ResumableSessionAvailable(task, cfg)
+	if err != nil {
+		uxlog.Log("[resume] transcript inspection failed task=%s session=%s: %v", task.ID, task.SessionID, err)
+		return false, fmt.Errorf("inspect resume transcript: %w", err)
+	}
+	if available {
+		return true, nil
+	}
+	old := task.SessionID
+	task.SessionID = model.GenerateSessionID()
+	uxlog.Log("[resume] transcript missing task=%s session=%s; starting fresh session=%s with original prompt", task.ID, old, task.SessionID)
+	return false, nil
+}
 
 // RefreshResumeSessionID is the RESUME-TIME analog of the daemon's post-exit
 // captureSessionIDPostExit hook. Before a Claude-style task is resumed, it

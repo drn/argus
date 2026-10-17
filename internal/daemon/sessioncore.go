@@ -135,6 +135,7 @@ func (c *sessionCore) StartSession(req *StartReq, resp *StartResp) error {
 		return nil
 	}
 	resp.PID = sess.PID()
+	resp.SessionID = task.SessionID
 	slog.Info("rpc.StartSession ok", "task", req.TaskID, "pid", resp.PID)
 	return nil
 }

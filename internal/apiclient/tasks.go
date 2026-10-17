@@ -97,9 +97,10 @@ func (c *Client) StopTask(ctx context.Context, id string) error {
 
 // ResumeResp is the resume-task response envelope.
 type ResumeResp struct {
-	Status string `json:"status"`
-	PID    int    `json:"pid"`
-	Healed bool   `json:"healed,omitempty"`
+	Status    string `json:"status"`
+	PID       int    `json:"pid"`
+	Healed    bool   `json:"healed,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // ResumeTask resumes (or starts fresh) the agent session for an existing task.

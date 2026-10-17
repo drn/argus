@@ -270,6 +270,9 @@ func (c *Client) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 	}
 
 	uxlog.Log("client.Start: success task=%s pid=%d", task.ID, resp.PID)
+	if resp.SessionID != "" {
+		task.SessionID = resp.SessionID
+	}
 	rs := c.getOrCreateSession(task.ID)
 	rs.mu.Lock()
 	rs.pid = resp.PID
