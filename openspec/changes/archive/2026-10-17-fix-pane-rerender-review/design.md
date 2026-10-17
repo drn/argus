@@ -22,3 +22,7 @@ The 2026-10-16 ux/supervisor traces distinguish task `1792191732555994000` (fres
 
 - A fresh spawn can race the first completed layout publication → log publication/use/fallback and publish after first draw; the ordinary guarded repair remains available.
 - Multiple viewers can publish different layouts → the most recent local TUI report wins and expires; this is a launch preference, not a claim that existing history has been reconciled.
+
+## Validation
+
+Rebased onto #1053 head `ffab4a90`. With ambient Argus/backend session variables scrubbed, `make -k pre-pr` passes build, vet, formatting and lint; its only failures are the acknowledged pinned-Go standard-library advisories and the known TUI 120-second package timeout (120.750s). The same TUI race suite passes with `-timeout 300s` in 198.054s; substituting that complete package profile into the otherwise passing repository run gives filtered coverage 88.5% (36042/40744), above the unchanged 88% gate. Strict OpenSpec validation passes all 69 items.

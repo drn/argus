@@ -74,7 +74,7 @@ Transcript-guarded width-repair stops SHALL give the agent three seconds after S
 
 ### Requirement: In-pane width repair status
 
-The TUI SHALL display a small border indicator while a pane's repair is deferred, stopping, or restarting. A deferral without an automatic retry SHALL say “Re-render pending”; an active repair or scheduled retry SHALL say “Re-rendering…”. Terminal content, including deferred user prompts, SHALL remain readable. The indicator SHALL clear when repair resolves, restart fails, the session exits cleanly, or the pane rebinds, including inactive Hera panes.
+The TUI SHALL display a small border indicator while a pane's repair is deferred, stopping, or restarting. Deferred repair SHALL say “Re-render pending”; active stop or restart SHALL say “Re-rendering…”. Terminal content, including deferred user prompts, SHALL remain readable. The indicator SHALL clear when repair resolves, restart fails, the session exits cleanly, or the pane rebinds, including inactive Hera panes.
 
 #### Scenario: Busy agent defers repair
 

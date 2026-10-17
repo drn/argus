@@ -11,5 +11,5 @@
 
 ## 3. Delivery
 
-- [ ] 3.1 Resolve coordinator questions, rebase onto updated #1053, run focused suites and make pre-pr, and archive the specs.
+- [x] 3.1 Resolve coordinator questions, rebase onto updated #1053, run focused suites and make pre-pr, and archive the specs.
 - [ ] 3.2 Update #1054 and report review disposition and evidence to coord.
