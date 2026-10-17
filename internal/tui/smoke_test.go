@@ -2943,3 +2943,42 @@ func TestSmoke_SkewPrompt_SkipDuringCountFetchOpensNoConfirm(t *testing.T) {
 	testutil.Equal(t, mode, modeTaskList)
 	testutil.Equal(t, int(calls.Load()), 1)
 }
+
+// TestSmoke_JumpSwitcherFilterAndEnter drives the ctrl+j jump switcher through
+// the real event loop (add-two-column-switcher): ctrl+j from the Tasks tab
+// opens the popup, typed runes filter it, and Enter opens the matching task's
+// agent view with the popup gone and the Tasks-tab cursor synced.
+func TestSmoke_JumpSwitcherFilterAndEnter(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	seedSwitcherTasks(t, app)
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	sim.InjectKey(tcell.KeyCtrlJ, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.mode, modeJumpSwitcher)
+		testutil.True(t, app.pages.HasPage(jumpSwitcherPage))
+	})
+
+	for _, r := range "zeta" {
+		sim.InjectKey(tcell.KeyRune, r, 0)
+	}
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.jumpSwitcher.Query(), "zeta")
+		testutil.DeepEqual(t, app.jumpSwitcher.tasks.VisibleTaskIDs(), []string{"ts-zeta"})
+	})
+
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.mode, modeAgent)
+		testutil.Nil(t, app.jumpSwitcher)
+		testutil.False(t, app.pages.HasPage(jumpSwitcherPage))
+		testutil.Equal(t, app.agentState.TaskID, "ts-zeta")
+		testutil.Equal(t, app.tasklist.SelectedTask().ID, "ts-zeta")
+	})
+}

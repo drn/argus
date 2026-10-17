@@ -336,3 +336,11 @@ func TestRail_CursorToNextNeedsInput_AcrossKanbanGroups(t *testing.T) {
 		testutil.Equal(t, r.Rows(), rows)
 	})
 }
+
+func TestRail_PRMeta(t *testing.T) {
+	r := NewRail()
+	testutil.Nil(t, r.PRMeta())
+	m := map[string]map[string]string{"t": {"state": "open"}}
+	r.SetPRMeta(m)
+	testutil.Equal(t, r.PRMeta()["t"]["state"], "open")
+}

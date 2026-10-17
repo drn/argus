@@ -243,15 +243,6 @@ type HeraPage struct {
 	// runner is not daemon-backed, in which case ctrl+y is an inert no-op.
 	OnCopyClipboard func(taskID string)
 
-	// OnSwitcher fires on `ctrl+j`, regardless of focus region (rail, coordinator
-	// pane, or agent pane) — the SAME "always intercepted" pattern as the Ctrl+Z
-	// fullscreen toggle below, so the byte never leaks to a focused pane's PTY.
-	// Wired to the App's unified task/role switcher (openTaskSwitcher); it is
-	// hera-page-local (not a keymap.Action) for the same reason Ctrl+Z/Ctrl+Y are:
-	// nothing about it is rail-mutation-shaped, and Hera's page-level keys have
-	// never gone through keymap.Resolve. nil-safe: unwired in remote mode.
-	OnSwitcher func()
-
 	// clipReady is set by the App each tick (SetClipboardHint): true when the
 	// focused terminal pane's task has an agent-staged clipboard payload. It no
 	// longer gates the `ctrl+y` interception (ctrl+y always fires
@@ -368,10 +359,9 @@ func (p *HeraPage) jumpToLeaf(id string) {
 // Exported so callers outside this package can reuse the exact ancestor-
 // expansion + reattach + focus behavior that originally backed only the plan
 // widget's own leaf-Enter (jumpToLeaf, still the plan widget's OnEnter
-// handler and now a thin wrapper over this). The unified task/role switcher
-// (Ctrl+J) is the other caller: selecting a hera-managed entry from anywhere
-// (including the classic agent view) calls this after switching to the Hera
-// tab.
+// handler and now a thin wrapper over this). The jump switcher (Ctrl+J) is
+// another caller: Enter on a Projects-column row from anywhere (including the
+// classic agent view) calls this after switching to the Hera tab.
 func (p *HeraPage) JumpToTask(id string) bool {
 	if p.remote || id == "" {
 		return false
@@ -433,7 +423,7 @@ func (p *HeraPage) SelectOrch(orchID int64) bool {
 
 // JumpToNextNeedsInput cycles to the next role in rail order whose own
 // signal needs input (add-hera-jump-question's Ctrl+G — a dedicated,
-// popup-free jump, independent of the Ctrl+J switcher): finds the target via
+// popup-free jump, independent of the Ctrl+J jump switcher): finds the target via
 // Rail.NextNeedsInputTaskID, then lands on it via JumpToTask, reusing the
 // exact same ancestor-expand + reattach + focus sequence every other jump
 // (the switcher, the plan widget's leaf-Enter) already goes through rather
@@ -965,15 +955,6 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 			// That silent fall-through was the footgun this binding closes.
 			p.focus.ToggleFullscreen()
 			uxlog.Log("[hera-view] ctrl+z fullscreen toggle: state=%d fullscreen=%v", p.focus.State(), p.focus.Fullscreen())
-			return
-		case tcell.KeyCtrlJ:
-			// Unified task/role switcher (Ctrl+J). ALWAYS consumed — even on the
-			// rail, where it's simply "open the switcher" rather than a no-op —
-			// so the byte can never fall through to a focused pane's PTY. Mirrors
-			// the Ctrl+Z case immediately above.
-			if p.OnSwitcher != nil {
-				p.OnSwitcher()
-			}
 			return
 		case tcell.KeyTab, tcell.KeyBacktab:
 			// Tab / Shift-Tab walk the focus ladder ONLY from the rail (entering a

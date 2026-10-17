@@ -22,6 +22,7 @@ Bouncing between argus tasks and Hera projects takes enough keystrokes that the 
 - `keybindings`: the `ctrl+j` switcher requirement changes from the agent-context `agent.switcher` (plus a Tasks-tab special case) to the unconditional global `global.switcher`.
 - `hera-view`: the old unified-switcher requirements (reachable from Hera, needs-input-first ordering, ancestor expansion on select) are replaced — Hera reach now comes from the global dispatch, ordering from the popup's needs-input cursor, and ancestor expansion from the Projects-column Enter.
 - `forms-and-modals`: the task switcher status-indicator requirement drops its grouped (Ctrl+J) scenario, since grouped mode is removed.
+- `command-palette`: the classic agent view's palette keeps listing the switcher after it moves from the agent context to the global context.
 
 ## Impact
 

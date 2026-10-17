@@ -294,6 +294,10 @@ func (r *Rail) SetFocused(v bool) { r.focused = v }
 // render a PR indicator. Pass nil to clear it (the indicator just won't render).
 func (r *Rail) SetPRMeta(m map[string]map[string]string) { r.prMeta = m }
 
+// PRMeta returns the "pr" namespace cache last handed to SetPRMeta (read-only;
+// the jump switcher feeds it to its private rail copy).
+func (r *Rail) PRMeta() map[string]map[string]string { return r.prMeta }
+
 // rolePR reports whether the role's bound task has a PR in an actionable
 // review state (mirrors theme.PRGlyph / model.PRState.IsActionable) — a
 // merged, closed, draft, or unknown-state PR leaves a url in the cache but

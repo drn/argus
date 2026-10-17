@@ -72,10 +72,23 @@ func TestHelpModal_Draw(t *testing.T) {
 	// Sample a few bindings to catch regressions in the section list.
 	testutil.Contains(t, body, "new task")
 	testutil.Contains(t, body, "fork task")
-	testutil.Contains(t, body, "task/role switcher")
-	// ctrl+j/ctrl+k rebind (hera-nav-palette): the switcher moved off ctrl+k,
-	// freeing it for the new global command palette action — fail the build
-	// if either regresses silently.
+	// ctrl+j jump switcher (add-two-column-switcher): a CtxGlobal action
+	// generated from the keymap, plus the Projects rail's static row — fail
+	// the build if either regresses silently. ctrl+k stays the palette.
+	testutil.Contains(t, body, "jump switcher (tasks + projects)")
+	railHasCtrlJ := false
+	for _, sec := range SectionsFromKeymap(keymap.DefaultKeymap()) {
+		if sec.Title != "Projects View (rail)" {
+			continue
+		}
+		for _, b := range sec.Bindings {
+			if b.Key == "ctrl+j" && b.Action == "jump switcher" {
+				railHasCtrlJ = true
+			}
+		}
+	}
+	testutil.True(t, railHasCtrlJ)
+	testutil.False(t, strings.Contains(body, "task/role switcher"))
 	testutil.Contains(t, body, "ctrl+j")
 	testutil.Contains(t, body, "command palette")
 	// ctrl+g global jump-to-next-needs-input (add-hera-jump-question): a new

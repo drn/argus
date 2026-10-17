@@ -85,6 +85,7 @@ var helpLayout = []helpGroup{
 		{"Cmd+←", "return to Tasks (rail only; Appearance option)"},
 		{"Cmd+→", "rightmost pane → Settings left pane"},
 		{"ctrl+z", "fullscreen pane"},
+		{"ctrl+j", "jump switcher"},
 		{"ctrl+y", "copy staged text (focused pane)"},
 		{"B", "force recycle coordinator (kill + restart, confirm)"},
 		{"←", "move to parent coordinator (rail focused)"},

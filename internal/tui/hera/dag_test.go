@@ -655,7 +655,7 @@ func TestPlanLeafEnter_ExpandsCollapsedAncestorBeforeJoin(t *testing.T) {
 }
 
 // TestJumpToTask_ExpandsCollapsedAncestorAndReturnsTrue pins the exported
-// entry point (extracted from jumpToLeaf for the unified task/role switcher,
+// entry point (extracted from jumpToLeaf for the Ctrl+J switcher, now the jump switcher;
 // hera-nav-palette): calling JumpToTask directly does the same ancestor
 // expansion + reattach + focus jumpToLeaf does, and reports success via its
 // return value (jumpToLeaf, still the plan widget's OnEnter, ignores it).

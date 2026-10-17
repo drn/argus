@@ -75,6 +75,11 @@ Inside the popup, `ctrl+g` SHALL move the cursor to the next row that needs inpu
 - **WHEN** one task in the Tasks column and one role in the Projects column need input, the cursor is on the task's row, and the user presses `ctrl+g` twice
 - **THEN** the first press moves the cursor to the Projects role and the second press moves it back to the task, and the popup stays open
 
+#### Scenario: ctrl+g reaches a role in a non-focused kanban group
+
+- **WHEN** a role under a top-level orchestrator in a kanban group other than the one the popup's Projects column has expanded (for example Backlog or Done) needs input, and the user presses `ctrl+g` in the popup
+- **THEN** the popup's Projects column expands that kanban group and lands the cursor on the role, and the real Projects rail's expanded kanban group is unchanged
+
 #### Scenario: ctrl+g with nothing needing input
 
 - **WHEN** no row in either column needs input and the user presses `ctrl+g`
