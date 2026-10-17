@@ -5115,6 +5115,7 @@ func TestApp_RedrawLoopGenSupersedesStaleLoop(t *testing.T) {
 // TUI sessions, mirroring the existing pendingRerenderRestart/committedCols
 // cleanup on task delete.
 func TestApp_RedrawLoopGenClearedOnDelete(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
@@ -5123,8 +5124,14 @@ func TestApp_RedrawLoopGenClearedOnDelete(t *testing.T) {
 	testutil.NoError(t, d.Add(task))
 
 	app.redrawLoopGen[task.ID] = 3
+	app.committedCols[task.ID] = 100
+	app.committedColsPID[task.ID] = 101
 
 	app.deleteTask(task)
+	_, anchored := app.committedCols[task.ID]
+	_, owned := app.committedColsPID[task.ID]
+	testutil.False(t, anchored)
+	testutil.False(t, owned)
 
 	if _, ok := app.redrawLoopGen[task.ID]; ok {
 		t.Fatal("expected redrawLoopGen entry to be cleared on task delete")
