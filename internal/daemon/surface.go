@@ -187,7 +187,10 @@ const (
 	//   - v8: rerender kicks defer until the recorded Claude transcript exists.
 	//     Exact lookup checks logical/physical paths and fails closed on errors.
 	//     Explicit revive opts into fresh recovery and returns the replacement ID.
-	SupervisorStreamSurface = 8
+	//   - v9: transcript-guarded width repairs use StopRerender and
+	//     KickWidthRerender for three-second PID-only escalation; ordinary
+	//     switch/revive kicks remain non-escalating.
+	SupervisorStreamSurface = 9
 )
 
 // SurfaceVersion is a supervisor's declared executed-surface identity: the pair
@@ -370,6 +373,7 @@ var SupervisorSpawnPaths = []string{
 // to it is far more likely to reach a running agent than not. Classifying an
 // ambiguous file as STREAM is the safe direction.
 var SupervisorStreamPaths = []string{
+	"internal/agent/width_rerender.go",        // opt-in bounded width repair
 	"internal/claudesession/claudesession.go", // exact transcript path inspection
 	"internal/agent/resume.go",                // transcript availability gate before kick/stop
 	"internal/agent/bgsessionreap.go",         // Claude background-session reap on Stop and before resume
@@ -403,7 +407,7 @@ var SupervisorStreamPaths = []string{
 // message prints the computed digest to paste back here.
 const (
 	SpawnSurfaceDigest  = "d514c27677ef859dc391d91d80f61c159354d6f629068c448432540a0d9ff576"
-	StreamSurfaceDigest = "8073019e2ae4a9f03b27410a34f1994c9e36182c5a6dcb485e6ef15ac0a825c4"
+	StreamSurfaceDigest = "7a13e29409e10b33beeffb8a801214eaae14deb2511d380690751a5e8b76a816"
 )
 
 // SurfaceDigest computes the SHA-256 over the declared manifest's file contents,

@@ -58,11 +58,17 @@ func (transcriptKickSession) RecentOutputTail(int) []byte { return nil }
 
 type transcriptKickRunner struct {
 	*agent.Runner
-	kicks int
+	kicks         int
+	ordinaryKicks int
 }
 
 func (*transcriptKickRunner) Get(string) agent.SessionHandle { return transcriptKickSession{} }
 func (r *transcriptKickRunner) KickRerender(*model.Task, config.Config, uint16, uint16) error {
+	r.ordinaryKicks++
+	return nil
+}
+
+func (r *transcriptKickRunner) KickWidthRerender(*model.Task, config.Config, uint16, uint16) error {
 	r.kicks++
 	return nil
 }
@@ -87,6 +93,7 @@ func TestResizeMissingTranscriptRetries(t *testing.T) {
 	seedAPITranscript(t, home, task.Worktree, task.SessionID, time.Time{})
 	testutil.True(t, srv.maybeKickRerender(task.ID, 24, 98))
 	testutil.Equal(t, r.kicks, 1)
+	testutil.Equal(t, r.ordinaryKicks, 0)
 }
 
 func TestExactTranscriptProbe(t *testing.T) {

@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"log/slog"
 	"os/exec"
 	"regexp"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -22,7 +24,7 @@ var childPIDRe = regexp.MustCompile(`CHILD=(\d+)`)
 func startGroupSession(t *testing.T, script string) (*Session, int) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
-	sess, err := StartSession("group-stop", exec.Command("sh", "-c", script), 24, 80)
+	sess, err := StartSession(strings.ReplaceAll(t.Name(), "/", "-"), exec.Command("sh", "-c", script), 24, 80)
 	testutil.NoError(t, err)
 	t.Cleanup(func() { _ = syscall.Kill(-sess.PID(), syscall.SIGKILL) })
 	deadline := time.Now().Add(5 * time.Second)
@@ -111,9 +113,112 @@ func TestSession_StopScoped_AgentOnlyLeavesGroup(t *testing.T) {
 	testutil.False(t, waitGone(child, 500*time.Millisecond))
 }
 
+func TestSession_StopScoped_RerenderEscalates(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real PTY process")
+	}
+	prev := agentStopKillAfter.Swap(int64(400 * time.Millisecond))
+	t.Cleanup(func() { agentStopKillAfter.Store(prev) })
+	sess, child := startGroupSession(t, `trap "" TERM HUP; sleep 60 & echo CHILD=$!; wait`)
+	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
+	testutil.NoError(t, sess.StopScoped(StopRerender))
+	time.Sleep(150 * time.Millisecond)
+	testutil.NoError(t, syscall.Kill(sess.PID(), 0))
+	testutil.True(t, waitGone(sess.PID(), 2*time.Second))
+	testutil.NoError(t, syscall.Kill(child, 0))
+}
+
+func TestSession_StopScoped_RerenderCancelsBeforeDrain(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real PTY process")
+	}
+	prev := agentStopKillAfter.Swap(int64(time.Second))
+	t.Cleanup(func() { agentStopKillAfter.Store(prev) })
+	var logs syncBuffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	sess, child := startGroupSession(t, `trap "" HUP; trap 'sleep 0.2; exit 0' TERM; sleep 60 & echo CHILD=$!; wait`)
+	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
+	testutil.NoError(t, sess.StopScoped(StopRerender))
+	select {
+	case <-sess.processExited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("process exit did not cancel escalation before PTY drain")
+	}
+	testutil.NoError(t, syscall.Kill(child, 0))
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for !strings.Contains(logs.String(), `msg="[rerender] exited during grace" task=`+sess.TaskID) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	testutil.Contains(t, logs.String(), `msg="[rerender] exited during grace" task=`+sess.TaskID)
+	testutil.NoError(t, syscall.Kill(child, syscall.SIGKILL))
+	<-sess.Done()
+	testutil.NoError(t, sess.Err())
+}
+
+func TestRerenderStop_DefaultGrace(t *testing.T) {
+	testutil.Equal(t, RerenderStopGrace, 3*time.Second)
+	testutil.Equal(t, time.Duration(agentStopKillAfter.Load()), RerenderStopGrace)
+}
+
+func TestSession_StopScoped_AgentOnlyDoesNotEscalate(t *testing.T) {
+	prev := agentStopKillAfter.Swap(int64(50 * time.Millisecond))
+	t.Cleanup(func() { agentStopKillAfter.Store(prev) })
+	sess, child := startGroupSession(t, `trap "" TERM HUP; sleep 60 & echo CHILD=$!; wait`)
+	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
+	testutil.NoError(t, sess.StopScoped(StopAgentOnly))
+	time.Sleep(500 * time.Millisecond)
+	testutil.NoError(t, syscall.Kill(sess.PID(), 0))
+}
+
+func TestRunner_WidthKickEscalatesAndRestarts(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	prev := agentStopKillAfter.Swap(int64(50 * time.Millisecond))
+	t.Cleanup(func() { agentStopKillAfter.Store(prev) })
+	cfg := runnerTestConfig()
+	cfg.Backends["test"] = config.Backend{Command: `trap "" TERM HUP; sleep 60 </dev/null >/dev/null 2>&1 & echo CHILD=$!; wait`}
+	r := NewRunner(nil)
+	task := &model.Task{ID: "width-kick", Name: "width", Worktree: t.TempDir()}
+	sess, err := r.Start(task, cfg, 24, 80, false)
+	testutil.NoError(t, err)
+	t.Cleanup(r.StopAll)
+	oldPID := sess.PID()
+	deadline := time.Now().Add(2 * time.Second)
+	var child int
+	for time.Now().Before(deadline) {
+		if m := childPIDRe.FindSubmatch(sess.RecentOutput()); m != nil {
+			child, _ = strconv.Atoi(string(m[1]))
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	testutil.True(t, child > 0)
+	t.Cleanup(func() {
+		if child > 0 {
+			_ = syscall.Kill(child, syscall.SIGKILL)
+		}
+	})
+	testutil.NoError(t, r.KickWidthRerender(task, cfg, 30, 98))
+	deadline = time.Now().Add(2 * time.Second)
+	var replacement SessionHandle
+	for time.Now().Before(deadline) {
+		replacement = r.Get(task.ID)
+		if !r.HasPendingRestart(task.ID) && replacement != nil && replacement.PID() != oldPID {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	testutil.NotNil(t, replacement)
+	testutil.False(t, r.HasPendingRestart(task.ID))
+	testutil.True(t, replacement.PID() != oldPID)
+	testutil.NoError(t, syscall.Kill(child, 0))
+}
+
 func TestStopScope_String(t *testing.T) {
 	testutil.Equal(t, StopTree.String(), "tree")
 	testutil.Equal(t, StopAgentOnly.String(), "agent-only")
+	testutil.Equal(t, StopRerender.String(), "rerender")
 	testutil.Equal(t, StopScope(9).String(), "unknown")
 }
 

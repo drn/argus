@@ -106,6 +106,7 @@ func TestStartSessionMissingTranscript(t *testing.T) {
 	const old = "11111111-1111-7111-9111-111111111111"
 	task := &model.Task{Name: "unsaved", Backend: "fixture", Worktree: t.TempDir(), SessionID: old, Prompt: "original mission"}
 	testutil.NoError(t, d.Add(task))
+	app.committedCols[task.ID] = 100
 	app.startSession(task)
 	sess := runner.Get(task.ID)
 	t.Cleanup(func() {
@@ -121,6 +122,8 @@ func TestStartSessionMissingTranscript(t *testing.T) {
 	testutil.Equal(t, got.Status, model.StatusInProgress)
 	testutil.NotNil(t, sess)
 	testutil.True(t, sess.Alive())
+	_, unresolved := app.committedCols[task.ID]
+	testutil.False(t, unresolved)
 }
 
 func TestReviveLiveMissingTranscript(t *testing.T) {

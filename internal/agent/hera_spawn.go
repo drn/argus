@@ -215,6 +215,7 @@ func SpawnHeraWorker(database *db.DB, runner SessionProvider, in HeraWorkerSpawn
 	}
 	task, _, err := CreateAndStart(database, runner, CreateInput{
 		Name:             uniqueName,
+		PTYRole:          db.HeraKindWorker,
 		Prompt:           in.TaskPrompt,
 		Project:          in.Project,
 		Backend:          in.Backend,
@@ -301,6 +302,7 @@ func MaterializeHeraWorker(database *db.DB, runner SessionProvider, in HeraMater
 	}
 	task, _, err := CreateAndStart(database, runner, CreateInput{
 		Name:    in.Role.Name,
+		PTYRole: db.HeraKindWorker,
 		Prompt:  in.TaskPrompt,
 		Project: in.Project,
 		Backend: in.Backend,
@@ -404,6 +406,7 @@ func MaterializeHeraSubCoordinator(database *db.DB, runner SessionProvider, in H
 	}
 	task, _, err := CreateAndStart(database, runner, CreateInput{
 		Name:    in.Role.Name,
+		PTYRole: db.HeraKindCoordinator,
 		Prompt:  in.TaskPrompt,
 		Project: in.Project,
 		// A sub-coordinator is still a coordinator: never budget-tiered (see
@@ -625,6 +628,7 @@ func SpawnHeraCoordinator(database *db.DB, runner SessionProvider, in HeraCoordi
 	var binding *db.HeraBinding
 	task, _, err := CreateAndStart(database, runner, CreateInput{
 		Name:    taskName,
+		PTYRole: db.HeraKindCoordinator,
 		Prompt:  in.TaskPrompt,
 		Project: in.Project,
 		// Never budget-tiered: a coordinator always resolves to a

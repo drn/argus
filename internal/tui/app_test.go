@@ -801,6 +801,7 @@ func TestRefreshTasksWithIDs_ContentIdleReusesStickySignals(t *testing.T) {
 // App.maybeKickRerender without a real PTY. Only the fields the rerender
 // predicate reads are meaningful; everything else returns zero values.
 type fakeKickSession struct {
+	pid        int
 	idle       bool
 	alive      bool
 	initCols   int
@@ -808,7 +809,7 @@ type fakeKickSession struct {
 	stopScope  atomic.Int64 // last StopScoped scope; -1 = plain Stop()
 }
 
-func (f *fakeKickSession) PID() int                                              { return 0 }
+func (f *fakeKickSession) PID() int                                              { return f.pid }
 func (f *fakeKickSession) WriteInput([]byte, agentview.InputOrigin) (int, error) { return 0, nil }
 func (f *fakeKickSession) Resize(uint16, uint16) error                           { return nil }
 func (f *fakeKickSession) RecentOutput() []byte                                  { return nil }
@@ -927,7 +928,7 @@ func TestMaybeKickRerenderAtWidth_KicksOnGenuineDrift(t *testing.T) {
 	}
 	// A resize bounce restarts the same task: agent-only, so its background
 	// processes survive (stop-finished-task-sessions).
-	testutil.Equal(t, agent.StopScope(sess.stopScope.Load()), agent.StopAgentOnly)
+	testutil.Equal(t, agent.StopScope(sess.stopScope.Load()), agent.StopRerender)
 	readUI(t, app.tapp, func() {
 		if !app.pendingRerenderRestart[taskID] {
 			t.Error("pendingRerenderRestart not set after a successful kick")
@@ -1042,9 +1043,7 @@ func TestMaybeKickRerenderAtWidth_LaterNarrowRebindStillKicksAfterDeferredWideBi
 		t.Fatal("a later narrow rebind (90) did not kick despite the session's committed width having drifted to 142 during a deferred wide bind")
 	}
 	readUI(t, app.tapp, func() {
-		if _, cached := app.committedCols[taskID]; cached {
-			t.Error("committedCols should be cleared once a kick actually fires")
-		}
+		testutil.Equal(t, app.committedCols[taskID], uint16(142))
 	})
 }
 

@@ -153,6 +153,13 @@ func (c *sessionCore) StopSession(req *StopReq, resp *StatusResp) error {
 	return nil
 }
 
+// StopRerender is a separate capability so older peers reject the request
+// instead of treating its unknown scope as StopTree. Callers must pass the
+// resumable-transcript guard before requesting this stop.
+func (c *sessionCore) StopRerender(req *TaskIDReq, resp *StatusResp) error {
+	return c.StopSession(&StopReq{TaskID: req.TaskID, Scope: agent.StopRerender}, resp)
+}
+
 // StopAll stops all running sessions.
 func (c *sessionCore) StopAll(_ *Empty, resp *StatusResp) error {
 	slog.Info("rpc.StopAll")
@@ -292,6 +299,14 @@ func (c *sessionCore) Resize(req *ResizeReq, resp *StatusResp) error {
 // actually invoked in ON mode (the daemon's API client targets supervisor.sock),
 // but keeping it uniform on the core means a future direct caller works too.
 func (c *sessionCore) KickRerender(req *KickReq, resp *StatusResp) error {
+	return c.kickRerender(req, resp, false)
+}
+
+func (c *sessionCore) KickWidthRerender(req *KickReq, resp *StatusResp) error {
+	return c.kickRerender(req, resp, true)
+}
+
+func (c *sessionCore) kickRerender(req *KickReq, resp *StatusResp, widthRepair bool) error {
 	slog.Info("rpc.KickRerender", "task", req.TaskID, "cols", req.Cols, "rows", req.Rows)
 	task := &model.Task{
 		ID:              req.TaskID,
@@ -310,7 +325,11 @@ func (c *sessionCore) KickRerender(req *KickReq, resp *StatusResp) error {
 	cfg := c.cfgFn()
 	cfg.MCPPort = req.MCPPort
 	kick := c.runner.KickRerender
-	if req.Revive {
+	if widthRepair {
+		kick = func(task *model.Task, cfg config.Config, rows, cols uint16) error {
+			return agent.KickWidthRerender(c.runner, task, cfg, rows, cols)
+		}
+	} else if req.Revive {
 		kick = func(task *model.Task, cfg config.Config, rows, cols uint16) error {
 			return agent.KickRevive(c.runner, task, cfg, rows, cols)
 		}

@@ -131,11 +131,14 @@ type BootInfoResp struct {
 //     StopTree, a full stop. A pre-v9 supervisor ignores the field and stops
 //     the agent PID only (its own pre-change behavior), so the TUI's
 //     resize-kick StopAgentOnly is the old behavior there too.
+//   - v10 (faster-pane-rerender): + StopRerender / KickWidthRerender for guarded
+//     bounded PID-only stops. Clients use StopSession with the non-escalating
+//     StopAgentOnly scope when an older peer rejects this method.
 //
 // StartResp.SessionID is additive and zero-value-safe: newer clients preserve
 // their existing ID when an older server omits it. Supervisor surface v19
 // identifies the launch recovery behavior that makes this field necessary.
-const ProtocolVersion = 9
+const ProtocolVersion = 10
 
 // SupervisorProtocolMatch reports whether a supervisor's handshake version
 // equals the daemon's. A mismatch is NOT fatal and NEVER triggers an auto-

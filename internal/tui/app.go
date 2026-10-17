@@ -517,6 +517,7 @@ type App struct {
 	// map, it immediately restarts the session via `--session-id` so Claude
 	// re-renders the conversation history at the current (wider) PTY.
 	pendingRerenderRestart map[string]bool
+	initialPTYPublisher    initialPTYPublisher
 
 	// pendingHeraReclaim marks tasks that were in_progress (actively live) at
 	// the moment a Hera nuke/reclaim (heraReclaimAndArchiveTask) fired their
@@ -1140,6 +1141,7 @@ func (a *App) afterDraw(screen tcell.Screen) {
 		}
 	}
 	a.reconcilePluginViewSize()
+	a.publishInitialPTYLayout(screen)
 }
 
 // SetDaemonStale records that the connected daemon's binary differs from the
@@ -2212,6 +2214,7 @@ func (a *App) consumeHeraReclaimPending(taskID string) bool {
 // pendingRestart is captured by the caller from a non-RPC source (in-process:
 // direct method call; daemon: ExitInfo.PendingRestart stamped by daemon side).
 func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool) {
+	defer a.setRerendering(taskID, false)
 	// Two callers, two flip-site stories:
 	//   - Daemon mode (HandleSessionExit): the daemon's onFinish callback
 	//     already ran transitionTaskOnExit before closing the stream that
@@ -5552,8 +5555,10 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 			decision := agent.ShouldKickRerender(true, initCols, committed, int(panelCols), idle, false, needsInput)
 			switch decision {
 			case agent.RerenderSkip:
+				a.setRerendering(taskID, false)
 				return
 			case agent.RerenderDeferBusy:
+				a.setRerenderPending(taskID)
 				// Agent is mid-tool-call — invalidate so the next
 				// same-cols reopen re-evaluates when the agent goes idle.
 				a.invalidateAttachCache(taskID)
@@ -5569,6 +5574,7 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 				}
 				return
 			case agent.RerenderDeferPrompt:
+				a.setRerenderPending(taskID)
 				// Agent is blocked on a user prompt — kicking would dismiss
 				// the question. Invalidate so a later resize re-evaluates
 				// once the user has answered and the agent moves on.
@@ -5580,7 +5586,9 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 				}
 				return
 			case agent.RerenderKick:
+				a.setRerendering(taskID, true)
 				if !checked || transcriptErr != nil || !available {
+					a.setRerenderPending(taskID)
 					a.invalidateAttachCache(taskID)
 					a.recordUnreconciledCommittedCols(taskID, panelCols)
 					uxlog.Log("[rerender] deferred task=%s session=%s: transcript unavailable err=%v", taskID, kickTask.SessionID, transcriptErr)
@@ -5594,7 +5602,8 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 				a.pendingRerenderRestart[taskID] = true
 				// Agent-only: a resize bounce restarts the same task, so its
 				// background processes (dev servers) must survive.
-				if err := sess.StopScoped(agent.StopAgentOnly); err != nil {
+				if err := sess.StopScoped(agent.StopRerender); err != nil {
+					a.setRerenderPending(taskID)
 					uxlog.Log("[tui] rerender: stop failed task=%s err=%v", taskID, err)
 					delete(a.pendingRerenderRestart, taskID)
 					// Stop attempt failed — invalidate so the next
@@ -5605,13 +5614,6 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 					if onDeferred != nil {
 						onDeferred()
 					}
-				} else {
-					// The resumed session re-emits its entire conversation at
-					// panelCols, so any previously-recorded drift is resolved
-					// — the new session's own InitialPTYSize becomes the
-					// fresh reference. Clear rather than update, so a stale
-					// entry can't outlive the incarnation it described.
-					delete(a.committedCols, taskID)
 				}
 			}
 		})
@@ -5702,6 +5704,7 @@ func (a *App) reapStaleRerenderRestart(taskID string, sess agent.SessionHandle) 
 	}
 	uxlog.Log("[tui] rerender: reaping stale pending flag for task=%s", taskID)
 	delete(a.pendingRerenderRestart, taskID)
+	a.setRerendering(taskID, false)
 	a.statusbar.ClearInfo()
 }
 
@@ -6280,6 +6283,7 @@ func (a *App) forceReviveClosedOut(pane *terminal.TerminalPane, t *model.Task) {
 // auto-start path, hera's Enter-reattach, switchSession's dead-session
 // branch) that don't ALL separately force a refetch of their own afterward.
 func (a *App) startSession(task *model.Task) {
+	defer a.setRerendering(task.ID, false)
 	cfg := a.db.Config()
 	rows, cols := a.spawnPTYSize(task.ID)
 
@@ -6346,6 +6350,7 @@ func (a *App) startSession(task *model.Task) {
 
 	task.SetStatus(model.StatusInProgress)
 	task.AgentPID = sess.PID()
+	delete(a.committedCols, task.ID)     // only a successful new start reconciles history
 	a.recentStarts[task.ID] = time.Now() // grace period: protect from false reconciliation
 	a.db.Update(task)                    //nolint:errcheck
 	a.invalidateTasksChangeGate()

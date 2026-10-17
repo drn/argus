@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/buildid"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/testutil"
@@ -26,6 +27,8 @@ type fakeDaemon struct {
 	alive     bool   // SessionStatus.Alive value
 	dropAfter int    // how many bytes to send before dropping the stream
 	streamMsg []byte // bytes to send on stream before drop
+
+	stopScopes []agent.StopScope
 }
 
 func newFakeDaemon(t *testing.T) *fakeDaemon {
@@ -99,7 +102,10 @@ func (s *FakeRPCService) UpdateSelf(_ *daemon.Empty, resp *daemon.UpdateSelfResp
 }
 
 // StopSession returns a daemon-side error.
-func (s *FakeRPCService) StopSession(_ *daemon.TaskIDReq, resp *daemon.StatusResp) error {
+func (s *FakeRPCService) StopSession(req *daemon.StopReq, resp *daemon.StatusResp) error {
+	s.fd.mu.Lock()
+	s.fd.stopScopes = append(s.fd.stopScopes, req.Scope)
+	s.fd.mu.Unlock()
 	resp.Error = "fake-stop-fail"
 	return nil
 }

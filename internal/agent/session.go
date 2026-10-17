@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,20 +40,21 @@ type Session struct {
 	Cmd    *exec.Cmd
 	ptmx   *os.File // PTY master
 
-	mu          sync.Mutex
-	buf         *RingBuffer
-	writers     []io.Writer // readLoop tees output to all attached writers
-	done        chan struct{}
-	readDone    chan struct{} // closed when readLoop returns; waitLoop blocks on this before closing done so all PTY output lands in the ring buffer
-	err         error
-	attached    bool
-	detachCh    chan struct{}
-	ptyCols     uint16    // current PTY width
-	ptyRows     uint16    // current PTY height
-	initialCols uint16    // PTY width at StartSession; never mutated after init
-	initialRows uint16    // PTY height at StartSession; never mutated after init
-	lastOutput  time.Time // last time output was received from PTY
-	lastInput   time.Time // last time ANY input was written (WriteInput, either origin); idle-push gate uses this to detect new work cycles
+	mu            sync.Mutex
+	buf           *RingBuffer
+	writers       []io.Writer // readLoop tees output to all attached writers
+	done          chan struct{}
+	processExited chan struct{} // closes before the PTY drain, cancelling PID escalation
+	readDone      chan struct{} // closed when readLoop returns; waitLoop blocks on this before closing done so all PTY output lands in the ring buffer
+	err           error
+	attached      bool
+	detachCh      chan struct{}
+	ptyCols       uint16    // current PTY width
+	ptyRows       uint16    // current PTY height
+	initialCols   uint16    // PTY width at StartSession; never mutated after init
+	initialRows   uint16    // PTY height at StartSession; never mutated after init
+	lastOutput    time.Time // last time output was received from PTY
+	lastInput     time.Time // last time ANY input was written (WriteInput, either origin); idle-push gate uses this to detect new work cycles
 	// lastUserInput is the last time WriteInput was called with
 	// agentview.OriginUser (a real keystroke) — NOT agentview.OriginSystem
 	// (system delivery). The needs-input clear-on-input filter (BUG-034)
@@ -117,19 +119,20 @@ func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, er
 	SaveSessionSize(taskID, int(cols), int(rows))
 
 	s := &Session{
-		TaskID:       taskID,
-		Cmd:          cmd,
-		ptmx:         ptmx,
-		buf:          NewRingBuffer(defaultBufSize),
-		done:         make(chan struct{}),
-		readDone:     make(chan struct{}),
-		detachCh:     make(chan struct{}),
-		ptyCols:      cols,
-		ptyRows:      rows,
-		initialCols:  cols,
-		initialRows:  rows,
-		logFile:      logFile,
-		colorReplies: make(chan []byte, 8),
+		TaskID:        taskID,
+		Cmd:           cmd,
+		ptmx:          ptmx,
+		buf:           NewRingBuffer(defaultBufSize),
+		done:          make(chan struct{}),
+		processExited: make(chan struct{}),
+		readDone:      make(chan struct{}),
+		detachCh:      make(chan struct{}),
+		ptyCols:       cols,
+		ptyRows:       rows,
+		initialCols:   cols,
+		initialRows:   rows,
+		logFile:       logFile,
+		colorReplies:  make(chan []byte, 8),
 	}
 	go s.forwardColorReplies()
 
@@ -241,6 +244,7 @@ func (s *Session) readLoop() {
 // unblocks this goroutine; without that defer, Done() would deadlock.
 func (s *Session) waitLoop() {
 	s.err = s.Cmd.Wait()
+	close(s.processExited)
 	select {
 	case <-s.readDone:
 	case <-time.After(ptmxDrainTimeout):
@@ -522,7 +526,16 @@ func (s *Session) Signal(sig os.Signal) error {
 // goroutines from other sessions read it.
 var stopKillAfter atomic.Int64
 
-func init() { stopKillAfter.Store(int64(5 * time.Second)) }
+// RerenderStopGrace gives Claude time to append its transcript after SIGTERM.
+// Only transcript-guarded repair stops use this bounded PID-only escalation.
+const RerenderStopGrace = 3 * time.Second
+
+var agentStopKillAfter atomic.Int64
+
+func init() {
+	stopKillAfter.Store(int64(5 * time.Second))
+	agentStopKillAfter.Store(int64(RerenderStopGrace))
+}
 
 // stopSignalTarget picks what Stop signals: the agent's whole process group
 // (negative pid) when the agent leads its own group — which the PTY's setsid
@@ -550,6 +563,9 @@ const (
 	// recycle, the TUI's resize kick — so the agent's own background
 	// processes survive.
 	StopAgentOnly
+	// StopRerender is a transcript-guarded repair: preserve the task's
+	// background processes, but bound the agent's shutdown to flush grace.
+	StopRerender
 )
 
 func (sc StopScope) String() string {
@@ -558,6 +574,8 @@ func (sc StopScope) String() string {
 		return "tree"
 	case StopAgentOnly:
 		return "agent-only"
+	case StopRerender:
+		return "rerender"
 	}
 	return "unknown"
 }
@@ -576,9 +594,34 @@ func (s *Session) StopScoped(scope StopScope) error {
 		return nil
 	}
 	pid := s.Cmd.Process.Pid
-	if scope == StopAgentOnly {
+	if scope == StopAgentOnly || scope == StopRerender {
 		if err := s.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			return err
+		}
+		if scope == StopRerender {
+			grace := time.Duration(agentStopKillAfter.Load())
+			uxlog.Log("[session] rerender stop: task=%s SIGTERM grace=%s", s.TaskID, grace)
+			slog.Info("[rerender] SIGTERM", "task", s.TaskID, "grace", grace)
+			go func() {
+				timer := time.NewTimer(grace)
+				defer timer.Stop()
+				select {
+				case <-s.processExited:
+					uxlog.Log("[session] rerender stop: task=%s exited during grace", s.TaskID)
+					slog.Info("[rerender] exited during grace", "task", s.TaskID)
+					return
+				case <-timer.C:
+				}
+				// os.Process.Signal refuses an already-Waited process, so an
+				// exit racing the timer cannot signal a recycled PID.
+				if err := s.Signal(syscall.SIGKILL); err == nil {
+					uxlog.Log("[session] rerender stop: task=%s SIGKILL after %s", s.TaskID, grace)
+					slog.Info("[rerender] SIGKILL after grace", "task", s.TaskID, "grace", grace)
+				} else {
+					uxlog.Log("[session] rerender stop: task=%s escalation skipped: %v", s.TaskID, err)
+					slog.Info("[rerender] escalation skipped", "task", s.TaskID, "err", err)
+				}
+			}()
 		}
 		return nil
 	}
