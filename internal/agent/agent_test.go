@@ -497,7 +497,7 @@ func TestBuildCmd_ExportsTaskID(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("expected ARGUS_TASK_ID=task-id-42 in cmd.Env; got %v", cmd.Env)
+		t.Fatal("expected ARGUS_TASK_ID fixture in child env")
 	}
 }
 
@@ -607,7 +607,7 @@ func TestBuildCmd_NoEnvOverrideWhenIDEmpty(t *testing.T) {
 	}
 	for _, kv := range cmd.Env {
 		if kv == "ARGUS_TASK_ID=" || kv == "ARGUS_TASK_ID" {
-			t.Fatalf("did not expect empty ARGUS_TASK_ID export; got %v", cmd.Env)
+			t.Fatal("did not expect empty ARGUS_TASK_ID export")
 		}
 	}
 }
@@ -1088,7 +1088,7 @@ func TestBuildCmd_ExportsCacheDirs(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("expected ANDROID_SDK_ROOT=%s in env, got %v", wantDir, cmd.Env)
+		t.Fatal("expected ANDROID_SDK_ROOT fixture in child env")
 	}
 	if info, statErr := os.Stat(wantDir); statErr != nil || !info.IsDir() {
 		t.Fatalf("expected cache dir %s to be created, stat err: %v", wantDir, statErr)
@@ -1114,7 +1114,7 @@ func TestBuildCmd_SkipsInvalidCacheDirsEntry(t *testing.T) {
 
 	for _, kv := range cmd.Env {
 		if strings.HasPrefix(kv, "EVIL=") {
-			t.Fatalf("did not expect EVIL to be exported, got %v", cmd.Env)
+			t.Fatal("did not expect EVIL to be exported")
 		}
 	}
 	if _, statErr := os.Stat(filepath.Join(home, "escaped")); statErr == nil {
@@ -1140,7 +1140,7 @@ func TestBuildCmd_SkipsCacheDirsEntryWithEmptyTarget(t *testing.T) {
 
 	for _, kv := range cmd.Env {
 		if strings.HasPrefix(kv, "=") {
-			t.Fatalf("did not expect a malformed empty-target entry, got %v", cmd.Env)
+			t.Fatal("did not expect a malformed empty-target entry")
 		}
 	}
 }
@@ -1164,7 +1164,7 @@ func TestBuildCmd_SkipsCacheDirsEntryWithEqualsInTarget(t *testing.T) {
 
 	for _, kv := range cmd.Env {
 		if strings.HasPrefix(kv, "FOO=BAR") {
-			t.Fatalf("did not expect a malformed FOO=BAR-prefixed entry, got %v", cmd.Env)
+			t.Fatal("did not expect a malformed FOO=BAR-prefixed entry")
 		}
 	}
 	if _, statErr := os.Stat(filepath.Join(db.DataDir(), "cache", "some-dir")); statErr == nil {
