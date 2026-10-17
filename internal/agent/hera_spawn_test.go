@@ -33,6 +33,22 @@ func TestHeraWorkerOrientation_NamesOrchAndCoord(t *testing.T) {
 	testutil.Equal(t, strings.Contains(got, `"coord"`), true)
 }
 
+// TestHeraWorkerOrientation_PromotionRequiresClaude pins the fix-codex-subcoordinators
+// wording: the worker prompt must not steer a Codex worker into the self-promotion
+// the MCP guard now rejects, and must route it to its coordinator instead.
+func TestHeraWorkerOrientation_PromotionRequiresClaude(t *testing.T) {
+	got := HeraWorkerOrientation("my-orch", "coord")
+	for _, sub := range []string{
+		"unless you are running on Claude",
+		"rejected on a non-Claude backend",
+		"hera_send your coordinator",
+		"kind=subcoord plan node",
+	} {
+		testutil.Equal(t, strings.Contains(got, sub), true)
+	}
+	testutil.Equal(t, strings.Contains(got, "another repo"), false)
+}
+
 func TestHeraCoordinatorOrientation_NamesOrch(t *testing.T) {
 	got := HeraCoordinatorOrientation("my-orch")
 	testutil.Equal(t, strings.Contains(got, `"my-orch"`), true)
@@ -105,6 +121,7 @@ func TestHeraCoordinatorOrientation_NoSelfPromotion(t *testing.T) {
 		{"subteam-trigger-is-scope", "multiple projects or phases", true},
 		{"path-worker-promotion", "worker-promotion", true},
 		{"path-subcoord-node", "kind=subcoord hera_plan_node", true},
+		{"promotion-requires-claude", `REQUIRES spawning that worker with backend="claude"`, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

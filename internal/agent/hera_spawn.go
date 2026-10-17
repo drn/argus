@@ -681,8 +681,8 @@ func SpawnHeraCoordinator(database *db.DB, runner SessionProvider, in HeraCoordi
 // session as a relabel (not a new session) and is not a way to "become the one
 // who does the work" — and reserves hera_new_orchestrator for a genuine OWN
 // sub-team (multi-project / multi-phase, whose workers — not the coordinator —
-// do the work), obtained via a new session (worker-promotion or a kind=subcoord
-// plan node). Also points at the coordination tools + the iris PR convention.
+// do the work), obtained via a new session (preferably a kind=subcoord plan node;
+// worker-promotion only with backend="claude"). Also points at the coordination tools + the iris PR convention.
 // Shared by the native Hera view's `n` key.
 //
 // It also carries the five context-discipline habits from
@@ -703,9 +703,11 @@ func HeraCoordinatorOrientation(orchestrator string) string {
 			"as a second coordinator (a relabel, not a new session) and is NOT a way to become the "+
 			"one who does the work. Reserve hera_new_orchestrator for when you need your OWN dedicated "+
 			"sub-team — multiple projects or phases, each with its own plan and workers (and even then "+
-			"those workers do the work, not you) — obtained via a genuinely new session: a worker "+
-			"whose prompt tells IT to call hera_new_orchestrator once started (the worker-promotion "+
-			"pattern), or a kind=subcoord hera_plan_node the gater materializes. When opening pull "+
+			"those workers do the work, not you) — obtained via a genuinely new session. PREFER a kind=subcoord "+
+			"hera_plan_node (objective in goal=): it resolves to a Claude-capable backend whenever one is configured. "+
+			"The worker-promotion alternative — a worker whose prompt tells IT to call "+
+			"hera_new_orchestrator — REQUIRES spawning that worker with backend=\"claude\", because "+
+			"hera_new_orchestrator is rejected on a non-Claude (e.g. Codex) backend. When opening pull "+
 			"requests, use mcp__argus__iris_gh_pr_create (not gh pr create directly) so argus records "+
 			"the PR URL and the hera rail shows the PR indicator.\n\n"+
 			"You are long-lived: unlike a worker spawned for one slice and then discarded, you "+
@@ -776,10 +778,12 @@ func DeriveHeraWorkerName(prompt string) string {
 func HeraWorkerOrientation(orchestrator, coordinator string) string {
 	return fmt.Sprintf(
 		"You are a worker agent born bound to hera orchestrator %q under coordinator %q. "+
-			"You may report progress via hera_send. If this task requires changes to another repo "+
-			"or you need to spawn sub-agents, call hera_new_orchestrator(cwd=$PWD, name=\"...\", "+
+			"You may report progress via hera_send. If you need your own sub-team, do NOT self-promote unless "+
+			"you are running on Claude: hera_new_orchestrator is rejected on a non-Claude backend. "+
+			"Otherwise hera_send your coordinator and ask it to author a kind=subcoord plan node for the "+
+			"work. On Claude you may instead call hera_new_orchestrator(cwd=$PWD, name=\"...\", "+
 			"coordinator_role_name=\"coord\", prompt=\"...\") to become a sub-coordinator, then use "+
-			"hera_spawn_worker(project=\"TARGET-PROJECT\", ...) to dispatch workers in that project. "+
+			"hera_spawn_worker(project=\"TARGET-PROJECT\", ...) to dispatch workers. "+
 			"When opening pull requests, use mcp__argus__iris_gh_pr_create (not gh pr create directly) "+
 			"so argus records the PR URL and the hera rail shows the PR indicator.",
 		orchestrator, coordinator)

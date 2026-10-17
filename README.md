@@ -707,7 +707,7 @@ If the recipient has a live agent session the daemon also writes a single notifi
 
 | Tool                    | Description                                                                                                                                       |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `hera_new_orchestrator` | Bootstrap a new orchestrator and claim its `coordinator` role for the calling task.                                                               |
+| `hera_new_orchestrator` | Bootstrap a new orchestrator and claim its `coordinator` role for the calling task. Rejected on a non-Claude backend — use a `kind=subcoord` plan node.  |
 | `hera_join`             | Claim the calling task's existing role + unread count, or (with `role_name` + `kind`) attach a new `worker`/`freelance` role under an orchestrator. Attach mode rejects (directing to `hera_move`) when the caller already holds a live binding under a different orchestrator. |
 | `hera_move`             | Relocate the caller's live binding to a different orchestrator: ends the current binding (`end_reason: "moved"`) and creates a new `worker`/`freelance` role+binding under the target, in one transaction. Use instead of `hera_join` when already bound elsewhere. |
 | `hera_rebind`           | Repair a binding stuck claim-says-none / attach-says-exists (a reused worktree path left the live binding pointing at a stale argus task): reconciles the binding to the caller's real live task without tearing down the session — the role, its prompt, messages, and status all survive. Refuses when genuinely ambiguous. |
