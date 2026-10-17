@@ -412,6 +412,25 @@ func (p *HeraPage) JumpToTask(id string) bool {
 	return true
 }
 
+// SelectOrch selects orchestrator orchID's own row in the rail (expanding its
+// collapsed ancestors and focusing its kanban group, via Rail.SelectOrch) and
+// lands keyboard focus on the rail. It is the jump switcher's landing for a
+// Projects row with no task of its own (a coordinator-less orchestrator
+// header), where JumpToTask has nothing to resolve. Returns false — focus
+// unchanged — in remote mode or when the orchestrator has no rail row.
+func (p *HeraPage) SelectOrch(orchID int64) bool {
+	if p.remote {
+		return false
+	}
+	if !p.rail.SelectOrch(orchID) {
+		uxlog.Log("[hera-view] select orch: no rail row for orch=%d (focus unchanged)", orchID)
+		return false
+	}
+	p.focus.SetRegion(FocusRail)
+	uxlog.Log("[hera-view] select orch: landed on orch=%d", orchID)
+	return true
+}
+
 // JumpToNextNeedsInput cycles to the next role in rail order whose own
 // signal needs input (add-hera-jump-question's Ctrl+G — a dedicated,
 // popup-free jump, independent of the Ctrl+J switcher): finds the target via

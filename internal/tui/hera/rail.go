@@ -198,6 +198,15 @@ type Rail struct {
 	focused   bool // drives the border-highlight style
 	animFrame int  // spinner frame for in-motion role glyphs (recomputed each Draw)
 
+	// cursorDimmed renders the selected row as an unfocused marker (a dim '›'
+	// gutter, unselected text) — the jump switcher's inactive column. panelTitle
+	// is the border title ("" → "Hera"). preFilterRef is the currentRef() held
+	// when SetFilter moved the query from inactive to active, restored when it
+	// returns to inactive (add-two-column-switcher).
+	cursorDimmed bool
+	panelTitle   string
+	preFilterRef int64
+
 	// prMeta is the daemon-populated "pr" namespace cache (taskID -> {state,url}),
 	// the same best-effort source the Details roster reads. A managed role whose
 	// bound task has a non-empty "url" renders a PR indicator. nil → no PR cells.
@@ -631,6 +640,170 @@ func (r *Rail) RestoreExcursion() bool {
 	r.clampCursor()
 	r.persist() // fold change (BUG-002), like ToggleCollapse/EnsureAncestorsExpanded
 	return true
+}
+
+// --- jump switcher seams (add-two-column-switcher) ---
+
+// SetPanelTitle sets the border title ("" restores the default "Hera").
+func (r *Rail) SetPanelTitle(title string) { r.panelTitle = title }
+
+// SetCursorDimmed renders the cursor as an unfocused marker instead of the
+// selected highlight (the jump switcher's inactive column).
+func (r *Rail) SetCursorDimmed(v bool) { r.cursorDimmed = v }
+
+// Filter returns the current filter query ("" when none is applied).
+func (r *Rail) Filter() string { return r.filterQuery }
+
+// HasSelectableRow reports whether any built row can hold the cursor.
+func (r *Rail) HasSelectableRow() bool {
+	for _, row := range r.rows {
+		if row.selectable() {
+			return true
+		}
+	}
+	return false
+}
+
+// SetFilter applies q non-interactively — input mode (Filtering) stays off and
+// no `/` line is drawn — reusing the `/` filter's filterMatches /
+// rebuildAfterFilter semantics: a narrowing query auto-selects the first real
+// match. When the focused kanban group holds no match but another group does,
+// that group is focused so the match is reachable. A query that stops
+// narrowing restores the selection held before narrowing began (falling back
+// to the current one), like ClearFilter but pinned to the pre-filter row.
+// Never persists. Setting the current query again is a no-op.
+func (r *Rail) SetFilter(q string) {
+	if q == r.filterQuery {
+		return
+	}
+	wasActive := r.filterActive()
+	cur := r.currentRef()
+	if !wasActive {
+		r.preFilterRef = cur
+	}
+	r.filterQuery = q
+	if r.filterActive() {
+		r.buildRows()
+		r.jumpToFirstMatch()
+		r.clampCursor()
+		if !r.HasSelectableRow() {
+			r.focusFirstMatchingKanbanGroup()
+		}
+	} else {
+		ref := cur
+		if wasActive && r.preFilterRef != 0 {
+			ref = r.preFilterRef
+		}
+		r.preFilterRef = 0
+		r.focusGroupFromRef(ref)
+		r.buildRows()
+		r.restoreCursor(cur)
+		r.restoreCursor(ref)
+		r.clampCursor()
+	}
+	uxlog.Log("[hera-view] rail set filter q=%q selectable=%v", q, r.HasSelectableRow())
+}
+
+// focusFirstMatchingKanbanGroup focuses the first non-focused kanban group
+// whose header survived the active filter (so it holds a match) and selects
+// that group's first match. No-op when no such header exists.
+func (r *Rail) focusFirstMatchingKanbanGroup() {
+	for _, row := range r.rows {
+		if g, ok := row.kanbanGroupHeader(); ok && g != r.focusedKanban {
+			r.focusedKanban = g
+			r.buildRows()
+			r.jumpToFirstMatch()
+			r.clampCursor()
+			return
+		}
+	}
+}
+
+// CopyFoldStateFrom deep-copies other's fold state — collapsed orchestrators,
+// per-coordinator Archive expandos, the Freelance/Archive section folds and the
+// focused kanban group — into r, rebuilding r's rows when it already holds a
+// model. The maps are cloned, so folding either rail afterwards never affects
+// the other. Nothing is persisted: r keeps its own (typically nil) store. A nil
+// other is a no-op.
+func (r *Rail) CopyFoldStateFrom(other *Rail) {
+	if other == nil {
+		return
+	}
+	r.collapsed = cloneInt64BoolMap(other.collapsed)
+	r.coordArchiveOpen = cloneInt64BoolMap(other.coordArchiveOpen)
+	r.freelanceCollap = other.freelanceCollap
+	r.archiveCollapsed = other.archiveCollapsed
+	r.focusedKanban = other.focusedKanban
+	r.firstRunCollapse = false
+	if r.rows != nil {
+		ref := r.currentRef()
+		r.buildRows()
+		r.restoreCursor(ref)
+		r.clampCursor()
+	}
+	uxlog.Log("[hera-view] rail fold state copied (collapsed=%d)", len(trueKeys(r.collapsed)))
+}
+
+// CursorToNextNeedsInput moves the cursor to the first needs-input row (same
+// qualification as NextNeedsInputTaskID) strictly after the cursor — or from
+// the top when fromStart — WITHOUT wrapping, so a caller chaining several
+// columns can detect the end of this one. Returns false, leaving the cursor
+// put, when no such row exists.
+func (r *Rail) CursorToNextNeedsInput(fromStart bool) bool {
+	start := 0
+	if !fromStart {
+		start = r.cursor + 1
+	}
+	for i := max(start, 0); i < len(r.rows); i++ {
+		if _, ok := r.rows[i].needsInputTaskID(); ok {
+			r.setCursor(i)
+			return true
+		}
+	}
+	return false
+}
+
+// SelectOrch selects orchID's own row — its rrOrch header, or the bridging
+// worker row standing in for a nested sub-team — expanding every collapsed
+// ANCESTOR (never orchID's own fold) and focusing its kanban group first, as
+// JumpToTask does for a role. A top-level archived orchestrator opens the
+// bottom Archive section. Returns false when orchID is unknown or has no row.
+func (r *Rail) SelectOrch(orchID int64) bool {
+	o := r.model.OrchByID(orchID)
+	if orchID == 0 || o == nil {
+		return false
+	}
+	if cp, ok := r.model.CanonicalParents()[orchID]; ok {
+		r.EnsureAncestorsExpanded(cp.OrchID)
+	} else {
+		changed := false
+		if group, ok := r.focusGroupOf(orchID); ok && group != r.focusedKanban {
+			r.focusedKanban = group
+			changed = true
+		}
+		if o.Archived && r.archiveCollapsed {
+			r.archiveCollapsed = false
+			changed = true
+		}
+		if changed {
+			r.buildRows()
+			r.clampCursor()
+			r.persist()
+		}
+	}
+	for i, row := range r.rows {
+		if row.kind == rrOrch && row.orch != nil && row.orch.ID == orchID && row.selectable() {
+			r.setCursor(i)
+			return true
+		}
+	}
+	for i, row := range r.rows {
+		if row.role != nil && row.collOrchID == orchID && row.selectable() {
+			r.setCursor(i)
+			return true
+		}
+	}
+	return false
 }
 
 // --- filter ---
@@ -1926,9 +2099,13 @@ func (r *Rail) Draw(screen tcell.Screen) {
 	}
 	// Reflect the query in the border title while typing (BUG-028-RAIL: Enter/Esc
 	// both fully clear the query, so it's never non-empty once input mode ends).
-	title := " Hera "
+	name := r.panelTitle
+	if name == "" {
+		name = "Hera"
+	}
+	title := " " + name + " "
 	if r.filterActive() {
-		title = " Hera /" + r.filterQuery + " "
+		title = " " + name + " /" + r.filterQuery + " "
 	}
 	inner := widget.DrawBorderedPanel(screen, x, y, w, h, title, borderStyle)
 	if inner.W <= 0 || inner.H <= 0 {
@@ -1987,6 +2164,13 @@ func (r *Rail) drawRow(screen tcell.Screen, x, y, w int, row railRow, selected b
 	// entry never draws the '›' marker — the cursor anchors on line 1 — but its
 	// text still renders selected-style when line 1 is selected.
 	gutterStyle := theme.StyleDimmed
+	if selected && r.cursorDimmed {
+		// Unfocused cursor: a dim marker only; the row text renders unselected.
+		if !row.breadcrumbCont {
+			screen.SetContent(x, y, marker, nil, theme.StyleDimmed)
+		}
+		selected = false
+	}
 	if selected {
 		if !row.breadcrumbCont {
 			screen.SetContent(x, y, marker, nil, theme.StyleSelected)
