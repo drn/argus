@@ -38,7 +38,7 @@ func TestResumeIDWire(t *testing.T) {
 }
 
 func TestSupResumeID(t *testing.T) {
-	d, _, database := supE2E(t)
+	d, supervisorClient, database := supE2E(t)
 	sock := filepath.Join(t.TempDir(), "d.sock")
 	go d.Serve(sock) //nolint:errcheck
 	t.Cleanup(func() { d.Shutdown() })
@@ -64,8 +64,7 @@ func TestSupResumeID(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.False(t, recovered.SessionID == "" || recovered.SessionID == prior)
 	task.SessionID = recovered.SessionID
-	// Wait for the replacement stream before stopping, so teardown does not
-	// race the supervisor's pending restart.
+	// Prove the replacement launched with the ID returned through both hops.
 	deadline := time.Now().Add(5 * time.Second)
 	var launch []byte
 	for time.Now().Before(deadline) {
@@ -77,6 +76,27 @@ func TestSupResumeID(t *testing.T) {
 	}
 	testutil.NoError(t, err)
 	testutil.Contains(t, string(launch), "--session-id\n"+task.SessionID)
+	// The old incarnation can remove its exit watcher during a kick. Reacquire
+	// the replacement and observe fresh PTY output before stopping it, so the
+	// daemon is subscribed to its exit. Use a unique echoed input marker: an
+	// existing client's output ring can still contain the old launch arguments.
+	testutil.NotNil(t, supervisorClient.Get(task.ID))
+	marker := "replacement-ready-" + task.SessionID
+	var written daemon.StatusResp
+	testutil.NoError(t, supervisorClient.call("Daemon.WriteInput", &daemon.WriteReq{TaskID: task.ID, Data: []byte(marker + "\n")}, &written))
+	testutil.Equal(t, written.Error, "")
+	deadline = time.Now().Add(5 * time.Second)
+	var output []byte
+	for time.Now().Before(deadline) {
+		if replacement := supervisorClient.Get(task.ID); replacement != nil {
+			output = replacement.RecentOutput()
+		}
+		if strings.Contains(string(output), marker) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	testutil.Contains(t, string(output), marker)
 	testutil.NoError(t, database.Update(task))
 	testutil.NoError(t, c.Stop(task.ID))
 	waitStatus(t, database, task.ID, model.StatusInReview)
