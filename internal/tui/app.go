@@ -5519,12 +5519,29 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 	if task.SessionID == "" {
 		return // backend doesn't support --session-id resume; nothing to do
 	}
+	cfg := a.db.Config()
+	kickTask := *task
+	committedSnapshot := int(a.committedCols[taskID])
+	checkResume := agent.ResumableSessionAvailable
+	if remote, ok := a.runner.(interface {
+		ResumableSessionAvailable(*model.Task, config.Config) (bool, error)
+	}); ok {
+		checkResume = remote.ResumableSessionAvailable
+	}
 
 	go func() {
 		// RPC calls — must NOT happen on the tview main goroutine.
 		initCols, _ := sess.InitialPTYSize()
 		idle := sess.IsIdle()
 		needsInput := sessionBlockedOnPrompt(taskID, idle)
+		// Transcript probes require filesystem or REST I/O. Only probe a
+		// candidate kick; a changed decision below defers safely for retry.
+		checked := agent.ShouldKickRerender(true, initCols, committedSnapshot, int(panelCols), idle, false, needsInput) == agent.RerenderKick
+		var available bool
+		var transcriptErr error
+		if checked {
+			available, transcriptErr = checkResume(&kickTask, cfg)
+		}
 		a.tapp.QueueUpdateDraw(func() {
 			// Re-check liveness and the pending flag — anything could have
 			// changed during the RPC round-trip.
@@ -5563,6 +5580,15 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 				}
 				return
 			case agent.RerenderKick:
+				if !checked || transcriptErr != nil || !available {
+					a.invalidateAttachCache(taskID)
+					a.recordUnreconciledCommittedCols(taskID, panelCols)
+					uxlog.Log("[rerender] deferred task=%s session=%s: transcript unavailable err=%v", taskID, kickTask.SessionID, transcriptErr)
+					if onDeferred != nil {
+						onDeferred()
+					}
+					return
+				}
 				uxlog.Log("[tui] rerender: stopping task=%s session=%s (init=%dx committed=%dx panel=%dx)", taskID, task.SessionID, initCols, committed, panelCols)
 				a.statusbar.SetInfo("Re-rendering at full width…")
 				a.pendingRerenderRestart[taskID] = true

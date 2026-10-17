@@ -1308,8 +1308,8 @@ func (a *App) heraKickRestartClosedOut(taskID string) (bool, error) {
 // reviveHeraWorker brings a live-but-stuck worker session back. A SIGTSTP'd or
 // otherwise stalled agent is idle (no recent output) and not parked at a user
 // prompt; that is the signature we revive. The revive reuses the runner's
-// KickRerender — the SAME stop-and-resume primitive the Tasks pane's rerender
-// path uses — which owns the stop + resume entirely inside the runner/daemon.
+// pending restart primitive, with explicit fresh recovery for missing
+// transcripts. The runner/daemon owns the stop and restart.
 // We deliberately do NOT reuse the TUI-side pendingRerenderRestart path
 // (handleSessionExitUI), because that only restarts while the operator is
 // viewing the task in the agent view; from the Hera tab it would settle the
@@ -1357,15 +1357,33 @@ func (a *App) reviveHeraWorker(task *model.Task, sess agent.SessionHandle) {
 			}
 			uxlog.Log("[hera-view] revive: kicking suspended/stuck session task=%s session=%s", taskID, task.SessionID)
 			a.statusbar.SetInfo("Reviving session…")
-			if err := runner.KickRerender(task, cfg, rows, cols); err != nil {
-				a.statusbar.SetError("Revive failed: " + err.Error())
-				uxlog.Log("[hera-view] revive: kick failed task=%s: %v", taskID, err)
-			} else {
-				// The worker is actively working again — restore in_progress if
-				// it was parked in in_review by a prior roll/reconcile (BUG-B).
-				a.reviveRestoreInProgress(taskID)
-				a.heraRefresh()
-			}
+			oldID := task.SessionID
+			kickTask := *task
+			go func() {
+				err := agent.KickRevive(runner, &kickTask, cfg, rows, cols)
+				if err == nil && kickTask.SessionID != oldID {
+					var latest *model.Task
+					latest, err = a.db.Get(taskID)
+					if err == nil && latest == nil {
+						err = fmt.Errorf("task %s disappeared during revive", taskID)
+					}
+					if err == nil {
+						latest.SessionID = kickTask.SessionID
+						err = a.db.Update(latest)
+					}
+				}
+				a.tapp.QueueUpdateDraw(func() {
+					if err != nil {
+						a.statusbar.SetError("Revive failed: " + err.Error())
+						uxlog.Log("[resume] revive failed task=%s: %v", taskID, err)
+						return
+					}
+					task.SessionID = kickTask.SessionID
+					uxlog.Log("[resume] revive accepted task=%s session=%s", taskID, kickTask.SessionID)
+					a.reviveRestoreInProgress(taskID)
+					a.heraRefresh()
+				})
+			}()
 		})
 	}()
 }

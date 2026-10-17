@@ -13,6 +13,7 @@ commands get `customFamily`. To add one, follow `.agents/skills/add-backend/SKIL
 | Resume | `--resume <id>` | `codex resume <id>` (replaces cmd) | `--session <id>` | `--session <id>` | `--conversation <id>` | `--resume <id>` | `--resume <id>` |
 | Capture source | `~/.claude/projects/<enc>/*.jsonl` | `state_5.sqlite` `threads.cwd` | `~/.pi/agent/sessions/--<enc>--/` | `opencode.db` `session[_v2].directory` | `~/.gemini/antigravity-cli/conversation_summaries.db` `workspace_uris` | `~/.cursor/chats/<md5(cwd)>/<uuid>/` newest mtime | — |
 | Recapture | every exit + resume refresh | once | once | once | every exit + resume refresh | once | never |
+| Resume availability | exact account transcript | — | — | — | — | — | — |
 | Prompt | `-- <p>` | `-- <p>` | positional | `--prompt` (config) | `--prompt-interactive` (family default) | `-- <p>` | `-- <p>` |
 | Model | `--model` (curated aliases) | `--model` (curated) | `--model` | `OPENCODE_CONFIG_CONTENT` | `--model` (custom only) | `--model` (custom only) | none |
 | Permission | `defaults.permission_mode` → `--permission-mode …` | baked into command | — | `--auto` launch flag | mode → `--mode …` / `--dangerously-skip-permissions` | mode → `--force` / `--plan` | — |
@@ -26,7 +27,7 @@ commands get `customFamily`. To add one, follow `.agents/skills/add-backend/SKIL
 | Prelaunch | — | — | ollama warmup (20s Start RPC) | — | — | — | — |
 
 Rows map to `Family` fields: Session ID → `PinsSessionID`, Resume → `ResumeFlag`/`ResumeCmd`,
-Capture → `Capture`, Recapture → `RecaptureEveryExit`, Prompt → `DefaultPromptFlag`/
+Capture → `Capture`, Recapture → `RecaptureEveryExit`, Resume availability → `ResumeAvailable`, Prompt → `DefaultPromptFlag`/
 `PromptPositional`, Model → `ModelDelivery`/`KnownModels`, Permission →
 `PermissionFlags`/`PermissionFlagTokens`, Launch flag → `LaunchFlag`, MCP → `MCPFlag`/`InjectGlobal`,
 Skills → `SkillDelivery`, Routing → `RoutingDelivery`, Sandbox grant → `SandboxGrants`/

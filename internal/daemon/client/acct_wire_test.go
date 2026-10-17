@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/db"
@@ -27,12 +28,39 @@ type wireRecorder struct {
 	recycle daemon.RecycleReq
 }
 
+func (w *wireRecorder) StartSession(_ *daemon.StartReq, resp *daemon.StartResp) error {
+	resp.PID = 123
+	return nil
+}
+
+func TestStartAbsentSessionID(t *testing.T) {
+	c, _ := newWireRecorderClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+	task := &model.Task{ID: "old-peer", SessionID: "saved"}
+	_, err := c.Start(task, config.DefaultConfig(), 24, 80, true)
+	testutil.NoError(t, err)
+	testutil.Equal(t, task.SessionID, "saved")
+}
+
 func (w *wireRecorder) KickRerender(req *daemon.KickReq, resp *daemon.StatusResp) error {
 	w.mu.Lock()
 	w.kick = *req
 	w.mu.Unlock()
 	resp.OK = true
+	if req.Revive {
+		resp.SessionID = "recovered"
+	}
 	return nil
+}
+
+func TestExplicitReviveWire(t *testing.T) {
+	c, rec := newWireRecorderClient(t)
+	task := &model.Task{ID: "revive", SessionID: "unsaved"}
+	testutil.NoError(t, agent.KickRevive(c, task, config.DefaultConfig(), 24, 80))
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	testutil.True(t, rec.kick.Revive)
+	testutil.Equal(t, task.SessionID, "recovered")
 }
 
 func (w *wireRecorder) Recycle(req *daemon.RecycleReq, resp *daemon.StatusResp) error {

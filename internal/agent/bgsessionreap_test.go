@@ -14,6 +14,15 @@ import (
 	"github.com/drn/argus/internal/testutil"
 )
 
+func TestBackgroundSessionList_DefaultIsInertInTests(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	bin := t.TempDir()
+	testutil.NoError(t, os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\nexit 99\n"), 0o700))
+	t.Setenv("PATH", bin)
+	_, err := listBackgroundSessionsFn(context.Background(), t.TempDir(), "")
+	testutil.ErrorIs(t, err, claudeagents.ErrUnavailable)
+}
+
 // stubBackgroundSessions swaps listBackgroundSessionsFn/stopBackgroundSessionFn
 // for the duration of t and restores them at cleanup time.
 func stubBackgroundSessions(t *testing.T,
@@ -276,6 +285,8 @@ func TestReapBackgroundSessionForResume(t *testing.T) {
 }
 
 func TestRunner_StartResume_ReapsBeforeLaunch(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	var stopped []string
 	stubBackgroundSessions(t,
 		func(ctx context.Context, cwd, configDir string) ([]claudeagents.Session, error) {

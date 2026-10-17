@@ -13,8 +13,15 @@ import (
 // listBackgroundSessionsFn / stopBackgroundSessionFn are test seams mirroring
 // autoRenameFn — tests swap them so they don't need a real claude binary.
 var (
-	listBackgroundSessionsFn = claudeagents.List
-	stopBackgroundSessionFn  = claudeagents.Stop
+	listBackgroundSessionsFn = func(ctx context.Context, cwd, configDir string) ([]claudeagents.Session, error) {
+		// Like the other default external-process seams, tests opt in with a
+		// stub; neither resume nor asynchronous stop cleanup may query live Claude.
+		if isTestBinary() {
+			return nil, claudeagents.ErrUnavailable
+		}
+		return claudeagents.List(ctx, cwd, configDir)
+	}
+	stopBackgroundSessionFn = claudeagents.Stop
 )
 
 // reapOrphanedClaudeSessions looks for Claude Code background sessions —

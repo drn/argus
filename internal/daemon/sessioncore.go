@@ -135,6 +135,7 @@ func (c *sessionCore) StartSession(req *StartReq, resp *StartResp) error {
 		return nil
 	}
 	resp.PID = sess.PID()
+	resp.SessionID = task.SessionID
 	slog.Info("rpc.StartSession ok", "task", req.TaskID, "pid", resp.PID)
 	return nil
 }
@@ -308,12 +309,19 @@ func (c *sessionCore) KickRerender(req *KickReq, resp *StatusResp) error {
 	}
 	cfg := c.cfgFn()
 	cfg.MCPPort = req.MCPPort
-	if err := c.runner.KickRerender(task, cfg, req.Rows, req.Cols); err != nil {
+	kick := c.runner.KickRerender
+	if req.Revive {
+		kick = func(task *model.Task, cfg config.Config, rows, cols uint16) error {
+			return agent.KickRevive(c.runner, task, cfg, rows, cols)
+		}
+	}
+	if err := kick(task, cfg, req.Rows, req.Cols); err != nil {
 		slog.Error("rpc.KickRerender failed", "task", req.TaskID, "err", err)
 		resp.Error = err.Error()
 		return nil
 	}
 	resp.OK = true
+	resp.SessionID = task.SessionID
 	return nil
 }
 

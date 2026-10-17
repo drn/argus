@@ -96,6 +96,9 @@ type Family struct {
 
 	// Capture recovers the session ID after exit; nil captures nothing.
 	Capture func(task *model.Task, cfg config.Config) (string, error)
+	// ResumeAvailable checks the exact recorded conversation before killing or
+	// resuming it. Nil means this family has no transcript-availability gate.
+	ResumeAvailable func(task *model.Task, cfg config.Config) (bool, error)
 	// RecaptureEveryExit: the CLI can switch conversations in-session
 	// (Claude /clear, agy /new), so the ID is re-captured on every exit and
 	// refreshed at resume. False captures once, while SessionID is empty.
@@ -343,6 +346,7 @@ var families = []*Family{
 		PinsSessionID:      true,
 		ResumeFlag:         "--resume",
 		Capture:            captureClaude,
+		ResumeAvailable:    claudeResumeAvailable,
 		RecaptureEveryExit: true,
 		SessionSwitcher:    true,
 		KnownModels:        []string{"opus", "sonnet", "haiku", "fable"},

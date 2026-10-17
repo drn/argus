@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"time"
@@ -101,6 +102,23 @@ func (s *Server) handleListClaudeSessions(w http.ResponseWriter, r *http.Request
 	configDir, err := agent.ClaudeConfigDirForTask(task, cfg)
 	if err != nil {
 		writeErr(w, http.StatusConflict, err.Error(), err)
+		return
+	}
+	if sid := r.URL.Query().Get("check_session_id"); sid != "" {
+		probe := *task
+		probe.SessionID = sid
+		available, err := agent.ResumableSessionAvailable(&probe, cfg)
+		if err != nil {
+			uxlog.Log("[rerender] remote transcript probe failed task=%s session=%s: %v", id, sid, err)
+			//nolint:gosec // G706: slog encodes these as structured attributes, escaping control characters.
+			slog.Warn("[rerender] remote transcript probe failed", "task", id, "session", sid, "error", err)
+			writeErr(w, http.StatusInternalServerError, "", err)
+			return
+		}
+		uxlog.Log("[rerender] remote transcript probe task=%s session=%s available=%t", id, sid, available)
+		//nolint:gosec // G706: slog encodes these as structured attributes, escaping control characters.
+		slog.Info("[rerender] remote transcript probe", "task", id, "session", sid, "available", available)
+		writeJSON(w, http.StatusOK, map[string]bool{"available": available})
 		return
 	}
 	sessions, err := claudesession.ListIn(configDir, task.Worktree)

@@ -843,14 +843,12 @@ func TestRunner_KickRerender_StartFailure_ReFiresOnFinish(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Kick at new dimensions, but inject a config whose backend cannot be
-	// resolved. The exit goroutine's r.Start will fail, triggering the
-	// re-fire path.
-	badCfg := config.Config{
-		Defaults: config.Defaults{Backend: "missing"},
-		Backends: map[string]config.Backend{},
-		Projects: make(map[string]config.Project),
-	}
+	// Kick at new dimensions with a missing launch directory, so the exit
+	// goroutine's r.Start fails and triggers the re-fire path.
+	// This fixture uses a family without transcript gating: the missing
+	// launch directory fails only when the pending restart starts its process.
+	task.Worktree = filepath.Join(t.TempDir(), "missing")
+	badCfg := startCfg
 	if err := r.KickRerender(task, badCfg, 30, 180); err != nil {
 		t.Fatalf("KickRerender: %v", err)
 	}

@@ -143,7 +143,11 @@ const (
 	//     (fix-inherited-claude-session-marker). A stale supervisor started
 	//     from inside Claude Code keeps spawning agents with transcript saving
 	//     off.
-	SupervisorSpawnSurface = 18
+	//   - v19: missing Claude transcripts recover with a fresh pinned ID and
+	//     original prompt; start RPC responses carry the effective session ID.
+	//     Lookup honors backend config-dir mappings and physical worktree paths.
+	//     Uncertain inspection preserves the ID and attempts resume.
+	SupervisorSpawnSurface = 19
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -180,7 +184,10 @@ const (
 	//     StopSession with StopAgentOnly keep the PID-only signal so a bounced
 	//     agent's background processes survive (stop-finished-task-sessions).
 	//     A stale supervisor still stops the PID alone for every stop.
-	SupervisorStreamSurface = 7
+	//   - v8: rerender kicks defer until the recorded Claude transcript exists.
+	//     Exact lookup checks logical/physical paths and fails closed on errors.
+	//     Explicit revive opts into fresh recovery and returns the replacement ID.
+	SupervisorStreamSurface = 8
 )
 
 // SurfaceVersion is a supervisor's declared executed-surface identity: the pair
@@ -363,15 +370,17 @@ var SupervisorSpawnPaths = []string{
 // to it is far more likely to reach a running agent than not. Classifying an
 // ambiguous file as STREAM is the safe direction.
 var SupervisorStreamPaths = []string{
-	"internal/agent/bgsessionreap.go",       // Claude background-session reap on Stop and before resume
-	"internal/agent/ringbuffer.go",          // the ring the sole readLoop tees into
-	"internal/claudeagents/claudeagents.go", // `claude agents`/`claude stop` under the session's config dir
-	"internal/agent/runner.go",              // live session map, pendingRestart, Stop/StopAll, KickRerender
-	"internal/agent/session.go",             // the single readLoop: PTY read → ring + writers, session log
-	"internal/agent/terminal_color.go",      // PTY startup OSC color-query replies and duplicate filtering
-	"internal/agent/sessionsize.go",         // the PTY-size sidecar session.go writes on resize
-	"internal/daemon/sessioncore.go",        // the R/S handlers both daemon and supervisor mount
-	"internal/daemon/supervisor.go",         // the supervisor process itself: Hello, exit caching, serve loop
+	"internal/claudesession/claudesession.go", // exact transcript path inspection
+	"internal/agent/resume.go",                // transcript availability gate before kick/stop
+	"internal/agent/bgsessionreap.go",         // Claude background-session reap on Stop and before resume
+	"internal/agent/ringbuffer.go",            // the ring the sole readLoop tees into
+	"internal/claudeagents/claudeagents.go",   // `claude agents`/`claude stop` under the session's config dir
+	"internal/agent/runner.go",                // live session map, pendingRestart, Stop/StopAll, KickRerender
+	"internal/agent/session.go",               // the single readLoop: PTY read → ring + writers, session log
+	"internal/agent/terminal_color.go",        // PTY startup OSC color-query replies and duplicate filtering
+	"internal/agent/sessionsize.go",           // the PTY-size sidecar session.go writes on resize
+	"internal/daemon/sessioncore.go",          // the R/S handlers both daemon and supervisor mount
+	"internal/daemon/supervisor.go",           // the supervisor process itself: Hello, exit caching, serve loop
 }
 
 // SpawnSurfaceDigest and StreamSurfaceDigest are the recorded SHA-256 of each
@@ -393,8 +402,8 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "0c97b19d08df4e11156c23d678e07b434723d6b73abbfc648386d337f098e9ea"
-	StreamSurfaceDigest = "9973137db7c31ce8082cc84c494f5f1722878314674e89d962ccafd96c098783"
+	SpawnSurfaceDigest  = "d514c27677ef859dc391d91d80f61c159354d6f629068c448432540a0d9ff576"
+	StreamSurfaceDigest = "8073019e2ae4a9f03b27410a34f1994c9e36182c5a6dcb485e6ef15ac0a825c4"
 )
 
 // SurfaceDigest computes the SHA-256 over the declared manifest's file contents,

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -521,10 +522,8 @@ func (s *Server) handleStopTask(w http.ResponseWriter, r *http.Request) {
 //     proxy subscription, the SPA terminal) already listen on, so they pick up
 //     the resumed output automatically without re-subscribing.
 //
-// The session is always started with resume=true so BuildCmd appends
-// --resume <last-session-id> for Claude/pi backends when task.SessionID is
-// non-empty. If the task has no prior session ID (first-start path), BuildCmd
-// omits the flag and starts fresh.
+// Resume is requested so saved conversations reopen; the shared runner
+// recovers a missing Claude transcript with a fresh ID and original prompt.
 func (s *Server) handleRestartTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	task, err := s.db.Get(id)
@@ -567,8 +566,9 @@ func (s *Server) handleRestartTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]any{
-		"status": "restarted",
-		"pid":    task.AgentPID,
+		"status":     "restarted",
+		"pid":        task.AgentPID,
+		"session_id": task.SessionID,
 	}
 	if reattached {
 		resp["healed"] = true
@@ -641,8 +641,9 @@ func (s *Server) handleResumeTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]any{
-		"status": "resumed",
-		"pid":    task.AgentPID,
+		"status":     "resumed",
+		"pid":        task.AgentPID,
+		"session_id": task.SessionID,
 	}
 	if reattached {
 		resp["healed"] = true
@@ -1321,6 +1322,13 @@ func (s *Server) maybeKickRerender(taskID string, rows, cols uint16) bool {
 		return false
 	}
 	cfg := s.db.Config()
+	if available, err := agent.ResumableSessionAvailable(task, cfg); err != nil || !available {
+		uxlog.Log("[rerender] deferred task=%s session=%s: transcript unavailable err=%v", task.ID, task.SessionID, err)
+		//nolint:gosec // G706: slog encodes these as structured attributes, escaping control characters.
+		slog.Warn("[rerender] deferred: transcript unavailable", "task", task.ID, "session", task.SessionID, "error", err)
+		s.invalidateColsCache(taskID)
+		return false
+	}
 	if err := s.runner.KickRerender(task, cfg, rows, cols); err != nil {
 		// Don't fail the resize on a kick failure — runner.KickRerender's
 		// own slog line records the task; just note the failure here.

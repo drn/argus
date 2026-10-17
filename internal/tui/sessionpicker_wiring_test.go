@@ -83,10 +83,16 @@ func TestSessionPicker_SelectInvokesSwitch(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	d := testDB(t)
-	app := New(d, agent.NewRunner(nil), false)
+	bin := filepath.Join(t.TempDir(), "claude")
+	testutil.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o700))
+	testutil.NoError(t, d.SetBackend("fixture", config.Backend{Command: bin}))
+	runner := agent.NewRunner(nil)
+	t.Cleanup(runner.StopAll)
+	app := New(d, runner, false)
 	task := &model.Task{
 		ID: "sp-2", Name: "select", Status: model.StatusInReview,
 		Project: "p", Worktree: t.TempDir(), SessionID: "old-session",
+		Backend:   "fixture",
 		CreatedAt: time.Now(),
 	}
 	testutil.NoError(t, d.Add(task))
@@ -96,6 +102,7 @@ func TestSessionPicker_SelectInvokesSwitch(t *testing.T) {
 	// Dead session (agentPane has none): switchSession restarts directly.
 
 	const newID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	seedClaudeSession(t, home, task.Worktree, newID, "Newer")
 	app.openSessionPickerModal([]claudesession.Session{
 		{ID: newID, Title: "Newer", Branch: "argus/x"},
 	}, "old-session")

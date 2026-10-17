@@ -1,5 +1,10 @@
 package agent
 
+import "errors"
+
+// ErrResumeUnavailable leaves a rerender eligible for a later retry.
+var ErrResumeUnavailable = errors.New("resumable transcript unavailable")
+
 // Rerender decisions are the outcome of ShouldKickRerender, the shared gating
 // logic for the kick. The TUI's agent-view-entry path calls ShouldKickRerender
 // directly; the API's resize handler (Server.maybeKickRerender) inlines the

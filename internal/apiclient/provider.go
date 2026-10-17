@@ -3,11 +3,13 @@ package apiclient
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sync"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // Compile-time assertion: Provider implements agent.SessionProvider.
@@ -58,6 +60,27 @@ func NewProvider(c *Client) *Provider {
 	}
 }
 
+// ResumableSessionAvailable checks remote transcripts through the existing
+// exact availability query; a remote TUI must never inspect its own HOME.
+func (p *Provider) ResumableSessionAvailable(task *model.Task, cfg config.Config) (bool, error) {
+	backend, err := agent.ResolveBackend(task, cfg)
+	if err != nil {
+		return false, err
+	}
+	if agent.FamilyOf(backend.Command).ResumeAvailable == nil {
+		return true, nil
+	}
+	var resp struct {
+		Available bool `json:"available"`
+	}
+	if err := p.c.doJSON(context.Background(), "GET", "/api/tasks/"+task.ID+"/claude-sessions?check_session_id="+url.QueryEscape(task.SessionID), nil, &resp); err != nil {
+		uxlog.Log("[rerender] remote transcript lookup failed task=%s: %v", task.ID, err)
+		return false, err
+	}
+	uxlog.Log("[rerender] remote transcript lookup task=%s session=%s available=%t", task.ID, task.SessionID, resp.Available)
+	return resp.Available, nil
+}
+
 // OnSessionExit registers the callback. Safe to call before any sessions
 // exist — Provider stores the function and dispatches once exit fires.
 func (p *Provider) OnSessionExit(fn func(taskID string, info SessionExitInfo)) {
@@ -106,8 +129,12 @@ func (p *Provider) Start(task *model.Task, _ config.Config, rows, cols uint16, r
 	// parameter is meaningful to the local in-process Runner but a no-op
 	// at this HTTP boundary.
 	_ = resume
-	if _, err := p.c.ResumeTask(ctx, task.ID); err != nil {
+	resp, err := p.c.ResumeTask(ctx, task.ID)
+	if err != nil {
 		return nil, fmt.Errorf("apiclient.Start: resume task=%s: %w", task.ID, err)
+	}
+	if resp.SessionID != "" {
+		task.SessionID = resp.SessionID
 	}
 
 	s := p.getOrCreateSession(task.ID)

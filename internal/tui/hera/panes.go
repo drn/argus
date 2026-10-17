@@ -245,8 +245,11 @@ const KickDebounce = 300 * time.Millisecond
 // would re-issue the decision RPCs (IsIdle/InitialPTYSize) and repeat the
 // "rerender deferred" uxlog line every 300ms for the whole busy stretch
 // (BUG-077). 10s keeps retry pressure on the daemon negligible while still
-// catching the agent going idle well within a session's lifetime.
+// catching the agent going idle well within a session's lifetime. Consecutive
+// deferrals double the dwell up to 60s; a rebind resets it.
 const KickRetryInterval = 10 * time.Second
+
+const kickRetryMax = 60 * time.Second
 
 // kickPending tracks an armed-but-unfired size-drift kick candidate for one
 // pane (HeraPage.coordKickPending / agentKickPending). The zero value means
@@ -254,9 +257,10 @@ const KickRetryInterval = 10 * time.Second
 // it fires) uses the LATEST observed width, not the width from the moment
 // the dwell first armed.
 type kickPending struct {
-	taskID   string
-	cols     int
-	deadline time.Time
+	taskID     string
+	cols       int
+	deadline   time.Time
+	retryDelay time.Duration
 }
 
 // maybeKickPaneRerender evaluates the shared size-drift kill+resume decision
@@ -317,6 +321,10 @@ func (p *HeraPage) maybeKickPaneRerender(bound string, kickedFor *string, cols i
 	}
 	*kickedFor = bound
 	deferredFor := bound
+	retryDelay := pending.retryDelay
+	if retryDelay == 0 {
+		retryDelay = KickRetryInterval
+	}
 	// cols is a terminal column count — bounded by realistic screen widths,
 	// nowhere near uint16's range; gosec G115 flags the conversion but it's
 	// safe (matches the pattern already used for the analogous conversion in
@@ -326,7 +334,9 @@ func (p *HeraPage) maybeKickPaneRerender(bound string, kickedFor *string, cols i
 			return // superseded by a rebind — don't clobber its fresh state
 		}
 		*kickedFor = ""
-		*pending = kickPending{taskID: deferredFor, deadline: p.kickClockNow().Add(KickRetryInterval)}
+		nextDelay := min(retryDelay*2, kickRetryMax)
+		*pending = kickPending{taskID: deferredFor, deadline: p.kickClockNow().Add(retryDelay), retryDelay: nextDelay}
+		uxlog.Log("[rerender] retry armed task=%s delay=%s", deferredFor, retryDelay)
 	})
 }
 

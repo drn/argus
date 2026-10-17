@@ -85,7 +85,14 @@ func (r *HeraReviveRunner) KickRerender(taskID string) error {
 		return fmt.Errorf("revive kick: no live session for task %s", taskID)
 	}
 	cols, rows := sess.PTYSize()
-	return r.runner.KickRerender(task, r.cfgFn(), uint16(rows), uint16(cols)) //nolint:gosec // bounded by terminal cell count
+	oldID := task.SessionID
+	if err := agent.KickRevive(r.runner, task, r.cfgFn(), uint16(rows), uint16(cols)); err != nil { //nolint:gosec // bounded by terminal cell count
+		return err
+	}
+	if task.SessionID != oldID {
+		return r.database.Update(task)
+	}
+	return nil
 }
 
 // RestartDead restarts a session with no live process, resuming via

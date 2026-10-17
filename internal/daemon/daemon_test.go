@@ -421,12 +421,15 @@ func waitForSocket(t *testing.T, sockPath string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(sockPath); err == nil {
+		// Bind creates the socket file before listen/Serve is ready. Prove
+		// readiness with a real connection, matching daemon/client's setup.
+		if conn, err := net.DialTimeout("unix", sockPath, 50*time.Millisecond); err == nil {
+			testutil.NoError(t, conn.Close())
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("socket %s did not appear", sockPath)
+	t.Fatalf("socket %s did not accept connections", sockPath)
 }
 
 func TestDaemon_TransitionTaskOnExit(t *testing.T) {

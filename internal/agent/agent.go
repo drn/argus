@@ -472,7 +472,8 @@ func CaptureClaudeSessionID(worktreePath string) (string, error) {
 }
 
 // ClaudeConfigDirForTask resolves the Claude config directory a task's session
-// lives under, from the account stored on the task. It errors when the stored
+// lives under, from its account and the backend mapping applied last at launch.
+// It errors when the stored
 // account is no longer configured, so callers fail loud instead of silently
 // reading another account's transcripts.
 func ClaudeConfigDirForTask(task *model.Task, cfg config.Config) (string, error) {
@@ -480,7 +481,28 @@ func ClaudeConfigDirForTask(task *model.Task, cfg config.Config) (string, error)
 		return "", fmt.Errorf("claude config dir: nil task")
 	}
 	dir, _, err := cfg.ClaudeConfigDir(task.Account)
-	return dir, err
+	if err != nil {
+		return "", err
+	}
+	backend, err := ResolveBackend(task, cfg)
+	if err != nil {
+		return "", err
+	}
+	if source := backend.EnvVars["CLAUDE_CONFIG_DIR"]; source != "" {
+		// Backend mappings are applied last at launch, including unsetting a
+		// target when resolution fails. An unset target uses Claude's default.
+		value, _ := resolveBackendEnvSource(cfg, source)
+		return value, nil
+	}
+	return dir, nil
+}
+
+func resolveBackendEnvSource(cfg config.Config, source string) (string, bool) {
+	scheme, rest := splitSecretScheme(source)
+	if scheme == "env" {
+		return secretResolver(rest)
+	}
+	return ResolverFor(cfg.Secrets)(source)
 }
 
 // CaptureClaudeSessionIDIn is CaptureClaudeSessionID against an explicit
@@ -1208,7 +1230,6 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// removes any inherited target and logs a non-sensitive warning naming ONLY the variable,
 	// never the value. We never log the resolved value.
 	if len(backend.EnvVars) > 0 {
-		registryResolve := ResolverFor(cfg.Secrets)
 		for target, source := range backend.EnvVars {
 			if target == "" || source == "" {
 				continue
@@ -1224,12 +1245,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 				}
 			}
 			cmd.Env = filtered
-			scheme, rest := splitSecretScheme(source)
-			resolve, resolveInput := secretResolver, rest
-			if scheme != "env" {
-				resolve, resolveInput = registryResolve, source
-			}
-			value, ok := resolve(resolveInput)
+			value, ok := resolveBackendEnvSource(cfg, source)
 			if !ok {
 				uxlog.Log("[agent] backend %q: credential source %q did not resolve; %q left unset in child env", backend.Command, source, target)
 				continue
