@@ -288,3 +288,51 @@ func TestRail_SelectOrch_ArchivedRootOpensArchive(t *testing.T) {
 	testutil.False(t, r.archiveCollapsed)
 	testutil.Equal(t, r.SelectedOrch().ID, int64(9))
 }
+
+func TestRail_CursorToNextNeedsInput_AcrossKanbanGroups(t *testing.T) {
+	model := func() heramodel.Model {
+		m := fourGroupModel()
+		m.Active[0].Roles = []heramodel.RoleView{{RoleID: 101, OrchID: 1, Name: "w-act", Kind: db.HeraKindWorker, Live: true, TaskID: "ta", NeedsInput: true}}
+		m.Active[2].Roles = []heramodel.RoleView{{RoleID: 301, OrchID: 3, Name: "w-blk", Kind: db.HeraKindWorker, Live: true, TaskID: "tb", NeedsInput: true}}
+		m.Freelance = []heramodel.RoleView{{RoleID: 901, Name: "free", Kind: db.HeraKindFreelance, Live: true, TaskID: "tf", NeedsInput: true}}
+		return m
+	}
+
+	t.Run("walks groups in rail order, freelance last, then stops", func(t *testing.T) {
+		r := NewRail()
+		r.SetModel(model())
+		testutil.True(t, r.CursorToNextNeedsInput(true))
+		testutil.Equal(t, selectedName(r), "w-act")
+		testutil.True(t, r.CursorToNextNeedsInput(false))
+		testutil.Equal(t, selectedName(r), "w-blk")
+		testutil.Equal(t, r.FocusedKanban(), db.HeraKanbanBlocked)
+		testutil.True(t, r.CursorToNextNeedsInput(false))
+		testutil.Equal(t, selectedName(r), "free")
+		before, group := r.CursorIndex(), r.FocusedKanban()
+		testutil.False(t, r.CursorToNextNeedsInput(false))
+		testutil.Equal(t, r.CursorIndex(), before)
+		testutil.Equal(t, r.FocusedKanban(), group)
+	})
+
+	t.Run("from a later group's header continues within that group", func(t *testing.T) {
+		r := NewRail()
+		r.SetModel(model())
+		// Cursor on the (non-focused) Blocked header: its member is after it.
+		for i, row := range r.rows {
+			if g, ok := row.kanbanGroupHeader(); ok && g == db.HeraKanbanBlocked {
+				r.cursor = i
+			}
+		}
+		testutil.True(t, r.CursorToNextNeedsInput(false))
+		testutil.Equal(t, selectedName(r), "w-blk")
+	})
+
+	t.Run("a miss leaves the focused group and rows intact", func(t *testing.T) {
+		r := NewRail()
+		r.SetModel(fourGroupModel())
+		rows := r.Rows()
+		testutil.False(t, r.CursorToNextNeedsInput(true))
+		testutil.Equal(t, r.FocusedKanban(), db.HeraKanbanActive)
+		testutil.Equal(t, r.Rows(), rows)
+	})
+}

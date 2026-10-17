@@ -685,3 +685,73 @@ func TestSwitcherPopup_EnterProjectsEmpty(t *testing.T) {
 	press(p, tcell.KeyEnter, 0)
 	testutil.False(t, p.Selected())
 }
+
+// kanbanNeedsInputFeed adds two top-level orchestrators in NON-focused kanban
+// groups (backlog, done), each with a worker needing input, alongside the
+// active-group wkr-date candidate.
+func kanbanNeedsInputFeed() SwitcherFeed {
+	f := switcherFeed()
+	f.HeraModel.Active[1].Roles[0].NeedsInput = true // wkr-date (active)
+	f.HeraModel.Active = append(f.HeraModel.Active,
+		heramodel.OrchView{ID: 3, Name: "shelved", KanbanStatus: db.HeraKanbanBacklog, Roles: []heramodel.RoleView{
+			{RoleID: 31, OrchID: 3, Name: "wkr-elder", Kind: db.HeraKindWorker, Live: true, TaskID: "he", BridgeTaskID: "he", NeedsInput: true},
+		}},
+		heramodel.OrchView{ID: 4, Name: "finished", KanbanStatus: db.HeraKanbanDone, Roles: []heramodel.RoleView{
+			{RoleID: 41, OrchID: 4, Name: "wkr-fig", Kind: db.HeraKindWorker, Live: true, TaskID: "hf", BridgeTaskID: "hf", NeedsInput: true},
+		}},
+	)
+	return f
+}
+
+func TestSwitcherPopup_CtrlGReachesNonFocusedKanbanGroups(t *testing.T) {
+	t.Run("ctrl+g cycles active -> backlog -> done and wraps", func(t *testing.T) {
+		p := newPopup(t, kanbanNeedsInputFeed(), SwitcherSeed{})
+		testutil.Equal(t, p.ActiveColumn(), SwitcherColumnProjects)
+		testutil.Equal(t, selRailName(p), "wkr-date")
+		press(p, tcell.KeyCtrlG, 0)
+		testutil.Equal(t, selRailName(p), "wkr-elder")
+		testutil.Equal(t, p.rail.FocusedKanban(), db.HeraKanbanBacklog)
+		press(p, tcell.KeyCtrlG, 0)
+		testutil.Equal(t, selRailName(p), "wkr-fig")
+		testutil.Equal(t, p.rail.FocusedKanban(), db.HeraKanbanDone)
+		press(p, tcell.KeyCtrlG, 0)
+		testutil.Equal(t, selRailName(p), "wkr-date")
+		testutil.Equal(t, p.rail.FocusedKanban(), db.HeraKanbanActive)
+	})
+
+	t.Run("start cursor reaches a needs-input row in a non-focused group", func(t *testing.T) {
+		f := switcherFeed()
+		f.HeraModel.Active = append(f.HeraModel.Active,
+			heramodel.OrchView{ID: 3, Name: "shelved", KanbanStatus: db.HeraKanbanBlocked, Roles: []heramodel.RoleView{
+				{RoleID: 31, OrchID: 3, Name: "wkr-elder", Kind: db.HeraKindWorker, Live: true, TaskID: "he", BridgeTaskID: "he", NeedsInput: true},
+			}})
+		p := newPopup(t, f, SwitcherSeed{})
+		testutil.Equal(t, p.ActiveColumn(), SwitcherColumnProjects)
+		testutil.Equal(t, selRailName(p), "wkr-elder")
+		testutil.Equal(t, p.rail.FocusedKanban(), db.HeraKanbanBlocked)
+	})
+
+	t.Run("Tasks then Projects across groups then back to Tasks", func(t *testing.T) {
+		f := kanbanNeedsInputFeed()
+		f.NeedsInput = []string{"b1"}
+		p := newPopup(t, f, SwitcherSeed{})
+		testutil.Equal(t, selTask(p), "b1")
+		for _, want := range []string{"wkr-date", "wkr-elder", "wkr-fig"} {
+			press(p, tcell.KeyCtrlG, 0)
+			testutil.Equal(t, p.ActiveColumn(), SwitcherColumnProjects)
+			testutil.Equal(t, selRailName(p), want)
+		}
+		press(p, tcell.KeyCtrlG, 0)
+		testutil.Equal(t, p.ActiveColumn(), SwitcherColumnTasks)
+		testutil.Equal(t, selTask(p), "b1")
+	})
+
+	t.Run("real rail's own focused group is untouched", func(t *testing.T) {
+		real := hera.NewRail()
+		real.SetModel(kanbanNeedsInputFeed().HeraModel)
+		p := newPopup(t, kanbanNeedsInputFeed(), SwitcherSeed{Rail: real})
+		press(p, tcell.KeyCtrlG, 0)
+		press(p, tcell.KeyCtrlG, 0)
+		testutil.Equal(t, real.FocusedKanban(), db.HeraKanbanActive)
+	})
+}

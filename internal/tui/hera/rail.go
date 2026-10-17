@@ -744,23 +744,101 @@ func (r *Rail) CopyFoldStateFrom(other *Rail) {
 	uxlog.Log("[hera-view] rail fold state copied (collapsed=%d)", len(trueKeys(r.collapsed)))
 }
 
-// CursorToNextNeedsInput moves the cursor to the first needs-input row (same
-// qualification as NextNeedsInputTaskID) strictly after the cursor — or from
-// the top when fromStart — WITHOUT wrapping, so a caller chaining several
-// columns can detect the end of this one. Returns false, leaving the cursor
-// put, when no such row exists.
-func (r *Rail) CursorToNextNeedsInput(fromStart bool) bool {
-	start := 0
-	if !fromStart {
-		start = r.cursor + 1
+// Virtual rail sections for CursorToNextNeedsInput's ordering: the Pinned
+// section, the four kanban groups (in kanbanOrder), then the trailing
+// Freelance/Archive sections.
+const (
+	railSecPinned = 0
+	railSecPost   = 1 + 4
+)
+
+// railRowPos is a row's position in the "every kanban group expanded" virtual
+// order: its section and its offset from that section's first row. Offsets are
+// comparable across builds with different focused groups because a section's
+// own rows never depend on which group is focused.
+type railRowPos struct{ sec, off int }
+
+func (a railRowPos) after(b railRowPos) bool {
+	return a.sec > b.sec || (a.sec == b.sec && a.off > b.off)
+}
+
+// rowPositions maps each built row to its railRowPos.
+func (r *Rail) rowPositions() []railRowPos {
+	out := make([]railRowPos, len(r.rows))
+	sec, start := railSecPinned, 0
+	for i, row := range r.rows {
+		if g, ok := row.kanbanGroupHeader(); ok {
+			sec, start = 1+kanbanIndex(g), i
+		} else if sec != railSecPost && ((row.kind == rrSectionHeader && row.collFreelance) || row.kind == rrArchiveExpando) {
+			sec, start = railSecPost, i
+		}
+		out[i] = railRowPos{sec: sec, off: i - start}
 	}
-	for i := max(start, 0); i < len(r.rows); i++ {
-		if _, ok := r.rows[i].needsInputTaskID(); ok {
-			r.setCursor(i)
-			return true
+	return out
+}
+
+// CursorToNextNeedsInput moves the cursor to the next needs-input row (same
+// qualification as NextNeedsInputTaskID) over the rail as if EVERY kanban
+// group were expanded (Pinned → Active → Backlog → Blocked → Done
+// → Freelance → Archive): a needs-input row inside a non-focused group — whose
+// rows are otherwise never built — is reachable, and landing on one focuses
+// its group (no other fold changes; persisted only via setCursor when a state
+// store is attached, which the popup copy never has). Strictly
+// after the cursor (or from the top when fromStart), never wrapping. Returns
+// false with the rail unchanged when no such row exists. Used by the jump
+// switcher's PRIVATE rail copy only; the real rail's ctrl+g
+// (NextNeedsInputTaskID) keeps its built-rows-only scan.
+func (r *Rail) CursorToNextNeedsInput(fromStart bool) bool {
+	type stop struct {
+		group db.HeraKanbanStatus
+		pos   railRowPos
+		idx   int
+	}
+	origGroup, origCursor := r.focusedKanban, r.cursor
+	cur := railRowPos{sec: -1, off: -1}
+	if pos := r.rowPositions(); !fromStart && origCursor >= 0 && origCursor < len(pos) {
+		cur = pos[origCursor]
+	}
+	var stops []stop
+	collect := func(keep func(sec int) bool) {
+		pos := r.rowPositions()
+		for i, row := range r.rows {
+			if _, ok := row.needsInputTaskID(); ok && keep(pos[i].sec) && pos[i].after(cur) {
+				stops = append(stops, stop{group: r.focusedKanban, pos: pos[i], idx: i})
+			}
 		}
 	}
-	return false
+	// The current build supplies the focus-independent sections plus its own
+	// group; every other group is built once with itself focused.
+	collect(func(int) bool { return true })
+	for _, g := range kanbanOrder {
+		if g == origGroup {
+			continue
+		}
+		r.focusedKanban = g
+		r.buildRows()
+		sec := 1 + kanbanIndex(g)
+		collect(func(s int) bool { return s == sec })
+	}
+	r.focusedKanban = origGroup
+	r.buildRows()
+	r.cursor = origCursor
+	if len(stops) == 0 {
+		return false
+	}
+	best := stops[0]
+	for _, s := range stops[1:] {
+		if best.pos.after(s.pos) {
+			best = s
+		}
+	}
+	if best.group != r.focusedKanban {
+		r.focusedKanban = best.group
+		r.buildRows()
+	}
+	r.setCursor(best.idx)
+	uxlog.Log("[hera-view] rail all-groups needs-input hit group=%s idx=%d", best.group, best.idx)
+	return true
 }
 
 // SelectOrch selects orchID's own row — its rrOrch header, or the bridging
