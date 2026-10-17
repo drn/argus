@@ -527,7 +527,7 @@ func (s *Session) Signal(sig os.Signal) error {
 var stopKillAfter atomic.Int64
 
 // RerenderStopGrace gives Claude time to append its transcript after SIGTERM.
-// Only transcript-guarded repair stops use this bounded PID-only escalation.
+// Only transcript-guarded repair stops use this escalation and descendant reap.
 const RerenderStopGrace = 3 * time.Second
 
 var agentStopKillAfter atomic.Int64
@@ -563,8 +563,8 @@ const (
 	// recycle, the TUI's resize kick — so the agent's own background
 	// processes survive.
 	StopAgentOnly
-	// StopRerender is a transcript-guarded repair: preserve the task's
-	// background processes, but bound the agent's shutdown to flush grace.
+	// StopRerender preserves descendants on cooperative exit, but escalation
+	// also reaps the captured agent tree after the transcript flush grace.
 	StopRerender
 )
 
@@ -612,15 +612,7 @@ func (s *Session) StopScoped(scope StopScope) error {
 					return
 				case <-timer.C:
 				}
-				// os.Process.Signal refuses an already-Waited process, so an
-				// exit racing the timer cannot signal a recycled PID.
-				if err := s.Signal(syscall.SIGKILL); err == nil {
-					uxlog.Log("[session] rerender stop: task=%s SIGKILL after %s", s.TaskID, grace)
-					slog.Info("[rerender] SIGKILL after grace", "task", s.TaskID, "grace", grace)
-				} else {
-					uxlog.Log("[session] rerender stop: task=%s escalation skipped: %v", s.TaskID, err)
-					slog.Info("[rerender] escalation skipped", "task", s.TaskID, "err", err)
-				}
+				s.escalateRerender(grace)
 			}()
 		}
 		return nil

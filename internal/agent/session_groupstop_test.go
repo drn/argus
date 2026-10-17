@@ -126,7 +126,12 @@ func TestSession_StopScoped_RerenderEscalates(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	testutil.NoError(t, syscall.Kill(sess.PID(), 0))
 	testutil.True(t, waitGone(sess.PID(), 2*time.Second))
-	testutil.NoError(t, syscall.Kill(child, 0))
+	select {
+	case <-sess.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("descendant retained PTY through escalation")
+	}
+	testutil.True(t, waitGone(child, 2*time.Second))
 }
 
 func TestSession_StopScoped_RerenderCancelsBeforeDrain(t *testing.T) {
@@ -279,7 +284,7 @@ func TestRunner_WidthKickEscalatesAndRestarts(t *testing.T) {
 	testutil.NotNil(t, replacement)
 	testutil.False(t, r.HasPendingRestart(task.ID))
 	testutil.True(t, replacement.PID() != oldPID)
-	testutil.NoError(t, syscall.Kill(child, 0))
+	testutil.True(t, waitGone(child, 2*time.Second))
 }
 
 func TestStopScope_String(t *testing.T) {

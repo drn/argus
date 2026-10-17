@@ -190,7 +190,9 @@ const (
 	//   - v9: transcript-guarded width repairs use StopRerender and
 	//     KickWidthRerender for three-second PID-only escalation; ordinary
 	//     switch/revive kicks remain non-escalating.
-	SupervisorStreamSurface = 9
+	//   - v10: escalated width repairs reap captured descendants, including
+	//     setsid helpers; cooperative exits preserve background processes.
+	SupervisorStreamSurface = 10
 )
 
 // SurfaceVersion is a supervisor's declared executed-surface identity: the pair
@@ -373,6 +375,7 @@ var SupervisorSpawnPaths = []string{
 // to it is far more likely to reach a running agent than not. Classifying an
 // ambiguous file as STREAM is the safe direction.
 var SupervisorStreamPaths = []string{
+	"internal/agent/rerender_tree.go",         // identity-scoped descendants on repair escalation
 	"internal/agent/width_rerender.go",        // opt-in bounded width repair
 	"internal/claudesession/claudesession.go", // exact transcript path inspection
 	"internal/agent/resume.go",                // transcript availability gate before kick/stop
@@ -407,7 +410,7 @@ var SupervisorStreamPaths = []string{
 // message prints the computed digest to paste back here.
 const (
 	SpawnSurfaceDigest  = "d514c27677ef859dc391d91d80f61c159354d6f629068c448432540a0d9ff576"
-	StreamSurfaceDigest = "32b837e1af3aa29df1368094111036165e02c256ec6be766ca97523b6700ac3e"
+	StreamSurfaceDigest = "882d81d6a0cafb6149327b55361927ce72d29814d53c2fad8aa23b756aa9d129"
 )
 
 // SurfaceDigest computes the SHA-256 over the declared manifest's file contents,

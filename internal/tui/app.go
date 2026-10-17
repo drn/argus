@@ -5622,8 +5622,8 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 				uxlog.Log("[tui] rerender: stopping task=%s session=%s (init=%dx committed=%dx panel=%dx)", taskID, task.SessionID, initCols, committed, panelCols)
 				a.statusbar.SetInfo("Re-rendering at full width…")
 				a.pendingRerenderRestart[taskID] = true
-				// Agent-only: a resize bounce restarts the same task, so its
-				// background processes (dev servers) must survive.
+				// Cooperative repair preserves descendants; an unresponsive
+				// agent's escalation also reaps its process tree.
 				if err := sess.StopScoped(agent.StopRerender); err != nil {
 					a.setRerenderPending(taskID)
 					uxlog.Log("[tui] rerender: stop failed task=%s err=%v", taskID, err)
