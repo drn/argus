@@ -39,9 +39,6 @@ func TestResumeIDWire(t *testing.T) {
 
 func TestSupResumeID(t *testing.T) {
 	d, supervisorClient, database := supE2E(t)
-	// CI's 2-vCPU runner can stall a start/kick hop past the 2s production RPC
-	// budget; this test asserts recovery semantics, not RPC latency.
-	supervisorClient.minTimeout = ciWait
 	sock := filepath.Join(t.TempDir(), "d.sock")
 	go d.Serve(sock) //nolint:errcheck
 	t.Cleanup(func() { d.Shutdown() })
@@ -51,7 +48,6 @@ func TestSupResumeID(t *testing.T) {
 	testutil.NoError(t, database.SetBackend("fixture", config.Backend{Command: bin}))
 	c, err := Connect(sock)
 	testutil.NoError(t, err)
-	c.minTimeout = ciWait
 	t.Cleanup(func() { _ = c.Close() })
 	const old = "11111111-1111-7111-9111-111111111111"
 	task := &model.Task{ID: "recover", Name: "recover", Status: model.StatusInProgress, Backend: "fixture", Worktree: t.TempDir(), SessionID: old}
@@ -86,8 +82,19 @@ func TestSupResumeID(t *testing.T) {
 	// existing client's output ring can still contain the old launch arguments.
 	testutil.NotNil(t, supervisorClient.Get(task.ID))
 	marker := "replacement-ready-" + task.SessionID
+	// The kick restart execs the replacement (writing launch-args) before the
+	// runner registers it, so WriteInput answers "session not found" in that gap.
+	// Retry until the replacement is registered; this is the readiness signal.
 	var written daemon.StatusResp
-	testutil.NoError(t, supervisorClient.call("Daemon.WriteInput", &daemon.WriteReq{TaskID: task.ID, Data: []byte(marker + "\n")}, &written))
+	deadline = time.Now().Add(ciWait)
+	for {
+		written = daemon.StatusResp{}
+		testutil.NoError(t, supervisorClient.call("Daemon.WriteInput", &daemon.WriteReq{TaskID: task.ID, Data: []byte(marker + "\n")}, &written))
+		if written.Error == "" || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	testutil.Equal(t, written.Error, "")
 	deadline = time.Now().Add(ciWait)
 	var output []byte
@@ -106,9 +113,9 @@ func TestSupResumeID(t *testing.T) {
 	waitStatus(t, database, task.ID, model.StatusInReview)
 }
 
-// ciWait bounds every readiness poll and RPC in the resume tests; generous so a
+// ciWait is the ceiling for every readiness poll in the resume tests; generous so a
 // starved CI runner never turns a slow-but-correct step into a failure.
-const ciWait = 30 * time.Second
+const ciWait = 20 * time.Second
 
 func assertResumeLaunchID(t *testing.T, sess agent.SessionHandle, id string) {
 	t.Helper()

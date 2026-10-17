@@ -110,11 +110,6 @@ type Client struct {
 	// peerProtocol is the supervisor's Hello ProtocolVersion (0 = never
 	// handshaken, e.g. the TUI's daemon client). Guarded by c.mu.
 	peerProtocol int
-
-	// minTimeout, when set, is a floor applied to every RPC deadline. Test seam
-	// only: lets e2e tests on slow CI runners outwait the 2s production budget
-	// without changing the default. Zero (production) means no floor.
-	minTimeout time.Duration
 }
 
 // accountProtocolVersion is the first supervisor protocol that carries
@@ -656,9 +651,6 @@ func (c *Client) callWithTimeout(method string, args, reply any, timeout time.Du
 	// (`||` short-circuits, so c.rpc is only read when c is non-nil.)
 	if c == nil || c.rpc == nil {
 		return ErrClientClosed
-	}
-	if timeout < c.minTimeout {
-		timeout = c.minTimeout
 	}
 	rpc := c.rpc
 	ch := make(chan error, 1)
