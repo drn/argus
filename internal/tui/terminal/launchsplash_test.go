@@ -183,14 +183,27 @@ func TestLaunchSplash_KickOfTaskWithOutputShowsNoSplash(t *testing.T) {
 	tp := splashPane(t, "in_progress")
 	tp.SetTaskID("t1")
 	writeTaskLog(t, "t1")
+	tp.SetSession(&mockAdapter{alive: true, totalWritten: 5})
+	notSplash(t, drawOnSim(t, tp, 80, 24)) // output observed → latched
+	// Production respawn: NewSession O_TRUNCs the log, handle restarts at 0.
+	testutil.NoError(t, os.Truncate(agent.SessionLogPath("t1"), 0))
+	tp.ResetVT()
 	tp.SetSession(&mockAdapter{alive: true})
-	tp.mu.Lock()
-	tp.rerendering = true
-	tp.mu.Unlock()
 	notSplash(t, drawOnSim(t, tp, 80, 24))
-	tp.mu.Lock()
-	tp.rerendering = false
-	tp.mu.Unlock()
+}
+
+func TestLaunchSplash_HistoryLatchSurvivesRoundTripToOtherTask(t *testing.T) {
+	tp := splashPane(t, "in_progress")
+	tp.SetTaskID("t1")
+	tp.SetSession(&mockAdapter{alive: true, totalWritten: 5})
+	notSplash(t, drawOnSim(t, tp, 80, 24))
+	tp.SetTaskID("t2")
+	tp.ResetVT()
+	tp.SetSession(&mockAdapter{alive: true, totalWritten: 3})
+	notSplash(t, drawOnSim(t, tp, 80, 24))
+	tp.SetTaskID("t1")
+	tp.ResetVT()
+	tp.SetSession(&mockAdapter{alive: true})
 	notSplash(t, drawOnSim(t, tp, 80, 24))
 }
 

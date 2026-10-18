@@ -59,6 +59,14 @@ func (tp *TerminalPane) launchSubtitle(sess agentview.TerminalAdapter) string {
 		tp.mu.Unlock()
 		return ""
 	}
+	taskID := tp.taskID
+	if taskID != "" && sess != nil && sess.TotalWritten() > 0 {
+		tp.latchHistoryLocked(taskID)
+	}
+	if taskID != "" && tp.launchHistory[taskID] {
+		tp.mu.Unlock()
+		return tp.endLaunchSplash()
+	}
 	stage := ""
 	switch {
 	case sess == nil && tp.launchTaskStatus == "pending":
@@ -66,25 +74,23 @@ func (tp *TerminalPane) launchSubtitle(sess agentview.TerminalAdapter) string {
 	case sess != nil && sess.Alive() && sess.TotalWritten() == 0:
 		stage = widget.LaunchSubtitleStarting
 	}
-	taskID := tp.taskID
 	tp.mu.Unlock()
 
-	// First launch only: a task that already has recorded output (an
-	// established agent re-dialed with a zero-byte handle, a size-drift
-	// kill+resume, a failed revive reverted to pending) must keep the
-	// replay/Re-rendering/placeholder rendering. The on-disk session log is
-	// the history signal — unlike per-bind pane state, ResetVT cannot wipe it.
+	// First launch only. The per-task latch above survives ResetVT/SetSession
+	// (the session log is O_TRUNC'd on every spawn, so a kill+resume or revive
+	// sees a 0-byte log and a 0-byte handle). The log size covers history this
+	// pane never observed (a TUI started after the agent had output).
 	if stage != "" && taskID != "" && tp.statLogSize() > 0 {
-		stage = ""
+		tp.mu.Lock()
+		tp.latchHistoryLocked(taskID)
+		tp.mu.Unlock()
+		return tp.endLaunchSplash()
 	}
 
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
 	if stage == "" {
-		if tp.launchStage != "" {
-			uxlog.Log("[terminalpane] launch splash end task=%s", tp.taskID)
-			tp.launchStage = ""
-		}
+		tp.endLaunchSplashLocked()
 		return ""
 	}
 	now := launchNow()
@@ -103,6 +109,27 @@ func (tp *TerminalPane) launchSubtitle(sess agentview.TerminalAdapter) string {
 		tp.launchStage = stage
 	}
 	return stage
+}
+
+func (tp *TerminalPane) latchHistoryLocked(taskID string) {
+	if tp.launchHistory == nil {
+		tp.launchHistory = map[string]bool{}
+	}
+	tp.launchHistory[taskID] = true
+}
+
+func (tp *TerminalPane) endLaunchSplash() string {
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	tp.endLaunchSplashLocked()
+	return ""
+}
+
+func (tp *TerminalPane) endLaunchSplashLocked() {
+	if tp.launchStage != "" {
+		uxlog.Log("[terminalpane] launch splash end task=%s", tp.taskID)
+		tp.launchStage = ""
+	}
 }
 
 // drawLaunchSplash paints the shared LAUNCH banner with the given status line,

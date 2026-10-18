@@ -365,6 +365,9 @@ type TerminalPane struct {
 	launchTaskStatus string
 	launchSince      time.Time
 	launchStage      string
+	// launchHistory latches tasks known to have produced output. Never cleared
+	// by ResetVT/SetSession so respawns and role round-trips stay splash-free.
+	launchHistory map[string]bool
 
 	// closedOutBannerShown is true while the closed-out-task banner overlay
 	// is showing INSTEAD of the pane's ordinary dead-session rendering
