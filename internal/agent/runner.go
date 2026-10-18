@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/events"
@@ -268,6 +269,33 @@ func (r *Runner) Get(taskID string) SessionHandle {
 		return nil
 	}
 	return sess
+}
+
+// startRegistrationWait bounds GetStarting's wait for an in-flight start to
+// publish its session.
+const startRegistrationWait = 3 * time.Second
+
+// GetStarting is Get that rides out the start gap: while a Start is reserved
+// (nil sentinel) or a kick-restart is queued (pendingRestart) but the session
+// is not yet published, it waits (bounded by startRegistrationWait) instead of
+// reporting "no session". Runner.Start execs the process before registering it,
+// so input or a resize landing in that window would otherwise be dropped.
+// Returns nil when no start is in flight or the wait elapses.
+func (r *Runner) GetStarting(taskID string) SessionHandle {
+	deadline := time.Now().Add(startRegistrationWait)
+	for {
+		r.mu.Lock()
+		sess, reserved := r.sessions[taskID]
+		starting := reserved || r.pendingRestart[taskID] != nil
+		r.mu.Unlock()
+		if sess != nil {
+			return sess
+		}
+		if !starting || time.Now().After(deadline) {
+			return nil
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // Attach connects stdin/stdout to a running session's PTY.

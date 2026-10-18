@@ -1438,3 +1438,57 @@ func TestRunner_NeedsInputSet(t *testing.T) {
 	testutil.Equal(t, r.NeedsInput("t3"), false)
 	testutil.Equal(t, len(r.NeedsInputIDs()), 0)
 }
+
+func TestRunner_GetStarting(t *testing.T) {
+	t.Run("no start in flight returns nil immediately", func(t *testing.T) {
+		r := NewRunner(nil)
+		start := time.Now()
+		if r.GetStarting("none") != nil {
+			t.Fatal("expected nil")
+		}
+		if time.Since(start) > startRegistrationWait/2 {
+			t.Fatalf("waited %v with no start in flight", time.Since(start))
+		}
+	})
+	t.Run("waits for a reserved start to publish", func(t *testing.T) {
+		r := NewRunner(nil)
+		r.sessions["t"] = nil // Start's reservation sentinel
+		want := &Session{}
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			r.mu.Lock()
+			r.sessions["t"] = want
+			r.mu.Unlock()
+		}()
+		if got := r.GetStarting("t"); got != SessionHandle(want) {
+			t.Fatalf("got %v, want published session", got)
+		}
+	})
+	t.Run("waits through a queued kick restart", func(t *testing.T) {
+		r := NewRunner(nil)
+		r.pendingRestart["t"] = &pendingRestart{}
+		want := &Session{}
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			r.mu.Lock()
+			r.sessions["t"] = want
+			r.mu.Unlock()
+		}()
+		if got := r.GetStarting("t"); got != SessionHandle(want) {
+			t.Fatalf("got %v, want published session", got)
+		}
+	})
+	t.Run("gives up when the reservation is released", func(t *testing.T) {
+		r := NewRunner(nil)
+		r.sessions["t"] = nil
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			r.mu.Lock()
+			delete(r.sessions, "t")
+			r.mu.Unlock()
+		}()
+		if r.GetStarting("t") != nil {
+			t.Fatal("expected nil after failed start")
+		}
+	})
+}

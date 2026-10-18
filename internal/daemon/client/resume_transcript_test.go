@@ -82,19 +82,10 @@ func TestSupResumeID(t *testing.T) {
 	// existing client's output ring can still contain the old launch arguments.
 	testutil.NotNil(t, supervisorClient.Get(task.ID))
 	marker := "replacement-ready-" + task.SessionID
-	// The kick restart execs the replacement (writing launch-args) before the
-	// runner registers it, so WriteInput answers "session not found" in that gap.
-	// Retry until the replacement is registered; this is the readiness signal.
+	// The replacement is exec'd before the runner registers it; WriteInput must
+	// ride out that gap (Runner.GetStarting) rather than answer "session not found".
 	var written daemon.StatusResp
-	deadline = time.Now().Add(ciWait)
-	for {
-		written = daemon.StatusResp{}
-		testutil.NoError(t, supervisorClient.call("Daemon.WriteInput", &daemon.WriteReq{TaskID: task.ID, Data: []byte(marker + "\n")}, &written))
-		if written.Error == "" || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testutil.NoError(t, supervisorClient.call("Daemon.WriteInput", &daemon.WriteReq{TaskID: task.ID, Data: []byte(marker + "\n")}, &written))
 	testutil.Equal(t, written.Error, "")
 	deadline = time.Now().Add(ciWait)
 	var output []byte
