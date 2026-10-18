@@ -16,6 +16,19 @@ import (
 // paneScrollStep is how many lines a PgUp/PgDn scrolls a focused pane.
 const paneScrollStep = 10
 
+// SplitLaunchPaneSizes derives conservative content sizes from the page's
+// dimensions, even when it is hidden or fullscreen. New history must fit the
+// split panes when the operator returns to them.
+func SplitLaunchPaneSizes(w, h int) (rows, coordCols, workerCols uint16) {
+	right := w - min(heraRailWidth, w)
+	if right < 4 || h < 2 || w > 65535 || h > 65535 {
+		return 0, 0, 0
+	}
+	coord := right / 2
+	worker := right - coord
+	return uint16(max(h-2, 5)), uint16(max(coord-2, 20)), uint16(max(worker-2, 20)) //nolint:gosec // h,w bounded to uint16 above; floors are at most 20
+}
+
 // SessionResolver resolves the live agent session for a task ID, returning the
 // agentview.TerminalAdapter the pane feeds from, or nil when no live session
 // exists. It is the in-process-runner seam that REPLACES Hera's proxy/ SSE

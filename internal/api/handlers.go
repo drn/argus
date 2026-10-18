@@ -1329,7 +1329,7 @@ func (s *Server) maybeKickRerender(taskID string, rows, cols uint16) bool {
 		s.invalidateColsCache(taskID)
 		return false
 	}
-	if err := s.runner.KickRerender(task, cfg, rows, cols); err != nil {
+	if err := agent.KickWidthRerender(s.runner, task, cfg, rows, cols); err != nil {
 		// Don't fail the resize on a kick failure — runner.KickRerender's
 		// own slog line records the task; just note the failure here.
 		log.Printf("api: KickRerender failed: %v", err)

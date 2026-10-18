@@ -3,6 +3,7 @@ package client
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/rpc"
 	"net/rpc/jsonrpc"
@@ -309,7 +310,18 @@ func (c *Client) Stop(taskID string) error { return c.StopScoped(taskID, agent.S
 // StopScoped stops a session via RPC with the given scope.
 func (c *Client) StopScoped(taskID string, scope agent.StopScope) error {
 	var resp daemon.StatusResp
-	if err := c.call("Daemon.StopSession", &daemon.StopReq{TaskID: taskID, Scope: scope}, &resp); err != nil {
+	method := "Daemon.StopSession"
+	if scope == agent.StopRerender {
+		// Older peers treat unknown StopSession scopes as a tree stop.
+		// A distinct verb fails closed on either stale RPC hop instead.
+		method = "Daemon.StopRerender"
+	}
+	if err := c.call(method, &daemon.StopReq{TaskID: taskID, Scope: scope}, &resp); err != nil {
+		if scope == agent.StopRerender && strings.Contains(err.Error(), "can't find method Daemon.StopRerender") {
+			uxlog.Log("[rerender] peer lacks bounded stop task=%s; using non-escalating agent-only stop", taskID)
+			slog.Info("[rerender] peer lacks bounded stop; using non-escalating agent-only stop", "task", taskID)
+			return c.StopScoped(taskID, agent.StopAgentOnly)
+		}
 		return err
 	}
 	if resp.Error != "" {
@@ -479,19 +491,23 @@ func (c *Client) StartOrReattach(task *model.Task, cfg config.Config, rows, cols
 // caller (api.maybeKickRerender) already treats a kick error as a non-fatal
 // no-op, so an older supervisor degrades to "no rerender" rather than breaking.
 func (c *Client) KickRerender(task *model.Task, _ config.Config, rows, cols uint16) error {
-	return c.kickRerender(task, rows, cols, false)
+	return c.kickRerender(task, rows, cols, false, "Daemon.KickRerender")
 }
 
 func (c *Client) Revive(task *model.Task, _ config.Config, rows, cols uint16) error {
-	return c.kickRerender(task, rows, cols, true)
+	return c.kickRerender(task, rows, cols, true, "Daemon.KickRerender")
 }
 
-func (c *Client) kickRerender(task *model.Task, rows, cols uint16, revive bool) error {
+func (c *Client) KickWidthRerender(task *model.Task, _ config.Config, rows, cols uint16) error {
+	return c.kickRerender(task, rows, cols, false, "Daemon.KickWidthRerender")
+}
+
+func (c *Client) kickRerender(task *model.Task, rows, cols uint16, revive bool, method string) error {
 	if err := c.checkAccountSupported(task); err != nil {
 		return err
 	}
 	var resp daemon.StatusResp
-	if err := c.call("Daemon.KickRerender", &daemon.KickReq{
+	if err := c.call(method, &daemon.KickReq{
 		Revive:          revive,
 		MCPPort:         c.currentMCPPort(),
 		TaskID:          task.ID,
@@ -509,6 +525,10 @@ func (c *Client) kickRerender(task *model.Task, rows, cols uint16, revive bool) 
 		Rows:            rows,
 		Cols:            cols,
 	}, &resp); err != nil {
+		if method == "Daemon.KickWidthRerender" && strings.Contains(err.Error(), "can't find method Daemon.KickWidthRerender") {
+			slog.Info("[rerender] peer lacks bounded kick; using ordinary kick", "task", task.ID)
+			return c.kickRerender(task, rows, cols, false, "Daemon.KickRerender")
+		}
 		return err
 	}
 	if resp.Error != "" {

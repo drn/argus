@@ -801,14 +801,16 @@ func TestRefreshTasksWithIDs_ContentIdleReusesStickySignals(t *testing.T) {
 // App.maybeKickRerender without a real PTY. Only the fields the rerender
 // predicate reads are meaningful; everything else returns zero values.
 type fakeKickSession struct {
+	pid        int
 	idle       bool
 	alive      bool
 	initCols   int
 	stopCalled atomic.Bool
 	stopScope  atomic.Int64 // last StopScoped scope; -1 = plain Stop()
+	stopErr    error
 }
 
-func (f *fakeKickSession) PID() int                                              { return 0 }
+func (f *fakeKickSession) PID() int                                              { return f.pid }
 func (f *fakeKickSession) WriteInput([]byte, agentview.InputOrigin) (int, error) { return 0, nil }
 func (f *fakeKickSession) Resize(uint16, uint16) error                           { return nil }
 func (f *fakeKickSession) RecentOutput() []byte                                  { return nil }
@@ -832,7 +834,7 @@ func (f *fakeKickSession) Stop() error {
 func (f *fakeKickSession) StopScoped(scope agent.StopScope) error {
 	f.stopCalled.Store(true)
 	f.stopScope.Store(int64(scope))
-	return nil
+	return f.stopErr
 }
 func (f *fakeKickSession) AddWriter(io.Writer)                     {}
 func (f *fakeKickSession) AddWriterFrom(io.Writer, uint64)         {}
@@ -927,7 +929,7 @@ func TestMaybeKickRerenderAtWidth_KicksOnGenuineDrift(t *testing.T) {
 	}
 	// A resize bounce restarts the same task: agent-only, so its background
 	// processes survive (stop-finished-task-sessions).
-	testutil.Equal(t, agent.StopScope(sess.stopScope.Load()), agent.StopAgentOnly)
+	testutil.Equal(t, agent.StopScope(sess.stopScope.Load()), agent.StopRerender)
 	readUI(t, app.tapp, func() {
 		if !app.pendingRerenderRestart[taskID] {
 			t.Error("pendingRerenderRestart not set after a successful kick")
@@ -1042,9 +1044,7 @@ func TestMaybeKickRerenderAtWidth_LaterNarrowRebindStillKicksAfterDeferredWideBi
 		t.Fatal("a later narrow rebind (90) did not kick despite the session's committed width having drifted to 142 during a deferred wide bind")
 	}
 	readUI(t, app.tapp, func() {
-		if _, cached := app.committedCols[taskID]; cached {
-			t.Error("committedCols should be cleared once a kick actually fires")
-		}
+		testutil.Equal(t, app.committedCols[taskID], uint16(142))
 	})
 }
 
@@ -5115,6 +5115,7 @@ func TestApp_RedrawLoopGenSupersedesStaleLoop(t *testing.T) {
 // TUI sessions, mirroring the existing pendingRerenderRestart/committedCols
 // cleanup on task delete.
 func TestApp_RedrawLoopGenClearedOnDelete(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
@@ -5123,8 +5124,14 @@ func TestApp_RedrawLoopGenClearedOnDelete(t *testing.T) {
 	testutil.NoError(t, d.Add(task))
 
 	app.redrawLoopGen[task.ID] = 3
+	app.committedCols[task.ID] = 100
+	app.committedColsPID[task.ID] = 101
 
 	app.deleteTask(task)
+	_, anchored := app.committedCols[task.ID]
+	_, owned := app.committedColsPID[task.ID]
+	testutil.False(t, anchored)
+	testutil.False(t, owned)
 
 	if _, ok := app.redrawLoopGen[task.ID]; ok {
 		t.Fatal("expected redrawLoopGen entry to be cleared on task delete")

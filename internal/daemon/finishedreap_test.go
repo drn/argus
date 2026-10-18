@@ -198,6 +198,7 @@ func TestStopSession_ThreadsScope(t *testing.T) {
 	var resp StatusResp
 	testutil.NoError(t, c.StopSession(&StopReq{TaskID: "a", Scope: agent.StopAgentOnly}, &resp))
 	testutil.NoError(t, c.StopSession(&StopReq{TaskID: "b"}, &resp))
-	testutil.DeepEqual(t, f.stopScopes, []agent.StopScope{agent.StopAgentOnly, agent.StopTree})
+	testutil.NoError(t, c.StopRerender(&TaskIDReq{TaskID: "c"}, &resp))
+	testutil.DeepEqual(t, f.stopScopes, []agent.StopScope{agent.StopAgentOnly, agent.StopTree, agent.StopRerender})
 	testutil.True(t, resp.OK)
 }

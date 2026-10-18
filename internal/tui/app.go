@@ -517,6 +517,7 @@ type App struct {
 	// map, it immediately restarts the session via `--session-id` so Claude
 	// re-renders the conversation history at the current (wider) PTY.
 	pendingRerenderRestart map[string]bool
+	initialPTYPublisher    initialPTYPublisher
 
 	// pendingHeraReclaim marks tasks that were in_progress (actively live) at
 	// the moment a Hera nuke/reclaim (heraReclaimAndArchiveTask) fired their
@@ -556,11 +557,12 @@ type App struct {
 	// "what width is this session's live scrollback ACTUALLY drifted to right
 	// now," not "what did we just check." A zero/absent entry means
 	// "nothing tracked yet" (falls back to comparing against initialCols
-	// only). Cleared when a kick actually fires (the resumed session's own
-	// InitialPTYSize takes over as the fresh reference) and on task delete.
+	// only). Scoped to committedColsPID; cleared on successful new start,
+	// replacement-process bind, or task deletion.
 	// See ShouldKickRerender's committedCols param and
 	// gotchas/pty-terminal.md (fix-committed-width-drift / BUG-078).
-	committedCols map[string]uint16
+	committedCols    map[string]uint16
+	committedColsPID map[string]int
 
 	// redrawLoopGen supersedes a stale startAgentRedrawLoop goroutine on a fast leave-and-return; see gotchas/ui-threading.md (fix-redraw-loop-leak).
 	redrawLoopGen map[string]uint64
@@ -724,6 +726,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 		pendingHeraReclaim:     make(map[string]bool),
 		lastAttachCols:         make(map[string]uint16),
 		committedCols:          make(map[string]uint16),
+		committedColsPID:       make(map[string]int),
 		redrawLoopGen:          make(map[string]uint64),
 		wtRoot:                 filepath.Join(db.DataDir(), "worktrees"),
 		clipboardWriter:        pbcopyWriter,
@@ -1135,6 +1138,7 @@ func (a *App) afterDraw(screen tcell.Screen) {
 		}
 	}
 	a.reconcilePluginViewSize()
+	a.publishInitialPTYLayout(screen)
 }
 
 // SetDaemonStale records that the connected daemon's binary differs from the
@@ -2216,6 +2220,7 @@ func (a *App) consumeHeraReclaimPending(taskID string) bool {
 // pendingRestart is captured by the caller from a non-RPC source (in-process:
 // direct method call; daemon: ExitInfo.PendingRestart stamped by daemon side).
 func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool) {
+	defer a.setRerendering(taskID, false)
 	// Two callers, two flip-site stories:
 	//   - Daemon mode (HandleSessionExit): the daemon's onFinish callback
 	//     already ran transitionTaskOnExit before closing the stream that
@@ -5501,16 +5506,32 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 	if task == nil || sess == nil || !sess.Alive() {
 		return
 	}
+	taskID := task.ID
+	pid := sess.PID()
+	previousPID, observed := a.committedColsPID[taskID]
+	if !observed || previousPID != pid {
+		uxlog.Log("[rerender] bind process changed task=%s old_pid=%d pid=%d discarded_anchor=%d", taskID, previousPID, pid, a.committedCols[taskID])
+		delete(a.committedCols, taskID)
+		a.committedColsPID[taskID] = pid
+		a.invalidateAttachCache(taskID)
+		if observed {
+			if a.pendingRerenderRestart[taskID] {
+				a.statusbar.ClearInfo()
+			}
+			delete(a.pendingRerenderRestart, taskID)
+			a.setRerendering(taskID, false)
+		}
+	}
 	if a.pendingRerenderRestart[task.ID] {
 		return // a kick is already in flight for this task
 	}
-	taskID := task.ID
 
 	// Cache gate runs before the SessionID check so Codex tasks (which
 	// have SessionID=="" and can never be kicked) still benefit from the
 	// short-circuit — matches the web side's ordering and avoids spawning
 	// an RPC goroutine on every Codex agent-view reopen.
 	if a.isRedundantAttach(taskID, panelCols) {
+		a.setRerendering(taskID, false)
 		uxlog.Log("[tui] rerender: skipping kick task=%s — panel cols unchanged since last attach (%d)", taskID, panelCols)
 		return
 	}
@@ -5541,6 +5562,10 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 			available, transcriptErr = checkResume(&kickTask, cfg)
 		}
 		a.tapp.QueueUpdateDraw(func() {
+			if currentPID, ok := a.committedColsPID[taskID]; !ok || currentPID != pid {
+				uxlog.Log("[rerender] stale decision skipped task=%s pid=%d current_pid=%d", taskID, pid, currentPID)
+				return
+			}
 			// Re-check liveness and the pending flag — anything could have
 			// changed during the RPC round-trip.
 			if !sess.Alive() || a.pendingRerenderRestart[taskID] {
@@ -5550,8 +5575,10 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 			decision := agent.ShouldKickRerender(true, initCols, committed, int(panelCols), idle, false, needsInput)
 			switch decision {
 			case agent.RerenderSkip:
+				a.setRerendering(taskID, false)
 				return
 			case agent.RerenderDeferBusy:
+				a.setRerenderPending(taskID)
 				// Agent is mid-tool-call — invalidate so the next
 				// same-cols reopen re-evaluates when the agent goes idle.
 				a.invalidateAttachCache(taskID)
@@ -5560,27 +5587,30 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 				// never landed — a LATER bind near initCols (or matching some
 				// unrelated viewer's cached width) must still see this drift
 				// (fix-committed-width-drift / BUG-078).
-				a.recordUnreconciledCommittedCols(taskID, panelCols)
+				a.recordUnreconciledCommittedCols(taskID, panelCols, pid)
 				uxlog.Log("[tui] rerender deferred: task=%s busy (init=%d committed=%d panel=%d)", taskID, initCols, committed, panelCols)
 				if onDeferred != nil {
 					onDeferred()
 				}
 				return
 			case agent.RerenderDeferPrompt:
+				a.setRerenderPending(taskID)
 				// Agent is blocked on a user prompt — kicking would dismiss
 				// the question. Invalidate so a later resize re-evaluates
 				// once the user has answered and the agent moves on.
 				a.invalidateAttachCache(taskID)
-				a.recordUnreconciledCommittedCols(taskID, panelCols)
+				a.recordUnreconciledCommittedCols(taskID, panelCols, pid)
 				uxlog.Log("[tui] rerender deferred: task=%s blocked on user prompt — preserving question (init=%d committed=%d panel=%d)", taskID, initCols, committed, panelCols)
 				if onDeferred != nil {
 					onDeferred()
 				}
 				return
 			case agent.RerenderKick:
+				a.setRerendering(taskID, true)
 				if !checked || transcriptErr != nil || !available {
+					a.setRerenderPending(taskID)
 					a.invalidateAttachCache(taskID)
-					a.recordUnreconciledCommittedCols(taskID, panelCols)
+					a.recordUnreconciledCommittedCols(taskID, panelCols, pid)
 					uxlog.Log("[rerender] deferred task=%s session=%s: transcript unavailable err=%v", taskID, kickTask.SessionID, transcriptErr)
 					if onDeferred != nil {
 						onDeferred()
@@ -5590,26 +5620,20 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 				uxlog.Log("[tui] rerender: stopping task=%s session=%s (init=%dx committed=%dx panel=%dx)", taskID, task.SessionID, initCols, committed, panelCols)
 				a.statusbar.SetInfo("Re-rendering at full width…")
 				a.pendingRerenderRestart[taskID] = true
-				// Agent-only: a resize bounce restarts the same task, so its
-				// background processes (dev servers) must survive.
-				if err := sess.StopScoped(agent.StopAgentOnly); err != nil {
+				// Cooperative repair preserves descendants; an unresponsive
+				// agent's escalation also reaps its process tree.
+				if err := sess.StopScoped(agent.StopRerender); err != nil {
+					a.setRerenderPending(taskID)
 					uxlog.Log("[tui] rerender: stop failed task=%s err=%v", taskID, err)
 					delete(a.pendingRerenderRestart, taskID)
 					// Stop attempt failed — invalidate so the next
 					// same-cols reopen retries (mirrors DeferBusy).
 					a.invalidateAttachCache(taskID)
-					a.recordUnreconciledCommittedCols(taskID, panelCols)
+					a.recordUnreconciledCommittedCols(taskID, panelCols, pid)
 					a.statusbar.ClearInfo()
 					if onDeferred != nil {
 						onDeferred()
 					}
-				} else {
-					// The resumed session re-emits its entire conversation at
-					// panelCols, so any previously-recorded drift is resolved
-					// — the new session's own InitialPTYSize becomes the
-					// fresh reference. Clear rather than update, so a stale
-					// entry can't outlive the incarnation it described.
-					delete(a.committedCols, taskID)
 				}
 			}
 		})
@@ -5639,7 +5663,11 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 // BUG-078's original behavior for the case it was written for (nothing
 // tracked yet, or an anchor the current panel already matches) and only
 // widens which candidates stay kickable, never narrows it.
-func (a *App) recordUnreconciledCommittedCols(taskID string, panelCols uint16) {
+func (a *App) recordUnreconciledCommittedCols(taskID string, panelCols uint16, pid int) {
+	if currentPID, ok := a.committedColsPID[taskID]; !ok || currentPID != pid {
+		uxlog.Log("[rerender] stale anchor skipped task=%s pid=%d current_pid=%d", taskID, pid, currentPID)
+		return
+	}
 	if cur, ok := a.committedCols[taskID]; ok &&
 		agent.MarginExceedsRerenderThreshold(int(cur), int(panelCols)) {
 		return
@@ -5700,6 +5728,7 @@ func (a *App) reapStaleRerenderRestart(taskID string, sess agent.SessionHandle) 
 	}
 	uxlog.Log("[tui] rerender: reaping stale pending flag for task=%s", taskID)
 	delete(a.pendingRerenderRestart, taskID)
+	a.setRerendering(taskID, false)
 	a.statusbar.ClearInfo()
 }
 
@@ -6278,6 +6307,7 @@ func (a *App) forceReviveClosedOut(pane *terminal.TerminalPane, t *model.Task) {
 // auto-start path, hera's Enter-reattach, switchSession's dead-session
 // branch) that don't ALL separately force a refetch of their own afterward.
 func (a *App) startSession(task *model.Task) {
+	defer a.setRerendering(task.ID, false)
 	cfg := a.db.Config()
 	rows, cols := a.spawnPTYSize(task.ID)
 
@@ -6344,6 +6374,8 @@ func (a *App) startSession(task *model.Task) {
 
 	task.SetStatus(model.StatusInProgress)
 	task.AgentPID = sess.PID()
+	delete(a.committedCols, task.ID) // only a successful new start reconciles history
+	delete(a.committedColsPID, task.ID)
 	a.recentStarts[task.ID] = time.Now() // grace period: protect from false reconciliation
 	a.db.Update(task)                    //nolint:errcheck
 	a.invalidateTasksChangeGate()
@@ -7697,6 +7729,7 @@ func (a *App) deleteTask(t *model.Task) {
 	a.invalidateAttachCache(t.ID)
 	delete(a.pendingRerenderRestart, t.ID)
 	delete(a.committedCols, t.ID)
+	delete(a.committedColsPID, t.ID)
 	delete(a.redrawLoopGen, t.ID) // also self-terminates any still-live loop: a missing key reads back as 0, which myGen (starts at 1) can never match
 	a.refreshTasksLocal()
 

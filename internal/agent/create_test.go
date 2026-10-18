@@ -66,9 +66,13 @@ type fakeRunner struct {
 	startCalls  int
 	startedTask *model.Task
 	sessionPID  int
+
+	startRows uint16
+	startCols uint16
 }
 
-func (f *fakeRunner) Start(task *model.Task, _ config.Config, _, _ uint16, _ bool) (SessionHandle, error) {
+func (f *fakeRunner) Start(task *model.Task, _ config.Config, rows, cols uint16, _ bool) (SessionHandle, error) {
+	f.startRows, f.startCols = rows, cols
 	f.startCalls++
 	f.startedTask = task
 	if f.startErr != nil {

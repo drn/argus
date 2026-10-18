@@ -106,7 +106,12 @@ func TestStartSessionMissingTranscript(t *testing.T) {
 	const old = "11111111-1111-7111-9111-111111111111"
 	task := &model.Task{Name: "unsaved", Backend: "fixture", Worktree: t.TempDir(), SessionID: old, Prompt: "original mission"}
 	testutil.NoError(t, d.Add(task))
+	app.committedCols[task.ID] = 100
+	app.committedColsPID[task.ID] = 101
+	app.agentPane.SetTaskID(task.ID)
+	app.setRerendering(task.ID, true)
 	app.startSession(task)
+	testutil.Equal(t, app.agentPane.RerenderStatus(), "")
 	sess := runner.Get(task.ID)
 	t.Cleanup(func() {
 		runner.StopAll()
@@ -121,6 +126,10 @@ func TestStartSessionMissingTranscript(t *testing.T) {
 	testutil.Equal(t, got.Status, model.StatusInProgress)
 	testutil.NotNil(t, sess)
 	testutil.True(t, sess.Alive())
+	_, unresolved := app.committedCols[task.ID]
+	testutil.False(t, unresolved)
+	_, owned := app.committedColsPID[task.ID]
+	testutil.False(t, owned)
 }
 
 func TestReviveLiveMissingTranscript(t *testing.T) {
@@ -138,6 +147,12 @@ func TestReviveLiveMissingTranscript(t *testing.T) {
 	testutil.NoError(t, d.Add(task))
 	first, err := r.Start(task, d.Config(), 24, 80, false)
 	testutil.NoError(t, err)
+	var deferred atomic.Bool
+	readUI(t, app.tapp, func() {
+		app.agentPane.SetTaskID(task.ID)
+		app.maybeKickRerenderAtWidth(task, &fakeKickSession{pid: first.PID(), alive: true, initCols: 80}, 100, func() { deferred.Store(true) })
+	})
+	waitRerender(t, func() bool { return deferred.Load() })
 	readUI(t, app.tapp, func() { app.reviveHeraWorker(task, &fakeKickSession{idle: true, alive: true}) })
 	deadline := time.Now().Add(uiTimeout)
 	for time.Now().Before(deadline) {
@@ -149,6 +164,13 @@ func TestReviveLiveMissingTranscript(t *testing.T) {
 			testutil.NoError(t, err)
 			testutil.Equal(t, got.SessionID, id)
 			testutil.Contains(t, string(next.RecentOutput()), "--session-id\r\n"+id)
+			cols, _ := next.InitialPTYSize()
+			readUI(t, app.tapp, func() { app.maybeKickRerenderAtWidth(task, next, uint16(cols), nil) }) //nolint:gosec // PTY dimensions originate as uint16
+			waitRerender(t, func() bool {
+				var cleared bool
+				readUI(t, app.tapp, func() { _, anchored := app.committedCols[task.ID]; cleared = !anchored })
+				return cleared
+			})
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
