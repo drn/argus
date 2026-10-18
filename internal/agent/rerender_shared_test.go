@@ -228,3 +228,38 @@ func TestRerenderSnapshot_UninspectableArgv(t *testing.T) {
 		})
 	}
 }
+
+func TestRerenderSnapshot_ArgvWarningsAggregated(t *testing.T) {
+	for _, mode := range []string{"readable", "error", "empty", "mixed"} {
+		t.Run(mode, func(t *testing.T) {
+			var logs syncBuffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+			failures := 0
+			calls := 0
+			nodes, err := rerenderProcessSnapshotWithArgv(context.Background(), func(*process.Process, context.Context) ([]string, error) {
+				calls++
+				if mode == "empty" {
+					failures++
+					return nil, nil
+				}
+				if mode == "error" || mode == "mixed" && calls%2 == 0 {
+					failures++
+					return nil, errors.New("per-process denial detail")
+				}
+				return []string{"helper"}, nil
+			})
+			testutil.NoError(t, err)
+			testutil.Equal(t, len(nodes), calls-failures)
+			if mode == "readable" {
+				testutil.Equal(t, logs.String(), "")
+				return
+			}
+			testutil.True(t, failures > 1)
+			testutil.Equal(t, strings.Count(logs.String(), "argv inspection skipped"), 1)
+			testutil.True(t, strings.Contains(logs.String(), fmt.Sprintf("count=%d\n", failures)))
+			testutil.False(t, strings.Contains(logs.String(), "per-process denial detail"))
+		})
+	}
+}

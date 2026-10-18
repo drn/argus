@@ -53,6 +53,7 @@ func rerenderProcessSnapshotWithArgv(ctx context.Context, readArgv func(*process
 		return nil, err
 	}
 	var nodes []rerenderProcess
+	skippedArgv := 0
 	for _, pid := range pids {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -69,12 +70,15 @@ func rerenderProcessSnapshotWithArgv(ctx context.Context, readArgv func(*process
 		if err == nil {
 			argv, argsErr := readArgv(p, ctx)
 			if argsErr != nil || len(argv) == 0 {
-				uxlog.Log("[rerender] argv inspection skipped pid=%d err=%v", pid, argsErr)
-				slog.Warn("[rerender] argv inspection skipped", "pid", pid, "err", argsErr)
+				skippedArgv++
 				continue // Unknown ownership also disconnects this subtree.
 			}
 			nodes = append(nodes, rerenderProcess{pid: pid, parent: parent, started: started, shared: isSharedClaudeDaemon(argv)})
 		}
+	}
+	if skippedArgv > 0 {
+		uxlog.Log("[rerender] argv inspection skipped count=%d", skippedArgv)
+		slog.Warn("[rerender] argv inspection skipped", "count", skippedArgv)
 	}
 	return nodes, nil
 }
