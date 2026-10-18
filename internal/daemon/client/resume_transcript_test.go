@@ -117,3 +117,9 @@ func assertResumeLaunchID(t *testing.T, sess agent.SessionHandle, id string) {
 	}
 	testutil.Contains(t, string(sess.RecentOutput()), want)
 }
+
+// A server-side start-gap wait longer than the client's RPC deadline would turn
+// into ErrRPCTimeout plus a leaked server goroutine, so keep it strictly below.
+func TestStartWaitBelowRPC(t *testing.T) {
+	testutil.True(t, agent.StartRegistrationWait < rpcTimeout)
+}

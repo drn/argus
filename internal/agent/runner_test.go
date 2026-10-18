@@ -1440,43 +1440,33 @@ func TestRunner_NeedsInputSet(t *testing.T) {
 }
 
 func TestRunner_GetStarting(t *testing.T) {
+	publishAfter := func(r *Runner, d time.Duration, s *Session) {
+		go func() {
+			time.Sleep(d)
+			r.mu.Lock()
+			r.sessions["t"] = s
+			r.mu.Unlock()
+		}()
+	}
 	t.Run("no start in flight returns nil immediately", func(t *testing.T) {
 		r := NewRunner(nil)
 		start := time.Now()
-		if r.GetStarting("none") != nil {
-			t.Fatal("expected nil")
-		}
-		if time.Since(start) > startRegistrationWait/2 {
-			t.Fatalf("waited %v with no start in flight", time.Since(start))
-		}
+		testutil.Nil(t, r.GetStarting("none"))
+		testutil.True(t, time.Since(start) < StartRegistrationWait/2)
 	})
 	t.Run("waits for a reserved start to publish", func(t *testing.T) {
 		r := NewRunner(nil)
 		r.sessions["t"] = nil // Start's reservation sentinel
 		want := &Session{}
-		go func() {
-			time.Sleep(50 * time.Millisecond)
-			r.mu.Lock()
-			r.sessions["t"] = want
-			r.mu.Unlock()
-		}()
-		if got := r.GetStarting("t"); got != SessionHandle(want) {
-			t.Fatalf("got %v, want published session", got)
-		}
+		publishAfter(r, 50*time.Millisecond, want)
+		testutil.Equal(t, r.GetStarting("t"), SessionHandle(want))
 	})
 	t.Run("waits through a queued kick restart", func(t *testing.T) {
 		r := NewRunner(nil)
 		r.pendingRestart["t"] = &pendingRestart{}
 		want := &Session{}
-		go func() {
-			time.Sleep(50 * time.Millisecond)
-			r.mu.Lock()
-			r.sessions["t"] = want
-			r.mu.Unlock()
-		}()
-		if got := r.GetStarting("t"); got != SessionHandle(want) {
-			t.Fatalf("got %v, want published session", got)
-		}
+		publishAfter(r, 50*time.Millisecond, want)
+		testutil.Equal(t, r.GetStarting("t"), SessionHandle(want))
 	})
 	t.Run("gives up when the reservation is released", func(t *testing.T) {
 		r := NewRunner(nil)
@@ -1487,8 +1477,9 @@ func TestRunner_GetStarting(t *testing.T) {
 			delete(r.sessions, "t")
 			r.mu.Unlock()
 		}()
-		if r.GetStarting("t") != nil {
-			t.Fatal("expected nil after failed start")
-		}
+		start := time.Now()
+		testutil.Nil(t, r.GetStarting("t"))
+		// Returning promptly proves the release was noticed, not the deadline.
+		testutil.True(t, time.Since(start) < StartRegistrationWait/2)
 	})
 }

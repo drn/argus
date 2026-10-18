@@ -271,18 +271,21 @@ func (r *Runner) Get(taskID string) SessionHandle {
 	return sess
 }
 
-// startRegistrationWait bounds GetStarting's wait for an in-flight start to
-// publish its session.
-const startRegistrationWait = 3 * time.Second
+// StartRegistrationWait bounds GetStarting's wait for an in-flight start to
+// publish its session. It MUST stay below the daemon client's rpcTimeout (2s):
+// a server-side wait that outlasts the client deadline yields ErrRPCTimeout
+// plus a leaked server goroutine, and the next input batch can race it.
+// daemon/client pins this relationship in a test.
+const StartRegistrationWait = 1500 * time.Millisecond
 
 // GetStarting is Get that rides out the start gap: while a Start is reserved
 // (nil sentinel) or a kick-restart is queued (pendingRestart) but the session
-// is not yet published, it waits (bounded by startRegistrationWait) instead of
+// is not yet published, it waits (bounded by StartRegistrationWait) instead of
 // reporting "no session". Runner.Start execs the process before registering it,
 // so input or a resize landing in that window would otherwise be dropped.
 // Returns nil when no start is in flight or the wait elapses.
 func (r *Runner) GetStarting(taskID string) SessionHandle {
-	deadline := time.Now().Add(startRegistrationWait)
+	deadline := time.Now().Add(StartRegistrationWait)
 	for {
 		r.mu.Lock()
 		sess, reserved := r.sessions[taskID]
