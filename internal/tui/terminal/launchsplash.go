@@ -50,12 +50,13 @@ func (tp *TerminalPane) resetLaunchSplashLocked() {
 // when the pane should render normally. Precedence: closed-out banner (decided
 // by the caller, earlier) > "Re-rendering…" (a live session being repaired is
 // never a launch) > launch splash > everything else. Splash shows only while
-// nothing has ever been written: a pending task with no session, or a live
-// session whose ring is still empty.
+// nothing has ever been written for the task (no session log either): a
+// pending task with no session, or a live session whose ring is still empty.
+// Genuine first launch only.
 func (tp *TerminalPane) launchSubtitle(sess agentview.TerminalAdapter) string {
 	tp.mu.Lock()
-	defer tp.mu.Unlock()
 	if !tp.launchSplash || tp.rerendering || tp.scrollOffset > 0 {
+		tp.mu.Unlock()
 		return ""
 	}
 	stage := ""
@@ -65,6 +66,20 @@ func (tp *TerminalPane) launchSubtitle(sess agentview.TerminalAdapter) string {
 	case sess != nil && sess.Alive() && sess.TotalWritten() == 0:
 		stage = widget.LaunchSubtitleStarting
 	}
+	taskID := tp.taskID
+	tp.mu.Unlock()
+
+	// First launch only: a task that already has recorded output (an
+	// established agent re-dialed with a zero-byte handle, a size-drift
+	// kill+resume, a failed revive reverted to pending) must keep the
+	// replay/Re-rendering/placeholder rendering. The on-disk session log is
+	// the history signal — unlike per-bind pane state, ResetVT cannot wipe it.
+	if stage != "" && taskID != "" && tp.statLogSize() > 0 {
+		stage = ""
+	}
+
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
 	if stage == "" {
 		if tp.launchStage != "" {
 			uxlog.Log("[terminalpane] launch splash end task=%s", tp.taskID)
@@ -91,12 +106,12 @@ func (tp *TerminalPane) launchSubtitle(sess agentview.TerminalAdapter) string {
 }
 
 // drawLaunchSplash paints the shared LAUNCH banner with the given status line,
-// strictly inside the rect. A rect too short for the full banner falls back to
-// just the centered status line.
+// strictly inside the rect. A rect too short or too narrow for the full
+// wordmark falls back to just the centered status line.
 func drawLaunchSplash(screen tcell.Screen, x, y, width, height int, subtitle string) {
 	widget.FillArea(screen, x, y, width, height, ' ', tcell.StyleDefault)
 	bannerH := widget.PendingBannerHeight()
-	if height >= bannerH {
+	if height >= bannerH && width >= widget.LaunchBannerMinWidth() {
 		widget.DrawLaunchBanner(screen, x, y+(height-bannerH)/2, width, subtitle)
 		return
 	}

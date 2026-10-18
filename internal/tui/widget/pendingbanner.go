@@ -40,6 +40,10 @@ func PendingBannerHeight() int {
 	return 12
 }
 
+// LaunchBannerMinWidth returns the narrowest pane the full wordmark fits in
+// without being right-clipped.
+func LaunchBannerMinWidth() int { return pendingBannerTextWidth }
+
 // DrawPendingBanner draws the pending task banner centered at the given y offset.
 // Returns the number of rows consumed.
 func DrawPendingBanner(screen tcell.Screen, x, y, width int) int {

@@ -1305,6 +1305,7 @@ func TestPanes_PaneSizeForTask(t *testing.T) {
 // the page plus a drawn-state helper.
 func launchSplashPage(t *testing.T, wkrStatus model.Status, wkrSess *fakeSession) (*HeraPage, func(fullscreen bool) string) {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir()) // session-log lookups must never touch the real ~/.argus
 	d := memDB(t)
 	orch := seedOrch(t, d, "orch")
 	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
@@ -1362,4 +1363,27 @@ func TestPanes_LaunchSplash_DeadInProgressWorkerIsNotSplash(t *testing.T) {
 	if strings.Contains(out, "P R E P A R I N G") || strings.Contains(out, "S T A R T I N G") {
 		t.Fatalf("dead non-pending role must not splash:\n%s", out)
 	}
+}
+
+// A coordinator pane (details mode) whose task is pending with no session —
+// e.g. a pending sub-coordinator materialization — shows PREPARING too.
+func TestPanes_LaunchSplash_PendingCoordinatorPaneShowsPreparing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	testutil.NoError(t, d.SetStatus("t-coord", model.StatusPending))
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{}))
+	p.Refresh()
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
+	testutil.Equal(t, p.coordBound, "t-coord")
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(160, 40)
+	p.SetRect(0, 0, 160, 40)
+	p.Draw(sim)
+	testutil.Contains(t, simScreenText(sim), "P R E P A R I N G")
 }
