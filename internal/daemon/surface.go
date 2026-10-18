@@ -192,7 +192,9 @@ const (
 	//     switch/revive kicks remain non-escalating.
 	//   - v10: escalated width repairs reap captured descendants, including
 	//     setsid helpers; cooperative exits preserve background processes.
-	SupervisorStreamSurface = 10
+	//   - v11: escalation preserves shared Claude daemons and their hosted
+	//     subtrees; unknown argv cannot establish cleanup ownership.
+	SupervisorStreamSurface = 11
 )
 
 // SurfaceVersion is a supervisor's declared executed-surface identity: the pair
@@ -410,7 +412,7 @@ var SupervisorStreamPaths = []string{
 // message prints the computed digest to paste back here.
 const (
 	SpawnSurfaceDigest  = "d514c27677ef859dc391d91d80f61c159354d6f629068c448432540a0d9ff576"
-	StreamSurfaceDigest = "3ff97c819e454d5642053267831d18c26c98d09772a16340223ec373e2298e03"
+	StreamSurfaceDigest = "a6389e9e69e0c1a5725d5dc131fe6ee8d9fa200be977b0e40720d8f27b2c9a89"
 )
 
 // SurfaceDigest computes the SHA-256 over the declared manifest's file contents,

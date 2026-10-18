@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,12 +19,32 @@ const rerenderDescendantGrace = 250 * time.Millisecond
 type rerenderProcess struct {
 	pid, parent int32
 	started     int64
+	shared      bool
+}
+
+func isSharedClaudeDaemon(argv []string) bool {
+	if len(argv) < 2 {
+		return false
+	}
+	executable := filepath.Base(argv[0])
+	// Native installs may exec the versioned binary behind the claude symlink.
+	native := executable == "claude" || strings.HasSuffix(filepath.ToSlash(filepath.Dir(argv[0])), "/claude/versions")
+	if native {
+		return argv[1] == "daemon"
+	}
+	// npm installs launch the official CLI through Node.
+	return len(argv) >= 3 && (executable == "node" || executable == "nodejs") &&
+		strings.HasSuffix(filepath.ToSlash(argv[1]), "/@anthropic-ai/claude-code/cli.js") && argv[2] == "daemon"
 }
 
 // Creation times bind the captured ancestry to a process instance, even after
 // killing its parent causes reparenting. No process-group signal can spill into
 // another task, and setsid does not hide an ordinary parent/child relationship.
 func rerenderProcessSnapshot(ctx context.Context) ([]rerenderProcess, error) {
+	return rerenderProcessSnapshotWithArgv(ctx, (*process.Process).CmdlineSliceWithContext)
+}
+
+func rerenderProcessSnapshotWithArgv(ctx context.Context, readArgv func(*process.Process, context.Context) ([]string, error)) ([]rerenderProcess, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -45,7 +67,13 @@ func rerenderProcessSnapshot(ctx context.Context) ([]rerenderProcess, error) {
 		}
 		parent, err := p.PpidWithContext(ctx)
 		if err == nil {
-			nodes = append(nodes, rerenderProcess{pid: pid, parent: parent, started: started})
+			argv, argsErr := readArgv(p, ctx)
+			if argsErr != nil || len(argv) == 0 {
+				uxlog.Log("[rerender] argv inspection skipped pid=%d err=%v", pid, argsErr)
+				slog.Warn("[rerender] argv inspection skipped", "pid", pid, "err", argsErr)
+				continue // Unknown ownership also disconnects this subtree.
+			}
+			nodes = append(nodes, rerenderProcess{pid: pid, parent: parent, started: started, shared: isSharedClaudeDaemon(argv)})
 		}
 	}
 	return nodes, nil
@@ -78,6 +106,11 @@ func selectRerenderDescendants(nodes []rerenderProcess, root int) []rerenderProc
 			continue
 		}
 		seen[n.pid] = true
+		if n.shared {
+			uxlog.Log("[rerender] preserving shared Claude daemon pid=%d", n.pid)
+			slog.Info("[rerender] preserving shared Claude daemon", "pid", n.pid)
+			continue // Hosted background sessions belong to other tasks too.
+		}
 		selected = append(selected, n)
 		roots = append(roots, children[n.pid]...)
 	}
