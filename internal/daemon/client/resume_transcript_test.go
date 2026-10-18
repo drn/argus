@@ -65,7 +65,7 @@ func TestSupResumeID(t *testing.T) {
 	testutil.False(t, recovered.SessionID == "" || recovered.SessionID == prior)
 	task.SessionID = recovered.SessionID
 	// Prove the replacement launched with the ID returned through both hops.
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(ciWait)
 	var launch []byte
 	for time.Now().Before(deadline) {
 		launch, err = os.ReadFile(filepath.Join(task.Worktree, "launch-args"))
@@ -82,10 +82,12 @@ func TestSupResumeID(t *testing.T) {
 	// existing client's output ring can still contain the old launch arguments.
 	testutil.NotNil(t, supervisorClient.Get(task.ID))
 	marker := "replacement-ready-" + task.SessionID
+	// The replacement is exec'd before the runner registers it; WriteInput must
+	// ride out that gap (Runner.GetStarting) rather than answer "session not found".
 	var written daemon.StatusResp
 	testutil.NoError(t, supervisorClient.call("Daemon.WriteInput", &daemon.WriteReq{TaskID: task.ID, Data: []byte(marker + "\n")}, &written))
 	testutil.Equal(t, written.Error, "")
-	deadline = time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(ciWait)
 	var output []byte
 	for time.Now().Before(deadline) {
 		if replacement := supervisorClient.Get(task.ID); replacement != nil {
@@ -102,12 +104,22 @@ func TestSupResumeID(t *testing.T) {
 	waitStatus(t, database, task.ID, model.StatusInReview)
 }
 
+// ciWait is the ceiling for every readiness poll in the resume tests; generous so a
+// starved CI runner never turns a slow-but-correct step into a failure.
+const ciWait = 20 * time.Second
+
 func assertResumeLaunchID(t *testing.T, sess agent.SessionHandle, id string) {
 	t.Helper()
 	want := "--session-id\r\n" + id
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(ciWait)
 	for time.Now().Before(deadline) && !strings.Contains(string(sess.RecentOutput()), want) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	testutil.Contains(t, string(sess.RecentOutput()), want)
+}
+
+// A server-side start-gap wait longer than the client's RPC deadline would turn
+// into ErrRPCTimeout plus a leaked server goroutine, so keep it strictly below.
+func TestStartWaitBelowRPC(t *testing.T) {
+	testutil.True(t, agent.StartRegistrationWait < rpcTimeout)
 }

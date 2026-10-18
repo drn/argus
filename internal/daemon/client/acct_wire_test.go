@@ -215,7 +215,7 @@ func TestSupAcctEnv(t *testing.T) {
 	testutil.NoError(t, err)
 
 	var got string
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		if data, rerr := os.ReadFile(envFile); rerr == nil && len(data) > 0 {
 			got = strings.TrimSpace(string(data))

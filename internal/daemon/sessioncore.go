@@ -258,11 +258,23 @@ func (c *sessionCore) HasPendingRestart(req *TaskIDReq, resp *PendingRestartResp
 	return nil
 }
 
+// getStarting is Get that waits out an in-flight start when the runner can
+// report one (the in-process agent.Runner; other SessionRunners fall back to
+// plain Get), so input/resize right after a kick restart isn't dropped.
+func (c *sessionCore) getStarting(taskID string) agent.SessionHandle {
+	if r, ok := c.runner.(interface {
+		GetStarting(string) agent.SessionHandle
+	}); ok {
+		return r.GetStarting(taskID)
+	}
+	return c.runner.Get(taskID)
+}
+
 // WriteInput sends data to a session's PTY stdin. req.Origin (zero value
 // agentview.OriginUser) carries through to the underlying session unchanged
 // — see WriteReq's doc comment for the wire-compatibility rationale.
 func (c *sessionCore) WriteInput(req *WriteReq, resp *StatusResp) error {
-	sess := c.runner.Get(req.TaskID)
+	sess := c.getStarting(req.TaskID)
 	if sess == nil {
 		resp.Error = "session not found"
 		return nil
@@ -277,7 +289,7 @@ func (c *sessionCore) WriteInput(req *WriteReq, resp *StatusResp) error {
 
 // Resize changes a session's PTY dimensions.
 func (c *sessionCore) Resize(req *ResizeReq, resp *StatusResp) error {
-	sess := c.runner.Get(req.TaskID)
+	sess := c.getStarting(req.TaskID)
 	if sess == nil {
 		resp.Error = "session not found"
 		return nil
