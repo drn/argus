@@ -1,6 +1,7 @@
 package widget
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
@@ -59,4 +60,22 @@ func TestPendingBannerLineWidths(t *testing.T) {
 			t.Errorf("line %d has %d runes, want %d", i, len(runes), pendingBannerTextWidth)
 		}
 	}
+}
+
+func TestDrawLaunchBanner_CustomSubtitle(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 20)
+
+	rows := DrawLaunchBanner(screen, 0, 0, 80, LaunchSubtitleStarting)
+	testutil.Equal(t, rows, PendingBannerHeight())
+	var sb strings.Builder
+	for c := 0; c < 80; c++ {
+		s, _, _ := screen.Get(c, 9) // subtitle row
+		sb.WriteString(s)
+	}
+	testutil.Contains(t, sb.String(), "S T A R T I N G")
 }

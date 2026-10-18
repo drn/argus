@@ -133,6 +133,24 @@ func (p *HeraPage) applySelection() {
 		p.bindPane(p.coordPane, &p.coordBound, &p.coordKickedFor, &p.coordKickPending, p.sel.CoordTaskID(), "coord")
 		p.bindPane(p.agentPane, &p.agentBound, &p.agentKickedFor, &p.agentKickPending, p.sel.TaskID(), "agent")
 	}
+	p.syncLaunchStatus()
+}
+
+// syncLaunchStatus pushes each bound task's workflow status to its pane so the
+// pane can tell a task that has not started (status "pending", no session yet)
+// from a dead one, for the launch splash. Derived from the model — the same
+// DB-backed state whether the spawn came from this TUI or an MCP tool in the
+// daemon. An unbound or unknown task clears the status.
+func (p *HeraPage) syncLaunchStatus() {
+	status := map[string]string{}
+	m := p.rail.Model()
+	m.AnnotateRoles(func(rv *RoleView) {
+		if rv.Live && rv.TaskID != "" {
+			status[rv.TaskID] = rv.TaskStatus
+		}
+	})
+	p.coordPane.SetLaunchTaskStatus(status[p.coordBound])
+	p.agentPane.SetLaunchTaskStatus(status[p.agentBound])
 }
 
 // detailsOrch resolves the orchestrator whose Details pane (roster + orchestration

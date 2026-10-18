@@ -358,6 +358,14 @@ type TerminalPane struct {
 	// "No active session".
 	pending bool
 
+	// launchSplash opts the pane into the derived launch splash (see
+	// launchsplash.go). launchTaskStatus is the bound task's status as pushed by
+	// the owner; launchSince/launchStage are the cap clock and last-logged stage.
+	launchSplash     bool
+	launchTaskStatus string
+	launchSince      time.Time
+	launchStage      string
+
 	// closedOutBannerShown is true while the closed-out-task banner overlay
 	// is showing INSTEAD of the pane's ordinary dead-session rendering
 	// (replay content or the "Session not running" placeholder). Hera's
@@ -498,6 +506,7 @@ func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 	}
 	tp.session = sess
 	tp.pending = false
+	tp.resetLaunchSplashLocked()
 	tp.resetLiveEmulatorInPlace()
 	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
@@ -795,6 +804,7 @@ func (tp *TerminalPane) ResetVT() {
 	tp.paintCacheValid = false
 	tp.closedOutBannerShown = false
 	tp.closedOutDismissedOnce = false
+	tp.resetLaunchSplashLocked()
 	tp.mu.Unlock()
 	tp.ExitDiffMode()
 }
@@ -1887,6 +1897,11 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		// before the next Draw (heraReattach only arms it from the
 		// dead-session branch, so this is defensive, not expected).
 		drawClosedOutBanner(screen, x, y, width, height)
+		return
+	}
+
+	if sub := tp.launchSubtitle(sess); sub != "" {
+		drawLaunchSplash(screen, x, y, width, height, sub)
 		return
 	}
 
