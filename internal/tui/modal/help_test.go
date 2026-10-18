@@ -7,6 +7,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/keymap"
 )
@@ -72,10 +73,23 @@ func TestHelpModal_Draw(t *testing.T) {
 	// Sample a few bindings to catch regressions in the section list.
 	testutil.Contains(t, body, "new task")
 	testutil.Contains(t, body, "fork task")
-	testutil.Contains(t, body, "task/role switcher")
-	// ctrl+j/ctrl+k rebind (hera-nav-palette): the switcher moved off ctrl+k,
-	// freeing it for the new global command palette action — fail the build
-	// if either regresses silently.
+	// ctrl+j jump switcher (add-two-column-switcher): a CtxGlobal action
+	// generated from the keymap, plus the Projects rail's static row — fail
+	// the build if either regresses silently. ctrl+k stays the palette.
+	testutil.Contains(t, body, "jump switcher (tasks + projects)")
+	railHasCtrlJ := false
+	for _, sec := range SectionsFromKeymap(keymap.DefaultKeymap()) {
+		if sec.Title != "Projects View (rail)" {
+			continue
+		}
+		for _, b := range sec.Bindings {
+			if b.Key == "ctrl+j" && b.Action == "jump switcher" {
+				railHasCtrlJ = true
+			}
+		}
+	}
+	testutil.True(t, railHasCtrlJ)
+	testutil.False(t, strings.Contains(body, "task/role switcher"))
 	testutil.Contains(t, body, "ctrl+j")
 	testutil.Contains(t, body, "command palette")
 	// ctrl+g global jump-to-next-needs-input (add-hera-jump-question): a new
@@ -367,4 +381,27 @@ func TestHelpSections_NonEmpty(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSectionsFromKeymap_RailSwitcherRowFollowsRebind: the Projects rail
+// section's jump-switcher row is derived from the global.switcher binding, so
+// a config rebind shows the real key there too (not a stale literal ctrl+j).
+func TestSectionsFromKeymap_RailSwitcherRowFollowsRebind(t *testing.T) {
+	km, warns := keymap.Build(config.Keybindings{Global: map[string]string{"switcher": "ctrl+e"}})
+	testutil.Equal(t, len(warns), 0)
+	var rail []HelpBinding
+	for _, sec := range SectionsFromKeymap(km) {
+		if sec.Title == "Projects View (rail)" {
+			rail = sec.Bindings
+		}
+	}
+	found := false
+	for _, b := range rail {
+		if b.Action == "jump switcher" {
+			found = true
+			testutil.Equal(t, b.Key, "ctrl+e")
+		}
+		testutil.False(t, b.Key == "ctrl+j")
+	}
+	testutil.True(t, found)
 }

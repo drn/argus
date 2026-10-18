@@ -1281,3 +1281,28 @@ func TestSelection_KanbanTarget(t *testing.T) {
 		testutil.Nil(t, Selection{}.KanbanTarget())
 	})
 }
+
+func TestModel_Clone(t *testing.T) {
+	src := Model{
+		ExplicitLinks: map[int64]db.HeraOrchLink{},
+		Active:        []OrchView{{ID: 1, Name: "o", Roles: []RoleView{{RoleID: 11, Name: "w"}}}},
+		Pinned:        []OrchView{{ID: 2, Roles: []RoleView{{RoleID: 21}}}},
+		Freelance:     []RoleView{{RoleID: 91, Name: "f"}},
+	}
+	c := src.Clone()
+	testutil.DeepEqual(t, c, src)
+
+	c.Active[0].SubtreeNeedsInput = true
+	c.Active[0].Roles[0].NeedsInput = true
+	c.Pinned[0].Roles[0].Name = "changed"
+	c.Freelance[0].Name = "changed"
+	testutil.False(t, src.Active[0].SubtreeNeedsInput)
+	testutil.False(t, src.Active[0].Roles[0].NeedsInput)
+	testutil.Equal(t, src.Pinned[0].Roles[0].Name, "")
+	testutil.Equal(t, src.Freelance[0].Name, "f")
+
+	t.Run("nil sections stay nil", func(t *testing.T) {
+		e := Model{}.Clone()
+		testutil.True(t, e.Active == nil && e.Pinned == nil && e.Archived == nil && e.Freelance == nil)
+	})
+}

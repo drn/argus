@@ -225,7 +225,7 @@ Derived from: `internal/tui/widget/rolestatusicon.go` (`RoleStatusIcon`, `RoleSt
 
 ### Requirement: Rail keybindings (area 4)
 
-The system SHALL bind the following keys while the rail holds focus: `j`/`k` and Down/Up move the cursor; Left walks to the parent; Space collapses/expands the row under the cursor; `Tab`/`Backtab` and `Ctrl+Alt+Left`/`Ctrl+Alt+Right` walk the focus ladder; `Ctrl+Q` returns focus to the rail; `Enter` enters the selected role's pane (restarting a dead/suspended session first); `w` spawns a worker under the selected coordinator's orchestrator via the full new-task modal; `n` creates a new top-level coordinator via the full new-task modal; `r` renames the selected role/orchestrator; `a` HIDES the selected worker / sub-coordinator into its parent coordinator's nested archive (Tier 1 — reversible, keeps the session + worktree alive); `P` toggles pin; `s`/`S` advance/revert the selected role's hera status; `m`/`M` advance/revert the selected TOP-LEVEL coordinator's kanban status (see the dedicated kanban requirement — a wholly separate axis from `s`/`S`); `J` adopts a freelancer / re-parents a coordinator; `B` bounces the selected role — on a coordinator selection it forces an immediate recycle (kills and restarts its session on the same task, seeded from its mission, plan-DAG state, and any handoff note — see `coordinator-context-management`); on a worker or freelance selection it instead sends the role's live session a system-input instruction asking it to call `hera_status(handoff_note=..., request_recycle=true)` itself, which the existing self-service recycle path (see `coordinator-context-management`) then completes once the role's session goes idle — both variants sit behind a confirmation modal, and `B` remains a no-op on an empty selection; `C` clears the selected coordinator's archive (NUKES every Tier-1 hidden item under it); `Ctrl+Z` fullscreens the focused pane; `Ctrl+J` opens the unified task/role switcher (see the switcher requirement below) — like `Ctrl+Z`, this fires regardless of which region (rail, coordinator pane, or agent pane) holds focus; `/` filters the rail by name; `Ctrl+D` NUKES the selected role/orchestrator (Tier 2 — removes it and its whole subtree from the rail, reclaims worktrees). Every bound key SHALL appear in the help overlay's "Hera View (rail)" section.
+The system SHALL bind the following keys while the rail holds focus: `j`/`k` and Down/Up move the cursor; Left walks to the parent; Space collapses/expands the row under the cursor; `Tab`/`Backtab` and `Ctrl+Alt+Left`/`Ctrl+Alt+Right` walk the focus ladder; `Ctrl+Q` returns focus to the rail; `Enter` enters the selected role's pane (restarting a dead/suspended session first); `w` spawns a worker under the selected coordinator's orchestrator via the full new-task modal; `n` creates a new top-level coordinator via the full new-task modal; `r` renames the selected role/orchestrator; `a` HIDES the selected worker / sub-coordinator into its parent coordinator's nested archive (Tier 1 — reversible, keeps the session + worktree alive); `P` toggles pin; `s`/`S` advance/revert the selected role's hera status; `m`/`M` advance/revert the selected TOP-LEVEL coordinator's kanban status (see the dedicated kanban requirement — a wholly separate axis from `s`/`S`); `J` adopts a freelancer / re-parents a coordinator; `B` bounces the selected role — on a coordinator selection it forces an immediate recycle (kills and restarts its session on the same task, seeded from its mission, plan-DAG state, and any handoff note — see `coordinator-context-management`); on a worker or freelance selection it instead sends the role's live session a system-input instruction asking it to call `hera_status(handoff_note=..., request_recycle=true)` itself, which the existing self-service recycle path (see `coordinator-context-management`) then completes once the role's session goes idle — both variants sit behind a confirmation modal, and `B` remains a no-op on an empty selection; `C` clears the selected coordinator's archive (NUKES every Tier-1 hidden item under it); `Ctrl+Z` fullscreens the focused pane; `Ctrl+J` opens the jump switcher (the global `global.switcher` action — see the `jump-switcher` capability) — like `Ctrl+Z`, this fires regardless of which region (rail, coordinator pane, or agent pane) holds focus, via the global dispatch rather than a Hera-page key case; `/` filters the rail by name; `Ctrl+D` NUKES the selected role/orchestrator (Tier 2 — removes it and its whole subtree from the rail, reclaims worktrees). Every bound key SHALL appear in the help overlay's "Hera View (rail)" section.
 
 The rail SHALL NOT bind `R` (retire) or a rail-wide `Ctrl+R` (prune) — both are removed by this redesign. All rail mutation keys SHALL be suppressed while the rail is in `/` filter INPUT mode (every keystroke is filter input). Selection-acting keys (`w`, `r`, `a`, `P`, `s`/`S`, `m`/`M`, `J`, `B`, `C`, `Ctrl+D`) are no-ops on an empty selection; `n` is selection-INDEPENDENT and fires even on an empty rail. `m`/`M` additionally no-op on any non-empty selection that is not a top-level coordinator header (a role row, a nested/bridged sub-coordinator row, or a Freelance row) — see the dedicated kanban requirement.
 
@@ -268,7 +268,7 @@ Derived from: `internal/tui/hera/rail.go` (rail `InputHandler`), `internal/tui/h
 #### Scenario: ctrl+j opens the switcher regardless of focused region
 
 - **WHEN** the user presses `ctrl+j` while the rail, the coordinator pane, or the agent pane holds focus
-- **THEN** the unified task/role switcher opens in every case, and the key never reaches a focused pane's PTY
+- **THEN** the jump switcher opens in every case, and the key never reaches a focused pane's PTY
 
 ### Requirement: Three-region focus model and ladder (area 5)
 
@@ -2240,41 +2240,13 @@ Derived from: `internal/tui/hera/rail.go` (`buildRows`, `step`, `SetModel`, `Sel
 - **WHEN** the daemon restarts and the rail state store is reloaded
 - **THEN** the focused kanban group is recomputed from the restored selection ref, not read from any persisted kanban-fold field
 
-### Requirement: Unified task/role switcher is reachable from Hera
-
-The system SHALL make the unified task/role switcher (`ctrl+j`) reachable from the native Hera view in both rail focus and pane/coordinator focus. In rail focus the switcher was previously unreachable (no binding existed); in pane/coordinator focus the key previously leaked to the live agent PTY. The switcher's entry list SHALL include Hera role bindings alongside plain argus tasks, using the same needs-input union (`heraManaged` ∪ plain in-progress tasks) the Hera rail's own attention accounting already computes.
-
-#### Scenario: Switcher opens from rail focus
-
-- **WHEN** the user presses `ctrl+j` while the Hera rail holds focus
-- **THEN** the unified switcher opens, listing both plain argus tasks and Hera roles
-
-#### Scenario: Switcher opens from a live pane, overriding PTY passthrough
-
-- **WHEN** the user presses `ctrl+j` while a Hera coordinator or worker terminal pane holds focus
-- **THEN** the switcher opens and the `ctrl+j` byte does not reach the pane's PTY
-
-### Requirement: Switcher defaults to needs-input-first ordering
-
-The switcher's entry list SHALL sort entries with `(?)` (needs-input) first, ahead of every other entry, then alphabetically. Pressing `Enter` immediately after opening the switcher (no filter text typed) SHALL therefore select the first needs-input entry; arrow-down walks to the 2nd, 3rd, and so on.
-
-#### Scenario: Enter with no filter jumps to the first needs-input entry
-
-- **WHEN** the switcher is opened and at least one entry needs input
-- **THEN** the topmost entry is a needs-input entry, and pressing `Enter` immediately jumps to it
-
-#### Scenario: Arrow-down walks through remaining needs-input entries before others
-
-- **WHEN** more than one entry needs input
-- **THEN** arrow-down visits every needs-input entry, in order, before reaching the first non-needs-input entry
-
 ### Requirement: Selecting a folded-away Hera role expands its ancestors before landing
 
-When the switcher's selected entry is a Hera role nested under one or more collapsed ancestor coordinators in the rail, the system SHALL first expand every ancestor on the role's canonical parent chain (uncollapsing them, exactly as a user Space-toggle would, persisting the expansion) before selecting the role and moving focus to its pane — mirroring the existing plan-view `jumpToLeaf` ancestor-expansion behavior.
+When the jump switcher's selected Projects-column row is a Hera role nested under one or more collapsed ancestor coordinators in the real Projects rail, the system SHALL first expand every ancestor on the role's canonical parent chain in the real rail (uncollapsing them, exactly as a user Space-toggle would, persisting the expansion) before selecting the role and moving focus to its pane — mirroring the existing plan-view `jumpToLeaf` ancestor-expansion behavior.
 
 #### Scenario: Selecting a buried role expands its ancestor chain
 
-- **WHEN** the user selects, from the switcher, a Hera role whose containing coordinator (or a further ancestor) is currently collapsed
+- **WHEN** the user selects, from the jump switcher's Projects column, a Hera role whose containing coordinator (or a further ancestor) is currently collapsed in the real Projects rail
 - **THEN** the system uncollapses that role's entire ancestor chain, then lands the rail selection and focus on the role's pane — the jump does not silently no-op
 
 ### Requirement: Command palette is reachable from Hera and no longer passes ctrl+k through to a pane
@@ -2728,7 +2700,6 @@ Each candidate's most recent originating Hera orchestrator (if any) is resolved 
 - **WHEN** a candidate's task has held Hera roles in two different orchestrators at different times, both bindings since ended
 - **THEN** the candidate resolves to the orchestrator of the more recent binding, by `started_at`
 
-
 ### Requirement: Hera pane respawn uses the pane's PTY size
 
 When a session is revived, size-drift-kicked, or restarted while the Hera tab is active and a Hera terminal pane is bound to that task, the new session SHALL be spawned at that pane's PTY size rather than the host terminal's size. When no laid-out Hera pane shows the task, or the Hera tab is not active, the host-terminal size SHALL be used.
@@ -2740,3 +2711,4 @@ When a session is revived, size-drift-kicked, or restarted while the Hera tab is
 #### Scenario: Revive with no bound pane
 - **WHEN** a session is started for a task no Hera pane is showing
 - **THEN** it starts at the host-terminal size as before
+

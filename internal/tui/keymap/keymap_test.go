@@ -70,7 +70,7 @@ func TestResolve_Defaults(t *testing.T) {
 		{CtxGlobal, ev(tcell.KeyCtrlK, 0, 0), ActGlobalPalette},
 		{CtxGlobal, ev(tcell.KeyCtrlG, 0, 0), ActGlobalJumpNeedsInput},
 		{CtxGlobal, ev(tcell.KeyCtrlB, 0, 0), ActGlobalRestoreRail},
-		{CtxAgent, ev(tcell.KeyCtrlJ, 0, 0), ActAgentSwitcher},
+		{CtxGlobal, ev(tcell.KeyCtrlJ, 0, 0), ActGlobalSwitcher},
 		{CtxTaskList, ev(tcell.KeyRune, 'n', 0), ActTaskNew},
 		{CtxTaskList, ev(tcell.KeyRune, 'S', 0), ActTaskStatusRev},
 		{CtxAgent, ev(tcell.KeyCtrlL, 0, 0), ActAgentLinks},
@@ -297,4 +297,47 @@ func TestBinding_StringFallback(t *testing.T) {
 	// key falls back to key(N).
 	testutil.Equal(t, (Binding{Key: tcell.KeyHome}).String(), "home")
 	testutil.Contains(t, (Binding{Key: tcell.KeyF5}).String(), "key(")
+}
+
+// TestGlobalSwitcher_ReplacesAgentSwitcher pins add-two-column-switcher's
+// keymap rename: ctrl+j is the GLOBAL jump switcher, the agent-context
+// agent.switcher action is gone (its old override no longer applies), and a
+// global.switcher override moves the key.
+func TestGlobalSwitcher_ReplacesAgentSwitcher(t *testing.T) {
+	t.Run("ctrl+j no longer resolves in the agent context", func(t *testing.T) {
+		_, ok := DefaultKeymap().Resolve(CtxAgent, ev(tcell.KeyCtrlJ, 0, 0))
+		testutil.False(t, ok)
+	})
+
+	t.Run("an old agent.switcher override is ignored", func(t *testing.T) {
+		km, warns := Build(config.Keybindings{Agent: map[string]string{"switcher": "ctrl+e"}})
+		testutil.Equal(t, len(warns), 0)
+		_, ok := km.Resolve(CtxAgent, ev(tcell.KeyCtrlE, 0, 0))
+		testutil.False(t, ok)
+		got, ok := km.Resolve(CtxGlobal, ev(tcell.KeyCtrlJ, 0, 0))
+		testutil.True(t, ok)
+		testutil.Equal(t, got, ActGlobalSwitcher)
+	})
+
+	t.Run("global.switcher override moves the key", func(t *testing.T) {
+		km, warns := Build(config.Keybindings{Global: map[string]string{"switcher": "ctrl+e"}})
+		testutil.Equal(t, len(warns), 0)
+		got, ok := km.Resolve(CtxGlobal, ev(tcell.KeyCtrlE, 0, 0))
+		testutil.True(t, ok)
+		testutil.Equal(t, got, ActGlobalSwitcher)
+		_, ok = km.Resolve(CtxGlobal, ev(tcell.KeyCtrlJ, 0, 0))
+		testutil.False(t, ok)
+	})
+
+	t.Run("labelled and listed in the Global help rows", func(t *testing.T) {
+		testutil.Equal(t, DefaultKeymap().ActionLabel(ActGlobalSwitcher), "jump switcher (tasks + projects)")
+		found := false
+		for _, r := range DefaultKeymap().HelpRows(CtxGlobal) {
+			if r.Label == "jump switcher (tasks + projects)" {
+				found = true
+				testutil.Equal(t, r.Key, "ctrl+j")
+			}
+		}
+		testutil.True(t, found)
+	})
 }

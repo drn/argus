@@ -67,8 +67,7 @@ type mergeSafetyCandidate struct {
 const mergeSafetyTierCoordinatorInferred = "coordinator-inferred"
 
 // mergeSafetyRowKind distinguishes a section header, a coordinator group
-// header, and a candidate row in MergeSafetyPopup's flattened render list
-// (mirrors switcherRowKind).
+// header, and a candidate row in MergeSafetyPopup's flattened render list.
 type mergeSafetyRowKind uint8
 
 const (

@@ -118,6 +118,7 @@ func (a *App) globalActionRegistry() map[keymap.Action]func() {
 				a.openConfirmPrune()
 			}
 		},
+		keymap.ActGlobalSwitcher:       func() { a.openJumpSwitcher() },
 		keymap.ActGlobalJumpNeedsInput: func() { a.jumpToNextNeedsInput() },
 		keymap.ActGlobalRestoreRail:    func() { a.restoreHeraRailExcursion() },
 	}
@@ -133,7 +134,6 @@ func (a *App) agentActionRegistry() map[keymap.Action]func() {
 		keymap.ActAgentLinks:     func() { a.openAgentLinks() },
 		keymap.ActAgentArtifacts: func() { a.openAgentArtifacts() },
 		keymap.ActAgentSession:   func() { a.openSessionPicker() },
-		keymap.ActAgentSwitcher:  func() { a.openTaskSwitcher() },
 		keymap.ActAgentOpenPR:    func() { a.openPR() },
 		keymap.ActAgentZoom:      func() { a.toggleAgentZen() },
 		keymap.ActAgentCopy: func() {
@@ -290,7 +290,13 @@ func (a *App) paletteApplicableActions() []paletteRow {
 	km := a.activeKeymap()
 	switch {
 	case a.mode == modeAgent:
-		return rowsForContext(km, keymap.CtxAgent, a.agentActionRegistry())
+		// The jump switcher is a CtxGlobal action (add-two-column-switcher)
+		// that nonetheless fires from the agent view, so it is the one global
+		// row offered here; the rest of the global set stays gated off.
+		rows := rowsForContext(km, keymap.CtxAgent, a.agentActionRegistry())
+		return append(rows, rowsForContext(km, keymap.CtxGlobal, map[keymap.Action]func(){
+			keymap.ActGlobalSwitcher: a.openJumpSwitcher,
+		})...)
 	case a.mode == modeTaskList && a.header.ActiveTab() == widget.TabHera && a.heraPage != nil && !a.heraPage.IsRemote():
 		rows := a.heraLiteralRows()
 		rows = append(rows, rowsForContext(km, keymap.CtxHeraRail, a.heraRailActionRegistry())...)

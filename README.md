@@ -196,7 +196,7 @@ below. The `?` overlay always shows your active bindings.
 | `Cmd+→`   | Enter the Projects rail (Settings → Appearance → cross-tab arrow navigation) |
 | `1` / `2` / `3` | Switch tabs (Tasks / Projects / Settings) |
 | `ctrl+l`  | Refresh screen (wipe ghost cells; works in every non-agent tab) |
-| `ctrl+j`  | Open the unified **task/role switcher** (see the Agent View table below — same global action, also reachable from the plain Task List) |
+| `ctrl+j`  | Open the **jump switcher (tasks + projects)**: a two-column popup with the Tasks list on the left (Hera-managed tasks always hidden, archived excluded) and the Projects rail on the right. `↑`/`↓` move, `←`/`→` switch column, typing filters both columns at once, `ctrl+g` hops to the next `(?)`, `Enter` goes there (a Projects row lands on that exact rail row in the Projects tab), `Esc` clears the filter then closes. Opens on the first `(?)`, else on the task you're viewing. Global — works from every tab, the agent view (zoomed or not), and every Projects pane, never reaching a PTY. Rebind with `[keybindings.global] switcher` |
 | `ctrl+k`  | Open the **command palette** — type to filter the actions applicable right here (this tab/pane's own actions + the always-available globals), `↑`/`↓` to select, `Enter` runs it immediately. Works from every tab and pane, including inside the agent view and a live Projects-tab pane |
 | `ctrl+g`  | Jump directly to the next role needing input (no popup, no typing) — press again to cycle to the next one, wrapping around. The rail's fold/selection state is snapshotted the instant you're first interrupted; once every role is clear, pressing `ctrl+g` again restores that snapshot instead of just saying there's nothing to do. Works from every tab and pane |
 | `ctrl+b`  | Restore the rail to its pre-interruption fold/selection snapshot, at any time — even with roles still needing input (unlike `ctrl+g` above, which only restores once they're all clear). No-op if nothing is snapshotted. Works from every tab and pane |
@@ -210,9 +210,8 @@ below. The `?` overlay always shows your active bindings.
 | `Esc`                 | Refocus terminal from diff/files; on the terminal, forwarded to the agent (does NOT exit the agent view) |
 | `Cmd+←` / `Cmd+→`     | Switch panels (no-op when zoomed — side panels are hidden). With cross-tab arrow navigation on, `Cmd+→` from the rightmost visible pane (files unzoomed, the terminal when zoomed) hops to the Projects rail; `Cmd+←` from the rail returns to this same agent view (same zoom, rightmost pane) |
 | `Cmd+↑` / `Cmd+↓`     | Navigate between tasks                                                    |
-| `ctrl+j`              | Open the unified **task/role switcher** (fuzzy-search all tasks AND Hera-managed roles by name; entries needing input are pinned to the top, so an empty-filter `Enter` jumps straight to the first one). Selecting a Hera-managed entry switches to the Projects tab and lands on it there (expanding any folded ancestor coordinator first) instead of opening the classic per-task view |
 | `ctrl+k`              | Open the command palette (see the Task List table above — same global action) |
-| `ctrl+g`              | Jump directly to the next role needing input — no popup, no typing, independent of the switcher above (see the Task List table above — same global action) |
+| `ctrl+g`              | Jump directly to the next role needing input — no popup, no typing (see the Task List table above — same global action) |
 | `ctrl+b`              | Restore the rail's pre-interruption fold/selection snapshot at any time (see the Task List table above — same global action) |
 | `ctrl+z`              | Toggle the git + file side panes (default layout set by Settings → Appearance → "Default agent view") |
 | `ctrl+l`              | Open link picker (fuzzy search all session URLs)                          |
@@ -234,7 +233,7 @@ The Projects tab (`2`) has three regions: a left **rail**, a middle **coordinato
 | `Tab`           | Enter a pane from the rail. **Once a terminal pane is focused, `Tab` / `Shift+Tab` pass through to the agent's PTY** so its autocomplete works (e.g. `/plugi`+`Tab` → `/plugin`) — they no longer cycle focus |
 | `ctrl+alt+←` / `ctrl+alt+→` | Move focus between panes once you're in one (the focus ladder; `Tab` is reserved for the agent there). `ctrl+q` steps back to the rail |
 | `ctrl+z`        | Fullscreen the focused content pane (rail stays; the other pane hides). Also traps `^Z` so it can never suspend the pane's agent |
-| `ctrl+j`        | Open the unified task/role switcher — works from the rail AND from a focused pane (never reaches the PTY). See the Agent View table above |
+| `ctrl+j`        | Open the jump switcher — works from the rail AND from a focused pane (never reaches the PTY). See the Task List table above |
 | `ctrl+k`        | Open the command palette — works from the rail AND from a focused pane (never reaches the PTY; this replaces the old raw pass-through of `ctrl+k` into a pane). From a pane its rows also include that pane's own fullscreen/copy actions |
 | `ctrl+g`        | Jump directly to the next role needing input, cycling on repeat (wraps around) — works from the rail AND from a focused pane (never reaches the PTY). See the Agent View table above |
 | `ctrl+b`        | Restore the rail's pre-interruption fold/selection snapshot at any time — works from the rail AND from a focused pane (never reaches the PTY). See the Agent View table above |

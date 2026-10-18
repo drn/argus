@@ -9,8 +9,7 @@ import (
 )
 
 // TaskStatusInputs carries the in_progress sub-state signals that pick a task's
-// status glyph. They mirror the per-task maps drawTaskRow consults so the task
-// list and the task switcher render an identical indicator column.
+// status glyph. They mirror the per-task maps drawTaskRow consults.
 type TaskStatusInputs struct {
 	NeedsInput    bool // agent rendered a blocking prompt — highest precedence
 	IdleUnvisited bool // idle and not viewed since going idle (moon with stars)
@@ -19,8 +18,8 @@ type TaskStatusInputs struct {
 }
 
 // TaskStatusIcon resolves a task's status glyph + style — the SINGLE source of
-// truth for the indicator column shared by the task list (drawTaskRow) and the
-// task switcher modal, so the two surfaces can never drift. `frame` is the
+// truth for the task list's indicator column (drawTaskRow; the jump switcher's
+// Tasks column is a private TaskListView, so it renders the same glyphs). `frame` is the
 // current spinner animation frame (the actively-running in_progress case
 // animates via SpinnerFrame). The in_progress precedence matches drawTaskRow:
 // needs-input → idle-unvisited → idle/absent → actively-running spinner.

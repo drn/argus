@@ -15,6 +15,7 @@ import (
 	"github.com/drn/argus/internal/tui/keymap"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
+	"github.com/drn/argus/internal/uxlog"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -84,6 +85,16 @@ type TaskListView struct {
 	// Filter state: `/` activates filter input, typing narrows visible tasks.
 	filtering bool   // true while the filter input is focused
 	filter    string // current filter text (case-insensitive substring match)
+	// preFilterID is the task selected when SetFilter moved the query from
+	// empty to non-empty; SetFilter("") restores it (jump switcher, D7).
+	preFilterID string
+
+	// focused switches the panel border to the focused palette and
+	// cursorDimmed renders the cursor row as an unfocused marker instead of
+	// the selected style. Both default false (today's look); the jump
+	// switcher's private copy drives them to show which column is active.
+	focused      bool
+	cursorDimmed bool
 
 	// hideHeraManaged hides every hera-managed task from the Tasks tab — both
 	// hera-spawned workers and live coordinators (the roles that live in the
@@ -406,15 +417,11 @@ func (tl *TaskListView) matchesFilter(t *model.Task) bool {
 	return true
 }
 
-// buildRows flattens tasks into display rows grouped by project.
-func (tl *TaskListView) buildRows() {
-	tl.rows = nil
-
-	// Separate pinned, active, and archived tasks, applying filter.
-	// Pinned takes precedence over all other section flags so a pinned-and-archived
-	// task surfaces at the top; the precedence order below archive > active is
-	// preserved for unpinned tasks.
-	var pinned, active, archived []*model.Task
+// partitionTasks splits the tasks buildRows would show into the Pinned,
+// Active and Archive sections (taskSection precedence: pinned wins over
+// archived), applying the filter and the hide-hera-managed rule. Shared by
+// buildRows and scanOrder so the two can never disagree on what is visible.
+func (tl *TaskListView) partitionTasks() (pinned, active, archived []*model.Task) {
 	for _, t := range tl.tasks {
 		if !tl.matchesFilter(t) {
 			continue
@@ -427,15 +434,23 @@ func (tl *TaskListView) buildRows() {
 		if tl.hideHeraManaged && (tl.isHeraSpawnedWorker(t) || tl.managed[t.ID]) {
 			continue
 		}
-		switch {
-		case t.Pinned:
+		switch taskSection(t) {
+		case sectionPinned:
 			pinned = append(pinned, t)
-		case t.Archived:
+		case sectionArchive:
 			archived = append(archived, t)
 		default:
 			active = append(active, t)
 		}
 	}
+	return pinned, active, archived
+}
+
+// buildRows flattens tasks into display rows grouped by project.
+func (tl *TaskListView) buildRows() {
+	tl.rows = nil
+
+	pinned, active, archived := tl.partitionTasks()
 
 	filterActive := tl.filter != ""
 
@@ -900,6 +915,101 @@ func (tl *TaskListView) applyFilter() {
 	tl.notifyCursorChange()
 }
 
+// SetFilter sets the filter query non-interactively (no input mode, no `/`
+// line) and rebuilds rows with the same matchesFilter semantics the `/`
+// filter uses. A non-empty query lands the cursor on the first matching task
+// (so Enter picks the top candidate); returning to an empty query restores the
+// task selected before filtering began, falling back to the current selection
+// when that task is no longer visible. Setting the current query again is a
+// no-op. Used by the jump switcher's private copy (add-two-column-switcher).
+func (tl *TaskListView) SetFilter(q string) {
+	if q == tl.filter {
+		return
+	}
+	cur := ""
+	if t := tl.SelectedTask(); t != nil {
+		cur = t.ID
+	}
+	if tl.filter == "" {
+		tl.preFilterID = cur
+	}
+	tl.filter = q
+	tl.buildRows()
+	if q != "" {
+		tl.cursor = 0
+		tl.clampCursor()
+	} else {
+		target := tl.preFilterID
+		tl.preFilterID = ""
+		if !tl.selectByID(target) && !tl.selectByID(cur) {
+			tl.clampCursor()
+		}
+	}
+	tl.notifyCursorChange()
+	uxlog.Log("[tasklist] set filter q=%q visible=%d", q, len(tl.VisibleTaskIDs()))
+}
+
+// scanOrder returns every task that buildRows would show (filter and
+// hide-hera-managed applied) in display order — Pinned, then Active projects
+// alphabetically, then Archive — as if every project were expanded. The
+// one-expanded-project fold is deliberately ignored so a needs-input scan can
+// reach tasks in folded projects.
+func (tl *TaskListView) scanOrder() []*model.Task {
+	pinned, active, archived := tl.partitionTasks()
+	var out []*model.Task
+	for _, sec := range [][]*model.Task{pinned, active, archived} {
+		order, groups := groupByProject(sec)
+		for _, proj := range order {
+			out = append(out, groups[proj]...)
+		}
+	}
+	return out
+}
+
+// showsNeedsInput reports whether a task row renders the needs-input glyph —
+// the same in_progress-gated predicate widget.TaskStatusIcon applies.
+func (tl *TaskListView) showsNeedsInput(t *model.Task) bool {
+	return t.Status == model.StatusInProgress && tl.needsInput[t.ID]
+}
+
+// NeedsInputTaskIDs returns the IDs of every visible task that shows the
+// needs-input glyph, in scanOrder (folded projects included).
+func (tl *TaskListView) NeedsInputTaskIDs() []string {
+	return tl.NeedsInputTaskIDsAfter("")
+}
+
+// NeedsInputTaskIDsAfter returns the needs-input task IDs that come strictly
+// after afterID in scanOrder, without wrapping. An empty or unknown afterID
+// returns every candidate.
+func (tl *TaskListView) NeedsInputTaskIDsAfter(afterID string) []string {
+	order := tl.scanOrder()
+	start := 0
+	for i, t := range order {
+		if t.ID == afterID {
+			start = i + 1
+			break
+		}
+	}
+	var ids []string
+	for _, t := range order[start:] {
+		if tl.showsNeedsInput(t) {
+			ids = append(ids, t.ID)
+		}
+	}
+	return ids
+}
+
+// Expanded returns the currently expanded Active-section project.
+func (tl *TaskListView) Expanded() string { return tl.expanded }
+
+// SetFocused switches the panel border between the focused and unfocused
+// palette (mirrors hera.Rail.SetFocused).
+func (tl *TaskListView) SetFocused(v bool) { tl.focused = v }
+
+// SetCursorDimmed renders the cursor row as an unfocused marker (a dimmed '›'
+// in the prefix, name in the normal style) instead of the selected highlight.
+func (tl *TaskListView) SetCursorDimmed(v bool) { tl.cursorDimmed = v }
+
 // handleFilterInput processes key events while the filter input is active.
 // Returns true if the event was consumed.
 func (tl *TaskListView) handleFilterInput(event *tcell.EventKey) bool {
@@ -1105,13 +1215,17 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 
 	// Show filter text in panel title when active.
 	title := " Tasks "
-	inner := widget.DrawBorderedPanel(screen, x, y, width, height, title, theme.StyleBorder)
+	borderStyle := theme.StyleBorder
+	if tl.focused {
+		borderStyle = theme.StyleFocusedBorder
+	}
+	inner := widget.DrawBorderedPanel(screen, x, y, width, height, title, borderStyle)
 	titleCol := x + 1 + ansi.StringWidth(title) // cursor starts after the title text
 	if tl.filter != "" || tl.filtering {
 		filterStr := "/" + tl.filter
 		col := titleCol
 		if col < x+width-1 {
-			screen.SetContent(col, y, '[', nil, theme.StyleBorder)
+			screen.SetContent(col, y, '[', nil, borderStyle)
 			col++
 		}
 		for _, r := range filterStr {
@@ -1122,7 +1236,7 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 			col++
 		}
 		if col < x+width-1 {
-			screen.SetContent(col, y, ']', nil, theme.StyleBorder)
+			screen.SetContent(col, y, ']', nil, borderStyle)
 		}
 	}
 	if inner.W <= 0 || inner.H <= 0 {
@@ -1329,8 +1443,7 @@ func (tl *TaskListView) drawPinnedHeader(screen tcell.Screen, x, y, w int) {
 }
 
 func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *model.Task, cursor bool) {
-	// Status indicator — resolved by the shared helper so the task switcher
-	// renders a glyph-identical indicator column.
+	// Status indicator — resolved by the shared widget.TaskStatusIcon classifier.
 	statusChar, statusStyle := widget.TaskStatusIcon(task.Status, widget.TaskStatusInputs{
 		NeedsInput:    tl.needsInput[task.ID],
 		IdleUnvisited: tl.idleUnvisited[task.ID],
@@ -1338,7 +1451,12 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 		Idle:          tl.idle[task.ID],
 	}, tl.animFrame)
 
-	// Build the row
+	// Build the row. A dimmed cursor (the jump switcher's inactive column)
+	// keeps the normal name style and marks the row with a dim '›' instead.
+	dimCursor := cursor && tl.cursorDimmed
+	if dimCursor {
+		cursor = false
+	}
 	nameStyle := theme.StyleNormal
 	if cursor {
 		nameStyle = theme.StyleSelected
@@ -1351,6 +1469,9 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 	prefix := "    "
 	col := x
 	widget.DrawText(screen, col, y, len(prefix), prefix, theme.StyleDefault)
+	if dimCursor {
+		screen.SetContent(col+1, y, '›', nil, theme.StyleDimmed)
+	}
 	col += len(prefix)
 
 	screen.SetContent(col, y, statusChar, nil, statusStyle)
@@ -1441,6 +1562,14 @@ func (tl *TaskListView) AdjacentTask(currentID string, direction int) *model.Tas
 // SelectByID moves the cursor to the row matching the given task ID.
 // If the task is in a collapsed project, expands it first.
 func (tl *TaskListView) SelectByID(id string) {
+	tl.selectByID(id)
+}
+
+// selectByID is SelectByID reporting whether a visible row matched.
+func (tl *TaskListView) selectByID(id string) bool {
+	if id == "" {
+		return false
+	}
 	// Find the task to get its project, then expand it so the row exists.
 	// Pinned tasks need no expansion bookkeeping — that section is always open.
 	for _, t := range tl.tasks {
@@ -1462,9 +1591,10 @@ func (tl *TaskListView) SelectByID(id string) {
 		if r.kind == rowTask && r.task.ID == id {
 			tl.cursor = i
 			tl.notifyCursorChange()
-			return
+			return true
 		}
 	}
+	return false
 }
 
 // SetExpanded sets which project is expanded.

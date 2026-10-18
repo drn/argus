@@ -39,6 +39,7 @@ const (
 	ActGlobalPalette        Action = "global.palette"
 	ActGlobalJumpNeedsInput Action = "global.jump_needs_input"
 	ActGlobalRestoreRail    Action = "global.restore_rail"
+	ActGlobalSwitcher       Action = "global.switcher"
 
 	// Task list
 	ActTaskNew       Action = "tasklist.new"
@@ -59,7 +60,6 @@ const (
 	ActAgentLinks      Action = "agent.links"
 	ActAgentArtifacts  Action = "agent.artifacts"
 	ActAgentSession    Action = "agent.session"
-	ActAgentSwitcher   Action = "agent.switcher"
 	ActAgentOpenPR     Action = "agent.open_pr"
 	ActAgentZoom       Action = "agent.zoom"
 	ActAgentCopy       Action = "agent.copy"
@@ -149,7 +149,7 @@ var defaultSpecs = map[Context]map[Action]string{
 		ActGlobalRefresh: "ctrl+l", ActGlobalDestroy: "ctrl+d", ActGlobalFork: "ctrl+f",
 		ActGlobalOpenRepo: "ctrl+o", ActGlobalOpenPR: "ctrl+p", ActGlobalPrune: "ctrl+r",
 		ActGlobalPalette: "ctrl+k", ActGlobalJumpNeedsInput: "ctrl+g",
-		ActGlobalRestoreRail: "ctrl+b",
+		ActGlobalRestoreRail: "ctrl+b", ActGlobalSwitcher: "ctrl+j",
 	},
 	CtxTaskList: {
 		ActTaskNew: "n", ActTaskStatusAdv: "s", ActTaskStatusRev: "S",
@@ -159,7 +159,7 @@ var defaultSpecs = map[Context]map[Action]string{
 		ActTaskArtifacts: "v",
 	},
 	CtxAgent: {
-		ActAgentLinks: "ctrl+l", ActAgentSession: "ctrl+r", ActAgentSwitcher: "ctrl+j",
+		ActAgentLinks: "ctrl+l", ActAgentSession: "ctrl+r",
 		ActAgentArtifacts: "ctrl+t",
 		ActAgentOpenPR:    "ctrl+p", ActAgentZoom: "ctrl+z", ActAgentCopy: "ctrl+y",
 		ActAgentPaneLeft: "cmd+left", ActAgentPaneRight: "cmd+right",
@@ -200,6 +200,7 @@ var actionLabels = map[Action]string{
 	ActGlobalOpenRepo: "open repo", ActGlobalOpenPR: "open PR", ActGlobalPrune: "prune completed",
 	ActGlobalPalette: "command palette", ActGlobalJumpNeedsInput: "jump to next needs-input (?); jumps back once all clear",
 	ActGlobalRestoreRail: "jump back now, even with (?) still open",
+	ActGlobalSwitcher:    "jump switcher (tasks + projects)",
 
 	ActTaskNew: "new task", ActTaskStatusAdv: "advance status", ActTaskStatusRev: "revert status",
 	ActTaskArchive: "toggle archive", ActTaskPin: "toggle pin", ActTaskRename: "rename",
@@ -207,7 +208,7 @@ var actionLabels = map[Action]string{
 	ActTaskDown: "navigate down", ActTaskUp: "navigate up", ActTaskInbox: "view message inbox (read-only)",
 	ActTaskArtifacts: "view task artifacts",
 
-	ActAgentLinks: "link picker", ActAgentSession: "switch Claude session", ActAgentSwitcher: "task/role switcher",
+	ActAgentLinks: "link picker", ActAgentSession: "switch Claude session",
 	ActAgentArtifacts: "view task artifacts",
 	ActAgentOpenPR:    "open PR", ActAgentZoom: "toggle single-pane (zoom)", ActAgentCopy: "copy staged text",
 	ActAgentPaneLeft: "focus pane left", ActAgentPaneRight: "focus pane right",
@@ -289,10 +290,10 @@ func (k *Keymap) ActionLabel(a Action) string {
 var contextOrder = map[Context][]Action{
 	CtxGlobal: {ActGlobalQuit, ActGlobalHelp, ActGlobalTabTasks, ActGlobalTabHera, ActGlobalTabSettings,
 		ActGlobalRefresh, ActGlobalDestroy, ActGlobalFork, ActGlobalOpenRepo, ActGlobalOpenPR, ActGlobalPrune,
-		ActGlobalPalette, ActGlobalJumpNeedsInput, ActGlobalRestoreRail},
+		ActGlobalPalette, ActGlobalSwitcher, ActGlobalJumpNeedsInput, ActGlobalRestoreRail},
 	CtxTaskList: {ActTaskNew, ActTaskDown, ActTaskUp, ActTaskStatusAdv, ActTaskStatusRev, ActTaskArchive,
 		ActTaskPin, ActTaskRename, ActTaskCopy, ActTaskFilter, ActTaskHera, ActTaskInbox, ActTaskArtifacts},
-	CtxAgent: {ActAgentLinks, ActAgentArtifacts, ActAgentSession, ActAgentSwitcher, ActAgentOpenPR, ActAgentZoom, ActAgentCopy,
+	CtxAgent: {ActAgentLinks, ActAgentArtifacts, ActAgentSession, ActAgentOpenPR, ActAgentZoom, ActAgentCopy,
 		ActAgentPaneLeft, ActAgentPaneRight, ActAgentTaskPrev, ActAgentTaskNext,
 		ActAgentScrollUp, ActAgentScrollDown, ActAgentScrollPgUp, ActAgentScrollPgDn, ActAgentScrollEnd},
 	CtxFilePnl: {ActFileDown, ActFileUp, ActFileFinder, ActFileOpen, ActFileEditor, ActFileTerminal},
