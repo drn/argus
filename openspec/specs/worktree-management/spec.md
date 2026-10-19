@@ -316,9 +316,11 @@ This step SHALL be best-effort: a failure to scan for or signal a process SHALL 
 
 ### Requirement: Branch namespace for hera-managed worker spawns
 
-Hera worker spawn — both the ad-hoc spawn of a brand-new born-bound worker and the materialization of a pre-planned worker or subcoord node from a plan-DAG — SHALL pass the spawning orchestrator's name as the branch namespace, so the resulting branch is `argus/<orchestrator-name>/<role-name>` instead of `argus/<role-name>`. For a subcoord node (which materializes a new coordinator agent occupying a worker slot in its PARENT orchestrator's plan-DAG), the namespace SHALL be the PARENT orchestrator's name, not the newly minted child orchestrator's name.
+Hera worker spawn — both the ad-hoc spawn of a brand-new born-bound worker and the materialization of a pre-planned worker or subcoord node from a plan-DAG — SHALL resolve the spawning orchestrator's name as the branch namespace in the target source repository, so the resulting branch is `argus/<orchestrator-name>/<role-name>` instead of `argus/<role-name>`. For a subcoord node (which materializes a new coordinator agent occupying a worker slot in its PARENT orchestrator's plan-DAG), the namespace SHALL be the PARENT orchestrator's name, not the newly minted child orchestrator's name.
 
-A root hera-coordinator spawn (which mints a brand-new top-level orchestrator, rather than occupying a worker slot within an existing one) SHALL ALSO pass its own freshly minted orchestrator's name as the branch namespace, using a branch leaf distinct from the orchestrator name itself (e.g. derived from the coordinator role name), so the resulting branch is `argus/<orchestrator-name>/<distinct-leaf>` and never the bare `argus/<orchestrator-name>` form. This SHALL apply even though the coordinator has no separate pre-existing orchestrator to namespace under — it namespaces under the orchestrator it itself just created, so that orchestrator's name is NEVER used as a leaf ref anywhere, only ever as a directory prefix. This guarantees a worker later spawned under the same orchestrator (which namespaces under that same name per this requirement's first paragraph) can never collide with the coordinator's own branch.
+If the sanitized namespace root is already a local branch leaf, resolution SHALL select a deterministic non-colliding fallback based on the orchestrator ID, reserving suffix space before sanitization. It SHALL inspect packed as well as loose local heads, check fallback candidates, and use the same fallback on repeated spawns with the same blocking refs. Removing a blocking ref MAY restore the ordinary namespace on later spawns; existing branches SHALL remain unchanged. Git/config lookup errors SHALL log and fail open to the ordinary namespace.
+
+A root hera-coordinator spawn (which mints a brand-new top-level orchestrator, rather than occupying a worker slot within an existing one) SHALL ALSO pass its own freshly minted orchestrator's name as the branch namespace, using a branch leaf distinct from the orchestrator name itself (e.g. derived from the coordinator role name), so the resulting branch is `argus/<orchestrator-name>/<distinct-leaf>` and never the bare `argus/<orchestrator-name>` form. This SHALL apply even though the coordinator has no separate pre-existing orchestrator to namespace under — it namespaces under the orchestrator it itself just created, so this spawn creates no bare namespace-root leaf. A worker later spawned under the same orchestrator cannot collide with the freshly created coordinator's own branch at the namespace root. Existing tasks that become coordinators SHALL retain their original branches and use collision-aware worker resolution above.
 
 Orchestrator-name resolution for the namespace SHALL fail open: if the orchestrator cannot be resolved, the spawn SHALL proceed with an empty namespace (the flat `argus/<role-name>` form) rather than aborting on that account alone.
 
@@ -359,9 +361,34 @@ Plain, non-hera task creation (`task_create`, the TUI's plain new-task flow) SHA
 - **WHEN** a plain (non-hera) task is created via `task_create` or the TUI's new-task flow
 - **THEN** the resulting branch remains the flat `argus/<task-name>` form, unaffected by this requirement
 
+#### Scenario: Existing task promotes itself and spawns workers
+
+- **WHEN** a task on `argus/exec-irl-prep` becomes coordinator of `exec-irl-prep` and spawns workers
+- **THEN** workers are created under a deterministic alternative namespace and the coordinator's branch is unchanged
+
+#### Scenario: Planned workers and subcoordinators face the same leaf
+
+- **WHEN** a planned worker or subcoordinator materializes under a parent orchestrator whose namespace root is a local leaf
+- **THEN** its branch uses the parent's resolved fallback namespace and materialization succeeds
+
+#### Scenario: Promoted worker spawns its own team
+
+- **WHEN** an existing worker becomes coordinator of an orchestrator whose sanitized root is a local leaf in the target repo
+- **THEN** its child workers use a non-colliding fallback and its existing parent branch remains unchanged
+
+#### Scenario: Fallback leaf and long sanitized namespace
+
+- **WHEN** the ordinary root and first fallback are leaves, including packed refs or a long name requiring sanitization
+- **THEN** resolution selects the next non-colliding length-safe namespace and repeated spawns use that same namespace
+
+#### Scenario: Source repository cannot be inspected
+
+- **WHEN** config resolution or the local-heads probe fails
+- **THEN** namespace resolution logs the failure and returns the ordinary namespace rather than aborting the spawn
+
 ### Requirement: Ref-namespace collision surfaces as an ordinary creation failure
 
-Because old-style flat hera branches (`argus/<role>`) and new namespaced branches (`argus/<orchestrator>/<role>`) can coexist in the same repository during and after this change, a git ref-namespace collision is possible: a ref cannot simultaneously be a leaf (e.g. `refs/heads/argus/foo`) and a directory prefix (e.g. `refs/heads/argus/foo/bar`). The system SHALL NOT attempt to detect or remediate this ahead of time. When such a collision occurs, worktree creation SHALL fail with an ordinary error (the same shape as any other git failure surfaced by this capability) and SHALL leave no partially-created worktree, branch, or database row behind.
+Because old-style flat hera branches (`argus/<role>`) and new namespaced branches (`argus/<orchestrator>/<role>`) can coexist in the same repository during and after this change, a git ref-namespace collision is possible: a ref cannot simultaneously be a leaf (e.g. `refs/heads/argus/foo`) and a directory prefix (e.g. `refs/heads/argus/foo/bar`). Hera worker spawn and materialization SHALL resolve namespace-root leaves ahead of creation as specified above. Direct low-level worktree creation and other unresolved collisions SHALL retain ordinary Git failure handling. When such a collision occurs, worktree creation SHALL fail with an ordinary error (the same shape as any other git failure surfaced by this capability) and SHALL leave no partially-created worktree, branch, or database row behind.
 
 #### Scenario: Existing flat branch blocks a new namespaced branch
 

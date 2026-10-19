@@ -467,7 +467,7 @@ func TestSpawnHeraCoordinator_ArchetypeDefaultsOrchestrator(t *testing.T) {
 func TestResolveOrchestratorBranchNamespace_FailsOpenOnUnresolvableID(t *testing.T) {
 	repo := initGitRepo(t)
 	d := createTestDB(t, repo)
-	testutil.Equal(t, resolveOrchestratorBranchNamespace(d, 999999), "")
+	testutil.Equal(t, resolveOrchestratorBranchNamespace(d, 999999, "proj"), "")
 }
 
 // TestResolveOrchestratorBranchNamespace_ResolvesName asserts a valid
@@ -477,7 +477,7 @@ func TestResolveOrchestratorBranchNamespace_ResolvesName(t *testing.T) {
 	d := createTestDB(t, repo)
 	orch, err := d.CreateHeraOrchestrator("my-orch", "")
 	testutil.NoError(t, err)
-	testutil.Equal(t, resolveOrchestratorBranchNamespace(d, orch.ID), "my-orch")
+	testutil.Equal(t, resolveOrchestratorBranchNamespace(d, orch.ID, "proj"), "my-orch")
 }
 
 // TestMaterializeHeraWorker_BranchNamespacedUnderOrchestrator asserts a
