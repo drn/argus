@@ -1539,11 +1539,13 @@ func (tl *TaskListView) HasTasks() bool {
 }
 
 // AdjacentTask returns the next (+1) or previous (-1) task relative to the
-// given task ID. Scans the full task list (not just visible/expanded rows).
-// Returns nil if there is no adjacent task in that direction.
+// given task ID, walking scanOrder: the filter and the hide-hera-managed
+// toggle apply, and folded projects are still reachable. Returns nil if the
+// current task is not visible or there is no adjacent task in that direction.
 func (tl *TaskListView) AdjacentTask(currentID string, direction int) *model.Task {
+	order := tl.scanOrder()
 	currentIdx := -1
-	for i, t := range tl.tasks {
+	for i, t := range order {
 		if t.ID == currentID {
 			currentIdx = i
 			break
@@ -1553,10 +1555,10 @@ func (tl *TaskListView) AdjacentTask(currentID string, direction int) *model.Tas
 		return nil
 	}
 	next := currentIdx + direction
-	if next < 0 || next >= len(tl.tasks) {
+	if next < 0 || next >= len(order) {
 		return nil
 	}
-	return tl.tasks[next]
+	return order[next]
 }
 
 // SelectByID moves the cursor to the row matching the given task ID.
