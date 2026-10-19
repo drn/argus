@@ -58,9 +58,14 @@ type sessionCore struct {
 	cfgFn  func() config.Config
 	done   <-chan struct{}
 
-	mu        sync.Mutex
-	streams   map[string][]net.Conn // taskID → connected stream clients
-	exitInfos map[string]ExitInfo   // taskID → cached exit info (brief)
+	mu      sync.Mutex
+	streams map[string][]net.Conn // taskID → connected stream clients
+	// exitInfos is taskID → cached exit entry (brief). One struct per task keeps
+	// the info, its producing session and its write generation in lockstep under
+	// c.mu: an overwrite replaces all of them at once, so a stale owner can never
+	// pair with a fresh ExitInfo.
+	exitInfos map[string]exitEntry
+	exitGen   uint64 // bumped on every exit write; entries carry the value they were written at
 }
 
 // rawSessionLister is the in-process runner's listing surface: it returns live
@@ -89,8 +94,30 @@ func newSessionCore(runner agent.SessionRunner, cfgFn func() config.Config, done
 		cfgFn:     cfgFn,
 		done:      done,
 		streams:   make(map[string][]net.Conn),
-		exitInfos: make(map[string]ExitInfo),
+		exitInfos: make(map[string]exitEntry),
 	}
+}
+
+// exitEntry is one cached ExitInfo plus the identity needed to tell whose it is.
+type exitEntry struct {
+	info ExitInfo
+	// owner is the session that produced the entry, when the producer knew it.
+	// nil = unknown (relay-sourced without a handle, or a restart-failure
+	// re-fire after the session left the runner's map).
+	owner agent.SessionHandle
+	// gen is the exitGen value the entry was written at.
+	gen uint64
+	// consumed marks an entry GetExitInfo already handed out. It stays as a
+	// payload-free tombstone so awaitExitInfoCached can tell "already fetched"
+	// from "not written yet" instead of waiting out its bound.
+	consumed bool
+}
+
+// recordExitLocked caches ei for taskID stamped with the exiting session
+// (nil = unknown), replacing any previous entry wholesale. The caller must hold c.mu.
+func (c *sessionCore) recordExitLocked(taskID string, ei ExitInfo, owner agent.SessionHandle) {
+	c.exitGen++
+	c.exitInfos[taskID] = exitEntry{info: ei, owner: owner, gen: c.exitGen}
 }
 
 // Ping verifies the session server is responsive.
@@ -391,15 +418,13 @@ func (c *sessionCore) Recycle(req *RecycleReq, resp *StatusResp) error {
 // Returns empty ExitInfo if the session is still running or info has expired.
 func (c *sessionCore) GetExitInfo(req *TaskIDReq, resp *ExitInfo) error {
 	c.mu.Lock()
-	info, ok := c.exitInfos[req.TaskID]
-	if ok {
-		delete(c.exitInfos, req.TaskID) // consume once
+	e, ok := c.exitInfos[req.TaskID]
+	if ok && !e.consumed { // consume once
+		*resp = e.info
+		c.exitInfos[req.TaskID] = exitEntry{owner: e.owner, gen: e.gen, consumed: true}
 	}
 	c.mu.Unlock()
 
-	if ok {
-		*resp = info
-	}
 	return nil
 }
 
@@ -468,6 +493,7 @@ func (c *sessionCore) handleStream(conn net.Conn) {
 	}
 
 	slog.Info("stream connected", "task", header.TaskID, "since", header.Since)
+	attachGen := c.dropStaleExitInfo(header.TaskID, sess)
 	c.registerStream(header.TaskID, conn)
 	defer c.unregisterStream(header.TaskID, conn)
 
@@ -497,7 +523,7 @@ func (c *sessionCore) handleStream(conn net.Conn) {
 		// returning, guaranteeing the EOF the client observes is always post-cache.
 		// This applies in both modes (daemon→TUI and supervisor→daemon) — the relay
 		// fetch races the cache identically.
-		c.awaitExitInfoCached(header.TaskID, exitInfoCacheMaxWait)
+		c.awaitExitInfoCached(header.TaskID, sess, attachGen, exitInfoCacheMaxWait)
 		slog.Info("stream: session exited", "task", header.TaskID)
 	case <-c.done:
 		slog.Info("stream: daemon shutting down", "task", header.TaskID)
@@ -506,19 +532,75 @@ func (c *sessionCore) handleStream(conn net.Conn) {
 	}
 }
 
+// dropStaleExitInfo discards a cached ExitInfo that belongs to a previous
+// incarnation of taskID when a stream attaches to sess, and returns the exit
+// generation at attach time (for awaitExitInfoCached). A kick/recycle restart
+// caches the old incarnation's ExitInfo (PendingRestart=true), but clients treat
+// the restart gap as alive and reconnect without fetching it, so it lingers.
+// Left in place it would satisfy awaitExitInfoCached for the replacement's real
+// exit, letting the stream EOF beat the fresh ExitInfo to the cache so the relay
+// consumes the stale entry and the exit-time status flip is skipped (task stuck
+// in_progress).
+//
+// Staleness is identity-based: an entry stamped with an owner other than sess is
+// stale even if sess has already exited; one stamped with sess is its own
+// (#707: a session that exited before the attach keeps its entry). An unowned
+// entry cannot be attributed, so it falls back to timing: onFinish runs only
+// after Done closes, so one seen while Done is still open (checked AFTER the
+// read, under the lock) cannot be sess's. Only called with a live-in-runner
+// sess, so an unowned restart-failure re-fire for a task with no session is
+// never touched.
+func (c *sessionCore) dropStaleExitInfo(taskID string, sess agent.SessionHandle) (gen uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	gen = c.exitGen
+	e, ok := c.exitInfos[taskID]
+	if !ok {
+		return gen
+	}
+	if e.consumed && e.owner != sess {
+		// A consumed tombstone carries no payload, so dropping it loses nothing.
+		// Keeping one the attaching session does not own would let await settle on
+		// it and the relay read a ZERO ExitInfo (CleanExit()==true), marking a
+		// crashed task Complete (#707).
+		delete(c.exitInfos, taskID)
+		return gen
+	}
+	if e.owner != nil {
+		if e.owner == sess {
+			return gen
+		}
+	} else {
+		select {
+		case <-sess.Done():
+			return gen // exiting now: the entry may be this session's own
+		default:
+		}
+	}
+	delete(c.exitInfos, taskID)
+	slog.Info("stream: dropped stale exit info from a previous incarnation", "task", taskID, "pending", e.info.PendingRestart, "stopped", e.info.Stopped)
+	return gen
+}
+
 // awaitExitInfoCached blocks until the task's ExitInfo has been recorded in the
 // cache (by the runner's exit goroutine / onFinish) or the bound elapses or the
 // core shuts down. Closes the #707 race in handleStream where the stream EOF
 // could otherwise precede the cache write. A consumed entry (already fetched by
 // the relay) or a bound timeout simply returns — the residual is rare and the
 // fetch that consumed it already delivered the real ExitInfo.
-func (c *sessionCore) awaitExitInfoCached(taskID string, max time.Duration) {
+func (c *sessionCore) awaitExitInfoCached(taskID string, sess agent.SessionHandle, attachGen uint64, max time.Duration) {
 	deadline := time.Now().Add(max)
 	for {
 		c.mu.Lock()
-		_, ok := c.exitInfos[taskID]
+		e, ok := c.exitInfos[taskID]
+		// Settled when the entry is sess's own (consumed or not), written after
+		// this stream attached (sess's exit, or a later incarnation that
+		// overwrote it), or unattributable AND unconsumed (real payload). An older
+		// incarnation's leftover, or a consumed tombstone sess does not own,
+		// keeps us waiting: settling on a tombstone would serve a zero ExitInfo.
+		settled := ok && (e.owner == sess || e.gen > attachGen || (e.owner == nil && !e.consumed))
 		c.mu.Unlock()
-		if ok || time.Now().After(deadline) {
+		if settled || time.Now().After(deadline) {
 			return
 		}
 		select {

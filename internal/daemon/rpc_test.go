@@ -175,7 +175,7 @@ func TestRPC_GetExitInfo(t *testing.T) {
 	t.Run("returns and consumes cached info", func(t *testing.T) {
 		// Stage exit info directly into the daemon.
 		d.mu.Lock()
-		d.exitInfos["t-exit"] = ExitInfo{Err: "boom", Stopped: true, LastOutput: []byte("bye")}
+		d.recordExitLocked("t-exit", ExitInfo{Err: "boom", Stopped: true, LastOutput: []byte("bye")}, nil)
 		d.mu.Unlock()
 
 		var info ExitInfo

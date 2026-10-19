@@ -333,6 +333,29 @@ func TestSupCrashRelayErr(t *testing.T) {
 	}
 }
 
+// TestSupRelayOwner: the relay hands the daemon the EXITING session handle even
+// though the client drops it from its map first, so the daemon can stamp its
+// exit-info cache with the producing session (identity-based staleness).
+func TestSupRelayOwner(t *testing.T) {
+	d, sc, database := supE2E(t)
+	_ = d
+	got := make(chan agent.SessionHandle, 1)
+	sc.OnSessionExitOwned(func(_ string, _ daemon.ExitInfo, owner agent.SessionHandle) { got <- owner })
+	bk := "be-relayowner"
+	testutil.NoError(t, database.SetBackend(bk, config.Backend{Command: "sh -c 'sleep 30'"}))
+	task := &model.Task{ID: "relayowner", Name: "relayowner", Status: model.StatusInProgress, Backend: bk, Worktree: t.TempDir()}
+	testutil.NoError(t, database.Add(task))
+	sess, err := sc.Start(task, config.Config{}, 24, 80, false)
+	testutil.NoError(t, err)
+	testutil.NoError(t, sc.Stop(task.ID))
+	select {
+	case owner := <-got:
+		testutil.True(t, owner == sess)
+	case <-time.After(10 * time.Second):
+		t.Fatal("no exit relay delivered within 10s")
+	}
+}
+
 // TestSupStop: an explicit stop → the daemon flips the task InReview.
 func TestSupStop(t *testing.T) {
 	d, sc, database := supE2E(t)
