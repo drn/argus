@@ -1071,6 +1071,61 @@ func TestTaskListView_AdjacentTask(t *testing.T) {
 	}
 }
 
+func TestTaskListView_AdjacentTask_HonorsVisibility(t *testing.T) {
+	tasks := []*model.Task{
+		{ID: "1", Name: "plain-a", Project: "projA"},
+		{ID: "w", Name: "worker", Project: "projA"},
+		{ID: "c", Name: "coord", Project: "projA"},
+		{ID: "2", Name: "plain-b", Project: "projB"},
+	}
+	id := func(tk *model.Task) string {
+		if tk == nil {
+			return ""
+		}
+		return tk.ID
+	}
+
+	t.Run("hidden hera tasks are skipped", func(t *testing.T) {
+		tl := NewTaskListView()
+		tl.SetTasks(tasks)
+		tl.SetHeraWorkers(map[string]bool{"w": true})
+		tl.SetManagedTasks(map[string]bool{"c": true})
+		tl.SetHideHeraManaged(true)
+
+		testutil.Equal(t, id(tl.AdjacentTask("1", 1)), "2")
+		testutil.Equal(t, id(tl.AdjacentTask("2", -1)), "1")
+	})
+
+	t.Run("hera tasks reachable when not hidden", func(t *testing.T) {
+		tl := NewTaskListView()
+		tl.SetTasks(tasks)
+		tl.SetHeraWorkers(map[string]bool{"w": true})
+		tl.SetManagedTasks(map[string]bool{"c": true})
+
+		testutil.Equal(t, id(tl.AdjacentTask("1", 1)), "w")
+		testutil.Equal(t, id(tl.AdjacentTask("2", -1)), "c")
+	})
+
+	t.Run("filtered-out tasks are skipped", func(t *testing.T) {
+		tl := NewTaskListView()
+		tl.SetTasks(tasks)
+		tl.SetFilter("plain")
+
+		testutil.Equal(t, id(tl.AdjacentTask("1", 1)), "2")
+	})
+
+	t.Run("follows display order with pinned first", func(t *testing.T) {
+		tl := NewTaskListView()
+		tl.SetTasks([]*model.Task{
+			{ID: "a", Name: "a", Project: "projA"},
+			{ID: "p", Name: "p", Project: "projZ", Pinned: true},
+		})
+
+		testutil.Equal(t, id(tl.AdjacentTask("p", 1)), "a")
+		testutil.Equal(t, id(tl.AdjacentTask("a", -1)), "p")
+	})
+}
+
 func TestTaskListView_SelectByID(t *testing.T) {
 	tl := NewTaskListView()
 	tl.SetTasks([]*model.Task{

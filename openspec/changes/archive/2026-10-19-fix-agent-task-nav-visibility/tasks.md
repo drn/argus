@@ -1,0 +1,3 @@
+- [x] `AdjacentTask` walks `scanOrder` (filter + hide-hera-managed + display order)
+- [x] Tests: hidden hera tasks skipped, visible when not hidden, filter, pinned-first order
+- [x] Archive change
