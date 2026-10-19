@@ -248,6 +248,15 @@ type SupervisorClient interface {
 func (d *Daemon) UseSupervisorRunner(c SupervisorClient) {
 	d.runner = c
 	d.supClient = c
+	// Prefer the owned form: the client drops the exiting session from its map
+	// before firing, so the handle must be handed over to stamp the exit-info
+	// cache with the producing session. Clients without it relay unowned.
+	if oc, ok := c.(interface {
+		OnSessionExitOwned(func(string, ExitInfo, agent.SessionHandle))
+	}); ok {
+		oc.OnSessionExitOwned(d.handleSessionExitOwned)
+		return
+	}
 	c.OnSessionExit(d.handleSessionExit)
 }
 
@@ -304,12 +313,14 @@ func New(database *db.DB) *Daemon {
 		// Snapshot HasPendingRestart once and stamp it onto ExitInfo so the
 		// TUI can read it from the exit notification without an extra RPC
 		// from the tview main goroutine (the gotcha at daemon-rpc.md:9).
-		d.handleSessionExit(taskID, ExitInfo{
+		// The exiting session is still in the runner's map here; stamp it as the
+		// ExitInfo's owner so stream attaches can tell a stale entry by identity.
+		d.handleSessionExitOwned(taskID, ExitInfo{
 			Err:            errStr,
 			Stopped:        stopped,
 			LastOutput:     lastOutput,
 			PendingRestart: d.runner.HasPendingRestart(taskID),
-		})
+		}, d.runner.Get(taskID))
 	})
 
 	// Mount the session-serving substrate. The daemon owns the runner (and thus
@@ -339,10 +350,17 @@ func New(database *db.DB) *Daemon {
 // GetExitInfo (a zero ExitInfo would CleanExit()=true → wrong Complete) and so
 // their stream conns are closed.
 func (d *Daemon) handleSessionExit(taskID string, ei ExitInfo) {
+	d.handleSessionExitOwned(taskID, ei, nil)
+}
+
+// handleSessionExitOwned is handleSessionExit with the exiting session known
+// (in-process runner path); owner stamps the cached ExitInfo for identity-based
+// staleness checks. nil = unknown (relay-sourced).
+func (d *Daemon) handleSessionExitOwned(taskID string, ei ExitInfo, owner agent.SessionHandle) {
 	slog.Info("session exited", "task", taskID, "stopped", ei.Stopped, "err", ei.Err, "streamLost", ei.StreamLost, "pending", ei.PendingRestart, "lastOutputBytes", len(ei.LastOutput))
 
 	d.mu.Lock()
-	d.exitInfos[taskID] = ei
+	d.recordExitLocked(taskID, ei, owner)
 	conns := d.streams[taskID]
 	delete(d.streams, taskID)
 	d.mu.Unlock()

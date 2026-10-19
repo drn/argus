@@ -133,6 +133,8 @@ func NewSupervisor(cfgFn func() config.Config) *Supervisor {
 		// Stamp HasPendingRestart so the daemon can read it off the cached
 		// ExitInfo without a separate RPC, exactly as the daemon stamps it today.
 		pending := core.runner.HasPendingRestart(taskID)
+		// onFinish fires while the exiting session is still in the runner's map.
+		owner := core.runner.Get(taskID)
 
 		ei := ExitInfo{
 			Err:            errStr,
@@ -141,7 +143,7 @@ func NewSupervisor(cfgFn func() config.Config) *Supervisor {
 			PendingRestart: pending,
 		}
 		core.mu.Lock()
-		core.exitInfos[taskID] = ei
+		core.recordExitLocked(taskID, ei, owner)
 		conns := core.streams[taskID]
 		delete(core.streams, taskID)
 		core.mu.Unlock()

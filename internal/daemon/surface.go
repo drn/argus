@@ -196,7 +196,7 @@ const (
 	//     subtrees; unknown argv cannot establish cleanup ownership.
 	//   - v12: WriteInput/Resize wait (bounded) for an in-flight start or queued
 	//     kick-restart to publish its session instead of "session not found".
-	//   - v13: a stream attaching to a live session discards the previous
+	//   - v13: a stream attaching to a live session discards (by owner identity) the previous
 	//     incarnation's cached ExitInfo, so a kick/recycle's stale
 	//     PendingRestart=true entry can no longer be served as the replacement's
 	//     exit (which skipped the daemon's status flip).
@@ -418,7 +418,7 @@ var SupervisorStreamPaths = []string{
 // message prints the computed digest to paste back here.
 const (
 	SpawnSurfaceDigest  = "d514c27677ef859dc391d91d80f61c159354d6f629068c448432540a0d9ff576"
-	StreamSurfaceDigest = "651c83894fc844fc44164eac8631b1888d1e513302ff8e356ac6755be857e846"
+	StreamSurfaceDigest = "c9180e421f6cddc5660ab5db82c80a38d23c3f7dd0579118384aae5891c0164c"
 )
 
 // SurfaceDigest computes the SHA-256 over the declared manifest's file contents,

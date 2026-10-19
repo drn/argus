@@ -99,6 +99,11 @@ type Client struct {
 	// onSessionExit is called when a session's stream EOF is detected.
 	// Includes exit info (error, stopped flag, last output) from the daemon.
 	onSessionExit func(taskID string, info daemon.ExitInfo)
+	// onSessionExitOwned is onSessionExit plus the RemoteSession that exited. The
+	// session is removed from c.sessions BEFORE the callback runs, so a receiver
+	// that needs the exiting handle's identity (the daemon stamping its exit-info
+	// cache) cannot recover it with Get. Fired instead of onSessionExit when set.
+	onSessionExitOwned func(taskID string, info daemon.ExitInfo, owner agent.SessionHandle)
 
 	// needsInput holds the daemon-computed "waiting on the user" set. When this
 	// Client is the daemon's supervisor-client (d.runner in supervisor mode), the
@@ -178,6 +183,29 @@ func (c *Client) OnSessionExit(fn func(taskID string, info daemon.ExitInfo)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.onSessionExit = fn
+}
+
+// OnSessionExitOwned is OnSessionExit that also receives the exiting session
+// handle (nil if the client held none). It takes precedence over OnSessionExit.
+func (c *Client) OnSessionExitOwned(fn func(taskID string, info daemon.ExitInfo, owner agent.SessionHandle)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onSessionExitOwned = fn
+}
+
+// fireSessionExit invokes the registered exit callback, preferring the owned form.
+func (c *Client) fireSessionExit(fn func(string, daemon.ExitInfo), owned func(string, daemon.ExitInfo, agent.SessionHandle), taskID string, info daemon.ExitInfo, rs *RemoteSession) {
+	if owned != nil {
+		var owner agent.SessionHandle
+		if rs != nil {
+			owner = rs
+		}
+		owned(taskID, info, owner)
+		return
+	}
+	if fn != nil {
+		fn(taskID, info)
+	}
 }
 
 // Close shuts down the client and all stream connections.
@@ -755,12 +783,11 @@ func (c *Client) BootInfo() (daemon.BootInfoResp, error) {
 func (c *Client) removeSessionStreamLost(taskID string) {
 	uxlog.Log("client.removeSessionStreamLost: task=%s", taskID)
 	c.mu.Lock()
+	rs := c.sessions[taskID]
 	delete(c.sessions, taskID)
-	fn := c.onSessionExit
+	fn, owned := c.onSessionExit, c.onSessionExitOwned
 	c.mu.Unlock()
-	if fn != nil {
-		fn(taskID, daemon.ExitInfo{StreamLost: true})
-	}
+	c.fireSessionExit(fn, owned, taskID, daemon.ExitInfo{StreamLost: true}, rs)
 }
 
 // removeSession cleans up a session from the client's map, queries exit info
@@ -768,11 +795,12 @@ func (c *Client) removeSessionStreamLost(taskID string) {
 func (c *Client) removeSession(taskID string) {
 	uxlog.Log("client.removeSession: task=%s", taskID)
 	c.mu.Lock()
+	rs := c.sessions[taskID]
 	delete(c.sessions, taskID)
-	fn := c.onSessionExit
+	fn, owned := c.onSessionExit, c.onSessionExitOwned
 	c.mu.Unlock()
 
-	if fn != nil {
+	if fn != nil || owned != nil {
 		// Query exit info from daemon before firing callback.
 		var info daemon.ExitInfo
 		err := c.call("Daemon.GetExitInfo", &daemon.TaskIDReq{TaskID: taskID}, &info)
@@ -786,7 +814,7 @@ func (c *Client) removeSession(taskID string) {
 		}
 		uxlog.Log("client.removeSession: task=%s exitInfo err=%v rpcErr=%v stopped=%v streamLost=%v lastOutput=%d bytes",
 			taskID, info.Err, err, info.Stopped, info.StreamLost, len(info.LastOutput))
-		fn(taskID, info)
+		c.fireSessionExit(fn, owned, taskID, info, rs)
 	}
 }
 

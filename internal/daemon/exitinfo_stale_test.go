@@ -7,8 +7,142 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/testutil"
 )
+
+// doneSession is a minimal SessionHandle whose only live method is Done.
+type doneSession struct {
+	agent.SessionHandle
+	done chan struct{}
+}
+
+func newDoneSession(closed bool) *doneSession {
+	s := &doneSession{done: make(chan struct{})}
+	if closed {
+		close(s.done)
+	}
+	return s
+}
+
+func (s *doneSession) Done() <-chan struct{} { return s.done }
+
+func staleTestCore() *sessionCore {
+	return newSessionCore(&fakeSupClient{}, config.DefaultConfig, make(chan struct{}))
+}
+
+func (c *sessionCore) hasExit(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.exitInfos[id]
+	return ok
+}
+
+func (c *sessionCore) record(id string, owner agent.SessionHandle) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.recordExitLocked(id, ExitInfo{Stopped: true, PendingRestart: true}, owner)
+}
+
+// TestSessionCore_ExitInfoOwnership pins the identity rules behind
+// dropStaleExitInfo / awaitExitInfoCached, including the #707 branch: a session
+// that already exited before its stream attached keeps its own entry.
+func TestSessionCore_ExitInfoOwnership(t *testing.T) {
+	t.Run("own entry kept even though the session already exited (#707)", func(t *testing.T) {
+		c, sess := staleTestCore(), newDoneSession(true)
+		c.record("t", sess)
+		c.dropStaleExitInfo("t", sess)
+		testutil.True(t, c.hasExit("t"))
+	})
+	t.Run("another incarnation's entry dropped", func(t *testing.T) {
+		c, old, cur := staleTestCore(), newDoneSession(true), newDoneSession(false)
+		c.record("t", old)
+		c.dropStaleExitInfo("t", cur)
+		testutil.False(t, c.hasExit("t"))
+	})
+	// The reviewer's pin: without identity, a Done-based rule keeps this entry
+	// because the attaching session has already exited.
+	t.Run("stale owner A, attach B with B's Done already closed: dropped", func(t *testing.T) {
+		c, a, b := staleTestCore(), newDoneSession(true), newDoneSession(true)
+		c.record("t", a)
+		gen := c.dropStaleExitInfo("t", b)
+		testutil.False(t, c.hasExit("t"))
+		// ...and nothing is left for await to mistake for B's own.
+		start := time.Now()
+		c.awaitExitInfoCached("t", b, gen, 60*time.Millisecond)
+		testutil.True(t, time.Since(start) >= 50*time.Millisecond)
+	})
+	t.Run("unowned entry falls back to Done timing", func(t *testing.T) {
+		c, live := staleTestCore(), newDoneSession(false)
+		c.record("t", nil)
+		c.dropStaleExitInfo("t", live)
+		testutil.False(t, c.hasExit("t"))
+
+		c2, exited := staleTestCore(), newDoneSession(true)
+		c2.record("t", nil)
+		c2.dropStaleExitInfo("t", exited)
+		testutil.True(t, c2.hasExit("t"))
+	})
+	// Restart-failure re-fire: onFinish runs a second time after the old session
+	// left the runner's map and no replacement exists, so the entry is unowned.
+	// It overwrites the owned one and must still reach the relay.
+	t.Run("restart-failure re-fire is unowned and still delivered", func(t *testing.T) {
+		c, old := staleTestCore(), newDoneSession(true)
+		c.record("t", old)
+		c.mu.Lock()
+		c.recordExitLocked("t", ExitInfo{Err: "restart failed", Stopped: true}, nil)
+		c.mu.Unlock()
+		var info ExitInfo
+		testutil.NoError(t, c.GetExitInfo(&TaskIDReq{TaskID: "t"}, &info))
+		testutil.Equal(t, info.Err, "restart failed")
+		testutil.False(t, info.PendingRestart) // not the overwritten owned entry
+	})
+	t.Run("await accepts an unowned entry", func(t *testing.T) {
+		c, sess := staleTestCore(), newDoneSession(true)
+		c.record("t", nil)
+		start := time.Now()
+		c.awaitExitInfoCached("t", sess, c.exitGen, 5*time.Second)
+		testutil.True(t, time.Since(start) < time.Second)
+	})
+	t.Run("await: own entry already consumed does not wait out the bound", func(t *testing.T) {
+		c, sess := staleTestCore(), newDoneSession(true)
+		c.record("t", sess)
+		var info ExitInfo
+		testutil.NoError(t, c.GetExitInfo(&TaskIDReq{TaskID: "t"}, &info))
+		testutil.True(t, info.Stopped)
+		testutil.NoError(t, c.GetExitInfo(&TaskIDReq{TaskID: "t"}, &info)) // second read is empty
+		start := time.Now()
+		c.awaitExitInfoCached("t", sess, c.exitGen, 5*time.Second)
+		testutil.True(t, time.Since(start) < time.Second)
+	})
+	t.Run("await: entry overwritten by a later incarnation does not wait out the bound", func(t *testing.T) {
+		c, mine, later := staleTestCore(), newDoneSession(false), newDoneSession(true)
+		gen := c.dropStaleExitInfo("t", mine) // attach: nothing cached yet
+		c.record("t", later)                  // a later incarnation's exit lands first
+		start := time.Now()
+		c.awaitExitInfoCached("t", mine, gen, 5*time.Second)
+		testutil.True(t, time.Since(start) < time.Second)
+	})
+	t.Run("await: an older incarnation's leftover keeps waiting", func(t *testing.T) {
+		c, old, cur := staleTestCore(), newDoneSession(true), newDoneSession(true)
+		c.record("t", old)
+		start := time.Now()
+		c.awaitExitInfoCached("t", cur, c.exitGen, 60*time.Millisecond) // attached after the write, never dropped
+		testutil.True(t, time.Since(start) >= 50*time.Millisecond)
+	})
+	t.Run("overwrite replaces owner and info together", func(t *testing.T) {
+		c, a, b := staleTestCore(), newDoneSession(true), newDoneSession(true)
+		c.record("t", a)
+		c.mu.Lock()
+		c.recordExitLocked("t", ExitInfo{Err: "fresh"}, b)
+		e := c.exitInfos["t"]
+		c.mu.Unlock()
+		testutil.Equal(t, e.info.Err, "fresh")
+		testutil.True(t, e.owner == agent.SessionHandle(b))
+		testutil.False(t, e.info.PendingRestart)
+	})
+}
 
 // A kick/recycle restart caches the OLD incarnation's ExitInfo with
 // PendingRestart=true, and nothing consumes it (clients see the gap as alive
@@ -47,7 +181,7 @@ func TestSup_StaleExitInfoDroppedOnAttach(t *testing.T) {
 	stale, ok := core.exitInfos[id]
 	core.mu.Unlock()
 	testutil.True(t, ok)
-	testutil.True(t, stale.PendingRestart)
+	testutil.True(t, stale.info.PendingRestart)
 
 	// A stream client attaches to the replacement.
 	server, client := net.Pipe()
