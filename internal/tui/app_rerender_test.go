@@ -263,3 +263,19 @@ func waitRerender(t *testing.T, done func() bool) {
 	}
 	t.Fatal("rerender outcome did not settle")
 }
+
+// A zoom toggle re-arms a Hera pane's evaluation while an earlier kick's
+// restart is still in flight; the in-flight early return must hand the pane its
+// retry callback instead of silently dropping the new width.
+func TestRerender_InFlightKickInvokesOnDeferred(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	app := New(testDB(t), agent.NewRunner(nil), false)
+	task := &model.Task{ID: "inflight", Name: "inflight", SessionID: "sid-inflight", AgentPID: 101}
+	sess := &fakeKickSession{pid: 101, alive: true, initCols: 88}
+	app.committedColsPID[task.ID] = 101
+	app.pendingRerenderRestart[task.ID] = true
+	called := 0
+	app.maybeKickRerenderAtWidth(task, sess, 178, func() { called++ })
+	testutil.Equal(t, called, 1)
+	app.maybeKickRerenderAtWidth(task, sess, 178, nil) // nil callback is fine
+}

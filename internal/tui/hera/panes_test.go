@@ -1387,3 +1387,68 @@ func TestPanes_LaunchSplash_PendingCoordinatorPaneShowsPreparing(t *testing.T) {
 	p.Draw(sim)
 	testutil.Contains(t, simScreenText(sim), "P R E P A R I N G")
 }
+
+// TestPanes_FullscreenToggleRearmsKick is the zoom-width regression: a Ctrl+Z
+// fullscreen toggle changes the focused pane's width without rebinding it, and
+// the per-bind kickedFor gate used to swallow the re-evaluation forever — the
+// zoomed pane kept history authored at the split width (and the unzoom kept
+// zoom-width content in the narrow pane) until the user left and came back.
+// A toggle must re-arm the evaluation at the NEW width, behind a fresh dwell,
+// and rapid toggling must collapse into one evaluation.
+func TestPanes_FullscreenToggleRearmsKick(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-coord": {id: "t-coord", alive: true}}))
+	kicks, advance := newKickRecorder(p)
+	p.Refresh()
+	p.Machine().SetRegion(FocusCoord)
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(160, 30)
+	p.SetRect(0, 0, 160, 30)
+
+	p.Draw(sim)
+	advance(KickDebounce)
+	p.Draw(sim)
+	split := kicksFor(*kicks, "t-coord")
+	testutil.Equal(t, len(split), 1)
+
+	// Zoom: re-armed behind a dwell, then evaluated at the wider width.
+	*kicks = nil
+	p.Machine().ToggleFullscreen()
+	p.Draw(sim)
+	testutil.Equal(t, len(*kicks), 0)
+	advance(KickDebounce)
+	p.Draw(sim)
+	zoomed := kicksFor(*kicks, "t-coord")
+	testutil.Equal(t, len(zoomed), 1)
+	if zoomed[0] <= split[0] {
+		t.Fatalf("zoom kick used cols=%d, want wider than split %d", zoomed[0], split[0])
+	}
+
+	// Further frames at the same width must not re-kick.
+	*kicks = nil
+	p.Draw(sim)
+	testutil.Equal(t, len(*kicks), 0)
+
+	// Rapid toggling inside the dwell collapses into a single evaluation at
+	// the final width.
+	p.Machine().ToggleFullscreen()
+	p.Draw(sim)
+	advance(KickDebounce / 3)
+	p.Machine().ToggleFullscreen()
+	p.Draw(sim)
+	advance(KickDebounce / 3)
+	p.Machine().ToggleFullscreen()
+	p.Draw(sim)
+	testutil.Equal(t, len(*kicks), 0)
+	advance(KickDebounce)
+	p.Draw(sim)
+	final := kicksFor(*kicks, "t-coord")
+	testutil.Equal(t, len(final), 1)
+	testutil.Equal(t, final[0], split[0]) // 3 toggles from zoomed settle unzoomed
+}

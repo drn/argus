@@ -24,6 +24,7 @@ import (
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 func TestTerminalPane_SetSession(t *testing.T) {
@@ -4777,4 +4778,29 @@ func TestTerminalPane_PTYSize(t *testing.T) {
 	r, c = tp.PTYSize()
 	testutil.Equal(t, r, uint16(0))
 	testutil.Equal(t, c, uint16(0))
+}
+
+// A non-forced PTY resize (e.g. a Hera Ctrl+Z zoom) used to be invisible in
+// ux.log; it must log old -> new so a width bug is diagnosable.
+func TestTerminalPane_NonForcedResizeIsLogged(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	testutil.NoError(t, uxlog.Init(logPath))
+	defer uxlog.Close()
+
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 90, 40)
+	screen := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, screen.Init())
+	defer screen.Fini()
+	screen.SetSize(200, 60)
+	tp.SetSession(&mockAdapter{alive: true})
+	tp.Draw(screen)
+
+	tp.SetRect(0, 0, 180, 40)
+	tp.Draw(screen)
+	uxlog.Close()
+
+	data, err := os.ReadFile(logPath)
+	testutil.NoError(t, err)
+	testutil.Contains(t, string(data), "[terminalpane] pty resize 88x38 -> 178x38")
 }

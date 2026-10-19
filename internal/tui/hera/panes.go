@@ -339,10 +339,27 @@ type kickPending struct {
 // bind's task (a rebind — same task or different — already reset kickedFor
 // itself and must win over a late-arriving stale callback).
 func (p *HeraPage) maybeKickPaneRerender(bound string, kickedFor *string, cols int, pending *kickPending) {
-	if p.kickRerender == nil || bound == "" || cols <= 0 || *kickedFor == bound {
+	if p.kickRerender == nil || bound == "" || cols <= 0 {
 		return
 	}
 	now := p.kickClockNow()
+	// Zoom re-arm: a Ctrl+Z fullscreen toggle changes this pane's width without
+	// rebinding it, so the per-bind kickedFor gate below would swallow the
+	// re-evaluation forever (zoomed pane keeps split-width history; unzoom keeps
+	// zoom-width content in the narrow pane). Re-arm behind a FRESH dwell when
+	// the toggle moved the width — rapid toggling keeps pushing the deadline, so
+	// it collapses into one evaluation at the settled width.
+	if p.layoutShifted && pending.taskID == bound && pending.cols != cols {
+		uxlog.Log("[hera-view] fullscreen width change task=%s cols %d->%d: re-arming size-drift kick evaluation", bound, pending.cols, cols)
+		*kickedFor = ""
+		pending.deadline = now.Add(KickDebounce)
+	}
+	if *kickedFor == bound {
+		if pending.taskID == bound {
+			pending.cols = cols // last-seen width, compared on the next layout shift
+		}
+		return
+	}
 	if pending.taskID != bound {
 		*pending = kickPending{taskID: bound, deadline: now.Add(KickDebounce)}
 	}
@@ -350,6 +367,7 @@ func (p *HeraPage) maybeKickPaneRerender(bound string, kickedFor *string, cols i
 	if now.Before(pending.deadline) {
 		return // still dwelling
 	}
+	uxlog.Log("[hera-view] size-drift kick evaluation task=%s cols=%d", bound, cols)
 	*kickedFor = bound
 	deferredFor := bound
 	retryDelay := pending.retryDelay

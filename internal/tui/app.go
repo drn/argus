@@ -5523,7 +5523,14 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 		}
 	}
 	if a.pendingRerenderRestart[task.ID] {
-		return // a kick is already in flight for this task
+		// A kick is already in flight. A caller with a retry path (Hera pane
+		// re-armed by a zoom toggle) must re-evaluate once the restart lands, or
+		// the width it just moved to is never reconciled for this bind.
+		uxlog.Log("[rerender] kick in flight task=%s panel=%d: evaluation deferred", taskID, panelCols)
+		if onDeferred != nil {
+			onDeferred()
+		}
+		return
 	}
 
 	// Cache gate runs before the SessionID check so Codex tasks (which
