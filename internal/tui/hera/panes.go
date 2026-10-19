@@ -338,6 +338,9 @@ type kickPending struct {
 // retry after KickRetryInterval, guarded on kickedFor still naming THIS
 // bind's task (a rebind — same task or different — already reset kickedFor
 // itself and must win over a late-arriving stale callback).
+// The callback can also fire synchronously inside the kickRerender call itself
+// (the "kick already in flight" early return), before maybeKickPaneRerender
+// returns.
 func (p *HeraPage) maybeKickPaneRerender(bound string, kickedFor *string, cols int, pending *kickPending) {
 	if p.kickRerender == nil || bound == "" || cols <= 0 {
 		return

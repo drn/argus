@@ -5492,10 +5492,11 @@ func (a *App) heraKickRerender(taskID string, panelCols uint16, onDeferred func(
 // network I/O. The panel size and the session pointer are captured up front
 // on the main goroutine where it's safe to read them.
 //
-// onDeferred, when non-nil, is invoked (on the tview main goroutine, from
-// inside the QueueUpdateDraw callback below) for every outcome that leaves
-// something worth retrying later: RerenderDeferBusy, RerenderDeferPrompt, and
-// a failed Stop() attempt. It is NOT called for RerenderSkip (no drift — a
+// onDeferred, when non-nil, is invoked on the tview main goroutine for every
+// outcome that leaves something worth retrying later: RerenderDeferBusy,
+// RerenderDeferPrompt, and a failed Stop() attempt (all from inside the
+// QueueUpdateDraw callback below), plus synchronously from the "kick already in
+// flight" early return before the goroutine is spawned. It is NOT called for RerenderSkip (no drift — a
 // stable no-op) or a successful RerenderKick (the resume itself re-emits at
 // the new width, nothing left to fix). Callers with a natural retry path of
 // their own (maybeKickRerender) pass nil.

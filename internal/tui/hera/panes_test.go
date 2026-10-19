@@ -1399,10 +1399,17 @@ func TestPanes_FullscreenToggleRearmsKick(t *testing.T) {
 	d := memDB(t)
 	orch := seedOrch(t, d, "orch")
 	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
 	p := NewHeraPage(d)
-	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-coord": {id: "t-coord", alive: true}}))
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{
+		"t-coord": {id: "t-coord", alive: true},
+		"t-wkr":   {id: "t-wkr", alive: true},
+	}))
 	kicks, advance := newKickRecorder(p)
 	p.Refresh()
+	// Bind BOTH panes (selecting the worker binds coord + agent), then focus the
+	// coordinator so Ctrl+Z zooms it.
+	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
 	p.Machine().SetRegion(FocusCoord)
 
 	sim := tcell.NewSimulationScreen("UTF-8")
@@ -1416,6 +1423,22 @@ func TestPanes_FullscreenToggleRearmsKick(t *testing.T) {
 	p.Draw(sim)
 	split := kicksFor(*kicks, "t-coord")
 	testutil.Equal(t, len(split), 1)
+	testutil.Equal(t, len(kicksFor(*kicks, "t-wkr")), 1)
+
+	// A width change WITHOUT a fullscreen toggle (window drag) must not re-arm.
+	*kicks = nil
+	sim.SetSize(200, 30)
+	p.SetRect(0, 0, 200, 30)
+	p.Draw(sim)
+	advance(KickDebounce)
+	p.Draw(sim)
+	testutil.Equal(t, len(*kicks), 0)
+	sim.SetSize(160, 30)
+	p.SetRect(0, 0, 160, 30)
+	p.Draw(sim)
+	advance(KickDebounce)
+	p.Draw(sim)
+	testutil.Equal(t, len(*kicks), 0)
 
 	// Zoom: re-armed behind a dwell, then evaluated at the wider width.
 	*kicks = nil
@@ -1426,6 +1449,8 @@ func TestPanes_FullscreenToggleRearmsKick(t *testing.T) {
 	p.Draw(sim)
 	zoomed := kicksFor(*kicks, "t-coord")
 	testutil.Equal(t, len(zoomed), 1)
+	// The agent pane's own width did not change, so it is not re-evaluated.
+	testutil.Equal(t, len(kicksFor(*kicks, "t-wkr")), 0)
 	if zoomed[0] <= split[0] {
 		t.Fatalf("zoom kick used cols=%d, want wider than split %d", zoomed[0], split[0])
 	}
@@ -1450,5 +1475,7 @@ func TestPanes_FullscreenToggleRearmsKick(t *testing.T) {
 	p.Draw(sim)
 	final := kicksFor(*kicks, "t-coord")
 	testutil.Equal(t, len(final), 1)
-	testutil.Equal(t, final[0], split[0]) // 3 toggles from zoomed settle unzoomed
+	testutil.Equal(t, len(kicksFor(*kicks, "t-wkr")), 0) // unzoomed back to its unchanged width
+	testutil.Equal(t, len(kicksFor(*kicks, "t-wkr")), 0) // agent width never changed
+	testutil.Equal(t, final[0], split[0])                // 3 toggles from zoomed settle unzoomed
 }
