@@ -5492,10 +5492,11 @@ func (a *App) heraKickRerender(taskID string, panelCols uint16, onDeferred func(
 // network I/O. The panel size and the session pointer are captured up front
 // on the main goroutine where it's safe to read them.
 //
-// onDeferred, when non-nil, is invoked (on the tview main goroutine, from
-// inside the QueueUpdateDraw callback below) for every outcome that leaves
-// something worth retrying later: RerenderDeferBusy, RerenderDeferPrompt, and
-// a failed Stop() attempt. It is NOT called for RerenderSkip (no drift — a
+// onDeferred, when non-nil, is invoked on the tview main goroutine for every
+// outcome that leaves something worth retrying later: RerenderDeferBusy,
+// RerenderDeferPrompt, and a failed Stop() attempt (all from inside the
+// QueueUpdateDraw callback below), plus synchronously from the "kick already in
+// flight" early return before the goroutine is spawned. It is NOT called for RerenderSkip (no drift — a
 // stable no-op) or a successful RerenderKick (the resume itself re-emits at
 // the new width, nothing left to fix). Callers with a natural retry path of
 // their own (maybeKickRerender) pass nil.
@@ -5523,7 +5524,14 @@ func (a *App) maybeKickRerenderAtWidth(task *model.Task, sess agent.SessionHandl
 		}
 	}
 	if a.pendingRerenderRestart[task.ID] {
-		return // a kick is already in flight for this task
+		// A kick is already in flight. A caller with a retry path (Hera pane
+		// re-armed by a zoom toggle) must re-evaluate once the restart lands, or
+		// the width it just moved to is never reconciled for this bind.
+		uxlog.Log("[rerender] kick in flight task=%s panel=%d: evaluation deferred", taskID, panelCols)
+		if onDeferred != nil {
+			onDeferred()
+		}
+		return
 	}
 
 	// Cache gate runs before the SessionID check so Codex tasks (which

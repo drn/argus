@@ -1862,6 +1862,9 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		// which recovers from a PTY that's stuck at a stale width.
 		sizeChanged := tp.ptyCols != wantCols || tp.ptyRows != wantRows
 		if sizeChanged || tp.forceResync {
+			if !tp.forceResync && sizeChanged {
+				uxlog.Log("[terminalpane] pty resize %dx%d -> %dx%d", tp.ptyCols, tp.ptyRows, wantCols, wantRows)
+			}
 			if tp.forceResync {
 				if sizeChanged {
 					uxlog.Log("[terminalpane] force resync corrected %dx%d -> %dx%d", tp.ptyCols, tp.ptyRows, wantCols, wantRows)

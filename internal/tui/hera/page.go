@@ -171,6 +171,12 @@ type HeraPage struct {
 	// kickNow overrides the kick-debounce clock in tests (SetKickClock); nil
 	// in production, where kickClockNow falls back to time.Now.
 	kickNow func() time.Time
+	// kickFullscreen / kickFocus remember the fullscreen layout the last Draw
+	// evaluated kicks under; a change flips layoutShifted for ONE Draw so
+	// maybeKickPaneRerender re-arms panes whose width the toggle changed.
+	kickFullscreen bool
+	kickFocus      Focus
+	layoutShifted  bool
 
 	// 6c mutation callbacks. The rail-focus key handler maps keys to these,
 	// passing the current heramodel.Selection (the multi-binding-disambiguated (role,orch)
@@ -845,6 +851,10 @@ func (p *HeraPage) Draw(screen tcell.Screen) {
 	p.rail.SetFocused(p.focus.State() == FocusRail)
 	p.rail.SetRect(x, railY, railW, railH)
 	p.rail.Draw(screen)
+
+	fs, fstate := p.focus.Fullscreen(), p.focus.State()
+	p.layoutShifted = fs != p.kickFullscreen || (fs && fstate != p.kickFocus)
+	p.kickFullscreen, p.kickFocus = fs, fstate
 
 	// Fullscreen: the rail stays put and the single focused content pane fills
 	// the entire area to its right. The other content region is not drawn and
