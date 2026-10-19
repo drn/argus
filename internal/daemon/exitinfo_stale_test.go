@@ -9,6 +9,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
 
@@ -131,6 +132,45 @@ func TestSessionCore_ExitInfoOwnership(t *testing.T) {
 		c.awaitExitInfoCached("t", cur, c.exitGen, 60*time.Millisecond) // attached after the write, never dropped
 		testutil.True(t, time.Since(start) >= 50*time.Millisecond)
 	})
+	// An unowned entry that was consumed leaves a tombstone. If the next
+	// incarnation attaches already-done (it crashed in the [Done, onFinish) gap)
+	// and the tombstone survived, await would settle on it and the relay would
+	// read a zero ExitInfo (CleanExit()==true), marking a crash Complete (#707).
+	// Each half of the defence gets its own assertion.
+	t.Run("unowned tombstone is dropped on attach even if the new session is done", func(t *testing.T) {
+		c, b := staleTestCore(), newDoneSession(true)
+		c.record("t", nil)
+		var info ExitInfo
+		testutil.NoError(t, c.GetExitInfo(&TaskIDReq{TaskID: "t"}, &info))
+		c.dropStaleExitInfo("t", b)
+		testutil.False(t, c.hasExit("t"))
+	})
+	t.Run("await is not settled by a consumed tombstone it does not own", func(t *testing.T) {
+		c, b := staleTestCore(), newDoneSession(true)
+		c.record("t", nil)
+		var info ExitInfo
+		testutil.NoError(t, c.GetExitInfo(&TaskIDReq{TaskID: "t"}, &info))
+		start := time.Now() // tombstone left in place: no dropStale
+		c.awaitExitInfoCached("t", b, c.exitGen, 60*time.Millisecond)
+		testutil.True(t, time.Since(start) >= 50*time.Millisecond)
+	})
+	t.Run("unowned tombstone then done attach: await waits, never serves a zero ExitInfo", func(t *testing.T) {
+		c, b := staleTestCore(), newDoneSession(true)
+		c.record("t", nil)
+		var info ExitInfo
+		testutil.NoError(t, c.GetExitInfo(&TaskIDReq{TaskID: "t"}, &info))
+		gen := c.dropStaleExitInfo("t", b)
+		start := time.Now()
+		c.awaitExitInfoCached("t", b, gen, 60*time.Millisecond)
+		testutil.True(t, time.Since(start) >= 50*time.Millisecond)
+		// The real exit lands afterwards and is what the relay reads.
+		c.mu.Lock()
+		c.recordExitLocked("t", ExitInfo{Err: "crash"}, b)
+		c.mu.Unlock()
+		var got ExitInfo
+		testutil.NoError(t, c.GetExitInfo(&TaskIDReq{TaskID: "t"}, &got))
+		testutil.Equal(t, got.Err, "crash")
+	})
 	t.Run("overwrite replaces owner and info together", func(t *testing.T) {
 		c, a, b := staleTestCore(), newDoneSession(true), newDoneSession(true)
 		c.record("t", a)
@@ -182,6 +222,9 @@ func TestSup_StaleExitInfoDroppedOnAttach(t *testing.T) {
 	core.mu.Unlock()
 	testutil.True(t, ok)
 	testutil.True(t, stale.info.PendingRestart)
+	// The supervisor's onFinish must stamp the exiting (old) session; without it
+	// production silently falls back to Done timing.
+	testutil.True(t, stale.owner == first)
 
 	// A stream client attaches to the replacement.
 	server, client := net.Pipe()
@@ -230,4 +273,51 @@ func waitFor(t *testing.T, what string, ok func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// ownedSupClient is a supervisor-client that offers the owned exit relay.
+type ownedSupClient struct {
+	fakeSupClient
+	ownedFn func(string, ExitInfo, agent.SessionHandle)
+}
+
+func (f *ownedSupClient) OnSessionExitOwned(fn func(string, ExitInfo, agent.SessionHandle)) {
+	f.ownedFn = fn
+}
+
+// UseSupervisorRunner must wire the OWNED relay when the client offers it: the
+// client drops the exiting session from its map before firing, so the handle
+// can only reach the daemon's exit cache through this callback.
+func TestDaemon_UseSupervisorRunnerWiresOwnedRelay(t *testing.T) {
+	d, _ := testDaemon(t)
+	c := &ownedSupClient{}
+	d.UseSupervisorRunner(c)
+	testutil.NotNil(t, c.ownedFn)
+	sess := newDoneSession(true)
+	c.ownedFn("t", ExitInfo{Stopped: true, PendingRestart: true}, sess)
+	d.mu.Lock()
+	e := d.exitInfos["t"]
+	d.mu.Unlock()
+	testutil.True(t, e.owner == agent.SessionHandle(sess))
+	testutil.True(t, e.info.Stopped)
+}
+
+// The in-process (supervisor OFF) onFinish must stamp the exiting session.
+func TestDaemon_InProcessExitStampsOwner(t *testing.T) {
+	d, _ := testDaemon(t)
+	testutil.NoError(t, d.db.SetBackend("test", config.Backend{Command: "true"}))
+	task := &model.Task{Name: "owner-test", Status: model.StatusInProgress, Worktree: t.TempDir(), Backend: "test"}
+	testutil.NoError(t, d.db.Add(task))
+	sess, err := d.runner.Start(task, d.db.Config(), 24, 80, false)
+	testutil.NoError(t, err)
+	waitFor(t, "exit info recorded", func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		_, ok := d.exitInfos[task.ID]
+		return ok
+	})
+	d.mu.Lock()
+	e := d.exitInfos[task.ID]
+	d.mu.Unlock()
+	testutil.True(t, e.owner == sess)
 }

@@ -558,6 +558,14 @@ func (c *sessionCore) dropStaleExitInfo(taskID string, sess agent.SessionHandle)
 	if !ok {
 		return gen
 	}
+	if e.consumed && e.owner != sess {
+		// A consumed tombstone carries no payload, so dropping it loses nothing.
+		// Keeping one the attaching session does not own would let await settle on
+		// it and the relay read a ZERO ExitInfo (CleanExit()==true), marking a
+		// crashed task Complete (#707).
+		delete(c.exitInfos, taskID)
+		return gen
+	}
 	if e.owner != nil {
 		if e.owner == sess {
 			return gen
@@ -585,11 +593,12 @@ func (c *sessionCore) awaitExitInfoCached(taskID string, sess agent.SessionHandl
 	for {
 		c.mu.Lock()
 		e, ok := c.exitInfos[taskID]
-		// Settled when the entry is sess's own (consumed or not), unattributable,
-		// or written after this stream attached (sess's exit, or a later
-		// incarnation that overwrote it). Only an older incarnation's leftover —
-		// owned by someone else and written before the attach — keeps us waiting.
-		settled := ok && (e.owner == nil || e.owner == sess || e.gen > attachGen)
+		// Settled when the entry is sess's own (consumed or not), written after
+		// this stream attached (sess's exit, or a later incarnation that
+		// overwrote it), or unattributable AND unconsumed (real payload). An older
+		// incarnation's leftover, or a consumed tombstone sess does not own,
+		// keeps us waiting: settling on a tombstone would serve a zero ExitInfo.
+		settled := ok && (e.owner == sess || e.gen > attachGen || (e.owner == nil && !e.consumed))
 		c.mu.Unlock()
 		if settled || time.Now().After(deadline) {
 			return
