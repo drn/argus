@@ -1,0 +1,5 @@
+- [x] Generalize the banner renderer (`DrawLaunchBanner`)
+- [x] Pane: opt-in launch splash, state-derived stage, cap, precedence, uxlog
+- [x] Hera page: enable on both panes, push bound-task status
+- [x] Tests: widget, terminal pane, Hera pane bind/Draw (split + fullscreen)
+- [x] Gotcha bullet + index row; archive change

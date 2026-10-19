@@ -295,6 +295,9 @@ func NewHeraPage(reader heramodel.HeraReader) *HeraPage {
 		plan:      planview.New(),
 		summary:   widget.NewAttentionSummary(),
 	}
+	// Show the Tasks view's LAUNCH splash while a role's task is launching.
+	p.coordPane.EnableLaunchSplash(true)
+	p.agentPane.EnableLaunchSplash(true)
 	p.coordPane.SetBorderTitle(coordPaneTitle)
 	p.agentPane.SetBorderTitle(agentPaneTitle)
 	// Retitle the embedded graph so it reads as the plan DAG, not a second
