@@ -87,20 +87,22 @@ lint-pr:
 	@git fetch origin master >/dev/null 2>&1 || true
 	golangci-lint run --new-from-rev=origin/master ./...
 
-# -timeout 120s bounds a hung suite while the machine is AWAKE. It is a weak
+# -timeout 150s bounds a hung suite while the machine is AWAKE. It is a weak
 # guard, not the real backstop: Go's test timeout uses the runtime-monotonic
 # clock, which macOS suspends during sleep, so an overnight-slept run never
 # accumulates the wall-clock minutes to trip it. The orphaned-test reaper
 # (script/reap-orphaned-tests.sh) is the sleep-proof backstop.
+# 150s (not 120s): internal/tui alone runs ~1,300 serial tests in ~123s under
+# -race on a normal dev machine, so 120s failed it deterministically.
 test:
-	go test -race -count=1 -timeout 120s ./...
+	go test -race -count=1 -timeout 150s ./...
 
 test-watch:
 	@command -v gotestsum >/dev/null 2>&1 || { echo "Install gotestsum: go install gotest.tools/gotestsum@latest"; exit 1; }
 	gotestsum --watch ./...
 
 test-cover:
-	go test -race -count=1 -timeout 120s -coverprofile=coverage.out ./...
+	go test -race -count=1 -timeout 150s -coverprofile=coverage.out ./...
 	@echo "--- raw ---"
 	@go tool cover -func=coverage.out | tail -1
 	@echo "--- filtered (per coverage-ignore.txt) ---"
@@ -109,12 +111,12 @@ test-cover:
 # CI gate. Fails if filtered coverage drops below the current floor.
 # Ratchets up over time toward the 95% target.
 test-cover-gate:
-	go test -race -count=1 -timeout 120s -coverprofile=coverage.out ./...
+	go test -race -count=1 -timeout 150s -coverprofile=coverage.out ./...
 	go run ./scripts/coverfilter -in coverage.out -out coverage.filtered.out -min 88
 
 test-pkg:
 	@test -n "$(PKG)" || { echo "Usage: make test-pkg PKG=./internal/db/"; exit 1; }
-	go test -race -count=1 -timeout 120s -v $(PKG)
+	go test -race -count=1 -timeout 150s -v $(PKG)
 
 # Black-box smoke test the plugin substrate against the locally running
 # daemon. Mints nothing — see cmd/argus-plugin-smoke for the one-time setup
