@@ -468,6 +468,7 @@ func (c *sessionCore) handleStream(conn net.Conn) {
 	}
 
 	slog.Info("stream connected", "task", header.TaskID, "since", header.Since)
+	c.dropStaleExitInfo(header.TaskID, sess)
 	c.registerStream(header.TaskID, conn)
 	defer c.unregisterStream(header.TaskID, conn)
 
@@ -504,6 +505,32 @@ func (c *sessionCore) handleStream(conn net.Conn) {
 	case <-waitForClose(conn):
 		slog.Info("stream: client disconnected", "task", header.TaskID)
 	}
+}
+
+// dropStaleExitInfo discards a cached ExitInfo that predates the live session a
+// stream is attaching to. A kick/recycle restart caches the old incarnation's
+// ExitInfo (PendingRestart=true), but clients treat the restart gap as alive
+// and reconnect without fetching it, so it lingers. Left in place it satisfies
+// awaitExitInfoCached for the replacement's real exit, letting the stream EOF
+// beat the fresh ExitInfo to the cache so the relay consumes the stale entry
+// and the exit-time status flip is skipped (task stuck in_progress). Done is
+// checked AFTER reading the entry under the lock: onFinish runs only once Done
+// has closed, so an entry seen while Done is still open cannot be this
+// session's own and is safe to drop.
+func (c *sessionCore) dropStaleExitInfo(taskID string, sess agent.SessionHandle) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ei, ok := c.exitInfos[taskID]
+	if !ok {
+		return
+	}
+	select {
+	case <-sess.Done():
+		return // exiting now: the entry may be this session's own
+	default:
+	}
+	delete(c.exitInfos, taskID)
+	slog.Info("stream: dropped stale exit info from a previous incarnation", "task", taskID, "pending", ei.PendingRestart, "stopped", ei.Stopped)
 }
 
 // awaitExitInfoCached blocks until the task's ExitInfo has been recorded in the
