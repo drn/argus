@@ -207,6 +207,19 @@ func TestLaunchSplash_HistoryLatchSurvivesRoundTripToOtherTask(t *testing.T) {
 	notSplash(t, drawOnSim(t, tp, 80, 24))
 }
 
+// The latch is per task: output on t1 must not suppress a genuine first
+// launch of t2 bound to the same pane.
+func TestLaunchSplash_HistoryLatchIsPerTask(t *testing.T) {
+	tp := splashPane(t, "in_progress")
+	tp.SetTaskID("t1")
+	tp.SetSession(&mockAdapter{alive: true, totalWritten: 5})
+	notSplash(t, drawOnSim(t, tp, 80, 24))
+	tp.SetTaskID("t2")
+	tp.ResetVT()
+	tp.SetSession(&mockAdapter{alive: true})
+	testutil.Contains(t, drawOnSim(t, tp, 80, 24), "S T A R T I N G")
+}
+
 // Q2: a fresh zero-byte RemoteSession handle for an established agent.
 func TestLaunchSplash_FreshHandleForEstablishedTaskShowsNoStarting(t *testing.T) {
 	tp := splashPane(t, "in_progress")
