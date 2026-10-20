@@ -1,10 +1,14 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
+	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/drn/argus/internal/config"
@@ -108,20 +112,53 @@ func warnCoordinatorBackend(format string, args ...any) {
 	slog.Warn(fmt.Sprintf("coordinator spawn: "+format, args...))
 }
 
-// resolveOrchestratorBranchNamespace looks up an orchestrator's name for use
-// as a hera worker's branch namespace (add-branch-namespacing:
-// argus/<orchestrator>/<role> instead of argus/<role>). Resolution fails
-// open: a lookup miss (bad/stale orchestrator id, or any other error) yields
-// "" — the flat branch form — rather than aborting the spawn. The genuine
-// failure mode for an invalid orchestrator id is the role/binding FK
-// violation that already runs later in AfterPersist; this lookup must not
-// introduce a second, earlier failure path for the same underlying problem.
-func resolveOrchestratorBranchNamespace(database *db.DB, orchestratorID int64) string {
+// resolveOrchestratorBranchNamespace avoids local namespace-root leaves, including
+// the flat branch of a task that promoted itself to coordinator. Resolve against
+// the target source repo: cross-project workers may encounter different refs.
+// Lookup/probe failures remain fail-open; CreateAndStart owns genuine failures.
+func resolveOrchestratorBranchNamespace(database *db.DB, orchestratorID int64, project string) string {
 	orch, err := database.HeraOrchestrator(orchestratorID)
 	if err != nil || orch == nil {
+		uxlog.Log("[hera] branch namespace: orchestrator=%d lookup failed (using flat branch): %v", orchestratorID, err)
 		return ""
 	}
-	return orch.Name
+	proj, ok := database.Config().Projects[project]
+	if !ok || proj.Path == "" {
+		uxlog.Log("[hera] branch namespace: project=%q unavailable (using ordinary namespace)", project)
+		return orch.Name
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "for-each-ref", "--format=%(refname)", "refs/heads/argus")
+	cmd.Dir = proj.Path
+	out, err := cmd.Output()
+	if err != nil {
+		uxlog.Log("[hera] branch namespace: project=%q probe failed (using ordinary namespace): %v", project, err)
+		return orch.Name
+	}
+	heads := make(map[string]bool)
+	for _, ref := range strings.Fields(string(out)) {
+		heads[ref] = true
+	}
+	root := sanitizeBranchName(orch.Name)
+	if !heads["refs/heads/argus/"+root] {
+		return orch.Name
+	}
+	// Reserve suffix space BEFORE CreateWorktree sanitizes the namespace again.
+	// Base 36 keeps even int64 IDs and counters within the 30-byte segment cap.
+	// Existing descendants are fine: only an exact leaf blocks a namespace root.
+	for attempt := 1; ; attempt++ {
+		suffix := "-t" + strconv.FormatInt(orch.ID, 36) + "-" + strconv.FormatInt(int64(attempt), 36)
+		prefix := root
+		if limit := maxBranchNameLen - len(suffix); len(prefix) > limit {
+			prefix = prefix[:limit]
+		}
+		candidate := strings.TrimRight(prefix, "-") + suffix
+		if !heads["refs/heads/argus/"+candidate] {
+			uxlog.Log("[hera] branch namespace: project=%q orchestrator=%q collision resolved: argus/%s -> argus/%s", project, orch.Name, root, candidate)
+			return candidate
+		}
+	}
 }
 
 // resolveOrchestratorAccount returns the account of the
@@ -223,7 +260,7 @@ func SpawnHeraWorker(database *db.DB, runner SessionProvider, in HeraWorkerSpawn
 		Archetype:        archetype,
 		Profile:          in.Profile,
 		BaseBranch:       in.Branch,
-		BranchNamespace:  resolveOrchestratorBranchNamespace(database, in.OrchestratorID),
+		BranchNamespace:  resolveOrchestratorBranchNamespace(database, in.OrchestratorID, in.Project),
 		Account:          inheritedAccount,
 		InheritedAccount: true,
 		AutoName:         false, // name is the meaningful role slug — no Haiku rename
@@ -311,7 +348,7 @@ func MaterializeHeraWorker(database *db.DB, runner SessionProvider, in HeraMater
 		// onto the materialized task; empty stays empty (resolution falls open).
 		Archetype:        in.Role.Archetype,
 		BaseBranch:       in.Branch,
-		BranchNamespace:  resolveOrchestratorBranchNamespace(database, in.Role.OrchestratorID),
+		BranchNamespace:  resolveOrchestratorBranchNamespace(database, in.Role.OrchestratorID, in.Project),
 		Account:          inheritedAccount,
 		InheritedAccount: true,
 		AutoName:         false, // name is the planner-assigned short-id slug — never rename
@@ -422,7 +459,7 @@ func MaterializeHeraSubCoordinator(database *db.DB, runner SessionProvider, in H
 		// orchestrator this call mints below doesn't exist yet at CreateWorktree
 		// time, so it couldn't be used even if it were the intended namespace
 		// (add-branch-namespacing D2).
-		BranchNamespace:  resolveOrchestratorBranchNamespace(database, in.Role.OrchestratorID),
+		BranchNamespace:  resolveOrchestratorBranchNamespace(database, in.Role.OrchestratorID, in.Project),
 		Account:          inheritedAccount,
 		InheritedAccount: true,
 		AutoName:         false, // name is the planner-assigned short-id slug — never rename
