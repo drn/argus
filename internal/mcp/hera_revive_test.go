@@ -149,6 +149,8 @@ func TestHeraRevive_Success(t *testing.T) {
 	testutil.Equal(t, fr.called, true)
 	testutil.Equal(t, fr.calledWith.TaskID, workerTask.ID)
 	testutil.Equal(t, fr.calledWith.IsCoordinator, false)
+	// Explicit hera_revive keeps its full gate (including the kick).
+	testutil.Equal(t, fr.calledWith.DeadOnly, false)
 	testutil.Contains(t, cr.Content[0].Text, "kicked_stuck")
 }
 

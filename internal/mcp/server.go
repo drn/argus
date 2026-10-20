@@ -97,10 +97,14 @@ type HeraSpawner func(in HeraSpawnInput) (*HeraSpawnResult, error)
 // HeraReviveInput carries a resolved PULL-revive target (add-hera-revive) into
 // the daemon's shared primitive. TaskID is the target role's live-bound argus
 // task; IsCoordinator identifies the TARGET role's kind (not the caller's) —
-// a live coordinator is never auto-restarted.
+// a live coordinator is never auto-restarted. DeadOnly selects the dead-only
+// primitive (internal/hera.ReviveDeadRole) used by hera_send's auto-revive: a
+// live session is never kicked, only a dead one restarted
+// (fix-hera-send-no-kick).
 type HeraReviveInput struct {
 	TaskID        string
 	IsCoordinator bool
+	DeadOnly      bool
 }
 
 // HeraReviver invokes the daemon's shared PULL-revive primitive

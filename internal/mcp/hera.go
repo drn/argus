@@ -233,7 +233,7 @@ var heraToolDefs = []Tool{
 	},
 	{
 		Name:        "hera_revive",
-		Description: "PULL-revive a hera role this coordinator coordinates. If its session is dead (no live process) it is restarted in place (--session-id resume when the task has one). If it's alive but genuinely stuck (idle, NOT blocked on a user prompt) its session is stopped and resumed in place at its existing size. A live coordinator role, a busy (actively working) role, one parked at a question, or one with a restart already in flight is left untouched and reported as such — this can never thrash a session that is actually working or waiting on an answer. Coordinator-only. Use when hera_status/hera_tree_updates show no progress from a role — e.g. after a session-supervisor restart SIGHUPs its PTY. This is pull/on-demand: nothing calls this automatically.",
+		Description: "PULL-revive a hera role this coordinator coordinates. If its session is dead (no live process) it is restarted in place (--session-id resume when the task has one). If it's alive, idle, and NOT blocked on a user prompt, its session is KICKED: the agent is stopped and resumed in place at its existing size. A kick restarts the agent, which kills any background jobs it started in-session (e.g. Bash run_in_background) — and idle-not-blocked is also how a healthy worker looks between turns or while waiting on a background job, so use this only as a last resort for a session that is truly wedged, never as a progress check (watch hera_tree_updates or the job's log instead). A live coordinator role, a busy (actively working) role, one parked at a question, or one with a restart already in flight is left untouched and reported as such. Coordinator-only. Typical use: a role that is dead after a session-supervisor restart SIGHUPs its PTY. hera_send's auto-revive only ever restarts a DEAD recipient — it never kicks.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -1332,10 +1332,12 @@ func (s *Server) toolHeraSend(id interface{}, args json.RawMessage) *Response {
 		}
 	}
 
-	// Auto-revive (add-hera-send-auto-revive): a coordinator sending to an
-	// explicitly named, different role gets the exact same PULL-revive
-	// hera_revive already provides — reused verbatim via s.heraRevive /
-	// internal/hera.ReviveRole, no new gating logic. Soft-fail throughout: a
+	// Auto-revive (add-hera-send-auto-revive, narrowed by
+	// fix-hera-send-no-kick): a coordinator sending to an explicitly named,
+	// different role restarts that role's session if it is DEAD. A live
+	// recipient is never kicked — delivery itself wakes an idle agent, and a
+	// kick restarts the agent and kills its in-session background jobs, which
+	// is exactly what every send to an idle worker used to do. Soft-fail throughout: a
 	// missing binding, a lookup error, a revive error, or heraRevive not
 	// being wired all skip silently (or Warn-log) and never block the send.
 	var reviveOutcome string
@@ -1347,6 +1349,7 @@ func (s *Server) toolHeraSend(id interface{}, args json.RawMessage) *Response {
 			outcome, reviveErr := s.heraRevive(HeraReviveInput{
 				TaskID:        binding.ArgusTaskID,
 				IsCoordinator: toRole.Kind == db.HeraKindCoordinator,
+				DeadOnly:      true,
 			})
 			if reviveErr != nil {
 				slog.Warn("[hera] send: auto-revive failed", "to_role", toRole.Name, "task_id", binding.ArgusTaskID, "err", reviveErr)
@@ -1708,6 +1711,8 @@ func heraReviveOutcomeMessage(outcome, roleName string) string {
 		return fmt.Sprintf("%s is idle but parked at a question — left untouched to avoid dismissing it.", roleName)
 	case string(hera.ReviveSkippedPending):
 		return fmt.Sprintf("%s already has a revive/restart in flight — no action taken.", roleName)
+	case string(hera.ReviveSkippedAlive):
+		return fmt.Sprintf("%s's session is alive — left untouched; message delivery will wake it.", roleName)
 	case string(hera.ReviveSkippedNoSessionID):
 		return fmt.Sprintf("%s's session is alive but has no session id to resume — left untouched.", roleName)
 	default:

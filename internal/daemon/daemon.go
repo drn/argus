@@ -556,7 +556,7 @@ func (d *Daemon) heraSpawnWorker(in mcp.HeraSpawnInput) (*mcp.HeraSpawnResult, e
 // SessionRunner.KickRerender/StartOrReattach) but not the top-level orchestration.
 func (d *Daemon) heraReviveRole(in mcp.HeraReviveInput) (string, error) {
 	rr := NewHeraReviveRunner(d.db, d.runner, d.cfgFn)
-	outcome, err := hera.ReviveRole(d.db, rr, in.TaskID, in.IsCoordinator)
+	outcome, err := reviveForInput(d.db, rr, in)
 	if err != nil {
 		return "", err
 	}
