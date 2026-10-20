@@ -1206,6 +1206,25 @@ func TestNeedsInputClear(t *testing.T) {
 		}
 	})
 
+	// A settle clear records no fingerprint (the tail had no prompt on it), so
+	// the cleared marker used to fall back to timestamp-only suppression and
+	// swallow ANY later prompt sharing that lastInput time. A reappearing
+	// awaiting-input shape after a settle is a new prompt and must re-arm — but
+	// only when a fingerprint is available; without one the old guard holds.
+	t.Run("settled clear without fingerprint re-arms a later prompt that has one", func(t *testing.T) {
+		lastInput := func(string) time.Time { return t0 }
+		running := []string{"a"}
+		settledNow := true
+		settled := func(string) bool { return settledNow }
+		out, base, cleared := NeedsInputClear([]string{"a"}, running, nil, nil, lastInput, nil, nil, settled, nil)
+		testutil.Equal(t, len(out), 0)
+
+		settledNow = false
+		fp := func(string) (uint64, bool) { return 42, true }
+		out, _, _ = NeedsInputClear([]string{"a"}, running, base, cleared, lastInput, nil, nil, settled, fp)
+		testutil.DeepEqual(t, out, []string{"a"})
+	})
+
 	// Regression guard for BUG-072: a settledOf that never reports true (the
 	// session never demonstrates settlement — e.g. it is still genuinely
 	// blocked) must never clear the flag on its own.
