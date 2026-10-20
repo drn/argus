@@ -47,6 +47,9 @@ func TestHeraSend_AutoRevive_DeadRecipientRestartedBeforeSend(t *testing.T) {
 	testutil.Equal(t, fr.called, true)
 	testutil.Equal(t, fr.calledWith.TaskID, binding.ArgusTaskID)
 	testutil.Equal(t, fr.calledWith.IsCoordinator, false)
+	// fix-hera-send-no-kick: the send path only ever asks for a dead-only
+	// revive — a live recipient must never be kicked by a message.
+	testutil.Equal(t, fr.calledWith.DeadOnly, true)
 	testutil.Contains(t, cr.Content[0].Text, "- **revive**:")
 	testutil.Contains(t, cr.Content[0].Text, "restarted")
 	testutil.Contains(t, cr.Content[0].Text, "Message sent")
@@ -54,10 +57,7 @@ func TestHeraSend_AutoRevive_DeadRecipientRestartedBeforeSend(t *testing.T) {
 
 func TestHeraSend_AutoRevive_SkipOutcomesStillDeliver(t *testing.T) {
 	for _, outcome := range []string{
-		"skipped_busy",
-		"skipped_blocked_on_prompt",
-		"skipped_coordinator_live",
-		"kicked_stuck",
+		"skipped_alive",
 	} {
 		t.Run(outcome, func(t *testing.T) {
 			s, d := testHeraServer(t)
@@ -78,7 +78,9 @@ func TestHeraSend_AutoRevive_SkipOutcomesStillDeliver(t *testing.T) {
 				t.Fatalf("expected success, got error: %s", cr.Content[0].Text)
 			}
 			testutil.Equal(t, fr.called, true)
+			testutil.Equal(t, fr.calledWith.DeadOnly, true)
 			testutil.Contains(t, cr.Content[0].Text, "- **revive**:")
+			testutil.Contains(t, cr.Content[0].Text, "message delivery will wake it")
 			testutil.Contains(t, cr.Content[0].Text, "Message sent")
 			testutil.Contains(t, cr.Content[0].Text, "**to**: w1")
 		})

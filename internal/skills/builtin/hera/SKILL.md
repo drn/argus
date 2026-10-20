@@ -134,8 +134,9 @@ status, revive, and completion; the plan-DAG authoring/mutation tools live in th
   omit `to` — it default-routes to the orchestrator's coordinator. **Coordinators must supply an
   explicit `to`.** `in_reply_to` threads a reply to a prior message id. Returns the `message_id`,
   recipient, and delivery mode. A coordinator sending to a different, explicitly named role also makes
-  a soft-fail, idle-gated auto-revive attempt through the same primitive as `hera_revive`; the result
-  may include a `revive` outcome. Caps: 64 KiB body, 500 unread per recipient, 50 sends/min/sender.
+  a soft-fail, **dead-only** auto-revive attempt: a recipient whose session is dead is restarted before
+  delivery; a live one is never touched (`skipped_alive`), since the message itself wakes it. The
+  result may include a `revive` outcome. Caps: 64 KiB body, 500 unread per recipient, 50 sends/min/sender.
   Cross-orchestrator messaging is not possible — `to` always resolves within your own orchestrator.
 
 - **`hera_inbox(cwd, [orchestrator], [timeout_seconds])`** — fetch all unread messages addressed to
@@ -164,15 +165,16 @@ status, revive, and completion; the plan-DAG authoring/mutation tools live in th
   coordinate. Reach for this when a role you spawned looks stuck — `hera_tree_updates`/`hera_status`
   show no progress, especially after something like a session-supervisor restart (which SIGHUPs every
   PTY it owns, leaving a worker dead or suspended). It inspects the role's live session and takes
-  exactly one action: a dead session is restarted in place; a live-but-genuinely-stuck session (idle,
-  NOT parked at a prompt) is kicked (stopped and resumed in place); anything else — busy, blocked on a
+  exactly one action: a dead session is restarted in place; a live session that is idle and NOT
+  parked at a prompt is **kicked** (stopped and resumed in place); anything else — busy, blocked on a
   question, a live coordinator, a missing resume id, or a kick already in flight — is left untouched
   and reported as such (`skipped_busy` / `skipped_blocked_on_prompt` /
-  `skipped_coordinator_live` / `skipped_no_session_id` / `skipped_restart_pending`). The MCP tool
-  itself is pull-only; the explicit-coordinator-recipient auto-revive under `hera_send` shares its
-  underlying runner primitive. The TUI's Enter-key path follows the same idle+not-blocked safety
-  contract but invokes the daemon revive RPC rather than this MCP tool. It targets a DIFFERENT role
-  than your own (self-targeting errors).
+  `skipped_coordinator_live` / `skipped_no_session_id` / `skipped_restart_pending`). **A kick restarts
+  the agent and kills every background job it started in-session**, and "idle, not blocked" is also
+  exactly how a healthy worker looks between turns or while it waits on a long job. So treat a kick as
+  the last resort for a session that is truly wedged, never as a progress check. `hera_send`'s
+  auto-revive only ever restarts a *dead* recipient. The TUI's Enter-key path applies the same gate.
+  It targets a DIFFERENT role than your own (self-targeting errors).
 
 - **`hera_accept(cwd, role_name, [orchestrator], [message])`** — coordinator-only: mark a role's bound
   task complete and send it a check-in asking whether it's winding down, has more work to do, or is
@@ -271,9 +273,17 @@ or using in-session sub-agents.
   still needed; do not create a background timer or shell sleep loop.
 - **Want whole-team state?** `hera_tree_updates(cwd=$PWD)`, then `hera_get_messages(ids=[…])` for the
   ones worth reading.
+- **Checking on a worker's progress?** Read `hera_tree_updates`, the worker's branch, or the log file of
+  its long job — don't ping it. A message costs the worker a turn. Never use `hera_revive` as a
+  progress check: an idle worker is usually just between turns or waiting on a background job, and a
+  kick kills that job.
 - **A role looks stuck (no progress, especially after a session-supervisor restart)?** Don't spawn a
-  duplicate worker on a hunch — try `hera_revive(cwd=$PWD, role_name=<name>)` first. It's a safe,
-  idle+not-blocked-gated no-op if the role turns out to be fine, busy, or waiting on a question.
+  duplicate worker on a hunch. First check whether it is dead or just waiting (its pane, its job's log
+  or marker file). `hera_revive(cwd=$PWD, role_name=<name>)` safely restarts a *dead* session and leaves
+  busy or blocked ones alone, but it **kicks** a live idle one — restarting the agent and killing its
+  in-session jobs. Reach for it on a live role only when you're sure the session is wedged.
+- **You're a worker?** Follow the worker conduct rules under §7(b): verification scope and long-job
+  survival.
 - **How completion flows back:** a worker finishing sends a closing `hera_send(status="done", …)` — the
   synchronous status apply rolls its task to `in_review` + `ready_to_close`, visible in the rail.
   **This is the worker's self-report, NOT task closure.** Once you (the coordinator) have independently
@@ -361,6 +371,20 @@ You opened in a born-bound worker terminal:
 5. `hera_send(cwd=$PWD, status="done", body="<summary + PR link>", tldr="cart-api done, PR #47, tests green")`
    — the synchronous status apply rolls your task to in_review + ready_to_close so the coordinator
    sees you finished. If you cannot complete: `hera_send(cwd=$PWD, status="failed", body="<reason>", …)`.
+
+**Worker conduct** (applies to any stack):
+
+- **Verification scope.** Run the project's own pre-PR gate when its CLAUDE.md/AGENTS.md defines one —
+  that always wins. Where none exists, run the narrowest checks that cover your change and leave the
+  full suite to CI. If even the project's gate (or a full suite) cannot run in your sandbox (missing
+  dependencies, too slow), run the narrowest checks you can and say plainly that the rest is CI-only. If a check tool times out or the environment lacks what it needs, fall back at once instead of
+  retrying. Your done report says which checks ran locally and which ran only in CI.
+- **Long jobs must survive a session restart.** Your session can restart under you (supervisor
+  restart, recycle, a human revive or kick), and a restart kills every job your session started —
+  including Bash `run_in_background` jobs. Run any step longer than a minute or two detached instead:
+  `nohup sh -c '<cmd>; echo $? > <job>.exit' > <job>.log 2>&1 &` from an ordinary (foreground) shell
+  call. After any restart, check `<job>.exit` / `<job>.log` before relaunching anything: a job with no
+  exit marker and a log that is still growing is still running.
 
 ### (c) Author a staged plan-DAG
 

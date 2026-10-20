@@ -220,3 +220,65 @@ func withSessionID(task *model.Task, sessionID string) *model.Task {
 	task.SessionID = sessionID
 	return task
 }
+
+// --- dead-only revive (fix-hera-send-no-kick) ---
+
+func TestReviveDeadRole(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		runner      *fakeReviveRunner
+		coordinator bool
+		want        ReviveOutcome
+		wantRestart bool
+	}{
+		{name: "dead session restarted", runner: &fakeReviveRunner{alive: false}, want: ReviveRestartedDead, wantRestart: true},
+		{name: "dead coordinator restarted", runner: &fakeReviveRunner{alive: false}, coordinator: true, want: ReviveRestartedDead, wantRestart: true},
+		// The exact signature ReviveRole kicks: alive, idle, not blocked.
+		{name: "live idle unblocked left untouched", runner: &fakeReviveRunner{alive: true, idle: true}, want: ReviveSkippedAlive},
+		{name: "live busy left untouched", runner: &fakeReviveRunner{alive: true}, want: ReviveSkippedAlive},
+		{name: "live blocked left untouched", runner: &fakeReviveRunner{alive: true, idle: true, blocked: true}, want: ReviveSkippedAlive},
+		{name: "live coordinator left untouched", runner: &fakeReviveRunner{alive: true, idle: true}, coordinator: true, want: ReviveSkippedAlive},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, err := db.OpenInMemory()
+			testutil.NoError(t, err)
+			t.Cleanup(func() { _ = d.Close() })
+
+			kind := db.HeraKindWorker
+			if tc.coordinator {
+				kind = db.HeraKindCoordinator
+			}
+			task, _, _ := seedRecycleRole(t, d, kind, "orch", "role-1", "/wt/r1", "argus/r1", "mission")
+			testutil.NoError(t, d.Update(withSessionID(task, "sess-1")))
+
+			outcome, err := ReviveDeadRole(d, tc.runner, task.ID)
+			testutil.NoError(t, err)
+			testutil.Equal(t, outcome, tc.want)
+			testutil.Equal(t, tc.runner.restartCalled, tc.wantRestart)
+			testutil.Equal(t, tc.runner.kickCalled, false)
+		})
+	}
+}
+
+func TestReviveDeadRole_RestartFails(t *testing.T) {
+	d, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	task, _, _ := seedRecycleRole(t, d, db.HeraKindWorker, "orch", "worker-1", "/wt/w1", "argus/w1", "mission")
+	_, err = ReviveDeadRole(d, &fakeReviveRunner{alive: false, restartErr: errors.New("boom")}, task.ID)
+	if err == nil {
+		t.Fatal("expected the restart failure to propagate")
+	}
+}
+
+func TestReviveDeadRole_TaskNotFound(t *testing.T) {
+	d, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	_, err = ReviveDeadRole(d, &fakeReviveRunner{}, "no-such-task")
+	if err == nil {
+		t.Fatal("expected an error for a missing task")
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/hera"
+	"github.com/drn/argus/internal/mcp"
 	"github.com/drn/argus/internal/model"
 )
 
@@ -117,4 +118,15 @@ func (r *HeraReviveRunner) RestartDead(taskID string) error {
 	task.SetStatus(model.StatusInProgress)
 	task.AgentPID = sess.PID()
 	return r.database.Update(task)
+}
+
+// reviveForInput dispatches a resolved revive request to the right shared
+// primitive: hera_send's auto-revive (DeadOnly) only ever restarts a dead
+// session, while explicit hera_revive runs the full ReviveRole gate including
+// the stuck-session kick (fix-hera-send-no-kick).
+func reviveForInput(store hera.ReviveStore, rr hera.ReviveRunner, in mcp.HeraReviveInput) (hera.ReviveOutcome, error) {
+	if in.DeadOnly {
+		return hera.ReviveDeadRole(store, rr, in.TaskID)
+	}
+	return hera.ReviveRole(store, rr, in.TaskID, in.IsCoordinator)
 }

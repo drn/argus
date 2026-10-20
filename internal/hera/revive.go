@@ -35,6 +35,11 @@ const (
 	// ReviveSkippedNoSessionID means the session is alive but the task has no
 	// session id to resume in place — left untouched.
 	ReviveSkippedNoSessionID ReviveOutcome = "skipped_no_session_id"
+	// ReviveSkippedAlive means a dead-only revive (ReviveDeadRole, hera_send's
+	// auto-revive) found a live session and left it untouched — message
+	// delivery itself wakes a live idle agent, and a kick would kill its
+	// in-session background jobs (fix-hera-send-no-kick).
+	ReviveSkippedAlive ReviveOutcome = "skipped_alive"
 )
 
 // ReviveStore is the narrow DB surface ReviveRole needs. Satisfied by the
@@ -86,19 +91,9 @@ type ReviveRunner interface {
 // task to in_progress (a restore failure does not fail the kick itself —
 // mirrors reviveRestoreInProgress's soft-fail).
 func ReviveRole(store ReviveStore, runner ReviveRunner, taskID string, isCoordinator bool) (ReviveOutcome, error) {
-	task, err := store.Get(taskID)
-	if err != nil {
-		return "", fmt.Errorf("revive: load task %s: %w", taskID, err)
-	}
-	if task == nil {
-		return "", fmt.Errorf("revive: task %s not found", taskID)
-	}
-
-	if !runner.IsAlive(taskID) {
-		if err := runner.RestartDead(taskID); err != nil {
-			return "", fmt.Errorf("revive: restart dead session for task %s: %w", taskID, err)
-		}
-		return ReviveRestartedDead, nil
+	task, outcome, err := restartIfDead(store, runner, taskID)
+	if err != nil || outcome != "" {
+		return outcome, err
 	}
 
 	if isCoordinator {
@@ -124,4 +119,39 @@ func ReviveRole(store ReviveStore, runner ReviveRunner, taskID string, isCoordin
 	// in in_review (e.g. awaiting close-out) can still be closed manually.
 	_, _ = store.ReviveHeraWorkerToInProgress(taskID)
 	return ReviveKickedStuck, nil
+}
+
+// ReviveDeadRole is the dead-only sibling of ReviveRole, used by hera_send's
+// auto-revive (fix-hera-send-no-kick): a dead session is restarted exactly as
+// ReviveRole would, and any live session — idle, busy, blocked, or a
+// coordinator — is left untouched and reported as ReviveSkippedAlive. A send
+// never kicks: "alive + idle + not blocked" is the normal resting state of an
+// agent between turns or waiting on a background job, and the agent's own
+// shutdown on a kick tears those jobs down.
+func ReviveDeadRole(store ReviveStore, runner ReviveRunner, taskID string) (ReviveOutcome, error) {
+	_, outcome, err := restartIfDead(store, runner, taskID)
+	if err != nil || outcome != "" {
+		return outcome, err
+	}
+	return ReviveSkippedAlive, nil
+}
+
+// restartIfDead loads taskID and restarts its session when it has no live
+// process, returning ReviveRestartedDead. A live session returns the loaded
+// task and an empty outcome so the caller applies its own live-session policy.
+func restartIfDead(store ReviveStore, runner ReviveRunner, taskID string) (*model.Task, ReviveOutcome, error) {
+	task, err := store.Get(taskID)
+	if err != nil {
+		return nil, "", fmt.Errorf("revive: load task %s: %w", taskID, err)
+	}
+	if task == nil {
+		return nil, "", fmt.Errorf("revive: task %s not found", taskID)
+	}
+	if runner.IsAlive(taskID) {
+		return task, "", nil
+	}
+	if err := runner.RestartDead(taskID); err != nil {
+		return nil, "", fmt.Errorf("revive: restart dead session for task %s: %w", taskID, err)
+	}
+	return task, ReviveRestartedDead, nil
 }

@@ -11,6 +11,8 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/hera"
+	"github.com/drn/argus/internal/mcp"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -265,4 +267,78 @@ func TestHeraReviveRunner_RestartDead_EndToEnd(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("timeout waiting for RestartDead to start a fresh session")
+}
+
+// TestReviveForInput_DeadOnlyNeverKicksLiveSession pins fix-hera-send-no-kick
+// end to end: hera_send's dead-only revive must leave a live (idle, unblocked)
+// session running — the same PID, never stopped — where the full ReviveRole
+// gate would have kicked it.
+func TestReviveForInput_DeadOnlyNeverKicksLiveSession(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	database, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	bin := filepath.Join(t.TempDir(), "claude")
+	testutil.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\nprintf 'ready\\n'\nexec sleep 30\n"), 0o700))
+	cfg := config.DefaultConfig()
+	cfg.Backends["fixture"] = config.Backend{Command: bin}
+	task := &model.Task{Name: "live", Backend: "fixture", Worktree: t.TempDir(), SessionID: "sess-1", Prompt: "mission"}
+	testutil.NoError(t, database.Add(task))
+	runner := agent.NewRunner(nil)
+	t.Cleanup(runner.StopAll)
+	sess, err := runner.Start(task, cfg, 24, 80, false)
+	testutil.NoError(t, err)
+	rr := NewHeraReviveRunner(database, runner, func() config.Config { return cfg })
+
+	outcome, err := reviveForInput(database, rr, mcp.HeraReviveInput{TaskID: task.ID, DeadOnly: true})
+	testutil.NoError(t, err)
+	testutil.Equal(t, outcome, hera.ReviveSkippedAlive)
+	testutil.Equal(t, runner.HasPendingRestart(task.ID), false)
+	testutil.True(t, sess.Alive())
+	testutil.Equal(t, runner.Get(task.ID).PID(), sess.PID())
+}
+
+func TestReviveForInput_DeadOnlyRestartsDeadSession(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	database, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	bin := filepath.Join(t.TempDir(), "claude")
+	testutil.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\nexec sleep 30\n"), 0o700))
+	cfg := config.DefaultConfig()
+	cfg.Backends["fixture"] = config.Backend{Command: bin}
+	task := &model.Task{Name: "dead", Backend: "fixture", Worktree: t.TempDir(), Prompt: "mission"}
+	testutil.NoError(t, database.Add(task))
+	runner := agent.NewRunner(nil)
+	t.Cleanup(runner.StopAll)
+	rr := NewHeraReviveRunner(database, runner, func() config.Config { return cfg })
+
+	outcome, err := reviveForInput(database, rr, mcp.HeraReviveInput{TaskID: task.ID, DeadOnly: true})
+	testutil.NoError(t, err)
+	testutil.Equal(t, outcome, hera.ReviveRestartedDead)
+	testutil.NotNil(t, runner.Get(task.ID))
+}
+
+// The full (non-dead-only) path still routes through ReviveRole: a live
+// coordinator target is reported as such rather than skipped_alive.
+func TestReviveForInput_FullGateForExplicitRevive(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	database, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	bin := filepath.Join(t.TempDir(), "claude")
+	testutil.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\nexec sleep 30\n"), 0o700))
+	cfg := config.DefaultConfig()
+	cfg.Backends["fixture"] = config.Backend{Command: bin}
+	task := &model.Task{Name: "coord", Backend: "fixture", Worktree: t.TempDir(), SessionID: "sess-1", Prompt: "mission"}
+	testutil.NoError(t, database.Add(task))
+	runner := agent.NewRunner(nil)
+	t.Cleanup(runner.StopAll)
+	_, err = runner.Start(task, cfg, 24, 80, false)
+	testutil.NoError(t, err)
+	rr := NewHeraReviveRunner(database, runner, func() config.Config { return cfg })
+
+	outcome, err := reviveForInput(database, rr, mcp.HeraReviveInput{TaskID: task.ID, IsCoordinator: true})
+	testutil.NoError(t, err)
+	testutil.Equal(t, outcome, hera.ReviveSkippedCoordinatorLive)
 }
