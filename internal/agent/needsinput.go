@@ -673,8 +673,18 @@ func NeedsInputClear(candidates []string, running []string, prevBaseline map[str
 			// prompt (e.g. the next question in a multi-question brainstorm
 			// flow), not a stale re-detection of the already-resolved one.
 			curFP, curOK := fingerprint(id)
-			if !marker.HasFP || !curOK || curFP == marker.FP {
+			// A settled clear (BUG-072) with no recorded fingerprint proves the
+			// signal was ABSENT from an idle tail for NeedsInputSettleTicks, so
+			// an awaiting-input shape appearing now (curOK) is a new prompt, not
+			// a stale re-detection: re-arm rather than fall back to timestamp-only
+			// suppression (which swallowed a later permission prompt that shared
+			// the same lastInput time).
+			rearm := marker.Settled && !marker.HasFP && curOK
+			if !rearm && (!marker.HasFP || !curOK || curFP == marker.FP) {
 				continue
+			}
+			if rearm {
+				uxlog.Log("[needsinput] task=%s re-armed after settled clear: new prompt at unchanged input time", id)
 			}
 		}
 		// Capture the baseline on first entry; freeze it across subsequent
@@ -713,7 +723,7 @@ func NeedsInputClear(candidates []string, running []string, prevBaseline map[str
 		// flagged until an unrelated, incidental keystroke arrived.
 		if settledOf != nil && settledOf(id) {
 			fp, ok := fingerprint(id)
-			newCleared[id] = ClearedMarker{At: li, FP: fp, HasFP: ok}
+			newCleared[id] = ClearedMarker{At: li, FP: fp, HasFP: ok, Settled: true}
 			continue
 		}
 		newBaseline[id] = baseline
@@ -736,6 +746,9 @@ type ClearedMarker struct {
 	At    time.Time
 	FP    uint64
 	HasFP bool
+	// Settled marks a BUG-072 settle clear: the tail showed no needs-input
+	// signal while genuinely idle, so a signal reappearing later is new content.
+	Settled bool
 }
 
 // ContentIdleFingerprint powers content-aware idle classification (BUG-036). It
