@@ -8,7 +8,6 @@ import (
 	"github.com/drn/argus/internal/testutil"
 )
 
-
 func TestBuildCmd_BridgeModPluginDir(t *testing.T) {
 	restore := SetEnsureBridgeModForTest(func() (string, error) {
 		return "/fake/home/.argus/bridge-mod/abc/argus-bridge", nil
