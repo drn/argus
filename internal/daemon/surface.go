@@ -154,7 +154,8 @@ const (
 	//     argus-bridge mod dir>` when [bridge] is enabled (add-argus-bridge-shadow),
 	//     loading a mod that reports session state to the daemon. The mod ships
 	//     embedded in the supervisor's own binary, so a stale supervisor spawns
-	//     Claude sessions without it (or with an older mod) until restarted.
+	//     Claude sessions without it (or with an older mod) until restarted. The mod is materialized under
+	//     ~/.argus/cache/bridge-mod (the sandbox-writable part of ~/.argus).
 	SupervisorSpawnSurface = 21
 
 	// SupervisorStreamSurface names the observable behavior of the live-session

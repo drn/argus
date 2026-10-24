@@ -487,3 +487,22 @@ func TestWritePortFile_UnwritableDir(t *testing.T) {
 	// A path whose parent is a regular file cannot be created.
 	testutil.Error(t, WritePortFile(filepath.Join(file, "api-port"), 1))
 }
+
+func TestRemovePortFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), PortFileName)
+	testutil.NoError(t, WritePortFile(path, 7743))
+
+	t.Run("not removed while a newer daemon owns it", func(t *testing.T) {
+		testutil.False(t, RemovePortFile(path, 7744))
+		_, err := os.Stat(path)
+		testutil.NoError(t, err)
+	})
+	t.Run("removed when it still names our port", func(t *testing.T) {
+		testutil.True(t, RemovePortFile(path, 7743))
+		_, err := os.Stat(path)
+		testutil.True(t, os.IsNotExist(err))
+	})
+	t.Run("missing file is fine", func(t *testing.T) {
+		testutil.False(t, RemovePortFile(path, 7743))
+	})
+}

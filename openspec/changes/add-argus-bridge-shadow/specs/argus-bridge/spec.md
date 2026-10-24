@@ -5,11 +5,19 @@ The system SHALL embed the `argus-bridge` Claude Code mod in the argus binary an
 
 #### Scenario: First materialization
 - **WHEN** a Claude session is launched and the mod has not been materialized for this binary's content
-- **THEN** the embedded files are written to `~/.argus/bridge-mod/<content-hash>/argus-bridge/` and that directory path is returned
+- **THEN** the embedded files are written to `~/.argus/cache/bridge-mod/<content-hash>/argus-bridge/` and that directory path is returned
 
 #### Scenario: Idempotent
 - **WHEN** materialization runs again with unchanged embedded content
 - **THEN** the same path is returned and no file is rewritten
+
+#### Scenario: Concurrent first launches
+- **WHEN** many launches materialize the same content at once
+- **THEN** every launch is handed a directory containing every mod file, and no launch removes a directory another was handed
+
+#### Scenario: Sandbox-writable location
+- **WHEN** a session runs inside the argus sandbox
+- **THEN** the mod directory sits under `~/.argus/cache`, the only part of `~/.argus` the sandbox may write
 
 #### Scenario: Never under go test
 - **WHEN** the code runs inside a Go test binary
@@ -23,15 +31,23 @@ The mod SHALL register no reporting behavior unless the `ARGUS_TASK_ID` environm
 - **THEN** it posts nothing and starts no timers
 
 ### Requirement: Bridge mod reports session lifecycle and state events
-The mod SHALL report structured events to the daemon, each carrying a monotonic `seq` within the mod's `boot` id, a timestamp and the current session id: `session.start` (session id, model, cwd), `turn.start`, `turn.complete`, `needs_input`, `cleared`, `session.measure` (context tokens/percent/window, cost, rate limits) and a periodic `heartbeat` of about 15 seconds. Only main-loop events SHALL be reported; events carrying an `agentId` SHALL be ignored.
+The mod SHALL report structured events to the daemon, each carrying a monotonic `seq` within the mod's `boot` id, a timestamp and the current session id: `session.start` (session id, model, cwd), `turn.start`, `turn.complete`, `needs_input`, `cleared`, `session.measure` (context tokens/percent/window, cost, rate limits) and a periodic `heartbeat` of about 15 seconds. `turn.complete` SHALL carry the `turn_id` of its `turn.start`. Only main-loop `turn.start`/`turn.complete` SHALL be reported (those carrying an `agentId` SHALL be ignored for busy/idle); needs-input raised inside a subagent SHALL still be reported. `session.measure` SHALL be sent at most once every 5 seconds (the latest held and sent on turn end or heartbeat), and a measurement identical to the last one sent SHALL be dropped.
 
 #### Scenario: Busy and idle
 - **WHEN** a main-loop turn starts and later completes
 - **THEN** a `turn.start` and a `turn.complete` event are posted in order with increasing `seq`
 
-#### Scenario: Subagent turns are ignored
+#### Scenario: Subagent turns are ignored for busy/idle
 - **WHEN** a turn event carries an `agentId`
-- **THEN** no event is posted for it
+- **THEN** no `turn.start` or `turn.complete` is posted for it
+
+#### Scenario: Subagent dialogs are reported
+- **WHEN** a subagent's `AskUserQuestion` or an `ask`-verdict tool call stays pending
+- **THEN** `needs_input` is posted as for a main-loop call
+
+#### Scenario: Measurement flood
+- **WHEN** `session.measure` fires many times within five seconds
+- **THEN** the first is sent, the rest are held, and only the latest is sent later (when it differs from what was last sent)
 
 #### Scenario: Session id changes after /clear
 - **WHEN** a `turn.start` fires and `$.session.id()` differs from the last reported id
@@ -54,10 +70,14 @@ The mod SHALL report `needs_input` when a user dialog is pending and `cleared` w
 
 #### Scenario: Unanswered permission dialog
 - **WHEN** `tool.check` returns `ask` and the `tool.call` is still pending after the grace period
-- **THEN** `needs_input` with kind `permission` is posted, and `cleared` is posted when the call completes
+- **THEN** `needs_input` with kind `permission` and confidence `pending-or-running` is posted, and `cleared` is posted when the call completes
 
-### Requirement: Bridge mod fails open
-The mod SHALL NOT throw out of any hook and SHALL NOT delay or break the session when the daemon is unreachable. It SHALL discover the daemon by reading `<HOME>/.argus/api-token` and `<HOME>/.argus/api-port`, re-reading the port after any connection failure, and SHALL buffer at most a bounded number of events for brief retry, dropping the oldest beyond the bound.
+#### Scenario: Exact dialogs
+- **WHEN** `needs_input` is posted for `AskUserQuestion` or `ExitPlanMode`
+- **THEN** its kind is `question` or `plan` and its confidence is `exact`
+
+### Requirement: Bridge mod fails open and never waits on the network
+The mod SHALL NOT throw out of any hook and SHALL NOT delay or break the session when the daemon is unreachable or unresponsive: no hook SHALL wait on event delivery, which runs as a background drain. It SHALL discover the daemon by reading `<HOME>/.argus/api-token` and `<HOME>/.argus/api-port`, re-reading the port after any connection failure, and SHALL buffer at most a bounded number of events for brief retry, dropping the oldest beyond the bound.
 
 #### Scenario: Daemon down
 - **WHEN** the daemon is unreachable or the token/port files are missing
@@ -66,6 +86,14 @@ The mod SHALL NOT throw out of any hook and SHALL NOT delay or break the session
 #### Scenario: Relocated data directory
 - **WHEN** `ARGUS_BRIDGE_DIR` is set
 - **THEN** the token and port are read from that directory instead of `<HOME>/.argus`
+
+#### Scenario: Unresponsive daemon
+- **WHEN** the daemon accepts the connection but never answers
+- **THEN** every hook still returns immediately and events stay buffered
+
+#### Scenario: Stale port
+- **WHEN** a post to the cached port returns a non-2xx status other than 401
+- **THEN** the cached port is forgotten and re-read from the port file before the next attempt
 
 #### Scenario: Daemon restarted on a new port
 - **WHEN** a post fails to connect and the port file now names a different port
@@ -80,7 +108,11 @@ The daemon SHALL accept bridge events for a task, drop duplicate or out-of-order
 
 #### Scenario: Reloaded mod
 - **WHEN** an event arrives with a different `boot` id and a lower `seq`
-- **THEN** it is accepted and becomes the new baseline
+- **THEN** it is accepted and becomes the new baseline, and the task's busy and needs-input state are reset
+
+#### Scenario: Silent task
+- **WHEN** a task's state has had no event for over an hour
+- **THEN** it is pruned from memory
 
 ### Requirement: Shadow comparison against screen-reading verdicts
 For each running task with a live bridge, the daemon SHALL compare its screen-reading verdicts against the bridge state on every watcher tick, for two signals: idle (bridge idle meaning turn idle or needs-input pending) and needs-input. A disagreement SHALL be counted and logged only after it persists past a settle window (default 10 seconds); shorter disagreements SHALL be counted as settling. A task without a live bridge SHALL be counted as `no_bridge` and never as a disagreement.
@@ -100,6 +132,10 @@ For each running task with a live bridge, the daemon SHALL compare its screen-re
 #### Scenario: No bridge
 - **WHEN** the task has no bridge events or the bridge is not live
 - **THEN** the `no_bridge` counter increments and nothing is logged
+
+#### Scenario: Permission-kind dialog counted apart
+- **WHEN** the bridge holds a permission-kind needs-input and the scraper disagrees
+- **THEN** the disagreement counts under `needs_input_permission`, not `needs_input`
 
 ### Requirement: Shadow mode changes no behavior
 In phase 1 the daemon SHALL NOT use bridge state to change any verdict, status, notification, delivery or session action.

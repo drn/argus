@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -19,7 +20,8 @@ const maxBridgeBody = 1 << 20
 // touches the session, the task row or any verdict (phase 1 is report-only).
 func (s *Server) handleBridgeEvents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if task, err := s.db.Get(id); err != nil || task == nil {
+	task, err := s.db.Get(id)
+	if err != nil || task == nil {
 		writeErr(w, http.StatusNotFound, "task not found", nil)
 		return
 	}
@@ -35,7 +37,11 @@ func (s *Server) handleBridgeEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	accepted := s.bridgeHub.Ingest(id, batch.Events, time.Now())
 	if accepted < len(batch.Events) {
+		// uxlog is a no-op in the daemon (it never calls uxlog.Init), so also
+		// log through slog, which does reach daemon.log.
 		uxlog.Log("[bridge] ingest task=%s accepted=%d of %d (duplicates/unknown types dropped)", id, accepted, len(batch.Events))
+		//nolint:gosec // G706: task.ID comes from the db.Get lookup above and slog encodes attributes, escaping control characters.
+		slog.Info("[bridge] ingest partial", "task", task.ID, "accepted", accepted, "received", len(batch.Events))
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"accepted": accepted, "received": len(batch.Events)})
 }

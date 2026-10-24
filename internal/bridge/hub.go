@@ -22,6 +22,8 @@ type State struct {
 	Busy           bool   `json:"busy"`
 	NeedsInput     bool   `json:"needs_input"`
 	NeedsInputKind string `json:"needs_input_kind,omitempty"`
+	// NeedsInputConfidence is ConfidenceExact or ConfidencePendingOrRunning.
+	NeedsInputConfidence string `json:"needs_input_confidence,omitempty"`
 
 	Context    *Context    `json:"context,omitempty"`
 	CostUSD    *float64    `json:"cost_usd,omitempty"`
@@ -66,6 +68,12 @@ func (h *Hub) Ingest(taskID string, events []Event, now time.Time) int {
 		if st == nil {
 			st = &State{TaskID: taskID, FirstEventAt: now}
 			h.states[taskID] = st
+		} else if ev.Boot != st.Boot {
+			// A new boot is a restarted or hot-reloaded mod: whatever turn or
+			// dialog the previous one had open is unknowable now, so a stopped
+			// or restarted mid-turn session must not come back live still busy.
+			st.Busy, st.LastTransitionAt = false, now
+			st.NeedsInput, st.NeedsInputKind, st.NeedsInputConfidence = false, "", ""
 		}
 		apply(st, ev, now)
 		accepted++
@@ -101,17 +109,17 @@ func apply(st *State, ev Event, now time.Time) {
 		st.Busy = false
 		// A finished turn leaves no dialog pending (an interrupt can end a
 		// turn without a tool.call post reaching the mod).
-		st.NeedsInput, st.NeedsInputKind = false, ""
+		st.NeedsInput, st.NeedsInputKind, st.NeedsInputConfidence = false, "", ""
 	case TypeNeedsInput:
 		if !st.NeedsInput {
 			st.LastTransitionAt = now
 		}
-		st.NeedsInput, st.NeedsInputKind = true, ev.Kind
+		st.NeedsInput, st.NeedsInputKind, st.NeedsInputConfidence = true, ev.Kind, ev.Confidence
 	case TypeCleared:
 		if st.NeedsInput {
 			st.LastTransitionAt = now
 		}
-		st.NeedsInput, st.NeedsInputKind = false, ""
+		st.NeedsInput, st.NeedsInputKind, st.NeedsInputConfidence = false, "", ""
 	case TypeMeasure:
 		if ev.Context != nil {
 			c := *ev.Context

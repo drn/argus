@@ -12,8 +12,16 @@
 
 export type Kind = 'question' | 'plan' | 'permission'
 
+/**
+ * How sure a needs_input is. A question/plan dialog is bracketed exactly by its
+ * tool call (`exact`). A permission ask stays pending through the tool's whole
+ * EXECUTION after approval, because the engine raises no event between
+ * approval and execution (`pending-or-running`): consumers must corroborate it.
+ */
+export type Confidence = 'exact' | 'pending-or-running'
+
 export type Transition =
-  | { type: 'needs_input'; kind: Kind; tool: string; toolUseId: string }
+  | { type: 'needs_input'; kind: Kind; confidence: Confidence; tool: string; toolUseId: string }
   | { type: 'cleared'; toolUseId: string }
 
 type Call = { tool: string; direct: boolean; askAt?: number; qualified: boolean }
@@ -95,6 +103,6 @@ export class NeedsInputTracker {
 
   private enter(id: string, tool: string, kind: Kind): Transition {
     this.lastId = id
-    return { type: 'needs_input', kind, tool, toolUseId: id }
+    return { type: 'needs_input', kind, confidence: kind === 'permission' ? 'pending-or-running' : 'exact', tool, toolUseId: id }
   }
 }

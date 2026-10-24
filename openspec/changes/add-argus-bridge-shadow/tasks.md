@@ -15,7 +15,7 @@
 
 ## 3. Mod and loading
 
-- [x] 3.1 Mod source: manifest, hooks, pure logic modules (`needsinput`, `queue`, `daemon`), vitest-style `claude plugin test` suites, tsconfig; passes `claude plugin validate`, `tsc -p`, `claude plugin test`
+- [x] 3.1 Mod source: manifest, hooks, pure logic modules (`tracker`, `reporter`, `measure`), `claude plugin test` suites, tsconfig; passes `claude plugin validate`, `tsc -p`, `claude plugin test`
 - [x] 3.2 `internal/bridgemod`: go:embed + content-addressed materialization + test seam, with tests
 - [x] 3.3 `Family.BridgeMod` capability (Claude only) and BuildCmd `--plugin-dir` injection gated by config; re-record the supervisor spawn-surface digest per `gotchas/ci-gates.md`
 
@@ -24,3 +24,13 @@
 - [x] 4.1 Gotchas file `context/knowledge/gotchas/bridge.md` + index row; backends matrix row; README Reference REST table
 - [x] 4.2 Live end-to-end run: `claude --plugin-dir` in tmux with a real `ARGUS_TASK_ID`; record shadow counters
 - [ ] 4.3 `make pre-pr` clean; open PR "Argus bridge phase 1: shadow-mode session reporting"
+
+## 5. Review fixes (independent review of #1068)
+
+- [x] 5.1 Hooks never await delivery (background single-flight drain); hung-fetch tests
+- [x] 5.2 Materialize race: never remove an existing hash dir; concurrency test; location moved to `~/.argus/cache/bridge-mod`
+- [x] 5.3 New `boot` resets busy/needs-input in the hub; test
+- [x] 5.4 Materialize/ingest failures also log via slog (daemon/supervisor never init uxlog)
+- [x] 5.5 Mod forgets the cached port on a non-2xx other than 401; daemon removes `api-port` on clean shutdown (only if still its own)
+- [x] 5.6 Test gaps: observation-does-not-alter-verdicts, inert-reads/heartbeat, >1MiB body, custom family capability
+- [x] 5.7 Permission-kind confidence tag and separate `needs_input_permission` counters; subagent asks reported; spec drift fixes; frontend-parity Non-Goal

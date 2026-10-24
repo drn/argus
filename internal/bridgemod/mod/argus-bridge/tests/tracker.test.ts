@@ -3,7 +3,7 @@ import { GRACE_MS, NeedsInputTracker } from '../hooks/tracker'
 
 test('AskUserQuestion is needs-input from call start to call end', () => {
   const t = new NeedsInputTracker()
-  expect(t.callStart('a', 'AskUserQuestion')).toEqual({ type: 'needs_input', kind: 'question', tool: 'AskUserQuestion', toolUseId: 'a' })
+  expect(t.callStart('a', 'AskUserQuestion')).toEqual({ type: 'needs_input', kind: 'question', confidence: 'exact', tool: 'AskUserQuestion', toolUseId: 'a' })
   expect(t.active).toBe(true)
   expect(t.callEnd('a')).toEqual({ type: 'cleared', toolUseId: 'a' })
   expect(t.active).toBe(false)
@@ -11,7 +11,7 @@ test('AskUserQuestion is needs-input from call start to call end', () => {
 
 test('ExitPlanMode is a plan dialog', () => {
   const t = new NeedsInputTracker()
-  expect(t.callStart('p', 'ExitPlanMode')).toEqual({ type: 'needs_input', kind: 'plan', tool: 'ExitPlanMode', toolUseId: 'p' })
+  expect(t.callStart('p', 'ExitPlanMode')).toEqual({ type: 'needs_input', kind: 'plan', confidence: 'exact', tool: 'ExitPlanMode', toolUseId: 'p' })
 })
 
 test('an ask verdict only counts after the grace period and while still pending', () => {
@@ -19,7 +19,7 @@ test('an ask verdict only counts after the grace period and while still pending'
   expect(t.callStart('b', 'Bash')).toBe(null)
   t.markAsk('b', 1000)
   expect(t.poll(1000 + GRACE_MS - 1)).toBe(null)
-  expect(t.poll(1000 + GRACE_MS)).toEqual({ type: 'needs_input', kind: 'permission', tool: 'Bash', toolUseId: 'b' })
+  expect(t.poll(1000 + GRACE_MS)).toEqual({ type: 'needs_input', kind: 'permission', confidence: 'pending-or-running', tool: 'Bash', toolUseId: 'b' })
   expect(t.callEnd('b')).toEqual({ type: 'cleared', toolUseId: 'b' })
 })
 

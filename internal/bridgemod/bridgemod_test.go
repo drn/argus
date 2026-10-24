@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/drn/argus/internal/testutil"
@@ -95,15 +96,59 @@ func TestMaterialize(t *testing.T) {
 		testutil.Equal(t, len(entries), 1)
 	})
 
-	t.Run("an incomplete directory of the same hash is rebuilt", func(t *testing.T) {
+	t.Run("an existing directory without the marker is never clobbered", func(t *testing.T) {
+		// A markerless hash dir cannot be produced by Materialize (the marker is
+		// written before the rename); if one exists something else made it, and
+		// removing it could delete a directory another launch just returned.
 		hashDir := filepath.Dir(dir)
 		testutil.NoError(t, os.Remove(filepath.Join(hashDir, completeMarker)))
-		testutil.NoError(t, os.WriteFile(filepath.Join(dir, "hooks", "register.ts"), []byte("corrupt"), 0o644))
 		_, err := Materialize(root)
-		testutil.NoError(t, err)
-		got, _ := os.ReadFile(filepath.Join(dir, "hooks", "register.ts"))
-		testutil.Equal(t, string(got), string(files["hooks/register.ts"]))
+		testutil.Error(t, err)
+		_, serr := os.Stat(filepath.Join(dir, "hooks", "register.ts"))
+		testutil.NoError(t, serr)
 	})
+}
+
+// TestMaterialize_ConcurrentFirstLaunch reproduces the first-launch race: many
+// launches materializing the same fresh root at once must all be handed a
+// complete directory (the earlier RemoveAll-before-rename let one launch
+// delete the directory another had just returned).
+func TestMaterialize_ConcurrentFirstLaunch(t *testing.T) {
+	files, err := Files()
+	testutil.NoError(t, err)
+	const workers, rounds = 16, 25
+	for r := 0; r < rounds; r++ {
+		root := t.TempDir()
+		var wg sync.WaitGroup
+		results := make([]string, workers)
+		errs := make([]error, workers)
+		start := make(chan struct{})
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				results[w], errs[w] = Materialize(root)
+				// Check at once, inside the goroutine: a racing launch's
+				// RemoveAll makes this path vanish only transiently.
+				if errs[w] == nil {
+					for name := range files {
+						if _, err := os.Stat(filepath.Join(results[w], filepath.FromSlash(name))); err != nil {
+							errs[w] = err
+							return
+						}
+					}
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
+		for w := 0; w < workers; w++ {
+			if errs[w] != nil {
+				t.Fatalf("round %d worker %d: returned path is incomplete: %v", r, w, errs[w])
+			}
+		}
+	}
 }
 
 func TestMaterialize_UnwritableRoot(t *testing.T) {

@@ -35,6 +35,8 @@ export class Reporter {
   private seq = 0
   private queue: WireEvent[] = []
   private inflight: Promise<void> | undefined
+  /** The last drain stopped on a retryable failure; do not re-kick until the next emit/heartbeat. */
+  private stalled = false
   private token: string | undefined
   private port: string | undefined
   private task: string | undefined | null = null // null = not resolved yet
@@ -62,7 +64,12 @@ export class Reporter {
     return this.queue.length
   }
 
-  /** Stamps and queues an event, then tries to deliver. Resolves, never rejects. */
+  /**
+   * Stamps and queues an event and starts delivery in the background. Resolves
+   * as soon as the event is queued, never rejects, and NEVER waits on the
+   * network: a daemon that accepts but does not answer would otherwise delay
+   * every turn and dialog by the post timeout, and blow a hook's budget.
+   */
   async emit(type: string, fields: Record<string, unknown> = {}): Promise<void> {
     try {
       if (!(await this.taskId())) return
@@ -76,19 +83,26 @@ export class Reporter {
       }
       this.queue.push(ev)
       if (this.queue.length > this.maxBuffer) this.queue.splice(0, this.queue.length - this.maxBuffer)
-      await this.flush()
+      void this.flush()
     } catch {
       // fail open
     }
   }
 
-  /** Single-flight delivery of everything queued. */
+  /**
+   * Single-flight delivery of everything queued: emits and heartbeats start it
+   * in the background, and events queued while it runs ride the same drain.
+   */
   flush(): Promise<void> {
     if (!this.inflight) {
+      this.stalled = false
       this.inflight = this.drain()
         .catch(() => undefined)
         .finally(() => {
           this.inflight = undefined
+          // An event queued after the drain loop's last check would otherwise
+          // wait for the next emit; a stalled (retryable) drain waits for it on purpose.
+          if (!this.stalled && this.queue.length > 0) void this.flush()
         })
     }
     return this.inflight
@@ -97,8 +111,18 @@ export class Reporter {
   private async drain(): Promise<void> {
     while (this.queue.length > 0) {
       const batch = this.queue.slice(0, BATCH)
-      const result = await this.post(batch)
-      if (result === 'retry') return
+      // A throwing env counts as a retryable failure, never an escape: an
+      // unmarked failure would also make flush's re-kick spin forever.
+      let result: PostResult
+      try {
+        result = await this.post(batch)
+      } catch {
+        result = 'retry'
+      }
+      if (result === 'retry') {
+        this.stalled = true
+        return
+      }
       // Events may have been trimmed from the front while the post was in
       // flight; remove by identity, not by position.
       const sent = new Set(batch)
@@ -133,6 +157,10 @@ export class Reporter {
         this.token = undefined
         continue
       }
+      // Any other non-2xx: the port may now belong to some other server (the
+      // daemon moved or died), which must not keep receiving the master token,
+      // so forget it and re-read the port file next time.
+      this.port = undefined
       if (res.status >= 500) return 'retry'
       return 'drop' // 400/404/...: resending the same batch cannot help
     }

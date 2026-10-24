@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,9 +112,11 @@ func TestObserveBridge_RespectsConfigSwitch(t *testing.T) {
 	testutil.Equal(t, srv.bridgeShadow.Stats(now).Signals[bridge.SignalIdle].NoBridge, int64(1))
 }
 
-// TestIdleWatcherTick_ObservesBridge pins the wiring: a tick with a running
-// session hands it to the comparator (here counted as no_bridge since the mod
-// never reported), without altering the watcher's own state.
+// TestIdleWatcherTick_ObservesBridge pins the wiring AND the "shadow mode
+// changes no behavior" contract: a tick with a running session hands it to the
+// comparator (counted as no_bridge since the mod never reported), and the
+// watcher's own verdict state and the runner's published needs-input set are
+// identical to a tick with the bridge disabled.
 func TestIdleWatcherTick_ObservesBridge(t *testing.T) {
 	if testing.Short() {
 		t.Skip("starts a real PTY-backed sleep; skipped in -short")
@@ -129,8 +132,37 @@ func TestIdleWatcherTick_ObservesBridge(t *testing.T) {
 		<-sess.Done()
 	})
 
-	srv.idleWatcherTick(newIdleWatcherState())
+	// Same session, same instant: one tick observed by the bridge, one not.
+	observed := newIdleWatcherState()
+	srv.idleWatcherTick(observed)
 	st := srv.bridgeShadow.Stats(time.Now())
 	testutil.Equal(t, st.Signals[bridge.SignalIdle].NoBridge, int64(1))
 	testutil.Equal(t, st.Signals[bridge.SignalNeedsInput].NoBridge, int64(1))
+	_, observedIdle, observedNeeds := srv.sessionStateMaps()
+
+	testutil.NoError(t, d.SetConfigValue("bridge.enabled", "false"))
+	plain := newIdleWatcherState()
+	srv.idleWatcherTick(plain)
+	_, plainIdle, plainNeeds := srv.sessionStateMaps()
+	// The disabled tick must not have been observed...
+	testutil.Equal(t, srv.bridgeShadow.Stats(time.Now()).Signals[bridge.SignalIdle].NoBridge, int64(1))
+	// ...and every verdict the watcher itself keeps is identical either way.
+	testutil.DeepEqual(t, observed.idleNow, plain.idleNow)
+	testutil.DeepEqual(t, observed.seenBefore, plain.seenBefore)
+	testutil.DeepEqual(t, observed.needsInputNow, plain.needsInputNow)
+	testutil.DeepEqual(t, observedIdle, plainIdle)
+	testutil.DeepEqual(t, observedNeeds, plainNeeds)
+}
+
+func TestHandleBridgeEvents_OversizeBodyRejected(t *testing.T) {
+	srv, d := testServer(t)
+	mux := srv.routes()
+	task := &model.Task{Name: "b", Status: model.StatusInProgress}
+	testutil.NoError(t, d.Add(task))
+	big := `{"events":[{"type":"heartbeat","seq":1,"boot":"b","session_id":"` + strings.Repeat("x", maxBridgeBody) + `"}]}`
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("POST", "/api/tasks/"+task.ID+"/bridge/events", big))
+	testutil.Equal(t, w.Code, http.StatusBadRequest)
+	_, ok := srv.bridgeHub.Get(task.ID)
+	testutil.False(t, ok)
 }

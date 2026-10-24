@@ -145,3 +145,31 @@ func TestHub_TransitionStamp(t *testing.T) {
 	st, _ = h.Get("t")
 	testutil.True(t, st.LastTransitionAt.Equal(t0))
 }
+
+func TestHub_NewBootResetsLiveState(t *testing.T) {
+	h := NewHub()
+	h.Ingest("t", []Event{
+		ev(TypeTurnStart, 1),
+		{Type: TypeNeedsInput, Seq: 2, Boot: "b1", Kind: KindPermission, Confidence: ConfidencePendingOrRunning},
+	}, t0)
+	st, _ := h.Get("t")
+	testutil.True(t, st.Busy)
+	testutil.True(t, st.NeedsInput)
+	testutil.Equal(t, st.NeedsInputConfidence, ConfidencePendingOrRunning)
+
+	// The mod restarts mid-turn; its first event (a session.start) must not
+	// resurrect the old busy/dialog state.
+	reload := Event{Type: TypeSessionStart, Seq: 1, Boot: "b2", SessionID: "s1"}
+	testutil.Equal(t, h.Ingest("t", []Event{reload}, t0.Add(time.Minute)), 1)
+	st, _ = h.Get("t")
+	testutil.False(t, st.Busy)
+	testutil.False(t, st.NeedsInput)
+	testutil.Equal(t, st.NeedsInputKind, "")
+	testutil.Equal(t, st.NeedsInputConfidence, "")
+	testutil.Equal(t, st.Boot, "b2")
+
+	// Same boot continues normally afterwards.
+	h.Ingest("t", []Event{{Type: TypeTurnStart, Seq: 2, Boot: "b2"}}, t0.Add(time.Minute))
+	st, _ = h.Get("t")
+	testutil.True(t, st.Busy)
+}

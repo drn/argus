@@ -1,6 +1,6 @@
 // Package bridgemod embeds the argus-bridge Claude Code mod (source under
 // mod/argus-bridge, a TypeScript plugin) and materializes it to a
-// content-addressed directory under ~/.argus for Claude's --plugin-dir flag.
+// content-addressed directory under ~/.argus/cache for Claude's --plugin-dir flag.
 // The mod reports a session's state to the daemon as structured events; see
 // openspec/specs/argus-bridge.
 package bridgemod
@@ -29,8 +29,12 @@ var modFS embed.FS
 
 const (
 	embedRoot = "mod/argus-bridge"
-	// workspace is the directory under ~/.argus materialized mods live in.
-	workspace = "bridge-mod"
+	// workspace is the directory (relative to ~/.argus) materialized mods live
+	// in. Under cache/ on purpose: a sandboxed session may write only
+	// ~/.argus/cache, and Claude's hot-reload writes .claude-plugin/types/ into
+	// every --plugin-dir folder it loads, so a read-only location would make
+	// that write fail inside the sandbox.
+	workspace = "cache/bridge-mod"
 	// modDirName is the directory --plugin-dir points at; its name is the
 	// plugin name's folder so the loaded plugin is identified as argus-bridge.
 	modDirName = "argus-bridge"
@@ -81,7 +85,7 @@ func hashFiles(files map[string][]byte) string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
-// EnsureBridgeMod materializes the embedded mod under ~/.argus/bridge-mod
+// EnsureBridgeMod materializes the embedded mod under ~/.argus/cache/bridge-mod
 // idempotently and returns the directory to pass to --plugin-dir. A new binary
 // with different mod content gets a new directory, so a running session's
 // hot-reloading Claude never sees a directory change under it. Returns
@@ -95,7 +99,7 @@ func EnsureBridgeMod() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("no home dir: %w", err)
 	}
-	return Materialize(filepath.Join(home, ".argus", workspace))
+	return Materialize(filepath.Join(home, ".argus", filepath.FromSlash(workspace)))
 }
 
 // Materialize writes the embedded files to <root>/<hash>/argus-bridge and
@@ -131,11 +135,12 @@ func Materialize(root string) (string, error) {
 	if err := os.WriteFile(filepath.Join(tmp, completeMarker), nil, 0o644); err != nil {
 		return "", err
 	}
-	// A half-written or stale directory of the same hash (no marker) is replaced.
-	_ = os.RemoveAll(hashDir)
+	// The marker was written into tmp before this rename, so a hash directory
+	// without it cannot exist: never remove an existing one. Two launches racing
+	// to the same hash would otherwise delete the directory the other just
+	// returned (reproduced: callers handed a path missing hooks/register.ts).
 	if err := os.Rename(tmp, hashDir); err != nil {
-		// Lost a race to another launch that finished first: its copy is
-		// identical (same hash), so use it.
+		// Lost the race: the winner's copy is identical (same hash), so use it.
 		if _, serr := os.Stat(filepath.Join(hashDir, completeMarker)); serr == nil {
 			return target, nil
 		}

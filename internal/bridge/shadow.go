@@ -16,6 +16,11 @@ type Signal string
 const (
 	SignalIdle       Signal = "idle"
 	SignalNeedsInput Signal = "needs_input"
+	// SignalNeedsInputPermission holds the needs-input ticks where the bridge
+	// reports a permission-kind dialog. That kind can span the tool's execution
+	// after approval (pending-or-running), so its disagreements are reported
+	// apart and never pollute the headline needs_input numbers.
+	SignalNeedsInputPermission Signal = "needs_input_permission"
 )
 
 // DefaultSettle is how long a disagreement must persist before it counts: the
@@ -84,8 +89,9 @@ func NewShadow(hub *Hub, settle time.Duration) *Shadow {
 		settle: settle,
 		logf:   defaultLogf,
 		counters: map[Signal]*Counters{
-			SignalIdle:       {},
-			SignalNeedsInput: {},
+			SignalIdle:                 {},
+			SignalNeedsInput:           {},
+			SignalNeedsInputPermission: {},
 		},
 		open: make(map[openKey]*openState),
 	}
@@ -118,7 +124,15 @@ func (s *Shadow) Observe(now time.Time, running []string, idle, needs map[string
 			continue
 		}
 		s.compare(now, id, SignalIdle, idle[id], !st.Busy || st.NeedsInput)
-		s.compare(now, id, SignalNeedsInput, needs[id], st.NeedsInput)
+		// Needs-input counts under the headline signal unless the bridge holds a
+		// permission-kind dialog; the other variant's open disagreement (the kind
+		// just flipped) is dropped so it cannot linger unresolved.
+		sig, other := SignalNeedsInput, SignalNeedsInputPermission
+		if st.NeedsInput && st.NeedsInputKind == KindPermission {
+			sig, other = SignalNeedsInputPermission, SignalNeedsInput
+		}
+		delete(s.open, openKey{id, other})
+		s.compare(now, id, sig, needs[id], st.NeedsInput)
 	}
 	// A task that left the running set takes its open disagreements with it.
 	for k := range s.open {
@@ -131,6 +145,8 @@ func (s *Shadow) Observe(now time.Time, running []string, idle, needs map[string
 func (s *Shadow) noBridge(id string) {
 	for _, sig := range []Signal{SignalIdle, SignalNeedsInput} {
 		s.counters[sig].NoBridge++
+	}
+	for _, sig := range []Signal{SignalIdle, SignalNeedsInput, SignalNeedsInputPermission} {
 		delete(s.open, openKey{id, sig})
 	}
 }

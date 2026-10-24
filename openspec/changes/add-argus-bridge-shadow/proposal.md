@@ -4,9 +4,9 @@ Almost everything argus knows about a live Claude session (busy/idle, waiting-on
 
 ## What Changes
 
-- New Claude Code mod `argus-bridge`, source in `internal/bridgemod/mod/argus-bridge/`, embedded with `go:embed` and materialized content-addressed under `~/.argus/`. It is inert unless `ARGUS_TASK_ID` is set. It posts structured events (`session.start`, `turn.start`, `turn.complete`, `needs_input`, `cleared`, `session.measure`, `heartbeat`) to the daemon over loopback REST.
+- New Claude Code mod `argus-bridge`, source in `internal/bridgemod/mod/argus-bridge/`, embedded with `go:embed` and materialized content-addressed under `~/.argus/cache/bridge-mod/`. It is inert unless `ARGUS_TASK_ID` is set. It posts structured events (`session.start`, `turn.start`, `turn.complete`, `needs_input`, `cleared`, `session.measure`, `heartbeat`) to the daemon over loopback REST.
 - `agent.BuildCmd` adds `--plugin-dir <materialized dir>` for backend families that declare the new `Family.BridgeMod` capability (Claude only), gated by a new `[bridge] enabled` config switch (default ON; phase 1 changes no behavior).
-- The daemon writes `~/.argus/api-port` atomically when the REST API binds, so a mod in a session that outlives a daemon bounce can rediscover the port.
+- The daemon writes `~/.argus/api-port` atomically when the REST API binds (and removes it on clean shutdown), so a mod in a session that outlives a daemon bounce can rediscover the port.
 - New authenticated endpoint `POST /api/tasks/{id}/bridge/events`; the daemon keeps the latest bridge state per task in memory.
 - Shadow comparator: where the daemon computes scraper verdicts (idle watcher, needs-input watcher), it compares them to the bridge state of the same task, logs persistent disagreements via uxlog (`[bridge]` prefix, after a settle window) and keeps per-signal agree/disagree counters, exposed at `GET /api/bridge/shadow`.
 - Nothing consumes bridge state to change behavior in this phase.
@@ -22,6 +22,8 @@ Almost everything argus knows about a live Claude session (busy/idle, waiting-on
 - `daemon-lifecycle`: the daemon publishes the bound API port to `~/.argus/api-port`.
 - `idle-detection`: scraper idle and needs-input verdicts are compared against bridge state in shadow mode.
 - `config-management`: new `[bridge]` section with an `enabled` switch.
+
+**Non-goal (frontend parity):** no TUI/web/macOS surface for `/api/bridge/*` in phase 1; shadow stats are REST-only, with a client surface as a named follow-up once phase 2 consumes bridge state.
 
 ## Impact
 

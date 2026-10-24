@@ -84,7 +84,9 @@ async function safe(work: () => Promise<unknown>): Promise<void> {
 
 async function emitTransition($: Engine, b: Bridge, t: Transition | null): Promise<void> {
   if (!t) return
-  if (t.type === 'needs_input') await rep($, b).emit('needs_input', { kind: t.kind, tool: t.tool, tool_use_id: t.toolUseId })
+  if (t.type === 'needs_input') {
+    await rep($, b).emit('needs_input', { kind: t.kind, confidence: t.confidence, tool: t.tool, tool_use_id: t.toolUseId })
+  }
   else await rep($, b).emit('cleared', { tool_use_id: t.toolUseId })
 }
 
@@ -148,7 +150,7 @@ export const register: Register = on => {
         if (!(await rep($, b).taskId())) return
         await emitTransition($, b, b.tracker.reset())
         await sendMeasure($, b, b.measure.flush(await $.clock.now()))
-        await rep($, b).emit('turn.complete', { reason: e.reason })
+        await rep($, b).emit('turn.complete', { turn_id: e.turnId, reason: e.reason })
       })
     }
     return next(e)
@@ -156,7 +158,8 @@ export const register: Register = on => {
 
   on('tool.check', async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId === undefined && e.tool_use_id && result.decision === 'ask') {
+    // Not filtered on agentId: an ask inside a subagent blocks the user just the same.
+    if (e.tool_use_id && result.decision === 'ask') {
       await safe(async () => {
         if (!(await rep($, b).taskId())) return
         b.tracker.markAsk(e.tool_use_id as string, await $.clock.now())
@@ -171,7 +174,8 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('tool.call', async ($, e, next) => {
-    const id = e.agentId === undefined ? e.tool_use_id : undefined
+    // Not filtered on agentId (see tool.check): subagent dialogs block the user.
+    const id = e.tool_use_id
     if (id) {
       await safe(async () => {
         if (!(await rep($, b).taskId())) return

@@ -1675,6 +1675,15 @@ func (d *Daemon) cleanup() {
 		if err := d.apiServer.Shutdown(ctx); err != nil {
 			slog.Error("api server shutdown", "err", err)
 		}
+		// The port is about to be dead: stop advertising it so a session's
+		// argus-bridge mod doesn't keep sending the master token to whatever
+		// else binds that port. Only if the file is still ours (takeover).
+		d.mu.Lock()
+		port := d.apiPort
+		d.mu.Unlock()
+		if port != 0 && api.RemovePortFile(filepath.Join(db.DataDir(), api.PortFileName), port) {
+			slog.Info("api port file removed", "port", port)
+		}
 	}
 
 	// Shut down the MCP HTTP server if running.

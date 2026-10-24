@@ -16,6 +16,17 @@ const (
 	TypeHeartbeat    = "heartbeat"
 )
 
+// Confidence values carried by a needs_input event. A question/plan dialog is
+// bracketed exactly by its tool call, so it is exact. A permission ask spans
+// the tool's whole execution after approval (the engine raises no event
+// between approval and execution), so it can be pending-or-running: phase 2
+// must trust the bridge alone for question/plan and seek scraper
+// corroboration for permission.
+const (
+	ConfidenceExact            = "exact"
+	ConfidencePendingOrRunning = "pending-or-running"
+)
+
 // Needs-input kinds carried by a needs_input event.
 const (
 	KindQuestion   = "question"
@@ -57,9 +68,10 @@ type Event struct {
 	Reason string `json:"reason,omitempty"`
 
 	// needs_input / cleared
-	Kind      string `json:"kind,omitempty"`
-	Tool      string `json:"tool,omitempty"`
-	ToolUseID string `json:"tool_use_id,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	Confidence string `json:"confidence,omitempty"`
+	Tool       string `json:"tool,omitempty"`
+	ToolUseID  string `json:"tool_use_id,omitempty"`
 
 	// session.measure
 	Context    *Context    `json:"context,omitempty"`

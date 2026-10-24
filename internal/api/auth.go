@@ -329,3 +329,15 @@ func WritePortFile(path string, port int) error {
 	}
 	return nil
 }
+
+// RemovePortFile deletes the port file at path, but only while it still names
+// port: a newer daemon that took over may already have rewritten it, and
+// removing that one would blind every session to the live daemon. Returns
+// whether it removed the file. A missing or unreadable file is not an error.
+func RemovePortFile(path string, port int) bool {
+	data, err := os.ReadFile(path)
+	if err != nil || strings.TrimSpace(string(data)) != strconv.Itoa(port) {
+		return false
+	}
+	return os.Remove(path) == nil
+}

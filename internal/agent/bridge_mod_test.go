@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/drn/argus/internal/backendkind"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -84,20 +85,21 @@ func TestBuildCmd_BridgeModPluginDir(t *testing.T) {
 
 func TestFamilyBridgeModCapability(t *testing.T) {
 	for _, tt := range []struct {
-		backend string
-		want    bool
+		kind backendkind.Kind
+		want bool
 	}{
-		{"claude", true}, {"codex", false}, {"pi", false}, {"opencode", false},
-		{"antigravity", false}, {"cursor", false}, {"my-custom-agent", false},
+		{backendkind.Claude, true}, {backendkind.Codex, false}, {backendkind.Pi, false},
+		{backendkind.Opencode, false}, {backendkind.Antigravity, false}, {backendkind.Cursor, false},
 	} {
-		t.Run(tt.backend, func(t *testing.T) {
-			var got bool
-			for _, f := range families {
-				if string(f.Kind) == tt.backend {
-					got = f.BridgeMod
-				}
-			}
-			testutil.Equal(t, got, tt.want)
+		t.Run(string(tt.kind), func(t *testing.T) {
+			testutil.Equal(t, FamilyForKind(tt.kind).BridgeMod, tt.want)
 		})
 	}
+	t.Run("custom", func(t *testing.T) {
+		// A kind no family claims resolves to customFamily itself (not just
+		// "absent from the list").
+		fam := FamilyForKind(backendkind.Kind("no-such-cli"))
+		testutil.True(t, fam == customFamily)
+		testutil.False(t, fam.BridgeMod)
+	})
 }
