@@ -27,7 +27,7 @@ The REST API lives in the daemon; sessions are owned by the supervisor and outli
 
 **D2. Backend capability.** `Family.BridgeMod bool` (Claude true; all others false). BuildCmd reads the registry only, never branches on backend identity. The flag is appended after the skills `--add-dir` block as ` --plugin-dir <dir>`. A `[bridge] enabled=false` config or a materialize failure skips the flag (logged), never blocks launch.
 
-**D3. Daemon discovery.** The daemon writes `~/.argus/api-port` (mode 0600, temp file + rename) right after `ListenAndServe` returns the bound port. The mod reads `<HOME>/.argus/api-port` and `api-token` per attempt (HOME from `$.env.get("HOME")`), builds `http://127.0.0.1:<port>`, and re-reads the port after any connection failure. Alternative: fixed port; rejected, `bindWithRetry` can move it.
+**D3. Daemon discovery.** The daemon writes `~/.argus/api-port` (mode 0600, temp file + rename) right after `ListenAndServe` returns the bound port. The mod reads `<HOME>/.argus/api-port` and `api-token` per attempt (HOME from `$.env.get("HOME")`), builds `http://127.0.0.1:<port>`, and re-reads the port after any connection failure. `ARGUS_BRIDGE_DIR`, when set, replaces `<HOME>/.argus` as the directory holding `api-token`/`api-port` (a mod-side relocation/testing hook; the daemon does not read it). Alternative: fixed port; rejected, `bindWithRetry` can move it.
 
 **D4. Event wire contract.** `POST /api/tasks/{id}/bridge/events` accepts `{"events":[...]}`. Every event carries `type`, `seq` (monotonic within one mod `boot`), `boot` (random id minted at `register`, because a hot reload resets module state), `ts` (ms epoch, mod clock) and `session_id`. Types:
 

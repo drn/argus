@@ -506,6 +506,14 @@ Or use **Settings → System → Restart Session Supervisor** (Enter), which is 
 
 **Supervisor mode is ON by default** (`supervisor.enabled`, see the config table below). To **roll back** to the legacy in-process path — where the daemon owns the PTYs itself, exactly as before the supervisor existed — set `supervisor.enabled = false` (config.toml or the DB) and restart the daemon. The in-process path is retained as a supported fallback for one release.
 
+### Argus bridge
+
+A Claude Code **mod** shipped inside Argus (`internal/bridgemod/mod/argus-bridge`) that reports a session's state to the daemon as structured events instead of Argus inferring it from the terminal screen. Argus embeds it, materializes it content-addressed under `~/.argus/bridge-mod/`, and adds `--plugin-dir` to every **Claude-family** launch (other backends keep screen-reading). The mod is inert unless `ARGUS_TASK_ID` is set, fails open (a dead daemon never affects the session), and finds the daemon through `~/.argus/api-token` + `~/.argus/api-port` (the daemon rewrites the port file each time the API binds).
+
+It reports `session.start` (session id, model, cwd — re-sent after `/clear` or a model change), `turn.start` / `turn.complete` (busy/idle), `needs_input` / `cleared` (AskUserQuestion, ExitPlanMode, and permission asks still pending after a short grace), `session.measure` (context, cost, plan rate limits) and a 15s heartbeat.
+
+**Phase 1 is shadow mode:** the daemon compares its screen-reading idle and needs-input verdicts against the bridge every watcher tick, logs disagreements that persist past a 10s settle window (`[bridge]` lines in `ux.log`/`daemon.log`) and counts agree/disagree/settling/no-bridge per signal at `GET /api/bridge/shadow`. Nothing consumes the bridge yet; disable with `[bridge] enabled = false`.
+
 ### Diagnosing binary skew (`argus doctor`)
 
 `go install` can update one argus binary while the others keep running — the TUI on a new build, the daemon and/or supervisor on the old bytes — which silently breaks the keys that need the TUI↔daemon round-trip (Enter to attach, Ctrl+Q to detach) while local keys keep working.
@@ -811,6 +819,9 @@ Every authenticated token has the same permissions **except** a small master-onl
 | ------ | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET`  | `/api/tasks/{id}/output` | Recent output (text). Optional `?bytes=`, `?clean=1`                                                                                                                                                                                                                                                                        |
 | `GET`  | `/api/tasks/{id}/links`  | Extract http/https URLs from terminal output. Returns `{"links":[{"label","url"}]}`. Powers the PWA's "Open link" overflow item.                                                                                                                                                                                            |
+| `POST` | `/api/tasks/{id}/bridge/events` | Ingest a batch of [argus-bridge](#argus-bridge) mod events: `{"events":[{"type","seq","boot","ts","session_id",...}]}` (types `session.start`, `turn.start`, `turn.complete`, `needs_input`, `cleared`, `session.measure`, `heartbeat`). Returns `{accepted,received}`; duplicates and unknown types are dropped. Report-only: never touches the session. |
+| `GET`  | `/api/tasks/{id}/bridge` | The task's latest bridge-reported state (busy, needs-input, session id, model, context/cost/rate limits, `live`); 404 until the mod has reported. |
+| `GET`  | `/api/bridge/shadow`     | Shadow-mode counters comparing screen-reading verdicts with the bridge, per signal (`idle`, `needs_input`): `agree`, `disagree`, `settling`, `no_bridge`, plus the settle window and open disagreements. |
 | `POST` | `/api/tasks/{id}/input`  | Send raw bytes to PTY stdin                                                                                                                                                                                                                                                                                                 |
 | `POST` | `/api/tasks/{id}/upload` | Upload files mid-session. `multipart/form-data` with `files` parts; saved to `<worktree>/.context/<name>` (auto-suffixed on collision) and returns `{paths:[]}`. Same 10MB/50MB/20-file caps as create.                                                                                                                     |
 | `GET`  | `/api/tasks/{id}/stream` | SSE stream of live output (base64-encoded chunks)                                                                                                                                                                                                                                                                           |
@@ -1005,6 +1016,12 @@ Argus adds `--auto` when launching OpenCode, including resumed sessions and stor
 | `prompt_flag` | string | `""` | Flag used to pass the initial prompt to the backend (empty = positional/piped). |
 | `model` | string | `""` | Default model for this backend. Claude, Codex, Pi, Antigravity, and Cursor receive it as `--model <value>`; OpenCode receives it through the child-only `OPENCODE_CONFIG_CONTENT` `model` key because its v2 full TUI rejects the top-level flag. Empty = the CLI's own default. A per-task model overrides it. |
 | `models` | array | `[]` | Option list for the new-task model selector for this backend. Empty = built-in list (claude → `opus`/`sonnet`/`haiku`/`fable`, codex → its current model lineup — churns per Codex release, see `agent.KnownModels`, others including opencode, antigravity, and cursor → none, so `custom…` only). A `custom…` entry always lets you type a model not in the list. |
+
+#### `[bridge]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Load the [argus-bridge](#argus-bridge) mod into every Claude session Argus launches (`--plugin-dir`) and record the daemon's shadow comparison. Phase 1 is report-only, so `true` changes no behavior; `false` is the rollback. |
 
 #### `[backend_routing]`
 

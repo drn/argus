@@ -24,6 +24,7 @@ commands get `customFamily`. To add one, follow `.agents/skills/add-backend/SKIL
 | Accounts | `claude_config_dir` | `codex_home` | — | — | — | — | — |
 | Launch flag | — | — | — | `--auto` | — | `--trust` | — |
 | Session switcher | yes | — | — | — | — | — | yes |
+| Bridge mod | `--plugin-dir` | — | — | — | — | — | — |
 | Prelaunch | — | — | ollama warmup (20s Start RPC) | — | — | — | — |
 
 Rows map to `Family` fields: Session ID → `PinsSessionID`, Resume → `ResumeFlag`/`ResumeCmd`,
@@ -32,9 +33,11 @@ Capture → `Capture`, Recapture → `RecaptureEveryExit`, Resume availability �
 `PermissionFlags`/`PermissionFlagTokens`, Launch flag → `LaunchFlag`, MCP → `MCPFlag`/`InjectGlobal`,
 Skills → `SkillDelivery`, Routing → `RoutingDelivery`, Sandbox grant → `SandboxGrants`/
 `SandboxGrantsLaunchOnly`/`PrecreateSandboxGrants`, Session switcher → `SessionSwitcher`,
-Prelaunch → `Prelaunch`/`StartTimeout`.
+Prelaunch → `Prelaunch`/`StartTimeout`, Bridge mod → `BridgeMod`.
 
 ## Why the non-obvious cells are what they are
+
+- **Bridge mod is Claude-only.** Mods are a Claude Code feature; BuildCmd appends `--plugin-dir <argus-bridge dir>` for `Family.BridgeMod` families when `[bridge] enabled`. Every other family keeps screen-reading as its state source. See `gotchas/bridge.md`.
 
 - **antigravity is global-config only.** `agy` reads only `$HOME/.gemini/config` (no env
   override; `AGY_ACCOUNT` is undocumented), so MCP and skills are injected at daemon startup —

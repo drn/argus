@@ -46,6 +46,7 @@ function envFor($: Engine): Env {
   return {
     taskId: () => $.env.get('ARGUS_TASK_ID'),
     home: () => $.env.get('HOME'),
+    dataDir: () => $.env.get('ARGUS_BRIDGE_DIR'),
     readFile: async path => {
       try {
         return await $.fs.read(path)

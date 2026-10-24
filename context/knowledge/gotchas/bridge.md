@@ -1,0 +1,32 @@
+# Argus bridge (Claude Code mod + shadow comparator)
+
+Non-obvious invariants for `internal/bridgemod` (the embedded mod), `internal/bridge` (daemon
+state + comparator) and the `internal/api` bridge endpoints. Phase 1 is report-only.
+
+## The mod
+
+- **`tool.check` verdict `ask` does NOT mean a dialog appeared.** A settings `PermissionRequest` hook can auto-approve it within ~1s (this setup auto-approves Bash). The mod only reports a permission needs-input when the call is *still pending* after a 1.5s grace; `AskUserQuestion`/`ExitPlanMode` are the exceptions (the call itself is the dialog, pending from `tool.call` pre to post). Verified live: a Write ask reported, an auto-approved Bash ask did not.
+- **Never use `classic.PermissionRequest` / `classic.Notification` from the mod.** They are skipped when a managed plugin runs first (the Thanx org's `cc-plugin-sec-default`).
+- **`/clear` does not re-fire `session.start`.** The mod re-reads `$.session.id()`/`model()` on every `turn.start` and re-emits `session.start` on change (verified live: id changed after `/clear`).
+- **A hot reload re-runs `register` and resets module variables**, so `seq` restarts. Events carry a per-load `boot` id; the daemon dedupes by (`boot`, `seq`) and treats a new `boot` as a fresh baseline.
+- **`claude plugin validate` follows `$` only into top-level function declarations of the module (or imported ones).** Helpers that take `$` must be `function` declarations at file top, not closures or consts inside `register`; per-load state is passed explicitly (`Bridge` object). Gating hooks (`tool.check`, `tool.call`) need `.catch(($, e, next) => next(e))` to fail open.
+- **`$.env.get(name)` needs a string-literal name**; the mod reads only `ARGUS_TASK_ID`, `HOME` and `ARGUS_BRIDGE_DIR` (the last overrides the `$HOME/.argus` dir that holds `api-token`/`api-port`, used to live-test without touching the real one).
+- **A post is raced against `$.clock.sleep(2000)`**: `$.http.fetch` has no timeout, and a hung daemon must not hang a hook. Events stay buffered (cap 200, oldest dropped) and flush on the next emit/heartbeat.
+- **`register.test.ts` cannot drive the permission-ask path**: the test harness mints a different `tool_use_id` for the plugin's `tool.call` than a test can name on `tool.check`. It is unit-tested in `tracker.test.ts` and was verified live.
+- **Dev setup:** `.claude-plugin/types` is a gitignored symlink to the plugin-authoring skill's `types/` dir (path contains the Claude version; re-point it after an upgrade). Type-check with `npx --yes --package typescript tsc -p internal/bridgemod/mod/argus-bridge`; then `claude plugin validate` and `claude plugin test` on the same dir. `.gitignore` lists `.claude-plugin/types` WITHOUT a trailing slash on purpose: a slash-only pattern does not match a symlink and the link got committed once.
+
+## Embedding and loading
+
+- **`go:embed` uses explicit file patterns, not a directory.** A directory pattern skips the dot-dir `.claude-plugin/`; `all:` would try to embed the types symlink and `node_modules`. `TestEmbedCoversRuntimeFilesOnDisk` fails if a runtime file is added to the mod dir without the patterns picking it up (the mod would pass `claude plugin test` and break in production).
+- **The mod ships inside the *supervisor's* binary**, because BuildCmd runs there. The mod files are therefore in `SupervisorSpawnPaths`: any mod edit changes the spawn-surface digest and must be re-recorded (and bumped if observable). A stale supervisor spawns sessions with an old mod or none.
+- **Materialization is content-addressed** (`~/.argus/bridge-mod/<hash>/argus-bridge`, `.complete` marker written last, temp dir + rename) so a hot-reloading Claude never sees a directory mutate under it. Old hash dirs are not swept.
+- **An argus sandbox cannot write `~/.argus`**, so a smoke harness that calls the real `EnsureBridgeMod` from inside a sandbox fails to materialize; stub it with `agent.SetEnsureBridgeModForTest` + `bridgemod.Materialize(tmp)`.
+
+## Daemon and comparator
+
+- **The daemon never calls `uxlog.Init`**, so `uxlog.Log` is a no-op there. `bridge.defaultLogf` therefore also writes to `slog` (`daemon.log`); `[bridge]` lines show up in `ux.log` only for the TUI process.
+- **`api-port` is written right after `ListenAndServe`** (atomic temp+rename, 0600); the port moves under `bindWithRetry`, and sessions outlive a daemon bounce through the supervisor. The mod re-reads it on any connection failure.
+- **Idle is compared as "screen quiescent"**: bridge idle = `!busy || needs_input`, because the scraper's idle is also true while parked on a question. Comparing raw `!busy` would count every dialog as a disagreement.
+- **Only a *live* bridge is compared** (newest event, heartbeats included, under 45s old); otherwise the tick counts as `no_bridge`, never a disagreement. A disagreement counts only after the 10s settle window (scraper lag ~3s + 5s tick); shorter ones are `settling`. Counters are per task per tick, not per event.
+- **The comparator hooks in at exactly two places** (`idleWatcherTick` after the final idle set and `detectNeedsInputTick`'s `needsInputNow`) through `Server.observeBridge`, which is gated on `[bridge] enabled`. It must stay side-effect free on the verdicts; phase 2 swaps this seam.
+- **Live-run finding (phase 1 dogfood, in-process runner harness):** idle agreed on 329 of 329 non-settling ticks with zero disagreements, while the scraper's needs-input stayed `true` for minutes after dialogs were answered (`for=10s`+ disagreements, bridge correctly `false`). Cause not root-caused here; the harness drove input via `POST /input` with no TUI attached.

@@ -5,6 +5,7 @@ type Call = { url: string; body: { events: Array<{ type: string; seq: number; bo
 
 function fakeEnv(opts: {
   task?: string | undefined
+  dataDir?: string
   files?: Record<string, string>
   respond?: (call: Call, n: number) => { status: number; ok: boolean } | undefined
 } = {}) {
@@ -14,6 +15,7 @@ function fakeEnv(opts: {
   const env: Env = {
     taskId: async () => ('task' in opts ? opts.task : 'T1'),
     home: async () => '/h',
+    dataDir: async () => opts.dataDir,
     readFile: async p => {
       reads.push(p)
       return files[p]
@@ -151,6 +153,7 @@ test('an env that throws never escapes emit', async () => {
     home: async () => {
       throw new Error('boom')
     },
+    dataDir: async () => undefined,
     readFile: async () => undefined,
     fetch: async () => undefined,
     now: async () => 0,
@@ -158,4 +161,12 @@ test('an env that throws never escapes emit', async () => {
   const r = new Reporter(env, 'b')
   await r.emit('heartbeat')
   expect(r.pending).toBe(1)
+})
+
+test('ARGUS_BRIDGE_DIR overrides where the token and port are read from', async () => {
+  const f = fakeEnv({ dataDir: '/elsewhere', files: { '/elsewhere/api-token': 'x', '/elsewhere/api-port': '9001' } })
+  const r = new Reporter(f.env, 'b')
+  await r.emit('heartbeat')
+  expect(f.calls.map(c => c.url)).toEqual(['http://127.0.0.1:9001/api/tasks/T1/bridge/events'])
+  expect(f.calls[0]?.auth).toBe('Bearer x')
 })

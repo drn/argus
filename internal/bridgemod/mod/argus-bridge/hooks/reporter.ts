@@ -16,6 +16,8 @@ export interface Env {
   /** ARGUS_TASK_ID; undefined outside an argus task. */
   taskId(): Promise<string | undefined>
   home(): Promise<string | undefined>
+  /** ARGUS_BRIDGE_DIR: overrides where api-token/api-port live (default `$HOME/.argus`). */
+  dataDir(): Promise<string | undefined>
   /** File text, or undefined when unreadable. */
   readFile(path: string): Promise<string | undefined>
   /** The response, or undefined on any connection failure or timeout. */
@@ -106,11 +108,11 @@ export class Reporter {
 
   private async post(batch: WireEvent[]): Promise<PostResult> {
     const task = await this.taskId()
-    const home = await this.env.home()
-    if (!task || !home) return 'retry'
+    const dir = (await this.env.dataDir()) || ((await this.env.home()) ? `${await this.env.home()}/.argus` : undefined)
+    if (!task || !dir) return 'retry'
     for (let attempt = 0; attempt < 2; attempt++) {
-      if (this.token === undefined) this.token = (await this.env.readFile(`${home}/.argus/api-token`))?.trim() || undefined
-      if (this.port === undefined) this.port = (await this.env.readFile(`${home}/.argus/api-port`))?.trim() || undefined
+      if (this.token === undefined) this.token = (await this.env.readFile(`${dir}/api-token`))?.trim() || undefined
+      if (this.port === undefined) this.port = (await this.env.readFile(`${dir}/api-port`))?.trim() || undefined
       if (!this.token || !this.port) {
         // Files missing (daemon never ran or is mid-restart): forget and retry later.
         this.token = this.port = undefined

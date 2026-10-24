@@ -72,7 +72,7 @@ func TestEmbedCoversRuntimeFilesOnDisk(t *testing.T) {
 
 func TestMaterialize(t *testing.T) {
 	root := t.TempDir()
-	dir, err := materialize(root)
+	dir, err := Materialize(root)
 	testutil.NoError(t, err)
 	hash, _ := Hash()
 	testutil.Equal(t, dir, filepath.Join(root, hash, "argus-bridge"))
@@ -86,7 +86,7 @@ func TestMaterialize(t *testing.T) {
 
 	t.Run("idempotent and leaves no temp dirs", func(t *testing.T) {
 		before, _ := os.Stat(filepath.Join(dir, "hooks", "register.ts"))
-		again, err := materialize(root)
+		again, err := Materialize(root)
 		testutil.NoError(t, err)
 		testutil.Equal(t, again, dir)
 		after, _ := os.Stat(filepath.Join(dir, "hooks", "register.ts"))
@@ -99,7 +99,7 @@ func TestMaterialize(t *testing.T) {
 		hashDir := filepath.Dir(dir)
 		testutil.NoError(t, os.Remove(filepath.Join(hashDir, completeMarker)))
 		testutil.NoError(t, os.WriteFile(filepath.Join(dir, "hooks", "register.ts"), []byte("corrupt"), 0o644))
-		_, err := materialize(root)
+		_, err := Materialize(root)
 		testutil.NoError(t, err)
 		got, _ := os.ReadFile(filepath.Join(dir, "hooks", "register.ts"))
 		testutil.Equal(t, string(got), string(files["hooks/register.ts"]))
@@ -109,7 +109,7 @@ func TestMaterialize(t *testing.T) {
 func TestMaterialize_UnwritableRoot(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "afile")
 	testutil.NoError(t, os.WriteFile(file, nil, 0o644))
-	_, err := materialize(filepath.Join(file, "sub"))
+	_, err := Materialize(filepath.Join(file, "sub"))
 	testutil.Error(t, err)
 }
 

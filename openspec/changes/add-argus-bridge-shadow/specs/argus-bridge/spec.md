@@ -63,6 +63,10 @@ The mod SHALL NOT throw out of any hook and SHALL NOT delay or break the session
 - **WHEN** the daemon is unreachable or the token/port files are missing
 - **THEN** the session continues normally and events are dropped after the bounded buffer fills
 
+#### Scenario: Relocated data directory
+- **WHEN** `ARGUS_BRIDGE_DIR` is set
+- **THEN** the token and port are read from that directory instead of `<HOME>/.argus`
+
 #### Scenario: Daemon restarted on a new port
 - **WHEN** a post fails to connect and the port file now names a different port
 - **THEN** the retry targets the new port

@@ -95,13 +95,13 @@ func EnsureBridgeMod() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("no home dir: %w", err)
 	}
-	return materialize(filepath.Join(home, ".argus", workspace))
+	return Materialize(filepath.Join(home, ".argus", workspace))
 }
 
-// materialize writes the embedded files to <root>/<hash>/argus-bridge and
+// Materialize writes the embedded files to <root>/<hash>/argus-bridge and
 // returns that directory. The write goes to a sibling temp directory that is
 // renamed into place, so a concurrent launch sees all of the mod or none of it.
-func materialize(root string) (string, error) {
+func Materialize(root string) (string, error) {
 	files, err := Files()
 	if err != nil {
 		return "", fmt.Errorf("read embedded bridge mod: %w", err)
