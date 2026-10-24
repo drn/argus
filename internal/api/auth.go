@@ -290,3 +290,42 @@ func canonicalHTTPSOrigin(raw string) string {
 	}
 	return "https://" + u.Host
 }
+
+// PortFileName is the basename, under the argus data dir, of the file that
+// records the port the REST API actually bound. bindWithRetry can move the
+// port across daemon restarts, and sessions (hence the argus-bridge mod inside
+// them) outlive a daemon bounce, so they rediscover the daemon through this.
+const PortFileName = "api-port"
+
+// WritePortFile atomically records port at path (temp file + rename, 0600) so
+// a concurrent reader sees either the old port or the new one, never an empty
+// or partial file.
+func WritePortFile(path string, port int) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".api-port-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.WriteString(strconv.Itoa(port) + "\n"); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
+}

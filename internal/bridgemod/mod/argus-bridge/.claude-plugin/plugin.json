@@ -1,0 +1,8 @@
+{
+  "name": "argus-bridge",
+  "version": "0.1.0",
+  "description": "Reports this Claude session's state (busy/idle, needs-input, usage, session id) to the argus daemon. Inert outside an argus task.",
+  "author": {
+    "name": "argus"
+  }
+}

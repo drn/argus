@@ -20,6 +20,7 @@ type Config struct {
 	API         APIConfig          `toml:"api"`
 	Hera        HeraConfig         `toml:"hera"`
 	Supervisor  SupervisorConfig   `toml:"supervisor"`
+	Bridge      BridgeConfig       `toml:"bridge"`
 	Argus       ArgusConfig        `toml:"argus"`
 	Secrets     SecretsConfig      `toml:"secrets"`
 	// CacheDirs maps a TARGET environment-variable name to a subdirectory name
@@ -181,6 +182,19 @@ type SupervisorConfig struct {
 	// pre-P2 — which is RETAINED for one release per the migration plan, NOT
 	// deleted. config.toml wins over the DB when both are set (standard overlay
 	// rule; mirrors kb.enabled / api.enabled / hera.enabled).
+	Enabled bool `toml:"enabled"`
+}
+
+// BridgeConfig controls the argus bridge: the Claude Code mod argus loads into
+// every Claude session it launches (--plugin-dir) so the session reports its
+// own state as structured events, and the daemon's shadow comparison of those
+// events against screen-reading verdicts.
+type BridgeConfig struct {
+	// Enabled defaults to true (absent key ⇒ on). Phase 1 is report-only and
+	// changes no behavior, so on-by-default is safe. false skips the
+	// --plugin-dir injection and stops the daemon recording shadow
+	// comparisons; the ingest endpoints stay mounted so already-running
+	// sessions can still post. config.toml wins over the DB (standard overlay).
 	Enabled bool `toml:"enabled"`
 }
 
@@ -518,6 +532,7 @@ func DefaultConfig() Config {
 			CoordinatorNudgeIncrement: 50000,
 			WorkerContextWindow:       1000000,
 		},
+		Bridge: BridgeConfig{Enabled: true},
 		Supervisor: SupervisorConfig{
 			// Default ON as of P4: agents run under the out-of-process
 			// session-supervisor so the daemon can bounce without interrupting

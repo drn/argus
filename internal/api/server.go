@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/bridge"
 	"github.com/drn/argus/internal/clipboard"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
@@ -139,6 +140,12 @@ type Server struct {
 	// internal/api/claudesessions.go.
 	performClaudeSessionSwitchFn func(task *model.Task, cfg config.Config) (int, error)
 
+	// bridgeHub / bridgeShadow hold the argus-bridge mod's per-task reported
+	// state and the shadow comparison of it against screen-reading verdicts
+	// (phase 1: observation only). Always non-nil (built in New).
+	bridgeHub    *bridge.Hub
+	bridgeShadow *bridge.Shadow
+
 	// heraBG tracks in-flight Hera nuke tails (session stops + reclaim sweep).
 	heraBG sync.WaitGroup
 }
@@ -160,7 +167,10 @@ func (s *Server) SetFocusTracker(f *notify.FocusTracker) {
 // no idle-watcher goroutine starts). Daemon owns the manager so it can also
 // be wired into the scheduler for kick-off pushes — see daemon/daemon.go.
 func New(database *db.DB, runner agent.SessionRunner, token string, creator TaskCreator, pushMgr *push.Manager) *Server {
+	hub := bridge.NewHub()
 	srv := &Server{
+		bridgeHub:      hub,
+		bridgeShadow:   bridge.NewShadow(hub, 0),
 		db:             database,
 		runner:         runner,
 		token:          token,

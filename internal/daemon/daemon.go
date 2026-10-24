@@ -1515,6 +1515,13 @@ func (d *Daemon) Serve(sockPath string) error {
 				d.apiPort = apiPort
 				d.mu.Unlock()
 				slog.Info("api server listening", "port", apiPort)
+				// Publish the bound port for processes that outlive a daemon
+				// bounce (the argus-bridge mod inside agent sessions re-reads
+				// it on any connection failure). Best-effort: a write failure
+				// only costs the bridge its discovery, never the daemon.
+				if err := api.WritePortFile(filepath.Join(db.DataDir(), api.PortFileName), apiPort); err != nil {
+					slog.Warn("api port file write failed", "err", err)
+				}
 			}
 		}
 	}

@@ -947,6 +947,18 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		}
 	}
 
+	// Load the argus-bridge mod (reports session state to the daemon as
+	// structured events) into families that run Claude Code mods. Gated by the
+	// [bridge] config switch; like the skills/routing blocks above, a
+	// materialization failure is logged and skipped rather than blocking launch.
+	if fam.BridgeMod && cfg.Bridge.Enabled {
+		if dir, err := ensureBridgeModFn(); err != nil {
+			uxlog.Log("[bridge] mod materialize failed (continuing without it): %v", err)
+		} else if dir != "" {
+			cmdStr += " --plugin-dir " + shellQuote(dir)
+		}
+	}
+
 	// An Argus-only Codex home gives Codex native skill discovery without
 	// installing Argus skills into the user's global ~/.codex/skills. The path
 	// is exported to this child only, below. A setup failure leaves normal
