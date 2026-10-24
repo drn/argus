@@ -131,9 +131,7 @@ func (s *Shadow) Observe(now time.Time, running []string, idle, needs map[string
 func (s *Shadow) noBridge(id string) {
 	for _, sig := range []Signal{SignalIdle, SignalNeedsInput} {
 		s.counters[sig].NoBridge++
-		if _, ok := s.open[openKey{id, sig}]; ok {
-			delete(s.open, openKey{id, sig})
-		}
+		delete(s.open, openKey{id, sig})
 	}
 }
 

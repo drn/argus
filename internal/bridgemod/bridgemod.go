@@ -75,7 +75,7 @@ func hashFiles(files map[string][]byte) string {
 	sort.Strings(names)
 	h := sha256.New()
 	for _, n := range names {
-		fmt.Fprintf(h, "%s\x00%d\x00", n, len(files[n]))
+		_, _ = fmt.Fprintf(h, "%s\x00%d\x00", n, len(files[n]))
 		h.Write(files[n])
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
@@ -118,7 +118,7 @@ func Materialize(root string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("create temp bridge mod dir: %w", err)
 	}
-	defer os.RemoveAll(tmp)
+	defer func() { _ = os.RemoveAll(tmp) }()
 	for name, data := range files {
 		dst := filepath.Join(tmp, modDirName, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
