@@ -147,7 +147,10 @@ const (
 	//     original prompt; start RPC responses carry the effective session ID.
 	//     Lookup honors backend config-dir mappings and physical worktree paths.
 	//     Uncertain inspection preserves the ID and attempts resume.
-	SupervisorSpawnSurface = 19
+	//   - v20: BuildCmd reserves ARGUS_SANDBOXED, stripping inherited/configured
+	//     values and exporting exactly 1 only after successful sandbox wrapping
+	//     across all backends and fresh/resume/recycle launches.
+	SupervisorSpawnSurface = 20
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -417,7 +420,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "d514c27677ef859dc391d91d80f61c159354d6f629068c448432540a0d9ff576"
+	SpawnSurfaceDigest  = "35b3c4cb9d197e2c3a2d2c3506a8a51d76cc7a4beb6d0fe7d187863c378638b2"
 	StreamSurfaceDigest = "c1dc8210d586d40549d86dde03c2959d7f5b064d46c7576197037e36d130bb53"
 )
 

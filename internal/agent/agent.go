@@ -1260,6 +1260,20 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 			uxlog.Log("[opencode] task %q: model %q delivered via inline config (skills=%t)", task.ID, opencodeModel, opencodeSkillsDir != "")
 		}
 	}
+	// This reserved launch signal must describe this command's actual wrapper,
+	// never the parent's sandbox or a configured env/cache mapping. Finalize it
+	// after every other environment source so none can forge or replace it.
+	filtered := cmd.Env[:0]
+	for _, entry := range cmd.Env {
+		if name, _, _ := strings.Cut(entry, "="); name != "ARGUS_SANDBOXED" {
+			filtered = append(filtered, entry)
+		}
+	}
+	cmd.Env = filtered
+	if sandboxCleanup != nil {
+		cmd.Env = append(cmd.Env, "ARGUS_SANDBOXED=1")
+	}
+	uxlog.Log("[sandbox] task %q: wrapped=%t", task.ID, sandboxCleanup != nil)
 	committed = true
 	return cmd, sandboxCleanup, nil
 }
