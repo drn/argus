@@ -123,8 +123,8 @@ func TestBridgePermissionKeepsSourceAndCorroboratesOnlyInput(t *testing.T) {
 			testutil.Equal(t, st.NeedsInput, tc.want)
 			route := s.bridgeDeliveryRoute(task.ID)
 			testutil.True(t, route.Live)
-			testutil.False(t, route.Idle) // delivery requires turn idle, not quiescence
-			testutil.Equal(t, route.NeedsInput, tc.want)
+			testutil.False(t, route.Idle)      // delivery requires turn idle, not quiescence
+			testutil.True(t, route.NeedsInput) // delivery retains raw permission safety
 			_, idle, needs := s.sessionStateMaps()
 			testutil.Equal(t, idle[task.ID], tc.want)
 			testutil.Equal(t, needs[task.ID], tc.want)

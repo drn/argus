@@ -17,8 +17,8 @@ const (
 	SignalIdle       Signal = "idle"
 	SignalNeedsInput Signal = "needs_input"
 	// SignalNeedsInputPermission holds the needs-input ticks where the bridge
-	// reports an uncertain permission. It counts the corroborated verdict;
-	// exact permissions count under the headline needs_input signal.
+	// reports an uncertain permission. It compares the raw report so diagnostic
+	// disagreements remain visible; exact permissions use the headline signal.
 	SignalNeedsInputPermission Signal = "needs_input_permission"
 )
 
@@ -130,11 +130,14 @@ func (s *Shadow) Observe(now time.Time, running []string, idle, needs map[string
 		// Keep uncertain permission observations apart; exact permissions belong
 		// in the headline signal. Drop the other variant's open disagreement.
 		sig, other := SignalNeedsInput, SignalNeedsInputPermission
+		input := resolved.NeedsInput
 		if st.NeedsInput && UncertainPermission(st) {
 			sig, other = SignalNeedsInputPermission, SignalNeedsInput
+			// Comparing resolved input here would compare the scraper to itself.
+			input = st.NeedsInput
 		}
 		delete(s.open, openKey{id, other})
-		s.compare(now, id, sig, needs[id], resolved.NeedsInput)
+		s.compare(now, id, sig, needs[id], input)
 	}
 	// A task that left the running set takes its open disagreements with it.
 	for k := range s.open {

@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -163,12 +164,13 @@ func TestShadow_PermissionKindCountedSeparately(t *testing.T) {
 		s.Observe(now, []string{"a"}, nil, nil)
 	}
 	st := s.Stats(t0)
-	testutil.Equal(t, st.Signals[SignalNeedsInputPermission].Disagree, int64(0))
-	testutil.Equal(t, st.Signals[SignalNeedsInputPermission].Agree, int64(4))
+	testutil.Equal(t, st.Signals[SignalNeedsInputPermission].Disagree, int64(2))
+	testutil.Equal(t, st.Signals[SignalNeedsInputPermission].Agree, int64(0))
 	testutil.Equal(t, st.Signals[SignalIdle].Agree, int64(4))
 	testutil.Equal(t, st.Signals[SignalNeedsInput].Disagree, int64(0))
 	testutil.Equal(t, st.Signals[SignalNeedsInput].Agree, int64(0))
-	testutil.Equal(t, len(sink.lines), 0)
+	testutil.Equal(t, len(sink.lines), 1)
+	testutil.Contains(t, strings.Join(sink.lines, "\n"), "signal=needs_input_permission")
 
 	// The dialog clears: the tick now counts under the headline signal and the
 	// open permission disagreement is dropped, not left dangling.
