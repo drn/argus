@@ -657,3 +657,79 @@ The REST API SHALL expose authenticated POST endpoints under `/api/hera` for nuk
 - **WHEN** the backend roster contains `antigravity` with command `agy`
 - **THEN** its entry has kind `antigravity`, label `Antigravity`, skill_prefix `/`, and session_switcher false
 
+### Requirement: Bridge event ingest endpoint
+The REST API SHALL expose `POST /api/tasks/{id}/bridge/events`, authenticated like every `/api/*` route, accepting `{"events":[...]}` and recording them as the task's bridge state. It SHALL return 404 for an unknown task and 400 for a malformed body, and SHALL NOT alter any session or task state.
+
+#### Scenario: Valid batch
+- **WHEN** an authenticated client posts a valid batch for an existing task
+- **THEN** the response is 200 with the count of accepted events and the task's bridge state reflects them
+
+#### Scenario: Unknown task
+- **WHEN** the task id does not exist
+- **THEN** the response is 404
+
+#### Scenario: Unauthenticated
+- **WHEN** the request carries no valid token
+- **THEN** the response is 401
+
+### Requirement: Bridge state and shadow statistics endpoints
+The REST API SHALL expose `GET /api/tasks/{id}/bridge` returning the task's latest bridge state (404 when none) and `GET /api/bridge/shadow` returning, per signal (`idle`, `needs_input`, `needs_input_permission`), the counters `agree`, `disagree`, `settling` and `no_bridge`, the settle window, and the currently open disagreements.
+
+#### Scenario: Stats
+- **WHEN** a client requests `GET /api/bridge/shadow`
+- **THEN** the response lists the signals with their four counters
+
+#### Scenario: Oversize body
+- **WHEN** an event batch exceeds 1 MiB
+- **THEN** the request is rejected as a bad request and nothing is recorded
+
+### Requirement: Batched bridge authority snapshot
+
+The authenticated GET /api/bridge/states endpoint SHALL return a task-id-keyed map of currently live, launch-matched Claude bridge states with uncertain permission needs-input corroborated against raw scraper input. Local daemon RPC and remote TUI SHALL read the same snapshot semantics. Existing task, Hera and status endpoints SHALL use these same resolved verdicts while preserving live bridge busy authority throughout permission intervals.
+
+#### Scenario: Remote TUI reads bridge state
+
+- **WHEN** the remote TUI refreshes its running tasks
+- **THEN** it fetches a batched live snapshot and overrides terminal inference for authoritative bridge sessions
+
+#### Scenario: No live bridge
+
+- **WHEN** no current bridge is live
+- **THEN** the batch endpoint returns an empty object and clients use scraping
+
+### Requirement: Authenticated bridge delivery endpoints
+
+The daemon SHALL expose POST /api/tasks/{id}/bridge/deliveries, /deliveries/authorize and /deliveries/ack under the existing authenticated task API. Pull and authorization SHALL require the current generation and boot; acknowledgment SHALL require its unguessable claim token. The daemon SHALL expose POST /api/tasks/{id}/bridge/budget for the coordinator Stop hook to enqueue an eligible nudge after its existing gates, returning enabled=false when the route is unavailable. Transport acknowledgment SHALL not mark durable mail read. These endpoints SHALL remain available to all frontends; web/macOS Bridge settings controls are a named follow-up.
+
+#### Scenario: Disabled bridge delivery cannot authorize
+
+- **WHEN** an authenticated mod requests authorization while bridge.delivery is false
+- **THEN** the daemon returns authorized=false and the existing PTY path handles new deliveries
+
+### Requirement: Bridge settings API round-trip
+
+GET and PUT /api/settings SHALL expose a bridge section with enabled and delivery booleans. Partial updates SHALL leave absent keys unchanged and return effective configuration after the standard config.toml overlay. Remote TUI persistence SHALL use this section; web and macOS controls remain a named follow-up.
+
+#### Scenario: Delivery-only update preserves master switch
+
+- **WHEN** an authenticated client updates bridge.delivery alone
+- **THEN** the API persists that value and returns the unchanged effective bridge.enabled value alongside it
+
+### Requirement: Read-only bridge UI snapshot
+
+GET /api/tasks/{id}/bridge/ui SHALL require existing API authentication and return effective UI settings, bridge liveness, bindings, role status, unread message summaries and context/coordinator budget. Unknown tasks SHALL return 404. Reads SHALL never acknowledge or mark mail read, claim deliveries or mutate roles.
+
+#### Scenario: Snapshot preserves mail
+
+- **WHEN** an authenticated client repeatedly reads the snapshot
+- **THEN** unread messages and pending deliveries remain unchanged
+
+### Requirement: Bridge UI settings API
+
+GET and PUT /api/settings SHALL include band and toasts booleans in the bridge section. Partial updates SHALL preserve omitted settings and return effective config.toml-over-DB values. Remote TUI SHALL map both keys through this contract.
+
+#### Scenario: Band-only update
+
+- **WHEN** a client updates bridge.band alone
+- **THEN** the API persists it and returns unchanged effective delivery, enabled and toasts values
+

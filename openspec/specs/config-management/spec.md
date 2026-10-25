@@ -301,3 +301,32 @@ The default configuration SHALL include a `cursor` backend with command `cursor-
 - **WHEN** the default config is built
 - **THEN** it contains a backend named `cursor` classified as the cursor family
 
+### Requirement: Bridge configuration switch
+The configuration SHALL provide `[bridge] enabled` (default true; DB key `bridge.enabled`; config.toml wins over the DB) controlling bridge mod injection into Claude launches and the daemon's shadow comparison.
+
+#### Scenario: Default
+- **WHEN** no bridge setting exists
+- **THEN** the bridge is enabled
+
+#### Scenario: Explicit disable
+- **WHEN** config.toml sets `[bridge] enabled = false`
+- **THEN** new Claude launches carry no `--plugin-dir` and the comparator records nothing
+
+### Requirement: Bridge delivery setting overlay
+
+The system SHALL provide bridge.delivery default true, with config.toml overriding DB and an absent key retaining the default. The daemon SHALL resolve this setting for each new delivery and budget request without session restart. bridge.delivery SHALL have no effect when bridge.enabled is false. Disabling delivery SHALL restore legacy PTY delivery and the ordinary Stop-hook budget nudge.
+
+#### Scenario: Explicit config overrides DB
+
+- **WHEN** config.toml sets bridge.delivery=false and DB stores true
+- **THEN** effective delivery is false
+
+### Requirement: Live bridge UI settings
+
+The system SHALL provide bridge.band and bridge.toasts default true. config.toml SHALL override DB values and absent keys SHALL retain defaults. Running mods SHALL refresh effective settings without restart; both UI settings SHALL be inert when bridge.enabled=false.
+
+#### Scenario: File overlay wins
+
+- **WHEN** config.toml sets bridge.band=false and DB stores true
+- **THEN** the effective value remains false
+

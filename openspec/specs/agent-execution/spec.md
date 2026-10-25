@@ -1139,7 +1139,6 @@ Consecutive deferred pane kicks SHALL retry at 10, 20, 40, then 60 second interv
 - **WHEN** a pane remains bound and its kicks repeatedly defer
 - **THEN** retries slow to the cap and remain eligible indefinitely
 
-
 ### Requirement: Input and resize ride out the session start gap
 
 While a session start is in flight (slot reserved but session not yet published) or a kick-restart is queued, a WriteInput or Resize request for that task SHALL wait, bounded to a few seconds, for the session to be published instead of failing with "session not found". If no start is in flight, or the start fails, the request SHALL fail immediately with "session not found".
@@ -1151,3 +1150,23 @@ While a session start is in flight (slot reserved but session not yet published)
 #### Scenario: No start in flight
 - **WHEN** a client sends input for a task with no session and no start in flight
 - **THEN** the request fails immediately with "session not found"
+
+### Requirement: Backend families declare bridge mod capability
+Each backend `Family` SHALL declare whether Claude Code mods can be loaded into its sessions (`BridgeMod`); only the Claude family SHALL declare it. BuildCmd SHALL append ` --plugin-dir <materialized mod dir>` for a family with the capability when `[bridge] enabled` is true and materialization succeeds, and SHALL otherwise omit the flag without blocking launch.
+
+#### Scenario: Claude launch
+- **WHEN** BuildCmd builds a Claude command with the bridge enabled
+- **THEN** the command contains `--plugin-dir` followed by the quoted materialized mod directory
+
+#### Scenario: Non-Claude launch
+- **WHEN** BuildCmd builds a Codex, Pi, OpenCode, Antigravity, Cursor or custom command
+- **THEN** the command contains no `--plugin-dir`
+
+#### Scenario: Bridge disabled
+- **WHEN** `[bridge] enabled` is false
+- **THEN** no `--plugin-dir` is added
+
+#### Scenario: Materialization failure
+- **WHEN** the mod cannot be materialized
+- **THEN** the failure is logged and the command is built without `--plugin-dir`
+

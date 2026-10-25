@@ -228,3 +228,31 @@ The recycle watcher SHALL emit a clearly identified informational daemon log aft
 - **WHEN** a previously tracked pending request is removed or its recycle proceeds
 - **THEN** the watcher forgets the prior wait so a later request starts a new diagnostic interval
 
+### Requirement: Bridge measurement supplies binding context
+
+A usable live session.measure SHALL stamp context tokens and percent on the binding without transcript rereading. The Stop hook SHALL retain its other duties and use transcript fallback when no usable live bridge measurement exists.
+
+#### Scenario: Live context measurement
+
+- **WHEN** the current bridge reports context tokens and percent
+- **THEN** the binding receives those values and the Stop hook does not scan the transcript for them
+
+### Requirement: Bridge budget nudge is non-blocking
+
+When bridge.delivery is enabled and phase 2 authority identifies the coordinator's live bridge, the Stop hook SHALL enqueue the budget nudge into the shared mod delivery path, and SHALL emit no blocking decision. The mod SHALL submit the nudge as a plugin-framed turn only while idle and outside input dialogs, with the same deduplication, acknowledgment and recovery contract as message delivery. Cadence SHALL match the existing Stop hook: fire at the budget on the first over-budget episode, then only after context_size grows by CoordinatorNudgeIncrement beyond the last nudge; pending recycle SHALL suppress ordinary nudges. Context-size stamping, request_recycle and forced recycle at 1.5x budget SHALL remain effective. With either bridge setting off or bridge authority absent, the ordinary Stop-hook nudge SHALL remain byte-identical. The mod SHALL NOT register prompt.compose for budget guidance because managed organization policy skips that hook.
+
+#### Scenario: Increment throttle applies to mod nudges
+
+- **WHEN** a bridge coordinator remains over budget without a full increment of context growth since the prior nudge
+- **THEN** no additional budget delivery is enqueued
+
+#### Scenario: Budget enqueue response is lost
+
+- **WHEN** the budget enqueue POST may have succeeded but its transport fails or returns an ambiguous server response
+- **THEN** the hook lets Stop complete and stamps the nudge cadence without also emitting a blocking nudge; explicit disabled or unavailable responses retain legacy blocking
+
+#### Scenario: Legacy budget nudge with delivery off
+
+- **WHEN** bridge.delivery is false while a coordinator's bridge is live and its nudge gate permits an over-budget nudge
+- **THEN** the Stop hook returns the existing blocking nudge
+
