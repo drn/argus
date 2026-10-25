@@ -19,8 +19,54 @@ test('an ask verdict only counts after the grace period and while still pending'
   expect(t.callStart('b', 'Bash')).toBe(null)
   t.markAsk('b', 1000)
   expect(t.poll(1000 + GRACE_MS - 1)).toBe(null)
-  expect(t.poll(1000 + GRACE_MS)).toEqual({ type: 'needs_input', kind: 'permission', confidence: 'pending-or-running', tool: 'Bash', toolUseId: 'b' })
+  expect(t.poll(1000 + GRACE_MS)).toEqual({ type: 'needs_input', kind: 'permission', confidence: 'pending', tool: 'Bash', toolUseId: 'b' })
   expect(t.callEnd('b')).toEqual({ type: 'cleared', toolUseId: 'b' })
+})
+
+test('an approved call seen running clears its permission dialog before the call ends', () => {
+  const t = new NeedsInputTracker()
+  t.callStart('b', 'Bash')
+  t.markAsk('b', 1000)
+  t.poll(1000 + GRACE_MS)
+  expect(t.markRunning('b')).toEqual({ type: 'cleared', toolUseId: 'b' })
+  expect(t.active).toBe(false)
+  expect(t.markRunning('b')).toBe(null)
+  expect(t.callEnd('b')).toBe(null)
+})
+
+test('a call seen running inside the grace never qualifies', () => {
+  const t = new NeedsInputTracker()
+  t.callStart('b', 'Bash')
+  t.markAsk('b', 1000)
+  expect(t.markRunning('b')).toBe(null)
+  expect(t.poll(1000 + GRACE_MS * 2)).toBe(null)
+  expect(t.nextDue()).toBe(undefined)
+  expect(t.active).toBe(false)
+})
+
+test('one running call does not clear another pending permission dialog', () => {
+  const t = new NeedsInputTracker()
+  t.callStart('a', 'Bash')
+  t.callStart('b', 'Bash')
+  t.markAsk('a', 1000)
+  t.markAsk('b', 1000)
+  t.poll(1000 + GRACE_MS)
+  expect(t.markRunning('a')).toBe(null)
+  expect(t.active).toBe(true)
+  expect(t.callEnd('b')).toEqual({ type: 'cleared', toolUseId: 'b' })
+})
+
+test('running evidence never clears a question or plan dialog', () => {
+  const t = new NeedsInputTracker()
+  t.callStart('q', 'AskUserQuestion')
+  expect(t.markRunning('q')).toBe(null)
+  expect(t.active).toBe(true)
+})
+
+test('running evidence for an unknown call is ignored', () => {
+  const t = new NeedsInputTracker()
+  expect(t.markRunning('ghost')).toBe(null)
+  expect(t.active).toBe(false)
 })
 
 test('an auto-approved ask (call ends inside the grace) never reports', () => {

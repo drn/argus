@@ -5,8 +5,9 @@
 //   - AskUserQuestion / ExitPlanMode is between tool.call pre and post (the
 //     call itself IS the dialog), or
 //   - a tool.check verdict of "ask" was seen for a call that is STILL pending
-//     after a grace period. "ask" alone does not mean a dialog appeared: a
-//     settings PermissionRequest hook can auto-approve it within about a second.
+//     after a grace period and has not been seen running. "ask" alone does not
+//     mean a dialog appeared: a settings PermissionRequest hook can auto-approve
+//     it within about a second.
 // classic.PermissionRequest / classic.Notification are deliberately not used:
 // they are skipped when a managed plugin runs first.
 
@@ -14,19 +15,24 @@ export type Kind = 'question' | 'plan' | 'permission'
 
 /**
  * How sure a needs_input is. A question/plan dialog is bracketed exactly by its
- * tool call (`exact`). A permission ask stays pending through the tool's whole
- * EXECUTION after approval, because the engine raises no event between
- * approval and execution (`pending-or-running`): consumers must corroborate it.
+ * tool call (`exact`). A permission ask is `pending`: asked, still pending and
+ * never seen running. The engine raises no event at approval, so a tool that
+ * draws no progress row stays pending through its execution too. Older mods
+ * sent `pending-or-running`, which the daemon still corroborates.
  */
-export type Confidence = 'exact' | 'pending-or-running'
+export type Confidence = 'exact' | 'pending'
 
 export type Transition =
   | { type: 'needs_input'; kind: Kind; confidence: Confidence; tool: string; toolUseId: string }
   | { type: 'cleared'; toolUseId: string }
 
-type Call = { tool: string; direct: boolean; askAt?: number; qualified: boolean }
+type Call = { tool: string; direct: boolean; askAt?: number; qualified: boolean; running: boolean }
 
 export const GRACE_MS = 1500
+
+export function confidenceOf(kind: Kind): Confidence {
+  return kind === 'permission' ? 'pending' : 'exact'
+}
 
 const DIRECT: Record<string, Kind> = { AskUserQuestion: 'question', ExitPlanMode: 'plan' }
 
@@ -49,7 +55,7 @@ export class NeedsInputTracker {
     const askAt = this.earlyAsk.get(id)
     this.earlyAsk.delete(id)
     const wasActive = this.active
-    this.calls.set(id, { tool, direct, askAt, qualified: direct })
+    this.calls.set(id, { tool, direct, askAt, qualified: direct, running: false })
     return direct && !wasActive ? this.enter(id, tool, DIRECT[tool] as Kind) : null
   }
 
@@ -60,12 +66,25 @@ export class NeedsInputTracker {
     else this.earlyAsk.set(id, now)
   }
 
+  /**
+   * The engine drew a progress row for the call, so it is executing: no dialog
+   * waits on it. Question and plan calls are the dialog itself and stay.
+   */
+  markRunning(id: string): Transition | null {
+    const call = this.calls.get(id)
+    if (!call || call.direct || call.running) return null
+    const wasActive = this.active
+    call.running = true
+    call.qualified = false
+    return wasActive && !this.active ? { type: 'cleared', toolUseId: id } : null
+  }
+
   /** Qualifies ask-pending calls whose grace has elapsed. */
   poll(now: number): Transition | null {
     const wasActive = this.active
     let first: [string, Call] | undefined
     for (const [id, c] of this.calls) {
-      if (!c.qualified && c.askAt !== undefined && now - c.askAt >= this.graceMs) {
+      if (!c.qualified && !c.running && c.askAt !== undefined && now - c.askAt >= this.graceMs) {
         c.qualified = true
         first ??= [id, c]
       }
@@ -93,7 +112,7 @@ export class NeedsInputTracker {
   nextDue(): number | undefined {
     let due: number | undefined
     for (const c of this.calls.values()) {
-      if (!c.qualified && c.askAt !== undefined) {
+      if (!c.qualified && !c.running && c.askAt !== undefined) {
         const t = c.askAt + this.graceMs
         due = due === undefined ? t : Math.min(due, t)
       }
@@ -103,6 +122,6 @@ export class NeedsInputTracker {
 
   private enter(id: string, tool: string, kind: Kind): Transition {
     this.lastId = id
-    return { type: 'needs_input', kind, confidence: kind === 'permission' ? 'pending-or-running' : 'exact', tool, toolUseId: id }
+    return { type: 'needs_input', kind, confidence: confidenceOf(kind), tool, toolUseId: id }
   }
 }

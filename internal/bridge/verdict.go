@@ -38,10 +38,14 @@ func Resolve(st State, scraperNeeds bool) State {
 	return st
 }
 
-// UncertainPermission includes older reports without confidence. An exact
-// permission signal is authoritative just like a question or plan dialog.
+// UncertainPermission is a permission whose interval may include the approved
+// execution: pending-or-running, or older reports without confidence. Exact
+// and pending permissions are authoritative just like a question or plan.
 func UncertainPermission(st State) bool {
-	return st.NeedsInputKind == KindPermission && st.NeedsInputConfidence != ConfidenceExact
+	if st.NeedsInputKind != KindPermission {
+		return false
+	}
+	return st.NeedsInputConfidence != ConfidenceExact && st.NeedsInputConfidence != ConfidencePending
 }
 
 // Quiescent matches the existing idle UI semantics around parked dialogs.
