@@ -208,14 +208,15 @@ test('band styles its segments with theme tokens', async ($, on) => {
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   const line = await ui.find({ type: 'Text', text: /argus:/ })
   expect(line?.text).toBe('argus: 2 unread from newest • budget 90% • blocked • workers 2 working, 1 blocked')
-  expect(line?.props.color).toBe('subtle')
+  expect(line?.props.dimColor).toBe(true)
   const part = async (text: string) => (await ui.findAll({ type: 'Text' })).find(t => t.text === text)?.props
-  expect((await part('argus:'))?.color).toBe('ide')
+  expect((await part('argus:'))?.color).toBe('rgb(59,130,246)')
   expect((await part(' 2 unread from newest'))?.color).toBe('warning')
   expect((await part(' 2 unread from newest'))?.weight).toBe('bold')
-  expect((await part('budget 90%'))?.color).toBe('claude')
-  expect((await part('blocked'))?.color).toBe('claude')
-  expect((await part('1 blocked'))?.color).toBe('claude')
+  expect((await part('budget 90%'))?.color).toBe('warning')
+  expect((await part('budget 90%'))?.weight).toBe('bold')
+  expect((await part('blocked'))?.color).toBe('warning')
+  expect((await part('1 blocked'))?.color).toBe('warning')
   w.snapshot.unread = 0
   w.snapshot.messages = []
   w.snapshot.context.tokens = 225000
@@ -225,6 +226,7 @@ test('band styles its segments with theme tokens', async ($, on) => {
   expect((await ui.find({ type: 'Text', text: /argus:/ }))?.text).toBe('argus: 0 unread • budget 75% • done')
   expect(await part(' 0 unread')).toBeUndefined()
   expect((await part('budget 75%'))?.color).toBe('warning')
+  expect((await part('budget 75%'))?.weight).toBeUndefined()
   expect((await part('done'))?.color).toBe('success')
   w.snapshot.context.tokens = 222000
   await w.refresh()

@@ -59,12 +59,15 @@ export function refreshUI($: Engine, ui: UI): Promise<void> {
 
 type Part = { text: string; color?: Color; weight?: 'bold' }
 
-const STATUS_COLOR: Record<string, Color> = { blocked: 'claude', done: 'success', failed: 'error' }
+// Matches the statusline's label blue exactly; everything else is a theme key.
+const LABEL_BLUE = 'rgb(59,130,246)'
 
-function budgetColor(percent: number): Color | undefined {
-  if (percent >= 90) return 'claude'
-  if (percent >= 75) return 'warning'
-  return undefined
+const STATUS_COLOR: Record<string, Color> = { blocked: 'warning', done: 'success', failed: 'error' }
+
+function budgetPart(text: string, percent: number): Part {
+  if (percent >= 90) return { text, color: 'warning', weight: 'bold' }
+  if (percent >= 75) return { text, color: 'warning' }
+  return { text }
 }
 
 // bandSegments builds the band's ' • '-separated segments, each a run of
@@ -73,7 +76,7 @@ function budgetColor(percent: number): Color | undefined {
 export function bandSegments(value: Snapshot): Part[][] {
   const newest = value.unread > 0 ? value.messages[value.messages.length - 1] : undefined
   const unread = `${value.unread} unread${newest ? ` from ${newest.sender}` : ''}`
-  const segments: Part[][] = [[{ text: 'argus:', color: 'ide' }, value.unread > 0 ? { text: ` ${unread}`, color: 'warning', weight: 'bold' } : { text: ` ${unread}` }]]
+  const segments: Part[][] = [[{ text: 'argus:', color: LABEL_BLUE }, value.unread > 0 ? { text: ` ${unread}`, color: 'warning', weight: 'bold' } : { text: ` ${unread}` }]]
   const tokens = value.context?.tokens
   const coordinators = value.bindings.filter(b => b.kind === 'coordinator')
   for (const b of coordinators) {
@@ -82,7 +85,7 @@ export function bandSegments(value: Snapshot): Part[][] {
       continue
     }
     const percent = Math.round((tokens / b.budget) * 100)
-    segments.push([{ text: `budget ${percent}%`, color: budgetColor(percent) }])
+    segments.push([budgetPart(`budget ${percent}%`, percent)])
   }
   const statuses = [...new Set(value.bindings.map(b => b.status || '?'))]
   if (statuses.length) segments.push(statuses.flatMap((status, i) => [...(i ? [{ text: '/' }] : []), { text: status, color: STATUS_COLOR[status] }]))
@@ -90,7 +93,7 @@ export function bandSegments(value: Snapshot): Part[][] {
   const blocked = coordinators.reduce((n, b) => n + (b.workers?.blocked ?? 0), 0)
   const counts: Part[] = []
   if (working > 0) counts.push({ text: `${working} working` })
-  if (blocked > 0) counts.push(...(counts.length ? [{ text: ', ' }] : []), { text: `${blocked} blocked`, color: 'claude' })
+  if (blocked > 0) counts.push(...(counts.length ? [{ text: ', ' }] : []), { text: `${blocked} blocked`, color: 'warning' })
   if (counts.length) segments.push([{ text: 'workers ' }, ...counts])
   if (value.offline) segments.push([{ text: '⚠ bridge offline', color: 'warning' }])
   return segments
@@ -150,6 +153,6 @@ export function registerUI(on: On, ui: UI): void {
     // The engine's own component draws only surveys (yielded to above), but
     // composed under the line it adds a blank row above the prompt box.
     const plugin = beneath.type === 'engine' ? null : beneath
-    return <Box flexDirection="column"><Text color="subtle" wrap="truncate-end">{line}</Text>{plugin}</Box>
+    return <Box flexDirection="column"><Text dimColor wrap="truncate-end">{line}</Text>{plugin}</Box>
   })
 }
