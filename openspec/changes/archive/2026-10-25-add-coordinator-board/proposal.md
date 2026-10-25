@@ -8,6 +8,7 @@ Coordinator updates for Aaron scroll away and disappear across recycles. A curat
 - Expose board items and unread counts through REST and coordinator recovery context.
 - Show the board beneath the Hera roster with selection-time landing, mailbox indicators, reply and dismissal.
 - Add a default-on UX setting and coordinator maintenance instructions.
+- Integrate separate board attention into the bridge band and deliver human dismissal notices through the shared notifier with a human sender label.
 
 ## Capabilities
 
@@ -18,6 +19,7 @@ Coordinator updates for Aaron scroll away and disappear across recycles. A curat
 ### Modified capabilities
 
 - `hera-view`: The coordinator details region alternates its lower panel between the plan DAG and the human board, while retaining the roster above it.
+- `argus-bridge`: Separate board unread count/newest subject in coordinator bands; human-labelled dismissal mail uses the normal delivery and mail UI.
 
 ## Impact
 

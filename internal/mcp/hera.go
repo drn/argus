@@ -1474,7 +1474,7 @@ func (s *Server) toolHeraInbox(id interface{}, args json.RawMessage) *Response {
 			fromName = fromRole.Name
 		}
 		fmt.Fprintf(&b, "\n--- %d ---\n", m.ID)
-		fmt.Fprintf(&b, "from: %s\n", fromName)
+		fmt.Fprintf(&b, "from: %s\n", m.SenderName(fromName))
 		if m.InReplyTo != nil {
 			fmt.Fprintf(&b, "in_reply_to: %d\n", *m.InReplyTo)
 		}
@@ -1978,7 +1978,7 @@ func (s *Server) toolHeraTreeUpdates(id interface{}, args json.RawMessage) *Resp
 		}
 		lines = append(lines, lineEntry{
 			"id":                m.ID,
-			"from_role":         fromName,
+			"from_role":         m.SenderName(fromName),
 			"from_orchestrator": fromOrch,
 			"to_role":           toName,
 			"to_orchestrator":   toOrch,
@@ -2087,7 +2087,7 @@ func (s *Server) toolHeraGetMessages(id interface{}, args json.RawMessage) *Resp
 		}
 		entry := msgEntry{
 			"id":                m.ID,
-			"from_role":         fromName,
+			"from_role":         m.SenderName(fromName),
 			"from_orchestrator": fromOrch,
 			"to_role":           toName,
 			"to_orchestrator":   toOrch,

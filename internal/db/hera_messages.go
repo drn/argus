@@ -68,6 +68,16 @@ type HeraMessage struct {
 	DeliveredAt  *time.Time
 }
 
+// SenderName labels reserved self-addressed board notices without inventing a
+// role. SendHeraMessage forbids ordinary self-send; only board resolution writes
+// this system form, atomically with the human's decision.
+func (m *HeraMessage) SenderName(roleName string) string {
+	if m.FromRoleID == m.ToRoleID {
+		return "Aaron (board)"
+	}
+	return roleName
+}
+
 // SendHeraMessage validates and persists a new hera message. Caps applied:
 //   - body ≤ 64 KiB (model.MaxMessageBodyBytes)
 //   - tldr required, ≤ 120 chars, single line

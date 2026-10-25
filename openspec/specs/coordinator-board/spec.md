@@ -38,6 +38,12 @@ The TUI SHALL render collapsed entries with bold kind/id/subject headers, suppor
 
 - **WHEN** Aaron dismisses a decision
 - **THEN** it is resolved by human and the coordinator inbox durably records that it was dropped
+- **AND** resolution and notice commit atomically; the unread notice is delivered through the normal notifier as a bridge plugin-framed turn or PTY fallback, labelled `Aaron (board)` in doorbells, inbox/history and bridge mail UI
+
+#### Scenario: Dismissal before binding or notification enqueue
+
+- **WHEN** a human decision dismissal commits before the coordinator is bound or the process exits before enqueue
+- **THEN** the pending notice remains durable and the notification tick delivers it after a live binding exists; repeated dismissal creates no second notice
 
 ### Requirement: Predictable Hera presentation
 

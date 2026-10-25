@@ -18,3 +18,11 @@
 - [x] 3.2 Run hera-review and test-adversary, fix findings.
 - [x] 3.3 Run full make pre-pr and archive validated specs before the PR.
 - [x] 3.4 Prepare the PR handoff with validation details, unsigned-commit note and named frontend follow-ups. PR creation and CI monitoring follow artifact completion.
+
+## 4. Bridge integration
+
+- [x] 4.1 Rebase on current master and verify shared wiring.
+- [x] 4.2 Deliver atomic dismissal notices through the shared notifier with a human sender label.
+- [x] 4.3 Add separate board counts and newest subject to bridge snapshot and band.
+- [x] 4.4 Verify draft-prefill support and record named follow-ups.
+- [x] 4.5 Review, run full pre-pr and mod tests, and prepare the PR handoff. PR update and CI monitoring follow artifact completion.

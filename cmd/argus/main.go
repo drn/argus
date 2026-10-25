@@ -21,6 +21,7 @@ import (
 	"github.com/drn/argus/internal/daemon"
 	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/launchagent"
 	"github.com/drn/argus/internal/notify"
 	"github.com/drn/argus/internal/skew"
@@ -309,6 +310,7 @@ func runTUI() {
 			ticker := time.NewTicker(5 * time.Second)
 			defer ticker.Stop()
 			for range ticker.C {
+				hera.DeliverBoardNotices(database, hera.New(database, n))
 				n.Reconcile(time.Now())
 			}
 		}()

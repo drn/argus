@@ -20,6 +20,25 @@ type inboxFixture struct {
 	workerID int64
 }
 
+func TestLoadInboxBoardSender(t *testing.T) {
+	d := testDB(t)
+	task := &model.Task{Name: "coord", Status: model.StatusInProgress}
+	testutil.NoError(t, d.Add(task))
+	o, err := d.CreateHeraOrchestrator("board", "")
+	testutil.NoError(t, err)
+	c, _, err := d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{OrchestratorID: o.ID, Name: "coord", Kind: db.HeraKindCoordinator}, task.ID, "/wt/board")
+	testutil.NoError(t, err)
+	i, err := d.PostHeraBoardItem(c.ID, "decision", "Choose", "body")
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.ResolveHeraBoardItem(c.ID, i.ID, "human", ""))
+	entries, err := loadInboxEntries(d, task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(entries), 1)
+	testutil.Equal(t, entries[0].From, "Aaron (board)")
+	testutil.Equal(t, entries[0].To, "coord")
+	testutil.True(t, entries[0].Unread)
+}
+
 // seedInbox gives task "recv" two task messages (one acked), one system
 // message, and one hera message addressed to the worker role it is bound to.
 func seedInbox(t *testing.T) inboxFixture {

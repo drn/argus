@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
-import type { Snapshot } from '../types'
+import type { Binding, Snapshot } from '../types'
 import { bandText } from '../hooks/ui'
 
 const START = { cwd: '/work', surface: 'terminal', isInteractive: true } as const
@@ -10,7 +10,7 @@ const COMMAND = { args: '', origin: { kind: 'composer' } as const, presentation:
 function world(on: On, opts: { engineBeneath?: boolean } = {}) {
   const clock = mock.clock(on, { now: 1_000_000 })
   mock.env(on, { HOME: '/h', ARGUS_TASK_ID: 'T1', ARGUS_BRIDGE_GENERATION: 'launch' })
-  let snapshot = { settings: { enabled: true, delivery: true, band: true, toasts: true }, live: true, context: { tokens: 250000, percent: 25, window: 1000000 }, bindings: [{ binding_id: 9, role: 'coord', kind: 'coordinator', orchestrator: 'team', status: 'working', unread: 0, budget: 300000 }] as { binding_id: number; role: string; kind: string; orchestrator: string; status: string; unread: number; budget: number; workers?: { working: number; blocked: number } }[], unread: 0, messages: [] as { id: string; sender: string; tldr: string; sent_at: string }[] }
+  let snapshot = { settings: { enabled: true, delivery: true, band: true, toasts: true }, live: true, context: { tokens: 250000, percent: 25, window: 1000000 }, bindings: [{ binding_id: 9, role: 'coord', kind: 'coordinator', orchestrator: 'team', status: 'working', unread: 0, budget: 300000 }] as Binding[], unread: 0, messages: [] as { id: string; sender: string; tldr: string; sent_at: string }[] }
   const toasts: string[] = []
   const submits: string[] = []
   const urls: string[] = []
@@ -251,4 +251,33 @@ test('band text omits zero worker counts, ignores non-coordinator roll-ups and j
   expect(bandText({ ...base, bindings: [{ ...coord, workers: { working: 4, blocked: 0 } }] })).toBe('argus: 0 unread • budget ? • working • workers 4 working')
   expect(bandText({ ...base, bindings: [{ ...coord, budget: 0, workers: { working: 1, blocked: 0 } }, { ...coord, binding_id: 2, kind: 'worker', status: 'blocked', budget: 0, workers: { working: 9, blocked: 9 } }] })).toBe('argus: 0 unread • budget ? • working/blocked • workers 1 working')
   expect(bandText({ ...base, unread: 1, messages: [] })).toBe('argus: 1 unread')
+})
+
+test('board attention stays separate from mail, omits zero and truncates Unicode subjects', () => {
+  const base: Snapshot = { settings: { enabled: true, delivery: true, band: true, toasts: true }, live: true, context: null, unread: 1, messages: [{ id: 'hera:1', sender: 'Aaron (board)', tldr: 'Dropped decision', sent_at: '' }], bindings: [{ binding_id: 1, role: 'coord', kind: 'coordinator', orchestrator: 'team', status: 'idle', unread: 1, budget: 0, board_unread: 2, board_subject: 'Choose a release' }] }
+  expect(bandText(base)).toBe('argus: 1 unread from Aaron (board) • budget ? • board 2: Choose a release • idle')
+  base.bindings[0]!.board_subject = '😀'.repeat(61)
+  expect(bandText(base)).toContain('board 2: ' + '😀'.repeat(59) + '…')
+  base.bindings[0]!.board_unread = 0
+  expect(bandText(base)).toBe('argus: 1 unread from Aaron (board) • budget ? • idle')
+  delete base.bindings[0]!.board_unread
+  expect(bandText(base)).toBe('argus: 1 unread from Aaron (board) • budget ? • idle')
+})
+
+test('board arrivals are quiet while dismissal mail toasts with the human label', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await w.refresh()
+  w.snapshot.bindings[0]!.board_unread = 2
+  w.snapshot.bindings[0]!.board_subject = 'Choose a release'
+  await w.refresh()
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /argus:/ }))?.text).toContain('0 unread • budget 83% • board 2: Choose a release')
+  expect(w.toasts).toEqual([])
+  w.snapshot.messages.push({ id: 'hera:1', sender: 'Aaron (board)', tldr: 'Dropped decision', sent_at: '1970-01-01T00:15:00Z' })
+  w.snapshot.unread = 1
+  await w.refresh()
+  expect(w.toasts).toEqual(['Aaron (board): Dropped decision'])
+  expect(w.submits).toEqual([])
+  await ui.unmount()
 })

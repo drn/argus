@@ -23,6 +23,8 @@ type bridgeUIBinding struct {
 	Status       string `json:"status"`
 	Unread       int    `json:"unread"`
 	Budget       int    `json:"budget"`
+	BoardUnread  int    `json:"board_unread,omitempty"`
+	BoardSubject string `json:"board_subject,omitempty"`
 	// Workers rolls up a coordinator's worker roles; nil for other kinds.
 	Workers *bridgeUIWorkers `json:"workers,omitempty"`
 }
@@ -106,6 +108,11 @@ func (s *Server) handleBridgeUI(w http.ResponseWriter, r *http.Request) {
 		}
 		if role.Kind == db.HeraKindCoordinator {
 			item.Budget = cfg.Hera.CoordinatorContextBudget
+			item.BoardUnread, item.BoardSubject, err = s.db.HeraBoardUnread(role.ID)
+			if err != nil {
+				fail(err)
+				return
+			}
 			workers, err := s.bridgeUIWorkers(orch.ID)
 			if err != nil {
 				fail(err)
@@ -120,7 +127,7 @@ func (s *Server) handleBridgeUI(w http.ResponseWriter, r *http.Request) {
 				fail(err)
 				return
 			}
-			out.Messages = append(out.Messages, bridgeUIMessage{ID: fmt.Sprintf("hera:%d", m.ID), Sender: sender.Name, Tldr: m.Tldr, SentAt: m.SentAt})
+			out.Messages = append(out.Messages, bridgeUIMessage{ID: fmt.Sprintf("hera:%d", m.ID), Sender: m.SenderName(sender.Name), Tldr: m.Tldr, SentAt: m.SentAt})
 		}
 	}
 	mail, err := s.db.Inbox(id, db.InboxFilter{UnreadOnly: true, Limit: db.MaxInboxLimit})

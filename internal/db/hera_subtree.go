@@ -27,6 +27,10 @@ type HeraMessageTLDR struct {
 	SentAt     time.Time
 }
 
+func (m HeraMessageTLDR) SenderName(roleName string) string {
+	return (&HeraMessage{FromRoleID: m.FromRoleID, ToRoleID: m.ToRoleID}).SenderName(roleName)
+}
+
 // HeraTreeUpdatesLimit caps a single subtree roll-up read. With nextCursor set
 // to the max id returned, repeated calls page forward through a busy subtree
 // rather than returning an unbounded result. Matches Hera's LIMIT 200.

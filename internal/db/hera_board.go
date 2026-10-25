@@ -185,7 +185,7 @@ func (d *DB) ResolveHeraBoardItem(roleID, id int64, by, note string) error {
 		if note != "" {
 			body += "\n\n" + note
 		}
-		_, err = tx.Exec(`INSERT INTO hera_messages(from_role_id,to_role_id,body,tldr,sent_at,delivery_mode) VALUES(?,?,?,?,?,?)`, roleID, roleID, body, fmt.Sprintf("Aaron dropped board decision #%d", id), now, HeraDeliveryQueuedNoBinding)
+		_, err = tx.Exec(`INSERT INTO hera_messages(from_role_id,to_role_id,body,tldr,sent_at,delivery_mode) VALUES(?,?,?,?,?,?)`, roleID, roleID, body, fmt.Sprintf("Aaron dropped board decision #%d", id), now, HeraDeliveryPending)
 		if err != nil {
 			return err
 		}
@@ -195,4 +195,46 @@ func (d *DB) ResolveHeraBoardItem(roleID, id int64, by, note string) error {
 	}
 	uxlog.Log("[board] resolved role=%d item=%d by=%s", roleID, id, by)
 	return nil
+}
+
+// PendingHeraBoardNotices is the durable board outbox. Leave unbound notices
+// pending until a binding exists, and never deliver already-read mail.
+func (d *DB) PendingHeraBoardNotices() ([]*HeraMessage, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	rows, err := d.conn.Query(`SELECT id, from_role_id, to_role_id, body, tldr, in_reply_to, sent_at, read_at, delivery_mode, delivered_at
+ FROM hera_messages WHERE from_role_id=to_role_id AND read_at IS NULL
+ AND delivery_mode IN ('pending','queued_no_binding')
+ AND EXISTS (SELECT 1 FROM hera_bindings WHERE role_id=to_role_id AND ended_at IS NULL)
+ ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*HeraMessage
+	for rows.Next() {
+		m, err := scanHeraMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// HeraBoardUnread returns a read-only band summary. Some lightweight callers
+// have partial schemas predating the board; treat only a missing table as empty.
+func (d *DB) HeraBoardUnread(roleID int64) (int, string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var count int
+	var subject string
+	err := d.conn.QueryRow(`SELECT COUNT(*), COALESCE((SELECT subject FROM hera_board_items
+ WHERE role_id=? AND resolved=0 AND is_read=0 ORDER BY updated_at DESC,id DESC LIMIT 1),'')
+ FROM hera_board_items WHERE role_id=? AND resolved=0 AND is_read=0`, roleID, roleID).Scan(&count, &subject)
+	if err != nil && strings.Contains(err.Error(), "no such table: hera_board_items") {
+		uxlog.Log("[board] band summary skipped: board table absent")
+		return 0, "", nil
+	}
+	return count, subject, err
 }

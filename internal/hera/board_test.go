@@ -38,3 +38,14 @@ func TestBoardSummaryFallbacks(t *testing.T) {
 	testutil.Contains(t, BoardSummary(failedBoardReader{}, coord), "hera_board_list")
 	testutil.Equal(t, BoardSummary(failedBoardReader{}, &db.HeraRole{Kind: db.HeraKindWorker}), "")
 }
+
+type failedBoardOutbox struct{}
+
+func (failedBoardOutbox) PendingHeraBoardNotices() ([]*db.HeraMessage, error) {
+	return nil, errors.New("unavailable")
+}
+
+func TestBoardNoticeOutboxFailure(t *testing.T) {
+	// No service may be called when the outbox query fails.
+	DeliverBoardNotices(failedBoardOutbox{}, nil)
+}

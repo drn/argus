@@ -2,11 +2,33 @@ package hera
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/uxlog"
 )
+
+// DeliverBoardNotices drains the atomic board outbox on the existing notify
+// tick. The store filters read, already-enqueued and unbound messages. A crash
+// between resolution and this pass leaves the notice available for the next pass.
+func DeliverBoardNotices(store interface {
+	PendingHeraBoardNotices() ([]*db.HeraMessage, error)
+}, svc *Service) {
+	msgs, err := store.PendingHeraBoardNotices()
+	if err != nil {
+		uxlog.Log("[board] notice outbox failed: %v", err)
+		slog.Warn("[board] notice outbox failed", "err", err)
+		return
+	}
+	if len(msgs) > 0 {
+		uxlog.Log("[board] delivering notices count=%d", len(msgs))
+		slog.Info("[board] delivering notices", "count", len(msgs))
+	}
+	for _, msg := range msgs {
+		svc.Deliver(msg)
+	}
+}
 
 // BoardReader is also used by recovery paths that predate the board.
 type BoardReader interface {

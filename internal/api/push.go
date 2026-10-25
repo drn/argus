@@ -10,6 +10,7 @@ import (
 	"github.com/drn/argus/internal/bridge"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/events"
+	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -669,6 +670,7 @@ func (s *Server) idleWatcherTick(state *idleWatcherState) {
 	// and unfocused. Guard nil: notifier is wired only when the daemon fully
 	// starts (may be absent in lightweight test setups).
 	if s.notifier != nil {
+		hera.DeliverBoardNotices(s.db, hera.New(s.db, s.notifier))
 		s.notifier.Reconcile(now)
 	}
 }

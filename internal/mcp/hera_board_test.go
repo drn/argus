@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/db"
@@ -84,4 +85,18 @@ func TestHeraBoardToolErrors(t *testing.T) {
 	got = callResult(t, s.toolHeraBoard(1, json.RawMessage(`{"cwd":"/wt/board"}`), "list"))
 	testutil.Equal(t, got.IsError, true)
 	testutil.Contains(t, got.Content[0].Text, "hera not configured")
+}
+
+func TestHeraBoardDismissalInboxSender(t *testing.T) {
+	s, d := testHeraServer(t)
+	task := seedCoordinator(t, s, d, "board", "/wt/board")
+	b, err := d.HeraLiveBindingByTask(task.ID)
+	testutil.NoError(t, err)
+	i, err := d.PostHeraBoardItem(b.RoleID, "decision", "Choose", "body")
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.ResolveHeraBoardItem(b.RoleID, i.ID, "human", ""))
+	got := callResult(t, doRequest(t, s, "tools/call", ToolCallParams{Name: "hera_inbox", Arguments: json.RawMessage(`{"cwd":"/wt/board"}`)}))
+	testutil.False(t, got.IsError)
+	testutil.Contains(t, got.Content[0].Text, "from: Aaron (board)")
+	testutil.False(t, strings.Contains(got.Content[0].Text, "from: coord"))
 }

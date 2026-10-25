@@ -17,6 +17,7 @@ import (
 
 func TestResumeIDWire(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	isolateResumeProbeCLI(t)
 	_, sock, database := testSetup(t)
 	bin := filepath.Join(t.TempDir(), "claude")
 	testutil.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > launch-args\nprintf '%s\\n' \"$@\"\nexec sleep 30\n"), 0o700))
@@ -38,6 +39,7 @@ func TestResumeIDWire(t *testing.T) {
 }
 
 func TestSupResumeID(t *testing.T) {
+	isolateResumeProbeCLI(t)
 	d, supervisorClient, database := supE2E(t)
 	sock := filepath.Join(t.TempDir(), "d.sock")
 	go d.Serve(sock) //nolint:errcheck
@@ -102,6 +104,16 @@ func TestSupResumeID(t *testing.T) {
 	testutil.NoError(t, database.Update(task))
 	testutil.NoError(t, c.Stop(task.ID))
 	waitStatus(t, database, task.ID, model.StatusInReview)
+}
+
+// The daemon's unrelated startup usage probe must not launch the installed
+// Claude CLI, which can keep writing into HOME after these short fixtures end.
+// The resumed sessions use their own absolute fake CLI paths below.
+func isolateResumeProbeCLI(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	testutil.NoError(t, os.WriteFile(filepath.Join(dir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o700))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 // ciWait is the ceiling for every readiness poll in the resume tests; generous so a

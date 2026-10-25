@@ -141,3 +141,70 @@ func TestHeraBoardErrorsAndNonDecisionResolution(t *testing.T) {
 	testutil.Error(t, d.ReadHeraBoardItem(c.ID, i.ID))
 	testutil.Error(t, d.ResolveHeraBoardItem(c.ID, i.ID, "agent", ""))
 }
+
+func TestHeraBoardOutboxBindingAndRead(t *testing.T) {
+	d := heraTestDB(t)
+	o := mkOrch(t, d, "board")
+	c := mkRole(t, d, o.ID, "coord", HeraKindCoordinator)
+	i, err := d.PostHeraBoardItem(c.ID, "decision", "Choose", "body")
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.ResolveHeraBoardItem(c.ID, i.ID, "human", ""))
+	msgs, err := d.PendingHeraBoardNotices()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(msgs), 0)
+	_, err = d.CreateHeraBinding(CreateHeraBindingInput{RoleID: c.ID, ArgusTaskID: "board-task", WorktreePath: "/wt/board"})
+	testutil.NoError(t, err)
+	msgs, err = d.PendingHeraBoardNotices()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(msgs), 1)
+	testutil.Equal(t, msgs[0].SenderName("coord"), "Aaron (board)")
+	testutil.Equal(t, msgs[0].DeliveryMode, HeraDeliveryPending)
+	noticeID := msgs[0].ID
+	testutil.NoError(t, d.MarkHeraMessageDelivered(noticeID, HeraDeliveryIdleSubmit))
+	msgs, err = d.PendingHeraBoardNotices()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(msgs), 0)
+	testutil.NoError(t, d.MarkHeraMessageDelivered(noticeID, HeraDeliveryQueuedNoBinding))
+	msgs, err = d.PendingHeraBoardNotices()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(msgs), 1)
+	_, err = d.MarkHeraMessagesRead(c.ID, []int64{msgs[0].ID})
+	testutil.NoError(t, err)
+	msgs, err = d.PendingHeraBoardNotices()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(msgs), 0)
+}
+
+func TestHeraBoardUnreadMissingTable(t *testing.T) {
+	d := heraTestDB(t)
+	_, err := d.conn.Exec(`DROP TABLE hera_board_items`)
+	testutil.NoError(t, err)
+	n, subject, err := d.HeraBoardUnread(1)
+	testutil.NoError(t, err)
+	testutil.Equal(t, n, 0)
+	testutil.Equal(t, subject, "")
+	testutil.NoError(t, d.Close())
+	_, _, err = d.HeraBoardUnread(1)
+	testutil.Error(t, err)
+	_, err = d.PendingHeraBoardNotices()
+	testutil.Error(t, err)
+}
+
+func TestHeraBoardNoticeSenderName(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		from, to int64
+		want     string
+	}{
+		{"board", 1, 1, "Aaron (board)"},
+		{"role", 2, 1, "worker"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := &HeraMessage{FromRoleID: tc.from, ToRoleID: tc.to}
+			tldr := HeraMessageTLDR{FromRoleID: tc.from, ToRoleID: tc.to}
+			testutil.Equal(t, msg.SenderName("worker"), tc.want)
+			testutil.Equal(t, tldr.SenderName("worker"), tc.want)
+		})
+	}
+}
