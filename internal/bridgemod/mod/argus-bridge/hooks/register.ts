@@ -22,6 +22,8 @@ const POST_TIMEOUT_MS = 2_000
 
 /** Everything one load of the mod keeps; a hot reload makes a fresh one. */
 type Bridge = {
+	busy: boolean
+	needsKind: string
   readonly boot: string
   reporter: Reporter | undefined
   readonly tracker: NeedsInputTracker
@@ -32,6 +34,8 @@ type Bridge = {
 
 function newBridge(): Bridge {
   return {
+	busy: false,
+	needsKind: '',
     // `boot` distinguishes this load from an earlier one whose seq restarts.
     boot: Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 6),
     reporter: undefined,
@@ -45,6 +49,7 @@ function newBridge(): Bridge {
 function envFor($: Engine): Env {
   return {
     taskId: () => $.env.get('ARGUS_TASK_ID'),
+	launchGeneration: () => $.env.get('ARGUS_BRIDGE_GENERATION'),
     home: () => $.env.get('HOME'),
     dataDir: () => $.env.get('ARGUS_BRIDGE_DIR'),
     readFile: async path => {
@@ -84,6 +89,7 @@ async function safe(work: () => Promise<unknown>): Promise<void> {
 
 async function emitTransition($: Engine, b: Bridge, t: Transition | null): Promise<void> {
   if (!t) return
+	b.needsKind = t.type === 'needs_input' ? t.kind : ''
   if (t.type === 'needs_input') {
     await rep($, b).emit('needs_input', { kind: t.kind, confidence: t.confidence, tool: t.tool, tool_use_id: t.toolUseId })
   }
@@ -112,9 +118,10 @@ async function pollNeedsInput($: Engine, b: Bridge): Promise<void> {
 }
 
 async function beat($: Engine, b: Bridge): Promise<void> {
+	await syncSession($, b, false)
   await pollNeedsInput($, b)
   await sendMeasure($, b, b.measure.flush(await $.clock.now()))
-  await rep($, b).emit('heartbeat')
+  await rep($, b).emit('heartbeat', { busy: b.busy, needs_input: b.tracker.active, kind: b.needsKind, confidence: b.needsKind === 'permission' ? 'pending-or-running' : 'exact' })
   await rep($, b).flush()
 }
 
@@ -138,6 +145,7 @@ export const register: Register = on => {
       await safe(async () => {
         if (!(await rep($, b).taskId())) return
         await syncSession($, b, false)
+		b.busy = true
         await rep($, b).emit('turn.start', { turn_id: e.turnId })
       })
     }
@@ -149,6 +157,7 @@ export const register: Register = on => {
       await safe(async () => {
         if (!(await rep($, b).taskId())) return
         await emitTransition($, b, b.tracker.reset())
+		b.busy = false
         await sendMeasure($, b, b.measure.flush(await $.clock.now()))
         await rep($, b).emit('turn.complete', { turn_id: e.turnId, reason: e.reason })
       })

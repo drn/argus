@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/bridge"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/uxlog"
@@ -14,6 +15,14 @@ import (
 
 // Compile-time assertion: Provider implements agent.SessionProvider.
 var _ agent.SessionProvider = (*Provider)(nil)
+
+// BridgeStates is fetched by the TUI tick off the main UI thread, matching
+// the local daemon client's batched bridge snapshot.
+func (p *Provider) BridgeStates() (map[string]bridge.State, error) {
+	var states map[string]bridge.State
+	err := p.c.doJSON(context.Background(), "GET", "/api/bridge/states", nil, &states)
+	return states, err
+}
 
 // Provider implements agent.SessionProvider over HTTP using the apiclient
 // Client. It mirrors the daemon-client provider (internal/daemon/client) but

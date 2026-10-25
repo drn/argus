@@ -187,7 +187,7 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 
 	// Resolve the backend and account before any side effect so a bad account
 	// never leaves a worktree behind. "default" is stored as "".
-	backend := resolveDefaultBackendName(input.Backend, input.Project, cfg)
+	backend := resolveDefaultBackendName(input.Backend, input.Project, cfg, input.Account)
 	account, err := resolveTaskAccount(cfg, input, backend)
 	if err != nil {
 		return nil, nil, err

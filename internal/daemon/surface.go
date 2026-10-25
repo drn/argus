@@ -156,7 +156,9 @@ const (
 	//     embedded in the supervisor's own binary, so a stale supervisor spawns
 	//     Claude sessions without it (or with an older mod) until restarted. The mod is materialized under
 	//     ~/.argus/cache/bridge-mod (the sandbox-writable part of ~/.argus).
-	SupervisorSpawnSurface = 21
+	//   - v22: bridge reports carry a per-launch generation and heartbeat state
+	//     snapshots; backend usage routing respects the task's account.
+	SupervisorSpawnSurface = 22
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -209,7 +211,9 @@ const (
 	//     incarnation's cached ExitInfo, so a kick/recycle's stale
 	//     PendingRestart=true entry can no longer be served as the replacement's
 	//     exit (which skipped the daemon's status flip).
-	SupervisorStreamSurface = 13
+	//   - v14: SessionStatus/ListSessions expose the immutable bridge launch
+	//     generation so a resumed transcript cannot inherit old authority.
+	SupervisorStreamSurface = 14
 )
 
 // SurfaceVersion is a supervisor's declared executed-surface identity: the pair
@@ -400,6 +404,7 @@ var SupervisorSpawnPaths = []string{
 // to it is far more likely to reach a running agent than not. Classifying an
 // ambiguous file as STREAM is the safe direction.
 var SupervisorStreamPaths = []string{
+	"internal/agent/bridge.go",                // per-launch bridge identity read through SessionStatus
 	"internal/agent/rerender_tree.go",         // identity-scoped descendants on repair escalation
 	"internal/agent/width_rerender.go",        // opt-in bounded width repair
 	"internal/claudesession/claudesession.go", // exact transcript path inspection
@@ -434,8 +439,8 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "eb7fa903b56ceb198d64d37aa7ab222dbc5f7418ccb30c6ebc8e2df155ced23d"
-	StreamSurfaceDigest = "c1dc8210d586d40549d86dde03c2959d7f5b064d46c7576197037e36d130bb53"
+	SpawnSurfaceDigest  = "e90114e93ce4117edfd4ab7d2c71c376e13c1a2398a6fecaea0de5967201a6b5"
+	StreamSurfaceDigest = "4db586fb7dcaf62899cb2ebc82bbaa7fcc325d7cf99611f5f7942c44f9bc9467"
 )
 
 // SurfaceDigest computes the SHA-256 over the declared manifest's file contents,

@@ -29,10 +29,14 @@ var (
 // Returns "" when no tier list is configured, every tier is skipped, or every
 // capped tier is at/over threshold with no uncapped tier in the list —
 // callers fall back to their own existing single-default-backend precedence.
-func ResolveBackend(cfg config.Config) string {
+func ResolveBackend(cfg config.Config, accounts ...string) string {
+	account := cfg.ResolveAccount("", "")
+	if len(accounts) > 0 {
+		account = accounts[0]
+	}
 	switch cfg.BackendRouting.Strategy {
 	case config.StrategyHeadroom:
-		return resolveHeadroom(cfg)
+		return resolveHeadroom(cfg, account)
 	case "", config.StrategyOrdered:
 	default:
 		warnUnknownStrategy(cfg.BackendRouting.Strategy)
@@ -41,19 +45,19 @@ func ResolveBackend(cfg config.Config) string {
 		if _, ok := cfg.Backends[tier.Backend]; !ok {
 			continue
 		}
-		if tierAvailable(tier) {
+		if tierAvailable(tier, account) {
 			return tier.Backend
 		}
 	}
 	return ""
 }
 
-func tierAvailable(tier config.BackendTier) bool {
+func tierAvailable(tier config.BackendTier, accounts ...string) bool {
 	switch tier.Probe {
 	case config.ProbeNone:
 		return true
 	case config.ProbeClaudeUsage:
-		return underThreshold(claudeCachedPct, tier.ThresholdPct)
+		return underThreshold(claudeUsageForAccount(accounts), tier.ThresholdPct)
 	case config.ProbeCodexUsage:
 		return underThreshold(codexCachedPct, tier.ThresholdPct)
 	default:
@@ -77,7 +81,7 @@ func underThreshold(cached func() (float64, bool), thresholdPct int) bool {
 // threshold, the one with the largest threshold−pct headroom (ties → list
 // order); failing that, the first tier with no usable reading (stale/unknown
 // capped tiers and none-probe tiers) in list order; failing that, "".
-func resolveHeadroom(cfg config.Config) string {
+func resolveHeadroom(cfg config.Config, accounts ...string) string {
 	var (
 		best        string
 		bestScore   float64
@@ -92,7 +96,7 @@ func resolveHeadroom(cfg config.Config) string {
 		switch tier.Probe {
 		case config.ProbeNone:
 		case config.ProbeClaudeUsage:
-			cached = claudeCachedPct
+			cached = claudeUsageForAccount(accounts)
 		case config.ProbeCodexUsage:
 			cached = codexCachedPct
 		default:
@@ -120,6 +124,13 @@ func resolveHeadroom(cfg config.Config) string {
 		return best
 	}
 	return firstUnread
+}
+
+func claudeUsageForAccount(accounts []string) func() (float64, bool) {
+	if len(accounts) == 0 || accounts[0] == "" || accounts[0] == "default" {
+		return claudeCachedPct
+	}
+	return func() (float64, bool) { return usagebudget.CachedClaudePctForAccount(accounts[0]) }
 }
 
 var warnedStrategies sync.Map

@@ -46,7 +46,7 @@ func TestHandleBridgeEvents(t *testing.T) {
 		}
 		testutil.NoError(t, json.Unmarshal(gw.Body.Bytes(), &st))
 		testutil.True(t, st.Busy)
-		testutil.True(t, st.Live)
+		testutil.False(t, st.Live) // reports without a running matching launch are diagnostic only
 		testutil.Equal(t, st.SessionID, "s1")
 		testutil.Equal(t, st.Model, "opus")
 	})

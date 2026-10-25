@@ -626,6 +626,13 @@ func (d *DB) createHeraTables() error {
 			tokens_output         INTEGER NOT NULL DEFAULT 0,
 			cost_usd_accrued      REAL NOT NULL DEFAULT 0
 		);
+		CREATE TABLE IF NOT EXISTS hera_bridge_cost (
+			binding_id INTEGER PRIMARY KEY REFERENCES hera_bindings(id) ON DELETE CASCADE,
+			session_id TEXT NOT NULL,
+			generation TEXT NOT NULL DEFAULT '',
+			cumulative REAL NOT NULL,
+			source TEXT NOT NULL DEFAULT 'bridge'
+		);
 		-- THE multi-binding invariant (Hera migration 0004): live-uniqueness is
 		-- per-(task, orchestrator), NOT per-task. One argus task may simultaneously
 		-- be a worker in orchestrator A and a coordinator in B. orchestrator_id is

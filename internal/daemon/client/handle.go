@@ -304,6 +304,16 @@ func (rs *RemoteSession) refreshInfo() {
 	rs.updateInfo(info)
 }
 
+// BridgeGeneration is queried off the UI thread by daemon bridge readers.
+func (rs *RemoteSession) BridgeGeneration() string {
+	var info daemon.SessionInfo
+	if err := rs.client.call("Daemon.SessionStatus", &daemon.TaskIDReq{TaskID: rs.taskID}, &info); err != nil {
+		return ""
+	}
+	rs.updateInfo(info)
+	return info.BridgeGeneration
+}
+
 // Writer fan-out — the supervisor-client double-proxy (session-supervisor P2).
 //
 // When the daemon is the *consumer* of this client (supervisor mode), its own

@@ -23,6 +23,7 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/apiclient"
 	"github.com/drn/argus/internal/app/agentview"
+	"github.com/drn/argus/internal/bridge"
 	"github.com/drn/argus/internal/claudeaccount"
 	"github.com/drn/argus/internal/claudesession"
 	"github.com/drn/argus/internal/config"
@@ -364,10 +365,13 @@ type App struct {
 	lastPreviewTaskID    string // task ID for the cached TotalWritten
 	lastPreviewLogSize   int64  // log file size when dead-session preview was last refreshed
 	// Idle-unvisited tracking (for visual InReview promotion)
-	idleUnvisited    map[string]bool   // task IDs idle since user last opened their agent view
-	viewedWhileAgent map[string]bool   // tasks viewed in agent view; suppresses idleUnvisited re-add
-	needsInputIDs    []string          // task IDs detected as blocked on a user prompt this tick
-	needsInputFP     map[string]uint64 // taskID -> prior-tick content fingerprint (BUG-032 stability pass)
+	idleUnvisited        map[string]bool         // task IDs idle since user last opened their agent view
+	viewedWhileAgent     map[string]bool         // tasks viewed in agent view; suppresses idleUnvisited re-add
+	needsInputIDs        []string                // task IDs detected as blocked on a user prompt this tick
+	bridgeStates         map[string]bridge.State // daemon snapshot, installed only on UI thread
+	scraperNeedsInputIDs []string                // raw fallback state, never seeded by bridge verdicts
+	hadBridgeStates      bool
+	needsInputFP         map[string]uint64 // taskID -> prior-tick content fingerprint (BUG-032 stability pass)
 	// needsInputEscalation carries the BUG-029 consecutive-tick escalation
 	// counter (agent.EscalateParkedSelection) across ticks: bounds the worst
 	// case for a session whose content fingerprint never converges despite
@@ -1622,6 +1626,17 @@ func (a *App) onTick() {
 	runner := a.runner
 	a.mu.Unlock()
 	runningIDs, idleIDs := runner.RunningAndIdle()
+	var bridgeStates map[string]bridge.State
+	if source, ok := runner.(interface {
+		BridgeStates() (map[string]bridge.State, error)
+	}); ok {
+		var err error
+		bridgeStates, err = source.BridgeStates()
+		if err != nil {
+			uxlog.Log("[bridge] TUI snapshot failed: %v", err)
+			bridgeStates = nil
+		}
+	}
 
 	// Reconcile hera pane PTY sizes off the main thread (Resize RPC). Safe to
 	// call always: it no-ops for unbound panes and for panes whose Draw didn't
@@ -1663,6 +1678,10 @@ func (a *App) onTick() {
 		// allowCachedTasks=true: this is the periodic per-tick path
 		// (add-tasks-fetch-dirty-check) — see shouldRefetchTasks's doc comment
 		// for why every other refreshTasksWithIDs caller must pass false.
+		a.bridgeStates = bridgeStates
+		if runningIDs == nil {
+			a.bridgeStates = nil
+		}
 		a.refreshTasksWithIDs(runningIDs, idleIDs, true)
 		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
 			if selected := a.tasklist.SelectedTask(); selected != nil && selected.ID != a.artifactCountTaskID {
@@ -3470,6 +3489,11 @@ func (a *App) invalidateTasksChangeGate() {
 // from the periodic onTick path (see shouldRefetchTasks's own doc comment for
 // why every other caller must pass false instead).
 func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string, allowCachedTasks bool) {
+	if local, ok := a.db.(*db.DB); ok && !local.Config().Bridge.Enabled {
+		a.bridgeStates = nil
+	}
+	scraperIdleIDs := idleIDs
+	idleIDs = bridge.Override(idleIDs, a.bridgeStates, bridge.Quiescent)
 	var tasks []*model.Task
 	if allowCachedTasks && !a.shouldRefetchTasks() {
 		tasks = a.tasks
@@ -3494,6 +3518,9 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string, allowCachedTasks
 	// representing real progress, kicking a genuinely-blocked task out of
 	// the daemon's idle list for a tick or two at a time.
 	prevNeedsInput := a.needsInputIDs
+	if a.hadBridgeStates || len(a.bridgeStates) > 0 {
+		prevNeedsInput = a.scraperNeedsInputIDs
+	}
 	a.runningIDs = runningIDs
 	a.idleIDs = idleIDs
 
@@ -3586,7 +3613,10 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string, allowCachedTasks
 	a.tasklist.SetRunning(a.runningIDs)
 	a.tasklist.SetIdle(idleIDs)
 	a.syncIdleUnvisited()
-	a.needsInputIDs = a.detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput)
+	a.needsInputIDs = a.detectNeedsInputSticky(scraperIdleIDs, runningIDs, prevNeedsInput)
+	a.scraperNeedsInputIDs = append([]string{}, a.needsInputIDs...)
+	a.hadBridgeStates = len(a.bridgeStates) > 0
+	a.needsInputIDs = bridge.Override(a.needsInputIDs, a.bridgeStates, bridge.AwaitingInput)
 	a.tasklist.SetNeedsInput(a.needsInputIDs)
 	a.autoClearBlockedHeraRoles(runningIDs)
 	heraWorkers, heraCoordinators := a.readHeraRoles()
@@ -3614,8 +3644,8 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string, allowCachedTasks
 	if a.needsInputScreen == nil {
 		a.needsInputScreen = &agent.ScreenRenderer{}
 	}
-	rawIdleSet := make(map[string]bool, len(idleIDs))
-	for _, id := range idleIDs {
+	rawIdleSet := make(map[string]bool, len(scraperIdleIDs))
+	for _, id := range scraperIdleIDs {
 		rawIdleSet[id] = true
 	}
 	// dedupe-redundant-contentidle-reads: a.needsInputRawSignals was just
@@ -3633,6 +3663,7 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string, allowCachedTasks
 	sessionIdle := make([]string, 0, len(idleIDs)+len(contentIdleIDs))
 	sessionIdle = append(sessionIdle, idleIDs...)
 	sessionIdle = append(sessionIdle, contentIdleIDs...)
+	sessionIdle = bridge.Override(sessionIdle, a.bridgeStates, bridge.Quiescent)
 	a.heraPage.SetSessionIdle(sessionIdle)
 	// Running set (BUG-C): a hera binding does NOT end when its agent session
 	// exits, so rv.Live stays true for a dead worker whose task row lingers. Feed
@@ -3644,6 +3675,7 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string, allowCachedTasks
 	// computed this tick, exposed so the rail's needs-input gate can suppress a
 	// genuinely sustained-active role's "(?)" glyph regardless of task status
 	// or a stale self-reported `blocked` hera status.
+	a.sustainedActiveIDs = bridge.Override(a.sustainedActiveIDs, a.bridgeStates, bridge.Working)
 	a.heraPage.SetSustainedActive(a.sustainedActiveIDs)
 	prStates := a.readPRStates()
 	managed := a.readManagedTasks()

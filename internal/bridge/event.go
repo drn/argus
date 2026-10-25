@@ -2,7 +2,7 @@
 // contract of the Claude Code mod that reports session state as structured
 // events, the in-memory per-task state built from those events, and the
 // shadow comparator that measures how often screen-reading disagrees with
-// them. Phase 1 only observes; nothing here changes a verdict.
+// them. Current live reports can override inference through Authority.
 package bridge
 
 // Event types the mod posts (internal/bridgemod/mod/argus-bridge).
@@ -53,11 +53,14 @@ type RateLimit struct {
 // TS is the mod's clock in epoch milliseconds and is informational only — the
 // daemon judges liveness by its own receive time.
 type Event struct {
-	Type      string `json:"type"`
-	Seq       int64  `json:"seq"`
-	Boot      string `json:"boot"`
-	TS        int64  `json:"ts"`
-	SessionID string `json:"session_id,omitempty"`
+	Busy       *bool  `json:"busy,omitempty"`
+	NeedsInput *bool  `json:"needs_input,omitempty"`
+	Generation string `json:"generation,omitempty"`
+	Type       string `json:"type"`
+	Seq        int64  `json:"seq"`
+	Boot       string `json:"boot"`
+	TS         int64  `json:"ts"`
+	SessionID  string `json:"session_id,omitempty"`
 
 	// session.start
 	Model string `json:"model,omitempty"`

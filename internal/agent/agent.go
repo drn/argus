@@ -150,7 +150,7 @@ func IsTaskSandboxed(task *model.Task, cfg config.Config) bool {
 // the tier list) was the root cause of the tier list being unreachable for
 // every freshly created task. Returns "" only when nothing in the whole
 // chain (including cfg.Defaults.Backend) resolves to a name.
-func resolveDefaultBackendName(explicit, project string, cfg config.Config) string {
+func resolveDefaultBackendName(explicit, project string, cfg config.Config, accounts ...string) string {
 	name := ""
 
 	if project != "" {
@@ -164,7 +164,11 @@ func resolveDefaultBackendName(explicit, project string, cfg config.Config) stri
 	}
 
 	if name == "" {
-		name = backendtier.ResolveBackend(cfg)
+		account := cfg.ResolveAccount("", project)
+		if len(accounts) > 0 {
+			account = cfg.ResolveAccount(accounts[0], project)
+		}
+		name = backendtier.ResolveBackend(cfg, account)
 	}
 
 	if name == "" {
@@ -180,7 +184,7 @@ func resolveDefaultBackendName(explicit, project string, cfg config.Config) stri
 // project backend is never overridden by usage-based routing — the tiered
 // resolver is consulted only once neither is set.
 func ResolveBackend(task *model.Task, cfg config.Config) (config.Backend, error) {
-	name := resolveDefaultBackendName(task.Backend, task.Project, cfg)
+	name := resolveDefaultBackendName(task.Backend, task.Project, cfg, task.Account)
 
 	if name == "" {
 		return config.Backend{}, fmt.Errorf("no backend configured")
@@ -1175,6 +1179,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// CreateAndStart guards against), but we skip the export defensively
 	// rather than emit a literal "ARGUS_TASK_ID=" with no value.
 	if task.ID != "" {
+		cmd.Env = append(cmd.Env, "ARGUS_BRIDGE_GENERATION="+model.GenerateSessionID())
 		cmd.Env = append(cmd.Env, "ARGUS_TASK_ID="+task.ID)
 	}
 

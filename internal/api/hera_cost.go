@@ -35,6 +35,8 @@ type heraTokensPutReq struct {
 // unchanged for this delta — permanently unpriced, per Decision 6's
 // corollary — while raw totals still advance regardless.
 func (s *Server) handleHeraTokensPut(w http.ResponseWriter, r *http.Request) {
+	s.bridgeIngestMu.Lock()
+	defer s.bridgeIngestMu.Unlock()
 	id := r.PathValue("id")
 	task, err := s.db.Get(id)
 	if err != nil {
@@ -101,7 +103,8 @@ func (s *Server) handleHeraTokensPut(w http.ResponseWriter, r *http.Request) {
 		TokensOutput:       req.TokensOutput,
 		CostUSDAccrued:     newAccrued,
 	}
-	if err := s.db.UpdateHeraBindingCostTotals(binding.ID, newTotals); err != nil {
+	newAccrued, err = s.db.UpdateHeraTranscriptCost(binding.ID, newTotals)
+	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
