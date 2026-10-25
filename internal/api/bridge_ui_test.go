@@ -139,3 +139,51 @@ func TestBridgeUISnapshotLiveBindingsAndTaskSummary(t *testing.T) {
 	}
 	testutil.Equal(t, summaries["Named sender"], strings.Repeat("界", 117)+"...")
 }
+
+func TestBridgeUISnapshotWorkerRollup(t *testing.T) {
+	s, _, task := bridgeAuthorityServer(t)
+	orch, err := s.db.CreateHeraOrchestrator("rollup", "")
+	testutil.NoError(t, err)
+	_, _, err = s.db.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{OrchestratorID: orch.ID, Name: "coord", Kind: db.HeraKindCoordinator}, task.ID, task.Worktree)
+	testutil.NoError(t, err)
+	for _, w := range []struct {
+		name   string
+		status db.HeraRoleStatusValue
+		cancel bool
+	}{
+		{"w-working", db.HeraStatusWorking, false},
+		{"w-blocked-1", db.HeraStatusBlocked, false},
+		{"w-blocked-2", db.HeraStatusBlocked, false},
+		{"w-done", db.HeraStatusDone, false},
+		{"w-nostatus", "", false},
+		{"w-cancelled", db.HeraStatusWorking, true},
+	} {
+		role, err := s.db.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: orch.ID, Name: w.name, Kind: db.HeraKindWorker})
+		testutil.NoError(t, err)
+		if w.status != "" {
+			testutil.NoError(t, s.db.UpsertHeraRoleStatus(role.ID, w.status))
+		}
+		if w.cancel {
+			testutil.NoError(t, s.db.CancelHeraPlannedNode(role.ID))
+		}
+	}
+	// A worker binding on another orchestrator carries no roll-up.
+	other, err := s.db.CreateHeraOrchestrator("other", "")
+	testutil.NoError(t, err)
+	_, _, err = s.db.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{OrchestratorID: other.ID, Name: "helper", Kind: db.HeraKindWorker}, task.ID, task.Worktree)
+	testutil.NoError(t, err)
+
+	w := httptest.NewRecorder()
+	s.routes().ServeHTTP(w, authedReq("GET", "/api/tasks/"+task.ID+"/bridge/ui", ""))
+	testutil.Equal(t, w.Code, 200)
+	var got bridgeUISnapshot
+	testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	testutil.Equal(t, len(got.Bindings), 2)
+	byRole := map[string]bridgeUIBinding{}
+	for _, b := range got.Bindings {
+		byRole[b.Role] = b
+	}
+	testutil.DeepEqual(t, byRole["coord"].Workers, &bridgeUIWorkers{Working: 1, Blocked: 2})
+	testutil.Nil(t, byRole["helper"].Workers)
+	testutil.False(t, strings.Contains(w.Body.String(), `"workers":null`))
+}

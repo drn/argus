@@ -162,7 +162,10 @@ const (
 	//     receipts and submits throttled non-blocking coordinator nudges.
 	//   - v24: bridge mod renders a composable Hera band, toasts arrivals and
 	//     answers local inbox/status commands with live band/toast settings.
-	SupervisorSpawnSurface = 24
+	//   - v25: bridge band drops context, names the newest unread sender, rolls
+	//     up a coordinator's workers, uses theme colors and keeps the last
+	//     snapshot flagged offline when the daemon is unreachable.
+	SupervisorSpawnSurface = 25
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -447,7 +450,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "a141c9ae9b200aa4c5e53fe4959b3dd8fd4635781aff21b59e7c559e9f9af447"
+	SpawnSurfaceDigest  = "5b4388886d2344d0f99cf61246f3a4a4a1cc5e4f3b60dd85365e2bcf022210f1"
 	StreamSurfaceDigest = "4db586fb7dcaf62899cb2ebc82bbaa7fcc325d7cf99611f5f7942c44f9bc9467"
 )
 

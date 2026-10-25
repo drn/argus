@@ -23,6 +23,13 @@ type bridgeUIBinding struct {
 	Status       string `json:"status"`
 	Unread       int    `json:"unread"`
 	Budget       int    `json:"budget"`
+	// Workers rolls up a coordinator's worker roles; nil for other kinds.
+	Workers *bridgeUIWorkers `json:"workers,omitempty"`
+}
+
+type bridgeUIWorkers struct {
+	Working int `json:"working"`
+	Blocked int `json:"blocked"`
 }
 
 type bridgeUIMessage struct {
@@ -99,6 +106,12 @@ func (s *Server) handleBridgeUI(w http.ResponseWriter, r *http.Request) {
 		}
 		if role.Kind == db.HeraKindCoordinator {
 			item.Budget = cfg.Hera.CoordinatorContextBudget
+			workers, err := s.bridgeUIWorkers(orch.ID)
+			if err != nil {
+				fail(err)
+				return
+			}
+			item.Workers = workers
 		}
 		out.Bindings = append(out.Bindings, item)
 		for _, m := range mail {
@@ -139,4 +152,34 @@ func (s *Server) handleBridgeUI(w http.ResponseWriter, r *http.Request) {
 	out.Unread = len(out.Messages)
 	uxlog.Log("[bridge-ui] snapshot task=%s bindings=%d unread=%d live=%t", id, len(out.Bindings), out.Unread, out.Live)
 	writeJSON(w, http.StatusOK, out)
+}
+
+// bridgeUIWorkers counts the orchestrator's working and blocked worker roles
+// for the band's roll-up. Cancelled planned nodes never run, so they are left
+// out; a role with no status row is idle.
+func (s *Server) bridgeUIWorkers(orchID int64) (*bridgeUIWorkers, error) {
+	roles, err := s.db.ListHeraRolesByKind(orchID, db.HeraKindWorker)
+	if err != nil {
+		return nil, err
+	}
+	out := &bridgeUIWorkers{}
+	for _, role := range roles {
+		if role.CancelledAt != nil {
+			continue
+		}
+		status, err := s.db.HeraRoleStatusFor(role.ID)
+		if errors.Is(err, db.ErrHeraNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		switch status.Status {
+		case db.HeraStatusWorking:
+			out.Working++
+		case db.HeraStatusBlocked:
+			out.Blocked++
+		}
+	}
+	return out, nil
 }
