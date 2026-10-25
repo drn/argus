@@ -191,10 +191,7 @@ func (s *Server) sessionStateMaps() (runningSet, idleSet, needsInputSet map[stri
 		needsInputSet[id] = true
 	}
 	for id, st := range s.BridgeStates() {
-		if !bridge.Authoritative(st) {
-			continue
-		}
-		idleSet[id] = !st.Busy || st.NeedsInput
+		idleSet[id] = bridge.Quiescent(st)
 		needsInputSet[id] = st.NeedsInput
 	}
 	return runningSet, idleSet, needsInputSet

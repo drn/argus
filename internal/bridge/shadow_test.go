@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -160,14 +161,16 @@ func TestShadow_PermissionKindCountedSeparately(t *testing.T) {
 	for i := 0; i < 4; i++ { // approved tool still running: bridge says needs-input, scraper does not
 		now := t0.Add(time.Duration(i) * 5 * time.Second)
 		s.Hub().Ingest("a", []Event{ev(TypeHeartbeat, int64(10+i))}, now)
-		s.Observe(now, []string{"a"}, set("a"), nil)
+		s.Observe(now, []string{"a"}, nil, nil)
 	}
 	st := s.Stats(t0)
 	testutil.Equal(t, st.Signals[SignalNeedsInputPermission].Disagree, int64(2))
+	testutil.Equal(t, st.Signals[SignalNeedsInputPermission].Agree, int64(0))
+	testutil.Equal(t, st.Signals[SignalIdle].Agree, int64(4))
 	testutil.Equal(t, st.Signals[SignalNeedsInput].Disagree, int64(0))
 	testutil.Equal(t, st.Signals[SignalNeedsInput].Agree, int64(0))
 	testutil.Equal(t, len(sink.lines), 1)
-	testutil.Contains(t, sink.lines[0], "signal=needs_input_permission")
+	testutil.Contains(t, strings.Join(sink.lines, "\n"), "signal=needs_input_permission")
 
 	// The dialog clears: the tick now counts under the headline signal and the
 	// open permission disagreement is dropped, not left dangling.
@@ -176,6 +179,17 @@ func TestShadow_PermissionKindCountedSeparately(t *testing.T) {
 	s.Observe(now, []string{"a"}, set("a"), nil)
 	testutil.Equal(t, s.Stats(now).Signals[SignalNeedsInput].Agree, int64(1))
 	testutil.Equal(t, len(s.Stats(now).Open), 0)
+}
+
+func TestShadow_ExactPermissionStaysHeadline(t *testing.T) {
+	s, _ := newShadow(t)
+	s.Hub().Ingest("a", []Event{ev(TypeTurnStart, 1),
+		{Type: TypeNeedsInput, Seq: 2, Boot: "b1", Kind: KindPermission, Confidence: ConfidenceExact}}, t0)
+	s.Observe(t0, []string{"a"}, nil, nil)
+	st := s.Stats(t0)
+	testutil.Equal(t, st.Signals[SignalNeedsInput].Settling, int64(1))
+	testutil.Equal(t, st.Signals[SignalIdle].Settling, int64(1))
+	testutil.Equal(t, st.Signals[SignalNeedsInputPermission], Counters{})
 }
 
 func TestShadow_QuestionKindStaysHeadline(t *testing.T) {

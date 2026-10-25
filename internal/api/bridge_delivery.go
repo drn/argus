@@ -24,6 +24,8 @@ func (s *Server) bridgeDeliveryRoute(id string) notify.BridgeRoute {
 	if !s.db.Config().Bridge.Delivery {
 		return notify.BridgeRoute{}
 	}
+	// Delivery writes into the session: raw pending permission must block even
+	// when display corroboration suppresses it.
 	st, live := s.bridgeState(id, time.Now())
 	return notify.BridgeRoute{Live: live, Idle: !st.Busy, NeedsInput: st.NeedsInput, Generation: st.Generation, Boot: st.Boot, Session: st.SessionID}
 }

@@ -4,12 +4,12 @@
 
 For live Claude bridges, the daemon and daemon-connected TUI SHALL use bridge turn and dialog state for idle, needs-input, notifications, task list and Hera spinner gates. Quiescent idle SHALL mean not busy or awaiting input. Scraper sustained-active, settling and escalation behavior SHALL remain intact for non-Claude, stale or missing bridges and the in-process runner. The comparator SHALL continue comparing raw scraper verdicts against live bridge state.
 
-Permission-kind pending calls SHALL use scraper fallback because their bridge interval includes execution after approval; only question/plan dialogs SHALL be authoritative without corroboration. Subagent dialogs SHALL count as needs-input without changing main-loop busy state.
+Only uncertain permission needs-input SHALL require raw scraper corroboration because its bridge interval includes execution after approval. Live bridge busy state SHALL remain authoritative throughout; exact permission, question and plan dialogs SHALL be authoritative without corroboration. Subagent dialogs SHALL count as needs-input without changing main-loop busy state.
 
 #### Scenario: Permission approved while tool still runs
 
 - **WHEN** a permission-kind call remains pending after approval
-- **THEN** the scraper determines its idle and needs-input state until the call clears
+- **THEN** bridge busy remains authoritative and only uncertain permission needs-input is ANDed with raw scraper needs-input until the call clears
 
 #### Scenario: Answered dialog remains in the terminal tail
 

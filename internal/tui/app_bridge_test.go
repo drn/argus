@@ -27,6 +27,19 @@ func TestRefreshTasksBridgeAuthority(t *testing.T) {
 	testutil.Equal(t, len(a.needsInputIDs), 0)
 	testutil.False(t, a.tasklist.IdleSet()[task.ID])
 	testutil.DeepEqual(t, a.sustainedActiveIDs, []string{task.ID})
+	// The daemon already corroborates uncertain permission input. An idle raw
+	// runner must not override bridge busy, and a corroborated dialog must show.
+	a.bridgeStates[task.ID] = bridge.State{Busy: true, NeedsInputKind: bridge.KindPermission, NeedsInputConfidence: bridge.ConfidencePendingOrRunning}
+	a.refreshTasksWithIDs([]string{task.ID}, []string{task.ID}, false)
+	testutil.Equal(t, len(a.needsInputIDs), 0)
+	testutil.False(t, a.tasklist.IdleSet()[task.ID])
+	testutil.DeepEqual(t, a.sustainedActiveIDs, []string{task.ID})
+	st := a.bridgeStates[task.ID]
+	st.NeedsInput = true
+	a.bridgeStates[task.ID] = st
+	a.refreshTasksWithIDs([]string{task.ID}, nil, false)
+	testutil.DeepEqual(t, a.needsInputIDs, []string{task.ID})
+	testutil.True(t, a.tasklist.IdleSet()[task.ID])
 	// Disabling the existing master switch must discard even a cached dialog
 	// report and restore scraper verdicts, without sticky bridge contamination.
 	a.bridgeStates[task.ID] = bridge.State{Busy: true, NeedsInput: true}

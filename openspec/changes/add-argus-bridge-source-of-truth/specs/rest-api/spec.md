@@ -2,7 +2,7 @@
 
 ### Requirement: Batched bridge authority snapshot
 
-The authenticated GET /api/bridge/states endpoint SHALL return a task-id-keyed map of currently live, launch-matched Claude bridge states. Local daemon RPC and remote TUI SHALL read the same snapshot semantics. Existing task, Hera and status endpoints SHALL use authoritative idle and needs-input verdicts, preserving scraper fallback for permission intervals.
+The authenticated GET /api/bridge/states endpoint SHALL return a task-id-keyed map of currently live, launch-matched Claude bridge states with uncertain permission needs-input corroborated against raw scraper input. Local daemon RPC and remote TUI SHALL read the same snapshot semantics. Existing task, Hera and status endpoints SHALL use these same resolved verdicts while preserving live bridge busy authority throughout permission intervals.
 
 #### Scenario: Remote TUI reads bridge state
 

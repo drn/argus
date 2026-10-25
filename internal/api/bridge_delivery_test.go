@@ -47,6 +47,26 @@ func TestBridgeDeliveryEndpoints(t *testing.T) {
 	}
 }
 
+func TestBridgeDeliveryBlocksRawUncertainPermission(t *testing.T) {
+	for _, confidence := range []string{bridge.ConfidencePendingOrRunning, ""} {
+		t.Run("confidence="+confidence, func(t *testing.T) {
+			s, _, task := bridgeAuthorityServer(t)
+			now := time.Now()
+			busy, needs := false, true
+			s.bridgeHub.Ingest(task.ID, []bridge.Event{{Type: bridge.TypeHeartbeat, Generation: "launch", SessionID: "session", Boot: "b", Seq: 1, Busy: &busy, NeedsInput: &needs, Kind: bridge.KindPermission, Confidence: confidence}}, now)
+			// No raw scraper input: display clears input, but delivery must not.
+			testutil.False(t, s.BridgeStates()[task.ID].NeedsInput)
+			route := s.bridgeDeliveryRoute(task.ID)
+			testutil.True(t, route.Live)
+			testutil.True(t, route.Idle)
+			testutil.True(t, route.NeedsInput)
+			s.SetNotifier(notify.New(notify.AdaptRunner(func(string) notify.SessionHandleIface { return nil }), notify.NewFocusTracker(nil)))
+			s.notifier.ReliableNotify(task.ID, "notice", "hera:raw-permission", notify.NotifyOpts{})
+			testutil.Nil(t, s.notifier.ClaimBridge(task.ID, "launch", "b", now))
+		})
+	}
+}
+
 func TestScanBridgeEvidence(t *testing.T) {
 	expires := time.Date(2026, 10, 24, 22, 0, 0, 0, time.UTC)
 	c := notify.BridgeClaim{DeliveryID: "hera:1", Expires: expires}
@@ -119,7 +139,7 @@ func TestBridgeBudgetEndpoint(t *testing.T) {
 }
 
 func TestBridgeDeliveryEvidenceFromTranscript(t *testing.T) {
-	for _, name := range []string{"submitted", "settled absent", "restarted absent", "live queued", "unreadable"} {
+	for _, name := range []string{"submitted", "settled absent", "restarted absent", "live queued", "uncertain permission", "unreadable"} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			s, runner, task := bridgeAuthorityServer(t)
@@ -134,7 +154,13 @@ func TestBridgeDeliveryEvidenceFromTranscript(t *testing.T) {
 				runner.session.generation = generation
 				busy = true
 			}
-			s.bridgeHub.Ingest(task.ID, []bridge.Event{{Type: bridge.TypeHeartbeat, Generation: generation, SessionID: "session", Boot: "b", Seq: 1, Busy: &busy}}, now)
+			needs := name == "uncertain permission"
+			s.bridgeHub.Ingest(task.ID, []bridge.Event{{Type: bridge.TypeHeartbeat, Generation: generation, SessionID: "session", Boot: "b", Seq: 1, Busy: &busy, NeedsInput: &needs, Kind: bridge.KindPermission, Confidence: bridge.ConfidencePendingOrRunning}}, now)
+			if needs {
+				testutil.False(t, s.BridgeStates()[task.ID].NeedsInput)
+				st, live := s.bridgeState(task.ID, now)
+				testutil.False(t, bridgeSettledAfterClaim(st, live, c))
+			}
 			project, err := claudesession.ProjectDir(task.Worktree)
 			testutil.NoError(t, err)
 			testutil.NoError(t, os.MkdirAll(project, 0700))

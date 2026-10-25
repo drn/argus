@@ -572,18 +572,20 @@ func (s *Server) idleWatcherTick(state *idleWatcherState) {
 	for id, value := range idleSet {
 		scraperIdle[id] = value
 	}
+	// Resolve input from this tick's raw inference before idle events/pushes.
+	// Feeding the published runner verdict back here would latch exact dialogs.
+	s.detectNeedsInputTick(state, running, idle, tailOf)
 	if state.bridgeSource == nil {
 		state.bridgeSource = make(map[string]bool)
 	}
 	for _, id := range running {
 		st, live := s.bridgeState(id, now)
-		live = live && bridge.Authoritative(st)
 		if state.bridgeSource[id] != live {
 			bridgeSourceLog(id, live)
 		}
 		state.bridgeSource[id] = live
 		if live {
-			idleSet[id] = !st.Busy || st.NeedsInput
+			idleSet[id] = bridge.Quiescent(bridge.Resolve(st, state.scraperNeeds[id]))
 		}
 	}
 
@@ -641,7 +643,6 @@ func (s *Server) idleWatcherTick(state *idleWatcherState) {
 		s.push.Notify("", name, body, id)
 	}
 
-	s.detectNeedsInputTick(state, running, idle, tailOf)
 	// Shadow-compare the FINAL scraper verdicts (idle incl. the content-idle
 	// fold-in, needs-input as just published) against the bridge mod's reported
 	// state. Observation only; changes nothing above or below.
@@ -736,9 +737,12 @@ func (s *Server) detectNeedsInputTick(state *idleWatcherState, running, idle []s
 	for id, value := range needsSet {
 		state.scraperNeeds[id] = value
 	}
+	s.bridgeScraperMu.Lock()
+	s.bridgeScraperNeeds = state.scraperNeeds
+	s.bridgeScraperMu.Unlock()
 	for _, id := range running {
-		if st, live := s.bridgeState(id, time.Now()); live && bridge.Authoritative(st) {
-			needsSet[id] = st.NeedsInput && !archived[id]
+		if st, live := s.bridgeState(id, time.Now()); live {
+			needsSet[id] = bridge.Resolve(st, state.scraperNeeds[id]).NeedsInput && !archived[id]
 		}
 	}
 	needs = needs[:0]

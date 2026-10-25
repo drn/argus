@@ -17,9 +17,8 @@ const (
 	SignalIdle       Signal = "idle"
 	SignalNeedsInput Signal = "needs_input"
 	// SignalNeedsInputPermission holds the needs-input ticks where the bridge
-	// reports a permission-kind dialog. That kind can span the tool's execution
-	// after approval (pending-or-running), so its disagreements are reported
-	// apart and never pollute the headline needs_input numbers.
+	// reports an uncertain permission. It compares the raw report so diagnostic
+	// disagreements remain visible; exact permissions use the headline signal.
 	SignalNeedsInputPermission Signal = "needs_input_permission"
 )
 
@@ -126,16 +125,19 @@ func (s *Shadow) Observe(now time.Time, running []string, idle, needs map[string
 			s.noBridge(id)
 			continue
 		}
-		s.compare(now, id, SignalIdle, idle[id], !st.Busy || st.NeedsInput)
-		// Needs-input counts under the headline signal unless the bridge holds a
-		// permission-kind dialog; the other variant's open disagreement (the kind
-		// just flipped) is dropped so it cannot linger unresolved.
+		resolved := Resolve(st, needs[id])
+		s.compare(now, id, SignalIdle, idle[id], Quiescent(resolved))
+		// Keep uncertain permission observations apart; exact permissions belong
+		// in the headline signal. Drop the other variant's open disagreement.
 		sig, other := SignalNeedsInput, SignalNeedsInputPermission
-		if st.NeedsInput && st.NeedsInputKind == KindPermission {
+		input := resolved.NeedsInput
+		if st.NeedsInput && UncertainPermission(st) {
 			sig, other = SignalNeedsInputPermission, SignalNeedsInput
+			// Comparing resolved input here would compare the scraper to itself.
+			input = st.NeedsInput
 		}
 		delete(s.open, openKey{id, other})
-		s.compare(now, id, sig, needs[id], st.NeedsInput)
+		s.compare(now, id, sig, needs[id], input)
 	}
 	// A task that left the running set takes its open disagreements with it.
 	for k := range s.open {
