@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -123,6 +124,7 @@ type Daemon struct {
 	db                 *db.DB
 	listener           net.Listener
 	done               chan struct{}
+	shutdownOnce       sync.Once     // closes done exactly once across concurrent Shutdown callers
 	ready              chan struct{} // closed when Serve has set listener (or failed)
 	sockPath           string        // set by Serve, used by cleanup
 	pidPath            string        // set by Serve, used by cleanup
@@ -1607,11 +1609,16 @@ func (d *Daemon) handleConn(conn net.Conn, server *rpc.Server) {
 // file removal) happens in Serve's exit path on the main goroutine — this
 // ensures cleanup completes before the process exits.
 func (d *Daemon) Shutdown() {
-	select {
-	case <-d.done:
-		return // already shutting down
-	default:
+	// A select-then-close lets two concurrent callers (the Shutdown RPC and a
+	// signal or test cleanup) both see done open and both close it, panicking
+	// with "close of closed channel".
+	first := false
+	d.shutdownOnce.Do(func() {
 		close(d.done)
+		first = true
+	})
+	if !first {
+		return // already shutting down
 	}
 
 	// Wait for Serve to have set the listener (or failed to start).
