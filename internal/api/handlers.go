@@ -17,6 +17,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/app/agentview"
+	"github.com/drn/argus/internal/bridge"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/events"
@@ -50,6 +51,7 @@ type taskCounts struct {
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	running, idle := s.runner.RunningAndIdle()
+	idle = bridge.Override(idle, s.BridgeStates(), bridge.Quiescent)
 
 	tasks, err := s.db.Tasks()
 	if err != nil {
@@ -187,6 +189,13 @@ func (s *Server) sessionStateMaps() (runningSet, idleSet, needsInputSet map[stri
 	needsInputSet = make(map[string]bool, len(needs))
 	for _, id := range needs {
 		needsInputSet[id] = true
+	}
+	for id, st := range s.BridgeStates() {
+		if !bridge.Authoritative(st) {
+			continue
+		}
+		idleSet[id] = !st.Busy || st.NeedsInput
+		needsInputSet[id] = st.NeedsInput
 	}
 	return runningSet, idleSet, needsInputSet
 }

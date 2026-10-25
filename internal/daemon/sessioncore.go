@@ -221,6 +221,7 @@ func (c *sessionCore) SessionStatus(req *TaskIDReq, resp *SessionInfo) error {
 	resp.Rows = rows
 	resp.InitialCols = initCols
 	resp.InitialRows = initRows
+	resp.BridgeGeneration = agent.SessionBridgeGeneration(sess)
 	resp.WorkDir = sess.WorkDir()
 	resp.TotalWritten = sess.TotalWritten()
 	return nil
@@ -254,16 +255,17 @@ func (c *sessionCore) ListSessions(_ *Empty, resp *ListResp) error {
 		cols, rows := sess.PTYSize()
 		initCols, initRows := sess.InitialPTYSize()
 		resp.Sessions = append(resp.Sessions, SessionInfo{
-			TaskID:       id,
-			Alive:        sess.Alive(),
-			Idle:         sess.IsIdle(),
-			PID:          sess.PID(),
-			Cols:         cols,
-			Rows:         rows,
-			InitialCols:  initCols,
-			InitialRows:  initRows,
-			WorkDir:      sess.WorkDir(),
-			TotalWritten: sess.TotalWritten(),
+			BridgeGeneration: agent.SessionBridgeGeneration(sess),
+			TaskID:           id,
+			Alive:            sess.Alive(),
+			Idle:             sess.IsIdle(),
+			PID:              sess.PID(),
+			Cols:             cols,
+			Rows:             rows,
+			InitialCols:      initCols,
+			InitialRows:      initRows,
+			WorkDir:          sess.WorkDir(),
+			TotalWritten:     sess.TotalWritten(),
 		})
 	}
 	// Synthetic entries for the kick-restart gap. Mirrors SessionStatus's

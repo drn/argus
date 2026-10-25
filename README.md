@@ -512,7 +512,7 @@ A Claude Code **mod** shipped inside Argus (`internal/bridgemod/mod/argus-bridge
 
 It reports `session.start` (session id, model, cwd — re-sent after `/clear` or a model change), `turn.start` / `turn.complete` (busy/idle), `needs_input` / `cleared` (AskUserQuestion/ExitPlanMode are `exact`; permission asks still pending after a short grace are `pending-or-running`; subagent dialogs included), `session.measure` (context, cost, plan rate limits) and a 15s heartbeat.
 
-**Phase 1 is shadow mode:** the daemon compares its screen-reading idle and needs-input verdicts against the bridge every watcher tick, logs disagreements that persist past a 10s settle window (`[bridge]` lines in `ux.log`/`daemon.log`) and counts agree/disagree/settling/no-bridge per signal at `GET /api/bridge/shadow`. Nothing consumes the bridge yet; disable with `[bridge] enabled = false`.
+**Phase 2 uses the bridge as truth:** a report is live for 45s only when its launch generation matches the currently running Claude process. Daemon, TUI, web and macOS use its idle and question/plan state; permission intervals, stale/missing bridges, other backends and the in-process TUI keep scraping. Source transitions log `[bridge] source`; the scraper comparison remains at `GET /api/bridge/shadow`. Measurements supply context and cumulative cost, and fresh account-matched weekly rate limits precede the default-account hidden probe. Named accounts without a fresh bridge reading stay unknown. Disable with `[bridge] enabled = false`.
 
 ### Diagnosing binary skew (`argus doctor`)
 
@@ -819,8 +819,9 @@ Every authenticated token has the same permissions **except** a small master-onl
 | ------ | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET`  | `/api/tasks/{id}/output` | Recent output (text). Optional `?bytes=`, `?clean=1`                                                                                                                                                                                                                                                                        |
 | `GET`  | `/api/tasks/{id}/links`  | Extract http/https URLs from terminal output. Returns `{"links":[{"label","url"}]}`. Powers the PWA's "Open link" overflow item.                                                                                                                                                                                            |
-| `POST` | `/api/tasks/{id}/bridge/events` | Ingest a batch of [argus-bridge](#argus-bridge) mod events: `{"events":[{"type","seq","boot","ts","session_id",...}]}` (types `session.start`, `turn.start`, `turn.complete`, `needs_input`, `cleared`, `session.measure`, `heartbeat`). Returns `{accepted,received}`; duplicates and unknown types are dropped. Report-only: never touches the session. |
+| `POST` | `/api/tasks/{id}/bridge/events` | Ingest [argus-bridge](#argus-bridge) events with `type`, `seq`, `boot`, `ts`, `session_id` and `generation`. Returns `{accepted,received}`; duplicates, retired boots and superseded launches are dropped. Live measurements update context and cumulative cost. Heartbeats include busy/dialog snapshots for daemon recovery. |
 | `GET`  | `/api/tasks/{id}/bridge` | The task's latest bridge-reported state (busy, needs-input, session id, model, context/cost/rate limits, `live`); 404 until the mod has reported. |
+| `GET`  | `/api/bridge/states` | Task-id-keyed live bridge snapshot, matched to running Claude launch generations. Used by the remote TUI; an empty object means scraper fallback. Local TUI uses the equivalent `Daemon.BridgeStates` RPC. |
 | `GET`  | `/api/bridge/shadow`     | Shadow-mode counters comparing screen-reading verdicts with the bridge, per signal (`idle`, `needs_input`, and `needs_input_permission` kept apart because a permission ask can span the tool's execution): `agree`, `disagree`, `settling`, `no_bridge`, plus the settle window and open disagreements. |
 | `POST` | `/api/tasks/{id}/input`  | Send raw bytes to PTY stdin                                                                                                                                                                                                                                                                                                 |
 | `POST` | `/api/tasks/{id}/upload` | Upload files mid-session. `multipart/form-data` with `files` parts; saved to `<worktree>/.context/<name>` (auto-suffixed on collision) and returns `{paths:[]}`. Same 10MB/50MB/20-file caps as create.                                                                                                                     |
@@ -1021,7 +1022,7 @@ Argus adds `--auto` when launching OpenCode, including resumed sessions and stor
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `true` | Load the [argus-bridge](#argus-bridge) mod into every Claude session Argus launches (`--plugin-dir`) and record the daemon's shadow comparison. Phase 1 is report-only, so `true` changes no behavior; `false` is the rollback. |
+| `enabled` | bool | `true` | Load the [argus-bridge](#argus-bridge) mod into Claude sessions, use current live reports for session state and measurements, and retain scraper comparisons. `false` restores scraper authority and default-account probing. |
 
 #### `[backend_routing]`
 

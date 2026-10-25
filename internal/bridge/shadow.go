@@ -111,7 +111,7 @@ func (s *Shadow) Hub() *Hub { return s.hub }
 // and needs are the scraper's FINAL verdict sets for that tick. Idle is
 // compared as "screen quiescent": a bridge that is not busy, or is waiting on a
 // dialog (the screen is parked there too), counts as idle.
-func (s *Shadow) Observe(now time.Time, running []string, idle, needs map[string]bool) {
+func (s *Shadow) Observe(now time.Time, running []string, idle, needs map[string]bool, lookups ...func(string, time.Time) (State, bool)) {
 	s.hub.Prune(now)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -119,6 +119,9 @@ func (s *Shadow) Observe(now time.Time, running []string, idle, needs map[string
 	for _, id := range running {
 		runningSet[id] = true
 		st, live := s.hub.Live(id, now)
+		if len(lookups) > 0 {
+			st, live = lookups[0](id, now)
+		}
 		if !live {
 			s.noBridge(id)
 			continue

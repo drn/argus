@@ -142,9 +142,10 @@ type Server struct {
 
 	// bridgeHub / bridgeShadow hold the argus-bridge mod's per-task reported
 	// state and the shadow comparison of it against screen-reading verdicts
-	// (phase 1: observation only). Always non-nil (built in New).
-	bridgeHub    *bridge.Hub
-	bridgeShadow *bridge.Shadow
+	// and authoritative state for current live Claude launches. Always non-nil.
+	bridgeHub      *bridge.Hub
+	bridgeIngestMu sync.Mutex
+	bridgeShadow   *bridge.Shadow
 
 	// heraBG tracks in-flight Hera nuke tails (session stops + reclaim sweep).
 	heraBG sync.WaitGroup

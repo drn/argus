@@ -120,20 +120,21 @@ func (e ExitInfo) CleanExit() bool {
 // mutex, exactly as before the extraction.
 type Daemon struct {
 	*sessionCore
-	db        *db.DB
-	listener  net.Listener
-	done      chan struct{}
-	ready     chan struct{}        // closed when Serve has set listener (or failed)
-	sockPath  string               // set by Serve, used by cleanup
-	pidPath   string               // set by Serve, used by cleanup
-	lockFile  *os.File             // singleton flock held for the daemon's lifetime
-	mcpPort   int                  // actual MCP HTTP port in use (set after listen)
-	apiPort   int                  // actual REST API HTTP port in use (set after listen)
-	mcpServer *mcp.Server          // set when KB is enabled, shut down in cleanup
-	kbIndexer *kb.Indexer          // set when KB is enabled, stopped in cleanup
-	apiServer *api.Server          // set when API is enabled, shut down in cleanup
-	scheduler *scheduler.Scheduler // recurring scheduled-task firer; always started
-	heraGater *heragater.Watcher   // hera plan-DAG gater; started when hera enabled
+	db                 *db.DB
+	listener           net.Listener
+	done               chan struct{}
+	ready              chan struct{} // closed when Serve has set listener (or failed)
+	sockPath           string        // set by Serve, used by cleanup
+	pidPath            string        // set by Serve, used by cleanup
+	lockFile           *os.File      // singleton flock held for the daemon's lifetime
+	mcpPort            int           // actual MCP HTTP port in use (set after listen)
+	apiPort            int           // actual REST API HTTP port in use (set after listen)
+	mcpServer          *mcp.Server   // set when KB is enabled, shut down in cleanup
+	kbIndexer          *kb.Indexer   // set when KB is enabled, stopped in cleanup
+	apiServer          *api.Server   // set when API is enabled, shut down in cleanup
+	restoreBridgeUsage func()
+	scheduler          *scheduler.Scheduler // recurring scheduled-task firer; always started
+	heraGater          *heragater.Watcher   // hera plan-DAG gater; started when hera enabled
 	// heraRecycleWatcher drives the self-service recycle_coord path
 	// (add-coordinator-context-management D5): started when hera enabled,
 	// polls for coordinators with a pending recycle request and restarts
@@ -1502,6 +1503,7 @@ func (d *Daemon) Serve(sockPath string) error {
 			apiSrv.SetNotifier(d.notifier)
 			apiSrv.SetFocusTracker(d.focusTracker)
 			d.apiServer = apiSrv
+			d.restoreBridgeUsage = usagebudget.SetBridgeReader(apiSrv.BridgeUsage)
 			// Wire the events.Sink to the API server's event bus so emission
 			// sites (db, orch, runner, this file) feed /api/events/stream.
 			// Cleared on daemon shutdown so a torn-down apiSrv can't be
@@ -1666,6 +1668,9 @@ func (d *Daemon) cleanup() {
 
 	// Shut down the API HTTP server if running.
 	if d.apiServer != nil {
+		if d.restoreBridgeUsage != nil {
+			d.restoreBridgeUsage()
+		}
 		// Detach the events sink first so emission sites racing with
 		// shutdown (e.g. db.Update from the post-exit transition) don't
 		// hit a closed event bus.

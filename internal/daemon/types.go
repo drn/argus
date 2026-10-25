@@ -269,16 +269,17 @@ type StatusResp struct {
 
 // SessionInfo describes the state of a running session.
 type SessionInfo struct {
-	TaskID       string
-	Alive        bool
-	Idle         bool
-	PID          int
-	Cols         int
-	Rows         int
-	InitialCols  int // PTY width at session start; immutable
-	InitialRows  int // PTY height at session start; immutable
-	WorkDir      string
-	TotalWritten uint64
+	BridgeGeneration string
+	TaskID           string
+	Alive            bool
+	Idle             bool
+	PID              int
+	Cols             int
+	Rows             int
+	InitialCols      int // PTY width at session start; immutable
+	InitialRows      int // PTY height at session start; immutable
+	WorkDir          string
+	TotalWritten     uint64
 }
 
 // WriteReq is the RPC request to send input to a session's PTY.

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/backendtier"
+	"github.com/drn/argus/internal/bridge"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/kb"
@@ -24,6 +25,16 @@ import (
 type RPCService struct {
 	*sessionCore
 	daemon *Daemon
+}
+
+// BridgeStates returns only current live bridge reports; missing API means
+// no authority and keeps in-process/older-client scraping intact.
+func (s *RPCService) BridgeStates(_ *Empty, resp *map[string]bridge.State) error {
+	*resp = make(map[string]bridge.State)
+	if s.daemon.apiServer != nil {
+		*resp = s.daemon.apiServer.BridgeStates()
+	}
+	return nil
 }
 
 // logRPCErr logs an RPC handler error under the given method name and returns

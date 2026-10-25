@@ -13,6 +13,7 @@ export type WireEvent = {
 }
 
 export interface Env {
+	launchGeneration?(): Promise<string | undefined>
   /** ARGUS_TASK_ID; undefined outside an argus task. */
   taskId(): Promise<string | undefined>
   home(): Promise<string | undefined>
@@ -35,6 +36,7 @@ export class Reporter {
   private seq = 0
   private queue: WireEvent[] = []
   private inflight: Promise<void> | undefined
+	private enqueue: Promise<void> = Promise.resolve()
   /** The last drain stopped on a retryable failure; do not re-kick until the next emit/heartbeat. */
   private stalled = false
   private token: string | undefined
@@ -71,6 +73,12 @@ export class Reporter {
    * every turn and dialog by the post timeout, and blow a hook's budget.
    */
   async emit(type: string, fields: Record<string, unknown> = {}): Promise<void> {
+	const session = this.lastSession
+	this.enqueue = this.enqueue.then(() => this.enqueueEvent(type, fields, session)).catch(() => undefined)
+	return this.enqueue
+	}
+
+	private async enqueueEvent(type: string, fields: Record<string, unknown>, session: string | undefined): Promise<void> {
     try {
       if (!(await this.taskId())) return
       const ev: WireEvent = {
@@ -78,7 +86,8 @@ export class Reporter {
         seq: ++this.seq,
         boot: this.boot,
         ts: await this.env.now(),
-        ...(this.lastSession ? { session_id: this.lastSession } : {}),
+		generation: await this.env.launchGeneration?.(),
+        ...(session ? { session_id: session } : {}),
         ...fields,
       }
       this.queue.push(ev)

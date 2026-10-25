@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/bridge"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/model"
@@ -23,6 +24,13 @@ import (
 // Prevents the TUI from hanging indefinitely if the daemon crashes.
 // 2s is generous for a local Unix socket; anything slower indicates real trouble.
 const rpcTimeout = 2 * time.Second
+
+// BridgeStates reads the daemon's authority snapshot, never the PTY.
+func (c *Client) BridgeStates() (map[string]bridge.State, error) {
+	var states map[string]bridge.State
+	err := c.call("Daemon.BridgeStates", &daemon.Empty{}, &states)
+	return states, err
+}
 
 // piStartTimeout is the Pi family's Start budget; kept as a named alias for
 // the tests that pin it.

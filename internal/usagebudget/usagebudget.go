@@ -139,6 +139,10 @@ func logWarn(format string, args ...any) {
 // renders (or on timeout / a blocking dialog). Failures are logged and leave
 // the existing cache untouched; the returned error is always nil.
 func Probe(ctx context.Context) error {
+	if _, ok := bridgeReading(""); ok {
+		logInfo("[usagebudget] fresh bridge measurement; hidden probe skipped")
+		return nil
+	}
 	if err := ctx.Err(); err != nil {
 		return nil
 	}
@@ -346,6 +350,9 @@ func answerTrustDialog(ctx context.Context, sess usageSession) error {
 // triggers a live probe, so it is safe to call synchronously from
 // internal/backendtier's tier-list resolver.
 func CachedClaudePct() (float64, bool) {
+	if reading, ok := bridgeReading(""); ok {
+		return reading.Percentage, true
+	}
 	reading, ok := snapshot()
 	if !ok {
 		return 0, false
@@ -359,6 +366,9 @@ func CachedClaudePct() (float64, bool) {
 // percentage (e.g. the daemon's BootInfo relay, surfaced in the TUI status
 // bar). Never triggers a live probe.
 func CachedReading() (Reading, bool) {
+	if reading, ok := bridgeReading(""); ok {
+		return reading, true
+	}
 	return snapshot()
 }
 

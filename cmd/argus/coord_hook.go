@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/drn/argus/internal/bridge"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/db"
@@ -59,8 +60,9 @@ type coordHookEnv struct {
 	// previously-stamped value and skip its retry loop when the fresh scan
 	// already reflects it (fix-context-stop-lag's early exit) — see
 	// readContextSizeReal.
-	ReadContextSize  func(taskID, transcriptPath string) (int, error)
-	StampContextSize func(taskID string, size int) error
+	ReadContextSize   func(taskID, transcriptPath string) (int, error)
+	BridgeMeasurement func(taskID string) (size int, contextKnown bool, costKnown bool)
+	StampContextSize  func(taskID string, size int) error
 	// ReadTokenTotals scans transcriptPath for the five running per-rate-class
 	// token totals (add-coordinator-cost-estimate) — a pure, taskID-free scan,
 	// unlike ReadContextSize which needs taskID for its early-exit freshness
@@ -149,7 +151,14 @@ func runCoordHook(stdin io.Reader, out, errOut io.Writer, env coordHookEnv) {
 		return
 	}
 
-	size, err := env.ReadContextSize(taskID, in.TranscriptPath)
+	var size int
+	var contextKnown, costKnown bool
+	if env.BridgeMeasurement != nil {
+		size, contextKnown, costKnown = env.BridgeMeasurement(taskID)
+	}
+	if !contextKnown {
+		size, err = env.ReadContextSize(taskID, in.TranscriptPath)
+	}
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "coord-hook: read context size: %v\n", err)
 		return
@@ -158,19 +167,23 @@ func runCoordHook(stdin io.Reader, out, errOut io.Writer, env coordHookEnv) {
 	// Always stamp, regardless of kind or budget — this is the live signal a
 	// human, the rail's context-pressure indicator, or the recycle mechanism
 	// reads, with zero dependency on the session's cooperation.
-	if err := env.StampContextSize(taskID, size); err != nil {
-		_, _ = fmt.Fprintf(errOut, "coord-hook: stamp context size: %v\n", err)
+	if !contextKnown {
+		if err := env.StampContextSize(taskID, size); err != nil {
+			_, _ = fmt.Fprintf(errOut, "coord-hook: stamp context size: %v\n", err)
+		}
 	}
 
 	// Token-usage accrual (add-coordinator-cost-estimate): same unconditional
 	// scope as the context_size stamp above — every hera-bound role kind,
 	// regardless of budget — best-effort and non-fatal, since this is cost
 	// telemetry, not the hook's primary budget/nudge responsibility.
-	totals, err := env.ReadTokenTotals(in.TranscriptPath)
-	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "coord-hook: read token totals: %v\n", err)
-	} else if err := env.StampTokenAccrual(taskID, totals); err != nil {
-		_, _ = fmt.Fprintf(errOut, "coord-hook: stamp token accrual: %v\n", err)
+	if !costKnown {
+		totals, err := env.ReadTokenTotals(in.TranscriptPath)
+		if err != nil {
+			_, _ = fmt.Fprintf(errOut, "coord-hook: read token totals: %v\n", err)
+		} else if err := env.StampTokenAccrual(taskID, totals); err != nil {
+			_, _ = fmt.Fprintf(errOut, "coord-hook: stamp token accrual: %v\n", err)
+		}
 	}
 
 	// Budget/nudge/hard-stop/recycle enforcement is coordinator-only: a
@@ -294,6 +307,7 @@ func realCoordHookEnv() coordHookEnv {
 		ResolveRoleKind:            resolveRoleKindReal,
 		PendingRecycleAlready:      pendingRecycleAlreadyReal,
 		ReadContextSize:            readContextSizeReal,
+		BridgeMeasurement:          bridgeMeasurementReal,
 		StampContextSize:           stampContextSizeReal,
 		ReadTokenTotals:            scanTokenTotals,
 		StampTokenAccrual:          stampTokenAccrualReal,
@@ -504,6 +518,24 @@ func stampContextSizeReal(taskID string, size int) error {
 	}
 	_, err = coordHookRequest(http.MethodPut, "/api/tasks/"+taskID+"/meta", bytes.NewReader(payload))
 	return err
+}
+
+func bridgeMeasurementReal(taskID string) (int, bool, bool) {
+	body, err := coordHookRequest(http.MethodGet, "/api/tasks/"+taskID+"/bridge", nil)
+	if err != nil {
+		return 0, false, false
+	}
+	var report struct {
+		bridge.State
+		Live bool `json:"live"`
+	}
+	if json.Unmarshal(body, &report) != nil || !report.Live || report.LastMeasureAt.IsZero() || time.Since(report.LastMeasureAt) >= bridge.LiveWindow {
+		return 0, false, false
+	}
+	if report.Context != nil && report.Context.Tokens != nil {
+		return int(*report.Context.Tokens), true, report.CostUSD != nil
+	}
+	return 0, false, report.CostUSD != nil
 }
 
 // heraTokensPutBody mirrors internal/api/hera_cost.go's heraTokensPutReq —

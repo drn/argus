@@ -1,7 +1,16 @@
 # Argus bridge (Claude Code mod + shadow comparator)
 
 Non-obvious invariants for `internal/bridgemod` (the embedded mod), `internal/bridge` (daemon
-state + comparator) and the `internal/api` bridge endpoints. Phase 1 is report-only.
+state + comparator) and the `internal/api` bridge endpoints.
+
+## Source of truth
+
+- **A transcript id is not a process identity.** BuildCmd exports a new `ARGUS_BRIDGE_GENERATION` per launch; the mod echoes it, and supervisor SessionInfo relays it. Resume can reuse a transcript id; recycle/rerender/restart must stay scraper-sourced until that launch's mod reports. A failed generation RPC returns empty, never the cached old generation.
+- **A heartbeat must reconstruct busy and dialog state after a daemon bounce.** Event freshness alone cannot make an empty Hub's default `busy=false` authoritative while an existing turn is running; heartbeat snapshots carry busy, needs-input, kind and confidence. Retired boot ids cannot regain authority through late buffered posts.
+- **Permission intervals are live but not authoritative for idle/needs-input.** Approval has no separate engine event, so `tool.call` remains pending during execution; use scraper fallback for those verdicts while still allowing the live session's measurements. Question/plan dialogs remain exact, including subagent dialogs.
+- **Cost source handoffs baseline without charging.** The first transcript after bridge reporting saves its raw token offset, and the first bridge report after transcript accounting saves its cumulative USD offset. The source, offset and accrued cost are persisted atomically on binding-owned state; a transition turn may be undercounted, never charged twice. `/clear`/lower cumulative counters start new epochs; hot reload with unchanged cumulative cost does not.
+- **Rate-limit freshness is measurement freshness, not heartbeat freshness, and accounts never borrow readings.** Named accounts with no usable live bridge remain unknown; per-account headless probes are a named follow-up. The existing hidden probe measures only the default account.
+- **The TUI snapshot is fetched off the UI thread.** Local RPC and remote REST snapshots override final task/Hera sets after scraper computation, retaining fallback state machines. Web/macOS read the same verdicts through task/Hera/status responses and existing events; the in-process runner keeps scraping.
 
 ## The mod
 

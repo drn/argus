@@ -40,6 +40,16 @@ test('inert without a task id: nothing is built, read or posted', async () => {
   expect(r.pending).toBe(0)
 })
 
+test('concurrent hooks enqueue in order even when metadata awaits resolve out of order', async () => {
+ const f=fakeEnv()
+ let reads=0
+ f.env.now=async()=>{if(++reads===1){await Promise.resolve();await Promise.resolve();await Promise.resolve()}return 1234}
+ const r=new Reporter(f.env,'b')
+ await Promise.all([r.emit('turn.start'),r.emit('needs_input'),r.emit('cleared')])
+ await r.flush()
+ expect(f.calls.flatMap(c=>c.body.events).map(e=>[e.type,e.seq])).toEqual([['turn.start',1],['needs_input',2],['cleared',3]])
+})
+
 test('events carry monotonic seq, boot, ts and the session id; the url and bearer come from the files', async () => {
   const f = fakeEnv()
   const r = new Reporter(f.env, 'boot1')

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/bridge"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/events"
 	"github.com/drn/argus/internal/model"
@@ -120,6 +121,8 @@ func (s *Server) handlePushTest(w http.ResponseWriter, r *http.Request) {
 // Pulled out as a struct so idleWatcherTick can be exercised in unit tests
 // without spinning up a real ticker.
 type idleWatcherState struct {
+	bridgeSource  map[string]bool
+	scraperNeeds  map[string]bool
 	idleNow       map[string]bool      // taskID -> last seen idle?
 	seenBefore    map[string]bool      // taskID -> have we observed this session on a prior tick?
 	pushedAt      map[string]time.Time // taskID -> wall-clock time we last fired an idle push
@@ -563,6 +566,26 @@ func (s *Server) idleWatcherTick(state *idleWatcherState) {
 	for _, id := range contentIdle {
 		idleSet[id] = true
 	}
+	// Keep raw inference for shadow diagnostics, then override the final
+	// verdict before any event or push observes it.
+	scraperIdle := make(map[string]bool, len(idleSet))
+	for id, value := range idleSet {
+		scraperIdle[id] = value
+	}
+	if state.bridgeSource == nil {
+		state.bridgeSource = make(map[string]bool)
+	}
+	for _, id := range running {
+		st, live := s.bridgeState(id, now)
+		live = live && bridge.Authoritative(st)
+		if state.bridgeSource[id] != live {
+			bridgeSourceLog(id, live)
+		}
+		state.bridgeSource[id] = live
+		if live {
+			idleSet[id] = !st.Busy || st.NeedsInput
+		}
+	}
 
 	for _, id := range running {
 		seen[id] = true
@@ -622,7 +645,7 @@ func (s *Server) idleWatcherTick(state *idleWatcherState) {
 	// Shadow-compare the FINAL scraper verdicts (idle incl. the content-idle
 	// fold-in, needs-input as just published) against the bridge mod's reported
 	// state. Observation only; changes nothing above or below.
-	s.observeBridge(now, running, idleSet, state.needsInputNow)
+	s.observeBridge(now, running, scraperIdle, state.scraperNeeds)
 	lastUserInputOf := func(id string) time.Time {
 		if sess := s.runner.Get(id); sess != nil {
 			return sess.LastUserInput()
@@ -662,8 +685,12 @@ func (s *Server) idleWatcherTick(state *idleWatcherState) {
 // state's needsInputNow map is replaced wholesale each tick, so exited
 // sessions (absent from running/idle) drop out and fire a clear event.
 func (s *Server) detectNeedsInputTick(state *idleWatcherState, running, idle []string, tailOf func(string) []byte) {
-	prev := make([]string, 0, len(state.needsInputNow))
-	for id := range state.needsInputNow {
+	previousScraper := state.scraperNeeds
+	if previousScraper == nil {
+		previousScraper = state.needsInputNow
+	}
+	prev := make([]string, 0, len(previousScraper))
+	for id := range previousScraper {
 		prev = append(prev, id)
 	}
 	// lastInputOf reads the daemon-owned session's most-recent-USER-input
@@ -704,6 +731,23 @@ func (s *Server) detectNeedsInputTick(state *idleWatcherState, running, idle []s
 	needsSet := make(map[string]bool, len(needs))
 	for _, id := range needs {
 		needsSet[id] = true
+	}
+	state.scraperNeeds = make(map[string]bool, len(needsSet))
+	for id, value := range needsSet {
+		state.scraperNeeds[id] = value
+	}
+	for _, id := range running {
+		if st, live := s.bridgeState(id, time.Now()); live && bridge.Authoritative(st) {
+			needsSet[id] = st.NeedsInput && !archived[id]
+		}
+	}
+	needs = needs[:0]
+	for id, value := range needsSet {
+		if value {
+			needs = append(needs, id)
+		} else {
+			delete(needsSet, id)
+		}
 	}
 	for _, id := range needs {
 		if !state.needsInputNow[id] {

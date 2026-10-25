@@ -9,7 +9,7 @@ function world(on: On, opts: { task?: string; sessionId?: () => string; denyFetc
   const reads: string[] = []
   let fetches = 0
   const clock = mock.clock(on, { now: 1_000_000 })
-  mock.env(on, { HOME: '/h', ...(opts.task === undefined ? {} : { ARGUS_TASK_ID: opts.task }) })
+  mock.env(on, { HOME: '/h', ARGUS_BRIDGE_GENERATION: 'launch', ...(opts.task === undefined ? {} : { ARGUS_TASK_ID: opts.task }) })
   on('fs.read', (_, e) => {
     reads.push(e.path)
     return { value: e.path.endsWith('api-token') ? 'tok' : '7743' }
@@ -39,6 +39,15 @@ function world(on: On, opts: { task?: string; sessionId?: () => string; denyFetc
 
 const START = { cwd: '/work', surface: 'terminal', isInteractive: true } as const
 
+test('heartbeats reconstruct a busy session after a daemon bounce', async ($, on) => {
+ const w=world(on,{task:'T1'})
+ await $.session.start(START)
+ await $.turn.start({text:'work',turnId:'t1'})
+ await w.clock.advance(15_000)
+ await w.delivered()
+ expect(w.posted.find(e=>e.type==='heartbeat')).toMatchObject({busy:true, needs_input:false, generation:'launch'})
+})
+
 test('inert without ARGUS_TASK_ID: no reads, no posts, no fetches, no heartbeat', async ($, on) => {
   const w = world(on)
   await $.session.start(START)
@@ -59,6 +68,7 @@ test('session.start reports id, model and cwd; turns report busy then idle in or
   await w.delivered()
   expect(w.types()).toEqual(['session.start', 'turn.start', 'turn.complete'])
   expect(w.posted[0]).toMatchObject({ session_id: 'sess-1', model: 'opus', cwd: '/work' })
+	expect(w.posted[0]).toMatchObject({ generation: 'launch' })
   expect(w.posted[1]).toMatchObject({ turn_id: 't1' })
   expect(w.posted[2]).toMatchObject({ turn_id: 't1', reason: 'answer' })
   expect(w.posted.map(p => p.seq)).toEqual([1, 2, 3])
