@@ -35,10 +35,23 @@ type DefaultsJSON struct {
 
 // SettingsResp is the full /api/settings shape.
 type SettingsResp struct {
-	Sandbox  SandboxJSON     `json:"sandbox"`
-	KB       KBJSON          `json:"kb"`
-	API      APISettingsJSON `json:"api"`
-	Defaults DefaultsJSON    `json:"defaults"`
+	Bridge   BridgeSettingsJSON `json:"bridge"`
+	Sandbox  SandboxJSON        `json:"sandbox"`
+	KB       KBJSON             `json:"kb"`
+	API      APISettingsJSON    `json:"api"`
+	Defaults DefaultsJSON       `json:"defaults"`
+}
+
+// BridgeSettingsJSON mirrors the daemon's effective bridge settings.
+type BridgeSettingsJSON struct {
+	Enabled  bool `json:"enabled"`
+	Delivery bool `json:"delivery"`
+}
+
+// BridgeUpdate is a partial update; nil fields remain unchanged.
+type BridgeUpdate struct {
+	Enabled  *bool `json:"enabled,omitempty"`
+	Delivery *bool `json:"delivery,omitempty"`
 }
 
 // SandboxUpdate is the partial-update payload for the sandbox section.
@@ -70,6 +83,7 @@ type DefaultsUpdate struct {
 // SettingsUpdate is the request body for PUT /api/settings. Every section is
 // a pointer so callers can update one section without round-tripping the rest.
 type SettingsUpdate struct {
+	Bridge   *BridgeUpdate   `json:"bridge,omitempty"`
 	Sandbox  *SandboxUpdate  `json:"sandbox,omitempty"`
 	KB       *KBUpdate       `json:"kb,omitempty"`
 	API      *APIUpdate      `json:"api,omitempty"`

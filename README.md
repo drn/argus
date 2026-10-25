@@ -292,6 +292,8 @@ End-of-life has **two resting states**, and **no DB row is ever hard-deleted** �
 
 #### Settings
 
+The **Bridge** section provides **Enabled** and **Message delivery** toggles in local and remote TUI mode. Message delivery applies immediately to new deliveries and budget nudges; the master switch also controls loading the mod into new sessions. Config-file values override Settings. Web and macOS Bridge settings controls are a named follow-up.
+
 | Key                   | Action                                                   |
 | --------------------- | -------------------------------------------------------- |
 | `j` / `k`             | Navigate rows                                            |
@@ -821,6 +823,10 @@ Every authenticated token has the same permissions **except** a small master-onl
 | `GET`  | `/api/tasks/{id}/links`  | Extract http/https URLs from terminal output. Returns `{"links":[{"label","url"}]}`. Powers the PWA's "Open link" overflow item.                                                                                                                                                                                            |
 | `POST` | `/api/tasks/{id}/bridge/events` | Ingest [argus-bridge](#argus-bridge) events with `type`, `seq`, `boot`, `ts`, `session_id` and `generation`. Returns `{accepted,received}`; duplicates, retired boots and superseded launches are dropped. Live measurements update context and cumulative cost. Heartbeats include busy/dialog snapshots for daemon recovery. |
 | `GET`  | `/api/tasks/{id}/bridge` | The task's latest bridge-reported state (busy, needs-input, session id, model, context/cost/rate limits, `live`); 404 until the mod has reported. |
+| `POST` | `/api/tasks/{id}/bridge/deliveries` | Pull the active delivery using `{generation,boot}`; returns `{delivery:null}` or a fenced token, text and delivery ID. |
+| `POST` | `/api/tasks/{id}/bridge/deliveries/authorize` | Authorize one idle submission using `{generation,boot,token}`; returns `{authorized}`. Cancelled, stale or superseded claims are rejected. |
+| `POST` | `/api/tasks/{id}/bridge/deliveries/ack` | Acknowledge successful prompt submission with the claim identity/token; returns `{acked}` without marking durable inbox mail read. |
+| `POST` | `/api/tasks/{id}/bridge/budget` | Queue a coordinator's throttled nudge with `{size,text}` when bridge delivery is live; returns `{enabled}`. The Stop hook owns budget/increment/pending gates and retains legacy blocking when unavailable. |
 | `GET`  | `/api/bridge/states` | Task-id-keyed live bridge snapshot, matched to running Claude launch generations. Used by the remote TUI; an empty object means scraper fallback. Local TUI uses the equivalent `Daemon.BridgeStates` RPC. |
 | `GET`  | `/api/bridge/shadow`     | Shadow-mode counters comparing screen-reading verdicts with the bridge, per signal (`idle`, `needs_input`, and `needs_input_permission` kept apart because a permission ask can span the tool's execution): `agree`, `disagree`, `settling`, `no_bridge`, plus the settle window and open disagreements. |
 | `POST` | `/api/tasks/{id}/input`  | Send raw bytes to PTY stdin                                                                                                                                                                                                                                                                                                 |
@@ -920,8 +926,8 @@ Schedule expressions accept the standard 5-field cron syntax (e.g. `0 9 * * 1-5`
 
 | Method | Endpoint                         | Description                                                                                                                                  |
 | ------ | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET`  | `/api/settings`                  | Returns sandbox / KB / API / defaults config plus `sandbox.available` (whether `sandbox-exec` is on this host).                              |
-| `PUT`  | `/api/settings`                  | Partial update — every section is optional. Body: `{"sandbox":{...}, "kb":{...}, "api":{...}, "defaults":{...}}`. The `sandbox` section is **master token required**; other sections accept any token. |
+| `GET`  | `/api/settings`                  | Returns sandbox / KB / API / Bridge / defaults config plus `sandbox.available` (whether `sandbox-exec` is on this host).                              |
+| `PUT`  | `/api/settings`                  | Partial update — every section is optional. Body: `{"sandbox":{...}, "kb":{...}, "api":{...}, "bridge":{"enabled":true,"delivery":true}, "defaults":{...}}`. The `sandbox` section is **master token required**; other sections accept any token. |
 | `GET`  | `/api/logs/{ux\|daemon}?bytes=N` | Tail the last N bytes of the log (default 64K, max 1M). Missing files return `200` with empty body.                                          |
 
 ### Plugin substrate
@@ -1023,6 +1029,7 @@ Argus adds `--auto` when launching OpenCode, including resumed sessions and stor
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `true` | Load the [argus-bridge](#argus-bridge) mod into Claude sessions, use current live reports for session state and measurements, and retain scraper comparisons. `false` restores scraper authority and default-account probing. |
+| `delivery` | bool | `true` | Deliver Hera/task notices and throttled coordinator budget nudges as idle plugin-framed turns without editing drafts or blocking Stop. Requires `enabled`; `false` restores PTY delivery and the Stop-hook nudge. Read live, with config.toml taking precedence over DB. |
 
 #### `[backend_routing]`
 

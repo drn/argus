@@ -934,11 +934,14 @@ func TestSmoke_NewTaskFormPaste(t *testing.T) {
 	}
 
 	// Paste into the prompt field.
-	sim.PostEvent(tcell.NewEventPaste(true))
+	// Queue the complete paste through tview's real event loop. The simulation's
+	// nonblocking PostEvent can drop a boundary when its ten-event queue fills;
+	// QueueEvent supplies backpressure and preserves the boundaries and keys.
+	app.tapp.QueueEvent(tcell.NewEventPaste(true))
 	for _, r := range "pasted prompt text" {
-		sim.InjectKey(tcell.KeyRune, r, 0)
+		app.tapp.QueueEvent(tcell.NewEventKey(tcell.KeyRune, r, 0))
 	}
-	sim.PostEvent(tcell.NewEventPaste(false))
+	app.tapp.QueueEvent(tcell.NewEventPaste(false))
 
 	// Poll for the prompt to populate. syncUI's 50 ms eventSettle is enough
 	// on a quiet machine but not reliably enough under -race on CI, where

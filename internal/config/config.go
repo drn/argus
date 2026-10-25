@@ -196,6 +196,9 @@ type BridgeConfig struct {
 	// comparisons; the ingest endpoints stay mounted so already-running
 	// sessions can still post. config.toml wins over the DB (standard overlay).
 	Enabled bool `toml:"enabled"`
+	// Delivery gates mod message submission and non-blocking budget nudges.
+	// Read live by the daemon; ineffective when Enabled is false.
+	Delivery bool `toml:"delivery"`
 }
 
 // HeraConfig controls the native Hera multi-agent coordination view.
@@ -532,7 +535,7 @@ func DefaultConfig() Config {
 			CoordinatorNudgeIncrement: 50000,
 			WorkerContextWindow:       1000000,
 		},
-		Bridge: BridgeConfig{Enabled: true},
+		Bridge: BridgeConfig{Enabled: true, Delivery: true},
 		Supervisor: SupervisorConfig{
 			// Default ON as of P4: agents run under the out-of-process
 			// session-supervisor so the daemon can bounce without interrupting

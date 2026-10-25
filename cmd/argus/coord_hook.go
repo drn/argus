@@ -62,6 +62,7 @@ type coordHookEnv struct {
 	// readContextSizeReal.
 	ReadContextSize   func(taskID, transcriptPath string) (int, error)
 	BridgeMeasurement func(taskID string) (size int, contextKnown bool, costKnown bool)
+	BridgeDelivery    func(taskID string, size int, text string) (bool, error)
 	StampContextSize  func(taskID string, size int) error
 	// ReadTokenTotals scans transcriptPath for the five running per-rate-class
 	// token totals (add-coordinator-cost-estimate) — a pure, taskID-free scan,
@@ -262,15 +263,29 @@ func runCoordHook(stdin io.Reader, out, errOut io.Writer, env coordHookEnv) {
 			size, budget,
 		),
 	}
-	if err := json.NewEncoder(out).Encode(dec); err != nil {
-		_, _ = fmt.Fprintf(errOut, "coord-hook: encode decision: %v\n", err)
-		return
+	// Preserve the existing gates and cadence; only the transport changes.
+	queued := false
+	if env.BridgeDelivery != nil {
+		var deliveryErr error
+		queued, deliveryErr = env.BridgeDelivery(taskID, size, dec.Reason)
+		if deliveryErr != nil {
+			// The daemon may already have queued the nudge. A second blocking
+			// nudge would double-submit; retain the cadence and let Stop finish.
+			queued = true
+			_, _ = fmt.Fprintf(errOut, "coord-hook: ambiguous bridge budget delivery (not blocking): %v\n", deliveryErr)
+		}
+	}
+	if !queued {
+		if err := json.NewEncoder(out).Encode(dec); err != nil {
+			_, _ = fmt.Fprintf(errOut, "coord-hook: encode decision: %v\n", err)
+			return
+		}
 	}
 
 	// Record the size at which this nudge fired so the increment throttle above
 	// has a baseline for the next invocation. Only reached on the path that
-	// actually emits a block decision — never on a turn suppressed by the
-	// increment gate or by pending_recycle.
+	// enqueues a bridge nudge (or has an ambiguous enqueue result) or emits a
+	// block decision — never when the increment/pending gates suppress it.
 	if err := env.StampLastNudgedContextSize(taskID, size); err != nil {
 		_, _ = fmt.Fprintf(errOut, "coord-hook: stamp last nudged context size: %v\n", err)
 	}
@@ -308,6 +323,7 @@ func realCoordHookEnv() coordHookEnv {
 		PendingRecycleAlready:      pendingRecycleAlreadyReal,
 		ReadContextSize:            readContextSizeReal,
 		BridgeMeasurement:          bridgeMeasurementReal,
+		BridgeDelivery:             bridgeDeliveryReal,
 		StampContextSize:           stampContextSizeReal,
 		ReadTokenTotals:            scanTokenTotals,
 		StampTokenAccrual:          stampTokenAccrualReal,
@@ -536,6 +552,58 @@ func bridgeMeasurementReal(taskID string) (int, bool, bool) {
 		return int(*report.Context.Tokens), true, report.CostUSD != nil
 	}
 	return 0, false, report.CostUSD != nil
+}
+
+func bridgeDeliveryReal(taskID string, size int, text string) (bool, error) {
+	port, err := discoverAPIPort()
+	if err != nil {
+		return false, nil
+	}
+	token, err := discoverAPIToken()
+	if err != nil {
+		return false, nil
+	}
+	return postBridgeBudget(coordHookBaseURL(port)+"/api/tasks/"+taskID+"/bridge/budget", token, size, text)
+}
+
+// A failed response after POST is ambiguous: the daemon may have enqueued.
+// Only explicit rejection or disabled replies allow a legacy blocking nudge.
+func postBridgeBudget(url, token string, size int, text string) (bool, error) {
+	payload, err := json.Marshal(map[string]any{"size": size, "text": text})
+	if err != nil {
+		return false, nil
+	}
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return false, nil
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := coordHookHTTPClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close() //nolint:errcheck // short-lived Stop-hook request
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		return false, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("budget enqueue status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, err
+	}
+	var report struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.Unmarshal(body, &report); err != nil {
+		return false, err
+	}
+	if report.Enabled == nil {
+		return false, fmt.Errorf("budget enqueue result missing")
+	}
+	return *report.Enabled, nil
 }
 
 // heraTokensPutBody mirrors internal/api/hera_cost.go's heraTokensPutReq —

@@ -291,6 +291,8 @@ func TestStore_SetConfigValue_KeyMapping(t *testing.T) {
 		{"kb.enabled", "false"},
 		{"kb.metis_vault_path", "/home/user/vault"},
 		{"api.enabled", "true"},
+		{"bridge.enabled", "false"},
+		{"bridge.delivery", "false"},
 		{"defaults.backend", "claude"},
 		{"default_backend", "codex"},
 		{"defaults.share_project", "argus"},
@@ -321,6 +323,36 @@ func TestStore_SetConfigValue_KeyMapping(t *testing.T) {
 		}
 		testutil.Contains(t, err.Error(), "no remote handler")
 	})
+}
+
+func TestStore_BridgeToggleRefreshesEffectiveCache(t *testing.T) {
+	for _, key := range []string{"bridge.enabled", "bridge.delivery"} {
+		t.Run(key, func(t *testing.T) {
+			s, _ := newStore(t, func(mux *http.ServeMux) {
+				mux.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {
+					var body apiclient.SettingsUpdate
+					testutil.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+					testutil.NotNil(t, body.Bridge)
+					if key == "bridge.enabled" {
+						testutil.NotNil(t, body.Bridge.Enabled)
+						testutil.False(t, *body.Bridge.Enabled)
+						testutil.Nil(t, body.Bridge.Delivery)
+					} else {
+						testutil.NotNil(t, body.Bridge.Delivery)
+						testutil.False(t, *body.Bridge.Delivery)
+						testutil.Nil(t, body.Bridge.Enabled)
+					}
+					// The effective response can differ from the requested value
+					// because config.toml overrides DB. Cache this, not the request.
+					_, _ = w.Write([]byte(`{"bridge":{"enabled":true,"delivery":false}}`))
+				})
+			})
+			s.cachedConfig = config.DefaultConfig()
+			testutil.NoError(t, s.SetConfigValue(key, "false"))
+			testutil.True(t, s.Config().Bridge.Enabled)
+			testutil.False(t, s.Config().Bridge.Delivery)
+		})
+	}
 }
 
 func TestStore_SetArchived(t *testing.T) {

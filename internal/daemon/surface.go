@@ -158,7 +158,9 @@ const (
 	//     ~/.argus/cache/bridge-mod (the sandbox-writable part of ~/.argus).
 	//   - v22: bridge reports carry a per-launch generation and heartbeat state
 	//     snapshots; backend usage routing respects the task's account.
-	SupervisorSpawnSurface = 22
+	//   - v23: bridge mod pulls and submits idle messages with fenced delivery
+	//     receipts and submits throttled non-blocking coordinator nudges.
+	SupervisorSpawnSurface = 23
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -373,6 +375,7 @@ var SupervisorSpawnPaths = []string{
 	"internal/bridgemod/bridgemod.go",                                // embedded argus-bridge mod + content-addressed materialization
 	"internal/bridgemod/mod/argus-bridge/.claude-plugin/plugin.json", // the mod the spawned session loads
 	"internal/bridgemod/mod/argus-bridge/hooks/hooks.json",
+	"internal/bridgemod/mod/argus-bridge/hooks/delivery.ts",
 	"internal/bridgemod/mod/argus-bridge/hooks/measure.ts",
 	"internal/bridgemod/mod/argus-bridge/hooks/register.ts",
 	"internal/bridgemod/mod/argus-bridge/hooks/reporter.ts",
@@ -392,6 +395,7 @@ var SupervisorSpawnPaths = []string{
 	"internal/agent/secret.go",                   // point-of-use secret resolution inside BuildCmd
 	"internal/agent/secretregistry.go",           // the resolver registry BuildCmd resolves through
 	"internal/skills/builtin.go",                 // builtin skills materialized at spawn time
+	"internal/skills/builtin/hera/SKILL.md",      // bridge delivery instructions materialized for Hera agents
 	"internal/skills/skills.go",                  // --add-dir skill provisioning
 }
 
@@ -439,7 +443,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "e90114e93ce4117edfd4ab7d2c71c376e13c1a2398a6fecaea0de5967201a6b5"
+	SpawnSurfaceDigest  = "2908d63767fd04a885f7fd98b8fcf15dcb1512684409214a57f431aa6f2d5ea7"
 	StreamSurfaceDigest = "4db586fb7dcaf62899cb2ebc82bbaa7fcc325d7cf99611f5f7942c44f9bc9467"
 )
 

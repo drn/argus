@@ -14,6 +14,9 @@ state + comparator) and the `internal/api` bridge endpoints.
 
 ## The mod
 
+- **Budget nudges use idle `prompt.submit`, not `prompt.compose`.** Live tmux verification showed the managed `cc-plugin-sec-default` plugin skips other mods' compose hooks, matching phase 1's classic-hook bypass. The Stop hook keeps its increment/pending gates and stamps last-nudged context after enqueue; measurement stamps and the hard-stop remain. Recycle/rerender safety still uses terminal predicates (named follow-up).
+- **Set local busy before any await in `turn.start`.** Otherwise an idle poll can submit during session-id synchronization. Delivery polling and acknowledgment stay single-flight and outside hook dispatch; network timeout never triggers prompt resubmission.
+
 - **`tool.check` verdict `ask` does NOT mean a dialog appeared.** A settings `PermissionRequest` hook can auto-approve it within ~1s (this setup auto-approves Bash). The mod only reports a permission needs-input when the call is *still pending* after a 1.5s grace; `AskUserQuestion`/`ExitPlanMode` are the exceptions (the call itself is the dialog, pending from `tool.call` pre to post). Verified live: a Write ask reported, an auto-approved Bash ask did not.
 - **Never use `classic.PermissionRequest` / `classic.Notification` from the mod.** They are skipped when a managed plugin runs first (the Thanx org's `cc-plugin-sec-default`).
 - **`/clear` does not re-fire `session.start`.** The mod re-reads `$.session.id()`/`model()` on every `turn.start` and re-emits `session.start` on change (verified live: id changed after `/clear`).

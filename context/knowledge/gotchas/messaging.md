@@ -54,6 +54,10 @@ table and the four MCP tools that ride on top of it.
 
 ## Nudge contract (reliable pane delivery)
 
+- **Bridge transport acknowledgment never marks inbox mail read.** Live eligible Claude bridges pull the same notifier queue and submit plugin-framed turns; Hera inbox reads and task acknowledgments cancel pending claims as well as PTY deliveries. `bridge.delivery=false` restores legacy delivery and the blocking budget nudge; config.toml wins over DB.
+- **A lease timeout does not prove a plugin prompt was not submitted.** Every submitted prompt carries its delivery-ID marker; recovery checks complete user rows in the resolved transcript, retaining ambiguous claims without PTY retry when the transcript is unreadable/incomplete. Positive absence requires window coverage plus either a dead original process or a same-launch/session idle heartbeat after lease expiry and the flush-lag allowance; only then re-offer once and eventually fall back. Never use assistant reflections of the marker as submission evidence.
+- **A lost budget-enqueue response must not fall back to `decision:block`.** The daemon may already have queued that nudge; an ambiguous POST/5xx response lets Stop finish and stamps the cadence, preferring a missed nudge to duplicate turns. Explicit disabled/rejected responses retain the legacy block.
+
 - **Nudge goes through `internal/notify.Notifier` (reliable pane delivery),
   not a bare PTY write.** The message is committed before `Nudge` is called.
   `Nudge` registers a reliable delivery keyed by `msg.ID` as `deliveryID`.

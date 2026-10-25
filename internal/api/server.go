@@ -155,6 +155,9 @@ type Server struct {
 // Must be called before ListenAndServe.
 func (s *Server) SetNotifier(n *notify.Notifier) {
 	s.notifier = n
+	if n != nil {
+		n.SetBridgeRoute(s.bridgeDeliveryRoute, s.bridgeDeliveryEvidence)
+	}
 }
 
 // SetFocusTracker wires the daemon-level focus tracker into the API server.
