@@ -14,6 +14,10 @@ state + comparator) and the `internal/api` bridge endpoints.
 
 ## The mod
 
+- **AbovePrompt must always include `await next(e)` as beneath, even when hidden.** The engine permits one hooks module and one unqualified hook per event per mod; lifecycle UI work shares the reporting hooks. Live Claude 2.1.310 with managed `cc-plugin-sec-default` confirmed AbovePrompt, toast, command.register and command.run work (unlike prompt.compose).
+- **Band rendering reads only the session atom; refresh is background single-flight work.** Running sessions pick up effective band/toast switches on turn completion, measurement or a 15s timer. Inspecting mail never marks it read or claims delivery; a refresh immediately before plugin submission observes arrivals before the model can drain its inbox. Seen identities survive mod reload in session state; suppressed arrivals do not toast later on re-enable.
+- **Embed the mod's `types/index.d.ts` contract as runtime content, but never `.claude-plugin/types`.** The former declares session atoms; the latter is the engine-generated development SDK symlink. Add new runtime UI files to SupervisorSpawnPaths and bump/re-record the spawn surface.
+
 - **Budget nudges use idle `prompt.submit`, not `prompt.compose`.** Live tmux verification showed the managed `cc-plugin-sec-default` plugin skips other mods' compose hooks, matching phase 1's classic-hook bypass. The Stop hook keeps its increment/pending gates and stamps last-nudged context after enqueue; measurement stamps and the hard-stop remain. Recycle/rerender safety still uses terminal predicates (named follow-up).
 - **Set local busy before any await in `turn.start`.** Otherwise an idle poll can submit during session-id synchronization. Delivery polling and acknowledgment stay single-flight and outside hook dispatch; network timeout never triggers prompt resubmission.
 

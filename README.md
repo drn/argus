@@ -823,6 +823,7 @@ Every authenticated token has the same permissions **except** a small master-onl
 | `GET`  | `/api/tasks/{id}/links`  | Extract http/https URLs from terminal output. Returns `{"links":[{"label","url"}]}`. Powers the PWA's "Open link" overflow item.                                                                                                                                                                                            |
 | `POST` | `/api/tasks/{id}/bridge/events` | Ingest [argus-bridge](#argus-bridge) events with `type`, `seq`, `boot`, `ts`, `session_id` and `generation`. Returns `{accepted,received}`; duplicates, retired boots and superseded launches are dropped. Live measurements update context and cumulative cost. Heartbeats include busy/dialog snapshots for daemon recovery. |
 | `GET`  | `/api/tasks/{id}/bridge` | The task's latest bridge-reported state (busy, needs-input, session id, model, context/cost/rate limits, `live`); 404 until the mod has reported. |
+| `GET` | `/api/tasks/{id}/bridge/ui` | Read-only effective UI settings, live bridge/context, Hera bindings/status/budget and unread Hera/task summaries. Does not acknowledge mail or claim deliveries. |
 | `POST` | `/api/tasks/{id}/bridge/deliveries` | Pull the active delivery using `{generation,boot}`; returns `{delivery:null}` or a fenced token, text and delivery ID. |
 | `POST` | `/api/tasks/{id}/bridge/deliveries/authorize` | Authorize one idle submission using `{generation,boot,token}`; returns `{authorized}`. Cancelled, stale or superseded claims are rejected. |
 | `POST` | `/api/tasks/{id}/bridge/deliveries/ack` | Acknowledge successful prompt submission with the claim identity/token; returns `{acked}` without marking durable inbox mail read. |
@@ -927,7 +928,7 @@ Schedule expressions accept the standard 5-field cron syntax (e.g. `0 9 * * 1-5`
 | Method | Endpoint                         | Description                                                                                                                                  |
 | ------ | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET`  | `/api/settings`                  | Returns sandbox / KB / API / Bridge / defaults config plus `sandbox.available` (whether `sandbox-exec` is on this host).                              |
-| `PUT`  | `/api/settings`                  | Partial update — every section is optional. Body: `{"sandbox":{...}, "kb":{...}, "api":{...}, "bridge":{"enabled":true,"delivery":true}, "defaults":{...}}`. The `sandbox` section is **master token required**; other sections accept any token. |
+| `PUT`  | `/api/settings`                  | Partial update — every section is optional. Body: `{"sandbox":{...}, "kb":{...}, "api":{...}, "bridge":{"enabled":true,"delivery":true,"band":true,"toasts":true}, "defaults":{...}}`. The `sandbox` section is **master token required**; other sections accept any token. |
 | `GET`  | `/api/logs/{ux\|daemon}?bytes=N` | Tail the last N bytes of the log (default 64K, max 1M). Missing files return `200` with empty body.                                          |
 
 ### Plugin substrate
@@ -1030,6 +1031,10 @@ Argus adds `--auto` when launching OpenCode, including resumed sessions and stor
 |-----|------|---------|-------------|
 | `enabled` | bool | `true` | Load the [argus-bridge](#argus-bridge) mod into Claude sessions, use current live reports for session state and measurements, and retain scraper comparisons. `false` restores scraper authority and default-account probing. |
 | `delivery` | bool | `true` | Deliver Hera/task notices and throttled coordinator budget nudges as idle plugin-framed turns without editing drafts or blocking Stop. Requires `enabled`; `false` restores PTY delivery and the Stop-hook nudge. Read live, with config.toml taking precedence over DB. |
+| `band` | bool | `true` | Show Hera role/kind, orchestrator, unread count, context % and coordinator budget above the Claude prompt. Hidden when unbound; composes with other mods. Changes apply to running sessions on refresh (at most 15s). Requires `enabled`. |
+| `toasts` | bool | `true` | Toast newly observed Hera/task messages once. Existing unread mail establishes a quiet baseline. Changes apply on refresh in running sessions; requires `enabled`. |
+
+All four switches are in **Settings → Bridge** in local and remote TUI mode; `config.toml` overrides DB values. Web/macOS settings controls are the named follow-up `bridge-settings-web-macos-parity`. In Claude sessions, `/hera-inbox` lists unread sender, summary and age without marking mail read; `/hera-status` shows role, binding, budget and bridge liveness. Both answer locally without a model turn.
 
 #### `[backend_routing]`
 

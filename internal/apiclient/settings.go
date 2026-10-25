@@ -46,12 +46,16 @@ type SettingsResp struct {
 type BridgeSettingsJSON struct {
 	Enabled  bool `json:"enabled"`
 	Delivery bool `json:"delivery"`
+	Band     bool `json:"band"`
+	Toasts   bool `json:"toasts"`
 }
 
 // BridgeUpdate is a partial update; nil fields remain unchanged.
 type BridgeUpdate struct {
 	Enabled  *bool `json:"enabled,omitempty"`
 	Delivery *bool `json:"delivery,omitempty"`
+	Band     *bool `json:"band,omitempty"`
+	Toasts   *bool `json:"toasts,omitempty"`
 }
 
 // SandboxUpdate is the partial-update payload for the sandbox section.

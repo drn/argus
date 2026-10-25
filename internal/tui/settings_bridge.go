@@ -16,6 +16,8 @@ func (sv *SettingsView) bridgeRows() []settingsRow {
 	}{
 		{"bridge.enabled", "Enabled", cfg.Enabled},
 		{"bridge.delivery", "Message delivery", cfg.Delivery},
+		{"bridge.band", "Hera band", cfg.Band},
+		{"bridge.toasts", "Message toasts", cfg.Toasts},
 	} {
 		state := "OFF"
 		if item.enabled {
@@ -31,6 +33,12 @@ func (sv *SettingsView) toggleBridge(key string) bool {
 	value := cfg.Enabled
 	if key == "bridge.delivery" {
 		value = cfg.Delivery
+	}
+	if key == "bridge.band" {
+		value = cfg.Band
+	}
+	if key == "bridge.toasts" {
+		value = cfg.Toasts
 	}
 	if err := sv.database.SetConfigValue(key, strconv.FormatBool(!value)); err != nil {
 		uxlog.Log("[bridge] settings persist failed key=%s error=%v", key, err)
