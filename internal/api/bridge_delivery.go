@@ -24,7 +24,7 @@ func (s *Server) bridgeDeliveryRoute(id string) notify.BridgeRoute {
 	if !s.db.Config().Bridge.Delivery {
 		return notify.BridgeRoute{}
 	}
-	st, live := s.bridgeState(id, time.Now())
+	st, live := s.bridgeVerdict(id, time.Now())
 	return notify.BridgeRoute{Live: live, Idle: !st.Busy, NeedsInput: st.NeedsInput, Generation: st.Generation, Boot: st.Boot, Session: st.SessionID}
 }
 
@@ -107,7 +107,7 @@ func (s *Server) bridgeDeliveryEvidence(c notify.BridgeClaim) notify.BridgeEvide
 		// absence alone cannot revoke that engine-side queue entry.
 		if evidence == notify.BridgeAbsent {
 			session := s.runner.Get(c.TaskID)
-			st, live := s.bridgeState(c.TaskID, time.Now())
+			st, live := s.bridgeVerdict(c.TaskID, time.Now())
 			// A different authoritative launch also proves the original
 			// claimant's process is gone, including resume on the same transcript.
 			if session == nil || !session.Alive() || (live && st.Generation != c.Generation) || bridgeSettledAfterClaim(st, live, c) {

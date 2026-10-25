@@ -50,7 +50,7 @@ func TestHeartbeatRehydratesBusyAndPermissionKind(t *testing.T) {
 	testutil.True(t, ok)
 	testutil.True(t, st.Busy)
 	testutil.True(t, st.NeedsInput)
-	testutil.False(t, Authoritative(st))
+	testutil.True(t, UncertainPermission(st))
 }
 
 func TestLegacyOrIncompleteReportCannotInheritAuthority(t *testing.T) {

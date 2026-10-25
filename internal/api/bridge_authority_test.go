@@ -3,7 +3,10 @@ package api
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,18 +16,20 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 type bridgeTestSession struct {
 	agent.SessionHandle
 	generation string
+	tail       []byte
 }
 
-func (s *bridgeTestSession) BridgeGeneration() string  { return s.generation }
-func (*bridgeTestSession) Alive() bool                 { return true }
-func (*bridgeTestSession) LastInput() time.Time        { return time.Time{} }
-func (*bridgeTestSession) LastUserInput() time.Time    { return time.Time{} }
-func (*bridgeTestSession) RecentOutputTail(int) []byte { return nil }
+func (s *bridgeTestSession) BridgeGeneration() string    { return s.generation }
+func (*bridgeTestSession) Alive() bool                   { return true }
+func (*bridgeTestSession) LastInput() time.Time          { return time.Time{} }
+func (*bridgeTestSession) LastUserInput() time.Time      { return time.Time{} }
+func (s *bridgeTestSession) RecentOutputTail(int) []byte { return s.tail }
 
 type bridgeTestRunner struct {
 	agent.SessionRunner
@@ -73,12 +78,80 @@ func TestBridgeAuthorityWatcherAndRestart(t *testing.T) {
 	s.bridgeHub.Ingest(task.ID, []bridge.Event{{Type: bridge.TypeNeedsInput, Kind: bridge.KindPermission, Generation: "launch", SessionID: "session", Boot: "b", Seq: 4}}, now)
 	s.idleWatcherTick(state)
 	testutil.True(t, s.bridgeLive(task.ID, time.Now()))
-	testutil.True(t, state.idleNow[task.ID])
+	testutil.False(t, state.idleNow[task.ID])
 	testutil.False(t, state.needsInputNow[task.ID])
 	r.session.generation = "restarted"
 	testutil.False(t, s.bridgeLive(task.ID, time.Now()))
 	s.idleWatcherTick(state)
 	testutil.True(t, state.idleNow[task.ID])
+}
+
+func TestBridgePermissionKeepsSourceAndCorroboratesOnlyInput(t *testing.T) {
+	s, r, task := bridgeAuthorityServer(t)
+	path := filepath.Join(t.TempDir(), "ux.log")
+	testutil.NoError(t, uxlog.Init(path))
+	t.Cleanup(uxlog.Close)
+	now := time.Now()
+	seq := int64(0)
+	post := func(kind, confidence string) {
+		t.Helper()
+		seq++
+		s.bridgeHub.Ingest(task.ID, []bridge.Event{{Type: bridge.TypeNeedsInput, Kind: kind, Confidence: confidence, Generation: "launch", SessionID: "session", Boot: "b", Seq: seq}}, now)
+	}
+	s.bridgeHub.Ingest(task.ID, []bridge.Event{{Type: bridge.TypeTurnStart, Generation: "launch", SessionID: "session", Boot: "b", Seq: seq}}, now)
+	state := newIdleWatcherState()
+	s.idleWatcherTick(state)
+	for _, tc := range []struct {
+		name, kind, confidence string
+		tail                   []byte
+		want                   bool
+	}{
+		{"hook approved", bridge.KindPermission, bridge.ConfidencePendingOrRunning, nil, false},
+		{"exact permission", bridge.KindPermission, bridge.ConfidenceExact, nil, true},
+		{"prior exact cannot corroborate", bridge.KindPermission, bridge.ConfidencePendingOrRunning, nil, false},
+		{"visible dialog", bridge.KindPermission, bridge.ConfidencePendingOrRunning, blockedTail, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r.session.tail = tc.tail
+			post(tc.kind, tc.confidence)
+			s.idleWatcherTick(state)
+			testutil.True(t, state.bridgeSource[task.ID])
+			testutil.Equal(t, state.needsInputNow[task.ID], tc.want)
+			testutil.Equal(t, state.idleNow[task.ID], tc.want)
+			st := s.BridgeStates()[task.ID]
+			testutil.True(t, st.Busy)
+			testutil.Equal(t, st.NeedsInput, tc.want)
+			route := s.bridgeDeliveryRoute(task.ID)
+			testutil.True(t, route.Live)
+			testutil.False(t, route.Idle) // delivery requires turn idle, not quiescence
+			testutil.Equal(t, route.NeedsInput, tc.want)
+			_, idle, needs := s.sessionStateMaps()
+			testutil.Equal(t, idle[task.ID], tc.want)
+			testutil.Equal(t, needs[task.ID], tc.want)
+			w := httptest.NewRecorder()
+			s.routes().ServeHTTP(w, authedReq("GET", "/api/bridge/states", ""))
+			var states map[string]bridge.State
+			testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &states))
+			testutil.Equal(t, states[task.ID].NeedsInput, tc.want)
+			w = httptest.NewRecorder()
+			s.routes().ServeHTTP(w, authedReq("GET", "/api/status", ""))
+			var status statusResponse
+			testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &status))
+			wantIdle := 0
+			if tc.want {
+				wantIdle = 1
+			}
+			testutil.Equal(t, status.Sessions.Idle, wantIdle)
+		})
+	}
+	data, err := os.ReadFile(path)
+	testutil.NoError(t, err)
+	testutil.Equal(t, strings.Count(string(data), "[bridge] source"), 1)
+	r.session.generation = "restarted"
+	s.idleWatcherTick(state)
+	data, err = os.ReadFile(path)
+	testutil.NoError(t, err)
+	testutil.Equal(t, strings.Count(string(data), "[bridge] source"), 2)
 }
 
 func TestBridgeRejectsOldLaunch(t *testing.T) {

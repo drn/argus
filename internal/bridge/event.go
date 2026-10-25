@@ -18,10 +18,9 @@ const (
 
 // Confidence values carried by a needs_input event. A question/plan dialog is
 // bracketed exactly by its tool call, so it is exact. A permission ask spans
-// the tool's whole execution after approval (the engine raises no event
-// between approval and execution), so it can be pending-or-running: phase 2
-// must trust the bridge alone for question/plan and seek scraper
-// corroboration for permission.
+// the tool's whole execution after approval, so it can be pending-or-running.
+// Only uncertain permission input needs scraper corroboration; exact input
+// and the bridge's busy state remain authoritative independently.
 const (
 	ConfidenceExact            = "exact"
 	ConfidencePendingOrRunning = "pending-or-running"

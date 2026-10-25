@@ -146,6 +146,10 @@ type Server struct {
 	bridgeHub      *bridge.Hub
 	bridgeIngestMu sync.Mutex
 	bridgeShadow   *bridge.Shadow
+	// Raw scraper input is kept apart from runner verdicts to avoid feeding a
+	// bridge-owned exact dialog back into a later uncertain permission.
+	bridgeScraperMu    sync.RWMutex
+	bridgeScraperNeeds map[string]bool
 
 	// heraBG tracks in-flight Hera nuke tails (session stops + reclaim sweep).
 	heraBG sync.WaitGroup

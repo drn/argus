@@ -124,8 +124,19 @@ func (s *Server) bridgeLive(id string, now time.Time) bool {
 	return ok
 }
 
+// bridgeVerdict resolves live state against raw scraper input. Diagnostic and
+// measurement readers can keep using bridgeState to inspect the original report.
+func (s *Server) bridgeVerdict(id string, now time.Time) (bridge.State, bool) {
+	st, live := s.bridgeState(id, now)
+	s.bridgeScraperMu.RLock()
+	st = bridge.Resolve(st, s.bridgeScraperNeeds[id])
+	s.bridgeScraperMu.RUnlock()
+	return st, live
+}
+
 // BridgeStates is a batched authoritative snapshot for daemon-connected TUI
-// clients. It does no terminal reads and excludes stale/old-generation reports.
+// clients. It resolves uncertain permission input against the last raw scraper
+// snapshot, does no terminal reads, and excludes stale/old-generation reports.
 func (s *Server) BridgeStates() map[string]bridge.State {
 	out := make(map[string]bridge.State)
 	if s.runner == nil {
@@ -136,7 +147,7 @@ func (s *Server) BridgeStates() map[string]bridge.State {
 		if err != nil || task == nil || task.Archived {
 			continue
 		}
-		if st, ok := s.bridgeState(id, time.Now()); ok {
+		if st, ok := s.bridgeVerdict(id, time.Now()); ok {
 			out[id] = st
 		}
 	}
