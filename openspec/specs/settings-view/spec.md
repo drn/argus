@@ -488,3 +488,27 @@ An account name, `default_account`, or `project_accounts` entry defined in `conf
 #### Scenario: Toml account cannot be edited
 - **WHEN** `config.toml` defines `[accounts.work]`
 - **THEN** its rows show `(config.toml)` and edit/delete are refused
+
+### Requirement: Bridge settings section
+
+TUI Settings SHALL provide an extensible Bridge section exposing bridge.enabled and bridge.delivery through existing toggle interactions. Changes SHALL persist and round-trip through the configuration overlay. No new key bindings SHALL be introduced. Web SPA and macOS Bridge settings parity SHALL remain a named follow-up.
+
+#### Scenario: Toggle persists through refresh
+
+- **WHEN** the user toggles Bridge delivery and Settings refreshes
+- **THEN** the persisted effective value is displayed
+
+#### Scenario: Remote TUI toggle round-trips immediately
+
+- **WHEN** the remote TUI toggles a Bridge setting
+- **THEN** the existing settings API persists its partial update and the effective response refreshes the remote config cache immediately
+
+### Requirement: Bridge UI toggles
+
+TUI Settings SHALL expose band and toast toggles in the Bridge section using existing interactions. Both SHALL persist locally and round-trip through the remote store immediately using effective configuration. Web SPA and macOS settings controls SHALL remain the named follow-up bridge-settings-web-macos-parity.
+
+#### Scenario: Remote toggle persists
+
+- **WHEN** a remote TUI toggles bridge.toasts and refreshes
+- **THEN** its effective persisted value is shown
+

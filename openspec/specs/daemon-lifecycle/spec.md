@@ -228,7 +228,6 @@ When the supervisor-restart reconcile flips a task whose live session the superv
 - **WHEN** the supervisor-restart reconcile orphans a codex, pi, or opencode task
 - **THEN** the daemon leaves the task's recorded session ID unchanged
 
-
 ### Requirement: Stale exit info is discarded when a stream attaches to a live session
 
 A cached ExitInfo SHALL belong to the incarnation that produced it. When a stream attaches to a live session, the core SHALL discard any cached ExitInfo for that task that predates the attach, so a previous incarnation's entry (notably a kick or recycle restart's `PendingRestart=true` info) cannot be served as the replacement's exit. Ownership SHALL be identity-based: each cached ExitInfo is stamped with the session that produced it, an entry owned by another session is stale, and an entry owned by the attaching session SHALL be kept even if that session already exited. Waiting for a session's exit info SHALL accept the session's own entry, an unattributable one, or one written after the attach, and SHALL NOT be satisfied by an older incarnation's entry (nor by a consumed tombstone it does not own). An entry with no recorded owner (including a restart-failure re-fire for a task with no live session) is dropped only if the attaching session is still running, and SHALL still be delivered to a reader. Waiting SHALL NOT run to its bound when the session's own entry was already consumed or was overwritten by a later incarnation.
@@ -237,3 +236,26 @@ A cached ExitInfo SHALL belong to the incarnation that produced it. When a strea
 
 - **WHEN** a recycle replaced a session and a stream then attaches to the replacement
 - **THEN** the old incarnation's cached ExitInfo is removed, and the replacement's later exit yields its own ExitInfo with `PendingRestart=false`
+
+### Requirement: Daemon publishes its bound API port
+When the REST API binds, the daemon SHALL atomically write the actual bound port to `~/.argus/api-port` (mode 0600, temp file plus rename), so processes that outlive a daemon restart can rediscover it.
+
+#### Scenario: Port moved by bind retry
+- **WHEN** the configured port is busy and the API binds a later port
+- **THEN** `~/.argus/api-port` contains the port actually bound
+
+#### Scenario: Restart
+- **WHEN** the daemon restarts and binds a different port
+- **THEN** the file is replaced with the new port without a window where it is empty
+
+### Requirement: Daemon withdraws its port file on clean shutdown
+On clean shutdown the daemon SHALL remove `~/.argus/api-port` only while it still names that daemon's own port, so a newer daemon's file is never removed.
+
+#### Scenario: Clean shutdown
+- **WHEN** the daemon shuts down and the port file names its port
+- **THEN** the file is removed
+
+#### Scenario: Takeover
+- **WHEN** a newer daemon has already rewritten the port file with a different port
+- **THEN** the exiting daemon leaves it in place
+
