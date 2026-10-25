@@ -23,6 +23,7 @@ func TestResolvePermission(t *testing.T) {
 		{"approved running", KindPermission, ConfidencePendingOrRunning, true, false, false},
 		{"visible permission", KindPermission, ConfidencePendingOrRunning, true, true, true},
 		{"exact permission", KindPermission, ConfidenceExact, true, false, true},
+		{"pending permission not seen running", KindPermission, ConfidencePending, true, false, true},
 		{"legacy permission", KindPermission, "", true, false, false},
 		{"question", KindQuestion, ConfidenceExact, true, false, true},
 		{"plan", KindPlan, ConfidenceExact, true, false, true},

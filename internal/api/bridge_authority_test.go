@@ -110,6 +110,7 @@ func TestBridgePermissionKeepsSourceAndCorroboratesOnlyInput(t *testing.T) {
 		{"exact permission", bridge.KindPermission, bridge.ConfidenceExact, nil, true},
 		{"prior exact cannot corroborate", bridge.KindPermission, bridge.ConfidencePendingOrRunning, nil, false},
 		{"visible dialog", bridge.KindPermission, bridge.ConfidencePendingOrRunning, blockedTail, true},
+		{"pending dialog the scraper misses", bridge.KindPermission, bridge.ConfidencePending, nil, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r.session.tail = tc.tail

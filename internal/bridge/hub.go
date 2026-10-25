@@ -24,7 +24,8 @@ type State struct {
 	Busy           bool   `json:"busy"`
 	NeedsInput     bool   `json:"needs_input"`
 	NeedsInputKind string `json:"needs_input_kind,omitempty"`
-	// NeedsInputConfidence is ConfidenceExact or ConfidencePendingOrRunning.
+	// NeedsInputConfidence is ConfidenceExact, ConfidencePending or
+	// ConfidencePendingOrRunning (older mods).
 	NeedsInputConfidence string `json:"needs_input_confidence,omitempty"`
 
 	Context    *Context    `json:"context,omitempty"`

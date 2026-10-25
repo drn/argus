@@ -33,6 +33,15 @@ function world(on: On, opts: { engineBeneath?: boolean } = {}) {
   return { clock, refresh, snapshot, toasts, submits, urls, registered, fail: () => { unavailable = true }, recover: () => { unavailable = false } }
 }
 
+test('the run-in-background pill is drawn unchanged while marking its call running', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await w.refresh()
+  const ui = await $.ui.mount({ plugin: 'argus-bridge', surface: 'terminal', component: 'ToolProgress', props: { tool_use_id: 'unknown-call', kind: 'background_hint', hint: '(ctrl+b to run in background)' } })
+  expect((await ui.find({ type: 'Text', text: /BENEATH/ }))?.text).toBe('BENEATH')
+  await ui.unmount()
+})
+
 test('band composes and live flips on/off on every surface', async ($, on) => {
   const w = world(on)
   await $.session.start(START)

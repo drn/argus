@@ -12,7 +12,7 @@ import type { Hook, Register } from 'claude-code'
 import { measureFields, MeasureThrottle } from './measure'
 import { Reporter, type Env } from './reporter'
 import { Delivery } from './delivery'
-import { GRACE_MS, NeedsInputTracker, type Transition } from './tracker'
+import { confidenceOf, GRACE_MS, NeedsInputTracker, type Kind, type Transition } from './tracker'
 import { registerUI, startUI, scheduleUI, refreshUI, type UI } from './ui'
 
 /** The engine interface a hook receives. */
@@ -125,11 +125,16 @@ async function pollNeedsInput($: Engine, b: Bridge): Promise<void> {
   await emitTransition($, b, b.tracker.poll(await $.clock.now()))
 }
 
+async function markRunning($: Engine, b: Bridge, id: string): Promise<void> {
+  if (!(await rep($, b).taskId())) return
+  await emitTransition($, b, b.tracker.markRunning(id))
+}
+
 async function beat($: Engine, b: Bridge): Promise<void> {
 	await syncSession($, b, false)
   await pollNeedsInput($, b)
   await sendMeasure($, b, b.measure.flush(await $.clock.now()))
-  await rep($, b).emit('heartbeat', { busy: b.busy, needs_input: b.tracker.active, kind: b.needsKind, confidence: b.needsKind === 'permission' ? 'pending-or-running' : 'exact' })
+  await rep($, b).emit('heartbeat', { busy: b.busy, needs_input: b.tracker.active, kind: b.needsKind, confidence: b.needsKind ? confidenceOf(b.needsKind as Kind) : 'exact' })
   await rep($, b).flush()
 }
 
@@ -260,6 +265,14 @@ export const register: Register = on => {
         })
       }
     }
+  }).catch(($, e, next) => next(e))
+
+  // The ctrl+b pill under a foreground call is drawn only while it executes:
+  // proof that no permission dialog waits on it. Drawing is never changed and
+  // never waits on the report.
+  on('ui.render', { component: 'ToolProgress' }, ($, e, next) => {
+    void safe(() => markRunning($, b, e.props.tool_use_id))
+    return next(e)
   }).catch(($, e, next) => next(e))
 
   on('session.measure', async ($, e, next) => {

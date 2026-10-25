@@ -181,15 +181,19 @@ func TestShadow_PermissionKindCountedSeparately(t *testing.T) {
 	testutil.Equal(t, len(s.Stats(now).Open), 0)
 }
 
-func TestShadow_ExactPermissionStaysHeadline(t *testing.T) {
-	s, _ := newShadow(t)
-	s.Hub().Ingest("a", []Event{ev(TypeTurnStart, 1),
-		{Type: TypeNeedsInput, Seq: 2, Boot: "b1", Kind: KindPermission, Confidence: ConfidenceExact}}, t0)
-	s.Observe(t0, []string{"a"}, nil, nil)
-	st := s.Stats(t0)
-	testutil.Equal(t, st.Signals[SignalNeedsInput].Settling, int64(1))
-	testutil.Equal(t, st.Signals[SignalIdle].Settling, int64(1))
-	testutil.Equal(t, st.Signals[SignalNeedsInputPermission], Counters{})
+func TestShadow_TrustedPermissionStaysHeadline(t *testing.T) {
+	for _, confidence := range []string{ConfidenceExact, ConfidencePending} {
+		t.Run(confidence, func(t *testing.T) {
+			s, _ := newShadow(t)
+			s.Hub().Ingest("a", []Event{ev(TypeTurnStart, 1),
+				{Type: TypeNeedsInput, Seq: 2, Boot: "b1", Kind: KindPermission, Confidence: confidence}}, t0)
+			s.Observe(t0, []string{"a"}, nil, nil)
+			st := s.Stats(t0)
+			testutil.Equal(t, st.Signals[SignalNeedsInput].Settling, int64(1))
+			testutil.Equal(t, st.Signals[SignalIdle].Settling, int64(1))
+			testutil.Equal(t, st.Signals[SignalNeedsInputPermission], Counters{})
+		})
+	}
 }
 
 func TestShadow_QuestionKindStaysHeadline(t *testing.T) {
