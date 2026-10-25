@@ -13,6 +13,7 @@ import { measureFields, MeasureThrottle } from './measure'
 import { Reporter, type Env } from './reporter'
 import { Delivery } from './delivery'
 import { GRACE_MS, NeedsInputTracker, type Transition } from './tracker'
+import { registerUI, startUI, scheduleUI, refreshUI, type UI } from './ui'
 
 /** The engine interface a hook receives. */
 type Engine = Parameters<Hook<'session.start'>>[0]
@@ -23,6 +24,7 @@ const POST_TIMEOUT_MS = 2_000
 
 /** Everything one load of the mod keeps; a hot reload makes a fresh one. */
 type Bridge = {
+	ui: UI
 	busy: boolean
 	needsKind: string
   readonly boot: string
@@ -37,6 +39,7 @@ type Bridge = {
 
 function newBridge(): Bridge {
   return {
+	ui: { running: undefined, timer: undefined },
 	busy: false,
 	needsKind: '',
     // `boot` distinguishes this load from an earlier one whose seq restarts.
@@ -157,6 +160,10 @@ function deliveryFor($: Engine, b: Bridge): Delivery {
     request: (path, token) => bridgeRequest($, b, path, token),
     submit: async text => {
       if (b.busy || b.tracker.active) return false
+      // Observe arrivals before the model can consume its durable inbox.
+      // This is background delivery work, never awaited by a turn hook.
+      await refreshUI($, b.ui)
+      if (b.busy || b.tracker.active) return false
       const result = await $.prompt.submit({ text })
       return !result.drop
     },
@@ -172,10 +179,12 @@ async function pollDelivery($: Engine, b: Bridge): Promise<void> {
 
 export const register: Register = on => {
   const b = newBridge()
+  registerUI(on, b.ui)
 
   on('session.start', async ($, e, next) => {
     await safe(async () => {
       if (!(await rep($, b).taskId())) return
+      await safe(() => startUI($, b.ui))
       await syncSession($, b, true)
       b.heartbeat?.cancel()
       b.heartbeat = $.clock.every(HEARTBEAT_MS, () => {
@@ -208,6 +217,7 @@ export const register: Register = on => {
 		b.busy = false
         await sendMeasure($, b, b.measure.flush(await $.clock.now()))
         await rep($, b).emit('turn.complete', { turn_id: e.turnId, reason: e.reason })
+        scheduleUI($, b.ui)
         $.clock.after(0, () => { void safe(() => pollDelivery($, b)) })
       })
     }
@@ -256,6 +266,7 @@ export const register: Register = on => {
     await safe(async () => {
       if (!(await rep($, b).taskId())) return
       await sendMeasure($, b, b.measure.offer(measureFields(e), await $.clock.now()))
+      scheduleUI($, b.ui)
     })
     return next(e)
   })

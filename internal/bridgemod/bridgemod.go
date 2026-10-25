@@ -24,7 +24,7 @@ import (
 // .claude-plugin/types symlink and node_modules). The tests/ and tsconfig.json
 // development files are deliberately absent.
 //
-//go:embed mod/argus-bridge/.claude-plugin/plugin.json mod/argus-bridge/hooks/hooks.json mod/argus-bridge/hooks/*.ts
+//go:embed mod/argus-bridge/.claude-plugin/plugin.json mod/argus-bridge/hooks/hooks.json mod/argus-bridge/hooks/*.ts mod/argus-bridge/hooks/*.tsx mod/argus-bridge/types/*.d.ts
 var modFS embed.FS
 
 const (

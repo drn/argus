@@ -199,6 +199,9 @@ type BridgeConfig struct {
 	// Delivery gates mod message submission and non-blocking budget nudges.
 	// Read live by the daemon; ineffective when Enabled is false.
 	Delivery bool `toml:"delivery"`
+	// Band and Toasts control visible mod UI and are read live by sessions.
+	Band   bool `toml:"band"`
+	Toasts bool `toml:"toasts"`
 }
 
 // HeraConfig controls the native Hera multi-agent coordination view.
@@ -535,7 +538,7 @@ func DefaultConfig() Config {
 			CoordinatorNudgeIncrement: 50000,
 			WorkerContextWindow:       1000000,
 		},
-		Bridge: BridgeConfig{Enabled: true, Delivery: true},
+		Bridge: BridgeConfig{Enabled: true, Delivery: true, Band: true, Toasts: true},
 		Supervisor: SupervisorConfig{
 			// Default ON as of P4: agents run under the out-of-process
 			// session-supervisor so the daemon can bounce without interrupting

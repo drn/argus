@@ -18,13 +18,14 @@ func TestFiles_ContainsRuntimeFilesOnly(t *testing.T) {
 	for _, want := range []string{
 		".claude-plugin/plugin.json", "hooks/hooks.json", "hooks/register.ts",
 		"hooks/tracker.ts", "hooks/reporter.ts", "hooks/measure.ts",
+		"hooks/ui.tsx", "types/index.d.ts",
 	} {
 		if _, ok := files[want]; !ok {
 			t.Errorf("embedded mod is missing %s", want)
 		}
 	}
 	for name := range files {
-		if strings.HasPrefix(name, "tests/") || strings.Contains(name, "types/") || name == "tsconfig.json" {
+		if strings.HasPrefix(name, "tests/") || strings.Contains(name, ".claude-plugin/types/") || name == "tsconfig.json" {
 			t.Errorf("dev-only file embedded: %s", name)
 		}
 	}

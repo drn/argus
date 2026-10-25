@@ -190,6 +190,12 @@ func (d *DB) Config() config.Config {
 	if v, ok := kv["bridge.delivery"]; ok {
 		cfg.Bridge.Delivery = v == "true"
 	}
+	if v, ok := kv["bridge.band"]; ok {
+		cfg.Bridge.Band = v == "true"
+	}
+	if v, ok := kv["bridge.toasts"]; ok {
+		cfg.Bridge.Toasts = v == "true"
+	}
 
 	// Argus self-update config.
 	if v, ok := kv["argus.source_path"]; ok {

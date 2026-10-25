@@ -160,7 +160,9 @@ const (
 	//     snapshots; backend usage routing respects the task's account.
 	//   - v23: bridge mod pulls and submits idle messages with fenced delivery
 	//     receipts and submits throttled non-blocking coordinator nudges.
-	SupervisorSpawnSurface = 23
+	//   - v24: bridge mod renders a composable Hera band, toasts arrivals and
+	//     answers local inbox/status commands with live band/toast settings.
+	SupervisorSpawnSurface = 24
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -380,6 +382,8 @@ var SupervisorSpawnPaths = []string{
 	"internal/bridgemod/mod/argus-bridge/hooks/register.ts",
 	"internal/bridgemod/mod/argus-bridge/hooks/reporter.ts",
 	"internal/bridgemod/mod/argus-bridge/hooks/tracker.ts",
+	"internal/bridgemod/mod/argus-bridge/hooks/ui.tsx",
+	"internal/bridgemod/mod/argus-bridge/types/index.d.ts",
 	"internal/backendkind/backendkind.go",        // command → family classification
 	"internal/inject/antigravity/antigravity.go", // agy global config BuildCmd refreshes before launch
 	"internal/inject/atomicfile/atomicfile.go",   // atomic writer the global-config injectors use
@@ -443,7 +447,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "2908d63767fd04a885f7fd98b8fcf15dcb1512684409214a57f431aa6f2d5ea7"
+	SpawnSurfaceDigest  = "a141c9ae9b200aa4c5e53fe4959b3dd8fd4635781aff21b59e7c559e9f9af447"
 	StreamSurfaceDigest = "4db586fb7dcaf62899cb2ebc82bbaa7fcc325d7cf99611f5f7942c44f9bc9467"
 )
 
