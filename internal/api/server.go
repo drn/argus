@@ -46,8 +46,12 @@ type Server struct {
 	// runner is the session backend, typed as agent.SessionRunner so the daemon
 	// can hand it either an in-process *agent.Runner (supervisor OFF) or a
 	// supervisor-client (supervisor ON) — the API server drives both identically.
-	runner      agent.SessionRunner
-	token       string
+	runner agent.SessionRunner
+	token  string
+
+	// roMux is the router ReadOnlyGet dispatches through, built once on first use.
+	roOnce      sync.Once
+	roMux       *http.ServeMux
 	createTask  TaskCreator
 	httpSrv     *http.Server
 	push        *push.Manager

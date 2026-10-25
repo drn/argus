@@ -23,7 +23,7 @@ Interpretation of the liveness probe:
 - Output contains `"error":"missing or invalid Authorization header"` → daemon is up; this is the expected response without a token. Proceed.
 - Any other JSON → daemon is up but in an unexpected state; surface the response and stop.
 
-The projects list and the live schedules list require a Bearer token, so do not attempt to fetch them from this Context block — fetch them at runtime in the Verbs section using a single `cat ~/.argus/api-token` substitution inside a curl invocation (where shell command substitution is allowed).
+The projects list and the live schedules list require auth, so do not attempt to fetch them from this Context block — read them at runtime with the `mcp__argus__argus_api_get` tool (`/api/projects`, `/api/schedules`). Only the mutating verbs below need curl with the token.
 
 ## When to use this skill versus /schedule
 
@@ -50,10 +50,7 @@ Pick the verb from `$ARGUMENTS`. If unclear, ask which one.
 
 ### list
 
-```
-curl -sS -H "Authorization: Bearer $(cat ~/.argus/api-token)" \
-  http://localhost:7743/api/schedules | jq
-```
+Call the `mcp__argus__argus_api_get` tool with `path` = `/api/schedules` (read-only, in-process: no curl, no token, no permission prompt). The `schedule_list` MCP tool is an equivalent alternative. Use the same tool with `/api/projects` to read the project names for `create`.
 
 Show the user a compact table: `name`, `schedule`, `enabled`, `next_run_at`, `last_run_at`, `last_error` (only if non-empty). Hide `prompt` unless the user asks — prompts can be long.
 
