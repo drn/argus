@@ -254,3 +254,11 @@ func TestDefaultConfig_PermissionModeAndCleanCommand(t *testing.T) {
 		t.Errorf("claude command = %q, want bare \"claude\"", cmd)
 	}
 }
+
+// TestBridgeConfig_DefaultEnabled: the argus bridge defaults ON (phase 1 is
+// report-only).
+func TestBridgeConfig_DefaultEnabled(t *testing.T) {
+	if !DefaultConfig().Bridge.Enabled {
+		t.Error("Bridge.Enabled should default to true")
+	}
+}

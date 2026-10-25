@@ -1515,6 +1515,13 @@ func (d *Daemon) Serve(sockPath string) error {
 				d.apiPort = apiPort
 				d.mu.Unlock()
 				slog.Info("api server listening", "port", apiPort)
+				// Publish the bound port for processes that outlive a daemon
+				// bounce (the argus-bridge mod inside agent sessions re-reads
+				// it on any connection failure). Best-effort: a write failure
+				// only costs the bridge its discovery, never the daemon.
+				if err := api.WritePortFile(filepath.Join(db.DataDir(), api.PortFileName), apiPort); err != nil {
+					slog.Warn("api port file write failed", "err", err)
+				}
 			}
 		}
 	}
@@ -1667,6 +1674,15 @@ func (d *Daemon) cleanup() {
 		defer cancel()
 		if err := d.apiServer.Shutdown(ctx); err != nil {
 			slog.Error("api server shutdown", "err", err)
+		}
+		// The port is about to be dead: stop advertising it so a session's
+		// argus-bridge mod doesn't keep sending the master token to whatever
+		// else binds that port. Only if the file is still ours (takeover).
+		d.mu.Lock()
+		port := d.apiPort
+		d.mu.Unlock()
+		if port != 0 && api.RemovePortFile(filepath.Join(db.DataDir(), api.PortFileName), port) {
+			slog.Info("api port file removed", "port", port)
 		}
 	}
 

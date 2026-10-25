@@ -290,3 +290,54 @@ func canonicalHTTPSOrigin(raw string) string {
 	}
 	return "https://" + u.Host
 }
+
+// PortFileName is the basename, under the argus data dir, of the file that
+// records the port the REST API actually bound. bindWithRetry can move the
+// port across daemon restarts, and sessions (hence the argus-bridge mod inside
+// them) outlive a daemon bounce, so they rediscover the daemon through this.
+const PortFileName = "api-port"
+
+// WritePortFile atomically records port at path (temp file + rename, 0600) so
+// a concurrent reader sees either the old port or the new one, never an empty
+// or partial file.
+func WritePortFile(path string, port int) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".api-port-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.WriteString(strconv.Itoa(port) + "\n"); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return nil
+}
+
+// RemovePortFile deletes the port file at path, but only while it still names
+// port: a newer daemon that took over may already have rewritten it, and
+// removing that one would blind every session to the live daemon. Returns
+// whether it removed the file. A missing or unreadable file is not an error.
+func RemovePortFile(path string, port int) bool {
+	data, err := os.ReadFile(path)
+	if err != nil || strings.TrimSpace(string(data)) != strconv.Itoa(port) {
+		return false
+	}
+	return os.Remove(path) == nil
+}

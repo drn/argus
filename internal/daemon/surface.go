@@ -150,7 +150,13 @@ const (
 	//   - v20: BuildCmd reserves ARGUS_SANDBOXED, stripping inherited/configured
 	//     values and exporting exactly 1 only after successful sandbox wrapping
 	//     across all backends and fresh/resume/recycle launches.
-	SupervisorSpawnSurface = 20
+	//   - v21: Claude-family spawns append `--plugin-dir <materialized
+	//     argus-bridge mod dir>` when [bridge] is enabled (add-argus-bridge-shadow),
+	//     loading a mod that reports session state to the daemon. The mod ships
+	//     embedded in the supervisor's own binary, so a stale supervisor spawns
+	//     Claude sessions without it (or with an older mod) until restarted. The mod is materialized under
+	//     ~/.argus/cache/bridge-mod (the sandbox-writable part of ~/.argus).
+	SupervisorSpawnSurface = 21
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -357,8 +363,16 @@ func CompareSupervisorSurface(reported SurfaceVersion) SurfaceSkew {
 // omission from this list is exactly the silent false-negative the surface
 // version is guarded against.
 var SupervisorSpawnPaths = []string{
-	"internal/agent/agent.go",                    // BuildCmd: argv, env, dir, cache-dir redirection
-	"internal/agent/backends.go",                 // backend family registry BuildCmd dispatches on
+	"internal/agent/agent.go",                                        // BuildCmd: argv, env, dir, cache-dir redirection
+	"internal/agent/backends.go",                                     // backend family registry BuildCmd dispatches on
+	"internal/agent/bridge_mod.go",                                   // --plugin-dir bridge mod materialization seam BuildCmd calls
+	"internal/bridgemod/bridgemod.go",                                // embedded argus-bridge mod + content-addressed materialization
+	"internal/bridgemod/mod/argus-bridge/.claude-plugin/plugin.json", // the mod the spawned session loads
+	"internal/bridgemod/mod/argus-bridge/hooks/hooks.json",
+	"internal/bridgemod/mod/argus-bridge/hooks/measure.ts",
+	"internal/bridgemod/mod/argus-bridge/hooks/register.ts",
+	"internal/bridgemod/mod/argus-bridge/hooks/reporter.ts",
+	"internal/bridgemod/mod/argus-bridge/hooks/tracker.ts",
 	"internal/backendkind/backendkind.go",        // command → family classification
 	"internal/inject/antigravity/antigravity.go", // agy global config BuildCmd refreshes before launch
 	"internal/inject/atomicfile/atomicfile.go",   // atomic writer the global-config injectors use
@@ -420,7 +434,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "35b3c4cb9d197e2c3a2d2c3506a8a51d76cc7a4beb6d0fe7d187863c378638b2"
+	SpawnSurfaceDigest  = "eb7fa903b56ceb198d64d37aa7ab222dbc5f7418ccb30c6ebc8e2df155ced23d"
 	StreamSurfaceDigest = "c1dc8210d586d40549d86dde03c2959d7f5b064d46c7576197037e36d130bb53"
 )
 

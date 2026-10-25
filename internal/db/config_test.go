@@ -362,3 +362,22 @@ func TestReadConfigValueReadOnly(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.False(t, found)
 }
+
+// TestDB_Config_Bridge covers the bridge switch: default ON, DB "false"
+// disables, and a config.toml value wins over the DB.
+func TestDB_Config_Bridge(t *testing.T) {
+	d := testDB(t)
+	testutil.True(t, d.Config().Bridge.Enabled)
+	testutil.NoError(t, d.SetConfigValue("bridge.enabled", "false"))
+	testutil.False(t, d.Config().Bridge.Enabled)
+}
+
+func TestDB_Config_BridgeTOMLWins(t *testing.T) {
+	dir := t.TempDir()
+	d, err := Open(filepath.Join(dir, "data.sql"))
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	testutil.NoError(t, d.SetConfigValue("bridge.enabled", "true"))
+	testutil.NoError(t, os.WriteFile(filepath.Join(dir, config.FileName), []byte("[bridge]\nenabled = false\n"), 0o644))
+	testutil.False(t, d.Config().Bridge.Enabled)
+}

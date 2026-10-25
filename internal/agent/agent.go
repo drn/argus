@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/url"
 	"os"
 	"os/exec"
@@ -944,6 +945,21 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 			uxlog.Log("[routing] builtin routing content materialize failed (continuing without it): %v", err)
 		} else if path != "" {
 			cmdStr += " --append-system-prompt-file " + shellQuote(path)
+		}
+	}
+
+	// Load the argus-bridge mod (reports session state to the daemon as
+	// structured events) into families that run Claude Code mods. Gated by the
+	// [bridge] config switch; like the skills/routing blocks above, a
+	// materialization failure is logged and skipped rather than blocking launch.
+	if fam.BridgeMod && cfg.Bridge.Enabled {
+		if dir, err := ensureBridgeModFn(); err != nil {
+			// uxlog is a no-op in the daemon and supervisor (neither calls
+			// uxlog.Init), where BuildCmd actually runs; slog reaches their logs.
+			uxlog.Log("[bridge] mod materialize failed (continuing without it): %v", err)
+			slog.Warn("[bridge] mod materialize failed (continuing without it)", "err", err)
+		} else if dir != "" {
+			cmdStr += " --plugin-dir " + shellQuote(dir)
 		}
 	}
 

@@ -462,3 +462,47 @@ func TestAuthMiddleware_SetsVAPIDSubject(t *testing.T) {
 		testutil.Equal(t, pm2.Subject(), "")
 	})
 }
+
+func TestWritePortFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", PortFileName)
+	testutil.NoError(t, WritePortFile(path, 7743))
+	data, err := os.ReadFile(path)
+	testutil.NoError(t, err)
+	testutil.Equal(t, string(data), "7743\n")
+	info, err := os.Stat(path)
+	testutil.NoError(t, err)
+	testutil.Equal(t, info.Mode().Perm(), os.FileMode(0o600))
+
+	// Replacing leaves no temp files behind and the new value in place.
+	testutil.NoError(t, WritePortFile(path, 7745))
+	data, _ = os.ReadFile(path)
+	testutil.Equal(t, string(data), "7745\n")
+	entries, _ := os.ReadDir(filepath.Dir(path))
+	testutil.Equal(t, len(entries), 1)
+}
+
+func TestWritePortFile_UnwritableDir(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "afile")
+	testutil.NoError(t, os.WriteFile(file, nil, 0o600))
+	// A path whose parent is a regular file cannot be created.
+	testutil.Error(t, WritePortFile(filepath.Join(file, "api-port"), 1))
+}
+
+func TestRemovePortFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), PortFileName)
+	testutil.NoError(t, WritePortFile(path, 7743))
+
+	t.Run("not removed while a newer daemon owns it", func(t *testing.T) {
+		testutil.False(t, RemovePortFile(path, 7744))
+		_, err := os.Stat(path)
+		testutil.NoError(t, err)
+	})
+	t.Run("removed when it still names our port", func(t *testing.T) {
+		testutil.True(t, RemovePortFile(path, 7743))
+		_, err := os.Stat(path)
+		testutil.True(t, os.IsNotExist(err))
+	})
+	t.Run("missing file is fine", func(t *testing.T) {
+		testutil.False(t, RemovePortFile(path, 7743))
+	})
+}

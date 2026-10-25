@@ -619,6 +619,10 @@ func (s *Server) idleWatcherTick(state *idleWatcherState) {
 	}
 
 	s.detectNeedsInputTick(state, running, idle, tailOf)
+	// Shadow-compare the FINAL scraper verdicts (idle incl. the content-idle
+	// fold-in, needs-input as just published) against the bridge mod's reported
+	// state. Observation only; changes nothing above or below.
+	s.observeBridge(now, running, idleSet, state.needsInputNow)
 	lastUserInputOf := func(id string) time.Time {
 		if sess := s.runner.Get(id); sess != nil {
 			return sess.LastUserInput()

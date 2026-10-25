@@ -105,6 +105,11 @@ type Family struct {
 	RecaptureEveryExit bool
 	// SessionSwitcher: the Claude session list/switch endpoints apply.
 	SessionSwitcher bool
+	// BridgeMod: Claude Code mods can be loaded into this CLI's sessions, so
+	// BuildCmd appends `--plugin-dir <argus-bridge mod dir>` (when [bridge] is
+	// enabled). Mods run only inside Claude Code; every other family keeps
+	// screen-reading as its only state source.
+	BridgeMod bool
 
 	// KnownModels is the curated model list for pickers; nil means
 	// custom-only (any typed id is accepted).
@@ -349,6 +354,7 @@ var families = []*Family{
 		ResumeAvailable:    claudeResumeAvailable,
 		RecaptureEveryExit: true,
 		SessionSwitcher:    true,
+		BridgeMod:          true,
 		KnownModels:        []string{"opus", "sonnet", "haiku", "fable"},
 		ModelDelivery:      ModelFlag,
 		SkillDelivery:      SkillsAddDir,

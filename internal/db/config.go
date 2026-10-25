@@ -182,6 +182,12 @@ func (d *DB) Config() config.Config {
 		cfg.Supervisor.Enabled = v == "true"
 	}
 
+	// Bridge config. Absent key ⇒ true (the DefaultConfig base); only an
+	// explicit "false" disables it. config.toml wins over this DB value.
+	if v, ok := kv["bridge.enabled"]; ok {
+		cfg.Bridge.Enabled = v == "true"
+	}
+
 	// Argus self-update config.
 	if v, ok := kv["argus.source_path"]; ok {
 		cfg.Argus.SourcePath = v
