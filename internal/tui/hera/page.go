@@ -6,6 +6,7 @@ import (
 
 	heramodel "github.com/drn/argus/internal/hera/model"
 
+	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/keymap"
 	"github.com/drn/argus/internal/tui/planview"
@@ -146,7 +147,14 @@ type HeraPage struct {
 	// heraPlanNodesWithBridge (the planned + live worker roles and their
 	// hera_blocks edges — the plan a coordinator authored), so there is no
 	// provider seam. It replaced the retired orchestration-tree projection.
-	plan *planview.Widget // embedded plan-DAG graph
+	plan           *planview.Widget // embedded plan-DAG graph
+	board          *boardView
+	boardOrchID    int64
+	showBoard      bool
+	boardAuto      bool
+	boardHeight    int
+	OnBoardRead    func(roleID, itemID int64, updatedAt time.Time)
+	OnBoardDismiss func(roleID, itemID int64)
 
 	// planOrchID is the orchestrator ID whose plan is currently projected into the
 	// plan widget (0 when none). rebuildPlan compares it to the incoming root to
@@ -299,6 +307,8 @@ func NewHeraPage(reader heramodel.HeraReader) *HeraPage {
 		agentPane: terminal.NewTerminalPane(),
 		details:   NewDetailsView(),
 		plan:      planview.New(),
+		board:     newBoardView(),
+		boardAuto: true,
 		summary:   widget.NewAttentionSummary(),
 	}
 	// Show the Tasks view's LAUNCH splash while a role's task is launching.
@@ -309,6 +319,7 @@ func NewHeraPage(reader heramodel.HeraReader) *HeraPage {
 	// Retitle the embedded graph so it reads as the plan DAG, not a second
 	// top-level " DAG " tab (gotchas/hera-view.md).
 	p.plan.SetTitle(" Plan ")
+	p.rail.boardAuto = true
 	p.rail.SetFocused(true)
 	// Rebind the panes whenever the rail cursor lands on a different role.
 	p.rail.SetOnSelectionChanged(p.applySelection)
@@ -629,6 +640,15 @@ type tasksReader struct {
 
 func (r *tasksReader) Tasks() ([]*model.Task, error) { return r.tasks, nil }
 
+func (r *tasksReader) ListHeraBoardItems(id int64, resolved bool) ([]*db.HeraBoardItem, error) {
+	if br, ok := r.HeraReader.(interface {
+		ListHeraBoardItems(int64, bool) ([]*db.HeraBoardItem, error)
+	}); ok {
+		return br.ListHeraBoardItems(id, resolved)
+	}
+	return nil, nil
+}
+
 // SetClipboardHint toggles whether the focused terminal pane advertises a
 // staged agent clipboard payload via a `(ctrl+y copy)` border-title affordance.
 // The App refreshes it each tick from the daemon for the focused pane's task
@@ -922,7 +942,7 @@ func (p *HeraPage) logSummaryTransition(shown bool) {
 }
 
 // drawDetailsRegion stacks the read-only roster (top) over the embedded plan
-// DAG (bottom) for a selected coordinator — both render at once, no toggle. The
+// DAG or human board (bottom) for a selected coordinator. The
 // roster is sized to its natural content height, capped at half the region so
 // the plan graph always keeps at least half; the plan fills the remainder. Each
 // widget draws its own bordered panel covering its full sub-rect, so no stale
@@ -938,6 +958,13 @@ func (p *HeraPage) drawDetailsRegion(screen tcell.Screen, y, w, h int) {
 
 	planH := h - rosterH
 	if planH >= 2 {
+		if p.showBoard {
+			p.boardHeight = planH
+			p.plan.SetRect(0, 0, 0, 0)
+			p.board.draw(screen, p.agentX, y+rosterH, w, planH, p.boardTitle(), p.focus.State() == FocusAgent)
+			return
+		}
+		p.plan.SetTitle(p.boardTitle())
 		p.plan.SetRect(p.agentX, y+rosterH, w, planH)
 		p.plan.SetFocused(p.focus.State() == FocusAgent)
 		p.plan.Draw(screen)
@@ -1079,6 +1106,13 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 		}
 		switch p.focus.State() {
 		case FocusRail:
+			if p.detailsMode && !p.rail.Filtering() {
+				if act, _ := p.keys().Resolve(keymap.CtxHeraBoard, event); act == keymap.ActBoardToggle {
+					p.showBoard = !p.showBoard
+					uxlog.Log("[board] toggled orch=%d board=%v", p.boardOrchID, p.showBoard)
+					return
+				}
+			}
 			if p.handleRailMutation(event) {
 				return
 			}
@@ -1087,6 +1121,15 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 			p.forwardKey(p.coordPane, event)
 		case FocusAgent:
 			if p.detailsMode {
+				if act, _ := p.keys().Resolve(keymap.CtxHeraBoard, event); act == keymap.ActBoardToggle {
+					p.showBoard = !p.showBoard
+					uxlog.Log("[board] toggled orch=%d board=%v", p.boardOrchID, p.showBoard)
+					return
+				}
+				if p.showBoard {
+					p.handleBoardKey(event, setFocus)
+					return
+				}
 				// Rail-mutation keys (pin P, rename r, …, Ctrl+D) act on the rail's
 				// CURRENT selection — the selected coordinator — even while its
 				// Details/plan region is focused. Route them to handleRailMutation
@@ -1484,7 +1527,9 @@ func (p *HeraPage) MouseHandler() func(action tview.MouseAction, event *tcell.Ev
 					// Coordinator: the plan graph (bottom of the stacked region) is
 					// the interactive surface; it ignores clicks outside its own rect,
 					// so the roster area above it is inert.
-					consumed, _ = p.plan.MouseHandler()(action, event, setFocus)
+					if !p.showBoard {
+						consumed, _ = p.plan.MouseHandler()(action, event, setFocus)
+					}
 				} else {
 					consumed, _ = p.agentPane.MouseHandler()(action, event, setFocus)
 				}

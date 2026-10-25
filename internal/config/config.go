@@ -429,9 +429,11 @@ type Keybindings struct {
 	Diff      map[string]string `toml:"diff"`
 	Settings  map[string]string `toml:"settings"`
 	HeraRail  map[string]string `toml:"hera_rail"`
+	HeraBoard map[string]string `toml:"hera_board"`
 }
 
 type UIConfig struct {
+	CoordinatorBoard bool   `toml:"coordinator_board"`
 	Theme            string `toml:"theme"`
 	ShowElapsed      bool   `toml:"show_elapsed"`
 	ShowIcons        bool   `toml:"show_icons"`
@@ -523,6 +525,7 @@ func DefaultConfig() Config {
 			Theme:            "default",
 			ShowElapsed:      true,
 			ShowIcons:        true,
+			CoordinatorBoard: true,
 			SpinnerStyle:     "progress",
 			DefaultAgentZoom: true,
 		},

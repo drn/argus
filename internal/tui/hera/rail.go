@@ -139,6 +139,7 @@ const heraIconCoord = rune(0x0F0E7B) // 󰹻
 // read-only: sections, cursor, and per-orchestrator collapse. No mutation
 // verbs live here (6c).
 type Rail struct {
+	boardAuto bool
 	*tview.Box
 
 	model  heramodel.Model
@@ -2381,7 +2382,7 @@ func (r *Rail) drawOrchRow(screen tcell.Screen, x, y, w int, row railRow, select
 	}
 	// coordinator marker
 	if col < x+w {
-		screen.SetContent(col, y, heraIconCoord, nil, nameStyle)
+		screen.SetContent(col, y, r.coordMarker(o.ID), nil, nameStyle)
 		col += 2
 	}
 	remaining := w - (col - x)
@@ -2438,7 +2439,7 @@ func (r *Rail) drawRoleRow(screen tcell.Screen, x, y, w int, row railRow, select
 			screen.SetContent(col, y, []rune(chevron(r.isCollapsed(row.collOrchID)))[0], nil, markerStyle)
 			col += 2
 			if col < x+w {
-				screen.SetContent(col, y, heraIconCoord, nil, markerStyle)
+				screen.SetContent(col, y, r.coordMarker(row.collOrchID), nil, markerStyle)
 				col += 2
 			}
 		}

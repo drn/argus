@@ -25,6 +25,8 @@ import (
 // its live binding points at (empty when unbound), and whether that task is
 // flagged meta:hera.ready_to_close (M4 — a finished worker awaiting close-out).
 type RoleView struct {
+	BoardItems   []*db.HeraBoardItem
+	BoardUnread  int
 	RoleID       int64
 	OrchID       int64
 	Name         string
@@ -1254,6 +1256,24 @@ func BuildModel(r HeraReader, needsInput map[string]bool, sessionIdle map[string
 				continue
 			}
 			rv := buildRoleView(r, role, roleToBinding, roleToLatest, heraMeta, taskByID, needsInput, sessionIdle, sessionRunning, sustainedActive)
+			if role.Kind == db.HeraKindCoordinator {
+				if br, ok := r.(interface {
+					ListHeraBoardItems(int64, bool) ([]*db.HeraBoardItem, error)
+				}); ok {
+					items, berr := br.ListHeraBoardItems(role.ID, false)
+					if berr != nil {
+						uxlog.Log("[board] snapshot failed role=%d: %v", role.ID, berr)
+					} else {
+						rv.BoardItems = items
+						for _, item := range items {
+							if !item.Read {
+								rv.BoardUnread++
+							}
+						}
+						uxlog.Log("[board] snapshot role=%d open=%d unread=%d", role.ID, len(items), rv.BoardUnread)
+					}
+				}
+			}
 			rv.CostUSDAccrued = costByRole[role.ID] // zero value on nil map or missing key
 			if role.Kind == db.HeraKindFreelance && role.ArchivedAt == nil && o.ArchivedAt == nil {
 				// Active freelance roles live in their own top-level section.

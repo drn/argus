@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 // DB is the SQLite-backed data store for tasks, projects, backends, and config.
 type DB struct {

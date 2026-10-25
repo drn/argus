@@ -42,6 +42,7 @@ func (s *Server) routes() *http.ServeMux {
 	// Hera orchestration roster — orchestrators → roles (coordinator/worker)
 	// plus freelance roles. Read-only; feeds the webapp's Hera tab.
 	mux.HandleFunc("GET /api/hera", s.handleHera)
+	mux.HandleFunc("GET /api/hera/roles/{id}/board", s.handleHeraBoard)
 	// Hera mutations; nuke is master-gated inside its handlers.
 	mux.HandleFunc("GET /api/hera/orchestrators/{id}/nuke-preview", s.handleHeraNukePreview)
 	mux.HandleFunc("POST /api/hera/orchestrators/{id}/nuke", s.handleHeraNukeOrch)

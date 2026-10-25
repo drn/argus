@@ -54,6 +54,13 @@ func TestHeraCoordinatorOrientation_NamesOrch(t *testing.T) {
 	testutil.Equal(t, strings.Contains(got, `"my-orch"`), true)
 }
 
+func TestHeraCoordinatorOrientation_HumanBoard(t *testing.T) {
+	got := HeraCoordinatorOrientation("board")
+	for _, rule := range []string{"hera_board_post", "hera_board_update", "hera_board_resolve", "when settled", "after Aaron replies"} {
+		t.Run(rule, func(t *testing.T) { testutil.Contains(t, got, rule) })
+	}
+}
+
 // TestHeraCoordinatorOrientation_CarriesFiveDisciplineHabits is a snapshot-style
 // test asserting the add-coordinator-context-management D4 habits all survive in
 // the spawn orientation text: small window, low-default-effort-with-escalation,

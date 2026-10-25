@@ -260,6 +260,8 @@ func overridesFor(kb config.Keybindings, ctx Context) map[string]string {
 		return kb.Settings
 	case CtxHeraRail:
 		return kb.HeraRail
+	case CtxHeraBoard:
+		return kb.HeraBoard
 	}
 	return nil
 }

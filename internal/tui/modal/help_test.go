@@ -43,9 +43,9 @@ func TestHelpModal_Draw(t *testing.T) {
 	// Height must clear the full section list (the modal scrolls when it can't);
 	// 140 leaves headroom so every section — including the last ones, Hera plan
 	// DAG and Modals & Forms — renders without scrolling.
-	sim := drawAt(t, 100, 140)
+	sim := drawAt(t, 100, 160)
 	m := NewHelpModal()
-	m.SetRect(0, 0, 100, 140)
+	m.SetRect(0, 0, 100, 160)
 	m.Draw(sim)
 	sim.Sync()
 
@@ -57,6 +57,10 @@ func TestHelpModal_Draw(t *testing.T) {
 
 	body := screenString(sim)
 	testutil.Contains(t, body, "Keybindings")
+	testutil.Contains(t, body, "Coordinator board")
+	testutil.Contains(t, body, "toggle plan / human board")
+	testutil.Contains(t, body, "compose reply to coordinator (never submits)")
+	testutil.Contains(t, body, "dismiss board item")
 	testutil.Contains(t, body, "Task List")
 	testutil.Contains(t, body, "Projects View (rail)")
 	testutil.Contains(t, body, "Agent View")
@@ -321,9 +325,9 @@ func TestHelpModal_DrawShowsScrollPositionWhenOverflow(t *testing.T) {
 
 func TestHelpModal_DrawHidesScrollHintWhenFits(t *testing.T) {
 	// Give the modal enough room that every row fits.
-	sim := drawAt(t, 100, 140)
+	sim := drawAt(t, 100, 160)
 	m := NewHelpModal()
-	m.SetRect(0, 0, 100, 140)
+	m.SetRect(0, 0, 100, 160)
 	m.Draw(sim)
 	sim.Sync()
 	body := screenString(sim)
