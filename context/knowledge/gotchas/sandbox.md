@@ -1,5 +1,7 @@
 ## Sandbox (macOS sandbox-exec)
 
+- **`ARGUS_SANDBOXED=1` is reserved for successfully wrapped launches; worktree paths and `ARGUS_TASK_ID` do not prove OS confinement.** `BuildCmd` removes inherited/configured values after all environment mappings and emits exactly `1` only when wrapping succeeded, including resume and recycle; unwrapped launches leave it absent.
+
 - **sandbox-exec uses SBPL profiles, not JSON.** `GenerateSandboxConfig()` returns `(profilePath, params, cleanup, err)`.
 - **SBPL symlink trap:** All SBPL rules (deny AND allow) must use symlink-resolved paths — kernel resolves symlinks before matching. `evalSymlinksOrKeep()` resolves HOME, WORKTREE, git dir, and custom paths. Without this, rules containing `/var/folders/...` silently fail against kernel-resolved `/private/var/folders/...`.
 - **Must allow writes to:** `~/.claude.json`, `~/.claude/` (or Claude hangs silently), `/var/folders` (macOS temp dirs), and the main repo's `.git` dir (for worktree git operations — `resolveGitDir()` handles this automatically).
