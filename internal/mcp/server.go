@@ -219,6 +219,8 @@ type Server struct {
 	heraSpawn   HeraSpawner     // optional; set via SetHeraService (born-bound spawn)
 	heraRevive  HeraReviver     // optional; set via SetHeraReviver (PULL-revive, add-hera-revive)
 	profileCfg  ConfigStore     // optional; set via SetProfileResolver
+	apiGetMu    sync.RWMutex    // guards apiGet (set after the listener is serving)
+	apiGet      APIGetter       // optional; set via SetAPIGetter (argus_api_get)
 	createMu    sync.Mutex
 	creating    int // number of in-flight task_create calls
 	// creatingKeys tracks (project, name) pairs currently being created so
@@ -1070,6 +1072,9 @@ func (s *Server) handleToolsList(req *Request) *Response {
 	if s.profileResolveEnabled() {
 		tools = append(tools, profileToolDefs...)
 	}
+	if s.apiGetEnabled() {
+		tools = append(tools, apiGetToolDefs...)
+	}
 	if s.todoToolsActive() {
 		tools = append(tools, todoToolDefs...)
 	}
@@ -1200,6 +1205,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolHeraAccept(req.ID, params.Arguments)
 	case "profile_resolve":
 		return s.toolProfileResolve(req.ID, params.Arguments)
+	case "argus_api_get":
+		return s.toolAPIGet(req.ID, params.Arguments)
 	case "todo_create":
 		if !s.todoToolsActive() {
 			return errorResp(req.ID, -32601, "unknown tool: "+params.Name)

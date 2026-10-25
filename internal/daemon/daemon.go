@@ -1504,6 +1504,12 @@ func (d *Daemon) Serve(sockPath string) error {
 			apiSrv.SetFocusTracker(d.focusTracker)
 			d.apiServer = apiSrv
 			d.restoreBridgeUsage = usagebudget.SetBridgeReader(apiSrv.BridgeUsage)
+			// argus_api_get: agents read daemon REST state in-process through the
+			// MCP server instead of curl + the master token. Only present when both
+			// the MCP server (KB.Enabled) and the REST API are up.
+			if d.mcpServer != nil {
+				d.mcpServer.SetAPIGetter(apiSrv.ReadOnlyGet)
+			}
 			// Wire the events.Sink to the API server's event bus so emission
 			// sites (db, orch, runner, this file) feed /api/events/stream.
 			// Cleared on daemon shutdown so a torn-down apiSrv can't be

@@ -743,6 +743,12 @@ If the recipient has a live agent session the daemon also writes a single notifi
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `profile_resolve` | Resolve the [diligence profile](#diligence-profiles-model-tiering) in effect for the caller and return its full body (per-archetype `model`/`effort`/`window`, `[rigor]`, `[panel]`) as structured JSON. Works from any `cwd`/task, not just hera-bound ones. Optional explicit `profile` name bypasses `cwd` resolution. Fails open: `{"resolved": false, "errors": [...]}` rather than a hard error. The [`argus-resolve-model`](#agent-facing-skills) skill is the documented convention for using this to pick a model for Claude's native sub-agent dispatch (the `Agent`/`Task` tool), as opposed to hera worker spawn, which resolves archetypes automatically at spawn time. |
 
+**Daemon State (read-only):**
+
+| Tool            | Description |
+| --------------- | ----------- |
+| `argus_api_get` | GET a daemon REST path in-process (e.g. `/api/tasks`, `/api/tasks/{id}/bridge`, `/api/hera`) and return the body — no curl, no token, no permission prompt. GET-only: non-GET routes, SSE streams, `..`/scheme/host paths, and master-token-only routes are refused; the API token never appears in output. Present only when both the MCP server and the REST API are enabled. |
+
 **Schedule Management:**
 
 | Tool               | Description                                                                                                                                                                                               |
