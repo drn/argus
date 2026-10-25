@@ -255,7 +255,7 @@ The line SHALL be dimmed and SHALL use theme keys for every state color. The one
 
 When a refresh cannot reach the daemon (API files unreadable, a failed or non-OK response, or a timeout) the mod SHALL keep the last snapshot on screen and append the offline flag, and SHALL clear the flag on the next successful refresh. With no earlier snapshot the line stays hidden.
 
-Rendering SHALL use a typed session atom and call next(e). It SHALL include beneath when another plugin drew it, and SHALL omit the engine's own empty component (which adds a blank row between the band and the prompt box). It SHALL yield to beneath whole while a survey holds the band. It SHALL hide its line when unbound, when no snapshot has ever loaded, when bridge.enabled=false or when bridge.band=false. Refresh SHALL occur after turn.complete, session.measure and on a slow timer without blocking hooks.
+Rendering SHALL use a typed session atom and call next(e). It SHALL include beneath when another plugin drew it, and SHALL omit the engine's own empty component. The blank row between the band and the prompt box is the engine's fixed spacer between the transcript and the prompt box, present with or without a band, and lies outside the mod's tree. It SHALL yield to beneath whole while a survey holds the band. It SHALL hide its line when unbound, when no snapshot has ever loaded, when bridge.enabled=false or when bridge.band=false. Refresh SHALL occur after turn.complete, session.measure and on a slow timer without blocking hooks.
 
 #### Scenario: Running band toggles without restart
 
@@ -282,7 +282,7 @@ Rendering SHALL use a typed session atom and call next(e). It SHALL include bene
 - **WHEN** a band is showing and the next refresh gets a failed response
 - **THEN** the band keeps the last values and appends `⚠ bridge offline`, and the flag clears on the next successful refresh
 
-#### Scenario: No blank row above the prompt box
+#### Scenario: Band tree holds only its own line
 
 - **WHEN** no other plugin draws in the band and no survey is up
 - **THEN** the band's tree holds only its own line, not the engine's empty component
