@@ -11,6 +11,7 @@
 import type { Hook, Register } from 'claude-code'
 import { measureFields, MeasureThrottle } from './measure'
 import { Reporter, type Env } from './reporter'
+import { Delivery } from './delivery'
 import { GRACE_MS, NeedsInputTracker, type Transition } from './tracker'
 
 /** The engine interface a hook receives. */
@@ -30,6 +31,8 @@ type Bridge = {
   readonly measure: MeasureThrottle
   lastModel: string | undefined
   heartbeat: { cancel: () => void } | undefined
+  deliveryTimer: { cancel: () => void } | undefined
+  delivery: Delivery | undefined
 }
 
 function newBridge(): Bridge {
@@ -43,6 +46,8 @@ function newBridge(): Bridge {
     measure: new MeasureThrottle(),
     lastModel: undefined,
     heartbeat: undefined,
+    deliveryTimer: undefined,
+    delivery: undefined,
   }
 }
 
@@ -125,6 +130,46 @@ async function beat($: Engine, b: Bridge): Promise<void> {
   await rep($, b).flush()
 }
 
+// Read discovery on every request: sessions survive daemon port/token changes.
+async function bridgeRequest($: Engine, b: Bridge, path: string, token?: string): Promise<Record<string, unknown> | undefined> {
+  const task = await rep($, b).taskId()
+  if (!task) return undefined
+  const dir = (await $.env.get('ARGUS_BRIDGE_DIR')) || `${await $.env.get('HOME')}/.argus`
+  const port = (await $.fs.read(`${dir}/api-port`)).trim()
+  const auth = (await $.fs.read(`${dir}/api-token`)).trim()
+  if (!/^\d+$/.test(port) || !auth) return undefined
+  const body = JSON.stringify({ generation: await $.env.get('ARGUS_BRIDGE_GENERATION'), boot: b.boot, token })
+  const response = await Promise.race([
+    $.http.fetch(`http://127.0.0.1:${port}/api/tasks/${encodeURIComponent(task)}/bridge/${path}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${auth}`, 'Content-Type': 'application/json' },
+      body,
+    }),
+    $.clock.sleep(POST_TIMEOUT_MS).then(() => undefined),
+  ])
+  if (!response?.ok) return undefined
+  return JSON.parse(response.text) as Record<string, unknown>
+}
+
+function deliveryFor($: Engine, b: Bridge): Delivery {
+  b.delivery ??= new Delivery({
+    idle: () => !b.busy && !b.tracker.active,
+    request: (path, token) => bridgeRequest($, b, path, token),
+    submit: async text => {
+      if (b.busy || b.tracker.active) return false
+      const result = await $.prompt.submit({ text })
+      return !result.drop
+    },
+  })
+  return b.delivery
+}
+
+async function pollDelivery($: Engine, b: Bridge): Promise<void> {
+  // Flush turn/identity reports before requesting a route decision.
+  await rep($, b).flush()
+  await deliveryFor($, b).poll()
+}
+
 export const register: Register = on => {
   const b = newBridge()
 
@@ -136,16 +181,19 @@ export const register: Register = on => {
       b.heartbeat = $.clock.every(HEARTBEAT_MS, () => {
         void safe(() => beat($, b))
       })
+      b.deliveryTimer?.cancel()
+      b.deliveryTimer = $.clock.every(5_000, () => { void safe(() => pollDelivery($, b)) })
+      $.clock.after(0, () => { void safe(() => pollDelivery($, b)) })
     })
     return next(e)
   })
 
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) {
+      b.busy = true
       await safe(async () => {
         if (!(await rep($, b).taskId())) return
         await syncSession($, b, false)
-		b.busy = true
         await rep($, b).emit('turn.start', { turn_id: e.turnId })
       })
     }
@@ -160,6 +208,7 @@ export const register: Register = on => {
 		b.busy = false
         await sendMeasure($, b, b.measure.flush(await $.clock.now()))
         await rep($, b).emit('turn.complete', { turn_id: e.turnId, reason: e.reason })
+        $.clock.after(0, () => { void safe(() => pollDelivery($, b)) })
       })
     }
     return next(e)
@@ -210,4 +259,5 @@ export const register: Register = on => {
     })
     return next(e)
   })
+
 }

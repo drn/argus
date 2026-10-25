@@ -409,6 +409,12 @@ func (s *Store) Schedules() ([]*model.ScheduledTask, error) {
 func (s *Store) SetConfigValue(key, value string) error {
 	upd := apiclient.SettingsUpdate{}
 	switch key {
+	case "bridge.enabled":
+		b := value == "true"
+		upd.Bridge = &apiclient.BridgeUpdate{Enabled: &b}
+	case "bridge.delivery":
+		b := value == "true"
+		upd.Bridge = &apiclient.BridgeUpdate{Delivery: &b}
 	case "sandbox.enabled":
 		b := value == "true"
 		upd.Sandbox = &apiclient.SandboxUpdate{Enabled: &b}
@@ -438,7 +444,13 @@ func (s *Store) SetConfigValue(key, value string) error {
 	default:
 		return errors.New("apistore: SetConfigValue: no remote handler for key " + key)
 	}
-	_, err := s.c.UpdateSettings(context.Background(), upd)
+	response, err := s.c.UpdateSettings(context.Background(), upd)
+	if err == nil && upd.Bridge != nil {
+		s.configMu.Lock()
+		s.cachedConfig.Bridge.Enabled = response.Bridge.Enabled
+		s.cachedConfig.Bridge.Delivery = response.Bridge.Delivery
+		s.configMu.Unlock()
+	}
 	return err
 }
 

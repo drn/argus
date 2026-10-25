@@ -3,11 +3,13 @@ import type { On } from 'claude-code'
 
 type Posted = { type: string; seq: number; boot: string; session_id?: string; [k: string]: unknown }
 
-function world(on: On, opts: { task?: string; sessionId?: () => string; denyFetch?: boolean; hangFetch?: boolean } = {}) {
+function world(on: On, opts: { task?: string; sessionId?: () => string; denyFetch?: boolean; hangFetch?: boolean; deliver?: boolean } = {}) {
   const posted: Posted[] = []
   const urls: string[] = []
   const reads: string[] = []
   let fetches = 0
+  let offered = false
+  const submitted: string[] = []
   const clock = mock.clock(on, { now: 1_000_000 })
   mock.env(on, { HOME: '/h', ARGUS_BRIDGE_GENERATION: 'launch', ...(opts.task === undefined ? {} : { ARGUS_TASK_ID: opts.task }) })
   on('fs.read', (_, e) => {
@@ -19,7 +21,14 @@ function world(on: On, opts: { task?: string; sessionId?: () => string; denyFetc
     if (opts.denyFetch) return { deny: 'network blocked' }
     if (opts.hangFetch) return new Promise(() => {}) as never
     urls.push(e.url)
-    posted.push(...JSON.parse(e.init?.body ?? '{"events":[]}').events)
+    if (opts.deliver && e.url.endsWith('/deliveries')) {
+      const delivery = offered ? null : { token: 'c1', text: 'INTEGRATION_NOTICE [argus-delivery:hera:1]' }
+      offered = true
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ delivery }) } }
+    }
+    if (opts.deliver && e.url.endsWith('/authorize')) return { value: { status: 200, ok: true, headers: {}, text: '{"authorized":true}' } }
+    if (opts.deliver && e.url.endsWith('/ack')) return { value: { status: 200, ok: true, headers: {}, text: '{"acked":true}' } }
+    posted.push(...(JSON.parse(e.init?.body ?? '{"events":[]}').events ?? []))
     return { value: { status: 200, ok: true, headers: {}, text: '{}' } }
   })
   on('session.id', () => ({ value: opts.sessionId ? opts.sessionId() : 'sess-1' }))
@@ -29,15 +38,31 @@ function world(on: On, opts: { task?: string; sessionId?: () => string; denyFetc
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('session.measure', (_, e) => ({ changed: e.changed }))
+  on('prompt.submit', (_, e) => { submitted.push(e.text); return { text: e.text } })
   // Delivery is background work: let it run before looking at what was posted.
   const delivered = async () => {
     await clock.settle()
     await clock.settle()
   }
-  return { posted, urls, reads, fetches: () => fetches, clock, delivered, types: () => posted.map(p => p.type) }
+  return { posted, urls, reads, submitted, fetches: () => fetches, clock, delivered, types: () => posted.map(p => p.type) }
 }
 
 const START = { cwd: '/work', surface: 'terminal', isInteractive: true } as const
+
+test('real registration polls after a completed turn and never during a busy turn', async ($, on) => {
+  const w = world(on, { task: 'T1', deliver: true })
+  await $.session.start(START)
+  await $.turn.start({ text: 'working', turnId: 't1' })
+  await w.clock.advance(5_000)
+  await w.delivered()
+  expect(w.submitted).toEqual([])
+  expect(w.urls.filter(u => u.endsWith('/deliveries'))).toEqual([])
+  await $.turn.complete({ turnId: 't1', reason: 'answer', durationMs: 1, isAborted: false, answer: 'done' })
+  await w.clock.advance(5_000)
+  await w.delivered()
+  expect(w.submitted).toEqual(['INTEGRATION_NOTICE [argus-delivery:hera:1]'])
+  expect(w.urls.some(u => u.endsWith('/deliveries/ack'))).toBe(true)
+})
 
 test('heartbeats reconstruct a busy session after a daemon bounce', async ($, on) => {
  const w=world(on,{task:'T1'})
@@ -147,6 +172,26 @@ test('AskUserQuestion reports an exact needs_input while pending and cleared whe
   await call
   await w.delivered()
   expect(w.types()).toContain('cleared')
+})
+
+test('pending question gates delivery even without a running main turn', async ($, on) => {
+  const w = world(on, { task: 'T1', deliver: true })
+  let release = () => {}
+  on('tool.call', async () => {
+    await new Promise<void>(resolve => { release = resolve })
+    return { result: {} }
+  })
+  await $.session.start(START)
+  const call = $.tool.call({ tool: 'AskUserQuestion', questions: [] } as never)
+  await w.clock.settle()
+  await w.clock.advance(5_000)
+  await w.delivered()
+  expect(w.submitted).toEqual([])
+  release()
+  await call
+  await w.clock.advance(5_000)
+  await w.delivered()
+  expect(w.submitted).toEqual(['INTEGRATION_NOTICE [argus-delivery:hera:1]'])
 })
 
 test('a hook failure inside the daemon path never breaks the session', async ($, on) => {

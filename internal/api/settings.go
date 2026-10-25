@@ -19,13 +19,19 @@ import (
 
 // settingsResponse is the JSON shape returned by GET /api/settings.
 // It mirrors the slice of TUI settings that are meaningful to manage from
-// the web (sandbox, KB, defaults, API). TUI-rendering settings (spinner,
+// the web or remote TUI (sandbox, KB, defaults, API, bridge). TUI-rendering settings (spinner,
 // theme, keybindings) are intentionally omitted.
 type settingsResponse struct {
-	Sandbox  sandboxJSON  `json:"sandbox"`
-	KB       kbJSON       `json:"kb"`
-	API      apiSettings  `json:"api"`
-	Defaults defaultsJSON `json:"defaults"`
+	Bridge   bridgeSettings `json:"bridge"`
+	Sandbox  sandboxJSON    `json:"sandbox"`
+	KB       kbJSON         `json:"kb"`
+	API      apiSettings    `json:"api"`
+	Defaults defaultsJSON   `json:"defaults"`
+}
+
+type bridgeSettings struct {
+	Enabled  bool `json:"enabled"`
+	Delivery bool `json:"delivery"`
 }
 
 type sandboxJSON struct {
@@ -55,6 +61,7 @@ type defaultsJSON struct {
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	cfg := s.db.Config()
 	writeJSON(w, http.StatusOK, settingsResponse{
+		Bridge: bridgeSettings{Enabled: cfg.Bridge.Enabled, Delivery: cfg.Bridge.Delivery},
 		Sandbox: sandboxJSON{
 			Enabled:          cfg.Sandbox.Enabled,
 			Available:        isSandboxAvailable(),
@@ -82,10 +89,16 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 // Every section is a pointer so callers can update one section at a time
 // without needing to round-trip the rest.
 type updateSettingsReq struct {
+	Bridge   *bridgeUpdate   `json:"bridge,omitempty"`
 	Sandbox  *sandboxUpdate  `json:"sandbox,omitempty"`
 	KB       *kbUpdate       `json:"kb,omitempty"`
 	API      *apiUpdate      `json:"api,omitempty"`
 	Defaults *defaultsUpdate `json:"defaults,omitempty"`
+}
+
+type bridgeUpdate struct {
+	Enabled  *bool `json:"enabled,omitempty"`
+	Delivery *bool `json:"delivery,omitempty"`
 }
 
 // Each *Update mirrors the corresponding response section but with pointer
@@ -155,6 +168,14 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 // CSV joining without needing a server fixture.
 func buildSettingsUpdates(req updateSettingsReq) map[string]string {
 	out := make(map[string]string)
+	if b := req.Bridge; b != nil {
+		if b.Enabled != nil {
+			out["bridge.enabled"] = boolStr(*b.Enabled)
+		}
+		if b.Delivery != nil {
+			out["bridge.delivery"] = boolStr(*b.Delivery)
+		}
+	}
 	if s := req.Sandbox; s != nil {
 		if s.Enabled != nil {
 			out["sandbox.enabled"] = boolStr(*s.Enabled)

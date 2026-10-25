@@ -161,6 +161,8 @@ The reference helpers live in `internal/tui/smoke_test.go`:
 
 For mouse-focus regressions: inject a click on a non-interactive panel and assert `app.GetFocus()` stayed on the interactive widget. See `TestSmoke_Click*` for the pattern.
 
+**Queue complete simulated pastes through `tview.Application.QueueEvent` from the test goroutine.** SimulationScreen's nonblocking `PostEvent` can return `ErrEventQFull` on its ten-event queue after a burst of keys, dropping the end marker and leaving the form's prompt empty forever; `QueueEvent` keeps the real tview loop and paste handling while supplying backpressure (`PostEventWait` is deprecated).
+
 **When asserting on rendered cells, call `sim.Show()` before `sim.GetContents()`.** A widget's `Draw` writes the back buffer; `GetContents()` returns the *front* buffer, which is only synced on `Show()`. Drawing then reading back without `Show()` yields an all-blank grid (silent false negative — the test "passes" the panic check but sees no content). See `TestConfirmModal_LongMessageWraps` in `internal/tui/modal/confirm_test.go`.
 
 ## Mocking the Daemon

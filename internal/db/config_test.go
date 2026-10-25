@@ -372,6 +372,25 @@ func TestDB_Config_Bridge(t *testing.T) {
 	testutil.False(t, d.Config().Bridge.Enabled)
 }
 
+func TestDB_Config_BridgeDelivery(t *testing.T) {
+	d := testDB(t)
+	testutil.True(t, d.Config().Bridge.Delivery)
+	testutil.NoError(t, d.SetConfigValue("bridge.delivery", "false"))
+	testutil.False(t, d.Config().Bridge.Delivery)
+	testutil.NoError(t, d.SetConfigValue("bridge.delivery", "true"))
+	testutil.True(t, d.Config().Bridge.Delivery)
+}
+
+func TestDB_Config_BridgeDeliveryTOMLWins(t *testing.T) {
+	dir := t.TempDir()
+	d, err := Open(filepath.Join(dir, "data.sql"))
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	testutil.NoError(t, d.SetConfigValue("bridge.delivery", "true"))
+	testutil.NoError(t, os.WriteFile(filepath.Join(dir, config.FileName), []byte("[bridge]\ndelivery = false\n"), 0o644))
+	testutil.False(t, d.Config().Bridge.Delivery)
+}
+
 func TestDB_Config_BridgeTOMLWins(t *testing.T) {
 	dir := t.TempDir()
 	d, err := Open(filepath.Join(dir, "data.sql"))

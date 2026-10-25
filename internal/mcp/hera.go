@@ -175,7 +175,7 @@ var heraToolDefs = []Tool{
 	},
 	{
 		Name:        "hera_send",
-		Description: "Send a message to another role in the same orchestrator. Workers/freelancers default to the coordinator when 'to' is omitted. Coordinators must supply an explicit 'to'. Worker/freelance senders MUST supply 'status' (one of idle/working/blocked/done/failed) — it is applied to the sender's role synchronously before the message is sent.",
+		Description: "Send a message to another role in the same orchestrator. Workers/freelancers default to the coordinator when 'to' is omitted. Coordinators must supply an explicit 'to'. Worker/freelance senders MUST supply 'status' (one of idle/working/blocked/done/failed) — it is applied to the sender's role synchronously before the message is sent. Doorbells use idle plugin turns for live Claude bridges with bridge.delivery enabled, otherwise PTY delivery; storage is durable regardless. Read hera_inbox to consume the message.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -192,7 +192,7 @@ var heraToolDefs = []Tool{
 	},
 	{
 		Name:        "hera_inbox",
-		Description: "Read unread messages addressed to the caller's hera role. Marks messages as read (cancels pending doorbell deliveries). Returns oldest first. Set timeout_seconds from 1 to 120 to block server-side until a message arrives or the timeout elapses; omitted or zero returns immediately.",
+		Description: "Read unread messages addressed to the caller's hera role. Marks messages as read (cancels pending PTY and bridge doorbell claims). Bridge transport acknowledgment alone does not read mail. Returns oldest first. Set timeout_seconds from 1 to 120 to block server-side until a message arrives or the timeout elapses; omitted or zero returns immediately.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

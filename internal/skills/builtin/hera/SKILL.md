@@ -125,6 +125,8 @@ status, revive, and completion; the plan-DAG authoring/mutation tools live in th
 
 ### Messaging (idle-gated bus)
 
+Live Claude bridges with `bridge.delivery` enabled deliver doorbells as plugin-framed turns while idle and outside input dialogs, preserving unsent drafts. Other backends, disabled delivery and missing/dead bridges use PTY delivery. Delivery acknowledgment only confirms the notice; read `hera_inbox` to consume durable mail. Inbox reads cancel pending claims too. Ambiguous submission recovery never blindly retries: unread mail remains available even if its doorbell is abandoned.
+
 - **`hera_send(cwd, body, tldr, status, [to], [in_reply_to], [orchestrator])`** — message another role
   **in the same orchestrator**. `body` and `tldr` are **required**; `tldr` is a one-line summary ≤120
   chars, written from the recipient's perspective (see §5). **`status` is REQUIRED for worker/freelance

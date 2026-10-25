@@ -71,6 +71,7 @@ const (
 	srAccount
 	srAccountField
 	srProjectAccount
+	srBridge
 )
 
 // settingsCategory groups related settings rows into a left-rail entry.
@@ -101,6 +102,7 @@ const (
 	catKnowledgeBase
 	catRemoteAPI
 	catHera
+	catBridge
 	catTodo
 	catAppearance
 	catLogs
@@ -136,6 +138,8 @@ func (c settingsCategory) Label() string {
 		return "Remote API"
 	case catHera:
 		return "Hera"
+	case catBridge:
+		return "Bridge"
 	case catTodo:
 		return "To-Do List"
 	case catAppearance:
@@ -154,7 +158,7 @@ func (c settingsCategory) Label() string {
 // present, render after a "Plugins" header below this list.
 var builtinCategories = []settingsCategory{
 	catSystem, catSandbox, catProjects, catBackends, catBackendTiers, catAccounts, catDefaults, catSchedules,
-	catKnowledgeBase, catRemoteAPI, catHera, catTodo, catAppearance, catLogs,
+	catKnowledgeBase, catRemoteAPI, catHera, catBridge, catTodo, catAppearance, catLogs,
 }
 
 // settingsFocus is which sub-panel currently owns input within the settings view.
@@ -1184,6 +1188,9 @@ func (sv *SettingsView) rebuildRows() {
 		}
 		sv.rows = append(sv.rows, settingsRow{kind: srVaultPath, label: metisLabel, key: vaultKeyMetis})
 
+	case catBridge:
+		sv.rows = append(sv.rows, sv.bridgeRows()...)
+
 	case catRemoteAPI:
 		apiLabel := "Disabled"
 		if sv.apiEnabled {
@@ -1724,6 +1731,8 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 			return true
 		}
 		switch sv.currentRowKind() {
+		case srBridge:
+			return sv.handleEnter()
 		case srSpinner:
 			sv.cycleSpinner(1)
 			return true
@@ -2079,6 +2088,8 @@ func (sv *SettingsView) handleEnter() bool {
 		return false
 	}
 	switch row.kind {
+	case srBridge:
+		return sv.toggleBridge(row.key)
 	case srSandbox:
 		// Toggle sandbox.
 		sv.sandboxEnabled = !sv.sandboxEnabled
@@ -3115,6 +3126,13 @@ func (sv *SettingsView) renderPane(screen tcell.Screen, x, y, w, h int) {
 // renderRowDetail dispatches to the per-row detail renderer.
 func (sv *SettingsView) renderRowDetail(screen tcell.Screen, x, y, w, h int, row *settingsRow) {
 	switch row.kind {
+	case srBridge:
+		widget.DrawText(screen, x, y, w, "Bridge", theme.StyleTitle)
+		text := "Report Claude session state. Applies to new sessions; disabling restores terminal authority."
+		if row.key == "bridge.delivery" {
+			text = "Deliver messages through the mod and add budget guidance without blocking. Applies immediately; requires Bridge enabled."
+		}
+		widget.DrawText(screen, x, y+2, w, text, theme.StyleDimmed)
 	case srWarning:
 		sv.renderWarningDetail(screen, x, y, w, h, row)
 	case srSecretsBootstrap:

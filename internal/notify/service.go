@@ -49,6 +49,8 @@ type Notifier struct {
 	waitForAdvance func(SessionHandleIface, uint64, time.Duration) bool
 	waitForClear   func(SessionHandleIface, time.Duration) bool
 	waitForConsume func(SessionHandleIface, string, time.Duration) bool
+	bridgeRoute    func(string) BridgeRoute
+	bridgeEvidence func(BridgeClaim) BridgeEvidence
 }
 
 // New creates a Notifier. runner and focus must be non-nil.
@@ -232,6 +234,9 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 	}
 
 	// Check session. The runner returns nil when no live session exists.
+	if n.reconcileBridge(taskID, d, now) {
+		return
+	}
 	sess := n.runner.Get(taskID)
 	if sess == nil {
 		logDelivery(slog.LevelDebug, "delivery skip: no session", taskID, d.deliveryID)
@@ -663,6 +668,12 @@ func formatLogAttrs(attrs []any) string {
 func (n *Notifier) removeAndAdvance(taskID, deliveryID string, submitted bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	n.removeAndAdvanceLocked(taskID, deliveryID, submitted)
+}
+
+// removeAndAdvanceLocked lets bridge acknowledgment validate and retire the
+// exact claim atomically with cancellation and same-ID re-registration.
+func (n *Notifier) removeAndAdvanceLocked(taskID, deliveryID string, submitted bool) {
 
 	// Verify it's still the active one.
 	p := n.pending[taskID]

@@ -187,6 +187,9 @@ func (d *DB) Config() config.Config {
 	if v, ok := kv["bridge.enabled"]; ok {
 		cfg.Bridge.Enabled = v == "true"
 	}
+	if v, ok := kv["bridge.delivery"]; ok {
+		cfg.Bridge.Delivery = v == "true"
+	}
 
 	// Argus self-update config.
 	if v, ok := kv["argus.source_path"]; ok {
