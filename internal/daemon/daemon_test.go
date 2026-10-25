@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -802,4 +803,36 @@ func TestDaemon_CaptureSessionIDPostExit_CaptureError(t *testing.T) {
 	got, err := d.db.Get(tk.ID)
 	testutil.NoError(t, err)
 	testutil.Equal(t, got.SessionID, "") // unchanged after capture error
+}
+
+// TestDaemon_ConcurrentShutdown races several Shutdown callers (the RPC, a
+// signal handler and test cleanup all call it). Each must return without a
+// "close of closed channel" panic, and Serve must still exit.
+func TestDaemon_ConcurrentShutdown(t *testing.T) {
+	d, sockPath := testDaemon(t)
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Serve(sockPath) }()
+	waitForSocket(t, sockPath)
+
+	const callers = 16
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			d.Shutdown()
+		}()
+	}
+	close(start)
+	wg.Wait()
+	d.Shutdown() // a late caller after shutdown is a no-op too
+
+	select {
+	case err := <-errCh:
+		testutil.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for Serve to return")
+	}
 }
