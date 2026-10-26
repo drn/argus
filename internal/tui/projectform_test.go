@@ -268,22 +268,19 @@ func TestProjectForm_PathValue_TildeExpandsToAbsolute(t *testing.T) {
 
 // --- Path autocomplete tests ---
 
-// setupACDirs creates a temp directory with subdirectories for autocomplete tests.
-// Returns the temp root path (absolute, symlink-resolved).
+// setupACDirs creates and enters a sparse, test-owned autocomplete directory.
+// Type relative paths so each keystroke scans only the fixture, never the shared
+// TMPDIR ancestors. t.Chdir restores cwd before t.TempDir removes the fixture.
 func setupACDirs(t *testing.T, names ...string) string {
 	t.Helper()
 	root := t.TempDir()
-	// Resolve symlinks so macOS /var → /private/var doesn't cause mismatches.
-	root, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, n := range names {
 		if err := os.MkdirAll(filepath.Join(root, n), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return root
+	t.Chdir(root)
+	return "."
 }
 
 func typeRunes(pf *ProjectForm, s string) {
@@ -491,14 +488,28 @@ func TestProjectForm_PathAC_TabOnClosedTriggersAC(t *testing.T) {
 
 func TestProjectForm_PathAC_PasteTriggersAC(t *testing.T) {
 	root := setupACDirs(t, "alpha", "beta")
+	absRoot, err := os.Getwd()
+	testutil.NoError(t, err)
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{"relative", root},
+		{"absolute", absRoot},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pf := NewProjectForm()
+			pf.focused = pfFieldPath
+			paste := pf.PasteHandler()
+			paste(tc.path+"/", func(p tview.Primitive) {})
 
-	pf := NewProjectForm()
-	pf.focused = pfFieldPath
-	paste := pf.PasteHandler()
-	paste(root+"/", func(p tview.Primitive) {})
-
-	testutil.Equal(t, pf.pathAC.Open(), true)
-	testutil.Equal(t, len(pf.pathAC.matches), 2)
+			testutil.Equal(t, pf.pathAC.Open(), true)
+			testutil.Equal(t, len(pf.pathAC.matches), 2)
+			testutil.DeepEqual(t, pf.pathAC.matches, []string{
+				filepath.Join(absRoot, "alpha"), filepath.Join(absRoot, "beta"),
+			})
+		})
+	}
 }
 
 func TestProjectForm_PathAC_NotOnOtherFields(t *testing.T) {
