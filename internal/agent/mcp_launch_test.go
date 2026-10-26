@@ -1,14 +1,20 @@
 package agent
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/drn/argus/internal/mcplimits"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
 
 func TestBuildCmd_TaskScopedMCP(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CODEX_HOME", "")
+	t.Setenv("CODEX_SQLITE_HOME", "")
+	t.Setenv("MCP_TOOL_TIMEOUT", "60000")
 	for _, tc := range []struct {
 		name    string
 		backend string
@@ -22,6 +28,8 @@ func TestBuildCmd_TaskScopedMCP(t *testing.T) {
 		{"codex resume", "codex", true, 7743, "mcp_servers.argus.url"},
 		{"claude disabled", "claude", false, 0, ""},
 		{"codex disabled", "codex", false, 0, ""},
+		{"claude resume disabled", "claude", true, 0, ""},
+		{"codex resume disabled", "codex", true, 0, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testConfig()
@@ -33,16 +41,44 @@ func TestBuildCmd_TaskScopedMCP(t *testing.T) {
 				defer cleanup()
 			}
 			command := cmd.Args[2]
-			if tc.want == "" {
-				if strings.Contains(command, "mcp_servers.argus") || strings.Contains(command, "--mcp-config") {
-					t.Fatalf("unexpected MCP configuration in %q", command)
+			timeoutEnv := ""
+			for _, entry := range cmd.Environ() {
+				if strings.HasPrefix(entry, "MCP_TOOL_TIMEOUT=") {
+					timeoutEnv = strings.TrimPrefix(entry, "MCP_TOOL_TIMEOUT=")
 				}
+			}
+			if tc.want == "" {
+				testutil.Equal(t, timeoutEnv, "60000")
+				testutil.Equal(t, strings.Contains(command, "mcp_servers.argus"), false)
+				testutil.Equal(t, strings.Contains(command, "--mcp-config"), false)
 				return
 			}
-			testutil.Contains(t, command, tc.want)
-			testutil.Contains(t, command, "http://localhost:7743/mcp")
+			testutil.Equal(t, strings.Contains(command, tc.want), true)
+			testutil.Equal(t, strings.Contains(command, "http://localhost:7743/mcp"), true)
+			if tc.backend == "claude" {
+				_, rest, ok := strings.Cut(command, "--mcp-config '")
+				testutil.Equal(t, ok, true)
+				raw, _, ok := strings.Cut(rest, "'")
+				testutil.Equal(t, ok, true)
+				var cfg struct {
+					Servers map[string]struct {
+						Timeout int `json:"timeout"`
+					} `json:"mcpServers"`
+				}
+				testutil.NoError(t, json.Unmarshal([]byte(raw), &cfg))
+				testutil.Equal(t, cfg.Servers["argus"].Timeout, 150000)
+				testutil.Equal(t, cfg.Servers["argus"].Timeout > mcplimits.HeraInboxTimeoutSeconds*1000, true)
+				testutil.Equal(t, timeoutEnv, "150000")
+			} else {
+				_, rest, ok := strings.Cut(command, "-c 'mcp_servers.argus.tool_timeout_sec=")
+				testutil.Equal(t, ok, true)
+				value, _, ok := strings.Cut(rest, "'")
+				testutil.Equal(t, ok, true)
+				testutil.Equal(t, value, "150")
+				testutil.Equal(t, timeoutEnv, "60000")
+			}
 			if tc.backend == "codex" && tc.resume {
-				testutil.Contains(t, command, " resume ")
+				testutil.Equal(t, strings.Contains(command, " resume "), true)
 			}
 		})
 	}

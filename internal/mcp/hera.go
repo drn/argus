@@ -12,6 +12,7 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/hera"
+	"github.com/drn/argus/internal/mcplimits"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -95,7 +96,7 @@ type HeraStore interface {
 // maxHeraInboxTimeoutSeconds caps the server-side hera_inbox wait. It matches
 // task_ask's two-minute envelope so a stuck client cannot hold an MCP request
 // open indefinitely.
-const maxHeraInboxTimeoutSeconds = 120
+const maxHeraInboxTimeoutSeconds = mcplimits.HeraInboxTimeoutSeconds
 
 // heraToolDefs contains the native hera_* tool schemas. The first 9 are ported
 // verbatim from Hera's daemon.toolDefinitions() — same param names,

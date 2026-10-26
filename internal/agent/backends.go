@@ -17,6 +17,7 @@ import (
 	injectantigravity "github.com/drn/argus/internal/inject/antigravity"
 	injectcursor "github.com/drn/argus/internal/inject/cursor"
 	injectopencode "github.com/drn/argus/internal/inject/opencode"
+	"github.com/drn/argus/internal/mcplimits"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/skills"
 	"github.com/drn/argus/internal/uxlog"
@@ -173,13 +174,14 @@ func mustSpec(k backendkind.Kind) backendkind.Spec {
 
 func claudeMCPFlag(url string) string {
 	mcpConfig, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{
-		"argus": map[string]string{"type": "http", "url": url},
+		"argus": map[string]any{"type": "http", "url": url, "timeout": mcplimits.ClientTimeoutMilliseconds},
 	}})
 	return " --mcp-config " + shellQuote(string(mcpConfig))
 }
 
 func codexMCPFlag(url string) string {
-	return " -c " + shellQuote("mcp_servers.argus.url="+strconv.Quote(url))
+	return " -c " + shellQuote("mcp_servers.argus.url="+strconv.Quote(url)) +
+		" -c " + shellQuote("mcp_servers.argus.tool_timeout_sec="+strconv.Itoa(mcplimits.ClientTimeoutSeconds))
 }
 
 func codexResumeCommand(mcpFlag, modelFlag, sessionID string) string {

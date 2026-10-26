@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/drn/argus/internal/backendkind"
@@ -22,6 +23,7 @@ import (
 	"github.com/drn/argus/internal/claudesession"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/mcplimits"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/profiles"
 	"github.com/drn/argus/internal/review"
@@ -841,6 +843,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	mcpFlag := ""
 	if cfg.MCPPort > 0 && fam.MCPFlag != nil {
 		mcpFlag = fam.MCPFlag(fmt.Sprintf("http://localhost:%d/mcp", cfg.MCPPort))
+		uxlog.Log("[mcp] configured task=%s family=%s client_timeout=%ds", task.ID, fam.Kind, mcplimits.ClientTimeoutSeconds)
 	}
 	cmdStr += mcpFlag
 	// Families without a per-launch MCP flag read Argus's registration (and,
@@ -1150,6 +1153,11 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		// in depth against a marker reaching the agent by a path the denylist
 		// does not cover. Before backend env_vars so an explicit mapping wins.
 		cmd.Env = append(cmd.Env, claudeenv.ForcePersistenceEnv)
+		if cfg.MCPPort > 0 {
+			// Fallback for inline MCP config parsing paths that may ignore the
+			// per-server timeout. Progress cannot extend the HTTP request timer.
+			cmd.Env = append(cmd.Env, "MCP_TOOL_TIMEOUT="+strconv.Itoa(mcplimits.ClientTimeoutMilliseconds))
+		}
 	}
 	if opencodeConfigContent != "" {
 		cmd.Env = append(cmd.Env, "OPENCODE_CONFIG_CONTENT="+opencodeConfigContent)
