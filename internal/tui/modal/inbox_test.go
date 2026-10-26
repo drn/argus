@@ -137,31 +137,6 @@ func TestInboxModal_OpensAtBottomAndScrolls(t *testing.T) {
 	testutil.Equal(t, m.scroll, bottom)
 }
 
-func TestWrapPreservingLines(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		in    string
-		width int
-		want  []string
-	}{
-		{"zero width", "abc", 0, nil},
-		{"keeps newlines and blanks", "a\n\nb", 10, []string{"a", "", "b"}},
-		{"word wraps", "one two three", 7, []string{"one two", "three"}},
-		{"hard breaks long token", "abcdefghij", 4, []string{"abcd", "efgh", "ij"}},
-		{"hard break flushes current line", "hi abcdefgh", 4, []string{"hi", "abcd", "efgh"}},
-		{"strips control chars and tabs", "a\x1b[31mb\tc", 20, []string{"a[31mb c"}},
-		{"rune counted", "ééé ééé", 3, []string{"ééé", "ééé"}},
-		{"wide runes count two columns", "漢字漢字", 4, []string{"漢字", "漢字"}},
-		{"wide word wraps by width", "ab 漢字", 4, []string{"ab", "漢字"}},
-		{"rune wider than line emitted alone", "漢", 1, []string{"漢"}},
-		{"zero-width only word skipped", "a \u200b b", 10, []string{"a b"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			testutil.DeepEqual(t, wrapPreservingLines(tc.in, tc.width), tc.want)
-		})
-	}
-}
-
 func TestInboxModal_MouseScroll(t *testing.T) {
 	m := NewInboxModal("Inbox")
 	m.SetRect(0, 0, 80, 20)
@@ -220,6 +195,17 @@ func TestInboxModal_StripsControlsFromHeaderAndTitle(t *testing.T) {
 	testutil.Equal(t, m.lines(80)[0].text, "Error: line1 line2")
 	m.SetUnavailable("no\x1b")
 	testutil.Equal(t, m.lines(80)[0].text, "no")
+}
+
+func TestInboxModal_SharedWrapSanitizesSummaryAndBody(t *testing.T) {
+	m := NewInboxModal("Inbox")
+	m.SetEntries([]InboxEntry{{Summary: "one\x1b\ttwo\n\nthree", Body: "four\x00\tfive six"}})
+	lines := m.lines(10)
+	var text []string
+	for _, line := range lines[2:] {
+		text = append(text, line.text)
+	}
+	testutil.DeepEqual(t, text, []string{"  one two", "  ", "  three", "  four", "  five six"})
 }
 
 func TestDrawCells_WideRunesAndClipping(t *testing.T) {

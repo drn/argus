@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/mattn/go-runewidth"
@@ -185,11 +184,11 @@ func (m *InboxModal) lines(width int) []inboxLine {
 		}
 		out = append(out, inboxLine{"  " + state, style})
 		if e.Summary != "" {
-			for _, l := range wrapPreservingLines(e.Summary, width-2) {
+			for _, l := range widget.WrapPreservingLines(stripControls(e.Summary, true), width-2) {
 				out = append(out, inboxLine{"  " + l, theme.StyleSelected})
 			}
 		}
-		for _, l := range wrapPreservingLines(e.Body, width-2) {
+		for _, l := range widget.WrapPreservingLines(stripControls(e.Body, true), width-2) {
 			out = append(out, inboxLine{"  " + l, theme.StyleNormal})
 		}
 	}
@@ -222,60 +221,6 @@ func stripControls(s string, keepNewlines bool) string {
 }
 
 func singleLine(s string) string { return stripControls(s, false) }
-
-// wrapPreservingLines word-wraps each line of text to width display columns,
-// keeping blank lines and hard-breaking overlong tokens. Control characters
-// are stripped first.
-func wrapPreservingLines(text string, width int) []string {
-	if width <= 0 {
-		return nil
-	}
-	text = stripControls(text, true)
-	var out []string
-	for _, para := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
-		if strings.TrimSpace(para) == "" {
-			out = append(out, "")
-			continue
-		}
-		var cur strings.Builder
-		curW := 0
-		flush := func() {
-			if curW > 0 {
-				out = append(out, cur.String())
-				cur.Reset()
-				curW = 0
-			}
-		}
-		for _, word := range strings.Fields(para) {
-			for runewidth.StringWidth(word) > width {
-				flush()
-				head := runewidth.Truncate(word, width, "")
-				if head == "" {
-					// A single rune wider than the whole line; emit it alone.
-					_, size := utf8.DecodeRuneInString(word)
-					head = word[:size]
-				}
-				out = append(out, head)
-				word = word[len(head):]
-			}
-			ww := runewidth.StringWidth(word)
-			if ww == 0 {
-				continue
-			}
-			if curW > 0 && curW+1+ww > width {
-				flush()
-			}
-			if curW > 0 {
-				cur.WriteByte(' ')
-				curW++
-			}
-			cur.WriteString(word)
-			curW += ww
-		}
-		flush()
-	}
-	return out
-}
 
 // drawCells paints text at (x, y), advancing by each rune's display width and
 // clipping at maxWidth columns so a wide rune never straddles the border.

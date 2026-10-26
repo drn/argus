@@ -410,6 +410,8 @@ M6a scaffolds the native Hera view: a `HeraPage` (rail | coordinator pane | agen
 
 ## Coordinator board
 
+- **Lay out every wrapped header before computing board cursor-follow offsets, reserving the hint row and unread marker first.** Board text uses display-column widths (including grapheme-aware painting); body bold markers must be removed before word wrapping, and bullet continuations consume their own hanging-indent width.
+
 - **Keep accordion expansion as a single item id, independent of cursor movement.** Preserve that id across refreshes only while it remains in the open-item snapshot; clear it when removed so a later reappearance cannot silently reopen it.
 
 - **Reserve the board hint row before computing item scroll bounds, including empty boards.** Ctrl+Q returns board focus to the rail; Esc belongs to plan navigation. Mailbox coloring must replace only the glyph foreground, preserving selected-row attributes in both header and bridging-row render paths.

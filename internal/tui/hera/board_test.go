@@ -17,6 +17,165 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
+func drawBoardRows(t *testing.T, b *boardView, width, height int) (tcell.SimulationScreen, []string) {
+	t.Helper()
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	t.Cleanup(sim.Fini)
+	sim.SetSize(width, height)
+	b.draw(sim, 0, 0, width, height, " Board ", true, keymap.DefaultKeymap())
+	sim.Show()
+	var rows []string
+	for y := 1; y < height-2; y++ {
+		var row strings.Builder
+		for x := 1; x < width-1; {
+			r, _, width := sim.Get(x, y)
+			row.WriteString(r)
+			x += max(1, width)
+		}
+		rows = append(rows, strings.TrimRight(row.String(), " "))
+	}
+	return sim, rows
+}
+
+func TestBoardBodyWrapping(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		width      int
+		want       []string
+	}{
+		{"words and blanks", "whole into Nothing account\n\nlast", 18, []string{"  whole into", "  Nothing", "  account", "", "  last"}},
+		{"long token", "abcdefghijklmnop", 12, []string{"  abcdefgh", "  ijklmnop"}},
+		{"wide runes", "ab 漢字 漢字", 12, []string{"  ab 漢字", "  漢字"}},
+		{"dash bullet", "- whole into Nothing account", 18, []string{"  - whole into", "    Nothing", "    account"}},
+		{"star bullet", "* whole into Nothing account", 18, []string{"  * whole into", "    Nothing", "    account"}},
+		{"bold and literal syntax", "**My take:** `code` **open", 30, []string{"  My take: `code` **open"}},
+		{"bold long token", "**abcdefghijklmnop**", 12, []string{"  abcdefgh", "  ijklmnop"}},
+		{"normalized whitespace", "one\t **two**   three", 18, []string{"  one two three"}},
+		{"empty bold markers", "****", 18, []string{"  ****"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &boardView{items: []*db.HeraBoardItem{{ID: 1, Kind: "fyi", Subject: "S", Body: tc.body, Read: true}}, expandedID: 1}
+			_, rows := drawBoardRows(t, b, tc.width, 20)
+			// Locate the first body row independently of header height.
+			start := 0
+			for start < len(rows) && !strings.HasPrefix(rows[start], "  ") {
+				start++
+			}
+			testutil.Equal(t, start < len(rows), true)
+			if start < len(rows) {
+				testutil.DeepEqual(t, rows[start:start+len(tc.want)], tc.want)
+			}
+		})
+	}
+}
+
+func TestBoardHeaderWrappingAndEllipsis(t *testing.T) {
+	for _, expanded := range []bool{false, true} {
+		t.Run(fmt.Sprintf("expanded=%v", expanded), func(t *testing.T) {
+			b := &boardView{items: []*db.HeraBoardItem{{ID: 1, Kind: "fyi", Subject: "one two three four five six"}}}
+			if expanded {
+				b.expandedID = 1
+			}
+			sim, rows := drawBoardRows(t, b, 28, 10)
+			if expanded {
+				testutil.Equal(t, rows[0], "▾ [fyi] #1 one two three •")
+				testutil.Equal(t, rows[1], "           four five six")
+				_, style, _ := sim.Get(12, 2)
+				_, _, attrs := style.Decompose()
+				testutil.Equal(t, attrs&tcell.AttrBold != 0, true)
+				testutil.Equal(t, attrs&tcell.AttrReverse != 0, false)
+			} else {
+				testutil.Equal(t, rows[0], "▸ [fyi] #1 one two thre… •")
+				testutil.Equal(t, rows[1], "")
+			}
+			_, style, _ := sim.Get(1, 1)
+			_, _, attrs := style.Decompose()
+			testutil.Equal(t, attrs&tcell.AttrBold != 0, true)
+			testutil.Equal(t, attrs&tcell.AttrReverse != 0, true)
+		})
+	}
+}
+
+func TestBoardBoldAcrossWraps(t *testing.T) {
+	b := &boardView{items: []*db.HeraBoardItem{{ID: 1, Kind: "fyi", Subject: "S", Body: "**whole into Nothing** plain", Read: true}}, expandedID: 1}
+	sim, rows := drawBoardRows(t, b, 18, 10)
+	testutil.DeepEqual(t, rows[1:3], []string{"  whole into", "  Nothing plain"})
+	for _, tc := range []struct {
+		x, y int
+		bold bool
+	}{{3, 2, true}, {3, 3, true}, {11, 3, false}} {
+		t.Run(fmt.Sprintf("%d,%d", tc.x, tc.y), func(t *testing.T) {
+			_, style, _ := sim.Get(tc.x, tc.y)
+			_, _, attrs := style.Decompose()
+			testutil.Equal(t, attrs&tcell.AttrBold != 0, tc.bold)
+		})
+	}
+}
+
+func TestBoardStyledBulletAndCombiningRunes(t *testing.T) {
+	b := &boardView{items: []*db.HeraBoardItem{{ID: 1, Kind: "fyi", Subject: "S", Body: "- **漢字 one two** plain\n**e\u0301**\n- **abcdefghijklmno**\n**a** **b**", Read: true}}, expandedID: 1}
+	sim, rows := drawBoardRows(t, b, 18, 15)
+	testutil.DeepEqual(t, rows[1:7], []string{"  - 漢字 one two", "    plain", "  e\u0301", "  - abcdefghijkl", "    mno", "  a b"})
+	for _, tc := range []struct {
+		x, y int
+		bold bool
+	}{{5, 2, true}, {5, 3, false}, {3, 4, true}, {5, 6, true}, {5, 7, true}} {
+		t.Run(fmt.Sprintf("%d,%d", tc.x, tc.y), func(t *testing.T) {
+			_, style, _ := sim.Get(tc.x, tc.y)
+			_, _, attrs := style.Decompose()
+			testutil.Equal(t, attrs&tcell.AttrBold != 0, tc.bold)
+		})
+	}
+}
+
+func TestBoardBoldAcrossExplicitNewline(t *testing.T) {
+	b := &boardView{items: []*db.HeraBoardItem{{ID: 1, Kind: "fyi", Subject: "S", Body: "**one\ntwo** plain", Read: true}}, expandedID: 1}
+	sim, rows := drawBoardRows(t, b, 28, 10)
+	testutil.DeepEqual(t, rows[1:3], []string{"  one", "  two plain"})
+	_, style, _ := sim.Get(3, 3)
+	_, _, attrs := style.Decompose()
+	testutil.Equal(t, attrs&tcell.AttrBold != 0, true)
+}
+
+func TestBoardCursorFollowsWrappedHeader(t *testing.T) {
+	b := &boardView{items: []*db.HeraBoardItem{
+		{ID: 1, Kind: "fyi", Subject: strings.Repeat("long subject ", 8), Read: true},
+		{ID: 2, Kind: "fyi", Subject: "Target", Read: true},
+	}, expandedID: 1, cursor: 1, followCursor: true}
+	_, rows := drawBoardRows(t, b, 28, 7)
+	testutil.Contains(t, strings.Join(rows, "\n"), "#2 Target")
+	testutil.Equal(t, b.offset > 0, true)
+	b.cursor = 0
+	b.followCursor = true
+	_, rows = drawBoardRows(t, b, 28, 7)
+	testutil.Contains(t, rows[0], "▾ [fyi] #1")
+	testutil.Equal(t, b.offset, 0)
+}
+
+func TestBoardWideHeaderAndNarrowUnread(t *testing.T) {
+	for _, expanded := range []bool{false, true} {
+		for _, width := range []int{3, 4, 16, 28} {
+			t.Run(fmt.Sprintf("expanded=%v/width=%d", expanded, width), func(t *testing.T) {
+				b := &boardView{items: []*db.HeraBoardItem{{ID: 1, Kind: "fyi", Subject: "漢字 subject 漢字 tail", Body: "漢字"}}}
+				if expanded {
+					b.expandedID = 1
+				}
+				sim, rows := drawBoardRows(t, b, width, 30)
+				testutil.Contains(t, rows[0], "•")
+				for y := 1; y < 29; y++ {
+					r, _, _ := sim.Get(width-1, y)
+					testutil.Equal(t, r, "│")
+				}
+				if expanded && width == 28 {
+					testutil.Equal(t, rows[0], "▾ [fyi] #1 漢字 subject •")
+					testutil.Equal(t, rows[1], "           漢字 tail")
+				}
+			})
+		}
+	}
+}
+
 func TestBoardSelectionDoesNotStealView(t *testing.T) {
 	p := NewHeraPage(nil)
 	o := &heramodel.OrchView{ID: 1, Roles: []heramodel.RoleView{{RoleID: 2, Kind: db.HeraKindCoordinator, BoardUnread: 1, BoardItems: []*db.HeraBoardItem{{ID: 3, Subject: "Choose", Kind: "decision"}}}}}
