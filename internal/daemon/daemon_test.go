@@ -21,6 +21,33 @@ import (
 	"github.com/drn/argus/internal/testutil"
 )
 
+// serveTestServer joins Serve during cleanup: Shutdown only signals it, while
+// Serve still owns PID/socket writes and cleanup. Join before TempDir/DB teardown.
+func serveTestServer(t *testing.T, server interface {
+	Serve(string) error
+	Shutdown()
+}, sockPath string) <-chan error {
+	t.Helper()
+	serveDone := make(chan struct{})
+	errCh := make(chan error, 1)
+	var serveErr error
+	go func() {
+		defer close(serveDone)
+		serveErr = server.Serve(sockPath)
+		errCh <- serveErr
+	}()
+	t.Cleanup(func() {
+		server.Shutdown()
+		select {
+		case <-serveDone:
+			testutil.NoError(t, serveErr)
+		case <-time.After(5 * time.Second):
+			t.Error("Serve did not return within 5s after Shutdown; fixture cleanup is unsafe")
+		}
+	})
+	return errCh
+}
+
 func testDaemon(t *testing.T) (*Daemon, string) {
 	t.Helper()
 	database, err := db.OpenInMemory()
@@ -88,8 +115,7 @@ func dialStreamSince(t *testing.T, sockPath string, taskID string, since uint64)
 
 func TestDaemon_UpdateSelfEmpty(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	client := dialRPC(t, sockPath)
@@ -106,8 +132,7 @@ func TestDaemon_BootInfo(t *testing.T) {
 	d, sockPath := testDaemon(t)
 
 	bootStart := time.Now()
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	client := dialRPC(t, sockPath)
@@ -142,8 +167,7 @@ func TestDaemon_BootInfo(t *testing.T) {
 func TestDaemon_Ping(t *testing.T) {
 	d, sockPath := testDaemon(t)
 
-	go d.Serve(sockPath)
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 
 	// Wait for socket to appear.
 	waitForSocket(t, sockPath)
@@ -161,8 +185,7 @@ func TestDaemon_Ping(t *testing.T) {
 func TestDaemon_ListSessions_Empty(t *testing.T) {
 	d, sockPath := testDaemon(t)
 
-	go d.Serve(sockPath)
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	client := dialRPC(t, sockPath)
@@ -182,8 +205,7 @@ func TestDaemon_StartAndStop(t *testing.T) {
 	d.db.SetBackend("test", config.Backend{Command: "sleep 60"})
 	d.db.SetConfigValue("default.backend", "test")
 
-	go d.Serve(sockPath)
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	client := dialRPC(t, sockPath)
@@ -344,8 +366,7 @@ func TestKillExistingDaemon_NoPIDFile(t *testing.T) {
 
 func TestDaemon_Clip(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	c := dialRPC(t, sockPath)
@@ -398,8 +419,7 @@ func TestDaemon_Clip(t *testing.T) {
 
 func TestDaemon_ClipBig(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	c := dialRPC(t, sockPath)
@@ -522,8 +542,7 @@ func TestDaemon_OnFinishFlipsStatus(t *testing.T) {
 
 func TestDaemon_PendingRPC(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	client := dialRPC(t, sockPath)
@@ -555,8 +574,7 @@ func TestDaemon_ListPendGap(t *testing.T) {
 	// daemon-client TUI's tick reconciler doesn't false-Complete InProgress
 	// rows that are mid-restart.
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	client := dialRPC(t, sockPath)
@@ -584,8 +602,7 @@ func TestDaemon_ListPendGap(t *testing.T) {
 
 func TestDaemon_StatusAliveGap(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	client := dialRPC(t, sockPath)

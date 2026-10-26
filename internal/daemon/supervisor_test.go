@@ -57,8 +57,7 @@ func pollExitInfo(t *testing.T, c interface {
 func TestSup_PingHello(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	s, sock := testSupervisor(t, config.DefaultConfig())
-	go s.Serve(sock) //nolint:errcheck
-	t.Cleanup(func() { s.Shutdown() })
+	serveTestServer(t, s, sock)
 	waitForSocket(t, sock)
 
 	c := dialRPC(t, sock)
@@ -83,8 +82,7 @@ func TestSup_PingHello(t *testing.T) {
 func TestSup_StartListStop(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	s, sock := testSupervisor(t, supCfg("sleep 60"))
-	go s.Serve(sock) //nolint:errcheck
-	t.Cleanup(func() { s.Shutdown() })
+	serveTestServer(t, s, sock)
 	waitForSocket(t, sock)
 
 	c := dialRPC(t, sock)
@@ -126,8 +124,7 @@ func TestSup_StartListStop(t *testing.T) {
 func TestSup_StreamBytes(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	s, sock := testSupervisor(t, supCfg("bash -c 'echo hello-sup; sleep 1'"))
-	go s.Serve(sock) //nolint:errcheck
-	t.Cleanup(func() { s.Shutdown() })
+	serveTestServer(t, s, sock)
 	waitForSocket(t, sock)
 
 	c := dialRPC(t, sock)
@@ -152,8 +149,7 @@ func TestSup_StreamBytes(t *testing.T) {
 func TestSup_ExitCachingCleanExit(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	s, sock := testSupervisor(t, supCfg("bash -c 'echo done-clean'"))
-	go s.Serve(sock) //nolint:errcheck
-	t.Cleanup(func() { s.Shutdown() })
+	serveTestServer(t, s, sock)
 	waitForSocket(t, sock)
 
 	c := dialRPC(t, sock)
@@ -178,8 +174,7 @@ func TestSup_ExitCachingCleanExit(t *testing.T) {
 func TestSup_ExitCachingCrash(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	s, sock := testSupervisor(t, supCfg("bash -c 'exit 3'"))
-	go s.Serve(sock) //nolint:errcheck
-	t.Cleanup(func() { s.Shutdown() })
+	serveTestServer(t, s, sock)
 	waitForSocket(t, sock)
 
 	c := dialRPC(t, sock)
@@ -199,8 +194,7 @@ func TestSup_ExitCachingCrash(t *testing.T) {
 func TestSup_ExitCachingStopped(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	s, sock := testSupervisor(t, supCfg("sleep 60"))
-	go s.Serve(sock) //nolint:errcheck
-	t.Cleanup(func() { s.Shutdown() })
+	serveTestServer(t, s, sock)
 	waitForSocket(t, sock)
 
 	c := dialRPC(t, sock)
@@ -264,13 +258,11 @@ func TestSup_CoexistsWithDaemon(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	d, dsock := testDaemon(t)
-	go d.Serve(dsock) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, dsock)
 	waitForSocket(t, dsock)
 
 	s, ssock := testSupervisor(t, config.DefaultConfig())
-	go s.Serve(ssock) //nolint:errcheck
-	t.Cleanup(func() { s.Shutdown() })
+	serveTestServer(t, s, ssock)
 	waitForSocket(t, ssock)
 
 	dc := dialRPC(t, dsock)
@@ -350,8 +342,7 @@ func TestSup_ShutdownViaRPC(t *testing.T) {
 func TestSup_UnknownPrefixByte(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	s, sock := testSupervisor(t, config.DefaultConfig())
-	go s.Serve(sock) //nolint:errcheck
-	t.Cleanup(func() { s.Shutdown() })
+	serveTestServer(t, s, sock)
 	waitForSocket(t, sock)
 
 	conn, err := net.Dial("unix", sock)

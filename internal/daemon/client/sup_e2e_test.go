@@ -39,8 +39,7 @@ func supE2E(t *testing.T) (*daemon.Daemon, *Client, *db.DB) {
 
 	supSock := filepath.Join(t.TempDir(), "s.sock")
 	sup := daemon.NewSupervisor(database.Config) // cfgFn = DB config (P1 path)
-	go sup.Serve(supSock)                        //nolint:errcheck
-	t.Cleanup(func() { sup.Shutdown() })
+	serveTestServer(t, sup, supSock)
 	waitFile(t, supSock)
 
 	sc, err := Connect(supSock)
@@ -79,8 +78,7 @@ func TestSupSlowStart(t *testing.T) {
 	t.Cleanup(restore)
 
 	sockPath := filepath.Join(t.TempDir(), "d.sock")
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitFile(t, sockPath)
 	c, err := Connect(sockPath)
 	testutil.NoError(t, err)
@@ -140,8 +138,7 @@ func TestSupInnerAmbiguous(t *testing.T) {
 	})
 
 	sockPath := filepath.Join(t.TempDir(), "d.sock")
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitFile(t, sockPath)
 	c, err := Connect(sockPath)
 	testutil.NoError(t, err)
@@ -246,8 +243,7 @@ func TestSupColdStart(t *testing.T) {
 	// 3. Stand in for the just-started supervisor: a real in-process Supervisor on
 	//    the same socket. Connect now succeeds and the version handshake matches.
 	sup := daemon.NewSupervisor(database.Config)
-	go sup.Serve(supSock) //nolint:errcheck
-	t.Cleanup(func() { sup.Shutdown() })
+	serveTestServer(t, sup, supSock)
 	waitFile(t, supSock)
 
 	sc, err := Connect(supSock)
@@ -303,8 +299,7 @@ func TestSupCrashRelayErr(t *testing.T) {
 
 	supSock := filepath.Join(t.TempDir(), "s.sock")
 	sup := daemon.NewSupervisor(database.Config)
-	go sup.Serve(supSock) //nolint:errcheck
-	t.Cleanup(func() { sup.Shutdown() })
+	serveTestServer(t, sup, supSock)
 	waitFile(t, supSock)
 
 	sc, err := Connect(supSock)
@@ -375,8 +370,7 @@ func TestSupTee(t *testing.T) {
 
 	// The daemon serves its own socket so a TUI client can stream from it.
 	daemonSock := filepath.Join(t.TempDir(), "d.sock")
-	go d.Serve(daemonSock) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, daemonSock)
 	waitFile(t, daemonSock)
 
 	task := startE2E(t, d, sc, database, "tee", "sh -c 'sleep 0.5; echo TEE-MARKER'")

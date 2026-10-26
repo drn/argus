@@ -112,8 +112,7 @@ var errUnreachableSupervisor = errors.New("dial: connection refused")
 func TestSup_HelloReportsSurface(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	s, sock := testSupervisor(t, config.DefaultConfig())
-	go s.Serve(sock) //nolint:errcheck
-	t.Cleanup(func() { s.Shutdown() })
+	serveTestServer(t, s, sock)
 	waitForSocket(t, sock)
 
 	c := dialRPC(t, sock)

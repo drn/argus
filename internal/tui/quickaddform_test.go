@@ -369,10 +369,7 @@ func wireSyncScan(f *QuickAddForm) {
 
 func TestQuickAddForm_Integration(t *testing.T) {
 	// Full flow: enter dir, scan, select, get results.
-	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, "project-a", ".git"), 0o755)
-	os.MkdirAll(filepath.Join(dir, "project-b", ".git"), 0o755)
-	os.MkdirAll(filepath.Join(dir, "not-git"), 0o755)
+	dir := setupACDirs(t, "project-a/.git", "project-b/.git", "not-git")
 
 	database, err := db.OpenInMemory()
 	testutil.NoError(t, err)
@@ -403,8 +400,7 @@ func TestQuickAddForm_Integration(t *testing.T) {
 }
 
 func TestQuickAddForm_NoReposError(t *testing.T) {
-	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, "not-git"), 0o755)
+	dir := setupACDirs(t, "not-git")
 
 	f := NewQuickAddForm(nil)
 	wireSyncScan(f)

@@ -57,11 +57,7 @@ func TestD_BackendRoutingAbsentCfg(t *testing.T) {
 	// pins that an absent [backend_routing] table never blocks Serve.
 	d.codexProbe = func(context.Context) error { return nil }
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- d.Serve(sockPath)
-	}()
-	t.Cleanup(func() { d.Shutdown() })
+	errCh := serveTestServer(t, d, sockPath)
 
 	deadline := time.After(5 * time.Second)
 	tick := time.NewTicker(10 * time.Millisecond)

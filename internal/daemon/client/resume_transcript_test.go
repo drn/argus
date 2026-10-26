@@ -42,8 +42,7 @@ func TestSupResumeID(t *testing.T) {
 	isolateResumeProbeCLI(t)
 	d, supervisorClient, database := supE2E(t)
 	sock := filepath.Join(t.TempDir(), "d.sock")
-	go d.Serve(sock) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sock)
 	waitFile(t, sock)
 	bin := filepath.Join(t.TempDir(), "claude")
 	testutil.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > launch-args\nprintf '%s\\n' \"$@\"\nexec sleep 30\n"), 0o700))
