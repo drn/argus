@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/db"
@@ -15,6 +16,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/mattn/go-runewidth"
 	"github.com/rivo/tview"
+	"github.com/rivo/uniseg"
 )
 
 type boardView struct {
@@ -123,6 +125,106 @@ func boardHint(keys *keymap.Keymap, focused bool) string {
 		label(keymap.ActBoardDismiss), label(keymap.ActBoardToggle))
 }
 
+type boardLine struct {
+	text           string
+	bold, selected bool
+	boldRunes      []bool
+}
+
+// boardBold removes only paired, nonempty bold markers. Other syntax stays literal.
+func boardBold(s string) (string, []bool) {
+	var text strings.Builder
+	var bold []bool
+	appendText := func(s string, strong bool) {
+		text.WriteString(s)
+		for range s {
+			bold = append(bold, strong)
+		}
+	}
+	for len(s) > 0 {
+		start := strings.Index(s, "**")
+		if start < 0 {
+			appendText(s, false)
+			break
+		}
+		end := strings.Index(s[start+2:], "**")
+		if end <= 0 {
+			appendText(s[:start+2], false)
+			s = s[start+2:]
+			continue
+		}
+		appendText(s[:start], false)
+		appendText(s[start+2:start+2+end], true)
+		s = s[start+4+end:]
+	}
+	return text.String(), bold
+}
+
+func boardBodyLines(body string, width int) []boardLine {
+	var lines []boardLine
+	indent := strings.Repeat(" ", min(2, max(0, width-1)))
+	body, allBold := boardBold(strings.TrimRight(boardText(body), "\n"))
+	offset := 0
+	for _, paragraph := range strings.Split(body, "\n") {
+		length := utf8.RuneCountInString(paragraph)
+		bold := allBold[offset : offset+length]
+		offset += length + 1
+		bullet := ""
+		if strings.HasPrefix(paragraph, "- ") || strings.HasPrefix(paragraph, "* ") {
+			bullet, paragraph = paragraph[:2], paragraph[2:]
+			bold = bold[2:]
+		}
+		source := []rune(paragraph)
+		pos := 0
+		padding := indent + strings.Repeat(" ", min(len(bullet), max(0, width-len(indent)-1)))
+		for n, wrapped := range widget.WrapPreservingLines(paragraph, max(1, width-len(padding))) {
+			prefix := padding
+			if n == 0 && bullet != "" {
+				prefix = indent + bullet[:len(padding)-len(indent)]
+			}
+			line := boardLine{text: prefix + wrapped, boldRunes: make([]bool, len(prefix))}
+			// The shared wrapper normalizes whitespace; consume matching source
+			// runes so styles survive word wraps and hard-broken tokens alike.
+			for _, r := range wrapped {
+				if r != ' ' {
+					for pos < len(source) && source[pos] != r {
+						pos++
+					}
+				}
+				strong := pos < len(bold) && bold[pos]
+				line.boldRunes = append(line.boldRunes, strong)
+				if r == ' ' {
+					for pos < len(source) && unicode.IsSpace(source[pos]) {
+						pos++
+					}
+				} else if pos < len(source) {
+					pos++
+				}
+			}
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+func (l boardLine) draw(screen tcell.Screen, x, y, width int, focused bool) {
+	col, index := 0, 0
+	graphemes := uniseg.NewGraphemes(l.text)
+	for graphemes.Next() {
+		runes := graphemes.Runes()
+		w := runewidth.StringWidth(graphemes.Str())
+		if col+w > width {
+			break
+		}
+		style := theme.StyleNormal.Bold(l.bold || (index < len(l.boldRunes) && l.boldRunes[index])).Reverse(l.selected && focused)
+		if w > 0 {
+			screen.SetContent(x+col, y, runes[0], runes[1:], style)
+		}
+		col += w
+		index += len(runes)
+	}
+}
+
 func (b *boardView) draw(screen tcell.Screen, x, y, w, h int, title string, focused bool, keys *keymap.Keymap) {
 	border := theme.StyleBorder
 	if focused {
@@ -139,11 +241,7 @@ func (b *boardView) draw(screen tcell.Screen, x, y, w, h int, title string, focu
 	if inner.H == 0 {
 		return
 	}
-	type line struct {
-		text           string
-		bold, selected bool
-	}
-	var lines []line
+	var lines []boardLine
 	selectedStart := 0
 	for n, i := range b.items {
 		selected := n == b.cursor
@@ -157,15 +255,36 @@ func (b *boardView) draw(screen tcell.Screen, x, y, w, h int, title string, focu
 		unread := ""
 		if !i.Read {
 			unread = " •"
-		}
-		header := fmt.Sprintf("%s [%s] #%d %s%s", marker, i.Kind, i.ID, i.Subject, unread)
-		lines = append(lines, line{boardText(header), true, selected})
-		if b.expandedID == i.ID {
-			for _, part := range strings.Split(boardText(i.Body), "\n") {
-				for _, wrapped := range strings.Split(runewidth.Wrap(part, max(1, inner.W-2)), "\n") {
-					lines = append(lines, line{"  " + wrapped, false, false})
-				}
+			if inner.W == 1 {
+				unread = "•"
 			}
+		}
+		prefix := boardText(fmt.Sprintf("%s [%s] #%d ", marker, i.Kind, i.ID))
+		subject := boardText(i.Subject)
+		if b.expandedID == i.ID {
+			// Leave room for a wide subject rune even in very narrow panels.
+			prefix = runewidth.Truncate(prefix, max(0, inner.W-runewidth.StringWidth(unread)-2), "")
+			indent := strings.Repeat(" ", runewidth.StringWidth(prefix))
+			markerOnly := unread != "" && inner.W-runewidth.StringWidth(unread) < 2
+			wrapWidth := max(1, inner.W-len(indent)-runewidth.StringWidth(unread))
+			if markerOnly {
+				lines = append(lines, boardLine{text: unread, bold: true, selected: selected})
+				wrapWidth = inner.W
+			}
+			for n, wrapped := range widget.WrapPreservingLines(subject, wrapWidth) {
+				header := indent + wrapped
+				if n == 0 && !markerOnly {
+					header = prefix + wrapped + unread
+				}
+				lines = append(lines, boardLine{text: header, bold: true, selected: selected && n == 0 && !markerOnly})
+			}
+			lines = append(lines, boardBodyLines(i.Body, inner.W)...)
+		} else {
+			header := runewidth.Truncate(prefix+subject, max(0, inner.W-runewidth.StringWidth(unread)), "…") + unread
+			if inner.W <= runewidth.StringWidth(unread) {
+				header = unread
+			}
+			lines = append(lines, boardLine{text: header, bold: true, selected: selected})
 		}
 	}
 	if len(lines) == 0 {
@@ -183,14 +302,7 @@ func (b *boardView) draw(screen tcell.Screen, x, y, w, h int, title string, focu
 	}
 	b.offset = max(0, min(b.offset, max(0, len(lines)-inner.H)))
 	for n := b.offset; n < len(lines) && n-b.offset < inner.H; n++ {
-		st := theme.StyleNormal
-		if lines[n].bold {
-			st = st.Bold(true)
-		}
-		if lines[n].selected && focused {
-			st = st.Reverse(true)
-		}
-		widget.DrawText(screen, inner.X, inner.Y+n-b.offset, inner.W, lines[n].text, st)
+		lines[n].draw(screen, inner.X, inner.Y+n-b.offset, inner.W, focused)
 	}
 }
 
