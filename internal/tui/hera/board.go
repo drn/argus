@@ -21,11 +21,11 @@ type boardView struct {
 	items        []*db.HeraBoardItem
 	cursor       int
 	offset       int
-	expanded     map[int64]bool
+	expandedID   int64
 	followCursor bool
 }
 
-func newBoardView() *boardView { return &boardView{expanded: make(map[int64]bool)} }
+func newBoardView() *boardView { return &boardView{} }
 
 func (p *HeraPage) SetBoardAuto(enabled bool) {
 	p.boardAuto = enabled
@@ -65,11 +65,18 @@ func (p *HeraPage) updateBoard(o *heramodel.OrchView) {
 	if c != nil {
 		p.board.items = c.BoardItems
 	}
+	expandedPresent := false
 	for n, i := range p.board.items {
 		if i.ID == selected {
 			p.board.cursor = n
-			break
 		}
+		if i.ID == p.board.expandedID {
+			expandedPresent = true
+		}
+	}
+	if !expandedPresent && p.board.expandedID != 0 {
+		uxlog.Log("[board] expansion cleared orch=%d item=%d: no longer open", o.ID, p.board.expandedID)
+		p.board.expandedID = 0
 	}
 	p.board.cursor = max(0, min(p.board.cursor, len(p.board.items)-1))
 }
@@ -103,13 +110,33 @@ func (p *HeraPage) boardTitle() string {
 	return fmt.Sprintf(" Plan · Board (%d) ", unread)
 }
 
-func (b *boardView) draw(screen tcell.Screen, x, y, w, h int, title string, focused bool) {
+func boardHint(keys *keymap.Keymap, focused bool) string {
+	label := func(act keymap.Action) string {
+		binding, _ := keys.BindingFor(keymap.CtxHeraBoard, act)
+		return binding.String()
+	}
+	if !focused {
+		return "⌘→ open board · " + label(keymap.ActBoardToggle) + " plan"
+	}
+	return fmt.Sprintf("%s/%s move · ⏎ expand · %s reply · %s dismiss · %s plan · ctrl+q back",
+		label(keymap.ActBoardDown), label(keymap.ActBoardUp), label(keymap.ActBoardReply),
+		label(keymap.ActBoardDismiss), label(keymap.ActBoardToggle))
+}
+
+func (b *boardView) draw(screen tcell.Screen, x, y, w, h int, title string, focused bool, keys *keymap.Keymap) {
 	border := theme.StyleBorder
 	if focused {
 		border = theme.StyleFocusedBorder
 	}
 	inner := widget.DrawBorderedPanel(screen, x, y, w, h, title, border)
 	if inner.W <= 0 || inner.H <= 0 {
+		return
+	}
+	// Reserve the footer before layout and scrolling, including empty boards.
+	hint := runewidth.Truncate(boardHint(keys, focused), inner.W, "")
+	tview.Print(screen, tview.Escape(hint), inner.X, inner.Y+inner.H-1, inner.W, tview.AlignLeft, theme.ColorDimmed)
+	inner.H--
+	if inner.H == 0 {
 		return
 	}
 	type line struct {
@@ -124,7 +151,7 @@ func (b *boardView) draw(screen tcell.Screen, x, y, w, h int, title string, focu
 			selectedStart = len(lines)
 		}
 		marker := "▸"
-		if b.expanded[i.ID] {
+		if b.expandedID == i.ID {
 			marker = "▾"
 		}
 		unread := ""
@@ -133,7 +160,7 @@ func (b *boardView) draw(screen tcell.Screen, x, y, w, h int, title string, focu
 		}
 		header := fmt.Sprintf("%s [%s] #%d %s%s", marker, i.Kind, i.ID, i.Subject, unread)
 		lines = append(lines, line{boardText(header), true, selected})
-		if b.expanded[i.ID] {
+		if b.expandedID == i.ID {
 			for _, part := range strings.Split(boardText(i.Body), "\n") {
 				for _, wrapped := range strings.Split(runewidth.Wrap(part, max(1, inner.W-2)), "\n") {
 					lines = append(lines, line{"  " + wrapped, false, false})
@@ -187,10 +214,16 @@ func (p *HeraPage) handleBoardKey(event *tcell.EventKey, setFocus func(tview.Pri
 		}
 		switch {
 		case event.Key() == tcell.KeyEnter:
-			p.board.expanded[i.ID] = !p.board.expanded[i.ID]
-			if p.board.expanded[i.ID] && p.OnBoardRead != nil {
-				p.OnBoardRead(i.RoleID, i.ID, i.UpdatedAt)
+			p.board.followCursor = true
+			if p.board.expandedID == i.ID {
+				p.board.expandedID = 0
+			} else {
+				p.board.expandedID = i.ID
+				if p.OnBoardRead != nil {
+					p.OnBoardRead(i.RoleID, i.ID, i.UpdatedAt)
+				}
 			}
+			uxlog.Log("[board] expansion orch=%d item=%d expanded=%v", p.boardOrchID, i.ID, p.board.expandedID == i.ID)
 		case act == keymap.ActBoardReply:
 			p.replyToBoard(i)
 		case act == keymap.ActBoardDismiss:

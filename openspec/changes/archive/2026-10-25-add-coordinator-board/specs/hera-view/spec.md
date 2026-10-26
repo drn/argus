@@ -32,3 +32,53 @@ When the plan is visible and the user presses Enter on a plain leaf node whose r
 
 - **WHEN** the plan is visible and the user presses Enter on a plain leaf node whose containing coordinator (or any ancestor coordinator) is collapsed in the rail, so the role's row is not currently built
 - **THEN** the system uncollapses the target's entire ancestor coordinator chain (rebuilding and persisting the rail like a user expand), then selects that node's role and moves focus to its agent pane — the join lands regardless of fold state instead of silently doing nothing
+
+## ADDED Requirements
+
+### Requirement: Board hint and mailbox presentation
+
+The Hera TUI SHALL render the coordinator-board focus-aware muted hint on a reserved bottom interior row, clipping at narrow widths and scrolling items above it, including when empty. Its rebindable labels SHALL track the active keymap. Unread mailbox markers on orchestrator headers and bridging sub-coordinator rows SHALL use the theme's orange color while retaining selected-row attributes; normal coordinator markers SHALL keep their existing style.
+
+#### Scenario: Board focus changes
+
+- **WHEN** focus moves from the rail or coordinator pane to the board
+- **THEN** the hint changes from open-board and plan shortcuts to item actions, plan and the actual Ctrl+Q back shortcut
+
+#### Scenario: Short and narrow board
+
+- **WHEN** a board has little space or many items
+- **THEN** its single muted hint clips within the reserved bottom row and items never paint over it
+
+#### Scenario: Selected unread coordinator
+
+- **WHEN** an unread coordinator header or bridging sub-coordinator row is selected
+- **THEN** only its mailbox glyph is orange and its selected-row attributes remain intact
+
+### Requirement: Single expanded board item
+
+The TUI board SHALL behave as an accordion. Enter on a collapsed item SHALL expand it, collapse any previously expanded item, and acknowledge the expanded revision as read. Enter on the expanded item SHALL collapse it. Cursor movement SHALL NOT change expansion. Refreshes SHALL preserve the expanded item by id while it remains in the open board; when it is resolved or removed, nothing SHALL remain expanded.
+
+#### Scenario: Expand a different item
+
+- **WHEN** item A is expanded and Aaron presses Enter on collapsed item B
+- **THEN** only B is expanded and its displayed revision is marked read
+
+#### Scenario: Collapse the expanded item
+
+- **WHEN** Aaron presses Enter on the expanded item
+- **THEN** no item is expanded
+
+#### Scenario: Move without expanding
+
+- **WHEN** Aaron moves the cursor with j/k or arrow keys
+- **THEN** the expanded item remains unchanged
+
+#### Scenario: Refresh retains expansion
+
+- **WHEN** the board refreshes and the expanded item still exists
+- **THEN** the same item remains expanded by id even if its content or order changes
+
+#### Scenario: Expanded item disappears
+
+- **WHEN** the expanded item is resolved or removed during refresh
+- **THEN** no item is expanded, including if that id later returns

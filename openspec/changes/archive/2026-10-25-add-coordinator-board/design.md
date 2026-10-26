@@ -12,6 +12,10 @@ Named follow-ups: `board-arrival-toasts` (the band/toasts render only in the coo
 
 ## Decisions
 
+- Model accordion expansion as one item id, separate from the cursor. Enter toggles that id and acknowledges only expansion; refresh clears an id absent from the open snapshot so removed/resolved items cannot regain stale expansion if they later reappear.
+
+- Reserve the last board interior row for a muted focus-aware hint before laying out or scrolling items, including empty boards. Resolve rebindable action labels from the active keymap; keep Cmd+Right, Enter and the actual Ctrl+Q back key literal. Clip to the pane width. Reuse `theme.ColorInProgress` for only the unread mailbox foreground, preserving selected-row attributes in orchestrator headers and bridging rows. These presentation refinements remain TUI-only under the named web/macOS follow-ups above; they change no REST contract.
+
 - Use a dedicated `hera_board_items` table keyed by coordinator role. Extending `hera_messages` would introduce a human pseudo-role and change immutable delivery/acknowledgment semantics; a separate table preserves those invariants while reusing the durable inbox for decision-dismissal notifications.
 - A material edit is a change to kind, subject or body. Identical writes preserve read state; a changed item becomes unread. Resolved items remain historical and cannot be silently reopened by edits.
 - Resolution records agent/human and an optional note. Human decision dismissal and its coordinator inbox notification are atomic, preventing a resolved decision without durable notice.

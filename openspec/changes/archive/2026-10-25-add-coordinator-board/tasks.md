@@ -11,6 +11,7 @@
 - [x] 2.2 Implement selection-time board landing and plan toggle.
 - [x] 2.3 Implement navigation, expansion/read, reply paste and dismissal.
 - [x] 2.4 Add keymap/help/README and SimulationScreen regression tests.
+- [x] 2.5 Make board expansion an accordion, preserve it by id across refreshes, clear removed items, and test navigation, replacement and collapse.
 
 ## 3. Delivery
 
@@ -18,6 +19,7 @@
 - [x] 3.2 Run hera-review and test-adversary, fix findings.
 - [x] 3.3 Run full make pre-pr and archive validated specs before the PR.
 - [x] 3.4 Prepare the PR handoff with validation details, unsigned-commit note and named frontend follow-ups. PR creation and CI monitoring follow artifact completion.
+- [x] 3.5 Add focus-aware keymap-derived board footer and orange mailbox glyphs, with render and SimulationScreen coverage.
 
 ## 4. Bridge integration
 

@@ -961,7 +961,7 @@ func (p *HeraPage) drawDetailsRegion(screen tcell.Screen, y, w, h int) {
 		if p.showBoard {
 			p.boardHeight = planH
 			p.plan.SetRect(0, 0, 0, 0)
-			p.board.draw(screen, p.agentX, y+rosterH, w, planH, p.boardTitle(), p.focus.State() == FocusAgent)
+			p.board.draw(screen, p.agentX, y+rosterH, w, planH, p.boardTitle(), p.focus.State() == FocusAgent, p.keys())
 			return
 		}
 		p.plan.SetTitle(p.boardTitle())

@@ -8,10 +8,12 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/app/agentview"
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/hera"
+	"github.com/drn/argus/internal/tui/keymap"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -33,10 +35,15 @@ func TestSmoke_CoordinatorBoard(t *testing.T) {
 	app := New(d, runner, false)
 	sim, stop := wireApp(t, app)
 	defer stop()
-	sim.SetSize(160, 50)
+	sim.SetSize(240, 50)
 	sim.InjectKey(tcell.KeyRune, '2', 0)
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() { testutil.Equal(t, app.heraPage.SelectOrch(o.ID), true) })
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		w, h := sim.Size()
+		testutil.Contains(t, screenText(sim, w, h), "⌘→ open board · p plan")
+	})
 	sim.InjectKey(tcell.KeyRight, 0, tcell.ModCtrl|tcell.ModAlt)
 	syncUI(t, app.tapp)
 	sim.InjectKey(tcell.KeyRight, 0, tcell.ModCtrl|tcell.ModAlt)
@@ -46,6 +53,24 @@ func TestSmoke_CoordinatorBoard(t *testing.T) {
 		testutil.Equal(t, app.tapp.GetFocus() == app.heraPage, true)
 		w, h := sim.Size()
 		testutil.Contains(t, screenText(sim, w, h), "Choose rollout")
+		testutil.Contains(t, screenText(sim, w, h), "j/k move · ⏎ expand · r reply · x dismiss · p plan · ctrl+q back")
+	})
+	sim.InjectKey(tcell.KeyCtrlQ, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.heraPage.Machine().State(), hera.FocusRail)
+		w, h := sim.Size()
+		testutil.Contains(t, screenText(sim, w, h), "⌘→ open board · p plan")
+	})
+	keys, warnings := keymap.Build(config.Keybindings{HeraBoard: map[string]string{"reply": "a"}})
+	testutil.Equal(t, len(warnings), 0)
+	readUI(t, app.tapp, func() { app.heraPage.Keys = func() *keymap.Keymap { return keys } })
+	sim.InjectKey(tcell.KeyRight, 0, tcell.ModCtrl|tcell.ModAlt)
+	sim.InjectKey(tcell.KeyRight, 0, tcell.ModCtrl|tcell.ModAlt)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		w, h := sim.Size()
+		testutil.Contains(t, screenText(sim, w, h), "j/k move · ⏎ expand · a reply · x dismiss · p plan · ctrl+q back")
 	})
 	sim.InjectKey(tcell.KeyEnter, 0, 0)
 	syncUI(t, app.tapp)
@@ -54,7 +79,7 @@ func TestSmoke_CoordinatorBoard(t *testing.T) {
 		return e == nil && len(items) == 1 && items[0].Read
 	})
 	readUI(t, app.tapp, func() { w, h := sim.Size(); testutil.Contains(t, screenText(sim, w, h), "Expanded body visible") })
-	sim.InjectKey(tcell.KeyRune, 'r', 0)
+	sim.InjectKey(tcell.KeyRune, 'a', 0)
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() {
 		testutil.Equal(t, app.heraPage.Machine().State(), hera.FocusCoord)
@@ -74,6 +99,34 @@ func TestSmoke_CoordinatorBoard(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, len(msgs), 1)
 	testutil.Contains(t, msgs[0].Body, "Aaron dropped")
+	_, err = d.PostHeraBoardItem(role.ID, "fyi", "First accordion item", "First accordion body")
+	testutil.NoError(t, err)
+	_, err = d.PostHeraBoardItem(role.ID, "fyi", "Second accordion item", "Second accordion body")
+	testutil.NoError(t, err)
+	readUI(t, app.tapp, func() { app.heraPage.Refresh() })
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		w, h := sim.Size()
+		testutil.Contains(t, screenText(sim, w, h), "First accordion body")
+	})
+	sim.InjectKey(tcell.KeyRune, 'j', 0)
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { app.heraPage.Refresh() })
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		w, h := sim.Size()
+		text := screenText(sim, w, h)
+		testutil.Equal(t, strings.Contains(text, "First accordion body"), false)
+		testutil.Contains(t, text, "Second accordion body")
+	})
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		w, h := sim.Size()
+		testutil.Equal(t, strings.Contains(screenText(sim, w, h), "Second accordion body"), false)
+	})
 }
 
 func TestSmoke_CoordinatorBoardMutationError(t *testing.T) {

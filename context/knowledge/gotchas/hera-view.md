@@ -410,6 +410,10 @@ M6a scaffolds the native Hera view: a `HeraPage` (rail | coordinator pane | agen
 
 ## Coordinator board
 
+- **Keep accordion expansion as a single item id, independent of cursor movement.** Preserve that id across refreshes only while it remains in the open-item snapshot; clear it when removed so a later reappearance cannot silently reopen it.
+
+- **Reserve the board hint row before computing item scroll bounds, including empty boards.** Ctrl+Q returns board focus to the rail; Esc belongs to plan navigation. Mailbox coloring must replace only the glyph foreground, preserving selected-row attributes in both header and bridging-row render paths.
+
 - **Choose board versus plan only on coordinator selection changes.** Refreshes replace board content without changing the visible view; selecting a worker resets the selection-time decision so returning to its coordinator can land on newly unread items.
 - **Board reply is a single bracketed paste with `OriginUser`, never a submit.** Its two newlines belong inside the paste frame; the board owns `r` before rail rename dispatch, while the plan retains the existing rename action.
 - **Human decision dismissal and its inbox notice commit together.** The system notice uses the coordinator as both stored sender and recipient, bypassing agent self-send/rate caps; it remains readable through `hera_inbox` even across a recycle or without a live binding.

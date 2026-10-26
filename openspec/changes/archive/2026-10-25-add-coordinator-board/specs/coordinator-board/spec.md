@@ -61,3 +61,70 @@ Coordinator orientation and builtin Hera guidance SHALL instruct agents to put h
 
 - **WHEN** a coordinator starts or reclaims its role
 - **THEN** it receives the maintenance rule and open board item ids/subjects
+
+### Requirement: Focus-aware board hint row
+
+The TUI SHALL reserve the bottom interior row of every visible board for a single muted hint, including empty boards. Unfocused boards SHALL show `⌘→ open board · p plan`; focused boards SHALL show `j/k move · ⏎ expand · r reply · x dismiss · p plan · ctrl+q back` with default bindings. Rebindable labels SHALL come from the active keymap; structural focus, Enter and back labels SHALL reflect the actual fixed keys. Items SHALL scroll above the hint. Narrow panes SHALL clip the hint to available cells without wrapping, overflow or item overlap.
+
+#### Scenario: Unfocused and empty board
+
+- **WHEN** the board is visible without focus, including with no open items
+- **THEN** the bottom interior row shows the muted open-board and plan hint
+
+#### Scenario: Focused board with many items
+
+- **WHEN** focus enters a board whose items exceed its height
+- **THEN** the bottom interior row shows movement, expand, reply, dismiss, plan and Ctrl+Q back hints while the selected item scrolls above it
+
+#### Scenario: Rebound action
+
+- **WHEN** a board action is rebound in the active keymap
+- **THEN** the hint uses the new binding for that action
+
+#### Scenario: Narrow board
+
+- **WHEN** the board is narrower than its hint text
+- **THEN** the hint clips cleanly on its reserved row without overwriting the border or item content
+
+### Requirement: Orange unread mailbox glyph
+
+The TUI SHALL color only the unread coordinator mailbox glyph with the existing orange theme color, preserving the row's other style attributes on selected rows. Normal coordinator icons and surrounding text SHALL retain their existing styles. This SHALL apply to orchestrator headers and bridging sub-coordinator rows.
+
+#### Scenario: Unread mailbox on normal and selected rows
+
+- **WHEN** a coordinator has unread board items with the board setting enabled
+- **THEN** its mailbox glyph is orange on both normal and selected rail rows and the surrounding text keeps its row style
+
+#### Scenario: Normal coordinator marker
+
+- **WHEN** the coordinator has no unread items or the board setting is disabled
+- **THEN** its normal coordinator icon keeps its existing style
+
+### Requirement: Single expanded board item
+
+The TUI board SHALL behave as an accordion. Enter on a collapsed item SHALL expand it, collapse any previously expanded item, and acknowledge the expanded revision as read. Enter on the expanded item SHALL collapse it. Cursor movement SHALL NOT change expansion. Refreshes SHALL preserve the expanded item by id while it remains in the open board; when it is resolved or removed, nothing SHALL remain expanded.
+
+#### Scenario: Expand a different item
+
+- **WHEN** item A is expanded and Aaron presses Enter on collapsed item B
+- **THEN** only B is expanded and its displayed revision is marked read
+
+#### Scenario: Collapse the expanded item
+
+- **WHEN** Aaron presses Enter on the expanded item
+- **THEN** no item is expanded
+
+#### Scenario: Move without expanding
+
+- **WHEN** Aaron moves the cursor with j/k or arrow keys
+- **THEN** the expanded item remains unchanged
+
+#### Scenario: Refresh retains expansion
+
+- **WHEN** the board refreshes and the expanded item still exists
+- **THEN** the same item remains expanded by id even if its content or order changes
+
+#### Scenario: Expanded item disappears
+
+- **WHEN** the expanded item is resolved or removed during refresh
+- **THEN** no item is expanded, including if that id later returns
