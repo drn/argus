@@ -304,7 +304,7 @@ End-of-life has **two resting states**, and **no DB row is ever hard-deleted** â
 
 #### Settings
 
-The **Bridge** section provides **Enabled** and **Message delivery** toggles in local and remote TUI mode. Message delivery applies immediately to new deliveries and budget nudges; the master switch also controls loading the mod into new sessions. Config-file values override Settings. Web and macOS Bridge settings controls are a named follow-up.
+The **Bridge** section provides **Enabled**, **Message delivery**, **Hera band** and **Message toasts** toggles in local and remote TUI mode. Message delivery applies immediately to new deliveries and budget nudges; the band and toasts apply in running sessions within about 15 seconds (or at the next turn); the master switch also controls loading the mod into new sessions and gates the other three. Config-file values override Settings. Web and macOS Bridge settings controls are a named follow-up.
 
 | Key                   | Action                                                   |
 | --------------------- | -------------------------------------------------------- |
