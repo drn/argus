@@ -170,7 +170,8 @@ const (
 	//     the daemon shows without scraper corroboration.
 	//   - v27: coordinator bridge band shows board unread and newest subject
 	//     separately from mail.
-	SupervisorSpawnSurface = 27
+	//   - v28: agent sessions support an opt-in child-only unsigned Git policy.
+	SupervisorSpawnSurface = 28
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -380,6 +381,8 @@ func CompareSupervisorSurface(reported SurfaceVersion) SurfaceSkew {
 // version is guarded against.
 var SupervisorSpawnPaths = []string{
 	"internal/agent/agent.go",                                        // BuildCmd: argv, env, dir, cache-dir redirection
+	"internal/agent/git_policy.go",                                   // child-only Git signing policy
+	"internal/config/git.go",                                         // Git policy schema and validation
 	"internal/agent/backends.go",                                     // backend family registry BuildCmd dispatches on
 	"internal/agent/bridge_mod.go",                                   // --plugin-dir bridge mod materialization seam BuildCmd calls
 	"internal/bridgemod/bridgemod.go",                                // embedded argus-bridge mod + content-addressed materialization
@@ -455,7 +458,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "1bcf68f0d0e19fb1e2642503a5321a2b528484f455a24d193cd97df52d56a0d7"
+	SpawnSurfaceDigest  = "fbaf903c87072a0f03a60723958f7a17d42c91f93080635cef0593f567da8d37"
 	StreamSurfaceDigest = "4db586fb7dcaf62899cb2ebc82bbaa7fcc325d7cf99611f5f7942c44f9bc9467"
 )
 

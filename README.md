@@ -1036,6 +1036,14 @@ Every option below is overridable. A ⚠️ marks options that are **read but no
 | `share_project` | string | `""` | Project preselected in the New Task form when the PWA share target (iOS/Android share sheet) lands a payload. Empty falls back to the currently expanded project folder. |
 | `permission_mode` | string | `"bypass-active"` | Permission flags injected into Claude-style backends at launch. One of `default`, `acceptEdits`, `plan`, `bypass-allow`, `bypass-active`. |
 
+#### `[git]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `agent_commit_signing` | string | `"inherit"` | `inherit` preserves Git signing settings; opt-in `unsigned` sets `commit.gpgsign=false` only in agent process trees, so ordinary commits do not wait for a signing prompt. Restart or recycle sessions to pick up changes. Explicit `git commit -S` or `git -c` options still win. |
+
+To opt in, add `[git]` with `agent_commit_signing = "unsigned"` to `~/.argus/config.toml`. Unsigned feature commits have no individual signature; a GitHub squash-merge signature attests the merge. Confirm repository rules permit unsigned feature commits. The setting follows the session across branch switches and leaves global/shared Git configuration unchanged. An upgraded supervisor is required; restart a stale supervisor before restarting/recycling sessions. This is config.toml-only for TUI, web, and macOS launches; Settings controls are the named follow-up `agent-git-policy-settings-controls`.
+
 #### `[backends.<name>]`
 
 Command templates, keyed by name. Seeded with `claude`, `codex`, `pi`, `opencode`, `cursor` (`cursor-agent --approve-mcps`; Argus adds `--trust` and maps `defaults.permission_mode` to `--force` / `--plan`; MCP is registered in `~/.cursor/mcp.json`), and `antigravity` (`agy --prompt-interactive`; Argus maps `defaults.permission_mode` to `--mode accept-edits` / `--mode plan` / `--dangerously-skip-permissions`). The OpenCode default uses its full interactive UI with `--prompt`; Argus adds `--auto` at launch so permission requests that would ask are approved.

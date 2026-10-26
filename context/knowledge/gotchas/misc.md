@@ -41,6 +41,10 @@
 
 ## Backend credential env mapping (env_vars)
 
+- **`[git] agent_commit_signing = "unsigned"` is a child-process policy, not a branch rule; restart/recycle sessions after changing it and upgrade/restart a stale supervisor.** Apply after backend environment mappings, preserve indexed Git config, and also append to inherited `GIT_CONFIG_PARAMETERS` because Git parses it last; explicit `-S`/`-c` still wins, and no global/shared Git configuration is edited.
+
+- **Agent fixture commits must ignore developer system/global/command-scope Git config before the first Git operation, independently of the production signing policy.** Normal agent `TestMain` installs isolation before tests start (also clears inherited Codex home overrides so fixture HOME wins); preserve its fake-daemon helper dispatch and use synthetic signers for policy tests.
+
 - **`config.Backend.EnvVars` / the `backends.env_vars` JSON column hold the MAPPING ONLY (target env var → source descriptor), NEVER a secret value.** A secret value must never enter the DB, logs, fixtures, or git. `BuildCmd` resolves the source at spawn time through the swappable `agent.secretResolver` seam (default `envSecretResolver` = `os.LookupEnv`) and appends `target=value` to `cmd.Env`; an unresolved source sets nothing and `uxlog`s a warning naming ONLY the var, never the value. The success path logs nothing about the value.
 - **Swap the resolver via `agent.SetSecretResolver` (returns the previous; nil resets to default) — never edit `BuildCmd` to add a new credential source.** This is the seam for a future `op`/1Password resolver.
 - **The launchd-started daemon's minimal env will NOT carry the source (e.g. `HERA_OPENAI`)**, so the default `os.LookupEnv` resolver injects nothing there — same minimal-env constraint that once stripped `TERM`. Cross-vendor review works today only when the daemon is started from an env that already exports the source. The `codex` default seeds `{"OPENAI_API_KEY":"HERA_OPENAI"}`; `fixupBackends` fills it on pre-existing rows only when their mapping is empty (never clobbers a customized one).
