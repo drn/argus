@@ -116,6 +116,9 @@ func (l *FileLoader) Apply(base Config) Config {
 	// forward-compatible. Don't "fix" this into a strict decode — a typo
 	// blocking the whole overlay would be worse than a silent no-op.
 	meta, derr := toml.Decode(string(data), &merged)
+	if derr == nil {
+		derr = merged.Git.Validate()
+	}
 	if derr != nil {
 		l.err = fmt.Errorf("parsing %s: %w", l.path, derr)
 		l.backendRoutingTierDefined = false

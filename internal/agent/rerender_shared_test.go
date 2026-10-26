@@ -24,7 +24,7 @@ func TestMain(m *testing.M) {
 		runSharedDaemonHelper(mode)
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	os.Exit(runAgentTests(m))
 }
 
 // The same test executable runs under a fake "claude daemon run" argv. No

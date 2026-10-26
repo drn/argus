@@ -810,6 +810,10 @@ func NeedsSessionRecapture(task *model.Task, cfg config.Config) bool {
 // When sandbox is enabled and available, the command is wrapped with sandbox-exec.
 // The returned cleanup function removes the sandbox config temp file (nil if no sandbox).
 func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func(), error) {
+	if err := cfg.Git.Validate(); err != nil {
+		uxlog.Log("[agent-git] task %q: invalid signing policy", task.ID)
+		return nil, nil, err
+	}
 	backend, err := ResolveBackend(task, cfg)
 	if err != nil {
 		return nil, nil, err
@@ -1274,6 +1278,17 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 			cmd.Env = append(cmd.Env, target+"="+value)
 		}
 	}
+
+	cmd.Env, err = agentGitPolicy(cmd.Env, cfg.Git.AgentCommitSigning)
+	if err != nil {
+		uxlog.Log("[agent-git] task %q: signing policy failed: %v", task.ID, err)
+		return nil, nil, err
+	}
+	policy := cfg.Git.AgentCommitSigning
+	if policy == "" {
+		policy = "inherit"
+	}
+	uxlog.Log("[agent-git] task %q: commit signing policy=%s", task.ID, policy)
 
 	if isOpencode {
 		uxlog.Log("[opencode] auto approval enabled for task %q (injected=%t)", task.ID, injectLaunchFlag)
