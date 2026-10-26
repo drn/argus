@@ -31,11 +31,7 @@ func TestD_UsageBudgetAbsentCfg(t *testing.T) {
 	// pins that an absent [backend_routing]/usage config never blocks Serve.
 	d.usageBudgetProbe = func(context.Context) error { return nil }
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- d.Serve(sockPath)
-	}()
-	t.Cleanup(func() { d.Shutdown() })
+	errCh := serveTestServer(t, d, sockPath)
 
 	deadline := time.After(5 * time.Second)
 	tick := time.NewTicker(10 * time.Millisecond)

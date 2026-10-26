@@ -28,8 +28,7 @@ func startTestSession(t *testing.T, taskID, cmd string) (*Daemon, *rpc.Client) {
 	testutil.NoError(t, d.db.SetBackend("test", config.Backend{Command: cmd}))
 	testutil.NoError(t, d.db.SetConfigValue("default.backend", "test"))
 
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	c := dialRPC(t, sockPath)
@@ -160,8 +159,7 @@ func TestRPC_Resize(t *testing.T) {
 
 func TestRPC_GetExitInfo(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 	c := dialRPC(t, sockPath)
 
@@ -194,8 +192,7 @@ func TestRPC_GetExitInfo(t *testing.T) {
 
 func TestRPC_KBSearch(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 	c := dialRPC(t, sockPath)
 
@@ -229,8 +226,7 @@ func TestRPC_KBSearch(t *testing.T) {
 
 func TestRPC_KBList(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 	c := dialRPC(t, sockPath)
 
@@ -253,8 +249,7 @@ func TestRPC_KBList(t *testing.T) {
 
 func TestRPC_KBList_Err(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 	c := dialRPC(t, sockPath)
 
@@ -268,8 +263,7 @@ func TestRPC_KBList_Err(t *testing.T) {
 
 func TestRPC_KBSearch_Err(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 	c := dialRPC(t, sockPath)
 
@@ -282,8 +276,7 @@ func TestRPC_KBSearch_Err(t *testing.T) {
 
 func TestRPC_KBSearch_Empty(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 	c := dialRPC(t, sockPath)
 
@@ -297,8 +290,7 @@ func TestRPC_KBSearch_Empty(t *testing.T) {
 
 func TestRPC_KBIngest_Err(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 	c := dialRPC(t, sockPath)
 
@@ -313,8 +305,7 @@ func TestRPC_KBIngest_Err(t *testing.T) {
 
 func TestRPC_KBStatus(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 	c := dialRPC(t, sockPath)
 
@@ -353,8 +344,7 @@ func TestRPC_RPCShutdown(t *testing.T) {
 // hardcoding (bindWithRetry means neither is stable across restarts).
 func TestRPC_Ports(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	// Stage the port fields directly — KB and API are disabled in tests, so
@@ -376,8 +366,7 @@ func TestRPC_Ports(t *testing.T) {
 // server is bound (the default in tests — KB and API both disabled).
 func TestRPC_Ports_Zero(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	c := dialRPC(t, sockPath)
@@ -396,8 +385,7 @@ func TestDaemon_HandleStream(t *testing.T) {
 	testutil.NoError(t, d.db.SetBackend("test", config.Backend{Command: "bash -c 'echo hello-stream; sleep 1'"}))
 	testutil.NoError(t, d.db.SetConfigValue("default.backend", "test"))
 
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	c := dialRPC(t, sockPath)
@@ -439,8 +427,7 @@ func TestD_StreamSince(t *testing.T) {
 	testutil.NoError(t, d.db.SetBackend("test", config.Backend{Command: "bash -c 'echo first-burst; sleep 2; echo second-burst'"}))
 	testutil.NoError(t, d.db.SetConfigValue("default.backend", "test"))
 
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	c := dialRPC(t, sockPath)
@@ -493,8 +480,7 @@ func TestD_StreamSince(t *testing.T) {
 // of handleStream — the daemon should drop the connection without panicking.
 func TestD_StreamNoSess(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	conn := dialStream(t, sockPath, "ghost")
@@ -509,8 +495,7 @@ func TestD_StreamNoSess(t *testing.T) {
 // returns without panicking.
 func TestD_StreamBadHdr(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	// Dial with stream prefix but write garbage where header should be.
@@ -532,8 +517,7 @@ func TestD_StreamBadHdr(t *testing.T) {
 // the daemon should log the unknown byte and close the connection.
 func TestD_ConnBadPfx(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	conn, err := net.Dial("unix", sockPath)
@@ -690,8 +674,7 @@ func TestStartTestSessionGuard(t *testing.T) {
 // the RPC handler. We use the daemon's own runner for symmetry.
 func TestRPC_StopAll_NoSessions(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	c := dialRPC(t, sockPath)
@@ -703,8 +686,7 @@ func TestRPC_StopAll_NoSessions(t *testing.T) {
 // TestRPC_StartSession_Error exercises the error branch (unknown backend).
 func TestRPC_StartSession_Error(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	c := dialRPC(t, sockPath)
@@ -724,8 +706,7 @@ func TestRPC_StartSession_Error(t *testing.T) {
 // TestRPC_StopSession_NotFound exercises the StopSession error branch.
 func TestRPC_StopSession_NotFound(t *testing.T) {
 	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	c := dialRPC(t, sockPath)

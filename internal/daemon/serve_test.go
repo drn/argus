@@ -25,8 +25,7 @@ func TestServe_WithKBAPI(t *testing.T) {
 	testutil.NoError(t, d.db.SetConfigValue("kb.enabled", "true"))
 	testutil.NoError(t, d.db.SetConfigValue("api.enabled", "true"))
 
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	// Quick sanity ping to confirm the daemon survived service init.
@@ -46,8 +45,7 @@ func TestServe_KBVault(t *testing.T) {
 	testutil.NoError(t, d.db.SetConfigValue("kb.enabled", "true"))
 	testutil.NoError(t, d.db.SetConfigValue("kb.metis_vault_path", t.TempDir()))
 
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 	waitForSocket(t, sockPath)
 
 	// Give the indexer goroutine a chance to start.

@@ -191,8 +191,7 @@ func TestSupAcctEnv(t *testing.T) {
 	}
 	supSock := filepath.Join(t.TempDir(), "s.sock")
 	sup := daemon.NewSupervisor(cfgFn)
-	go sup.Serve(supSock) //nolint:errcheck
-	t.Cleanup(func() { sup.Shutdown() })
+	serveTestServer(t, sup, supSock)
 	waitFile(t, supSock)
 	sc, err := Connect(supSock)
 	testutil.NoError(t, err)

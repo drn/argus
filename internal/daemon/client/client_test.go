@@ -19,6 +19,33 @@ import (
 	"github.com/drn/argus/internal/testutil"
 )
 
+// serveTestServer joins Serve during cleanup: Shutdown only signals it, while
+// Serve still owns PID/socket writes and cleanup. Join before TempDir/DB teardown.
+func serveTestServer(t *testing.T, server interface {
+	Serve(string) error
+	Shutdown()
+}, sockPath string) <-chan error {
+	t.Helper()
+	serveDone := make(chan struct{})
+	errCh := make(chan error, 1)
+	var serveErr error
+	go func() {
+		defer close(serveDone)
+		serveErr = server.Serve(sockPath)
+		errCh <- serveErr
+	}()
+	t.Cleanup(func() {
+		server.Shutdown()
+		select {
+		case <-serveDone:
+			testutil.NoError(t, serveErr)
+		case <-time.After(5 * time.Second):
+			t.Error("Serve did not return within 5s after Shutdown; fixture cleanup is unsafe")
+		}
+	})
+	return errCh
+}
+
 func testSetup(t *testing.T) (*daemon.Daemon, string, *db.DB) {
 	t.Helper()
 	database, err := db.OpenInMemory()
@@ -33,8 +60,7 @@ func testSetup(t *testing.T) (*daemon.Daemon, string, *db.DB) {
 	d := daemon.New(database)
 	sockPath := filepath.Join(t.TempDir(), "test.sock")
 
-	go d.Serve(sockPath)
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sockPath)
 
 	// Wait for the daemon to actually accept connections. A created socket
 	// file (os.Stat) does NOT guarantee the accept loop is ready — dialing in

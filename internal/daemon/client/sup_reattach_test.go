@@ -34,8 +34,7 @@ func reattachHarness(t *testing.T) (supSock string, database *db.DB) {
 
 	supSock = filepath.Join(t.TempDir(), "s.sock")
 	sup := daemon.NewSupervisor(database.Config)
-	go sup.Serve(supSock) //nolint:errcheck
-	t.Cleanup(func() { sup.Shutdown() })
+	serveTestServer(t, sup, supSock)
 	waitFile(t, supSock)
 	return supSock, database
 }

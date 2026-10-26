@@ -44,8 +44,7 @@ func TestBoundedStopHops(t *testing.T) {
 	d := daemon.New(database)
 	d.UseSupervisorRunner(sc)
 	sock := filepath.Join(t.TempDir(), "d.sock")
-	go d.Serve(sock) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sock)
 	waitFile(t, sock)
 	c, err := Connect(sock)
 	testutil.NoError(t, err)
@@ -78,8 +77,7 @@ func TestSupRerender(t *testing.T) {
 		})
 	}
 	sock := filepath.Join(t.TempDir(), "d.sock")
-	go d.Serve(sock) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
+	serveTestServer(t, d, sock)
 	waitFile(t, sock)
 	c, err := Connect(sock)
 	testutil.NoError(t, err)
