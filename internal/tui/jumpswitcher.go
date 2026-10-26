@@ -103,13 +103,14 @@ func (a *App) jumpSwitcherFeed(in switcherReads) SwitcherFeed {
 		idleUnvisited = append(idleUnvisited, id)
 	}
 	f := SwitcherFeed{
-		Tasks:         a.tasks,
-		Managed:       in.managed,
-		HeraWorkers:   in.heraWorkers,
-		HeraCoords:    in.heraCoords,
-		Running:       a.runningIDs,
-		Idle:          a.idleIDs,
-		IdleUnvisited: idleUnvisited,
+		CoordinatorBoard: a.db.Config().UI.CoordinatorBoard,
+		Tasks:            a.tasks,
+		Managed:          in.managed,
+		HeraWorkers:      in.heraWorkers,
+		HeraCoords:       in.heraCoords,
+		Running:          a.runningIDs,
+		Idle:             a.idleIDs,
+		IdleUnvisited:    idleUnvisited,
 		// The SAME sticky set the real Tasks list gets; the Projects column's
 		// (?) comes from the Hera model, which heraPage.SetNeedsInput already
 		// fed with needsInputForHeraRail's admission of this set.

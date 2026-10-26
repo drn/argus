@@ -100,7 +100,7 @@ func TestHelpModal_Draw(t *testing.T) {
 	// CtxGlobal action generated straight from the keymap, same as the
 	// palette above — fail the build if it silently regresses.
 	testutil.Contains(t, body, "ctrl+g")
-	testutil.Contains(t, body, "jump to next needs-input (?)")
+	testutil.Contains(t, body, "next needs-input (?) / unread coordinator board")
 	// ctrl+b manual rail restore (add-ctrlg-excursion): the ctrl+g problem-child
 	// excursion's explicit manual-restore counterpart — fail the build if it's
 	// ever silently dropped from the generated overlay.

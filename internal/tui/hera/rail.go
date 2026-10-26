@@ -329,6 +329,9 @@ func (r *Rail) SetModel(m heramodel.Model) {
 	r.noteExcursionTransition(m)
 	prev := r.currentRef()
 	r.model = m
+	// Reuse the canonical reveal path for board-only coordinators, including
+	// worker bridges under closed ancestors. These flags affect reveal only.
+	r.eachUnreadBoard(m, func(o *heramodel.OrchView) { r.applyStickyReveal(-o.ID) })
 	// A persisted selection (BUG-002) takes precedence on the FIRST build after a
 	// restore — the rows didn't exist when SetStateStore ran. It is one-shot:
 	// once applied here it's zeroed, so later rebuilds keep the live cursor. The
@@ -511,11 +514,10 @@ func trueKeys(m map[int64]bool) []int64 {
 
 // --- problem-child excursion (ctrl+g / ctrl+b, add-ctrlg-excursion) ---
 
-// NeedsInputCount returns the current whole-rail needs-input count
-// (Model.NeedsInputTotalCount), fold-independent — the same figure the
-// excursion state machine below tracks and the one ctrl+g/ctrl+b consult at
-// keypress time to decide whether to cycle, arm, or restore.
-func (r *Rail) NeedsInputCount() int { return r.model.NeedsInputTotalCount() }
+// NeedsInputCount returns the fold-independent attention role count: own
+// needs-input signals plus unread coordinator boards when enabled. Ctrl+G's
+// count gate and the excursion state machine use the same role membership.
+func (r *Rail) NeedsInputCount() int { return len(r.attentionRoleIDs(r.model)) }
 
 // HasExcursionSnapshot reports whether a snapshot is currently held (an
 // excursion is open). Exposed mainly for tests.
@@ -579,7 +581,7 @@ func (r *Rail) HasExcursionSnapshot() bool { return r.excursion != nil }
 // No wall-clock or idle-time heuristics — purely a function of the set and
 // whether a snapshot is currently held.
 func (r *Rail) noteExcursionTransition(m heramodel.Model) {
-	current := m.NeedsInputRoleIDs()
+	current := r.attentionRoleIDs(m)
 	if r.rows == nil {
 		// BUG-070: first-ever call, rows don't exist yet — seed only, never
 		// capture (see doc above).
@@ -815,7 +817,7 @@ func (r *Rail) CursorToNextNeedsInput(fromStart bool) bool {
 	collect := func(keep func(sec int) bool) {
 		pos := r.rowPositions()
 		for i, row := range r.rows {
-			if _, ok := row.needsInputTaskID(); ok && keep(pos[i].sec) && pos[i].after(cur) {
+			if _, ok := r.attentionTaskID(row); ok && keep(pos[i].sec) && pos[i].after(cur) {
 				stops = append(stops, stop{group: r.focusedKanban, pos: pos[i], idx: i})
 			}
 		}
@@ -849,6 +851,7 @@ func (r *Rail) CursorToNextNeedsInput(fromStart bool) bool {
 		r.buildRows()
 	}
 	r.setCursor(best.idx)
+	r.logBoardCandidate(r.rows[best.idx])
 	uxlog.Log("[hera-view] rail all-groups needs-input hit group=%s idx=%d", best.group, best.idx)
 	return true
 }
@@ -2122,7 +2125,8 @@ func (row railRow) needsInputTaskID() (string, bool) {
 // NextNeedsInputTaskID returns the argus task id of the next row — in today's
 // built rail order (Pinned → Active depth-first → Freelance → Archive), the
 // SAME traversal appendOrchWorkers already reveals a hidden needs-input leaf
-// through when its ancestor is folded — whose own signal needs input,
+// through when its ancestor is folded — whose own signal needs input or
+// whose coordinator board has unread items with ui.coordinator_board enabled,
 // scanning strictly AFTER the current cursor and wrapping around the whole
 // ring back to (and including) the cursor itself. Mirrors SelectByTaskID's
 // scan-and-select shape, but position- rather than id-driven: repeated calls
@@ -2131,21 +2135,11 @@ func (row railRow) needsInputTaskID() (string, bool) {
 // candidate keeps re-selecting itself once the ring wraps all the way
 // around — the caller (HeraPage.JumpToNextNeedsInput) does the actual
 // ancestor-expand + select. Returns ("", false) when no row qualifies or the
-// rail is empty.
+// rail is empty. A board candidate without a bound task returns ("", true);
+// the page lands on its exact coordinator row rather than using the task id.
 func (r *Rail) NextNeedsInputTaskID() (string, bool) {
-	n := len(r.rows)
-	if n == 0 {
-		return "", false
-	}
-	cursor := r.cursor
-	if cursor < 0 || cursor >= n {
-		cursor = 0
-	}
-	for step := 1; step <= n; step++ {
-		i := (cursor + step) % n
-		if id, ok := r.rows[i].needsInputTaskID(); ok {
-			return id, true
-		}
+	if row, ok := r.nextNeedsInputRow(); ok {
+		return r.attentionTaskID(row)
 	}
 	return "", false
 }

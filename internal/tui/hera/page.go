@@ -474,23 +474,33 @@ func (p *HeraPage) SelectOrch(orchID int64) bool {
 	return true
 }
 
-// JumpToNextNeedsInput cycles to the next role in rail order whose own
-// signal needs input (add-hera-jump-question's Ctrl+G — a dedicated,
-// popup-free jump, independent of the Ctrl+J jump switcher): finds the target via
-// Rail.NextNeedsInputTaskID, then lands on it via JumpToTask, reusing the
-// exact same ancestor-expand + reattach + focus sequence every other jump
-// (the switcher, the plan widget's leaf-Enter) already goes through rather
-// than re-deriving it here. Returns false — a safe no-op — in remote mode or
-// when no role currently needs input.
+// JumpToNextNeedsInput cycles through needs-input roles and, when enabled,
+// coordinators with unread boards. Board targets use exact-row landing so a
+// task shared across orchestrators cannot select another coordinator's board.
+// Both paths reuse existing ancestor expansion, selection and pane landing.
+// Returns false in remote mode or when no built row qualifies.
 func (p *HeraPage) JumpToNextNeedsInput() bool {
 	if p.remote {
 		return false
 	}
-	id, ok := p.rail.NextNeedsInputTaskID()
+	row, ok := p.rail.nextNeedsInputRow()
 	if !ok {
 		uxlog.Log("[hera-view] jump to next needs-input: no role needs input")
 		return false
 	}
+	if o := p.rail.unreadBoardOrch(row); o != nil {
+		// Task lookup can land on a different binding's board. Select this
+		// coordinator's exact row and run the normal selection/landing path.
+		p.rail.EnsureAncestorsExpanded(o.ID)
+		if !p.JumpToRow(0, o.ID) {
+			return false
+		}
+		// An explicit jump also auto-lands when the sole candidate is already
+		// selected; ordinary refresh must continue preserving the plan view.
+		p.showBoard = true
+		return true
+	}
+	id, _ := row.needsInputTaskID()
 	return p.JumpToTask(id)
 }
 

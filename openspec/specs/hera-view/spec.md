@@ -2391,6 +2391,28 @@ Derived from: `internal/tui/hera/rail.go` (`railRow.needsInputTaskID`, `Rail.Nex
 - **WHEN** a coordinator-spawned sub-team's parent and child headers both qualify because they share the same underlying coordinator task, and that task needs input
 - **THEN** `ctrl+g` lands on whichever of the two headers `SelectByTaskID` matches first in rail row order, consistently — matching the existing multi-binding convention rather than alternating between them
 
+When `ui.coordinator_board` is enabled, the candidate ring SHALL additionally include every coordinator with unread board items, including top-level headers and nested sub-coordinator bridging rows. A coordinator qualifying through both signals SHALL appear once. Board targets SHALL land on that coordinator's exact row, even when its task is also bound in another orchestrator, and run the existing selection-time board auto-landing behavior. A repeated jump to the already-selected unread coordinator SHALL also show its board. Folded paths SHALL reveal board candidates through the existing partial-fold mechanism and expand ancestors on landing. The Ctrl+J popup's next-needs-input scan SHALL use the same qualification, preserving its existing all-kanban-group traversal. With the setting disabled, both scans SHALL retain their previous needs-input-only behavior.
+
+#### Scenario: Board-only top-level coordinator
+
+- **WHEN** a top-level coordinator has unread board items but no needs-input signal and the user presses Ctrl+G
+- **THEN** the coordinator header is selected and its board is shown
+
+#### Scenario: Board-only nested coordinator behind a fold
+
+- **WHEN** a nested sub-coordinator has unread board items under a collapsed ancestor
+- **THEN** its bridging row is revealed, Ctrl+G expands its ancestor path and selects that coordinator with its board shown
+
+#### Scenario: Mixed signals keep rail order without duplicate stops
+
+- **WHEN** workers need input and coordinators have unread boards, including a coordinator also needing input
+- **THEN** repeated Ctrl+G presses cycle in built rail order with one stop per coordinator, and Ctrl+J's next-needs-input scan includes the same board candidates
+
+#### Scenario: Board setting disabled
+
+- **WHEN** ui.coordinator_board is off and the only attention signal is an unread board
+- **THEN** neither jump scan qualifies that coordinator and Ctrl+G retains its existing restore or no-op behavior
+
 ### Requirement: Mouse wheel scrolls the rail
 
 The rail SHALL respond to mouse wheel scroll events within its rect by moving the cursor: scroll-up moves the cursor to the NEXT selectable row, scroll-down moves it to the PREVIOUS selectable row, including kanban-group boundary crossing and cursor persistence, identically to keyboard navigation. This mapping is deliberately inverted relative to a plain content-pane scroll — the cursor is what the gesture drags, so it moves in the same direction as the operator's fingers (trackpad "natural" scrolling) rather than the direction a viewport would pan. A left-click within the rail's rect SHALL focus it. Mouse events outside the rail's rect SHALL NOT be consumed.
@@ -2576,6 +2598,18 @@ Derived from: `internal/tui/hera/rail.go` (`Rail.noteExcursionTransition`, `Rail
 
 - **WHEN** an excursion snapshot is held and the needs-input set later becomes empty on its own (every outstanding problem resolves)
 - **THEN** the snapshot remains held until the operator explicitly discharges it via `ctrl+g` or `ctrl+b` — nothing auto-clears it
+
+When `ui.coordinator_board` is enabled, the whole-rail excursion membership SHALL additionally include coordinator role identities with unread boards, deduplicating coordinators that also need input. This SHALL govern the global jump's attention count as well as identity-based arming. Existing cold-start deferral, absorption while frozen and explicit restoration SHALL apply equally to board candidates. Unread counts or additional items on an already-unread coordinator SHALL NOT constitute a new identity.
+
+#### Scenario: New board coordinator re-arms but a stale board does not
+
+- **WHEN** a snapshot was restored while one coordinator's board remains unread and rebuilds keep observing that board
+- **THEN** no snapshot re-arms until a distinct coordinator newly has unread board items or another role newly needs input
+
+#### Scenario: Count unchanged but coordinator identity changed
+
+- **WHEN** one coordinator's unread board clears and another coordinator becomes unread before the next rebuild
+- **THEN** the new coordinator identity re-arms the excursion even though the total attention count is unchanged
 
 ### Requirement: ctrl+b manually restores the rail's excursion snapshot at any time
 
