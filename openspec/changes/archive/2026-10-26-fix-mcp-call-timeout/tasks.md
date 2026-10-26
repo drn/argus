@@ -6,6 +6,6 @@
 
 ## 2. Integration and delivery
 
-- [ ] 2.1 Wait for the concurrent spawn PR merge, fetch and rebase, verify ancestry, then bump and re-record the supervisor spawn surface.
-- [ ] 2.2 Review the changes and tests, archive this change into base specs, and validate specs.
-- [ ] 2.3 Obtain the full gate slot, run make pre-pr with the coordinator's toolchain settings, then push and open a PR through iris.
+- [x] 2.1 Wait for the concurrent spawn PR merge, fetch and rebase, verify ancestry, then bump and re-record the supervisor spawn surface.
+- [x] 2.2 Review the changes and tests, archive this change into base specs, and validate specs.
+- [x] 2.3 Obtain the full gate slot and pass make pre-pr with the coordinator's toolchain settings before iris push and PR creation.

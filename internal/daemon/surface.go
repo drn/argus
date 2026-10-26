@@ -171,7 +171,9 @@ const (
 	//   - v27: coordinator bridge band shows board unread and newest subject
 	//     separately from mail.
 	//   - v28: agent sessions support an opt-in child-only unsigned Git policy.
-	SupervisorSpawnSurface = 28
+	//   - v29: managed Claude/Codex/OpenCode MCP deadlines exceed the shared
+	//     Hera inbox wait cap, with Claude's child environment fallback.
+	SupervisorSpawnSurface = 29
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -384,6 +386,7 @@ var SupervisorSpawnPaths = []string{
 	"internal/agent/git_policy.go",                                   // child-only Git signing policy
 	"internal/config/git.go",                                         // Git policy schema and validation
 	"internal/agent/backends.go",                                     // backend family registry BuildCmd dispatches on
+	"internal/mcplimits/limits.go",                                   // shared inbox cap and derived MCP client deadline
 	"internal/agent/bridge_mod.go",                                   // --plugin-dir bridge mod materialization seam BuildCmd calls
 	"internal/bridgemod/bridgemod.go",                                // embedded argus-bridge mod + content-addressed materialization
 	"internal/bridgemod/mod/argus-bridge/.claude-plugin/plugin.json", // the mod the spawned session loads
@@ -458,7 +461,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "fbaf903c87072a0f03a60723958f7a17d42c91f93080635cef0593f567da8d37"
+	SpawnSurfaceDigest  = "9d403ce1ecba8b3af51c6fd4c3332e19363af4d9dd8895ab584ab48eb1734ea0"
 	StreamSurfaceDigest = "4db586fb7dcaf62899cb2ebc82bbaa7fcc325d7cf99611f5f7942c44f9bc9467"
 )
 
