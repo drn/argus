@@ -498,6 +498,15 @@ func (p *HeraPage) JumpToNextNeedsInput() bool {
 		// An explicit jump also auto-lands when the sole candidate is already
 		// selected; ordinary refresh must continue preserving the plan view.
 		p.showBoard = true
+		p.focus.SetRegion(FocusAgent)
+		for n, item := range p.board.items {
+			if !item.Read {
+				p.board.cursor = n
+				break
+			}
+		}
+		p.board.followCursor = true
+		uxlog.Log("[hera-view] jump to board: orch=%d focus=board cursor=%d", o.ID, p.board.cursor)
 		return true
 	}
 	id, _ := row.needsInputTaskID()

@@ -3,10 +3,12 @@ package tui
 import (
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/hera"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 )
@@ -18,7 +20,12 @@ func TestSmoke_CtrlGUnreadBoard(t *testing.T) {
 			d := testDB(t)
 			oid := seedHeraOrch(t, d, "board-jump")
 			c := seedHeraBoundRole(t, d, oid, "coord", db.HeraKindCoordinator, "tc")
-			_, err := d.PostHeraBoardItem(c.ID, "decision", "Release approval needed", "Choose the release")
+			read, err := d.PostHeraBoardItem(c.ID, "fyi", "Already read", "Previous update")
+			testutil.NoError(t, err)
+			testutil.NoError(t, d.ReadHeraBoardItem(c.ID, read.ID))
+			first, err := d.PostHeraBoardItem(c.ID, "decision", "Release approval needed", "Choose the release")
+			testutil.NoError(t, err)
+			second, err := d.PostHeraBoardItem(c.ID, "decision", "Second decision", "Another choice")
 			testutil.NoError(t, err)
 			testutil.NoError(t, d.SetConfigValue("ui.coordinator_board", strconv.FormatBool(enabled)))
 			app := New(d, agent.NewRunner(nil), false)
@@ -36,11 +43,36 @@ func TestSmoke_CtrlGUnreadBoard(t *testing.T) {
 				testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
 				testutil.Equal(t, app.heraPage.SelectionContext().FocusTaskID(), "tc")
 				testutil.Nil(t, app.heraPage.SelectionContext().Role)
+				testutil.Equal(t, app.heraPage.Machine().State(), hera.FocusAgent)
 				// Assert rendered board content: selection alone could pass with
 				// the details region still showing its plan instead of the board.
 				w, h := sim.Size()
 				testutil.Contains(t, screenText(sim, w, h), "Release approval needed")
 			})
+			items, err := d.ListHeraBoardItems(c.ID, false)
+			testutil.NoError(t, err)
+			testutil.True(t, items[0].Read)
+			testutil.False(t, items[1].Read)
+			testutil.False(t, items[2].Read)
+			if !enabled {
+				return
+			}
+			// Observe the existing acknowledgment seam synchronously: landing
+			// and j/k must not acknowledge; Enter must expand the selected item.
+			var expanded []int64
+			readUI(t, app.tapp, func() {
+				app.heraPage.OnBoardRead = func(_ int64, id int64, _ time.Time) {
+					expanded = append(expanded, id)
+				}
+			})
+			sim.InjectKey(tcell.KeyRune, 'j', 0)
+			sim.InjectKey(tcell.KeyEnter, 0, 0)
+			syncUI(t, app.tapp)
+			readUI(t, app.tapp, func() { testutil.DeepEqual(t, expanded, []int64{second.ID}) })
+			sim.InjectKey(tcell.KeyRune, 'k', 0)
+			sim.InjectKey(tcell.KeyEnter, 0, 0)
+			syncUI(t, app.tapp)
+			readUI(t, app.tapp, func() { testutil.DeepEqual(t, expanded, []int64{second.ID, first.ID}) })
 		})
 	}
 }
