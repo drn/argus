@@ -47,6 +47,8 @@ const switcherRemotePlaceholder = "Projects unavailable in remote mode"
 // time (NewSwitcherPopup) and on every tick while it is open (Refeed). It
 // mirrors what the real Tasks tab list and Projects rail are fed.
 type SwitcherFeed struct {
+	// CoordinatorBoard enables unread-board attention in the private rail.
+	CoordinatorBoard bool
 	// Tasks is the full task snapshot (a.tasks). Archived tasks and every
 	// hera-managed task (Managed ∪ HeraWorkers — the real list's own
 	// isHeraSpawnedWorker || managed hide rule with `H` on) are dropped from
@@ -213,6 +215,7 @@ func (p *SwitcherPopup) feed(f SwitcherFeed) {
 	p.tasks.SetTasks(tasks)
 	if !p.remote {
 		p.rail.SetPRMeta(f.PRMeta)
+		p.rail.SetBoardAuto(f.CoordinatorBoard)
 		p.rail.SetModel(f.HeraModel.Clone())
 	}
 }

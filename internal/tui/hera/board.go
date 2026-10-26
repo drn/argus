@@ -29,7 +29,7 @@ func newBoardView() *boardView { return &boardView{} }
 
 func (p *HeraPage) SetBoardAuto(enabled bool) {
 	p.boardAuto = enabled
-	p.rail.boardAuto = enabled
+	p.rail.SetBoardAuto(enabled)
 }
 
 func (r *Rail) coordMarker(orchID int64) rune {

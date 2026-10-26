@@ -205,7 +205,7 @@ var actionLabels = map[Action]string{
 	ActGlobalTabHera: "switch to Projects tab", ActGlobalTabSettings: "switch to Settings tab",
 	ActGlobalRefresh: "refresh screen", ActGlobalDestroy: "destroy task", ActGlobalFork: "fork task",
 	ActGlobalOpenRepo: "open repo", ActGlobalOpenPR: "open PR", ActGlobalPrune: "prune completed",
-	ActGlobalPalette: "command palette", ActGlobalJumpNeedsInput: "jump to next needs-input (?); jumps back once all clear",
+	ActGlobalPalette: "command palette", ActGlobalJumpNeedsInput: "next needs-input (?) / unread coordinator board",
 	ActGlobalRestoreRail: "jump back now, even with (?) still open",
 	ActGlobalSwitcher:    "jump switcher (tasks + projects)",
 
