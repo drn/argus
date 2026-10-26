@@ -657,6 +657,20 @@ func (d *DB) createHeraTables() error {
 		-- too. in_reply_to SET NULL on parent delete so threads don't break.
 		-- read_at is real NULL (never '') — the partial inbox index below requires it.
 		-- delivery_mode tracks how (or whether) the message reached the recipient PTY.
+		CREATE TABLE IF NOT EXISTS hera_board_items (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			role_id INTEGER NOT NULL REFERENCES hera_roles(id) ON DELETE CASCADE,
+			kind TEXT NOT NULL CHECK(kind IN ('decision','fyi')),
+			subject TEXT NOT NULL,
+			body TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			is_read INTEGER NOT NULL DEFAULT 0,
+			resolved INTEGER NOT NULL DEFAULT 0,
+			resolved_by TEXT NOT NULL DEFAULT '',
+			resolution_note TEXT NOT NULL DEFAULT ''
+		);
+		CREATE INDEX IF NOT EXISTS idx_hera_board_open ON hera_board_items(role_id, resolved, is_read);
 		CREATE TABLE IF NOT EXISTS hera_messages (
 			id             INTEGER PRIMARY KEY AUTOINCREMENT,
 			from_role_id   INTEGER NOT NULL REFERENCES hera_roles(id) ON DELETE CASCADE,

@@ -5,18 +5,19 @@ package keymap
 type Context string
 
 const (
-	CtxGlobal   Context = "global"
-	CtxTaskList Context = "tasklist"
-	CtxAgent    Context = "agent"
-	CtxFilePnl  Context = "filepanel"
-	CtxDiff     Context = "diff"
-	CtxSettings Context = "settings"
-	CtxHeraRail Context = "hera_rail"
+	CtxGlobal    Context = "global"
+	CtxTaskList  Context = "tasklist"
+	CtxAgent     Context = "agent"
+	CtxFilePnl   Context = "filepanel"
+	CtxDiff      Context = "diff"
+	CtxSettings  Context = "settings"
+	CtxHeraRail  Context = "hera_rail"
+	CtxHeraBoard Context = "hera_board"
 )
 
 // AllContexts is the ordered set of contexts (drives validation + help order).
 var AllContexts = []Context{
-	CtxGlobal, CtxTaskList, CtxAgent, CtxFilePnl, CtxDiff, CtxSettings, CtxHeraRail,
+	CtxGlobal, CtxTaskList, CtxAgent, CtxFilePnl, CtxDiff, CtxSettings, CtxHeraRail, CtxHeraBoard,
 }
 
 // Action is a stable, context-prefixed identifier for a rebindable command.
@@ -136,8 +137,13 @@ const (
 	// stuck-task backlog. Selection-INDEPENDENT like ActHeraNewCoord — it
 	// fires even on an empty rail, since its candidate set is never scoped to
 	// a coordinator.
-	ActHeraCleanup Action = "hera_rail.cleanup"
-	ActHeraInbox   Action = "hera_rail.inbox"
+	ActHeraCleanup  Action = "hera_rail.cleanup"
+	ActHeraInbox    Action = "hera_rail.inbox"
+	ActBoardToggle  Action = "hera_board.toggle"
+	ActBoardReply   Action = "hera_board.reply"
+	ActBoardDismiss Action = "hera_board.dismiss"
+	ActBoardDown    Action = "hera_board.down"
+	ActBoardUp      Action = "hera_board.up"
 )
 
 // defaultSpecs is THE source of truth for argus's built-in bindings, mirroring
@@ -190,6 +196,7 @@ var defaultSpecs = map[Context]map[Action]string{
 		ActHeraAdopt: "J", ActHeraNewCoord: "n", ActHeraClear: "c",
 		ActHeraCleanup: "C", ActHeraInbox: "i",
 	},
+	CtxHeraBoard: {ActBoardToggle: "p", ActBoardReply: "r", ActBoardDismiss: "x", ActBoardDown: "j", ActBoardUp: "k"},
 }
 
 // actionLabels are the human-readable descriptions used in the help overlay.
@@ -233,9 +240,14 @@ var actionLabels = map[Action]string{
 	ActHeraPin: "toggle pin", ActHeraStatAdv: "advance status", ActHeraStatRev: "revert status",
 	ActHeraKanbanAdv: "advance kanban status (top-level coord)", ActHeraKanbanRev: "revert kanban status (top-level coord)",
 	ActHeraAdopt: "adopt freelancer / reparent coordinator", ActHeraNewCoord: "new coordinator (new-task modal)",
-	ActHeraClear:   "clear coord's archive (nuke hidden agents)",
-	ActHeraCleanup: "cleanup stuck-task backlog (all projects)",
-	ActHeraInbox:   "view role's message inbox (read-only)",
+	ActHeraClear:    "clear coord's archive (nuke hidden agents)",
+	ActHeraCleanup:  "cleanup stuck-task backlog (all projects)",
+	ActHeraInbox:    "view role's message inbox (read-only)",
+	ActBoardToggle:  "toggle plan / human board",
+	ActBoardReply:   "compose reply to coordinator (never submits)",
+	ActBoardDismiss: "dismiss board item",
+	ActBoardDown:    "next board item",
+	ActBoardUp:      "previous board item",
 }
 
 // HelpRow is one rendered help line: the key chord and its action label.
@@ -305,4 +317,5 @@ var contextOrder = map[Context][]Action{
 	CtxHeraRail: {ActHeraSpawn, ActHeraNewCoord, ActHeraRename, ActHeraArchive, ActHeraPin,
 		ActHeraStatAdv, ActHeraStatRev, ActHeraKanbanAdv, ActHeraKanbanRev, ActHeraAdopt, ActHeraClear,
 		ActHeraCleanup, ActHeraInbox, ActHeraDelete},
+	CtxHeraBoard: {ActBoardToggle, ActBoardReply, ActBoardDismiss, ActBoardDown, ActBoardUp},
 }

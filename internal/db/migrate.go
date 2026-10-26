@@ -14,6 +14,10 @@ func (d *DB) migrate() error {
 	var version int
 	err := d.conn.QueryRow(`SELECT version FROM schema_version LIMIT 1`).Scan(&version)
 	if err == nil {
+		if version < schemaVersion {
+			_, err = d.conn.Exec(`UPDATE schema_version SET version=?`, schemaVersion)
+			return err
+		}
 		return nil // already migrated
 	}
 	if !errors.Is(err, sql.ErrNoRows) {

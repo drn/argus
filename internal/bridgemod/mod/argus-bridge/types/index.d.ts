@@ -1,4 +1,4 @@
-export type Binding = { binding_id: number; role: string; kind: string; orchestrator: string; status: string; unread: number; budget: number; workers?: { working: number; blocked: number } }
+export type Binding = { binding_id: number; role: string; kind: string; orchestrator: string; status: string; unread: number; budget: number; board_unread?: number; board_subject?: string; workers?: { working: number; blocked: number } }
 export type Message = { id: string; sender: string; tldr: string; sent_at: string }
 export type Snapshot = {
   settings: { enabled: boolean; delivery: boolean; band: boolean; toasts: boolean }

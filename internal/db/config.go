@@ -102,6 +102,7 @@ func (d *DB) Config() config.Config {
 		{"ui.show_icons", &cfg.UI.ShowIcons},
 		{"ui.default_agent_zoom", &cfg.UI.DefaultAgentZoom},
 		{"ui.cross_tab_arrows", &cfg.UI.CrossTabArrows},
+		{"ui.coordinator_board", &cfg.UI.CoordinatorBoard},
 	}
 	for _, f := range boolFields {
 		if v, ok := kv[f.key]; ok {

@@ -964,8 +964,13 @@ func (a *App) buildUI() {
 		heraReader = d
 	}
 	a.heraPage = hera.NewHeraPage(heraReader)
+	a.heraPage.SetBoardAuto(a.db.Config().UI.CoordinatorBoard)
 	a.heraPage.Keys = a.activeKeymap
 	if d, ok := a.db.(*db.DB); ok {
+		a.heraPage.OnBoardRead = func(roleID, itemID int64, updatedAt time.Time) {
+			go a.mutateHeraBoard(d, roleID, itemID, updatedAt, false)
+		}
+		a.heraPage.OnBoardDismiss = func(roleID, itemID int64) { go a.mutateHeraBoard(d, roleID, itemID, time.Time{}, true) }
 		// Persist + restore the rail's fold/selection state across restarts
 		// (BUG-002). Local-only: remote mode (apistore) has no config table seam,
 		// so persistence stays off. Mirrors the heraReader / heraOps type-assert.
@@ -3511,6 +3516,7 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string, allowCachedTasks
 	// above, so it doesn't pay for a second, redundant full-table fetch of
 	// the same data (see gotchas/hera-view.md).
 	a.heraPage.SetTasks(a.tasks)
+	a.heraPage.SetBoardAuto(a.db.Config().UI.CoordinatorBoard)
 	// Snapshot the previous needs-input set before we overwrite it. The
 	// sticky pass below uses this to carry forward detections that have
 	// fallen out of idleIDs — Claude's prompt UI emits periodic animation

@@ -135,10 +135,19 @@ func (r railRow) selectable() bool {
 // codepoint Hera's rail used for iconCoord).
 const heraIconCoord = rune(0x0F0E7B) // 󰹻
 
+// Preserve selection attributes while giving only unread mail its orange hue.
+func (r *Rail) coordMarkerStyle(orchID int64, style tcell.Style) tcell.Style {
+	if r.coordMarker(orchID) != heraIconCoord {
+		return style.Foreground(theme.ColorInProgress)
+	}
+	return style
+}
+
 // Rail is the left navigation widget of the Hera view. It renders the Model
 // read-only: sections, cursor, and per-orchestrator collapse. No mutation
 // verbs live here (6c).
 type Rail struct {
+	boardAuto bool
 	*tview.Box
 
 	model  heramodel.Model
@@ -2381,7 +2390,7 @@ func (r *Rail) drawOrchRow(screen tcell.Screen, x, y, w int, row railRow, select
 	}
 	// coordinator marker
 	if col < x+w {
-		screen.SetContent(col, y, heraIconCoord, nil, nameStyle)
+		screen.SetContent(col, y, r.coordMarker(o.ID), nil, r.coordMarkerStyle(o.ID, nameStyle))
 		col += 2
 	}
 	remaining := w - (col - x)
@@ -2438,7 +2447,7 @@ func (r *Rail) drawRoleRow(screen tcell.Screen, x, y, w int, row railRow, select
 			screen.SetContent(col, y, []rune(chevron(r.isCollapsed(row.collOrchID)))[0], nil, markerStyle)
 			col += 2
 			if col < x+w {
-				screen.SetContent(col, y, heraIconCoord, nil, markerStyle)
+				screen.SetContent(col, y, r.coordMarker(row.collOrchID), nil, r.coordMarkerStyle(row.collOrchID, markerStyle))
 				col += 2
 			}
 		}

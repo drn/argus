@@ -168,7 +168,9 @@ const (
 	//   - v26: bridge mod drops a permission dialog once the engine draws the
 	//     call's run-in-background pill and reports the rest as `pending`, which
 	//     the daemon shows without scraper corroboration.
-	SupervisorSpawnSurface = 26
+	//   - v27: coordinator bridge band shows board unread and newest subject
+	//     separately from mail.
+	SupervisorSpawnSurface = 27
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -453,7 +455,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "994849ce1d4b6967a2087e8292827be6ac14dd1cc52b172fa1c168c38f9a7256"
+	SpawnSurfaceDigest  = "1bcf68f0d0e19fb1e2642503a5321a2b528484f455a24d193cd97df52d56a0d7"
 	StreamSurfaceDigest = "4db586fb7dcaf62899cb2ebc82bbaa7fcc325d7cf99611f5f7942c44f9bc9467"
 )
 

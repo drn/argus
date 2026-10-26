@@ -82,6 +82,11 @@ var helpLayout = []helpGroup{
 		{"Enter / ◀ / ▶", "toggle / cycle settings"},
 		{"Cmd+← / Cmd+→", "left ⇄ right pane; from left → Projects"},
 	}},
+	{title: "Coordinator board", ctx: keymap.CtxHeraBoard, extra: []HelpBinding{
+		{"Enter", "expand / collapse item (expanding marks read)"},
+		{"↑ / ↓", "previous / next board item"},
+		{"PgUp / PgDn", "scroll expanded board text"},
+	}},
 	{title: "Projects View (rail)", ctx: keymap.CtxHeraRail, extra: []HelpBinding{
 		{"j / k / space", "navigate / collapse / expand"},
 		{"/", "filter rail by name (↑/↓ navigate, Enter jumps in + clears, Esc clears)"},

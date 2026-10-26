@@ -285,6 +285,7 @@ func TestOverridesFor_AllContexts(t *testing.T) {
 		Diff:      map[string]string{"split": "u"},
 		Settings:  map[string]string{"edit": "E"},
 		HeraRail:  map[string]string{"spawn_worker": "W"},
+		HeraBoard: map[string]string{"toggle": "b"},
 	}
 	for _, ctx := range AllContexts {
 		testutil.NotNil(t, overridesFor(kb, ctx))

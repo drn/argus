@@ -97,7 +97,7 @@ type HeraStore interface {
 // open indefinitely.
 const maxHeraInboxTimeoutSeconds = 120
 
-// heraToolDefs contains the 19 hera_* tool schemas. The first 9 are ported
+// heraToolDefs contains the native hera_* tool schemas. The first 9 are ported
 // verbatim from Hera's daemon.toolDefinitions() — same param names,
 // descriptions, and required lists as the external Hera daemon so agents have an
 // identical surface when running natively. hera_move (fix-hera-join-move-binding)
@@ -111,7 +111,8 @@ const maxHeraInboxTimeoutSeconds = 120
 // the coordinator-only accept-and-complete tool (add-hera-accept-lifecycle);
 // its status-flip-plus-notify logic lives in the shared
 // internal/hera.AcceptRole primitive, also called by the plan-DAG gater's
-// auto-accept-on-materialize.
+// auto-accept-on-materialize. Four coordinator human-board tools are appended
+// by boardToolDefs during initialization.
 var heraToolDefs = []Tool{
 	{
 		Name:        "hera_new_orchestrator",
@@ -417,6 +418,10 @@ var heraToolDefs = []Tool{
 			"required": []string{"cwd", "name"},
 		},
 	},
+}
+
+func init() {
+	heraToolDefs = append(heraToolDefs, boardToolDefs()...)
 }
 
 // callerRoleResult holds the resolved context for the calling agent's hera
@@ -764,6 +769,7 @@ func (s *Server) toolHeraJoin(id interface{}, args json.RawMessage) *Response {
 		fmt.Fprintf(&b, "- **kind**: %s\n", caller.role.Kind)
 		fmt.Fprintf(&b, "- **binding_id**: %d\n", caller.binding.ID)
 		fmt.Fprintf(&b, "- **unread_message_count**: %d\n", unread)
+		b.WriteString(hera.BoardSummary(s.heraStore, caller.role))
 		return toolResult(id, b.String())
 	}
 
@@ -1468,7 +1474,7 @@ func (s *Server) toolHeraInbox(id interface{}, args json.RawMessage) *Response {
 			fromName = fromRole.Name
 		}
 		fmt.Fprintf(&b, "\n--- %d ---\n", m.ID)
-		fmt.Fprintf(&b, "from: %s\n", fromName)
+		fmt.Fprintf(&b, "from: %s\n", m.SenderName(fromName))
 		if m.InReplyTo != nil {
 			fmt.Fprintf(&b, "in_reply_to: %d\n", *m.InReplyTo)
 		}
@@ -1613,6 +1619,7 @@ func (s *Server) toolHeraStatus(id interface{}, args json.RawMessage) *Response 
 	fmt.Fprintf(&b, "- **role**: %s\n", caller.role.Name)
 	fmt.Fprintf(&b, "- **status**: %s\n", p.Status)
 	fmt.Fprintf(&b, "- **orchestrator**: %s\n", caller.orch.Name)
+	b.WriteString(hera.BoardSummary(s.heraStore, caller.role))
 	if p.HandoffNote != "" {
 		fmt.Fprintf(&b, "- **handoff_note**: recorded\n")
 	}
@@ -1971,7 +1978,7 @@ func (s *Server) toolHeraTreeUpdates(id interface{}, args json.RawMessage) *Resp
 		}
 		lines = append(lines, lineEntry{
 			"id":                m.ID,
-			"from_role":         fromName,
+			"from_role":         m.SenderName(fromName),
 			"from_orchestrator": fromOrch,
 			"to_role":           toName,
 			"to_orchestrator":   toOrch,
@@ -2080,7 +2087,7 @@ func (s *Server) toolHeraGetMessages(id interface{}, args json.RawMessage) *Resp
 		}
 		entry := msgEntry{
 			"id":                m.ID,
-			"from_role":         fromName,
+			"from_role":         m.SenderName(fromName),
 			"from_orchestrator": fromOrch,
 			"to_role":           toName,
 			"to_orchestrator":   toOrch,

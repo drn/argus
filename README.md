@@ -258,7 +258,19 @@ The Projects tab (`2`) has three regions: a left **rail**, a middle **coordinato
 | `Cmd+↑` / `Cmd+↓` | Move the rail cursor up / down without changing the focused pane (the mod-7 escape sequence is consumed — the pane's PTY never sees it) |
 | `ctrl+q`        | Return focus to the rail                                                                |
 
-When a **worker** is selected the details region shows its live agent terminal. When a **coordinator** is selected it stacks a read-only roster of that orchestrator's roles — a compact table (status, name, diligence archetype, resolved model; ready-to-close/PR fold into the status cell), scrollable via `PgUp`/`PgDn` when it has more agents than the panel can show — over the embedded **plan DAG** — the planned + live worker roles laid out by their `hera_blocks` dependency order (the plan the coordinator authored over the `hera_plan*` MCP tools), with same-stage siblings auto-collapsed into parallel groups and a master-detail header above the diagram. Both render at once, no toggle; the plan graph is the interactive surface (a coordinator with no authored plan shows its live roles flat with a "no plan" hint):
+When a **worker** is selected the details region shows its live agent terminal. A **coordinator** shows its read-only Agents roster above the **plan DAG** or its durable **human board**. Selecting a coordinator with unread board items lands on the board; refreshes preserve your view. `p` toggles plan/board from the rail or details pane. An unread board changes that coordinator's marker to a mailbox. Set `[ui] coordinator_board = false` to disable automatic board landing and mailbox markers.
+
+| Key (coordinator board) | Action |
+| --- | --- |
+| `p` | Toggle plan / board (rail or details focused) |
+| `Cmd+→` | Follow the focus ladder into the right details / board pane |
+| `↑` / `↓` / `j` / `k` | Select previous / next item |
+| `Enter` | Expand / collapse; expanding marks the item read |
+| `PgUp` / `PgDn` | Scroll expanded text |
+| `r` | Focus coordinator and paste `Re: <subject> (#<id>)` plus two newlines; never submits |
+| `x` | Dismiss item as human; decisions also leave a durable coordinator inbox notice |
+
+The plan DAG shows the coordinator-authored worker dependency graph; a coordinator without an authored plan shows the empty-plan hint.
 
 | Key (plan DAG)       | Action                                                                            |
 | -------------------- | --------------------------------------------------------------------------------- |
@@ -726,6 +738,10 @@ If the recipient has a live agent session the daemon also writes a single notifi
 | `hera_send`             | Send a role-addressed message. **`status` is required for worker/freelance senders** (`idle`/`working`/`blocked`/`done`/`failed`) and is applied synchronously before send. Workers/freelancers default to the coordinator when `to` is omitted; coordinators must name a recipient. |
 | `hera_inbox`            | Fetch unread role messages immediately, or block up to 120s with `timeout_seconds`; returned messages are marked read and pane deliveries cancelled. |
 | `hera_mark_read`        | Mark a specific list of message IDs read and cancel their pending deliveries.                                                                     |
+| `hera_board_post` | Coordinator-only: post a human `decision` or `fyi` with one-line `subject` and `body`; returns stable numeric id. |
+| `hera_board_update` | Replace own open item's `kind`, `subject`, `body` by `id`; material changes mark unread. |
+| `hera_board_resolve` | Resolve own item by `id`, with optional `note`; records agent as resolver. |
+| `hera_board_list` | List own open items, or history with `include_resolved=true`. Join/status/recycle also surface open ids and subjects. |
 | `hera_status`           | Set the caller role's status (`idle`/`working`/`blocked`/`done`/`failed`), mirrored to `task_meta`; `done` rolls the worker's task to in-review + `ready_to_close`; `failed` rolls to in-review without `ready_to_close`. Optional `handoff_note` (string) and `request_recycle` (bool) are accepted from **any hera-bound role kind** (coordinator, worker, or freelance): `handoff_note` is stamped to `task_meta` for the next recycle's seed prompt, `request_recycle=true` flags a pending [self-service recycle](#context-budget-stop-hook) that the daemon acts on once the session goes idle — for a coordinator this is driven by the `coord-hook` budget nudge, for a worker/freelance role only by a human-initiated rail `B` bounce. |
 | `hera_revive`           | Coordinator-only PULL-revive of one role the caller coordinates, by `role_name`. A dead session (no live process) restarts in place; a live session that is idle and not blocked on a prompt is **kicked** (stopped and resumed in place, recovering fresh with its original prompt when its transcript is missing). A kick restarts the agent and kills any background jobs it started in-session, so it is a last resort for a truly wedged session, not a progress check. Anything else (busy, blocked on a question, a live coordinator, a kick already in flight) is left untouched and reported as such. `hera_send`'s auto-revive only ever restarts a *dead* recipient; it never kicks a live one. |
 | `hera_tree_updates`     | Scan the caller's orchestrator subtree for messages since a per-role cursor; returns TLDR subject lines only and auto-advances the cursor.        |
@@ -829,7 +845,7 @@ Every authenticated token has the same permissions **except** a small master-onl
 | `GET`  | `/api/tasks/{id}/links`  | Extract http/https URLs from terminal output. Returns `{"links":[{"label","url"}]}`. Powers the PWA's "Open link" overflow item.                                                                                                                                                                                            |
 | `POST` | `/api/tasks/{id}/bridge/events` | Ingest [argus-bridge](#argus-bridge) events with `type`, `seq`, `boot`, `ts`, `session_id` and `generation`. Returns `{accepted,received}`; duplicates, retired boots and superseded launches are dropped. Live measurements update context and cumulative cost. Heartbeats include busy/dialog snapshots for daemon recovery. |
 | `GET`  | `/api/tasks/{id}/bridge` | The task's latest bridge-reported state (busy, needs-input, session id, model, context/cost/rate limits, `live`); 404 until the mod has reported. |
-| `GET` | `/api/tasks/{id}/bridge/ui` | Read-only effective UI settings, live bridge/context, Hera bindings/status/budget (coordinator bindings add a `workers` working/blocked roll-up) and unread Hera/task summaries. Does not acknowledge mail or claim deliveries. |
+| `GET` | `/api/tasks/{id}/bridge/ui` | Read-only effective UI settings, live bridge/context, Hera bindings/status/budget (coordinators add `workers` working/blocked roll-up plus separate `board_unread`/`board_subject`) and unread Hera/task summaries. Human dismissal mail is labelled `Aaron (board)`. Does not acknowledge items/mail or claim deliveries. |
 | `POST` | `/api/tasks/{id}/bridge/deliveries` | Pull the active delivery using `{generation,boot}`; returns `{delivery:null}` or a fenced token, text and delivery ID. |
 | `POST` | `/api/tasks/{id}/bridge/deliveries/authorize` | Authorize one idle submission using `{generation,boot,token}`; returns `{authorized}`. Cancelled, stale or superseded claims are rejected. |
 | `POST` | `/api/tasks/{id}/bridge/deliveries/ack` | Acknowledge successful prompt submission with the claim identity/token; returns `{acked}` without marking durable inbox mail read. |
@@ -890,6 +906,7 @@ Every authenticated token has the same permissions **except** a small master-onl
 | Method | Endpoint    | Description                                                                                                                                                                                                                            |
 | ------ | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET`  | `/api/hera` | Read-only orchestration roster. Returns `{orchestrators:[{id,name,pinned,archived,kanban_status,subtree_cost_usd,bridge_parent_orch_id,bridge_parent_role_id,subtree_needs_input,roles:[…]}], freelance:[…]}`. Each role carries `kind` (coordinator/worker/freelance), `status`, bound `task_id`/`task_name`/`task_status`, `live`, `ready_to_close`, `needs_input`, per-rate-class token totals (`tokens_input`/`tokens_cache_write_1h`/`tokens_cache_write_5m`/`tokens_cache_read`/`tokens_output`), and `cost_usd` — all omitted (not `0`) when never measured. `subtree_cost_usd` sums the orchestrator's own roles only, not a recursive walk into nested sub-coordinators (see `internal/pricing`). `bridge_parent_orch_id`/`bridge_parent_role_id` are `null` for a top-level orchestrator, else the parent orchestrator/role it nests beneath via a worker→coordinator bridge; `subtree_needs_input` is true when any role in the orchestrator's subtree (including nested sub-orchestrators) needs input. Feeds the webapp's **Hera** tab. |
+| `GET` | `/api/hera/roles/{id}/board` | Coordinator role's open board `{items, unread_count}`; `?include_resolved=true` includes history. Roster roles also expose `board_unread`. Reads do not acknowledge items. |
 | `POST` | `/api/hera/{orchestrators\|roles}/{id}/{archive\|unarchive\|pin\|unpin\|rename}` | Hera rail mutations (any authenticated token). `rename` takes `{name}`; 409 on a name conflict. Archiving a worker also stops its live session. |
 | `POST` | `/api/hera/roles/{id}/status`, `/api/hera/orchestrators/{id}/kanban` | Set role status (`idle\|working\|blocked\|done`) or top-level orchestrator kanban (`active\|backlog\|blocked\|done`) via `{status}`. |
 | `GET`/`POST` | `/api/hera/orchestrators/{id}/nuke-preview`, `/api/hera/{orchestrators\|roles}/{id}/nuke` | **Master token.** Preview counts, then cascade-nuke (stop sessions, end bindings, stamp rows nuked, archive sole-bound tasks, preserve tasks bound elsewhere; worktree reclaim via the reclaim sweep). Never hard-deletes. |
@@ -1116,6 +1133,7 @@ Registered repos, keyed by name. The DB projects table is the primary source; en
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| `coordinator_board` | bool | `true` | Automatically land on unread human board at coordinator selection and show a mailbox marker. OFF keeps plan landing and the coordinator marker. Explicit `p` toggle remains available. |
 | `spinner_style` | string | `"progress"` | Spinner animation: `progress`, `dots`, `braille`, or `classic`. |
 | `default_agent_zoom` | bool | `true` | Resting agent-view layout: `true` opens single-pane/zoomed (side panels collapsed); `false` opens the 1:3:1 three-pane layout. `Ctrl+Z` toggles at runtime. |
 | `cross_tab_arrows` | bool | `false` | Opt-in. One continuous `Cmd+Left`/`Cmd+Right` chain: Tasks list / agent view (unzoomed or zoomed) ⇄ Projects rail ⇄ coordinator pane ⇄ agent pane ⇄ Settings left pane ⇄ Settings right pane. Entering from the left lands on the leftmost pane, from the right on the rightmost. Never fires while a modal, filter / inline edit has focus, or while a Projects pane is fullscreen. |
@@ -1130,7 +1148,7 @@ Remap argus's own keys, alacritty-style. Bindings are **context-scoped**: each
 `[keybindings.<context>]` table maps an action id to a keyspec, layered on top of
 the built-in defaults (only the entries you set change). Edits are picked up live
 — no restart. Contexts: `global`, `tasklist`, `agent`, `filepanel`, `diff`,
-`settings`, `hera_rail`.
+`settings`, `hera_rail`, `hera_board`.
 
 ```toml
 [keybindings.tasklist]

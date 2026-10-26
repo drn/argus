@@ -1169,6 +1169,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolHeraNewOrchestrator(req.ID, params.Arguments)
 	case "hera_join":
 		return s.toolHeraJoin(req.ID, params.Arguments)
+	case "hera_board_post", "hera_board_update", "hera_board_resolve", "hera_board_list":
+		return s.toolHeraBoard(req.ID, params.Arguments, strings.TrimPrefix(params.Name, "hera_board_"))
 	case "hera_move":
 		return s.toolHeraMove(req.ID, params.Arguments)
 	case "hera_rebind":

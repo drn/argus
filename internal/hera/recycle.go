@@ -159,6 +159,7 @@ func BuildRecycleSeedPrompt(store RecycleStore, roleID int64) (string, error) {
 	}
 
 	var b strings.Builder
+	b.WriteString(BoardSummary(store, role))
 	b.WriteString("You are a fresh session recycled from a prior session on this same task. ")
 	b.WriteString("Below is the current state of your orchestration and any handoff note your prior session left, followed by your ORIGINAL prompt from when this task began. ")
 	b.WriteString("The current state and handoff note supersede the original prompt — read them FIRST and act on them; no tool call is needed to obtain them.\n")

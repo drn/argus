@@ -14,6 +14,8 @@ description: >-
 
 # Hera — native multi-agent coordination inside argus
 
+Coordinators: put human decisions and attention on your board with `hera_board_post`; rewrite superseded items with `hera_board_update`, and resolve them with `hera_board_resolve` when settled, including after Aaron replies and follow-up concludes.
+
 Hera is argus's **native, in-tree** layer for running a *team* of agents. It is not a separate
 daemon or plugin — coordination runs in-process in the argus daemon, the rail/tree render directly
 in the TUI's second tab, and agents drive it entirely through the `mcp__argus__hera_*` MCP

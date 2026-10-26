@@ -87,6 +87,12 @@ export function bandSegments(value: Snapshot): Part[][] {
     const percent = Math.round((tokens / b.budget) * 100)
     segments.push([budgetPart(`budget ${percent}%`, percent)])
   }
+  for (const b of coordinators) {
+    if (!(b.board_unread && b.board_unread > 0)) continue
+    const chars = Array.from(b.board_subject ?? '')
+    const subject = chars.length > 60 ? chars.slice(0, 59).join('') + '…' : chars.join('')
+    segments.push([{ text: `board ${b.board_unread}${subject ? `: ${subject}` : ''}`, color: 'warning', weight: 'bold' }])
+  }
   const statuses = [...new Set(value.bindings.map(b => b.status || '?'))]
   if (statuses.length) segments.push(statuses.flatMap((status, i) => [...(i ? [{ text: '/' }] : []), { text: status, color: STATUS_COLOR[status] }]))
   const working = coordinators.reduce((n, b) => n + (b.workers?.working ?? 0), 0)

@@ -120,7 +120,7 @@ func loadInboxEntries(d *db.DB, taskID string) ([]modal.InboxEntry, error) {
 		out = append(out, taskInboxEntry(m, taskName(m.From)))
 	}
 	for _, m := range heraMsgs {
-		out = append(out, heraInboxEntry(m, roleName(m.FromRoleID), roleName(m.ToRoleID)))
+		out = append(out, heraInboxEntry(m, m.SenderName(roleName(m.FromRoleID)), roleName(m.ToRoleID)))
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
 	return out, nil

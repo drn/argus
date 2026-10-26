@@ -13,6 +13,7 @@ import (
 // bound task, ready_to_close) plus the bound task's name/status so the SPA can
 // render a roster row and drill into the task without a second round-trip.
 type heraRoleJSON struct {
+	BoardUnread  int    `json:"board_unread"`
 	RoleID       int64  `json:"role_id"`
 	OrchID       int64  `json:"orch_id"`
 	Name         string `json:"name"`
@@ -213,6 +214,7 @@ func buildHeraOrchJSON(m *heramodel.Model, o heramodel.OrchView) heraOrchJSON {
 // per-orchestrator token map this function doesn't have access to.
 func heraRoleJSONFrom(rv heramodel.RoleView) heraRoleJSON {
 	rj := heraRoleJSON{
+		BoardUnread:  rv.BoardUnread,
 		RoleID:       rv.RoleID,
 		OrchID:       rv.OrchID,
 		Name:         rv.Name,

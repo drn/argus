@@ -72,9 +72,17 @@ func (s *Service) Send(fromRoleID, toRoleID int64, body, tldr string, inReplyTo 
 		return nil, err
 	}
 
+	s.Deliver(msg)
+	return msg, nil
+}
+
+// Deliver enqueues a message already committed by an atomic store operation.
+// It shares normal Hera doorbell routing, bridge delivery and PTY fallback.
+func (s *Service) Deliver(msg *db.HeraMessage) {
+	fromRoleID, toRoleID := msg.FromRoleID, msg.ToRoleID
 	if s.notifier == nil {
 		slog.Info("[hera] delivery skipped: no notifier", "msg_id", msg.ID)
-		return msg, nil
+		return
 	}
 
 	// Resolve recipient's live binding → argus task ID.
@@ -86,13 +94,13 @@ func (s *Service) Send(fromRoleID, toRoleID int64, body, tldr string, inReplyTo 
 		if stampErr := s.store.MarkHeraMessageDelivered(msg.ID, db.HeraDeliveryQueuedNoBinding); stampErr != nil {
 			slog.Warn("[hera] failed to stamp queued_no_binding", "msg_id", msg.ID, "err", stampErr)
 		}
-		return msg, nil
+		return
 	}
 	if err != nil {
 		// Unexpected DB error — soft-fail, don't error the caller.
 		slog.Warn("[hera] delivery skipped: binding lookup error",
 			"msg_id", msg.ID, "to_role_id", toRoleID, "err", err)
-		return msg, nil
+		return
 	}
 
 	// Resolve from-role name for the doorbell line.
@@ -104,7 +112,7 @@ func (s *Service) Send(fromRoleID, toRoleID int64, body, tldr string, inReplyTo 
 			"from_role_id", fromRoleID, "err", roleErr)
 	}
 
-	doorbellLine := fmt.Sprintf("[hera from %s] msg #%d — %s", fromRoleName, msg.ID, msg.Tldr)
+	doorbellLine := fmt.Sprintf("[hera from %s] msg #%d — %s", msg.SenderName(fromRoleName), msg.ID, msg.Tldr)
 	deliveryID := heraDeliveryID(msg.ID)
 	s.notifier.ReliableNotify(binding.ArgusTaskID, doorbellLine, deliveryID, notify.NotifyOpts{})
 
@@ -115,8 +123,6 @@ func (s *Service) Send(fromRoleID, toRoleID int64, body, tldr string, inReplyTo 
 	if stampErr := s.store.MarkHeraMessageDelivered(msg.ID, db.HeraDeliveryIdleSubmit); stampErr != nil {
 		slog.Warn("[hera] failed to stamp idle_submit", "msg_id", msg.ID, "err", stampErr)
 	}
-
-	return msg, nil
 }
 
 // Inbox returns unread messages for roleID (oldest first) and cancels any
