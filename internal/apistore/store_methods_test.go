@@ -293,6 +293,8 @@ func TestStore_SetConfigValue_KeyMapping(t *testing.T) {
 		{"api.enabled", "true"},
 		{"bridge.enabled", "false"},
 		{"bridge.delivery", "false"},
+		{"bridge.band", "false"},
+		{"bridge.toasts", "false"},
 		{"defaults.backend", "claude"},
 		{"default_backend", "codex"},
 		{"defaults.share_project", "argus"},
@@ -326,31 +328,34 @@ func TestStore_SetConfigValue_KeyMapping(t *testing.T) {
 }
 
 func TestStore_BridgeToggleRefreshesEffectiveCache(t *testing.T) {
-	for _, key := range []string{"bridge.enabled", "bridge.delivery"} {
+	for _, key := range []string{"bridge.enabled", "bridge.delivery", "bridge.band", "bridge.toasts"} {
 		t.Run(key, func(t *testing.T) {
 			s, _ := newStore(t, func(mux *http.ServeMux) {
 				mux.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {
 					var body apiclient.SettingsUpdate
 					testutil.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 					testutil.NotNil(t, body.Bridge)
-					if key == "bridge.enabled" {
-						testutil.NotNil(t, body.Bridge.Enabled)
-						testutil.False(t, *body.Bridge.Enabled)
-						testutil.Nil(t, body.Bridge.Delivery)
-					} else {
-						testutil.NotNil(t, body.Bridge.Delivery)
-						testutil.False(t, *body.Bridge.Delivery)
-						testutil.Nil(t, body.Bridge.Enabled)
+					b := body.Bridge
+					for name, field := range map[string]*bool{"bridge.enabled": b.Enabled, "bridge.delivery": b.Delivery, "bridge.band": b.Band, "bridge.toasts": b.Toasts} {
+						if name == key {
+							testutil.NotNil(t, field)
+							testutil.False(t, *field)
+						} else {
+							testutil.Nil(t, field)
+						}
 					}
 					// The effective response can differ from the requested value
 					// because config.toml overrides DB. Cache this, not the request.
-					_, _ = w.Write([]byte(`{"bridge":{"enabled":true,"delivery":false}}`))
+					_, _ = w.Write([]byte(`{"bridge":{"enabled":true,"delivery":false,"band":false,"toasts":true}}`))
 				})
 			})
 			s.cachedConfig = config.DefaultConfig()
 			testutil.NoError(t, s.SetConfigValue(key, "false"))
-			testutil.True(t, s.Config().Bridge.Enabled)
-			testutil.False(t, s.Config().Bridge.Delivery)
+			cfg := s.Config().Bridge
+			testutil.True(t, cfg.Enabled)
+			testutil.False(t, cfg.Delivery)
+			testutil.False(t, cfg.Band)
+			testutil.True(t, cfg.Toasts)
 		})
 	}
 }

@@ -3133,10 +3133,10 @@ func (sv *SettingsView) renderRowDetail(screen tcell.Screen, x, y, w, h int, row
 			text = "Deliver messages through the mod and add budget guidance without blocking. Applies immediately; requires Bridge enabled."
 		}
 		if row.key == "bridge.band" {
-			text = "Show Hera role, unread mail and budget above the Claude prompt. Applies on refresh in running sessions; requires Bridge enabled."
+			text = "Show Hera role, unread mail and budget above the Claude prompt. Applies in running sessions within ~15s; requires Bridge enabled."
 		}
 		if row.key == "bridge.toasts" {
-			text = "Show a toast when Hera or task mail arrives. Applies on refresh in running sessions; requires Bridge enabled."
+			text = "Show a toast when Hera or task mail arrives. Applies in running sessions within ~15s; requires Bridge enabled."
 		}
 		widget.DrawText(screen, x, y+2, w, text, theme.StyleDimmed)
 	case srWarning:
