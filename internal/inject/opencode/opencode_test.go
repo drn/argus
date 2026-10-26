@@ -371,7 +371,7 @@ func TestInjectOpencodeJSON_NonArraySkillsValueLeftUntouched(t *testing.T) {
 
 func TestInjectOpencodeJSON_OperatorDisableRespected(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "opencode.json")
-	if err := os.WriteFile(path, []byte(`{"mcp":{"argus":{"type":"remote","url":"http://localhost:7742/mcp","enabled":false}}}`), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"mcp":{"argus":{"type":"remote","url":"http://localhost:7742/mcp","enabled":false,"timeout":150000}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := os.ReadFile(path)

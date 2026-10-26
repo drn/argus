@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/drn/argus/internal/inject/atomicfile"
+	"github.com/drn/argus/internal/mcplimits"
 
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -18,7 +19,7 @@ const mcpServerName = "argus"
 
 // InjectGlobal reads opencode's global config, adds/updates the argus MCP
 // server entry under the `mcp` object, and writes the file back. Idempotent —
-// only writes if the entry is absent or the port has changed. All other keys
+// only writes if the entry is absent or its port/timeout has changed. All other keys
 // (including unrelated mcp entries and top-level config) are preserved verbatim.
 // The config lives at $XDG_CONFIG_HOME/opencode/opencode.json when
 // XDG_CONFIG_HOME is set, else ~/.config/opencode/opencode.json — mirroring
@@ -128,7 +129,8 @@ func injectOpencodeJSON(path string, port int, skillsDir string) error {
 	enabled := true
 	if existing, ok := mcp[mcpServerName].(map[string]any); ok {
 		e, isBool := existing["enabled"].(bool)
-		mcpCorrect = existing["url"] == url && existing["type"] == "remote" && isBool
+		mcpCorrect = existing["url"] == url && existing["type"] == "remote" && isBool &&
+			existing["timeout"] == float64(mcplimits.ClientTimeoutMilliseconds)
 		if isBool {
 			enabled = e
 		}
@@ -137,6 +139,7 @@ func injectOpencodeJSON(path string, port int, skillsDir string) error {
 	skills, skillsCorrect := ensureSkillsEntry(data["skills"], skillsDir)
 
 	if mcpCorrect && skillsCorrect {
+		uxlog.Log("[opencode-inject] argus MCP unchanged: timeout=%dms", mcplimits.ClientTimeoutMilliseconds)
 		return nil
 	}
 
@@ -144,13 +147,20 @@ func injectOpencodeJSON(path string, port int, skillsDir string) error {
 		"type":    "remote",
 		"url":     url,
 		"enabled": enabled,
+		"timeout": mcplimits.ClientTimeoutMilliseconds,
 	}
 	data["mcp"] = mcp
 	if skills != nil {
 		data["skills"] = skills
 	}
 
-	return writeJSON(path, data)
+	err = writeJSON(path, data)
+	if err != nil {
+		uxlog.Log("[opencode-inject] argus MCP write failed: %v", err)
+	} else {
+		uxlog.Log("[opencode-inject] argus MCP configured: timeout=%dms enabled=%t", mcplimits.ClientTimeoutMilliseconds, enabled)
+	}
+	return err
 }
 
 // ensureSkillsEntry returns the skills array that should be written (nil if
