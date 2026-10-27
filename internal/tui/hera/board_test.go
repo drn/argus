@@ -219,6 +219,65 @@ func TestBoardRefreshMailboxAndToggle(t *testing.T) {
 	testutil.Equal(t, p.boardTitle(), " Plan · Board (0) ")
 }
 
+func TestBoardLandOnEntry(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		unread   bool
+		disabled bool
+		worker   bool
+		want     bool
+	}{
+		{name: "unread mail since selection", unread: true, want: true},
+		{name: "no unread mail", want: false},
+		{name: "setting disabled", unread: true, disabled: true, want: false},
+		{name: "worker selected", unread: true, worker: true, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := memDB(t)
+			oid := seedOrch(t, d, "board")
+			c := seedBoundRole(t, d, oid, "coord", db.HeraKindCoordinator, "t-coord")
+			seedBoundRole(t, d, oid, "wkr", db.HeraKindWorker, "t-wkr")
+			p := NewHeraPage(d)
+			p.SetBoardAuto(!tc.disabled)
+			p.Refresh()
+			testutil.True(t, selectOrchByName(p, "board"))
+			if tc.worker {
+				testutil.True(t, p.Rail().SelectByTaskID("t-wkr"))
+			}
+			testutil.False(t, p.showBoard)
+			if tc.unread {
+				_, err := d.PostHeraBoardItem(c.ID, "decision", "Choose", "body")
+				testutil.NoError(t, err)
+			}
+			// Mail arriving on the selected coordinator never flips a refresh.
+			p.Refresh()
+			testutil.False(t, p.showBoard)
+			p.LandBoardOnEntry()
+			testutil.Equal(t, p.showBoard, tc.want)
+		})
+	}
+}
+
+func TestBoardLandOnEntryKeepsChosenBoard(t *testing.T) {
+	d := memDB(t)
+	oid := seedOrch(t, d, "board")
+	c := seedBoundRole(t, d, oid, "coord", db.HeraKindCoordinator, "t-coord")
+	for _, s := range []string{"First", "Second"} {
+		_, err := d.PostHeraBoardItem(c.ID, "fyi", s, "body")
+		testutil.NoError(t, err)
+	}
+	p := NewHeraPage(d)
+	p.Refresh()
+	testutil.True(t, selectOrchByName(p, "board"))
+	testutil.True(t, p.showBoard)
+	p.board.cursor = 1
+	p.board.expandedID = p.board.items[1].ID
+	p.LandBoardOnEntry()
+	testutil.True(t, p.showBoard)
+	testutil.Equal(t, p.board.cursor, 1)
+	testutil.Equal(t, p.board.expandedID, p.board.items[1].ID)
+}
+
 type boardReplySession struct {
 	*fakeSession
 	origin agentview.InputOrigin

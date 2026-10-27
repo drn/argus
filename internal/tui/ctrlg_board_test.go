@@ -76,3 +76,41 @@ func TestSmoke_CtrlGUnreadBoard(t *testing.T) {
 		})
 	}
 }
+
+// Re-entering the Hera tab (here via Cmd+→) onto a coordinator that received
+// board mail while the tab was away must open its board, not keep the plan the
+// earlier visit chose.
+func TestSmoke_TabEntryLandsUnreadBoard(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	d := testDB(t)
+	testutil.NoError(t, d.SetConfigValue("ui.cross_tab_arrows", "true"))
+	oid := seedHeraOrch(t, d, "board-entry")
+	c := seedHeraBoundRole(t, d, oid, "coord", db.HeraKindCoordinator, "tc")
+	app := New(d, agent.NewRunner(nil), false)
+	sim, stop := wireApp(t, app)
+	defer stop()
+	sim.SetSize(160, 50)
+	cmd := func(k tcell.Key) {
+		sim.InjectKey(k, 0, tcell.ModCtrl|tcell.ModAlt)
+		syncUI(t, app.tapp)
+	}
+
+	cmd(tcell.KeyRight)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+		testutil.Equal(t, app.heraPage.SelectionContext().FocusTaskID(), "tc")
+	})
+	cmd(tcell.KeyLeft)
+	readUI(t, app.tapp, func() { testutil.Equal(t, app.header.ActiveTab(), widget.TabTasks) })
+
+	_, err := d.PostHeraBoardItem(c.ID, "decision", "Release approval needed", "Choose the release")
+	testutil.NoError(t, err)
+	cmd(tcell.KeyRight)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.header.ActiveTab(), widget.TabHera)
+		testutil.Equal(t, app.heraPage.SelectionContext().FocusTaskID(), "tc")
+		testutil.Equal(t, app.heraPage.Machine().State(), hera.FocusRail)
+		w, h := sim.Size()
+		testutil.Contains(t, screenText(sim, w, h), "Release approval needed")
+	})
+}

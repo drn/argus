@@ -718,7 +718,7 @@ Derived from: `internal/tui/hera/panes.go` (`applySelection`, `detailsOrch`), `i
 
 ### Requirement: Details region stacks roster over the plan DAG (area 6)
 
-For a coordinator selection the system SHALL render the read-only `" Details "` roster (top) and either the embedded plan graph or the coordinator's human board (bottom). The roster is sized to its natural content height, capped at half the region (so the lower panel keeps at least half), clamped to a minimum of 3 rows and to the region height; the lower panel fills the remainder and is skipped when fewer than 2 rows remain. With `ui.coordinator_board` enabled, unread items at coordinator selection time select the board; otherwise the plan is selected. Same-selection refreshes SHALL preserve the chosen lower panel. The `p` action SHALL toggle plan/board when the rail or details region is focused, yielding to active rail-filter typing. With the setting disabled and the plan visible, its existing `" Plan "` title SHALL remain unchanged; otherwise the header SHALL show plan/board navigation and the unread count.
+For a coordinator selection the system SHALL render the read-only `" Details "` roster (top) and either the embedded plan graph or the coordinator's human board (bottom). The roster is sized to its natural content height, capped at half the region (so the lower panel keeps at least half), clamped to a minimum of 3 rows and to the region height; the lower panel fills the remainder and is skipped when fewer than 2 rows remain. With `ui.coordinator_board` enabled, unread items at coordinator selection time select the board; otherwise the plan is selected. Entering the Hera tab SHALL count as selection time for the coordinator already under the rail cursor: unread items SHALL select the board, keeping its item cursor and expansion, and entry SHALL NOT switch a visible board to the plan. Other same-selection refreshes SHALL preserve the chosen lower panel. The `p` action SHALL toggle plan/board when the rail or details region is focused, yielding to active rail-filter typing. With the setting disabled and the plan visible, its existing `" Plan "` title SHALL remain unchanged; otherwise the header SHALL show plan/board navigation and the unread count.
 
 The selected lower panel SHALL own details-region navigation: the plan keeps its four-way navigation, `Enter`/`Space`, and `Esc`, while the board uses the coordinator-board capability's item navigation, expansion, reply and dismissal actions. Coordinator-region clicks SHALL keep keyboard focus on the Hera page wrapper; hidden plan content SHALL NOT receive clicks. The existing Cmd+Right focus ladder SHALL reach the details/board region. Board dismissal SHALL use the coordinator-board atomic notice and normal notifier delivery rule; the bridge band SHALL expose board attention separately from Hera mail, without changing the selected lower panel.
 
@@ -733,6 +733,11 @@ When the plan is visible and the user presses Enter on a plain leaf node whose r
 
 - **WHEN** a coordinator with unread board items is selected with the setting enabled
 - **THEN** the roster renders above the board, and later refreshes preserve that choice until an explicit toggle or a different coordinator selection
+
+#### Scenario: Unread board on Hera-tab entry
+
+- **WHEN** the selected coordinator receives unread board items while the Hera tab is away and the user re-enters the tab (including via Cmd+→ from the agent view) with the setting enabled
+- **THEN** the roster renders above the board, without the cursor having to leave and return to the coordinator
 
 #### Scenario: Enter on a plain leaf node jumps to its role within the Hera view
 
@@ -2845,3 +2850,4 @@ The TUI board SHALL behave as an accordion. Enter on a collapsed item SHALL expa
 
 - **WHEN** the expanded item is resolved or removed during refresh
 - **THEN** no item is expanded, including if that id later returns
+

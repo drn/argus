@@ -83,6 +83,26 @@ func (p *HeraPage) updateBoard(o *heramodel.OrchView) {
 	p.board.cursor = max(0, min(p.board.cursor, len(p.board.items)-1))
 }
 
+// LandBoardOnEntry re-runs selection-time board landing for the coordinator
+// already under the rail cursor. Tab entry calls it after its refresh: the rail
+// cursor survives a tab switch, so updateBoard sees the same orchestrator ID and
+// keeps the panel chosen before mail arrived — landing on a coordinator with
+// unread items via Cmd+→ (or 2) would otherwise show its plan until the cursor
+// left and came back. Only opens the board; cursor and expansion are kept.
+func (p *HeraPage) LandBoardOnEntry() {
+	if !p.detailsMode || !p.boardAuto || p.showBoard {
+		return
+	}
+	o := p.detailsOrch()
+	if o == nil {
+		return
+	}
+	if c := o.CoordRole(); c != nil && c.BoardUnread > 0 {
+		p.showBoard = true
+		uxlog.Log("[board] entry landing orch=%d unread=%d board=true", o.ID, c.BoardUnread)
+	}
+}
+
 func (b *boardView) selected() *db.HeraBoardItem {
 	if b.cursor < 0 || b.cursor >= len(b.items) {
 		return nil

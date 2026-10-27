@@ -5129,6 +5129,7 @@ func (a *App) switchToHeraTab2() {
 	a.heraPage.Machine().ToRail()
 	a.statusbar.SetHeraFocus(0)
 	a.heraPage.Refresh()
+	a.heraPage.LandBoardOnEntry()
 	a.pages.SwitchToPage("hera")
 	a.tapp.SetFocus(a.heraPage)
 	uxlog.Log("[hera-view] tab 2 routed to hera")
