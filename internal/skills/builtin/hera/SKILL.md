@@ -111,12 +111,17 @@ status, revive, and completion; the plan-DAG authoring/mutation tools live in th
     `role.ArgusProject`).
   - `branch` — base branch passed to argus task creation. **Defaults to the project default — see the
     base-branch gotcha in §6.**
-  - `backend` — omit for ordinary workers so project/tier/default routing can select available capacity
-    and accounts. Pin Claude only for actual self-promotion, Claude-only connectors/MCP, or an in-session
-    Claude review panel.
-  - `model` — optional valid per-worker model override, scoped to the worker's resolved backend (claude:
-    opus/sonnet/haiku/fable; codex: e.g. gpt-6-sol; pi/opencode/antigravity/cursor: their configured ids). Leave it unset
-    with `archetype=` so the profile picks the tier; otherwise the backend default applies.
+  - `backend` — **omit it for ordinary workers.** With no backend, argus picks one per spawn (project
+    override, then `[backend_routing]` usage headroom and accounts), which spreads workers across Claude
+    and Codex quota. Pin Claude only for one of three concrete needs: the worker will self-promote via
+    `hera_new_orchestrator`, it needs a Claude-only connector/MCP, or it runs an in-session Claude review
+    panel. "The task is important" or "I'm on Claude" is not such a need. The spawn result reports
+    `backend: <name> (routed)` or `(explicit override)` so you can see what the worker got.
+  - `model` — optional per-worker model override, valid only for the worker's resolved backend (claude:
+    opus/sonnet/haiku/fable; codex: e.g. gpt-6-sol; pi/opencode/antigravity/cursor: their configured ids).
+    Since routing usually picks the backend, a backend-specific model (e.g. `opus`) is silently dropped
+    when the worker lands elsewhere. Pass `archetype=` instead and let the profile pick the tier for
+    whichever backend the worker gets.
   - `archetype` — the worker's **diligence archetype** (e.g. `code_slice`, `bug_fix`, `review`,
     `ci_loop`; defaults to `code_slice`). Selects the per-archetype model from the project's bound
     profile and is exported to the worker as `ARGUS_ARCHETYPE` when profile resolution succeeds. A valid

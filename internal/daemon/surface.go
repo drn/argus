@@ -185,7 +185,10 @@ const (
 	//     A stale supervisor spawns with the inherited PATH unchanged.
 	// 32: quota-aware backend/account routing and ordinary-worker guidance;
 	//     explicit default account pins survive task creation and inheritance.
-	SupervisorSpawnSurface = 32
+	// 33: hera skills tell coordinators to omit a worker backend unless one of
+	//     three concrete needs applies, and to prefer archetype over a
+	//     backend-specific model. A stale supervisor serves the older guidance.
+	SupervisorSpawnSurface = 33
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -476,7 +479,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "db0532b56b988b7c0a36d8d94866aaa1ade203fb53a7d3c1acdf3980e2f6ba96"
+	SpawnSurfaceDigest  = "6a811eb3c0b39cca7ab1ee03083da74541100440a2c988efc491171c1f9deeba"
 	StreamSurfaceDigest = "4db586fb7dcaf62899cb2ebc82bbaa7fcc325d7cf99611f5f7942c44f9bc9467"
 )
 
