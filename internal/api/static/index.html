@@ -2164,12 +2164,12 @@ function __argusRefreshTimer() { return refreshTimer; }
 
 // --- API (with 10s timeout) ---
 const DEFAULT_TIMEOUT_MS = 10000;
-// Just under the server's own 300s http.Server.ReadTimeout (server.go),
+// Just under the server's own 900s http.Server.ReadTimeout (server.go),
 // which genuinely bounds how long the server spends reading a multipart
 // body — so a slow mobile upload times out server-side (with a real
 // error) rather than client-side (with the task having actually been
 // created behind our back).
-const UPLOAD_TIMEOUT_MS = 280000;
+const UPLOAD_TIMEOUT_MS = 880000;
 // Task creation with no attachments still runs git-worktree setup + hooks
 // + agent start synchronously server-side before responding. Unlike
 // UPLOAD_TIMEOUT_MS, this is NOT bounded by ReadTimeout (which only
@@ -5373,11 +5373,11 @@ function createModelValue() {
 // --- File upload state for the New Task form ---
 // Files accumulate across multiple picker invocations and drag-drop events.
 // Cleared on successful create() only — survives tab switches and failed
-// creates so the user can retry without re-picking. Per-file 10MB / total
-// 50MB caps mirror the server limits — we reject early instead of failing
+// creates so the user can retry without re-picking. Per-file 100MB / total
+// 250MB caps mirror the server limits — we reject early instead of failing
 // the upload after a long network round-trip.
-const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
-const MAX_UPLOAD_TOTAL_BYTES = 50 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+const MAX_UPLOAD_TOTAL_BYTES = 250 * 1024 * 1024;
 const MAX_UPLOAD_COUNT = 20;
 let createFiles = [];
 
@@ -5393,7 +5393,7 @@ function onCreateFilesPicked(e) {
   e.target.value = '';
 }
 
-// Render a byte cap as "10MB" / "50MB" — used in toasts so the strings stay
+// Render a byte cap as "100MB" / "250MB" — used in toasts so the strings stay
 // in sync with MAX_UPLOAD_BYTES / MAX_UPLOAD_TOTAL_BYTES if either changes.
 function formatCap(bytes) {
   return Math.round(bytes / (1024 * 1024)) + 'MB';

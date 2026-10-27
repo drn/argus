@@ -298,7 +298,7 @@ The server SHALL return git status, file diff, and file-tree listings scoped to 
 
 ### Requirement: File uploads enforce size and count caps
 
-The server SHALL accept multipart file uploads (per task and at task creation) and SHALL enforce a per-file cap of 10 MB, a per-request total cap of 50 MB, and a maximum of 20 files. Uploaded filenames SHALL be sanitized (directory components, control characters, bidi overrides, and leading dashes removed) and written into the worktree without clobbering existing files (auto-suffixed). Oversize or too-many uploads SHALL return 413; empty or invalid-name parts SHALL return 400.
+The server SHALL accept multipart file uploads (per task and at task creation) and SHALL enforce a per-file cap of 100 MB, a per-request total cap of 250 MB, and a maximum of 20 files. Uploaded filenames SHALL be sanitized (directory components, control characters, bidi overrides, and leading dashes removed) and written into the worktree without clobbering existing files (auto-suffixed). Oversize or too-many uploads SHALL return 413; empty or invalid-name parts SHALL return 400.
 
 #### Scenario: Oversize attachment rejected
 

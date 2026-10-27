@@ -277,14 +277,14 @@ func (s *Server) ListenAndServe(port int) (int, error) {
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		// ReadTimeout bounds total time the server spends reading a request
-		// (headers + body). Important for the upload endpoints (50MB cap):
+		// (headers + body). Important for the upload endpoints (250MB cap):
 		// without it, a slowloris client trickling 1 byte/second could pin
 		// a goroutine for hours under MaxBytesReader's size cap. 5 minutes
-		// is generous for legitimate uploads at 100KB/s; the SPA times out
-		// its own fetches at 60s for FormData. ReadTimeout does NOT affect
+		// is generous for legitimate uploads at ~300KB/s; the SPA times out
+		// its own fetches just under this for FormData. ReadTimeout does NOT affect
 		// SSE: SSE responses are GETs with no body, so once headers are
 		// read the timeout no longer applies to the response phase.
-		ReadTimeout: 300 * time.Second,
+		ReadTimeout: 900 * time.Second,
 		IdleTimeout: 120 * time.Second,
 		// NOTE: WriteTimeout is intentionally omitted. Setting it would kill
 		// long-lived SSE streams (handleStreamOutput) after the timeout.
