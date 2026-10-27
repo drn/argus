@@ -262,7 +262,7 @@ var heraToolDefs = []Tool{
 	},
 	{
 		Name:        "hera_spawn_worker",
-		Description: "Spawn a new born-bound worker task under this orchestrator. Caller must hold a live coordinator binding. Creates an argus task (worktree + session) and, transactionally, a worker role + binding pre-bound to it. An orientation prefix naming the coordinator + orchestrator is prepended to the prompt; the verbatim prompt is stored on the role. Defaults the project to the coordinator's own. Pass `model` to match the worker's model to its task complexity (e.g. a strong model for a hard refactor, a cheaper/faster one for mechanical work).",
+		Description: "Spawn a new born-bound worker task under this orchestrator. Caller must hold a live coordinator binding. Creates an argus task (worktree + session) and, transactionally, a worker role + binding pre-bound to it. An orientation prefix naming the coordinator + orchestrator is prepended to the prompt; the verbatim prompt is stored on the role. Defaults the project to the coordinator's own. Leave `backend` unset so [backend_routing] spreads workers across Claude and Codex by remaining usage; pass `archetype` to match the worker's model tier to its task complexity (e.g. big_build for a hard refactor, ci_loop for mechanical work).",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -272,8 +272,8 @@ var heraToolDefs = []Tool{
 				"prompt":       map[string]interface{}{"type": "string", "description": "The worker's MISSION/task only. An orientation prefix naming the coordinator is prepended automatically; the verbatim prompt is stored on the role row and shown as the node's description in the plan-DAG view. Do NOT prepend organization or security policy: every spawned worker session receives its org instructions independently (harness-injected), so a prepended copy is redundant and pollutes the stored prompt and the plan-DAG view"},
 				"project":      map[string]interface{}{"type": "string", "description": "(optional) Override the argus project. Defaults to the coordinator's own project"},
 				"branch":       map[string]interface{}{"type": "string", "description": "(optional) Branch passed to argus CreateTask. Defaults to project default"},
-				"backend":      map[string]interface{}{"type": "string", "description": "(optional) Backend passed to argus CreateTask. Defaults to project default"},
-				"model":        map[string]interface{}{"type": "string", "description": "(optional) Per-worker model override; choose by task complexity. Must be valid for the worker's resolved backend (claude: opus/sonnet/haiku/fable; codex: e.g. gpt-6-sol; pi: its model ids; opencode: a provider-qualified provider/model id, e.g. opencode/space-bunny-free; antigravity: an agy model id; cursor: a cursor-agent model id). Empty = backend default. Delivered through the backend's supported mechanism (--model for claude/codex/pi/antigravity/cursor, child-only OPENCODE_CONFIG_CONTENT for opencode); ignored if the backend command already hard-codes a model"},
+				"backend":      map[string]interface{}{"type": "string", "description": "(optional) Omit by default: with no backend, argus picks one per spawn from the project override and [backend_routing] usage headroom, spreading work across Claude and Codex quota. Set it only for a concrete backend-specific need (e.g. the worker needs a connector or MCP signed in on only one backend, or it must promote itself via hera_new_orchestrator, which needs Claude). The spawn result reports the backend the worker got and whether it was routed or explicit"},
+				"model":        map[string]interface{}{"type": "string", "description": "(optional) Per-worker model override. Prefer `archetype` instead: the backend is usually picked by [backend_routing] at spawn, so a backend-specific model (e.g. opus) is silently dropped when the worker lands on another backend, while an archetype resolves to the right model for whichever backend it gets. Must be valid for the worker's resolved backend (claude: opus/sonnet/haiku/fable; codex: e.g. gpt-6-sol; pi: its model ids; opencode: a provider-qualified provider/model id, e.g. opencode/space-bunny-free; antigravity: an agy model id; cursor: a cursor-agent model id). Empty = backend default. Delivered through the backend's supported mechanism (--model for claude/codex/pi/antigravity/cursor, child-only OPENCODE_CONFIG_CONTENT for opencode); ignored if the backend command already hard-codes a model"},
 				"archetype":    map[string]interface{}{"type": "string", "description": "(optional) Diligence archetype for the worker (e.g. code_slice, bug_fix, big_build, review, ci_loop). Selects the per-archetype model from the project's bound profile and is exported as ARGUS_ARCHETYPE to the worker. Defaults to code_slice when omitted"},
 			},
 			"required": []string{"cwd", "prompt"},
@@ -1874,9 +1874,16 @@ func (s *Server) toolHeraSpawnWorker(id interface{}, args json.RawMessage) *Resp
 		return toolError(id, fmt.Sprintf("spawn worker: %v", err))
 	}
 
+	// Report which backend the worker got and who chose it, so a coordinator
+	// forcing a backend by habit (bypassing [backend_routing]) is visible.
+	backendSource := "routed"
+	if strings.TrimSpace(p.Backend) != "" {
+		backendSource = "explicit"
+	}
 	slog.Info("[hera] spawn_worker ok",
 		"orch", caller.orch.Name, "role", res.Role.Name, "binding_id", res.Binding.ID,
-		"task_id", res.Task.ID, "coordinator", caller.role.Name)
+		"task_id", res.Task.ID, "coordinator", caller.role.Name,
+		"backend", res.Task.Backend, "backend_source", backendSource)
 	var b strings.Builder
 	fmt.Fprintf(&b, "Worker spawned.\n\n")
 	fmt.Fprintf(&b, "- **orchestrator**: %s\n", caller.orch.Name)
@@ -1885,6 +1892,11 @@ func (s *Server) toolHeraSpawnWorker(id interface{}, args json.RawMessage) *Resp
 	fmt.Fprintf(&b, "- **binding_id**: %d\n", res.Binding.ID)
 	fmt.Fprintf(&b, "- **argus_task_id**: %s\n", res.Task.ID)
 	fmt.Fprintf(&b, "- **project**: %s\n", project)
+	if backendSource == "explicit" {
+		fmt.Fprintf(&b, "- **backend**: %s (explicit override)\n", res.Task.Backend)
+	} else {
+		fmt.Fprintf(&b, "- **backend**: %s (routed by [backend_routing])\n", res.Task.Backend)
+	}
 	return toolResult(id, b.String())
 }
 

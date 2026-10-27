@@ -173,7 +173,10 @@ const (
 	//   - v28: agent sessions support an opt-in child-only unsigned Git policy.
 	//   - v29: managed Claude/Codex/OpenCode MCP deadlines exceed the shared
 	//     Hera inbox wait cap, with Claude's child environment fallback.
-	SupervisorSpawnSurface = 29
+	//   - v30: builtin hera skills tell coordinators to omit a worker backend
+	//     so [backend_routing] decides; a stale supervisor serves the old
+	//     guidance that primed explicit backend="claude" spawns.
+	SupervisorSpawnSurface = 30
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -461,7 +464,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "9d403ce1ecba8b3af51c6fd4c3332e19363af4d9dd8895ab584ab48eb1734ea0"
+	SpawnSurfaceDigest  = "f563d9a8372dec5cb092398a71f3aca164c4b4839cde98a6d6fe1bb949fa829b"
 	StreamSurfaceDigest = "4db586fb7dcaf62899cb2ebc82bbaa7fcc325d7cf99611f5f7942c44f9bc9467"
 )
 

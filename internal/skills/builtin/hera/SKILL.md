@@ -111,11 +111,17 @@ status, revive, and completion; the plan-DAG authoring/mutation tools live in th
     `role.ArgusProject`).
   - `branch` — base branch passed to argus task creation. **Defaults to the project default — see the
     base-branch gotcha in §6.**
-  - `backend` — normally defaults to the project default; usage-budget routing may supply its configured
-    worker fallback when enabled.
-  - `model` — optional valid per-worker model override, scoped to the worker's resolved backend (claude:
-    opus/sonnet/haiku/fable; codex: e.g. gpt-6-sol; pi/opencode/antigravity/cursor: their configured ids). Leave it unset
-    with `archetype=` so the profile picks the tier; otherwise the backend default applies.
+  - `backend` — **omit it.** With no backend, argus picks one per spawn (project override, then
+    `[backend_routing]` usage headroom), which spreads workers across Claude and Codex quota. Set it only
+    for a concrete backend-specific need: the worker needs a connector/MCP signed in on only one backend,
+    or it must promote itself via `hera_new_orchestrator` (Claude only). "The task is important" or "I'm
+    on Claude" is not such a need. The spawn result reports `backend: <name> (routed …)` or
+    `(explicit override)` so you can see what the worker got.
+  - `model` — optional per-worker model override, valid only for the worker's resolved backend (claude:
+    opus/sonnet/haiku/fable; codex: e.g. gpt-6-sol; pi/opencode/antigravity/cursor: their configured ids).
+    Since routing usually picks the backend, a backend-specific model (e.g. `opus`) is silently dropped
+    when the worker lands elsewhere. Pass `archetype=` instead and let the profile pick the tier for
+    whichever backend the worker gets.
   - `archetype` — the worker's **diligence archetype** (e.g. `code_slice`, `bug_fix`, `review`,
     `ci_loop`; defaults to `code_slice`). Selects the per-archetype model from the project's bound
     profile and is exported to the worker as `ARGUS_ARCHETYPE` when profile resolution succeeds. A valid
