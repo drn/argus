@@ -202,8 +202,11 @@ func TestBoardRefreshMailboxAndToggle(t *testing.T) {
 	i, err := d.PostHeraBoardItem(c.RoleID, "fyi", "Ready", "body")
 	testutil.NoError(t, err)
 	p.Refresh()
-	testutil.Equal(t, p.showBoard, false)
+	testutil.Equal(t, p.showBoard, true)
 	testutil.Equal(t, p.rail.coordMarker(oid), rune(0xf01ee))
+	p.showBoard = false // back to the plan; no new mail keeps it there
+	p.Refresh()
+	testutil.Equal(t, p.showBoard, false)
 	p.SetBoardAuto(false)
 	testutil.Equal(t, p.rail.coordMarker(oid), heraIconCoord)
 	testutil.Equal(t, p.boardTitle(), " Plan ")
@@ -249,7 +252,9 @@ func TestBoardLandOnEntry(t *testing.T) {
 				_, err := d.PostHeraBoardItem(c.ID, "decision", "Choose", "body")
 				testutil.NoError(t, err)
 			}
-			// Mail arriving on the selected coordinator never flips a refresh.
+			// The operator chose the plan after the mail arrived.
+			p.Refresh()
+			p.showBoard = false
 			p.Refresh()
 			testutil.False(t, p.showBoard)
 			p.LandBoardOnEntry()
@@ -276,6 +281,92 @@ func TestBoardLandOnEntryKeepsChosenBoard(t *testing.T) {
 	testutil.True(t, p.showBoard)
 	testutil.Equal(t, p.board.cursor, 1)
 	testutil.Equal(t, p.board.expandedID, p.board.items[1].ID)
+}
+
+func TestBoardNewMailSwitchesBoard(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		change   func(t *testing.T, d *db.DB, roleID int64, items []*db.HeraBoardItem)
+		disabled bool
+		worker   bool
+		want     bool
+	}{
+		{name: "new item", want: true, change: func(t *testing.T, d *db.DB, roleID int64, _ []*db.HeraBoardItem) {
+			_, err := d.PostHeraBoardItem(roleID, "decision", "New", "body")
+			testutil.NoError(t, err)
+		}},
+		{name: "read item revised", want: true, change: func(t *testing.T, d *db.DB, roleID int64, items []*db.HeraBoardItem) {
+			_, err := d.UpdateHeraBoardItem(roleID, items[0].ID, "fyi", "Read", "revised body")
+			testutil.NoError(t, err)
+		}},
+		{name: "no change", change: func(*testing.T, *db.DB, int64, []*db.HeraBoardItem) {}},
+		{name: "unread item read", change: func(t *testing.T, d *db.DB, roleID int64, items []*db.HeraBoardItem) {
+			testutil.NoError(t, d.ReadHeraBoardItem(roleID, items[1].ID))
+		}},
+		{name: "setting disabled", disabled: true, change: func(t *testing.T, d *db.DB, roleID int64, _ []*db.HeraBoardItem) {
+			_, err := d.PostHeraBoardItem(roleID, "decision", "New", "body")
+			testutil.NoError(t, err)
+		}},
+		{name: "worker selected", worker: true, change: func(t *testing.T, d *db.DB, roleID int64, _ []*db.HeraBoardItem) {
+			_, err := d.PostHeraBoardItem(roleID, "decision", "New", "body")
+			testutil.NoError(t, err)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := memDB(t)
+			oid := seedOrch(t, d, "board")
+			c := seedBoundRole(t, d, oid, "coord", db.HeraKindCoordinator, "t-coord")
+			seedBoundRole(t, d, oid, "wkr", db.HeraKindWorker, "t-wkr")
+			read, err := d.PostHeraBoardItem(c.ID, "fyi", "Read", "body")
+			testutil.NoError(t, err)
+			testutil.NoError(t, d.ReadHeraBoardItem(c.ID, read.ID))
+			unread, err := d.PostHeraBoardItem(c.ID, "fyi", "Unread", "body")
+			testutil.NoError(t, err)
+			p := NewHeraPage(d)
+			p.SetBoardAuto(!tc.disabled)
+			p.Refresh()
+			testutil.True(t, selectOrchByName(p, "board"))
+			if tc.worker {
+				testutil.True(t, p.Rail().SelectByTaskID("t-wkr"))
+			}
+			// The operator is on the plan, typing in the coordinator pane.
+			p.showBoard = false
+			p.focus.SetRegion(FocusCoord)
+			tc.change(t, d, c.ID, []*db.HeraBoardItem{read, unread})
+			p.Refresh()
+			testutil.Equal(t, p.showBoard, tc.want)
+			testutil.Equal(t, p.focus.State(), FocusCoord)
+			if tc.want {
+				// The switch is one-shot: choosing the plan again sticks.
+				p.showBoard = false
+				p.Refresh()
+				testutil.False(t, p.showBoard)
+			}
+		})
+	}
+}
+
+func TestBoardNewMailKeepsCursorAndExpansion(t *testing.T) {
+	d := memDB(t)
+	oid := seedOrch(t, d, "board")
+	c := seedBoundRole(t, d, oid, "coord", db.HeraKindCoordinator, "t-coord")
+	for _, s := range []string{"First", "Second"} {
+		_, err := d.PostHeraBoardItem(c.ID, "fyi", s, "body")
+		testutil.NoError(t, err)
+	}
+	p := NewHeraPage(d)
+	p.Refresh()
+	testutil.True(t, selectOrchByName(p, "board"))
+	p.board.cursor = 1
+	selected := p.board.items[1].ID
+	p.board.expandedID = selected
+	p.showBoard = false
+	_, err := d.PostHeraBoardItem(c.ID, "decision", "Third", "body")
+	testutil.NoError(t, err)
+	p.Refresh()
+	testutil.True(t, p.showBoard)
+	testutil.Equal(t, p.board.selected().ID, selected)
+	testutil.Equal(t, p.board.expandedID, selected)
 }
 
 type boardReplySession struct {

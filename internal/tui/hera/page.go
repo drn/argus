@@ -150,6 +150,7 @@ type HeraPage struct {
 	plan           *planview.Widget // embedded plan-DAG graph
 	board          *boardView
 	boardOrchID    int64
+	boardUnreadIDs map[int64]bool // selected coordinator's unread items at the last updateBoard
 	showBoard      bool
 	boardAuto      bool
 	boardHeight    int
