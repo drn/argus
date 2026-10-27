@@ -85,11 +85,38 @@ func Run(sourceDir string) (string, error) {
 // fixed argument vectors. The command name is parameterised so we can share
 // one helper, but no caller-supplied data is interpolated.
 func runCmd(dir, name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...) //nolint:gosec // name and args are package-internal literals
+	env := envWithGoDirs(envWithToolPath(os.Environ(), os.Getenv("HOME")), os.Getenv("HOME"), runningExecutableDir())
+	bin, err := lookPathIn(name, env)
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.Command(bin, args...) //nolint:gosec // bin and args are package-internal literals
 	cmd.Dir = dir
-	cmd.Env = envWithGoDirs(envWithToolPath(os.Environ(), os.Getenv("HOME")), os.Getenv("HOME"), runningExecutableDir())
+	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// lookPathIn resolves name against the PATH in env. exec.Command resolves bare
+// names against the daemon's own PATH, not cmd.Env, so a launchd-started
+// daemon would never find an asdf/mise/homebrew `go` otherwise.
+func lookPathIn(name string, env []string) (string, error) {
+	for _, kv := range env {
+		path, ok := strings.CutPrefix(kv, "PATH=")
+		if !ok {
+			continue
+		}
+		for _, d := range filepath.SplitList(path) {
+			if d == "" {
+				continue
+			}
+			p := filepath.Join(d, name)
+			if info, err := os.Stat(p); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+				return p, nil
+			}
+		}
+	}
+	return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
 }
 
 // toolPathDirs lists where version managers and package managers put `go`.
