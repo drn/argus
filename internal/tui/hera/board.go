@@ -50,15 +50,35 @@ func (p *HeraPage) updateBoard(o *heramodel.OrchView) {
 		p.boardOrchID = 0
 		p.showBoard = false
 		p.board = newBoardView()
+		p.boardUnreadIDs = nil
 		return
 	}
 	c := o.CoordRole()
+	unread := map[int64]bool{}
+	if c != nil {
+		for _, i := range c.BoardItems {
+			if !i.Read {
+				unread[i.ID] = true
+			}
+		}
+	}
 	if p.boardOrchID != o.ID {
 		p.board = newBoardView()
 		p.showBoard = p.boardAuto && c != nil && c.BoardUnread > 0
 		p.boardOrchID = o.ID
 		uxlog.Log("[board] selection orch=%d board=%v", o.ID, p.showBoard)
+	} else if p.boardAuto && !p.showBoard {
+		// New mail on the coordinator in view switches to the board once; an
+		// unchanged unread set leaves an explicit toggle to the plan alone.
+		for id := range unread {
+			if !p.boardUnreadIDs[id] {
+				p.showBoard = true
+				uxlog.Log("[board] new mail orch=%d item=%d board=true", o.ID, id)
+				break
+			}
+		}
 	}
+	p.boardUnreadIDs = unread
 	var selected int64
 	if i := p.board.selected(); i != nil {
 		selected = i.ID
@@ -81,6 +101,26 @@ func (p *HeraPage) updateBoard(o *heramodel.OrchView) {
 		p.board.expandedID = 0
 	}
 	p.board.cursor = max(0, min(p.board.cursor, len(p.board.items)-1))
+}
+
+// LandBoardOnEntry re-runs selection-time board landing for the coordinator
+// already under the rail cursor. Tab entry calls it after its refresh: the rail
+// cursor survives a tab switch, so updateBoard sees the same orchestrator ID and
+// keeps the panel chosen before mail arrived — landing on a coordinator with
+// unread items via Cmd+→ (or 2) would otherwise show its plan until the cursor
+// left and came back. Only opens the board; cursor and expansion are kept.
+func (p *HeraPage) LandBoardOnEntry() {
+	if !p.detailsMode || !p.boardAuto || p.showBoard {
+		return
+	}
+	o := p.detailsOrch()
+	if o == nil {
+		return
+	}
+	if c := o.CoordRole(); c != nil && c.BoardUnread > 0 {
+		p.showBoard = true
+		uxlog.Log("[board] entry landing orch=%d unread=%d board=true", o.ID, c.BoardUnread)
+	}
 }
 
 func (b *boardView) selected() *db.HeraBoardItem {
