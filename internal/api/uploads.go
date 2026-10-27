@@ -15,16 +15,16 @@ import (
 
 // Per-file and total caps for uploads.
 const (
-	maxAttachmentBytes      int64 = 10 * 1024 * 1024 // 10 MB per file
-	maxAttachmentTotalBytes int64 = 50 * 1024 * 1024 // 50 MB per request
+	maxAttachmentBytes      int64 = 100 * 1024 * 1024 // 100 MB per file
+	maxAttachmentTotalBytes int64 = 250 * 1024 * 1024 // 250 MB per request
 	maxAttachmentCount            = 20
 )
 
 // errAttachmentTooLarge / errTooManyAttachments are sentinel errors returned
 // by parseAttachments so callers can map them to 4xx responses.
 var (
-	errAttachmentTooLarge   = errors.New("attachment exceeds 10MB cap")
-	errAttachmentTotalLarge = errors.New("attachments exceed 50MB total cap")
+	errAttachmentTooLarge   = errors.New("attachment exceeds 100MB cap")
+	errAttachmentTotalLarge = errors.New("attachments exceed 250MB total cap")
 	errTooManyAttachments   = errors.New("too many attachments")
 	errEmptyAttachment      = errors.New("attachment is empty")
 	errBadAttachmentName    = errors.New("invalid attachment name")
