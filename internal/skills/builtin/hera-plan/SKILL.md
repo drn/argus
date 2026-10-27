@@ -223,6 +223,8 @@ when its blockers finish.
   ready immediately (materializes on the gater's next tick); with blockers, when they all reach `done`.
 - Keep it an explicit choice — default to plain worker nodes; don't spin up middle-management for a
   stage one worker can do.
+- Plain worker nodes take no `backend`: they always resolve via `[backend_routing]`, spreading work
+  across Claude and Codex. That is the intended default for ordinary workers, not a gap to work around.
 
 ## Worked example — author a staged plan-DAG and let it self-materialize
 
