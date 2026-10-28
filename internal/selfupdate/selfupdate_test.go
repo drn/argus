@@ -196,3 +196,55 @@ func TestEnvWithGoDirs(t *testing.T) {
 		testutil.DeepEqual(t, envWithGoDirs([]string{"A=1"}, "", ""), []string{"A=1"})
 	})
 }
+
+func TestLookPathIn(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "faketool")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o700); err != nil { //nolint:gosec // test needs an executable
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notexec"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("found in env PATH not process PATH", func(t *testing.T) {
+		t.Setenv("PATH", "/nonexistent")
+		got, err := lookPathIn("faketool", []string{"A=1", "PATH=/also/missing:" + dir})
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, bin)
+	})
+	t.Run("missing binary", func(t *testing.T) {
+		_, err := lookPathIn("faketool", []string{"PATH=/also/missing"})
+		testutil.ErrorIs(t, err, exec.ErrNotFound)
+	})
+	t.Run("non-executable skipped", func(t *testing.T) {
+		_, err := lookPathIn("notexec", []string{"PATH=" + dir})
+		testutil.ErrorIs(t, err, exec.ErrNotFound)
+	})
+	t.Run("relative PATH entries skipped", func(t *testing.T) {
+		t.Chdir(filepath.Dir(dir))
+		_, err := lookPathIn("faketool", []string{"PATH=" + filepath.Base(dir) + ":"})
+		testutil.ErrorIs(t, err, exec.ErrNotFound)
+	})
+	t.Run("no PATH in env", func(t *testing.T) {
+		_, err := lookPathIn("faketool", []string{"A=1"})
+		testutil.ErrorIs(t, err, exec.ErrNotFound)
+	})
+}
+
+func TestRunCmd_ResolvesViaAugmentedPath(t *testing.T) {
+	home := t.TempDir()
+	shims := filepath.Join(home, ".asdf", "shims")
+	if err := os.MkdirAll(shims, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shims, "shimtool"), []byte("#!/bin/sh\necho shim-ok\n"), 0o700); err != nil { //nolint:gosec // test needs an executable
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", "/usr/bin:/bin")
+
+	out, err := runCmd(t.TempDir(), "shimtool")
+	testutil.NoError(t, err)
+	testutil.Contains(t, out, "shim-ok")
+}
