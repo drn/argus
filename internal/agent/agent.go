@@ -1113,7 +1113,8 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// activity across worktrees kept re-triggering the prompt regardless of
 	// how the argus binary itself was signed. Both tools fully honor the
 	// override.
-	cmd.Env = append(spawnBaseEnv(os.Environ(), spawnAuthStrip(isClaude && claudeConfigDir != "", isCodex && codexAccountHome != ""), task.ID),
+	home, _ := os.UserHomeDir()
+	cmd.Env = append(ensureLocalBinOnPath(spawnBaseEnv(os.Environ(), spawnAuthStrip(isClaude && claudeConfigDir != "", isCodex && codexAccountHome != ""), task.ID), home),
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",
 		"GOCACHE="+filepath.Join(db.DataDir(), "cache", "go-build"),

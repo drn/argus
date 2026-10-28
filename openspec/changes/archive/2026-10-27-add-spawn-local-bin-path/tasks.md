@@ -1,0 +1,3 @@
+- [x] Add `ensureLocalBinOnPath` and apply it in `BuildCmd`
+- [x] Table test for present/absent/empty/no-PATH cases
+- [x] Merge delta into `openspec/specs/agent-execution/spec.md`
