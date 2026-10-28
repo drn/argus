@@ -181,7 +181,9 @@ const (
 	//     AGENTS.md[.override] folded in, no longer linked), and agy an
 	//     always-on ~/.gemini/config/rules file written before each launch.
 	//     A stale supervisor still prepends the prefix and builds the old overlay.
-	SupervisorSpawnSurface = 30
+	// 31: BuildCmd appends ~/.local/bin to the spawned session PATH when absent.
+	//     A stale supervisor spawns with the inherited PATH unchanged.
+	SupervisorSpawnSurface = 31
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -418,6 +420,7 @@ var SupervisorSpawnPaths = []string{
 	"internal/agent/prelaunch.go",                // backend prelaunch (pi/ollama) run before the fork
 	"internal/agent/routing_prompt.go",           // --append-system-prompt-file routing injection
 	"internal/agent/sandbox.go",                  // the sandbox-exec wrapper the command is wrapped in
+	"internal/agent/spawnpath.go",                // ~/.local/bin PATH guarantee BuildCmd applies
 	"internal/agent/secret.go",                   // point-of-use secret resolution inside BuildCmd
 	"internal/agent/secretregistry.go",           // the resolver registry BuildCmd resolves through
 	"internal/skills/builtin.go",                 // builtin skills materialized at spawn time
@@ -469,7 +472,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "d7f33d6e8c2da6990f2f6abc0f22a82e9f50c23148e6bc2b362716a8e21bae11"
+	SpawnSurfaceDigest  = "3f8a363ff98ea78872ee29314508121c26cdd8b79a0d41a8721598909994e3bd"
 	StreamSurfaceDigest = "4db586fb7dcaf62899cb2ebc82bbaa7fcc325d7cf99611f5f7942c44f9bc9467"
 )
 
