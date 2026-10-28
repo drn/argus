@@ -107,7 +107,7 @@ func lookPathIn(name string, env []string) (string, error) {
 			continue
 		}
 		for _, d := range filepath.SplitList(path) {
-			if d == "" {
+			if !filepath.IsAbs(d) {
 				continue
 			}
 			p := filepath.Join(d, name)

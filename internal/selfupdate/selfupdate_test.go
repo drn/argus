@@ -221,6 +221,11 @@ func TestLookPathIn(t *testing.T) {
 		_, err := lookPathIn("notexec", []string{"PATH=" + dir})
 		testutil.ErrorIs(t, err, exec.ErrNotFound)
 	})
+	t.Run("relative PATH entries skipped", func(t *testing.T) {
+		t.Chdir(filepath.Dir(dir))
+		_, err := lookPathIn("faketool", []string{"PATH=" + filepath.Base(dir) + ":"})
+		testutil.ErrorIs(t, err, exec.ErrNotFound)
+	})
 	t.Run("no PATH in env", func(t *testing.T) {
 		_, err := lookPathIn("faketool", []string{"A=1"})
 		testutil.ErrorIs(t, err, exec.ErrNotFound)
