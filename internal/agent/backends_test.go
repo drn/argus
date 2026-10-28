@@ -357,6 +357,9 @@ func TestInjectGlobalHooks(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(home, ".gemini", "config", "skills.json"))
 	testutil.NoError(t, err)
 	testutil.Contains(t, string(raw), filepath.Join(home, ".argus", "skills", ".claude", "skills"))
+	rule, err := os.ReadFile(filepath.Join(home, ".gemini", "config", "rules", "argus-routing.md"))
+	testutil.NoError(t, err)
+	testutil.Contains(t, string(rule), "trigger: always_on")
 
 	testutil.NoError(t, injectOpencodeGlobal(7742, true))
 	_, err = os.Stat(filepath.Join(home, ".config", "opencode", "opencode.json"))

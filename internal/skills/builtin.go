@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/drn/argus/internal/inject/atomicfile"
 	"github.com/drn/argus/internal/routing"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -236,8 +237,10 @@ func ensureCodexSkills(source string) (string, error) {
 	if err := linkCodexEntries(codexHome, argusHome, "skills", codexAgentsFile, codexAgentsOverrideFile); err != nil {
 		return "", err
 	}
+	// Best-effort: an unreadable user AGENTS.md must not cost the overlay its
+	// skills and state links.
 	if err := writeCodexAgentsFile(codexHome, argusHome); err != nil {
-		return "", err
+		uxlog.Log("[skills] codex AGENTS.md routing unavailable (continuing without it): %v", err)
 	}
 	skillsDir := filepath.Join(argusHome, "skills")
 	if err := os.MkdirAll(skillsDir, 0755); err != nil {
@@ -286,7 +289,7 @@ const codexAgentsOverrideFile = "AGENTS.override.md"
 // writeCodexAgentsFile generates the overlay's AGENTS.md: the user's own
 // global AGENTS.md (never linked, so Argus content can't leak into their
 // normal Codex home) followed by Argus's builtin routing orientation. The
-// rename inside atomicWriteIfDifferent replaces a stale symlink to the user's
+// rename inside atomicfile.Write replaces a stale symlink to the user's
 // file rather than writing through it.
 func writeCodexAgentsFile(sourceHome, argusHome string) error {
 	routingContent, err := routing.BuiltinContent()
@@ -308,16 +311,23 @@ func writeCodexAgentsFile(sourceHome, argusHome string) error {
 		break
 	}
 	out = append(out, routingContent...)
-	if info, err := os.Lstat(filepath.Join(argusHome, codexAgentsOverrideFile)); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		// A link left by an earlier overlay build would outrank the file below.
-		if err := os.Remove(filepath.Join(argusHome, codexAgentsOverrideFile)); err != nil {
-			return fmt.Errorf("remove stale Codex override link: %w", err)
+	// Any override already in the overlay (a stale link, or a file Codex wrote
+	// there) would outrank the generated file, so move it aside.
+	if override := filepath.Join(argusHome, codexAgentsOverrideFile); pathExists(override) {
+		backupDir, err := os.MkdirTemp(argusHome, ".argus-preserved-")
+		if err != nil {
+			return fmt.Errorf("preserve overlay override: %w", err)
+		}
+		if err := os.Rename(override, filepath.Join(backupDir, codexAgentsOverrideFile)); err != nil {
+			return fmt.Errorf("preserve overlay override: %w", err)
 		}
 	}
-	if err := atomicWriteIfDifferent(filepath.Join(argusHome, codexAgentsFile), out); err != nil {
-		return fmt.Errorf("write Argus Codex AGENTS.md: %w", err)
-	}
-	return nil
+	return atomicfile.WriteIfDifferent(filepath.Join(argusHome, codexAgentsFile), out, "write Argus Codex AGENTS.md")
+}
+
+func pathExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }
 
 func linkCodexSkills(sourceDir, targetDir string) error {

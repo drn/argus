@@ -177,13 +177,27 @@ func TestInjectRouting(t *testing.T) {
 	testutil.Equal(t, string(got), "---\ntrigger: always_on\n---\n\nROUTING\n")
 
 	t.Run("unchanged content is not rewritten", func(t *testing.T) {
-		old := time.Now().Add(-time.Hour)
+		old := time.Now().Add(-time.Hour).Truncate(time.Second)
 		testutil.NoError(t, os.Chtimes(target, old, old))
 		testutil.NoError(t, InjectRouting([]byte("ROUTING\n")))
 		info, err := os.Stat(target)
 		testutil.NoError(t, err)
-		if !info.ModTime().Equal(old.Truncate(time.Second)) && info.ModTime().After(old.Add(time.Minute)) {
-			t.Fatal("identical content must not be rewritten")
+		testutil.Equal(t, info.ModTime().Unix(), old.Unix())
+	})
+
+	t.Run("a symlink at the target is replaced, not followed", func(t *testing.T) {
+		victim := filepath.Join(t.TempDir(), "victim.md")
+		testutil.NoError(t, os.WriteFile(victim, []byte("keep"), 0o644))
+		testutil.NoError(t, os.Remove(target))
+		testutil.NoError(t, os.Symlink(victim, target))
+		testutil.NoError(t, InjectRouting([]byte("ROUTING\n")))
+		b, err := os.ReadFile(victim)
+		testutil.NoError(t, err)
+		testutil.Equal(t, string(b), "keep")
+		info, err := os.Lstat(target)
+		testutil.NoError(t, err)
+		if info.Mode()&os.ModeSymlink != 0 {
+			t.Fatal("target must be a regular file")
 		}
 	})
 

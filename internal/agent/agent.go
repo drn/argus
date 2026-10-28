@@ -937,8 +937,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// injecting it into a non-argus spawn is inert. Materialization failure is
 	// logged and skipped rather than blocking launch.
 	opencodeRoutingPath := ""
-	switch fam.RoutingDelivery {
-	case RoutingSystemPromptFile, RoutingAppendFlag, RoutingInlineConfig:
+	if fam.RoutingDelivery != RoutingNone {
 		if path, err := ensureBuiltinRoutingFn(); err != nil {
 			uxlog.Log("[routing] builtin routing content materialize failed (continuing without it): %v", err)
 		} else if path != "" {

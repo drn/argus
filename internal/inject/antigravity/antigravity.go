@@ -45,18 +45,7 @@ func InjectRouting(content []byte) error {
 		return fmt.Errorf("%s: create %s: %w", label, rulesDir, err)
 	}
 	doc := append([]byte("---\ntrigger: always_on\n---\n\n"), content...)
-	target := filepath.Join(rulesDir, routingRulesFile)
-	if current, err := os.ReadFile(target); err == nil && string(current) == string(doc) {
-		return nil
-	}
-	tmp := target + ".tmp"
-	if err := os.WriteFile(tmp, doc, 0o644); err != nil {
-		return fmt.Errorf("%s: write %s: %w", label, tmp, err)
-	}
-	if err := os.Rename(tmp, target); err != nil {
-		return fmt.Errorf("%s: replace %s: %w", label, target, err)
-	}
-	return nil
+	return atomicfile.WriteIfDifferent(filepath.Join(rulesDir, routingRulesFile), doc, label)
 }
 
 // InjectGlobal registers Argus's MCP server on port (skipped when port <= 0,

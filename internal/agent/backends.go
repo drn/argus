@@ -55,7 +55,10 @@ const (
 	SkillsGlobal
 )
 
-// RoutingDelivery is how a family receives Argus's builtin routing content.
+// RoutingDelivery is how a family receives Argus's builtin routing content
+// through a per-launch flag or config. Codex (generated AGENTS.md in its
+// Argus-only home, with SkillsCodexHome) and Antigravity (a global rule file
+// written by InjectGlobal) are delivered there, so they stay RoutingNone.
 type RoutingDelivery int
 
 const (
@@ -67,12 +70,6 @@ const (
 	// RoutingInlineConfig adds the materialized file to the child-only inline
 	// config's `instructions` array (opencode).
 	RoutingInlineConfig
-	// RoutingCodexHome is delivered as the Argus-only CODEX_HOME overlay's
-	// AGENTS.md, written alongside the overlay's skills (Codex).
-	RoutingCodexHome
-	// RoutingGlobalRules is a rules file in the CLI's global config, written
-	// by the family's InjectGlobal (Antigravity).
-	RoutingGlobalRules
 )
 
 // SandboxGrant is a HOME-relative SBPL write grant a family needs to persist
@@ -396,11 +393,10 @@ var families = []*Family{
 		ResumeCmd: codexResumeCommand,
 		// Keep this list synced with the Codex CLI's own `/model` picker and
 		// the seed diligence profiles' archetype.*.models.codex entries.
-		KnownModels:     []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"},
-		ModelDelivery:   ModelFlag,
-		SkillDelivery:   SkillsCodexHome,
-		RoutingDelivery: RoutingCodexHome,
-		MCPFlag:         codexMCPFlag,
+		KnownModels:   []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"},
+		ModelDelivery: ModelFlag,
+		SkillDelivery: SkillsCodexHome,
+		MCPFlag:       codexMCPFlag,
 		SandboxGrants: []SandboxGrant{
 			{HomeRel: "/.codex", Comment: "Codex auth, session DB (state_5.sqlite), history, sessions."},
 			{HomeRel: "/.local/share/argus/codex-home", Comment: "Argus-only CODEX_HOME overlay carrying builtin skills."},
@@ -440,7 +436,6 @@ var families = []*Family{
 		RecaptureEveryExit: true,
 		ModelDelivery:      ModelFlag,
 		SkillDelivery:      SkillsGlobal,
-		RoutingDelivery:    RoutingGlobalRules,
 		// agy reads prompts only from -p/--print, -i/--prompt-interactive, or
 		// stdin; a positional or `--` prompt is a hard error.
 		DefaultPromptFlag: "--prompt-interactive",

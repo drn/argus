@@ -740,4 +740,46 @@ func TestEnsureCodexSkills_GeneratesAgentsMd(t *testing.T) {
 		testutil.NoError(t, err)
 		testutil.Equal(t, string(orig), "BASE")
 	})
+
+	t.Run("blank user AGENTS.md contributes nothing", func(t *testing.T) {
+		_, src := setup(t)
+		testutil.NoError(t, os.WriteFile(filepath.Join(src, "AGENTS.md"), []byte("  \n"), 0o600))
+		overlay, err := ensureCodexSkills("")
+		testutil.NoError(t, err)
+		got, err := os.ReadFile(filepath.Join(overlay, "AGENTS.md"))
+		testutil.NoError(t, err)
+		testutil.Equal(t, string(got), string(routingContent))
+	})
+
+	t.Run("unreadable user AGENTS.md still yields the overlay", func(t *testing.T) {
+		_, src := setup(t)
+		testutil.NoError(t, os.MkdirAll(filepath.Join(src, "AGENTS.md"), 0o700))
+		testutil.NoError(t, os.WriteFile(filepath.Join(src, "config.toml"), []byte("c"), 0o600))
+		overlay, err := ensureCodexSkills("")
+		testutil.NoError(t, err)
+		linked, err := os.Readlink(filepath.Join(overlay, "config.toml"))
+		testutil.NoError(t, err)
+		testutil.Equal(t, linked, filepath.Join(src, "config.toml"))
+		entries, err := os.ReadDir(filepath.Join(overlay, "skills"))
+		testutil.NoError(t, err)
+		if len(entries) == 0 {
+			t.Fatal("overlay must keep its builtin skills")
+		}
+	})
+
+	t.Run("a real override file in the overlay is preserved aside", func(t *testing.T) {
+		_, _ = setup(t)
+		overlay, err := ArgusCodexHomeFor("")
+		testutil.NoError(t, err)
+		testutil.NoError(t, os.MkdirAll(overlay, 0o700))
+		testutil.NoError(t, os.WriteFile(filepath.Join(overlay, "AGENTS.override.md"), []byte("local"), 0o600))
+		_, err = ensureCodexSkills("")
+		testutil.NoError(t, err)
+		if _, err := os.Lstat(filepath.Join(overlay, "AGENTS.override.md")); !os.IsNotExist(err) {
+			t.Fatal("override must not remain in the overlay root")
+		}
+		matches, err := filepath.Glob(filepath.Join(overlay, ".argus-preserved-*", "AGENTS.override.md"))
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(matches), 1)
+	})
 }
