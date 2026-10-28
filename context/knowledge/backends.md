@@ -19,7 +19,7 @@ commands get `customFamily`. To add one, follow `.agents/skills/add-backend/SKIL
 | Permission | `defaults.permission_mode` → `--permission-mode …` | baked into command | — | `--auto` launch flag | mode → `--mode …` / `--dangerously-skip-permissions` | mode → `--force` / `--plan` | — |
 | MCP | `--mcp-config` per launch | `-c mcp_servers.argus.url` per launch | — | global `opencode.json` | global `~/.gemini/config/mcp_config.json` | global `~/.cursor/mcp.json` (+`--approve-mcps` in command) | — |
 | Skills | `--add-dir ~/.argus/skills` | Argus-only `CODEX_HOME` overlay | `--skill <dir>` | `OPENCODE_CONFIG_CONTENT` | global `~/.gemini/config/skills.json` entry | — | — |
-| Routing | `--append-system-prompt-file` | prompt prefix | — | prompt prefix | prompt prefix | prompt prefix | — |
+| Routing | `--append-system-prompt-file` | `AGENTS.md` in the Argus-only `CODEX_HOME` overlay | `--append-system-prompt <file>` | `instructions` in `OPENCODE_CONFIG_CONTENT` | always-on global rule `~/.gemini/config/rules/argus-routing.md` | — (no native mechanism; see gotchas) | — |
 | Sandbox grant | `~/.claude.json*`, `~/.claude` | `~/.codex`, codex-home | `~/.pi` | (base `~/.local`) | `~/.gemini/{antigravity-cli,config,jetski}` (pre-created) | `~/.cursor/{chats,projects,statsig-cache.json}` (launch-only, pre-created; mcp.json/cli-config.json read-only) | — |
 | Accounts | `claude_config_dir` | `codex_home` | — | — | — | — | — |
 | Launch flag | — | — | — | `--auto` | — | `--trust` | — |

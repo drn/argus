@@ -173,7 +173,15 @@ const (
 	//   - v28: agent sessions support an opt-in child-only unsigned Git policy.
 	//   - v29: managed Claude/Codex/OpenCode MCP deadlines exceed the shared
 	//     Hera inbox wait cap, with Claude's child environment fallback.
-	SupervisorSpawnSurface = 29
+	//   - v30: routing orientation is delivered natively per family instead of
+	//     prepended to the first prompt (Codex/opencode/agy/cursor no longer get
+	//     a prompt prefix): Pi gets --append-system-prompt, opencode an
+	//     `instructions` entry in its inline config, Codex a generated
+	//     AGENTS.md in its Argus-only CODEX_HOME overlay (the user's own
+	//     AGENTS.md[.override] folded in, no longer linked), and agy an
+	//     always-on ~/.gemini/config/rules file written before each launch.
+	//     A stale supervisor still prepends the prefix and builds the old overlay.
+	SupervisorSpawnSurface = 30
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -461,7 +469,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "9d403ce1ecba8b3af51c6fd4c3332e19363af4d9dd8895ab584ab48eb1734ea0"
+	SpawnSurfaceDigest  = "4ad6c24d7912e24c2e4d2c964aaffba7fe0dcae2acbc361f535ff754100f622b"
 	StreamSurfaceDigest = "4db586fb7dcaf62899cb2ebc82bbaa7fcc325d7cf99611f5f7942c44f9bc9467"
 )
 

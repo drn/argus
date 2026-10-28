@@ -8,9 +8,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
+	"github.com/drn/argus/internal/routing"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -231,7 +233,10 @@ func ensureCodexSkills(source string) (string, error) {
 	// Link existing state and configuration so authentication, preferences,
 	// plugins, and session history carry over. The skills subtree is handled
 	// separately so Argus skills never enter the user's normal Codex catalog.
-	if err := linkCodexEntries(codexHome, argusHome, "skills"); err != nil {
+	if err := linkCodexEntries(codexHome, argusHome, "skills", codexAgentsFile, codexAgentsOverrideFile); err != nil {
+		return "", err
+	}
+	if err := writeCodexAgentsFile(codexHome, argusHome); err != nil {
 		return "", err
 	}
 	skillsDir := filepath.Join(argusHome, "skills")
@@ -250,7 +255,7 @@ func ensureCodexSkills(source string) (string, error) {
 // linkCodexEntries mirrors existing root entries without writing to the
 // user's Codex home. The source wins if Codex replaced an overlay symlink;
 // the overlay copy is preserved before restoring the link.
-func linkCodexEntries(sourceDir, targetDir, skip string) error {
+func linkCodexEntries(sourceDir, targetDir string, skip ...string) error {
 	entries, err := os.ReadDir(sourceDir)
 	if os.IsNotExist(err) {
 		return nil
@@ -259,7 +264,7 @@ func linkCodexEntries(sourceDir, targetDir, skip string) error {
 		return fmt.Errorf("read Codex home: %w", err)
 	}
 	for _, entry := range entries {
-		if entry.Name() == skip {
+		if slices.Contains(skip, entry.Name()) {
 			continue
 		}
 		source := filepath.Join(sourceDir, entry.Name())
@@ -267,6 +272,50 @@ func linkCodexEntries(sourceDir, targetDir, skip string) error {
 		if err := linkCodexSource(source, target, targetDir); err != nil {
 			return fmt.Errorf("link Codex state %s: %w", entry.Name(), err)
 		}
+	}
+	return nil
+}
+
+// codexAgentsFile is the instruction file Codex loads from its home.
+const codexAgentsFile = "AGENTS.md"
+
+// codexAgentsOverrideFile outranks AGENTS.md in the same directory, so it is
+// folded into the generated file instead of being linked in front of it.
+const codexAgentsOverrideFile = "AGENTS.override.md"
+
+// writeCodexAgentsFile generates the overlay's AGENTS.md: the user's own
+// global AGENTS.md (never linked, so Argus content can't leak into their
+// normal Codex home) followed by Argus's builtin routing orientation. The
+// rename inside atomicWriteIfDifferent replaces a stale symlink to the user's
+// file rather than writing through it.
+func writeCodexAgentsFile(sourceHome, argusHome string) error {
+	routingContent, err := routing.BuiltinContent()
+	if err != nil {
+		return fmt.Errorf("read routing content: %w", err)
+	}
+	// Codex prefers AGENTS.override.md over AGENTS.md; keep that precedence
+	// for the user's own content.
+	var out []byte
+	for _, name := range []string{codexAgentsOverrideFile, codexAgentsFile} {
+		user, err := os.ReadFile(filepath.Join(sourceHome, name))
+		if os.IsNotExist(err) || (err == nil && len(bytes.TrimSpace(user)) == 0) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("read Codex %s: %w", name, err)
+		}
+		out = append(bytes.TrimRight(user, "\n"), "\n\n---\n\n"...)
+		break
+	}
+	out = append(out, routingContent...)
+	if info, err := os.Lstat(filepath.Join(argusHome, codexAgentsOverrideFile)); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		// A link left by an earlier overlay build would outrank the file below.
+		if err := os.Remove(filepath.Join(argusHome, codexAgentsOverrideFile)); err != nil {
+			return fmt.Errorf("remove stale Codex override link: %w", err)
+		}
+	}
+	if err := atomicWriteIfDifferent(filepath.Join(argusHome, codexAgentsFile), out); err != nil {
+		return fmt.Errorf("write Argus Codex AGENTS.md: %w", err)
 	}
 	return nil
 }

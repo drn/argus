@@ -421,9 +421,10 @@ func TestBuildCmd_RoutingPromptFlag_AppendedForClaude(t *testing.T) {
 		"claude --dangerously-skip-permissions --permission-mode plan --append-system-prompt-file '/fake/home/.argus/routing/system-prompt.md' -- 'go'")
 }
 
-// TestBuildCmd_RoutingPromptFlag_SkippedForNonClaude confirms the flag is
-// withheld for non-Claude backends even when materialization would succeed —
-// mirroring TestBuildCmd_PermissionMode_SkippedForNonClaude.
+// TestBuildCmd_RoutingPromptFlag_SkippedForNonClaude confirms Claude's
+// --append-system-prompt-file flag is withheld for non-Claude backends even
+// when materialization would succeed (Pi gets its own flag) — mirroring
+// TestBuildCmd_PermissionMode_SkippedForNonClaude.
 func TestBuildCmd_RoutingPromptFlag_SkippedForNonClaude(t *testing.T) {
 	restore := SetEnsureBuiltinRoutingForTest(func() (string, error) {
 		return "/fake/home/.argus/routing/system-prompt.md", nil
@@ -443,7 +444,7 @@ func TestBuildCmd_RoutingPromptFlag_SkippedForNonClaude(t *testing.T) {
 		task := &model.Task{Name: "t", Backend: "pi", Prompt: "go", Worktree: t.TempDir()}
 		cmd, _, err := BuildCmd(task, cfg, false)
 		testutil.NoError(t, err)
-		testutil.Equal(t, cmd.Args[2], "pi 'go'")
+		testutil.Equal(t, cmd.Args[2], "pi --append-system-prompt '/fake/home/.argus/routing/system-prompt.md' 'go'")
 	})
 
 	t.Run("opencode", func(t *testing.T) {
