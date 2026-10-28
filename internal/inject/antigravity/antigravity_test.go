@@ -166,3 +166,54 @@ func TestInjectGlobal_MkdirFails(t *testing.T) {
 	testutil.NoError(t, os.WriteFile(filepath.Join(home, ".gemini"), []byte("file"), 0o644))
 	testutil.Contains(t, InjectGlobal(1, "").Error(), "create")
 }
+
+func TestInjectRouting(t *testing.T) {
+	dir := setHome(t)
+	target := filepath.Join(dir, "rules", "argus-routing.md")
+
+	testutil.NoError(t, InjectRouting([]byte("ROUTING\n")))
+	got, err := os.ReadFile(target)
+	testutil.NoError(t, err)
+	testutil.Equal(t, string(got), "---\ntrigger: always_on\n---\n\nROUTING\n")
+
+	t.Run("unchanged content is not rewritten", func(t *testing.T) {
+		old := time.Now().Add(-time.Hour).Truncate(time.Second)
+		testutil.NoError(t, os.Chtimes(target, old, old))
+		testutil.NoError(t, InjectRouting([]byte("ROUTING\n")))
+		info, err := os.Stat(target)
+		testutil.NoError(t, err)
+		testutil.Equal(t, info.ModTime().Unix(), old.Unix())
+	})
+
+	t.Run("a symlink at the target is replaced, not followed", func(t *testing.T) {
+		victim := filepath.Join(t.TempDir(), "victim.md")
+		testutil.NoError(t, os.WriteFile(victim, []byte("keep"), 0o644))
+		testutil.NoError(t, os.Remove(target))
+		testutil.NoError(t, os.Symlink(victim, target))
+		testutil.NoError(t, InjectRouting([]byte("ROUTING\n")))
+		b, err := os.ReadFile(victim)
+		testutil.NoError(t, err)
+		testutil.Equal(t, string(b), "keep")
+		info, err := os.Lstat(target)
+		testutil.NoError(t, err)
+		if info.Mode()&os.ModeSymlink != 0 {
+			t.Fatal("target must be a regular file")
+		}
+	})
+
+	t.Run("changed content replaces the file", func(t *testing.T) {
+		testutil.NoError(t, InjectRouting([]byte("NEW\n")))
+		got, err := os.ReadFile(target)
+		testutil.NoError(t, err)
+		testutil.Equal(t, string(got), "---\ntrigger: always_on\n---\n\nNEW\n")
+	})
+
+	t.Run("sibling user rules are untouched", func(t *testing.T) {
+		mine := filepath.Join(dir, "rules", "mine.md")
+		testutil.NoError(t, os.WriteFile(mine, []byte("mine"), 0o644))
+		testutil.NoError(t, InjectRouting([]byte("X")))
+		b, err := os.ReadFile(mine)
+		testutil.NoError(t, err)
+		testutil.Equal(t, string(b), "mine")
+	})
+}

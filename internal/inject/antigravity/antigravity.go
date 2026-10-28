@@ -26,6 +26,28 @@ func ConfigDir() (string, error) {
 	return filepath.Join(home, ".gemini", "config"), nil
 }
 
+// routingRulesFile is the Argus-owned rule file under ~/.gemini/config/rules.
+// agy requires YAML frontmatter with a valid trigger on every file there;
+// always_on keeps the content in every session. The content is self-gating
+// (each section checks Argus sandbox residency), so it is inert outside
+// Argus-launched sessions.
+const routingRulesFile = "argus-routing.md"
+
+// InjectRouting writes content as Argus's always-on global rule. The file is
+// wholly Argus-owned and rewritten only when it differs.
+func InjectRouting(content []byte) error {
+	dir, err := ConfigDir()
+	if err != nil {
+		return err
+	}
+	rulesDir := filepath.Join(dir, "rules")
+	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
+		return fmt.Errorf("%s: create %s: %w", label, rulesDir, err)
+	}
+	doc := append([]byte("---\ntrigger: always_on\n---\n\n"), content...)
+	return atomicfile.WriteIfDifferent(filepath.Join(rulesDir, routingRulesFile), doc, label)
+}
+
 // InjectGlobal registers Argus's MCP server on port (skipped when port <= 0,
 // i.e. MCP is off) and, when skillsDir is non-empty, Argus's builtin skills
 // dir. Both writes preserve every unrelated key and are skipped when already

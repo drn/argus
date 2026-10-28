@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -58,7 +59,7 @@ func TestBuildCmd_PiAndOpencodeSkillsAreSessionScoped(t *testing.T) {
 
 func TestOpencodeSessionConfigContent_InvalidExistingContent(t *testing.T) {
 	t.Setenv("OPENCODE_CONFIG_CONTENT", "not json")
-	if _, err := opencodeSessionConfigContent("provider/model", "/skills"); err == nil {
+	if _, err := opencodeSessionConfigContent("provider/model", "/skills", ""); err == nil {
 		t.Fatal("invalid existing inline config must not be replaced")
 	}
 }
@@ -66,7 +67,7 @@ func TestOpencodeSessionConfigContent_InvalidExistingContent(t *testing.T) {
 func TestOpencodeSessionConfigContent_MergesModelAndSkills(t *testing.T) {
 	t.Setenv("OPENCODE_CONFIG_CONTENT", `{"theme":"custom","skills":["/my/skill"],"model":"old/model"}`)
 
-	got, err := opencodeSessionConfigContent("provider/model", "/skills")
+	got, err := opencodeSessionConfigContent("provider/model", "/skills", "")
 	testutil.NoError(t, err)
 
 	var config map[string]any
@@ -79,7 +80,7 @@ func TestOpencodeSessionConfigContent_MergesModelAndSkills(t *testing.T) {
 func TestOpencodeSessionConfigContent_ModelOnly(t *testing.T) {
 	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
 
-	got, err := opencodeSessionConfigContent("provider/model", "")
+	got, err := opencodeSessionConfigContent("provider/model", "", "")
 	testutil.NoError(t, err)
 
 	var config map[string]any
@@ -93,7 +94,7 @@ func TestOpencodeSessionConfigContent_ModelOnly(t *testing.T) {
 func TestOpencodeSessionConfigContent_ReplacesExpandedModel(t *testing.T) {
 	t.Setenv("OPENCODE_CONFIG_CONTENT", `{"model":{"providerID":"old","model":"old-model"}}`)
 
-	got, err := opencodeSessionConfigContent("provider/model", "")
+	got, err := opencodeSessionConfigContent("provider/model", "", "")
 	testutil.NoError(t, err)
 
 	var config map[string]any
@@ -104,7 +105,7 @@ func TestOpencodeSessionConfigContent_ReplacesExpandedModel(t *testing.T) {
 func TestOpencodeSessionConfigContent_NullSkillsIsReplaced(t *testing.T) {
 	t.Setenv("OPENCODE_CONFIG_CONTENT", `{"skills":null}`)
 
-	got, err := opencodeSessionConfigContent("provider/model", "/skills")
+	got, err := opencodeSessionConfigContent("provider/model", "/skills", "")
 	testutil.NoError(t, err)
 
 	var config map[string]any
@@ -116,7 +117,7 @@ func TestOpencodeSessionConfigContent_NullSkillsIsReplaced(t *testing.T) {
 func TestOpencodeSessionConfigContent_IncompatibleSkillsPreservesModel(t *testing.T) {
 	t.Setenv("OPENCODE_CONFIG_CONTENT", `{"skills":"user-owned"}`)
 
-	got, err := opencodeSessionConfigContent("provider/model", "/skills")
+	got, err := opencodeSessionConfigContent("provider/model", "/skills", "")
 	testutil.NoError(t, err)
 
 	var config map[string]any
@@ -130,7 +131,7 @@ func TestOpencodeSessionConfigContent_TrailingCommasAreAccepted(t *testing.T) {
 	// allowed), so a document it accepts must not read as malformed here.
 	t.Setenv("OPENCODE_CONFIG_CONTENT", "{\n  \"theme\": \"custom\",\n  \"model\": \"old/model\",\n  \"skills\": [\"/my/skill\",],\n}")
 
-	got, err := opencodeSessionConfigContent("provider/model", "/skills")
+	got, err := opencodeSessionConfigContent("provider/model", "/skills", "")
 	testutil.NoError(t, err)
 
 	var config map[string]any
@@ -171,7 +172,7 @@ func TestOpencodeSessionConfigContent_NonObjectInputs(t *testing.T) {
 	for _, raw := range []string{"null", "[1,2]", `"a string"`, "3", "true", "not json"} {
 		t.Run(raw, func(t *testing.T) {
 			t.Setenv("OPENCODE_CONFIG_CONTENT", raw)
-			if _, err := opencodeSessionConfigContent("provider/model", "/skills"); err == nil {
+			if _, err := opencodeSessionConfigContent("provider/model", "/skills", ""); err == nil {
 				t.Fatalf("non-object inline config %q must be rejected", raw)
 			}
 		})
@@ -184,69 +185,9 @@ func TestOpencodeSessionConfigContent_AlreadyMergedIsByteIdentical(t *testing.T)
 	const raw = `{"model":"provider/model","skills":["/skills"],"theme":"custom"}`
 	t.Setenv("OPENCODE_CONFIG_CONTENT", raw)
 
-	got, err := opencodeSessionConfigContent("provider/model", "/skills")
+	got, err := opencodeSessionConfigContent("provider/model", "/skills", "")
 	testutil.NoError(t, err)
 	testutil.Equal(t, got, raw)
-}
-
-func TestNonClaudeRoutingContentReal_ReturnsEmbeddedContent(t *testing.T) {
-	got, err := nonClaudeRoutingContentReal()
-	testutil.NoError(t, err)
-	if got == "" {
-		t.Fatal("expected non-empty embedded routing content")
-	}
-}
-
-func TestBuildCmd_ContextPrefixOnlyForPromptPrefixFamilies(t *testing.T) {
-	restoreRouting := SetNonClaudeRoutingContentForTest(func() (string, error) { return "ROUTING", nil })
-	defer restoreRouting()
-
-	cfg := nonClaudeContextConfig()
-	cfg.Backends["agy"] = config.Backend{Command: "agy"}
-	cfg.Backends["pi"] = config.Backend{Command: "pi"}
-	for _, tc := range []struct {
-		backend string
-		want    bool
-	}{{"claude", false}, {"pi", false}, {"codex", true}, {"opencode", true}, {"agy", true}} {
-		t.Run(tc.backend, func(t *testing.T) {
-			task := &model.Task{Name: "t", Backend: tc.backend, Prompt: "go", Worktree: t.TempDir()}
-			cmd, _, err := BuildCmd(task, cfg, false)
-			testutil.NoError(t, err)
-			testutil.Equal(t, strings.Contains(cmd.Args[2], "ROUTING"), tc.want)
-		})
-	}
-}
-
-func TestNonClaudeContextPrefix_CodexRoutingOnly(t *testing.T) {
-	restoreRouting := SetNonClaudeRoutingContentForTest(func() (string, error) { return "ROUTING", nil })
-	defer restoreRouting()
-
-	got := nonClaudeContextPrefix()
-	testutil.Equal(t, got, "ROUTING\n\n---\n\n")
-}
-
-func TestNonClaudeContextPrefix_OpencodeRoutingOnly(t *testing.T) {
-	restoreRouting := SetNonClaudeRoutingContentForTest(func() (string, error) { return "ROUTING", nil })
-	defer restoreRouting()
-
-	got := nonClaudeContextPrefix()
-	testutil.Equal(t, got, "ROUTING\n\n---\n\n")
-}
-
-func TestNonClaudeContextPrefix_EmptyRoutingReturnsEmpty(t *testing.T) {
-	restoreRouting := SetNonClaudeRoutingContentForTest(func() (string, error) { return "", nil })
-	defer restoreRouting()
-
-	got := nonClaudeContextPrefix()
-	testutil.Equal(t, got, "")
-}
-
-func TestNonClaudeContextPrefix_SourceErrorsSkippedNotFatal(t *testing.T) {
-	restoreRouting := SetNonClaudeRoutingContentForTest(func() (string, error) { return "", errors.New("boom") })
-	defer restoreRouting()
-
-	got := nonClaudeContextPrefix()
-	testutil.Equal(t, got, "")
 }
 
 // --- isCodex-gating seam: BuildCmd must call ensureCodexSkillsFn for codex
@@ -339,65 +280,89 @@ func nonClaudeContextConfig() config.Config {
 	}
 }
 
-func TestBuildCmd_NonClaudeContextPrefix_CodexRoutingOnly(t *testing.T) {
-	restoreRouting := SetNonClaudeRoutingContentForTest(func() (string, error) { return "ROUTING", nil })
-	defer restoreRouting()
-
+func TestBuildCmd_NoPromptPrefixForAnyBackend(t *testing.T) {
 	cfg := nonClaudeContextConfig()
-	worktree := t.TempDir()
-	if err := os.WriteFile(filepath.Join(worktree, "CLAUDE.md"), []byte("REPO"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	task := &model.Task{Name: "t", Backend: "codex", Prompt: "go", Worktree: worktree}
-
-	cmd, _, err := BuildCmd(task, cfg, false)
-	testutil.NoError(t, err)
-	testutil.Contains(t, cmd.Args[2], "ROUTING")
-	testutil.Contains(t, cmd.Args[2], "go") // original prompt still present
-	if containsAny(cmd.Args[2], "REPO", "CLAUDE.md") {
-		t.Errorf("expected codex command to exclude CLAUDE.md content, got %q", cmd.Args[2])
+	cfg.Backends["agy"] = config.Backend{Command: "agy"}
+	for _, backend := range []string{"claude", "codex", "pi", "opencode", "agy"} {
+		t.Run(backend, func(t *testing.T) {
+			task := &model.Task{Name: "t", Backend: backend, Prompt: "go", Worktree: t.TempDir()}
+			cmd, _, err := BuildCmd(task, cfg, false)
+			testutil.NoError(t, err)
+			testutil.Contains(t, cmd.Args[2], "'go'")
+			if strings.Contains(cmd.Args[2], "---") {
+				t.Errorf("expected no context prefix, got %q", cmd.Args[2])
+			}
+		})
 	}
 }
 
-func TestBuildCmd_NonClaudeContextPrefix_OpencodeRoutingOnly(t *testing.T) {
-	restoreRouting := SetNonClaudeRoutingContentForTest(func() (string, error) { return "ROUTING", nil })
-	defer restoreRouting()
+func TestOpencodeSessionConfigContent_InstructionsMerge(t *testing.T) {
+	t.Run("added alongside skills and model", func(t *testing.T) {
+		t.Setenv("OPENCODE_CONFIG_CONTENT", "")
+		got, err := opencodeSessionConfigContent("p/m", "/skills", "/routing.md")
+		testutil.NoError(t, err)
+		var cfg map[string]any
+		testutil.NoError(t, json.Unmarshal([]byte(got), &cfg))
+		testutil.DeepEqual(t, cfg["instructions"], any([]any{"/routing.md"}))
+		testutil.DeepEqual(t, cfg["skills"], any([]any{"/skills"}))
+	})
+	t.Run("existing user entries preserved, no duplicate", func(t *testing.T) {
+		t.Setenv("OPENCODE_CONFIG_CONTENT", `{"instructions":["mine.md","/routing.md"]}`)
+		got, err := opencodeSessionConfigContent("", "", "/routing.md")
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, `{"instructions":["mine.md","/routing.md"]}`)
 
-	cfg := nonClaudeContextConfig()
-	worktree := t.TempDir()
-	if err := os.WriteFile(filepath.Join(worktree, "CLAUDE.md"), []byte("REPO"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	task := &model.Task{Name: "t", Backend: "opencode", Prompt: "go", Worktree: worktree}
-
-	cmd, _, err := BuildCmd(task, cfg, false)
-	testutil.NoError(t, err)
-	testutil.Contains(t, cmd.Args[2], "ROUTING")
-	if containsAny(cmd.Args[2], "REPO", "CLAUDE.md") {
-		t.Errorf("expected opencode command to exclude CLAUDE.md content, got %q", cmd.Args[2])
-	}
+		t.Setenv("OPENCODE_CONFIG_CONTENT", `{"instructions":["mine.md"]}`)
+		got, err = opencodeSessionConfigContent("", "", "/routing.md")
+		testutil.NoError(t, err)
+		var cfg map[string]any
+		testutil.NoError(t, json.Unmarshal([]byte(got), &cfg))
+		testutil.DeepEqual(t, cfg["instructions"], any([]any{"mine.md", "/routing.md"}))
+	})
+	t.Run("incompatible user value preserved", func(t *testing.T) {
+		t.Setenv("OPENCODE_CONFIG_CONTENT", `{"instructions":"mine.md"}`)
+		got, err := opencodeSessionConfigContent("", "", "/routing.md")
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, `{"instructions":"mine.md"}`)
+	})
 }
 
-func TestBuildCmd_NonClaudeContextPrefix_ClaudeUnaffected(t *testing.T) {
-	restoreRouting := SetNonClaudeRoutingContentForTest(func() (string, error) { return "ROUTING", nil })
-	defer restoreRouting()
+func TestBuildCmd_RoutingDeliveryPerFamily(t *testing.T) {
+	restore := SetEnsureBuiltinRoutingForTest(func() (string, error) { return "/r/system-prompt.md", nil })
+	defer restore()
 
 	cfg := nonClaudeContextConfig()
-	task := &model.Task{Name: "t", Backend: "claude", Prompt: "go", Worktree: t.TempDir()}
+	cfg.Backends["agy"] = config.Backend{Command: "agy"}
+	cfg.Backends["pi"] = config.Backend{Command: "pi"}
+	build := func(t *testing.T, backend string) *exec.Cmd {
+		t.Helper()
+		task := &model.Task{Name: "t", Backend: backend, Prompt: "go", Worktree: t.TempDir()}
+		cmd, _, err := BuildCmd(task, cfg, false)
+		testutil.NoError(t, err)
+		return cmd
+	}
 
-	cmd, _, err := BuildCmd(task, cfg, false)
-	testutil.NoError(t, err)
-	testutil.Equal(t, cmd.Args[2], "claude -- 'go'")
-}
-
-func TestBuildCmd_NonClaudeContextPrefix_PiUnaffected(t *testing.T) {
-	restoreRouting := SetNonClaudeRoutingContentForTest(func() (string, error) { return "ROUTING", nil })
-	defer restoreRouting()
-
-	cfg := nonClaudeContextConfig()
-	task := &model.Task{Name: "t", Backend: "pi", Prompt: "go", Worktree: t.TempDir()}
-
-	cmd, _, err := BuildCmd(task, cfg, false)
-	testutil.NoError(t, err)
-	testutil.Equal(t, cmd.Args[2], "pi 'go'")
+	t.Run("pi gets --append-system-prompt", func(t *testing.T) {
+		testutil.Contains(t, build(t, "pi").Args[2], "--append-system-prompt '/r/system-prompt.md'")
+	})
+	t.Run("opencode gets instructions in inline config", func(t *testing.T) {
+		cmd := build(t, "opencode")
+		var content string
+		for _, e := range cmd.Env {
+			if v, ok := strings.CutPrefix(e, "OPENCODE_CONFIG_CONTENT="); ok {
+				content = v
+			}
+		}
+		testutil.Contains(t, content, `"instructions":["/r/system-prompt.md"]`)
+	})
+	t.Run("claude keeps --append-system-prompt-file", func(t *testing.T) {
+		testutil.Contains(t, build(t, "claude").Args[2], "--append-system-prompt-file '/r/system-prompt.md'")
+	})
+	for _, b := range []string{"codex", "agy"} {
+		t.Run(b+" has no routing flag", func(t *testing.T) {
+			if strings.Contains(build(t, b).Args[2], "system-prompt") {
+				t.Fatalf("%s must receive routing through its native file, not a flag", b)
+			}
+		})
+	}
 }

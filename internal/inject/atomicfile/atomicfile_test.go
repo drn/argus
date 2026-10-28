@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/testutil"
 )
@@ -139,4 +140,21 @@ func TestReadJSONObject(t *testing.T) {
 		testutil.NoError(t, err)
 		testutil.Equal(t, m["k"], any("v"))
 	})
+}
+
+func TestWriteIfDifferent(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "f")
+	testutil.NoError(t, WriteIfDifferent(p, []byte("a"), "x"))
+	old := time.Now().Add(-time.Hour).Truncate(time.Second)
+	testutil.NoError(t, os.Chtimes(p, old, old))
+
+	testutil.NoError(t, WriteIfDifferent(p, []byte("a"), "x"))
+	info, err := os.Stat(p)
+	testutil.NoError(t, err)
+	testutil.Equal(t, info.ModTime().Unix(), old.Unix())
+
+	testutil.NoError(t, WriteIfDifferent(p, []byte("b"), "x"))
+	got, err := os.ReadFile(p)
+	testutil.NoError(t, err)
+	testutil.Equal(t, string(got), "b")
 }

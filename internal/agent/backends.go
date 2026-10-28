@@ -19,6 +19,7 @@ import (
 	injectopencode "github.com/drn/argus/internal/inject/opencode"
 	"github.com/drn/argus/internal/mcplimits"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/routing"
 	"github.com/drn/argus/internal/skills"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -54,15 +55,21 @@ const (
 	SkillsGlobal
 )
 
-// RoutingDelivery is how a family receives Argus's builtin routing content.
+// RoutingDelivery is how a family receives Argus's builtin routing content
+// through a per-launch flag or config. Codex (generated AGENTS.md in its
+// Argus-only home, with SkillsCodexHome) and Antigravity (a global rule file
+// written by InjectGlobal) are delivered there, so they stay RoutingNone.
 type RoutingDelivery int
 
 const (
 	RoutingNone RoutingDelivery = iota
 	// RoutingSystemPromptFile appends `--append-system-prompt-file <path>`.
 	RoutingSystemPromptFile
-	// RoutingPromptPrefix prepends the content to the first prompt.
-	RoutingPromptPrefix
+	// RoutingAppendFlag appends `--append-system-prompt <path>` (Pi).
+	RoutingAppendFlag
+	// RoutingInlineConfig adds the materialized file to the child-only inline
+	// config's `instructions` array (opencode).
+	RoutingInlineConfig
 )
 
 // SandboxGrant is a HOME-relative SBPL write grant a family needs to persist
@@ -344,7 +351,16 @@ func injectAntigravityGlobal(port int, launching bool) error {
 			dir = d
 		}
 	}
-	return injectantigravity.InjectGlobal(port, dir)
+	var routingErr error
+	if content, err := routing.BuiltinContent(); err != nil {
+		routingErr = err
+	} else {
+		routingErr = injectantigravity.InjectRouting(content)
+	}
+	if err := injectantigravity.InjectGlobal(port, dir); err != nil {
+		return err
+	}
+	return routingErr
 }
 
 var families = []*Family{
@@ -377,22 +393,22 @@ var families = []*Family{
 		ResumeCmd: codexResumeCommand,
 		// Keep this list synced with the Codex CLI's own `/model` picker and
 		// the seed diligence profiles' archetype.*.models.codex entries.
-		KnownModels:     []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"},
-		ModelDelivery:   ModelFlag,
-		SkillDelivery:   SkillsCodexHome,
-		RoutingDelivery: RoutingPromptPrefix,
-		MCPFlag:         codexMCPFlag,
+		KnownModels:   []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"},
+		ModelDelivery: ModelFlag,
+		SkillDelivery: SkillsCodexHome,
+		MCPFlag:       codexMCPFlag,
 		SandboxGrants: []SandboxGrant{
 			{HomeRel: "/.codex", Comment: "Codex auth, session DB (state_5.sqlite), history, sessions."},
 			{HomeRel: "/.local/share/argus/codex-home", Comment: "Argus-only CODEX_HOME overlay carrying builtin skills."},
 		},
 	},
 	{
-		Spec:          mustSpec(backendkind.Pi),
-		ResumeFlag:    "--session",
-		Capture:       capturePi,
-		ModelDelivery: ModelFlag,
-		SkillDelivery: SkillsFlag,
+		Spec:            mustSpec(backendkind.Pi),
+		ResumeFlag:      "--session",
+		Capture:         capturePi,
+		ModelDelivery:   ModelFlag,
+		SkillDelivery:   SkillsFlag,
+		RoutingDelivery: RoutingAppendFlag,
 		// Pi's argv parser does not honor "--" as end-of-flags.
 		PromptPositional: true,
 		Prelaunch:        piPrelaunch,
@@ -407,7 +423,7 @@ var families = []*Family{
 		Capture:         captureOpencode,
 		ModelDelivery:   ModelInlineConfig,
 		SkillDelivery:   SkillsInlineConfig,
-		RoutingDelivery: RoutingPromptPrefix,
+		RoutingDelivery: RoutingInlineConfig,
 		LaunchFlag:      "--auto",
 		InjectGlobal:    injectOpencodeGlobal,
 		// State lives under ~/.local/share/opencode, already granted by the
@@ -420,7 +436,6 @@ var families = []*Family{
 		RecaptureEveryExit: true,
 		ModelDelivery:      ModelFlag,
 		SkillDelivery:      SkillsGlobal,
-		RoutingDelivery:    RoutingPromptPrefix,
 		// agy reads prompts only from -p/--print, -i/--prompt-interactive, or
 		// stdin; a positional or `--` prompt is a hard error.
 		DefaultPromptFlag: "--prompt-interactive",
@@ -440,11 +455,10 @@ var families = []*Family{
 		},
 	},
 	{
-		Spec:            mustSpec(backendkind.Cursor),
-		ResumeFlag:      "--resume",
-		Capture:         captureCursor,
-		RoutingDelivery: RoutingPromptPrefix,
-		ModelDelivery:   ModelFlag,
+		Spec:          mustSpec(backendkind.Cursor),
+		ResumeFlag:    "--resume",
+		Capture:       captureCursor,
+		ModelDelivery: ModelFlag,
 		// Skips the workspace-trust prompt in a fresh worktree.
 		LaunchFlag:      "--trust",
 		PermissionFlags: cursorPermissionFlags,

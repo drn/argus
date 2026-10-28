@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/drn/argus/internal/routing"
 	"github.com/drn/argus/internal/testutil"
 )
 
@@ -662,4 +663,123 @@ func TestArgusCodexHomeFor_EmptyMatchesDefault(t *testing.T) {
 	c, err := ArgusCodexHomeFor(filepath.Join(home, ".codex"))
 	testutil.NoError(t, err)
 	testutil.Equal(t, c, a)
+}
+
+func TestEnsureCodexSkills_GeneratesAgentsMd(t *testing.T) {
+	routingContent, err := routing.BuiltinContent()
+	testutil.NoError(t, err)
+
+	setup := func(t *testing.T) (home, src string) {
+		home = t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("CODEX_HOME", "")
+		src = filepath.Join(home, ".codex")
+		testutil.NoError(t, os.MkdirAll(src, 0o700))
+		return home, src
+	}
+
+	t.Run("routing only when the user has no AGENTS.md", func(t *testing.T) {
+		_, src := setup(t)
+		overlay, err := ensureCodexSkills("")
+		testutil.NoError(t, err)
+		got, err := os.ReadFile(filepath.Join(overlay, "AGENTS.md"))
+		testutil.NoError(t, err)
+		testutil.Equal(t, string(got), string(routingContent))
+		if _, err := os.Stat(filepath.Join(src, "AGENTS.md")); !os.IsNotExist(err) {
+			t.Fatal("the user's Codex home must never be written")
+		}
+	})
+
+	t.Run("user AGENTS.md first, never linked, source untouched", func(t *testing.T) {
+		_, src := setup(t)
+		testutil.NoError(t, os.WriteFile(filepath.Join(src, "AGENTS.md"), []byte("USER RULES\n"), 0o600))
+		overlay, err := ensureCodexSkills("")
+		testutil.NoError(t, err)
+		got, err := os.ReadFile(filepath.Join(overlay, "AGENTS.md"))
+		testutil.NoError(t, err)
+		testutil.Equal(t, string(got), "USER RULES\n\n---\n\n"+string(routingContent))
+		info, err := os.Lstat(filepath.Join(overlay, "AGENTS.md"))
+		testutil.NoError(t, err)
+		if info.Mode()&os.ModeSymlink != 0 {
+			t.Fatal("overlay AGENTS.md must be a generated file, not a link")
+		}
+		orig, err := os.ReadFile(filepath.Join(src, "AGENTS.md"))
+		testutil.NoError(t, err)
+		testutil.Equal(t, string(orig), "USER RULES\n")
+	})
+
+	t.Run("override file wins and is not linked", func(t *testing.T) {
+		_, src := setup(t)
+		testutil.NoError(t, os.WriteFile(filepath.Join(src, "AGENTS.md"), []byte("BASE"), 0o600))
+		testutil.NoError(t, os.WriteFile(filepath.Join(src, "AGENTS.override.md"), []byte("OVERRIDE"), 0o600))
+		overlay, err := ensureCodexSkills("")
+		testutil.NoError(t, err)
+		got, err := os.ReadFile(filepath.Join(overlay, "AGENTS.md"))
+		testutil.NoError(t, err)
+		testutil.Equal(t, string(got), "OVERRIDE\n\n---\n\n"+string(routingContent))
+		if _, err := os.Lstat(filepath.Join(overlay, "AGENTS.override.md")); !os.IsNotExist(err) {
+			t.Fatal("AGENTS.override.md must not be linked into the overlay")
+		}
+	})
+
+	t.Run("stale links from an older overlay are replaced", func(t *testing.T) {
+		_, src := setup(t)
+		testutil.NoError(t, os.WriteFile(filepath.Join(src, "AGENTS.md"), []byte("BASE"), 0o600))
+		testutil.NoError(t, os.WriteFile(filepath.Join(src, "AGENTS.override.md"), []byte("OVERRIDE"), 0o600))
+		overlay, err := ArgusCodexHomeFor("")
+		testutil.NoError(t, err)
+		testutil.NoError(t, os.MkdirAll(overlay, 0o700))
+		testutil.NoError(t, os.Symlink(filepath.Join(src, "AGENTS.md"), filepath.Join(overlay, "AGENTS.md")))
+		testutil.NoError(t, os.Symlink(filepath.Join(src, "AGENTS.override.md"), filepath.Join(overlay, "AGENTS.override.md")))
+		_, err = ensureCodexSkills("")
+		testutil.NoError(t, err)
+		if _, err := os.Lstat(filepath.Join(overlay, "AGENTS.override.md")); !os.IsNotExist(err) {
+			t.Fatal("stale override link must be removed")
+		}
+		orig, err := os.ReadFile(filepath.Join(src, "AGENTS.md"))
+		testutil.NoError(t, err)
+		testutil.Equal(t, string(orig), "BASE")
+	})
+
+	t.Run("blank user AGENTS.md contributes nothing", func(t *testing.T) {
+		_, src := setup(t)
+		testutil.NoError(t, os.WriteFile(filepath.Join(src, "AGENTS.md"), []byte("  \n"), 0o600))
+		overlay, err := ensureCodexSkills("")
+		testutil.NoError(t, err)
+		got, err := os.ReadFile(filepath.Join(overlay, "AGENTS.md"))
+		testutil.NoError(t, err)
+		testutil.Equal(t, string(got), string(routingContent))
+	})
+
+	t.Run("unreadable user AGENTS.md still yields the overlay", func(t *testing.T) {
+		_, src := setup(t)
+		testutil.NoError(t, os.MkdirAll(filepath.Join(src, "AGENTS.md"), 0o700))
+		testutil.NoError(t, os.WriteFile(filepath.Join(src, "config.toml"), []byte("c"), 0o600))
+		overlay, err := ensureCodexSkills("")
+		testutil.NoError(t, err)
+		linked, err := os.Readlink(filepath.Join(overlay, "config.toml"))
+		testutil.NoError(t, err)
+		testutil.Equal(t, linked, filepath.Join(src, "config.toml"))
+		entries, err := os.ReadDir(filepath.Join(overlay, "skills"))
+		testutil.NoError(t, err)
+		if len(entries) == 0 {
+			t.Fatal("overlay must keep its builtin skills")
+		}
+	})
+
+	t.Run("a real override file in the overlay is preserved aside", func(t *testing.T) {
+		_, _ = setup(t)
+		overlay, err := ArgusCodexHomeFor("")
+		testutil.NoError(t, err)
+		testutil.NoError(t, os.MkdirAll(overlay, 0o700))
+		testutil.NoError(t, os.WriteFile(filepath.Join(overlay, "AGENTS.override.md"), []byte("local"), 0o600))
+		_, err = ensureCodexSkills("")
+		testutil.NoError(t, err)
+		if _, err := os.Lstat(filepath.Join(overlay, "AGENTS.override.md")); !os.IsNotExist(err) {
+			t.Fatal("override must not remain in the overlay root")
+		}
+		matches, err := filepath.Glob(filepath.Join(overlay, ".argus-preserved-*", "AGENTS.override.md"))
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(matches), 1)
+	})
 }

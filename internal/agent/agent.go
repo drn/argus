@@ -926,36 +926,29 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		}
 	}
 
-	// OpenCode's inline configuration is the single child-scoped delivery
-	// channel for both its Argus skills path and its resolved model. Keep the
-	// merge independent of skill materialization: a skills failure must not
-	// silently discard a valid model override, and a model-only task must not
-	// need a skills workspace to launch.
-	opencodeConfigContent := ""
-	if isOpencode && (opencodeModel != "" || opencodeSkillsDir != "") {
-		var configErr error
-		opencodeConfigContent, configErr = opencodeSessionConfigContent(opencodeModel, opencodeSkillsDir)
-		if configErr != nil {
-			uxlog.Log("[opencode] inline config unavailable (continuing without model/skills overrides): %v", configErr)
-			opencodeConfigContent = ""
-		}
-	}
-
 	// Make argus's own builtin routing content (hera coordination, argus-task
-	// self-management) reach every session of a RoutingSystemPromptFile family
-	// by materializing it and appending --append-system-prompt-file — the
-	// injection-side counterpart to the skills block above
-	// (RoutingPromptPrefix families get it prepended to the prompt below).
+	// self-management) reach Claude, Pi and opencode sessions by materializing
+	// it and delivering the path through the family's own flag or config —
+	// the injection-side counterpart to the skills block above. Codex and agy
+	// are delivered elsewhere (overlay AGENTS.md / InjectGlobal).
 	// Unconditional across every session kind (coordinator, worker, freelance)
 	// and NOT gated on cfg.Hera.Enabled: the content is self-gating at read
 	// time (each section checks ARGUS_TASK_ID/$PWD sandbox residency), so
 	// injecting it into a non-argus spawn is inert. Materialization failure is
 	// logged and skipped rather than blocking launch.
-	if fam.RoutingDelivery == RoutingSystemPromptFile {
+	opencodeRoutingPath := ""
+	if fam.RoutingDelivery != RoutingNone {
 		if path, err := ensureBuiltinRoutingFn(); err != nil {
 			uxlog.Log("[routing] builtin routing content materialize failed (continuing without it): %v", err)
 		} else if path != "" {
-			cmdStr += " --append-system-prompt-file " + shellQuote(path)
+			switch fam.RoutingDelivery {
+			case RoutingSystemPromptFile:
+				cmdStr += " --append-system-prompt-file " + shellQuote(path)
+			case RoutingAppendFlag:
+				cmdStr += " --append-system-prompt " + shellQuote(path)
+			case RoutingInlineConfig:
+				opencodeRoutingPath = path
+			}
 		}
 	}
 
@@ -984,6 +977,22 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	if err != nil {
 		return nil, nil, err
 	}
+
+	// OpenCode's inline configuration is the single child-scoped delivery
+	// channel for both its Argus skills path and its resolved model. Keep the
+	// merge independent of skill materialization: a skills failure must not
+	// silently discard a valid model override, and a model-only task must not
+	// need a skills workspace to launch.
+	opencodeConfigContent := ""
+	if isOpencode && (opencodeModel != "" || opencodeSkillsDir != "" || opencodeRoutingPath != "") {
+		var configErr error
+		opencodeConfigContent, configErr = opencodeSessionConfigContent(opencodeModel, opencodeSkillsDir, opencodeRoutingPath)
+		if configErr != nil {
+			uxlog.Log("[opencode] inline config unavailable (continuing without model/skills/routing overrides): %v", configErr)
+			opencodeConfigContent = ""
+		}
+	}
+
 	var argusCodexHome string
 	if fam.SkillDelivery == SkillsCodexHome {
 		if root, err := ensureCodexSkillsFn(codexAccountHome); err != nil {
@@ -1014,13 +1023,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 			cmdStr += " --session-id " + shellQuote(task.SessionID)
 		}
 		if task.Prompt != "" {
-			// Prepend routing context for families with no native equivalent of
-			// Claude's --append-system-prompt-file. See
-			// openspec/changes/remove-codex-claude-md-injection.
 			prompt := task.Prompt
-			if fam.RoutingDelivery == RoutingPromptPrefix {
-				prompt = nonClaudeContextPrefix() + prompt
-			}
 			switch {
 			case fam.PromptFlagFor(backend) != "":
 				cmdStr += " " + fam.PromptFlagFor(backend) + " " + shellQuote(prompt)

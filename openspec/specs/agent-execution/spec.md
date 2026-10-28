@@ -660,33 +660,29 @@ When building a Codex backend command, the system SHALL prepare the isolated Cod
 - **WHEN** isolated-home preparation fails for a Codex command
 - **THEN** the error is logged and the Codex command is still returned without the isolated `CODEX_HOME` override
 
-### Requirement: Non-Claude backend context prefix
+### Requirement: Routing orientation is delivered natively, never as a prompt prefix
 
-For non-Claude backends, the system SHALL prepend a context block to the task's initial spawn prompt — the prompt actually delivered to the spawned process — containing only the builtin hera/routing orientation content Claude backends receive via `--append-system-prompt-file`.
+The system SHALL NOT prepend any Argus-generated context block (routing orientation, `CLAUDE.md` content, or otherwise) to a task's initial spawn prompt for any backend; the prompt delivered to the spawned process SHALL be exactly the task's prompt. Argus's builtin routing orientation SHALL instead reach each backend through that backend's own instruction mechanism: Claude via `--append-system-prompt-file`; Pi via `--append-system-prompt`; OpenCode via an `instructions` entry in its child-only inline config (preserving any user entries); Codex via a generated `AGENTS.md` in its Argus-only `CODEX_HOME` overlay containing the user's own global instructions (`AGENTS.override.md` taking precedence over `AGENTS.md`, neither linked nor modified) followed by the routing content; Antigravity via an Argus-owned always-on rule file under `~/.gemini/config/rules/`. A backend with no such mechanism (Cursor) receives no routing orientation. Delivery failures SHALL be logged and SHALL NOT block launch.
 
-Neither a **Codex** nor an **opencode** backend SHALL receive `CLAUDE.md` content (global or repo-local) in this block: both CLIs already have their own native instruction-file discovery — Codex reads a global `~/.codex/AGENTS.md` unconditionally plus repo-local `AGENTS.md` walking from cwd to the worktree root; opencode reads repo-local `CLAUDE.md` as an `AGENTS.md` fallback and the user's global `~/.claude/CLAUDE.md` as a documented compatibility fallback. Duplicating either source into the prompt prefix would be pure token cost with no discovery benefit neither CLI doesn't already provide itself.
+#### Scenario: Prompt is delivered unmodified
 
-This SHALL NOT apply to Claude-style backends, whose existing native `CLAUDE.md` discovery and `--add-dir`/`--append-system-prompt-file` injection are unaffected by this requirement, and SHALL NOT apply to the `pi` backend (out of scope).
+- **WHEN** a command is built for any backend with a non-empty prompt
+- **THEN** the prompt delivered to the spawned process contains only the original prompt text
 
-#### Scenario: Codex backend receives routing orientation only
+#### Scenario: Pi receives routing through a flag
 
-- **WHEN** a command is built for a Codex backend with a non-empty prompt
-- **THEN** the prompt delivered to the spawned process is prefixed with the routing orientation content ahead of the original prompt text, and the prefix does not contain CLAUDE.md content
+- **WHEN** a Pi command is built and the routing file materializes
+- **THEN** the command contains `--append-system-prompt` naming that file
 
-#### Scenario: opencode backend receives routing orientation only
+#### Scenario: OpenCode instructions preserve user entries
 
-- **WHEN** a command is built for an opencode backend with a non-empty prompt
-- **THEN** the prompt delivered to the spawned process is prefixed with the routing orientation content ahead of the original prompt text, and the prefix does not contain CLAUDE.md content
+- **WHEN** an OpenCode command is built and the inherited inline config already has an `instructions` array
+- **THEN** the routing file is appended to that array without removing or duplicating entries
 
-#### Scenario: Claude backend is unaffected
+#### Scenario: Codex overlay AGENTS.md folds in the user's instructions
 
-- **WHEN** a command is built for a Claude-style backend
-- **THEN** the prompt is not prefixed with this context block (Claude continues to rely on native `CLAUDE.md` discovery and the existing `--add-dir`/`--append-system-prompt-file` flags)
-
-#### Scenario: pi backend is unaffected
-
-- **WHEN** a command is built for the `pi` backend
-- **THEN** the prompt is not prefixed with this context block
+- **WHEN** the Argus-only Codex home is prepared and the user's Codex home has an `AGENTS.md` (or `AGENTS.override.md`)
+- **THEN** the overlay's `AGENTS.md` is a generated file holding the user's content followed by the routing content, the user's files are unchanged, and no `AGENTS.override.md` link exists in the overlay
 
 ### Requirement: Pi and OpenCode discover Argus skills only in child sessions
 

@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/drn/argus/internal/routing"
 	"github.com/drn/argus/internal/skills"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -14,8 +13,7 @@ import (
 // ensureCodexSkillsFn prepares an Argus-only Codex home containing the
 // embedded skills and links to the user's Codex state. A package var (rather
 // than a direct skills.EnsureCodexSkills call) so tests can stub it —
-// mirrors ensureBuiltinRoutingFn (routing_prompt.go) and
-// nonClaudeRoutingContentFn below.
+// mirrors ensureBuiltinRoutingFn (routing_prompt.go).
 //
 // The real implementation is isTestBinary()-gated (see skills/builtin.go),
 // so it always returns ("", nil) under `go test`, meaning BuildCmd's
@@ -85,7 +83,7 @@ func stripJSONCTrailingCommas(raw string) string {
 // command is handled by BuildCmd before this helper is called. A malformed
 // inherited value is never replaced: the caller logs the error and continues
 // without Argus's override, matching the fail-open skills behavior.
-func opencodeSessionConfigContent(model, skillsDir string) (string, error) {
+func opencodeSessionConfigContent(model, skillsDir, instructionsPath string) (string, error) {
 	raw := strings.TrimSpace(os.Getenv("OPENCODE_CONFIG_CONTENT"))
 	config := make(map[string]any)
 	if raw != "" {
@@ -109,33 +107,8 @@ func opencodeSessionConfigContent(model, skillsDir string) (string, error) {
 		}
 	}
 
-	if skillsDir != "" {
-		existing, ok := config["skills"]
-		if !ok || existing == nil {
-			config["skills"] = []string{skillsDir}
-			changed = true
-		} else {
-			arr, ok := existing.([]any)
-			if !ok {
-				// A user-owned config with an incompatible skills shape is not
-				// Argus's to replace. Preserve it and still deliver the model;
-				// the warning is the only signal that skills were skipped.
-				uxlog.Log("[opencode] OPENCODE_CONFIG_CONTENT skills is %T, not an array; preserving it and skipping Argus skills", existing)
-			} else {
-				found := false
-				for _, item := range arr {
-					if item == skillsDir {
-						found = true
-						break
-					}
-				}
-				if !found {
-					config["skills"] = append(arr, skillsDir)
-					changed = true
-				}
-			}
-		}
-	}
+	mergeStringArray(config, "skills", skillsDir, &changed)
+	mergeStringArray(config, "instructions", instructionsPath, &changed)
 
 	if !changed {
 		return raw, nil
@@ -155,69 +128,30 @@ func SetEnsureCodexSkillsForTest(fn func(source string) (string, error)) func() 
 	return func() { ensureCodexSkillsFn = old }
 }
 
-// nonClaudeRoutingContentFn returns argus's builtin hera/routing orientation
-// content for prepending into a non-Claude backend's prompt — the same
-// content Claude receives via --append-system-prompt-file. A package var so
-// tests can stub it — mirrors ensureBuiltinRoutingFn.
-var nonClaudeRoutingContentFn = nonClaudeRoutingContent
-
-// SetNonClaudeRoutingContentForTest overrides the routing-content reader
-// nonClaudeContextPrefix calls. Returns a restore func.
-func SetNonClaudeRoutingContentForTest(fn func() (string, error)) func() {
-	old := nonClaudeRoutingContentFn
-	nonClaudeRoutingContentFn = fn
-	return func() { nonClaudeRoutingContentFn = old }
-}
-
-// nonClaudeRoutingContent returns the raw builtin routing prose.
-// isTestBinary()-gated to return ("", nil) under `go test`: routing.BuiltinContent
-// itself carries no such gate (it's the raw content reader
-// routing.EnsureBuiltinRouting's materialize step calls, safe for that
-// caller since EnsureBuiltinRouting gates the whole operation), so without
-// gating here the dozens of exact-command-string BuildCmd tests for
-// Codex/opencode would break on real embedded routing prose.
-func nonClaudeRoutingContent() (string, error) {
-	if isTestBinary() {
-		return "", nil
+// mergeStringArray adds value to config[key] (an array of strings) without
+// dropping user entries. A user-owned value with an incompatible shape is not
+// Argus's to replace: it is preserved and the warning is the only signal that
+// the Argus entry was skipped.
+func mergeStringArray(config map[string]any, key, value string, changed *bool) {
+	if value == "" {
+		return
 	}
-	return nonClaudeRoutingContentReal()
-}
-
-// nonClaudeRoutingContentReal is the untested-for-isTestBinary core of
-// nonClaudeRoutingContent, split out so tests can exercise the real embedded-
-// content read directly (nonClaudeRoutingContent always short-circuits under
-// `go test`).
-func nonClaudeRoutingContentReal() (string, error) {
-	content, err := routing.BuiltinContent()
-	if err != nil {
-		return "", err
+	existing, ok := config[key]
+	if !ok || existing == nil {
+		config[key] = []string{value}
+		*changed = true
+		return
 	}
-	return string(content), nil
-}
-
-// nonClaudeContextPrefix builds the prompt-prefix block for a
-// RoutingPromptPrefix family (Codex, opencode, antigravity): routing
-// orientation only. None of them receive CLAUDE.md content — each has native
-// instruction-file discovery (Codex: ~/.codex/AGENTS.md plus repo AGENTS.md;
-// opencode: repo CLAUDE.md as an AGENTS.md fallback; agy: AGENTS.md /
-// GEMINI.md walking up to the repo root) — so prepending CLAUDE.md here would
-// be duplication. See openspec/changes/remove-codex-claude-md-injection.
-// Returns "" when no source produced content. A source read failure is logged
-// and skipped — never blocks command construction, mirroring the Claude-side
-// --add-dir/--append-system-prompt-file failure handling.
-func nonClaudeContextPrefix() string {
-	var sections []string
-
-	if content, err := nonClaudeRoutingContentFn(); err != nil {
-		uxlog.Log("[context-prefix] read routing content failed (continuing without it): %v", err)
-	} else if content != "" {
-		sections = append(sections, content)
+	arr, ok := existing.([]any)
+	if !ok {
+		uxlog.Log("[opencode] OPENCODE_CONFIG_CONTENT %s is %T, not an array; preserving it and skipping the Argus entry", key, existing)
+		return
 	}
-
-	if len(sections) == 0 {
-		return ""
+	for _, item := range arr {
+		if item == value {
+			return
+		}
 	}
-	prefix := strings.Join(sections, "\n\n---\n\n") + "\n\n---\n\n"
-	uxlog.Log("[context-prefix] assembled %d section(s), %d bytes", len(sections), len(prefix))
-	return prefix
+	config[key] = append(arr, value)
+	*changed = true
 }

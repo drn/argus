@@ -41,7 +41,7 @@ with `HOME=<scratch dir>` and inspect what the CLI creates. Record:
 | Permission/approval flags | `--help` | `PermissionFlags`, `PermissionFlagTokens` |
 | Per-launch MCP config? | flag, env var, or only a global file | `MCPFlag` or `InjectGlobal` |
 | Skill discovery | per-launch flag, env, config dir, global manifest | `SkillDelivery` |
-| Instruction files it reads natively | docs (AGENTS.md? CLAUDE.md?) | `RoutingDelivery` |
+| Instruction files / flags it reads natively | docs (AGENTS.md? CLAUDE.md? an append-system-prompt flag? a config `instructions` list? a global rules dir?) — never prepend to the prompt | `RoutingDelivery` (flag/inline-config) or a family `InjectGlobal`/overlay (file-based) |
 | Env vars / config-dir override | `strings <binary> \| grep -E '^[A-Z_]+$'` | accounts, child-only config |
 | State dirs it writes under `$HOME` | scratch HOME after a run | `SandboxGrants` (+ `PrecreateSandboxGrants` when their parent isn't writable in the sandbox; `SandboxGrantsLaunchOnly` when other backends' agents must not write them) |
 | Slow startup work before the TUI? | | `Prelaunch`, `StartTimeout` |

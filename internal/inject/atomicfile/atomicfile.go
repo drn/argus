@@ -5,6 +5,7 @@
 package atomicfile
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -45,6 +46,15 @@ func Write(path string, data []byte, label string) error {
 		return fmt.Errorf("%s: rename: %w", label, err)
 	}
 	return nil
+}
+
+// WriteIfDifferent is Write that leaves the file untouched when it already
+// holds exactly data.
+func WriteIfDifferent(path string, data []byte, label string) error {
+	if current, err := os.ReadFile(path); err == nil && bytes.Equal(current, data) {
+		return nil
+	}
+	return Write(path, data, label)
 }
 
 // WriteJSON marshals v as two-space-indented JSON with a trailing newline and
