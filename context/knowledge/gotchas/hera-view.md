@@ -410,6 +410,8 @@ M6a scaffolds the native Hera view: a `HeraPage` (rail | coordinator pane | agen
 
 ## Coordinator board
 
+- **Route board wheel events by its drawn rectangle, without changing focus.** The board shares the details column with the inert roster, and the hidden plan has a zero rectangle; forwarding to that plan silently drops scrolling. Clear the board rectangle each page draw so hidden or too-short layouts cannot retain a stale mouse target, and cancel pending cursor follow on explicit scrolling.
+
 - **Lay out every wrapped header before computing board cursor-follow offsets, reserving the hint row and unread marker first.** Board text uses display-column widths (including grapheme-aware painting); body bold markers must be removed before word wrapping, and bullet continuations consume their own hanging-indent width.
 
 - **Keep accordion expansion as a single item id, independent of cursor movement.** Preserve that id across refreshes only while it remains in the open-item snapshot; clear it when removed so a later reappearance cannot silently reopen it.

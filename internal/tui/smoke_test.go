@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
+	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/skew"
@@ -22,8 +24,122 @@ import (
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/drn/argus/internal/uxlog"
 	"github.com/gdamore/tcell/v2"
+	"github.com/mattn/go-runewidth"
 	"github.com/rivo/tview"
 )
+
+func TestSmoke_HeraBoardWheelScrollTallItem(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	d := testDB(t)
+	orch, err := d.CreateHeraOrchestrator("board-scroll", "")
+	testutil.NoError(t, err)
+	role, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: orch.ID, Name: "coord", Kind: db.HeraKindCoordinator})
+	testutil.NoError(t, err)
+	var body strings.Builder
+	for n := range 80 {
+		fmt.Fprintf(&body, "body-line-%03d\n", n)
+	}
+	_, err = d.PostHeraBoardItem(role.ID, "fyi", "Tall item", body.String())
+	testutil.NoError(t, err)
+	p := hera.NewHeraPage(d)
+	p.Refresh()
+	testutil.Equal(t, p.SelectOrch(orch.ID), true)
+	p.Machine().SetRegion(hera.FocusAgent)
+	app, sim, _ := simApp(t)
+	processed := make(chan struct{}, 1)
+	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyF12 {
+			processed <- struct{}{}
+			return nil
+		}
+		return event
+	})
+	// A queued key is a FIFO barrier for mouse bursts; QueueUpdate alone can
+	// overtake pending events when the race/coverage suite loads the machine.
+	syncEvents := func() {
+		app.QueueEvent(tcell.NewEventKey(tcell.KeyF12, 0, 0))
+		select {
+		case <-processed:
+		case <-time.After(uiTimeout):
+			t.Fatal("board events did not drain")
+		}
+	}
+	sim.SetSize(180, 30)
+	app.SetRoot(p, true).SetFocus(p)
+	stop := runApp(t, app)
+	defer stop()
+	app.QueueEvent(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	syncEvents()
+	// Locate the actual drawn board, independent of roster height and pane split.
+	var boardX, boardY int
+	readText := func() string {
+		var text strings.Builder
+		readUI(t, app, func() {
+			sim.Show()
+			cells, w, h := sim.GetContents()
+			for y := range h {
+				var row strings.Builder
+				for x := range w {
+					if r := cells[y*w+x].Runes; len(r) > 0 {
+						row.WriteRune(r[0])
+					}
+				}
+				line := row.String()
+				if x := strings.Index(line, "Plan · Board"); x >= 0 {
+					boardX, boardY = runewidth.StringWidth(line[:x])+2, y+2
+				}
+				text.WriteString(line + "\n")
+			}
+		})
+		return text.String()
+	}
+	initial := readText()
+	testutil.Contains(t, initial, "body-line-000")
+	testutil.Equal(t, strings.Contains(initial, "body-line-079"), false)
+	testutil.Equal(t, boardY > 2, true)
+	wheel := func(button tcell.ButtonMask, count int, y int) {
+		for range count {
+			app.QueueEvent(tcell.NewEventMouse(boardX, y, button, 0))
+		}
+		syncEvents()
+	}
+	for _, focus := range []hera.Focus{hera.FocusRail, hera.FocusCoord, hera.FocusAgent} {
+		t.Run(fmt.Sprint(focus), func(t *testing.T) {
+			app.QueueUpdateDraw(func() { p.Machine().SetRegion(focus) })
+			wheel(tcell.WheelDown, 1, boardY)
+			after := readText()
+			testutil.Equal(t, strings.Contains(after, "body-line-000"), false)
+			testutil.Contains(t, after, "body-line-003")
+			wheel(tcell.WheelDown, 40, boardY)
+			bottom := readText()
+			testutil.Contains(t, bottom, "body-line-079")
+			wheel(tcell.WheelDown, 1, boardY)
+			testutil.Equal(t, readText(), bottom)
+			readUI(t, app, func() {
+				testutil.Equal(t, p.Machine().State(), focus)
+				testutil.Equal(t, app.GetFocus(), tview.Primitive(p))
+			})
+			wheel(tcell.WheelUp, 40, boardY)
+			testutil.Contains(t, readText(), "body-line-000")
+			wheel(tcell.WheelUp, 1, boardY)
+			top := readText()
+			wheel(tcell.WheelDown, 1, boardY-3) // roster above board
+			testutil.Equal(t, readText(), top)
+		})
+	}
+	app.QueueEvent(tcell.NewEventKey(tcell.KeyPgDn, 0, 0))
+	syncEvents()
+	testutil.Equal(t, strings.Contains(readText(), "body-line-000"), false)
+	app.QueueEvent(tcell.NewEventKey(tcell.KeyPgUp, 0, 0))
+	syncEvents()
+	testutil.Contains(t, readText(), "body-line-000")
+	app.QueueEvent(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	syncEvents()
+	testutil.Equal(t, strings.Contains(readText(), "body-line-000"), false)
+	app.QueueEvent(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	syncEvents()
+	testutil.Contains(t, readText(), "body-line-000")
+}
 
 // --- Test helpers for SimulationScreen-based integration tests ---
 //

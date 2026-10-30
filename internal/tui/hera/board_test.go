@@ -14,7 +14,9 @@ import (
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/keymap"
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 )
 
 func drawBoardRows(t *testing.T, b *boardView, width, height int) (tcell.SimulationScreen, []string) {
@@ -327,6 +329,101 @@ func TestBoardNavigationReadAndDismiss(t *testing.T) {
 	p.board.items = nil
 	p.handleBoardKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0), nil)
 	testutil.Nil(t, p.board.selected())
+}
+
+func TestBoardScrollClamp(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                 string
+		offset, height, want int
+		empty                bool
+	}{
+		{"above top", -3, 8, 0, false},
+		{"within body", 3, 8, 3, false},
+		{"below bottom", 100, 8, 16, false},
+		{"all content fits", 100, 30, 0, false},
+		{"empty after refresh", 100, 8, 0, true},
+		{"no content viewport", 100, 3, 0, false},
+		{"no interior", 100, 2, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &boardView{offset: tc.offset, expandedID: 1}
+			if !tc.empty {
+				b.items = []*db.HeraBoardItem{{ID: 1, Kind: "fyi", Subject: "S", Body: strings.Repeat("body\n", 20)}}
+			}
+			drawBoardRows(t, b, 60, tc.height)
+			testutil.Equal(t, b.offset, tc.want)
+		})
+	}
+}
+
+func TestBoardMouseBoundsAndCursorFollow(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		x, y     int
+		action   tview.MouseAction
+		want     int
+		consumed bool
+	}{
+		{"down", 5, 6, tview.MouseScrollDown, 8, true},
+		{"up", 5, 6, tview.MouseScrollUp, 2, true},
+		{"left", 1, 6, tview.MouseScrollDown, 5, false},
+		{"right", 62, 6, tview.MouseScrollDown, 5, false},
+		{"above", 5, 3, tview.MouseScrollDown, 5, false},
+		{"below", 5, 14, tview.MouseScrollDown, 5, false},
+		{"click", 5, 6, tview.MouseLeftClick, 5, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &boardView{offset: 5, followCursor: true, rect: widget.InnerRect{X: 2, Y: 4, W: 60, H: 10}}
+			testutil.Equal(t, b.handleMouse(tc.action, tcell.NewEventMouse(tc.x, tc.y, 0, 0)), tc.consumed)
+			testutil.Equal(t, b.offset, tc.want)
+			testutil.Equal(t, b.followCursor, !tc.consumed)
+		})
+	}
+}
+
+func TestBoardMouseThenSelection(t *testing.T) {
+	p := NewHeraPage(nil)
+	p.board.items = []*db.HeraBoardItem{
+		{ID: 1, Kind: "fyi", Subject: "First", Body: strings.Repeat("body\n", 40)},
+		{ID: 2, Kind: "fyi", Subject: "Second"},
+	}
+	p.board.expandedID = 1
+	drawBoardRows(t, p.board, 60, 10)
+	p.board.handleMouse(tview.MouseScrollDown, tcell.NewEventMouse(3, 3, 0, 0))
+	drawBoardRows(t, p.board, 60, 10)
+	testutil.Equal(t, p.board.offset, 3)
+	p.handleBoardKey(tcell.NewEventKey(tcell.KeyDown, 0, 0), nil)
+	_, rows := drawBoardRows(t, p.board, 60, 10)
+	testutil.Contains(t, strings.Join(rows, "\n"), "Second")
+	testutil.Equal(t, p.board.expandedID, int64(1))
+	p.handleBoardKey(tcell.NewEventKey(tcell.KeyUp, 0, 0), nil)
+	_, rows = drawBoardRows(t, p.board, 60, 10)
+	testutil.Contains(t, rows[0], "First")
+	testutil.Equal(t, p.board.offset, 0)
+}
+
+func TestBoardMouseBoundsClearedWhenHidden(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "board")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+	p := NewHeraPage(d)
+	p.Refresh()
+	testutil.Equal(t, p.SelectOrch(orch), true)
+	p.showBoard = true
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	t.Cleanup(sim.Fini)
+	sim.SetSize(180, 30)
+	p.SetRect(0, 0, 180, 30)
+	p.Draw(sim)
+	testutil.Equal(t, p.board.rect.H > 0, true)
+	prior := p.board.rect
+	p.SetRect(0, 0, 180, 2)
+	p.Draw(sim)
+	testutil.Equal(t, p.board.rect, widget.InnerRect{})
+	testutil.Equal(t, p.board.handleMouse(tview.MouseScrollDown, tcell.NewEventMouse(prior.X+1, prior.Y+1, 0, 0)), false)
 }
 
 func TestBoardHintRendering(t *testing.T) {
