@@ -830,6 +830,8 @@ func (p *HeraPage) InvalidateChangeGate() { p.fpKnown = false }
 // full bounding rect (DrawBorderedPanel / FillArea) so no stale cells survive —
 // per the CLAUDE.md UX-rendering rules (no Sync; full-rect coverage instead).
 func (p *HeraPage) Draw(screen tcell.Screen) {
+	// Only a board painted in this frame may receive mouse events.
+	p.board.rect = widget.InnerRect{}
 	p.DrawForSubclass(screen, p)
 	x, y, w, h := p.GetInnerRect()
 	if w <= 0 || h <= 0 {
@@ -1543,10 +1545,11 @@ func (p *HeraPage) MouseHandler() func(action tview.MouseAction, event *tcell.Ev
 				}
 			case FocusAgent:
 				if p.detailsMode {
-					// Coordinator: the plan graph (bottom of the stacked region) is
-					// the interactive surface; it ignores clicks outside its own rect,
-					// so the roster area above it is inert.
-					if !p.showBoard {
+					// Coordinator: only the board or plan at the bottom of the
+					// details stack receives scrolling; the roster above is inert.
+					if p.showBoard {
+						consumed = p.board.handleMouse(action, event)
+					} else {
 						consumed, _ = p.plan.MouseHandler()(action, event, setFocus)
 					}
 				} else {

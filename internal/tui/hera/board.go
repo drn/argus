@@ -25,6 +25,7 @@ type boardView struct {
 	offset       int
 	expandedID   int64
 	followCursor bool
+	rect         widget.InnerRect
 }
 
 func newBoardView() *boardView { return &boardView{} }
@@ -226,12 +227,14 @@ func (l boardLine) draw(screen tcell.Screen, x, y, width int, focused bool) {
 }
 
 func (b *boardView) draw(screen tcell.Screen, x, y, w, h int, title string, focused bool, keys *keymap.Keymap) {
+	b.rect = widget.InnerRect{X: x, Y: y, W: w, H: h}
 	border := theme.StyleBorder
 	if focused {
 		border = theme.StyleFocusedBorder
 	}
 	inner := widget.DrawBorderedPanel(screen, x, y, w, h, title, border)
 	if inner.W <= 0 || inner.H <= 0 {
+		b.offset = 0
 		return
 	}
 	// Reserve the footer before layout and scrolling, including empty boards.
@@ -239,6 +242,7 @@ func (b *boardView) draw(screen tcell.Screen, x, y, w, h int, title string, focu
 	tview.Print(screen, tview.Escape(hint), inner.X, inner.Y+inner.H-1, inner.W, tview.AlignLeft, theme.ColorDimmed)
 	inner.H--
 	if inner.H == 0 {
+		b.offset = 0
 		return
 	}
 	var lines []boardLine
@@ -288,6 +292,7 @@ func (b *boardView) draw(screen tcell.Screen, x, y, w, h int, title string, focu
 		}
 	}
 	if len(lines) == 0 {
+		b.offset = 0
 		widget.DrawText(screen, inner.X, inner.Y, inner.W, "No open board items", theme.StyleDimmed)
 		return
 	}
@@ -304,6 +309,25 @@ func (b *boardView) draw(screen tcell.Screen, x, y, w, h int, title string, focu
 	for n := b.offset; n < len(lines) && n-b.offset < inner.H; n++ {
 		lines[n].draw(screen, inner.X, inner.Y+n-b.offset, inner.W, focused)
 	}
+}
+
+func (b *boardView) handleMouse(action tview.MouseAction, event *tcell.EventMouse) bool {
+	x, y := event.Position()
+	if x < b.rect.X || x >= b.rect.X+b.rect.W || y < b.rect.Y || y >= b.rect.Y+b.rect.H {
+		return false
+	}
+	switch action {
+	case tview.MouseScrollDown:
+		b.offset += 3
+	case tview.MouseScrollUp:
+		b.offset -= 3
+	default:
+		return false
+	}
+	// Draw clamps against freshly wrapped content. Explicit scrolling must not
+	// snap back to a header merely because cursor follow was pending.
+	b.followCursor = false
+	return true
 }
 
 func (p *HeraPage) handleBoardKey(event *tcell.EventKey, setFocus func(tview.Primitive)) {
