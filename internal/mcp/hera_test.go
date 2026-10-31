@@ -2257,3 +2257,50 @@ func TestHeraPromptParams_MissionOnlyContract(t *testing.T) {
 		})
 	}
 }
+
+// TestHera_SpawnWorker_ReportsBackendSource asserts the spawn result names the
+// worker's resolved backend and whether the coordinator forced it (explicit)
+// or left it to [backend_routing] (routed). The wrapped spawner stands in for
+// CreateAndStart's resolution by stamping "codex" when no backend was given.
+func TestHera_SpawnWorker_ReportsBackendSource(t *testing.T) {
+	cases := []struct {
+		name, args, want string
+	}{
+		{"routed", `"role_name": "routed"`, "- **backend**: codex (routed)"},
+		{"explicit", `"role_name": "explicit", "backend": "claude"`, "- **backend**: claude (explicit override)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, d := testHeraServer(t)
+			coord := seedCoordinator(t, s, d, "myorch", "/wt/coord")
+			base := fakeHeraSpawn(d)
+			s.SetHeraService(s.heraSvc, d, func(in HeraSpawnInput) (*HeraSpawnResult, error) {
+				if in.Backend == "" {
+					in.Backend = "codex"
+				}
+				return base(in)
+			})
+
+			resp := doRequest(t, s, "tools/call", ToolCallParams{
+				Name:      "hera_spawn_worker",
+				Arguments: json.RawMessage(fmt.Sprintf(`{"cwd": %q, "prompt": "do a thing", %s}`, coord.Worktree, tc.args)),
+			})
+			testutil.NoError(t, respErr(resp))
+			cr := callResult(t, resp)
+			testutil.Equal(t, cr.IsError, false)
+			testutil.Contains(t, cr.Content[0].Text, tc.want)
+		})
+	}
+}
+
+// TestHera_SpawnWorker_SchemaSteersToRouting guards the guidance that keeps
+// coordinators from forcing a backend by habit: the backend description must
+// tell them to omit it, and the retired worker-fallback wording must stay gone.
+func TestHera_SpawnWorker_SchemaSteersToRouting(t *testing.T) {
+	props := heraToolSchema(t, "hera_spawn_worker")["properties"].(map[string]interface{})
+	backend := props["backend"].(map[string]interface{})["description"].(string)
+	testutil.Contains(t, backend, "Omit")
+	testutil.Contains(t, backend, "[backend_routing]")
+	model := props["model"].(map[string]interface{})["description"].(string)
+	testutil.Contains(t, model, "archetype")
+}
