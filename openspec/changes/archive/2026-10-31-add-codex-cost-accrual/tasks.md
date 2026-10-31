@@ -39,4 +39,4 @@
 - [x] 7.1 Add gotchas to `context/knowledge/gotchas/misc.md`, or a cost section: cwd-not-session-id discovery, cached ⊂ input and reasoning ⊂ output, de-dupe on identical totals, cursor and accrual single transaction, binding-window attribution, existing `rates.toml` never overwritten (manual seed step); update the index row
 - [x] 7.2 Update the README Reference section if it documents cost sources or `rates.toml`
 - [ ] 7.3 `make pre-pr` green
-- [ ] 7.4 Archive the change (`openspec archive add-codex-cost-accrual`, or a manual merge-and-move) in the same PR
+- [x] 7.4 Archive the change (`openspec archive add-codex-cost-accrual`, or a manual merge-and-move) in the same PR
