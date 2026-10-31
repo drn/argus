@@ -30,100 +30,11 @@ var (
 // capped tier is at/over threshold with no uncapped tier in the list —
 // callers fall back to their own existing single-default-backend precedence.
 func ResolveBackend(cfg config.Config, accounts ...string) string {
-	account := cfg.ResolveAccount("", "")
+	account := ""
 	if len(accounts) > 0 {
 		account = accounts[0]
 	}
-	switch cfg.BackendRouting.Strategy {
-	case config.StrategyHeadroom:
-		return resolveHeadroom(cfg, account)
-	case "", config.StrategyOrdered:
-	default:
-		warnUnknownStrategy(cfg.BackendRouting.Strategy)
-	}
-	for _, tier := range cfg.BackendRouting.Tiers {
-		if _, ok := cfg.Backends[tier.Backend]; !ok {
-			continue
-		}
-		if tierAvailable(tier, account) {
-			return tier.Backend
-		}
-	}
-	return ""
-}
-
-func tierAvailable(tier config.BackendTier, accounts ...string) bool {
-	switch tier.Probe {
-	case config.ProbeNone:
-		return true
-	case config.ProbeClaudeUsage:
-		return underThreshold(claudeUsageForAccount(accounts), tier.ThresholdPct)
-	case config.ProbeCodexUsage:
-		return underThreshold(codexCachedPct, tier.ThresholdPct)
-	default:
-		// Unknown probe kind: never available, but not an error — resolution
-		// continues to the next tier (backend-tier-routing spec).
-		return false
-	}
-}
-
-// underThreshold reports whether a capped tier is available: below its
-// threshold, or fail-open when the cached reading is missing/stale.
-func underThreshold(cached func() (float64, bool), thresholdPct int) bool {
-	pct, ok := cached()
-	if !ok {
-		return true
-	}
-	return pct < float64(thresholdPct)
-}
-
-// resolveHeadroom picks, among valid capped tiers with a fresh reading below
-// threshold, the one with the largest threshold−pct headroom (ties → list
-// order); failing that, the first tier with no usable reading (stale/unknown
-// capped tiers and none-probe tiers) in list order; failing that, "".
-func resolveHeadroom(cfg config.Config, accounts ...string) string {
-	var (
-		best        string
-		bestScore   float64
-		haveBest    bool
-		firstUnread string
-	)
-	for _, tier := range cfg.BackendRouting.Tiers {
-		if _, ok := cfg.Backends[tier.Backend]; !ok {
-			continue
-		}
-		var cached func() (float64, bool)
-		switch tier.Probe {
-		case config.ProbeNone:
-		case config.ProbeClaudeUsage:
-			cached = claudeUsageForAccount(accounts)
-		case config.ProbeCodexUsage:
-			cached = codexCachedPct
-		default:
-			continue
-		}
-		pct, known := 0.0, false
-		if cached != nil {
-			pct, known = cached()
-		}
-		if !known {
-			if firstUnread == "" {
-				firstUnread = tier.Backend
-			}
-			continue
-		}
-		score := float64(tier.ThresholdPct) - pct
-		if score <= 0 {
-			continue
-		}
-		if !haveBest || score > bestScore {
-			best, bestScore, haveBest = tier.Backend, score, true
-		}
-	}
-	if haveBest {
-		return best
-	}
-	return firstUnread
+	return ResolveChoice(cfg, "", account).Backend
 }
 
 func claudeUsageForAccount(accounts []string) func() (float64, bool) {

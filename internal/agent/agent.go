@@ -18,7 +18,6 @@ import (
 	"strings"
 
 	"github.com/drn/argus/internal/backendkind"
-	"github.com/drn/argus/internal/backendtier"
 	"github.com/drn/argus/internal/claudeenv"
 	"github.com/drn/argus/internal/claudesession"
 	"github.com/drn/argus/internal/config"
@@ -153,31 +152,11 @@ func IsTaskSandboxed(task *model.Task, cfg config.Config) bool {
 // every freshly created task. Returns "" only when nothing in the whole
 // chain (including cfg.Defaults.Backend) resolves to a name.
 func resolveDefaultBackendName(explicit, project string, cfg config.Config, accounts ...string) string {
-	name := ""
-
-	if project != "" {
-		if proj, ok := cfg.Projects[project]; ok && proj.Backend != "" {
-			name = proj.Backend
-		}
+	account := ""
+	if len(accounts) > 0 {
+		account = accounts[0]
 	}
-
-	if explicit != "" {
-		name = explicit
-	}
-
-	if name == "" {
-		account := cfg.ResolveAccount("", project)
-		if len(accounts) > 0 {
-			account = cfg.ResolveAccount(accounts[0], project)
-		}
-		name = backendtier.ResolveBackend(cfg, account)
-	}
-
-	if name == "" {
-		name = cfg.Defaults.Backend
-	}
-
-	return name
+	return resolveTaskChoice(explicit, project, cfg, account).Backend
 }
 
 // ResolveBackend returns the backend config for a task.

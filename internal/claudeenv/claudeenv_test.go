@@ -6,6 +6,13 @@ import (
 	"github.com/drn/argus/internal/testutil"
 )
 
+func TestIsAuthOverride(t *testing.T) {
+	for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"} {
+		t.Run(name, func(t *testing.T) { testutil.True(t, IsAuthOverride(name)) })
+	}
+	testutil.False(t, IsAuthOverride("CLAUDE_CONFIG_DIR"))
+}
+
 func TestParentSessionMarkers(t *testing.T) {
 	testutil.DeepEqual(t, ParentSessionMarkers, []string{
 		"CLAUDECODE",

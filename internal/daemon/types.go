@@ -56,10 +56,11 @@ type BootInfoResp struct {
 	// exactly "fresh enough to route on", never a raw presence check. Surfaced
 	// in the TUI status bar; *Pct is meaningless when the paired *Known is
 	// false and callers MUST NOT render it in that case.
-	ClaudeUsagePct   float64
-	ClaudeUsageKnown bool
-	CodexUsagePct    float64
-	CodexUsageKnown  bool
+	ClaudeUsagePct    float64
+	ClaudeUsageKnown  bool
+	ClaudeUsageWindow string
+	CodexUsagePct     float64
+	CodexUsageKnown   bool
 }
 
 // ProtocolVersion is the version of the session-server R/S protocol that the

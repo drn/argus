@@ -71,7 +71,8 @@ func (s *RPCService) BootInfo(_ *Empty, resp *BootInfoResp) error {
 	// probe. ClaudeUsageKnown/CodexUsageKnown already fold in staleness (see
 	// each package's cache validity rules), so a TUI or doctor consumer needs no
 	// separate freshness check of its own.
-	resp.ClaudeUsagePct, resp.ClaudeUsageKnown = usagebudget.CachedClaudePct()
+	reading, known := usagebudget.CachedReading()
+	resp.ClaudeUsagePct, resp.ClaudeUsageKnown, resp.ClaudeUsageWindow = reading.Percentage, known, reading.Window
 	resp.CodexUsagePct, resp.CodexUsageKnown = backendtier.CachedCodexPct()
 
 	// Relay the connected supervisor's identity. supClient is nil in in-process

@@ -15,7 +15,7 @@ func (d *DB) BackendTiers() ([]config.BackendTier, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	rows, err := d.conn.Query(`SELECT backend, probe, threshold_pct FROM backend_tiers ORDER BY position`)
+	rows, err := d.conn.Query(`SELECT backend, probe, threshold_pct, account FROM backend_tiers ORDER BY position`)
 	if err != nil {
 		return nil, fmt.Errorf("query backend_tiers: %w", err)
 	}
@@ -24,7 +24,7 @@ func (d *DB) BackendTiers() ([]config.BackendTier, error) {
 	var tiers []config.BackendTier
 	for rows.Next() {
 		var t config.BackendTier
-		if err := rows.Scan(&t.Backend, &t.Probe, &t.ThresholdPct); err != nil {
+		if err := rows.Scan(&t.Backend, &t.Probe, &t.ThresholdPct, &t.Account); err != nil {
 			continue
 		}
 		tiers = append(tiers, t)
@@ -52,8 +52,8 @@ func (d *DB) SetBackendTiers(tiers []config.BackendTier) error {
 		return fmt.Errorf("clear backend_tiers: %w", err)
 	}
 	for i, t := range tiers {
-		if _, err := tx.Exec(`INSERT INTO backend_tiers (position, backend, probe, threshold_pct) VALUES (?, ?, ?, ?)`,
-			i, t.Backend, t.Probe, t.ThresholdPct); err != nil {
+		if _, err := tx.Exec(`INSERT INTO backend_tiers (position, backend, probe, threshold_pct, account) VALUES (?, ?, ?, ?, ?)`,
+			i, t.Backend, t.Probe, t.ThresholdPct, t.Account); err != nil {
 			return fmt.Errorf("insert backend_tiers[%d]: %w", i, err)
 		}
 	}

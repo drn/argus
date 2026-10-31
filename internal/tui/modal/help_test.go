@@ -73,6 +73,7 @@ func TestHelpModal_Draw(t *testing.T) {
 	testutil.Contains(t, body, "collapse fanned group / drill out to parent plan")
 	testutil.Contains(t, body, "File Panel")
 	testutil.Contains(t, body, "Settings")
+	testutil.Contains(t, body, "cycle tier account")
 	testutil.Contains(t, body, "[esc / ?] close")
 	// Sample a few bindings to catch regressions in the section list.
 	testutil.Contains(t, body, "new task")

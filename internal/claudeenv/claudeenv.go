@@ -6,6 +6,11 @@ package claudeenv
 
 import "slices"
 
+// AuthOverrides take precedence over an account's stored login.
+var AuthOverrides = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}
+
+func IsAuthOverride(name string) bool { return slices.Contains(AuthOverrides, name) }
+
 // ParentSessionMarkers are the per-session runtime markers Claude Code
 // exports into every child process. They describe the PARENT session — its
 // identity, PID, entrypoint, messaging channel (including a token that must

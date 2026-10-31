@@ -315,6 +315,7 @@ The **Bridge** section provides **Enabled**, **Message delivery**, **Hera band**
 | `a`                   | Edit project's AppleEvents allowlist (on a project row)  |
 | `m`                   | Edit backend's default model (on a backend row)          |
 | `p`                   | Cycle probe kind (on a Backend Tiers row)                |
+| `A`                   | Cycle account (on a Backend Tiers row)                   |
 | `K` / `J`             | Move backend tier up / down (on a Backend Tiers row)     |
 | `t`                   | Toggle schedule enabled (on the Scheduled Tasks section) |
 | `r`                   | Run schedule now (on the Scheduled Tasks section)        |
@@ -596,7 +597,7 @@ acme-api = "work"
 acme-web = "work"
 ```
 
-An account needs at least one of `claude_config_dir` / `codex_home`. Paths must be absolute or start with `~`. The name `default` is reserved: it means each tool's usual dir (`~/.claude`, `~/.codex`). With nothing configured, every task runs on `default`, exactly as before, and the form shows no Account field. Accounts are set in `config.toml` only; there is no Settings editor yet. All keys are listed under [Config file → Accounts](#accounts-accounts-default_account-project_accounts).
+An account needs at least one of `claude_config_dir` / `codex_home`. Paths must be absolute or start with `~`. The name `default` is reserved: it means each tool's usual dir (`~/.claude`, `~/.codex`). With nothing configured, every task runs on `default`, exactly as before, and the form shows no Account field. Accounts are editable in Settings or `config.toml`. All keys are listed under [Config file → Accounts](#accounts-accounts-default_account-project_accounts).
 
 **Pin company projects to the work account.** List every work repo in `[project_accounts]`, so a task in that project uses the work account unless you pick another one. That keeps company code from running under a personal subscription by accident, and personal projects from being billed to work.
 
@@ -604,11 +605,11 @@ An account needs at least one of `claude_config_dir` / `codex_home`. Paths must 
 
 #### Which account a task uses
 
-- **Order:** the account you pick in the form, else the project's `project_accounts` entry, else `default_account`, else `default`. Picking `default` in the form really means `default`; it does not fall through to the project's default.
+- **Order:** the account you pick in the form, else the project's `project_accounts` entry, else the routed tier account, else `default_account`, else `default`. Picking `default` in the form really means `default`; it does not fall through to the project's default.
 - **Backend support:** a Claude backend needs an account with `claude_config_dir`, and a Codex backend needs one with `codex_home`. pi, opencode, antigravity, cursor, and custom commands run only on `default`. The forms list only the accounts that can run the selected backend. If you explicitly pick an account that can't run the backend, task creation fails before anything is created. If the account came from a project or global default, the task falls back to `default` and the switch is logged to `ux.log` under `[account]`.
 - **Fixed for the task's lifetime:** the account is saved on the task when it is created and never changes. Resume and restart use the saved account even if you later change the defaults. The transcript lives in the account's dir, so a running task can't switch accounts. To work under another account, create a new task and pick it; a fork always keeps the source task's account.
 - **Removed account:** if a task's account is removed from config, starting or resuming the task fails with an error naming the account. It never silently falls back to `default`.
-- **Inheritance:** hera workers, sub-coordinators, and freelancers use their coordinator's account. A coordinator on `default` keeps its workers on `default`. If the coordinator's account can't run a worker's backend (for example tier routing picks Codex but the account has no `codex_home`), the spawn fails with an error rather than running on a different login; add the missing dir or pin the worker's backend. A forked task keeps the source task's account. MCP `task_create` uses the calling task's account when the caller passes `caller_id` (or `cwd`), and accepts an explicit `account`.
+- **Inheritance:** Hera workers, sub-coordinators, and freelancers inherit a nonblank coordinator account, including an explicit `default`. A blank coordinator account permits routing. If an inherited account can't run a worker's backend (for example tier routing picks Codex but the account has no `codex_home`), the spawn fails rather than running on a different login; add the missing dir or pin the backend. Forks keep the source account. MCP `task_create` inherits the caller's account through `caller_id` or `cwd` and accepts an explicit `account`.
 
 #### Shared vs. separate
 
@@ -629,7 +630,7 @@ An account needs at least one of `claude_config_dir` / `codex_home`. Paths must 
 
 - TUI, web, and macOS new-task forms have an **Account** selector, preselected from the project or global default and labelled with the Claude sign-in (email / org) when known. It is hidden when only `default` applies. Skill autocomplete reads skills from the selected account.
 - REST: `POST /api/tasks` takes `account`, and task JSON includes it. `GET /api/accounts` lists accounts. See [Projects & backends](#projects--backends-full-crud).
-- Limits: the usage probes behind usage-budget and tier routing measure the `default` account only. Schedules use the project or global default. The TUI Hera spawn form ignores its Account field (spawns always use the coordinator's account). `hera_new_orchestrator` coordinators don't inherit the caller's account. A supervisor older than protocol v8 can't carry the account, so Argus refuses to start or restart a non-default-account task on it until the supervisor is restarted (`argus doctor` flags the skew).
+- Limits: Claude tier accounts have their own bridge/headless readings; named Codex usage remains unknown rather than borrowing the default account’s rollout. Schedules use the project or global default. The TUI Hera spawn form ignores its Account field (nonblank coordinator accounts are inherited; blank accounts permit routing). `hera_new_orchestrator` coordinators don't inherit the caller's account. A supervisor older than protocol v8 can't carry the account, so Argus refuses to start or restart a non-default-account task on it until the supervisor is restarted (`argus doctor` flags the skew).
 
 ### Sandbox
 
@@ -1069,26 +1070,33 @@ All four switches are in **Settings → Bridge** in local and remote TUI mode; `
 
 #### `[backend_routing]`
 
-An ordered list of backend "tiers" for **default task-backend selection** — generalizes `[hera.worker_budget]`'s hera-only, single-fallback usage steering into an arbitrary-length chain consulted by ordinary (non-hera) task creation. The resolver walks `tier` in order and picks the first tier that's uncapped, under its threshold, or unprobeable (fail-open); it's consulted only when a task has no explicit backend and its project has none configured either — it never overrides those. Also editable from Settings → **Backend Tiers** (`n` add, `d` remove, `K`/`J` reorder, `p` cycle probe kind, `e` edit threshold) when this table is absent from config.toml; **a non-empty table here is authoritative and renders that Settings category read-only**, same precedent as `[backends.<name>]`'s "(command is hardcoded)" case. No table (or an empty `tier` list) leaves backend resolution exactly as it was before this feature — a single `defaults.backend`.
+Backend/account tiers drive all task creation, including Hera workers. `ordered` picks the first available tier; `headroom` prefers the largest known `threshold_pct − usage`, then unknown tiers if no known tier is available. An explicit or project backend restricts routing to that backend while still allowing account selection. Account precedence is explicit (including nonblank inherited pins) → project_accounts → tier account → default_account → default. A blank parent account permits routing. Coordinators consider only Claude-capable tiers and retain the Claude fallback when none is available. Settings → **Backend Tiers** supports `n` add, `d` remove, `K`/`J` reorder, `p` probe, `A` account, and `e` threshold; config.toml-owned tiers remain read-only.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `strategy` | string | `"ordered"` | `ordered` picks the first available tier (above). `headroom` picks the tier with the most room under its threshold (`threshold_pct − usage`, ties → list order), preferring any tier with a known reading over tiers with no reading (unknown/stale probes and `none` tiers, taken in list order). An unrecognized value is logged and treated as `ordered`. config.toml-only, read even when the tiers come from Settings. |
 | `codex_pty_fallback_enabled` | bool | `false` | Allow the costed headless `codex` `/status` probe when no Codex rollout file has a usable reading. |
 
-Both usage probes run once at daemon startup and then every 30 minutes; the Claude probe runs in `~/.argus/usage-probe`. Codex readings use the weekly (10080-minute) window and stay valid until its reset.
+Usage probes run at daemon startup and every 30 minutes. Claude probes the default account and each distinct configured Claude tier account using its own CLAUDE_CONFIG_DIR, skipping accounts with fresh live bridge measurements. Routing and the TUI `cla` readout use the fuller valid five-hour/session or seven-day/week window; each expires independently at reset or after one hour without measurement. Failed probes fail open. Codex readings use the weekly (10080-minute) window and stay valid until its reset. Web/macOS tier controls and usage readouts are the named follow-up `web-macos-routing-settings-parity`.
 
 `[[backend_routing.tier]]` (repeatable, in resolution order):
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `backend` | string | — | Must name a key under `[backends]`; a tier naming an unknown backend is skipped, never a load error. |
+| `account` | string | empty | Optional named identity (e.g. `personal`); omitted uses existing account defaults. Invalid or backend-incompatible accounts are skipped with warnings. |
 | `probe` | string | — | One of `claude_usage`, `codex_usage`, or `none` (uncapped — e.g. a local `pi`/ollama backend). An unrecognized value is skipped, not an error. |
 | `threshold_pct` | int | `0` | Usage percentage at/above which this tier is treated as capped-out and resolution falls through to the next tier. Ignored for `none`. |
 
 ```toml
 [[backend_routing.tier]]
 backend = "claude"
+probe = "claude_usage"
+threshold_pct = 90
+
+[[backend_routing.tier]]
+backend = "claude"
+account = "personal"
 probe = "claude_usage"
 threshold_pct = 90
 
@@ -1112,7 +1120,7 @@ Named work / personal accounts for Claude Code and Codex. How resolution, first 
 | `[accounts.<name>] codex_home` | string | — | Absolute or `~`-prefixed path of the account's Codex home (`CODEX_HOME`, created `0700`). Required to run Codex backends. |
 | `[accounts.<name>] label` | string | `<name>` | Display label in the account selector. |
 | `[accounts.<name>] inherit` | array | `["CLAUDE.md","skills","commands","agents"]` | Entries symlinked from `~/.claude` into the Claude config dir. `settings.json` is copied once instead (add it here to symlink it). `.credentials*`, `.claude.json`, `projects`, `plugins` are never linked. An empty list links nothing. |
-| `default_account` | string | `""` | Account used when the task and its project name none. Empty = `default`. |
+| `default_account` | string | `""` | Account used when the task, project, and routed tier name none. Empty = `default`. |
 | `project_accounts` | table | `{}` | Top-level map of project name to default account, e.g. `[project_accounts] acme-api = "work"`. Recommended for every work repo. |
 
 #### `[projects.<name>]`

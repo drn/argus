@@ -6,12 +6,26 @@ import (
 
 	"github.com/drn/argus/internal/buildid"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/usagebudget"
 )
 
 // rpcFor builds an RPCService over the given daemon exactly as Serve does, so
 // BootInfo can be exercised directly without binding a socket.
 func rpcFor(d *Daemon) *RPCService {
 	return &RPCService{sessionCore: d.sessionCore, daemon: d}
+}
+
+func TestBootInfoRelaysBindingClaudeWindow(t *testing.T) {
+	d, _ := testDaemon(t)
+	restore := usagebudget.SetBridgeReader(func(string) (usagebudget.Reading, bool) {
+		return usagebudget.Reading{Percentage: 96, Window: "five_hour"}, true
+	})
+	defer restore()
+	var resp BootInfoResp
+	testutil.NoError(t, rpcFor(d).BootInfo(&Empty{}, &resp))
+	testutil.True(t, resp.ClaudeUsageKnown)
+	testutil.Equal(t, resp.ClaudeUsagePct, 96.0)
+	testutil.Equal(t, resp.ClaudeUsageWindow, "five_hour")
 }
 
 // TestBootInfoOwnVCS pins that the daemon reports its OWN captured VCS identity

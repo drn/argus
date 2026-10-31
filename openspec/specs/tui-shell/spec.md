@@ -374,14 +374,14 @@ The shell SHALL verify that a real controlling terminal is available before cons
 
 ### Requirement: Status bar surfaces cached usage-probe readings
 
-The status bar SHALL permanently render the daemon's cached Claude weekly-usage and Codex usage percentages alongside the default task-count summary (e.g. `cla 42% · cdx 76%`), regardless of whether anything currently needs operator attention. A reading that is absent (never probed) or stale (older than that probe's own staleness window) SHALL render as a literal `—`, visually distinct from a percentage, rather than a number that could be hours old and indistinguishable from a fresh one. The TUI SHALL poll the daemon for these readings on a fixed interval (`usageRecheckInterval`) no more frequent than the daemon's own probe cadence requires, reusing the daemon-connection source its periodic binary-skew recheck already holds.
+The status bar SHALL permanently render the daemon's cached Claude fuller-valid-session-or-week usage and Codex usage percentages alongside the default task-count summary (e.g. `cla 42%w · cdx 76%`), regardless of whether anything currently needs operator attention. A reading that is absent (never probed) or stale (older than that probe's own staleness window or past its reset) SHALL render as a literal `—`, visually distinct from a percentage, rather than a number that could be hours old and indistinguishable from a fresh one. The TUI SHALL poll the daemon for these readings on a fixed interval (`usageRecheckInterval`) no more frequent than the daemon's own probe cadence requires, reusing the daemon-connection source its periodic binary-skew recheck already holds.
 
 In `--remote` mode and the in-process-runner fallback (no daemon connection to poll), both sides SHALL permanently render as unknown (`—`) rather than erroring or blocking — there is no daemon-process-local cache to ask in either mode.
 
 #### Scenario: Fresh readings on both sides render as percentages
 
 - **WHEN** the daemon reports both the Claude and Codex usage readings as fresh
-- **THEN** the status bar renders both as percentages, e.g. `cla 42% · cdx 76%`
+- **THEN** the status bar renders both as percentages, e.g. `cla 42%w · cdx 76%`
 
 #### Scenario: A stale or never-probed reading renders as unknown, not a percentage
 
@@ -397,4 +397,18 @@ In `--remote` mode and the in-process-runner fallback (no daemon connection to p
 
 - **WHEN** the TUI is running in `--remote` mode or the in-process-runner fallback, with no local daemon connection to poll
 - **THEN** both sides of the readout permanently render `—`
+
+### Requirement: Claude readout reflects the binding quota window
+
+The TUI's existing cla usage readout SHALL show the fuller still-valid session or weekly percentage relayed from the daemon. Unknown/stale usage SHALL remain a literal dash. The binding window MAY have a terse suffix. Existing remote/fallback behavior SHALL remain unchanged; web/macOS readout parity SHALL remain the named follow-up web-macos-routing-settings-parity.
+
+#### Scenario: Session window binds
+
+- **WHEN** the daemon reports valid session usage 96% and weekly usage 75%
+- **THEN** the status bar's cla percentage is 96%
+
+#### Scenario: Expired session window
+
+- **WHEN** the session window expires while weekly usage remains valid
+- **THEN** the relayed percentage reflects weekly usage
 

@@ -1902,7 +1902,7 @@ func (a *App) reevaluateUsage() {
 		return
 	}
 	a.tapp.QueueUpdateDraw(func() {
-		a.statusbar.SetUsage(info.ClaudeUsagePct, info.ClaudeUsageKnown, info.CodexUsagePct, info.CodexUsageKnown)
+		a.statusbar.SetUsage(info.ClaudeUsagePct, info.ClaudeUsageKnown, info.CodexUsagePct, info.CodexUsageKnown, info.ClaudeUsageWindow)
 	})
 }
 

@@ -111,8 +111,9 @@ status, revive, and completion; the plan-DAG authoring/mutation tools live in th
     `role.ArgusProject`).
   - `branch` — base branch passed to argus task creation. **Defaults to the project default — see the
     base-branch gotcha in §6.**
-  - `backend` — normally defaults to the project default; usage-budget routing may supply its configured
-    worker fallback when enabled.
+  - `backend` — omit for ordinary workers so project/tier/default routing can select available capacity
+    and accounts. Pin Claude only for actual self-promotion, Claude-only connectors/MCP, or an in-session
+    Claude review panel.
   - `model` — optional valid per-worker model override, scoped to the worker's resolved backend (claude:
     opus/sonnet/haiku/fable; codex: e.g. gpt-6-sol; pi/opencode/antigravity/cursor: their configured ids). Leave it unset
     with `archetype=` so the profile picks the tier; otherwise the backend default applies.
@@ -396,13 +397,20 @@ When the work decomposes into multiple multi-session units with dependencies amo
 `hera-plan` skill** and author a plan-DAG — it carries the tools, gating, branch-stacking, naming, and
 a full worked seed→fan-out→fan-in example. The §4 decision triad tells you when that's the right tool.
 
+### Backend selection
+
+Omit `backend` for ordinary workers so budget routing can choose available capacity and accounts.
+Reserve `backend="claude"` for a worker that will self-promote to coordinator, needs a Claude-only
+connector/MCP, or will run an in-session Claude review panel. A possible future need for a sub-team
+is not a reason to pin every worker: author a `kind=subcoord` node when that need appears.
+
 ### Worker promotion: becoming a sub-coordinator
 
 > **Prefer the declarative form: a `kind=subcoord` plan node** (`hera_plan_node(kind="subcoord",
 > goal=...)`, see the `hera-plan` skill). It always materializes on a Claude-capable backend — with no
 > blockers on the gater's next tick, otherwise when its blockers finish. The runtime promotion below is
-> for when a worker discovers the need *mid-task*, and it **requires the worker to run on Claude**: spawn
-> it with `hera_spawn_worker(backend="claude")` (a `[backend_routing]`-picked Codex worker is rejected by
+> only for a worker specifically assigned to self-promote, and it **requires Claude**: spawn
+> that worker with `hera_spawn_worker(backend="claude")` (a `[backend_routing]`-picked Codex worker is rejected by
 > `hera_new_orchestrator`, since a non-Claude coordinator has no context/cost/recycle tracking).
 
 If a worker realizes mid-task it needs its own team (cross-repo work, real parallelism, a long sub-task):

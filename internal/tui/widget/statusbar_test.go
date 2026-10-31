@@ -10,6 +10,16 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
+func TestStatusBarUsageWindowSuffix(t *testing.T) {
+	for _, tc := range []struct{ window, want string }{{"five_hour", "cla 96%s"}, {"seven_day", "cla 96%w"}, {"", "cla 96%"}} {
+		t.Run(tc.window, func(t *testing.T) {
+			sb := NewStatusBar()
+			sb.SetUsage(96, true, 21, true, tc.window)
+			testutil.Contains(t, sb.UsageSummary(), tc.want)
+		})
+	}
+}
+
 func TestStatusBar_CountsEveryTaskStatus(t *testing.T) {
 	sb := NewStatusBar()
 	sb.SetTasks([]*model.Task{

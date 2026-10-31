@@ -27,14 +27,11 @@ func bridgeReading(account string) (Reading, bool) {
 	return read(account)
 }
 
-// CachedClaudePctForAccount never borrows the default probe for a named
-// account. The old hidden probe only measures Claude's default account.
+// CachedClaudePctForAccount reads only this account's bridge or probe cache.
 func CachedClaudePctForAccount(account string) (float64, bool) {
 	if reading, ok := bridgeReading(account); ok {
 		return reading.Percentage, true
 	}
-	if account != "" && account != "default" {
-		return 0, false
-	}
-	return CachedClaudePct()
+	reading, ok := snapshot(account)
+	return reading.Percentage, ok
 }
