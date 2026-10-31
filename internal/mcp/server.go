@@ -1577,6 +1577,10 @@ func (s *Server) taskCreateAccount(explicit, callerID, cwd string) (account stri
 		log.Printf("[mcp] task_create: caller not resolved, account not inherited: %v", err)
 		return "", false, nil
 	}
+	if caller.AccountRouted {
+		log.Printf("[mcp] task_create: caller %s was routed to %q; child routes too", caller.ID, caller.Account)
+		return "", false, nil
+	}
 	// A default-account caller is stored as ""; pin it so the child does not
 	// drift to the project/global default.
 	account = caller.Account

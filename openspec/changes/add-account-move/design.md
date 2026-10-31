@@ -28,7 +28,7 @@ Over `cfg.AccountNamesFor("claude")` minus the current account, pick the lowest 
 
 ### D4. Routed flag and inheritance
 
-`CreateAndStart` sets `tasks.account_routed` when the stored account came from the routed tier choice (no explicit or project account). `agent.InheritAccount(parent)` returns `""` for a routed parent (so the child routes) and `PinnedAccount(parent.Account)` otherwise. It is used by hera worker spawn (`resolveOrchestratorAccount`) and MCP `task_create`. A routed child that lands on an account is flagged routed in turn. Forks keep the source account (unchanged).
+`CreateAndStart` sets `tasks.account_routed` when the stored account came from the routed tier choice (no explicit or project account) and is nonblank; a routed blank account needs no flag because children inherit blank anyway. The two inheritance sites keep their existing rules and add one check each: hera `resolveOrchestratorAccount` returns `""` for a routed coordinator (else the stored account as-is, blank permitting routing), and MCP `taskCreateAccount` passes no account for a routed caller (else the stored account, blank pinned to `default`). A routed child that lands on an account is flagged routed in turn. Forks keep the source account (unchanged).
 
 ### D5. Safety rails
 

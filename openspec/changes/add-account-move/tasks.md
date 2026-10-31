@@ -1,12 +1,12 @@
 ## 1. Usage and persistence
 
-- [ ] 1.1 Tests first, then `usagebudget.CachedReadingForAccount` (bridge reading else probe cache, both windows)
-- [ ] 1.2 `tasks.account_routed` column (ALTER migration, scan/insert/update), `model.Task.AccountRouted`, targeted `db.SetTaskAccount(id, account, routed)`
+- [x] 1.1 Tests first, then `usagebudget.CachedReadingForAccount` (bridge reading else probe cache, both windows)
+- [x] 1.2 `tasks.account_routed` column (ALTER migration, scan/insert/update), `model.Task.AccountRouted`, targeted `db.SetTaskAccount(id, account, routed)`
 
 ## 2. Routed inheritance
 
-- [ ] 2.1 Tests first: `CreateAndStart` marks a task routed only when its account came from the tier choice
-- [ ] 2.2 `agent.InheritAccount`: routed parent → blank, else `PinnedAccount`; wire hera worker spawn and MCP `task_create`
+- [x] 2.1 Tests first: `CreateAndStart` marks a task routed only when its account came from the tier choice
+- [x] 2.2 Routed parent → blank account in hera `resolveOrchestratorAccount` and MCP `taskCreateAccount`; other inheritance unchanged
 
 ## 3. Move operation
 

@@ -2791,3 +2791,70 @@ func TestDB_TaskModelRoundTrip(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, got2.Model, "opus")
 }
+
+func TestDB_AccountRoutedRoundTrips(t *testing.T) {
+	d := testDB(t)
+
+	task := &model.Task{Name: "routed task", Account: "personal", AccountRouted: true}
+	testutil.NoError(t, d.Add(task))
+	got, err := d.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Account, "personal")
+	testutil.Equal(t, got.AccountRouted, true)
+
+	got.AccountRouted = false
+	testutil.NoError(t, d.Update(got))
+	got2, err := d.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got2.AccountRouted, false)
+
+	all, err := d.Tasks()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(all), 1)
+	testutil.Equal(t, all[0].AccountRouted, false)
+
+	plain := &model.Task{Name: "plain task"}
+	testutil.NoError(t, d.Add(plain))
+	got3, err := d.Get(plain.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got3.AccountRouted, false)
+}
+
+func TestCreateTables_AddsAccountRoutedToExistingDB(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.Add(&model.Task{Name: "pre-existing", Account: "personal"}))
+
+	// Recreate the pre-change shape: tasks without account_routed.
+	_, err := d.conn.Exec(`ALTER TABLE tasks DROP COLUMN account_routed`)
+	testutil.NoError(t, err)
+
+	testutil.NoError(t, d.createTables())
+
+	all, err := d.Tasks()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(all), 1)
+	testutil.Equal(t, all[0].Account, "personal")
+	testutil.Equal(t, all[0].AccountRouted, false)
+}
+
+func TestDB_SetTaskAccount_OnlyTouchesAccountColumns(t *testing.T) {
+	d := testDB(t)
+	task := &model.Task{Name: "acct", Account: "", AccountRouted: true, Status: model.StatusInProgress}
+	testutil.NoError(t, d.Add(task))
+
+	// A concurrent edit lands between a mover's read and its write.
+	other, _ := d.Get(task.ID)
+	other.Name = "renamed"
+	other.SetStatus(model.StatusInReview)
+	testutil.NoError(t, d.Update(other))
+
+	testutil.NoError(t, d.SetTaskAccount(task.ID, "personal", false))
+	got, err := d.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Account, "personal")
+	testutil.False(t, got.AccountRouted)
+	testutil.Equal(t, got.Name, "renamed")
+	testutil.Equal(t, got.Status, model.StatusInReview)
+
+	testutil.ErrorIs(t, d.SetTaskAccount("missing", "x", false), ErrTaskNotFound)
+}
