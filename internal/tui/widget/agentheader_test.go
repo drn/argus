@@ -264,19 +264,9 @@ func TestSplitLines_ZeroMaxWidth(t *testing.T) {
 	testutil.Equal(t, len(got), 1)
 }
 
-func TestTruncStr_NoTruncation(t *testing.T) {
-	got := truncStr("hi", 10)
-	testutil.Equal(t, got, "hi")
-}
-
-func TestTruncStr_Truncates(t *testing.T) {
-	got := truncStr("hello world", 5)
-	testutil.Equal(t, got, "hello")
-}
-
 func TestBuildUnifiedDiffLines_EmptyParsed(t *testing.T) {
 	// Empty parsed diff hits the early-return path.
-	lines := BuildUnifiedDiffLines(parsedDiffEmpty(), "x.go")
+	lines := BuildUnifiedDiffLines(parsedDiffEmpty(), "x.go", 80)
 	if lines != nil {
 		t.Errorf("empty parsed diff should return nil, got %d lines", len(lines))
 	}

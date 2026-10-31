@@ -324,6 +324,7 @@ type TerminalPane struct {
 	diffMode         bool
 	diffParsed       gitutil.ParsedDiff
 	diffUnifiedLines []widget.RenderedDiffLine
+	diffUnifiedWidth int
 	diffSplitLines   []widget.RenderedDiffLine
 	diffSplitWidth   int // width used to build split lines (invalidate on resize)
 	diffSplit        bool
@@ -1699,7 +1700,8 @@ func (tp *TerminalPane) EnterDiffMode(diff, fileName string) {
 	tp.diffScroll = 0
 	tp.diffFile = fileName
 	tp.diffParsed = gitutil.ParseUnifiedDiff(diff)
-	tp.diffUnifiedLines = widget.BuildUnifiedDiffLines(tp.diffParsed, fileName)
+	tp.diffUnifiedLines = nil
+	tp.diffUnifiedWidth = 0
 	tp.diffSplitLines = nil
 	tp.diffSplitWidth = 0
 	if !wasDiff {
@@ -1717,6 +1719,7 @@ func (tp *TerminalPane) ExitDiffMode() {
 	tp.diffMode = false
 	tp.diffParsed = gitutil.ParsedDiff{}
 	tp.diffUnifiedLines = nil
+	tp.diffUnifiedWidth = 0
 	tp.diffSplitLines = nil
 	tp.diffSplitWidth = 0
 	tp.diffScroll = 0
@@ -2832,6 +2835,10 @@ func (tp *TerminalPane) renderDiff(screen tcell.Screen, x, y, w, h int) {
 		}
 		lines = tp.diffSplitLines
 	} else {
+		if tp.diffUnifiedWidth != w || tp.diffUnifiedLines == nil {
+			tp.diffUnifiedLines = widget.BuildUnifiedDiffLines(tp.diffParsed, tp.diffFile, w)
+			tp.diffUnifiedWidth = w
+		}
 		lines = tp.diffUnifiedLines
 	}
 
