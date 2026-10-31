@@ -19,7 +19,7 @@
 - [x] 4.1 REST `POST /api/tasks/{id}/account` + `usage` on `GET /api/accounts`, with tests
 - [x] 4.2 MCP `task_move_account` (self-move rejection), with tests
 - [x] 4.3 `apiclient` / `apistore` move call
-- [ ] 4.4 TUI: keymap actions + help, account picker modal, task list and Hera rail wiring, remote path, smoke tests
+- [x] 4.4 TUI: keymap actions + help, account picker modal, task list and Hera rail wiring, remote path, smoke tests
 
 ## 5. Docs and gates
 

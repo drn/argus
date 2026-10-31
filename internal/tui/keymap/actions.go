@@ -54,8 +54,12 @@ const (
 	ActTaskHera      Action = "tasklist.toggle_hera"
 	ActTaskInbox     Action = "tasklist.inbox"
 	ActTaskArtifacts Action = "tasklist.artifacts"
-	ActTaskDown      Action = "tasklist.nav_down"
-	ActTaskUp        Action = "tasklist.nav_up"
+	// ActTaskMoveAccount (add-account-move) moves the selected task to
+	// another account and resumes it there; driven entirely by Argus, so it
+	// works when the task's own account has no usage left.
+	ActTaskMoveAccount Action = "tasklist.move_account"
+	ActTaskDown        Action = "tasklist.nav_down"
+	ActTaskUp          Action = "tasklist.nav_up"
 
 	// Agent view (all bindings must carry a modifier)
 	ActAgentLinks      Action = "agent.links"
@@ -138,13 +142,15 @@ const (
 	// stuck-task backlog. Selection-INDEPENDENT like ActHeraNewCoord — it
 	// fires even on an empty rail, since its candidate set is never scoped to
 	// a coordinator.
-	ActHeraCleanup  Action = "hera_rail.cleanup"
-	ActHeraInbox    Action = "hera_rail.inbox"
-	ActBoardToggle  Action = "hera_board.toggle"
-	ActBoardReply   Action = "hera_board.reply"
-	ActBoardDismiss Action = "hera_board.dismiss"
-	ActBoardDown    Action = "hera_board.down"
-	ActBoardUp      Action = "hera_board.up"
+	ActHeraCleanup Action = "hera_rail.cleanup"
+	ActHeraInbox   Action = "hera_rail.inbox"
+	// ActHeraMoveAccount is ActTaskMoveAccount for the selected role's task.
+	ActHeraMoveAccount Action = "hera_rail.move_account"
+	ActBoardToggle     Action = "hera_board.toggle"
+	ActBoardReply      Action = "hera_board.reply"
+	ActBoardDismiss    Action = "hera_board.dismiss"
+	ActBoardDown       Action = "hera_board.down"
+	ActBoardUp         Action = "hera_board.up"
 )
 
 // defaultSpecs is THE source of truth for argus's built-in bindings, mirroring
@@ -162,8 +168,9 @@ var defaultSpecs = map[Context]map[Action]string{
 		ActTaskNew: "n", ActTaskStatusAdv: "s", ActTaskStatusRev: "S",
 		ActTaskArchive: "a", ActTaskPin: "P", ActTaskRename: "r", ActTaskCopy: "c",
 		ActTaskFilter: "/", ActTaskHera: "H", ActTaskDown: "j", ActTaskUp: "k",
-		ActTaskInbox:     "i",
-		ActTaskArtifacts: "v",
+		ActTaskInbox:       "i",
+		ActTaskArtifacts:   "v",
+		ActTaskMoveAccount: ">",
 	},
 	CtxAgent: {
 		ActAgentLinks: "ctrl+l", ActAgentSession: "ctrl+r",
@@ -195,7 +202,7 @@ var defaultSpecs = map[Context]map[Action]string{
 		ActHeraArchive: "a", ActHeraPin: "P", ActHeraStatAdv: "s", ActHeraStatRev: "S",
 		ActHeraKanbanAdv: "m", ActHeraKanbanRev: "M",
 		ActHeraAdopt: "J", ActHeraNewCoord: "n", ActHeraClear: "c",
-		ActHeraCleanup: "C", ActHeraInbox: "i",
+		ActHeraCleanup: "C", ActHeraInbox: "i", ActHeraMoveAccount: ">",
 	},
 	CtxHeraBoard: {ActBoardToggle: "p", ActBoardReply: "r", ActBoardDismiss: "x", ActBoardDown: "j", ActBoardUp: "k"},
 }
@@ -214,7 +221,7 @@ var actionLabels = map[Action]string{
 	ActTaskArchive: "toggle archive", ActTaskPin: "toggle pin", ActTaskRename: "rename",
 	ActTaskCopy: "copy name / prompt", ActTaskFilter: "filter", ActTaskHera: "show/hide hera-managed (workers+coords)",
 	ActTaskDown: "navigate down", ActTaskUp: "navigate up", ActTaskInbox: "view message inbox (read-only)",
-	ActTaskArtifacts: "view task artifacts",
+	ActTaskArtifacts: "view task artifacts", ActTaskMoveAccount: "move to another account (resumes there)",
 
 	ActAgentLinks: "link picker", ActAgentSession: "switch Claude session",
 	ActAgentArtifacts: "view task artifacts",
@@ -241,14 +248,15 @@ var actionLabels = map[Action]string{
 	ActHeraPin: "toggle pin", ActHeraStatAdv: "advance status", ActHeraStatRev: "revert status",
 	ActHeraKanbanAdv: "advance kanban status (top-level coord)", ActHeraKanbanRev: "revert kanban status (top-level coord)",
 	ActHeraAdopt: "adopt freelancer / reparent coordinator", ActHeraNewCoord: "new coordinator (new-task modal)",
-	ActHeraClear:    "clear coord's archive (nuke hidden agents)",
-	ActHeraCleanup:  "cleanup stuck-task backlog (all projects)",
-	ActHeraInbox:    "view role's message inbox (read-only)",
-	ActBoardToggle:  "toggle plan / human board",
-	ActBoardReply:   "compose reply to coordinator (never submits)",
-	ActBoardDismiss: "dismiss board item",
-	ActBoardDown:    "next board item",
-	ActBoardUp:      "previous board item",
+	ActHeraClear:       "clear coord's archive (nuke hidden agents)",
+	ActHeraCleanup:     "cleanup stuck-task backlog (all projects)",
+	ActHeraInbox:       "view role's message inbox (read-only)",
+	ActHeraMoveAccount: "move to another account (resumes there)",
+	ActBoardToggle:     "toggle plan / human board",
+	ActBoardReply:      "compose reply to coordinator (never submits)",
+	ActBoardDismiss:    "dismiss board item",
+	ActBoardDown:       "next board item",
+	ActBoardUp:         "previous board item",
 }
 
 // HelpRow is one rendered help line: the key chord and its action label.
@@ -305,7 +313,7 @@ var contextOrder = map[Context][]Action{
 		ActGlobalRefresh, ActGlobalDestroy, ActGlobalFork, ActGlobalOpenRepo, ActGlobalOpenPR, ActGlobalPrune,
 		ActGlobalPalette, ActGlobalSwitcher, ActGlobalJumpNeedsInput, ActGlobalRestoreRail},
 	CtxTaskList: {ActTaskNew, ActTaskDown, ActTaskUp, ActTaskStatusAdv, ActTaskStatusRev, ActTaskArchive,
-		ActTaskPin, ActTaskRename, ActTaskCopy, ActTaskFilter, ActTaskHera, ActTaskInbox, ActTaskArtifacts},
+		ActTaskPin, ActTaskRename, ActTaskCopy, ActTaskFilter, ActTaskHera, ActTaskInbox, ActTaskArtifacts, ActTaskMoveAccount},
 	CtxAgent: {ActAgentLinks, ActAgentArtifacts, ActAgentSession, ActAgentOpenPR, ActAgentZoom, ActAgentCopy,
 		ActAgentPaneLeft, ActAgentPaneRight, ActAgentTaskPrev, ActAgentTaskNext,
 		ActAgentScrollUp, ActAgentScrollDown, ActAgentScrollPgUp, ActAgentScrollPgDn, ActAgentScrollEnd},
@@ -317,6 +325,6 @@ var contextOrder = map[Context][]Action{
 		ActSettingsCycleProbe, ActSettingsCycleAccount, ActSettingsMoveUp, ActSettingsMoveDown},
 	CtxHeraRail: {ActHeraSpawn, ActHeraNewCoord, ActHeraRename, ActHeraArchive, ActHeraPin,
 		ActHeraStatAdv, ActHeraStatRev, ActHeraKanbanAdv, ActHeraKanbanRev, ActHeraAdopt, ActHeraClear,
-		ActHeraCleanup, ActHeraInbox, ActHeraDelete},
+		ActHeraCleanup, ActHeraInbox, ActHeraMoveAccount, ActHeraDelete},
 	CtxHeraBoard: {ActBoardToggle, ActBoardReply, ActBoardDismiss, ActBoardDown, ActBoardUp},
 }

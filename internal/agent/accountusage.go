@@ -77,8 +77,8 @@ func PickMoveTarget(cfg config.Config, usage map[string]usagebudget.Reading, bac
 	return best, strings.Join(scores, " "), best != ""
 }
 
-// normalizeAccount maps a stored account ("" for default) to its name.
-func normalizeAccount(stored string) string {
+// NormalizeAccount maps a stored account ("" for default) to its name.
+func NormalizeAccount(stored string) string {
 	if s := strings.TrimSpace(stored); s != "" {
 		return s
 	}

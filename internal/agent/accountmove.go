@@ -107,7 +107,7 @@ func MoveTaskAccount(database *db.DB, runner accountMoveRunner, in AccountMoveIn
 	if backendkind.Of(backend.Command) != backendkind.Claude {
 		return nil, AccountMoveResult{}, fmt.Errorf("%w: only Claude tasks can move accounts (backend %q)", ErrAccount, task.Backend)
 	}
-	from := normalizeAccount(task.Account)
+	from := NormalizeAccount(task.Account)
 	to, err := resolveMoveTarget(cfg, backend.Command, from, in.Account)
 	if err != nil {
 		return nil, AccountMoveResult{}, err
@@ -228,10 +228,10 @@ func resolveMoveTarget(cfg config.Config, backendCommand, from, requested string
 	if !cfg.AccountSupports(target, backendCommand) {
 		return "", fmt.Errorf("%w: account %q does not support this task's backend", ErrAccount, target)
 	}
-	if normalizeAccount(target) == from {
+	if NormalizeAccount(target) == from {
 		return "", fmt.Errorf("%w: task is already on account %q", ErrAccount, from)
 	}
-	return normalizeAccount(target), nil
+	return NormalizeAccount(target), nil
 }
 
 func logAccountMove(taskID string, res AccountMoveResult, stage string) {
