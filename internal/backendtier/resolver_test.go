@@ -257,3 +257,26 @@ func TestResolveBackend_Headroom(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveBackendForClaudeUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		strategy string
+		pct      float64
+		codex    func() (float64, bool)
+		want     string
+	}{
+		// The fixed Claude reading replaces the cache, which reads unknown here.
+		{name: "headroom: fixed reading beats codex", strategy: config.StrategyHeadroom, pct: 0, codex: known(39), want: "claude"},
+		{name: "headroom: codex wins on more headroom", strategy: config.StrategyHeadroom, pct: 83, codex: known(39), want: "codex"},
+		{name: "headroom: over threshold excluded", strategy: config.StrategyHeadroom, pct: 95, codex: unknown(), want: "codex"},
+		{name: "ordered: under threshold", strategy: config.StrategyOrdered, pct: 50, codex: known(10), want: "claude"},
+		{name: "ordered: over threshold falls through", strategy: config.StrategyOrdered, pct: 90, codex: known(10), want: "codex"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withCachedPct(t, unknown(), tc.codex)
+			cfg := routingCfg(tc.strategy, claudeTier(90), codexTier(80))
+			testutil.Equal(t, ResolveBackendForClaudeUsage(cfg, tc.pct), tc.want)
+		})
+	}
+}

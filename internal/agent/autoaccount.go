@@ -69,6 +69,27 @@ func peekAutoAccount(cfg config.Config, backendCommand string) string {
 	return config.DefaultAccountName
 }
 
+// autoClaudeUsagePct is the Claude usage backend-tier routing reads for an
+// auto-picked account: the higher of its ledger windows. A named account with
+// no reading counts as 0%, as in Pick; the probe caches only learn a named
+// account once one of its sessions reports, and an unknown tier loses to any
+// measured one. ok is false only for an unmeasured default, which keeps the
+// existing probe.
+func autoClaudeUsagePct(account string) (float64, bool) {
+	account = accountusage.NormalizeAccount(account)
+	u := AccountUsage()[account]
+	if u.FiveHour == nil && u.Weekly == nil {
+		return 0, account != config.DefaultAccountName
+	}
+	pct := 0.0
+	for _, r := range []*accountusage.Reading{u.FiveHour, u.Weekly} {
+		if r != nil && r.Pct > pct {
+			pct = r.Pct
+		}
+	}
+	return pct, true
+}
+
 // pickAutoAccount resolves "auto" to a concrete account name for a new task
 // on the backend command, logging the choice and every score.
 func pickAutoAccount(cfg config.Config, backendCommand string) string {

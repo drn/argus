@@ -72,25 +72,82 @@ func TestPickAutoAccount_NilSourceIsAllUnknown(t *testing.T) {
 }
 
 func TestResolveDefaultBackendName_AutoReadsPickedClaudeAccount(t *testing.T) {
-	// The backend tier must be fed the account auto would pick for Claude:
-	// default is capped, so that is "work", never the literal "auto".
-	stubAccountUsage(t, map[string]accountusage.Usage{"default": {FiveHour: pct(100)}})
-	var seen []string
-	prev := resolveBackendTier
-	resolveBackendTier = func(_ config.Config, accounts ...string) string {
-		seen = append(seen, accounts...)
-		return ""
-	}
-	t.Cleanup(func() { resolveBackendTier = prev })
+	// The backend tier must be fed the Claude usage of the account auto would
+	// pick, from the ledger: max of the two windows, a named account with no
+	// reading counting as 0%, and only an unmeasured default using the probe.
+	for _, tc := range []struct {
+		name      string
+		usage     map[string]accountusage.Usage
+		wantProbe []string // accounts handed to the probe-backed resolver
+		wantFixed []float64
+	}{
+		{
+			name:      "unmeasured named account counts as 0%",
+			usage:     map[string]accountusage.Usage{"default": {FiveHour: pct(100)}},
+			wantFixed: []float64{0},
+		},
+		{
+			name: "measured account uses the higher window",
+			usage: map[string]accountusage.Usage{
+				"default": {FiveHour: pct(100)},
+				"work":    {FiveHour: pct(20), Weekly: pct(70)},
+			},
+			wantFixed: []float64{70},
+		},
+		{
+			name:      "unmeasured default keeps the probe",
+			usage:     map[string]accountusage.Usage{"work": {FiveHour: pct(100)}},
+			wantProbe: []string{"default"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubAccountUsage(t, tc.usage)
+			var probe []string
+			var fixed []float64
+			prevTier, prevFixed := resolveBackendTier, resolveBackendTierForClaudeUsage
+			resolveBackendTier = func(_ config.Config, accounts ...string) string {
+				probe = append(probe, accounts...)
+				return ""
+			}
+			resolveBackendTierForClaudeUsage = func(_ config.Config, pct float64) string {
+				fixed = append(fixed, pct)
+				return ""
+			}
+			t.Cleanup(func() { resolveBackendTier, resolveBackendTierForClaudeUsage = prevTier, prevFixed })
 
+			cfg := config.Config{
+				DefaultAccount: config.AutoAccountName,
+				Accounts:       map[string]config.Account{"work": {ClaudeConfigDir: "/opt/work"}},
+				Backends:       map[string]config.Backend{"claude": {Command: "claude"}},
+				Defaults:       config.Defaults{Backend: "claude"},
+			}
+			testutil.Equal(t, resolveDefaultBackendName("", "", cfg), "claude")
+			testutil.DeepEqual(t, probe, tc.wantProbe)
+			testutil.DeepEqual(t, fixed, tc.wantFixed)
+		})
+	}
+}
+
+func TestResolveDefaultBackendName_AutoUnmeasuredPersonalKeepsClaude(t *testing.T) {
+	// Dogfood regression: default at 83% weekly, personal unmeasured, headroom
+	// routing with Codex at 39% must still route Claude (to personal).
+	stubAccountUsage(t, map[string]accountusage.Usage{"default": {FiveHour: pct(47), Weekly: pct(83)}})
 	cfg := config.Config{
 		DefaultAccount: config.AutoAccountName,
-		Accounts:       map[string]config.Account{"work": {ClaudeConfigDir: "/opt/work"}},
-		Backends:       map[string]config.Backend{"claude": {Command: "claude"}},
+		Accounts:       map[string]config.Account{"personal": {ClaudeConfigDir: "/opt/personal"}},
+		Backends:       map[string]config.Backend{"claude": {Command: "claude"}, "codex": {Command: "codex"}},
 		Defaults:       config.Defaults{Backend: "claude"},
+		BackendRouting: config.BackendRoutingConfig{
+			Strategy: config.StrategyHeadroom,
+			Tiers: []config.BackendTier{
+				// Codex first and unprobed: an unknown Claude reading would tie
+				// on "unread" and lose to it on list order.
+				{Backend: "codex", Probe: config.ProbeNone},
+				{Backend: "claude", Probe: config.ProbeClaudeUsage, ThresholdPct: 90},
+			},
+		},
 	}
 	testutil.Equal(t, resolveDefaultBackendName("", "", cfg), "claude")
-	testutil.DeepEqual(t, seen, []string{"work"})
 }
 
 func TestInheritAccount(t *testing.T) {

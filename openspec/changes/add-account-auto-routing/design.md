@@ -46,7 +46,7 @@ A small concurrency-safe store: `Record(account, window, pct, resetsAt, measured
 
 ### D5. Backend and account interplay
 
-`resolveDefaultBackendName` runs before account resolution and feeds `backendtier.ResolveBackend(cfg, account)`. When the account would resolve to `auto`, the backend tier is fed the account `Pick` would choose for a Claude backend, so the `claude_usage` tier reads the account that would actually run the task. Then `Pick` runs again over the candidates that support the chosen backend.
+`resolveDefaultBackendName` runs before account resolution and feeds `backendtier.ResolveBackend(cfg, account)`. When the account would resolve to `auto`, the backend tier is fed the account `Pick` would choose for a Claude backend, so the `claude_usage` tier reads the account that would actually run the task. The reading comes from the ledger (max of the 5-hour and weekly percentages), not the probe caches, because the probe caches only know a named account once one of its sessions reports, and the headroom strategy skips an unknown tier, so an unmeasured `personal` lost to Codex on `default` (found in dogfood). A named account with no ledger reading counts as 0%, as in `Pick`; `default` with no reading keeps the probe path (`backendtier.ResolveBackendForClaudeUsage` vs `ResolveBackend`). Then `Pick` runs again over the candidates that support the chosen backend.
 
 ### D6. Inheritance
 
