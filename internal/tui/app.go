@@ -5883,8 +5883,8 @@ func accountOptionsFromRemote(list []apiclient.AccountJSON) ([]AccountOption, ma
 	var opts []AccountOption
 	labels := map[string]string{}
 	for _, ac := range list {
-		if ac.Name == "" || ac.Name == config.DefaultAccountName {
-			continue
+		if ac.Name == "" || ac.Name == config.DefaultAccountName || config.IsAutoAccount(ac.Name) {
+			continue // the form derives "auto" itself
 		}
 		opts = append(opts, AccountOption{Name: ac.Name, Label: ac.Label, Claude: ac.Supports.Claude, Codex: ac.Supports.Codex})
 		switch {

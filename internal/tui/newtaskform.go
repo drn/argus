@@ -466,12 +466,18 @@ func (f *NewTaskForm) rebuildAccountOptions(keep bool) {
 		f.accountPicked = ""
 	}
 	tool := f.accountTool()
-	names := []string{config.DefaultAccountName}
+	var named []string
 	for _, o := range f.accountCatalog {
-		if o.Name != config.DefaultAccountName && o.supports(tool) {
-			names = append(names, o.Name)
+		if o.Name != config.DefaultAccountName && !config.IsAutoAccount(o.Name) && o.supports(tool) {
+			named = append(named, o.Name)
 		}
 	}
+	names := []string{config.DefaultAccountName}
+	if len(named) > 0 {
+		// "auto" picks among these at creation, so it applies whenever one does.
+		names = append(names, config.AutoAccountName)
+	}
+	names = append(names, named...)
 	f.accountNames = names
 	f.accountIdx = 0
 	if idx := indexOf(names, f.accountPicked); f.accountPicked != "" && idx >= 0 {
@@ -520,7 +526,8 @@ func (f *NewTaskForm) effectiveAccount() string {
 }
 
 // accountClaudeDir is the Claude config dir skill autocomplete reads for the
-// effective account ("" = ~/.claude).
+// effective account ("" = ~/.claude, also used while "auto" is selected since
+// the account is only picked at creation).
 func (f *NewTaskForm) accountClaudeDir() string {
 	name := f.effectiveAccount()
 	for _, o := range f.accountCatalog {
@@ -546,7 +553,13 @@ func (f *NewTaskForm) accountDisplayNames() []string {
 	return out
 }
 
+// autoAccountFormLabel describes the "auto" option in the selector.
+const autoAccountFormLabel = "most headroom"
+
 func (f *NewTaskForm) catalogLabel(name string) string {
+	if config.IsAutoAccount(name) {
+		return autoAccountFormLabel
+	}
 	for _, o := range f.accountCatalog {
 		if o.Name == name {
 			return o.Label

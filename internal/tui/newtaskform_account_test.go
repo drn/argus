@@ -99,6 +99,8 @@ func TestNewTaskForm_Account(t *testing.T) {
 		f := accountForm(t, "b")
 		f.focused = ntFieldAccount
 		key(f, tcell.KeyRight)
+		testutil.Equal(t, f.Task().Account, "auto")
+		key(f, tcell.KeyRight)
 		testutil.Equal(t, f.Task().Account, "both")
 		key(f, tcell.KeyRight)
 		testutil.Equal(t, f.Task().Account, "work")
@@ -106,14 +108,15 @@ func TestNewTaskForm_Account(t *testing.T) {
 
 	t.Run("options filtered by backend tool", func(t *testing.T) {
 		f := accountForm(t, "b")
-		testutil.DeepEqual(t, f.accountNames, []string{"default", "both", "work"})
+		testutil.DeepEqual(t, f.accountNames, []string{"default", "auto", "both", "work"})
 		selectBackend(f, "x")
-		testutil.DeepEqual(t, f.accountNames, []string{"default", "both", "cx"})
+		testutil.DeepEqual(t, f.accountNames, []string{"default", "auto", "both", "cx"})
 	})
 
 	t.Run("backend change keeps a selection that still applies", func(t *testing.T) {
 		f := accountForm(t, "b")
 		f.focused = ntFieldAccount
+		key(f, tcell.KeyRight)
 		key(f, tcell.KeyRight)
 		testutil.Equal(t, f.Account(), "both")
 		selectBackend(f, "x")
@@ -141,16 +144,29 @@ func TestNewTaskForm_Account(t *testing.T) {
 		testutil.Equal(t, f.focused, ntFieldPrompt)
 	})
 
+	t.Run("auto preselected when the default is auto", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		cfg := accountTestConfig()
+		cfg.DefaultAccount = config.AutoAccountName
+		f := NewNewTaskForm(map[string]config.Project{"p": {}, "q": {}}, "p", map[string]config.Backend{"b": {Command: "claude"}}, "b")
+		f.SetAccounts(AccountOptionsFromConfig(cfg), func(project string) string { return cfg.ResolveAccount("", project) })
+		testutil.Equal(t, f.Task().Account, "auto")
+		f.projInput = []rune("q")
+		f.onProjectChanged()
+		testutil.Equal(t, f.Task().Account, "work")
+	})
+
 	t.Run("label appended to display name", func(t *testing.T) {
 		f := accountForm(t, "b")
 		f.SetAccountLabel("work", "me@x.com")
-		testutil.Equal(t, f.accountDisplayNames()[2], "work (me@x.com)")
+		testutil.Equal(t, f.accountDisplayNames()[3], "work (me@x.com)")
+		testutil.Equal(t, f.accountDisplayNames()[1], "auto (most headroom)")
 	})
 
 	t.Run("configured label is the fallback display label", func(t *testing.T) {
 		f := accountForm(t, "b")
 		f.SetAccounts([]AccountOption{{Name: "work", Label: "Work", Claude: true}}, nil)
-		testutil.Equal(t, f.accountDisplayNames()[1], "work (Work)")
+		testutil.Equal(t, f.accountDisplayNames()[2], "work (Work)")
 	})
 }
 
@@ -192,6 +208,12 @@ func TestNewTaskForm_AccountSkills(t *testing.T) {
 	t.Run("default account reads ~/.claude", func(t *testing.T) {
 		testutil.DeepEqual(t, skillNames(f), []string{"home-skill"})
 	})
+	t.Run("auto reads ~/.claude", func(t *testing.T) {
+		f.focused = ntFieldAccount
+		key(f, tcell.KeyRight)
+		testutil.Equal(t, f.Account(), "auto")
+		testutil.DeepEqual(t, skillNames(f), []string{"home-skill"})
+	})
 	t.Run("selected account reads its config dir", func(t *testing.T) {
 		f.focused = ntFieldAccount
 		key(f, tcell.KeyRight)
@@ -213,6 +235,7 @@ func TestNewTaskForm_AccountSkills(t *testing.T) {
 func TestAccountOptionsFromRemote(t *testing.T) {
 	opts, labels := accountOptionsFromRemote([]apiclient.AccountJSON{
 		{Name: "default", Supports: apiclient.AccountSupportsJSON{Claude: true, Codex: true}},
+		{Name: "auto", Label: "Auto (most headroom)", Supports: apiclient.AccountSupportsJSON{Claude: true}},
 		{Name: "work", Label: "Work", ClaudeConfigDir: "/remote/w", Supports: apiclient.AccountSupportsJSON{Claude: true}, LoggedIn: true, Email: "w@x.com"},
 		{Name: "off", Supports: apiclient.AccountSupportsJSON{Claude: true}},
 		{Name: "cx", Supports: apiclient.AccountSupportsJSON{Codex: true}},
@@ -262,7 +285,7 @@ func TestSetupNewTaskAccounts_RemoteUsesStore(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	testutil.DeepEqual(t, names, []string{"default", "work"})
+	testutil.DeepEqual(t, names, []string{"default", "auto", "work"})
 	testutil.Equal(t, label, "w@x.com")
 }
 
@@ -283,8 +306,12 @@ func TestSmoke_NewTaskFormAccountField(t *testing.T) {
 	syncUI(t, app.tapp)
 	sim.InjectKey(tcell.KeyRight, 0, 0)
 	syncUI(t, app.tapp)
-
 	var got string
+	readUI(t, app.tapp, func() { got = app.newTaskForm.Account() })
+	testutil.Equal(t, got, "auto")
+	sim.InjectKey(tcell.KeyRight, 0, 0)
+	syncUI(t, app.tapp)
+
 	readUI(t, app.tapp, func() { got = app.newTaskForm.Account() })
 	testutil.Equal(t, got, "work")
 	sim.Show()
