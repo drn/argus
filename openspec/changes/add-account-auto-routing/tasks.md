@@ -41,8 +41,8 @@
 
 ## 7. REST accounts listing
 
-- [ ] 7.1 Tests first: `GET /api/accounts` includes the `auto` entry after `default` only when a named account is valid, `is_default` marks `auto` when the default resolves to it, and per-account `usage` reflects the ledger (omitted when empty)
-- [ ] 7.2 Implement the `auto` entry and `usage` field
+- [x] 7.1 Tests first: `GET /api/accounts` includes the `auto` entry after `default` only when a named account is valid, `is_default` marks `auto` when the default resolves to it, and per-account `usage` reflects the ledger (omitted when empty)
+- [x] 7.2 Implement the `auto` entry and `usage` field
 
 ## 8. TUI
 

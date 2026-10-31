@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/drn/argus/internal/accountusage"
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/claudeaccount"
 	"github.com/drn/argus/internal/config"
@@ -167,11 +169,17 @@ func TestHandleListAccounts(t *testing.T) {
 		testutil.Equal(t, w.Code, http.StatusOK)
 		var got []accountJSON
 		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
-		testutil.Equal(t, len(got), 4)
+		testutil.Equal(t, len(got), 5)
 		testutil.Equal(t, got[0].Name, "default")
 		testutil.False(t, got[0].IsDefault)
 		testutil.False(t, got[0].LoggedIn)
 		testutil.Equal(t, got[0].Supports, accountSupportsJSON{Claude: true, Codex: true})
+		testutil.Equal(t, got[1].Name, "auto")
+		testutil.Equal(t, got[1].Label, "Auto (most headroom)")
+		testutil.False(t, got[1].IsDefault)
+		testutil.Equal(t, got[1].ClaudeConfigDir, "")
+		testutil.Equal(t, got[1].Supports, accountSupportsJSON{Claude: true, Codex: true})
+		got = append(got[:1], got[2:]...)
 		testutil.Equal(t, got[1].Name, "codexonly")
 		testutil.Equal(t, got[1].ClaudeConfigDir, "")
 		testutil.Equal(t, got[1].CodexHome, "/tmp/argus-test-codexonly")
@@ -306,4 +314,41 @@ func TestParseMultipartTaskForm_ReadsAccount(t *testing.T) {
 	_, _, _, _, _, _, acct, _, err := parseMultipartTaskForm(req)
 	testutil.NoError(t, err)
 	testutil.Equal(t, acct, "work")
+}
+
+func TestHandleListAccounts_AutoAndUsage(t *testing.T) {
+	stubAuth(t, func(context.Context, string) (claudeaccount.Status, error) { return claudeaccount.Status{}, nil })
+	list := func(t *testing.T, srv *Server) []accountJSON {
+		t.Helper()
+		w := httptest.NewRecorder()
+		srv.routes().ServeHTTP(w, authedReq("GET", "/api/accounts", ""))
+		testutil.Equal(t, w.Code, http.StatusOK)
+		var got []accountJSON
+		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+		return got
+	}
+
+	t.Run("auto is the default", func(t *testing.T) {
+		srv, _ := accountsServer(t, "default_account = \"auto\"\n[accounts.work]\nclaude_config_dir = \"/tmp/argus-test-work\"\n")
+		got := list(t, srv)
+		testutil.Equal(t, len(got), 3)
+		testutil.Equal(t, got[1].Name, "auto")
+		testutil.True(t, got[1].IsDefault)
+		testutil.Equal(t, got[1].Supports, accountSupportsJSON{Claude: true})
+		testutil.False(t, got[0].IsDefault)
+		testutil.False(t, got[2].IsDefault)
+	})
+
+	t.Run("usage reported per account", func(t *testing.T) {
+		srv, _ := accountsServer(t, "[accounts.work]\nclaude_config_dir = \"/tmp/argus-test-work\"\n")
+		reset := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+		srv.accountUsage.Record("", accountusage.WindowFiveHour, 100, reset, time.Now())
+		got := list(t, srv)
+		testutil.NotNil(t, got[0].Usage)
+		testutil.Equal(t, *got[0].Usage.FiveHourPct, 100.0)
+		testutil.Equal(t, got[0].Usage.FiveHourResetsAt, reset.Format(time.RFC3339))
+		testutil.Nil(t, got[0].Usage.WeeklyPct)
+		testutil.Nil(t, got[1].Usage) // auto
+		testutil.Nil(t, got[2].Usage) // work: no reading
+	})
 }

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/drn/argus/internal/accountusage"
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/claudeaccount"
 	"github.com/drn/argus/internal/config"
@@ -42,6 +43,35 @@ type accountJSON struct {
 	Org             string              `json:"org,omitempty"`
 	Plan            string              `json:"plan,omitempty"`
 	CodexLoggedIn   *bool               `json:"codex_logged_in,omitempty"`
+	Usage           *accountUsageJSON   `json:"usage,omitempty"`
+}
+
+// accountUsageJSON is an account's currently valid Claude plan usage from the
+// daemon's ledger; a window with no valid reading is omitted.
+type accountUsageJSON struct {
+	FiveHourPct      *float64 `json:"five_hour_pct,omitempty"`
+	FiveHourResetsAt string   `json:"five_hour_resets_at,omitempty"`
+	WeeklyPct        *float64 `json:"weekly_pct,omitempty"`
+	WeeklyResetsAt   string   `json:"weekly_resets_at,omitempty"`
+}
+
+// autoAccountLabel labels the "auto" pseudo-account in pickers.
+const autoAccountLabel = "Auto (most headroom)"
+
+func usageJSON(u accountusage.Usage) *accountUsageJSON {
+	if u.FiveHour == nil && u.Weekly == nil {
+		return nil
+	}
+	out := &accountUsageJSON{}
+	if r := u.FiveHour; r != nil {
+		pct := r.Pct
+		out.FiveHourPct, out.FiveHourResetsAt = &pct, r.ResetsAt.UTC().Format(time.RFC3339)
+	}
+	if r := u.Weekly; r != nil {
+		pct := r.Pct
+		out.WeeklyPct, out.WeeklyResetsAt = &pct, r.ResetsAt.UTC().Format(time.RFC3339)
+	}
+	return out
 }
 
 // handleListAccounts lists the built-in default account followed by the
@@ -110,11 +140,35 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 
-	res := make([]accountJSON, 0, len(out))
+	usage := s.AccountUsage()
+	res := make([]accountJSON, 0, len(out)+1)
 	for _, a := range out {
-		if a.Name != "" {
-			res = append(res, a)
+		if a.Name == "" {
+			continue
+		}
+		a.Usage = usageJSON(usage[accountusage.NormalizeAccount(a.Name)])
+		res = append(res, a)
+		if a.Name == config.DefaultAccountName && len(names) > 1 {
+			res = append(res, autoAccountJSON(cfg, names, defName))
 		}
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// autoAccountJSON is the "auto" pseudo-account entry: no directories, and it
+// supports a tool when any configured account does.
+func autoAccountJSON(cfg config.Config, names []string, defName string) accountJSON {
+	a := accountJSON{Name: config.AutoAccountName, Label: autoAccountLabel, IsDefault: config.IsAutoAccount(defName)}
+	for _, n := range names {
+		if n == config.DefaultAccountName {
+			continue
+		}
+		if _, _, err := cfg.ClaudeConfigDir(n); err == nil {
+			a.Supports.Claude = true
+		}
+		if _, _, err := cfg.CodexHome(n); err == nil {
+			a.Supports.Codex = true
+		}
+	}
+	return a
 }

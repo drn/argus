@@ -61,6 +61,7 @@ func moveServer(t *testing.T, r *moveTestRunner) (*Server, *model.Task) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	s, d := testServer(t)
+	r.SessionRunner = agent.NewRunner(nil) // background watchers call the rest
 	s.runner = r
 	testutil.NoError(t, d.SetBackend("cl", config.Backend{Command: "claude"}))
 	testutil.NoError(t, d.SetAccount("work", config.Account{ClaudeConfigDir: filepath.Join(t.TempDir(), "work")}))

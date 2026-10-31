@@ -5284,7 +5284,9 @@ function updateCreateAccountVisibility() {
     const opt = document.createElement('option');
     opt.value = a.name;
     let who = a.label && a.label !== a.name ? a.label : '';
-    if (tool === 'claude') {
+    if (a.name === 'auto') {
+      who = a.label || '';
+    } else if (tool === 'claude') {
       who = a.logged_in
         ? (a.email ? a.email : 'signed in') + (a.plan ? ' (' + a.plan + ')' : '')
         : 'not logged in';
