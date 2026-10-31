@@ -221,8 +221,10 @@ type Server struct {
 	profileCfg  ConfigStore     // optional; set via SetProfileResolver
 	apiGetMu    sync.RWMutex    // guards apiGet (set after the listener is serving)
 	apiGet      APIGetter       // optional; set via SetAPIGetter (argus_api_get)
-	createMu    sync.Mutex
-	creating    int // number of in-flight task_create calls
+	// accountMover backs task_move_account; set via SetAccountMover.
+	accountMover accountMoverSlot
+	createMu     sync.Mutex
+	creating     int // number of in-flight task_create calls
 	// creatingKeys tracks (project, name) pairs currently being created so
 	// two concurrent task_create calls with the same key can't both pass
 	// the duplicate-row check and race to insert. Guarded by createMu.
@@ -1075,6 +1077,9 @@ func (s *Server) handleToolsList(req *Request) *Response {
 	if s.apiGetEnabled() {
 		tools = append(tools, apiGetToolDefs...)
 	}
+	if s.accountMoveEnabled() {
+		tools = append(tools, accountMoveToolDefs...)
+	}
 	if s.todoToolsActive() {
 		tools = append(tools, todoToolDefs...)
 	}
@@ -1125,6 +1130,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolKBDelete(req.ID, params.Arguments)
 	case "kb_ingest":
 		return s.toolKBIngest(req.ID, params.Arguments)
+	case "task_move_account":
+		return s.toolTaskMoveAccount(req.ID, params.Arguments)
 	case "task_create":
 		return s.toolTaskCreate(req.ID, params.Arguments)
 	case "task_list":

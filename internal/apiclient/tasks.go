@@ -243,3 +243,22 @@ func (c *Client) GetScheduleRaw(ctx context.Context, id string) (*model.Schedule
 	}
 	return &s, nil
 }
+
+// MoveAccountResp mirrors agent.AccountMoveResult.
+type MoveAccountResp struct {
+	From    string `json:"from"`
+	To      string `json:"to"`
+	Resumed bool   `json:"resumed"`
+	Started bool   `json:"started"`
+}
+
+// MoveTaskAccount moves a Claude task to another account (a configured name,
+// "default", or "auto") and resumes it there. force interrupts a busy agent.
+func (c *Client) MoveTaskAccount(ctx context.Context, id, account string, force bool) (*MoveAccountResp, error) {
+	var resp MoveAccountResp
+	body := map[string]any{"account": account, "force": force}
+	if err := c.doJSON(ctx, "POST", "/api/tasks/"+id+"/account", body, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
