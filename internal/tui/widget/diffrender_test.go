@@ -148,6 +148,9 @@ func TestBuildSideBySideDiffLines_WrapsAndAligns(t *testing.T) {
 		if len(txt) > w {
 			t.Errorf("row width %d exceeds %d", len(txt), w)
 		}
+		if !strings.HasPrefix(string(txt), "@") && len(txt) != 2*((w-1)/2)+1 {
+			t.Errorf("row width %d, want %d: %q", len(txt), 2*((w-1)/2)+1, string(txt))
+		}
 	}
 	// Every digit of the long line must survive (no truncation). Line numbers
 	// add a few digits, so only a lower bound is meaningful.

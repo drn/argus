@@ -11,16 +11,16 @@ import (
 // lineNumWidth is the number of characters reserved for line numbers.
 const lineNumWidth = 4
 
-// unifiedGutterW is the unified-view gutter: two line numbers, their
-// separators, and the +/- prefix.
+// unifiedGutterW covers two line numbers, their separators, and the +/- prefix.
 const unifiedGutterW = lineNumWidth*2 + 3
 
-// minContentW floors the wrapped content width so a very narrow pane still
-// makes progress instead of emitting one rune per row.
+// minContentW floors wrapped content width so narrow panes don't emit one rune per row.
 const minContentW = 5
 
-// wrapCells splits cells into rows of at most w cells; empty input yields one
-// empty row so blank source lines keep their height.
+// sidePad is the per-side prefix cell plus trailing pad cell around content.
+const sidePad = 2
+
+// wrapCells splits cells into rows of at most w; empty input yields one row to keep blank lines.
 func wrapCells(cells []StyledChar, w int) [][]StyledChar {
 	if w < 1 {
 		w = 1
@@ -30,13 +30,13 @@ func wrapCells(cells []StyledChar, w int) [][]StyledChar {
 	}
 	var rows [][]StyledChar
 	for len(cells) > w {
-		rows = append(rows, cells[:w])
+		rows = append(rows, cells[:w:w])
 		cells = cells[w:]
 	}
 	return append(rows, cells)
 }
 
-// blankCells returns n unstyled spaces.
+// blankCells returns n spaces in the given style.
 func blankCells(n int, style tcell.Style) []StyledChar {
 	cells := make([]StyledChar, n)
 	for i := range cells {
@@ -69,8 +69,7 @@ type RenderedDiffLine struct {
 // BuildUnifiedDiffLines creates syntax-highlighted unified diff output from a
 // parsed diff and filename. Each line includes line numbers, +/- prefix, and
 // syntax-highlighted content with appropriate background colors. Paired
-// removed+added lines get word-level highlighting on the changed spans. Lines
-// longer than totalW wrap onto continuation rows with a blank gutter.
+// removed+added lines get word-level highlighting. Lines wider than totalW wrap.
 func BuildUnifiedDiffLines(pd gitutil.ParsedDiff, filename string, totalW int) []RenderedDiffLine {
 	if len(pd.Hunks) == 0 {
 		return nil
@@ -159,9 +158,7 @@ func BuildUnifiedDiffLines(pd gitutil.ParsedDiff, filename string, totalW int) [
 	return result
 }
 
-// appendWrappedUnified appends a unified diff line, wrapping content to
-// contentW; continuation rows get a blank gutter whose prefix cell keeps the
-// line's background so the +/- tint stays continuous.
+// appendWrappedUnified wraps content to contentW; continuation rows keep the prefix-cell tint.
 func appendWrappedUnified(result []RenderedDiffLine, gutter, content []StyledChar, contentW int, prefixStyle tcell.Style) []RenderedDiffLine {
 	for i, row := range wrapCells(content, contentW) {
 		if i == 0 {
@@ -223,8 +220,7 @@ func computeWordSpansForHunks(pd gitutil.ParsedDiff) map[[2]int][]gitutil.DiffSp
 }
 
 // BuildSideBySideDiffLines creates syntax-highlighted side-by-side diff output.
-// Content longer than a column wraps onto extra rows; the shorter side is
-// padded so the divider stays aligned.
+// Content wider than a column wraps; the shorter side is padded to keep the divider aligned.
 func BuildSideBySideDiffLines(pd gitutil.ParsedDiff, filename string, totalW int) []RenderedDiffLine {
 	rows := gitutil.BuildSideBySide(pd)
 	if len(rows) == 0 {
@@ -315,12 +311,10 @@ func sideRowOrBlank(rows [][]StyledChar, k, contentW int) []StyledChar {
 	if k < len(rows) {
 		return rows[k]
 	}
-	return blankCells(contentW+2, tcell.StyleDefault)
+	return blankCells(contentW+sidePad, tcell.StyleDefault)
 }
 
-// buildSideRows renders one side of a side-by-side diff line as wrapped rows,
-// each prefix + contentW cells + trailing pad. Word-level spans index into the
-// unwrapped content, so they are applied before wrapping.
+// buildSideRows wraps one side into prefix+contentW+pad rows; word spans apply before wrapping.
 func buildSideRows(hl HighlightedLine, lineType gitutil.DiffLineType, contentW int, wordSpans []gitutil.DiffSpan) [][]StyledChar {
 	var prefix StyledChar
 	var bgColor tcell.Color
@@ -357,14 +351,14 @@ func buildSideRows(hl HighlightedLine, lineType gitutil.DiffLineType, contentW i
 	wrapped := wrapCells(content, contentW)
 	rows := make([][]StyledChar, len(wrapped))
 	for i, chunk := range wrapped {
-		cells := make([]StyledChar, 0, contentW+2)
+		cells := make([]StyledChar, 0, contentW+sidePad)
 		if i == 0 {
 			cells = append(cells, prefix)
 		} else {
 			cells = append(cells, StyledChar{Ch: ' ', Style: padStyle})
 		}
 		cells = append(cells, chunk...)
-		cells = append(cells, blankCells(contentW-len(chunk)+1, padStyle)...)
+		cells = append(cells, blankCells(contentW-len(chunk)+sidePad-1, padStyle)...)
 		rows[i] = cells
 	}
 	return rows
@@ -417,13 +411,4 @@ func styledString(s string, style tcell.Style) []StyledChar {
 		cells = append(cells, StyledChar{Ch: r, Style: style})
 	}
 	return cells
-}
-
-// truncStr truncates a string to at most maxW runes.
-func truncStr(s string, maxW int) string {
-	runes := []rune(s)
-	if len(runes) <= maxW {
-		return s
-	}
-	return string(runes[:maxW])
 }

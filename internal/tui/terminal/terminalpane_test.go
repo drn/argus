@@ -4811,3 +4811,33 @@ func TestTerminalPane_NonForcedResizeIsLogged(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Contains(t, string(data), "[terminalpane] pty resize 88x38 -> 178x38")
 }
+
+func TestTerminalPane_RenderDiff_RewrapsOnWidthChange(t *testing.T) {
+	long := strings.Repeat("abcdefghij", 8)
+	diff := "--- a/t.txt\n+++ b/t.txt\n@@ -1 +1 @@\n-old\n+" + long + "\n"
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(120, 20)
+
+	for _, split := range []bool{false, true} {
+		tp := NewTerminalPane()
+		tp.EnterDiffMode(diff, "t.txt")
+		tp.diffSplit = split
+		tp.renderDiff(screen, 0, 0, 120, 20)
+		wide := len(tp.diffUnifiedLines)
+		if split {
+			wide = len(tp.diffSplitLines)
+		}
+		tp.renderDiff(screen, 0, 0, 40, 20)
+		narrow := len(tp.diffUnifiedLines)
+		if split {
+			narrow = len(tp.diffSplitLines)
+		}
+		if narrow <= wide {
+			t.Errorf("split=%v: narrower pane should wrap into more rows (wide=%d narrow=%d)", split, wide, narrow)
+		}
+	}
+}
