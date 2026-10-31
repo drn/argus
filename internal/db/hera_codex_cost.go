@@ -1,55 +1,39 @@
 package db
 
 import (
-	"database/sql"
 	"fmt"
 	"time"
 )
 
-// CostSweepBinding is one hera binding the Codex cost sweeper may accrue to
-// (add-codex-cost-accrual), plus how many live bindings its task currently
-// holds: a task live under 2+ orchestrators has no single binding to charge,
-// mirroring PUT /api/tasks/{id}/hera/tokens's ErrHeraAmbiguous skip.
-type CostSweepBinding struct {
-	HeraBinding
-	TaskLiveBindings int
-}
-
-// ListCostSweepBindings returns every binding that is live or ended after
-// endedSince — the grace window that lets a sweep read the final calls made
-// just before a binding ended.
-func (d *DB) ListCostSweepBindings(endedSince time.Time) ([]CostSweepBinding, error) {
+// ListCostSweepBindings returns every hera binding that is live or ended
+// after endedSince, for the Codex cost sweeper (add-codex-cost-accrual): the
+// grace window that lets a sweep read the final calls made just before a
+// binding ended, or the backfill window on a sweeper's first pass.
+func (d *DB) ListCostSweepBindings(endedSince time.Time) ([]HeraBinding, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	// ended_at is RFC3339Nano text with a zone offset, so the SQL comparison
 	// is only a coarse prefilter (a day of slack absorbs offset changes); the
 	// exact cut happens on the parsed time below.
 	rows, err := d.conn.Query(
-		`SELECT b.id, b.role_id, b.orchestrator_id, b.argus_task_id, b.worktree_path, b.started_at, b.ended_at, b.end_reason,
-		        (SELECT COUNT(*) FROM hera_bindings x WHERE x.argus_task_id = b.argus_task_id AND x.ended_at IS NULL)
-		 FROM hera_bindings b
-		 WHERE b.ended_at IS NULL OR b.ended_at > ?
-		 ORDER BY b.id`, formatTime(endedSince.Add(-24*time.Hour)))
+		`SELECT id, role_id, orchestrator_id, argus_task_id, worktree_path, started_at, ended_at, end_reason
+		 FROM hera_bindings
+		 WHERE ended_at IS NULL OR ended_at > ?
+		 ORDER BY id`, formatTime(endedSince.Add(-24*time.Hour)))
 	if err != nil {
 		return nil, fmt.Errorf("list cost sweep bindings: %w", err)
 	}
 	defer rows.Close()
-	var out []CostSweepBinding
+	var out []HeraBinding
 	for rows.Next() {
-		var c CostSweepBinding
-		var startedAt string
-		var endedAt, endReason sql.NullString
-		if err := rows.Scan(&c.ID, &c.RoleID, &c.OrchestratorID, &c.ArgusTaskID, &c.WorktreePath,
-			&startedAt, &endedAt, &endReason, &c.TaskLiveBindings); err != nil {
-			return nil, fmt.Errorf("scan cost sweep binding: %w", err)
+		b, err := scanHeraBindingRows(rows)
+		if err != nil {
+			return nil, err
 		}
-		c.StartedAt = parseTime(startedAt)
-		c.EndedAt = nullTimePtr(endedAt)
-		c.EndReason = endReason.String
-		if c.EndedAt != nil && !c.EndedAt.After(endedSince) {
+		if b.EndedAt != nil && !b.EndedAt.After(endedSince) {
 			continue
 		}
-		out = append(out, c)
+		out = append(out, *b)
 	}
 	return out, rows.Err()
 }

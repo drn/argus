@@ -59,7 +59,7 @@ func (f *fixture) sweeper() *Sweeper {
 	return &Sweeper{
 		Store:   f.d,
 		StateDB: func(*model.Task, config.Config) (string, error) { return f.stateDB, nil },
-		Rates:   func(*model.Task) (*pricing.Table, error) { return f.table, nil },
+		Rates:   func(string) (*pricing.Table, error) { return f.table, nil },
 		Now:     time.Now,
 	}
 }
@@ -217,8 +217,8 @@ func TestSweep_SkipsNonCodexAndAmbiguousBindings(t *testing.T) {
 	f.write(f.thread("d", "/w/d"), (&rollout{}).model("gpt-a").call(time.Now().Add(time.Minute), 100, 0, 0))
 
 	st := f.sweeper().Sweep()
-	testutil.Equal(t, st.Bindings, 2) // both of the dual task's bindings; never the Claude one
-	testutil.Equal(t, st.Ambiguous, 2)
+	testutil.Equal(t, st.Bindings, 2)  // the dual task's two bindings; never the Claude one
+	testutil.Equal(t, st.Ambiguous, 2) // the one call, seen from each binding
 	testutil.Equal(t, st.Calls, 0)
 	testutil.Equal(t, f.totals(claude.ID).TokensInput, int64(0))
 	testutil.Equal(t, f.totals(dual.ID).TokensInput, int64(0))
@@ -263,7 +263,7 @@ func TestSweep_FailuresAreIsolated(t *testing.T) {
 		f.worker("a", "codex")
 		f.write(f.thread("a", "/w/a"), (&rollout{}).model("gpt-a").call(time.Now().Add(time.Minute), 1, 0, 0))
 		s := f.sweeper()
-		s.Rates = func(*model.Task) (*pricing.Table, error) { return nil, errors.New("bad toml") }
+		s.Rates = func(string) (*pricing.Table, error) { return nil, errors.New("bad toml") }
 		testutil.Equal(t, s.Sweep().Errors, 1)
 	})
 	t.Run("missing thread index and missing rollout are quiet", func(t *testing.T) {
@@ -275,20 +275,28 @@ func TestSweep_FailuresAreIsolated(t *testing.T) {
 		s.StateDB = func(*model.Task, config.Config) (string, error) { return filepath.Join(f.dir, "nope.sqlite"), nil }
 		testutil.Equal(t, s.Sweep().Errors, 0)
 	})
-	t.Run("task row gone is skipped", func(t *testing.T) {
+	t.Run("deleted task falls back to the default Codex home", func(t *testing.T) {
 		f := newFixture(t)
-		task, _ := f.worker("a", "codex")
-		testutil.NoError(t, f.d.Delete(task.ID))
-		st := f.sweeper().Sweep()
-		testutil.Equal(t, st.Bindings, 0)
+		task, b := f.worker("a", "codex")
+		time.Sleep(5 * time.Millisecond)
+		during := time.Now()
+		time.Sleep(5 * time.Millisecond)
+		f.write(f.thread("a", "/w/a"), (&rollout{}).model("gpt-a").call(during, 9, 0, 0))
+		testutil.NoError(t, f.d.Delete(task.ID)) // ends the binding; the row stays
+		var gotTask *model.Task
+		s := f.sweeper()
+		s.StateDB = func(task *model.Task, _ config.Config) (string, error) { gotTask = task; return f.stateDB, nil }
+		st := s.Sweep()
 		testutil.Equal(t, st.Errors, 0)
+		testutil.Equal(t, gotTask.Account, "")
+		testutil.Equal(t, f.totals(b.ID).TokensInput, int64(9))
 	})
 }
 
-func TestRollouts_CorruptIndexErrors(t *testing.T) {
+func TestThreadIndex_CorruptIndexErrors(t *testing.T) {
 	bad := filepath.Join(t.TempDir(), "state_5.sqlite")
 	testutil.NoError(t, os.WriteFile(bad, []byte("not a sqlite file"), 0o644))
-	_, err := Rollouts(bad, "/w")
+	_, err := ThreadIndex(bad)
 	testutil.True(t, err != nil)
 }
 
@@ -305,7 +313,7 @@ func TestNew_DefaultSeams(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.True(t, strings.HasSuffix(path, "state_5.sqlite"))
 
-	table, err := s.Rates(&model.Task{ID: "t"})
+	table, err := s.Rates("")
 	testutil.NoError(t, err)
 	_, ok := table.Models["gpt-6.1-sol"]
 	testutil.True(t, ok)
@@ -320,7 +328,7 @@ type faultyStore struct {
 	listErr, cursorErr, accrueErr error
 }
 
-func (s faultyStore) ListCostSweepBindings(t time.Time) ([]db.CostSweepBinding, error) {
+func (s faultyStore) ListCostSweepBindings(t time.Time) ([]db.HeraBinding, error) {
 	if s.listErr != nil {
 		return nil, s.listErr
 	}
@@ -385,9 +393,93 @@ func TestNew_UnknownAccountErrors(t *testing.T) {
 	testutil.True(t, err != nil)
 }
 
-func TestRollouts_StatErrorSurfaces(t *testing.T) {
+func TestThreadIndex_StatErrorSurfaces(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "file")
 	testutil.NoError(t, os.WriteFile(file, nil, 0o644))
-	_, err := Rollouts(filepath.Join(file, "state_5.sqlite"), "/w")
+	_, err := ThreadIndex(filepath.Join(file, "state_5.sqlite"))
 	testutil.True(t, err != nil)
+}
+
+// endedBinding creates a codex worker whose binding has ended, and returns a
+// timestamp inside its window.
+func (f *fixture) endedBinding(name string) (*model.Task, *db.HeraBinding, time.Time) {
+	f.t.Helper()
+	task, b := f.worker(name, "codex")
+	time.Sleep(5 * time.Millisecond)
+	testutil.NoError(f.t, f.d.EndHeraBinding(b.ID, "test"))
+	bindings, err := f.d.ListCostSweepBindings(time.Now().Add(-time.Hour))
+	testutil.NoError(f.t, err)
+	for _, x := range bindings {
+		if x.ID == b.ID {
+			return task, b, b.StartedAt.Add(x.EndedAt.Sub(b.StartedAt) / 2)
+		}
+	}
+	f.t.Fatal("ended binding not listed")
+	return nil, nil, time.Time{}
+}
+
+func TestSweep_BackfillsStaleBindingsOnce(t *testing.T) {
+	f := newFixture(t)
+	_, b, during := f.endedBinding("old")
+	path := f.thread("old", "/w/old")
+	r := (&rollout{}).model("gpt-a").call(during, 100, 0, 0)
+	f.write(path, r)
+	later := func() time.Time { return time.Now().Add(time.Hour) } // the binding ended well before the grace window
+
+	s := f.sweeper()
+	s.Now = later
+	st := s.Sweep()
+	testutil.Equal(t, st.Backfilled, 1)
+	testutil.Equal(t, f.totals(b.ID).TokensInput, int64(100))
+
+	t.Run("later sweeps on the same sweeper skip stale bindings", func(t *testing.T) {
+		r.call(during, 50, 0, 0)
+		f.write(path, r)
+		st := s.Sweep()
+		testutil.Equal(t, st.Bindings, 0)
+		testutil.Equal(t, f.totals(b.ID).TokensInput, int64(100))
+	})
+
+	t.Run("a fresh sweeper's backfill skips an already-read binding", func(t *testing.T) {
+		fresh := f.sweeper()
+		fresh.Now = later
+		st := fresh.Sweep()
+		testutil.Equal(t, st.Backfilled, 0)
+		testutil.Equal(t, f.totals(b.ID).TokensInput, int64(100))
+	})
+}
+
+func TestSweep_SkipsCallsMadeWhileDualBound(t *testing.T) {
+	f := newFixture(t)
+	task, b := f.worker("dual", "codex")
+	// The same task bound under a second orchestrator while the first binding
+	// is still live, so their windows overlap once the first ends.
+	other, err := f.d.CreateHeraOrchestrator("o2", "")
+	testutil.NoError(t, err)
+	role2, err := f.d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: other.ID, Name: "dual2", Kind: db.HeraKindCoordinator, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	f.bind(role2.ID, task)
+	time.Sleep(5 * time.Millisecond)
+	during := time.Now()
+	time.Sleep(5 * time.Millisecond)
+	testutil.NoError(t, f.d.EndHeraBinding(b.ID, "test"))
+	f.write(f.thread("dual", "/w/dual"), (&rollout{}).model("gpt-a").call(during, 100, 0, 0))
+
+	s := f.sweeper()
+	s.Now = func() time.Time { return time.Now().Add(time.Hour) }
+	st := s.Sweep()
+	testutil.Equal(t, st.Ambiguous, 2) // the one call, seen from each binding
+	testutil.Equal(t, st.Calls, 0)
+	testutil.Equal(t, f.totals(b.ID).TokensInput, int64(0))
+}
+
+func TestSweep_BackfillOfDeletedRolloutIsNotCounted(t *testing.T) {
+	f := newFixture(t)
+	f.endedBinding("gone")
+	f.thread("gone", "/w/gone") // registered in the index, file never written
+	s := f.sweeper()
+	s.Now = func() time.Time { return time.Now().Add(time.Hour) }
+	st := s.Sweep()
+	testutil.Equal(t, st.Backfilled, 0)
+	testutil.Equal(t, st.Errors, 0)
 }

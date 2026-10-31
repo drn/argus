@@ -2,13 +2,15 @@
 
 ### Requirement: Codex rollout accrual
 
-The daemon SHALL accrue cost for every hera binding whose task's backend family declares the Codex-rollout cost source, by reading the Codex rollout files of every Codex thread whose recorded working directory equals the binding's worktree path. Threads SHALL be discovered through the Codex thread index (`state_5.sqlite` `threads` table) in the task's resolved Codex home (the task account's `codex_home`, otherwise the default Codex home). This set SHALL include Codex sub-agent threads and every thread started in that worktree, not only the thread whose ID Argus captured.
+The daemon SHALL accrue cost for every hera binding whose task's backend family declares the Codex-rollout cost source, or whose task row no longer exists (a deleted task cannot name its backend, so the presence of Codex threads in its worktree decides), by reading the Codex rollout files of every Codex thread whose recorded working directory equals the binding's worktree path. Threads SHALL be discovered through the Codex thread index (`state_5.sqlite` `threads` table) in the task's resolved Codex home (the task account's `codex_home`, otherwise the default Codex home; the default for a deleted task). This set SHALL include Codex sub-agent threads and every thread started in that worktree, not only the thread whose ID Argus captured.
 
 Each de-duplicated `token_count` event carrying a non-null `last_token_usage` SHALL be treated as one billable call. Consecutive events with an identical `total_token_usage` are duplicates and SHALL count once. A call's usage SHALL map onto the binding's existing raw columns as follows: `input_tokens − cached_input_tokens` → `tokens_input`; `cached_input_tokens` → `tokens_cache_read`; `cache_write_input_tokens` → `tokens_cache_write_5m`; `output_tokens` → `tokens_output`. `reasoning_output_tokens` SHALL NOT be added separately, because it is already included in `output_tokens`.
 
 Each call SHALL be priced individually, at the moment it is first observed, against the rate table entry keyed by the model recorded in the rollout's most recent `turn_context` event preceding that call. The resulting USD and raw tokens SHALL be ADDED to the binding's `cost_usd_accrued` and raw token columns. A call whose recorded model has no rate-table entry SHALL advance the raw token columns but add no USD, and SHALL never be priced later.
 
-The daemon SHALL run this accrual periodically, at least once per minute and once at daemon startup. It SHALL sweep bindings that are live or that ended within the last 15 minutes. It SHALL NOT touch bindings whose family declares any other cost source, so Codex accrual never interacts with Stop-hook or bridge accounting. A live binding whose task currently holds more than one live hera binding (bound under two or more orchestrators) SHALL be skipped, because there is no single binding to charge. This mirrors the Stop-hook endpoint's ambiguous-binding rejection.
+The daemon SHALL run this accrual periodically, at least once per minute and once at daemon startup. Each pass SHALL sweep bindings that are live or that ended within the last 15 minutes. It SHALL NOT touch bindings whose existing task's family declares any other cost source, so Codex accrual never interacts with Stop-hook or bridge accounting.
+
+The first pass after daemon startup SHALL additionally backfill: every binding that ended within the last 30 days and has never been read (no cursor) SHALL be priced from the rollouts still on disk, under the same per-call rules. A binding with any cursor SHALL never be backfilled again, so each call is priced at most once across daemon restarts.
 
 #### Scenario: A Codex worker's calls accrue cost
 
@@ -35,10 +37,20 @@ The daemon SHALL run this accrual periodically, at least once per minute and onc
 - **WHEN** a Codex call is recorded under a model with no rate-table entry
 - **THEN** the binding's raw token columns advance by that call's usage and `cost_usd_accrued` is unchanged, and adding a rate for that model later does not price that call
 
-#### Scenario: A task bound under two orchestrators is skipped
+#### Scenario: A deleted task's Codex work still accrues
 
-- **WHEN** a Codex-backend task holds live hera bindings under two orchestrators at once
-- **THEN** the sweeper accrues nothing to either binding
+- **WHEN** a hera binding's task row has been deleted, and the default Codex home's thread index records Codex threads in that binding's worktree with calls inside the binding's window
+- **THEN** those calls accrue to the binding
+
+#### Scenario: Startup backfills a never-read ended binding once
+
+- **WHEN** the daemon starts and a binding that ended 3 days ago has no cursor and its worktree's rollouts are still on disk
+- **THEN** that pass prices the binding's calls, and no later pass or later daemon start prices them again
+
+#### Scenario: Backfill stops at 30 days
+
+- **WHEN** a never-read binding ended more than 30 days before the daemon starts
+- **THEN** it is not backfilled
 
 #### Scenario: Claude bindings are never swept
 
@@ -49,7 +61,7 @@ The daemon SHALL run this accrual periodically, at least once per minute and onc
 
 The daemon SHALL persist a read cursor per (binding, rollout file) recording the byte offset consumed, the last consumed event's running total (for cross-sweep de-duplication), and the most recent model seen. Each sweep SHALL read only bytes after the cursor, up to the last complete line; an incomplete trailing line SHALL be left for a later sweep. The binding's cost and raw-token increments and the cursor advance SHALL be committed in a single transaction, so a crash or daemon restart never prices a call twice and never skips one.
 
-A call SHALL accrue to a binding only when the call's event timestamp is at or after the binding's `started_at` and, if the binding has ended, before its `ended_at`. A later binding on the same worktree SHALL therefore never re-accrue calls that belonged to an earlier binding, while still accruing later calls appended to the same rollout (for example, a resumed thread).
+A call SHALL accrue to a binding only when the call's event timestamp is at or after the binding's `started_at` and, if the binding has ended, before its `ended_at`. A later binding on the same worktree SHALL therefore never re-accrue calls that belonged to an earlier binding, while still accruing later calls appended to the same rollout (for example, a resumed thread). A call whose timestamp falls inside the windows of two or more bindings of the same task (the task was bound under two or more orchestrators at that moment) SHALL accrue to none of them, because there is no single binding to charge. This mirrors the Stop-hook endpoint's ambiguous-binding rejection.
 
 #### Scenario: Repeated sweeps over an unchanged rollout add nothing
 
@@ -65,6 +77,11 @@ A call SHALL accrue to a binding only when the call's event timestamp is at or a
 
 - **WHEN** the daemon restarts after a sweep committed a cursor for a rollout
 - **THEN** the next sweep continues from that cursor and does not re-price earlier calls
+
+#### Scenario: A call made while dual-bound is skipped
+
+- **WHEN** a Codex-backend task is bound under two orchestrators at once and makes a call during that overlap
+- **THEN** that call accrues to neither binding, while calls made when only one binding was live accrue to that one
 
 #### Scenario: A rebinding does not double-count earlier calls
 
@@ -129,3 +146,26 @@ Derived from: `internal/agent/agent.go` (`KnownModels`, `ResolveModel`), `intern
 
 - **WHEN** a Codex call is recorded under model `gpt-6.1-sol` and the rate table has a `gpt-6.1-sol` entry
 - **THEN** the call is priced from that entry, regardless of the model alias Argus resolved for the task
+
+### Requirement: No retroactive cost; unmeasured is distinct from zero
+
+A binding whose session predates this feature, or whose totals have otherwise never been accumulated (all five raw token-total columns AND `cost_usd_accrued` remain at their default of 0), SHALL be reported as having no cost data ("n/a" or equivalent absent-value display), never as a computed $0.00 cost. The system SHALL apply no backfill or migration to bindings recorded before this change ships, nor to any accrual period whose model lacked a rate-table entry at the time (see "Accrual-time cost stamping").
+
+One exception applies: Codex rollout accrual's one-time startup backfill (see "Codex rollout accrual") MAY price a never-read Codex binding that ended within the last 30 days, because Codex keeps its own per-call usage log on disk. Those calls are priced at the rate table in effect when they are first observed, the same accrual-time rule every other accrual follows. Claude transcript and bridge accrual remain non-retroactive.
+
+Derived from: `internal/db/schema.go` (`hera_bindings` new columns, default 0, no backfill).
+
+#### Scenario: An all-zero binding renders as unmeasured, not free
+
+- **WHEN** a binding's five raw token-total columns and `cost_usd_accrued` are all exactly 0
+- **THEN** its cost is reported as "n/a", not "$0.00"
+
+#### Scenario: A pre-existing binding is never retroactively priced
+
+- **WHEN** a binding was recorded before this change shipped and its transcript is no longer scanned
+- **THEN** its totals remain at their default of 0 and no cost is ever computed or backfilled for it
+
+#### Scenario: A recently ended Codex binding is the backfill exception
+
+- **WHEN** a Codex binding ended within the last 30 days, was never read, and its rollouts are still on disk at daemon startup
+- **THEN** its calls are priced once at the then-current rate table, and its cost no longer reads "n/a"

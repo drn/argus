@@ -79,15 +79,20 @@ const heraReclaimSweepInterval = 30 * time.Minute
 // last one, so a short tick keeps Codex roles' displayed cost near-live.
 var codexCostSweepInterval = time.Minute
 
-// codexCostSweepFn runs one Codex cost sweep. Nil under `go test` (like
+// codexCostSweepFn returns the per-tick sweep for one daemon run. It builds
+// ONE Sweeper reused across ticks, because a Sweeper's first pass is the
+// one-time 30-day backfill. Nil under `go test` (like
 // injectGlobalBackendConfig) so ephemeral test daemons never read the
 // developer's real ~/.codex or install ~/.argus/rates.toml; tests that drive
 // the loop swap in their own.
-var codexCostSweepFn = func() func(*Daemon) {
+var codexCostSweepFn = func() func(*Daemon) func() {
 	if strings.HasSuffix(os.Args[0], ".test") {
 		return nil
 	}
-	return func(d *Daemon) { codexcost.New(d.db).Sweep() }
+	return func(d *Daemon) func() {
+		s := codexcost.New(d.db)
+		return func() { s.Sweep() }
+	}
 }()
 
 // DefaultSocketPath returns the default Unix socket path.
@@ -1105,22 +1110,23 @@ func (d *Daemon) runHeraReclaimSweeper() {
 }
 
 // runCodexCostSweeper is the Codex rollout cost sweeper goroutine body
-// (add-codex-cost-accrual): one sweep at startup, then one per
+// (add-codex-cost-accrual): one sweep at startup (which also runs the
+// one-time backfill), then one per
 // codexCostSweepInterval until d.done closes. Codex never runs the Claude
 // Stop hook or bridge mod, so this is the only path that prices Codex roles.
 // A panicking sweep is logged and the loop continues.
 func (d *Daemon) runCodexCostSweeper() {
-	sweep := codexCostSweepFn
-	if sweep == nil {
+	if codexCostSweepFn == nil {
 		return
 	}
+	sweep := codexCostSweepFn(d)
 	run := func() {
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("[codexcost] sweep panicked", "panic", r)
 			}
 		}()
-		sweep(d)
+		sweep()
 	}
 	ticker := time.NewTicker(codexCostSweepInterval)
 	defer ticker.Stop()

@@ -34,6 +34,7 @@ The long-context figures come from aggregator sites citing OpenAI, and the seed 
 - A "partial" marker on subtree rollups that include unmeasured roles (e.g. "$262+"). This would be a three-client UI change, deferred as a named follow-up.
 - Correcting existing Claude rates in `rates.toml` (see Open Questions).
 - Long-context pricing for Claude models. Claude's transcript path prices aggregate deltas, not individual calls, so the tier field is honored only by per-call pricers (Codex) in this change.
+- Backfill beyond 30 days, or of Claude bindings (Claude transcripts are not re-scanned).
 - Non-hera Codex tasks. Cost columns live on `hera_bindings`, and there is nowhere to accrue a plain task's cost today.
 
 ## Decisions
@@ -109,15 +110,30 @@ A call is accrued to a binding only if its event `timestamp` is ≥ `binding.sta
 
 `agent.Family` gains `CostSource` (`CostSourceNone` default, `CostSourceClaudeHook`, `CostSourceCodexRollout`). The DB returns bindings with `ended_at IS NULL OR ended_at > now − 15m`. The sweeper keeps those whose task's family reports `CostSourceCodexRollout`, so it never branches on backend identity outside `backends.go`, per AGENTS.md.
 
-The 15-minute grace window lets the final calls before a binding ended get read. A live binding whose task is concurrently bound under 2+ orchestrators is skipped, matching the Stop-hook PUT handler's `ErrHeraAmbiguous` rejection, because charging both would double-count. A Claude binding is never touched, so there is no interaction with the transcript and bridge sources or their source-handoff logic in `hera_bridge_cost`.
+The 15-minute grace window lets the final calls before a binding ended get read. A call made while the task was bound under 2+ orchestrators is skipped (D10). A Claude binding is never touched, so there is no interaction with the transcript and bridge sources or their source-handoff logic in `hera_bridge_cost`.
 
 ### D7. Cadence: daemon goroutine, 60s tick plus once at startup
 
 The sweeper is a sibling of `runHeraReclaimSweeper`: `d.done`-gated, panic-recovered, first sweep at startup. Steady-state cost is one SQLite query per live Codex binding plus reading only appended bytes. Each sweep logs bindings scanned, calls priced, calls unpriced (unknown model), USD added, and per-binding errors, under prefix `[codexcost]`. Per-binding failures are isolated, so a missing Codex home or unreadable rollout skips that binding without aborting the batch.
 
-### D8. Backfill falls out naturally for live bindings only
+### D8. One-time startup backfill (revised during implementation)
 
-Already-running orchestrators like sketch-reporting have live bindings (Codex workers keep live bindings after their task completes), so the first sweep accrues every call since each binding started. Bindings ended more than 15 minutes before the feature ships are not swept, consistent with the existing "no retroactive cost" rule. Their history is priced at the rates in effect at first observation, which is accrual-time stamping applied at the earliest moment the system could observe the calls.
+A real-data dry run showed the approved "live bindings only" scope missed the motivating case entirely. sketch-reporting's original Codex workers were nuked (`user_deleted`) at 00:02, before the feature existed, so none of their spend would ever count. Codex keeps per-call usage on disk, so a backfill is possible, and the user opted in.
+
+- **What it covers:** each Sweeper's first pass (once per daemon start) also lists bindings that ended within 30 days and prices those with no cursor rows.
+- **Once only:** a binding with any cursor is never backfilled again, so a restart re-checks but re-prices nothing.
+- **Pricing:** backfilled calls are priced at the current rate table, which is the same accrual-time rule applied at first observation. This is a deliberate, Codex-only exception to "No retroactive cost" (MODIFIED in the delta).
+- **Measured on the live DB copy:** 13,118 calls across 275 bindings, +$461. sketch-reporting went from $303 to $529. An immediate re-run, and a fresh sweeper, priced nothing.
+
+### D9. Deleted task rows fall back to the default Codex home
+
+Nuking a worker deletes its task row but leaves the binding row, so the family can't be resolved. Such bindings use the default Codex home, and the presence of Codex threads for that worktree within the binding's window is what decides. This also captures calls made in the final minutes before a team is nuked, which the 15-minute grace window would otherwise drop.
+
+- **Accepted edge:** a deleted Claude worker that shelled out to `codex` in its own worktree would have that Codex spend counted. That is real spend, and a live task is still gated by family.
+
+### D10. Dual-bound attribution is per call, not per binding
+
+The first cut skipped whole live bindings whose task held 2+ live bindings. That wrongly charged the surviving binding for calls made during an earlier overlap. The rule is now per call: a call accrues only when exactly one of the task's bindings' windows contains it. That one rule covers live dual-binding, ended overlaps, and sequential rebinding.
 
 ## Risks / Trade-offs
 

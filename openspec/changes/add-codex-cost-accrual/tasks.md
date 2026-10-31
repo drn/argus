@@ -29,9 +29,14 @@
 - [x] 5.3 Wire `runCodexCostSweeper` into the daemon (startup sweep plus 60s ticker, `d.done`-gated, panic-recovered), with a test seam so daemon tests never read a real `~/.codex`
 - [x] 5.4 Log per sweep under `[codexcost]` (bindings, calls priced and unpriced, USD added, errors) via slog/uxlog per daemon convention
 
-## 6. Docs and gate
+## 6. Backfill (added during implementation, user-approved)
 
-- [x] 6.1 Add gotchas to `context/knowledge/gotchas/misc.md`, or a cost section: cwd-not-session-id discovery, cached ⊂ input and reasoning ⊂ output, de-dupe on identical totals, cursor and accrual single transaction, binding-window attribution, existing `rates.toml` never overwritten (manual seed step); update the index row
-- [x] 6.2 Update the README Reference section if it documents cost sources or `rates.toml`
-- [ ] 6.3 `make pre-pr` green
-- [ ] 6.4 Archive the change (`openspec archive add-codex-cost-accrual`, or a manual merge-and-move) in the same PR
+- [x] 6.1 One-time first-pass backfill of never-read bindings ended within 30 days; deleted-task fallback to the default Codex home; per-call dual-binding attribution replacing the per-binding live-count skip
+- [x] 6.2 Tests: backfill once (same sweeper and fresh sweeper), deleted rollout not counted, deleted task accrues, call during dual-binding skipped; dry run on a copy of the live DB
+
+## 7. Docs and gate
+
+- [x] 7.1 Add gotchas to `context/knowledge/gotchas/misc.md`, or a cost section: cwd-not-session-id discovery, cached ⊂ input and reasoning ⊂ output, de-dupe on identical totals, cursor and accrual single transaction, binding-window attribution, existing `rates.toml` never overwritten (manual seed step); update the index row
+- [x] 7.2 Update the README Reference section if it documents cost sources or `rates.toml`
+- [ ] 7.3 `make pre-pr` green
+- [ ] 7.4 Archive the change (`openspec archive add-codex-cost-accrual`, or a manual merge-and-move) in the same PR

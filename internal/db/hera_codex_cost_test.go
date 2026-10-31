@@ -27,18 +27,17 @@ func TestListCostSweepBindings(t *testing.T) {
 
 	got, err := d.ListCostSweepBindings(time.Now().Add(-15 * time.Minute))
 	testutil.NoError(t, err)
-	byID := map[int64]CostSweepBinding{}
+	byID := map[int64]HeraBinding{}
 	for _, b := range got {
 		byID[b.ID] = b
 	}
 	_, hasOld := byID[old.ID]
 	testutil.False(t, hasOld)
-	testutil.Equal(t, byID[live.ID].TaskLiveBindings, 1)
 	testutil.Equal(t, byID[live.ID].WorktreePath, "/w/live")
 	testutil.True(t, byID[live.ID].EndedAt == nil)
 	testutil.True(t, byID[recent.ID].EndedAt != nil)
-	testutil.Equal(t, byID[recent.ID].TaskLiveBindings, 0)
-	testutil.Equal(t, byID[dual.ID].TaskLiveBindings, 2)
+	_, hasDual := byID[dual.ID]
+	testutil.True(t, hasDual)
 }
 
 func TestAccrueCodexCalls(t *testing.T) {

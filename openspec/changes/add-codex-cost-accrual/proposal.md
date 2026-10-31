@@ -6,7 +6,8 @@ Hera cost estimates only measure Claude sessions: accrual runs off `argus coord-
 
 - A daemon-side sweeper reads each live Codex-backend hera binding's Codex rollout files, found through Codex's own thread index by the binding's worktree `cwd`. This covers the main thread, Codex sub-agent threads, and resumed threads.
 - Each Codex API call (one `token_count` event in a rollout) is priced individually at the moment it is first observed, using the model Codex itself recorded for that turn, and added to the binding's existing `cost_usd_accrued` and raw token columns. TUI, web, and macOS all read cost from those columns already, so no client changes are needed.
-- A per-binding, per-rollout read cursor makes accrual incremental and idempotent. A call is attributed only to the binding whose `[started_at, ended_at)` window contains its timestamp, so re-binding a worktree never double-counts.
+- On the first sweep after daemon start, a one-time backfill prices never-read Codex bindings that ended within the last 30 days, from the rollouts still on disk. This brings existing orchestrators like sketch-reporting up to their real totals; it is a Codex-only exception to the "no retroactive cost" rule. Bindings whose task row was deleted (nuked workers) fall back to the default Codex home.
+- A per-binding, per-rollout read cursor makes accrual incremental and idempotent. A call is attributed only to the binding whose `[started_at, ended_at)` window contains its timestamp, and to none when the task was bound under two orchestrators at that moment, so neither re-binding nor dual-binding ever double-counts.
 - The rate table gains an optional long-context tier per model: a threshold plus a second set of rates applied to any single call whose input exceeds it. OpenAI bills `gpt-6.1-sol` calls above 272K input tokens at a higher rate.
 - `rates.toml` is seeded with `gpt-6.1-sol` (published standard and long-context rates), replacing the comment that says Codex models are deliberately unseeded.
 - The backend family registry gains a cost-source capability so the sweeper selects Codex bindings without branching on backend identity.
@@ -19,7 +20,7 @@ _None._
 
 ### Modified Capabilities
 
-- `cost-estimation`: adds Codex rollout accrual (per-call pricing, cursor-based incremental reads, binding-window attribution, sub-agent inclusion); the rate table requirement gains provider-reported model keys and an optional long-context tier.
+- `cost-estimation`: adds Codex rollout accrual (per-call pricing, cursor-based incremental reads, binding-window attribution, sub-agent inclusion, one-time 30-day backfill); the rate table requirement gains provider-reported model keys and an optional long-context tier; "No retroactive cost" gains the Codex backfill exception.
 
 ## Impact
 

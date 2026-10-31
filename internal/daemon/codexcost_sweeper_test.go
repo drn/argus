@@ -18,11 +18,14 @@ func TestRunCodexCostSweeper(t *testing.T) {
 	origFn, origInterval := codexCostSweepFn, codexCostSweepInterval
 	t.Cleanup(func() { codexCostSweepFn, codexCostSweepInterval = origFn, origInterval })
 
-	var calls atomic.Int32
+	var calls, built atomic.Int32
 	codexCostSweepInterval = 5 * time.Millisecond
-	codexCostSweepFn = func(*Daemon) {
-		if calls.Add(1) == 2 {
-			panic("sweep blew up") // recovered; the loop keeps ticking
+	codexCostSweepFn = func(*Daemon) func() {
+		built.Add(1)
+		return func() {
+			if calls.Add(1) == 2 {
+				panic("sweep blew up") // recovered; the loop keeps ticking
+			}
 		}
 	}
 	d := &Daemon{done: make(chan struct{})}
@@ -45,4 +48,5 @@ func TestRunCodexCostSweeper(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("sweeper did not stop on done")
 	}
+	testutil.Equal(t, built.Load(), int32(1)) // one Sweeper per daemon run: backfill runs once
 }
