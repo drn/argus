@@ -87,7 +87,7 @@ func (f *fixture) thread(id, cwd string) string {
 	path := filepath.Join(f.dir, "rollout-"+id+".jsonl")
 	conn, err := sql.Open("sqlite", f.stateDB)
 	testutil.NoError(f.t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_, err = conn.Exec(`INSERT INTO threads(id, rollout_path, created_at, cwd) VALUES(?,?,?,?)`, id, path, time.Now().Unix(), cwd)
 	testutil.NoError(f.t, err)
 	return path

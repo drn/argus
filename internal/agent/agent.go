@@ -544,7 +544,7 @@ func CodexStateDBPath(sqliteHome string) (string, error) {
 		var err error
 		sqliteHome, err = skills.UserCodexHome()
 		if err != nil {
-			return "", fmt.Errorf("Codex home: %w", err)
+			return "", fmt.Errorf("codex home: %w", err)
 		}
 	}
 	return filepath.Join(sqliteHome, codexStateDB), nil
