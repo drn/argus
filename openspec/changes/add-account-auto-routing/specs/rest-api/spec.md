@@ -28,7 +28,7 @@
 
 ### Requirement: Move a task to another account over REST
 
-`POST /api/tasks/{id}/account` with JSON `{"account": "<name>|default|auto"}` SHALL perform the account-move operation and then resume the task's session as `POST /api/tasks/{id}/restart` does, responding 200 with `{from, to, resumed}`. An unknown task SHALL return 404; a live, non-idle session SHALL return 409; every other rejection (unknown or unsupported target, same account, non-Claude backend, no other candidate for `auto`) SHALL return 400 with the reason. A failure to restart after the move has persisted SHALL return 500 with the task left on the target account.
+`POST /api/tasks/{id}/account` with JSON `{"account": "<name>|default|auto", "force": <bool, optional>}` SHALL perform the account-move operation and then resume the task's session as `POST /api/tasks/{id}/restart` does, responding 200 with `{from, to, resumed}`. An unknown task SHALL return 404; a live, non-idle session SHALL return 409 unless `force` is true; every other rejection (unknown or unsupported target, same account, non-Claude backend, no other candidate for `auto`) SHALL return 400 with the reason. A failure to restart after the move has persisted SHALL return 500 with the task left on the target account.
 
 #### Scenario: Move succeeds
 - **WHEN** a client POSTs `{"account": "personal"}` for an idle task on `default`

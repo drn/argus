@@ -32,11 +32,11 @@
 
 ## 6. Account move
 
-- [ ] 6.1 Tests first (`t.TempDir()` HOME, fake runner): `PrepareAccountMove` rejections (unknown task, non-Claude, same account, unsupported/unknown target, `auto` with no candidate, busy session) leave no side effects
+- [ ] 6.1 Tests first (`t.TempDir()` HOME, fake runner): `PrepareAccountMove` rejections (unknown task, non-Claude, same account, unsupported/unknown target, `auto` with no candidate, busy session without force) leave no side effects; busy session with force proceeds; no model turn or agent tool call is involved
 - [ ] 6.2 Tests first: a successful move stops a live idle session, copies `<sid>.jsonl` + `<sid>/` into the target's `projects/<enc>/` (overwriting an older copy, source kept), persists account + clears the flag, and returns `{from, to, resumed:true}`; missing transcript → session ID cleared, `resumed:false`
 - [ ] 6.3 Implement `internal/agent/accountmove.go` (`RefreshResumeSessionID` first, stop + bounded wait, `BootstrapClaudeConfigDir`, copy, persist) with `[account]` logs
-- [ ] 6.4 Tests first + implement `POST /api/tasks/{id}/account` (404 / 409 / 400 / 500 mapping, restart shares the `handleRestartTask` body via an extracted helper)
-- [ ] 6.5 Tests first + implement MCP `task_move_account` (self-move rejection, error mapping, description text)
+- [ ] 6.4 Tests first + implement `POST /api/tasks/{id}/account` (404 / 409 unless `force` / 400 / 500 mapping, restart shares the `handleRestartTask` body via an extracted helper)
+- [ ] 6.5 Tests first + implement MCP `task_move_account` (self-move rejection, `force`, error mapping, description text)
 - [ ] 6.6 `apiclient` + `apistore` `MoveTaskAccount` for remote mode, with a test against an httptest server
 
 ## 7. REST accounts listing
@@ -48,14 +48,14 @@
 
 - [ ] 8.1 Tests first: new-task form lists `auto` (after `default`) when a named account supports the backend, preselects it when the default is `auto`, submits `"auto"`, and reads skills from `~/.claude` while `auto` is selected
 - [ ] 8.2 Implement the form change (local + remote account sources)
-- [ ] 8.3 Add `tasklist.move_account` / `hera_rail.move_account` (`A`) to `keymap` (defaultSpecs, actionLabels, contextOrder), dispatch cases, palette registries, and `TestHelpModal_Draw` assertions
-- [ ] 8.4 Tests first: picker modal lists `auto` + eligible accounts with usage labels ("—" unknown); notices for no selection / non-Claude / no other account / busy; confirm runs the move off the UI thread and then `startSession`; remote mode calls the REST endpoint; SimulationScreen smoke test for open → confirm → close
+- [ ] 8.3 Add `tasklist.move_account` / `hera_rail.move_account` (`>`) to `keymap` (defaultSpecs, actionLabels, contextOrder), dispatch cases, palette registries, and `TestHelpModal_Draw` assertions
+- [ ] 8.4 Tests first: picker modal lists `auto` + eligible accounts with usage labels ("—" unknown); notices for no selection / non-Claude / no other account; busy session opens the picker with an interrupt warning and sends force; confirm runs the move off the UI thread and then `startSession`; remote mode calls the REST endpoint; SimulationScreen smoke test for open → confirm → close
 - [ ] 8.5 Implement the picker modal and the move flow with `[account]` uxlog lines for success / failure
 
 ## 9. Docs and verification
 
 - [ ] 9.1 Gotchas: ledger is in-memory and valid-until-reset; `auto` is resolved at creation, never stored; move copies (never deletes) transcripts; self-move rejection; old-daemon fail-open. Update `context/knowledge/index.md`
-- [ ] 9.2 README Reference: `default_account = "auto"`, `[account_routing]`, `A` key rows, `task_move_account` MCP tool, `POST /api/tasks/{id}/account`, `/api/accounts` `usage`
+- [ ] 9.2 README Reference: `default_account = "auto"`, `[account_routing]`, `>` key rows, `task_move_account` MCP tool, `POST /api/tasks/{id}/account`, `/api/accounts` `usage`
 - [ ] 9.3 `make pre-pr` clean
-- [ ] 9.4 Dogfood: with `default_account = "auto"`, a new task lands on the account with headroom; `A` moves a capped task and the conversation resumes (check for any folder-trust prompt on the target account); a coordinator moves a worker via `task_move_account`
+- [ ] 9.4 Dogfood: with `default_account = "auto"`, a new task lands on the account with headroom; `>` moves a capped task and the conversation resumes (check for any folder-trust prompt on the target account); a coordinator moves a worker via `task_move_account`
 - [ ] 9.5 Archive the change (`openspec archive add-account-auto-routing`) on this branch before merge

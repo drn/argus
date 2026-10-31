@@ -42,7 +42,7 @@ When a new task's account resolves to `auto`, the system SHALL choose among the 
 
 ### Requirement: A Claude task can be moved to another account
 
-The system SHALL provide an account-move operation for a task on a Claude backend. The target SHALL be a configured account, `default`, or `auto`; `auto` SHALL apply the auto selection rule over the accounts that support the backend, excluding the task's current account. The move SHALL be rejected without side effects when the task does not exist, its backend is not Claude, the target is unknown, equals the current account, or does not support the backend, `auto` has no other candidate, or the task's session is live and not idle. Otherwise the system SHALL stop a live session and wait for it to exit, ensure the target's Claude config dir exists, copy the task's newest transcript (`<session-id>.jsonl` plus its `<session-id>/` sidecar directory when present) from the source account's `projects/<encoded worktree>/` into the target's, overwriting an older copy, and leave the source copy in place. It SHALL then store the target as the task's account with the auto-routed flag cleared, and resume the task's session under the target account on the same task, worktree, branch, and hera bindings. When no transcript exists, the move SHALL still complete, the session SHALL start fresh, and the result SHALL report that the conversation was not resumed. Every move SHALL be logged under `[account]` with the task, source, and target.
+The system SHALL provide an account-move operation for a task on a Claude backend. The target SHALL be a configured account, `default`, or `auto`; `auto` SHALL apply the auto selection rule over the accounts that support the backend, excluding the task's current account. The move SHALL be rejected without side effects when the task does not exist, its backend is not Claude, the target is unknown, equals the current account, or does not support the backend, `auto` has no other candidate, or the task's session is live and not idle and the caller did not request force. The operation SHALL be carried out entirely by Argus (daemon or TUI) and SHALL NOT need any agent turn, tool call, or model usage on the task's current account, so it works when that account has no usage left. It SHALL NOT create a new task: the same task row, worktree, branch, and hera role bindings are kept, and only the agent process is replaced. Otherwise the system SHALL stop a live session and wait for it to exit, ensure the target's Claude config dir exists, copy the task's newest transcript (`<session-id>.jsonl` plus its `<session-id>/` sidecar directory when present) from the source account's `projects/<encoded worktree>/` into the target's, overwriting an older copy, and leave the source copy in place. It SHALL then store the target as the task's account with the auto-routed flag cleared, and resume the task's session under the target account on the same task, worktree, branch, and hera bindings. When no transcript exists, the move SHALL still complete, the session SHALL start fresh, and the result SHALL report that the conversation was not resumed. Every move SHALL be logged under `[account]` with the task, source, and target.
 
 #### Scenario: Stuck agent moved and resumed
 - **WHEN** an idle task on `default`, whose session hit its 5-hour cap, is moved to `personal`
@@ -52,9 +52,17 @@ The system SHALL provide an account-move operation for a task on a Claude backen
 - **WHEN** a task on `default` is moved with target `auto` and `personal` is the only other candidate
 - **THEN** the task moves to `personal`
 
-#### Scenario: Busy session refused
-- **WHEN** a task's session is actively producing output
+#### Scenario: Same task, same hera role
+- **WHEN** a hera worker on `default` is moved to `personal`
+- **THEN** no new task is created, the task keeps its ID, worktree, branch, and worker binding, and its coordinator's messages still reach it
+
+#### Scenario: Busy session refused without force
+- **WHEN** a task's session is actively producing output and force is not requested
 - **THEN** the move is rejected and nothing changes
+
+#### Scenario: Busy session moved with force
+- **WHEN** a task's session is actively producing output and force is requested
+- **THEN** the session is stopped and the move proceeds
 
 #### Scenario: Non-Claude task refused
 - **WHEN** a codex task is moved

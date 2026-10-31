@@ -54,18 +54,18 @@ A small concurrency-safe store: `Record(account, window, pct, resetsAt, measured
 
 ### D7. Account move (`agent.PrepareAccountMove`)
 
-1. Load the task. Reject: unknown task; a non-Claude backend; target `auto` with no other candidate; target equal to the current account; a target that does not support the backend; a session that is live and not idle (`409` / tool error). An agent stuck on its cap sits at the prompt and is idle.
+1. Load the task. Reject: unknown task; a non-Claude backend; target `auto` with no other candidate; target equal to the current account; a target that does not support the backend; a session that is live and not idle unless `force` (`409` / tool error). An agent stuck on its cap normally sits idle at the prompt, but Claude Code may keep redrawing a rate-limit or retry screen, so the TUI always offers the move: on a busy session it warns that the agent will be interrupted and passes `force`. Nothing in the move runs a model turn, so it works when the source account is at 100%.
 2. Resolve `auto` with `Pick` over the candidates that support the backend, excluding the current account.
 3. If a session is live, stop it (`runner.Stop`) and wait up to 10s for it to exit.
 4. Bootstrap the target config dir (`BootstrapClaudeConfigDir`), then copy `<src>/projects/<enc>/<sid>.jsonl` and the `<sid>/` sidecar dir if present into `<dst>/projects/<enc>/`, overwriting an older copy from an earlier move. The source stays in place, so moving back works and nothing is lost. The session ID comes from `RefreshResumeSessionID` first, so the newest in-place transcript is the one moved. No transcript means the move still proceeds: the session ID is cleared and the result says `resumed: false`.
 5. Persist `account` (`""` for default) and `account_auto = false`. A move is a deliberate choice, so the task and its future workers stay on the target.
-6. Return `{from, to, resumed}`. Each caller restarts through its own existing path: REST/MCP reuse the `handleRestartTask` body (`StartOrReattach(..., resume=true)` + `in_progress`), and the TUI uses `startSession` so pane wiring happens. Hera bindings are untouched (same task ID).
+6. Return `{from, to, resumed}`. Each caller restarts through its own existing path: REST/MCP reuse the `handleRestartTask` body (`StartOrReattach(..., resume=true)` + `in_progress`), and the TUI uses `startSession` so pane wiring happens. No new task is created: the task row, worktree, branch, and hera bindings are untouched (same task ID). Only the agent process is replaced by one running under the target account with `--resume`, so the hera role and its message delivery carry over unchanged.
 
 MCP `task_move_account` rejects a caller moving its own task (the call would kill the session waiting for the response) with a message pointing to the user or coordinator. It accepts `task_id`, `account`, and `caller_id`.
 
 ### D8. TUI
 
-`A` (`tasklist.move_account`, `hera.move_account`, both rebindable) opens a picker modal listing `auto` plus each candidate account other than the current one, labelled with its 5-hour and weekly % from `AccountUsageSource` ("—" when unknown). Enter confirms; the move runs off the UI thread and reports via the status-bar notice. A busy session shows a notice instead of the picker. Remote mode calls `POST /api/tasks/{id}/account`. The new-task form's account selector lists `auto` first when the backend has at least one named candidate, preselected when the project/global default resolves to `auto`.
+`>` (`tasklist.move_account`, `hera.move_account`, both rebindable) opens a picker modal listing `auto` plus each candidate account other than the current one, labelled with its 5-hour and weekly % from `AccountUsageSource` ("—" when unknown). Enter confirms; the move runs off the UI thread and reports via the status-bar notice. A busy session still gets the picker, with an interrupt warning, and the move is sent with force. Remote mode calls `POST /api/tasks/{id}/account`. The new-task form's account selector lists `auto` first when the backend has at least one named candidate, preselected when the project/global default resolves to `auto`.
 
 ## Risks / Trade-offs
 
