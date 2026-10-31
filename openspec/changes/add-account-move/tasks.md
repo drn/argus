@@ -23,8 +23,8 @@
 
 ## 5. Docs and gates
 
-- [ ] 5.1 README Reference (keybindings, MCP tool, REST endpoint, account usage), gotchas, knowledge index
-- [ ] 5.2 Supervisor spawn digest re-record if spawn paths changed
+- [x] 5.1 README Reference (keybindings, MCP tool, REST endpoint, account usage), gotchas, knowledge index
+- [x] 5.2 Supervisor spawn digest re-record if spawn paths changed
 - [ ] 5.3 `make pre-pr`
 - [ ] 5.4 Dogfood on master: `>` moves a task and resumes it; a coordinator moves a worker; a routed coordinator's worker is routed
 - [ ] 5.5 Archive the change on this branch before merge
