@@ -109,9 +109,10 @@ const (
 	// ActSettingsCycleProbe/MoveUp/MoveDown back the backend-tier-routing
 	// category's reorderable-list editor (add-tiered-backend-routing) — the
 	// only category with per-row fields beyond a single toggle/cycle.
-	ActSettingsCycleProbe Action = "settings.cycle_probe"
-	ActSettingsMoveUp     Action = "settings.move_up"
-	ActSettingsMoveDown   Action = "settings.move_down"
+	ActSettingsCycleProbe   Action = "settings.cycle_probe"
+	ActSettingsCycleAccount Action = "settings.cycle_account"
+	ActSettingsMoveUp       Action = "settings.move_up"
+	ActSettingsMoveDown     Action = "settings.move_down"
 
 	// Hera rail mutations (Enter + nav are structural)
 	ActHeraDelete  Action = "hera_rail.delete"
@@ -187,7 +188,7 @@ var defaultSpecs = map[Context]map[Action]string{
 		ActSettingsNew: "n", ActSettingsEdit: "e", ActSettingsQuickAdd: "i",
 		ActSettingsApple: "a", ActSettingsToggle: "t", ActSettingsRun: "r",
 		ActSettingsModel:      "m",
-		ActSettingsCycleProbe: "p", ActSettingsMoveUp: "K", ActSettingsMoveDown: "J",
+		ActSettingsCycleProbe: "p", ActSettingsCycleAccount: "A", ActSettingsMoveUp: "K", ActSettingsMoveDown: "J",
 	},
 	CtxHeraRail: {
 		ActHeraDelete: "ctrl+d", ActHeraSpawn: "w", ActHeraRename: "r",
@@ -233,7 +234,7 @@ var actionLabels = map[Action]string{
 	ActSettingsNew: "new", ActSettingsEdit: "edit", ActSettingsQuickAdd: "quick add projects",
 	ActSettingsApple: "AppleEvents", ActSettingsToggle: "toggle schedule", ActSettingsRun: "run schedule now",
 	ActSettingsModel:      "edit model",
-	ActSettingsCycleProbe: "cycle probe kind (backend tier)", ActSettingsMoveUp: "move tier up", ActSettingsMoveDown: "move tier down",
+	ActSettingsCycleProbe: "cycle probe kind (backend tier)", ActSettingsCycleAccount: "cycle tier account", ActSettingsMoveUp: "move tier up", ActSettingsMoveDown: "move tier down",
 
 	ActHeraDelete: "nuke role/orchestrator (whole sub-team if nested)", ActHeraSpawn: "spawn worker under coordinator (new-task modal)",
 	ActHeraRename: "rename role/orchestrator", ActHeraArchive: "hide worker in coord's archive (reversible)",
@@ -313,7 +314,7 @@ var contextOrder = map[Context][]Action{
 		ActDiffFinder, ActDiffOpen, ActDiffEditor, ActDiffTerminal},
 	CtxSettings: {ActSettingsDown, ActSettingsUp, ActSettingsNew, ActSettingsEdit, ActSettingsDelete,
 		ActSettingsQuickAdd, ActSettingsApple, ActSettingsToggle, ActSettingsRun, ActSettingsModel,
-		ActSettingsCycleProbe, ActSettingsMoveUp, ActSettingsMoveDown},
+		ActSettingsCycleProbe, ActSettingsCycleAccount, ActSettingsMoveUp, ActSettingsMoveDown},
 	CtxHeraRail: {ActHeraSpawn, ActHeraNewCoord, ActHeraRename, ActHeraArchive, ActHeraPin,
 		ActHeraStatAdv, ActHeraStatRev, ActHeraKanbanAdv, ActHeraKanbanRev, ActHeraAdopt, ActHeraClear,
 		ActHeraCleanup, ActHeraInbox, ActHeraDelete},

@@ -37,6 +37,14 @@ type bridgeTestRunner struct {
 	session *bridgeTestSession
 }
 
+type multiBridgeUsageRunner struct {
+	*bridgeTestRunner
+	ids []string
+}
+
+func (r *multiBridgeUsageRunner) Running() []string              { return r.ids }
+func (r *multiBridgeUsageRunner) Get(string) agent.SessionHandle { return r.session }
+
 func (r *bridgeTestRunner) Running() []string { return []string{r.id} }
 func (r *bridgeTestRunner) RunningAndIdle() ([]string, []string) {
 	return []string{r.id}, []string{r.id}
@@ -239,4 +247,54 @@ func TestBridgeUsageAccountAndFreshness(t *testing.T) {
 	testutil.True(t, s.bridgeLive(task.ID, now))
 	_, ok = s.BridgeUsage("")
 	testutil.False(t, ok)
+}
+
+func TestBridgeUsageFullestWindowAndExpiry(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		session float64
+		reset   time.Duration
+		want    float64
+	}{
+		{"session binds", 96, time.Hour, 96},
+		{"expired session", 96, -time.Hour, 75},
+		{"weekly binds", 20, time.Hour, 75},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, task := bridgeAuthorityServer(t)
+			now := time.Now()
+			s.bridgeHub.Ingest(task.ID, []bridge.Event{{Type: bridge.TypeMeasure, Generation: "launch", SessionID: "session", Boot: "b", Seq: 1, RateLimits: []bridge.RateLimit{
+				{Kind: "five_hour", PercentUsed: tc.session, ResetsAt: now.Add(tc.reset).Format(time.RFC3339)},
+				{Kind: "seven_day", PercentUsed: 75, ResetsAt: now.Add(24 * time.Hour).Format(time.RFC3339)},
+			}}}, now)
+			reading, ok := s.BridgeUsage("")
+			testutil.True(t, ok)
+			testutil.Equal(t, reading.Percentage, tc.want)
+		})
+	}
+}
+
+func TestBridgeUsageFreshestMeasurementPerWindow(t *testing.T) {
+	for _, withWeek := range []bool{false, true} {
+		t.Run(strconv.FormatBool(withWeek), func(t *testing.T) {
+			s, r, first := bridgeAuthorityServer(t)
+			second := &model.Task{Name: "second", Backend: first.Backend, SessionID: "session", Status: model.StatusInProgress}
+			testutil.NoError(t, s.db.Add(second))
+			s.runner = &multiBridgeUsageRunner{bridgeTestRunner: r, ids: []string{first.ID, second.ID}}
+			now := time.Now()
+			reset := now.Add(time.Hour).Format(time.RFC3339)
+			s.bridgeHub.Ingest(first.ID, []bridge.Event{{Type: bridge.TypeMeasure, Generation: "launch", SessionID: "session", Boot: "old", Seq: 1, RateLimits: []bridge.RateLimit{{Kind: "five_hour", PercentUsed: 99, ResetsAt: reset}, {Kind: "seven_day", PercentUsed: 90, ResetsAt: reset}}}}, now.Add(-time.Minute))
+			s.bridgeHub.Ingest(first.ID, []bridge.Event{{Type: bridge.TypeHeartbeat, Generation: "launch", SessionID: "session", Boot: "old", Seq: 2}}, now)
+			limits := []bridge.RateLimit{{Kind: "five_hour", PercentUsed: 20, ResetsAt: reset}}
+			want := 90.0
+			if withWeek {
+				limits = append(limits, bridge.RateLimit{Kind: "seven_day", PercentUsed: 75, ResetsAt: reset})
+				want = 75
+			}
+			s.bridgeHub.Ingest(second.ID, []bridge.Event{{Type: bridge.TypeMeasure, Generation: "launch", SessionID: "session", Boot: "new", Seq: 1, RateLimits: limits}}, now)
+			reading, ok := s.BridgeUsage("")
+			testutil.True(t, ok)
+			testutil.Equal(t, reading.Percentage, want)
+		})
+	}
 }

@@ -163,7 +163,7 @@ func bridgeSourceLog(id string, live bool) {
 	slog.Info("[bridge] source", "task", id, "source", source)
 }
 
-// BridgeUsage selects the newest fresh weekly reading on exactly this
+// BridgeUsage selects the fullest fresh quota window on exactly this
 // account. Heartbeats keep the session live, never the measurement fresh.
 func (s *Server) BridgeUsage(account string) (usagebudget.Reading, bool) {
 	if account == "default" {
@@ -184,19 +184,26 @@ func (s *Server) BridgeUsage(account string) (usagebudget.Reading, bool) {
 			continue
 		}
 		for _, limit := range st.RateLimits {
-			if limit.Kind != "seven_day" || limit.PercentUsed < 0 || limit.PercentUsed > 100 || math.IsNaN(limit.PercentUsed) || math.IsInf(limit.PercentUsed, 0) {
+			if (limit.Kind != "seven_day" && limit.Kind != "five_hour") || limit.PercentUsed < 0 || limit.PercentUsed > 100 || math.IsNaN(limit.PercentUsed) || math.IsInf(limit.PercentUsed, 0) {
 				continue
 			}
 			reset, err := time.Parse(time.RFC3339, limit.ResetsAt)
 			if err != nil || !reset.After(now) {
 				continue
 			}
-			if best.LastProbedAt.Before(st.LastMeasureAt) {
-				best = usagebudget.Reading{Percentage: limit.PercentUsed, ResetAt: reset, LastProbedAt: st.LastMeasureAt}
+			window := &best.SevenDay
+			if limit.Kind == "five_hour" {
+				window = &best.FiveHour
+			}
+			if *window == nil || (*window).LastProbedAt.Before(st.LastMeasureAt) || ((*window).LastProbedAt.Equal(st.LastMeasureAt) && (*window).Percentage < limit.PercentUsed) {
+				*window = &usagebudget.Window{Percentage: limit.PercentUsed, ResetAt: reset, LastProbedAt: st.LastMeasureAt}
 			}
 		}
 	}
-	return best, !best.LastProbedAt.IsZero()
+	if best.FiveHour == nil && best.SevenDay == nil {
+		return usagebudget.Reading{}, false
+	}
+	return usagebudget.SelectReading(best, now)
 }
 
 func (s *Server) stampBridgeMeasurement(id string, st bridge.State) {

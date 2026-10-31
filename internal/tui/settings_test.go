@@ -380,6 +380,19 @@ func TestSettingsView_BackendTiers_EmptyShowsPlaceholder(t *testing.T) {
 	testutil.Contains(t, sv.rows[0].label, "press n to add")
 }
 
+func TestSettingsView_TierAccountCyclePersists(t *testing.T) {
+	sv := testSettingsViewWithConfigToml(t, "[accounts.personal]\nclaude_config_dir = \"~/.claude-personal\"\n")
+	sv.setCategory(catBackendTiers)
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', 0))
+	for _, want := range []string{"default", "personal", ""} {
+		testutil.True(t, sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'A', 0)))
+		testutil.Equal(t, sv.backendTiers[0].Account, want)
+		tiers, err := sv.database.(*db.DB).BackendTiers()
+		testutil.NoError(t, err)
+		testutil.Equal(t, tiers[0].Account, want)
+	}
+}
+
 func TestSettingsView_BackendTiers_CategoryReachableViaRail(t *testing.T) {
 	sv := testSettingsView(t)
 	found := false
@@ -612,6 +625,7 @@ threshold_pct = 80
 
 	for _, ev := range []*tcell.EventKey{
 		tcell.NewEventKey(tcell.KeyRune, 'n', 0),
+		tcell.NewEventKey(tcell.KeyRune, 'A', 0),
 		tcell.NewEventKey(tcell.KeyRune, 'd', 0),
 		tcell.NewEventKey(tcell.KeyRune, 'p', 0),
 		tcell.NewEventKey(tcell.KeyRune, 'K', 0),

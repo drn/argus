@@ -20,6 +20,7 @@ func resetState(t *testing.T) {
 	usageCache.mu.Lock()
 	usageCache.reading = Reading{}
 	usageCache.ok = false
+	usageCache.accounts = nil
 	usageCache.mu.Unlock()
 
 	// Never launch a real `claude` session from a test: default the streaming
@@ -37,6 +38,7 @@ func resetState(t *testing.T) {
 		usageCache.mu.Lock()
 		usageCache.reading = Reading{}
 		usageCache.ok = false
+		usageCache.accounts = nil
 		usageCache.mu.Unlock()
 		startUsageSession = origStart
 		probeDirFunc = origDir

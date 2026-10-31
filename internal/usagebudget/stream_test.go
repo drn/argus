@@ -43,8 +43,8 @@ func TestProbe_StreamingStoresReadingAndTerminatesBeforeExit(t *testing.T) {
 
 	got, ok := snapshot()
 	testutil.Equal(t, ok, true)
-	testutil.Equal(t, got.Percentage, 51.0)
-	if want := time.Date(2026, 10, 13, 1, 0, 0, 0, loc); !got.ResetAt.Equal(want) {
+	testutil.Equal(t, got.Percentage, 62.0)
+	if want := time.Date(2026, 10, 8, 2, 30, 0, 0, loc); !got.ResetAt.Equal(want) {
 		t.Errorf("ResetAt = %v, want %v", got.ResetAt, want)
 	}
 	terminated, selfExited, _ := f.state()
@@ -109,16 +109,15 @@ func TestParseUsageOutput_PercentageOnLineAfterHeader(t *testing.T) {
 
 // Scenario: Percentage on the line after the header, against the real
 // captured 100x80 /usage screen. Other sections' percentages (Current session
-// 62%, Current week (Fable) 0%, Usage credits 100%) must not be mistaken for
-// the weekly all-models one.
+// 62% binds over the weekly 51%; per-model weeks and Usage credits must be ignored.
 func TestParseUsageOutput_RealFixture(t *testing.T) {
 	base, loc := fixtureBase(t)
 
 	got, err := parseUsageOutput(renderUsageOutput(readFixture(t, "usage_100x80.raw")), base)
 	testutil.NoError(t, err)
 
-	testutil.Equal(t, got.Percentage, 51.0)
-	if want := time.Date(2026, 10, 13, 1, 0, 0, 0, loc); !got.ResetAt.Equal(want) {
+	testutil.Equal(t, got.Percentage, 62.0)
+	if want := time.Date(2026, 10, 8, 2, 30, 0, 0, loc); !got.ResetAt.Equal(want) {
 		t.Errorf("ResetAt = %v, want %v", got.ResetAt, want)
 	}
 }
@@ -144,7 +143,7 @@ func TestParseUsageOutput_IgnoresOtherSections(t *testing.T) {
 
 		got, err := parseUsageOutput(out, base)
 		testutil.NoError(t, err)
-		testutil.Equal(t, got.Percentage, 51.0)
+		testutil.Equal(t, got.Percentage, 62.0)
 	})
 
 	t.Run("weekly header without its own percentage does not borrow the next section's", func(t *testing.T) {
@@ -244,7 +243,7 @@ func TestProbe_TrustDialogForProbeDirIsAccepted(t *testing.T) {
 	}
 	got, ok := snapshot()
 	testutil.Equal(t, ok, true)
-	testutil.Equal(t, got.Percentage, 51.0)
+	testutil.Equal(t, got.Percentage, 62.0)
 }
 
 // Scenario: Trust dialog for another path is not accepted.
@@ -311,6 +310,6 @@ func TestProbe_SuccessLineReachesDaemonLog(t *testing.T) {
 
 	log := readSlog()
 	testutil.Contains(t, log, "[usagebudget] probe updated")
-	testutil.Contains(t, log, "51")
-	testutil.Contains(t, log, "2026-10-13")
+	testutil.Contains(t, log, "62")
+	testutil.Contains(t, log, "2026-10-08")
 }

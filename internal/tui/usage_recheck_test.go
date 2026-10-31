@@ -71,13 +71,14 @@ func TestReevaluateUsage_FeedsStatusBar(t *testing.T) {
 	defer cleanup()
 
 	app.skewProvider = &fakeSkewClient{resp: daemon.BootInfoResp{
-		ClaudeUsagePct:   42,
-		ClaudeUsageKnown: true,
-		CodexUsagePct:    76,
-		CodexUsageKnown:  true,
+		ClaudeUsagePct:    42,
+		ClaudeUsageKnown:  true,
+		ClaudeUsageWindow: "five_hour",
+		CodexUsagePct:     76,
+		CodexUsageKnown:   true,
 	}}
 	app.lastUsageCheck = time.Now().Add(-2 * usageRecheckInterval)
 	app.reevaluateUsage()
 
-	testutil.Contains(t, app.statusbar.UsageSummary(), "cla 42% · cdx 76%")
+	testutil.Contains(t, app.statusbar.UsageSummary(), "cla 42%s · cdx 76%")
 }

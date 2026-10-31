@@ -53,7 +53,7 @@ func TestCreateAndStart_RejectsUnknownAccount(t *testing.T) {
 func TestCreateAndStart_StoresAccount(t *testing.T) {
 	cases := []struct{ name, in, want string }{
 		{"named", "work", "work"},
-		{"default stored empty", "default", ""},
+		{"explicit default stays a pin", "default", "default"},
 		{"unset stored empty", "", ""},
 	}
 	for _, tc := range cases {
@@ -102,8 +102,8 @@ func TestCreateAndStart_AccountBackendSupport(t *testing.T) {
 		{"inherited unsupported rejected", "", "pi", "work", true, "", "inherited account \"work\" does not support backend"},
 		{"inherited unknown rejected", "", "test", "ghost", true, "", "unknown account"},
 		{"inherited supported kept", "", "test", "work", true, "work", ""},
-		{"inherited default pins over global default", `default_account = "work"`, "test", "default", true, "", ""},
-		{"inherited default pins over project default", "[project_accounts]\nproj = \"work\"", "test", "default", true, "", ""},
+		{"inherited default pins over global default", `default_account = "work"`, "test", "default", true, "default", ""},
+		{"inherited default pins over project default", "[project_accounts]\nproj = \"work\"", "test", "default", true, "default", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -174,7 +174,7 @@ func TestResolveOrchestratorAccount(t *testing.T) {
 		testutil.Contains(t, err.Error(), "no readable coordinator task")
 	})
 
-	t.Run("default-account coordinator pins default", func(t *testing.T) {
+	t.Run("blank-account coordinator permits routing", func(t *testing.T) {
 		orch, err := d.CreateHeraOrchestrator("dflt-orch", "")
 		testutil.NoError(t, err)
 		task := &model.Task{ID: "dflt-coord", Name: "dcoord", Project: "proj", Status: model.StatusInProgress}
@@ -186,7 +186,7 @@ func TestResolveOrchestratorAccount(t *testing.T) {
 		testutil.NoError(t, err)
 		got, err := resolveOrchestratorAccount(d, orch.ID)
 		testutil.NoError(t, err)
-		testutil.Equal(t, got, "default")
+		testutil.Equal(t, got, "")
 	})
 }
 
