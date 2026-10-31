@@ -76,6 +76,24 @@ func TestBuildSettingsUpdates(t *testing.T) {
 		testutil.Equal(t, val, "")
 	})
 
+	t.Run("defaults voice_project flow through", func(t *testing.T) {
+		proj := "forge"
+		got := buildSettingsUpdates(updateSettingsReq{
+			Defaults: &defaultsUpdate{VoiceProject: &proj},
+		})
+		testutil.Equal(t, got["defaults.voice_project"], "forge")
+	})
+
+	t.Run("defaults voice_project empty clears", func(t *testing.T) {
+		empty := ""
+		got := buildSettingsUpdates(updateSettingsReq{
+			Defaults: &defaultsUpdate{VoiceProject: &empty},
+		})
+		val, ok := got["defaults.voice_project"]
+		testutil.Equal(t, ok, true)
+		testutil.Equal(t, val, "")
+	})
+
 	t.Run("defaults permission_mode valid flows through", func(t *testing.T) {
 		mode := config.PermissionModeAcceptEdits
 		got := buildSettingsUpdates(updateSettingsReq{
@@ -160,6 +178,29 @@ func TestHandleSettings_ShareProjectRoundtrip(t *testing.T) {
 	handler.ServeHTTP(w, authedReq("PUT", "/api/settings", `{"defaults": {"share_project": ""}}`))
 	testutil.Equal(t, w.Code, http.StatusOK)
 	testutil.Equal(t, d.Config().Defaults.ShareProject, "")
+}
+
+func TestHandleSettings_VoiceProjectRoundtrip(t *testing.T) {
+	srv, d := testServer(t)
+	mux := srv.routes()
+	handler := authMiddleware(srv.token, d, nil, mux)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, authedReq("PUT", "/api/settings", `{"defaults": {"voice_project": "forge"}}`))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	testutil.Equal(t, d.Config().Defaults.VoiceProject, "forge")
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("GET", "/api/settings", ""))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	var resp settingsResponse
+	testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	testutil.Equal(t, resp.Defaults.VoiceProject, "forge")
+
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, authedReq("PUT", "/api/settings", `{"defaults": {"voice_project": ""}}`))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	testutil.Equal(t, d.Config().Defaults.VoiceProject, "")
 }
 
 func TestHandleSettings_PermissionModeRoundtrip(t *testing.T) {

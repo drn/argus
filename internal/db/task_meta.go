@@ -12,6 +12,17 @@ import (
 // Returned by SetMeta and SetMetaBatch; the HTTP handler maps it to a 400.
 var ErrMetaInvalidKey = errors.New("task_meta: task_id, namespace, and key must all be non-empty")
 
+// UIMetaNamespace holds client-facing presentation flags for a task.
+const UIMetaNamespace = "ui"
+
+const (
+	// UIMetaKeyNew marks a task created in the background (e.g. by voice
+	// capture) that no user has opened yet; the TUI clears it on open.
+	UIMetaKeyNew = "new"
+	// UIMetaKeySource records how a background task was created ("voice").
+	UIMetaKeySource = "source"
+)
+
 // TaskMetaEntry is one (namespace, key, value, updated_at) row of task
 // sidecar metadata. The sidecar table lets plugins (and ad-hoc CLI use)
 // annotate tasks without piling new columns onto the tasks schema. See the
@@ -156,6 +167,20 @@ func (d *DB) ListMetaByNamespace(namespace string) (map[string]map[string]string
 		out[taskID][key] = value
 	}
 	return out, nil
+}
+
+// DeleteMeta removes a single (task_id, namespace, key) row. Deleting a row
+// that does not exist is not an error.
+func (d *DB) DeleteMeta(taskID, namespace, key string) error {
+	if taskID == "" || namespace == "" || key == "" {
+		return ErrMetaInvalidKey
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, err := d.conn.Exec(`DELETE FROM task_meta WHERE task_id=? AND namespace=? AND key=?`, taskID, namespace, key); err != nil {
+		return fmt.Errorf("delete meta: %w", err)
+	}
+	return nil
 }
 
 // DeleteMetaForTask removes every metadata row for taskID across every

@@ -330,3 +330,16 @@ func TestDB_TaskMeta_ErrorBranchesAfterClose(t *testing.T) {
 		}
 	})
 }
+
+func TestDeleteMeta(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.SetMeta("t1", UIMetaNamespace, UIMetaKeyNew, "true"))
+	testutil.NoError(t, d.SetMeta("t1", UIMetaNamespace, UIMetaKeySource, "voice"))
+	testutil.NoError(t, d.DeleteMeta("t1", UIMetaNamespace, UIMetaKeyNew))
+	testutil.NoError(t, d.DeleteMeta("t1", UIMetaNamespace, UIMetaKeyNew))
+	got, err := d.ListMeta("t1", UIMetaNamespace)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(got), 1)
+	testutil.Equal(t, got[0].Key, UIMetaKeySource)
+	testutil.ErrorIs(t, d.DeleteMeta("", UIMetaNamespace, UIMetaKeyNew), ErrMetaInvalidKey)
+}

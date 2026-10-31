@@ -1,0 +1,13 @@
+- [x] `internal/voicetask` parser with table tests
+- [x] `POST /api/voice-tasks` handler and tests
+- [x] `defaults.voice_project` in config, DB config, REST settings, apiclient, apistore, web SPA
+- [x] task_meta `ui` namespace constants and `DeleteMeta`
+- [x] TUI `✦` indicator, project header marker, notice, clear-on-open
+- [x] `[voice]` / `[voice.jev]` config with defaults and TOML decode tests
+- [x] `internal/voicetask` Jev classifier (httptest-covered) and shared `Launcher` (spoken, jev, default); refactor `POST /api/voice-tasks` onto it
+- [x] `internal/wispr` driver: URL-scheme start/stop, read-only `History` poll, fixture-DB tests
+- [x] `internal/hotkey`: combo parser, pure tracker state machine, darwin purego event tap, non-darwin stub
+- [x] `internal/voice` service (start/stop, short-hold discard, max-duration auto-stop, notifications) with fake-seam tests
+- [x] Daemon wiring, `VoiceStart`/`VoiceStop`/`VoiceStatus` RPCs and client methods
+- [x] `argus voice start|stop|status` CLI
+- [x] Gotchas, README reference, and openspec updates

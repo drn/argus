@@ -83,6 +83,10 @@ const (
 	// as "individual worker" against the coordinator's supervisor glyph. CODEPOINT
 	// NOT RENDER-TESTED IN A TERMINAL YET — eyeball in a real Nerd Font terminal.
 	IconWorker = rune(0x0F0004) // 󰀄 nf-md-account — Hera worker marker
+
+	// IconNewTask marks a background-created task (e.g. voice capture) that has
+	// not been opened yet (task_meta ui.new=true).
+	IconNewTask = '✦'
 )
 
 // Styles for common UI elements.
@@ -134,6 +138,10 @@ var (
 	// StyleWorker renders the task-row worker indicator. Dim (not bold) so a
 	// worker reads as subordinate to the bold cyan coordinator marker.
 	StyleWorker = tcell.StyleDefault.Foreground(ColorDimmed)
+
+	// StyleNewTask renders the unopened-new-task marker on task rows and
+	// project headers.
+	StyleNewTask = tcell.StyleDefault.Foreground(ColorProject).Bold(true)
 )
 
 // PRGlyph maps a PR review state to the glyph and style its task-row

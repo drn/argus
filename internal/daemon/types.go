@@ -486,3 +486,21 @@ type SetFocusedReq struct {
 	TaskID  string
 	Focused bool
 }
+
+// VoiceStatusResp snapshots the daemon's hold-to-talk voice capture service.
+// Available is false when the daemon runs without a voice service.
+type VoiceStatusResp struct {
+	Available              bool
+	Recording              bool
+	Processing             int
+	StartedAt              time.Time
+	HotkeyEnabled          bool
+	Hotkey                 string
+	TapActive              bool
+	InputMonitoringGranted bool
+	LastResult             string
+	LastDetail             string
+	LastTaskID             string
+	LastAt                 time.Time
+	Error                  string
+}

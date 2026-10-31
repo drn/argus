@@ -57,6 +57,7 @@ type apiSettings struct {
 type defaultsJSON struct {
 	Backend        string `json:"backend"`
 	ShareProject   string `json:"share_project"`
+	VoiceProject   string `json:"voice_project"`
 	PermissionMode string `json:"permission_mode"`
 }
 
@@ -82,6 +83,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		Defaults: defaultsJSON{
 			Backend:        cfg.Defaults.Backend,
 			ShareProject:   cfg.Defaults.ShareProject,
+			VoiceProject:   cfg.Defaults.VoiceProject,
 			PermissionMode: cfg.Defaults.PermissionMode,
 		},
 	})
@@ -127,6 +129,7 @@ type apiUpdate struct {
 type defaultsUpdate struct {
 	Backend        *string `json:"backend,omitempty"`
 	ShareProject   *string `json:"share_project,omitempty"`
+	VoiceProject   *string `json:"voice_project,omitempty"`
 	PermissionMode *string `json:"permission_mode,omitempty"`
 }
 
@@ -231,6 +234,9 @@ func buildSettingsUpdates(req updateSettingsReq) map[string]string {
 		}
 		if d.ShareProject != nil {
 			out["defaults.share_project"] = *d.ShareProject
+		}
+		if d.VoiceProject != nil {
+			out["defaults.voice_project"] = *d.VoiceProject
 		}
 		// Only accept a recognized permission mode. An unknown/empty value
 		// would persist a config row that BuildCmd treats as "no flags"

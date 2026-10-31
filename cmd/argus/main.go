@@ -90,6 +90,9 @@ func main() {
 		case "doctor":
 			runDoctor()
 			return
+		case "voice":
+			runVoiceCommand(os.Args[2:])
+			return
 		}
 	}
 

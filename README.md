@@ -567,6 +567,22 @@ argus daemon status      # show plist path + installed/loaded state
 
 The plist is configured with `RunAtLoad` and `KeepAlive { SuccessfulExit = false }`, which means launchd starts the daemon at login and restarts it if it crashes (non-zero exit) — but a clean `argus daemon stop` is honored and won't trigger a respawn. Stdout/stderr are written to `~/.argus/launchd.log`. The plist points at `~/.argus/argusd`, a symlink to the resolved argus binary; reinstalling rewrites the symlink so launchd picks up the new binary on next start. macOS only — Linux/Windows show no toggle.
 
+### Voice capture (Wispr Flow)
+
+Hold a global hotkey, speak, release: the daemon drives the [Wispr Flow](https://wisprflow.ai) app, reads the transcript from Wispr's local history DB, and starts an auto-named task in the background with a macOS notification. The new task shows `✦` in the TUI task list until you open it. macOS only; no Hammerspoon or other hotkey tool needed.
+
+1. Set `[voice] enabled = true` in `config.toml` (see [`[voice]`](#voice) below). Pick a `hotkey` that differs from Wispr's own push-to-talk shortcut (default `right_option`).
+2. Restart the daemon (`argus daemon restart`). On first start macOS asks for **Input Monitoring**; grant it to `argus` in System Settings → Privacy & Security, then restart the daemon again. A rebuilt unsigned binary loses the grant, so install with `make install-signed`.
+3. Hold the hotkey (at least 300 ms), speak, release. Say "in project <name>, ..." to pick the project; otherwise the Jev classifier (if configured) or `defaults.voice_project` decides.
+
+```bash
+argus voice start    # begin recording without the hotkey
+argus voice stop     # stop and process the transcript
+argus voice status   # recording state, hotkey, tap, Input Monitoring grant, last result
+```
+
+Wispr Flow also pastes the transcript into the focused app; that cannot be disabled. Its URL commands and history DB are undocumented, so a Wispr update can break the driver (failures are logged under `[voice]` in `ux.log`).
+
 ### Accounts
 
 Accounts let one Argus run tasks under different Claude Code and Codex subscriptions, such as a work plan and a personal plan. You pick the account when you start a task, and sessions on different accounts run side by side.
@@ -827,6 +843,7 @@ Every authenticated token has the same permissions **except** a small master-onl
 | `GET`    | `/api/system-metrics`       | Host-load snapshot: CPU %, 1/5/15-min load avg, memory + swap, disk usage of the `~/.argus` filesystem, Argus process RSS, host uptime, and live agent-session counts. Sampled on a background ticker; each metric carries an availability flag. Also carries `host_sleep` (`status` of `not_applicable`/`safe`/`held`/`at_risk`/`unknown`, plus `message` and `fix`). Polled by the Settings tab.        |
 | `GET`    | `/api/tasks`                | List tasks. Filters: `?status=`, `?project=`, `?archived=1` (or `=all`). Each task carries `idle: true` when `in_progress` but the session is missing or waiting for input.                                                                                                      |
 | `POST`   | `/api/tasks`                | Create and start a task. JSON `{"name", "prompt", "project", "backend?", "model?", "sandbox_override?", "account?"}`, OR `multipart/form-data` with `name`/`prompt`/`project`/`backend`/`model`/`sandbox_override`/`account` plus `files` parts (uploaded into `<worktree>/.context/`, paths appended to the prompt). Per-file 100MB / total 250MB / 20 files cap. `sandbox_override` is `""` (inherit the project/global setting, default) \| `"enabled"` \| `"disabled"` — a per-task override of sandboxing, validated before any worktree is created. `account` names an [account](#accounts) (`"default"` included; empty = project/global default); an unknown account, or one that can't run an explicitly requested backend, is 400. |
+| `POST`   | `/api/voice-tasks`          | Create and start a task from a dictated transcript. JSON `{"transcript", "backend?"}`. An "in project <name>" phrase picks the project (and is stripped from the prompt); otherwise the optional Jev classifier (`[voice.jev]`), then `defaults.voice_project`. 400 empty transcript/prompt, 422 no resolvable project. Returns `{id, name, status, project, prompt, project_source (spoken|jev|default), spoken_project?}`. Flags the task `ui.new` for the TUI `✦` indicator. |
 | `GET`    | `/api/tasks/{id}`           | Get single task detail (includes `archived`, `worktree_path`, `prompt`, `idle`)                                                                                                                                                                                                  |
 | `POST`   | `/api/tasks/{id}/stop`      | Stop a running agent (moves to `in_review`)                                                                                                                                                                                                                                      |
 | `POST` | `/api/tasks/{id}/resume` | Resume a stopped agent; recover fresh with the original prompt if its Claude transcript is missing. Returns `{status,pid,session_id}` (plus `healed:true` on reattach). |
@@ -1035,6 +1052,7 @@ Every option below is overridable. A ⚠️ marks options that are **read but no
 |-----|------|---------|-------------|
 | `backend` | string | `"claude"` | Backend used for a new task when none is chosen in the New Task form. Must name a key under `[backends]`. |
 | `share_project` | string | `""` | Project preselected in the New Task form when the PWA share target (iOS/Android share sheet) lands a payload. Empty falls back to the currently expanded project folder. |
+| `voice_project` | string | `""` | Project used for voice-captured tasks (`POST /api/voice-tasks`) when the transcript doesn't say "in project <name>". |
 | `permission_mode` | string | `"bypass-active"` | Permission flags injected into Claude-style backends at launch. One of `default`, `acceptEdits`, `plan`, `bypass-allow`, `bypass-active`. |
 
 #### `[git]`
@@ -1271,6 +1289,28 @@ Configures the `things3` backend (macOS-only — drives the Things 3 app via App
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `true` | Drive agent PTYs through the out-of-process [session-supervisor](#daemon--session-supervisor) so the daemon can bounce without interrupting agents. Set `false` to **roll back** to the legacy in-process runner (daemon owns the PTYs); retained one release as a supported fallback. config.toml wins over the DB. |
+
+#### `[voice]`
+
+config.toml only (no DB key, REST, or settings UI). Changes take effect on daemon restart. See [Voice capture](#voice-capture-wispr-flow).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Start the daemon's global hold-to-talk hotkey tap (macOS; needs Input Monitoring). |
+| `hotkey` | string | `"right_option"` | Modifier-only combo joined by `+`: `ctrl`, `option`, `cmd`, `shift`, `fn`, or sided `right_option`/`left_command`/etc. Must differ from Wispr's own shortcut. |
+| `wispr_db` | string | `""` | Path to Wispr's `flow.sqlite`. Empty uses `~/Library/Application Support/Wispr Flow/flow.sqlite`. |
+| `transcript_timeout_seconds` | int | `30` | How long to wait for Wispr to finish the transcript after release. |
+
+##### `[voice.jev]`
+
+Optional TypeSafe Jev classifier that picks the project when the transcript doesn't say "in project <name>". Leave `api_key` empty to disable.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `api_key` | string | `""` | Secret source resolved through the secrets resolver, e.g. `"op://Private/TypeSafe/credential"`. Never put a raw key here. |
+| `endpoint` | string | `"https://api.typesafe.ai/v1/systemone"` | Typed-decision endpoint (use `https://openrouter.ai/api/alpha/decisions` with an OpenRouter key). |
+| `model` | string | `""` | Sent only when non-empty, e.g. `typesafe/jev-1.13` for OpenRouter. |
+| `min_confidence` | float | `0.7` | Minimum probability for the chosen project; below it (or `none`) falls back to `defaults.voice_project`. |
 
 #### `[argus]`
 

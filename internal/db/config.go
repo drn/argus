@@ -81,6 +81,7 @@ func (d *DB) Config() config.Config {
 	}{
 		{ConfigKeyDefaultBackend, &cfg.Defaults.Backend},
 		{"defaults.share_project", &cfg.Defaults.ShareProject},
+		{"defaults.voice_project", &cfg.Defaults.VoiceProject},
 		{"defaults.permission_mode", &cfg.Defaults.PermissionMode},
 		// Keybindings are NOT DB-backed: they live in keymap defaults +
 		// config.toml overrides only (the old keybindings.* rows were dropped).

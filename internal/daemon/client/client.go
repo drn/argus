@@ -838,3 +838,36 @@ func (c *Client) SetFocused(taskID string, focused bool) {
 		}
 	}()
 }
+
+// VoiceStart begins a daemon-side hold-to-talk recording.
+func (c *Client) VoiceStart() error {
+	return c.voiceCall("Daemon.VoiceStart")
+}
+
+// VoiceStop ends the daemon-side recording; the task launches in the background.
+func (c *Client) VoiceStop() error {
+	return c.voiceCall("Daemon.VoiceStop")
+}
+
+func (c *Client) voiceCall(method string) error {
+	var resp daemon.StatusResp
+	if err := c.call(method, &daemon.Empty{}, &resp); err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return errors.New(resp.Error)
+	}
+	return nil
+}
+
+// VoiceStatus reports the daemon's voice capture state.
+func (c *Client) VoiceStatus() (daemon.VoiceStatusResp, error) {
+	var resp daemon.VoiceStatusResp
+	if err := c.call("Daemon.VoiceStatus", &daemon.Empty{}, &resp); err != nil {
+		return daemon.VoiceStatusResp{}, err
+	}
+	if resp.Error != "" {
+		return resp, errors.New(resp.Error)
+	}
+	return resp, nil
+}

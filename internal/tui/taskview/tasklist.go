@@ -70,6 +70,7 @@ type TaskListView struct {
 	prStates      map[string]model.PRState // task ID → cached GitHub PR review state (from task_meta "pr")
 	heraWorkers   map[string]bool          // task IDs that are hera-spawned workers (task_meta hera.role=worker)
 	heraCoords    map[string]bool          // task IDs that hold a hera coordinator role (task_meta hera.role=coordinator)
+	newTasks      map[string]bool          // task IDs flagged task_meta ui.new=true (created in background, not yet opened)
 	animFrame     int                      // current spinner frame (time-based, updated in Draw)
 
 	cursor          int
@@ -165,6 +166,7 @@ func NewTaskListView() *TaskListView {
 		idleUnvisited:   make(map[string]bool),
 		needsInput:      make(map[string]bool),
 		prStates:        make(map[string]model.PRState),
+		newTasks:        make(map[string]bool),
 		heraWorkers:     make(map[string]bool),
 		heraCoords:      make(map[string]bool),
 		managed:         make(map[string]bool),
@@ -249,6 +251,22 @@ func (tl *TaskListView) SetPRStates(states map[string]model.PRState) {
 		return
 	}
 	tl.prStates = states
+}
+
+// SetNewTasks updates the set of task IDs flagged as new (task_meta ui.new),
+// drawn as a marker cell on the task row and its project header. A nil map
+// clears every marker.
+func (tl *TaskListView) SetNewTasks(ids map[string]bool) {
+	if ids == nil {
+		tl.newTasks = make(map[string]bool)
+		return
+	}
+	tl.newTasks = ids
+}
+
+// IsNewTask reports whether a task ID is currently flagged as new.
+func (tl *TaskListView) IsNewTask(taskID string) bool {
+	return tl.newTasks[taskID]
 }
 
 // PRStateFor returns the cached PR review state for a task ID, or PRNone when
@@ -1416,7 +1434,21 @@ func (tl *TaskListView) drawProjectRow(screen tcell.Screen, x, y, w int, proj st
 	countStr := fmt.Sprintf(" (%d)", len(projTasks))
 	if col-x+len(countStr) <= w {
 		widget.DrawText(screen, col, y, len(countStr), countStr, tcell.StyleDefault.Foreground(theme.ColorDimmed))
+		col += len(countStr)
 	}
+
+	if col-x+2 <= w && tl.anyNewTask(projTasks) {
+		screen.SetContent(col+1, y, theme.IconNewTask, nil, theme.StyleNewTask)
+	}
+}
+
+func (tl *TaskListView) anyNewTask(tasks []*model.Task) bool {
+	for _, t := range tasks {
+		if tl.newTasks[t.ID] {
+			return true
+		}
+	}
+	return false
 }
 
 func (tl *TaskListView) drawSeparator(screen tcell.Screen, x, y, w int) {
@@ -1476,6 +1508,11 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 
 	screen.SetContent(col, y, statusChar, nil, statusStyle)
 	col += 2 // status char + space
+
+	if tl.newTasks[task.ID] {
+		screen.SetContent(col, y, theme.IconNewTask, nil, theme.StyleNewTask)
+		col += 2 // new-task indicator + space
+	}
 
 	// PR review indicator cell (add-pr-review-indicator). Only consumes width
 	// when the task has an actionable PR state; otherwise the cell is skipped

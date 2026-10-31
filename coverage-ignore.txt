@@ -68,3 +68,9 @@ internal/api/spawn_fork.go
 # (mirror of the daemon-client RemoteSession contract; daemon-client also
 # leaves those 0% in its tests).
 internal/apiclient/session.go
+
+# purego CoreGraphics/CoreFoundation event-tap glue. Privileged/external
+# resource: creating the tap needs the Input Monitoring TCC grant and a live
+# CFRunLoop. The testable logic (combo matching, Tracker, dispatch) lives in
+# combo.go/tracker.go/dispatch.go and is fully covered.
+internal/hotkey/tap_darwin.go
