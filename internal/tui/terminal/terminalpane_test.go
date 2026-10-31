@@ -569,8 +569,15 @@ func TestTerminalPane_DiffMode(t *testing.T) {
 	if !tp.InDiffMode() {
 		t.Error("should be in diff mode")
 	}
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(40, 10)
+	tp.renderDiff(screen, 0, 0, 40, 10)
 	if len(tp.diffUnifiedLines) == 0 {
-		t.Error("unified diff lines should be populated")
+		t.Error("unified diff lines should be populated after render")
 	}
 	tp.ExitDiffMode()
 	if tp.InDiffMode() {
@@ -1275,7 +1282,7 @@ func TestTerminalPane_SetFocused_InvalidatesPaintCache(t *testing.T) {
 func TestBuildUnifiedDiffLines(t *testing.T) {
 	diff := "--- a/test.go\n+++ b/test.go\n@@ -1,3 +1,3 @@\n context\n-removed\n+added\n"
 	pd := gitutil.ParseUnifiedDiff(diff)
-	lines := widget.BuildUnifiedDiffLines(pd, "test.go")
+	lines := widget.BuildUnifiedDiffLines(pd, "test.go", 80)
 	if len(lines) == 0 {
 		t.Fatal("expected non-empty unified diff lines")
 	}
@@ -1293,7 +1300,7 @@ func TestBuildUnifiedDiffLines(t *testing.T) {
 
 func TestBuildUnifiedDiffLinesEmpty(t *testing.T) {
 	pd := gitutil.ParseUnifiedDiff("")
-	lines := widget.BuildUnifiedDiffLines(pd, "test.go")
+	lines := widget.BuildUnifiedDiffLines(pd, "test.go", 80)
 	if lines != nil {
 		t.Error("expected nil for empty diff")
 	}
