@@ -512,13 +512,10 @@ func CaptureCodexSessionID(worktreePath string) (string, error) {
 	return CaptureCodexSessionIDIn("", worktreePath)
 }
 
-// CaptureCodexSessionIDIn is CaptureCodexSessionID against an explicit Codex
-// SQLite home (an account's codex_home); "" means CODEX_SQLITE_HOME, else the
-// user's Codex home.
-func CaptureCodexSessionIDIn(sqliteHome, worktreePath string) (string, error) {
-	if worktreePath == "" {
-		return "", fmt.Errorf("CaptureCodexSessionID: worktree path is empty")
-	}
+// CodexStateDBPath resolves the Codex thread-index database (state_5.sqlite)
+// under sqliteHome, where "" means CODEX_SQLITE_HOME, else the user's Codex
+// home — the same resolution session capture and cost accrual share.
+func CodexStateDBPath(sqliteHome string) (string, error) {
 	if sqliteHome == "" {
 		sqliteHome = strings.TrimSpace(os.Getenv("CODEX_SQLITE_HOME"))
 	}
@@ -526,10 +523,23 @@ func CaptureCodexSessionIDIn(sqliteHome, worktreePath string) (string, error) {
 		var err error
 		sqliteHome, err = skills.UserCodexHome()
 		if err != nil {
-			return "", fmt.Errorf("CaptureCodexSessionID: Codex home: %w", err)
+			return "", fmt.Errorf("codex home: %w", err)
 		}
 	}
-	dbPath := filepath.Join(sqliteHome, codexStateDB)
+	return filepath.Join(sqliteHome, codexStateDB), nil
+}
+
+// CaptureCodexSessionIDIn is CaptureCodexSessionID against an explicit Codex
+// SQLite home (an account's codex_home); "" means CODEX_SQLITE_HOME, else the
+// user's Codex home.
+func CaptureCodexSessionIDIn(sqliteHome, worktreePath string) (string, error) {
+	if worktreePath == "" {
+		return "", fmt.Errorf("CaptureCodexSessionID: worktree path is empty")
+	}
+	dbPath, err := CodexStateDBPath(sqliteHome)
+	if err != nil {
+		return "", fmt.Errorf("CaptureCodexSessionID: %w", err)
+	}
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return "", fmt.Errorf("CaptureCodexSessionID: open db: %w", err)

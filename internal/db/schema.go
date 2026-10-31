@@ -635,6 +635,17 @@ func (d *DB) createHeraTables() error {
 			cumulative REAL NOT NULL,
 			source TEXT NOT NULL DEFAULT 'bridge'
 		);
+		-- add-codex-cost-accrual: per-(binding, rollout file) read cursor for the
+		-- daemon's Codex rollout sweeper. Advanced in the SAME transaction as the
+		-- binding's cost/token increments so a call is priced exactly once.
+		CREATE TABLE IF NOT EXISTS hera_codex_cost_cursor (
+			binding_id   INTEGER NOT NULL REFERENCES hera_bindings(id) ON DELETE CASCADE,
+			rollout_path TEXT    NOT NULL,
+			byte_offset  INTEGER NOT NULL DEFAULT 0,
+			last_total   INTEGER NOT NULL DEFAULT -1,
+			model        TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY (binding_id, rollout_path)
+		);
 		-- THE multi-binding invariant (Hera migration 0004): live-uniqueness is
 		-- per-(task, orchestrator), NOT per-task. One argus task may simultaneously
 		-- be a worker in orchestrator A and a coordinator in B. orchestrator_id is
