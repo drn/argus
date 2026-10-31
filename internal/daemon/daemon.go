@@ -137,8 +137,8 @@ type Daemon struct {
 	restoreBridgeUsage func()
 	// restoreAccountUsage undoes the agent.SetAccountUsageSource install.
 	restoreAccountUsage func()
-	scheduler          *scheduler.Scheduler // recurring scheduled-task firer; always started
-	heraGater          *heragater.Watcher   // hera plan-DAG gater; started when hera enabled
+	scheduler           *scheduler.Scheduler // recurring scheduled-task firer; always started
+	heraGater           *heragater.Watcher   // hera plan-DAG gater; started when hera enabled
 	// heraRecycleWatcher drives the self-service recycle_coord path
 	// (add-coordinator-context-management D5): started when hera enabled,
 	// polls for coordinators with a pending recycle request and restarts

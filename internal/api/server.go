@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/accountusage"
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/bridge"
 	"github.com/drn/argus/internal/clipboard"
 	"github.com/drn/argus/internal/config"
@@ -148,10 +148,10 @@ type Server struct {
 	// bridgeHub / bridgeShadow hold the argus-bridge mod's per-task reported
 	// state and the shadow comparison of it against screen-reading verdicts
 	// and authoritative state for current live Claude launches. Always non-nil.
-	bridgeHub      *bridge.Hub
+	bridgeHub *bridge.Hub
 	// accountUsage is the per-account Claude usage ledger fed by bridge
 	// measures; "auto" account selection and GET /api/accounts read it.
-	accountUsage *accountusage.Ledger
+	accountUsage   *accountusage.Ledger
 	bridgeIngestMu sync.Mutex
 	bridgeShadow   *bridge.Shadow
 	// Raw scraper input is kept apart from runner verdicts to avoid feeding a
