@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/claudeaccount"
@@ -18,6 +19,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/usagebudget"
 )
 
 func accountsServer(t *testing.T, toml string) (*Server, *db.DB) {
@@ -306,4 +308,40 @@ func TestParseMultipartTaskForm_ReadsAccount(t *testing.T) {
 	_, _, _, _, _, _, acct, _, err := parseMultipartTaskForm(req)
 	testutil.NoError(t, err)
 	testutil.Equal(t, acct, "work")
+}
+
+func TestHandleListAccounts_Usage(t *testing.T) {
+	stubAuth(t, func(context.Context, string) (claudeaccount.Status, error) { return claudeaccount.Status{}, nil })
+	srv, _ := accountsServer(t, "[accounts.work]\nclaude_config_dir = \"/tmp/argus-test-work\"\n[accounts.cx]\ncodex_home = \"/tmp/argus-test-cx\"\n")
+	now := time.Now()
+	reset := now.Add(time.Hour).UTC().Truncate(time.Second)
+	weekReset := now.Add(72 * time.Hour).UTC().Truncate(time.Second)
+	t.Cleanup(agent.SetAccountUsageSource(func(config.Config) map[string]usagebudget.Reading {
+		return map[string]usagebudget.Reading{
+			"default": {
+				FiveHour: &usagebudget.Window{Percentage: 100, ResetAt: reset, LastProbedAt: now},
+				SevenDay: &usagebudget.Window{Percentage: 30, ResetAt: weekReset, LastProbedAt: now},
+			},
+			// An expired-only reading reports no usage.
+			"work": {FiveHour: &usagebudget.Window{Percentage: 90, ResetAt: now.Add(-time.Minute), LastProbedAt: now.Add(-time.Hour)}},
+		}
+	}))
+
+	w := httptest.NewRecorder()
+	srv.routes().ServeHTTP(w, authedReq("GET", "/api/accounts", ""))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	var got []accountJSON
+	testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	byName := map[string]accountJSON{}
+	for _, a := range got {
+		byName[a.Name] = a
+	}
+	def := byName["default"].Usage
+	testutil.NotNil(t, def)
+	testutil.Equal(t, *def.FiveHourPct, 100.0)
+	testutil.Equal(t, def.FiveHourResetsAt, reset.Format(time.RFC3339))
+	testutil.Equal(t, *def.WeeklyPct, 30.0)
+	testutil.Equal(t, def.WeeklyResetsAt, weekReset.Format(time.RFC3339))
+	testutil.Nil(t, byName["work"].Usage)
+	testutil.Nil(t, byName["cx"].Usage)
 }

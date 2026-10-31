@@ -195,8 +195,10 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 	choice := resolveTaskChoice(input.Backend, input.Project, cfg, input.Account)
 	backend := choice.Backend
 	projectAccount := cfg.ProjectAccounts[input.Project]
+	routed := false
 	if input.Account == "" && (projectAccount == "" || cfg.ValidateAccount(projectAccount) != nil) && choice.Account != "" && cfg.AccountSupports(choice.Account, cfg.Backends[backend].Command) {
 		input.Account = choice.Account
+		routed = true
 	}
 	account, err := resolveTaskAccount(cfg, input, backend)
 	if err != nil {
@@ -205,6 +207,8 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 	if account == config.DefaultAccountName && !explicitDefault {
 		account = ""
 	}
+	// A routed blank account needs no flag: children inherit blank anyway.
+	routed = routed && account != ""
 	uxlog.Log("[backendtier] spawn backend=%q account=%q reason=%s", backend, account, choice.Reason)
 	slog.Info("[backendtier] spawn", "backend", backend, "account", account, "reason", choice.Reason)
 
@@ -292,6 +296,7 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		BaseBranch:      baseBranch,
 		SandboxOverride: strings.TrimSpace(input.SandboxOverride),
 		Account:         account,
+		AccountRouted:   routed,
 	}
 	// Persist sandbox state at creation time so the display reflects the
 	// setting active when the task was launched, not the current setting.

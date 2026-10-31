@@ -546,24 +546,12 @@ func (s *Server) handleRestartTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg := s.db.Config()
-	// Resume-time recapture (Claude-only): target the newest worktree transcript
-	// so the resume picks the most recent in-place session, not the stale
-	// create-time UUID. No-op for non-Claude / no-change / no-transcript.
-	agent.RefreshResumeSessionID(s.db, task)
-	// Always resume so BuildCmd appends --resume <session-id> when the task
-	// has a prior session (the normal post-exit case). If SessionID is empty,
-	// BuildCmd starts fresh — same graceful degradation as /resume.
-	sess, reattached, err := s.runner.StartOrReattach(task, cfg, 24, 80, true)
+	reattached, err := s.restartTaskSession(task)
 	if err != nil {
 		uxlog.Log("[api] restart: start failed task=%s err=%v", id, err)
 		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
-
-	task.SetStatus(model.StatusInProgress)
-	task.AgentPID = sess.PID()
-	s.db.Update(task) //nolint:errcheck
 
 	if reattached {
 		uxlog.Log("[api] restart: healed task=%s pid=%d", id, task.AgentPID)
@@ -580,6 +568,27 @@ func (s *Server) handleRestartTask(w http.ResponseWriter, r *http.Request) {
 		resp["healed"] = true
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// restartTaskSession resumes a task's session (or reattaches a live one) and
+// marks it in progress. Shared by restart and the account move.
+func (s *Server) restartTaskSession(task *model.Task) (reattached bool, err error) {
+	cfg := s.db.Config()
+	// Resume-time recapture (Claude-only): target the newest worktree transcript
+	// so the resume picks the most recent in-place session, not the stale
+	// create-time UUID. No-op for non-Claude / no-change / no-transcript.
+	agent.RefreshResumeSessionID(s.db, task)
+	// Always resume so BuildCmd appends --resume <session-id> when the task
+	// has a prior session (the normal post-exit case). If SessionID is empty,
+	// BuildCmd starts fresh — same graceful degradation as /resume.
+	sess, reattached, err := s.runner.StartOrReattach(task, cfg, 24, 80, true)
+	if err != nil {
+		return false, err
+	}
+	task.SetStatus(model.StatusInProgress)
+	task.AgentPID = sess.PID()
+	s.db.Update(task) //nolint:errcheck
+	return reattached, nil
 }
 
 // --- Resume Task ---

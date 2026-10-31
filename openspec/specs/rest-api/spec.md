@@ -602,7 +602,7 @@ The system SHALL expose a `GET /api/tasks/{id}/claude-sessions` endpoint that li
 
 ### Requirement: Accounts exposed over REST
 
-`POST /api/tasks` (JSON and multipart) SHALL accept an optional `account` (unknown name, or an account that does not support an explicitly requested backend → 400) and task JSON SHALL include `account`. `GET /api/accounts` SHALL return a bare JSON array, `default` first then configured accounts by name, of `{name, label, claude_config_dir, codex_home, supports: {claude, codex}, is_default, logged_in, email?, org?, plan?, codex_logged_in?}`. An optional `?project=` SHALL make `is_default` mark that project's resolved default. The `logged_in` / `email` / `org` / `plan` fields describe the Claude login (best-effort, empty for an account without `claude_config_dir`); `codex_logged_in` is omitted when unknown or when the account has no `codex_home`. Sign-in lookups SHALL run under a short budget and degrade rather than fail. The endpoint SHALL never return credentials. `GET /api/skills` SHALL accept optional `account` and `task` parameters selecting whose Claude config dir to read skills from (unknown account or task → 400; no `claude_config_dir` → `~/.claude`).
+`POST /api/tasks` (JSON and multipart) SHALL accept an optional `account` (unknown name, or an account that does not support an explicitly requested backend → 400) and task JSON SHALL include `account` and `account_routed`. `GET /api/accounts` SHALL return a bare JSON array, `default` first then configured accounts by name, of `{name, label, claude_config_dir, codex_home, supports: {claude, codex}, is_default, logged_in, email?, org?, plan?, codex_logged_in?, usage?}`. An optional `?project=` SHALL make `is_default` mark that project's resolved default. The `logged_in` / `email` / `org` / `plan` fields describe the Claude login (best-effort, empty for an account without `claude_config_dir`); `codex_logged_in` is omitted when unknown or when the account has no `codex_home`. `usage` SHALL carry the account's currently valid Claude readings as `{five_hour_pct?, five_hour_resets_at?, weekly_pct?, weekly_resets_at?}` and SHALL be omitted when none is valid. Sign-in lookups SHALL run under a short budget and degrade rather than fail. The endpoint SHALL never return credentials. `GET /api/skills` SHALL accept optional `account` and `task` parameters selecting whose Claude config dir to read skills from (unknown account or task → 400; no `claude_config_dir` → `~/.claude`).
 
 #### Scenario: Unknown account on create
 - **WHEN** a client POSTs `account: "nope"`
@@ -615,6 +615,10 @@ The system SHALL expose a `GET /api/tasks/{id}/claude-sessions` endpoint that li
 #### Scenario: Project-aware default
 - **WHEN** a client requests `GET /api/accounts?project=acme` and `project_accounts` maps `acme` to `work`
 - **THEN** only `work` has `is_default: true`
+
+#### Scenario: Usage reported
+- **WHEN** `default` has a valid reading of 100% for its 5-hour window resetting at 17:40
+- **THEN** the `default` entry's `usage.five_hour_pct` is 100 and `usage.five_hour_resets_at` is 17:40
 
 ### Requirement: Hera mutation endpoints
 
@@ -737,4 +741,16 @@ GET and PUT /api/settings SHALL include band and toasts booleans in the bridge s
 
 - **WHEN** a client updates bridge.band alone
 - **THEN** the API persists it and returns unchanged effective delivery, enabled and toasts values
+
+### Requirement: Move a task to another account over REST
+
+`POST /api/tasks/{id}/account` with JSON `{"account": "<name>|default|auto", "force": <bool, optional>}` SHALL perform the account-move operation and resume the task's session as `POST /api/tasks/{id}/restart` does, responding 200 with `{from, to, resumed, started}`. An unknown task SHALL return 404; a live, non-idle session SHALL return 409 unless `force` is true, as SHALL a move or restart already in progress; every other rejection (unknown or unsupported target, same account, non-Claude backend, no other candidate for `auto`) SHALL return 400 with the reason. A failure to restart after the move has persisted SHALL return 500 with the task left on the target account.
+
+#### Scenario: Move succeeds
+- **WHEN** a client POSTs `{"account": "personal"}` for an idle task on `default`
+- **THEN** the response is 200 with `from: "default"`, `to: "personal"`, and the task runs on `personal`
+
+#### Scenario: Busy task
+- **WHEN** the task's session is actively producing output
+- **THEN** the response is 409 and nothing changes
 

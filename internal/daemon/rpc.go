@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/backendtier"
 	"github.com/drn/argus/internal/bridge"
 	"github.com/drn/argus/internal/db"
@@ -34,6 +35,14 @@ func (s *RPCService) BridgeStates(_ *Empty, resp *map[string]bridge.State) error
 	if s.daemon.apiServer != nil {
 		*resp = s.daemon.apiServer.BridgeStates()
 	}
+	return nil
+}
+
+// AccountUsage returns each Claude-capable account's current usage reading
+// from this daemon's caches, for the local TUI's account picker and "auto"
+// move target (the probe caches live only in the daemon).
+func (s *RPCService) AccountUsage(_ *Empty, resp *map[string]usagebudget.Reading) error {
+	*resp = agent.LocalAccountUsage(s.daemon.db.Config())
 	return nil
 }
 

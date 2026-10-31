@@ -466,3 +466,34 @@ func TestKeyset_InboxFiresWithSelectionTask(t *testing.T) {
 		testutil.False(t, p.handleRailMutation(iKey))
 	})
 }
+
+func TestKeyset_MoveAccountFiresWithSelectionTask(t *testing.T) {
+	gtKey := tcell.NewEventKey(tcell.KeyRune, '>', tcell.ModNone)
+
+	t.Run("worker row passes worker task", func(t *testing.T) {
+		p, _ := railPageWithCursorOnWorker(t)
+		var got string
+		p.OnMoveAccount = func(id string) { got = id }
+		p.InputHandler()(gtKey, noFocus)
+		testutil.Equal(t, got, "tw")
+	})
+	t.Run("coordinator header passes coordinator task", func(t *testing.T) {
+		p, _ := railPageWithCursorOnCoordinator(t)
+		var got string
+		p.OnMoveAccount = func(id string) { got = id }
+		p.InputHandler()(gtKey, noFocus)
+		testutil.Equal(t, got, "tc")
+	})
+	t.Run("empty rail consumes without firing", func(t *testing.T) {
+		p := NewHeraPage(memDB(t))
+		p.Refresh()
+		fired := false
+		p.OnMoveAccount = func(string) { fired = true }
+		testutil.True(t, p.handleRailMutation(gtKey))
+		testutil.False(t, fired)
+	})
+	t.Run("unwired falls through", func(t *testing.T) {
+		p, _ := railPageWithCursorOnWorker(t)
+		testutil.False(t, p.handleRailMutation(gtKey))
+	})
+}

@@ -46,17 +46,21 @@ type Task struct {
 	// Sandboxed below — the override itself is never re-derived.
 	SandboxOverride string `json:"sandbox_override,omitempty"`
 	// Account names the account (config.Accounts key, or "default"/"") the
-	// task runs under. Resolved once at creation and immutable: resume reads
-	// transcripts / session state from that account's tool dir.
-	Account    string    `json:"account,omitempty"`
-	Sandboxed  bool      `json:"sandboxed,omitempty"`
-	Archived   bool      `json:"archived,omitempty"`
-	Pinned     bool      `json:"pinned,omitempty"`
-	BaseBranch string    `json:"base_branch,omitempty"`
-	Result     string    `json:"result,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	StartedAt  time.Time `json:"started_at,omitempty"`
-	EndedAt    time.Time `json:"ended_at,omitempty"`
+	// task runs under. Resolved once at creation; changed only by an explicit
+	// account move. Resume reads transcripts / session state from that
+	// account's tool dir.
+	Account string `json:"account,omitempty"`
+	// AccountRouted is true when Account came from tier routing rather than
+	// an explicit or project pin, so children route instead of inheriting it.
+	AccountRouted bool      `json:"account_routed,omitempty"`
+	Sandboxed     bool      `json:"sandboxed,omitempty"`
+	Archived      bool      `json:"archived,omitempty"`
+	Pinned        bool      `json:"pinned,omitempty"`
+	BaseBranch    string    `json:"base_branch,omitempty"`
+	Result        string    `json:"result,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	StartedAt     time.Time `json:"started_at,omitempty"`
+	EndedAt       time.Time `json:"ended_at,omitempty"`
 }
 
 // Elapsed returns the duration since the task was started.

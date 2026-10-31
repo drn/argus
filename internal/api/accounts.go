@@ -9,6 +9,7 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/claudeaccount"
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/usagebudget"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -42,6 +43,36 @@ type accountJSON struct {
 	Org             string              `json:"org,omitempty"`
 	Plan            string              `json:"plan,omitempty"`
 	CodexLoggedIn   *bool               `json:"codex_logged_in,omitempty"`
+	Usage           *accountUsageJSON   `json:"usage,omitempty"`
+}
+
+// accountUsageJSON is an account's currently valid Claude usage (bridge
+// reading, else background probe); a window with no valid reading is omitted.
+type accountUsageJSON struct {
+	FiveHourPct      *float64 `json:"five_hour_pct,omitempty"`
+	FiveHourResetsAt string   `json:"five_hour_resets_at,omitempty"`
+	WeeklyPct        *float64 `json:"weekly_pct,omitempty"`
+	WeeklyResetsAt   string   `json:"weekly_resets_at,omitempty"`
+}
+
+func usageJSON(r usagebudget.Reading, ok bool, now time.Time) *accountUsageJSON {
+	if !ok {
+		return nil
+	}
+	five, week := usagebudget.LiveWindows(r, now)
+	if five == nil && week == nil {
+		return nil
+	}
+	out := &accountUsageJSON{}
+	if five != nil {
+		pct := five.Percentage
+		out.FiveHourPct, out.FiveHourResetsAt = &pct, five.ResetAt.UTC().Format(time.RFC3339)
+	}
+	if week != nil {
+		pct := week.Percentage
+		out.WeeklyPct, out.WeeklyResetsAt = &pct, week.ResetAt.UTC().Format(time.RFC3339)
+	}
+	return out
 }
 
 // handleListAccounts lists the built-in default account followed by the
@@ -110,11 +141,16 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 
+	usage := agent.AccountUsage(cfg)
+	now := time.Now()
 	res := make([]accountJSON, 0, len(out))
 	for _, a := range out {
-		if a.Name != "" {
-			res = append(res, a)
+		if a.Name == "" {
+			continue
 		}
+		r, ok := usage[a.Name]
+		a.Usage = usageJSON(r, ok, now)
+		res = append(res, a)
 	}
 	writeJSON(w, http.StatusOK, res)
 }

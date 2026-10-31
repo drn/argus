@@ -170,7 +170,8 @@ func resolveOrchestratorBranchNamespace(database *db.DB, orchestratorID int64, p
 // orchestrator's coordinator task so spawned workers stay on the same account
 // (a personal-account coordinator must not fan out onto the work account).
 // A blank stored account permits routing; a nonblank named or explicit
-// "default" account is inherited as a pin.
+// "default" account is inherited as a pin, unless the coordinator's account
+// itself came from routing (AccountRouted), in which case workers route too.
 // An orchestrator with no coordinator binding at all yields "" (nothing to
 // inherit; normal resolution applies, logged). A coordinator that exists but
 // whose task cannot be read is an error, never a silent project-default
@@ -192,6 +193,10 @@ func resolveOrchestratorAccount(database *db.DB, orchestratorID int64) (string, 
 			if err != nil || t == nil {
 				uxlog.Log("[account] orchestrator %d coordinator task %s unreadable: %v", orchestratorID, b.ArgusTaskID, err)
 				continue
+			}
+			if t.AccountRouted {
+				uxlog.Log("[account] orchestrator %d coordinator %s was routed to %q; worker routes too", orchestratorID, t.ID, t.Account)
+				return "", nil
 			}
 			return t.Account, nil
 		}

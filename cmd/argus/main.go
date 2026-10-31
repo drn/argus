@@ -275,6 +275,9 @@ func runTUI() {
 		uxlog.Log("connected to daemon at %s", sockPath)
 		daemonConnected = true
 		runner = client
+		// The account picker and the "auto" move target read the daemon's
+		// per-account usage caches.
+		defer agent.SetAccountUsageSource(client.AccountUsageSource())()
 		defer client.Close()
 	}
 

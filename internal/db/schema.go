@@ -28,6 +28,7 @@ func (d *DB) createTables() error {
 			profile     TEXT NOT NULL DEFAULT '',
 			sandbox_override TEXT NOT NULL DEFAULT '',
 			account TEXT NOT NULL DEFAULT '',
+			account_routed INTEGER NOT NULL DEFAULT 0,
 			created_at  TEXT NOT NULL,
 			started_at  TEXT NOT NULL DEFAULT '',
 			ended_at    TEXT NOT NULL DEFAULT ''
@@ -138,6 +139,11 @@ func (d *DB) createTables() error {
 	// account (add-agent-accounts): the account the task runs under; '' =
 	// default (~/.claude, ~/.codex). Set at creation, never re-resolved.
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN account TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+
+	// account_routed (add-account-move): 1 when the account came from tier
+	// routing rather than an explicit or project pin, so hera workers and
+	// task_create children route too. Cleared by an account move.
+	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN account_routed INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck
 
 	// Index for FindByNameProject (task_create idempotency check inside
 	// createMu). The query filters by all three columns; SQLite uses a

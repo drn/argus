@@ -17,6 +17,7 @@ import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/usagebudget"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -837,4 +838,25 @@ func (c *Client) SetFocused(taskID string, focused bool) {
 			uxlog.Log("client.SetFocused: task=%s focused=%v err=%v", taskID, focused, err)
 		}
 	}()
+}
+
+// AccountUsage reads the daemon's per-account usage readings.
+func (c *Client) AccountUsage() (map[string]usagebudget.Reading, error) {
+	var usage map[string]usagebudget.Reading
+	err := c.call("Daemon.AccountUsage", &daemon.Empty{}, &usage)
+	return usage, err
+}
+
+// AccountUsageSource adapts AccountUsage for agent.SetAccountUsageSource. A
+// failed read (an older daemon, a dropped socket) logs and reports every
+// account unknown.
+func (c *Client) AccountUsageSource() func(config.Config) map[string]usagebudget.Reading {
+	return func(config.Config) map[string]usagebudget.Reading {
+		usage, err := c.AccountUsage()
+		if err != nil {
+			uxlog.Log("[account] usage read from daemon failed, treating every account as unknown: %v", err)
+			return nil
+		}
+		return usage
+	}
 }

@@ -113,6 +113,15 @@ type AccountJSON struct {
 	Email           string              `json:"email,omitempty"`
 	Org             string              `json:"org,omitempty"`
 	Plan            string              `json:"plan,omitempty"`
+	Usage           *AccountUsageJSON   `json:"usage,omitempty"`
+}
+
+// AccountUsageJSON mirrors api.accountUsageJSON.
+type AccountUsageJSON struct {
+	FiveHourPct      *float64 `json:"five_hour_pct,omitempty"`
+	FiveHourResetsAt string   `json:"five_hour_resets_at,omitempty"`
+	WeeklyPct        *float64 `json:"weekly_pct,omitempty"`
+	WeeklyResetsAt   string   `json:"weekly_resets_at,omitempty"`
 }
 
 // ListAccounts returns the daemon's accounts, default first.

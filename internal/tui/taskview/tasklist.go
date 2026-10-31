@@ -128,6 +128,8 @@ type TaskListView struct {
 	OnCopy func(task *model.Task)
 	// OnInbox fires on `i` to open the selected task's read-only inbox viewer.
 	OnInbox func(task *model.Task)
+	// OnMoveAccount fires on `>` to move the selected task to another account.
+	OnMoveAccount func(task *model.Task)
 	// OnArtifacts opens the selected task's registered-artifact browser.
 	OnArtifacts func(task *model.Task)
 	// Callback fired after buildRows when the row composition changes.
@@ -1146,6 +1148,10 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 			case keymap.ActTaskArtifacts:
 				if t := tl.SelectedTask(); t != nil && tl.OnArtifacts != nil {
 					tl.OnArtifacts(t)
+				}
+			case keymap.ActTaskMoveAccount:
+				if t := tl.SelectedTask(); t != nil && tl.OnMoveAccount != nil {
+					tl.OnMoveAccount(t)
 				}
 			}
 		}

@@ -133,3 +133,17 @@ func TestBootInfoSupervisorRelay(t *testing.T) {
 		})
 	}
 }
+
+func TestAccountUsageRPCReadsDaemonCaches(t *testing.T) {
+	d, _ := testDaemon(t)
+	restore := usagebudget.SetBridgeReader(func(account string) (usagebudget.Reading, bool) {
+		if account == "default" || account == "" {
+			return usagebudget.Reading{Percentage: 64, Window: "seven_day"}, true
+		}
+		return usagebudget.Reading{}, false
+	})
+	defer restore()
+	var resp map[string]usagebudget.Reading
+	testutil.NoError(t, rpcFor(d).AccountUsage(&Empty{}, &resp))
+	testutil.Equal(t, resp["default"].Percentage, 64.0)
+}
