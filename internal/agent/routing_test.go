@@ -137,6 +137,7 @@ func TestCoordinatorSpawnRoutesAccount(t *testing.T) {
 			testutil.NoError(t, err)
 			testutil.Equal(t, result.Task.Backend, "test")
 			testutil.Equal(t, result.Task.Account, "work")
+			testutil.True(t, result.Task.AccountRouted)
 		})
 	}
 }

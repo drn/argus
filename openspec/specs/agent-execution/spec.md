@@ -787,34 +787,6 @@ Every failure in this check SHALL be logged and SHALL NOT prevent the resume fro
 - **WHEN** the `claude` CLI is unavailable or listing/stopping fails
 - **THEN** the failure is logged and the resume proceeds
 
-### Requirement: Account resolved once at task creation and immutable
-
-The system SHALL record an `account` on each new task, resolved at the single creation call site (`CreateAndStart`) as: explicit selection, else the project's `project_accounts` entry, else the routed tier account, else `default_account`, else `default`. An explicit `"default"` SHALL be honored as `default` and never re-resolved through the project or global default; an empty value SHALL mean no selection was made. `CreateAndStart` SHALL resolve the backend before creating the worktree. Creating a task with an unknown account name, or with an explicitly selected account that does not support the resolved backend (`Config.AccountSupports`), SHALL be rejected before any side effect. A project/global default that does not support the resolved backend SHALL fall back to `default` and be logged under `[account]`; an inherited account (hera, MCP `task_create`) that does not support it SHALL be rejected. Hera workers, sub-coordinators and freelancers SHALL inherit the spawning coordinator's stored account as-is. A nonblank named account or explicit `default` SHALL pin that account; a blank parent account SHALL permit routing. Explicit `default` SHALL remain nonblank when stored, while an implicit default SHALL remain blank. A spawn whose coordinator account cannot be read SHALL fail rather than resolve the project default. Fork-created tasks SHALL keep the source task's account. The stored value SHALL never be re-resolved on resume or restart.
-
-#### Scenario: Changing the global default does not move existing tasks
-- **WHEN** `default_account` changes after a task exists
-- **THEN** the task still spawns and resumes under its stored account
-
-#### Scenario: Worker inherits coordinator account
-- **WHEN** a coordinator on account `personal` spawns a hera worker
-- **THEN** the worker task's `account` is `personal`
-
-#### Scenario: Explicit-default coordinator pins default
-- **WHEN** a coordinator with a nonblank explicit `default` account spawns a worker in a project whose `project_accounts` entry is `work`
-- **THEN** the worker runs on `default`
-
-#### Scenario: Explicit default is not re-resolved
-- **WHEN** a task is created with `account: "default"` in a project whose default is `work`
-- **THEN** the task runs on `default`
-
-#### Scenario: Explicit account lacking the backend's tool
-- **WHEN** a task is created on a codex backend with an explicitly selected account that defines only `claude_config_dir`
-- **THEN** creation fails with an error naming the account and backend, and no worktree or row is left behind
-
-#### Scenario: Inherited account lacking the backend's tool
-- **WHEN** a coordinator on a Claude-only account spawns a Codex worker
-- **THEN** the worker creation is rejected before side effects, preserving the inherited account pin
-
 ### Requirement: Spawn exports the task account's directory
 
 `BuildCmd` SHALL export `CLAUDE_CONFIG_DIR=<account claude_config_dir>` for Claude backends when the task's account is not `default`, and SHALL NOT export it for any other backend. For Codex backends on a non-default account it SHALL export `CODEX_HOME` (the account's Argus overlay home, or the account home itself if the overlay could not be built) and `CODEX_SQLITE_HOME=<account codex_home>`. On first use the account's `codex_home` SHALL be created with mode 0700 and nothing copied into it. If the stored account no longer exists in configuration, or no longer defines the directory the backend needs, the spawn SHALL fail with an error naming the account rather than falling back to `default`. A session started through the session-supervisor SHALL spawn under the same account and per-task sandbox override as an in-process spawn.
@@ -1206,3 +1178,40 @@ CreateAndStart SHALL resolve and validate a backend/account pair before side eff
 
 - **WHEN** a worker is spawned under a coordinator with a blank stored account
 - **THEN** the inherited blank is not a pin and the worker receives the routed account
+
+### Requirement: Account resolved once at task creation and changed only by an explicit move
+
+The system SHALL record an `account` on each new task, resolved at the single creation call site (`CreateAndStart`) as: explicit selection, else the project's `project_accounts` entry, else the routed tier account, else `default_account`, else `default`. An explicit `"default"` SHALL be honored as `default` and never re-resolved through the project or global default; an empty value SHALL mean no selection was made. `CreateAndStart` SHALL resolve the backend before creating the worktree. Creating a task with an unknown account name, or with an explicitly selected account that does not support the resolved backend (`Config.AccountSupports`), SHALL be rejected before any side effect. A project/global default that does not support the resolved backend SHALL fall back to `default` and be logged under `[account]`; an inherited account (hera, MCP `task_create`) that does not support it SHALL be rejected. When the stored account came from the routed tier choice (no explicit or project account), the task SHALL be marked routed; a task whose account was set any other way SHALL NOT be. Hera workers, sub-coordinators and freelancers SHALL inherit the spawning coordinator's stored account as-is, except that a routed coordinator SHALL pass a blank account so the new task is routed (and marked routed) itself. A nonblank named account or explicit `default` SHALL pin that account; a blank parent account SHALL permit routing. Explicit `default` SHALL remain nonblank when stored, while an implicit default SHALL remain blank. A spawn whose coordinator account cannot be read SHALL fail rather than resolve the project default. Fork-created tasks SHALL keep the source task's account. The stored value SHALL never be re-resolved on resume or restart; it SHALL change only through the account-move operation.
+
+#### Scenario: Changing the global default does not move existing tasks
+- **WHEN** `default_account` changes after a task exists
+- **THEN** the task still spawns and resumes under its stored account
+
+#### Scenario: Worker inherits coordinator account
+- **WHEN** a coordinator on account `personal` spawns a hera worker
+- **THEN** the worker task's `account` is `personal`
+
+#### Scenario: Explicit-default coordinator pins default
+- **WHEN** a coordinator with a nonblank explicit `default` account spawns a worker in a project whose `project_accounts` entry is `work`
+- **THEN** the worker runs on `default`
+
+#### Scenario: Explicit default is not re-resolved
+- **WHEN** a task is created with `account: "default"` in a project whose default is `work`
+- **THEN** the task runs on `default`
+
+#### Scenario: Explicit account lacking the backend's tool
+- **WHEN** a task is created on a codex backend with an explicitly selected account that defines only `claude_config_dir`
+- **THEN** creation fails with an error naming the account and backend, and no worktree or row is left behind
+
+#### Scenario: Inherited account lacking the backend's tool
+- **WHEN** a coordinator on a Claude-only account spawns a Codex worker
+- **THEN** the worker creation is rejected before side effects, preserving the inherited account pin
+
+#### Scenario: Routed coordinator's worker is routed
+- **WHEN** routing placed a coordinator on `personal` and it later spawns a worker while `personal` is over its tier threshold and `default` has headroom
+- **THEN** the worker is routed to `default` and marked routed
+
+#### Scenario: Pinned coordinator's worker stays pinned
+- **WHEN** a coordinator created with explicit account `personal` spawns a worker
+- **THEN** the worker runs on `personal` and is not marked routed
+
