@@ -238,20 +238,24 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(tmp, in); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
+	discard := func(err error) error {
+		_ = os.Remove(tmp.Name()) // best effort: a stray temp file is harmless
 		return err
+	}
+	if _, err := io.Copy(tmp, in); err != nil {
+		_ = tmp.Close()
+		return discard(err)
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmp.Name())
-		return err
+		return discard(err)
 	}
 	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
-		os.Remove(tmp.Name())
-		return err
+		return discard(err)
 	}
-	return os.Rename(tmp.Name(), dst)
+	if err := os.Rename(tmp.Name(), dst); err != nil {
+		return discard(err)
+	}
+	return nil
 }
 
 // copyTree copies regular files under src into dst, overwriting; symlinks and

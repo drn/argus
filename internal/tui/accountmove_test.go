@@ -13,6 +13,7 @@ import (
 	"github.com/drn/argus/internal/accountusage"
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/apiclient"
+	"github.com/drn/argus/internal/apistore"
 	"github.com/drn/argus/internal/claudesession"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
@@ -22,7 +23,10 @@ import (
 	"github.com/drn/argus/internal/tui/modal"
 )
 
-var _ remoteAccountMover = (*accountMoveStore)(nil)
+var (
+	_ remoteAccountMover = (*accountMoveStore)(nil)
+	_ remoteAccountMover = (*apistore.Store)(nil)
+)
 
 type moveTestSession struct {
 	agent.SessionHandle
