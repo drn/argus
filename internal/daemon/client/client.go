@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/drn/argus/internal/accountusage"
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/bridge"
 	"github.com/drn/argus/internal/config"
@@ -837,4 +838,25 @@ func (c *Client) SetFocused(taskID string, focused bool) {
 			uxlog.Log("client.SetFocused: task=%s focused=%v err=%v", taskID, focused, err)
 		}
 	}()
+}
+
+// AccountUsage reads the daemon's per-account usage ledger.
+func (c *Client) AccountUsage() (map[string]accountusage.Usage, error) {
+	var usage map[string]accountusage.Usage
+	err := c.call("Daemon.AccountUsage", &daemon.Empty{}, &usage)
+	return usage, err
+}
+
+// AccountUsageSource adapts AccountUsage for agent.SetAccountUsageSource: a
+// failed read (an older daemon, a dropped socket) logs and reports every
+// account unknown, so "auto" fails open.
+func (c *Client) AccountUsageSource() func() map[string]accountusage.Usage {
+	return func() map[string]accountusage.Usage {
+		usage, err := c.AccountUsage()
+		if err != nil {
+			uxlog.Log("[account] usage read from daemon failed, treating every account as unknown: %v", err)
+			return nil
+		}
+		return usage
+	}
 }

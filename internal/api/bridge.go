@@ -13,6 +13,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/usagebudget"
 
+	"github.com/drn/argus/internal/accountusage"
 	"github.com/drn/argus/internal/bridge"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -57,6 +58,7 @@ func (s *Server) handleBridgeEvents(w http.ResponseWriter, r *http.Request) {
 		if n > 0 && ev.Type == bridge.TypeMeasure {
 			if st, live := s.bridgeState(id, time.Now()); live {
 				s.stampBridgeMeasurement(id, st)
+				s.recordAccountUsage(task.Account, st)
 			}
 		}
 	}
@@ -249,4 +251,28 @@ func (s *Server) observeBridge(now time.Time, running []string, idle, needs map[
 		return
 	}
 	s.bridgeShadow.Observe(now, running, idle, needs, s.bridgeState)
+}
+
+// recordAccountUsage feeds a measured session's plan windows into the
+// per-account ledger under the task's account.
+func (s *Server) recordAccountUsage(account string, st bridge.State) {
+	if s.accountUsage == nil {
+		return
+	}
+	for _, limit := range st.RateLimits {
+		reset, err := time.Parse(time.RFC3339, limit.ResetsAt)
+		if err != nil {
+			continue
+		}
+		s.accountUsage.Record(account, limit.Kind, limit.PercentUsed, reset, st.LastMeasureAt)
+	}
+}
+
+// AccountUsage returns the ledger's currently valid per-account readings.
+// nil-safe.
+func (s *Server) AccountUsage() map[string]accountusage.Usage {
+	if s == nil {
+		return map[string]accountusage.Usage{}
+	}
+	return s.accountUsage.Snapshot()
 }

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/drn/argus/internal/accountusage"
 	"github.com/drn/argus/internal/backendtier"
 	"github.com/drn/argus/internal/bridge"
 	"github.com/drn/argus/internal/db"
@@ -33,6 +34,16 @@ func (s *RPCService) BridgeStates(_ *Empty, resp *map[string]bridge.State) error
 	*resp = make(map[string]bridge.State)
 	if s.daemon.apiServer != nil {
 		*resp = s.daemon.apiServer.BridgeStates()
+	}
+	return nil
+}
+
+// AccountUsage returns the per-account usage ledger the local TUI's "auto"
+// account selection reads; missing API means every account is unknown.
+func (s *RPCService) AccountUsage(_ *Empty, resp *map[string]accountusage.Usage) error {
+	*resp = make(map[string]accountusage.Usage)
+	if s.daemon.apiServer != nil {
+		*resp = s.daemon.apiServer.AccountUsage()
 	}
 	return nil
 }

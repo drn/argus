@@ -135,6 +135,8 @@ type Daemon struct {
 	kbIndexer          *kb.Indexer   // set when KB is enabled, stopped in cleanup
 	apiServer          *api.Server   // set when API is enabled, shut down in cleanup
 	restoreBridgeUsage func()
+	// restoreAccountUsage undoes the agent.SetAccountUsageSource install.
+	restoreAccountUsage func()
 	scheduler          *scheduler.Scheduler // recurring scheduled-task firer; always started
 	heraGater          *heragater.Watcher   // hera plan-DAG gater; started when hera enabled
 	// heraRecycleWatcher drives the self-service recycle_coord path
@@ -1506,6 +1508,7 @@ func (d *Daemon) Serve(sockPath string) error {
 			apiSrv.SetFocusTracker(d.focusTracker)
 			d.apiServer = apiSrv
 			d.restoreBridgeUsage = usagebudget.SetBridgeReader(apiSrv.BridgeUsage)
+			d.restoreAccountUsage = agent.SetAccountUsageSource(apiSrv.AccountUsage)
 			// argus_api_get: agents read daemon REST state in-process through the
 			// MCP server instead of curl + the master token. Only present when both
 			// the MCP server (KB.Enabled) and the REST API are up.
@@ -1681,6 +1684,9 @@ func (d *Daemon) cleanup() {
 
 	// Shut down the API HTTP server if running.
 	if d.apiServer != nil {
+		if d.restoreAccountUsage != nil {
+			d.restoreAccountUsage()
+		}
 		if d.restoreBridgeUsage != nil {
 			d.restoreBridgeUsage()
 		}

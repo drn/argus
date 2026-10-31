@@ -275,6 +275,9 @@ func runTUI() {
 		uxlog.Log("connected to daemon at %s", sockPath)
 		daemonConnected = true
 		runner = client
+		// "auto" account selection for TUI-created tasks reads the daemon's
+		// per-account usage ledger.
+		defer agent.SetAccountUsageSource(client.AccountUsageSource())()
 		defer client.Close()
 	}
 

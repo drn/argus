@@ -25,10 +25,10 @@
 
 ## 5. Daemon wiring
 
-- [ ] 5.1 Tests first: a bridge measure with `rate_limits` records both windows into the ledger under the task's account (default normalized)
-- [ ] 5.2 Feed the ledger from the API server's bridge-measure path; daemon owns the ledger and sets `agent.AccountUsageSource`
-- [ ] 5.3 Tests first: TUI-socket `AccountUsage` RPC returns the snapshot; client error → empty map + `[account]` log
-- [ ] 5.4 Implement the RPC, the daemon client method, and set `agent.AccountUsageSource` in the local TUI at startup
+- [x] 5.1 Tests first: a bridge measure with `rate_limits` records both windows into the ledger under the task's account (default normalized)
+- [x] 5.2 Feed the ledger from the API server's bridge-measure path; daemon owns the ledger and sets `agent.AccountUsageSource`
+- [x] 5.3 Tests first: TUI-socket `AccountUsage` RPC returns the snapshot; client error → empty map + `[account]` log
+- [x] 5.4 Implement the RPC, the daemon client method, and set `agent.AccountUsageSource` in the local TUI at startup
 
 ## 6. Account move
 

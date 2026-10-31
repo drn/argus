@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/rpc"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/accountusage"
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/buildid"
 	"github.com/drn/argus/internal/daemon"
@@ -29,6 +31,9 @@ type fakeDaemon struct {
 	streamMsg []byte // bytes to send on stream before drop
 
 	stopScopes []agent.StopScope
+
+	usage        map[string]accountusage.Usage // AccountUsage reply
+	usageMissing bool                          // simulate an older daemon
 }
 
 func newFakeDaemon(t *testing.T) *fakeDaemon {
@@ -46,6 +51,16 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 // FakeRPCService is the registered RPC type — its handlers reach back into
 // the fakeDaemon for state.
 type FakeRPCService struct{ fd *fakeDaemon }
+
+func (s *FakeRPCService) AccountUsage(_ *daemon.Empty, resp *map[string]accountusage.Usage) error {
+	s.fd.mu.Lock()
+	defer s.fd.mu.Unlock()
+	if s.fd.usageMissing {
+		return errors.New("rpc: can't find method Daemon.AccountUsage")
+	}
+	*resp = s.fd.usage
+	return nil
+}
 
 func (s *FakeRPCService) SessionStatus(req *daemon.TaskIDReq, resp *daemon.SessionInfo) error {
 	s.fd.mu.Lock()
