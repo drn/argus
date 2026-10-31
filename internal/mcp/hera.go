@@ -647,7 +647,7 @@ func (s *Server) toolHeraNewOrchestrator(id interface{}, args json.RawMessage) *
 				"task is already the coordinator of orchestrator %q; a coordinator DISPATCHES work "+
 					"with hera_spawn_worker (project= targets any repo) and must not bind its own session "+
 					"as a second coordinator. For a dedicated sub-team, author a kind=subcoord hera_plan_node, "+
-					"or spawn a worker with backend=\"claude\" (which can promote itself via hera_new_orchestrator).",
+					"or, only when its mission requires self-promotion, spawn a worker with backend=\"claude\". Omit backend for ordinary workers so budget routing applies.",
 				orchName))
 		}
 	}
@@ -668,7 +668,7 @@ func (s *Server) toolHeraNewOrchestrator(id interface{}, args json.RawMessage) *
 			"this task runs on backend %q, which is not provably Claude-capable; a coordinator needs Claude Code "+
 				"(coord-hook context tracking, cost accrual, and recycle). Ask your coordinator (hera_send) to author "+
 				"hera_plan_node(kind=\"subcoord\", goal=...) for this sub-team, or to respawn you with "+
-				"hera_spawn_worker(backend=\"claude\"). If this task is not bound to a coordinator, use the TUI New "+
+				"hera_spawn_worker(backend=\"claude\") only if self-promotion is required. Omit backend for ordinary workers. If this task is not bound to a coordinator, use the TUI New "+
 				"Coordinator form instead.",
 			name))
 	}

@@ -6,17 +6,27 @@ Provides the account-wide weekly Claude usage probe and in-memory cache that `ba
 ## Requirements
 ### Requirement: Weekly usage percentage is probed and cached, never checked live
 
-The system SHALL periodically sample Aaron's current weekly Claude usage percentage and reset timestamp via a background probe, and SHALL cache the result (percentage, reset timestamp, last-probed-at) in memory for synchronous reads. The system SHALL NOT perform a live probe synchronously inside a spawn call; every read of the cached value SHALL be non-blocking regardless of probe freshness.
+The system SHALL periodically sample Claude's five-hour session and seven-day all-models usage windows via a background probe and retain each parsed window's percentage, reset timestamp, and last-probed-at independently. Synchronous reads SHALL return the fuller still-valid window without launching a live probe. A stale window or one whose reset has passed SHALL be ignored independently; if neither window is usable, usage SHALL be unknown. Existing weekly-only output SHALL remain usable.
+
+#### Scenario: Session pressure exceeds weekly pressure
+
+- **WHEN** fresh session usage is 96% and weekly usage is 75%, with both resets in the future
+- **THEN** the cached reading is 96%
+
+#### Scenario: Session reset reveals the weekly window
+
+- **WHEN** the 96% session window has reset but the 75% weekly window is still valid
+- **THEN** the cached reading is 75% without requiring another probe
+
+#### Scenario: Weekly window binds
+
+- **WHEN** weekly usage exceeds session usage and both windows are valid
+- **THEN** the cached reading is the weekly percentage
 
 #### Scenario: Cache read never blocks a backend resolution
 
-- **WHEN** `backend-tier-routing`'s resolver reads this cache for its `claude_usage` probe kind
-- **THEN** the read reaches only the in-memory cached usage percentage, never triggering a live probe
-
-#### Scenario: Cache starts empty after a daemon restart
-
-- **WHEN** the daemon has just started and no probe tick has completed yet
-- **THEN** the cached usage percentage is treated as unknown, and any tier naming the `claude_usage` probe kind is treated as available (fail-open)
+- **WHEN** routing reads usage
+- **THEN** only cached state is read, and missing or stale state is unknown
 
 ### Requirement: The usage probe fails open on any error
 
@@ -43,17 +53,27 @@ The headless Claude `/usage` probe SHALL run with the same parent-session marker
 
 ### Requirement: Fresh bridge rate limits precede hidden probes
 
-Usage routing SHALL prefer the freshest usable weekly session.measure reading among live Claude bridges on the requested account. The headless probe SHALL run only when no fresh applicable reading exists. Default and named accounts SHALL remain isolated.
+Usage routing SHALL prefer fresh session.measure readings from live Claude bridges on the requested account. For each of five_hour and seven_day, it SHALL use the freshest measurement with a valid percentage and future reset, then return the fuller valid window. The headless probe SHALL run only when no fresh applicable reading exists. Default and named accounts SHALL remain isolated.
 
-The headless probe SHALL remain default-account-only. A named account with no fresh bridge reading SHALL return unknown and fail open; per-account headless probes are a named follow-up.
+At startup and every 30 minutes, the headless poller SHALL probe the default account and each distinct valid Claude tier account using its CLAUDE_CONFIG_DIR, with inherited auth overrides and parent-session markers stripped as for spawning. Caches SHALL be isolated per account. Each account's fresh bridge reading SHALL skip its hidden probe; errors SHALL leave that account's previous reading unchanged and fail open under existing staleness rules.
 
 #### Scenario: Live account reading
 
-- **WHEN** a live bridge on the requested account has a fresh weekly limit
-- **THEN** usage routing uses that percentage without launching a hidden Claude session
+- **WHEN** a live bridge on the requested account has a fresh session or weekly limit
+- **THEN** routing uses the fuller valid percentage without launching a hidden Claude session
 
 #### Scenario: Different account or stale reading
 
 - **WHEN** only another account or stale measurements exist
-- **THEN** they are not used and the existing fallback remains available
+- **THEN** they are ignored and only the requested account's fallback is available
+
+#### Scenario: Independent bridge window validity
+
+- **WHEN** a bridge supplies an expired session limit and a valid weekly limit
+- **THEN** the weekly limit remains usable
+
+#### Scenario: Idle personal account is measured before routing
+
+- **WHEN** personal is configured in a Claude tier with no live bridge
+- **THEN** the startup/ticker probe measures it with its own CLAUDE_CONFIG_DIR and caches its reading independently
 

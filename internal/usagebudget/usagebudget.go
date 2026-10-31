@@ -63,17 +63,28 @@ const (
 	CacheMaxAge = time.Hour
 )
 
-// Reading is the latest parsed Claude weekly usage state.
+// Window is one independently expiring Claude quota measurement.
+type Window struct {
+	Percentage   float64
+	ResetAt      time.Time
+	LastProbedAt time.Time
+}
+
+// Reading retains both Claude quota windows and the currently binding value.
 type Reading struct {
+	FiveHour     *Window
+	SevenDay     *Window
+	Window       string
 	Percentage   float64
 	ResetAt      time.Time
 	LastProbedAt time.Time
 }
 
 type cacheState struct {
-	mu      sync.RWMutex
-	reading Reading
-	ok      bool
+	mu       sync.RWMutex
+	reading  Reading
+	ok       bool
+	accounts map[string]Reading
 }
 
 var usageCache cacheState
@@ -138,9 +149,11 @@ func logWarn(format string, args ...any) {
 // after every chunk, and terminates the session as soon as the weekly reading
 // renders (or on timeout / a blocking dialog). Failures are logged and leave
 // the existing cache untouched; the returned error is always nil.
-func Probe(ctx context.Context) error {
-	if _, ok := bridgeReading(""); ok {
-		logInfo("[usagebudget] fresh bridge measurement; hidden probe skipped")
+func Probe(ctx context.Context) error { return probeAccount(ctx, "", "") }
+
+func probeAccount(ctx context.Context, account, configDir string) error {
+	if _, ok := bridgeReading(account); ok {
+		logInfo("[usagebudget] fresh bridge measurement account=%q; hidden probe skipped", account)
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -157,22 +170,28 @@ func Probe(ctx context.Context) error {
 		logWarn("[usagebudget] probe failed: %v", err)
 		return nil
 	}
-	sess, err := startUsageSession(probeCtx, dir)
+	var sess usageSession
+	if configDir == "" {
+		sess, err = startUsageSession(probeCtx, dir)
+	} else {
+		sess, err = startAccountUsageSession(probeCtx, dir, configDir)
+	}
 	if err != nil {
 		if ctx.Err() == nil {
-			logWarn("[usagebudget] probe failed: %v", err)
+			logWarn("[usagebudget] probe failed account=%q: %v", account, err)
 		}
 		return nil
 	}
 	defer sess.Terminate() //nolint:errcheck // best-effort; Terminate is idempotent
 
-	runProbeSession(ctx, probeCtx, sess, dir)
+	logInfo("[usagebudget] probing account=%q", account)
+	runProbeSession(ctx, probeCtx, sess, dir, account)
 	return nil
 }
 
 // runProbeSession drives one started session to an outcome (stored reading,
 // timeout, blocking dialog, or end-of-output parse failure) and logs it.
-func runProbeSession(parent, probeCtx context.Context, sess usageSession, dir string) {
+func runProbeSession(parent, probeCtx context.Context, sess usageSession, dir string, accounts ...string) {
 	chunks := make(chan []byte, 64)
 	stop := make(chan struct{})
 	defer close(stop)
@@ -216,7 +235,7 @@ func runProbeSession(parent, probeCtx context.Context, sess usageSession, dir st
 			if !ok {
 				// The session ended on its own before the weekly section
 				// rendered. Last attempt over everything it printed.
-				finishWithoutSession(raw)
+				finishWithoutSession(raw, accounts...)
 				return
 			}
 			raw = append(raw, chunk...)
@@ -233,7 +252,7 @@ func runProbeSession(parent, probeCtx context.Context, sess usageSession, dir st
 			// /usage first paints Claude Code's locally cached figures with a
 			// "Refreshing…" marker, then repaints with the fetched ones; only
 			// the settled screen is authoritative.
-			if !usageRefreshing(screen) && storeIfParsed(screen) {
+			if !usageRefreshing(screen) && storeIfParsed(screen, accounts...) {
 				_ = sess.Terminate()
 				return
 			}
@@ -309,8 +328,8 @@ func usageRefreshing(screen string) bool {
 	return strings.Contains(screen, "Refreshing…") || strings.Contains(screen, "Refreshing...")
 }
 
-func finishWithoutSession(raw []byte) {
-	if storeIfParsed(renderUsageOutput(raw)) {
+func finishWithoutSession(raw []byte, accounts ...string) {
+	if storeParsedUsage(renderUsageOutput(raw), true, accounts...) {
 		return
 	}
 	_, err := parseUsageOutput(renderUsageOutput(raw), nowFunc())
@@ -318,15 +337,33 @@ func finishWithoutSession(raw []byte) {
 }
 
 // storeIfParsed stores the reading and logs success when screen parses.
-func storeIfParsed(screen string) bool {
+func storeIfParsed(screen string, accounts ...string) bool {
+	return storeParsedUsage(screen, false, accounts...)
+}
+
+func storeParsedUsage(screen string, final bool, accounts ...string) bool {
 	probedAt := nowFunc()
+	if usageRefreshing(screen) {
+		return false
+	}
+	// Session paints first. Wait for the all-models section before stopping
+	// the interactive process, otherwise a partial frame can hide weekly pressure.
+	if !final {
+		if _, err := parseUsageSection(screen, probedAt, false); err != nil {
+			return false
+		}
+	}
 	reading, err := parseUsageOutput(screen, probedAt)
 	if err != nil {
 		return false
 	}
 	reading.LastProbedAt = probedAt
-	storeReading(reading)
-	logInfo("[usagebudget] probe updated: percentage=%.2f reset_at=%s", reading.Percentage, reading.ResetAt.Format(time.RFC3339))
+	storeReading(reading, accounts...)
+	account := "default"
+	if len(accounts) > 0 && accounts[0] != "" {
+		account = accounts[0]
+	}
+	logInfo("[usagebudget] probe updated: account=%q percentage=%.2f reset_at=%s", account, reading.Percentage, reading.ResetAt.Format(time.RFC3339))
 	return true
 }
 
@@ -372,27 +409,34 @@ func CachedReading() (Reading, bool) {
 	return snapshot()
 }
 
-func storeReading(reading Reading) {
+func storeReading(reading Reading, accounts ...string) {
 	usageCache.mu.Lock()
 	defer usageCache.mu.Unlock()
-	usageCache.reading = reading
+	if len(accounts) > 0 && accounts[0] != "" && accounts[0] != "default" {
+		if usageCache.accounts == nil {
+			usageCache.accounts = make(map[string]Reading)
+		}
+		usageCache.accounts[accounts[0]] = mergeWindows(usageCache.accounts[accounts[0]], reading)
+		return
+	}
+	usageCache.reading = mergeWindows(usageCache.reading, reading)
 	usageCache.ok = true
 }
 
-func snapshot() (Reading, bool) {
+func snapshot(accounts ...string) (Reading, bool) {
 	if cacheSnapshotHook != nil {
 		cacheSnapshotHook()
 	}
 	usageCache.mu.RLock()
 	defer usageCache.mu.RUnlock()
-	if !usageCache.ok {
+	reading, ok := usageCache.reading, usageCache.ok
+	if len(accounts) > 0 && accounts[0] != "" && accounts[0] != "default" {
+		reading, ok = usageCache.accounts[accounts[0]]
+	}
+	if !ok {
 		return Reading{}, false
 	}
-	reading := usageCache.reading
-	if nowFunc().Sub(reading.LastProbedAt) > CacheMaxAge {
-		return Reading{}, false
-	}
-	return reading, true
+	return SelectReading(reading, nowFunc())
 }
 
 // --- real PTY session ------------------------------------------------------
@@ -404,9 +448,8 @@ type ptyUsageSession struct {
 	termOnce sync.Once
 }
 
-// startClaudeUsageSession runs `claude -- /usage` in a PTY with cmd.Dir = dir.
-// Default-account only: tasks on other Claude accounts are not probed, so an
-// inherited CLAUDE_CONFIG_DIR is dropped rather than probing some other dir.
+// startClaudeUsageSession probes the default account. Named-account probes
+// use startAccountUsageSession with the configured identity directory.
 func startClaudeUsageSession(ctx context.Context, dir string) (usageSession, error) {
 	s, err := startPTYSession(ctx, dir, "claude", "--", "/usage")
 	if err != nil {
@@ -419,6 +462,10 @@ func startClaudeUsageSession(ctx context.Context, dir string) (usageSession, err
 // dir and the probe environment. Split from startClaudeUsageSession so tests
 // can exercise the real PTY/terminate path with a stand-in command.
 func startPTYSession(ctx context.Context, dir, name string, args ...string) (*ptyUsageSession, error) {
+	return startAccountPTYSession(ctx, dir, "", name, args...)
+}
+
+func startAccountPTYSession(ctx context.Context, dir, configDir, name string, args ...string) (*ptyUsageSession, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	// Drop an inherited CLAUDE_CONFIG_DIR (the probe measures the default
@@ -428,10 +475,13 @@ func startPTYSession(ctx context.Context, dir, name string, args ...string) (*pt
 	env := make([]string, 0, len(os.Environ())+3)
 	for _, kv := range os.Environ() {
 		key, _, _ := strings.Cut(kv, "=")
-		if key == "CLAUDE_CONFIG_DIR" || claudeenv.IsParentSessionMarker(key) {
+		if key == "CLAUDE_CONFIG_DIR" || claudeenv.IsParentSessionMarker(key) || (configDir != "" && claudeenv.IsAuthOverride(key)) {
 			continue
 		}
 		env = append(env, kv)
+	}
+	if configDir != "" {
+		env = append(env, "CLAUDE_CONFIG_DIR="+configDir)
 	}
 	cmd.Env = append(env,
 		"TERM=xterm-256color",
@@ -670,24 +720,23 @@ func trustPathMatches(workspace, dir string) bool {
 
 // --- parsing ---------------------------------------------------------------
 
-var percentageRe = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)\s*%`)
+var percentageRe = regexp.MustCompile(`(-?[0-9]+(?:\.[0-9]+)?)\s*%`)
 
 var resetRe = regexp.MustCompile(`(?i)\bResets\s+(?:on\s+)?(.+?)\s+at\s+([0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?)\s*\(([^)]+)\)`)
 
 var meridiemRe = regexp.MustCompile(`(?i)([0-9])\s*(AM|PM)\b`)
 
-// parseUsageOutput extracts the "Current week (all models)" reading. The
+// parseUsageSection extracts one session or all-models weekly reading. The
 // percentage may sit on the header line itself or on a following line before
 // the next section header (the real /usage layout puts it on the bar line
 // after the header); the "Resets ..." line is taken from the same section.
-// Other sections (Current session, per-model weeks, Usage credits) are never
-// read.
-func parseUsageOutput(output string, base time.Time) (Reading, error) {
+// Per-model weeks and usage credits are never read.
+func parseUsageSection(output string, base time.Time, session bool) (Reading, error) {
 	lines := strings.Split(output, "\n")
 	header := -1
 	for i, line := range lines {
 		lower := strings.ToLower(line)
-		if strings.Contains(lower, "current week") && strings.Contains(lower, "all models") {
+		if (session && strings.Contains(lower, "current session")) || (!session && strings.Contains(lower, "current week") && strings.Contains(lower, "all models")) {
 			header = i
 			break
 		}
@@ -716,6 +765,9 @@ func parseUsageOutput(output string, base time.Time) (Reading, error) {
 		if err != nil {
 			return Reading{}, fmt.Errorf("parse percentage %q: %w", match[1], err)
 		}
+		if parsed < 0 || parsed > 100 {
+			return Reading{}, errors.New("invalid percentage")
+		}
 		pct = parsed
 		foundPct = true
 		break
@@ -725,12 +777,25 @@ func parseUsageOutput(output string, base time.Time) (Reading, error) {
 	}
 
 	match := resetRe.FindStringSubmatch(strings.Join(section, "\n"))
+	if len(match) < 4 && session {
+		short := sessionResetRe.FindStringSubmatch(strings.Join(section, "\n"))
+		if len(short) == 3 {
+			loc := locationForZone(short[2])
+			match = []string{short[0], base.In(loc).Format("Jan 2 2006"), short[1], short[2]}
+		}
+	}
 	if len(match) < 4 {
 		return Reading{}, errors.New("reset timestamp not found")
 	}
 	resetAt, err := parseResetTimestamp(match[1], match[2], match[3], base)
 	if err != nil {
 		return Reading{}, err
+	}
+	if session && sessionResetRe.MatchString(strings.Join(section, "\n")) && !resetAt.After(base) {
+		next := resetAt.AddDate(0, 0, 1)
+		if next.Sub(base) <= 5*time.Hour {
+			resetAt = next
+		}
 	}
 	return Reading{Percentage: pct, ResetAt: resetAt}, nil
 }
@@ -788,7 +853,7 @@ func parseResetTimestamp(datePart, timePart, zonePart string, base time.Time) (t
 		if err == nil {
 			if !hasYear {
 				baseInLoc := base.In(loc)
-				if parsed.Before(baseInLoc.Add(-24 * time.Hour)) {
+				if parsed.Before(baseInLoc.Add(-24*time.Hour)) && baseInLoc.Month() == time.December && parsed.Month() == time.January {
 					parsed = parsed.AddDate(1, 0, 0)
 				}
 			}

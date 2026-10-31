@@ -51,7 +51,7 @@ type CreateInput struct {
 	SandboxOverride string
 
 	// Account optionally selects the account (config.Accounts name) for this
-	// task; empty resolves via project/global default. An unknown name, or an
+	// task; empty resolves via project/tier/global default. An unknown name, or an
 	// explicit one that does not support the resolved backend
 	// (config.AccountSupports), is rejected before any worktree is created; a
 	// project/global-default-derived account that does not support it falls
@@ -134,8 +134,8 @@ var ErrAccount = errors.New("account")
 
 // resolveTaskAccount resolves and validates the account for a new task on the
 // named backend. An explicit selection that cannot run the backend is an
-// error; an unsupported project/global default or inherited account falls
-// back to the default account. Returns "" for the default account.
+// error, including inherited selections. An unsupported project/global
+// default falls back to default. Explicit "default" remains a stored pin.
 func resolveTaskAccount(cfg config.Config, input CreateInput, backend string) (string, error) {
 	explicit := strings.TrimSpace(input.Account)
 	account := cfg.ResolveAccount(explicit, input.Project)
@@ -156,6 +156,9 @@ func resolveTaskAccount(cfg config.Config, input CreateInput, backend string) (s
 		return "", nil
 	}
 	if account == config.DefaultAccountName {
+		if explicit == config.DefaultAccountName {
+			return config.DefaultAccountName, nil
+		}
 		return "", nil
 	}
 	return account, nil
@@ -186,12 +189,24 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 	}
 
 	// Resolve the backend and account before any side effect so a bad account
-	// never leaves a worktree behind. "default" is stored as "".
-	backend := resolveDefaultBackendName(input.Backend, input.Project, cfg, input.Account)
+	// never leaves a worktree behind. Preserve an explicitly pinned default;
+	// an implicit default stays blank so child workers may route accounts.
+	explicitDefault := input.Account == config.DefaultAccountName
+	choice := resolveTaskChoice(input.Backend, input.Project, cfg, input.Account)
+	backend := choice.Backend
+	projectAccount := cfg.ProjectAccounts[input.Project]
+	if input.Account == "" && (projectAccount == "" || cfg.ValidateAccount(projectAccount) != nil) && choice.Account != "" && cfg.AccountSupports(choice.Account, cfg.Backends[backend].Command) {
+		input.Account = choice.Account
+	}
 	account, err := resolveTaskAccount(cfg, input, backend)
 	if err != nil {
 		return nil, nil, err
 	}
+	if account == config.DefaultAccountName && !explicitDefault {
+		account = ""
+	}
+	uxlog.Log("[backendtier] spawn backend=%q account=%q reason=%s", backend, account, choice.Reason)
+	slog.Info("[backendtier] spawn", "backend", backend, "account", account, "reason", choice.Reason)
 
 	// Compensating-action stack: each successful side effect appends an undo
 	// closure. unwind runs them LIFO. We run cleanups outside any critical

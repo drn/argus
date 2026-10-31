@@ -63,10 +63,11 @@ type StatusBar struct {
 	// SetUsage; zero value (both false) renders as unknown, matching a
 	// not-yet-polled or --remote/in-process-runner session with no BootInfo
 	// source to ask.
-	claudePct   float64
-	claudeKnown bool
-	codexPct    float64
-	codexKnown  bool
+	claudePct    float64
+	claudeWindow string
+	claudeKnown  bool
+	codexPct     float64
+	codexKnown   bool
 }
 
 // maxPluginBarHints caps how many plugin hints the bar will attempt to render
@@ -106,7 +107,11 @@ func (sb *StatusBar) SetTab(t Tab) {
 // semantics). Pass claudeKnown/codexKnown false (pct ignored) when a reading
 // is absent or stale — Draw renders that side as "—" rather than a possibly
 // hours-old percentage indistinguishable from a fresh one.
-func (sb *StatusBar) SetUsage(claudePct float64, claudeKnown bool, codexPct float64, codexKnown bool) {
+func (sb *StatusBar) SetUsage(claudePct float64, claudeKnown bool, codexPct float64, codexKnown bool, window ...string) {
+	sb.claudeWindow = ""
+	if len(window) > 0 {
+		sb.claudeWindow = window[0]
+	}
 	sb.claudePct = claudePct
 	sb.claudeKnown = claudeKnown
 	sb.codexPct = codexPct
@@ -228,6 +233,12 @@ func (sb *StatusBar) usageSummary() string {
 	claude := "—"
 	if sb.claudeKnown {
 		claude = fmt.Sprintf("%.0f%%", sb.claudePct)
+		switch sb.claudeWindow {
+		case "five_hour":
+			claude += "s"
+		case "seven_day":
+			claude += "w"
+		}
 	}
 	codex := "—"
 	if sb.codexKnown {

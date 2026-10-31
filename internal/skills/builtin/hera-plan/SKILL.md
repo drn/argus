@@ -215,11 +215,13 @@ when its blockers finish.
   — so it nests under you in the rail/tree via the multi-binding bridge, never sharing your task.
 - You hand it only the `goal`. It runs its own planning (often `/brainstorm` → its own `hera_plan`)
   and spawns its own workers. Bake rich context into the goal so it needs little back-and-forth.
+- **Omit backend for ordinary worker nodes.** Routing selects available capacity/accounts. Pin Claude
+  only for actual self-promotion, a Claude-only connector/MCP, or an in-session Claude review panel.
 - **This is THE way to stand up a sub-coordinator.** Author `hera_plan_node(kind="subcoord", goal=...)`
   (or a `kind="subcoord"` node in `hera_plan`) — it resolves to a Claude-capable backend whenever one is configured. Do
   **not** spawn a worker and have it call `hera_new_orchestrator`: the worker inherits
-  `[backend_routing]` and may land on Codex, and `hera_new_orchestrator` is rejected there. If you must
-  use worker promotion, spawn the worker with `backend="claude"`. A subcoord node with no blockers is
+  `[backend_routing]` and may land on Codex, and `hera_new_orchestrator` is rejected there. Only when the mission explicitly requires
+  worker self-promotion, spawn that worker with `backend="claude"`. A subcoord node with no blockers is
   ready immediately (materializes on the gater's next tick); with blockers, when they all reach `done`.
 - Keep it an explicit choice — default to plain worker nodes; don't spin up middle-management for a
   stage one worker can do.

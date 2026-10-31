@@ -48,23 +48,13 @@ type Config struct {
 	// config.toml-only. See ResolveAccount.
 	Accounts map[string]Account `toml:"accounts"`
 	// DefaultAccount is the account new tasks use when neither an explicit
-	// selection nor a ProjectAccounts entry applies.
+	// selection, ProjectAccounts entry, nor routed tier account applies.
 	DefaultAccount string `toml:"default_account"`
 	// ProjectAccounts maps a project name to its default account.
 	ProjectAccounts map[string]string `toml:"project_accounts"`
-	// BackendRouting is the ordered tier list consulted by default
-	// task-backend resolution (agent.ResolveBackend / CreateAndStart) whenever
-	// neither an explicit task backend nor a project backend applies. An
-	// absent [backend_routing] table (or an empty Tiers slice) leaves
-	// single-default-backend behavior unchanged. Hera coordinator/sub-coordinator
-	// spawn deliberately bypasses this list entirely (see
-	// agent.resolveCoordinatorBackend) — coord-hook (context tracking, cost
-	// accrual, recycle) is Claude-Code-only, so a coordinator always resolves
-	// to a Claude-capable backend regardless of tier state. The former
-	// [hera.worker_budget] one-way Claude→single-fallback switch has been
-	// retired: hera worker/freelance spawn now resolves through this SAME tier
-	// list (via the unified creation-time precedence chain), not a bespoke
-	// resolver.
+	// BackendRouting chooses backend/account pairs at task creation. Explicit
+	// or project backends restrict backend selection but still allow account
+	// routing. Coordinator creation filters tiers to Claude-capable backends.
 	BackendRouting BackendRoutingConfig `toml:"backend_routing"`
 }
 
@@ -119,6 +109,7 @@ const (
 // the tier is skipped, never a load error.
 type BackendTier struct {
 	Backend      string `toml:"backend"`
+	Account      string `toml:"account"`
 	Probe        string `toml:"probe"`
 	ThresholdPct int    `toml:"threshold_pct"`
 }

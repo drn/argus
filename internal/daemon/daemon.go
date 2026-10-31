@@ -277,7 +277,7 @@ func New(database *db.DB) *Daemon {
 		prResolveRepo:     gitutil.ResolveDefaultRepo,
 		prAliasCap:        prDefaultAliasCap,
 		prDisableFlagPath: filepath.Join(db.DataDir(), prPollDisableFlag),
-		usageBudgetProbe:  usagebudget.Probe,
+		usageBudgetProbe:  func(ctx context.Context) error { return usagebudget.ProbeConfiguredAccounts(ctx, database.Config()) },
 		codexProbe:        backendtier.Probe,
 	}
 

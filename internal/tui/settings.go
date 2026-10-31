@@ -1425,6 +1425,9 @@ func probeLabel(probe string) string {
 // in-progress threshold edit buffer exactly like the todo project/tag rows do.
 func (sv *SettingsView) backendTierRowLabel(i int, t config.BackendTier) string {
 	label := fmt.Sprintf("%d. %s — %s", i+1, t.Backend, probeLabel(t.Probe))
+	if t.Account != "" {
+		label += " (" + t.Account + ")"
+	}
 	if t.Probe == config.ProbeNone {
 		return label
 	}
@@ -1839,6 +1842,11 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 				return false
 			}
 			return sv.handleEditModel()
+		case keymap.ActSettingsCycleAccount:
+			if sv.focus == focusRail {
+				return false
+			}
+			return sv.cycleBackendTierAccount()
 		case keymap.ActSettingsCycleProbe:
 			if sv.focus == focusRail {
 				return false
@@ -3865,6 +3873,12 @@ func (sv *SettingsView) renderBackendTierDetail(screen tcell.Screen, x, y, w, h 
 
 	widget.DrawText(screen, x, y+r, w, "  Backend: "+t.Backend, theme.StyleDimmed)
 	r++
+	account := t.Account
+	if account == "" {
+		account = "(automatic)"
+	}
+	widget.DrawText(screen, x, y+r, w, "  Account: "+account, theme.StyleDimmed)
+	r++
 	widget.DrawText(screen, x, y+r, w, "  Probe: "+probeLabel(t.Probe), theme.StyleDimmed)
 	r++
 	if t.Probe != config.ProbeNone && r < h-1 {
@@ -3875,7 +3889,7 @@ func (sv *SettingsView) renderBackendTierDetail(screen tcell.Screen, x, y, w, h 
 		}
 	}
 
-	hints := "[n] add  [d] remove  [K/J] move  [→] cycle backend  [p] cycle probe  [e] edit threshold"
+	hints := "[n] add  [d] remove  [K/J] move  [→] backend  [A] account  [p] probe  [e] threshold"
 	if sv.editingTierIdx == idx {
 		hints = "[enter] save threshold  [esc] cancel"
 	} else if !editable {

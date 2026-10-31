@@ -17,7 +17,7 @@ func TestDB_BackendTiers_EmptyByDefault(t *testing.T) {
 func TestDB_BackendTiers_RoundTripPreservesOrder(t *testing.T) {
 	d := testDB(t)
 	want := []config.BackendTier{
-		{Backend: "claude", Probe: config.ProbeClaudeUsage, ThresholdPct: 80},
+		{Backend: "claude", Account: "personal", Probe: config.ProbeClaudeUsage, ThresholdPct: 80},
 		{Backend: "codex", Probe: config.ProbeCodexUsage, ThresholdPct: 70},
 		{Backend: "pi", Probe: config.ProbeNone},
 	}

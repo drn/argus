@@ -85,6 +85,8 @@ func (d *DB) createTables() error {
 		return err
 	}
 
+	d.conn.Exec(`ALTER TABLE backend_tiers ADD COLUMN account TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+
 	// Idempotent ALTER TABLE migrations below. All are safe to call multiple
 	// times (errors for already-existing columns are silently ignored), so
 	// ordering within this block does not matter — new columns can be appended

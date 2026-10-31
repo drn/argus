@@ -183,7 +183,9 @@ const (
 	//     A stale supervisor still prepends the prefix and builds the old overlay.
 	// 31: BuildCmd appends ~/.local/bin to the spawned session PATH when absent.
 	//     A stale supervisor spawns with the inherited PATH unchanged.
-	SupervisorSpawnSurface = 31
+	// 32: quota-aware backend/account routing and ordinary-worker guidance;
+	//     explicit default account pins survive task creation and inheritance.
+	SupervisorSpawnSurface = 32
 
 	// SupervisorStreamSurface names the observable behavior of the live-session
 	// stream core.
@@ -393,6 +395,8 @@ func CompareSupervisorSurface(reported SurfaceVersion) SurfaceSkew {
 // version is guarded against.
 var SupervisorSpawnPaths = []string{
 	"internal/agent/agent.go",                                        // BuildCmd: argv, env, dir, cache-dir redirection
+	"internal/agent/routing.go",                                      // shared backend/account routing used by ResolveBackend
+	"internal/backendtier/choice.go",                                 // account-aware tier choice
 	"internal/agent/git_policy.go",                                   // child-only Git signing policy
 	"internal/config/git.go",                                         // Git policy schema and validation
 	"internal/agent/backends.go",                                     // backend family registry BuildCmd dispatches on
@@ -472,7 +476,7 @@ var SupervisorStreamPaths = []string{
 // To re-record after an intentional change: run the guard test; its failure
 // message prints the computed digest to paste back here.
 const (
-	SpawnSurfaceDigest  = "3f8a363ff98ea78872ee29314508121c26cdd8b79a0d41a8721598909994e3bd"
+	SpawnSurfaceDigest  = "3152a14fd7bf8a6c0ede71c0c44c314ca20c87f0d038c5df63033570f89480c1"
 	StreamSurfaceDigest = "4db586fb7dcaf62899cb2ebc82bbaa7fcc325d7cf99611f5f7942c44f9bc9467"
 )
 

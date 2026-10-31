@@ -22,7 +22,7 @@ const claudeSettingsFile = "settings.json"
 // claudeAuthOverrideEnv are auth sources Claude Code ranks above the stored
 // /login, so an inherited value would silently bill a different identity than
 // the task's explicit account.
-var claudeAuthOverrideEnv = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}
+var claudeAuthOverrideEnv = claudeenv.AuthOverrides
 
 // claudeSettingsAccountKeys are settings.json keys bound to the default login or
 // able to run credential-fetching commands, so they are never copied into

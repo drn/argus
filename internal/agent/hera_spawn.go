@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/drn/argus/internal/backendtier"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
@@ -44,30 +45,11 @@ const (
 	defaultCoordinatorArchetype = "orchestrator"
 )
 
-// resolveCoordinatorBackend is the hard carve-out that keeps a hera
-// coordinator or sub-coordinator off budget-tiered routing
-// (fix-backend-routing-semantics): coord-hook's context-size stamping,
-// token/cost accrual, and the recycle machinery are Claude-Code-only, so a
-// coordinator must always resolve to a Claude-capable backend regardless of
-// [backend_routing] tier state.
-//
-// An explicit caller-supplied backend (e.g. a deliberate selection in the
-// rail's New Coordinator form) still always wins — operator override,
-// mirroring the pre-existing worker-budget precedent ("explicit backend
-// always wins") — but it is never accepted SILENTLY when it isn't
-// Claude-capable: a uxlog warning names what breaks. When no explicit
-// backend is given, ordinary project/tier/default resolution runs
-// (resolveDefaultBackendName), and the result is used as-is only if it
-// happens to be Claude-capable; otherwise this fails open to the literal
-// "claude" backend (with a uxlog warning) rather than silently leaving the
-// coordinator on a backend that can't run coord-hook.
-//
-// IsClaudeBackend's exact-basename check is deliberately an include-list, not
-// create.go's CaptureSessionID-style exclude-list: the question here is
-// "provably Claude-capable," and an unrecognized/custom command is not. A
-// side effect: an operator running Claude via a differently-named wrapper
-// script is forced onto bare "claude" rather than trusted.
-func resolveCoordinatorBackend(explicit, project string, cfg config.Config) string {
+// resolveCoordinatorBackend restricts automatic coordinator selection to
+// Claude-capable tiers, retaining account scoring and project/account pins.
+// If none resolves, the existing Claude fallback keeps coordination available.
+// An explicit non-Claude backend remains an operator override with a warning.
+func resolveCoordinatorBackend(explicit, project string, cfg config.Config, accounts ...string) string {
 	const claudeFallback = "claude"
 
 	if explicit != "" {
@@ -80,7 +62,30 @@ func resolveCoordinatorBackend(explicit, project string, cfg config.Config) stri
 		return explicit
 	}
 
-	name := resolveDefaultBackendName("", project, cfg)
+	filtered := cfg
+	filtered.BackendRouting.Tiers = nil
+	for _, tier := range cfg.BackendRouting.Tiers {
+		if b, ok := cfg.Backends[tier.Backend]; ok && IsClaudeBackend(b.Command) {
+			filtered.BackendRouting.Tiers = append(filtered.BackendRouting.Tiers, tier)
+		}
+	}
+	preferred := cfg.Projects[project].Backend
+	if b, ok := cfg.Backends[preferred]; !ok || !IsClaudeBackend(b.Command) {
+		preferred = ""
+	}
+	pin := ""
+	if len(accounts) > 0 {
+		pin = accounts[0]
+	}
+	if pin == "" {
+		if p := cfg.ProjectAccounts[project]; p != "" && cfg.ValidateAccount(p) == nil {
+			pin = p
+		}
+	}
+	if choice := backendtier.ResolveChoice(filtered, preferred, pin); choice.Backend != "" {
+		return choice.Backend
+	}
+	name := resolveDefaultBackendName("", project, filtered, accounts...)
 	if b, ok := cfg.Backends[name]; ok && IsClaudeBackend(b.Command) {
 		return name
 	}
@@ -164,8 +169,8 @@ func resolveOrchestratorBranchNamespace(database *db.DB, orchestratorID int64, p
 // resolveOrchestratorAccount returns the account of the
 // orchestrator's coordinator task so spawned workers stay on the same account
 // (a personal-account coordinator must not fan out onto the work account).
-// A default-account coordinator yields "default", not "", so its workers are
-// pinned to it rather than falling through to a project/global default.
+// A blank stored account permits routing; a nonblank named or explicit
+// "default" account is inherited as a pin.
 // An orchestrator with no coordinator binding at all yields "" (nothing to
 // inherit; normal resolution applies, logged). A coordinator that exists but
 // whose task cannot be read is an error, never a silent project-default
@@ -188,7 +193,7 @@ func resolveOrchestratorAccount(database *db.DB, orchestratorID int64) (string, 
 				uxlog.Log("[account] orchestrator %d coordinator task %s unreadable: %v", orchestratorID, b.ArgusTaskID, err)
 				continue
 			}
-			return PinnedAccount(t.Account), nil
+			return t.Account, nil
 		}
 		if len(bindings) > 0 {
 			return "", fmt.Errorf("resolve orchestrator account: no readable coordinator task for orchestrator %d", orchestratorID)
@@ -446,9 +451,8 @@ func MaterializeHeraSubCoordinator(database *db.DB, runner SessionProvider, in H
 		PTYRole: db.HeraKindCoordinator,
 		Prompt:  in.TaskPrompt,
 		Project: in.Project,
-		// A sub-coordinator is still a coordinator: never budget-tiered (see
-		// resolveCoordinatorBackend).
-		Backend: resolveCoordinatorBackend(in.Backend, in.Project, database.Config()),
+		// Sub-coordinators route only among Claude-capable tiers.
+		Backend: resolveCoordinatorBackend(in.Backend, in.Project, database.Config(), inheritedAccount),
 		Model:   in.Model,
 		// The planned subcoord role's authored archetype propagates onto the
 		// materialized task (add-diligence-profiles); empty stays empty.
@@ -668,8 +672,7 @@ func SpawnHeraCoordinator(database *db.DB, runner SessionProvider, in HeraCoordi
 		PTYRole: db.HeraKindCoordinator,
 		Prompt:  in.TaskPrompt,
 		Project: in.Project,
-		// Never budget-tiered: a coordinator always resolves to a
-		// Claude-capable backend, regardless of tier state (resolveCoordinatorBackend).
+		// Coordinators route among Claude-capable tiers, including accounts.
 		Backend:         resolveCoordinatorBackend(in.Backend, in.Project, database.Config()),
 		Model:           in.Model,
 		Archetype:       archetype,
