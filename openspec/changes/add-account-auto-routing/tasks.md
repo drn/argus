@@ -51,6 +51,7 @@
 - [x] 8.3 Add `tasklist.move_account` / `hera_rail.move_account` (`>`) to `keymap` (defaultSpecs, actionLabels, contextOrder), dispatch cases, palette registries, and `TestHelpModal_Draw` assertions
 - [x] 8.4 Tests first: picker modal lists `auto` + eligible accounts with usage labels ("—" unknown); notices for no selection / non-Claude / no other account; busy session opens the picker with an interrupt warning and sends force; confirm runs the move off the UI thread and then `startSession`; remote mode calls the REST endpoint; SimulationScreen smoke test for open → confirm → close
 - [x] 8.5 Implement the picker modal and the move flow with `[account]` uxlog lines for success / failure
+- [x] 8.6 Settings: default/project account rows cycle through `auto`; a stored `auto` is not marked `(missing)`
 
 ## 9. Docs and verification
 

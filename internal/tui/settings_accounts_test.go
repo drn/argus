@@ -226,6 +226,10 @@ func TestAccounts_CycleDefaultAccountPersists(t *testing.T) {
 	selectRow(t, sv, srAccountDefault, "_default")
 
 	acctKey(sv, tcell.KeyRight, 0)
+	testutil.Equal(t, d.Config().DefaultAccount, "auto")
+	testutil.Contains(t, sv.rows[0].label, "Default account: auto")
+	testutil.False(t, strings.Contains(sv.rows[0].label, "(missing)"))
+	acctKey(sv, tcell.KeyRight, 0)
 	testutil.Equal(t, d.Config().DefaultAccount, "personal")
 	testutil.Contains(t, sv.rows[0].label, "Default account: personal")
 
@@ -246,7 +250,7 @@ func TestAccounts_CycleProjectAccountPersists(t *testing.T) {
 	selectRow(t, sv, srProjectAccount, "argus")
 	testutil.Contains(t, sv.SelectedRow().label, "(global default)")
 
-	want := []string{"default", "personal", ""}
+	want := []string{"default", "auto", "personal", ""}
 	for _, w := range want {
 		acctKey(sv, tcell.KeyRight, 0)
 		testutil.Equal(t, d.Config().ProjectAccounts["argus"], w)

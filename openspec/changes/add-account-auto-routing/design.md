@@ -18,7 +18,7 @@
 - Automatic moves of capped sessions (user decision: manual only).
 - A "stuck on cap" indicator.
 - Probing accounts that have no live session (readings come only from live sessions; unknown = available).
-- Codex transcript moves, the web/macOS move action, a Settings picker for `auto` (named follow-ups).
+- Codex transcript moves, the web/macOS move action, a Settings UI for the thresholds (named follow-ups). Settings can cycle the default/project account to `auto`.
 
 ## Decisions
 

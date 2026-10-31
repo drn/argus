@@ -26,9 +26,10 @@ Argus picks a task's account once, statically (explicit → project pin → `def
 - `rest-api`: `auto` entry and `usage` on `GET /api/accounts`; new `POST /api/tasks/{id}/account`.
 - `forms-and-modals`: new-task account selector offers `auto`.
 - `keybindings`: `>` moves the selected task to another account (task list and Hera rail).
+- `settings-view`: the default-account and project rows can cycle to `auto`.
 
 ## Impact
 
 - Code: `internal/config` (reserved `auto`, `AccountRouting`), new `internal/accountusage` (ledger + selection), `internal/agent/create.go` + `hera_spawn.go` (resolution / inheritance), new `internal/agent/accountmove.go`, `internal/db` (`tasks.account_auto` column), `internal/model/task.go`, `internal/api` (ledger feed from bridge measures, `/api/accounts`, move endpoint), `internal/daemon` (ledger wiring + `AccountUsage` TUI RPC), `internal/daemon/client`, `internal/mcp` (`task_move_account`, `task_create` inheritance), `internal/tui` (form `auto`, `>` key + picker modal, palette, remote path via `apiclient`/`apistore`), `internal/tui/keymap` + help + README Reference.
 - Wire: additive TUI↔daemon RPC method `AccountUsage` (old daemon → error → all-unknown, fail open). No supervisor protocol change.
-- Frontend parity: web + macOS new-task forms get `auto` for free via the new `/api/accounts` entry. **Named follow-ups:** the move action in the web SPA and macOS app; a Settings-UI picker offering `auto` (config.toml-only in v1, like other routing keys); Codex transcript moves (Claude-only in v1); usage readings for accounts with no live sessions (no probe per named account in v1).
+- Frontend parity: web + macOS new-task forms get `auto` for free via the new `/api/accounts` entry. **Named follow-ups:** the move action in the web SPA and macOS app; a Settings UI for the `[account_routing]` thresholds (config.toml-only in v1, like other routing keys); Codex transcript moves (Claude-only in v1); usage readings for accounts with no live sessions (no probe per named account in v1).

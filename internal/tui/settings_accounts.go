@@ -76,12 +76,22 @@ func (sv *SettingsView) accountDB() *db.DB {
 }
 
 // accountNameOptions is the cycle order for the default / project rows:
-// "default" first, then the valid configured accounts sorted by name.
+// "default", then "auto" when any account is configured, then the valid
+// configured accounts sorted by name.
 func (sv *SettingsView) accountNameOptions() []string {
-	return config.Config{Accounts: sv.accounts}.AccountNames()
+	names := config.Config{Accounts: sv.accounts}.AccountNames()
+	if len(names) < 2 {
+		return names
+	}
+	return append([]string{names[0], config.AutoAccountName}, names[1:]...)
 }
 
+// accountExists reports whether a stored default/project selection names a
+// real choice; the reserved "auto" always does.
 func (sv *SettingsView) accountExists(name string) bool {
+	if config.IsAutoAccount(name) {
+		return true
+	}
 	_, ok := sv.accounts[name]
 	return ok
 }
